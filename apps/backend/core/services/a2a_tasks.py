@@ -489,15 +489,19 @@ async def _dispatch_session(org: str, agent_id: str, row: dict, text: str) -> bo
     )
     request_id = hosted_mcp._network_request_id(row["id"])
     to = claims["operation"]["resource"].removeprefix("session:")
+    # The laptop binds the note's operands to the envelope's text exactly (cli authority::bind), and
+    # shows who asked, for whom and why from the note itself: the member route sends the minted text
+    # with no header. The person's-link route below has no note, so it keeps the header.
+    signed = claims["operation"]["operands"]["text"]
     a2a = {
         "role": "ROLE_AGENT",
-        "parts": [{"text": header + text}],
+        "parts": [{"text": signed}],
         "metadata": {URI: row["authority"]},
         "extensions": [URI],
     }
     params = {
         "to": to,
-        "text": header + text,
+        "text": signed,
         "request_id": request_id,
         "a2a": a2a,
         "person": network_member.app_person(origin),

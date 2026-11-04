@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from core.repositories import a2a_repo
-from core.services import network_member, network_route
+from core.services import a2a_tasks, network_member, network_route
 from tests.unit.routers.test_a2a_internal import ADDRESS, AGENT, H, ORG, OWNER, RULES, URL, body, env  # noqa: F401
 
 URI = "https://thelightbulb.company/a2a/ext/authority/v1"
@@ -59,7 +59,9 @@ def test_dispatch_prefers_the_bridge_when_the_workspace_has_a_runtime(client, br
     row = asyncio.run(a2a_repo.get_task(ORG, out["taskId"]))
     assert params["to"] == ADDRESS and params["request_id"] == out["taskId"]
     assert params["person"] == network_member.app_person(bridge.session["humanUserId"])
-    assert params["text"].startswith("[A2A] ") and params["text"].endswith("\nstatus?")
+    # The laptop refuses a note whose operands differ from the text (cli authority::bind "operands").
+    claims = a2a_tasks._claims(row["authority"])
+    assert params["text"] == claims["operation"]["operands"]["text"] == "status?"
     assert params["a2a"] == {
         "role": "ROLE_AGENT",
         "parts": [{"text": params["text"]}],

@@ -351,6 +351,8 @@ def backend(monkeypatch):
             return False
 
     def fake_urlopen(req, timeout=None):
+        if req.full_url.endswith("/runtime-proof"):  # _start's own proof fetch, not a session reply
+            raise urllib.error.URLError("no proof in this test")
         posted.append((req.full_url, dict(req.header_items()), json.loads(req.data)))
         if status["code"] >= 300:
             raise urllib.error.HTTPError(req.full_url, status["code"], "no", {}, None)
@@ -402,7 +404,7 @@ def test_an_a2a_record_without_reply_to_is_acked_unforwarded(net, turns, backend
     net.answer(**_peek({k: v for k, v in A2A_REPLY.items() if k != "reply_to"}, session=A2A_SESSION))
     assert network.ensure_started(background=False)
     assert _until(lambda: len(_acks(net, "read")) == 1)
-    assert [p for p in posted if not p[0].endswith("/runtime-proof")] == [] and turns.ran == []
+    assert posted == [] and turns.ran == []
 
 
 def test_concurrent_a2a_declares_keep_both_people(net):

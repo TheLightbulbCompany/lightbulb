@@ -179,7 +179,7 @@ PROOF_TICK_S = 3600.0
 _proof_exp = 0.0  # 0 = none held, so the next tick fetches
 
 
-def refresh_runtime_proof(now: float | None = None) -> bool:
+def refresh_runtime_proof() -> bool:
     """Fetch this runtime's workspace proof from the backend, write ``login.json`` (0600, atomic)
     and tell a running engine to re-read it. False on any error; never raises, never logs the proof."""
     global _proof_exp
@@ -216,7 +216,7 @@ def renew_proof_if_due(now: float | None = None) -> bool:
     """Refresh when fewer than 15 days remain (or none is held). True when it posted."""
     if _proof_exp - (time.time() if now is None else now) >= PROOF_RENEW_S:
         return False
-    refresh_runtime_proof(now)
+    refresh_runtime_proof()
     return True
 
 

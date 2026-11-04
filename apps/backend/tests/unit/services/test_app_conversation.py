@@ -632,3 +632,17 @@ async def test_a_request_from_a_direct_message_says_so(monkeypatch):
     monkeypatch.setattr(conv.messaging_repo, "get_room", AsyncMock(return_value={"kind": "dm"}))
     caller = svc.BuilderCaller(owner_id=OWNER, actor_id="agent_x", actor_kind="agent")
     assert await conv._attributed(caller, "build it", "user_ada", "dm_1") == "Ada (in a direct message): build it"
+
+
+async def test_a_builder_in_an_apps_conversation_cannot_upload_a_second_app(chat, monkeypatch):
+    res = await _start()
+    room = conv.conversation_room_id(res["app_id"])
+    monkeypatch.setattr(svc.messaging_repo, "get_run", AsyncMock(return_value={"roomId": room}))
+    in_conversation = svc.BuilderCaller(owner_id=OWNER, actor_id=FORGE, actor_kind="agent", run_id="run_9")
+    with pytest.raises(svc.AppsRefused) as e:
+        await svc.put_source(OWNER, name="booking-page", commit="c1", archive=_tar(SRC_V1), actor=in_conversation)
+    assert e.value.code == "wrong_app" and "lightbulb app new booking " in e.value.next
+    assert await svc.apps_repo.get_by_name(OWNER, "booking-page") is None
+    # Its own name is taken over as before.
+    await svc.put_source(OWNER, name="booking", commit="c1", archive=_tar(SRC_V1), actor=in_conversation)
+    assert (await svc.apps_repo.get(res["app_id"]))["state"] == "building"

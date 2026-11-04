@@ -17,7 +17,16 @@ from core.config import settings
 from core.repositories import a2a_repo, local_sessions_repo, messaging_repo
 from core.services import a2a_rules, hosted_mcp, messaging, network_proof, network_route
 from core.services.a2a_auth import READ_SCOPE_A2A, SEND_SCOPE, A2ACaller
-from core.services.a2a_authority import URI, AuthorityError, AuthorityRequest, Operation, mint, sign_record, verify
+from core.services.a2a_authority import (
+    URI,
+    AuthorityError,
+    AuthorityRequest,
+    Operation,
+    mint,
+    sign_record,
+    sign_rules,
+    verify,
+)
 from core.services.a2a_rules import Rules, default_rules
 from core.services.network_proof import _unb64
 
@@ -764,7 +773,17 @@ async def put_rules(auth: AuthContext, org: str, rules: Rules, *, now: int | Non
             await _redecide(org, row, stored, now=now)
         except Exception:
             logger.exception("a2a re-decide failed", extra={"org": org, "task": row["id"]})
+    try:
+        await network_route.push_rules(org, sign_rules(org, doc, now=now))
+    except Exception:  # the laptops catch up on their next connect; the PUT stands
+        logger.exception("a2a rules push failed", extra={"org": org})
     return doc
+
+
+async def current_rules_jws(org: str, *, now: int | None = None) -> str:
+    """The workspace's stored rules document signed, or the shipped default when none is stored."""
+    doc = await a2a_repo.get_rules(org) or default_rules(org, []).model_dump()
+    return sign_rules(org, doc, now=int(time.time()) if now is None else now)
 
 
 def _readable(auth: AuthContext, row: dict) -> bool:

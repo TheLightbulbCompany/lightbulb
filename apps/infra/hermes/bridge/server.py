@@ -535,6 +535,24 @@ def _network_sessions(params: dict, **_kwargs) -> dict:
     return _net("network.sessions", "cloud.sessions.set", run=lambda: {"count": network.reload_sessions()})
 
 
+def _network_a2a_send(params: dict, timeout_ms=RPC_DEFAULT_TIMEOUT_MS, **_kwargs) -> dict:
+    """A hosted A2A send: declare the person's ``a2a`` session, then ``app.send`` with the A2A
+    message. ``a2a`` carries a JWS in its metadata: nothing here logs it."""
+    body = {k: params.get(k) for k in ("to", "text", "request_id", "person")}
+    a2a = params.get("a2a")
+    if not all(isinstance(v, str) and v for v in body.values()) or not isinstance(a2a, dict):
+        return {"ok": False, "error": {"code": "INVALID_REQUEST",
+                                       "message": "to, text, request_id, person and a2a are required"}}
+
+    def run() -> dict:
+        network.declare_a2a_session(body["person"])
+        return network.ask("app.send", {"app": "a2a", "person": body["person"], "to": body["to"],
+                                        "text": body["text"], "request_id": body["request_id"],
+                                        "a2a": a2a, "wait": True}, timeout_ms / 1000)
+
+    return _net("network.a2a_send", "", run=run)
+
+
 def _network_wake(params: dict, **_kwargs) -> dict:
     """A peer rang the doorbell: start the member, nothing else (spec job 3)."""
     return _net("network.wake", "", run=dict)
@@ -544,7 +562,7 @@ RPC_METHODS.update({"network.join": _network_join, "network.sessions": _network_
                     "network.hold": _network_hold,
                     "network.invite": _network_invite, "network.team": _network_team,
                     "network.leave": _network_leave,
-                    "network.wake": _network_wake})
+                    "network.wake": _network_wake, "network.a2a_send": _network_a2a_send})
 
 
 # The backend's memory sync, remember and wipes (core/services/memory_*.py) onto the cloud member:

@@ -198,3 +198,36 @@ def test_network_invite_logs_no_ticket(net, caplog):
                   "team.get": {"team_id": "tm1", "members": []}})
     _rpc("network.invite")
     assert "TICKET" not in caplog.text
+
+
+def test_a2a_send_declares_then_sends_with_the_a2a_object(net):
+    assert network.ensure_started(background=False)
+    a2a = {"role": "ROLE_USER", "parts": [{"text": "hi"}], "metadata": {"https://x/ext": "jws.jws.jws"},
+           "extensions": ["https://x/ext"]}
+    net.answer(**{"app.send": {"receipt": "r1"}})
+    params = {"to": "atlas", "text": "hi", "request_id": "req-1", "person": "user_a", "a2a": a2a}
+    assert _rpc("network.a2a_send", params) == {"ok": True, "payload": {"receipt": "r1"}}
+    ops = [c["op"] for c in net.calls() if c["op"] in ("cloud.sessions.set", "app.send")]
+    assert ops[-2:] == ["cloud.sessions.set", "app.send"]
+    assert {"app": "a2a", "person": "user_a"} in _sent(net, "cloud.sessions.set")[-1]["sessions"]
+    assert _sent(net, "app.send")[-1] == {"op": "app.send", "app": "a2a", "person": "user_a", "to": "atlas",
+                                          "text": "hi", "request_id": "req-1", "a2a": a2a, "wait": True}
+    declared_once = len(net.calls("cloud.sessions.set"))
+    _rpc("network.a2a_send", params)  # declared once per process
+    assert len(net.calls("cloud.sessions.set")) == declared_once
+    assert len(net.calls("app.send")) == 2
+
+
+def test_a2a_send_with_missing_params_is_invalid_request(net):
+    full = {"to": "atlas", "text": "hi", "request_id": "r", "person": "u", "a2a": {"role": "ROLE_USER"}}
+    for key in full:
+        answer = _rpc("network.a2a_send", {k: v for k, v in full.items() if k != key})
+        assert answer["ok"] is False and answer["error"]["code"] == "INVALID_REQUEST", key
+    assert _rpc("network.a2a_send", {**full, "a2a": "x"})["error"]["code"] == "INVALID_REQUEST"
+    assert net.calls("app.send") == []
+
+
+def test_a2a_send_when_the_sidecar_is_off_is_unavailable(net, monkeypatch):
+    monkeypatch.setattr(bridge, "NETWORK_KEY", "")
+    answer = _rpc("network.a2a_send", {"to": "a", "text": "t", "request_id": "r", "person": "u", "a2a": {}})
+    assert answer["ok"] is False and answer["error"]["code"] == "UNAVAILABLE"

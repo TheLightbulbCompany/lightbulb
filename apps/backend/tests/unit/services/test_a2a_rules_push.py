@@ -19,8 +19,15 @@ def claims_of(jws: str) -> dict:
     return json.loads(_unb64(jws.split(".")[1]))
 
 
-def row(user: str) -> dict:
-    return {"key": f"k-{user}", "userId": user, "generation": "g", "connectedAt": 1, "taskAddress": "http://t"}
+def row(user: str, org: str = ORG) -> dict:
+    return {
+        "org": org,
+        "key": f"k-{user}",
+        "userId": user,
+        "generation": "g",
+        "connectedAt": 1,
+        "taskAddress": "http://t",
+    }
 
 
 @pytest.fixture
@@ -31,11 +38,11 @@ def net(repos, monkeypatch):  # noqa: F811
         "core.services.clerk_admin.list_organization_members",
         AsyncMock(side_effect=lambda org, **_: [{"user_id": u} for u in members[org]]),
     )
-    conns = SimpleNamespace(routes_for_user=AsyncMock(side_effect=lambda u: [row(u)]))
+    conns = SimpleNamespace(routes_for_user=AsyncMock(side_effect=lambda u: [row(u, OTHER if u == "u3" else ORG)]))
     monkeypatch.setattr("core.services.network_route._connections", lambda: conns)
     call = AsyncMock(return_value={"stored": True})
     monkeypatch.setattr("core.services.network_route.call", call)
-    return SimpleNamespace(call=call, members=members)
+    return SimpleNamespace(call=call, members=members, conns=conns)
 
 
 def test_sign_rules_has_typ_workspace_revision_and_doc(net):
@@ -84,3 +91,22 @@ def test_push_is_scoped_to_the_links_workspace(net, monkeypatch):
     )
     asyncio.run(network_route.push_current_rules(link, None))
     net.call.assert_not_awaited()
+
+
+def test_a_save_reaches_only_links_signed_into_that_workspace(net):
+    net.members[OTHER] = ["u1", "u3"]  # u1 is in both; their laptop signed into ORG
+    asyncio.run(network_route.push_rules(OTHER, "jws"))
+    assert {c.args[0]["userId"] for c in net.call.await_args_list} == {"u3"}
+    net.call.reset_mock()
+    asyncio.run(network_route.push_rules(ORG, "jws"))
+    assert {c.args[0]["userId"] for c in net.call.await_args_list} == {"u1", "u2"}
+
+
+def test_a_link_with_no_recorded_workspace_gets_the_push_only_if_its_person_has_one(net, monkeypatch):
+    net.conns.routes_for_user.side_effect = lambda u: [{**row(u), "org": ""}]
+    orgs = {"u1": [{"id": ORG}], "u2": [{"id": ORG}, {"id": OTHER}]}
+    monkeypatch.setattr(
+        "core.services.clerk_admin.list_user_organizations", AsyncMock(side_effect=lambda u, **_: orgs[u])
+    )
+    assert asyncio.run(network_route.push_rules(ORG, "jws")) == 1
+    assert [c.args[0]["userId"] for c in net.call.await_args_list] == ["u1"]

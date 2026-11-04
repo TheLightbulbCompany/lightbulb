@@ -611,7 +611,7 @@ class ConnectionService:
         keys = [cid.removeprefix("netroute#") for cid, _, kind in found if kind == "net-route"]
         return [r for r in await self.live_routes(keys) if r["userId"] == user_id] if keys else []
 
-    async def put_route(self, *, key: str, user_id: str, generation: str, name: str = "") -> None:
+    async def put_route(self, *, key: str, user_id: str, generation: str, name: str = "", org: str = "") -> None:
         """The newest link of computer ``key`` (its member key) wins: one row per key."""
         now = int(time.time())
         item = {
@@ -626,6 +626,8 @@ class ConnectionService:
             "taskAddress": {"S": task_address.own_address()},
             "ttl": {"N": str(now + self.RELAY_TTL_SECONDS)},
         }
+        if org:  # the workspace its proof signed into: a rules push goes to that workspace's links only
+            item["org"] = {"S": org}
         await asyncio.to_thread(self._client.put_item, TableName=self.table_name, Item=item)
 
     async def refresh_route(self, key: str, generation: str) -> bool:
@@ -690,6 +692,7 @@ class ConnectionService:
                             "connectedAt": int(item.get("connectedAt", {}).get("N", "0")),
                             "taskAddress": item.get("taskAddress", {}).get("S", ""),
                             "name": item.get("computerName", {}).get("S", ""),
+                            "org": item.get("org", {}).get("S", ""),
                         }
                     )
                 request = resp.get("UnprocessedKeys") or None

@@ -303,9 +303,9 @@ def declare_a2a_session(person: str) -> None:
     undeclared session). Same ``members``/``revoked_keys`` handling as ``reload_sessions``."""
     if person in _a2a_declared:
         return
-    sessions = list(_sessions.get("sessions") or [])
-    if not any(s.get("app") == "a2a" and s.get("person") == person for s in sessions):
-        sessions.append({"app": "a2a", "person": person})
+    # The set replaces the engine's sessions, so it carries every person declared so far.
+    sessions = [x for x in (_sessions.get("sessions") or []) if x.get("app") != "a2a"]
+    sessions += [{"app": "a2a", "person": p} for p in sorted(_a2a_declared | {person})]
     params = {"sessions": sessions, "revoked_keys": _sessions.get("revoked_keys") or []}
     if "members" in _sessions:
         params["members"] = _sessions["members"]

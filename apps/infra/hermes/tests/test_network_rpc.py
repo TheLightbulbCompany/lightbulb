@@ -231,3 +231,32 @@ def test_a2a_send_when_the_sidecar_is_off_is_unavailable(net, monkeypatch):
     monkeypatch.setattr(bridge, "NETWORK_KEY", "")
     answer = _rpc("network.a2a_send", {"to": "a", "text": "t", "request_id": "r", "person": "u", "a2a": {}})
     assert answer["ok"] is False and answer["error"]["code"] == "UNAVAILABLE"
+
+
+def test_a2a_declares_accumulate_across_people(net):
+    assert network.ensure_started(background=False)
+    net.answer(**{"app.send": {"receipt": "r"}})
+    p = lambda who: {"to": "t", "text": "x", "request_id": "r-" + who, "person": who, "a2a": {"role": "ROLE_USER"}}
+    _rpc("network.a2a_send", p("A"))
+    _rpc("network.a2a_send", p("B"))
+    n = len(net.calls("cloud.sessions.set"))
+    _rpc("network.a2a_send", p("A"))
+    assert len(net.calls("cloud.sessions.set")) == n
+    a2a = [s for s in _sent(net, "cloud.sessions.set")[-1]["sessions"] if s.get("app") == "a2a"]
+    assert {s["person"] for s in a2a} == {"A", "B"}
+
+
+def test_a2a_failed_declare_is_not_cached(net):
+    assert network.ensure_started(background=False)
+    net.answer(**{"cloud.sessions.set": {"ok": False, "error": "internal"}})
+    body = {"to": "t", "text": "x", "request_id": "r", "person": "A", "a2a": {"role": "ROLE_USER"}}
+    assert _rpc("network.a2a_send", body)["ok"] is False
+    assert network._a2a_declared == set() and net.calls("app.send") == []
+    net.answer(**{"cloud.sessions.set": {"ok": True, "result": {}}, "app.send": {"receipt": "r"}})
+    assert _rpc("network.a2a_send", body)["ok"] is True
+
+
+def test_a2a_send_empty_strings_are_invalid_request(net):
+    full = {"to": "a", "text": "t", "request_id": "r", "person": "u", "a2a": {"role": "ROLE_USER"}}
+    for key in ("to", "text", "request_id", "person"):
+        assert _rpc("network.a2a_send", {**full, key: ""})["error"]["code"] == "INVALID_REQUEST", key

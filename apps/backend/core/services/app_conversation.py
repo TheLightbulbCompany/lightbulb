@@ -197,7 +197,9 @@ async def _attributed(caller: BuilderCaller, text: str, person: str | None, room
         who = ((await _roster_agent(caller.owner_id, caller.actor_id)) or {}).get("displayName") or "An agent"
     if room_id:
         meta = await messaging_repo.get_room(room_id) or {}
-        return f"{who} (in #{meta.get('name') or 'a room'}): {text}"
+        dm = meta.get("kind") in ("dm", "group-dm") or not meta.get("name")
+        where = "a direct message" if dm else f"#{meta['name']}"
+        return f"{who} (in {where}): {text}"
     return f"{who} (via CLI): {text}"
 
 

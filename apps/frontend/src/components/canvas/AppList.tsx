@@ -11,7 +11,7 @@ const WHO: Record<string, string> = {
 };
 
 function whoCanOpen(app: AppRow) {
-  return app.open_to === "room" ? `#${app.room_name ?? "room"}` : WHO[app.open_to] ?? app.open_to;
+  return app.open_to === "room" ? (app.room_name ? `#${app.room_name}` : "the chat it was asked in") : WHO[app.open_to] ?? app.open_to;
 }
 
 function Row({ app, onOpen, canManage }: { app: AppRow; onOpen: (appId: string) => void; canManage: boolean }) {
@@ -24,7 +24,7 @@ function Row({ app, onOpen, canManage }: { app: AppRow; onOpen: (appId: string) 
     <span className="app-item__name">{displayName(app)}</span>
     <span className="app-item__line">{status ?? (asker ? `asked by ${asker}${where}` : app.room_name ? `from #${app.room_name}` : "")}</span>
     <span className="app-item__line">
-      <span>{blocked ? (app.room_id ? `ask in #${app.room_name ?? "room"}` : "not shared with you") : whoCanOpen(app)}</span> · <span>{last}</span>{(app.spend_month_cents ?? 0) > 0 && <> · <span>${(app.spend_month_cents! / 100).toFixed(2)} spent this month</span></>}
+      <span>{blocked ? (app.room_id ? (app.room_name ? `ask in #${app.room_name}` : "ask whoever shared it") : "not shared with you") : whoCanOpen(app)}</span> · <span>{last}</span>{(app.spend_month_cents ?? 0) > 0 && <> · <span>${(app.spend_month_cents! / 100).toFixed(2)} spent this month</span></>}
     </span>
   </>;
   // An admin opens a blocked app too: the view shows the refusal and Settings, the only way to change who can open it.

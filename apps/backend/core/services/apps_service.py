@@ -412,63 +412,25 @@ _SETUP_CODES = ("no_company_stripe_account", "services_account_needed")
 
 
 async def _ensure_workflows(app: dict, issue_id: str | None) -> None:
+    """Free hosting and a database for the app, with no card (founder ruling, 4 Nov 2026: free costs
+    nothing and no provider asks for a person). A paid service still gets its own card from ``start``."""
     rows = await _rows(app)
     display = app.get("display_name") or app["name"]
-    # Approved once for the workspace (the first app's card): every later app's free hosting and data are set
-    # up with no card. Before that, one card per app: hosting's card also covers the data, and names it.
-    standing = await provisioning_workflow.standing_approval(app["owner_id"])
-    if standing:
-        for provider, service, env in _RESOURCES:
-            row = rows.get((provider, service, env))
-            if row is None or row.get("state") in _DEAD:
-                await provisioning_workflow.start(
-                    owner_id=app["owner_id"],
-                    provider_name=provider,
-                    service_id=service,
-                    configuration={"name": app["name"] if env == "prod" else f"{app['name']}-preview"},
-                    issue_id=issue_id,
-                    reason=f"{display}: {'hosting' if provider == 'vercel' else 'a database'} ({'live' if env == 'prod' else 'preview'})",
-                    app_id=app["app_id"],
-                    environment=env,
-                    preapproved_by=standing["approved_by"],
-                )
-        return
-    card = rows.get(("vercel", "project", "prod"))
+    asked_by = app.get("created_by") or app.get("actor_id") or "lightbulb"
     for provider, service, env in _RESOURCES:
         row = rows.get((provider, service, env))
         if row is None or row.get("state") in _DEAD:
-            name = app["name"] if env == "prod" else f"{app['name']}-preview"
-            carded = provider == "vercel"
-            bundle: dict = (
-                {
-                    "also": [
-                        await provisioning_workflow.consent_line(
-                            app["owner_id"], "neon", "postgres", f"The data for {display}, live and preview"
-                        )
-                    ],
-                    "title": f"Set up free hosting and a database for {display} and every app after it",
-                }
-                if carded
-                else {"bundled_with": card["workflow_id"]}
-                if card and card.get("state") not in _DEAD
-                else {}
-            )
-            started = await provisioning_workflow.start(
+            await provisioning_workflow.start(
                 owner_id=app["owner_id"],
                 provider_name=provider,
                 service_id=service,
-                configuration={"name": name},
+                configuration={"name": app["name"] if env == "prod" else f"{app['name']}-preview"},
                 issue_id=issue_id,
-                # The owner reads this on the card: say what it is for, in words.
-                reason=f"{display}: hosting and data"
-                if carded
-                else f"{display}: {'hosting' if provider == 'vercel' else 'a database'} ({'live' if env == 'prod' else 'preview'})",
+                reason=f"{display}: {'hosting' if provider == 'vercel' else 'a database'} ({'live' if env == 'prod' else 'preview'})",
                 app_id=app["app_id"],
                 environment=env,
-                **bundle,
+                preapproved_by=asked_by,
             )
-            if carded:
-                card = started
 
 
 async def _secret(app: dict, rows: dict, provider: str, env: str, key: str) -> dict | None:

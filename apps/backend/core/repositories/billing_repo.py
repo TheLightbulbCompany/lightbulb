@@ -1228,24 +1228,6 @@ async def claim_front_desk(owner_id: str, *, stale_before: str | None = None) ->
     return int(resp["Attributes"].get("front_desk_gen") or 0)
 
 
-async def set_apps_standing_approval(owner_id: str, approval: dict) -> None:
-    """The owner approved free hosting and a database once for every app (founder ruling, 4 Nov 2026).
-    Written once; a missing billing row is a silent no-op, like the other setters."""
-    table = _get_table()
-    try:
-        await run_in_thread(
-            table.update_item,
-            Key={"owner_id": owner_id},
-            UpdateExpression="SET apps_standing_approval = :a, updated_at = :t",
-            ExpressionAttributeValues={":a": approval, ":t": utc_now_iso()},
-            ConditionExpression="attribute_exists(owner_id) AND attribute_not_exists(apps_standing_approval)",
-        )
-    except ClientError as e:
-        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return
-        raise
-
-
 async def set_nightly_ceo_opted_out(owner_id: str, opted_out: bool) -> None:
     """Set/clear the durable nightly-CEO opt-out flag.
 

@@ -85,11 +85,6 @@ def account(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def standing(monkeypatch):
-    monkeypatch.setattr(mod.billing_repo, "set_apps_standing_approval", AsyncMock())
-
-
-@pytest.fixture(autouse=True)
 def cards(monkeypatch):
     for name in (
         "request_provider_consent",
@@ -2392,7 +2387,7 @@ async def test_the_winning_approval_drives_its_app_without_a_reader():
 
 
 async def test_a_preapproved_free_service_files_no_card_and_posts_no_approved_line():
-    """Founder ruling 4 Nov 2026: the workspace approves free hosting and data once; later apps get no card."""
+    """Founder ruling 4 Nov 2026: free hosting and data need no approval at all."""
     with (
         patch.object(mod.api, "eligibility", AsyncMock(return_value={"is_eligible": True, "requirements": []})),
         patch.object(mod.api, "catalog_services", AsyncMock(return_value=[SERVICE])),
@@ -2419,7 +2414,7 @@ async def test_a_preapproved_free_service_files_no_card_and_posts_no_approved_li
     assert approved.await_args.kwargs == {"usage_limit": None, "approved_by": "user_owner", "quiet": True}
 
 
-async def test_a_paid_service_still_gets_its_card_even_with_a_standing_approval():
+async def test_a_paid_service_still_gets_its_card_when_started_preapproved():
     paid = {**SERVICE, "pricing": {**(SERVICE.get("pricing") or {}), "type": "paid"}}
     with (
         patch.object(mod.api, "eligibility", AsyncMock(return_value={"is_eligible": True, "requirements": []})),
@@ -2440,16 +2435,3 @@ async def test_a_paid_service_still_gets_its_card_even_with_a_standing_approval(
         )
     approved.assert_not_awaited()
     mod.provisioning_approvals.request_provider_consent.assert_awaited_once()
-
-
-async def test_a_person_approving_an_apps_free_card_approves_every_later_app():
-    from core.services import apps_service
-
-    free = {"pricing_type": "component"}
-    with patch.object(mod.apps_room, "post_approval_line", AsyncMock()), patch.object(apps_service, "drive"):
-        await mod._approved_line("user_1", _row(app_id="app_1", approval=free))
-        await mod._approved_line("user_1", _row(app_id="app_2", approval=free), quiet=True)  # by the standing one
-        await mod._approved_line("user_1", _row(approval=free))  # not an app's card
-        await mod._approved_line("user_1", _row(app_id="app_3", approval={"pricing_type": "paid"}))
-    (call,) = mod.billing_repo.set_apps_standing_approval.await_args_list
-    assert call.args[0] == _row()["owner_id"] and call.args[1]["approved_by"] == "user_1"

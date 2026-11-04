@@ -1,43 +1,111 @@
 import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { AppList } from "../AppList";
 import type { AppRow } from "@/hooks/useApps";
 
+const openPanel = vi.fn();
+vi.mock("@/components/workspace/workspaceController", () => ({ openPanel: (...a: unknown[]) => openPanel(...a) }));
+
 const app = (over: Partial<AppRow> = {}): AppRow => ({
-  app_id: "a1", name: "Invoices", room_id: "r1", room_name: "finance", state: "ready", open_to: "room",
+  app_id: "a1", name: "Invoices", room_id: "r1", room_name: "finance", state: "live", open_to: "room",
   budget_usd: 20, preview_url: null, live_url: "https://x", live_version: 1, last_opened_at: null,
   spend_month_cents: 320, created_by_name: "Dana", can_open: true, ...over,
 });
 const props = { loading: false, error: null, onOpen: vi.fn(), onRetry: vi.fn() };
+const names = () => screen.getAllByRole("listitem").map((li) => li.querySelector(".app-item__name")!.textContent);
 
 describe("AppList", () => {
-  it("renders one row per app with who can open it", () => {
+  it("one row per app: name, state, who can open it, who asked, spend; a click opens it", () => {
     render(<AppList {...props} apps={[
       app(), app({ app_id: "a2", name: "Pipeline", open_to: "workspace" }),
       app({ app_id: "a3", name: "Share", open_to: "invited" }), app({ app_id: "a4", name: "Site", open_to: "public" }),
     ]} />);
     expect(screen.getAllByRole("listitem")).toHaveLength(4);
-    expect(screen.getAllByText(/asked by Dana in #finance/)).toHaveLength(4);
-    expect(screen.getAllByText("#finance").length).toBeGreaterThan(0);
-    expect(screen.getByText("everyone here")).toBeTruthy();
-    expect(screen.getByText("invited people")).toBeTruthy();
-    expect(screen.getByText("anyone with the link")).toBeTruthy();
-    expect(screen.getAllByText("$3.20 spent this month").length).toBe(4);
+    expect(screen.getByText("Open to people in #finance.")).toBeTruthy();
+    expect(screen.getByText("Open to everyone here.")).toBeTruthy();
+    expect(screen.getByText("Open to invited people.")).toBeTruthy();
+    expect(screen.getByText("Open to anyone with the link.")).toBeTruthy();
+    expect(screen.getAllByText("Asked by Dana in #finance · $3.20 this month")).toHaveLength(4);
     fireEvent.click(screen.getByRole("button", { name: /Invoices/ }));
     expect(props.onOpen).toHaveBeenCalledWith("a1");
   });
 
-  it("a stuck app's row says where it stopped, not its usual status", () => {
-    render(<AppList {...props} apps={[app({ state: "building", stuck: { at: "2026-11-03T00:00:00Z", step: "building" } })]} />);
-    expect(screen.getByText("Stopped at building. Nothing has moved for 5 minutes.")).toBeTruthy();
-    expect(screen.queryByText(/Building the new version/)).toBeNull();
+  it("apps that need the person come first, then failures, then work in progress, then the rest", () => {
+    render(<AppList {...props} canManage apps={[
+      app({ app_id: "l", name: "Live One" }),
+      app({ app_id: "b", name: "Building One", state: "building", live_version: null }),
+      app({ app_id: "s", name: "Stuck One", state: "building", stuck: { at: "x", step: "building" } }),
+      app({ app_id: "n", name: "Needs One", state: "awaiting_approval", live_version: null }),
+    ]} />);
+    expect(names()).toEqual(["Needs One", "Stuck One", "Building One", "Live One"]);
   });
 
-  it("greys an app the viewer cannot open and names its room", () => {
+  it("an app waiting for approval offers Review to a manager, which opens Activity; a member is told who acts", () => {
+    const { unmount } = render(<AppList {...props} canManage apps={[app({ state: "awaiting_approval", live_version: null })]} />);
+    expect(screen.getByText("Needs approval")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    expect(openPanel).toHaveBeenCalledWith("activity", {}, { pushUrl: true });
+    unmount();
+    render(<AppList {...props} apps={[app({ state: "awaiting_approval", live_version: null })]} />);
+    expect(screen.getByText("Waiting for an owner to approve its hosting and data.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Review" })).toBeNull();
+  });
+
+  it("a stuck app says it stopped and where, not its usual status", () => {
+    render(<AppList {...props} apps={[app({ state: "building", stuck: { at: "2026-11-03T00:00:00Z", step: "building" } })]} />);
+    expect(screen.getByText("Stopped")).toBeTruthy();
+    expect(screen.getByText("Nothing has moved for 5 minutes at building. Open it to ask the agent.")).toBeTruthy();
+    expect(screen.queryByText("Updating")).toBeNull();
+  });
+
+  it("an app waiting for approval reads Needs approval even when nothing has moved for a while", () => {
+    render(<AppList {...props} canManage apps={[app({ state: "awaiting_approval", live_version: null, stuck: { at: "x", step: "building" } })]} />);
+    expect(screen.getByText("Needs approval")).toBeTruthy();
+    expect(screen.queryByText("Stopped")).toBeNull();
+  });
+
+  it("tiles take the first and last word, numbers skipped", () => {
+    render(<AppList {...props} apps={[app({ name: "run-12-jobs" }), app({ app_id: "a2", name: "run-1-harbor" }), app({ app_id: "a3", name: "crm" })]} />);
+    expect([...document.querySelectorAll(".app-tile")].map((t) => t.textContent)).toEqual(["RJ", "RH", "C"]);
+  });
+
+  it("a building app's tile shows the running ring; a live one's does not", () => {
+    render(<AppList {...props} apps={[app({ state: "building", live_version: null }), app({ app_id: "a2", name: "Done" })]} />);
+    expect([...document.querySelectorAll(".app-tile")].map((t) => t.hasAttribute("data-running"))).toEqual([true, false]);
+  });
+
+  it.each([
+    [{ state: "building", live_version: null }, "Building", "The agent is making the first version."],
+    [{ state: "building" }, "Updating", "The agent is building a new version. The live app keeps working."],
+    [{ state: "building", live_version: null, publishing: true }, "Publishing", "Publishing. It'll be live in a minute or two."],
+    [{ state: "provisioning", live_version: null }, "Setting up", "Setting up hosting and data, usually a few minutes."],
+    [{ state: "ready", live_version: null }, "Ready to try", "Try the preview, then publish it."],
+    [{ state: "ready", live_version: null, agent_working: true }, "First version", "Try it now; the agent is still improving it."],
+    [{ state: "failed", live_version: null }, "Failed", "The last build didn't work. Open it to ask the agent."],
+    [{ preview_newer: true }, "Live", "A newer version is ready to publish."],
+    [{ publish_failed: true }, "Live", "The last update didn't go live. People still see the version before it."],
+  ] as const)("%o reads %s: %s", (over, label, next) => {
+    render(<AppList {...props} apps={[app(over as Partial<AppRow>)]} />);
+    const row = screen.getByRole("listitem");
+    expect(within(row).getByText(label)).toBeTruthy();
+    expect(within(row).getByText(next)).toBeTruthy();
+  });
+
+  it("filters: In progress and Live, with counts", () => {
+    render(<AppList {...props} apps={[app(), app({ app_id: "a2", name: "Draft", state: "ready", live_version: null })]} />);
+    const filters = screen.getByRole("group", { name: "Show" });
+    expect(filters.textContent).toBe("All2In progress1Live1");
+    fireEvent.click(within(filters).getByRole("button", { name: /In progress/ }));
+    expect(names()).toEqual(["Draft"]);
+    fireEvent.click(within(filters).getByRole("button", { name: /Live/ }));
+    expect(names()).toEqual(["Invoices"]);
+  });
+
+  it("greys an app the viewer cannot open and says where to ask", () => {
     const onOpen = vi.fn();
     render(<AppList {...props} onOpen={onOpen} apps={[app({ can_open: false })]} />);
-    expect(screen.getByText("ask in #finance")).toBeTruthy();
-    const row = screen.getByText("Invoices").closest("[aria-disabled]")!;
+    expect(screen.getByText("Ask in #finance to open it.")).toBeTruthy();
+    const row = screen.getByRole("group", { name: "Invoices" });
     expect(row.getAttribute("aria-disabled")).toBe("true");
     fireEvent.click(row);
     expect(onOpen).not.toHaveBeenCalled();
@@ -50,64 +118,33 @@ describe("AppList", () => {
     expect(onOpen).toHaveBeenCalledWith("a1");
     unmount();
     render(<AppList {...props} onOpen={onOpen} apps={[app({ can_open: false })]} />);
-    expect(screen.queryByRole("button")).toBeNull();
-    expect(screen.getByRole("group").getAttribute("aria-disabled")).toBe("true");
+    expect(screen.queryByRole("button", { name: /Invoices/ })).toBeNull();
   });
 
-  it("a first publish says it is publishing, not making the preview", () => {
-    render(<AppList {...props} onOpen={vi.fn()} apps={[app({ state: "building", live_version: null, publishing: true })]} />);
-    expect(screen.getByText("Publishing. It'll be live in a minute or two.")).toBeTruthy();
-    expect(screen.queryByText(/making the preview/)).toBeNull();
-  });
-
-  it("building apps open to their status and conversation", () => {
-    const onOpen = vi.fn();
-    render(<AppList {...props} onOpen={onOpen} apps={[app({ state: "building", live_version: null }), app({ app_id: "a2", name: "Pipeline", state: "building", conversation_id: "c2" })]} />);
-    expect(screen.getByText("The agent is making the preview. It'll post in #finance when it's ready.")).toBeTruthy(); // an older app, its conversation not opened yet
-    expect(screen.getByText("Building the new version. It'll show here and in its conversation when it's ready.")).toBeTruthy(); // a publish or a change
-    fireEvent.click(screen.getByText("Invoices"));
-    expect(onOpen).toHaveBeenCalledWith("a1");
-  });
-
-  it("an app from no room names no room, and one shared with only its creator says so", () => {
-    render(<AppList {...props} apps={[app({ room_id: null, room_name: undefined, open_to: "me", created_by_name: "Dana" })]} />);
-    expect(screen.getByText("asked by Dana")).toBeTruthy();
-    expect(screen.getByText("only its creator and admins")).toBeTruthy();
+  it("an app from a DM or the CLI names no room", () => {
+    render(<AppList {...props} apps={[app({ room_id: null, room_name: undefined, open_to: "me", spend_month_cents: null })]} />);
+    expect(screen.getByText("Asked by Dana")).toBeTruthy();
+    expect(screen.getByText("Open to only its creator and admins.")).toBeTruthy();
     expect(screen.queryByText(/#room/)).toBeNull();
   });
 
-  it("shows a title-cased display name, not the slug, and hides zero spend", () => {
-    render(<AppList {...props} apps={[app({ name: "workshop-signup", spend_month_cents: 0 }), app({ app_id: "a2", name: "x-y", display_name: "Fancy Name", spend_month_cents: 0 })]} />);
+  it("shows a title-cased display name, initials on the tile, and hides zero or unknown spend", () => {
+    render(<AppList {...props} apps={[app({ name: "workshop-signup", spend_month_cents: 0 }), app({ app_id: "a2", name: "x-y", display_name: "Fancy Name", spend_month_cents: null })]} />);
     expect(screen.getByText("Workshop Signup")).toBeTruthy();
     expect(screen.getByText("Fancy Name")).toBeTruthy();
-    expect(screen.queryByText("workshop-signup")).toBeNull();
-    expect(screen.queryByText(/spent this month/)).toBeNull();
-  });
-
-  it("hides the spend line when spend is null", () => {
-    render(<AppList {...props} apps={[app({ spend_month_cents: null })]} />);
-    expect(screen.queryByText(/spent this month/)).toBeNull();
-    expect(screen.queryByText(/NaN|\$0/)).toBeNull();
-  });
-
-  it("awaiting row names who asked when requested_by is present", () => {
-    render(<AppList {...props} apps={[app({ state: "awaiting_approval", requested_by: "Dana" })]} />);
-    expect(screen.getByText("Waiting for an owner to approve Dana's request: the cards are in Activity, under Needs you.")).toBeTruthy();
+    expect([...document.querySelectorAll(".app-tile")].map((t) => t.textContent)).toEqual(["WS", "FN"]);
+    expect(screen.queryByText(/this month|NaN|\$0/)).toBeNull();
   });
 
   it("a row with no known asker says where it came from, never 'someone'", () => {
-    render(<AppList {...props} apps={[app({ created_by_name: undefined, requested_by: undefined })]} />);
-    expect(screen.getByText("from #finance")).toBeTruthy();
+    render(<AppList {...props} apps={[app({ created_by_name: undefined, requested_by: undefined, spend_month_cents: null })]} />);
+    expect(screen.getByText("From #finance")).toBeTruthy();
     expect(screen.queryByText(/someone/)).toBeNull();
   });
 
-  it.each([
-    ["awaiting_approval", "Waiting for an owner to approve: the cards are in Activity, under Needs you."],
-    ["provisioning", "Setting up its hosting and data, usually a few minutes."],
-    ["failed", "Something went wrong. Ask the agent in #finance."],
-  ] as const)("%s row shows its status line", (state, line) => {
-    render(<AppList {...props} apps={[app({ state })]} />);
-    expect(screen.getByText(line)).toBeTruthy();
+  it("says when it last changed", () => {
+    render(<AppList {...props} apps={[app({ updated_at: new Date(Date.now() - 2 * 3600_000).toISOString(), spend_month_cents: null })]} />);
+    expect(screen.getByText("Asked by Dana in #finance · 2 hours ago")).toBeTruthy();
   });
 
   it("loading and empty copy", () => {
@@ -115,7 +152,8 @@ describe("AppList", () => {
     expect(screen.getByText("Loading apps…")).toBeTruthy();
     unmount();
     render(<AppList {...props} apps={[]} />);
-    expect(screen.getByText(/No apps yet\. In any room, ask an agent for one, like "a sign-up page for our workshop", and it appears here\./)).toBeTruthy();
+    expect(screen.getByText("No apps yet")).toBeTruthy();
+    expect(screen.queryByRole("group", { name: "Show" })).toBeNull();
   });
 
   it("a load failure says what happened, Try again retries, raw text is under Details", () => {

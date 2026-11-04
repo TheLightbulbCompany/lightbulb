@@ -370,6 +370,16 @@ def ask(op: str, body: dict | None = None, timeout_s: float = 10.0) -> dict:
 
 #: People whose ``a2a`` session this engine run was told about (every set re-declares them).
 _a2a_declared: set[str] = set()
+
+
+def _a2a_entry(person: str) -> dict:
+    """The engine's declared-session shape (``{name, agent, title?}``) for ``app.send``'s
+    ``{app: "a2a", person}``: it sends from ``a2a-<person>``."""
+    return {"name": f"a2a-{person}", "agent": "app", "title": "A2A"}
+
+
+def _not_a2a(entry: dict) -> bool:
+    return not str(entry.get("name") or "").startswith("a2a-")
 #: One ``cloud.sessions.set`` at a time: each replaces the engine's sessions, so two concurrent
 #: RPC threads (``ThreadingHTTPServer``) could otherwise undeclare each other's people.
 _sessions_lock = threading.Lock()
@@ -382,8 +392,8 @@ def declare_a2a_session(person: str) -> None:
         if person in _a2a_declared:
             return
         # The set replaces the engine's sessions, so it carries every person declared so far.
-        sessions = [x for x in (_sessions.get("sessions") or []) if x.get("app") != "a2a"]
-        sessions += [{"app": "a2a", "person": p} for p in sorted(_a2a_declared | {person})]
+        sessions = [x for x in (_sessions.get("sessions") or []) if _not_a2a(x)]
+        sessions += [_a2a_entry(p) for p in sorted(_a2a_declared | {person})]
         params = {"sessions": sessions, "revoked_keys": _sessions.get("revoked_keys") or []}
         if "members" in _sessions:
             params["members"] = _sessions["members"]
@@ -411,8 +421,8 @@ def reload_sessions() -> int:
         # The set replaces the a2a sessions too: re-declare every cached person, so a laptop's reply
         # to a hosted send still lands. ponytail: the cache is in memory, so an engine restart empties
         # it and the next send re-declares; persist the list if replies strand across restarts.
-        params["sessions"] = [x for x in params["sessions"] if x.get("app") != "a2a"] + [
-            {"app": "a2a", "person": p} for p in sorted(_a2a_declared)
+        params["sessions"] = [x for x in params["sessions"] if _not_a2a(x)] + [
+            _a2a_entry(p) for p in sorted(_a2a_declared)
         ]
         ask("cloud.sessions.set", params)
         _sessions = data

@@ -1918,6 +1918,7 @@ async def list_apps(owner_id: str, auth: AuthContext) -> list[dict]:
         uid = a.get("created_by")
         row.update(
             can_open=_can_open(a, auth, bool(member.get(a.get("room_id")))),
+            updated_at=a.get("updated_at"),
             # Only a room the caller is in is named to them.
             room_name=(live.get(a.get("room_id")) or {}).get("name") if member.get(a.get("room_id")) else None,
             created_by_name=names.get(uid) if uid and names.get(uid) != uid else None,

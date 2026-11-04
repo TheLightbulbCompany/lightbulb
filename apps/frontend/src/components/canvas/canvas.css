@@ -2,14 +2,43 @@
 .canvas { display: flex; flex-direction: column; gap: 24px; padding: 16px; color: var(--fg); }
 .canvas__heading { margin: 0 0 4px; font-size: var(--text-caption); font-weight: 600; color: var(--fg-mute); }
 .canvas__notice { font-size: var(--text-ui); color: var(--fg-mute); }
-.app-list { display: grid; grid-template-columns: minmax(0, 1fr); margin: 0; padding: 0; list-style: none; }
-.app-item + .app-item { border-top: 1px solid var(--plane-edge); }
-.app-item__row { display: grid; gap: 4px; width: 100%; min-width: 0; padding: 10px 0; text-align: left; color: var(--fg); }
-.app-item__row[aria-disabled="true"] { opacity: 0.55; cursor: not-allowed; }
-button.app-item__row:hover .app-item__name { text-decoration: underline; }
-button.app-item__row:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; border-radius: 4px; }
+/* The list: one row per app. Tile, name + state (icon + word, colour on text only), the next step, who and when. */
+.app-list__head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; margin-bottom: 8px; }
+.app-list__title { margin: 0; font-size: 18px; line-height: 1.4; font-weight: 600; }
+.app-list__filters { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--plane-edge); border-radius: 999px; }
+.app-list__filters button { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 12px; border-radius: 999px; font-size: var(--text-caption); color: var(--fg-mute); transition: background-color 120ms var(--ease-out, ease-out), color 120ms var(--ease-out, ease-out); }
+.app-list__filters button:hover { color: var(--fg); }
+.app-list__filters button[aria-pressed="true"] { background: var(--plane-selected); color: var(--fg); font-weight: 600; }
+.app-list__filters button:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
+.app-list__n { font-variant-numeric: tabular-nums; color: var(--fg-mute); font-weight: 400; }
+.app-list { display: grid; grid-template-columns: minmax(0, 1fr); margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--plane-edge); }
+.app-item { display: flex; align-items: center; gap: 12px; border-bottom: 1px solid var(--plane-edge); }
+.app-item__main { flex: 1; min-width: 0; display: grid; grid-template-columns: 40px minmax(0, 1fr); align-items: start; gap: 12px; padding: 12px 8px; margin: 0 -8px; border-radius: 8px; text-align: left; color: var(--fg); transition: background-color 120ms var(--ease-out, ease-out); }
+button.app-item__main:hover { background: var(--plane-hover); }
+button.app-item__main:focus-visible { outline: 2px solid var(--fg); outline-offset: -2px; }
+.app-item__main[aria-disabled="true"] { opacity: 0.55; cursor: not-allowed; }
+.app-tile { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 8px; border: 1px solid var(--plane-edge); background: var(--plane-raised); color: var(--fg-soft); font-size: var(--text-caption); font-weight: 600; letter-spacing: 0.02em; }
+/* The builder is working: the workspace's one running-agent signal, the pulsing ring (messaging.css's halo). */
+.app-tile[data-running] { box-shadow: 0 0 0 2px color-mix(in srgb, var(--ok) 72%, transparent); animation: app-tile-running 1.8s var(--ease-out, ease-out) infinite; }
+@keyframes app-tile-running { 50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--ok) 20%, transparent); } }
+@media (prefers-reduced-motion: reduce) { .app-tile[data-running] { animation: none; } }
+.app-item__text { display: grid; gap: 2px; min-width: 0; }
+.app-item__top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
 .app-item__name { font-weight: 600; overflow-wrap: anywhere; }
-.app-item__line { font-size: var(--text-ui); color: var(--fg-mute); overflow-wrap: anywhere; }
+.app-state { display: inline-flex; align-items: center; gap: 4px; font-size: var(--text-caption); color: var(--fg-mute); white-space: nowrap; }
+.app-state svg { align-self: center; }
+.app-state[data-tone="need"] { color: var(--fg); font-weight: 600; }
+.app-state[data-tone="bad"] { color: var(--err); }
+.app-state[data-tone="run"] { color: var(--info); }
+.app-state[data-tone="ok"] { color: var(--ok); }
+.app-item__next { font-size: var(--text-ui); color: var(--fg-soft); overflow-wrap: anywhere; }
+.app-item__meta { font-size: var(--text-caption); color: var(--fg-mute); overflow-wrap: anywhere; }
+.app-item__act { flex: none; display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 14px; border-radius: 999px; background: var(--fg); color: var(--plane-pane); font-size: var(--text-caption); font-weight: 600; transition: transform 120ms var(--ease-out, ease-out); }
+.app-item__act:active { transform: scale(0.97); }
+.app-item__act:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
+.app-list__empty { display: grid; gap: 4px; padding: 24px 0; max-width: 56ch; }
+.app-list__empty-title { margin: 0; font-weight: 600; }
+@media (hover: none), (pointer: coarse) { .app-list__filters button, .app-item__act { min-height: 44px; } }
 
 /* App view: header bar over the frame, with the app's conversation beside it (one at a time in a narrow panel). */
 .app-view { display: flex; flex-direction: column; height: 100%; min-height: 0; color: var(--fg); }

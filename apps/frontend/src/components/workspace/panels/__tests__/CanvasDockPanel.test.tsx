@@ -6,6 +6,7 @@ vi.mock("@/hooks/useApps", () => ({ useApps: () => hook }));
 vi.mock("@/hooks/useIsWorkspaceAdmin", () => ({ useIsWorkspaceAdmin: () => false }));
 vi.mock("../../workspaceController", () => ({ updatePanelParams: vi.fn() }));
 vi.mock("@/components/canvas/AppView", () => ({ AppView: () => <div>app view</div>, AskAgent: () => <button type="button">Ask the agent to fix it</button> }));
+vi.mock("@/components/canvas/AppConversation", () => ({ AppConversation: ({ app }: { app: { app_id: string } }) => <aside aria-label="Conversation">{app.app_id}</aside> }));
 import { CanvasDockPanel } from "../CanvasDockPanel";
 
 const row = (over: Record<string, unknown> = {}) => ({ app_id: "a1", name: "Invoices", room_id: "r", room_name: "finance", state: "ready", open_to: "room",
@@ -55,6 +56,14 @@ describe("CanvasDockPanel deep link", () => {
     expect(screen.getByText(/(making the preview|Building the new version)\. It'll (post|show here and) in #finance/)).toBeTruthy();
     expect(screen.queryByText("app view")).toBeNull();
     expect(screen.getByRole("button", { name: "All apps" })).toBeTruthy();
+    // The builder talks while it builds: its conversation is beside the status.
+    expect(screen.getByRole("complementary", { name: "Conversation" }).textContent).toBe("a1");
+  });
+
+  it("an app the viewer can't open shows no conversation", () => {
+    hook = { ...base, apps: [row({ state: "building", can_open: false })] };
+    panel("a1");
+    expect(screen.queryByRole("complementary", { name: "Conversation" })).toBeNull();
   });
 
   it.each([

@@ -11,9 +11,22 @@ button.app-item__row:focus-visible { outline: 2px solid var(--fg); outline-offse
 .app-item__name { font-weight: 600; overflow-wrap: anywhere; }
 .app-item__line { font-size: var(--text-ui); color: var(--fg-mute); overflow-wrap: anywhere; }
 
-/* App view: header bar over a full-height frame. */
-.app-view { display: flex; flex-direction: column; height: 100%; min-height: 0; color: var(--fg); }
-.app-view > .canvas__notice { padding: 16px; }
+/* App view: header bar over the frame, with the app's conversation beside it (one at a time in a narrow panel). */
+.app-view { display: flex; flex-direction: column; height: 100%; min-height: 0; color: var(--fg); container-type: inline-size; }
+.app-view__split { flex: 1; display: grid; grid-template-columns: minmax(0, 1fr) 380px; min-height: 0; }
+.app-view__main { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow-y: auto; }
+.app-view__main > .canvas__notice { padding: 16px; }
+.app-view__panes { display: none; }
+@container (max-width: 760px) {
+  .app-view__split { grid-template-columns: minmax(0, 1fr); }
+  .app-view__panes { display: inline-flex; }
+  .app-view[data-pane="preview"] .session-chat { display: none; }
+  .app-view[data-pane="conversation"] .app-view__main { display: none; }
+  .app-view .session-chat { border-left: 0; }
+}
+/* An app still being set up: its status over its conversation. */
+.canvas--pending { height: 100%; min-height: 0; }
+.canvas--pending > .session-chat { flex: 1; border-left: 0; border-top: 1px solid var(--plane-edge); }
 .app-view__bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 8px 16px; border-bottom: 1px solid var(--plane-edge); }
 .app-view__name { margin: 0; font-size: var(--text-ui); font-weight: 600; overflow-wrap: anywhere; }
 .app-view__version { font-size: var(--text-caption); color: var(--fg-mute); }
@@ -33,7 +46,7 @@ button.app-item__row:focus-visible { outline: 2px solid var(--fg); outline-offse
 .app-settings__row--sub { padding-left: 20px; }
 .app-settings__invited { margin: 0; padding: 0; list-style: none; }
 .publish { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.app-view > .publish.canvas__notice { padding: 0 16px 8px; }
+.app-view__main > .publish.canvas__notice { padding: 0 16px 8px; }
 .app-view button:disabled { opacity: 0.55; cursor: not-allowed; }
 
 /* Primary (filled) action, danger action, and the Preview | Live segmented control. */

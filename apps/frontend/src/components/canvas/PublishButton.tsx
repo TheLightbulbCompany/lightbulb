@@ -66,7 +66,7 @@ function PublishView({ app, ctl: { phase, done, failed, start, refresh } }: { ap
   const who = app.open_to === "room" ? roomOf(app) : audience(app).replace("people you invited", "people you invite");
   const publishAgain = eligible && (confirming
     ? <span className="publish" role="group" aria-label="Confirm publish">
-      <span className="canvas__notice">Make this preview live for {who}? You can undo it from the room.</span>
+      <span className="canvas__notice">Make this preview live for {who}? You can undo it from its conversation.</span>
       <button type="button" className="app-view__btn app-view__btn--primary" onClick={() => { setConfirming(false); start(); }}>Publish</button>
       <button type="button" className="app-view__btn" onClick={() => setConfirming(false)}>Cancel</button>
     </span>
@@ -78,7 +78,7 @@ function PublishView({ app, ctl: { phase, done, failed, start, refresh } }: { ap
     const raw = phase.k === "failed" ? phase.msg : app.error?.message;
     return <span className="publish">
       <Problem raw={raw} action={<button type="button" className="app-view__btn" onClick={start}>Try again</button>}>
-        This version didn&apos;t go live.{app.live_version != null ? " People still see the last live version." : ""} Try again, or ask the agent in {roomOf(app)} to fix it.
+        This version didn&apos;t go live.{app.live_version != null ? " People still see the last live version." : ""} Try again, or ask the agent in its conversation to fix it.
       </Problem></span>;
   }
   if (phase.k === "slow") return <span className="publish"><span role="status" className="canvas__notice">Still publishing — check back in a minute</span>

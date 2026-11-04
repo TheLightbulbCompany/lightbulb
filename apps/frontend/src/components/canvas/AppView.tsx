@@ -9,26 +9,28 @@ import { PublishButton, usePublish } from "./PublishButton";
 import { closePendingTab, navigatePendingTab, openPendingTab } from "@/components/settings/openInNewTab";
 import { notifyError } from "@/lib/notify";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
+import { AppConversation } from "./AppConversation";
 import { Problem, displayName, refusalCode, roomOf, statusLine } from "./appText";
 import "./canvas.css";
 
-/** "Ask the agent to fix it": one message in the app's room, as the person. Remounts per failure, so a new one can ask again. */
+/** "Ask the agent to fix it": one message in the app's conversation, as the person. Remounts per failure, so a new one can ask again. */
 export function AskAgent({ app, error }: { app: AppRow; error?: string }) {
-  const { askAgent } = useApps();
+  const { askAgent, openConversation } = useApps();
   const [state, setState] = useState<"idle" | "asking" | "asked" | { status?: number; code?: string; raw: string }>("idle");
-  const room = roomOf(app);
-  if (state === "asked") return <p role="status" className="canvas__notice">Asked the agent in {room}. It&apos;ll post there.</p>;
+  if (state === "asked") return <p role="status" className="canvas__notice">Asked the agent in the conversation. It&apos;ll answer there.</p>;
   const ask = async () => {
     setState("asking");
-    try { await askAgent(app.app_id, error); setState("asked"); }
+    // The conversation is opened first, so an older app that has only its room gets one and the ask lands there.
+    try { await openConversation(app.app_id); await askAgent(app.app_id, error); setState("asked"); }
     catch (err) { setState({ status: (err as { status?: number })?.status, code: refusalCode(err), raw: (err as Error)?.message ?? "" }); }
   };
   return <div className="canvas__notice publish">
     <button type="button" className="app-view__btn" disabled={state === "asking"} onClick={ask}>{state === "asking" ? "Asking…" : "Ask the agent to fix it"}</button>
     {typeof state === "object" && <Problem raw={state.raw}>{state.status === 403
-      ? `You're not in ${room}, so this can't be posted as you. Join it, or ask someone in it.`
-      : state.code === "no_agent" ? `There's no agent in ${room} to ask. Add one to the room.`
-      : `We couldn't ask in ${room}. Try again.`}</Problem>}
+      ? "You can't post in this app's conversation."
+      : state.code === "no_agent" ? "There's no agent in the conversation to ask. Add one to the workspace."
+      : state.code === "conversation_full" ? "The conversation is full."
+      : "We couldn't ask. Try again."}</Problem>}
   </div>;
 }
 
@@ -77,7 +79,11 @@ export function AppView({ app, onBack }: { app: AppRow; onBack(): void }) {
   const dn = displayName(app);
   const room = roomOf(app);
   const canManage = app.can_publish === true || isAdmin;
-  const whoName = app.open_to === "room" ? room : app.open_to === "invited" ? "invited people" : app.open_to === "public" ? "anyone with the link" : "people in this workspace";
+  const whoName = app.open_to === "room" ? room : app.open_to === "invited" ? "invited people" : app.open_to === "public" ? "anyone with the link"
+    : app.open_to === "me" ? "its creator and workspace admins" : "people in this workspace";
+  const askWho = app.room_id ? `Ask in ${room}.` : `Ask ${app.created_by_name ?? "the person who asked for it"} to share it.`;
+  // Narrow panel: one of the two at a time (canvas.css shows the switch only then). Wide: both, side by side.
+  const [pane, setPane] = useState<"preview" | "conversation">("preview");
   const current = useRef(app.app_id);
   current.current = app.app_id;
   // State is tagged with its app so a render right after a switch never shows the previous app's pass.
@@ -134,7 +140,7 @@ export function AppView({ app, onBack }: { app: AppRow; onBack(): void }) {
   const liveAppFailed = app.state !== "failed" && app.publish_failed === true && phase.k === "idle";
   const askable = canManage && !publishing && (!!app.stuck || app.state === "failed" || app.publish_failed === true || phase.k === "failed");
 
-  return <div className="app-view">
+  return <div className="app-view" data-pane={pane}>
     <header className="app-view__bar">
       <button type="button" className="app-view__btn" onClick={onBack}><ArrowLeft size={16} aria-hidden="true" />All apps</button>
       <h2 className="app-view__name">{dn}</h2>
@@ -145,27 +151,33 @@ export function AppView({ app, onBack }: { app: AppRow; onBack(): void }) {
       <PublishButton app={app} ctl={publishCtl} />
       {canManage && app.previous_version && !publishing && <PutBack key={app.app_id} app={app} previous={app.previous_version}
         onDone={(text) => { publishCtl.reset(); setPutBackLine({ id: app.app_id, text }); setAttempt((n) => n + 1); }} />}
+      <span className="app-view__seg app-view__panes" role="group" aria-label="Show">
+        {(["conversation", "preview"] as const).map((v) => <button key={v} type="button" className="app-view__btn" aria-pressed={pane === v}
+          onClick={() => setPane(v)}>{v === "conversation" ? "Conversation" : "App"}</button>)}
+      </span>
       <button type="button" className="app-view__btn" onClick={openInTab}>Open in its own tab</button>
       {canManage && <button type="button" className="app-view__btn" aria-expanded={settingsOpen}
         onClick={() => setSettingsOpen((v) => !v)}>Settings</button>}
     </header>
+    <div className="app-view__split"><div className="app-view__main">
     {app.state === "failed"
-      ? <div className="canvas__notice"><Problem raw={app.error?.message ?? null}>The last publish didn&apos;t land.{canManage ? " Press Publish to try again, or ask" : " Ask"} the agent in {room}.</Problem></div>
+      ? <div className="canvas__notice"><Problem raw={app.error?.message ?? null}>The last publish didn&apos;t land.{canManage ? " Press Publish to try again, or ask" : " Ask"} the agent in the conversation.</Problem></div>
       : pending && <p className="canvas__notice">{pending}</p>}
     {liveAppFailed && <div className="canvas__notice"><Problem raw={app.error?.message ?? null}>The last version didn&apos;t go live. People still see the version before it.</Problem></div>}
     {putBackLine?.id === app.app_id && <p role="status" className="canvas__notice">{putBackLine.text}</p>}
     {askable && <AskAgent key={app.app_id} app={app} error={phase.k === "failed" ? phase.msg : undefined} />}
     {!app.stuck && t === "preview" && (app.agent_working && app.state === "ready" && app.live_version == null
-      ? <p className="canvas__notice">This is a first version. The agent is still working on it and will post in {room} when it&apos;s ready.</p>
-      : <p className="canvas__notice">You&apos;re looking at the preview. Only you and {room} see it until it&apos;s published{canManage ? ": press Publish, or say “ship it” in the room" : ""}. The data here is examples; the live app starts empty.</p>)}
-    {!canManage && <p className="canvas__notice">{app.open_to === "room" ? `Open to ${room}` : `Open to ${whoName}`}. Only {app.created_by_name ?? "the person who asked for it"} or a workspace admin can change who can open it.</p>}
+      ? <p className="canvas__notice">This is a first version. The agent is still working on it and will post in the conversation when it&apos;s ready.</p>
+      : <p className="canvas__notice">You&apos;re looking at the preview. It isn&apos;t live until it&apos;s published{canManage ? ": press Publish, or say “ship it” in the conversation" : ""}. The data here is examples; the live app starts empty.</p>)}
+    {!canManage && <p className="canvas__notice">Open to {whoName}. Only {app.created_by_name ?? "the person who asked for it"} or a workspace admin can change who can open it.</p>}
     {settingsOpen && <AppSettings app={app} publishCtl={publishCtl} onClose={() => setSettingsOpen(false)} onRemoved={onBack} />}
     {tabError && <div className="canvas__notice"><Problem raw={tabError.raw}>{dn} didn&apos;t open. Try again in a moment.</Problem></div>}
     {refused ? <div className="canvas__notice">{refused.status === 403
-      ? <Problem raw={refused.raw}>Only {whoName} can open {dn}. Ask in {room}.</Problem>
+      ? <Problem raw={refused.raw}>Only {whoName} can open {dn}. {askWho}</Problem>
       : <Problem raw={refused.raw} action={retry}>{dn} didn&apos;t open. Try again in a moment.</Problem>}</div>
       : url ? <iframe key={`${key}:${attempt}`} title={dn} src={url} className="canvas__frame"
         sandbox="allow-scripts allow-same-origin allow-forms allow-popups" />
       : <p className="canvas__notice">Opening…</p>}
+    </div><AppConversation app={app} /></div>
   </div>;
 }

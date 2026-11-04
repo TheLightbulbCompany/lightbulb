@@ -12,9 +12,13 @@ export function displayName(app: Pick<AppRow, "name" | "display_name">): string 
 
 export const roomOf = (app: AppRow) => `#${app.room_name ?? "room"}`;
 
+/** Where the builder posts: the app's own conversation, else (an older app not opened since) its room. */
+export const postsIn = (app: AppRow) => (app.conversation_id || !app.room_id ? "its conversation" : roomOf(app));
+
 /** Who can open the app, as a phrase ("people in #finance", "anyone with the link"). */
 export function audience(app: Pick<AppRow, "open_to" | "room_name">): string {
   switch (app.open_to) {
+    case "me": return "only its creator and workspace admins";
     case "room": return `people in #${app.room_name ?? "room"}`;
     case "workspace": return "everyone in the workspace";
     case "invited": return "people you invited";
@@ -31,7 +35,7 @@ export function liveLine(app: AppRow): string {
 /** The one line for an app that stopped moving or is not ready yet; null when it is ready. */
 export function statusLine(app: AppRow): string | null {
   if (app.stuck) return `Stopped at ${app.stuck.step}. Nothing has moved for 5 minutes.`;
-  const room = roomOf(app);
+  const room = postsIn(app);
   switch (app.state) {
     case "awaiting_approval": return `Waiting for an owner to approve${app.requested_by?.trim() ? ` ${app.requested_by.trim()}'s request` : ""}: the cards are in Activity, under Needs you.`;
     case "provisioning": return "Setting up its hosting and data, usually a few minutes.";

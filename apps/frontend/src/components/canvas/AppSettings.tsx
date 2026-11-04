@@ -12,7 +12,8 @@ import { LiveLink, Problem, displayName } from "./appText";
 import "./canvas.css";
 
 const CHOICES: { value: AppRow["open_to"]; label: string }[] = [
-  { value: "room", label: "" }, // "#room (this room)", filled in from the app
+  { value: "me", label: "Only me (and workspace admins)" },
+  { value: "room", label: "" }, // "#room (this room)", filled in from the app; left out when it came from no room
   { value: "workspace", label: "Everyone in the workspace" },
   { value: "invited", label: "People I invite" },
   { value: "public", label: "Anyone with the link" },
@@ -22,7 +23,8 @@ type OpenTo = AppRow["open_to"];
 
 // Who stops being able to open the app if it moves from `from` to `to`; null when nobody does (widening).
 function whoLosesAccess(from: OpenTo, to: OpenTo, room: string): string | null {
-  if (from === to || to === "public" || (from === "room" && to === "workspace")) return null;
+  if (from === to || to === "public" || from === "me" || (from === "room" && to === "workspace")) return null;
+  if (to === "me") return "Only you and workspace admins will be able to open it.";
   if (from === "public") {
     const outside = to === "room" ? `outside ${room}` : to === "workspace" ? "outside the workspace" : "you haven't invited";
     return `Anyone with the link ${outside} will lose access.`;
@@ -110,7 +112,7 @@ export function AppSettings({ app, onClose, onRemoved, publishCtl }: { app: AppR
 
     <fieldset className="app-settings__group">
       <legend className="canvas__heading">Who can open it</legend>
-      {CHOICES.map((c) => <label key={c.value} className="app-settings__row">
+      {CHOICES.filter((c) => c.value !== "room" || app.room_id || openTo === "room").map((c) => <label key={c.value} className="app-settings__row">
         <input type="radio" name={`open-to-${app.app_id}`} checked={(pending ?? openTo) === c.value} onChange={() => pick(c.value)} />
         {c.value === "room" ? `${room} (this room)` : c.label}
       </label>)}

@@ -1,7 +1,7 @@
 "use client";
 
 import { useAuth } from "@clerk/nextjs";
-import { useEffect } from "react";
+import { useCallback, useEffect } from "react";
 import useSWR from "swr";
 
 import { useLiveEvents } from "@/hooks/useLiveEvents";
@@ -11,10 +11,11 @@ import { notifyApiError } from "@/lib/notify";
 export type AppRow = {
   app_id: string;
   name: string;
-  room_id: string;
+  room_id: string | null; // null: the app came from no room (CLI, or asked for without one)
   room_name?: string;
+  conversation_id?: string | null; // its own conversation with its builder, once opened (POST /apps/{id}/conversation)
   state: "awaiting_approval" | "provisioning" | "building" | "ready" | "live" | "failed" | "destroyed";
-  open_to: "room" | "workspace" | "invited" | "public";
+  open_to: "me" | "room" | "workspace" | "invited" | "public";
   budget_usd: number;
   preview_url: string | null;
   live_url: string | null;
@@ -67,6 +68,12 @@ export function useApps() {
     return res.url;
   };
 
+  /** The app's conversation with its builder, made on the first open, with the person seated. Stable: SessionChat re-opens when it changes. */
+  const openConversation = useCallback(async (appId: string): Promise<{ roomId: string }> => {
+    const res = await api.post(`/apps/${encodeURIComponent(appId)}/conversation`, {}) as { room_id: string };
+    return { roomId: res.room_id };
+  }, [api]);
+
   /** Starts a publish and returns at once; the caller re-reads the list for progress. Errors propagate: the caller shows the backend's message. */
   const publish = async (appId: string): Promise<{ state?: string; error?: { message: string } | null }> => {
     const res = await api.post(`/apps/${encodeURIComponent(appId)}/publish`, {}) as { state?: string; error?: { message: string } | null };
@@ -109,7 +116,7 @@ export function useApps() {
     }
   };
 
-  /** Posts the error in the app's room as the person. Errors propagate: the caller shows them inline. */
+  /** Posts the error in the app's conversation as the person (an older app's room until its conversation is opened). Errors propagate: the caller shows them inline. */
   const askAgent = async (appId: string, error?: string): Promise<void> => {
     await api.post(`/apps/${encodeURIComponent(appId)}/ask-agent`, error ? { error: error.slice(0, 2000) } : {});
   };
@@ -150,6 +157,7 @@ export function useApps() {
     error: (error as Error | undefined) ?? null,
     refresh: () => { void mutate(); },
     open,
+    openConversation,
     publish,
     update,
     invite,

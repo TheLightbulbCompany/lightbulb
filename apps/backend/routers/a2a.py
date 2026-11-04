@@ -1,6 +1,7 @@
 """The A2A door (JSON-RPC binding, A2A v1.0): Agent Card, issuer keys, SendMessage and GetTask, records,
 a holder's decision, the workspace rules, and the hook-token ask from a hosted agent."""
 
+import time
 from typing import Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
@@ -145,3 +146,22 @@ async def session_reply(owner_id: str, body: SessionReplyRequest, _: dict = Depe
     except A2AError as exc:
         raise HTTPException(exc.code, detail={"code": exc.message}) from None
     return {"ok": True}
+
+
+@router.post("/api/v1/internal/network/{owner_id}/runtime-proof")
+async def runtime_proof(owner_id: str, _: dict = Depends(_require_hook_token)):
+    """A workspace proof for this workspace's own runtime. The key is derived from the boot secret, never
+    taken from the caller; the hook token proves the caller is that runtime. A workspace that left its
+    network is not renewed."""
+    from core.auth import is_org_owner_id
+    from core.services import agentcore_runtime, network_member
+
+    if not is_org_owner_id(owner_id):
+        raise HTTPException(409, detail={"code": "not_on_network"})
+    key = await agentcore_runtime.network_member_key(owner_id)
+    if not key:
+        raise HTTPException(404, detail={"code": "no_runtime"})
+    if not await network_member.stored_team_id(owner_id):
+        raise HTTPException(409, detail={"code": "not_on_network"})
+    now = int(time.time())
+    return {"proof": network_proof.mint_workspace(key, owner_id, now=now), "exp": now + network_proof.LIFE_S}

@@ -351,6 +351,8 @@ def backend(monkeypatch):
             return False
 
     def fake_urlopen(req, timeout=None):
+        if req.full_url.endswith("/runtime-proof"):  # _start's own proof fetch, not a session reply
+            raise urllib.error.URLError("no proof in this test")
         posted.append((req.full_url, dict(req.header_items()), json.loads(req.data)))
         if status["code"] >= 300:
             raise urllib.error.HTTPError(req.full_url, status["code"], "no", {}, None)

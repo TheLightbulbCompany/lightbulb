@@ -79,6 +79,13 @@ def mint(
     return _sign(claims)
 
 
+def mint_workspace(member_key: str, org_id: str, now: int | None = None) -> str:
+    """A proof that ``member_key`` is the workspace ``org_id``'s own runtime: ``sub`` and ``org`` are both
+    the workspace id (an ``org_`` subject, never a person)."""
+    now = int(time.time()) if now is None else now
+    return _sign({"iat": now, "exp": now + LIFE_S, "sub": org_id, "org": org_id, "computer": member_key})
+
+
 def _sign(claims: dict, typ: str | None = None) -> str:
     head = {"alg": "EdDSA", "kid": kid(), **({"typ": typ} if typ else {})}
     header = _b64(json.dumps(head, separators=(",", ":")).encode())

@@ -456,6 +456,17 @@ async def ask_agent(
     return await _run(svc.ask_agent_to_fix(owner_id, app_id, auth=auth, error=body.error))
 
 
+class MemberStartBody(BaseModel):
+    request: str = Field(min_length=1, max_length=4000)
+
+
+@router.post("/start")
+async def member_start(body: MemberStartBody, auth: Annotated[AuthContext, Depends(get_current_user)]):
+    """Canvas's prompt box: a person asks for an app with no room. It gets its own conversation and a builder."""
+    await require_always_on_entitlement(resolve_owner_id(auth), message=PAID_MESSAGE)
+    return await _run(app_conversation.start_as_member(auth, body.request))
+
+
 @router.post("/{app_id}/ask")
 async def member_ask(
     app_id: str, body: MemberAskBody, owner_id: Manager, auth: Annotated[AuthContext, Depends(get_current_user)]

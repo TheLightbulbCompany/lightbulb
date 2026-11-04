@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -332,6 +333,59 @@ async def start(
         "next": next_,
         "relayed": not message.get("replayed"),  # whether the builder heard a new request line just now
     }
+
+
+_FILLER = {
+    "a",
+    "an",
+    "the",
+    "for",
+    "our",
+    "my",
+    "us",
+    "we",
+    "to",
+    "of",
+    "and",
+    "with",
+    "that",
+    "where",
+    "can",
+    "build",
+    "make",
+    "create",
+    "me",
+    "please",
+    "page",
+    "simple",
+    "small",
+    "new",
+    "app",
+    "website",
+    "site",
+    "tool",
+}
+
+
+def name_from_request(text: str) -> str:
+    """A DNS-label name from the request's first meaningful words: "Build a sign-up form for our pottery
+    workshop" → "sign-up-form-pottery". Falls back to "app"."""
+    words = [w for w in re.findall(r"[a-z0-9]+(?:-[a-z0-9]+)*", text.lower()) if w not in _FILLER]
+    name = "-".join(words[:4])[:40].strip("-")
+    return name or "app"
+
+
+async def start_as_member(auth: AuthContext, request_text: str) -> dict:
+    """Canvas's "What should we build?": the person asks with no room. Never lands on another app: a name
+    already taken gets -2, -3, …"""
+    owner_id = resolve_owner_id(auth)
+    base = name_from_request(request_text)
+    name, n = base, 1
+    while await apps_repo.get_by_name(owner_id, name):
+        n += 1
+        name = f"{base[: 40 - len(str(n)) - 1]}-{n}"
+    caller = BuilderCaller(owner_id=owner_id, actor_id=auth.user_id, actor_kind="person")
+    return await start(caller, name, request_text)
 
 
 async def ask(

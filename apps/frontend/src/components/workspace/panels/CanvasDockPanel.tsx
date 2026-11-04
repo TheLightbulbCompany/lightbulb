@@ -11,7 +11,7 @@ import { updatePanelParams } from "../workspaceController";
 import type { PanelProps } from "../panelComponents";
 
 export function CanvasDockPanel({ id, params }: PanelProps) {
-  const { apps, loading, error, refresh } = useApps();
+  const { apps, loading, error, refresh, start } = useApps();
   const canManage = useIsWorkspaceAdmin();
   const close = () => updatePanelParams(id, { app: undefined });
   const open = params.app ? apps.find((a) => a.app_id === params.app) : undefined;
@@ -36,6 +36,6 @@ export function CanvasDockPanel({ id, params }: PanelProps) {
       {!loading && <button type="button" className="app-view__btn" onClick={close}>All apps</button>}
     </div>;
   }
-  return <AppList apps={apps} loading={loading} error={error} onRetry={refresh} canManage={canManage}
+  return <AppList apps={apps} loading={loading} error={error} onRetry={refresh} canManage={canManage} onStart={start}
     onOpen={(appId) => updatePanelParams(id, { app: appId })} />;
 }

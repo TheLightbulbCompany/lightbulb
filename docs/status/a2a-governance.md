@@ -4,7 +4,7 @@ Updated by the governance session at every task completion. Newest first. Everyt
 
 ## 4 Nov 2026
 
-**Merged to main (founder-authorised, each tested on top of main):** #4562 phase 1, #4606 phase 1b (replaces #4571), #4608 phase 2 monorepo half (replaces #4591). Main deploys these to dev; production stays a manual dispatch. CLI #134 merges after a card-publish race fix. Phase 2b (the runtime signs in as the workspace) approved with a 30-day proof life; planning next.
+**Merged to main (founder-authorised, each tested on top of main):** #4562 phase 1, #4606 phase 1b (replaces #4571), #4608 phase 2 monorepo half (replaces #4591). Main deploys these to dev; production stays a manual dispatch. CLI #134 merged (cb962d0) after the Workers session's live checks passed; a release needs a version tag. Phase 2b (the runtime signs in as the workspace) approved with a 30-day proof life; planning next.
 
 ## 2 Nov 2026, evening
 

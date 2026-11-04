@@ -372,6 +372,15 @@ def test_test_link_is_a_preview_only_builder_pass(client, previewing):
     patch.assert_not_awaited()  # never last_opened_at
 
 
+def test_reset_preview_data_is_a_builder_call(client, monkeypatch):
+    reset = AsyncMock(return_value={"reset": True})
+    monkeypatch.setattr(svc, "reset_preview_data", reset)
+    assert client.post(f"{BASE}/app_1/reset-preview-data").status_code == 401
+    r = client.post(f"{BASE}/app_1/reset-preview-data", headers=HOOK)
+    assert r.status_code == 200 and r.json() == {"reset": True}
+    reset.assert_awaited_once_with("org_a", "app_1")
+
+
 def test_test_link_names_a_signed_in_builder_as_a_builder_too(client, previewing, proof):
     r = client.post(f"{BASE}/app_1/test-link", headers=PROOF)
     assert r.status_code == 200

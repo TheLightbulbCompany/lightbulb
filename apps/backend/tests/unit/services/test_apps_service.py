@@ -494,6 +494,24 @@ async def test_preview_reseeds_after_a_schema_change(world):
     assert world.reset.await_count == 2 and len(world.vercel.created()) == 3
 
 
+async def test_reset_preview_data_reseeds_the_preview_without_a_rebuild(world):
+    """`app verify` sends forms with test values; this puts the preview back to schema + seed."""
+    src, _, _ = await _ready_preview(world)
+    assert world.reset.await_count == 1
+    assert await svc.reset_preview_data(OWNER, src["app_id"]) == {"reset": True}
+    assert world.reset.await_count == 2 and len(world.vercel.created()) == 1  # same build, fresh data
+    assert world.reset.await_args.kwargs["seed_sql"] == SRC_V1["drizzle/seed.sql"]
+    # another read holds the lease: not reset now, but the next step does it
+    later = (svc.datetime.now(svc.UTC) + svc.timedelta(seconds=30)).isoformat()
+    await svc.apps_repo.patch(src["app_id"], {"progress_lease_until": later})
+    assert await svc.reset_preview_data(OWNER, src["app_id"]) == {"reset": False}
+    assert world.reset.await_count == 2
+    earlier = (svc.datetime.now(svc.UTC) - svc.timedelta(seconds=1)).isoformat()
+    await svc.apps_repo.patch(src["app_id"], {"progress_lease_until": earlier})
+    await svc.status(OWNER, src["app_id"])
+    assert world.reset.await_count == 3
+
+
 async def test_publish_waits_for_the_live_database_secret(world):
     """An active row whose secret has not landed: the production build would run its migrations
     without DATABASE_URL and fail. Refuse with a reason instead; publish once it is there."""

@@ -8,7 +8,7 @@ import pytest
 
 from core.repositories import a2a_repo
 from core.services import network_member, network_route
-from tests.unit.routers.test_a2a_internal import AGENT, H, ORG, OWNER, RULES, URL, body, env  # noqa: F401
+from tests.unit.routers.test_a2a_internal import ADDRESS, AGENT, H, ORG, OWNER, RULES, URL, body, env  # noqa: F401
 
 URI = "https://thelightbulb.company/a2a/ext/authority/v1"
 REPLY_URL = f"/api/v1/internal/a2a/{ORG}/session-reply"
@@ -35,7 +35,7 @@ def bridge(monkeypatch, env):  # noqa: F811
     return env
 
 
-def reply(request_id, text, person=OWNER, sender="abc"):  # abc: the session the task asked
+def reply(request_id, text, person=OWNER, sender=ADDRESS):  # the session the task asked
     return {
         "request_id": request_id,
         "text": text,
@@ -57,7 +57,7 @@ def test_dispatch_prefers_the_bridge_when_the_workspace_has_a_runtime(client, br
     owner, method, params = bridge.rpc.await_args.args
     assert owner == ORG and method == "network.a2a_send"
     row = asyncio.run(a2a_repo.get_task(ORG, out["taskId"]))
-    assert params["to"] == "abc" and params["request_id"] == out["taskId"]
+    assert params["to"] == ADDRESS and params["request_id"] == out["taskId"]
     assert params["person"] == network_member.app_person(bridge.session["humanUserId"])
     assert params["text"].startswith("[A2A] ") and params["text"].endswith("\nstatus?")
     assert params["a2a"] == {
@@ -166,7 +166,7 @@ def test_a_reply_from_another_session_is_404(client, bridge):
 
 def test_a_reply_from_a_session_the_task_did_not_ask_is_404(client, bridge):
     task_id = ask(client)["taskId"]
-    r = client.post(REPLY_URL, json=reply(task_id, "x", sender="someone-else"), headers=H)
+    r = client.post(REPLY_URL, json=reply(task_id, "x", sender="mnopqrstuvwx/claude:conv-1"), headers=H)
     assert r.status_code == 404
     assert asyncio.run(a2a_repo.get_task(ORG, task_id))["artifact"]["parts"] == [{"text": "delivered"}]
     no_from = {k: v for k, v in reply(task_id, "x").items() if k != "from"}

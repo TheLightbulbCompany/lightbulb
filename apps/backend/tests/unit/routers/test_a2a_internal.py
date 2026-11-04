@@ -19,6 +19,8 @@ ROOM = str(uuid.uuid4())
 ORIGIN_MSG = str(uuid.uuid4())
 AGENT_MSG = str(uuid.uuid4())
 FOREIGN_MSG = str(uuid.uuid4())
+SESSION_ID = "abc"  # the backend's local-session id the agent names
+ADDRESS = "abcdefghijkl/claude:conv-1"  # the engine's key for it, which the Mac reports
 URL = f"/api/v1/internal/a2a/{ORG}/ask-session"
 H = {"Authorization": f"Bearer {TOKEN}"}
 RULES = {
@@ -47,7 +49,7 @@ def env(monkeypatch, a2a_env):
     monkeypatch.setattr("core.services.messaging.human_display_name", AsyncMock(return_value="Owner"))
     through = AsyncMock(return_value={"ok": True})  # network_route.call
     monkeypatch.setattr("core.services.network_route.call", through)
-    session = {"humanUserId": OWNER}
+    session = {"humanUserId": OWNER, "networkSessionId": ADDRESS}
     monkeypatch.setattr(
         "core.repositories.local_sessions_repo.get_session", AsyncMock(side_effect=lambda o, s: dict(session))
     )
@@ -80,7 +82,7 @@ def env(monkeypatch, a2a_env):
 
 def body(**kw):
     return {
-        "sessionId": "abc",
+        "sessionId": SESSION_ID,
         "text": "status?",
         "intent": "founder asked",
         "agentId": AGENT,
@@ -112,7 +114,8 @@ def test_origin_human_no_rule_is_held_for_session_person(client, env):
     assert auth["requester"] == {"person": "user_x", "org": ORG, "verified_by": "origin-message"}
     assert [h["agent"] for h in auth["chain"]] == [None, AGENT]
     assert auth["chain"][1]["session"] == "run-1" and auth["chain"][1]["person"] == "user_x"
-    assert auth["operation"]["resource"] == "session:abc" and auth["operation"]["skill"] == "ask_session"
+    assert auth["operation"]["resource"] == f"session:{ADDRESS}" and auth["operation"]["skill"] == "ask_session"
+    assert row["sessionId"] == SESSION_ID  # the backend id stays on the task
     [rec] = asyncio.run(a2a_repo.list_records(ORG, out["taskId"]))
     assert claims(rec["jws"])["decision"] == "hold"
 
@@ -122,6 +125,14 @@ def test_a_hosted_ask_is_held_under_the_default_document(client, env, monkeypatc
     r = client.post(URL, json=body(originMessageId=ORIGIN_MSG), headers=H)
     assert r.status_code == 200, r.text
     assert r.json()["state"] == "held"  # ask_session matches neither members-message nor members-assign
+    env.through.assert_not_awaited()
+
+
+def test_a_session_its_mac_has_not_put_on_the_network_is_409_and_stores_nothing(client, env):
+    del env.session["networkSessionId"]
+    r = client.post(URL, json=body(originMessageId=ORIGIN_MSG), headers=H)
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "session_not_on_network"
+    env.put_task.assert_not_awaited()
     env.through.assert_not_awaited()
 
 
@@ -173,7 +184,7 @@ def test_allowed_ask_session_reaches_app_send_and_completes_delivered(client, en
     assert out["state"] == "completed"
     (link, op, params, _), _ = env.through.await_args
     assert link["key"] == "k1" and op == "app.send"
-    assert params["to"] == "abc" and params["request_id"] == out["taskId"] and params["app"] == AGENT
+    assert params["to"] == ADDRESS and params["request_id"] == out["taskId"] and params["app"] == AGENT
     assert params["title"] == "Friday via Owner" and params["text"].endswith("\nstatus?")
     row = asyncio.run(a2a_repo.get_task(ORG, out["taskId"]))
     assert row["delivered"] is True and row["artifact"]["parts"] == [{"text": "delivered"}]

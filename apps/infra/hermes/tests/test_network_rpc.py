@@ -209,7 +209,7 @@ def test_a2a_send_declares_then_sends_with_the_a2a_object(net):
     assert _rpc("network.a2a_send", params) == {"ok": True, "payload": {"receipt": "r1"}}
     ops = [c["op"] for c in net.calls() if c["op"] in ("cloud.sessions.set", "app.send")]
     assert ops[-2:] == ["cloud.sessions.set", "app.send"]
-    assert {"app": "a2a", "person": "user_a"} in _sent(net, "cloud.sessions.set")[-1]["sessions"]
+    assert {"name": "a2a-user_a", "agent": "app", "title": "A2A"} in _sent(net, "cloud.sessions.set")[-1]["sessions"]
     assert _sent(net, "app.send")[-1] == {"op": "app.send", "app": "a2a", "person": "user_a", "to": "atlas",
                                           "text": "hi", "request_id": "req-1", "a2a": a2a, "wait": True}
     declared_once = len(net.calls("cloud.sessions.set"))
@@ -242,8 +242,11 @@ def test_a2a_declares_accumulate_across_people(net):
     n = len(net.calls("cloud.sessions.set"))
     _rpc("network.a2a_send", p("A"))
     assert len(net.calls("cloud.sessions.set")) == n
-    a2a = [s for s in _sent(net, "cloud.sessions.set")[-1]["sessions"] if s.get("app") == "a2a"]
-    assert {s["person"] for s in a2a} == {"A", "B"}
+    sessions = _sent(net, "cloud.sessions.set")[-1]["sessions"]
+    assert {s["name"] for s in sessions if s["name"].startswith("a2a-")} == {"a2a-A", "a2a-B"}
+    # The engine refuses the whole set unless every entry has a name and an agent
+    # (net_ops.rs `cloud.sessions.set`): the shape a fake engine cannot catch.
+    assert all(isinstance(s.get("name"), str) and isinstance(s.get("agent"), str) for s in sessions)
 
 
 def test_a2a_failed_declare_is_not_cached(net):
@@ -270,6 +273,6 @@ def test_a_sessions_reload_keeps_the_a2a_declarations(net):
     net.s3.seed("org_test/network/sessions.json", json.dumps(new).encode())
     assert _rpc("network.sessions") == {"ok": True, "payload": {"count": 1}}
     declared = net.calls("cloud.sessions.set")[-1]["sessions"]
-    assert declared == new["sessions"] + [{"app": "a2a", "person": "A"}]  # a reply to A still lands
+    assert declared == new["sessions"] + [{"name": "a2a-A", "agent": "app", "title": "A2A"}]  # a reply to A still lands
     assert network._a2a_declared == {"A"}
     assert json.loads(network.SESSIONS_FILE.read_text()) == new  # the file stays the backend's

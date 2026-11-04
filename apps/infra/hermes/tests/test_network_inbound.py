@@ -415,4 +415,4 @@ def test_concurrent_a2a_declares_keep_both_people(net):
     for t in threads:
         t.join()
     last = net.calls("cloud.sessions.set")[-1]["sessions"]
-    assert {s["person"] for s in last if s.get("app") == "a2a"} == {"A", "B", "C", "D"}
+    assert {s["name"] for s in last if s["name"].startswith("a2a-")} == {"a2a-A", "a2a-B", "a2a-C", "a2a-D"}

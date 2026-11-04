@@ -530,6 +530,7 @@ export function canResumeSession(session: LocalSession, own: boolean, userId?: s
 const RESUME_LIFETIME_MS = 24 * 60 * 60 * 1000;
 const RESUME_FAST_MS = 30_000;
 const RESUME_SLOW_MS = 30_000;
+const OPENING_SLOW = "Your Mac has not opened this conversation yet. Check that Lightbulb is running and connected, then check again.";
 
 const RESUME_REFUSED: Record<string, (mac: string, folder: string) => string> = {
   // Only a run Lightbulb cannot show (a private `claude --resume`, `codex --no-daemon`, a job it has
@@ -624,7 +625,13 @@ export function useSessionResume(client: SessionControlClient, prop: LocalSessio
   // A stale sidebar row must not launch a second writer. Read the session before
   // restoring; a failed read leaves an explicit retry instead of guessing.
   useEffect(() => {
-    if (!automatic || prop.status !== "ended" || !client.getLocalSession) return;
+    if (!automatic) return;
+    if (prop.status !== "ended") {
+      opened.current = prop.sessionId;
+      setAutoOpening(false); setError(null);
+      return;
+    }
+    if (!client.getLocalSession) return;
     setAutoOpening(opened.current !== prop.sessionId);
     let alive = true;
     void client.getLocalSession(prop.sessionId).then(latest => {
@@ -642,32 +649,9 @@ export function useSessionResume(client: SessionControlClient, prop: LocalSessio
     opened.current = session.sessionId;
     void resume("");
   }, [automatic, checked, source, session, own, userId, resume, opened]);
-  useEffect(() => {
-    if (automatic && prop.status !== "ended") { opened.current = prop.sessionId; setAutoOpening(false); setError(null); }
-  }, [automatic, prop.sessionId, prop.status, opened]);
-  // Keep the selected run fresh until its sidebar catches up. Ended rows can
-  // stay outside the active listing even after a new generation registers.
-  useEffect(() => {
-    if (!automatic || prop.status !== "ended" || session.status === "ended" || !client.getLocalSession) return;
-    let alive = true;
-    let timer: ReturnType<typeof setTimeout>;
-    const tick = async () => {
-      try {
-        const latest = await client.getLocalSession!(prop.sessionId);
-        if (!alive) return;
-        setFresh({ source, session: latest });
-        if (latest.status === "ended") {
-          setAutoOpening(false);
-          setError("This session stopped before it was ready. Try again.");
-          return;
-        }
-      } catch { /* keep the working terminal while a metadata read retries */ }
-      if (alive) timer = setTimeout(() => void tick(), 5000);
-    };
-    timer = setTimeout(() => void tick(), 5000);
-    return () => { alive = false; clearTimeout(timer); };
-  }, [automatic, client, prop.sessionId, prop.status, session.status, source]);
   const pending = session.status === "ended" && session.resume?.state === "pending";
+  // shortcut: poll while the sidebar is stale; use status events if the five-second delay becomes visible.
+  const following = automatic && prop.status === "ended" && session.status !== "ended";
   const requestedAt = session.resume?.requestedAt;
   const checkOpening = useCallback(async () => {
     if (!client.getLocalSession) return;
@@ -675,7 +659,7 @@ export function useSessionResume(client: SessionControlClient, prop: LocalSessio
       const latest = await client.getLocalSession(session.sessionId);
       setFresh({ source, session: latest });
       if (latest.status === "ended" && latest.resume?.state === "pending") {
-        setError("Your Mac has not opened this conversation yet. Check that Lightbulb is running and connected, then check again.");
+        setError(OPENING_SLOW);
       } else {
         setAutoOpening(false);
         setError(latest.status === "ended" && !latest.resume ? "This session did not open. Try again." : null);
@@ -686,12 +670,12 @@ export function useSessionResume(client: SessionControlClient, prop: LocalSessio
     if (!automatic || !pending) return;
     const requested = Date.parse(requestedAt ?? "");
     const age = Number.isFinite(requested) ? Math.max(0, Date.now() - requested) : 0;
-    const timer = setTimeout(() => setError("Your Mac has not opened this conversation yet. Check that Lightbulb is running and connected, then check again."), Math.max(0, 30_000 - age));
+    const timer = setTimeout(() => setError(OPENING_SLOW), Math.max(0, 30_000 - age));
     return () => clearTimeout(timer);
   }, [automatic, pending, requestedAt]);
   useEffect(() => {
     const read = client.getLocalSession;
-    if (!pending || !read) return;
+    if ((!pending && !following) || !read) return;
     // A request waits up to 24 h for its Mac, which can refuse whenever it wakes: keep asking
     // while it is live, every 2 s for the first 30 s and every 30 s after.
     const expires = Date.parse(requestedAt ?? "") + RESUME_LIFETIME_MS; // NaN: unknown, poll until unmount
@@ -700,22 +684,28 @@ export function useSessionResume(client: SessionControlClient, prop: LocalSessio
     let timer: ReturnType<typeof setTimeout> | undefined;
     const next = () => {
       if (!alive) return;
-      if (Date.now() >= expires) { setError("The request to open this session expired. Check again to refresh its status."); return; }
-      timer = setTimeout(() => void tick(), Date.now() - started < RESUME_FAST_MS ? AUTO_CHECK_INTERVAL_MS : RESUME_SLOW_MS);
+      if (pending && Date.now() >= expires) { setError("The request to open this session expired. Check again to refresh its status."); return; }
+      const pendingInterval = Date.now() - started < RESUME_FAST_MS ? AUTO_CHECK_INTERVAL_MS : RESUME_SLOW_MS;
+      timer = setTimeout(() => void tick(), following ? 5000 : pendingInterval);
     };
     const tick = async () => {
       try {
         const latest = await read(session.sessionId);
         if (!alive) return;
         setFresh({ source, session: latest });
+        if (following && latest.status === "ended") {
+          setAutoOpening(false);
+          setError("This session stopped before it was ready. Try again.");
+          return;
+        }
         if (latest.status === "ended" && !latest.resume) setError("This session did not open. Try again.");
-        if (latest.status !== "ended" || latest.resume?.state !== "pending") return; // resolved or refused
+        if (!following && (latest.status !== "ended" || latest.resume?.state !== "pending")) return; // resolved or refused
       } catch { /* the next tick asks again */ }
       next();
     };
     next();
     return () => { alive = false; clearTimeout(timer); };
-  }, [client, session.sessionId, pending, requestedAt, source]);
+  }, [client, session.sessionId, pending, following, requestedAt, source]);
   useEffect(() => {
     const get = client.getLocalSessionCommand;
     if (!first || !running || !get) return;

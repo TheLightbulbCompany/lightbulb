@@ -67,7 +67,7 @@ function PublishView({ app, ctl: { phase, done, failed, start, refresh } }: { ap
   const ask = app.open_to === "me" ? "Make this preview live just for its creator and workspace admins?" : `Make this preview live for ${who}?`;
   const publishAgain = eligible && (confirming
     ? <span className="publish" role="group" aria-label="Confirm publish">
-      <span className="canvas__notice">{ask} You can undo it from its conversation.</span>
+      <span className="canvas__notice">{ask}{app.live_version != null ? " You can put back the version live now from here." : ""}</span>
       <button type="button" className="app-view__btn app-view__btn--primary" onClick={() => { setConfirming(false); start(); }}>Publish</button>
       <button type="button" className="app-view__btn" onClick={() => setConfirming(false)}>Cancel</button>
     </span>

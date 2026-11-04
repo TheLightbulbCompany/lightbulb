@@ -344,7 +344,7 @@ describe("AppView", () => {
     it("Publish asks first, naming the audience; Cancel posts nothing", async () => {
       render(<AppView app={ready({ open_to: "workspace" })} onBack={vi.fn()} />);
       fireEvent.click(await screen.findByRole("button", { name: "Publish" }));
-      expect(screen.getByText("Make this preview live for everyone in the workspace? You can undo it from its conversation.")).toBeTruthy();
+      expect(screen.getByText("Make this preview live for everyone in the workspace? You can put back the version live now from here.")).toBeTruthy();
       expect(publish).not.toHaveBeenCalled();
       fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
       expect(screen.getByRole("button", { name: "Publish" })).toBeTruthy();
@@ -354,7 +354,7 @@ describe("AppView", () => {
     it("an app shared with only its creator says so grammatically in the confirm", async () => {
       render(<AppView app={ready({ open_to: "me" })} onBack={vi.fn()} />);
       fireEvent.click(await screen.findByRole("button", { name: "Publish" }));
-      expect(screen.getByText("Make this preview live just for its creator and workspace admins? You can undo it from its conversation.")).toBeTruthy();
+      expect(screen.getByText("Make this preview live just for its creator and workspace admins? You can put back the version live now from here.")).toBeTruthy();
     });
 
     it.each([

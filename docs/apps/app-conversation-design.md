@@ -24,6 +24,17 @@ On Emergent each app is its own conversation: you talk to its builder beside a l
 - **Canvas:** `AppView` gets the conversation beside the preview, reusing `SessionChat`'s parts (`RoomTimeline`, `RoomComposer`); "Ask the agent to fix it" posts there.
 - **Older apps** keep their room; the app conversation is created the first time one is opened in Canvas.
 
+## Apps don't belong to rooms (founder, 4 Nov 2026)
+
+The CLI is hosting for anyone, including a developer on their own laptop, so an app belongs to an **account**, not a room.
+
+- **Owner = a workspace.** `lightbulb login` signs a person in and gives them a workspace to hold their apps: their team's, or a workspace of their own if they have none (the product only makes organisation workspaces, so a solo developer gets a one-member one). The workspace's Stripe Projects setup happens during login or the first `lightbulb app up`, in the browser, the same as for a team; today an app without it stops at `services_account_needed`.
+- **A room is optional.** It is only where a request came from when a Lightbulb agent builds the app. `_check_room` (R46: "an app belongs to a room") goes; `app new` no longer needs `--room`.
+- **Sharing without rooms:** only me, people I invite, my workspace, anyone with the link. "People in #room" stays as a convenience for teams.
+- **Publish gate by caller:** a person running `lightbulb app publish` is the person; an agent may publish only when a person asked in the app's own conversation.
+- **Notices** go to the app's conversation when it has one; a developer using only the CLI reads the CLI's output.
+- **Canvas** lists apps by workspace, not by room membership.
+
 ## Not in this change
 
 - A "New app" box in Canvas with no room (next step, same machinery).

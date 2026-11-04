@@ -41,7 +41,8 @@ export function statusLine(app: AppRow): string | null {
     case "awaiting_approval": return `Waiting for an owner to approve${app.requested_by?.trim() ? ` ${app.requested_by.trim()}'s request` : ""}: the cards are in Activity, under Needs you.`;
     case "provisioning": return "Setting up its hosting and data, usually a few minutes.";
     case "requested": // reserved by `app start`: the builder is on its first version
-    case "building": return app.live_version == null // a first build, even over the starter placeholder's preview
+    case "building": if (app.publishing) return "Publishing. It'll be live in a minute or two.";
+      return app.live_version == null // a first build, even over the starter placeholder's preview
       ? `The agent is making the preview. It'll post in ${room} when it's ready.`
       : `Building the new version. It'll show here and in ${room} when it's ready.`; // a publish or a change: not "the preview"
     case "failed": return `Something went wrong. Ask the agent in ${room}.`;

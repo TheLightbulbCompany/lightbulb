@@ -77,7 +77,10 @@ async def upload(body: Upload, auth: AuthContext = Depends(caller)) -> dict:
         for s in body.sessions
     ]
     stored = await session_store.put_sessions(auth.user_id, rows, full, auth.org_id)
-    if full:  # the evaluator reads only what a person chose to upload in full; its failure never fails the upload
+    # The evaluator reads only what a person chose to upload in full, and only in a workspace: a free
+    # account's sessions are stored, never evaluated (founder ruling, 4 Nov 2026). Its failure never
+    # fails the upload.
+    if full and auth.org_id:
         for r in rows:
             try:
                 await evaluator.ingest_session(

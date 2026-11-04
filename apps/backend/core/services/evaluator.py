@@ -33,6 +33,8 @@ from core.services.workspace_memory import _BATCH, _client, _delete_events, _pag
 
 logger = logging.getLogger(__name__)
 
+# ponytail: unreachable since 4 Nov 2026 (routers/sessions.py evaluates workspace uploads only);
+# delete the cap rows, _reserve_cap and their tests when the free path is retired for good.
 FREE_MONTHLY_CAP = 50
 DUE_S = 7 * 86400  # how long after an ingest the sweep keeps collecting that person's reflections
 CAP_ROW_S = 62 * 86400  # a monthly cap row outlives its month, then expires

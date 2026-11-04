@@ -338,6 +338,16 @@ def test_upload_full_triggers_ingest_and_metadata_does_not(app, s3):
         assert c.post("/api/v1/sessions", json={"mode": "full", **body}).status_code == 200  # never fails the upload
 
 
+def test_a_free_accounts_full_upload_is_stored_and_never_evaluated(app, s3):
+    from unittest.mock import AsyncMock
+
+    body = {"sessions": [session()], "tool_calls": [call()], "mode": "full"}
+    with patch("routers.sessions.evaluator.ingest_session", new=AsyncMock(return_value=True)) as ingest:
+        r = as_(app, "u_free").post("/api/v1/sessions", json=body)
+        assert r.status_code == 200 and r.json()["stored"]
+        ingest.assert_not_called()
+
+
 def test_rows_expire_with_their_retention_and_read_as_gone_once_past_it(app, s3, table):
     as_(app, "user_ada", "org_1").post("/api/v1/sessions", json={"sessions": [session("w")], "mode": "metadata"})
     as_(app, "user_dee").post("/api/v1/sessions", json={"sessions": [session("f")], "mode": "metadata"})

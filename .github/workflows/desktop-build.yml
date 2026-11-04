@@ -324,6 +324,16 @@ jobs:
         VERSION="0.4.${{ github.run_number }}"
         DMG="Lightbulb_${VERSION}_aarch64.dmg"
         TAG="desktop-v${VERSION}"
+        if [ "$HOSTED_RUNNER" = true ]; then
+          # Apple's folder-to-image method on hosted Macs. Avoid the explicit
+          # scratch-volume detach that timed out twice on macos-15.
+          # https://developer.apple.com/documentation/xcode/packaging-mac-software-for-distribution
+          STAGING="$RUNNER_TEMP/lightbulb-dmg-source"
+          mkdir -p "$STAGING"
+          ditto "$APP" "$STAGING/Lightbulb.app"
+          ln -s /Applications "$STAGING/Applications"
+          hdiutil create -srcfolder "$STAGING" -volname Lightbulb -format UDZO -ov "$DMG"
+        else
         # Build the DMG by mounting a scratch image under $RUNNER_TEMP, NOT under
         # /Volumes. Tauri's bundle_dmg.sh (and a plain `hdiutil create -srcfolder`)
         # mount at /Volumes/<name>, which a self-hosted runner can't write to
@@ -342,6 +352,7 @@ jobs:
         hdiutil detach "$MNT" -force
         hdiutil convert "$RW" -format UDZO -o "$DMG"
         rm -f "$RW"; rm -rf "$MNT"
+        fi
         # Sign, notarize, staple the DMG (the .app inside is already notarized+stapled).
         codesign --force --timestamp --keychain "$KEYCHAIN_PATH" --sign "$SIGN_ID" "$DMG"
         # The Mac's uplink drops long uploads; retry each network call, 3 attempts.
@@ -353,6 +364,7 @@ jobs:
         echo "Published $DMG to $TAG"
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        HOSTED_RUNNER: ${{ inputs.hosted_runner }}
     - name: Publish draft release
       run: |-
         for i in 1 2 3; do

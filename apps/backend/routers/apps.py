@@ -222,10 +222,11 @@ async def put_source(request: Request, caller: Annotated[svc.BuilderCaller, Depe
         fields = {k: form.get(k) for k in ("name", "room_id", "commit")}
         if not hasattr(archive, "read") or not all(isinstance(v, str) and v for v in fields.values()):
             raise HTTPException(422, {"code": "invalid_request", "message": "name, room_id, commit and archive"})
+        placeholder = form.get("placeholder") == "true"  # the starter's untouched page; old CLIs omit it
         data = await archive.read(MAX_UPLOAD + 1)
     if len(data) > MAX_UPLOAD:
         raise _too_large()
-    return await _run(svc.put_source(caller.owner_id, **fields, archive=data, actor=caller))
+    return await _run(svc.put_source(caller.owner_id, **fields, archive=data, actor=caller, placeholder=placeholder))
 
 
 @router.post("/build/up")

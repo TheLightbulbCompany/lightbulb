@@ -3102,3 +3102,45 @@ async def test_hosting_still_being_set_up_is_working_until_the_drive_window_pass
     assert await svc._look(OWNER, src["app_id"]) is True
     assert (await svc.apps_repo.get(src["app_id"]))["stuck"]["step"] == "setting up hosting"
     assert room.lines == [STUCK_LINE.replace("building", "setting up hosting")]
+
+
+# --- the starter's placeholder page is not a ready app ------------------------------------------
+
+
+async def _placeholder_preview(world, commit="c0"):
+    src = await svc.put_source(
+        OWNER, name="crew", room_id="room_1", commit=commit, archive=_tar(SRC_V1), actor=PERSON, placeholder=True
+    )
+    await _up(src)
+    await _all_active(world, src["app_id"])
+    await svc.status(OWNER, src["app_id"])  # deploys
+    world.vercel.finish(f"dpl_{len(world.vercel.created())}")
+    return src
+
+
+async def test_a_placeholder_preview_is_building_and_stays_watched_until_the_real_source(world, room):
+    src = await _placeholder_preview(world)
+    app_id = src["app_id"]
+    assert (await svc.apps_repo.get(app_id))["sources"][src["source_id"]]["placeholder"] is True
+    assert (await svc.status(OWNER, app_id))["state"] == "building"
+    assert (await svc.apps_repo.get(app_id))["state"] == "building"
+    assert await svc._look(OWNER, app_id) is False  # the watch keeps running
+
+    real = await _source(SRC_V2, "c1")
+    assert "placeholder" not in (await svc.apps_repo.get(app_id))["sources"][real["source_id"]]
+    await _up(real)
+    await svc.status(OWNER, app_id)  # deploys the real source
+    world.vercel.finish(f"dpl_{len(world.vercel.created())}")
+    assert (await svc.status(OWNER, app_id))["state"] == "ready"
+
+
+async def test_a_live_app_whose_new_source_is_a_placeholder_stays_live(world):
+    src, _, _ = await _ready_preview(world)
+    await _go_live(world, src)
+    later = await svc.put_source(
+        OWNER, name="crew", room_id="room_1", commit="c9", archive=_tar(SRC_V1), actor=PERSON, placeholder=True
+    )
+    await _up(later)
+    await svc.status(OWNER, src["app_id"])
+    world.vercel.finish(f"dpl_{len(world.vercel.created())}")
+    assert (await svc.status(OWNER, src["app_id"]))["state"] == "live"

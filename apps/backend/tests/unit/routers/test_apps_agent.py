@@ -209,6 +209,9 @@ def test_source_upload_and_its_errors(client, monkeypatch):
     assert r.status_code == 200 and r.json() == {"app_id": "app_1", "source_id": "s1"}
     assert put.await_args.args == ("org_a",)
     assert put.await_args.kwargs["archive"] == b"tarbytes" and put.await_args.kwargs["commit"] == "c1"
+    assert put.await_args.kwargs["placeholder"] is False  # an old CLI sends no field
+    client.post(f"{BASE}/source", data={**form, "placeholder": "true"}, files=files, headers=HOOK)
+    assert put.await_args.kwargs["placeholder"] is True
 
     monkeypatch.setattr(mod, "MAX_UPLOAD", 4)
     assert client.post(f"{BASE}/source", data=form, files=files, headers=HOOK).status_code == 413

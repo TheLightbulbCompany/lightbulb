@@ -24,6 +24,7 @@ import os
 import secrets
 import socket
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.error
@@ -177,12 +178,14 @@ def _enable_workers() -> None:
 PROOF_RENEW_S = 15 * 86_400
 PROOF_TICK_S = 3600.0
 _proof_exp = 0.0  # 0 = none held, so the next tick fetches
+_proof_final = False  # the backend said 404/409: stop asking until the next _start
 
 
 def refresh_runtime_proof() -> bool:
     """Fetch this runtime's workspace proof from the backend, write ``login.json`` (0600, atomic)
     and tell a running engine to re-read it. False on any error; never raises, never logs the proof."""
-    global _proof_exp
+    global _proof_exp, _proof_final
+    final = False
     try:
         req = urllib.request.Request(
             f"{bridge.API}/api/v1/internal/network/{bridge.OWNER}/runtime-proof",
@@ -194,13 +197,25 @@ def refresh_runtime_proof() -> bool:
             got = json.loads(resp.read())
         proof, exp = got["proof"], float(got["exp"])
         NET_HOME.mkdir(parents=True, exist_ok=True)
-        tmp = NET_HOME / "login.json.tmp"
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump({"proof": proof, "route_url": None, "name": "workspace"}, fh)
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, NET_HOME / "login.json")
+        fd, tmp = tempfile.mkstemp(dir=NET_HOME, prefix="login.json.")  # unique, 0600
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump({"proof": proof, "route_url": None, "name": "workspace"}, fh)
+            os.replace(tmp, NET_HOME / "login.json")
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
         _proof_exp = exp
+    except urllib.error.HTTPError as exc:
+        if exc.code not in (404, 409):  # no_runtime / not_on_network are final; the rest retry
+            log.warning("network: runtime proof not refreshed (HTTP %s)", exc.code)
+            return False
+        log.info("network: runtime proof refused (HTTP %s); not asking again until restart", exc.code)
+        _proof_final = final = True
+        try:
+            (NET_HOME / "login.json").unlink(missing_ok=True)
+        except OSError as oserr:
+            log.warning("network: login.json not removed (%s)", type(oserr).__name__)
     except Exception as exc:  # noqa: BLE001 -- the engine starts without it; the next tick retries
         log.warning("network: runtime proof not refreshed (%s)", type(exc).__name__)
         return False
@@ -209,15 +224,14 @@ def refresh_runtime_proof() -> bool:
             ask("login.changed", {})
         except Exception as exc:  # noqa: BLE001
             log.warning("network: login.changed failed (%s)", type(exc).__name__)
-    return True
+    return not final
 
 
 def renew_proof_if_due(now: float | None = None) -> bool:
-    """Refresh when fewer than 15 days remain (or none is held). True when it posted."""
-    if _proof_exp - (time.time() if now is None else now) >= PROOF_RENEW_S:
+    """Refresh when fewer than 15 days remain (or none is held). True only when a fresh proof landed."""
+    if _proof_final or _proof_exp - (time.time() if now is None else now) >= PROOF_RENEW_S:
         return False
-    refresh_runtime_proof()
-    return True
+    return refresh_runtime_proof()
 
 
 def _renew_loop(proc) -> None:
@@ -228,7 +242,7 @@ def _renew_loop(proc) -> None:
 
 
 def _start() -> bool:
-    global _proc, _token, _etag, _sha, _sessions, _stopping, _ready
+    global _proc, _token, _etag, _sha, _sessions, _stopping, _ready, _proof_final
     with _sessions_lock:  # not mid-declare: a declare would record a person this engine never saw
         _a2a_declared.clear()  # a fresh engine starts with only the file's sessions
     fetched = _fetch_sessions()
@@ -257,6 +271,7 @@ def _start() -> bool:
         fh.write(base64.b64decode(bridge.NETWORK_KEY))
     os.chmod(key_path, 0o600)
 
+    _proof_final = False
     refresh_runtime_proof()
     _enable_workers()
     SOCKET.unlink(missing_ok=True)

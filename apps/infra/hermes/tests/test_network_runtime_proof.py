@@ -80,3 +80,44 @@ def test_the_proof_is_never_logged(net, posts, caplog):  # noqa: F811
     text = caplog.text
     for secret in (PROOF, "SECRETPAYLOAD", "SIGSECRET", TOKEN):
         assert secret not in text
+
+
+def _http_error(code):
+    return urllib.error.HTTPError("http://backend", code, "x", {}, io.BytesIO(b"{}"))
+
+
+@pytest.mark.parametrize("code", [404, 409])
+def test_final_refusal_stops_asking_and_removes_login(net, posts, monkeypatch, code):  # noqa: F811
+    calls, _ = posts
+    assert network.ensure_started(background=False)
+    login = network.NET_HOME / "login.json"
+    assert login.exists()
+
+    def refuse(req, timeout=None):
+        calls.append(req)
+        raise _http_error(code)
+
+    monkeypatch.setattr(network.urllib.request, "urlopen", refuse)
+    before = len(net.calls("login.changed"))
+    assert network.renew_proof_if_due(now=2_000_000_000) is False
+    assert not login.exists()
+    assert len(net.calls("login.changed")) == before + 1
+    n = len(calls)
+    assert network.renew_proof_if_due(now=2_000_000_000) is False
+    assert len(calls) == n
+
+
+def test_a_500_still_retries(net, posts, monkeypatch):  # noqa: F811
+    calls, _ = posts
+    assert network.ensure_started(background=False)
+
+    def boom(req, timeout=None):
+        calls.append(req)
+        raise _http_error(500)
+
+    monkeypatch.setattr(network.urllib.request, "urlopen", boom)
+    n = len(calls)
+    assert network.renew_proof_if_due(now=2_000_000_000) is False
+    assert network.renew_proof_if_due(now=2_000_000_000) is False
+    assert len(calls) == n + 2
+    assert (network.NET_HOME / "login.json").exists()

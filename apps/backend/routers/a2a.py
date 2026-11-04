@@ -156,10 +156,12 @@ async def runtime_proof(owner_id: str, _: dict = Depends(_require_hook_token)):
     from core.auth import is_org_owner_id
     from core.services import agentcore_runtime, network_member
 
+    if not is_org_owner_id(owner_id):
+        raise HTTPException(409, detail={"code": "not_on_network"})
     key = await agentcore_runtime.network_member_key(owner_id)
     if not key:
         raise HTTPException(404, detail={"code": "no_runtime"})
-    if not is_org_owner_id(owner_id) or not await network_member.stored_team_id(owner_id):
+    if not await network_member.stored_team_id(owner_id):
         raise HTTPException(409, detail={"code": "not_on_network"})
     now = int(time.time())
     return {"proof": network_proof.mint_workspace(key, owner_id, now=now), "exp": now + network_proof.LIFE_S}

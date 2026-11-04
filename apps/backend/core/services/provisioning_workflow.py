@@ -240,11 +240,6 @@ def _drifted(before: dict, after: dict) -> bool:
     return any(before.get(k) != after.get(k) for k in keys)
 
 
-async def standing_approval(owner_id: str) -> dict | None:
-    """The owner's one approval of free hosting and a database for every app, once given."""
-    return ((await billing_repo.get_by_owner_id(owner_id)) or {}).get("apps_standing_approval")
-
-
 async def account_id_for(owner_id: str) -> str:
     """The company Stripe account every provisioning call is made on. Public
     so the container catalog route reads it the same way ``start`` does.
@@ -522,8 +517,8 @@ async def start(
         **await _card_lines(app_id, environment),
     )
     if preapproved_by and snapshot.get("pricing_type") != "paid":
-        # The owner's standing approval covers it (free hosting and data for every app): no card. A paid
-        # service still gets its own card below, since that one spends money.
+        # Free: nothing to approve (no money, and no provider asks for a person). A paid service still gets
+        # its own card below, since that one spends money.
         moved = await repo.transition(
             row["workflow_id"],
             from_state="ask",
@@ -595,8 +590,8 @@ async def _fresh_snapshot(account_id: str, row: dict) -> dict:
 async def on_approved(
     workflow_id: str, *, usage_limit: dict | None, approved_by: str, quiet: bool = False
 ) -> dict | None:
-    """The owner approved the consent card. Re-read the catalog before moving. ``quiet``: approved by the
-    owner's standing approval, so no "approved" line is posted (nobody clicked anything just now)."""
+    """The owner approved the consent card. Re-read the catalog before moving. ``quiet``: a free service
+    started pre-approved, so no "approved" line is posted (nobody clicked anything)."""
     row = await repo.get(workflow_id)
     if not row or row.get("state") != "awaiting_approval":
         return row
@@ -684,16 +679,10 @@ async def consent_line(owner_id: str, provider_name: str, service_id: str, what:
 
 async def _approved_line(approved_by: str, moved: dict | None, *, quiet: bool = False) -> dict | None:
     """Only the caller whose transition WON posts: a second click or the phone
-    approval read after the route both find the row moved and post nothing.
-    An app's free card, approved by a person, becomes the workspace's standing approval for later apps."""
+    approval read after the route both find the row moved and post nothing."""
     if moved and not moved.get("bundled_with"):
         if not quiet:
             await apps_room.post_approval_line(owner_id=moved["owner_id"], user_id=approved_by, workflow=moved)
-            if moved.get("app_id") and (moved.get("approval") or {}).get("pricing_type") != "paid":
-                await billing_repo.set_apps_standing_approval(
-                    moved["owner_id"],
-                    {"approved_by": approved_by, "approved_at": utc_now_iso(), "workflow_id": moved["workflow_id"]},
-                )
         if moved.get("app_id"):
             from core.services import apps_service  # apps_service imports this module
 

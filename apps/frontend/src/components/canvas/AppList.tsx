@@ -3,7 +3,7 @@
 // Canvas: every app in the workspace, one row each. Everyone sees every app; one the viewer
 // cannot open is greyed with "ask in #room" (spec §4). A building app opens to its status and conversation.
 import type { AppRow } from "@/hooks/useApps";
-import { Problem, displayName, statusLine } from "./appText";
+import { Problem, displayName, roomOf, statusLine } from "./appText";
 import "./canvas.css";
 
 const WHO: Record<string, string> = {
@@ -11,7 +11,7 @@ const WHO: Record<string, string> = {
 };
 
 function whoCanOpen(app: AppRow) {
-  return app.open_to === "room" ? (app.room_name ? `#${app.room_name}` : "the chat it was asked in") : WHO[app.open_to] ?? app.open_to;
+  return app.open_to === "room" ? roomOf(app) : WHO[app.open_to] ?? app.open_to;
 }
 
 function Row({ app, onOpen, canManage }: { app: AppRow; onOpen: (appId: string) => void; canManage: boolean }) {

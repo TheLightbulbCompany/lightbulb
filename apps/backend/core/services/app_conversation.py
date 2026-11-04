@@ -190,7 +190,9 @@ async def _requester(owner_id: str, user_id: str | None, room_id: str | None) ->
     return user_id
 
 
-async def _attributed(caller: BuilderCaller, text: str, person: str | None, room_id: str | None) -> str:
+async def _attributed(
+    caller: BuilderCaller, text: str, person: str | None, room_id: str | None, via: str = "via CLI"
+) -> str:
     """``"{name} (in #{room}): {text}"`` or ``"{name} (via CLI): {text}"``: who said it, and where."""
     if person:
         who = await messaging.human_display_name(person)
@@ -201,7 +203,7 @@ async def _attributed(caller: BuilderCaller, text: str, person: str | None, room
         dm = meta.get("kind") in ("dm", "group-dm") or not meta.get("name")
         where = "a direct message" if dm else f"#{meta['name']}"
         return f"{who} (in {where}): {text}"
-    return f"{who} (via CLI): {text}"
+    return f"{who} ({via}): {text}"
 
 
 async def _relay(app: dict, meta: dict, key: str, text: str) -> dict:
@@ -284,6 +286,7 @@ async def start(
     *,
     origin_room_id: str | None = None,
     requested_by: str | None = None,
+    via: str = "via CLI",
 ) -> dict:
     """Hand an app request to its own conversation: reserve the app, open its conversation, post the
     request there as from the person, and wake the builder there. The room is free at once."""
@@ -311,13 +314,15 @@ async def start(
     meta = await _ensure(app, builder)
     if person:
         await _seat(owner_id, meta, person)
-    text = await _attributed(caller, request_text, person, origin_room_id)
+    text = await _attributed(caller, request_text, person, origin_room_id, via)
     # The receipt is this request (who and what): a retry replays it, another person's request is its own line.
     key = f"apps-start:{app['app_id']}:{hashlib.sha256(text.encode()).hexdigest()[:16]}"
     # Found idle: say it again, which wakes the builder. Never on a race: the winner's line is being posted now.
     if how == "found" and not app.get("sources") and not await _builder_busy(owner_id, meta["roomId"], text):
         key += f":{uuid.uuid4()}"
     message = await _relay(app, meta, key, text)
+    # Watched from the request, not the first upload: a builder that never uploads still ends in "stopped".
+    svc.watch(owner_id, app["app_id"])
     display, canvas_url = svc._display(app), svc._canvas_url(app["app_id"])
     line = f"Started {display}. It's being built in its own conversation in Canvas: {canvas_url}"
     if how != "made":
@@ -385,7 +390,7 @@ async def start_as_member(auth: AuthContext, request_text: str) -> dict:
         n += 1
         name = f"{base[: 40 - len(str(n)) - 1]}-{n}"
     caller = BuilderCaller(owner_id=owner_id, actor_id=auth.user_id, actor_kind="person")
-    return await start(caller, name, request_text)
+    return await start(caller, name, request_text, via="in Canvas")
 
 
 async def ask(

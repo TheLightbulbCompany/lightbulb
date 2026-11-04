@@ -668,3 +668,11 @@ async def test_a_person_starts_from_canvas_and_never_lands_on_another_app(chat):
     assert (a1["name"], a2["name"]) == ("booking-haircuts", "booking-haircuts-2")
     assert a1["created_by"] == "user_1" and a1["state"] == "requested" and a1.get("origin_room_id") is None
     assert first["conversation_id"] == conv.conversation_room_id(first["app_id"])
+
+
+async def test_a_started_app_is_watched_and_a_canvas_request_says_where_it_came_from(chat, monkeypatch):
+    watched_ids: list[str] = []
+    monkeypatch.setattr(svc, "watch", lambda owner, app_id: watched_ids.append(app_id))
+    res = await conv.start_as_member(ADA, "A booking page for haircuts")
+    assert watched_ids == [res["app_id"]]
+    assert chat.posts[-1]["text"] == "Ada (in Canvas): A booking page for haircuts"

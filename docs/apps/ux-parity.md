@@ -9,17 +9,17 @@ Emergent was seen on 31 Oct 2026, on one `pilot-tracker` request.
 | 2 | Clarify | One card, four questions, defaults, Auto-answer | One card with a default when something is unclear (run 1); none when the request is specific (runs 2, 3, 4). It waits for an answer; no auto-answer | MATCH |
 | 3 | Set up accounts | Nothing to do | Hosting checked before building (#4555), not yet run | UNTESTED |
 | 4 | Approve | Nothing to approve | One card per app with hosting and data, terms for both (runs 1–4). Stripe asks for fresh approval per project | GAP (Stripe-bound) |
-| 5 | Watch the build | Steps and live preview side by side | Progress notes in the room | GAP |
-| 6 | See it early | Preview visible about 4 min in | Preview 7–9 min after the request (runs 2, 3, 4); 15 in run 1 | GAP |
+| 5 | Watch the build | Steps and live preview side by side | Each app has its own conversation beside the preview in Canvas (4 Nov); the room gets one line. No step-by-step list yet | MATCH (no steps list) |
+| 6 | See it early | Preview visible about 4 min in | Equipment Loans (4 Nov): approval card at 3 min, preview 3 min after approving, 6 min in all. Earlier runs 7–15 min | MATCH (one run) |
 | 7 | Open the app | In the pane, or its own tab | Works in Canvas and its own tab (runs 1–4) | MATCH |
 | 8 | Agent checks its work | Browser pass, about 1 min | Verify plus a second-agent review: 7–25 min. Verify now sends forms (cli#135); run 1 crash was caught | GAP |
-| 9 | Hand-off message | What it does, what was tested, samples labelled, Publish and Preview buttons | Says what was tested; says "ready" or "live" truthfully since v0.9.4. Sometimes posted in a thread | UNTESTED |
-| 10 | Sample data | Labelled "(sample)", offers to clear | Not labelled (runs 2, 4); run 4 showed sample totals beside "Live data" | GAP |
-| 11 | Next steps | Suggests features | `FollowUps` in the skill (#4555), not yet run | UNTESTED |
-| 12 | Change it | Message the agent | Run 3: search box added and published in 17 min | MATCH |
-| 13 | Publish | Publish button, health check | Run 3: worked, 17 min with review. Run 1 published without being asked; refused from #4575 | UNTESTED |
-| 14 | Undo | Rollback | Run 3: Canvas put back v1 in seconds, data kept | MATCH |
-| 15 | Share | Public link | Run 3: public worked about a minute after confirming; back to room after | MATCH |
+| 9 | Hand-off message | What it does, what was tested, samples labelled, Publish and Preview buttons | 4 Nov: says what it does, what was tested and what it could not test; buttons "Publish it", "Clear the sample rows", a next feature. Posted two sets of buttons once | MATCH |
+| 10 | Sample data | Labelled "(sample)", offers to clear | 4 Nov: rows marked "(sample)", a "Clear the sample rows" button, the banner says the live app starts empty | MATCH |
+| 11 | Next steps | Suggests features | 4 Nov: suggests one or two features as buttons | MATCH |
+| 12 | Change it | Message the agent | 4 Nov, in the app's conversation: heading changed in 2 min; "add notes, then ship it" live in 5 min | MATCH |
+| 13 | Publish | Publish button, health check | 4 Nov: Publish button live in under 2 min, the live app starts empty. While publishing Canvas hid the app and said "making the preview" (fixed #4624, #4625) | MATCH |
+| 14 | Undo | Rollback | Run 3 and 4 Nov: "Put back the previous version" in about 10 s | MATCH |
+| 15 | Share | Public link | Run 3 public; 4 Nov room → everyone in the workspace, kept after reload (it redeploys, which hid the app until #4625) | MATCH |
 | 16 | Stuck run | Not yet seen | App marks itself stopped after 5 quiet minutes and tells the room (#4589); not yet seen firing in prod | UNTESTED |
 | 17 | Edit by pointing at the page | Edit toolbar on the preview | None | GAP |
 
@@ -70,3 +70,15 @@ Runs 8–10 used shorter wording than the list above (inventory for the office, 
 - Approval now carries an app to its preview by itself (#4583): run 8 went from approval to deployed in 2 min.
 - The app owns its run (#4589): `progress_at`, linked agent runs, a "stopped" line within 5 min; the follow-up cap is 10 per human message and says when it triggers.
 - Open: the starter placeholder counts as "ready"; the agent shows nothing until its whole review loop ends (starter `AGENTS.md` says "post nothing until done"), so first usable preview is 30–55 min against Emergent's ~5; verify leaves test rows in the preview; two requests close together become one turn.
+
+### App-owned conversations in prod (4 Nov 2026)
+
+Demo Lab on Hermes h-2026.11.4-bfea9ef (CLI v0.9.12), both requests sent to the CEO in a DM seconds apart.
+
+| Request | Started | To first preview | Main flow | Publish / change / undo / share | Person acted | Wrong |
+|---|---|---|---|---|---|---|
+| Equipment loans (internal tool) | 2 min, own conversation | 6 min (plus 8 min before I approved) | Add a loan, mark returned, kept after reload | All four work | 1 card ($1 limit) | Hand-off named the hidden room "#App · Equipment Loans" |
+| Pottery workshops (site + form) | 2 min, own conversation | none | — | — | none | Builder used another name, so a second app and card appeared; the reserved one sat at "making the preview" (fixed #4621) |
+
+Found and fixed the same day: Mac `app up` refused by AppleDouble `._` files (#4618, cli#149); "#room" / "#a room" for DM requests (#4619, #4623); Canvas hid the app while a new version built (#4625); first publish said "making the preview" (#4624).
+Still open: a card's default spending limit is $50, not the cheapest; the agent's message can name the hidden room; a person's preview rows are reset when the agent changes the app (the banner says preview data is examples).

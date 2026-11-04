@@ -23,7 +23,7 @@ const app = (over: Partial<AppRow> = {}): AppRow => ({
 beforeEach(() => { vi.restoreAllMocks(); open.mockReset(); refresh.mockReset(); publish.mockReset(); askAgent.mockReset(); rollback.mockReset(); openConversation.mockClear(); admin = false; });
 
 describe("AppView", () => {
-  it("shows the app's conversation beside the preview, with a Conversation | App switch for a narrow panel", async () => {
+  it("shows the app's conversation beside the preview, with no Conversation | App switch when wide", async () => {
     open.mockResolvedValue("https://x.apps.test/?pass=1");
     const { container } = render(<AppView app={app()} onBack={vi.fn()} />);
     await screen.findByTitle("Invoices");
@@ -32,10 +32,8 @@ describe("AppView", () => {
     expect(within(split as HTMLElement).getByRole("complementary", { name: "Conversation" }).textContent).toBe("a1");
     const view = container.querySelector(".app-view")!;
     expect(view.getAttribute("data-pane")).toBe("preview");
-    fireEvent.click(screen.getByRole("button", { name: "Conversation" }));
-    expect(view.getAttribute("data-pane")).toBe("conversation");
-    expect(screen.getByRole("button", { name: "Conversation" }).getAttribute("aria-pressed")).toBe("true");
     expect(view.hasAttribute("data-narrow")).toBe(false); // jsdom has no width: wide, both shown
+    expect(screen.queryByRole("button", { name: "Conversation" })).toBeNull(); // the switch is for narrow panels only
     expect(screen.getByRole("complementary", { name: "Conversation" }).getAttribute("data-shown")).toBe("true");
   });
 

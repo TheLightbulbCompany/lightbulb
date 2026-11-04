@@ -1,6 +1,7 @@
 """A2A tasks on the hosted door: the authority request, the decision, dispatch to a workspace agent,
 reply linking and the signed record of every state."""
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -418,12 +419,19 @@ async def _complete_delivered(org: str, row: dict, now: int) -> None:
     row["record"] = await _record(org, row, "completed", now=now)
 
 
-async def on_session_reply(org: str, task_id: str, text: str) -> None:
+#: An ``app.send`` receipt state that means the engine did not take the send.
+_NOT_TAKEN = frozenset({"refused", "held", "expired"})
+
+
+async def on_session_reply(org: str, task_id: str, text: str, session: str) -> None:
     """A laptop session answered a hosted send (its reply reached the cloud member's ``a2a`` session):
     the reply text becomes the artifact of a ``working`` task (completed, with its record) or of one
-    completed as delivered (its record stands). Once: a second reply writes nothing."""
+    completed as delivered (its record stands). Once: a second reply writes nothing. Only the origin
+    person's ``a2a-<handle>`` session can answer the task."""
     row = await a2a_repo.get_task(org, task_id)
     if row is None or row.get("dispatchRequestId") != task_id:  # the dispatch request id is the task id
+        raise A2AError(404, "unknown_request")
+    if session != "a2a-" + network_member.app_person(_claims(row["authority"])["chain"][0]["person"]):
         raise A2AError(404, "unknown_request")
     artifact = {"artifactId": task_id, "parts": [{"text": text}]}
     if row["state"] == "completed":
@@ -465,10 +473,18 @@ async def _dispatch_session(org: str, agent_id: str, row: dict, text: str) -> bo
     }
     try:
         # Only a warm member is asked: an invoke would cold-start a parked workspace (~55 s).
-        if await network_member._session_is_warm(org):
-            await container_rpc.call(org, "network.a2a_send", params, timeout_s=SESSION_SEND_TIMEOUT_S)
-            row.update(dispatchRequestId=request_id, delivered=True)
-            return True
+        if settings.A2A_DISPATCH_VIA_MEMBER and await network_member._session_is_warm(org):
+            receipt = await container_rpc.call(org, "network.a2a_send", params, timeout_s=SESSION_SEND_TIMEOUT_S)
+            state = (receipt or {}).get("state")
+            if state not in _NOT_TAKEN:  # stored, queued or delivered: taken, as phase 1 treats a send
+                row.update(dispatchRequestId=request_id, delivered=True)
+                return True
+            logger.warning("a2a bridge send %s; trying the person's link", state, extra={"org": org, "task": row["id"]})
+    except asyncio.TimeoutError:
+        # The member may have delivered it: a second send through the laptop link could duplicate it.
+        logger.warning("a2a bridge send timed out; not resent", extra={"org": org, "task": row["id"]})
+        row["failReason"] = "dispatch_failed"
+        return False
     except Exception as exc:  # noqa: BLE001 -- the class only: the params carry the authority JWS
         logger.warning(
             "a2a bridge send failed (%s); trying the person's link",

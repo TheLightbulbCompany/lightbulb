@@ -96,6 +96,12 @@ def test_iter_files_strips_dot_slash_and_skips_dirs():
     assert dict(apps_source.iter_files(_tar({"./a.txt": b"1"}, [d]))) == {"a.txt": b"1"}
 
 
+def test_iter_files_drops_macos_appledouble_entries():
+    # macOS tar packs ``._name`` for every file with extended attributes; it is binary, not source.
+    files = {"drizzle/0000_init.sql": b"select 1;", "drizzle/._0000_init.sql": b"\x00\x05\x16\x07\xa8", "._x": b"\xff"}
+    assert dict(apps_source.iter_files(_tar(files))) == {"drizzle/0000_init.sql": b"select 1;"}
+
+
 @pytest.mark.asyncio
 async def test_ids_with_slash_or_dotdot_are_rejected(s3):
     for bad in ("a/b", "..", "a..b"):

@@ -168,10 +168,10 @@ export function AppView({ app, onBack }: { app: AppRow; onBack(): void }) {
       <PublishButton app={app} ctl={publishCtl} />
       {canManage && app.previous_version && !publishing && <PutBack key={app.app_id} app={app} previous={app.previous_version}
         onDone={(text) => { publishCtl.reset(); setPutBackLine({ id: app.app_id, text }); setAttempt((n) => n + 1); }} />}
-      <span className="app-view__seg app-view__panes" role="group" aria-label="Show">
+      {narrow && <span className="app-view__seg app-view__panes" role="group" aria-label="Show">
         {(["conversation", "preview"] as const).map((v) => <button key={v} type="button" className="app-view__btn" aria-pressed={pane === v}
           onClick={() => setPane(v)}>{v === "conversation" ? "Conversation" : "App"}</button>)}
-      </span>
+      </span>}
       {!nothing && <button type="button" className="app-view__btn" onClick={openInTab}>Open in its own tab</button>}
       {canManage && <button type="button" className="app-view__btn" aria-expanded={settingsOpen}
         onClick={() => { setSettingsOpen((v) => !v); setPane("preview"); }}>Settings</button>}

@@ -224,6 +224,7 @@ def world(monkeypatch):
         monkeypatch.setattr(wf, "start", AsyncMock(side_effect=start))
         monkeypatch.setattr(wf, "advance_on_read", AsyncMock(side_effect=lambda wid: dict(rows[wid])))
         monkeypatch.setattr(wf, "account_id_for", AsyncMock(return_value="acct_1"))
+        monkeypatch.setattr(wf, "standing_approval", AsyncMock(return_value=None))
         monkeypatch.setattr(wf, "cancel", AsyncMock())
         monkeypatch.setattr(wf, "consent_line", AsyncMock(return_value={"what": "data", "provider": "Neon"}))
         monkeypatch.setattr(
@@ -3291,3 +3292,20 @@ async def test_up_without_a_services_account_says_so_on_the_app_and_clears_once_
     monkeypatch.setattr(svc, "_ensure_workflows", real)
     await _up(src)
     assert (await _rec(src)).get("setup_blocker") is None
+
+
+async def test_once_the_workspace_approved_apps_every_new_app_gets_hosting_and_data_with_no_card(world):
+    svc.provisioning_workflow.standing_approval.return_value = {"approved_by": "user_owner", "approved_at": "t"}
+    src = await _source()
+    await _up(src)
+    calls = svc.provisioning_workflow.start.await_args_list
+    assert len(calls) == len(svc._RESOURCES)
+    assert all(c.kwargs["preapproved_by"] == "user_owner" for c in calls)
+    assert not any(c.kwargs.get("title") or c.kwargs.get("bundled_with") or c.kwargs.get("also") for c in calls)
+
+
+async def test_before_that_the_first_app_card_says_it_covers_later_apps(world):
+    src = await _source()
+    await _up(src)
+    titles = [c.kwargs.get("title") for c in svc.provisioning_workflow.start.await_args_list if c.kwargs.get("title")]
+    assert titles == ["Set up free hosting and a database for Crew and every app after it"]

@@ -16,8 +16,10 @@ export function CanvasDockPanel({ id, params }: PanelProps) {
   const close = () => updatePanelParams(id, { app: undefined });
   const open = params.app ? apps.find((a) => a.app_id === params.app) : undefined;
   if (params.app) {
-    // A failed app that still has a preview (a publish that did not land) gets the full view: the preview, Publish to retry, Settings.
-    if (open && (["awaiting_approval", "provisioning", "building"].includes(open.state) || (open.state === "failed" && open.live_version == null && !open.preview_url))) {
+    // Only an app with nothing to show yet gets this: one with a preview or a live version keeps the full view
+    // (the app, Publish, Settings) while a change, a publish or a sharing change builds; its status line says so.
+    const nothingYet = !open?.preview_url && !open?.live_url;
+    if (open && nothingYet && (["awaiting_approval", "provisioning", "building", "failed"].includes(open.state))) {
       // Its builder talks while it is being set up, so its conversation is here too.
       return <div className="canvas canvas--pending">
         <h2 className="canvas__heading">{displayName(open)}</h2>

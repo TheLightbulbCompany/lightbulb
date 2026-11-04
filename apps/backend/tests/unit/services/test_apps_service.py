@@ -3144,3 +3144,12 @@ async def test_a_live_app_whose_new_source_is_a_placeholder_stays_live(world):
     await svc.status(OWNER, src["app_id"])
     world.vercel.finish(f"dpl_{len(world.vercel.created())}")
     assert (await svc.status(OWNER, src["app_id"]))["state"] == "live"
+
+
+def test_placeholder_is_judged_by_the_source_the_preview_shows():
+    rows = {("vercel", "project", "prod"): {"state": "active"}}
+    sources = {"s0": {"placeholder": True}, "s1": {}}
+    # The last build moved to the real source, but the preview still shows the placeholder.
+    app = {"preview": {"source_id": "s0"}, "preview_built": {"source_id": "s1"}, "sources": sources}
+    assert svc._state(app, rows)[0] == "building"
+    assert svc._state({**app, "preview": {"source_id": "s1"}}, rows)[0] == "ready"

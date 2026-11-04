@@ -1097,8 +1097,8 @@ def _state(app: dict, rows: dict) -> tuple[str, AppError | None]:
     # Only the starter's "Being built" page is deployed (the agent files the hosting card before it
     # builds): not ready until the real source is up, so nothing offers Publish on it and the watch
     # keeps running. A live app keeps its state; its live version is the real one.
-    built = (app.get("preview_built") or {}).get("source_id")
-    if not app.get("live_version") and ((app.get("sources") or {}).get(built) or {}).get("placeholder"):
+    shown = _preview_source(app)
+    if not app.get("live_version") and ((app.get("sources") or {}).get(shown) or {}).get("placeholder"):
         return "building", _renewal_hold(app)
     # A failed build leaves the live version serving.
     return "ready", app.get("error") or app.get("publish_error") or _host_warning(app) or _renewal_hold(app)

@@ -130,6 +130,10 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               <- apps/frontend/src/components/messaging/NewSessionButton.tsx;
                                  apps/desktop/src-tauri/src/session_start.rs;
                                  apps/mobile/src/app/(app)/session/new.tsx (still has the first message)
+  - Open saved CLI conversation (owner desktop restores automatically; search hits stay on history) ... references/surfaces.md ("Opening your saved CLI conversation" paragraph)
+                              <- apps/frontend/src/components/messaging/LocalSessionPanel.tsx + SessionResume.tsx;
+                                 packages/shared/src/messaging/sessionControls.ts;
+                                 apps/desktop/src-tauri/src/local_sessions/transport.rs (resume idle grace)
   - Open in a terminal (owner only, app sessions, starts a forked copy) ... references/surfaces.md ("Open in a terminal" paragraph)
                               <- apps/backend/core/services/desktop_session_start.py (open route);
                                  apps/frontend/src/components/messaging/LocalSessionPanel.tsx;

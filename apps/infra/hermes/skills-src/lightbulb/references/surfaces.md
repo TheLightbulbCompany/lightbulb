@@ -123,6 +123,12 @@ the whole session, including what it did meanwhile. A session with a live termin
 You still read the structured record with
 `lightbulb_local_sessions`.
 
+Opening your saved CLI conversation in the desktop app checks whether it is
+already running and restores it automatically when needed, without sending a
+prompt. A search hit stays on its saved history. A folder-access or sharing
+refusal gives a settings link; it never silently grants access or starts a
+second writer. The web and phone retain explicit resume controls.
+
 Claude questions captured by a current desktop app are answered directly in Lightbulb, with
 options or a written answer, even when the conversation has no shared terminal. Questions,
 permissions and follow-ups are separate interactions: while a question waits, there is no

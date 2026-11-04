@@ -45,6 +45,103 @@ describe("resumeStatus", () => {
 describe("useSessionResume", () => {
   const opts = { own: false, userId: "bob", ownerName: "Alice", nameOf };
 
+  it("uses a running read even when the sidebar still supplies the ended generation", async () => {
+    const pending = ended({ resume: { state: "pending", byUserId: "bob", requestedAt: "" } });
+    const running = ended({ generation: "g2", status: "idle", resume: undefined });
+    const client = { submitLocalSessionCommand: vi.fn(), getLocalSession: vi.fn(async () => running) };
+    vi.useFakeTimers();
+    const { result } = renderHook(() => useSessionResume(client, pending, { ...opts, uuid: () => "r-1" }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(2100); });
+    expect(result.current.session).toEqual(running);
+    expect(result.current.status).toBeNull();
+  });
+
+  it("checks the current run before automatically restoring an opened owner conversation", async () => {
+    const running = ended({ generation: "g2", status: "idle" });
+    const client = { submitLocalSessionCommand: vi.fn(), getLocalSession: vi.fn(async () => running), resumeLocalSession: vi.fn() };
+    const { result } = renderHook(() => useSessionResume(client, ended(), { ...opts, own: true, autoOpen: true, uuid: () => "r-1" }));
+    await waitFor(() => expect(result.current.session).toEqual(running));
+    expect(client.resumeLocalSession).not.toHaveBeenCalled();
+  });
+
+  it("automatically restores once, without sending a prompt or repeating on rerender", async () => {
+    const pending = ended({ resume: { state: "pending", byUserId: "alice", requestedAt: new Date().toISOString() } });
+    const client = { submitLocalSessionCommand: vi.fn(), getLocalSession: vi.fn(async () => ended()), resumeLocalSession: vi.fn(async () => pending) };
+    const { rerender } = renderHook(() => useSessionResume(client, ended(), { ...opts, own: true, autoOpen: true, uuid: () => "r-1" }));
+    await waitFor(() => expect(client.resumeLocalSession).toHaveBeenCalledOnce());
+    rerender();
+    expect(client.resumeLocalSession).toHaveBeenCalledWith("s1", { resumeId: "r-1" });
+    expect(client.resumeLocalSession).toHaveBeenCalledOnce();
+  });
+
+  it("does not automatically retry an actionable refusal or restore someone else's conversation", async () => {
+    const refused = ended({ resume: { state: "failed", byUserId: "alice", requestedAt: "", reason: "FOLDER_NOT_APPROVED" } });
+    const client = { submitLocalSessionCommand: vi.fn(), getLocalSession: vi.fn(async () => refused), resumeLocalSession: vi.fn() };
+    const { result } = renderHook(() => useSessionResume(client, ended(), { ...opts, own: true, autoOpen: true, uuid: () => "r-1" }));
+    await waitFor(() => expect(result.current.recovery).toBe("folder-access"));
+    expect(client.resumeLocalSession).not.toHaveBeenCalled();
+    renderHook(() => useSessionResume(client, ended(), { ...opts, autoOpen: true, uuid: () => "r-2" }));
+    expect(client.resumeLocalSession).not.toHaveBeenCalled();
+  });
+
+  it("reports a run that stops after opening and does not silently restart it", async () => {
+    vi.useFakeTimers();
+    let stopped = false;
+    const client = { submitLocalSessionCommand: vi.fn(), resumeLocalSession: vi.fn(),
+      getLocalSession: vi.fn(async () => stopped ? ended({ generation: "g2" }) : ended({ generation: "g2", status: "idle" })) };
+    const { result } = renderHook(() => useSessionResume(client, ended(), { ...opts, own: true, autoOpen: true, uuid: () => "r-1" }));
+    await act(async () => {});
+    expect(result.current.session.status).toBe("idle");
+    stopped = true;
+    await act(async () => { await vi.advanceTimersByTimeAsync(5100); });
+    expect(result.current.session.status).toBe("ended");
+    expect(result.current.error).toContain("stopped");
+    expect(client.resumeLocalSession).not.toHaveBeenCalled();
+  });
+
+  it("does not undo End after the sidebar catches up to the running generation", async () => {
+    const client = { submitLocalSessionCommand: vi.fn(), resumeLocalSession: vi.fn(), getLocalSession: vi.fn(async () => ended({ generation: "g2" })) };
+    const { result, rerender } = renderHook(({ s }) => useSessionResume(client, s, { ...opts, own: true, autoOpen: true, uuid: () => "r-1" }),
+      { initialProps: { s: ended({ status: "idle", generation: "g2" }) } });
+    rerender({ s: ended({ generation: "g2" }) });
+    await act(async () => {});
+    expect(client.resumeLocalSession).not.toHaveBeenCalled();
+    expect(result.current.automatic).toBe(false);
+  });
+
+  it("keeps the one opening attempt across a new-generation panel remount", async () => {
+    const openedConversation = { current: null as string | null };
+    const pending = ended({ resume: { state: "pending", byUserId: "alice", requestedAt: new Date().toISOString() } });
+    const client = { submitLocalSessionCommand: vi.fn(), resumeLocalSession: vi.fn(async () => pending), getLocalSession: vi.fn(async () => ended()) };
+    const options = { ...opts, own: true, autoOpen: true, openedConversation, uuid: () => "r-1" };
+    const first = renderHook(() => useSessionResume(client, ended(), options));
+    await waitFor(() => expect(client.resumeLocalSession).toHaveBeenCalledOnce());
+    first.unmount();
+    client.getLocalSession.mockResolvedValue(ended({ generation: "g2" }));
+    const next = renderHook(() => useSessionResume(client, ended({ generation: "g2" }), options));
+    await act(async () => {});
+    expect(client.resumeLocalSession).toHaveBeenCalledOnce();
+    expect(next.result.current.automatic).toBe(false);
+    expect(next.result.current.available).toBe(true);
+  });
+
+  it("bounds automatic readiness and checks status without launching another writer", async () => {
+    vi.useFakeTimers();
+    const pending = ended({ resume: { state: "pending", byUserId: "alice", requestedAt: new Date().toISOString() } });
+    const client = { submitLocalSessionCommand: vi.fn(), resumeLocalSession: vi.fn(), getLocalSession: vi.fn(async () => pending) };
+    const { result } = renderHook(() => useSessionResume(client, pending, { ...opts, own: true, autoOpen: true, uuid: () => "r-1" }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(31_000); });
+    expect(result.current.error).toContain("not opened");
+    await act(async () => { await result.current.check?.(); });
+    expect(client.resumeLocalSession).not.toHaveBeenCalled();
+    expect(result.current.available).toBe(false);
+    client.getLocalSession.mockResolvedValue(ended());
+    await act(async () => { await result.current.check?.(); });
+    expect(result.current.error).toContain("did not open");
+    expect(result.current.automatic).toBe(false);
+    expect(result.current.available).toBe(true);
+  });
+
   it("retries a lost reply as the same request and starts a new one after a refusal", async () => {
     let n = 0;
     const resumeLocalSession = vi.fn()

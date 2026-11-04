@@ -168,6 +168,10 @@ export function SessionFocus({ focus, entries, hintRevision, client, resolveSess
   const showChat = Boolean(session && openChat && onChatOpenChange);
   const chatShown = showChat && chatOpen;
   const panel = useRef<HTMLElement>(null);
+  // Selection lifetime, not generation lifetime: End must not restore the run
+  // again when LocalSessionPanel remounts for the next generation.
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- A new selection gets a fresh opening decision; a new generation retains it.
+  const openedConversation = useMemo(() => ({ current: null as string | null }), [focus.sessionId, focus.seq]);
   const [chatLayout, setChatLayout] = useState<SessionChatLayout>("screen");
   useLayoutEffect(() => {
     const el = panel.current;
@@ -213,6 +217,7 @@ export function SessionFocus({ focus, entries, hintRevision, client, resolveSess
         <Button variant="ghost" onClick={retryFallback}>Try again</Button>
       </div>}
       {session && owner ? <LocalSessionPanel key={sessionViewKey(session)} session={session} ownerName={owner.ownerName} own={owner.own}
+        openedConversation={openedConversation}
         client={client} revision={hintRevision} onAccessLost={onAccessLost} participants={withSessions} onMessageOwner={messageOwner} onEvent={onEvent} nameOf={id => resolveSessionOwner(id).ownerName} focusSeq={focus.seq} />
         : <div className="p-4 text-ui text-muted-foreground">
           <p role="status">{resolvedFallback?.notFound ? "This session is no longer shared." : resolvedFallback?.error ? "Could not load this session." : "Opening session…"}</p>

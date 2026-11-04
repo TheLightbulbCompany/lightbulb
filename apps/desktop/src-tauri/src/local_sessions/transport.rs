@@ -130,11 +130,15 @@ fn idle_stop_due(status: &str, watched: bool, quiet: Option<Duration>, pressed: 
     status == "idle" && !watched && quiet.is_some_and(|quiet| quiet >= after)
 }
 
-/// How long since the session last did something: its transcript (Claude's JSONL, Codex's rollout)
-/// was last written then. Never the time since it started.
-fn quiet_for(mirror: &Mirror, now: SystemTime) -> Option<Duration> {
+/// Quiet since the transcript's last write, bounded by this process's start.
+/// Resuming history need not write it: yesterday's turn must not immediately
+/// stop a new writer before its terminal can attach.
+fn quiet_for(mirror: &Mirror, now: SystemTime, holder_birth: Option<u64>) -> Option<Duration> {
     let written = fs::metadata(mirror.native.transcript.as_ref()?).ok()?.modified().ok()?;
-    now.duration_since(written).ok()
+    // A daemon can predate the resumed thread; its new terminal holder cannot.
+    let birth = mirror.native.process.birth_micros.max(holder_birth.unwrap_or(0));
+    let started = SystemTime::UNIX_EPOCH.checked_add(Duration::from_micros(birth))?;
+    now.duration_since(written.max(started)).ok()
 }
 
 /// macOS says memory is short: `kern.memorystatus_vm_pressure_level` is warn (2) or critical (4).
@@ -1258,6 +1262,7 @@ impl Host {
         let pressed = memory_pressed();
         let now = SystemTime::now();
         for holder in unattached {
+            let holder_birth = lightbulb_core::os::process_birth(holder.pid);
             let keys: Vec<String> = self
                 .mirrors
                 .iter()
@@ -1274,7 +1279,7 @@ impl Host {
                 && keys.iter().all(|key| {
                     let m = &self.mirrors[key];
                     let watched = m.session_id.as_deref().is_some_and(super::screen::watched);
-                    !m.withheld() && !m.stop_owed && idle_stop_due(&m.native.status, watched, quiet_for(m, now), pressed)
+                    !m.withheld() && !m.stop_owed && idle_stop_due(&m.native.status, watched, quiet_for(m, now, holder_birth), pressed)
                 });
             // The holder checks for a terminal or panel again as it takes the stop (one attached
             // since discovery looked keeps it running), and only a stop it took is recorded. It is
@@ -5269,6 +5274,7 @@ pub(super) mod tests {
             m.native.holder = Some(holder.into());
             m.native.status = status.into();
             m.native.transcript = Some(written);
+            m.native.process.birth_micros = hour_ago.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_micros() as u64;
             m
         };
         let idle = held("1d1e0001", "idle", transcript("idle.jsonl", hour_ago));
@@ -5279,9 +5285,13 @@ pub(super) mod tests {
         // Switched to Only me: the workspace would never be told its end.
         let mut only_me = held("1d1e0005", "idle", transcript("only-me.jsonl", hour_ago));
         only_me.shared = false;
-        let keys: Vec<String> = [&idle, &busy, &fresh, &joined, &only_me].iter().map(|m| native_key(&m.native)).collect();
+        // Resuming old history does not write a new turn. Its new process must
+        // still get the full idle window before its unattached holder is stopped.
+        let mut resumed = held("1d1e0006", "idle", transcript("resumed.jsonl", hour_ago));
+        resumed.native.process.birth_micros = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_micros() as u64;
+        let keys: Vec<String> = [&idle, &busy, &fresh, &joined, &only_me, &resumed].iter().map(|m| native_key(&m.native)).collect();
         let (k_idle, k_joined, k_only_me) = (keys[0].clone(), keys[3].clone(), keys[4].clone());
-        let mut host = test_host(dir.path(), keys.iter().map(String::as_str).zip([idle, busy, fresh, joined, only_me]).collect());
+        let mut host = test_host(dir.path(), keys.iter().map(String::as_str).zip([idle, busy, fresh, joined, only_me, resumed]).collect());
         // Fake holders: each answers an idle END as given, and says whether it was ever asked.
         use std::io::Write;
         use std::os::unix::net::UnixListener;
@@ -5307,17 +5317,18 @@ pub(super) mod tests {
                 false
             })
         };
-        let unattached: Vec<_> = ["1d1e0001", "1d1e0002", "1d1e0003", "1d1e0004", "1d1e0005"].into_iter().map(holder).collect();
+        let unattached: Vec<_> = ["1d1e0001", "1d1e0002", "1d1e0003", "1d1e0004", "1d1e0005", "1d1e0006"].into_iter().map(holder).collect();
         // A relay that cannot read the reason: nothing is stopped.
         super::super::session_states::set_reads_idle_stopped(false);
         host.stop_idle(unattached.clone()).unwrap();
         assert!(host.ended_pending.is_empty());
-        let asked = [answers(&unattached[0], true), answers(&unattached[3], false), answers(&unattached[4], true)];
+        let asked = [answers(&unattached[0], true), answers(&unattached[3], false), answers(&unattached[4], true), answers(&unattached[5], true)];
         super::super::session_states::set_reads_idle_stopped(true);
         host.stop_idle(unattached).unwrap();
-        let [idle_asked, joined_asked, only_me_asked] = asked.map(|t| t.join().unwrap());
+        let [idle_asked, joined_asked, only_me_asked, resumed_asked] = asked.map(|t| t.join().unwrap());
         assert!(idle_asked && joined_asked, "both due holders are asked");
         assert!(!only_me_asked, "an Only-me session's holder is never asked");
+        assert!(!resumed_asked, "old history must not immediately stop a newly resumed process");
         assert_eq!(host.mirrors[&k_idle].ended_reason.as_deref(), Some("idle-stopped"));
         assert_eq!(host.ended_pending, vec![k_idle.clone()], "only the idle one an hour quiet, whose holder took the stop");
         for key in &keys[1..] {

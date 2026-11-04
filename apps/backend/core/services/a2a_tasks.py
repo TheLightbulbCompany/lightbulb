@@ -341,6 +341,16 @@ async def _origin_person(owner_id: str, room_id: str | None, message_id: str | N
     return author["id"]
 
 
+async def _on_persons_computer(person: str, address: str) -> bool:
+    """The Mac reports the address unchecked: its member short (the engine's first 12 characters of the
+    computer key) must be one of the session person's computers, every key that ever signed in as them
+    or is linked now (``network_login.computer_keys``), less the ones they signed out."""
+    from core.services import network_login
+
+    keys = set(await network_login.computer_keys(person)) - set(await network_login.revoked_keys([person]))
+    return address.split("/", 1)[0] in {k[:12] for k in keys}
+
+
 async def ask_session(owner_id: str, body, *, now: int | None = None) -> dict:
     """A hosted agent asks a laptop session, under the person whose message it is answering (else the
     agent's first holder); held for the session's person unless a rule allows it."""
@@ -353,7 +363,7 @@ async def ask_session(owner_id: str, body, *, now: int | None = None) -> dict:
     # The engine's own key for the session (<member short>/<provider>:<conversation>), which its Mac
     # reports. A bare id would be qualified into the SENDER's namespace and reach nobody.
     address = session.get("networkSessionId")
-    if not address:
+    if not address or not await _on_persons_computer(session["humanUserId"], address):
         raise A2AError(409, "session_not_on_network")
     doc = await a2a_repo.get_rules(owner_id)
     rules = Rules.model_validate(doc) if doc else default_rules(owner_id, [])

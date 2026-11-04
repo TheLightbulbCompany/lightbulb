@@ -74,10 +74,14 @@ def env(monkeypatch, a2a_env):
             }
         ),
     )
+    # OWNER's computers: ADDRESS's member short is the first 12 characters of one of them.
+    computers = ["abcdefghijkl" + "m" * 40]
+    monkeypatch.setattr("core.services.network_login.computer_keys", AsyncMock(side_effect=lambda u: list(computers)))
+    monkeypatch.setattr("core.services.network_login.revoked_keys", AsyncMock(return_value=[]))
     put_task = AsyncMock(wraps=a2a_repo.put_task)
     monkeypatch.setattr("core.repositories.a2a_repo.put_task", put_task)
     asyncio.run(a2a_repo.put_rules(ORG, RULES))
-    return SimpleNamespace(notify=notify, through=through, session=session, put_task=put_task)
+    return SimpleNamespace(notify=notify, through=through, session=session, put_task=put_task, computers=computers)
 
 
 def body(**kw):
@@ -130,6 +134,18 @@ def test_a_hosted_ask_is_held_under_the_default_document(client, env, monkeypatc
 
 def test_a_session_its_mac_has_not_put_on_the_network_is_409_and_stores_nothing(client, env):
     del env.session["networkSessionId"]
+    r = client.post(URL, json=body(originMessageId=ORIGIN_MSG), headers=H)
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "session_not_on_network"
+    env.put_task.assert_not_awaited()
+    env.through.assert_not_awaited()
+
+
+@pytest.mark.parametrize("why", ["teammates_short", "signed_out"])
+def test_a_session_address_not_on_its_persons_computers_is_409_and_stores_nothing(client, env, monkeypatch, why):
+    if why == "teammates_short":
+        env.session["networkSessionId"] = "zyxwvutsrqpo/claude:conv-1"  # another member's computer
+    else:
+        monkeypatch.setattr("core.services.network_login.revoked_keys", AsyncMock(return_value=list(env.computers)))
     r = client.post(URL, json=body(originMessageId=ORIGIN_MSG), headers=H)
     assert r.status_code == 409 and r.json()["detail"]["code"] == "session_not_on_network"
     env.put_task.assert_not_awaited()

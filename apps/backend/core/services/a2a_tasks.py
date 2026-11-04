@@ -258,6 +258,7 @@ async def _decide_and_store(
     session_person: str | None,
     now: int,
     origin_is_person: bool = True,
+    session_id: str | None = None,
 ) -> dict:
     """Decide a minted authority, dispatch when allowed, sign its record, store the task and ask any
     holders; the stored row."""
@@ -295,6 +296,8 @@ async def _decide_and_store(
         "originIsPerson": origin_is_person,
         "verifiedBy": claims["requester"]["verified_by"],
     }
+    if session_id:
+        row["sessionId"] = session_id  # the backend's local-session id; the resource is the network address
     if d.effect == "hold" and not d.holders:
         # A hold nobody can answer is a silent hang: refuse it.
         row.update(state="rejected", rule="no_holder")
@@ -347,6 +350,11 @@ async def ask_session(owner_id: str, body, *, now: int | None = None) -> dict:
     session = await local_sessions_repo.get_session(owner_id, body.session_id)
     if session is None:
         raise A2AError(404, "unknown_session")
+    # The engine's own key for the session (<member short>/<provider>:<conversation>), which its Mac
+    # reports. A bare id would be qualified into the SENDER's namespace and reach nobody.
+    address = session.get("networkSessionId")
+    if not address:
+        raise A2AError(409, "session_not_on_network")
     doc = await a2a_repo.get_rules(owner_id)
     rules = Rules.model_validate(doc) if doc else default_rules(owner_id, [])
     person = await _origin_person(owner_id, body.room_id, body.origin_message_id)
@@ -361,7 +369,7 @@ async def ask_session(owner_id: str, body, *, now: int | None = None) -> dict:
             raise A2AError(403, "no_requester")
         person, verified_by = holders[0], "agent-runtime"
     req = AuthorityRequest(
-        operation=Operation(skill="ask_session", resource=f"session:{body.session_id}", operands={"text": body.text}),
+        operation=Operation(skill="ask_session", resource=f"session:{address}", operands={"text": body.text}),
         intent=body.intent,
     )
     chain = [
@@ -386,6 +394,7 @@ async def ask_session(owner_id: str, body, *, now: int | None = None) -> dict:
         session_person=session.get("humanUserId"),
         now=now,
         origin_is_person=verified_by == "origin-message",
+        session_id=body.session_id,
     )
     return {"taskId": row["id"], "state": row["state"], "holders": row["holders"]}
 

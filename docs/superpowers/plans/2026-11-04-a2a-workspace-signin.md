@@ -82,7 +82,7 @@
 - Consumes: Task 3's `Proof.org`, `is_workspace`.
 - Produces: `bind(a, kind, to, body, meta, sender_person: Option<&str>, sender_workspace: Option<&str>) -> Result<()>`: accepts when `sender_person == requester.person`, or (unchanged) the person relay rule, or `sender_workspace == Some(requester.org)` AND `chain.len() == 2` AND `chain[1].agent.is_some()`.
 
-- [ ] **Step 1: Write the failing tests:** unit `workspace_sender_binds_its_own_workspaces_hosted_note`; `workspace_sender_cannot_bind_another_workspaces_note` (Review Focus 5); `workspace_sender_cannot_bind_a_one_hop_note`; `workspace_sender_cannot_bind_a_note_without_an_agent_hop`; integration `a_workspace_sender_without_a_note_is_judged_as_its_member` (Review Focus 4: a plain message from an instance signed in as `org_1` is allowed by `members-message`, and an `a2a` ask without a note is held with requester `member:<short>`, never `person:org_1`).
+- [ ] **Step 1: Write the failing tests:** unit `workspace_sender_binds_its_own_workspaces_hosted_note`; `workspace_sender_cannot_bind_another_workspaces_note` (Review Focus 5); `workspace_sender_cannot_bind_a_one_hop_note`; `workspace_sender_cannot_bind_a_note_without_an_agent_hop`; integration `a_workspace_sender_without_a_note_is_judged_as_its_member` (Review Focus 4: a plain message from an instance signed in as `org_1` is allowed by `members-message`, and an `a2a` ask without a note is held with requester `member:<short>`, never `person:org_1`). Workers' check: `a_workspace_senders_assign_to_new_still_matches_its_member_row` (an instance signed in as `org_1` assigns to B's `:new` worker address; B has an `always` row for the instance's member → the assign starts without a hold; with a `refused` row → refused `declined`).
 - [ ] **Step 2: Run** → FAIL. — [ ] **Step 3: Implement.** — [ ] **Step 4: Run** `--lib authority --lib mail --test a2a_workspace --test a2a_envelope --test a2a_hold` → PASS.
 - [ ] **Step 5: Commit** `feat(a2a): a laptop accepts a hosted note relayed by its workspace's runtime`
 
@@ -94,7 +94,7 @@
 
 **Interfaces:**
 - Consumes: Task 4's `Judge.sender_workspace`.
-- Produces: the dialog's first line `"<agent> for <person>, via your workspace's agent: <intent>"` (each field through `frame::preview`) when `relayed_by` is set; the signed record gains `"relayed_by": "org_<id>"` (null otherwise).
+- Produces: the dialog's first line `"<agent> for <person>, via your workspace's agent: <intent>"` (each field through `frame::preview`) when `relayed_by` is set, for Authority holds only: the Worker hold's dialog text (`holds::dialog` Worker arm) is unchanged; the signed record gains `"relayed_by": "org_<id>"` (null otherwise).
 
 - [ ] **Step 1: Write the failing test:** `a_relayed_hosted_ask_is_held_and_names_the_workspace` (an instance signed in as `org_1` sends a two-hop note for `user_p` to B's session; B holds it; `shown` contains "via your workspace's agent"; Allow delivers; the approvals record has `relayed_by == "org_1"`). And: the same note from an instance signed in as `org_2` is refused `bad_request`, nothing stored.
 - [ ] **Step 2: Run** → FAIL. — [ ] **Step 3: Implement.** — [ ] **Step 4: Run** `--test a2a_workspace --test a2a_hold --test holds`, then the full `cargo test` once → PASS.

@@ -296,6 +296,15 @@ describe("AppView", () => {
     expect(screen.queryByText("Preview: not live yet.")).toBeNull();
   });
 
+  it("an app with nothing built yet asks for no pass and says what's coming", () => {
+    render(<AppView app={app({ state: "requested", preview_url: null, live_url: null, live_version: null })} onBack={vi.fn()} />);
+    expect(open).not.toHaveBeenCalled();
+    expect(screen.getByText(/^The agent is making the preview\./)).toBeTruthy();
+    expect(screen.queryByText(/You're looking at the preview/)).toBeNull();
+    expect(screen.queryByText("Opening…")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Open in its own tab" })).toBeNull();
+  });
+
   it("falls back to live when the preview goes away", async () => {
     open.mockImplementation(async (id: string, t = "live") => `https://${id}.${t}.test/`);
     const { rerender } = render(<AppView app={app({ preview_url: "https://p" })} onBack={vi.fn()} />);

@@ -11,13 +11,13 @@ from __future__ import annotations
 import hashlib
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from core.auth import AuthContext, resolve_owner_id
 from core.constants import SYSTEM_ACTOR_ID
 from core.dynamodb import plain
 from core.repositories import apps_repo, messaging_repo
-from core.services import apps_room, messaging, session_chat
+from core.services import apps_room, clerk_admin, messaging, session_chat
 from core.services import apps_service as svc
 from core.services.apps_service import AppsRefused, BuilderCaller
 
@@ -118,6 +118,31 @@ async def _can_open(owner_id: str, app: dict, auth: AuthContext) -> bool:
         return True
     room_id = app.get("room_id") if app.get("open_to") == "room" else None
     return bool(room_id) and await messaging.still_reads_room(owner_id, auth.user_id, room_id, owner_id)
+
+
+async def may_open(owner_id: str, app: dict, user_id: str) -> bool:
+    """``_can_open`` for a person known only by id (the CLI, a room door): no token says whether they are
+    an admin, so Clerk is asked, and only when the sharing alone says no."""
+    if await _can_open(owner_id, app, AuthContext(user_id=user_id, org_id=owner_id)):
+        return True
+    members = await clerk_admin.list_organization_members(owner_id)  # [] on a Clerk error: fail closed
+    return any(m["user_id"] == user_id and m.get("role") in ("org:admin", "admin") for m in members)
+
+
+async def require_opens(owner_id: str, app: dict, caller: BuilderCaller) -> None:
+    """A person (not an agent: builders keep the workspace) reads or talks to an app only if they can open it."""
+    if caller.actor_kind == "person" and not await may_open(owner_id, app, caller.actor_id):
+        raise AppsRefused("not_allowed", "This app is not shared with you.", "ask its creator to share it")
+
+
+async def seat_still_opens(owner_id: str, app_id: str, user_id: str) -> bool:
+    """``messaging.require_room_member``'s check on an app's conversation: a seat never outlives the
+    right to open the app (a gone app opens for nobody)."""
+    try:
+        app = await svc._owned(owner_id, app_id)
+    except AppsRefused:
+        return False
+    return await may_open(owner_id, app, user_id)
 
 
 async def unseat_who_cannot_open(app: dict) -> int:
@@ -233,9 +258,20 @@ async def _reserve(
     return app, how
 
 
-async def _builder_busy(owner_id: str, room_id: str) -> bool:
+_HEARD_FOR = timedelta(minutes=10)
+
+
+async def _builder_busy(owner_id: str, room_id: str, text: str) -> bool:
+    """A run in the conversation still beating, or this same request posted there in the last 10 minutes
+    (a run can take a while to open: a quick retry must not post it twice)."""
     now = datetime.now(UTC)
-    return any(svc._working(r, now) for r in await messaging_repo.list_open_runs_for_room(owner_id, room_id))
+    if any(svc._working(r, now) for r in await messaging_repo.list_open_runs_for_room(owner_id, room_id)):
+        return True
+    since = (now - _HEARD_FOR).isoformat()
+    return any(
+        (m.get("author") or {}).get("kind") == "system" and m.get("text") == text and str(m.get("createdAt")) >= since
+        for m in await messaging_repo.list_messages_before(room_id, 10**18, 50)
+    )
 
 
 async def start(
@@ -252,6 +288,12 @@ async def start(
     svc._check_name(name)
     if origin_room_id:
         await svc._check_room(owner_id, origin_room_id)
+        if ((await messaging_repo.get_room(origin_room_id)) or {}).get("app"):
+            raise AppsRefused(
+                "room_is_app",
+                "That room is an app's own conversation, not a room to start an app from.",
+                "work on that app there, or start a new app from a room or with no --room",
+            )
     person = (
         caller.actor_id if caller.actor_kind == "person" else await _requester(owner_id, requested_by, origin_room_id)
     )
@@ -260,6 +302,9 @@ async def start(
     if builder is None:
         raise _NO_AGENT
     app, how = await _reserve(caller, name, origin_room_id, person)
+    if person and not app.get("created_by"):  # reserved before anyone asked: the first person who did made it
+        if await apps_repo.patch(app["app_id"], {"created_by": person}, expect={"created_by": None}):
+            app["created_by"] = person
     meta = await _ensure(app, builder)
     if person:
         await _seat(owner_id, meta, person)
@@ -267,7 +312,7 @@ async def start(
     # The receipt is this request (who and what): a retry replays it, another person's request is its own line.
     key = f"apps-start:{app['app_id']}:{hashlib.sha256(text.encode()).hexdigest()[:16]}"
     # Found idle: say it again, which wakes the builder. Never on a race: the winner's line is being posted now.
-    if how == "found" and not app.get("sources") and not await _builder_busy(owner_id, meta["roomId"]):
+    if how == "found" and not app.get("sources") and not await _builder_busy(owner_id, meta["roomId"], text):
         key += f":{uuid.uuid4()}"
     message = await _relay(app, meta, key, text)
     display, canvas_url = svc._display(app), svc._canvas_url(app["app_id"])
@@ -300,6 +345,7 @@ async def ask(
     source message's id) makes a resend a no-op."""
     owner_id = caller.owner_id
     app = await svc._owned(owner_id, app_id)
+    await require_opens(owner_id, app, caller)
     room_id = (origin or {}).get("room_id")
     if room_id:
         await svc._check_room(owner_id, room_id)

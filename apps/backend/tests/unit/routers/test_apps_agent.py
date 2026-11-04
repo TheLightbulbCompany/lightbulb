@@ -542,7 +542,7 @@ def test_pull_by_name_returns_the_archive_its_commit_and_the_real_id(client, mon
     r = client.get(f"{BASE}/booking/source", headers=HOOK)
     assert r.status_code == 200 and r.content == b"tarbytes"
     assert r.headers["X-Lightbulb-Commit"] == "c7" and r.headers["X-Lightbulb-App"] == "app_1"
-    assert latest.await_args.args == ("org_a", "app_1") and by_name.await_args.args == ("org_a", "booking")
+    assert latest.await_args.args[:2] == ("org_a", "app_1") and by_name.await_args.args == ("org_a", "booking")
     # An id skips the lookup; an unknown name is a 404.
     by_name.reset_mock()
     assert client.get(f"{BASE}/app_1/source", headers=HOOK).headers["X-Lightbulb-App"] == "app_1"

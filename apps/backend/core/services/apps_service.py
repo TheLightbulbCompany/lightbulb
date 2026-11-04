@@ -311,9 +311,14 @@ async def resolve_app_id(owner_id: str, ref: str) -> str:
     return app["app_id"]
 
 
-async def latest_source(owner_id: str, app_id: str) -> tuple[bytes, str]:
-    """The newest uploaded archive and its commit, for ``app pull``."""
-    latest = _latest_source(await _owned(owner_id, app_id))
+async def latest_source(owner_id: str, app_id: str, caller: BuilderCaller | None = None) -> tuple[bytes, str]:
+    """The newest uploaded archive and its commit, for ``app pull``. A person pulls only an app they can open."""
+    app = await _owned(owner_id, app_id)
+    if caller:
+        from core.services import app_conversation  # it imports this module
+
+        await app_conversation.require_opens(owner_id, app, caller)
+    latest = _latest_source(app)
     if not latest:
         raise AppsRefused("source_not_found", "That app has no source yet.", "wait for its first upload")
     source_id, src = latest
@@ -1249,11 +1254,12 @@ async def put_source(
     # ponytail: check-then-write, so two uploads in the same second can both pass; a conditional patch on
     # `sources` closes it if that ever happens.
     # The same commit again is a retried upload (its first answer was lost), not a stale copy.
+    # base_commit "new": a folder never synced, which only the app's first upload may be.
     if base_commit and latest and latest[1]["commit"] not in (base_commit, commit):
+        yours = "is a new folder" if base_commit == "new" else f"is built on {base_commit}"
         raise AppsRefused(
             "stale_base",
-            f"{_display(app)} changed since your copy: its latest version is {latest[1]['commit']}, yours is built"
-            f" on {base_commit}.",
+            f"{_display(app)} changed since your copy: its latest version is {latest[1]['commit']}, yours {yours}.",
             "run lightbulb app pull, merge your change, then lightbulb app up",
         )
     if app.get("state") == "requested":  # reserved by `app start`: its builder's first upload takes it over
@@ -1306,12 +1312,16 @@ async def up(
         await _check_destructive(app, await _files(owner_id, app["app_id"], source_id), approved_destructive)
     fields: dict = {"preview_want": source_id}
     if not await _rows(app):  # R52: only a new app takes these from up; afterwards the owner's PATCH does
-        # Built in its own conversation: the room stays the origin's.
-        if room_id and room_id != app.get("conversation_id"):
-            fields["room_id"] = room_id
-        if open_to == "room" and not (fields.get("room_id") or app.get("room_id")):
-            open_to = "workspace"  # no room to be open to: never an app nobody can open
-        fields.update(services=services, open_to=open_to, budget_usd=budget_usd, origin=origin)
+        # Started (`app start` reserved it from a room): its room, sharing and origin were set there, and a
+        # builder's `up` (the CLI sends no room and "workspace") never widens it.
+        if not app.get("origin_room_id"):
+            # Built in its own conversation: the room stays the origin's.
+            if room_id and room_id != app.get("conversation_id"):
+                fields["room_id"] = room_id
+            if open_to == "room" and not (fields.get("room_id") or app.get("room_id")):
+                open_to = "workspace"  # no room to be open to: never an app nobody can open
+            fields.update(open_to=open_to, origin=origin)
+        fields.update(services=services, budget_usd=budget_usd)
         # R73: an agent's app gets its human creator, believed only from a room that person is in.
         if requested_by and room_id and not app.get("created_by"):
             try:
@@ -1896,6 +1906,7 @@ async def list_apps(owner_id: str, auth: AuthContext) -> list[dict]:
             # Only a room the caller is in is named to them.
             room_name=(live.get(a.get("room_id")) or {}).get("name") if member.get(a.get("room_id")) else None,
             created_by_name=names.get(uid) if uid and names.get(uid) != uid else None,
+            is_creator=bool(uid) and uid == auth.user_id,  # Settings says "me" only to the creator
             agent_name=agents.get(a.get("actor_id")) if a.get("actor_kind") == "agent" else None,
             # R73: who may publish (and manage); whether there is a ready preview is the `preview` field.
             can_publish=can_manage(a, auth),

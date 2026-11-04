@@ -1626,6 +1626,13 @@ async def require_room_member(owner_id: str, user_id: str, room_id: str) -> tupl
             row = await local_sessions_repo.get_session(meta["ownerId"], meta["session"]["sessionId"])
             if row is not None and row.get("removedAt") is not None:
                 raise ApiProblem("ROOM_NOT_FOUND", "Room not found.")
+        elif meta.get("app"):
+            # An app's conversation: a seat never outlives the right to open the app (its sharing narrowed,
+            # the person left the app's room) — this door does not wait for the unseat sweep either.
+            from core.services import app_conversation  # lazy: it imports this module
+
+            if not await app_conversation.seat_still_opens(meta["ownerId"], meta["app"]["app_id"], user_id):
+                raise ApiProblem("ROOM_NOT_FOUND", "Room not found.")
         return meta, member
     # A human of the room's own workspace who lost access keeps the reconcile hint;
     # everyone else (a stranger, or a foreign member viewing from the wrong org) sees nothing.

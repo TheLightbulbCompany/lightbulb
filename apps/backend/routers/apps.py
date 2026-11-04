@@ -304,7 +304,7 @@ async def put_source(request: Request, caller: Annotated[svc.BuilderCaller, Depe
 @router.get("/build/{app_id}/source")
 async def get_source(app_id: AppId, caller: Builder):
     """The newest uploaded source, for ``app pull``: the archive, its commit and the real app id in headers."""
-    data, commit = await _run(svc.latest_source(caller.owner_id, app_id))
+    data, commit = await _run(svc.latest_source(caller.owner_id, app_id, caller))
     headers = {"X-Lightbulb-Commit": commit, "X-Lightbulb-App": app_id, "Cache-Control": "no-store"}
     return Response(data, media_type="application/gzip", headers=headers)
 

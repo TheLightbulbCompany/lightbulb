@@ -12,7 +12,7 @@ import { LiveLink, Problem, displayName } from "./appText";
 import "./canvas.css";
 
 const CHOICES: { value: AppRow["open_to"]; label: string }[] = [
-  { value: "me", label: "Only me (and workspace admins)" },
+  { value: "me", label: "" }, // "Only me (and workspace admins)" to its creator, else "Only its creator and workspace admins"
   { value: "room", label: "" }, // "#room (this room)", filled in from the app; left out when it came from no room
   { value: "workspace", label: "Everyone in the workspace" },
   { value: "invited", label: "People I invite" },
@@ -22,9 +22,9 @@ const CHOICES: { value: AppRow["open_to"]; label: string }[] = [
 type OpenTo = AppRow["open_to"];
 
 // Who stops being able to open the app if it moves from `from` to `to`; null when nobody does (widening).
-function whoLosesAccess(from: OpenTo, to: OpenTo, room: string): string | null {
+function whoLosesAccess(from: OpenTo, to: OpenTo, room: string, mine: boolean): string | null {
   if (from === to || to === "public" || from === "me" || (from === "room" && to === "workspace")) return null;
-  if (to === "me") return "Only you and workspace admins will be able to open it.";
+  if (to === "me") return `Only ${mine ? "you" : "its creator"} and workspace admins will be able to open it.`;
   if (from === "public") {
     const outside = to === "room" ? `outside ${room}` : to === "workspace" ? "outside the workspace" : "you haven't invited";
     return `Anyone with the link ${outside} will lose access.`;
@@ -61,12 +61,13 @@ export function AppSettings({ app, onClose, onRemoved, publishCtl }: { app: AppR
 
   // The hook already surfaces API errors; these handlers only keep the panel usable.
   const room = `#${app.room_name ?? "this room"}`;
+  const mine = app.is_creator === true;
   const warning = pending === "public"
     ? `Anyone with the link will be able to open it, including people outside the workspace, without signing in.${hasDb ? " They can see and submit what the app shows them." : ""}`
-    : pending && whoLosesAccess(openTo, pending, room);
+    : pending && whoLosesAccess(openTo, pending, room, mine);
   const pick = (value: OpenTo) => {
     if (value === openTo) { setPending(null); return; }
-    if (value === "public" || whoLosesAccess(openTo, value, room)) setPending(value); else { setPending(null); choose(value); }
+    if (value === "public" || whoLosesAccess(openTo, value, room, mine)) setPending(value); else { setPending(null); choose(value); }
   };
   const choose = async (value: OpenTo) => {
     const before = openTo;
@@ -114,7 +115,7 @@ export function AppSettings({ app, onClose, onRemoved, publishCtl }: { app: AppR
       <legend className="canvas__heading">Who can open it</legend>
       {CHOICES.filter((c) => c.value !== "room" || app.room_id || openTo === "room").map((c) => <label key={c.value} className="app-settings__row">
         <input type="radio" name={`open-to-${app.app_id}`} checked={(pending ?? openTo) === c.value} onChange={() => pick(c.value)} />
-        {c.value === "room" ? `${room} (this room)` : c.label}
+        {c.value === "room" ? `${room} (this room)` : c.value === "me" ? (mine ? "Only me (and workspace admins)" : "Only its creator and workspace admins") : c.label}
       </label>)}
       <div className="app-settings__row app-settings__row--sub"><button type="button" className="app-view__btn" disabled>Use your own domain (coming soon)</button></div>
       {pending && warning && <div role="alert" className="app-settings__row">

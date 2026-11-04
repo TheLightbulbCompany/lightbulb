@@ -10,6 +10,7 @@ const WORDS: ChatWords = {
   label: "Conversation", title: "Conversation",
   empty: "Tell the agent what to change. It answers here, and the preview updates when it's done.",
   unavailable: "This conversation isn't available to you.", full: "This conversation is full.", ended: "This conversation is closed.",
+  compose: "Tell the agent what to change",
 };
 
 /** `shown: false`: mounted but hidden (a narrow panel showing the app), so its messages still notify. */

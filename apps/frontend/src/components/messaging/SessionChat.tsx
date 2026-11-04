@@ -18,7 +18,7 @@ const NO_REACTIONS: readonly string[] = [];
 const NO_MESSAGES: readonly RoomMessage[] = [];
 
 /** The column's words; Canvas's app conversation (AppConversation) says them about an app. */
-export type ChatWords = { label: string; title: string; empty: string; unavailable: string; full: string; ended: string };
+export type ChatWords = { label: string; title: string; empty: string; unavailable: string; full: string; ended: string; compose?: string };
 const SESSION_WORDS: ChatWords = {
   label: "Session chat", title: "Chat", empty: "Talk about the session here. The terminal stays the session's.",
   unavailable: "Chat is not available for this session.", full: "This chat is full.", ended: "This session ended. Its chat is read-only.",
@@ -134,7 +134,7 @@ export function SessionChat({ sessionId, sessionOwnerId, openChat, onClose, onRo
         ? <p role="status" className="room-composer room-archived text-ui text-muted-foreground">{words.ended}</p>
         : <RoomComposer text={text} onTextChange={setText} members={members} clientMessageId={clientMessageId}
           sendState={rooms.sendState(clientMessageId)} onSubmit={send} onRetry={send}
-          onReconcile={(id) => rooms.reconcileSend(id)} onUploadAttachment={rooms.uploadAttachment} disabled={!roomId || !rooms.httpReady} label="Message the people here" placeholder="Message the people here" roomKind="channel" />}
+          onReconcile={(id) => rooms.reconcileSend(id)} onUploadAttachment={rooms.uploadAttachment} disabled={!roomId || !rooms.httpReady} label={words.compose ?? "Message the people here"} placeholder={words.compose ?? "Message the people here"} roomKind="channel" />}
     </>}
   </aside>;
 }

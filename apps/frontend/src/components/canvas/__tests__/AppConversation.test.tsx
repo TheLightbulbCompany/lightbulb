@@ -56,7 +56,7 @@ it("a hidden conversation (narrow panel showing the app) is not on screen, so it
 
 it("sends into the conversation room like any room message", async () => {
   render(<AppConversation app={app} />);
-  const box = await screen.findByLabelText("Message the people here");
+  const box = await screen.findByLabelText("Tell the agent what to change");
   await waitFor(() => expect(box).toBeEnabled());
   fireEvent.change(box, { target: { value: "make the header blue" } });
   fireEvent.keyDown(box, { key: "Enter" });

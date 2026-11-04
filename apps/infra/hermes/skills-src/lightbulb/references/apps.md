@@ -19,12 +19,13 @@ Every app has its own conversation, named "App · {name}", shown beside the app 
 is built there, never in a team room, so several apps can be built at once.
 
 - **Asked in a room or a DM:** hand it over. Run
-  `lightbulb app start "<the request, word for word>" --name <name> --room <roomId> --json`,
-  post the line its `next` gives you once, and end the turn. If `next` says the app was already
-  started, post nothing. Don't build here.
+  `lightbulb app start "<the request, word for word>" --name <name> --room <roomId> --requested-by <sender id> --json`
+  (`sender` id: the user id on their message, never a name), post the line its `next` gives you
+  once, and end the turn. If `next` says the app was already started, post nothing. Don't build here.
 - **A message in a room about an app that already exists** (a change, a question, "ship it"):
-  `lightbulb app ask <name> "<the message, word for word>"`, then one line: "Passed to {app}'s
-  conversation in Canvas." The builder answers there.
+  `lightbulb app ask <name> "<the message, word for word>" --room <roomId> --requested-by <sender id> --message-id <message id>`,
+  then one line: "Passed to {app}'s conversation in Canvas." The builder answers there. If they
+  asked to ship it, add: "To make it live, say “ship it” in the app's conversation in Canvas."
 - **In an app's own conversation** you are its builder: the first message is the request,
   relayed by Lightbulb as "{person} (in #room): …" or "(via CLI): …". Follow Start below, with
   `lightbulb app new <name> --kind <kind>` and no `--room` (it takes over the app that was
@@ -71,9 +72,10 @@ Build the first version yourself; never hand the first build to a sub-agent. Mak
 first, the one thing the person asked for, and run `up` as soon as `app check` passes: the person
 should see something in minutes, not after everything is finished.
 
-`lightbulb app check` → fix → `lightbulb app up --json`. On the first `up` add
-`--requested-by "<the person's user id>"` (the `sender` id on their message; a name is ignored)
-so Canvas shows who asked and they can change its Settings. `up` commits, checks, sends the
+`lightbulb app check` → fix → `lightbulb app up --json`. An app built in its own conversation
+already knows who asked (`app start` recorded it). Only for an app you build in a room you were
+asked in (no conversation), add `--requested-by "<the person's user id>"` on the first `up` (the
+`sender` id on their message; a name is ignored). `up` commits, checks, sends the
 code and waits for the build (up to ten minutes). Read its `next`. If it starts with fix, diagnose or undo,
 do that; otherwise do the step it names:
 
@@ -126,7 +128,9 @@ add that it runs on sample data and the real data arrives in a few minutes.
 Rows you put in `drizzle/seed.sql` are examples, so label them: end each visible name with
 "(sample)". They must never pass for the person's real customers. Offer to clear them.
 
-Outside a room turn (a Paperclip run), post the same line with `lightbulb-post.sh --room <roomId>`.
+Outside a room turn (a Paperclip run), post the same line in the app's conversation with
+`lightbulb-post.sh --room <roomId>`, where `<roomId>` is the app's `conversation_id` (from
+`lightbulb app status <name> --json`).
 
 ## Changes and publishing
 

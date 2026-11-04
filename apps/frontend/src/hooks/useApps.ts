@@ -14,7 +14,7 @@ export type AppRow = {
   room_id: string | null; // null: the app came from no room (CLI, or asked for without one)
   room_name?: string;
   conversation_id?: string | null; // its own conversation with its builder, once opened (POST /apps/{id}/conversation)
-  state: "awaiting_approval" | "provisioning" | "building" | "ready" | "live" | "failed" | "destroyed";
+  state: "requested" | "awaiting_approval" | "provisioning" | "building" | "ready" | "live" | "failed" | "destroyed";
   open_to: "me" | "room" | "workspace" | "invited" | "public";
   budget_usd: number;
   preview_url: string | null;
@@ -25,6 +25,7 @@ export type AppRow = {
   requested_by?: string; // the person who asked for the app
   display_name?: string; // person-facing name; Canvas title-cases the slug when absent
   created_by_name?: string;
+  is_creator?: boolean; // the viewer made it (or asked an agent for it)
   agent_name?: string;
   can_open: boolean;
   stuck?: { at: string; step: string } | null;
@@ -38,7 +39,7 @@ export type AppRow = {
   resources?: { provider: string; service: string; state: string; resource_id?: string; environment?: string }[];
 };
 
-const PENDING: AppRow["state"][] = ["awaiting_approval", "provisioning", "building"];
+const PENDING: AppRow["state"][] = ["requested", "awaiting_approval", "provisioning", "building"];
 
 type AppsResponse = { apps: AppRow[] };
 

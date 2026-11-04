@@ -1,12 +1,13 @@
 """Each app's own conversation (docs/apps/app-conversation-design.md): start, ask, open, line routing."""
 
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
 
 from core.auth import AuthContext
 from core.services import app_conversation as conv
-from core.services import apps_room, messaging, session_chat
+from core.services import apps_room, clerk_admin, messaging, session_chat
 from tests.unit.services.test_apps_service import (  # noqa: F401 -- fixtures
     OWNER,
     PERSON,
@@ -24,6 +25,7 @@ FORGE = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 AGENT = svc.BuilderCaller(owner_id=OWNER, actor_id=FORGE, actor_kind="agent")
 ADA = AuthContext(user_id="user_1", org_id=OWNER)
 BOB = AuthContext(user_id="user_bob", org_id=OWNER)
+REAL_REQUIRE_ROOM_MEMBER = messaging.require_room_member  # the fixture fakes it; the door test needs the real one
 
 
 @pytest.fixture
@@ -54,7 +56,7 @@ def chat(world, monkeypatch):  # noqa: F811
         prior = next((p for p in posts if p["key"] == key), None)
         if prior:
             return prior, True
-        posts.append({"messageId": f"m{len(posts) + 1}", "key": key, **kw})
+        posts.append({"messageId": f"m{len(posts) + 1}", "key": key, "createdAt": svc.utc_now_iso(), **kw})
         return posts[-1], False
 
     async def seat(owner_id, meta, user_id, *, full):
@@ -81,6 +83,10 @@ def chat(world, monkeypatch):  # noqa: F811
     monkeypatch.setattr(repo, "create_message", AsyncMock(side_effect=create_message))
     monkeypatch.setattr(repo, "get_user_stream", AsyncMock(return_value={"active": True}))
     monkeypatch.setattr(repo, "list_open_runs_for_room", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        repo, "list_messages_before", AsyncMock(side_effect=lambda r, b, n: [p for p in posts if p["room_id"] == r])
+    )
+    monkeypatch.setattr(clerk_admin, "list_organization_members", AsyncMock(return_value=[]))
     monkeypatch.setattr(session_chat, "_seat", seat)
     monkeypatch.setattr(
         session_chat,
@@ -94,6 +100,10 @@ def chat(world, monkeypatch):  # noqa: F811
     monkeypatch.setattr(messaging, "still_reads_room", AsyncMock(side_effect=reads))
     monkeypatch.setattr(messaging, "create_human_message", AsyncMock(side_effect=human_message))
     return type("Chat", (), {"rooms": rooms, "members": members, "posts": posts, "said": said})
+
+
+def _age(post, minutes=11):
+    post["createdAt"] = (datetime.now(UTC) - timedelta(minutes=minutes)).isoformat()
 
 
 def _woken(post):
@@ -155,7 +165,11 @@ async def test_two_starts_for_one_name_make_one_app_and_one_request(chat, monkey
 
 async def test_a_second_start_is_heard_when_it_is_new_or_nobody_is_building(chat, monkeypatch):
     await _start()
-    # Nobody took the request up (no run, no source): a retry says it again, which wakes the builder.
+    # A retry within 10 minutes: the request line is fresh, so it counts as heard (a run may still be opening).
+    await _start()
+    assert len(chat.posts) == 1
+    # Nobody took it up for 10 minutes (no run, no source): a retry says it again, which wakes the builder.
+    _age(chat.posts[0])
     await _start()
     assert len(chat.posts) == 2 and _woken(chat.posts[-1]) == [FORGE]
     # Someone else's request while the builder works is its own line, never dropped.
@@ -477,7 +491,8 @@ async def test_invited_is_the_invitees_and_managers_never_the_room(chat, monkeyp
 async def test_a_second_start_tells_the_agent_to_post_nothing(chat, monkeypatch):
     first = await _start()
     assert first["next"].startswith("post this line in the room") and first["relayed"]
-    # Nobody building: the request is said again (a new line), but the room hears nothing new.
+    # Nobody building for 10 minutes: the request is said again (a new line), but the room hears nothing new.
+    _age(chat.posts[0])
     again = await _start()
     assert again["next"] == "this app was already started; post nothing in the room" and again["relayed"]
     # The builder is on it: the same request replays, nothing new anywhere.
@@ -486,6 +501,9 @@ async def test_a_second_start_tells_the_agent_to_post_nothing(chat, monkeypatch)
     busy = await _start()
     assert busy["next"] == again["next"] and not busy["relayed"]
     assert len(chat.posts) == 2
+    # Nothing running, but the line just went out: heard, not posted a third time.
+    monkeypatch.setattr(svc.messaging_repo, "list_open_runs_for_room", AsyncMock(return_value=[]))
+    assert not (await _start())["relayed"] and len(chat.posts) == 2
 
 
 async def test_the_loser_of_a_start_race_never_posts_a_second_request(chat, monkeypatch):
@@ -496,3 +514,113 @@ async def test_the_loser_of_a_start_race_never_posts_a_second_request(chat, monk
     assert raced["app_id"] == first["app_id"]
     assert raced["next"] == "this app was already started; post nothing in the room" and not raced["relayed"]
     assert len(chat.posts) == 1
+
+
+# --- final review --------------------------------------------------------------------------------
+
+
+async def test_up_as_the_cli_sends_it_never_widens_a_started_app(chat):
+    res = await _start()  # from #general: open to the room, asked for by Ada
+    src = await svc.put_source(OWNER, name="booking", commit="c1", archive=_tar(SRC_V1), actor=AGENT, base_commit="new")
+    # The real CLI: no room, "workspace", its own origin.
+    await svc.up(
+        OWNER,
+        name="booking",
+        room_id=None,
+        services=[],
+        open_to="workspace",
+        budget_usd=0,
+        source_id=src["source_id"],
+        actor=AGENT,
+        origin={"kind": "unknown"},
+    )
+    app = await svc.apps_repo.get(res["app_id"])
+    assert (app["open_to"], app["room_id"], app["origin"]) == ("room", "room_1", {"kind": "asked"})
+
+
+async def test_a_start_by_an_agent_for_a_person_makes_them_its_creator(chat):
+    # Reserved first with nobody named (the agent forgot --requested-by), then asked for by Ada.
+    first = await _start(requested_by=None)
+    assert (await svc.apps_repo.get(first["app_id"]))["created_by"] is None
+    _age(chat.posts[0])
+    await _start()
+    app = await svc.apps_repo.get(first["app_id"])
+    assert app["created_by"] == "user_1"
+    assert "user_1" in [m["id"] for m in chat.members[first["conversation_id"]]]
+    assert chat.posts[-1]["text"] == "Ada (in #general): build a booking page"
+    # Someone outside the room is never believed: Bob is not made its creator.
+    second = await conv.start(AGENT, "notes", "notes", origin_room_id="room_1", requested_by=BOB.user_id)
+    assert (await svc.apps_repo.get(second["app_id"]))["created_by"] is None
+
+
+async def test_ask_as_the_cli_sends_it_posts_once_on_a_retry(chat):
+    res = await _start()
+    # `app ask booking --room room_1 --requested-by user_1 --message-id m-77`, its answer lost, then retried.
+    outs = [
+        await conv.ask(
+            AGENT,
+            res["app_id"],
+            "make it blue",
+            origin={"room_id": "room_1", "requested_by": "user_1"},
+            client_message_id="m-77",
+        )
+        for _ in range(2)
+    ]
+    assert outs[0] == outs[1] and len(chat.posts) == 2
+    assert chat.posts[-1]["text"] == "Ada (in #general): make it blue"
+
+
+async def test_a_new_folder_uploads_only_as_the_first_version(chat):
+    res = await _start()
+    first = await svc.put_source(
+        OWNER, name="booking", commit="c1", archive=_tar(SRC_V1), actor=AGENT, base_commit="new"
+    )
+    assert first["app_id"] == res["app_id"]
+    # Its answer lost: the same commit again is a retry.
+    await svc.put_source(OWNER, name="booking", commit="c1", archive=_tar(SRC_V1), actor=AGENT, base_commit="new")
+    with pytest.raises(svc.AppsRefused) as e:
+        await svc.put_source(OWNER, name="booking", commit="c2", archive=_tar(SRC_V1), actor=AGENT, base_commit="new")
+    assert e.value.code == "stale_base" and "app pull" in e.value.next
+
+
+async def test_start_refuses_an_apps_own_conversation_as_its_room(chat):
+    res = await _start()
+    with pytest.raises(svc.AppsRefused) as e:
+        await conv.start(AGENT, "notes", "notes", origin_room_id=res["conversation_id"], requested_by="user_1")
+    assert e.value.code == "room_is_app"
+
+
+async def test_a_seat_in_an_apps_conversation_ends_with_the_right_to_open_it(chat):
+    res = await _start()
+    room = res["conversation_id"]
+    chat.members["room_1"].append({"kind": "human", "id": BOB.user_id})
+    await conv.open_conversation(BOB, res["app_id"])
+    assert (await REAL_REQUIRE_ROOM_MEMBER(OWNER, BOB.user_id, room))[1]["id"] == BOB.user_id
+    # Bob leaves #general; his seat is still there, but the door no longer lets him in. Ada (its creator) stays.
+    chat.members["room_1"] = [m for m in chat.members["room_1"] if m["id"] != BOB.user_id]
+    with pytest.raises(messaging.ApiProblem) as e:
+        await REAL_REQUIRE_ROOM_MEMBER(OWNER, BOB.user_id, room)
+    assert e.value.error.code == "ROOM_NOT_FOUND"
+    await svc.apps_repo.patch(res["app_id"], {"open_to": "me"})
+    assert (await REAL_REQUIRE_ROOM_MEMBER(OWNER, "user_1", room))[1]["id"] == "user_1"
+    # A workspace admin keeps it (Clerk says so; no token here to say it).
+    clerk_admin.list_organization_members.return_value = [{"user_id": BOB.user_id, "role": "org:admin"}]
+    assert (await REAL_REQUIRE_ROOM_MEMBER(OWNER, BOB.user_id, room))[1]["id"] == BOB.user_id
+
+
+async def test_a_person_pulls_or_asks_only_an_app_they_can_open(chat):
+    res = await _start()
+    await svc.put_source(OWNER, name="booking", commit="c1", archive=_tar(SRC_V1), actor=AGENT)
+    await svc.apps_repo.patch(res["app_id"], {"open_to": "me"})
+    bob = svc.BuilderCaller(owner_id=OWNER, actor_id=BOB.user_id, actor_kind="person")
+    for call in (
+        svc.latest_source(OWNER, res["app_id"], bob),
+        conv.ask(bob, res["app_id"], "make it red"),
+    ):
+        with pytest.raises(svc.AppsRefused) as e:
+            await call
+        assert e.value.code == "not_allowed"
+    # Its creator, and any agent of the workspace, still can.
+    assert (await svc.latest_source(OWNER, res["app_id"], PERSON))[1] == "c1"
+    assert (await svc.latest_source(OWNER, res["app_id"], AGENT))[1] == "c1"
+    await conv.ask(PERSON, res["app_id"], "make it red")

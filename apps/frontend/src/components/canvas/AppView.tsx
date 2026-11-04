@@ -114,7 +114,10 @@ export function AppView({ app, onBack }: { app: AppRow; onBack(): void }) {
     if (rose || publishCtl.phase.k !== "idle") setPutBackLine(null);
   }, [app.live_version, publishCtl.phase.k]);
 
+  // Nothing to show yet (an app just started, or its first build): no pass to ask for; the status line says why.
+  const nothing = !app.preview_url && !app.live_url;
   useEffect(() => {
+    if (nothing) return;
     let cancelled = false;
     setTabError(null);
     open(app.app_id, t).then(
@@ -127,7 +130,7 @@ export function AppView({ app, onBack }: { app: AppRow; onBack(): void }) {
     );
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- open/refresh are fresh closures each render; app+target is the trigger
-  }, [key, attempt]);
+  }, [key, attempt, nothing]);
 
   const openInTab = async () => {
     const id = app.app_id;
@@ -169,7 +172,7 @@ export function AppView({ app, onBack }: { app: AppRow; onBack(): void }) {
         {(["conversation", "preview"] as const).map((v) => <button key={v} type="button" className="app-view__btn" aria-pressed={pane === v}
           onClick={() => setPane(v)}>{v === "conversation" ? "Conversation" : "App"}</button>)}
       </span>
-      <button type="button" className="app-view__btn" onClick={openInTab}>Open in its own tab</button>
+      {!nothing && <button type="button" className="app-view__btn" onClick={openInTab}>Open in its own tab</button>}
       {canManage && <button type="button" className="app-view__btn" aria-expanded={settingsOpen}
         onClick={() => { setSettingsOpen((v) => !v); setPane("preview"); }}>Settings</button>}
     </header>
@@ -180,13 +183,14 @@ export function AppView({ app, onBack }: { app: AppRow; onBack(): void }) {
     {liveAppFailed && <div className="canvas__notice"><Problem raw={app.error?.message ?? null}>The last version didn&apos;t go live. People still see the version before it.</Problem></div>}
     {putBackLine?.id === app.app_id && <p role="status" className="canvas__notice">{putBackLine.text}</p>}
     {askable && <AskAgent key={app.app_id} app={app} error={phase.k === "failed" ? phase.msg : undefined} />}
-    {!app.stuck && t === "preview" && (app.agent_working && app.state === "ready" && app.live_version == null
+    {!app.stuck && !nothing && t === "preview" && (app.agent_working && app.state === "ready" && app.live_version == null
       ? <p className="canvas__notice">This is a first version. The agent is still working on it and will post in the conversation when it&apos;s ready.</p>
       : <p className="canvas__notice">You&apos;re looking at the preview. It isn&apos;t live until it&apos;s published{canManage ? ": press Publish, or say “ship it” in the conversation" : ""}. The data here is examples; the live app starts empty.</p>)}
     {!canManage && <p className="canvas__notice">Open to {whoName}. Only {app.created_by_name ?? "the person who asked for it"} or a workspace admin can change who can open it.</p>}
     {settingsOpen && <AppSettings app={app} publishCtl={publishCtl} onClose={() => setSettingsOpen(false)} onRemoved={onBack} />}
     {tabError && <div className="canvas__notice"><Problem raw={tabError.raw}>{dn} didn&apos;t open. Try again in a moment.</Problem></div>}
-    {refused ? <div className="canvas__notice">{refused.status === 403
+    {nothing ? null // the status line above says what is coming
+      : refused ? <div className="canvas__notice">{refused.status === 403
       ? <Problem raw={refused.raw}>Only {whoName} can open {dn}. {askWho}</Problem>
       : <Problem raw={refused.raw} action={retry}>{dn} didn&apos;t open. Try again in a moment.</Problem>}</div>
       : url ? <iframe key={`${key}:${attempt}`} title={dn} src={url} className="canvas__frame"

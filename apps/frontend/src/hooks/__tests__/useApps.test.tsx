@@ -107,9 +107,9 @@ describe("useApps", () => {
     await waitFor(() => expect(mockGet.mock.calls.length).toBeGreaterThan(1));
   });
 
-  it("polls while an app is building", async () => {
+  it.each(["building", "requested"] as const)("polls while an app is %s", async (state) => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    mockGet.mockResolvedValue({ apps: [row({ state: "building" })] });
+    mockGet.mockResolvedValue({ apps: [row({ state })] });
     renderHook(() => useApps(), { wrapper });
     await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(1));
     await act(async () => { await vi.advanceTimersByTimeAsync(15_100); });

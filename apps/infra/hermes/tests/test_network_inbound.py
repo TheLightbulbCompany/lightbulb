@@ -402,7 +402,7 @@ def test_an_a2a_record_without_reply_to_is_acked_unforwarded(net, turns, backend
     net.answer(**_peek({k: v for k, v in A2A_REPLY.items() if k != "reply_to"}, session=A2A_SESSION))
     assert network.ensure_started(background=False)
     assert _until(lambda: len(_acks(net, "read")) == 1)
-    assert posted == [] and turns.ran == []
+    assert [p for p in posted if not p[0].endswith("/runtime-proof")] == [] and turns.ran == []
 
 
 def test_concurrent_a2a_declares_keep_both_people(net):

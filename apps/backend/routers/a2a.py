@@ -1,7 +1,7 @@
 """The A2A door (JSON-RPC binding, A2A v1.0): Agent Card, issuer keys, SendMessage and GetTask, records,
 a holder's decision, the workspace rules, and the hook-token ask from a hosted agent."""
 
-import json
+import time
 from typing import Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
@@ -161,5 +161,5 @@ async def runtime_proof(owner_id: str, _: dict = Depends(_require_hook_token)):
         raise HTTPException(404, detail={"code": "no_runtime"})
     if not is_org_owner_id(owner_id) or not await network_member.stored_team_id(owner_id):
         raise HTTPException(409, detail={"code": "not_on_network"})
-    proof = network_proof.mint_workspace(key, owner_id)
-    return {"proof": proof, "exp": json.loads(network_proof._unb64(proof.split(".")[1]))["exp"]}
+    now = int(time.time())
+    return {"proof": network_proof.mint_workspace(key, owner_id, now=now), "exp": now + network_proof.LIFE_S}

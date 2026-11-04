@@ -1,6 +1,7 @@
 """The backend mints a workspace proof for its own runtime's member key (A2A phase 2b)."""
 
 import json
+import logging
 from unittest.mock import AsyncMock
 
 import pytest
@@ -73,3 +74,30 @@ def test_route_refuses_a_workspace_off_its_network(client, monkeypatch):
     r = client.post(URL, headers=H)
     assert r.status_code == 409
     assert r.json()["detail"] == {"code": "not_on_network"}
+
+
+def test_route_refuses_a_non_org_owner(client, monkeypatch):
+    monkeypatch.setattr(
+        "core.services.container_auth.container_repo.get_by_owner_id",
+        AsyncMock(return_value={"owner_id": "user_1", "hook_token": TOKEN}),
+    )
+    r = client.post("/api/v1/internal/network/user_1/runtime-proof", headers=H)
+    assert r.status_code == 409
+    assert r.json()["detail"] == {"code": "not_on_network"}
+
+
+def test_another_workspaces_hook_token_is_401(client, monkeypatch):
+    tokens = {"org_a": "token-a", "org_b": "token-b"}
+    monkeypatch.setattr(
+        "core.services.container_auth.container_repo.get_by_owner_id",
+        AsyncMock(side_effect=lambda o: {"owner_id": o, "hook_token": tokens[o]}),
+    )
+    url = "/api/v1/internal/network/{}/runtime-proof"
+    assert client.post(url.format("org_b"), headers={"Authorization": "Bearer token-a"}).status_code == 401
+    assert client.post(url.format("org_b"), headers={"Authorization": "Bearer token-b"}).status_code == 200
+
+
+def test_the_proof_is_never_logged(client, caplog):
+    caplog.set_level(logging.DEBUG)
+    proof = client.post(URL, headers=H).json()["proof"]
+    assert all(part not in caplog.text for part in [*proof.split("."), TOKEN, proof])

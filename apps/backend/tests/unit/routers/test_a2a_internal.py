@@ -117,6 +117,14 @@ def test_origin_human_no_rule_is_held_for_session_person(client, env):
     assert claims(rec["jws"])["decision"] == "hold"
 
 
+def test_a_hosted_ask_is_held_under_the_default_document(client, env, monkeypatch):
+    monkeypatch.setattr("core.repositories.a2a_repo.get_rules", AsyncMock(return_value=None))  # none stored
+    r = client.post(URL, json=body(originMessageId=ORIGIN_MSG), headers=H)
+    assert r.status_code == 200, r.text
+    assert r.json()["state"] == "held"  # ask_session matches neither members-message nor members-assign
+    env.through.assert_not_awaited()
+
+
 def test_no_origin_requester_is_admin_holder_agent_runtime(client, env):
     env.session["humanUserId"] = "user_laptop"
     r = client.post(URL, json=body(), headers=H)

@@ -260,3 +260,16 @@ def test_a2a_send_empty_strings_are_invalid_request(net):
     full = {"to": "a", "text": "t", "request_id": "r", "person": "u", "a2a": {"role": "ROLE_USER"}}
     for key in ("to", "text", "request_id", "person"):
         assert _rpc("network.a2a_send", {**full, key: ""})["error"]["code"] == "INVALID_REQUEST", key
+
+
+def test_a_sessions_reload_keeps_the_a2a_declarations(net):
+    assert network.ensure_started(background=False)
+    net.answer(**{"app.send": {"receipt": "r"}})
+    _rpc("network.a2a_send", {"to": "t", "text": "x", "request_id": "r", "person": "A", "a2a": {"role": "ROLE_USER"}})
+    new = {"sessions": [{"name": "atlas", "agent": "Atlas", "agentId": "a-atlas"}]}
+    net.s3.seed("org_test/network/sessions.json", json.dumps(new).encode())
+    assert _rpc("network.sessions") == {"ok": True, "payload": {"count": 1}}
+    declared = net.calls("cloud.sessions.set")[-1]["sessions"]
+    assert declared == new["sessions"] + [{"app": "a2a", "person": "A"}]  # a reply to A still lands
+    assert network._a2a_declared == {"A"}
+    assert json.loads(network.SESSIONS_FILE.read_text()) == new  # the file stays the backend's

@@ -245,8 +245,12 @@ async def push_rules(org: str, jws: str) -> int:
 
     # ponytail: one Clerk call per save and a routes_for_user read per member; an org-keyed
     # route index when workspaces hold hundreds of people
+    members = await clerk_admin.list_organization_members(org)
+    if not members:  # no Clerk key (dev), or Clerk answered nothing: the laptops get it on connect
+        logger.info("a2a rules push: no members listed; nothing pushed", extra={"org": org})
+        return 0
     rows = []
-    for member in await clerk_admin.list_organization_members(org):
+    for member in members:
         rows += await _connections().routes_for_user(member["user_id"])
     rows = [r for r in rows if await _in_workspace(r, org)]
     return sum(await asyncio.gather(*(_push_one(r, jws) for r in rows)))

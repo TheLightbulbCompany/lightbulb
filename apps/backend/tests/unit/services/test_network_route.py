@@ -233,6 +233,38 @@ def test_a_signed_in_computer_links_and_answers_ops_forwarded_from_another_task(
     assert door.client.post("/api/v1/network/internal/route", json=body).status_code == 403
 
 
+def test_serve_records_the_proofs_workspace_and_pushes_its_rules_once_until_close(door, monkeypatch):
+    pushes, cancelled = [], []
+
+    async def push(link, org):  # stands in for push_current_rules: it runs until the link closes
+        pushes.append((link.key, link.org, org))
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.append(link.key)
+            raise
+
+    monkeypatch.setattr(network_route, "push_current_rules", push)
+    computer = Key()
+    with door.client.websocket_connect("/api/v1/gateway/network") as ws:
+        hello = computer.hello(ws.receive_json()["challenge"])
+        hello["proof"] = network_proof.mint(computer.key, USER, org="org_ws")
+        ws.send_json(hello)
+        assert ws.receive_json()["type"] == "ready"
+        assert door.presence.put_route.await_args.kwargs["org"] == "org_ws"
+        for _ in range(50):
+            if pushes:
+                break
+            threading.Event().wait(0.05)
+        assert cancelled == []
+    for _ in range(50):
+        if cancelled:
+            break
+        threading.Event().wait(0.05)
+    assert pushes == [(computer.key, "org_ws", "org_ws")]
+    assert cancelled == [computer.key]
+
+
 def test_a_bad_proof_or_a_computer_nobody_signed_in_is_closed(door):
     from starlette.websockets import WebSocketDisconnect
 

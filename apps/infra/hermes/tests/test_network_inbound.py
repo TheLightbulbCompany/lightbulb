@@ -381,7 +381,7 @@ def test_a_reply_to_an_a2a_session_goes_to_the_backend_not_a_turn(net, turns, ba
     url, headers, body = posted[-1]
     assert url == "https://api.test/api/v1/internal/a2a/org_test/session-reply"
     assert headers["Authorization"] == "Bearer hook-tok"
-    assert body == {"request_id": "task-1", "text": "all green", "session": A2A_SESSION}
+    assert body == {"request_id": "task-1", "text": "all green", "session": A2A_SESSION, "from": "mac-p"}
     assert _acks(net) == [("m9", "delivered"), ("m9", "read")]
     assert all(c["session"] == A2A_SESSION for c in net.calls("inbox.ack"))
     assert turns.ran == []

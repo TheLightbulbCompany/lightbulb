@@ -499,3 +499,30 @@ def test_unauthenticated_upload_is_refused_before_the_body_is_read(client, hook,
         assert r.status_code == 401, headers
         assert len(pulled) <= 1, headers  # the transport may prime one chunk; the app read none
     put.assert_not_awaited()
+
+
+def test_start_and_ask_pass_the_caller_through(client, monkeypatch):
+    from core.services import app_conversation
+
+    out = {"app_id": "app_1", "conversation_id": "c1", "canvas_url": "u", "next": "n"}
+    start, ask = AsyncMock(return_value=out), AsyncMock(return_value={"conversation_id": "c1", "message_id": "m1"})
+    monkeypatch.setattr(app_conversation, "start", start)
+    monkeypatch.setattr(app_conversation, "ask", ask)
+    body = {"name": "booking", "request": "build a booking page", "origin_room_id": "room_1", "requested_by": "u1"}
+    assert client.post(f"{BASE}/start", json=body, headers=HOOK).json() == out
+    caller, name, text = start.await_args.args
+    assert (caller.actor_id, caller.actor_kind, name, text) == ("agt_1", "agent", "booking", "build a booking page")
+    assert start.await_args.kwargs == {"origin_room_id": "room_1", "requested_by": "u1"}
+    assert client.post(f"{BASE}/start", json={**body, "request": ""}, headers=HOOK).status_code == 422
+    r = client.post(
+        f"{BASE}/app_1/ask",
+        json={"text": "green", "origin": {"room_id": "room_1", "requested_by": "u1"}, "client_message_id": "msg_9"},
+        headers=HOOK,
+    )
+    assert r.json()["message_id"] == "m1"
+    assert ask.await_args.args[1:] == ("app_1", "green")
+    assert ask.await_args.kwargs == {
+        "origin": {"room_id": "room_1", "requested_by": "u1"},
+        "client_message_id": "msg_9",
+    }
+    assert client.post(f"{BASE}/app_1/ask", json={"text": "green"}).status_code == 401

@@ -4129,7 +4129,9 @@ async def create_human_message(
         members,
         mentions + [{"kind": "agent", "id": a} for a in (addressing or {}).get("agents", [])],
         None,
-        room_kind=meta.get("kind"),
+        # An app's own conversation (app_conversation) is its builder's: every person's message there is
+        # addressed to it, as in a DM.
+        room_kind="dm" if meta.get("app") else meta.get("kind"),
         feed_roster=feed_roster,
         in_thread=request.thread_root_message_id is not None,
     )

@@ -126,7 +126,8 @@ class AppStatus(TypedDict):
     app_id: str
     name: str
     display_name: str
-    room_id: str
+    room_id: str | None
+    conversation_id: str | None  # the app's own conversation (app_conversation), once it has one
     state: str
     open_to: str
     budget_usd: int
@@ -1106,10 +1107,14 @@ def _state(app: dict, rows: dict) -> tuple[str, AppError | None]:
 
 
 async def _record_state(app: dict, state: str) -> str:
+    if app.get("state") == "requested" and not app.get("sources"):
+        return "requested"  # reserved by `app start`; the first upload adopts it
     record = "live" if state == "ready" and app.get("live_version") else state
     if app.get("state") != record:
         # Only over the state this copy saw: a reader from before a release must not undo its "live".
-        await _patch(app, {"state": record}, expect={"state": app.get("state")})
+        moved = await _patch(app, {"state": record}, expect={"state": app.get("state")})
+        if moved and record in ("ready", "live"):
+            await apps_room.post_origin_ready_line(app, _display(app), _canvas_url(app["app_id"]))
     return record
 
 
@@ -1180,6 +1185,10 @@ async def put_source(
         )
     if app.get("state") == "destroyed":
         raise AppsRefused("app_destroyed", f"{name} was removed.", "pick another name")
+    if app.get("state") == "requested":  # reserved by `app start`: its builder's first upload takes it over
+        adopted = {"state": "building", "actor_id": actor.actor_id, "actor_kind": actor.actor_kind}
+        await apps_repo.patch(app["app_id"], adopted, expect={"state": "requested"})
+        app = {**app, **adopted}
     source_id = await apps_source.put(owner_id, app["app_id"], commit=commit, data=archive)
     files = await asyncio.to_thread(lambda: dict(apps_source.iter_files(archive)))
     names = [n for n, _ in _migrations(files)[0]]
@@ -1225,7 +1234,9 @@ async def up(
         await _check_destructive(app, await _files(owner_id, app["app_id"], source_id), approved_destructive)
     fields: dict = {"preview_want": source_id}
     if not await _rows(app):  # R52: only a new app takes these from up; afterwards the owner's PATCH does
-        fields.update(services=services, open_to=open_to, budget_usd=budget_usd, origin=origin, room_id=room_id)
+        fields.update(services=services, open_to=open_to, budget_usd=budget_usd, origin=origin)
+        if room_id != app.get("conversation_id"):  # built in its own conversation: the room stays the origin's
+            fields["room_id"] = room_id
         if requested_by and not app.get("created_by"):  # R73: an agent's app gets its human creator
             try:
                 await messaging.require_room_member(owner_id, requested_by, room_id)
@@ -1249,20 +1260,20 @@ _PUBLISH_ASK = re.compile(r"\b(publish|ship|launch|deploy|go live|make it live|p
 
 
 async def _asked_to_publish(app: dict) -> bool:
-    """A person in the app's room asked for it to go live since the app was made. An agent may
-    publish only then: going live is the person's call (Canvas's Publish button is theirs too)."""
-    room_id = app.get("room_id")
-    if not room_id:
-        return False
+    """A person asked for it to go live since the app was made, in the app's conversation or the room it
+    came from. An agent may publish only then: going live is the person's call (Canvas's Publish button is
+    theirs too). A relayed line is Lightbulb's (author "system"), never a person's ask."""
     since = str(app.get("created_at") or "")
-    for m in await messaging_repo.list_messages_before(room_id, 10**18, 100):
-        text = m.get("editedText") if int(m.get("messageRevision", 0) or 0) else m.get("text")
-        if (
-            (m.get("author") or {}).get("kind") == "human"
-            and str(m.get("createdAt") or "") >= since
-            and _PUBLISH_ASK.search(text or "")
-        ):
-            return True
+    rooms = dict.fromkeys(r for r in (app.get("conversation_id"), app.get("origin_room_id"), app.get("room_id")) if r)
+    for room_id in rooms:
+        for m in await messaging_repo.list_messages_before(room_id, 10**18, 100):
+            text = m.get("editedText") if int(m.get("messageRevision", 0) or 0) else m.get("text")
+            if (
+                (m.get("author") or {}).get("kind") == "human"
+                and str(m.get("createdAt") or "") >= since
+                and _PUBLISH_ASK.search(text or "")
+            ):
+                return True
     return False
 
 
@@ -1494,7 +1505,8 @@ def _view(app: dict, rows: dict, state: str, agent_working: bool = False) -> App
         "app_id": app["app_id"],
         "name": app["name"],
         "display_name": _display(app),
-        "room_id": app["room_id"],
+        "room_id": app.get("room_id"),
+        "conversation_id": app.get("conversation_id"),
         "state": state,
         "open_to": app["open_to"],
         "budget_usd": app["budget_usd"],
@@ -1725,8 +1737,8 @@ async def _look(owner_id: str, app_id: str) -> bool:
         if _working(await messaging_repo.get_run(owner_id, run_id), now):
             return False
     # Any run in the app's room (one the app never linked) still beating: the agent is working.
-    if app.get("room_id") and any(
-        _working(r, now) for r in await messaging_repo.list_open_runs_for_room(owner_id, app["room_id"])
+    if apps_room.room_of(app) and any(
+        _working(r, now) for r in await messaging_repo.list_open_runs_for_room(owner_id, apps_room.room_of(app))
     ):
         return False
     step = "setting up hosting" if state == "provisioning" else "building"  # a pending deploy is never stuck
@@ -1766,7 +1778,7 @@ async def list_apps(owner_id: str, auth: AuthContext) -> list[dict]:
     if not apps:
         return []
     all_rows = await wf_repo.list_for_owner(owner_id)
-    room_ids = sorted({a["room_id"] for a in apps})
+    room_ids = sorted({a["room_id"] for a in apps if a.get("room_id")})
     metas = dict(zip(room_ids, await asyncio.gather(*(messaging_repo.get_room(r) for r in room_ids)), strict=True))
     live = {r: m for r, m in metas.items() if m and not m.get("deletedAt")}
     member = dict(
@@ -1797,9 +1809,9 @@ async def list_apps(owner_id: str, auth: AuthContext) -> list[dict]:
         uid = a.get("created_by")
         row.update(
             # R35: an invited app still opens for its room; invitees use their links.
-            can_open=a["open_to"] in ("public", "workspace") or bool(member.get(a["room_id"])),
+            can_open=a["open_to"] in ("public", "workspace") or bool(member.get(a.get("room_id"))),
             # Only a room the caller is in is named to them.
-            room_name=(live.get(a["room_id"]) or {}).get("name") if member.get(a["room_id"]) else None,
+            room_name=(live.get(a.get("room_id")) or {}).get("name") if member.get(a.get("room_id")) else None,
             created_by_name=names.get(uid) if uid and names.get(uid) != uid else None,
             agent_name=agents.get(a.get("actor_id")) if a.get("actor_kind") == "agent" else None,
             # R73: who may publish (and manage); whether there is a ready preview is the `preview` field.
@@ -1884,6 +1896,8 @@ async def open_app(owner_id: str, app_id: str, *, auth: AuthContext, target: str
     url = url.rstrip("/")
     if app["open_to"] in ("room", "invited"):  # R35: invited apps still open for their room
         try:
+            if not app.get("room_id"):
+                raise messaging.ApiProblem("ROOM_NOT_FOUND", "Room not found.")
             await messaging.require_room_member(owner_id, auth.user_id, app["room_id"])
         except messaging.ApiProblem:
             # The room is not named: Canvas never names a room the caller is not in.
@@ -1899,7 +1913,7 @@ async def open_app(owner_id: str, app_id: str, *, auth: AuthContext, target: str
     if name == auth.user_id and email:
         name = email
     token = network_proof.mint_app_pass(
-        auth.user_id, name=name, email=email, ws=owner_id, room=app["room_id"], app=app["name"]
+        auth.user_id, name=name, email=email, ws=owner_id, room=app.get("room_id") or "", app=app["name"]
     )
     return f"{url}/_lightbulb/session#token={token}"
 
@@ -1920,7 +1934,7 @@ async def test_link(owner_id: str, app_id: str, *, actor: BuilderCaller) -> str:
         name="Builder agent",
         email="",
         ws=owner_id,
-        room=app["room_id"],
+        room=app.get("room_id") or "",
         app=_preview_app(app),
         life_s=TEST_PASS_S,
     )
@@ -2000,8 +2014,8 @@ async def revoke_invite(owner_id: str, app_id: str, *, email: str) -> dict:
 
 
 async def ask_agent_to_fix(owner_id: str, app_id: str, *, auth: AuthContext, error: str | None = None) -> dict:
-    """One message in the app's room, as the person, asking its builder agent to fix a failed publish
-    or to pick up an app that stopped moving.
+    """One message in the app's conversation (else, an older app, its room), as the person, asking its
+    builder agent to fix a failed publish or to pick up an app that stopped moving.
     ``error``: a refusal Canvas saw that was never stored; the person could post it themselves anyway."""
     app = await _owned(owner_id, app_id)
     # A provisioning failure is worked out from the rows, never stored.
@@ -2010,7 +2024,11 @@ async def ask_agent_to_fix(owner_id: str, app_id: str, *, auth: AuthContext, err
     stuck = app.get("stuck")
     if not what and not stuck:
         raise AppsRefused("nothing_failed", "That app has nothing to fix right now.")
-    room_id = app["room_id"]
+    room_id = app.get("room_id")
+    if app.get("conversation_id") or not room_id:  # its own conversation: seat the person there first
+        from core.services import app_conversation  # it imports this module
+
+        room_id = (await app_conversation.open_conversation(auth, app_id))["room_id"]
     try:
         await messaging.require_room_member(owner_id, auth.user_id, room_id)
         # A builder that left the room (or a person's computer that built it): any agent there can read

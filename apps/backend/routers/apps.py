@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import dataclasses
 import re
+import uuid
 from typing import Annotated, Literal
 
 from botocore.exceptions import BotoCoreError, ClientError
@@ -18,6 +19,7 @@ from pydantic import BaseModel, EmailStr, Field, StringConstraints
 from core.config import settings
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.repositories.apps_repo import NameTaken
+from core.services import app_conversation
 from core.services import apps_service as svc
 from core.services import network_login, network_proof
 from core.services.apps_db import AppsDbError
@@ -213,6 +215,46 @@ class RollbackBody(BaseModel):
     version: int | None = Field(default=None, ge=1)
 
 
+class StartBody(BaseModel):
+    name: str = Field(max_length=63)
+    request: str = Field(min_length=1, max_length=4000)
+    origin_room_id: str | None = Field(default=None, max_length=128)
+    requested_by: str | None = Field(default=None, max_length=128)
+
+
+class AskOrigin(BaseModel):
+    room_id: str | None = Field(default=None, max_length=128)
+    requested_by: str | None = Field(default=None, max_length=128)
+
+
+class AskBody(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+    origin: AskOrigin | None = None
+    client_message_id: str | None = Field(default=None, max_length=128)  # the source message: a resend is a no-op
+
+
+@router.post("/build/start")
+async def start(body: StartBody, caller: Builder):
+    """A room agent's first move on an app request: the app gets its own conversation, the room is free."""
+    return await _run(
+        app_conversation.start(
+            caller,
+            body.name,
+            body.request,
+            origin_room_id=body.origin_room_id,
+            requested_by=body.requested_by,
+        )
+    )
+
+
+@router.post("/build/{app_id}/ask")
+async def ask(app_id: str, body: AskBody, caller: Builder):
+    origin = body.origin.model_dump(exclude_none=True) if body.origin else None
+    return await _run(
+        app_conversation.ask(caller, app_id, body.text, origin=origin, client_message_id=body.client_message_id)
+    )
+
+
 @router.post("/build/source")
 async def put_source(request: Request, caller: Annotated[svc.BuilderCaller, Depends(_upload_caller)]):
     # Parsed by hand, after builder_caller: the proof check hashes the raw body first, and FastAPI's
@@ -324,6 +366,11 @@ class AskAgentBody(BaseModel):
     error: str | None = Field(default=None, max_length=2000)  # a refusal Canvas saw that the record never kept
 
 
+class MemberAskBody(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+    client_message_id: uuid.UUID | None = None
+
+
 class MemberPublishBody(BaseModel):
     pass  # R69: {} — Canvas publishes what the ready preview shows
 
@@ -369,6 +416,19 @@ async def ask_agent(
     app_id: str, body: AskAgentBody, owner_id: Manager, auth: Annotated[AuthContext, Depends(get_current_user)]
 ):
     return await _run(svc.ask_agent_to_fix(owner_id, app_id, auth=auth, error=body.error))
+
+
+@router.post("/{app_id}/ask")
+async def member_ask(
+    app_id: str, body: MemberAskBody, owner_id: Manager, auth: Annotated[AuthContext, Depends(get_current_user)]
+):
+    return await _run(app_conversation.ask_as_member(auth, app_id, body.text, body.client_message_id))
+
+
+@router.post("/{app_id}/conversation")
+async def open_conversation(app_id: str, auth: Annotated[AuthContext, Depends(get_current_user)]):
+    """Canvas opens the app's conversation: created on the first open, the caller seated (anyone who can open the app)."""
+    return await _run(app_conversation.open_conversation(auth, app_id))
 
 
 @router.post("/{app_id}/open")

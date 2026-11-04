@@ -161,8 +161,9 @@ async def _active(owner_id: str, user_id: str) -> bool:
     return bool(stream and stream.get("active"))
 
 
-async def _seat(owner_id: str, meta: dict, user_id: str) -> dict:
-    """Seat one reader as a plain member. A lost revision race re-reads and retries."""
+async def _seat(owner_id: str, meta: dict, user_id: str, *, full: str = "This session's chat is full.") -> dict:
+    """Seat one reader as a plain member. A lost revision race re-reads and retries. Also the app
+    conversation's door (``app_conversation``), with its own ``full`` refusal."""
     if await messaging_repo.get_user_stream(owner_id, user_id) is None:
         # Only a person who never had a stream gets one here (create-if-absent). An inactive
         # row is a removed member: ensure_user_stream would turn it back on, so it is never
@@ -183,7 +184,7 @@ async def _seat(owner_id: str, meta: dict, user_id: str) -> dict:
             # ponytail: MAX_ROOM_MEMBERS (32) bounds a session's chat, as it bounds the vendor room.
             put_metric("messaging.session_room.capped")
             logger.warning("session chat full; %s not seated in %s", user_id, meta["roomId"])
-            raise ApiProblem("MEMBER_LIMIT", "This session's chat is full.") from exc
+            raise ApiProblem("MEMBER_LIMIT", full) from exc
         except ClientError as exc:
             if not messaging_repo._is_cancelled(exc) or attempt == 2:
                 raise

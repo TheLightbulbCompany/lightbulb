@@ -534,6 +534,7 @@ def test_remove_accepts_the_display_name_or_the_slug(admin, monkeypatch):
     [
         ("POST", "rollback", {"version": 1}),
         ("POST", "ask-agent", {}),
+        ("POST", "ask", {"text": "make it blue"}),
         ("GET", "invites", None),
         ("DELETE", "invites", {"email": "a@x.co"}),
     ],
@@ -546,6 +547,7 @@ def test_new_member_routes_are_manager_gated(monkeypatch, method, path, body):
     monkeypatch.setattr(svc.apps_repo, "get", AsyncMock(side_effect=lambda a, **_: records.get(a)))
     for name in ("rollback", "ask_agent_to_fix", "list_invites", "revoke_invite"):
         monkeypatch.setattr(svc, name, AsyncMock(side_effect=AssertionError("the gate comes first")))
+    monkeypatch.setattr(mod.app_conversation, "ask_as_member", AsyncMock(side_effect=AssertionError("gate first")))
     try:
         r = _as("member").request(method, f"{BASE}/mine/{path}", json=body)
         assert r.status_code == 403 and r.json()["detail"]["code"] == "not_allowed"
@@ -837,3 +839,13 @@ def test_invite_email_names_the_app_by_its_display_name_escaped(invites):
     assert sent[0]["subject"] == "You're invited to Sign-up <b>now</b>"
     assert "Sign-up &lt;b&gt;now&lt;/b&gt;" in sent[0]["html"] and "<b>" not in sent[0]["html"]
     assert "alpha" not in sent[0]["text"].split("https://")[0]  # the slug stays in the address
+
+
+def test_conversation_opens_for_any_signed_in_member_and_the_service_decides(member, monkeypatch):
+    opened = AsyncMock(return_value={"room_id": "c1"})
+    monkeypatch.setattr(mod.app_conversation, "open_conversation", opened)
+    assert member.post(f"{BASE}/app_1/conversation").json() == {"room_id": "c1"}
+    assert opened.await_args.args[0].user_id == "user_member" and opened.await_args.args[1] == "app_1"
+    opened.side_effect = svc.AppsRefused("not_a_member", "no")
+    r = member.post(f"{BASE}/app_1/conversation")
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "not_a_member"

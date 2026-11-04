@@ -192,9 +192,9 @@ class Origin(BaseModel):
 
 class UpBody(BaseModel):
     name: str = Field(max_length=63)
-    room_id: str = Field(max_length=128)
+    room_id: str | None = Field(default=None, max_length=128)  # optional: where the request came from
     services: list[Annotated[str, Field(max_length=64)]] = Field(max_length=20)
-    open_to: Literal["room", "workspace", "invited", "public"]
+    open_to: Literal["me", "invited", "workspace", "public", "room"]
     budget_usd: int = Field(ge=0)
     source_id: str = Field(max_length=128)
     origin: Origin
@@ -261,9 +261,13 @@ async def put_source(request: Request, caller: Annotated[svc.BuilderCaller, Depe
     # own form parsing would consume the stream before it (Starlette replays the cached body here).
     async with request.form(max_part_size=4096) as form:
         archive = form.get("archive")
-        fields = {k: form.get(k) for k in ("name", "room_id", "commit")}
+        fields = {k: form.get(k) for k in ("name", "commit")}
         if not hasattr(archive, "read") or not all(isinstance(v, str) and v for v in fields.values()):
-            raise HTTPException(422, {"code": "invalid_request", "message": "name, room_id, commit and archive"})
+            raise HTTPException(422, {"code": "invalid_request", "message": "name, commit and archive"})
+        room_id = form.get("room_id")  # optional: an app belongs to its workspace, not a room
+        if room_id is not None and not (isinstance(room_id, str) and len(room_id) <= 128):
+            raise HTTPException(422, {"code": "invalid_request", "message": "room_id"})
+        fields["room_id"] = room_id or None
         placeholder = form.get("placeholder") == "true"  # the starter's untouched page; old CLIs omit it
         data = await archive.read(MAX_UPLOAD + 1)
     if len(data) > MAX_UPLOAD:
@@ -345,7 +349,7 @@ async def list_apps(auth: Annotated[AuthContext, Depends(get_current_user)]):
 
 
 class SettingsBody(BaseModel):
-    open_to: Literal["room", "workspace", "invited", "public"] | None = None
+    open_to: Literal["me", "invited", "workspace", "public", "room"] | None = None
     budget_usd: int | None = Field(default=None, ge=0, strict=True)
     display_name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=60)] | None = None
 

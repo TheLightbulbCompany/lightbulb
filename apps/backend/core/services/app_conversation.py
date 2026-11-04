@@ -110,11 +110,14 @@ async def _seat(owner_id: str, meta: dict, user_id: str) -> None:
 
 
 async def _can_open(owner_id: str, app: dict, auth: AuthContext) -> bool:
-    """Whoever can open the app: its managers, everyone for a workspace or public app, the members of its
-    room, and anyone already seated in its conversation."""
-    if svc.can_manage(app, auth) or app.get("open_to") in ("workspace", "public"):
+    """Whoever can open the app (``apps_service._can_open``: by its sharing), and anyone already seated in
+    its conversation."""
+    if svc._can_open(app, auth, False):
         return True
-    for room_id in (app.get("room_id"), app.get("conversation_id")):
+    for room_id in (
+        app.get("room_id") if app.get("open_to") in ("room", "invited") else None,
+        app.get("conversation_id"),
+    ):
         if room_id and await messaging.still_reads_room(owner_id, auth.user_id, room_id, owner_id):
             return True
     return False

@@ -168,6 +168,9 @@ def test_up_returns_up_result(client, monkeypatch):
     assert kw["approved_destructive"] is None and kw["requested_by"] is None
     client.post(f"{BASE}/up", json={**UP_BODY, "requested_by": "user_ada"}, headers=HOOK)
     assert up.await_args.kwargs["requested_by"] == "user_ada"
+    body = {k: v for k, v in UP_BODY.items() if k != "room_id"}  # no room: a CLI-only app
+    assert client.post(f"{BASE}/up", json={**body, "open_to": "me"}, headers=HOOK).status_code == 200
+    assert (up.await_args.kwargs["room_id"], up.await_args.kwargs["open_to"]) == (None, "me")
 
 
 def test_status_shape_matches_contract(client, monkeypatch):
@@ -212,6 +215,9 @@ def test_source_upload_and_its_errors(client, monkeypatch):
     assert put.await_args.kwargs["placeholder"] is False  # an old CLI sends no field
     client.post(f"{BASE}/source", data={**form, "placeholder": "true"}, files=files, headers=HOOK)
     assert put.await_args.kwargs["placeholder"] is True
+    # No room: an app belongs to its workspace.
+    r = client.post(f"{BASE}/source", data={"name": "crew", "commit": "c1"}, files=files, headers=HOOK)
+    assert r.status_code == 200 and put.await_args.kwargs["room_id"] is None
 
     monkeypatch.setattr(mod, "MAX_UPLOAD", 4)
     assert client.post(f"{BASE}/source", data=form, files=files, headers=HOOK).status_code == 413

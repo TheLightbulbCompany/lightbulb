@@ -82,6 +82,8 @@ def test_list_marks_can_open_by_room_membership(member, monkeypatch):
         _record("app_5", "ws", "room_out", "workspace"),
         _record("app_6", "pub", "room_gone", "public"),
         _record("app_7", "gone", "room_in", "room", state="destroyed"),
+        _record("app_8", "solo", None, "workspace"),
+        _record("app_9", "private", None, "me", created_by="user_founder"),
     ]
     rooms = {
         "room_in": {"roomId": "room_in", "ownerId": "org_a", "name": "Ops"},
@@ -127,7 +129,8 @@ def test_list_marks_can_open_by_room_membership(member, monkeypatch):
         "inv-out": False,
         "ws": True,
         "pub": True,
-    }
+        "solo": True,
+    }  # "private" is its creator's only: not listed to another member
     assert rows["mine"]["room_name"] == "Ops" and rows["pub"]["room_name"] is None
     assert rows["theirs"]["room_name"] is None  # a room the caller is not in is not named
     assert rows["mine"]["created_by_name"] == "Ada" and rows["mine"]["agent_name"] is None
@@ -165,6 +168,7 @@ def test_patch_requires_creator_or_org_admin(admin, member, monkeypatch, paid):
     assert upd.await_args.kwargs == {"open_to": "public", "budget_usd": 50, "display_name": None}
     paid.assert_awaited_with("org_a", message=mod.PAID_MESSAGE)
 
+    assert admin.patch(f"{BASE}/app_1", json={"open_to": "me"}).status_code == 200  # only me
     r = admin.patch(f"{BASE}/app_1", json={"display_name": "  Crew Rota  "})
     assert r.status_code == 200 and upd.await_args.kwargs["display_name"] == "Crew Rota"
     for bad in (

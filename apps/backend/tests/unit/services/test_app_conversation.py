@@ -314,3 +314,70 @@ async def test_every_message_in_an_apps_conversation_is_for_its_builder(monkeypa
     targets = created.await_args.kwargs["dispatch_targets"]
     assert [t["agentId"] for t in targets] == woken
     assert all(t["eventKind"] == "user_request" for t in targets)
+
+
+# --- apps don't belong to rooms (Task 2) --------------------------------------------------------
+
+
+async def _roomless(actor=PERSON):
+    return await svc.put_source(OWNER, name="notes", commit="c1", archive=_tar(SRC_V1), actor=actor)
+
+
+async def test_an_app_with_no_room_builds_publishes_and_shows_to_the_workspace(chat, world):  # noqa: F811
+    src = await _roomless()
+    app_id = src["app_id"]
+    app = await svc.apps_repo.get(app_id)
+    assert (app["room_id"], app["open_to"], app["created_by"]) == (None, "workspace", "user_1")
+    # An up that still says "room" has no room to be open to: the app stays openable, by the workspace.
+    await svc.up(
+        OWNER,
+        name="notes",
+        services=["database"],
+        open_to="room",
+        budget_usd=0,
+        source_id=src["source_id"],
+        actor=PERSON,
+        origin={"kind": "idea"},
+    )
+    assert (await svc.apps_repo.get(app_id))["open_to"] == "workspace"
+    await _all_active(world, app_id)
+    await svc.status(OWNER, app_id)
+    world.vercel.finish(f"dpl_{len(world.vercel.created())}")
+    assert (await svc.status(OWNER, app_id))["state"] == "ready"
+    # A person running `app publish` is never gated (nobody had to ask in any room).
+    assert (await svc.publish(OWNER, app_id, source_id=src["source_id"], actor=PERSON))["state"] == "building"
+    rows = await svc.list_apps(OWNER, BOB)
+    assert [(r["name"], r["can_open"], r["room_name"]) for r in rows] == [("notes", True, None)]
+    url = await svc.open_app(OWNER, app_id, auth=BOB, target="preview")
+    assert "/_lightbulb/session#token=" in url
+
+
+async def test_sharing_without_a_room_only_me_and_no_room_mode(chat):
+    src = await _roomless()
+    app_id = src["app_id"]
+    await svc.apps_repo.patch(app_id, {"preview_url": "https://notes-preview.apps.example.com"})
+    with pytest.raises(svc.AppsRefused) as e:
+        await svc.update_settings(OWNER, app_id, open_to="room")
+    assert e.value.code == "no_room"
+    await svc.update_settings(OWNER, app_id, open_to="me")
+    assert [r["name"] for r in await svc.list_apps(OWNER, ADA)] == ["notes"]
+    assert await svc.list_apps(OWNER, BOB) == []
+    with pytest.raises(svc.AppsRefused) as e:
+        await svc.open_app(OWNER, app_id, auth=BOB, target="preview")
+    assert e.value.code == "not_allowed"
+    assert "token=" in await svc.open_app(OWNER, app_id, auth=ADA, target="preview")
+    with pytest.raises(svc.AppsRefused):
+        await conv.open_conversation(BOB, app_id)
+
+
+async def test_an_agent_publishes_a_roomless_app_only_when_asked_in_its_conversation(chat, monkeypatch):
+    src = await _roomless(actor=AGENT)
+    room = (await conv.open_conversation(ADA, src["app_id"]))["room_id"]
+    app = await svc.apps_repo.get(src["app_id"])
+    said: list[dict] = []
+    monkeypatch.setattr(
+        svc.messaging_repo, "list_messages_before", AsyncMock(side_effect=lambda r, b, n: said if r == room else [])
+    )
+    assert not await svc._asked_to_publish(app)
+    said.append({"author": {"kind": "human"}, "text": "publish it", "createdAt": "2999-01-01T00:00:00Z"})
+    assert await svc._asked_to_publish(app)

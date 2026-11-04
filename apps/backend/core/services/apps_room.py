@@ -121,12 +121,12 @@ async def post_system_line(
     app: dict, key: str, text: str, targets: list[dict] | None = None, *, room_id: str | None = None
 ) -> dict | None:
     """A system line in the app's room (``room_of``), or in ``room_id``. The key is the receipt: a resend
-    replays it. ``None``: the room is gone."""
+    replays it (``"replayed": True`` on the result). ``None``: the room is gone."""
     room_id = room_id or room_of(app)
     if not room_id:
         return None
     try:
-        message, _ = await messaging_repo.create_message(
+        message, replayed = await messaging_repo.create_message(
             room_id=room_id,
             owner_id=app["owner_id"],
             idemp_pk=messaging_repo.room_pk(room_id),
@@ -142,7 +142,7 @@ async def post_system_line(
             source_agent_id=None,
             client_message_id=None,
         )
-        return message
+        return {**message, "replayed": replayed}
     except (messaging_repo.RoomArchived, messaging_repo.RoomNotFound):
         return None
 

@@ -221,10 +221,10 @@ def _build_rooms(app: dict) -> list[str]:
 
 
 def _can_open(app: dict, auth: AuthContext, in_room: bool) -> bool:
-    """Who opens it: "me" its managers; "room" and "invited" also the app's room (R35: invitees use their
-    links); "workspace" and "public" every member."""
+    """Who opens it: "me" and "invited" its managers (invitees use their links, R35); "room" also the app's
+    room; "workspace" and "public" every member."""
     mode = app["open_to"]
-    return mode in ("workspace", "public") or can_manage(app, auth) or (mode in ("room", "invited") and in_room)
+    return mode in ("workspace", "public") or can_manage(app, auth) or (mode == "room" and in_room)
 
 
 def _notify(app: dict) -> None:
@@ -1978,7 +1978,7 @@ async def open_app(owner_id: str, app_id: str, *, auth: AuthContext, target: str
     url = url.rstrip("/")
     if not _can_open(app, auth, False):
         in_room = False
-        if app["open_to"] in ("room", "invited") and app.get("room_id"):
+        if app["open_to"] == "room" and app.get("room_id"):
             try:
                 await messaging.require_room_member(owner_id, auth.user_id, app["room_id"])
                 in_room = True
@@ -2040,8 +2040,9 @@ async def reset_preview_data(owner_id: str, app_id: str) -> dict:
 
 
 async def invite(owner_id: str, app_id: str, *, emails: list[str], user_id: str) -> dict:
-    """One single-use, 14-day link per email, to this app only; a room or only-me app then becomes "invited"
-    (``update_settings`` re-pushes LIGHTBULB_OPEN_TO and redeploys). R48: a public app needs no pass, so
+    """One single-use, 14-day link per email, to this app only; an only-me app then becomes "invited", a room
+    app stays "room" (its room keeps it; any non-public app honours its links). ``update_settings`` re-pushes
+    LIGHTBULB_OPEN_TO and redeploys. R48: a public app needs no pass, so
     its invitees get the plain address and nothing is stored."""
     app = await _owned(owner_id, app_id)
     base = (app.get("live_url") or app.get("preview_url") or "").rstrip("/")
@@ -2064,7 +2065,7 @@ async def invite(owner_id: str, app_id: str, *, emails: list[str], user_id: str)
             created_by=user_id,
         )
         links[email] = f"{base}/_lightbulb/invite#t={token}"
-    if app["open_to"] in ("room", "me"):  # R59: additive; only once the links exist. A workspace app stays workspace.
+    if app["open_to"] == "me":  # R59: additive; only once the links exist. Room and workspace apps stay as they are.
         await update_settings(owner_id, app_id, open_to="invited")
         app["open_to"] = "invited"
     once = "" if public else " The link works once and expires in 14 days."

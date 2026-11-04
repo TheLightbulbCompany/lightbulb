@@ -125,7 +125,7 @@ def test_list_marks_can_open_by_room_membership(member, monkeypatch):
     assert {n: a["can_open"] for n, a in rows.items()} == {
         "mine": True,
         "theirs": False,
-        "inv": True,
+        "inv": False,  # "invited" is the invitees (by link) and managers, never the room
         "inv-out": False,
         "ws": True,
         "pub": True,
@@ -407,6 +407,13 @@ def test_invites_require_admin_and_set_open_to_invited(member, invites):
     admin = _as("admin")
     for bad in ({"emails": []}, {"emails": ["not-an-email"]}, {"emails": [f"u{i}@x.co" for i in range(21)]}, {}):
         assert admin.post(f"{BASE}/app_a/invites", json=bad).status_code == 422, bad
+    # A room app stays a room app (its room keeps it; the links work too). An only-me app becomes "invited".
+    r = admin.post(f"{BASE}/app_b/invites", json={"emails": ["dee@x.co"]})
+    assert r.status_code == 200 and r.json() == {"invited": 1, "open_to": "room"}
+    sent.clear()
+    table.update_item(
+        Key={"app_id": "app_a"}, UpdateExpression="SET open_to = :m", ExpressionAttributeValues={":m": "me"}
+    )
     r = admin.post(f"{BASE}/app_a/invites", json={"emails": ["Bo@X.co", "cy@x.co"]})
     assert r.status_code == 200 and r.json() == {"invited": 2, "open_to": "invited"}
     assert table.get_item(Key={"app_id": "app_a"})["Item"]["open_to"] == "invited"
@@ -414,7 +421,7 @@ def test_invites_require_admin_and_set_open_to_invited(member, invites):
     assert all(m["kind"] == "apps_invite" and "https://alpha.apps.test/_lightbulb/invite#t=" in m["html"] for m in sent)
     # only the token's hash is stored
     stored = [i for i in table.scan()["Items"] if i["app_id"].startswith("INVITE#")]
-    assert len(stored) == 2 and all(_token(m) not in str(stored) for m in sent)
+    assert len(stored) == 3 and all(_token(m) not in str(stored) for m in sent)
     assert admin.post(f"{BASE}/app_zzz/invites", json={"emails": ["a@x.co"]}).status_code == 404
 
 

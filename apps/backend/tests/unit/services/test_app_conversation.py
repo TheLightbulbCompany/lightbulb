@@ -447,3 +447,52 @@ async def test_a_first_upload_that_loses_the_adoption_carries_on_with_the_winner
     app = await svc.apps_repo.get(res["app_id"])
     assert src["app_id"] == res["app_id"] and (app["state"], app["actor_id"]) == ("building", CEO)
     assert app["sources"]
+
+
+# --- Task 2 review --------------------------------------------------------------------------------
+
+
+async def test_invited_is_the_invitees_and_managers_never_the_room(chat, monkeypatch):
+    monkeypatch.setattr(svc.apps_repo, "put_invite", AsyncMock())
+    monkeypatch.setattr(svc.email_service, "send_email", AsyncMock())
+    res = await _start()  # a room app from #general, created by Ada
+    app_id = res["app_id"]
+    await svc.apps_repo.patch(app_id, {"preview_url": "https://booking-preview.apps.example.com"})
+    chat.members["room_1"].append({"kind": "human", "id": BOB.user_id})
+    # Inviting from a room app keeps it a room app: its room still opens it.
+    assert (await svc.invite(OWNER, app_id, emails=["x@example.com"], user_id="user_1"))["open_to"] == "room"
+    assert "token=" in await svc.open_app(OWNER, app_id, auth=BOB, target="preview")
+    # Only Ada, then one invite: "invited". Bob is in the origin room and still opens neither.
+    await svc.update_settings(OWNER, app_id, open_to="me")
+    assert (await svc.invite(OWNER, app_id, emails=["x@example.com"], user_id="user_1"))["open_to"] == "invited"
+    with pytest.raises(svc.AppsRefused) as e:
+        await svc.open_app(OWNER, app_id, auth=BOB, target="preview")
+    assert e.value.code == "not_allowed"
+    with pytest.raises(svc.AppsRefused):
+        await conv.open_conversation(BOB, app_id)
+    assert "token=" in await svc.open_app(OWNER, app_id, auth=ADA, target="preview")
+    assert not [a for a in await svc.list_apps(OWNER, BOB) if a["can_open"]]
+
+
+async def test_a_second_start_tells_the_agent_to_post_nothing(chat, monkeypatch):
+    first = await _start()
+    assert first["next"].startswith("post this line in the room") and first["relayed"]
+    # Nobody building: the request is said again (a new line), but the room hears nothing new.
+    again = await _start()
+    assert again["next"] == "this app was already started; post nothing in the room" and again["relayed"]
+    # The builder is on it: the same request replays, nothing new anywhere.
+    run = {"status": "open", "dispatchedAt": svc.utc_now_iso()}
+    monkeypatch.setattr(svc.messaging_repo, "list_open_runs_for_room", AsyncMock(return_value=[run]))
+    busy = await _start()
+    assert busy["next"] == again["next"] and not busy["relayed"]
+    assert len(chat.posts) == 2
+
+
+async def test_the_loser_of_a_start_race_never_posts_a_second_request(chat, monkeypatch):
+    first = await _start()
+    # Nobody is building yet, and the owner index lags: this start loses the name to the first.
+    monkeypatch.setattr(svc.apps_repo, "get_by_name", AsyncMock(return_value=None))
+    raced = await _start()
+    assert raced["app_id"] == first["app_id"]
+    assert raced["next"] == "this app was already started; post nothing in the room" and not raced["relayed"]
+    assert len(chat.posts) == 1

@@ -116,7 +116,7 @@ async def _can_open(owner_id: str, app: dict, auth: AuthContext) -> bool:
     narrowing the sharing must take the conversation away too (``unseat_who_cannot_open``)."""
     if svc._can_open(app, auth, False):
         return True
-    room_id = app.get("room_id") if app.get("open_to") in ("room", "invited") else None
+    room_id = app.get("room_id") if app.get("open_to") == "room" else None
     return bool(room_id) and await messaging.still_reads_room(owner_id, auth.user_id, room_id, owner_id)
 
 
@@ -126,7 +126,7 @@ async def unseat_who_cannot_open(app: dict) -> int:
     room_id = app.get("conversation_id")
     if not room_id or app["open_to"] in ("workspace", "public"):
         return 0
-    room = app.get("room_id") if app["open_to"] in ("room", "invited") else None
+    room = app.get("room_id") if app["open_to"] == "room" else None
     removed = 0
     for m in await messaging_repo.list_members(room_id):
         if m.get("kind") != "human" or m["id"] == app.get("created_by"):
@@ -193,9 +193,9 @@ async def _relay(app: dict, meta: dict, key: str, text: str) -> dict:
 async def _reserve(
     caller: BuilderCaller, name: str, origin_room_id: str | None, requester: str | None
 ) -> tuple[dict, bool]:
-    """The app record in state ``requested``, once per name: a second start finds the first's. The flag:
-    whether this call made it."""
-    made = False
+    """The app record in state ``requested``, once per name: a second start finds the first's. How it was
+    got: "made" by this call, "found" already there, or "raced" (a concurrent start made it first)."""
+    how = "found"
     owner_id = caller.owner_id
     app = await apps_repo.get_by_name(owner_id, name)
     if app is None:
@@ -215,11 +215,12 @@ async def _reserve(
                 display_name=svc._display({"name": name}),
                 state="requested",
             )
-            made = True
+            how = "made"
         except apps_repo.NameTaken:
             app = await apps_repo.claimed_by(owner_id, name)  # a start racing this one won the name
             if app is None:
                 raise
+            how = "raced"
     app = plain(app)
     if app.get("state") == "destroyed":
         raise AppsRefused("app_destroyed", f"{name} was removed.", "pick another name")
@@ -229,7 +230,7 @@ async def _reserve(
             f"{name} is already an app in this workspace.",
             "pick another name, or ask its builder in the app's conversation in Canvas",
         )
-    return app, made
+    return app, how
 
 
 async def _builder_busy(owner_id: str, room_id: str) -> bool:
@@ -258,27 +259,31 @@ async def start(
     builder = builder or await _default_builder({"owner_id": owner_id}, origin_room_id)
     if builder is None:
         raise _NO_AGENT
-    app, made = await _reserve(caller, name, origin_room_id, person)
+    app, how = await _reserve(caller, name, origin_room_id, person)
     meta = await _ensure(app, builder)
     if person:
         await _seat(owner_id, meta, person)
     text = await _attributed(caller, request_text, person, origin_room_id)
     # The receipt is this request (who and what): a retry replays it, another person's request is its own line.
     key = f"apps-start:{app['app_id']}:{hashlib.sha256(text.encode()).hexdigest()[:16]}"
-    if not made and not app.get("sources") and not await _builder_busy(owner_id, meta["roomId"]):
-        key += f":{uuid.uuid4()}"  # nobody is building it: say it again, which wakes the builder
-    await _relay(app, meta, key, text)
+    # Found idle: say it again, which wakes the builder. Never on a race: the winner's line is being posted now.
+    if how == "found" and not app.get("sources") and not await _builder_busy(owner_id, meta["roomId"]):
+        key += f":{uuid.uuid4()}"
+    message = await _relay(app, meta, key, text)
     display, canvas_url = svc._display(app), svc._canvas_url(app["app_id"])
     line = f"Started {display}. It's being built in its own conversation in Canvas: {canvas_url}"
+    if how != "made":
+        next_ = "this app was already started; post nothing in the room"
+    elif origin_room_id:
+        next_ = f'post this line in the room as written, then end your turn: "{line}"'
+    else:
+        next_ = f"the builder is working on it in the app's conversation: {canvas_url}"
     return {
         "app_id": app["app_id"],
         "conversation_id": meta["roomId"],
         "canvas_url": canvas_url,
-        "next": (
-            f'post this line in the room as written, then end your turn: "{line}"'
-            if origin_room_id
-            else f"the builder is working on it in the app's conversation: {canvas_url}"
-        ),
+        "next": next_,
+        "relayed": not message.get("replayed"),  # whether the builder heard a new request line just now
     }
 
 

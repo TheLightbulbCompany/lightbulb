@@ -5,7 +5,7 @@ Emergent was seen on 31 Oct 2026, on one `pilot-tracker` request.
 
 | # | User step | Emergent | Lightbulb | Status |
 |---|---|---|---|---|
-| 1 | Ask | One prompt box, starts at once | Message an agent in a room | MATCH |
+| 1 | Ask | One prompt box, starts at once | Canvas "What should we build?" box with ideas (#4628), or message an agent anywhere; the app's own conversation opens at once | MATCH |
 | 2 | Clarify | One card, four questions, defaults, Auto-answer | One card with a default when something is unclear (run 1); none when the request is specific (runs 2, 3, 4). It waits for an answer; no auto-answer | MATCH |
 | 3 | Set up accounts | Nothing to do | Hosting checked before building (#4555), not yet run | UNTESTED |
 | 4 | Approve | Nothing to approve | One card per app with hosting and data, terms for both (runs 1–4). Stripe asks for fresh approval per project | GAP (Stripe-bound) |
@@ -82,3 +82,10 @@ Demo Lab on Hermes h-2026.11.4-bfea9ef (CLI v0.9.12), both requests sent to the 
 
 Found and fixed the same day: Mac `app up` refused by AppleDouble `._` files (#4618, cli#149); "#room" / "#a room" for DM requests (#4619, #4623); Canvas hid the app while a new version built (#4625); first publish said "making the preview" (#4624).
 Still open: a card's default spending limit is $50, not the cheapest; the agent's message can name the hidden room; a person's preview rows are reset when the agent changes the app (the banner says preview data is examples).
+
+### Canvas list, prompt box and a third full lifecycle (4 Nov 2026, afternoon)
+
+- Canvas apps list redesigned (#4627): state as icon + word, the one next step, who asked and when, needs-you first, All / In progress / Live. "Needs setup" when a Stripe services account is missing (#4630).
+- "What should we build?" in Canvas (#4628): a request made "Booking 30 Minute Calls" and opened its conversation at once. Its builder then answered in 2 min with a false "ready" message linking an older app built from the same words (run 11). Fixed by naming the app in the request line (#4632, deploying); the reserved app is now watched for being stuck from the request (#4631).
+- Run 12 Jobs: Publish, "change the heading, then ship it" (live in 11 min), put back (about 10 s), share room → workspace. With Equipment Loans and run 3, publish / change / undo / share now work on 3 apps.
+- Small copy left: the publish confirmation says "You can undo it from its conversation"; undo is the "Put back the previous version" button.

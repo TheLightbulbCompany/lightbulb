@@ -268,7 +268,7 @@ describe("AppSettings", () => {
     unmount();
     render(<AppSettings app={app({ can_publish: true, preview_url: "https://p" })} onClose={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Publish" }));
-    expect(screen.getByText("Make this preview live for #finance? You can undo it from its conversation.")).toBeTruthy();
+    expect(screen.getByText("Make this preview live for #finance? You can put back the version live now from here.")).toBeTruthy();
     fireEvent.click(screen.getAllByRole("button", { name: "Publish" })[0]);
     await waitFor(() => expect(publish).toHaveBeenCalledWith("a1"));
   });

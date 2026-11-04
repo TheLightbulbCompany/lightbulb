@@ -414,8 +414,25 @@ _SETUP_CODES = ("no_company_stripe_account", "services_account_needed")
 async def _ensure_workflows(app: dict, issue_id: str | None) -> None:
     rows = await _rows(app)
     display = app.get("display_name") or app["name"]
-    # One card per app: hosting's card also covers the data, and names it. An app that already has
-    # its cards keeps them.
+    # Approved once for the workspace (the first app's card): every later app's free hosting and data are set
+    # up with no card. Before that, one card per app: hosting's card also covers the data, and names it.
+    standing = await provisioning_workflow.standing_approval(app["owner_id"])
+    if standing:
+        for provider, service, env in _RESOURCES:
+            row = rows.get((provider, service, env))
+            if row is None or row.get("state") in _DEAD:
+                await provisioning_workflow.start(
+                    owner_id=app["owner_id"],
+                    provider_name=provider,
+                    service_id=service,
+                    configuration={"name": app["name"] if env == "prod" else f"{app['name']}-preview"},
+                    issue_id=issue_id,
+                    reason=f"{display}: {'hosting' if provider == 'vercel' else 'a database'} ({'live' if env == 'prod' else 'preview'})",
+                    app_id=app["app_id"],
+                    environment=env,
+                    preapproved_by=standing["approved_by"],
+                )
+        return
     card = rows.get(("vercel", "project", "prod"))
     for provider, service, env in _RESOURCES:
         row = rows.get((provider, service, env))
@@ -429,7 +446,7 @@ async def _ensure_workflows(app: dict, issue_id: str | None) -> None:
                             app["owner_id"], "neon", "postgres", f"The data for {display}, live and preview"
                         )
                     ],
-                    "title": f"Set up hosting and data for {display}",
+                    "title": f"Set up free hosting and a database for {display} and every app after it",
                 }
                 if carded
                 else {"bundled_with": card["workflow_id"]}

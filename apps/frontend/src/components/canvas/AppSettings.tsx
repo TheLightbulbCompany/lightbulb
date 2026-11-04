@@ -8,7 +8,7 @@ import { closePendingTab, navigatePendingTab, openPendingTab } from "@/component
 import { useApps, type AppRow } from "@/hooks/useApps";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 import { PublishButton, type PublishCtl } from "./PublishButton";
-import { LiveLink, Problem, displayName } from "./appText";
+import { LiveLink, Problem, displayName, roomOf } from "./appText";
 import "./canvas.css";
 
 const CHOICES: { value: AppRow["open_to"]; label: string }[] = [
@@ -60,7 +60,7 @@ export function AppSettings({ app, onClose, onRemoved, publishCtl }: { app: AppR
   if (!canManage) return null;
 
   // The hook already surfaces API errors; these handlers only keep the panel usable.
-  const room = `#${app.room_name ?? "this room"}`;
+  const room = roomOf(app);
   const mine = app.is_creator === true;
   const warning = pending === "public"
     ? `Anyone with the link will be able to open it, including people outside the workspace, without signing in.${hasDb ? " They can see and submit what the app shows them." : ""}`

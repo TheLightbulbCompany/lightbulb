@@ -10,7 +10,8 @@ export function displayName(app: Pick<AppRow, "name" | "display_name">): string 
   return app.name.split(/[-_\s]+/).filter(Boolean).map((w) => w[0].toUpperCase() + w.slice(1)).join(" ") || app.name;
 }
 
-export const roomOf = (app: AppRow) => `#${app.room_name ?? "room"}`;
+/** The room it was asked in, or a DM's plain name (a DM has none). */
+export const roomOf = (app: Pick<AppRow, "room_name">) => (app.room_name ? `#${app.room_name}` : "the chat it was asked in");
 
 /** Where the builder posts: the app's own conversation, else (an older app not opened since) its room. */
 export const postsIn = (app: AppRow) => (app.conversation_id || !app.room_id ? "its conversation" : roomOf(app));
@@ -19,7 +20,7 @@ export const postsIn = (app: AppRow) => (app.conversation_id || !app.room_id ? "
 export function audience(app: Pick<AppRow, "open_to" | "room_name">): string {
   switch (app.open_to) {
     case "me": return "only its creator and workspace admins";
-    case "room": return `people in #${app.room_name ?? "room"}`;
+    case "room": return `people in ${roomOf(app)}`;
     case "workspace": return "everyone in the workspace";
     case "invited": return "people you invited";
     default: return "anyone with the link";

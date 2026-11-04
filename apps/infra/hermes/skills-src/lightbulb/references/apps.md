@@ -130,7 +130,7 @@ Rows you put in `drizzle/seed.sql` are examples, so label them: end each visible
 
 Outside a room turn (a Paperclip run), post the same line in the app's conversation with
 `lightbulb-post.sh --room <roomId>`, where `<roomId>` is the app's `conversation_id` (from
-`lightbulb app status <name> --json`).
+`lightbulb app status --json`, run in the app's folder).
 
 ## Changes and publishing
 

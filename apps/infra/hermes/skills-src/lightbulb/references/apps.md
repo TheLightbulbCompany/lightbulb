@@ -83,15 +83,18 @@ first-version line once (§ What to say). A `preview_url` alone is not that: whi
 is still the starter placeholder, post nothing. Then keep going: add tests for the business rules, fill in the rest, and run `up` again after each change.
 Canvas tells people the agent is still working while your run is open.
 
-Then prove it. Run `lightbulb app verify --json`. It signs in past the door and
-opens every page, with no browser. Fix what it lists, then run `up` and `verify` again.
-Then try the main flow once: get a `url` from `lightbulb app test-link --json` and open it with the
+Then prove it, yourself: never ask the person to test, sign in or click for you. Try the main flow
+once: get a `url` from `lightbulb app test-link --json` (it signs the browser in as the builder) and
+open it with the
 browser tool's navigate call, not by typing into the address bar. If that doesn't work first time,
 stop trying and add "I couldn't try it in a browser" to the ready line. Don't spend more than two
 minutes here. Never install a browser, and never build a local server or redirect to get past a
 browser problem. If you did try it, record it:
 `lightbulb app evidence --kind browser --file <recording or screenshot> --note "<what you checked>"`.
 Keep the file under `.lightbulb/evidence/` or outside the app; anywhere else is refused.
+Run `lightbulb app verify --json` last, after your own checks: it opens every page, sends each form,
+then puts the preview data back to its samples, so the person never sees your test entries. Fix
+what it lists, then run `up` and `verify` again.
 Then run `lightbulb app status --json`, not `up`: a second `up` moves the preview past your record.
 Read what's on screen as the person will: wrong words like "Add a account", cut-off text and empty
 states are yours to fix first. Post the ready line (§ What to say) only when it says `"done": true`.
@@ -126,9 +129,9 @@ Post these lines as written; fill in the `{braces}`. `{app}` is the app's name a
 "people in #{room}" (the start), "everyone in the workspace", "people you invited" or "anyone with
 the link".
 
-Progress notes while building are optional: one plain sentence about what the person will get
-("Setting up the sign-up form and where the answers go"), never a library, table, type or file
-name, and at most one every few minutes. The lines below stay exactly as specified.
+Post as little as the person needs: the approval line if a card was filed, the first-version line,
+and the ready line. No progress notes in between unless the person asks how it's going; Canvas
+already shows that the agent is still working. The lines below stay exactly as specified.
 
 - Hosting: "Before I build {app}: this workspace needs a services account to host it. An admin can
   add one from the Stripe card in Settings → Connections. Tell me when it's done and I'll start."

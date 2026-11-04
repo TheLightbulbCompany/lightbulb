@@ -93,7 +93,8 @@ def _members(data: bytes, *, forbid: bool) -> Iterator[tuple[str, tarfile.TarInf
 
 def iter_files(data: bytes) -> Iterator[tuple[str, bytes]]:
     for path, m, tf in _members(data, forbid=False):
-        if m.isreg():
+        # macOS tar adds a binary ``._name`` (AppleDouble) beside each file with extended attributes.
+        if m.isreg() and not path.rpartition("/")[2].startswith("._"):
             yield path, tf.extractfile(m).read()
 
 

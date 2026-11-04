@@ -646,3 +646,25 @@ async def test_a_builder_in_an_apps_conversation_cannot_upload_a_second_app(chat
     # Its own name is taken over as before.
     await svc.put_source(OWNER, name="booking", commit="c1", archive=_tar(SRC_V1), actor=in_conversation)
     assert (await svc.apps_repo.get(res["app_id"]))["state"] == "building"
+
+
+@pytest.mark.parametrize(
+    ("text", "name"),
+    [
+        ("Build a sign-up form for our pottery workshop", "sign-up-form-pottery-workshop"),
+        ("Make me a website for Harbor Coffee", "harbor-coffee"),
+        ("an app", "app"),
+        ("!!!", "app"),
+    ],
+)
+def test_name_from_request(text, name):
+    assert conv.name_from_request(text) == name
+
+
+async def test_a_person_starts_from_canvas_and_never_lands_on_another_app(chat):
+    first = await conv.start_as_member(ADA, "Build a booking page for haircuts")
+    second = await conv.start_as_member(ADA, "Build a booking page for haircuts")
+    a1, a2 = await svc.apps_repo.get(first["app_id"]), await svc.apps_repo.get(second["app_id"])
+    assert (a1["name"], a2["name"]) == ("booking-haircuts", "booking-haircuts-2")
+    assert a1["created_by"] == "user_1" and a1["state"] == "requested" and a1.get("origin_room_id") is None
+    assert first["conversation_id"] == conv.conversation_room_id(first["app_id"])

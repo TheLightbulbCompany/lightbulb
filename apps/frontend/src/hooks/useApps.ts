@@ -77,6 +77,13 @@ export function useApps() {
     return { roomId: res.room_id };
   }, [api, mutate]);
 
+  /** Canvas's "What should we build?": the app gets its own conversation and a builder. Errors propagate. */
+  const start = async (request: string): Promise<{ app_id: string }> => {
+    const res = await api.post("/apps/start", { request }) as { app_id: string };
+    void mutate();
+    return res;
+  };
+
   /** Starts a publish and returns at once; the caller re-reads the list for progress. Errors propagate: the caller shows the backend's message. */
   const publish = async (appId: string): Promise<{ state?: string; error?: { message: string } | null }> => {
     const res = await api.post(`/apps/${encodeURIComponent(appId)}/publish`, {}) as { state?: string; error?: { message: string } | null };
@@ -161,6 +168,7 @@ export function useApps() {
     refresh: () => { void mutate(); },
     open,
     openConversation,
+    start,
     publish,
     update,
     invite,

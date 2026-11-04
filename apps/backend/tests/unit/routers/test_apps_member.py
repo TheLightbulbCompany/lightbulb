@@ -860,3 +860,17 @@ def test_conversation_opens_for_any_signed_in_member_and_the_service_decides(mem
     opened.side_effect = svc.AppsRefused("not_a_member", "no")
     r = member.post(f"{BASE}/app_1/conversation")
     assert r.status_code == 403 and r.json()["detail"]["code"] == "not_a_member"
+
+
+def test_any_member_starts_an_app_from_canvas(monkeypatch):
+    start = AsyncMock(
+        return_value={"app_id": "app_9", "conversation_id": "c9", "canvas_url": "u", "next": "", "relayed": True}
+    )
+    monkeypatch.setattr(mod.app_conversation, "start_as_member", start)
+    try:
+        r = _as("member").post(f"{BASE}/start", json={"request": "a booking page"})
+        assert r.status_code == 200 and r.json()["app_id"] == "app_9"
+        assert start.await_args.args[1] == "a booking page"
+        assert _as("member").post(f"{BASE}/start", json={"request": ""}).status_code == 422
+    finally:
+        app.dependency_overrides.clear()

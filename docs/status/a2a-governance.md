@@ -2,6 +2,10 @@
 
 Updated by the governance session at every task completion. Newest first. Everything here is a draft PR until the founder merges it.
 
+## 4 Nov 2026
+
+**Merged to main (founder-authorised, each tested on top of main):** #4562 phase 1, #4606 phase 1b (replaces #4571), #4608 phase 2 monorepo half (replaces #4591). Main deploys these to dev; production stays a manual dispatch. CLI #134 merges after a card-publish race fix. Phase 2b (the runtime signs in as the workspace) approved with a 30-day proof life; planning next.
+
 ## 2 Nov 2026, evening
 
 **Founder decisions today:** all four designs approved with the author's defaults; scope narrowed to phases 1b and 2; phases 3 and 4 wait as drafts.

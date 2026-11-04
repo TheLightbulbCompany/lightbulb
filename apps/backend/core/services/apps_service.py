@@ -1094,6 +1094,12 @@ def _state(app: dict, rows: dict) -> tuple[str, AppError | None]:
         return ("awaiting_approval" if waiting else "provisioning"), None
     if app.get("preview_pending") or app.get("publish_pending") or not app.get("preview"):
         return "building", _renewal_hold(app)
+    # Only the starter's "Being built" page is deployed (the agent files the hosting card before it
+    # builds): not ready until the real source is up, so nothing offers Publish on it and the watch
+    # keeps running. A live app keeps its state; its live version is the real one.
+    shown = _preview_source(app)
+    if not app.get("live_version") and ((app.get("sources") or {}).get(shown) or {}).get("placeholder"):
+        return "building", _renewal_hold(app)
     # A failed build leaves the live version serving.
     return "ready", app.get("error") or app.get("publish_error") or _host_warning(app) or _renewal_hold(app)
 
@@ -1144,7 +1150,14 @@ async def _result(app: dict, rows: dict, transient: AppError | None, cost_cents:
 
 
 async def put_source(
-    owner_id: str, *, name: str, room_id: str, commit: str, archive: bytes, actor: BuilderCaller
+    owner_id: str,
+    *,
+    name: str,
+    room_id: str,
+    commit: str,
+    archive: bytes,
+    actor: BuilderCaller,
+    placeholder: bool = False,
 ) -> dict:
     """R32: the source upload creates the app record; ``up`` fills in the rest."""
     _check_name(name)
@@ -1170,6 +1183,8 @@ async def put_source(
     files = await asyncio.to_thread(lambda: dict(apps_source.iter_files(archive)))
     names = [n for n, _ in _migrations(files)[0]]
     entry = {"commit": commit, "at": utc_now_iso(), "migrations": names, "migrations_key": _migrations_key(files)}
+    if placeholder:
+        entry["placeholder"] = True
     sources = {**(app.get("sources") or {}), source_id: entry}
     keep = {app.get("live_source_id"), app.get("preview_want"), (app.get("publish_pending") or {}).get("source_id")}
     recent = sorted(sources, key=lambda k: sources[k]["at"])[-10:]

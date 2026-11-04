@@ -1195,5 +1195,10 @@ async def openai_apps_challenge():
     return PlainTextResponse(settings.OPENAI_APPS_CHALLENGE_TOKEN)
 
 
+from routers import a2a  # noqa: E402
+
+# The A2A door; before the MCP mount, which 404s every path it does not serve.
+app.include_router(a2a.router)
+
 # Keep this last: the SDK serves /mcp and its root well-known OAuth metadata.
 app.mount("/", hosted_mcp.mount)

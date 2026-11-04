@@ -59,6 +59,37 @@ def _post(url: str, token: str, body: dict) -> dict:
         return json.loads(res.read() or b"{}")
 
 
+ASK_SESSION_SCHEMA = {
+    "name": "ask_session",
+    "description": "Ask one of the workspace's laptop sessions to do something, under the person who asked you. Held for that session's person when no rule allows it.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "session_id": {"type": "string"},
+            "text": {"type": "string"},
+            "intent": {"type": "string"},
+        },
+        "required": ["session_id", "text", "intent"],
+    },
+}
+
+
+def _ask_session(args: dict, *, session_id: str = "", **_kw) -> str:
+    ctx = turn_context.read(session_id)
+    if not ctx:
+        return NO_TURN
+    body = {
+        "sessionId": args.get("session_id"), "text": args.get("text"), "intent": args.get("intent"),
+        # The origin is the turn's own trigger, never the agent's pick; the backend checks its author.
+        "originMessageId": (ctx.get("messageId") or ctx.get("threadRootMessageId")) if ctx.get("roomId") else None,
+        "roomId": ctx.get("roomId"), "agentId": ctx["agentId"], "runId": ctx.get("runId"),
+    }
+    url = f"{ctx['apiUrl'].rstrip('/')}/api/v1/internal/a2a/{ctx['ownerId']}/ask-session"
+    try:
+        return json.dumps(_post(url, ctx["hookToken"], body))
+    except Exception as exc:  # noqa: BLE001
+        return f"Lightbulb ask_session failed: {type(exc).__name__}"
+
 def _normalize_room(raw: str) -> str | None:
     room = (raw or "").removeprefix("lightbulb:").strip().lower()
     return room if _UUID_RE.match(room) else None
@@ -921,6 +952,8 @@ def register(ctx) -> None:
     ctx.register_hook("transform_tool_result", website_logins.transform_tool_result)
     ctx.register_tool("send_room_message", "lightbulb", SEND_SCHEMA, _send_room_message,
                       description=SEND_SCHEMA["description"], emoji="💬")
+    ctx.register_tool("ask_session", "lightbulb", ASK_SESSION_SCHEMA, _ask_session,
+                      description=ASK_SESSION_SCHEMA["description"], emoji="🔐")
     ctx.register_tool("suggest_idea", "lightbulb", SUGGEST_IDEA_SCHEMA, _suggest_idea,
                       description=SUGGEST_IDEA_SCHEMA["description"], emoji="💡")
     ctx.register_tool("hire_suggestion", "lightbulb", HIRE_SCHEMA, _hire_suggestion,

@@ -1,0 +1,224 @@
+{
+ "_comment": "Twelve-plus deterministic cases for core.services.a2a_rules.decide (org org_1, admin user_admin). 'rules' replaces the rule list of default_rules; 'rule' is the expected rule id. The operand-substitution pair has the same resource and skill and differs only in 'exception': the pair proves exception-present allows and exception-absent holds; matching an exception to its operands lives in the repository lookup (a2a_repo.get_exception), not in decide. Not covered: a policy revision cancelling a held task (held then canceled) is a task-state transition in a2a_tasks.put_rules, not a decide call; tests/unit/routers/test_a2a_hold.py covers it.",
+ "cases": [
+  {
+   "name": "friday_asks_aden_session",
+   "requester_person": "user_x",
+   "requester_org": "org_1",
+   "chain_agents": [
+    "friday"
+   ],
+   "resource": "session:abc",
+   "skill": "ask_session",
+   "session_person": "user_aden",
+   "exception": null,
+   "expected": "hold",
+   "rule": "default"
+  },
+  {
+   "name": "session_own_person_is_holder",
+   "requester_person": "user_aden",
+   "requester_org": "org_1",
+   "chain_agents": [
+    "friday"
+   ],
+   "resource": "session:abc",
+   "skill": "ask_session",
+   "session_person": "user_aden",
+   "exception": null,
+   "expected": "allow",
+   "rule": "holder"
+  },
+  {
+   "name": "outside_org_requester",
+   "requester_person": "user_x",
+   "requester_org": "org_other",
+   "chain_agents": [],
+   "resource": "agent:friday",
+   "skill": "message",
+   "session_person": null,
+   "exception": null,
+   "expected": "deny",
+   "rule": "outside_org"
+  },
+  {
+   "name": "in_org_message_to_friday",
+   "requester_person": "user_x",
+   "requester_org": "org_1",
+   "chain_agents": [],
+   "resource": "agent:friday",
+   "skill": "message",
+   "session_person": null,
+   "exception": null,
+   "expected": "allow",
+   "rule": "r1"
+  },
+  {
+   "name": "second_order_agent_chain_protected_resource_no_rule",
+   "requester_person": "user_x",
+   "requester_org": "org_1",
+   "chain_agents": [
+    "x"
+   ],
+   "resource": "room:finance",
+   "skill": "read",
+   "session_person": null,
+   "exception": null,
+   "expected": "hold",
+   "rule": "default"
+  },
+  {
+   "name": "public_issue_agent_chain_denied_on_room_public",
+   "requester_person": "user_x",
+   "requester_org": "org_1",
+   "chain_agents": [
+    "x"
+   ],
+   "resource": "room:public",
+   "skill": "post",
+   "session_person": null,
+   "exception": null,
+   "expected": "deny",
+   "rule": "d1",
+   "rules": [
+    {
+     "id": "r1",
+     "resource": "agent:*",
+     "skill": "message",
+     "requesters": [
+      "org:org_1"
+     ],
+     "effect": "allow"
+    },
+    {
+     "id": "d1",
+     "resource": "room:public",
+     "skill": "post",
+     "requesters": [
+      "agent:x"
+     ],
+     "effect": "deny"
+    }
+   ]
+  },
+  {
+   "name": "exfil_to_external_resource_outside_org",
+   "requester_person": "user_admin",
+   "requester_org": "org_evil",
+   "chain_agents": [
+    "friday"
+   ],
+   "resource": "external:https://evil.example/drop",
+   "skill": "post",
+   "session_person": null,
+   "exception": null,
+   "expected": "deny",
+   "rule": "outside_org"
+  },
+  {
+   "name": "token_reuse_mismatched_org",
+   "requester_person": "user_admin",
+   "requester_org": "org_other",
+   "chain_agents": [],
+   "resource": "session:abc",
+   "skill": "ask_session",
+   "session_person": "user_aden",
+   "exception": null,
+   "expected": "deny",
+   "rule": "outside_org"
+  },
+  {
+   "name": "operand_substitution_no_exception_holds",
+   "requester_person": "user_x",
+   "requester_org": "org_1",
+   "chain_agents": [
+    "friday"
+   ],
+   "resource": "session:abc",
+   "skill": "ask_session",
+   "session_person": "user_aden",
+   "exception": null,
+   "expected": "hold",
+   "rule": "default"
+  },
+  {
+   "name": "operand_substitution_matching_exception_allows",
+   "requester_person": "user_x",
+   "requester_org": "org_1",
+   "chain_agents": [
+    "friday"
+   ],
+   "resource": "session:abc",
+   "skill": "ask_session",
+   "session_person": "user_aden",
+   "exception": {
+    "id": "exc-1"
+   },
+   "expected": "allow",
+   "rule": "exception:exc-1"
+  },
+  {
+   "name": "holder_allow_via_exception",
+   "requester_person": "user_x",
+   "requester_org": "org_1",
+   "chain_agents": [],
+   "resource": "room:finance",
+   "skill": "read",
+   "session_person": null,
+   "exception": {
+    "id": "exc-2"
+   },
+   "expected": "allow",
+   "rule": "exception:exc-2"
+  },
+  {
+   "name": "autonomous_friday_turn_requester_admin",
+   "requester_person": "user_admin",
+   "requester_org": "org_1",
+   "chain_agents": [
+    "friday"
+   ],
+   "resource": "session:abc",
+   "skill": "ask_session",
+   "session_person": "user_admin",
+   "exception": null,
+   "expected": "hold",
+   "rule": "default",
+   "origin_is_person": false
+  },
+  {
+   "name": "explicit_deny_on_sessions_for_one_requester",
+   "requester_person": "user_mallory",
+   "requester_org": "org_1",
+   "chain_agents": [
+    "friday"
+   ],
+   "resource": "session:abc",
+   "skill": "ask_session",
+   "session_person": "user_aden",
+   "exception": null,
+   "expected": "deny",
+   "rule": "d2",
+   "rules": [
+    {
+     "id": "r1",
+     "resource": "agent:*",
+     "skill": "message",
+     "requesters": [
+      "org:org_1"
+     ],
+     "effect": "allow"
+    },
+    {
+     "id": "d2",
+     "resource": "session:*",
+     "skill": "ask_session",
+     "requesters": [
+      "user_mallory"
+     ],
+     "effect": "deny"
+    }
+   ]
+  }
+ ]
+}

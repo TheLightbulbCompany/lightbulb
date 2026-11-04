@@ -4,6 +4,7 @@ description: "Lightbulb room tools: post to a room, suggest a hire, read shared 
 author: "Lightbulb"
 provides_tools:
   - send_room_message
+  - ask_session
   - hire_suggestion
   - request_approval
   - ask_person

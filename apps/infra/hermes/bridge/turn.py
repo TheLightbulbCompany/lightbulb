@@ -4175,6 +4175,8 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, 
             turn_ctx = {
                 "apiUrl": API, "ownerId": OWNER, "hookToken": HOOK_TOKEN, "roomId": room.get("id"),
                 "agentId": agent_id, "runId": run_id, "eventId": body.get("eventId"),
+                # the inbound message that triggered this turn (a follow-up's too): ask_session's origin
+                "messageId": (body.get("message") or {}).get("messageId"),
                 "threadRootMessageId": thread_root, "sessionKey": hermes_key,
                 "localSessionToken": local_session_token,
                 "family": "room" if has_run else "unavailable",

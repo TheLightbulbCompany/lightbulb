@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 NO_ROUTE = "None of your computers is online; open one (lightbulb login)."
 OFFLINE = "{name} is offline. Open it."
-ROUTE_OPS = frozenset({"directory", "app.send", "app.inbox", "app.ack", "app.unread", "app.receipt"})
+ROUTE_OPS = frozenset({"directory", "app.send", "app.inbox", "app.ack", "app.unread", "app.receipt", "rules.set"})
 HELLO_DEADLINE_S = 10.0
 REFRESH_S = 60.0
 MAX_FRAME = 1 << 20
@@ -217,6 +217,43 @@ async def local_call(key: str, generation: str, op: str, params: dict, timeout_s
     raise _refused(code, f"{op} was refused ({code})", answer.get("reason"))
 
 
+async def _push_one(row: dict, jws: str) -> bool:
+    try:
+        await call(row, "rules.set", {"jws": jws}, 5.0)
+    except Exception as exc:  # noqa: BLE001 -- an old engine answers unsupported; a closed link is gone
+        logger.debug("rules.set not delivered: %s", type(exc).__name__)  # never the jws
+        return False
+    return True
+
+
+async def push_rules(org: str, jws: str) -> int:
+    """``rules.set`` on every connected link of a person in workspace ``org``; the links reached.
+    A person in two workspaces gets this one's document on every link (each engine pins its first)."""
+    from core.services import clerk_admin
+
+    rows = []
+    for member in await clerk_admin.list_organization_members(org):
+        rows += await _connections().routes_for_user(member["user_id"])
+    return sum(await asyncio.gather(*(_push_one(r, jws) for r in rows)))
+
+
+async def push_current_rules(link: Link, org: str | None) -> None:
+    """The stored (else default) rules of this link's workspace, once, to this link only. The
+    workspace is the proof's ``org``, else the person's only one; ambiguous: nothing is pushed."""
+    from core.services import a2a_tasks, clerk_admin, task_address
+
+    try:
+        if org is None:
+            orgs = await clerk_admin.list_user_organizations(link.user_id, limit=100)
+            if len(orgs) != 1:
+                return
+            org = orgs[0]["id"]
+        row = {"key": link.key, "generation": link.generation, "taskAddress": task_address.own_address()}
+        await _push_one(row, await a2a_tasks.current_rules_jws(org))
+    except Exception:  # noqa: BLE001 -- the next connect or the next save pushes again
+        logger.debug("rules push on connect failed", exc_info=True)
+
+
 async def sign_out(user_id: str, key: str) -> None:
     """Close this person's computer ``key``'s route link now, on whichever task holds it."""
     for row in await _connections().live_routes([key]):
@@ -278,10 +315,11 @@ async def serve(websocket) -> None:
     try:
         reader = asyncio.create_task(_read(websocket, link))
         keeper = asyncio.create_task(_keep(connections, link))
+        pusher = asyncio.create_task(push_current_rules(link, claims.get("org")))
         done, _ = await asyncio.wait({reader, keeper}, return_when=asyncio.FIRST_COMPLETED)
         if keeper in done and not keeper.cancelled() and keeper.exception() is None:
             code = keeper.result()
-        for task in (reader, keeper):
+        for task in (reader, keeper, pusher):
             task.cancel()
             with contextlib.suppress(BaseException):
                 await task

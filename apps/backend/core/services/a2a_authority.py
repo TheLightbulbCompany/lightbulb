@@ -18,6 +18,7 @@ from core.services.network_proof import _sign, _unb64
 URI = "https://thelightbulb.company/a2a/ext/authority/v1"
 OBJECT_TYP = "lightbulb-a2a-authority"
 RECORD_TYP = "lightbulb-a2a-record"
+RULES_TYP = "lightbulb-a2a-rules"
 MAX_LIFE_S = 86_400
 MAX_INTENT = 2048
 
@@ -86,6 +87,11 @@ def mint(
 
 def sign_record(record: dict) -> str:
     return _sign(record, typ=RECORD_TYP)
+
+
+def sign_rules(org: str, doc: dict, *, now: int) -> str:
+    """The workspace's rules document, signed for the laptops (no ``exp``: the newest ``iat`` wins there)."""
+    return _sign({"workspace": org, "revision": doc["revision"], "doc": doc, "iat": now}, typ=RULES_TYP)
 
 
 def _is(value, kind) -> bool:

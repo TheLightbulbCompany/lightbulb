@@ -3276,3 +3276,18 @@ async def test_a_retried_upload_of_the_latest_commit_is_not_stale(world):
     await svc.put_source(OWNER, name="crew", commit="c2", archive=_tar(SRC_V2), actor=PERSON, base_commit="c1")
     again = await svc.put_source(OWNER, name="crew", commit="c2", archive=_tar(SRC_V2), actor=PERSON, base_commit="c1")
     assert again["app_id"] == first["app_id"]
+
+
+async def test_up_without_a_services_account_says_so_on_the_app_and_clears_once_it_works(world, monkeypatch):
+    src = await _source()
+    refusal = svc.provisioning_workflow.WorkflowRefused(
+        "services_account_needed", "Setting up services needs a services account — add one from the Stripe card."
+    )
+    real = svc._ensure_workflows
+    monkeypatch.setattr(svc, "_ensure_workflows", AsyncMock(side_effect=refusal))
+    with pytest.raises(svc.provisioning_workflow.WorkflowRefused):
+        await _up(src)
+    assert (await _rec(src))["setup_blocker"]["code"] == "services_account_needed"
+    monkeypatch.setattr(svc, "_ensure_workflows", real)
+    await _up(src)
+    assert (await _rec(src)).get("setup_blocker") is None

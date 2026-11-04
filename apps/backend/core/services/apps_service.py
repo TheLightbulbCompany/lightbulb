@@ -408,6 +408,9 @@ async def _rows(app: dict, all_rows: list[dict] | None = None) -> dict[tuple, di
     return out
 
 
+_SETUP_CODES = ("no_company_stripe_account", "services_account_needed")
+
+
 async def _ensure_workflows(app: dict, issue_id: str | None) -> None:
     rows = await _rows(app)
     display = app.get("display_name") or app["name"]
@@ -1348,9 +1351,17 @@ async def up(
         fields.update(error=None, preview_built=None)
     if app.get("preview_host_error"):  # and the preview host, when every try has failed
         fields["preview_host_error"] = None
+    if app.get("setup_blocker"):  # tried again: the account may be linked now
+        fields["setup_blocker"] = None
     await _patch(app, {**fields, **_progress_fields(app, actor.run_id)})
     watch(owner_id, app["app_id"])
-    await _ensure_workflows(app, issue_id)
+    try:
+        await _ensure_workflows(app, issue_id)
+    except provisioning_workflow.WorkflowRefused as e:
+        # Something only a person can fix (no Stripe account linked): say it on the app, not only to the caller.
+        if e.code in _SETUP_CODES:
+            await _patch(app, {"setup_blocker": {"code": e.code, "message": e.message}})
+        raise
     rows, transient = await _progress(app)
     return await _result(app, rows, transient, cost_cents)
 
@@ -1918,6 +1929,7 @@ async def list_apps(owner_id: str, auth: AuthContext) -> list[dict]:
         uid = a.get("created_by")
         row.update(
             can_open=_can_open(a, auth, bool(member.get(a.get("room_id")))),
+            setup_blocker={"message": b["message"]} if (b := a.get("setup_blocker")) else None,
             updated_at=a.get("updated_at"),
             # Only a room the caller is in is named to them.
             room_name=(live.get(a.get("room_id")) or {}).get("name") if member.get(a.get("room_id")) else None,

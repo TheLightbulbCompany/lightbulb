@@ -30,6 +30,7 @@ export type AppRow = {
   agent_name?: string;
   can_open: boolean;
   stuck?: { at: string; step: string } | null;
+  setup_blocker?: { message: string } | null; // only a person can fix it, e.g. no Stripe services account linked
   agent_working?: boolean; // an agent is still improving the preview: it's a first version
   can_publish?: boolean; // mock (R17): plan 1 computes it
   error?: { message: string } | null; // the last build/publish failure, when the backend reports one

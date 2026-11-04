@@ -65,6 +65,8 @@ function PutBack({ app, previous, onDone }: { app: AppRow; previous: NonNullable
   </span>;
 }
 
+const NARROW_PX = 760;
+
 export function AppView({ app, onBack }: { app: AppRow; onBack(): void }) {
   const { open, refresh } = useApps();
   const isAdmin = useIsWorkspaceAdmin();
@@ -82,8 +84,20 @@ export function AppView({ app, onBack }: { app: AppRow; onBack(): void }) {
   const whoName = app.open_to === "room" ? room : app.open_to === "invited" ? "invited people" : app.open_to === "public" ? "anyone with the link"
     : app.open_to === "me" ? "its creator and workspace admins" : "people in this workspace";
   const askWho = app.room_id ? `Ask in ${room}.` : `Ask ${app.created_by_name ?? "the person who asked for it"} to share it.`;
-  // Narrow panel: one of the two at a time (canvas.css shows the switch only then). Wide: both, side by side.
+  // Narrow panel (Canvas is a dock panel: its width, not the window's): one of the two at a time, with a switch.
+  // Wide: both, side by side. A hidden conversation is not "on screen", so its messages still notify.
   const [pane, setPane] = useState<"preview" | "conversation">("preview");
+  const viewRef = useRef<HTMLDivElement>(null);
+  const [narrow, setNarrow] = useState(false);
+  useEffect(() => {
+    const el = viewRef.current;
+    if (!el) return;
+    const measure = () => setNarrow(el.clientWidth > 0 && el.clientWidth <= NARROW_PX);
+    measure();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(el);
+    return () => observer?.disconnect();
+  }, []);
   const current = useRef(app.app_id);
   current.current = app.app_id;
   // State is tagged with its app so a render right after a switch never shows the previous app's pass.
@@ -140,7 +154,7 @@ export function AppView({ app, onBack }: { app: AppRow; onBack(): void }) {
   const liveAppFailed = app.state !== "failed" && app.publish_failed === true && phase.k === "idle";
   const askable = canManage && !publishing && (!!app.stuck || app.state === "failed" || app.publish_failed === true || phase.k === "failed");
 
-  return <div className="app-view" data-pane={pane}>
+  return <div ref={viewRef} className="app-view" data-pane={pane} data-narrow={narrow || undefined}>
     <header className="app-view__bar">
       <button type="button" className="app-view__btn" onClick={onBack}><ArrowLeft size={16} aria-hidden="true" />All apps</button>
       <h2 className="app-view__name">{dn}</h2>
@@ -157,7 +171,7 @@ export function AppView({ app, onBack }: { app: AppRow; onBack(): void }) {
       </span>
       <button type="button" className="app-view__btn" onClick={openInTab}>Open in its own tab</button>
       {canManage && <button type="button" className="app-view__btn" aria-expanded={settingsOpen}
-        onClick={() => setSettingsOpen((v) => !v)}>Settings</button>}
+        onClick={() => { setSettingsOpen((v) => !v); setPane("preview"); }}>Settings</button>}
     </header>
     <div className="app-view__split"><div className="app-view__main">
     {app.state === "failed"
@@ -178,6 +192,6 @@ export function AppView({ app, onBack }: { app: AppRow; onBack(): void }) {
       : url ? <iframe key={`${key}:${attempt}`} title={dn} src={url} className="canvas__frame"
         sandbox="allow-scripts allow-same-origin allow-forms allow-popups" />
       : <p className="canvas__notice">Opening…</p>}
-    </div><AppConversation app={app} /></div>
+    </div><AppConversation app={app} shown={!narrow || pane === "conversation"} /></div>
   </div>;
 }

@@ -71,8 +71,9 @@ export function useApps() {
   /** The app's conversation with its builder, made on the first open, with the person seated. Stable: SessionChat re-opens when it changes. */
   const openConversation = useCallback(async (appId: string): Promise<{ roomId: string }> => {
     const res = await api.post(`/apps/${encodeURIComponent(appId)}/conversation`, {}) as { room_id: string };
+    void mutate(); // the row now has its conversation_id: copy about where the builder posts follows it
     return { roomId: res.room_id };
-  }, [api]);
+  }, [api, mutate]);
 
   /** Starts a publish and returns at once; the caller re-reads the list for progress. Errors propagate: the caller shows the backend's message. */
   const publish = async (appId: string): Promise<{ state?: string; error?: { message: string } | null }> => {

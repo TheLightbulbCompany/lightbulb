@@ -1334,10 +1334,17 @@ it("tells notifications the session chat on screen shows replies inline, and sto
   state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [] });
   compose();
   await act(async () => {});
-  expect((notifications as unknown as { repliesInline?: boolean }).repliesInline).toBeFalsy();
+  const side = () => (notifications as unknown as { sideRoomIds?: string[] }).sideRoomIds ?? [];
+  expect(side()).toEqual([]);
+  const main = (notifications as unknown as { activeRoomId: string | null }).activeRoomId;
   act(() => workspaceValue.openSession("s1", true));
   act(() => workspaceValue.setSessionChatRoomId("chat-1"));
-  expect(notifications).toMatchObject({ activeRoomId: "chat-1", roomVisible: true, repliesInline: true });
+  // An app's conversation in Canvas too: each side room is kept quiet on its own, and the main room stays as it was.
+  act(() => workspaceValue.setSideRoom("app-conversation:a1", "conv-1"));
+  expect(side()).toEqual(["chat-1", "conv-1"]);
+  expect((notifications as unknown as { activeRoomId: string | null }).activeRoomId).toBe(main);
   act(() => workspaceValue.setSessionChatRoomId(null));
-  expect((notifications as unknown as { repliesInline?: boolean }).repliesInline).toBeFalsy();
+  expect(side()).toEqual(["conv-1"]);
+  act(() => workspaceValue.setSideRoom("app-conversation:a1", null));
+  expect(side()).toEqual([]);
 });

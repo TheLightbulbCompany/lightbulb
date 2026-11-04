@@ -8,6 +8,8 @@ import type { RoomKind } from "@lightbulb/shared";
  */
 export interface RoomView {
   visibleRoomId: string | null;
+  /** Rooms on screen in a side column (session chat, an app's conversation), besides the main one. */
+  sideRoomIds?: readonly string[];
   rooms: ReadonlyMap<string, { kind: RoomKind; name: string | null }>;
 }
 

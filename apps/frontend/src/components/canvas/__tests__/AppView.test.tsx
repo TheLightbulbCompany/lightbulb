@@ -10,7 +10,7 @@ const rollback = vi.fn();
 let admin = false;
 const openConversation = vi.fn(async () => ({ roomId: "conv-1" }));
 vi.mock("@/hooks/useApps", () => ({ useApps: () => ({ open, refresh, publish, askAgent, rollback, openConversation, listInvites: async () => [] }) }));
-vi.mock("../AppConversation", () => ({ AppConversation: ({ app }: { app: AppRow }) => <aside aria-label="Conversation">{app.app_id}</aside> }));
+vi.mock("../AppConversation", () => ({ AppConversation: ({ app, shown }: { app: AppRow; shown?: boolean }) => <aside aria-label="Conversation" data-shown={String(shown)}>{app.app_id}</aside> }));
 vi.mock("@/hooks/useIsWorkspaceAdmin", () => ({ useIsWorkspaceAdmin: () => admin }));
 import { AppView } from "../AppView";
 
@@ -35,6 +35,25 @@ describe("AppView", () => {
     fireEvent.click(screen.getByRole("button", { name: "Conversation" }));
     expect(view.getAttribute("data-pane")).toBe("conversation");
     expect(screen.getByRole("button", { name: "Conversation" }).getAttribute("aria-pressed")).toBe("true");
+    expect(view.hasAttribute("data-narrow")).toBe(false); // jsdom has no width: wide, both shown
+    expect(screen.getByRole("complementary", { name: "Conversation" }).getAttribute("data-shown")).toBe("true");
+  });
+
+  it("in a narrow panel the conversation counts as on screen only on its pane, and Settings shows the app pane", async () => {
+    const width = vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(500);
+    open.mockResolvedValue("https://x.apps.test/?pass=1");
+    const { container } = render(<AppView app={app({ can_publish: true })} onBack={vi.fn()} />);
+    await screen.findByTitle("Invoices");
+    const view = container.querySelector(".app-view")!;
+    const conversation = () => screen.getByRole("complementary", { name: "Conversation" }).getAttribute("data-shown");
+    expect(view.hasAttribute("data-narrow")).toBe(true);
+    expect(conversation()).toBe("false"); // the app pane is showing: its messages still notify
+    fireEvent.click(screen.getByRole("button", { name: "Conversation" }));
+    expect(conversation()).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    expect(view.getAttribute("data-pane")).toBe("preview"); // Settings lives on the app pane
+    expect(conversation()).toBe("false");
+    width.mockRestore();
   });
 
   it("an app from no room, shared with only its creator, names no room when refused", async () => {
@@ -323,6 +342,12 @@ describe("AppView", () => {
       fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
       expect(screen.getByRole("button", { name: "Publish" })).toBeTruthy();
       expect(publish).not.toHaveBeenCalled();
+    });
+
+    it("an app shared with only its creator says so grammatically in the confirm", async () => {
+      render(<AppView app={ready({ open_to: "me" })} onBack={vi.fn()} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Publish" }));
+      expect(screen.getByText("Make this preview live just for its creator and workspace admins? You can undo it from its conversation.")).toBeTruthy();
     });
 
     it.each([

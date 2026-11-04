@@ -64,9 +64,10 @@ function PublishView({ app, ctl: { phase, done, failed, start, refresh } }: { ap
   const eligible = app.can_publish === true && !!app.preview_url
     && (app.state === "ready" || app.state === "failed" || (app.state === "live" && app.preview_newer === true));
   const who = app.open_to === "room" ? roomOf(app) : audience(app).replace("people you invited", "people you invite");
+  const ask = app.open_to === "me" ? "Make this preview live just for its creator and workspace admins?" : `Make this preview live for ${who}?`;
   const publishAgain = eligible && (confirming
     ? <span className="publish" role="group" aria-label="Confirm publish">
-      <span className="canvas__notice">Make this preview live for {who}? You can undo it from its conversation.</span>
+      <span className="canvas__notice">{ask} You can undo it from its conversation.</span>
       <button type="button" className="app-view__btn app-view__btn--primary" onClick={() => { setConfirming(false); start(); }}>Publish</button>
       <button type="button" className="app-view__btn" onClick={() => setConfirming(false)}>Cancel</button>
     </span>

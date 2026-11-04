@@ -574,6 +574,13 @@ describe("reduceChatFrame — room runs", () => {
     reduceChatFrame(s, chunk("r2"), away, { ...room, runId: "r2" });
     expect(reduceChatFrame(s, runEnded("r2", "done"), onScreen, { ...room, runId: "r2" })).toEqual([{ kind: "dismiss", key: "r2" }]);
   });
+
+  it("a run in a side room on screen (an app's conversation) is quiet too, beside another main room", () => {
+    const s = createRunToastState();
+    const beside: RunToastContext = { ...away, visibleRoomId: "room-other", sideRoomIds: ["room-gtm"] };
+    expect(reduceChatFrame(s, chunk("r1"), beside, room)).toEqual([]);
+    expect(reduceChatFrame(s, runEnded("r1", "done"), beside, room)).toEqual([]);
+  });
 });
 
 describe("reduceTeamsRunEvent — what a failed team run says", () => {

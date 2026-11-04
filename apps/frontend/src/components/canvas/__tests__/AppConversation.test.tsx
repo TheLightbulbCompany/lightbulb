@@ -9,8 +9,8 @@ vi.mock("@/hooks/useRooms", () => ({ useRooms: () => rooms.value }));
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 const openConversation = vi.fn(async () => ({ roomId: "conv-1" }));
 vi.mock("@/hooks/useApps", () => ({ useApps: () => ({ openConversation }) }));
-const setSessionChatRoomId = vi.fn();
-vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({ useMessagingWorkspaceOptional: () => ({ setSessionChatRoomId }) }));
+const setSideRoom = vi.fn();
+vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({ useMessagingWorkspaceOptional: () => ({ setSideRoom }) }));
 beforeAll(() => import("@/components/messaging/openui/OpenUICard"));
 
 import { AppConversation } from "../AppConversation";
@@ -21,7 +21,7 @@ const detail = { roomId: "conv-1", name: "Invoices", kind: "channel", members: [
 const selectRoom = vi.fn();
 const sendMessage = vi.fn(async () => {});
 beforeEach(() => {
-  selectRoom.mockClear(); sendMessage.mockClear(); openConversation.mockClear(); setSessionChatRoomId.mockClear();
+  selectRoom.mockClear(); sendMessage.mockClear(); openConversation.mockClear(); setSideRoom.mockClear();
   rooms.value = {
     selectRoom, sendMessage, activeRoomId: "conv-1", activeRoom: detail, messages: [
       { messageId: "m1", roomId: "conv-1", messageSeq: 1, roomRevision: 1, author: { kind: "agent", id: "ag", displayName: "Builder" },
@@ -36,12 +36,22 @@ it("opens the app's conversation through its door, shows it, and registers it as
   const view = render(<AppConversation app={app} />);
   await waitFor(() => expect(selectRoom).toHaveBeenCalledWith("conv-1"));
   expect(openConversation).toHaveBeenCalledExactlyOnceWith("a1");
-  expect(setSessionChatRoomId).toHaveBeenCalledWith("conv-1"); // not toasted while it is on screen
+  await waitFor(() => expect(setSideRoom).toHaveBeenLastCalledWith("app-conversation:a1", "conv-1")); // not toasted while on screen
   expect(screen.getByRole("complementary", { name: "Conversation" })).toBeInTheDocument();
   expect(screen.getByText("The first version is up.")).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Close chat" })).toBeNull(); // it stays beside the preview
   view.unmount();
-  expect(setSessionChatRoomId).toHaveBeenLastCalledWith(null);
+  expect(setSideRoom).toHaveBeenLastCalledWith("app-conversation:a1", null);
+});
+
+it("a hidden conversation (narrow panel showing the app) is not on screen, so it still notifies", async () => {
+  const view = render(<AppConversation app={app} shown={false} />);
+  await waitFor(() => expect(selectRoom).toHaveBeenCalledWith("conv-1"));
+  expect(setSideRoom).not.toHaveBeenCalledWith("app-conversation:a1", "conv-1");
+  view.rerender(<AppConversation app={app} shown />);
+  expect(setSideRoom).toHaveBeenLastCalledWith("app-conversation:a1", "conv-1");
+  view.rerender(<AppConversation app={app} shown={false} />);
+  expect(setSideRoom).toHaveBeenLastCalledWith("app-conversation:a1", null);
 });
 
 it("sends into the conversation room like any room message", async () => {

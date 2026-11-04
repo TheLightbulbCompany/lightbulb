@@ -10,9 +10,8 @@ const mockPost = vi.fn();
 const mockPatch = vi.fn();
 const mockDel = vi.fn();
 
-vi.mock("@/lib/api", () => ({
-  useApi: () => ({ get: mockGet, post: mockPost, patch: mockPatch, del: mockDel }),
-}));
+const api = { get: mockGet, post: mockPost, patch: mockPatch, del: mockDel }; // stable, as useApi's useMemo is
+vi.mock("@/lib/api", () => ({ useApi: () => api }));
 let liveHandler: ((e: unknown) => void) | null = null;
 vi.mock("@/hooks/useLiveEvents", () => ({
   useLiveEvents: () => ({ onEvent: (h: (e: unknown) => void) => { liveHandler = h; return () => { liveHandler = null; }; } }),
@@ -50,6 +49,22 @@ describe("useApps", () => {
     await act(async () => { liveHandler?.({ type: "runtime.resource.invalidated", payload: { resource: "mail" } }); });
     expect(mockGet.mock.calls.length).toBe(n);
     await act(async () => { liveHandler?.({ type: "runtime.resource.invalidated", payload: { resource: "apps", resourceId: "app_1" } }); });
+    await waitFor(() => expect(mockGet.mock.calls.length).toBeGreaterThan(n));
+  });
+
+  it("opens an app's conversation, keeps the function stable, and re-reads the list so its conversation_id lands", async () => {
+    mockGet.mockResolvedValue({ apps: [row()] });
+    mockPost.mockResolvedValue({ room_id: "conv-1" });
+    const { result, rerender } = renderHook(() => useApps(), { wrapper });
+    await waitFor(() => expect(result.current.apps).toHaveLength(1));
+    const first = result.current.openConversation;
+    rerender();
+    expect(result.current.openConversation).toBe(first); // SessionChat re-opens when it changes
+    const n = mockGet.mock.calls.length;
+    let out: { roomId: string } | undefined;
+    await act(async () => { out = await result.current.openConversation("app_1"); });
+    expect(out).toEqual({ roomId: "conv-1" });
+    expect(mockPost).toHaveBeenCalledWith("/apps/app_1/conversation", {});
     await waitFor(() => expect(mockGet.mock.calls.length).toBeGreaterThan(n));
   });
 

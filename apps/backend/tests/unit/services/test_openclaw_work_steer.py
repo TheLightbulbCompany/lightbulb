@@ -294,3 +294,13 @@ async def test_a_new_top_level_message_in_a_channel_gets_its_own_turn(monkeypatc
     )
     assert steers == []
     assert len(created) == 1 and len(ingress) == 1
+
+
+@pytest.mark.asyncio
+async def test_an_ambient_top_level_line_in_a_channel_still_folds_into_the_live_run(monkeypatch):
+    """Jev's ambient lines keep today's behaviour: they join the live run instead of a new turn."""
+    worker, created, _, steers, _ = _fixture(monkeypatch, runs=[{**LIVE, "eventKind": "room_event"}])
+    await worker._dispatch_message(
+        {**META, "kind": "channel"}, MEMBER, _message(threadRootMessageId=None), "room_event"
+    )
+    assert len(steers) == 1 and created == []

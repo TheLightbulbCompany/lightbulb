@@ -801,10 +801,14 @@ class OpenClawWorkWorker:
             and (
                 meta["kind"] == "dm"
                 or root == run.get("triggerMessageId")
-                # In a channel each top-level message starts its own thread, so one with no root
-                # never joins a run whose root is also empty (run 10, 3 Nov 2026, was steered into
-                # run 9's run and never got a turn). A group DM is one flat conversation: it does.
-                or ((root is not None or meta.get("kind") != "channel") and run.get("threadRootId") == root)
+                # In a channel an addressed top-level message is a new request with its own thread,
+                # so it never joins a run whose root is also empty (run 10, 3 Nov 2026, was steered
+                # into run 9's run and never got a turn). Ambient lines (Jev) still fold in, and a
+                # group DM is one flat conversation.
+                or (
+                    (root is not None or meta.get("kind") != "channel" or event_kind == "room_event")
+                    and run.get("threadRootId") == root
+                )
             )
         ]
         if not live:

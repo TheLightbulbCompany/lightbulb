@@ -175,7 +175,8 @@ def _enable_workers() -> None:
 
 def _start() -> bool:
     global _proc, _token, _etag, _sha, _sessions, _stopping, _ready
-    _a2a_declared.clear()  # a fresh engine starts with only the file's sessions
+    with _sessions_lock:  # not mid-declare: a declare would record a person this engine never saw
+        _a2a_declared.clear()  # a fresh engine starts with only the file's sessions
     fetched = _fetch_sessions()
     if fetched is None:
         return False  # not connected yet (no log: the normal state of most workspaces)
@@ -296,7 +297,7 @@ def ask(op: str, body: dict | None = None, timeout_s: float = 10.0) -> dict:
     return answer.get("result") or {}
 
 
-#: People whose ``a2a`` session this engine run was told about (cleared when a set replaces them).
+#: People whose ``a2a`` session this engine run was told about (every set re-declares them).
 _a2a_declared: set[str] = set()
 #: One ``cloud.sessions.set`` at a time: each replaces the engine's sessions, so two concurrent
 #: RPC threads (``ThreadingHTTPServer``) could otherwise undeclare each other's people.
@@ -335,10 +336,15 @@ def reload_sessions() -> int:
     # The engine replaces its revoked set on every set (absent is none), so a sign-out
     # (``network_login.revoke``) reaches a warm engine only if the reload carries it.
     params["revoked_keys"] = data.get("revoked_keys") or []
-    with _sessions_lock:  # a declare between this set and the clear would be wiped unrecorded
+    with _sessions_lock:  # one set at a time: each replaces the engine's sessions
+        # The set replaces the a2a sessions too: re-declare every cached person, so a laptop's reply
+        # to a hosted send still lands. ponytail: the cache is in memory, so an engine restart empties
+        # it and the next send re-declares; persist the list if replies strand across restarts.
+        params["sessions"] = [x for x in params["sessions"] if x.get("app") != "a2a"] + [
+            {"app": "a2a", "person": p} for p in sorted(_a2a_declared)
+        ]
         ask("cloud.sessions.set", params)
         _sessions = data
-        _a2a_declared.clear()  # the set replaced the engine's sessions, the a2a ones included
     SESSIONS_FILE.write_bytes(raw)
     return len(data.get("sessions") or [])
 
@@ -475,7 +481,8 @@ def _a2a_reply(session: str, record: dict) -> None:
         log.warning("network: a2a record %s has no reply_to; acked unforwarded", record["id"])
         status = 404
     else:
-        body = {"request_id": record["reply_to"], "text": record.get("text") or "", "session": session}
+        body = {"request_id": record["reply_to"], "text": record.get("text") or "", "session": session,
+                "from": record.get("from") or ""}  # the backend checks it is the session the task asked
         req = urllib.request.Request(
             f"{bridge.API}/api/v1/internal/a2a/{bridge.OWNER}/session-reply",
             data=json.dumps(body).encode(),

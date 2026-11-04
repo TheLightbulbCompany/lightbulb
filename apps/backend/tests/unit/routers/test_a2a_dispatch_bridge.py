@@ -35,8 +35,13 @@ def bridge(monkeypatch, env):  # noqa: F811
     return env
 
 
-def reply(request_id, text, person=OWNER):
-    return {"request_id": request_id, "text": text, "session": "a2a-" + network_member.app_person(person)}
+def reply(request_id, text, person=OWNER, sender="abc"):  # abc: the session the task asked
+    return {
+        "request_id": request_id,
+        "text": text,
+        "session": "a2a-" + network_member.app_person(person),
+        "from": sender,
+    }
 
 
 def ask(client):
@@ -66,14 +71,36 @@ def test_dispatch_prefers_the_bridge_when_the_workspace_has_a_runtime(client, br
     assert row["delivered"] is True and row["dispatchRequestId"] == out["taskId"]
 
 
-def test_dispatch_falls_back_to_best_link_when_the_bridge_raises(client, bridge):
-    bridge.rpc.side_effect = RuntimeError('{"code": "UNAVAILABLE"}')  # the member went down mid-request
+@pytest.mark.parametrize(
+    "exc",
+    [RuntimeError('{"code": "UNAVAILABLE"}'), asyncio.TimeoutError(), Exception("unavailable")],
+    ids=["runtime_error", "timeout", "unavailable"],
+)
+def test_a_bridge_rpc_exception_fails_the_task_without_a_second_send(client, bridge, exc):
+    bridge.rpc.side_effect = exc  # issued, outcome unknown: the member may have delivered it
+    out = ask(client)
+    assert out["state"] == "failed"
+    assert asyncio.run(a2a_repo.get_task(ORG, out["taskId"]))["reason"] == "dispatch_failed"
+    bridge.rpc.assert_awaited_once()
+    bridge.best_link.assert_not_awaited()
+    bridge.through.assert_not_awaited()
+
+
+@pytest.mark.parametrize("receipt", [{"id": "m1"}, {"id": "m1", "state": "odd"}, None], ids=["no_state", "odd", "none"])
+def test_a_receipt_with_no_known_state_fails_the_task_without_a_second_send(client, bridge, receipt):
+    bridge.rpc.return_value = receipt
+    out = ask(client)
+    assert out["state"] == "failed"
+    assert asyncio.run(a2a_repo.get_task(ORG, out["taskId"]))["reason"] == "dispatch_failed"
+    bridge.best_link.assert_not_awaited()
+
+
+def test_a_held_receipt_is_taken(client, bridge):
+    bridge.rpc.return_value = {"id": "m1", "state": "held"}  # the laptop's person decides it
     out = ask(client)
     assert out["state"] == "completed"
-    bridge.rpc.assert_awaited_once()
-    bridge.best_link.assert_awaited_once()
-    (link, op, params, _), _ = bridge.through.await_args
-    assert link["key"] == "k1" and op == "app.send" and params["request_id"] == out["taskId"]
+    bridge.best_link.assert_not_awaited()
+    assert asyncio.run(a2a_repo.get_task(ORG, out["taskId"]))["delivered"] is True
 
 
 def test_session_reply_completes_the_task_with_the_reply_text(client, bridge):
@@ -114,21 +141,13 @@ def test_session_reply_with_a_bad_hook_token_is_401(client, bridge):
     assert asyncio.run(a2a_repo.get_task(ORG, task_id))["artifact"]["parts"] == [{"text": "delivered"}]
 
 
-def test_a_refused_bridge_receipt_falls_back_to_best_link(client, bridge):
-    bridge.rpc.return_value = {"id": "m1", "state": "refused", "reason": "not_found"}
+@pytest.mark.parametrize("state", ["refused", "expired"])
+def test_a_refused_bridge_receipt_falls_back_to_best_link(client, bridge, state):
+    bridge.rpc.return_value = {"id": "m1", "state": state, "reason": "not_found"}
     out = ask(client)
     assert out["state"] == "completed"
     bridge.best_link.assert_awaited_once()
     assert bridge.through.await_args.args[1] == "app.send"
-
-
-def test_a_bridge_timeout_fails_the_task_without_a_second_send(client, bridge):
-    bridge.rpc.side_effect = asyncio.TimeoutError()
-    out = ask(client)
-    assert out["state"] == "failed"
-    assert asyncio.run(a2a_repo.get_task(ORG, out["taskId"]))["reason"] == "dispatch_failed"
-    bridge.best_link.assert_not_awaited()
-    bridge.through.assert_not_awaited()
 
 
 def test_a_cold_member_takes_the_link(client, bridge):
@@ -143,6 +162,15 @@ def test_a_reply_from_another_session_is_404(client, bridge):
     r = client.post(REPLY_URL, json=reply(task_id, "x", person="user_other"), headers=H)
     assert r.status_code == 404
     assert asyncio.run(a2a_repo.get_task(ORG, task_id))["artifact"]["parts"] == [{"text": "delivered"}]
+
+
+def test_a_reply_from_a_session_the_task_did_not_ask_is_404(client, bridge):
+    task_id = ask(client)["taskId"]
+    r = client.post(REPLY_URL, json=reply(task_id, "x", sender="someone-else"), headers=H)
+    assert r.status_code == 404
+    assert asyncio.run(a2a_repo.get_task(ORG, task_id))["artifact"]["parts"] == [{"text": "delivered"}]
+    no_from = {k: v for k, v in reply(task_id, "x").items() if k != "from"}
+    assert client.post(REPLY_URL, json=no_from, headers=H).status_code == 422
 
 
 def test_a_reply_after_a_working_task_expired_is_dropped(client, bridge):

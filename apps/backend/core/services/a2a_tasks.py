@@ -1,7 +1,6 @@
 """A2A tasks on the hosted door: the authority request, the decision, dispatch to a workspace agent,
 reply linking and the signed record of every state."""
 
-import asyncio
 import hashlib
 import json
 import logging
@@ -419,19 +418,24 @@ async def _complete_delivered(org: str, row: dict, now: int) -> None:
     row["record"] = await _record(org, row, "completed", now=now)
 
 
-#: An ``app.send`` receipt state that means the engine did not take the send.
-_NOT_TAKEN = frozenset({"refused", "held", "expired"})
+#: ``app.send`` receipt states: the engine took the send, or it certainly did not (the link may try).
+_TAKEN = frozenset({"queued", "stored", "delivered", "read", "held"})
+_FALL_BACK = frozenset({"refused", "expired"})
 
 
-async def on_session_reply(org: str, task_id: str, text: str, session: str) -> None:
+async def on_session_reply(org: str, task_id: str, text: str, session: str, sender: str) -> None:
     """A laptop session answered a hosted send (its reply reached the cloud member's ``a2a`` session):
     the reply text becomes the artifact of a ``working`` task (completed, with its record) or of one
-    completed as delivered (its record stands). Once: a second reply writes nothing. Only the origin
-    person's ``a2a-<handle>`` session can answer the task."""
+    completed as delivered (its record stands). Once: a second reply writes nothing. Only the session
+    asked (``sender``, the record's ``from``), replying to the origin person's ``a2a-<handle>`` session,
+    can answer the task."""
     row = await a2a_repo.get_task(org, task_id)
     if row is None or row.get("dispatchRequestId") != task_id:  # the dispatch request id is the task id
         raise A2AError(404, "unknown_request")
-    if session != "a2a-" + network_member.app_person(_claims(row["authority"])["chain"][0]["person"]):
+    claims = _claims(row["authority"])
+    if session != "a2a-" + network_member.app_person(claims["chain"][0]["person"]):
+        raise A2AError(404, "unknown_request")
+    if sender != claims["operation"]["resource"].removeprefix("session:"):  # the session _dispatch_session sent to
         raise A2AError(404, "unknown_request")
     artifact = {"artifactId": task_id, "parts": [{"text": text}]}
     if row["state"] == "completed":
@@ -444,6 +448,14 @@ async def on_session_reply(org: str, task_id: str, text: str, session: str) -> N
     jws = _record_jws(row, "completed", now=now)
     if await a2a_repo.complete_task(org, task_id, artifact=artifact, record=jws):
         await a2a_repo.append_record(org, task_id, {"jws": jws})
+
+
+async def _member_warm(org: str) -> bool:
+    try:
+        return await network_member._session_is_warm(org)
+    except Exception:  # noqa: BLE001 -- nothing was sent: the person's link is safe to try
+        logger.warning("a2a member warm check failed", extra={"org": org}, exc_info=True)
+        return False
 
 
 async def _dispatch_session(org: str, agent_id: str, row: dict, text: str) -> bool:
@@ -471,26 +483,27 @@ async def _dispatch_session(org: str, agent_id: str, row: dict, text: str) -> bo
         "a2a": a2a,
         "person": network_member.app_person(origin),
     }
-    try:
-        # Only a warm member is asked: an invoke would cold-start a parked workspace (~55 s).
-        if settings.A2A_DISPATCH_VIA_MEMBER and await network_member._session_is_warm(org):
+    # Only a warm member is asked: an invoke would cold-start a parked workspace (~55 s).
+    if settings.A2A_DISPATCH_VIA_MEMBER and await _member_warm(org):
+        try:
             receipt = await container_rpc.call(org, "network.a2a_send", params, timeout_s=SESSION_SEND_TIMEOUT_S)
-            state = (receipt or {}).get("state")
-            if state not in _NOT_TAKEN:  # stored, queued or delivered: taken, as phase 1 treats a send
-                row.update(dispatchRequestId=request_id, delivered=True)
-                return True
-            logger.warning("a2a bridge send %s; trying the person's link", state, extra={"org": org, "task": row["id"]})
-    except asyncio.TimeoutError:
-        # The member may have delivered it: a second send through the laptop link could duplicate it.
-        logger.warning("a2a bridge send timed out; not resent", extra={"org": org, "task": row["id"]})
-        row["failReason"] = "dispatch_failed"
-        return False
-    except Exception as exc:  # noqa: BLE001 -- the class only: the params carry the authority JWS
-        logger.warning(
-            "a2a bridge send failed (%s); trying the person's link",
-            type(exc).__name__,
-            extra={"org": org, "task": row["id"]},
-        )
+        except Exception as exc:  # noqa: BLE001 -- the class only: the params carry the authority JWS
+            # Issued, outcome unknown (a timeout, an unavailable bridge): the member may have delivered
+            # it, so a second send through the laptop link could duplicate it.
+            logger.warning(
+                "a2a bridge send failed (%s); not resent", type(exc).__name__, extra={"org": org, "task": row["id"]}
+            )
+            row["failReason"] = "dispatch_failed"
+            return False
+        state = (receipt or {}).get("state")
+        if state in _TAKEN:  # held: the laptop's person decides it
+            row.update(dispatchRequestId=request_id, delivered=True)
+            return True
+        if state not in _FALL_BACK:  # missing or unknown: not known to be taken, nor known not to be
+            logger.warning("a2a bridge receipt state %r; not resent", state, extra={"org": org, "task": row["id"]})
+            row["failReason"] = "dispatch_failed"
+            return False
+        logger.warning("a2a bridge send %s; trying the person's link", state, extra={"org": org, "task": row["id"]})
     try:
         link = await network_route.best_link(origin)
         if link is None:
@@ -824,7 +837,7 @@ async def put_rules(auth: AuthContext, org: str, rules: Rules, *, now: int | Non
     if not auth.is_org_admin:
         raise A2AError(403, "admin")
     now = int(time.time()) if now is None else now
-    doc = {**rules.model_dump(), "revision": revision(rules)}
+    doc = {**rules.model_dump(exclude_none=True), "revision": revision(rules)}  # the signed doc too
     await a2a_repo.put_rules(org, doc)  # first: a hold made from now on is decided by the new rules
     stored = Rules.model_validate(doc)
     # ponytail: one task at a time inside the request; a queue when an org holds hundreds
@@ -845,7 +858,7 @@ async def put_rules(auth: AuthContext, org: str, rules: Rules, *, now: int | Non
 
 async def current_rules_jws(org: str, *, now: int | None = None) -> str:
     """The workspace's stored rules document signed, or the shipped default when none is stored."""
-    doc = await a2a_repo.get_rules(org) or default_rules(org, []).model_dump()
+    doc = await a2a_repo.get_rules(org) or default_rules(org, []).model_dump(exclude_none=True)
     return sign_rules(org, doc, now=int(time.time()) if now is None else now)
 
 

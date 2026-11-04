@@ -59,6 +59,10 @@ def test_put_rules_pushes_to_every_link_of_the_workspace(net):
     sent = net.call.await_args_list[0]
     assert sent.args[1] == "rules.set"
     assert claims_of(sent.args[2]["jws"])["doc"] == doc
+    assert doc == asyncio.run(a2a_repo.get_rules(ORG))  # the stored document is the signed one
+    rule = a2a_rules.Rule(id="x", resource="agent:*", skill="message", requesters=["u1"], effect="allow")
+    doc = asyncio.run(a2a_tasks.put_rules(admin, ORG, RULES.model_copy(update={"rules": [rule]}), now=6))
+    assert "when" not in claims_of(net.call.await_args_list[-1].args[2]["jws"])["doc"]["rules"][0]  # exclude_none
 
 
 def test_push_continues_past_an_unsupported_engine(net):
@@ -73,7 +77,21 @@ def test_connect_pushes_the_default_document_when_none_is_stored(net):
     (sent,) = net.call.await_args_list
     claims = claims_of(sent.args[2]["jws"])
     assert claims["revision"] == "default" and claims["workspace"] == ORG
-    assert claims["doc"] == a2a_rules.default_rules(ORG, []).model_dump()
+    assert claims["doc"] == a2a_rules.default_rules(ORG, []).model_dump(exclude_none=True)
+    assert {
+        "id": "members-message",
+        "resource": "session:*",
+        "skill": "message",
+        "requesters": ["org:*"],
+        "effect": "allow",
+    } in claims["doc"]["rules"]
+    assert {
+        "id": "members-assign",
+        "resource": "session:*",
+        "skill": "assign",
+        "requesters": ["org:*"],
+        "effect": "allow",
+    } in claims["doc"]["rules"]
 
 
 def test_push_is_scoped_to_the_links_workspace(net, monkeypatch):
@@ -110,3 +128,11 @@ def test_a_link_with_no_recorded_workspace_gets_the_push_only_if_its_person_has_
     )
     assert asyncio.run(network_route.push_rules(ORG, "jws")) == 1
     assert [c.args[0]["userId"] for c in net.call.await_args_list] == ["u1"]
+
+
+def test_an_empty_member_list_logs_once_and_pushes_nothing(net, monkeypatch, caplog):
+    monkeypatch.setattr("core.services.clerk_admin.list_organization_members", AsyncMock(return_value=[]))
+    with caplog.at_level("INFO", logger="core.services.network_route"):
+        assert asyncio.run(network_route.push_rules(ORG, "jws")) == 0
+    assert [r.levelname for r in caplog.records if "no members" in r.getMessage()] == ["INFO"]
+    net.call.assert_not_awaited()

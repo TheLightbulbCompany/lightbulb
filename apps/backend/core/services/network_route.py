@@ -57,6 +57,7 @@ class Link:
     user_id: str
     generation: str
     send: Any  # async (dict) -> None
+    org: str = ""  # the workspace its proof signed into ("": none named)
     exp: int = 0  # its proof's: the link closes when it lapses (the computer refreshes first)
     mail_window: float = 0.0
     mail_count: int = 0
@@ -226,14 +227,28 @@ async def _push_one(row: dict, jws: str) -> bool:
     return True
 
 
-async def push_rules(org: str, jws: str) -> int:
-    """``rules.set`` on every connected link of a person in workspace ``org``; the links reached.
-    A person in two workspaces gets this one's document on every link (each engine pins its first)."""
+async def _in_workspace(row: dict, org: str) -> bool:
+    """A link belongs to the workspace its proof named; one from before that was recorded belongs to
+    its person's only workspace (several: unknown, so none)."""
+    if row.get("org"):
+        return row["org"] == org
     from core.services import clerk_admin
 
+    orgs = await clerk_admin.list_user_organizations(row["userId"], limit=100)
+    return len(orgs) == 1 and orgs[0]["id"] == org
+
+
+async def push_rules(org: str, jws: str) -> int:
+    """``rules.set`` on every connected link of a person in workspace ``org``; the links reached.
+    Only links signed into ``org`` (an engine pins the first workspace it is told)."""
+    from core.services import clerk_admin
+
+    # ponytail: one Clerk call per save and a routes_for_user read per member; an org-keyed
+    # route index when workspaces hold hundreds of people
     rows = []
     for member in await clerk_admin.list_organization_members(org):
         rows += await _connections().routes_for_user(member["user_id"])
+    rows = [r for r in rows if await _in_workspace(r, org)]
     return sum(await asyncio.gather(*(_push_one(r, jws) for r in rows)))
 
 
@@ -301,21 +316,21 @@ async def serve(websocket) -> None:
     async def send(frame: dict) -> None:
         await websocket.send_text(json.dumps(frame))
 
-    link = Link(key, user_id, generation, send, exp=claims["exp"])
+    link = Link(key, user_id, generation, send, org=claims.get("org") or "", exp=claims["exp"])
     old = links.get(key)
     links[key] = link
     if old is not None:
         _fail(old)
     name = hello.get("computer") if isinstance(hello.get("computer"), str) else ""
     name = "".join(c for c in name if c.isprintable())[:64]
-    await connections.put_route(key=key, user_id=user_id, generation=generation, name=name)
+    await connections.put_route(key=key, user_id=user_id, generation=generation, name=name, org=link.org)
     logger.info("network route link up user=%s", user_id)  # never the key
     await send({"type": "ready", "person": network_member.app_person(user_id)})
     code = 1000
     try:
         reader = asyncio.create_task(_read(websocket, link))
         keeper = asyncio.create_task(_keep(connections, link))
-        pusher = asyncio.create_task(push_current_rules(link, claims.get("org")))
+        pusher = asyncio.create_task(push_current_rules(link, link.org or None))
         done, _ = await asyncio.wait({reader, keeper}, return_when=asyncio.FIRST_COMPLETED)
         if keeper in done and not keeper.cancelled() and keeper.exception() is None:
             code = keeper.result()

@@ -775,8 +775,9 @@ async def put_rules(auth: AuthContext, org: str, rules: Rules, *, now: int | Non
             logger.exception("a2a re-decide failed", extra={"org": org, "task": row["id"]})
     try:
         await network_route.push_rules(org, sign_rules(org, doc, now=now))
-    except Exception:  # the laptops catch up on their next connect; the PUT stands
-        logger.exception("a2a rules push failed", extra={"org": org})
+    except Exception as exc:  # the laptops catch up on their next connect; the PUT stands
+        logger.warning("a2a rules push failed: %s", type(exc).__name__, extra={"org": org})
+        logger.debug("a2a rules push failure", exc_info=True)
     return doc
 
 

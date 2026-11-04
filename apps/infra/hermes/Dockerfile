@@ -90,9 +90,9 @@ RUN set -eux; \
 # TODO: the engine release containing network workers (cli PR #105) must replace this pin before
 # LIGHTBULB_NETWORK_WORKERS can be turned on.
 # v0.7.0 or later: the backend's memory sync (memory.list/import/remember/forget) are engine ops.
-# The checksum is v0.9.11's lightbulb-linux-arm64.tar.gz.sha256 asset; bump the tag and the checksum together.
-RUN curl -fsSLo /tmp/lb.tgz https://github.com/TheLightbulbCompany/cli/releases/download/v0.9.11/lightbulb-linux-arm64.tar.gz \
- && echo "192a4aa5f5587cd46f3eba89edb62ac23fb337dd0ca8027f9c31bc11348522d6  /tmp/lb.tgz" | sha256sum -c - \
+# The checksum is v0.9.12's lightbulb-linux-arm64.tar.gz.sha256 asset; bump the tag and the checksum together.
+RUN curl -fsSLo /tmp/lb.tgz https://github.com/TheLightbulbCompany/cli/releases/download/v0.9.12/lightbulb-linux-arm64.tar.gz \
+ && echo "e273087b7b0656eb0526dac6d01b0f6548d4ec6a35c06608afb65eda38f3d1fb  /tmp/lb.tgz" | sha256sum -c - \
  && tar -xzf /tmp/lb.tgz -C /usr/local/bin lightbulb && rm /tmp/lb.tgz && lightbulb version
 
 # ---- CLI connector binaries ------------------------------------------------------------------

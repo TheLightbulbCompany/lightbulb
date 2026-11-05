@@ -71,6 +71,7 @@ async def router_runs(ws: str) -> list[dict[str, Any]]:
             setattr(settings, name, os.environ.get(name, value))
     if not settings.TEMPORAL_API_KEY:
         settings.TEMPORAL_API_KEY = os.environ.get("TEMPORAL_API_KEY") or _secret("lightbulb/dev/temporal_api_key")
+    assert settings.TEMPORAL_NAMESPACE.startswith("lightbulb-dev."), "refusing: not the dev Temporal namespace"
     client = await temporal_client.connect()
     handle = client.get_workflow_handle(ts.router_workflow_id(ws))
     batches: list[RouterTurnIn] = []

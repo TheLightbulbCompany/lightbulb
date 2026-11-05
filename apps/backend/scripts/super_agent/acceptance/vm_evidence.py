@@ -1,14 +1,14 @@
 """Wave-2 gate (G2 step 3): per-task VM evidence (plans/wave2-V Task 17).
 
-Every Attempt of a task in ``sa-dev-on`` (API-key model provider, so per-task VMs) must have run
-on that task's own AgentCore session, and every Attempt of a task in ``sa-dev-chatgpt`` (ChatGPT
-login, shared VM until the broker cutover) on the workspace session. ``begin_attempt``
-(core/temporal/activities.py) records the AgentCore session id it dispatched to as the Attempt's
-``sessionId`` -- ``runtime_transport.session_id_for(ws, task_id)`` for a task session,
-``session_id_for(ws)`` for the workspace's -- so the evidence is those rows against those ids.
+One workspace. Whether its tasks get their own AgentCore session is the backend's single rule,
+``token_custody.task_vm_allowed`` (spec 13 §5.4: ChatGPT login only under ``custody: backend``, the token broker;
+``custody: actor`` keeps the VM refreshing, so the shared workspace session). Under per-task VMs every Attempt of
+every task must carry that task's own session id and no two tasks may share one; otherwise every Attempt must carry
+the workspace session id. ``begin_attempt`` (core/temporal/activities.py) records the AgentCore session id it
+dispatched to as the Attempt's ``sessionId`` -- ``runtime_transport.session_id_for(ws, task_id)`` for a task
+session, ``session_id_for(ws)`` for the workspace's -- so the evidence is those rows against those ids.
 
-Pure over ``ctx.tasks_rows(ws)`` (G1's dev-only read of the tasks table); no network. Session ids
-are not secrets; task ids and session ids are the evidence.
+Reads ``ctx.tasks_rows(ws)`` and the custody rule. Session ids are not secrets; task ids and session ids are the evidence.
 """
 
 from __future__ import annotations
@@ -41,41 +41,32 @@ def _attempts(rows: Iterable[dict[str, Any]], task_ids: Iterable[str]) -> dict[s
     return out
 
 
-async def vm_evidence(
-    ctx: Ctx,
-    *,
-    ws_on: str,
-    task_ids_on: list[str],
-    ws_chatgpt: str,
-    task_ids_chatgpt: list[str],
-) -> Result:
-    """Passes iff every Attempt of ``task_ids_on`` in ``ws_on`` carries that task's own session id
-    (no two tasks share one), and every Attempt of ``task_ids_chatgpt`` in ``ws_chatgpt`` carries
-    the workspace session id. A task with no Attempt is a failure: there is no evidence."""
+async def vm_evidence(ctx: Ctx, *, ws: str, task_ids: list[str], per_task: bool | None = None) -> Result:
+    """Passes iff every Attempt of ``task_ids`` carries the expected session id (see the module docstring).
+    ``per_task`` defaults to the backend's own rule (``task_vm_allowed``) at gate time; a task with no Attempt
+    is a failure: there is no evidence."""
+    if per_task is None:
+        from core.services.token_custody import task_vm_allowed
+
+        per_task = await task_vm_allowed(ws)
     failures: list[str] = []
-    evidence: dict[str, Any] = {}
-    for label, ws, task_ids, per_task in (
-        ("on", ws_on, task_ids_on, True),
-        ("chatgpt", ws_chatgpt, task_ids_chatgpt, False),
-    ):
-        by_task = _attempts(await ctx.tasks_rows(ws), task_ids)
-        seen: dict[str, str] = {}  # session id -> first task seen on it
-        evidence[label] = {"ws": ws, "attempts": []}
-        for tid in task_ids:
-            if not by_task[tid]:
-                failures.append(f"{label}:{tid}: no attempt rows")
-            for att in sorted(by_task[tid], key=lambda a: int(a.get("n") or 0)):
-                expected = session_id_for(ws, tid if per_task else None)
-                sid = att.get("sessionId")
-                evidence[label]["attempts"].append({"taskId": tid, "n": att.get("n"), "sessionId": sid})
-                if sid != expected:
-                    kind = "task" if per_task else "workspace"
-                    failures.append(
-                        f"{label}:{tid}#{att.get('n')}: sessionId {sid} is not the {kind} session {expected}"
-                    )
-                if per_task and sid in seen and seen[sid] != tid:
-                    failures.append(f"{label}:{tid}#{att.get('n')}: shares session {sid} with task {seen[sid]}")
-                if sid is not None:
-                    seen.setdefault(sid, tid)
-    evidence["failures"] = failures
-    return Result(passed=not failures, evidence=evidence)
+    attempts: list[dict[str, Any]] = []
+    seen: dict[str, str] = {}  # session id -> first task seen on it
+    by_task = _attempts(await ctx.tasks_rows(ws), task_ids)
+    for tid in task_ids:
+        if not by_task[tid]:
+            failures.append(f"{tid}: no attempt rows")
+        for att in sorted(by_task[tid], key=lambda a: int(a.get("n") or 0)):
+            expected = session_id_for(ws, tid if per_task else None)
+            sid = att.get("sessionId")
+            attempts.append({"taskId": tid, "n": att.get("n"), "sessionId": sid})
+            if sid != expected:
+                kind = "task" if per_task else "workspace"
+                failures.append(f"{tid}#{att.get('n')}: sessionId {sid} is not the {kind} session {expected}")
+            if per_task and sid in seen and seen[sid] != tid:
+                failures.append(f"{tid}#{att.get('n')}: shares session {sid} with task {seen[sid]}")
+            if sid is not None:
+                seen.setdefault(sid, tid)
+    return Result(
+        passed=not failures, evidence={"ws": ws, "perTaskVm": per_task, "attempts": attempts, "failures": failures}
+    )

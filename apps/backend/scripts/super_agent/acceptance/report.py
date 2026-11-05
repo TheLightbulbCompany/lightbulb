@@ -144,7 +144,7 @@ def _cell(value: Any) -> str:
     return (text[:300] + "…" if len(text) > 300 else text).replace("|", "\\|")
 
 
-def render_report(results: Mapping[str, Any], *, sha: str, fixtures: Mapping[str, str], faults: str = "") -> str:
+def render_report(results: Mapping[str, Any], *, sha: str, workspace: str, faults: str = "") -> str:
     """Markdown the gate ledger keeps: one row per check with its evidence (row keys, ids, timings)."""
     lines = [
         "# Acceptance report",
@@ -152,7 +152,7 @@ def render_report(results: Mapping[str, Any], *, sha: str, fixtures: Mapping[str
         f"- run at: {datetime.now(timezone.utc).isoformat(timespec='seconds')}",
         f"- dev SHA: {sha}",
         f"- faults: {faults or 'none'}",
-        f"- fixtures: {', '.join(f'{k}={v}' for k, v in fixtures.items()) or 'none'}",
+        f"- workspace: {workspace}",
         f"- verdict: {'ALL GREEN' if results and all(r.passed for r in results.values()) else 'NOT GREEN'}",
         "",
         "| scenario | result | check | value |",
@@ -183,23 +183,15 @@ def write_report(path: Path, results: Mapping[str, Any], **meta: Any) -> None:
 
 # ---------------------------------------------------------------------- G2: the gate
 async def gate(ctx: Ctx, *, rules_expect: Any | None = None, log: Callable[[str], None] = print) -> dict[str, Any]:
-    """A0–A13 on ``sa-dev-on`` (A0 picks ``sa-dev-off`` itself), A1–A2 again on ``sa-dev-chatgpt``, then the
-    evidence checks: ``vm_evidence`` over both runs' task ids (V17) and ``rules_observe`` over the lead's
-    ``Expect`` (S9; skipped without one). The *UI* checks and W's digest stay by hand (wave2-README G2 step 2–3)."""
+    """A1–A13 on the one dev workspace (A0 needs the switch off: run it before the flip), then the evidence
+    checks: ``vm_evidence`` over the task ids the scenarios left in ``ctx.state["taskIds"]`` (V17; per-task or workspace
+    session by the workspace's token custody)
+    and ``rules_observe`` over the lead's ``Expect`` (S9; skipped without one). UI checks and W's digest stay by hand."""
     from scripts.super_agent.acceptance.rules_observe import rules_observe
     from scripts.super_agent.acceptance.vm_evidence import vm_evidence
 
-    results: dict[str, Any] = await run_scenarios(ORDER, ctx, log=log)
-    chatgpt = ctx.for_ws("sa-dev-chatgpt")
-    for name, result in (await run_scenarios(["A1", "A2"], chatgpt, log=log)).items():
-        results[f"{name}@sa-dev-chatgpt"] = result
-    results["VM"] = await vm_evidence(
-        ctx,
-        ws_on=ctx.fixtures["sa-dev-on"],
-        task_ids_on=list(ctx.state.get("taskIds") or []),
-        ws_chatgpt=ctx.fixtures["sa-dev-chatgpt"],
-        task_ids_chatgpt=list(chatgpt.state.get("taskIds") or []),
-    )
+    results: dict[str, Any] = await run_scenarios(ORDER[1:], ctx, log=log)
+    results["VM"] = await vm_evidence(ctx, ws=ctx.ws, task_ids=list(ctx.state.get("taskIds") or []))
     results["RULES"] = (
         await rules_observe(ctx, rules_expect)
         if rules_expect

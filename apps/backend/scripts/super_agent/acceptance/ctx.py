@@ -1,12 +1,13 @@
 """G1: ``Ctx`` and ``Result`` for the wave-2 acceptance scenarios (plans/wave2-README.md G1, spec 09 §5.5).
 
 Dev only, three times over: ``settings.ENVIRONMENT`` must be ``dev``, the API host must be ``api-dev``
-(``runner.dev_only``) and the tasks table must be ``lightbulb-dev-*``. The fixture users (Sam, Priya, Ada) sign in
+(``runner.dev_only``) and the tasks table must be ``lightbulb-dev-*``. Everything runs in ONE existing workspace
+(the dev "Super Agent Test" org): ``sam`` is its owner, ``priya`` a second Clerk test user added as a member. They sign in
 through Clerk sign-in tickets minted with the dev Clerk secret from Secrets Manager (``runner.Clerk``, AWS profile
 ``isol8-admin``). No token or secret is ever printed: evidence is ids, row keys and timings.
 
 The names every lane's scenario body uses (O13 #4764, Q11, A13, M10, V17, S9):
-``ctx.ws`` / ``ctx.users[label]`` / ``ctx.fixtures[name]`` (ids), ``ctx.state`` (carried across scenarios),
+``ctx.ws`` / ``ctx.users[label]`` (ids), ``ctx.state`` (carried across scenarios),
 ``ctx.api(user)`` (httpx.AsyncClient rooted at the API host), ``await ctx.tasks_rows(ws=ctx.ws)``,
 ``ctx.appsync(ws)`` (async iterator of live events on ``/ws/{wsChannel}/tasks``),
 ``await ctx.wait_for(pred, timeout_s)`` (polls ``tasks_rows``; the first truthy ``pred(rows)``, ``None`` on timeout),
@@ -31,28 +32,18 @@ import httpx
 from core import tasks_schema as ts
 from core.config import settings
 from core.dynamodb import get_table, plain, run_in_thread, table_name
-from scripts.load.fixtures import APPSYNC_TEMPLATE
+from scripts.load.fixtures import APPSYNC_TEMPLATE, _add_member, _bapi
 from scripts.multiparty_e2e.runner import API, UA, Clerk, Session, dev_only
 
 T = TypeVar("T")
 
-#: Fixture workspaces (spec 09 §7.2, wave2-README): Clerk org name -> the fixture users seated in it; the first
-#: user creates the org and so is its admin (Q11: Sam admin, Priya member).
-FIXTURES: dict[str, tuple[str, ...]] = {
-    "sa-dev-on": ("sam", "priya"),
-    "sa-dev-off": ("sam", "priya"),
-    "sa-dev-chatgpt": ("sam", "priya"),
-    "sa-dev-acme": ("ada",),
-}
+#: The dev test workspace the founder keeps ("Super Agent Test"): its Clerk org id is the workspace owner id.
+DEFAULT_WORKSPACE = "org_3LgB9twuJbYCjGILfOL5JjgQV0p"
+#: The second person (Q11, A12: a member beside the owner); ``+clerk_test`` never receives mail.
+SECOND_USER_EMAIL = "sa-test-2+clerk_test@thelightbulb.company"
 API_ROOT = "{0.scheme}://{0.netloc}".format(urlsplit(API))
 DEV_TABLE_PREFIX = "lightbulb-dev-"
 POLL_S = 0.5
-
-
-def user_email(fixture: str, label: str) -> str:
-    """One Clerk user per (fixture, label), so every fixture workspace tears down on its own:
-    ``sa-dev-on-sam+clerk_test@example.com`` (``+clerk_test`` never receives mail, as scripts/load/fixtures.py)."""
-    return f"{fixture}-{label}+clerk_test@example.com"
 
 
 @dataclass(frozen=True)
@@ -89,56 +80,41 @@ class _TicketAuth(httpx.Auth):
 
 
 class Ctx:
-    def __init__(
-        self,
-        *,
-        ws: str,
-        users: dict[str, str],
-        fixtures: dict[str, str],
-        ws_name: str = "sa-dev-on",
-        clerk: Clerk | None = None,
-    ):
-        self.ws, self.users, self.fixtures, self.ws_name = ws, users, fixtures, ws_name
+    def __init__(self, *, ws: str, users: dict[str, str], clerk: Clerk | None = None):
+        self.ws, self.users = ws, users
         self.state: dict[str, Any] = {}
         self._clerk = clerk
         self._sessions: dict[tuple[str, str], Session] = {}
         self._clients: dict[tuple[str, str], httpx.AsyncClient] = {}
 
-    # ------------------------------------------------------------------ construction
     @classmethod
-    def connect(cls, *, ws_name: str = "sa-dev-on") -> Ctx:
-        """Resolve the fixture ids from dev Clerk (reads only) and bind ``ws`` / ``users`` to ``ws_name``."""
+    def connect(cls, *, ws: str = DEFAULT_WORKSPACE) -> Ctx:
+        """Bind to the existing workspace ``ws``: ``sam`` is its Clerk org creator (the owner); ``priya`` is
+        ``SECOND_USER_EMAIL``, created and added as a MEMBER when missing (idempotent: the only Clerk writes)."""
         guard()
         clerk = Clerk()
-        fixtures = resolve_fixtures(clerk)
-        missing = sorted(set(FIXTURES) - set(fixtures))
-        if missing:
-            raise SystemExit(f"fixture workspaces missing in dev Clerk: {missing}; run `setup --apply` first")
-        return cls(
-            ws=fixtures[ws_name], users=resolve_users(clerk, ws_name), fixtures=fixtures, ws_name=ws_name, clerk=clerk
+        org = clerk.http.get(f"/organizations/{ws}")
+        if org.status_code != 200:
+            raise SystemExit(f"workspace {ws} not found in dev Clerk (HTTP {org.status_code})")
+        second = clerk.user(SECOND_USER_EMAIL) or _bapi(
+            clerk,
+            "/users",
+            {
+                "email_address": [SECOND_USER_EMAIL],
+                "first_name": "Priya",
+                "last_name": "Test",
+                "skip_password_requirement": True,
+            },
         )
-
-    def for_ws(self, ws_name: str) -> Ctx:
-        """Another fixture workspace with its own users and a fresh ``state``, sharing the Clerk client and every
-        session so far (the gate runs A1/A2 on ``sa-dev-chatgpt`` for the VM evidence)."""
-        if self._clerk is None:
-            raise RuntimeError("for_ws needs a Clerk client")
-        other = Ctx(
-            ws=self.fixtures[ws_name],
-            users=resolve_users(self._clerk, ws_name),
-            fixtures=self.fixtures,
-            ws_name=ws_name,
-            clerk=self._clerk,
-        )
-        other._sessions, other._clients = self._sessions, self._clients
-        return other
+        _add_member(clerk, ws, second["id"])
+        return cls(ws=ws, users={"sam": org.json()["created_by"], "priya": second["id"]}, clerk=clerk)
 
     async def aclose(self) -> None:
         for client in self._clients.values():
             await client.aclose()
         self._clients.clear()
 
-    # ------------------------------------------------------------------ the API as a fixture user
+    # ------------------------------------------------------------------ the API as a user
     def _session(self, user: str, ws: str) -> Session:
         key = (user, ws)
         if key not in self._sessions:
@@ -148,7 +124,7 @@ class Ctx:
         return self._sessions[key]
 
     def api(self, user: str, ws: str | None = None) -> httpx.AsyncClient:
-        """An httpx.AsyncClient rooted at the API host, signed in as the fixture user with ``ws`` active
+        """An httpx.AsyncClient rooted at the API host, signed in as ``user`` with ``ws`` active
         (default ``ctx.ws``). Paths are full, e.g. ``/api/v1/messaging/rooms``."""
         key = (user, ws or self.ws)
         if key not in self._clients:
@@ -193,7 +169,7 @@ class Ctx:
 
     # ------------------------------------------------------------------ A12: each user's DM with @lightbulb
     async def ensure_dm_rooms(self) -> dict[str, str]:
-        """``ctx.state["samDmRoomId"]`` / ``["priyaDmRoomId"]`` (one per fixture user): the user's DM with the
+        """``ctx.state["samDmRoomId"]`` / ``["priyaDmRoomId"]`` (one per user): the user's DM with the
         front agent, found as the single ``@lightbulb`` member of ``#general`` (O7 seating) and opened through
         ``POST /messaging/rooms`` ``kind=dm`` (the route returns the existing DM, so this is idempotent)."""
         out: dict[str, str] = {}
@@ -281,23 +257,6 @@ def parse_appsync_data(msg: dict[str, Any]) -> list[dict[str, Any]]:
         if isinstance(event, dict):
             out.append(event)
     return out
-
-
-# ---------------------------------------------------------------------- fixture lookups (dev Clerk, reads only)
-def resolve_users(clerk: Clerk, fixture: str) -> dict[str, str]:
-    """label -> Clerk user id for the fixture's users; refuses when one is missing (run ``setup --apply``)."""
-    found = {label: clerk.user(user_email(fixture, label)) for label in FIXTURES[fixture]}
-    missing = sorted(label for label, user in found.items() if not user)
-    if missing:
-        raise SystemExit(f"{fixture}: fixture users missing in dev Clerk: {missing}; run `setup --apply` first")
-    return {label: user["id"] for label, user in found.items()}
-
-
-def resolve_fixtures(clerk: Clerk) -> dict[str, str]:
-    """fixture name -> Clerk org id (= the workspace owner id) for every fixture org that exists."""
-    orgs = clerk.http.get("/organizations", params={"query": "sa-dev-", "limit": 100}).raise_for_status().json()
-    by_name = {o["name"]: o["id"] for o in orgs.get("data", [])}
-    return {name: by_name[name] for name in FIXTURES if name in by_name}
 
 
 def aws_profile_default() -> None:

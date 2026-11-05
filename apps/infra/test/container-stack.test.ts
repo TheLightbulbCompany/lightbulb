@@ -150,6 +150,27 @@ describe("ContainerStack — dev", () => {
     });
   });
 
+  test("replicas bucket expires task overlays after 14 days by tag", () => {
+    // Super-agent per-task VMs tag every object they write under <owner>/hermes-tasks/ with
+    // lb-kind=task-overlay. Tag-scoped, no prefix: inert wherever nothing carries the tag (prod).
+    for (const environment of ["dev", "prod"] as const) {
+      const rules = Object.values(buildStack(environment).findResources("AWS::S3::Bucket"))
+        .find((b: any) => b.Properties.BucketName === `lightbulb-${environment}-openclaw-replicas`)!
+        .Properties.LifecycleConfiguration.Rules;
+      const overlay = rules.find((r: any) => r.Id === "TaskOverlays");
+      expect(overlay).toEqual({
+        Id: "TaskOverlays",
+        ExpirationInDays: 14,
+        Status: "Enabled",
+        TagFilters: [{ Key: "lb-kind", Value: "task-overlay" }],
+      });
+      expect(rules.filter((r: any) => r.Prefix).map((r: any) => [r.Id, r.Prefix, r.ExpirationInDays])).toEqual([
+        ["SessionsFree", "sessions/free/", 30],
+        ["SessionsWorkspace", "sessions/workspace/", 365],
+      ]);
+    }
+  });
+
   test("owns the platform ECS cluster the backend runs on", () => {
     template.hasResourceProperties("AWS::ECS::Cluster", {
       ClusterName: "lightbulb-dev-container",

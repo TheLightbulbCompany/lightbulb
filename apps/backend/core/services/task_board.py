@@ -90,10 +90,11 @@ _SA_STATUS = {
     "in_progress": ("working",),
     "blocked": ("waiting",),
     "in_review": ("idle",),
-    "done": ("resolved",),
+    "done": ("resolved",),  # a stopped task is `resolved` + statusReason=stopped: it lists under done too
     "cancelled": ("failed",),
 }
 _SA_OPEN = ("proposed", "queued", "working", "waiting", "idle")
+# ponytail: one page per status, newest first; a board past 50 open tasks per status needs the cursor.
 _SA_SCAN = 50
 _IDENTIFIER = re.compile(r"^LB-\d{1,9}$")
 

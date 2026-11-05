@@ -7,13 +7,18 @@ inside the function. Payloads carry ids only.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 from temporalio import activity, workflow
 from temporalio.common import RetryPolicy
+from temporalio.exceptions import ActivityError
 
 DRAFT_TTL = timedelta(days=7)
+# spec 06 §3.6: renew a Google watch 48 h before it expires; three failed renewals pause the automation.
+KEEPER_LEAD = timedelta(hours=48)
+KEEPER_RETRY = timedelta(hours=1)
+KEEPER_MAX_FAILURES = 3
 
 
 @dataclass(frozen=True)
@@ -60,14 +65,14 @@ async def reconcile_schedules() -> dict:
 
     from core import tasks_schema as ts
     from core.repositories import automations_repo as repo
+    from core.services import automation_hooks
     from core.services import automation_schedule as asch
-    from core.services.credentials import integration_secret_store
     from core.temporal.client import get_client
 
     deletes = sweep_allowed()
     if not deletes:
         logging.getLogger(__name__).warning("reconcile: tasks table is not this namespace's env; no deletes")
-    out = {"created": 0, "updated": 0, "deleted_orphans": 0, "deleted_drafts": 0}
+    out = {"created": 0, "updated": 0, "deleted_orphans": 0, "deleted_drafts": 0, "keepers": 0}
     cutoff = (datetime.now(timezone.utc) - DRAFT_TTL).isoformat()
     keep: set[str] = set()
     for row in await repo.scan_schedules():
@@ -76,13 +81,8 @@ async def reconcile_schedules() -> dict:
         if row["status"] == "draft" and row["createdAt"] < cutoff:
             if deletes and await repo.delete_schedule(ws, sid, only_if_status="draft"):
                 await asch.delete(ws, sid)
-                # ponytail: provider-side hooks of a never-activated draft are left registered (the URL then
-                # 404s); unregister them here if drafts ever register provider hooks (A8 registers on create).
-                for public_id in row.get("hookPublicIds") or []:
-                    hook = await repo.get_hook(ws, public_id)
-                    if hook:
-                        await integration_secret_store.delete(ws, hook["secretRef"])
-                    await repo.delete_hook(ws, public_id)
+                for public_id in row.get("hookPublicIds") or []:  # provider hook, keeper, secret, row
+                    await automation_hooks.delete(ws, public_id)
                 out["deleted_drafts"] += 1
             continue
         # The scan is stale: act on the current row (consistent read), so a pause or delete since the scan
@@ -94,6 +94,13 @@ async def reconcile_schedules() -> dict:
         changed = await asch.upsert(row)
         if changed:
             out[changed] += 1
+        if row["status"] == "paused_system":
+            continue
+        for public_id in row.get("hookPublicIds") or []:  # a Google hook without its keeper gets one
+            hook = await repo.get_hook(ws, public_id)
+            if hook and hook.get("account") and hook.get("expiresAt"):
+                await automation_hooks.start_keeper(ws, public_id, automation_hooks.expires_ms(hook["expiresAt"]))
+                out["keepers"] += 1
     if not deletes:
         return out
     prefix = ts.schedule_workflow_id("", "").split(":", 1)[0] + ":"
@@ -121,5 +128,60 @@ class ScheduleReconcileWorkflow:
         )
 
 
-WORKFLOWS = [ScheduleReconcileWorkflow]
-ACTIVITIES = [reconcile_schedules]
+@activity.defn
+async def renew_google_watch(ws: str, public_id: str) -> int | None:
+    from core.services import automation_hooks
+
+    return await automation_hooks.renew(ws, public_id)
+
+
+@activity.defn
+async def mark_watch_broken(ws: str, public_id: str) -> None:
+    from core.services import automation_hooks
+
+    await automation_hooks.mark_broken(ws, public_id)
+
+
+@workflow.defn
+class GoogleWatchKeeperWorkflow:
+    """One per Google `HOOK#` (id `gwatch:{ws}:{publicId}`): sleeps until 48 h before the watch expires, renews
+    it, Continues-As-New with the new expiry. Three failed renewals or a passed expiry pause the automation."""
+
+    @workflow.run
+    async def run(self, ws: str, public_id: str, expires_ms: int, failures: int = 0, renewals: int = 0) -> dict:
+        expires_at = datetime.fromtimestamp(expires_ms / 1000, tz=timezone.utc)
+        if expires_at <= workflow.now():
+            await self._broken(ws, public_id)
+            return {"outcome": "broken", "renewals": renewals}
+        renew_at = expires_at - KEEPER_LEAD
+        if renew_at > workflow.now():
+            await workflow.sleep(renew_at - workflow.now())
+        try:
+            new_expiry = await workflow.execute_activity(
+                renew_google_watch,
+                args=[ws, public_id],
+                start_to_close_timeout=timedelta(minutes=5),
+                retry_policy=RetryPolicy(maximum_attempts=1),
+            )
+        except ActivityError:
+            failures += 1
+            if failures >= KEEPER_MAX_FAILURES:
+                await self._broken(ws, public_id)
+                return {"outcome": "broken", "renewals": renewals}
+            await workflow.sleep(KEEPER_RETRY)
+            workflow.continue_as_new(args=[ws, public_id, expires_ms, failures, renewals])
+        if new_expiry is None:  # the hook was deleted
+            return {"outcome": "gone", "renewals": renewals}
+        workflow.continue_as_new(args=[ws, public_id, new_expiry, 0, renewals + 1])
+
+    async def _broken(self, ws: str, public_id: str) -> None:
+        await workflow.execute_activity(
+            mark_watch_broken,
+            args=[ws, public_id],
+            start_to_close_timeout=timedelta(minutes=2),
+            retry_policy=RetryPolicy(maximum_attempts=3),
+        )
+
+
+WORKFLOWS = [ScheduleReconcileWorkflow, GoogleWatchKeeperWorkflow]
+ACTIVITIES = [reconcile_schedules, renew_google_watch, mark_watch_broken]

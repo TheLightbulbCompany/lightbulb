@@ -195,6 +195,36 @@ async def test_reconcile_deletes_stale_draft(table, client, ws):
         await _cleanup(ws, "f")
 
 
+async def test_reconcile_starts_missing_keeper(table, client, ws):
+    """A Google HOOK# whose keeper died (worker crash, namespace reset) gets one again on the daily pass."""
+    from temporalio.service import RPCError
+
+    await _active(ws, "g", cron=[], hookPublicIds=["pub_g"])
+    await repo.put_hook(
+        ws,
+        {
+            "publicId": "pub_g",
+            "scheduleId": "g",
+            "provider": "google",
+            "events": ["calendar.changed"],
+            "signingMode": "bearer",
+            "secretRef": "hook-pub_g",
+            "armed": True,
+            "account": "ada@example.com",
+            "expiresAt": "2099-01-01T00:00:00+00:00",
+        },
+    )
+    handle = client.get_workflow_handle(f"gwatch:{ws}:pub_g")
+    with pytest.raises(RPCError):
+        await handle.describe()
+    try:
+        await reconcile_schedules()
+        assert (await handle.describe()).workflow_type == "GoogleWatchKeeperWorkflow"
+        await reconcile_schedules()  # a second pass keeps the running one
+    finally:
+        await handle.terminate()
+
+
 async def test_reconcile_boot_start_idempotent(client):
     import uuid
 

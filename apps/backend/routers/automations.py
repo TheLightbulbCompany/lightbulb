@@ -48,8 +48,10 @@ from core.services.inbound_triggers import (
     list_vercel_projects,
     seed_trigger_routine,
 )
+from core.services import automation_hooks
 from core.services.paperclip_admin_client import PaperclipAdminClient, PaperclipApiError
 from core.services.paperclip_admin_session import get_admin_session_cookie, invalidate_admin_session
+from core.services.super_agent_flags import flags_for
 from routers import paperclip_trigger_proxy
 from routers.teams._guards import WEBHOOK_AUTOMATIONS_MESSAGE, require_always_on_entitlement
 
@@ -163,6 +165,7 @@ async def from_integration(
             routine_id=body.routine_id,
             title=body.title,
             description=body.description,
+            actor_user_id=auth.user_id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -230,6 +233,11 @@ async def set_webhook_secret(
     # (publicIds are 24-hex upstream).
     if not public_id.isalnum() or len(public_id) > 64:
         raise HTTPException(status_code=400, detail="invalid_public_id")
+
+    # Super-agent workspaces: the secret goes to Secrets Manager and the HOOK# row is armed (lane A, Task 8).
+    # No HOOK# row = still a Paperclip trigger: today's path below.
+    if await flags_for(owner_id) and await automation_hooks.arm(owner_id, public_id, body.webhook_secret):
+        return {"status": "stored"}
 
     try:
         trigger_id = await _resolve_trigger_id(owner_id, public_id)

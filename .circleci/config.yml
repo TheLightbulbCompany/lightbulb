@@ -1,18 +1,26 @@
 # =============================================================================
-# PR checks on CircleCI (free tier) -- a mirror of the pull_request workflows in
-# .github/workflows/. GitHub-hosted minutes ran out and the self-hosted runner
-# box is offline (2026-11-05); deploys stay on GitHub Actions and this never
-# runs on main.
+# CircleCI (free tier) setup pipeline. GitHub-hosted Actions minutes ran out and
+# the self-hosted runner box is offline (2026-11-05), so:
 #
-# Dynamic config: this setup pipeline diffs the branch against main and
-# continues with .circleci/pr-checks.yml, switching on only the areas whose
-# paths changed. The mapping below is the same set of `paths:` filters the
-# GitHub workflows declare (one regex per line, anchored, grep -P). The secret
-# scan has no switch: it runs on every PR.
+#   branch push  -> .circleci/pr-checks.yml   a mirror of the pull_request
+#                                             workflows in .github/workflows/
+#   main push    -> .circleci/deploy-dev.yml  the dev stage of the generated
+#                                             .github/workflows/deploy.yml
 #
-# Project settings to pair with this (CircleCI UI): "Only build pull requests"
-# so a branch push without a PR does not spend credits, and no "build forked
-# PRs". The `ignore: main` filter below is what keeps main pushes out.
+# Prod promotion stays on GitHub Actions (workflow_dispatch of deploy.yml).
+#
+# Branches: the path-filtering job diffs the branch against main and continues
+# with pr-checks.yml, switching on only the areas whose paths changed. The
+# mapping below is the same set of `paths:` filters the GitHub workflows
+# declare (one regex per line, anchored, grep -P). The secret scan has no
+# switch: it runs on every PR.
+#
+# Main: the same job with no mapping, so it only continues into deploy-dev.yml
+# (one orb, one job type; nothing to filter on a deploy).
+#
+# Project settings to pair with this (CircleCI UI): trigger on all pushes (main
+# must trigger, so "Only build pull requests" stays OFF), no forked PRs. Each
+# branch push without a PR costs the pr-checks run; keep branches on PRs.
 # =============================================================================
 version: 2.1
 setup: true
@@ -21,6 +29,17 @@ orbs:
   path-filtering: circleci/path-filtering@3.0.0
 
 workflows:
+  main-setup:
+    jobs:
+      - path-filtering/filter:
+          name: continue-to-deploy-dev
+          filters:
+            branches:
+              only: main
+          base-revision: main
+          config-path: .circleci/deploy-dev.yml
+          resource_class: small
+
   pr-setup:
     jobs:
       - path-filtering/filter:

@@ -1,0 +1,167 @@
+# =============================================================================
+# Dev deploy on CircleCI (free tier) -- continuation of .circleci/config.yml on
+# every push to main. Does what the dev stage of the generated
+# .github/workflows/deploy.yml does (apps/infra/lib/app.ts is the source):
+#
+#   1. synth the CDK app                      (Build-Synth)
+#   2. publish assets + deploy the 11 dev     (Assets-* and dev-*-Deploy, in
+#      stacks, in dependency order             the assembly's dependency order)
+#   3. Vercel: frontend preview + dev aliases (DeployVercelDev)
+#      and the company site preview           (DeployCompanyDev)
+#
+# Prod promotion stays on GitHub Actions (workflow_dispatch of deploy.yml).
+#
+# Differences from deploy.yml, and why:
+# - `cdk deploy --app cdk.out 'dev/*'` replaces the 43 asset jobs and 11
+#   CloudFormation jobs: same roles (cdk-hnb659fds-{file,image}-publishing /
+#   deploy / cfn-exec), same capabilities, same order; one process, serial.
+# - No cdk.out S3 transport (gha-cdk-out/): the synth and the deploy share one
+#   filesystem. That was the only thing the us-west-2 auth at the top of
+#   deploy.yml did; the deploy role here needs no S3 access.
+# - AWS auth is CircleCI OIDC -> lightbulb-circleci-deploy (IAM in
+#   apps/infra/circleci/), which may assume the cdk-* bootstrap roles and
+#   nothing else. Session 2h: the orb exports static keys, and CircleCI's OIDC
+#   token expires 1h after the job starts, so a refresh is impossible.
+# - Two jobs, not one: the Free plan kills any job at 60 minutes (support.
+#   circleci.com/hc/en-us/articles/4410707277083), and stacks + both Vercel
+#   builds on a 2-vCPU VM would sit near that. Vercel needs no Docker, so it
+#   runs on the 4-vCPU docker executor pr-checks.yml already uses for next build.
+# - Serialised by `serial-group` (native, Free plan): a newer pipeline's job
+#   queues behind the running one without holding an executor, and an older
+#   queued job is skipped when a newer one is waiting -- the coalescing the
+#   GitHub concurrency group lost with `queue: max`.
+#
+# Env (CircleCI context `lightbulb-deploy-dev`, attached to both jobs; names
+# are the GitHub secrets/vars deploy.yml reads, dev only -- the *_PROD values
+# synth as "" and the prod templates are never deployed from here):
+#   synth:  STRIPE_WORKSPACE_PRICE_ID_DEV STRIPE_BASE_PRICE_ID_DEV
+#           STRIPE_ULTRA_PRICE_ID_DEV STRIPE_SEAT_PRICE_ID_DEV
+#           STRIPE_FRONT_DESK_PRICE_ID_DEV STRIPE_PUBLISHABLE_KEY_DEV
+#           OPENROUTER_WORKSPACE_ID_DEV OPENROUTER_MANAGED_MODEL_ID_DEV
+#           OPENROUTER_MODEL_POLICY_JSON_DEV NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_DEV
+#           DESKTOP_EXECUTION_OWNER_DEV OPENAI_APPS_CHALLENGE_TOKEN_DEV
+#   vercel: VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID VERCEL_PROJECT_ID_COMPANY
+#           NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_DEV NEXT_PUBLIC_API_URL_DEV
+#
+# Credits: machine medium 10/min, docker large 20/min (see the PR for the
+# per-deploy estimate).
+# =============================================================================
+version: 2.1
+
+orbs:
+  aws-cli: circleci/aws-cli@5.4.2
+
+jobs:
+  deploy-dev-stacks:
+    # Linux VM: Docker for CDK's Lambda bundling (python3.12 / nodejs24 images)
+    # and for the backend image asset (apps/backend, linux/amd64 -- native here).
+    machine:
+      image: ubuntu-2204:current
+    resource_class: medium
+    steps:
+      - checkout
+      - run:
+          name: Use Node 20
+          # nvm is a shell function on the machine image; source it rather than rely on BASH_ENV.
+          command: |
+            source "$HOME/.nvm/nvm.sh"
+            nvm install 20 >/dev/null
+            nvm alias default 20 >/dev/null
+            echo 'source "$HOME/.nvm/nvm.sh"' >> "$BASH_ENV"
+            node --version
+      - run:
+          name: Synth
+          # deploy.yml's Build step verbatim. No AWS credentials yet, as there:
+          # cdk.context.json is committed, so synth makes no lookups.
+          working_directory: apps/infra
+          command: |
+            npm ci --no-audit --no-fund
+            rm -rf cdk.out
+            npx cdk synth --no-notices --quiet
+          no_output_timeout: 20m
+      - aws-cli/setup:
+          role_arn: arn:aws:iam::877352799272:role/lightbulb-circleci-deploy
+          role_session_name: circleci-${CIRCLE_BUILD_NUM}
+          profile_name: lightbulb-circleci-deploy
+          region: us-east-1
+          session_duration: "7200"
+      - run:
+          name: Publish assets and deploy the dev stacks
+          # 'dev/*' is the nested assembly-dev: the 11 lightbulb-dev-* stacks,
+          # none of prod (verified with `cdk --app cdk.out ls 'dev/*'`).
+          working_directory: apps/infra
+          command: npx cdk deploy --app cdk.out 'dev/*' --require-approval never --no-notices
+          no_output_timeout: 30m
+
+  deploy-dev-vercel:
+    docker:
+      - image: cimg/node:20.19
+    # 4 vCPU / 8 GB for `next build`, the class pr-checks.yml's frontend build uses.
+    resource_class: large
+    environment:
+      COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+    steps:
+      - checkout
+      - run:
+          name: Enable pnpm
+          # pnpm at the root package.json's packageManager version, the store
+          # where pr-checks.yml caches it, so `vercel build`'s install hits it.
+          command: |
+            corepack enable --install-directory "$HOME/.local/bin"
+            echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$BASH_ENV"
+            export PATH="$HOME/.local/bin:$PATH"
+            pnpm config set --global store-dir "$HOME/.pnpm-store"
+            pnpm --version
+      - restore_cache:
+          keys:
+            - pnpm-store-v1-{{ checksum "pnpm-lock.yaml" }}
+            - pnpm-store-v1-
+      - run:
+          name: Install Vercel CLI
+          command: npm install -g --prefix "$HOME/.local" vercel@63.1.0
+      - run:
+          name: Deploy frontend to Vercel (preview) and alias the dev hosts
+          # DeployVercelDev verbatim. Hosts are dev.<DEV_ROOT_DOMAIN>,
+          # admin.dev.<DEV_ROOT_DOMAIN>, dev.<LAUNCH_DOMAIN> from
+          # apps/infra/lib/domains.ts. Register before aliasing, and bind each
+          # dev host to a git branch so `vercel deploy --prod` leaves it alone
+          # (the why is above bindDevHostToPreview in app.ts).
+          command: |
+            vercel pull --yes --token="$VERCEL_TOKEN"
+            NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY="$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_DEV" \
+            NEXT_PUBLIC_API_URL="$NEXT_PUBLIC_API_URL_DEV" \
+              vercel build --token="$VERCEL_TOKEN"
+            DEPLOY_URL=$(vercel deploy --prebuilt --archive=tgz --token="$VERCEL_TOKEN")
+            for host in dev.thelightbulb.company admin.dev.thelightbulb.company; do
+              vercel domains add "$host" frontend --force --token="$VERCEL_TOKEN"
+              curl -fsS -o /dev/null -X PATCH "https://api.vercel.com/v9/projects/$VERCEL_PROJECT_ID/domains/$host?teamId=$VERCEL_ORG_ID" \
+                -H "Authorization: Bearer $VERCEL_TOKEN" -H "Content-Type: application/json" -d '{"gitBranch":"main"}'
+            done
+            vercel alias "$DEPLOY_URL" dev.thelightbulb.company --token="$VERCEL_TOKEN"
+            vercel alias "$DEPLOY_URL" admin.dev.thelightbulb.company --token="$VERCEL_TOKEN"
+            vercel alias "$DEPLOY_URL" dev.flickmeon.ai --token="$VERCEL_TOKEN"
+          no_output_timeout: 30m
+      - run:
+          name: Deploy company site to Vercel (preview)
+          # DeployCompanyDev verbatim: same token and org, its own project id,
+          # built from the repo root (Root Directory is a Vercel project
+          # setting). `.vercel/` holds the frontend's link and output, so it goes.
+          command: |
+            rm -rf .vercel
+            export VERCEL_PROJECT_ID="$VERCEL_PROJECT_ID_COMPANY"
+            vercel pull --yes --token="$VERCEL_TOKEN"
+            vercel build --token="$VERCEL_TOKEN"
+            vercel deploy --prebuilt --archive=tgz --token="$VERCEL_TOKEN"
+          no_output_timeout: 20m
+
+workflows:
+  deploy-dev:
+    jobs:
+      - deploy-dev-stacks:
+          context: lightbulb-deploy-dev
+          serial-group: << pipeline.project.slug >>/deploy-dev-stacks
+      - deploy-dev-vercel:
+          context: lightbulb-deploy-dev
+          requires:
+            - deploy-dev-stacks
+          serial-group: << pipeline.project.slug >>/deploy-dev-vercel

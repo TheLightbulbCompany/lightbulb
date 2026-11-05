@@ -1,0 +1,21 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "CircleCIMainBranchJobs",
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::877352799272:oidc-provider/oidc.circleci.com/org/Jt5rbVSvEdDxeXLX3bvu6H"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "oidc.circleci.com/org/Jt5rbVSvEdDxeXLX3bvu6H:aud": "Jt5rbVSvEdDxeXLX3bvu6H"
+        },
+        "StringLike": {
+          "oidc.circleci.com/org/Jt5rbVSvEdDxeXLX3bvu6H:sub": "org/Jt5rbVSvEdDxeXLX3bvu6H/project/b6acec1b-6ba0-4b3c-8d65-0ac8d5178503/user/*/vcs-origin/github.com/TheLightbulbCompany/lightbulb/vcs-ref/refs/heads/main"
+        }
+      }
+    }
+  ]
+}

@@ -295,8 +295,14 @@ class Settings(BaseSettings):
 
     SUPER_AGENT_ENV_ENABLED: bool = False
     """Super-agent env master (contracts-v2 §1). Off = every workspace is off whatever its
-    ``containers.super_agent`` says. Read only by ``core.services.super_agent_flags.flags_for``.
+    ``containers.super_agent`` says. Read only by ``core.services.super_agent_flags`` (``flags_for``, ``env_enabled``).
     Set true for dev only in ``service-stack.ts``."""
+    # Temporal (contracts-v2 §16). Defaults are the local dev server; dev sets the Cloud namespace and
+    # injects the key from Secrets Manager ``lightbulb/dev/temporal_api_key``. Key set = API key + TLS.
+    TEMPORAL_ADDRESS: str = "localhost:7233"
+    TEMPORAL_NAMESPACE: str = "default"
+    TEMPORAL_API_KEY: str | None = None
+    TEMPORAL_TASK_QUEUE: str = "lightbulb"
 
     NIGHTLY_CEO_HEARTBEATS_ENABLED: bool = True
     """Off = ``arm_nightly_ceo`` returns ``heartbeats_disabled`` without touching any

@@ -17,3 +17,9 @@ async def flags_for(ws: str) -> bool:
     row = await container_repo.get_by_owner_id(ws)
     # ponytail: one eventually consistent GetItem per call; add a 30 s cache when a per-message caller lands.
     return (row or {}).get("super_agent") is True
+
+
+def env_enabled() -> bool:
+    """The env master alone, for process-wide wiring with no workspace (the Temporal client in the
+    lifespan, the worker entrypoint). Per-workspace behaviour still asks `flags_for`."""
+    return settings.SUPER_AGENT_ENV_ENABLED

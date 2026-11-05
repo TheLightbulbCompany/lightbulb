@@ -49,8 +49,15 @@ class _Body:
         return json.dumps({"status": 200, "body": {"ok": True}}).encode()
 
 
-def _task_body(kind: str = "task") -> dict:
-    return {"identity": {"run_id": "r1", "task_id": TASK, "session": {"kind": kind}}}
+RUN = "0b9a3c1e-6f2d-4e5a-9b7c-1d2e3f4a5b6c"
+
+
+def _task_body(kind: str = "task", task_id: str = TASK) -> dict:
+    """The real wire identity (camelCase), with the session kind V3 will set."""
+    from core.services.runtime_runs import RunIdentity
+
+    identity = RunIdentity(run_id=RUN, owner_id=OWNER, task_id=task_id, attempt=1, agent_id="a1").to_wire()
+    return {"identity": {**identity, "session": {"kind": kind}}}
 
 
 @pytest.fixture
@@ -80,9 +87,9 @@ async def test_request_routes_task_id_to_invoke(invoked):
 @pytest.mark.parametrize(
     ("path", "method", "body"),
     [
-        ("/internal/v1/runs/r1", "GET", _task_body()),
-        ("/internal/v1/runs/r1/steer", "POST", {**_task_body(), "text": "hi", "kind": "input"}),
-        ("/internal/v1/runs/r1/stop", "POST", _task_body()),
+        (f"/internal/v1/runs/{RUN}", "GET", _task_body()),
+        (f"/internal/v1/runs/{RUN}/steer", "POST", {**_task_body(), "text": "hi", "kind": "input"}),
+        (f"/internal/v1/runs/{RUN}/stop", "POST", _task_body()),
     ],
 )
 async def test_task_session_allowed_for_every_task_run_call(invoked, path, method, body):
@@ -98,9 +105,12 @@ async def test_task_session_allowed_for_every_task_run_call(invoked, path, metho
         ("/internal/v1/curate", {"agentId": "a1"}),
         ("/internal/v1/runsx", _task_body()),
         ("/internal/v1/runs", _task_body("workspace")),  # a workspace run on a task session
-        ("/internal/v1/runs", {"identity": {"task_id": TASK}}),
+        ("/internal/v1/runs", {"identity": {"taskId": TASK}}),
         ("/internal/v1/runs", None),
-        ("/internal/v1/runs", {"identity": {"task_id": "another", "session": {"kind": "task"}}}),
+        ("/internal/v1/runs", _task_body(task_id="another")),
+        (f"/internal/v1/runs/{RUN}/../../../plugins/lightbulb-channel/rpc", _task_body()),
+        ("/internal/v1/runs/%2F..", _task_body()),
+        (f"/internal/v1/runs/{RUN}/stop?x=1", _task_body()),
     ],
 )
 async def test_task_session_refused_for_anything_but_a_task_run(invoked, path, body):

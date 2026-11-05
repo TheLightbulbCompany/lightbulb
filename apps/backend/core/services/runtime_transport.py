@@ -21,6 +21,7 @@ import concurrent.futures
 import hashlib
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -69,7 +70,9 @@ class TaskSessionRefused(ValueError):
     """A call with ``task_id`` that is not a runs-v1 call for that task's own task run."""
 
 
-_RUNS_V1 = "/internal/v1/runs"
+#: The bridge's own runs-v1 routes (``bridge/runs.py`` create + ``_RUN_RE``), matched whole: no
+#: prefix test a ``/runs/../`` path could slip through.
+_RUNS_V1_RE = re.compile(r"^/internal/v1/runs(/[0-9a-f-]{36}(/stop|/steer)?)?$")
 
 
 def _check_task_call(path: str, json_body: Any, task_id: str) -> None:
@@ -80,10 +83,10 @@ def _check_task_call(path: str, json_body: Any, task_id: str) -> None:
     identity = json_body.get("identity") if isinstance(json_body, dict) else None
     session = identity.get("session") if isinstance(identity, dict) else None
     if (
-        (path == _RUNS_V1 or path.startswith(_RUNS_V1 + "/"))
+        _RUNS_V1_RE.fullmatch(path)
         and isinstance(session, dict)
         and session.get("kind") == "task"
-        and identity.get("task_id") == task_id
+        and identity.get("taskId") == task_id  # the wire identity is camelCase (RunIdentity.to_wire)
     ):
         return
     raise TaskSessionRefused(f"task session refused for {path}")

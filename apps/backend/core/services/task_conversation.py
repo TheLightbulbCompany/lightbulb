@@ -102,8 +102,10 @@ async def post_as_lightbulb(
     task_refs: list[dict] | None = None,
     kind: str | None = None,
     progress: bool = False,
+    attrs: dict | None = None,
 ) -> str:
-    """Post as Lightbulb; idempotent on `event_id`. Returns the message id."""
+    """Post as Lightbulb; idempotent on `event_id`. Returns the message id. `attrs`: extra message attributes
+    (lane A's confirm card carries `automationId`)."""
     if kind is None:  # Lane Q: never claim an approval a Question row doesn't show (spec 05 §3.5 layer 3)
         from core.services import questions
 
@@ -122,7 +124,10 @@ async def post_as_lightbulb(
             thread_root_message_id=uuid.UUID(thread_root) if thread_root else None,
             progress=progress,
         ),
-        attrs={k: v for k, v in (("taskRefs", task_refs), ("specialist", specialist), ("kind", kind)) if v is not None},
+        attrs={
+            **(attrs or {}),
+            **{k: v for k, v in (("taskRefs", task_refs), ("specialist", specialist), ("kind", kind)) if v is not None},
+        },
     )
     return str(receipt.message_id)
 

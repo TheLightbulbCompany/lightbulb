@@ -34,12 +34,23 @@ from __future__ import annotations
 
 import logging
 
+import re
+from datetime import datetime, timezone
+
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field, model_validator
+from fastapi import APIRouter, Depends, HTTPException, Response
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic.alias_generators import to_camel
+from temporalio.service import RPCError
+from ulid import ULID
+
+from core.temporal import client as temporal_client
+from core.temporal.automations import FireInput
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.config import settings
+from core.repositories import automations_repo, messaging_repo, tasks_repo
+from core.repositories.tasks_repo import IllegalTransition, VersionConflict
 from core.services.inbound_triggers import (
     list_github_repos,
     list_google_accounts,
@@ -48,10 +59,10 @@ from core.services.inbound_triggers import (
     list_vercel_projects,
     seed_trigger_routine,
 )
-from core.services import automation_hooks
+from core.services import automation_hooks, automation_schedule, chat_gate, super_agent_flags, tasks_access
 from core.services.paperclip_admin_client import PaperclipAdminClient, PaperclipApiError
 from core.services.paperclip_admin_session import get_admin_session_cookie, invalidate_admin_session
-from core.services.super_agent_flags import flags_for
+from core.services.trigger_fire_url import trigger_fire_url
 from routers import paperclip_trigger_proxy
 from routers.teams._guards import WEBHOOK_AUTOMATIONS_MESSAGE, require_always_on_entitlement
 
@@ -236,7 +247,9 @@ async def set_webhook_secret(
 
     # Super-agent workspaces: the secret goes to Secrets Manager and the HOOK# row is armed (lane A, Task 8).
     # No HOOK# row = still a Paperclip trigger: today's path below.
-    if await flags_for(owner_id) and await automation_hooks.arm(owner_id, public_id, body.webhook_secret):
+    if await super_agent_flags.flags_for(owner_id) and await automation_hooks.arm(
+        owner_id, public_id, body.webhook_secret
+    ):
         return {"status": "stored"}
 
     try:
@@ -265,3 +278,353 @@ async def set_webhook_secret(
         raise HTTPException(status_code=503, detail="arm_secret_unavailable") from exc
 
     return {"status": "stored"}
+
+
+# =====================================================================================================
+# Super-agent automations (lane A, Task 6; contracts-v2 §11, spec 06 §5.1). Every route below is 404 while
+# the workspace's switch is off. An automation is one SCHED# row (+ at most one Temporal Schedule, kept in
+# step by `automation_schedule.upsert`) and its HOOK# rows (`automation_hooks`). Activation happens only
+# here (`/activate`); typed text never activates (C20).
+# =====================================================================================================
+
+_DELIVER_TO = re.compile(r"^(none|room:\S+|dm:\S+)$")
+_ACTIVATE_MESSAGE = "Automations run on the paid plan. Upgrade to turn this one on."
+
+
+class _In(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid")
+
+
+class ScheduleIn(_In):
+    cron: list[str] = Field(min_length=1, max_length=4)  # 5-field, wall clock in `tz`
+    tz: str
+    remaining_runs: int | None = Field(default=None, ge=1)  # 1 = one-off
+
+
+class EventTriggerIn(_In):
+    provider: str
+    event_ids: list[str] = Field(min_length=1)
+    resource: str | None = None
+    topic: str | None = None
+
+
+class AutomationIn(_In):
+    name: str = Field(min_length=1, max_length=200)
+    instructions: str = Field(min_length=1, max_length=20000)
+    specialist_id: str | None = None
+    deliver_to: str = Field(default="none", pattern=_DELIVER_TO.pattern)
+    budget_per_run_usd: float = Field(default=1.0, gt=0, le=100)
+    schedule: ScheduleIn | None = None
+    events: list[EventTriggerIn] = []
+    activate: bool = False
+
+
+class AutomationPatch(_In):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    instructions: str | None = Field(default=None, min_length=1, max_length=20000)
+    specialist_id: str | None = None
+    deliver_to: str | None = Field(default=None, pattern=_DELIVER_TO.pattern)
+    budget_per_run_usd: float | None = Field(default=None, gt=0, le=100)
+    schedule: ScheduleIn | None = None
+    version: int
+
+
+def _err(http_status: int, code: str, **extra) -> HTTPException:
+    return HTTPException(status_code=http_status, detail={"code": code, **extra})
+
+
+async def _ws(auth: AuthContext) -> str:
+    ws = resolve_owner_id(auth)
+    if not await super_agent_flags.flags_for(ws):
+        raise _err(404, "not_found")
+    return ws
+
+
+def _may_edit(row: dict, auth: AuthContext) -> None:
+    if not (auth.is_org_admin or row.get("ownerUserId") == auth.user_id):
+        raise _err(403, "forbidden")
+
+
+def _may_activate(row: dict, auth: AuthContext) -> None:
+    """Turning an automation on: a room automation runs for everyone in the room, so an org admin (the
+    Router's proposal is deliverTo=room with ownerUserId=requester); a personal one, its owner only."""
+    if (row.get("deliverTo") or "none").startswith("room:"):
+        require_org_admin(auth)
+    elif row.get("ownerUserId") != auth.user_id:
+        raise _err(403, "forbidden")
+
+
+async def _visible(row: dict, auth: AuthContext) -> bool:
+    """Who sees an automation: its owner, an org admin, and the members of the room it delivers to."""
+    if auth.is_org_admin or row.get("ownerUserId") == auth.user_id:
+        return True
+    deliver_to = row.get("deliverTo") or "none"
+    if deliver_to.startswith("room:"):
+        return await messaging_repo.get_member(deliver_to.removeprefix("room:"), "human", auth.user_id) is not None
+    return False
+
+
+async def _row(ws: str, sid: str, auth: AuthContext) -> dict:
+    row = await automations_repo.get_schedule(ws, sid)
+    if row is None or not await _visible(row, auth):
+        raise _err(404, "not_found")  # hidden reads as missing, as the task routes do
+    return row
+
+
+def _schedule_fields(schedule: ScheduleIn) -> dict:
+    try:
+        automation_schedule.validate_cron(schedule.cron, schedule.tz)
+    except ValueError as exc:
+        raise _err(400, "invalid_schedule", message=str(exc)) from exc
+    return {"cron": schedule.cron, "tz": schedule.tz, "remainingRuns": schedule.remaining_runs}
+
+
+async def _view(ws: str, row: dict) -> dict:
+    """`AutomationView` (spec 06 §5.1): times in UTC, the client renders them in `schedule.tz` (C19)."""
+    sid = row["scheduleId"]
+    hooks = [h for h in [await automations_repo.get_hook(ws, pid) for pid in row.get("hookPublicIds") or []] if h]
+    next_runs: list[datetime] = []
+    if row.get("cron"):
+        try:
+            next_runs = await automation_schedule.next_runs(ws, sid)
+        except Exception:  # noqa: BLE001 — Temporal down: the card shows no dates rather than failing the view
+            logger.warning("automations: next_runs unavailable owner=%s automation=%s", ws, sid, exc_info=True)
+    return {
+        "id": sid,
+        "name": row["name"],
+        "instructions": row["policyText"],
+        "status": row["status"],
+        "pausedReason": row.get("pausedReason"),
+        "schedule": (
+            {"cron": row["cron"], "tz": row["tz"], "remainingRuns": row.get("remainingRuns")}
+            if row.get("cron")
+            else None
+        ),
+        "nextRuns": [t.isoformat() for t in next_runs],
+        "hooks": [
+            {
+                "publicId": h["publicId"],
+                "provider": h["provider"],
+                "events": h.get("events") or [],
+                "fireUrl": trigger_fire_url(ws, h["publicId"]),
+                "armed": bool(h.get("armed")),
+                "lastSigFailAt": h.get("lastSigFailAt"),
+            }
+            for h in hooks
+        ],
+        "specialistId": row.get("specialist"),
+        "deliverTo": row.get("deliverTo") or "none",
+        "budgetPerRunUsd": row.get("budgetPerRunUsd"),
+        "ownerUserId": row["ownerUserId"],
+        "createdBy": row.get("createdBy") or "user",
+        "mode": row.get("mode"),
+        "lastTaskId": row.get("lastTaskId"),
+        "activeRunTaskId": row.get("activeRunTaskId"),
+        "runCount": len(row.get("runTaskIds") or []),
+        "version": row["version"],
+    }
+
+
+async def _activate(ws: str, row: dict) -> dict:
+    """draft / paused / paused_system → active. A Google watch that broke or lapsed while paused is opened
+    again first (and its keeper restarted); when that fails the automation stays paused."""
+    now = datetime.now(timezone.utc).isoformat()
+    for pid in row.get("hookPublicIds") or []:
+        hook = await automations_repo.get_hook(ws, pid)
+        # the broken one (mark_broken disarmed it) or one that lapsed while paused; a healthy watch is left alone
+        if hook and hook.get("account") and (not hook.get("armed") or (hook.get("expiresAt") or now) <= now):
+            try:
+                expires_ms = await automation_hooks.renew(ws, pid)
+            except Exception as exc:  # noqa: BLE001 — gog refused: the owner has to reconnect Google
+                logger.warning("automations: google watch re-arm failed owner=%s hook=%s", ws, pid, exc_info=True)
+                raise _err(409, "google_watch_broken") from exc
+            if expires_ms:
+                await automation_hooks.start_keeper(ws, pid, expires_ms)
+    try:
+        row = await automations_repo.set_status(
+            ws, row["scheduleId"], "active", reason=None, allowed_from=frozenset({"draft", "paused", "paused_system"})
+        )
+    except IllegalTransition as exc:
+        raise _err(409, "illegal_state", status=row["status"]) from exc
+    if row.get("cron"):
+        await automation_schedule.upsert(row)
+    return row
+
+
+@router.get("")
+async def list_automations(auth: AuthContext = Depends(get_current_user)) -> dict:
+    ws = await _ws(auth)
+    rows = [r for r in await automations_repo.list_schedules(ws) if await _visible(r, auth)]
+    rows.sort(key=lambda r: r.get("createdAt") or "", reverse=True)
+    return {"automations": [await _view(ws, r) for r in rows]}
+
+
+@router.post("")
+async def create_automation(body: AutomationIn, auth: AuthContext = Depends(get_current_user)) -> dict:
+    ws = await _ws(auth)
+    if body.events:  # a webhook on a provider is an org-admin act, as `from_integration` is today
+        require_org_admin(auth)
+    fields = _schedule_fields(body.schedule) if body.schedule else {"cron": [], "tz": "UTC"}
+    row, _ = await automations_repo.create_schedule(
+        ws,
+        {
+            "scheduleId": str(ULID()),
+            "name": body.name.strip(),
+            "ownerUserId": auth.user_id,
+            "policyText": body.instructions.strip(),
+            "specialist": body.specialist_id,
+            "budgetPerRunUsd": body.budget_per_run_usd,
+            "deliverTo": body.deliver_to,
+            "createdBy": "user",
+            **fields,
+        },
+    )
+    sid = row["scheduleId"]
+    setup = []
+    for ev in body.events:
+        try:
+            out = await automation_hooks.seed(
+                ws,
+                ev.provider,
+                ev.event_ids,
+                resource=ev.resource,
+                topic=ev.topic,
+                specialist=None,
+                automation_id=sid,
+                title=None,
+                description=None,
+                actor_user_id=auth.user_id,
+            )
+        except ValueError as exc:
+            await _destroy(ws, sid)
+            raise _err(400, "invalid_trigger", message=str(exc)) from exc
+        setup.append(
+            {"publicId": out["trigger_public_id"], "guided": out["guided"], "instructions": out["instructions"]}
+        )
+    row = await automations_repo.get_schedule(ws, sid) or row
+    if row.get("cron"):
+        await automation_schedule.upsert(row)  # paused until activated
+    if body.activate:
+        try:
+            _may_activate(row, auth)
+            await require_always_on_entitlement(ws, message=_ACTIVATE_MESSAGE)
+        except HTTPException:
+            await _destroy(ws, sid)  # not turned on: nothing of it is kept
+            raise
+        row = await _activate(ws, row)
+    return {**await _view(ws, row), "setup": setup}
+
+
+@router.get("/{sid}")
+async def get_automation(sid: str, auth: AuthContext = Depends(get_current_user)) -> dict:
+    ws = await _ws(auth)
+    return await _view(ws, await _row(ws, sid, auth))
+
+
+@router.get("/{sid}/runs")
+async def list_runs(sid: str, auth: AuthContext = Depends(get_current_user)) -> dict:
+    """History = the run tasks (newest first), as the viewer may see them. ponytail: the row keeps ≤50 ids."""
+    from routers.tasks import _summary  # O's TaskSummary builder (names open answerers)
+
+    ws = await _ws(auth)
+    row = await _row(ws, sid, auth)
+    ids = [t for t in [row.get("activeRunTaskId"), *(row.get("runTaskIds") or [])] if t]
+    runs = []
+    for task_id in dict.fromkeys(ids):
+        tree = await tasks_repo.get_task_tree(ws, task_id)
+        if tree["task"] is not None and await tasks_access.can_view(tree["task"], auth.user_id):
+            runs.append(await _summary(tree, auth.user_id))
+    return {"runs": runs, "next": None}
+
+
+@router.patch("/{sid}")
+async def patch_automation(sid: str, body: AutomationPatch, auth: AuthContext = Depends(get_current_user)) -> dict:
+    ws = await _ws(auth)
+    row = await _row(ws, sid, auth)
+    _may_edit(row, auth)
+    fields: dict = {}
+    if body.name is not None:
+        fields["name"] = body.name.strip()
+    if body.instructions is not None:
+        fields["policyText"] = body.instructions.strip()
+    if body.specialist_id is not None:
+        fields["specialist"] = body.specialist_id
+    if body.deliver_to is not None:
+        fields["deliverTo"] = body.deliver_to
+    if body.budget_per_run_usd is not None:
+        fields["budgetPerRunUsd"] = body.budget_per_run_usd
+    if body.schedule is not None:
+        fields.update(_schedule_fields(body.schedule))
+    try:
+        row = await automations_repo.update_schedule(ws, sid, fields, expected_version=body.version)
+    except VersionConflict as exc:
+        raise _err(409, "stale_version") from exc
+    if body.schedule is not None or row.get("cron"):
+        await automation_schedule.upsert(row)
+    return await _view(ws, row)
+
+
+@router.post("/{sid}/activate")
+@router.post("/{sid}/resume")
+async def activate_automation(sid: str, auth: AuthContext = Depends(get_current_user)) -> dict:
+    ws = await _ws(auth)
+    row = await _row(ws, sid, auth)
+    _may_activate(row, auth)
+    await require_always_on_entitlement(ws, message=_ACTIVATE_MESSAGE)
+    return await _view(ws, await _activate(ws, row))
+
+
+@router.post("/{sid}/pause")
+async def pause_automation(sid: str, auth: AuthContext = Depends(get_current_user)) -> dict:
+    ws = await _ws(auth)
+    row = await _row(ws, sid, auth)
+    _may_edit(row, auth)
+    try:
+        row = await automations_repo.set_status(ws, sid, "paused", reason=None, allowed_from=frozenset({"active"}))
+    except IllegalTransition as exc:
+        raise _err(409, "illegal_state", status=row["status"]) from exc
+    if row.get("cron"):
+        await automation_schedule.upsert(row)
+    return await _view(ws, row)
+
+
+async def _destroy(ws: str, sid: str) -> None:
+    row = await automations_repo.get_schedule(ws, sid)
+    for pid in (row or {}).get("hookPublicIds") or []:
+        await automation_hooks.delete(ws, pid)  # provider hook, keeper, secret, row
+    await automation_schedule.delete(ws, sid)
+    await automations_repo.delete_schedule(ws, sid)
+
+
+@router.delete("/{sid}", status_code=204)
+async def delete_automation(sid: str, auth: AuthContext = Depends(get_current_user)) -> Response:
+    ws = await _ws(auth)
+    _may_edit(await _row(ws, sid, auth), auth)
+    await _destroy(ws, sid)
+    return Response(status_code=204)
+
+
+@router.post("/{sid}/run")
+async def run_now(sid: str, auth: AuthContext = Depends(get_current_user)) -> dict:
+    """Run now: today's chat gate first (§14.10), one run at a time, then a `TriggerFireWorkflow`."""
+    ws = await _ws(auth)
+    row = await _row(ws, sid, auth)
+    _may_edit(row, auth)
+    if row["status"] != "active":
+        raise _err(409, "not_active", status=row["status"])
+    gate = await chat_gate.gate_chat(user_id=auth.user_id, owner_id=ws, session_key=f"automation:{sid}")
+    if gate.get("blocked"):
+        raise _err(402, gate.get("code") or "blocked", message=gate.get("message"))
+    if row.get("activeRunTaskId"):
+        raise _err(409, "run_in_progress", taskId=row["activeRunTaskId"])
+    ulid = str(ULID())
+    try:
+        await temporal_client.get_client().start_workflow(
+            "TriggerFireWorkflow",
+            FireInput(ws, sid, "manual", dedupe_key=ulid, actor_user_id=auth.user_id),
+            id=f"fire:{ws}:{sid}:manual:{ulid}",
+            task_queue=settings.TEMPORAL_TASK_QUEUE,
+        )
+    except (temporal_client.TemporalUnavailable, RPCError) as exc:
+        raise _err(503, "TEMPORAL_UNAVAILABLE", retryable=True) from exc
+    return {"triggerId": f"manual:{sid}:{ulid}"}

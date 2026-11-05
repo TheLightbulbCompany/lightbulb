@@ -90,6 +90,26 @@ async def test_apply_soft_deletes_agents_terminated_or_gone_in_paperclip(tasks_t
     assert (await agent_registry.seed_from_paperclip(WS)).deleted == 0
 
 
+@pytest.mark.asyncio
+async def test_apply_never_deletes_when_the_workspace_has_no_active_company(tasks_table, paperclip):
+    """Missing / provisioning / failed workspace row: no company, so the Paperclip list is unknown, not empty."""
+    await agent_registry.seed_from_paperclip(WS)
+    before = await repo.list_agents(WS)
+    with patch.object(agent_registry, "_paperclip_agents", AsyncMock(return_value=None)):
+        assert await agent_registry.seed_from_paperclip(WS) == (0, 0, 0, 0)
+    assert await repo.list_agents(WS) == before
+
+
+@pytest.mark.asyncio
+async def test_paperclip_agents_is_none_without_an_active_company():
+    with (
+        patch("core.services.paperclip_openclaw_pairing.resolve_company_id_for_owner", AsyncMock(return_value=None)),
+        patch("core.services.paperclip_openclaw_pairing.fetch_paperclip_agents_for_owner") as fetch,
+    ):
+        assert await agent_registry._paperclip_agents(WS) is None
+    fetch.assert_not_called()
+
+
 async def _cli(*argv):
     from scripts import backfill_agent_registry as script
 

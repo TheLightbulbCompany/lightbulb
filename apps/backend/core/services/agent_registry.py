@@ -210,15 +210,22 @@ _VERIFY_FIELDS = (
 )
 
 
-async def _paperclip_agents(ws: str) -> list[dict]:
-    """The owner's live Paperclip agents: the call `load_agent_roster` makes today. Raises when unavailable."""
+async def _paperclip_agents(ws: str) -> list[dict] | None:
+    """The owner's live Paperclip agents: the call `load_agent_roster` makes today. Raises when unavailable.
+    None when the workspace has no active company (missing, provisioning, failed): the list is unknown, not empty."""
     from core.repositories.paperclip_repo import PaperclipRepo
     from core.services.paperclip_admin_client import shared_admin_client
-    from core.services.paperclip_openclaw_pairing import fetch_paperclip_agents_for_owner
+    from core.services.paperclip_openclaw_pairing import (
+        fetch_paperclip_agents_for_owner,
+        resolve_company_id_for_owner,
+    )
 
+    pc_repo = PaperclipRepo(table_name="paperclip-companies")
+    if await resolve_company_id_for_owner(owner_id=ws, repo=pc_repo) is None:
+        return None
     rows = await fetch_paperclip_agents_for_owner(
         owner_id=ws,
-        repo=PaperclipRepo(table_name="paperclip-companies"),
+        repo=pc_repo,
         admin_client=shared_admin_client(),
         raise_on_unavailable=True,
     )
@@ -228,10 +235,14 @@ async def _paperclip_agents(ws: str) -> list[dict]:
 async def seed_from_paperclip(ws: str, *, dry_run: bool = False) -> SeedReport:
     """Id-preserving backfill: every non-terminated Paperclip agent → its `AGENT#` row. Idempotent: an
     unchanged row is not written. A registry row whose agent is terminated or gone in Paperclip is soft-deleted:
-    this heals writes Paperclip makes on its own side (a rejected hire, an agent using its own key)."""
+    this heals writes Paperclip makes on its own side (a rejected hire, an agent using its own key). A workspace
+    without an active company is left alone: its Paperclip list is unknown, and deleting from it would wipe the roster."""
     created = updated = skipped = deleted = 0
     live: set[str] = set()
-    for agent in await _paperclip_agents(ws):
+    agents = await _paperclip_agents(ws)
+    if agents is None:
+        return SeedReport(0, 0, 0, 0)
+    for agent in agents:
         if agent.get("status") == "terminated":
             skipped += 1
             continue
@@ -270,7 +281,7 @@ async def verify(ws: str) -> list[Diff]:
     """Set and field equality of the registry against Paperclip (terminated / deleted dropped on each side)."""
     paperclip = {
         a["id"]: _comparable(row_from_paperclip(a))
-        for a in await _paperclip_agents(ws)
+        for a in await _paperclip_agents(ws) or []
         if a.get("status") != "terminated"
     }
     registry = {r["agentId"]: _comparable(r) for r in await repo.list_agents(ws) if r.get("status") != "deleted"}

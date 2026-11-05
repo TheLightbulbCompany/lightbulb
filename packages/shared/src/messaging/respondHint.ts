@@ -51,6 +51,7 @@ export interface RespondTarget {
   id: string;
   displayName: string;
   listenMode: ListenMode | null;
+  mentionHandle?: string | null;
 }
 
 /**
@@ -64,7 +65,12 @@ export function respondHint(
   members: readonly RespondTarget[],
   mentions: readonly MemberRef[],
   runningAgentIds: readonly string[],
+  /** Super-agent on: Lightbulb (`@lightbulb`) is the one voice in a room; seated specialists don't answer. With no
+   *  `@lightbulb` seat known yet, every agent shows as before. */
+  oneVoice = false,
 ): string {
+  const front = oneVoice ? members.find((m) => m.kind === "agent" && m.mentionHandle === "lightbulb") : undefined;
+  if (front) members = [front];
   const mentioned = new Set(mentions.filter((ref) => ref.kind === "agent").map((ref) => ref.id));
   const parts: string[] = [];
   for (const member of members) {

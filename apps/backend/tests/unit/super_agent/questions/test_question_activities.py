@@ -109,6 +109,7 @@ async def test_relay_question_idempotent_and_only_to_answerers(world, relay):
     await _run(tq.relay_question, WS, TASK, ref.qid)  # an Activity retry
     events = {c.kwargs["event_id"] for c in relay["post"].await_args_list}
     assert events == {f"q:{ref.qid}"}  # same event id: the message is posted once
+    assert relay["post"].await_args.kwargs["task_refs"] == [{"taskId": TASK, "role": "started", "qid": ref.qid}]
     assert [c.args[0] for c in relay["push"].await_args_list] == [ADA]  # one push, the answerer only
     title, body, data = relay["push"].await_args.args[1:]
     assert data == {"source": "task_question", "taskId": TASK, "qid": ref.qid} and len(body) <= 180

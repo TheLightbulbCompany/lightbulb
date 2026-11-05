@@ -228,13 +228,31 @@ def test_gate_deny_wins_over_later_retry_approval():
 
 @pytest.mark.parametrize(
     "text",
-    ["Approved — proceeding", "you've approved the send", "OK, going ahead now", "Approval was granted by Sam"],
+    [
+        "Approved — proceeding",
+        "you've approved the send",
+        "OK, going ahead now",
+        "Approval was granted by Sam",
+        "Thanks! I'm proceeding with the send.",
+        "Done with the draft. Approved, sending it now.",
+    ],
 )
 def test_false_approval_regex_matches(text):
     assert questions.FALSE_APPROVAL_RE.search(text)
 
 
-@pytest.mark.parametrize("text", ["Waiting on Sam to approve", "Needs approval from an admin", "go ahead and ask"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Waiting on Sam to approve",
+        "Needs approval from an admin",
+        "go ahead and ask",
+        "Sam approved the copy yesterday, so I sent it.",  # a report of the past, not a claim about this question
+        "Once approved, I'll send it.",
+        "The approved vendor list is in Drive.",
+        "Ada will go ahead once Sam decides.",
+    ],
+)
 def test_false_approval_regex_ignores(text):
     assert not questions.FALSE_APPROVAL_RE.search(text)
 
@@ -258,3 +276,11 @@ def test_schema_fields():
         assert f in fields
     for f in ("kind", "operands", "executor_ok"):
         assert f in ts.Effect.model_fields
+
+
+def test_waiting_label_caps_the_names():
+    assert questions.waiting_label(["Sam"]) == "Waiting on Sam"
+    assert questions.waiting_label(["Sam", "Ada"]) == "Waiting on Sam or Ada"
+    assert questions.waiting_label(["Sam", "Ada", "Bo"]) == "Waiting on Sam, Ada and 1 other"
+    assert questions.waiting_label(["Sam", "Ada", "Bo", "Cy", "Di"]) == "Waiting on Sam, Ada and 3 others"
+    assert questions.waiting_label([]) == "Waiting on a decision"

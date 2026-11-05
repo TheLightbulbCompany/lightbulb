@@ -255,7 +255,7 @@ async def relay_question(ws: str, task_id: str, qid: str) -> None:
         return
     label = task.get("specialist") or "Lightbulb"
     title, body = questions.card_copy(q, label)
-    refs = [{"taskId": task_id, "role": "started"}]
+    refs = [{"taskId": task_id, "role": "started", "qid": qid}]  # the card's buttons bind to {taskId, qid}
     room = await task_conversation.ensure_task_room(ws, task)
     for uid in q["answerers"]:
         await task_conversation.ensure_task_room(ws, task, seat_viewer=uid)

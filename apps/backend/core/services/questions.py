@@ -197,9 +197,25 @@ def gate(effect: dict, prior: list[dict]) -> GateResult:
 
 
 #: Spec 05 §3.5 layer 3: a Router reply claiming an approval that a Question row does not show.
+#: Narrowed to first-person / present claims (lead, 5 Nov): a sentence-initial "Approved", "approval was granted",
+#: "you've approved", "going ahead now", "I'm proceeding". "Sam approved the copy yesterday" is a report, not a claim.
 FALSE_APPROVAL_RE = re.compile(
-    r"\b(approved|approval (was )?(granted|given)|you('ve| have) approved|go(ing)? ahead now)\b", re.IGNORECASE
+    r"(?:(?:^|(?<=[.!?:;—–])\s+|(?<=\n)\s*)approved\b)"
+    r"|\b(?:approval (?:was |has been |is )?(?:granted|given)|you(?:'ve| have) approved|go(?:ing)? ahead now"
+    r"|(?:i(?:'m| am)|we(?:'re| are)) (?:now )?(?:proceeding|going ahead))\b",
+    re.IGNORECASE,
 )
+_SENTENCE = re.compile(r"(?<=[.!?])\s+|\n+")
+
+
+def waiting_label(names: list[str]) -> str:
+    """ "Waiting on Sam" / "… Sam or Ada" / "… Sam, Ada and 2 others": never a roster."""
+    if not names:
+        return "Waiting on a decision"
+    if len(names) <= 2:
+        return "Waiting on " + " or ".join(names)
+    return f"Waiting on {names[0]}, {names[1]} and {len(names) - 2} other{'s' if len(names) > 3 else ''}"
+
 
 _PUSH_MAX = 180
 
@@ -243,9 +259,12 @@ def card_copy(q: dict, specialist_label: str) -> tuple[str, str]:
     return title, body
 
 
-async def guard_reply(ws: str, text: str, task_refs: list[dict] | None, specialist: str | None) -> str | None:
+async def guard_reply(
+    ws: str, text: str, task_refs: list[dict] | None, specialist: str | None
+) -> tuple[str, str, str] | None:
     """Spec 05 §3.5 layer 3: a Lightbulb reply that names a task with an open Question and claims an approval
-    ("Approved — proceeding") is not posted as written. Returns the card line to post instead, or None."""
+    ("Approved — proceeding") is not posted as written. Only the claiming sentences are dropped; the rest of the reply
+    stays, and the card line is appended. Returns `(text, task_id, qid)`, or None when nothing is claimed."""
     if not task_refs or not FALSE_APPROVAL_RE.search(text):
         return None
     from core.observability.metrics import put_metric
@@ -254,8 +273,18 @@ async def guard_reply(ws: str, text: str, task_refs: list[dict] | None, speciali
 
     for ref in task_refs:
         open_qs = await questions_repo.list_open(ws, ref["taskId"])
-        if open_qs:
-            names = [await human_display_name(u) for u in open_qs[0]["answerers"]]
-            put_metric("router.false_approval_blocked")
-            return f"Queued for {specialist or 'Lightbulb'} after {' or '.join(names)}'s decision."
+        if not open_qs:
+            continue
+        q = open_qs[0]
+        names = [await human_display_name(u) for u in q["answerers"]]
+        kept = [s for s in _SENTENCE.split(text) if s.strip() and not FALSE_APPROVAL_RE.search(s)]
+        who = waiting_label(names).removeprefix("Waiting on ")
+        sp = specialist or "Lightbulb"
+        card = (
+            f"Queued for {sp} after {who}'s decision."
+            if len(names) <= 2
+            else f"Queued for {sp} after a decision from {who}."
+        )
+        put_metric("router.false_approval_blocked")
+        return " ".join([*kept, card]), ref["taskId"], q["qid"]
     return None

@@ -132,7 +132,10 @@ async def test_run_event_heartbeat_updates_progress_line(api):
         "status": "running",
         "recentTools": [{"name": "web_search"}],
     }
+    before = (await repo.get_attempt(WS, tid, 1))["version"]
     await api.post(_url(WS, ref.run_id), json=body, headers=H)
+    # no version bump: the projector publishes no workspace-wide task.changed every 2 minutes
+    assert (await repo.get_attempt(WS, tid, 1))["version"] == before
     body["recentTools"] = [{"name": "terminal"}]
     await api.post(_url(WS, ref.run_id), json=body, headers=H)
     lines = [p for p in api.world["posts"] if p.get("progress")]

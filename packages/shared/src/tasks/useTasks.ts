@@ -55,9 +55,14 @@ export async function putTaskSummary(cache: Cache, mutate: ScopedMutator, task: 
 
 export interface RefreshDeps { cache: Cache; mutate: ScopedMutator; client: TasksClient }
 
-export async function refreshTask({ cache, mutate, client }: RefreshDeps, { taskId, version }: TaskChanged): Promise<void> {
+export async function refreshTask({ cache, mutate, client }: RefreshDeps, { taskId, part, version }: TaskChanged): Promise<void> {
   const lists = listKeys(cache, client);
   const detail = cache.get(taskKey(taskId))?.data as TaskDetail | undefined;
+  // An attempt, Question or Effect row counts its own versions from 1: only an open detail cares about it.
+  if (part !== "task") {
+    if (detail) await refetch({ cache, mutate, client }, taskId, lists);
+    return;
+  }
   const known = [
     detail?.task.version,
     ...lists.map((k) => (cache.get(k)?.data as TaskList | undefined)?.tasks.find((t) => t.taskId === taskId)?.version),
@@ -69,7 +74,10 @@ export async function refreshTask({ cache, mutate, client }: RefreshDeps, { task
     return;
   }
   if (Math.max(...known) >= version) return;
+  await refetch({ cache, mutate, client }, taskId, lists);
+}
 
+async function refetch({ cache, mutate, client }: RefreshDeps, taskId: string, lists: string[]): Promise<void> {
   let fresh: TaskDetail;
   try {
     fresh = await client.get(taskId);

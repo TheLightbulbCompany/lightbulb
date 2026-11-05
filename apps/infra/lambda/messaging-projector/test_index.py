@@ -1721,8 +1721,23 @@ class TaskChangedTests(unittest.TestCase):
             self.assertEqual(set(event), {"schemaVersion", "eventId", "type", "occurredAt", "payload"})
             self.assertEqual((event["schemaVersion"], event["type"]), (1, "task.changed"))
             self.assertEqual(event["payload"], {"taskId": TASK_ID, "part": part, "version": 2})
-            self.assertEqual(event["eventId"], str(uuid5(NAMESPACE_URL, f"task:{TASK_ID}:{part}:2")))
+            self.assertEqual(event["eventId"], str(uuid5(NAMESPACE_URL, f"task:{TASK_ID}:{sk}:2")))
             self.assertTrue(event["occurredAt"].endswith("Z"))
+
+    def test_effect_row_publishes_for_its_task(self, publish):
+        """Audit #10: an Effect change (approved, landed) reaches the task's viewers."""
+        index.process_record(task_record("EFFECT#idem-1", event="MODIFY", old_version=1, taskId=TASK_ID))
+        _, event = publish.call_args.args
+        self.assertEqual(event["payload"], {"taskId": TASK_ID, "part": "effect", "version": 2})
+        publish.reset_mock()
+        index.process_record(task_record("EFFECT#idem-1:use"))  # the single-use marker names no task
+        publish.assert_not_called()
+
+    def test_two_attempts_at_one_version_are_two_events(self, publish):
+        index.process_record(task_record(f"TASK#{TASK_ID}#ATT#0001", version=1))
+        index.process_record(task_record(f"TASK#{TASK_ID}#ATT#0002", version=1))
+        first, second = (c.args[1]["eventId"] for c in publish.call_args_list)
+        self.assertNotEqual(first, second)
 
     def test_skips_same_version(self, publish):
         index.process_record(task_record(f"TASK#{TASK_ID}", event="MODIFY", version=3, old_version=3))

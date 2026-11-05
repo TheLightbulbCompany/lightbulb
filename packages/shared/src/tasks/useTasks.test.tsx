@@ -83,6 +83,28 @@ describe("useTasks", () => {
     expect(client.get).not.toHaveBeenCalled();
   });
 
+  it("an attempt, Question or Effect event refetches an open detail whatever its own version", async () => {
+    const client = fakeClient();
+    const { deps } = await setup(client);
+    client.get.mockClear();
+    client.list.mockClear();
+    for (const part of ["attempt", "question", "effect"]) {
+      await act(() => refreshTask(deps(), { taskId: "t1", part, version: 1 }));  // below the task row's 5
+    }
+    expect(client.get.mock.calls).toEqual([["t1"], ["t1"], ["t1"]]);
+    expect(client.list).not.toHaveBeenCalled();
+  });
+
+  it("a non-task event for a task with no open detail fetches nothing", async () => {
+    const client = fakeClient();
+    const { deps } = await setup(client);
+    client.get.mockClear();
+    client.list.mockClear();
+    await act(() => refreshTask(deps(), { taskId: "t-new", part: "attempt", version: 3 }));
+    expect(client.get).not.toHaveBeenCalled();
+    expect(client.list).not.toHaveBeenCalled();
+  });
+
   it("forbidden refetch drops the task quietly", async () => {
     const client = fakeClient();
     const { hook, deps } = await setup(client);

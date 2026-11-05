@@ -98,7 +98,8 @@
       "network",
       "voice",
       "text",
-      "answer"
+      "answer",
+      "ask"
     ],
     "Admission": [
       "respond",
@@ -221,6 +222,7 @@
     "voice": "voice:{callId}:{utteranceId}",
     "text": "text:{messageId}",
     "answer": "answer:{qid}:{clientAnswerId}",
+    "ask": "ask:{qid}",
     "rule": "rule:{scheduleId}:{threadHash}"
   },
   "namespaces": {
@@ -1631,7 +1633,8 @@
             "network",
             "voice",
             "text",
-            "answer"
+            "answer",
+            "ask"
           ],
           "title": "Source",
           "type": "string"

@@ -49,6 +49,17 @@ class AnswerRef:
 class QuestionRef:
     qid: str
     answerers: list[str]
+    blocking: bool = True  # False: the Worker goes on; the answer arrives as input (ask_person without `blocked`)
+
+
+@dataclass(frozen=True)
+class AskRef:
+    """A Worker's ask_person / request_approval (ids only; the text is on `TRIG#ask:{qid}`)."""
+
+    trigger_id: str
+    kind: str  # question | approval
+    subkind: str
+    blocking: bool
 
 
 @dataclass(frozen=True)
@@ -95,14 +106,16 @@ class TaskQuestionsMixin:
 
     def _q_init(self) -> None:
         self._open_qs: dict[str, list[str]] = {}  # qid → answerers (the validator's no-I/O check)
+        self._nonblocking: set[str] = set()  # open questions the Worker need not wait for
+        self._asked_questions: set[str] = set()  # `question`-kind rows the Worker asked (one open at a time)
         self._q_remind_at: dict[str, datetime] = {}  # unreminded open questions
         self._landings: list[tuple[str, str]] = []  # (effect idem key, answered by) waiting to land
 
     # --- hooks -----------------------------------------------------------------------------------------
 
     async def _q_before_attempt(self) -> bool:
-        """An open Question blocks the next attempt: inputs wait behind it (spec 05 §3.5 layer 2)."""
-        return not self._open_qs
+        """An open blocking Question holds the next attempt: inputs wait behind it (spec 05 §3.5 layer 2)."""
+        return not (set(self._open_qs) - self._nonblocking)
 
     async def _q_after_attempt(self, outcome: str) -> None:
         if outcome != "waiting_approval":
@@ -117,13 +130,22 @@ class TaskQuestionsMixin:
                 # Worker, whose repeated call asks again.
                 await _act("note_answerers_unavailable", self._ws, self._task_id)
             return
-        now = workflow.now()
         for ref in refs:
-            if ref.qid in self._open_qs:
-                continue
-            self._open_qs[ref.qid] = list(ref.answerers)
-            self._q_remind_at[ref.qid] = now + REMIND_AFTER
-            await _act("relay_question", self._ws, self._task_id, ref.qid)
+            await self._q_track(ref)
+
+    async def _q_track(self, ref: QuestionRef) -> None:
+        if ref.qid in self._open_qs:
+            return
+        self._open_qs[ref.qid] = list(ref.answerers)
+        if not ref.blocking:
+            self._nonblocking.add(ref.qid)
+        self._q_remind_at[ref.qid] = workflow.now() + REMIND_AFTER
+        await _act("relay_question", self._ws, self._task_id, ref.qid)
+
+    def _q_forget(self, qid: str) -> None:
+        self._open_qs.pop(qid, None)
+        self._nonblocking.discard(qid)
+        self._q_remind_at.pop(qid, None)
 
     async def _q_on_waiting(self) -> None:
         """While a Question is open the task waits here, with no deadline: the 7-day quiet resolve never ends a task
@@ -176,6 +198,7 @@ class TaskQuestionsMixin:
         if self._open_qs:
             await _act("cancel_open_questions", self._ws, self._task_id, by_user_id, "stopped")
             self._open_qs.clear()
+            self._nonblocking.clear()
             self._q_remind_at.clear()
 
     # --- the one answer path ---------------------------------------------------------------------------
@@ -183,8 +206,7 @@ class TaskQuestionsMixin:
     @workflow.update
     async def answer(self, ref: AnswerRef) -> QuestionResult:
         out = await _act("record_answer", self._ws, self._task_id, ref, result_type=AnswerOut)
-        self._open_qs.pop(ref.qid, None)
-        self._q_remind_at.pop(ref.qid, None)
+        self._q_forget(ref.qid)
         if out.land_idem_key:
             self._landings.append((out.land_idem_key, ref.by_user_id))
             return QuestionResult(ref.qid, "answered", landing=True)
@@ -193,6 +215,25 @@ class TaskQuestionsMixin:
             self._pending.append(TaskInputRef(out.trigger_id, "answer"))
             self._wakes += 1
         return QuestionResult(ref.qid, "answered")
+
+    @workflow.update
+    async def ask(self, ref: AskRef) -> str:
+        """A Worker's question or approval on this task (runtime_internal's ask route). One open `question` per
+        task: a new one supersedes the earlier unanswered one. Returns the qid."""
+        opened = await _act("open_asked_question", self._ws, self._task_id, ref, result_type=QuestionRef)
+        if ref.kind == "question":
+            for qid in [q for q in self._asked_questions if q != opened.qid]:
+                self._q_forget(qid)
+            self._asked_questions = {opened.qid}
+        await self._q_track(opened)
+        return opened.qid
+
+    @ask.validator
+    def _validate_ask(self, ref: AskRef) -> None:
+        if self._stop_by is not None:
+            raise ValueError("task_closed")
+        if ref.kind not in ("question", "approval"):
+            raise ValueError("bad_kind")
 
     @answer.validator
     def _validate_answer(self, ref: AnswerRef) -> None:
@@ -265,6 +306,48 @@ async def open_questions(ws: str, task_id: str) -> list[QuestionRef]:
         row, _ = await questions_repo.open_question(ws, q)
         refs[q["qid"]] = QuestionRef(q["qid"], list(row["answerers"]))
     return list(refs.values())
+
+
+@activity.defn(name="open_asked_question")
+async def open_asked_question(ws: str, task_id: str, ref: AskRef) -> QuestionRef:
+    """The Question row for a Worker's ask (text from `TRIG#ask:{qid}`), answerers per spec 05 §3.3; a new
+    `question` supersedes the task's earlier open one (`cancelled`, reason `superseded`). Idempotent on the qid."""
+    from core.repositories import questions_repo, tasks_repo
+    from core.services import questions
+
+    trigger = await tasks_repo.get_trigger(ws, ref.trigger_id)
+    task = await tasks_repo.get_task(ws, task_id)
+    if trigger is None or task is None:
+        raise _fail(LookupError(f"ask {ref.trigger_id} on {task_id} not found"))
+    ask = trigger["ref"]
+    qid = ask["qid"]
+    existing = await questions_repo.get_question(ws, task_id, qid)
+    if existing is None:
+        try:
+            ids, rule, base = await questions.answerers(ws, task, ref.kind, ref.subkind)
+        except questions.NoAnswerer as err:
+            raise _fail(err) from err
+        existing, _ = await questions_repo.open_question(
+            ws,
+            {
+                "taskId": task_id,
+                "qid": qid,
+                "kind": ref.kind,
+                "subkind": ref.subkind,
+                "title": ask["title"],
+                "text": ask.get("text") or "",
+                "options": ask.get("options") or [],
+                "askedBy": {"kind": "worker", "specialistId": task.get("specialist"), "attempt": ask.get("attempt")},
+                "answerers": ids,
+                "answererRule": rule,
+                "baseAnswerers": base,
+            },
+        )
+    if ref.kind == "question":
+        await questions_repo.cancel_open(
+            ws, task_id, by="worker", reason="superseded", kinds=("question",), except_qid=qid
+        )
+    return QuestionRef(qid, list(existing["answerers"]), ref.blocking)
 
 
 def _origin_thread(subscriptions: list[dict]) -> tuple[str, str | None] | None:
@@ -544,4 +627,5 @@ ACTIVITIES = [
     note_answerers_unavailable,
     cancel_open_questions,
     apply_effect,
+    open_asked_question,
 ]

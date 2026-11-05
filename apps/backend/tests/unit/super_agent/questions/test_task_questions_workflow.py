@@ -12,9 +12,10 @@ import pytest
 from temporalio import activity
 from temporalio.client import WorkflowUpdateFailedError
 from temporalio.exceptions import ApplicationError
+from temporalio.service import RPCError
 from temporalio.worker import Worker
 
-from core.temporal.task_questions import AnswerOut, AnswerRef, QuestionRef
+from core.temporal.task_questions import AnswerOut, AnswerRef, AskRef, QuestionRef
 from core.temporal.types import StopRequest, TaskInputRef, TaskStart, WorkerTurnOut
 from core.temporal.workflows import WORKFLOWS, TaskWorkflow
 
@@ -57,6 +58,12 @@ class QFakes(Fakes):
         async def note_answerers_unavailable(ws: str, task_id: str) -> None:
             await f._call("note_answerers_unavailable", ws, task_id)
 
+        @activity.defn(name="open_asked_question")
+        async def open_asked_question(ws: str, task_id: str, ref: AskRef) -> QuestionRef:
+            return await f._call(
+                "open_asked_question", ws, task_id, ref, default=QuestionRef(f"q-{ref.trigger_id}", [SAM], ref.blocking)
+            )
+
         @activity.defn(name="cancel_open_questions")
         async def cancel_open_questions(ws: str, task_id: str, by: str, reason: str) -> list[str]:
             return await f._call("cancel_open_questions", ws, task_id, by, reason, default=[])
@@ -69,6 +76,7 @@ class QFakes(Fakes):
             record_answer,
             note_answerers_unavailable,
             cancel_open_questions,
+            open_asked_question,
         ]
 
 
@@ -250,3 +258,45 @@ async def test_answerer_lookup_error_leaves_the_task_waiting(temporal_env, fakes
         await h.signal(TaskWorkflow.input, TaskInputRef("chat:try-again", "message"))
         await _until(lambda: "relay_question" in fakes.names())
     assert fakes.names().count("begin_attempt") == 2
+
+
+async def test_worker_ask_non_blocking_does_not_hold_the_next_attempt(temporal_env, fakes):
+    """A Worker's question without `blocked`: relayed, open, and a new input still starts the next attempt."""
+    fakes.turns = [WorkerTurnOut("completed"), WorkerTurnOut("completed")]
+    async with worker(temporal_env, fakes) as q:
+        h = await _start(temporal_env, q)
+        await _until(lambda: "end_attempt" in fakes.names())
+        qid = await h.execute_update(TaskWorkflow.ask, AskRef("ask:1", "question", "question", False))
+        assert qid == "q-ask:1"
+        await _until(lambda: "relay_question" in fakes.names())
+        await h.signal(TaskWorkflow.input, TaskInputRef("chat:more", "message"))
+        await _until(lambda: fakes.names().count("begin_attempt") == 2)
+        await h.execute_update(TaskWorkflow.ask, AskRef("ask:2", "question", "question", False))
+        with pytest.raises(WorkflowUpdateFailedError):  # superseded in the workflow's books too
+            await h.execute_update(TaskWorkflow.answer, _press(qid="q-ask:1", option="answer"))
+        await h.execute_update(TaskWorkflow.answer, _press(qid="q-ask:2", option="answer"))
+
+
+async def test_worker_approval_holds_until_answered(temporal_env, fakes):
+    fakes.turns = [WorkerTurnOut("completed"), WorkerTurnOut("completed")]
+    async with worker(temporal_env, fakes) as q:
+        h = await _start(temporal_env, q)
+        await _until(lambda: "end_attempt" in fakes.names())
+        await h.execute_update(TaskWorkflow.ask, AskRef("ask:a", "approval", "purchase", True))
+        await h.signal(TaskWorkflow.input, TaskInputRef("chat:go", "message"))
+        await asyncio.sleep(0.5)
+        assert fakes.names().count("begin_attempt") == 1  # held behind the approval
+        await h.execute_update(TaskWorkflow.answer, _press(qid="q-ask:a"))
+        await _until(lambda: fakes.names().count("begin_attempt") == 2)
+
+
+async def test_worker_ask_after_stop_refused(temporal_env, fakes):
+    fakes.turns = [WorkerTurnOut("completed")]
+    async with worker(temporal_env, fakes) as q:
+        h = await _start(temporal_env, q)
+        await _until(lambda: "end_attempt" in fakes.names())
+        await h.execute_update(TaskWorkflow.stop, StopRequest(PRIYA))
+        # Refused by the validator while stopping, or not found once the stopped workflow has completed.
+        with pytest.raises((WorkflowUpdateFailedError, RPCError)):
+            await h.execute_update(TaskWorkflow.ask, AskRef("ask:late", "question", "question", True))
+    assert "open_asked_question" not in fakes.names()

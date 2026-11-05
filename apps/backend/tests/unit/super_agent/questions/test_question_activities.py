@@ -202,3 +202,52 @@ async def test_note_answerers_unavailable_missing_task_fails(world, relay):
     with pytest.raises(LookupError):
         await _run(tq.note_answerers_unavailable, WS, "9f14e45f-ceea-467a-9575-8a1b2c3d4e5f")
     relay["post"].assert_not_awaited()
+
+
+async def _ask_trigger(qid, kind="question", subkind="question", title="Which one?"):
+    trigger_id = f"ask:{qid}"
+    await tasks_repo.put_trigger(
+        WS,
+        {
+            "triggerId": trigger_id,
+            "source": "ask",
+            "ref": {
+                "taskId": TASK,
+                "qid": qid,
+                "kind": kind,
+                "subkind": subkind,
+                "title": title,
+                "text": "",
+                "options": [],
+                "blocking": True,
+                "attempt": 1,
+            },
+            "admission": "respond",
+            "lane": "shared",
+            "receivedAt": "2026-11-05T00:00:00+00:00",
+        },
+    )
+    return trigger_id
+
+
+async def test_open_asked_question_from_trigger_and_supersedes(world):
+    t1 = await _ask_trigger("q-ask1")
+    first = await _run(tq.open_asked_question, WS, TASK, tq.AskRef(t1, "question", "question", False))
+    assert first == tq.QuestionRef("q-ask1", [SAM], False)
+    assert (await questions_repo.get_question(WS, TASK, "q-ask1"))["title"] == "Which one?"
+    assert await _run(tq.open_asked_question, WS, TASK, tq.AskRef(t1, "question", "question", False)) == first
+    t2 = await _ask_trigger("q-ask2", title="Which account?")
+    await _run(tq.open_asked_question, WS, TASK, tq.AskRef(t2, "question", "question", True))
+    rows = {q["qid"]: q for q in await questions_repo.list_for_task(WS, TASK)}
+    assert (rows["q-ask1"]["state"], rows["q-ask1"]["reason"]) == ("cancelled", "superseded")
+    assert rows["q-ask2"]["state"] == "open"
+    t3 = await _ask_trigger("q-ok", kind="approval", subkind="purchase", title="Pay $40")
+    ref = await _run(tq.open_asked_question, WS, TASK, tq.AskRef(t3, "approval", "purchase", True))
+    assert ref.answerers == [ADA]
+    rows = {q["qid"]: q for q in await questions_repo.list_for_task(WS, TASK)}
+    assert rows["q-ask2"]["state"] == "open" and rows["q-ok"]["state"] == "open"  # an approval supersedes nothing
+
+
+async def test_open_asked_question_missing_trigger_fails(world):
+    with pytest.raises(ApplicationError):
+        await _run(tq.open_asked_question, WS, TASK, tq.AskRef("ask:nope", "question", "question", True))

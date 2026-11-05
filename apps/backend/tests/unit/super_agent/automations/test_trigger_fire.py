@@ -105,6 +105,7 @@ async def test_schedule_fire_starts_task_deterministically(env):
     ((trigger, room_id),) = env.enqueued
     assert room_id == "r1"
     assert trigger.admission == "respond" and trigger.lane == "shared" and trigger.source == "schedule"
+    assert trigger.actor_user_id == "user_sam"  # a fire has no person behind it: the automation's owner is the actor
     start = trigger.ref["start"]
     assert start["kind"] == "start_task" and start["triggerIds"] == [trigger_id]
     assert start["policyRef"] == "SCHED#s1" and start["budgetUsd"] == 1.0 and start["visibility"] == "room"
@@ -182,9 +183,9 @@ async def test_webhook_fire_carries_payload_excerpt(env):
 
 async def test_manual_fire_uses_its_ulid(env):
     await _active()
-    inp = FireInput(ws=WS, schedule_id="s1", source="manual", dedupe_key="01HZZ", actor_user_id="user_sam")
+    inp = FireInput(ws=WS, schedule_id="s1", source="manual", dedupe_key="01HZZ", actor_user_id="user_priya")
     assert await fire_automation(inp, 0) == "manual:s1:01HZZ"
-    assert env.enqueued[0][0].actor_user_id == "user_sam"
+    assert env.enqueued[0][0].actor_user_id == "user_priya"  # Run now: the person who pressed it, not the owner
 
 
 # --- closing a run ------------------------------------------------------------------------------------
@@ -296,7 +297,7 @@ async def _run_task(temporal_env, fakes, reason="router"):
 TID = "8f14e45f-ceea-467a-9575-8a1b2c3d4e5f"
 
 
-@pytest.mark.parametrize("outcome,failed", [("completed", False), ("failed", True), ("cancelled", True)])
+@pytest.mark.parametrize("outcome,failed", [("completed", False), ("failed", True), ("cancelled", False)])
 async def test_task_workflow_closes_the_run_after_an_ended_attempt(temporal_env, outcome, failed):
     from tests.unit.super_agent.orchestration.fake_activities import Fakes
 
@@ -322,3 +323,104 @@ async def test_task_workflow_keeps_the_run_open_while_the_task_goes_on(temporal_
     await _run_task(temporal_env, fakes)
     assert fakes.names().count("end_attempt") == 2
     assert fakes.args("close_automation_run") == [(WS, TID, False)]
+
+
+# --- paths that end the task without ending an attempt (review of #4748) ------------------------------------
+
+
+async def _run_until(temporal_env, fakes, drive):
+    """Start a TaskWorkflow on O's harness, let `drive(handle)` push it, return when it completes."""
+    from datetime import timedelta
+
+    from core.temporal.types import TaskStart
+    from core.temporal.workflows import WORKFLOWS, TaskWorkflow
+
+    queue = f"q-{uuid.uuid4()}"
+    fast = timedelta(milliseconds=50)
+    async with Worker(
+        temporal_env.client,
+        task_queue=queue,
+        workflows=WORKFLOWS,
+        activities=fakes.activities(),
+        max_heartbeat_throttle_interval=fast,
+        default_heartbeat_throttle_interval=fast,
+    ):
+        h = await temporal_env.client.start_workflow(
+            TaskWorkflow.run, TaskStart(WS, TID, "router"), id=f"task:{WS}:{uuid.uuid4()}", task_queue=queue
+        )
+        await drive(h)
+        await h.result()
+
+
+async def test_lost_runtime_three_times_closes_the_run_as_failed(temporal_env):
+    from tests.unit.super_agent.orchestration.fake_activities import Fakes
+
+    from core.temporal.types import WorkerTurnOut
+
+    fakes = Fakes()
+    fakes.behaviour["worker_turn"] = lambda inp: WorkerTurnOut("runtime_lost")
+
+    async def nothing(h):
+        return None
+
+    await _run_until(temporal_env, fakes, nothing)
+    # failed after the third loss, then the 7-day quiet resolve: the run closed once, as a failure
+    assert fakes.args("transition")[0] == (WS, TID, "failed", "runtime_lost")
+    assert fakes.args("close_automation_run") == [(WS, TID, True)]
+
+
+async def test_stop_while_queued_closes_the_run(temporal_env):
+    import asyncio
+
+    from tests.unit.super_agent.orchestration.fake_activities import Fakes
+
+    from core.temporal.types import StopRequest
+
+    fakes = Fakes()
+    fakes.behaviour["acquire_slot"] = lambda ws, tid: False  # no slot: the task waits, queued
+
+    async def stop(h):
+        for _ in range(100):
+            if "acquire_slot" in fakes.names():
+                break
+            await asyncio.sleep(0.05)
+        await h.execute_update("stop", StopRequest(by_user_id="sam"))
+
+    await _run_until(temporal_env, fakes, stop)
+    assert fakes.args("transition") == [(WS, TID, "resolved", "stopped")]
+    assert fakes.args("close_automation_run") == [(WS, TID, False)]  # freed, and not a failure
+
+
+async def test_dismiss_closes_the_run(temporal_env):
+    import asyncio
+
+    from tests.unit.super_agent.orchestration.fake_activities import Fakes
+
+    from core.temporal.types import ActionRequest
+
+    fakes = Fakes()
+    fakes.behaviour["acquire_slot"] = lambda ws, tid: False
+
+    async def dismiss(h):
+        for _ in range(100):
+            if "acquire_slot" in fakes.names():
+                break
+            await asyncio.sleep(0.05)
+        await h.execute_update("dismiss", ActionRequest("sam"))
+
+    await _run_until(temporal_env, fakes, dismiss)
+    assert fakes.args("transition") == [(WS, TID, "resolved", "dismissed")]
+    assert fakes.args("close_automation_run") == [(WS, TID, False)]
+
+
+async def test_quiet_resolve_after_a_closed_attempt_closes_once(temporal_env):
+    from tests.unit.super_agent.orchestration.fake_activities import Fakes
+
+    fakes = Fakes()
+
+    async def nothing(h):
+        return None
+
+    await _run_until(temporal_env, fakes, nothing)  # completed → idle → 7-day quiet → resolved
+    assert fakes.args("transition") == [(WS, TID, "resolved", "quiet")]
+    assert fakes.args("close_automation_run") == [(WS, TID, False)]  # once: after the attempt, not again

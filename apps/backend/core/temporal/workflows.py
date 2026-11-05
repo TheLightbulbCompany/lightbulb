@@ -287,6 +287,8 @@ class TaskWorkflow(TaskQuestionsMixin, AutomationRunMixin):
     async def _transition(self, to: str, reason: str | None) -> None:
         await _act("transition", self._ws, self._task_id, to, reason)
         self._status = to
+        if workflow.patched(PATCH_AUTOMATION_RUN):  # Lane A: an automation run ends with its task
+            await self._a_on_transition(to)
 
     def _deferred(self) -> bool:
         """An attempt was refused (budget, proposed) and nothing new has arrived since."""

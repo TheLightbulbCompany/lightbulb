@@ -245,7 +245,7 @@ async def fire_automation(inp: FireInput, at_ms: int) -> str:
         return "skipped:paused"
     trigger_id = _fire_trigger_id(inp, row, at_ms)
     task_id = ts.router_task_id(trigger_id, 0, 0)
-    previous = row.get("lastTaskId") if row.get("lastTaskId") != task_id else None
+    previous = next((t for t in row.get("runTaskIds") or [] if t != task_id), None)  # newest closed run
     if not await repo.claim_run(ws, row["scheduleId"], task_id):
         return "skipped:overlap"
 
@@ -281,7 +281,9 @@ async def fire_automation(inp: FireInput, at_ms: int) -> str:
         source=inp.source,
         admission="respond",
         lane="shared",
-        actor_user_id=inp.actor_user_id,
+        # Run now carries the person who pressed it; a Schedule or webhook fire has nobody behind it, so the
+        # automation's owner is the actor and the task lands in that person's lane (or the deliverTo room).
+        actor_user_id=inp.actor_user_id or row["ownerUserId"],
         received_at=now,
         created_at=now,
         updated_at=now,
@@ -343,15 +345,28 @@ class TriggerFireWorkflow:
 
 
 class AutomationRunMixin:
-    """TaskWorkflow hook (≤4 call-site lines in workflows.py): an automation run is closed when its task
-    stops continuing (not after `waiting_approval` or `runtime_lost`, which go on)."""
+    """TaskWorkflow hooks (≤8 call-site lines in workflows.py): an automation run is closed when its task
+    stops continuing: after an ended attempt (not `waiting_approval` or `runtime_lost`, which go on), and on
+    every transition to resolved/failed that ends no attempt (lost runtime, Stop while queued, dismiss/resolve,
+    the quiet timeout). Closed once per workflow run; the Activity is a no-op for anything else."""
 
     async def _a_after_attempt(self, outcome: str) -> None:
         if self._status in ("working", "waiting"):
             return
+        # A person's Stop (`cancelled`) is not a failure of the automation (lead ruling, 5 Nov).
+        await self._a_close(outcome not in ("completed", "cancelled"))
+
+    async def _a_on_transition(self, to: str) -> None:
+        if to in ("resolved", "failed"):
+            await self._a_close(to == "failed")
+
+    async def _a_close(self, failed: bool) -> None:
+        if getattr(self, "_a_closed", False):
+            return
+        self._a_closed = True
         await workflow.execute_activity(
             close_automation_run,
-            args=[self._ws, self._task_id, outcome != "completed"],
+            args=[self._ws, self._task_id, failed],
             start_to_close_timeout=timedelta(seconds=30),
             retry_policy=RetryPolicy(maximum_attempts=5),
         )

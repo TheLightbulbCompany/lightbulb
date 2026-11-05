@@ -29,8 +29,9 @@ async def test_connect_args_cloud_vs_local(monkeypatch):
     assert kwargs["tls"] is True
     assert kwargs["namespace"] == "lightbulb-dev.nv5xx"
 
-    monkeypatch.undo()
-    monkeypatch.setattr(tc.Client, "connect", fake_connect)
+    monkeypatch.setattr(settings, "TEMPORAL_API_KEY", None)
+    monkeypatch.setattr(settings, "TEMPORAL_ADDRESS", "localhost:7233")
+    monkeypatch.setattr(settings, "TEMPORAL_NAMESPACE", "default")
     await tc.connect()
     address, kwargs = calls[-1]
     assert address == "localhost:7233"

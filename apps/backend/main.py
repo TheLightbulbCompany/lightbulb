@@ -467,19 +467,16 @@ async def lifespan(app: FastAPI):
     mcp_context = hosted_mcp.running()
     await mcp_context.__aenter__()
 
-    # Temporal client (super-agent, dev only). Best-effort and bounded: a bad key or a Cloud outage
-    # logs and leaves get_client() raising TemporalUnavailable; every existing route still serves.
-    # temporalio is imported only in this branch, so an env with the master off never loads it.
+    # Temporal client (super-agent, dev only), connected in the background so startup never waits on it:
+    # until it lands, or if it fails (bad key, Cloud outage), get_client() raises TemporalUnavailable and
+    # every existing route still serves. temporalio is imported only in this branch.
     from core.services.super_agent_flags import env_enabled
 
+    temporal_task = None
     if env_enabled():
-        from core.temporal.client import connect as temporal_connect, set_client as set_temporal_client
+        from core.temporal.client import connect_and_set
 
-        try:
-            async with asyncio.timeout(10):
-                set_temporal_client(await temporal_connect())
-        except Exception:
-            logger.warning("temporal connect failed", exc_info=True)
+        temporal_task = asyncio.create_task(connect_and_set())
 
     # Startup complete — flip the liveness gate so /health returns 200.
     global _started
@@ -490,9 +487,10 @@ async def lifespan(app: FastAPI):
     # Shutdown — request every producer's stop before draining. (The openclaw-work
     # FIFO is drained by its own Lambda, scripts/work_lambda.py, not by this process.)
     logger.info("Shutting down application...")
-    if env_enabled():
+    if temporal_task is not None:
         from core.temporal.client import set_client as set_temporal_client
 
+        temporal_task.cancel()
         set_temporal_client(None)
     set_shutting_down(True)  # 503 new business requests; /health stays green for ALB drain
     from core.services.update_service import request_worker_stop

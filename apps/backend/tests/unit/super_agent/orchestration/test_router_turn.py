@@ -776,3 +776,39 @@ async def test_one_failed_start_never_skips_the_others(world, monkeypatch):
     with pytest.raises(RuntimeError, match="start_task_workflow failed"):
         await _run([t1])
     assert world["starts"] == [(ts.router_task_id(BATCH, 1, 0), "router")]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_start_still_records_the_started_ones_and_the_fallback_says_partial(world, monkeypatch):
+    """Review on #4845: the starts that went out are recorded (routedTo, rules note) before the Activity raises,
+    so a second failure loses nothing, and apply_fallback for a trigger with posted cards says only that some of
+    it couldn't start."""
+    t1 = await _trig("chat:m1")
+    t2 = await _trig("chat:m2")
+    world["decisions"] = [_start([t1]), _start([t2], title="Book the flights", specialist=None)]
+    bad = ts.router_task_id(BATCH, 1, 0)
+
+    async def flaky(ws, task_id, reason):
+        if task_id == bad:
+            raise RuntimeError("temporal hiccup")
+        world["starts"].append((task_id, reason))
+
+    monkeypatch.setattr(acts.temporal_client, "start_task_workflow", flaky)
+    with pytest.raises(RuntimeError):
+        await _run([t1, t2])
+    assert (await repo.get_trigger(WS, t1))["routedTo"] == {"taskId": ts.router_task_id(BATCH, 0, 0)}
+    assert (await repo.get_trigger(WS, t2)).get("routedTo") is None
+    await acts.apply_fallback(WS, [t1, t2])
+    lines = {p["event_id"]: p["text"] for p in world["posts"] if p["event_id"].startswith("router-fallback:")}
+    assert lines == {f"router-fallback:{t1}": router_prompt.PARTIAL, f"router-fallback:{t2}": router_prompt.FALLBACK}
+
+
+@pytest.mark.asyncio
+async def test_a_retried_pass_through_signals_once(world):
+    """A retried router_turn (same batch) never signals the task again: routedTo records the pass_through."""
+    open_id = await _open_task({"kind": "room", "roomId": ROOM})
+    t1 = await _trig("chat:m1")
+    world["decisions"] = [{"kind": "pass_through", "triggerIds": [t1], "taskId": open_id}]
+    await _run([t1])
+    await _run([t1])
+    assert world["inputs"] == [(open_id, t1, "message")]

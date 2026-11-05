@@ -891,3 +891,20 @@ def test_status_words_cover_every_status():
         router_prompt.status_words({"status": "idle", "statusReason": "landed"}) == "finished; its approved action ran"
     )
     assert router_prompt.status_words({"status": "resolved", "statusReason": "odd"}) == "closed"
+
+
+@pytest.mark.asyncio
+async def test_recently_closed_pages_past_other_scopes(world, monkeypatch):
+    """A closure in this room survives newer closures in other rooms: the scan pages (newest first) until the day
+    ends instead of stopping at one fixed page."""
+    monkeypatch.setattr(acts, "_CLOSED_PAGE", 3)
+    mine = await _open_task({"kind": "room", "roomId": ROOM}, status="resolved", title="Mine, stopped")
+    for i in range(7):
+        await _open_task({"kind": "room", "roomId": str(uuid.uuid4())}, status="resolved", title=f"Other {i}")
+    closed = await acts._closed_tasks(WS, "shared", SAM, {ROOM})
+    assert [t["taskId"] for t in closed] == [mine]
+
+
+def test_effect_unknown_says_check_first():
+    words = router_prompt.status_words({"status": "idle", "statusReason": "effect_unknown"})
+    assert words == "finished, but its action might have happened: check before saying it did or retrying"

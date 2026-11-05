@@ -130,7 +130,7 @@ _STATUS_WORDS: dict[tuple[str, str | None], str] = {
     ("waiting", "budget"): "paused: over its budget",
     ("idle", None): "finished, result posted",
     ("idle", "landed"): "finished; its approved action ran",
-    ("idle", "effect_unknown"): "finished, but whether its action ran is unknown",
+    ("idle", "effect_unknown"): "finished, but its action might have happened: check before saying it did or retrying",
     ("failed", None): "failed, did not finish",
     ("resolved", None): "closed",
     ("resolved", "stopped"): "stopped by a person; nothing more was done",

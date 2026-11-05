@@ -167,7 +167,11 @@ def test_tokenless_malformed_request_is_401_not_422(client, env):
     assert client.post(URL, json={"nonsense": 1}).status_code == 401
 
 
-@pytest.mark.parametrize("origin", [AGENT_MSG, FOREIGN_MSG, str(uuid.uuid4())])
+# Explicit ids: uuid values as ids differ per process, and pytest-xdist refuses to run when
+# its workers collect different test ids.
+@pytest.mark.parametrize(
+    "origin", [AGENT_MSG, FOREIGN_MSG, str(uuid.uuid4())], ids=["agent_msg", "foreign_msg", "unknown_msg"]
+)
 def test_named_origin_that_fails_a_check_is_403_and_stores_nothing(client, env, origin):
     r = client.post(URL, json=body(originMessageId=origin), headers=H)
     assert r.status_code == 403 and r.json()["detail"]["code"] == "bad_origin"

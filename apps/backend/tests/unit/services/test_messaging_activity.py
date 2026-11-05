@@ -108,7 +108,10 @@ async def say(room_id, author, text="hi", *, mentions=(), thread_root=None):
         room_id=room_id,
         owner_id=OWNER,
         idemp_pk=repo.room_pk(room_id),
-        idemp_sk=repo.human_idemp_sk(author["id"], f"c-{next(_ids)}"),
+        # "m-", not "c-": _room() stores its own IDEMP#human#<creator>#c-<n> row in the room
+        # partition, so a "c-" message key collided whenever the module counter hit a room's
+        # number -- which depended on how many tests ran before it in the process (xdist).
+        idemp_sk=repo.human_idemp_sk(author["id"], f"m-{next(_ids)}"),
         req_hash=repo.request_hash(text, next(_ids)),
         author=author,
         text=text,

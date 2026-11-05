@@ -182,6 +182,9 @@ async def handle_sendblue_inbound(body: SendblueInbound, request: Request):
             ),
             idempotency_key=event_id,
             session_key=text_session_key(customer),
+            # Super-agent workspaces: how the Router's reply gets back to this customer (lane A, A9).
+            source="text",
+            reply_ref={"provider": "sendblue", "address": address, "fromNumber": line["address"], "toNumber": customer},
         )
         if result == "error":
             await _rollback_dedup(event_id)

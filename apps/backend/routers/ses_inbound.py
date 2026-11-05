@@ -414,6 +414,14 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
             # continuation rather than a cold start. None (no usable
             # message-id) keeps the old per-message throwaway session.
             session_key=thread_session_key(body.headers),
+            # Super-agent workspaces: how the Router's reply gets back into this thread (lane A, A9).
+            source="mail",
+            reply_ref={
+                "address": sender,
+                "messageId": body.headers.get("Message-ID", "") or body.headers.get("Message-Id", "") or None,
+                "references": body.headers.get("References") or None,
+                "subject": body.subject or "",
+            },
         )
         if result == "error":
             # Transient delivery failure (e.g. a running container's RPC

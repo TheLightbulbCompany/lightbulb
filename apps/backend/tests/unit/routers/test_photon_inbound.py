@@ -216,6 +216,8 @@ def test_stored_and_delivered_with_exact_kwargs(client, seams):
         ),
         idempotency_key="photon:m1",
         session_key=text_inbound.text_session_key(CUSTOMER),
+        source="text",
+        reply_ref={"provider": "photon", "address": TEAM, "senderId": LINE_USER, "spaceId": SPACE, "to": CUSTOMER},
     )
     assert text_inbound.text_session_key(CUSTOMER).startswith("lightbulb-text:")
     assert f"Reply-Key: {key}" in seams["deliver_to_agent"].await_args.kwargs["message"]

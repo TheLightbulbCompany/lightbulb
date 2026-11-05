@@ -103,3 +103,10 @@ async def test_switch_off_activity_unchanged(feed_world, monkeypatch):
     assert (await _feed())["sources"] == {"paperclip": "unavailable"}
     assert await activity.unseen_counts(WS, "user_sam", AsyncMock()) is None
     spy.assert_not_awaited()
+
+
+async def test_question_store_error_never_breaks_the_feed(feed_world, monkeypatch):
+    monkeypatch.setattr(questions_repo, "needs_for_user", AsyncMock(side_effect=RuntimeError("ddb down")))
+    feed_world["paperclip"].return_value = []
+    page = await _feed()
+    assert page["items"] == [] and page["sources"] == {"paperclip": "ok"}

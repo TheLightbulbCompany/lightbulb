@@ -37,6 +37,20 @@ def world(table, monkeypatch):
     monkeypatch.setattr(away, "capture_product_event", MagicMock())
     monkeypatch.setattr(away, "_claim_room_slot", AsyncMock(return_value=True))
     monkeypatch.setattr(away, "put_metric", lambda *a, **k: None)
+    from core.services import questions
+
+    w.members = [{"user_id": "user_sam", "role": "org:member"}, {"user_id": "user_ada", "role": "org:admin"}]
+
+    async def members(org_id, *, strict=False):
+        assert strict
+        return w.members
+
+    monkeypatch.setattr(questions.clerk_admin, "list_organization_members", members)
+    monkeypatch.setattr(
+        questions.billing_repo,
+        "get_capability_policy",
+        AsyncMock(return_value={"money_moves": True, "outreach": False, "publishing": True, "provisioning": True}),
+    )
     return w
 
 
@@ -47,7 +61,9 @@ async def _open():
             "taskId": TASK,
             "qid": "q-1",
             "kind": "approval",
+            "subkind": "send",
             "title": "send the Q3 invoice to acme@example.com",
+            "options": [{"id": "allow_once", "label": "Allow once"}, {"id": "deny", "label": "Deny"}],
             "askedBy": {"kind": "worker"},
             "answerers": ["user_sam"],
             "answererRule": "requester",
@@ -104,3 +120,24 @@ async def test_away_email_dropped_for_a_non_answerer(world):
     await _open()
     assert await away.check_one(_row("user_priya"), NOW) is False
     world.send.assert_not_awaited()
+
+
+async def test_away_email_dropped_when_removed_from_the_workspace(world):
+    await _open()
+    world.members = [m for m in world.members if m["user_id"] != "user_sam"]
+    assert await away.check_one(_row(), NOW) is False
+    world.send.assert_not_awaited()
+    world.finish.assert_awaited_once_with("AWAY#user_sam", f"Q#{TASK}#q-1")
+
+
+async def test_away_email_clerk_error_is_retried_not_sent(world, monkeypatch):
+    from core.services import questions
+
+    await _open()
+    monkeypatch.setattr(
+        questions.clerk_admin, "list_organization_members", AsyncMock(side_effect=RuntimeError("clerk"))
+    )
+    with pytest.raises(RuntimeError):
+        await away.check_one(_row(), NOW)  # run_once logs it; the row stays due for the next pass
+    world.send.assert_not_awaited()
+    world.finish.assert_not_awaited()

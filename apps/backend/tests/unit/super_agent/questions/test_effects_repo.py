@@ -50,7 +50,10 @@ async def test_state_moves_forward_only(table):
     assert (row["state"], row["questionId"]) == ("approved", "q-1")
     with pytest.raises(IllegalTransition):
         await repo.set_effect_state(WS, f"{TASK}:1:c1", to="denied")  # an answer is final
-    await repo.set_effect_state(WS, f"{TASK}:1:c1", to="intent")
+    with pytest.raises(IllegalTransition):
+        await repo.set_effect_state(WS, f"{TASK}:1:c1", to="intent")  # only use_approval enters intent
+    assert await repo.use_approval(WS, f"{TASK}:1:c1", "h1") is True
+    assert (await repo.get_effect(WS, f"{TASK}:1:c1"))["state"] == "intent"
     with pytest.raises(IllegalTransition):
         await repo.set_effect_state(WS, f"{TASK}:1:c1", to="approved")
 
@@ -73,18 +76,45 @@ async def test_done_needs_intent(table):
         await repo.mark_effect_done(WS, f"{TASK}:1:c1", disposition="done", result_ref=None)
 
 
-async def test_consume_approval_single_use(table):
+async def _approved():
     await repo.put_effect(WS, _e())
     await repo.set_effect_state(WS, f"{TASK}:1:c1", to="approved", fields={"questionId": "q-1"})
-    assert await repo.consume_approval(WS, f"{TASK}:1:c1", f"{TASK}:2:c7", "h1") is True
-    assert await repo.consume_approval(WS, f"{TASK}:1:c1", f"{TASK}:3:c9", "h1") is False
+
+
+async def test_use_approval_single_use_for_retries(table):
+    await _approved()
+    assert await repo.use_approval(WS, f"{TASK}:1:c1", "h1", new_effect=_e(2, "c7")) is True
+    assert (await repo.get_effect(WS, f"{TASK}:2:c7"))["state"] == "intent"
+    assert await repo.use_approval(WS, f"{TASK}:1:c1", "h1", new_effect=_e(3, "c9")) is False
+    assert await repo.get_effect(WS, f"{TASK}:3:c9") is None  # the refused retry wrote nothing
+
+
+async def test_landing_and_worker_retry_race_one_winner(table):
+    """The backend's Landing and a Worker's retry press on one approval at once: exactly one proceeds."""
+    await _approved()
+    results = await asyncio.gather(
+        repo.use_approval(WS, f"{TASK}:1:c1", "h1"),
+        repo.use_approval(WS, f"{TASK}:1:c1", "h1", new_effect=_e(2, "c7")),
+    )
+    assert sorted(results) == [False, True]
+    landed = (await repo.get_effect(WS, f"{TASK}:1:c1"))["state"] == "intent"
+    retried = await repo.get_effect(WS, f"{TASK}:2:c7") is not None
+    assert landed != retried
+
+
+async def test_use_approval_refused_unless_approved(table):
+    await repo.put_effect(WS, _e())  # proposed
+    assert await repo.use_approval(WS, f"{TASK}:1:c1", "h1") is False
+    assert await repo.use_approval(WS, f"{TASK}:1:c1", "h1", new_effect=_e(2, "c7")) is False
+    await repo.set_effect_state(WS, f"{TASK}:1:c1", to="denied")
+    assert await repo.use_approval(WS, f"{TASK}:1:c1", "h1", new_effect=_e(2, "c7")) is False
 
 
 async def test_gate_sees_the_use_row(table):
     """End to end over the repo: one approval lets one retry through; the next retry asks again."""
-    await repo.put_effect(WS, _e())
-    await repo.set_effect_state(WS, f"{TASK}:1:c1", to="approved", fields={"questionId": "q-1"})
+    await _approved()
     retry = _e(2, "c7")
     assert questions.gate(retry, await repo.effects_for(WS, TASK, "h1")).decision == "proceed"
-    await repo.consume_approval(WS, f"{TASK}:1:c1", f"{TASK}:2:c7", "h1")
+    await repo.use_approval(WS, f"{TASK}:1:c1", "h1", new_effect=retry)
+    await repo.mark_effect_done(WS, f"{TASK}:2:c7", disposition="done", result_ref="ses:1")
     assert questions.gate(_e(3, "c9"), await repo.effects_for(WS, TASK, "h1")).decision == "needs_approval"

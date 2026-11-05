@@ -74,11 +74,21 @@ def qid_for(idem_key: str) -> str:
     return "q-" + hashlib.sha256(idem_key.encode()).hexdigest()[:16]
 
 
-async def _admins(ws: str) -> list[str]:
+async def _members(ws: str) -> dict[str, str]:
+    """{user_id: role} of the workspace, strictly read (a Clerk error raises, never reads as "nobody")."""
     if not ws.startswith("org_"):
-        return [ws]  # a personal workspace's owner is its only admin
+        return {ws: "org:admin"}  # a personal workspace's owner is its only member and admin
     members = await clerk_admin.list_organization_members(ws, strict=True)
-    return [m["user_id"] for m in members if m.get("role") == "org:admin" and m.get("user_id")]
+    return {m["user_id"]: m.get("role") or "" for m in members if m.get("user_id")}
+
+
+async def _admins(ws: str) -> list[str]:
+    return [u for u, role in (await _members(ws)).items() if role == "org:admin"]
+
+
+async def _current_rule(ws: str, subkind: str | None) -> str:
+    needs_policy = subkind == "send" or subkind in _MONEY
+    return _rule_for(subkind, await billing_repo.get_capability_policy(ws) if needs_policy else {})
 
 
 def _rule_for(subkind: str | None, policy: dict[str, bool]) -> str:
@@ -111,8 +121,7 @@ async def answerers(
     Returns `(answerers, rule, base)`: `base` is the non-admin part (requester, app creator, governance holders), kept
     so `can_answer_now` can re-check the admin part at answer time. Raises `NoAnswerer` on an empty list.
     """
-    needs_policy = subkind == "send" or subkind in _MONEY
-    rule = _rule_for(subkind, await billing_repo.get_capability_policy(ws) if needs_policy else {})
+    rule = await _current_rule(ws, subkind)
     if rule == "holders":
         base = list(holders or [])
     elif rule == "creator+admins":
@@ -133,12 +142,18 @@ async def answerers(
 
 
 async def can_answer_now(ws: str, q: dict, user_id: str) -> bool:
-    """In the stored list AND the rule still admits them: an admin demoted since the ask is refused."""
-    if user_id not in q.get("answerers", []):
+    """Spec 05 §3.3 "re-checks authority": in the stored list AND still a workspace member AND today's rule (from
+    today's policy) still admits them. An admin demoted, a member removed, or a policy tightened since the ask
+    (outreach/money moves → admins only) is refused. Fails closed on a row with no stored rule."""
+    if user_id not in (q.get("answerers") or []) or not q.get("answererRule"):
         return False
-    if user_id in q.get("baseAnswerers", []):
-        return True
-    return q.get("answererRule", "").endswith("admins") and user_id in await _admins(ws)
+    members = await _members(ws)
+    if user_id not in members:
+        return False
+    rule = await _current_rule(ws, q.get("subkind"))
+    if rule != "admins" and user_id in (q.get("baseAnswerers") or []):
+        return True  # requester, app creator or governance holder, and today's rule still has that seat
+    return rule.endswith("admins") and members[user_id] == "org:admin"
 
 
 @dataclass(frozen=True)

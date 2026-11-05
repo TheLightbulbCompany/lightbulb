@@ -18,7 +18,7 @@ from core import tasks_schema as ts
 from core.dynamodb import ddb_safe, plain, run_in_thread, utc_now_iso
 from core.repositories.tasks_repo import TasksRepoError, VersionConflict, _get, _is_condition_failure, _row, _table
 
-__all__ = ["NotAnswerer", "NotFound", "NotOpen", "VersionConflict"]
+__all__ = ["InvalidOption", "NotAnswerer", "NotFound", "NotOpen", "VersionConflict"]
 
 
 class NotFound(TasksRepoError):
@@ -27,6 +27,10 @@ class NotFound(TasksRepoError):
 
 class NotAnswerer(TasksRepoError):
     pass
+
+
+class InvalidOption(TasksRepoError):
+    """The answer names an option the question does not offer."""
 
 
 class NotOpen(TasksRepoError):
@@ -154,6 +158,9 @@ async def record_answer(
         raise NotFound(qid)
     if by not in q["answerers"]:
         raise NotAnswerer(f"{by} may not answer {qid}")
+    offered = {o["id"] for o in q.get("options") or []} or {"answer"}  # no options: a free-text answer
+    if option_id not in offered:
+        raise InvalidOption(f"{option_id!r} is not an option of {qid}")
     if q["state"] != "open":
         if q["state"] == "answered" and q.get("clientAnswerId") == client_answer_id:
             return q

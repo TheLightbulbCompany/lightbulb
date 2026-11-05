@@ -102,6 +102,20 @@ async def test_answer_stale_version(table):
     )["state"] == "answered"
 
 
+async def test_answer_must_name_an_offered_option(table):
+    await repo.open_question(WS, _q())
+    with pytest.raises(repo.InvalidOption):
+        await _answer(option="publish")
+    assert (await repo.list_open(WS, TASK))[0]["state"] == "open"
+
+
+async def test_free_text_question_takes_answer_only(table):
+    await repo.open_question(WS, _q("q-t", kind="question", options=[]))
+    with pytest.raises(repo.InvalidOption):
+        await _answer("q-t", option="allow_once")
+    assert (await _answer("q-t", option="answer"))["state"] == "answered"
+
+
 async def test_answer_unknown_question(table):
     with pytest.raises(repo.NotFound):
         await _answer(qid="q-nope")

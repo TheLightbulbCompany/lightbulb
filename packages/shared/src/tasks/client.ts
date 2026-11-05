@@ -8,6 +8,8 @@ export const scopeParam = (scope: TaskScope): string =>
   scope.kind === "room" ? `room:${scope.roomId}` : scope.kind;
 
 export interface TasksClient {
+  /** The signed-in workspace (org, else user); part of every list cache key so a workspace switch never shows another tenant's threads. */
+  cacheScope: string;
   list(scope: TaskScope, cursor?: string | null): Promise<{ tasks: TaskSummary[]; next: string | null }>;
   get(taskId: string): Promise<TaskDetail>;
   act(taskId: string, verb: TaskVerb, version: number): Promise<TaskSummary>;
@@ -18,9 +20,10 @@ export interface TasksClient {
   needsYou(): Promise<{ items: QuestionView[]; next: string | null }>;
 }
 
-export function createTasksClient(api: ApiMethods): TasksClient {
+export function createTasksClient(api: ApiMethods, cacheScope = ""): TasksClient {
   const path = (taskId: string) => `/tasks/${encodeURIComponent(taskId)}`;
   return {
+    cacheScope,
     list: (scope, cursor) => api.get(
       `/tasks?scope=${encodeURIComponent(scopeParam(scope))}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
     ) as ReturnType<TasksClient["list"]>,

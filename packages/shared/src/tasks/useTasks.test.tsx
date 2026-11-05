@@ -8,7 +8,7 @@ import { ApiError } from "../api/error";
 import type { TasksClient } from "./client";
 import { fixtureTask } from "./fixtures";
 import type { TaskDetail, TaskSummary } from "./types";
-import { refreshTask, taskKey, useTask, useTaskList } from "./useTasks";
+import { refreshTask, taskKey, taskListKey, useTask, useTaskList } from "./useTasks";
 
 const t1 = fixtureTask({ taskId: "t1", title: "one", version: 5 });
 const t2 = fixtureTask({ taskId: "t2", title: "two", version: 2 });
@@ -16,6 +16,7 @@ const detailOf = (task: TaskSummary): TaskDetail => ({ task, attempts: [], quest
 
 function fakeClient(over: Partial<TasksClient> = {}) {
   return {
+    cacheScope: "org_a",
     list: vi.fn(async () => ({ tasks: [t1, t2], next: null })),
     get: vi.fn(async (id: string) => detailOf(id === "t1" ? t1 : t2)),
     ...over,
@@ -37,6 +38,11 @@ async function setup(client: TasksClient) {
 }
 
 describe("useTasks", () => {
+  it("list keys carry the workspace, so a workspace switch never reuses another tenant's list", () => {
+    expect(taskListKey({ cacheScope: "org_a" }, { kind: "mine" })).toBe("tasks:org_a:mine");
+    expect(taskListKey({ cacheScope: "org_b" }, { kind: "mine" })).not.toBe(taskListKey({ cacheScope: "org_a" }, { kind: "mine" }));
+  });
+
   it("null key when off", () => {
     const client = fakeClient();
     renderHook(() => [useTaskList(client, null), useTask(client, null)]);

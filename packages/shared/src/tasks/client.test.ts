@@ -10,6 +10,10 @@ function fakeApi() {
 }
 
 describe("tasks client: routes and bodies (wave2-README C15)", () => {
+  it("carries the workspace for cache keys", () => {
+    expect(createTasksClient(fakeApi().api, "org_1").cacheScope).toBe("org_1");
+  });
+
   it("list scopes", async () => {
     const { api, get } = fakeApi();
     const c = createTasksClient(api);

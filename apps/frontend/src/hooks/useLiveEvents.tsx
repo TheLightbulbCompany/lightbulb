@@ -70,9 +70,10 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
   const api = useApi();
   const messaging = useMemo(() => createMessagingClient(api), [api]);
   const runtimeClient = useMemo(() => createRuntimeClient(api, () => crypto.randomUUID()), [api]);
-  const tasks = useMemo(() => createTasksClient(api), [api]);
-  const refreshTask = useTaskChangedRefresh(tasks);
   const ownerScope = orgId ?? userId ?? null;
+  // Keyed by the signed-in workspace so a Clerk org switch never reuses the last org's task lists.
+  const tasks = useMemo(() => createTasksClient(api, ownerScope ?? ""), [api, ownerScope]);
+  const refreshTask = useTaskChangedRefresh(tasks);
   const httpReady = !!isLoaded && !!userId;
   const { data: liveConfig, error: configError, mutate: refreshConfig } = useSWR(
     httpReady ? ["messaging-live-config", userId, ownerScope] : null,

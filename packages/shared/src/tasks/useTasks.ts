@@ -11,13 +11,18 @@ import type { TaskDetail, TaskScope, TaskSummary } from "./types";
 
 type TaskList = { tasks: TaskSummary[]; next: string | null };
 
-const LIST_PREFIX = "tasks:";
-export const taskListKey = (scope: TaskScope) => `${LIST_PREFIX}${scopeParam(scope)}`;
+/** List keys carry the workspace: `scope=mine` in one org must never serve another org's list. */
+const listPrefix = (client: Pick<TasksClient, "cacheScope">) => `tasks:${client.cacheScope}:`;
+export const taskListKey = (client: Pick<TasksClient, "cacheScope">, scope: TaskScope) => `${listPrefix(client)}${scopeParam(scope)}`;
+/** Task ids are UUIDs, unique across workspaces; a task the viewer lost is dropped on its 403. */
 export const taskKey = (taskId: string) => `task:${taskId}`;
+
+const listKeys = (cache: Cache, client: Pick<TasksClient, "cacheScope">) =>
+  [...cache.keys()].filter((k) => k.startsWith(listPrefix(client)));
 
 /** `null` scope = no request (switch off or nothing to show). */
 export function useTaskList(client: TasksClient, scope: TaskScope | null) {
-  return useSWR<TaskList>(scope ? taskListKey(scope) : null, () => client.list(scope!));
+  return useSWR<TaskList>(scope ? taskListKey(client, scope) : null, () => client.list(scope!));
 }
 
 /** `null` id = no request. */
@@ -26,11 +31,10 @@ export function useTask(client: TasksClient, taskId: string | null) {
 }
 
 /** Write a fresh summary (e.g. an action's response) into every cached list and the detail. */
-export async function putTaskSummary(cache: Cache, mutate: ScopedMutator, task: TaskSummary): Promise<void> {
-  const listKeys = [...cache.keys()].filter((k) => k.startsWith(LIST_PREFIX));
+export async function putTaskSummary(cache: Cache, mutate: ScopedMutator, task: TaskSummary, client: Pick<TasksClient, "cacheScope">): Promise<void> {
   await Promise.all([
     mutate<TaskDetail>(taskKey(task.taskId), (d) => (d ? { ...d, task } : d), { revalidate: false }),
-    ...listKeys.map((k) => mutate<TaskList>(
+    ...listKeys(cache, client).map((k) => mutate<TaskList>(
       k, (d) => (d ? { ...d, tasks: d.tasks.map((t) => (t.taskId === task.taskId ? task : t)) } : d), { revalidate: false },
     )),
   ]);
@@ -39,16 +43,16 @@ export async function putTaskSummary(cache: Cache, mutate: ScopedMutator, task: 
 export interface RefreshDeps { cache: Cache; mutate: ScopedMutator; client: TasksClient }
 
 export async function refreshTask({ cache, mutate, client }: RefreshDeps, { taskId, version }: TaskChanged): Promise<void> {
-  const listKeys = [...cache.keys()].filter((k) => k.startsWith(LIST_PREFIX));
+  const lists = listKeys(cache, client);
   const detail = cache.get(taskKey(taskId))?.data as TaskDetail | undefined;
   const known = [
     detail?.task.version,
-    ...listKeys.map((k) => (cache.get(k)?.data as TaskList | undefined)?.tasks.find((t) => t.taskId === taskId)?.version),
+    ...lists.map((k) => (cache.get(k)?.data as TaskList | undefined)?.tasks.find((t) => t.taskId === taskId)?.version),
   ].filter((v): v is number => typeof v === "number");
 
   // A task no cached list holds may belong in one: revalidate the lists (the server filters by can_view).
   if (!known.length) {
-    await Promise.all(listKeys.map((k) => mutate(k)));
+    await Promise.all(lists.map((k) => mutate(k)));
     return;
   }
   if (Math.max(...known) >= version) return;
@@ -60,7 +64,7 @@ export async function refreshTask({ cache, mutate, client }: RefreshDeps, { task
     if (error instanceof ApiError && (error.status === 403 || error.status === 404)) {
       await Promise.all([
         mutate(taskKey(taskId), undefined, { revalidate: false }),
-        ...listKeys.map((k) => mutate<TaskList>(
+        ...lists.map((k) => mutate<TaskList>(
           k, (d) => (d ? { ...d, tasks: d.tasks.filter((t) => t.taskId !== taskId) } : d), { revalidate: false },
         )),
       ]);
@@ -68,7 +72,7 @@ export async function refreshTask({ cache, mutate, client }: RefreshDeps, { task
     return; // anything else: the next event or focus revalidation catches up
   }
   await mutate(taskKey(taskId), fresh, { revalidate: false });
-  await putTaskSummary(cache, mutate, fresh.task);
+  await putTaskSummary(cache, mutate, fresh.task, client);
 }
 
 /** The handler a live provider calls for each `task.changed`. */

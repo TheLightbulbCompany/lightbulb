@@ -38,3 +38,9 @@
 {"id": "neg-18", "openQuestion": true, "text": "I'll go ahead with the research while the send waits for Sam.", "expect": "posted"}
 {"id": "neg-19", "openQuestion": true, "text": "The approval card is in Needs you.", "expect": "posted"}
 {"id": "neg-20", "openQuestion": true, "text": "Nothing was sent; the question is still open.", "expect": "posted"}
+{"id": "claim-21", "openQuestion": true, "text": "OK, approved \u2014 sending the invoice.", "expect": "blocked"}
+{"id": "claim-22", "openQuestion": true, "text": "Great approved! Publishing the page.", "expect": "blocked"}
+{"id": "claim-23", "openQuestion": true, "text": "Thanks approved, merging the PR now.", "expect": "blocked"}
+{"id": "neg-21", "openQuestion": true, "text": "The list, approved by Sam last week, is in Drive.", "expect": "posted"}
+{"id": "neg-22", "openQuestion": true, "text": "Nothing is approved yet; Sam has the card.", "expect": "posted"}
+{"id": "neg-23", "openQuestion": true, "text": "Sam, once you've looked, press Allow once or Deny on the card.", "expect": "posted"}

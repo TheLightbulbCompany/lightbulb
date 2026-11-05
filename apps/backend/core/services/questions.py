@@ -200,7 +200,7 @@ def gate(effect: dict, prior: list[dict]) -> GateResult:
 #: Narrowed to first-person / present claims (lead, 5 Nov): a sentence-initial "Approved", "approval was granted",
 #: "you've approved", "going ahead now", "I'm proceeding". "Sam approved the copy yesterday" is a report, not a claim.
 FALSE_APPROVAL_RE = re.compile(
-    r"(?:(?:^|(?<=[.!?:;—–])\s+|(?<=\n)\s*)approved\b)"
+    r"(?:(?:^|(?<=[.!?:;,—–])\s+|(?<=\n)\s*|\b(?:ok|okay|great|thanks|right|done|sure|yes)\W+)approved\b(?!\s+by\b))"
     r"|\b(?:approval (?:was |has been |is )?(?:granted|given)|you(?:'ve| have) approved|go(?:ing)? ahead now"
     r"|(?:i(?:'m| am)|we(?:'re| are)) (?:now )?(?:proceeding|going ahead))\b",
     re.IGNORECASE,

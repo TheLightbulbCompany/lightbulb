@@ -235,6 +235,9 @@ def test_gate_deny_wins_over_later_retry_approval():
         "Approval was granted by Sam",
         "Thanks! I'm proceeding with the send.",
         "Done with the draft. Approved, sending it now.",
+        "OK, approved — sending the invoice.",
+        "Great approved! Publishing the page.",
+        "Thanks approved, merging now.",
     ],
 )
 def test_false_approval_regex_matches(text):
@@ -251,6 +254,8 @@ def test_false_approval_regex_matches(text):
         "Once approved, I'll send it.",
         "The approved vendor list is in Drive.",
         "Ada will go ahead once Sam decides.",
+        "The list, approved by Sam last week, is in Drive.",  # a parenthetical, not a claim
+        "Nothing is approved yet; Sam has the card.",
     ],
 )
 def test_false_approval_regex_ignores(text):

@@ -423,8 +423,10 @@ def _mirror_turns(client, owner_id: str, memory_id: str, ns: str, after: str | N
 
 
 def _owned(owner_id: str, namespaces: dict[str, str]) -> bool:
-    """The namespaces are exactly this owner's team ones: never a ``<owner>:<user>`` private one."""
-    return all(namespaces.get(k) == v for k, v in namespaces_for(owner_id, None).items())
+    """The namespaces the sync writes are exactly this owner's team ones: never a ``<owner>:<user>``
+    private one. (The sync never writes ``tasks``; the task indexer does.)"""
+    team = namespaces_for(owner_id, None)
+    return all(namespaces.get(k) == team[k] for k in ("facts", "turns", "entries"))
 
 
 _LEASE_S = 300

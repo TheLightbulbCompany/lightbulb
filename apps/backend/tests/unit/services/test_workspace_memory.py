@@ -17,11 +17,11 @@ def _fake_client(record_pages: list[tuple[list[str], bool]], sessions: dict[str,
         {"memoryRecordSummaries": [{"memoryRecordId": r} for r in page], **({"nextToken": "n"} if nxt else {})}
         for page, nxt in record_pages
     ]
-    # The pages are the team facts namespace's; the member scan (namespacePath) and the turns and
-    # entries namespaces hold nothing here.
+    # The pages are the team facts namespace's; the member scans (namespacePath) and the turns,
+    # entries and tasks namespaces hold nothing here.
     fake.list_memory_records.side_effect = lambda **kw: (
         {"memoryRecordSummaries": []}
-        if "namespacePath" in kw or kw["namespace"] in ("/turns/org_x/", "/entries/org_x/")
+        if "namespacePath" in kw or kw["namespace"] in ("/turns/org_x/", "/entries/org_x/", "/tasks/org_x/")
         else pages_left.pop(0)
     )
     fake.batch_delete_memory_records.return_value = {"successfulRecords": [], "failedRecords": []}
@@ -70,9 +70,9 @@ async def test_wipe_deletes_records_now_and_events_plus_late_records_in_the_tail
     await asyncio.gather(*workspace_memory._tails)
 
     for call in fake.list_memory_records.call_args_list:
-        # The three team namespaces, plus one member scan of /owners/.
+        # The four team namespaces, plus one member scan per family.
         assert call.kwargs.get("namespace", "/owners/org_x/") in workspace_memory.namespaces_for("org_x", None).values()
-        assert call.kwargs.get("namespacePath", "/owners/") == "/owners/"
+        assert call.kwargs.get("namespacePath", "/owners/") in ("/owners/", "/turns/", "/tasks/")
     chunks = [c.kwargs["records"] for c in fake.batch_delete_memory_records.call_args_list]
     assert [len(c) for c in chunks] == [100, 100, 50, 1]
     assert [r["memoryRecordId"] for c in chunks for r in c] == [*records, "late"]
@@ -84,7 +84,7 @@ async def test_wipe_deletes_records_now_and_events_plus_late_records_in_the_tail
 
 
 @pytest.mark.asyncio
-async def test_owner_wipe_covers_three_namespaces(monkeypatch, configured):
+async def test_owner_wipe_covers_four_namespaces(monkeypatch, configured):
     seen = {}
 
     async def spy(client, label, memory_id, namespaces, *a, **k):
@@ -94,7 +94,7 @@ async def test_owner_wipe_covers_three_namespaces(monkeypatch, configured):
     monkeypatch.setattr(workspace_memory, "_wipe", spy)
     await workspace_memory.delete_owner_memory("org_x")
     wanted = workspace_memory.namespaces_for("org_x", None)
-    assert set(wanted) == {"facts", "turns", "entries"}
+    assert set(wanted) == {"facts", "turns", "entries", "tasks"}
     assert set(wanted.values()) <= set(seen["namespaces"])
 
 
@@ -188,8 +188,12 @@ async def test_member_wipe_deletes_only_that_members_private_scope(monkeypatch, 
     await workspace_memory.delete_member_memory("org_x", "user_a", resweep_after_s=0)
     await asyncio.gather(*workspace_memory._tails)
 
-    # The exact namespace with its trailing "/": never user_ab's, never the team's.
-    assert {c.kwargs["namespace"] for c in fake.list_memory_records.call_args_list} == {"/owners/org_x:user_a/"}
+    # The exact namespaces with their trailing "/": never user_ab's, never the team's.
+    assert {c.kwargs["namespace"] for c in fake.list_memory_records.call_args_list} == {
+        "/owners/org_x:user_a/",
+        "/turns/org_x:user_a/",
+        "/tasks/org_x:user_a/",
+    }
     assert _deleted_records(fake) == ["a1", "a1"]  # now, and the late re-sweep (fake never empties)
     assert {c.kwargs["actorId"] for c in fake.delete_event.call_args_list} == {"org_x:user_a"}
     fake.list_actors.assert_not_called()
@@ -346,3 +350,81 @@ def test_memory_tab_lists_a_validto_zero_claim_as_current():
         "metadata": {"kind": {"stringValue": "claim"}, "validTo": {"numberValue": 0}},
     }
     assert workspace_memory._view(rec)["status"] == "current"
+
+
+def test_namespaces_for_adds_task_and_private_namespaces():
+    """Super-agent memory (spec 07 §3): task cards in /tasks/<o>/, and a person's private lane in
+    /turns/<o>:<u>/ and /tasks/<o>:<u>/. Each is a sibling of the facts namespace, never a child."""
+    team = workspace_memory.namespaces_for("org_x", None)
+    assert team == {
+        "facts": "/owners/org_x/",
+        "turns": "/turns/org_x/",
+        "entries": "/entries/org_x/",
+        "tasks": "/tasks/org_x/",
+    }
+    mine = workspace_memory.namespaces_for("org_x", "user_a")
+    assert mine == {
+        **team,
+        "private": "/owners/org_x:user_a/",
+        "private_turns": "/turns/org_x:user_a/",
+        "private_tasks": "/tasks/org_x:user_a/",
+    }
+    # ":" only between the owner and the member: a team namespace never names a member.
+    assert all(":" not in ns for ns in team.values())
+    assert all(ns.count(":") == 1 for k, ns in mine.items() if k.startswith("private"))
+
+
+@pytest.mark.asyncio
+async def test_owner_wipe_covers_tasks_and_private_turns_and_private_tasks(monkeypatch, configured):
+    """Member lanes are found by a namespacePath scan of each family (/owners/, /turns/, /tasks/)
+    and by ListActors; a prefix neighbour (org_xy, another owner) keeps everything."""
+    fake = _scoped_client(
+        {
+            "/owners/org_x/": ["team"],
+            "/tasks/org_x/": ["card"],
+            "/tasks/org_x:user_a/": ["pcard"],
+            "/turns/org_x:user_a/": ["pturn"],
+            "/turns/org_x:user_gone/": ["goneturn"],  # events expired: not in ListActors
+            "/tasks/other/": ["other"],
+            "/tasks/org_xy:user_b/": ["xyb"],
+        },
+        actors=["org_x", "org_x:user_a"],
+    )
+    monkeypatch.setattr(workspace_memory, "_client", lambda: fake)
+
+    await workspace_memory.delete_owner_memory("org_x", resweep_after_s=0)
+    await asyncio.gather(*workspace_memory._tails)
+
+    assert set(_deleted_records(fake)) == {"team", "card", "pcard", "pturn", "goneturn"}
+    scanned = {
+        c.kwargs["namespacePath"] for c in fake.list_memory_records.call_args_list if "namespacePath" in c.kwargs
+    }
+    assert scanned == {"/owners/", "/turns/", "/tasks/"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("no_evaluator_wipe")
+async def test_member_wipe_covers_private_turns_and_private_tasks(monkeypatch, configured):
+    fake = _scoped_client(
+        {
+            "/owners/org_x/": ["team"],
+            "/turns/org_x/": ["tturn"],
+            "/tasks/org_x/": ["tcard"],
+            "/owners/org_x:user_a/": ["a1"],
+            "/turns/org_x:user_a/": ["a2"],
+            "/tasks/org_x:user_a/": ["a3"],
+            "/tasks/org_x:user_ab/": ["ab"],
+        },
+        actors=["org_x", "org_x:user_a"],
+    )
+    monkeypatch.setattr(workspace_memory, "_client", lambda: fake)
+
+    await workspace_memory.delete_member_memory("org_x", "user_a", resweep_after_s=0)
+    await asyncio.gather(*workspace_memory._tails)
+
+    assert set(_deleted_records(fake)) == {"a1", "a2", "a3"}  # team namespaces and user_ab untouched
+    assert {c.kwargs["namespace"] for c in fake.list_memory_records.call_args_list} == {
+        "/owners/org_x:user_a/",
+        "/turns/org_x:user_a/",
+        "/tasks/org_x:user_a/",
+    }

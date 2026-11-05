@@ -61,11 +61,31 @@ def namespaces_for(owner_id: str, user_id: str | None) -> dict[str, str]:
     """The namespaces recall reads for ``owner_id``; ``private`` only when ``user_id`` is given."""
     # turns and entries are siblings of the facts namespace, never children: a prefix read of
     # /owners/<o>/ must not pull them in.
+    # tasks holds the super-agent task cards; the private_* pair is a person's private lane
+    # (their DM with @lightbulb, their private tasks), read only with a backend-computed member.
     team = owner_namespace(owner_id)
-    out = {"facts": team, "turns": f"/turns/{owner_id}/", "entries": f"/entries/{owner_id}/"}
+    out = {
+        "facts": team,
+        "turns": f"/turns/{owner_id}/",
+        "entries": f"/entries/{owner_id}/",
+        "tasks": f"/tasks/{owner_id}/",
+    }
     if user_id:
-        out["private"] = f"/owners/{owner_id}:{user_id}/"
+        member = f"{owner_id}:{user_id}"
+        out |= {
+            "private": f"/owners/{member}/",
+            "private_turns": f"/turns/{member}/",
+            "private_tasks": f"/tasks/{member}/",
+        }
     return out
+
+
+# The families that hold an ``<owner>:<user>`` member scope; a wipe covers each.
+_MEMBER_FAMILIES = ("/owners/", "/turns/", "/tasks/")
+
+
+def _member_scopes(actor: str) -> list[str]:
+    return [f"{family}{actor}/" for family in _MEMBER_FAMILIES]
 
 
 def _client():
@@ -133,17 +153,16 @@ def _member_actors(client, owner_id: str, memory_id: str) -> list[str]:
 
 
 def _member_namespaces(client, owner_id: str, memory_id: str) -> list[str]:
-    """Every ``/owners/<owner>:<user>/`` that holds a record, found by scanning ``/owners/``.
-    ponytail: env-wide scan per owner wipe; page by owner if the env grows past a few 10k records."""
-    prefix = f"/owners/{owner_id}:"
-    found = (
+    """Every ``<family><owner>:<user>/`` that holds a record, found by scanning each member family.
+    ponytail: env-wide scans per owner wipe; page by owner if the env grows past a few 10k records."""
+    found = {
         ns
-        for r in _pages(
-            client.list_memory_records, "memoryRecordSummaries", memoryId=memory_id, namespacePath="/owners/"
-        )
+        for family in _MEMBER_FAMILIES
+        for r in _pages(client.list_memory_records, "memoryRecordSummaries", memoryId=memory_id, namespacePath=family)
         for ns in r.get("namespaces") or []
-    )
-    return sorted({ns for ns in found if ns.startswith(prefix)})
+        if ns.startswith(f"{family}{owner_id}:")
+    }
+    return sorted(found)
 
 
 async def _still_gone(label: str, check: Callable[[], Awaitable[bool]] | None) -> bool:
@@ -222,7 +241,7 @@ async def delete_owner_memory(owner_id: str, *, resweep_after_s: float = RESWEEP
     of records. Also every session and draft members uploaded or collected in the workspace,
     directly from the workspace's rows (no per-member webhook is relied on). The records are a
     no-op when the env has no memory."""
-    owned = namespaces_for(owner_id, None)  # facts, turns, entries
+    owned = namespaces_for(owner_id, None)  # facts, turns, entries, tasks
     from core.services import evaluator, session_store  # lazy: import cycles
 
     async def records() -> None:
@@ -232,7 +251,9 @@ async def delete_owner_memory(owner_id: str, *, resweep_after_s: float = RESWEEP
         client = _client()
         members = await run_in_thread(_member_actors, client, owner_id, memory_id)
         scanned = await run_in_thread(_member_namespaces, client, owner_id, memory_id)
-        namespaces = list(dict.fromkeys([*owned.values(), *scanned, *(f"/owners/{a}/" for a in members)]))
+        namespaces = list(
+            dict.fromkeys([*owned.values(), *scanned, *(ns for a in members for ns in _member_scopes(a))])
+        )
         await _wipe(client, f"owner={owner_id}", memory_id, namespaces, [owner_id, *members], resweep_after_s)
 
     await _run_all(
@@ -302,7 +323,7 @@ async def delete_member_memory(
         steps.insert(
             0,
             lambda: _wipe(
-                _client(), f"actor={actor}", memory_id, [f"/owners/{actor}/"], [actor], resweep_after_s, still_gone
+                _client(), f"actor={actor}", memory_id, _member_scopes(actor), [actor], resweep_after_s, still_gone
             ),
         )
     await _run_all(f"member wipe for {actor}", steps)

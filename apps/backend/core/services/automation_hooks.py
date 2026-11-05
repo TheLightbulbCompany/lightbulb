@@ -77,6 +77,8 @@ async def seed(
     id_text = it._join_human([e.id for e in events])
 
     if automation_id:
+        if specialist is not None:
+            raise ValueError("attaching to an existing automation can't reassign it")
         sched = await repo.get_schedule(owner_id, automation_id)
         if sched is None:
             raise ValueError(f"automation {automation_id!r} is not in this workspace")
@@ -118,16 +120,16 @@ async def seed(
         "resource": reg.meta_asset["id"] if reg.meta_asset else resource,
     }
     proxy_url = trigger_fire_url(owner_id, public_id)
-    hook, _ = await repo.put_hook(owner_id, hook)
-    await repo.update_schedule(
-        owner_id,
-        sid,
-        {"hookPublicIds": [*sched.get("hookPublicIds", []), public_id]},
-        expected_version=sched["version"],
-    )
-    if secret:
-        await integration_secret_store.put(owner_id, hook["secretRef"], {"secret": secret, "mode": mode})
     try:
+        hook, _ = await repo.put_hook(owner_id, hook)
+        await repo.update_schedule(
+            owner_id,
+            sid,
+            {"hookPublicIds": [*sched.get("hookPublicIds", []), public_id]},
+            expected_version=sched["version"],
+        )
+        if secret:
+            await integration_secret_store.put(owner_id, hook["secretRef"], {"secret": secret, "mode": mode})
         fields = await _register(owner_id, reg, public_id=public_id, proxy_url=proxy_url, secret=secret, topic=topic)
         if fields:
             hook = await repo.update_hook(owner_id, public_id, fields, expected_version=hook["version"])
@@ -277,7 +279,8 @@ async def delete(owner_id: str, public_id: str) -> None:
     if hook is None:
         return
     await _unregister(owner_id, hook)
-    await cancel_keeper(owner_id, public_id)
+    if hook.get("account"):  # only Google hooks have a keeper; a Stripe hook's delete never needs Temporal
+        await cancel_keeper(owner_id, public_id)
     await integration_secret_store.delete(owner_id, hook["secretRef"])
     await repo.delete_hook(owner_id, public_id)
     await _unlink(owner_id, hook["scheduleId"], public_id)
@@ -297,12 +300,16 @@ async def _unregister(owner_id: str, hook: dict) -> None:
             if token:
                 await it._delete_vercel_webhook(token=token, webhook_id=hook_id)
         elif provider in it._META_ASSET_LISTERS and resource:
-            assets = await it._META_ASSET_LISTERS[provider](owner_id)
-            asset = next((a for a in assets if a["id"] == resource), None)
-            if asset:
-                await it._unsubscribe_meta_asset(asset)
+            # Meta holds ONE subscription per asset for our app; sibling hooks on the same asset share it.
             bindings = await integrations_repo.get_meta_webhook_bindings(owner_id, provider)
             kept = [b for b in bindings if b.get("trigger_public_id") != hook["publicId"]]
+            sibling_fields = sorted({f for b in kept if b.get("asset_id") == resource for f in b.get("fields") or []})
+            assets = await it._META_ASSET_LISTERS[provider](owner_id)
+            asset = next((a for a in assets if a["id"] == resource), None)
+            if asset and sibling_fields:
+                await it._subscribe_meta_asset(asset, sibling_fields)  # narrow to what the siblings still want
+            elif asset:
+                await it._unsubscribe_meta_asset(asset)
             if len(kept) != len(bindings):
                 await integrations_repo.set_meta_webhook_bindings(owner_id, provider, kept)
         elif hook.get("account"):

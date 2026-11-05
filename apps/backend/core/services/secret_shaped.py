@@ -32,3 +32,22 @@ def secret_pattern(text: str) -> str | None:
 def secret_shaped(text: str) -> bool:
     """A secret keyword or a credential-shaped string."""
     return bool(KEYWORD.search(text)) or secret_pattern(text) is not None
+
+
+# Redaction needs whole secrets, not the detection patterns' partial matches: a PEM block through its
+# END line (or to the end of the text when cut off), all three JWT segments, and any value after a
+# secret-named key whatever its length. Applied before SECRET_PATTERNS.
+_REDACT_FIRST = [
+    (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----(?:.*?-----END [A-Z ]*PRIVATE KEY-----|.*\Z)", re.S), "[REDACTED]"),
+    (re.compile(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]*)?"), "[REDACTED]"),
+    (re.compile(r"(?i)\b(api[_ -]?key|secret|token|password|passwd|pwd)(\s*[:=]\s*)\S+"), r"\1\2[REDACTED]"),
+]
+
+
+def redact(text: str) -> str:
+    """``text`` with every secret replaced by ``[REDACTED]`` (a keyword alone stays)."""
+    for rx, repl in _REDACT_FIRST:
+        text = rx.sub(repl, text)
+    for _, rx in SECRET_PATTERNS:
+        text = rx.sub("[REDACTED]", text)
+    return text

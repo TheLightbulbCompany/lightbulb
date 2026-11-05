@@ -12,7 +12,7 @@ Errors: `RegistryUnavailable` (any store failure; `load_agent_roster` maps it to
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Literal, NamedTuple
 
 from botocore.exceptions import BotoCoreError, ClientError
 
@@ -23,13 +23,17 @@ from core.services.super_agent_flags import env_enabled
 
 __all__ = [
     "AgentConflict",
+    "Diff",
     "RegistryUnavailable",
+    "SeedReport",
     "get",
     "mirror_delete",
     "mirror_from_paperclip",
     "owner_of",
     "roster",
     "row_from_paperclip",
+    "seed_from_paperclip",
+    "verify",
 ]
 
 logger = logging.getLogger(__name__)
@@ -173,3 +177,116 @@ async def mirror_delete(agent_id: str) -> None:
     except Exception:  # noqa: BLE001 -- never fail the Paperclip write
         logger.exception("agent_registry.mirror failed agent=%s (delete)", agent_id)
         _mirror_metric("error")
+
+
+# --- Backfill and verify (wave1-R Task 4) ------------------------------------------------------------
+
+
+class SeedReport(NamedTuple):
+    created: int
+    updated: int
+    skipped_terminated: int
+    deleted: int
+
+
+class Diff(NamedTuple):
+    kind: Literal["missing_in_registry", "extra_in_registry", "field"]
+    agent_id: str
+    field: str | None = None
+
+
+# The fields `verify` compares (registry attr names); status is normalised to active|paused on both sides.
+_VERIFY_FIELDS = (
+    "name",
+    "role",
+    "title",
+    "reportsTo",
+    "persona",
+    "status",
+    "listingId",
+    "companyId",
+    "icon",
+    "appearance",
+)
+
+
+async def _paperclip_agents(ws: str) -> list[dict] | None:
+    """The owner's live Paperclip agents: the call `load_agent_roster` makes today. Raises when unavailable.
+    None when the workspace has no active company (missing, provisioning, failed): the list is unknown, not empty."""
+    from core.repositories.paperclip_repo import PaperclipRepo
+    from core.services.paperclip_admin_client import shared_admin_client
+    from core.services.paperclip_openclaw_pairing import (
+        fetch_paperclip_agents_for_owner,
+        resolve_company_id_for_owner,
+    )
+
+    pc_repo = PaperclipRepo(table_name="paperclip-companies")
+    if await resolve_company_id_for_owner(owner_id=ws, repo=pc_repo) is None:
+        return None
+    rows = await fetch_paperclip_agents_for_owner(
+        owner_id=ws,
+        repo=pc_repo,
+        admin_client=shared_admin_client(),
+        raise_on_unavailable=True,
+    )
+    return [r for r in rows if isinstance(r, dict) and r.get("id")]
+
+
+async def seed_from_paperclip(ws: str, *, dry_run: bool = False) -> SeedReport:
+    """Id-preserving backfill: every non-terminated Paperclip agent → its `AGENT#` row. Idempotent: an
+    unchanged row is not written. A registry row whose agent is terminated or gone in Paperclip is soft-deleted:
+    this heals writes Paperclip makes on its own side (a rejected hire, an agent using its own key). A workspace
+    without an active company is left alone: its Paperclip list is unknown, and deleting from it would wipe the roster."""
+    created = updated = skipped = deleted = 0
+    live: set[str] = set()
+    agents = await _paperclip_agents(ws)
+    if agents is None:
+        return SeedReport(0, 0, 0, 0)
+    for agent in agents:
+        if agent.get("status") == "terminated":
+            skipped += 1
+            continue
+        live.add(agent["id"])
+        fields = row_from_paperclip(agent)
+        existing = await repo.get(ws, agent["id"])
+        if existing is None:
+            created += 1
+            if not dry_run:
+                _, made = await repo.put_new(ws, fields)
+                if not made:  # raced a mirror: fall through to the field compare next run
+                    created -= 1
+            continue
+        fields.pop("agentId")
+        changed = {k: v for k, v in fields.items() if existing.get(k) != v}
+        if changed:
+            updated += 1
+            if not dry_run:
+                await repo.upsert_fields(ws, agent["id"], changed)
+    for row in await repo.list_agents(ws):
+        if row.get("status") != "deleted" and row["agentId"] not in live:
+            deleted += 1
+            if not dry_run:
+                await repo.mark_deleted(ws, row["agentId"])
+    return SeedReport(created, updated, skipped, deleted)
+
+
+def _comparable(row: dict) -> dict[str, Any]:
+    out = {k: row.get(k) for k in _VERIFY_FIELDS if k != "listingId"}
+    out["status"] = "paused" if row.get("status") == "paused" else "active"
+    out["listingId"] = (row.get("listing") or {}).get("listingId")
+    return out
+
+
+async def verify(ws: str) -> list[Diff]:
+    """Set and field equality of the registry against Paperclip (terminated / deleted dropped on each side)."""
+    paperclip = {
+        a["id"]: _comparable(row_from_paperclip(a))
+        for a in await _paperclip_agents(ws) or []
+        if a.get("status") != "terminated"
+    }
+    registry = {r["agentId"]: _comparable(r) for r in await repo.list_agents(ws) if r.get("status") != "deleted"}
+    diffs = [Diff("missing_in_registry", i) for i in sorted(paperclip.keys() - registry.keys())]
+    diffs += [Diff("extra_in_registry", i) for i in sorted(registry.keys() - paperclip.keys())]
+    for agent_id in sorted(paperclip.keys() & registry.keys()):
+        diffs += [Diff("field", agent_id, f) for f in _VERIFY_FIELDS if paperclip[agent_id][f] != registry[agent_id][f]]
+    return diffs

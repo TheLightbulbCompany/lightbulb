@@ -69,6 +69,8 @@ async def propose(owner_id: str, body: ProposeIn, request: Request) -> dict:
         raise _err(400, "no_requester")
     if not body.cron and body.match is None:
         raise _err(400, "no_schedule")
+    if body.cron and body.match is not None:
+        raise _err(409, "rule_never_runs")  # a rule fires on its matches, never on a schedule
     tz = body.tz or await user_repo.get_timezone(requester)
     if body.cron:
         try:

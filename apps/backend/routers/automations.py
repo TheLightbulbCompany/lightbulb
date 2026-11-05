@@ -517,6 +517,8 @@ async def create_automation(body: AutomationIn, auth: AuthContext = Depends(get_
     if body.events:  # a webhook on a provider is an org-admin act, as `from_integration` is today
         require_org_admin(auth)
     fields = _schedule_fields(body.schedule) if body.schedule else {"cron": [], "tz": "UTC"}
+    if body.match is not None and (body.schedule is not None or body.events):
+        raise _err(409, "rule_never_runs")  # a rule fires on its matches, never on a schedule or a webhook
     if body.match is not None:  # a rule: any member, for rooms they are in or their own calendar; starts in observe
         fields |= {
             "match": await check_scope(ws, auth.user_id, body.match, body.builtin),
@@ -618,6 +620,8 @@ async def patch_automation(sid: str, body: AutomationPatch, auth: AuthContext = 
         fields["deliverTo"] = body.deliver_to
     if body.budget_per_run_usd is not None:
         fields["budgetPerRunUsd"] = body.budget_per_run_usd
+    if body.schedule is not None and (row.get("match") or body.match is not None):
+        raise _err(409, "rule_never_runs")  # a rule row must never reach the fire path
     if body.schedule is not None:
         fields.update(_schedule_fields(body.schedule))
     if body.match is not None:
@@ -692,6 +696,8 @@ async def run_now(sid: str, auth: AuthContext = Depends(get_current_user)) -> di
     ws = await _ws(auth)
     row = await _row(ws, sid, auth)
     _may_edit(row, auth)
+    if row.get("match"):
+        raise _err(409, "rule_never_runs")  # observe records; Run now would be the fire path
     if row["status"] != "active":
         raise _err(409, "not_active", status=row["status"])
     gate = await chat_gate.gate_chat(user_id=auth.user_id, owner_id=ws, session_key=f"automation:{sid}")

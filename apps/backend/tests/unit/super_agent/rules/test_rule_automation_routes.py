@@ -170,3 +170,28 @@ async def test_only_activate_turns_a_rule_on(internal, monkeypatch):
     monkeypatch.setattr("routers.automations._turn_on_rule", activate)
     assert (await repo.get_schedule(WS, sid))["status"] == "draft"
     activate.assert_not_awaited()
+
+
+async def test_rule_row_never_reaches_the_fire_path(api, internal):
+    """A rule has no schedule, no webhook and no Run now (lead, 5 Nov): 409 `rule_never_runs` everywhere."""
+    sched = {"cron": ["0 9 * * 1"], "tz": "UTC"}
+    r = _as(api).post(BASE, json={**RULE, "schedule": sched})
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "rule_never_runs"
+    r = _as(api).post(BASE, json={**RULE, "events": [{"provider": "stripe", "eventIds": ["invoice.payment_failed"]}]})
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "rule_never_runs"
+    assert await repo.list_schedules(WS) == []
+    view = _as(api).post(BASE, json=RULE).json()
+    r = _as(api).patch(f"{BASE}/{view['id']}", json={"schedule": sched, "version": view["version"]})
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "rule_never_runs"
+    _as(api).post(f"{BASE}/{view['id']}/activate")
+    r = _as(api).post(f"{BASE}/{view['id']}/run")
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "rule_never_runs"
+    api.temporal.start_workflow.assert_not_awaited()
+    plain = _as(api).post(BASE, json={"name": "n", "instructions": "i"}).json()
+    r = _as(api).patch(
+        f"{BASE}/{plain['id']}", json={"match": RULE["match"], "schedule": sched, "version": plain["version"]}
+    )
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "rule_never_runs"
+    tid = await _chat_trigger()
+    r = internal.api.client.post(PROPOSE, json={**RULE, "cron": ["0 9 * * 1"], "triggerIds": [tid]}, headers=AUTH)
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "rule_never_runs"

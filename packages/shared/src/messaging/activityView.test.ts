@@ -185,3 +185,14 @@ describe("activityView", () => {
     expect(attentionActivityCount([approval, mention, dm, thread, reaction, finished], unseen)).toBe(3);
   });
 });
+
+describe("isNeedsYou: super-agent questions", () => {
+  it("an open task question needs you; an answered one does not", async () => {
+    const { isNeedsYou } = await import("./activityView");
+    const base = { id: "taskq:t1:q1", kind: "task_question", subtype: "approval", roomId: null, messageId: null, threadRootMessageId: null,
+      actor: { kind: "agent", id: "", name: "Lightbulb" }, createdAt: "2026-11-04T14:00:00Z", resolvedBy: null, resolvedAt: null, read: false,
+      summary: { title: "Allow?", requester: null, reason: null, preview: null, links: [{ kind: "task", id: "t1", label: "Signup app" }] }, actions: [] };
+    expect(isNeedsYou({ ...base, state: "open" } as never)).toBe(true);
+    expect(isNeedsYou({ ...base, state: "answered" } as never)).toBe(false);
+  });
+});

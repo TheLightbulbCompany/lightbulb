@@ -76,6 +76,9 @@ function activityWhere(item: ActivityItem): string | null {
   if (item.roomKind) return room ? `in ${room.label}` : null;
   if (item.kind === "paperclip") return "in Work";
   if (item.kind === "session") return "in a session";
+  // A task question names its thread.
+  const task = item.kind === "task_question" ? item.summary.links.find((link) => link.kind === "task") : undefined;
+  if (task) return `in ${task.label}`;
   return null;
 }
 

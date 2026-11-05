@@ -107,6 +107,7 @@ describe("nativeNotify — Tauri desktop shell", () => {
     invoke.mockRejectedValue(new Error("ipc"));
     expect(await nativeNotify("Title", "Body")).toBe(false);
   });
+
 });
 
 describe("notificationPermission", () => {

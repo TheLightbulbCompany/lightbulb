@@ -652,3 +652,44 @@ def test_a_bare_id_naming_two_triggers_resolves_to_none():
     assert router_prompt._resolve("y2", batch) == "chat:y2"
     assert router_prompt._resolve("x1", batch) is None
     assert router_prompt._resolve("chat:x1", batch) == "chat:x1"
+
+
+@pytest.mark.asyncio
+async def test_router_sees_which_lightbulb_lines_really_started_work(world, monkeypatch):
+    """Live dev 5 Nov: a dropped start's ack ("Growth has the checklist") sat in the Router's transcript and the
+    next ask got "Already underway" with no task. The Router now sees the room's recent lines with the cards each
+    Lightbulb line really carried, and the rule that only Open tasks are underway."""
+    started = ts.router_task_id(BATCH, 9, 0)
+
+    async def get_msg(room_id, message_id):
+        return {"messageId": message_id, "messageSeq": 13, "text": "please make the checklist", "author": {}}
+
+    async def before(room_id, seq, limit):
+        assert seq == 13
+        return [
+            {"messageId": "a", "author": {"kind": "human", "displayName": "Sam"}, "text": "make a checklist"},
+            {
+                "messageId": "b",
+                "author": {"kind": "agent", "id": CEO, "displayName": "Lightbulb"},
+                "text": "Growth has the day-of checklist.",
+            },
+            {
+                "messageId": "c",
+                "author": {"kind": "agent", "id": CEO, "displayName": "Lightbulb"},
+                "text": "On it: paying Acme.",
+                "taskRefs": [{"taskId": started, "role": "started"}],
+            },
+            {"messageId": "d", "author": {"kind": "agent", "id": CEO}, "text": "Working: x", "progress": True},
+        ]
+
+    monkeypatch.setattr(acts.messaging_repo, "get_message_by_id", get_msg)
+    monkeypatch.setattr(acts.messaging_repo, "list_messages_before", before)
+    t1 = await _trig("chat:m1")
+    world["decisions"] = [_start([t1])]
+    await _run([t1])
+    prompt = world["runs"][0][1].input
+    assert "- Sam: make a checklist" in prompt
+    assert "- Lightbulb: Growth has the day-of checklist. [no task card]" in prompt
+    assert f"- Lightbulb: On it: paying Acme. [cards: {started} started]" in prompt
+    assert "Working: x" not in prompt
+    assert 'Work is underway only if it is in "Open tasks"' in world["runs"][0][1].instructions

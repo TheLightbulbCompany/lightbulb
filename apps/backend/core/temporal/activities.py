@@ -510,6 +510,35 @@ async def _trigger_view(ws: str, trig: dict) -> dict:
     return view
 
 
+_RECENT = 10
+
+
+async def _recent_lines(ws: str, trig: dict, batch: set[str]) -> list[dict]:
+    """The room's lines just before the batch's first message, each Lightbulb line with the task cards it really
+    carried (`taskRefs`): the Router's view of what was said and what was started, instead of its own transcript."""
+    ref = trig.get("ref") or {}
+    if not (ref.get("roomId") and ref.get("messageId")):
+        return []
+    msg = await messaging_repo.get_message_by_id(ref["roomId"], ref["messageId"])
+    if not msg or not msg.get("messageSeq"):
+        return []
+    front = await task_conversation.front_agent_id(ws)
+    out = []
+    for row in await messaging_repo.list_messages_before(ref["roomId"], int(msg["messageSeq"]), _RECENT):
+        if row.get("deletedAt") or row.get("progress") or ts.trigger_id("chat", row.get("messageId", "")) in batch:
+            continue
+        author = row.get("author") or {}
+        out.append(
+            {
+                "who": author.get("displayName"),
+                "text": row.get("editedText") or row.get("text") or "",
+                "lightbulb": author.get("kind") == "agent" and author.get("id") == front,
+                "cards": row.get("taskRefs") or [],
+            }
+        )
+    return out
+
+
 def _task_in_scope(task: dict, lane: str, user_id: str | None, room_id: str | None) -> bool:
     """May a trigger from (`lane`, `user_id`, `room_id`) pass through to `task`? Private lane: only person tasks
     naming the user. Shared lane: workspace tasks, and room tasks of that same room (never another room's)."""
@@ -864,7 +893,8 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
         rooms = {ts.trigger_room(t) for t in to_model.values()} - {None}
         open_tasks = await _open_tasks(ws, inp.lane, user_id, rooms)
         views = [await _trigger_view(ws, t) for t in to_model.values()]
-        prompt = router_prompt.render_batch(views, roster, open_tasks, lane=inp.lane)
+        recent = await _recent_lines(ws, next(iter(to_model.values())), set(to_model))
+        prompt = router_prompt.render_batch(views, roster, open_tasks, lane=inp.lane, recent=recent)
         memory = memory_tags.block_for_router(
             "private" if private and user_id else "shared", user_id if private else None, room_id
         )

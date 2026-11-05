@@ -16,10 +16,10 @@ from typing import Any
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import agent_registry_repo as repo
 from core.repositories.agent_registry_repo import AgentConflict
+from core.services.super_agent_flags import env_enabled
 
 __all__ = [
     "AgentConflict",
@@ -134,7 +134,7 @@ async def _workspace_of(agent: dict) -> str | None:
 
 async def mirror_from_paperclip(agent: dict) -> None:
     """Upsert the registry row for a Paperclip agent dict (`terminated` → soft delete)."""
-    if not settings.SUPER_AGENT_ENV_ENABLED:
+    if not env_enabled():
         return
     try:
         ws = await _workspace_of(agent)
@@ -160,7 +160,7 @@ async def mirror_from_paperclip(agent: dict) -> None:
 
 async def mirror_delete(agent_id: str) -> None:
     """Soft-delete the registry row of a deleted Paperclip agent."""
-    if not settings.SUPER_AGENT_ENV_ENABLED:
+    if not env_enabled():
         return
     try:
         ws = await repo.owner_of(agent_id)

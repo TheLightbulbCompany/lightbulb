@@ -783,9 +783,9 @@ class PaperclipAdminClient:
     async def _mirror(self, response: Any, *, session_cookie: str, agent_id: str | None = None) -> None:
         """Mirror an agent write into the super-agent registry (``agent_registry``; no-op unless the env
         master is on, never raises). Re-reads the agent when the response is not the full agent dict."""
-        from core.config import settings  # lazy, like _headers
+        from core.services.super_agent_flags import env_enabled  # lazy, like _headers' settings
 
-        if not settings.SUPER_AGENT_ENV_ENABLED:
+        if not env_enabled():
             return
         from core.services import agent_registry
 
@@ -932,9 +932,9 @@ class PaperclipAdminClient:
             f"/api/agents/{agent_id}",
             session_cookie=session_cookie,
         )
-        from core.config import settings  # lazy, like _headers
+        from core.services.super_agent_flags import env_enabled  # lazy, like _headers' settings
 
-        if settings.SUPER_AGENT_ENV_ENABLED:
+        if env_enabled():
             from core.services import agent_registry
 
             await agent_registry.mirror_delete(agent_id)

@@ -69,6 +69,10 @@ def test_env_enabled_callers_are_allowlisted():
         BACKEND / "core" / "config.py",  # names it in the setting's docstring
         BACKEND / "main.py",  # Temporal client in the lifespan
         BACKEND / "scripts" / "temporal_worker.py",
+        # Lane R: the AGENT# registry mirror is env-wide (every Paperclip agent write in an env with the table).
+        BACKEND / "core" / "services" / "agent_registry.py",
+        BACKEND / "core" / "services" / "paperclip_admin_client.py",
+        BACKEND / "routers" / "paperclip_proxy.py",
     }
     offenders = [
         str(path.relative_to(BACKEND))

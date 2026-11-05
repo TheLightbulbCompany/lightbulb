@@ -1,0 +1,115 @@
+[
+ {
+  "name": "no links key (legacy page)",
+  "page": {
+   "results": [
+    {
+     "kind": "claim",
+     "content": "Acme renewal price: 12000",
+     "status": "current",
+     "occurredAt": "2026-10-01T09:00:00+00:00",
+     "validFrom": null
+    },
+    {
+     "kind": "turn",
+     "content": "Sam: send the sheet",
+     "status": "current",
+     "occurredAt": "2026-10-01T09:00:00+00:00",
+     "validFrom": null
+    }
+   ]
+  },
+  "text": "Current:\nAcme renewal price: 12000 (2026-10-01)\nTurns:\n2026-10-01, Sam: send the sheet"
+ },
+ {
+  "name": "links after turns",
+  "page": {
+   "results": [
+    {
+     "kind": "claim",
+     "content": "Acme renewal price: 12000",
+     "status": "current",
+     "occurredAt": "2026-10-01T09:00:00+00:00",
+     "validFrom": null
+    },
+    {
+     "kind": "turn",
+     "content": "Sam: send the sheet",
+     "status": "current",
+     "occurredAt": "2026-10-01T09:00:00+00:00",
+     "validFrom": null
+    },
+    {
+     "kind": "fact",
+     "content": "Ship Fridays",
+     "status": "current",
+     "occurredAt": "2026-10-01T09:00:00+00:00",
+     "validFrom": "2026-09-01T00:00:00+00:00"
+    }
+   ],
+   "links": [
+    {
+     "kind": "task",
+     "id": "01JCTASK42",
+     "identifier": "T-42",
+     "title": "Acme pricing\nsheet",
+     "status": "resolved",
+     "specialist": "agent-fin",
+     "updatedAt": "2026-10-02T12:00:00+00:00",
+     "why": "task",
+     "threads": [
+      {
+       "kind": "thread",
+       "id": "room:r1:m9"
+      }
+     ]
+    },
+    {
+     "kind": "task",
+     "id": "01JCTASK43",
+     "identifier": "T-43",
+     "title": "Q4 budget",
+     "status": "working",
+     "specialist": null,
+     "updatedAt": null,
+     "why": "task",
+     "threads": []
+    }
+   ]
+  },
+  "text": "Current:\nAcme renewal price: 12000 (2026-10-01)\nLog:\nShip Fridays (2026-09-01)\nTurns:\n2026-10-01, Sam: send the sheet\nLinked:\nT-42 Acme pricing sheet \u2014 resolved 2026-10-02 \u00b7 agent-fin \u00b7 task:01JCTASK42 (threads: room:r1:m9)\nT-43 Q4 budget \u2014 working \u00b7 - \u00b7 task:01JCTASK43"
+ },
+ {
+  "name": "links only",
+  "page": {
+   "results": [],
+   "links": [
+    {
+     "kind": "task",
+     "id": "01JCTASK42",
+     "identifier": "T-42",
+     "title": "Acme pricing\nsheet",
+     "status": "resolved",
+     "specialist": "agent-fin",
+     "updatedAt": "2026-10-02T12:00:00+00:00",
+     "why": "task",
+     "threads": [
+      {
+       "kind": "thread",
+       "id": "room:r1:m9"
+      }
+     ]
+    }
+   ]
+  },
+  "text": "Linked:\nT-42 Acme pricing sheet \u2014 resolved 2026-10-02 \u00b7 agent-fin \u00b7 task:01JCTASK42 (threads: room:r1:m9)"
+ },
+ {
+  "name": "empty",
+  "page": {
+   "results": [],
+   "links": []
+  },
+  "text": "Nothing found."
+ }
+]

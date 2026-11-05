@@ -183,11 +183,14 @@ def _merge_sync(
         ),
         attempt,
     )
-    base_raw = _get(s3, bucket, overlay + lm.base_rel(base_attempt))
-    if base_raw is None and base_attempt != attempt:
-        # The earlier attempts' overlay expired (reopened > 14 days after resolve): this attempt restored
-        # the specialist onto an empty overlay, so its own base is the right B.
-        base_raw = _get(s3, bucket, overlay + lm.base_rel(attempt))
+    # The FIRST base that exists from there on: an attempt whose restore failed wrote none (the bridge
+    # writes it only after a successful restore), and an overlay reopened > 14 days after resolve has
+    # expired. Never jump straight to this attempt's own base: an unsealed attempt between them may have
+    # written learning that base already contains, and the merge would then never add it.
+    base_raw = None
+    for k in range(base_attempt, attempt + 1):
+        if (base_raw := _get(s3, bucket, overlay + lm.base_rel(k))) is not None:
+            break
     base, base_text = lm.parse_base(base_raw) if base_raw else ({}, {})
     if base_raw is None:
         logger.warning("learning merge: no base for task=%s attempt=%s; adding only", task_id, base_attempt)
@@ -301,7 +304,12 @@ def tag_overlay(ws: str, task_id: str, *, on: bool = True) -> int:
     n = 0
     for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=f"{ws}/{OVERLAY_ROOT}/{task_id}/"):
         for obj in page.get("Contents", []):
-            s3.put_object_tagging(Bucket=bucket, Key=obj["Key"], Tagging=OVERLAY_TAG if on else _OPEN_TAG)
+            try:
+                s3.put_object_tagging(Bucket=bucket, Key=obj["Key"], Tagging=OVERLAY_TAG if on else _OPEN_TAG)
+            except Exception as exc:  # noqa: BLE001 -- deleted since the listing (expired, re-saved): skip it
+                if str(getattr(exc, "response", {}).get("Error", {}).get("Code", "")) not in ("NoSuchKey", "404"):
+                    raise
+                continue
             n += 1
     return n
 

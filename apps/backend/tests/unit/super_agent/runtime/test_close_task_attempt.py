@@ -235,3 +235,49 @@ async def test_reopen_after_the_overlay_expired_merges_against_the_new_attempts_
     assert "base-0001.json" in gets and "base-0002.json" in gets  # tried the expired base, fell back
     assert report.get("applied") and report["added"]["memory"] == 1
     assert b"new fact" in s3.get_object(Bucket=BUCKET, Key=profile + lm.MEMORY)["Body"].read()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_restore_never_drops_an_unsealed_attempts_learning(world, monkeypatch):
+    """#4792 re-review: attempt 1's restore failed (no base-0001: the bridge writes it only after a
+    successful restore); attempt 2 wrote X and died unsealed; attempt 3 restored X from the overlay, so
+    base-0003 already holds X, and added Y. The merge takes the FIRST base that exists (base-0002), so X
+    and Y both land -- never base-0003, against which X would never be added."""
+    s3 = world["s3"]
+    prefix = learning.overlay_prefix(WS, TASK, SPEC)
+    profile = f"{WS}/hermes/{SPEC}/"
+    s3.put_object(Bucket=BUCKET, Key=profile + lm.MEMORY, Body=b"old fact")
+
+    def base(text):
+        sha = hashlib.sha256(text.encode()).hexdigest()
+        return json.dumps({"files": {lm.MEMORY: {"sha256": sha, "etag": "", "text": text}}}).encode()
+
+    s3.put_object(Bucket=BUCKET, Key=prefix + lm.base_rel(2), Body=base("old fact"))
+    s3.put_object(Bucket=BUCKET, Key=prefix + lm.base_rel(3), Body=base("old fact\n§\nfact X"))
+    final = b"old fact\n\xc2\xa7\nfact X\n\xc2\xa7\nfact Y"
+    s3.put_object(Bucket=BUCKET, Key=prefix + lm.MEMORY, Body=final)
+    seal = {"attempt": 3, "files": {lm.MEMORY: hashlib.sha256(final).hexdigest()}}
+    s3.put_object(Bucket=BUCKET, Key=prefix + lm.SEALED, Body=json.dumps(seal).encode())
+    monkeypatch.setattr(tasks_repo, "get_task", AsyncMock(return_value={"lane": "shared", "status": "working"}))
+    monkeypatch.setattr(learning.hermes_profiles, "profile_prefix", lambda ws, a: profile)
+
+    report = await learning.merge_learning(WS, SPEC, TASK, 3)
+
+    merged = s3.get_object(Bucket=BUCKET, Key=profile + lm.MEMORY)["Body"].read()
+    assert report["added"]["memory"] == 2 and b"fact X" in merged and b"fact Y" in merged
+
+
+@pytest.mark.asyncio
+async def test_tag_overlay_skips_an_object_deleted_since_the_listing(world, monkeypatch):
+    s3 = world["s3"]
+    _seed(world, lane="shared")
+    real = s3.put_object_tagging
+    gone = learning.overlay_prefix(WS, TASK, SPEC) + lm.MEMORY
+
+    def tagging(**kw):
+        if kw["Key"] == gone:
+            s3.delete_object(Bucket=BUCKET, Key=gone)
+        return real(**kw)
+
+    s3.put_object_tagging = tagging
+    assert learning.tag_overlay(WS, TASK) == 3  # the other three still tagged

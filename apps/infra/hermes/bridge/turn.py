@@ -4208,6 +4208,13 @@ def _run_task_turn(identity: dict, request: dict, *, family: str) -> tuple[str, 
     run_id = identity["runId"]
     session_id = identity["sessionId" if paperclip else "sessionKey"]
     limits = {} if paperclip else (request.get("limits") or {})
+    if family == "task" and identity.get("mode") != "router" and identity.get("runSecret"):
+        # A Worker run has no room turn to wake: its finished delegations go to the task's /inputs
+        # (audit #9). Only runs-v1 Worker runs carry a runSecret, so prod's room/Paperclip paths skip this.
+        from bridge import followups
+
+        followups.remember_task(session_id, identity["taskId"], identity["runSecret"])
+        followups.ensure_started()
     try:
         import run_agent  # noqa: F401
     except ImportError:

@@ -69,6 +69,7 @@ _WORKER_TURN = {
 }
 
 PATCH_CANCEL_QUESTIONS_ON_END = "O-cancel-questions-on-end-v1"  # audit #5
+PATCH_RECONCILE_CANCEL_QUESTIONS = "O-reconcile-cancel-questions-v1"  # a watchdog-failed orphan's open Questions
 SYSTEM_ACTOR = "__system__"  # == core.constants.SYSTEM_ACTOR_ID (the sandbox imports no core modules)
 
 # Outcome → the status `end_attempt` leaves the task in (the workflow mirrors it to pick its next wait).
@@ -329,7 +330,10 @@ class TaskWorkflow(TaskQuestionsMixin, AutomationRunMixin, WatchMixin):
         # A task that ends leaves no open Question (Waiting on you, Activity, away email): a resolve, the quiet
         # resolve, no_answerer, a failure. A Stop cancels them itself, with the person's id (`_q_on_stop`).
         if to in ("resolved", "failed") and self._stop_by is None and workflow.patched(PATCH_CANCEL_QUESTIONS_ON_END):
-            await self._q_cancel_open(self._action[1] if self._action else SYSTEM_ACTOR, reason or to)
+            try:
+                await self._q_cancel_open(self._action[1] if self._action else SYSTEM_ACTOR, reason or to)
+            except ActivityError:  # the task still ends; a Question left open is shown, never answerable
+                workflow.logger.error("cancel_open_questions failed for task %s", self._task_id)
         await _act("transition", self._ws, self._task_id, to, reason)
         self._status = to
         if workflow.patched(PATCH_AUTOMATION_RUN):  # Lane A: an automation run ends with its task
@@ -399,6 +403,12 @@ class TaskWorkflow(TaskQuestionsMixin, AutomationRunMixin, WatchMixin):
             return True
         if live != "live":
             await _act("release_slot", self._ws, self._task_id)
+        if workflow.patched(PATCH_RECONCILE_CANCEL_QUESTIONS):
+            # This run never tracked the orphan's Questions (`_open_qs` is empty): cancel them from the store.
+            try:
+                await _act("cancel_open_questions", self._ws, self._task_id, SYSTEM_ACTOR, "lost_run")
+            except ActivityError:
+                workflow.logger.error("cancel_open_questions failed for task %s", self._task_id)
         await self._transition("failed", "lost_run")
         return False
 

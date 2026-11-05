@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
 from core import tasks_schema as ts
+from core.constants import SYSTEM_ACTOR_ID
 from core.auth import AuthContext, get_current_user, get_human_session, resolve_owner_id, security_optional
 from core.dynamodb import utc_now_iso
 from core.repositories import effects_repo, questions_repo, tasks_repo
@@ -85,7 +86,7 @@ def _view(q: dict, viewer: str, names: dict[str, str]) -> dict[str, Any]:
         "answeredBy": person(q.get("answeredBy")),
         "answeredAt": q.get("answeredAt"),
         "reason": q.get("reason"),
-        "cancelledBy": person(q.get("cancelledBy")),
+        "cancelledBy": None if q.get("cancelledBy") in _NOT_A_PERSON else person(q.get("cancelledBy")),
         "cancelledAt": q.get("cancelledAt"),
         "govRef": q.get("govRef"),
         "createdAt": q["createdAt"],
@@ -173,9 +174,22 @@ async def _answered_view(ws: str, task: dict, qid: str, viewer: str) -> dict[str
     return {"question": view, "next": tasks_access.summarize(tree, viewer)}
 
 
+_NOT_A_PERSON = frozenset({SYSTEM_ACTOR_ID, "watch"})  # the task ended it (resolve, failure, watchdog, watch)
+
+
 def _not_open(q: dict) -> HTTPException:
+    """409 with who closed it. Cancelled: `reason` (stopped, resolved, quiet, lost_run, watch_gave_up, ...) for the
+    client's copy, and `by` only when a person did it ("This thread ended", never a system id as a name)."""
     if q["state"] == "cancelled":
-        return _problem(409, "not_open", state="cancelled", by=q.get("cancelledBy"), at=q.get("cancelledAt"))
+        by = q.get("cancelledBy")
+        return _problem(
+            409,
+            "not_open",
+            state="cancelled",
+            by=None if by in _NOT_A_PERSON else by,
+            at=q.get("cancelledAt"),
+            reason=q.get("reason"),
+        )
     return _problem(409, "not_open", state=q["state"], by=q.get("answeredBy"), at=q.get("answeredAt"))
 
 

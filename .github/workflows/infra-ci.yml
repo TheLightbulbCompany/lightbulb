@@ -62,7 +62,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Setup uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@v7
 
       # No project/lockfile: the bridge is vendored into the image, not a uv
       # project, so the suite's deps are named inline — the same command

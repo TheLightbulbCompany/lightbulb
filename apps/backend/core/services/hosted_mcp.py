@@ -497,9 +497,12 @@ async def recall(question: str) -> dict:
     auth = _caller()
     page = await _memory(memory_api.recall_page(auth.org_id, auth.user_id, question))
     # The one page an agent reads (8,000-9,000 tokens for English text), as the CLI's tool:
-    # the structured results stay for the Memory tab.
+    # the structured results stay for the Memory tab. Links (super-agent only) are checked for this person.
     turns = sum(r["kind"] == "turn" for r in page["results"])
-    return {"page": memory_stages.page_text(page), "counts": {"facts": len(page["results"]) - turns, "turns": turns}}
+    counts = {"facts": len(page["results"]) - turns, "turns": turns}
+    if "links" in page:
+        counts["links"] = len(page["links"])
+    return {"page": memory_stages.page_text(page), "counts": counts}
 
 
 @mcp.tool(annotations=WRITE, description=SPEC["remember"]["description"])

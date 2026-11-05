@@ -37,6 +37,7 @@ MIN_POSITIVE = 5
 ENTITY_TTL_S = 60.0
 MAX_PAGES = 10
 MAX_CALLS = 16
+TASK_TOP_K = 10
 _gates: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()  # one semaphore per event loop
 _entity_cache: dict[tuple[str, str], tuple[float, set[str]]] = {}
 
@@ -125,8 +126,11 @@ def _named(part: str, entities: set[str]) -> list[str]:
     return hits[:MAX_ENTITIES]
 
 
-async def _search_part(client, memory_id, namespaces, part, limit, as_of, include_private, entities) -> list:
-    """Every arm for one part: (kind_default, summaries) per arm, in a fixed order."""
+async def _search_part(
+    client, memory_id, namespaces, part, limit, as_of, include_private, entities, tasks=False
+) -> list:
+    """Every arm for one part: (kind_default, summaries) per arm, in a fixed order. ``tasks`` (a
+    super-agent workspace) adds the task-card arm and, with a member, their private turns."""
     variants = _as_of_variants(as_of)
     jobs: list[tuple[str, object]] = []
 
@@ -144,6 +148,13 @@ async def _search_part(client, memory_id, namespaces, part, limit, as_of, includ
     if include_private and "private" in namespaces:
         for extra in variants:
             jobs.append(("claim", retrieve(namespaces["private"], extra)))
+    if tasks:
+        if include_private and "private_turns" in namespaces:
+            jobs.append(("turn", retrieve(namespaces["private_turns"], created)))
+        task_spaces = [namespaces["tasks"], namespaces.get("private_tasks") if include_private else None]
+        for ns in task_spaces:
+            if ns:
+                jobs.append(("task", partial(_retrieve, client, memory_id, ns, part, TASK_TOP_K, [])))
     for entity in _named(part, entities):
         for extra in variants:
             jobs.append(
@@ -189,7 +200,9 @@ async def recall(
     include_private: bool = False,
     use_rerank: bool = True,
     use_expand: bool = True,
+    tasks: bool = False,
 ) -> dict:
+    """``tasks``: also search task cards; their ids go to ``page["taskHits"]`` (for links), never to results."""
     now = datetime.now(UTC)
     when = as_of or now
     t0 = time.monotonic()
@@ -199,15 +212,19 @@ async def recall(
     client = workspace_memory._client()
     entities = await _entities(client, memory_id, namespaces["facts"])
     per_part = await asyncio.gather(
-        *(_search_part(client, memory_id, namespaces, p, limit, as_of, include_private, entities) for p in parts)
+        *(_search_part(client, memory_id, namespaces, p, limit, as_of, include_private, entities, tasks) for p in parts)
     )
     t2 = time.monotonic()
 
     start, end = time_window(question, when)
     by_id: dict[str, Candidate] = {}
     rankings: list[list[str]] = []
+    task_hits: list[str] = []
     for arms in per_part:
         for kind_default, rows in arms:
+            if kind_default == "task":  # a card is a pointer: it becomes a link, never evidence
+                task_hits += [t for r in rows if (t := from_record(r, "task").task_id)]
+                continue
             ranking = []
             for row in rows:
                 c = _as_current(from_record(row, kind_default), as_of)
@@ -250,6 +267,8 @@ async def recall(
     t4 = time.monotonic()
 
     page = compose(ordered, budget_tokens, when)
+    if tasks:
+        page["taskHits"] = list(dict.fromkeys(task_hits))
     t5 = time.monotonic()
     logger.info(
         "memory recall expansionMs=%d searchMs=%d fuseMs=%d rerankMs=%d composeMs=%d",

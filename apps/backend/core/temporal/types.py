@@ -24,6 +24,9 @@ AttemptOutcome = Literal[
     "unavailable",
 ]
 Admission = Literal["respond", "candidate"]
+StopReason = Literal["stopped", "budget", "watchdog"]
+# The bridge's v1 run statuses (bridge/runs.py, runtime_runs.RunStatus.status).
+RunStatusName = Literal["queued", "running", "stopping", "completed", "failed", "cancelled"]
 
 _CLASS_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]{0,127}$")
 
@@ -52,7 +55,7 @@ class TaskInputRef:
 @dataclass(frozen=True)
 class StopRequest:
     by_user_id: str
-    reason: str = "stopped"  # a reason code, not prose
+    reason: StopReason = "stopped"
 
 
 @dataclass(frozen=True)
@@ -77,7 +80,7 @@ class RunUsage:
 class RunEvent:
     run_id: str
     kind: Literal["heartbeat", "terminal"]
-    status: str
+    status: RunStatusName
     usage: RunUsage | None = None
 
 

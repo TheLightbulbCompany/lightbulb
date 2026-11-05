@@ -11,10 +11,11 @@ import time
 from typing import Any
 
 from core import tasks_schema as ts
-from core.repositories import messaging_repo, tasks_repo
+from core.repositories import messaging_repo
 from core.services import clerk_admin
 
 _ORG_TTL_S = 60.0
+_ORG_CACHE_MAX = 10_000
 _org_cache: dict[str, tuple[float, set[str]]] = {}
 
 
@@ -24,6 +25,8 @@ async def _user_org_ids(user_id: str) -> set[str]:
     hit = _org_cache.get(user_id)
     if hit and hit[0] > time.monotonic():
         return hit[1]
+    if len(_org_cache) >= _ORG_CACHE_MAX:
+        _org_cache.clear()
     orgs = {o["id"] for o in await clerk_admin.list_user_organizations(user_id, limit=100) if o.get("id")}
     _org_cache[user_id] = (time.monotonic() + _ORG_TTL_S, orgs)
     return orgs
@@ -36,22 +39,19 @@ async def _is_workspace_member(ws: str, user_id: str) -> bool:
 
 
 async def can_view(task: dict, user_id: str) -> bool:
-    """DM ⇒ requester; room ⇒ current members of the home room; workspace ⇒ every member; plus answerers of
-    any Question row on the task."""
+    """DM ⇒ requester; room ⇒ current members of the home room; workspace ⇒ every member; plus anyone in
+    `audience.userIds` (Lane Q adds a Question's answerers there when it opens, contracts §5)."""
     if not user_id:
         return False
     audience = task.get("audience") or {}
     if user_id in (audience.get("userIds") or []):
         return True
-    ws = task["pk"].removeprefix("WS#")
     kind = audience.get("kind")
     if kind == "room" and audience.get("roomId"):
-        if await messaging_repo.get_member(audience["roomId"], "human", user_id) is not None:
-            return True
-    elif kind == "workspace" and await _is_workspace_member(ws, user_id):
-        return True
-    tree = await tasks_repo.get_task_tree(ws, task["taskId"])
-    return any(user_id in (q.get("answerers") or []) for q in tree.get("questions", []))
+        return await messaging_repo.get_member(audience["roomId"], "human", user_id) is not None
+    if kind == "workspace":
+        return await _is_workspace_member(task["pk"].removeprefix("WS#"), user_id)
+    return False
 
 
 def _shown_group(task: dict, viewer_id: str, open_qs: list[dict], effects: list[dict]) -> str | None:
@@ -83,7 +83,7 @@ def _origin_room(subscriptions: list[dict], audience: dict) -> str | None:
 
 
 def summarize(tree: dict, viewer_id: str) -> dict[str, Any]:
-    """The C15 `TaskSummary` for one viewer. `tree` is `tasks_repo.get_task_tree` plus optional `effects`
+    """The C15 `TaskSummary` for one viewer. Callers check `can_view(task, viewer_id)` first: this does not. `tree` is `tasks_repo.get_task_tree` plus optional `effects`
     (Effect rows of the task) and `userNames` ({userId: display name}) added by the caller."""
     task = tree["task"]
     names = tree.get("userNames") or {}

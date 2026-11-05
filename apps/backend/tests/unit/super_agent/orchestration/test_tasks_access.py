@@ -30,7 +30,7 @@ def _task(audience, **over):
 
 @pytest.fixture
 def world(monkeypatch):
-    """Room r1 has priya now (ex was removed); org_1 has sam and priya; one Q row names ann as answerer."""
+    """Room r1 has priya now (ex was removed); org_1 has sam and priya; ann is an answerer (in audience.userIds)."""
     room = {("r1", "priya"), ("r1", "sam")}
     orgs = {"sam": {WS}, "priya": {WS}, "ex": set()}
 
@@ -41,17 +41,8 @@ def world(monkeypatch):
     async def orgs_of(user_id):
         return orgs.get(user_id, set())
 
-    async def tree(ws, task_id):
-        return {
-            "task": None,
-            "attempts": [],
-            "subscriptions": [],
-            "questions": [{"type": "question", "answerers": ["ann"], "state": "open"}],
-        }
-
     monkeypatch.setattr(ta.messaging_repo, "get_member", get_member)
     monkeypatch.setattr(ta, "_user_org_ids", orgs_of)
-    monkeypatch.setattr(ta.tasks_repo, "get_task_tree", tree)
 
 
 @pytest.mark.parametrize(
@@ -59,7 +50,7 @@ def world(monkeypatch):
     [
         ({"kind": "person", "userIds": ["sam"]}, "sam", True),
         ({"kind": "person", "userIds": ["sam"]}, "priya", False),
-        ({"kind": "person", "userIds": ["sam"]}, "ann", True),  # answerer on a Q row
+        ({"kind": "person", "userIds": ["sam", "ann"]}, "ann", True),  # answerer added by Q when a question opens
         ({"kind": "room", "roomId": "r1", "userIds": []}, "priya", True),
         ({"kind": "room", "roomId": "r1", "userIds": []}, "ex", False),
         ({"kind": "workspace", "userIds": []}, "priya", True),

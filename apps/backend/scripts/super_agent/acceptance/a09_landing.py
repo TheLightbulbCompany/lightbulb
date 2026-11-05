@@ -15,7 +15,7 @@ from scripts.super_agent.acceptance.ctx import Ctx, Result
 from scripts.super_agent.acceptance.o_lib import answer_question, question_row, rows_of, task_detail, task_questions
 
 TEST_ADDRESS = re.compile(r"^[^@\s]+\+clerk_test@thelightbulb\.company$", re.I)
-REVIEW_S = 600
+REVIEW_S = 300
 LAND_S = 120
 
 
@@ -25,6 +25,8 @@ def _effects(rows: list[dict], task_id: str) -> list[dict]:
 
 async def a09(ctx: Ctx) -> Result:
     task_ids = list(ctx.state.get("taskIds") or [])
+    if not task_ids:
+        return Result(False, {"reason": "needs A2: no task ids in ctx.state"})
     found = await ctx.wait_for(
         lambda rows: next((q for t in task_ids if (q := question_row(rows, t, ("review",)))), None), REVIEW_S
     )

@@ -269,3 +269,13 @@ def aws_profile_default() -> None:
     os.environ.setdefault("AWS_REGION", "us-east-1")
     settings.OAUTH_TOKENS_TABLE = settings.OAUTH_TOKENS_TABLE or "lightbulb-dev-oauth-tokens"
     settings.MESSAGING_TABLE = settings.MESSAGING_TABLE or "lightbulb-dev-messaging"
+
+
+def load_backend_secrets() -> None:
+    """The backend env some services need when the harness calls them directly (``token_custody`` decrypts the
+    token row): ``ENCRYPTION_KEY`` from the dev Secrets Manager secret the backend task definition points at.
+    Never printed; a no-op when the settings already hold it."""
+    if not settings.ENCRYPTION_KEY:
+        from scripts.multiparty_e2e.runner import _secret
+
+        settings.ENCRYPTION_KEY = _secret("lightbulb/dev/encryption_key")

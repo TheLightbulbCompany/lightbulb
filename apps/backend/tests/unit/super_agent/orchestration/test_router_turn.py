@@ -812,3 +812,23 @@ async def test_a_retried_pass_through_signals_once(world):
     await _run([t1])
     await _run([t1])
     assert world["inputs"] == [(open_id, t1, "message")]
+
+
+@pytest.mark.asyncio
+async def test_a_fanned_out_trigger_records_the_task_that_started(world, monkeypatch):
+    """One ask, two starts: the first failed, the second started. The trigger records the started one, so the
+    fallback says only that some of it couldn't start."""
+    t1 = await _trig("chat:m1")
+    world["decisions"] = [_start([t1]), _start([t1], title="Book the flights", specialist=None)]
+    bad, good = ts.router_task_id(BATCH, 0, 0), ts.router_task_id(BATCH, 1, 0)
+
+    async def flaky(ws, task_id, reason):
+        if task_id == bad:
+            raise RuntimeError("temporal hiccup")
+
+    monkeypatch.setattr(acts.temporal_client, "start_task_workflow", flaky)
+    with pytest.raises(RuntimeError):
+        await _run([t1])
+    assert (await repo.get_trigger(WS, t1))["routedTo"] == {"taskId": good}
+    await acts.apply_fallback(WS, [t1])
+    assert world["posts"][-1]["text"] == router_prompt.PARTIAL

@@ -718,7 +718,7 @@ async def _apply(
     `router_task_id(batch, i, k)`, event ids `router:{batch}:{i}`; returns ids only."""
     slots: dict[str, dict] = {}
     covered: set[str] = set()
-    routed_to: dict[str, str] = {}  # every trigger a start or pass_through covers → its task
+    routed_to: dict[str, list[str]] = {}  # every trigger a start or pass_through covers → its tasks, in order
 
     def slot(tid: str) -> dict:
         return slots.setdefault(
@@ -773,7 +773,7 @@ async def _apply(
             sl["refs"].append({"taskId": task_id, "role": "started"})
             sl["starts"].append(task_id)
             for tid in dec.trigger_ids:
-                routed_to.setdefault(tid, task_id)
+                routed_to.setdefault(tid, []).append(task_id)
         elif isinstance(dec, ts.ProposeTasks):
             for k, t in enumerate(dec.tasks):
                 task_id = ts.router_task_id(inp.batch_id, i, k)
@@ -806,7 +806,7 @@ async def _apply(
                 await tasks_repo.set_trigger_routed_to(ws, primary, {"taskId": dec.task_id})
             sl["passes"].append(dec.task_id)
             for tid in dec.trigger_ids:
-                routed_to.setdefault(tid, dec.task_id)
+                routed_to.setdefault(tid, []).append(dec.task_id)
             ack(sl, dec.ack)
         elif isinstance(dec, ts.Ask):
             sl["lines"].append(dec.text + (f" ({' / '.join(dec.options)})" if dec.options else ""))
@@ -856,8 +856,10 @@ async def _apply(
             started.append(task_id)
     # Recorded for what did start, before any raise: a second failure never loses them, and apply_fallback sees a
     # trigger whose cards are already posted.
-    for tid, task_id in routed_to.items():
-        if task_id in failed:
+    for tid, task_ids in routed_to.items():
+        # The first task that did start (a trigger fanned out to A, failed, and B, started, records B).
+        task_id = next((t for t in task_ids if t not in failed), None)
+        if task_id is None:
             continue
         await tasks_repo.set_trigger_routed_to(ws, tid, {"taskId": task_id})
         if _thread_key(triggers[tid]):

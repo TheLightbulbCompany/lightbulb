@@ -36,7 +36,7 @@ def api(table, monkeypatch):
         return meta
 
     with (
-        patch("routers.internal_voice._require_hook_token", AsyncMock(return_value={})),
+        patch("routers.internal_automations._require_hook_token", AsyncMock(return_value={})),
         patch("core.services.super_agent_flags.flags_for", AsyncMock(return_value=True)) as flags,
         patch("core.repositories.messaging_repo.get_voice_run", side_effect=get_voice_run),
         patch("core.repositories.messaging_repo.get_room", side_effect=get_room),

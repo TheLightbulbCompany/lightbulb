@@ -22,17 +22,9 @@ class FakeCtx:
 
     def __init__(self, handler=None, rows: dict[str, list[dict]] | None = None):
         self.ws = "org_on"
-        self.ws_name = "sa-dev-on"
         self.users = {"sam": "user_sam", "priya": "user_priya"}
-        self.fixtures = {"sa-dev-on": "org_on", "sa-dev-off": "org_off", "sa-dev-chatgpt": "org_chatgpt"}
         self.state: dict = {}
         self.handler, self.rows = handler, rows or {}
-        self.children: dict[str, FakeCtx] = {}
-
-    def for_ws(self, name: str) -> FakeCtx:
-        child = self.children.setdefault(name, FakeCtx(self.handler, self.rows))
-        child.ws, child.ws_name = self.fixtures[name], name
-        return child
 
     def api(self, user: str, ws: str | None = None) -> httpx.AsyncClient:
         return httpx.AsyncClient(base_url=ctxmod.API_ROOT, transport=httpx.MockTransport(self.handler))
@@ -131,7 +123,7 @@ async def test_missing_function_in_present_module_is_not_implemented(monkeypatch
 # ---------------------------------------------------------------------- wait_for
 async def test_wait_for_returns_first_truthy_then_none_on_timeout(monkeypatch):
     monkeypatch.setattr(ctxmod, "POLL_S", 0.001)
-    ctx = Ctx(ws="org", users={}, fixtures={})
+    ctx = Ctx(ws="org", users={})
     pages = iter([[], [{"type": "task", "status": "queued"}], [{"type": "task", "status": "working"}]])
 
     async def rows(ws=None):
@@ -165,7 +157,7 @@ async def test_report_lists_every_check(monkeypatch):
     monkeypatch.setattr(report, "resolve", lambda part: bodies.get(part))
     results = await report.run_scenarios(["A1", "A12", "A5"], FakeCtx(), log=lambda line: None)
     assert results["A1"].passed and not results["A12"].passed and not results["A5"].passed
-    md = report.render_report(results, sha="abc123", fixtures={"sa-dev-on": "org_on"}, faults="")
+    md = report.render_report(results, sha="abc123", workspace="org_on", faults="")
     for check in (
         "one_agent_member_lightbulb",
         "no_double_reply",
@@ -186,7 +178,7 @@ async def test_report_lists_every_check(monkeypatch):
 def test_write_report_keeps_full_evidence_json(tmp_path):
     results = {"A0": Result(True, {"zero_tasks_rows": True, "roomId": "r1"})}
     out = tmp_path / "gates" / "wave2.md"
-    report.write_report(out, results, sha="s", fixtures={}, faults="")
+    report.write_report(out, results, sha="s", workspace="org", faults="")
     assert "| A0 | PASS | zero_tasks_rows | ok |" in out.read_text()
     assert json.loads(out.with_suffix(".md.json").read_text())["A0"]["evidence"]["roomId"] == "r1"
 
@@ -195,38 +187,37 @@ def test_write_report_keeps_full_evidence_json(tmp_path):
 async def test_a00_parity_green_on_legacy_workspace():
     result = await a00(FakeCtx(legacy_handler()))
     assert result.passed, result.evidence
-    assert result.evidence["ws"] == "org_off" and result.evidence["replyMessageId"] == "m2"
+    assert result.evidence["ws"] == "org_on" and result.evidence["replyMessageId"] == "m2"
 
 
 async def test_a00_parity_fails_when_features_or_rows_leak():
-    leaked = FakeCtx(legacy_handler(features=True), rows={"org_off": [{"type": "task", "taskId": "t"}]})
+    leaked = FakeCtx(
+        legacy_handler(features=True), rows={"org_on": [{"sk": "AGENT#a"}, {"sk": "META"}, {"sk": "TASK#t"}]}
+    )
     result = await a00(leaked)
     assert not result.passed
     assert report.failed_checks(result) == ["live_config_has_no_features", "zero_tasks_rows"]
+    assert result.evidence["tasksRows"] == 1  # AGENT#/META rows are not task rows
     silent = await a00(FakeCtx(legacy_handler(reply=False)))
     assert report.failed_checks(silent) == ["room_agent_replied_as_today"]
 
 
 # ---------------------------------------------------------------------- G2 wiring
-async def test_gate_wires_vm_evidence_over_both_runs(monkeypatch):
-    t_on, t_gpt = "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"
-    rows = {
-        "org_on": [{"type": "attempt", "taskId": t_on, "n": 1, "sessionId": session_id_for("org_on", t_on)}],
-        "org_chatgpt": [{"type": "attempt", "taskId": t_gpt, "n": 1, "sessionId": session_id_for("org_chatgpt")}],
-    }
+async def test_gate_wires_vm_evidence_and_skips_a0(monkeypatch):
+    tid = "22222222-2222-4222-8222-222222222222"
+    rows = {"org_on": [{"type": "attempt", "taskId": tid, "n": 1, "sessionId": session_id_for("org_on")}]}
     ctx = FakeCtx(rows=rows)
 
     async def scenarios(names, c, *, log):
-        c.state["taskIds"] = [t_on if c.ws == "org_on" else t_gpt]
-        return {n: Result(True, {"ran_on": c.ws_name, "ok": True}) for n in names}
+        c.state["taskIds"] = [tid]
+        return {n: Result(True, {"ok": True}) for n in names}
 
     monkeypatch.setattr(report, "run_scenarios", scenarios)
     results = await report.gate(ctx, log=lambda line: None)
-    assert set(results) == {*report.ORDER, "A1@sa-dev-chatgpt", "A2@sa-dev-chatgpt", "VM", "RULES"}
-    assert results["A1@sa-dev-chatgpt"].evidence["ran_on"] == "sa-dev-chatgpt"
+    assert set(results) == {*report.ORDER[1:], "VM", "RULES"}
     assert results["VM"].passed, results["VM"].evidence["failures"]
     assert results["RULES"].evidence["reason"].startswith("no --rules-expect")
-    rows["org_chatgpt"][0]["sessionId"] = session_id_for("org_chatgpt", t_gpt)  # ran on a task VM: must fail
+    rows["org_on"][0]["sessionId"] = session_id_for("org_on", tid)  # ran on a task VM: must fail
     assert not (await report.gate(ctx, log=lambda line: None))["VM"].passed
 
 

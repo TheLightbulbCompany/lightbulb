@@ -1,4 +1,4 @@
-"""A0 — parity: with the switch off (``sa-dev-off``) the API behaves as today (spec 09 §8.3; wave2-README G1).
+"""A0 — parity: with the workspace's switch off (run it BEFORE flipping ``super_agent`` on) the API behaves as today (spec 09 §8.3; wave2-README G1).
 
 Sam posts in ``#general``; the room agent answers as today (a cold runtime's first reply can take a minute);
 ``live-config`` carries no ``features``; the workspace has zero ``tasks`` rows. The CloudWatch side
@@ -12,17 +12,20 @@ import uuid
 
 from scripts.super_agent.acceptance.ctx import Result
 
+#: sk prefixes of task-system rows; AGENT#/META/PENDING_BRIEF are written by R4/R6 whatever the switch says.
+TASK_FAMILY = ("TASK#", "THREAD#", "NEEDS#", "EFFECT#", "TRIG#", "OBS#", "SCHED#")  # core/tasks_schema.py *_sk
+
 LEGACY_REPLY_S = 120
 
 
 async def a00(ctx) -> Result:
-    off = ctx.for_ws("sa-dev-off")
+    off = ctx
     api = off.api("sam")
     cfg = (await api.get("/api/v1/messaging/live-config")).raise_for_status().json()
     rooms = (await api.get("/api/v1/messaging/rooms")).raise_for_status().json().get("rooms") or []
     general = next((r for r in rooms if (r.get("name") or "").lower() == "general"), None)
     if general is None:
-        return Result(False, {"reason": "sa-dev-off has no #general"})
+        return Result(False, {"reason": "no #general"})
     room_id = general["roomId"]
     body = {
         "clientMessageId": str(uuid.uuid4()),
@@ -50,7 +53,7 @@ async def a00(ctx) -> Result:
         )
         if reply is None:
             await off.sleep(2)
-    rows = await off.tasks_rows(off.ws)
+    rows = [r for r in await off.tasks_rows(off.ws) if str(r.get("sk", "")).startswith(TASK_FAMILY)]
     checks = {
         "live_config_has_no_features": "features" not in cfg,
         "room_agent_replied_as_today": reply is not None,

@@ -8,6 +8,7 @@ import { ApiError } from "../api/error";
 import type { TaskChanged } from "../live/types";
 import { scopeParam, type TasksClient } from "./client";
 import type { QuestionView, TaskDetail, TaskScope, TaskSummary } from "./types";
+import { resolveCeoAgentId } from "./view";
 
 type TaskList = { tasks: TaskSummary[]; next: string | null };
 
@@ -123,9 +124,15 @@ export function useTaskChangedRefresh(client: TasksClient): (payload: TaskChange
   return useCallback((payload: TaskChanged) => void refreshTask({ cache, mutate, client }, payload), [cache, mutate, client]);
 }
 
-/** The workspace's agent names by id, one SWR read shared by every caller with the same `key` (each app passes its
- *  own loader: web the teams API, mobile `/teams/agents`). `null` key = no request. */
-export function useAgentNames(key: string | null, load: () => Promise<readonly { id: string; name?: string | null }[]>): ReadonlyMap<string, string> {
+type DirectoryAgent = { id: string; name?: string | null; role?: string | null; reportsTo?: string | null; origin?: string | null };
+
+/** The workspace's agents, one SWR read shared by every caller with the same `key` (each app passes its own loader:
+ *  `/teams/agents`): names by id (task specialists are agent ids) and the front agent's id (`resolveCeoAgentId`),
+ *  which displays as "Lightbulb" with the switch on. `null` key = no request. */
+export function useAgentDirectory(key: string | null, load: () => Promise<readonly DirectoryAgent[]>): { names: ReadonlyMap<string, string>; frontAgentId: string | undefined } {
   const { data } = useSWR(key ? ["agent-names", key] : null, load, { shouldRetryOnError: false, dedupingInterval: 60_000 });
-  return useMemo(() => new Map((data ?? []).filter((a) => a.name).map((a) => [a.id, a.name!])), [data]);
+  return useMemo(() => ({
+    names: new Map((data ?? []).filter((a) => a.name).map((a) => [a.id, a.name!])),
+    frontAgentId: resolveCeoAgentId(data ?? []),
+  }), [data]);
 }

@@ -374,7 +374,7 @@ export type {
 } from "./tasks/types";
 export { createTasksClient, scopeParam } from "./tasks/client";
 export type { TasksClient } from "./tasks/client";
-export { putTaskSummary, questionsKey, refreshTask, taskKey, taskListKey, useAgentNames, useTask, useOlderTasks, useTaskCache, useTaskChangedRefresh, useTaskList, useTaskQuestions } from "./tasks/useTasks";
+export { putTaskSummary, questionsKey, refreshTask, taskKey, taskListKey, useAgentDirectory, useTask, useOlderTasks, useTaskCache, useTaskChangedRefresh, useTaskList, useTaskQuestions } from "./tasks/useTasks";
 export {
   automationStatusLine, budgetLine, canDecide, canEdit, deliveryWords, money, runNow, runNowReason, runsPerMonth, scheduleWords, viewerTimeZone, waitingWords,
 } from "./tasks/automations";

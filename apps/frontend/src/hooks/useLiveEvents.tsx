@@ -17,7 +17,7 @@ import {
   createMessagingClient,
   createRuntimeClient,
   createTasksClient,
-  useAgentNames,
+  useAgentDirectory,
   type AgentNames,
   framesChannelFor,
   useTaskChangedRefresh,
@@ -54,6 +54,8 @@ export interface LiveEventsContextValue extends RuntimeRpcSource {
   tasks: TasksClient;
   /** Agent id → name while the switch is on (task specialists are agent ids); empty until it loads. */
   agentNames: AgentNames;
+  /** The front agent (displays as "Lightbulb" while the switch is on); undefined until the agents list loads. */
+  frontAgentId: string | undefined;
   claimActiveRoomSubscription(room: ActiveRoomSubscription): () => void;
   /** Subscribe the active room's frames sibling channel (a Mac tab's view-tier frames) while
    * any claim is held. Ref-counted; the returned function releases this claim once. */
@@ -94,8 +96,8 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
   const superAgent = config?.features?.superAgent === true;
   // Specialist names for task cards ("Lightbulb · Finance", never the agent id): one read of the agents list while
   // the switch is on, shared by every card through this context.
-  const agentNames = useAgentNames(superAgent && httpReady ? tasks.cacheScope : null,
-    async () => ((await api.get("/teams/agents")) as { agents?: { id: string; name?: string | null }[] } | null)?.agents ?? []);
+  const { names: agentNames, frontAgentId } = useAgentDirectory(superAgent && httpReady ? tasks.cacheScope : null,
+    async () => ((await api.get("/teams/agents")) as { agents?: { id: string; name?: string | null; role?: string | null; reportsTo?: string | null; origin?: string | null }[] } | null)?.agents ?? []);
   const [activeRoomState, setActiveRoomState] = useState<{
     ownerScope: string | null;
     room: ActiveRoomSubscription | null;
@@ -282,6 +284,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     superAgent,
     tasks,
     agentNames,
+    frontAgentId,
     claimActiveRoomSubscription,
     claimFrames,
     claimSessionFrames,
@@ -302,6 +305,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     superAgent,
     tasks,
     agentNames,
+    frontAgentId,
     claimActiveRoomSubscription,
     claimFrames,
     claimSessionFrames,

@@ -1,5 +1,4 @@
 import { useOrganization } from "@clerk/expo";
-import { resolveCeoAgentId } from "@lightbulb/shared";
 import { useEffect, useState } from "react";
 
 import { fetchAgents, fetchMembers, useTeamsConfig, type CompanyMember, type TeamsAgent } from "./teamsData";
@@ -53,10 +52,4 @@ export function useWorkspaceRoster(enabled: boolean): { agents: TeamsAgent[]; me
     };
   }, [enabled, config, orgId]);
   return { agents, members };
-}
-
-/** The front agent's id while `enabled` (the room screen asks only for a super-agent DM with an agent). */
-export function useFrontAgentId(enabled: boolean): string | undefined {
-  const { agents } = useWorkspaceRoster(enabled);
-  return enabled ? resolveCeoAgentId(agents) : undefined;
 }

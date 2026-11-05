@@ -305,7 +305,9 @@ export function MessageGroup({
             />
             <View style={styles.headCol}>
               <Text style={[styles.authorName, { color: palette.fgMute }]} numberOfLines={1}>
-                {superAgent && message.specialist ? <SpecialistName specialist={message.specialist} /> : message.author.displayName}
+                {superAgent && message.specialist ? <SpecialistName specialist={message.specialist} />
+                  : superAgent && message.author.kind === "agent" ? <AgentName id={message.author.id} name={message.author.displayName} />
+                  : message.author.displayName}
               </Text>
               <Bubble
                 testID="message-bubble"
@@ -497,4 +499,10 @@ const styles = StyleSheet.create({
 function SpecialistName({ specialist }: { specialist: string }) {
   const { agentNames } = useLiveEvents();
   return <>{specialistLabel(specialist, agentNames)}</>;
+}
+
+/** Super-agent: the front agent reads "Lightbulb" on its older posts too (stored as its seat name, "CEO"). */
+function AgentName({ id, name }: { id: string; name: string }) {
+  const { frontAgentId } = useLiveEvents();
+  return <>{id === frontAgentId ? "Lightbulb" : name}</>;
 }

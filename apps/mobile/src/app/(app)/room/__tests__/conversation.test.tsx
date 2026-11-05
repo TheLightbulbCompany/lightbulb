@@ -151,6 +151,8 @@ const mockSetTyping = jest.fn(async () => {});
 const typingHandlers = new Set<(event: LiveEvent) => void>();
 const mockLive = {
   httpReady: true, liveConnected: true, liveError: null,
+  // The front agent (`@lightbulb`) as the live provider resolves it from the agents list.
+  frontAgentId: "agent-lb",
   // room-unavailable is the blocked-states suite's own room id (its Try again
   // recovery needs its post-retry reconcile to actually run).
   liveChannels: ["/rooms/room-1/k", "/rooms/room-unavailable/k"], connectionRevision: 1,
@@ -188,7 +190,6 @@ const mockLive = {
 let mockSuperAgent = false;
 jest.mock("../../../../providers/live-events", () => ({ useSuperAgent: () => mockSuperAgent, useLiveEvents: () => mockLive }));
 // The front agent (`@lightbulb`) once the roster answers; only asked for while the switch is on.
-jest.mock("../../../../lib/workspaceRoster", () => ({ useFrontAgentId: (enabled: boolean) => (enabled ? "agent-lb" : undefined) }));
 // The band has its own suite; here only WHERE it mounts is under test.
 jest.mock("../../../../components/room/OnboardingBand", () => ({
   OnboardingBand: () => {
@@ -769,6 +770,17 @@ describe("conversation screen", () => {
     mockSuperAgent = true;
     await render(<Conversation />);
     expect(await screen.findByText("Friday now works through Lightbulb. A message here starts a Friday thread.")).toBeTruthy();
+  });
+
+  it("super-agent on: the front agent reads Lightbulb in the header and on its older posts, whatever its seat says", async () => {
+    mockSuperAgent = true;
+    mockLive.frontAgentId = "agent-1"; // Friday stands in for the front agent here
+    try {
+      mockRoomId = "dm-friday";
+      await render(<Conversation />);
+      expect(await screen.findByLabelText("Lightbulb, idle")).toBeTruthy();
+      expect(screen.queryByTestId("specialist-dm-banner")).toBeNull();
+    } finally { mockLive.frontAgentId = "agent-lb"; }
   });
 
   it("titles an agent DM with the agent and its idle status, opening details", async () => {

@@ -34,6 +34,7 @@ from core.services import (
     push_service,
     runtime_runs,
     runtime_transport,
+    source_replies,
     super_agent_faults,
     task_conversation,
 )
@@ -634,24 +635,15 @@ async def _room_exists(room_id: str) -> bool:
     return await messaging_repo.get_room(room_id) is not None
 
 
-async def _deliver_source_reply(ws: str, trig: dict, text: str, event_id: str) -> bool:
-    """A `reply` to a mail/text trigger goes back the way it came (lane A's `source_replies.deliver_reply`,
-    idempotent on `event_id`); False until that module lands, and the reply falls back to the deliver room."""
-    try:
-        from core.services import source_replies  # type: ignore[import-not-found]
-    except ImportError:
-        return False
-    await source_replies.deliver_reply(ws, trig, text, idempotency_key=event_id)
-    return True
-
-
 async def _deliver(
     ws: str, trig: dict, text: str, *, event_id: str, refs: list[dict] | None, remember: bool = True
 ) -> str | None:
     """Post in the trigger's place: its thread or room (chat), the deliver room (other sources), or back to the
     sender for a plain mail/text reply. Idempotent on `event_id`."""
     ref = trig.get("ref") or {}
-    if trig["source"] in ("mail", "text") and not refs and await _deliver_source_reply(ws, trig, text, event_id):
+    if trig["source"] in ("mail", "text") and not refs:
+        # A plain reply goes back the way it came (lane A's sender), idempotent on `event_id`.
+        await source_replies.deliver_reply(ws, trig, text, idempotency_key=event_id)
         return None
     room = ts.trigger_room(trig)
     if not room or not await _room_exists(room):

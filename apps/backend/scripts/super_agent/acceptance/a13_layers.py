@@ -53,17 +53,10 @@ async def legacy_rows(ws: str, room_ids: list[str]) -> dict[str, list[str]]:
     return {"runs": runs, "followUps": follow_ups}
 
 
-async def router_runs(ws: str) -> list[dict[str, Any]]:
-    """One entry per ``router_turn`` batch in the Router workflow's history: ``{batchId, lane, status, decisions,
-    tools}``. Temporal: the dev namespace, key from Secrets Manager ``lightbulb/dev/temporal_api_key`` unless the
-    ``TEMPORAL_*`` settings are already set. ponytail: reads the current run's history only; a Router that has
-    continued-as-new hides earlier batches -- read ``first_execution_run_id`` chains if that ever matters."""
-    from temporalio.converter import DataConverter
-
+async def dev_temporal_client():
+    """The Temporal client on the dev namespace (key from Secrets Manager unless the settings already hold one)."""
     from core.config import settings
-    from core.services import runtime_runs, task_conversation
     from core.temporal import client as temporal_client
-    from core.temporal.types import RouterTurnIn
     from scripts.multiparty_e2e.runner import _secret
 
     for name, value in DEV_TEMPORAL.items():
@@ -72,7 +65,20 @@ async def router_runs(ws: str) -> list[dict[str, Any]]:
     if not settings.TEMPORAL_API_KEY:
         settings.TEMPORAL_API_KEY = os.environ.get("TEMPORAL_API_KEY") or _secret("lightbulb/dev/temporal_api_key")
     assert settings.TEMPORAL_NAMESPACE.startswith("lightbulb-dev."), "refusing: not the dev Temporal namespace"
-    client = await temporal_client.connect()
+    return await temporal_client.connect()
+
+
+async def router_runs(ws: str) -> list[dict[str, Any]]:
+    """One entry per ``router_turn`` batch in the Router workflow's history: ``{batchId, lane, status, decisions,
+    tools}``. Temporal: the dev namespace, key from Secrets Manager ``lightbulb/dev/temporal_api_key`` unless the
+    ``TEMPORAL_*`` settings are already set. ponytail: reads the current run's history only; a Router that has
+    continued-as-new hides earlier batches -- read ``first_execution_run_id`` chains if that ever matters."""
+    from temporalio.converter import DataConverter
+
+    from core.services import runtime_runs, task_conversation
+    from core.temporal.types import RouterTurnIn
+
+    client = await dev_temporal_client()
     handle = client.get_workflow_handle(ts.router_workflow_id(ws))
     batches: list[RouterTurnIn] = []
     async for event in handle.fetch_history_events():

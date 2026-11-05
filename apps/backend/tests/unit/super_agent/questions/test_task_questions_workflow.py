@@ -233,6 +233,27 @@ async def test_answer_after_stop_refused(temporal_env, fakes):
     assert "record_answer" not in fakes.names() and fakes.names().count("begin_attempt") == 1
 
 
+async def test_answer_after_close_refused(temporal_env, fakes):
+    """N-F1: once Close (resolve) is queued, an "Allow once" is refused; nothing is recorded, no attempt runs."""
+    from core.temporal.types import ActionRequest
+
+    async with worker(temporal_env, fakes) as q:
+        h = await _start(temporal_env, q)
+        await _until(lambda: "relay_question" in fakes.names())
+
+        async def slow_cancel(*_):
+            await asyncio.sleep(0.5)  # keep the workflow open while Sam presses
+
+        fakes.behaviour["cancel_open_questions"] = slow_cancel
+        close = asyncio.create_task(h.execute_update(TaskWorkflow.resolve, ActionRequest(PRIYA)))
+        await _until(lambda: "cancel_open_questions" in fakes.names())
+        with pytest.raises(WorkflowUpdateFailedError):
+            await h.execute_update(TaskWorkflow.answer, _press())
+        await close
+        await h.result()
+    assert "record_answer" not in fakes.names() and fakes.names().count("begin_attempt") == 1
+
+
 async def test_no_answerer_resolves_instead_of_waiting(temporal_env, fakes):
     def nobody(*_):
         raise ApplicationError("no admins", type="NoAnswerer", non_retryable=True)

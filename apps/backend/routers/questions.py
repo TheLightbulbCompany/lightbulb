@@ -174,6 +174,7 @@ async def _answered_view(ws: str, task: dict, qid: str, viewer: str) -> dict[str
     return {"question": view, "next": tasks_access.summarize(tree, viewer)}
 
 
+_CLOSED = frozenset({"resolved", "failed"})
 _NOT_A_PERSON = frozenset({SYSTEM_ACTOR_ID, "watch"})  # the task ended it (resolve, failure, watchdog, watch)
 
 
@@ -207,6 +208,10 @@ async def answer(task_id: str, qid: str, body: AnswerBody, auth: Annotated[AuthC
         if q["state"] == "answered" and q.get("clientAnswerId") == body.client_answer_id and q.get("answeredBy") == me:
             return await _answered_view(ws, task, qid, me)  # the same press again
         raise _not_open(q)
+    if task.get("status") in _CLOSED:
+        # A closed task's Questions are cancelled when it ends; one left open (that cancel failed) is still never
+        # answered, and no Temporal update is sent (it would start a fresh run for a finished task).
+        raise _problem(409, "task_closed")
     if not await questions.can_answer_now(ws, q, me):
         raise _problem(403, "not_answerer")
     offered = {o["id"] for o in q.get("options") or []} or {"answer"}
@@ -240,7 +245,7 @@ async def answer(task_id: str, qid: str, body: AnswerBody, auth: Annotated[AuthC
             return await _answered_view(ws, task, qid, me)
         if now and now["state"] != "open":
             raise _not_open(now) from err
-        if "task_closed" in codes:
+        if "task_closed" in codes or (await tasks_repo.get_task(ws, task_id) or {}).get("status") in _CLOSED:
             raise _problem(409, "task_closed") from err
         if {"not_answerer", "NotAnswerer"} & codes:
             raise _problem(403, "not_answerer") from err

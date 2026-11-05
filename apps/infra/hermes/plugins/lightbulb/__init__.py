@@ -684,7 +684,9 @@ APPROVAL_SCHEMA = {
     "description": "Ask a person to decide something: creates an approval in their Needs you with "
                    "Approve and Reject buttons; approving it wakes you with the answer. Use it for "
                    "every sign-off (a plan, prices, spend, a launch, a public post, a vendor), never a "
-                   "task assigned to the person or a question in chat. Linked tasks move to in_review. "
+                   "task assigned to the person or a question in chat. On a Lightbulb task, never ask it "
+                   "before sending, spending or publishing: those tools stop for approval by themselves, "
+                   "so just call them. Linked tasks move to in_review. "
                    "Returns the approval's link: give it to the person in your reply.",
     "parameters": {
         "type": "object",

@@ -8,6 +8,7 @@ never the batch (the bridge already validated field shapes; this is the backend'
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 
 from pydantic import TypeAdapter, ValidationError
@@ -26,8 +27,10 @@ Rules:
 - Every trigger marked "respond" needs a decision. A "candidate" trigger may be ignored.
 - start_task: one clear piece of work. Name a specialist from the roster by id when one fits, otherwise omit it. \
 A trigger with a pinned specialist goes to that specialist: start_task with it, or pass_through to a task it has open.
-- Start the request even when it would spend money, send or publish: the task stops at an approval question before \
-any paid or risky step, and that approval is the person's only decision. Never hold work back for a person to start.
+- Start the request even when it would spend money, send or publish. Write the brief as the work itself \
+("buy acme.dev", "send the email"): sending, spending and publishing tools stop for a person's approval by \
+themselves, so never add approval or confirmation steps to a brief ("present it for approval", "send only after \
+approval"): the Worker would ask twice. Never hold work back for a person to start.
 - Software someone wants built or changed (an app, a site, a form, a page, a dashboard, a tool) is a request like any \
 other: start_task, with the specialist whose title fits building software (Engineering) when the roster has one, and \
 their words as written in the brief. Its builder works on it in Canvas; publishing it stays the person's approval.
@@ -163,6 +166,24 @@ def status_words(task: dict, asker: str | None = None) -> str:
     if status == "failed" and asker and task.get("ownerUserId") == asker:
         return _MY_FAILED
     return _STATUS_WORDS.get((status, reason)) or _STATUS_WORDS.get((status, None)) or status
+
+
+_STATUS_WORD = re.compile(r"\b(?:Working|Needs you)\b")  # the request-state words; "Done"/"Closed" read as prose too
+_WORD = re.compile(r"[a-z0-9$]+")
+
+
+def restates(reply: str, acks: set[str]) -> bool:
+    """A reply on a trigger whose tasks already have their ack line that only says the tasks again (dev 5 Nov, N-F3:
+    "Engineering is building…" then "Both requests are Working: Engineering has…"). The rule is in the prompt; this
+    keeps the message to one line when the model ignores it. A separate answer (a fact, an estimate) stays.
+    ponytail: a status word or half its words in the ack; an embedding check if real answers get dropped."""
+    if not acks:
+        return False
+    if _STATUS_WORD.search(reply):
+        return True
+    words = set(_WORD.findall(reply.lower()))
+    said = set(_WORD.findall(" ".join(acks).lower()))
+    return bool(words) and len(words & said) * 2 >= len(words)
 
 
 def _resolve(given: str, trigger_ids: set[str]) -> str | None:

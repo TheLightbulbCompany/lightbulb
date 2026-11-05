@@ -103,6 +103,7 @@ class TaskQuestionsMixin:
     _seen_inputs: set[str]
     _wakes: int
     _stop_by: str | None
+    _action: tuple[str, str] | None  # a queued resolve/dismiss
     _transition: Any  # TaskWorkflow's status writer
     _woken: Any  # TaskWorkflow's "something to do" predicate
 
@@ -255,7 +256,9 @@ class TaskQuestionsMixin:
 
     @answer.validator
     def _validate_answer(self, ref: AnswerRef) -> None:
-        if self._stop_by is not None:
+        # `_action`: a Close (resolve) is queued; the loop will cancel this Question, so an answer now is refused,
+        # never recorded on a task that is ending. Validators do not run on replay: no patch needed.
+        if self._stop_by is not None or self._action is not None:
             raise ValueError("task_closed")
         if ref.qid not in self._open_qs:
             raise ValueError("not_open")

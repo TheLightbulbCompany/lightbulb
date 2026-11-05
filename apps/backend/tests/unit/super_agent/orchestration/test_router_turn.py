@@ -230,6 +230,39 @@ async def test_same_summary_on_every_decision_posts_once(world):
 
 
 @pytest.mark.asyncio
+async def test_a_reply_restating_the_started_requests_is_not_posted(world):
+    """Dev 5 Nov N-F3: the ack, then a reply saying the same requests again ("Both requests are Working: …"). One
+    line per ask; a separate answer (a fee estimate) still shows."""
+    t1 = await _trig("chat:m1")
+    ack = (
+        "Engineering is building the signup page, and Growth is finding a domain within the $15 cap and will ask "
+        "before purchase."
+    )
+    world["decisions"] = [
+        _start([t1], title="Signup page", ack=ack),
+        {
+            "kind": "reply",
+            "triggerIds": [t1],
+            "text": "Both requests are Working: Engineering has the signup page, and Growth has the domain search "
+            "and will ask before spending up to $15.",
+        },
+        {"kind": "reply", "triggerIds": [t1], "text": "Engineering has the signup page and Growth the domain."},
+        _start([t1], title="Domain", specialist=None, ack="And the domain."),
+        {"kind": "reply", "triggerIds": [t1], "text": "Stripe takes 2.9% + 30¢ per charge: $1.75 on a $50 ticket."},
+    ]
+    await _run([t1])
+    (post,) = world["posts"]
+    assert post["text"] == f"{ack}\nStripe takes 2.9% + 30¢ per charge: $1.75 on a $50 ticket."
+    assert len(post["task_refs"]) == 2
+
+
+def test_restates_only_with_an_ack():
+    assert not router_prompt.restates("Both requests are Working.", set())  # a plain status reply, no tasks started
+    assert router_prompt.restates("Both requests are Working.", {"On it."})
+    assert not router_prompt.restates("Venues come with rough prices.", {"Growth has the agenda and the venues."})
+
+
+@pytest.mark.asyncio
 async def test_router_turn_retry_applies_once(world):
     t1 = await _trig("chat:m1")
     world["decisions"] = [
@@ -1020,3 +1053,13 @@ async def test_an_automation_card_is_the_only_answer(world, monkeypatch):
     world["output"] = "Drafted the automation."
     await _run([t1], batch=str(uuid.uuid4()))  # no decision at all: the prose never stands in for the card either
     assert world["posts"] == []
+
+
+def test_briefs_carry_no_approval_steps():
+    """Gate run 6 (A9): "the task stops at an approval question" made the Router write "present … for approval; send
+    only after explicit approval" into a brief, and the Worker asked a plain approval before mail.send asked again.
+    The prompt says the tools gate themselves and briefs hold only the work."""
+    text = " ".join(router_prompt.ROUTER_INSTRUCTIONS.split())
+    assert "never add approval or confirmation steps to a brief" in text
+    assert "stop for a person's approval by themselves" in text
+    assert "stops at an approval question" not in text

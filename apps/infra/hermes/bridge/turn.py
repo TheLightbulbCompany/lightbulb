@@ -26,7 +26,7 @@ from collections import namedtuple
 from pathlib import Path
 
 from bridge import API, HOME, HOOK_TOKEN, OWNER, now
-from bridge import sync, browser_control, memory_ctx, task_mode, website_logins, worktrees
+from bridge import credentials, sync, browser_control, memory_ctx, task_mode, website_logins, worktrees
 from bridge.sync import restore_profile, save_profile, _profile_dir, pin_profile_defaults
 
 log = logging.getLogger("bridge")
@@ -1659,42 +1659,27 @@ def _post_backend(path: str, body: dict) -> int:
 
 
 def runtime_mcp_env(agent_id: str) -> dict[str, str]:
-    """Fresh brokered-MCP bearers for one Hermes turn; never persist them in a profile."""
-    if not API or not OWNER or not HOOK_TOKEN:
-        return {}
-    request = urllib.request.Request(
-        f"{API}/api/v1/runtime/credentials/u/{OWNER}",
-        data=json.dumps({"agent_id": agent_id}).encode(),
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {HOOK_TOKEN}"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=15) as response:
-            payload = json.loads(response.read())
-    except Exception:  # noqa: BLE001 -- a missing optional integration must not fail the turn
-        log.warning("brokered MCP credentials unavailable for agent=%s", agent_id)
-        return {}
-    tokens = payload.get("tokens") if isinstance(payload, dict) else None
-    if not isinstance(tokens, dict):
-        log.warning("brokered MCP credentials returned an invalid payload for agent=%s", agent_id)
-        return {}
-    return {
-        f"MCP_{re.sub(r'[^A-Za-z0-9]', '_', key).upper()}_ACCESS_TOKEN": token
-        for key, token in tokens.items()
-        if isinstance(key, str) and re.fullmatch(r"[A-Za-z0-9_-]+", key) and isinstance(token, str) and token
-    }
+    """Fresh brokered-MCP bearers for one Hermes turn; never persist them in a profile. The same
+    vend fills the backend-custodied grants in locally (bridge/credentials.py, spec 13)."""
+    vended = credentials.vend(agent_id, api=API, owner=OWNER, hook_token=HOOK_TOKEN)
+    return vended.mcp_env() if vended is not None else {}
 
 
-def _brokered_mcp_scope(overlay: dict[str, str]):
-    """Keep brokered bearers isolated to this turn's execution context."""
+def _brokered_mcp_scope(overlay: dict[str, str], agent_id: str | None = None):
+    """Keep brokered bearers isolated to this turn's execution context; with ``agent_id``, a
+    `credentials.TurnRenewer` re-vends a long turn's brokered grants before they expire (started
+    only when the turn's vend holds something brokered)."""
     from contextlib import contextmanager
 
     @contextmanager
     def _scope():
         token = _brokered_mcp_overlay.set(overlay)
+        renewer = credentials.TurnRenewer.for_turn(agent_id) if agent_id else None
         try:
             yield
         finally:
+            if renewer is not None:
+                renewer.stop()
             _brokered_mcp_overlay.reset(token)
 
     return _scope()
@@ -1739,7 +1724,7 @@ def warm_agent(agent_id: str) -> None:
     except ImportError:
         return
     try:
-        with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id):
+        with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id), agent_id), _secret_scope(agent_id):
             try:
                 from hermes_cli.plugins import discover_plugins
 
@@ -4051,7 +4036,7 @@ def _room_turn_env(agent_id: str, session_key: str, hermes_key: str, run_id, bod
         room_env = {**(room_env or {}), "OPENCLI_CDP_ENDPOINT": cdp}
     if run_id:  # the CLI forwards it as X-Lightbulb-Run; per-turn secret scope, so concurrent turns never share it
         room_env = {**(room_env or {}), "LIGHTBULB_RUN_ID": str(run_id)}
-    with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id, room_env), _terminal_scope(agent_id, hermes_key), _desktop_active_turn(hermes_key, run_id), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):
+    with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id), agent_id), _secret_scope(agent_id, room_env), _terminal_scope(agent_id, hermes_key), _desktop_active_turn(hermes_key, run_id), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):
         try:
             yield browser_lease
         finally:
@@ -4208,6 +4193,13 @@ def _run_task_turn(identity: dict, request: dict, *, family: str) -> tuple[str, 
     run_id = identity["runId"]
     session_id = identity["sessionId" if paperclip else "sessionKey"]
     limits = {} if paperclip else (request.get("limits") or {})
+    if family == "task" and identity.get("mode") != "router" and identity.get("runSecret"):
+        # A Worker run has no room turn to wake: its finished delegations go to the task's /inputs
+        # (audit #9). Only runs-v1 Worker runs carry a runSecret, so prod's room/Paperclip paths skip this.
+        from bridge import followups
+
+        followups.remember_task(session_id, identity["taskId"], identity["runSecret"])
+        followups.ensure_started()
     try:
         import run_agent  # noqa: F401
     except ImportError:
@@ -4255,7 +4247,7 @@ def _run_task_turn(identity: dict, request: dict, *, family: str) -> tuple[str, 
                "runSecret": identity.get("runSecret")} if not paperclip and not router else {})}
     # Paperclip runs need the same brokered MCP bearers as room turns. Without
     # this scope, ${MCP_POSTHOG_ACCESS_TOKEN} stays literal and PostHog returns 401.
-    with _waiting_turn_lock(agent_id, session_id, run_id), _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id, env), _terminal_scope(agent_id, session_id), _desktop_active_turn(session_id, run_id), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):
+    with _waiting_turn_lock(agent_id, session_id, run_id), _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id), agent_id), _secret_scope(agent_id, env), _terminal_scope(agent_id, session_id), _desktop_active_turn(session_id, run_id), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):
         budget = None
         try:
             extra = {"max_iterations": limits["max_iterations"]} if limits.get("max_iterations") else {}

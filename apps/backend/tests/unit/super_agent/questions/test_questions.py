@@ -289,3 +289,15 @@ def test_waiting_label_caps_the_names():
     assert questions.waiting_label(["Sam", "Ada", "Bo"]) == "Waiting on Sam, Ada and 1 other"
     assert questions.waiting_label(["Sam", "Ada", "Bo", "Cy", "Di"]) == "Waiting on Sam, Ada and 3 others"
     assert questions.waiting_label([]) == "Waiting on a decision"
+
+
+@pytest.mark.parametrize(
+    "kind,operands,expected",
+    [
+        ("app.publish", {"appName": "Signup"}, {"kind": "app", "title": "Publish Signup"}),
+        ("pr.merge", {"number": 7, "repo": "acme/web"}, {"kind": "pr", "title": "Merge PR #7 in acme/web"}),
+        ("purchase", {"item": "a domain"}, None),
+    ],
+)
+def test_output_for_review_kinds_only(kind, operands, expected):
+    assert questions.output_for({"kind": kind, "operands": operands}) == expected

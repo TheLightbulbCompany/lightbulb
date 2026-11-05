@@ -344,6 +344,13 @@ def _err(http_status: int, code: str, **extra) -> HTTPException:
     return HTTPException(status_code=http_status, detail={"code": code, **extra})
 
 
+def check_dm_owner(deliver_to: str | None, owner_user_id: str) -> None:
+    """A `dm:` delivery is the automation owner's own DM with Lightbulb; anyone else's DM would show them a
+    person-visible run they cannot open. 400 `dm_owner_only` at save time (fire_automation keeps a backstop)."""
+    if deliver_to and deliver_to.startswith("dm:") and deliver_to.removeprefix("dm:") != owner_user_id:
+        raise _err(400, "dm_owner_only")
+
+
 async def _ws(auth: AuthContext) -> str:
     ws = resolve_owner_id(auth)
     if not await super_agent_flags.flags_for(ws):
@@ -514,6 +521,7 @@ async def list_automations(auth: AuthContext = Depends(get_current_user)) -> dic
 @router.post("")
 async def create_automation(body: AutomationIn, auth: AuthContext = Depends(get_current_user)) -> dict:
     ws = await _ws(auth)
+    check_dm_owner(body.deliver_to, auth.user_id)
     if body.events:  # a webhook on a provider is an org-admin act, as `from_integration` is today
         require_org_admin(auth)
     fields = _schedule_fields(body.schedule) if body.schedule else {"cron": [], "tz": "UTC"}
@@ -617,6 +625,7 @@ async def patch_automation(sid: str, body: AutomationPatch, auth: AuthContext = 
     if body.specialist_id is not None:
         fields["specialist"] = body.specialist_id
     if body.deliver_to is not None:
+        check_dm_owner(body.deliver_to, row["ownerUserId"])
         fields["deliverTo"] = body.deliver_to
     if body.budget_per_run_usd is not None:
         fields["budgetPerRunUsd"] = body.budget_per_run_usd

@@ -1,0 +1,51 @@
+// The open question on a thread (the phone twin of web's NeedsYouCard): only an answerer gets the
+// option buttons; everyone else reads who it waits on. Typed text never answers (contracts-v2 §8).
+
+import { useState } from "react";
+import { StyleSheet, Text, View } from "react-native";
+import type { QuestionView, TaskSummary } from "@lightbulb/shared";
+
+import { fonts, radii, spacing, type ChatPalette } from "../../config/theme";
+import { ActionButton } from "./TaskCard";
+import { useTaskActions } from "./useTaskActions";
+
+/** `onAnsweredElsewhere` gets the "Already answered by X" line: the refetch drops this card, so the screen shows it. */
+export function NeedsYouCard({ task, question, palette, onAnsweredElsewhere }: {
+  task: TaskSummary; question: QuestionView; palette: ChatPalette; onAnsweredElsewhere?: (message: string) => void;
+}) {
+  const { answer } = useTaskActions();
+  const [pending, setPending] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const [closed, setClosed] = useState(false);
+  const waiting = question.waitingLabel ?? `Waiting on ${question.answerers.map((a) => a.name).join(" or ")}`;
+  return (
+    <View accessibilityLabel={question.text || question.title} style={[styles.card, { borderColor: palette.edge, borderLeftColor: palette.warn, backgroundColor: palette.surface }]}>
+      <Text style={[styles.label, { color: palette.fgMute }]}>{(question.canAnswer ? "Waiting on you" : waiting).toUpperCase()}</Text>
+      <Text style={[styles.title, { color: palette.fg }]}>{question.text || question.title}</Text>
+      {question.canAnswer && !closed ? (
+        <View style={styles.actions}>
+          {question.options.map((o) => (
+            <ActionButton key={o.id} label={o.label} palette={palette} primary={o.style === "primary"} disabled={pending}
+              onPress={async () => {
+                setPending(true);
+                const res = await answer(task, question.id, o.id, { expectVersion: question.version });
+                setPending(false);
+                if (res.ok) setClosed(true);
+                else if (res.answeredBy) { setClosed(true); onAnsweredElsewhere?.(res.message); }
+                else setNote(res.message);
+              }} />
+          ))}
+        </View>
+      ) : null}
+      {note ? <Text accessibilityRole="alert" style={[styles.meta, { color: palette.alert }]}>{note}</Text> : null}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  card: { borderWidth: 1, borderLeftWidth: 3, borderRadius: radii.md, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, gap: spacing.xs },
+  label: { fontFamily: fonts.sansSemiBold, fontSize: 10, letterSpacing: 1.2, lineHeight: 14 },
+  title: { fontFamily: fonts.sansSemiBold, fontSize: 15, lineHeight: 20 },
+  meta: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18 },
+  actions: { flexDirection: "row", flexWrap: "wrap", gap: spacing.xs, marginTop: spacing.xs },
+});

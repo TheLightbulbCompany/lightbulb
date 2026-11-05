@@ -27,14 +27,20 @@ def _clear_sync_state():
     tmp_path stamps would otherwise poison the same agent id here. Autouse for the same reason
     _clear_run_registry is: a future sync test that does not take `home` is exactly the one
     that would inherit the state and fail somewhere else."""
-    from bridge import sync
-    sync._SYNCED.clear()
-    sync._MTIMES.clear()
-    sync._CLI_PULLED.clear()
+    from bridge import credentials, sync
+
+    def clear():
+        sync._SYNCED.clear()
+        sync._MTIMES.clear()
+        sync._CLI_PULLED.clear()
+        sync._BROKERED_CLI.clear()
+        sync._CODEX_BROKERED = False
+        credentials._LAST.clear()
+        credentials._AGENT, credentials._DELEGATE_ON = None, False
+
+    clear()
     yield
-    sync._SYNCED.clear()
-    sync._MTIMES.clear()
-    sync._CLI_PULLED.clear()
+    clear()
 
 
 @pytest.fixture

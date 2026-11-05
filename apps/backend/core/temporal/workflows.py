@@ -25,6 +25,7 @@ from temporalio.workflow import ActivityCancellationType
 
 from core.temporal.automations import PATCH_AUTOMATION_RUN, AutomationRunMixin
 from core.temporal.task_questions import TaskQuestionsMixin
+from core.temporal.watches import WatchMixin, WatchSpec
 from core.temporal.types import (
     ActionRequest,
     AttemptRef,
@@ -139,7 +140,7 @@ class RouterWorkflow:
 
 
 @workflow.defn
-class TaskWorkflow(TaskQuestionsMixin, AutomationRunMixin):
+class TaskWorkflow(TaskQuestionsMixin, AutomationRunMixin, WatchMixin):
     """`task:{ws}:{taskId}`: slot lease → Attempt → `worker_turn` (async, bridge-completed) → `end_attempt`."""
 
     @workflow.init
@@ -162,12 +163,25 @@ class TaskWorkflow(TaskQuestionsMixin, AutomationRunMixin):
         self._awaiting_start = False  # begin_attempt found a proposed task: only Start runs it
         self.last_event: RunEvent | None = None
         self._q_init()  # Lane Q: open questions (task_questions.py)
+        self._w_init()  # Lane A: watches (watches.py)
 
     # --- hooks (Q, A, S add behaviour here) ------------------------------------------------------------
 
     async def _on_waiting(self) -> None:
         """The task is about to wait for inputs or actions (idle/waiting)."""
-        await self._q_on_waiting()
+        self._w_wake = False  # one-shot: an add/poke/unwatch brought the task back here
+        if not self._watches:
+            await self._q_on_waiting()
+        # While watches run, the watch loop waits (checks go on with a Question open) and hands Q's work
+        # (an approved draft to land, a reminder due) back here; Q's own wait takes over once no watch is left.
+        watched = False  # without a watch this is exactly Q's wait above: no new commands for older histories
+        while self._watches and not self._woken() and self._status != "resolved":
+            watched = True
+            await self._w_on_waiting()
+            if self._status != "resolved":
+                await self._q_serve()
+        if watched and self._open_qs and not self._woken() and self._status != "resolved":
+            await self._q_on_waiting()  # a give-up or unwatch left a Question open: Q's wait, no deadline
 
     async def _before_attempt(self) -> bool:
         """False ⇒ do not start an attempt now; the workflow waits for the next input or action."""
@@ -204,6 +218,19 @@ class TaskWorkflow(TaskQuestionsMixin, AutomationRunMixin):
         self._attempt_needed = True
         self._awaiting_start = False
         self._wakes += 1
+
+    # Lane A: watches (watches.py)
+    @workflow.update
+    async def add_watch(self, spec: WatchSpec) -> str:
+        return await self._w_add(spec)
+
+    @workflow.signal
+    def watch_poke(self, watch_id: str) -> None:
+        self._w_poke(watch_id)
+
+    @workflow.signal
+    def unwatch(self, watch_id: str) -> None:
+        self._w_remove(watch_id)
 
     @workflow.signal
     def run_event(self, event: RunEvent) -> None:
@@ -296,7 +323,7 @@ class TaskWorkflow(TaskQuestionsMixin, AutomationRunMixin):
 
     def _woken(self) -> bool:
         work = (bool(self._pending) or self._attempt_needed) and not self._deferred()
-        return work or self._action is not None or self._stop_by is not None
+        return work or self._action is not None or self._stop_by is not None or self._w_wake
 
     @workflow.run
     async def run(self, start: TaskStart) -> None:
@@ -330,6 +357,8 @@ class TaskWorkflow(TaskQuestionsMixin, AutomationRunMixin):
                     break
                 continue
             await self._on_waiting()
+            if self._status == "resolved":  # a watch's `fail` give-up ended the task while it waited
+                break
             try:
                 await workflow.wait_condition(self._woken, timeout=QUIET_AFTER)
             except asyncio.TimeoutError:

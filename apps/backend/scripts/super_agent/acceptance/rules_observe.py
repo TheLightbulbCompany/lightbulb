@@ -1,8 +1,8 @@
 """Wave-2 gate (G2): proactive rules in observe left a record and did nothing (plans/wave2-S Task 9).
 
-Manual checks 1-3 (and 9) are driven by a person in ``sa-dev-on``: Sam writes the rule in ``#dev``, Priya's
+Manual checks 1-3 (and 9) are driven by a person in the test workspace: Sam writes the rule in ``#dev``, Priya's
 Turn on is refused, Sam's lands it in observe (check 1); three bug reports and two chatter lines are posted
-(check 2); Sam asks Lightbulb to fix one reported bug in its thread (check 3); an invite reaches the fixture
+(check 2); Sam asks Lightbulb to fix one reported bug in its thread (check 3); an invite reaches the test
 Google account (check 9). This module is the evidence those steps leave in the tasks table, pure over
 ``ctx.tasks_rows(ws)`` (G1's dev-only read), no network. Thread keys, trigger ids and the rule id are the
 evidence; no message text is read.

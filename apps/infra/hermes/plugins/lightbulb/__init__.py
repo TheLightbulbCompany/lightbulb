@@ -915,6 +915,89 @@ ASK_PERSON_SCHEMA = {
 }
 ASK_IN_REPLY = "No task to ask on: in a room conversation, ask in your reply instead."
 
+# watch / unwatch (lane A, Task 12): the task sleeps on a timer and wakes you when something finishes.
+WATCH_SCHEMA = {
+    "name": "watch",
+    "description": "Ask your task to watch something that finishes later (a PR's checks, a URL that should start "
+                   "answering) and end your turn: the task wakes you with 'Watch met: …' when it does. Past "
+                   "give_up_hours it asks the person whether to keep watching.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "kind": {"type": "string", "enum": ["pr_checks", "url"]},
+            "repo": {"type": "string", "description": "pr_checks: owner/name"},
+            "number": {"type": "integer", "description": "pr_checks: the PR number"},
+            "url": {"type": "string", "description": "url: the address that should answer 2xx"},
+            "every_min": {"type": "integer", "description": "Minutes between checks (5 to 1440). Default 30."},
+            "give_up_hours": {"type": "number", "description": "Hours until the task asks instead. Default 24, at most 336."},
+        },
+        "required": ["kind"],
+    },
+}
+UNWATCH_SCHEMA = {
+    "name": "unwatch",
+    "description": "Stop a watch you started (its id came back from watch).",
+    "parameters": {"type": "object", "properties": {"watch_id": {"type": "string"}}, "required": ["watch_id"]},
+}
+WATCH_ONLY = "watch works only on a Lightbulb task run."
+
+
+def _watch(args: dict, *, session_id: str = "", **_kw) -> str:
+    ctx = turn_context.read(session_id)
+    if not _task_run(ctx):
+        return WATCH_ONLY
+    args = args or {}
+    kind = args.get("kind")
+    if kind == "pr_checks":
+        target = {"repo": str(args.get("repo") or ""), "number": args.get("number")}
+        if not target["repo"] or not isinstance(target["number"], int):
+            return json.dumps({"error": "pr_checks needs repo (owner/name) and number"})
+    elif kind == "url":
+        target = {"url": str(args.get("url") or "")}
+        if not target["url"].startswith(("https://", "http://")):
+            return json.dumps({"error": "url must start with https:// or http://"})
+    else:
+        return json.dumps({"error": "kind is pr_checks or url"})
+    body = {"runId": ctx.get("runId"), "attempt": ctx.get("attempt"), "runSecret": ctx.get("runSecret"),
+            "kind": kind, "target": target}
+    if isinstance(args.get("every_min"), int):
+        body["everyMin"] = args["every_min"]
+    hours = args.get("give_up_hours")
+    if isinstance(hours, (int, float)) and hours > 0:
+        import datetime as _dt
+
+        hours = min(float(hours), 14 * 24)  # the backend's cap: a watch is for something that finishes soon
+        body["giveUpAt"] = (_dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(hours=hours)).isoformat()
+    url = f"{ctx['apiUrl'].rstrip('/')}/api/v1/internal/tasks/{ctx['ownerId']}/{ctx['taskId']}/watches"
+    try:
+        made = _post(url, ctx["hookToken"], body)
+    except urllib.error.HTTPError as exc:
+        detail = _detail(exc)
+        return f"Watch not started: HTTP {exc.code}" + (f" ({detail})." if detail else ".")
+    except Exception as exc:  # noqa: BLE001
+        return f"Watch not started: {type(exc).__name__}."
+    return json.dumps({"watchId": made.get("watchId"), "giveUpAt": made.get("giveUpAt"),
+                       "note": "Watching. End your turn; you will be woken with 'Watch met: …'."})
+
+
+def _unwatch(args: dict, *, session_id: str = "", **_kw) -> str:
+    ctx = turn_context.read(session_id)
+    if not _task_run(ctx):
+        return WATCH_ONLY
+    watch_id = str((args or {}).get("watch_id") or "").strip()
+    if not watch_id:
+        return json.dumps({"error": "watch_id is required"})
+    body = {"runId": ctx.get("runId"), "attempt": ctx.get("attempt"), "runSecret": ctx.get("runSecret"),
+            "watchId": watch_id}
+    url = f"{ctx['apiUrl'].rstrip('/')}/api/v1/internal/tasks/{ctx['ownerId']}/{ctx['taskId']}/watches/remove"
+    try:
+        _post(url, ctx["hookToken"], body)
+    except urllib.error.HTTPError as exc:
+        return f"Watch not removed: HTTP {exc.code}."
+    except Exception as exc:  # noqa: BLE001
+        return f"Watch not removed: {type(exc).__name__}."
+    return "stopped"
+
 
 def _ask_person(args: dict, *, session_id: str = "", **_kw) -> str:
     question = str(args.get("question") or "").strip()
@@ -1097,6 +1180,10 @@ def register(ctx) -> None:
                       description=PURCHASE_SCHEMA["description"], emoji="💳")
     ctx.register_tool("request_approval", "lightbulb", APPROVAL_SCHEMA, _request_approval,
                       description=APPROVAL_SCHEMA["description"], emoji="✅")
+    ctx.register_tool("watch", "lightbulb", WATCH_SCHEMA, _watch,
+                      description=WATCH_SCHEMA["description"], emoji="👀")
+    ctx.register_tool("unwatch", "lightbulb", UNWATCH_SCHEMA, _unwatch,
+                      description=UNWATCH_SCHEMA["description"], emoji="👀")
     ctx.register_tool("ask_person", "lightbulb", ASK_PERSON_SCHEMA, _ask_person,
                       description=ASK_PERSON_SCHEMA["description"], emoji="❓")
     ctx.register_tool("lightbulb_local_sessions", "lightbulb", SESSIONS_SCHEMA, _local_sessions,

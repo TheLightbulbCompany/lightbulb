@@ -170,6 +170,10 @@ export default function AppLayout() {
                   <Stack.Screen name="room/[roomId]/index" options={{ title: "" }} />
                   <Stack.Screen name="room/[roomId]/thread/[messageId]" options={{ title: "Thread" }} />
                   <Stack.Screen name="room/[roomId]/details" options={{ title: "Details" }} />
+                  {/* A super-agent thread (opened from a card, Activity, a push or a link). */}
+                  <Stack.Screen name="task/[taskId]" options={{ title: "Thread" }} />
+                  {/* A super-agent automation and its run history. */}
+                  <Stack.Screen name="automation/[id]" options={{ title: "Automation" }} />
                   {/* A shared Claude / Codex session's transcript: workspace-scoped, not
                       a room's (it sets its own title from the session). */}
                   <Stack.Screen name="session/new" options={{ title: "New session" }} />

@@ -703,6 +703,13 @@ def _provider_credential(agent_id: str, provider: str) -> tuple[bool, str]:
             state = (blob.get("providers") or {}).get("openai-codex") or {}
             tokens = state.get("tokens") or {}
             present = isinstance(tokens, dict) and any(tokens.get(k) for k in ("access_token", "refresh_token"))
+            if not present and state.get("custody") == "backend":
+                # The backend holds the grant (spec 13): a vend fills the local file, and its
+                # `model` is the proof the grant is live.
+                from bridge import credentials
+
+                vended = credentials.vend(agent_id)
+                present = vended is not None and vended.model is not None
         except (OSError, ValueError, AttributeError):
             present = False
         return present, "chatgpt-oauth"

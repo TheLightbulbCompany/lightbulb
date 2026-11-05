@@ -12,6 +12,8 @@ provides_tools:
   - lightbulb_local_sessions
   - lightbulb_desktop
   - start_work
+  - watch
+  - unwatch
   - lightbulb_read_rooms
   - lightbulb_workspace
   - start_task

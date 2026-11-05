@@ -10,8 +10,10 @@ Schema (created by apps/infra/lib/stacks/database-stack.ts):
 - GSI target-timestamp-index (PK target_user_id, SK timestamp_action_id)
 """
 
+import json
 import time
 import uuid
+from decimal import Decimal
 from typing import Any
 
 from boto3.dynamodb.conditions import Key
@@ -33,6 +35,11 @@ def _generate_action_id() -> str:
     ts_hex = f"{ts_ms:012x}"
     rand_hex = uuid.uuid4().hex[:20]
     return f"{ts_hex}{rand_hex}"
+
+
+def _json_default(o: Any) -> Any:
+    """Decimals stay numbers (parse_float turns them back into Decimal); datetimes and the rest become strings."""
+    return float(o) if isinstance(o, Decimal) else str(o)
 
 
 async def create(
@@ -64,7 +71,8 @@ async def create(
         "timestamp_action_id": f"{iso_ts}#{action_id}",
         "target_user_id": target_user_id,
         "action": action,
-        "payload": payload,
+        # DynamoDB rejects float; a float in the payload (e.g. watchdog_ctl's config) would lose the row.
+        "payload": json.loads(json.dumps(payload, default=_json_default), parse_float=Decimal),
         "result": result,
         "audit_status": audit_status,
         "http_status": http_status,

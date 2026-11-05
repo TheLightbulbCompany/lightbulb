@@ -85,6 +85,15 @@ const TONES: Record<ShownGroup, TaskTone> = {
 };
 const NEXT_STEPS = new Set<TaskAction>(["publish", "send", "merge", "approve"]);
 
+/** The front agent (`@lightbulb`): the backend-authored starter (or legacy seed) root CEO, by role, never by
+ *  display name. Undefined until the roster answers or where no agent holds that role. Web and mobile share it
+ *  so both pick the same agent. */
+export function resolveCeoAgentId(
+  agents: readonly { id: string; role?: string | null; reportsTo?: string | null; origin?: string | null }[],
+): string | undefined {
+  return agents.find((a) => a.role === "ceo" && !a.reportsTo && (a.origin === "Starter" || a.origin === "Seed"))?.id;
+}
+
 /** "finance" → "Lightbulb · Finance"; no specialist → "Lightbulb". */
 export function specialistLabel(specialist: string | null | undefined): string {
   if (!specialist) return "Lightbulb";
@@ -248,19 +257,18 @@ function nextInstant(dow: number | null, h: number, m: number, tz: string, now: 
   return wall - zoneOffsetMinutes(wall, tz) * 60_000;
 }
 
-function dayWords(dow: string): { label: string; days: (number | null)[] } | null {
+function dayWords(dow: string): { label: string; days: (number | null)[]; range?: [number, number] } | null {
   if (dow === "*") return { label: "Every day", days: [null] };
   const one = (token: string) => (/^\d$/.test(token) ? Number(token) % 7 : DAY_NAMES[token.toLowerCase().slice(0, 3)]);
   const range = dow.match(/^(\w+)-(\w+)$/);
   if (range) {
     const [a, b] = [one(range[1]), one(range[2])];
     if (a === undefined || b === undefined) return null;
-    if (a === 1 && b === 5) return { label: "Weekdays", days: [1] };
-    return { label: `${DAYS[a]}s to ${DAYS[b]}s`, days: [a] };
+    return { label: a === 1 && b === 5 ? "Weekdays" : `${DAYS[a]}s to ${DAYS[b]}s`, days: [a], range: [a, b] };
   }
   const days = dow.split(",").map(one);
   if (days.some((d) => d === undefined)) return null;
-  if (days.length === 2 && days.includes(0) && days.includes(6)) return { label: "Weekends", days: [6] };
+  if (days.length === 2 && days.includes(0) && days.includes(6)) return { label: "Weekends", days: [6, 0] };
   return { label: days.map((d) => `${DAYS[d]}s`).join(" and "), days };
 }
 
@@ -282,9 +290,10 @@ export function formatSchedule(cron: readonly string[], tz: string, viewerTz: st
     // The viewer's zone can put the run on the day before or after the row's.
     const viewerDow = DAY_NAMES[new Intl.DateTimeFormat("en-US", { timeZone: viewerTz, weekday: "short" }).format(new Date(instant)).toLowerCase()];
     const shift = (viewerDow - first + 7) % 7 === 6 ? -1 : (viewerDow - first + 7) % 7;
-    const label = shift === 0 || words.label === "Weekdays" || words.label === "Weekends"
-      ? words.label
-      : words.days.map((d) => `${DAYS[((d ?? 0) + shift + 7) % 7]}s`).join(" and ");
+    const day = (d: number) => `${DAYS[(d + shift + 7) % 7]}s`;
+    const label = shift === 0 ? words.label
+      : words.range ? `${day(words.range[0])} to ${day(words.range[1])}`
+      : words.days.map((d) => day(d ?? 0)).join(" and ");
     return `${label} ${time}`;
   }).join(" and ");
 }

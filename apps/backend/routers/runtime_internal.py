@@ -306,7 +306,9 @@ async def effect_check(owner_id: str, body: EffectBody, request: Request) -> dic
         return {"decision": "denied", "questionId": res.qid}
     # needs_approval: the proposed row is the draft (Output) the person reviews; the workflow opens the Question
     # once the turn ends `waiting_approval`.
-    row, _ = await effects_repo.put_effect(owner_id, {**effect, "questionId": res.qid})
+    row, _ = await effects_repo.put_effect(
+        owner_id, {**effect, "questionId": res.qid, "output": questions.output_for(effect)}
+    )
     return {"decision": "needs_approval", "questionId": row.get("questionId") or res.qid}
 
 

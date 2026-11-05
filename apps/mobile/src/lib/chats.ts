@@ -1,4 +1,4 @@
-import type { LocalSession, RoomMember, RoomSummary } from "@lightbulb/shared";
+import type { ChatEntry, LocalSession, RoomMember, RoomSummary } from "@lightbulb/shared";
 
 import { LocalStore } from "./localStore";
 
@@ -40,3 +40,20 @@ export const otherMembers = (
   room: Pick<RoomSummary, "members"> | undefined,
   viewerId: string | null | undefined,
 ): RowParticipant[] => (room?.members ?? []).filter((m) => !(m.kind === "human" && m.id === viewerId));
+
+/** A chat row, or the super-agent's Specialists group row. */
+export type ChatListRow = ChatEntry | { kind: "specialists"; key: string; count: number; open: boolean };
+
+/** Super-agent one voice: DMs with any agent but the front one (`@lightbulb`) move under one Specialists row at
+ *  the end, listed only while `open`. No front agent known: the entries as they are. */
+export function fileSpecialists(entries: ChatEntry[], frontAgentId: string | undefined, viewerId: string | null | undefined, open: boolean): ChatListRow[] {
+  if (!frontAgentId) return entries;
+  const specialist = (entry: ChatEntry) => {
+    if (entry.kind !== "room" || entry.room.kind !== "dm") return false;
+    const others = otherMembers(entry.room, viewerId);
+    return others.length === 1 && others[0].kind === "agent" && others[0].id !== frontAgentId;
+  };
+  const grouped = entries.filter(specialist);
+  if (!grouped.length) return entries;
+  return [...entries.filter((e) => !specialist(e)), { kind: "specialists", key: "specialists", count: grouped.length, open }, ...(open ? grouped : [])];
+}

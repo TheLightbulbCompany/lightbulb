@@ -77,8 +77,17 @@ RUN set -eu; cd /opt/hermes; \
 # intuit/quickbooks-online-mcp-server#151 (open since 2026-09-30, unreviewed)
 # adds the same send_invoice with the same params and guards; once a pin
 # carries it, the count check fails the build and this overlay gets deleted.
+#
+# brokered-token.patch (spec 13 T8, lane V15) teaches the client a BROKERED store: when
+# QUICKBOOKS_ACCESS_TOKEN is in the store (the bridge writes the backend-vended token there each
+# turn, no refresh token, no client secret) the server seeds from it, re-reads the store on every
+# call and adopts a rewritten token, and never calls Intuit, never starts the OAuth flow, never
+# writes the store. Inert for today's stores (no such key). `git apply --check` is its own
+# command (same reason as the Hermes series above); the smoke after the build proves the
+# behaviour with every HTTP primitive replaced by a throw.
 ENV QUICKBOOKS_MCP_COMMIT=c351dc011d9cb14b211857457085f7994d8b1e15
 COPY quickbooks-mcp/ /opt/quickbooks-mcp-overlay/
+COPY tests/image_smoke/quickbooks_brokered_smoke.mjs /tmp/quickbooks_brokered_smoke.mjs
 RUN set -eux; \
     mkdir -p /opt/quickbooks-mcp; \
     cd /opt/quickbooks-mcp; \
@@ -89,6 +98,9 @@ RUN set -eux; \
     rm -rf .git; \
     cp /opt/quickbooks-mcp-overlay/send-invoice.tool.ts src/tools/; \
     cp /opt/quickbooks-mcp-overlay/send-quickbooks-invoice.handler.ts src/handlers/; \
+    git apply --check /opt/quickbooks-mcp-overlay/brokered-token.patch; \
+    git apply /opt/quickbooks-mcp-overlay/brokered-token.patch; \
+    grep -q 'brokeredAccessToken: brokered_access_token' src/clients/quickbooks-client.ts; \
     rm -rf /opt/quickbooks-mcp-overlay; \
     perl -pi -e 's|^(import \{ GetInvoicePdfTool \} from "./tools/get-invoice-pdf.tool.js";)$|$1\nimport { SendInvoiceTool } from "./tools/send-invoice.tool.js";|' src/index.ts; \
     perl -pi -e 's|^(\s*)(RegisterTool\(server, GetInvoicePdfTool\);)$|$1$2\n$1RegisterTool(server, SendInvoiceTool);|' src/index.ts; \
@@ -99,6 +111,8 @@ RUN set -eux; \
     npm run build; \
     npm prune --omit=dev; \
     test -f /opt/quickbooks-mcp/dist/index.js; \
+    node /tmp/quickbooks_brokered_smoke.mjs /opt/quickbooks-mcp/dist; \
+    rm -f /tmp/quickbooks_brokered_smoke.mjs; \
     grep -q '"send_invoice"' /opt/quickbooks-mcp/dist/tools/send-invoice.tool.js; \
     grep -q 'RegisterTool(server, SendInvoiceTool)' /opt/quickbooks-mcp/dist/index.js; \
     printf '%s\n' '#!/bin/sh' 'set -eu' 'export QUICKBOOKS_TOKEN_STORE_PATH="${HOME}/quickbooks/.env"' 'exec node /opt/quickbooks-mcp/dist/index.js' > /usr/local/bin/lightbulb-quickbooks-mcp; \

@@ -1,0 +1,155 @@
+diff --git a/src/clients/quickbooks-client.ts b/src/clients/quickbooks-client.ts
+index 92dc141..79dbb1d 100644
+--- a/src/clients/quickbooks-client.ts
++++ b/src/clients/quickbooks-client.ts
+@@ -52,13 +52,19 @@ process.on('unhandledRejection', (reason) => {
+ const client_id = process.env.QUICKBOOKS_CLIENT_ID;
+ const client_secret = process.env.QUICKBOOKS_CLIENT_SECRET;
+ const refresh_token = process.env.QUICKBOOKS_REFRESH_TOKEN;
++// Lightbulb brokered mode (token broker, spec 13): the host holds the refresh token and writes a
++// short-lived access token (+ optional QUICKBOOKS_ACCESS_TOKEN_EXPIRES_AT, epoch seconds) into
++// the store each turn. In this mode the server never refreshes with Intuit, never starts the
++// OAuth flow and never writes the store: it re-reads the store and adopts the token there.
++const brokered_access_token = process.env.QUICKBOOKS_ACCESS_TOKEN?.trim() || undefined;
+ const realm_id = process.env.QUICKBOOKS_REALM_ID;
+ const environment = process.env.QUICKBOOKS_ENVIRONMENT || 'sandbox';
+ // Fix for Issue #5: Use env var with underscore (QUICKBOOKS_REDIRECT_URI)
+ const redirect_uri = process.env.QUICKBOOKS_REDIRECT_URI || 'http://localhost:8000/callback';
+ 
+ // Only throw error if client_id or client_secret is missing
+-if (!client_id || !client_secret || !redirect_uri) {
++// A brokered store carries no client secret: refresh is the host's job.
++if (!client_id || !redirect_uri || (!client_secret && !brokered_access_token)) {
+   throw Error("Client ID, Client Secret and Redirect URI must be set in environment variables");
+ }
+ 
+@@ -78,6 +84,8 @@ export class QuickbooksClient {
+   private oauthClient: OAuthClient;
+   private isAuthenticating: boolean = false;
+   private redirectUri: string;
++  // Brokered mode (see brokered_access_token above): the store is the source of the access token.
++  private readonly brokered: boolean;
+ 
+   // Refresh 5 minutes before actual expiry to avoid edge cases
+   private static readonly TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000;
+@@ -99,7 +107,9 @@ export class QuickbooksClient {
+     realmId?: string;
+     environment: string;
+     redirectUri: string;
++    brokeredAccessToken?: string;
+   }) {
++    this.brokered = !!config.brokeredAccessToken;
+     this.clientId = config.clientId;
+     this.clientSecret = config.clientSecret;
+     this.refreshToken = config.refreshToken;
+@@ -112,6 +122,32 @@ export class QuickbooksClient {
+       environment: this.environment,
+       redirectUri: this.redirectUri,
+     });
++    if (this.brokered) this.syncBrokeredToken();
++  }
++
++  // Brokered mode: parse the store the way the startup load did (dotenv), so the token compares
++  // byte-for-byte with the one in memory.
++  private readBrokeredStore(): { token?: string; expiresAt?: number } {
++    try {
++      const parsed = dotenv.parse(fs.readFileSync(TOKEN_STORE_PATH));
++      const token = parsed.QUICKBOOKS_ACCESS_TOKEN?.trim() || undefined;
++      const exp = Number(parsed.QUICKBOOKS_ACCESS_TOKEN_EXPIRES_AT);
++      return { token, expiresAt: Number.isFinite(exp) && exp > 0 ? exp : undefined };
++    } catch {
++      return {};
++    }
++  }
++
++  // Brokered mode, before every call: a token the host rewrote since the last call is adopted
++  // and the QuickBooks instance rebuilt with it. Without a recorded expiry the host's renewal
++  // window (it rewrites with 10 min left) is what keeps the token fresh; assume Intuit's hour.
++  private syncBrokeredToken(): void {
++    if (!this.brokered) return;
++    const { token, expiresAt } = this.readBrokeredStore();
++    if (!token || token === this.accessToken) return;
++    this.accessToken = token;
++    this.accessTokenExpiry = new Date(expiresAt ? expiresAt * 1000 : Date.now() + 60 * 60 * 1000);
++    this.quickbooksInstance = undefined;
+   }
+ 
+   private isTokenExpiredOrExpiringSoon(): boolean {
+@@ -422,6 +458,7 @@ export class QuickbooksClient {
+   }
+ 
+   private saveTokensToEnv(): void {
++    if (this.brokered) return; // the host owns the store; this server never writes it
+     const tokenPath = TOKEN_STORE_PATH;
+     const envContent = fs.existsSync(tokenPath) ? fs.readFileSync(tokenPath, 'utf-8') : '';
+     const envLines = envContent.split('\n');
+@@ -493,6 +530,16 @@ export class QuickbooksClient {
+   }
+ 
+   async refreshAccessToken() {
++    if (this.brokered) {
++      // Never Intuit, never the OAuth flow: the host refreshes. A rewritten store is adopted;
++      // an unchanged, expiring one means the host has not renewed yet -- the caller retries.
++      this.syncBrokeredToken();
++      if (!this.accessToken || this.isTokenExpiredOrExpiringSoon()) {
++        throw new Error('Quickbooks access token expired — retry (the host renews it)');
++      }
++      const expiresIn = Math.max(0, Math.floor((this.accessTokenExpiry!.getTime() - Date.now()) / 1000));
++      return { access_token: this.accessToken, expires_in: expiresIn };
++    }
+     if (!this.refreshToken) {
+       await this.startOAuthFlow();
+ 
+@@ -597,9 +644,13 @@ export class QuickbooksClient {
+       return this.authInFlight;
+     }
+ 
+-    this.authInFlight = (async () => {
++    // Start the body on a microtask so the assignment below lands BEFORE its `finally` can clear
++    // it: in brokered mode the body never awaits (no network), so an immediately-invoked async
++    // function would run to completion first and leave a settled promise cached here -- every
++    // later authenticate() would then return it and never rebuild the instance.
++    this.authInFlight = Promise.resolve().then(async () => {
+       try {
+-        if (!this.refreshToken || !this.realmId) {
++        if (!this.brokered && (!this.refreshToken || !this.realmId)) {
+           await this.startOAuthFlow();
+ 
+           // Verify we have both tokens after OAuth flow
+@@ -659,7 +710,7 @@ export class QuickbooksClient {
+       } finally {
+         this.authInFlight = undefined;
+       }
+-    })();
++    });
+ 
+     return this.authInFlight;
+   }
+@@ -668,6 +719,7 @@ export class QuickbooksClient {
+   // Checks token freshness on each invocation so handlers stay functional
+   // across 60-minute token boundaries without server restarts.
+   static async getInstance(): Promise<QuickBooks> {
++    quickbooksClient.syncBrokeredToken();
+     if (quickbooksClient.isTokenExpiredOrExpiringSoon()) {
+       await quickbooksClient.authenticate();
+     }
+@@ -682,6 +734,7 @@ export class QuickbooksClient {
+   // (e.g. POST /upload for binary attachments). Ensures token freshness on
+   // every invocation, same as getInstance().
+   static async getAuthCredentials(): Promise<{ accessToken: string; realmId: string; isSandbox: boolean }> {
++    quickbooksClient.syncBrokeredToken();
+     if (quickbooksClient.isTokenExpiredOrExpiringSoon() || !quickbooksClient.accessToken) {
+       await quickbooksClient.authenticate();
+     }
+@@ -705,9 +758,10 @@ export class QuickbooksClient {
+ 
+ export const quickbooksClient = new QuickbooksClient({
+   clientId: client_id,
+-  clientSecret: client_secret,
++  clientSecret: client_secret ?? '', // brokered mode: unused, the host holds the secret
+   refreshToken: refresh_token,
+   realmId: realm_id,
+   environment: environment,
+   redirectUri: redirect_uri,
++  brokeredAccessToken: brokered_access_token,
+ });

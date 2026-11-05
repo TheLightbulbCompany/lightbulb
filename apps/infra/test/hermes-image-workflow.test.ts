@@ -146,6 +146,39 @@ describe("build-hermes-image workflow", () => {
       expect(code).not.toMatch(/git apply --check[^\n]*&&/);
     });
 
+    it("the QuickBooks brokered-token patch exists, touches only the client, and is applied --check first between the overlay copy and the build", () => {
+      const patch = readFileSync(join(ROOT, "apps/infra/hermes/quickbooks-mcp/brokered-token.patch"), "utf8");
+      const touched = patch.split("\n").filter((l) => l.startsWith("--- a/")).map((l) => l.slice(6));
+      expect(touched).toEqual(["src/clients/quickbooks-client.ts"]);
+      expect(patch).toContain("brokeredAccessToken: brokered_access_token");
+      const copy = dockerfile.indexOf("cp /opt/quickbooks-mcp-overlay/send-quickbooks-invoice.handler.ts src/handlers/");
+      const check = dockerfile.indexOf("git apply --check /opt/quickbooks-mcp-overlay/brokered-token.patch; \\");
+      const apply = dockerfile.indexOf("\n    git apply /opt/quickbooks-mcp-overlay/brokered-token.patch; \\");
+      const rmOverlay = dockerfile.indexOf("rm -rf /opt/quickbooks-mcp-overlay;");
+      const build = dockerfile.indexOf("npm run build;");
+      expect(copy).toBeGreaterThan(-1);
+      expect(check).toBeGreaterThan(copy);
+      expect(apply).toBeGreaterThan(check);
+      expect(rmOverlay).toBeGreaterThan(apply);
+      expect(build).toBeGreaterThan(rmOverlay);
+      const code = dockerfile.split("\n").filter((line) => !line.trim().startsWith("#")).join("\n");
+      expect(code).not.toMatch(/git apply --check[^\n]*&&/);
+    });
+
+    it("the build runs the QuickBooks brokered smoke against the built dist and removes it", () => {
+      const build = dockerfile.indexOf("npm run build;");
+      const smoke = dockerfile.indexOf("node /tmp/quickbooks_brokered_smoke.mjs /opt/quickbooks-mcp/dist;");
+      expect(smoke).toBeGreaterThan(build);
+      expect(dockerfile).toContain("rm -f /tmp/quickbooks_brokered_smoke.mjs;");
+      expect(dockerfile).toContain("COPY tests/image_smoke/quickbooks_brokered_smoke.mjs /tmp/quickbooks_brokered_smoke.mjs");
+      const script = readFileSync(join(ROOT, "apps/infra/hermes/tests/image_smoke/quickbooks_brokered_smoke.mjs"), "utf8");
+      expect(script).toContain('console.log("quickbooks brokered ok")');
+      // every HTTP primitive (request/get/createServer on http and https, plus fetch) is a throw
+      expect(script).toContain("for (const mod of [http, https])");
+      expect(script).toContain('mod.request = deny("network request")');
+      expect(script).toContain('globalThis.fetch = deny("fetch")');
+    });
+
     it("the build runs the patched-image smoke and leaves no patch files in the layer", () => {
       expect(dockerfile).toContain("python3 /tmp/patched_hermes_smoke.py");
       expect(dockerfile).toContain("rm -rf /tmp/hermes-patches /tmp/patched_hermes_smoke.py");

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import schema from "../../fixtures/super-agent/tasks-schema.json";
 import { FIXTURES, PRIYA, SAM, fixtureTask, viewAs } from "./fixtures";
 import { OUTPUT_KINDS, type TaskSummary } from "./types";
-import { activityLine, elapsedShort, answerVerb, askLine, doneByLine, nameSpecialistIn, effectLine, formatSchedule, overviewGroups, previewRows, primaryOptionId, specialistLabel, summaryView, taskSummaryLine } from "./view";
+import { activityLine, elapsedShort, taskFinished, answerVerb, askLine, doneByLine, nameSpecialistIn, effectLine, formatSchedule, overviewGroups, previewRows, primaryOptionId, specialistLabel, summaryView, taskSummaryLine } from "./view";
 
 const byId = (ts: TaskSummary[], id: string) => ts.find((t) => t.taskId === id)!;
 
@@ -83,6 +83,14 @@ describe("summary lines and labels", () => {
     expect(doneByLine("finance", { word: "Done", reason: null })).toBe("Done by Finance");
     // Closed never claims it was done: a person can close a request before it finishes (dev walk N-F1).
     expect(doneByLine(null, { word: "Closed", reason: null })).toBeNull();
+  });
+  it("taskFinished: a completed attempt, or a waiting approval whose effect landed", () => {
+    const t = (outcome: string | null) => ({ activity: { n: 1, status: "ended" as const, outcome } });
+    expect(taskFinished({ task: t("completed"), effects: [] })).toBe(true);
+    expect(taskFinished({ task: t("waiting_approval"), effects: [{ state: "proposed" }] })).toBe(false);
+    expect(taskFinished({ task: t("waiting_approval"), effects: [{ state: "done" }] })).toBe(true);
+    expect(taskFinished({ task: t("cancelled"), effects: [] })).toBe(false);
+    expect(taskFinished({ task: {}, effects: [] })).toBe(false);
   });
   it("Done by only when the run really finished", () => {
     expect(doneByLine("finance", { word: "Done", reason: null }, undefined, false)).toBeNull();

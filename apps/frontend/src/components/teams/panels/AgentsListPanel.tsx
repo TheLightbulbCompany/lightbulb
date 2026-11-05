@@ -91,6 +91,8 @@ export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
   const storedView = useAgentsViewMode();
   const [viewDeepLink, setViewDeepLink] = useState<AgentsViewMode | null>(initialView ?? null);
   const view = viewDeepLink ?? storedView;
+  // The org chart only exists without the super-agent; a saved or linked chart view never hides Team's search.
+  const chartShown = !superAgent && view === "chart";
   // Adjust-state-during-render, not an effect — the same pattern TasksList
   // uses for its `?groupBy` re-delivery: the workspace merges parameters into an
   // open panel instead of remounting it, and a plain sidebar nav clears them.
@@ -228,11 +230,11 @@ export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
         // Chart view keeps the value (so returning to the list restores the
         // search) but does not offer the box: a control that visibly changes
         // nothing is worse than no control.
-        searchValue={view === "chart" ? "" : search}
+        searchValue={chartShown ? "" : search}
         onSearchChange={setSearch}
-        searchPlaceholder={view === "chart" ? "" : "Find agent..."}
+        searchPlaceholder={chartShown ? "" : "Find agent..."}
         searchAriaLabel="Search agents"
-        hideSearch={view === "chart"}
+        hideSearch={chartShown}
         actions={superAgent ? undefined : (
           <ViewModeToggle
             view={view}

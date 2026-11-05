@@ -113,6 +113,56 @@ describe("RoomPanel Threads view (super-agent)", () => {
     expect(namesAgent("lightbulbs", "Lightbulb")).toBe(false);
   });
 
+  it("Escape puts the column away in this room only; the X closes it everywhere; focus returns to the toggle", async () => {
+    localStorage.clear();
+    const { unmount } = render(<Fresh><RoomPanel {...props} /></Fresh>);
+    const aside = await screen.findByRole("complementary", { name: "Requests" });
+    await userEvent.click(within(aside).getByRole("button", { name: "Close requests" }));
+    expect(screen.getByRole("button", { name: /^Requests/ })).toHaveFocus();
+    await userEvent.click(screen.getByRole("button", { name: /^Requests/ }));
+    const again = await screen.findByRole("complementary", { name: "Requests" });
+    within(again).getByRole("button", { name: "Close requests" }).focus();
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("complementary", { name: "Requests" })).toBeNull();
+    expect(screen.getByRole("button", { name: /^Requests/ })).toHaveFocus();
+    unmount();
+    // Escape remembered nothing: the next visit (this room or any other) opens with the column.
+    expect(localStorage.getItem(`lightbulb.room.requestsOpen:${SAM}`)).toBe("1");
+    render(<Fresh><RoomPanel {...props} /></Fresh>);
+    expect(await screen.findByRole("complementary", { name: "Requests" })).toBeInTheDocument();
+    localStorage.clear();
+  });
+
+  it("closing About returns focus to the Requests toggle", async () => {
+    localStorage.clear();
+    render(<Fresh><RoomPanel {...props} /></Fresh>);
+    await userEvent.click(await screen.findByRole("button", { name: /^People/ }));
+    const about = await screen.findByRole("complementary", { name: "About" });
+    await userEvent.click(within(about).getByRole("button", { name: "Back to conversation" }));
+    expect(screen.getByRole("button", { name: /^Requests/ })).toHaveFocus();
+  });
+
+  it("on a narrow screen the toggle opens the Requests as a sheet over the conversation, and closes it", async () => {
+    localStorage.clear();
+    const wide = window.matchMedia;
+    window.matchMedia = ((query: string) => ({ matches: query === "(max-width: 859px)", media: query, onchange: null,
+      addListener: vi.fn(), removeListener: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn() })) as unknown as typeof window.matchMedia;
+    try {
+      render(<Fresh><RoomPanel {...props} /></Fresh>);
+      const toggle = await screen.findByRole("button", { name: /^Requests/ });
+      // Closed by default here, whatever the wide-screen choice: it would cover the conversation.
+      expect(screen.queryByRole("complementary", { name: "Requests" })).toBeNull();
+      expect(toggle).toHaveAttribute("aria-pressed", "false");
+      await userEvent.click(toggle);
+      const sheet = await screen.findByRole("complementary", { name: "Requests" });
+      expect(screen.getByRole("button", { name: /^Requests/, hidden: true })).toHaveAttribute("aria-pressed", "true");
+      await userEvent.click(within(sheet).getByRole("button", { name: "Close requests" }));
+      expect(screen.queryByRole("complementary", { name: "Requests" })).toBeNull();
+      // The sheet never touched the wide-screen choice.
+      expect(localStorage.getItem(`lightbulb.room.requestsOpen:${SAM}`)).toBeNull();
+    } finally { window.matchMedia = wide; localStorage.clear(); }
+  });
+
   it("Scheduled is in the ··· menu and opens in the column with Back", async () => {
     localStorage.clear();
     render(<Fresh><RoomPanel {...props} /></Fresh>);
@@ -132,13 +182,17 @@ describe("RoomPanel Threads view (super-agent)", () => {
     expect(within(article).queryByText("Agent")).toBeNull();
   });
 
-  it("naming Lightbulb in plain words shows on it…, like an @mention (dev walk R8)", async () => {
-    const front = { ...lightbulb, mentionHandle: "lightbulb", listenMode: "mentions" as const };
+  it("naming Lightbulb in plain words shows on it… in a DM or where it listens to everything (dev walk R8)", async () => {
+    const mentionsOnly = { ...lightbulb, mentionHandle: "lightbulb", listenMode: "mentions" as const };
     const ask = { ...message, text: "Hi Lightbulb, can you find a venue?", createdAt: new Date().toISOString() };
-    const { rerender } = render(<Fresh><RoomPanel {...props} participants={[sam, front]} messages={[ask]} /></Fresh>);
+    const dm = { ...props.room!, kind: "dm" as const, name: null };
+    const { rerender } = render(<Fresh><RoomPanel {...props} room={dm} participants={[sam, mentionsOnly]} messages={[ask]} /></Fresh>);
     expect(await screen.findByText("Lightbulb is on it…")).toBeInTheDocument();
+    // A channel where Lightbulb only answers mentions: a plain name dispatches nothing, so no promise.
+    rerender(<Fresh><RoomPanel {...props} participants={[sam, mentionsOnly, { ...sam, id: "priya", displayName: "Priya" }]} messages={[ask]} /></Fresh>);
+    expect(screen.queryByText("Lightbulb is on it…")).toBeNull();
     // A word that only contains the name is not the name.
-    rerender(<Fresh><RoomPanel {...props} participants={[sam, front]} messages={[{ ...ask, text: "the lightbulbs are out" }]} /></Fresh>);
+    rerender(<Fresh><RoomPanel {...props} room={dm} participants={[sam, mentionsOnly]} messages={[{ ...ask, text: "the lightbulbs are out" }]} /></Fresh>);
     expect(screen.queryByText("Lightbulb is on it…")).toBeNull();
   });
 

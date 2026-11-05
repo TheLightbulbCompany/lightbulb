@@ -454,6 +454,9 @@ function RoomContent({
   // It folds (without forgetting the choice) while something else has the pane (Browser, Files, Ideas) and on narrow
   // screens, where a column would cover the conversation.
   const [requestsPref, setRequestsPref] = useState(() => readRequestsOpen(currentUserId));
+  const [requestsSheet, setRequestsSheet] = useState(false);
+  const [requestsDismissedIn, setRequestsDismissedIn] = useState<string | null>(null);
+  const restoreRequestsFocus = useRef(false);
   const paneBusy = !!pane && pane.panelId !== THREAD_PANE_ID;
   const browserAvailable = useStatusLoaded();
   const visibleRoom = room?.roomId === roomId ? room : undefined;
@@ -492,7 +495,7 @@ function RoomContent({
     // A run for this ask that already ended (failed, stopped) shows its own outcome.
     && !allRuns.some((run) => run.triggerMessageId === lastMain.messageId)
     && ![...(repliesByRoot.get(lastMain.messageId)?.authors.values() ?? [])].some((author) => author.kind === "agent")
-    && (lastMain.mentions.some((m) => m.kind === "agent" && m.id === front.id) || namesAgent(lastMain.text, front.displayName)
+    && (lastMain.mentions.some((m) => m.kind === "agent" && m.id === front.id) || ((room?.kind === "dm" || front.listenMode === "active") && namesAgent(lastMain.text, front.displayName))
       || (front.listenMode === "active" && participants.filter((p) => p.kind === "human").length === 1))
     ? lastMain : undefined;
   const [onItExpired, setOnItExpired] = useState<string | null>(null);
@@ -538,7 +541,10 @@ function RoomContent({
   const taskSelection = superAgent && selection?.kind === "task" ? selection.id : null;
   const showScheduled = superAgent && selection?.kind === "scheduled";
   const showDetail = !!(parentMessage || showTasks || taskSelection || showScheduled);
-  const requestsShown = superAgent && requestsPref && !paneBusy && !isNarrow && !visibleRoom?.feed && contextCollapsed;
+  // Wide: the remembered choice, unless Escape put it away in this room. Narrow: a sheet over the conversation, opened
+  // by the toggle each time (a column there would cover the conversation).
+  const requestsWanted = isNarrow ? requestsSheet : requestsPref && requestsDismissedIn !== roomId;
+  const requestsShown = superAgent && requestsWanted && !paneBusy && !visibleRoom?.feed && contextCollapsed;
   // An open request pane is steered from this composer ("Replying to: …"); null while the composer isn't shown.
   const taskReply = useTaskReply(superAgent && !visibleRoom?.feed && !visibleRoom?.archivedAt ? roomId : null, composer,
     () => setFocusToken((t) => t + 1));
@@ -636,6 +642,12 @@ function RoomContent({
     else if (contextCollapsed && contextWasOpen.current && !selection) contextTrigger.current?.focus({ preventScroll: true });
     contextWasOpen.current = !contextCollapsed;
   }, [contextCollapsed, isNarrow, selection]);
+  // The Requests column closed (X, Escape, its toggle): its toggle gets focus back, once it is on screen again.
+  useEffect(() => {
+    if (requestsShown || !restoreRequestsFocus.current) return;
+    restoreRequestsFocus.current = false;
+    contextTrigger.current?.focus({ preventScroll: true });
+  }, [requestsShown]);
 
   const closeDetail = useCallback(() => {
     if (selection?.kind === "thread") onSelectThread?.(null);
@@ -646,10 +658,19 @@ function RoomContent({
   const counterparts = participants.filter((participant) => participant.kind !== "human" || participant.id !== currentUserId);
   const roomName = roomDisplayName(visibleRoom, counterparts);
   const sideTitle = `${showTasks ? "Tasks" : taskSelection ? "Request" : showScheduled ? "Scheduled" : showDetail ? "Thread" : contextCollapsed ? "Requests" : "About"} · ${roomName}`;
-  const setRequestsOpen = (open: boolean) => {
-    setRequestsPref(open);
-    writeRequestsOpen(currentUserId, open);
-    if (open && paneBusy) closePane(); // the column takes the pane back from Browser, Files or Ideas
+  const openRequests = () => {
+    setRequestsDismissedIn(null);
+    if (isNarrow) setRequestsSheet(true);
+    else { setRequestsPref(true); writeRequestsOpen(currentUserId, true); }
+    if (paneBusy) closePane(); // the column takes the pane back from Browser, Files or Ideas
+  };
+  /** The toggle and the X close it for every room (remembered); Escape puts it away in this room only; on a narrow
+   *  screen every close just closes the sheet. Focus goes back to the Requests toggle. */
+  const closeRequests = (how: "remember" | "here") => {
+    restoreRequestsFocus.current = true;
+    if (isNarrow) setRequestsSheet(false);
+    else if (how === "here") setRequestsDismissedIn(roomId);
+    else { setRequestsPref(false); writeRequestsOpen(currentUserId, false); }
   };
   const sideHost = useThreadPane(showContext, () => { closeDetail(); setContextCollapsed(true); }, sideTitle);
 
@@ -882,9 +903,13 @@ function RoomContent({
         // (super-agent; its dot = something here needs you), Files, Browser, Ideas. Without the super-agent, About
         // leads instead (members, pins, files, links). The ··· menu keeps the rare things.
         views={<>
-          {superAgent ? !visibleRoom?.feed && <Button type="button" variant="ghost" size="sm" className="room-view-toggle relative" aria-pressed={requestsShown}
+          {superAgent ? !visibleRoom?.feed && <Button ref={contextTrigger} type="button" variant="ghost" size="sm" className="room-view-toggle relative" aria-pressed={requestsShown}
             aria-label={waitingOnMe > 0 ? `Requests, ${waitingOnMe} need${waitingOnMe === 1 ? "s" : ""} you` : "Requests"}
-            onClick={() => { closeDetail(); setContextCollapsed(true); setRequestsOpen(!requestsShown); if (!requestsShown) capture("overview_opened", { source: "room", count: waitingOnMe }); }}>
+            onClick={() => {
+              closeDetail(); setContextCollapsed(true);
+              if (requestsShown) closeRequests("remember");
+              else { openRequests(); capture("overview_opened", { source: "room", count: waitingOnMe }); }
+            }}>
             <ListChecks aria-hidden="true" /><span>Requests</span>
             {waitingOnMe > 0 && <span aria-hidden="true" className="absolute right-1 top-1 size-1.5 rounded-full bg-warn" />}
           </Button> : <Button ref={contextTrigger} type="button" variant="ghost" size="sm" className="room-view-about relative"
@@ -1034,13 +1059,13 @@ function RoomContent({
         </section>} />
     </aside>}
     {requestsShown && !showDetail && <aside className="room-context" aria-label="Requests"
-      onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setRequestsOpen(false); } }}>
+      onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeRequests("here"); } }}>
       <header className="room-context-header"><h3 className="flex-1 font-semibold">Requests</h3>
-        <Button variant="ghost" size="icon-sm" aria-label="Close requests" title="Close" onClick={() => setRequestsOpen(false)}><X aria-hidden="true" /></Button></header>
+        <Button variant="ghost" size="icon-sm" aria-label="Close requests" title="Close" onClick={() => closeRequests("remember")}><X aria-hidden="true" /></Button></header>
       <div className="room-context-body"><RequestGroups scope={{ kind: "room", roomId }} viewerId={currentUserId} onOpen={openTask} /></div>
     </aside>}
     {showScheduled && <aside className="room-context" aria-label="Scheduled" onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeDetail(); } }}>
-      <header className="room-context-header"><Button variant="ghost" aria-label={requestsPref ? "Back to requests" : "Back to conversation"} onClick={closeDetail}><ArrowLeft aria-hidden="true" />Back</Button>
+      <header className="room-context-header"><Button variant="ghost" aria-label={requestsWanted ? "Back to requests" : "Back to conversation"} onClick={closeDetail}><ArrowLeft aria-hidden="true" />Back</Button>
         <h3 ref={detailHeading} tabIndex={-1} className="font-semibold">Scheduled</h3></header>
       <div className="room-context-body"><ScheduledList scope={{ kind: "room", roomId }} onOpen={openTask} /></div>
     </aside>}
@@ -1050,7 +1075,7 @@ function RoomContent({
       <div className="room-context-body"><RoomTasks tasks={roomTasks} onOpenAll={onLinkToWork!} /></div>
     </aside>}
     {taskSelection && <TaskPane key={taskSelection} taskId={taskSelection} viewerId={currentUserId} headingRef={detailHeading}
-      {...(localSelection?.from === "about" || (superAgent && requestsPref && !isNarrow) ? { onClose: closeDetail, backLabel: "Back to requests" } : { onClose: closeDetail })} />}
+      {...(localSelection?.from === "about" || (superAgent && requestsWanted) ? { onClose: closeDetail, backLabel: "Back to requests" } : { onClose: closeDetail })} />}
     {showDetail && !showTasks && !taskSelection && !showScheduled && <aside className="room-context" aria-label="Thread" onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeDetail(); } }}>
       <header className="room-context-header"><Button variant="ghost" aria-label="Back to conversation" onClick={closeDetail}><ArrowLeft aria-hidden="true" />Back</Button>
         <h3 ref={detailHeading} tabIndex={-1} className="font-semibold room-wrap">Thread</h3></header>

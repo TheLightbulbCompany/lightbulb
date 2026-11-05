@@ -205,6 +205,13 @@ export function activityLine(t: TaskSummary, viewerId: string, names: AgentNames
   return { actor, rest, text: `${actor} · ${rest}` };
 }
 
+/** The run really finished: an attempt completed, or a waiting approval's effect landed. Only then does a request
+ *  read "Done by" (doneByLine's `finished`); web and mobile share the rule. */
+export function taskFinished({ task, effects }: { task: Pick<TaskSummary, "activity">; effects: readonly Pick<TaskEffect, "state">[] }): boolean {
+  const outcome = task.activity?.outcome;
+  return outcome === "completed" || (outcome === "waiting_approval" && effects.some((e) => e.state === "done"));
+}
+
 function joinNames([first, ...rest]: string[]): string {
   if (!rest.length) return first;
   return rest.length === 1 ? `${first} or ${rest[0]}` : `${first} or ${rest.length} others`;

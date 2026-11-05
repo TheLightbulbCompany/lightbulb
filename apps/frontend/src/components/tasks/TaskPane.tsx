@@ -9,7 +9,7 @@
 import { useEffect, useRef, useState, type ReactElement, type RefObject } from "react";
 import { ArrowLeft } from "lucide-react";
 import {
-  ApiError, FREE_TEXT_OPTION, answerVerb, askLine, doneByLine, effectLine, effectName, previewRows, specialistLabel, summaryView, useTask, useTaskQuestions,
+  ApiError, FREE_TEXT_OPTION, taskFinished, answerVerb, askLine, doneByLine, effectLine, effectName, previewRows, specialistLabel, summaryView, useTask, useTaskQuestions,
   type QuestionView, type TaskDetail, type TaskSummary, type TaskTrace,
 } from "@lightbulb/shared";
 import { SessionChat, type ChatWords } from "@/components/messaging/SessionChat";
@@ -83,8 +83,7 @@ function TaskPaneBody({ detail, viewerId }: { detail: TaskDetail; viewerId: stri
   const composerShown = useRoomComposerShown(task.originRoomId);
   const effects = open ? detail.effects.filter((e) => e.state !== "proposed") : detail.effects;
   return <div className="room-context-body flex min-h-0 flex-col gap-3">
-    <TaskHeader task={task} viewerId={viewerId} finished={task.activity?.outcome === "completed"
-      || (task.activity?.outcome === "waiting_approval" && detail.effects.some((e) => e.state === "done"))} />
+    <TaskHeader task={task} viewerId={viewerId} finished={taskFinished(detail)} />
     {open && <NeedsYouCard key={open.id} task={task} question={open} label={word} ended={view.word === "Closed"} />}
     {answered.length > 0 && <ul aria-label="Decisions" className="grid gap-1 px-1 text-ui text-muted-foreground">
       {answered.map((q) => <li key={q.id}>{answerLine(q)}</li>)}

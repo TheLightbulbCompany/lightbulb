@@ -272,9 +272,12 @@ jobs:
       - checkout
       - run:
           name: Use Node 20
+          # nvm is a shell function on the machine image; source it rather than rely on BASH_ENV.
           command: |
+            source "$HOME/.nvm/nvm.sh"
             nvm install 20 >/dev/null
-            nvm alias default 20
+            nvm alias default 20 >/dev/null
+            echo 'source "$HOME/.nvm/nvm.sh"' >> "$BASH_ENV"
             node --version
       - pnpm-install
       - run:

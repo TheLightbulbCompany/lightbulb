@@ -761,7 +761,10 @@ async def _apply(
                 text,
                 event_id=f"router:{inp.batch_id}:{idx}",
                 refs=sl["refs"] or None,
-                remember=any(line and line not in sl["acks"] for line in sl["lines"]),  # ack-only posts: no memory
+                # Acks and the fallback line are boilerplate: a post of only those stays out of room memory.
+                remember=any(
+                    line and line not in sl["acks"] and line != router_prompt.FALLBACK for line in sl["lines"]
+                ),
             )
         if message_id:
             posted.append(message_id)
@@ -862,7 +865,9 @@ async def apply_fallback(ws: str, trigger_ids: list[str]) -> None:
     for tid in trigger_ids:
         trig = await tasks_repo.get_trigger(ws, tid)
         if trig and trig["admission"] == "respond":
-            await _deliver(ws, trig, router_prompt.FALLBACK, event_id=f"router-fallback:{tid}", refs=None)
+            await _deliver(
+                ws, trig, router_prompt.FALLBACK, event_id=f"router-fallback:{tid}", refs=None, remember=False
+            )
 
 
 ACTIVITIES = [

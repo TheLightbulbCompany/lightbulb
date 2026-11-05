@@ -241,6 +241,7 @@ async def test_post_as_lightbulb_goes_into_room_memory(chat, monkeypatch):
     mid = await tc.post_as_lightbulb(WS, ORIGIN, text="Paid the invoice.", event_id="task:x:1", kind="result")
     await tc.post_as_lightbulb(WS, ORIGIN, text="Working: browser", event_id="task:x:p", progress=True)
     await tc.post_as_lightbulb(WS, ORIGIN, text="On it.", event_id="router:b:0", remember=False)
+    await tc.post_as_lightbulb(WS, ORIGIN, text="Needs your OK", event_id="q:1", kind="question")
     ((room, message),) = seen
     assert room["roomId"] == ORIGIN
     assert message["messageId"] == mid and message["text"] == "Paid the invoice."

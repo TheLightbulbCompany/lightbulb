@@ -417,6 +417,7 @@ async def test_apply_fallback_posts_once_per_respond(world):
     await acts.apply_fallback(WS, [t1, t2])
     await acts.apply_fallback(WS, [t1, t2])
     assert [(p["event_id"], p["text"]) for p in world["posts"]] == [(f"router-fallback:{t1}", router_prompt.FALLBACK)]
+    assert world["posts"][0]["remember"] is False
 
 
 def test_validate_decisions_keeps_order_and_drops_only_bad():
@@ -556,4 +557,4 @@ async def test_ignored_respond_trigger_gets_the_fallback_line(world):
     world["decisions"] = [{"kind": "ignore", "triggerIds": [t1, t2]}]
     await _run([t1, t2])
     assert [(p["event_id"], p["text"]) for p in world["posts"]] == [(f"router:{BATCH}:0", router_prompt.FALLBACK)]
-    assert world["posts"][0]["remember"] is True  # a line Lightbulb said, not an ack: remembered
+    assert world["posts"][0]["remember"] is False  # the fallback line is boilerplate: not remembered

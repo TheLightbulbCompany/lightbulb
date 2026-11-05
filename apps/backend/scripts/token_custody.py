@@ -3,11 +3,13 @@ and back, and report where they are.
 
     uv run python -m scripts.token_custody --owner-id ORG --show
     uv run python -m scripts.token_custody --owner-id ORG --measure-ttl
-    uv run python -m scripts.token_custody --owner-id ORG --cutover codex|x|quickbooks|instagram|all [--dry-run]
-    uv run python -m scripts.token_custody --owner-id ORG --rollback codex|x|quickbooks|instagram|all
+    uv run python -m scripts.token_custody --owner-id ORG --cutover codex|x|quickbooks|instagram|all [--apply]
+    uv run python -m scripts.token_custody --owner-id ORG --rollback codex|x|quickbooks|instagram|all [--apply]
     uv run python -m scripts.token_custody --all --list-eligible
 
-Dev-only unless ``--founder-approved`` (spec 09 pattern). Prints decisions, ids and integer
+DRY RUN BY DEFAULT (every super-agent ops script): ``--cutover``/``--rollback`` only report what they
+would do until ``--apply``. Dev-only unless ``--founder-approved REF`` (spec 09 pattern: the message
+link or date+quote of the approval, printed with every decision). Prints decisions, ids and integer
 seconds; never a token value. Idempotent: a second cutover answers ``already``.
 """
 
@@ -62,7 +64,15 @@ async def _measure_ttl(owner_id: str) -> None:
     print(f"codex: ttl_seconds={ttl}")
 
 
-async def _cli(action: str, owner_id: str, provider: str) -> str:
+async def _cli(action: str, owner_id: str, provider: str, *, dry_run: bool) -> str:
+    if dry_run:
+        # The same preconditions cli_cutover/cli_rollback check first, from the row, nothing written.
+        row = await integrations_repo.get(owner_id, provider, consistent=True)
+        connected = bool(row) and row.get("status", "connected") == "connected"
+        backend = bool(row) and row.get("custody") == "backend"
+        if action == "cutover":
+            return "no_grant" if not connected else "already" if backend else "would_cutover"
+        return "would_rollback" if backend else "already"
     try:
         from core.services.credentials import cli_cutover
     except ImportError:  # V14 not merged on this deploy
@@ -79,9 +89,9 @@ async def _move(action: str, owner_id: str, target: str, *, dry_run: bool) -> in
                 if action == "cutover":
                     result = await token_custody.codex_cutover(owner_id, dry_run=dry_run)
                 else:
-                    result = await token_custody.codex_rollback(owner_id)
+                    result = await token_custody.codex_rollback(owner_id, dry_run=dry_run)
             else:
-                result = f"would_{action}" if dry_run else await _cli(action, owner_id, provider)
+                result = await _cli(action, owner_id, provider, dry_run=dry_run)
         except Exception as exc:  # noqa: BLE001 -- one provider's failure must not stop the others
             failed += 1
             print(f"{provider}: ERROR {type(exc).__name__}")
@@ -123,12 +133,16 @@ async def main(argv: list[str] | None = None) -> int:
     what.add_argument("--show", action="store_true")
     what.add_argument("--list-eligible", action="store_true")
     what.add_argument("--measure-ttl", action="store_true")
-    parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--founder-approved", action="store_true", help="required in prod")
+    parser.add_argument("--apply", action="store_true", help="write; without it --cutover/--rollback only report")
+    parser.add_argument(
+        "--founder-approved", metavar="REF", help="prod only: the approval (message link, or date + quote)"
+    )
     args = parser.parse_args(argv)
     if settings.ENVIRONMENT == "prod" and not args.founder_approved:
-        print("refusing: token_custody in prod needs --founder-approved")
+        print("refusing: token_custody in prod needs --founder-approved REF")
         return 2
+    if args.founder_approved:
+        print(f"founder_approved={args.founder_approved}")
     if args.list_eligible:
         await _list_eligible()
         return 0
@@ -141,9 +155,10 @@ async def main(argv: list[str] | None = None) -> int:
     if args.measure_ttl:
         await _measure_ttl(args.owner_id)
         return 0
+    dry_run = not args.apply
     if args.cutover:
-        return await _move("cutover", args.owner_id, args.cutover, dry_run=args.dry_run)
-    return await _move("rollback", args.owner_id, args.rollback, dry_run=args.dry_run)
+        return await _move("cutover", args.owner_id, args.cutover, dry_run=dry_run)
+    return await _move("rollback", args.owner_id, args.rollback, dry_run=dry_run)
 
 
 if __name__ == "__main__":

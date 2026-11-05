@@ -315,31 +315,56 @@ async def codex_cutover(owner_id: str, *, dry_run: bool = False) -> str:
             except hermes_profiles.MarkerRaced:
                 # A writer we failed to fence: undo the row so the old path (which still reads
                 # S3's newest pair) stays the one path.
-                await oauth_service.set_custody_actor(user, expected_version=1)
+                if not await oauth_service.set_custody_actor(user, expected_version=1):
+                    # The row moved under us too: it stays backend with S3 still a plain grant.
+                    # Loud, and the operator re-runs (a re-run answers ``already`` or heals).
+                    _metric("cutover", result="undo_failed")
+                    logger.warning("token_broker cutover owner=%s result=undo_failed", owner_id)
+                    return "undo_failed"
                 _metric("cutover", result="raced")
                 return "raced"
-    if await codex_vend(owner_id) is None:
-        raise RuntimeError("token_broker: cutover verify vend returned nothing")
+    # Verify: one vend. The move is complete whatever this says (``--show`` reports backend and a
+    # re-run answers ``already``), so a refusal here is reported, never raised.
+    try:
+        verified = await codex_vend(owner_id) is not None
+    except (ReconnectRequired, RefreshUnavailable, owner_lifecycle.OwnerLifecycleBusyError, RuntimeError) as exc:
+        logger.warning("token_broker cutover owner=%s verify=%s", owner_id, type(exc).__name__)
+        verified = False
+    if not verified:
+        _metric("cutover", result="done_unverified")
+        return "done_unverified"
     _metric("cutover", result="done")
     logger.info("token_broker cutover owner=%s result=done", owner_id)
     return "done"
 
 
-async def codex_rollback(owner_id: str) -> str:
+async def codex_rollback(owner_id: str, *, dry_run: bool = False) -> str:
     """Back to VM custody: stage the row's newest pair as a plain grant (replacing the marker),
-    then flip the row. ``done`` | ``already`` | ``busy_session`` | ``raced``."""
+    then flip the row. ``done`` | ``already`` | ``busy_session`` | ``would_rollback`` | ``raced``."""
     user = await oauth_service.resolve_token_owner(owner_id=owner_id)
     row = await oauth_service.get_token_row(user, consistent=True, bound_to=owner_id)
     if row is None or row.get("custody") != "backend":
         return "already"
     if not await session_idle(owner_id):
         return "busy_session"
+    if dry_run:
+        return "would_rollback"
     async with owner_lifecycle.owner_lifecycle_guard(owner_id):
         async with fenced_session(owner_id) as fenced:
             if not fenced:
                 return "busy_session"
+            # Re-read under the fences (the broker's own leased re-check): a forced refresh during
+            # the idle wait rotated the pair, and staging the one read before it would hand the VM
+            # a spent refresh token while the row stayed backend.
+            row = await oauth_service.get_token_row(user, consistent=True, bound_to=owner_id)
+            if row is None or row.get("custody") != "backend":
+                return "already"
             await run_in_thread(hermes_profiles.stage_codex_auth, owner_id, row["tokens"])
             if not await oauth_service.set_custody_actor(user, expected_version=row["version"]):
+                # Not reachable under the fences (the broker refreshes only under the guard); if it
+                # ever is, S3 holds a pair the row no longer knows -- say so.
+                _metric("cutover", result="rollback_raced")
+                logger.warning("token_broker rollback owner=%s result=raced (S3 staged, row unchanged)", owner_id)
                 return "raced"
     _metric("cutover", result="rollback")
     logger.info("token_broker rollback owner=%s result=done", owner_id)

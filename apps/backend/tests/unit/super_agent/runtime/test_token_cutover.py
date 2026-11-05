@@ -361,8 +361,8 @@ async def test_script_refuses_prod_without_approval(world, monkeypatch):
     monkeypatch.setattr(settings, "ENVIRONMENT", "prod")
     code, out = await _run(["--owner-id", OWNER, "--show"])
     assert code == 2 and "refusing" in out
-    code, out = await _run(["--owner-id", OWNER, "--show", "--founder-approved"])
-    assert code == 0 and "custody=actor" in out
+    code, out = await _run(["--owner-id", OWNER, "--show", "--founder-approved", "msg-link-1"])
+    assert code == 0 and "custody=actor" in out and "founder_approved=msg-link-1" in out
 
 
 @pytest.mark.asyncio
@@ -374,10 +374,10 @@ async def test_script_never_prints_tokens(world):
     for argv in (
         ["--owner-id", OWNER, "--show"],
         ["--owner-id", OWNER, "--measure-ttl"],
-        ["--owner-id", OWNER, "--cutover", "codex", "--dry-run"],
-        ["--owner-id", OWNER, "--cutover", "codex"],
+        ["--owner-id", OWNER, "--cutover", "codex"],  # dry run by default
+        ["--owner-id", OWNER, "--cutover", "codex", "--apply"],
         ["--owner-id", OWNER, "--show"],
-        ["--owner-id", OWNER, "--rollback", "codex"],
+        ["--owner-id", OWNER, "--rollback", "codex", "--apply"],
     ):
         code, out = await _run(argv)
         assert code == 0, (argv, out)
@@ -388,6 +388,82 @@ async def test_script_never_prints_tokens(world):
     assert "codex: would_cutover" in outputs[2] and "codex: done" in outputs[3]
     assert "custody=backend version=1" in outputs[4] and "codex: done" in outputs[5]
     assert _row(world)["custody"] == "actor"
+
+
+@pytest.mark.asyncio
+async def test_rollback_dry_run_writes_nothing(world):
+    """Review of #4732: `--rollback codex` without --apply must not roll back."""
+    _seed_row(world, tokens=DDB_PAIR, custody="backend")
+    _seed_auth(world, None)
+    assert await token_custody.codex_rollback(OWNER, dry_run=True) == "would_rollback"
+    code, out = await _run(["--owner-id", OWNER, "--rollback", "codex"])
+    assert code == 0 and "codex: would_rollback" in out
+    assert _row(world)["custody"] == "backend"
+    assert "openai-codex" not in _auth(world)["providers"]
+    world["stop"].assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rollback_stages_the_pair_read_under_the_fence(world):
+    """Review of #4732: a broker refresh during the idle wait rotates the pair; the rollback must
+    stage THAT pair, not the one it read before waiting (a spent refresh token in S3)."""
+    _seed_row(world, tokens=DDB_PAIR, custody="backend")
+    _seed_auth(world, None)
+
+    async def refresh_during_wait(owner_id):
+        current = _row_tokens(world)["access_token"]
+        await token_custody.codex_vend(OWNER, presented_sha256=token_custody._sha(current), force=True)
+        return True
+
+    world["idle"].side_effect = refresh_during_wait
+    assert await token_custody.codex_rollback(OWNER) == "done"
+    rotated = _row_tokens(world)
+    assert rotated["refresh_token"] == "RT-r1" and len(world["posted"]) == 1
+    assert _auth(world)["providers"]["openai-codex"]["tokens"]["refresh_token"] == "RT-r1"
+    assert _row(world)["custody"] == "actor"
+
+
+@pytest.mark.asyncio
+async def test_cutover_undo_failed_is_reported(world, monkeypatch):
+    _seed_row(world, tokens=DDB_PAIR)
+    _seed_auth(world, S3_PAIR)
+    monkeypatch.setattr(
+        hermes_profiles, "stage_codex_marker", lambda *a, **k: (_ for _ in ()).throw(hermes_profiles.MarkerRaced(OWNER))
+    )
+    monkeypatch.setattr(oauth_service, "set_custody_actor", AsyncMock(return_value=False))
+    assert await token_custody.codex_cutover(OWNER) == "undo_failed"
+    assert _row(world)["custody"] == "backend"  # loudly left for a re-run
+
+
+@pytest.mark.asyncio
+async def test_cutover_done_unverified_when_the_verify_vend_refuses(world, monkeypatch):
+    _seed_row(world, tokens=DDB_PAIR)
+    _seed_auth(world, S3_PAIR)
+    monkeypatch.setattr(
+        token_custody, "codex_vend", AsyncMock(side_effect=token_custody.RefreshUnavailable("http_503"))
+    )
+    assert await token_custody.codex_cutover(OWNER) == "done_unverified"
+    assert _row(world)["custody"] == "backend" and _auth(world)["providers"]["openai-codex"] == {
+        "custody": "backend",
+        "tokens": {},
+    }
+    assert await token_custody.codex_cutover(OWNER) == "already"
+
+
+@pytest.mark.asyncio
+async def test_script_cli_dry_run_reads_the_row(world):
+    table = world["ddb"].Table("test-integrations")
+    table.put_item(Item={"owner_id": OWNER, "provider": "x", "status": "connected"})
+    code, out = await _run(["--owner-id", OWNER, "--cutover", "all"])
+    assert code == 0
+    assert "x: would_cutover" in out and "quickbooks: no_grant" in out and "instagram: no_grant" in out
+    table.put_item(Item={"owner_id": OWNER, "provider": "x", "status": "connected", "custody": "backend"})
+    code, out = await _run(["--owner-id", OWNER, "--cutover", "x"])
+    assert "x: already" in out
+    code, out = await _run(["--owner-id", OWNER, "--rollback", "all"])
+    assert "x: would_rollback" in out and "quickbooks: already" in out and "codex: already" in out
+    assert _row_tokens  # nothing written: the row API was only read
+    assert table.get_item(Key={"owner_id": OWNER, "provider": "x"})["Item"]["custody"] == "backend"
 
 
 @pytest.mark.asyncio

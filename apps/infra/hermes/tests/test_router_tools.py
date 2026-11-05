@@ -54,7 +54,29 @@ def test_registered_under_router_toolset():
             seen.append((name, toolset))
 
     rt.register(Ctx())
-    assert seen == [(k, "lightbulb_router") for k in ("start_task", "propose_tasks", "pass_through", "reply", "ask", "ignore")]
+    assert seen == [(k, "lightbulb_router") for k in ("start_task", "propose_tasks", "pass_through", "reply", "ask", "ignore", "follow_link")]
+
+
+def test_follow_link_calls_memory_link_route(router_turn, monkeypatch):
+    import plugins.lightbulb as lb
+    from bridge.memory_ctx import MEMORY_CTX
+
+    calls = []
+    monkeypatch.setattr(lb, "_post", lambda url, token, body: calls.append((url, token, body)) or {"task": {"taskId": TASK}})
+    ctx = {"runId": RUN, "mode": "router", "ownerId": "org_test", "apiUrl": "https://api.test/", "hookToken": "hook"}
+    monkeypatch.setattr(rt.turn_context, "read", lambda sid: ctx)
+    token = MEMORY_CTX.set({"lane": "shared", "member": None, "audience": {"kind": "room", "roomId": "r1"}, "tags": {}, "sync": "none"})
+    try:
+        out = json.loads(rt._follow_link({"task_id": TASK}, session_id="s"))
+        assert out["task"]["taskId"] == TASK
+        assert calls == [("https://api.test/api/v1/internal/memory/link/org_test", "hook",
+                          {"id": TASK, "audience": {"kind": "room", "roomId": "r1"}})]
+        assert "error" in json.loads(rt._follow_link({"task_id": "nope"}, session_id="s"))
+    finally:
+        MEMORY_CTX.reset(token)
+    assert rt._follow_link({"task_id": TASK}, session_id="s") == rt.NO_LINK  # no block: nothing to read with
+    monkeypatch.setattr(rt.turn_context, "read", lambda sid: {"runId": RUN, "mode": "worker"})
+    assert rt._follow_link({"task_id": TASK}, session_id="s") == rt.NOT_ROUTER
 
 
 def test_worker_run_has_no_send_room_message(monkeypatch):

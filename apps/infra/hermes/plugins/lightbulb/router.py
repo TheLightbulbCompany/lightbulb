@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import urllib.error
 
 from . import turn_context
 
@@ -59,6 +60,38 @@ SCHEMAS = {
 }
 
 _CAMEL = {"trigger_ids": "triggerIds", "task_id": "taskId"}
+
+FOLLOW_LINK_SCHEMA = {
+    "name": "follow_link",
+    "description": "Open a task that a recall result linked: its summary, threads and last result, as the "
+                   "people in this lane may see it. Read-only.",
+    "parameters": {"type": "object", "properties": {"task_id": {"type": "string"}}, "required": ["task_id"]},
+}
+NO_LINK = "follow_link needs this run's memory block (the backend sets it on every Router run)."
+
+
+def _follow_link(args: dict, *, session_id: str = "", **_kw) -> str:
+    """The Router's second hop (lane M6): `POST /api/v1/internal/memory/link/{owner}` with the run's audience."""
+    from bridge.memory_ctx import MEMORY_CTX
+
+    from . import _post  # the package is initialised by the time a tool runs
+
+    ctx = turn_context.read(session_id)
+    if not ctx or ctx.get("mode") != "router":
+        return NOT_ROUTER
+    task_id = str((args or {}).get("task_id") or "")
+    if not _UUID.fullmatch(task_id):
+        return json.dumps({"error": "task_id must be a task id from a Linked: line"})
+    block = MEMORY_CTX.get()
+    if not block or not block.get("audience"):
+        return NO_LINK
+    url = f"{ctx['apiUrl'].rstrip('/')}/api/v1/internal/memory/link/{ctx['ownerId']}"
+    try:
+        return json.dumps(_post(url, ctx["hookToken"], {"id": task_id, "audience": block["audience"]}))
+    except urllib.error.HTTPError as exc:
+        return json.dumps({"error": "not visible to this lane" if exc.code == 404 else f"link failed: {exc.code}"})
+    except Exception as exc:  # noqa: BLE001
+        return json.dumps({"error": f"link failed: {type(exc).__name__}"})
 
 
 def _problem(kind: str, args: dict) -> str | None:
@@ -115,3 +148,5 @@ def _handler(kind: str):
 def register(ctx) -> None:
     for kind, schema in SCHEMAS.items():
         ctx.register_tool(kind, TOOLSET, schema, _handler(kind), description=schema["description"], emoji="🧭")
+    ctx.register_tool("follow_link", TOOLSET, FOLLOW_LINK_SCHEMA, _follow_link,
+                      description=FOLLOW_LINK_SCHEMA["description"], emoji="🔗")

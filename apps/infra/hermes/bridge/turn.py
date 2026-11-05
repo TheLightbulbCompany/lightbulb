@@ -3716,6 +3716,8 @@ PRIVATE_DM_NOTES = ("Not saved: this is a private DM. What this person tells you
 def memory_pre_tool_call(tool_name: str = "", args: dict | None = None, **_kw):
     """Hermes pre_tool_call hook (registered by the lightbulb plugin): refuse a shared-notes write
     in a private DM turn."""
+    if _ROUTER_TURN.get() and tool_name == "remember":  # the agentcore provider's write (search stays open)
+        return {"action": "block", "message": ROUTER_NOTES_READ_ONLY}
     if tool_name != "memory" or not (_PRIVATE_DM.get() or _ROUTER_TURN.get()):
         return None
     args = args if isinstance(args, dict) else {}

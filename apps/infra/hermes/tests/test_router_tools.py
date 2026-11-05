@@ -112,6 +112,12 @@ def test_router_memory_is_read_only():
         blocked = turn.memory_pre_tool_call("memory", {"action": "add", "content": "x"})
         assert blocked["action"] == "block"
         assert turn.memory_pre_tool_call("memory", {"action": "read"}) is None
+        assert turn.memory_pre_tool_call("remember", {"text": "x"})["action"] == "block"
+        assert turn.memory_pre_tool_call("workspace_memory_search", {"query": "x"}) is None
     finally:
         turn._ROUTER_TURN.reset(token)
     assert turn.memory_pre_tool_call("memory", {"action": "add", "content": "x"}) is None
+
+
+def test_router_remember_is_open_outside_a_router_turn():
+    assert turn.memory_pre_tool_call("remember", {"text": "x"}) is None

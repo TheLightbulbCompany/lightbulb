@@ -93,3 +93,9 @@ def test_event_carries_the_run_secret(real_poster):
     calls, _ = real_poster
     runs._post_event({**IDENTITY, "runSecret": "s3cr3t"}, {"kind": "heartbeat", "status": "running"})
     assert calls[0][1]["runSecret"] == "s3cr3t"
+
+
+def test_run_secret_never_lands_in_the_run_record(quiet_turn, threads, monkeypatch, run_events):  # noqa: F811
+    server.handle_plugin(CREATE, "POST", AUTH, {**BODY, "identity": {**IDENTITY, "runSecret": "s3cr3t"}})
+    assert "runSecret" not in runs.turn.RUNS[IDENTITY["runId"]]["identity"]
+    assert threads[0].args[0]["runSecret"] == "s3cr3t"  # the thread's copy posts it (test above)

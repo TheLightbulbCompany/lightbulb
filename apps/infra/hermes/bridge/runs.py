@@ -107,6 +107,9 @@ def _create(headers: dict, body) -> tuple[int, dict]:
         raise _invalid("run_identity")
     identity = validate_identity(body.get("identity"))
     request = validate_request(body.get("request"))
+    # The attempt's secret rides only the thread's copy (like localSessionToken): never in RUNS or the
+    # S3 run record, which other turns of the workspace can read.
+    run_secret = identity.pop("runSecret", None)
     if not turn.reserve_turn():
         return 503, {"error": "recycling"}
     registered = False
@@ -123,7 +126,7 @@ def _create(headers: dict, body) -> tuple[int, dict]:
         token = next((v for k, v in headers.items() if k.lower() == "x-lightbulb-local-session-token"), None)
         threading.Thread(
             target=_run_and_report,
-            args=(dict(identity, localSessionToken=token), dict(request)),
+            args=(dict(identity, localSessionToken=token, runSecret=run_secret), dict(request)),
             daemon=True,
             name=f"task-run-{identity['runId']}",
         ).start()

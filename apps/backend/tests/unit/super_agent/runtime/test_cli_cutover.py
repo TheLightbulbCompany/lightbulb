@@ -110,6 +110,8 @@ def world(monkeypatch):
     )
     stop = AsyncMock(return_value=True)
     monkeypatch.setattr(cli_cutover.hermes_provisioning, "stop_runtime_session", stop)
+    idle = AsyncMock(return_value=True)
+    monkeypatch.setattr(cli_cutover.hermes_provisioning, "_wait_for_idle_session", idle)
     lease = MagicMock(return_value=True)
     finish = MagicMock()
     monkeypatch.setattr(cli_cutover.container_repo, "try_take_wake_lease_sync", lease)
@@ -138,7 +140,7 @@ def world(monkeypatch):
         s3 = boto3.client("s3", region_name="us-east-1")
         s3.create_bucket(Bucket=BUCKET)
         monkeypatch.setattr(cli_cutover, "_s3", lambda: s3)
-        yield {"state": state, "s3": s3, "stop": stop, "lease": lease, "finish": finish}
+        yield {"state": state, "s3": s3, "stop": stop, "lease": lease, "finish": finish, "idle": idle}
 
 
 def _xurl(rt: str, exp: int) -> bytes:
@@ -291,3 +293,20 @@ async def test_rollback_between_read_and_lease_never_refreshes(monkeypatch):
     with pytest.raises(ValueError):
         await access_token.get_with_expiry(OWNER, "x")
     refresh.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cutover_waits_for_idle_and_never_stops_a_running_turn(world):
+    """Review of #4691: stopping mid-turn would lose the turn's profile writes. The fence waits
+    for the bridge to report idle (and hold new turns) first; still busy -> busy_session, no stop."""
+    world["s3"].put_object(Bucket=BUCKET, Key=f"{OWNER}/hermes/a1/home/.xurl", Body=_xurl("RT", 0))
+    world["idle"].return_value = False
+    assert await cli_cutover.cli_cutover(OWNER, "x") == "busy_session"
+    world["stop"].assert_not_awaited()
+    world["lease"].assert_not_called()
+    assert world["state"]["secret"] is None
+
+    world["idle"].return_value = True
+    assert await cli_cutover.cli_cutover(OWNER, "x") == "done"
+    world["idle"].assert_awaited_with(OWNER)
+    world["stop"].assert_awaited_once()

@@ -1,6 +1,6 @@
 """Spec 13 T6: a backend-custodied CLI row keeps its secret; a switch-on connect is backend."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -17,13 +17,11 @@ def test_retains_secret_for_backend_custody():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("provider", "switch", "expected"),
-    [("x", True, "backend"), ("quickbooks", True, "backend"), ("x", False, None), ("stripe", True, None)],
-)
-async def test_connect_with_switch_on_sets_backend_custody(provider, switch, expected):
-    with patch.object(connections, "flags_for", AsyncMock(return_value=switch)):
-        assert await connections._connect_custody("org_a", registry.get_provider(provider)) == expected
+@pytest.mark.parametrize("provider", ["x", "quickbooks", "instagram", "stripe"])
+async def test_connect_with_switch_on_sets_backend_custody(provider):
+    # Off in code until V11's bridge fills CLI tokens locally (review of #4691): no connect, switch
+    # on or off, leaves X/QuickBooks/Instagram with token-free files nothing fills.
+    assert await connections._connect_custody("org_a", registry.get_provider(provider)) is None
 
 
 @pytest.mark.asyncio

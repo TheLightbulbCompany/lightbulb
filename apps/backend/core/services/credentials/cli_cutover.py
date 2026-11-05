@@ -91,7 +91,11 @@ def _credential(provider: str, raw: bytes) -> dict[str, Any] | None:
 
 
 class _Fenced:
-    """Stop the workspace session and hold its cold-wake lease for the duration."""
+    """Wait for the workspace session to go idle, stop it, and hold its cold-wake lease for the
+    duration. ``_wait_for_idle_session`` (the roll's guard) has an idle bridge take its
+    refusal hold atomically with answering idle, so no turn starts between that answer and the
+    stop; a session still busy at its deadline is never stopped (``busy_session``): a mid-turn
+    stop loses the turn's profile writes."""
 
     def __init__(self, owner_id: str):
         self.owner_id, self.token = owner_id, uuid.uuid4().hex
@@ -99,6 +103,8 @@ class _Fenced:
     async def __aenter__(self) -> bool:
         container = await container_repo.get_by_owner_id(self.owner_id) or {}
         arn = container.get("agentcore_runtime_arn")
+        if arn and not await hermes_provisioning._wait_for_idle_session(self.owner_id):
+            return False
         if arn and not await hermes_provisioning.stop_runtime_session(self.owner_id, arn):
             return False
         self.held = await run_in_thread(

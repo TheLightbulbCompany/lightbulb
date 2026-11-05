@@ -108,11 +108,8 @@ These hold whether or not you open a reference.
   shape (one plan, one decision, one connect card, three offers) is in that
   file's "The first run", even before `BRIEF.md` lands.
 - **A person's decision is an approval in Needs you**: call the `request_approval` tool.
-  Never a task for them or a question in chat (the paperclip skill's
+  Never a task assigned to them or a question in chat (the paperclip skill's
   `references/interactions.md`).
-- **Work for a teammate is a task, not a delegation.** When something belongs to another
-  specialist, ask Lightbulb to start a task for it (in the room, or by naming them with
-  `@handle`); Lightbulb routes it and posts the result. Never assign it yourself.
 - **Blocked, or unsure between options, on a task: `ask_person`.** Never guess, never only
   a comment. In a room, ask in your reply.
 - **Any count or status of tasks: read the board first** with the paperclip skill's list route

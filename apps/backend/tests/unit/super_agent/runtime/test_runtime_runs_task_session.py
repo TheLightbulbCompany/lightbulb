@@ -113,3 +113,17 @@ async def test_curate_goes_to_workspace_session(transport):
 
 def test_task_vm_cap():
     assert rr.MAX_TASK_VMS_PER_WORKSPACE == 10
+
+
+@pytest.mark.asyncio
+async def test_activities_identity_carries_the_attempts_session_kind(monkeypatch):
+    """O's `_identity` reads the kind off the Attempt row `begin_attempt` wrote, so a task-session
+    attempt's every run call says `session.kind == "task"`; the shim awaits the async gate."""
+    from core.temporal import activities as acts
+
+    att = {"runId": RUN, "n": 2, "agentId": "a1", "sessionId": rr.runtime_transport.session_id_for(OWNER, TASK)}
+    assert acts._identity(OWNER, TASK, att).to_wire()["session"] == {"kind": "task"}
+    att["sessionId"] = rr.runtime_transport.session_id_for(OWNER)
+    assert acts._identity(OWNER, TASK, att).to_wire()["session"] == {"kind": "workspace"}
+    monkeypatch.setattr(rr, "session_kind_for", AsyncMock(return_value="task"))
+    assert await acts._session_kind(OWNER) == "task"

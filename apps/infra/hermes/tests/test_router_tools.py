@@ -92,3 +92,26 @@ def test_task_ns_matches_schema():
 
     path = _schema_path()
     assert str(TASK_NS) == json.loads(path.read_text())["namespaces"]["task"]
+
+
+@pytest.mark.parametrize("kind,args", [
+    ("propose_tasks", {"tasks": [{"title": "a", "brief": "b", "budget": 9}], "ack": "x"}),  # unknown key
+    ("propose_tasks", {"tasks": [{"title": 5, "brief": "b"}], "ack": "x"}),
+    ("pass_through", {"task_id": "not-a-uuid"}),
+    ("start_task", {"title": "t", "brief": "b", "ack": "a", "visibility": "everyone"}),
+    ("reply", {"text": ["not", "text"]}),
+])
+def test_router_tool_validates_fields(router_turn, kind, args):
+    assert "error" in json.loads(_call(kind, trigger_ids=["chat:m1"], **args))
+    assert "decisions" not in turn.RUNS[RUN]
+
+
+def test_router_memory_is_read_only():
+    token = turn._ROUTER_TURN.set(True)
+    try:
+        blocked = turn.memory_pre_tool_call("memory", {"action": "add", "content": "x"})
+        assert blocked["action"] == "block"
+        assert turn.memory_pre_tool_call("memory", {"action": "read"}) is None
+    finally:
+        turn._ROUTER_TURN.reset(token)
+    assert turn.memory_pre_tool_call("memory", {"action": "add", "content": "x"}) is None

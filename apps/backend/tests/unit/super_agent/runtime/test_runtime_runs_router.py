@@ -28,3 +28,10 @@ def test_status_carries_decisions():
     status = runtime_runs._status({"run_id": "r1", "status": "completed", "decisions": [{"kind": "ignore"}]})
     assert status.decisions == [{"kind": "ignore"}]
     assert runtime_runs._status({"run_id": "r1", "status": "running"}).decisions == []
+
+
+def test_router_model_on_the_wire():
+    wire = runtime_runs.RunIdentity(
+        "r1", "org_1", BATCH, 1, CEO, mode="router", lane="shared", model="m-small"
+    ).to_wire()
+    assert wire["model"] == "m-small"

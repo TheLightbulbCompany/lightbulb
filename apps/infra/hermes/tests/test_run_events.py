@@ -74,3 +74,22 @@ def test_heartbeat_event_every_interval(quiet_turn, monkeypatch, run_events):  #
     monkeypatch.setattr(runs, "HEARTBEAT_EVERY_S", 0.01)
     runs._heartbeats(IDENTITY, Event())
     assert run_events == [(IDENTITY, {"kind": "heartbeat", "status": "running", "recentTools": [{"name": "web"}]})]
+
+
+def test_terminal_posted_before_the_turn_ends(quiet_turn, threads, monkeypatch, run_events):  # noqa: F811
+    order = []
+    monkeypatch.setattr(runs.turn, "_construct_agent", lambda *a, **k: Agent("x" * 70000))
+    monkeypatch.setattr(runs.turn, "_end_turn", lambda: order.append("end_turn"))
+    real = runs._post_event
+    monkeypatch.setattr(runs, "_post_event", lambda i, b: order.append(b["kind"]) or real(i, b))
+    server.handle_plugin(CREATE, "POST", AUTH, {**BODY, "identity": {**IDENTITY, "runSecret": "s3cr3t"}})
+    threads[0].run_now()
+    assert order == ["terminal", "end_turn"]
+    sent = [b for _, b in run_events if b["kind"] == "terminal"][0]
+    assert len(sent["output"]) == runs.MAX_EVENT_OUTPUT
+
+
+def test_event_carries_the_run_secret(real_poster):
+    calls, _ = real_poster
+    runs._post_event({**IDENTITY, "runSecret": "s3cr3t"}, {"kind": "heartbeat", "status": "running"})
+    assert calls[0][1]["runSecret"] == "s3cr3t"

@@ -779,6 +779,10 @@ ROUTER_TOOLSET = "lightbulb_router"
 ROUTER_RUN_LIMITS = {"enabled_toolsets": [ROUTER_TOOLSET, "memory"], "disabled_toolsets": None,
                      "skip_background_review": True}
 MAX_DECISIONS = 40
+#: Router turns read memory but never write it (founder ruling: durable learning happens in Workers).
+_ROUTER_TURN: contextvars.ContextVar[bool] = contextvars.ContextVar("lightbulb_router_turn", default=False)
+ROUTER_NOTES_READ_ONLY = ("Lightbulb's coordinator reads notes but does not write them: the specialist doing "
+                          "the work records what should be remembered.")
 
 
 def record_decision(run_id: str, decision: dict) -> bool:
@@ -3712,12 +3716,14 @@ PRIVATE_DM_NOTES = ("Not saved: this is a private DM. What this person tells you
 def memory_pre_tool_call(tool_name: str = "", args: dict | None = None, **_kw):
     """Hermes pre_tool_call hook (registered by the lightbulb plugin): refuse a shared-notes write
     in a private DM turn."""
-    if tool_name != "memory" or not _PRIVATE_DM.get():
+    if tool_name != "memory" or not (_PRIVATE_DM.get() or _ROUTER_TURN.get()):
         return None
     args = args if isinstance(args, dict) else {}
     ops = args.get("operations")
     actions = [op.get("action") for op in ops if isinstance(op, dict)] if isinstance(ops, list) and ops \
         else [args.get("action")]
+    if _ROUTER_TURN.get() and any(action in ("add", "replace", "remove") for action in actions):
+        return {"action": "block", "message": ROUTER_NOTES_READ_ONLY}
     if any(action in ("add", "replace") for action in actions):
         return {"action": "block", "message": PRIVATE_DM_NOTES}
     return None
@@ -3771,6 +3777,7 @@ def _construct_agent(agent_id: str, body: dict, frames, session_key: str, **limi
     # A private-lane turn (a person's Router lane, a private task's Worker) never writes shared notes (L3).
     _PRIVATE_DM.set((chat_type == "dm" and bool(_PERSON_ID.fullmatch(user_id)))
                     or (block or {}).get("lane") == "private")
+    _ROUTER_TURN.set(limits.get("enabled_toolsets") == ROUTER_RUN_LIMITS["enabled_toolsets"])
     callbacks = {}
     if frames is not None:
         # stream_delta_callback / reasoning_callback are the per-token text streams (Task 11).
@@ -4151,6 +4158,8 @@ def _run_task_turn(identity: dict, request: dict, *, family: str) -> tuple[str, 
             memory = {"memory": request["memory"]} if request.get("memory") else {}  # a task's block (spec 07 §5.2)
             if router:  # decisions only: no execution tools, no background review, no side session
                 extra |= ROUTER_RUN_LIMITS
+                if identity.get("model"):  # the cheaper Router model (§9), chosen by the backend
+                    extra["model"] = identity["model"]
             agent = _construct_agent(agent_id, {"sessionKey": session_id, **memory}, None, session_id, **extra)
             queued = attach_agent(run_id, agent)
             if paperclip_run_aborted(run_id):
@@ -4302,12 +4311,14 @@ def run_paperclip_turn(identity: dict, request: dict, reserved: bool = False) ->
     _run_durable_turn(identity, request, reserved, family="paperclip")
 
 
-def run_task_turn(identity: dict, request: dict, reserved: bool = False) -> None:
+def run_task_turn(identity: dict, request: dict, reserved: bool = False, on_finished=None) -> None:
     """Run one v1 task run (bridge/runs.py) and leave its terminal result in the bounded registry."""
-    _run_durable_turn(identity, request, reserved, family="task")
+    _run_durable_turn(identity, request, reserved, family="task", on_finished=on_finished)
 
 
-def _run_durable_turn(identity: dict, request: dict, reserved: bool, *, family: str) -> None:
+def _run_durable_turn(identity: dict, request: dict, reserved: bool, *, family: str, on_finished=None) -> None:
+    """`on_finished`: called right after the terminal record, before usage, profile saves and `_end_turn`
+    (which may let the VM park): the run's terminal event goes out while the VM is still busy."""
     run_id = identity["runId"]
     agent_id = identity["agentId"]
     session_id = identity["sessionId" if family == "paperclip" else "sessionKey"]
@@ -4340,6 +4351,11 @@ def _run_durable_turn(identity: dict, request: dict, reserved: bool, *, family: 
         with hb_lock:
             hb_stop.set()
         finish_paperclip_run(run_id, outcome, output=output, error=error, usage=usage)
+        if on_finished is not None:
+            try:
+                on_finished()
+            except Exception:  # noqa: BLE001 -- the turn's own bookkeeping must still run
+                log.warning("task run on_finished failed run=%s", run_id, exc_info=True)
         report_usage(
             session_id,
             agent_id,

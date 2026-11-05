@@ -92,3 +92,11 @@ def test_router_session_key_pattern_matches_schema():
     path = _schema_path()
     pattern = path and (json.loads(path.read_text()).get("sessionKeys") or {}).get("router")
     assert pattern == runs.ROUTER_SESSION_KEY_RE.pattern
+
+
+def test_router_uses_the_model_the_backend_chose(quiet_turn, threads, monkeypatch):  # noqa: F811
+    built = {}
+    monkeypatch.setattr(turn, "_construct_agent", lambda *a, **k: built.update(k) or Agent())
+    _post({**IDENTITY, "model": "claude-haiku-4-5"})
+    threads[0].run_now()
+    assert built["model"] == "claude-haiku-4-5"

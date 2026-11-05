@@ -48,6 +48,7 @@ class RunIdentity:
     run_secret: str | None = None  # the Attempt's secret; the bridge echoes it on run events and inputs
     mode: Literal["worker", "router"] = "worker"
     lane: str | None = None
+    model: str | None = None  # Router runs: the cheaper model (§9); the bridge overrides the profile's
 
     @property
     def session_key(self) -> str:
@@ -69,6 +70,8 @@ class RunIdentity:
         }
         if self.mode == "router":
             wire["lane"] = self.lane or "shared"
+            if self.model:
+                wire["model"] = self.model
         return wire
 
 

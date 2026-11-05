@@ -194,6 +194,7 @@ def handle(path: str, method: str, headers: dict, body) -> tuple[int, dict] | No
 
 # ---- run events: the backend's async worker_turn is completed by these (wave-2 O Task 4) ------------
 HEARTBEAT_EVERY_S = 120.0
+MAX_EVENT_OUTPUT = 65536  # the backend's Attempt.output cap
 EVENT_ATTEMPTS = 6
 EVENT_BACKOFF_S = 2.0
 
@@ -201,7 +202,8 @@ EVENT_BACKOFF_S = 2.0
 def _post_event(identity: dict, body: dict) -> int:
     """POST one run event; retries 5xx and network errors with backoff, never throws."""
     url = f"{API}/api/v1/internal/runtime/{OWNER}/runs/{identity['runId']}/events"
-    payload = json.dumps({"taskId": identity["taskId"], "attempt": identity["attempt"], **body}).encode()
+    payload = json.dumps({"taskId": identity["taskId"], "attempt": identity["attempt"],
+                          "runSecret": identity.get("runSecret") or "", **body}).encode()
     status = 0
     for attempt in range(EVENT_ATTEMPTS):
         req = urllib.request.Request(url, data=payload, method="POST", headers={
@@ -237,12 +239,15 @@ def _run_and_report(identity: dict, request: dict) -> None:
     if events:
         threading.Thread(target=_heartbeats, args=(identity, stop), daemon=True,
                          name=f"task-hb-{identity['runId']}").start()
+    def terminal() -> None:
+        stop.set()
+        if events:
+            status = turn.durable_run_status(identity["runId"], identity, kind="task") or {}
+            _post_event(identity, {"kind": "terminal", "status": status.get("status") or "failed",
+                                   "output": (status.get("output") or "")[:MAX_EVENT_OUTPUT] or None,
+                                   "error": status.get("error"), "usage": status.get("usage")})
+
     try:
-        turn.run_task_turn(identity, request, True)
+        turn.run_task_turn(identity, request, True, on_finished=terminal)
     finally:
         stop.set()
-    if events:
-        status = turn.durable_run_status(identity["runId"], identity, kind="task") or {}
-        _post_event(identity, {"kind": "terminal", "status": status.get("status") or "failed",
-                               "output": status.get("output"), "error": status.get("error"),
-                               "usage": status.get("usage")})

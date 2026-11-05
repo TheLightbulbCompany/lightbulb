@@ -8,10 +8,12 @@ run's status and applies it (shapes: `routerDecisions` in tasks-schema.json; it 
 from __future__ import annotations
 
 import json
+import re
 
 from . import turn_context
 
 TOOLSET = "lightbulb_router"
+_UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 MAX_PROPOSED = 5
 NOT_ROUTER = "Router tools are only available in a Lightbulb Router run."
 
@@ -72,8 +74,20 @@ def _problem(kind: str, args: dict) -> str | None:
         tasks = args.get("tasks")
         if not isinstance(tasks, list) or not 1 <= len(tasks) <= MAX_PROPOSED:
             return f"propose 1 to {MAX_PROPOSED} tasks"
-        if not all(isinstance(t, dict) and t.get("title") and t.get("brief") for t in tasks):
-            return "every proposed task needs a title and a brief"
+        for t in tasks:
+            if not isinstance(t, dict) or set(t) - set(_TASK["properties"]):
+                return "a proposed task has only title, brief and specialist"
+            if not (isinstance(t.get("title"), str) and t["title"] and len(t["title"]) <= 200
+                    and isinstance(t.get("brief"), str) and t["brief"]
+                    and isinstance(t.get("specialist", ""), str)):
+                return "every proposed task needs a title (at most 200 characters) and a brief"
+    if kind == "pass_through" and not _UUID.fullmatch(str(args.get("task_id"))):
+        return "task_id must be a task id from the batch"
+    if kind == "start_task" and args.get("visibility") not in (None, "person", "room", "workspace"):
+        return "visibility is person, room or workspace"
+    for field in ("ack", "text", "brief", "title", "reason", "specialist"):
+        if field in args and args[field] is not None and not isinstance(args[field], str):
+            return f"{field} must be text"
     return None
 
 

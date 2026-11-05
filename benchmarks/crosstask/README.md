@@ -18,6 +18,9 @@ The model calls go through Codex on the ChatGPT subscription only (`--llm codex`
 
 Differences from spec 07 §8.6:
 - **No judge.** Gold facts are template tokens, so fact accuracy is a token match. Abstention is the agent's own `abstain` flag. Both are deterministic, so a run makes about half the spec's ~1,000 calls per arm.
+- **Oblique questions name neither the client nor the subject.** They use a client description ("the candy factory") that shares no word with the client's name or with the one #sales line that introduces the client, so word overlap cannot resolve them (fake backend: oblique taskHit@2 1.0 → 0.46).
+- **Superseded values are penalised.** A supersession answer that names the old value is wrong even if it also names the new one (`staleFacts`). The heuristic stand-in quotes everything it read, so it scores 0 there by design.
+- **Facts are still stated verbatim in a stored turn**, so fact accuracy on direct questions does not need links. Quote fact accuracy per category.
 - **No Codex pass on wording.** The spec allows one to rewrite the fixture's wording. It was not run. If you want more natural phrasing, run it and review the result before committing.
 - **Live backend comes later.** The live backend and the seeding (`POST /tasks`, `POST /messages` on the bench routes) land with Task 9. Until then `--backend` accepts only `fake`.
 - **Reach comes from links only.** A task counts as reached only through a link or `read_task`, so the `--no-links` arm reaches nothing by construction. `score.lift` therefore also reports the fact-accuracy lift.

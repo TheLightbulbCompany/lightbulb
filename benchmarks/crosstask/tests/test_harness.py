@@ -121,3 +121,21 @@ def test_lift_reports_points():
         "taskHit@2": 90.0,
         "factAccuracy": 30.0,
     }
+
+
+def test_oblique_questions_never_name_the_client_or_title():
+    ws = _ws()
+    tasks = {t["taskId"]: t for t in ws["tasks"]}
+    for q in (q for q in ws["questions"] if q["category"] == "oblique"):
+        t = tasks[q["goldTaskIds"][0]]
+        assert t["client"].lower() not in q["text"].lower(), q["id"]
+        assert t["subject"].lower() not in q["text"].lower(), q["id"]
+
+
+def test_answer_naming_the_superseded_value_is_wrong():
+    ws = _ws()
+    q = next(q for q in ws["questions"] if q["category"] == "supersession")
+    new, old = q["goldFacts"][0], q["staleFacts"][0]
+    assert new != old
+    assert score.fact_correct(q, {"answer": f"It is {new}."})
+    assert not score.fact_correct(q, {"answer": f"It was {old}, now {new}."})

@@ -19,8 +19,11 @@ def task_hit(question: dict, result: dict, n: int) -> bool:
 
 
 def fact_correct(question: dict, result: dict) -> bool:
+    """Every gold fact named, and no superseded value (an answer hedging old and new is wrong)."""
     answer = result["answer"].lower()
-    return all(f.lower() in answer for f in question["goldFacts"])
+    return all(f.lower() in answer for f in question["goldFacts"]) and not any(
+        f.lower() in answer for f in question.get("staleFacts", [])
+    )
 
 
 def _rate(xs: list[bool]) -> float | None:

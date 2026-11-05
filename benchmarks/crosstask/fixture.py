@@ -27,6 +27,20 @@ SPECIALISTS = [("agent-eng", "Engineering"), ("agent-fin", "Finance"), ("agent-m
 CHANNELS = ["launch", "sales", "eng", "ops"]
 HOME = {"agent-eng": "room_eng", "agent-fin": "room_sales", "agent-mkt": "room_launch"}
 CLIENTS = ["Acme", "Globex", "Initech", "Umbrella", "Hooli", "Stark", "Wayne", "Wonka", "Soylent", "Tyrell"]
+# (what #sales says about the client once, how an oblique question refers to it). The two share no
+# word with each other or with the client's name, so word overlap cannot resolve the client.
+CLIENT_HINTS = {
+    "Acme": ("Acme sells anvils and rockets by mail order.", "the cartoon hardware catalogue"),
+    "Globex": ("Globex is run by Hank Scorpio out of Cypress Creek.", "the volcano-lair conglomerate"),
+    "Initech": ("Initech writes banking software and loves TPS reports.", "the cover-sheet office"),
+    "Umbrella": ("Umbrella is the pharmaceutical group in Raccoon City.", "the zombie drug company"),
+    "Hooli": ("Hooli is the search giant in Palo Alto.", "the big tech campus"),
+    "Stark": ("Stark builds armour and arc reactors.", "the iron-suit manufacturer"),
+    "Wayne": ("Wayne is the Gotham holding company.", "the bat-cave family firm"),
+    "Wonka": ("Wonka makes chocolate and everlasting gobstoppers.", "the candy factory"),
+    "Soylent": ("Soylent sells meal replacement drinks.", "the nutrition shake people"),
+    "Tyrell": ("Tyrell builds replicants for off-world colonies.", "the android makers"),
+}
 # (subject, oblique paraphrase, what the fact names)
 SUBJECTS = {
     "agent-eng": [
@@ -193,6 +207,8 @@ def _messages(rng: random.Random, tasks: list[dict]) -> list[dict]:
         for k in range(10):
             author, text = lines[k] if k < len(lines) else (rng.choice(others), f"Following {t['title']} closely.")
             add(t["homeRoomId"], author, text, when + timedelta(minutes=7 * k), t, None if k == 0 else root)
+    for k, (about, _) in enumerate(CLIENT_HINTS.values()):
+        add("room_sales", PEOPLE[k % 6][0], about, START + timedelta(days=k))
     for k in range(170):
         add(f"room_{rng.choice(CHANNELS)}", rng.choice(PEOPLE)[0], rng.choice(CHATTER), START + timedelta(hours=9 * k))
     return msgs
@@ -229,7 +245,7 @@ def _questions(rng: random.Random, tasks: list[dict]) -> list[dict]:
     asked = (START + timedelta(weeks=8)).isoformat()
     qs: list[dict] = []
 
-    def q(cat: str, text: str, audience: dict, gold: list[dict], facts: list[str], forbidden=(), owner=None):
+    def q(cat, text, audience, gold: list[dict], facts: list[str], forbidden=(), owner=None, stale=()):
         qs.append(
             {
                 "id": f"q{len(qs) + 1:03d}",
@@ -239,6 +255,7 @@ def _questions(rng: random.Random, tasks: list[dict]) -> list[dict]:
                 "askedAt": asked,
                 "goldTaskIds": [t["taskId"] for t in gold],
                 "goldFacts": facts,
+                "staleFacts": list(stale),  # superseded values: an answer naming one is wrong
                 "forbiddenTaskIds": [t["taskId"] for t in forbidden],
                 "expectAbstain": not gold,
                 "owner": owner,
@@ -259,7 +276,7 @@ def _questions(rng: random.Random, tasks: list[dict]) -> list[dict]:
         other = rng.choice([c for c in CHANNELS if f"room_{c}" != t["homeRoomId"]])
         q(
             "oblique",
-            f"Remind me what we landed on for {t['oblique']} with {t['client']}?",
+            f"Remind me what we landed on for {t['oblique']} with {CLIENT_HINTS[t['client']][1]}?",
             _room(f"room_{other}"),
             [t],
             [t["value"]],
@@ -272,6 +289,7 @@ def _questions(rng: random.Random, tasks: list[dict]) -> list[dict]:
             _room("room_ops"),
             [new],
             [new["value"]],
+            stale=[old["value"]],
         )
     for k in range(COUNTS["freshness"]):
         t = tasks[19 + k]

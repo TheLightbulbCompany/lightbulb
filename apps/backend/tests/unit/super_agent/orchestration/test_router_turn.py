@@ -611,3 +611,44 @@ async def test_each_room_has_its_own_router_session(world):
     assert keys[4] == keys[1]  # a deliver room's trigger shares its room's session
     assert all(re.fullmatch(ts.ROUTER_SESSION_KEY_PATTERN, k) for k in keys)
     assert ROOM not in keys[0] and ROOM not in str(world["runs"][0][0].to_wire())
+
+
+@pytest.mark.asyncio
+async def test_bare_trigger_id_still_starts_the_task(world):
+    """Dev 5 Nov (#general seq 12): the model named the trigger without its `chat:` prefix; the start was dropped
+    and its ack still went out as the run's prose. The bare tail of exactly one batch trigger resolves to it."""
+    mid = str(uuid.uuid4())
+    t1 = await _trig(f"chat:{mid}", ref={"roomId": ROOM, "messageId": mid})
+    world["output"] = "Growth has the day-of checklist."
+    world["decisions"] = [{**_start([mid], ack="Growth has the day-of checklist."), "triggerIds": [mid]}]
+    out = await _run([t1])
+    assert out.started_task_ids == [ts.router_task_id(BATCH, 0, 0)]
+    assert world["posts"][0]["task_refs"] == [{"taskId": ts.router_task_id(BATCH, 0, 0), "role": "started"}]
+
+
+@pytest.mark.asyncio
+async def test_a_dropped_decision_never_posts_its_summary(world):
+    """When every decision for a trigger is dropped (unknown trigger, off-roster specialist), the reply is the plain
+    fallback, never the run's prose claiming the assignment."""
+    t1 = await _trig("chat:m1")
+    world["output"] = "Growth has the day-of checklist."
+    world["decisions"] = [_start(["chat:nope"], ack="Growth has the day-of checklist.")]
+    out = await _run([t1])
+    assert out.started_task_ids == []
+    assert world["posts"][0]["text"] == router_prompt.FALLBACK and world["posts"][0]["task_refs"] is None
+
+
+@pytest.mark.asyncio
+async def test_prose_without_decisions_still_answers(world):
+    t1 = await _trig("chat:m1")
+    world["output"] = "March 1 works."
+    world["decisions"] = []
+    await _run([t1])
+    assert world["posts"][0]["text"] == "March 1 works."
+
+
+def test_a_bare_id_naming_two_triggers_resolves_to_none():
+    batch = {"chat:x1", "mail:x1", "chat:y2"}
+    assert router_prompt._resolve("y2", batch) == "chat:y2"
+    assert router_prompt._resolve("x1", batch) is None
+    assert router_prompt._resolve("chat:x1", batch) == "chat:x1"

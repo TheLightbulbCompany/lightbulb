@@ -80,6 +80,15 @@ def render_batch(triggers: list[dict], roster: list[dict], open_tasks: list[dict
     return "\n".join(lines)
 
 
+def _resolve(given: str, trigger_ids: set[str]) -> str | None:
+    """The batch trigger a decision names: exact, or the one id it is the bare tail of (the model dropped the
+    `chat:` prefix on dev, 5 Nov, and its start was discarded while its ack still looked posted)."""
+    if given in trigger_ids:
+        return given
+    tails = [t for t in trigger_ids if t.endswith(f":{given}")]
+    return tails[0] if len(tails) == 1 else None
+
+
 def validate_decisions(
     raw: list[dict],
     *,
@@ -99,7 +108,7 @@ def validate_decisions(
             dec = _DECISION.validate_python(item)
         except ValidationError:
             continue
-        tids = [t for t in dec.trigger_ids if t in trigger_ids]
+        tids = [r for r in (_resolve(t, trigger_ids) for t in dec.trigger_ids) if r]
         if not tids:
             continue
         if isinstance(dec, ts.StartTask) and dec.specialist and dec.specialist not in roster_ids:

@@ -66,15 +66,19 @@ class RunRequest:
     instructions: str
     max_iterations: int | None = None
     run_budget_seconds: int | None = None
+    memory: dict | None = None  # spec 07 §5.2, built by memory_tags; absent = today's behaviour
 
     def to_wire(self) -> dict:
         limits = {"max_iterations": self.max_iterations, "run_budget_seconds": self.run_budget_seconds}
-        return {
+        wire = {
             "input": self.input,
             "instructions": self.instructions,
             "effects": "off",
             "limits": {k: v for k, v in limits.items() if v is not None},
         }
+        if self.memory is not None:
+            wire["memory"] = self.memory
+        return wire
 
 
 @dataclass(frozen=True)

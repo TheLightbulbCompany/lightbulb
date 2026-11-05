@@ -32,3 +32,10 @@ def secret_pattern(text: str) -> str | None:
 def secret_shaped(text: str) -> bool:
     """A secret keyword or a credential-shaped string."""
     return bool(KEYWORD.search(text)) or secret_pattern(text) is not None
+
+
+def redact(text: str) -> str:
+    """``text`` with every credential-shaped match replaced by ``[REDACTED]`` (keywords alone stay)."""
+    for _, rx in SECRET_PATTERNS:
+        text = rx.sub("[REDACTED]", text)
+    return text

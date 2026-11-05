@@ -267,6 +267,30 @@ async def test_agent_release_saves_and_frees_the_browser(workspace, monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_task_runs_share_one_browser_lease_across_sessions(workspace, agent_tools, monkeypatch):
+    """§14.11: two task VMs' runs, one workspace browser. The second gets the busy answer, not a
+    second session; once the first VM is stopped (`release_for_run`), the second acquires."""
+    monkeypatch.setattr(control, "ACQUIRE_WAIT_SECONDS", 0.05)
+    monkeypatch.setattr(
+        control,
+        "_checkpoint",
+        AsyncMock(return_value={"saved_key": "browser-state/org_browser/k.json", "saved_at": "t"}),
+    )
+    first = await control.acquire_agent("org_browser", "run-task-1", "a1")
+    with pytest.raises(control.BrowserError, match="Another agent run"):
+        await control.acquire_agent("org_browser", "run-task-2", "a2")
+    assert workspace["browser_state"]["session_id"] == "session"  # still the one session
+
+    assert await control.release_for_run("org_browser", "run-task-2") is False  # not the controller
+    assert workspace["browser_state"]["controller_id"] == "run-task-1"
+    assert await control.release_for_run("org_browser", "run-task-1") is True
+    assert await control.release_for_run("org_browser", "run-task-1") is False  # already free
+    state = workspace["browser_state"]
+    assert control._mode(state) == "idle" and "controller_id" not in state and state["session_id"] == "session"
+    assert first["generation"]  # the next run's acquire is the ordinary idle claim from here
+
+
+@pytest.mark.asyncio
 async def test_failed_save_keeps_pointer_and_browser(workspace, monkeypatch):
     _agent(workspace)
     workspace["browser_state"]["saved_key"] = "browser-state/org_browser/previous.json"

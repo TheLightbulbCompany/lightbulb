@@ -185,7 +185,10 @@ const mockLive = {
 // One hoisted object, never a fresh literal per call: RoomsPlatform requires a
 // referentially stable `live`, and a new one per render re-fires the history
 // reconcile into "Maximum update depth exceeded".
-jest.mock("../../../../providers/live-events", () => ({ useLiveEvents: () => mockLive }));
+let mockSuperAgent = false;
+jest.mock("../../../../providers/live-events", () => ({ useSuperAgent: () => mockSuperAgent, useLiveEvents: () => mockLive }));
+// The front agent (`@lightbulb`) once the roster answers; only asked for while the switch is on.
+jest.mock("../../../../lib/workspaceRoster", () => ({ useFrontAgentId: (enabled: boolean) => (enabled ? "agent-lb" : undefined) }));
 // The band has its own suite; here only WHERE it mounts is under test.
 jest.mock("../../../../components/room/OnboardingBand", () => ({
   OnboardingBand: () => {
@@ -239,6 +242,7 @@ describe("conversation screen", () => {
     mockOpenLive.mockClear();
     mockMessages = [...mockBase];
     mockRoomId = "room-1";
+    mockSuperAgent = false;
     mockIsPreview = false;
     mockFocused = true;
     mockLive.messaging.listRooms.mockReset().mockImplementation(async () => ({ rooms: [mockRoom] }));
@@ -754,6 +758,17 @@ describe("conversation screen", () => {
     await waitFor(() => expect(screen.getByLabelText("Star this conversation")).toBeTruthy());
     await fireEvent.press(screen.getByLabelText("Star this conversation"));
     await waitFor(() => expect(screen.getByText("The star could not be saved.")).toBeTruthy());
+  });
+
+  it("super-agent on: a specialist's DM says it now works through Lightbulb; off, no banner", async () => {
+    mockRoomId = "dm-friday";
+    const off = await render(<Conversation />);
+    await screen.findByLabelText("Friday, idle");
+    expect(screen.queryByTestId("specialist-dm-banner")).toBeNull();
+    await off.unmount();
+    mockSuperAgent = true;
+    await render(<Conversation />);
+    expect(await screen.findByText("Friday now works through Lightbulb. A message here starts a Friday thread.")).toBeTruthy();
   });
 
   it("titles an agent DM with the agent and its idle status, opening details", async () => {

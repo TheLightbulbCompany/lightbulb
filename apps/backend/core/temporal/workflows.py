@@ -23,7 +23,9 @@ from temporalio.exceptions import ActivityError, ApplicationError, CancelledErro
 from temporalio.exceptions import TimeoutError as ActivityTimeout
 from temporalio.workflow import ActivityCancellationType
 
+from core.temporal.automations import PATCH_AUTOMATION_RUN, AutomationRunMixin
 from core.temporal.task_questions import TaskQuestionsMixin
+from core.temporal.watches import WatchMixin, WatchSpec
 from core.temporal.types import (
     ActionRequest,
     AttemptRef,
@@ -46,6 +48,9 @@ CAN_AFTER_SIGNALS = 2_000
 QUIET_AFTER = timedelta(days=7)
 MAX_SAME_RUN_RECONCILES = 3
 MAX_LOST_ATTEMPTS = 3  # the first attempt plus two new ones, then `failed`
+# A Router batch is one lane in one room: "shared" spans rooms, and a batch's memory audience, open tasks and
+# fallback line are one room's (audit #6). Histories without the marker keep batching by lane.
+PATCH_ROUTER_ROOM_BATCH = "o-router-room-batch-v1"
 
 _SHORT = {"start_to_close_timeout": timedelta(seconds=30), "retry_policy": RetryPolicy(maximum_attempts=5)}
 _ROUTER_TURN = {
@@ -59,6 +64,9 @@ _WORKER_TURN = {
     "retry_policy": RetryPolicy(maximum_attempts=1),
     "cancellation_type": ActivityCancellationType.WAIT_CANCELLATION_COMPLETED,
 }
+
+PATCH_CANCEL_QUESTIONS_ON_END = "O-cancel-questions-on-end-v1"  # audit #5
+SYSTEM_ACTOR = "__system__"  # == core.constants.SYSTEM_ACTOR_ID (the sandbox imports no core modules)
 
 # Outcome → the status `end_attempt` leaves the task in (the workflow mirrors it to pick its next wait).
 _STATUS_AFTER = {
@@ -113,8 +121,11 @@ class RouterWorkflow:
         while True:
             await workflow.wait_condition(lambda: bool(self._queue) or self._should_continue_as_new())
             if self._queue:
-                lane = self._queue[0].lane
-                batch = [r for r in self._queue if r.lane == lane][:BATCH_MAX]
+                head = self._queue[0]
+                lane = head.lane
+                by_room = workflow.patched(PATCH_ROUTER_ROOM_BATCH)
+                batch = [r for r in self._queue if r.lane == lane and (not by_room or r.room_id == head.room_id)]
+                batch = batch[:BATCH_MAX]
                 taken = {r.trigger_id for r in batch}
                 self._queue = [r for r in self._queue if r.trigger_id not in taken]
                 trigger_ids = [r.trigger_id for r in batch]
@@ -138,7 +149,7 @@ class RouterWorkflow:
 
 
 @workflow.defn
-class TaskWorkflow(TaskQuestionsMixin):
+class TaskWorkflow(TaskQuestionsMixin, AutomationRunMixin, WatchMixin):
     """`task:{ws}:{taskId}`: slot lease → Attempt → `worker_turn` (async, bridge-completed) → `end_attempt`."""
 
     @workflow.init
@@ -161,12 +172,25 @@ class TaskWorkflow(TaskQuestionsMixin):
         self._awaiting_start = False  # begin_attempt found a proposed task: only Start runs it
         self.last_event: RunEvent | None = None
         self._q_init()  # Lane Q: open questions (task_questions.py)
+        self._w_init()  # Lane A: watches (watches.py)
 
     # --- hooks (Q, A, S add behaviour here) ------------------------------------------------------------
 
     async def _on_waiting(self) -> None:
         """The task is about to wait for inputs or actions (idle/waiting)."""
-        await self._q_on_waiting()
+        self._w_wake = False  # one-shot: an add/poke/unwatch brought the task back here
+        if not self._watches:
+            await self._q_on_waiting()
+        # While watches run, the watch loop waits (checks go on with a Question open) and hands Q's work
+        # (an approved draft to land, a reminder due) back here; Q's own wait takes over once no watch is left.
+        watched = False  # without a watch this is exactly Q's wait above: no new commands for older histories
+        while self._watches and not self._woken() and self._status != "resolved":
+            watched = True
+            await self._w_on_waiting()
+            if self._status != "resolved":
+                await self._q_serve()
+        if watched and self._open_qs and not self._woken() and self._status != "resolved":
+            await self._q_on_waiting()  # a give-up or unwatch left a Question open: Q's wait, no deadline
 
     async def _before_attempt(self) -> bool:
         """False ⇒ do not start an attempt now; the workflow waits for the next input or action."""
@@ -175,6 +199,8 @@ class TaskWorkflow(TaskQuestionsMixin):
     async def _after_attempt(self, outcome: str) -> None:
         """An attempt ended (after `end_attempt`)."""
         await self._q_after_attempt(outcome)
+        if workflow.patched(PATCH_AUTOMATION_RUN):  # Lane A: an automation run closes with its task
+            await self._a_after_attempt(outcome)
 
     async def _on_stop(self, by_user_id: str) -> None:
         """A person stopped the task, before the running turn is cancelled (Q cancels open questions)."""
@@ -201,6 +227,19 @@ class TaskWorkflow(TaskQuestionsMixin):
         self._attempt_needed = True
         self._awaiting_start = False
         self._wakes += 1
+
+    # Lane A: watches (watches.py)
+    @workflow.update
+    async def add_watch(self, spec: WatchSpec) -> str:
+        return await self._w_add(spec)
+
+    @workflow.signal
+    def watch_poke(self, watch_id: str) -> None:
+        self._w_poke(watch_id)
+
+    @workflow.signal
+    def unwatch(self, watch_id: str) -> None:
+        self._w_remove(watch_id)
 
     @workflow.signal
     def run_event(self, event: RunEvent) -> None:
@@ -282,8 +321,14 @@ class TaskWorkflow(TaskQuestionsMixin):
     # --- main loop -------------------------------------------------------------------------------------
 
     async def _transition(self, to: str, reason: str | None) -> None:
+        # A task that ends leaves no open Question (Waiting on you, Activity, away email): a resolve, the quiet
+        # resolve, no_answerer, a failure. A Stop cancels them itself, with the person's id (`_q_on_stop`).
+        if to in ("resolved", "failed") and self._stop_by is None and workflow.patched(PATCH_CANCEL_QUESTIONS_ON_END):
+            await self._q_cancel_open(self._action[1] if self._action else SYSTEM_ACTOR, reason or to)
         await _act("transition", self._ws, self._task_id, to, reason)
         self._status = to
+        if workflow.patched(PATCH_AUTOMATION_RUN):  # Lane A: an automation run ends with its task
+            await self._a_on_transition(to)
 
     def _deferred(self) -> bool:
         """An attempt was refused (budget, proposed) and nothing new has arrived since."""
@@ -291,7 +336,7 @@ class TaskWorkflow(TaskQuestionsMixin):
 
     def _woken(self) -> bool:
         work = (bool(self._pending) or self._attempt_needed) and not self._deferred()
-        return work or self._action is not None or self._stop_by is not None
+        return work or self._action is not None or self._stop_by is not None or self._w_wake
 
     @workflow.run
     async def run(self, start: TaskStart) -> None:
@@ -325,6 +370,8 @@ class TaskWorkflow(TaskQuestionsMixin):
                     break
                 continue
             await self._on_waiting()
+            if self._status == "resolved":  # a watch's `fail` give-up ended the task while it waited
+                break
             try:
                 await workflow.wait_condition(self._woken, timeout=QUIET_AFTER)
             except asyncio.TimeoutError:

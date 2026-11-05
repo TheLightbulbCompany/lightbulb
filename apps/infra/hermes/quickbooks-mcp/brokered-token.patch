@@ -55,7 +55,7 @@ index 92dc141..79dbb1d 100644
 +    try {
 +      const parsed = dotenv.parse(fs.readFileSync(TOKEN_STORE_PATH));
 +      const token = parsed.QUICKBOOKS_ACCESS_TOKEN?.trim() || undefined;
-+      const exp = Number(parsed.QUICKBOOKS_ACCESS_TOKEN_EXPIRES_AT);
++      const raw = Number(parsed.QUICKBOOKS_ACCESS_TOKEN_EXPIRES_AT), exp = raw > 1e12 ? raw / 1000 : raw; // ms guard
 +      return { token, expiresAt: Number.isFinite(exp) && exp > 0 ? exp : undefined };
 +    } catch {
 +      return {};

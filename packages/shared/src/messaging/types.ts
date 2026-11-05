@@ -218,8 +218,10 @@ export interface CanonicalRoomMessage {
   routedTo?: { taskIds: string[]; started: number; suggested: number; passThrough: boolean } | null;
   /** On a task-room line: the card reply it was forwarded from. */
   forwardedFrom?: { roomId: string; messageId: string; roomName?: string } | null;
-  /** "result" on a task's result line. */
+  /** "result" on a task's result line; "automation_confirm" on the card that turns an automation on. */
   kind?: string | null;
+  /** The automation an `automation_confirm` card is about (lane A's propose route). */
+  automationId?: string | null;
 }
 
 export interface MessageAttachment {
@@ -738,12 +740,13 @@ export interface LocalSessionOfflineOutbox {
 // text per kind. New kinds (reaction, agent_run) arrive without a shape change.
 // ---------------------------------------------------------------------------
 
-export type ActivityKind = "mention" | "dm" | "thread_reply" | "reaction" | "agent_run" | "paperclip" | "session" | "login" | "extension" | "reconnect";
+export type ActivityKind = "mention" | "dm" | "thread_reply" | "reaction" | "agent_run" | "paperclip" | "session" | "login" | "extension" | "reconnect" | "task_question";
 /** `interaction`: an agent paused on a task, waiting for a human to confirm or answer. */
 /** `waiting` / `finished`: one of your shared sessions paused for your input, or ended a long turn. */
 /** `login`: an agent needs a website login. (A sign-in code is typed into the shared browser, never asked for here.) */
 export type ActivitySubtype = "approval" | "assigned_issue" | "failed_run" | "interaction" | "waiting" | "finished" | "join_request" | "login" | "extension" | "reconnect";
-export type ActivityLinkKind = "issue" | "room" | "thread" | "run" | "approval" | "session" | "task_question";
+/** `task`: a super-agent thread (a `task_question` item's link and its Open action; `activity.py render_task_question`). */
+export type ActivityLinkKind = "issue" | "room" | "thread" | "run" | "approval" | "session" | "task";
 
 export interface ActivityActor {
   kind: "human" | "agent" | "system";

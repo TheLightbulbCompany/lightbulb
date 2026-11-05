@@ -12,14 +12,17 @@ import this module and must do nothing session-bound before their first /invocat
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import re
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 import uuid
 
-from bridge import OWNER, turn
+from bridge import API, HOOK_TOKEN, OWNER, turn
 
 log = logging.getLogger("bridge")
 
@@ -44,6 +47,32 @@ _retrying = 0
 # ponytail: in-memory, per process -- a restart forgets the count, and the queue with it.
 MAX_ATTEMPTS = 8
 _attempts: dict[str, int] = {}
+
+
+#: Worker session key -> {"taskId", "runSecret"} of its latest run (bridge/turn._run_task_turn). In
+#: memory only, like the thread's identity copy: never in RUNS or the S3 run record.
+#: ponytail: never cleared -- one small entry per Worker session the process ever ran (a task VM runs
+#: one; a shared VM is recycled within 7 h). Pop on run end if a long-lived shared VM shows growth.
+_TASKS: dict[str, dict] = {}
+
+
+def remember_task(session_key: str, task_id: str, run_secret: str) -> None:
+    _TASKS[session_key] = {"taskId": task_id, "runSecret": run_secret}
+
+
+def _post_input(body: dict) -> int:
+    """One POST to the task's `/inputs` (backend: a `job_result` trigger + a signal to the task's
+    workflow). The drain's own pass is the retry loop; never throws."""
+    req = urllib.request.Request(
+        f"{API}/api/v1/internal/runtime/{OWNER}/inputs", data=json.dumps(body).encode(), method="POST",
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {HOOK_TOKEN}"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as res:
+            return res.status
+    except urllib.error.HTTPError as exc:
+        return exc.code
+    except Exception:  # noqa: BLE001 -- network: retried by the next pass
+        return 0
 
 
 def ensure_started() -> None:
@@ -171,6 +200,44 @@ def _drop(ledger, evt: dict, claim: str) -> None:
         ledger.drop_completion_delivery(str(evt.get("delegation_id") or ""), claim)
 
 
+def _text(claimed: list[tuple[dict, str]], fmt) -> str:
+    blocks = [text for evt, _claim in claimed if (text := fmt(evt))]
+    if len(blocks) > 1:
+        blocks.insert(0, _BATCH_HEADER.format(n=len(blocks)))
+    return "\n\n".join(blocks).encode()[:turn.MAX_FOLLOWUP_TEXT_BYTES].decode("utf-8", "ignore")
+
+
+def _settle(status: int, claimed: list[tuple[dict, str]], ledger, what: str) -> list[dict]:
+    """2xx delivered, 4xx final (dropped), else released for the next pass. Returns the retries."""
+    if 200 <= status < 300:
+        for evt, claim in claimed:
+            ledger.complete_event_delivery(evt, claim)
+            _forget(evt)
+            _attempts.pop(_delivery_key(evt), None)
+        log.info("delegation %s -> %s (%d events)", what, status, len(claimed))
+        return []
+    if 400 <= status < 500:  # final: unknown room/agent/trigger/task, malformed, capped, or old backend
+        for evt, claim in claimed:
+            _drop(ledger, evt, claim)
+        log.warning("delegation %s refused %s; dropped %d", what, status, len(claimed))
+        return []
+    for evt, claim in claimed:  # 5xx or network: the ledger counts the attempt and may drop it
+        ledger.release_event_delivery(evt, claim)
+    return [evt for evt, _claim in claimed]
+
+
+def _deliver_to_task(session_key: str, task: dict, claimed: list[tuple[dict, str]], ledger, fmt) -> list[dict]:
+    """A Worker session's completions become one task input (`delegation_completed`)."""
+    ids = ",".join(sorted(_delivery_key(evt) for evt, _claim in claimed))
+    text = _text(claimed, fmt)
+    body = {
+        "taskId": task["taskId"], "sessionKey": session_key, "kind": "delegation_completed",
+        "jobId": ids[:256], "text": text, "runSecret": task["runSecret"],
+        "deliveryId": str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-task-input:{ids}")),
+    }
+    return _settle(_post_input(body) if text else 200, claimed, ledger, f"task input {body['deliveryId']}")
+
+
 def _deliver(session_key: str, last: dict | None, group: list[dict], ledger, fmt) -> list[dict]:
     """Claim, format and POST one session's completions for one originating turn. Returns the
     events to retry."""
@@ -184,6 +251,9 @@ def _deliver(session_key: str, last: dict | None, group: list[dict], ledger, fmt
                    if (claim := ledger.claim_event_delivery(evt, CONSUMER)) is not None]
         if not claimed:
             return []  # another consumer owns every row
+        task = _TASKS.get(session_key) if last is None else None
+        if task is not None:
+            return _deliver_to_task(session_key, task, claimed, ledger, fmt)
         if last is None:
             # ponytail: only room sessions are woken; mail/Paperclip delegations are dropped (gap list).
             log.warning("delegation drain: session %s has no room turn in this process; dropping %d",
@@ -191,10 +261,7 @@ def _deliver(session_key: str, last: dict | None, group: list[dict], ledger, fmt
             for evt, claim in claimed:
                 _drop(ledger, evt, claim)
             return []
-        blocks = [text for evt, _claim in claimed if (text := fmt(evt))]
-        if len(blocks) > 1:
-            blocks.insert(0, _BATCH_HEADER.format(n=len(blocks)))
-        text = "\n\n".join(blocks).encode()[:turn.MAX_FOLLOWUP_TEXT_BYTES].decode("utf-8", "ignore")
+        text = _text(claimed, fmt)
         ids = ",".join(sorted(_delivery_key(evt) for evt, _claim in claimed))
         body = {
             "followUpId": str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-followup:{ids}")),
@@ -203,18 +270,4 @@ def _deliver(session_key: str, last: dict | None, group: list[dict], ledger, fmt
             "reason": "delegation_completed", "text": text,
         }
         status = turn._post_backend(f"followups/{OWNER}", body) if text else 200
-        if 200 <= status < 300:
-            for evt, claim in claimed:
-                ledger.complete_event_delivery(evt, claim)
-                _forget(evt)
-                _attempts.pop(_delivery_key(evt), None)
-            log.info("delegation follow-up %s -> %s (%d events)", body["followUpId"], status, len(claimed))
-            return []
-        if 400 <= status < 500:  # final: unknown room/agent/trigger, malformed, capped, or old backend
-            for evt, claim in claimed:
-                _drop(ledger, evt, claim)
-            log.warning("delegation follow-up %s refused %s; dropped %d", body["followUpId"], status, len(claimed))
-            return []
-        for evt, claim in claimed:  # 5xx or network: the ledger counts the attempt and may drop it
-            ledger.release_event_delivery(evt, claim)
-        return [evt for evt, _claim in claimed]
+        return _settle(status, claimed, ledger, f"follow-up {body['followUpId']}")

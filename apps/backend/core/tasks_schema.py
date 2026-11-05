@@ -69,6 +69,7 @@ TriggerSource = Literal[
     "text",
     "answer",
     "ask",
+    "watch",  # lane A (A12): a task's own watch was met; the input kind is "watch"
 ]
 Admission = Literal["respond", "candidate"]
 # C13
@@ -113,6 +114,11 @@ def run_id(ws: str, task_id: str, n: int) -> str:
     return str(uuid.uuid5(RUN_NS, f"{ws}:{task_id}:{n}"))
 
 
+def router_run_id(ws: str, batch_id: str) -> str:
+    """A Router batch's bridge run id: a retried `router_turn` re-POSTs the same run (a replay)."""
+    return str(uuid.uuid5(RUN_NS, f"{ws}:router:{batch_id}"))
+
+
 #: A Worker's session on the workspace's VM (spec 02 §2.2): one per task, so an attempt resumes the last one's
 #: transcript. The bridge's run route checks keys against this pattern (bridge/runs.py SESSION_KEY_RE).
 WORKER_SESSION_KEY_PATTERN = r"^agent:[0-9a-f-]{36}:lightbulb:task:[0-9a-f-]{36}$"
@@ -151,6 +157,7 @@ TRIGGER_ID_FORMATS: dict[str, str] = {
     "text": "text:{messageId}",
     "answer": "answer:{qid}:{clientAnswerId}",  # a person's free-text answer; the Temporal update carries ids only
     "ask": "ask:{qid}",  # a Worker's ask_person / request_approval text; the `ask` update carries ids only
+    "watch": "watch:{taskId}:{watchId}:{n}",  # the n-th check of a task's watch found it met (A12)
     # §18: one observe/auto match per rule per thread, ever. Not a TriggerSource: the row's `source` is chat/webhook.
     "rule": "rule:{scheduleId}:{threadHash}",
 }
@@ -201,6 +208,11 @@ def effect_sk(idem_key: str) -> str:
     return f"EFFECT#{idem_key}"
 
 
+def learn_sk(specialist_id: str, task_id: str, attempt: int) -> str:
+    """One learning merge of one attempt into one specialist (spec 07 §3.5; lane V)."""
+    return f"LEARN#{specialist_id}#{task_id}#{attempt:04d}"
+
+
 def trigger_sk(trigger_id: str) -> str:
     return f"TRIG#{trigger_id}"
 
@@ -248,6 +260,11 @@ def slots_sk() -> str:
     return "SLOTS"
 
 
+def task_seq_sk() -> str:
+    """The workspace's task identifier counter (`LB-{n}`, spec 01 `next_identifier`)."""
+    return "TASKSEQ"
+
+
 # Spec 03 §5.1: the workspace's own rows under `WS#{ws}` (Lane R, wave1-R Task 6).
 META_SK = "META"
 PENDING_BRIEF_SK = "PENDING_BRIEF"
@@ -259,6 +276,11 @@ def status_key(ws: str, status: str) -> str:
 
 def task_workflow_id(ws: str, task_id: str) -> str:
     return f"task:{ws}:{task_id}"
+
+
+def learning_workflow_id(ws: str, specialist_id: str) -> str:
+    """The one merge writer per specialist (spec 07 §3.5)."""
+    return f"learn:{ws}:{specialist_id}"
 
 
 def router_workflow_id(ws: str) -> str:
@@ -305,6 +327,7 @@ KEY_FORMATS: dict[str, str] = {
     "question": "TASK#{taskId}#Q#{qid}",
     "needs": "NEEDS#{userId}#{taskId}#{qid}",
     "effect": "EFFECT#{idemKey}",
+    "learn": "LEARN#{specialistId}#{taskId}#{attempt:04}",
     "trigger": "TRIG#{triggerId}",
     "schedule": "SCHED#{scheduleId}",
     "observed": "OBS#{threadKey}",
@@ -428,7 +451,9 @@ class Task(_Row):
     attempt_count: int = 0
     usage: Usage | None = None
     resolved_at: str | None = None
-    a2a_task_id: str | None = None
+    # Explicit: `to_camel` would make it `a2ATaskId`; the wire name everywhere else (the `a2a:{a2aTaskId}` trigger
+    # id, lane Q's A2A admission) is `a2aTaskId`.
+    a2a_task_id: str | None = Field(None, alias="a2aTaskId")
     ws_channel: str | None = None
     proposal_reason: str | None = None  # why the Router proposed instead of starting (G18)
     stop_requested_by: str | None = None  # who pressed Stop (attributes the stop)
@@ -561,6 +586,23 @@ class Output(_Model):
     ref: dict[str, str] = {}  # {s3Key} / {appId} / {repo, pr} …
 
 
+class LearnIntent(_Row):
+    """A learning merge's intent row (spec 07 §3.5 crash safety 2-3): `planned` ({rel: sha256} of
+    every put) lands before the S3 writes, `applied` + the merge report after; a replay of an
+    applied row is a no-op."""
+
+    type: Literal["learn"] = "learn"
+    specialist_id: str
+    task_id: TaskId
+    attempt: int = Field(ge=1)
+    state: Literal["planned", "applied"]
+    planned: dict[str, str] = {}
+    report: dict[str, Any] | None = None
+
+    def sk(self) -> str:
+        return learn_sk(self.specialist_id, self.task_id, self.attempt)
+
+
 class Effect(_Row):
     """External, irreversible effects only (send, pay, merge, publish, provision, A2A)."""
 
@@ -573,6 +615,7 @@ class Effect(_Row):
     operands: dict[str, Any] = {}  # the call's parsed operands (≤16 KB): the Output draft while proposed
     operands_hash: str
     executor_ok: bool = False  # a backend Landing executor can run it from `operands`
+    door_used_at: str | None = None  # the one backend door call this intent let through (Lane Q door gating)
     state: EffectState
     question_id: str | None = None
     output: Output | None = None  # the draft payload while proposed
@@ -786,6 +829,7 @@ ROW_MODELS: dict[str, type[_Row]] = {
         Question,
         Needs,
         Effect,
+        LearnIntent,
         Trigger,
         Schedule,
         Hook,
@@ -884,6 +928,8 @@ class StartTask(_Decision):
     policy_ref: str | None = None
     budget_usd: float | None = None
     previous_run_task_id: TaskId | None = None
+    # Same explicit alias as Task.a2a_task_id: one wire name, `a2aTaskId` (`to_camel` would say `a2ATaskId`).
+    a2a_task_id: str | None = Field(None, alias="a2aTaskId")  # an inbound A2A request's governance row
 
 
 class ProposeTasks(_Decision):

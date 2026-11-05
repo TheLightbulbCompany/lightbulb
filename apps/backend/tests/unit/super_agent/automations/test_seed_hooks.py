@@ -395,7 +395,7 @@ async def test_webhook_secret_put_super_agent_branch(env, api, monkeypatch):
     app.dependency_overrides[get_current_user] = _as_org_admin
     try:
         with (
-            patch("routers.automations.flags_for", AsyncMock(return_value=True)),
+            patch("core.services.super_agent_flags.flags_for", AsyncMock(return_value=True)),
             patch("routers.automations._resolve_trigger_id", AsyncMock()) as resolve,
         ):
             r = api.put(f"/api/v1/automations/{pid}/webhook-secret", json={"webhook_secret": "whsec_live"})
@@ -416,7 +416,7 @@ async def test_webhook_secret_put_switch_off_unchanged(env, api):
     app.dependency_overrides[get_current_user] = _as_org_admin
     try:
         with (
-            patch("routers.automations.flags_for", AsyncMock(return_value=False)),
+            patch("core.services.super_agent_flags.flags_for", AsyncMock(return_value=False)),
             patch("routers.automations._resolve_trigger_id", AsyncMock(return_value=None)) as resolve,
         ):
             r = api.put(f"/api/v1/automations/{pid}/webhook-secret", json={"webhook_secret": "whsec_live"})

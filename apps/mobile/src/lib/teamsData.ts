@@ -254,6 +254,8 @@ export interface TeamsAgent {
   /** Paperclip's agent status, verbatim (running / idle / paused / error …): the avatar ring. */
   status?: string | null;
   role?: string | null;
+  /** The manager's agent id; the root CEO has none. */
+  reportsTo?: string | null;
 }
 
 /**

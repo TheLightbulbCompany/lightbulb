@@ -11,6 +11,9 @@ provides_tools:
   - suggest_idea
   - lightbulb_local_sessions
   - lightbulb_desktop
+  - start_work
+  - watch
+  - unwatch
   - lightbulb_read_rooms
   - lightbulb_workspace
   - start_task
@@ -19,3 +22,4 @@ provides_tools:
   - reply
   - ask
   - ignore
+  - propose_automation

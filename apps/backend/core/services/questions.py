@@ -10,6 +10,7 @@ Only answering a Question approves. Nothing here maps message text to an answer.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from dataclasses import dataclass
 
@@ -22,6 +23,7 @@ EFFECT_KINDS = ("mail.send", "text.send", "app.publish", "pr.merge", "purchase",
 
 #: A draft output a person reviews; the first option lands it (Landing), the second sends it back to the Worker.
 REVIEW_KINDS = {"mail.send": "send", "text.send": "send", "app.publish": "publish", "pr.merge": "merge"}
+_OUTPUT_KINDS = {"mail.send": "mail", "text.send": "mail", "app.publish": "app", "pr.merge": "pr"}
 
 _SUBKINDS = {
     "mail.send": "send",
@@ -68,6 +70,13 @@ def kind_and_options(effect_kind: str) -> tuple[ts.QuestionKind, list[str]]:
     if action:
         return "review", [action, "request_changes"]
     return "approval", ["allow_once", "deny"]
+
+
+def operands_hash(kind: str, operands: dict) -> str:
+    """The canonical effect hash shared with the bridge (bridge/effects.py `operands_hash`): sha256 of
+    `{kind, **operands}` as sorted, compact JSON. Every backend door and the effects route compute it themselves."""
+    canonical = json.dumps({"kind": kind, **operands}, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 def qid_for(idem_key: str) -> str:
@@ -241,6 +250,16 @@ def title_for(effect: dict) -> str:
     else:
         line = f"run {effect.get('tool') or 'a tool'}"
     return line if len(line) <= 200 else line[:199] + "…"
+
+
+def output_for(effect: dict) -> dict | None:
+    """The Output (draft) a proposed review-kind Effect carries, so the task shows Ready for review with its next step
+    (Send / Publish / Merge). Approval kinds (purchase, provision, a2a) have no draft to review: None."""
+    kind = _OUTPUT_KINDS.get(effect.get("kind"))
+    if kind is None:
+        return None
+    line = title_for(effect)
+    return {"kind": kind, "title": line[:1].upper() + line[1:]}
 
 
 def card_copy(q: dict, specialist_label: str) -> tuple[str, str]:

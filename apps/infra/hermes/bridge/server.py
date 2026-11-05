@@ -33,7 +33,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import bridge
-from bridge import GATEWAY_TOKEN, HOOK_TOKEN, OWNER, PORT, STARTED, now
+from bridge import GATEWAY_TOKEN, HOOK_TOKEN, OWNER, PORT, STARTED, now, task_mode
 from bridge import sync, turn, browser_control, followups, mcp_compat, network, recycle, runs, subagents
 
 logging.basicConfig(level=logging.INFO, format="[bridge] %(message)s", stream=sys.stdout)
@@ -234,9 +234,19 @@ def _handle_call_run(path: str, method: str, headers: dict, body) -> tuple[int, 
 def handle_plugin(path: str, method: str, headers: dict, body) -> tuple[int, dict]:
     if not _authorized(headers):
         return 401, {"error": "unauthorized"}
+    # A task VM (spec 02 §3.3) runs its task's runs and answers RPC reads, nothing else: no room
+    # turn, no Paperclip run, no call -- each would restore and write the specialist profile.
+    task_run = path.startswith("/internal/v1/runs")
+    if task_mode.active() and not task_run and path != "/plugins/lightbulb-channel/rpc":
+        return task_mode.Refused.reply
     # A real, authorized invoke: this microVM is claimed, so the network member may start here
-    # (never on a warm-pool instance). No-op without a member key or sessions.json.
-    network.ensure_started(background=True)
+    # (never on a warm-pool instance). No-op without a member key or sessions.json. A task
+    # session never starts one: the workspace member belongs to the workspace VM.
+    identity = body.get("identity") if isinstance(body, dict) else None
+    session = identity.get("session") if isinstance(identity, dict) else None
+    wants_task = task_run and isinstance(session, dict) and session.get("kind") == "task"
+    if not (task_mode.active() or wants_task):
+        network.ensure_started(background=True)
     # The website-login vault token rides every backend invoke (runtime_transport._vault_header);
     # memory only. See bridge/__init__.py's VAULT_TOKEN.
     vault = _header(headers, "X-Lightbulb-Vault")
@@ -248,6 +258,11 @@ def handle_plugin(path: str, method: str, headers: dict, body) -> tuple[int, dic
     paperclip = _handle_paperclip_run(path, method, headers, body)
     if paperclip is not None:
         return paperclip
+    if path == "/internal/v1/curate" and method == "POST":  # lane V5b; a task VM was refused above
+        agent_id = body.get("agentId") if isinstance(body, dict) else None
+        if not isinstance(agent_id, str) or agent_id not in _roster():  # as profile.warm
+            return 400, {"error": "invalid_request"}
+        return turn.curate_agent(agent_id)
     task_run = runs.handle(path, method, headers, body)
     if task_run is not None:
         return task_run
@@ -467,6 +482,8 @@ def _unavailable(method: str) -> dict:
 # background, so the first RPC of a cold microVM would otherwise find it off.
 def _net(method: str, op: str, body: dict | None = None, run=None) -> dict:
     """``run`` (no arguments) replaces the one engine op when a method does more than ask."""
+    if task_mode.active():  # the workspace member belongs to the workspace VM: never started here
+        return {"ok": False, "error": {"code": "task_mode", "message": f"{method} is not available on a task VM"}}
     if not network.ensure_started(background=False):
         return _unavailable(method)
     try:
@@ -686,6 +703,13 @@ def _provider_credential(agent_id: str, provider: str) -> tuple[bool, str]:
             state = (blob.get("providers") or {}).get("openai-codex") or {}
             tokens = state.get("tokens") or {}
             present = isinstance(tokens, dict) and any(tokens.get(k) for k in ("access_token", "refresh_token"))
+            if not present and state.get("custody") == "backend":
+                # The backend holds the grant (spec 13): a vend fills the local file, and its
+                # `model` is the proof the grant is live.
+                from bridge import credentials
+
+                vended = credentials.vend(agent_id)
+                present = vended is not None and vended.model is not None
         except (OSError, ValueError, AttributeError):
             present = False
         return present, "chatgpt-oauth"
@@ -918,6 +942,7 @@ def _save_on_sigterm(signum, _frame) -> None:
         for agent_id in sorted(turn.RESTORED):
             try:
                 sync.save_profile(agent_id)
+                sync.reseal_attempt(agent_id)  # a task VM stopped after its seal: the save above may have moved a sealed file
             except Exception:  # noqa: BLE001 -- one bad profile must not cost the others
                 log.warning("sigterm: save_profile %s failed", agent_id, exc_info=True)
         try:

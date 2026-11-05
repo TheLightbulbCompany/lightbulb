@@ -52,7 +52,8 @@ import { RunBlock } from "../../../../components/room/RunBlock";
 import { fonts, radii, spacing, useChatPalette } from "../../../../config/theme";
 import { claimRoomTarget } from "../../../../lib/activeAgent";
 import { hasNativeVoice } from "../../../../lib/webrtc";
-import { useLiveEvents } from "../../../../providers/live-events";
+import { useLiveEvents, useSuperAgent } from "../../../../providers/live-events";
+import { useFrontAgentId } from "../../../../lib/workspaceRoster";
 import { useLive, useRoomLive } from "../../../../providers/live";
 import { JumpToLatest } from "../../../../components/conversation/JumpToLatest";
 import { usePushedScreenKeyboardOffset } from "../../../../lib/keyboardOffset";
@@ -252,6 +253,11 @@ function Conversation() {
     && (viewer?.role === "owner" || viewer?.role === "admin");
   const dmWithAgent = isDm && others[0]?.kind === "agent";
   const isHumanDm = isDm && others[0]?.kind === "human";
+  // Super-agent: a DM with a specialist (any agent but the front one) says the specialist now works through
+  // Lightbulb. Only once the front agent is known, so an unresolved roster never calls every agent a specialist.
+  const superAgent = useSuperAgent();
+  const frontAgentId = useFrontAgentId(superAgent && dmWithAgent);
+  const specialistDm = !!frontAgentId && dmWithAgent && others.length === 1 && others[0]?.id !== frontAgentId;
   // One heartbeat/snapshot loop per screen that shows it (ponytail) — Chats
   // already runs its own, and only a human DM's status line reads this one.
   const presence = usePresence(focused && isHumanDm);
@@ -493,6 +499,11 @@ function Conversation() {
           if (startedRoomId !== roomId) router.push(`/(app)/room/${startedRoomId}`);
         }}
       />
+      {specialistDm ? (
+        <Text accessibilityRole="text" testID="specialist-dm-banner" style={[styles.specialistBanner, { color: palette.fgMute, borderColor: palette.edge }]}>
+          {roomName} now works through Lightbulb. A message here starts a {roomName} thread.
+        </Text>
+      ) : null}
       {/* The sheet shows its own copy; this one is for a hidden sheet (UI §8). */}
       {!preview && room && live.roomId === room.roomId && !live.open ? <NoticeBanner style={styles.liveNotice} /> : null}
       {prefsError && (
@@ -734,6 +745,10 @@ function Conversation() {
 }
 
 const styles = StyleSheet.create({
+  specialistBanner: {
+    fontFamily: fonts.sans, fontSize: 13, lineHeight: 18, paddingHorizontal: spacing.lg, paddingVertical: spacing.sm,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
   container: { flex: 1 },
   liveNotice: { marginHorizontal: 12, marginTop: 8 },
   // Top/bottom are swapped against the un-inverted version: the content

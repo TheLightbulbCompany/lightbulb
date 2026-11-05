@@ -1039,6 +1039,7 @@ export function MessagingWorkspaceProvider({
     onStopSubagent: rooms.stopSubagent,
     onSubagentsVisible: rooms.subagentsPollVisible,
     onLinkToWork: () => openPanel("teams-issues", {}, { pushUrl: true }),
+    frontAgentId: resolveCeoAgentId(agentRoster?.agents ?? []),
     onDownloadAttachment: rooms.downloadAttachment,
     onAttachmentUrl: rooms.attachmentUrl,
   } : null;

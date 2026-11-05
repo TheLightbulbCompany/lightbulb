@@ -16,7 +16,7 @@ from threading import Event
 import urllib.error
 import urllib.request
 
-from bridge import API, HOOK_TOKEN, OWNER, memory_ctx, turn
+from bridge import API, HOOK_TOKEN, OWNER, memory_ctx, task_mode, turn
 
 log = logging.getLogger("bridge")
 
@@ -55,13 +55,16 @@ def validate_identity(identity, *, path_run_id: str | None = None) -> dict:
     if mode not in ("worker", "router") and isinstance(mode, str):
         raise Refused(*UNSUPPORTED)
     session = identity.get("session")
-    if isinstance(session, dict) and session.get("kind") != "workspace" and isinstance(session.get("kind"), str):
+    kind = session.get("kind") if isinstance(session, dict) else None
+    if isinstance(kind, str) and kind not in ("workspace", "task"):
         raise Refused(*UNSUPPORTED)
+    if kind == "task" and mode != "worker":
+        raise Refused(*UNSUPPORTED)  # a Router batch never runs in a task session (spec 02 §3.3)
     ok = (
         all(isinstance(identity.get(k), str) and _UUID_RE.fullmatch(identity[k]) for k in ("runId", "taskId", "agentId"))
         and isinstance(identity.get("ownerId"), str) and identity["ownerId"]
         and _positive_int(identity.get("attempt"))
-        and session == {"kind": "workspace"}
+        and session in ({"kind": "workspace"}, {"kind": "task"})
         and isinstance(identity.get("sessionKey"), str) and _session_key_ok(identity)
         and (path_run_id is None or identity["runId"] == path_run_id)
     )
@@ -113,6 +116,7 @@ def _create(headers: dict, body) -> tuple[int, dict]:
         raise _invalid("run_identity")
     identity = validate_identity(body.get("identity"))
     request = validate_request(body.get("request"))
+    task_mode.admit(identity)  # a task-kind run latches this VM to its task; anything else on a latched VM is 409
     # The attempt's secret rides only the thread's copy (like localSessionToken): never in RUNS or the
     # S3 run record, which other turns of the workspace can read.
     run_secret = identity.pop("runSecret", None)
@@ -146,6 +150,7 @@ def _create(headers: dict, body) -> tuple[int, dict]:
 
 def _poll_or_stop(run_id: str, stop: bool, body) -> tuple[int, dict]:
     identity = validate_identity((body or {}).get("identity") if isinstance(body, dict) else None, path_run_id=run_id)
+    task_mode.admit(identity)  # latches a fresh VM BEFORE the record read (its overlay's .runs/, not the specialist's)
     try:
         status = turn.durable_run_status(run_id, identity, kind="task")
     except Exception:  # noqa: BLE001 -- the durable-record read failed (an S3 blip)
@@ -168,6 +173,7 @@ def _steer(run_id: str, body) -> tuple[int, dict]:
     if not isinstance(body, dict):
         raise _invalid("run_identity")
     identity = validate_identity(body.get("identity"), path_run_id=run_id)
+    task_mode.admit(identity)
     text, kind = body.get("text"), body.get("kind")
     if kind not in ("user", "input"):
         raise _invalid("steer")
@@ -198,6 +204,8 @@ def handle(path: str, method: str, headers: dict, body) -> tuple[int, dict] | No
             return _steer(match.group(1), body)
         return _poll_or_stop(match.group(1), action == "/stop", body)
     except Refused as refused:
+        return refused.reply
+    except task_mode.Refused as refused:
         return refused.reply
 
 

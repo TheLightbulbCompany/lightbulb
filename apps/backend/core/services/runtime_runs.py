@@ -63,6 +63,23 @@ class RunIdentity:
     # by `session_kind_for`, written on the Attempt row by O's `begin_attempt`, never cached on the task.
     session_kind: SessionKind = "workspace"
 
+    @classmethod
+    def for_attempt(cls, owner_id: str, task_id: str, att: dict) -> "RunIdentity":
+        """The one way to name an Attempt's run: the Attempt row records where `begin_attempt` put it (V3), so
+        every reader (worker_turn, the trace route, the watchdog) derives `session_kind` the same way."""
+        kind: SessionKind = (
+            "task" if att.get("sessionId") == runtime_transport.session_id_for(owner_id, task_id) else "workspace"
+        )
+        return cls(
+            att["runId"],
+            owner_id,
+            task_id,
+            att["n"],
+            att["agentId"],
+            run_secret=att.get("runSecret"),
+            session_kind=kind,
+        )
+
     @property
     def session_key(self) -> str:
         if self.mode == "router":
@@ -208,17 +225,25 @@ async def session_kind_for(owner_id: str) -> SessionKind:
     return "task" if await token_custody.task_vm_allowed(owner_id) else "workspace"
 
 
-async def stop_task_session(owner_id: str, task_id: str) -> bool:
+async def stop_task_session(owner_id: str, task_id: str, run_id: str | None = None) -> bool:
     """Stop the task's own AgentCore session (and clear only its warm row). False when the workspace
     has no runtime; otherwise `hermes_provisioning.stop_runtime_session`'s answer. Called by V's
-    `close_task_attempt` after the seal, before the learning merge is signalled."""
-    from core.services import hermes_provisioning
+    `close_task_attempt` after the seal, before the learning merge is signalled. With `run_id`, the
+    workspace browser lease that run still holds is freed after the stop (contracts §14.11: a VM
+    stopped mid-tool never released it; the next task's run would wait out the lease)."""
+    from core.services import browser_control, hermes_provisioning
 
     container = await container_repo.get_by_owner_id(owner_id) or {}
     arn = container.get("agentcore_runtime_arn")
     if not arn:
         return False
-    return await hermes_provisioning.stop_runtime_session(owner_id, arn, task_id=task_id)
+    stopped = await hermes_provisioning.stop_runtime_session(owner_id, arn, task_id=task_id)
+    if run_id:
+        try:
+            await browser_control.release_for_run(owner_id, run_id)
+        except Exception:  # noqa: BLE001 -- the lease still expires on its own; never cost the merge signal
+            logger.warning("task browser release failed task=%s", task_id, exc_info=True)
+    return stopped
 
 
 async def curate(owner_id: str, agent_id: str) -> dict:

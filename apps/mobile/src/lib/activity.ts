@@ -37,6 +37,8 @@ export function activityHrefs(target: Navigate): Href[] {
       return ["/(app)/(tabs)/teams"];
     case "session":
       return notificationHrefs({ source: "session", sessionId: target.id }) ?? [];
+    case "task":
+      return notificationHrefs({ source: "task_question", taskId: target.id }) ?? [];
     default:
       // A link kind a newer server sends that this build doesn't know: stay put.
       return [];

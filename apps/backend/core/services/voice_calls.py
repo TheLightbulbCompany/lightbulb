@@ -37,6 +37,7 @@ from core.services import (
     runtime_transport,
     voice_persona,
 )
+from core.services.super_agent_flags import flags_for
 from core.services.live_events import get_live_event_publisher
 
 logger = logging.getLogger(__name__)
@@ -304,6 +305,14 @@ EOF
 - Cannot: if you lack the access or the tool, say which one, in one sentence.
 Your reply is spoken: no markdown, no lists, no code, no links, no ids. Never claim an action succeeded before it did.
 Take as many steps as the request needs. Everything you write is spoken as you go, so while you work, before each lookup, say one short sentence with what you found so far or what you are checking next; give real content, never filler like "still checking".]"""
+
+# Super-agent workspaces (contracts-v2 §14.1): work asked aloud starts a task through the start_work tool;
+# the hand-off line above (a Paperclip task) does not apply there. One sentence, under the switch only.
+SUPER_AGENT_NOTE = (
+    "[In this workspace, hand work off with the start_work tool (a short title and a self-contained brief) "
+    "rather than by creating a task yourself, then say in one sentence that it has started and that the "
+    "result will be in the room.]"
+)
 
 
 # A meeting's unsaid answers ride on its META item (400 KB), for this occurrence and the newest
@@ -792,6 +801,7 @@ async def dispatch_voice_run(
     in the call's own transcript (identity.callId). run_id is the worker's, reused on every retry, so a
     delivered-but-timed-out invoke is replayed, never re-run."""
     owner_id, room_id = call["ownerId"], call["roomId"]
+    super_agent = await flags_for(owner_id)  # lane A: start_work is offered, the Paperclip hand-off is not
     meta, members = await asyncio.gather(messaging_repo.get_room(room_id), messaging_repo.list_members(room_id))
     if not meta or not any(m.get("kind") == "agent" and m["id"] == agent_id for m in members):
         raise _problem(409, code="agent_not_in_room")
@@ -826,7 +836,7 @@ async def dispatch_voice_run(
         "request": {
             "input": f"[Live voice in #{meta.get('name') or 'this room'}. Spoken since you last spoke, newest last:\n"
             f"{spoken}]\n\n{asked}{name} (voice): {utterance}",
-            "instructions": TURN_NOTE,
+            "instructions": TURN_NOTE + ("\n" + SUPER_AGENT_NOTE if super_agent else ""),
             "session_id": session_id,
             "frames": {
                 "sink": "backend",
@@ -843,6 +853,7 @@ async def dispatch_voice_run(
             "room": {"id": room_id, "name": meta.get("name"), "kind": meta["kind"], "revision": int(meta["revision"])},
             "sender": {"id": speaker_id, "kind": "human" if requester else "guest", "displayName": name},
             **({"sessions": sessions} if sessions else {}),
+            **({"superAgent": True} if super_agent else {}),
         },
     }
     history = body["request"]["recentHistory"]

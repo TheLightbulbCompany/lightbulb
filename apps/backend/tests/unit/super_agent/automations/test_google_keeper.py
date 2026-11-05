@@ -180,7 +180,7 @@ async def test_renew_opens_a_new_channel_stops_the_old_and_keeps_the_sync_token(
     await repo.put_hook(WS, _hook())
     assert await renew_google_watch(WS, PID) == 1799999999000
     row = await repo.get_hook(WS, PID)
-    assert row["resourceId"] == "res-new" and row["channelId"] != "ch-old"
+    assert row["resourceId"] == "res-new" and row["channelId"] != "ch-old" and row["armed"] is True
     assert row["expiresAt"] == "2027-01-15T07:59:59+00:00"
     assert row["pageToken"] == "sync-token-from-S7"
     calls = [c.args[0] for c in gog.call_args_list]
@@ -220,6 +220,7 @@ async def test_mark_watch_broken_pauses_the_automation(table):
         await mark_watch_broken(WS, PID)
     row = await repo.get_schedule(WS, "s1")
     assert (row["status"], row["pausedReason"]) == ("paused_system", "google_watch_broken")
+    assert (await repo.get_hook(WS, PID))["armed"] is False  # the broken one, so resume re-arms only it
     upsert.assert_awaited_once()
     await mark_watch_broken(WS, PID)  # already paused: no error
     await mark_watch_broken(WS, "0" * 24)  # hook gone: no error

@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FIXTURES, LIGHTBULB, SAM } from "@lightbulb/shared/tasks/fixtures";
@@ -8,6 +8,21 @@ const live = vi.hoisted(() => ({ superAgent: true, tasks: null as unknown }));
 vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useSuperAgent: () => live.superAgent, useOptionalLiveEvents: () => live }));
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 vi.mock("../MessageTaskCard", () => ({ MessageTaskCard: () => <div data-testid="legacy-task-card" /> }));
+// The row as the server holds it: activate flips it, and the card's re-read sees the flip.
+const automation = vi.hoisted(() => ({ current: null as Record<string, unknown> | null }));
+const api = vi.hoisted(() => ({
+  get: vi.fn(async (path: string) => path === "/automations/a1" && automation.current ? automation.current : Promise.reject(new Error("404"))),
+  post: vi.fn(async () => { automation.current = { ...automation.current, status: "active" }; return automation.current; }),
+  del: vi.fn(async () => undefined),
+}));
+const AUTOMATION = vi.hoisted(() => ({
+  id: "a1", name: "Post signups every Monday", instructions: "Post the signup count so far in #workshop-launch.", status: "draft", pausedReason: null,
+  schedule: { cron: ["0 9 * * 1"], tz: "America/New_York" }, nextRuns: [], hooks: [], specialistId: null, deliverTo: "room:room-workshop-launch",
+  budgetPerRunUsd: 1, ownerUserId: "user_sam", createdBy: "router", mode: null, lastTaskId: null, activeRunTaskId: null, runCount: 0, version: 1,
+}));
+vi.mock("@/lib/api", () => ({ useApi: () => api }));
+const clerk = vi.hoisted(() => ({ userId: "user_sam", role: "org:admin" as string | undefined }));
+vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ userId: clerk.userId }), useOrganization: () => ({ membership: clerk.role ? { role: clerk.role } : null }) }));
 
 import { RoomMessageItem } from "../RoomMessageItem";
 import type { RoomMessage } from "../types";
@@ -61,6 +76,32 @@ describe("RoomMessageItem with the super-agent switch", () => {
     expect(chip).not.toHaveAttribute("aria-pressed");
     await userEvent.click(chip);
     expect(onToggleReaction).not.toHaveBeenCalled();
+  });
+
+  it("an automation_confirm card turns the automation on only through its button", async () => {
+    automation.current = { ...AUTOMATION };
+    const card = { ...reply, messageId: "m-confirm", text: "Set up below. Confirm on the card.", taskRefs: undefined, kind: "automation_confirm", automationId: "a1" } as RoomMessage;
+    render(item(card));
+    const region = await screen.findByRole("region", { name: "Turn on Post signups every Monday" });
+    expect(region).toHaveTextContent("Mondays 9:00");
+    expect(region).toHaveTextContent("up to $1 a run, about $4 a month");
+    await userEvent.click(within(region).getByRole("button", { name: "Turn on" }));
+    expect(api.post).toHaveBeenCalledWith("/automations/a1/activate", {});
+    expect(await within(region).findByText("On")).toBeInTheDocument();
+    expect(within(region).queryByRole("button", { name: "Turn on" })).toBeNull();
+  });
+
+  it("a member who may not turn a room automation on reads the waiting line, no buttons", async () => {
+    clerk.role = "org:member";
+    automation.current = { ...AUTOMATION };
+    const card = { ...reply, messageId: "m-confirm", text: "Set up below. Confirm on the card.", taskRefs: undefined, kind: "automation_confirm", automationId: "a1" } as RoomMessage;
+    render(item(card));
+    const region = await screen.findByRole("region", { name: "Turn on Post signups every Monday" });
+    expect(within(region).getByText("Waiting on a workspace admin")).toBeInTheDocument();
+    expect(within(region).queryByRole("button", { name: "Turn on" })).toBeNull();
+    // The owner may still drop the proposal (the server's _may_edit).
+    expect(within(region).getByRole("button", { name: "Not now" })).toBeInTheDocument();
+    clerk.role = "org:admin";
   });
 
   it("flag off is identical to today", async () => {

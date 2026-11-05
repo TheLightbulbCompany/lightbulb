@@ -1163,8 +1163,14 @@ def _email_local_part(email: str | None) -> str | None:
     return local or None
 
 
-def mention_handles(agents: list[dict[str, Any]]) -> dict[str, str]:
-    """Derive workspace-unique, deterministic handles over canonical ID order."""
+#: Handles no agent derives from its name while the workspace's super-agent switch is on: `@lightbulb` is the
+#: front agent (contracts-v2 §6), set by `_resolved_member` / `task_conversation._front_agent`.
+RESERVED_HANDLES = frozenset({"lightbulb"})
+
+
+def mention_handles(agents: list[dict[str, Any]], *, reserved: Collection[str] = ()) -> dict[str, str]:
+    """Derive workspace-unique, deterministic handles over canonical ID order. A ``reserved`` candidate is
+    suffixed like a collision."""
     candidates: dict[str, str] = {}
     by_candidate: dict[str, list[str]] = {}
     for agent in sorted(agents, key=lambda row: row["id"]):
@@ -1175,7 +1181,7 @@ def mention_handles(agents: list[dict[str, Any]]) -> dict[str, str]:
     handles: dict[str, str] = {}
     for agent_id, candidate in candidates.items():
         colliders = by_candidate[candidate]
-        if len(colliders) == 1:
+        if len(colliders) == 1 and candidate not in reserved:
             handles[agent_id] = candidate
         else:
             handles[agent_id] = f"{candidate[:23]}-{_uuid_hex_prefix(agent_id)}"
@@ -1539,7 +1545,7 @@ async def refresh_agent_member_names(
     row = next((r for r in roster if r["id"] == agent_id), None)
     if row is None:
         return {}
-    handle = mention_handles(roster).get(agent_id)
+    handle = (await _handles_for(owner_id, roster)).get(agent_id)
     publisher = get_live_event_publisher()
     old: dict[str, str | None] = {}
     for entry in await messaging_repo.list_rooms_for_member(owner_id, "agent", agent_id):
@@ -1634,7 +1640,7 @@ async def _resolved_member(owner_id: str, member: CreateRoomMember, roster: list
     row = agents.get(member.id)
     if row is None:
         raise ApiProblem("MEMBER_NOT_FOUND", "That agent is not in this workspace.")
-    handles = mention_handles(roster)
+    handles = await _handles_for(owner_id, roster)
     return {
         "kind": "agent",
         "id": member.id,
@@ -1643,6 +1649,74 @@ async def _resolved_member(owner_id: str, member: CreateRoomMember, roster: list
         "role": "member",
         "listenMode": member.listen_mode,
     }
+
+
+async def _front_agent_id(owner_id: str) -> str | None:
+    """The front agent ("Lightbulb") while the workspace's super-agent switch is on; None otherwise."""
+    from core.services import super_agent_flags, task_conversation  # lazy: task_conversation imports this module
+
+    if not await super_agent_flags.flags_for(owner_id):
+        return None
+    try:
+        return await task_conversation.front_agent_id(owner_id)
+    except task_conversation.NoFrontAgent:
+        return None
+
+
+async def _handles_for(owner_id: str, roster: list[dict]) -> dict[str, str]:
+    """Every agent's handle: name-derived, except that under the switch `lightbulb` is reserved for the front
+    agent. One derivation for seating, re-seating and renames, so a re-stamp never flips lightbulb → aden."""
+    front = await _front_agent_id(owner_id)  # None while the switch is off
+    handles = mention_handles(roster, reserved=RESERVED_HANDLES if front else ())
+    if front and front in handles:
+        handles[front] = "lightbulb"
+    return handles
+
+
+async def _router_room(meta: dict, owner_id: str) -> bool:
+    """A room people chat with Lightbulb in (switch on): `admission.router_room`."""
+    from core.services import admission  # lazy: admission imports this module
+
+    return await admission.router_room(meta, owner_id)
+
+
+async def _lightbulb_only(owner_id: str, members: list[CreateRoomMember], kind: str) -> list[CreateRoomMember]:
+    """A new Router room seats one agent, Lightbulb (contracts-v2 §6); specialists are named by `@handle`
+    and the Router pins them. A human-to-human DM stays agent-free; a DM to any agent is a DM to Lightbulb."""
+    from core.services import task_conversation
+
+    agents = [m for m in members if m.kind == "agent"]
+    humans = [m for m in members if m.kind != "agent"]
+    if kind == "dm" and not agents:
+        return humans
+    try:
+        front = await task_conversation.front_agent_id(owner_id)
+    except task_conversation.NoFrontAgent:
+        raise ApiProblem("MEMBER_NOT_FOUND", "This workspace has no Lightbulb agent yet.") from None
+    listen = next((m.listen_mode for m in agents if m.id == front), None) or (agents[0].listen_mode if agents else None)
+    return [*humans, CreateRoomMember(kind="agent", id=front, role="member", listen_mode=listen or "active")]
+
+
+#: Event-id prefixes that may still post in a Router room as another agent: A2A hold cards and Live late answers,
+#: until lane Q's Question holds replace them (lead ruling, 5 Nov 2026; lanes/O.md).
+_VOICE_EXEMPT_EVENT_PREFIXES = ("a2a:", "live-late:")
+
+
+async def _require_lightbulb_voice(owner_id: str, meta: dict, agent_id: str, event_id: str = "") -> None:
+    """Contracts-v2 §6: in rooms people chat in only Lightbulb (the front agent) posts; a Worker posts only in
+    its own task room (the task's specialist). Everything else is refused, `lightbulb-post.sh --room` included."""
+    if event_id.startswith(_VOICE_EXEMPT_EVENT_PREFIXES) or agent_id == await _front_agent_id(owner_id):
+        return
+    task = meta.get("task") or {}
+    if task.get("taskId"):
+        from core.repositories import tasks_repo
+
+        row = await tasks_repo.get_task(owner_id, task["taskId"])
+        # ponytail: the task's specialist may post in any of that specialist's task rooms; binding the post to
+        # the attempt's runSecret is the upgrade when per-task VMs ship.
+        if row and row.get("specialist") == agent_id:
+            return
+    raise ApiProblem("ROOM_FORBIDDEN", "Only Lightbulb posts here. A task's notes go in its own task room.")
 
 
 async def require_room_member(owner_id: str, user_id: str, room_id: str) -> tuple[dict, dict]:
@@ -2047,7 +2121,7 @@ async def ensure_default_room(owner_id: str, owner_user_id: str) -> str | None:
     agents = {row["id"]: row for row in roster}
     if any(agent_id not in agents for agent_id in starter_ids.values()):
         return None
-    handles = mention_handles(roster)
+    handles = await _handles_for(owner_id, roster)
     members = [
         {
             "kind": "human",
@@ -2297,8 +2371,22 @@ async def room_agent(room_id: str, agent_id: str, meta: dict | None = None) -> d
         return member
     meta = {**(meta or await messaging_repo.get_room(room_id) or {}), "roomId": room_id}
     if not is_feed_room(meta):
-        return None
-    roster = await load_agent_roster(meta["ownerId"])
+        # A task's room seats Lightbulb and its readers; the task's specialist (the Worker) is its author
+        # the same way: a roster stand-in, never a seat (contracts-v2 §6).
+        task_id = (meta.get("task") or {}).get("taskId")
+        if not task_id:
+            return None
+        from core.repositories import tasks_repo
+
+        task = await tasks_repo.get_task(meta["ownerId"], task_id)
+        if not task or task.get("specialist") != agent_id:
+            return None
+    return await _stand_in(meta["ownerId"], agent_id)
+
+
+async def _stand_in(owner_id: str, agent_id: str) -> dict | None:
+    """A roster-backed author with no seat (the feed, a task room's specialist, an exempt A2A/Live post)."""
+    roster = await load_agent_roster(owner_id)
     row = next((agent for agent in roster if agent["id"] == agent_id), None)
     if row is None:
         return None
@@ -2306,10 +2394,11 @@ async def room_agent(room_id: str, agent_id: str, meta: dict | None = None) -> d
         "kind": "agent",
         "id": agent_id,
         "displayName": row["name"],
-        "mentionHandle": mention_handles(roster)[agent_id],
+        "mentionHandle": (await _handles_for(owner_id, roster))[agent_id],
         "role": "member",
         "listenMode": "mentions",
-        "ownerId": meta["ownerId"],
+        "ownerId": owner_id,
+        "standIn": True,  # no MEMBER# row: the write skips the author membership check
     }
 
 
@@ -2389,7 +2478,7 @@ async def ensure_vendor_room(owner_id: str) -> str | None:
                     "kind": "agent",
                     "id": ceo_id,
                     "displayName": agents[ceo_id]["name"],
-                    "mentionHandle": mention_handles(roster)[ceo_id],
+                    "mentionHandle": (await _handles_for(owner_id, roster))[ceo_id],
                     "role": "member",
                     "listenMode": "mentions",
                 }
@@ -2529,6 +2618,8 @@ async def _live_dm(room_id: str, user_id: str, counterpart: CreateRoomMember) ->
 
 async def create_room(auth: AuthContext, request: CreateRoomRequest) -> RoomDetail:
     owner_id = resolve_owner_id(auth)
+    if await _front_agent_id(owner_id):  # the switch is on: a new room is a Router room
+        request = request.model_copy(update={"members": await _lightbulb_only(owner_id, request.members, request.kind)})
     keys = [(member.kind, member.id) for member in request.members]
     if len(keys) != len(set(keys)) or ("human", auth.user_id) in keys:
         raise ApiProblem("INVALID_REQUEST", "Room members must be unique and omit the creator.")
@@ -2726,7 +2817,7 @@ async def upsert_member(auth: AuthContext, room_id: str, request: UpsertRoomMemb
         member = {**member, "modeSetBy": "user"}
     if request.kind == "human" and await messaging_repo.ensure_user_stream(owner_id, request.id) is None:
         raise ApiProblem("MEMBER_NOT_FOUND", "That human is not in this workspace.")  # a removed member
-    handles = mention_handles(roster) if roster else {}
+    handles = await _handles_for(owner_id, roster) if roster else {}
     current = await messaging_repo.list_members(room_id)
     room_agents = [row for row in current if row.get("kind") == "agent"]
     handle_updates = {row["id"]: handles[row["id"]] for row in room_agents if row["id"] in handles}
@@ -4105,12 +4196,23 @@ async def create_human_message(
         raise ApiProblem("ROOM_FORBIDDEN", "Reply to a feed post in Discuss; only agents post to the feed.")
     owner_id = meta["ownerId"]  # room-scoped writes are keyed on the ROOM owner, never the caller's workspace
     feed_roster = None
+    router = await _router_room(meta, owner_id)
     if is_feed_room(meta):
         # Agents are the feed's authors, not members: an @mention names one on this owner's roster.
         feed_roster = {row["id"] for row in await load_agent_roster(owner_id)}
         named = [ref for ref in request.mentions if ref.kind == "agent"]
         if any(ref.id not in feed_roster for ref in named):
             raise ApiProblem("MEMBER_NOT_FOUND", "Mentioned agent is not in this workspace.")
+        people = await _validate_mentions(room_id, [ref for ref in request.mentions if ref.kind != "agent"])
+        mentions = sorted([*people, *({"kind": "agent", "id": ref.id} for ref in named)], key=lambda r: r["id"])
+    elif router:
+        # A Router room seats only Lightbulb: `@<specialist>` names a roster agent, and admission pins it on
+        # the trigger (`ref.pinnedSpecialist`) for the Router.
+        named = [ref for ref in request.mentions if ref.kind == "agent"]
+        if named:
+            roster_ids = {row["id"] for row in await load_agent_roster(owner_id)}
+            if any(ref.id not in roster_ids for ref in named):
+                raise ApiProblem("MEMBER_NOT_FOUND", "Mentioned agent is not in this workspace.")
         people = await _validate_mentions(room_id, [ref for ref in request.mentions if ref.kind != "agent"])
         mentions = sorted([*people, *({"kind": "agent", "id": ref.id} for ref in named)], key=lambda r: r["id"])
     else:
@@ -4180,6 +4282,13 @@ async def create_human_message(
         feed_roster=feed_roster,
         in_thread=request.thread_root_message_id is not None,
     )
+    if router:
+        # Named specialists are not seated: they ride the stored targets as `user_request` (what admission
+        # reads); nothing is woken by them, the admit row below is the only work item.
+        named_ids = {m["id"] for m in mentions if m.get("kind") == "agent"} - {t["agentId"] for t in targets}
+        targets += [{"agentId": agent_id, "eventKind": "user_request"} for agent_id in sorted(named_ids)]
+        if any(t["eventKind"] == "user_request" for t in targets):
+            targets = [t for t in targets if t["eventKind"] == "user_request"]
     room_kind = _room_kind(meta)
     # EFS is NFS. These reads open and read whole attachment files, so running
     # them inline blocked the event loop -- every other request on the
@@ -4233,6 +4342,7 @@ async def create_human_message(
             acting_human_id=auth.user_id if author_override else None,
             expected_room_revision=expected_room_revision,
             addressing=_stored_addressing(addressing),
+            admit=router and wake,  # a Router room: one WORK#ADMIT# row instead of per-agent WORK#MESSAGE# rows
         )
     except messaging_repo.RoomArchived as exc:
         raise ApiProblem("ROOM_ARCHIVED", ROOM_ARCHIVED_MESSAGE) from exc
@@ -4288,6 +4398,21 @@ async def create_human_message(
             )
         if agent_mentions:
             await _count_jev_miss(room_id, auth.user_id, item)
+        if router and request.reply_to_message_id:
+            # A reply to a task card (a Router message carrying `taskRefs`) is copied into the task's room,
+            # unless this is that room. Best effort: the send has landed; a failed copy must not 500 it.
+            from core import tasks_schema as ts
+            from core.services import task_conversation
+
+            card = links.get(str(request.reply_to_message_id)) or {}
+            for ref in card.get("taskRefs") or []:
+                if ref.get("taskId") and ts.task_room_id(ref["taskId"]) != room_id:
+                    try:
+                        await task_conversation.forward_card_reply(owner_id, ref["taskId"], item)
+                    except Exception:  # noqa: BLE001
+                        logger.warning(
+                            "card reply %s not forwarded to task %s", item["messageId"], ref["taskId"], exc_info=True
+                        )
     # Neither of these is part of the response. `touch_last_interactive` writes
     # to the containers table purely to feed the idle/park clock, and it was
     # being awaited after the message was already durable -- a whole round trip
@@ -4986,10 +5111,17 @@ async def create_agent_message(
                     message_id=line["messageId"], room_id=line["roomId"], created_at=line["createdAt"]
                 )
     feed = is_feed_room({**meta, "roomId": room_id})
+    router = await _router_room({**meta, "roomId": room_id}, owner_id)
+    if router:
+        await _require_lightbulb_voice(owner_id, meta, agent_id, request.event_id)
     if feed and request.thread_root_message_id is None and request.post_reason is None:
         # Every feed post says why (lightbulb-post.sh --why); Discuss replies need none.
         raise ApiProblem("INVALID_REQUEST", "A feed post needs postReason: why it matters.")
     member = await room_agent(room_id, agent_id, meta)
+    if member is None and router and request.event_id.startswith(_VOICE_EXEMPT_EVENT_PREFIXES):
+        # A Router room seats only Lightbulb: the A2A agent in the holder's DM (or a Live late answer) is not a
+        # member, so the exempt post goes out as a roster stand-in, like the feed's authors.
+        member = await _stand_in(owner_id, agent_id)
     if member is None:
         raise ApiProblem("MEMBER_NOT_FOUND", "Agent is not a current room member.")
     roster = {row["id"]: row for row in await load_agent_roster(owner_id)}
@@ -5012,7 +5144,7 @@ async def create_agent_message(
     # decision, and nothing for the reply cap below to cut or announce.
     targets = (
         []
-        if request.progress
+        if request.progress or router  # a Router room: Lightbulb's posts wake nobody (the Router already ran)
         else select_dispatch_targets(
             members,
             mentions,
@@ -5109,7 +5241,7 @@ async def create_agent_message(
             progress=request.progress,
             post_reason=request.post_reason,
             attrs=attrs or None,
-            author_member_check=not feed,  # the feed's agents are authors (roster-checked above)
+            author_member_check=not member.get("standIn"),  # a roster stand-in (feed, task room) has no seat
         )
     except messaging_repo.ExtraConditionFailed as exc:  # "don't post that" landed before the commit
         put_metric("voice.huddle.late_answer_suppressed")
@@ -5458,7 +5590,8 @@ async def _user_for_handle(owner_id: str, handle: str) -> str:
     if not people:
         raise ApiProblem("RUNTIME_UNAVAILABLE", "Could not read workspace members.", retryable=True, retry_after=3)
     agents = [
-        {"kind": "agent", "mentionHandle": h} for h in mention_handles(await load_agent_roster(owner_id)).values()
+        {"kind": "agent", "mentionHandle": h}
+        for h in (await _handles_for(owner_id, await load_agent_roster(owner_id))).values()
     ]
     humans = [
         {

@@ -154,7 +154,7 @@ async def claim_run(ws: str, sid: str, task_id: str) -> bool:
     row = await _conditional(
         ws,
         ts.schedule_sk(sid),
-        {"activeRunTaskId": task_id},
+        {"activeRunTaskId": task_id, "lastTaskId": task_id},  # the run in flight is also the latest run
         condition="#s = :active AND (attribute_not_exists(activeRunTaskId) "
         "OR attribute_type(activeRunTaskId, :nul) OR activeRunTaskId = :task) "
         "AND NOT contains(runTaskIds, :task)",
@@ -163,9 +163,10 @@ async def claim_run(ws: str, sid: str, task_id: str) -> bool:
     return row is not None
 
 
-async def close_run(ws: str, sid: str, task_id: str, *, failed: bool) -> dict:
-    """Free the claim, prepend the run to History (capped), count consecutive failures. A retry after success
-    returns the row unchanged; closing someone else's run is a `VersionConflict`."""
+async def close_run(ws: str, sid: str, task_id: str, *, failed: bool | None) -> dict:
+    """Free the claim, prepend the run to History (capped), count consecutive failures (`failed` None: the
+    outcome is unknown, the count stays). A retry after success returns the row unchanged; closing someone
+    else's run is a `VersionConflict`."""
     current = await get_schedule(ws, sid)
     if current is None:
         raise VersionConflict(f"schedule {sid}: missing")
@@ -179,7 +180,11 @@ async def close_run(ws: str, sid: str, task_id: str, *, failed: bool) -> dict:
         ts.schedule_sk(sid),
         {
             "runTaskIds": history,
-            "consecutiveFailures": current.get("consecutiveFailures", 0) + 1 if failed else 0,
+            "consecutiveFailures": (
+                current.get("consecutiveFailures", 0) + 1
+                if failed
+                else (current.get("consecutiveFailures", 0) if failed is None else 0)
+            ),
         },
         condition="activeRunTaskId = :task AND #v = :ev",
         values={":task": task_id, ":ev": current["version"]},

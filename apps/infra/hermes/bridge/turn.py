@@ -26,7 +26,7 @@ from collections import namedtuple
 from pathlib import Path
 
 from bridge import API, HOME, HOOK_TOKEN, OWNER, now
-from bridge import sync, browser_control, memory_ctx, website_logins, worktrees
+from bridge import credentials, sync, browser_control, memory_ctx, task_mode, website_logins, worktrees
 from bridge.sync import restore_profile, save_profile, _profile_dir, pin_profile_defaults
 
 log = logging.getLogger("bridge")
@@ -115,6 +115,8 @@ def _curate_when_idle() -> None:
     the curator would never come due.
     ponytail: with ``curator.consolidate`` on (we never set it) the LLM pass would hold this
     profile's lock for minutes; turns for that agent would queue behind it."""
+    if task_mode.active():
+        return  # never in a Worker VM: the curator runs on the workspace VM after the merge (spec 07 §3.5)
     with _busy_lock:
         if _busy != 1:
             return
@@ -132,6 +134,56 @@ def _curate_when_idle() -> None:
                 if curator.should_run_now():
                     curator.run_curator_review(synchronous=True)
         save_profile(agent_id)  # change-only: a no-op unless the seed or the run wrote
+
+
+def curate_agent(agent_id: str) -> tuple[int, dict]:
+    """``POST /internal/v1/curate {"agentId"}`` (spec 07 §3.5; lane V5b): the backend's
+    ``curate_specialist`` Activity asks the WORKSPACE VM to run Hermes's skill curator for one
+    specialist once its learning merges landed. A task VM is refused before this (server.py: the
+    curator never runs in a Worker). Counted as a turn while it runs, like ``_curate_when_idle``,
+    so a roll or recycle holds off mid-pass; ``busy`` (409) while a turn or delegation is live --
+    the Activity retries, and the VM's own idle pass curates anyway; ``recycling`` (503) under a
+    refusal hold. ``ensure_profile`` first: the merge bumped ``.revision``, so the merged files
+    come down before the curator looks at them."""
+    if not reserve_turn():
+        return 503, {"error": "recycling"}
+    try:
+        from bridge import followups  # followups imports this module
+
+        def live() -> bool:
+            with _busy_lock:
+                return _busy != 1 or followups.busy()
+
+        if live():
+            return 409, {"error": "busy"}
+        try:
+            from agent import curator
+        except ImportError:
+            return 200, {"ran": False, "changed": False}
+        with sync.profile_lock(agent_id):
+            # Again UNDER the lock (as _curate_when_idle): a turn that reserved between the check
+            # above and this lock restores and then writes this profile for its whole run, and a
+            # curator moving skills and saving beside it is the 16 Sep double-writer shape.
+            if live():
+                return 409, {"error": "busy"}
+            restore_profile(agent_id)
+            RESTORED.add(agent_id)
+            sync.ensure_profile(agent_id)
+            ran = False
+            try:
+                with _hermes_home_scope(agent_id):
+                    if curator.should_run_now():
+                        curator.run_curator_review(synchronous=True)
+                        ran = True
+            except Exception:  # noqa: BLE001 -- the Activity logs the 500; the VM's own idle pass retries
+                log.warning("curator failed for %s", agent_id, exc_info=True)
+                return 500, {"error": "curator_failed"}
+            before = dict(sync._MTIMES.get(agent_id, {}))
+            save_profile(agent_id)  # change-only: a no-op unless the seed or the review wrote
+            changed = sync._MTIMES.get(agent_id, {}) != before
+        return 200, {"ran": ran, "changed": changed}
+    finally:
+        release_turn()
 
 
 def _end_turn() -> None:
@@ -398,12 +450,14 @@ def _voice_body(identity: dict, request: dict) -> dict:
             "recentHistory": request.get("recentHistory") or []}
 
 
-def call_turn_context(identity: dict) -> dict:
+def call_turn_context(identity: dict, request: dict | None = None) -> dict:
     """A spoken turn's plugin turn context. Keyed by the call key: the plugin's tools find it (and
-    the Mac tool's active turn) by the session id Hermes hands them, which is the call's own."""
+    the Mac tool's active turn) by the session id Hermes hands them, which is the call's own.
+    `superAgent` (lane A): the backend set it on the request when work asked aloud may become a task."""
     return {"apiUrl": API, "ownerId": OWNER, "hookToken": HOOK_TOKEN, "agentId": identity["agentId"],
             "runId": identity["runId"], "sessionKey": call_session_key(identity["agentId"], identity["callId"]),
-            "roomId": None, "voiceRoomId": identity["roomId"],
+            "roomId": None, "voiceRoomId": identity["roomId"], "callId": identity["callId"],
+            "superAgent": bool((request or {}).get("superAgent")),
             "localSessionToken": identity.get("localSessionToken"), "family": "call"}
 
 
@@ -606,7 +660,7 @@ def _run_call(identity: dict, request: dict, frames: "VoiceFramePublisher") -> t
         import run_agent  # noqa: F401
     except ImportError:
         pass
-    ctx = call_turn_context(identity)
+    ctx = call_turn_context(identity, request)
     body = _voice_body(identity, request)
     # The room turns' folder path, never filled or removed here: an observed row's "saved at" note
     # names it, and the room's next turn fills it (_observed_text).
@@ -620,7 +674,12 @@ def _run_call(identity: dict, request: dict, frames: "VoiceFramePublisher") -> t
         # The room turn's own environment on the call's key (its own folder and shell), plus the
         # steer-lowered grant a call can get mid-run.
         with _room_turn_env(agent_id, session_key, call_key, run_id, body, frames, ctx, "call"), _call_grant_scope(run_id, ctx):
-            agent = _construct_agent(agent_id, body, frames, call_key, **CALL_RUN_LIMITS)
+            limits = dict(CALL_RUN_LIMITS)
+            if request.get("superAgent"):  # lane A: work asked aloud may become a task (start_work)
+                enabled, _ = profile_toolsets()
+                if enabled is not None:  # the Router's decision tools stay off a call, as _construct_agent strips them
+                    limits["enabled_toolsets"] = [*(t for t in enabled if t != ROUTER_TOOLSET), VOICE_WORK_TOOLSET]
+            agent = _construct_agent(agent_id, body, frames, call_key, **limits)
             # No compaction inside a spoken turn (67-103 s each, prod 10-07): Hermes's own
             # per-agent switch, which every automatic trigger reads (turn_context_compaction.py:239,
             # turn_preflight.py:89/289) and Hermes sets the same way on its review fork
@@ -777,6 +836,8 @@ def task_tool_recorder(run_id: str):
 
 #: The Router's decision tools (plugins/lightbulb/router.py): a Router run's only effect is this list.
 ROUTER_TOOLSET = "lightbulb_router"
+# start_work (lane A): only a super-agent Live call re-adds it (_run_call); every other turn strips it.
+VOICE_WORK_TOOLSET = "lightbulb_voice_work"
 ROUTER_RUN_LIMITS = {"enabled_toolsets": [ROUTER_TOOLSET, "memory"], "disabled_toolsets": None,
                      "skip_background_review": True}
 MAX_DECISIONS = 40
@@ -1061,18 +1122,30 @@ def _lb_checkpoint():
 
 
 def effects_supported() -> bool:
-    """`effects: "required"` on a run request needs F1 in the image (bridge/runs.py refuses it otherwise)."""
-    return _lb_checkpoint() is not None
+    """`effects: "required"` on a run request needs the F1 module AND F2's call sites in the image (an image with
+    only the module would install a callback nothing calls); bridge/runs.py refuses it otherwise."""
+    if _lb_checkpoint() is None:
+        return False
+    try:
+        return hasattr(importlib.import_module("agent.tool_executor"), "lb_checkpoint")
+    except ImportError:
+        return False
 
 
 def _waiting_marker_path(root, run_id: str) -> Path:
-    # Same file contract as plugins/lightbulb/turn_context.note_waiting; module globals are not shared.
-    return Path(root) / TURN_CONTEXT_DIRNAME / ("waiting-" + hashlib.sha256(run_id.encode()).hexdigest() + ".json")
+    from bridge import effects as _effects  # one owner of the path, shared with plugins/lightbulb/turn_context
+
+    return _effects.waiting_marker_path(root, run_id)
 
 
 def _take_waiting_marker(agent_id: str, run_id: str) -> bool:
-    """True when a task run's ask_person / request_approval asked the turn to end `waiting_approval`."""
-    path = _waiting_marker_path(_profile_dir(agent_id), run_id)
+    """True when a task run's ask_person / request_approval asked the turn to end `waiting_approval`. Markers a
+    dead run never took are reaped after a day."""
+    from bridge import effects as _effects
+
+    root = _profile_dir(agent_id)
+    _effects.reap_stale_waiting_markers(root)
+    path = _effects.waiting_marker_path(root, run_id)
     found = path.exists()
     path.unlink(missing_ok=True)
     return found
@@ -1586,42 +1659,27 @@ def _post_backend(path: str, body: dict) -> int:
 
 
 def runtime_mcp_env(agent_id: str) -> dict[str, str]:
-    """Fresh brokered-MCP bearers for one Hermes turn; never persist them in a profile."""
-    if not API or not OWNER or not HOOK_TOKEN:
-        return {}
-    request = urllib.request.Request(
-        f"{API}/api/v1/runtime/credentials/u/{OWNER}",
-        data=json.dumps({"agent_id": agent_id}).encode(),
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {HOOK_TOKEN}"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=15) as response:
-            payload = json.loads(response.read())
-    except Exception:  # noqa: BLE001 -- a missing optional integration must not fail the turn
-        log.warning("brokered MCP credentials unavailable for agent=%s", agent_id)
-        return {}
-    tokens = payload.get("tokens") if isinstance(payload, dict) else None
-    if not isinstance(tokens, dict):
-        log.warning("brokered MCP credentials returned an invalid payload for agent=%s", agent_id)
-        return {}
-    return {
-        f"MCP_{re.sub(r'[^A-Za-z0-9]', '_', key).upper()}_ACCESS_TOKEN": token
-        for key, token in tokens.items()
-        if isinstance(key, str) and re.fullmatch(r"[A-Za-z0-9_-]+", key) and isinstance(token, str) and token
-    }
+    """Fresh brokered-MCP bearers for one Hermes turn; never persist them in a profile. The same
+    vend fills the backend-custodied grants in locally (bridge/credentials.py, spec 13)."""
+    vended = credentials.vend(agent_id, api=API, owner=OWNER, hook_token=HOOK_TOKEN)
+    return vended.mcp_env() if vended is not None else {}
 
 
-def _brokered_mcp_scope(overlay: dict[str, str]):
-    """Keep brokered bearers isolated to this turn's execution context."""
+def _brokered_mcp_scope(overlay: dict[str, str], agent_id: str | None = None):
+    """Keep brokered bearers isolated to this turn's execution context; with ``agent_id``, a
+    `credentials.TurnRenewer` re-vends a long turn's brokered grants before they expire (started
+    only when the turn's vend holds something brokered)."""
     from contextlib import contextmanager
 
     @contextmanager
     def _scope():
         token = _brokered_mcp_overlay.set(overlay)
+        renewer = credentials.TurnRenewer.for_turn(agent_id) if agent_id else None
         try:
             yield
         finally:
+            if renewer is not None:
+                renewer.stop()
             _brokered_mcp_overlay.reset(token)
 
     return _scope()
@@ -1666,7 +1724,7 @@ def warm_agent(agent_id: str) -> None:
     except ImportError:
         return
     try:
-        with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id):
+        with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id), agent_id), _secret_scope(agent_id):
             try:
                 from hermes_cli.plugins import discover_plugins
 
@@ -3824,7 +3882,7 @@ def _construct_agent(agent_id: str, body: dict, frames, session_key: str, **limi
                      "stream_delta_callback": frames.delta, "reasoning_callback": frames.thinking}
     enabled_toolsets, disabled_toolsets = profile_toolsets()
     if enabled_toolsets is not None:  # the Router's decision tools are only for Router runs (limits re-add them)
-        enabled_toolsets = [t for t in enabled_toolsets if t != ROUTER_TOOLSET]
+        enabled_toolsets = [t for t in enabled_toolsets if t not in (ROUTER_TOOLSET, VOICE_WORK_TOOLSET)]
     db = _session_db(agent_id)
     # A state.db failure fails a room, call or side turn: each runs on its stored transcript.
     if db is None and (ROOM_SESSION_RE.match(session_key) or ":lightbulb:call:" in session_key
@@ -3978,7 +4036,7 @@ def _room_turn_env(agent_id: str, session_key: str, hermes_key: str, run_id, bod
         room_env = {**(room_env or {}), "OPENCLI_CDP_ENDPOINT": cdp}
     if run_id:  # the CLI forwards it as X-Lightbulb-Run; per-turn secret scope, so concurrent turns never share it
         room_env = {**(room_env or {}), "LIGHTBULB_RUN_ID": str(run_id)}
-    with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id, room_env), _terminal_scope(agent_id, hermes_key), _desktop_active_turn(hermes_key, run_id), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):
+    with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id), agent_id), _secret_scope(agent_id, room_env), _terminal_scope(agent_id, hermes_key), _desktop_active_turn(hermes_key, run_id), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):
         try:
             yield browser_lease
         finally:
@@ -4135,6 +4193,13 @@ def _run_task_turn(identity: dict, request: dict, *, family: str) -> tuple[str, 
     run_id = identity["runId"]
     session_id = identity["sessionId" if paperclip else "sessionKey"]
     limits = {} if paperclip else (request.get("limits") or {})
+    if family == "task" and identity.get("mode") != "router" and identity.get("runSecret"):
+        # A Worker run has no room turn to wake: its finished delegations go to the task's /inputs
+        # (audit #9). Only runs-v1 Worker runs carry a runSecret, so prod's room/Paperclip paths skip this.
+        from bridge import followups
+
+        followups.remember_task(session_id, identity["taskId"], identity["runSecret"])
+        followups.ensure_started()
     try:
         import run_agent  # noqa: F401
     except ImportError:
@@ -4182,7 +4247,7 @@ def _run_task_turn(identity: dict, request: dict, *, family: str) -> tuple[str, 
                "runSecret": identity.get("runSecret")} if not paperclip and not router else {})}
     # Paperclip runs need the same brokered MCP bearers as room turns. Without
     # this scope, ${MCP_POSTHOG_ACCESS_TOKEN} stays literal and PostHog returns 401.
-    with _waiting_turn_lock(agent_id, session_id, run_id), _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id, env), _terminal_scope(agent_id, session_id), _desktop_active_turn(session_id, run_id), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):
+    with _waiting_turn_lock(agent_id, session_id, run_id), _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id), agent_id), _secret_scope(agent_id, env), _terminal_scope(agent_id, session_id), _desktop_active_turn(session_id, run_id), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):
         budget = None
         try:
             extra = {"max_iterations": limits["max_iterations"]} if limits.get("max_iterations") else {}
@@ -4247,7 +4312,10 @@ def _run_task_turn(identity: dict, request: dict, *, family: str) -> tuple[str, 
     reply = result.get("final_response") or ""
     waiting = (checkpoint is not None and checkpoint.outcome == "waiting_approval") or (
         not paperclip and _take_waiting_marker(agent_id, run_id))
-    if waiting:  # a person decides next; the answer comes back as the next attempt's input
+    if waiting:
+        # On purpose, `waiting` wins over `failed` below: once an effect was held for a person, their decision is
+        # the next step even if the model then errored, and a failed turn must not retry the held effect on its
+        # own. The answer comes back as the next attempt's input.
         return "waiting_approval", None, reply, usage
     if result.get("interrupted") is True:  # not our stop (checked above): Hermes stopped it itself
         return "failed", INTERRUPTED, "", usage
@@ -4380,6 +4448,8 @@ def _run_durable_turn(identity: dict, request: dict, reserved: bool, *, family: 
             sync.restore_root_auth()
             restore_profile(agent_id)
             RESTORED.add(agent_id)
+            if family == "task" and task_mode.active():
+                sync.write_base_manifest(agent_id, int(identity.get("attempt") or 1))  # B for this attempt's merge
             if paperclip_run_aborted(run_id):
                 outcome = "cancelled"
             else:
@@ -4418,6 +4488,11 @@ def _run_durable_turn(identity: dict, request: dict, reserved: bool, *, family: 
             sync.save_root_auth()
         except Exception:  # noqa: BLE001
             log.warning("save_root_auth failed for native Paperclip turn", exc_info=True)
+        if family == "task" and task_mode.active():
+            try:  # AFTER the final save: the seal is the merge's proof the attempt finished (spec 07 §3.5)
+                sync.seal_attempt(agent_id, identity["taskId"], int(identity.get("attempt") or 1))
+            except Exception:  # noqa: BLE001 -- unsealed = skipped by the merge, never merged half
+                log.warning("seal_attempt failed run=%s", run_id, exc_info=True)
     finally:
         hb_stop.set()
         _end_turn()

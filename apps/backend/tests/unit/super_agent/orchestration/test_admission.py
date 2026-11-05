@@ -134,7 +134,7 @@ def test_lane_for_dm_is_private():
 
 async def test_admit_explicit_ask_respond(world):
     tid = await _admit(world, _msg(targets=[{"agentId": CEO, "eventKind": "user_request"}]))
-    assert world["router"] == [admission.TriggerRef(WS, tid, "shared", "respond")]
+    assert world["router"] == [admission.TriggerRef(WS, tid, "shared", "respond", ROOM)]
     assert world["jev"] == []
     trig = await repo.get_trigger(WS, tid)
     assert trig["admission"] == "respond" and trig["actorUserId"] == "sam"
@@ -245,7 +245,7 @@ async def test_enqueue_trigger_dedup(world, monkeypatch):
     assert rows == ["sched:s1:100", "sched:s1:100"]
     assert (await repo.get_trigger(WS, "sched:s1:100"))["ref"]["deliverRoomId"] == ROOM
     await admission.admit_pointer({"kind": "admit_trigger", "ownerId": WS, "triggerId": "sched:s1:100"})
-    assert world["router"][-1] == admission.TriggerRef(WS, "sched:s1:100", "shared", "respond")
+    assert world["router"][-1] == admission.TriggerRef(WS, "sched:s1:100", "shared", "respond", ROOM)
 
 
 def _stream_body(payload: dict) -> str:

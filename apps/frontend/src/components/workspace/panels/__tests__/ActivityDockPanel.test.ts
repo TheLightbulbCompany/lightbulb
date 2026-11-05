@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const openPanel = vi.fn();
-vi.mock("../../workspaceController", () => ({ openPanel: (...args: unknown[]) => openPanel(...args) }));
+const openTaskPane = vi.fn();
+vi.mock("../../workspaceController", () => ({ openPanel: (...args: unknown[]) => openPanel(...args), openTaskPane: (...args: unknown[]) => openTaskPane(...args) }));
 vi.mock("@/hooks/useActivity", () => ({ useActivity: vi.fn() }));
 vi.mock("@/hooks/useTeamsApi", () => ({ useTeamsApi: vi.fn() }));
 
@@ -27,6 +28,14 @@ describe("openActivityTarget", () => {
     ]);
     // openPanel("chat", …) only retargets an agent DM: a room link through it went nowhere.
     expect(openPanel).not.toHaveBeenCalled();
+  });
+
+  it("opens a super-agent thread in the task pane, not a room", () => {
+    openTaskPane.mockClear();
+    openActivityTarget({ kind: "task", id: "t1", roomId: null });
+    expect(openTaskPane).toHaveBeenCalledWith("t1");
+    expect(openPanel).not.toHaveBeenCalled();
+    expect(opened).not.toHaveBeenCalled();
   });
 
   it("opens Paperclip things in their Teams detail", () => {

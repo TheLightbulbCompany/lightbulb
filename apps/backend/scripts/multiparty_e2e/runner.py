@@ -90,6 +90,7 @@ class PacedClient(httpx.Client):
 class Clerk:
     def __init__(self):
         self.sk = _secret("lightbulb/dev/clerk_secret_key")
+        assert self.sk.startswith("sk_test_"), "refusing: not a Clerk test secret"
         self.http = PacedClient(
             base_url="https://api.clerk.com/v1", headers={"Authorization": f"Bearer {self.sk}", **UA}
         )
@@ -147,7 +148,9 @@ class Session:
         self.client_jwt = resp.headers.get("authorization") or self.client_jwt
         return resp.json()
 
-    def token(self) -> str:
+    def token(self, template: str | None = None) -> str:
+        if template:  # a JWT template (e.g. ``lightbulb-appsync``), minted fresh, never cached
+            return self._post(f"/v1/client/sessions/{self.sid}/tokens/{template}")["jwt"]
         if time.monotonic() - self._at > 40:
             self._jwt, self._at = self._post(f"/v1/client/sessions/{self.sid}/tokens")["jwt"], time.monotonic()
         return self._jwt

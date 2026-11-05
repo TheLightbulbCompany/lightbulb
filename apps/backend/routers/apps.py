@@ -21,6 +21,7 @@ from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.repositories.apps_repo import NameTaken
 from core.services import app_conversation
 from core.services import apps_service as svc
+from core.services import effect_doors
 from core.services import network_login, network_proof
 from core.services.apps_db import AppsDbError
 from core.services.apps_source import MAX_BYTES, SourceNotFound, SourceRefused, SourceTooLarge
@@ -317,6 +318,18 @@ async def up(body: UpBody, caller: Builder):
 
 @router.post("/build/{app_id}/publish")
 async def publish(app_id: AppId, body: PublishBody, caller: Builder):
+    if caller.actor_kind == "agent":  # with the switch on, an agent's publish must be one a person allowed (Lane Q)
+        try:
+            await effect_doors.require_intent(
+                caller.owner_id,
+                "app.publish",
+                {"appId": app_id},
+                match=lambda o: o.get("appId") in (None, app_id),  # `lightbulb app publish` names no app id
+            )
+        except effect_doors.DoorRefused as exc:
+            raise HTTPException(
+                403, {"code": exc.code, "message": str(exc), "next": "ask for approval; a person presses Publish"}
+            ) from exc
     return await _run(svc.publish(caller.owner_id, app_id, **body.model_dump(), actor=caller))
 
 

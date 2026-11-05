@@ -94,6 +94,61 @@ def _follow_link(args: dict, *, session_id: str = "", **_kw) -> str:
         return json.dumps({"error": f"link failed: {type(exc).__name__}"})
 
 
+PROPOSE_SCHEMA = {
+    "name": "propose_automation",
+    "description": "Draft a recurring automation for a request in the batch and post its confirm card in the room. "
+                   "Nothing runs until a person turns it on from the card.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "trigger_ids": _TRIGGERS,
+            "name": {"type": "string", "maxLength": 200},
+            "instructions": {"type": "string", "description": "What each run should do, self-contained."},
+            "cron": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 4,
+                     "description": "5-field cron lines in the person's zone (runs at least 10 minutes apart)."},
+            "tz": {"type": "string", "description": "IANA zone; omit for the requester's own zone."},
+            "specialist": {"type": "string", "description": "A specialist id from the roster, or omit."},
+            "deliver_to": {"type": "string", "description": "room:{id} | dm:{userId} | none; default: this room."},
+            "budget_per_run_usd": {"type": "number"},
+        },
+        "required": ["trigger_ids", "name", "instructions", "cron"],
+    },
+}
+_PROPOSE_KEYS = {"trigger_ids": "triggerIds", "name": "name", "instructions": "instructions", "cron": "cron",
+                 "tz": "tz", "specialist": "specialistId", "deliver_to": "deliverTo",
+                 "budget_per_run_usd": "budgetPerRunUsd"}
+
+
+def _propose_automation(args: dict, *, session_id: str = "", **_kw) -> str:
+    """Lane A: `POST /api/v1/internal/automations/{owner}/propose` drafts the row, pauses its Schedule and posts
+    the confirm card; the Router says one line and moves on."""
+    from . import _post  # the package is initialised by the time a tool runs
+
+    ctx = turn_context.read(session_id)
+    if not ctx or ctx.get("mode") != "router":
+        return NOT_ROUTER
+    args = args or {}
+    if not isinstance(args.get("trigger_ids"), list) or not args["trigger_ids"]:
+        return json.dumps({"error": "trigger_ids must list the batch's trigger ids"})
+    for field in ("name", "instructions"):
+        if not isinstance(args.get(field), str) or not args[field].strip():
+            return json.dumps({"error": f"{field} is required"})
+    if len(args["name"]) > 200:
+        return json.dumps({"error": "name is at most 200 characters"})
+    cron = args.get("cron")
+    if not isinstance(cron, list) or not cron or not all(isinstance(c, str) and c.strip() for c in cron):
+        return json.dumps({"error": "cron must be a list of 5-field cron lines"})
+    body = {_PROPOSE_KEYS[k]: v for k, v in args.items() if k in _PROPOSE_KEYS and v is not None}
+    url = f"{ctx['apiUrl'].rstrip('/')}/api/v1/internal/automations/{ctx['ownerId']}/propose"
+    try:
+        _post(url, ctx["hookToken"], body)
+    except urllib.error.HTTPError as exc:
+        return json.dumps({"error": f"not proposed: the backend answered {exc.code}"})
+    except Exception as exc:  # noqa: BLE001
+        return json.dumps({"error": f"not proposed: {type(exc).__name__}"})
+    return "proposed"
+
+
 def _problem(kind: str, args: dict) -> str | None:
     if not isinstance(args.get("trigger_ids"), list) or not args["trigger_ids"] or not all(
             isinstance(t, str) and t for t in args["trigger_ids"]):
@@ -150,3 +205,5 @@ def register(ctx) -> None:
         ctx.register_tool(kind, TOOLSET, schema, _handler(kind), description=schema["description"], emoji="🧭")
     ctx.register_tool("follow_link", TOOLSET, FOLLOW_LINK_SCHEMA, _follow_link,
                       description=FOLLOW_LINK_SCHEMA["description"], emoji="🔗")
+    ctx.register_tool("propose_automation", TOOLSET, PROPOSE_SCHEMA, _propose_automation,
+                      description=PROPOSE_SCHEMA["description"], emoji="🗓️")

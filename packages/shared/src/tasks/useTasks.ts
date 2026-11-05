@@ -23,17 +23,24 @@ const listKeys = (cache: Cache, client: Pick<TasksClient, "cacheScope">) =>
 
 /** `null` scope = no request (switch off or nothing to show). */
 export function useTaskList(client: TasksClient, scope: TaskScope | null) {
-  return useSWR<TaskList>(scope ? taskListKey(client, scope) : null, () => client.list(scope!));
+  return useSWR<TaskList>(scope ? taskListKey(client, scope) : null, () => client.list(scope!), { shouldRetryOnError: false });
 }
 
 /** `null` id = no request. */
+/** `null` id = no request. No retry on an error: a stale link's 404 would otherwise refetch forever. */
 export function useTask(client: TasksClient, taskId: string | null) {
-  return useSWR<TaskDetail>(taskId ? taskKey(taskId) : null, () => client.get(taskId!));
+  return useSWR<TaskDetail>(taskId ? taskKey(taskId) : null, () => client.get(taskId!), { shouldRetryOnError: false });
 }
 
 /** The viewer-specific question views of one task (`GET /tasks/{id}/questions`); `null` id = no request. */
 export function useTaskQuestions(client: TasksClient, taskId: string | null) {
-  return useSWR<{ items: QuestionView[] }>(taskId ? questionsKey(taskId) : null, () => client.questions(taskId!));
+  return useSWR<{ items: QuestionView[] }>(taskId ? questionsKey(taskId) : null, () => client.questions(taskId!), { shouldRetryOnError: false });
+}
+
+/** The SWR cache and mutator the task hooks share; apps use it for their own action hooks. */
+export function useTaskCache(): { cache: Cache; mutate: ScopedMutator } {
+  const { cache, mutate } = useSWRConfig();
+  return { cache, mutate };
 }
 
 /** Write a fresh summary (e.g. an action's response) into every cached list and the detail. */

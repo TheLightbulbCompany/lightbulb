@@ -43,6 +43,7 @@ import type { BillingAccount } from "@/hooks/useBilling";
 import { RoomMessageItem } from "./RoomMessageItem";
 import { TaskPane } from "@/components/tasks/TaskPane";
 import { TaskOverview } from "@/components/tasks/TaskOverview";
+import { SpecialistDmBanner } from "./SpecialistDmBanner";
 import { useRoomThreads } from "@/components/tasks/useRoomThreads";
 import { useSuperAgent } from "@/hooks/useLiveEvents";
 import { RoomMessageSearch } from "./RoomMessageSearch";
@@ -125,6 +126,8 @@ export interface RoomPanelProps {
   onStopSubagent?: (agentId: string, subagentId: string) => Promise<unknown>;
   onSubagentsVisible?: (visible: boolean) => void;
   onLinkToWork?: () => void;
+  /** Super-agent: the one front agent (`@lightbulb`). A DM with any other agent shows the specialist banner. */
+  frontAgentId?: string;
   onDownloadAttachment?: (roomId: string, attachmentId: string) => Promise<Blob>;
   onAttachmentUrl?: (roomId: string, attachmentId: string) => Promise<{ url: string }>;
   /** A card's click: posts the person's answer in reply to the card (MessagingWorkspaceContext builds it). */
@@ -319,6 +322,7 @@ function RoomContent({
   onStopSubagent,
   onSubagentsVisible,
   onLinkToWork,
+  frontAgentId,
   onDownloadAttachment,
   onAttachmentUrl,
   onCardReply,
@@ -853,6 +857,11 @@ function RoomContent({
           {inShell && <ViewButton label="Files"
             onClick={() => { capture("file_browser_opened"); openPanel("file-viewer", composer.focusAgentId ? { agent: composer.focusAgentId } : {}, { pushUrl: true }); }}><FolderOpen aria-hidden="true" /></ViewButton>}
         </nav>} />
+      {superAgent && frontAgentId && visibleRoom?.kind === "dm" && (() => {
+        // Only once the front agent is known: an unresolved roster must not call every agent a specialist.
+        const agent = counterparts.length === 1 && counterparts[0].kind === "agent" && counterparts[0].id !== frontAgentId ? counterparts[0] : null;
+        return agent ? <SpecialistDmBanner agentName={agent.displayName} handle={agent.mentionHandle} frontAgentId={frontAgentId} /> : null;
+      })()}
       {(state === "reconnecting" || !liveConnected) && <div className="room-state"><p role="status" aria-label="Room status">Reconnecting live updates. You can keep sending messages.</p>
         {onRetry && <Button variant="outline" onClick={onRetry}>Check for updates</Button>}</div>}
       <div ref={historyRef} className="contents">

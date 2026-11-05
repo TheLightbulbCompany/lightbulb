@@ -185,3 +185,26 @@ async def use_approval(ws: str, approved_idem_key: str, operands_hash: str, *, n
         if not _is_condition_failure(exc):
             raise
     return False
+
+
+async def mark_door_used(ws: str, idem_key: str) -> bool:
+    """A backend door passes an `intent` row exactly once: `SET doorUsedAt` only while it is unset and the row is
+    still `intent`. False when it was used already (or moved on)."""
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"pk": ts.ws_pk(ws), "sk": ts.effect_sk(idem_key)},
+            UpdateExpression="SET doorUsedAt = :now",
+            # The row model writes every field, so an unused marker is stored as NULL, not absent.
+            ConditionExpression=(
+                "attribute_exists(sk) AND (attribute_not_exists(doorUsedAt) OR attribute_type(doorUsedAt, :null))"
+                " AND #st = :intent"
+            ),
+            ExpressionAttributeNames={"#st": "state"},
+            ExpressionAttributeValues={":now": utc_now_iso(), ":intent": "intent", ":null": "NULL"},
+        )
+        return True
+    except ClientError as exc:
+        if not _is_condition_failure(exc):
+            raise
+    return False

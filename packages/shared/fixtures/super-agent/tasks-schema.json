@@ -99,7 +99,8 @@
       "voice",
       "text",
       "answer",
-      "ask"
+      "ask",
+      "watch"
     ],
     "Admission": [
       "respond",
@@ -185,6 +186,7 @@
     "question": "TASK#{taskId}#Q#{qid}",
     "needs": "NEEDS#{userId}#{taskId}#{qid}",
     "effect": "EFFECT#{idemKey}",
+    "learn": "LEARN#{specialistId}#{taskId}#{attempt:04}",
     "trigger": "TRIG#{triggerId}",
     "schedule": "SCHED#{scheduleId}",
     "observed": "OBS#{threadKey}",
@@ -223,6 +225,7 @@
     "text": "text:{messageId}",
     "answer": "answer:{qid}:{clientAnswerId}",
     "ask": "ask:{qid}",
+    "watch": "watch:{taskId}:{watchId}:{n}",
     "rule": "rule:{scheduleId}:{threadHash}"
   },
   "namespaces": {
@@ -521,7 +524,7 @@
           "default": null,
           "title": "Resolvedat"
         },
-        "a2ATaskId": {
+        "a2aTaskId": {
           "anyOf": [
             {
               "type": "string"
@@ -1488,6 +1491,18 @@
           "title": "Executorok",
           "type": "boolean"
         },
+        "doorUsedAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Doorusedat"
+        },
         "state": {
           "enum": [
             "proposed",
@@ -1548,6 +1563,84 @@
         "state"
       ],
       "title": "Effect",
+      "type": "object"
+    },
+    "learn": {
+      "additionalProperties": false,
+      "description": "A learning merge's intent row (spec 07 \u00a73.5 crash safety 2-3): `planned` ({rel: sha256} of\nevery put) lands before the S3 writes, `applied` + the merge report after; a replay of an\napplied row is a no-op.",
+      "properties": {
+        "version": {
+          "default": 1,
+          "title": "Version",
+          "type": "integer"
+        },
+        "createdAt": {
+          "title": "Createdat",
+          "type": "string"
+        },
+        "updatedAt": {
+          "title": "Updatedat",
+          "type": "string"
+        },
+        "type": {
+          "const": "learn",
+          "default": "learn",
+          "title": "Type",
+          "type": "string"
+        },
+        "specialistId": {
+          "title": "Specialistid",
+          "type": "string"
+        },
+        "taskId": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "title": "Taskid",
+          "type": "string"
+        },
+        "attempt": {
+          "minimum": 1,
+          "title": "Attempt",
+          "type": "integer"
+        },
+        "state": {
+          "enum": [
+            "planned",
+            "applied"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "planned": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "title": "Planned",
+          "type": "object"
+        },
+        "report": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Report"
+        }
+      },
+      "required": [
+        "createdAt",
+        "updatedAt",
+        "specialistId",
+        "taskId",
+        "attempt",
+        "state"
+      ],
+      "title": "LearnIntent",
       "type": "object"
     },
     "trigger": {
@@ -1634,7 +1727,8 @@
             "voice",
             "text",
             "answer",
-            "ask"
+            "ask",
+            "watch"
           ],
           "title": "Source",
           "type": "string"
@@ -3654,6 +3748,18 @@
             ],
             "default": null,
             "title": "Previousruntaskid"
+          },
+          "a2aTaskId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "A2Ataskid"
           }
         },
         "required": [

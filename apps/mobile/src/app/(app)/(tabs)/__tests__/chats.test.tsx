@@ -161,7 +161,8 @@ jest.mock("expo-clipboard", () => ({ setStringAsync: (text: string) => mockSetSt
 // marks the room it has open. One hoisted object, never a fresh literal.
 const mockMarkRead = jest.fn(async (_roomId: string, _cursor: { lastReadSeq: number }) => ({}));
 const mockLive = { messaging: { markRead: mockMarkRead } };
-jest.mock("../../../../providers/live-events", () => ({ useLiveEvents: () => mockLive }));
+let mockSuperAgent = false;
+jest.mock("../../../../providers/live-events", () => ({ useSuperAgent: () => mockSuperAgent, useLiveEvents: () => mockLive }));
 
 const mockSummary = (over: Partial<RoomSummary>): RoomSummary => ({
   roomId: "r1",
@@ -263,7 +264,7 @@ jest.mock("../../../../lib/rooms", () => ({
     ...mockRoomsState,
   }),
 }));
-let mockAgents: { id: string; name: string; status?: string; seeded?: boolean; origin?: string }[] = [];
+let mockAgents: { id: string; name: string; status?: string; seeded?: boolean; origin?: string; role?: string }[] = [];
 jest.mock("../../../../lib/workspaceRoster", () => ({
   useWorkspaceRoster: () => ({ agents: mockAgents, members: [{ userId: "user-b", name: "Leo" }] }),
 }));
@@ -331,6 +332,7 @@ describe("Chats", () => {
     mockOrgId = `org-${++mockOrgSeq}`;
     mockFocused = true;
     mockRoomsState = {};
+    mockSuperAgent = false;
     mockSessions = [];
     mockLiveLines = {};
     mockAgents = [
@@ -343,6 +345,15 @@ describe("Chats", () => {
   afterEach(() => {
     jest.restoreAllMocks();
   });
+
+  // The grouping itself is lib/chats `fileSpecialists` (unit-tested there); this checks the screen wires it.
+  it("super-agent on: the Specialists row opens to the specialist DM", async () => {
+    mockSuperAgent = true;
+    mockAgents = [{ id: "agent-lb", name: "Lightbulb", role: "ceo", origin: "Starter" }, ...mockAgents];
+    await render(<ChatsTab />);
+    await fireEvent.press(await screen.findByLabelText("Specialists · 1"));
+    expect(await screen.findByTestId("chat-room-r2")).toBeTruthy();
+  }, 15_000);
 
   it("merges rooms and live sessions into one list, newest first", async () => {
     mockSessions = [busySession];

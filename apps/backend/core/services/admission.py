@@ -25,8 +25,8 @@ from temporalio.service import RPCError
 from core import tasks_schema as ts
 from core.dynamodb import utc_now_iso
 from core.observability.metrics import put_metric
-from core.repositories import messaging_repo, tasks_repo
-from core.services import jev, messaging, room_memory
+from core.repositories import automations_repo, messaging_repo, tasks_repo
+from core.services import jev, messaging, room_memory, rules
 from core.services.openclaw_work import WorkRetry
 from core.services.super_agent_flags import flags_for
 from core.temporal import client as temporal
@@ -100,7 +100,10 @@ async def _admit_trigger(ws: str, trigger_id: str) -> None:
     if trig is None or not await flags_for(ws):
         put_metric("admission.outcome", dimensions={"outcome": "dropped", "source": "trigger"})
         return
-    await _signal(TriggerRef(ws, trigger_id, trig["lane"], trig["admission"]))
+    ref = trig.get("ref") or {}
+    await _signal(
+        TriggerRef(ws, trigger_id, trig["lane"], trig["admission"], ref.get("roomId") or ref.get("deliverRoomId"))
+    )
     put_metric("admission.outcome", dimensions={"outcome": trig["admission"], "source": trig["source"]})
 
 
@@ -163,7 +166,7 @@ async def _admit_message(room_id: str, seq: int) -> None:
     if routed:
         trig["routedTo"] = routed
     await tasks_repo.put_trigger(ws, trig)  # a redelivery replays the stored row
-    await _signal(TriggerRef(ws, trigger_id, base["lane"], admission))
+    await _signal(TriggerRef(ws, trigger_id, base["lane"], admission, room_id))
     put_metric("admission.outcome", dimensions={"outcome": admission, "source": "chat"})
 
 
@@ -187,7 +190,16 @@ async def _ask_jev(meta: dict, msg: dict, ws: str) -> tuple[str | None, dict | N
         for a in await agent_registry_repo.list_agents(ws)
         if a.get("status", "active") == "active" and a.get("listenMode", "active") == "active"
     }
-    verdict = await jev.route_for_router(meta, msg, members, history, listening)
+    # §18: the room's proactive rules ride the same call as one extra question (no second Jev call).
+    in_scope = rules.rules_for_room(await automations_repo.list_rules(ws), meta["roomId"])
+    verdict = await jev.route_for_router(
+        meta, msg, members, history, listening, **({"rules": in_scope} if in_scope else {})
+    )
+    if in_scope:
+        if "rule" in verdict:  # parsed even when `who` was unusable
+            await _record_rule(ws, meta["roomId"], msg, in_scope, verdict)
+        else:
+            put_metric("rules.match", dimensions={"outcome": "jev_unavailable"})
     if verdict.get("fallback"):
         put_metric("admission.jev", dimensions={"outcome": "fallback"})
         return None, None  # §14.7: Jev down ⇒ addressed messages only
@@ -195,3 +207,46 @@ async def _ask_jev(meta: dict, msg: dict, ws: str) -> tuple[str | None, dict | N
         return None, None
     routed = {"specialist": verdict["specialist"]} if verdict.get("specialist") else None
     return "candidate", routed
+
+
+async def _record_rule(ws: str, room_id: str, msg: dict, in_scope: list[dict], verdict: dict) -> None:
+    """Observe (contracts §18, spec 12 §3.3-3.4): a confident rule pick becomes one "would have done" record.
+    Never a task, a Router signal or a push, and never a change to how this message is admitted. The author is
+    human and the message unaddressed here (the fast path handled the rest); a task holding the thread already
+    passed through above, so the thread gates reduce to "a person stopped work on it"."""
+    from core.temporal import rules_activities
+
+    sid = verdict.get("rule")
+    rule = next((r for r in in_scope if r["scheduleId"] == sid), None) if sid else None
+    if rule is None:
+        put_metric("rules.match", dimensions={"outcome": "no_match"})
+        return
+    thread_key = f"room:{room_id}:{msg.get('threadRootMessageId') or msg['messageId']}"
+    gate = rules.code_gates(
+        author_kind="human",
+        addressed=False,
+        thread_task_id=None,
+        thread_stopped_by_human=await _stopped_by_human(ws, thread_key),
+    )
+    if gate:
+        put_metric("rules.match", dimensions={"outcome": gate})
+        return
+    ref = {"roomId": room_id, "messageId": msg["messageId"]}
+    if msg.get("threadRootMessageId"):
+        ref["threadRoot"] = msg["threadRootMessageId"]
+    would = rules.would_do(rule, {"text": msg.get("text") or ""}, rule.get("tz") or "UTC")
+    try:
+        await rules_activities.record_match(
+            ws, sid, rule.get("ruleVersion", 1), thread_key, ref, verdict.get("ruleP"), would, "chat"
+        )
+    except Exception:  # noqa: BLE001 -- a lost record (version conflict, DynamoDB) never fails admission
+        logger.warning("rules: record_match failed ws=%s rule=%s", ws, sid, exc_info=True)
+
+
+async def _stopped_by_human(ws: str, thread_key: str) -> bool:
+    """A thread whose task a person stopped (resolved, reason `stopped`): a rule never picks it up again."""
+    thread = await tasks_repo._get(ws, ts.thread_sk(thread_key))
+    if not thread or thread.get("active"):
+        return False
+    task = await tasks_repo.get_task(ws, thread["taskId"])
+    return bool(task and task.get("statusReason") == "stopped")

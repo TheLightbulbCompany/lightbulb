@@ -150,3 +150,16 @@ def test_waiting_marker_roundtrip(tmp_path):
     assert turn_context.read_waiting(tmp_path, RUN) == "q-9"
     turn_context.clear_waiting(tmp_path, RUN)
     assert turn_context.read_waiting(tmp_path, RUN) is None
+
+
+def test_marker_path_is_the_bridges(tmp_path):
+    from bridge import effects
+
+    turn_context.note_waiting(tmp_path, RUN, "q-9")
+    assert effects.waiting_marker_path(tmp_path, RUN).read_text() == '{"questionId": "q-9"}'
+    assert turn_context.read_waiting(tmp_path, RUN) == "q-9"
+
+
+def test_publish_is_not_a_subkind_the_schema_offers():
+    enum = lightbulb.APPROVAL_SCHEMA["parameters"]["properties"]["subkind"]["enum"]
+    assert "publish" not in enum and set(enum) == set(lightbulb.TASK_SUBKINDS)

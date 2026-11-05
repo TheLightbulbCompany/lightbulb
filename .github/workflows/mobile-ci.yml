@@ -31,12 +31,13 @@ env:
 jobs:
   check-and-bundle:
     name: Check & Bundle
-    # Linux, like every other CI workflow: the one self-hosted Mac is kept for
-    # the native lanes (desktop-build, mobile-release), which queued behind this.
+    # GitHub-hosted Linux (2026-11-05), not vars.CI_RUNNER: the shared self-hosted
+    # box queued every PR behind the others. The self-hosted Mac stays for the
+    # native lanes (desktop-build, mobile-release).
     # It once HUNG on ubuntu at `Mobile tests` (2026-07-29): importing
     # @clerk/expo leaves MessagePort handles open, so jest never exits.
     # `--forceExit` on that step is the fix; the cap stays so a stall fails fast.
-    runs-on: ${{ vars.CI_RUNNER }}
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - name: Checkout code
@@ -45,9 +46,8 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
         with:
-          # Per-job install dir: jobs sharing a self-hosted runner home race
-          # the default ~/setup-pnpm (ENOTEMPTY on rmdir) when this and
-          # mobile-ota land together.
+          # Per-job install dir: harmless on a fresh hosted runner, and keeps
+          # concurrent jobs apart if this ever runs on a shared self-hosted home.
           dest: ${{ runner.temp }}/setup-pnpm
 
       - name: Setup Node.js
@@ -55,13 +55,6 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'pnpm'
-
-      - name: Reclaim runner workspace disk
-        run: |
-          rm -rf node_modules apps/*/node_modules packages/*/node_modules
-          rm -rf "$HOME/.cache/pnpm" "$HOME/Library/Caches/pnpm"
-          rm -rf "$HOME/Library/Caches/CocoaPods" "$HOME/Library/Developer/Xcode/DerivedData"
-          pnpm store prune || true
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile

@@ -27,7 +27,8 @@ env:
 jobs:
   lint-test-build:
     name: Lint, test & build
-    runs-on: ${{ vars.CI_RUNNER }}
+    # GitHub-hosted (2026-11-05), not vars.CI_RUNNER: nothing here needs the box.
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - name: Checkout code
@@ -36,9 +37,8 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
         with:
-          # Per-runner-instance install dir: the self-hosted box shares one home
-          # across runner instances, and concurrent installs into the default
-          # ~/setup-pnpm race each other.
+          # Per-runner-instance install dir: harmless on a fresh hosted runner, and
+          # keeps concurrent installs apart on a shared self-hosted home.
           dest: ${{ runner.temp }}/setup-pnpm
 
       - name: Setup Node.js

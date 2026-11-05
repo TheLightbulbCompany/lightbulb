@@ -20,13 +20,20 @@ concurrency:
 jobs:
   test-core-linux:
     name: TestCoreLinux
-    runs-on: ${{ vars.CI_RUNNER }}
+    # GitHub-hosted (2026-11-05), not vars.CI_RUNNER: core builds without Tauri or
+    # Xcode, so nothing here needs the self-hosted box. rust-cache keeps target/ and
+    # the registry between runs, which a fresh hosted runner would otherwise rebuild.
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
     - name: Checkout
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+    - name: Cache cargo
+      uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      with:
+        workspaces: apps/desktop
     # -p compiles only core's dependency tree: no Tauri, webkit or Xcode.
     - name: Cargo test (lightbulb-core)
       run: cargo test --manifest-path apps/desktop/Cargo.toml -p lightbulb-core --locked

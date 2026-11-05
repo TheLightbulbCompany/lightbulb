@@ -3,7 +3,7 @@ import type { Idea } from "@lightbulb/shared";
 import type { ReactNode } from "react";
 
 let mockOrg = "org-a"; // a fresh org gives a test its own /ideas cache entry
-jest.mock("@clerk/expo", () => ({ useAuth: () => ({ userId: "user-a", orgId: mockOrg }) }), { virtual: true });
+jest.mock("@clerk/expo", () => ({ useAuth: () => ({ userId: "user-a", orgId: mockOrg }) }));
 // The native sheet is iOS-only; its content is what this test reads.
 jest.mock("../../ui/BottomSheet", () => ({
   BottomSheet: ({ visible, children }: { visible: boolean; children: ReactNode }) => (visible ? children : null),

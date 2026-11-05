@@ -65,4 +65,6 @@ args=(-sS -w $'\n%{http_code}' -X "$method" -H "Authorization: Bearer ${OPENCLAW
 # The run this call comes from (set in room and task turns): a task run's provisioning ask becomes a Question on
 # its task (spec 05 P1); every other route ignores it.
 [[ -n "${LIGHTBULB_RUN_ID:-}" ]] && args+=(-H "X-Lightbulb-Run: ${LIGHTBULB_RUN_ID}")
+# A task run's secret proves the run is the caller's own (checked like the runtime routes check it).
+[[ -n "${LIGHTBULB_RUN_SECRET:-}" ]] && args+=(-H "X-Lightbulb-Run-Secret: ${LIGHTBULB_RUN_SECRET}")
 curl "${args[@]}" "${ISOL8_API_URL%/}${path}"

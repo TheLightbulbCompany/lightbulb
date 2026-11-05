@@ -454,7 +454,9 @@ async def container_request(owner_id: str, body: ProvisionRequestBody, request: 
     await _require_hook_token(owner_id, request)
     await require_always_on_entitlement(owner_id, message=PAID_MESSAGE)
     _validate(body)
-    task = await provisioning_questions.task_for_run(owner_id, request.headers.get("X-Lightbulb-Run"))
+    task = await provisioning_questions.task_for_run(
+        owner_id, request.headers.get("X-Lightbulb-Run"), request.headers.get("X-Lightbulb-Run-Secret")
+    )
     try:
         # `start` files the consent card, so a board outage arrives here as a
         # PaperclipApiError/httpx error. Unmapped it is a 500 the agent reads as
@@ -477,7 +479,10 @@ async def container_request(owner_id: str, body: ProvisionRequestBody, request: 
     except ProvisioningError as e:
         raise _stripe_failure(e) from e
     reused = bool(row.get("reused"))
-    asked = row.get("question") if row.get("state") == "awaiting_approval" else None
+    # Only this task's own Question: a reused workflow another task asked about is not a Question this Worker can
+    # wait on (its next attempt is not held by it), so it reads as an ordinary reuse.
+    q = row.get("question") or {}
+    asked = q if row.get("state") == "awaiting_approval" and task and q.get("taskId") == task["taskId"] else None
     return {
         **_safe_workflow(row),
         "reused": reused,

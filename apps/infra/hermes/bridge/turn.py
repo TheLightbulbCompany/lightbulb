@@ -4270,6 +4270,8 @@ def _run_task_turn(identity: dict, request: dict, *, family: str) -> tuple[str, 
         "PAPERCLIP_COMPANY_ID": identity["companyId"],
         "PAPERCLIP_RUN_ID": run_id,
     } if paperclip else {"LIGHTBULB_RUN_ID": str(run_id)}  # a task run's shell calls name it (X-Lightbulb-Run)
+    if not paperclip and identity.get("runSecret"):  # …and prove it (X-Lightbulb-Run-Secret); never logged
+        env["LIGHTBULB_RUN_SECRET"] = str(identity["runSecret"])
     if paperclip and identity.get("issueId"):
         env["PAPERCLIP_TASK_ID"] = identity["issueId"]
     # The agent dispositions the issue by calling the Paperclip API from a terminal command,

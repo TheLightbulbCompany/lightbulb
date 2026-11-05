@@ -105,18 +105,19 @@ async def test_answer_of(monkeypatch, q, expect):
 
 
 @pytest.mark.asyncio
-async def test_task_for_run_needs_the_switch_and_a_live_run(monkeypatch):
+async def test_task_for_run_needs_the_switch_a_live_run_and_its_secret(monkeypatch):
     flags = AsyncMock(return_value=False)
     monkeypatch.setattr(pq.super_agent_flags, "flags_for", flags)
-    assert await pq.task_for_run("org_a", "run-1") is None
+    assert await pq.task_for_run("org_a", "run-1", "s3cret") is None
     flags.return_value = True
-    monkeypatch.setattr(
-        "core.services.effect_doors.live_attempts", AsyncMock(return_value=[{"taskId": "t-1", "runId": "run-1"}])
-    )
+    att = {"taskId": "t-1", "runId": "run-1", "runSecret": "s3cret"}
+    monkeypatch.setattr("core.services.effect_doors.live_attempts", AsyncMock(return_value=[att]))
     monkeypatch.setattr(pq.tasks_repo, "get_task", AsyncMock(return_value={"taskId": "t-1"}))
-    assert await pq.task_for_run("org_a", "run-1") == {"taskId": "t-1"}
-    assert await pq.task_for_run("org_a", "run-2") is None
-    assert await pq.task_for_run("org_a", None) is None
+    assert await pq.task_for_run("org_a", "run-1", "s3cret") == {"taskId": "t-1"}
+    assert await pq.task_for_run("org_a", "run-1", "wrong") is None  # another run's id without its secret: card
+    assert await pq.task_for_run("org_a", "run-1", None) is None
+    assert await pq.task_for_run("org_a", "run-2", "s3cret") is None
+    assert await pq.task_for_run("org_a", None, "s3cret") is None
 
 
 @pytest.mark.asyncio
@@ -137,5 +138,14 @@ async def test_ask_consent_opens_a_blocking_admin_approval(monkeypatch):
         "run-2",
     )
     assert kw["title"] == "set up posthog svc_analytics for Signup — live"
-    assert [o["id"] for o in kw["options"]] == ["allow_once", "deny"]
+    assert kw["options"] == [{"id": "allow_once", "label": "Allow"}, {"id": "deny", "label": "Deny"}]
     assert kw["qid"] == pq.questions.qid_for("provision:pwf_1")
+
+
+def test_paid_consent_states_price_recurrence_and_limit():
+    paid = {**SERVICE, "pricing": {"type": "paid", "paid_pricing": [{"freeform": "$20/mo", "is_default": True}]}}
+    snap = mod.snapshot_of(paid, PROVIDER, CONFIG)
+    assert pq._money(snap) == (
+        "Price: $20/mo, billed to your card on your Stripe account. Spending limit: $50 a month."
+    )
+    assert pq._money(mod.snapshot_of(SERVICE, PROVIDER, CONFIG)) == ""  # free: nothing to bill

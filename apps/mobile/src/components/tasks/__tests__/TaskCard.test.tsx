@@ -35,14 +35,14 @@ it("a missing task reads as unavailable", async () => {
   // First in the file: RNTL's async render after a test whose action is still settling can hand back
   // an empty tree (seen with the two tests below ahead of it), so this one runs before any press.
   const view = await render(<Fresh><TaskCard task={undefined} taskId="gone" viewerId={SAM} palette={p} /></Fresh>);
-  expect(view.getByText("This thread isn't available")).toBeTruthy();
+  expect(view.getByText("This request isn't available")).toBeTruthy();
 });
 
 it("word and action per viewer: Sam sees Approve, Priya sees Waiting on Sam", async () => {
   const waiting = byId("step05", "t-signup");
   const sam = await render(<Fresh><TaskCard task={waiting} taskId="t-signup" viewerId={SAM} palette={p} /></Fresh>);
-  expect(screen.getByText("Waiting on you")).toBeTruthy();
-  expect(screen.getByText("Lightbulb · Engineering")).toBeTruthy();
+  expect(screen.getByText("Needs you")).toBeTruthy();
+  expect(screen.getByText("Engineering")).toBeTruthy();
   expect(screen.getByText("Needs approval: Provision database and Stripe")).toBeTruthy();
   expect(screen.getByLabelText("Approve")).toBeTruthy();
   await sam.unmount();
@@ -53,10 +53,10 @@ it("word and action per viewer: Sam sees Approve, Priya sees Waiting on Sam", as
   await priya.unmount();
 });
 
-it("the card is one button with an accessible name; Approve opens the thread screen, never answers blind", async () => {
+it("the card is one button with an accessible name; Approve opens the request screen, never answers blind", async () => {
   const onOpen = jest.fn();
   const view = await render(<Fresh><TaskCard task={byId("step05", "t-signup")} taskId="t-signup" viewerId={SAM} palette={p} onOpen={onOpen} /></Fresh>);
-  const card = screen.getByLabelText("Open Workshop signup app, Waiting on you");
+  const card = screen.getByLabelText("Open Workshop signup app, Needs you");
   expect(card.props.accessibilityRole).toBe("button");
   fireEvent.press(card);
   expect(onOpen).toHaveBeenCalledWith("t-signup");
@@ -68,14 +68,14 @@ it("the card is one button with an accessible name; Approve opens the thread scr
   await view.unmount();
 });
 
-it("a card for a thread older than the room's first page reads it by id", async () => {
+it("a card for a request older than the room's first page reads it by id", async () => {
   const old = { ...byId("step05", "t-signup"), taskId: "t-old", title: "Last month's report" };
   client.get.mockResolvedValue({ task: old, attempts: [], questions: [], effects: [], subscriptions: [], taskRoomId: "tr" } as never);
   const message = { roomId: "r-old", taskRefs: [{ taskId: "t-old", role: "started" }] } as never;
   const view = await render(<Fresh><MessageTasks message={message} viewerId={SAM} palette={p} /></Fresh>);
   expect(await screen.findByText("Last month's report")).toBeTruthy();
   expect(client.get).toHaveBeenCalledWith("t-old");
-  expect(screen.queryByText("This thread isn't available")).toBeNull();
+  expect(screen.queryByText("This request isn't available")).toBeNull();
   await act(async () => {});
   await view.unmount();
 });

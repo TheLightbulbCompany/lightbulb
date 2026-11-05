@@ -162,7 +162,7 @@ describe("TaskPane", () => {
     await userEvent.click(screen.getByRole("button", { name: "Stop" }));
     await userEvent.click(screen.getByRole("button", { name: "Stop it" }));
     expect(client.act).toHaveBeenCalledWith("t-signup", "stop", step8.task.version);
-    expect(await screen.findByText("Stopped")).toBeInTheDocument();
+    expect(await screen.findByText("Closed")).toBeInTheDocument();
   });
 
   it("effects: a refused landing did not happen; unknown says to check first", async () => {
@@ -241,7 +241,7 @@ describe("NeedsYouCard", () => {
       preview: { kind: "mail.send", to: "team@acme.com", subject: "Join us Nov 20", body: "Hi all, signups open today.", idemKey: "x" },
     })]);
     pane();
-    const card = await screen.findByRole("group", { name: "Allow Lightbulb · Engineering to send 'Join us Nov 20' to team@acme.com" });
+    const card = await screen.findByRole("group", { name: "Allow Engineering to send 'Join us Nov 20' to team@acme.com" });
     expect(within(card).getByLabelText("What this does")).toBeInTheDocument();
     expect(card).toHaveTextContent("Toteam@acme.com");
     expect(card).toHaveTextContent("MessageHi all, signups open today.");
@@ -265,10 +265,10 @@ describe("NeedsYouCard", () => {
     withDetail({ ...step8, task: FIXTURES.step07.tasks[1], questions: [{ ...openRow, qid: "q-email", kind: "review" }],
       effects: [{ idemKey: "e1", tool: "mail.send", state: "proposed", resultRef: null }] }, [review]);
     pane(SAM, "t-email");
-    // The card and the effect read the Work row's word, not "Waiting on you" / "Waiting for approval".
+    // The card and the effect read the Work row's word, not "Waiting for approval".
     const card = await screen.findByRole("group", { name: "Send the launch email?" });
-    expect(within(card).getByText("Ready for review")).toBeInTheDocument();
-    expect(within(screen.getByRole("list", { name: "Effects" })).getByRole("listitem")).toHaveTextContent("Ready for review");
+    expect(within(card).getByText("Needs you")).toBeInTheDocument();
+    expect(within(screen.getByRole("list", { name: "Effects" })).getByRole("listitem")).toHaveTextContent("Needs you");
     await userEvent.click(await screen.findByRole("button", { name: "Send" }));
     expect(client.answer).toHaveBeenCalledWith("t-email", "q-email", expect.objectContaining({ optionId: "send" }));
     const calls = Object.values(client).filter((v) => typeof v === "function").flatMap((fn) => (fn as unknown as { mock: { calls: unknown[][] } }).mock.calls.flat());

@@ -1,6 +1,6 @@
 "use client";
 
-// A thread card under a Lightbulb message (mockup steps 2–9). The whole card opens the thread
+// A request card under a Lightbulb message (mockup steps 2–9). The whole card opens the request
 // (a stretched button); the one action button sits above it. State colour marks the word and a
 // dot, never a fill (DESIGN.md).
 
@@ -44,16 +44,16 @@ export function TaskCard({ task, taskId, viewerId, onOpen, hideAction, children 
   const q = task?.openQuestion;
   const asks = q?.canAnswer && (q.kind === "approval" || q.kind === "review") ? q.qid : null;
   const { data: views, error: viewsError } = useTaskQuestions(tasks, asks ? taskId : null);
-  // Details didn't load: the button opens the thread (where the question shows in full) instead of acting blind.
+  // Details didn't load: the button opens the request (where the question shows in full) instead of acting blind.
   const blind = !!asks && !views && !!viewsError;
   const preview = previewRows(views?.items.find((q) => q.id === asks)?.preview).slice(0, 3);
   if (!task) {
     return <div className="mt-1.5 max-w-xl rounded-lg border border-dashed border-border px-3 py-2 text-ui text-muted-foreground" data-task-card={taskId}>
-      This thread isn&apos;t available
+      This request isn&apos;t available
     </div>;
   }
   const view = summaryView(task, viewerId);
-  // Free-text answers and plain reviews need the thread; everything else is one press.
+  // Free-text answers and plain reviews need the request pane; everything else is one press.
   // Reopen lives in the pane and the overview, not on every resolved card in the history (audit #30).
   const inline = !hideAction && view.action && view.action !== "answer" && view.action !== "review" && view.action !== "reopen" ? view.action : null;
   const open = () => {
@@ -61,8 +61,9 @@ export function TaskCard({ task, taskId, viewerId, onOpen, hideAction, children 
     onOpen?.(taskId);
   };
   // The summary line only when it says more than the status word (an ask, a reason, what is landing).
-  const line = taskSummaryLine(task, viewerId, agentNames);
-  const detail = line === view.word || line.startsWith(`${view.word} ·`) ? null : line;
+  // The specialist is the actor, by its own name ("Growth"), on its own line (founder, 5 Nov).
+  const line = taskSummaryLine(task, viewerId);
+  const detail = line === view.word ? null : line;
   return <div className="editorial-card editorial-card-hover relative mt-1.5 max-w-xl px-3 py-2" data-task-card={taskId}>
     <div className="flex items-start gap-3">
       <div className="min-w-0 flex-1">
@@ -94,7 +95,7 @@ export function TaskCard({ task, taskId, viewerId, onOpen, hideAction, children 
           if (!res.ok) setError(res.message);
         }}>{ACTION_LABELS[inline]}</Button>
     </div>}
-    {blind && <p className="relative z-10 mt-1 text-ui text-muted-foreground">The details didn&apos;t load. Open the thread to decide.</p>}
+    {blind && <p className="relative z-10 mt-1 text-ui text-muted-foreground">The details didn&apos;t load. Open the request to decide.</p>}
     {error && <p role="alert" className="relative z-10 mt-1 text-ui text-err">{error}</p>}
   </div>;
 }

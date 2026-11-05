@@ -77,7 +77,7 @@ describe("sidebar with the super-agent on", () => {
 describe("SpecialistDmBanner", () => {
   it("names the specialist and the Ask link opens the front agent's DM with the mention drafted", async () => {
     render(<SpecialistDmBanner agentName="Finance" handle="finance" frontAgentId="agent_ceo" />);
-    expect(screen.getByRole("note")).toHaveTextContent("Finance now works through Lightbulb. A message here starts a Finance thread.");
+    expect(screen.getByRole("note")).toHaveTextContent("Finance now works through Lightbulb. A message here starts a Finance request.");
     await userEvent.click(screen.getByRole("button", { name: "Ask Finance in your Lightbulb DM ›" }));
     expect(openAgentDmWithDraft).toHaveBeenCalledWith("agent_ceo", "@finance ");
   });

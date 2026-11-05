@@ -23,10 +23,10 @@ const group = (message: CanonicalRoomMessage, over: Partial<Parameters<typeof Me
 
 beforeEach(() => { live.superAgent = true; list.mockClear(); live.tasks = { cacheScope: `org_group_${Math.random()}`, list, questions: jest.fn(async () => ({ items: [] })) }; });
 
-it("Lightbulb · Finance byline on a result line", async () => {
+it("Finance byline on a result line", async () => {
   await group(result);
-  // The byline, and the fees card under it, both read "Lightbulb · Finance"; the author's own name is gone.
-  expect(screen.getAllByText("Lightbulb · Finance").length).toBeGreaterThanOrEqual(1);
+  // The byline, and the fees card under it, both read "Finance"; the author's own name is gone.
+  expect(screen.getAllByText("Finance").length).toBeGreaterThanOrEqual(1);
   expect(screen.queryByText("Lightbulb")).toBeNull();
 });
 
@@ -43,7 +43,7 @@ it("started and suggested refs split under the reply", async () => {
 it("the person's message says where it went; the agent's 👀 is a receipt, not a toggle", async () => {
   const onToggleReaction = jest.fn();
   await group({ ...ask, reactions: { "👀": [LIGHTBULB] } }, { onToggleReaction });
-  expect(screen.getByText("Sent to 2 threads, 1 suggested ›")).toBeTruthy();
+  expect(screen.getByText("2 requests started, 1 suggested ›")).toBeTruthy();
   const chip = screen.getByLabelText("Lightbulb saw this");
   fireEvent.press(chip);
   expect(onToggleReaction).not.toHaveBeenCalled();
@@ -54,6 +54,6 @@ it("flag off: no cards, no byline change, no /tasks read", async () => {
   await group(reply);
   await group(result);
   expect(screen.queryByText("Workshop signup app")).toBeNull();
-  expect(screen.queryByText("Lightbulb · Finance")).toBeNull();
+  expect(screen.queryByText("Finance")).toBeNull();
   expect(list).not.toHaveBeenCalled();
 });

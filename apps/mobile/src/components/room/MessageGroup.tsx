@@ -238,7 +238,7 @@ export function MessageGroup({
   const palette = useChatPalette();
   const superAgent = useSuperAgent();
   const live = useOptionalLiveEvents();
-  // One author name for the avatar and the byline. Super-agent: a specialist's post reads "Lightbulb · <name>", and
+  // One author name for the avatar and the byline. Super-agent: a specialist's post reads by its own name, and
   // the front agent reads "Lightbulb" on its older posts too (stored as its seat name, "CEO").
   const authorName = !superAgent ? message.author.displayName
     : message.specialist ? specialistLabel(message.specialist, live?.agentNames)

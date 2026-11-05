@@ -35,21 +35,21 @@ describe("TaskOverview", () => {
   it("group order and placeholders", async () => {
     overview();
     await screen.findByRole("heading", { name: "Working · 3" });
-    expect(headings()).toEqual(["Waiting on you · 0", "Working · 3", "Resolved · 0"]);
+    expect(headings()).toEqual(["Needs you · 0", "Working · 3", "Closed · 0"]);
     expect(screen.getByText("Nothing needs you")).toBeInTheDocument();
-    expect(screen.queryByText("Nothing resolved yet")).toBeNull(); // collapsed by default
-    expect(screen.queryByRole("heading", { name: /Ready for review|Applying|Done/ })).toBeNull();
+    expect(screen.queryByText("Nothing closed yet")).toBeNull(); // collapsed by default
+    expect(screen.queryByRole("heading", { name: /Done/ })).toBeNull();
   });
 
-  it("resolved collapsed, toggles and remembers", async () => {
+  it("closed collapsed, toggles and remembers", async () => {
     client = fakeTasksClient(FIXTURES.step09.tasks); live.tasks = client;
     overview();
-    const toggle = await screen.findByRole("button", { name: "Resolved · 1" });
+    const toggle = await screen.findByRole("button", { name: "Closed · 1" });
     expect(toggle).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByText("Workshop signup app")).toBeNull();
     await userEvent.click(toggle);
     expect(toggle).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByRole("button", { name: "Open Workshop signup app, Resolved" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open Workshop signup app, Closed" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Reopen" })).toBeInTheDocument();
   });
 
@@ -68,20 +68,20 @@ describe("TaskOverview", () => {
     const moved = FIXTURES.step05.tasks; // signup now waits on Sam
     client.list.mockResolvedValue({ tasks: moved, next: null });
     await act(() => swr.mutate(taskListKey(client, room)));
-    await screen.findByRole("heading", { name: "Waiting on you · 1" });
-    const waiting = screen.getByRole("region", { name: "Waiting on you · 1" });
+    await screen.findByRole("heading", { name: "Needs you · 1" });
+    const waiting = screen.getByRole("region", { name: "Needs you · 1" });
     expect(within(waiting).getByText("Workshop signup app")).toBeInTheDocument();
     expect(within(waiting).getByText(/^Needs approval: Provision database and Stripe/)).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Working · 2" })).toBeInTheDocument();
   });
 
-  it("rows open the thread; Reopen acts on a resolved row", async () => {
+  it("rows open the request; Reopen acts on a closed row", async () => {
     client = fakeTasksClient(FIXTURES.step09.tasks); live.tasks = client;
     const onOpen = vi.fn();
     overview(room, onOpen);
     await userEvent.click(await screen.findByRole("button", { name: "Open Stripe fee estimate, Done" }));
     expect(onOpen).toHaveBeenCalledWith("t-fees");
-    await userEvent.click(screen.getByRole("button", { name: "Resolved · 1" }));
+    await userEvent.click(screen.getByRole("button", { name: "Closed · 1" }));
     await userEvent.click(screen.getByRole("button", { name: "Reopen" }));
     expect(client.act).toHaveBeenCalledWith("t-signup", "reopen", 7);
   });

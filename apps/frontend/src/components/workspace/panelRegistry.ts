@@ -275,10 +275,10 @@ export function describePanel(
     return { panelId: "artifact", component: "artifact", title: p.name ?? p.ident ?? "File", params: p };
   }
 
-  // One super-agent thread (TaskPane). Only reachable while the switch is on: nothing links here otherwise.
+  // One super-agent request (TaskPane). Only reachable while the switch is on: nothing links here otherwise.
   if (key === "task-detail") {
     if (!params.taskId) return null;
-    return { panelId: "task-detail", component: "task", title: "Thread", params: { taskId: params.taskId } };
+    return { panelId: "task-detail", component: "task", title: "Request", params: { taskId: params.taskId } };
   }
 
   if (key === "browser") {

@@ -38,6 +38,7 @@ figure only if it changes the answer.
 - ask for one clarifying question; asking approves nothing, and typed text never \
 approves anything.
 - ack: one short line people see in chat (what you started, suggested or passed on). No headings, no lists.
+- Words people see (ack, reply, ask): a task is a "request", never a "task" or a "thread" (a thread is only a reply thread on a message). A request's status is one of four words, the one each task line below starts with: Working, Needs you, Done, Closed; a short reason after it is fine ("Needs you: ready for review"). Name the specialist doing it by its name ("Growth is working on it").
 - Read each task's state as written. Never say something that spends money or sends something (a purchase, a \
 payment, an email) happened unless its task says its action ran; a stopped, dismissed or waiting task did not do it.
 - Work is underway only if it is in "Open tasks" below. A Lightbulb line under "Recent in this room" that names \
@@ -124,28 +125,34 @@ def render_batch(
 
 
 # The task's state in words the model cannot misread (dev, 5 Nov: `idle` read as "queued", a stopped purchase read
-# as "done"). Keyed by (status, statusReason); a reason not listed falls back to the status's own words.
+# as "done"), led by the one of the four words people see (founder, 5 Nov: Working, Needs you, Done, Closed; the
+# same mapping as `packages/shared/src/tasks/view.ts` `summaryView`). Keyed by (status, statusReason); a reason not
+# listed falls back to the status's own words.
 _STATUS_WORDS: dict[tuple[str, str | None], str] = {
-    ("proposed", None): "proposed, not started (waits for a person to press Start)",
-    ("queued", None): "queued, not started yet",
-    ("working", None): "working now",
-    ("waiting", None): "waiting on a person's answer or approval",
-    ("waiting", "approval"): "waiting on a person's approval; nothing it needs approved has happened",
-    ("waiting", "budget"): "paused: over its budget",
-    ("idle", None): "finished, result posted",
-    ("idle", "landed"): "finished; its approved action ran",
-    ("idle", "effect_unknown"): "finished, but its action might have happened: check before saying it did or retrying",
-    ("failed", None): "failed, did not finish",
-    ("resolved", None): "closed",
-    ("resolved", "stopped"): "stopped by a person; nothing more was done",
-    ("resolved", "dismissed"): "dismissed, never started",
-    ("resolved", "no_answerer"): "closed: nobody could approve it; nothing it needed approved happened",
-    ("resolved", "quiet"): "closed after a quiet week",
+    ("proposed", None): "Needs you: proposed, not started (waits for a person to press Start)",
+    ("queued", None): "Working: queued, not started yet",
+    ("working", None): "Working: working now",
+    ("waiting", None): "Needs you: waiting on a person's answer or approval",
+    ("waiting", "approval"): "Needs you: waiting on a person's approval; nothing it needs approved has happened",
+    ("waiting", "budget"): "Needs you: paused, over its budget",
+    ("idle", None): "Done: finished, result posted",
+    ("idle", "landed"): "Done: finished; its approved action ran",
+    ("idle", "effect_unknown"): "Done: finished, but its action might have happened: check before claiming or retrying",
+    ("failed", None): "Needs you: failed, did not finish (its owner can retry)",
+    ("resolved", None): "Closed",
+    ("resolved", "stopped"): "Closed: stopped by a person; nothing more was done",
+    ("resolved", "dismissed"): "Closed: dismissed, never started",
+    ("resolved", "no_answerer"): "Closed: nobody could approve it; nothing it needed approved happened",
+    ("resolved", "quiet"): "Closed after a quiet week",
 }
+# Idle with a watch armed is not finished: it wakes itself when the watched thing finishes (watches.py).
+_WATCHING = "Working: checking back later on something it is watching"
 
 
 def status_words(task: dict) -> str:
     status, reason = task.get("status") or "", task.get("statusReason")
+    if status == "idle" and task.get("watchUntil"):
+        return _WATCHING
     return _STATUS_WORDS.get((status, reason)) or _STATUS_WORDS.get((status, None)) or status
 
 

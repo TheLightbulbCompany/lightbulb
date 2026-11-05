@@ -14,7 +14,7 @@ export function SpecialistDmBanner({ agentName, handle, frontAgentId }: {
   frontAgentId: string;
 }): ReactElement {
   return <p role="note" className="border-b border-border px-4 py-2 text-ui text-muted-foreground" data-specialist-banner>
-    {agentName} now works through Lightbulb. A message here starts a {agentName} thread.{" "}
+    {agentName} now works through Lightbulb. A message here starts a {agentName} request.{" "}
     <button type="button" className="underline hover:text-foreground" onClick={() => openAgentDmWithDraft(frontAgentId, handle ? `@${handle} ` : "")}>
       Ask {agentName} in your Lightbulb DM ›
     </button>

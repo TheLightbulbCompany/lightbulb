@@ -21,7 +21,7 @@ beforeEach(() => {
 describe("TaskCard", () => {
   it("a resolved card in the history offers no Reopen (the pane and overview do)", () => {
     render(<Fresh><TaskCard task={{ ...byId("step02", "t-signup"), status: "resolved", shownGroup: "resolved" }} taskId="t-signup" viewerId={SAM} /></Fresh>);
-    expect(screen.getByText("Resolved")).toBeInTheDocument();
+    expect(screen.getByText("Closed")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Reopen" })).toBeNull();
   });
 
@@ -30,7 +30,7 @@ describe("TaskCard", () => {
     (live as { agentNames?: Map<string, string> }).agentNames = new Map([[id, "Finance"]]);
     try {
       render(<Fresh><TaskCard task={{ ...byId("step02", "t-signup"), specialist: id }} taskId="t-signup" viewerId={SAM} /></Fresh>);
-      expect(screen.getByText("Lightbulb · Finance")).toBeInTheDocument();
+      expect(screen.getByText("Finance")).toBeInTheDocument();
       expect(screen.queryByText(new RegExp(id))).toBeNull();
     } finally { delete (live as { agentNames?: unknown }).agentNames; }
   });
@@ -38,18 +38,19 @@ describe("TaskCard", () => {
   it("word, meta and action per status and viewer", () => {
     const { unmount } = render(<Fresh><TaskCard task={byId("step02", "t-signup")} taskId="t-signup" viewerId={SAM} /></Fresh>);
     expect(screen.getByText("Working")).toBeInTheDocument();
-    expect(screen.getByText("Lightbulb · Engineering")).toBeInTheDocument();
+    expect(screen.getByText("Engineering")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
     unmount();
 
     const waiting = byId("step05", "t-signup");
     const sam = render(<Fresh><TaskCard task={waiting} taskId="t-signup" viewerId={SAM} /></Fresh>);
-    expect(screen.getByText("Waiting on you")).toBeInTheDocument();
+    expect(screen.getByText("Needs you")).toBeInTheDocument();
     expect(screen.getByText("Needs approval: Provision database and Stripe")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Approve" })).toBeInTheDocument();
     sam.unmount();
 
     render(<Fresh><TaskCard task={viewAs(waiting, PRIYA)} taskId="t-signup" viewerId={PRIYA} /></Fresh>);
+    expect(screen.getByText("Working")).toBeInTheDocument();
     expect(screen.getByText("Waiting on Sam")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
   });
@@ -58,7 +59,7 @@ describe("TaskCard", () => {
     const onOpen = vi.fn();
     client.questions.mockResolvedValue({ items: [{ id: "q-provision", version: 7 }] } as never);
     render(<Fresh><TaskCard task={byId("step05", "t-signup")} taskId="t-signup" viewerId={SAM} onOpen={onOpen} /></Fresh>);
-    await userEvent.click(screen.getByRole("button", { name: "Open Workshop signup app, Waiting on you" }));
+    await userEvent.click(screen.getByRole("button", { name: "Open Workshop signup app, Needs you" }));
     expect(onOpen).toHaveBeenCalledWith("t-signup");
     onOpen.mockClear();
     await userEvent.click(screen.getByRole("button", { name: "Approve" }));
@@ -79,11 +80,11 @@ describe("TaskCard", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).toBeEnabled());
   });
 
-  it("details that fail to load: the card says so, and its button opens the thread instead of acting blind", async () => {
+  it("details that fail to load: the card says so, and its button opens the request instead of acting blind", async () => {
     const onOpen = vi.fn();
     client.questions.mockRejectedValue(new Error("503"));
     render(<Fresh><TaskCard task={byId("step05", "t-signup")} taskId="t-signup" viewerId={SAM} onOpen={onOpen} /></Fresh>);
-    expect(await screen.findByText("The details didn't load. Open the thread to decide.")).toBeInTheDocument();
+    expect(await screen.findByText("The details didn't load. Open the request to decide.")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Approve" }));
     expect(onOpen).toHaveBeenCalledWith("t-signup");
     expect(client.answer).not.toHaveBeenCalled();
@@ -102,7 +103,7 @@ describe("TaskCard", () => {
 
   it("missing task renders unavailable row", () => {
     render(<Fresh><TaskCard task={undefined} taskId="gone" viewerId={SAM} /><TaskCard task={byId("step02", "t-email")} taskId="t-email" viewerId={SAM} /></Fresh>);
-    expect(screen.getByText("This thread isn't available")).toBeInTheDocument();
+    expect(screen.getByText("This request isn't available")).toBeInTheDocument();
     expect(screen.getByText("Launch email draft")).toBeInTheDocument();
   });
 

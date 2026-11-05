@@ -84,7 +84,7 @@ const ask = fixtureMessage({
   routedTo: { taskIds: ["t-signup", "t-email", "t-fees"], started: 2, suggested: 1, passThrough: false },
 });
 const reply = fixtureMessage({
-  messageId: "m-reply", messageSeq: 2, text: "On it: two threads started, one suggested.",
+  messageId: "m-reply", messageSeq: 2, text: "On it: two requests started, one suggested.",
   taskRefs: [
     { taskId: "t-signup", role: "started" },
     { taskId: "t-email", role: "started" },

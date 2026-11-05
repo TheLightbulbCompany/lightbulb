@@ -1,6 +1,6 @@
 "use client";
 
-// Thread cards under a Lightbulb message (`taskRefs`), the Suggested block, and the
+// Request cards under a Lightbulb message (`taskRefs`), the Suggested block, and the
 // "Sent to …" line under a person's message (`routedTo`). Only rendered with the switch on.
 // One shared room list read (SWR dedupes it across every message in the room).
 
@@ -25,15 +25,15 @@ export function MessageTasks({ message, viewerId, onOpen }: {
   if (!data) {
     return error
       ? <p role="alert" className="mt-1.5 max-w-xl text-ui text-muted-foreground">
-        Threads couldn&apos;t load. <button type="button" className="underline hover:text-foreground" onClick={() => void mutate()}>Retry</button>
+        Requests couldn&apos;t load. <button type="button" className="underline hover:text-foreground" onClick={() => void mutate()}>Retry</button>
       </p>
-      : <div aria-busy="true" aria-label="Loading threads">
+      : <div aria-busy="true" aria-label="Loading requests">
         {refs.map((r) => <div key={r.taskId} className="mt-1.5 h-14 max-w-xl rounded-lg border border-border bg-muted/40 motion-safe:animate-pulse" />)}
       </div>;
   }
   const started = refs.filter((r) => r.role === "started");
   const suggested = refs.filter((r) => r.role === "suggested");
-  return <div aria-label="Threads in this message">
+  return <div aria-label="Requests in this message">
     {started.map((r) => <RefCard key={r.taskId} taskId={r.taskId} listed={byId.get(r.taskId)} viewerId={viewerId} onOpen={onOpen} />)}
     {suggested.length > 0 && <SuggestedBlock refs={suggested} taskById={byId} viewerId={viewerId} onOpen={onOpen} />}
   </div>;
@@ -102,7 +102,7 @@ export function SuggestedBlock({ refs, taskById, viewerId, onOpen }: {
   </section>;
 }
 
-/** "Sent to Workshop signup app ›" (one thread, opens it) or "Sent to 2 threads, 1 suggested ›" (scrolls to the reply). */
+/** "Sent to Workshop signup app ›" (one request, opens it) or "2 requests started, 1 suggested ›" (scrolls to the reply). */
 export function RoutedToLink({ routedTo, taskTitle, onOpen, onShowReply }: {
   routedTo: NonNullable<CanonicalRoomMessage["routedTo"]>;
   taskTitle?: (taskId: string) => string | undefined;
@@ -113,13 +113,13 @@ export function RoutedToLink({ routedTo, taskTitle, onOpen, onShowReply }: {
   if (!taskIds.length) return null;
   const single = passThrough || taskIds.length === 1;
   const label = single
-    ? `Sent to ${taskTitle?.(taskIds[0]) ?? "a thread"}`
-    : [`Sent to ${started} ${started === 1 ? "thread" : "threads"}`, suggested ? `${suggested} suggested` : ""].filter(Boolean).join(", ");
+    ? `Sent to ${taskTitle?.(taskIds[0]) ?? "a request"}`
+    : [`${started} ${started === 1 ? "request" : "requests"} started`, suggested ? `${suggested} suggested` : ""].filter(Boolean).join(", ");
   return <button type="button" className="mt-0.5 text-ui text-muted-foreground hover:text-foreground hover:underline"
     onClick={() => (single ? onOpen?.(taskIds[0]) : onShowReply?.(taskIds[0]))}>{label} ›</button>;
 }
 
-/** `RoutedToLink` for a person's message, with the thread's title from the room's list. */
+/** `RoutedToLink` for a person's message, with the request's title from the room's list. */
 export function MessageRoutedTo({ message, onOpen, onShowReply }: {
   message: CanonicalRoomMessage; onOpen?: (taskId: string) => void; onShowReply?: (taskId: string) => void;
 }): ReactElement | null {

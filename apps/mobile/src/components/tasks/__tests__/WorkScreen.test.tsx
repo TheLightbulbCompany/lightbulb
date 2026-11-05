@@ -29,16 +29,16 @@ it("Task board (old) reaches today's board", async () => {
   await view.unmount();
 });
 
-it("group order and placeholders: Waiting on you · Working · Resolved (collapsed)", async () => {
+it("group order and placeholders: Needs you · Working · Closed (collapsed)", async () => {
   client();
   const view = await render(<WorkScreen />);
   expect(await view.findByText("Working · 3")).toBeTruthy();
-  const headings = () => view.getAllByText(/^(Waiting on you|Working|Ready for review|Landing|Idle|Resolved) · \d+/).map((n) => String(n.props.children).replace(/ ›$/, "").replace(/,/g, ""));
-  expect(headings()).toEqual(["Waiting on you · 0", "Working · 3", "Resolved · 0"]);
+  const headings = () => view.getAllByText(/^(Needs you|Working|Done|Closed) · \d+/).map((n) => String(n.props.children).replace(/ ›$/, "").replace(/,/g, ""));
+  expect(headings()).toEqual(["Needs you · 0", "Working · 3", "Closed · 0"]);
   expect(view.getByText("Nothing needs you")).toBeTruthy();
-  expect(view.queryByText("Nothing resolved yet")).toBeNull(); // collapsed by default
-  await fireEvent.press(view.getByLabelText("Resolved · 0"));
-  expect(await view.findByText("Nothing resolved yet")).toBeTruthy();
+  expect(view.queryByText("Nothing closed yet")).toBeNull(); // collapsed by default
+  await fireEvent.press(view.getByLabelText("Closed · 0"));
+  expect(await view.findByText("Nothing closed yet")).toBeTruthy();
   expect(view.getByText("Workshop signup app")).toBeTruthy();
   await act(async () => {});
   await view.unmount();
@@ -47,7 +47,7 @@ it("group order and placeholders: Waiting on you · Working · Resolved (collaps
 it("rows push the task screen; Scheduled shows the empty state until automations exist", async () => {
   client(FIXTURES.step05.tasks);
   const view = await render(<WorkScreen />);
-  await fireEvent.press(await view.findByLabelText("Open Workshop signup app, Waiting on you"));
+  await fireEvent.press(await view.findByLabelText("Open Workshop signup app, Needs you"));
   expect(mockPush).toHaveBeenCalledWith({ pathname: "/(app)/task/[taskId]", params: { taskId: "t-signup" } });
   await fireEvent.press(view.getByText("Scheduled"));
   expect(await view.findByText("Ask @lightbulb to put recurring work on a schedule.")).toBeTruthy();

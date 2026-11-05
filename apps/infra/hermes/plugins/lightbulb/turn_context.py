@@ -7,7 +7,6 @@ is in the profile sync's exclude list: the local-session JWT it carries never le
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import threading
@@ -51,7 +50,9 @@ def clear(root, session_id: str) -> None:
 
 
 def _waiting_path(root, run_id: str) -> Path:
-    return Path(root) / DIRNAME / ("waiting-" + hashlib.sha256(run_id.encode()).hexdigest() + ".json")
+    from bridge.effects import waiting_marker_path  # one owner of the path: the bridge takes what this writes
+
+    return waiting_marker_path(root, run_id)
 
 
 def note_waiting(root, run_id: str, question_id: str) -> None:

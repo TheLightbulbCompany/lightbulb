@@ -646,7 +646,7 @@ APPROVAL_SCHEMA = {
             "recommendedAction": {"type": "string", "description": "What you will do if approved."},
             "companyPlan": {"type": "boolean",
                             "description": "True only when this is your plan or strategy for the whole company."},
-            "subkind": {"type": "string", "enum": ["tool", "spend", "purchase", "provider_consent", "publish", "send"],
+            "subkind": {"type": "string", "enum": ["tool", "spend", "purchase", "provider_consent", "send"],
                         "description": "On a Lightbulb task: what kind of decision this is (who may answer follows "
                                        "from it). Leave it out otherwise."},
         },

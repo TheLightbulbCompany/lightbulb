@@ -34,9 +34,11 @@ async def test_stops_session_before_signal(monkeypatch):
     client = _Client()
     monkeypatch.setattr(runtime_runs, "stop_task_session", stop)
     monkeypatch.setattr(learning, "get_client", lambda: client)
+    monkeypatch.setattr(learning, "tag_overlay", lambda ws, task_id, on: order.append(f"tag:{task_id}") or 0)
+    monkeypatch.setattr(tasks_repo, "get_task", AsyncMock(return_value={"status": "resolved"}))
     await learning.close_task_attempt(WS, TASK, SPEC, 2, "run-2")
     await learning.close_task_attempt(WS, TASK, SPEC, 2, "run-2")  # a retried end_attempt: same ref again
-    assert order == [f"stop:{TASK}:run-2", "signal:LearningWorkflow"] * 2
+    assert order == [f"stop:{TASK}:run-2", "signal:LearningWorkflow", f"tag:{TASK}"] * 2
     assert client.kw["id"] == ts.learning_workflow_id(WS, SPEC) == f"learn:{WS}:{SPEC}"
     assert client.kw["start_signal"] == "merge" and client.kw["start_signal_args"] == [MergeRef(TASK, 2)]
     assert client.state.ws == WS and client.state.specialist_id == SPEC
@@ -140,3 +142,142 @@ async def test_unsealed_attempt_is_skipped_and_recorded(world, monkeypatch):
     report = await learning.merge_learning(WS, SPEC, TASK, 1)
     assert report["skipped"] == "unsealed" and world["puts"] == []
     assert (await learning_repo.get(WS, SPEC, TASK, 1))["state"] == "applied"
+
+
+@pytest.mark.parametrize("status,tagged", [("waiting", False), ("idle", False), ("resolved", True), ("failed", True)])
+@pytest.mark.asyncio
+async def test_close_tags_the_overlay_only_when_the_task_is_terminal(world, monkeypatch, status, tagged):
+    """#4792 review: S3 Expiration counts from object creation, so a waiting task's >14-day-old overlay
+    would expire under the tag. Only a terminal task is tagged; other tasks' overlays and the specialist
+    profile never are; a tagging failure never costs the merge signal."""
+    s3 = world["s3"]
+    _seed(world, lane="shared")
+    other = f"{WS}/hermes-tasks/44444444-4444-4444-8444-444444444444/{SPEC}/memories/MEMORY.md"
+    s3.put_object(Bucket=BUCKET, Key=other, Body=b"x")
+    s3.put_object(Bucket=BUCKET, Key=f"{WS}/hermes/{SPEC}/memories/MEMORY.md", Body=b"profile")
+    signalled = []
+    monkeypatch.setattr(runtime_runs, "stop_task_session", AsyncMock(return_value=True))
+    monkeypatch.setattr(learning, "signal_merge", AsyncMock(side_effect=lambda *a: signalled.append(a)))
+    monkeypatch.setattr(tasks_repo, "get_task", AsyncMock(return_value={"status": status}))
+
+    await learning.close_task_attempt(WS, TASK, SPEC, 1)
+
+    prefix = learning.overlay_prefix(WS, TASK, SPEC)
+    keys = [o["Key"] for o in s3.list_objects_v2(Bucket=BUCKET, Prefix=prefix)["Contents"]]
+    assert len(keys) == 4 and all(_tags(s3, k) == ({"lb-kind": "task-overlay"} if tagged else {}) for k in keys)
+    assert _tags(s3, other) == {} and _tags(s3, f"{WS}/hermes/{SPEC}/memories/MEMORY.md") == {}
+    assert len(signalled) == 1
+
+    monkeypatch.setattr(learning, "tag_overlay", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("s3")))
+    await learning.close_task_attempt(WS, TASK, SPEC, 2)  # logged, not raised
+    assert len(signalled) == 2
+
+
+def _tags(s3, key):
+    return {t["Key"]: t["Value"] for t in s3.get_object_tagging(Bucket=BUCKET, Key=key)["TagSet"]}
+
+
+@pytest.mark.asyncio
+async def test_resolve_tags_and_reopen_untags_before_the_next_attempt(world, monkeypatch):
+    """Status moves (activities._move, the one choke point): → resolved/failed tags; resolved/failed →
+    queued/working (Reopen, Retry) untags BEFORE the transition, so the next attempt never runs on an
+    overlay the lifecycle rule is counting down; → waiting tags nothing."""
+    from core.temporal import activities
+
+    s3 = world["s3"]
+    _seed(world, lane="shared")
+    key = learning.overlay_prefix(WS, TASK, SPEC) + lm.MEMORY
+    row = {"status": "working"}
+    events: list[str] = []
+
+    async def transition(ws, task_id, *, to, reason=None, fields=None):
+        events.append(f"{to}:{_tags(s3, key).get('lb-kind', 'none')}")
+        row["status"] = to
+        return dict(row)
+
+    monkeypatch.setattr(activities, "_task", AsyncMock(side_effect=lambda *a: dict(row)))
+    monkeypatch.setattr(activities.tasks_repo, "transition_task", transition)
+    monkeypatch.setattr(activities.memory_tasks_index, "index_task", AsyncMock())
+
+    await activities._move(WS, TASK, "waiting")
+    assert _tags(s3, key) == {}  # never tagged while waiting
+    await activities._move(WS, TASK, "working")
+    await activities._move(WS, TASK, "resolved", "resolved")
+    assert _tags(s3, key) == {"lb-kind": "task-overlay"}
+    await activities._move(WS, TASK, "working")  # Reopen: walks resolved → queued → working
+    assert events[-2:] == ["queued:task-open", "working:task-open"]  # untagged before the next attempt
+
+
+@pytest.mark.asyncio
+async def test_reopen_after_the_overlay_expired_merges_against_the_new_attempts_base(world, monkeypatch):
+    """Reopened > 14 days after resolve: attempts 1's base/seal/overlay are gone (expired); attempt 2
+    restored the specialist onto an empty overlay (the first-attempt path) and wrote base-0002. Its merge
+    uses that base -- not "add only" against a missing base-0001 -- and lands the new learning."""
+    s3 = world["s3"]
+    prefix = learning.overlay_prefix(WS, TASK, SPEC)
+    profile = f"{WS}/hermes/{SPEC}/"
+    s3.put_object(Bucket=BUCKET, Key=profile + lm.MEMORY, Body=b"old fact")
+    old = hashlib.sha256(b"old fact").hexdigest()
+    new = b"old fact\n\u00a7\nnew fact"
+    s3.put_object(Bucket=BUCKET, Key=prefix + lm.MEMORY, Body=new)
+    base2 = {"files": {lm.MEMORY: {"sha256": old, "etag": "", "text": "old fact"}}}
+    s3.put_object(Bucket=BUCKET, Key=prefix + lm.base_rel(2), Body=json.dumps(base2).encode())
+    seal = {"attempt": 2, "files": {lm.MEMORY: hashlib.sha256(new).hexdigest()}}
+    s3.put_object(Bucket=BUCKET, Key=prefix + lm.SEALED, Body=json.dumps(seal).encode())
+    monkeypatch.setattr(tasks_repo, "get_task", AsyncMock(return_value={"lane": "shared", "status": "working"}))
+    monkeypatch.setattr(learning.hermes_profiles, "profile_prefix", lambda ws, a: profile)
+    gets = []
+    real_get = learning._get
+    monkeypatch.setattr(learning, "_get", lambda s, b, k: (gets.append(k.rsplit("/", 1)[-1]), real_get(s, b, k))[1])
+
+    report = await learning.merge_learning(WS, SPEC, TASK, 2)
+
+    assert "base-0001.json" in gets and "base-0002.json" in gets  # tried the expired base, fell back
+    assert report.get("applied") and report["added"]["memory"] == 1
+    assert b"new fact" in s3.get_object(Bucket=BUCKET, Key=profile + lm.MEMORY)["Body"].read()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_restore_never_drops_an_unsealed_attempts_learning(world, monkeypatch):
+    """#4792 re-review: attempt 1's restore failed (no base-0001: the bridge writes it only after a
+    successful restore); attempt 2 wrote X and died unsealed; attempt 3 restored X from the overlay, so
+    base-0003 already holds X, and added Y. The merge takes the FIRST base that exists (base-0002), so X
+    and Y both land -- never base-0003, against which X would never be added."""
+    s3 = world["s3"]
+    prefix = learning.overlay_prefix(WS, TASK, SPEC)
+    profile = f"{WS}/hermes/{SPEC}/"
+    s3.put_object(Bucket=BUCKET, Key=profile + lm.MEMORY, Body=b"old fact")
+
+    def base(text):
+        sha = hashlib.sha256(text.encode()).hexdigest()
+        return json.dumps({"files": {lm.MEMORY: {"sha256": sha, "etag": "", "text": text}}}).encode()
+
+    s3.put_object(Bucket=BUCKET, Key=prefix + lm.base_rel(2), Body=base("old fact"))
+    s3.put_object(Bucket=BUCKET, Key=prefix + lm.base_rel(3), Body=base("old fact\n§\nfact X"))
+    final = b"old fact\n\xc2\xa7\nfact X\n\xc2\xa7\nfact Y"
+    s3.put_object(Bucket=BUCKET, Key=prefix + lm.MEMORY, Body=final)
+    seal = {"attempt": 3, "files": {lm.MEMORY: hashlib.sha256(final).hexdigest()}}
+    s3.put_object(Bucket=BUCKET, Key=prefix + lm.SEALED, Body=json.dumps(seal).encode())
+    monkeypatch.setattr(tasks_repo, "get_task", AsyncMock(return_value={"lane": "shared", "status": "working"}))
+    monkeypatch.setattr(learning.hermes_profiles, "profile_prefix", lambda ws, a: profile)
+
+    report = await learning.merge_learning(WS, SPEC, TASK, 3)
+
+    merged = s3.get_object(Bucket=BUCKET, Key=profile + lm.MEMORY)["Body"].read()
+    assert report["added"]["memory"] == 2 and b"fact X" in merged and b"fact Y" in merged
+
+
+@pytest.mark.asyncio
+async def test_tag_overlay_skips_an_object_deleted_since_the_listing(world, monkeypatch):
+    s3 = world["s3"]
+    _seed(world, lane="shared")
+    real = s3.put_object_tagging
+    gone = learning.overlay_prefix(WS, TASK, SPEC) + lm.MEMORY
+
+    def tagging(**kw):
+        if kw["Key"] == gone:
+            s3.delete_object(Bucket=BUCKET, Key=gone)
+        return real(**kw)
+
+    s3.put_object_tagging = tagging
+    assert learning.tag_overlay(WS, TASK) == 3  # the other three still tagged

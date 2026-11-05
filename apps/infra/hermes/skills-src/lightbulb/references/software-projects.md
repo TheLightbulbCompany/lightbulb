@@ -11,8 +11,8 @@ step that creates it: every other rule from there on still applies.
 Confirm scope with the person in the room: who it is for, the first thing it
 must do, and anything they already chose (stack, host, domain). Write a short
 plan as a document on a task (`references/chat-vs-document.md`), get it
-confirmed, and ask Lightbulb to start a task per piece (repo, first feature,
-deploy, CI). Confirmations are approvals in Needs you; monitors are routines.
+confirmed, and open one Paperclip issue per piece (repo, first feature, deploy,
+CI). The paperclip skill owns issues, confirmations and monitors.
 
 ## Check what is connected before promising anything
 
@@ -160,8 +160,8 @@ turn that wrote it. Set this up with the first pull request.
    linking an account are the owner's clicks. Tell them exactly where, and
    have them pick the setting that reviews every pull request on its own: a
    reviewer tied to a person's account ignores a request posted by an agent.
-3. **They have none: review on a routine.** Create a routine for yourself
-   (paperclip skill, `references/routines.md`) named
+3. **They have none: review on a routine.** Create a Paperclip routine
+   assigned to yourself (paperclip skill, `references/routines.md`) named
    "Review open pull requests". Its description is the contract, and it names
    the repository, because a routine run starts in its own empty folder: list
    with `gh pr list --repo OWNER/REPO --state open`; for each non-draft pull

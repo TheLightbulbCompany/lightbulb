@@ -13,7 +13,7 @@ If `lightbulb-facts.json` says `email_enabled: false`, email is off here — do 
 offer it.
 
 **Inbox.** Mail to the team address is stored for 30 days. A reply to something you
-sent comes back to you; everything else goes to the CEO, who turns it into tasks. Some of it
+sent comes back to you; everything else goes to the CEO, who delegates. Some of it
 wakes you as a chat message (see below); the rest you read on demand:
 
 ```bash

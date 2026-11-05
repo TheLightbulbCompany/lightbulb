@@ -51,7 +51,8 @@ INPUT_MAX = 32 * 1024
 
 WORKER_INSTRUCTIONS = (
     "You are working on one task for this workspace. Do the work, then answer with the result the person "
-    "asked for. Post notes only in this task's own room; Lightbulb posts your result for you."
+    "asked for. Post notes only in this task's own room; Lightbulb posts your result for you. For work that "
+    "belongs to a teammate or a person, follow the lightbulb skill's references/tasks.md."
 )
 
 _STATUS_AFTER = {
@@ -84,10 +85,16 @@ async def _move(ws: str, task_id: str, to: str, reason: str | None = None, field
     task = await _task(ws, task_id)
     if task["status"] == to:
         return
+    from core.temporal import learning  # Lane V: overlay expiry follows the task's terminal state
+
+    if task["status"] in learning.TERMINAL and to not in learning.TERMINAL:
+        await learning.set_overlay_tag(ws, task_id, on=False)  # reopen: untag BEFORE the next attempt
     if to == "working" and task["status"] not in tasks_repo.TRANSITIONS["working"]:
         await tasks_repo.transition_task(ws, task_id, to="queued")
     row = await tasks_repo.transition_task(ws, task_id, to=to, reason=reason, fields=fields)
     await memory_tasks_index.index_task(ws, row)  # memory (M5): the task card follows every status change
+    if to in learning.TERMINAL:
+        await learning.set_overlay_tag(ws, task_id, on=True)
 
 
 def _origin(tree: dict) -> tuple[str | None, str | None]:
@@ -232,10 +239,13 @@ async def _request(ws: str, task: dict, att: dict, tree: dict) -> runtime_runs.R
     if prev:
         p = max(prev, key=lambda a: a["n"])
         parts.append(f"## Previous attempt\nAttempt {p['n']} ended: {p.get('outcome') or 'unknown'}.")
+    # Lane Q (contracts §8): every Worker run carries the effect checkpoint; the bridge refuses `required`
+    # until its image has F1, so this lands after that dev roll.
     return runtime_runs.RunRequest(
         input="\n\n".join(x for x in parts if x),
         instructions=WORKER_INSTRUCTIONS,
         memory=memory_tags.block_for_worker(task),  # memory (M2): the Worker writes in the task's lane
+        effects="required",
     )
 
 

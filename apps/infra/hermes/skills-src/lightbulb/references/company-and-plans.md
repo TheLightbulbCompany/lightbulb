@@ -2,7 +2,7 @@
 
 Fresh workspaces start with six agents: **CEO**, **Engineering**, **Finance**,
 **Growth**, **Analytics**, and **Customer Operations**. The CEO is the owner's
-single point of contact and hands work to the five functional specialists as tasks.
+single point of contact and delegates work to the five functional specialists.
 Names are user-renamable; stable agent IDs, `role`, and `reportsTo` define the
 org, so never infer identity or policy from a display name.
 
@@ -37,7 +37,7 @@ asked, once.
 
 - The roster (`GET /api/companies/{companyId}/agents` via the paperclip
   skill) is the source of truth for who exists. Each entry carries `role`,
-  `title`, and `capabilities` — read `capabilities` before asking for a task for one of them.
+  `title`, and `capabilities` — read `capabilities` before delegating.
 - `role: ceo` is load-bearing: only the CEO (or agents explicitly granted
   permission) can create agents through Teams or assign work broadly.
   Other roles (`engineer`, `designer`, `pm`, `general`, …) are labels for

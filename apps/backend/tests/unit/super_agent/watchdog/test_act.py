@@ -130,7 +130,7 @@ async def test_paperclip_create_then_cancel_loop_regression(env):
 
 
 async def test_fleet_cap_refusal_writes_no_task_row(env):
-    out = await wd.watchdog_act(WatchdogConfig(fleet_actions_per_hour=0), _p(env))
+    out = await wd.watchdog_act(WatchdogConfig(reconcile="act", fleet_actions_per_hour=0), _p(env))
     assert out.outcome == "capped"
     assert _wd_rows(env) == []
     env.start.assert_not_awaited()
@@ -190,6 +190,6 @@ async def test_reconcile_rechecks_c1_age(env):
 
 async def test_lost_spend_race_releases_the_cap_unit(env, monkeypatch):
     monkeypatch.setattr(watchdog_repo, "spend_action", AsyncMock(return_value=None))
-    cfg = WatchdogConfig(fleet_actions_per_hour=1)
+    cfg = WatchdogConfig(reconcile="act", fleet_actions_per_hour=1)
     assert (await wd.watchdog_act(cfg, _p(env))).outcome == "limit"
     assert await watchdog_repo.take_cap("act", datetime.now(timezone.utc).strftime("%Y%m%d%H"), 1) is True

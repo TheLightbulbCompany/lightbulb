@@ -206,6 +206,12 @@ async def test_a00_parity_fails_when_features_or_rows_leak():
 async def test_gate_wires_vm_evidence_and_skips_a0(monkeypatch):
     tid = "22222222-2222-4222-8222-222222222222"
     rows = {"org_on": [{"type": "attempt", "taskId": tid, "n": 1, "sessionId": session_id_for("org_on")}]}
+    from core.services import token_custody
+
+    async def actor(owner_id):
+        return False
+
+    monkeypatch.setattr(token_custody, "task_vm_allowed", actor)
     ctx = FakeCtx(rows=rows)
 
     async def scenarios(names, c, *, log):
@@ -217,7 +223,7 @@ async def test_gate_wires_vm_evidence_and_skips_a0(monkeypatch):
     assert set(results) == {*report.ORDER[1:], "VM", "RULES"}
     assert results["VM"].passed, results["VM"].evidence["failures"]
     assert results["RULES"].evidence["reason"].startswith("no --rules-expect")
-    rows["org_on"][0]["sessionId"] = session_id_for("org_on", tid)  # ran on a task VM: must fail
+    rows["org_on"][0]["sessionId"] = session_id_for("org_on", tid)  # ran on a task VM under actor custody: must fail
     assert not (await report.gate(ctx, log=lambda line: None))["VM"].passed
 
 
@@ -241,7 +247,7 @@ def dm_handler(created: list[dict], *, lightbulb: bool = True):
 
 async def test_ensure_dm_rooms_opens_one_dm_per_user_with_lightbulb():
     created: list[dict] = []
-    ctx = Ctx(ws="org_on", users={"sam": "user_sam", "priya": "user_priya"}, fixtures={"sa-dev-on": "org_on"})
+    ctx = Ctx(ws="org_on", users={"sam": "user_sam", "priya": "user_priya"})
     ctx.api = lambda user, ws=None: httpx.AsyncClient(
         base_url=ctxmod.API_ROOT, transport=httpx.MockTransport(dm_handler(created))
     )  # type: ignore[method-assign]
@@ -257,7 +263,7 @@ async def test_ensure_dm_rooms_opens_one_dm_per_user_with_lightbulb():
 
 
 async def test_ensure_dm_rooms_refuses_without_lightbulb_member():
-    ctx = Ctx(ws="org_on", users={"sam": "user_sam"}, fixtures={})
+    ctx = Ctx(ws="org_on", users={"sam": "user_sam"})
     ctx.api = lambda user, ws=None: httpx.AsyncClient(
         base_url=ctxmod.API_ROOT, transport=httpx.MockTransport(dm_handler([], lightbulb=False))
     )  # type: ignore[method-assign]

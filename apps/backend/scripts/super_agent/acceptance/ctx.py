@@ -169,7 +169,7 @@ class Ctx:
 
     # ------------------------------------------------------------------ A12: each user's DM with @lightbulb
     async def ensure_dm_rooms(self) -> dict[str, str]:
-        """``ctx.state["samDmRoomId"]`` / ``["priyaDmRoomId"]`` (one per fixture user): the user's DM with the
+        """``ctx.state["samDmRoomId"]`` / ``["priyaDmRoomId"]`` (one per user): the user's DM with the
         front agent, found as the single ``@lightbulb`` member of ``#general`` (O7 seating) and opened through
         ``POST /messaging/rooms`` ``kind=dm`` (the route returns the existing DM, so this is idempotent)."""
         out: dict[str, str] = {}

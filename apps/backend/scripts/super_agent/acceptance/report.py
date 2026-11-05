@@ -184,19 +184,14 @@ def write_report(path: Path, results: Mapping[str, Any], **meta: Any) -> None:
 # ---------------------------------------------------------------------- G2: the gate
 async def gate(ctx: Ctx, *, rules_expect: Any | None = None, log: Callable[[str], None] = print) -> dict[str, Any]:
     """A1–A13 on the one dev workspace (A0 needs the switch off: run it before the flip), then the evidence
-    checks: ``vm_evidence`` over A1/A2's task ids (V17; the workspace is on a ChatGPT login, so shared-VM half only)
+    checks: ``vm_evidence`` over the task ids the scenarios left in ``ctx.state["taskIds"]`` (V17; per-task or workspace
+    session by the workspace's token custody)
     and ``rules_observe`` over the lead's ``Expect`` (S9; skipped without one). UI checks and W's digest stay by hand."""
     from scripts.super_agent.acceptance.rules_observe import rules_observe
     from scripts.super_agent.acceptance.vm_evidence import vm_evidence
 
     results: dict[str, Any] = await run_scenarios(ORDER[1:], ctx, log=log)
-    results["VM"] = await vm_evidence(
-        ctx,
-        ws_on=ctx.ws,
-        task_ids_on=[],
-        ws_chatgpt=ctx.ws,
-        task_ids_chatgpt=list(ctx.state.get("taskIds") or []),
-    )
+    results["VM"] = await vm_evidence(ctx, ws=ctx.ws, task_ids=list(ctx.state.get("taskIds") or []))
     results["RULES"] = (
         await rules_observe(ctx, rules_expect)
         if rules_expect

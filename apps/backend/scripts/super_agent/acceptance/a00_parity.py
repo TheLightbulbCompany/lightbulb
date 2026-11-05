@@ -10,10 +10,12 @@ from __future__ import annotations
 import time
 import uuid
 
+from core import tasks_schema as ts
 from scripts.super_agent.acceptance.ctx import Result
 
-#: sk prefixes of task-system rows; AGENT#/META/PENDING_BRIEF are written by R4/R6 whatever the switch says.
-TASK_FAMILY = ("TASK#", "THREAD#", "NEEDS#", "EFFECT#", "TRIG#", "OBS#", "SCHED#")  # core/tasks_schema.py *_sk
+#: R4/R6 write these under WS# for every workspace whatever the switch says (AGENTID# is the reverse pointer's own pk,
+#: so it never shows under WS#); every other sk in core/tasks_schema.py belongs to the task system.
+NOT_TASK_ROWS = (ts.agent_sk(""), ts.META_SK, ts.PENDING_BRIEF_SK)
 
 LEGACY_REPLY_S = 120
 
@@ -53,7 +55,7 @@ async def a00(ctx) -> Result:
         )
         if reply is None:
             await off.sleep(2)
-    rows = [r for r in await off.tasks_rows(off.ws) if str(r.get("sk", "")).startswith(TASK_FAMILY)]
+    rows = [r for r in await off.tasks_rows(off.ws) if not str(r.get("sk", "")).startswith(NOT_TASK_ROWS)]
     checks = {
         "live_config_has_no_features": "features" not in cfg,
         "room_agent_replied_as_today": reply is not None,

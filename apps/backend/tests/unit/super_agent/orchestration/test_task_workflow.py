@@ -139,6 +139,7 @@ async def test_stop_calls_on_stop_hook_before_cancel(temporal_env, fakes):
 async def test_slot_wait_released_by_signal(temporal_env, fakes):
     grants = iter([False, True])
     fakes.behaviour["acquire_slot"] = lambda *a: next(grants)
+    fakes.behaviour["worker_turn"] = until_cancelled  # keeps the turn open: no idle-wait timer afterwards
     async with worker(temporal_env, fakes) as q:
         h = await _start(temporal_env, q)
         await _until(lambda: len(fakes.args("acquire_slot")) == 1)

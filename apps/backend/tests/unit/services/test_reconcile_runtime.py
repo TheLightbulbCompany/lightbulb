@@ -126,7 +126,9 @@ class World:
         mp.setattr("core.services.provisioning_landing.build_provisioned_env", AsyncMock(return_value={}))
         mp.setattr("core.services.key_service.read_byo_key", AsyncMock(return_value="sk-byo-key"))
         mp.setattr(hp, "_stage_owner_facts", AsyncMock())
-        mp.setattr("core.services.oauth_service.get_decrypted_tokens", AsyncMock(return_value={"access_token": "a"}))
+        mp.setattr(
+            "core.services.oauth_service.get_token_row", AsyncMock(return_value={"tokens": {"access_token": "a"}})
+        )
         self.staged = []
         mp.setattr(
             "core.services.container_auth.stage_codex_auth",

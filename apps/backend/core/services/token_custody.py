@@ -20,14 +20,22 @@ Logs and metrics carry ids and numbers only, never a token value.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
+import re
 import time
+import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 import httpx
 
+from core.config import settings
+from core.dynamodb import run_in_thread
 from core.observability.metrics import put_metric
-from core.services import oauth_service, owner_lifecycle
+from core.repositories import container_repo
+from core.services import hermes_profiles, hermes_provisioning, oauth_service, owner_lifecycle
 from core.services.container_provision import resolve_provider_choice
 from core.services.credentials.access_token import ReconnectRequired, _announce_reconnect
 
@@ -35,6 +43,13 @@ logger = logging.getLogger(__name__)
 
 PROVIDER_KEY = "openai-codex"
 REFRESH_WINDOW_S = 600
+#: The first dev image tag (``h-<YYYY.M.D>-<sha7>``) whose bridge reads the ``auth.json`` marker
+#: and asks the broker (F6 + V11). None until V16's roll records it: the cutover refuses every
+#: image before then (spec 13 §6.3 -- an old image reads the marker as "no refresh token").
+BROKER_MIN_IMAGE_TAG: str | None = None
+#: How long the cutover holds the cold-wake lease: nothing may start a session mid-move.
+WAKE_LEASE_S = 60
+_TAG_RE = re.compile(r"^h-(\d{4})\.(\d{1,2})\.(\d{1,2})-([0-9a-f]{7})$")
 _REFRESH_TIMEOUT_S = 20.0
 _TERMINAL_CODES = frozenset({"invalid_grant", "invalid_token", "invalid_request", "refresh_token_reused"})
 
@@ -184,3 +199,137 @@ async def codex_vend(owner_id: str, *, presented_sha256: str | None = None, forc
             raise RuntimeError("token_broker: conditional write lost (row revoked or lease taken over)")
         _metric("vend", path="refresh")
         return _vend(tokens, row, refreshed=True)
+
+
+# --- cutover / rollback (spec 13 §6.1) -----------------------------------------------------------
+#
+# Two writers must be fenced. Backend writers (connect, disconnect, the broker's refresh) wait on
+# ``owner_lifecycle_guard``. The VM writer (``save_root_auth``) is fenced by an idle wait, a stopped
+# session and a held cold-wake lease, so no session can start and rotate the grant mid-move.
+
+
+def _tag_date(tag: str) -> tuple[int, int, int] | None:
+    m = _TAG_RE.fullmatch(tag or "")
+    return (int(m[1]), int(m[2]), int(m[3])) if m else None
+
+
+def _image_has_broker(image_uri: str) -> bool:
+    """Whether the configured Hermes image's tag is the broker-capable one or a later build."""
+    if not BROKER_MIN_IMAGE_TAG:
+        return False
+    tag = (image_uri or "").rsplit(":", 1)[-1]
+    if tag == BROKER_MIN_IMAGE_TAG:
+        return True
+    have, want = _tag_date(tag), _tag_date(BROKER_MIN_IMAGE_TAG)
+    return bool(have and want and have > want)
+
+
+@asynccontextmanager
+async def fenced_session(owner_id: str) -> AsyncIterator[bool]:
+    """Wait for the workspace session to go idle, stop it, and hold its cold-wake lease for the
+    block. Yields False -- nothing touched -- when a turn is still running at the idle deadline
+    (a mid-turn stop loses that turn's profile writes), the stop is unconfirmed, or the lease is
+    held. Spec 13 §6.1 step 2.1-2.2 and 2.6."""
+    row = await container_repo.get_by_owner_id(owner_id) or {}
+    arn = row.get("agentcore_runtime_arn")
+    if arn and not await hermes_provisioning._wait_for_idle_session(owner_id):
+        yield False
+        return
+    if arn and not await hermes_provisioning.stop_runtime_session(owner_id, arn):
+        yield False
+        return
+    token = uuid.uuid4().hex
+    held = await run_in_thread(
+        container_repo.try_take_wake_lease_sync,
+        owner_id,
+        arn=arn or "",
+        token=token,
+        now=int(time.time()),
+        lease_s=WAKE_LEASE_S,
+    )
+    if not held:
+        yield False
+        return
+    try:
+        yield True
+    finally:
+        await run_in_thread(container_repo.finish_wake_sync, owner_id, token=token)
+
+
+_GRANT_KEYS = ("access_token", "refresh_token", "id_token")
+
+
+async def codex_cutover(owner_id: str, *, dry_run: bool = False) -> str:
+    """Move the workspace's ChatGPT grant into backend custody.
+
+    ``done`` | ``already`` | ``not_chatgpt`` | ``no_grant`` | ``stale_image`` | ``busy_session`` |
+    ``raced`` | ``would_cutover`` (dry run: every precondition passed, nothing written)."""
+    choice, _ = await resolve_provider_choice(owner_id)
+    if choice != "chatgpt_oauth":
+        return "not_chatgpt"
+    user = await oauth_service.resolve_token_owner(owner_id=owner_id)
+    row = await oauth_service.get_token_row(user, consistent=True, bound_to=owner_id)
+    if row is None:
+        return "no_grant"
+    if row.get("custody") == "backend":
+        return "already"
+    if not _image_has_broker(settings.AGENTCORE_HERMES_IMAGE):
+        return "stale_image"
+    if dry_run:
+        return "would_cutover"
+    # The runtime itself must be on the broker-capable image: a roll brings it there, and a
+    # session that is busy at the roll's deadline is still on the old image.
+    if await hermes_provisioning.roll_runtime_image(owner_id) not in ("current", "updated"):
+        return "stale_image"
+    bucket = settings.OWNER_STATE_BUCKET
+    key = f"{hermes_profiles.root_home_prefix(owner_id)}auth.json"
+    async with owner_lifecycle.owner_lifecycle_guard(owner_id):
+        async with fenced_session(owner_id) as fenced:
+            if not fenced:
+                return "busy_session"
+            existing, etag = await run_in_thread(hermes_profiles._s3_get_versioned, bucket, key)
+            blob = json.loads(existing) if existing else {}
+            staged = ((blob.get("providers") or {}).get(PROVIDER_KEY) or {}).get("tokens") or {}
+            # The VM's copy is the newest pair whenever it holds a grant (it rotates in place);
+            # a never-rotated grant is still the one DDB has from connect.
+            source = staged if staged.get("refresh_token") else row["tokens"]
+            pair = {k: v for k, v in source.items() if k in _GRANT_KEYS and v}
+            if not pair.get("refresh_token"):
+                return "no_grant"
+            tokens = {**row["tokens"], **pair}
+            if row.get("account_id"):
+                tokens.setdefault("account_id", row["account_id"])
+            if not await oauth_service.take_custody(user, tokens=tokens):
+                return "raced"
+            try:
+                await run_in_thread(hermes_profiles.stage_codex_marker, owner_id, expected_etag=etag, existing=blob)
+            except hermes_profiles.MarkerRaced:
+                # A writer we failed to fence: undo the row so the old path (which still reads
+                # S3's newest pair) stays the one path.
+                await oauth_service.set_custody_actor(user, expected_version=1)
+                _metric("cutover", result="raced")
+                return "raced"
+    if await codex_vend(owner_id) is None:
+        raise RuntimeError("token_broker: cutover verify vend returned nothing")
+    _metric("cutover", result="done")
+    logger.info("token_broker cutover owner=%s result=done", owner_id)
+    return "done"
+
+
+async def codex_rollback(owner_id: str) -> str:
+    """Back to VM custody: stage the row's newest pair as a plain grant (replacing the marker),
+    then flip the row. ``done`` | ``already`` | ``busy_session`` | ``raced``."""
+    user = await oauth_service.resolve_token_owner(owner_id=owner_id)
+    row = await oauth_service.get_token_row(user, consistent=True, bound_to=owner_id)
+    if row is None or row.get("custody") != "backend":
+        return "already"
+    async with owner_lifecycle.owner_lifecycle_guard(owner_id):
+        async with fenced_session(owner_id) as fenced:
+            if not fenced:
+                return "busy_session"
+            await run_in_thread(hermes_profiles.stage_codex_auth, owner_id, row["tokens"])
+            if not await oauth_service.set_custody_actor(user, expected_version=row["version"]):
+                return "raced"
+    _metric("cutover", result="rollback")
+    logger.info("token_broker rollback owner=%s result=done", owner_id)
+    return "done"

@@ -493,6 +493,57 @@ async def cas_update_tokens(user_id: str, *, expected_version: int, tokens: dict
         raise
 
 
+async def take_custody(user_id: str, *, tokens: dict) -> bool:
+    """Cutover step 4 (spec 13 §6.1): the row becomes the backend's, at ``version = 1``, holding
+    ``tokens`` (the VM's newest pair). Conditional on the row being active and VM-custodied
+    (no ``custody`` attribute, or ``actor``). False when the condition fails."""
+    from datetime import UTC, datetime
+
+    expires_at = _expires_at_ms(tokens.get("access_token") or "") or int(tokens.get("expires_at") or 0)
+    tokens = {**tokens, "expires_at": expires_at}
+    try:
+        _table().update_item(
+            Key={"user_id": user_id},
+            UpdateExpression=(
+                "SET encrypted_tokens = :tok, custody = :backend, version = :one, expires_at = :exp, last_refresh = :now"
+            ),
+            ConditionExpression="(attribute_not_exists(custody) OR custody = :actor) AND #s = :active",
+            ExpressionAttributeNames={"#s": "state"},
+            ExpressionAttributeValues={
+                ":tok": get_fernet().encrypt(json.dumps(tokens).encode()),
+                ":backend": "backend",
+                ":actor": "actor",
+                ":one": 1,
+                ":exp": expires_at,
+                ":now": datetime.now(UTC).isoformat(),
+                ":active": "active",
+            },
+        )
+        return True
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise
+
+
+async def set_custody_actor(user_id: str, *, expected_version: int) -> bool:
+    """Rollback (or a raced cutover's undo): the VM owns the grant again. Conditional on the
+    version just read, so a refresh that landed meanwhile is never overruled."""
+    try:
+        _table().update_item(
+            Key={"user_id": user_id},
+            UpdateExpression="SET custody = :actor",
+            ConditionExpression="version = :v AND #s = :active",
+            ExpressionAttributeNames={"#s": "state"},
+            ExpressionAttributeValues={":actor": "actor", ":v": expected_version, ":active": "active"},
+        )
+        return True
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise
+
+
 async def token_row_needs_reconnect(user_id: str, *, bound_to: str | None = None) -> bool:
     """Whether this workspace's backend-custodied grant was refused by OpenAI (the broker marked
     it): the vend then answers "reconnect", not "not brokered"."""

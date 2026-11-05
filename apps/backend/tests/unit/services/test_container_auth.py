@@ -60,7 +60,7 @@ async def test_revoke_propagates_an_authoritative_store_failure():
 @pytest.mark.asyncio
 async def test_push_credential_stages_the_root_auth_json():
     with (
-        patch("core.services.oauth_service.get_decrypted_tokens", new=AsyncMock(return_value=_TOKENS)),
+        patch("core.services.oauth_service.get_token_row", new=AsyncMock(return_value={"tokens": _TOKENS})),
         patch("core.services.container_auth.stage_codex_auth") as stage,
     ):
         assert await container_auth.push_oauth_credential_to_container(owner_id="org_1", connector_id="user_c") is True
@@ -70,7 +70,7 @@ async def test_push_credential_stages_the_root_auth_json():
 @pytest.mark.asyncio
 async def test_push_credential_noops_when_there_are_no_tokens():
     with (
-        patch("core.services.oauth_service.get_decrypted_tokens", new=AsyncMock(return_value=None)),
+        patch("core.services.oauth_service.get_token_row", new=AsyncMock(return_value=None)),
         patch("core.services.container_auth.stage_codex_auth") as stage,
     ):
         assert await container_auth.push_oauth_credential_to_container(owner_id="org_1", connector_id="user_c") is False
@@ -83,7 +83,7 @@ async def test_push_credential_reports_false_when_the_token_read_fails():
     and a raise here would surface as a failed connect for a token we simply could not fetch."""
     with (
         patch(
-            "core.services.oauth_service.get_decrypted_tokens",
+            "core.services.oauth_service.get_token_row",
             new=AsyncMock(side_effect=RuntimeError("ddb down")),
         ),
         patch("core.services.container_auth.stage_codex_auth") as stage,
@@ -97,7 +97,7 @@ async def test_push_credential_propagates_a_stage_failure():
     """Unlike the read, the WRITE is authoritative: a staged grant nobody can prove landed must
     not report success -- the owner would see "connected" with no credential in the profile."""
     with (
-        patch("core.services.oauth_service.get_decrypted_tokens", new=AsyncMock(return_value=_TOKENS)),
+        patch("core.services.oauth_service.get_token_row", new=AsyncMock(return_value={"tokens": _TOKENS})),
         patch("core.services.container_auth.stage_codex_auth", side_effect=RuntimeError("s3 down")),
     ):
         with pytest.raises(RuntimeError, match="s3 down"):

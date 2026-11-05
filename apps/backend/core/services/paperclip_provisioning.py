@@ -37,6 +37,7 @@ from botocore.exceptions import ClientError
 from ulid import ULID
 
 from core.auth import is_org_owner_id
+from core.services.super_agent_flags import flags_for
 from core.config import settings
 from core.encryption import decrypt, encrypt
 from core.observability.metrics import put_metric
@@ -1186,7 +1187,10 @@ class PaperclipProvisioning:
         self, *, company_id: str, session_cookie: str, starter_agent_ids: dict, owner_id: str
     ) -> None:
         """Best effort: a failed routine seed never fails the provision. Idempotent by
-        (agent, title), so a reconcile re-run creates only what is missing."""
+        (agent, title), so a reconcile re-run creates only what is missing.
+        Super-agent workspaces get none: automations come from the confirm card (contracts-v2 §11)."""
+        if await flags_for(owner_id):
+            return
         for starter_key, routines in STARTER_ROUTINES.items():
             try:
                 await create_agent_routines(

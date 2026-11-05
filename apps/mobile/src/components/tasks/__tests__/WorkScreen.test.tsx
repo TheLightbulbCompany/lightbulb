@@ -1,7 +1,7 @@
 import { act, fireEvent, render } from "@testing-library/react-native";
 import { FIXTURES } from "@lightbulb/shared/tasks/fixtures";
 
-const mockLive = { superAgent: true, tasks: null as unknown, api: { get: jest.fn(async () => { throw new Error("no route"); }), post: jest.fn() } };
+const mockLive = { superAgent: true, tasks: null as unknown, api: { get: jest.fn(async (): Promise<unknown> => ({ automations: [] })), post: jest.fn() } };
 const mockPush = jest.fn();
 jest.mock("../../../providers/live-events", () => ({ useLiveEvents: () => mockLive, useSuperAgent: () => mockLive.superAgent }));
 jest.mock("@clerk/expo", () => ({ useAuth: () => ({ userId: "user_sam" }), useOrganization: () => ({ membership: { role: "org:admin" } }) }));
@@ -52,6 +52,20 @@ it("rows push the task screen; Scheduled shows the empty state until automations
   await fireEvent.press(view.getByText("Scheduled"));
   expect(await view.findByText("Ask @lightbulb to put recurring work on a schedule.")).toBeTruthy();
   expect(mockLive.api.get).toHaveBeenCalledWith("/automations");
+  await act(async () => {});
+  await view.unmount();
+});
+
+it("Scheduled: a failed read says so with Retry, never the empty prompt", async () => {
+  client();
+  mockLive.api.get.mockRejectedValue(new Error("403"));
+  const view = await render(<WorkScreen />);
+  await fireEvent.press(await view.findByText("Scheduled"));
+  expect(await view.findByText("Schedules couldn’t load.")).toBeTruthy();
+  expect(view.queryByText("Ask @lightbulb to put recurring work on a schedule.")).toBeNull();
+  mockLive.api.get.mockResolvedValue({ automations: [] });
+  await fireEvent.press(view.getByLabelText("Retry loading schedules"));
+  expect(await view.findByText("Ask @lightbulb to put recurring work on a schedule.")).toBeTruthy();
   await act(async () => {});
   await view.unmount();
 });

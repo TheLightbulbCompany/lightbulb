@@ -3,7 +3,7 @@
 import { useCallback } from "react";
 import { useAuth, useOrganization } from "@clerk/expo";
 import {
-  automationKey, automationRunsKey, automationsKey, runNow as runNowShared, useAutomationRunsView, useAutomationView, useAutomationsView,
+  automationKey, automationRunsKey, automationsKey, runNow as runNowShared, type AutomationSource,
   useTaskCache, type AutomationView,
 } from "@lightbulb/shared";
 
@@ -12,19 +12,10 @@ import { errorCopy } from "./useTaskActions";
 
 export type AutomationVerb = "activate" | "pause" | "resume" | "run";
 
-export function useAutomations(enabled = true) {
+/** What the shared automation hooks read through: this phone's API client and workspace scope. */
+export function useAutomationSource(): AutomationSource {
   const { api, tasks } = useLiveEvents();
-  return useAutomationsView(api, tasks.cacheScope, enabled);
-}
-
-export function useAutomation(id: string | null) {
-  const { api, tasks } = useLiveEvents();
-  return useAutomationView(api, tasks.cacheScope, id);
-}
-
-export function useAutomationRuns(id: string | null) {
-  const { api, tasks } = useLiveEvents();
-  return useAutomationRunsView(api, tasks.cacheScope, id);
+  return { api, cacheScope: tasks.cacheScope };
 }
 
 export function useAutomationActions() {

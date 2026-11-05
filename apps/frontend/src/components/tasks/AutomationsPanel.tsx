@@ -7,14 +7,13 @@
 import { useState, type ReactElement } from "react";
 import { ArrowLeft } from "lucide-react";
 import { useAuth } from "@clerk/nextjs";
-import { specialistLabel, summaryView, type AutomationView } from "@lightbulb/shared";
+import { automationStatusLine, specialistLabel, summaryView, useAutomation, useAutomationRuns, useAutomations, type AutomationView } from "@lightbulb/shared";
 import { RoutinesPanel } from "@/components/teams/panels/RoutinesPanel";
 import { Button } from "@/components/ui/button";
 import { useSuperAgent } from "@/hooks/useLiveEvents";
 import { openTaskPane } from "@/components/workspace/workspaceController";
-import { statusLine, useAutomations } from "./ScheduledList";
 import {
-  budgetLine, deliveryWords, runNow, runNowReason, scheduleWords, useAutomation, useAutomationActions, useAutomationRuns, useCanDecide, useCanEdit, viewerTimeZone, waitingWords,
+  budgetLine, deliveryWords, runNow, runNowReason, scheduleWords, useAutomationActions, useAutomationSource, useCanDecide, useCanEdit, viewerTimeZone, waitingWords,
 } from "./automations";
 
 export function AutomationsPanel({ viewerTz = viewerTimeZone(), onOpenTask = openTaskPane }: {
@@ -60,7 +59,7 @@ function RunNowButton({ a, onOpenTask, onNote }: { a: AutomationView; onOpenTask
 function AutomationList({ viewerTz, onSelect, onOlder, onOpenTask }: {
   viewerTz: string; onSelect: (id: string) => void; onOlder: () => void; onOpenTask: (taskId: string) => void;
 }): ReactElement {
-  const { data, error } = useAutomations();
+  const { data, error } = useAutomations(useAutomationSource());
   const [note, setNote] = useState<string | null>(null);
   const rows = data?.automations ?? [];
   return <div className="grid gap-3">
@@ -75,7 +74,7 @@ function AutomationList({ viewerTz, onSelect, onOlder, onOpenTask }: {
     {rows.length > 0 && <ul className="grid">{rows.map((a) => <li key={a.id} className="relative flex items-center gap-3 rounded-md px-2 py-2 hover:bg-accent">
       <div className="min-w-0 flex-1">
         <button type="button" className="block max-w-full truncate text-left font-semibold after:absolute after:inset-0 after:content-['']" onClick={() => onSelect(a.id)}>{a.name}</button>
-        <p className="truncate text-ui text-muted-foreground">{[scheduleLine(a, viewerTz), deliveryWords(a.deliverTo), statusLine(a)].filter(Boolean).join(" · ")}</p>
+        <p className="truncate text-ui text-muted-foreground">{[scheduleLine(a, viewerTz), deliveryWords(a.deliverTo), automationStatusLine(a)].filter(Boolean).join(" · ")}</p>
       </div>
       <RunNowButton a={a} onOpenTask={onOpenTask} onNote={setNote} />
     </li>)}</ul>}
@@ -86,8 +85,9 @@ function AutomationList({ viewerTz, onSelect, onOlder, onOpenTask }: {
 function AutomationDetail({ id, viewerTz, onBack, onOpenTask }: {
   id: string; viewerTz: string; onBack: () => void; onOpenTask: (taskId: string) => void;
 }): ReactElement {
-  const { data: a, error } = useAutomation(id);
-  const { data: runs } = useAutomationRuns(id);
+  const source = useAutomationSource();
+  const { data: a, error } = useAutomation(source, id);
+  const { data: runs } = useAutomationRuns(source, id);
   const { act } = useAutomationActions();
   const canDecide = useCanDecide();
   const canEdit = useCanEdit();
@@ -107,7 +107,7 @@ function AutomationDetail({ id, viewerTz, onBack, onOpenTask }: {
     <header className="grid gap-1">
       <h2 className="font-semibold">{a.name}</h2>
       <p className="text-ui text-muted-foreground">{[scheduleLine(a, viewerTz), specialistLabel(a.specialistId), budgetLine(a)].filter(Boolean).join(" · ")}</p>
-      {statusLine(a) && <p className="text-ui text-warn">{statusLine(a)}</p>}
+      {automationStatusLine(a) && <p className="text-ui text-warn">{automationStatusLine(a)}</p>}
     </header>
     {/* Pause and Run now follow the server's _may_edit (admin or owner); Resume is an activate (room → admin only). */}
     {canEdit(a) || canDecide(a)

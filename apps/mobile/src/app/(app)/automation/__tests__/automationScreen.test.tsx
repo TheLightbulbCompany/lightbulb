@@ -1,4 +1,4 @@
-import { render } from "@testing-library/react-native";
+import { fireEvent, render } from "@testing-library/react-native";
 import type { AutomationView } from "@lightbulb/shared";
 
 const mockLive = { superAgent: true, tasks: { cacheScope: "org_a" }, api: { get: jest.fn(), post: jest.fn() } };
@@ -36,5 +36,15 @@ it("paused: Run now is off with its reason; a member waits on an admin to resume
   expect(view.getByLabelText("Run now")).toBeDisabled();
   expect(view.getByText("Waiting on a workspace admin")).toBeTruthy();
   expect(view.queryByLabelText("Resume")).toBeNull();
+  await view.unmount();
+});
+
+it("a draft: whoever may decide gets Turn on (activate); history loads before it says No runs yet", async () => {
+  mockLive.api.post.mockResolvedValue({});
+  routes(row({ status: "draft", deliverTo: "dm:user_sam" }));
+  const view = await render(<AutomationScreen />);
+  await fireEvent.press(await view.findByLabelText("Turn on"));
+  expect(mockLive.api.post).toHaveBeenCalledWith("/automations/auto-1/activate", {});
+  expect(await view.findByText("No runs yet. Each run opens as its own thread.")).toBeTruthy();
   await view.unmount();
 });

@@ -1,30 +1,24 @@
 "use client";
 
-// Lane A's automation routes (wave2-A Task 6; spec 06 §5.1). Not on main yet: everything here is
-// written to that contract, and the panel shows its empty state until the routes answer.
+// Lane A's automation routes (routers/automations.py): actions and the viewer's two predicates. Reads go
+// through the shared hooks (`useAutomations(useAutomationSource())`).
 
 import { useCallback } from "react";
-import useSWR, { useSWRConfig } from "swr";
+import { useSWRConfig } from "swr";
 import { useAuth, useOrganization } from "@clerk/nextjs";
-import { canDecide, canEdit, runNow as runNowShared, type AutomationView, type RunNowOutcome, type TaskSummary } from "@lightbulb/shared";
+import {
+  automationKey, automationRunsKey, automationsKey, canDecide, canEdit, runNow as runNowShared,
+  type AutomationSource, type AutomationView, type RunNowOutcome,
+} from "@lightbulb/shared";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { useApi } from "@/lib/api";
 import { errorCopy } from "./useTaskActions";
 
 export type AutomationVerb = "activate" | "pause" | "resume" | "run";
 
-export function useAutomation(id: string | null) {
-  const api = useApi();
-  const { tasks } = useLiveEvents();
-  return useSWR<AutomationView>(id ? ["automation", tasks.cacheScope, id] : null,
-    () => api.get(`/automations/${encodeURIComponent(id!)}`) as Promise<AutomationView>, { shouldRetryOnError: false });
-}
-
-export function useAutomationRuns(id: string | null) {
-  const api = useApi();
-  const { tasks } = useLiveEvents();
-  return useSWR<{ runs: TaskSummary[]; next: string | null }>(id ? ["automation-runs", tasks.cacheScope, id] : null,
-    () => api.get(`/automations/${encodeURIComponent(id!)}/runs`) as Promise<{ runs: TaskSummary[]; next: string | null }>, { shouldRetryOnError: false });
+/** What the shared automation hooks read through: the signed-in API client and the workspace scope. */
+export function useAutomationSource(): AutomationSource {
+  return { api: useApi(), cacheScope: useLiveEvents().tasks.cacheScope };
 }
 
 /** One POST per press; the list, the row and its runs re-read afterwards. */
@@ -33,7 +27,7 @@ export function useAutomationActions() {
   const { tasks } = useLiveEvents();
   const { mutate } = useSWRConfig();
   const refresh = useCallback((id: string) => Promise.all([
-    mutate(["automations", tasks.cacheScope]), mutate(["automation", tasks.cacheScope, id]), mutate(["automation-runs", tasks.cacheScope, id]),
+    mutate(automationsKey(tasks.cacheScope)), mutate(automationKey(tasks.cacheScope, id)), mutate(automationRunsKey(tasks.cacheScope, id)),
   ]), [mutate, tasks.cacheScope]);
   const act = useCallback(async (id: string, verb: AutomationVerb): Promise<AutomationView | { triggerId: string }> => {
     const res = await api.post(`/automations/${encodeURIComponent(id)}/${verb}`, {}) as AutomationView | { triggerId: string };

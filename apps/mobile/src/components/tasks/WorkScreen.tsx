@@ -4,7 +4,7 @@
 
 import { useAuth } from "@clerk/expo";
 import {
-  automationStatusLine, deliveryWords, overviewGroups, scheduleWords, viewerTimeZone, summaryView, taskSummaryLine, useTaskList, type TaskScope, type TaskSummary,
+  automationStatusLine, deliveryWords, overviewGroups, scheduleWords, useAutomations, viewerTimeZone, summaryView, taskSummaryLine, useTaskList, type TaskScope, type TaskSummary,
 } from "@lightbulb/shared";
 import { router } from "expo-router";
 import { useContext, useState } from "react";
@@ -14,7 +14,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View, useColorScheme } from "r
 import { chatPalette, fonts, radii, spacing, type ChatPalette } from "../../config/theme";
 import { useLiveEvents } from "../../providers/live-events";
 import { SegmentedControl } from "../ui/SegmentedControl";
-import { useAutomations } from "./automations";
+import { useAutomationSource } from "./automations";
 import { TaskStatus, openTaskScreen } from "./TaskCard";
 
 type Segment = "overview" | "scheduled";
@@ -51,9 +51,9 @@ export function WorkScreen({ scope = { kind: "workspace" }, onOpenOldBoard, view
 export function OverviewList({ scope, palette, onOpen = openTaskScreen }: { scope: TaskScope; palette: ChatPalette; onOpen?: (taskId: string) => void }) {
   const { userId } = useAuth();
   const { tasks } = useLiveEvents();
-  const { data, error } = useTaskList(tasks, scope);
+  const { data, error, mutate } = useTaskList(tasks, scope);
   const [resolvedOpen, setResolvedOpen] = useState(false);
-  if (!data) return <Text style={[styles.meta, { color: palette.fgMute }]}>{error ? "Threads couldn't load. Pull to try again." : "Loading…"}</Text>;
+  if (!data) return <LoadState what="Threads" error={!!error} onRetry={() => void mutate()} palette={palette} />;
   return (
     <View style={styles.groups}>
       {overviewGroups(data.tasks).map((group) => {
@@ -106,8 +106,9 @@ function OverviewRow({ task, viewerId, palette, onOpen, first }: {
 export function ScheduledList({ palette, viewerTz, onOpen = (id) => router.push({ pathname: "/(app)/automation/[id]", params: { id } }) }: {
   palette: ChatPalette; viewerTz: string; onOpen?: (id: string) => void;
 }) {
-  const { data } = useAutomations();
-  const rows = data?.automations ?? [];
+  const { data, error, mutate } = useAutomations(useAutomationSource());
+  if (!data) return <LoadState what="Schedules" error={!!error} onRetry={() => void mutate()} palette={palette} />;
+  const rows = data.automations;
   if (!rows.length) {
     return (
       <View style={[styles.placeholder, { borderColor: palette.edge }]}>
@@ -132,7 +133,22 @@ export function ScheduledList({ palette, viewerTz, onOpen = (id) => router.push(
   );
 }
 
+/** Loading, or a failed read with Retry (never the empty prompt while nothing is known). */
+export function LoadState({ what, error, onRetry, palette }: { what: string; error: boolean; onRetry: () => void; palette: ChatPalette }) {
+  if (!error) return <Text accessibilityRole="text" style={[styles.meta, { color: palette.fgMute }]}>Loading…</Text>;
+  return (
+    <View style={styles.loadRow}>
+      <Text accessibilityRole="alert" style={[styles.meta, { color: palette.fgMute }]}>{what} couldn’t load.</Text>
+      <Pressable accessibilityRole="button" accessibilityLabel={`Retry loading ${what.toLowerCase()}`} onPress={onRetry} hitSlop={8} style={styles.retry}>
+        <Text style={[styles.link, { color: palette.link }]}>Retry</Text>
+      </Pressable>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
+  loadRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  retry: { minHeight: 44, justifyContent: "center" },
   host: { flex: 1 },
   toggleBar: { paddingHorizontal: spacing.lg, paddingVertical: spacing.sm },
   body: { paddingHorizontal: spacing.lg, paddingBottom: spacing.xl, gap: spacing.lg },

@@ -379,6 +379,6 @@ export {
 } from "./tasks/automations";
 export type { RunNowOutcome } from "./tasks/automations";
 export {
-  automationKey, automationRunsKey, automationsKey,
-  useAutomation as useAutomationView, useAutomationRuns as useAutomationRunsView, useAutomations as useAutomationsView,
+  automationKey, automationRunsKey, automationsKey, useAutomation, useAutomationRuns, useAutomations,
 } from "./tasks/useAutomations";
+export type { AutomationSource } from "./tasks/useAutomations";

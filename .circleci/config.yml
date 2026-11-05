@@ -1,0 +1,58 @@
+# =============================================================================
+# PR checks on CircleCI (free tier) -- a mirror of the pull_request workflows in
+# .github/workflows/. GitHub-hosted minutes ran out and the self-hosted runner
+# box is offline (2026-11-05); deploys stay on GitHub Actions and this never
+# runs on main.
+#
+# Dynamic config: this setup pipeline diffs the branch against main and
+# continues with .circleci/pr-checks.yml, switching on only the areas whose
+# paths changed. The mapping below is the same set of `paths:` filters the
+# GitHub workflows declare (one regex per line, anchored, grep -P). The secret
+# scan has no switch: it runs on every PR.
+#
+# Project settings to pair with this (CircleCI UI): "Only build pull requests"
+# so a branch push without a PR does not spend credits, and no "build forked
+# PRs". The `ignore: main` filter below is what keeps main pushes out.
+# =============================================================================
+version: 2.1
+setup: true
+
+orbs:
+  path-filtering: circleci/path-filtering@3.0.0
+
+workflows:
+  pr-setup:
+    jobs:
+      - path-filtering/filter:
+          name: changed-paths
+          filters:
+            branches:
+              ignore: main
+          base-revision: main
+          config-path: .circleci/pr-checks.yml
+          resource_class: small
+          mapping: |
+            apps/backend/.* run-backend true
+            apps/infra/lambda/(ses-inbound|ws-connect|pub-authorizer|messaging-projector|messaging-search-indexer|openrouter-settlement)/.* run-backend true
+            apps/frontend/.* run-frontend true
+            packages/.* run-frontend true
+            pnpm-lock.yaml run-frontend true
+            apps/mobile/.* run-mobile true
+            packages/shared/.* run-mobile true
+            pnpm-lock.yaml run-mobile true
+            apps/infra/.* run-infra true
+            .github/workflows/(deploy|desktop-build).yml run-infra true
+            (paperclip-version|hermes-version|openrouter-pricing).json run-infra true
+            pnpm-lock.yaml run-infra true
+            apps/company/.* run-company true
+            pnpm-lock.yaml run-company true
+            tla/.* run-tla true
+            apps/huddle-agent/.* run-huddle true
+            apps/backend/core/services/(messaging|jev|voice_calls).py run-huddle true
+            .circleci/.* run-backend true
+            .circleci/.* run-frontend true
+            .circleci/.* run-mobile true
+            .circleci/.* run-infra true
+            .circleci/.* run-company true
+            .circleci/.* run-tla true
+            .circleci/.* run-huddle true

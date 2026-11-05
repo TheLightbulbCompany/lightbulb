@@ -73,6 +73,7 @@ def test_env_enabled_callers_are_allowlisted():
         BACKEND / "core" / "services" / "agent_registry.py",
         BACKEND / "core" / "services" / "paperclip_admin_client.py",
         BACKEND / "routers" / "paperclip_proxy.py",
+        BACKEND / "scripts" / "backfill_agent_registry.py",
     }
     offenders = [
         str(path.relative_to(BACKEND))

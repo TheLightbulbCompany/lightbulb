@@ -19,6 +19,7 @@ import sys
 from core.config import settings
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services.agent_registry import seed_from_paperclip, verify
+from core.services.super_agent_flags import env_enabled
 
 
 async def main(argv: list[str] | None = None) -> int:
@@ -33,8 +34,8 @@ async def main(argv: list[str] | None = None) -> int:
     if settings.ENVIRONMENT == "prod":
         print("refusing: backfill_agent_registry is dev-only")
         return 2
-    if not settings.SUPER_AGENT_ENV_ENABLED:
-        print("refusing: SUPER_AGENT_ENV_ENABLED is off (no registry table)")
+    if not env_enabled():
+        print("refusing: the super-agent env master is off (no registry table)")
         return 2
 
     owners = (

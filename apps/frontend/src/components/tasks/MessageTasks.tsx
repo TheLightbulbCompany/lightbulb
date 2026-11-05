@@ -18,11 +18,19 @@ export function MessageTasks({ message, viewerId, onOpen }: {
 }): ReactElement | null {
   const { tasks } = useLiveEvents();
   const refs = message.taskRefs ?? [];
-  const { data } = useTaskList(tasks, refs.length ? { kind: "room", roomId: message.roomId } : null);
+  const { data, error, mutate } = useTaskList(tasks, refs.length ? { kind: "room", roomId: message.roomId } : null);
   if (!refs.length) return null;
   const byId = new Map((data?.tasks ?? []).map((t) => [t.taskId, t]));
-  // Before the list loads, render nothing rather than a row of "isn't available".
-  if (!data) return null;
+  // Before the list loads, quiet placeholders (never a row of "isn't available"); a failed read offers Retry.
+  if (!data) {
+    return error
+      ? <p role="alert" className="mt-1.5 max-w-xl text-ui text-muted-foreground">
+        Threads couldn&apos;t load. <button type="button" className="underline hover:text-foreground" onClick={() => void mutate()}>Retry</button>
+      </p>
+      : <div aria-busy="true" aria-label="Loading threads">
+        {refs.map((r) => <div key={r.taskId} className="mt-1.5 h-14 max-w-xl rounded-lg border border-border bg-muted/40 motion-safe:animate-pulse" />)}
+      </div>;
+  }
   const started = refs.filter((r) => r.role === "started");
   const suggested = refs.filter((r) => r.role === "suggested");
   return <div aria-label="Threads in this message">

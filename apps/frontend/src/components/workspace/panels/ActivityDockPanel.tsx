@@ -33,7 +33,7 @@ const TEAMS_DETAIL: Partial<Record<ActivityTarget["kind"], string>> = {
  * (`openPanel("chat", …)` only retargets an agent DM, so a room link through it did nothing.)
  */
 export function openActivityTarget({ kind, id, roomId }: ActivityTarget): void {
-  // A super-agent thread (a task question's "Open task"): the thread pane, not a room.
+  // A super-agent thread (a task question's "Open thread"): the thread pane, not a room.
   if (kind === "task") {
     openTaskPane(id);
     return;

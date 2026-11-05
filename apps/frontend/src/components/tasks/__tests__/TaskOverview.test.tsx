@@ -10,7 +10,7 @@ import { Fresh, fakeTasksClient, type FakeTasksClient } from "./fakeTasks";
 const live = vi.hoisted(() => ({ superAgent: true, tasks: null as unknown }));
 vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useSuperAgent: () => live.superAgent, useOptionalLiveEvents: () => live }));
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
-const apiGet = vi.hoisted(() => vi.fn(async () => { throw new Error("no automations route"); }));
+const apiGet = vi.hoisted(() => vi.fn(async (): Promise<unknown> => ({ automations: [] })));
 vi.mock("@/lib/api", () => ({ useApi: () => ({ get: apiGet }) }));
 const copyText = vi.hoisted(() => vi.fn(async () => true));
 vi.mock("@/components/messaging/messageLinks", async (importOriginal) => ({ ...await importOriginal<typeof import("@/components/messaging/messageLinks")>(), copyText }));
@@ -100,5 +100,15 @@ describe("TaskOverview", () => {
     expect(await screen.findByText("Ask @lightbulb to put recurring work on a schedule.")).toBeInTheDocument();
     expect(apiGet).toHaveBeenCalledWith("/automations");
     expect(client.cacheScope).toBe("org_test"); // the SWR key carries it: ["automations", cacheScope]
+  });
+
+  it("scheduled tab: a failed read says so with Retry, never the empty prompt", async () => {
+    apiGet.mockRejectedValueOnce(new Error("503"));
+    overview();
+    await userEvent.click(await screen.findByRole("tab", { name: "Scheduled" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Schedules couldn't load.");
+    expect(screen.queryByText("Ask @lightbulb to put recurring work on a schedule.")).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("Ask @lightbulb to put recurring work on a schedule.")).toBeInTheDocument();
   });
 });

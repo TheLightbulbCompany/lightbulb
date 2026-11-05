@@ -361,7 +361,7 @@ export { cardReplyRequest, choiceReply, formReply, tableReply } from "./ui/reply
 export type { CardReply } from "./ui/reply";
 export { answerIsFormOf, answerIsFrom, answerIsTableOf, cardAnswerFor, cardAnswersFor } from "./ui/answer";
 export {
-  TASK_STATUSES, SHOWN_GROUPS, GROUP_LABELS, GROUP_ORDER, taskView, summaryView, specialistLabel, overviewGroups, taskSummaryLine, effectLine, formatSchedule,
+  TASK_STATUSES, SHOWN_GROUPS, GROUP_LABELS, GROUP_ORDER, taskView, summaryView, specialistLabel, overviewGroups, taskSummaryLine, effectLine, effectName, formatSchedule,
 } from "./tasks/view";
 export type {
   EffectRow, OverviewGroup, QuestionRow, ShownGroup, SummaryView, TaskAction, TaskRow, TaskStatus, TaskTone, TaskView, TaskViewInput,

@@ -27,7 +27,7 @@ describe("summaryView: one word per status, group from the server", () => {
     [{ status: "idle", shownGroup: "idle", watching: true, watchUntil: "2026-11-10" }, "Watching", "idle", null, "neutral"],
     [{ status: "resolved", shownGroup: "resolved" }, "Resolved", "resolved", "reopen", "neutral"],
     [{ status: "resolved", shownGroup: "resolved", statusReason: "stopped" }, "Stopped", "resolved", "reopen", "neutral"],
-    [{ status: "working", shownGroup: "landing", landing: "e1" }, "Landing", "landing", null, "landing"],
+    [{ status: "working", shownGroup: "landing", landing: "e1" }, "Applying", "landing", null, "landing"],
     [{ status: "failed", shownGroup: "waiting_on_you" }, "Failed", "waiting_on_you", "retry", "waiting"],
   ] as const)("%j → %s", (over, word, group, action, tone) => {
     expect(summaryView(t(over as Partial<TaskSummary>), SAM)).toEqual({ word, group, action, tone });
@@ -105,5 +105,13 @@ describe("formatSchedule", () => {
     expect(formatSchedule(["0 22 * * 1"], "America/Los_Angeles", "Europe/Berlin", NOV)).toBe("Tuesdays 7:00");
     expect(formatSchedule(["0 9 1 * *"], "UTC", "UTC", NOV)).toBe("0 9 1 * *");
     expect(formatSchedule(["0 9 * * 1", "0 9 * * 4"], "UTC", "UTC", NOV)).toBe("Mondays 9:00 and Thursdays 9:00");
+  });
+});
+
+describe("specialistLabel", () => {
+  it("names a handle; an id never shows as a name", () => {
+    expect(specialistLabel("finance")).toBe("Lightbulb · Finance");
+    expect(specialistLabel("3f2a9c1e-0b4d-4e7a-9a51-2f6c8d0e1b2a")).toBe("Lightbulb");
+    expect(specialistLabel("agent_01HXYZABCDEFGH")).toBe("Lightbulb");
   });
 });

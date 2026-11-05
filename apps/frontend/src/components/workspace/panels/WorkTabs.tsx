@@ -21,12 +21,14 @@ const LABELS: Record<(typeof WORK_TEAMS_KEYS)[number] | typeof WORK_THREADS_KEY,
 };
 
 export function WorkTabs({ teamsKey }: { teamsKey: string }): React.ReactElement {
-  const keys = useSuperAgent() ? [WORK_THREADS_KEY, ...WORK_TEAMS_KEYS] as const : WORK_TEAMS_KEYS;
+  const superAgent = useSuperAgent();
+  // With the super-agent on, threads are the work; the Paperclip task board stays reachable as "Older tasks", last.
+  const keys = superAgent ? [WORK_THREADS_KEY, ...WORK_TEAMS_KEYS.filter((k) => k !== "issues"), "issues"] as const : WORK_TEAMS_KEYS;
   return (
     <PanelTabs
       ariaLabel="Work"
       className="px-6 pt-3"
-      tabs={keys.map((key) => ({ value: key, label: LABELS[key] }))}
+      tabs={keys.map((key) => ({ value: key, label: superAgent && key === "issues" ? "Older tasks" : LABELS[key] }))}
       value={teamsKey}
       onValueChange={(key) => openPanel(`teams-${key}`, {}, { pushUrl: true })}
     />

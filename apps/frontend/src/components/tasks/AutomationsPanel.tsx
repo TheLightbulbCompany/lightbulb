@@ -14,7 +14,7 @@ import { useSuperAgent } from "@/hooks/useLiveEvents";
 import { openTaskPane } from "@/components/workspace/workspaceController";
 import { statusLine, useAutomations } from "./ScheduledList";
 import {
-  budgetLine, deliveryWords, runNow, scheduleWords, useAutomation, useAutomationActions, useAutomationRuns, useCanDecide, useCanEdit, viewerTimeZone, waitingWords,
+  budgetLine, cronTime, deliveryWords, runNow, withCronTime, scheduleWords, useAutomation, useAutomationActions, useAutomationRuns, useCanDecide, useCanEdit, viewerTimeZone, waitingWords,
 } from "./automations";
 
 export function AutomationsPanel({ viewerTz = viewerTimeZone(), onOpenTask = openTaskPane }: {
@@ -68,6 +68,7 @@ function AutomationList({ viewerTz, onSelect, onOlder, onOpenTask }: {
       <h2 className="font-semibold">Automations</h2>
       <button type="button" className="text-ui text-muted-foreground underline" onClick={onOlder}>Older automations</button>
     </div>
+    {data && rows.length > 0 && <p className="text-ui text-muted-foreground">To add one, ask @lightbulb in any chat (&ldquo;every Monday at 9, …&rdquo;).</p>}
     {!data && <p role="status" className="text-ui text-muted-foreground">{error ? "Automations aren't available yet." : "Loading…"}</p>}
     {data && rows.length === 0 && <p className="rounded-lg border border-dashed border-border px-3 py-2 text-ui text-muted-foreground">
       Ask @lightbulb to put recurring work on a schedule.
@@ -88,7 +89,9 @@ function AutomationDetail({ id, viewerTz, onBack, onOpenTask }: {
 }): ReactElement {
   const { data: a, error } = useAutomation(id);
   const { data: runs } = useAutomationRuns(id);
-  const { act } = useAutomationActions();
+  const { act, edit, remove } = useAutomationActions();
+  const [editing, setEditing] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const canDecide = useCanDecide();
   const canEdit = useCanEdit();
   const { userId } = useAuth();
@@ -119,10 +122,27 @@ function AutomationDetail({ id, viewerTz, onBack, onOpenTask }: {
       </div>
       : <p className="text-ui text-muted-foreground">{waitingWords(a)}</p>}
     {note && <p role="status" className="text-ui text-muted-foreground">{note}</p>}
-    <section aria-label="Instructions" className="editorial-card px-3 py-2">
-      <h3 className="label-caps">Instructions</h3>
-      <p className="whitespace-pre-wrap text-ui">{a.instructions}</p>
-    </section>
+    {editing
+      ? <EditAutomation a={a} viewerTz={viewerTz} onCancel={() => setEditing(false)} onSave={async (body) => {
+        try { await edit(a.id, body, a.version); setEditing(false); setNote(null); }
+        catch { setNote("That didn't save. It may have changed: reopen it and try again."); }
+      }} />
+      : <section aria-label="Instructions" className="editorial-card px-3 py-2">
+        <h3 className="label-caps">Instructions</h3>
+        <p className="whitespace-pre-wrap text-ui">{a.instructions}</p>
+      </section>}
+    {canEdit(a) && !editing && <div className="flex flex-wrap items-center gap-2">
+      <Button type="button" size="sm" variant="ghost" onClick={() => setEditing(true)}>Edit</Button>
+      {deleting
+        ? <span role="group" aria-label={`Delete ${a.name}?`} className="inline-flex items-center gap-2 text-ui">
+          <span>Delete this automation? Its past runs stay.</span>
+          <Button type="button" size="sm" variant="outline" onClick={async () => {
+            try { await remove(a.id); onBack(); } catch { setNote("That didn't go through. Try again."); setDeleting(false); }
+          }}>Delete</Button>
+          <Button type="button" size="sm" variant="ghost" onClick={() => setDeleting(false)}>Keep it</Button>
+        </span>
+        : <Button type="button" size="sm" variant="ghost" onClick={() => setDeleting(true)}>Delete…</Button>}
+    </div>}
     <section aria-label="History" className="grid gap-1">
       <h3 className="label-caps">History</h3>
       {!runs?.runs.length
@@ -135,4 +155,37 @@ function AutomationDetail({ id, viewerTz, onBack, onOpenTask }: {
         </li>)}</ul>}
     </section>
   </div>;
+}
+
+/** Instructions and the time of day (days and zone kept); a rule has no schedule to move. */
+function EditAutomation({ a, viewerTz, onSave, onCancel }: {
+  a: AutomationView; viewerTz: string; onSave: (body: { instructions?: string; schedule?: { cron: string[]; tz: string } }) => Promise<void>; onCancel: () => void;
+}): ReactElement {
+  const [instructions, setInstructions] = useState(a.instructions);
+  const start = a.schedule ? cronTime(a.schedule.cron) : null;
+  const [time, setTime] = useState(start ?? "");
+  const [saving, setSaving] = useState(false);
+  const zone = a.schedule && a.schedule.tz !== viewerTz ? ` (${a.schedule.tz.split("/").pop()?.replace(/_/g, " ")} time)` : "";
+  return <form aria-label="Edit automation" className="editorial-card grid gap-2 px-3 py-2" onSubmit={async (event) => {
+    event.preventDefault();
+    setSaving(true);
+    await onSave({
+      ...(instructions.trim() !== a.instructions ? { instructions: instructions.trim() } : {}),
+      ...(a.schedule && start && time && time !== start ? { schedule: { cron: withCronTime(a.schedule.cron, time), tz: a.schedule.tz } } : {}),
+    });
+    setSaving(false);
+  }}>
+    <label className="grid gap-1 text-ui"><span className="label-caps">Instructions</span>
+      <textarea value={instructions} onChange={(event) => setInstructions(event.target.value)} rows={5} maxLength={20000} required
+        className="w-full resize-y rounded-md border border-input bg-background px-2 py-1.5 text-ui" />
+    </label>
+    {start && <label className="grid w-fit gap-1 text-ui"><span className="label-caps">Time{zone}</span>
+      <input type="time" value={time} onChange={(event) => setTime(event.target.value)} required
+        className="rounded-md border border-input bg-background px-2 py-1 text-ui" />
+    </label>}
+    <div className="flex gap-2">
+      <Button type="submit" size="sm" disabled={saving || !instructions.trim()}>Save</Button>
+      <Button type="button" size="sm" variant="ghost" onClick={onCancel}>Cancel</Button>
+    </div>
+  </form>;
 }

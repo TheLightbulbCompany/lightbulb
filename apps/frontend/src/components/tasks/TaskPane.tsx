@@ -7,7 +7,7 @@
 import { useEffect, useRef, useState, type ReactElement, type RefObject } from "react";
 import { ArrowLeft } from "lucide-react";
 import {
-  effectLine, specialistLabel, useTask, useTaskQuestions, type QuestionView, type TaskDetail, type TaskSummary, type TaskTrace,
+  effectLine, effectName, specialistLabel, useTask, useTaskQuestions, type QuestionView, type TaskDetail, type TaskSummary, type TaskTrace,
 } from "@lightbulb/shared";
 import { SessionChat, type ChatWords } from "@/components/messaging/SessionChat";
 import { Button } from "@/components/ui/button";
@@ -25,8 +25,8 @@ const TRANSCRIPT_WORDS: ChatWords = {
 const time = (iso: string | null) => (iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "");
 const money = (n: number) => `$${n.toFixed(2).replace(/\.00$/, "")}`;
 
-export function TaskPane({ taskId, viewerId, onClose, headingRef }: {
-  taskId: string; viewerId: string; onClose: () => void; headingRef?: RefObject<HTMLHeadingElement | null>;
+export function TaskPane({ taskId, viewerId, onClose, headingRef, backLabel = "Back to conversation" }: {
+  taskId: string; viewerId: string; onClose: () => void; headingRef?: RefObject<HTMLHeadingElement | null>; backLabel?: string;
 }): ReactElement {
   const { tasks } = useLiveEvents();
   const { data, error } = useTask(tasks, taskId);
@@ -43,7 +43,7 @@ export function TaskPane({ taskId, viewerId, onClose, headingRef }: {
   return <aside className="room-context" aria-label="Thread" data-task-pane={taskId}
     onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); onClose(); } }}>
     <header className="room-context-header">
-      <Button variant="ghost" aria-label="Back to conversation" onClick={onClose}><ArrowLeft aria-hidden="true" />Back</Button>
+      <Button variant="ghost" aria-label={backLabel} onClick={onClose}><ArrowLeft aria-hidden="true" />Back</Button>
       <h3 ref={heading} tabIndex={-1} className="min-w-0 truncate font-semibold">{data?.task.title ?? "Thread"}</h3>
     </header>
     {!data
@@ -78,7 +78,7 @@ function TaskPaneBody({ detail, viewerId }: { detail: TaskDetail; viewerId: stri
         const line = effectLine(e);
         const warn = e.state === "unknown" || line.startsWith("Didn't happen");
         return <li key={e.idemKey} className="flex flex-wrap items-baseline gap-x-2">
-          <span className="font-semibold">{e.output?.title ?? e.tool}</span>
+          <span className="font-semibold">{effectName(e)}</span>
           <span className={warn ? "text-warn" : "text-muted-foreground"}>{line}</span>
         </li>;
       })}
@@ -97,8 +97,10 @@ export function TaskHeader({ task, viewerId }: { task: TaskSummary; viewerId: st
   const { act } = useTaskActions("pane");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  const [confirmStop, setConfirmStop] = useState(false);
   const live = task.status === "queued" || task.status === "working" || task.status === "waiting";
   const press = async (verb: "stop" | "resolve" | "reopen") => {
+    setConfirmStop(false);
     setPending(true);
     const res = await act(task, verb);
     setPending(false);
@@ -111,10 +113,16 @@ export function TaskHeader({ task, viewerId }: { task: TaskSummary; viewerId: st
       <span><span aria-hidden="true">☁ </span>Lightbulb cloud</span>
     </div>
     <div className="flex flex-wrap gap-2">
-      {live && <Button type="button" size="sm" variant="outline" disabled={pending} onClick={() => void press("stop")}>Stop</Button>}
-      {task.status !== "resolved"
-        ? <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={() => void press("resolve")}>Resolve</Button>
-        : <Button type="button" size="sm" variant="outline" disabled={pending} onClick={() => void press("reopen")}>Reopen</Button>}
+      {/* A running thread is stopped (asked once), never resolved under it; Reopen undoes either. */}
+      {live && (confirmStop
+        ? <span role="group" aria-label="Stop this thread?" className="inline-flex items-center gap-2 text-ui">
+          <span>Stop this thread?</span>
+          <Button type="button" size="sm" variant="outline" disabled={pending} onClick={() => void press("stop")}>Stop it</Button>
+          <Button type="button" size="sm" variant="ghost" onClick={() => setConfirmStop(false)}>Keep going</Button>
+        </span>
+        : <Button type="button" size="sm" variant="outline" disabled={pending} onClick={() => setConfirmStop(true)}>Stop</Button>)}
+      {!live && task.status !== "resolved" && <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={() => void press("resolve")}>Resolve</Button>}
+      {task.status === "resolved" && <Button type="button" size="sm" variant="outline" disabled={pending} onClick={() => void press("reopen")}>Reopen</Button>}
     </div>
     {error && <p role="alert" className="text-ui text-err">{error}</p>}
   </section>;
@@ -157,7 +165,7 @@ export function TaskDetails({ detail }: { detail: TaskDetail }): ReactElement {
     <summary className="cursor-pointer text-muted-foreground">Details</summary>
     <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
       {task.proposalReason && <><dt className="text-muted-foreground">Why</dt><dd>{task.proposalReason}</dd></>}
-      <dt className="text-muted-foreground">Attempts</dt><dd>{attempts.length}</dd>
+      <dt className="text-muted-foreground">Runs</dt><dd>{attempts.length}</dd>
       {cost && <><dt className="text-muted-foreground">Cost</dt><dd>{cost}</dd></>}
     </dl>
     {latest > 0 && <details className="mt-2" onToggle={(event) => {
@@ -166,11 +174,11 @@ export function TaskDetails({ detail }: { detail: TaskDetail }): ReactElement {
         void tasks.trace(task.taskId, latest).then(setTrace, () => setTrace({ error: true }));
       }
     }}>
-      <summary className="cursor-pointer text-muted-foreground">Trace</summary>
+      <summary className="cursor-pointer text-muted-foreground">Steps</summary>
       {trace == null ? <p className="text-muted-foreground">Loading…</p>
-        : "error" in trace ? <p className="text-muted-foreground">The trace isn&apos;t available.</p>
-        : !trace.recentTools.length ? <p className="text-muted-foreground">No tool calls yet.</p>
-        : <ol className="mt-1 max-h-64 overflow-auto text-caption" aria-label={`Attempt ${trace.attempt} tools`}>
+        : "error" in trace ? <p className="text-muted-foreground">The steps aren&apos;t available.</p>
+        : !trace.recentTools.length ? <p className="text-muted-foreground">No steps yet.</p>
+        : <ol className="mt-1 max-h-64 overflow-auto text-caption" aria-label={`Run ${trace.attempt} steps`}>
           {trace.recentTools.map((tool, i) => <li key={i} className="truncate font-mono">{toolLine(tool)}</li>)}
         </ol>}
     </details>}

@@ -1,6 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { CanonicalRoomMessage } from "@lightbulb/shared";
 import { fixtureTask, SAM } from "@lightbulb/shared/tasks/fixtures";
 import { Fresh, fakeTasksClient, type FakeTasksClient } from "./fakeTasks";
 
@@ -8,7 +9,7 @@ const live = vi.hoisted(() => ({ superAgent: true, tasks: null as unknown }));
 vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useSuperAgent: () => live.superAgent }));
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 
-import { SuggestedBlock } from "../MessageTasks";
+import { MessageTasks, SuggestedBlock } from "../MessageTasks";
 
 const p = (id: string) => fixtureTask({ taskId: id, title: `Task ${id}`, status: "proposed", shownGroup: null, proposalReason: "would use a paid tool" });
 const a = p("a"), b = p("b");
@@ -36,5 +37,18 @@ describe("SuggestedBlock", () => {
     render(<Fresh><SuggestedBlock refs={[{ taskId: "a", role: "suggested" }]} taskById={new Map([["a", a]])} viewerId={SAM} /></Fresh>);
     await userEvent.click(screen.getByRole("button", { name: "Dismiss" }));
     await waitFor(() => expect(client.act).toHaveBeenCalledWith("a", "dismiss", 1));
+  });
+});
+
+describe("MessageTasks while the room list is not in", () => {
+  it("placeholders while loading; a failed read offers Retry, never 'isn't available'", async () => {
+    const message = { roomId: "r1", taskRefs: [{ taskId: "a", role: "started" }] } as unknown as CanonicalRoomMessage;
+    client.list.mockRejectedValueOnce(new Error("503"));
+    render(<Fresh><MessageTasks message={message} viewerId={SAM} /></Fresh>);
+    expect(screen.getByLabelText("Loading threads")).toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Threads couldn't load.");
+    expect(screen.queryByText(/isn't available/)).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("Task a")).toBeInTheDocument();
   });
 });

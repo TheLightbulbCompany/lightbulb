@@ -59,7 +59,7 @@ describe("taskView: one word, group and action per stored status (contracts-v2 Â
     ["queued", SAM, "Queued", "working", null],
     ["working", SAM, "Working", "working", null],
     ["working", PRIYA, "Working", "working", null],
-    ["waiting", SAM, "Waiting", "working", null],
+    ["waiting", SAM, "Waiting on a reply", "working", null],
     ["idle", SAM, "Idle", "idle", null],
     ["idle", PRIYA, "Idle", "idle", null],
     ["resolved", SAM, "Resolved", "resolved", "reopen"],
@@ -115,7 +115,7 @@ describe("taskView: open questions", () => {
 
   it.each(["answered", "cancelled"] as const)("%s questions are ignored", (state) => {
     expect(view(task("waiting"), SAM, { questions: [q("approval", [SAM], state)] }))
-      .toEqual({ word: "Waiting", group: "working", action: null });
+      .toEqual({ word: "Waiting on a reply", group: "working", action: null });
   });
 
   it("questions of another task are ignored", () => {
@@ -127,7 +127,7 @@ describe("taskView: open questions", () => {
   });
 
   it.each([
-    [[], "Waiting"],
+    [[], "Waiting on a reply"],
     [[SAM], "Waiting on Sam"],
     [[SAM, "user-alex"], "Waiting on Sam or someone"],
     [[SAM, "user-alex", "user-kim"], "Waiting on Sam or 2 others"],
@@ -158,7 +158,7 @@ describe("taskView: open questions", () => {
 describe("taskView: Landing (apply_effect running)", () => {
   it.each(["approved", "intent"] as const)("an %s effect on a live task â†’ Landing", (state) => {
     for (const status of ["queued", "working", "waiting"] as const) {
-      expect(view(task(status), SAM, { effects: [effect(state)] })).toEqual({ word: "Landing", group: "landing", action: null });
+      expect(view(task(status), SAM, { effects: [effect(state)] })).toEqual({ word: "Applying", group: "landing", action: null });
     }
   });
 
@@ -177,7 +177,7 @@ describe("taskView: Landing (apply_effect running)", () => {
 
   it("Landing outranks waiting on someone else", () => {
     expect(view(task("waiting"), PRIYA, { effects: [effect("intent")], questions: [q("approval", [SAM])] }).word)
-      .toBe("Landing");
+      .toBe("Applying");
   });
 
   it("does not change idle, resolved, failed or proposed", () => {

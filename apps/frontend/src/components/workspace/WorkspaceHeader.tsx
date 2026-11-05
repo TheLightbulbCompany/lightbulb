@@ -12,6 +12,7 @@ import { recordMessagesNavigation } from "./chatHistory";
 import { HistoryButtons } from "./HistoryButtons";
 import { activateMessagesPanel, openPanel, useWorkspaceState, type Place } from "./workspaceController";
 import { useSuperAgent } from "@/hooks/useLiveEvents";
+import { useThreads } from "@/components/tasks/useRoomThreads";
 import { ThemeToggles } from "@/components/chat/ThemeToggles";
 
 // The five places, and nothing else (spec 3.1). Browser, Files and Mail open in
@@ -28,6 +29,8 @@ const DESTINATIONS: readonly { place: Place; panel: string; label: string; Icon:
 ];
 
 /** The global rail: the places, search, history and the account controls. */
+const WORKSPACE = { kind: "workspace" } as const;
+
 export function WorkspaceHeader({ chatReady = true, onNavigate }: {
   chatReady?: boolean;
   /** A destination was picked: the shell closes the phone drawer. */
@@ -42,6 +45,8 @@ export function WorkspaceHeader({ chatReady = true, onNavigate }: {
   const attentionCount = useNeedsYouBadge();
   // With the super-agent on, Work leads with Threads (the overview); today's Tasks board stays a tab.
   const superAgent = useSuperAgent();
+  // With it on, Work badges the threads waiting on you (team runs are the old board's).
+  const { waitingOnMe } = useThreads(superAgent ? WORKSPACE : null);
   return (
     <nav className="workspace-rail" aria-label="Workspace">
       <HistoryButtons />
@@ -50,12 +55,14 @@ export function WorkspaceHeader({ chatReady = true, onNavigate }: {
       </button>
       {DESTINATIONS.map(({ place, panel, label, Icon }) => {
         // Team runs are team work, so their count rides on Work; Activity badges what needs you.
-        const runs = place === "work" ? activeTeamRunCount : 0;
+        const runs = place === "work" && !superAgent ? activeTeamRunCount : 0;
+        const waiting = place === "work" && superAgent ? waitingOnMe : 0;
         const unseen = place === "activity" ? attentionCount : 0;
-        const badge = runs || unseen;
+        const badge = runs || waiting || unseen;
         const accessibleLabel = runs
           ? `${label}, ${runs} active team ${runs === 1 ? "run" : "runs"}`
-          : unseen ? `${label}, ${unseen} need${unseen === 1 ? "s" : ""} you` : label;
+          : waiting ? `${label}, ${waiting} ${waiting === 1 ? "thread" : "threads"} waiting on you`
+            : unseen ? `${label}, ${unseen} need${unseen === 1 ? "s" : ""} you` : label;
         // Messaging never needs the container; the other places do.
         return <button key={place} type="button" aria-label={accessibleLabel} title={accessibleLabel}
           disabled={!chatReady && place !== "chat"}

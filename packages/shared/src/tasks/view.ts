@@ -60,11 +60,11 @@ export function taskView({ task, viewerId, questions, effects, nameOf }: TaskVie
   if (ask) return view("Waiting on you", "waiting_on_you", ask.kind === "approval" ? "approve" : "answer");
   if (mine.length) return view("Ready for review", "ready_for_review", "review");
   if (effects.some((e) => e.taskId === task.taskId && (e.state === "approved" || e.state === "intent"))) {
-    return view("Landing", "landing");
+    return view("Applying", "landing");
   }
   const others = [...new Set(open.flatMap((q) => q.answerers))];
   if (others.length) return view(`Waiting on ${waitingOn(others, nameOf)}`, "working");
-  return view(task.status === "queued" ? "Queued" : task.status === "working" ? "Working" : "Waiting", "working");
+  return view(task.status === "queued" ? "Queued" : task.status === "working" ? "Working" : "Waiting on a reply", "working");
 }
 
 /** Any one answerer can answer: "Sam", "Sam or Alex", "Sam or 2 others". */
@@ -86,8 +86,12 @@ const TONES: Record<ShownGroup, TaskTone> = {
 const NEXT_STEPS = new Set<TaskAction>(["publish", "send", "merge", "approve"]);
 
 /** "finance" → "Lightbulb · Finance"; no specialist → "Lightbulb". */
+/** An id where a handle belongs (an agent uuid, a `prefix_…` key): never shown as a name. */
+const OPAQUE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-|^[a-z]+_[0-9A-Za-z]{10,}$/i;
+
 export function specialistLabel(specialist: string | null | undefined): string {
-  if (!specialist) return "Lightbulb";
+  // ponytail: an id reads as plain "Lightbulb"; resolve it through the agent roster if ids become common here.
+  if (!specialist || OPAQUE_ID.test(specialist)) return "Lightbulb";
   return `Lightbulb · ${specialist.charAt(0).toUpperCase()}${specialist.slice(1)}`;
 }
 
@@ -105,10 +109,11 @@ export function summaryView(t: TaskSummary, viewerId: string): SummaryView {
     const next = (t.output?.nextStep ?? "review") as TaskAction;
     return v("Ready for review", NEXT_STEPS.has(next) ? next : "review");
   }
-  if (group === "landing") return v("Landing");
+  if (group === "landing") return v("Applying");
   if (t.status === "idle") return v(t.watching ? "Watching" : "Idle");
   if (q && !q.canAnswer && q.answererNames.length) return v(`Waiting on ${joinNames(q.answererNames)}`);
-  return v(t.status === "queued" ? "Queued" : t.status === "waiting" ? "Waiting" : "Working");
+  // Waiting with no question this viewer can see: someone else's decision, never a bare "Waiting".
+  return v(t.status === "queued" ? "Queued" : t.status === "waiting" ? "Waiting on a reply" : "Working");
 }
 
 function joinNames([first, ...rest]: string[]): string {
@@ -118,7 +123,7 @@ function joinNames([first, ...rest]: string[]): string {
 
 export const GROUP_LABELS: Record<ShownGroup, string> = {
   waiting_on_you: "Waiting on you", working: "Working", ready_for_review: "Ready for review",
-  landing: "Landing", idle: "Idle", resolved: "Resolved",
+  landing: "Applying", idle: "Idle", resolved: "Resolved",
 };
 /** Contract display order (mockup GROUPS). */
 export const GROUP_ORDER: readonly ShownGroup[] = ["waiting_on_you", "working", "ready_for_review", "landing", "idle", "resolved"];
@@ -151,6 +156,16 @@ export function taskSummaryLine(t: TaskSummary, viewerId: string): string {
   if (t.status === "proposed") return t.proposalReason ?? "Suggested";
   if (view.group === "working") return `${view.word} · ${specialistLabel(t.specialist)}`;
   return view.word;
+}
+
+const EFFECT_NAMES: Record<string, string> = {
+  "mail.send": "Email", "text.send": "Text message", "app.publish": "App publish", "pr.merge": "Pull request merge",
+  purchase: "Purchase", provision: "Provider setup", "a2a.send": "Message to another agent",
+};
+
+/** What an effect is, in words: its output's title, else its kind ("Email"), never a raw tool id. */
+export function effectName(effect: Pick<TaskEffect, "tool" | "kind" | "output">): string {
+  return effect.output?.title ?? EFFECT_NAMES[effect.kind ?? effect.tool] ?? "An outside action";
 }
 
 const EFFECT_WORDS: Record<string, string> = {

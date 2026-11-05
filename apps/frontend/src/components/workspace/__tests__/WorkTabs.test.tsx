@@ -30,7 +30,7 @@ describe("WorkTabs", () => {
     live.superAgent = true;
     try {
       render(<WorkTabs teamsKey="threads" />);
-      expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["Threads", "Tasks", "Projects", "Goals", "Automations", "Cases", "Agents", "Money"]);
+      expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["Threads", "Projects", "Goals", "Automations", "Cases", "Agents", "Money", "Older tasks"]);
       expect(screen.getByRole("tab", { name: "Threads" })).toHaveAttribute("aria-selected", "true");
     } finally { live.superAgent = false; }
   });

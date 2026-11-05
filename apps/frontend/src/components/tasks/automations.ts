@@ -44,7 +44,12 @@ export function useAutomationActions() {
     await api.del(`/automations/${encodeURIComponent(id)}`);
     await refresh(id);
   }, [api, refresh]);
-  return { act, remove, refresh };
+  /** PATCH /automations/{id} with the row's version (a stale one is a 409 the caller shows). */
+  const edit = useCallback(async (id: string, body: { instructions?: string; schedule?: { cron: string[]; tz: string } }, version: number) => {
+    await api.patch(`/automations/${encodeURIComponent(id)}`, { ...body, version });
+    await refresh(id);
+  }, [api, refresh]);
+  return { act, remove, edit, refresh };
 }
 
 /** The schedule in the viewer's zone, and the row's own zone named when it differs: "Mondays 14:00 (New York time: Mondays 9:00)". */
@@ -102,6 +107,18 @@ export async function runNow(act: (id: string, verb: AutomationVerb) => Promise<
     return { kind: "note", message: errorCopy(error) };
   }
 }
+
+/** "HH:MM" of a cron list's first entry (wall clock in the row's zone), or null when it isn't a plain time. */
+export function cronTime(cron: readonly string[]): string | null {
+  const [min, hour] = (cron[0] ?? "").trim().split(/\s+/);
+  return /^\d+$/.test(min ?? "") && /^\d+$/.test(hour ?? "") ? `${hour.padStart(2, "0")}:${min.padStart(2, "0")}` : null;
+}
+
+/** Every entry moved to `time` ("HH:MM"), its days kept. */
+export const withCronTime = (cron: readonly string[], time: string): string[] => {
+  const [h, m] = time.split(":").map(Number);
+  return cron.map((entry) => { const [, , ...rest] = entry.trim().split(/\s+/); return [m, h, ...rest].join(" "); });
+};
 
 export const viewerTimeZone = (): string => {
   try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch { return "UTC"; }

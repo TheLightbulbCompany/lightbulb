@@ -10,7 +10,9 @@ from scripts.super_agent.acceptance.o_lib import EVENT_S, START_S, rows_of, task
 
 
 async def a03(ctx: Ctx) -> Result:
-    task_id = ctx.state["proposedTaskId"]
+    task_id = ctx.state.get("proposedTaskId")
+    if task_id is None:  # A2 answers quick factual asks inline and proposes nothing; A3 needs a money-spending ask
+        return Result(False, {"reason": "no proposed task to start: needs an ask for work that spends money"})
     detail = await task_detail(ctx, "sam", task_id)
     events: list[dict] = []
 

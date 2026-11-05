@@ -293,3 +293,41 @@ async def test_a11_schedule_lifecycle(monkeypatch):
     ctx.handler = handler
     result = await a11(ctx)
     assert result.passed, result.evidence
+
+
+async def test_a02_two_started_tasks_and_the_estimate_inline():
+    from scripts.super_agent.acceptance.a02_many_asks import a02
+    from core import tasks_schema as ts
+
+    rows: list[dict] = []
+    ctx = Fake(None, rows)
+
+    def handler(request, user):
+        if request.url.path.endswith("/rooms/r1") and request.method == "GET":
+            return _json({"members": [{"kind": "agent", "id": "front"}]})
+        if request.method == "POST":
+            trig = ts.trigger_id("chat", "m9")
+            rows.extend(
+                {"type": "task", "taskId": f"t{i}", "status": "working", "specialist": "s", "triggerId": trig}
+                for i in (1, 2)
+            )
+            rows.append({"type": "trigger", "triggerId": trig, "admission": "respond", "routedTo": {"taskId": "t1"}})
+            rows.append({"type": "subscription", "taskId": "t1", "createdBy": "router"})
+            return _json({"messageId": "m9", "messageSeq": 1})
+        return _json(
+            {
+                "messages": [
+                    {
+                        "author": {"kind": "agent", "id": "front"},
+                        "taskRefs": [{}, {}],
+                        "messageId": "c",
+                        "text": "On 200 tickets Stripe takes about $1,200 (2.9% + 30c).",
+                    }
+                ]
+            }
+        )
+
+    ctx.handler = handler
+    result = await a02(ctx)
+    assert result.passed, result.evidence
+    assert ctx.state["proposedTaskId"] is None

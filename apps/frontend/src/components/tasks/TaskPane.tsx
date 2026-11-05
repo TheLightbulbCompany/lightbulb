@@ -1,6 +1,6 @@
 "use client";
 
-// One thread, opened from a card, a link or a panel (mockup step 8): header with its controls,
+// One request, opened from a card, a link or a panel (mockup step 8): header with its controls,
 // a Needs-you card only while something is open (a Do it / Not now card while suggested), the task
 // room as read-only progress, the outputs, and folded Details. Section order is the mockup's.
 // Steering is the room's own composer ("Replying to: …", taskReply.ts); "Add a note" only when that
@@ -9,7 +9,7 @@
 import { useEffect, useRef, useState, type ReactElement, type RefObject } from "react";
 import { ArrowLeft } from "lucide-react";
 import {
-  ApiError, FREE_TEXT_OPTION, answerVerb, askLine, effectLine, effectName, previewRows, specialistLabel, summaryView, useTask, useTaskQuestions,
+  ApiError, FREE_TEXT_OPTION, answerVerb, askLine, doneByLine, effectLine, effectName, previewRows, specialistLabel, summaryView, useTask, useTaskQuestions,
   type QuestionView, type TaskDetail, type TaskSummary, type TaskTrace,
 } from "@lightbulb/shared";
 import { SessionChat, type ChatWords } from "@/components/messaging/SessionChat";
@@ -22,14 +22,11 @@ import { sendToTask, useMarkTaskPaneOpen, useRoomComposerShown } from "./taskRep
 import { useTaskActions } from "./useTaskActions";
 
 const TRANSCRIPT_WORDS: ChatWords = {
-  label: "Thread progress", title: "Progress",
-  empty: "Lightbulb posts this thread's progress here.",
-  unavailable: "This thread's conversation isn't available.", full: "This conversation is full.", ended: "This thread is closed.",
+  label: "Request progress", title: "Progress",
+  empty: "Lightbulb posts this request's progress here.",
+  unavailable: "This request's conversation isn't available.", full: "This conversation is full.", ended: "This request is closed.",
 };
 
-/** The specialist as the actor ("Growth"): each is its own agent, so no "Lightbulb ·" in front. */
-const actorName = (specialist: string | null | undefined, names: Parameters<typeof specialistLabel>[1]) =>
-  specialistLabel(specialist, names).replace(/^Lightbulb · /, "");
 const time = (iso: string | null) => (iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "");
 const money = (n: number) => `$${n.toFixed(2).replace(/\.00$/, "")}`;
 
@@ -51,16 +48,16 @@ export function TaskPane({ taskId, viewerId, onClose, headingRef, backLabel = "B
   }, [tasks, taskId]);
   useEffect(() => { heading.current?.focus({ preventScroll: true }); }, [heading, taskId]);
 
-  return <aside className="room-context" aria-label="Thread" data-task-pane={taskId}
+  return <aside className="room-context" aria-label="Request" data-task-pane={taskId}
     onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); onClose(); } }}>
     <header className="room-context-header">
       <Button variant="ghost" aria-label={backLabel} onClick={onClose}><ArrowLeft aria-hidden="true" />Back</Button>
-      <h3 ref={heading} tabIndex={-1} className="min-w-0 truncate font-semibold">{data?.task.title ?? "Thread"}</h3>
+      <h3 ref={heading} tabIndex={-1} className="min-w-0 truncate font-semibold">{data?.task.title ?? "Request"}</h3>
     </header>
     {!data
       ? !error ? <p role="status" className="p-4 text-ui text-muted-foreground">Loading…</p>
-        : gone ? <p role="status" className="p-4 text-ui text-muted-foreground">This thread isn&apos;t available to you.</p>
-        : <p role="alert" className="p-4 text-ui text-muted-foreground">This thread couldn&apos;t load. <button type="button" className="underline hover:text-foreground" onClick={() => void mutate()}>Retry</button></p>
+        : gone ? <p role="status" className="p-4 text-ui text-muted-foreground">This request isn&apos;t available to you.</p>
+        : <p role="alert" className="p-4 text-ui text-muted-foreground">This request couldn&apos;t load. <button type="button" className="underline hover:text-foreground" onClick={() => void mutate()}>Retry</button></p>
       : <TaskPaneBody detail={data} viewerId={viewerId} />}
   </aside>;
 }
@@ -73,10 +70,11 @@ function TaskPaneBody({ detail, viewerId }: { detail: TaskDetail; viewerId: stri
   const questions = views?.items ?? [];
   const open = questions.find((q) => q.state === "open");
   const answered = questions.filter((q) => q.state === "answered" && q.answeredBy);
-  // The header's and the Work row's word ("Ready for review", "Waiting on you"), so the card and effects agree with them.
-  const word = summaryView(task, viewerId).word;
+  // The header's reason ("Ready for review", "Needs approval"), else its word, so the card and effects agree with it.
+  const view = summaryView(task, viewerId);
+  const word = view.reason ?? view.word;
   const proposed = task.status === "proposed";
-  // The room's composer steers this thread when it is on screen; otherwise a one-line note here.
+  // The room's composer steers this request when it is on screen; otherwise a one-line note here.
   const composerShown = useRoomComposerShown(task.originRoomId);
   return <div className="room-context-body flex min-h-0 flex-col gap-3">
     <TaskHeader task={task} viewerId={viewerId} />
@@ -123,6 +121,9 @@ export function TaskHeader({ task, viewerId }: { task: TaskSummary; viewerId: st
   const [pending, setPending] = useState(false);
   const [confirmStop, setConfirmStop] = useState(false);
   const live = task.status === "queued" || task.status === "working" || task.status === "waiting";
+  const view = summaryView(task, viewerId);
+  // The specialist is the actor: "Growth is working on this" / "Done by Growth"; its bare name where nobody did it.
+  const actor = doneByLine(task.specialist, view, agentNames) ?? specialistLabel(task.specialist, agentNames);
   const press = async (verb: "stop" | "resolve" | "reopen") => {
     setConfirmStop(false);
     setPending(true);
@@ -130,29 +131,30 @@ export function TaskHeader({ task, viewerId }: { task: TaskSummary; viewerId: st
     setPending(false);
     setError(res.ok ? null : res.message);
   };
-  return <section aria-label="Thread status" className="grid gap-1 px-1">
+  return <section aria-label="Request status" className="grid gap-1 px-1">
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-ui text-muted-foreground">
-      <span className="font-semibold text-foreground">{actorName(task.specialist, agentNames)}</span>
+      <span className="font-semibold text-foreground">{actor}</span>
       <TaskStatus task={task} viewerId={viewerId} />
+      {view.reason && <span>{view.reason}</span>}
       {task.runsOn && <span><span aria-hidden="true">☁ </span>Lightbulb cloud</span>}
     </div>
     <div className="flex flex-wrap gap-2">
-      {/* A running thread is stopped (asked once), never resolved under it; Reopen undoes either. */}
+      {/* A running request is stopped (asked once), never resolved under it; Reopen undoes either. */}
       {live && (confirmStop
-        ? <span role="group" aria-label="Stop this thread?" className="inline-flex items-center gap-2 text-ui">
-          <span>Stop this thread?</span>
+        ? <span role="group" aria-label="Stop this request?" className="inline-flex items-center gap-2 text-ui">
+          <span>Stop this request?</span>
           <Button type="button" size="sm" variant="outline" disabled={pending} onClick={() => void press("stop")}>Stop it</Button>
           <Button type="button" size="sm" variant="ghost" onClick={() => setConfirmStop(false)}>Keep going</Button>
         </span>
         : <Button type="button" size="sm" variant="outline" disabled={pending} onClick={() => setConfirmStop(true)}>Stop</Button>)}
-      {!live && task.status !== "resolved" && task.status !== "proposed" && <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={() => void press("resolve")}>Resolve</Button>}
+      {!live && task.status !== "resolved" && task.status !== "proposed" && <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={() => void press("resolve")}>Close</Button>}
       {task.status === "resolved" && <Button type="button" size="sm" variant="outline" disabled={pending} onClick={() => void press("reopen")}>Reopen</Button>}
     </div>
     {error && <p role="alert" className="text-ui text-err">{error}</p>}
   </section>;
 }
 
-/** A suggested thread leads with what it will do, why it was suggested and what it may cost; Do it starts it,
+/** A suggested request leads with what it will do, why it was suggested and what it may cost; Do it starts it,
  *  Not now dismisses it (the Suggested block's Start/Dismiss). */
 export function SuggestedCard({ task, viewerId }: { task: TaskSummary; viewerId: string }): ReactElement {
   const { act } = useTaskActions("pane");
@@ -168,7 +170,7 @@ export function SuggestedCard({ task, viewerId }: { task: TaskSummary; viewerId:
   };
   return <section aria-labelledby={headingId} className="editorial-card px-3 py-2">
     <p className="label-caps">{summaryView(task, viewerId).word}</p>
-    <h4 id={headingId} className="font-semibold">{actorName(task.specialist, agentNames)} wants to: {task.title}</h4>
+    <h4 id={headingId} className="font-semibold">{specialistLabel(task.specialist, agentNames)} wants to: {task.title}</h4>
     {(task.proposalReason || task.budgetUsd != null) && <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 border-t border-border pt-2 text-ui">
       {task.proposalReason && <><dt className="text-muted-foreground">Why</dt><dd className="min-w-0 break-words">{task.proposalReason}</dd></>}
       {task.budgetUsd != null && <><dt className="text-muted-foreground">Cost</dt><dd>Up to {money(task.budgetUsd)}</dd></>}
@@ -181,7 +183,7 @@ export function SuggestedCard({ task, viewerId }: { task: TaskSummary; viewerId:
   </section>;
 }
 
-/** Steering when the room's composer isn't on screen: one line, Enter sends it into the thread's room. */
+/** Steering when the room's composer isn't on screen: one line, Enter sends it into the request's room. */
 function AddNote({ task }: { task: TaskSummary }): ReactElement {
   const { messaging } = useLiveEvents();
   const [open, setOpen] = useState(false);
@@ -203,7 +205,7 @@ function AddNote({ task }: { task: TaskSummary }): ReactElement {
 }
 
 /** The open question. Only an answerer gets buttons; everyone else reads who it waits on. Typed text never answers. */
-export function NeedsYouCard({ task, question, label = "Waiting on you" }: { task: TaskSummary; question: QuestionView; label?: string }): ReactElement {
+export function NeedsYouCard({ task, question, label = "Needs you" }: { task: TaskSummary; question: QuestionView; label?: string }): ReactElement {
   const { answer } = useTaskActions("pane");
   const [pending, setPending] = useState(false);
   const [note, setNote] = useState<string | null>(null);

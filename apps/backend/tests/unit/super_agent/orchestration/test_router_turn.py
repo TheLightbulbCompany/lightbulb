@@ -926,7 +926,7 @@ async def test_router_reads_each_task_state_in_plain_words(world):
     prompt, instructions = world["runs"][0][1].input, world["runs"][0][1].instructions
     assert "Write March workshop invite blurb · Done: finished, result posted" in prompt
     assert "Make the day-of checklist · Working: queued, not started yet" in prompt
-    assert "Email attendees about the date · Needs you: waiting on a person's approval" in prompt
+    assert "Email attendees about the date · Working: waiting on a person's approval" in prompt
     closed = prompt.split("## Recently closed")[1]
     assert "Buy workshop signup domain · Closed: stopped by a person; nothing more was done" in closed
     assert "Buy workshop signup domain" not in prompt.split("## Recently closed")[0]
@@ -969,6 +969,12 @@ def test_status_words_lead_with_the_four_words_people_see():
             "Done",
             "Closed",
         }
+    # "Needs you" only for what is on the asker: their own failed task; someone else's reads Closed.
+    failed = {"status": "failed", "ownerUserId": "u-sam"}
+    assert router_prompt.status_words(failed, "u-sam").startswith("Needs you:")
+    assert router_prompt.status_words(failed, "u-priya").startswith("Closed:")
+    assert router_prompt.status_words(failed).startswith("Closed:")
+    assert router_prompt.status_words({"status": "waiting", "statusReason": "approval"}, "u-sam").startswith("Working:")
     watched = router_prompt.status_words({"status": "idle", "watchUntil": "2026-11-06T00:00:00+00:00"})
     assert watched.startswith("Working:")
     assert '"request"' in router_prompt.ROUTER_INSTRUCTIONS

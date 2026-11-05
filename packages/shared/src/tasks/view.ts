@@ -106,16 +106,18 @@ export function resolveCeoAgentId(
 /** Agent id → display name (from the workspace's agents list; `useAgentDirectory`). */
 export type AgentNames = ReadonlyMap<string, string>;
 
-const UUID_LIKE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** A handle that reads as a name ("finance", "customer success"); anything with digits, underscores or other marks
+ *  is an id ("agent_7f3", a uuid) and never shown. */
+const HANDLE = /^[a-z]+(?:[ -][a-z]+)*$/i;
 
 /** The specialist as the actor, by its own name (each is its own profile; founder, 5 Nov): "finance" → "Finance";
  *  an agent id → its name from `names`; no specialist, or an id not (yet) in the list → "Lightbulb" (an id is never
- *  shown as a name). */
+ *  shown as a name: only a letters-only handle is). */
 export function specialistLabel(specialist: string | null | undefined, names?: AgentNames): string {
   if (!specialist) return "Lightbulb";
   const named = names?.get(specialist);
   if (named) return named;
-  if (UUID_LIKE.test(specialist)) return "Lightbulb";
+  if (!HANDLE.test(specialist)) return "Lightbulb";
   return `${specialist.charAt(0).toUpperCase()}${specialist.slice(1)}`;
 }
 
@@ -158,11 +160,13 @@ export function summaryView(t: TaskSummary, viewerId: string): SummaryView {
   return v("Working", LIVE_REASONS[t.status] ?? null);
 }
 
-/** The request pane's actor line: "Finance is working on this" until it ends, then "Done by Finance". With no
- *  specialist Lightbulb is the actor. */
-export function doneByLine(specialist: string | null | undefined, word: StatusWord, names?: AgentNames): string {
+/** The request pane's actor line: "Finance is working on this" while it runs, "Done by Finance" once it is done.
+ *  Null where nobody did it: a suggestion not yet started, or a request closed with a reason (stopped, dismissed,
+ *  failed): the status line already says why. With no specialist Lightbulb is the actor. */
+export function doneByLine(specialist: string | null | undefined, view: Pick<TaskView, "word" | "reason">, names?: AgentNames): string | null {
+  if (view.reason === "Wants to start" || (view.word === "Closed" && view.reason)) return null;
   const who = specialistLabel(specialist, names);
-  return word === "Done" || word === "Closed" ? `Done by ${who}` : `${who} is working on this`;
+  return view.word === "Done" || view.word === "Closed" ? `Done by ${who}` : `${who} is working on this`;
 }
 
 function joinNames([first, ...rest]: string[]): string {

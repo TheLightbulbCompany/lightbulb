@@ -64,7 +64,7 @@ export default function TaskScreen() {
   }
   const open = views?.items.find((q) => q.state === "open");
   // The specialist as the actor: "Growth is working on this" / "Done by Growth" (founder, 5 Nov).
-  const doneBy = view ? doneByLine(task.specialist, view.word, agentNames) : null;
+  const doneBy = view ? doneByLine(task.specialist, view, agentNames) : null;
   const live = task.status === "queued" || task.status === "working" || task.status === "waiting";
   const proposed = task.status === "proposed";
   const press = async (verb: "stop" | "resolve" | "reopen" | "start" | "dismiss") => {
@@ -105,7 +105,7 @@ export default function TaskScreen() {
             </View>
           </View>
         ) : null}
-        {doneBy && !proposed ? <Text style={[styles.meta, { color: palette.fgMute }]}>{doneBy}</Text> : null}
+        {doneBy ? <Text style={[styles.meta, { color: palette.fgMute }]}>{doneBy}</Text> : null}
         {note ? <Text accessibilityRole="alert" style={[styles.meta, { color: palette.alert }]}>{note}</Text> : null}
         {open ? <NeedsYouCard key={open.id} task={task} question={open} palette={palette} onAnsweredElsewhere={setNote} /> : null}
         {task.output ? (

@@ -45,6 +45,6 @@ it("a draft: whoever may decide gets Turn on (activate); history loads before it
   const view = await render(<AutomationScreen />);
   await fireEvent.press(await view.findByLabelText("Turn on"));
   expect(mockLive.api.post).toHaveBeenCalledWith("/automations/auto-1/activate", {});
-  expect(await view.findByText("No runs yet. Each run opens as its own thread.")).toBeTruthy();
+  expect(await view.findByText("No runs yet. Each run opens as its own request.")).toBeTruthy();
   await view.unmount();
 });

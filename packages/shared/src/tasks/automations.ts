@@ -121,6 +121,7 @@ export function automationRowLine(
 ): string {
   const status = automationStatusLine(a) ?? "On";
   const when = scheduleWords(a, viewerTz) ?? (a.match ? "runs on a match" : null);
-  const next = a.status === "active" && a.nextRuns?.[0] && !when?.startsWith("Once") ? `next ${nextRunWords(a.nextRuns[0], viewerTz)}` : null;
+  const words = a.status === "active" && a.nextRuns?.[0] && !when?.startsWith("Once") ? nextRunWords(a.nextRuns[0], viewerTz) : "";
+  const next = words ? `next ${words}` : null;
   return [status, when, next].filter(Boolean).join(" · ");
 }

@@ -2,7 +2,7 @@
 
 // Work › Automations with the switch on (mockup step 11): one object per automation with its schedule in
 // the viewer's time zone, its instructions, Pause and Run now, and a history in which every run is its
-// own thread. Off, today's RoutinesPanel renders untouched; "Older automations" reaches it when on.
+// own request. Off, today's RoutinesPanel renders untouched; "Older automations" reaches it when on.
 
 import { useState, type ReactElement } from "react";
 import { ArrowLeft } from "lucide-react";

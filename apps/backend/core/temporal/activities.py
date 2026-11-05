@@ -571,7 +571,7 @@ async def _recent_lines(ws: str, trig: dict, batch: set[str], lane: str, user_id
     for row in rows:
         author = row.get("author") or {}
         cards = [
-            {**c, "state": router_prompt.status_words(tasks[c["taskId"]])} if c.get("taskId") in tasks else c
+            {**c, "state": router_prompt.status_words(tasks[c["taskId"]], user_id)} if c.get("taskId") in tasks else c
             for c in row.get("taskRefs") or []
         ]
         out.append(
@@ -1004,7 +1004,9 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
         chat = next((t for t in to_model.values() if {"roomId", "messageId"} <= set(t.get("ref") or {})), None)
         recent = await _recent_lines(ws, chat, set(to_model), inp.lane, user_id) if chat else None
         closed = await _closed_tasks(ws, inp.lane, user_id, rooms)
-        prompt = router_prompt.render_batch(views, roster, open_tasks, lane=inp.lane, recent=recent, closed=closed)
+        prompt = router_prompt.render_batch(
+            views, roster, open_tasks, lane=inp.lane, recent=recent, closed=closed, asker=user_id
+        )
         memory = memory_tags.block_for_router(
             "private" if private and user_id else "shared", user_id if private else None, room_id
         )

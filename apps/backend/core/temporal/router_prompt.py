@@ -68,12 +68,13 @@ def render_batch(
     lane: str = "shared",
     recent: list[dict] | tuple | None = (),
     closed: list[dict] | tuple = (),
+    asker: str | None = None,
 ) -> str:
     """`triggers`: views from `activities._trigger_view` (triggerId, source, admission, text, who, where, threaded,
     pinnedSpecialist, routedTo); `roster`: registry rows (id, name, title, status); `open_tasks`: task rows;
     `recent`: the room's (or thread's) lines before the batch (`activities._recent_lines`: who, text, lightbulb,
     cards, each with its task's `state` when the task exists); None: the batch has no room message, so no earlier
-    lines are known."""
+    lines are known. `asker`: the person the batch answers (first trigger's actor); "Needs you" is theirs only."""
     names = {a["id"]: a.get("name") or a["id"] for a in roster}
     lines = [f"# Batch ({'private lane' if lane != 'shared' else 'shared lane'})", "", "## Triggers"]
     for t in triggers:
@@ -113,7 +114,7 @@ def render_batch(
     def row(t: dict) -> str:
         return (
             f"- {t['taskId']} · {t.get('identifier') or ''} · {_one_line(t.get('title') or '', 120)} · "
-            f"{status_words(t)} · {names.get(t.get('specialist'), t.get('specialist')) or '-'}"
+            f"{status_words(t, asker)} · {names.get(t.get('specialist'), t.get('specialist')) or '-'}"
         )
 
     lines += ["", "## Open tasks (id · identifier · title · state · specialist)"]
@@ -126,19 +127,20 @@ def render_batch(
 
 # The task's state in words the model cannot misread (dev, 5 Nov: `idle` read as "queued", a stopped purchase read
 # as "done"), led by the one of the four words people see (founder, 5 Nov: Working, Needs you, Done, Closed; the
-# same mapping as `packages/shared/src/tasks/view.ts` `summaryView`). Keyed by (status, statusReason); a reason not
-# listed falls back to the status's own words.
+# same per-viewer rule as `packages/shared/src/tasks/view.ts` `summaryView`). "Needs you" is said only of what is on
+# the asker: a proposal (anyone may start it) and their own failed task. A waiting task is Working here: the row does
+# not say whose answer it waits on. Keyed by (status, statusReason); an unlisted reason falls back to the status's.
 _STATUS_WORDS: dict[tuple[str, str | None], str] = {
     ("proposed", None): "Needs you: proposed, not started (waits for a person to press Start)",
     ("queued", None): "Working: queued, not started yet",
     ("working", None): "Working: working now",
-    ("waiting", None): "Needs you: waiting on a person's answer or approval",
-    ("waiting", "approval"): "Needs you: waiting on a person's approval; nothing it needs approved has happened",
-    ("waiting", "budget"): "Needs you: paused, over its budget",
+    ("waiting", None): "Working: waiting on a person's answer or approval",
+    ("waiting", "approval"): "Working: waiting on a person's approval; nothing it needs approved has happened",
+    ("waiting", "budget"): "Working: paused, over its budget",
     ("idle", None): "Done: finished, result posted",
     ("idle", "landed"): "Done: finished; its approved action ran",
     ("idle", "effect_unknown"): "Done: finished, but its action might have happened: check before claiming or retrying",
-    ("failed", None): "Needs you: failed, did not finish (its owner can retry)",
+    ("failed", None): "Closed: failed, did not finish (its owner can retry)",
     ("resolved", None): "Closed",
     ("resolved", "stopped"): "Closed: stopped by a person; nothing more was done",
     ("resolved", "dismissed"): "Closed: dismissed, never started",
@@ -149,10 +151,15 @@ _STATUS_WORDS: dict[tuple[str, str | None], str] = {
 _WATCHING = "Working: checking back later on something it is watching"
 
 
-def status_words(task: dict) -> str:
+_MY_FAILED = "Needs you: failed, did not finish (the asker owns it and can retry)"
+
+
+def status_words(task: dict, asker: str | None = None) -> str:
     status, reason = task.get("status") or "", task.get("statusReason")
     if status == "idle" and task.get("watchUntil"):
         return _WATCHING
+    if status == "failed" and asker and task.get("ownerUserId") == asker:
+        return _MY_FAILED
     return _STATUS_WORDS.get((status, reason)) or _STATUS_WORDS.get((status, None)) or status
 
 

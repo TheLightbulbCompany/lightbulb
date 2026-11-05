@@ -79,10 +79,18 @@ describe("summary lines and labels", () => {
     expect(taskSummaryLine(byId(FIXTURES.step02.tasks, "t-fees"), SAM)).toBe("would use a paid tool");
   });
   it("actor line for the request pane", () => {
-    expect(doneByLine("finance", "Working")).toBe("Finance is working on this");
-    expect(doneByLine("finance", "Needs you")).toBe("Finance is working on this");
-    expect(doneByLine("finance", "Done")).toBe("Done by Finance");
-    expect(doneByLine(null, "Closed")).toBe("Done by Lightbulb");
+    expect(doneByLine("finance", { word: "Working", reason: null })).toBe("Finance is working on this");
+    expect(doneByLine("finance", { word: "Needs you", reason: "Ready for review" })).toBe("Finance is working on this");
+    expect(doneByLine("finance", { word: "Done", reason: null })).toBe("Done by Finance");
+    expect(doneByLine(null, { word: "Closed", reason: null })).toBe("Done by Lightbulb");
+  });
+  it("no actor line for what never ran or ended without a result", () => {
+    expect(doneByLine("finance", { word: "Needs you", reason: "Wants to start" })).toBeNull();
+    for (const reason of ["Stopped", "Dismissed", "Failed"]) expect(doneByLine("finance", { word: "Closed", reason })).toBeNull();
+  });
+  it("ids that are not names never show", () => {
+    for (const id of ["agent_7f3a", "a1b2c3", "5b36216c-196c-48af-ad2a-6817c42a1de3"]) expect(specialistLabel(id)).toBe("Lightbulb");
+    expect(specialistLabel("customer success")).toBe("Customer success");
   });
   it("specialist label", () => {
     expect(specialistLabel("finance")).toBe("Finance");

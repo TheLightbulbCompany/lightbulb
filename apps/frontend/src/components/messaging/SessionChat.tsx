@@ -45,7 +45,7 @@ export function SessionChat({ sessionId, sessionOwnerId, openChat, onClose, onRo
   words?: ChatWords;
   /** A message went out from this column's composer. */
   onSend?: () => void;
-  /** No composer: the column only shows the room (a thread's progress, steered from its room's composer). */
+  /** Look, don't act: no composer and no live card buttons (a request's progress, steered from its room's composer). */
   readOnly?: boolean;
 }) {
   const { userId } = useAuth();
@@ -110,8 +110,8 @@ export function SessionChat({ sessionId, sessionOwnerId, openChat, onClose, onRo
     const participant = members.find((m) => m.kind === message.author.kind && m.id === message.author.id);
     return <RoomMessageItem key={message.messageId}
     id={`session-chat-${message.messageId}`} message={message} text={message.text} participant={participant}
-    onCardReply={participant ? onCardReply : undefined} cardAnswer={cardAnswers.get(message.messageId) ?? null}
-    currentUserId={me} actionable={!archived} inThread={false} collapsed={collapsed} replyCount={0} highlighted={false}
+    onCardReply={participant && !readOnly ? onCardReply : undefined} cardAnswer={cardAnswers.get(message.messageId) ?? null}
+    currentUserId={me} actionable={!archived && !readOnly} inThread={false} collapsed={collapsed} replyCount={0} highlighted={false}
     mentionsViewer={message.mentions.some((m) => m.kind === "human" && m.id === me)}
     markdown={roomMarkdown} urlTransform={roomUrlTransform} quickReactions={NO_REACTIONS} reactionPending={false} reactionError={false}
     onDownloadAttachment={rooms.downloadAttachment} onAttachmentUrl={rooms.attachmentUrl}

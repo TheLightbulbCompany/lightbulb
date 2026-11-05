@@ -23,6 +23,7 @@ vi.mock("@/lib/api", () => ({
 // Pending device-code state so the OAuth stage renders its distinctive copy
 // (verification link + user code) rather than the transient spinner.
 const mockOAuthState = vi.fn();
+vi.mock("next/navigation", () => ({ useSearchParams: () => new URLSearchParams() }));
 // The plan gate in front of ChatGPT sign-in reads billing; a subscriber unless a test says otherwise.
 const mockBilling = vi.hoisted(() => ({ isSubscribed: true, startCheckout: vi.fn(async () => undefined) }));
 vi.mock("@/hooks/useBilling", () => ({

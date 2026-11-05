@@ -352,9 +352,9 @@ class CheckoutRequest(BaseModel):
     # Required to change the plan of a live subscription; without it the
     # response is ``confirm_required`` with the cost and nothing is changed.
     confirm: bool = False
-    # Where a web Checkout returns: "chatgpt" lands back in ChatGPT sign-in (a free workspace picked ChatGPT,
-    # which needs the plan), else the billing panel.
-    then: Literal["chatgpt"] | None = None
+    # Where a web Checkout returns (fixed paths, billing_service._CHECKOUT_RETURNS): "chatgpt" = ChatGPT sign-in in
+    # Settings → Model, "chatgpt_onboarding" = the onboarding ChatGPT step; absent = the billing panel.
+    then: Literal["chatgpt", "chatgpt_onboarding"] | None = None
 
 
 @router.post(

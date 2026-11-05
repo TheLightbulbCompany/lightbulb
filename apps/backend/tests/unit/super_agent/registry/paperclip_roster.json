@@ -1,0 +1,213 @@
+[
+  {
+    "id": "fab86e87-2677-4b35-babd-3fc769c71a74",
+    "companyId": "10636810-efcf-4f85-84bf-9434bc9c70f6",
+    "name": "Friday",
+    "role": "ceo",
+    "title": "CEO",
+    "icon": null,
+    "status": "idle",
+    "reportsTo": null,
+    "capabilities": "CEO persona text.",
+    "adapterType": "hermes_gateway",
+    "adapterConfig": {
+      "url": "https://example.invalid"
+    },
+    "runtimeConfig": {
+      "heartbeat": {
+        "enabled": false
+      }
+    },
+    "budgetMonthlyCents": 0,
+    "spentMonthlyCents": 0,
+    "metadata": null,
+    "lastHeartbeatAt": null,
+    "createdAt": "2026-11-01T00:00:00.000Z",
+    "updatedAt": "2026-11-01T00:00:00.000Z"
+  },
+  {
+    "id": "a4c84777-43c2-482c-8487-47ee67fe4195",
+    "companyId": "10636810-efcf-4f85-84bf-9434bc9c70f6",
+    "name": "Engineering",
+    "role": "engineer",
+    "title": "Engineering",
+    "icon": null,
+    "status": "running",
+    "reportsTo": "fab86e87-2677-4b35-babd-3fc769c71a74",
+    "capabilities": "Engineering persona text.",
+    "adapterType": "hermes_gateway",
+    "adapterConfig": {
+      "url": "https://example.invalid"
+    },
+    "runtimeConfig": {
+      "heartbeat": {
+        "enabled": false
+      }
+    },
+    "budgetMonthlyCents": 0,
+    "spentMonthlyCents": 0,
+    "metadata": null,
+    "lastHeartbeatAt": null,
+    "createdAt": "2026-11-01T00:00:00.000Z",
+    "updatedAt": "2026-11-01T00:00:00.000Z"
+  },
+  {
+    "id": "893abbb0-57da-453a-b0fe-e382910509b9",
+    "companyId": "10636810-efcf-4f85-84bf-9434bc9c70f6",
+    "name": "Finance",
+    "role": "cfo",
+    "title": "Finance",
+    "icon": null,
+    "status": "idle",
+    "reportsTo": "fab86e87-2677-4b35-babd-3fc769c71a74",
+    "capabilities": "Finance persona text.",
+    "adapterType": "hermes_gateway",
+    "adapterConfig": {
+      "url": "https://example.invalid"
+    },
+    "runtimeConfig": {
+      "heartbeat": {
+        "enabled": false
+      }
+    },
+    "budgetMonthlyCents": 0,
+    "spentMonthlyCents": 0,
+    "metadata": null,
+    "lastHeartbeatAt": null,
+    "createdAt": "2026-11-01T00:00:00.000Z",
+    "updatedAt": "2026-11-01T00:00:00.000Z"
+  },
+  {
+    "id": "bc784eff-7d54-49f8-b042-ac355d62671b",
+    "companyId": "10636810-efcf-4f85-84bf-9434bc9c70f6",
+    "name": "Marketing",
+    "role": "cmo",
+    "title": "Marketing",
+    "icon": null,
+    "status": "idle",
+    "reportsTo": "fab86e87-2677-4b35-babd-3fc769c71a74",
+    "capabilities": "Marketing persona text.",
+    "adapterType": "hermes_gateway",
+    "adapterConfig": {
+      "url": "https://example.invalid"
+    },
+    "runtimeConfig": {
+      "heartbeat": {
+        "enabled": false
+      }
+    },
+    "budgetMonthlyCents": 0,
+    "spentMonthlyCents": 0,
+    "metadata": null,
+    "lastHeartbeatAt": null,
+    "createdAt": "2026-11-01T00:00:00.000Z",
+    "updatedAt": "2026-11-01T00:00:00.000Z"
+  },
+  {
+    "id": "4416f76e-b00d-48fb-baf5-a4d5c3b36b56",
+    "companyId": "10636810-efcf-4f85-84bf-9434bc9c70f6",
+    "name": "Analytics",
+    "role": "researcher",
+    "title": "Analytics",
+    "icon": null,
+    "status": "idle",
+    "reportsTo": "fab86e87-2677-4b35-babd-3fc769c71a74",
+    "capabilities": "Analytics persona text.",
+    "adapterType": "hermes_gateway",
+    "adapterConfig": {
+      "url": "https://example.invalid"
+    },
+    "runtimeConfig": {
+      "heartbeat": {
+        "enabled": false
+      }
+    },
+    "budgetMonthlyCents": 0,
+    "spentMonthlyCents": 0,
+    "metadata": null,
+    "lastHeartbeatAt": null,
+    "createdAt": "2026-11-01T00:00:00.000Z",
+    "updatedAt": "2026-11-01T00:00:00.000Z"
+  },
+  {
+    "id": "aa4eba60-5430-4389-adc3-45e46721a4c7",
+    "companyId": "10636810-efcf-4f85-84bf-9434bc9c70f6",
+    "name": "Customer Operations",
+    "role": "general",
+    "title": "Customer Operations",
+    "icon": null,
+    "status": "idle",
+    "reportsTo": "fab86e87-2677-4b35-babd-3fc769c71a74",
+    "capabilities": "Customer Operations persona text.",
+    "adapterType": "hermes_gateway",
+    "adapterConfig": {
+      "url": "https://example.invalid"
+    },
+    "runtimeConfig": {
+      "heartbeat": {
+        "enabled": false
+      }
+    },
+    "budgetMonthlyCents": 0,
+    "spentMonthlyCents": 0,
+    "metadata": null,
+    "lastHeartbeatAt": null,
+    "createdAt": "2026-11-01T00:00:00.000Z",
+    "updatedAt": "2026-11-01T00:00:00.000Z"
+  },
+  {
+    "id": "5ace3c3c-2593-4cac-92aa-23929edd2d03",
+    "companyId": "10636810-efcf-4f85-84bf-9434bc9c70f6",
+    "name": "Hired from marketplace",
+    "role": "general",
+    "title": "Support",
+    "icon": null,
+    "status": "paused",
+    "reportsTo": "fab86e87-2677-4b35-babd-3fc769c71a74",
+    "capabilities": "Engineering persona text.",
+    "adapterType": "hermes_gateway",
+    "adapterConfig": {
+      "url": "https://example.invalid"
+    },
+    "runtimeConfig": {
+      "heartbeat": {
+        "enabled": false
+      }
+    },
+    "budgetMonthlyCents": 0,
+    "spentMonthlyCents": 0,
+    "metadata": {
+      "isol8_listing_id": "lst_1",
+      "isol8_listing_slug": "support-pro"
+    },
+    "lastHeartbeatAt": null,
+    "createdAt": "2026-11-01T00:00:00.000Z",
+    "updatedAt": "2026-11-01T00:00:00.000Z"
+  },
+  {
+    "id": "dd553df3-3740-473c-bb3d-e76029699289",
+    "companyId": "10636810-efcf-4f85-84bf-9434bc9c70f6",
+    "name": "Fired",
+    "role": "engineer",
+    "title": "Engineering",
+    "icon": null,
+    "status": "terminated",
+    "reportsTo": "fab86e87-2677-4b35-babd-3fc769c71a74",
+    "capabilities": "Engineering persona text.",
+    "adapterType": "hermes_gateway",
+    "adapterConfig": {
+      "url": "https://example.invalid"
+    },
+    "runtimeConfig": {
+      "heartbeat": {
+        "enabled": false
+      }
+    },
+    "budgetMonthlyCents": 0,
+    "spentMonthlyCents": 0,
+    "metadata": null,
+    "lastHeartbeatAt": null,
+    "createdAt": "2026-11-01T00:00:00.000Z",
+    "updatedAt": "2026-11-01T00:00:00.000Z"
+  }
+]

@@ -47,6 +47,7 @@ def test_keys():
     assert ts.schedule_sk("s1") == "SCHED#s1"
     assert ts.hook_sk("pub_1") == "HOOK#pub_1"
     assert ts.agent_sk("a1") == "AGENT#a1"
+    assert (ts.agent_owner_pk("a1"), ts.AGENT_OWNER_SK) == ("AGENTID#a1", "WS")
     assert ts.project_sk("p1") == "PROJECT#p1"
     assert ts.goal_sk("g1") == "GOAL#g1"
     assert ts.creation_sk("c1") == "CAP#c1"

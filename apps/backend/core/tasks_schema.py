@@ -193,6 +193,14 @@ def agent_sk(agent_id: str) -> str:
     return f"AGENT#{agent_id}"
 
 
+def agent_owner_pk(agent_id: str) -> str:
+    """Reverse pointer agent id → workspace (spec 03 §5.1): sk `AGENT_OWNER_SK`, attr `ws`. Global id uniqueness."""
+    return f"AGENTID#{agent_id}"
+
+
+AGENT_OWNER_SK = "WS"
+
+
 def project_sk(project_id: str) -> str:
     return f"PROJECT#{project_id}"
 
@@ -244,6 +252,7 @@ KEY_FORMATS: dict[str, str] = {
     "schedule": "SCHED#{scheduleId}",
     "hook": "HOOK#{publicId}",
     "agent": "AGENT#{agentId}",
+    "agentOwner": "AGENTID#{agentId}",
     "project": "PROJECT#{projectId}",
     "goal": "GOAL#{goalId}",
     "creation": "CAP#{capId}",
@@ -573,15 +582,25 @@ class Hook(_Row):
 
 
 class Agent(_Row):
-    """Specialist; ids are today's agent ids (spec 03 owns the backfill)."""
+    """Specialist; ids are today's agent ids (spec 03 owns the backfill, §5.1 the fields). `persona` is
+    Paperclip's `capabilities`; `listing` is `{listingId, listingSlug}`; `companyId` until Paperclip is gone."""
 
     type: Literal["agent"] = "agent"
     agent_id: str
-    name: str
+    name: str = Field(max_length=256)
     handle: str | None = None
     listen_mode: ListenMode = "active"
     skills: list[str] = []
-    status: str = "active"
+    status: Literal["active", "paused", "deleted"] = "active"
+    role: str | None = None
+    title: str | None = None
+    persona: str | None = None
+    icon: str | None = None
+    appearance: dict[str, Any] | None = None
+    reports_to: str | None = None
+    listing: dict[str, str] | None = None
+    budget_monthly_cents: int = 0
+    company_id: str | None = None
 
     def sk(self) -> str:
         return agent_sk(self.agent_id)

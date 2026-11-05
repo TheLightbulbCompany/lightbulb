@@ -157,6 +157,7 @@
     "schedule": "SCHED#{scheduleId}",
     "hook": "HOOK#{publicId}",
     "agent": "AGENT#{agentId}",
+    "agentOwner": "AGENTID#{agentId}",
     "project": "PROJECT#{projectId}",
     "goal": "GOAL#{goalId}",
     "creation": "CAP#{capId}",
@@ -1907,7 +1908,7 @@
     },
     "agent": {
       "additionalProperties": false,
-      "description": "Specialist; ids are today's agent ids (spec 03 owns the backfill).",
+      "description": "Specialist; ids are today's agent ids (spec 03 owns the backfill, \u00a75.1 the fields). `persona` is\nPaperclip's `capabilities`; `listing` is `{listingId, listingSlug}`; `companyId` until Paperclip is gone.",
       "properties": {
         "version": {
           "default": 1,
@@ -1933,6 +1934,7 @@
           "type": "string"
         },
         "name": {
+          "maxLength": 256,
           "title": "Name",
           "type": "string"
         },
@@ -1967,8 +1969,118 @@
         },
         "status": {
           "default": "active",
+          "enum": [
+            "active",
+            "paused",
+            "deleted"
+          ],
           "title": "Status",
           "type": "string"
+        },
+        "role": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Role"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        },
+        "persona": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Persona"
+        },
+        "icon": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Icon"
+        },
+        "appearance": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Appearance"
+        },
+        "reportsTo": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reportsto"
+        },
+        "listing": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Listing"
+        },
+        "budgetMonthlyCents": {
+          "default": 0,
+          "title": "Budgetmonthlycents",
+          "type": "integer"
+        },
+        "companyId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Companyid"
         }
       },
       "required": [

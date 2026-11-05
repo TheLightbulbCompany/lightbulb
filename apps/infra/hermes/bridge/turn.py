@@ -1562,6 +1562,45 @@ def _upload_attachment(room_id: str, item: dict) -> dict | None:
     return {"attachmentId": attachment_id, "fileName": item["fileName"], "contentType": item["contentType"]}
 
 
+#: tasks_schema.TASK_NS / task_room_id (backend): every task's hidden conversation room.
+_TASK_NS = _uuid.uuid5(_uuid.NAMESPACE_URL, "https://thelightbulb.company/ns/super-agent/task")
+
+
+def task_room_id(task_id: str) -> str:
+    return str(_uuid.uuid5(_TASK_NS, f"room:{task_id}"))
+
+
+def task_result_media(agent_id: str, task_id: str, output: str) -> tuple[str, list[dict]]:
+    """A Worker result's `MEDIA:` lines become files on the result post in the task room: each one PUT
+    to that room's attachment key (`uploadedAttachments`, adopted by the backend), the line gone. The
+    run event carries no file bytes, so everything goes up (budget 0); a file that cannot -- a text
+    type has no signature the backend sniffs, or the PUT failed -- becomes the usual note, never a raw
+    path. ponytail: text files (.md/.csv/.txt) get the note, not the file; inline them on the event if
+    a Worker's text deliverable matters."""
+    if not any(line.startswith(MEDIA_PREFIX) for line in output.splitlines()):
+        return output, []
+    root, room = _profile_dir(agent_id), task_room_id(task_id)
+    lines: list[str] = []
+    uploaded: list[dict] = []
+    for line in output.splitlines():
+        kind = MEDIA_CONTENT_TYPES.get(Path(line[len(MEDIA_PREFIX):].strip()).suffix.lower()) if line.startswith(MEDIA_PREFIX) else None
+        if kind is not None and kind not in UPLOAD_SUFFIX:
+            lines.append(_note(Path(line[len(MEDIA_PREFIX):].strip()), "text files aren't attached from a task yet", root))
+            continue
+        item = _attachable(line, root, 0, HOME) if len(uploaded) < MAX_ATTACHMENTS else (
+            _note(Path(line[len(MEDIA_PREFIX):].strip()), f"a message carries at most {MAX_ATTACHMENTS} files", root)
+            if line.startswith(MEDIA_PREFIX) else None)
+        if item is None:
+            lines.append(line)
+        elif isinstance(item, str):
+            lines.append(item)
+        elif (entry := _upload_attachment(room, item)) is not None:
+            uploaded.append(entry)
+        else:
+            lines.append(_note(item["upload"], "the upload failed", root))
+    return "\n".join(lines).strip(), uploaded
+
+
 def _is_uuid(value: str) -> bool:
     try:
         _uuid.UUID(value)

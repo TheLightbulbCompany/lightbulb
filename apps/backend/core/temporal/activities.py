@@ -408,12 +408,14 @@ async def end_attempt(ws: str, task_id: str, n: int, outcome: str, error: str | 
     room, root = _origin(tree)
     if outcome == "completed" and att.get("output"):
         text = att["output"]
+        files = att.get("attachments") or []  # PUT by the task VM to the TASK room's keys
         refs = [{"taskId": task_id, "role": "started"}]
         if room:
+            names = ", ".join(f["fileName"] for f in files)
             await task_conversation.post_as_lightbulb(
                 ws,
                 room,
-                text=text,
+                text=f"{text}\n\n_(Attached in the task: {names}.)_" if files else text,
                 event_id=f"task-result:{task_id}:{n}",
                 specialist=task.get("specialist"),
                 thread_root=root,
@@ -428,6 +430,7 @@ async def end_attempt(ws: str, task_id: str, n: int, outcome: str, error: str | 
             event_id=f"task-result-room:{task_id}:{n}",
             specialist=task.get("specialist"),
             kind="result",
+            uploaded_attachments=files,
         )
         if room:
             await messaging.ask_who_should_see(ws, {"roomId": room}, "completed")

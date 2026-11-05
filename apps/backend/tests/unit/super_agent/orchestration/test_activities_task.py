@@ -237,6 +237,19 @@ async def test_end_attempt_posts_result_as_lightbulb(world):
     assert world["client"].signals == []  # no Router turn per result
 
 
+async def test_end_attempt_result_files_go_to_the_task_room_post(world):
+    """Live dev bug (5 Nov): a Worker's file reached the room as a raw MEDIA: path. The task VM PUT it to the
+    task room's key; the task room post adopts it, the origin post names it."""
+    tid = await _task(root=ROOT)
+    await _attempt(tid)
+    files = [{"attachmentId": str(uuid.uuid4()), "fileName": "agenda.docx", "contentType": "application/pdf"}]
+    await repo.update_attempt(WS, tid, 1, {"attachments": files}, allowed_status=frozenset({"dispatched"}))
+    await _ended(tid, "completed", output="The agenda is ready.")
+    origin, room = world["posts"]
+    assert room["room"] == ts.task_room_id(tid) and room["uploaded_attachments"] == files
+    assert origin.get("uploaded_attachments") is None and "agenda.docx" in origin["text"]
+
+
 async def test_end_attempt_failure_pushes_requester_only(world):
     tid = await _task()
     await _attempt(tid)

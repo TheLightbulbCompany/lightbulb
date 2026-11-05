@@ -23,7 +23,7 @@ vi.mock("@/components/notifications/MessageNotifications", () => ({ MessageNotif
 } }));
 vi.mock("@/hooks/useAgents", () => ({ useAgents: mocks.agents }));
 vi.mock("@/components/agents/useRosterEntries", () => ({ useRosterEntries: mocks.roster }));
-vi.mock("@/components/chat/shell/useChatReady", () => ({ useChatReady: () => ({ chatReady: true }) }));
+vi.mock("@/components/chat/shell/useChatReady", () => ({ useChatReady: () => ({ chatReady: true, setupStarting: false }) }));
 vi.mock("@/hooks/useTeamsApi", () => ({ useTeamsApi: () => ({
   read: (path: string) => ({ data: path === "/agents"
     ? { agents: [{ id: "agent-friday", name: "Friday" }, { id: "agent-atlas", name: "Atlas", role: "ceo", origin: "Starter" }] }

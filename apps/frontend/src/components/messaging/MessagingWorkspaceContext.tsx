@@ -290,7 +290,7 @@ export function MessagingWorkspaceProvider({
   const sendRoomMessage = rooms.sendMessage;
   const teams = useTeamsApi();
   // The runtime is still being set up (a new workspace): a Router room's first message shows as queued.
-  const { chatReady } = useChatReady();
+  const { setupStarting } = useChatReady();
   const { agents } = useAgents();
   const roster = useRosterEntries(agents);
   const activityByAgentId = useMemo(() => new Map(roster.map((entry) => [entry.agent.id, entry.state])), [roster]);
@@ -1051,7 +1051,7 @@ export function MessagingWorkspaceProvider({
     onSubagentsVisible: rooms.subagentsPollVisible,
     onLinkToWork: () => openPanel("teams-issues", {}, { pushUrl: true }),
     frontAgentId: resolveCeoAgentId(agentRoster?.agents ?? []),
-    runtimeStarting: !chatReady,
+    runtimeStarting: setupStarting,
     onDownloadAttachment: rooms.downloadAttachment,
     onAttachmentUrl: rooms.attachmentUrl,
   } : null;

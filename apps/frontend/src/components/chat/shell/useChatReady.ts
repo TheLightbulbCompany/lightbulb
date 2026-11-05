@@ -10,7 +10,11 @@ import { useProvisioningState } from "@/hooks/useProvisioningState";
  * stronger than `useProvisioningState().phase === "normal"`, which is true for
  * ANY 200 from /container/status, including the whole cold-start window.
  */
-export function useChatReady(): { chatReady: boolean } {
-  const { container } = useProvisioningState();
-  return { chatReady: container?.runtime_phase === "ready" || container?.lifecycle === "parked" };
+export function useChatReady(): { chatReady: boolean; setupStarting: boolean } {
+  const { container, phase } = useProvisioningState();
+  const chatReady = container?.runtime_phase === "ready" || container?.lifecycle === "parked";
+  // Setup genuinely under way: not ready, not failed, not stopped at a gate (plan, signup, a team admin). Only then
+  // may a message be promised an answer "as soon as setup finishes".
+  const failed = container?.lifecycle === "error" || container?.container_status === "error";
+  return { chatReady, setupStarting: !chatReady && !failed && phase === "normal" };
 }

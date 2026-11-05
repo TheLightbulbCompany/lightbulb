@@ -1220,6 +1220,20 @@ export function ProvisioningStepper({
   // `elapsedMs` to zero, which is how 21 hours kept looking like 5 minutes.
   const stuck = elapsedMs > STUCK_MS;
 
+  // Super-agent: #general opens at once and takes a message; the setup's real progress is the banner over it (the
+  // first message waits, admitted, until the runtime answers). Never a card in front of the chat.
+  if (superAgent) {
+    return (
+      <>
+        <AgentsBanner state={isTerminalError ? "failed" : stuck ? "stuck" : timedOut ? "slow" : "welcome"} phase={phase}
+          onCheck={handleAgentsBannerCheck}
+          onSupport={() => capture("support_contact_clicked", { source: "agents_banner", phase, stuck })}
+          isChecking={needsRecover && isRetryingProvision} checkFailed={needsRecover && retryFailed} />
+        {children}
+      </>
+    );
+  }
+
   // Every workspace/plan/provider gate above has passed. Messaging never needs
   // the container (HTTP + DynamoDB + AppSync), so a starting, stuck or failed
   // one is a banner over the working app, not a card in front of it. Only the
@@ -1245,20 +1259,6 @@ export function ProvisioningStepper({
           isChecking={needsRecover && isRetryingProvision}
           checkFailed={needsRecover && retryFailed}
         />
-        {children}
-      </>
-    );
-  }
-
-  // Super-agent: #general opens at once and takes a message; the setup's real progress is the banner over it (the
-  // first message waits, admitted, until the runtime answers). Never a card in front of the chat.
-  if (superAgent) {
-    return (
-      <>
-        <AgentsBanner state={isTerminalError ? "failed" : stuck ? "stuck" : timedOut ? "slow" : "welcome"} phase={phase}
-          onCheck={handleAgentsBannerCheck}
-          onSupport={() => capture("support_contact_clicked", { source: "agents_banner", phase, stuck })}
-          isChecking={needsRecover && isRetryingProvision} checkFailed={needsRecover && retryFailed} />
         {children}
       </>
     );

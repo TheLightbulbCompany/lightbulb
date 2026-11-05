@@ -224,6 +224,18 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     gatewayHealthData = null;
   });
 
+  it("super-agent on, real setup in progress (a container row exists): the welcome copy, not the old 'getting ready' one", () => {
+    mockSuperAgent.on = true;
+    try {
+      useProvMock.mockReturnValue({ phase: "normal", blocked: null, refreshInterval: 3000, refresh: vi.fn(),
+        container: { container_status: "provisioning", runtime_phase: "provisioning", container_substatus: "task_running" } });
+      render(<ProvisioningStepper><div>children</div></ProvisioningStepper>);
+      expect(screen.getByText("children")).toBeInTheDocument();
+      expect(screen.getByRole("status")).toHaveTextContent("You can write to Lightbulb now — it answers as soon as setup finishes.");
+      expect(screen.queryByText(/ready in about a minute/i)).toBeNull();
+    } finally { mockSuperAgent.on = false; }
+  });
+
   it("keeps the setup card only until the first status response arrives", () => {
     useProvMock.mockReturnValue({ phase: "normal", blocked: null, refreshInterval: 3000, refresh: vi.fn(), container: null });
     render(

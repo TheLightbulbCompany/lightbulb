@@ -139,10 +139,10 @@ function PulsingDot() {
 function StartingBanner({ label }: { label: string }) {
   const insets = useSafeAreaInsets();
   return (
-    <View style={[styles.banner, { paddingTop: insets.top }]}>
+    <View style={[styles.banner, { paddingTop: insets.top }]} accessibilityLiveRegion="polite">
       <View style={styles.bannerRow}>
         <PulsingDot />
-        <Text style={styles.bannerText} numberOfLines={1}>
+        <Text style={styles.bannerText} numberOfLines={2}>
           {label}
         </Text>
       </View>

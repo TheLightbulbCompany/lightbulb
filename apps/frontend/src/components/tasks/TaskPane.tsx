@@ -27,8 +27,6 @@ const TRANSCRIPT_WORDS: ChatWords = {
   unavailable: "This request's conversation isn't available.", full: "This conversation is full.", ended: "This request is closed.",
 };
 
-/** A question's card is posted into the task room too; the pane shows it once, at the top. */
-const isQuestionCard = (message: { kind?: string | null }) => message.kind === "question";
 
 const time = (iso: string | null) => (iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "");
 const money = (n: number) => `$${n.toFixed(2).replace(/\.00$/, "")}`;
@@ -73,6 +71,11 @@ function TaskPaneBody({ detail, viewerId }: { detail: TaskDetail; viewerId: stri
   const questions = views?.items ?? [];
   const open = questions.find((q) => q.state === "open");
   const answered = questions.filter((q) => q.state === "answered" && q.answeredBy);
+  // A question's card is posted into the task room too: shown once (open at the top, answered as a Decision line),
+  // so Progress leaves it out; a cancelled one has no other place and stays in Progress.
+  const cancelled = new Set(questions.filter((q) => q.state === "cancelled").map((q) => q.id));
+  const hideCard = (m: { kind?: string | null; taskRefs?: { qid?: string }[] | null }) =>
+    m.kind === "question" && !m.taskRefs?.some((r) => r.qid && cancelled.has(r.qid));
   // The header's reason ("Ready for review", "Needs approval"), else its word, so the card agrees with it.
   const view = summaryView(task, viewerId);
   const word = view.reason ?? view.word;
@@ -87,7 +90,7 @@ function TaskPaneBody({ detail, viewerId }: { detail: TaskDetail; viewerId: stri
     </ul>}
     <div className="flex min-h-64 flex-1 flex-col">
       <SessionChat sessionId={detail.taskRoomId} sessionOwnerId={task.ownerUserId ?? ""} words={TRANSCRIPT_WORDS}
-        openChat={async (roomId) => ({ roomId })} readOnly hideMessage={isQuestionCard} />
+        openChat={async (roomId) => ({ roomId })} readOnly hideMessage={hideCard} />
     </div>
     {/* One text box: the room's composer when it is on screen, else this line; never beside a typed answer. */}
     {!composerShown && !(open?.canAnswer && !open.options.length) && <AddNote task={task} />}
@@ -136,7 +139,8 @@ export function TaskHeader({ task, viewerId }: { task: TaskSummary; viewerId: st
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-ui text-muted-foreground">
       <span className="font-semibold text-foreground">{actor}</span>
       <TaskStatus task={task} viewerId={viewerId} />
-      {view.reason && !actor.toLowerCase().includes(view.reason.toLowerCase()) && <span>{view.reason}</span>}
+      {/* "Done by X, ready for your review" already says Ready for review. */}
+      {view.reason && !(view.reason === "Ready for review" && view.word === "Needs you" && actor.startsWith("Done by")) && <span>{view.reason}</span>}
     </div>
     <div className="flex flex-wrap gap-2">
       {/* A running request is stopped (asked once), never resolved under it; Reopen undoes either. */}

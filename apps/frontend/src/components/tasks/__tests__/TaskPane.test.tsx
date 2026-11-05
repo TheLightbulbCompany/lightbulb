@@ -12,11 +12,12 @@ vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useSuperAge
 vi.mock("@/lib/analytics", () => ({ capture }));
 // The transcript is the task room in the ordinary room column; a stand-in records which room it opens and whether it is read-only.
 vi.mock("@/components/messaging/SessionChat", () => ({
-  SessionChat: ({ sessionId, openChat, readOnly, hideMessage }: { sessionId: string; openChat: (id: string) => Promise<{ roomId: string }>; readOnly?: boolean; hideMessage?: (m: { kind?: string }) => boolean }) => {
+  SessionChat: ({ sessionId, openChat, readOnly, hideMessage }: { sessionId: string; openChat: (id: string) => Promise<{ roomId: string }>; readOnly?: boolean; hideMessage?: (m: { kind?: string; taskRefs?: { qid?: string }[] }) => boolean }) => {
     const [room, setRoom] = useState("");
     useEffect(() => { void openChat(sessionId).then((r) => setRoom(r.roomId)); }, [sessionId, openChat]);
     return <section aria-label="Transcript" data-room={room} data-read-only={readOnly ? "yes" : "no"}
-      data-hides={["question", "result"].filter((kind) => hideMessage?.({ kind })).join(",")} />;
+      data-hides={["question", "result"].filter((kind) => hideMessage?.({ kind })).join(",")}
+      data-keeps-cancelled={hideMessage?.({ kind: "question", taskRefs: [{ qid: "q-gone" }] }) ? "no" : "yes"} />;
   },
 }));
 
@@ -86,6 +87,14 @@ describe("TaskPane", () => {
     pane(SAM);
     const mine = await screen.findByRole("group", { name: "Allow Lightbulb · Engineering to provision a database and Stripe payments?" });
     expect(within(mine).getAllByRole("button").map((b) => b.textContent)).toEqual(["Allow once", "Deny"]);
+  });
+
+  it("a cancelled question's card stays in Progress (it has no other place)", async () => {
+    withDetail({ ...step8, questions: [{ ...openRow, qid: "q-gone", state: "cancelled" as const }] }, [approval({ id: "q-gone", state: "cancelled" })]);
+    pane();
+    const transcript = await screen.findByRole("region", { name: "Transcript" });
+    await waitFor(() => expect(transcript).toHaveAttribute("data-keeps-cancelled", "yes"));
+    expect(transcript).toHaveAttribute("data-hides", "question");
   });
 
   it("transcript is the task room, read-only; with no room composer on screen a one-line note steers it", async () => {
@@ -255,7 +264,8 @@ describe("NeedsYouCard", () => {
     expect(screen.queryByRole("list", { name: "Effects" })).toBeNull();
     // The header follows the same state: ready for review, nothing running, so no Stop.
     const status = screen.getByRole("region", { name: "Request status" });
-    expect(status).toHaveTextContent(/^Done by .+, ready for your review/);
+    // The whole line: actor, the status word once, no repeated "Ready for review".
+    expect(status.firstElementChild).toHaveTextContent(/^Done by \w+, ready for your reviewNeeds you$/);
     expect(status).not.toHaveTextContent("is working on this");
     expect(within(status).queryByRole("button", { name: "Stop" })).toBeNull();
     await userEvent.click(await screen.findByRole("button", { name: "Send" }));

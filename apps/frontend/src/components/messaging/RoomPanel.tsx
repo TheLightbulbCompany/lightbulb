@@ -470,14 +470,16 @@ function RoomContent({
   }, [messages]);
   // Super-agent: the viewer's last ask to Lightbulb with nothing back yet (no later message, no agent reply under it,
   // no run on screen) reads "Lightbulb is on it…" until its reply or card lands. The Router posts no typing signal,
-  // so this is the client's: an ask names Lightbulb, or the room has no other person to answer.
+  // so this is the client's: an ask names Lightbulb, or Lightbulb listens to everything and no other person is here.
   // ponytail: gives up after ON_IT_MS of silence; a server "seen" signal would replace the timer.
   const front = superAgent && !runtimeStarting ? participants.find((p) => p.kind === "agent" && p.mentionHandle === "lightbulb") : undefined;
   const lastMain = mainMessages.findLast((message) => !message.deletedAt);
   const askPending = front && lastMain && lastMain.author.kind === "human" && lastMain.author.id === currentUserId
     && !runs.some((run) => run.state === "running")
+    // A run for this ask that already ended (failed, stopped) shows its own outcome.
+    && !allRuns.some((run) => run.triggerMessageId === lastMain.messageId)
     && ![...(repliesByRoot.get(lastMain.messageId)?.authors.values() ?? [])].some((author) => author.kind === "agent")
-    && (lastMain.mentions.some((m) => m.kind === "agent" && m.id === front.id) || participants.filter((p) => p.kind === "human").length === 1)
+    && (lastMain.mentions.some((m) => m.kind === "agent" && m.id === front.id) || (front.listenMode === "active" && participants.filter((p) => p.kind === "human").length === 1))
     ? lastMain : undefined;
   const [onItExpired, setOnItExpired] = useState<string | null>(null);
   useEffect(() => {

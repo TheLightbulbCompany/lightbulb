@@ -750,7 +750,8 @@ it("More shows a chevron and how much is inside while closed, so it never reads 
     ]} />);
   const summary = container.querySelector(".room-directory-more > summary")!;
   expect(summary.querySelector("svg.room-directory-more-chevron")).not.toBeNull();
-  expect(within(summary as HTMLElement).getByLabelText("1 inside")).toHaveTextContent("1");
+  expect(summary).toHaveAttribute("aria-label", "More, 1 inside");
+  expect(summary).toHaveTextContent("More1");
 });
 
 it("hides empty Channels and External connections sections", () => {

@@ -618,10 +618,12 @@ function DirectoryContent({
     {/* Sessions and External connections fold under More (closed by default); it opens itself while the
         session or shared channel on screen is inside, or while anything in it is unread or waiting. */}
     {(sessionsSection || external) && <details className="room-directory-more" open={moreHoldsCurrent || moreCount > 0 || undefined}>
-      <summary className="room-directory-group"><ChevronRight aria-hidden="true" className="room-directory-more-chevron" />More
+      <summary className="room-directory-group"
+        aria-label={moreCount > 0 ? `More, ${moreCount} unread or waiting` : moreItems > 0 ? `More, ${moreItems} inside` : "More"}>
+        <ChevronRight aria-hidden="true" className="room-directory-more-chevron" />More
         {moreCount > 0
-          ? <span className="room-count" aria-label={`${moreCount} unread or waiting`}>{moreCount}</span>
-          : moreItems > 0 && <span className="text-muted-foreground" aria-label={`${moreItems} inside`}>{moreItems}</span>}</summary>
+          ? <span className="room-count" aria-hidden="true">{moreCount}</span>
+          : moreItems > 0 && <span className="text-muted-foreground" aria-hidden="true">{moreItems}</span>}</summary>
       {sessionsSection}
       {external && renderGroup(external)}
     </details>}

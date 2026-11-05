@@ -1032,9 +1032,9 @@ export function MessagingWorkspaceProvider({
       } : {}),
     ...(!activeFeed && rooms.activeRoom && !rooms.activeRoom.shared
       && (rooms.activeRoom.kind !== "channel" || ["owner", "admin"].includes(viewerRole)) ? {
-      addMemberCandidates: directoryParticipants.filter((candidate) => !rooms.activeRoom!.members.some(
-        (member) => member.kind === candidate.kind && member.id === candidate.id,
-      )),
+      // Super-agent: people only; a specialist is reached through Lightbulb (Team › Ask), and Members can't remove one.
+      addMemberCandidates: directoryParticipants.filter((candidate) => !(superAgent && candidate.kind === "agent")
+        && !rooms.activeRoom!.members.some((member) => member.kind === candidate.kind && member.id === candidate.id)),
       onAddMember: addMember,
     } : {}),
     ...(!activeFeed && rooms.activeRoom?.kind === "channel" && ["owner", "admin"].includes(viewerRole)

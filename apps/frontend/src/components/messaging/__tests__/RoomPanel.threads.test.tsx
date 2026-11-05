@@ -70,7 +70,7 @@ describe("RoomPanel Threads view (super-agent)", () => {
   });
 
   it("after an ask, Lightbulb is on it… until its reply lands; never for an old ask", async () => {
-    const front = { ...lightbulb, mentionHandle: "lightbulb" };
+    const front = { ...lightbulb, mentionHandle: "lightbulb", listenMode: "active" as const };
     const ask = { ...message, createdAt: new Date().toISOString() };
     const { rerender } = render(<Fresh><RoomPanel {...props} participants={[sam, front]} messages={[ask]} /></Fresh>);
     expect(await screen.findByText("Lightbulb is on it…")).toBeInTheDocument();
@@ -79,6 +79,18 @@ describe("RoomPanel Threads view (super-agent)", () => {
     expect(screen.queryByText("Lightbulb is on it…")).toBeNull();
     rerender(<Fresh><RoomPanel {...props} participants={[sam, front]} messages={[{ ...ask, createdAt: "2026-11-04T14:00:00Z" }]} /></Fresh>);
     await waitFor(() => expect(screen.queryByText("Lightbulb is on it…")).toBeNull());
+  });
+
+  it("no on it… once the ask's run ended (failed or stopped), or when Lightbulb only listens for mentions", async () => {
+    const front = { ...lightbulb, mentionHandle: "lightbulb", listenMode: "active" as const };
+    const ask = { ...message, messageId: "m-ask", createdAt: new Date().toISOString() };
+    const { rerender } = render(<Fresh><RoomPanel {...props} participants={[sam, front]} messages={[ask]} /></Fresh>);
+    expect(await screen.findByText("Lightbulb is on it…")).toBeInTheDocument();
+    const failed = { roomId: "r1", agentId: front.id, runId: "run-1", text: "", thinking: "", state: "aborted", tools: [], triggerMessageId: "m-ask" } as NonNullable<RoomPanelProps["runs"]>[number];
+    rerender(<Fresh><RoomPanel {...props} participants={[sam, front]} messages={[ask]} runs={[failed]} /></Fresh>);
+    expect(screen.queryByText("Lightbulb is on it…")).toBeNull();
+    rerender(<Fresh><RoomPanel {...props} participants={[sam, { ...front, listenMode: "mentions" }]} messages={[ask]} /></Fresh>);
+    expect(screen.queryByText("Lightbulb is on it…")).toBeNull();
   });
 
   it("About › Members lists people and Lightbulb only: no specialists, no Agent tag, no listen mode", async () => {

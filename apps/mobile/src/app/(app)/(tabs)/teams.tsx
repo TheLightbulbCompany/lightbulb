@@ -22,6 +22,8 @@ import { CreateIssueSheet } from "../../../components/teams/CreateIssueSheet";
 import { insetRowStyle } from "../../../components/ui/InsetGroup";
 import { ListRow } from "../../../components/ui/ListRow";
 import { SegmentedControl } from "../../../components/ui/SegmentedControl";
+import { WorkScreen } from "../../../components/tasks/WorkScreen";
+import { useSuperAgent } from "../../../providers/live-events";
 import { chatPalette, colors, fonts, radii, spacing, type ChatPalette } from "../../../config/theme";
 import {
   formatCents,
@@ -497,6 +499,15 @@ const MODES: readonly { key: TeamsMode; label: string }[] = [
 // ---------------------------------------------------------------------------
 
 export default function TeamsScreen() {
+  const superAgent = useSuperAgent();
+  // With the super-agent on, the tab is Work: the threads overview and the schedules. Today's board stays
+  // reachable from a link there; off, this screen is today's.
+  const [oldBoard, setOldBoard] = useState(false);
+  if (superAgent && !oldBoard) return <WorkScreen onOpenOldBoard={() => setOldBoard(true)} />;
+  return <TeamsBoard onBackToWork={superAgent ? () => setOldBoard(false) : undefined} />;
+}
+
+function TeamsBoard({ onBackToWork }: { onBackToWork?: () => void }) {
   const scheme = useColorScheme() === "dark" ? "dark" : "light";
   const styles = SHEETS[scheme];
   const palette = chatPalette[scheme];
@@ -552,6 +563,11 @@ export default function TeamsScreen() {
   const headerHeight = useContext(HeaderHeightContext) ?? 0;
   return (
     <View style={[styles.host, { paddingTop: headerHeight }]} testID="teams-host">
+      {onBackToWork ? (
+        <Pressable accessibilityRole="button" accessibilityLabel="Back to Work" onPress={onBackToWork} style={{ paddingHorizontal: spacing.lg, paddingVertical: spacing.sm }}>
+          <Text style={{ fontFamily: fonts.sans, fontSize: 14, color: palette.link }}>‹ Work</Text>
+        </Pressable>
+      ) : null}
       <View style={styles.toggleBar}>
         <SegmentedControl
           label="Teams view"

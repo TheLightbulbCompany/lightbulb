@@ -50,8 +50,10 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request, Response
 
 from core.config import settings
-from core.repositories import billing_repo, integrations_repo
+from core.repositories import automations_repo, billing_repo, integrations_repo
 from core.services.provision_gate import has_always_on_entitlement
+from core.services.super_agent_flags import flags_for
+from routers import hooks
 from routers._public_ingress import _check_rate_limit, _client_factory, _extract_caller_ip
 
 logger = logging.getLogger(__name__)
@@ -268,6 +270,13 @@ async def receive_meta_event(request: Request) -> Response:
             billing = await billing_repo.get_by_owner_id(binding["owner_id"])
             if not has_always_on_entitlement(billing):
                 logger.info("meta webhook: owner %s not entitled, dropping asset=%s", binding["owner_id"], asset_id)
+                continue
+            if await flags_for(binding["owner_id"]) and await automations_repo.get_hook(
+                binding["owner_id"], binding["trigger_public_id"]
+            ):
+                await hooks.fire_verified(
+                    binding["owner_id"], binding["trigger_public_id"], body, dedupe_key=idempotency_key
+                )
                 continue
             await _fire(binding, body, idempotency_key)
 

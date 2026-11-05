@@ -578,3 +578,25 @@ def test_heartbeat_toggle_is_admin_only_and_ceo_only(client, monkeypatch):
     r, set_opt, _ = _heartbeat_toggle(client, monkeypatch, agent_id="agent-eng")
     assert r.status_code == 400
     set_opt.assert_not_awaited()
+
+
+def test_list_and_get_agent_name_the_front_agent_lightbulb(client, monkeypatch):
+    """Dev walk R6: Paperclip calls the front agent "CEO"; under the switch the Team API says "Lightbulb"."""
+    from routers.teams import agents as agents_mod
+    from core.services import messaging
+
+    admin = MagicMock()
+    admin.list_agents = AsyncMock(
+        return_value={"agents": [{"id": "ceo", "name": "CEO"}, {"id": "g", "name": "Growth"}]}
+    )
+    admin.get_agent = AsyncMock(return_value={"id": "ceo", "name": "CEO", "companyId": "co_abc"})
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(agents_mod, "get_seeded_agent_ids", AsyncMock(return_value=set()))
+    monkeypatch.setattr(messaging, "_front_agent_id", AsyncMock(return_value="ceo"))
+
+    names = {a["id"]: a["name"] for a in client.get("/api/v1/teams/agents").json()["agents"]}
+    assert names == {"ceo": "Lightbulb", "g": "Growth"}
+    assert client.get("/api/v1/teams/agents/ceo").json()["name"] == "Lightbulb"
+
+    monkeypatch.setattr(messaging, "_front_agent_id", AsyncMock(return_value=None))  # switch off: Paperclip's name
+    assert client.get("/api/v1/teams/agents/ceo").json()["name"] == "CEO"

@@ -794,6 +794,11 @@ async def _apply(
         if line:
             sl["acks"].add(line)
 
+    # A trigger answered by an automation's confirm card (propose_automation, during the run): the card's own line
+    # is the answer, so no Router reply or fallback line is posted beside it (dev walk R7: one line above the card,
+    # another below).
+    carded = {tid for tid, t in triggers.items() if (t.get("routedTo") or {}).get("automationId")}
+    covered.update(carded)
     for i, dec in enumerate(decisions):
         primary = dec.trigger_ids[0]
         if not isinstance(dec, ts.Ignore):  # `ignore` on a respond trigger is silence: the fallback line covers it
@@ -851,7 +856,8 @@ async def _apply(
         elif isinstance(dec, ts.Ask):
             sl["lines"].append(dec.text + (f" ({' / '.join(dec.options)})" if dec.options else ""))
         elif isinstance(dec, ts.Reply):
-            sl["lines"].append(dec.text)
+            if primary not in carded:
+                sl["lines"].append(dec.text)
         activity.heartbeat("apply")
     for tid, trig in triggers.items():  # a `respond` trigger is never left in silence
         if tid not in covered and trig["admission"] == "respond":
@@ -992,6 +998,8 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
         status = await _router_run(ws, inp, prompt, memory, ts.trigger_scope(next(iter(to_model.values()))))
         if status.status != "completed":
             raise RuntimeError(f"router run {status.status}: {status.error or ''}")
+        for tid in to_model:  # propose_automation marks its trigger during the run (routedTo.automationId)
+            triggers[tid] = await tasks_repo.get_trigger(ws, tid) or triggers[tid]
         # The run's prose answers a trigger only when the Router made no decision at all: with decisions it is a
         # summary of them ("Growth has the checklist"), which must never stand in for a decision that was dropped.
         run_text = None if status.decisions else (status.output or "").strip() or None

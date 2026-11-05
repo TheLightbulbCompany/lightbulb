@@ -13,7 +13,7 @@ from core import tasks_schema as ts
 from core.repositories import user_repo
 from core.services import task_conversation
 from scripts.super_agent.acceptance.ctx import Ctx, Result
-from scripts.super_agent.acceptance.o_lib import ROUTER_REPLY_S, messages, poll_messages, post, rows_of
+from scripts.super_agent.acceptance.o_lib import ROUTER_REPLY_S, poll_messages, post, rows_of
 
 ASK = "every Monday at 9am post signups here"
 FIRE_S = 180
@@ -52,9 +52,29 @@ async def a11(ctx: Ctx) -> Result:
     )
     if draft is None:
         return Result(False, {"reason": "no SCHED# row after the ask", "askMessageId": ask["messageId"]})
+    sid = draft["scheduleId"]
+    try:
+        return await _steps(ctx, api, room_id, ask, draft)
+    finally:
+        # The scenario PATCHes the automation to a one-off and back; left behind it reads "Once, 5 Nov" in the
+        # workspace's Automations list (dev walk R12). It is this run's own row: delete it, pass or fail.
+        await api.delete(f"{SCHEDULES}/{sid}")
+
+
+async def _steps(ctx: Ctx, api, room_id: str, ask: dict, draft: dict) -> Result:
     sid, tz = draft["scheduleId"], draft["tz"]
-    posts = [m for m in await messages(ctx, "sam", room_id) if m.get("messageSeq", 0) > ask["messageSeq"]]
-    confirm = next((m for m in posts if m.get("kind") == "automation_confirm"), None)
+
+    def confirm_of(rows: list[dict]) -> dict | None:
+        return next(
+            (m for m in rows if m.get("messageSeq", 0) > ask["messageSeq"] and m.get("kind") == "automation_confirm"),
+            None,
+        )
+
+    # The SCHED# row is written before its card is posted (~0.7 s, gate run 5): wait for the card.
+    posts = [
+        m for m in await poll_messages(ctx, "sam", room_id, confirm_of) if m.get("messageSeq", 0) > ask["messageSeq"]
+    ]
+    confirm = confirm_of(posts)
     router_text = " ".join(m.get("text") or "" for m in posts if (m.get("author") or {}).get("kind") == "agent")
     await post(ctx, "sam", room_id, "yes")
     await ctx.sleep(2)

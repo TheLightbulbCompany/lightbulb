@@ -12,12 +12,13 @@ import pytest
 from core.repositories import effects_repo, tasks_repo
 from core.services import questions, runtime_runs
 from core.temporal.types import WorkerTurnOut
+from routers import runtime_internal as ri
 
 from ..orchestration.test_activities_task import WS, _task, world  # noqa: F401
 from ..orchestration.test_runtime_internal_routes import H, _running, _secret, api  # noqa: F401
 
 OPERANDS = {"agentId": "a-1", "to": "acme@example.com", "subject": "Q3 invoice", "body": "Attached."}
-HASH = hashlib.sha256(b"mail.send:h1").hexdigest()
+HASH = ri.operands_hash("mail.send", OPERANDS)
 
 
 def _url(ws):
@@ -139,6 +140,9 @@ async def test_bad_idem_key_and_big_operands(api):
     tid = await _started(api)
     bad = await api.post(_url(WS), json=await _body(tid, idemKey=f"{tid}:1:other"), headers=H)
     assert bad.status_code == 400
+    forged = await api.post(_url(WS), json=await _body(tid, operands={**OPERANDS, "to": "evil@x.io"}), headers=H)
+    assert forged.status_code == 400 and forged.json()["detail"] == "operands_hash_mismatch"  # hash recomputed here
+    assert await effects_repo.get_effect(WS, f"{tid}:1:c1") is None
     big = await api.post(_url(WS), json=await _body(tid, operands={"body": "x" * 17_000}), headers=H)
     assert big.status_code == 422
 
@@ -212,3 +216,20 @@ def test_faults_are_dev_only(monkeypatch):
         with pytest.raises(ValueError):
             runtime_runs.RunRequest(input="x", instructions="y", faults=("kill_after_effect_intent",))
         runtime_runs.RunRequest(input="x", instructions="y")  # no faults: fine anywhere
+
+
+async def test_own_approved_call_is_not_rerun(api):
+    """The Worker re-posts the very call that was approved (same toolCallId): Landing owns it; no second run."""
+    tid = await _started(api)
+    await api.post(_url(WS), json=await _body(tid), headers=H)
+    await effects_repo.set_effect_state(WS, f"{tid}:1:c1", to="approved", fields={"questionId": "q-a"})
+    resp = await api.post(_url(WS), json=await _body(tid), headers=H)
+    assert resp.json()["decision"] == "refuse" and "landed" in resp.json()["message"]
+    assert (await effects_repo.get_effect(WS, f"{tid}:1:c1"))["state"] == "approved"  # not consumed, not intent
+
+
+def test_operands_hash_matches_the_bridge():
+    assert (
+        ri.operands_hash("mail.send", {"b": 1, "a": "x"})
+        == hashlib.sha256(b'{"a":"x","b":1,"kind":"mail.send"}').hexdigest()
+    )

@@ -16,6 +16,7 @@ Lane Q appends its effects and questions routes to this router.
 from __future__ import annotations
 
 import base64
+import hashlib
 import hmac
 import json
 import logging
@@ -40,7 +41,7 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 _LIVE = frozenset({"dispatched", "running"})
-_CLEAN = frozenset({"completed", "waiting_approval"})  # terminal statuses that are not failures
+_CLEAN = acts._CLEAN  # terminal statuses that are not failures
 
 
 _TOOLS_KEPT = 20
@@ -214,6 +215,13 @@ async def task_input(owner_id: str, body: InputBody, request: Request, response:
 _OPERANDS_MAX = 16 * 1024
 
 
+def operands_hash(kind: str, operands: dict) -> str:
+    """The bridge's canonical hash (bridge/effects.py `operands_hash`): sha256 of `{kind, **operands}` as sorted,
+    compact JSON. Recomputed here so a runtime cannot pair one call's operands with another's hash."""
+    canonical = json.dumps({"kind": kind, **operands}, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
 class EffectBody(BaseModel):
     task_id: str = Field(alias="taskId")
     attempt: int = Field(ge=1)
@@ -260,6 +268,8 @@ async def effect_check(owner_id: str, body: EffectBody, request: Request) -> dic
         raise HTTPException(status_code=409, detail="stale_run")
     if body.idem_key != f"{body.task_id}:{body.attempt}:{body.tool_call_id}":
         raise HTTPException(status_code=400, detail="invalid_idem_key")
+    if body.operands_hash != operands_hash(body.kind, body.operands):
+        raise HTTPException(status_code=400, detail="operands_hash_mismatch")
     effect = {
         "idemKey": body.idem_key,
         "taskId": body.task_id,
@@ -275,6 +285,13 @@ async def effect_check(owner_id: str, body: EffectBody, request: Request) -> dic
         res = questions.gate(effect, await effects_repo.effects_for(owner_id, body.task_id, body.operands_hash))
         if res.decision != "proceed":
             break
+        if res.approved_idem_key == body.idem_key:
+            # The caller's own earlier call is the approved row: Landing (or a fresh call) runs it, never a re-run of
+            # the call that was approved.
+            return {
+                "decision": "refuse",
+                "message": "This call was approved and is being landed by Lightbulb; do not run it yourself.",
+            }
         if await effects_repo.use_approval(owner_id, res.approved_idem_key, body.operands_hash, new_effect=effect):
             return {"decision": "proceed"}
     if res.decision == "proceed":  # the second read still says proceed but the row is gone: unknown outcome

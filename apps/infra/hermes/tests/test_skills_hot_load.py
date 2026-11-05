@@ -110,3 +110,26 @@ def test_new_session_sees_new_skill_old_session_prompt_unchanged(monkeypatch, fa
 
     assert old_session_prompt == "skills: old"
     assert pb.build_skills_prompt() == "skills: new,old"
+
+
+def test_incomplete_pull_that_wrote_a_skill_still_clears(monkeypatch, fake_prompt_builder):
+    """A skill that landed must reach new sessions even if another key failed this turn."""
+    _, clears = fake_prompt_builder
+    sync._REVISIONS[AGENT] = "1"
+    s3 = FakeS3(["skills/x/SKILL.md", "memories/bad.md"])
+    real_download = s3.download_file
+
+    def flaky(bucket, key, dest):
+        if key.endswith("bad.md"):
+            raise RuntimeError("throttled")
+        real_download(bucket, key, dest)
+
+    s3.download_file = flaky
+    monkeypatch.setattr(sync, "S3_BUCKET", "bucket-under-test")
+    monkeypatch.setattr(sync, "_s3", lambda: s3)
+    monkeypatch.setattr(sync, "_read_revision", lambda agent_id: "2")
+    monkeypatch.setattr(sync, "_pull_new_mcp_token_files", lambda agent_id: None)
+    monkeypatch.setattr(sync, "_pull_cli_credentials", lambda agent_id: None)
+    sync.ensure_profile(AGENT)
+    assert sync._REVISIONS[AGENT] == "1"  # incomplete: revision not advanced
+    assert clears == [False]

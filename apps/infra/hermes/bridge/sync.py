@@ -1199,7 +1199,7 @@ def ensure_profile(agent_id: str) -> None:
     complete = _download_profile(agent_id)
     if revision is not None and complete:
         _REVISIONS[agent_id] = revision
-    if complete and _SKILLS_TOUCHED.pop(agent_id, False):
+    if _SKILLS_TOUCHED.pop(agent_id, False):  # even if incomplete: what landed must reach new sessions
         _clear_skills_cache()
 
 

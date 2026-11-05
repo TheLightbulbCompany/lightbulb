@@ -67,3 +67,8 @@ def test_trigger_carries_rule_match():
         rule_match={"schedId": "s1", "version": 1, "p": 0.9, "decision": "observed", "wouldDo": "Would x"},
     )
     assert trig.to_item()["ruleMatch"]["wouldDo"] == "Would x"
+
+
+def test_rule_version_is_not_the_row_lock():
+    item = _sched(match={"sources": ["room"], "roomIds": ["r1"]}).to_item()
+    assert item["ruleVersion"] == 1 and item["version"] == 1

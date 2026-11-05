@@ -1965,6 +1965,11 @@
           ],
           "default": null
         },
+        "ruleVersion": {
+          "default": 1,
+          "title": "Ruleversion",
+          "type": "integer"
+        },
         "speculative": {
           "default": false,
           "title": "Speculative",

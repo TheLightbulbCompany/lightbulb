@@ -562,7 +562,7 @@ class RuleMatch(_Model):
     """§18: what a rule would have done (observe) or did (auto) for this trigger."""
 
     sched_id: str
-    version: int
+    version: int  # the rule's `ruleVersion`
     p: float | None = None  # Jev's probability; None for code-matched (calendar) rules
     decision: str  # "observed" in wave 2
     would_do: str
@@ -597,7 +597,7 @@ class MatchEntry(_Model):
     at: str
     thread_key: str
     would_do: str
-    version: int
+    version: int  # the rule's `ruleVersion` when it matched
     done_by_human: bool = False
 
 
@@ -637,6 +637,9 @@ class Schedule(_Row):
     created_by: Literal["user", "router"] = "user"
     # §18 rule fields: a row with `match` is a proactive rule; rows without it are ordinary automations.
     match: RuleMatchScope | None = None
+    # The rule's own version: bumped by a text, scope or specialist edit (which also drops it to observe). Row
+    # `version` is the write lock and moves on every stats append, so promotion counts on this one.
+    rule_version: int = 1
     speculative: bool = False
     time_limit_s: int | None = None
     daily_cap_usd: float = 10.0

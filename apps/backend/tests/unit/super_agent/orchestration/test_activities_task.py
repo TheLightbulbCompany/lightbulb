@@ -287,6 +287,25 @@ async def test_ending_a_task_lets_go_of_its_threads(world):
     assert not any(s["active"] for s in (await repo.get_task_tree(WS, failed))["subscriptions"])
 
 
+async def test_retry_and_reopen_take_their_threads_back(world):
+    """Leaving resolved/failed resubscribes the task's Router threads, unless another task claimed one meanwhile."""
+    root = str(uuid.uuid4())
+    key = f"room:{ROOM}:{root}"
+    tid = await _task(root=root)
+    await _attempt(tid)
+    await _ended(tid, "failed")
+    assert await repo.task_for_thread(WS, key) is None
+    await _attempt(tid)  # retry: begin_attempt moves failed → queued → working
+    assert await repo.task_for_thread(WS, key) == tid
+    await repo.update_attempt(WS, tid, 2, {"output": "x"}, allowed_status=frozenset({"dispatched"}))
+    await acts.end_attempt(WS, tid, 2, "cancelled", None)  # resolved, stopped
+    assert await repo.task_for_thread(WS, key) is None
+    other = await _task()
+    await repo.subscribe(WS, other, key, created_by="router")  # a new task took the thread
+    await acts.transition(WS, tid, "queued", None)  # reopen
+    assert await repo.task_for_thread(WS, key) == other  # never stolen back
+
+
 async def test_check_budget_between_attempts(world):
     tid = await _task(budgetUsd=0.05)
     assert await acts.check_budget(WS, tid) is True

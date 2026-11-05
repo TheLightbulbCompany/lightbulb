@@ -358,6 +358,16 @@ async def unsubscribe_all(ws: str, task_id: str) -> None:
                 pass
 
 
+async def resubscribe_router_threads(ws: str, task_id: str) -> None:
+    """The task's Router-made threads it let go of when it ended, back (one another task took meanwhile stays)."""
+    for sub in (await get_task_tree(ws, task_id))["subscriptions"]:
+        if not sub.get("active", True) and sub.get("createdBy") == "router":
+            try:
+                await subscribe(ws, task_id, sub["threadKey"], created_by="router")
+            except TasksRepoError:
+                pass
+
+
 async def task_for_thread(ws: str, thread_key: str) -> str | None:
     row = await _get(ws, ts.thread_sk(thread_key))
     return row["taskId"] if row and row["active"] else None

@@ -82,13 +82,17 @@ async def _task(ws: str, task_id: str) -> dict:
 
 async def _move(ws: str, task_id: str, to: str, reason: str | None = None, fields: dict | None = None) -> None:
     """Transition unless already there; walks queued first when the edge needs it. A task that ends (resolved,
-    failed) lets go of its threads, so later replies there go to the Router (and may start a new task)."""
+    failed) lets go of its threads, so later replies there go to the Router (and may start a new task); a retry or
+    reopen takes back the ones no other task has claimed since."""
     task = await _task(ws, task_id)
     if task["status"] != to:
         from core.temporal import learning  # Lane V: overlay expiry follows the task's terminal state
 
         if task["status"] in learning.TERMINAL and to not in learning.TERMINAL:
             await learning.set_overlay_tag(ws, task_id, on=False)  # reopen: untag BEFORE the next attempt
+            # Retry/reopen takes its threads back before the move (a crash in between redoes both), so a reply
+            # in the original thread reaches this task again instead of starting a second one.
+            await tasks_repo.resubscribe_router_threads(ws, task_id)
         if task["status"] not in tasks_repo.TRANSITIONS[to] and "queued" in tasks_repo.TRANSITIONS[to]:
             # e.g. a retried failed/reopened task: failed → queued → working, or → waiting when over budget
             await tasks_repo.transition_task(ws, task_id, to="queued")

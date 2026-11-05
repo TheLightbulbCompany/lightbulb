@@ -127,11 +127,11 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
       {collapsed && timestamp && <time className="sr-only" dateTime={timestamp}>{time}</time>}
       {!collapsed && <div className="room-message-byline">{superAgent && message.specialist
         // A result posted for a specialist reads as the one front agent with its label (contracts-v2 §9).
-        ? <SpecialistByline specialist={message.specialist} />
+        ? <SpecialistByline specialist={message.specialist} participant={participant} currentUserId={currentUserId} onMessage={onSelectParticipant} disabled={!actionable} />
         : participant
         ? <ParticipantProfile participant={participant} currentUserId={currentUserId} onMessage={onSelectParticipant} disabled={!actionable} />
         : <span className="font-semibold truncate" title={name}>{name}</span>}
-        {message.author.kind === "agent" && <span className="room-agent-label">Agent</span>}
+        {message.author.kind === "agent" && !(superAgent && message.specialist) && <span className="room-agent-label">Agent</span>}
         {timestamp && <time className="text-ui text-muted-foreground" dateTime={timestamp} title={new Date(timestamp).toLocaleString()}>{time}</time>}
       </div>}
       <RoomMessageContent message={message} currentUserId={currentUserId} actionable={actionable} onUpdate={onUpdateMessage} startEditing={startEditing} onEditingClosed={onEditingClosed} actions={actions} menuExtras={menuExtras}>
@@ -151,7 +151,9 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
         Forwarded from {message.forwardedFrom.roomName ? `#${message.forwardedFrom.roomName}` : "the conversation"} ›</button>}
       {!message.deletedAt && superAgent && message.kind === "automation_confirm" && message.automationId && <AutomationConfirmCard automationId={message.automationId} />}
       {!message.deletedAt && superAgent && message.routedTo && <MessageRoutedTo message={message} onOpen={onOpenTask}
-        onShowReply={() => document.getElementById(id)?.parentElement?.querySelector(`#${CSS.escape(id)} ~ article`)?.scrollIntoView({ block: "nearest", behavior: "smooth" })} />}
+        // The reply that carries the cards (the first thread's card), wherever it landed; else the next message.
+        onShowReply={(taskId) => (document.querySelector(`[data-task-card="${CSS.escape(taskId)}"]`)?.closest("article")
+          ?? document.getElementById(id)?.parentElement?.querySelector(`#${CSS.escape(id)} ~ article`))?.scrollIntoView({ block: "nearest", behavior: "smooth" })} />}
       {!message.deletedAt && <RoomDocumentCards text={message.text} />}
       {!message.deletedAt && <RoomAppLinks text={message.text} />}
       {!message.deletedAt && <RoomLinkPreviews text={message.text} />}
@@ -182,8 +184,14 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
   </article>;
 }
 
-/** "Lightbulb · Finance": a specialist id reads by its name from the agents list (an id is never shown). */
-function SpecialistByline({ specialist }: { specialist: string }): ReactElement {
-  const agentNames = useOptionalLiveEvents()?.agentNames;
-  return <span className="font-semibold truncate" data-specialist={specialist}>{specialistLabel(specialist, agentNames)}</span>;
+/** "Lightbulb · Finance": a specialist id reads by its name from the agents list (an id is never shown). With the
+ *  author seated, the label keeps the author's hover card (audit #28). */
+function SpecialistByline({ specialist, participant, currentUserId, onMessage, disabled }: {
+  specialist: string; participant?: RoomParticipant; currentUserId: string;
+  onMessage?: RoomMessageItemProps["onSelectParticipant"]; disabled: boolean;
+}): ReactElement {
+  const label = specialistLabel(specialist, useOptionalLiveEvents()?.agentNames);
+  return participant
+    ? <ParticipantProfile participant={{ ...participant, displayName: label }} currentUserId={currentUserId} onMessage={onMessage} disabled={disabled} />
+    : <span className="font-semibold truncate" data-specialist={specialist}>{label}</span>;
 }

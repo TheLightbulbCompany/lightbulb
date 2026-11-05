@@ -46,7 +46,8 @@ export function TaskCard({ task, taskId, viewerId, palette, onOpen = openTaskScr
     );
   }
   const view = summaryView(task, viewerId);
-  const inline = !hideAction && view.action && view.action !== "answer" && view.action !== "review" ? view.action : null;
+  // Reopen lives on the thread screen and the Work list, not on every resolved card in the history (audit #30).
+  const inline = !hideAction && view.action && view.action !== "answer" && view.action !== "review" && view.action !== "reopen" ? view.action : null;
   const line = taskSummaryLine(task, viewerId, agentNames);
   const detail = line === view.word || line.startsWith(`${view.word} ·`) ? null : line;
   // The open target and the action are siblings, never nested: a screen reader reaches each on its own (audit #23).
@@ -76,7 +77,7 @@ export function TaskCard({ task, taskId, viewerId, palette, onOpen = openTaskScr
           onPress={async () => {
             // An answer that acts outside (approve, send, publish, merge) is decided on the thread screen, where the
             // question is shown in full: the card never sends it blind.
-            if (inline !== "start" && inline !== "retry" && inline !== "reopen") { onOpen(taskId); return; }
+            if (inline !== "start" && inline !== "retry") { onOpen(taskId); return; }
             setPending(true);
             setError(null);
             const res = await run(task, inline);

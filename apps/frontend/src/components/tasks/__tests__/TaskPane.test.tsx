@@ -153,6 +153,21 @@ describe("TaskPane", () => {
     ]);
   });
 
+  it("a failed load (not 403/404) offers Retry; a task with no runtime yet names none", async () => {
+    client.get.mockRejectedValueOnce(new Error("503"));
+    pane();
+    expect(await screen.findByRole("alert")).toHaveTextContent("This thread couldn't load.");
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByRole("region", { name: "Thread status" })).toBeInTheDocument();
+  });
+
+  it("names no runtime until the task has one", async () => {
+    withDetail({ ...step8, task: { ...step8.task, runsOn: null } });
+    pane();
+    await screen.findByRole("region", { name: "Thread status" });
+    expect(screen.queryByText("Lightbulb cloud")).toBeNull();
+  });
+
   it("forbidden task reads as unavailable", async () => {
     client.get.mockRejectedValue(new ApiError(404, null));
     pane();

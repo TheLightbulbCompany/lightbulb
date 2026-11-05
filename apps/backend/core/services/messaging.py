@@ -2121,7 +2121,7 @@ async def ensure_default_room(owner_id: str, owner_user_id: str) -> str | None:
     agents = {row["id"]: row for row in roster}
     if any(agent_id not in agents for agent_id in starter_ids.values()):
         return None
-    handles = mention_handles(roster)
+    handles = await _handles_for(owner_id, roster)
     members = [
         {
             "kind": "human",
@@ -2381,7 +2381,12 @@ async def room_agent(room_id: str, agent_id: str, meta: dict | None = None) -> d
         task = await tasks_repo.get_task(meta["ownerId"], task_id)
         if not task or task.get("specialist") != agent_id:
             return None
-    roster = await load_agent_roster(meta["ownerId"])
+    return await _stand_in(meta["ownerId"], agent_id)
+
+
+async def _stand_in(owner_id: str, agent_id: str) -> dict | None:
+    """A roster-backed author with no seat (the feed, a task room's specialist, an exempt A2A/Live post)."""
+    roster = await load_agent_roster(owner_id)
     row = next((agent for agent in roster if agent["id"] == agent_id), None)
     if row is None:
         return None
@@ -2389,10 +2394,10 @@ async def room_agent(room_id: str, agent_id: str, meta: dict | None = None) -> d
         "kind": "agent",
         "id": agent_id,
         "displayName": row["name"],
-        "mentionHandle": mention_handles(roster)[agent_id],
+        "mentionHandle": (await _handles_for(owner_id, roster))[agent_id],
         "role": "member",
         "listenMode": "mentions",
-        "ownerId": meta["ownerId"],
+        "ownerId": owner_id,
         "standIn": True,  # no MEMBER# row: the write skips the author membership check
     }
 
@@ -2473,7 +2478,7 @@ async def ensure_vendor_room(owner_id: str) -> str | None:
                     "kind": "agent",
                     "id": ceo_id,
                     "displayName": agents[ceo_id]["name"],
-                    "mentionHandle": mention_handles(roster)[ceo_id],
+                    "mentionHandle": (await _handles_for(owner_id, roster))[ceo_id],
                     "role": "member",
                     "listenMode": "mentions",
                 }
@@ -5113,6 +5118,10 @@ async def create_agent_message(
         # Every feed post says why (lightbulb-post.sh --why); Discuss replies need none.
         raise ApiProblem("INVALID_REQUEST", "A feed post needs postReason: why it matters.")
     member = await room_agent(room_id, agent_id, meta)
+    if member is None and router and request.event_id.startswith(_VOICE_EXEMPT_EVENT_PREFIXES):
+        # A Router room seats only Lightbulb: the A2A agent in the holder's DM (or a Live late answer) is not a
+        # member, so the exempt post goes out as a roster stand-in, like the feed's authors.
+        member = await _stand_in(owner_id, agent_id)
     if member is None:
         raise ApiProblem("MEMBER_NOT_FOUND", "Agent is not a current room member.")
     roster = {row["id"]: row for row in await load_agent_roster(owner_id)}
@@ -5581,7 +5590,8 @@ async def _user_for_handle(owner_id: str, handle: str) -> str:
     if not people:
         raise ApiProblem("RUNTIME_UNAVAILABLE", "Could not read workspace members.", retryable=True, retry_after=3)
     agents = [
-        {"kind": "agent", "mentionHandle": h} for h in mention_handles(await load_agent_roster(owner_id)).values()
+        {"kind": "agent", "mentionHandle": h}
+        for h in (await _handles_for(owner_id, await load_agent_roster(owner_id))).values()
     ]
     humans = [
         {

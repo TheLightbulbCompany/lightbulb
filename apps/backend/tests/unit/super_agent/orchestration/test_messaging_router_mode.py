@@ -258,11 +258,13 @@ async def test_worker_post_outside_its_task_room_refused(world):
 async def test_a2a_and_live_late_posts_keep_working(world):
     """Lead ruling (5 Nov): A2A hold cards and Live late answers post as their agent in Router rooms until
     lane Q's Question holds replace them."""
-    world["members"].append(_agent(FIN, "finance"))
+    # Only Lightbulb is seated (create_room under the switch): the A2A agent posts as a roster stand-in.
     for event_id in (f"a2a:{uuid.uuid4()}", f"live-late:{uuid.uuid4()}"):
         await _post(agent_id=FIN, text="hold", event_id=event_id)
     assert [c["author"]["id"] for c in world["created"]] == [FIN, FIN]
-    assert all(c["dispatch_targets"] == [] for c in world["created"])
+    assert all(c["dispatch_targets"] == [] and c["author_member_check"] is False for c in world["created"])
+    with pytest.raises(ApiProblem):  # the exemption is the event id, not the agent
+        await _post(agent_id=FIN, text="hold", event_id="ev-plain")
 
 
 @pytest.mark.asyncio

@@ -97,7 +97,8 @@
       "a2a",
       "network",
       "voice",
-      "text"
+      "text",
+      "answer"
     ],
     "Admission": [
       "respond",
@@ -178,7 +179,8 @@
     "a2a": "a2a:{a2aTaskId}",
     "network": "net:{recordId}",
     "voice": "voice:{callId}:{utteranceId}",
-    "text": "text:{messageId}"
+    "text": "text:{messageId}",
+    "answer": "answer:{qid}:{clientAnswerId}"
   },
   "namespaces": {
     "run": "054fce2c-dfac-5872-affb-9edcd0befb8d",
@@ -1044,6 +1046,38 @@
           "default": null,
           "title": "Answeredat"
         },
+        "answererRule": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Answererrule"
+        },
+        "baseAnswerers": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Baseanswerers",
+          "type": "array"
+        },
+        "clientAnswerId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Clientanswerid"
+        },
         "operandsHash": {
           "anyOf": [
             {
@@ -1067,6 +1101,49 @@
           ],
           "default": null,
           "title": "Effectidemkey"
+        },
+        "preview": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Preview"
+        },
+        "relay": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Relay"
+        },
+        "govRef": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Govref"
         }
       },
       "required": [
@@ -1226,13 +1303,28 @@
           "title": "Attempt",
           "type": "integer"
         },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
         "tool": {
           "title": "Tool",
           "type": "string"
         },
+        "operands": {
+          "additionalProperties": true,
+          "default": {},
+          "title": "Operands",
+          "type": "object"
+        },
         "operandsHash": {
           "title": "Operandshash",
           "type": "string"
+        },
+        "executorOk": {
+          "default": false,
+          "title": "Executorok",
+          "type": "boolean"
         },
         "state": {
           "enum": [
@@ -1288,6 +1380,7 @@
         "idemKey",
         "taskId",
         "attempt",
+        "kind",
         "tool",
         "operandsHash",
         "state"
@@ -1333,7 +1426,8 @@
             "a2a",
             "network",
             "voice",
-            "text"
+            "text",
+            "answer"
           ],
           "title": "Source",
           "type": "string"

@@ -67,6 +67,7 @@ TriggerSource = Literal[
     "network",
     "voice",
     "text",
+    "answer",
 ]
 Admission = Literal["respond", "candidate"]
 # C13
@@ -131,6 +132,7 @@ TRIGGER_ID_FORMATS: dict[str, str] = {
     "network": "net:{recordId}",
     "voice": "voice:{callId}:{utteranceId}",
     "text": "text:{messageId}",
+    "answer": "answer:{qid}:{clientAnswerId}",  # a person's free-text answer; the Temporal update carries ids only
 }
 
 
@@ -442,8 +444,14 @@ class Question(_Row):
     answer: Answer | None = None
     answered_by: str | None = None
     answered_at: str | None = None
+    answerer_rule: str | None = None  # questions.answerers() rule, re-checked at answer time
+    base_answerers: list[str] = []  # the non-admin part of `answerers` (requester, app creator, holders)
+    client_answer_id: str | None = None  # the answer press's retry key
     operands_hash: str | None = None
     effect_idem_key: str | None = None
+    preview: dict[str, Any] | None = None  # spec 05 §5.1 card preview (mail body, diff, price), ≤16 KB
+    relay: dict[str, str] | None = None  # {roomId, messageId} of the posted card
+    gov_ref: dict[str, str] | None = None  # {kind, id} of a governance hold
 
     def sk(self) -> str:
         return question_sk(self.task_id, self.qid)
@@ -476,8 +484,11 @@ class Effect(_Row):
     idem_key: str
     task_id: TaskId
     attempt: int
+    kind: str  # questions.EFFECT_KINDS
     tool: str
+    operands: dict[str, Any] = {}  # the call's parsed operands (≤16 KB): the Output draft while proposed
     operands_hash: str
+    executor_ok: bool = False  # a backend Landing executor can run it from `operands`
     state: EffectState
     question_id: str | None = None
     output: Output | None = None  # the draft payload while proposed

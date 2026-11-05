@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from botocore.exceptions import ClientError
+from pydantic.alias_generators import to_camel
 
 from core import tasks_schema as ts
 from core.dynamodb import ddb_safe, plain, run_in_thread
@@ -50,10 +51,17 @@ _PROTECTED = frozenset(
 )
 
 
-def _check_fields(fields: dict) -> None:
-    bad = _PROTECTED & set(fields)
+def _check_fields(fields: dict) -> dict:
+    """The update with camelCase attribute names (rows are stored camel); refuses writer-owned fields in
+    either spelling. Any other casing ("PublicId") is refused rather than written as a stray attribute."""
+    odd = [k for k in fields if k != to_camel(k) and k != k.lower()]
+    if odd:
+        raise ValueError(f"field names must be camelCase or snake_case: {sorted(odd)}")
+    camel = {to_camel(k): v for k, v in fields.items()}
+    bad = _PROTECTED & set(camel)
     if bad:
         raise ValueError(f"field update may not set {sorted(bad)}")
+    return camel
 
 
 async def _conditional(ws: str, sk: str, sets: dict, *, condition: str, values: dict, remove=()) -> dict | None:
@@ -93,7 +101,7 @@ async def list_schedules(ws: str) -> list[dict]:
 
 
 async def update_schedule(ws: str, sid: str, fields: dict, *, expected_version: int) -> dict:
-    _check_fields(fields)
+    fields = _check_fields(fields)
     row = await _conditional(ws, ts.schedule_sk(sid), fields, condition="#v = :ev", values={":ev": expected_version})
     if row is None:
         raise VersionConflict(f"schedule {sid}: not at version {expected_version} (or missing)")
@@ -123,13 +131,15 @@ async def set_status(
 
 async def claim_run(ws: str, sid: str, task_id: str) -> bool:
     """Claim the run slot for `task_id`: only an active automation with no run in flight (SKIP overlap).
-    Claiming again with the same task id (an Activity retry) is a success."""
+    Claiming again with the same task id (an Activity retry) is a success, unless that run already closed:
+    re-arming a finished run would hold the slot forever."""
     row = await _conditional(
         ws,
         ts.schedule_sk(sid),
         {"activeRunTaskId": task_id},
         condition="#s = :active AND (attribute_not_exists(activeRunTaskId) "
-        "OR attribute_type(activeRunTaskId, :nul) OR activeRunTaskId = :task)",
+        "OR attribute_type(activeRunTaskId, :nul) OR activeRunTaskId = :task) "
+        "AND NOT contains(runTaskIds, :task)",
         values={":active": "active", ":task": task_id, ":nul": "NULL"},
     )
     return row is not None
@@ -179,11 +189,12 @@ async def get_hook(ws: str, public_id: str) -> dict | None:
     return await _get(ws, ts.hook_sk(public_id))
 
 
-async def update_hook(ws: str, public_id: str, fields: dict) -> dict:
-    _check_fields(fields)
-    row = await _conditional(ws, ts.hook_sk(public_id), fields, condition="#v = #v", values={})
+async def update_hook(ws: str, public_id: str, fields: dict, *, expected_version: int) -> dict:
+    """The routes and the Google watch keeper both update a hook: version-checked so neither loses a write."""
+    fields = _check_fields(fields)
+    row = await _conditional(ws, ts.hook_sk(public_id), fields, condition="#v = :ev", values={":ev": expected_version})
     if row is None:
-        raise KeyError(public_id)
+        raise VersionConflict(f"hook {public_id}: not at version {expected_version} (or missing)")
     return row
 
 

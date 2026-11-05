@@ -75,3 +75,9 @@ def test_enforce_ignore_drops_all():
 def test_enforce_leaves_model_decisions_for_mail():
     reply = ts.Reply(kind="reply", trigger_ids=["mail:m1"], text="hi")
     assert enforce([reply, _start(1)], decide(_t("mail", actor="human"))) == [reply, _start(1)]
+
+
+@pytest.mark.parametrize("source", ["hook", "email", "", "Schedule"])
+def test_unknown_source_is_refused(source):
+    with pytest.raises(ValueError):
+        decide(_t(source, actor="human"))

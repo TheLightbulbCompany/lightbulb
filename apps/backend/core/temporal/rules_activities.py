@@ -7,6 +7,7 @@ or a push: in wave 2 every mode only records.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 from temporalio import activity
@@ -18,6 +19,9 @@ from core.repositories import automations_repo, tasks_repo
 from core.repositories.tasks_repo import _put_new, _row
 
 logger = logging.getLogger(__name__)
+
+#: ponytail: same value as `rules.DID_IT_YOURSELF_WINDOW_H` (S2); import it from there once both are on main.
+DID_IT_YOURSELF_WINDOW_H = 24
 
 
 @activity.defn
@@ -55,6 +59,25 @@ async def record_match(
     outcome = "observed" if new else "duplicate"
     put_metric("rules.match", dimensions={"outcome": outcome})
     return outcome
+
+
+async def note_task_started(ws: str, thread_key: str) -> None:
+    """Called when a person's request starts or passes through to a task on `thread_key`: every rule that
+    observed the thread in the last 24 h gets `doneByHuman=true`. Zero model cost; never raises (it must not
+    fail the Router apply)."""
+    try:
+        obs = await tasks_repo._get(ws, ts.observed_sk(thread_key))
+        if obs is None:
+            return
+        at = datetime.fromisoformat(obs["at"].replace("Z", "+00:00"))
+        if datetime.now(timezone.utc) - at > timedelta(hours=DID_IT_YOURSELF_WINDOW_H):
+            return
+        for rule in await automations_repo.list_rules(ws):
+            entries = (rule.get("stats") or {}).get("matches") or []
+            if any(m.get("threadKey") == thread_key for m in entries):
+                await automations_repo.mark_done_by_human(ws, rule["scheduleId"], thread_key)
+    except Exception:  # noqa: BLE001 -- measurement only
+        logger.warning("did-it-yourself mark failed for %s", thread_key, exc_info=True)
 
 
 WORKFLOWS: list = []

@@ -34,7 +34,7 @@ async def test_org_admin_can_start_workspace_checkout(plan, monkeypatch):
 
     assert result == {"checkout_url": "https://checkout.test/cs_1"}
     create.assert_awaited_once_with(
-        owner_id="org_1", clerk_user_id="user_admin", plan=plan, return_to="web", confirm=False
+        owner_id="org_1", clerk_user_id="user_admin", plan=plan, return_to="web", confirm=False, then=None
     )
 
 
@@ -53,7 +53,7 @@ async def test_workspace_checkout_passes_return_to_app_through(monkeypatch):
 
     assert result == {"checkout_url": "https://checkout.test/cs_1"}
     create.assert_awaited_once_with(
-        owner_id="org_1", clerk_user_id="user_admin", plan="workspace", return_to="app", confirm=False
+        owner_id="org_1", clerk_user_id="user_admin", plan="workspace", return_to="app", confirm=False, then=None
     )
 
 

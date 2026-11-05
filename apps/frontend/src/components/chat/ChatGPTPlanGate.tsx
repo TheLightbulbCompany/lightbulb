@@ -9,6 +9,7 @@ import { useSearchParams } from "next/navigation";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useBilling } from "@/hooks/useBilling";
+import { recentCheckoutReturn } from "@/lib/checkoutReturn";
 
 /** Where Checkout returns to (routers/billing.py `then`): Settings → Model, or the onboarding ChatGPT step. */
 export type ChatGPTReturn = "chatgpt" | "chatgpt_onboarding";
@@ -23,8 +24,8 @@ export function ChatGPTPlanGate({ waitForPlan = false, then = "chatgpt", childre
 }) {
   const { account, isLoading, isSubscribed, refresh } = useBilling();
   const searchParams = useSearchParams();
-  // Read once on mount: the shell strips ?checkout= right after.
-  const [paid] = useState(() => waitForPlan || searchParams.get("checkout") === "success");
+  // The URL on mount, or the tab's remembered return (the shell strips ?checkout= before a late-mounting step sees it).
+  const [paid] = useState(() => waitForPlan || searchParams.get("checkout") === "success" || recentCheckoutReturn());
   const [waitRound, setWaitRound] = useState(0);
   const [waiting, setWaiting] = useState(paid);
   useEffect(() => {

@@ -7,6 +7,7 @@ is in the profile sync's exclude list: the local-session JWT it carries never le
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import threading
@@ -42,3 +43,29 @@ def read(session_id: str) -> dict | None:
 
 def clear(root, session_id: str) -> None:
     _path(root, session_id).unlink(missing_ok=True)
+
+
+# --- a task run's "end this turn waiting_approval" marker (Lane Q) ---------------------------------
+# ask_person / request_approval on a task run can't change the run's outcome from inside a tool, so they
+# leave this file; bridge/runs.py reads it when the turn ends and reports `waiting_approval`.
+
+
+def _waiting_path(root, run_id: str) -> Path:
+    return Path(root) / DIRNAME / ("waiting-" + hashlib.sha256(run_id.encode()).hexdigest() + ".json")
+
+
+def note_waiting(root, run_id: str, question_id: str) -> None:
+    target = _waiting_path(root, run_id)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps({"questionId": question_id}), encoding="utf-8")
+
+
+def read_waiting(root, run_id: str) -> str | None:
+    try:
+        return json.loads(_waiting_path(root, run_id).read_text(encoding="utf-8")).get("questionId")
+    except (OSError, ValueError):
+        return None
+
+
+def clear_waiting(root, run_id: str) -> None:
+    _waiting_path(root, run_id).unlink(missing_ok=True)

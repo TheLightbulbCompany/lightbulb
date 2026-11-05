@@ -4148,7 +4148,10 @@ def _run_task_turn(identity: dict, request: dict, *, family: str) -> tuple[str, 
     router = identity.get("mode") == "router"
     ctx = {"apiUrl": API, "ownerId": OWNER, "hookToken": HOOK_TOKEN, "agentId": agent_id,
            "runId": run_id, "sessionKey": session_id, "roomId": None,
-           "localSessionToken": token, "family": family, "mode": identity.get("mode") or "worker"}
+           "localSessionToken": token, "family": family, "mode": identity.get("mode") or "worker",
+           # Lane Q: a Worker run's ask_person / request_approval speak for this attempt (runtime_internal checks it)
+           **({"taskId": identity.get("taskId"), "attempt": identity.get("attempt"),
+               "runSecret": identity.get("runSecret")} if not paperclip and not router else {})}
     # Paperclip runs need the same brokered MCP bearers as room turns. Without
     # this scope, ${MCP_POSTHOG_ACCESS_TOKEN} stays literal and PostHog returns 401.
     with _waiting_turn_lock(agent_id, session_id, run_id), _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id, env), _terminal_scope(agent_id, session_id), _desktop_active_turn(session_id, run_id), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):

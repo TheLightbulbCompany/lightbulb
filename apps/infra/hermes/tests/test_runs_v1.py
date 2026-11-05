@@ -236,13 +236,15 @@ def test_task_family_ctx_has_no_paperclip_env(quiet_turn, threads, monkeypatch):
         return Agent()
 
     monkeypatch.setattr(turn, "_construct_agent", construct)
-    assert _post(headers={**AUTH, "X-Lightbulb-Local-Session-Token": "grant-jwt"})[0] == 202
+    with_secret = {"identity": {**IDENTITY, "runSecret": "s3"}, "request": REQUEST}
+    assert _post(with_secret, headers={**AUTH, "X-Lightbulb-Local-Session-Token": "grant-jwt"})[0] == 202
     threads[0].run_now()
 
     assert not any(name.startswith("PAPERCLIP_") for name in seen["overlay"])
     ctx = seen["ctx"]
     assert ctx["family"] == "task" and ctx["roomId"] is None and ctx["sessionKey"] == KEY
     assert ctx["runId"] == RUN and ctx["localSessionToken"] == "grant-jwt"
+    assert ctx["taskId"] == TASK and ctx["attempt"] == 1 and ctx["runSecret"] == "s3"  # Lane Q: the plugin's ask speaks for this attempt
     assert seen["limits"]["max_iterations"] == 40 and callable(seen["limits"]["tool_complete_callback"])
     assert _poll()[1]["status"] == "completed"
 

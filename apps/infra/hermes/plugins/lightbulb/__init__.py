@@ -646,11 +646,65 @@ APPROVAL_SCHEMA = {
             "recommendedAction": {"type": "string", "description": "What you will do if approved."},
             "companyPlan": {"type": "boolean",
                             "description": "True only when this is your plan or strategy for the whole company."},
+            "subkind": {"type": "string", "enum": ["tool", "spend", "purchase", "provider_consent", "publish", "send"],
+                        "description": "On a Lightbulb task: what kind of decision this is (who may answer follows "
+                                       "from it). Leave it out otherwise."},
         },
         "required": ["title", "summary"],
     },
 }
 APPROVAL_NO_KEY = "request_approval is unavailable: this turn has no Paperclip credentials."
+TASK_SUBKINDS = ("tool", "spend", "purchase", "provider_consent", "send")  # context-free ones (spec 05 §3.3)
+TASK_STALE_RUN = "This run is no longer the task's current attempt: stop and end your turn."
+TASK_CLOSED = "This task was stopped: stop and end your turn."
+
+
+def _task_run(ctx: dict | None) -> bool:
+    """A super-agent Worker run: the turn speaks for an attempt (taskId + runSecret), never a Router or room turn."""
+    return bool(ctx and ctx.get("taskId") and ctx.get("runSecret") and ctx.get("mode") != "router")
+
+
+def _detail(exc: urllib.error.HTTPError) -> str:
+    """FastAPI's `detail` (a string or a dict with `code`), or ''."""
+    try:
+        err = json.loads(exc.read(4096) or b"{}")
+    except Exception:  # noqa: BLE001
+        return ""
+    detail = err.get("detail") if isinstance(err, dict) else None
+    if isinstance(detail, dict):
+        detail = detail.get("code")
+    return str(detail or "")
+
+
+def _task_question(ctx: dict, *, kind: str, subkind: str, title: str, text: str, options: list[dict],
+                   blocking: bool, key: str) -> str:
+    """A question or approval on a super-agent task run (Lane Q): one Question row on the task, through the
+    backend's internal ask route under the run's identity. Never Paperclip. A blocking ask marks the turn to end
+    `waiting_approval` (turn_context.note_waiting); the answer comes back as input to the next attempt."""
+    tool_call_id = "ask-" + hashlib.sha256(key.encode()).hexdigest()[:16]  # the same ask again replays
+    body = {"taskId": ctx.get("taskId"), "runId": ctx.get("runId"), "attempt": ctx.get("attempt"),
+            "runSecret": ctx.get("runSecret"), "toolCallId": tool_call_id, "kind": kind, "subkind": subkind,
+            "title": title[:200], "text": text[:500], "options": options, "blocking": blocking}
+    url = f"{ctx['apiUrl'].rstrip('/')}/api/v1/internal/runtime/{ctx['ownerId']}/questions"
+    try:
+        made = _post(url, ctx["hookToken"], body)
+    except urllib.error.HTTPError as exc:
+        detail = _detail(exc)
+        if detail == "stale_run":
+            return TASK_STALE_RUN
+        if detail == "task_closed":
+            return TASK_CLOSED
+        return f"Question not created: HTTP {exc.code}" + (f" ({detail})." if detail else ".")
+    except Exception as exc:  # noqa: BLE001
+        return f"Question not created: {type(exc).__name__}."
+    qid = str(made.get("questionId") or "")
+    label = str(made.get("waitingLabel") or "Waiting on a person")
+    if made.get("state") not in (None, "open"):  # a replayed ask whose question is already closed
+        return f"Question {qid} was already {made.get('state')}; its answer is in your input, if any. Carry on."
+    if blocking:
+        turn_context.note_waiting(turn_context._home(), str(ctx.get("runId")), qid)
+        return f"{label}. Question {qid} is open. End your turn now; the answer arrives as input."
+    return f"{label}. Question {qid} is open; the answer arrives as input when they answer. Carry on meanwhile."
 
 
 def _paperclip_call(method: str, url: str, key: str, body: dict | None = None, run_id: str | None = None):
@@ -709,7 +763,18 @@ def _with_from_section(description: str) -> str:
     return f"{description}\n\n{text}" if description else text
 
 
-def _request_approval(args: dict, **_kw) -> str:
+def _request_approval(args: dict, *, session_id: str = "", **_kw) -> str:
+    ctx = turn_context.read(session_id)
+    if _task_run(ctx):  # a super-agent task run: one Question row, never Paperclip
+        title, summary = str(args.get("title") or "").strip(), str(args.get("summary") or "").strip()
+        if not title or not summary:
+            return "title and summary are required."
+        subkind = str(args.get("subkind") or "")
+        return _task_question(
+            ctx, kind="approval", subkind=subkind if subkind in TASK_SUBKINDS else "tool", title=title, text=summary,
+            options=[{"id": "allow_once", "label": "Allow once"}, {"id": "deny", "label": "Deny"}], blocking=True,
+            key=f"approval:{title}:{summary}",
+        )
     base, key = _scope_secret("PAPERCLIP_API_URL").rstrip("/"), _scope_secret("PAPERCLIP_API_KEY")
     if not base or not key:
         return APPROVAL_NO_KEY
@@ -803,13 +868,21 @@ ASK_PERSON_SCHEMA = {
 ASK_IN_REPLY = "No task to ask on: in a room conversation, ask in your reply instead."
 
 
-def _ask_person(args: dict, **_kw) -> str:
+def _ask_person(args: dict, *, session_id: str = "", **_kw) -> str:
     question = str(args.get("question") or "").strip()
     options = [str(o).strip() for o in (args.get("options") or []) if str(o).strip()]
     if not question:
         return "question is required."
     if options and not 2 <= len(options) <= 4:
         return "Give 2 to 4 options, or none for a typed answer."
+    ctx = turn_context.read(session_id)
+    if _task_run(ctx):  # a super-agent task run: one Question row, never Paperclip
+        details = str(args.get("details") or "").strip()
+        return _task_question(
+            ctx, kind="question", subkind="question", title=question, text=details,
+            options=[{"id": f"o{i}", "label": label[:200]} for i, label in enumerate(options, 1)],
+            blocking=bool(args.get("blocked")), key=f"question:{question}:{details}",
+        )
     ref = str(args.get("task") or "").strip() or _scope_secret("PAPERCLIP_TASK_ID")
     run_id = _scope_secret("PAPERCLIP_RUN_ID")
     if not ref or not run_id:  # the fork's create requires the agent's run (routes requireAgentRunId)

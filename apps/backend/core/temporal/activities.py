@@ -16,6 +16,7 @@ import base64
 import secrets
 import logging
 import time
+import uuid
 from datetime import timedelta
 
 from temporalio import activity
@@ -625,6 +626,14 @@ def _thread_key(trig: dict) -> str | None:
     return None
 
 
+async def _room_exists(room_id: str) -> bool:
+    try:
+        uuid.UUID(room_id)
+    except ValueError:
+        return False
+    return await messaging_repo.get_room(room_id) is not None
+
+
 async def _deliver_source_reply(ws: str, trig: dict, text: str, event_id: str) -> bool:
     """A `reply` to a mail/text trigger goes back the way it came (lane A's `source_replies.deliver_reply`,
     idempotent on `event_id`); False until that module lands, and the reply falls back to the deliver room."""
@@ -645,7 +654,9 @@ async def _deliver(
     if trig["source"] in ("mail", "text") and not refs and await _deliver_source_reply(ws, trig, text, event_id):
         return None
     room = ts.trigger_room(trig)
-    if not room:
+    if not room or not await _room_exists(room):
+        # A deliver room that is not a room (gate run 2: an automation saved with `room:acc-a1-…`) must not fail
+        # the batch: its other triggers' tasks still start, and this trigger's task still runs.
         logger.warning("trigger %s has nowhere to answer (source %s)", trig["triggerId"], trig["source"])
         return None
     return await task_conversation.post_as_lightbulb(

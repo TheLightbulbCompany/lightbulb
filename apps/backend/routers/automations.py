@@ -351,6 +351,19 @@ def check_dm_owner(deliver_to: str | None, owner_user_id: str) -> None:
         raise _err(400, "dm_owner_only")
 
 
+async def check_deliver_room(deliver_to: str | None, ws: str, user_id: str) -> None:
+    """A `room:` delivery names a room of this workspace the saver sits in. 400 `room_not_found` at save time: a
+    run delivering to a room that does not exist failed its whole Router batch (gate run 2, A11)."""
+    if not (deliver_to and deliver_to.startswith("room:")):
+        return
+    from core.services import messaging
+
+    try:
+        await messaging.require_room_member(ws, user_id, deliver_to.removeprefix("room:"))
+    except messaging.ApiProblem as exc:
+        raise _err(400, "room_not_found") from exc
+
+
 async def _ws(auth: AuthContext) -> str:
     ws = resolve_owner_id(auth)
     if not await super_agent_flags.flags_for(ws):
@@ -522,6 +535,7 @@ async def list_automations(auth: AuthContext = Depends(get_current_user)) -> dic
 async def create_automation(body: AutomationIn, auth: AuthContext = Depends(get_current_user)) -> dict:
     ws = await _ws(auth)
     check_dm_owner(body.deliver_to, auth.user_id)
+    await check_deliver_room(body.deliver_to, ws, auth.user_id)
     if body.events:  # a webhook on a provider is an org-admin act, as `from_integration` is today
         require_org_admin(auth)
     fields = _schedule_fields(body.schedule) if body.schedule else {"cron": [], "tz": "UTC"}
@@ -626,6 +640,7 @@ async def patch_automation(sid: str, body: AutomationPatch, auth: AuthContext = 
         fields["specialist"] = body.specialist_id
     if body.deliver_to is not None:
         check_dm_owner(body.deliver_to, row["ownerUserId"])
+        await check_deliver_room(body.deliver_to, ws, auth.user_id)
         fields["deliverTo"] = body.deliver_to
     if body.budget_per_run_usd is not None:
         fields["budgetPerRunUsd"] = body.budget_per_run_usd

@@ -328,3 +328,25 @@ async def test_begin_attempt_proposed_waits_for_start(world):
     assert (await repo.get_task(WS, tid))["status"] == "proposed"
     assert await acts.begin_attempt(WS, tid, ["chat:m2"], True) == AttemptRef(1, ts.run_id(WS, tid, 1))
     assert (await repo.get_task(WS, tid))["status"] == "working"
+
+
+async def test_bridge_usage_report_skips_task_runs(monkeypatch):
+    """One usage writer for a Worker turn: end_attempt (requester), never the bridge's usage callback too."""
+    recorded = []
+
+    async def record(*a, **k):
+        recorded.append(a)
+
+    async def claim(*a):
+        return True
+
+    monkeypatch.setattr(acts.messaging, "_record_run_usage", record)
+    monkeypatch.setattr(acts.messaging.messaging_repo, "claim_usage_receipt", claim)
+    monkeypatch.setattr(acts.messaging.run_analytics, "schedule_run_completed", lambda **k: None)
+    usage = {"model": "m", "inputTokens": 5, "outputTokens": 1, "cacheReadTokens": 0, "cacheWriteTokens": 0}
+    for key, expected in ((ts.worker_session_key(CEO, ts.new_task_id()), 0), ("agent:x:main", 1)):
+        body = acts.messaging.UsageReportRequest.model_validate(
+            {"sessionKey": key, "agentId": CEO, "runId": str(uuid.uuid4()), "success": True, "usage": usage}
+        )
+        await acts.messaging.handle_usage_report(WS, body)
+        assert len(recorded) == expected

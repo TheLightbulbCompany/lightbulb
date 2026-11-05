@@ -173,12 +173,16 @@ def test_agent_message_attrs_absent_when_flag_off():
         "createdAt": "2026-11-04T10:00:00Z",
     }
     wire = messaging.canonical_message(item).model_dump(by_alias=True, mode="json")
-    assert not {"taskRefs", "specialist", "routedTo", "forwardedFrom", "kind"} & set(wire)
+    assert not {"taskRefs", "specialist", "routedTo", "forwardedFrom", "kind", "automationId"} & set(wire)
     with_attrs = messaging.canonical_message(
         item | {"specialist": "finance", "taskRefs": [{"taskId": TID, "role": "started"}]}
     )
     wire = with_attrs.model_dump(by_alias=True, mode="json")
     assert wire["specialist"] == "finance" and wire["taskRefs"] == [{"taskId": TID, "role": "started"}]
+    # The confirm card's automation id is on the wire (read and live), so clients link the card to it
+    card = messaging.canonical_message(item | {"kind": "automation_confirm", "automationId": "01JAUTO"})
+    wire = card.model_dump(by_alias=True, mode="json")
+    assert (wire["kind"], wire["automationId"]) == ("automation_confirm", "01JAUTO")
 
 
 def test_runtime_cannot_set_task_attrs():

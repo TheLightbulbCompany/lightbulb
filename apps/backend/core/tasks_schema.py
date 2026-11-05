@@ -104,6 +104,15 @@ def run_id(ws: str, task_id: str, n: int) -> str:
     return str(uuid.uuid5(RUN_NS, f"{ws}:{task_id}:{n}"))
 
 
+#: A Worker's session on the workspace's VM (spec 02 §2.2): one per task, so an attempt resumes the last one's
+#: transcript. The bridge's run route checks keys against this pattern (bridge/runs.py SESSION_KEY_RE).
+WORKER_SESSION_KEY_PATTERN = r"^agent:[0-9a-f-]{36}:lightbulb:task:[0-9a-f-]{36}$"
+
+
+def worker_session_key(agent_id: str, task_id: str) -> str:
+    return f"agent:{agent_id}:lightbulb:task:{task_id}"
+
+
 def router_lane_key(user_id: str) -> str:
     """The Router's private lane for one person; no raw user id in session keys (C12)."""
     return "u:" + hashlib.sha256(user_id.encode()).hexdigest()[:16]
@@ -674,6 +683,7 @@ def export_schema() -> dict[str, Any]:
         "keys": KEY_FORMATS,
         "triggerIds": TRIGGER_ID_FORMATS,
         "namespaces": {"run": str(RUN_NS), "task": str(TASK_NS)},
+        "sessionKeys": {"worker": WORKER_SESSION_KEY_PATTERN},
         "gsis": [{"name": g.name, "pk": g.pk_attr, "sk": g.sk_attr} for g in GSIS],
         "rows": {
             name: model.model_json_schema(by_alias=True, mode="serialization") for name, model in ROW_MODELS.items()

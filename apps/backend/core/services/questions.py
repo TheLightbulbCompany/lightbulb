@@ -135,9 +135,9 @@ async def answerers(
     if rule == "holders":
         base = list(holders or [])
     elif rule == "creator+admins":
-        if not app:
-            raise NoAnswerer("publish needs the app")
-        base = [app["created_by"]] if app.get("created_by") else []
+        # An app the call did not name (`lightbulb app publish` run in the app's folder carries no id) has no
+        # creator seat to add; its admins still answer, as they would for a named app.
+        base = [app["created_by"]] if app and app.get("created_by") else []
     elif rule.startswith("requester"):
         base = [task["ownerUserId"]] if task.get("ownerUserId") else []
     else:

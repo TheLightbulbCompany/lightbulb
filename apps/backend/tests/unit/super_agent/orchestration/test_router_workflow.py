@@ -108,3 +108,24 @@ async def test_router_continue_as_new_keeps_seen(temporal_env, fakes):
     assert ids.count("t2000") == 1 and ids.count("early") == 1
     assert ids.count("fresh") == 1
     assert len(ids) == len(set(ids)) == 2_003  # every queued ref survived Continue-As-New, once
+
+
+async def test_router_survives_fallback_failure(temporal_env, fakes):
+    fakes.behaviour["router_turn"] = non_retryable
+    fakes.behaviour["apply_fallback"] = non_retryable
+    queue = f"q-{uuid.uuid4()}"
+    async with Worker(temporal_env.client, task_queue=queue, workflows=WORKFLOWS, activities=fakes.activities()):
+        h = await temporal_env.client.start_workflow(
+            RouterWorkflow.run, RouterState(WS, [_ref("a")]), id="router:fb", task_queue=queue
+        )
+        for _ in range(100):
+            if fakes.args("apply_fallback"):
+                break
+            await asyncio.sleep(0.05)
+        await h.signal(RouterWorkflow.trigger, _ref("b"))
+        for _ in range(100):
+            if len(fakes.args("router_turn")) >= 2:
+                break
+            await asyncio.sleep(0.05)
+        await h.terminate()
+    assert [a[0].trigger_ids for a in fakes.args("router_turn")] == [["a"], ["b"]]

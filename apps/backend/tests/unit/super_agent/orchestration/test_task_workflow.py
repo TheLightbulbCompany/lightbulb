@@ -203,3 +203,71 @@ async def test_reopen_after_resolve_reuses_workflow_id(temporal_env, fakes):
         assert h2.id == wid and h2.result_run_id != h.result_run_id
         await h2.terminate()
     assert len(fakes.args("begin_attempt")) == 1
+
+
+async def test_stop_when_turn_ends_during_mark_stop(temporal_env, fakes):
+    done = asyncio.Event()
+
+    async def turn(inp):
+        await done.wait()
+        return WorkerTurnOut("completed")
+
+    async def mark(*a):
+        done.set()
+        await asyncio.sleep(0.3)  # the turn completes while this Activity is in flight
+
+    fakes.behaviour["worker_turn"] = turn
+    fakes.behaviour["mark_stop_requested"] = mark
+    async with worker(temporal_env, fakes) as q:
+        h = await _start(temporal_env, q)
+        await _until(lambda: "worker_turn" in fakes.names())
+        res = await h.execute_update(TaskWorkflow.stop, StopRequest("sam"))
+        await h.result()
+    assert res.status == "stopped"  # no AttributeError: the turn had ended, so nothing to cancel
+    assert fakes.args("end_attempt")[0][3] == "completed"
+    assert fakes.args("transition") == [(WS, TID, "resolved", "stopped")]
+
+
+async def test_resolve_wakes_slot_wait(temporal_env, fakes):
+    fakes.behaviour["acquire_slot"] = lambda *a: False
+    async with worker(temporal_env, fakes) as q:
+        h = await _start(temporal_env, q)
+        await _until(lambda: "acquire_slot" in fakes.names())
+        await h.execute_update(TaskWorkflow.resolve, ActionRequest("sam"))
+        await h.result()
+    assert "begin_attempt" not in fakes.names()
+    assert fakes.names()[-2:] == ["release_slot", "transition"]
+    assert fakes.args("transition") == [(WS, TID, "resolved", "resolved")]
+
+
+async def test_budget_denied_waits_for_new_input(temporal_env, fakes):
+    budgets = iter([False, True])
+    fakes.behaviour["check_budget"] = lambda *a: next(budgets)
+    async with worker(temporal_env, fakes) as q:
+        h = await _start(temporal_env, q, reason="migrated")
+        await h.signal(TaskWorkflow.input, TaskInputRef("chat:m1", "message"))
+        await _until(lambda: "check_budget" in fakes.names())
+        await asyncio.sleep(0.3)
+        assert fakes.names() == ["check_budget"]  # no hot loop on the still-pending input
+        await h.signal(TaskWorkflow.input, TaskInputRef("chat:m2", "message"))
+        await _until(lambda: "worker_turn" in fakes.names())
+        await h.terminate()
+    assert fakes.args("begin_attempt")[0][2] == ["chat:m1", "chat:m2"]
+
+
+async def test_reply_on_proposed_task_waits_for_start(temporal_env, fakes):
+    from core.temporal.types import AttemptRef
+
+    refs = iter([AttemptRef(0, ""), AttemptRef(1, "run-1")])
+    fakes.behaviour["begin_attempt"] = lambda *a: next(refs)
+    async with worker(temporal_env, fakes) as q:
+        h = await _start(temporal_env, q, reason="migrated")
+        await h.signal(TaskWorkflow.input, TaskInputRef("chat:m1", "message"))
+        await _until(lambda: "begin_attempt" in fakes.names())
+        await h.signal(TaskWorkflow.input, TaskInputRef("chat:m2", "message"))
+        await asyncio.sleep(0.3)
+        assert "worker_turn" not in fakes.names() and len(fakes.args("begin_attempt")) == 1
+        await h.signal(TaskWorkflow.start)
+        await _until(lambda: "worker_turn" in fakes.names())
+        await h.terminate()
+    assert fakes.args("begin_attempt")[1][2] == ["chat:m1", "chat:m2"]

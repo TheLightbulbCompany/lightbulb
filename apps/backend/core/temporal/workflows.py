@@ -126,7 +126,11 @@ class RouterWorkflow:
                         **_ROUTER_TURN,
                     )
                 except ActivityError:
-                    await _act("apply_fallback", self._ws, trigger_ids)
+                    try:
+                        await _act("apply_fallback", self._ws, trigger_ids)
+                    except ActivityError:
+                        # Never let one batch kill the Router (the queue lives in this run).
+                        workflow.logger.error("router fallback failed for batch %s", batch_id)
             if self._should_continue_as_new():
                 await workflow.wait_condition(workflow.all_handlers_finished)
                 workflow.continue_as_new(RouterState(self._ws, list(self._queue), list(self._seen)))
@@ -150,6 +154,9 @@ class TaskWorkflow:
         self._slot_free = False
         self._attempt: AttemptRef | None = None
         self._turn: workflow.ActivityHandle | None = None
+        self._wakes = 0  # bumped by every input/start/retry/reopen
+        self._blocked_at: int | None = None  # `_wakes` when budget or proposed status deferred an attempt
+        self._awaiting_start = False  # begin_attempt found a proposed task: only Start runs it
         self.last_event: RunEvent | None = None
 
     # --- hooks (Q, A, S add behaviour here) ------------------------------------------------------------
@@ -175,6 +182,7 @@ class TaskWorkflow:
             return
         self._seen_inputs.add(ref.trigger_id)
         self._pending.append(ref)
+        self._wakes += 1
         attempt = self._attempt
         if attempt is not None and self._turn is not None and not self._turn.done():
             # Steer the live run; not accepted ⇒ stays pending for the next attempt (lost-steer redispatch, §14.4).
@@ -185,6 +193,8 @@ class TaskWorkflow:
     def start(self) -> None:
         self._started = True
         self._attempt_needed = True
+        self._awaiting_start = False
+        self._wakes += 1
 
     @workflow.signal
     def run_event(self, event: RunEvent) -> None:
@@ -205,12 +215,15 @@ class TaskWorkflow:
         if self._status == "resolved" or self._stop_by is not None:
             return StopResult("not_running")
         self._stop_by = req.by_user_id
+        # Local copies: the turn may end (and clear these) during any await below.
+        attempt, turn = self._attempt, self._turn
         await self._on_stop(req.by_user_id)
-        if self._running() and self._attempt is not None:
+        if attempt is not None and turn is not None and not turn.done():
             await _act("mark_stop_requested", self._ws, self._task_id, req.by_user_id)
-            await _act("stop_attempt", self._ws, self._task_id, self._attempt.n)
-            self._turn.cancel()
-            return StopResult("stopping")
+            await _act("stop_attempt", self._ws, self._task_id, attempt.n)
+            if not turn.done():
+                turn.cancel()
+                return StopResult("stopping")
         await workflow.wait_condition(lambda: self._status == "resolved")
         return StopResult("stopped")
 
@@ -225,6 +238,7 @@ class TaskWorkflow:
     @workflow.update
     async def retry(self, req: ActionRequest) -> None:
         self._attempt_needed = True
+        self._wakes += 1
 
     @retry.validator
     def _validate_retry(self, req: ActionRequest) -> None:
@@ -234,6 +248,7 @@ class TaskWorkflow:
     @workflow.update
     async def reopen(self, req: ActionRequest) -> None:
         self._attempt_needed = True
+        self._wakes += 1
 
     @reopen.validator
     def _validate_reopen(self, req: ActionRequest) -> None:
@@ -264,8 +279,13 @@ class TaskWorkflow:
         await _act("transition", self._ws, self._task_id, to, reason)
         self._status = to
 
+    def _deferred(self) -> bool:
+        """An attempt was refused (budget, proposed) and nothing new has arrived since."""
+        return self._awaiting_start or self._blocked_at == self._wakes
+
     def _woken(self) -> bool:
-        return bool(self._pending) or self._attempt_needed or self._action is not None or self._stop_by is not None
+        work = (bool(self._pending) or self._attempt_needed) and not self._deferred()
+        return work or self._action is not None or self._stop_by is not None
 
     @workflow.run
     async def run(self, start: TaskStart) -> None:
@@ -279,7 +299,7 @@ class TaskWorkflow:
                 action, _ = self._action
                 await self._transition("resolved", "dismissed" if action == "dismiss" else "resolved")
                 break
-            if self._attempt_needed or self._pending:
+            if (self._attempt_needed or self._pending) and not self._deferred():
                 self._attempt_needed = False
                 outcome = await self._run_attempt()
                 if outcome is None:
@@ -309,11 +329,17 @@ class TaskWorkflow:
             return None
         if not await _act("check_budget", self._ws, self._task_id, result_type=bool):
             self._status = "waiting"  # check_budget wrote waiting/budget
+            self._blocked_at = self._wakes
             return None
-        while not await _act("acquire_slot", self._ws, self._task_id, result_type=bool):
-            self._slot_free = False
-            await workflow.wait_condition(lambda: self._slot_free or self._stop_by is not None)
-            if self._stop_by is not None:
+        while True:
+            self._slot_free = False  # cleared before asking, so a release during the ask is not lost
+            if await _act("acquire_slot", self._ws, self._task_id, result_type=bool):
+                break
+            await workflow.wait_condition(
+                lambda: self._slot_free or self._stop_by is not None or self._action is not None
+            )
+            if self._stop_by is not None or self._action is not None:
+                await _act("release_slot", self._ws, self._task_id)  # drops this task from the waiters
                 return None
         inputs, self._pending = self._pending, []
         try:
@@ -324,6 +350,11 @@ class TaskWorkflow:
             await _act("release_slot", self._ws, self._task_id)
             self._pending = inputs + self._pending
             raise
+        if ref.n == 0:  # still proposed: a thread reply alone never starts work (consent is Start)
+            await _act("release_slot", self._ws, self._task_id)
+            self._pending = inputs + self._pending
+            self._awaiting_start = True
+            return None
         self._attempt = ref
         self._status = "working"
         out = WorkerTurnOut("cancelled") if self._stop_by is not None else await self._worker_turn(ref)

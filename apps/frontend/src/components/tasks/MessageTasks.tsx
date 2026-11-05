@@ -107,7 +107,7 @@ export function RoutedToLink({ routedTo, taskTitle, onOpen, onShowReply }: {
   routedTo: NonNullable<CanonicalRoomMessage["routedTo"]>;
   taskTitle?: (taskId: string) => string | undefined;
   onOpen?: (taskId: string) => void;
-  onShowReply?: () => void;
+  onShowReply?: (taskId: string) => void;
 }): ReactElement | null {
   const { taskIds, started, suggested, passThrough } = routedTo;
   if (!taskIds.length) return null;
@@ -116,12 +116,12 @@ export function RoutedToLink({ routedTo, taskTitle, onOpen, onShowReply }: {
     ? `Sent to ${taskTitle?.(taskIds[0]) ?? "a thread"}`
     : [`Sent to ${started} ${started === 1 ? "thread" : "threads"}`, suggested ? `${suggested} suggested` : ""].filter(Boolean).join(", ");
   return <button type="button" className="mt-0.5 text-ui text-muted-foreground hover:text-foreground hover:underline"
-    onClick={() => (single ? onOpen?.(taskIds[0]) : onShowReply?.())}>{label} ›</button>;
+    onClick={() => (single ? onOpen?.(taskIds[0]) : onShowReply?.(taskIds[0]))}>{label} ›</button>;
 }
 
 /** `RoutedToLink` for a person's message, with the thread's title from the room's list. */
 export function MessageRoutedTo({ message, onOpen, onShowReply }: {
-  message: CanonicalRoomMessage; onOpen?: (taskId: string) => void; onShowReply?: () => void;
+  message: CanonicalRoomMessage; onOpen?: (taskId: string) => void; onShowReply?: (taskId: string) => void;
 }): ReactElement | null {
   const { tasks } = useLiveEvents();
   const routedTo = message.routedTo;

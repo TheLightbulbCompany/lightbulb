@@ -7,7 +7,7 @@
 import { useEffect, useRef, useState, type ReactElement, type RefObject } from "react";
 import { ArrowLeft } from "lucide-react";
 import {
-  FREE_TEXT_OPTION, answerVerb, askLine, effectLine, effectName, previewRows, specialistLabel, useTask, useTaskQuestions,
+  ApiError, FREE_TEXT_OPTION, answerVerb, askLine, effectLine, effectName, previewRows, specialistLabel, useTask, useTaskQuestions,
   type QuestionView, type TaskDetail, type TaskSummary, type TaskTrace,
 } from "@lightbulb/shared";
 import { SessionChat, type ChatWords } from "@/components/messaging/SessionChat";
@@ -30,7 +30,9 @@ export function TaskPane({ taskId, viewerId, onClose, headingRef, backLabel = "B
   taskId: string; viewerId: string; onClose: () => void; headingRef?: RefObject<HTMLHeadingElement | null>; backLabel?: string;
 }): ReactElement {
   const { tasks } = useLiveEvents();
-  const { data, error } = useTask(tasks, taskId);
+  const { data, error, mutate } = useTask(tasks, taskId);
+  // A 403/404 is final ("not available"); anything else (network, 5xx) gets Retry.
+  const gone = error instanceof ApiError && (error.status === 403 || error.status === 404);
   const ownHeading = useRef<HTMLHeadingElement>(null);
   const heading = headingRef ?? ownHeading;
 
@@ -48,7 +50,9 @@ export function TaskPane({ taskId, viewerId, onClose, headingRef, backLabel = "B
       <h3 ref={heading} tabIndex={-1} className="min-w-0 truncate font-semibold">{data?.task.title ?? "Thread"}</h3>
     </header>
     {!data
-      ? <p role="status" className="p-4 text-ui text-muted-foreground">{error ? "This thread isn't available to you." : "Loading…"}</p>
+      ? !error ? <p role="status" className="p-4 text-ui text-muted-foreground">Loading…</p>
+        : gone ? <p role="status" className="p-4 text-ui text-muted-foreground">This thread isn&apos;t available to you.</p>
+        : <p role="alert" className="p-4 text-ui text-muted-foreground">This thread couldn&apos;t load. <button type="button" className="underline hover:text-foreground" onClick={() => void mutate()}>Retry</button></p>
       : <TaskPaneBody detail={data} viewerId={viewerId} />}
   </aside>;
 }
@@ -72,7 +76,11 @@ function TaskPaneBody({ detail, viewerId }: { detail: TaskDetail; viewerId: stri
         openChat={async (roomId) => ({ roomId })} onSend={() => capture("task_steer_sent", { taskId: task.taskId, status: task.status })} />
     </div>
     {task.output && <section aria-label="Outputs" className="editorial-card px-3 py-2 text-ui">
-      <span aria-hidden="true">📎 </span>{task.output.title}
+      {/* With a question open on it, the output is reviewed there (its preview and the decision): go to it (audit #25). */}
+      {open
+        ? <button type="button" className="text-left hover:underline" onClick={() => document.getElementById(`needs-${open.id}`)?.closest("section")?.scrollIntoView({ block: "nearest", behavior: "smooth" })}>
+          <span aria-hidden="true">📎 </span>{task.output.title} ›</button>
+        : <><span aria-hidden="true">📎 </span>{task.output.title}</>}
     </section>}
     {detail.effects.length > 0 && <ul aria-label="Effects" className="grid gap-1 px-1 text-ui">
       {detail.effects.map((e) => {
@@ -111,7 +119,7 @@ export function TaskHeader({ task, viewerId }: { task: TaskSummary; viewerId: st
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-ui text-muted-foreground">
       <span>{specialistLabel(task.specialist, agentNames)}</span>
       <TaskStatus task={task} viewerId={viewerId} />
-      <span><span aria-hidden="true">☁ </span>Lightbulb cloud</span>
+      {task.runsOn && <span><span aria-hidden="true">☁ </span>Lightbulb cloud</span>}
     </div>
     <div className="flex flex-wrap gap-2">
       {/* A running thread is stopped (asked once), never resolved under it; Reopen undoes either. */}

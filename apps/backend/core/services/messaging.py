@@ -8,6 +8,7 @@ agents and :mod:`core.repositories.messaging_repo`.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import re
@@ -21,7 +22,16 @@ from collections.abc import Collection
 from typing import Any, Literal
 
 from botocore.exceptions import ClientError
-from pydantic import Base64Bytes, BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
+from pydantic import (
+    Base64Bytes,
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 from pydantic.alias_generators import to_camel
 
 from core.auth import AuthContext, resolve_owner_id
@@ -509,8 +519,37 @@ class UpdateMessageRequest(ContractModel):
 
 
 class TaskRef(ContractModel):
+    """A task card on a Lightbulb message. Writers: Router apply (started/suggested), the result post, question
+    cards (+ `qid`: the card's buttons bind to {taskId, qid}). Strict on write (`create_agent_message`);
+    `_read_task_refs` keeps a stored row readable whatever it holds."""
+
     task_id: str
     role: Literal["started", "suggested"]
+    qid: str | None = None
+
+    @model_serializer(mode="wrap")
+    def _drop_absent_qid(self, handler):
+        result = handler(self)
+        if self.qid is None:
+            result.pop("qid", None)
+        return result
+
+
+_TASK_REF_KEYS = {"taskId", "role", "qid"}
+
+
+def _read_task_refs(stored: Any) -> list[TaskRef] | None:
+    """Stored taskRefs for a read: unknown keys ignored, a ref that still does not validate dropped. One odd
+    stored message must never 400 its whole room."""
+    if not isinstance(stored, list):
+        return None
+    refs = []
+    for ref in stored:
+        try:
+            refs.append(TaskRef.model_validate({k: v for k, v in ref.items() if k in _TASK_REF_KEYS}))
+        except (AttributeError, ValueError):
+            logger.warning("unreadable stored taskRef dropped: %r", ref)
+    return refs
 
 
 # Super-agent message attrs: field name -> stored/wire name.
@@ -1255,7 +1294,7 @@ def canonical_message(item: dict[str, Any], *, original_request: bool = False) -
     # never serialize the original text/attachments of a tombstone.
     deleted = bool(item.get("deletedAt")) and not original_request
     edited = "editedText" in item and not original_request
-    return CanonicalMessage(
+    fields = dict(
         message_id=item["messageId"],
         room_id=item["roomId"],
         message_seq=int(item["messageSeq"]),
@@ -1271,11 +1310,12 @@ def canonical_message(item: dict[str, Any], *, original_request: bool = False) -
         in_reply_to=item.get("inReplyTo"),
         progress=item.get("progress") is True,
         post_reason=item.get("postReason"),
-        **{name: item.get(stored) for name, stored in _ATTR_FIELDS.items()},
+        **{name: item.get(stored) for name, stored in _ATTR_FIELDS.items() if name != "task_refs"},
+        task_refs=_read_task_refs(item.get("taskRefs")),
         addressed_agent_ids=[
             t["agentId"]
             for t in item.get("dispatchTargets") or []
-            if t.get("agentId") and t.get("eventKind") == "user_request"
+            if isinstance(t, dict) and t.get("agentId") and t.get("eventKind") == "user_request"
         ],
         attachments=[] if deleted else item.get("attachments") or [],
         # Messages from before 2026-10-02 carry no sessionMentions; their labels name the same ids.
@@ -1287,6 +1327,76 @@ def canonical_message(item: dict[str, Any], *, original_request: bool = False) -
         edited_at=None if original_request else item.get("editedAt"),
         deleted_at=None if original_request else item.get("deletedAt"),
     )
+    try:
+        return CanonicalMessage(**fields)  # every valid stored row: exactly today's output
+    except ValidationError as exc:
+        return _tolerant_message(fields, exc)
+
+
+# A stored row that no longer validates (a rolled-back enum value, an old extra key, a long name) is repaired
+# on READ only, so one message never fails its room; writes stay strict. These fields cannot be repaired.
+_CORE_FIELDS = {"message_id", "room_id", "message_seq", "room_revision", "created_at", "text"}
+_READ_FALLBACK = {"mentions": [], "run_id": None, "reply_to_message_id": None, "thread_root_message_id": None}
+_REPAIR_LOGGED: dict[Any, None] = {}  # insertion-ordered: the oldest id is evicted past 10k
+
+
+def _repair_author(value: Any) -> dict:
+    a = value if isinstance(value, dict) else {}
+    # An unknown kind reads as "agent", never "system" (the most trusted kind; readState never counts it unread).
+    kind = a.get("kind") if a.get("kind") in ("human", "agent", "system") else "agent"
+    return {
+        "kind": kind,
+        "id": str(a.get("id") or "unknown")[:256],
+        "displayName": str(a.get("displayName") or "Someone")[:256],
+    }
+
+
+def _tolerant_message(fields: dict[str, Any], exc: ValidationError) -> CanonicalMessage:
+    """Repair what failed and retry: unknown nested keys are ignored, a bad list element or map entry is
+    dropped, any other bad field falls back to its default. One warning per message."""
+    fields = copy.deepcopy(fields)
+    repaired: set[str] = set()
+    for _ in range(5):
+        drops: dict[str, set[int]] = {}
+        for err in exc.errors():
+            loc, name = err["loc"], err["loc"][0]
+            if name in _CORE_FIELDS:
+                raise exc
+            repaired.add(str(name))
+            value = fields.get(name)
+            if name == "author":
+                fields["author"] = _repair_author(value)
+            elif err["type"] == "extra_forbidden" and len(loc) == 3 and isinstance(value, list):
+                value[loc[1]].pop(loc[2], None)  # an unknown key on a list element: ignored
+            elif len(loc) >= 2 and isinstance(loc[1], int) and isinstance(value, list):
+                drops.setdefault(name, set()).add(loc[1])
+            elif len(loc) >= 2 and isinstance(value, dict):
+                value.pop(loc[1], None)
+            elif err["type"] == "too_long" and isinstance(value, list):
+                fields[name] = value[:ATTACHMENT_MAX_COUNT]
+            elif name == "deleted_at":
+                # A stored deletion is never shown live: the text is already blanked (`deleted`); the marker
+                # becomes the message's own createdAt, a valid time clients read as "deleted".
+                fields[name] = fields["created_at"]
+            else:
+                field = CanonicalMessage.model_fields[name]
+                fields[name] = (
+                    _READ_FALLBACK[name] if name in _READ_FALLBACK else field.get_default(call_default_factory=True)
+                )
+        for name, idx in drops.items():
+            fields[name] = [v for i, v in enumerate(fields[name]) if i not in idx]
+        try:
+            message = CanonicalMessage(**fields)
+        except ValidationError as again:
+            exc = again
+            continue
+        if fields["message_id"] not in _REPAIR_LOGGED:  # once per message per process
+            _REPAIR_LOGGED[fields["message_id"]] = None
+            if len(_REPAIR_LOGGED) > 10_000:
+                _REPAIR_LOGGED.pop(next(iter(_REPAIR_LOGGED)))
+            logger.warning("stored message %s read with repaired fields %s", fields["message_id"], sorted(repaired))
+        return message
+    raise exc
 
 
 # Local file, empty archive, and spanned archive signatures -- shared by
@@ -2373,7 +2483,7 @@ async def agent_feed(owner_id: str) -> dict[str, Any]:
     # ponytail: the newest 100 rows, top-level kept; a Discuss thread longer than ~80 replies in
     # that window shortens the list. A top-level index if that is ever seen.
     rows = await messaging_repo.list_messages_before(room_id, int(meta.get("lastSeq") or 0) + 1, 100)
-    posts = [canonical_message(row) for row in rows if not row.get("deletedAt") and not row.get("threadRootMessageId")][
+    posts = _listable([row for row in rows if not row.get("deletedAt") and not row.get("threadRootMessageId")])[
         -FEED_AGENT_READ_LIMIT:
     ]
     return {
@@ -3123,13 +3233,25 @@ async def list_messages(
     try:
         if before_seq is None:
             rows, next_after = await messaging_repo.list_messages(room_id, after_seq, limit)
-            return MessagePage(messages=[canonical_message(row) for row in rows], next_after_seq=next_after)
+            return MessagePage(messages=_listable(rows), next_after_seq=next_after)
         rows, next_before = await messaging_repo.list_messages_before_page(room_id, before_seq, limit)
     except ValueError as exc:
         raise ApiProblem("INVALID_REQUEST", str(exc)) from exc
-    return MessagePage(
-        messages=[canonical_message(row) for row in rows], next_after_seq=None, next_before_seq=next_before
-    )
+    return MessagePage(messages=_listable(rows), next_after_seq=None, next_before_seq=next_before)
+
+
+def _listable(rows: list[dict]) -> list[CanonicalMessage]:
+    """A page of messages; a row even the tolerant read cannot show (core fields broken) is skipped and logged,
+    never a failed room."""
+    out = []
+    for row in rows:
+        try:
+            out.append(canonical_message(row))
+        except (AttributeError, KeyError, TypeError, ValueError):  # ValidationError is a ValueError
+            logger.warning(
+                "stored message unreadable, skipped: room=%s seq=%s", row.get("roomId"), row.get("messageSeq")
+            )
+    return out
 
 
 async def update_message(
@@ -5110,6 +5232,9 @@ async def create_agent_message(
         if voice_run and voice_run.get("noPost"):
             put_metric("voice.huddle.late_answer_suppressed")
             raise ApiProblem("ACTION_UNAVAILABLE", "The Live call asked not to post this answer.")
+    if attrs and attrs.get("taskRefs") is not None:
+        # Strict on write: a ref the read model does not know is a bug here, not a stored surprise later.
+        attrs = {**attrs, "taskRefs": [TaskRef.model_validate(r).model_dump() for r in attrs["taskRefs"]]}
     room_id = str(request.room_id)
     agent_id = str(request.agent_id)
     meta = await messaging_repo.get_room(room_id)

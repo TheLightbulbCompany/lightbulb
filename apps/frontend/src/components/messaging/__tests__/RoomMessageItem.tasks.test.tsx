@@ -45,7 +45,8 @@ describe("RoomMessageItem with the super-agent switch", () => {
   it("specialist byline", () => {
     render(item(result));
     expect(screen.getByText("Lightbulb · Finance")).toBeInTheDocument();
-    expect(screen.getByText("Agent")).toBeInTheDocument();
+    // The label says Lightbulb already: no "Agent" tag beside it (audit #28).
+    expect(screen.queryByText("Agent")).toBeNull();
   });
 
   it("started and suggested refs split", async () => {

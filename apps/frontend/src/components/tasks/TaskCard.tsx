@@ -54,7 +54,8 @@ export function TaskCard({ task, taskId, viewerId, onOpen, hideAction, children 
   }
   const view = summaryView(task, viewerId);
   // Free-text answers and plain reviews need the thread; everything else is one press.
-  const inline = !hideAction && view.action && view.action !== "answer" && view.action !== "review" ? view.action : null;
+  // Reopen lives in the pane and the overview, not on every resolved card in the history (audit #30).
+  const inline = !hideAction && view.action && view.action !== "answer" && view.action !== "review" && view.action !== "reopen" ? view.action : null;
   const open = () => {
     capture("task_card_opened", { taskId, source: "card", status: task.status });
     onOpen?.(taskId);

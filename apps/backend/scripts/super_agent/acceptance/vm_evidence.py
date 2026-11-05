@@ -47,6 +47,9 @@ async def vm_evidence(ctx: Ctx, *, ws: str, task_ids: list[str], per_task: bool 
     is a failure: there is no evidence."""
     if per_task is None:
         from core.services.token_custody import task_vm_allowed
+        from scripts.super_agent.acceptance.ctx import load_backend_secrets
+
+        load_backend_secrets()
 
         per_task = await task_vm_allowed(ws)
     failures: list[str] = []

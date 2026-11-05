@@ -102,3 +102,10 @@ export async function runNow(
 export const viewerTimeZone = (): string => {
   try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch { return "UTC"; }
 };
+
+/** A next-run time in the viewer's zone: "Mon 10 Nov, 9:00". */
+export function nextRunWords(iso: string, viewerTz: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return new Intl.DateTimeFormat("en-GB", { timeZone: viewerTz, weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit", hourCycle: "h23" }).format(d);
+}

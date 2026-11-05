@@ -142,7 +142,7 @@ async def test_a09_lands_once_and_ends_idle():
             return _json({})
         if path.endswith("/questions"):
             return _json({"items": [_view("sam")]})
-        detail = _json({"shownGroup": seen["group"]})
+        detail = _json({"task": {"shownGroup": seen["group"]}})
         seen["group"] = "idle" if seen["group"] == "ready_for_review" and rows[2]["state"] == "done" else seen["group"]
         return detail
 
@@ -419,3 +419,11 @@ async def test_a03_stops_the_task_even_when_a_wait_raises():
     with pytest.raises(RuntimeError):
         await mod.a03(ctx)
     assert paths[-1] == "stop"
+
+
+async def test_a05_and_a09_fail_fast_when_a2_made_no_tasks():
+    for body in (a05, a09):
+        ctx = Fake(lambda r, u: _json({}))
+        ctx.state["taskIds"] = []
+        result = await body(ctx)  # would otherwise wait minutes for a Question that cannot appear
+        assert not result.passed and result.evidence["reason"].startswith("needs A2")

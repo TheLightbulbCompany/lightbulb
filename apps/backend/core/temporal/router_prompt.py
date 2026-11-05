@@ -30,15 +30,21 @@ A trigger with a pinned specialist goes to that specialist: start_task with it, 
 hard to undo), when the ask is large or unclear, or when the person should choose first. Say why in `reason`; the \
 person starts a proposed task with one tap.
 - pass_through when an open task listed below already covers the message: give its task id.
-- reply for quick answers and status. ask for one clarifying question; asking approves nothing, and typed text never \
+- reply for quick answers and status. On a trigger you also start or propose tasks for, add a reply only for a \
+separate answer the person asked for (a quick fact or estimate); never one that restates the tasks: the ack and the \
+cards already say it. ask for one clarifying question; asking approves nothing, and typed text never \
 approves anything.
 - ack: one short line people see in chat (what you started, suggested or passed on). No headings, no lists.
+- Work is underway only if it is in "Open tasks" below. A Lightbulb line under "Recent in this room" that names \
+work but carries no task card started nothing: if the person asks for it (again), start it; never say it is underway.
 - One message with several asks: several decisions on the same trigger id. People see one line with one card per task: the first decision's ack is that line, so write it for all of them; later acks on the same trigger are not shown.
 """
 
 FALLBACK = "I couldn't get to this, ask me again."
 
 _TEXT_MAX = 2000
+_RECENT_LINE_MAX = 300  # a person's line under "Recent"
+_LIGHTBULB_LINE_MAX = 1200  # Lightbulb's own reply, whole enough to see what it claimed (10 lines: bounded)
 _DECISION = TypeAdapter(ts.RouterDecision)
 
 
@@ -47,9 +53,18 @@ def _one_line(text: str, limit: int = _TEXT_MAX) -> str:
     return flat if len(flat) <= limit else flat[: limit - 1] + "…"
 
 
-def render_batch(triggers: list[dict], roster: list[dict], open_tasks: list[dict], *, lane: str = "shared") -> str:
+def render_batch(
+    triggers: list[dict],
+    roster: list[dict],
+    open_tasks: list[dict],
+    *,
+    lane: str = "shared",
+    recent: list[dict] | tuple | None = (),
+) -> str:
     """`triggers`: views from `activities._trigger_view` (triggerId, source, admission, text, who, where, threaded,
-    pinnedSpecialist, routedTo); `roster`: registry rows (id, name, title, status); `open_tasks`: task rows."""
+    pinnedSpecialist, routedTo); `roster`: registry rows (id, name, title, status); `open_tasks`: task rows;
+    `recent`: the room's (or thread's) lines before the batch (`activities._recent_lines`: who, text, lightbulb,
+    cards); None: the batch has no room message, so no earlier lines are known."""
     names = {a["id"]: a.get("name") or a["id"] for a in roster}
     lines = [f"# Batch ({'private lane' if lane != 'shared' else 'shared lane'})", "", "## Triggers"]
     for t in triggers:
@@ -66,6 +81,17 @@ def render_batch(triggers: list[dict], roster: list[dict], open_tasks: list[dict
             head += f" · likely specialist: {names.get(likely, likely)} ({likely})"
         lines.append(head)
         lines.append(f"  {_one_line(t.get('who') or 'Someone', 80)}: {_one_line(t.get('text'))}")
+    if recent is None:
+        lines += ["", "## Recent in this conversation", "- not available: only the message above is known"]
+    elif recent:
+        lines += ["", "## Recent in this room (oldest first; a Lightbulb line's cards are the tasks it really started)"]
+        for r in recent:
+            cap = _LIGHTBULB_LINE_MAX if r.get("lightbulb") else _RECENT_LINE_MAX
+            line = f"- {_one_line(r.get('who') or 'Someone', 80)}: {_one_line(r.get('text'), cap)}"
+            if r.get("lightbulb"):
+                cards = ", ".join(f"{c.get('taskId')} {c.get('role') or ''}".strip() for c in r.get("cards") or [])
+                line += f" [cards: {cards}]" if cards else " [no task card]"
+            lines.append(line)
     lines += ["", "## Specialists (id · name · title)"]
     active = [a for a in roster if a.get("status", "active") == "active" and a.get("role") != "ceo"]
     lines += [f"- {a['id']} · {names[a['id']]} · {_one_line(a.get('title') or '', 80)}" for a in active] or [

@@ -15,7 +15,7 @@ from scripts.super_agent.acceptance.ctx import Ctx, Result
 from scripts.super_agent.acceptance.o_lib import answer_question, question_row, rows_of, task_detail, task_questions
 
 TEST_ADDRESS = re.compile(r"^[^@\s]+\+clerk_test@thelightbulb\.company$", re.I)
-REVIEW_S = 600
+REVIEW_S = 300
 LAND_S = 120
 
 
@@ -25,6 +25,8 @@ def _effects(rows: list[dict], task_id: str) -> list[dict]:
 
 async def a09(ctx: Ctx) -> Result:
     task_ids = list(ctx.state.get("taskIds") or [])
+    if not task_ids:
+        return Result(False, {"reason": "needs A2: no task ids in ctx.state"})
     found = await ctx.wait_for(
         lambda rows: next((q for t in task_ids if (q := question_row(rows, t, ("review",)))), None), REVIEW_S
     )
@@ -52,17 +54,22 @@ async def a09(ctx: Ctx) -> Result:
     )
     groups: list[str] = []
     for _ in range(LAND_S * 4):  # 0.25 s: Landing is brief when the executor is fast
-        group = (await task_detail(ctx, "sam", task_id)).get("shownGroup")
+        group = (await task_detail(ctx, "sam", task_id))["task"].get("shownGroup")  # the summary holds it
         if group and (not groups or groups[-1] != group):
             groups.append(group)
         effects = _effects(await ctx.tasks_rows(ctx.ws), task_id)
-        if effects and all(e["state"] in ("done", "unknown") for e in effects) and groups[-1] in ("idle", "resolved"):
+        if (
+            effects
+            and all(e["state"] in ("done", "unknown") for e in effects)
+            and groups
+            and groups[-1] in ("idle", "resolved")
+        ):
             break
         await ctx.sleep(0.25)
     effects = _effects(await ctx.tasks_rows(ctx.ws), task_id)
     sent = [e for e in effects if e.get("kind") == "mail.send"]
     checks = {
-        "was_ready_for_review": before.get("shownGroup") == "ready_for_review",
+        "was_ready_for_review": before["task"].get("shownGroup") == "ready_for_review",
         "send_press_accepted": press.status_code == 200,
         "one_effect_ran_once": len(sent) == 1 and sent[0]["state"] == "done" and bool(sent[0].get("resultRef")),
         "intent_recorded_before_done": bool(sent) and bool(sent[0].get("doorUsedAt")),

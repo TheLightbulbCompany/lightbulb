@@ -29,7 +29,11 @@ export function useAutomationActions() {
     await refresh(id);
     return res;
   }, [api, refresh]);
-  return { act, refresh };
+  const remove = useCallback(async (id: string) => {
+    await api.del(`/automations/${encodeURIComponent(id)}`);
+    await refresh(id);
+  }, [api, refresh]);
+  return { act, remove, refresh };
 }
 
 /** The viewer as the server's two predicates see them (routers/automations.py). */

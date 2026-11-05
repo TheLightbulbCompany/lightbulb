@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { AtSign, Bold, CaseSensitive, Code, FileText, Italic, Link2, List, ListOrdered, Paperclip, RotateCcw, Send, SquareCode, Strikethrough, X } from "lucide-react";
 import { ApiError, MESSAGE_ATTACHMENT_ACCEPT, MESSAGE_ATTACHMENT_MAX_BYTES, MESSAGE_ATTACHMENT_MAX_COUNT, activeTrigger, applyCompletion, resolveMessageAttachmentContentType, resolveTypedMentions, resolveTypedSessionMentions, respondHint, searchEmoji, sessionMatches, sessionTitle, wrapSelection, type CompletionTrigger, type CreateMessageRequest, type MarkdownStyle, type MessageAttachment, type MessageAttachmentContentType, type MemberRef, type RoomKind, type SessionMentionCandidate, sessionAgentName } from "@lightbulb/shared";
+import { useSuperAgent } from "@/hooks/useLiveEvents";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { consumeFocusComposerRequest } from "@/lib/focusComposerRequest";
@@ -126,6 +127,7 @@ function ComposerAttempt({
   cancelFocusAfterSend: () => void;
   consumeFocusAfterSend: () => boolean;
 }) {
+  const superAgent = useSuperAgent();
   const fieldId = useId();
   const field = useRef<HTMLTextAreaElement>(null);
   const seenFocusToken = useRef(focusToken);
@@ -510,7 +512,7 @@ function ComposerAttempt({
     replaceText(next.text, next.selectionStart, next.selectionEnd);
   }
 
-  const hint = respondHint(roomKind, members, mentions, runningAgentIds);
+  const hint = respondHint(roomKind, members, mentions, runningAgentIds, superAgent);
   // Who-will-reply matters at the moment of sending, not while the box is empty.
   const showHint = !!hint && hasContent;
 

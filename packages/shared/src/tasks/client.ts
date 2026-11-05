@@ -1,0 +1,36 @@
+// The task routes (wave2-README C15). No `/outputs/.../apply`: a review answer with
+// `optionId ∈ {publish, send, merge, approve}` is the apply.
+
+import type { ApiMethods } from "../api/client";
+import type { AnswerBody, QuestionView, TaskDetail, TaskScope, TaskSummary, TaskVerb } from "./types";
+
+export const scopeParam = (scope: TaskScope): string =>
+  scope.kind === "room" ? `room:${scope.roomId}` : scope.kind;
+
+export interface TasksClient {
+  list(scope: TaskScope, cursor?: string | null): Promise<{ tasks: TaskSummary[]; next: string | null }>;
+  get(taskId: string): Promise<TaskDetail>;
+  act(taskId: string, verb: TaskVerb, version: number): Promise<TaskSummary>;
+  startMany(taskIds: string[]): Promise<unknown>;
+  answer(taskId: string, qid: string, body: AnswerBody): Promise<{ question: QuestionView; next: unknown }>;
+  trace(taskId: string, attempt: number): Promise<unknown>;
+  markRead(taskId: string): Promise<unknown>;
+  needsYou(): Promise<{ items: QuestionView[]; next: string | null }>;
+}
+
+export function createTasksClient(api: ApiMethods): TasksClient {
+  const path = (taskId: string) => `/tasks/${encodeURIComponent(taskId)}`;
+  return {
+    list: (scope, cursor) => api.get(
+      `/tasks?scope=${encodeURIComponent(scopeParam(scope))}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+    ) as ReturnType<TasksClient["list"]>,
+    get: (taskId) => api.get(path(taskId)) as Promise<TaskDetail>,
+    act: (taskId, verb, version) => api.post(`${path(taskId)}/${verb}`, { version }) as Promise<TaskSummary>,
+    startMany: (taskIds) => api.post("/tasks/start", { taskIds }),
+    answer: (taskId, qid, body) =>
+      api.post(`${path(taskId)}/questions/${encodeURIComponent(qid)}/answer`, body) as ReturnType<TasksClient["answer"]>,
+    trace: (taskId, attempt) => api.get(`${path(taskId)}/trace?attempt=${attempt}`),
+    markRead: (taskId) => api.post(`${path(taskId)}/read`, {}),
+    needsYou: () => api.get("/needs-you") as ReturnType<TasksClient["needsYou"]>,
+  };
+}

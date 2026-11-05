@@ -210,6 +210,16 @@ export interface CanonicalRoomMessage {
   sessionTargetLabels?: Record<string, string>;
   /** A feed post's "Why I created this post" (plain text). Absent on every other message. */
   postReason?: string | null;
+  /** Super-agent attrs (contracts-v2 §6), only on messages Lightbulb posts for tasks; absent otherwise. */
+  taskRefs?: { taskId: string; role: "started" | "suggested" }[] | null;
+  /** Specialist handle of a result line ("finance"); the byline reads "Lightbulb · Finance". */
+  specialist?: string | null;
+  /** On a person's message: where Lightbulb sent it. */
+  routedTo?: { taskIds: string[]; started: number; suggested: number; passThrough: boolean } | null;
+  /** On a task-room line: the card reply it was forwarded from. */
+  forwardedFrom?: { roomId: string; messageId: string; roomName?: string } | null;
+  /** "result" on a task's result line. */
+  kind?: string | null;
 }
 
 export interface MessageAttachment {
@@ -733,7 +743,7 @@ export type ActivityKind = "mention" | "dm" | "thread_reply" | "reaction" | "age
 /** `waiting` / `finished`: one of your shared sessions paused for your input, or ended a long turn. */
 /** `login`: an agent needs a website login. (A sign-in code is typed into the shared browser, never asked for here.) */
 export type ActivitySubtype = "approval" | "assigned_issue" | "failed_run" | "interaction" | "waiting" | "finished" | "join_request" | "login" | "extension" | "reconnect";
-export type ActivityLinkKind = "issue" | "room" | "thread" | "run" | "approval" | "session";
+export type ActivityLinkKind = "issue" | "room" | "thread" | "run" | "approval" | "session" | "task_question";
 
 export interface ActivityActor {
   kind: "human" | "agent" | "system";

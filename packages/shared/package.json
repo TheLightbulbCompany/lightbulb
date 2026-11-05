@@ -8,7 +8,8 @@
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./cards": "./src/ui/library.ts"
+    "./cards": "./src/ui/library.ts",
+    "./tasks/fixtures": "./src/tasks/fixtures.ts"
   },
   "scripts": {
     "test": "vitest run",

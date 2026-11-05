@@ -508,6 +508,21 @@ class UpdateMessageRequest(ContractModel):
         return value
 
 
+class TaskRef(ContractModel):
+    task_id: str
+    role: Literal["started", "suggested"]
+
+
+# Super-agent message attrs: field name -> stored/wire name.
+_ATTR_FIELDS = {
+    "task_refs": "taskRefs",
+    "specialist": "specialist",
+    "routed_to": "routedTo",
+    "forwarded_from": "forwardedFrom",
+    "kind": "kind",
+}
+
+
 class CanonicalMessage(ContractModel):
     message_id: uuid.UUID
     room_id: uuid.UUID
@@ -527,6 +542,12 @@ class CanonicalMessage(ContractModel):
     progress: bool = False
     # A feed post's "Why I created this post" line (plain text); absent otherwise.
     post_reason: str | None = None
+    # Super-agent attrs (contracts §6, G2), only on messages Lightbulb posts for tasks; absent otherwise.
+    task_refs: list[TaskRef] | None = None
+    specialist: str | None = None
+    routed_to: dict[str, str] | None = None
+    forwarded_from: dict[str, str] | None = None
+    kind: str | None = None
     # The agents this message addresses -- a `user_request` dispatch target
     # (an @mention, a name-addressed open, or a DM), not a `room_event` ambient
     # candidate: those are merely eligible for Jev to route, and Jev picks at
@@ -559,6 +580,10 @@ class CanonicalMessage(ContractModel):
         if self.post_reason is None:
             result.pop("postReason", None)
             result.pop("post_reason", None)
+        for name in _ATTR_FIELDS:
+            if getattr(self, name) is None:
+                result.pop(name, None)
+                result.pop(_ATTR_FIELDS[name], None)
         if not self.session_mentions:
             for key in ("sessionMentions", "session_mentions", "sessionTargetLabels", "session_target_labels"):
                 result.pop(key, None)
@@ -1238,6 +1263,7 @@ def canonical_message(item: dict[str, Any], *, original_request: bool = False) -
         in_reply_to=item.get("inReplyTo"),
         progress=item.get("progress") is True,
         post_reason=item.get("postReason"),
+        **{name: item.get(stored) for name, stored in _ATTR_FIELDS.items()},
         addressed_agent_ids=[
             t["agentId"]
             for t in item.get("dispatchTargets") or []
@@ -4900,7 +4926,11 @@ async def create_follow_up(owner_id: str, request: FollowUpRequest) -> FollowUpR
     return FollowUpResponse(status=status)
 
 
-async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> AgentMessageReceiptResponse:
+async def create_agent_message(
+    owner_id: str, request: AgentMessageRequest, *, attrs: dict | None = None
+) -> AgentMessageReceiptResponse:
+    """``attrs``: super-agent message attrs by stored name (`_ATTR_FIELDS`), passed only by backend code
+    (`task_conversation.post_as_lightbulb`); never part of the runtime's request body."""
     late_run = request.event_id.removeprefix("live-late:") if request.event_id.startswith("live-late:") else None
     if late_run:
         # Conversation engine §3.6: "don't post that". Both late-answer doors (the worker's /late-answer
@@ -5066,6 +5096,7 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
             silent=request.progress,
             progress=request.progress,
             post_reason=request.post_reason,
+            attrs=attrs or None,
             author_member_check=not feed,  # the feed's agents are authors (roster-checked above)
         )
     except messaging_repo.ExtraConditionFailed as exc:  # "don't post that" landed before the commit

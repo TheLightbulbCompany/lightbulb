@@ -235,8 +235,8 @@ def schedule_workflow_id(ws: str, schedule_id: str) -> str:
 
 
 def task_room_id(task_id: str) -> str:
-    """§6: every task's hidden conversation room."""
-    return f"task:{task_id}"
+    """§6: every task's hidden conversation room. A uuid (message routes take uuid room ids), fixed per task."""
+    return str(uuid.uuid5(TASK_NS, f"room:{task_id}"))
 
 
 KEY_FORMATS: dict[str, str] = {
@@ -261,7 +261,7 @@ KEY_FORMATS: dict[str, str] = {
     "taskWorkflowId": "task:{ws}:{taskId}",
     "routerWorkflowId": "router:{ws}",
     "scheduleWorkflowId": "sched:{ws}:{scheduleId}",
-    "taskRoomId": "task:{taskId}",
+    "taskRoomId": "uuid5(task, 'room:{taskId}')",
     "routerLaneKey": "u:{sha256(userId)[:16]}",
 }
 

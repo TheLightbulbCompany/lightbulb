@@ -493,6 +493,42 @@ async def cas_update_tokens(user_id: str, *, expected_version: int, tokens: dict
         raise
 
 
+async def token_row_needs_reconnect(user_id: str, *, bound_to: str | None = None) -> bool:
+    """Whether this workspace's backend-custodied grant was refused by OpenAI (the broker marked
+    it): the vend then answers "reconnect", not "not brokered"."""
+    row = _table().get_item(Key={"user_id": user_id}, ConsistentRead=True).get("Item")
+    return bool(
+        row
+        and row.get("custody") == "backend"
+        and row.get("state") == "reconnect_required"
+        and _row_belongs_to(row, bound_to)
+    )
+
+
+async def mark_reconnect_required(user_id: str, *, expected_version: int) -> bool:
+    """The broker's terminal refusal (``invalid_grant``, ``refresh_token_reused``, 401/403): the
+    grant is dead. Conditional on the version the broker refreshed from, so a reconnect that
+    landed meanwhile is never marked."""
+    try:
+        _table().update_item(
+            Key={"user_id": user_id},
+            UpdateExpression="SET #s = :rr",
+            ConditionExpression="version = :v AND custody = :backend AND #s = :active",
+            ExpressionAttributeNames={"#s": "state"},
+            ExpressionAttributeValues={
+                ":rr": "reconnect_required",
+                ":v": expected_version,
+                ":backend": "backend",
+                ":active": "active",
+            },
+        )
+        return True
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise
+
+
 async def has_active_oauth(
     *,
     user_id: str,

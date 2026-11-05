@@ -143,7 +143,11 @@ async def get_with_expiry(owner_id: str, provider_key: str) -> tuple[str, int]:
         expires_at = _expires_at(credential or {})
         if not (credential or {}).get("access_token") or expires_at is None:
             return None
-        return expires_at if expires_at == 0 or expires_at > time.time() + window else None
+        if expires_at == 0:
+            # Unknown expiry: fresh, except Instagram -- Meta drops its token for good at 60 days,
+            # so an unrecorded expiry gets a refresh check (which records one).
+            return None if provider.oauth.long_lived_exchange == "ig_exchange_token" else 0
+        return expires_at if expires_at > time.time() + window else None
 
     # Only for custody rows: legacy backend providers keep today's lease-per-call path in prod.
     if row and row.get("custody") == "backend" and row.get("status", "connected") == "connected":

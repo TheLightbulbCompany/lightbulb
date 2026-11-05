@@ -10,7 +10,9 @@ from pydantic import BaseModel, Field
 from core.auth import AuthContext, get_current_user
 from core.repositories import integrations_repo
 from core.services import runtime_rpc as service
-from core.services import messaging
+from core.services import messaging, token_custody
+from core.services.owner_lifecycle import OwnerLifecycleBusyError
+from core.services.super_agent_flags import flags_for
 from core.services.credentials import access_token, registry
 from core.services.messaging import (
     RuntimeOperation,
@@ -27,6 +29,30 @@ class RuntimeCredentialRequest(BaseModel):
     agent_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
 
 
+class RuntimeModelRequest(RuntimeCredentialRequest):
+    presented_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    force: bool = False
+
+
+async def _authorize_vend(owner_id: str, agent_id: str, request: Request) -> None:
+    from core.services.container_auth import _require_hook_token
+
+    await _require_hook_token(owner_id, request)
+    roster = await messaging.load_agent_roster(owner_id)
+    if agent_id not in {agent["id"] for agent in roster}:
+        raise HTTPException(status_code=403, detail="agent_not_in_workspace")
+
+
+def _model(vend: token_custody.CodexVend) -> dict:
+    return {
+        "provider": token_custody.PROVIDER_KEY,
+        "access_token": vend.access_token,
+        "id_token": vend.id_token,
+        "account_id": vend.account_id,
+        "expires_at": vend.expires_at,
+    }
+
+
 @router.post("/credentials/u/{owner_id}")
 async def runtime_credentials(
     owner_id: str, body: RuntimeCredentialRequest, request: Request, response: Response
@@ -35,13 +61,12 @@ async def runtime_credentials(
 
     One per connected backend-refreshed provider, keyed by its MCP server key (the
     bridge maps it to ``MCP_<KEY>_ACCESS_TOKEN`` in the turn's secret scope) or, for
-    a provider with no MCP server (microsoft365, called with curl), its own key."""
-    from core.services.container_auth import _require_hook_token
+    a provider with no MCP server (microsoft365, called with curl), its own key.
 
-    await _require_hook_token(owner_id, request)
-    roster = await messaging.load_agent_roster(owner_id)
-    if body.agent_id not in {agent["id"] for agent in roster}:
-        raise HTTPException(status_code=403, detail="agent_not_in_workspace")
+    Additive (spec 13 §5.1): ``expires_at`` ({key: epoch s}) when any token has a known expiry,
+    and ``model`` -- the ChatGPT access token -- when the workspace's grant is backend-custodied.
+    A payload without either is exactly today's."""
+    await _authorize_vend(owner_id, body.agent_id, request)
 
     connected = {
         row["provider"]: row
@@ -49,6 +74,7 @@ async def runtime_credentials(
         if row.get("provider") and row.get("status", "connected") == "connected"
     }
     tokens: dict[str, str] = {}
+    expires: dict[str, int] = {}
     unavailable: list[str] = []
     for provider in registry.all_providers().values():
         if (
@@ -60,7 +86,9 @@ async def runtime_credentials(
             continue
         key = provider.mcp_remote.key if provider.mcp_remote else provider.key
         try:
-            tokens[key] = await access_token.get(owner_id, provider.key)
+            tokens[key], expires_at = await access_token.get_with_expiry(owner_id, provider.key)
+            if expires_at:
+                expires[key] = expires_at
         except access_token.ReconnectRequired:
             unavailable.append(provider.key)  # not connected / no usable grant: the owner reconnects
         except Exception as exc:  # noqa: BLE001
@@ -74,8 +102,41 @@ async def runtime_credentials(
                 exc,
             )
             unavailable.append(provider.key)
+    payload: dict = {"tokens": tokens, "unavailable": unavailable}
+    # flags_for is False in prod without any read: no backend-custodied grant exists there.
+    if await flags_for(owner_id):
+        try:
+            vend = await token_custody.codex_vend(owner_id)
+        except Exception as exc:  # noqa: BLE001 -- reconnect, busy, OpenAI down: the rest still vends
+            logger.warning("runtime model unavailable owner=%s error=%s", owner_id, type(exc).__name__)
+            unavailable.append(token_custody.PROVIDER_KEY)
+        else:
+            if vend is not None:
+                payload["model"] = _model(vend)
+                if vend.expires_at:
+                    expires["model"] = vend.expires_at
+    if expires:
+        payload["expires_at"] = expires
     response.headers["Cache-Control"] = "no-store"
-    return {"tokens": tokens, "unavailable": unavailable}
+    return payload
+
+
+@router.post("/credentials/u/{owner_id}/model")
+async def runtime_model(owner_id: str, body: RuntimeModelRequest, request: Request, response: Response) -> dict:
+    """Forced refresh for the bridge's F6 delegate: the VM got a 401 on the token it presents.
+    Refreshes only if that token is still current; otherwise returns the newer one (N VMs, one
+    refresh). 409 busy (lease held), 410 the grant is dead, 404 not backend-custodied."""
+    await _authorize_vend(owner_id, body.agent_id, request)
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        vend = await token_custody.codex_vend(owner_id, presented_sha256=body.presented_sha256, force=body.force)
+    except access_token.ReconnectRequired:
+        raise HTTPException(status_code=410, detail={"code": "reconnect_required"}) from None
+    except (OwnerLifecycleBusyError, token_custody.RefreshUnavailable):
+        raise HTTPException(status_code=409, detail={"code": "busy"}) from None
+    if vend is None:
+        raise HTTPException(status_code=404, detail={"code": "not_brokered"})
+    return {"model": _model(vend), "refreshed": vend.refreshed}
 
 
 @router.post(

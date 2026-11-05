@@ -397,6 +397,7 @@ async def refresh(owner_id: str, provider_key: str, credential: dict) -> dict:
 
 
 _IG_REFRESH_URL = "https://graph.instagram.com/refresh_access_token"
+_IG_LONG_LIVED_S = 60 * 86400
 
 
 async def refresh_ig(credential: dict) -> dict:
@@ -411,7 +412,9 @@ async def refresh_ig(credential: dict) -> dict:
         )
         resp.raise_for_status()
         tok = resp.json()
-    expires_in = tok.get("expires_in")
+    # Meta always sends expires_in today; without it assume a long-lived token's 60 days rather
+    # than "no expiry" (which would read as fresh until Meta kills it).
+    expires_in = tok.get("expires_in") or _IG_LONG_LIVED_S
     return {
         **credential,
         "access_token": tok["access_token"],

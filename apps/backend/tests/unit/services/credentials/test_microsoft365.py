@@ -160,8 +160,8 @@ async def test_broker_vends_graph_token_only_to_the_owning_org(async_client, mon
     monkeypatch.setattr(container_auth.container_repo, "get_by_owner_id", AsyncMock(side_effect=containers.get))
     monkeypatch.setattr(runtime_rpc.integrations_repo, "list_for_owner", AsyncMock(side_effect=rows.get))
     monkeypatch.setattr(runtime_rpc.messaging, "load_agent_roster", AsyncMock(return_value=[{"id": "ceo"}]))
-    minted = AsyncMock(side_effect=lambda owner, provider: f"graph-{owner}")
-    monkeypatch.setattr(runtime_rpc.access_token, "get", minted)
+    minted = AsyncMock(side_effect=lambda owner, provider: (f"graph-{owner}", 0))  # 0 = expiry unknown
+    monkeypatch.setattr(runtime_rpc.access_token, "get_with_expiry", minted)
 
     def call(owner, hook):
         return async_client.post(
@@ -249,7 +249,7 @@ async def test_one_providers_unexpected_error_never_fails_the_whole_broker_call(
         AsyncMock(return_value=[{"provider": "microsoft365", "status": "connected"}]),
     )
     monkeypatch.setattr(runtime_rpc.messaging, "load_agent_roster", AsyncMock(return_value=[{"id": "ceo"}]))
-    monkeypatch.setattr(runtime_rpc.access_token, "get", AsyncMock(side_effect=AttributeError("boom")))
+    monkeypatch.setattr(runtime_rpc.access_token, "get_with_expiry", AsyncMock(side_effect=AttributeError("boom")))
     r = await async_client.post(
         "/api/v1/runtime/credentials/u/org_a", json={"agent_id": "ceo"}, headers={"Authorization": "Bearer hook-a"}
     )

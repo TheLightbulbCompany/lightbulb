@@ -108,3 +108,23 @@ async def test_ig_refresh_branch(wired, monkeypatch):
     assert request.url.params["grant_type"] == "ig_refresh_token"
     assert request.headers["Authorization"] == "Bearer IG-1"
     assert wired["put"].await_args.args[2]["access_token"] == "IG-2"
+
+
+@pytest.mark.asyncio
+async def test_instagram_without_expiry_is_checked_not_fresh_forever(wired, monkeypatch):
+    """Lead (5 Nov): an Instagram token with no recorded expiry gets a refresh check (Meta drops a
+    token for good at 60 days), and a refresh answer without ``expires_in`` falls back to 60 days
+    so the next call is not another refresh."""
+    monkeypatch.setattr(access_token.oauth_dance, "refresh", _REAL_REFRESH)
+    wired["state"]["cred"] = {"access_token": "IG-1", "token_expiry": ""}
+    calls = []
+
+    async def fake_get(self, url, *, params=None, headers=None, **kw):
+        calls.append(url)
+        request = httpx.Request("GET", url, params=params, headers=headers)
+        return httpx.Response(200, json={"access_token": "IG-2"}, request=request)  # no expires_in
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+    token, expires_at = await access_token.get_with_expiry("org_a", "instagram")
+    assert token == "IG-2" and len(calls) == 1
+    assert expires_at > datetime.now(timezone.utc).timestamp() + 59 * 86400

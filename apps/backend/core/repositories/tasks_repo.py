@@ -115,11 +115,16 @@ async def _update(
     condition: str,
     values: dict[str, Any],
     remove: tuple[str, ...] = (),
+    bump: bool = True,
 ) -> dict:
-    """SET `sets`, `version = version + 1`, `updatedAt`; REMOVE `remove`; under `condition`. Returns the new row."""
-    names: dict[str, str] = {"#v": "version", "#u": "updatedAt", "#sk": "sk"}
-    vals: dict[str, Any] = {":one": 1, ":now": utc_now_iso(), **values}
-    parts = ["#v = #v + :one", "#u = :now"]
+    """SET `sets`, `version = version + 1`, `updatedAt`; REMOVE `remove`; under `condition`. Returns the new row.
+    `bump=False` leaves `version` alone: the projector publishes no `task.changed` for the write."""
+    names: dict[str, str] = {"#u": "updatedAt", "#sk": "sk"}
+    vals: dict[str, Any] = {":now": utc_now_iso(), **values}
+    parts = ["#u = :now"]
+    if bump:
+        names["#v"], vals[":one"] = "version", 1
+        parts.insert(0, "#v = #v + :one")
     for i, (attr, value) in enumerate(sets.items()):
         names[f"#f{i}"] = attr
         vals[f":f{i}"] = value
@@ -131,6 +136,8 @@ async def _update(
         expr += " REMOVE " + ", ".join(f"#r{i}" for i in range(len(remove)))
     if "#s" in condition:
         names["#s"] = "status"
+    if "#v" in condition:
+        names["#v"] = "version"
     super_agent_faults.maybe_conflict()  # dev fault hook: conditional_conflict:<pct>
     resp = await run_in_thread(
         _table().update_item,
@@ -277,12 +284,15 @@ async def get_attempt(ws: str, task_id: str, n: int) -> dict | None:
     return await _get(ws, ts.attempt_sk(task_id, n))
 
 
-async def update_attempt(ws: str, task_id: str, n: int, fields: dict, *, allowed_status: frozenset[str]) -> dict:
-    """Update an attempt only while its status is in `allowed_status`; `fields` may move `status` itself."""
+async def update_attempt(
+    ws: str, task_id: str, n: int, fields: dict, *, allowed_status: frozenset[str], bump: bool = True
+) -> dict:
+    """Update an attempt only while its status is in `allowed_status`; `fields` may move `status` itself.
+    `bump=False`: no version change, so no live event (the bridge's 2-minute heartbeat)."""
     _check_fields({k: v for k, v in fields.items() if k != "status"})
     condition, values = _status_in(allowed_status)
     try:
-        return await _update(ws, ts.attempt_sk(task_id, n), fields, condition=condition, values=values)
+        return await _update(ws, ts.attempt_sk(task_id, n), fields, condition=condition, values=values, bump=bump)
     except ClientError as exc:
         if not _is_condition_failure(exc):
             raise

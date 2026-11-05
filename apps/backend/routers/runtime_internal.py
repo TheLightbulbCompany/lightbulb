@@ -122,6 +122,7 @@ async def run_event(owner_id: str, run_id: str, body: RunEventBody, request: Req
                     "recentTools": [_tool_line(t) for t in body.recent_tools[-_TOOLS_KEPT:]],
                 },
                 allowed_status=_LIVE,
+                bump=False,  # every 2 min: no workspace-wide task.changed (a live view polls the trace)
             )
         if first:
             await _progress_line(owner_id, body.task_id, body.attempt, body.recent_tools)

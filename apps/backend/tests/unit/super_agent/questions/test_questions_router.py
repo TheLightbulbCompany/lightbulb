@@ -114,7 +114,8 @@ async def test_private_task_404_for_non_viewer(world):
 
 
 async def test_unknown_task_404(world):
-    resp = await world["client"].get("/api/v1/tasks/8f14e45f-ceea-467a-9575-8a1b2c3d4e5f/questions")
+    # Not conftest's seeded TASK: that one exists (with Sam in its audience) since the audience fix.
+    resp = await world["client"].get("/api/v1/tasks/0b9e2d1c-5a6f-4e3d-8c7b-112233445566/questions")
     assert resp.status_code == 404
 
 

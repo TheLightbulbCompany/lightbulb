@@ -2,8 +2,6 @@
 Review focus 2: a retried `router_turn` applies once."""
 
 import re
-import sys
-import types
 import uuid
 
 import pytest
@@ -424,7 +422,9 @@ async def test_reply_to_mail_trigger_uses_deliver_reply(world, monkeypatch):
     async def deliver_reply(ws, trigger, text, *, idempotency_key):
         sent.append((trigger["triggerId"], text, idempotency_key))
 
-    monkeypatch.setitem(sys.modules, "core.services.source_replies", types.SimpleNamespace(deliver_reply=deliver_reply))
+    # The module activities imported, not sys.modules: once anything imported the real one, `from core.services
+    # import source_replies` reads the package attribute and a sys.modules stand-in is never seen (suite order).
+    monkeypatch.setattr(acts.source_replies, "deliver_reply", deliver_reply)
     t1 = await _trig("mail:abc", source="mail", ref={"text": "Can you send the invoice?", "from": "bob@acme.test"})
     world["decisions"] = [{"kind": "reply", "triggerIds": [t1], "text": "Sent it just now."}]
     await _run([t1])

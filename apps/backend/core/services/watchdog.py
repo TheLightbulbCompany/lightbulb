@@ -525,8 +525,8 @@ async def _act(cfg: WatchdogConfig, p: Proposal, by: str) -> str:
         wf = await _wf_state(p.ws, p.task_id)
     except DescribeFailed:
         return "skipped"
-    if wf is not None and wf.status == "RUNNING":
-        return "skipped"  # live again: not an orphan
+    if not check_c1(task, wf, datetime.now(timezone.utc)):
+        return "skipped"  # live again, or the row moved within the last 5 min: not an orphan
     if await watchdog_repo.count_actions(p.ws, p.task_id, "reconcile") >= cfg.reconciles_per_task:
         await _escalate_once(p)  # checked before the cap so a task at its limit never spends fleet budget
         return "limit"
@@ -537,7 +537,8 @@ async def _act(cfg: WatchdogConfig, p: Proposal, by: str) -> str:
     n = await watchdog_repo.spend_action(
         p.ws, p.task_id, "reconcile", limit=cfg.reconciles_per_task, finding_id=p.finding_id, by=by
     )
-    if n is None:
+    if n is None:  # another writer took the last slot between the count and the spend
+        await watchdog_repo.release_cap("act", hour)
         await _escalate_once(p)
         return "limit"
     from core.temporal.client import start_task_workflow

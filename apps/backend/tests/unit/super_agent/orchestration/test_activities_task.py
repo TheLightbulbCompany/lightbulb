@@ -147,7 +147,11 @@ async def test_begin_attempt_idempotent(world):
 
 async def test_begin_attempt_recomputes_session_kind(world, monkeypatch):
     kinds = iter(["workspace", "task"])
-    monkeypatch.setattr(acts.runtime_runs, "session_kind_for", lambda ws: next(kinds), raising=False)
+
+    async def session_kind_for(ws):  # V3's is async (switch + custody gate)
+        return next(kinds)
+
+    monkeypatch.setattr(acts.runtime_runs, "session_kind_for", session_kind_for, raising=False)
     tid = await _task()
     await acts.begin_attempt(WS, tid, [])
     await acts.end_attempt(WS, tid, 1, "runtime_lost", "HeartbeatTimeout")

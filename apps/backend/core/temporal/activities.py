@@ -96,8 +96,10 @@ async def _input_text(ws: str, trigger_id: str) -> str:
 
 
 def _identity(ws: str, task_id: str, att: dict) -> runtime_runs.RunIdentity:
+    # The Attempt row records where begin_attempt put the run (V3): its own task session, or the shared VM.
+    kind = "task" if att.get("sessionId") == runtime_transport.session_id_for(ws, task_id) else "workspace"
     return runtime_runs.RunIdentity(
-        att["runId"], ws, task_id, att["n"], att["agentId"], run_secret=att.get("runSecret")
+        att["runId"], ws, task_id, att["n"], att["agentId"], run_secret=att.get("runSecret"), session_kind=kind
     )
 
 
@@ -134,16 +136,16 @@ def _cap(session_kind: str) -> int:
     )
 
 
-def _session_kind(ws: str) -> str:
-    """V3's `session_kind_for`; the shared VM until it lands (README)."""
+async def _session_kind(ws: str) -> str:
+    """V3's `session_kind_for` (async: it reads the switch and the custody gate); the shared VM until it lands."""
     fn = getattr(runtime_runs, "session_kind_for", None)
-    return fn(ws) if fn else "workspace"
+    return await fn(ws) if fn else "workspace"
 
 
 @activity.defn
 async def acquire_slot(ws: str, task_id: str) -> bool:
     """Take a lease (cap per VM kind). Full ⇒ join the waiters and return False; `release_slot` signals."""
-    cap = _cap(_session_kind(ws))
+    cap = _cap(await _session_kind(ws))
     for _ in range(8):
         row = await tasks_repo.get_slots(ws)
         now = int(time.time())
@@ -191,7 +193,7 @@ async def begin_attempt(ws: str, task_id: str, input_trigger_ids: list[str], sta
         await _move(ws, task_id, "working", fields={"attemptCount": last["n"]})
         return AttemptRef(last["n"], last["runId"])
     n = len(attempts) + 1
-    kind = _session_kind(ws)
+    kind = await _session_kind(ws)
     att, _ = await tasks_repo.put_attempt(
         ws,
         task_id,

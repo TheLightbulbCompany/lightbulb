@@ -225,17 +225,25 @@ async def session_kind_for(owner_id: str) -> SessionKind:
     return "task" if await token_custody.task_vm_allowed(owner_id) else "workspace"
 
 
-async def stop_task_session(owner_id: str, task_id: str) -> bool:
+async def stop_task_session(owner_id: str, task_id: str, run_id: str | None = None) -> bool:
     """Stop the task's own AgentCore session (and clear only its warm row). False when the workspace
     has no runtime; otherwise `hermes_provisioning.stop_runtime_session`'s answer. Called by V's
-    `close_task_attempt` after the seal, before the learning merge is signalled."""
-    from core.services import hermes_provisioning
+    `close_task_attempt` after the seal, before the learning merge is signalled. With `run_id`, the
+    workspace browser lease that run still holds is freed after the stop (contracts §14.11: a VM
+    stopped mid-tool never released it; the next task's run would wait out the lease)."""
+    from core.services import browser_control, hermes_provisioning
 
     container = await container_repo.get_by_owner_id(owner_id) or {}
     arn = container.get("agentcore_runtime_arn")
     if not arn:
         return False
-    return await hermes_provisioning.stop_runtime_session(owner_id, arn, task_id=task_id)
+    stopped = await hermes_provisioning.stop_runtime_session(owner_id, arn, task_id=task_id)
+    if run_id:
+        try:
+            await browser_control.release_for_run(owner_id, run_id)
+        except Exception:  # noqa: BLE001 -- the lease still expires on its own; never cost the merge signal
+            logger.warning("task browser release failed task=%s", task_id, exc_info=True)
+    return stopped
 
 
 async def curate(owner_id: str, agent_id: str) -> dict:

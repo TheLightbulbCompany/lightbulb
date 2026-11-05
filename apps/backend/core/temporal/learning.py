@@ -264,10 +264,13 @@ async def signal_merge(ws: str, specialist_id: str, ref: MergeRef) -> None:
 
 
 @activity.defn
-async def close_task_attempt(ws: str, task_id: str, specialist_id: str, attempt: int) -> None:
-    """After the seal: stop the task's own session, THEN queue its merge. Idempotent -- a stop of a
-    gone session is a stop, and the workflow drops a `MergeRef` it has seen."""
-    await runtime_runs.stop_task_session(ws, task_id)
+async def close_task_attempt(
+    ws: str, task_id: str, specialist_id: str, attempt: int, run_id: str | None = None
+) -> None:
+    """After the seal: stop the task's own session (freeing the browser lease `run_id` holds), THEN
+    queue its merge. Idempotent -- a stop of a gone session is a stop, a release of a lease the run
+    no longer holds is a no-op, and the workflow drops a `MergeRef` it has seen."""
+    await runtime_runs.stop_task_session(ws, task_id, run_id)
     await signal_merge(ws, specialist_id, MergeRef(task_id, attempt))
 
 
@@ -283,7 +286,7 @@ async def close_task_attempt_if_task_session(ws: str, task_id: str, att: dict, a
     if not is_task_session_attempt(ws, task_id, att):
         return
     try:
-        await close_task_attempt(ws, task_id, att["agentId"], attempt)
+        await close_task_attempt(ws, task_id, att["agentId"], attempt, att.get("runId"))
     except Exception:  # noqa: BLE001
         logger.warning("close_task_attempt failed task=%s attempt=%s", task_id, attempt, exc_info=True)
 

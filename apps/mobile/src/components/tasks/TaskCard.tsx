@@ -6,7 +6,7 @@ import { useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { router } from "expo-router";
 import {
-  specialistLabel, summaryView, taskSummaryLine, useTaskList, type CanonicalRoomMessage, type TaskRef, type TaskSummary, type TaskTone,
+  putTaskSummary, specialistLabel, summaryView, taskSummaryLine, useTaskCache, useTaskList, type CanonicalRoomMessage, type TaskRef, type TaskSummary, type TaskTone,
 } from "@lightbulb/shared";
 
 import { fonts, radii, spacing, type ChatPalette } from "../../config/theme";
@@ -90,6 +90,7 @@ export function ActionButton({ label, palette, primary, disabled, onPress }: {
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={label}
+      accessibilityState={{ disabled: !!disabled }}
       disabled={disabled}
       onPress={(event) => { event.stopPropagation?.(); onPress(); }}
       hitSlop={6}
@@ -126,6 +127,7 @@ export function SuggestedBlock({ refs, taskById, viewerId, palette, onOpen }: {
 }) {
   const { tasks } = useLiveEvents();
   const { act, refetch } = useTaskActions();
+  const { cache, mutate } = useTaskCache();
   const [pending, setPending] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const proposed = refs.map((r) => taskById.get(r.taskId)).filter((t): t is TaskSummary => t?.status === "proposed");
@@ -139,6 +141,8 @@ export function SuggestedBlock({ refs, taskById, viewerId, palette, onOpen }: {
     setPending("all");
     try {
       const res = await tasks.startMany(proposed.map((t) => t.taskId));
+      // Write the started summaries now: AppSync may drop their task.changed events.
+      await Promise.all(res.tasks.map((t) => putTaskSummary(cache, mutate, t, tasks)));
       const started = new Set(res.tasks.map((t) => t.taskId));
       const failed = proposed.filter((t) => !started.has(t.taskId));
       await Promise.all(failed.map((t) => refetch(t.taskId)));

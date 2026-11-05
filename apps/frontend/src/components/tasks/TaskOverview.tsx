@@ -69,6 +69,7 @@ export function OverviewRow({ task, viewerId, onOpen }: { task: TaskSummary; vie
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const view = summaryView(task, viewerId);
+  const { agentNames } = useLiveEvents();
   const copyLink = async () => {
     const ok = await copyText(taskPermalink(task.taskId));
     setCopied(ok);
@@ -83,7 +84,7 @@ export function OverviewRow({ task, viewerId, onOpen }: { task: TaskSummary; vie
     <div className="min-w-0 flex-1">
       <button type="button" onClick={() => onOpen(task.taskId)} aria-label={`Open ${task.title}, ${view.word}`}
         className="block max-w-full truncate text-left font-semibold after:absolute after:inset-0 after:content-['']">{task.title}</button>
-      <p className="truncate text-ui text-muted-foreground">{taskSummaryLine(task, viewerId)}</p>
+      <p className="truncate text-ui text-muted-foreground">{taskSummaryLine(task, viewerId, agentNames)}</p>
       {error && <p role="alert" className="text-ui text-err">{error}</p>}
       {copied && <p role="status" className="text-ui text-muted-foreground">Link copied</p>}
     </div>

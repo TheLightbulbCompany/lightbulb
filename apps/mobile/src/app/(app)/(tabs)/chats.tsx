@@ -388,7 +388,8 @@ export default function Chats() {
                   online: online.has(member.id),
                   sharing: sessions.some((s) => s.humanUserId === member.id && sessionLive(s)),
                 }
-              : member,
+              // Super-agent: the front agent reads "Lightbulb" whatever its stored seat name ("CEO").
+              : member.id === frontAgentId ? { ...member, displayName: "Lightbulb" } : member,
           );
           const dmAgent = room.kind === "dm" && others[0]?.kind === "agent" ? others[0] : null;
           const ring = dmAgent

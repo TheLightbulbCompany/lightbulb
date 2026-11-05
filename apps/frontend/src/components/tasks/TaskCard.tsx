@@ -40,7 +40,7 @@ export function TaskCard({ task, taskId, viewerId, onOpen, hideAction, children 
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // An approval or review this viewer can act on shows what it does before the one press (To, Subject, …).
-  const { tasks } = useLiveEvents();
+  const { tasks, agentNames } = useLiveEvents();
   const q = task?.openQuestion;
   const asks = q?.canAnswer && (q.kind === "approval" || q.kind === "review") ? q.qid : null;
   const { data: views, error: viewsError } = useTaskQuestions(tasks, asks ? taskId : null);
@@ -60,7 +60,7 @@ export function TaskCard({ task, taskId, viewerId, onOpen, hideAction, children 
     onOpen?.(taskId);
   };
   // The summary line only when it says more than the status word (an ask, a reason, what is landing).
-  const line = taskSummaryLine(task, viewerId);
+  const line = taskSummaryLine(task, viewerId, agentNames);
   const detail = line === view.word || line.startsWith(`${view.word} ·`) ? null : line;
   return <div className="editorial-card editorial-card-hover relative mt-1.5 max-w-xl px-3 py-2" data-task-card={taskId}>
     <div className="flex items-start gap-3">
@@ -69,7 +69,7 @@ export function TaskCard({ task, taskId, viewerId, onOpen, hideAction, children 
           className="block max-w-full truncate text-left font-semibold after:absolute after:inset-0 after:rounded-lg after:content-[''] focus-visible:outline-none focus-visible:after:outline-2 focus-visible:after:outline-offset-2 focus-visible:after:outline-ring">
           {task.title}
         </button>
-        <p className="truncate text-ui text-muted-foreground">{specialistLabel(task.specialist)}</p>
+        <p className="truncate text-ui text-muted-foreground">{specialistLabel(task.specialist, agentNames)}</p>
         {detail && <p className="truncate text-ui">{detail}</p>}
       </div>
       <TaskStatus task={task} viewerId={viewerId} />

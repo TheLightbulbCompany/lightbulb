@@ -11,6 +11,7 @@ import { useRosterEntries } from "@/components/agents/useRosterEntries";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type { CompanyAgent, CompanyMember } from "@/components/teams/shared/types";
 import { resolveCeoAgentId } from "@/components/getstarted/getStartedFirstTask";
+import { useSuperAgent } from "@/hooks/useLiveEvents";
 import { activateMessagesPanel, getWorkspaceSnapshot, openPanel } from "@/components/workspace/workspaceController";
 import { MessageNotifications } from "@/components/notifications/MessageNotifications";
 import { UnreadTitleBadge } from "@/components/notifications/UnreadTitleBadge";
@@ -33,6 +34,9 @@ import { useSessionRows } from "./useSessionRows";
 import type { SessionRow } from "@lightbulb/shared";
 import type { DirectoryRoom, DirectoryParticipant, RoomParticipant } from "./types";
 
+
+/** What the front agent is called while the super-agent switch is on (contracts-v2 §9). */
+const FRONT_AGENT_NAME = "Lightbulb";
 export interface MessagingWorkspaceValue {
   activeRoomId: string | null;
   directoryProps: RoomDirectoryProps;
@@ -439,10 +443,14 @@ export function MessagingWorkspaceProvider({
   }, [seen, workspaceSessions.sessions, openSessionId, seenScope, sessionSeen.scope]);
   // A room member's online/sharing (human) or agentActivity (agent) decoration --
   // the same ternary every member list below applies to its own room-member array.
+  // Super-agent: the front agent is "Lightbulb" (@lightbulb) everywhere, whatever its roster name ("CEO").
+  // Stored member rows and the Paperclip roster keep the old name, so the one rename happens here.
+  const superAgent = useSuperAgent();
+  const frontId = superAgent ? resolveCeoAgentId(agentRoster?.agents ?? []) : undefined;
   const decorate = useCallback((member: RoomMember): RoomParticipant => member.kind === "agent"
-    ? { ...member, agentActivity: activityByAgentId.get(member.id) }
+    ? { ...member, ...(member.id === frontId ? { displayName: FRONT_AGENT_NAME, mentionHandle: "lightbulb" } : {}), agentActivity: activityByAgentId.get(member.id) }
     : { ...member, online: online.has(member.id), sharing: sharing.has(member.id) },
-  [activityByAgentId, online, sharing]);
+  [activityByAgentId, online, sharing, frontId]);
   // A roster row's display name, with the same "Workspace member" fallback everywhere one is missing.
   const rosterName = (member: CompanyMember | undefined) => member?.name || member?.email || "Workspace member";
   const { user: clerkUser } = useUser();
@@ -509,12 +517,12 @@ export function MessagingWorkspaceProvider({
     const agents = (agentRoster?.agents ?? []).map((agent) => ({
       kind: "agent" as const,
       id: agent.id,
-      displayName: agent.name,
+      displayName: agent.id === frontId ? FRONT_AGENT_NAME : agent.name,
       agentActivity: activityByAgentId.get(agent.id),
       mentionHandle: rooms.activeRoom?.members.find((member) => member.kind === "agent" && member.id === agent.id)?.mentionHandle ?? null,
     }));
     return [...people, ...agents];
-  }, [humanRoster, agentRoster, rooms.activeRoom, userId, online, sharing, activityByAgentId]);
+  }, [humanRoster, agentRoster, rooms.activeRoom, userId, online, sharing, activityByAgentId, frontId]);
 
   const handleTyping = useCallback((isTyping: boolean) => {
     if (typingTimer.current) clearTimeout(typingTimer.current);

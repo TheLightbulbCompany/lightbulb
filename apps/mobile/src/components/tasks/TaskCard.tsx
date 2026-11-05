@@ -35,6 +35,7 @@ export function TaskCard({ task, taskId, viewerId, palette, onOpen = openTaskScr
   onOpen?: (taskId: string) => void; hideAction?: boolean; children?: React.ReactNode;
 }) {
   const { run } = useTaskActions();
+  const { agentNames } = useLiveEvents();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   if (!task) {
@@ -46,7 +47,7 @@ export function TaskCard({ task, taskId, viewerId, palette, onOpen = openTaskScr
   }
   const view = summaryView(task, viewerId);
   const inline = !hideAction && view.action && view.action !== "answer" && view.action !== "review" ? view.action : null;
-  const line = taskSummaryLine(task, viewerId);
+  const line = taskSummaryLine(task, viewerId, agentNames);
   const detail = line === view.word || line.startsWith(`${view.word} ·`) ? null : line;
   return (
     <Pressable
@@ -59,7 +60,7 @@ export function TaskCard({ task, taskId, viewerId, palette, onOpen = openTaskScr
       <View style={styles.row}>
         <View style={styles.main}>
           <Text style={[styles.title, { color: palette.fg }]} numberOfLines={1}>{task.title}</Text>
-          <Text style={[styles.meta, { color: palette.fgMute }]} numberOfLines={1}>{specialistLabel(task.specialist)}</Text>
+          <Text style={[styles.meta, { color: palette.fgMute }]} numberOfLines={1}>{specialistLabel(task.specialist, agentNames)}</Text>
           {detail ? <Text style={[styles.meta, { color: palette.fg }]} numberOfLines={2}>{detail}</Text> : null}
           {task.output && !detail?.includes(task.output.title) ? (
             <Text style={[styles.meta, { color: palette.fgMute }]} numberOfLines={1}>📎 {task.output.title}</Text>

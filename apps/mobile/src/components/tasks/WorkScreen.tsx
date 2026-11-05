@@ -97,13 +97,14 @@ export function OverviewList({ scope, palette, onOpen = openTaskScreen }: { scop
 function OverviewRow({ task, viewerId, palette, onOpen, first }: {
   task: TaskSummary; viewerId: string; palette: ChatPalette; onOpen: (taskId: string) => void; first: boolean;
 }) {
+  const { agentNames } = useLiveEvents();
   const view = summaryView(task, viewerId);
   return (
     <Pressable accessibilityRole="button" accessibilityLabel={`Open ${task.title}, ${view.word}`} onPress={() => onOpen(task.taskId)}
       style={({ pressed }) => [styles.row, { backgroundColor: pressed ? palette.hover : "transparent", borderColor: palette.edge, borderTopWidth: first ? 0 : StyleSheet.hairlineWidth }]}>
       <View style={styles.rowMain}>
         <Text style={[styles.title, { color: palette.fg }]} numberOfLines={1}>{task.title}</Text>
-        <Text style={[styles.meta, { color: palette.fgMute }]} numberOfLines={1}>{taskSummaryLine(task, viewerId)}</Text>
+        <Text style={[styles.meta, { color: palette.fgMute }]} numberOfLines={1}>{taskSummaryLine(task, viewerId, agentNames)}</Text>
       </View>
       <TaskStatus task={task} viewerId={viewerId} palette={palette} />
     </Pressable>

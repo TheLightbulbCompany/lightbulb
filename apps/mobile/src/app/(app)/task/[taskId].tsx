@@ -24,7 +24,7 @@ export default function TaskScreen() {
   const { taskId } = useLocalSearchParams<{ taskId: string }>();
   const { userId } = useAuth();
   const palette = useChatPalette();
-  const { tasks } = useLiveEvents();
+  const { tasks, agentNames } = useLiveEvents();
   // Behind the switch: with it off (or still loading) a pasted task link fetches and marks nothing.
   const on = useSuperAgent();
   const id = on ? taskId ?? null : null;
@@ -47,7 +47,7 @@ export default function TaskScreen() {
     contentStyle: { backgroundColor: palette.ground },
     headerTitle: () => (
       <ConversationHeader title={task?.title ?? "Thread"} avatar={null} palette={palette}
-        status={task ? `${specialistLabel(task.specialist)} · ${view?.word} · Lightbulb cloud` : null}
+        status={task ? `${specialistLabel(task.specialist, agentNames)} · ${view?.word} · Lightbulb cloud` : null}
         statusTone={view?.tone === "working" ? "live" : "mute"} />
     ),
   };

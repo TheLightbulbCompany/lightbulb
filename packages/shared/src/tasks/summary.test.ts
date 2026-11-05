@@ -110,6 +110,15 @@ describe("formatSchedule", () => {
   });
 });
 
+describe("specialistLabel with the agents list", () => {
+  it("an agent id reads by its name; an unknown id never shows; a handle reads as itself", () => {
+    const id = "5b36216c-196c-48af-ad2a-6817c42a1de3";
+    expect(specialistLabel(id, new Map([[id, "Finance"]]))).toBe("Lightbulb · Finance");
+    expect(specialistLabel(id)).toBe("Lightbulb");
+    expect(specialistLabel("finance")).toBe("Lightbulb · Finance");
+  });
+});
+
 describe("questions: the server's option ids and copy", () => {
   it("the one-press option is the question's primary, never a literal", () => {
     // questions.py kind_and_options: approval [allow_once, deny]; review [send|publish|merge, request_changes].

@@ -56,3 +56,7 @@ async def test_running_count_gauge_loop_falls_back_off_ecs(monkeypatch):
     with pytest.raises(asyncio.CancelledError):
         await main._running_count_gauge_loop()
     assert log_calls == [(("running_count",), {"extra": {"instance": "local", "count": 0}})]
+
+
+# These tests drive the lifespan workers themselves (tests/conftest.py stubs them otherwise).
+pytestmark = pytest.mark.real_background_workers

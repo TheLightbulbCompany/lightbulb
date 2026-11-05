@@ -151,7 +151,10 @@ async def test_a_parked_runtime_gets_sessions_json_rewritten_and_no_rpc(store, m
     await network_member.publish_sessions("org_a")
     assert [s["title"] for s in _doc(store)["sessions"]] == ["Friday", "Nova"]
     assert rpc == []
-    assert not caplog.records  # no warning traceback on a normal provision
+    # No warning traceback on a normal provision. `asyncio` records are excluded: they are
+    # another test's leftovers ("Task was destroyed but it is pending!" when a dropped task is
+    # garbage-collected), and GC can run them inside any test under xdist.
+    assert not [r for r in caplog.records if r.name != "asyncio"]
 
 
 @pytest.mark.asyncio

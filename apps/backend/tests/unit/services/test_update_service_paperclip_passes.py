@@ -496,3 +496,7 @@ def test_update_repo_exposes_t13_methods():
     assert callable(ur.list_pending_by_type)
     assert callable(ur.mark_applied)
     assert callable(ur.mark_failed)
+
+
+# These tests drive the lifespan workers themselves (tests/conftest.py stubs them otherwise).
+pytestmark = pytest.mark.real_background_workers

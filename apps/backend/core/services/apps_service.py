@@ -85,6 +85,7 @@ class BuilderCaller:
     actor_id: str
     actor_kind: Literal["agent", "person"]
     run_id: str | None = None  # X-Lightbulb-Run: the agent run this call came from
+    run_secret: str | None = None  # X-Lightbulb-Run-Secret: proves a task run is the caller's own (never logged)
 
 
 class AppsRefused(provisioning_workflow.WorkflowRefused):
@@ -1870,14 +1871,19 @@ async def update_settings(
 
 async def _requests_by_app(owner_id: str) -> dict[str, dict]:
     """``{app_id: {task_id, identifier}}`` from the workspace's app Creation rows. Opening the request checks who may
-    see it; the id and its LB-n say nothing. Only where requests exist (the env master: prod reads no tasks table)."""
-    if not super_agent_flags.env_enabled():
+    see it; the id and its LB-n say nothing. Only where requests exist (prod reads no tasks table); a failed read
+    costs the rows their request link, never the list."""
+    if not await super_agent_flags.flags_for(owner_id):
         return {}
-    made = {c["capId"]: c["taskId"] for c in await tasks_repo.list_creations(owner_id) if c.get("kind") == "app"}
-    made = {app_id: task_id for app_id, task_id in made.items() if task_id}
-    if not made:
+    try:
+        made = {c["capId"]: c["taskId"] for c in await tasks_repo.list_creations(owner_id) if c.get("kind") == "app"}
+        made = {app_id: task_id for app_id, task_id in made.items() if task_id}
+        if not made:
+            return {}
+        tasks = {t["taskId"]: t for t in await tasks_repo.batch_get(owner_id, [ts.task_sk(t) for t in made.values()])}
+    except Exception:  # noqa: BLE001 -- Canvas without request links beats no Canvas
+        logger.warning("apps: request links unavailable for %s", owner_id, exc_info=True)
         return {}
-    tasks = {t["taskId"]: t for t in await tasks_repo.batch_get(owner_id, [ts.task_sk(t) for t in made.values()])}
     return {
         app_id: {"task_id": task_id, "identifier": tasks[task_id].get("identifier")}
         for app_id, task_id in made.items()

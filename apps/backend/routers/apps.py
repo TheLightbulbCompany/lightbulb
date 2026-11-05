@@ -154,7 +154,10 @@ async def _caller(request: Request, *, upload: bool = False) -> svc.BuilderCalle
     await require_always_on_entitlement(caller.owner_id, message=PAID_MESSAGE)  # R22
     run_id = request.headers.get("X-Lightbulb-Run")
     if run_id and _AGENT_ID_RE.fullmatch(run_id):  # absent or malformed: the app links no run (old CLIs)
-        caller = dataclasses.replace(caller, run_id=run_id)
+        secret = request.headers.get("X-Lightbulb-Run-Secret")
+        caller = dataclasses.replace(
+            caller, run_id=run_id, run_secret=secret if secret and len(secret) <= 128 else None
+        )
     return caller
 
 

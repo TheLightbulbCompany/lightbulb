@@ -178,17 +178,36 @@ async def open_conversation(auth: AuthContext, app_id: str) -> dict:
     return {"room_id": meta["roomId"]}
 
 
-async def _request_of(owner_id: str, room_id: str | None) -> tuple[dict, str | None] | None:
+_NOT_YOUR_REQUEST = AppsRefused(
+    "not_your_request",
+    "That room is a request's own room, and this call does not come from that request.",
+    "hand the app over from the request's own run, or name the room it was asked in",
+)
+
+
+async def _request_of(caller: BuilderCaller, room_id: str | None) -> tuple[dict, str | None] | None:
     """A Worker hands an app over from its request's own room (``--room <request room>``): that request (task row)
-    and the room it was asked in. Who asked and where come from the row, never from the caller's word."""
+    and the room it was asked in; who asked and where then come from the row. Only the request's own live run
+    (``X-Lightbulb-Run`` + ``X-Lightbulb-Run-Secret``, which also needs the switch on) or a person who can see the
+    request may name it; anyone else is refused, never treated as an ordinary room. Not a request room: None."""
+    owner_id = caller.owner_id
     meta = (await messaging_repo.get_room(room_id) if room_id else None) or {}
     task_id = (meta.get("task") or {}).get("taskId")
-    if not task_id or meta.get("ownerId") != owner_id:
+    if not task_id:
         return None
+    if meta.get("ownerId") != owner_id:
+        raise AppsRefused("room_not_found", "That room is not in this workspace.", "pick a room of this workspace")
+    if caller.actor_kind == "agent":
+        from core.services import provisioning_questions  # lazy: it pulls in the provisioning workflow
+
+        ran = await provisioning_questions.task_for_run(owner_id, caller.run_id, caller.run_secret)
+        if (ran or {}).get("taskId") != task_id:
+            raise _NOT_YOUR_REQUEST
     tree = await tasks_repo.get_task_tree(owner_id, task_id)
-    if tree["task"] is None:
-        return None
-    return tree["task"], tasks_access._origin_room(tree["subscriptions"], tree["task"].get("audience") or {})
+    task = tree["task"]
+    if task is None or (caller.actor_kind == "person" and not await tasks_access.can_view(task, caller.actor_id)):
+        raise _NOT_YOUR_REQUEST
+    return task, tasks_access._origin_room(tree["subscriptions"], task.get("audience") or {})
 
 
 async def _requester(owner_id: str, user_id: str | None, room_id: str | None) -> str | None:
@@ -305,7 +324,7 @@ async def start(
     request there as from the person, and wake the builder there. The room is free at once."""
     owner_id = caller.owner_id
     svc._check_name(name)
-    request = await _request_of(owner_id, origin_room_id)
+    request = await _request_of(caller, origin_room_id)
     if request:  # started by a request: the app comes from where it was asked, for the person who asked
         origin_room_id, requested_by = request[1], request[0].get("ownerUserId")
     if origin_room_id:
@@ -327,7 +346,7 @@ async def start(
     if builder is None:
         raise _NO_AGENT
     app, how = await _reserve(caller, name, origin_room_id, person)
-    if request:  # Canvas lists it as a creation of this request (the first request that made it stays)
+    if request and how == "made":  # Canvas lists it as this request's creation (never an app another flow reserved)
         await tasks_repo.put_creation(owner_id, {"capId": app["app_id"], "kind": "app", "taskId": request[0]["taskId"]})
     if person and not app.get("created_by"):  # reserved before anyone asked: the first person who did made it
         if await apps_repo.patch(app["app_id"], {"created_by": person}, expect={"created_by": None}):
@@ -434,7 +453,7 @@ async def ask(
     app = await svc._owned(owner_id, app_id)
     await require_opens(owner_id, app, caller)
     room_id = (origin or {}).get("room_id")
-    request = await _request_of(owner_id, room_id)
+    request = await _request_of(caller, room_id)
     if request:  # passed on from a request: where and by whom it was asked, from the request's row
         room_id = request[1]
     if room_id:

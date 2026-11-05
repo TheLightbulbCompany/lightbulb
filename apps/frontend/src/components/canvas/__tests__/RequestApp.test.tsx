@@ -21,9 +21,16 @@ describe("RequestApp", () => {
     render(<RequestApp taskId="t1" />);
     expect(screen.getByText("Workshop Signup")).toBeInTheDocument();
     expect(screen.getByText(/Ready to try/)).toBeInTheDocument();
-    expect(screen.queryByRole("link")).toBeNull(); // a preview opens through a pass, in Canvas
+    expect(screen.queryByRole("link")).toBeNull(); // nothing live: the preview opens in Canvas
     fireEvent.click(screen.getByRole("button", { name: "Open in Canvas" }));
     expect(openPanel).toHaveBeenCalledWith("canvas", { app: "a1" }, { pushUrl: true });
+  });
+
+  it("a live app open to a room shows no address: it opens through a pass in Canvas", () => {
+    apps.list = [app({ state: "live", live_version: 1, open_to: "room", live_url: "https://live" })];
+    render(<RequestApp taskId="t1" />);
+    expect(screen.getByText(/Live/)).toBeInTheDocument();
+    expect(screen.queryByRole("link")).toBeNull();
   });
 
   it("a public live app gets its address; a request that made no app shows nothing", () => {

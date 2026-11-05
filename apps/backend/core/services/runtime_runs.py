@@ -12,6 +12,7 @@ from typing import Literal
 
 import httpx
 
+from core.config import settings
 from core.repositories import container_repo
 from core.services import local_session_grants, runtime_transport
 from core.services.messaging import ApiProblem
@@ -77,6 +78,8 @@ class RunRequest:
     def __post_init__(self) -> None:
         if self.effects not in ("off", "required"):
             raise ValueError(f"effects must be off or required, not {self.effects!r}")
+        if self.faults and settings.ENVIRONMENT != "dev":
+            raise ValueError("fault hooks are dev only")
 
     def to_wire(self) -> dict:
         limits = {"max_iterations": self.max_iterations, "run_budget_seconds": self.run_budget_seconds}

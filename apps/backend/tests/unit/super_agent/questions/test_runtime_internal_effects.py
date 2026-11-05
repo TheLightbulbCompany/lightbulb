@@ -190,10 +190,25 @@ async def test_run_event_waiting_approval_terminal(api):
     assert ("complete", WorkerTurnOut("waiting_approval", None)) in api.fake.log
 
 
-def test_run_request_wire_carries_effects_and_faults():
+def test_run_request_wire_carries_effects_and_faults(monkeypatch):
+    from core.config import settings
+
+    monkeypatch.setattr(settings, "ENVIRONMENT", "dev")
     off = runtime_runs.RunRequest(input="x", instructions="y").to_wire()
     assert off["effects"] == "off" and "faults" not in off
     on = runtime_runs.RunRequest(input="x", instructions="y", effects="required", faults=("kill_after_effect_intent",))
     assert on.to_wire()["effects"] == "required" and on.to_wire()["faults"] == ["kill_after_effect_intent"]
     with pytest.raises(ValueError):
         runtime_runs.RunRequest(input="x", instructions="y", effects="maybe")
+
+
+def test_faults_are_dev_only(monkeypatch):
+    from core.config import settings
+
+    monkeypatch.setattr(settings, "ENVIRONMENT", "dev")
+    runtime_runs.RunRequest(input="x", instructions="y", faults=("kill_after_effect_intent",))
+    for env in ("prod", "staging", ""):
+        monkeypatch.setattr(settings, "ENVIRONMENT", env)
+        with pytest.raises(ValueError):
+            runtime_runs.RunRequest(input="x", instructions="y", faults=("kill_after_effect_intent",))
+        runtime_runs.RunRequest(input="x", instructions="y")  # no faults: fine anywhere

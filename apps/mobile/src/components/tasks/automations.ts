@@ -1,0 +1,52 @@
+// Lane A's automation routes on the phone (the web twin: components/tasks/automations.ts).
+
+import { useCallback } from "react";
+import { useAuth, useOrganization } from "@clerk/expo";
+import {
+  automationKey, automationRunsKey, automationsKey, runNow as runNowShared, useAutomationRunsView, useAutomationView, useAutomationsView,
+  useTaskCache, type AutomationView,
+} from "@lightbulb/shared";
+
+import { useLiveEvents } from "../../providers/live-events";
+import { errorCopy } from "./useTaskActions";
+
+export type AutomationVerb = "activate" | "pause" | "resume" | "run";
+
+export function useAutomations(enabled = true) {
+  const { api, tasks } = useLiveEvents();
+  return useAutomationsView(api, tasks.cacheScope, enabled);
+}
+
+export function useAutomation(id: string | null) {
+  const { api, tasks } = useLiveEvents();
+  return useAutomationView(api, tasks.cacheScope, id);
+}
+
+export function useAutomationRuns(id: string | null) {
+  const { api, tasks } = useLiveEvents();
+  return useAutomationRunsView(api, tasks.cacheScope, id);
+}
+
+export function useAutomationActions() {
+  const { api, tasks } = useLiveEvents();
+  const { mutate } = useTaskCache();
+  const refresh = useCallback((id: string) => Promise.all([
+    mutate(automationsKey(tasks.cacheScope)), mutate(automationKey(tasks.cacheScope, id)), mutate(automationRunsKey(tasks.cacheScope, id)),
+  ]), [mutate, tasks.cacheScope]);
+  const act = useCallback(async (id: string, verb: AutomationVerb) => {
+    const res = await api.post(`/automations/${encodeURIComponent(id)}/${verb}`, {});
+    await refresh(id);
+    return res;
+  }, [api, refresh]);
+  return { act, refresh };
+}
+
+/** The viewer as the server's two predicates see them (routers/automations.py). */
+export function useAutomationViewer(): { userId: string | null; admin: boolean } {
+  const { userId } = useAuth();
+  const { membership } = useOrganization();
+  return { userId: userId ?? null, admin: membership?.role === "org:admin" };
+}
+
+export const runNow = (act: (id: string, verb: AutomationVerb) => Promise<unknown>, a: Pick<AutomationView, "id" | "activeRunTaskId" | "status">) =>
+  runNowShared((id) => act(id, "run"), a, errorCopy);

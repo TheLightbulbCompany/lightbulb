@@ -14,7 +14,7 @@ import { useSuperAgent } from "@/hooks/useLiveEvents";
 import { openTaskPane } from "@/components/workspace/workspaceController";
 import { statusLine, useAutomations } from "./ScheduledList";
 import {
-  budgetLine, deliveryWords, runNow, scheduleWords, useAutomation, useAutomationActions, useAutomationRuns, useCanDecide, useCanEdit, viewerTimeZone, waitingWords,
+  budgetLine, deliveryWords, runNow, runNowReason, scheduleWords, useAutomation, useAutomationActions, useAutomationRuns, useCanDecide, useCanEdit, viewerTimeZone, waitingWords,
 } from "./automations";
 
 export function AutomationsPanel({ viewerTz = viewerTimeZone(), onOpenTask = openTaskPane }: {
@@ -45,7 +45,7 @@ function RunNowButton({ a, onOpenTask, onNote }: { a: AutomationView; onOpenTask
   if (a.activeRunTaskId) {
     return <Button type="button" size="sm" variant="ghost" className="relative z-10" onClick={() => onOpenTask(a.activeRunTaskId!)}>Running ›</Button>;
   }
-  const reason = !canEdit(a) ? "Only its owner or an admin can run it" : a.status === "draft" ? "Turn it on first" : null;
+  const reason = runNowReason(a, canEdit(a));
   return <span className="relative z-10 inline-flex items-center gap-2">
     {reason && <span className="text-caption text-muted-foreground">{reason}</span>}
     <Button type="button" size="sm" variant="outline" disabled={!!reason} aria-disabled={!!reason}

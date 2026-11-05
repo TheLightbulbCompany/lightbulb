@@ -21,7 +21,12 @@ def _table():
 
 
 async def put_status(
-    owner_id: str, provider: str, status: str = "connected", identity: str | None = None, tenant_id: str | None = None
+    owner_id: str,
+    provider: str,
+    status: str = "connected",
+    identity: str | None = None,
+    tenant_id: str | None = None,
+    custody: str | None = None,
 ) -> None:
     """Record that this owner has this provider connected.
 
@@ -47,6 +52,9 @@ async def put_status(
         item["identity"] = identity
     if tenant_id:
         item["tenant_id"] = tenant_id
+    if custody:
+        # Spec 13: who refreshes this row's rotating grant ("backend"); absent = today's rule.
+        item["custody"] = custody
     await run_in_thread(_table().put_item, Item=item)
 
 
@@ -102,6 +110,25 @@ async def set_status(owner_id: str, provider: str, status: str, *, reason: str |
         Key={"owner_id": owner_id, "provider": provider},
         UpdateExpression=expr,
         ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues=values,
+    )
+
+
+async def set_custody(owner_id: str, provider: str, custody: str, *, expected: str | None = None) -> None:
+    """Move an existing row to ``custody`` (cutover/rollback, spec 13 §6.2), only from
+    ``expected`` (None = no custody attribute yet). Raises ``ConditionalCheckFailedException``
+    when the row is gone or its custody moved: the caller re-reads."""
+    condition = "attribute_exists(owner_id) AND " + (
+        "attribute_not_exists(custody)" if expected is None else "custody = :expected"
+    )
+    values: dict = {":c": custody, ":u": int(time.time())}
+    if expected is not None:
+        values[":expected"] = expected
+    await run_in_thread(
+        _table().update_item,
+        Key={"owner_id": owner_id, "provider": provider},
+        UpdateExpression="SET custody = :c, updated_at = :u",
+        ConditionExpression=condition,
         ExpressionAttributeValues=values,
     )
 

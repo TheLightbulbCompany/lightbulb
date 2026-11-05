@@ -46,6 +46,7 @@ from core.services.google_identity import seed_agent_google_identity
 from core.services.owner_facts import write_owner_facts
 from core.services import owner_lifecycle
 from core.services.owner_lifecycle import OwnerLifecycleBusyError, owner_lifecycle_guard
+from core.services.super_agent_flags import flags_for
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +57,7 @@ _PASTE_SEPARATOR = "|"
 router = APIRouter(prefix="/connections", tags=["connections"])
 
 
-def _retains_secret(p: registry.Provider) -> bool:
+def _retains_secret(p: registry.Provider, row: dict | None = None) -> bool:
     """Whether the backend keeps the credential (in Secrets Manager).
 
     ``refresh_owner == "actor"`` means a CLI/keyring inside the container owns
@@ -67,8 +68,20 @@ def _retains_secret(p: registry.Provider) -> bool:
     opts an actor-refresh provider back in — posthog, so the backend can run
     its own HogQL reads (owner-day rollups) without touching the container's
     MCP copy. Disconnect deletes the retained secret unconditionally
-    (``_disconnect_teardown``), so the flag needs no teardown wiring."""
-    return registry.refresh_owner_for(p) != "actor" or p.retain_secret
+    (``_disconnect_teardown``), so the flag needs no teardown wiring.
+
+    A row with ``custody: backend`` (spec 13) is backend-custodian whatever the provider's default.
+    """
+    return registry.refresh_owner_for(p, row) != "actor" or p.retain_secret
+
+
+async def _connect_custody(owner_id: str, p: registry.Provider) -> str | None:
+    """``"backend"`` for a custody-migratable provider connected in a workspace with the
+    super-agent switch on (spec 13: the backend holds the rotating grant from the start), else
+    None -- the row gets no custody attribute and today's rule applies."""
+    if p.custody_migratable and await flags_for(owner_id):
+        return "backend"
+    return None
 
 
 async def _remove_materialized_artifacts(owner_id: str, p: registry.Provider, credential: dict) -> None:
@@ -1240,18 +1253,25 @@ async def oauth_callback(
             # container, so the backend stores nothing and the EFS keyring written by
             # apply_connection is the sole durable copy. Mark connected only after
             # wiring succeeds.
-            if _retains_secret(p):
+            custody = await _connect_custody(owner_id, p)
+            row_hint = {"custody": custody} if custody else None
+            if _retains_secret(p, row_hint):
                 await integration_secret_store.put(owner_id, prov, credential)
             try:
                 connection_identity = await apply_connection.apply_connection(owner_id, prov, credential)
             except Exception:
                 await _remove_materialized_artifacts(owner_id, p, credential)
-                if _retains_secret(p):
+                if _retains_secret(p, row_hint):
                     await integration_secret_store.delete(owner_id, prov)
                 return _done("error=apply_failed", origin)
             # Secret-free metadata from the id_token (Microsoft: account + tenant).
             await integrations_repo.put_status(
-                owner_id, prov, "connected", identity=credential.get("account"), tenant_id=credential.get("tenant_id")
+                owner_id,
+                prov,
+                "connected",
+                identity=credential.get("account"),
+                tenant_id=credential.get("tenant_id"),
+                **({"custody": custody} if custody else {}),
             )
             await write_owner_facts(owner_id)  # best-effort: refresh the agents' connected_integrations manifest
     except OwnerLifecycleBusyError:

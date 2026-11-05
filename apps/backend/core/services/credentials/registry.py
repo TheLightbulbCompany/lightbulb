@@ -435,6 +435,11 @@ class Provider(BaseModel):
     # HogQL rollups). Non-actor providers retain regardless — see
     # routers.connections._retains_secret.
     retain_secret: bool = False
+    # Super-agent token custody (spec 13 T6): an actor-refreshed provider whose rotating grant the
+    # backend may take over, per integration row (row ``custody`` attribute, see refresh_owner_for).
+    custody_migratable: bool = False
+    # How long before expiry the backend refreshes a token it holds (seconds).
+    refresh_window_s: int = 60
     wiring: Wiring
     requires: Requires = Requires()
     oauth: OAuthSpec | None = None
@@ -546,8 +551,14 @@ class Provider(BaseModel):
         return self
 
 
-def refresh_owner_for(provider: Provider) -> RefreshOwner:
-    """Resolve the effective token custodian for the current environment."""
+def refresh_owner_for(provider: Provider, row: dict | None = None) -> RefreshOwner:
+    """Resolve the effective token custodian for the current environment.
+
+    An integrations ``row`` carrying ``custody`` wins (spec 13: custody is data, set by a
+    switch-on connect or the cutover script); a row without it -- every legacy row -- keeps
+    today's rule."""
+    if row and row.get("custody") in ("backend", "actor"):
+        return row["custody"]
     if provider.brokered_environments and current_env() in provider.brokered_environments:
         return "backend"
     return provider.refresh_owner

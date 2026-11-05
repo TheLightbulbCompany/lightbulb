@@ -2,7 +2,7 @@
 
 import logging
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 
 import httpx
 
@@ -110,14 +110,50 @@ async def _announce_reconnect(owner_id: str, provider_key: str) -> None:
         logger.warning("reconnect needs-you item failed owner=%s provider=%s", owner_id, provider_key)
 
 
+def _expires_at(credential: dict) -> int | None:
+    """Epoch seconds of ``token_expiry``; 0 when there is none; None when it is unreadable."""
+    expiry = credential.get("token_expiry")
+    if not expiry:
+        return 0
+    try:
+        expires_at = datetime.fromisoformat(expiry)
+    except (TypeError, ValueError):
+        return None
+    return int(expires_at.timestamp()) if expires_at.tzinfo is not None else None
+
+
 async def get(owner_id: str, provider_key: str) -> str:
     """Return a fresh access token for a connected backend-refreshed OAuth provider."""
-    provider = registry.get_provider(provider_key)
-    if not provider.oauth or registry.refresh_owner_for(provider) != "backend":
-        raise ValueError(f"{provider_key} is not a backend-refreshed OAuth provider")
+    return (await get_with_expiry(owner_id, provider_key))[0]
 
-    # ponytail: one owner-wide lease and Secrets Manager read per request keep
-    # refresh correct; use provider leases/access-token caching if latency grows.
+
+async def get_with_expiry(owner_id: str, provider_key: str) -> tuple[str, int]:
+    """``(access_token, expires_at epoch s; 0 = unknown)`` for a connected backend-refreshed
+    OAuth provider, refreshing it when it expires within ``provider.refresh_window_s``.
+
+    For a ``custody: backend`` row, a token outside the window comes back after one read and no
+    lease: N task VMs vending at once take the lease only when a refresh is actually due."""
+    provider = registry.get_provider(provider_key)
+    row = await integrations_repo.get(owner_id, provider_key)
+    if not provider.oauth or registry.refresh_owner_for(provider, row) != "backend":
+        raise ValueError(f"{provider_key} is not a backend-refreshed OAuth provider")
+    window = provider.refresh_window_s
+
+    def _fresh(credential: dict | None) -> int | None:
+        expires_at = _expires_at(credential or {})
+        if not (credential or {}).get("access_token") or expires_at is None:
+            return None
+        return expires_at if expires_at == 0 or expires_at > time.time() + window else None
+
+    # Only for custody rows: legacy backend providers keep today's lease-per-call path in prod.
+    if row and row.get("custody") == "backend" and row.get("status", "connected") == "connected":
+        credential = await integration_secret_store.get(owner_id, provider_key)
+        expires_at = _fresh(credential)
+        if expires_at is not None:
+            return credential["access_token"], expires_at
+
+    # ponytail: one owner-wide lease and Secrets Manager read per refresh keep
+    # refresh correct; use provider leases if refreshes contend.
     async with owner_lifecycle.owner_lifecycle_guard(owner_id):
         row = await integrations_repo.get(owner_id, provider_key)
         if not row or row.get("status", "connected") != "connected":
@@ -126,33 +162,27 @@ async def get(owner_id: str, provider_key: str) -> str:
         if not credential or not credential.get("access_token"):
             await _mark_reconnect(owner_id, provider_key, "no_access_token")
             raise ReconnectRequired(provider_key)
-
-        expiry = credential.get("token_expiry")
-        if expiry:
+        if _expires_at(credential) is None:
+            await _mark_reconnect(owner_id, provider_key, "bad_expiry")
+            raise ReconnectRequired(provider_key)
+        if _fresh(credential) is None:
+            # Instagram has no refresh token: its long-lived token refreshes itself.
+            if not credential.get("refresh_token") and provider.oauth.long_lived_exchange != "ig_exchange_token":
+                await _mark_reconnect(owner_id, provider_key, "no_refresh_token")
+                raise ReconnectRequired(provider_key)
             try:
-                expires_at = datetime.fromisoformat(expiry)
-                if expires_at.tzinfo is None:
-                    raise ValueError("naive token expiry")
-            except (TypeError, ValueError) as exc:
-                await _mark_reconnect(owner_id, provider_key, "bad_expiry")
+                credential = await oauth_dance.refresh(owner_id, provider_key, credential)
+            except ValueError as exc:
+                await _mark_reconnect(
+                    owner_id, provider_key, await _refresh_reason(owner_id, provider_key, exc, credential)
+                )
                 raise ReconnectRequired(provider_key) from exc
-            if expires_at <= datetime.now(timezone.utc) + timedelta(minutes=1):
-                if not credential.get("refresh_token"):
-                    await _mark_reconnect(owner_id, provider_key, "no_refresh_token")
-                    raise ReconnectRequired(provider_key)
-                try:
-                    credential = await oauth_dance.refresh(owner_id, provider_key, credential)
-                except ValueError as exc:
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code in (400, 401):
                     await _mark_reconnect(
                         owner_id, provider_key, await _refresh_reason(owner_id, provider_key, exc, credential)
                     )
                     raise ReconnectRequired(provider_key) from exc
-                except httpx.HTTPStatusError as exc:
-                    if exc.response.status_code in (400, 401):
-                        await _mark_reconnect(
-                            owner_id, provider_key, await _refresh_reason(owner_id, provider_key, exc, credential)
-                        )
-                        raise ReconnectRequired(provider_key) from exc
-                    raise
-                await integration_secret_store.put(owner_id, provider_key, credential)
-        return credential["access_token"]
+                raise
+            await integration_secret_store.put(owner_id, provider_key, credential)
+        return credential["access_token"], _expires_at(credential) or 0

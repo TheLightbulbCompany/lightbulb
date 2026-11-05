@@ -44,7 +44,7 @@ async def runtime_credentials(
         raise HTTPException(status_code=403, detail="agent_not_in_workspace")
 
     connected = {
-        row["provider"]
+        row["provider"]: row
         for row in await integrations_repo.list_for_owner(owner_id)
         if row.get("provider") and row.get("status", "connected") == "connected"
     }
@@ -54,7 +54,7 @@ async def runtime_credentials(
         if (
             provider.key not in connected
             or not provider.oauth
-            or registry.refresh_owner_for(provider) != "backend"
+            or registry.refresh_owner_for(provider, connected[provider.key]) != "backend"
             or not registry.available_for(provider, owner_id)
         ):
             continue

@@ -361,6 +361,8 @@ async def refresh(owner_id: str, provider_key: str, credential: dict) -> dict:
     own store every time — a platform app's is never inside the owner's credential.
     """
     p = registry.get_provider(provider_key)
+    if p.oauth.long_lived_exchange == "ig_exchange_token":
+        return await refresh_ig(credential)
     store_id, client_secret = await _oauth_client(owner_id, provider_key)
     # The grant belongs to the client it was issued to; a later DCR re-registration
     # must not swap it out from under an existing refresh token.
@@ -389,6 +391,30 @@ async def refresh(owner_id: str, provider_key: str, credential: dict) -> dict:
         **credential,
         "access_token": tok["access_token"],
         "refresh_token": tok.get("refresh_token") or credential["refresh_token"],
+        "token_expiry": _expiry_iso(expires_in),
+        "expires_in": int(expires_in) if expires_in else None,
+    }
+
+
+_IG_REFRESH_URL = "https://graph.instagram.com/refresh_access_token"
+
+
+async def refresh_ig(credential: dict) -> dict:
+    """Extend a long-lived Instagram token (it has no refresh token: the token refreshes itself).
+    Bearer header, never the token in the URL (same as ``instagram_cli._fetch_identity``), so it
+    cannot land in an access log."""
+    async with httpx.AsyncClient(timeout=15) as http:
+        resp = await http.get(
+            _IG_REFRESH_URL,
+            params={"grant_type": "ig_refresh_token"},
+            headers={"Authorization": f"Bearer {credential['access_token']}"},
+        )
+        resp.raise_for_status()
+        tok = resp.json()
+    expires_in = tok.get("expires_in")
+    return {
+        **credential,
+        "access_token": tok["access_token"],
         "token_expiry": _expiry_iso(expires_in),
         "expires_in": int(expires_in) if expires_in else None,
     }

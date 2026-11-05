@@ -12,6 +12,7 @@ import lightbulb  # noqa: E402
 from lightbulb import turn_context  # noqa: E402
 
 from bridge import turn  # noqa: E402
+from tests.test_voice_call_run import env  # noqa: E402, F401 — the _run_call harness
 
 SESSION = "agent:ceo:lightbulb:call:win-1"
 RUN = "22222222-2222-4222-8222-222222222222"
@@ -62,10 +63,47 @@ def test_start_work_rejects_bad_args_and_reports_refusals(tmp_path, monkeypatch)
     assert out.startswith("Not started")
 
 
-def test_registered_under_the_lightbulb_toolset():
-    """`register()` imports Hermes itself, so the registration is pinned on the source like the other tools."""
+def test_registered_under_its_own_toolset():
+    """`register()` imports Hermes itself, so the registration is pinned on the source like the other tools.
+    Its own toolset: the schema must not reach the model on an ordinary voice, room or Worker turn."""
     src = pathlib.Path(lightbulb.__file__).read_text()
-    assert 'ctx.register_tool("start_work", "lightbulb", START_WORK_SCHEMA, _start_work' in src
+    assert 'ctx.register_tool("start_work", VOICE_WORK_TOOLSET, START_WORK_SCHEMA, _start_work' in src
+    assert lightbulb.VOICE_WORK_TOOLSET == turn.VOICE_WORK_TOOLSET == "lightbulb_voice_work"
+
+
+def test_voice_work_toolset_off_every_other_turn(monkeypatch):
+    """A profile that lists the toolset still never hands it to a room, task or Router turn (only _run_call
+    re-adds it, and only on a super-agent call)."""
+    import sys
+    import types
+
+    monkeypatch.setattr(turn, "profile_toolsets", lambda: (["lightbulb", "lightbulb_voice_work", "memory"], None))
+    captured = {}
+
+    class FakeAIAgent:
+        def __init__(self, **kw):
+            captured.update(kw)
+
+    monkeypatch.setitem(sys.modules, "run_agent", types.SimpleNamespace(AIAgent=FakeAIAgent))
+    monkeypatch.setattr(turn, "pin_profile_defaults", lambda agent_id: {})
+    monkeypatch.setattr(turn, "profile_model", lambda c: ("m", "p"))
+    monkeypatch.setattr(turn, "_session_db", lambda a: None)
+    monkeypatch.setattr(turn, "_credential_pool", lambda *a: None)
+    monkeypatch.setattr(turn, "_capture_api_errors", lambda a: None)
+    turn._construct_agent("agent-1", {}, None, "agent:agent-1:lightbulb:task:7d1e2f30-4a5b-4c6d-8e9f-0a1b2c3d4e5f")
+    assert captured["enabled_toolsets"] == ["lightbulb", "memory"]
+
+
+def test_a_super_agent_call_enables_the_voice_work_toolset(env, home, monkeypatch):  # noqa: F811
+    from tests.test_voice_call_run import IDENTITY, REQUEST, _frames
+
+    monkeypatch.setattr(turn, "profile_toolsets", lambda: (["lightbulb", "memory"], None))
+    turn.register_call_run(IDENTITY)
+    assert turn._run_call(IDENTITY, {**REQUEST, "superAgent": True}, _frames())[0] == "completed"
+    assert env["limits"]["enabled_toolsets"] == ["lightbulb", "memory", "lightbulb_voice_work"]
+    turn.register_call_run(IDENTITY)
+    assert turn._run_call(IDENTITY, REQUEST, _frames())[0] == "completed"  # an ordinary call: CALL_RUN_LIMITS only
+    assert "enabled_toolsets" not in env["limits"]
 
 
 def test_call_turn_context_carries_super_agent_and_call_id():

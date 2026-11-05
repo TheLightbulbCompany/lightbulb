@@ -176,6 +176,7 @@ START_WORK_SCHEMA = {
     },
 }
 START_WORK_ONLY = "start_work works only inside a Live voice request in a Lightbulb super-agent workspace."
+VOICE_WORK_TOOLSET = "lightbulb_voice_work"  # == bridge.turn.VOICE_WORK_TOOLSET; only a super-agent call enables it
 
 
 def _start_work(args: dict, *, session_id: str = "", **_kw) -> str:
@@ -1106,7 +1107,7 @@ def register(ctx) -> None:
                       description=READ_ROOMS_SCHEMA["description"], emoji="🗂️")
     ctx.register_tool("lightbulb_workspace", "lightbulb", WORKSPACE_SCHEMA, _workspace,
                       description=WORKSPACE_SCHEMA["description"], emoji="🏢")
-    ctx.register_tool("start_work", "lightbulb", START_WORK_SCHEMA, _start_work,
+    ctx.register_tool("start_work", VOICE_WORK_TOOLSET, START_WORK_SCHEMA, _start_work,
                       description=START_WORK_SCHEMA["description"], emoji="🚀")
     ctx.register_tool("lightbulb_voice_profile", "lightbulb", VOICE_PROFILE_SCHEMA, _voice_profile,
                       description=VOICE_PROFILE_SCHEMA["description"], emoji="🎙️")

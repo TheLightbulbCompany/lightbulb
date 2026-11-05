@@ -18,6 +18,7 @@ import httpx  # noqa: E402
 import pytest  # noqa: E402
 from moto import mock_aws  # noqa: E402
 
+from core import tasks_schema as ts  # noqa: E402
 from core.config import settings  # noqa: E402
 from core.services import apps_service as svc  # noqa: E402
 from core.services import vercel_client  # noqa: E402
@@ -164,6 +165,25 @@ def world(monkeypatch):
                     ],
                     "Projection": {"ProjectionType": "ALL"},
                 }
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        # The super-agent tasks table: Canvas reads which request made each app from its Creation rows.
+        task_attrs = {"pk", "sk"} | {a for g in ts.GSIS for a in (g.pk_attr, g.sk_attr)}
+        ddb.create_table(
+            TableName="test-tasks",
+            KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}],
+            AttributeDefinitions=[{"AttributeName": a, "AttributeType": "S"} for a in sorted(task_attrs)],
+            GlobalSecondaryIndexes=[
+                {
+                    "IndexName": g.name,
+                    "KeySchema": [
+                        {"AttributeName": g.pk_attr, "KeyType": "HASH"},
+                        {"AttributeName": g.sk_attr, "KeyType": "RANGE"},
+                    ],
+                    "Projection": {"ProjectionType": "ALL"},
+                }
+                for g in ts.GSIS
             ],
             BillingMode="PAY_PER_REQUEST",
         )

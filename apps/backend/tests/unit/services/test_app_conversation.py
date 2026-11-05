@@ -706,3 +706,69 @@ async def test_listing_re_arms_the_stuck_watch_for_apps_still_being_built(chat, 
     seen.clear()
     await svc.list_apps(OWNER, ADA)
     assert seen == []  # already said stuck: nothing more to watch
+
+
+# --- Apps as requests (super-agent, founder 5 Nov 2026): a Worker hands an app over from its request's room ------
+
+
+@pytest.fixture
+async def request_room(chat, monkeypatch):
+    """A request Ada asked in #general (task row + its hidden room), as the Router leaves it."""
+    from core import tasks_schema as ts
+    from core.repositories import tasks_repo
+
+    monkeypatch.setattr(svc.messaging_repo, "ensure_workspace_id", AsyncMock(return_value="ch"))
+    monkeypatch.setattr(svc.settings, "SUPER_AGENT_ENV_ENABLED", True)
+    task_id = ts.new_task_id()
+    await tasks_repo.create_task(
+        OWNER,
+        {
+            "taskId": task_id,
+            "identifier": "LB-7",
+            "title": "Booking page",
+            "status": "queued",
+            "audience": {"kind": "room", "roomId": "room_1"},
+            "lane": "shared",
+            "ownerUserId": "user_1",
+            "triggerId": ts.trigger_id("chat", "m1"),
+        },
+    )
+    await tasks_repo.subscribe(OWNER, task_id, "room:room_1:m1", created_by="router")
+    room = ts.task_room_id(task_id)
+    chat.rooms[room] = {"roomId": room, "ownerId": OWNER, "name": "Booking page", "task": {"taskId": task_id}}
+    return task_id, room
+
+
+async def test_a_request_hands_its_app_over_and_canvas_names_the_request(chat, request_room):
+    from core.repositories import tasks_repo
+
+    task_id, room = request_room
+    res = await _start(origin_room_id=room, requested_by=None)
+    app = await svc.apps_repo.get(res["app_id"])
+    # Where and by whom come from the request's row: #general, Ada; the app is open to that room.
+    assert (app["origin_room_id"], app["created_by"], app["open_to"]) == ("room_1", "user_1", "room")
+    (post,) = chat.posts
+    assert post["text"].startswith("Ada (in #general): build a booking page")
+    line = f"Started Booking. It's being built in its own conversation in Canvas: {res['canvas_url']}"
+    assert res["next"] == f'answer with this line as your result, then end: "{line}"'
+    (made,) = await tasks_repo.list_creations(OWNER)
+    assert (made["capId"], made["kind"], made["taskId"]) == (res["app_id"], "app", task_id)
+    (row,) = await svc.list_apps(OWNER, ADA)
+    assert row["request"] == {"task_id": task_id, "identifier": "LB-7"}
+    # A second hand-over of the same app keeps the request that made it, and says it was already started.
+    again = await _start(origin_room_id=room, requested_by=None)
+    assert again["next"].startswith('answer with this line as your result, then end: "Booking was already started.')
+    assert len(await tasks_repo.list_creations(OWNER)) == 1
+
+
+async def test_a_change_passed_on_from_a_request_names_who_asked_and_where(chat, request_room):
+    _, room = request_room
+    res = await _start(origin_room_id="room_1")
+    await conv.ask(AGENT, res["app_id"], "make it blue", origin={"room_id": room})
+    assert chat.posts[-1]["text"] == "Ada (in #general): make it blue"
+
+
+async def test_an_app_from_no_request_has_no_request_in_canvas(chat):
+    await _start()
+    (row,) = await svc.list_apps(OWNER, ADA)
+    assert row["request"] is None

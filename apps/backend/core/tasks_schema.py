@@ -81,8 +81,10 @@ ScheduleStatus = Literal["draft", "active", "paused", "paused_system"]
 RuleMode = Literal["off", "observe", "auto"]
 # §14.7: active = Jev candidate, observe = never runs.
 ListenMode = Literal["active", "observe"]
-# §3 + §13: skills only in v1.
-CreationKind = Literal["skill"]
+# §3 + §13: what Lightbulb made for the workspace. An app's `capId` is its app id; its state lives on the app
+# record (Apps owns the lifecycle, spec 08 §3.1); the row says which request made it (founder, 5 Nov: Canvas =
+# Creations). Skills next.
+CreationKind = Literal["app", "skill"]
 CreationStatus = Literal["draft", "active", "off"]
 RouterDecisionKind = Literal["start_task", "pass_through", "reply", "ask", "ignore"]
 # Spec 11 (watchdog): check that fired, the judge's verdict, the action it proposes, a platform admin's label.
@@ -830,6 +832,7 @@ class Creation(_Row):
     status: CreationStatus = "draft"
     s3_key: str | None = None
     activated_by: str | None = None
+    task_id: str | None = None  # the request that made it (the first one; later changes are their own requests)
 
     def sk(self) -> str:
         return creation_sk(self.cap_id)

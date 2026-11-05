@@ -298,3 +298,12 @@ async def test_keys_come_from_tasks_schema(table):
     got = await repo.get_task(WS, row["taskId"])
     assert (got["pk"], got["sk"]) == (ts.ws_pk(WS), ts.task_sk(row["taskId"]))
     assert got["workflowId"] == ts.task_workflow_id(WS, row["taskId"])
+
+
+async def test_creations_first_request_wins_and_the_watchdog_caps_are_not_creations(table):
+    """An app's Creation row names the request that made it; a later put keeps it. `CAP#act#…` rows share the prefix."""
+    table.put_item(Item={"pk": ts.ws_pk(WS), "sk": ts.wd_cap_sk("act", "2026-11-05"), "type": "wdCap", "n": 1})
+    first, made = await repo.put_creation(WS, {"capId": "app_1", "kind": "app", "taskId": "t1"})
+    again, made_again = await repo.put_creation(WS, {"capId": "app_1", "kind": "app", "taskId": "t2"})
+    assert (made, made_again, again["taskId"]) == (True, False, "t1")
+    assert [(c["capId"], c["kind"], c["taskId"]) for c in await repo.list_creations(WS)] == [("app_1", "app", "t1")]

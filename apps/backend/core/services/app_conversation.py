@@ -17,8 +17,8 @@ from datetime import UTC, datetime, timedelta
 from core.auth import AuthContext, resolve_owner_id
 from core.constants import SYSTEM_ACTOR_ID
 from core.dynamodb import plain
-from core.repositories import apps_repo, messaging_repo
-from core.services import apps_room, clerk_admin, messaging, session_chat
+from core.repositories import apps_repo, messaging_repo, tasks_repo
+from core.services import apps_room, clerk_admin, messaging, session_chat, tasks_access
 from core.services import apps_service as svc
 from core.services.apps_service import AppsRefused, BuilderCaller
 
@@ -178,6 +178,19 @@ async def open_conversation(auth: AuthContext, app_id: str) -> dict:
     return {"room_id": meta["roomId"]}
 
 
+async def _request_of(owner_id: str, room_id: str | None) -> tuple[dict, str | None] | None:
+    """A Worker hands an app over from its request's own room (``--room <request room>``): that request (task row)
+    and the room it was asked in. Who asked and where come from the row, never from the caller's word."""
+    meta = (await messaging_repo.get_room(room_id) if room_id else None) or {}
+    task_id = (meta.get("task") or {}).get("taskId")
+    if not task_id or meta.get("ownerId") != owner_id:
+        return None
+    tree = await tasks_repo.get_task_tree(owner_id, task_id)
+    if tree["task"] is None:
+        return None
+    return tree["task"], tasks_access._origin_room(tree["subscriptions"], tree["task"].get("audience") or {})
+
+
 async def _requester(owner_id: str, user_id: str | None, room_id: str | None) -> str | None:
     """The person an agent speaks for, only when they sit in the room they asked in (as ``up``'s ``requested_by``)."""
     if not user_id or not room_id:
@@ -292,6 +305,9 @@ async def start(
     request there as from the person, and wake the builder there. The room is free at once."""
     owner_id = caller.owner_id
     svc._check_name(name)
+    request = await _request_of(owner_id, origin_room_id)
+    if request:  # started by a request: the app comes from where it was asked, for the person who asked
+        origin_room_id, requested_by = request[1], request[0].get("ownerUserId")
     if origin_room_id:
         await svc._check_room(owner_id, origin_room_id)
         if ((await messaging_repo.get_room(origin_room_id)) or {}).get("app"):
@@ -300,14 +316,19 @@ async def start(
                 "That room is an app's own conversation, not a room to start an app from.",
                 "work on that app there, or start a new app from a room or with no --room",
             )
-    person = (
-        caller.actor_id if caller.actor_kind == "person" else await _requester(owner_id, requested_by, origin_room_id)
-    )
+    if caller.actor_kind == "person":
+        person = caller.actor_id
+    elif request:
+        person = requested_by  # the request's own row says who asked
+    else:
+        person = await _requester(owner_id, requested_by, origin_room_id)
     builder = await _roster_agent(owner_id, caller.actor_id) if caller.actor_kind == "agent" else None
     builder = builder or await _default_builder({"owner_id": owner_id}, origin_room_id)
     if builder is None:
         raise _NO_AGENT
     app, how = await _reserve(caller, name, origin_room_id, person)
+    if request:  # Canvas lists it as a creation of this request (the first request that made it stays)
+        await tasks_repo.put_creation(owner_id, {"capId": app["app_id"], "kind": "app", "taskId": request[0]["taskId"]})
     if person and not app.get("created_by"):  # reserved before anyone asked: the first person who did made it
         if await apps_repo.patch(app["app_id"], {"created_by": person}, expect={"created_by": None}):
             app["created_by"] = person
@@ -327,7 +348,10 @@ async def start(
     svc.watch(owner_id, app["app_id"])
     display, canvas_url = svc._display(app), svc._canvas_url(app["app_id"])
     line = f"Started {display}. It's being built in its own conversation in Canvas: {canvas_url}"
-    if how != "made":
+    if request:  # a Worker: its result is the request's answer, posted for it
+        said = line if how == "made" else f"{display} was already started. It's being built in Canvas: {canvas_url}"
+        next_ = f'answer with this line as your result, then end: "{said}"'
+    elif how != "made":
         next_ = "this app was already started; post nothing in the room"
     elif origin_room_id:
         next_ = f'post this line in the room as written, then end your turn: "{line}"'
@@ -410,13 +434,17 @@ async def ask(
     app = await svc._owned(owner_id, app_id)
     await require_opens(owner_id, app, caller)
     room_id = (origin or {}).get("room_id")
+    request = await _request_of(owner_id, room_id)
+    if request:  # passed on from a request: where and by whom it was asked, from the request's row
+        room_id = request[1]
     if room_id:
         await svc._check_room(owner_id, room_id)
-    person = (
-        caller.actor_id
-        if caller.actor_kind == "person"
-        else await _requester(owner_id, (origin or {}).get("requested_by"), room_id)
-    )
+    if caller.actor_kind == "person":
+        person = caller.actor_id
+    elif request:
+        person = request[0].get("ownerUserId")
+    else:
+        person = await _requester(owner_id, (origin or {}).get("requested_by"), room_id)
     meta = await _ensure(app)  # nobody is seated: the line says who asked, and opening decides who may read it
     said = await _attributed(caller, text, person, room_id)
     message = await _relay(app, meta, f"apps-ask:{app_id}:{client_message_id or uuid.uuid4()}", said)

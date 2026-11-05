@@ -8,6 +8,7 @@ const live = vi.hoisted(() => ({ superAgent: true, tasks: null as unknown }));
 vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useSuperAgent: () => live.superAgent, useOptionalLiveEvents: () => live }));
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 vi.mock("../MessageTaskCard", () => ({ MessageTaskCard: () => <div data-testid="legacy-task-card" /> }));
+vi.mock("@/components/canvas/RequestApp", () => ({ RequestApp: () => null })); // its own test in canvas/
 // The row as the server holds it: activate flips it, and the card's re-read sees the flip.
 const automation = vi.hoisted(() => ({ current: null as Record<string, unknown> | null }));
 const api = vi.hoisted(() => ({

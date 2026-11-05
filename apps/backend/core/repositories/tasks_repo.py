@@ -447,6 +447,29 @@ async def get_trigger(ws: str, trigger_id: str) -> dict | None:
     return await _get(ws, ts.trigger_sk(trigger_id))
 
 
+# --- Creation (`CAP#`) -----------------------------------------------------------------------------
+
+
+async def put_creation(ws: str, creation: dict) -> tuple[dict, bool]:
+    """First writer wins: the request that made it stays the one that made it."""
+    return await _put_new(ws, _row(ts.Creation, ws, creation))
+
+
+async def list_creations(ws: str) -> list[dict]:
+    """The workspace's Creation rows (the watchdog's `CAP#act#…` caps share the prefix: filtered by type)."""
+    kwargs: dict[str, Any] = {
+        "KeyConditionExpression": "pk = :pk AND begins_with(sk, :prefix)",
+        "ExpressionAttributeValues": {":pk": ts.ws_pk(ws), ":prefix": "CAP#"},
+    }
+    out: list[dict] = []
+    while True:
+        page = await run_in_thread(_table().query, **kwargs)
+        out += [i for i in map(plain, page.get("Items", [])) if i.get("type") == "creation"]
+        if "LastEvaluatedKey" not in page:
+            return out
+        kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+
+
 # --- Generic (C29) ---------------------------------------------------------------------------------
 
 

@@ -249,7 +249,12 @@ async def begin_attempt(ws: str, task_id: str, input_trigger_ids: list[str], sta
 
 
 async def _request(ws: str, task: dict, att: dict, tree: dict) -> runtime_runs.RunRequest:
-    parts = [f"# Task: {task['title']}", task.get("description") or ""]
+    # The request's room id: a Worker hands an app over from it (`lightbulb app start --room`, skill references/apps.md).
+    parts = [
+        f"# Task: {task['title']}",
+        f"Request room: {ts.task_room_id(task['taskId'])}",
+        task.get("description") or "",
+    ]
     for tid in att.get("inputTriggerIds") or []:
         text = await _input_text(ws, tid)
         if text:

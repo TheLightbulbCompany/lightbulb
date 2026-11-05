@@ -158,7 +158,7 @@ def test_question_states_and_effect_lifecycle():
     assert get_args(ts.EffectState) == ("proposed", "approved", "denied", "intent", "done", "unknown")
     assert get_args(ts.EffectDecision) == ("proceed", "replay", "refuse", "needs_approval", "denied")
     assert get_args(ts.CreationStatus) == ("draft", "active", "off")
-    assert get_args(ts.CreationKind) == ("skill",)
+    assert get_args(ts.CreationKind) == ("app", "skill")
 
 
 def test_every_row_type_has_a_model():

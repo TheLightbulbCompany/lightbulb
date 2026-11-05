@@ -28,6 +28,9 @@ Rules:
 A trigger with a pinned specialist goes to that specialist: start_task with it, or pass_through to a task it has open.
 - Start the request even when it would spend money, send or publish: the task stops at an approval question before \
 any paid or risky step, and that approval is the person's only decision. Never hold work back for a person to start.
+- Software someone wants built or changed (an app, a site, a form, a page, a dashboard, a tool) is a request like any \
+other: start_task, with the specialist whose title fits building software (Engineering) when the roster has one, and \
+their words as written in the brief. Its builder works on it in Canvas; publishing it stays the person's approval.
 - pass_through when an open task listed below already covers the message: give its task id.
 - reply for quick answers and status. On a trigger you also start tasks for, add a reply only for a \
 separate answer the person asked for (a quick fact or estimate); never one that restates the tasks: the ack and the \

@@ -1,0 +1,84 @@
+import { describe, expect, it } from "vitest";
+
+import schema from "../../fixtures/super-agent/tasks-schema.json";
+import { FIXTURES, PRIYA, SAM, fixtureTask, viewAs } from "./fixtures";
+import { OUTPUT_KINDS, type TaskSummary } from "./types";
+import { overviewGroups, specialistLabel, summaryView, taskSummaryLine } from "./view";
+
+const byId = (ts: TaskSummary[], id: string) => ts.find((t) => t.taskId === id)!;
+
+describe("contract: TaskSummary matches views.TaskSummary in tasks-schema.json", () => {
+  it("same field names, same required set, output kinds", () => {
+    const view = (schema as unknown as { views: { TaskSummary: { properties: object; required: string[] } } }).views.TaskSummary;
+    const sample = fixtureTask({ taskId: "t", title: "x" });
+    expect(Object.keys(sample).sort()).toEqual(Object.keys(view.properties).sort());
+    for (const f of view.required) expect(sample, f).toHaveProperty(f);
+    expect(OUTPUT_KINDS).toEqual(schema.enums.OutputKind);
+  });
+});
+
+describe("summaryView: one word per status, group from the server", () => {
+  const t = (over: Partial<TaskSummary>) => fixtureTask({ taskId: "t", title: "x", ...over });
+  it.each([
+    [{ status: "proposed", shownGroup: null }, "Suggested", null, "start", "neutral"],
+    [{ status: "queued" }, "Queued", "working", null, "working"],
+    [{ status: "working" }, "Working", "working", null, "working"],
+    [{ status: "idle", shownGroup: "idle" }, "Idle", "idle", null, "neutral"],
+    [{ status: "idle", shownGroup: "idle", watching: true, watchUntil: "2026-11-10" }, "Watching", "idle", null, "neutral"],
+    [{ status: "resolved", shownGroup: "resolved" }, "Resolved", "resolved", "reopen", "neutral"],
+    [{ status: "resolved", shownGroup: "resolved", statusReason: "stopped" }, "Stopped", "resolved", "reopen", "neutral"],
+    [{ status: "working", shownGroup: "landing", landing: "e1" }, "Landing", "landing", null, "landing"],
+    [{ status: "failed", shownGroup: "waiting_on_you" }, "Failed", "waiting_on_you", "retry", "waiting"],
+  ] as const)("%j → %s", (over, word, group, action, tone) => {
+    expect(summaryView(t(over as Partial<TaskSummary>), SAM)).toEqual({ word, group, action, tone });
+  });
+
+  it("waiting with my open approval is Waiting on you; a question is Answer", () => {
+    const s5 = byId(FIXTURES.step05.tasks, "t-signup");
+    expect(summaryView(s5, SAM)).toMatchObject({ word: "Waiting on you", group: "waiting_on_you", action: "approve" });
+    const q = { ...s5, openQuestion: { ...s5.openQuestion!, kind: "question" as const } };
+    expect(summaryView(q, SAM).action).toBe("answer");
+  });
+
+  it("waiting for someone else is not Waiting on you", () => {
+    const priya = viewAs(byId(FIXTURES.step05.tasks, "t-signup"), PRIYA);
+    expect(summaryView(priya, PRIYA)).toEqual({ word: "Waiting on Sam", group: "working", action: null, tone: "working" });
+  });
+
+  it("review question is Ready for review with the output's next step", () => {
+    expect(summaryView(byId(FIXTURES.step07.tasks, "t-email"), SAM))
+      .toEqual({ word: "Ready for review", group: "ready_for_review", action: "send", tone: "review" });
+  });
+
+  it("failed is someone else's Idle with no action", () => {
+    const failed = viewAs(fixtureTask({ taskId: "t", title: "x", status: "failed", shownGroup: "waiting_on_you" }), PRIYA);
+    expect(summaryView(failed, PRIYA)).toMatchObject({ group: "idle", action: null });
+  });
+});
+
+describe("overviewGroups", () => {
+  it("always includes Waiting on you and Resolved (collapsed)", () => {
+    const groups = overviewGroups([]);
+    expect(groups.map((g) => g.id)).toEqual(["waiting_on_you", "resolved"]);
+    expect(groups[1]).toMatchObject({ collapsed: true, alwaysShown: true });
+  });
+  it("contract order; proposed tasks are not in it", () => {
+    expect(overviewGroups(FIXTURES.step02.tasks).map((g) => [g.id, g.tasks.length]))
+      .toEqual([["waiting_on_you", 0], ["working", 2], ["resolved", 0]]);
+    expect(overviewGroups(FIXTURES.step07.tasks).map((g) => g.id))
+      .toEqual(["waiting_on_you", "working", "ready_for_review", "idle", "resolved"]);
+  });
+});
+
+describe("summary lines and labels", () => {
+  it("lines", () => {
+    expect(taskSummaryLine(byId(FIXTURES.step05.tasks, "t-signup"), SAM)).toBe("Needs approval: Provision database and Stripe");
+    expect(taskSummaryLine(byId(FIXTURES.step09.tasks, "t-email"), SAM)).toBe("Applying: Draft: \"Join us Nov 20\" (240 words)");
+    expect(taskSummaryLine(byId(FIXTURES.step02.tasks, "t-signup"), SAM)).toBe("Working · Lightbulb · Engineering");
+    expect(taskSummaryLine(byId(FIXTURES.step02.tasks, "t-fees"), SAM)).toBe("would use a paid tool");
+  });
+  it("specialist label", () => {
+    expect(specialistLabel("finance")).toBe("Lightbulb · Finance");
+    expect(specialistLabel(null)).toBe("Lightbulb");
+  });
+});

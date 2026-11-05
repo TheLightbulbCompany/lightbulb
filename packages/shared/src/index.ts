@@ -53,7 +53,7 @@ export type { ApiCallOptions, ApiMethods } from "./api/client";
 export { accumulateStreamText } from "./live/streamText";
 export { AppSyncEventsClient, framesChannelFor } from "./live/appsyncEvents";
 export { useLiveEvents } from "./live/useLiveEvents";
-export type { CallTurnFrame, ChatIncomingMessage, LiveEvent, LiveEventOf, MessagePush, RoomActivityChanged, RoomBrowserFrame, RoomSubagentEvent, SessionAttention, SessionBrowserFrame, SessionScreen, SessionTyping } from "./live/types";
+export type { CallTurnFrame, ChatIncomingMessage, LiveEvent, TaskChanged, LiveEventOf, MessagePush, RoomActivityChanged, RoomBrowserFrame, RoomSubagentEvent, SessionAttention, SessionBrowserFrame, SessionScreen, SessionTyping } from "./live/types";
 export { applyRoomActivity, pruneRoomActivity, roomLiveLine, typingLine } from "./messaging/roomActivity";
 export type { RoomActivity } from "./messaging/roomActivity";
 export { createMessagingClient } from "./messaging/client";
@@ -360,5 +360,16 @@ export type { CardName } from "./ui/library";
 export { cardReplyRequest, choiceReply, formReply, tableReply } from "./ui/reply";
 export type { CardReply } from "./ui/reply";
 export { answerIsFormOf, answerIsFrom, answerIsTableOf, cardAnswerFor, cardAnswersFor } from "./ui/answer";
-export { TASK_STATUSES, SHOWN_GROUPS, taskView } from "./tasks/view";
-export type { EffectRow, QuestionRow, ShownGroup, TaskAction, TaskRow, TaskStatus, TaskView, TaskViewInput } from "./tasks/view";
+export {
+  TASK_STATUSES, SHOWN_GROUPS, GROUP_LABELS, GROUP_ORDER, taskView, summaryView, specialistLabel, overviewGroups, taskSummaryLine,
+} from "./tasks/view";
+export type {
+  EffectRow, OverviewGroup, QuestionRow, ShownGroup, SummaryView, TaskAction, TaskRow, TaskStatus, TaskTone, TaskView, TaskViewInput,
+} from "./tasks/view";
+export { OUTPUT_KINDS } from "./tasks/types";
+export type {
+  AnswerBody, OutputKind, QuestionKind, QuestionOption, QuestionView, SummaryQuestion, TaskAttempt, TaskDetail, TaskEffect,
+  TaskRef, TaskScope, TaskSubscription, TaskSummary, TaskVerb,
+} from "./tasks/types";
+export { createTasksClient, scopeParam } from "./tasks/client";
+export type { TasksClient } from "./tasks/client";

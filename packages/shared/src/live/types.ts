@@ -145,7 +145,8 @@ export type LiveEventType =
   | "runtime.resource.invalidated"
   | "paperclip.event"
   | "digest.ready"
-  | "call.turn.frame";
+  | "call.turn.frame"
+  | "task.changed";
 
 export const LIVE_EVENT_TYPES: ReadonlySet<string> = new Set<LiveEventType>([
   "room.message.reactions.changed",
@@ -174,7 +175,10 @@ export const LIVE_EVENT_TYPES: ReadonlySet<string> = new Set<LiveEventType>([
   "paperclip.event",
   "digest.ready",
   "call.turn.frame",
+  "task.changed",
 ]);
+
+export interface TaskChanged { taskId: string; part: string; version: number }
 
 /** One agent-turn frame of a voice call, published by the bridge (no roomId). */
 export interface CallTurnFrame {
@@ -348,7 +352,9 @@ export type LiveEvent =
   | LiveEventEnvelope<"runtime.resource.invalidated", RuntimeResourceInvalidated>
   | LiveEventEnvelope<"paperclip.event", PaperclipEvent>
   | LiveEventEnvelope<"digest.ready", DigestReady>
-  | LiveEventEnvelope<"call.turn.frame", CallTurnFrame>;
+  | LiveEventEnvelope<"call.turn.frame", CallTurnFrame>
+  /** A task row changed (ids only; refetch through the API). Rides `/ws/{ws}/tasks`. */
+  | LiveEventEnvelope<"task.changed", TaskChanged>;
 
 export type LiveEventOf<T extends LiveEventType> = Extract<LiveEvent, { type: T }>;
 
@@ -514,6 +520,9 @@ function payloadValid(type: LiveEventType, payload: unknown): boolean {
     case "digest.ready":
       return num(payload.total) && str(payload.activityUrl) && isObj(payload.countsByKind) && isObj(payload.push)
         && str(payload.push.title) && str(payload.push.body);
+    case "task.changed":
+      // Ids only (I1): clients refetch through the authorized API, so a status here would be ignored.
+      return str(payload.taskId) && str(payload.part) && Number.isSafeInteger(payload.version);
     case "call.turn.frame":
       return str(payload.callId) && str(payload.turnId) && str(payload.agentId) && isObj(payload.frame) && str(payload.frame.type);
   }

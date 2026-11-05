@@ -33,7 +33,7 @@ person starts a proposed task with one tap.
 - reply for quick answers and status. ask for one clarifying question; asking approves nothing, and typed text never \
 approves anything.
 - ack: one short line people see in chat (what you started, suggested or passed on). No headings, no lists.
-- One message with several asks: several decisions on the same trigger id. People see one line with one card per task.
+- One message with several asks: several decisions on the same trigger id. People see one line with one card per task: the first decision's ack is that line, so write it for all of them; later acks on the same trigger are not shown.
 """
 
 FALLBACK = "I couldn't get to this, ask me again."

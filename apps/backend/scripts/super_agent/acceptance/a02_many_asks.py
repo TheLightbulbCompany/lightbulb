@@ -40,7 +40,9 @@ async def a02(ctx: Ctx) -> Result:
                 if (m.get("author") or {}).get("kind") == "agent"
                 and m.get("kind") != "result"
                 and m.get("messageSeq", 0) > ask["messageSeq"]
-                and len(m.get("taskRefs") or []) >= 3
+                and m.get(
+                    "taskRefs"
+                )  # the Router may fold a task into an existing one: fewer than 3 cards is a finding, not a miss
             ),
             None,
         )
@@ -72,7 +74,7 @@ async def a02(ctx: Ctx) -> Result:
             await messages(ctx, "sam", room_id), (front or {}).get("id", "")
         ),
     }
-    ctx.state["taskIds"] = [t["taskId"] for t in tasks]
+    ctx.state["taskIds"] = [t["taskId"] for t in tasks if t["status"] != "proposed"]  # started: attempts, SUB, VM
     ctx.state["proposedTaskId"] = next((t["taskId"] for t in tasks if t["status"] == "proposed"), None)
     ctx.state["cardMessageId"] = reply[0]["messageId"] if reply else None
     ctx.state["firstStartedTaskId"] = first_started  # A13 expects a SUB row for this task only

@@ -190,7 +190,9 @@ async def _guarded(call: Awaitable[Any]) -> Any:
         return Result(False, {"error": f"{type(exc).__name__}: {exc}", "traceback": traceback.format_exc()[-2000:]})
 
 
-async def gate(ctx: Ctx, *, rules_expect: Any | None = None, log: Callable[[str], None] = print) -> dict[str, Any]:
+async def gate(
+    ctx: Ctx, *, rules_expect: Any | None = None, skip: tuple[str, ...] = (), log: Callable[[str], None] = print
+) -> dict[str, Any]:
     """A1–A13 on the one dev workspace (A0 needs the switch off: run it before the flip), then the evidence
     checks: ``vm_evidence`` over the task ids the scenarios left in ``ctx.state["taskIds"]`` (V17; per-task or workspace
     session by the workspace's token custody)
@@ -198,7 +200,7 @@ async def gate(ctx: Ctx, *, rules_expect: Any | None = None, log: Callable[[str]
     from scripts.super_agent.acceptance.rules_observe import rules_observe
     from scripts.super_agent.acceptance.vm_evidence import vm_evidence
 
-    results: dict[str, Any] = await run_scenarios(ORDER[1:], ctx, log=log)
+    results: dict[str, Any] = await run_scenarios([n for n in ORDER[1:] if n not in skip], ctx, log=log)
     results["VM"] = await _guarded(vm_evidence(ctx, ws=ctx.ws, task_ids=list(ctx.state.get("taskIds") or [])))
     results["RULES"] = (
         await _guarded(rules_observe(ctx, rules_expect))

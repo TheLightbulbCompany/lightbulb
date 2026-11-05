@@ -108,7 +108,8 @@ PROPOSE_SCHEMA = {
                      "description": "5-field cron lines in the person's zone (runs at least 10 minutes apart)."},
             "tz": {"type": "string", "description": "IANA zone; omit for the requester's own zone."},
             "specialist": {"type": "string", "description": "A specialist id from the roster, or omit."},
-            "deliver_to": {"type": "string", "description": "room:{id} | dm:{userId} | none; default: this room."},
+            "deliver_to": {"type": "string", "description": "Omit to deliver here. Else room:{roomId} (the room's id, never its name) | "
+                                                              "dm:{userId} | none."},
             "budget_per_run_usd": {"type": "number"},
         },
         "required": ["trigger_ids", "name", "instructions", "cron"],

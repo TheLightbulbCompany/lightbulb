@@ -107,6 +107,14 @@ async def _move(ws: str, task_id: str, to: str, reason: str | None = None, field
         await tasks_repo.unsubscribe_all(ws, task_id)
 
 
+def _is_uuid(value: str) -> bool:
+    try:
+        uuid.UUID(value)
+    except ValueError:
+        return False
+    return True
+
+
 def _origin(tree: dict) -> tuple[str | None, str | None]:
     """(roomId, threadRoot) of the conversation the task came from: its Router-made subscription."""
     for sub in tree.get("subscriptions") or []:
@@ -411,6 +419,11 @@ async def end_attempt(ws: str, task_id: str, n: int, outcome: str, error: str | 
 
     requester = task.get("ownerUserId")
     room, root = _origin(tree)
+    if room and not _is_uuid(room):
+        # A deliver room that is not a room id (a name the Router saved, gate run 3) can never take a post: the
+        # task room still gets the result, and the attempt still ends (its automation claim is freed).
+        logger.warning("end_attempt: origin room is not a room id task=%s", task_id)
+        room = None
     if outcome == "completed" and att.get("output"):
         text = att["output"]
         files = att.get("attachments") or []  # PUT by the task VM to the TASK room's keys

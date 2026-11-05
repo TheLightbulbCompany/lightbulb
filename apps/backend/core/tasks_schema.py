@@ -7,7 +7,7 @@ read that file, and `tests/unit/super_agent/test_tasks_schema.py` fails when it 
 
 Row keys: pk `WS#{ws}`, where `ws` is the workspace owner id (`org_…` / `user_…`). Rows (contracts-v2 §3, plus
 `NEEDS#` restored by §14.2): Task, Attempt, Subscription + `THREAD#` lookup, Question, Needs, Effect, Trigger,
-Schedule + `HOOK#` webhook pointer, Specialist (`AGENT#`), Project, Goal, Creation (`CAP#`). Cut rows have no builder on purpose.
+Schedule + `HOOK#` webhook pointer, Specialist (`AGENT#`), Project, Goal, Creation (`CAP#`), Observed (`OBS#`, §18 rules). Cut rows have no builder on purpose.
 """
 
 from __future__ import annotations
@@ -133,6 +133,8 @@ TRIGGER_ID_FORMATS: dict[str, str] = {
     "voice": "voice:{callId}:{utteranceId}",
     "text": "text:{messageId}",
     "answer": "answer:{qid}:{clientAnswerId}",  # a person's free-text answer; the Temporal update carries ids only
+    # §18: one observe/auto match per rule per thread, ever. Not a TriggerSource: the row's `source` is chat/webhook.
+    "rule": "rule:{scheduleId}:{threadHash}",
 }
 
 
@@ -142,6 +144,11 @@ def trigger_id(source: str, *parts: object) -> str:
     if len(parts) != len(names):
         raise ValueError(f"{source} trigger id takes {len(names)} part(s): {fmt}")
     return ":".join([prefix, *map(str, parts)])
+
+
+def rule_trigger_id(sched_id: str, thread_key: str) -> str:
+    """§18: the dedupe key of a rule match; the thread key is hashed so ids stay short and carry no room ids."""
+    return trigger_id("rule", sched_id, hashlib.sha256(thread_key.encode()).hexdigest()[:16])
 
 
 def ws_pk(ws: str) -> str:
@@ -178,6 +185,11 @@ def effect_sk(idem_key: str) -> str:
 
 def trigger_sk(trigger_id: str) -> str:
     return f"TRIG#{trigger_id}"
+
+
+def observed_sk(thread_key: str) -> str:
+    """§18: a rule observed this thread (spec 12 §3.4); a task later started on it counts as did-it-yourself."""
+    return f"OBS#{thread_key}"
 
 
 def schedule_sk(schedule_id: str) -> str:
@@ -250,6 +262,7 @@ KEY_FORMATS: dict[str, str] = {
     "effect": "EFFECT#{idemKey}",
     "trigger": "TRIG#{triggerId}",
     "schedule": "SCHED#{scheduleId}",
+    "observed": "OBS#{threadKey}",
     "hook": "HOOK#{publicId}",
     "agent": "AGENT#{agentId}",
     "agentOwner": "AGENTID#{agentId}",
@@ -511,6 +524,16 @@ class Effect(_Row):
         return effect_sk(self.idem_key)
 
 
+class RuleMatch(_Model):
+    """§18: what a rule would have done (observe) or did (auto) for this trigger."""
+
+    sched_id: str
+    version: int
+    p: float | None = None  # Jev's probability; None for code-matched (calendar) rules
+    decision: str  # "observed" in wave 2
+    would_do: str
+
+
 class Trigger(_Row):
     type: Literal["trigger"] = "trigger"
     trigger_id: str
@@ -521,9 +544,36 @@ class Trigger(_Row):
     actor_user_id: str | None = None
     routed_to: dict[str, str] | None = None
     received_at: str
+    rule_match: RuleMatch | None = None
 
     def sk(self) -> str:
         return trigger_sk(self.trigger_id)
+
+
+class RuleMatchScope(_Model):
+    """spec 12 §3.1: one source per rule; `room` names its rooms (no "everywhere" rule), `calendar` its account."""
+
+    sources: list[Literal["room", "calendar"]]
+    room_ids: list[str] = []
+    account: str | None = None
+    repo: str | None = None  # owner/name; builtin=repro_fix only
+
+
+class MatchEntry(_Model):
+    at: str
+    thread_key: str
+    would_do: str
+    version: int
+    done_by_human: bool = False
+
+
+class RuleStats(_Model):
+    """Capped lists on the rule row (spec 12 §3.1): no new row type."""
+
+    day: str | None = None
+    spent_usd: float = 0.0
+    deliveries: list[bool] = []  # last 10 delivery verdicts (wave 3)
+    matches: list[MatchEntry] = []  # newest last, at most 50
 
 
 class Schedule(_Row):
@@ -551,6 +601,15 @@ class Schedule(_Row):
     consecutive_failures: int = 0
     hook_public_ids: list[str] = []
     created_by: Literal["user", "router"] = "user"
+    # §18 rule fields: a row with `match` is a proactive rule; rows without it are ordinary automations.
+    match: RuleMatchScope | None = None
+    speculative: bool = False
+    time_limit_s: int | None = None
+    daily_cap_usd: float = 10.0
+    builtin: Literal["invite_prep", "repro_fix"] | None = None
+    promoted_by: str | None = None
+    promoted_at: str | None = None
+    stats: RuleStats | None = None
 
     def sk(self) -> str:
         return schedule_sk(self.schedule_id)
@@ -640,6 +699,19 @@ class Creation(_Row):
         return creation_sk(self.cap_id)
 
 
+class Observed(_Row):
+    """`OBS#{threadKey}`: a rule observed this thread (§18). Written once by `record_match`; never a THREAD# row."""
+
+    type: Literal["observed"] = "observed"
+    thread_key: str
+    sched_id: str
+    trigger_id: str
+    at: str
+
+    def sk(self) -> str:
+        return observed_sk(self.thread_key)
+
+
 ROW_MODELS: dict[str, type[_Row]] = {
     m.model_fields["type"].default: m
     for m in (
@@ -657,6 +729,7 @@ ROW_MODELS: dict[str, type[_Row]] = {
         Project,
         Goal,
         Creation,
+        Observed,
     )
 }
 

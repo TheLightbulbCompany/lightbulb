@@ -100,7 +100,8 @@ def test_trigger_id_refuses_the_wrong_number_of_parts():
 
 
 def test_every_trigger_source_has_an_id_format():
-    assert set(get_args(ts.TriggerSource)) == set(ts.TRIGGER_ID_FORMATS)
+    # "rule" is an id kind, not a source: a rule match's row keeps the chat/webhook source it came from.
+    assert set(get_args(ts.TriggerSource)) | {"rule"} == set(ts.TRIGGER_ID_FORMATS)
 
 
 def test_audience_rules():
@@ -176,6 +177,7 @@ def test_every_row_type_has_a_model():
         "project",
         "goal",
         "creation",
+        "observed",
     }
     for name, model in ts.ROW_MODELS.items():
         assert model.model_fields["type"].default == name

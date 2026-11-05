@@ -28,7 +28,7 @@ const SUPER_AGENT_HIDDEN: ReadonlySet<string> = new Set(["projects", "goals", "c
 export function WorkTabs({ teamsKey }: { teamsKey: string }): React.ReactElement {
   const superAgent = useSuperAgent();
   // The Paperclip task board stays reachable as "Older tasks", last, only while it holds any (or is the page shown).
-  const { data: older } = useTeamsApi().read<{ issues?: unknown[] }>(superAgent ? "/issues?excludeRoutineExecutions=true" : null);
+  const { data: older } = useTeamsApi().read<{ issues?: unknown[] }>(superAgent ? "/issues?excludeRoutineExecutions=true&limit=1" : null);
   const showOlder = !!older?.issues?.length || teamsKey === "issues";
   type Key = keyof typeof LABELS;
   const keys: readonly Key[] = superAgent

@@ -158,3 +158,12 @@ describe("questions: the server's option ids and copy", () => {
     expect(summaryView(t, SAM)).toMatchObject({ word: "Dismissed", action: null });
   });
 });
+
+describe("overviewGroups splits the server's idle group so each heading matches its rows", () => {
+  it("Done, Watching and Failed are separate groups", () => {
+    const t = (taskId: string, over: Partial<TaskSummary>) => fixtureTask({ taskId, title: taskId, shownGroup: "idle", status: "idle", ...over });
+    const groups = overviewGroups([t("a", {}), t("b", { watching: true, watchUntil: "2026-12-01T00:00:00Z" }), t("c", { status: "failed" })]);
+    expect(groups.filter((g) => g.tasks.length).map((g) => [g.label, g.tasks.map((x) => x.taskId)]))
+      .toEqual([["Done", ["a"]], ["Watching", ["b"]], ["Failed", ["c"]]]);
+  });
+});

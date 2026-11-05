@@ -30,8 +30,17 @@ MULTIPLE = "multiple"  # classify(): more than one external action in one comman
 SPLIT_THEM = "One external action per command; split them and run each on its own."
 _WRAPPERS = {"env", "nohup", "time", "exec", "command", "builtin", "sudo", "timeout", "doas", "nice", "stdbuf",
              "ionice", "caffeinate"}
-_VALUED_OPTS = {"-n", "-c", "-p", "-t", "-u", "-g", "-s", "--signal", "-k", "--kill-after", "-h", "-C", "-D", "-R", "-T",
-                "-U", "-i", "-o", "-e"}  # a wrapper option whose value is the next token (nice -n 10, ionice -c 2 …)
+# A wrapper's options whose value is the next token (nice -n 10, ionice -c 2, timeout -s KILL 30, sudo -u x).
+_VALUED_OPTS = {
+    "nice": {"-n", "--adjustment"},
+    "ionice": {"-c", "-n", "-p", "--class", "--classdata"},
+    "timeout": {"-s", "--signal", "-k", "--kill-after"},
+    "sudo": {"-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U"},
+    "doas": {"-u", "-C"},
+    "env": {"-u", "-C", "-S", "--unset", "--chdir"},
+    "stdbuf": {"-i", "-o", "-e"},  # `-oL` is one token and needs nothing
+    "caffeinate": {"-t", "-w"},
+}
 _SEPARATOR = re.compile(r"^[;|&]+$")
 _SHELL_C = re.compile(r"^-[a-zA-Z]*c[a-zA-Z]*$")  # -c, -lc, -ec, -xc …
 _SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
@@ -123,9 +132,10 @@ def _unwrap(argv: list[str]) -> list[str]:
                 i += 2 if argv[i] in ("-s", "--signal", "-k", "--kill-after") else 1
             i += 1  # the duration
         elif base in _WRAPPERS:
+            valued = _VALUED_OPTS.get(base, set())
             i += 1
             while i < len(argv) and argv[i].startswith("-"):
-                i += 2 if argv[i] in _VALUED_OPTS else 1
+                i += 2 if argv[i] in valued else 1
         else:
             break
     return argv[i:]

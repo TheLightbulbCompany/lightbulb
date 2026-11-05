@@ -48,8 +48,6 @@ CAN_AFTER_SIGNALS = 2_000
 QUIET_AFTER = timedelta(days=7)
 MAX_SAME_RUN_RECONCILES = 3
 MAX_LOST_ATTEMPTS = 3  # the first attempt plus two new ones, then `failed`
-PATCH_CANCEL_QUESTIONS_ON_END = "O-cancel-questions-on-end-v1"  # audit #5
-SYSTEM_ACTOR = "__system__"  # == core.constants.SYSTEM_ACTOR_ID (the sandbox imports no core modules)
 
 _SHORT = {"start_to_close_timeout": timedelta(seconds=30), "retry_policy": RetryPolicy(maximum_attempts=5)}
 _ROUTER_TURN = {
@@ -63,6 +61,9 @@ _WORKER_TURN = {
     "retry_policy": RetryPolicy(maximum_attempts=1),
     "cancellation_type": ActivityCancellationType.WAIT_CANCELLATION_COMPLETED,
 }
+
+PATCH_CANCEL_QUESTIONS_ON_END = "O-cancel-questions-on-end-v1"  # audit #5
+SYSTEM_ACTOR = "__system__"  # == core.constants.SYSTEM_ACTOR_ID (the sandbox imports no core modules)
 
 # Outcome → the status `end_attempt` leaves the task in (the workflow mirrors it to pick its next wait).
 _STATUS_AFTER = {

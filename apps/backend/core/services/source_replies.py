@@ -25,21 +25,23 @@ async def deliver_reply(ws: str, trigger: dict, text: str, *, idempotency_key: s
     source = trigger.get("source")
     if not reply or source not in ("mail", "text"):
         return
-    key = f"reply:{idempotency_key}" if idempotency_key else None
+    key = f"reply:{ws}:{idempotency_key}" if idempotency_key else None  # scoped per workspace
     if key and await record_event_or_skip(key, source="source_replies") is WebhookDedupResult.ALREADY_SEEN:
         return
     try:
-        await _send(ws, trigger, ref, reply, source, text)
+        await _send(ws, trigger, ref, reply, source, text, idempotency_key)
     except Exception:
         if key:
             await delete_event(key)
         raise
 
 
-async def _send(ws: str, trigger: dict, ref: dict, reply: dict, source: str, text: str) -> None:
+async def _send(
+    ws: str, trigger: dict, ref: dict, reply: dict, source: str, text: str, idempotency_key: str | None
+) -> None:
     agent_id = ref.get("agentId") or ""
     if source == "mail":
-        await agent_mail_reply.send_reply(
+        status = await agent_mail_reply.send_reply(
             ctx={
                 "owner_id": ws,
                 "agent_id": agent_id,
@@ -50,13 +52,15 @@ async def _send(ws: str, trigger: dict, ref: dict, reply: dict, source: str, tex
             },
             body_text=text,
         )
+        if status != "sent":  # send_reply never raises; a reply that did not go out must free the key
+            raise RuntimeError(f"mail reply {status}")
         return
     if reply.get("provider") == "photon":
         sent = await photon.send_text(
             sender_id=reply["senderId"],
             space_id=reply["spaceId"],
             text=text,
-            idempotency_key=f"reply:{trigger['triggerId']}",
+            idempotency_key=f"reply:{idempotency_key or trigger['triggerId']}",  # per reply, not per trigger
         )
         message_id = (sent or {}).get("id") or f"photon-reply:{trigger['triggerId']}"
         to = reply.get("to") or ""

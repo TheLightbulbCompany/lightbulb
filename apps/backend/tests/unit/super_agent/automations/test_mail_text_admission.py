@@ -140,17 +140,21 @@ async def test_deliver_reply_text_sends_sms():
 
 
 async def test_deliver_reply_text_photon():
+    from core.services.webhook_dedup import WebhookDedupResult
+
     ref = {"provider": "photon", "address": "team@x", "senderId": "u_line", "spaceId": "sp_1", "to": "+1666"}
     with (
         patch("core.services.photon.send_text", AsyncMock(return_value={"id": "p9"})) as send,
         patch("core.repositories.agent_mail_inbox_repo.put_sent", AsyncMock()) as put_sent,
+        patch("core.services.source_replies.record_event_or_skip", AsyncMock(return_value=WebhookDedupResult.RECORDED)),
     ):
-        await source_replies.deliver_reply(WS, _trigger("text", ref), "Yes, 9 to 5.")
+        await source_replies.deliver_reply(WS, _trigger("text", ref), "Yes, 9 to 5.", idempotency_key="evt-9")
+    # Photon's own idempotency key is per reply (the Router's event id), not per trigger
     assert send.await_args.kwargs == {
         "sender_id": "u_line",
         "space_id": "sp_1",
         "text": "Yes, 9 to 5.",
-        "idempotency_key": "reply:text:x",
+        "idempotency_key": "reply:evt-9",
     }
     assert put_sent.await_args.kwargs["message_id"] == "p9"
 
@@ -183,7 +187,22 @@ async def test_deliver_reply_is_idempotent_on_the_routers_event_id():
         await source_replies.deliver_reply(WS, _trigger("text", ref), "Yes.", idempotency_key="evt-1")  # the retry
         await source_replies.deliver_reply(WS, _trigger("text", ref), "Yes.", idempotency_key="evt-1")  # a second retry
     assert send.await_count == 2  # the failed attempt and the one that went out; the last was a no-op
-    assert seen == {"reply:evt-1"}
+    assert seen == {"reply:org_1:evt-1"}  # scoped per workspace
+
+
+async def test_a_mail_reply_that_was_not_sent_frees_the_key():
+    """`send_reply` never raises: a `not_sent` answer must still free the key, or the retry is a no-op."""
+    from core.services.webhook_dedup import WebhookDedupResult
+
+    freed = []
+    with (
+        patch("core.services.source_replies.record_event_or_skip", AsyncMock(return_value=WebhookDedupResult.RECORDED)),
+        patch("core.services.source_replies.delete_event", AsyncMock(side_effect=lambda k: freed.append(k))),
+        patch("core.services.agent_mail_reply.send_reply", AsyncMock(return_value="not_sent")),
+    ):
+        with pytest.raises(RuntimeError, match="not_sent"):
+            await source_replies.deliver_reply(WS, _trigger("mail", MAIL_REF), "hello", idempotency_key="evt-2")
+    assert freed == ["reply:org_1:evt-2"]
 
 
 async def test_deliver_reply_without_a_reply_ref_is_a_noop():

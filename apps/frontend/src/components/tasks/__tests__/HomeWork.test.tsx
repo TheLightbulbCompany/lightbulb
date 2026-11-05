@@ -110,4 +110,27 @@ describe("HomeWork", () => {
     const { result: badge } = renderHook(() => useHomeNeedsYou(), { wrapper: Fresh });
     await waitFor(() => expect(badge.current).toBe(4));
   });
+
+  it("your company today, in order: Needs you, then the slots (mentions, Ideas, Feed), then Working, Done, Closed", async () => {
+    render(<Fresh><HomeWork viewerId={SAM} onOpen={vi.fn()} between={<section aria-label="Ideas slot" />} /></Fresh>);
+    const needs = await screen.findByRole("region", { name: "Needs you · 3" });
+    const slot = screen.getByRole("region", { name: "Ideas slot" });
+    const working = await screen.findByRole("region", { name: "Working · 3" });
+    const closed = screen.getByRole("region", { name: "Closed · 7" });
+    const order = [needs, slot, working, closed];
+    for (let i = 1; i < order.length; i++) expect(order[i - 1].compareDocumentPosition(order[i]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("the slots show while requests are still loading", () => {
+    client.list.mockReturnValue(new Promise(() => {}));
+    render(<Fresh><HomeWork viewerId={SAM} onOpen={vi.fn()} between={<section aria-label="Ideas slot" />} /></Fresh>);
+    expect(screen.getByRole("region", { name: "Ideas slot" })).toBeInTheDocument();
+  });
+
+  it("a working row shows who is doing it, live: actor · what · how long", async () => {
+    render(<Fresh><HomeWork viewerId={SAM} onOpen={vi.fn()} /></Fresh>);
+    const working = await screen.findByRole("region", { name: "Working · 3" });
+    const row = within(working).getByText("Request c").closest("li")!;
+    expect(row.querySelector("[data-live]")).toHaveTextContent(/^Lightbulb · working · \d+d$/);
+  });
 });

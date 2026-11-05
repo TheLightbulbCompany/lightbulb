@@ -269,3 +269,17 @@ export function splitPost(text: string): { title: string; body: string } {
   const title = first.replace(/^#+\s*/, "").replace(/^(\*\*|__)(.*)\1$/, "$2").trim();
   return { title, body: rest.join("\n").trim() };
 }
+
+// --- Home (super-agent) ------------------------------------------------------
+
+/**
+ * What For you carried that Home shows nowhere else: unread mentions and replies to you (one compact line), and open
+ * asks that are not requests (a website login, a browser extension, a reconnect, a session waiting on you). Request
+ * questions are Needs you rows; DMs show as unread in the sidebar; Paperclip items are retired here.
+ */
+export function homeExtras(items: readonly ActivityItem[]): { mentions: ActivityItem[]; asks: ActivityItem[] } {
+  const mentions = items.filter((item) => item.state === "open" && !item.read && (item.kind === "mention" || item.kind === "thread_reply"));
+  const asks = items.filter((item) => item.kind !== "task_question" && item.kind !== "paperclip"
+    && (activityVerb(item) === "do" || activityVerb(item) === "decide"));
+  return { mentions, asks };
+}

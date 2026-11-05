@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FOR_YOU_FILTERS, dayLabel, feedTimeline, filterForYou, forYouEntries, isForYouFilter, splitPost } from "../activityPage";
+import { FOR_YOU_FILTERS, dayLabel, feedTimeline, filterForYou, forYouEntries, homeExtras, isForYouFilter, splitPost } from "../activityPage";
 import { approval, ask, assigned, attention, failedRun, loginAsk, maya, message, post, runGroup } from "./fixtures";
 
 describe("For you", () => {
@@ -125,5 +125,16 @@ describe("feed timeline", () => {
   it("takes the first line as the title without its emphasis marks", () => {
     expect(splitPost("**Acme paid: $1,200**\nStripe confirmed it.\nFirst revenue.")).toEqual({ title: "Acme paid: $1,200", body: "Stripe confirmed it.\nFirst revenue." });
     expect(splitPost("# Heading only")).toEqual({ title: "Heading only", body: "" });
+  });
+});
+
+describe("Home (super-agent): what For you carried that Home shows nowhere else", () => {
+  it("unread mentions and replies as one line; open non-request asks as rows; DMs, requests and Paperclip left out", () => {
+    const read = message("m-read", maya, true);
+    const dm = message("d1", maya, false, "dm");
+    const taskQ = { ...loginAsk, id: "task_question:q1", kind: "task_question" as const, subtype: null };
+    const { mentions, asks } = homeExtras([message("m1"), read, dm, message("r1", maya, false, "thread_reply"), loginAsk, approval, ask, taskQ]);
+    expect(mentions.map((i) => i.id)).toEqual(["mention:m1", "thread_reply:r1"]);
+    expect(asks.map((i) => i.id)).toEqual(["login:abc"]);
   });
 });

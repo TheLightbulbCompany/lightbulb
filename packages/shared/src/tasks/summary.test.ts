@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import schema from "../../fixtures/super-agent/tasks-schema.json";
 import { FIXTURES, PRIYA, SAM, fixtureTask, viewAs } from "./fixtures";
 import { OUTPUT_KINDS, type TaskSummary } from "./types";
-import { answerVerb, askLine, doneByLine, nameSpecialistIn, effectLine, formatSchedule, overviewGroups, previewRows, primaryOptionId, specialistLabel, summaryView, taskSummaryLine } from "./view";
+import { activityLine, elapsedShort, answerVerb, askLine, doneByLine, nameSpecialistIn, effectLine, formatSchedule, overviewGroups, previewRows, primaryOptionId, specialistLabel, summaryView, taskSummaryLine } from "./view";
 
 const byId = (ts: TaskSummary[], id: string) => ts.find((t) => t.taskId === id)!;
 
@@ -81,7 +81,8 @@ describe("summary lines and labels", () => {
     expect(doneByLine("finance", { word: "Needs you", reason: "Ready for review" })).toBe("Done by Finance, ready for your review");
     expect(doneByLine("finance", { word: "Needs you", reason: "Needs approval" })).toBe("Finance needs you");
     expect(doneByLine("finance", { word: "Done", reason: null })).toBe("Done by Finance");
-    expect(doneByLine(null, { word: "Closed", reason: null })).toBe("Done by Lightbulb");
+    // Closed never claims it was done: a person can close a request before it finishes (dev walk N-F1).
+    expect(doneByLine(null, { word: "Closed", reason: null })).toBeNull();
   });
   it("no actor line for what never ran or ended without a result", () => {
     for (const reason of ["Stopped", "Dismissed", "Failed"]) expect(doneByLine("finance", { word: "Closed", reason })).toBeNull();
@@ -141,6 +142,21 @@ describe("specialistLabel with the agents list", () => {
     expect(specialistLabel(id, new Map([[id, "Finance"]]))).toBe("Finance");
     expect(specialistLabel(id)).toBe("Lightbulb");
     expect(specialistLabel("finance")).toBe("Finance");
+  });
+});
+
+describe("activityLine: a Working request's live line", () => {
+  const at = Date.parse("2026-11-05T12:00:00Z");
+  const t = (over: Partial<TaskSummary>) => fixtureTask({ taskId: "t", title: "x", updatedAt: "2026-11-05T11:59:48Z", ...over });
+  it("actor · verb · elapsed while Working; null otherwise", () => {
+    expect(activityLine(t({ status: "working", specialist: "growth" }), SAM, undefined, at)?.text).toBe("Growth · working · 12s");
+    expect(activityLine(t({ status: "queued" }), SAM, undefined, at)?.text).toBe("Lightbulb · starting · 12s");
+    expect(activityLine(t({ status: "idle", shownGroup: "idle" }), SAM, undefined, at)).toBeNull();
+  });
+  it("elapsed reads in the largest whole unit", () => {
+    expect(elapsedShort("2026-11-05T11:55:00Z", at)).toBe("5m");
+    expect(elapsedShort("2026-11-05T09:00:00Z", at)).toBe("3h");
+    expect(elapsedShort("2026-11-03T12:00:00Z", at)).toBe("2d");
   });
 });
 

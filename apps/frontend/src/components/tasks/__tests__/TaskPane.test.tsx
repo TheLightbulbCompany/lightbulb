@@ -273,4 +273,52 @@ describe("NeedsYouCard", () => {
     const calls = Object.values(client).filter((v) => typeof v === "function").flatMap((fn) => (fn as unknown as { mock: { calls: unknown[][] } }).mock.calls.flat());
     expect(JSON.stringify(calls)).not.toMatch(/apply/);
   });
+
+  it("a Closed request's approval is read-only: no Allow once / Deny, and no Done by (dev walk N-F1)", async () => {
+    const closed = { ...FIXTURES.step05.tasks[0], status: "resolved" as const, shownGroup: "resolved" as const };
+    withDetail({ ...step8, task: closed, questions: [openRow] }, [approval()]);
+    pane();
+    const card = await screen.findByRole("group", { name: /provision a database/ });
+    expect(within(card).getByText("Closed — not approved")).toBeInTheDocument();
+    expect(within(card).queryByRole("button")).toBeNull();
+    expect(screen.getByRole("region", { name: "Request status" })).not.toHaveTextContent("Done by");
+  });
+
+  it("Request changes asks what should change first, then sends it with the answer (dev walk N-F2)", async () => {
+    const review = approval({ id: "q-email", kind: "review", text: "", title: "Send the launch email?",
+      options: [{ id: "request_changes", label: "Request changes", style: "secondary" }, { id: "send", label: "Send", style: "primary" }] });
+    withDetail({ ...step8, task: FIXTURES.step07.tasks[1], questions: [{ ...openRow, qid: "q-email", kind: "review" }] }, [review]);
+    pane(SAM, "t-email");
+    await userEvent.click(await screen.findByRole("button", { name: "Request changes" }));
+    expect(client.answer).not.toHaveBeenCalled();
+    const box = screen.getByRole("textbox", { name: "What should change?" });
+    expect(screen.getByRole("button", { name: "Send changes" })).toBeDisabled();
+    await userEvent.type(box, "Say the new date in the subject");
+    await userEvent.click(screen.getByRole("button", { name: "Send changes" }));
+    expect(client.answer).toHaveBeenCalledWith("t-email", "q-email", expect.objectContaining({ optionId: "request_changes", text: "Say the new date in the subject" }));
+  });
+
+  it("Cancel backs out of Request changes without answering", async () => {
+    const review = approval({ id: "q-email", kind: "review", text: "", title: "Send the launch email?",
+      options: [{ id: "request_changes", label: "Request changes", style: "secondary" }, { id: "send", label: "Send", style: "primary" }] });
+    withDetail({ ...step8, task: FIXTURES.step07.tasks[1], questions: [{ ...openRow, qid: "q-email", kind: "review" }] }, [review]);
+    pane(SAM, "t-email");
+    await userEvent.click(await screen.findByRole("button", { name: "Request changes" }));
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument();
+    expect(client.answer).not.toHaveBeenCalled();
+  });
+});
+
+describe("steering a finished request (dev walk N-F4)", () => {
+  it("reads Working with Stop as soon as the note goes, before the revised result", async () => {
+    const done = { ...step8.task, status: "idle" as const, shownGroup: "idle" as const, watching: false };
+    withDetail({ ...step8, task: done, questions: [] }, []);
+    pane();
+    const status = await screen.findByRole("region", { name: "Request status" });
+    expect(within(status).getByText("Done")).toBeInTheDocument();
+    await userEvent.type(screen.getByRole("textbox", { name: "Add a note" }), "Make it one line{Enter}");
+    await waitFor(() => expect(within(status).getByText("Working")).toBeInTheDocument());
+    expect(within(status).getByRole("button", { name: "Stop" })).toBeInTheDocument();
+  });
 });

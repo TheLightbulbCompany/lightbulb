@@ -145,4 +145,23 @@ describe("TeamFeed", () => {
     await waitFor(() => expect(posts()).toHaveLength(3));
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
   });
+
+  it("Home's compact feed: the newest posts only, no dividers, no welcome, then a way to the whole feed", async () => {
+    const today = new Date().toISOString();
+    const { client } = setup({ limit: 1 });
+    client.listMessages.mockResolvedValue({ messages: [
+      post(1, { createdAt: today, text: "**This is our feed.** When something here matters to you, one of us posts it." }),
+      post(2, { createdAt: today }),
+      post(3, { createdAt: today, text: "**Acme paid**\nStripe confirmed it." }),
+    ], nextAfterSeq: null });
+    await waitFor(() => expect(posts()).toHaveLength(1));
+    expect(posts()[0].querySelector(".feed-post__title")?.textContent).toBe("Acme paid");
+    expect(document.querySelector(".team-feed__divider")).toBeNull();
+    // The Brief stays editable here, as on the full feed.
+    expect(screen.getByRole("button", { name: "Edit the brief" })).toBeInTheDocument();
+    const opened = vi.fn();
+    window.addEventListener("openRoom", (event) => opened((event as CustomEvent).detail), { once: true });
+    await userEvent.click(screen.getByRole("button", { name: "See the whole feed" }));
+    expect(opened).toHaveBeenCalledWith({ roomId: "feed-1" });
+  });
 });

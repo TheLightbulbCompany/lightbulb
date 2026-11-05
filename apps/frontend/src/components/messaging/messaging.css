@@ -13,7 +13,10 @@
 .room-conversation { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .room-conversation[hidden] { display: none; }
 .room-header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; min-height: 48px; padding: 4px 20px; }
-.room-view-about[aria-expanded="true"] { background: var(--accent); }
+.room-view-about[aria-expanded="true"], .room-view-toggle[aria-pressed="true"] { background: var(--accent); }
+/* The room's tool toggles keep their words while there is room; on a tight header the icon stays, named by aria-label. */
+.room-header { container: room-header / inline-size; }
+@container room-header (max-width: 760px) { .room-view-toggle > span:not([aria-hidden]) { display: none; } }
 .room-title { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1 1 160px; }
 .room-header h2 { font-size: 1rem; font-weight: 700; }
 .room-topic { max-width: 32ch; gap: 4px; height: 28px; padding: 0 6px; color: var(--muted-foreground); font-size: var(--text-ui); font-weight: 400; }

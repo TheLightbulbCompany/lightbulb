@@ -24,9 +24,11 @@ vi.mock("@/components/notifications/MessageNotifications", () => ({ MessageNotif
 vi.mock("@/hooks/useAgents", () => ({ useAgents: mocks.agents }));
 vi.mock("@/components/agents/useRosterEntries", () => ({ useRosterEntries: mocks.roster }));
 vi.mock("@/components/chat/shell/useChatReady", () => ({ useChatReady: () => ({ chatReady: true, setupStarting: false }) }));
+const teams = vi.hoisted(() => ({ agentsLoading: false, superAgent: false }));
+vi.mock("@/hooks/useLiveEvents", async (importOriginal) => ({ ...(await importOriginal<object>()), useSuperAgent: () => teams.superAgent }));
 vi.mock("@/hooks/useTeamsApi", () => ({ useTeamsApi: () => ({
   read: (path: string) => ({ data: path === "/agents"
-    ? { agents: [{ id: "agent-friday", name: "Friday" }, { id: "agent-atlas", name: "Atlas", role: "ceo", origin: "Starter" }] }
+    ? (teams.agentsLoading ? undefined : { agents: [{ id: "agent-friday", name: "Friday" }, { id: "agent-atlas", name: "Atlas", role: "ceo", origin: "Starter" }] })
     : { members: [{ userId: "owner", name: "Owner" }, { userId: "colleague", name: "Colleague" }] } }),
 }) }));
 vi.mock("@/components/workspace/workspaceController", () => ({ openPanel: vi.fn(), activateMessagesPanel: vi.fn(), openInviteDialog: vi.fn(), getWorkspaceSnapshot: () => ({ activePanelId: null }) }));
@@ -792,6 +794,43 @@ it("clears the sending room's stored draft when the owner switches rooms mid-sen
   });
 
   expect(localStorage.getItem(draftKey("org", "room-1", null))).toBeNull();
+});
+
+it("emptying the box (a Replying to steer) drops the room from Drafts in the same render (dev walk R10)", () => {
+  const view = compose();
+  // Typing: the stored draft lands after each render, so the sidebar lists the room from the next keystroke.
+  act(() => { panel.composer.onTextChange("make it"); });
+  act(() => { panel.composer.onTextChange("make it one line"); });
+  expect(directory.draftRoomIds).toContain("room-1");
+  act(() => { panel.composer.onTextChange(""); });
+  expect(directory.draftRoomIds).not.toContain("room-1");
+  expect(localStorage.getItem(draftKey("org", "room-1", null))).toBeNull();
+  view.unmount();
+});
+
+describe("the front agent before the roster loads (dev walk R6)", () => {
+  afterEach(() => { teams.agentsLoading = false; teams.superAgent = false; });
+  const atlasRoom = { ...room, members: [room.members[0], { ...room.members[1], id: "agent-atlas", displayName: "CEO", mentionHandle: "ceo" }] };
+
+  it("never reads its seat name: Lightbulb from the last load, or by seat name on a first load", () => {
+    teams.superAgent = true;
+    state.activeRoom = atlasRoom; state.rooms = [atlasRoom];
+    // A load that knows the roster remembers who the front agent is.
+    const first = compose();
+    expect(panel.participants.find((p) => p.id === "agent-atlas")?.displayName).toBe("Lightbulb");
+    first.unmount();
+    // A hard load: the roster hasn't answered yet, and the room still says "CEO".
+    teams.agentsLoading = true;
+    const second = compose();
+    expect(panel.participants.find((p) => p.id === "agent-atlas")).toMatchObject({ displayName: "Lightbulb", mentionHandle: "lightbulb" });
+    expect(directory.ceoAgentId).toBe("agent-atlas");
+    second.unmount();
+    // A first load ever (nothing remembered): the seat name still reads Lightbulb.
+    localStorage.clear();
+    const third = compose();
+    expect(panel.participants.find((p) => p.id === "agent-atlas")?.displayName).toBe("Lightbulb");
+    third.unmount();
+  });
 });
 
 it("restores a per-room draft when the owner returns to the room", () => {

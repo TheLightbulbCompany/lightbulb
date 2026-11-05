@@ -14,7 +14,12 @@ vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 const apiGet = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/api", () => ({ useApi: () => ({ get: apiGet }) }));
 
-import { RoomPanel, type RoomPanelProps } from "../RoomPanel";
+import { RoomPanel, namesAgent, type RoomPanelProps } from "../RoomPanel";
+import { act } from "@testing-library/react";
+import { _resetControllerForTests, attachShell, closePane, getWorkspaceSnapshot, openBrowserPane, setThreadPaneHost } from "@/components/workspace/workspaceController";
+vi.mock("@/lib/shellNav", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()), pushSearchParams: vi.fn(), replaceSearchParams: vi.fn(),
+}));
 
 const sam: RoomParticipant = { kind: "human", id: SAM, displayName: "Sam", mentionHandle: null, role: "owner", listenMode: null, joinedAt: "2026-11-04T00:00:00Z", joinedSeq: 0 };
 const lightbulb: RoomParticipant = { ...sam, kind: "agent", id: "agent_ceo", displayName: "Lightbulb", role: "member" };
@@ -41,25 +46,100 @@ beforeEach(() => {
 });
 
 describe("RoomPanel Threads view (super-agent)", () => {
-  it("the About button carries the needs-you dot and opens on the room's requests", async () => {
-    render(<Fresh><RoomPanel {...props} /></Fresh>);
-    const button = await screen.findByRole("button", { name: "About, 1 needs you" });
-    expect(button).toHaveTextContent("About");
-    await userEvent.click(button);
-    const aside = await screen.findByRole("complementary", { name: "About" });
-    expect(within(aside).getByRole("tab", { name: "Requests" })).toHaveAttribute("aria-selected", "true");
-    expect(within(aside).getByRole("heading", { name: "Needs you · 1" })).toBeInTheDocument();
+  it("the Requests column is open beside the conversation; a row opens the request there, Back returns, Close is remembered", async () => {
+    localStorage.clear();
+    const { unmount } = render(<Fresh><RoomPanel {...props} /></Fresh>);
+    // Open by default, with the toggle pressed and carrying the needs-you dot.
+    const toggle = await screen.findByRole("button", { name: "Requests, 1 needs you" });
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+    const aside = await screen.findByRole("complementary", { name: "Requests" });
+    expect(await within(aside).findByRole("heading", { name: "Needs you · 1" })).toBeInTheDocument();
     expect(within(aside).getByRole("heading", { name: "Working · 2" })).toBeInTheDocument();
-    // One room read serves the button and the tab.
+    // No second tab strip in the column: Scheduled lives in the ··· menu.
+    expect(within(aside).queryByRole("tab")).toBeNull();
+    // One room read serves the button and the column.
     expect(client.list).toHaveBeenCalledTimes(1);
-    // A row opens its thread in the same column.
+    // A row opens the request in the same column; Back returns to the list.
     await userEvent.click(within(aside).getByRole("button", { name: "Open Workshop signup app, Needs you" }));
     expect(await screen.findByRole("complementary", { name: "Request" })).toHaveAttribute("data-task-pane", "t-signup");
-    // Opened from About, Back returns to its Threads tab; from there, Back returns to the conversation.
+    expect(screen.queryByRole("complementary", { name: "Requests" })).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "Back to requests" }));
-    expect(within(await screen.findByRole("complementary", { name: "About" })).getByRole("tab", { name: "Requests" })).toHaveAttribute("aria-selected", "true");
-    await userEvent.click(screen.getByRole("button", { name: "Back to conversation" }));
-    expect(screen.getByRole("button", { name: "About, 1 needs you" })).toHaveFocus();
+    const back = await screen.findByRole("complementary", { name: "Requests" });
+    // Closed, it stays closed for this person, in this room and the next.
+    await userEvent.click(within(back).getByRole("button", { name: "Close requests" }));
+    expect(screen.queryByRole("complementary", { name: "Requests" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Requests, 1 needs you" })).toHaveAttribute("aria-pressed", "false");
+    unmount();
+    render(<Fresh><RoomPanel {...props} /></Fresh>);
+    await screen.findByRole("button", { name: "Requests, 1 needs you" });
+    expect(screen.queryByRole("complementary", { name: "Requests" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Requests, 1 needs you" }));
+    expect(await screen.findByRole("complementary", { name: "Requests" })).toBeInTheDocument();
+    localStorage.clear();
+  });
+
+  it("a request card in the conversation opens in the column, not a separate pane", async () => {
+    localStorage.clear();
+    const reply: RoomMessage = { ...message, messageId: "m2", messageSeq: 2, author: { kind: "agent", id: lightbulb.id, displayName: "Lightbulb" }, text: "On it.", taskRefs: [{ taskId: "t-signup" }] } as RoomMessage;
+    render(<Fresh><RoomPanel {...props} messages={[message, reply]} /></Fresh>);
+    const card = (await screen.findAllByRole("button", { name: "Open Workshop signup app, Needs you" })).find((b) => b.closest("[data-task-card]"))!;
+    await userEvent.click(card);
+    expect(await screen.findByRole("complementary", { name: "Request" })).toHaveAttribute("data-task-pane", "t-signup");
+    expect(screen.getByRole("button", { name: "Back to requests" })).toBeInTheDocument();
+  });
+
+  it("in the shell the column takes the right pane, folds while Browser has it, and comes back when Browser closes", async () => {
+    localStorage.clear();
+    _resetControllerForTests();
+    attachShell(() => undefined);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    act(() => setThreadPaneHost(host));
+    try {
+      render(<Fresh><RoomPanel {...props} /></Fresh>);
+      expect(await within(host).findByRole("complementary", { name: "Requests" })).toBeInTheDocument();
+      expect(getWorkspaceSnapshot().pane?.component).toBe("thread");
+      act(() => { openBrowserPane(); });
+      expect(getWorkspaceSnapshot().pane?.panelId).toBe("browser");
+      expect(screen.queryByRole("complementary", { name: "Requests" })).toBeNull();
+      act(() => closePane());
+      expect(await within(host).findByRole("complementary", { name: "Requests" })).toBeInTheDocument();
+    } finally { host.remove(); _resetControllerForTests(); localStorage.clear(); }
+  });
+
+  it("namesAgent: the name as a whole word, any case", () => {
+    expect(namesAgent("hi lightbulb, help", "Lightbulb")).toBe(true);
+    expect(namesAgent("Lightbulb?", "Lightbulb")).toBe(true);
+    expect(namesAgent("lightbulbs", "Lightbulb")).toBe(false);
+  });
+
+  it("Scheduled is in the ··· menu and opens in the column with Back", async () => {
+    localStorage.clear();
+    render(<Fresh><RoomPanel {...props} /></Fresh>);
+    await userEvent.click(screen.getByRole("button", { name: "Conversation options" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "Scheduled" }));
+    expect(await screen.findByRole("complementary", { name: "Scheduled" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Back to requests" }));
+    expect(await screen.findByRole("complementary", { name: "Requests" })).toBeInTheDocument();
+  });
+
+  it("Lightbulb's messages read as the coordinator", async () => {
+    const front = { ...lightbulb, mentionHandle: "lightbulb" };
+    const reply: RoomMessage = { ...message, messageId: "m2", messageSeq: 2, author: { kind: "agent", id: front.id, displayName: "Lightbulb" }, text: "On it." };
+    render(<Fresh><RoomPanel {...props} participants={[sam, front]} messages={[message, reply]} /></Fresh>);
+    const article = await screen.findByRole("article", { name: "Message from Lightbulb" });
+    expect(within(article).getByText("Coordinator")).toBeInTheDocument();
+    expect(within(article).queryByText("Agent")).toBeNull();
+  });
+
+  it("naming Lightbulb in plain words shows on it…, like an @mention (dev walk R8)", async () => {
+    const front = { ...lightbulb, mentionHandle: "lightbulb", listenMode: "mentions" as const };
+    const ask = { ...message, text: "Hi Lightbulb, can you find a venue?", createdAt: new Date().toISOString() };
+    const { rerender } = render(<Fresh><RoomPanel {...props} participants={[sam, front]} messages={[ask]} /></Fresh>);
+    expect(await screen.findByText("Lightbulb is on it…")).toBeInTheDocument();
+    // A word that only contains the name is not the name.
+    rerender(<Fresh><RoomPanel {...props} participants={[sam, front]} messages={[{ ...ask, text: "the lightbulbs are out" }]} /></Fresh>);
+    expect(screen.queryByText("Lightbulb is on it…")).toBeNull();
   });
 
   it("a message sent while the workspace is still being set up reads Queued until Lightbulb answers", async () => {
@@ -97,8 +177,9 @@ describe("RoomPanel Threads view (super-agent)", () => {
     const front = { ...lightbulb, mentionHandle: "lightbulb" };
     const finance: RoomParticipant = { ...lightbulb, id: "agent_fin", displayName: "Finance", mentionHandle: "finance", listenMode: "mentions" };
     render(<Fresh><RoomPanel {...props} participants={[sam, front, finance]} onRemoveMember={vi.fn()} onListenModeChange={vi.fn()} /></Fresh>);
-    await userEvent.click(await screen.findByRole("button", { name: /^About/ }));
-    await userEvent.click(within(screen.getByRole("complementary", { name: "About" })).getByRole("tab", { name: "Members" }));
+    // About opens from the people in the header (and ··· › Details); with the super-agent it has no Requests tab.
+    await userEvent.click(await screen.findByRole("button", { name: /^People/ }));
+    expect(within(screen.getByRole("complementary", { name: "About" })).queryByRole("tab", { name: "Requests" })).toBeNull();
     const list = within(screen.getByRole("complementary", { name: "About" })).getByRole("heading", { name: "Members" }).closest("section")!;
     expect(within(list).getByText("Lightbulb")).toBeInTheDocument();
     expect(within(list).queryByText("Finance")).toBeNull();

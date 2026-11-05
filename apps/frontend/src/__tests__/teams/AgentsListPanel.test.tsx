@@ -6,7 +6,8 @@
 // smuggle attempt would 422, but we enforce defense in depth at the UI
 // boundary too.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { SWRConfig } from "swr";
 
 interface AgentRow {
   id: string;
@@ -73,7 +74,14 @@ vi.mock("@/components/teams/org-chart/OrgChart", () => ({
 
 // Team › Message: Lightbulb's DM, or (switch on) a specialist asked through Lightbulb's DM with its @handle.
 const live = vi.hoisted(() => ({ superAgent: false }));
-vi.mock("@/hooks/useLiveEvents", () => ({ useSuperAgent: () => live.superAgent }));
+// Team cards (switch on) read the workspace's requests and each profile's skills.
+const teamTasks = vi.hoisted(() => ({ list: [] as unknown[] }));
+vi.mock("@/hooks/useLiveEvents", () => ({
+  useSuperAgent: () => live.superAgent,
+  useLiveEvents: () => ({ agentNames: new Map([["ceo", "Lightbulb"]]), tasks: { cacheScope: "org", list: async () => ({ tasks: teamTasks.list, next: null }) } }),
+}));
+const skills = vi.hoisted(() => ({ byAgent: {} as Record<string, unknown> }));
+vi.mock("@/hooks/useRuntimeRpc", () => ({ useRuntimeRpc: (_m: string | null, params: { agentId: string }) => ({ data: skills.byAgent[params.agentId] }) }));
 vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({
   useMessagingWorkspaceOptional: () => ({ directoryProps: { ceoAgentId: "ceo", participants: [{ kind: "agent", id: "fin", mentionHandle: "finance" }] } }),
 }));
@@ -429,6 +437,40 @@ describe("Team › Message", () => {
     expect(screen.queryByRole("button", { name: "New agent" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Hire a specialist" }));
     expect(screen.getByRole("dialog", { name: "Hire a specialist" })).toBeInTheDocument();
+  });
+
+  it("switch on: a card per specialist says what it's for, its skills and recent requests, with Ask; no org chart", async () => {
+    live.superAgent = true;
+    mockRead.mockReturnValue({ ...agents, data: { agents: [
+      { id: "fin", name: "Finance", role: "cfo" },
+      { id: "ceo", name: "CEO", role: "ceo" },
+      { id: "growth", name: "Growth", role: "cmo", title: "Finds you customers" } as AgentRow,
+    ] } });
+    skills.byAgent = { fin: { skills: [{ name: "stripe" }, { name: "quickbooks" }, { name: "off", disabled: true }] } };
+    teamTasks.list = [
+      { taskId: "t1", identifier: "t1", title: "Reconcile October", status: "idle", shownGroup: "idle", specialist: "fin", audience: { kind: "room" }, audienceKind: "room", taskRoomId: "tr", watching: false, updatedAt: "2026-11-05T10:00:00Z", version: 1 },
+      { taskId: "t2", identifier: "t2", title: "Plan the week", status: "working", shownGroup: "working", specialist: null, audience: { kind: "room" }, audienceKind: "room", taskRoomId: "tr", watching: false, updatedAt: "2026-11-05T10:00:00Z", version: 1 },
+    ];
+    try {
+      render(<SWRConfig value={{ provider: () => new Map() }}><AgentsListPanel /></SWRConfig>);
+      const cards = screen.getAllByRole("listitem").filter((li) => li.closest("[aria-label='Specialists']") && li.querySelector("h3"));
+      // Lightbulb leads, as the coordinator.
+      expect(within(cards[0]).getByRole("heading", { name: "Lightbulb" })).toBeInTheDocument();
+      expect(within(cards[0]).getByText("Starts every request and hands it to the right specialist.")).toBeInTheDocument();
+      const fin = cards.find((c) => within(c).queryByRole("heading", { name: "Finance" }))!;
+      // No title or persona: the line comes from its skills; disabled skills don't show.
+      expect(within(fin).getByText("Works with stripe and quickbooks.")).toBeInTheDocument();
+      expect(within(fin).getByRole("list", { name: "Finance's skills" })).toHaveTextContent("stripequickbooks");
+      expect(await within(fin).findByRole("button", { name: "Open Reconcile October, Done" })).toBeInTheDocument();
+      expect(await within(cards[0]).findByRole("button", { name: "Open Plan the week, Working" })).toBeInTheDocument();
+      const growth = cards.find((c) => within(c).queryByRole("heading", { name: "Growth" }))!;
+      expect(within(growth).getByText("Finds you customers")).toBeInTheDocument();
+      expect(within(growth).getByText("No requests yet.")).toBeInTheDocument();
+      fireEvent.click(within(fin).getByRole("button", { name: "Ask Finance through Lightbulb" }));
+      expect(nav.openAgentDmWithDraft).toHaveBeenCalledWith("ceo", "@finance ");
+      expect(screen.queryByRole("button", { name: "Org chart view" })).toBeNull();
+      expect(screen.queryByTestId("org-chart")).toBeNull();
+    } finally { skills.byAgent = {}; teamTasks.list = []; }
   });
 
   it("switch off: every agent's Message opens its DM", () => {

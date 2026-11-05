@@ -81,6 +81,7 @@ export default function AutomationScreen() {
       </View>
       <View style={styles.section} accessibilityLabel="History">
         <Text style={[styles.label, { color: palette.fgMute }]}>HISTORY</Text>
+        {runs?.skipped && <Text style={[styles.meta, { color: palette.fgMute }]}>{runs.skipped.text}</Text>}
         {!runs ? <LoadState what="History" error={!!runsError} onRetry={() => void retryRuns()} palette={palette} />
           : !runs.runs.length ? <Text style={[styles.meta, { color: palette.fgMute }]}>No runs yet. Each run opens as its own thread.</Text>
           : <View style={[styles.list, { borderColor: palette.edge, backgroundColor: palette.surface }]}>{runs.runs.map((t, i) => (

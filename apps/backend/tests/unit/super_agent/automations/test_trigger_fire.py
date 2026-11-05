@@ -13,6 +13,7 @@ from core.config import settings
 from core.repositories import automations_repo as repo
 from core.repositories import tasks_repo
 from core.temporal.automations import (
+    IDLE_DAYS,
     FireInput,
     TriggerFireWorkflow,
     close_automation_run,
@@ -43,6 +44,10 @@ def env(table, monkeypatch):
         return created
 
     results: dict[str, str] = {}
+    container = {}  # the workspace's containers row: `last_interactive_at` feeds the idle skip
+
+    async def get_container(ws):
+        return container
 
     async def last_result(ws, task_id):
         return results.get(task_id)
@@ -50,8 +55,11 @@ def env(table, monkeypatch):
     with (
         patch("core.services.admission.enqueue_trigger", side_effect=enqueue) as enq,
         patch("core.services.task_conversation.last_result_text", side_effect=last_result),
+        patch("core.repositories.container_repo.get_by_owner_id", side_effect=get_container),
     ):
-        yield type("Env", (), {"s3": s3, "enqueued": enqueued, "enqueue": enq, "results": results})()
+        yield type(
+            "Env", (), {"s3": s3, "enqueued": enqueued, "enqueue": enq, "results": results, "container": container}
+        )()
 
 
 async def _active(sid="s1", **over):
@@ -121,6 +129,21 @@ async def test_run_overlap_skipped(env):
     assert await repo.claim_run(WS, "s1", "t-running")
     assert await fire_automation(_sched_input(), _ms("2027-01-04T14:00:00+00:00")) == "skipped:overlap"
     assert env.enqueued == []
+
+
+async def test_idle_workspace_skips_until_a_human_is_back(env):
+    at = _ms("2027-01-04T14:00:00+00:00")
+    await _active()
+    env.container["last_interactive_at"] = at // 1000 - IDLE_DAYS * 86_400 - 1
+    assert await fire_automation(_sched_input(), at) == "skipped:idle"
+    row = await repo.get_schedule(WS, "s1")
+    assert env.enqueued == [] and row.get("activeRunTaskId") is None and row["lastSkip"]["reason"] == "idle"
+    manual = FireInput(ws=WS, schedule_id="s1", source="manual", dedupe_key="01HZZ", actor_user_id="user_sam")
+    assert await fire_automation(manual, at) == "manual:s1:01HZZ"  # Run now has a person behind it
+    assert "lastSkip" not in await repo.get_schedule(WS, "s1")  # a run supersedes the skip
+    await repo.close_run(WS, "s1", env.enqueued[0][0].ref["taskId"], failed=False)
+    env.container["last_interactive_at"] = at // 1000 - 60  # someone sent a message: fires run again
+    assert (await fire_automation(_sched_input(), at)).startswith("sched:")
 
 
 async def test_paused_schedule_fire_is_noop(env):

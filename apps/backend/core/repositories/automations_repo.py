@@ -30,7 +30,7 @@ from core.repositories.tasks_repo import (
 RUN_HISTORY = 50
 
 # Rows store unset optional fields as NULL (as tasks_repo does), so "free" conditions also accept NULL.
-# Writer-owned: changed only by set_status / claim_run / close_run / note_sig_failure.
+# Writer-owned: changed only by set_status / claim_run / note_skip / close_run / note_sig_failure.
 _PROTECTED = frozenset(
     {
         "pk",
@@ -42,6 +42,7 @@ _PROTECTED = frozenset(
         "pausedReason",
         "activeRunTaskId",
         "runTaskIds",
+        "lastSkip",
         "consecutiveFailures",
         "sigFailCount",
         "lastSigFailAt",
@@ -159,8 +160,22 @@ async def claim_run(ws: str, sid: str, task_id: str) -> bool:
         "OR attribute_type(activeRunTaskId, :nul) OR activeRunTaskId = :task) "
         "AND NOT contains(runTaskIds, :task)",
         values={":active": "active", ":task": task_id, ":nul": "NULL"},
+        remove=("lastSkip",),  # a run supersedes an earlier skip
     )
     return row is not None
+
+
+async def note_skip(ws: str, sid: str, *, reason: str) -> None:
+    """Record the latest skipped fire (`lastSkip`) for History; the next claimed run clears it."""
+    from core.dynamodb import utc_now_iso
+
+    await _conditional(
+        ws,
+        ts.schedule_sk(sid),
+        {"lastSkip": {"at": utc_now_iso(), "reason": reason}},
+        condition="attribute_exists(pk)",
+        values={},
+    )
 
 
 async def close_run(ws: str, sid: str, task_id: str, *, failed: bool | None) -> dict:

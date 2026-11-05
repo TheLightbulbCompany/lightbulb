@@ -427,6 +427,13 @@ async def test_runs_filtered_by_can_view(api):
     assert runs[0]["status"] == "queued"
 
 
+async def test_runs_show_an_idle_skip_in_plain_words(api):
+    sid = (await _active(api))["id"]
+    await repo.note_skip(WS, sid, reason="idle")
+    skipped = _as(api, SAM, admin=False).get(f"{BASE}/{sid}/runs").json()["skipped"]
+    assert skipped["text"] == "Skipped — nobody's been active for 3 days" and skipped["at"]
+
+
 # --- the confirm card (Router proposal) ----------------------------------------------------------------------
 
 

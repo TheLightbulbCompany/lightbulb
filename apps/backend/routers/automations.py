@@ -45,7 +45,7 @@ from temporalio.service import RPCError
 from ulid import ULID
 
 from core.temporal import client as temporal_client
-from core.temporal.automations import FireInput
+from core.temporal.automations import IDLE_SKIP_TEXT, FireInput
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.config import settings
@@ -623,7 +623,9 @@ async def list_runs(sid: str, auth: AuthContext = Depends(get_current_user)) -> 
         tree = await tasks_repo.get_task_tree(ws, task_id)
         if tree["task"] is not None and await tasks_access.can_view(tree["task"], auth.user_id):
             runs.append(await _summary(tree, auth.user_id))
-    return {"runs": runs, "next": None}
+    skip = row.get("lastSkip")
+    skipped = {"at": skip["at"], "text": IDLE_SKIP_TEXT} if skip and skip.get("reason") == "idle" else None
+    return {"runs": runs, "next": None, "skipped": skipped}
 
 
 @router.patch("/{sid}")

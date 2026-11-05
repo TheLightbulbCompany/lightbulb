@@ -246,3 +246,22 @@ async def test_post_as_lightbulb_goes_into_room_memory(chat, monkeypatch):
     assert room["roomId"] == ORIGIN
     assert message["messageId"] == mid and message["text"] == "Paid the invoice."
     assert message["author"] == {"kind": "agent", "id": CEO, "displayName": "Lightbulb"}
+
+
+async def test_task_room_seat_never_outlives_can_view(chat, monkeypatch):
+    """Audit #16: seats are never swept, so the room door asks `can_view` (read and send both go through it)."""
+    from core.repositories import tasks_repo
+    from core.services.messaging import ApiProblem
+
+    task = {**_task({"kind": "person", "userIds": ["sam"]}), "status": "working"}
+    room = await tc.ensure_task_room(WS, task, seat_viewer="priya")  # seated while she could see it
+
+    async def get_task(ws, task_id):
+        return task
+
+    monkeypatch.setattr(tasks_repo, "get_task", get_task)
+    meta, _ = await messaging.require_room_member(WS, "sam", room)
+    assert meta["roomId"] == room
+    with pytest.raises(ApiProblem) as exc:
+        await messaging.require_room_member(WS, "priya", room)
+    assert exc.value.error.code == "ROOM_NOT_FOUND"

@@ -26,7 +26,7 @@ from core import tasks_schema as ts
 from core.dynamodb import utc_now_iso
 from core.observability.metrics import put_metric
 from core.repositories import automations_repo, messaging_repo, tasks_repo
-from core.services import jev, messaging, room_memory, rules
+from core.services import jev, messaging, room_memory, rules, task_conversation, tasks_access
 from core.services.openclaw_work import WorkRetry
 from core.services.super_agent_flags import flags_for
 from core.temporal import client as temporal
@@ -38,8 +38,9 @@ _HISTORY = 20
 
 
 async def router_room(meta: dict, owner_id: str) -> bool:
-    """A room people chat with Lightbulb in: switch on, and not an app/feed/vendor/session/meeting room or one
-    shared with another organization. A task's own room is a Router room."""
+    """A room people chat with Lightbulb in: switch on, Lightbulb (the front agent) seated, and not an
+    app/feed/vendor/session/meeting room or one shared with another organization. A task's own room is a Router
+    room. A room without Lightbulb's seat (a specialist's DM) keeps today's path: Lightbulb could not answer there."""
     if not meta or not await flags_for(owner_id):
         return False
     if meta.get("task"):
@@ -52,7 +53,9 @@ async def router_room(meta: dict, owner_id: str) -> bool:
         or messaging.is_vendor_room(meta)
     ):
         return False
-    return not await messaging_repo.has_foreign_members(meta["roomId"], owner_id)
+    if await messaging_repo.has_foreign_members(meta["roomId"], owner_id):
+        return False
+    return await _front_member(meta["roomId"], owner_id) is not None
 
 
 def lane_for(meta: dict, author: dict) -> str:
@@ -136,8 +139,22 @@ async def _admit_message(room_id: str, seq: int) -> None:
     task_id = (meta.get("task") or {}).get("taskId")
     if not task_id and msg.get("threadRootMessageId"):
         task_id = await tasks_repo.task_for_thread(ws, f"room:{room_id}:{msg['threadRootMessageId']}")
+    if task_id and not await _can_view(ws, task_id, author["id"]):
+        task_id = None  # a reply in a private task's thread by someone else: route it like any message
     if task_id:
-        await tasks_repo.put_trigger(ws, {**base, "ref": ref, "admission": "respond", "routedTo": {"taskId": task_id}})
+        trig = {**base, "ref": ref, "admission": "respond", "routedTo": {"taskId": task_id}}
+        await tasks_repo.put_trigger(ws, trig)
+        if blocked := await task_conversation.gate_input(ws, task_id, trig):  # §14.10: a steer or a new attempt
+            await task_conversation.post_as_lightbulb(
+                ws,
+                room_id,
+                text=blocked,
+                event_id=f"task-gate:{task_id}:{trigger_id}",
+                thread_root=ref.get("threadRoot"),
+                remember=False,  # billing copy, not something the room said
+            )
+            put_metric("admission.outcome", dimensions={"outcome": "gated", "source": "chat"})
+            return
         await _to_task(ws, task_id, trigger_id)
         put_metric("admission.outcome", dimensions={"outcome": "pass_through", "source": "chat"})
         return
@@ -170,9 +187,12 @@ async def _admit_message(room_id: str, seq: int) -> None:
     put_metric("admission.outcome", dimensions={"outcome": admission, "source": "chat"})
 
 
-async def _front_member(room_id: str, ws: str) -> dict | None:
-    from core.services import task_conversation
+async def _can_view(ws: str, task_id: str, user_id: str) -> bool:
+    task = await tasks_repo.get_task(ws, task_id)
+    return task is not None and await tasks_access.can_view(task, user_id)
 
+
+async def _front_member(room_id: str, ws: str) -> dict | None:
     try:
         return await messaging_repo.get_member(room_id, "agent", await task_conversation.front_agent_id(ws))
     except task_conversation.NoFrontAgent:

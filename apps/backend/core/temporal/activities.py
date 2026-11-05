@@ -81,20 +81,27 @@ async def _task(ws: str, task_id: str) -> dict:
 
 
 async def _move(ws: str, task_id: str, to: str, reason: str | None = None, fields: dict | None = None) -> None:
-    """Transition unless already there; walks queued first when the edge needs it."""
+    """Transition unless already there; walks queued first when the edge needs it. A task that ends (resolved,
+    failed) lets go of its threads, so later replies there go to the Router (and may start a new task); a retry or
+    reopen takes back the ones no other task has claimed since."""
     task = await _task(ws, task_id)
-    if task["status"] == to:
-        return
-    from core.temporal import learning  # Lane V: overlay expiry follows the task's terminal state
+    if task["status"] != to:
+        from core.temporal import learning  # Lane V: overlay expiry follows the task's terminal state
 
-    if task["status"] in learning.TERMINAL and to not in learning.TERMINAL:
-        await learning.set_overlay_tag(ws, task_id, on=False)  # reopen: untag BEFORE the next attempt
-    if to == "working" and task["status"] not in tasks_repo.TRANSITIONS["working"]:
-        await tasks_repo.transition_task(ws, task_id, to="queued")
-    row = await tasks_repo.transition_task(ws, task_id, to=to, reason=reason, fields=fields)
-    await memory_tasks_index.index_task(ws, row)  # memory (M5): the task card follows every status change
-    if to in learning.TERMINAL:
-        await learning.set_overlay_tag(ws, task_id, on=True)
+        if task["status"] in learning.TERMINAL and to not in learning.TERMINAL:
+            await learning.set_overlay_tag(ws, task_id, on=False)  # reopen: untag BEFORE the next attempt
+            # Retry/reopen takes its threads back before the move (a crash in between redoes both), so a reply
+            # in the original thread reaches this task again instead of starting a second one.
+            await tasks_repo.resubscribe_router_threads(ws, task_id)
+        if task["status"] not in tasks_repo.TRANSITIONS[to] and "queued" in tasks_repo.TRANSITIONS[to]:
+            # e.g. a retried failed/reopened task: failed → queued → working, or → waiting when over budget
+            await tasks_repo.transition_task(ws, task_id, to="queued")
+        row = await tasks_repo.transition_task(ws, task_id, to=to, reason=reason, fields=fields)
+        await memory_tasks_index.index_task(ws, row)  # memory (M5): the task card follows every status change
+        if to in learning.TERMINAL:
+            await learning.set_overlay_tag(ws, task_id, on=True)
+    if to in ("resolved", "failed"):  # also on a retry that finds the move done (idempotent)
+        await tasks_repo.unsubscribe_all(ws, task_id)
 
 
 def _origin(tree: dict) -> tuple[str | None, str | None]:
@@ -340,16 +347,11 @@ async def deliver_input(ws: str, task_id: str, n: int, trigger_id: str) -> bool:
     Gate refused ⇒ today's copy in the task room and the input is consumed; not accepted ⇒ stays pending."""
     trig = await tasks_repo.get_trigger(ws, trigger_id) or {}
     att = await tasks_repo.get_attempt(ws, task_id, n)
-    actor = trig.get("actorUserId")
-    if actor:
-        gate = await chat_gate.gate_chat(
-            user_id=actor, owner_id=ws, session_key=_identity(ws, task_id, att).session_key
+    if blocked := await task_conversation.gate_input(ws, task_id, trig):
+        await task_conversation.post_as_lightbulb(
+            ws, ts.task_room_id(task_id), text=blocked, event_id=f"task-gate:{task_id}:{trigger_id}", remember=False
         )
-        if gate.get("blocked"):
-            await task_conversation.post_as_lightbulb(
-                ws, ts.task_room_id(task_id), text=gate["message"], event_id=f"task-gate:{task_id}:{trigger_id}"
-            )
-            return True
+        return True
     text = await _input_text(ws, trigger_id)
     try:
         accepted = await runtime_runs.steer_run(ws, _identity(ws, task_id, att), text, "input")
@@ -747,6 +749,9 @@ async def _apply(
                 sl["proposed"].append(task_id)
             ack(sl, dec.ack)
         elif isinstance(dec, ts.PassThrough):
+            if blocked := await task_conversation.gate_input(ws, dec.task_id, trig):  # §14.10, like a start
+                sl["lines"].append(blocked)
+                continue
             await temporal_client.signal_task_input(ws, dec.task_id, TaskInputRef(primary, "message"))
             sl["passes"].append(dec.task_id)
             for tid in dec.trigger_ids:

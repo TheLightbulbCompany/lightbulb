@@ -269,11 +269,60 @@ async def test_end_attempt_stopped_resolves(world):
     assert (task["status"], task["statusReason"]) == ("resolved", "stopped")
 
 
+async def test_ending_a_task_lets_go_of_its_threads(world):
+    """Audit #4: resolved/failed ⇒ THREAD# inactive, so later replies go to the Router; a retried move too."""
+    root = str(uuid.uuid4())
+    key = f"room:{ROOM}:{root}"
+    tid = await _task(root=root)
+    await _attempt(tid)
+    await _ended(tid, "cancelled")
+    assert await repo.task_for_thread(WS, key) is None
+    assert [s["active"] for s in (await repo.get_task_tree(WS, tid))["subscriptions"]] == [False]
+    await acts.transition(WS, tid, "resolved", "stopped")  # already there: still a no-op, no error
+    other = await _task()
+    await repo.subscribe(WS, other, key, created_by="router")  # the thread can move to a new task
+    assert await repo.task_for_thread(WS, key) == other
+    failed = await _task(root=str(uuid.uuid4()))
+    await _attempt(failed)
+    await _ended(failed, "failed")
+    assert not any(s["active"] for s in (await repo.get_task_tree(WS, failed))["subscriptions"])
+
+
+async def test_retry_and_reopen_take_their_threads_back(world):
+    """Leaving resolved/failed resubscribes the task's Router threads, unless another task claimed one meanwhile."""
+    root = str(uuid.uuid4())
+    key = f"room:{ROOM}:{root}"
+    tid = await _task(root=root)
+    await _attempt(tid)
+    await _ended(tid, "failed")
+    assert await repo.task_for_thread(WS, key) is None
+    await _attempt(tid)  # retry: begin_attempt moves failed → queued → working
+    assert await repo.task_for_thread(WS, key) == tid
+    await repo.update_attempt(WS, tid, 2, {"output": "x"}, allowed_status=frozenset({"dispatched"}))
+    await acts.end_attempt(WS, tid, 2, "cancelled", None)  # resolved, stopped
+    assert await repo.task_for_thread(WS, key) is None
+    other = await _task()
+    await repo.subscribe(WS, other, key, created_by="router")  # a new task took the thread
+    await acts.transition(WS, tid, "queued", None)  # reopen
+    assert await repo.task_for_thread(WS, key) == other  # never stolen back
+
+
 async def test_check_budget_between_attempts(world):
     tid = await _task(budgetUsd=0.05)
     assert await acts.check_budget(WS, tid) is True
     await _attempt(tid)
     await _ended(tid, "completed", usage={"costUsd": 0.06})
+    assert await acts.check_budget(WS, tid) is False
+    task = await repo.get_task(WS, tid)
+    assert (task["status"], task["statusReason"]) == ("waiting", "budget")
+
+
+async def test_check_budget_on_a_retried_failed_task(world):
+    """Audit #14: failed → waiting was illegal, so check_budget raised and failed the workflow run."""
+    tid = await _task(budgetUsd=0.05)
+    await _attempt(tid)
+    await _ended(tid, "failed", usage={"costUsd": 0.06})
+    assert (await repo.get_task(WS, tid))["status"] == "failed"
     assert await acts.check_budget(WS, tid) is False
     task = await repo.get_task(WS, tid)
     assert (task["status"], task["statusReason"]) == ("waiting", "budget")

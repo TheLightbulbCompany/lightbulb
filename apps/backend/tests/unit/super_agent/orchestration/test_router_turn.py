@@ -364,6 +364,18 @@ async def test_gate_chat_refusal_blocks_start(world):
 
 
 @pytest.mark.asyncio
+async def test_gate_chat_refusal_blocks_pass_through(world):
+    """§14.10: a pass_through steers or re-runs a task, so it is gated like a start."""
+    open_id = await _open_task({"kind": "room", "roomId": ROOM})
+    t1 = await _trig("chat:m1")
+    world["gate"] = {"blocked": True, "code": "TRIAL_LIMIT", "message": "Your trial's daily limit is reached."}
+    world["decisions"] = [{"kind": "pass_through", "triggerIds": [t1], "taskId": open_id, "ack": "Passed on."}]
+    await _run([t1])
+    assert world["inputs"] == [] and (await repo.get_trigger(WS, t1)).get("routedTo") is None
+    assert world["posts"][0]["text"] == "Your trial's daily limit is reached."
+
+
+@pytest.mark.asyncio
 async def test_deterministic_start_skips_router_run(world):
     t1 = await _trig(
         "sched:s1:100",

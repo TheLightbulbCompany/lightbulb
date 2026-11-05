@@ -1,8 +1,9 @@
 """Short-lived local-session authority for one agent turn; never a provider credential.
 
-Two kinds (spec 2026-10-07-agent-session-approval §3.1): a room turn's grant, minted per room
-dispatch, and a Paperclip run's (run, heartbeat or routine), minted at the facade. A Paperclip
-grant has no room and no requester."""
+Three kinds (spec 2026-10-07-agent-session-approval §3.1): a room turn's grant, minted per room
+dispatch; a Paperclip run's (run, heartbeat or routine), minted at the facade; and a task run's
+(contracts-v2 §14.3), minted by runtime_runs.create_run. Paperclip and task grants are background
+grants: no room and no requester."""
 
 from dataclasses import dataclass
 import re
@@ -12,6 +13,7 @@ import uuid
 import jwt
 
 from core.services.messaging import ApiProblem
+from core.tasks_schema import worker_session_key
 from core.services.service_token import _signing_key
 
 PURPOSE = "lightbulb_local_session_invocation"
@@ -90,6 +92,21 @@ def mint_paperclip(owner: str, agent: str, hermes_session_key: str, run_id: str,
     )
 
 
+def mint_task(owner: str, agent: str, session_key: str, run_id: str, task_id: str) -> str:
+    """The grant for one task run (``runtime_runs.create_run``): background, like a Paperclip run's."""
+    return _sign(
+        {
+            "ownerId": owner,
+            "roomId": None,
+            "agentId": agent,
+            "eventId": None,
+            "requesterId": None,
+            "sessionKey": session_key,
+            "origin": {"kind": "task", "runId": run_id, "taskId": task_id},
+        }
+    )
+
+
 def _uuid(value) -> bool:
     return isinstance(value, str) and str(uuid.UUID(value)) == value
 
@@ -102,6 +119,17 @@ def _turn(claims: dict) -> str:
         if not (_uuid(room) and _uuid(claims["eventId"])) or claims["sessionKey"] != session_key(agent, room):
             raise ValueError()
         return claims["eventId"]
+    if isinstance(origin, dict) and set(origin) == {"kind", "runId", "taskId"} and origin["kind"] == "task":
+        run, task = origin["runId"], origin["taskId"]
+        if (
+            room is not None
+            or claims["eventId"] is not None
+            or claims["requesterId"] is not None
+            or not (_uuid(run) and _uuid(task))
+            or claims["sessionKey"] != worker_session_key(agent, task)
+        ):
+            raise ValueError()
+        return run
     if not (isinstance(origin, dict) and set(origin) == {"kind", "runId", "issueId"} and origin["kind"] == "paperclip"):
         raise ValueError()
     run, issue = origin["runId"], origin["issueId"]

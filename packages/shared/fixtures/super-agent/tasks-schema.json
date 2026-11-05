@@ -182,6 +182,9 @@
     "run": "054fce2c-dfac-5872-affb-9edcd0befb8d",
     "task": "c10f836a-c762-50eb-b28b-a8a6af634983"
   },
+  "sessionKeys": {
+    "worker": "^agent:[0-9a-f-]{36}:lightbulb:task:[0-9a-f-]{36}$"
+  },
   "gsis": [
     {
       "name": "by-status",

@@ -43,7 +43,8 @@ async def admit_inbound_a2a(org: str, a2a_row: dict) -> str | None:
         if task is not None and task["status"] == "resolved":
             put_metric("a2a.admission.stopped_task_ignored")
             return None  # a late allow never restarts what a person stopped (or finished)
-        return trigger_id
+        # Otherwise fall through: enqueue_trigger re-puts the same rows, so a crash between its two puts can't
+        # strand the request (the outbox ignores an identical re-put).
     text = str(a2a_row.get("text") or "")
     start = ts.StartTask(
         kind="start_task",
@@ -53,6 +54,7 @@ async def admit_inbound_a2a(org: str, a2a_row: dict) -> str | None:
         specialist=agent_id,  # pinned: the agent that was asked, not the Router's pick
         ack="",
         visibility="person",
+        a2a_task_id=a2a_task_id,  # lands on Task.a2aTaskId, so report_a2a can tell governance how it ended
     )
     room = await hosted_mcp.person_dm(AuthContext(user_id=requester, org_id=org), agent_id, create_key=a2a_task_id)
     trigger = ts.Trigger(

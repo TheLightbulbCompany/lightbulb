@@ -42,6 +42,7 @@ async def test_inbound_lands_in_private_lane_pinned(world):
     start = row["ref"]["start"]
     assert (start["kind"], start["specialist"], start["visibility"]) == ("start_task", "agent-finance", "person")
     assert start["title"] == "Send Acme the Q3 invoice. Thanks." and start["brief"] == ROW["text"]
+    assert start["a2aTaskId"] == "a2a-task-1"
     assert world["admits"] == [(WS, trigger_id)]
     hosted_mcp.person_dm.assert_awaited_once()
     assert hosted_mcp.person_dm.await_args.kwargs == {"create_key": "a2a-task-1"}
@@ -52,7 +53,9 @@ async def test_admission_idempotent_per_a2a_task(world):
     second = await a2a_admission.admit_inbound_a2a(WS, {**ROW, "text": "changed"})
     assert first == second
     assert (await tasks_repo.get_trigger(WS, first))["ref"]["text"] == ROW["text"]  # the first request stands
-    assert len(world["admits"]) == 1 and hosted_mcp.person_dm.await_count == 1
+    # The admit row is re-put every time (a crash between the two puts never strands the request); the outbox
+    # ignores an identical re-put, so the Router still sees it once.
+    assert len(world["admits"]) == 2 and hosted_mcp.person_dm.await_count == 2
 
 
 async def test_stopped_task_not_restarted_on_late_allow(world):

@@ -3654,6 +3654,18 @@
             ],
             "default": null,
             "title": "Previousruntaskid"
+          },
+          "a2ATaskId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "A2Ataskid"
           }
         },
         "required": [

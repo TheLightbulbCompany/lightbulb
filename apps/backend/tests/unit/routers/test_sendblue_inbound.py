@@ -132,6 +132,8 @@ def test_stored_and_delivered_with_exact_kwargs(client, seams):
         ),
         idempotency_key="sendblue:h1",
         session_key=sb.text_session_key(CUSTOMER),
+        source="text",
+        reply_ref={"provider": "sendblue", "address": TEAM, "fromNumber": LINE, "toNumber": CUSTOMER},
     )
     assert f"Reply-Key: {key}" in seams["deliver_to_agent"].await_args.kwargs["message"]
     seams["send_typing"].assert_awaited_once_with(from_number=LINE, to_number=CUSTOMER)

@@ -16,13 +16,19 @@ as a terminal step; every failure mode collapses to ``"error"``.
 """
 
 import logging
+from typing import Literal
 
+from core import tasks_schema as ts
+from core.dynamodb import utc_now_iso
 from core.repositories import container_repo
 from core.services import runtime_transport
 from core.services.openclaw_work import _AGENTCORE_INGRESS_TIMEOUT_S
+from core.services.super_agent_flags import flags_for
 from core.services.trial_cap import trial_block_reason
 
 logger = logging.getLogger(__name__)
+
+MAX_TRIGGER_TEXT = 32_768
 
 
 async def deliver_to_agent(
@@ -32,11 +38,19 @@ async def deliver_to_agent(
     message: str,
     idempotency_key: str,
     session_key: str | None = None,
+    source: Literal["mail", "text"] = "mail",
+    reply_ref: dict | None = None,
 ) -> str:
     """POST an inbound message to the owner's runtime.
 
     Returns one of ``"delivered"``, ``"container_not_running"``, ``"error"``. Never raises.
+
+    Super-agent workspaces (contracts-v2 §14.6): the message becomes one `TRIG#` + `WORK#ADMIT#` pair for the
+    Router instead (`source` mail|text, `reply_ref` = how a reply gets back, see `source_replies`); the callers'
+    stranger caps, allowlists and trial gates run before this call either way.
     """
+    if await flags_for(owner_id):
+        return await _admit(owner_id, agent_id, message, idempotency_key, session_key, source, reply_ref)
     try:
         container = await container_repo.get_by_owner_id(owner_id)
         if not container or not container.get("agentcore_runtime_arn"):
@@ -80,3 +94,44 @@ async def deliver_to_agent(
     except Exception as exc:  # noqa: BLE001 — must never raise; every failure -> "error"
         logger.warning("agent_mail_delivery failed owner=%s agent=%s err=%s", owner_id, agent_id, exc)
         return "error"
+
+
+async def _admit(
+    owner_id: str,
+    agent_id: str,
+    message: str,
+    idempotency_key: str,
+    session_key: str | None,
+    source: str,
+    reply_ref: dict | None,
+) -> str:
+    """One trigger per message id: a provider retry of the same message is the same trigger (the row put is
+    conditional; the outbox put is unconditional by O6's design). ``"error"`` when the rows could not be
+    written, so the caller rolls back its dedup and asks the provider to retry."""
+    from core.services import admission  # lazy: admission imports the messaging stack
+
+    now = utc_now_iso()
+    try:
+        trigger = ts.Trigger(
+            ws=owner_id,
+            trigger_id=ts.trigger_id(source, idempotency_key),
+            source=source,
+            admission="respond",
+            lane="shared",
+            received_at=now,
+            created_at=now,
+            updated_at=now,
+            ref={
+                "agentId": agent_id,
+                "text": message[:MAX_TRIGGER_TEXT],
+                "sessionKey": session_key,
+                "reply": reply_ref,
+            },
+        )
+        await admission.enqueue_trigger(owner_id, trigger)
+    except Exception as exc:  # noqa: BLE001 — never raises; the caller 503s and the provider retries
+        logger.warning(
+            "agent_mail_delivery admit failed owner=%s agent=%s err=%s", owner_id, agent_id, type(exc).__name__
+        )
+        return "error"
+    return "delivered"

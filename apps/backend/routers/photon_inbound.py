@@ -335,6 +335,15 @@ async def handle_photon_inbound(request: Request):
             ),
             idempotency_key=event_id,
             session_key=text_session_key(customer),
+            # Super-agent workspaces: how the Router's reply gets back to this customer (lane A, A9).
+            source="text",
+            reply_ref={
+                "provider": "photon",
+                "address": address,
+                "senderId": line_user,
+                "spaceId": space.id,
+                "to": customer,
+            },
         )
         if result == "error":
             await _rollback_dedup(event_id)

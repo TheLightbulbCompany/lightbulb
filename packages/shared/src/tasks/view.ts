@@ -149,18 +149,26 @@ export const GROUP_LABELS: Record<ShownGroup, string> = {
 export const GROUP_ORDER: readonly ShownGroup[] = ["waiting_on_you", "working", "ready_for_review", "landing", "idle", "resolved"];
 
 export interface OverviewGroup {
-  id: ShownGroup; label: string; tasks: TaskSummary[]; alwaysShown: boolean; collapsed: boolean;
+  /** A shown group, or one of the server's `idle` group's parts ("watching", "failed"). */
+  id: ShownGroup | "watching" | "failed"; label: string; tasks: TaskSummary[]; alwaysShown: boolean; collapsed: boolean;
 }
 
 /** Waiting on you and Resolved always (Resolved collapsed); the rest only when non-empty. Proposed tasks are skipped. */
 export function overviewGroups(ts: readonly TaskSummary[]): OverviewGroup[] {
-  return GROUP_ORDER.map((id) => ({
-    id,
-    label: GROUP_LABELS[id],
-    tasks: ts.filter((t) => t.shownGroup === id),
-    alwaysShown: id === "waiting_on_you" || id === "resolved",
-    collapsed: id === "resolved",
-  })).filter((g) => g.alwaysShown || g.tasks.length > 0);
+  return GROUP_ORDER.flatMap((id): OverviewGroup[] => {
+    const tasks = ts.filter((t) => t.shownGroup === id);
+    const group = (gid: OverviewGroup["id"], label: string, rows: TaskSummary[]): OverviewGroup =>
+      ({ id: gid, label, tasks: rows, alwaysShown: gid === "waiting_on_you" || gid === "resolved", collapsed: gid === "resolved" });
+    // The server's `idle` group also holds watched and (someone else's) failed threads: each heading matches its rows.
+    if (id === "idle") {
+      return [
+        group("idle", GROUP_LABELS.idle, tasks.filter((t) => t.status === "idle" && !t.watching)),
+        group("watching", "Watching", tasks.filter((t) => t.status === "idle" && t.watching)),
+        group("failed", "Failed", tasks.filter((t) => t.status === "failed")),
+      ];
+    }
+    return [group(id, GROUP_LABELS[id], tasks)];
+  }).filter((g) => g.alwaysShown || g.tasks.length > 0);
 }
 
 /** One line under a row's title. */

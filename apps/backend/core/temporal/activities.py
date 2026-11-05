@@ -538,7 +538,7 @@ async def _trigger_view(ws: str, trig: dict) -> dict:
 _RECENT = 10
 
 
-async def _recent_lines(ws: str, trig: dict, batch: set[str]) -> list[dict]:
+async def _recent_lines(ws: str, trig: dict, batch: set[str], lane: str, user_id: str | None) -> list[dict]:
     """The room's lines just before the batch's first message, each Lightbulb line with the task cards it really
     carried (`taskRefs`): the Router's view of what was said and what was started, instead of its own transcript."""
     ref = trig.get("ref") or {}
@@ -553,17 +553,33 @@ async def _recent_lines(ws: str, trig: dict, batch: set[str]) -> list[dict]:
         rows = (await messaging_repo.list_thread(ref["roomId"], ref["threadRoot"], seq))[-_RECENT:]
     else:
         rows = await messaging_repo.list_messages_before(ref["roomId"], seq, _RECENT)
+    rows = [
+        r
+        for r in rows
+        if not (r.get("deletedAt") or r.get("progress") or ts.trigger_id("chat", r.get("messageId", "")) in batch)
+    ]
+    # Each card's task as it is now (one older than a day, or past the Open scan, is in neither task list), in one
+    # read; a task outside this trigger's scope (a person's private task) shows no state.
+    ids = {c["taskId"] for r in rows for c in r.get("taskRefs") or [] if c.get("taskId")}
+    room = ts.trigger_room(trig)
+    tasks = {
+        t["taskId"]: t
+        for t in await tasks_repo.batch_get(ws, [ts.task_sk(i) for i in ids])
+        if _task_in_scope(t, lane, user_id, room)
+    }
     out = []
     for row in rows:
-        if row.get("deletedAt") or row.get("progress") or ts.trigger_id("chat", row.get("messageId", "")) in batch:
-            continue
         author = row.get("author") or {}
+        cards = [
+            {**c, "state": router_prompt.status_words(tasks[c["taskId"]])} if c.get("taskId") in tasks else c
+            for c in row.get("taskRefs") or []
+        ]
         out.append(
             {
                 "who": author.get("displayName"),
                 "text": row.get("editedText") or row.get("text") or "",
                 "lightbulb": author.get("kind") == "agent" and author.get("id") == front,
-                "cards": row.get("taskRefs") or [],
+                "cards": cards,
             }
         )
     return out
@@ -986,7 +1002,7 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
         # The batch is one conversation (lane, trigger_scope): its lines come from the first trigger that has a
         # message in a room. A batch with none (mail, schedules) has no stored lines; the prompt says so.
         chat = next((t for t in to_model.values() if {"roomId", "messageId"} <= set(t.get("ref") or {})), None)
-        recent = await _recent_lines(ws, chat, set(to_model)) if chat else None
+        recent = await _recent_lines(ws, chat, set(to_model), inp.lane, user_id) if chat else None
         closed = await _closed_tasks(ws, inp.lane, user_id, rooms)
         prompt = router_prompt.render_batch(views, roster, open_tasks, lane=inp.lane, recent=recent, closed=closed)
         memory = memory_tags.block_for_router(

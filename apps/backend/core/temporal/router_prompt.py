@@ -71,7 +71,8 @@ def render_batch(
     """`triggers`: views from `activities._trigger_view` (triggerId, source, admission, text, who, where, threaded,
     pinnedSpecialist, routedTo); `roster`: registry rows (id, name, title, status); `open_tasks`: task rows;
     `recent`: the room's (or thread's) lines before the batch (`activities._recent_lines`: who, text, lightbulb,
-    cards); None: the batch has no room message, so no earlier lines are known."""
+    cards, each with its task's `state` when the task exists); None: the batch has no room message, so no earlier
+    lines are known."""
     names = {a["id"]: a.get("name") or a["id"] for a in roster}
     lines = [f"# Batch ({'private lane' if lane != 'shared' else 'shared lane'})", "", "## Triggers"]
     for t in triggers:
@@ -96,7 +97,10 @@ def render_batch(
             cap = _LIGHTBULB_LINE_MAX if r.get("lightbulb") else _RECENT_LINE_MAX
             line = f"- {_one_line(r.get('who') or 'Someone', 80)}: {_one_line(r.get('text'), cap)}"
             if r.get("lightbulb"):
-                cards = ", ".join(f"{c.get('taskId')} {c.get('role') or ''}".strip() for c in r.get("cards") or [])
+                cards = ", ".join(
+                    f"{c.get('taskId')} {c.get('role') or ''}".strip() + (f" ({c['state']})" if c.get("state") else "")
+                    for c in r.get("cards") or []
+                )
                 line += f" [cards: {cards}]" if cards else " [no task card]"
             lines.append(line)
     lines += ["", "## Specialists (id · name · title)"]

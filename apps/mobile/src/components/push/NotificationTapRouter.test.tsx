@@ -7,6 +7,8 @@ import { NotificationTapRouter, notificationHrefs } from "./NotificationTapRoute
 
 jest.mock("expo-router", () => ({ router: { push: jest.fn(), dismissTo: jest.fn() } }));
 let mockSuperAgent = false;
+let mockAuth = { userId: "user_sam", orgId: "org_a" as string | null };
+jest.mock("@clerk/expo", () => ({ useAuth: () => mockAuth }));
 jest.mock("../../providers/live-events", () => ({ useSuperAgent: () => mockSuperAgent }));
 
 const lastResponse = Notifications.useLastNotificationResponse as jest.Mock;
@@ -36,6 +38,7 @@ function reading(roomId: string, threadId: string | null = null) {
 beforeEach(() => {
   jest.clearAllMocks();
   mockSuperAgent = false;
+  mockAuth = { userId: "user_sam", orgId: "org_a" };
   lastResponse.mockReturnValue(null);
 });
 afterEach(() => {
@@ -50,6 +53,16 @@ it("a task_question tap waits for the switch: off it stays put (kept, not cleare
   mockSuperAgent = true;
   await view.rerender(<NotificationTapRouter />);
   expect(push).toHaveBeenCalledWith({ pathname: "/(app)/task/[taskId]", params: { taskId: "t-1" } });
+  expect(clear).toHaveBeenCalled();
+});
+
+it("a held task_question tap is dropped after a workspace switch, never replayed for the new one", async () => {
+  const view = await tap({ source: "task_question", taskId: "t-2", qid: "q-2" });
+  expect(clear).not.toHaveBeenCalled();
+  mockAuth = { userId: "user_sam", orgId: "org_b" };
+  mockSuperAgent = true;
+  await view.rerender(<NotificationTapRouter />);
+  expect(push).not.toHaveBeenCalled();
   expect(clear).toHaveBeenCalled();
 });
 

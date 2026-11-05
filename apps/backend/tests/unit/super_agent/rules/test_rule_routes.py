@@ -76,9 +76,20 @@ async def test_turn_on_room_rule_needs_admin(world):
     assert r.status_code == 403
     r = await _mode(world, SAM, "observe", row)
     assert r.status_code == 200 and r.json()["mode"] == "observe"
-    cal = await _rule("cal", owner=PRIYA, match={"sources": ["calendar"], "account": "priya@x.com"})
+
+
+async def test_personal_rule_owner_only(world):
+    """A calendar rule: only its owner turns it on and reads its record; an admin may still turn it off."""
+    cal = await _rule("cal", owner=PRIYA, match={"sources": ["calendar"], "account": "priya@x.com"}, matches=1)
+    assert (await _mode(world, SAM, "observe", cal, sid="cal")).status_code == 403  # admin, not the owner
     r = await _mode(world, PRIYA, "observe", cal, sid="cal")
     assert r.status_code == 200 and r.json()["mode"] == "observe"
+    world["who"]["user"] = SAM
+    assert (await world["client"].get("/api/v1/automations/cal/matches")).status_code == 403
+    world["who"]["user"] = PRIYA
+    assert (await world["client"].get("/api/v1/automations/cal/matches")).json()["stats"]["matchesThisVersion"] == 1
+    r = await _mode(world, SAM, "off", r.json(), sid="cal")
+    assert r.status_code == 200 and r.json()["mode"] == "off"
 
 
 async def test_promote_refused_in_wave2(world):

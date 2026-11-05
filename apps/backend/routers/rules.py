@@ -1,10 +1,11 @@
 """Proactive rule routes (contracts §18, spec 12 §3.4; wave2-S Task 5): a rule's mode and its observe record.
 
 `POST /api/v1/automations/{id}/mode` and `GET /api/v1/automations/{id}/matches`. Both 404 unless the workspace's
-switch is on, and for rows without a `match` scope (ordinary automations). Who may change a mode (founder, 4 Nov):
-a person turns their own personal (calendar) rule on or off; room rules need an org admin to turn on; any audience
-member may drop an auto rule back to observe ("Quiet this"); auto needs an admin, 5 matches on this version and
-billing, and is refused in wave 2 (`rules.AUTO_AVAILABLE`). Creating, editing and activating rules ride lane A's
+switch is on, and for rows without a `match` scope (ordinary automations). Who may change a mode (founder, 4 Nov;
+lead, 5 Nov): only its owner turns a personal (calendar) rule on, and only the owner reads its record; an org admin
+may still turn it off. Room rules need an org admin to turn on; any audience member may drop an auto rule back to
+observe ("Quiet this"); auto needs an admin, 5 matches on this version and billing, and is refused in wave 2
+(`rules.AUTO_AVAILABLE`). Creating, editing and activating rules ride lane A's
 automation routes.
 """
 
@@ -43,13 +44,20 @@ async def _rule(auth: AuthContext, sid: str) -> tuple[str, dict]:
     return ws, row
 
 
-def _personal(row: dict, auth: AuthContext) -> bool:
-    """The caller's own calendar rule. Room rules are never personal."""
-    return "calendar" in row["match"].get("sources", []) and row.get("ownerUserId") == auth.user_id
+def _calendar(row: dict) -> bool:
+    return "calendar" in row["match"].get("sources", [])
+
+
+def _owner(row: dict, auth: AuthContext) -> bool:
+    return row.get("ownerUserId") == auth.user_id
 
 
 async def _in_audience(row: dict, auth: AuthContext) -> bool:
-    if auth.is_org_admin or row.get("ownerUserId") == auth.user_id:
+    """Who sees a rule's record and may quiet it. A personal (calendar) rule's audience is its owner alone
+    (lead ruling, 5 Nov); a room rule's is its owner, the org admins and the members of its rooms."""
+    if _calendar(row):
+        return _owner(row, auth)
+    if auth.is_org_admin or _owner(row, auth):
         return True
     for room_id in row["match"].get("roomIds") or []:
         if await messaging_repo.get_member(room_id, "human", auth.user_id) is not None:
@@ -69,13 +77,16 @@ async def set_mode(sid: str, body: ModeIn, auth: AuthContext = Depends(get_curre
             raise HTTPException(status_code=402, detail={"code": gate.get("code"), "message": gate.get("message")})
         if not rules.AUTO_AVAILABLE:
             raise _err(409, "not_available")
-    elif body.mode == "off":
-        if not (auth.is_org_admin or row.get("ownerUserId") == auth.user_id):
+    elif body.mode == "off":  # owner or org admin, personal rules included
+        if not (auth.is_org_admin or _owner(row, auth)):
             raise _err(403, "forbidden")
     elif row.get("mode") == "auto":  # demote: "Quiet this"
         if not await _in_audience(row, auth):
             raise _err(403, "forbidden")
-    elif not _personal(row, auth):  # turning a room rule on
+    elif _calendar(row):  # turning a personal rule on: its owner only, not an admin
+        if not _owner(row, auth):
+            raise _err(403, "forbidden")
+    else:  # turning a room rule on
         require_org_admin(auth)
     try:
         return await automations_repo.update_schedule(

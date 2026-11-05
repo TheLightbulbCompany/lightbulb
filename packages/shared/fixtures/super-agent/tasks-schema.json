@@ -234,7 +234,7 @@
   },
   "sessionKeys": {
     "worker": "^agent:[0-9a-f-]{36}:lightbulb:task:[0-9a-f-]{36}$",
-    "router": "^agent:[0-9a-f-]{36}:lightbulb:router:(shared|u:[0-9a-f]{16})$"
+    "router": "^agent:[0-9a-f-]{36}:lightbulb:router:(shared|u:[0-9a-f]{16})(:r:[0-9a-f]{16})?$"
   },
   "gsis": [
     {

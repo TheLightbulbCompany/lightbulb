@@ -35,3 +35,10 @@ def test_router_model_on_the_wire():
         "r1", "org_1", BATCH, 1, CEO, mode="router", lane="shared", model="m-small"
     ).to_wire()
     assert wire["model"] == "m-small"
+
+
+def test_router_identity_names_its_room():
+    room = ts.router_room_key("11111111-1111-4111-8111-111111111111")
+    wire = runtime_runs.RunIdentity("r1", "org_1", BATCH, 1, CEO, mode="router", lane="shared", room=room).to_wire()
+    assert wire["room"] == room and wire["sessionKey"] == f"agent:{CEO}:lightbulb:router:shared:{room}"
+    assert re.fullmatch(ts.ROUTER_SESSION_KEY_PATTERN, wire["sessionKey"])

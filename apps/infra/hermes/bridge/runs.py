@@ -24,7 +24,7 @@ _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 #: Must equal tasks-schema.json's worker session key pattern (tests/test_runs_v1.py checks it).
 SESSION_KEY_RE = re.compile(r"^agent:[0-9a-f-]{36}:lightbulb:task:[0-9a-f-]{36}$")
 #: Must equal tasks-schema.json's router session key pattern: one Router session per lane.
-ROUTER_SESSION_KEY_RE = re.compile(r"^agent:[0-9a-f-]{36}:lightbulb:router:(shared|u:[0-9a-f]{16})$")
+ROUTER_SESSION_KEY_RE = re.compile(r"^agent:[0-9a-f-]{36}:lightbulb:router:(shared|u:[0-9a-f]{16})(:r:[0-9a-f]{16})?$")
 _RUN_RE = re.compile(r"^/internal/v1/runs/([0-9a-f-]{36})(/stop|/steer)?$")
 MAX_INPUT_BYTES = 200 * 1024
 #: worker_turn's limit, under the bridge's 7 h recycle (contracts-v2 §14.11).
@@ -76,11 +76,13 @@ def validate_identity(identity, *, path_run_id: str | None = None) -> dict:
 
 
 def _session_key_ok(identity: dict) -> bool:
-    """Worker: the task's own session. Router (taskId = the batch id): its lane's session."""
+    """Worker: the task's own session. Router (taskId = the batch id): its lane's session in its room (`room`,
+    `r:<hash>`), so a Router run never reads another room's conversation."""
     key = identity["sessionKey"]
     if identity.get("mode") == "router":
-        lane = identity.get("lane")
-        return bool(ROUTER_SESSION_KEY_RE.fullmatch(key)) and key == f"agent:{identity['agentId']}:lightbulb:router:{lane}"
+        lane, room = identity.get("lane"), identity.get("room")
+        expected = f"agent:{identity['agentId']}:lightbulb:router:{lane}" + (f":{room}" if room else "")
+        return bool(ROUTER_SESSION_KEY_RE.fullmatch(key)) and key == expected
     return identity.get("mode") == "worker" and bool(SESSION_KEY_RE.fullmatch(key)) and (
         key == f"agent:{identity['agentId']}:lightbulb:task:{identity['taskId']}")
 

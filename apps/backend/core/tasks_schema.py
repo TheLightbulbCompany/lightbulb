@@ -128,13 +128,20 @@ def worker_session_key(agent_id: str, task_id: str) -> str:
     return f"agent:{agent_id}:lightbulb:task:{task_id}"
 
 
-#: The Router's session on the workspace VM: one per lane (`shared` or `router_lane_key(user)`), on the
-#: CEO agent's profile. The bridge checks keys against this (bridge/runs.py ROUTER_SESSION_KEY_RE).
-ROUTER_SESSION_KEY_PATTERN = r"^agent:[0-9a-f-]{36}:lightbulb:router:(shared|u:[0-9a-f]{16})$"
+#: The Router's session on the workspace VM: one per lane (`shared` or `router_lane_key(user)`) and room
+#: (`router_room_key(room)`; none for a trigger with no room), on the CEO agent's profile. A Router run reads its
+#: session's previous conversation, so one room's batch never sees another room's (or a DM's). The bridge checks
+#: keys against this (bridge/runs.py ROUTER_SESSION_KEY_RE).
+ROUTER_SESSION_KEY_PATTERN = r"^agent:[0-9a-f-]{36}:lightbulb:router:(shared|u:[0-9a-f]{16})(:r:[0-9a-f]{16})?$"
 
 
-def router_session_key(agent_id: str, lane: str) -> str:
-    return f"agent:{agent_id}:lightbulb:router:{lane}"
+def router_session_key(agent_id: str, lane: str, room: str | None = None) -> str:
+    return f"agent:{agent_id}:lightbulb:router:{lane}" + (f":{room}" if room else "")
+
+
+def router_room_key(room_id: str) -> str:
+    """The room part of a Router session key (no raw room id in session keys, like the lane)."""
+    return "r:" + hashlib.sha256(room_id.encode()).hexdigest()[:16]
 
 
 def trigger_room(trig: dict) -> str | None:

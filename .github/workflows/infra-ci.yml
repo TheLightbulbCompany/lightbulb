@@ -149,6 +149,27 @@ jobs:
             echo "::endgroup::"
           done
 
+      # The Lightbulb patch series (apps/infra/hermes/hermes-patches/) is applied by the image
+      # Dockerfile, but that image only builds on main. Prove it here on every PR, against the
+      # same pinned base: copy the base's /opt/hermes out, apply the series in SERIES order with
+      # --check first (exactly the Dockerfile loop), then run the patched-image smoke on it.
+      - name: Apply the Lightbulb patch series to the pinned base and smoke it
+        run: |
+          rm -rf "$RUNNER_TEMP/hermes"
+          cid=$(docker create "$IMAGE")
+          docker cp "$cid:/opt/hermes" "$RUNNER_TEMP/hermes"
+          docker rm "$cid" >/dev/null
+          cd "$RUNNER_TEMP/hermes"
+          for p in $(grep -E '^[0-9]{4}-.*\.patch$' "$GITHUB_WORKSPACE/apps/infra/hermes/hermes-patches/SERIES"); do
+            git apply --check "$GITHUB_WORKSPACE/apps/infra/hermes/hermes-patches/$p"
+            git apply "$GITHUB_WORKSPACE/apps/infra/hermes/hermes-patches/$p"
+          done
+          docker run --rm --network none \
+            -v "$RUNNER_TEMP/hermes:/opt/hermes" \
+            -v "$GITHUB_WORKSPACE/apps/infra/hermes/tests/image_smoke/patched_hermes_smoke.py:/tmp/smoke.py:ro" \
+            -e HERMES_HOME=/tmp/patched-smoke \
+            --entrypoint python "$IMAGE" /tmp/smoke.py
+
   test:
     name: Synth & Test
     runs-on: ${{ vars.CI_RUNNER }}

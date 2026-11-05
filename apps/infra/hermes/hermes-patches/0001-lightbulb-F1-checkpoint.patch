@@ -1,0 +1,446 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: prez2307 <prasiddha@gmail.com>
+Date: Wed, 4 Nov 2026 20:03:43 -0500
+Subject: [PATCH 1/4] lightbulb F1 checkpoint
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Save-before-effect checkpoint interface, inert by default (spec 02 §4.1).
+agent/lb_checkpoint.py: Decision (proceed/refuse/replay), ToolRef, install(),
+before_tool(), tool_committed(). With agent._lb_checkpoint unset every function
+returns immediately. A callback that raises or exceeds timeout_s refuses the
+call (fail closed) and records agent._lb_checkpoint_failed; unlike
+pre_tool_call hooks its failure is never swallowed into "proceed".
+
+Scope is before_tool + tool_committed only; before_model/model_accepted are cut
+until a consumer exists. Which tools pay for an ack is the callback's policy
+(contracts-v2 §8: external, irreversible effects only).
+
+Also records the golden transcript of a stubbed two-tool turn at the
+unpatched pin (tests/agent/fixtures/lb_golden_tool_turn.json).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ agent/lb_checkpoint.py                        | 132 +++++++++++++
+ tests/agent/fixtures/lb_golden_tool_turn.json |  77 ++++++++
+ tests/agent/test_lb_checkpoint.py             | 186 ++++++++++++++++++
+ 3 files changed, 395 insertions(+)
+ create mode 100644 agent/lb_checkpoint.py
+ create mode 100644 tests/agent/fixtures/lb_golden_tool_turn.json
+ create mode 100644 tests/agent/test_lb_checkpoint.py
+
+diff --git a/agent/lb_checkpoint.py b/agent/lb_checkpoint.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..8b546d2bb957bc9e0f1d15419a598d924d03a234
+--- /dev/null
++++ b/agent/lb_checkpoint.py
+@@ -0,0 +1,132 @@
++"""Lightbulb F1: save-before-effect checkpoint for tool calls (inert by default).
++
++The bridge installs a callback on an agent after construction; until it does,
++``agent._lb_checkpoint`` is None and every function here returns immediately, so the
++patched call sites in ``agent/tool_executor.py`` behave exactly like upstream.
++
++Interface, not policy: which tools pay for an ack is the callback's decision. Unlike
++``pre_tool_call`` hooks (whose failures never block), a callback that raises or times
++out REFUSES the call — fail closed.
++"""
++from __future__ import annotations
++
++import concurrent.futures
++import logging
++from dataclasses import dataclass, field
++import threading
++from typing import Literal, Optional
++
++from tools.thread_context import propagate_context_to_thread
++
++logger = logging.getLogger(__name__)
++
++# ponytail: one shared pool for every agent in the process; a timed-out callback keeps
++# its worker until it returns. Per-agent pools if a wedged backend ever starves this.
++_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=8, thread_name_prefix="lb-checkpoint")
++
++
++class CheckpointRefused(Exception):
++    """Raised by callers that need an exception form of a ``refuse`` decision."""
++
++
++@dataclass(frozen=True)
++class Decision:
++    kind: Literal["proceed", "refuse", "replay"]
++    message: Optional[str] = None
++    result: Optional[str] = None
++
++    @classmethod
++    def proceed(cls) -> "Decision":
++        return cls("proceed")
++
++    @classmethod
++    def refuse(cls, message: str) -> "Decision":
++        return cls("refuse", message=message)
++
++    @classmethod
++    def replay(cls, result: str) -> "Decision":
++        return cls("replay", result=result)
++
++
++_PROCEED = Decision.proceed()
++
++
++@dataclass(frozen=True)
++class ToolRef:
++    tool_call_id: str
++    name: str
++    args: dict = field(hash=False, compare=True)
++
++
++class _Installed:
++    def __init__(self, callback, timeout_s: float) -> None:
++        self.callback = callback
++        self.timeout_s = timeout_s
++        self.lock = threading.Lock()
++        self.open_ids: set = set()  # calls that passed before_tool and still await tool_committed
++
++
++def install(agent, callback, *, timeout_s: float = 10.0) -> None:
++    """Attach ``callback`` (``before_tool(ref) -> Decision``,
++    ``tool_committed(ref, result, disposition) -> None``); ``None`` uninstalls."""
++    agent._lb_checkpoint = None if callback is None else _Installed(callback, timeout_s)
++
++
++def installed(agent) -> bool:
++    return getattr(agent, "_lb_checkpoint", None) is not None
++
++
++def _call(agent, installed: _Installed, method: str, *args):
++    # The turn's ContextVars and approval callbacks follow the call onto the pool thread.
++    future = _POOL.submit(propagate_context_to_thread(getattr(installed.callback, method)), *args)
++    try:
++        return future.result(timeout=installed.timeout_s)
++    except BaseException as exc:  # noqa: BLE001 -- timeout, callback error: both fail closed
++        future.cancel()
++        agent._lb_checkpoint_failed = type(exc).__name__
++        logger.warning("lightbulb checkpoint %s failed: %s", method, type(exc).__name__)
++        raise
++
++
++def before_tool(agent, ref: ToolRef) -> Decision:
++    """``proceed`` when nothing is installed; else the callback's decision, or
++    ``refuse("checkpoint_unavailable")`` when it raises or exceeds ``timeout_s``."""
++    installed = getattr(agent, "_lb_checkpoint", None)
++    if installed is None:
++        return _PROCEED
++    try:
++        decision = _call(agent, installed, "before_tool", ref)
++    except Exception:
++        return Decision.refuse("checkpoint_unavailable")
++    if not isinstance(decision, Decision):
++        agent._lb_checkpoint_failed = "InvalidDecision"
++        return Decision.refuse("checkpoint_unavailable")
++    if decision.kind != "refuse":
++        with installed.lock:
++            installed.open_ids.add(ref.tool_call_id)
++    return decision
++
++
++def forget(agent, ref: ToolRef) -> None:
++    """The call passed before_tool but will not run (interrupted during the ack): no commit."""
++    installed = getattr(agent, "_lb_checkpoint", None)
++    if installed is not None:
++        with installed.lock:
++            installed.open_ids.discard(ref.tool_call_id)
++
++
++def tool_committed(agent, ref: ToolRef, result, disposition) -> bool:
++    """``True`` when nothing is installed, the call never passed ``before_tool`` (skipped,
++    abandoned, timed out before dispatch), or the callback acked; ``False`` on error/timeout."""
++    installed = getattr(agent, "_lb_checkpoint", None)
++    if installed is None:
++        return True
++    with installed.lock:
++        if ref.tool_call_id not in installed.open_ids:
++            return True
++        installed.open_ids.discard(ref.tool_call_id)
++    try:
++        _call(agent, installed, "tool_committed", ref, result, disposition)
++    except Exception:
++        return False
++    return True
+diff --git a/tests/agent/fixtures/lb_golden_tool_turn.json b/tests/agent/fixtures/lb_golden_tool_turn.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..62700d838c94a3c0bd588a06925dedc854a0876e
+--- /dev/null
++++ b/tests/agent/fixtures/lb_golden_tool_turn.json
+@@ -0,0 +1,77 @@
++{
++ "final_response": "done",
++ "handler_log": [
++  [
++   "handler",
++   "c1"
++  ],
++  [
++   "handler",
++   "c2"
++  ]
++ ],
++ "messages": [
++  {
++   "content": "search something",
++   "role": "user"
++  },
++  {
++   "content": "",
++   "finish_reason": "tool_calls",
++   "reasoning": null,
++   "role": "assistant",
++   "tool_calls": [
++    {
++     "call_id": "c1",
++     "function": {
++      "arguments": "{\"query\": \"c1\"}",
++      "name": "web_search"
++     },
++     "id": "c1",
++     "response_item_id": "fc_c1",
++     "type": "function"
++    },
++    {
++     "call_id": "c2",
++     "function": {
++      "arguments": "{\"query\": \"c2\"}",
++      "name": "web_search"
++     },
++     "id": "c2",
++     "response_item_id": "fc_c2",
++     "type": "function"
++    }
++   ]
++  },
++  {
++   "_tool_output_risk": {
++    "findings": [],
++    "redacted": false,
++    "risk": "low"
++   },
++   "content": "result-c1",
++   "name": "web_search",
++   "role": "tool",
++   "tool_call_id": "c1",
++   "tool_name": "web_search"
++  },
++  {
++   "_tool_output_risk": {
++    "findings": [],
++    "redacted": false,
++    "risk": "low"
++   },
++   "content": "result-c2",
++   "name": "web_search",
++   "role": "tool",
++   "tool_call_id": "c2",
++   "tool_name": "web_search"
++  },
++  {
++   "content": "done",
++   "finish_reason": "stop",
++   "reasoning": null,
++   "role": "assistant"
++  }
++ ]
++}
+\ No newline at end of file
+diff --git a/tests/agent/test_lb_checkpoint.py b/tests/agent/test_lb_checkpoint.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..2570f91c21157a628e38c61875f112925fbf76d8
+--- /dev/null
++++ b/tests/agent/test_lb_checkpoint.py
+@@ -0,0 +1,186 @@
++"""Lightbulb F1/F2: save-before-effect checkpoint around tool dispatch (spec 02 §4.1, §8.1).
++
++Every test drives the real executor paths with the tool handler mocked at its production
++surface (``model_tools.handle_function_call`` sequential, ``agent._invoke_tool`` concurrent),
++the same way ``test_tool_call_incremental_persistence.py`` does.
++"""
++import json
++import os
++import tempfile
++import threading
++import time
++from pathlib import Path
++from types import SimpleNamespace
++from unittest.mock import MagicMock, patch
++
++import pytest
++
++from run_agent import AIAgent
++
++GOLDEN = Path(__file__).parent / "fixtures" / "lb_golden_tool_turn.json"
++
++
++@pytest.fixture(autouse=True)
++def _no_background_titles(monkeypatch):
++    monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *a, **k: None)
++
++
++def _make_agent():
++    hermes_home = Path(tempfile.mkdtemp(prefix="hermes-lb-test-"))
++    (hermes_home / "logs").mkdir(parents=True, exist_ok=True)
++    tool_defs = [
++        {"type": "function", "function": {"name": "web_search", "description": "web_search tool",
++                                          "parameters": {"type": "object", "properties": {}}}},
++    ]
++    with (
++        patch("model_tools.get_tool_definitions", return_value=tool_defs),
++        patch("model_tools.check_toolset_requirements", return_value={}),
++        patch("agent.process_bootstrap.OpenAI"),
++        patch("run_agent._hermes_home", hermes_home),
++        patch("agent.model_metadata.fetch_model_metadata", return_value={}),
++    ):
++        agent = AIAgent(api_key="test-key", base_url="https://openrouter.ai/api/v1",
++                        quiet_mode=True, skip_context_files=True, skip_memory=True)
++    agent.client = MagicMock()
++    agent._cached_system_prompt = "You are helpful."
++    agent._use_prompt_caching = False
++    agent.compression_enabled = False
++    agent.save_trajectories = False
++    agent._flush_messages_to_session_db = MagicMock(return_value=True)
++    return agent
++
++
++def _call(call_id, name="web_search", arguments=None):
++    arguments = arguments or json.dumps({"query": call_id})  # distinct args: identical calls are deduped
++    return SimpleNamespace(id=call_id, type="function", function=SimpleNamespace(name=name, arguments=arguments))
++
++
++def _response(content="", finish_reason="stop", tool_calls=None):
++    msg = SimpleNamespace(content=content, tool_calls=tool_calls)
++    return SimpleNamespace(choices=[SimpleNamespace(message=msg, finish_reason=finish_reason)],
++                           model="test/model", usage=None)
++
++
++def _handler(log):
++    def _fake(function_name, function_args, effective_task_id, **kwargs):
++        log.append(("handler", kwargs.get("tool_call_id")))
++        return f"result-{kwargs.get('tool_call_id')}"
++    return _fake
++
++
++def _invoke(log):
++    def _fake(name, args, task_id, call_id, **kwargs):
++        log.append(("handler", call_id))
++        return f"result-{call_id}"
++    return _fake
++
++
++def _persist_passthrough():
++    return patch("agent.tool_executor.maybe_persist_tool_result", side_effect=lambda **kw: kw["content"])
++
++
++def _run_sequential(agent, call_ids, log):
++    messages: list = []
++    with patch("model_tools.handle_function_call", side_effect=_handler(log)), _persist_passthrough():
++        agent._execute_tool_calls_sequential(
++            SimpleNamespace(content="", tool_calls=[_call(c) for c in call_ids]), messages, "task-1")
++    return messages
++
++
++def _stub_turn(agent, log):
++    """One full turn: the model asks for two tools, then answers."""
++    agent.client.chat.completions.create.side_effect = [
++        _response(finish_reason="tool_calls", tool_calls=[_call("c1"), _call("c2")]),
++        _response(content="done"),
++    ]
++    with (
++        patch("model_tools.handle_function_call", side_effect=_handler(log)),
++        patch.object(agent, "_invoke_tool", side_effect=_invoke(log)),
++        _persist_passthrough(),
++        patch.object(agent, "_persist_session"),
++        patch.object(agent, "_save_trajectory"),
++        patch.object(agent, "_cleanup_task_resources"),
++    ):
++        return agent.run_conversation("search something")
++
++
++class Recorder:
++    """A bridge-shaped callback: logs every call with its thread."""
++
++    def __init__(self, decide=None, commit_error=None, sleep=0.0):
++        self.log = []
++        self.lock = threading.Lock()
++        self.decide = decide
++        self.commit_error = commit_error
++        self.sleep = sleep
++
++    def before_tool(self, ref):
++        from agent.lb_checkpoint import Decision
++        with self.lock:
++            self.log.append(("before_tool", ref.tool_call_id))
++        if self.sleep:
++            time.sleep(self.sleep)
++        return self.decide(ref) if self.decide else Decision.proceed()
++
++    def tool_committed(self, ref, result, disposition):
++        with self.lock:
++            self.log.append(("tool_committed", ref.tool_call_id))
++        if self.commit_error:
++            raise self.commit_error
++
++
++def _canonical(messages):
++    """JSON-normalized messages without wall-clock timestamps."""
++    rows = json.loads(json.dumps(messages, default=str, sort_keys=True))
++    for row in rows:
++        row.pop("timestamp", None)
++    return rows
++
++
++# ---------------------------------------------------------------------------- F1 (module only)
++
++def test_before_tool_without_callback_is_a_noop():
++    from agent import lb_checkpoint
++    agent = SimpleNamespace()
++    ref = lb_checkpoint.ToolRef("t", "x", {})
++    assert lb_checkpoint.before_tool(agent, ref).kind == "proceed"
++    assert lb_checkpoint.tool_committed(agent, ref, "r", None) is True
++    assert not hasattr(agent, "_lb_checkpoint_failed")
++
++
++def test_before_tool_timeout_refuses_and_records():
++    from agent import lb_checkpoint
++    agent = SimpleNamespace()
++    lb_checkpoint.install(agent, Recorder(sleep=0.5), timeout_s=0.05)
++    decision = lb_checkpoint.before_tool(agent, lb_checkpoint.ToolRef("t", "x", {}))
++    assert decision == lb_checkpoint.Decision.refuse("checkpoint_unavailable")
++    assert agent._lb_checkpoint_failed == "TimeoutError"
++
++
++def test_before_tool_raise_refuses_and_records_class():
++    from agent import lb_checkpoint
++
++    def boom(ref):
++        raise ConnectionError("backend down")
++
++    agent = SimpleNamespace()
++    lb_checkpoint.install(agent, Recorder(decide=boom))
++    assert lb_checkpoint.before_tool(agent, lb_checkpoint.ToolRef("t", "x", {})).kind == "refuse"
++    assert agent._lb_checkpoint_failed == "ConnectionError"
++
++
++def test_tool_committed_failure_returns_false():
++    from agent import lb_checkpoint
++    agent = SimpleNamespace()
++    lb_checkpoint.install(agent, Recorder(commit_error=RuntimeError("x")))
++    ref = lb_checkpoint.ToolRef("t", "x", {})
++    lb_checkpoint.before_tool(agent, ref)
++    assert lb_checkpoint.tool_committed(agent, ref, "r", None) is False
++
++
++def test_install_none_uninstalls():
++    from agent import lb_checkpoint
++    agent = SimpleNamespace()
++    lb_checkpoint.install(agent, Recorder())
++    lb_checkpoint.install(agent, None)
++    assert agent._lb_checkpoint is None

@@ -2,8 +2,10 @@
   "base": {
     "image": "nousresearch/hermes-agent@sha256:a5b2eac62d3f97686e027eedd837d38bc5cc7d941f3107bebefdcef38126d103",
     "version": "0.21.3",
-    "pulled": "2026-09-16"
+    "pulled": "2026-09-16",
+    "revision": "d5b3cad7b98b3bcd157ea8b585759b0bb4fb8a6d"
   },
+  "patches": "apps/infra/hermes/hermes-patches/SERIES",
   "dev": {
     "tag": "h-2026.11.4-51f3a89"
   },

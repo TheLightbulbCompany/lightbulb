@@ -66,7 +66,11 @@ def world(table, monkeypatch):  # noqa: F811
         return runtime_runs.RunStatus(identity.run_id, state, w["output"], None, None, [], list(w["decisions"]))
 
     async def create_run(ws, identity, request):
+        # The bridge: a second POST of the same run id with another request is an idempotency conflict (409).
+        prior = next((r for i, r in w["runs"] if i.run_id == identity.run_id), None)
         w["runs"].append((identity, request))
+        if prior is not None and prior != request:
+            raise runtime_runs.RunRefused("idempotency_conflict")
         return status(identity, w["first_status"])
 
     async def get_run(ws, identity):
@@ -218,8 +222,11 @@ async def test_router_turn_retry_applies_once(world):
     first = await _run([t1])
     again = await _run([t1])
     assert first == again
-    assert len(world["posts"]) == 1 and len(world["runs"]) == 2  # the bridge replays the same run id
+    assert len(world["posts"]) == 1 and len(world["runs"]) == 2  # the same run id, re-POSTed
     assert world["runs"][0][0].run_id == world["runs"][1][0].run_id == ts.router_run_id(WS, BATCH)
+    # The retry rendered a different prompt (the first apply created tasks the batch now lists), the bridge
+    # refused the re-POST, and the stored run's decisions were read back instead of a fallback.
+    assert world["runs"][0][1] != world["runs"][1][1] and world["polls"] == [ts.router_run_id(WS, BATCH)]
     working, _ = await repo.list_tasks_by_status(WS, "queued")
     proposed, _ = await repo.list_tasks_by_status(WS, "proposed")
     assert len(working) == 1 and len(proposed) == 1
@@ -377,14 +384,14 @@ async def test_deterministic_start_skips_router_run(world):
 async def test_reply_to_mail_trigger_uses_deliver_reply(world, monkeypatch):
     sent = []
 
-    async def deliver_reply(ws, trigger, text):
-        sent.append((trigger["triggerId"], text))
+    async def deliver_reply(ws, trigger, text, *, idempotency_key):
+        sent.append((trigger["triggerId"], text, idempotency_key))
 
     monkeypatch.setitem(sys.modules, "core.services.source_replies", types.SimpleNamespace(deliver_reply=deliver_reply))
     t1 = await _trig("mail:abc", source="mail", ref={"text": "Can you send the invoice?", "from": "bob@acme.test"})
     world["decisions"] = [{"kind": "reply", "triggerIds": [t1], "text": "Sent it just now."}]
     await _run([t1])
-    assert sent == [(t1, "Sent it just now.")] and world["posts"] == []
+    assert sent == [(t1, "Sent it just now.", f"router:{BATCH}:0")] and world["posts"] == []
     assert "bob@acme.test: Can you send the invoice?" in world["runs"][0][1].input
 
 
@@ -407,6 +414,9 @@ async def test_apply_fallback_posts_once_per_respond(world):
 
 
 def test_validate_decisions_keeps_order_and_drops_only_bad():
+    room_task = {"taskId": str(uuid.UUID(int=1)), "audience": {"kind": "room", "roomId": "r1"}}
+    other_room = {"taskId": str(uuid.UUID(int=2)), "audience": {"kind": "room", "roomId": "r2"}}
+    ws_task = {"taskId": str(uuid.UUID(int=3)), "audience": {"kind": "workspace"}}
     kept = router_prompt.validate_decisions(
         [
             {"kind": "ignore", "triggerIds": ["a", "zzz"]},
@@ -423,13 +433,29 @@ def test_validate_decisions_keeps_order_and_drops_only_bad():
                 "tasks": [{"title": "bad", "brief": "b", "specialist": "nope"}],
             },
             "garbage",
+            {"kind": "pass_through", "triggerIds": ["a"], "taskId": room_task["taskId"]},
+            {
+                "kind": "pass_through",
+                "triggerIds": ["a"],
+                "taskId": other_room["taskId"],
+            },  # room A never reaches room B
+            {"kind": "pass_through", "triggerIds": ["a"], "taskId": ws_task["taskId"]},
+            {"kind": "pass_through", "triggerIds": ["a"], "taskId": str(uuid.UUID(int=9))},  # not open
         ],
         trigger_ids={"a"},
         roster_ids={FIN},
-        open_task_ids=set(),
+        open_tasks={t["taskId"]: t for t in (room_task, other_room, ws_task)},
+        scope=lambda tid: ("shared", SAM, "r1"),
+        in_scope=acts._task_in_scope,
     )
-    assert [type(d).__name__ for d in kept] == ["Ignore", "ProposeTasks"]
+    assert [type(d).__name__ for d in kept] == ["Ignore", "ProposeTasks", "PassThrough", "PassThrough"]
     assert kept[0].trigger_ids == ["a"] and [t.title for t in kept[1].tasks] == ["ok"]
+    assert [d.task_id for d in kept[2:]] == [room_task["taskId"], ws_task["taskId"]]
+    # A DM (private lane) reaches only person tasks naming that user.
+    lane = ts.router_lane_key(SAM)
+    assert acts._task_in_scope({"audience": {"kind": "person", "userIds": [SAM]}}, lane, SAM, None)
+    assert not acts._task_in_scope(room_task, lane, SAM, "r1")
+    assert not acts._task_in_scope({"audience": {"kind": "person", "userIds": [PRIYA]}}, lane, SAM, None)
 
 
 def test_render_batch_shape():
@@ -453,3 +479,61 @@ def test_render_batch_shape():
     assert text.startswith("# Batch (private lane)")
     assert "- [chat:1] respond · chat · #general · in a thread · likely specialist: Finance" in text
     assert "  Sam: a b c" in text and "- none" in text
+
+
+@pytest.mark.asyncio
+async def test_visibility_clamped_to_the_trigger(world):
+    t_room = await _trig("chat:m1")
+    t_mail = await _trig("mail:m2", source="mail", ref={"text": "hi", "deliverRoomId": None})
+    world["decisions"] = [
+        _start([t_room], visibility="workspace"),  # a room trigger never widens to the workspace
+        _start([t_room], visibility="person"),
+        _start([t_mail], visibility="room"),  # no room: workspace
+    ]
+    await _run([t_room, t_mail])
+    kinds = [(await repo.get_task(WS, ts.router_task_id(BATCH, i, 0)))["audience"]["kind"] for i in range(3)]
+    assert kinds == ["room", "person", "workspace"]
+    # Private lane: always the person's, whatever the model asked.
+    lane = ts.router_lane_key(SAM)
+    t_dm = await _trig("chat:m3", lane=lane)
+    world["decisions"] = [_start([t_dm], visibility="workspace")]
+    await _run([t_dm], lane=lane, batch=str(uuid.uuid4()))
+    assert (await repo.get_task(WS, world["starts"][-1][0]))["audience"]["kind"] == "person"
+
+
+@pytest.mark.asyncio
+async def test_person_task_without_an_actor_is_refused(world):
+    start = {"title": "x", "brief": "y", "ack": "ok", "visibility": "person"}
+    t1 = await _trig("sched:s9:1", source="schedule", actor=None, ref={"deliverRoomId": ROOM, "start": start})
+    with pytest.raises(ValueError, match="names no actor"):
+        await _run([t1])
+    assert world["starts"] == [] and world["posts"] == []
+
+
+@pytest.mark.asyncio
+async def test_pass_through_without_ack_still_routes(world):
+    open_id = await _open_task({"kind": "workspace"})
+    t1 = await _trig("chat:m1")
+    world["decisions"] = [{"kind": "pass_through", "triggerIds": [t1], "taskId": open_id}]
+    await _run([t1])
+    assert world["posts"] == [] and world["inputs"] == [(open_id, t1, "message")]
+    assert (await repo.get_trigger(WS, t1))["routedTo"] == {"taskId": open_id} and len(world["noted"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_pass_through_never_crosses_rooms_or_dms(world):
+    other = await _open_task({"kind": "room", "roomId": str(uuid.uuid4())})
+    t1 = await _trig("chat:m1")
+    world["decisions"] = [{"kind": "pass_through", "triggerIds": [t1], "taskId": other, "ack": "Passed."}]
+    await _run([t1])
+    assert world["inputs"] == [] and world["posts"][0]["text"] == router_prompt.FALLBACK
+    assert other not in world["runs"][0][1].input  # another room's task is not even offered
+
+
+@pytest.mark.asyncio
+async def test_ignored_respond_trigger_gets_the_fallback_line(world):
+    t1 = await _trig("chat:m1")
+    t2 = await _trig("chat:m2", admission="candidate")
+    world["decisions"] = [{"kind": "ignore", "triggerIds": [t1, t2]}]
+    await _run([t1, t2])
+    assert [(p["event_id"], p["text"]) for p in world["posts"]] == [(f"router:{BATCH}:0", router_prompt.FALLBACK)]

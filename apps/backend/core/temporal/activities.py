@@ -34,7 +34,6 @@ from core.services import (
     runtime_runs,
     runtime_transport,
     task_conversation,
-    tasks_access,
 )
 from core.temporal import client as temporal_client
 from core.temporal import router_prompt, rules_activities
@@ -480,17 +479,24 @@ async def _trigger_view(ws: str, trig: dict) -> dict:
     return view
 
 
-async def _open_tasks(ws: str, lane: str, user_id: str | None) -> list[dict]:
-    """Tasks the Router may pass a message to: this person's in a private lane, the room/workspace ones in the
-    shared lane (a person's private tasks never show in the shared batch)."""
+def _task_in_scope(task: dict, lane: str, user_id: str | None, room_id: str | None) -> bool:
+    """May a trigger from (`lane`, `user_id`, `room_id`) pass through to `task`? Private lane: only person tasks
+    naming the user. Shared lane: workspace tasks, and room tasks of that same room (never another room's)."""
+    audience = task.get("audience") or {}
+    if lane != "shared":
+        return audience.get("kind") == "person" and bool(user_id) and user_id in (audience.get("userIds") or [])
+    if audience.get("kind") == "workspace":
+        return True
+    return audience.get("kind") == "room" and bool(room_id) and audience.get("roomId") == room_id
+
+
+async def _open_tasks(ws: str, lane: str, user_id: str | None, room_ids: set[str]) -> list[dict]:
+    """Tasks the Router may pass a batch's messages to (`_task_in_scope` for any of the batch's rooms)."""
     rows: list[dict] = []
     for status in _OPEN_STATUSES:
         page, _ = await tasks_repo.list_tasks_by_status(ws, status, limit=_OPEN_SCAN)
         rows += [r for r in page if not r.get("hidden")]
-    if lane != "shared":
-        keep = [await tasks_access.can_view(r, user_id or "") for r in rows]
-        return [r for r, ok in zip(rows, keep, strict=True) if ok]
-    return [r for r in rows if (r.get("audience") or {}).get("kind") != "person"]
+    return [r for r in rows if any(_task_in_scope(r, lane, user_id, room) for room in room_ids or {None})]
 
 
 async def _cheap_model(ws: str) -> str | None:
@@ -518,7 +524,12 @@ async def _router_run(ws: str, inp: RouterTurnIn, prompt: str, memory: dict) -> 
         run_budget_seconds=ROUTER_BUDGET_S,
         memory=memory,
     )
-    status = await runtime_runs.create_run(ws, identity, request)
+    try:
+        status = await runtime_runs.create_run(ws, identity, request)
+    except runtime_runs.RunRefused:
+        # A retry after a partial apply renders a different prompt (open tasks changed) and the bridge
+        # fingerprints the whole request: the stored run (same run id) already holds the decisions.
+        status = await runtime_runs.get_run(ws, identity)
     started = time.monotonic()
     while status.status in _RUNNING:
         if time.monotonic() - started > ROUTER_BUDGET_S:
@@ -548,14 +559,14 @@ def _thread_key(trig: dict) -> str | None:
     return None
 
 
-async def _deliver_source_reply(ws: str, trig: dict, text: str) -> bool:
-    """A `reply` to a mail/text trigger goes back the way it came (lane A's `source_replies.deliver_reply`);
-    False until that module lands, and the reply falls back to the trigger's deliver room."""
+async def _deliver_source_reply(ws: str, trig: dict, text: str, event_id: str) -> bool:
+    """A `reply` to a mail/text trigger goes back the way it came (lane A's `source_replies.deliver_reply`,
+    idempotent on `event_id`); False until that module lands, and the reply falls back to the deliver room."""
     try:
         from core.services import source_replies  # type: ignore[import-not-found]
     except ImportError:
         return False
-    await source_replies.deliver_reply(ws, trig, text)
+    await source_replies.deliver_reply(ws, trig, text, idempotency_key=event_id)
     return True
 
 
@@ -563,7 +574,7 @@ async def _deliver(ws: str, trig: dict, text: str, *, event_id: str, refs: list[
     """Post in the trigger's place: its thread or room (chat), the deliver room (other sources), or back to the
     sender for a plain mail/text reply. Idempotent on `event_id`."""
     ref = trig.get("ref") or {}
-    if trig["source"] in ("mail", "text") and not refs and await _deliver_source_reply(ws, trig, text):
+    if trig["source"] in ("mail", "text") and not refs and await _deliver_source_reply(ws, trig, text, event_id):
         return None
     room = ref.get("roomId") or ref.get("deliverRoomId")
     if not room:
@@ -583,9 +594,18 @@ async def _ensure_task(ws: str, task_id: str, trig: dict, lane: str, status: str
     actor = trig.get("actorUserId")
     room = ref.get("roomId") or ref.get("deliverRoomId")
     private = lane != "shared"
-    kind = fields.pop("visibility", None) or ("person" if private or not room else "room")
+    asked = fields.pop("visibility", None)
+    # Clamp the model's `visibility` to what the trigger allows (§5): a private lane is always the person's;
+    # a room trigger is that room's or the person's, never the workspace's; workspace only with no room.
+    if private:
+        kind = "person"
+    elif room:
+        kind = "person" if asked == "person" else "room"
+    else:
+        kind = "person" if asked == "person" else "workspace"
     if kind == "person" and not actor:
-        kind = "room" if room else "workspace"
+        # ponytail: refuse rather than widen (lead ruling). Lane A's fires pass the schedule owner as the actor.
+        raise ValueError(f"trigger {trig['triggerId']} names no actor for a person-visible task")
     audience = {"kind": kind}
     if kind == "person":
         audience["userIds"] = [actor]
@@ -631,7 +651,8 @@ async def _apply(
 
     for i, dec in enumerate(decisions):
         primary = dec.trigger_ids[0]
-        covered.update(dec.trigger_ids)
+        if not isinstance(dec, ts.Ignore):  # `ignore` on a respond trigger is silence: the fallback line covers it
+            covered.update(dec.trigger_ids)
         trig, sl = triggers[primary], slot(primary)
         if isinstance(dec, ts.StartTask):
             # A scripted start (`ref.start`, lane A's fires) is keyed by its trigger, so the automation knows the
@@ -696,10 +717,14 @@ async def _apply(
     posted: list[str] = []
     for idx, tid in enumerate(inp.trigger_ids):
         sl, trig = slots.get(tid), triggers.get(tid)
-        if not sl or not trig or not (sl["lines"] or sl["refs"]):
+        if not sl or not trig:
             continue
-        text = "\n".join(line for line in sl["lines"] if line) or "On it."
-        message_id = await _deliver(ws, trig, text, event_id=f"router:{inp.batch_id}:{idx}", refs=sl["refs"] or None)
+        message_id = None
+        if sl["lines"] or sl["refs"]:  # a pass_through without an ack posts nothing but still routes below
+            text = "\n".join(line for line in sl["lines"] if line) or "On it."
+            message_id = await _deliver(
+                ws, trig, text, event_id=f"router:{inp.batch_id}:{idx}", refs=sl["refs"] or None
+            )
         if message_id:
             posted.append(message_id)
         ref = trig.get("ref") or {}
@@ -747,7 +772,8 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
             ((t.get("ref") or {}).get("roomId") for t in to_model.values() if (t.get("ref") or {}).get("roomId")), None
         )
         roster = await messaging.load_agent_roster(ws)
-        open_tasks = await _open_tasks(ws, inp.lane, user_id)
+        rooms = {(t.get("ref") or {}).get("roomId") for t in to_model.values()} - {None}
+        open_tasks = await _open_tasks(ws, inp.lane, user_id, rooms)
         views = [await _trigger_view(ws, t) for t in to_model.values()]
         prompt = router_prompt.render_batch(views, roster, open_tasks, lane=inp.lane)
         memory = memory_tags.block_for_router(
@@ -761,7 +787,13 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
             status.decisions,
             trigger_ids=set(to_model),
             roster_ids={a["id"] for a in roster},
-            open_task_ids={t["taskId"] for t in open_tasks},
+            open_tasks={t["taskId"]: t for t in open_tasks},
+            scope=lambda tid: (
+                inp.lane,
+                to_model[tid].get("actorUserId"),
+                (to_model[tid].get("ref") or {}).get("roomId"),
+            ),
+            in_scope=_task_in_scope,
         )
     return await _apply(ws, inp, triggers, decisions, run_text)
 

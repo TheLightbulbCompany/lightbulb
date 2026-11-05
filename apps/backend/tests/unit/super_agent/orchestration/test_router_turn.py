@@ -356,7 +356,7 @@ async def test_deterministic_start_skips_router_run(world):
     )
     out = await _run([t1])
     assert world["runs"] == []  # no model turn
-    task_id = ts.router_task_id(BATCH, 0, 0)
+    task_id = ts.router_task_id(t1, 0, 0)  # keyed by the trigger: the automation's `ref.taskId` (A5)
     task = await repo.get_task(WS, task_id)
     assert task and task["status"] == "queued" and task["specialist"] == FIN
     assert task["audience"] == {"kind": "room", "roomId": ROOM, "userIds": []} and task.get("ownerUserId") is None

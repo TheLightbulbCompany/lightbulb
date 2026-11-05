@@ -634,7 +634,10 @@ async def _apply(
         covered.update(dec.trigger_ids)
         trig, sl = triggers[primary], slot(primary)
         if isinstance(dec, ts.StartTask):
-            task_id = ts.router_task_id(inp.batch_id, i, 0)
+            # A scripted start (`ref.start`, lane A's fires) is keyed by its trigger, so the automation knows the
+            # task id before the Router applies it (`ref.taskId`); a model decision by the batch.
+            scripted = isinstance((trig.get("ref") or {}).get("start"), dict)
+            task_id = ts.router_task_id(primary, 0, 0) if scripted else ts.router_task_id(inp.batch_id, i, 0)
             gate = await chat_gate.gate_chat(
                 user_id=trig.get("actorUserId") or "", owner_id=ws, session_key=f"task:{task_id}"
             )

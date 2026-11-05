@@ -49,6 +49,8 @@ _MERGE = {
 # options only (no new command): replay-safe without a patch marker.
 _CURATE = {
     "start_to_close_timeout": timedelta(minutes=10),
+    # a hung bridge holds the specialist's merge queue at most this long, retries included
+    "schedule_to_close_timeout": timedelta(minutes=15),
     "retry_policy": RetryPolicy(initial_interval=timedelta(seconds=30), backoff_coefficient=2.0, maximum_attempts=4),
 }
 

@@ -218,7 +218,12 @@ def test_delegate_not_registered_without_model(backend, s3, home, hermes_auth):
     credentials.vend("friday")
     assert hermes_auth == [credentials.codex_refresh_delegate]  # once
 
-    backend.answers["/"] = (200, {"tokens": {}})  # custody rolled back: Hermes refreshes itself again
+    backend.answers["/"] = (200, {"tokens": {}})  # no model, but the local grant is still brokered: kept
+    credentials.vend("friday")
+    assert hermes_auth == [credentials.codex_refresh_delegate]
+    # custody rolled back: restore pulls a real grant, then Hermes refreshes itself again
+    s3.stored = {"providers": {"openai-codex": {"tokens": {"access_token": "A", "refresh_token": "R"}}}}
+    sync.restore_root_auth()
     credentials.vend("friday")
     assert hermes_auth == [credentials.codex_refresh_delegate, None]
 
@@ -231,3 +236,52 @@ def test_settings_reads_a_marker_with_a_vended_model_as_connected(backend, s3, h
     (home / "auth.json").write_text(json.dumps(MARKER))
     backend.answers["/"] = (200, {"tokens": {}, "unavailable": ["openai-codex"]})
     assert server._provider_credential("friday", "openai-codex") == (False, "chatgpt-oauth")
+
+
+def test_broker_blip_keeps_the_delegate(backend, s3, home, hermes_auth):
+    """#4784 review blocker: a vend without `model` because the broker is busy / OpenAI is down
+    (openai-codex in `unavailable`) must NOT drop F6 while the marker holds -- else Hermes posts
+    the placeholder refresh token to OpenAI and a working grant is quarantined."""
+    sync.restore_root_auth()
+    backend.answers["/"] = (200, {"tokens": {}, "model": MODEL})
+    credentials.vend("friday")
+    backend.answers["/"] = (200, {"tokens": {}, "unavailable": ["openai-codex"]})
+    credentials.vend("friday")
+    server._provider_credential("friday", "openai-codex")  # the settings check vends too
+    assert hermes_auth == [credentials.codex_refresh_delegate]  # still registered
+
+    # A real rollback: S3 holds a real grant again; the next restore + vend unregisters.
+    s3.stored = {"providers": {"openai-codex": {"tokens": {"access_token": "A", "refresh_token": "R"}}}}
+    sync._ROOT_AUTH_ETAG = "stale"
+    sync.restore_root_auth()
+    backend.answers["/"] = (200, {"tokens": {}})
+    credentials.vend("friday")
+    assert hermes_auth == [credentials.codex_refresh_delegate, None]
+
+
+def test_model_404_not_brokered_is_transient(backend, s3, home, hermes_auth):
+    backend.answers["/"] = (200, {"tokens": {}, "model": MODEL})
+    credentials.vend("friday")
+    backend.answers["/model"] = (404, {"detail": {"code": "not_brokered"}})
+    with pytest.raises(RuntimeError) as info:
+        credentials.codex_refresh_delegate("AT-1", "lightbulb-brokered")
+    assert info.value.relogin_required is False
+
+
+def test_cli_file_marked_before_the_write(backend, home, monkeypatch):
+    """A concurrent save_rotated_cli_credentials must see the mark before the patched bytes land."""
+    _token_free_files(home, "friday")
+    seen = []
+    real = credentials._atomic_write
+    monkeypatch.setattr(credentials, "_atomic_write", lambda path, data, **kw: (seen.append(set(sync._BROKERED_CLI.get("friday", ()))), real(path, data, **kw)))
+    backend.answers["/"] = (200, {"tokens": {"x": "XT"}})
+    credentials.vend("friday")
+    assert seen and all(f"{sync.PROFILE_HOME}/.xurl" in marks for marks in seen)
+
+
+def test_vend_never_raises(backend, home, monkeypatch, caplog):
+    backend.answers["/"] = (200, {"tokens": {}, "model": MODEL, "expires_at": {"model": float("inf")}})
+    monkeypatch.setattr(credentials, "write_codex_auth", lambda _m: (_ for _ in ()).throw(OSError("disk full AT-1")))
+    out = credentials.vend("friday")
+    assert out is not None and out.expires_at == {}
+    assert "AT-1" not in caplog.text

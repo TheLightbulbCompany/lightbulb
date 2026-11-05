@@ -292,3 +292,4 @@ async def test_curate_refusal_is_transient(monkeypatch, refusal):
         for i in range(policy.maximum_attempts - 1)
     ]
     assert sum(waits) > 60 and not policy.non_retryable_error_types
+    assert learning._CURATE["schedule_to_close_timeout"].total_seconds() <= 15 * 60

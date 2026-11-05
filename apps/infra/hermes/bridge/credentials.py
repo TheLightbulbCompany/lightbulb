@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import tempfile
@@ -125,10 +126,13 @@ def vend(agent_id: str, *, api: str | None = None, owner: str | None = None, hoo
     model = payload.get("model")
     out = Vend(
         tokens={k: t for k, t in tokens.items() if isinstance(k, str) and isinstance(t, str) and t},
-        expires_at={k: int(v) for k, v in expires.items() if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0},
+        expires_at={k: int(v) for k, v in expires.items() if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and v > 0},
         model=model if isinstance(model, dict) and isinstance(model.get("access_token"), str) and model["access_token"] else None,
     )
-    apply(agent_id, out)
+    try:
+        apply(agent_id, out)
+    except Exception as exc:  # noqa: BLE001 -- never fail the turn; the type only (a token may be in the text)
+        log.warning("brokered credentials not applied for agent=%s: %s", agent_id, type(exc).__name__)
     return out
 
 
@@ -136,7 +140,12 @@ def apply(agent_id: str, vended: Vend) -> None:
     """Fill the brokered grants in locally. Never raises."""
     if vended.model:
         write_codex_auth(vended.model)
-    _set_delegate(vended.model is not None, agent_id)
+    # Off ONLY on a real custody rollback: restore_root_auth pulled a real grant (_CODEX_BROKERED
+    # False). A vend without `model` while the marker holds is a broker blip ("openai-codex" in
+    # `unavailable`): dropping F6 then would send the placeholder refresh token to OpenAI, which
+    # answers invalid_grant and quarantines a working grant.
+    if vended.model is not None or not sync._CODEX_BROKERED:
+        _set_delegate(vended.model is not None, agent_id)
     apply_cli_tokens(agent_id, vended.tokens, vended.expires_at)
     _LAST[agent_id] = vended
 
@@ -214,6 +223,11 @@ def codex_refresh_delegate(access_token: str, refresh_token: str) -> dict:
         raise _auth_error("Lightbulb token broker unreachable", "lightbulb_broker_busy", relogin=False) from exc
     if status == 410:
         raise _auth_error("ChatGPT login needs reconnecting", "invalid_grant", relogin=True)
+    if status == 404:
+        # not_brokered: custody rolled back (or the switch went off). Transient on purpose: the local
+        # auth.json still holds the placeholder until the next turn's restore pulls the real grant,
+        # and that turn's vend unregisters this delegate (apply). Never a relogin.
+        log.warning("codex refresh: broker says not brokered for agent=%s; waiting for the real grant", agent_id)
     model = payload.get("model")
     if status != 200 or not isinstance(model, dict) or not isinstance(model.get("access_token"), str) or not model["access_token"]:
         raise _auth_error(f"Lightbulb token broker answered {status}", "lightbulb_broker_busy", relogin=False)
@@ -242,15 +256,18 @@ def apply_cli_tokens(agent_id: str, tokens: dict[str, str], expires_at: dict[str
             path = sync._profile_dir(agent) / rel
             if not path.is_file():
                 continue  # not materialized here (not connected, or the pull is still due): nothing to fill
+            # Marked BEFORE the write: a concurrent save_rotated_cli_credentials must never see the
+            # patched file unmarked and upload the brokered token as a "rotation".
+            sync.mark_brokered(agent, rel)
             try:
                 raw = path.read_bytes()
                 new = _PATCHERS[key](raw, token, int(expires_at.get(key) or 0))
                 if new != raw:
                     _atomic_write(path, new, like=path)
-            except Exception:  # noqa: BLE001 -- the CLI then fails as it does today with a stale token
-                log.warning("brokered %s token not written for agent=%s", key, agent, exc_info=True)
+            except Exception as exc:  # noqa: BLE001 -- the CLI then fails as it does today with a stale token
+                # type only: a parse error's text can quote the file, which holds a token
+                log.warning("brokered %s token not written for agent=%s: %s", key, agent, type(exc).__name__)
                 continue
-            sync.mark_brokered(agent, rel)
             done.append(f"{agent}/{rel}")
     return done
 

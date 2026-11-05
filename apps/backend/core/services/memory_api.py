@@ -19,8 +19,17 @@ from botocore.exceptions import BotoCoreError, ClientError
 from core.config import settings
 from core.dynamodb import run_in_thread
 from core.repositories import container_repo
-from core.services import evaluator, memory_recall, memory_stages, memory_sync, network_member, workspace_memory
+from core.services import (
+    evaluator,
+    memory_links,
+    memory_recall,
+    memory_stages,
+    memory_sync,
+    network_member,
+    workspace_memory,
+)
 from core.services.secret_shaped import secret_pattern, secret_shaped
+from core.services.super_agent_flags import flags_for
 
 logger = logging.getLogger(__name__)
 
@@ -57,8 +66,11 @@ async def recall_page(
     budget_tokens: int = 8000,
     limit: int = 100,
     use_expand: bool = True,
+    audience: dict | None = None,
 ) -> dict:
-    """The evidence page. ``user_id`` adds that person's private scope; ``None`` is the workspace."""
+    """The evidence page. ``user_id`` adds that person's private scope; ``None`` is the workspace.
+    In a super-agent workspace the page also has ``links`` to tasks, each visible to ``audience``
+    (default: ``user_id`` as a person, else the workspace)."""
     question = _question(question)
     if as_of and as_of.tzinfo is None:
         as_of = as_of.replace(tzinfo=UTC)
@@ -67,7 +79,8 @@ async def recall_page(
         return {"asOf": (as_of or datetime.now().astimezone()).isoformat(), "usedEvidenceTokens": 0, "results": []}
     ns = workspace_memory.namespaces_for(owner_id, user_id)
     _sync_in_background(owner_id, memory_id)
-    return await memory_recall.recall(
+    links = await flags_for(owner_id)
+    page = await memory_recall.recall(
         memory_id=memory_id,
         namespaces=ns,
         question=question,
@@ -76,7 +89,13 @@ async def recall_page(
         limit=limit,
         include_private=user_id is not None,
         use_expand=use_expand,
+        **({"tasks": True} if links else {}),
     )
+    if links:
+        if audience is None:
+            audience = {"kind": "person", "userId": user_id} if user_id else {"kind": "workspace"}
+        page["links"] = await memory_links.resolve_links(owner_id, page["results"], page.pop("taskHits", []), audience)
+    return page
 
 
 def _sync_in_background(owner_id: str, memory_id: str) -> None:

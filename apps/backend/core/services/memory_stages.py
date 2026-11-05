@@ -41,6 +41,8 @@ class Candidate:
     valid_to: datetime | None = None
     source_id: str = ""
     fused: float = 0.0
+    task_id: str = ""  # super-agent tags (room ingestion, Worker turns); empty elsewhere
+    thread_id: str = ""
 
 
 def count_tokens(text: str) -> int:
@@ -158,6 +160,8 @@ def from_record(summary: dict, kind_default: str) -> Candidate:
         valid_from=valid_from,
         valid_to=valid_to,
         source_id=record_id,
+        task_id=_meta(metadata, "taskId"),
+        thread_id=_meta(metadata, "threadId"),
     )
 
 
@@ -232,7 +236,9 @@ def mark_contested(candidates: list[Candidate]) -> list[Candidate]:
 
 def _result(c: Candidate) -> dict:
     _, history = _parse(c.content)
+    tags = {k: v for k, v in (("taskId", c.task_id), ("threadId", c.thread_id)) if v}
     return {
+        **tags,
         "kind": c.kind,
         "content": c.content,
         "occurredAt": c.occurred_at.isoformat(),
@@ -277,6 +283,7 @@ def compose(candidates: list[Candidate], budget_tokens: int, as_of: datetime) ->
 def page_text(page: dict) -> str:
     """The composed page as an agent reads it, as the CLI's: a heading per section, a line per
     result with its day (validFrom when it has one, else occurredAt), in rank order; a line's own newlines are spaces, so no line fakes a heading.
+    A super-agent page's task links follow as ``Linked:``.
     apps/infra/hermes/plugins/memory/agentcore keeps a copy (_page_text): change both."""
     sections: dict[str, list[str]] = {"Contested:": [], "Current:": [], "Log:": [], "Turns:": []}
     for r in page["results"]:
@@ -287,7 +294,19 @@ def page_text(page: dict) -> str:
             sections["Contested:"].append(f"{text.removeprefix('Contested: ')} ({day})")
         else:
             sections["Current:" if r["kind"] in _CURRENT_KINDS else "Log:"].append(f"{text} ({day})")
+    sections["Linked:"] = [link_line(lk) for lk in page.get("links") or []]
     return "\n".join(f"{head}\n" + "\n".join(lines) for head, lines in sections.items() if lines) or "Nothing found."
+
+
+def link_line(link: dict) -> str:
+    """One ``Linked:`` line: what the task is now (the live row), and the id to follow."""
+    title = " ".join(link["title"].split())
+    day = (link.get("updatedAt") or "")[:10]
+    head = f"{link['identifier']} {title} — {link['status']}{f' {day}' if day else ''}"
+    threads = ", ".join(t["id"] for t in link.get("threads") or [])
+    return f"{head} · {link.get('specialist') or '-'} · task:{link['id']}" + (
+        f" (threads: {threads})" if threads else ""
+    )
 
 
 _MONTHS = {m.lower(): i for i, m in enumerate(calendar.month_name) if m}

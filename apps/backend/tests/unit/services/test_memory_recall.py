@@ -478,3 +478,41 @@ async def test_a_question_page_holds_50_turn_excerpts_beside_claims(monkeypatch)
     assert kw["searchCriteria"]["metadataFilters"][0]["operator"] == "BEFORE"
     roomy = await memory_recall.recall(memory_id=MEM, namespaces=NS, question="invoice number?", budget_tokens=20_000)
     assert [r["kind"] for r in roomy["results"]].count("turn") == 50
+
+
+async def test_task_records_go_to_links_not_results(monkeypatch):
+    def handler(op, kw):
+        if kw["namespace"] == NS["tasks"]:
+            return [_rec("c1", "T-42 Acme pricing — working · fin", taskId="t42")]
+        if kw["namespace"] == NS["turns"]:
+            return [_rec("u1", "Sam: Acme wants the sheet", taskId="t42", threadId="room:r1:m1")]
+        return []
+
+    _use(monkeypatch, FakeClient(handler))
+    page = await _run(tasks=True)
+    assert _texts(page) == ["Sam: Acme wants the sheet"]
+    assert page["results"][0]["taskId"] == "t42" and page["results"][0]["threadId"] == "room:r1:m1"
+    assert page["taskHits"] == ["t42"]
+
+
+async def test_shared_lane_never_reads_private_namespaces(monkeypatch):
+    client = _use(monkeypatch, FakeClient())
+    await _run(namespaces=TEAM_ONLY, tasks=True)
+    read = {kw["namespace"] for _, kw in client.calls}
+    assert read and not any(":" in ns for ns in read)
+    assert TEAM_ONLY["tasks"] in read
+
+
+async def test_private_lane_reads_private_turns_and_tasks(monkeypatch):
+    client = _use(monkeypatch, FakeClient())
+    await _run(include_private=True, tasks=True)
+    read = {kw["namespace"] for _, kw in client.calls}
+    assert {NS["private_turns"], NS["private_tasks"], NS["tasks"]} <= read
+
+
+async def test_without_tasks_no_task_or_private_turn_arm(monkeypatch):
+    client = _use(monkeypatch, FakeClient())
+    page = await _run(include_private=True)
+    read = {kw["namespace"] for _, kw in client.calls}
+    assert not read & {NS["tasks"], NS["private_tasks"], NS["private_turns"]}
+    assert "taskHits" not in page

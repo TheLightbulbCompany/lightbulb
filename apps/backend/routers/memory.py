@@ -15,7 +15,15 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
-from core.services import container_auth, evaluator, memory_api, memory_sync, session_store, workspace_memory
+from core.services import (
+    container_auth,
+    evaluator,
+    memory_api,
+    memory_links,
+    memory_sync,
+    session_store,
+    workspace_memory,
+)
 from routers.sessions import caller
 
 logger = logging.getLogger(__name__)
@@ -110,9 +118,37 @@ class RememberBody(BaseModel):
     replaces: list[str] | None = Field(default=None, max_length=50)
 
 
+class AudienceBody(BaseModel):
+    """Who the page is for: link visibility is checked against it (spec 07 §5.3)."""
+
+    kind: Literal["room", "person", "workspace"]
+    roomId: str | None = Field(default=None, max_length=200)  # noqa: N815 -- the wire name
+    userId: str | None = Field(default=None, max_length=200)  # noqa: N815
+
+
 class InternalRecallBody(RecallBody):
     # The person in a 1:1 DM (the plugin's ``_member``): adds their private scope, as before the log.
     member: str | None = Field(default=None, max_length=200)
+    # The run's ``memory`` block (backend-computed, spec 07 §5.2): never a model argument.
+    lane: Literal["shared", "private"] | None = None
+    audience: AudienceBody | None = None
+
+
+class LinkBody(BaseModel):
+    id: str = Field(min_length=1, max_length=200)
+    audience: AudienceBody
+
+
+def _audience(member: str | None, lane: str | None, audience: AudienceBody | None) -> dict | None:
+    """A person audience is only ever the member (L2); a private lane needs both."""
+    shown = audience.model_dump(exclude_none=True) if audience else None
+    if lane == "private" and not (member and shown and shown["kind"] == "person"):
+        raise HTTPException(status_code=422, detail="a private lane needs member and a person audience")
+    if shown and shown["kind"] == "person" and shown.get("userId") != member:
+        raise HTTPException(status_code=422, detail="a person audience is the member")
+    if shown and shown["kind"] == "room" and not shown.get("roomId"):
+        raise HTTPException(status_code=422, detail="a room audience names its room")
+    return shown
 
 
 class InternalRememberBody(RememberBody):
@@ -187,11 +223,43 @@ async def internal_recall(owner_id: str, body: InternalRecallBody, request: Requ
     """Recall for the workspace's agents: the team scope, plus the private scope of ``member`` (sent
     only from a 1:1 DM with that person). No question expansion: the plugin waits seconds, not a model call."""
     await container_auth._require_hook_token(owner_id, request)
-    fields = body.model_dump()
-    member = fields.pop("member")
+    fields = body.model_dump(exclude={"member", "lane", "audience"})
+    member = body.member
     if member is not None and not workspace_memory._MEMBER_ID.fullmatch(member):
         raise HTTPException(status_code=422, detail="member must be a user id")
-    return await _guard(memory_api.recall_page(owner_id, member, **fields, use_expand=False))
+    audience = _audience(member, body.lane, body.audience)
+    return await _guard(memory_api.recall_page(owner_id, member, **fields, use_expand=False, audience=audience))
+
+
+class BoardBody(BaseModel):
+    audience: AudienceBody
+
+
+@internal_router.post("/board/{owner_id}")
+async def internal_board(owner_id: str, body: BoardBody, request: Request) -> dict:
+    """The task board a super-agent turn reads instead of Paperclip's, filtered for its audience."""
+    await container_auth._require_hook_token(owner_id, request)
+    audience = body.audience.model_dump(exclude_none=True)
+    if audience["kind"] == "room" and not audience.get("roomId"):
+        raise HTTPException(status_code=422, detail="a room audience names its room")
+    if not await memory_api.flags_for(owner_id):
+        return {"text": ""}
+    return {"text": await memory_links.board_text(owner_id, audience)}
+
+
+@internal_router.post("/link/{owner_id}")
+async def internal_link(owner_id: str, body: LinkBody, request: Request) -> dict:
+    """The Router's second hop (``follow_link``): one task as ``audience`` may see it; 404 otherwise."""
+    await container_auth._require_hook_token(owner_id, request)
+    audience = body.audience.model_dump(exclude_none=True)
+    if audience["kind"] == "room" and not audience.get("roomId"):
+        raise HTTPException(status_code=422, detail="a room audience names its room")
+    if not await memory_api.flags_for(owner_id):
+        raise HTTPException(status_code=404, detail="not found")
+    out = await memory_links.read_link(owner_id, body.id, audience)
+    if out is None:
+        raise HTTPException(status_code=404, detail="not found")
+    return out
 
 
 @internal_router.post("/remember/{owner_id}")

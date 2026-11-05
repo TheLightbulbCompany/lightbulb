@@ -27,7 +27,7 @@ describe("summaryView: one word per status, group from the server", () => {
     [{ status: "idle", shownGroup: "idle", watching: true, watchUntil: "2026-11-10" }, "Watching", "idle", null, "neutral"],
     [{ status: "resolved", shownGroup: "resolved" }, "Resolved", "resolved", "reopen", "neutral"],
     [{ status: "resolved", shownGroup: "resolved", statusReason: "stopped" }, "Stopped", "resolved", "reopen", "neutral"],
-    [{ status: "working", shownGroup: "landing", landing: "e1" }, "Landing", "landing", null, "landing"],
+    [{ status: "working", shownGroup: "landing", landing: "e1" }, "Applying", "landing", null, "landing"],
     [{ status: "failed", shownGroup: "waiting_on_you" }, "Failed", "waiting_on_you", "retry", "waiting"],
   ] as const)("%j → %s", (over, word, group, action, tone) => {
     expect(summaryView(t(over as Partial<TaskSummary>), SAM)).toEqual({ word, group, action, tone });

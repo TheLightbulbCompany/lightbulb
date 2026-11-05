@@ -1503,7 +1503,7 @@ def render_task_question(q: dict) -> ActivityItem:
         ),
         actions=[
             ActivityAction(
-                id="open", label="Open task", style="primary", navigate=ActionNavigate(kind="task", id=q["taskId"])
+                id="open", label="Open thread", style="primary", navigate=ActionNavigate(kind="task", id=q["taskId"])
             )
         ],
     )

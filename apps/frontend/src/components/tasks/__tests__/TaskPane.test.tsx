@@ -62,7 +62,8 @@ describe("TaskPane", () => {
   it("header controls per status", async () => {
     const { unmount } = pane();
     expect(await screen.findByRole("button", { name: "Stop" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Resolve" })).toBeInTheDocument();
+    // Running: Stop (asked once), no Resolve under it.
+    expect(screen.queryByRole("button", { name: "Resolve" })).toBeNull();
     expect(screen.getByText("Lightbulb cloud")).toBeInTheDocument();
     unmount();
     withDetail({ ...step8, task: { ...step8.task, status: "resolved", shownGroup: "resolved" } });
@@ -106,10 +107,10 @@ describe("TaskPane", () => {
     expect(client.trace).not.toHaveBeenCalled();
     await userEvent.click(screen.getByText("Details"));
     expect(screen.getByText("$0.84 of $5 budget")).toBeInTheDocument();
-    await userEvent.click(screen.getByText("Trace"));
+    await userEvent.click(screen.getByText("Steps"));
     await waitFor(() => expect(client.trace).toHaveBeenCalledWith("t-signup", 2));
     expect(client.trace).toHaveBeenCalledTimes(1);
-    expect(await screen.findByText("No tool calls yet.")).toBeInTheDocument();
+    expect(await screen.findByText("No steps yet.")).toBeInTheDocument();
   });
 
   it("cost hidden when nothing spent and no budget", async () => {
@@ -125,10 +126,14 @@ describe("TaskPane", () => {
     expect(client.markRead.mock.calls).toEqual([["t-signup"]]);
   });
 
-  it("stop is one press; the word follows the returned summary", async () => {
+  it("stop asks once; Keep going backs out; the word follows the returned summary", async () => {
     client.act.mockResolvedValueOnce({ ...step8.task, status: "resolved", statusReason: "stopped", shownGroup: "resolved", version: 9 });
     pane();
     await userEvent.click(await screen.findByRole("button", { name: "Stop" }));
+    await userEvent.click(screen.getByRole("button", { name: "Keep going" }));
+    expect(client.act).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Stop" }));
+    await userEvent.click(screen.getByRole("button", { name: "Stop it" }));
     expect(client.act).toHaveBeenCalledWith("t-signup", "stop", step8.task.version);
     expect(await screen.findByText("Stopped")).toBeInTheDocument();
   });
@@ -143,8 +148,8 @@ describe("TaskPane", () => {
     const effects = await screen.findByRole("list", { name: "Effects" });
     expect(within(effects).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
       "Launch emailDidn't happen: rate limited",
-      "app.publishMight have happened — check before retrying",
-      "pr.mergeDone",
+      "App publishMight have happened — check before retrying",
+      "Pull request mergeDone",
     ]);
   });
 

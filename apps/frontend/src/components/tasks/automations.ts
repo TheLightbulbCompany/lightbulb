@@ -7,7 +7,7 @@ import { useCallback } from "react";
 import { useSWRConfig } from "swr";
 import { useAuth, useOrganization } from "@clerk/nextjs";
 import {
-  automationKey, automationRunsKey, automationsKey, canDecide, canEdit, runNow as runNowShared,
+  automationKey, automationRunsKey, automationsKey, canDecide, canEdit, specialistLabel, runNow as runNowShared,
   type AutomationSource, type AutomationView, type RunNowOutcome,
 } from "@lightbulb/shared";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
@@ -38,7 +38,12 @@ export function useAutomationActions() {
     await api.del(`/automations/${encodeURIComponent(id)}`);
     await refresh(id);
   }, [api, refresh]);
-  return { act, remove, refresh };
+  /** PATCH /automations/{id} with the row's version (a stale one is a 409 the caller shows). */
+  const edit = useCallback(async (id: string, body: { instructions?: string; schedule?: { cron: string[]; tz: string; remainingRuns?: number | null } }, version: number) => {
+    await api.patch(`/automations/${encodeURIComponent(id)}`, { ...body, version });
+    await refresh(id);
+  }, [api, refresh]);
+  return { act, remove, edit, refresh };
 }
 
 /** Who may turn a proposal on or resume it (shared `canDecide`, the server's two predicates). */
@@ -61,4 +66,23 @@ export type { RunNowOutcome };
 export const runNow = (act: (id: string, verb: AutomationVerb) => Promise<unknown>, a: Pick<AutomationView, "id" | "activeRunTaskId" | "status">): Promise<RunNowOutcome> =>
   runNowShared((id) => act(id, "run"), a, errorCopy);
 
+/** "HH:MM" of a cron list's first entry (wall clock in the row's zone), or null when it isn't a plain time. */
+export function cronTime(cron: readonly string[]): string | null {
+  const [min, hour] = (cron[0] ?? "").trim().split(/\s+/);
+  return /^\d+$/.test(min ?? "") && /^\d+$/.test(hour ?? "") ? `${hour.padStart(2, "0")}:${min.padStart(2, "0")}` : null;
+}
+
+/** A single-entry schedule moved to `time` ("HH:MM"), its days kept (several entries are never collapsed to one time). */
+export const withCronTime = (cron: readonly string[], time: string): string[] => {
+  const [h, m] = time.split(":").map(Number);
+  const [, , ...rest] = (cron[0] ?? "").trim().split(/\s+/);
+  return [[m, h, ...rest].join(" ")];
+};
+
 export { budgetLine, deliveryWords, money, runNowReason, runsPerMonth, scheduleWords, viewerTimeZone, waitingWords } from "@lightbulb/shared";
+
+/** "Lightbulb · Finance" for an automation's specialist: an agent id by its name (the live provider's agent names). */
+export function useSpecialistLabel(): (specialistId: string | null | undefined) => string {
+  const { agentNames } = useLiveEvents();
+  return useCallback((id) => specialistLabel(id, agentNames), [agentNames]);
+}

@@ -22,7 +22,7 @@ import { SessionSearch } from "./SessionSearch";
 import { StartSessionDialog } from "./StartSessionDialog";
 import { readSessionMarks, readSidebarPrefs, writeSessionMarks, writeSidebarPrefs, type SidebarPrefs } from "./sidebarPrefs";
 import { useAsyncAction } from "./useAsyncAction";
-import { openInviteDialog } from "@/components/workspace/workspaceController";
+import { openAgentDmWithDraft, openInviteDialog } from "@/components/workspace/workspaceController";
 import type { DirectoryParticipant, ParticipantSelection, DirectoryRoom } from "./types";
 import "./messaging.css";
 
@@ -245,8 +245,13 @@ function DirectoryContent({
   const oneVoice = superAgent && !!ceoAgentId;
   const roster = participants.filter((participant) => !withDm.has(`${participant.kind}:${participant.id}`)
     && (!oneVoice || participant.kind !== "agent" || participant.id === ceoAgentId));
+  // The specialists taken off the roster stay findable: listed under Specialists, where a click asks them
+  // through the Lightbulb DM (an @mention drafted), the one way they take work now.
+  const askable = oneVoice ? participants.filter((participant) => participant.kind === "agent" && participant.id !== ceoAgentId
+    && !withDm.has(`${participant.kind}:${participant.id}`)) : [];
   const groups = groupRooms(rooms, sections, { sort: prefs.sort, nameOf: (room) => roomDisplayName(room, room.participants),
-    alwaysShow: roster.length > 0 ? ["direct"] : [], ...(oneVoice ? { frontAgentId: ceoAgentId } : {}) });
+    alwaysShow: [...(roster.length > 0 ? ["direct"] : []), ...(askable.length > 0 ? ["specialists"] : [])],
+    ...(oneVoice ? { frontAgentId: ceoAgentId } : {}) });
   // `focusRoomTrigger` can run long after the render that captured it (it's
   // attached to a promise settling), so it must read the CURRENT groups, not
   // whatever `groups` was closed over at click time -- a plain ref, kept in
@@ -520,9 +525,10 @@ function DirectoryContent({
     const visible = collapsed ? group.rooms.filter((room) => room.roomId === currentRoomId) : group.rooms;
     const listId = `${id}-group-${group.id}`;
     const body = (grip?: ReactNode) => {
-      const rows: Array<{ key: string; label: string; room?: DirectoryRoom; participant?: DirectoryParticipant }> = [
+      const rows: Array<{ key: string; label: string; room?: DirectoryRoom; participant?: DirectoryParticipant; ask?: boolean }> = [
         ...visible.map((room) => ({ key: room.roomId, label: roomDisplayName(room, room.participants), room })),
         ...(group.id === "direct" && !collapsed ? roster.map((participant) => ({ key: `${participant.kind}:${participant.id}`, label: participant.displayName, participant })) : []),
+        ...(group.id === "specialists" && !collapsed ? askable.map((participant) => ({ key: `ask:${participant.id}`, label: participant.displayName, participant, ask: true })) : []),
       ];
       if (group.id === "direct") {
         const unreadOf = (row: typeof rows[number]) => row.room && !row.room.muted ? row.room.unreadCount : 0;
@@ -538,7 +544,15 @@ function DirectoryContent({
         id: group.id, label: group.label, listId, collapsed, grip,
         badge: collapsed && unread > 0 && <span className="room-count" aria-label={`${unread} unread messages in ${group.label}`}>{unread}</span>,
       })}
-      <ul id={listId}>{rows.map(({ key, label, room, participant }) => {
+      <ul id={listId}>{rows.map(({ key, label, room, participant, ask }) => {
+        if (ask && ceoAgentId) return <li key={key} className="room-directory-row room-directory-row--roster">
+          <button type="button" className="room-directory-entry" aria-label={`Ask ${label} through Lightbulb`}
+            onClick={() => openAgentDmWithDraft(ceoAgentId, participant!.mentionHandle ? `@${participant!.mentionHandle} ` : "")}>
+            <ParticipantAvatar participant={participant!} size="xs" />
+            <span className="min-w-0 flex-1"><span className="block truncate" title={label}>{label}</span></span>
+            <span className="room-directory-tag">Ask</span>
+          </button>
+        </li>;
         // A roster row is someone with no DM yet. It carries no overflow menu
         // (star, mute, mark-unread and copy-link all need a room), but it
         // must still reserve that control's width -- see

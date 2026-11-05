@@ -43,7 +43,9 @@ describe("RoomPanel Threads view (super-agent)", () => {
     // A row opens its thread in the same column.
     await userEvent.click(within(aside).getByRole("button", { name: "Open Workshop signup app, Waiting on you" }));
     expect(await screen.findByRole("complementary", { name: "Thread" })).toHaveAttribute("data-task-pane", "t-signup");
-    // Back from the thread returns focus to the Threads button, the control that opened the column.
+    // Opened from the overview, Back returns to the overview; from there, Back returns to the conversation.
+    await userEvent.click(screen.getByRole("button", { name: "Back to threads" }));
+    expect(await screen.findByRole("complementary", { name: "Threads" })).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Back to conversation" }));
     expect(screen.getByRole("button", { name: "Threads, 1 waiting on you" })).toHaveFocus();
   });

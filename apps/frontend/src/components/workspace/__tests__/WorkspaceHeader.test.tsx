@@ -38,8 +38,8 @@ vi.mock("../workspaceController", () => ({ openPanel: (...args: unknown[]) => op
 
 const recordMessagesNavigation = vi.fn();
 vi.mock("../chatHistory", () => ({ recordMessagesNavigation: () => recordMessagesNavigation() }));
-const live = vi.hoisted(() => ({ superAgent: false }));
-vi.mock("@/hooks/useLiveEvents", () => ({ useSuperAgent: () => live.superAgent }));
+const live = vi.hoisted(() => ({ superAgent: false, tasks: null as unknown }));
+vi.mock("@/hooks/useLiveEvents", () => ({ useSuperAgent: () => live.superAgent, useOptionalLiveEvents: () => (live.tasks ? live : null) }));
 
 import { trackTeamRunActivity } from "@/components/notifications/teamRunActivity";
 import { WorkspaceHeader } from "../WorkspaceHeader";
@@ -87,6 +87,15 @@ describe("WorkspaceHeader", () => {
       fireEvent.click(screen.getByRole("button", { name: "Work" }));
       expect(openPanel).toHaveBeenCalledWith("teams-threads", {}, { pushUrl: true });
     } finally { live.superAgent = false; }
+  });
+  it("with the switch on, Work badges the threads waiting on you, not team runs", async () => {
+    live.superAgent = true;
+    // Two open questions on one thread and one on another: two threads.
+    live.tasks = { cacheScope: "org_h", needsYou: vi.fn(async () => ({ next: null, items: [{ taskId: "a" }, { taskId: "a" }, { taskId: "b" }] })) };
+    try {
+      render(<WorkspaceHeader />);
+      expect(await screen.findByRole("button", { name: "Work, 2 threads waiting on you" })).toBeInTheDocument();
+    } finally { live.superAgent = false; live.tasks = null; }
   });
   it("shows active team runs on Work without covering workspace content", () => {
     act(() => trackTeamRunActivity("teams.heartbeat.run.queued", { runId: "run-1" }));

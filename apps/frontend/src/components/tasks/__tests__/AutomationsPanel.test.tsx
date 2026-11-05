@@ -5,13 +5,14 @@ import type { AutomationView } from "@lightbulb/shared";
 import { FIXTURES } from "@lightbulb/shared/tasks/fixtures";
 import { Fresh } from "./fakeTasks";
 
-const live = vi.hoisted(() => ({ superAgent: true, tasks: { cacheScope: "org_test" } }));
+const live = vi.hoisted(() => ({ superAgent: true, tasks: { cacheScope: "org_test" }, agentNames: new Map([["agt-fin", "Finance desk"]]) }));
 vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useSuperAgent: () => live.superAgent }));
-const api = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(async () => ({})), del: vi.fn(async () => undefined) }));
+const api = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(async () => ({})), del: vi.fn(async () => undefined), patch: vi.fn(async () => ({})) }));
 vi.mock("@/lib/api", () => ({ useApi: () => api }));
 vi.mock("@/components/teams/panels/RoutinesPanel", () => ({ RoutinesPanel: () => <div data-testid="routines-panel">Routines (today)</div> }));
 const openTaskPane = vi.hoisted(() => vi.fn());
-vi.mock("@/components/workspace/workspaceController", () => ({ openTaskPane }));
+const openPanel = vi.hoisted(() => vi.fn());
+vi.mock("@/components/workspace/workspaceController", () => ({ openTaskPane, openPanel }));
 const clerk = vi.hoisted(() => ({ userId: "user_sam", role: "org:admin" as string | undefined }));
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ userId: clerk.userId }), useOrganization: () => ({ membership: clerk.role ? { role: clerk.role } : null }) }));
 import { ApiError } from "@lightbulb/shared";
@@ -35,6 +36,49 @@ const routes = (over: Partial<AutomationView> = {}) => {
 beforeEach(() => { live.superAgent = true; clerk.userId = "user_sam"; clerk.role = "org:admin"; api.get.mockReset(); api.post.mockClear(); openTaskPane.mockClear(); routes(); });
 
 describe("AutomationsPanel", () => {
+  it("names the specialist from the roster, not its id; several times are not offered as one time field", async () => {
+    routes({ specialistId: "agt-fin", schedule: { cron: ["0 9 * * 1", "0 17 * * 1"], tz: "America/New_York" } });
+    render(<Fresh><AutomationsPanel viewerTz="America/New_York" /></Fresh>);
+    await userEvent.click(await screen.findByRole("button", { name: "Post signups every Monday" }));
+    expect(await screen.findByText(/Lightbulb · Finance desk/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Edit" }));
+    expect(screen.getByRole("form", { name: "Edit automation" }).querySelector("input[type=time]")).toBeNull();
+  });
+
+  it("a 400 on save says the schedule or text wasn't accepted; a rule says Save puts it back to watch-only", async () => {
+    routes({ match: { sources: ["mail"] }, schedule: null });
+    api.patch.mockRejectedValueOnce(new ApiError(400, { code: "invalid_schedule" }));
+    render(<Fresh><AutomationsPanel viewerTz="America/New_York" /></Fresh>);
+    await userEvent.click(await screen.findByRole("button", { name: "Post signups every Monday" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    expect(screen.getByText(/back to watch-only/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("That schedule or text wasn't accepted. Check it and try again.")).toBeInTheDocument();
+  });
+
+  it("edit moves the time (days kept) and the instructions with the row's version; delete asks first", async () => {
+    routes({ schedule: { cron: ["0 9 * * 1"], tz: "America/New_York", remainingRuns: 4 } });
+    render(<Fresh><AutomationsPanel viewerTz="America/New_York" /></Fresh>);
+    await userEvent.click(await screen.findByRole("button", { name: "Post signups every Monday" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    const form = screen.getByRole("form", { name: "Edit automation" });
+    const box = within(form).getByRole("textbox");
+    await userEvent.clear(box);
+    await userEvent.type(box, "Post signups and the waitlist.");
+    const time = form.querySelector("input[type=time]") as HTMLInputElement;
+    await userEvent.clear(time);
+    await userEvent.type(time, "10:30");
+    await userEvent.click(within(form).getByRole("button", { name: "Save" }));
+    // The run limit rides along: a one-off or "4 times" never becomes forever.
+    expect(api.patch).toHaveBeenCalledWith("/automations/a1",
+      { instructions: "Post signups and the waitlist.", schedule: { cron: ["30 10 * * 1"], tz: "America/New_York", remainingRuns: 4 }, version: 3 });
+
+    await userEvent.click(await screen.findByRole("button", { name: "Delete…" }));
+    expect(api.del).not.toHaveBeenCalled();
+    await userEvent.click(within(screen.getByRole("group", { name: "Delete Post signups every Monday?" })).getByRole("button", { name: "Delete" }));
+    expect(api.del).toHaveBeenCalledWith("/automations/a1");
+  });
+
   it("schedule in the viewer's time zone", async () => {
     const { unmount } = render(<Fresh><AutomationsPanel viewerTz="America/New_York" /></Fresh>);
     expect(await screen.findByText(/Mondays 9:00/)).toBeInTheDocument();

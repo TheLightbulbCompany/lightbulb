@@ -1,7 +1,7 @@
 "use client";
 
 // The overview beside the chat (mockup step 3): threads grouped Waiting on you · Working · Ready for
-// review · Landing · Idle · Resolved, from the server's `shownGroup`. A second tab lists Scheduled work.
+// review · Applying · Idle · Resolved, from the server's `shownGroup`. A second tab lists Scheduled work.
 
 import { useState, type ReactElement } from "react";
 import { MoreHorizontal } from "lucide-react";

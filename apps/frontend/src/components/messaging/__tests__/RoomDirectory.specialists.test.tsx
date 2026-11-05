@@ -42,6 +42,13 @@ describe("sidebar with the super-agent on", () => {
     expect(rowsOf("Specialists")).toEqual(["Finance"]);
   });
 
+  it("a specialist off the roster stays findable: Specialists lists it, and a click asks it in the Lightbulb DM", async () => {
+    render(<RoomDirectory {...props} rooms={[]} />);
+    await userEvent.click(screen.getByRole("button", { name: "Expand Specialists" }));
+    await userEvent.click(screen.getByRole("button", { name: "Ask Engineering through Lightbulb" }));
+    expect(openAgentDmWithDraft).toHaveBeenCalledWith("agent_ceo", "@engineering ");
+  });
+
   it("an unknown front agent (roster not resolved, or no ceo role) keeps today's roster", () => {
     render(<RoomDirectory {...props} ceoAgentId={undefined} />);
     // Today's roster: every agent, alphabetical (nothing to pin without a known CEO).

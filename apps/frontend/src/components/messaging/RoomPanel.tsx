@@ -415,7 +415,8 @@ function RoomContent({
   const [detailsTab, setDetailsTab] = useState<DetailsTab>("members");
   const [editTarget, setEditTarget] = useState<string | null>(null);
   const superAgent = useSuperAgent();
-  const [localSelection, setSelection] = useState<{ kind: "thread" | "tasks" | "task" | "overview"; id: string } | null>(null);
+  // `from: "overview"`: a thread opened from the Threads overview goes back there, not to the conversation.
+  const [localSelection, setSelection] = useState<{ kind: "thread" | "tasks" | "task" | "overview"; id: string; from?: "overview" } | null>(null);
   const selection = useMemo(() => selectedThreadId === undefined ? localSelection
     : selectedThreadId ? { kind: "thread" as const, id: selectedThreadId }
       : localSelection?.kind !== "thread" ? localSelection : null, [selectedThreadId, localSelection]);
@@ -645,7 +646,7 @@ function RoomContent({
     // the row that was pressed leaves the DOM with the overview.
     if (document.activeElement instanceof HTMLButtonElement && !showOverview) trigger.current = document.activeElement;
     onSelectThread?.(null);
-    setSelection({ kind: "task", id: taskId });
+    setSelection({ kind: "task", id: taskId, ...(showOverview ? { from: "overview" as const } : {}) });
   }, [onSelectThread, showOverview]);
   const isAgentId = useCallback((memberId: string) => participants.some((p) => p.kind === "agent" && p.id === memberId), [participants]);
 
@@ -984,9 +985,19 @@ function RoomContent({
     {showOverview && <aside className="room-context" aria-label="Threads" onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeDetail(); } }}>
       <header className="room-context-header"><Button variant="ghost" aria-label="Back to conversation" onClick={closeDetail}><ArrowLeft aria-hidden="true" />Back</Button>
         <h3 ref={detailHeading} tabIndex={-1} className="font-semibold">Threads</h3></header>
-      <div className="room-context-body"><TaskOverview scope={{ kind: "room", roomId }} viewerId={currentUserId} onOpen={openTask} /></div>
+      <div className="room-context-body">
+        <TaskOverview scope={{ kind: "room", roomId }} viewerId={currentUserId} onOpen={openTask} />
+        {/* Paperclip tasks this room names still exist: they stay reachable here, below the threads. */}
+        {onLinkToWork && roomTasks.length > 0 && <section aria-label="Older tasks" className="mt-4 grid gap-2">
+          <h4 className="label-caps">Older tasks · {roomTasks.length}</h4>
+          <RoomTasks tasks={roomTasks} onOpenAll={onLinkToWork} />
+        </section>}
+      </div>
     </aside>}
-    {taskSelection && <TaskPane key={taskSelection} taskId={taskSelection} viewerId={currentUserId} onClose={closeDetail} headingRef={detailHeading} />}
+    {taskSelection && <TaskPane key={taskSelection} taskId={taskSelection} viewerId={currentUserId} headingRef={detailHeading}
+      {...(localSelection?.from === "overview"
+        ? { onClose: () => setSelection({ kind: "overview", id: "overview" }), backLabel: "Back to threads" }
+        : { onClose: closeDetail })} />}
     {showDetail && !showTasks && !taskSelection && !showOverview && <aside className="room-context" aria-label="Thread" onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeDetail(); } }}>
       <header className="room-context-header"><Button variant="ghost" aria-label="Back to conversation" onClick={closeDetail}><ArrowLeft aria-hidden="true" />Back</Button>
         <h3 ref={detailHeading} tabIndex={-1} className="font-semibold room-wrap">Thread</h3></header>

@@ -16,7 +16,7 @@ const taskQuestion: ActivityItem = {
   actor: { kind: "agent", id: "", name: "Lightbulb" },
   summary: { title: "Allow Lightbulb · Engineering to provision a database?", requester: { kind: "agent", id: "", name: "Lightbulb" }, reason: null, preview: null,
     links: [{ kind: "task", id: "t1", label: "Workshop signup app" }] },
-  actions: [{ id: "open", label: "Open task", style: "primary", confirm: null, input: null, navigate: { kind: "task", id: "t1", roomId: null } }],
+  actions: [{ id: "open", label: "Open thread", style: "primary", confirm: null, input: null, navigate: { kind: "task", id: "t1", roomId: null } }],
 };
 
 describe("For you: task questions", () => {
@@ -30,7 +30,7 @@ describe("For you: task questions", () => {
       onRunAction: vi.fn().mockResolvedValue(undefined), onNavigate: vi.fn(), onDismissRuns: vi.fn(), people: [], agents: [],
     } satisfies ForYouProps;
     render(<ForYou {...props} />);
-    await userEvent.click(screen.getByRole("button", { name: "Open task" }));
+    await userEvent.click(screen.getByRole("button", { name: "Open thread" }));
     expect(props.onNavigate).toHaveBeenCalledWith({ kind: "task", id: "t1", roomId: null });
   });
 });

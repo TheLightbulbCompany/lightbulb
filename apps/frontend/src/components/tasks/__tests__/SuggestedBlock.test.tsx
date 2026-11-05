@@ -40,6 +40,19 @@ describe("SuggestedBlock", () => {
   });
 });
 
+describe("MessageTasks while the room list is not in", () => {
+  it("placeholders while loading; a failed read offers Retry, never 'isn't available'", async () => {
+    const message = { roomId: "r1", taskRefs: [{ taskId: "a", role: "started" }] } as unknown as CanonicalRoomMessage;
+    client.list.mockRejectedValueOnce(new Error("503"));
+    render(<Fresh><MessageTasks message={message} viewerId={SAM} /></Fresh>);
+    expect(screen.getByLabelText("Loading threads")).toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Threads couldn't load.");
+    expect(screen.queryByText(/isn't available/)).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("Task a")).toBeInTheDocument();
+  });
+});
+
 describe("MessageTasks", () => {
   it("a card for a task the room list doesn't hold reads it by id, not 'isn't available'", async () => {
     const old = fixtureTask({ taskId: "old", title: "Last month's report", status: "idle", shownGroup: "idle" });

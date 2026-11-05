@@ -1138,6 +1138,11 @@ from routers import rules as rules_router  # noqa: E402
 
 app.include_router(rules_router.router, prefix="/api/v1", tags=["rules"])
 
+# Super-agent task API (wave2-O Task 8, C15). After questions so /tasks/{id}/questions stays theirs.
+from routers import tasks as tasks_router  # noqa: E402
+
+app.include_router(tasks_router.router, prefix="/api/v1", tags=["tasks"])
+
 # A person reviews (lists, deletes) what the workspace's agents remember.
 from routers import memory as memory_router  # noqa: E402
 

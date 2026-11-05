@@ -612,6 +612,15 @@ async def note_answerers_unavailable(ws: str, task_id: str) -> None:
     )
 
 
+@activity.defn(name="report_a2a")
+async def report_a2a(ws: str, task_id: str, outcome: str) -> None:
+    """How an A2A-started task ended, for governance (wave2-Q Task 10). No call site yet: the governance
+    completion functions are the A2A session's (spec 05 T9); until then this records `a2a.report_pending`."""
+    from core.services import a2a_admission
+
+    await a2a_admission.report_a2a(ws, task_id, outcome)
+
+
 @activity.defn(name="cancel_open_questions")
 async def cancel_open_questions(ws: str, task_id: str, by: str, reason: str) -> list[str]:
     from core.repositories import questions_repo
@@ -626,6 +635,7 @@ ACTIVITIES = [
     record_answer,
     note_answerers_unavailable,
     cancel_open_questions,
+    report_a2a,
     apply_effect,
     open_asked_question,
 ]

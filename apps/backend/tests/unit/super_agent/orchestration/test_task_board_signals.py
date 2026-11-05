@@ -1,7 +1,6 @@
 """`task_board` under the switch (wave-2 O Task 12; contracts-v2 §14.9): reads through `can_view`, changes as
 signals to `TaskWorkflow` or a task-room note, never a row write; switch off ⇒ today's Paperclip path."""
 
-import re
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -139,15 +138,22 @@ async def test_task_board_legacy_when_off(world):
 
 
 SKILL_DIR = Path(__file__).resolve().parents[5] / "infra" / "hermes" / "skills-src" / "lightbulb"
-_DELEGATION = re.compile(r"delegat|assigned to|assignee|issue per|routine assigned", re.IGNORECASE)
 
 
-def test_skills_text_has_no_paperclip_delegation():
-    """§14.11: the skill no longer tells agents to delegate through Paperclip; work goes to Lightbulb as a task."""
-    offenders = []
+def test_task_wording_is_super_agent_only():
+    """§14.11 without touching switch-off agents: skills are fleet-wide, so the task handoff wording lives in
+    references/tasks.md, which only the super-agent Worker's instructions name; the global text keeps Paperclip."""
+    from core.temporal.activities import WORKER_INSTRUCTIONS
+
+    tasks_md = (SKILL_DIR / "references" / "tasks.md").read_text()
+    assert "ask Lightbulb to start a task" in tasks_md
+    assert "references/tasks.md" in WORKER_INSTRUCTIONS
+    assert "tasks.md" not in (SKILL_DIR / "SKILL.md").read_text()  # not in the routing table: never loaded globally
     for path in [SKILL_DIR / "SKILL.md", *sorted((SKILL_DIR / "references").glob("*.md"))]:
-        for n, line in enumerate(path.read_text().splitlines(), 1):
-            if "paperclip" in line.lower() and _DELEGATION.search(line):
-                offenders.append(f"{path.name}:{n}: {line.strip()}")
-    assert offenders == []
-    assert "ask Lightbulb to start a task" in (SKILL_DIR / "SKILL.md").read_text()
+        if path.name != "tasks.md":
+            assert "ask Lightbulb to start" not in path.read_text(), path.name
+    assert (
+        "A handoff that needs work is a Paperclip task"
+        in (SKILL_DIR / "references" / "platform-primitives.md").read_text()
+    )
+    assert "--assignee-user <userId>" in (SKILL_DIR / "references" / "ideas.md").read_text()

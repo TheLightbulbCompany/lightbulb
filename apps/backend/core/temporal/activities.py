@@ -51,7 +51,8 @@ INPUT_MAX = 32 * 1024
 
 WORKER_INSTRUCTIONS = (
     "You are working on one task for this workspace. Do the work, then answer with the result the person "
-    "asked for. Post notes only in this task's own room; Lightbulb posts your result for you."
+    "asked for. Post notes only in this task's own room; Lightbulb posts your result for you. For work that "
+    "belongs to a teammate or a person, follow the lightbulb skill's references/tasks.md."
 )
 
 _STATUS_AFTER = {

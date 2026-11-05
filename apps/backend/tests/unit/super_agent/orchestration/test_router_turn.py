@@ -353,7 +353,10 @@ async def test_deterministic_start_skips_router_run(world):
         actor=None,
         ref={
             "deliverRoomId": ROOM,
+            "a2aTaskId": "a2a-task-1",
             "start": {
+                "kind": "start_task",
+                "triggerIds": ["sched:s1:100"],
                 "title": "Weekly digest",
                 "brief": "Write it",
                 "specialist": FIN,
@@ -365,7 +368,8 @@ async def test_deterministic_start_skips_router_run(world):
     assert world["runs"] == []  # no model turn
     task_id = ts.router_task_id(t1, 0, 0)  # keyed by the trigger: the automation's `ref.taskId` (A5)
     task = await repo.get_task(WS, task_id)
-    assert task and task["status"] == "queued" and task["specialist"] == FIN
+    assert task and task["status"] == "queued" and task["specialist"] == FIN and task["a2aTaskId"] == "a2a-task-1"
+    assert (await repo.get_trigger(WS, t1))["routedTo"] == {"taskId": task_id}  # Q10 finds the task here on a replay
     assert task["audience"] == {"kind": "room", "roomId": ROOM, "userIds": []} and task.get("ownerUserId") is None
     assert world["posts"] == [
         {

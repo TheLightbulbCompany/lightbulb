@@ -545,8 +545,8 @@ def _scripted(trig: dict) -> ts.StartTask | None:
     start = (trig.get("ref") or {}).get("start")
     if not isinstance(start, dict):
         return None
-    try:
-        return ts.StartTask.model_validate({"kind": "start_task", "triggerIds": [trig["triggerId"]], **start})
+    try:  # the fire's own kind/triggerIds (a `StartTask` dump) are this trigger's by construction
+        return ts.StartTask.model_validate({**start, "kind": "start_task", "triggerIds": [trig["triggerId"]]})
     except ValueError:
         logger.warning("trigger %s carries an invalid ref.start", trig["triggerId"])
         return None
@@ -619,8 +619,10 @@ async def _ensure_task(ws: str, task_id: str, trig: dict, lane: str, status: str
         "lane": "private" if private else "shared",
         "ownerUserId": actor,
         "triggerId": trig["triggerId"],
+        "a2aTaskId": ref.get("a2aTaskId"),  # lane Q (Q10): an inbound A2A task reports back by this id
         **{k: v for k, v in fields.items() if v is not None},
     }
+    row = {k: v for k, v in row.items() if v is not None}
     row, _ = await tasks_repo.create_task(ws, row)
     await task_conversation.ensure_task_room(ws, row)
     await memory_tasks_index.index_task(ws, row)  # memory (M5)

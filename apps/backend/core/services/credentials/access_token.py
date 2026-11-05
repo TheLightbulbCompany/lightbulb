@@ -75,8 +75,9 @@ async def _mark_reconnect(owner_id: str, provider_key: str, reason: str = "unspe
         await _announce_reconnect(owner_id, provider_key)
 
 
-async def _announce_reconnect(owner_id: str, provider_key: str) -> None:
-    """Best-effort: the flip already stands, so a failure here costs visibility, never the call."""
+async def _announce_reconnect(owner_id: str, provider_key: str, *, reconcile: bool = True) -> None:
+    """Best-effort: the flip already stands, so a failure here costs visibility, never the call.
+    ``reconcile=False`` for a provider with no MCP wiring (ChatGPT login): the item only."""
     from core.dynamodb import utc_now_iso
     from core.repositories import messaging_repo
     from core.services import website_logins
@@ -85,10 +86,11 @@ async def _announce_reconnect(owner_id: str, provider_key: str) -> None:
     from core.services.live_events import publish_owner_users
     from core.services.messaging import make_live_event
 
-    try:
-        await mcp_server.reconcile_integrations(owner_id)  # the profile build skips non-connected rows
-    except Exception:  # noqa: BLE001
-        logger.warning("reconnect profile reconcile failed owner=%s provider=%s", owner_id, provider_key)
+    if reconcile:
+        try:
+            await mcp_server.reconcile_integrations(owner_id)  # the profile build skips non-connected rows
+        except Exception:  # noqa: BLE001
+            logger.warning("reconnect profile reconcile failed owner=%s provider=%s", owner_id, provider_key)
     try:
         created = utc_now_iso()
         for user_id in await website_logins._humans_to_ask(owner_id, None):
@@ -143,7 +145,11 @@ async def get_with_expiry(owner_id: str, provider_key: str) -> tuple[str, int]:
         expires_at = _expires_at(credential or {})
         if not (credential or {}).get("access_token") or expires_at is None:
             return None
-        return expires_at if expires_at == 0 or expires_at > time.time() + window else None
+        if expires_at == 0:
+            # Unknown expiry: fresh, except Instagram -- Meta drops its token for good at 60 days,
+            # so an unrecorded expiry gets a refresh check (which records one).
+            return None if provider.oauth.long_lived_exchange == "ig_exchange_token" else 0
+        return expires_at if expires_at > time.time() + window else None
 
     # Only for custody rows: legacy backend providers keep today's lease-per-call path in prod.
     if row and row.get("custody") == "backend" and row.get("status", "connected") == "connected":

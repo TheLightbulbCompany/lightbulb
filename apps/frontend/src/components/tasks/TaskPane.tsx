@@ -3,8 +3,8 @@
 // One request, opened from a card, a link or a panel (mockup step 8): header with its controls,
 // a Needs-you card only while something is open, the task
 // room as read-only progress, the outputs, and folded Details. Section order is the mockup's.
-// Steering is the room's own composer ("Replying to: …", taskReply.ts); "Add a note" only when that
-// composer isn't on screen (opened from Work).
+// Steering is the room's own composer ("Replying to: …", taskReply.ts); a one-line note only when that
+// composer isn't on screen (opened from Home or Work).
 
 import { useEffect, useRef, useState, type ReactElement, type RefObject } from "react";
 import { ArrowLeft } from "lucide-react";
@@ -26,6 +26,9 @@ const TRANSCRIPT_WORDS: ChatWords = {
   empty: "Lightbulb posts this request's progress here.",
   unavailable: "This request's conversation isn't available.", full: "This conversation is full.", ended: "This request is closed.",
 };
+
+/** A question's card is posted into the task room too; the pane shows it once, at the top. */
+const isQuestionCard = (message: { kind?: string | null }) => message.kind === "question";
 
 const time = (iso: string | null) => (iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "");
 const money = (n: number) => `$${n.toFixed(2).replace(/\.00$/, "")}`;
@@ -70,11 +73,12 @@ function TaskPaneBody({ detail, viewerId }: { detail: TaskDetail; viewerId: stri
   const questions = views?.items ?? [];
   const open = questions.find((q) => q.state === "open");
   const answered = questions.filter((q) => q.state === "answered" && q.answeredBy);
-  // The header's reason ("Ready for review", "Needs approval"), else its word, so the card and effects agree with it.
+  // The header's reason ("Ready for review", "Needs approval"), else its word, so the card agrees with it.
   const view = summaryView(task, viewerId);
   const word = view.reason ?? view.word;
   // The room's composer steers this request when it is on screen; otherwise a one-line note here.
   const composerShown = useRoomComposerShown(task.originRoomId);
+  const effects = open ? detail.effects.filter((e) => e.state !== "proposed") : detail.effects;
   return <div className="room-context-body flex min-h-0 flex-col gap-3">
     <TaskHeader task={task} viewerId={viewerId} />
     {open && <NeedsYouCard key={open.id} task={task} question={open} label={word} />}
@@ -83,19 +87,17 @@ function TaskPaneBody({ detail, viewerId }: { detail: TaskDetail; viewerId: stri
     </ul>}
     <div className="flex min-h-64 flex-1 flex-col">
       <SessionChat sessionId={detail.taskRoomId} sessionOwnerId={task.ownerUserId ?? ""} words={TRANSCRIPT_WORDS}
-        openChat={async (roomId) => ({ roomId })} readOnly />
+        openChat={async (roomId) => ({ roomId })} readOnly hideMessage={isQuestionCard} />
     </div>
-    {!composerShown && <AddNote task={task} />}
-    {task.output && <section aria-label="Outputs" className="editorial-card px-3 py-2 text-ui">
-      {/* With a question open on it, the output is reviewed there (its preview and the decision): go to it (audit #25). */}
-      {open
-        ? <button type="button" className="text-left hover:underline" onClick={() => document.getElementById(`needs-${open.id}`)?.closest("section")?.scrollIntoView({ block: "nearest", behavior: "smooth" })}>
-          <span aria-hidden="true">📎 </span>{task.output.title} ›</button>
-        : <><span aria-hidden="true">📎 </span>{task.output.title}</>}
+    {/* One text box: the room's composer when it is on screen, else this line; never beside a typed answer. */}
+    {!composerShown && !(open?.canAnswer && !open.options.length) && <AddNote task={task} />}
+    {/* With a question open, its card above already shows the output and the pending effect. */}
+    {task.output && !open && <section aria-label="Outputs" className="editorial-card px-3 py-2 text-ui">
+      <span aria-hidden="true">📎 </span>{task.output.title}
     </section>}
-    {detail.effects.length > 0 && <ul aria-label="Effects" className="grid gap-1 px-1 text-ui">
-      {detail.effects.map((e) => {
-        const line = open && e.state === "proposed" ? word : effectLine(e);
+    {effects.length > 0 && <ul aria-label="Effects" className="grid gap-1 px-1 text-ui">
+      {effects.map((e) => {
+        const line = effectLine(e);
         const warn = e.state === "unknown" || line.startsWith("Didn't happen");
         return <li key={e.idemKey} className="flex flex-wrap items-baseline gap-x-2">
           <span className="font-semibold">{effectName(e)}</span>
@@ -118,8 +120,9 @@ export function TaskHeader({ task, viewerId }: { task: TaskSummary; viewerId: st
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [confirmStop, setConfirmStop] = useState(false);
-  const live = task.status === "queued" || task.status === "working" || task.status === "waiting";
   const view = summaryView(task, viewerId);
+  // Stop only while something runs: a request that needs the viewer (or is done) has nothing to stop.
+  const live = view.word === "Working";
   // The specialist is the actor: "Growth is working on this" / "Done by Growth"; its bare name where nobody did it.
   const actor = doneByLine(task.specialist, view, agentNames) ?? specialistLabel(task.specialist, agentNames);
   const press = async (verb: "stop" | "resolve" | "reopen") => {
@@ -133,8 +136,7 @@ export function TaskHeader({ task, viewerId }: { task: TaskSummary; viewerId: st
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-ui text-muted-foreground">
       <span className="font-semibold text-foreground">{actor}</span>
       <TaskStatus task={task} viewerId={viewerId} />
-      {view.reason && <span>{view.reason}</span>}
-      {task.runsOn && <span><span aria-hidden="true">☁ </span>Lightbulb cloud</span>}
+      {view.reason && !actor.toLowerCase().includes(view.reason.toLowerCase()) && <span>{view.reason}</span>}
     </div>
     <div className="flex flex-wrap gap-2">
       {/* A running request is stopped (asked once), never resolved under it; Reopen undoes either. */}
@@ -155,11 +157,9 @@ export function TaskHeader({ task, viewerId }: { task: TaskSummary; viewerId: st
 /** Steering when the room's composer isn't on screen: one line, Enter sends it into the request's room. */
 function AddNote({ task }: { task: TaskSummary }): ReactElement {
   const { messaging } = useLiveEvents();
-  const [open, setOpen] = useState(false);
   const [text, setText] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  if (!open) return <div className="px-1"><Button type="button" size="sm" variant="ghost" onClick={() => setOpen(true)}>Add a note</Button></div>;
   return <form className="grid gap-1 px-1" onSubmit={(event) => {
     event.preventDefault();
     const note = text.trim();
@@ -167,8 +167,8 @@ function AddNote({ task }: { task: TaskSummary }): ReactElement {
     setPending(true);
     sendToTask(messaging, task, note, "note").then(() => { setText(""); setError(null); }, () => setError("That didn't go through. Try again.")).finally(() => setPending(false));
   }}>
-    <Input autoFocus aria-label="Add a note" placeholder="Add a note…" value={text} maxLength={4000} disabled={pending}
-      onChange={(event) => setText(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape" && !text) { event.stopPropagation(); setOpen(false); } }} />
+    <Input aria-label="Add a note" placeholder="Add a note…" value={text} maxLength={4000} disabled={pending}
+      onChange={(event) => setText(event.target.value)} />
     {error && <p role="alert" className="text-ui text-err">{error}</p>}
   </form>;
 }
@@ -176,13 +176,14 @@ function AddNote({ task }: { task: TaskSummary }): ReactElement {
 /** The open question. Only an answerer gets buttons; everyone else reads who it waits on. Typed text never answers. */
 export function NeedsYouCard({ task, question, label = "Needs you" }: { task: TaskSummary; question: QuestionView; label?: string }): ReactElement {
   const { answer } = useTaskActions("pane");
+  const { agentNames } = useLiveEvents();
   const [pending, setPending] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [closed, setClosed] = useState(false);
   const [text, setText] = useState("");
   const headingId = `needs-${question.id}`;
   const waiting = question.waitingLabel ?? `Waiting on ${question.answerers.map((a) => a.name).join(" or ")}`;
-  const heading = askLine(question, task.specialist);
+  const heading = askLine(question, task.specialist, agentNames);
   const rows = previewRows(question.preview, Infinity);
   const send = async (optionId: string, typed?: string) => {
     setPending(true);
@@ -227,6 +228,7 @@ export function TaskDetails({ detail }: { detail: TaskDetail }): ReactElement {
     <summary className="cursor-pointer text-muted-foreground">Details</summary>
     <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
       <dt className="text-muted-foreground">Runs</dt><dd>{attempts.length}</dd>
+      {task.runsOn && <><dt className="text-muted-foreground">Runs on</dt><dd>Lightbulb cloud</dd></>}
       {cost && <><dt className="text-muted-foreground">Cost</dt><dd>{cost}</dd></>}
     </dl>
     {latest > 0 && <details className="mt-2" onToggle={(event) => {

@@ -120,6 +120,13 @@ export function specialistLabel(specialist: string | null | undefined, names?: A
   return `${specialist.charAt(0).toUpperCase()}${specialist.slice(1)}`;
 }
 
+/** A message posted for a specialist names it by id in its text ("**22cc1ca5-…** has a draft ready"): read the id
+ *  as the specialist's name, like the byline. A handle ("finance") already reads as a name and is left alone. */
+export function nameSpecialistIn(text: string, specialist: string | null | undefined, names?: AgentNames): string {
+  if (!specialist || HANDLE.test(specialist) || !text.includes(specialist)) return text;
+  return text.split(specialist).join(specialistLabel(specialist, names));
+}
+
 function toneOf(word: StatusWord, group: ShownGroup | null): TaskTone {
   if (word === "Working") return group === "landing" ? "landing" : "working";
   if (word === "Needs you") return group === "ready_for_review" ? "review" : "waiting";
@@ -159,12 +166,14 @@ export function summaryView(t: TaskSummary, viewerId: string): SummaryView {
   return v("Working", LIVE_REASONS[t.status] ?? null);
 }
 
-/** The request pane's actor line: "Finance is working on this" while it runs, "Done by Finance" once it is done.
- *  Null where nobody did it: a request closed with a reason (stopped, dismissed, failed): the status line already
- *  says why. With no specialist Lightbulb is the actor. */
+/** The request pane's actor line, from the same view as the status word: "Finance is working on this" while it
+ *  runs, "Done by Finance, ready for your review" / "Finance needs you" when it waits on the viewer, "Done by
+ *  Finance" once it is done. Null where nobody did it: a request closed with a reason (stopped, dismissed,
+ *  failed): the status line already says why. With no specialist Lightbulb is the actor. */
 export function doneByLine(specialist: string | null | undefined, view: Pick<TaskView, "word" | "reason">, names?: AgentNames): string | null {
   if (view.word === "Closed" && view.reason) return null;
   const who = specialistLabel(specialist, names);
+  if (view.word === "Needs you") return view.reason === "Ready for review" ? `Done by ${who}, ready for your review` : `${who} needs you`;
   return view.word === "Done" || view.word === "Closed" ? `Done by ${who}` : `${who} is working on this`;
 }
 
@@ -245,12 +254,12 @@ export const FREE_TEXT_OPTION = "answer";
 
 /** What the approver is asked: "Allow Engineering to send 'Q3' to a@b.c" (the title names the action and
  *  its target, questions.py `title_for`). Other kinds read their title as written. */
-export function askLine(q: { kind: string; title: string; text?: string | null; preview?: unknown }, specialist: string | null | undefined): string {
+export function askLine(q: { kind: string; title: string; text?: string | null; preview?: unknown }, specialist: string | null | undefined, names?: AgentNames): string {
   // Only an effect-born approval (it carries a preview; its title is questions.py `title_for`'s "send … to …")
   // reads as "Allow …"; a worker's own ask keeps its words.
   if (q.kind !== "approval" || !q.preview) return q.text || q.title;
   const title = q.title.charAt(0).toLowerCase() + q.title.slice(1);
-  return `Allow ${specialistLabel(specialist)} to ${title}`;
+  return `Allow ${specialistLabel(specialist, names)} to ${title}`;
 }
 
 const PREVIEW_LABELS: Record<string, string> = {

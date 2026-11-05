@@ -12,10 +12,11 @@ vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useSuperAge
 vi.mock("@/lib/analytics", () => ({ capture }));
 // The transcript is the task room in the ordinary room column; a stand-in records which room it opens and whether it is read-only.
 vi.mock("@/components/messaging/SessionChat", () => ({
-  SessionChat: ({ sessionId, openChat, readOnly }: { sessionId: string; openChat: (id: string) => Promise<{ roomId: string }>; readOnly?: boolean }) => {
+  SessionChat: ({ sessionId, openChat, readOnly, hideMessage }: { sessionId: string; openChat: (id: string) => Promise<{ roomId: string }>; readOnly?: boolean; hideMessage?: (m: { kind?: string }) => boolean }) => {
     const [room, setRoom] = useState("");
     useEffect(() => { void openChat(sessionId).then((r) => setRoom(r.roomId)); }, [sessionId, openChat]);
-    return <section aria-label="Transcript" data-room={room} data-read-only={readOnly ? "yes" : "no"} />;
+    return <section aria-label="Transcript" data-room={room} data-read-only={readOnly ? "yes" : "no"}
+      data-hides={["question", "result"].filter((kind) => hideMessage?.({ kind })).join(",")} />;
   },
 }));
 
@@ -43,16 +44,16 @@ const pane = (viewer = SAM, taskId = "t-signup") => render(<Fresh><TaskPane task
 beforeEach(() => { capture.mockClear(); withDetail(step8); });
 
 describe("TaskPane", () => {
-  it("section order: header, needs-you, transcript, outputs, details", async () => {
+  it("section order: header, needs-you, transcript, details; the open card stands for the output", async () => {
     const waiting = { ...FIXTURES.step05.tasks[0], output: { idemKey: "e", kind: "app" as const, title: "Signup app preview" } };
     withDetail({ ...step8, task: waiting, questions: [openRow] }, [approval()]);
     pane();
     const status = await screen.findByRole("region", { name: "Request status" });
     const needs = screen.getByRole("group", { name: /provision a database/ });
     const transcript = screen.getByRole("region", { name: "Transcript" });
-    const outputs = screen.getByRole("region", { name: "Outputs" });
+    expect(screen.queryByRole("region", { name: "Outputs" })).toBeNull();
     const details = screen.getByText("Details").closest("details")!;
-    const order = [status, needs, transcript, outputs, details];
+    const order = [status, needs, transcript, details];
     for (let i = 1; i < order.length; i++) expect(order[i - 1].compareDocumentPosition(order[i]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(details.open).toBe(false);
   });
@@ -62,7 +63,9 @@ describe("TaskPane", () => {
     expect(await screen.findByRole("button", { name: "Stop" })).toBeInTheDocument();
     // Running: Stop (asked once), no Resolve under it.
     expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
-    expect(screen.getByText("Lightbulb cloud")).toBeInTheDocument();
+    // Where it runs is plumbing: Details only.
+    expect(screen.getByText("Lightbulb cloud").closest("details")).not.toBeNull();
+    expect(within(screen.getByRole("region", { name: "Request status" })).queryByText("Lightbulb cloud")).toBeNull();
     unmount();
     withDetail({ ...step8, task: { ...step8.task, status: "resolved", shownGroup: "resolved" } });
     pane();
@@ -91,7 +94,10 @@ describe("TaskPane", () => {
     const transcript = await screen.findByRole("region", { name: "Transcript" });
     await waitFor(() => expect(transcript).toHaveAttribute("data-room", step8.taskRoomId));
     expect(transcript).toHaveAttribute("data-read-only", "yes");
-    await userEvent.click(screen.getByRole("button", { name: "Add a note" }));
+    // The question card shows once, at the top: its copy in the task room is left out of Progress.
+    expect(transcript).toHaveAttribute("data-hides", "question");
+    // One line, already there: no button that opens a second box.
+    expect(screen.queryByRole("button", { name: "Add a note" })).toBeNull();
     await userEvent.type(screen.getByRole("textbox", { name: "Add a note" }), "Use the blue theme{Enter}");
     expect(live.messaging.sendMessage).toHaveBeenCalledWith(step8.taskRoomId, expect.objectContaining({ text: "Use the blue theme", mentions: [] }));
     expect(capture).toHaveBeenCalledWith("task_steer_sent", expect.objectContaining({ taskId: "t-signup", source: "note" }));
@@ -245,7 +251,13 @@ describe("NeedsYouCard", () => {
     // The card and the effect read the Work row's word, not "Waiting for approval".
     const card = await screen.findByRole("group", { name: "Send the launch email?" });
     expect(within(card).getByText("Ready for review")).toBeInTheDocument();
-    expect(within(screen.getByRole("list", { name: "Effects" })).getByRole("listitem")).toHaveTextContent("Ready for review");
+    // The pending send is the card itself: no second row repeating it below.
+    expect(screen.queryByRole("list", { name: "Effects" })).toBeNull();
+    // The header follows the same state: ready for review, nothing running, so no Stop.
+    const status = screen.getByRole("region", { name: "Request status" });
+    expect(status).toHaveTextContent(/^Done by .+, ready for your review/);
+    expect(status).not.toHaveTextContent("is working on this");
+    expect(within(status).queryByRole("button", { name: "Stop" })).toBeNull();
     await userEvent.click(await screen.findByRole("button", { name: "Send" }));
     expect(client.answer).toHaveBeenCalledWith("t-email", "q-email", expect.objectContaining({ optionId: "send" }));
     const calls = Object.values(client).filter((v) => typeof v === "function").flatMap((fn) => (fn as unknown as { mock: { calls: unknown[][] } }).mock.calls.flat());

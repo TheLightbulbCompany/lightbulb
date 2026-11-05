@@ -49,7 +49,7 @@ export default function TaskScreen() {
     contentStyle: { backgroundColor: palette.ground },
     headerTitle: () => (
       <ConversationHeader title={task?.title ?? "Request"} avatar={null} palette={palette}
-        status={task && view ? [actor, view.word, view.reason, task.runsOn ? "Lightbulb cloud" : null].filter(Boolean).join(" · ") : null}
+        status={task && view ? [actor, view.word, view.reason].filter(Boolean).join(" · ") : null}
         statusTone={view?.tone === "working" ? "live" : "mute"} />
     ),
   };
@@ -65,7 +65,8 @@ export default function TaskScreen() {
   const open = views?.items.find((q) => q.state === "open");
   // The specialist as the actor: "Growth is working on this" / "Done by Growth" (founder, 5 Nov).
   const doneBy = view ? doneByLine(task.specialist, view, agentNames) : null;
-  const live = task.status === "queued" || task.status === "working" || task.status === "waiting";
+  // Stop only while something runs: a request that needs the viewer has nothing to stop.
+  const live = view?.word === "Working";
   const press = async (verb: "stop" | "resolve" | "reopen") => {
     setPending(true);
     const res = await act(task, verb);
@@ -78,7 +79,6 @@ export default function TaskScreen() {
       <View style={styles.top}>
         <View style={styles.row} accessibilityLabel="Request status">
           <TaskStatus task={task} viewerId={userId ?? ""} palette={palette} />
-          {task.runsOn ? <Text style={[styles.meta, { color: palette.fgMute }]}>☁ Lightbulb cloud</Text> : null}
         </View>
         <View style={styles.row}>
           {live ? <ActionButton label="Stop" palette={palette} disabled={pending} onPress={() => void press("stop")} /> : null}

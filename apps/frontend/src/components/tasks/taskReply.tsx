@@ -3,7 +3,7 @@
 // One text box (critique P1-3): the open request pane is steered from its room's composer ("Replying to: …"),
 // so the pane says which request is open and each room says whether its composer is on screen.
 
-import { useEffect, useState, useSyncExternalStore, type ReactElement } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactElement } from "react";
 import { X } from "lucide-react";
 import { useTask, type TaskSummary, type TasksClient } from "@lightbulb/shared";
 import type { RoomComposerProps } from "@/components/messaging/RoomComposer";
@@ -59,7 +59,7 @@ export async function sendToTask(messaging: LiveEventsContextValue["messaging"],
  * sending then posts into the request's room. Removing the chip sends to the room as normal and `onRemove`
  * hands focus back to the composer. `roomId` is null when the room's composer isn't on screen.
  */
-export function useTaskReply(roomId: string | null, draft: Pick<RoomComposerProps, "onTextChange">, onRemove?: () => void): {
+export function useTaskReply(roomId: string | null, draft: Pick<RoomComposerProps, "text" | "onTextChange">, onRemove?: () => void): {
   chip: ReactElement; composer: Partial<RoomComposerProps>;
 } | null {
   useMarkRoomComposer(roomId);
@@ -71,6 +71,8 @@ export function useTaskReply(roomId: string | null, draft: Pick<RoomComposerProp
   // Each send is a fresh composer attempt (its own id), so a sent or failed reply never locks the box.
   const [clientMessageId, setClientMessageId] = useState(() => crypto.randomUUID());
   const [error, setError] = useState<string | null>(null);
+  const text = useRef(draft.text);
+  text.current = draft.text;
   useEffect(() => { setRemoved(null); setError(null); }, [taskId]);
   const task = data?.task;
   if (!live || !roomId || !task || task.taskId !== taskId || task.originRoomId !== roomId || removed === task.taskId) return null;
@@ -87,11 +89,13 @@ export function useTaskReply(roomId: string | null, draft: Pick<RoomComposerProp
       // It goes to the request's specialist, so the room's "who will reply" line would name the wrong agent.
       showRespondHint: false,
       onSubmit: async (request) => {
+        // The box (and the room's stored draft) empties now, as a room send does; a failure gives the text back.
+        draft.onTextChange("");
         try {
           await sendToTask(live.messaging, task, request.text, "composer");
           setError(null);
-          draft.onTextChange("");
         } catch {
+          if (!text.current.trim()) draft.onTextChange(request.text);
           setError("That didn't go through. Try again.");
         } finally {
           setClientMessageId(crypto.randomUUID());

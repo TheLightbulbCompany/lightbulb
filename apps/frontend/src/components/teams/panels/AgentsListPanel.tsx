@@ -58,6 +58,10 @@ export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
   const superAgent = useSuperAgent();
   const directory = useMessagingWorkspaceOptional()?.directoryProps;
   const frontAgentId = superAgent ? directory?.ceoAgentId : undefined;
+  // The front agent reads as the sidebar names it ("Lightbulb"), never its roster name ("CEO").
+  const nameOf = (agent: CompanyAgent) => agent.id === frontAgentId
+    ? directory?.participants.find((p) => p.kind === "agent" && p.id === agent.id)?.displayName || "Lightbulb"
+    : agent.name;
   const message = (agent: CompanyAgent) => {
     if (!frontAgentId || agent.id === frontAgentId) return openChatPanel(agent.id);
     const handle = directory?.participants.find((p) => p.kind === "agent" && p.id === agent.id)?.mentionHandle;
@@ -100,13 +104,13 @@ export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
     );
   }
 
-  const columns: PanelDataColumn<CompanyAgent>[] = [
+  const allColumns: PanelDataColumn<CompanyAgent>[] = [
     {
       key: "name",
       header: "Name",
       sortable: true,
       cell: (a) => (
-        <div className="font-medium text-[var(--midnight)]">{a.name}</div>
+        <div className="font-medium text-[var(--midnight)]">{nameOf(a)}</div>
       ),
     },
     {
@@ -142,7 +146,7 @@ export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
             <button
               type="button"
               className="text-ui hover:underline text-[var(--midnight)]"
-              aria-label={frontAgentId && a.id !== frontAgentId ? `Ask ${a.name} through Lightbulb` : `Message ${a.name}`}
+              aria-label={frontAgentId && a.id !== frontAgentId ? `Ask ${a.name} through Lightbulb` : `Message ${nameOf(a)}`}
               onClick={() => message(a)}
             >
               {frontAgentId && a.id !== frontAgentId ? "Ask" : "Message"}
@@ -192,6 +196,9 @@ export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
       ),
     },
   ];
+  // Super-agent: specialists by name only; Paperclip's roles (CMO, ENGINEER) and origins are plumbing.
+  const columns = superAgent ? allColumns.filter((c) => c.key !== "role" && c.key !== "origin") : allColumns;
+  const createLabel = superAgent ? "Hire a specialist" : "New agent";
 
   return (
     <div className="editorial-page flex flex-col gap-4 p-4 sm:p-5 lg:p-6 max-w-[1600px] mx-auto w-full">
@@ -200,12 +207,13 @@ export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
         title="Team"
         actions={
           <>
-            {/* Hiring moved here from the workspace rail: the same marketplace drawer. */}
-            <EditorialButton variant="secondary" onClick={() => openMarketplace({ view: "browse" })}>
+            {/* Hiring moved here from the workspace rail: the same marketplace drawer. Super-agent: one action,
+                the chooser (hire from the marketplace, or build one). */}
+            {!superAgent && <EditorialButton variant="secondary" onClick={() => openMarketplace({ view: "browse" })}>
               Add an AI employee
-            </EditorialButton>
+            </EditorialButton>}
             <EditorialButton variant="primary" onClick={() => setCreating(true)}>
-              New agent
+              {createLabel}
             </EditorialButton>
           </>
         }
@@ -243,7 +251,7 @@ export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
               ? undefined
               : "Spin up your first agent — assign a role + start delegating work."
           }
-          action={{ label: "New agent", onClick: () => setCreating(true) }}
+          action={{ label: createLabel, onClick: () => setCreating(true) }}
         />
       ) : view === "chart" ? (
         // The chart draws the WHOLE roster, never the search-filtered slice.
@@ -262,6 +270,7 @@ export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
 
       {creating && (
         <CreateAgentDialog
+          title={createLabel}
           agents={agents ?? []}
           onClose={() => setCreating(false)}
           onCreated={() => {
@@ -325,10 +334,12 @@ function ViewModeToggle({
 }
 
 function CreateAgentDialog({
+  title: dialogTitle,
   agents,
   onClose,
   onCreated,
 }: {
+  title: string;
   /** Existing roster — the manager picker's candidates. A brand-new agent
    *  has no descendants, so every existing agent is an eligible manager. */
   agents: CompanyAgent[];
@@ -384,7 +395,7 @@ function CreateAgentDialog({
       <EditorialDialog
         open
         onOpenChange={(o) => !o && onClose()}
-        title="New agent"
+        title={dialogTitle}
       >
         <AgentCreateChooser
           surface="teams"
@@ -402,7 +413,7 @@ function CreateAgentDialog({
     <EditorialDialog
       open
       onOpenChange={(o) => !o && onClose()}
-      title="New agent"
+      title={dialogTitle}
     >
       <div className="flex flex-col gap-3">
         <label className="block">

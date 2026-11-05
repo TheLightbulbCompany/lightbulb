@@ -516,6 +516,8 @@ function DirectoryContent({
   // opens itself while there is any, so nothing new sits out of sight.
   const moreCount = (external?.rooms ?? []).reduce((n, room) => n + (room.muted ? 0 : room.unreadCount), 0)
     + ownWaitingCount(sessionRows.map((entry) => entry.row));
+  // Closed, More still says how much is inside, so it never reads as an empty heading.
+  const moreItems = sessionRows.length + (external?.rooms.length ?? 0);
   const renderGroup = (group: RoomGroup) => {
     // Archived starts collapsed, so for it alone a listed id means "expanded".
     const collapsed = prefs.collapsed.includes(group.id) !== (group.id === "archived");
@@ -616,8 +618,10 @@ function DirectoryContent({
     {/* Sessions and External connections fold under More (closed by default); it opens itself while the
         session or shared channel on screen is inside, or while anything in it is unread or waiting. */}
     {(sessionsSection || external) && <details className="room-directory-more" open={moreHoldsCurrent || moreCount > 0 || undefined}>
-      <summary className="room-directory-group">More
-        {moreCount > 0 && <span className="room-count" aria-label={`${moreCount} unread or waiting`}>{moreCount}</span>}</summary>
+      <summary className="room-directory-group"><ChevronRight aria-hidden="true" className="room-directory-more-chevron" />More
+        {moreCount > 0
+          ? <span className="room-count" aria-label={`${moreCount} unread or waiting`}>{moreCount}</span>
+          : moreItems > 0 && <span className="text-muted-foreground" aria-label={`${moreItems} inside`}>{moreItems}</span>}</summary>
       {sessionsSection}
       {external && renderGroup(external)}
     </details>}

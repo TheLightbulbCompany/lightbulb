@@ -843,6 +843,10 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
       ? channel === `/ws/${subscriptionWorkspaceId}${roomChannelSuffix}`
       : channel.endsWith(roomChannelSuffix)) ?? null
     : null;
+  // Only one room channel is live at a time (another column, e.g. a request's progress, can hold it): without it
+  // the room on screen catches up from the user channel's `room.message.available` instead.
+  const roomChannelLive = useRef(false);
+  roomChannelLive.current = liveConnected && subscribeToRoom && acknowledgedRoomChannel !== null;
   useEffect(() => {
     if (!liveConnected || !subscribeToRoom || !acknowledgedRoomChannel || accessRemoved) return;
     void reconcile(lastSequence(messagesRef.current)).catch(() => {});
@@ -871,6 +875,10 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
       const {
         roomId, messageSeq, threadRootMessageId, lastMessage, mentionedUserIds, accountableHumanId, previewOnly,
       } = event.payload;
+      if (roomId === activeRoomId && !previewOnly && !roomChannelLive.current) {
+        const newest = lastSequence(messagesRef.current);
+        if (messageSeq > newest) void reconcile(newest).catch(() => {});
+      }
       void mutateRooms((current) => {
         if (!current) return current;
         let changed = false;

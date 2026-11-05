@@ -102,7 +102,7 @@ describe("WorkspaceHeader", () => {
     fireEvent.click(screen.getByRole("button", { name: "Work" }));
     expect(closePane).toHaveBeenCalledOnce();
   });
-  it("with the switch on, Home badges its Needs you requests plus Activity's, not team runs", async () => {
+  it("with the switch on, Home badges exactly its Needs you count: not Activity's, not team runs", async () => {
     live.superAgent = true;
     activityState.attentionCount = 1;
     const t = (taskId: string, shownGroup: string) => ({ taskId, shownGroup, status: "waiting", watching: false, updatedAt: "2026-11-05T00:00:00Z" });
@@ -111,7 +111,7 @@ describe("WorkspaceHeader", () => {
     apiGet.mockResolvedValue({ next: null, tasks: [t("a", "waiting_on_you"), t("b", "ready_for_review"), t("c", "working")] });
     try {
       render(<SWRConfig value={{ provider: () => new Map() }}><WorkspaceHeader /></SWRConfig>);
-      expect(await screen.findByRole("button", { name: "Home, 3 need you" })).toBeInTheDocument();
+      expect(await screen.findByRole("button", { name: "Home, 2 need you" })).toBeInTheDocument();
     } finally { live.superAgent = false; live.tasks = null; activityState.attentionCount = 0; }
   });
   it("shows active team runs on Work without covering workspace content", () => {

@@ -240,8 +240,9 @@ class Gsi(NamedTuple):
     sk_attr: str
 
 
-# §3: by-status only (`ws-meta` joins only if spec 03 needs it). Created with the table.
-GSIS: tuple[Gsi, ...] = (Gsi("by-status", "statusKey", "updatedAt"),)
+# §3: both created with the table (CloudFormation adds at most one GSI per later update). `ws-meta` is
+# sparse: spec 03's workspace META rows carry `metaKind` (Lane R, wave1-R Task 6).
+GSIS: tuple[Gsi, ...] = (Gsi("by-status", "statusKey", "updatedAt"), Gsi("ws-meta", "metaKind", "pk"))
 
 
 # --- Models ----------------------------------------------------------------------------------------

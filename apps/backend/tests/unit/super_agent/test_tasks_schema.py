@@ -184,8 +184,9 @@ def test_cut_rows_have_no_builders():
 
 
 def test_gsis():
-    assert [g.name for g in ts.GSIS] == ["by-status"]
+    assert [g.name for g in ts.GSIS] == ["by-status", "ws-meta"]
     assert (ts.GSIS[0].pk_attr, ts.GSIS[0].sk_attr) == ("statusKey", "updatedAt")
+    assert (ts.GSIS[1].pk_attr, ts.GSIS[1].sk_attr) == ("metaKind", "pk")
 
 
 DECISIONS = [

@@ -34,8 +34,8 @@ async def _router(env, fakes, refs, *, wait_turns):
         return handle
 
 
-def _ref(tid, lane="shared"):
-    return TriggerRef(WS, tid, lane, "respond")
+def _ref(tid, lane="shared", room=None):
+    return TriggerRef(WS, tid, lane, "respond", room)
 
 
 async def test_router_batches_by_lane(temporal_env, fakes):
@@ -63,6 +63,35 @@ async def test_router_batches_by_lane(temporal_env, fakes):
     turns = [a[0] for a in fakes.args("router_turn")]
     assert turns[0].trigger_ids == ["a", "c"] and turns[0].lane == "shared"
     assert turns[1].trigger_ids == ["b"] and turns[1].lane == "u:x"
+
+
+async def test_router_batch_never_spans_rooms(temporal_env, fakes):
+    """Audit #6: the shared lane spans rooms; one batch is one room (memory audience, open tasks, fallback)."""
+    refs = [_ref("a", room="r1"), _ref("b", room="r2"), _ref("c", room="r1")]
+    queue = f"q-{uuid.uuid4()}"
+    async with Worker(temporal_env.client, task_queue=queue, workflows=WORKFLOWS, activities=fakes.activities()):
+        h = await temporal_env.client.start_workflow(
+            RouterWorkflow.run, RouterState(WS, refs), id=f"router:{uuid.uuid4()}", task_queue=queue
+        )
+        for _ in range(200):
+            if len(fakes.args("router_turn")) >= 2:
+                break
+            await asyncio.sleep(0.05)
+        await h.terminate()
+    assert sorted(a[0].trigger_ids for a in fakes.args("router_turn")) == [["a", "c"], ["b"]]
+
+
+async def test_router_turn_tries_twice_then_falls_back(temporal_env, fakes):
+    """Audit #17: a failing batch gets one retry (not three) before the fallback, so other lanes wait ~10 min, not 20."""
+
+    def down(inp):
+        raise RuntimeError("bridge down")
+
+    fakes.behaviour["router_turn"] = down
+    h = await _router(temporal_env, fakes, [_ref("a")], wait_turns=3)
+    await h.terminate()
+    assert fakes.names().count("router_turn") == 2
+    assert fakes.args("apply_fallback") == [(WS, ["a"])]
 
 
 async def test_router_dedups_trigger(temporal_env, fakes):

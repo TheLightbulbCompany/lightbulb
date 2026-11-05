@@ -26,7 +26,7 @@ import { TaskPane } from "../TaskPane";
 const approval = (over: Partial<QuestionView> = {}): QuestionView => ({
   id: "q-provision", taskId: "t-signup", kind: "approval", subkind: null, title: "Provision database and Stripe",
   text: "Allow Lightbulb · Engineering to provision a database and Stripe payments?",
-  options: [{ id: "deny", label: "Deny", style: "danger" }, { id: "approve", label: "Approve", style: "primary" }],
+  options: [{ id: "allow_once", label: "Allow once", style: "primary" }, { id: "deny", label: "Deny", style: "danger" }],
   state: "open", answerers: [{ id: SAM, name: "Sam" }], canAnswer: true, waitingLabel: "Waiting on you",
   answer: null, answeredBy: null, answeredAt: null, createdAt: "2026-11-04T14:00:00Z", version: 4, ...over,
 });
@@ -84,7 +84,7 @@ describe("TaskPane", () => {
     withDetail({ ...step8, task: waiting, questions: [openRow] }, [approval()]);
     pane(SAM);
     const mine = await screen.findByRole("group", { name: "Allow Lightbulb · Engineering to provision a database and Stripe payments?" });
-    expect(within(mine).getAllByRole("button").map((b) => b.textContent)).toEqual(["Deny", "Approve"]);
+    expect(within(mine).getAllByRole("button").map((b) => b.textContent)).toEqual(["Allow once", "Deny"]);
   });
 
   it("transcript is the task room; steer fires the event", async () => {
@@ -166,22 +166,22 @@ describe("NeedsYouCard", () => {
   it("approve posts optionId with the question's version; buttons go", async () => {
     client.answer.mockResolvedValueOnce({ question: approval({ state: "answered" }), next: FIXTURES.step07.tasks[0] } as never);
     pane();
-    await userEvent.click(await screen.findByRole("button", { name: "Approve" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Allow once" }));
     expect(client.answer).toHaveBeenCalledWith("t-signup", "q-provision",
-      { optionId: "approve", clientAnswerId: expect.stringMatching(/^[0-9a-f-]{36}$/), expectVersion: 4 });
-    await waitFor(() => expect(screen.queryByRole("button", { name: "Approve" })).toBeNull());
+      { optionId: "allow_once", clientAnswerId: expect.stringMatching(/^[0-9a-f-]{36}$/), expectVersion: 4 });
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Allow once" })).toBeNull());
   });
 
   it("409 shows who answered and removes the buttons, with no second POST", async () => {
     // Priya answered between Sam's read and his press: the answer route says not_open, the
     // refetched question is answered, and the card gives way to the decision line.
-    const byPriya = approval({ state: "answered", canAnswer: false, answeredBy: { id: PRIYA, name: "Priya" }, answeredAt: "2026-11-04T14:03:00Z", answer: { optionId: "approve", text: null } });
+    const byPriya = approval({ state: "answered", canAnswer: false, answeredBy: { id: PRIYA, name: "Priya" }, answeredAt: "2026-11-04T14:03:00Z", answer: { optionId: "allow_once", text: null } });
     client.questions.mockResolvedValueOnce({ items: [approval()] } as never).mockResolvedValue({ items: [byPriya] } as never);
     client.answer.mockRejectedValueOnce(new ApiError(409, { code: "not_open" }));
     pane();
-    await userEvent.click(await screen.findByRole("button", { name: "Approve" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Allow once" }));
     expect(await screen.findByText(/^Approved by Priya · /)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Allow once" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Deny" })).toBeNull();
     expect(client.answer).toHaveBeenCalledTimes(1);
   });
@@ -189,8 +189,32 @@ describe("NeedsYouCard", () => {
   it("403 copy", async () => {
     client.answer.mockRejectedValueOnce(new ApiError(403, null));
     pane();
-    await userEvent.click(await screen.findByRole("button", { name: "Approve" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Allow once" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Only Sam can approve this");
+  });
+
+  it("shows the exact effect before the approver decides", async () => {
+    withDetail({ ...step8, task: FIXTURES.step05.tasks[0], questions: [openRow] }, [approval({
+      title: "send 'Join us Nov 20' to team@acme.com", text: "",
+      preview: { kind: "mail.send", to: "team@acme.com", subject: "Join us Nov 20", body: "Hi all, signups open today.", idemKey: "x" },
+    })]);
+    pane();
+    const card = await screen.findByRole("group", { name: "Allow Lightbulb · Engineering to send 'Join us Nov 20' to team@acme.com" });
+    expect(within(card).getByLabelText("What this does")).toBeInTheDocument();
+    expect(card).toHaveTextContent("Toteam@acme.com");
+    expect(card).toHaveTextContent("MessageHi all, signups open today.");
+    expect(card).not.toHaveTextContent("idemKey");
+  });
+
+  it("a free-text question (no options) takes a typed answer, posted as optionId answer", async () => {
+    const ask = approval({ kind: "question", title: "Which date should the launch use?", text: "", options: [] });
+    withDetail({ ...step8, task: FIXTURES.step05.tasks[0], questions: [{ ...openRow, kind: "question", options: [] }] }, [ask]);
+    pane();
+    const box = await screen.findByRole("textbox", { name: "Your answer" });
+    expect(screen.getByRole("button", { name: "Send answer" })).toBeDisabled();
+    await userEvent.type(box, "Nov 20");
+    await userEvent.click(screen.getByRole("button", { name: "Send answer" }));
+    expect(client.answer).toHaveBeenCalledWith("t-signup", "q-provision", expect.objectContaining({ optionId: "answer", text: "Nov 20", expectVersion: 4 }));
   });
 
   it("review answer is the apply (no /apply)", async () => {

@@ -70,8 +70,23 @@ async def _get(ws: str, sk: str) -> dict | None:
     return plain(item) if item else None
 
 
+_LIVE_PREFIXES = ("TASK#", "EFFECT#")
+
+
+async def stamp_channel(ws: str, item: dict) -> dict:
+    """A task, attempt, question or effect row carries the workspace's live channel segment (`/ws/{wsChannel}/tasks`,
+    O9): the projector publishes `task.changed` only for rows that carry it. Updates are update_item, so the stamp
+    survives them."""
+    if item.get("wsChannel") or not str(item.get("sk", "")).startswith(_LIVE_PREFIXES):
+        return item
+    from core.repositories import messaging_repo  # lazy: messaging_repo is the heavier module
+
+    return {**item, "wsChannel": await messaging_repo.ensure_workspace_id(ws)}
+
+
 async def _put_new(ws: str, item: dict) -> tuple[dict, bool]:
     """Put unless the row exists; on a retry return the stored row unchanged."""
+    item = await stamp_channel(ws, item)
     try:
         super_agent_faults.maybe_conflict()  # dev fault hook: conditional_conflict:<pct>
         await run_in_thread(_table().put_item, Item=ddb_safe(item), ConditionExpression="attribute_not_exists(sk)")
@@ -87,6 +102,8 @@ async def _put_new(ws: str, item: dict) -> tuple[dict, bool]:
 
 def _row(model: type[ts._Row], ws: str, data: dict) -> dict:
     now = utc_now_iso()
+    if "ws_channel" not in model.model_fields:  # writer-owned (`stamp_channel`): a copied stored row may carry it
+        data = {k: v for k, v in data.items() if k != "wsChannel"}
     return plain(model.model_validate({**data, "ws": ws, "version": 1, "createdAt": now, "updatedAt": now}).to_item())
 
 
@@ -98,11 +115,16 @@ async def _update(
     condition: str,
     values: dict[str, Any],
     remove: tuple[str, ...] = (),
+    bump: bool = True,
 ) -> dict:
-    """SET `sets`, `version = version + 1`, `updatedAt`; REMOVE `remove`; under `condition`. Returns the new row."""
-    names: dict[str, str] = {"#v": "version", "#u": "updatedAt", "#sk": "sk"}
-    vals: dict[str, Any] = {":one": 1, ":now": utc_now_iso(), **values}
-    parts = ["#v = #v + :one", "#u = :now"]
+    """SET `sets`, `version = version + 1`, `updatedAt`; REMOVE `remove`; under `condition`. Returns the new row.
+    `bump=False` leaves `version` alone: the projector publishes no `task.changed` for the write."""
+    names: dict[str, str] = {"#u": "updatedAt", "#sk": "sk"}
+    vals: dict[str, Any] = {":now": utc_now_iso(), **values}
+    parts = ["#u = :now"]
+    if bump:
+        names["#v"], vals[":one"] = "version", 1
+        parts.insert(0, "#v = #v + :one")
     for i, (attr, value) in enumerate(sets.items()):
         names[f"#f{i}"] = attr
         vals[f":f{i}"] = value
@@ -114,6 +136,8 @@ async def _update(
         expr += " REMOVE " + ", ".join(f"#r{i}" for i in range(len(remove)))
     if "#s" in condition:
         names["#s"] = "status"
+    if "#v" in condition:
+        names["#v"] = "version"
     super_agent_faults.maybe_conflict()  # dev fault hook: conditional_conflict:<pct>
     resp = await run_in_thread(
         _table().update_item,
@@ -144,12 +168,6 @@ def _check_fields(fields: dict) -> None:
 async def create_task(ws: str, task: dict) -> tuple[dict, bool]:
     if task.get("status") not in ("proposed", "queued"):
         raise ValueError("a task is created proposed or queued")
-    if not task.get("wsChannel"):
-        # The workspace's live channel segment (`/ws/{wsChannel}/tasks`, O9): without it the projector
-        # publishes no `task.changed` for this row. Transitions are update_item, so the stamp survives them.
-        from core.repositories import messaging_repo  # lazy: messaging_repo is the heavier module
-
-        task = {**task, "wsChannel": await messaging_repo.ensure_workspace_id(ws)}
     return await _put_new(ws, _row(ts.Task, ws, task))
 
 
@@ -257,21 +275,42 @@ async def list_tasks_by_status(
 
 async def put_attempt(ws: str, task_id: str, n: int, fields: dict) -> tuple[dict, bool]:
     data = {"runId": ts.run_id(ws, task_id, n), **fields, "taskId": task_id, "n": n}
-    for owned in ("pk", "sk", "version", "createdAt", "updatedAt", "type"):
+    for owned in ("pk", "sk", "version", "createdAt", "updatedAt", "type", "noteCount"):  # noteCount: count_note
         data.pop(owned, None)
     return await _put_new(ws, _row(ts.Attempt, ws, data))
+
+
+async def count_note(ws: str, task_id: str, n: int, cap: int) -> bool:
+    """Count one `task_note` on the attempt; False once it has `cap` (no version bump: not a state change)."""
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"pk": ts.ws_pk(ws), "sk": ts.attempt_sk(task_id, n)},
+            UpdateExpression="ADD #c :one",
+            ConditionExpression="attribute_exists(sk) AND (attribute_not_exists(#c) OR #c < :cap)",
+            ExpressionAttributeNames={"#c": "noteCount"},
+            ExpressionAttributeValues={":one": 1, ":cap": cap},
+        )
+        return True
+    except ClientError as exc:
+        if not _is_condition_failure(exc):
+            raise
+    return False
 
 
 async def get_attempt(ws: str, task_id: str, n: int) -> dict | None:
     return await _get(ws, ts.attempt_sk(task_id, n))
 
 
-async def update_attempt(ws: str, task_id: str, n: int, fields: dict, *, allowed_status: frozenset[str]) -> dict:
-    """Update an attempt only while its status is in `allowed_status`; `fields` may move `status` itself."""
+async def update_attempt(
+    ws: str, task_id: str, n: int, fields: dict, *, allowed_status: frozenset[str], bump: bool = True
+) -> dict:
+    """Update an attempt only while its status is in `allowed_status`; `fields` may move `status` itself.
+    `bump=False`: no version change, so no live event (the bridge's 2-minute heartbeat)."""
     _check_fields({k: v for k, v in fields.items() if k != "status"})
     condition, values = _status_in(allowed_status)
     try:
-        return await _update(ws, ts.attempt_sk(task_id, n), fields, condition=condition, values=values)
+        return await _update(ws, ts.attempt_sk(task_id, n), fields, condition=condition, values=values, bump=bump)
     except ClientError as exc:
         if not _is_condition_failure(exc):
             raise
@@ -346,6 +385,26 @@ async def unsubscribe(ws: str, task_id: str, thread_key: str) -> None:
         if not _is_condition_failure(exc):
             raise
         raise TasksRepoError(f"task {task_id} is not subscribed to {thread_key}") from exc
+
+
+async def unsubscribe_all(ws: str, task_id: str) -> None:
+    """Every active subscription of the task, deactivated (a thread another task took over is skipped)."""
+    for sub in (await get_task_tree(ws, task_id))["subscriptions"]:
+        if sub.get("active", True):
+            try:
+                await unsubscribe(ws, task_id, sub["threadKey"])
+            except TasksRepoError:
+                pass
+
+
+async def resubscribe_router_threads(ws: str, task_id: str) -> None:
+    """The task's Router-made threads it let go of when it ended, back (one another task took meanwhile stays)."""
+    for sub in (await get_task_tree(ws, task_id))["subscriptions"]:
+        if not sub.get("active", True) and sub.get("createdBy") == "router":
+            try:
+                await subscribe(ws, task_id, sub["threadKey"], created_by="router")
+            except TasksRepoError:
+                pass
 
 
 async def task_for_thread(ws: str, thread_key: str) -> str | None:

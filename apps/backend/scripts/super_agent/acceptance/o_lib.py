@@ -11,13 +11,15 @@ from typing import Any
 
 from core import tasks_schema as ts
 
-ROUTER_REPLY_S = 10
+#: Upper bound the scenarios WAIT for the Router (cold start 30-60 s; its turns are sequential per workspace).
+#: The waits return as soon as the thing is there; the observed seconds go in the evidence.
+ROUTER_REPLY_S = 180
 START_S = 15
 EVENT_S = 3
 ACK_S = 5
 THREE_ASKS = (
-    "Three things: 1) build a signup page for the workshop with our purple theme, 2) email last week's attendees "
-    "about the new date, 3) estimate what Stripe fees we'd pay on 200 tickets."
+    "Three things: 1) build a signup page for the workshop with our purple theme, 2) email last week's attendees (only sa-test-2+clerk_test@thelightbulb.company, "
+    "this is a test) about the new date, 3) estimate what Stripe fees we'd pay on 200 tickets."
 )
 
 
@@ -87,3 +89,27 @@ async def task_detail(ctx: Any, user: str, task_id: str) -> dict:
     r = await ctx.api(user).get(f"/api/v1/tasks/{task_id}")
     r.raise_for_status()
     return r.json()
+
+
+async def task_questions(ctx: Any, user: str, task_id: str) -> list[dict]:
+    """The task's QuestionViews as ``user`` sees them (``canAnswer``, ``waitingLabel`` are per viewer)."""
+    r = await ctx.api(user).get(f"/api/v1/tasks/{task_id}/questions")
+    r.raise_for_status()
+    return r.json()["items"]
+
+
+async def answer_question(ctx: Any, user: str, task_id: str, qid: str, option_id: str, *, key: str):
+    """The raw response: callers assert on the status (403 for a non-answerer)."""
+    body = {"optionId": option_id, "clientAnswerId": key}
+    return await ctx.api(user).post(f"/api/v1/tasks/{task_id}/questions/{qid}/answer", json=body)
+
+
+def question_row(rows: list[dict], task_id: str, kinds: tuple[str, ...], state: str = "open") -> dict | None:
+    return next(
+        (
+            q
+            for q in rows_of(rows, "question")
+            if q.get("taskId") == task_id and q.get("kind") in kinds and q.get("state") == state
+        ),
+        None,
+    )

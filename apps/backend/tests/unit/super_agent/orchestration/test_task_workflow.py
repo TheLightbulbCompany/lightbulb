@@ -256,6 +256,18 @@ async def test_budget_denied_waits_for_new_input(temporal_env, fakes):
     assert fakes.args("begin_attempt")[0][2] == ["chat:m1", "chat:m2"]
 
 
+async def test_budget_blocked_task_can_be_retried(temporal_env, fakes):
+    """Audit #14: waiting/budget was not retryable (validator) once the person raised the budget."""
+    budgets = iter([False, True])
+    fakes.behaviour["check_budget"] = lambda *a: next(budgets)
+    async with worker(temporal_env, fakes) as q:
+        h = await _start(temporal_env, q)
+        await _until(lambda: "check_budget" in fakes.names())
+        await h.execute_update(TaskWorkflow.retry, ActionRequest("sam"))
+        await _until(lambda: "worker_turn" in fakes.names())
+        await h.terminate()
+
+
 async def test_reply_on_proposed_task_waits_for_start(temporal_env, fakes):
     from core.temporal.types import AttemptRef
 

@@ -95,7 +95,7 @@ const reply = fixtureMessage({
 const approval = {
   qid: "q-provision", kind: "approval" as const, subkind: null,
   title: "Provision database and Stripe", answerers: [SAM], answererNames: ["Sam"], canAnswer: true,
-  options: [{ id: "deny", label: "Deny" }, { id: "approve", label: "Approve" }],
+  options: [{ id: "allow_once", label: "Allow once" }, { id: "deny", label: "Deny" }],
 };
 const signupWaiting = { ...signup, status: "waiting" as const, shownGroup: "waiting_on_you" as const, openQuestion: approval, version: 3 };
 const feesWorking = { ...fees, status: "working" as const, shownGroup: "working" as const, version: 2, activity: signup.activity };
@@ -105,7 +105,7 @@ const emailReview = {
   openQuestion: {
     qid: "q-email", kind: "review" as const, subkind: null, title: "Send the launch email?",
     answerers: [SAM], answererNames: ["Sam"], canAnswer: true,
-    options: [{ id: "request_changes", label: "Request changes" }, { id: "send", label: "Send" }],
+    options: [{ id: "send", label: "Send" }, { id: "request_changes", label: "Request changes" }],
   },
   output: { idemKey: "e-mail", kind: "mail" as const, title: "Draft: \"Join us Nov 20\" (240 words)", nextStep: "send" },
 };
@@ -121,15 +121,15 @@ const result = fixtureMessage({
 export const answeredApprovalRow: TaskQuestionRow = {
   qid: "q-provision", kind: "approval", subkind: null, title: "Provision database and Stripe",
   text: "Allow Lightbulb · Engineering to provision a database and Stripe payments?",
-  options: [{ id: "deny", label: "Deny" }, { id: "approve", label: "Approve" }],
-  answerers: [SAM], state: "answered", answer: { optionId: "approve", text: null }, answeredBy: SAM,
+  options: [{ id: "allow_once", label: "Allow once" }, { id: "deny", label: "Deny" }],
+  answerers: [SAM], state: "answered", answer: { optionId: "allow_once", text: null }, answeredBy: SAM,
   answeredAt: "2026-11-04T14:02:00.000Z", createdAt: AT, version: 2,
 };
 export const answeredApprovalView: QuestionView = {
   id: "q-provision", taskId: "t-signup", kind: "approval", subkind: null, title: answeredApprovalRow.title, text: answeredApprovalRow.text!,
-  options: [{ id: "deny", label: "Deny", style: "danger" }, { id: "approve", label: "Approve", style: "primary" }],
+  options: [{ id: "allow_once", label: "Allow once", style: "primary" }, { id: "deny", label: "Deny", style: "danger" }],
   state: "answered", answerers: [{ id: SAM, name: "Sam" }], canAnswer: false, waitingLabel: null,
-  answer: { optionId: "approve", text: null }, answeredBy: { id: SAM, name: "Sam" }, answeredAt: answeredApprovalRow.answeredAt!,
+  answer: { optionId: "allow_once", text: null }, answeredBy: { id: SAM, name: "Sam" }, answeredAt: answeredApprovalRow.answeredAt!,
   createdAt: AT, version: 2,
 };
 

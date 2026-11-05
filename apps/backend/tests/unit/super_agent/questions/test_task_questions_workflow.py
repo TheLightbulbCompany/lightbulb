@@ -58,15 +58,15 @@ class QFakes(Fakes):
         async def note_answerers_unavailable(ws: str, task_id: str) -> None:
             await f._call("note_answerers_unavailable", ws, task_id)
 
+        @activity.defn(name="cancel_open_questions")
+        async def cancel_open_questions(ws: str, task_id: str, by: str, reason: str) -> list[str]:
+            return await f._call("cancel_open_questions", ws, task_id, by, reason, default=[])
+
         @activity.defn(name="open_asked_question")
         async def open_asked_question(ws: str, task_id: str, ref: AskRef) -> QuestionRef:
             return await f._call(
                 "open_asked_question", ws, task_id, ref, default=QuestionRef(f"q-{ref.trigger_id}", [SAM], ref.blocking)
             )
-
-        @activity.defn(name="cancel_open_questions")
-        async def cancel_open_questions(ws: str, task_id: str, by: str, reason: str) -> list[str]:
-            return await f._call("cancel_open_questions", ws, task_id, by, reason, default=[])
 
         return [
             *super().activities(),
@@ -184,6 +184,36 @@ async def test_stop_cancels_open_questions(temporal_env, fakes):
         assert fakes.args("cancel_open_questions") == [(WS, TID, PRIYA, "stopped")]
         assert fakes.args("transition")[-1] == (WS, TID, "resolved", "stopped")
         assert "record_answer" not in fakes.names()
+
+
+async def test_resolve_cancels_open_questions(temporal_env, fakes):
+    """Audit #5: a resolve (not only Stop) leaves no open Question behind, cancelled under the resolver's id before
+    the transition. Its history is histories/O-cancel-questions-on-end-v1.json (test_replay)."""
+    from core.temporal.types import ActionRequest
+
+    async with worker(temporal_env, fakes) as q:
+        h = await _start(temporal_env, q)
+        await _until(lambda: "relay_question" in fakes.names())
+        await h.execute_update(TaskWorkflow.resolve, ActionRequest(SAM))
+        await h.result()
+        assert fakes.args("cancel_open_questions") == [(WS, TID, SAM, "resolved")]
+        assert fakes.names().index("cancel_open_questions") < fakes.names().index("transition")
+        assert fakes.args("transition")[-1] == (WS, TID, "resolved", "resolved")
+
+
+async def test_a_failed_cancel_still_ends_the_task(temporal_env, fakes):
+    """The cancel Activity failing after its retries never keeps the task from resolving."""
+    from core.temporal.types import ActionRequest
+
+    from ..orchestration.fake_activities import non_retryable
+
+    fakes.behaviour["cancel_open_questions"] = non_retryable
+    async with worker(temporal_env, fakes) as q:
+        h = await _start(temporal_env, q)
+        await _until(lambda: "relay_question" in fakes.names())
+        await h.execute_update(TaskWorkflow.resolve, ActionRequest(SAM))
+        await h.result()
+        assert fakes.args("transition")[-1] == (WS, TID, "resolved", "resolved")
 
 
 async def test_answer_after_stop_refused(temporal_env, fakes):

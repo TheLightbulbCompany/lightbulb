@@ -678,7 +678,8 @@ def _run_call(identity: dict, request: dict, frames: "VoiceFramePublisher") -> t
             if request.get("superAgent"):  # lane A: work asked aloud may become a task (start_work)
                 enabled, _ = profile_toolsets()
                 if enabled is not None:  # the Router's decision tools stay off a call, as _construct_agent strips them
-                    limits["enabled_toolsets"] = [*(t for t in enabled if t != ROUTER_TOOLSET), VOICE_WORK_TOOLSET]
+                    strip = (ROUTER_TOOLSET, TASK_TOOLSET)  # task_note is a Worker run's alone
+                    limits["enabled_toolsets"] = [*(t for t in enabled if t not in strip), VOICE_WORK_TOOLSET]
             agent = _construct_agent(agent_id, body, frames, call_key, **limits)
             # No compaction inside a spoken turn (67-103 s each, prod 10-07): Hermes's own
             # per-agent switch, which every automatic trigger reads (turn_context_compaction.py:239,
@@ -838,6 +839,8 @@ def task_tool_recorder(run_id: str):
 ROUTER_TOOLSET = "lightbulb_router"
 # start_work (lane A): only a super-agent Live call re-adds it (_run_call); every other turn strips it.
 VOICE_WORK_TOOLSET = "lightbulb_voice_work"
+# task_note: only a super-agent Worker run re-adds it (_run_durable_turn); every other turn strips it.
+TASK_TOOLSET = "lightbulb_task"
 ROUTER_RUN_LIMITS = {"enabled_toolsets": [ROUTER_TOOLSET, "memory"], "disabled_toolsets": None,
                      "skip_background_review": True}
 MAX_DECISIONS = 40
@@ -1560,6 +1563,45 @@ def _upload_attachment(room_id: str, item: dict) -> dict | None:
         log.warning("media upload failed: %s: %s", item["upload"], exc)
         return None
     return {"attachmentId": attachment_id, "fileName": item["fileName"], "contentType": item["contentType"]}
+
+
+#: tasks_schema.TASK_NS / task_room_id (backend): every task's hidden conversation room.
+_TASK_NS = _uuid.uuid5(_uuid.NAMESPACE_URL, "https://thelightbulb.company/ns/super-agent/task")
+
+
+def task_room_id(task_id: str) -> str:
+    return str(_uuid.uuid5(_TASK_NS, f"room:{task_id}"))
+
+
+def task_result_media(agent_id: str, task_id: str, output: str) -> tuple[str, list[dict]]:
+    """A Worker result's `MEDIA:` lines become files on the result post in the task room: each one PUT
+    to that room's attachment key (`uploadedAttachments`, adopted by the backend), the line gone. The
+    run event carries no file bytes, so everything goes up (budget 0); a file that cannot -- a text
+    type has no signature the backend sniffs, or the PUT failed -- becomes the usual note, never a raw
+    path. ponytail: text files (.md/.csv/.txt) get the note, not the file; inline them on the event if
+    a Worker's text deliverable matters."""
+    if not any(line.startswith(MEDIA_PREFIX) for line in output.splitlines()):
+        return output, []
+    root, room = _profile_dir(agent_id), task_room_id(task_id)
+    lines: list[str] = []
+    uploaded: list[dict] = []
+    for line in output.splitlines():
+        kind = MEDIA_CONTENT_TYPES.get(Path(line[len(MEDIA_PREFIX):].strip()).suffix.lower()) if line.startswith(MEDIA_PREFIX) else None
+        if kind is not None and kind not in UPLOAD_SUFFIX:
+            lines.append(_note(Path(line[len(MEDIA_PREFIX):].strip()), "text files aren't attached from a task yet", root))
+            continue
+        item = _attachable(line, root, 0, HOME) if len(uploaded) < MAX_ATTACHMENTS else (
+            _note(Path(line[len(MEDIA_PREFIX):].strip()), f"a message carries at most {MAX_ATTACHMENTS} files", root)
+            if line.startswith(MEDIA_PREFIX) else None)
+        if item is None:
+            lines.append(line)
+        elif isinstance(item, str):
+            lines.append(item)
+        elif (entry := _upload_attachment(room, item)) is not None:
+            uploaded.append(entry)
+        else:
+            lines.append(_note(item["upload"], "the upload failed", root))
+    return "\n".join(lines).strip(), uploaded
 
 
 def _is_uuid(value: str) -> bool:
@@ -3882,7 +3924,7 @@ def _construct_agent(agent_id: str, body: dict, frames, session_key: str, **limi
                      "stream_delta_callback": frames.delta, "reasoning_callback": frames.thinking}
     enabled_toolsets, disabled_toolsets = profile_toolsets()
     if enabled_toolsets is not None:  # the Router's decision tools are only for Router runs (limits re-add them)
-        enabled_toolsets = [t for t in enabled_toolsets if t not in (ROUTER_TOOLSET, VOICE_WORK_TOOLSET)]
+        enabled_toolsets = [t for t in enabled_toolsets if t not in (ROUTER_TOOLSET, VOICE_WORK_TOOLSET, TASK_TOOLSET)]
     db = _session_db(agent_id)
     # A state.db failure fails a room, call or side turn: each runs on its stored transcript.
     if db is None and (ROOM_SESSION_RE.match(session_key) or ":lightbulb:call:" in session_key
@@ -4254,6 +4296,11 @@ def _run_task_turn(identity: dict, request: dict, *, family: str) -> tuple[str, 
             if not paperclip:
                 extra["tool_complete_callback"] = task_tool_recorder(run_id)
             memory = {"memory": request["memory"]} if request.get("memory") else {}  # a task's block (spec 07 §5.2)
+            if not paperclip and not router and identity.get("taskId") and identity.get("runSecret"):
+                enabled, _ = profile_toolsets()  # a Worker run: its own task room's note tool (task_note)
+                if enabled is not None:
+                    strip = (ROUTER_TOOLSET, VOICE_WORK_TOOLSET)
+                    extra["enabled_toolsets"] = [*(t for t in enabled if t not in strip), TASK_TOOLSET]
             if router:  # decisions only: no execution tools, no background review, no side session
                 extra |= ROUTER_RUN_LIMITS
                 if identity.get("model"):  # the cheaper Router model (§9), chosen by the backend

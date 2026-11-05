@@ -362,6 +362,7 @@ export type { CardReply } from "./ui/reply";
 export { answerIsFormOf, answerIsFrom, answerIsTableOf, cardAnswerFor, cardAnswersFor } from "./ui/answer";
 export {
   TASK_STATUSES, SHOWN_GROUPS, GROUP_LABELS, GROUP_ORDER, resolveCeoAgentId, taskView, summaryView, specialistLabel, overviewGroups, taskSummaryLine, effectLine, effectName, formatSchedule,
+  FREE_TEXT_OPTION, answerVerb, askLine, previewRows, primaryOptionId,
 } from "./tasks/view";
 export type {
   EffectRow, OverviewGroup, QuestionRow, ShownGroup, SummaryView, TaskAction, TaskRow, TaskStatus, TaskTone, TaskView, TaskViewInput,
@@ -373,7 +374,7 @@ export type {
 } from "./tasks/types";
 export { createTasksClient, scopeParam } from "./tasks/client";
 export type { TasksClient } from "./tasks/client";
-export { putTaskSummary, questionsKey, refreshTask, taskKey, taskListKey, useTask, useTaskCache, useTaskChangedRefresh, useTaskList, useTaskQuestions } from "./tasks/useTasks";
+export { putTaskSummary, questionsKey, refreshTask, taskKey, taskListKey, useTask, useOlderTasks, useTaskCache, useTaskChangedRefresh, useTaskList, useTaskQuestions } from "./tasks/useTasks";
 export {
   automationStatusLine, budgetLine, canDecide, canEdit, deliveryWords, money, runNow, runNowReason, runsPerMonth, scheduleWords, viewerTimeZone, waitingWords,
 } from "./tasks/automations";

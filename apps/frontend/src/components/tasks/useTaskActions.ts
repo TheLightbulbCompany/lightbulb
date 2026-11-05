@@ -5,7 +5,7 @@
 
 import { useCallback } from "react";
 import { useSWRConfig } from "swr";
-import { ApiError, putTaskSummary, questionsKey, taskKey, type TaskAction, type TaskSummary, type TaskVerb } from "@lightbulb/shared";
+import { ApiError, primaryOptionId, putTaskSummary, questionsKey, taskKey, type TaskAction, type TaskSummary, type TaskVerb } from "@lightbulb/shared";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { capture, type AnalyticsEvent } from "@/lib/analytics";
 
@@ -34,9 +34,13 @@ export function useTaskActions(source: string) {
   const { tasks } = useLiveEvents();
   const { cache, mutate } = useSWRConfig();
 
+  // One task, not every list: its detail and questions re-read, and the fresh summary written into the lists.
   const refetch = useCallback(async (taskId: string) => {
-    const lists = [...cache.keys()].filter((k) => k.startsWith(`tasks:${tasks.cacheScope}:`));
-    await Promise.all([mutate(taskKey(taskId)), mutate(questionsKey(taskId)), ...lists.map((k) => mutate(k))]);
+    const detail = await tasks.get(taskId).catch(() => null);
+    await mutate(questionsKey(taskId));
+    if (!detail) return;
+    await mutate(taskKey(taskId), detail, { revalidate: false });
+    await putTaskSummary(cache, mutate, detail.task, tasks);
   }, [cache, mutate, tasks]);
 
   const act = useCallback(async (task: TaskSummary, verb: TaskVerb): Promise<ActionResult> => {
@@ -77,9 +81,14 @@ export function useTaskActions(source: string) {
     }
   }, [tasks, cache, mutate, refetch, source]);
 
-  /** The card/row primary action. `answer` (free text) has no one-press form: it opens the thread. */
+  /** The card/row primary action. `answer` (free text) has no one-press form: it opens the thread.
+   *  An answer posts the question's own primary option id (allow_once, send, …), never the action word. */
   const run = useCallback((task: TaskSummary, action: TaskAction): Promise<ActionResult> => {
-    if (ANSWERS.has(action) && task.openQuestion) return answer(task, task.openQuestion.qid, action);
+    if (ANSWERS.has(action) && task.openQuestion) {
+      const optionId = primaryOptionId(task.openQuestion.options);
+      if (!optionId) return Promise.resolve({ ok: false, message: "Open the thread to answer this." });
+      return answer(task, task.openQuestion.qid, optionId);
+    }
     if (action === "start" || action === "retry" || action === "reopen") return act(task, action);
     return Promise.resolve({ ok: true });
   }, [act, answer]);

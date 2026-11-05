@@ -999,6 +999,45 @@ def _unwatch(args: dict, *, session_id: str = "", **_kw) -> str:
     return "stopped"
 
 
+# task_note (contracts-v2 §6): a Worker posts only in its own task's room. Its toolset is stripped from every turn
+# and re-added only for a super-agent Worker run (bridge.turn TASK_TOOLSET); the handler checks the run again.
+TASK_TOOLSET = "lightbulb_task"  # == bridge.turn.TASK_TOOLSET
+TASK_NOTE_SCHEMA = {
+    "name": "task_note",
+    "description": "Post a short progress note in this task's own conversation (what you found, what you are doing "
+                   "next). People following the task read it; your final answer is posted for you, so never "
+                   "repeat it here. This is the only place you post while working on a task.",
+    "parameters": {
+        "type": "object",
+        "properties": {"text": {"type": "string", "description": "The note, one or two sentences."}},
+        "required": ["text"],
+    },
+}
+TASK_NOTE_ONLY = "task_note works only on a Lightbulb task run."
+
+
+def _task_note(args: dict, *, session_id: str = "", **_kw) -> str:
+    ctx = turn_context.read(session_id)
+    if not _task_run(ctx):
+        return TASK_NOTE_ONLY
+    text = str((args or {}).get("text") or "").strip()
+    if not text:
+        return "text is required."
+    body = {"taskId": ctx.get("taskId"), "runId": ctx.get("runId"), "attempt": ctx.get("attempt"),
+            "runSecret": ctx.get("runSecret"), "text": text[:2000]}
+    url = f"{ctx['apiUrl'].rstrip('/')}/api/v1/internal/runtime/{ctx['ownerId']}/notes"
+    try:
+        _post(url, ctx["hookToken"], body)
+    except urllib.error.HTTPError as exc:
+        detail = _detail(exc)
+        if detail == "stale_run":
+            return TASK_STALE_RUN
+        return f"Note not posted: HTTP {exc.code}" + (f" ({detail})." if detail else ".")
+    except Exception as exc:  # noqa: BLE001
+        return f"Note not posted: {type(exc).__name__}."
+    return "Posted in the task's conversation."
+
+
 def _ask_person(args: dict, *, session_id: str = "", **_kw) -> str:
     question = str(args.get("question") or "").strip()
     options = [str(o).strip() for o in (args.get("options") or []) if str(o).strip()]
@@ -1184,6 +1223,8 @@ def register(ctx) -> None:
                       description=WATCH_SCHEMA["description"], emoji="👀")
     ctx.register_tool("unwatch", "lightbulb", UNWATCH_SCHEMA, _unwatch,
                       description=UNWATCH_SCHEMA["description"], emoji="👀")
+    ctx.register_tool("task_note", TASK_TOOLSET, TASK_NOTE_SCHEMA, _task_note,
+                      description=TASK_NOTE_SCHEMA["description"], emoji="📝")
     ctx.register_tool("ask_person", "lightbulb", ASK_PERSON_SCHEMA, _ask_person,
                       description=ASK_PERSON_SCHEMA["description"], emoji="❓")
     ctx.register_tool("lightbulb_local_sessions", "lightbulb", SESSIONS_SCHEMA, _local_sessions,

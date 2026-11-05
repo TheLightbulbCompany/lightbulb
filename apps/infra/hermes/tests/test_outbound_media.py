@@ -363,3 +363,37 @@ def test_an_outbox_file_too_big_to_send_is_still_kept_in_the_profile(tmp_path, m
     text, _, uploads = turn.extract_media(f"MEDIA:{video}", profile, tmp_path)
     assert uploads == [] and (profile / "outbox" / "hero.mp4").read_bytes() == _MP4
     assert text.endswith("it's saved in the agent's workspace at `outbox/hero.mp4`.)_")
+
+
+# ---- a Worker's task result (live dev bug, 5 Nov: a raw MEDIA: path in the task room) -------------
+TASK = "85224fd1-0000-4000-8000-000000000000"
+
+
+def test_task_result_media_uploads_to_the_task_room_and_strips_the_line(home, monkeypatch):
+    work = _profile_dir("spec") / "work" / TASK
+    work.mkdir(parents=True)
+    (work / "agenda.docx").write_bytes(b"PK\x03\x04" + b"\x00" * 10)
+    (work / "notes.md").write_text("# notes")
+    put = []
+    monkeypatch.setattr(turn, "_upload_attachment", lambda room, item: put.append((room, item["fileName"])) or {
+        "attachmentId": "a1", "fileName": item["fileName"], "contentType": item["contentType"]})
+    out = f"Here is the agenda.\nMEDIA:{work / 'agenda.docx'}\nMEDIA:{work / 'notes.md'}\nMEDIA:{work / 'gone.pdf'}"
+
+    text, files = turn.task_result_media("spec", TASK, out)
+
+    assert put == [(turn.task_room_id(TASK), "agenda.docx")]
+    assert files == [{"attachmentId": "a1", "fileName": "agenda.docx",
+                      "contentType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}]
+    assert "MEDIA:" not in text and str(home) not in text and text.startswith("Here is the agenda.")
+    assert "notes.md" in text and "gone.pdf" in text  # notes, never a raw path
+
+
+def test_task_room_id_matches_the_backend():
+    import uuid
+    ns = uuid.uuid5(uuid.NAMESPACE_URL, "https://thelightbulb.company/ns/super-agent/task")  # tasks_schema.TASK_NS
+    assert turn.task_room_id(TASK) == str(uuid.uuid5(ns, f"room:{TASK}"))
+
+
+def test_a_result_without_media_is_untouched(monkeypatch):
+    monkeypatch.setattr(turn, "_upload_attachment", lambda *a: pytest.fail("no upload"))
+    assert turn.task_result_media("spec", TASK, "done") == ("done", [])

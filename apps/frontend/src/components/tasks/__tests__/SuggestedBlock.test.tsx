@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { CanonicalRoomMessage } from "@lightbulb/shared";
+import type { CanonicalRoomMessage, TaskDetail } from "@lightbulb/shared";
 import { fixtureTask, SAM } from "@lightbulb/shared/tasks/fixtures";
 import { Fresh, fakeTasksClient, type FakeTasksClient } from "./fakeTasks";
 
@@ -50,5 +50,18 @@ describe("MessageTasks while the room list is not in", () => {
     expect(screen.queryByText(/isn't available/)).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(await screen.findByText("Task a")).toBeInTheDocument();
+  });
+});
+
+describe("MessageTasks", () => {
+  it("a card for a task the room list doesn't hold reads it by id, not 'isn't available'", async () => {
+    const old = fixtureTask({ taskId: "old", title: "Last month's report", status: "idle", shownGroup: "idle" });
+    client = fakeTasksClient([a], { old: { task: old, attempts: [], questions: [], effects: [], subscriptions: [], taskRoomId: "tr" } as TaskDetail });
+    live.tasks = client;
+    const message = { roomId: "r1", taskRefs: [{ taskId: "old", role: "started" }] } as unknown as CanonicalRoomMessage;
+    render(<Fresh><MessageTasks message={message} viewerId={SAM} /></Fresh>);
+    expect(await screen.findByText("Last month's report")).toBeInTheDocument();
+    expect(client.get).toHaveBeenCalledWith("old");
+    expect(screen.queryByText(/isn't available/)).toBeNull();
   });
 });

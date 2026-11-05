@@ -4,7 +4,7 @@
 
 import { useAuth } from "@clerk/expo";
 import {
-  automationStatusLine, deliveryWords, overviewGroups, scheduleWords, useAutomations, viewerTimeZone, summaryView, taskSummaryLine, useTaskList, type TaskScope, type TaskSummary,
+  automationStatusLine, deliveryWords, overviewGroups, scheduleWords, useAutomations, viewerTimeZone, summaryView, taskSummaryLine, useOlderTasks, useTaskList, type TaskScope, type TaskSummary,
 } from "@lightbulb/shared";
 import { router } from "expo-router";
 import { useContext, useState } from "react";
@@ -52,11 +52,12 @@ export function OverviewList({ scope, palette, onOpen = openTaskScreen }: { scop
   const { userId } = useAuth();
   const { tasks } = useLiveEvents();
   const { data, error, mutate } = useTaskList(tasks, scope);
+  const { older, hasOlder, loading, loadOlder } = useOlderTasks(tasks, data, scope);
   const [resolvedOpen, setResolvedOpen] = useState(false);
   if (!data) return <LoadState what="Threads" error={!!error} onRetry={() => void mutate()} palette={palette} />;
   return (
     <View style={styles.groups}>
-      {overviewGroups(data.tasks).map((group) => {
+      {overviewGroups([...data.tasks, ...older]).map((group) => {
         const collapsible = group.id === "resolved";
         const open = !collapsible || resolvedOpen;
         const heading = `${group.label} · ${group.tasks.length}`;
@@ -83,6 +84,12 @@ export function OverviewList({ scope, palette, onOpen = openTaskScreen }: { scop
           </View>
         );
       })}
+      {hasOlder ? (
+        <Pressable accessibilityRole="button" accessibilityLabel="Load older threads" accessibilityState={{ busy: loading }} disabled={loading}
+          onPress={() => void loadOlder()} style={styles.oldLink} hitSlop={8}>
+          <Text style={[styles.link, { color: palette.link }]}>{loading ? "Loading…" : "Load older threads"}</Text>
+        </Pressable>
+      ) : null}
     </View>
   );
 }

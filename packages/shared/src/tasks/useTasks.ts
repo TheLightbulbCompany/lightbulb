@@ -1,7 +1,7 @@
 // SWR hooks over the task routes, and the `task.changed` refresh (ids only, I1): the client
 // refetches through the authorized API; a task it can no longer see is dropped quietly.
 
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import useSWR, { useSWRConfig, type Cache, type ScopedMutator } from "swr";
 
 import { ApiError } from "../api/error";
@@ -21,9 +21,29 @@ export const questionsKey = (taskId: string) => `task-questions:${taskId}`;
 const listKeys = (cache: Cache, client: Pick<TasksClient, "cacheScope">) =>
   [...cache.keys()].filter((k) => k.startsWith(listPrefix(client)));
 
-/** `null` scope = no request (switch off or nothing to show). */
+/** The first page of a scope (50, tasks.py). Older pages load on demand (`useOlderTasks`); a card whose task
+ *  isn't on it reads it by id. `null` scope = no request (switch off or nothing to show). */
 export function useTaskList(client: TasksClient, scope: TaskScope | null) {
   return useSWR<TaskList>(scope ? taskListKey(client, scope) : null, () => client.list(scope!), { shouldRetryOnError: false });
+}
+
+/** "Load older" for a list: pages after the first, fetched only when asked. They live in the SWR cache under the
+ *  list's own prefix (`…:older`), so `putTaskSummary` and `task.changed` (`refreshTask`) update their rows too. */
+export function useOlderTasks(client: TasksClient, first: TaskList | undefined, scope: TaskScope | null) {
+  const key = scope ? `${taskListKey(client, scope)}:older` : null;
+  const { data: older, mutate } = useSWR<TaskList>(key, null); // no fetcher: only loadOlder fills it
+  const next = older ? older.next : first?.next ?? null;
+  const [loading, setLoading] = useState(false);
+  const loadOlder = useCallback(async () => {
+    if (!scope || !next) return;
+    setLoading(true);
+    try {
+      const page = await client.list(scope, next);
+      await mutate((o) => ({ next: page.next, tasks: [...(o?.tasks ?? []), ...page.tasks] }), { revalidate: false });
+    } finally { setLoading(false); }
+  }, [client, scope, next, mutate]);
+  const seen = new Set((first?.tasks ?? []).map((t) => t.taskId));
+  return { older: (older?.tasks ?? []).filter((t) => !seen.has(t.taskId)), hasOlder: !!next, loading, loadOlder };
 }
 
 /** `null` id = no request. */
@@ -55,9 +75,14 @@ export async function putTaskSummary(cache: Cache, mutate: ScopedMutator, task: 
 
 export interface RefreshDeps { cache: Cache; mutate: ScopedMutator; client: TasksClient }
 
-export async function refreshTask({ cache, mutate, client }: RefreshDeps, { taskId, version }: TaskChanged): Promise<void> {
+export async function refreshTask({ cache, mutate, client }: RefreshDeps, { taskId, part, version }: TaskChanged): Promise<void> {
   const lists = listKeys(cache, client);
   const detail = cache.get(taskKey(taskId))?.data as TaskDetail | undefined;
+  // An attempt, Question or Effect row counts its own versions from 1: only an open detail cares about it.
+  if (part !== "task") {
+    if (detail) await refetch({ cache, mutate, client }, taskId, lists);
+    return;
+  }
   const known = [
     detail?.task.version,
     ...lists.map((k) => (cache.get(k)?.data as TaskList | undefined)?.tasks.find((t) => t.taskId === taskId)?.version),
@@ -69,7 +94,10 @@ export async function refreshTask({ cache, mutate, client }: RefreshDeps, { task
     return;
   }
   if (Math.max(...known) >= version) return;
+  await refetch({ cache, mutate, client }, taskId, lists);
+}
 
+async function refetch({ cache, mutate, client }: RefreshDeps, taskId: string, lists: string[]): Promise<void> {
   let fresh: TaskDetail;
   try {
     fresh = await client.get(taskId);

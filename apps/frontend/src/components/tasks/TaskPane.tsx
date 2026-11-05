@@ -7,7 +7,8 @@
 import { useEffect, useRef, useState, type ReactElement, type RefObject } from "react";
 import { ArrowLeft } from "lucide-react";
 import {
-  effectLine, effectName, specialistLabel, useTask, useTaskQuestions, type QuestionView, type TaskDetail, type TaskSummary, type TaskTrace,
+  FREE_TEXT_OPTION, answerVerb, askLine, effectLine, effectName, previewRows, specialistLabel, useTask, useTaskQuestions,
+  type QuestionView, type TaskDetail, type TaskSummary, type TaskTrace,
 } from "@lightbulb/shared";
 import { SessionChat, type ChatWords } from "@/components/messaging/SessionChat";
 import { Button } from "@/components/ui/button";
@@ -62,7 +63,7 @@ function TaskPaneBody({ detail, viewerId }: { detail: TaskDetail; viewerId: stri
   const answered = questions.filter((q) => q.state === "answered" && q.answeredBy);
   return <div className="room-context-body flex min-h-0 flex-col gap-3">
     <TaskHeader task={task} viewerId={viewerId} />
-    {open && <NeedsYouCard task={task} question={open} />}
+    {open && <NeedsYouCard key={open.id} task={task} question={open} />}
     {answered.length > 0 && <ul aria-label="Decisions" className="grid gap-1 px-1 text-ui text-muted-foreground">
       {answered.map((q) => <li key={q.id}>{answerLine(q)}</li>)}
     </ul>}
@@ -88,8 +89,7 @@ function TaskPaneBody({ detail, viewerId }: { detail: TaskDetail; viewerId: stri
 }
 
 function answerLine(q: QuestionView): string {
-  const option = q.options.find((o) => o.id === q.answer?.optionId)?.label;
-  const verb = q.answer?.optionId === "approve" ? "Approved" : q.answer?.optionId === "deny" ? "Denied" : option ? `${option}` : "Answered";
+  const verb = answerVerb(q.answer?.optionId, q.options.find((o) => o.id === q.answer?.optionId)?.label);
   return `${verb} by ${q.answeredBy!.name} · ${time(q.answeredAt)}`;
 }
 
@@ -134,22 +134,39 @@ export function NeedsYouCard({ task, question }: { task: TaskSummary; question: 
   const [pending, setPending] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [closed, setClosed] = useState(false);
+  const [text, setText] = useState("");
   const headingId = `needs-${question.id}`;
   const waiting = question.waitingLabel ?? `Waiting on ${question.answerers.map((a) => a.name).join(" or ")}`;
+  const heading = askLine(question, task.specialist);
+  const rows = previewRows(question.preview, Infinity);
+  const send = async (optionId: string, typed?: string) => {
+    setPending(true);
+    const res = await answer(task, question.id, optionId, { expectVersion: question.version, ...(typed ? { text: typed } : {}) });
+    setPending(false);
+    if (res.ok) setClosed(true);
+    else { setNote(res.message); if (res.answeredBy) setClosed(true); }
+  };
   return <section role="group" aria-labelledby={headingId} className="editorial-card border-l-2 border-l-warn px-3 py-2">
     <p className="label-caps">{question.canAnswer ? "Waiting on you" : waiting}</p>
-    <h4 id={headingId} className="font-semibold">{question.text || question.title}</h4>
-    {question.canAnswer && !closed && <div className="mt-2 flex flex-wrap gap-2">
-      {question.options.map((o) => <Button key={o.id} type="button" size="sm" disabled={pending}
-        variant={o.style === "primary" ? "default" : o.style === "danger" ? "outline" : "ghost"}
-        onClick={async () => {
-          setPending(true);
-          const res = await answer(task, question.id, o.id, { expectVersion: question.version });
-          setPending(false);
-          if (res.ok) setClosed(true);
-          else { setNote(res.message); if (res.answeredBy) setClosed(true); }
-        }}>{o.label}</Button>)}
-    </div>}
+    <h4 id={headingId} className="font-semibold">{heading}</h4>
+    {question.text && question.text !== heading && <p className="mt-0.5 whitespace-pre-wrap text-ui">{question.text}</p>}
+    {rows.length > 0 && <dl aria-label="What this does" className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 border-t border-border pt-2 text-ui">
+      {rows.map((r) => <div key={r.label} className="contents">
+        <dt className="text-muted-foreground">{r.label}</dt><dd className="min-w-0 whitespace-pre-wrap break-words">{r.value}</dd>
+      </div>)}
+    </dl>}
+    {question.canAnswer && !closed && (question.options.length
+      ? <div className="mt-2 flex flex-wrap gap-2">
+        {question.options.map((o) => <Button key={o.id} type="button" size="sm" disabled={pending}
+          variant={o.style === "primary" ? "default" : o.style === "danger" ? "outline" : "ghost"}
+          onClick={() => void send(o.id)}>{o.label}</Button>)}
+      </div>
+      // A free-text ask (no options): the answer is what the person types, posted as optionId "answer".
+      : <form className="mt-2 grid gap-2" onSubmit={(event) => { event.preventDefault(); if (text.trim()) void send(FREE_TEXT_OPTION, text.trim()); }}>
+        <textarea aria-label="Your answer" value={text} onChange={(event) => setText(event.target.value)} rows={3} maxLength={4000}
+          className="w-full resize-y rounded-md border border-input bg-background px-2 py-1.5 text-ui focus-visible:outline-2 focus-visible:outline-ring" />
+        <div><Button type="submit" size="sm" disabled={pending || !text.trim()}>Send answer</Button></div>
+      </form>)}
     {note && <p role="alert" className="mt-1 text-ui text-err">{note}</p>}
   </section>;
 }

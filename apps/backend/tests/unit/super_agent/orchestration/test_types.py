@@ -12,6 +12,7 @@ ALLOWED = {
     "ws",
     "trigger_id",
     "lane",
+    "room_id",  # TriggerRef: an id (Router batches never span rooms)
     "admission",
     "task_id",
     "reason",

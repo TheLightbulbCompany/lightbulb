@@ -814,6 +814,20 @@
           },
           "title": "Recenttools",
           "type": "array"
+        },
+        "progressPosted": {
+          "default": false,
+          "title": "Progressposted",
+          "type": "boolean"
+        },
+        "attachments": {
+          "default": [],
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Attachments",
+          "type": "array"
         }
       },
       "required": [

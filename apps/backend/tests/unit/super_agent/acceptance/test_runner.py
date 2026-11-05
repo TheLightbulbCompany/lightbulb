@@ -104,12 +104,12 @@ def test_parse_scenarios():
         report.parse_scenarios("A99")
 
 
-async def test_missing_scenario_reports_not_implemented():
-    # Lane Q's a05_approval.py is not on this checkout: the runner says so instead of importing it.
-    assert report.resolve("a05_approval:a05") is None
+async def test_missing_scenario_reports_not_implemented(monkeypatch):
+    monkeypatch.setitem(report.SCENARIOS, "A5", ("Q", ("a99_nope:a99",)))
+    assert report.resolve("a99_nope:a99") is None
     result = await report.run_scenario("A5", FakeCtx())
     assert result.passed is False
-    assert result.evidence["reason"] == "not implemented (lane Q: a05_approval:a05)"
+    assert result.evidence["reason"] == "not implemented (lane Q: a99_nope:a99)"
     assert report.status("A5").startswith("not implemented (lane Q")
     assert report.status("A0") == "implemented"
 

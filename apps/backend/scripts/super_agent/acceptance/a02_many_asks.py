@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from core import tasks_schema as ts
 from scripts.super_agent.acceptance.ctx import Ctx, Result
 from scripts.super_agent.acceptance.o_lib import (
     ROUTER_REPLY_S,
@@ -25,12 +26,14 @@ async def a02(ctx: Ctx) -> Result:
     ask = await post(ctx, "sam", room_id, THREE_ASKS)
     tasks = await ctx.wait_for(lambda rows: _three(tasks_from(rows, ask["messageId"])), ROUTER_REPLY_S)
     rows = await ctx.tasks_rows(ctx.ws)
+    tasks = tasks or tasks_from(rows, ask["messageId"])  # fewer than three: report what the Router did make
     reply = [
         m
         for m in await messages(ctx, "sam", room_id)
         if (m.get("author") or {}).get("kind") == "agent" and m.get("taskRefs")
     ]
-    trig = next((t for t in rows_of(rows, "trigger") if t["triggerId"] == tasks[0]["triggerId"]), {})
+    ask_trigger = ts.trigger_id("chat", ask["messageId"])
+    trig = next((t for t in rows_of(rows, "trigger") if t["triggerId"] == ask_trigger), {})
     subs = {s["taskId"] for s in rows_of(rows, "subscription") if s.get("createdBy") == "router"}
     statuses = sorted(t["status"] for t in tasks)
     checks = {
@@ -47,4 +50,7 @@ async def a02(ctx: Ctx) -> Result:
     ctx.state["taskIds"] = [t["taskId"] for t in tasks]
     ctx.state["proposedTaskId"] = next((t["taskId"] for t in tasks if t["status"] == "proposed"), None)
     ctx.state["cardMessageId"] = reply[0]["messageId"] if reply else None
-    return Result(all(checks.values()), {"askMessageId": ask["messageId"], "statuses": statuses, **checks})
+    return Result(
+        all(checks.values()),
+        {"askMessageId": ask["messageId"], "statuses": statuses, "taskCount": len(tasks), **checks},
+    )

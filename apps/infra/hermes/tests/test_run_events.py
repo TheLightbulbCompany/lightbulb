@@ -99,3 +99,15 @@ def test_run_secret_never_lands_in_the_run_record(quiet_turn, threads, monkeypat
     server.handle_plugin(CREATE, "POST", AUTH, {**BODY, "identity": {**IDENTITY, "runSecret": "s3cr3t"}})
     assert "runSecret" not in runs.turn.RUNS[IDENTITY["runId"]]["identity"]
     assert threads[0].args[0]["runSecret"] == "s3cr3t"  # the thread's copy posts it (test above)
+
+
+def test_terminal_carries_the_results_files_and_no_media_line(quiet_turn, threads, monkeypatch, run_events):  # noqa: F811
+    monkeypatch.setattr(runs.turn, "_construct_agent", lambda *a, **k: Agent("Done.\nMEDIA:/x/agenda.docx"))
+    seen = []
+    monkeypatch.setattr(runs.turn, "task_result_media", lambda agent, task, out: seen.append((agent, task)) or (
+        "Done.", [{"attachmentId": "a1", "fileName": "agenda.docx", "contentType": "application/pdf"}]))
+    server.handle_plugin(CREATE, "POST", AUTH, {**BODY, "identity": {**IDENTITY, "runSecret": "s3cr3t"}})
+    threads[0].run_now()
+    sent = [b for _, b in run_events if b["kind"] == "terminal"][0]
+    assert seen == [(IDENTITY["agentId"], IDENTITY["taskId"])]
+    assert sent["output"] == "Done." and sent["attachments"][0]["fileName"] == "agenda.docx"

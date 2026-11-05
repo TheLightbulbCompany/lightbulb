@@ -342,7 +342,7 @@ async def deliver_input(ws: str, task_id: str, n: int, trigger_id: str) -> bool:
     att = await tasks_repo.get_attempt(ws, task_id, n)
     if blocked := await task_conversation.gate_input(ws, task_id, trig):
         await task_conversation.post_as_lightbulb(
-            ws, ts.task_room_id(task_id), text=blocked, event_id=f"task-gate:{task_id}:{trigger_id}"
+            ws, ts.task_room_id(task_id), text=blocked, event_id=f"task-gate:{task_id}:{trigger_id}", remember=False
         )
         return True
     text = await _input_text(ws, trigger_id)

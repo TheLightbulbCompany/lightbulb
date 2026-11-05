@@ -151,6 +151,7 @@ async def _admit_message(room_id: str, seq: int) -> None:
                 text=blocked,
                 event_id=f"task-gate:{task_id}:{trigger_id}",
                 thread_root=ref.get("threadRoot"),
+                remember=False,  # billing copy, not something the room said
             )
             put_metric("admission.outcome", dimensions={"outcome": "gated", "source": "chat"})
             return

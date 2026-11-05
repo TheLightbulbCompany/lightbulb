@@ -559,6 +559,7 @@ _ATTR_FIELDS = {
     "routed_to": "routedTo",
     "forwarded_from": "forwardedFrom",
     "kind": "kind",
+    "automation_id": "automationId",
 }
 
 
@@ -587,6 +588,7 @@ class CanonicalMessage(ContractModel):
     routed_to: dict[str, str] | None = None
     forwarded_from: dict[str, str] | None = None
     kind: str | None = None
+    automation_id: str | None = None  # the automation an `automation_confirm` card turns on (lane A)
     # The agents this message addresses -- a `user_request` dispatch target
     # (an @mention, a name-addressed open, or a DM), not a `room_event` ambient
     # candidate: those are merely eligible for Jev to route, and Jev picks at

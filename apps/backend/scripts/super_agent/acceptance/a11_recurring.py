@@ -112,6 +112,8 @@ async def a11(ctx: Ctx) -> Result:
         "confirm_card_posted_with_automation_id": confirm is not None and sid in str(confirm),
         "tz_is_sams_zone": tz == await user_repo.get_timezone(ctx.users["sam"]),
         "router_text_has_no_clock_time": ":" not in router_text and " am" not in router_text.lower(),
+        "deliver_to_is_this_room": draft.get("deliverTo")
+        == f"room:{room_id}",  # a real room id (API 400s room_not_found)
         "yes_leaves_draft": still_draft,
         "temporal_schedule_exists_and_runs": paused_after_activate is False,
         "next_run_is_monday_nine": monday_nine,

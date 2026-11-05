@@ -39,7 +39,7 @@ async def post(ctx: Any, user: str, room_id: str, text: str, *, thread_root: str
         "clientMessageId": str(uuid.uuid4()),
         "text": text,
         "mentions": [{"kind": "agent", "id": m} for m in mentions],
-        "replyToMessageId": None,
+        "replyToMessageId": thread_root,  # a real thread reply names its parent and its root
         "threadRootMessageId": thread_root,
     }
     r = await api.post(f"/api/v1/messaging/rooms/{room_id}/messages", json=body)

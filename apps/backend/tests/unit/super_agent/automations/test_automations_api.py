@@ -60,10 +60,18 @@ def api(table, monkeypatch):
         patch("core.services.chat_gate.gate_chat", AsyncMock(return_value={"blocked": False})) as gate,
         patch("core.repositories.user_repo.get_timezone", AsyncMock(return_value="Europe/London")),
         patch("core.repositories.messaging_repo.get_member", AsyncMock(return_value={"id": "member"})),
+        patch("core.services.messaging.require_room_member", AsyncMock(return_value=({}, {}))) as room_door,
     ):
         billing.get_by_owner_id = AsyncMock(return_value={"subscription_status": "active"})
         yield SimpleNamespace(
-            client=TestClient(app), app=app, temporal=temporal, calls=calls, flags=flags, gate=gate, billing=billing
+            client=TestClient(app),
+            app=app,
+            temporal=temporal,
+            calls=calls,
+            flags=flags,
+            gate=gate,
+            billing=billing,
+            room_door=room_door,
         )
     app.dependency_overrides.pop(get_current_user, None)
 
@@ -89,6 +97,20 @@ async def _active(api, **over):
 
 
 # --- the switch, create, view ----------------------------------------------------------------------------
+
+
+async def test_deliver_room_must_be_a_room_the_saver_sits_in(api):
+    """Gate run 2 (A11): an automation saved with `room:acc-a1-…` made every run fail its Router batch."""
+    from core.services.messaging import ApiProblem
+
+    api.room_door.side_effect = ApiProblem("ROOM_NOT_FOUND", "Room not found.")
+    r = _as(api).post(BASE, json=_IN | {"deliverTo": "room:acc-a1-66ac88"})
+    assert r.status_code == 400 and r.json()["detail"]["code"] == "room_not_found"
+    api.room_door.side_effect = None
+    view = await _draft(api)
+    api.room_door.side_effect = ApiProblem("ROOM_NOT_FOUND", "Room not found.")
+    r = _as(api).patch(f"{BASE}/{view['id']}", json={"deliverTo": "room:nope", "version": view["version"]})
+    assert r.status_code == 400 and r.json()["detail"]["code"] == "room_not_found"
 
 
 async def test_routes_404_when_switch_off(api):

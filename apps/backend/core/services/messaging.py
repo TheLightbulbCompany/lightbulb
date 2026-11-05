@@ -1490,18 +1490,23 @@ def runtime_operation(item: dict[str, Any]) -> RuntimeOperation:
 
 
 async def load_agent_roster(owner_id: str) -> list[dict[str, Any]]:
-    """Read the current canonical Paperclip/OpenClaw roster."""
+    """Read the workspace's agent roster: the super-agent ``AGENT#`` registry when the workspace's switch is
+    on (``super_agent_flags.flags_for``), else the canonical Paperclip roster. Same shape and errors either way."""
     from core.repositories.paperclip_repo import PaperclipRepo
+    from core.services import agent_registry, super_agent_flags
     from core.services.paperclip_admin_client import shared_admin_client
     from core.services.paperclip_openclaw_pairing import fetch_paperclip_agents_for_owner
 
     try:
-        rows = await fetch_paperclip_agents_for_owner(
-            owner_id=owner_id,
-            repo=PaperclipRepo(table_name="paperclip-companies"),
-            admin_client=shared_admin_client(),
-            raise_on_unavailable=True,
-        )
+        if await super_agent_flags.flags_for(owner_id):
+            rows = await agent_registry.roster(owner_id)
+        else:
+            rows = await fetch_paperclip_agents_for_owner(
+                owner_id=owner_id,
+                repo=PaperclipRepo(table_name="paperclip-companies"),
+                admin_client=shared_admin_client(),
+                raise_on_unavailable=True,
+            )
     except Exception as exc:
         raise ApiProblem(
             "RUNTIME_UNAVAILABLE",

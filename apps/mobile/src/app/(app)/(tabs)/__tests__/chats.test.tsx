@@ -161,7 +161,8 @@ jest.mock("expo-clipboard", () => ({ setStringAsync: (text: string) => mockSetSt
 // marks the room it has open. One hoisted object, never a fresh literal.
 const mockMarkRead = jest.fn(async (_roomId: string, _cursor: { lastReadSeq: number }) => ({}));
 const mockLive = { messaging: { markRead: mockMarkRead } };
-jest.mock("../../../../providers/live-events", () => ({ useSuperAgent: () => false, useLiveEvents: () => mockLive }));
+let mockSuperAgent = false;
+jest.mock("../../../../providers/live-events", () => ({ useSuperAgent: () => mockSuperAgent, useLiveEvents: () => mockLive }));
 
 const mockSummary = (over: Partial<RoomSummary>): RoomSummary => ({
   roomId: "r1",
@@ -263,8 +264,9 @@ jest.mock("../../../../lib/rooms", () => ({
     ...mockRoomsState,
   }),
 }));
-let mockAgents: { id: string; name: string; status?: string; seeded?: boolean; origin?: string }[] = [];
+let mockAgents: { id: string; name: string; status?: string; seeded?: boolean; origin?: string; role?: string }[] = [];
 jest.mock("../../../../lib/workspaceRoster", () => ({
+  frontAgentOf: jest.requireActual("../../../../lib/workspaceRoster").frontAgentOf,
   useWorkspaceRoster: () => ({ agents: mockAgents, members: [{ userId: "user-b", name: "Leo" }] }),
 }));
 let mockLiveLines: Record<string, string> = {};
@@ -331,6 +333,7 @@ describe("Chats", () => {
     mockOrgId = `org-${++mockOrgSeq}`;
     mockFocused = true;
     mockRoomsState = {};
+    mockSuperAgent = false;
     mockSessions = [];
     mockLiveLines = {};
     mockAgents = [
@@ -342,6 +345,25 @@ describe("Chats", () => {
 
   afterEach(() => {
     jest.restoreAllMocks();
+  });
+
+  // Super-agent: one voice. A DM with an agent other than the front one files under a collapsed Specialists row.
+  it("super-agent on: specialist DMs sit under a collapsed Specialists row; off, the list is today's", async () => {
+    mockSuperAgent = true;
+    mockAgents = [{ id: "agent-lb", name: "Lightbulb", role: "ceo", origin: "Starter" }, ...mockAgents];
+    await render(<ChatsTab />);
+    const specialists = await screen.findByLabelText("Specialists · 1");
+    expect(screen.queryByTestId("chat-room-r2")).toBeNull();
+    expect(screen.getByTestId("chat-room-r6")).toBeTruthy(); // a group DM is not a specialist's
+    await fireEvent.press(specialists);
+    expect(await screen.findByTestId("chat-room-r2")).toBeTruthy();
+  });
+
+  it("super-agent on but no front agent known yet: today's list", async () => {
+    mockSuperAgent = true;
+    await render(<ChatsTab />);
+    expect(await screen.findByTestId("chat-room-r2")).toBeTruthy();
+    expect(screen.queryByTestId("chat-specialists")).toBeNull();
   });
 
   it("merges rooms and live sessions into one list, newest first", async () => {

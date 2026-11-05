@@ -26,6 +26,10 @@ log = logging.getLogger("bridge")
 
 EFFECTS_PATH = f"/api/v1/internal/runtime/{OWNER}/effects"
 EXTERNAL_KINDS = ("mail.send", "text.send", "app.publish", "pr.merge", "purchase", "provision", "a2a.send")
+MULTIPLE = "multiple"  # classify(): more than one external action in one command
+SPLIT_THEM = "One external action per command; split them and run each on its own."
+_WRAPPERS = {"env", "nohup", "time", "exec", "command", "builtin", "sudo", "timeout", "doas"}
+_SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
 _DECISIONS = {"proceed", "replay", "refuse", "needs_approval", "denied"}
 UNAVAILABLE = "Lightbulb couldn't check this action (effects service unavailable). Do not retry it this turn; say so."
 _HEREDOC_OPEN = re.compile(r"<<-?\s*(['\"]?)(\w+)\1")
@@ -64,16 +68,66 @@ def _segments(command: str) -> list[tuple[list[str], str | None]]:
                 i += 1
             i += 1  # the terminator
             body = "\n".join(collected)
-        for piece in re.split(r"&&|\|\||;", line):
-            parts = [p.strip() for p in piece.split("|")]
-            for k, part in enumerate(parts):
-                try:
-                    argv = shlex.split(part)
-                except ValueError:
-                    argv = part.split()
-                if argv:
-                    out.append((argv, body if k == 0 else None))
+        for argv, first in _commands(line):
+            argv = _unwrap(argv)
+            if not argv:
+                continue
+            if os.path.basename(argv[0]) in _SHELLS and "-c" in argv[1:]:
+                inner = argv[argv.index("-c") + 1 :]
+                if inner:  # `bash -c "<script>"`: the script is what runs
+                    out.extend(_segments(inner[0]))
+                continue
+            out.append((argv, body if first else None))
     return out
+
+
+def _commands(line: str) -> list[tuple[list[str], bool]]:
+    """The simple commands of one line, quote-aware: `(argv, first_in_its_pipeline)` per `;`, `&&`, `||`, `|`."""
+    try:
+        lex = shlex.shlex(line, posix=True, punctuation_chars=";|&")
+        lex.whitespace_split = True
+        tokens = list(lex)
+    except ValueError:
+        tokens = line.split()
+    out: list[tuple[list[str], bool]] = []
+    cur: list[str] = []
+    first = True
+    for t in tokens:
+        if t in (";", "&&", "||", "|", "&", ";;"):
+            if cur:
+                out.append((cur, first))
+            cur, first = [], t != "|"
+        else:
+            cur.append(t)
+    if cur:
+        out.append((cur, first))
+    return out
+
+
+def _unwrap(argv: list[str]) -> list[str]:
+    """Drop `env`, `VAR=x`, `timeout 30`, `nohup`, `sudo -u x`, `time`, `exec` wrappers in front of the real command."""
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        base = os.path.basename(a)
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", a):
+            i += 1
+        elif base in ("timeout",):
+            i += 1
+            while i < len(argv) and argv[i].startswith("-"):
+                i += 2 if argv[i] in ("-s", "--signal", "-k", "--kill-after") else 1
+            i += 1  # the duration
+        elif base in ("sudo", "doas"):
+            i += 1
+            while i < len(argv) and argv[i].startswith("-"):
+                i += 2 if argv[i] in ("-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U") else 1
+        elif base in _WRAPPERS:
+            i += 1
+            while i < len(argv) and argv[i].startswith("-"):
+                i += 1
+        else:
+            break
+    return argv[i:]
 
 
 def _flags(argv: list[str], *, valued: set[str], bare: set[str]) -> tuple[dict[str, str], set[str], list[str]]:
@@ -138,10 +192,9 @@ def classify(tool: str, args: dict | None, *, agent_id: str | None = None) -> Ef
         found = [c for argv, body in _segments(command) if (c := _classify_shell(argv, body, agent_id))]
         if not found:
             return None
-        first = found[0]
-        if len(found) > 1:  # two effects in one command: one approval can't cover both; the Worker splits them
-            return EffectCall(first.kind, first.operands, executor_ok=False)
-        return first
+        if len(found) > 1:  # one approval can't cover two actions: refused locally, the backend is never asked
+            return EffectCall(MULTIPLE, {"kinds": [c.kind for c in found]}, executor_ok=False)
+        return found[0]
     if tool == "request_purchase":
         keep = {k: args[k] for k in ("merchant", "url", "amount", "why") if k in args}
         return EffectCall("purchase", keep, executor_ok=False)
@@ -172,13 +225,25 @@ def _post(path: str, body: dict, *, timeout_s: float = 8.0) -> tuple[int, dict]:
             return exc.code, {}
 
 
+_EXIT_RE = re.compile(r"\b(?:exit(?:ed with)?(?: code| status)?|return(?:ed|code))\s*[:=]?\s*(\d+)\b", re.IGNORECASE)
+
+
 def _failed(result) -> bool:
+    """A tool error object, or a plain-text terminal result that reports a non-zero exit."""
     if isinstance(result, str) and result.lstrip().startswith("{"):
         try:
             result = json.loads(result)
         except ValueError:
             return False
-    return isinstance(result, dict) and bool(result.get("error"))
+    if isinstance(result, dict):
+        if result.get("error"):
+            return True
+        code = result.get("exit_code", result.get("exitCode", result.get("returncode")))
+        return isinstance(code, int) and code != 0
+    if isinstance(result, str):
+        codes = [int(m.group(1)) for m in _EXIT_RE.finditer(result)]
+        return bool(codes) and codes[-1] != 0
+    return False
 
 
 class EffectsCallback:
@@ -207,6 +272,8 @@ class EffectsCallback:
         Decision = self._decision()
         if call is None:
             return Decision.proceed()
+        if call.kind == MULTIPLE:
+            return Decision.refuse(SPLIT_THEM)
         idem = f"{self.task_id}:{self.attempt}:{ref.tool_call_id}"
         body = {
             "taskId": self.task_id,
@@ -236,7 +303,10 @@ class EffectsCallback:
                 _exit(70)  # the VM dies with the intent recorded and the tool not run
             return Decision.proceed()
         if decision == "replay":
-            return Decision.replay(str(data.get("result") or ""))
+            result = str(data.get("result") or "")
+            if result.startswith("refused:"):  # it never happened: a replay would read as success
+                return Decision.refuse(f"That exact action was refused earlier ({result.removeprefix('refused:')}). Do not retry it this turn.")
+            return Decision.replay(result)
         if decision == "refuse":
             return Decision.refuse(str(data.get("message") or "Lightbulb refused this action."))
         qid = data.get("questionId") or "a question"

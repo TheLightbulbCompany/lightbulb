@@ -96,9 +96,34 @@ def test_classify_tools():
     assert send == EffectCall("a2a.send", {"to": "sam-mac", "text": "hi"}, executor_ok=False)
 
 
-def test_two_effects_in_one_command_have_no_executor():
+def test_two_effects_in_one_command_are_multiple():
     call = classify("terminal", {"command": f"{MAIL}\n{MAIL}"}, agent_id=AGENT)
-    assert call.kind == "mail.send" and not call.executor_ok
+    assert call == EffectCall(effects.MULTIPLE, {"kinds": ["mail.send", "mail.send"]}, executor_ok=False)
+    both = classify("terminal", {"command": "gh pr merge 7 -R a/b && lightbulb app publish --app x"}, agent_id=AGENT)
+    assert both.kind == effects.MULTIPLE and both.operands == {"kinds": ["pr.merge", "app.publish"]}
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "env FOO=1 lightbulb-mail.sh send --to a@b.c --subject S <<'EOF'\nhi\nEOF",
+        "FOO=1 BAR=2 lightbulb-mail.sh send --to a@b.c --subject S <<'EOF'\nhi\nEOF",
+        "timeout 30 lightbulb-mail.sh send --to a@b.c --subject S <<'EOF'\nhi\nEOF",
+        "timeout -s KILL 30 lightbulb-mail.sh send --to a@b.c --subject S <<'EOF'\nhi\nEOF",
+        "nohup lightbulb-mail.sh send --to a@b.c --subject S <<'EOF'\nhi\nEOF",
+        "sudo -u agent lightbulb-mail.sh send --to a@b.c --subject S <<'EOF'\nhi\nEOF",
+        "bash -c 'lightbulb-mail.sh send --to a@b.c --subject S'",
+        "sh -c \"cd /w && lightbulb-mail.sh send --to a@b.c --subject S\"",
+    ],
+)
+def test_wrappers_and_sh_c_are_seen_through(command):
+    call = classify("terminal", {"command": command}, agent_id=AGENT)
+    assert call is not None and call.kind == "mail.send" and call.operands["to"] == "a@b.c"
+
+
+def test_sh_c_with_two_actions_is_multiple():
+    call = classify("terminal", {"command": "bash -c 'gh pr merge 7 -R a/b; lightbulb app publish --app x'"}, agent_id=AGENT)
+    assert call.kind == effects.MULTIPLE
 
 
 def test_operands_hash_is_stable_and_specific():
@@ -237,3 +262,35 @@ def test_no_faults_no_exit(backend):
     cb.before_tool(ref)
     cb.tool_committed(ref, "sent", "done")
     assert backend["exits"] == []
+
+
+def test_two_effects_in_one_command_refused_without_backend(backend):
+    cb = _cb()
+    decision = cb.before_tool(Ref("terminal", {"command": f"{MAIL}\n{MAIL}"}))
+    assert decision.kind == "refuse" and "split" in decision.message.lower()
+    assert backend["calls"] == [] and cb.outcome is None
+
+
+def test_replay_of_a_refusal_is_refused(backend):
+    backend["answers"] = [(200, {"decision": "replay", "result": "refused:rate_limited"})]
+    decision = _cb().before_tool(Ref("terminal", {"command": MAIL}))
+    assert decision.kind == "refuse" and "rate_limited" in decision.message
+
+
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    [
+        ("sent\n[exit code 0]", "done"),
+        ("HTTP 500: boom\n[exit code 1]", "unknown"),
+        ("Command exited with code 2", "unknown"),
+        ('{"stdout": "", "exit_code": 1}', "unknown"),
+        ('{"stdout": "sent", "exit_code": 0}', "done"),
+        ("sent", "done"),
+    ],
+)
+def test_plain_text_exit_codes_decide_the_disposition(backend, result, expected):
+    cb = _cb()
+    ref = Ref("terminal", {"command": MAIL})
+    cb.before_tool(ref)
+    cb.tool_committed(ref, result, None)
+    assert backend["calls"][-1][1]["disposition"] == expected

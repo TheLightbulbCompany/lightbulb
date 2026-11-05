@@ -136,6 +136,45 @@ def _curate_when_idle() -> None:
         save_profile(agent_id)  # change-only: a no-op unless the seed or the run wrote
 
 
+def curate_agent(agent_id: str) -> tuple[int, dict]:
+    """``POST /internal/v1/curate {"agentId"}`` (spec 07 §3.5; lane V5b): the backend's
+    ``curate_specialist`` Activity asks the WORKSPACE VM to run Hermes's skill curator for one
+    specialist once its learning merges landed. A task VM is refused before this (server.py: the
+    curator never runs in a Worker). Counted as a turn while it runs, like ``_curate_when_idle``,
+    so a roll or recycle holds off mid-pass; ``busy`` (409) while a turn or delegation is live --
+    the Activity retries, and the VM's own idle pass curates anyway; ``recycling`` (503) under a
+    refusal hold. ``ensure_profile`` first: the merge bumped ``.revision``, so the merged files
+    come down before the curator looks at them."""
+    if not reserve_turn():
+        return 503, {"error": "recycling"}
+    try:
+        from bridge import followups  # followups imports this module
+
+        with _busy_lock:
+            live = _busy != 1 or followups.busy()
+        if live:
+            return 409, {"error": "busy"}
+        try:
+            from agent import curator
+        except ImportError:
+            return 200, {"ran": False, "changed": False}
+        with sync.profile_lock(agent_id):
+            restore_profile(agent_id)
+            RESTORED.add(agent_id)
+            sync.ensure_profile(agent_id)
+            ran = False
+            with _hermes_home_scope(agent_id):
+                if curator.should_run_now():
+                    curator.run_curator_review(synchronous=True)
+                    ran = True
+            before = dict(sync._MTIMES.get(agent_id, {}))
+            save_profile(agent_id)  # change-only: a no-op unless the seed or the review wrote
+            changed = sync._MTIMES.get(agent_id, {}) != before
+        return 200, {"ran": ran, "changed": changed}
+    finally:
+        release_turn()
+
+
 def _end_turn() -> None:
     """A turn's last step: curate if it is the last live turn, then drop its busy count."""
     try:

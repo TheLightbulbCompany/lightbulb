@@ -52,7 +52,7 @@ def test_keys():
     assert ts.goal_sk("g1") == "GOAL#g1"
     assert ts.creation_sk("c1") == "CAP#c1"
     assert ts.task_workflow_id(WS, TASK) == f"task:{WS}:{TASK}"
-    assert ts.task_room_id(TASK) == f"task:{TASK}"
+    assert ts.task_room_id(TASK) == str(uuid.uuid5(ts.TASK_NS, f"room:{TASK}"))
     assert ts.status_key(WS, "working") == "org_abc#working"
 
 

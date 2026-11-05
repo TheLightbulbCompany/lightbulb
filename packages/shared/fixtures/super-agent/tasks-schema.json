@@ -166,7 +166,7 @@
     "taskWorkflowId": "task:{ws}:{taskId}",
     "routerWorkflowId": "router:{ws}",
     "scheduleWorkflowId": "sched:{ws}:{scheduleId}",
-    "taskRoomId": "task:{taskId}",
+    "taskRoomId": "uuid5(task, 'room:{taskId}')",
     "routerLaneKey": "u:{sha256(userId)[:16]}"
   },
   "triggerIds": {

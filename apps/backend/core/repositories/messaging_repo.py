@@ -1006,6 +1006,7 @@ async def create_message(
     in_reply_to: str | None = None,
     progress: bool = False,
     post_reason: str | None = None,
+    attrs: dict | None = None,
     author_member_check: bool = True,
 ) -> tuple[dict, bool]:
     """Strong-read ``META.lastSeq`` then conditionally transact: bump META, put
@@ -1097,6 +1098,9 @@ async def create_message(
             if post_reason:
                 # A feed post's "Why I created this post" line.
                 message["postReason"] = post_reason
+            if attrs:
+                # Super-agent message attrs (taskRefs, specialist, routedTo, forwardedFrom, kind); absent on legacy posts.
+                message.update(attrs)
             if agent_hop is not None:
                 # The agent-reply cap reads the trigger's hop (messaging.create_agent_message).
                 message["agentHop"] = agent_hop

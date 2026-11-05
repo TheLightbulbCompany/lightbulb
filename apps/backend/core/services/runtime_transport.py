@@ -21,6 +21,7 @@ import concurrent.futures
 import hashlib
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -63,6 +64,32 @@ _NOT_READY_SNIPPETS = ("not ready", "not in valid state", "is still creating", "
 #: cold-start ingress), and that thread must never sit in the default executor that DynamoDB
 #: and every other ``to_thread`` user share.
 _EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=16, thread_name_prefix="agentcore-invoke")
+
+
+class TaskSessionRefused(ValueError):
+    """A call with ``task_id`` that is not a runs-v1 call for that task's own task run."""
+
+
+#: The bridge's own runs-v1 routes (``bridge/runs.py`` create + ``_RUN_RE``), matched whole: no
+#: prefix test a ``/runs/../`` path could slip through.
+_RUNS_V1_RE = re.compile(r"^/internal/v1/runs(/[0-9a-f-]{36}(/stop|/steer)?)?$")
+
+
+def _check_task_call(path: str, json_body: Any, task_id: str) -> None:
+    """Only a runs-v1 call whose identity is THIS task's run with ``session.kind == "task"`` may
+    reach a task session. That kind is what a bridge without task mode refuses, so a task session
+    is never asked to run anything that would restore and write ``<owner>/hermes/`` -- the 16 Sep
+    two-writers corruption (module docstring). Everything else stays on the workspace session."""
+    identity = json_body.get("identity") if isinstance(json_body, dict) else None
+    session = identity.get("session") if isinstance(identity, dict) else None
+    if (
+        _RUNS_V1_RE.fullmatch(path)
+        and isinstance(session, dict)
+        and session.get("kind") == "task"
+        and identity.get("taskId") == task_id  # the wire identity is camelCase (RunIdentity.to_wire)
+    ):
+        return
+    raise TaskSessionRefused(f"task session refused for {path}")
 
 
 @dataclass(frozen=True)
@@ -137,10 +164,15 @@ async def request(
     to pass in. ``content`` is a raw body for proxies that forward bytes verbatim (webhooks);
     it wins over ``json_body``.
 
+    With ``task_id``, only a runs-v1 call for that task's task run is sent (:func:`_check_task_call`);
+    anything else raises :class:`TaskSessionRefused` before any wake or invoke.
+
     Failures are httpx-shaped — ``httpx.ReadTimeout`` when the gateway did not answer in time,
     ``httpx.ConnectError`` for anything else in the way — so a caller's existing
     ``except httpx.…`` covers a microVM exactly as it used to cover a task IP.
     """
+    if task_id is not None:
+        _check_task_call(path, None if content is not None else json_body, task_id)
     return await _request_agentcore(
         container,
         path,

@@ -467,3 +467,18 @@ describe("DatabaseStack — workspace join links", () => {
     });
   });
 });
+
+describe("DatabaseStack — containers table", () => {
+  test("per-task AgentCore session rows expire by TTL (session_ttl) in dev; prod table unchanged", () => {
+    // Only `__session__#<owner>#task#<task>` rows carry session_ttl (container_repo): workspace
+    // rows and container rows never do, so the TTL is inert for them.
+    buildStack("dev").hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: "lightbulb-dev-containers",
+      TimeToLiveSpecification: { AttributeName: "session_ttl", Enabled: true },
+    });
+    const prod = Object.values(buildStack("prod").findResources("AWS::DynamoDB::Table")).find(
+      (t: any) => t.Properties.TableName === "lightbulb-prod-containers",
+    ) as any;
+    expect(prod.Properties.TimeToLiveSpecification).toBeUndefined();
+  });
+});

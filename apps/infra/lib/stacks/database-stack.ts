@@ -3,6 +3,7 @@ import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as kms from "aws-cdk-lib/aws-kms";
 import * as rds from "aws-cdk-lib/aws-rds";
+import { superAgentEnabled } from "../super-agent";
 import { tablePrefix } from "../table-names";
 import { Construct } from "constructs";
 
@@ -122,6 +123,10 @@ export class DatabaseStack extends cdk.Stack {
 
     this.containersTable = createTable("ContainersTable", "containers", {
       partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
+      // Only per-task AgentCore session rows (`__session__#<owner>#task#<task>`, super-agent
+      // per-task VMs) carry it: a task's warm estimate is dead 8 h after its claim. Behind the
+      // super-agent gate, so the prod table's CloudFormation does not change.
+      ...(superAgentEnabled(props.environment) ? { timeToLiveAttribute: "session_ttl" } : {}),
     });
     this.containersTable.addGlobalSecondaryIndex({
       indexName: "status-index",

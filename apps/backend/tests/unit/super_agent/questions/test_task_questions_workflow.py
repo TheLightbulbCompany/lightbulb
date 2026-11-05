@@ -186,6 +186,21 @@ async def test_stop_cancels_open_questions(temporal_env, fakes):
         assert "record_answer" not in fakes.names()
 
 
+async def test_resolve_cancels_open_questions(temporal_env, fakes):
+    """Audit #5: a resolve (not only Stop) leaves no open Question behind, cancelled under the resolver's id before
+    the transition. Its history is histories/O-cancel-questions-on-end-v1.json (test_replay)."""
+    from core.temporal.types import ActionRequest
+
+    async with worker(temporal_env, fakes) as q:
+        h = await _start(temporal_env, q)
+        await _until(lambda: "relay_question" in fakes.names())
+        await h.execute_update(TaskWorkflow.resolve, ActionRequest(SAM))
+        await h.result()
+        assert fakes.args("cancel_open_questions") == [(WS, TID, SAM, "resolved")]
+        assert fakes.names().index("cancel_open_questions") < fakes.names().index("transition")
+        assert fakes.args("transition")[-1] == (WS, TID, "resolved", "resolved")
+
+
 async def test_answer_after_stop_refused(temporal_env, fakes):
     async with worker(temporal_env, fakes) as q:
         h = await _start(temporal_env, q)

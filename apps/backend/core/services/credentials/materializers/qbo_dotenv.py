@@ -105,6 +105,22 @@ def write(owner_id: str, provider_key: str, credential: dict) -> str:
         # fail the connect loudly rather than write a store that cannot work.
         raise ValueError("quickbooks: callback carried no realmId; cannot identify the company")
 
+    if credential.get("custody") == "backend":
+        # Spec 13: the backend refreshes; the server (brokered-token patch) reads the access token
+        # the bridge writes into this store each turn. No refresh token, no client secret here.
+        app = run_sync(platform_oauth_app_store.get(p.oauth.platform_app))
+        if not app or not app.get("client_id"):
+            raise ValueError(f"quickbooks: platform OAuth app {p.oauth.platform_app!r} is unseeded")
+        body = _render(
+            {
+                "QUICKBOOKS_CLIENT_ID": app["client_id"],
+                "QUICKBOOKS_REALM_ID": realm_id,
+                "QUICKBOOKS_ENVIRONMENT": _intuit_environment(),
+            }
+        )
+        atomic_write(_store_path(owner_id), body, mode=0o600)
+        return realm_id
+
     app = run_sync(platform_oauth_app_store.get(p.oauth.platform_app))
     if not app or not app.get("client_secret"):
         raise ValueError(

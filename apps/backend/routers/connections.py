@@ -1255,6 +1255,10 @@ async def oauth_callback(
             # wiring succeeds.
             custody = await _connect_custody(owner_id, p)
             row_hint = {"custody": custody} if custody else None
+            if custody:
+                # Carried on the credential so every materialization (this one, a reprovision
+                # from the retained secret) writes the access-token-free form.
+                credential = {**credential, "custody": custody}
             if _retains_secret(p, row_hint):
                 await integration_secret_store.put(owner_id, prov, credential)
             try:

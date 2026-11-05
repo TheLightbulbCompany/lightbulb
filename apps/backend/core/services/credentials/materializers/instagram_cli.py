@@ -67,13 +67,18 @@ def write(owner_id: str, provider_key: str, credential: dict) -> str:
     # against a missing script.
     atomic_write(_skill_dir(owner_id) / "token.sh", _TOKEN_SCRIPT.read_bytes(), mode=0o700)
 
+    brokered = credential.get("custody") == "backend"
     creds = {
-        "access_token": token,
+        # Spec 13: under backend custody the bridge fills the vended token in locally each turn;
+        # token.sh then only prints it (the backend renews within its 30-day window).
+        "access_token": "" if brokered else token,
         # Prefer the Graph-reported id; fall back to the exchange's app-scoped id.
         "user_id": str(me.get("user_id") or credential.get("provider_user_id") or ""),
         "username": username,
-        "token_expiry": credential.get("token_expiry", ""),
+        "token_expiry": "" if brokered else credential.get("token_expiry", ""),
     }
+    if brokered:
+        creds["custody"] = "backend"
     atomic_write(_skill_dir(owner_id) / "credentials.json", json.dumps(creds, indent=2).encode())
     return username
 

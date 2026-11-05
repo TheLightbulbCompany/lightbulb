@@ -158,8 +158,15 @@ async def get_with_expiry(owner_id: str, provider_key: str) -> tuple[str, int]:
         row = await integrations_repo.get(owner_id, provider_key)
         if not row or row.get("status", "connected") != "connected":
             raise ReconnectRequired(provider_key)
+        # A rollback (custody -> actor) may have landed between the unleased read and the lease:
+        # the VM owns the grant again, and X/QuickBooks refresh tokens are single-use.
+        if registry.refresh_owner_for(provider, row) != "backend":
+            raise ValueError(f"{provider_key} is no longer backend-refreshed")
         credential = await integration_secret_store.get(owner_id, provider_key)
-        if not credential or not credential.get("access_token"):
+        # A cut-over QuickBooks grant is a refresh token alone (their store never held an access
+        # token): refresh it rather than calling it unusable.
+        refreshable = row.get("custody") == "backend" and (credential or {}).get("refresh_token")
+        if not credential or not (credential.get("access_token") or refreshable):
             await _mark_reconnect(owner_id, provider_key, "no_access_token")
             raise ReconnectRequired(provider_key)
         if _expires_at(credential) is None:

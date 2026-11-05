@@ -436,7 +436,9 @@ class Task(_Row):
     attempt_count: int = 0
     usage: Usage | None = None
     resolved_at: str | None = None
-    a2a_task_id: str | None = None
+    # Explicit: `to_camel` would make it `a2ATaskId`; the wire name everywhere else (the `a2a:{a2aTaskId}` trigger
+    # id, lane Q's A2A admission) is `a2aTaskId`.
+    a2a_task_id: str | None = Field(None, alias="a2aTaskId")
     ws_channel: str | None = None
     proposal_reason: str | None = None  # why the Router proposed instead of starting (G18)
     stop_requested_by: str | None = None  # who pressed Stop (attributes the stop)

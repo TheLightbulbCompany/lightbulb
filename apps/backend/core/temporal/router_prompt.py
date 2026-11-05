@@ -44,6 +44,7 @@ work but carries no task card started nothing: if the person asks for it (again)
 """
 
 FALLBACK = "I couldn't get to this, ask me again."
+PARTIAL = "Some of this couldn't start; ask me again for the rest."
 
 _TEXT_MAX = 2000
 _RECENT_LINE_MAX = 300  # a person's line under "Recent"

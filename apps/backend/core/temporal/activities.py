@@ -799,7 +799,11 @@ async def _apply(
             if blocked := await task_conversation.gate_input(ws, dec.task_id, trig):  # §14.10, like a start
                 sl["lines"].append(blocked)
                 continue
-            await temporal_client.signal_task_input(ws, dec.task_id, TaskInputRef(primary, "message"))
+            if (trig.get("routedTo") or {}).get("taskId") != dec.task_id:
+                # Once per trigger and task: a retried router_turn reads the routedTo it recorded and never
+                # signals again (the workflow dedupes in its run; this also covers a run that ended in between).
+                await temporal_client.signal_task_input(ws, dec.task_id, TaskInputRef(primary, "message"))
+                await tasks_repo.set_trigger_routed_to(ws, primary, {"taskId": dec.task_id})
             sl["passes"].append(dec.task_id)
             for tid in dec.trigger_ids:
                 routed_to.setdefault(tid, dec.task_id)
@@ -850,14 +854,18 @@ async def _apply(
                 failed.append(task_id)
                 continue
             started.append(task_id)
+    # Recorded for what did start, before any raise: a second failure never loses them, and apply_fallback sees a
+    # trigger whose cards are already posted.
+    for tid, task_id in routed_to.items():
+        if task_id in failed:
+            continue
+        await tasks_repo.set_trigger_routed_to(ws, tid, {"taskId": task_id})
+        if _thread_key(triggers[tid]):
+            await rules_activities.note_task_started(ws, _thread_key(triggers[tid]))  # rules (S6): did it yourself
     if failed:
         # After every other start went out: the Activity retries, and a retried start is a no-op for those
         # already running (USE_EXISTING), so the failed ones get another go instead of sitting queued.
         raise RuntimeError(f"start_task_workflow failed for {failed}")
-    for tid, task_id in routed_to.items():
-        await tasks_repo.set_trigger_routed_to(ws, tid, {"taskId": task_id})
-        if _thread_key(triggers[tid]):
-            await rules_activities.note_task_started(ws, _thread_key(triggers[tid]))  # rules (S6): did it yourself
     return RouterTurnOut(inp.batch_id, started, posted)
 
 
@@ -946,9 +954,9 @@ async def apply_fallback(ws: str, trigger_ids: list[str]) -> None:
     for tid in trigger_ids:
         trig = await tasks_repo.get_trigger(ws, tid)
         if trig and trig["admission"] == "respond":
-            await _deliver(
-                ws, trig, router_prompt.FALLBACK, event_id=f"router-fallback:{tid}", refs=None, remember=False
-            )
+            # Work already started for it (its ack and cards are posted): say only that the rest did not start.
+            line = router_prompt.PARTIAL if (trig.get("routedTo") or {}).get("taskId") else router_prompt.FALLBACK
+            await _deliver(ws, trig, line, event_id=f"router-fallback:{tid}", refs=None, remember=False)
 
 
 ACTIVITIES = [

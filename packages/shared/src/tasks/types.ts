@@ -107,7 +107,8 @@ export interface AnswerBody {
   text?: string;
   edits?: unknown;
   clientAnswerId: string;
-  expectVersion: number;
+  /** The question's version the answerer saw; omitted when unknown (the server still refuses a closed question). */
+  expectVersion?: number;
 }
 
 /** Message attrs Lightbulb sets on task messages (contracts-v2 §6; absent on every other message). */

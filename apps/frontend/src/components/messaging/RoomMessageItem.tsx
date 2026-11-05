@@ -3,7 +3,9 @@
 import { useMemo, type ReactElement, type ReactNode } from "react";
 import { MessageCircle } from "lucide-react";
 import type { Components, UrlTransform } from "react-markdown";
-import { sessionLabel, sessionStatus, type CardReply, type LocalSession } from "@lightbulb/shared";
+import { sessionLabel, sessionStatus, specialistLabel, type CardReply, type LocalSession } from "@lightbulb/shared";
+import { MessageRoutedTo, MessageTasks } from "@/components/tasks/MessageTasks";
+import { useSuperAgent } from "@/hooks/useLiveEvents";
 import { Button } from "@/components/ui/button";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
@@ -66,6 +68,10 @@ interface RoomMessageItemProps {
   menuExtras?: ReactNode;
   /** A person's colour in a session's chat (`personColor`), the same as in its terminal. */
   personColor?: string;
+  /** Super-agent: open a thread pane (task cards, "Sent to …"). */
+  onOpenTask?: (taskId: string) => void;
+  /** Super-agent: reactions by agents (Lightbulb's 👀 "saw this") are a receipt, not a toggle. */
+  isAgentId?: (id: string) => boolean;
 }
 
 /** A session chip is a reference, like a document link: it never messaged the session. */
@@ -82,7 +88,8 @@ function SessionCard({ sessionId, label, session, onOpen }: {
   </span>;
 }
 
-export function RoomMessageItem({ id, message, text, participant, currentUserId, actionable, inThread, collapsed, startEditing, onEditingClosed, replyCount, lastReplyAt, threadParticipants = [], workingNames = [], receipt, highlighted, mentionsViewer, markdown, urlTransform, quickReactions, reactionPending, reactionError, onToggleReaction, onOpenThread, onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, onCardReply, cardAnswer = null, cardsEnabled = true, sessions = [], onOpenSession, toolbarExtras, menuExtras, personColor }: RoomMessageItemProps): ReactElement {
+export function RoomMessageItem({ id, message, text, participant, currentUserId, actionable, inThread, collapsed, startEditing, onEditingClosed, replyCount, lastReplyAt, threadParticipants = [], workingNames = [], receipt, highlighted, mentionsViewer, markdown, urlTransform, quickReactions, reactionPending, reactionError, onToggleReaction, onOpenThread, onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, onCardReply, cardAnswer = null, cardsEnabled = true, sessions = [], onOpenSession, toolbarExtras, menuExtras, personColor, onOpenTask, isAgentId }: RoomMessageItemProps): ReactElement {
+  const superAgent = useSuperAgent();
   const cardReply = useMemo(() => onCardReply && actionable
     ? (replyText: string, clientMessageId: string) => onCardReply({ text: replyText, agentId: message.author.id, messageId: message.messageId, threadRootMessageId: message.threadRootMessageId, clientMessageId })
     : undefined, [onCardReply, actionable, message.author.id, message.messageId, message.threadRootMessageId]);
@@ -116,7 +123,10 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
       : participant ? <ParticipantAvatar participant={participant} showPresence={false} /> : <Identity name={name} avatarOnly size="default" />}
     <div className="room-message-content">
       {collapsed && timestamp && <time className="sr-only" dateTime={timestamp}>{time}</time>}
-      {!collapsed && <div className="room-message-byline">{participant
+      {!collapsed && <div className="room-message-byline">{superAgent && message.specialist
+        // A result posted for a specialist reads as the one front agent with its label (contracts-v2 §9).
+        ? <span className="font-semibold truncate" data-specialist={message.specialist}>{specialistLabel(message.specialist)}</span>
+        : participant
         ? <ParticipantProfile participant={participant} currentUserId={currentUserId} onMessage={onSelectParticipant} disabled={!actionable} />
         : <span className="font-semibold truncate" title={name}>{name}</span>}
         {message.author.kind === "agent" && <span className="room-agent-label">Agent</span>}
@@ -131,12 +141,19 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
         {message.sessionMentions.map((sessionId) => <SessionCard key={sessionId} sessionId={sessionId} label={message.sessionTargetLabels?.[sessionId]}
           session={sessions.find((item) => item.sessionId === sessionId)} onOpen={onOpenSession} />)}
       </div>}
-      {!message.deletedAt && <MessageTaskCard text={message.text} prose={message.author.kind === "agent"} />}
+      {!message.deletedAt && (superAgent && message.taskRefs?.length
+        ? <MessageTasks message={message} viewerId={currentUserId} onOpen={onOpenTask} />
+        : <MessageTaskCard text={message.text} prose={message.author.kind === "agent"} />)}
+      {!message.deletedAt && superAgent && message.routedTo && <MessageRoutedTo message={message} onOpen={onOpenTask}
+        onShowReply={() => document.getElementById(id)?.parentElement?.querySelector(`#${CSS.escape(id)} ~ article`)?.scrollIntoView({ block: "nearest", behavior: "smooth" })} />}
       {!message.deletedAt && <RoomDocumentCards text={message.text} />}
       {!message.deletedAt && <RoomAppLinks text={message.text} />}
       {!message.deletedAt && <RoomLinkPreviews text={message.text} />}
       {!message.deletedAt && onToggleReaction && appliedReactions.length > 0 && <div className="flex flex-wrap gap-1 mt-1" aria-label="Message reactions">
         {appliedReactions.map(([emoji, users]) => {
+          if (superAgent && isAgentId && users.every(isAgentId)) {
+            return <span key={emoji} role="img" className="inline-flex h-8 items-center gap-1 px-3 text-ui text-muted-foreground" aria-label={emoji === "👀" ? "Lightbulb saw this" : `Lightbulb reacted ${emoji}`}>{emoji}</span>;
+          }
           const selected = users.includes(currentUserId);
           return <Button key={emoji} type="button" size="sm" variant={selected ? "secondary" : "ghost"}
             aria-label={`${selected ? "Remove" : "Add"} ${emoji} reaction${users.length ? `, ${users.length}` : ""}`} aria-pressed={selected}

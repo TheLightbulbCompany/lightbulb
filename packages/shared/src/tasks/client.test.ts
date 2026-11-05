@@ -10,6 +10,10 @@ function fakeApi() {
 }
 
 describe("tasks client: routes and bodies (wave2-README C15)", () => {
+  it("carries the workspace for cache keys", () => {
+    expect(createTasksClient(fakeApi().api, "org_1").cacheScope).toBe("org_1");
+  });
+
   it("list scopes", async () => {
     const { api, get } = fakeApi();
     const c = createTasksClient(api);
@@ -31,13 +35,14 @@ describe("tasks client: routes and bodies (wave2-README C15)", () => {
     await c.trace("t", 2);
     await c.get("t");
     await c.needsYou();
+    await c.questions("t");
     expect(post.mock.calls).toEqual([
       ["/tasks/t/stop", { version: 4 }],
       ["/tasks/t/questions/q/answer", { optionId: "approve", clientAnswerId: "c", expectVersion: 2 }],
       ["/tasks/start", { taskIds: ["a", "b"] }],
       ["/tasks/t/read", {}],
     ]);
-    expect(get.mock.calls.map((x) => (x as unknown[])[0])).toEqual(["/tasks/t/trace?attempt=2", "/tasks/t", "/needs-you"]);
+    expect(get.mock.calls.map((x) => (x as unknown[])[0])).toEqual(["/tasks/t/trace?attempt=2", "/tasks/t", "/needs-you", "/tasks/t/questions"]);
     expect([...get.mock.calls, ...post.mock.calls].flat().join(" ")).not.toMatch(/apply/);
   });
 });

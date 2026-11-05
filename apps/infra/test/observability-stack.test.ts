@@ -194,6 +194,12 @@ const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
   "gateway.running.count": [[]],
   // core/services/voice_calls.py sweep_calls_once; W84 binds the rollup.
   "voice.calls.open": [[]],
+  // core/services/watchdog.py (spec 11): tick_metric {Mode}; every repo write; cap refusals {Kind};
+  // the judge's Jev cost via jev.decide(metric_prefix="watchdog.judge"), no dims. P48-P51 bind the rollup.
+  "watchdog.tick": [["Mode"]],
+  "watchdog.write": [[]],
+  "watchdog.cap_hit": [["Kind"]],
+  "watchdog.judge.cost": [[]],
   "marketplace.path_traversal_attempt": [[]],
   // routers/paperclip_events.py receive_paperclip_event, before the push
   // decision. P30/P31/W82 bind one error_code each; W83 binds the rollup.
@@ -841,6 +847,44 @@ describe("ObservabilityStack", () => {
   // and had been failing on main since Phase 1. The heartbeat test above still
   // holds — Phase 1 kept gateway.running.count, renaming its alarm to
   // backend-liveness.
+});
+
+describe("ObservabilityStack — watchdog alarms P48-P51 (dev only, spec 11)", () => {
+  const dev = buildTemplate("dev");
+  const alarm = (id: string) =>
+    (Object.values(dev.findResources("AWS::CloudWatch::Alarm")) as any[])
+      .map((a) => a.Properties)
+      .find((p) => String(p.AlarmName).startsWith(`lightbulb-dev-${id}-`));
+
+  test("dev synth has P48-P51 with thresholds, all warn", () => {
+    const p48 = alarm("P48");
+    expect(p48).toMatchObject({
+      AlarmName: "lightbulb-dev-P48-watchdog-silent",
+      MetricName: "watchdog.tick",
+      Statistic: "SampleCount",
+      Threshold: 0,
+      Period: 900,
+      EvaluationPeriods: 1,
+      ComparisonOperator: "LessThanOrEqualToThreshold",
+      TreatMissingData: "breaching",
+    });
+    expect(alarm("P49")).toMatchObject({ MetricName: "watchdog.write", Threshold: 300, Period: 3600 });
+    expect(alarm("P50")).toMatchObject({ MetricName: "watchdog.cap_hit", Threshold: 0, Period: 3600 });
+    expect(alarm("P51")).toMatchObject({ MetricName: "watchdog.judge.cost", Threshold: 5, Period: 86400 });
+    for (const id of ["P49", "P50", "P51"]) {
+      expect(alarm(id).ComparisonOperator).toBe("GreaterThanThreshold");
+      expect(alarm(id).TreatMissingData).toBe("notBreaching");
+    }
+    for (const id of ["P48", "P49", "P50", "P51"]) {
+      expect(alarm(id).AlarmActions).toEqual([{ Ref: expect.stringMatching(/^AlertsWarn/) }]);
+      const dims = Object.fromEntries(alarm(id).Dimensions.map((d: any) => [d.Name, d.Value]));
+      expect(dims).toEqual({ env: "dev", service: "lightbulb-backend" });
+    }
+  });
+
+  test("prod synth has no watchdog alarms", () => {
+    expect(JSON.stringify(PROD_TEMPLATE.findResources("AWS::CloudWatch::Alarm"))).not.toMatch(/watchdog/i);
+  });
 });
 
 describe("ObservabilityStack — CloudWatch alarms can publish", () => {

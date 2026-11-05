@@ -18,6 +18,7 @@ import * as route53 from "aws-cdk-lib/aws-route53";
 import * as ssm from "aws-cdk-lib/aws-ssm";
 import { Construct } from "constructs";
 import { PLATFORM_MAIL_DOMAIN, ROOT_DOMAIN } from "../domains";
+import { superAgentEnabled } from "../super-agent";
 
 // ---------------------------------------------------------------------------
 // Tunable thresholds
@@ -349,6 +350,9 @@ export class ObservabilityStack extends cdk.Stack {
     this.createPaperclipTierAlarms(props);
     this.createCostAlarms(props);
     this.createUptimeChecks();
+    if (superAgentEnabled(this.envName)) {
+      this.createWatchdogAlarms();
+    }
 
     // -----------------------------------------------------------------------
     // Dashboard
@@ -2998,6 +3002,54 @@ def handler(event, context):
    * Note the metric only exists in us-east-1 regardless of where the check
    * runs, which is where this stack already lives.
    */
+  /**
+   * Watchdog alarms on the watchdog itself (spec 11 §3.7, §4.4; wave-2 plan W7). Dev only, behind the
+   * super-agent gate: prod has no watchdog service. P48 is BREACHING on missing data on purpose (the P7
+   * pattern): the watchdog not ticking is exactly what it must catch.
+   */
+  private createWatchdogAlarms(): void {
+    this.createAlarm({
+      id: "P48",
+      name: "watchdog-silent",
+      metricName: "watchdog.tick",
+      statistic: "SampleCount",
+      threshold: 0,
+      evaluationPeriods: 1,
+      periodMinutes: 15,
+      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.BREACHING,
+      severity: "warn",
+      description: "Watchdog has not ticked for 15 min (schedule paused, service down or stuck)",
+    });
+    this.createAlarm({
+      id: "P49",
+      name: "watchdog-write-rate",
+      metricName: "watchdog.write",
+      threshold: 300,
+      periodMinutes: 60,
+      severity: "warn",
+      description: "Watchdog wrote > 300 rows in an hour: a finding storm or a loop in the watchdog itself",
+    });
+    this.createAlarm({
+      id: "P50",
+      name: "watchdog-cap-hit",
+      metricName: "watchdog.cap_hit",
+      threshold: 0,
+      periodMinutes: 60,
+      severity: "warn",
+      description: "Watchdog hit its fleet action cap or judge budget in the last hour",
+    });
+    this.createAlarm({
+      id: "P51",
+      name: "watchdog-judge-spend",
+      metricName: "watchdog.judge.cost",
+      threshold: 5,
+      periodMinutes: 1440,
+      severity: "warn",
+      description: "Watchdog judge (Jev) spent > $5 in a day",
+    });
+  }
+
   private createUptimeChecks(): void {
     const isProd = this.envName === "prod";
 

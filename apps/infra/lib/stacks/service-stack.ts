@@ -2628,6 +2628,42 @@ export class ServiceStack extends cdk.Stack {
         assignPublicIp: false,
         enableExecuteCommand: true,
       });
+
+      // Watchdog (spec 11, wave-2 plan W7): the same image on its own task queue and service, so the
+      // watchdog keeps ticking when the main worker pool is stuck. The `#watchdog` ids are Lightbulb's own
+      // dev workspace and room (created by hand); empty means the digest logs instead of posting.
+      const watchdogTaskDef = new ecs.FargateTaskDefinition(this, "TemporalWatchdogTaskDef", {
+        family: `lightbulb-${env}-temporal-watchdog`,
+        cpu: 256,
+        memoryLimitMiB: 512,
+        taskRole: this.taskRole,
+        executionRole: taskExecutionRole,
+      });
+      watchdogTaskDef.addContainer("temporal-watchdog", {
+        image: ecs.ContainerImage.fromDockerImageAsset(backendImage),
+        command: ["/app/.venv/bin/python", "-m", "scripts.temporal_worker", "--queue", "lightbulb-watchdog"],
+        environment: {
+          ...backendContainerEnvironment,
+          TEMPORAL_WATCHDOG_TASK_QUEUE: "lightbulb-watchdog",
+          WATCHDOG_OWNER_ID: "",
+          WATCHDOG_ROOM_ID: "",
+        },
+        secrets: backendContainerSecrets,
+        logging: ecs.LogDrivers.awsLogs({ streamPrefix: "temporal-watchdog", logGroup }),
+        stopTimeout: cdk.Duration.seconds(30),
+      });
+      new ecs.FargateService(this, "TemporalWatchdogService", {
+        serviceName: `lightbulb-${env}-temporal-watchdog`,
+        cluster: props.container.cluster,
+        taskDefinition: watchdogTaskDef,
+        desiredCount: 1,
+        capacityProviderStrategies: DEV_SPOT,
+        circuitBreaker: { rollback: true },
+        vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+        securityGroups: [serviceSg],
+        assignPublicIp: false,
+        enableExecuteCommand: true,
+      });
     }
 
     // Horizontal autoscaling: the machine relay (sub-project D) moved every

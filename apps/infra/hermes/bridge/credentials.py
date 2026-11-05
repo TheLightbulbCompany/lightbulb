@@ -256,14 +256,15 @@ def apply_cli_tokens(agent_id: str, tokens: dict[str, str], expires_at: dict[str
             path = sync._profile_dir(agent) / rel
             if not path.is_file():
                 continue  # not materialized here (not connected, or the pull is still due): nothing to fill
-            # Marked BEFORE the write: a concurrent save_rotated_cli_credentials must never see the
-            # patched file unmarked and upload the brokered token as a "rotation".
-            sync.mark_brokered(agent, rel)
+            # Mark + patch under the rotate lock (the write-back scan and the re-pull's discard hold it):
+            # neither may see the patched file unmarked and upload the brokered token as a "rotation".
             try:
-                raw = path.read_bytes()
-                new = _PATCHERS[key](raw, token, int(expires_at.get(key) or 0))
-                if new != raw:
-                    _atomic_write(path, new, like=path)
+                with sync._rotate_lock:
+                    sync.mark_brokered(agent, rel)
+                    raw = path.read_bytes()
+                    new = _PATCHERS[key](raw, token, int(expires_at.get(key) or 0))
+                    if new != raw:
+                        _atomic_write(path, new, like=path)
             except Exception as exc:  # noqa: BLE001 -- the CLI then fails as it does today with a stale token
                 # type only: a parse error's text can quote the file, which holds a token
                 log.warning("brokered %s token not written for agent=%s: %s", key, agent, type(exc).__name__)

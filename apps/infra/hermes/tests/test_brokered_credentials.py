@@ -273,10 +273,11 @@ def test_cli_file_marked_before_the_write(backend, home, monkeypatch):
     _token_free_files(home, "friday")
     seen = []
     real = credentials._atomic_write
-    monkeypatch.setattr(credentials, "_atomic_write", lambda path, data, **kw: (seen.append(set(sync._BROKERED_CLI.get("friday", ()))), real(path, data, **kw)))
+    monkeypatch.setattr(credentials, "_atomic_write", lambda path, data, **kw: (seen.append((set(sync._BROKERED_CLI.get("friday", ())), sync._rotate_lock.locked())), real(path, data, **kw)))
     backend.answers["/"] = (200, {"tokens": {"x": "XT"}})
     credentials.vend("friday")
-    assert seen and all(f"{sync.PROFILE_HOME}/.xurl" in marks for marks in seen)
+    # marked, and under the rotate lock the write-back scan and the re-pull's discard also hold
+    assert seen and all(f"{sync.PROFILE_HOME}/.xurl" in marks and locked for marks, locked in seen)
 
 
 def test_vend_never_raises(backend, home, monkeypatch, caplog):

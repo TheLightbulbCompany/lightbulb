@@ -12,7 +12,7 @@ from core.repositories import integrations_repo
 from core.services import runtime_rpc as service
 from core.services import messaging, token_custody
 from core.services.owner_lifecycle import OwnerLifecycleBusyError
-from core.services.super_agent_flags import flags_for
+from core.services.super_agent_flags import env_enabled
 from core.services.credentials import access_token, registry
 from core.services.messaging import (
     RuntimeOperation,
@@ -110,8 +110,10 @@ async def runtime_credentials(
             )
             unavailable.append(provider.key)
     payload: dict = {"tokens": tokens, "unavailable": unavailable}
-    # flags_for is False in prod without any read: no backend-custodied grant exists there.
-    if await flags_for(owner_id):
+    # The env master, not the workspace switch: custody is the data that decides (codex_vend is None
+    # unless the row is custody=backend), so a workspace whose switch went off keeps its brokered grant
+    # served until a rollback. Off in prod without any read: no backend-custodied grant exists there.
+    if env_enabled():
         try:
             vend = await token_custody.codex_vend(owner_id)
         except Exception as exc:  # noqa: BLE001 -- reconnect, busy, OpenAI down: the rest still vends
@@ -133,10 +135,11 @@ async def runtime_model(owner_id: str, body: RuntimeModelRequest, request: Reque
     """Forced refresh for the bridge's F6 delegate: the VM got a 401 on the token it presents.
     Refreshes only if that token is still current; otherwise returns the newer one (N VMs, one
     refresh). 409 busy (lease held), 410 the grant is dead, 404 not backend-custodied (or the
-    super-agent switch is off for this workspace: no brokered grant can exist)."""
+    env master is off: no brokered grant can exist). The workspace switch is not consulted: a brokered
+    grant whose switch went off is still served, never left refreshing "transiently" forever."""
     await _authorize_vend(owner_id, body.agent_id, request)
     response.headers["Cache-Control"] = "no-store"
-    if not await flags_for(owner_id):
+    if not env_enabled():
         raise HTTPException(status_code=404, detail={"code": "not_brokered"})
     try:
         vend = await token_custody.codex_vend(owner_id, presented_sha256=body.presented_sha256, force=body.force)

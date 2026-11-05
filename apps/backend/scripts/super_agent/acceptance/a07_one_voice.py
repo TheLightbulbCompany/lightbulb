@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from scripts.super_agent.acceptance.ctx import Ctx, Result
-from scripts.super_agent.acceptance.o_lib import front_agent, messages, rows_of, worker_authored
+from scripts.super_agent.acceptance.o_lib import front_agent, poll_messages, rows_of, worker_authored
 
 RESULT_S = 600
 
@@ -22,12 +22,17 @@ async def a07(ctx: Ctx) -> Result:
     )
     finance = done  # the finished task; its specialist labels the result
     task_id = (finance or {}).get("taskId")
-    room_rows = await messages(ctx, "sam", room_id, limit=100)
-    result = [
-        m
-        for m in room_rows
-        if m.get("kind") == "result" and any(r.get("taskId") == task_id for r in m.get("taskRefs") or [])
-    ]
+
+    def results(rows: list[dict]) -> list[dict]:  # a thread reply under the card (`end_attempt`'s thread_root)
+        return [
+            m
+            for m in rows
+            if m.get("kind") == "result" and any(r.get("taskId") == task_id for r in m.get("taskRefs") or [])
+        ]
+
+    # The task goes idle before `end_attempt` posts the result (run 4: read once, between the two).
+    room_rows = await poll_messages(ctx, "sam", room_id, results, limit=100)
+    result = results(room_rows)
     checks = {
         "a_started_task_finished": done is not None,
         "result_posted_by_lightbulb": bool(result)

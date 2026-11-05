@@ -54,6 +54,17 @@ async def messages(ctx: Any, user: str, room_id: str, *, limit: int = 50) -> lis
     return data.get("messages") or data.get("items") or []
 
 
+async def poll_messages(ctx: Any, user: str, room_id: str, pred, timeout_s: float = 30, *, limit: int = 50):
+    """Room messages (thread replies included) re-read every 0.5 s until ``pred(rows)`` holds or ``timeout_s``;
+    the last read either way. A task's row moves before its post lands (`end_attempt`, the run card)."""
+    for _ in range(int(timeout_s * 2)):
+        rows = await messages(ctx, user, room_id, limit=limit)
+        if pred(rows):
+            return rows
+        await ctx.sleep(0.5)
+    return await messages(ctx, user, room_id, limit=limit)
+
+
 async def room(ctx: Any, user: str, room_id: str) -> dict:
     r = await ctx.api(user).get(f"/api/v1/messaging/rooms/{room_id}")
     r.raise_for_status()

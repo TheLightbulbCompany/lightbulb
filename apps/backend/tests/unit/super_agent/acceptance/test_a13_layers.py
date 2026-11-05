@@ -42,7 +42,9 @@ def test_check_rows_names_each_missing_link():
 
 
 def test_check_router_allows_router_tools_only():
-    ok = a13_layers.check_router([_run("b1", ["start_task", "propose_tasks"]), _run("b2", ["reply"], tools=["memory"])])
+    ok = a13_layers.check_router(
+        [_run("b1", ["start_task", "propose_tasks"]), _run("b2", ["reply"], tools=["memory", "tool_search"])]
+    )
     assert ok["ok"] and ok["outside"] == [] and ok["notCompleted"] == []
     bad = a13_layers.check_router([_run("b1", ["start_task"], tools=["terminal"]), _run("b2", [], status="failed")])
     assert not bad["ok"]
@@ -53,7 +55,7 @@ def test_check_router_allows_router_tools_only():
 async def test_a13_green_when_rows_link_and_legacy_is_empty(monkeypatch):
     seen: dict = {}
 
-    async def legacy(ws, rooms):
+    async def legacy(ws, rooms, since=None):
         seen["legacy"] = (ws, rooms)
         return {"runs": [], "followUps": []}
 
@@ -76,7 +78,7 @@ async def test_a13_green_when_rows_link_and_legacy_is_empty(monkeypatch):
 
 
 async def test_a13_fails_on_legacy_rows_or_an_execution_tool_or_no_temporal(monkeypatch):
-    async def legacy(ws, rooms):
+    async def legacy(ws, rooms, since=None):
         return {"runs": ["RUN#x"], "followUps": ["r1/FOLLOWUP#y"]}
 
     async def runs(ws, front=None):
@@ -105,3 +107,45 @@ def test_check_rows_expects_a_subscription_only_for_the_first_started_task():
     rows = _rows(sub_for=(T1,))  # one owner per thread: T2 has none and that is right
     assert a13_layers.check_rows(rows, [T1, T2], [T1])["ok"]
     assert not a13_layers.check_rows(rows, [T1, T2], [T2])["ok"]
+
+
+async def test_a13_reads_only_this_runs_router_batches(monkeypatch):
+    seen: dict = {}
+
+    async def legacy(ws, rooms, since=None):
+        seen["since"] = since
+        return {"runs": [], "followUps": []}
+
+    async def runs(ws, front=None):
+        old = _run("b0", [], status="unavailable: RunLost: run_not_found")
+        return [{**old, "at": "2026-11-05T09:39:00"}, {**_run("b1", ["start_task"]), "at": "2026-11-05T18:31:00"}]
+
+    monkeypatch.setattr(a13_layers, "legacy_rows", legacy)
+    monkeypatch.setattr(a13_layers, "router_runs", runs)
+    ctx = FakeCtx(_rows())
+    ctx.started_at = "2026-11-05T18:30:00"
+    result = await a13_layers.a13(ctx)
+    assert result.passed, result.evidence
+    assert seen["since"] == "2026-11-05T18:30:00" and [r["batchId"] for r in result.evidence["routerRuns"]] == ["b1"]
+
+
+async def test_legacy_rows_skips_an_older_run_row_from_another_room(monkeypatch):
+    from core import dynamodb
+
+    items = [
+        {"sk": "RUN#stale", "roomId": "other", "updatedAt": "2026-11-05T08:54:35Z"},
+        {"sk": "RUN#ours", "roomId": "r1", "updatedAt": "2026-11-05T08:00:00Z"},
+        {"sk": "RUN#new", "roomId": "other", "updatedAt": "2026-11-05T18:40:00Z"},
+    ]
+
+    class Table:
+        calls = 0
+
+        def query(self, KeyConditionExpression):  # first the OWNER#ws RUN# query, then each room's FOLLOWUP#
+            self.calls += 1
+            return {"Items": items if self.calls == 1 else []}
+
+    table = Table()
+    monkeypatch.setattr(dynamodb, "get_table", lambda name: table)
+    out = await a13_layers.legacy_rows("org_on", ["r1"], "2026-11-05T18:30:00")
+    assert out == {"runs": ["RUN#ours", "RUN#new"], "followUps": []}

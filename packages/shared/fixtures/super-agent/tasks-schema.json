@@ -158,6 +158,7 @@
     "project": "PROJECT#{projectId}",
     "goal": "GOAL#{goalId}",
     "creation": "CAP#{capId}",
+    "slots": "SLOTS",
     "statusKey": "{ws}#{status}",
     "taskWorkflowId": "task:{ws}:{taskId}",
     "routerWorkflowId": "router:{ws}",
@@ -496,6 +497,30 @@
           ],
           "default": null,
           "title": "Wschannel"
+        },
+        "proposalReason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Proposalreason"
+        },
+        "landingEffect": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Landingeffect"
         }
       },
       "required": [
@@ -1752,6 +1777,532 @@
         "capId"
       ],
       "title": "Creation",
+      "type": "object"
+    }
+  },
+  "views": {
+    "TaskSummary": {
+      "$defs": {
+        "Audience": {
+          "additionalProperties": false,
+          "description": "\u00a75: set at creation; question answerers are added when a question opens.",
+          "properties": {
+            "kind": {
+              "enum": [
+                "person",
+                "room",
+                "workspace"
+              ],
+              "title": "Kind",
+              "type": "string"
+            },
+            "userIds": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "title": "Userids",
+              "type": "array"
+            },
+            "roomId": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Roomid"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "Audience",
+          "type": "object"
+        },
+        "QuestionOption": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "title": "Id",
+              "type": "string"
+            },
+            "label": {
+              "title": "Label",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "label"
+          ],
+          "title": "QuestionOption",
+          "type": "object"
+        },
+        "SummaryActivity": {
+          "additionalProperties": false,
+          "properties": {
+            "n": {
+              "title": "N",
+              "type": "integer"
+            },
+            "status": {
+              "enum": [
+                "dispatched",
+                "running",
+                "ended"
+              ],
+              "title": "Status",
+              "type": "string"
+            },
+            "outcome": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "completed",
+                    "failed",
+                    "cancelled",
+                    "runtime_lost",
+                    "refused",
+                    "waiting_approval",
+                    "checkpoint_failed",
+                    "unavailable"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Outcome"
+            },
+            "lastHeartbeatAt": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Lastheartbeatat"
+            }
+          },
+          "required": [
+            "n",
+            "status"
+          ],
+          "title": "SummaryActivity",
+          "type": "object"
+        },
+        "SummaryOutput": {
+          "additionalProperties": false,
+          "properties": {
+            "idemKey": {
+              "title": "Idemkey",
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "document",
+                "file",
+                "app",
+                "pr",
+                "mail",
+                "link",
+                "capability"
+              ],
+              "title": "Kind",
+              "type": "string"
+            },
+            "title": {
+              "title": "Title",
+              "type": "string"
+            },
+            "nextStep": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Nextstep"
+            }
+          },
+          "required": [
+            "idemKey",
+            "kind",
+            "title"
+          ],
+          "title": "SummaryOutput",
+          "type": "object"
+        },
+        "SummaryQuestion": {
+          "additionalProperties": false,
+          "properties": {
+            "qid": {
+              "title": "Qid",
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "question",
+                "approval",
+                "review"
+              ],
+              "title": "Kind",
+              "type": "string"
+            },
+            "subkind": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Subkind"
+            },
+            "title": {
+              "title": "Title",
+              "type": "string"
+            },
+            "answerers": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Answerers",
+              "type": "array"
+            },
+            "answererNames": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Answerernames",
+              "type": "array"
+            },
+            "canAnswer": {
+              "title": "Cananswer",
+              "type": "boolean"
+            },
+            "options": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/QuestionOption"
+              },
+              "title": "Options",
+              "type": "array"
+            }
+          },
+          "required": [
+            "qid",
+            "kind",
+            "title",
+            "answerers",
+            "answererNames",
+            "canAnswer"
+          ],
+          "title": "SummaryQuestion",
+          "type": "object"
+        },
+        "Usage": {
+          "additionalProperties": false,
+          "properties": {
+            "inputTokens": {
+              "default": 0,
+              "title": "Inputtokens",
+              "type": "integer"
+            },
+            "outputTokens": {
+              "default": 0,
+              "title": "Outputtokens",
+              "type": "integer"
+            },
+            "costUsd": {
+              "default": 0.0,
+              "title": "Costusd",
+              "type": "number"
+            }
+          },
+          "title": "Usage",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "description": "One task as one viewer sees it. `tasks_access.summarize` builds it; clients render it and never\nre-derive `shownGroup` (viewer-specific; None = proposed, shown in chat's Suggested block).",
+      "properties": {
+        "taskId": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "title": "Taskid",
+          "type": "string"
+        },
+        "identifier": {
+          "title": "Identifier",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "proposed",
+            "queued",
+            "working",
+            "waiting",
+            "idle",
+            "resolved",
+            "failed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "statusReason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Statusreason"
+        },
+        "shownGroup": {
+          "anyOf": [
+            {
+              "enum": [
+                "waiting_on_you",
+                "ready_for_review",
+                "landing",
+                "working",
+                "idle",
+                "resolved"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Showngroup"
+        },
+        "specialist": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Specialist"
+        },
+        "ownerUserId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Owneruserid"
+        },
+        "audience": {
+          "$ref": "#/$defs/Audience"
+        },
+        "audienceKind": {
+          "enum": [
+            "person",
+            "room",
+            "workspace"
+          ],
+          "title": "Audiencekind",
+          "type": "string"
+        },
+        "originRoomId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Originroomid"
+        },
+        "taskRoomId": {
+          "title": "Taskroomid",
+          "type": "string"
+        },
+        "proposalReason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Proposalreason"
+        },
+        "openQuestion": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SummaryQuestion"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "landing": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Landing"
+        },
+        "output": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SummaryOutput"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "watchUntil": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Watchuntil"
+        },
+        "watching": {
+          "title": "Watching",
+          "type": "boolean"
+        },
+        "runsOn": {
+          "anyOf": [
+            {
+              "enum": [
+                "task",
+                "workspace"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Runson"
+        },
+        "activity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SummaryActivity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "recentInputs": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Recentinputs",
+          "type": "array"
+        },
+        "attemptCount": {
+          "default": 0,
+          "title": "Attemptcount",
+          "type": "integer"
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Usage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "costUsd": {
+          "default": 0.0,
+          "title": "Costusd",
+          "type": "number"
+        },
+        "budgetUsd": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Budgetusd"
+        },
+        "updatedAt": {
+          "title": "Updatedat",
+          "type": "string"
+        },
+        "version": {
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "taskId",
+        "identifier",
+        "title",
+        "status",
+        "shownGroup",
+        "audience",
+        "audienceKind",
+        "taskRoomId",
+        "watching",
+        "updatedAt",
+        "version"
+      ],
+      "title": "TaskSummary",
       "type": "object"
     }
   },

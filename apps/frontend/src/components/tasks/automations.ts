@@ -5,9 +5,11 @@
 
 import { useCallback } from "react";
 import useSWR, { useSWRConfig } from "swr";
-import type { AutomationView, TaskSummary } from "@lightbulb/shared";
+import { useAuth, useOrganization } from "@clerk/nextjs";
+import { ApiError, formatSchedule, type AutomationView, type TaskSummary } from "@lightbulb/shared";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { useApi } from "@/lib/api";
+import { errorCopy } from "./useTaskActions";
 
 export type AutomationVerb = "activate" | "pause" | "resume" | "run";
 
@@ -43,6 +45,54 @@ export function useAutomationActions() {
     await refresh(id);
   }, [api, refresh]);
   return { act, remove, refresh };
+}
+
+/** The schedule in the viewer's zone, and the row's own zone named when it differs: "Mondays 14:00 (New York time: Mondays 9:00)". */
+export function scheduleWords(a: Pick<AutomationView, "schedule">, viewerTz: string): string | null {
+  if (!a.schedule) return null;
+  const words = formatSchedule(a.schedule.cron, a.schedule.tz, viewerTz);
+  if (a.schedule.tz === viewerTz) return words;
+  const zone = a.schedule.tz.split("/").pop()?.replace(/_/g, " ") ?? a.schedule.tz;
+  return `${words} (${zone} time: ${formatSchedule(a.schedule.cron, a.schedule.tz, a.schedule.tz)})`;
+}
+
+/** Where a run posts, in words (never the raw target id). */
+export function deliveryWords(deliverTo: string): string | null {
+  if (!deliverTo || deliverTo === "none") return null;
+  return deliverTo.startsWith("room:") ? "posts in a room" : "posts in a DM";
+}
+
+/** Who may turn a proposal on, pause it or run it (routers/automations.py): a room-delivered one needs an org admin,
+ *  a personal one its owner. */
+export function useCanDecide(): (a: Pick<AutomationView, "deliverTo" | "ownerUserId">) => boolean {
+  const { userId } = useAuth();
+  const { membership } = useOrganization();
+  const admin = membership?.role === "org:admin";
+  return useCallback((a) => (a.deliverTo.startsWith("room:") ? admin : a.ownerUserId === userId), [admin, userId]);
+}
+
+/** The line others read while they can't decide. */
+export const waitingWords = (a: Pick<AutomationView, "deliverTo">): string =>
+  a.deliverTo.startsWith("room:") ? "Waiting on a workspace admin" : "Waiting on its owner";
+
+export type RunNowOutcome = { kind: "started" } | { kind: "running"; taskId: string } | { kind: "note"; message: string };
+
+/** Run now: one POST; a 409 run_in_progress names the run to open; not_active and the gate carry their own words. */
+export async function runNow(act: (id: string, verb: AutomationVerb) => Promise<unknown>, a: Pick<AutomationView, "id" | "activeRunTaskId" | "status">): Promise<RunNowOutcome> {
+  if (a.activeRunTaskId) return { kind: "running", taskId: a.activeRunTaskId };
+  if (a.status === "draft") return { kind: "note", message: "Turn it on first." };
+  try {
+    await act(a.id, "run");
+    return { kind: "started" };
+  } catch (error) {
+    if (error instanceof ApiError) {
+      const detail = (error.body as { detail?: Record<string, unknown> } | null)?.detail ?? (error.body as Record<string, unknown> | null);
+      const code = typeof detail?.code === "string" ? detail.code : null;
+      if (error.status === 409 && code === "run_in_progress" && typeof detail?.taskId === "string") return { kind: "running", taskId: detail.taskId };
+      if (code === "not_active") return { kind: "note", message: "Turn it on first." };
+    }
+    return { kind: "note", message: errorCopy(error) };
+  }
 }
 
 export const viewerTimeZone = (): string => {

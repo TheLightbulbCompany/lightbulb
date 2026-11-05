@@ -17,10 +17,12 @@ const api = vi.hoisted(() => ({
 }));
 const AUTOMATION = vi.hoisted(() => ({
   id: "a1", name: "Post signups every Monday", instructions: "Post the signup count so far in #workshop-launch.", status: "draft", pausedReason: null,
-  schedule: { cron: ["0 9 * * 1"], tz: "America/New_York" }, nextRuns: [], hooks: [], specialistId: null, deliverTo: "room-workshop-launch",
+  schedule: { cron: ["0 9 * * 1"], tz: "America/New_York" }, nextRuns: [], hooks: [], specialistId: null, deliverTo: "room:room-workshop-launch",
   budgetPerRunUsd: 1, ownerUserId: "user_sam", createdBy: "router", mode: null, lastTaskId: null, activeRunTaskId: null, runCount: 0, version: 1,
 }));
 vi.mock("@/lib/api", () => ({ useApi: () => api }));
+const clerk = vi.hoisted(() => ({ userId: "user_sam", role: "org:admin" as string | undefined }));
+vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ userId: clerk.userId }), useOrganization: () => ({ membership: clerk.role ? { role: clerk.role } : null }) }));
 
 import { RoomMessageItem } from "../RoomMessageItem";
 import type { RoomMessage } from "../types";
@@ -87,6 +89,17 @@ describe("RoomMessageItem with the super-agent switch", () => {
     expect(api.post).toHaveBeenCalledWith("/automations/a1/activate", {});
     expect(await within(region).findByText("On")).toBeInTheDocument();
     expect(within(region).queryByRole("button", { name: "Turn on" })).toBeNull();
+  });
+
+  it("a member who may not turn a room automation on reads the waiting line, no buttons", async () => {
+    clerk.role = "org:member";
+    automation.current = { ...AUTOMATION };
+    const card = { ...reply, messageId: "m-confirm", text: "Set up below. Confirm on the card.", taskRefs: undefined, kind: "automation_confirm", automationId: "a1" } as RoomMessage;
+    render(item(card));
+    const region = await screen.findByRole("region", { name: "Turn on Post signups every Monday" });
+    expect(within(region).getByText("Waiting on a workspace admin")).toBeInTheDocument();
+    expect(within(region).queryByRole("button")).toBeNull();
+    clerk.role = "org:admin";
   });
 
   it("flag off is identical to today", async () => {

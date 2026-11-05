@@ -6,13 +6,16 @@
 
 import { useState, type ReactElement } from "react";
 import { ArrowLeft } from "lucide-react";
-import { formatSchedule, specialistLabel, summaryView, type AutomationView } from "@lightbulb/shared";
+import { useAuth } from "@clerk/nextjs";
+import { specialistLabel, summaryView, type AutomationView } from "@lightbulb/shared";
 import { RoutinesPanel } from "@/components/teams/panels/RoutinesPanel";
 import { Button } from "@/components/ui/button";
 import { useSuperAgent } from "@/hooks/useLiveEvents";
 import { openTaskPane } from "@/components/workspace/workspaceController";
 import { statusLine, useAutomations } from "./ScheduledList";
-import { budgetLine, useAutomation, useAutomationActions, useAutomationRuns, viewerTimeZone } from "./automations";
+import {
+  budgetLine, deliveryWords, runNow, scheduleWords, useAutomation, useAutomationActions, useAutomationRuns, useCanDecide, viewerTimeZone, waitingWords,
+} from "./automations";
 
 export function AutomationsPanel({ viewerTz = viewerTimeZone(), onOpenTask = openTaskPane }: {
   viewerTz?: string; onOpenTask?: (taskId: string) => void;
@@ -27,19 +30,32 @@ export function AutomationsPanel({ viewerTz = viewerTimeZone(), onOpenTask = ope
   return <div className="px-6 py-4">
     {selected
       ? <AutomationDetail id={selected} viewerTz={viewerTz} onBack={() => setSelected(null)} onOpenTask={onOpenTask} />
-      : <AutomationList viewerTz={viewerTz} onSelect={setSelected} onOlder={() => setLegacy(true)} />}
+      : <AutomationList viewerTz={viewerTz} onSelect={setSelected} onOlder={() => setLegacy(true)} onOpenTask={onOpenTask} />}
   </div>;
 }
 
-function scheduleLine(a: AutomationView, viewerTz: string): string {
-  if (!a.schedule) return "No schedule";
-  const words = formatSchedule(a.schedule.cron, a.schedule.tz, viewerTz);
-  return a.schedule.tz === viewerTz ? words : `${words} (your time)`;
+const scheduleLine = (a: AutomationView, viewerTz: string): string => scheduleWords(a, viewerTz) ?? "No schedule";
+
+/** Run now, or "Running ›" while a run is going (opens it). The outcome's note shows under the list. */
+function RunNowButton({ a, onOpenTask, onNote }: { a: AutomationView; onOpenTask: (taskId: string) => void; onNote: (note: string | null) => void }): ReactElement {
+  const { act } = useAutomationActions();
+  const canDecide = useCanDecide();
+  if (a.activeRunTaskId) {
+    return <Button type="button" size="sm" variant="ghost" className="relative z-10" onClick={() => onOpenTask(a.activeRunTaskId!)}>Running ›</Button>;
+  }
+  return <Button type="button" size="sm" variant="outline" className="relative z-10" disabled={a.status === "draft" || !canDecide(a)}
+    title={!canDecide(a) ? waitingWords(a) : undefined}
+    onClick={async () => {
+      const res = await runNow(act, a);
+      if (res.kind === "running") onOpenTask(res.taskId);
+      onNote(res.kind === "started" ? `${a.name} is running.` : res.kind === "note" ? res.message : null);
+    }}>Run now</Button>;
 }
 
-function AutomationList({ viewerTz, onSelect, onOlder }: { viewerTz: string; onSelect: (id: string) => void; onOlder: () => void }): ReactElement {
+function AutomationList({ viewerTz, onSelect, onOlder, onOpenTask }: {
+  viewerTz: string; onSelect: (id: string) => void; onOlder: () => void; onOpenTask: (taskId: string) => void;
+}): ReactElement {
   const { data, error } = useAutomations();
-  const { act } = useAutomationActions();
   const [note, setNote] = useState<string | null>(null);
   const rows = data?.automations ?? [];
   return <div className="grid gap-3">
@@ -54,10 +70,9 @@ function AutomationList({ viewerTz, onSelect, onOlder }: { viewerTz: string; onS
     {rows.length > 0 && <ul className="grid">{rows.map((a) => <li key={a.id} className="relative flex items-center gap-3 rounded-md px-2 py-2 hover:bg-accent">
       <div className="min-w-0 flex-1">
         <button type="button" className="block max-w-full truncate text-left font-semibold after:absolute after:inset-0 after:content-['']" onClick={() => onSelect(a.id)}>{a.name}</button>
-        <p className="truncate text-ui text-muted-foreground">{[scheduleLine(a, viewerTz), a.deliverTo && a.deliverTo !== "none" ? `posts to ${a.deliverTo}` : null, statusLine(a)].filter(Boolean).join(" · ")}</p>
+        <p className="truncate text-ui text-muted-foreground">{[scheduleLine(a, viewerTz), deliveryWords(a.deliverTo), statusLine(a)].filter(Boolean).join(" · ")}</p>
       </div>
-      <Button type="button" size="sm" variant="outline" className="relative z-10" disabled={a.status === "draft"}
-        onClick={async () => { try { await act(a.id, "run"); setNote(`${a.name} is running.`); } catch { setNote(`${a.name} couldn't run. Try again.`); } }}>Run now</Button>
+      <RunNowButton a={a} onOpenTask={onOpenTask} onNote={setNote} />
     </li>)}</ul>}
     {note && <p role="status" className="text-ui text-muted-foreground">{note}</p>}
   </div>;
@@ -69,9 +84,11 @@ function AutomationDetail({ id, viewerTz, onBack, onOpenTask }: {
   const { data: a, error } = useAutomation(id);
   const { data: runs } = useAutomationRuns(id);
   const { act } = useAutomationActions();
+  const canDecide = useCanDecide();
+  const { userId } = useAuth();
   const [note, setNote] = useState<string | null>(null);
-  const press = async (verb: "pause" | "resume" | "run") => {
-    try { await act(id, verb); setNote(verb === "run" ? "Running now." : null); }
+  const press = async (verb: "pause" | "resume") => {
+    try { await act(id, verb); setNote(null); }
     catch { setNote("That didn't go through. Try again."); }
   };
   if (!a) return <div className="grid gap-3">
@@ -86,10 +103,12 @@ function AutomationDetail({ id, viewerTz, onBack, onOpenTask }: {
       <p className="text-ui text-muted-foreground">{[scheduleLine(a, viewerTz), specialistLabel(a.specialistId), budgetLine(a)].filter(Boolean).join(" · ")}</p>
       {statusLine(a) && <p className="text-ui text-warn">{statusLine(a)}</p>}
     </header>
-    <div className="flex flex-wrap gap-2">
-      {a.status !== "draft" && <Button type="button" size="sm" variant="outline" onClick={() => void press(paused ? "resume" : "pause")}>{paused ? "Resume" : "Pause"}</Button>}
-      <Button type="button" size="sm" disabled={a.status === "draft"} onClick={() => void press("run")}>Run now</Button>
-    </div>
+    {canDecide(a)
+      ? <div className="flex flex-wrap gap-2">
+        {a.status !== "draft" && <Button type="button" size="sm" variant="outline" onClick={() => void press(paused ? "resume" : "pause")}>{paused ? "Resume" : "Pause"}</Button>}
+        <RunNowButton a={a} onOpenTask={onOpenTask} onNote={setNote} />
+      </div>
+      : <p className="text-ui text-muted-foreground">{waitingWords(a)}</p>}
     {note && <p role="status" className="text-ui text-muted-foreground">{note}</p>}
     <section aria-label="Instructions" className="editorial-card px-3 py-2">
       <h3 className="label-caps">Instructions</h3>
@@ -102,7 +121,7 @@ function AutomationDetail({ id, viewerTz, onBack, onOpenTask }: {
         : <ul className="grid">{runs.runs.map((t) => <li key={t.taskId}>
           <button type="button" className="flex w-full items-center gap-3 rounded-md px-2 py-1.5 text-left hover:bg-accent" onClick={() => onOpenTask(t.taskId)}>
             <span className="min-w-0 flex-1 truncate">{t.title}</span>
-            <span className="text-ui text-muted-foreground">{summaryView(t, a.ownerUserId).word}</span>
+            <span className="text-ui text-muted-foreground">{summaryView(t, userId ?? "").word}</span>
           </button>
         </li>)}</ul>}
     </section>

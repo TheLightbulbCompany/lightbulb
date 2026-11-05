@@ -12,12 +12,15 @@ vi.mock("@/lib/api", () => ({ useApi: () => api }));
 vi.mock("@/components/teams/panels/RoutinesPanel", () => ({ RoutinesPanel: () => <div data-testid="routines-panel">Routines (today)</div> }));
 const openTaskPane = vi.hoisted(() => vi.fn());
 vi.mock("@/components/workspace/workspaceController", () => ({ openTaskPane }));
+const clerk = vi.hoisted(() => ({ userId: "user_sam", role: "org:admin" as string | undefined }));
+vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ userId: clerk.userId }), useOrganization: () => ({ membership: clerk.role ? { role: clerk.role } : null }) }));
+import { ApiError } from "@lightbulb/shared";
 
 import { AutomationsPanel } from "../AutomationsPanel";
 
 const signups: AutomationView = {
   id: "a1", name: "Post signups every Monday", instructions: "Post the signup count so far in #workshop-launch.", status: "active", pausedReason: null,
-  schedule: { cron: ["0 9 * * 1"], tz: "America/New_York" }, nextRuns: [], hooks: [], specialistId: "finance", deliverTo: "room-workshop-launch",
+  schedule: { cron: ["0 9 * * 1"], tz: "America/New_York" }, nextRuns: [], hooks: [], specialistId: "finance", deliverTo: "room:room-workshop-launch",
   budgetPerRunUsd: 1, ownerUserId: "user_sam", createdBy: "router", mode: null, lastTaskId: "t-fees", activeRunTaskId: null, runCount: 1, version: 3,
 };
 const routes = (over: Partial<AutomationView> = {}) => {
@@ -29,7 +32,7 @@ const routes = (over: Partial<AutomationView> = {}) => {
     throw new Error(`no route ${path}`);
   });
 };
-beforeEach(() => { live.superAgent = true; api.get.mockReset(); api.post.mockClear(); openTaskPane.mockClear(); routes(); });
+beforeEach(() => { live.superAgent = true; clerk.userId = "user_sam"; clerk.role = "org:admin"; api.get.mockReset(); api.post.mockClear(); openTaskPane.mockClear(); routes(); });
 
 describe("AutomationsPanel", () => {
   it("schedule in the viewer's time zone", async () => {
@@ -37,7 +40,30 @@ describe("AutomationsPanel", () => {
     expect(await screen.findByText(/Mondays 9:00/)).toBeInTheDocument();
     unmount();
     render(<Fresh><AutomationsPanel viewerTz="Europe/London" /></Fresh>);
-    expect(await screen.findByText(/Mondays 14:00 \(your time\)/)).toBeInTheDocument();
+    expect(await screen.findByText(/Mondays 14:00 \(New York time: Mondays 9:00\) · posts in a room/)).toBeInTheDocument();
+  });
+
+  it("Run now follows the server's rules: a live run is opened, not restarted; only an admin may run a room automation", async () => {
+    routes({ activeRunTaskId: "t-live" });
+    const { unmount } = render(<Fresh><AutomationsPanel viewerTz="America/New_York" /></Fresh>);
+    await userEvent.click(await screen.findByRole("button", { name: "Running ›" }));
+    expect(openTaskPane).toHaveBeenCalledWith("t-live");
+    expect(api.post).not.toHaveBeenCalled();
+    unmount();
+
+    routes();
+    api.post.mockRejectedValueOnce(new ApiError(409, { detail: { code: "run_in_progress", taskId: "t-other" } }));
+    const again = render(<Fresh><AutomationsPanel viewerTz="America/New_York" /></Fresh>);
+    await userEvent.click(await screen.findByRole("button", { name: "Run now" }));
+    expect(openTaskPane).toHaveBeenCalledWith("t-other");
+    again.unmount();
+
+    clerk.role = "org:member";
+    render(<Fresh><AutomationsPanel viewerTz="America/New_York" /></Fresh>);
+    expect(await screen.findByRole("button", { name: "Run now" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "Post signups every Monday" }));
+    expect(await screen.findByText("Waiting on a workspace admin")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Pause" })).toBeNull();
   });
 
   it("Run now and Pause call lane A's routes", async () => {

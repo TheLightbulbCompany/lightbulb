@@ -5,13 +5,14 @@
 // typed text never does (contracts-v2 §8). Not now deletes the draft.
 
 import { useState, type ReactElement } from "react";
-import { formatSchedule, specialistLabel, type AutomationView } from "@lightbulb/shared";
+import { specialistLabel, type AutomationView } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
-import { budgetLine, useAutomation, useAutomationActions, viewerTimeZone } from "./automations";
+import { budgetLine, scheduleWords, useAutomation, useAutomationActions, useCanDecide, viewerTimeZone, waitingWords } from "./automations";
 
 export function AutomationConfirmCard({ automationId, viewerTz = viewerTimeZone() }: { automationId: string; viewerTz?: string }): ReactElement {
   const { data: a, error } = useAutomation(automationId);
   const { act, remove } = useAutomationActions();
+  const canDecide = useCanDecide();
   const [pending, setPending] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [gone, setGone] = useState(false);
@@ -37,22 +38,23 @@ export function AutomationConfirmCard({ automationId, viewerTz = viewerTimeZone(
     <p className="font-semibold">{a.status === "draft" ? "Turn on: " : ""}{a.name}</p>
     <p className="text-ui text-muted-foreground">{lines(a, viewerTz).join(" · ")}</p>
     {a.nextRuns.length > 0 && <p className="text-ui text-muted-foreground">Next: {a.nextRuns.slice(0, 3).map((iso) => when(iso, viewerTz)).join(", ")}</p>}
-    {a.status === "draft"
-      ? <div className="mt-2 flex items-center gap-2">
-        <Button type="button" size="sm" disabled={pending} onClick={() => void run("on")}>Turn on</Button>
-        <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={() => void run("off")}>Not now</Button>
-      </div>
-      : <p className="mt-1 text-ui text-ok">{a.status === "active" ? "On" : "Paused"}</p>}
+    {a.status !== "draft"
+      ? <p className="mt-1 text-ui text-ok">{a.status === "active" ? "On" : "Paused"}</p>
+      : canDecide(a)
+        ? <div className="mt-2 flex items-center gap-2">
+          <Button type="button" size="sm" disabled={pending} onClick={() => void run("on")}>Turn on</Button>
+          <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={() => void run("off")}>Not now</Button>
+        </div>
+        // The server decides who may turn it on (routers/automations.py); the card shows the same rule, no buttons.
+        : <p className="mt-1 text-ui text-muted-foreground">{waitingWords(a)}</p>}
     {note && <p role="alert" className="mt-1 text-ui text-err">{note}</p>}
   </section>;
 }
 
 function lines(a: AutomationView, viewerTz: string): string[] {
   const out: string[] = [];
-  if (a.schedule) {
-    const words = formatSchedule(a.schedule.cron, a.schedule.tz, viewerTz);
-    out.push(a.schedule.tz === viewerTz ? words : `${words} (${a.schedule.tz.replace(/_/g, " ").split("/").pop()} time: ${formatSchedule(a.schedule.cron, a.schedule.tz, a.schedule.tz)})`);
-  }
+  const schedule = scheduleWords(a, viewerTz);
+  if (schedule) out.push(schedule);
   out.push(specialistLabel(a.specialistId));
   const budget = budgetLine(a);
   if (budget) out.push(budget);

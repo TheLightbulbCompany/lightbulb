@@ -2,6 +2,7 @@
 
 import boto3
 import pytest
+import pytest_asyncio
 from moto import mock_aws
 
 from core import dynamodb, tasks_schema as ts
@@ -53,3 +54,14 @@ def metrics(monkeypatch):
     except ImportError:
         pass
     return seen
+
+
+@pytest_asyncio.fixture
+async def temporal_env():
+    from temporalio.testing import WorkflowEnvironment
+
+    env = await WorkflowEnvironment.start_time_skipping()
+    try:
+        yield env
+    finally:
+        await env.shutdown()

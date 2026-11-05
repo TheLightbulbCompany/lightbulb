@@ -76,6 +76,8 @@ def test_env_enabled_callers_are_allowlisted():
         BACKEND / "scripts" / "backfill_agent_registry.py",
         BACKEND / "scripts" / "copy_workspace_meta.py",  # dev-only copy refuses an env without the tasks table
         BACKEND / "core" / "repositories" / "paperclip_repo.py",  # META store is env-wide (it has fleet scans)
+        BACKEND / "core" / "services" / "watchdog.py",  # the watchdog schedule is platform-wide
+        BACKEND / "scripts" / "watchdog_ctl.py",
     }
     offenders = [
         str(path.relative_to(BACKEND))

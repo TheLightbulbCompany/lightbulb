@@ -228,7 +228,8 @@
     "task": "c10f836a-c762-50eb-b28b-a8a6af634983"
   },
   "sessionKeys": {
-    "worker": "^agent:[0-9a-f-]{36}:lightbulb:task:[0-9a-f-]{36}$"
+    "worker": "^agent:[0-9a-f-]{36}:lightbulb:task:[0-9a-f-]{36}$",
+    "router": "^agent:[0-9a-f-]{36}:lightbulb:router:(shared|u:[0-9a-f]{16})$"
   },
   "gsis": [
     {

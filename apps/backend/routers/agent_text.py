@@ -156,10 +156,9 @@ class BusinessPhone(BaseModel):
 @router.post("/u/{owner_id}/send")
 async def hook_send(owner_id: str, body: AgentSend, request: Request) -> dict:
     await _require_hook_token(owner_id, request)
-    try:  # a task run's text must be the one a person allowed (Lane Q door gating); legacy agents pass
+    try:  # with the switch on, a text must be one a person allowed (Lane Q door gating); off is today's path
         await effect_doors.require_intent(
             owner_id,
-            body.agent_id,
             "text.send",
             {"agentId": body.agent_id, "replyKey": body.reply_key, "body": body.text.rstrip("\n")},
         )

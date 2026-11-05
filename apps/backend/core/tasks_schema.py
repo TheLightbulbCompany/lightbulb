@@ -585,6 +585,7 @@ class Effect(_Row):
     operands: dict[str, Any] = {}  # the call's parsed operands (≤16 KB): the Output draft while proposed
     operands_hash: str
     executor_ok: bool = False  # a backend Landing executor can run it from `operands`
+    door_used_at: str | None = None  # the one backend door call this intent let through (Lane Q door gating)
     state: EffectState
     question_id: str | None = None
     output: Output | None = None  # the draft payload while proposed

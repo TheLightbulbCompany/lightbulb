@@ -58,28 +58,43 @@ async def test_switch_off_passes_without_reading(table, switch, monkeypatch):
     switch.return_value = False
     spy = AsyncMock(side_effect=AssertionError("tasks read with the switch off"))
     monkeypatch.setattr(tasks_repo, "list_tasks_by_status", spy)
-    await effect_doors.require_intent(WS, AGENT, "mail.send", OPS)
+    await effect_doors.require_intent(WS, "mail.send", OPS)
 
 
-async def test_legacy_agent_without_a_live_attempt_passes(table, switch):
-    await effect_doors.require_intent(WS, AGENT, "mail.send", OPS)
-    await _working(agent="agent-other")
-    await effect_doors.require_intent(WS, AGENT, "mail.send", OPS)  # someone else's task, not this agent's
-    await _working(n=2, agent=AGENT, status="ended")
-    await effect_doors.require_intent(WS, AGENT, "mail.send", OPS)  # its attempt ended: not a live task run
+async def test_switch_on_without_any_live_attempt_is_refused(table, switch):
+    """No exemption for "not a task run": the hook token is owner-scoped and the body names the agent, so
+    `--as <idle specialist>` would otherwise slip through."""
+    with pytest.raises(effect_doors.DoorRefused):
+        await effect_doors.require_intent(WS, "mail.send", OPS)
+    await _working(status="ended")
+    with pytest.raises(effect_doors.DoorRefused):
+        await effect_doors.require_intent(WS, "mail.send", OPS)
 
 
-async def test_task_run_without_intent_is_refused(table, switch):
+async def test_live_attempt_without_intent_is_refused(table, switch):
     await _working()
     with pytest.raises(effect_doors.DoorRefused) as err:
-        await effect_doors.require_intent(WS, AGENT, "mail.send", OPS)
+        await effect_doors.require_intent(WS, "mail.send", OPS)
     assert err.value.code == "effect_not_approved" and err.value.kind == "mail.send"
 
 
-async def test_task_run_with_matching_intent_passes(table, switch):
+async def test_matching_intent_of_any_live_attempt_passes_once(table, switch):
+    await _working(agent="agent-other")  # the approval is for the operands, whoever's name is on the call
+    await _effect()
+    await effect_doors.require_intent(WS, "mail.send", OPS)
+    row = await effects_repo.get_effect(WS, f"{TASK}:1:c1")
+    assert row["doorUsedAt"] and row["state"] == "intent"
+    with pytest.raises(effect_doors.DoorRefused):  # the same intent never lets a second call through
+        await effect_doors.require_intent(WS, "mail.send", OPS)
+
+
+async def test_door_use_is_one_conditional_update(table, switch):
     await _working()
     await _effect()
-    await effect_doors.require_intent(WS, AGENT, "mail.send", OPS)
+    assert await effects_repo.mark_door_used(WS, f"{TASK}:1:c1") is True
+    assert await effects_repo.mark_door_used(WS, f"{TASK}:1:c1") is False
+    await _effect(call="c2", state="approved")
+    assert await effects_repo.mark_door_used(WS, f"{TASK}:1:c2") is False  # not intent
 
 
 @pytest.mark.parametrize("state", ["proposed", "approved", "denied", "done", "unknown"])
@@ -87,7 +102,7 @@ async def test_only_intent_counts(table, switch, state):
     await _working()
     await _effect(state=state)
     with pytest.raises(effect_doors.DoorRefused):
-        await effect_doors.require_intent(WS, AGENT, "mail.send", OPS)
+        await effect_doors.require_intent(WS, "mail.send", OPS)
 
 
 async def test_other_operands_kind_or_attempt_are_refused(table, switch):
@@ -96,19 +111,34 @@ async def test_other_operands_kind_or_attempt_are_refused(table, switch):
     await _effect(n=2, operands={**OPS, "to": "other@example.com"}, call="c2")  # another recipient
     await _effect(n=2, kind="text.send", operands={"agentId": AGENT, "replyKey": "k", "body": "hi"}, call="c3")
     with pytest.raises(effect_doors.DoorRefused):
-        await effect_doors.require_intent(WS, AGENT, "mail.send", OPS)
+        await effect_doors.require_intent(WS, "mail.send", OPS)
 
 
 async def test_match_predicate_covers_what_the_classifier_cannot_know(table, switch):
     await _working()
     await _effect(kind="app.publish", operands={})  # `lightbulb app publish` with no --app
     await effect_doors.require_intent(
-        WS, AGENT, "app.publish", {"appId": "app_1"}, match=lambda o: o.get("appId") in (None, "app_1")
+        WS, "app.publish", {"appId": "app_1"}, match=lambda o: o.get("appId") in (None, "app_1")
     )
+    await _effect(kind="app.publish", operands={}, call="c2")
     with pytest.raises(effect_doors.DoorRefused):
         await effect_doors.require_intent(
-            WS, AGENT, "app.publish", {"appId": "app_2"}, match=lambda o: o.get("appId") == "app_2"
+            WS, "app.publish", {"appId": "app_2"}, match=lambda o: o.get("appId") == "app_2"
         )
+
+
+async def test_live_attempts_walks_every_page(table, switch, monkeypatch):
+    pages = {None: ([{"taskId": "t1", "attemptCount": 1}], "c1"), "c1": ([{"taskId": "t2", "attemptCount": 1}], None)}
+
+    async def by_status(ws, status, *, limit, cursor=None):
+        return pages[cursor]
+
+    async def attempt(ws, task_id, n):
+        return {"taskId": task_id, "n": n, "status": "running", "agentId": AGENT}
+
+    monkeypatch.setattr(tasks_repo, "list_tasks_by_status", by_status)
+    monkeypatch.setattr(tasks_repo, "get_attempt", attempt)
+    assert [a["taskId"] for a in await effect_doors.live_attempts(WS)] == ["t1", "t2"]
 
 
 def test_mail_operands_follow_the_classifier():

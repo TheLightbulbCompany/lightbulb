@@ -1488,6 +1488,18 @@
           "title": "Executorok",
           "type": "boolean"
         },
+        "doorUsedAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Doorusedat"
+        },
         "state": {
           "enum": [
             "proposed",

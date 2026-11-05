@@ -28,8 +28,8 @@ def gate(monkeypatch):
     calls = []
     state = {"refuse": False}
 
-    async def require_intent(ws, agent_id, kind, operands, *, match=None):
-        calls.append((ws, agent_id, kind, operands, match))
+    async def require_intent(ws, kind, operands, *, match=None):
+        calls.append((ws, kind, operands, match))
         if state["refuse"]:
             raise effect_doors.DoorRefused(kind)
 
@@ -55,8 +55,8 @@ def test_mail_door(client, gate, monkeypatch):
     send.assert_not_awaited()
     gate["refuse"] = False
     assert client.post(f"/api/v1/agent-mail/u/{OWNER}/send", json=body, headers=H).status_code == 200
-    (ws, agent, kind, operands, _) = gate["calls"][-1]
-    assert (ws, agent, kind) == (OWNER, AGENT, "mail.send")
+    (ws, kind, operands, _) = gate["calls"][-1]
+    assert (ws, kind) == (OWNER, "mail.send")
     assert operands == {"agentId": AGENT, "to": "acme@example.com", "subject": "Q3", "body": "hi"}
     send.assert_awaited_once()
 
@@ -70,7 +70,7 @@ def test_text_door(client, gate, monkeypatch):
     assert r.status_code == 403 and reply.await_count == 0
     gate["refuse"] = False
     assert client.post(f"/api/v1/agent-text/u/{OWNER}/send", json=body, headers=H).status_code == 200
-    assert gate["calls"][-1][2:4] == (
+    assert gate["calls"][-1][1:3] == (
         "text.send",
         {"agentId": AGENT, "replyKey": "team@acme.example/rk1", "body": "On my way"},
     )
@@ -92,8 +92,8 @@ def test_purchase_door(client, gate, monkeypatch):
     assert r.status_code == 403 and r.json()["detail"]["code"] == "effect_not_approved" and request.await_count == 0
     gate["refuse"] = False
     assert client.post(f"/api/v1/internal/link-wallet/{OWNER}/requests", json=body, headers=H).status_code == 200
-    (_, agent, kind, operands, match) = gate["calls"][-1]
-    assert (agent, kind) == (AGENT, "purchase")
+    (_, kind, operands, match) = gate["calls"][-1]
+    assert kind == "purchase"
     assert operands == {"merchant": "Acme", "url": "https://acme.io", "amount": 35.0, "why": "hosting"}
     assert match({"merchant": "Acme", "url": "https://acme.io", "amount": 35, "why": "hosting"})  # the tool's int
     assert not match({"merchant": "Acme", "url": "https://acme.io", "amount": 36, "why": "hosting"})
@@ -111,8 +111,8 @@ def test_app_publish_door_for_agents_only(client, gate, monkeypatch):
     assert r.status_code == 403 and r.json()["detail"]["code"] == "effect_not_approved" and publish.await_count == 0
     gate["refuse"] = False
     assert client.post("/api/v1/apps/build/app_1/publish", json=body, headers=hook).status_code == 200
-    (_, agent, kind, operands, match) = gate["calls"][-1]
-    assert (agent, kind, operands) == (AGENT, "app.publish", {"appId": "app_1"})
+    (_, kind, operands, match) = gate["calls"][-1]
+    assert (kind, operands) == ("app.publish", {"appId": "app_1"})
     assert match({}) and match({"appId": "app_1"}) and not match({"appId": "app_2"})
     # A person publishing from their computer is not a Worker: the door is not asked.
     from core.auth import AuthContext

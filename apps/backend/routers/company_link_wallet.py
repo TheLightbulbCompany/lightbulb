@@ -158,10 +158,9 @@ class PurchaseBody(BaseModel):
 @internal_router.post("/{owner_id}/requests")
 async def agent_request(owner_id: str, body: PurchaseBody, request: Request):
     await _require_hook_token(owner_id, request)
-    try:  # a task run's purchase must be the one a person allowed (Lane Q door gating); legacy agents pass
+    try:  # with the switch on, a purchase must be one a person allowed (Lane Q door gating); off is today's path
         await effect_doors.require_intent(
             owner_id,
-            body.agentId,
             "purchase",
             {"merchant": body.merchant, "url": body.url, "amount": body.amount, "why": body.why},
             # the tool's amount may be an int where the route parses a float: compare the numbers, not the JSON

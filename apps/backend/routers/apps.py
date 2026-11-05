@@ -318,11 +318,10 @@ async def up(body: UpBody, caller: Builder):
 
 @router.post("/build/{app_id}/publish")
 async def publish(app_id: AppId, body: PublishBody, caller: Builder):
-    if caller.actor_kind == "agent":  # a task run's publish must be the one a person allowed (Lane Q door gating)
+    if caller.actor_kind == "agent":  # with the switch on, an agent's publish must be one a person allowed (Lane Q)
         try:
             await effect_doors.require_intent(
                 caller.owner_id,
-                caller.actor_id,
                 "app.publish",
                 {"appId": app_id},
                 match=lambda o: o.get("appId") in (None, app_id),  # `lightbulb app publish` names no app id

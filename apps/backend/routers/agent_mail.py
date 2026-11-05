@@ -83,10 +83,9 @@ async def send_mail(owner_id: str, body: SendRequest, request: Request) -> dict:
     await _require_hook_token(owner_id, request)
     if body.to and body.reply_key:
         raise HTTPException(status_code=400, detail={"status": "to_and_reply_key"})
-    try:  # a task run's send must be the one a person allowed (Lane Q door gating); legacy agents pass
+    try:  # with the switch on, a send must be one a person allowed (Lane Q door gating); off is today's path
         await effect_doors.require_intent(
             owner_id,
-            body.agent_id,
             "mail.send",
             effect_doors.mail_operands(
                 agent_id=body.agent_id,

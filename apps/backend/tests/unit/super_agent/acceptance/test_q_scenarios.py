@@ -364,3 +364,58 @@ async def test_a06_never_approves_the_purchase():
     ctx.state.update(approvalTaskId=T, approvalQid="q1", purchaseTaskId=T)
     result = await a06(ctx)
     assert not result.passed and result.evidence["reason"].startswith("refusing")
+
+
+async def test_answer_question_refuses_money_and_the_purchase_task_without_posting():
+    import pytest
+
+    from scripts.super_agent.acceptance.o_lib import RefusedToAnswer, answer_question
+
+    posts = []
+
+    def handler(request, user):
+        if request.method == "POST":
+            posts.append(request.url.path)
+        return _json({"items": [_view(user, subkind="purchase")]})
+
+    ctx = Fake(handler)
+    with pytest.raises(RefusedToAnswer):
+        await answer_question(ctx, "sam", T, "q1", "approve", key="k")
+    ctx.handler = lambda r, u: (
+        (posts.append(r.url.path) if r.method == "POST" else None) or _json({"items": [_view(u, subkind="send")]})
+    )
+    ctx.state["purchaseTaskId"] = T
+    with pytest.raises(RefusedToAnswer):
+        await answer_question(ctx, "sam", T, "q1", "approve", key="k")
+    assert posts == []
+    ctx.state.pop("purchaseTaskId")
+    assert (await answer_question(ctx, "sam", T, "q1", "approve", key="k")).status_code == 200
+
+
+async def test_a03_stops_the_task_even_when_a_wait_raises():
+    import pytest
+
+    from scripts.super_agent.acceptance import a03_start_suggested as mod
+
+    async def no_events(*a, **k):
+        return
+        yield
+
+    ctx = Fake(None, [{"type": "task", "taskId": T, "status": "working"}])
+    ctx.appsync = no_events
+    ctx.state["proposedTaskId"] = T
+    paths = []
+
+    def handler(request, user):
+        paths.append(request.url.path.rsplit("/", 1)[-1])
+        return _json({"task": {"version": 3}})
+
+    ctx.handler = handler
+
+    async def boom(pred, timeout_s, *, ws=None):
+        raise RuntimeError("dev down")
+
+    ctx.wait_for = boom
+    with pytest.raises(RuntimeError):
+        await mod.a03(ctx)
+    assert paths[-1] == "stop"

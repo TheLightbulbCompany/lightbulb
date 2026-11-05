@@ -10,6 +10,7 @@ import uuid
 from typing import Any
 
 from core import tasks_schema as ts
+from core.services.questions import MONEY_SUBKINDS
 
 #: Upper bound the scenarios WAIT for the Router (cold start 30-60 s; its turns are sequential per workspace).
 #: The waits return as soon as the thing is there; the observed seconds go in the evidence.
@@ -22,8 +23,6 @@ ASKS = (
     "(only sa-test-2+clerk_test@thelightbulb.company, this is a test) about the new date, 3) estimate what Stripe "
     "fees we'd pay on 200 tickets, 4) and buy a domain for the workshop signup page (around $15)."
 )
-#: Question subkinds that spend money (core/services/questions.py `_MONEY`): no scenario ever approves one.
-MONEY_SUBKINDS = ("purchase", "spend", "budget_override")
 
 
 async def create_room(ctx: Any, user: str, name: str, members: list[dict]) -> dict:
@@ -101,8 +100,17 @@ async def task_questions(ctx: Any, user: str, task_id: str) -> list[dict]:
     return r.json()["items"]
 
 
+class RefusedToAnswer(Exception):
+    """A scenario tried to answer a Question that spends money (or the purchase task's): never pressed."""
+
+
 async def answer_question(ctx: Any, user: str, task_id: str, qid: str, option_id: str, *, key: str):
-    """The raw response: callers assert on the status (403 for a non-answerer)."""
+    """The raw response: callers assert on the status (403 for a non-answerer). The ONE place a Question is
+    answered, so the money guard lives here: fetch it first and refuse (raise, no POST) for a money subkind
+    or for the purchase task A3 started."""
+    view = next((q for q in await task_questions(ctx, user, task_id) if q["id"] == qid), None)
+    if view is None or view.get("subkind") in MONEY_SUBKINDS or task_id == ctx.state.get("purchaseTaskId"):
+        raise RefusedToAnswer(f"{task_id}/{qid}: {'unknown' if view is None else view.get('subkind')} Question")
     body = {"optionId": option_id, "clientAnswerId": key}
     return await ctx.api(user).post(f"/api/v1/tasks/{task_id}/questions/{qid}/answer", json=body)
 

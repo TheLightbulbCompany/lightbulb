@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+from core.services.questions import MONEY_SUBKINDS
 from scripts.super_agent.acceptance.ctx import Ctx, Result
 from scripts.super_agent.acceptance.o_lib import (
-    MONEY_SUBKINDS,
     ACK_S,
     ROUTER_REPLY_S,
     agent_posts,

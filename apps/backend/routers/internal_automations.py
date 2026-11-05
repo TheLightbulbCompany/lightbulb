@@ -29,7 +29,7 @@ from core.temporal.watches import (
     watch_id_for,
 )
 from core.services.container_auth import _require_hook_token
-from routers.automations import check_dm_owner
+from routers.automations import check_deliver_room, check_dm_owner
 from routers.rules import RuleBuiltin, RuleMatchIn, check_scope
 
 router = APIRouter()
@@ -70,25 +70,20 @@ async def _deliver_room_id(ws: str, requester: str, key: str, here: str) -> str:
     gate run 3) instead of giving its id: a name of exactly one room the requester sits in resolves to its id;
     anything else is 400 `room_not_found`, as the create/patch routes answer (a run posting to a room that is
     not one failed its task's end_attempt)."""
-    from core.services import messaging
-
     if key == here:
         return here
     try:
-        await messaging.require_room_member(ws, requester, key)
+        await check_deliver_room(f"room:{key}", ws, requester)
         return key
-    except messaging.ApiProblem:
+    except HTTPException:
         pass
     name = key.removeprefix("#").strip().lower()
     rooms = await messaging_repo.list_rooms_for_member(ws, "human", requester)
     ids = {r["meta"]["roomId"] for r in rooms if str(r["meta"].get("name") or "").strip().lower() == name}
     if len(ids) == 1:
         (room_id,) = ids
-        try:
-            await messaging.require_room_member(ws, requester, room_id)  # discovery only: recheck the seat
-            return room_id
-        except messaging.ApiProblem:
-            pass
+        await check_deliver_room(f"room:{room_id}", ws, requester)  # discovery only: recheck the seat (400)
+        return room_id
     raise _err(400, "room_not_found")
 
 

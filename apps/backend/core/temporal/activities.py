@@ -446,18 +446,22 @@ async def end_attempt(ws: str, task_id: str, n: int, outcome: str, error: str | 
             await task_conversation.post_as_lightbulb(ws, ts.task_room_id(task_id), **result_room)
         if room:
             names = ", ".join(f["fileName"] for f in files)
-            await task_conversation.post_as_lightbulb(
-                ws,
-                room,
-                text=f"{text}\n\n_(Attached in the task: {names}.)_" if files else text,
-                event_id=f"task-result:{task_id}:{n}",
-                specialist=task.get("specialist"),
-                thread_root=root,
-                task_refs=refs,
-                kind="result",
-            )
-        if room:
-            await messaging.ask_who_should_see(ws, {"roomId": room}, "completed")
+            try:
+                await task_conversation.post_as_lightbulb(
+                    ws,
+                    room,
+                    text=f"{text}\n\n_(Attached in the task: {names}.)_" if files else text,
+                    event_id=f"task-result:{task_id}:{n}",
+                    specialist=task.get("specialist"),
+                    thread_root=root,
+                    task_refs=refs,
+                    kind="result",
+                )
+                await messaging.ask_who_should_see(ws, {"roomId": room}, "completed")
+            except messaging.ApiProblem:
+                # A deleted or left room: the task room has the result, and the attempt must still end (a
+                # failed end_attempt fails the workflow and strands an automation's run claim).
+                logger.warning("end_attempt: origin room refused the result task=%s attempt=%s", task_id, n)
     if not first:
         return
     if outcome in ("failed", "refused", "unavailable", "checkpoint_failed") and requester:

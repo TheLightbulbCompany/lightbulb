@@ -264,6 +264,24 @@ async def test_end_attempt_with_a_room_name_for_origin_still_ends(world):
     assert (await repo.get_task(WS, tid))["status"] == "idle"
 
 
+async def test_end_attempt_ends_when_the_origin_room_refuses(world, monkeypatch):
+    """A deleted or left origin room: the task room has the result and the attempt still ends."""
+    tid = await _task(root=ROOT)
+    await _attempt(tid)
+    await acts.acquire_slot(WS, tid)
+    real = acts.task_conversation.post_as_lightbulb
+
+    async def gone(ws, room, **kw):
+        if room == ROOM:
+            raise acts.messaging.ApiProblem("ROOM_NOT_FOUND", "Room not found.")
+        return await real(ws, room, **kw)
+
+    monkeypatch.setattr(acts.task_conversation, "post_as_lightbulb", gone)
+    await _ended(tid, "completed")
+    assert [p["room"] for p in world["posts"]] == [ts.task_room_id(tid)]
+    assert (await repo.get_task(WS, tid))["status"] == "idle"
+
+
 async def test_end_attempt_result_files_go_to_the_task_room_post(world):
     """Live dev bug (5 Nov): a Worker's file reached the room as a raw MEDIA: path. The task VM PUT it to the
     task room's key; the task room post adopts it, the origin post names it."""

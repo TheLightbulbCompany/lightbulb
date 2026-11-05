@@ -83,3 +83,15 @@ def test_propose_automation_reports_backend_refusal(router_turn, monkeypatch):
     monkeypatch.setattr(pkg, "_post", refuse)
     out = json.loads(_call(trigger_ids=["chat:m1"], name="n", instructions="i", cron=["*/5 * * * *"]))
     assert out["error"].startswith("not proposed")
+
+
+def test_propose_automation_surfaces_the_backend_code(router_turn, monkeypatch):
+    import io
+    import urllib.error
+
+    def refuse(url, token, body):
+        raise urllib.error.HTTPError(url, 400, "bad", {}, io.BytesIO(b'{"detail": {"code": "room_not_found"}}'))
+
+    monkeypatch.setattr(pkg, "_post", refuse)
+    out = json.loads(_call(trigger_ids=["chat:m1"], name="n", instructions="i", cron=["0 9 * * 1"], deliver_to="room:x"))
+    assert out["error"] == "not proposed: room_not_found"

@@ -118,7 +118,7 @@ class RefusedToAnswer(Exception):
 async def answer_question(ctx: Any, user: str, task_id: str, qid: str, option_id: str, *, key: str):
     """The raw response: callers assert on the status (403 for a non-answerer). The ONE place a Question is
     answered, so the money guard lives here: fetch it first and refuse (raise, no POST) for a money subkind
-    or for the purchase task A3 started."""
+    or for the purchase task A2 started."""
     view = next((q for q in await task_questions(ctx, user, task_id) if q["id"] == qid), None)
     if view is None or view.get("subkind") in MONEY_SUBKINDS or task_id == ctx.state.get("purchaseTaskId"):
         raise RefusedToAnswer(f"{task_id}/{qid}: {'unknown' if view is None else view.get('subkind')} Question")

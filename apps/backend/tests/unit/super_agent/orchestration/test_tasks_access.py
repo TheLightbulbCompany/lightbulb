@@ -95,7 +95,7 @@ def _q(kind, answerers, state="open", qid="q1"):
         ("resolved", [], "sam", {}, [], "resolved"),
         ("failed", [], "sam", {}, [], "waiting_on_you"),
         ("failed", [], "priya", {}, [], "idle"),
-        ("proposed", [], "sam", {}, [], None),
+        ("proposed", [], "sam", {}, [], "resolved"),  # a row from before 5 Nov 2026 reads as Closed
         ("queued", [], "sam", {}, [], "working"),
     ],
 )

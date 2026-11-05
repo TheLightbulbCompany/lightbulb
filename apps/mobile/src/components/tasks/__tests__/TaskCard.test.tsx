@@ -20,7 +20,6 @@ function fakeClient() {
     list: jest.fn(async () => ({ tasks: FIXTURES.step05.tasks, next: null })),
     get: jest.fn(async () => undefined),
     act: jest.fn(async () => byId("step03", "t-fees")),
-    startMany: jest.fn(async () => ({ tasks: [] })),
     answer: jest.fn(async () => ({ question: {}, next: null })),
     trace: jest.fn(async () => ({ attempt: 1, recentTools: [] })),
     markRead: jest.fn(async () => undefined),

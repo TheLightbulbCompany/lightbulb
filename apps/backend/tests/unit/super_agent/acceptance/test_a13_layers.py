@@ -43,7 +43,7 @@ def test_check_rows_names_each_missing_link():
 
 def test_check_router_allows_router_tools_only():
     ok = a13_layers.check_router(
-        [_run("b1", ["start_task", "propose_tasks"]), _run("b2", ["reply"], tools=["memory", "tool_search"])]
+        [_run("b1", ["start_task", "pass_through"]), _run("b2", ["reply"], tools=["memory", "tool_search"])]
     )
     assert ok["ok"] and ok["outside"] == [] and ok["notCompleted"] == []
     bad = a13_layers.check_router([_run("b1", ["start_task"], tools=["terminal"]), _run("b2", [], status="failed")])
@@ -61,7 +61,7 @@ async def test_a13_green_when_rows_link_and_legacy_is_empty(monkeypatch):
 
     async def runs(ws, front=None):
         seen["runs"] = ws
-        return [_run("b1", ["start_task", "propose_tasks", "reply"])]
+        return [_run("b1", ["start_task", "reply"])]
 
     monkeypatch.setattr(a13_layers, "legacy_rows", legacy)
     monkeypatch.setattr(a13_layers, "router_runs", runs)

@@ -181,13 +181,7 @@ async def test_three_asks_one_reply_three_cards(world):
     world["decisions"] = [
         _start([t1]),
         _start([t1], title="Book the flights", specialist=None, ack="And booking the flights."),
-        {
-            "kind": "propose_tasks",
-            "triggerIds": [t1],
-            "reason": "a paid tool",
-            "ack": "One more you can start:",
-            "tasks": [{"title": "Estimate the Stripe fees", "brief": "Estimate", "specialist": FIN}],
-        },
+        _start([t1], title="Buy the domain", ack="And buying the domain."),  # paid: it asks inside the task
     ]
     out = await _run([t1])
     assert len(world["posts"]) == 1  # one line, three cards (G2)
@@ -196,20 +190,20 @@ async def test_three_asks_one_reply_three_cards(world):
     assert post["text"] == "On it: paying Acme."  # one ack per trigger: the first decision's (the cards say the rest)
     assert post["remember"] is False  # acks only: kept out of room memory (audit item 12)
     ids = [r["taskId"] for r in post["task_refs"]]
-    assert [r["role"] for r in post["task_refs"]] == ["started", "started", "suggested"]
+    assert [r["role"] for r in post["task_refs"]] == ["started", "started", "started"]
     assert ids == [ts.router_task_id(BATCH, 0, 0), ts.router_task_id(BATCH, 1, 0), ts.router_task_id(BATCH, 2, 0)]
     rows = [await repo.get_task(WS, i) for i in ids]
-    assert [r["status"] for r in rows] == ["queued", "queued", "proposed"]
+    assert [r["status"] for r in rows] == ["queued", "queued", "queued"]
     assert [r["specialist"] for r in rows] == [FIN, None, FIN]
-    assert rows[2]["proposalReason"] == "a paid tool" and rows[0]["audience"] == {
+    assert rows[0]["audience"] == {
         "kind": "room",
         "roomId": ROOM,
         "userIds": [],
     }
     assert sorted(r["identifier"] for r in rows) == ["LB-1", "LB-2", "LB-3"]
     assert rows[0]["ownerUserId"] == SAM and rows[0]["triggerId"] == t1 and rows[0]["lane"] == "shared"
-    assert out.started_task_ids == ids[:2] and out.posted_message_ids == [post["id"]]
-    assert world["starts"] == [(ids[0], "router"), (ids[1], "router")]
+    assert out.started_task_ids == ids and out.posted_message_ids == [post["id"]]
+    assert world["starts"] == [(i, "router") for i in ids]
     assert sorted(world["rooms"]) == sorted(ids) and {t for t, _ in world["indexed"]} == set(ids)
     assert (await repo.get_trigger(WS, t1))["routedTo"] == {"taskId": ids[0]}
     # The first started task holds the ack thread (one thread, one task); the others fall back to the room.
@@ -240,7 +234,7 @@ async def test_router_turn_retry_applies_once(world):
     t1 = await _trig("chat:m1")
     world["decisions"] = [
         _start([t1]),
-        {"kind": "propose_tasks", "triggerIds": [t1], "ack": "Or:", "tasks": [{"title": "B", "brief": "b"}]},
+        _start([t1], title="B", ack="Or:"),
     ]
     first = await _run([t1])
     again = await _run([t1])
@@ -250,10 +244,8 @@ async def test_router_turn_retry_applies_once(world):
     # The retry rendered a different prompt (the first apply created tasks the batch now lists), the bridge
     # refused the re-POST, and the stored run's decisions were read back instead of a fallback.
     assert world["runs"][0][1] != world["runs"][1][1] and world["polls"] == [ts.router_run_id(WS, BATCH)]
-    working, _ = await repo.list_tasks_by_status(WS, "queued")
-    proposed, _ = await repo.list_tasks_by_status(WS, "proposed")
-    assert len(working) == 1 and len(proposed) == 1
-    assert sorted(r["identifier"] for r in working + proposed) == ["LB-1", "LB-2"]  # the replay mints nothing
+    queued, _ = await repo.list_tasks_by_status(WS, "queued")
+    assert sorted(r["identifier"] for r in queued) == ["LB-1", "LB-2"]  # the replay mints nothing
 
 
 @pytest.mark.asyncio
@@ -336,7 +328,7 @@ async def test_router_ask_is_plain_reply(world):
     world["decisions"] = [{"kind": "ask", "triggerIds": [t1], "text": "Which card?", "options": ["Amex", "Visa"]}]
     await _run([t1])
     assert world["posts"][0]["text"] == "Which card? (Amex / Visa)" and world["posts"][0]["task_refs"] is None
-    for status in ("queued", "proposed", "waiting"):
+    for status in ("queued", "waiting"):
         assert (await repo.list_tasks_by_status(WS, status))[0] == []  # no task, no Question row (G27)
 
 
@@ -490,18 +482,9 @@ def test_validate_decisions_keeps_order_and_drops_only_bad():
     kept = router_prompt.validate_decisions(
         [
             {"kind": "ignore", "triggerIds": ["a", "zzz"]},
-            {
-                "kind": "propose_tasks",
-                "triggerIds": ["a"],
-                "ack": "x",
-                "tasks": [{"title": "ok", "brief": "b"}, {"title": "bad", "brief": "b", "specialist": "nope"}],
-            },
-            {
-                "kind": "propose_tasks",
-                "triggerIds": ["a"],
-                "ack": "x",
-                "tasks": [{"title": "bad", "brief": "b", "specialist": "nope"}],
-            },
+            {"kind": "start_task", "triggerIds": ["a"], "ack": "x", "title": "ok", "brief": "b", "specialist": FIN},
+            {"kind": "start_task", "triggerIds": ["a"], "ack": "x", "title": "bad", "brief": "b", "specialist": "nope"},
+            {"kind": "propose_tasks", "triggerIds": ["a"], "ack": "x", "tasks": [{"title": "gone", "brief": "b"}]},
             "garbage",
             {"kind": "pass_through", "triggerIds": ["a"], "taskId": room_task["taskId"]},
             {
@@ -518,8 +501,8 @@ def test_validate_decisions_keeps_order_and_drops_only_bad():
         scope=lambda tid: ("shared", SAM, "r1"),
         in_scope=acts._task_in_scope,
     )
-    assert [type(d).__name__ for d in kept] == ["Ignore", "ProposeTasks", "PassThrough", "PassThrough"]
-    assert kept[0].trigger_ids == ["a"] and [t.title for t in kept[1].tasks] == ["ok"]
+    assert [type(d).__name__ for d in kept] == ["Ignore", "StartTask", "PassThrough", "PassThrough"]
+    assert kept[0].trigger_ids == ["a"] and kept[1].title == "ok"
     assert [d.task_id for d in kept[2:]] == [room_task["taskId"], ws_task["taskId"]]
     # A DM (private lane) reaches only person tasks naming that user.
     lane = ts.router_lane_key(SAM)

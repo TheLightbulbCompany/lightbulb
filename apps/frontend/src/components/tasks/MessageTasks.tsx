@@ -1,17 +1,12 @@
 "use client";
 
-// Request cards under a Lightbulb message (`taskRefs`), the Suggested block, and the
-// "Sent to …" line under a person's message (`routedTo`). Only rendered with the switch on.
+// Request cards under a Lightbulb message (`taskRefs`) and the "Sent to …" line under a person's message (`routedTo`). Only rendered with the switch on.
 // One shared room list read (SWR dedupes it across every message in the room).
 
-import { useState, type ReactElement } from "react";
-import { useSWRConfig } from "swr";
-import { putTaskSummary, useTask, useTaskList, type CanonicalRoomMessage, type TaskRef, type TaskSummary } from "@lightbulb/shared";
-import { Button } from "@/components/ui/button";
+import type { ReactElement } from "react";
+import { useTask, useTaskList, type CanonicalRoomMessage, type TaskSummary } from "@lightbulb/shared";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
-import { capture } from "@/lib/analytics";
 import { TaskCard } from "./TaskCard";
-import { errorCopy, useTaskActions } from "./useTaskActions";
 
 export function MessageTasks({ message, viewerId, onOpen }: {
   message: CanonicalRoomMessage; viewerId: string; onOpen?: (taskId: string) => void;
@@ -31,11 +26,8 @@ export function MessageTasks({ message, viewerId, onOpen }: {
         {refs.map((r) => <div key={r.taskId} className="mt-1.5 h-14 max-w-xl rounded-lg border border-border bg-muted/40 motion-safe:animate-pulse" />)}
       </div>;
   }
-  const started = refs.filter((r) => r.role === "started");
-  const suggested = refs.filter((r) => r.role === "suggested");
   return <div aria-label="Requests in this message">
-    {started.map((r) => <RefCard key={r.taskId} taskId={r.taskId} listed={byId.get(r.taskId)} viewerId={viewerId} onOpen={onOpen} />)}
-    {suggested.length > 0 && <SuggestedBlock refs={suggested} taskById={byId} viewerId={viewerId} onOpen={onOpen} />}
+    {refs.map((r) => <RefCard key={r.taskId} taskId={r.taskId} listed={byId.get(r.taskId)} viewerId={viewerId} onOpen={onOpen} />)}
   </div>;
 }
 
@@ -49,72 +41,19 @@ function RefCard({ taskId, listed, viewerId, onOpen }: {
   return <TaskCard task={listed ?? data?.task} taskId={taskId} viewerId={viewerId} onOpen={onOpen} />;
 }
 
-export function SuggestedBlock({ refs, taskById, viewerId, onOpen }: {
-  refs: TaskRef[]; taskById: ReadonlyMap<string, TaskSummary>; viewerId: string; onOpen?: (taskId: string) => void;
-}): ReactElement {
-  const { tasks } = useLiveEvents();
-  const { cache, mutate } = useSWRConfig();
-  const { act, refetch } = useTaskActions("suggested");
-  const [pending, setPending] = useState<string | null>(null);
-  const [errors, setErrors] = useState<Record<string, string>>({});
-  const proposed = refs.map((r) => taskById.get(r.taskId)).filter((t): t is TaskSummary => t?.status === "proposed");
-
-  const one = async (task: TaskSummary, verb: "start" | "dismiss") => {
-    setPending(task.taskId);
-    const res = await act(task, verb);
-    setPending(null);
-    setErrors((e) => ({ ...e, [task.taskId]: res.ok ? "" : res.message }));
-  };
-  const all = async () => {
-    setPending("all");
-    try {
-      // The route answers with the ones that started (#4715); the rest are refetched and keep their card.
-      const res = await tasks.startMany(proposed.map((t) => t.taskId));
-      const started = new Set(res.tasks.map((t) => t.taskId));
-      for (const t of res.tasks) await putTaskSummary(cache, mutate, t, tasks);
-      const failed = proposed.filter((t) => !started.has(t.taskId));
-      await Promise.all(failed.map((t) => refetch(t.taskId)));
-      setErrors(Object.fromEntries(failed.map((t) => [t.taskId, "Couldn't start this one. Try again."])));
-      capture("task_suggestion_started", { source: "start_all", count: started.size });
-    } catch (error) {
-      setErrors(Object.fromEntries(proposed.map((t) => [t.taskId, errorCopy(error)])));
-    } finally {
-      setPending(null);
-    }
-  };
-
-  return <section aria-label="Suggested" className="mt-2 max-w-xl">
-    <div className="flex items-center gap-2">
-      <h4 className="label-caps">Suggested</h4>
-      {proposed.length >= 2 && <Button type="button" size="sm" variant="ghost" disabled={pending !== null} onClick={() => void all()}>Start all</Button>}
-    </div>
-    {refs.map((r) => {
-      const task = taskById.get(r.taskId);
-      const waiting = task?.status === "proposed";
-      return <TaskCard key={r.taskId} task={task} taskId={r.taskId} viewerId={viewerId} onOpen={onOpen} hideAction={waiting}>
-        {waiting && <div className="relative z-10 mt-2 flex items-center gap-2">
-          <Button type="button" size="sm" disabled={pending !== null} onClick={() => void one(task, "start")}>Start</Button>
-          <Button type="button" size="sm" variant="ghost" disabled={pending !== null} onClick={() => void one(task, "dismiss")}>Dismiss</Button>
-        </div>}
-        {errors[r.taskId] && <p role="alert" className="relative z-10 mt-1 text-ui text-err">{errors[r.taskId]}</p>}
-      </TaskCard>;
-    })}
-  </section>;
-}
-
-/** "Sent to Workshop signup app ›" (one request, opens it) or "2 requests started, 1 suggested ›" (scrolls to the reply). */
+/** "Sent to Workshop signup app ›" (one request, opens it) or "2 requests started ›" (scrolls to the reply). */
 export function RoutedToLink({ routedTo, taskTitle, onOpen, onShowReply }: {
   routedTo: NonNullable<CanonicalRoomMessage["routedTo"]>;
   taskTitle?: (taskId: string) => string | undefined;
   onOpen?: (taskId: string) => void;
   onShowReply?: (taskId: string) => void;
 }): ReactElement | null {
-  const { taskIds, started, suggested, passThrough } = routedTo;
+  const { taskIds, started, passThrough } = routedTo;
   if (!taskIds.length) return null;
   const single = passThrough || taskIds.length === 1;
   const label = single
     ? `Sent to ${taskTitle?.(taskIds[0]) ?? "a request"}`
-    : [`${started} ${started === 1 ? "request" : "requests"} started`, suggested ? `${suggested} suggested` : ""].filter(Boolean).join(", ");
+    : `${started} ${started === 1 ? "request" : "requests"} started`;
   return <button type="button" className="mt-0.5 text-ui text-muted-foreground hover:text-foreground hover:underline"
     onClick={() => (single ? onOpen?.(taskIds[0]) : onShowReply?.(taskIds[0]))}>{label} ›</button>;
 }

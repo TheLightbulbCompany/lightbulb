@@ -73,7 +73,7 @@ export function useTaskReply(roomId: string | null, draft: Pick<RoomComposerProp
   const [error, setError] = useState<string | null>(null);
   useEffect(() => { setRemoved(null); setError(null); }, [taskId]);
   const task = data?.task;
-  if (!live || !roomId || !task || task.taskId !== taskId || task.originRoomId !== roomId || task.status === "proposed" || removed === task.taskId) return null;
+  if (!live || !roomId || !task || task.taskId !== taskId || task.originRoomId !== roomId || removed === task.taskId) return null;
   return {
     chip: <div className="flex min-w-0 items-center gap-1 px-1 text-ui text-muted-foreground">
       <span className="min-w-0 truncate">Replying to: <span className="font-semibold text-foreground">{task.title}</span></span>

@@ -13,8 +13,6 @@ export interface TasksClient {
   list(scope: TaskScope, cursor?: string | null): Promise<{ tasks: TaskSummary[]; next: string | null }>;
   get(taskId: string): Promise<TaskDetail>;
   act(taskId: string, verb: TaskVerb, version: number): Promise<TaskSummary>;
-  /** `POST /tasks/start`: the summaries of the ones that started; an id absent from `tasks` did not. */
-  startMany(taskIds: string[]): Promise<{ tasks: TaskSummary[] }>;
   answer(taskId: string, qid: string, body: AnswerBody): Promise<{ question: QuestionView; next: TaskSummary | null }>;
   trace(taskId: string, attempt: number): Promise<TaskTrace>;
   markRead(taskId: string): Promise<unknown>;
@@ -32,7 +30,6 @@ export function createTasksClient(api: ApiMethods, cacheScope = ""): TasksClient
     ) as ReturnType<TasksClient["list"]>,
     get: (taskId) => api.get(path(taskId)) as Promise<TaskDetail>,
     act: (taskId, verb, version) => api.post(`${path(taskId)}/${verb}`, { version }) as Promise<TaskSummary>,
-    startMany: (taskIds) => api.post("/tasks/start", { taskIds }) as Promise<{ tasks: TaskSummary[] }>,
     answer: (taskId, qid, body) =>
       api.post(`${path(taskId)}/questions/${encodeURIComponent(qid)}/answer`, body) as ReturnType<TasksClient["answer"]>,
     trace: (taskId, attempt) => api.get(`${path(taskId)}/trace?attempt=${attempt}`) as Promise<TaskTrace>,

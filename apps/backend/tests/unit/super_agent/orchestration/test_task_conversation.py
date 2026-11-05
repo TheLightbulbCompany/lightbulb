@@ -304,7 +304,7 @@ async def test_room_with_a_question_card_lists(monkeypatch):
     assert refs == [
         [{"taskId": TID, "role": "started", "qid": "q-1"}],
         [{"taskId": TID, "role": "started"}],
-        [{"taskId": TID, "role": "suggested"}],
+        [{"taskId": TID, "role": "started"}],  # a stored "suggested" card (before 5 Nov 2026) reads as an ordinary one
     ]
 
 

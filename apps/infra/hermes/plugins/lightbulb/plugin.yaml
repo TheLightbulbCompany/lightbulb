@@ -18,7 +18,6 @@ provides_tools:
   - lightbulb_read_rooms
   - lightbulb_workspace
   - start_task
-  - propose_tasks
   - pass_through
   - reply
   - ask

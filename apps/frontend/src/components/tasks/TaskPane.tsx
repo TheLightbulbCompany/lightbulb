@@ -1,7 +1,7 @@
 "use client";
 
 // One request, opened from a card, a link or a panel (mockup step 8): header with its controls,
-// a Needs-you card only while something is open (a Do it / Not now card while suggested), the task
+// a Needs-you card only while something is open, the task
 // room as read-only progress, the outputs, and folded Details. Section order is the mockup's.
 // Steering is the room's own composer ("Replying to: …", taskReply.ts); "Add a note" only when that
 // composer isn't on screen (opened from Work).
@@ -73,21 +73,19 @@ function TaskPaneBody({ detail, viewerId }: { detail: TaskDetail; viewerId: stri
   // The header's reason ("Ready for review", "Needs approval"), else its word, so the card and effects agree with it.
   const view = summaryView(task, viewerId);
   const word = view.reason ?? view.word;
-  const proposed = task.status === "proposed";
   // The room's composer steers this request when it is on screen; otherwise a one-line note here.
   const composerShown = useRoomComposerShown(task.originRoomId);
   return <div className="room-context-body flex min-h-0 flex-col gap-3">
     <TaskHeader task={task} viewerId={viewerId} />
-    {proposed && <SuggestedCard task={task} viewerId={viewerId} />}
     {open && <NeedsYouCard key={open.id} task={task} question={open} label={word} />}
     {answered.length > 0 && <ul aria-label="Decisions" className="grid gap-1 px-1 text-ui text-muted-foreground">
       {answered.map((q) => <li key={q.id}>{answerLine(q)}</li>)}
     </ul>}
-    {!proposed && <div className="flex min-h-64 flex-1 flex-col">
+    <div className="flex min-h-64 flex-1 flex-col">
       <SessionChat sessionId={detail.taskRoomId} sessionOwnerId={task.ownerUserId ?? ""} words={TRANSCRIPT_WORDS}
         openChat={async (roomId) => ({ roomId })} readOnly />
-    </div>}
-    {!proposed && !composerShown && <AddNote task={task} />}
+    </div>
+    {!composerShown && <AddNote task={task} />}
     {task.output && <section aria-label="Outputs" className="editorial-card px-3 py-2 text-ui">
       {/* With a question open on it, the output is reviewed there (its preview and the decision): go to it (audit #25). */}
       {open
@@ -147,39 +145,10 @@ export function TaskHeader({ task, viewerId }: { task: TaskSummary; viewerId: st
           <Button type="button" size="sm" variant="ghost" onClick={() => setConfirmStop(false)}>Keep going</Button>
         </span>
         : <Button type="button" size="sm" variant="outline" disabled={pending} onClick={() => setConfirmStop(true)}>Stop</Button>)}
-      {!live && task.status !== "resolved" && task.status !== "proposed" && <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={() => void press("resolve")}>Close</Button>}
+      {!live && task.status !== "resolved" && <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={() => void press("resolve")}>Close</Button>}
       {task.status === "resolved" && <Button type="button" size="sm" variant="outline" disabled={pending} onClick={() => void press("reopen")}>Reopen</Button>}
     </div>
     {error && <p role="alert" className="text-ui text-err">{error}</p>}
-  </section>;
-}
-
-/** A suggested request leads with what it will do, why it was suggested and what it may cost; Do it starts it,
- *  Not now dismisses it (the Suggested block's Start/Dismiss). */
-export function SuggestedCard({ task, viewerId }: { task: TaskSummary; viewerId: string }): ReactElement {
-  const { act } = useTaskActions("pane");
-  const { agentNames } = useLiveEvents();
-  const headingId = `suggested-${task.taskId}`;
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const press = async (verb: "start" | "dismiss") => {
-    setPending(true);
-    const res = await act(task, verb);
-    setPending(false);
-    setError(res.ok ? null : res.message);
-  };
-  return <section aria-labelledby={headingId} className="editorial-card px-3 py-2">
-    <p className="label-caps">{summaryView(task, viewerId).word}</p>
-    <h4 id={headingId} className="font-semibold">{specialistLabel(task.specialist, agentNames)} wants to: {task.title}</h4>
-    {(task.proposalReason || task.budgetUsd != null) && <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 border-t border-border pt-2 text-ui">
-      {task.proposalReason && <><dt className="text-muted-foreground">Why</dt><dd className="min-w-0 break-words">{task.proposalReason}</dd></>}
-      {task.budgetUsd != null && <><dt className="text-muted-foreground">Cost</dt><dd>Up to {money(task.budgetUsd)}</dd></>}
-    </dl>}
-    <div className="mt-2 flex flex-wrap gap-2">
-      <Button type="button" size="sm" disabled={pending} onClick={() => void press("start")}>Do it</Button>
-      <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={() => void press("dismiss")}>Not now</Button>
-    </div>
-    {error && <p role="alert" className="mt-1 text-ui text-err">{error}</p>}
   </section>;
 }
 
@@ -257,7 +226,6 @@ export function TaskDetails({ detail }: { detail: TaskDetail }): ReactElement {
   return <details className="px-1 text-ui">
     <summary className="cursor-pointer text-muted-foreground">Details</summary>
     <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
-      {task.proposalReason && <><dt className="text-muted-foreground">Why</dt><dd>{task.proposalReason}</dd></>}
       <dt className="text-muted-foreground">Runs</dt><dd>{attempts.length}</dd>
       {cost && <><dt className="text-muted-foreground">Cost</dt><dd>{cost}</dd></>}
     </dl>

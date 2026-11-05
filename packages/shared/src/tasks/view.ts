@@ -5,7 +5,7 @@
 
 import type { TaskEffect, TaskSummary } from "./types";
 
-export const TASK_STATUSES = ["proposed", "queued", "working", "waiting", "idle", "resolved", "failed"] as const;
+export const TASK_STATUSES = ["queued", "working", "waiting", "idle", "resolved", "failed"] as const;
 export const SHOWN_GROUPS = ["waiting_on_you", "ready_for_review", "landing", "working", "idle", "resolved"] as const;
 export const QUESTION_KINDS = ["question", "approval", "review"] as const;
 export const QUESTION_STATES = ["open", "answered", "cancelled"] as const;
@@ -22,7 +22,7 @@ export interface QuestionRow {
 }
 export interface EffectRow { taskId: string; idemKey: string; state: (typeof EFFECT_STATES)[number] }
 
-export type TaskAction = "start" | "approve" | "answer" | "review" | "retry" | "reopen" | "publish" | "send" | "merge";
+export type TaskAction = "approve" | "answer" | "review" | "retry" | "reopen" | "publish" | "send" | "merge";
 
 /** The only four statuses people see. */
 export const STATUS_WORDS = ["Working", "Needs you", "Done", "Closed"] as const;
@@ -32,7 +32,7 @@ export interface TaskView {
   word: StatusWord;
   /** Why, in a few words, where the UI has room ("Ready for review", "Waiting on Sam"); null when the word says it all. */
   reason: string | null;
-  /** null = not in the overview (a proposed task lives in chat's Suggested block). */
+  /** null = not in the overview. */
   group: ShownGroup | null;
   action: TaskAction | null;
 }
@@ -52,7 +52,6 @@ const view = (word: StatusWord, group: ShownGroup | null, action: TaskAction | n
 
 export function taskView({ task, viewerId, questions, effects, nameOf }: TaskViewInput): TaskView {
   switch (task.status) {
-    case "proposed": return view("Needs you", null, "start", "Wants to start");
     case "resolved": return view("Closed", "resolved", "reopen");
     // Failed is the owner's to retry; for anyone else it ended.
     case "failed": return task.ownerUserId === viewerId
@@ -133,8 +132,8 @@ export function summaryView(t: TaskSummary, viewerId: string): SummaryView {
   const v = (word: StatusWord, reason: string | null = null, action: TaskAction | null = null): SummaryView =>
     ({ word, reason, group, action, tone: toneOf(word, group) });
   const q = t.openQuestion;
-  if (t.status === "proposed") return v("Needs you", "Wants to start", "start");
-  // A dismissed suggestion never ran: no Reopen on its card.
+  // Dismissed = a suggestion from before 5 Nov 2026 (proposals removed; the server reads it as resolved): it never
+  // ran, so no Reopen on its card.
   if (t.status === "resolved" && t.statusReason === "dismissed") return v("Closed", "Dismissed");
   if (t.status === "resolved") return v("Closed", t.statusReason === "stopped" ? "Stopped" : null, "reopen");
   // The owner's failed request needs them (retry); anyone else's is over (the server files it under idle).
@@ -161,10 +160,10 @@ export function summaryView(t: TaskSummary, viewerId: string): SummaryView {
 }
 
 /** The request pane's actor line: "Finance is working on this" while it runs, "Done by Finance" once it is done.
- *  Null where nobody did it: a suggestion not yet started, or a request closed with a reason (stopped, dismissed,
- *  failed): the status line already says why. With no specialist Lightbulb is the actor. */
+ *  Null where nobody did it: a request closed with a reason (stopped, dismissed, failed): the status line already
+ *  says why. With no specialist Lightbulb is the actor. */
 export function doneByLine(specialist: string | null | undefined, view: Pick<TaskView, "word" | "reason">, names?: AgentNames): string | null {
-  if (view.reason === "Wants to start" || (view.word === "Closed" && view.reason)) return null;
+  if (view.word === "Closed" && view.reason) return null;
   const who = specialistLabel(specialist, names);
   return view.word === "Done" || view.word === "Closed" ? `Done by ${who}` : `${who} is working on this`;
 }
@@ -186,7 +185,7 @@ export interface OverviewGroup {
 }
 
 /** The heading a summary sits under; matches `summaryView`'s word without needing the viewer (the server's
- *  `shownGroup` already is per viewer). Null = proposed (chat's Suggested block, not the overview). */
+ *  `shownGroup` already is per viewer). */
 function overviewGroupOf(t: TaskSummary): OverviewGroupId | null {
   switch (t.shownGroup) {
     case "waiting_on_you": case "ready_for_review": return "needs_you";
@@ -198,7 +197,7 @@ function overviewGroupOf(t: TaskSummary): OverviewGroupId | null {
   }
 }
 
-/** Needs you and Closed always (Closed collapsed); the rest only when non-empty. Proposed tasks are skipped. */
+/** Needs you and Closed always (Closed collapsed); the rest only when non-empty. */
 export function overviewGroups(ts: readonly TaskSummary[]): OverviewGroup[] {
   return GROUP_ORDER.map((id): OverviewGroup => ({
     id, label: GROUP_LABELS[id], tasks: ts.filter((t) => overviewGroupOf(t) === id),
@@ -216,7 +215,6 @@ export function taskSummaryLine(t: TaskSummary, viewerId: string): string {
     return `Needs an answer: ${q.title}`;
   }
   if (view.group === "landing") return `Applying: ${t.output?.title ?? "changes"}`;
-  if (t.status === "proposed") return t.proposalReason ?? "Wants to start";
   return view.reason ?? view.word;
 }
 

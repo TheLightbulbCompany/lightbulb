@@ -6,12 +6,12 @@ import { useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { router } from "expo-router";
 import {
-  putTaskSummary, specialistLabel, summaryView, taskSummaryLine, useTask, useTaskCache, useTaskList, type CanonicalRoomMessage, type TaskRef, type TaskSummary, type TaskTone,
+  specialistLabel, summaryView, taskSummaryLine, useTask, useTaskList, type CanonicalRoomMessage, type TaskSummary, type TaskTone,
 } from "@lightbulb/shared";
 
 import { fonts, radii, spacing, type ChatPalette } from "../../config/theme";
 import { useLiveEvents } from "../../providers/live-events";
-import { ACTION_LABELS, errorCopy, useTaskActions } from "./useTaskActions";
+import { ACTION_LABELS, useTaskActions } from "./useTaskActions";
 
 export const openTaskScreen = (taskId: string) =>
   router.push({ pathname: "/(app)/task/[taskId]", params: { taskId } });
@@ -30,9 +30,9 @@ export function TaskStatus({ task, viewerId, palette }: { task: TaskSummary; vie
   );
 }
 
-export function TaskCard({ task, taskId, viewerId, palette, onOpen = openTaskScreen, hideAction, children }: {
+export function TaskCard({ task, taskId, viewerId, palette, onOpen = openTaskScreen }: {
   task: TaskSummary | undefined; taskId: string; viewerId: string; palette: ChatPalette;
-  onOpen?: (taskId: string) => void; hideAction?: boolean; children?: React.ReactNode;
+  onOpen?: (taskId: string) => void;
 }) {
   const { run } = useTaskActions();
   const { agentNames } = useLiveEvents();
@@ -47,7 +47,7 @@ export function TaskCard({ task, taskId, viewerId, palette, onOpen = openTaskScr
   }
   const view = summaryView(task, viewerId);
   // Reopen lives on the request screen and the Work list, not on every resolved card in the history (audit #30).
-  const inline = !hideAction && view.action && view.action !== "answer" && view.action !== "review" && view.action !== "reopen" ? view.action : null;
+  const inline = view.action && view.action !== "answer" && view.action !== "review" && view.action !== "reopen" ? view.action : null;
   // The specialist is the actor, by its own name ("Growth"), on its own line (founder, 5 Nov).
   const line = taskSummaryLine(task, viewerId);
   const detail = line === view.word ? null : line;
@@ -72,13 +72,12 @@ export function TaskCard({ task, taskId, viewerId, palette, onOpen = openTaskScr
         <TaskStatus task={task} viewerId={viewerId} palette={palette} />
       </View>
       </Pressable>
-      {children}
       {inline ? (
         <ActionButton label={ACTION_LABELS[inline]} palette={palette} primary={view.tone === "waiting" || view.tone === "review"} disabled={pending}
           onPress={async () => {
             // An answer that acts outside (approve, send, publish, merge) is decided on the thread screen, where the
             // question is shown in full: the card never sends it blind.
-            if (inline !== "start" && inline !== "retry") { onOpen(taskId); return; }
+            if (inline !== "retry") { onOpen(taskId); return; }
             setPending(true);
             setError(null);
             const res = await run(task, inline);
@@ -111,7 +110,7 @@ export function ActionButton({ label, palette, primary, disabled, onPress }: {
   );
 }
 
-/** Thread cards under a Lightbulb message (`taskRefs`), with the Suggested block. One shared room read. */
+/** Thread cards under a Lightbulb message (`taskRefs`). One shared room read. */
 export function MessageTasks({ message, viewerId, palette, onOpen }: {
   message: CanonicalRoomMessage; viewerId: string; palette: ChatPalette; onOpen?: (taskId: string) => void;
 }) {
@@ -120,12 +119,9 @@ export function MessageTasks({ message, viewerId, palette, onOpen }: {
   const { data } = useTaskList(tasks, refs.length ? { kind: "room", roomId: message.roomId } : null);
   if (!refs.length || !data) return null;
   const byId = new Map(data.tasks.map((t) => [t.taskId, t]));
-  const started = refs.filter((r) => r.role === "started");
-  const suggested = refs.filter((r) => r.role === "suggested");
   return (
     <View style={styles.list} accessibilityLabel="Requests in this message">
-      {started.map((r) => <RefCard key={r.taskId} taskId={r.taskId} listed={byId.get(r.taskId)} viewerId={viewerId} palette={palette} onOpen={onOpen} />)}
-      {suggested.length > 0 ? <SuggestedBlock refs={suggested} taskById={byId} viewerId={viewerId} palette={palette} onOpen={onOpen} /> : null}
+      {refs.map((r) => <RefCard key={r.taskId} taskId={r.taskId} listed={byId.get(r.taskId)} viewerId={viewerId} palette={palette} onOpen={onOpen} />)}
     </View>
   );
 }
@@ -140,62 +136,6 @@ function RefCard({ taskId, listed, viewerId, palette, onOpen }: {
   return <TaskCard task={listed ?? data?.task} taskId={taskId} viewerId={viewerId} palette={palette} onOpen={onOpen} />;
 }
 
-export function SuggestedBlock({ refs, taskById, viewerId, palette, onOpen }: {
-  refs: TaskRef[]; taskById: ReadonlyMap<string, TaskSummary>; viewerId: string; palette: ChatPalette; onOpen?: (taskId: string) => void;
-}) {
-  const { tasks } = useLiveEvents();
-  const { act, refetch } = useTaskActions();
-  const { cache, mutate } = useTaskCache();
-  const [pending, setPending] = useState<string | null>(null);
-  const [errors, setErrors] = useState<Record<string, string>>({});
-  const proposed = refs.map((r) => taskById.get(r.taskId)).filter((t): t is TaskSummary => t?.status === "proposed");
-  const one = async (task: TaskSummary, verb: "start" | "dismiss") => {
-    setPending(task.taskId);
-    const res = await act(task, verb);
-    setPending(null);
-    setErrors((e) => ({ ...e, [task.taskId]: res.ok ? "" : res.message }));
-  };
-  const all = async () => {
-    setPending("all");
-    try {
-      const res = await tasks.startMany(proposed.map((t) => t.taskId));
-      // Write the started summaries now: AppSync may drop their task.changed events.
-      await Promise.all(res.tasks.map((t) => putTaskSummary(cache, mutate, t, tasks)));
-      const started = new Set(res.tasks.map((t) => t.taskId));
-      const failed = proposed.filter((t) => !started.has(t.taskId));
-      await Promise.all(failed.map((t) => refetch(t.taskId)));
-      setErrors(Object.fromEntries(failed.map((t) => [t.taskId, "Couldn't start this one. Try again."])));
-    } catch (error) {
-      setErrors(Object.fromEntries(proposed.map((t) => [t.taskId, errorCopy(error)])));
-    } finally {
-      setPending(null);
-    }
-  };
-  return (
-    <View accessibilityLabel="Suggested" style={styles.list}>
-      <View style={styles.row}>
-        <Text style={[styles.label, { color: palette.fgMute }]}>SUGGESTED</Text>
-        {proposed.length >= 2 ? <ActionButton label="Start all" palette={palette} disabled={pending !== null} onPress={() => void all()} /> : null}
-      </View>
-      {refs.map((r) => {
-        const task = taskById.get(r.taskId);
-        const waiting = task?.status === "proposed";
-        return (
-          <TaskCard key={r.taskId} task={task} taskId={r.taskId} viewerId={viewerId} palette={palette} onOpen={onOpen} hideAction={waiting}>
-            {waiting ? (
-              <View style={styles.actions}>
-                <ActionButton label="Start" palette={palette} primary disabled={pending !== null} onPress={() => void one(task, "start")} />
-                <ActionButton label="Dismiss" palette={palette} disabled={pending !== null} onPress={() => void one(task, "dismiss")} />
-              </View>
-            ) : null}
-            {errors[r.taskId] ? <Text accessibilityRole="alert" style={[styles.meta, { color: palette.alert }]}>{errors[r.taskId]}</Text> : null}
-          </TaskCard>
-        );
-      })}
-    </View>
-  );
-}
-
 /** "Sent to Workshop signup app ›" under a person's message (one request opens it; several name the count). */
 export function RoutedToLine({ message, palette, onOpen = openTaskScreen }: {
   message: CanonicalRoomMessage; palette: ChatPalette; onOpen?: (taskId: string) => void;
@@ -205,10 +145,10 @@ export function RoutedToLine({ message, palette, onOpen = openTaskScreen }: {
   const single = !!routedTo && (routedTo.passThrough || routedTo.taskIds.length === 1);
   const { data } = useTaskList(tasks, single ? { kind: "room", roomId: message.roomId } : null);
   if (!routedTo || !routedTo.taskIds.length) return null;
-  const { taskIds, started, suggested } = routedTo;
+  const { taskIds, started } = routedTo;
   const label = single
     ? `Sent to ${data?.tasks.find((t) => t.taskId === taskIds[0])?.title ?? "a request"}`
-    : [`${started} ${started === 1 ? "request" : "requests"} started`, suggested ? `${suggested} suggested` : ""].filter(Boolean).join(", ");
+    : `${started} ${started === 1 ? "request" : "requests"} started`;
   return (
     <Pressable accessibilityRole="button" accessibilityLabel={`${label} ›`} hitSlop={8} disabled={!single} onPress={() => onOpen(taskIds[0])}>
       <Text style={[styles.meta, { color: palette.fgMute }]}>{label} ›</Text>

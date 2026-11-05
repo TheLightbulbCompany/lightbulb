@@ -97,32 +97,6 @@ describe("TaskPane", () => {
     expect(capture).toHaveBeenCalledWith("task_steer_sent", expect.objectContaining({ taskId: "t-signup", source: "note" }));
   });
 
-  it("suggested: leads with Do it / Not now, why and cost; no Resolve, no transcript, no note", async () => {
-    const proposed = { ...step8.task, status: "proposed" as const, shownGroup: null, proposalReason: "spends money", budgetUsd: 5 };
-    withDetail({ ...step8, task: proposed, questions: [] }, []);
-    client.act.mockResolvedValueOnce({ ...proposed, status: "working", shownGroup: "working", version: proposed.version + 1 });
-    pane();
-    const card = await screen.findByRole("region", { name: /wants to:/ });
-    // The specialist is the actor, with no "Lightbulb ·" in front; the status word is the shared one.
-    expect(card).toHaveTextContent(`Engineering wants to: ${proposed.title}`);
-    expect(screen.getByRole("region", { name: "Request status" })).not.toHaveTextContent("Lightbulb ·");
-    expect(card).toHaveTextContent("spends money");
-    expect(card).toHaveTextContent("Up to $5");
-    expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
-    expect(screen.queryByRole("region", { name: "Transcript" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Add a note" })).toBeNull();
-    await userEvent.click(within(card).getByRole("button", { name: "Do it" }));
-    expect(client.act).toHaveBeenCalledWith(proposed.taskId, "start", proposed.version);
-  });
-
-  it("suggested: Not now dismisses it", async () => {
-    const proposed = { ...step8.task, status: "proposed" as const, shownGroup: null };
-    withDetail({ ...step8, task: proposed, questions: [] }, []);
-    pane();
-    await userEvent.click(within(await screen.findByRole("region", { name: /wants to:/ })).getByRole("button", { name: "Not now" }));
-    expect(client.act).toHaveBeenCalledWith(proposed.taskId, "dismiss", proposed.version);
-  });
-
   it("answered approval leaves a line", async () => {
     pane();
     expect(await screen.findByText(/^Approved by Sam · /)).toBeInTheDocument();

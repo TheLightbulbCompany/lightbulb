@@ -19,7 +19,7 @@ TASK = "8f14e45f-ceea-467a-9575-8a1b2c3d4e5f"
 
 
 def test_stored_statuses_are_the_seven_of_section_4():
-    assert set(get_args(ts.TaskStatus)) == {"proposed", "queued", "working", "waiting", "idle", "resolved", "failed"}
+    assert set(get_args(ts.TaskStatus)) == {"queued", "working", "waiting", "idle", "resolved", "failed"}
     assert "stopped" not in get_args(ts.TaskStatus)  # stopped = resolved with a reason
 
 
@@ -205,7 +205,6 @@ DECISIONS = [
         "specialist": None,
         "ack": "On it",
     },
-    {"kind": "propose_tasks", "triggerIds": ["chat:m1"], "tasks": [{"title": "t", "brief": "b"}], "ack": "?"},
     {"kind": "pass_through", "triggerIds": ["chat:m1"], "taskId": TASK, "ack": None},
     {"kind": "ask", "triggerIds": ["chat:m1"], "text": "Which one?"},
     {"kind": "ignore", "triggerIds": ["chat:m1"]},
@@ -222,6 +221,7 @@ def test_router_decision_union_parses_every_kind():
     "bad",
     [
         {"kind": "approve", "triggerIds": ["chat:m1"]},  # typed text never approves (§8)
+        {"kind": "propose_tasks", "triggerIds": ["chat:m1"], "tasks": [{"title": "t", "brief": "b"}], "ack": "?"},
         {"kind": "reply", "triggerIds": [], "text": "x"},  # every decision covers a trigger
         {"kind": "pass_through", "triggerIds": ["chat:m1"], "taskId": "not-a-uuid"},
     ],

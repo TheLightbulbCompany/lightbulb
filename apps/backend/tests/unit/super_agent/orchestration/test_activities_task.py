@@ -111,14 +111,14 @@ def world(table, monkeypatch):  # noqa: F811
     return w
 
 
-async def _task(status="queued", root=None, **over) -> str:
+async def _task(root=None, **over) -> str:
     tid = ts.new_task_id()
     row = {
         "taskId": tid,
         "identifier": "LB-1",
         "title": "Pay the invoice",
         "description": "Pay Acme $40",
-        "status": status if status in ("proposed", "queued") else "queued",
+        "status": "queued",
         "audience": {"kind": "room", "roomId": ROOM},
         "lane": "shared",
         "triggerId": "chat:m1",
@@ -455,12 +455,17 @@ async def test_transition_same_status_is_noop(world):
     assert (await repo.get_task(WS, tid))["statusReason"] == "dismissed"
 
 
-async def test_begin_attempt_proposed_waits_for_start(world):
-    tid = await _task(status="proposed")
+async def test_begin_attempt_legacy_proposed_never_runs(world):
+    """A row stored `proposed` before 5 Nov 2026 (proposals removed) never runs on a thread reply."""
+    tid = await _task()
+    repo._table().update_item(  # noqa: SLF001 -- no repo writer makes a proposed row any more
+        Key={"pk": ts.ws_pk(WS), "sk": (await repo.get_task(WS, tid))["sk"]},
+        UpdateExpression="SET #s = :p",
+        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues={":p": "proposed"},
+    )
     assert await acts.begin_attempt(WS, tid, ["chat:m2"]) == AttemptRef(0, "")
     assert (await repo.get_task(WS, tid))["status"] == "proposed"
-    assert await acts.begin_attempt(WS, tid, ["chat:m2"], True) == AttemptRef(1, ts.run_id(WS, tid, 1))
-    assert (await repo.get_task(WS, tid))["status"] == "working"
 
 
 async def test_bridge_usage_report_skips_task_runs(monkeypatch):

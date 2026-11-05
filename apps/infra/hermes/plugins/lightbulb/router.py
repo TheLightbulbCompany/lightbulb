@@ -15,7 +15,6 @@ from . import turn_context
 
 TOOLSET = "lightbulb_router"
 _UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
-MAX_PROPOSED = 5
 NOT_ROUTER = "Router tools are only available in a Lightbulb Router run."
 
 _TRIGGERS = {"type": "array", "items": {"type": "string"}, "minItems": 1,
@@ -40,15 +39,11 @@ def _schema(name: str, description: str, props: dict, required: list[str]) -> di
 
 SCHEMAS = {
     "start_task": _schema(
-        "start_task", "Start one task now for a request in the batch. `ack` is the one line people see.",
+        "start_task", "Start one task now for a request in the batch. `ack` is the one line people see. "
+        "Paid or risky steps (spend, send, publish) ask for approval inside the task on their own.",
         {**_TASK["properties"], "ack": {"type": "string"},
          "visibility": {"type": "string", "enum": ["person", "room", "workspace"]}},
         ["title", "brief", "ack"]),
-    "propose_tasks": _schema(
-        "propose_tasks", "Suggest up to 5 tasks a person starts with one tap (use for paid tools or unclear asks).",
-        {"tasks": {"type": "array", "items": _TASK, "minItems": 1, "maxItems": MAX_PROPOSED},
-         "ack": {"type": "string"}},
-        ["tasks", "ack"]),
     "pass_through": _schema(
         "pass_through", "Send a message to the task already working on it.",
         {"task_id": {"type": "string"}, "ack": {"type": "string"}}, ["task_id"]),
@@ -170,17 +165,6 @@ def _problem(kind: str, args: dict) -> str | None:
             return f"{field} is required"
     if kind == "start_task" and len(str(args.get("title"))) > 200:
         return "title is at most 200 characters"
-    if kind == "propose_tasks":
-        tasks = args.get("tasks")
-        if not isinstance(tasks, list) or not 1 <= len(tasks) <= MAX_PROPOSED:
-            return f"propose 1 to {MAX_PROPOSED} tasks"
-        for t in tasks:
-            if not isinstance(t, dict) or set(t) - set(_TASK["properties"]):
-                return "a proposed task has only title, brief and specialist"
-            if not (isinstance(t.get("title"), str) and t["title"] and len(t["title"]) <= 200
-                    and isinstance(t.get("brief"), str) and t["brief"]
-                    and isinstance(t.get("specialist", ""), str)):
-                return "every proposed task needs a title (at most 200 characters) and a brief"
     if kind == "pass_through" and not _UUID.fullmatch(str(args.get("task_id"))):
         return "task_id must be a task id from the batch"
     if kind == "start_task" and args.get("visibility") not in (None, "person", "room", "workspace"):

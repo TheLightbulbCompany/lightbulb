@@ -76,7 +76,7 @@ export function useTaskActions() {
       if (!optionId) return Promise.resolve({ ok: false, message: "Open the request to answer this." });
       return answer(task, task.openQuestion.qid, optionId);
     }
-    if (action === "start" || action === "retry" || action === "reopen") return act(task, action);
+    if (action === "retry" || action === "reopen") return act(task, action);
     return Promise.resolve({ ok: true });
   }, [act, answer]);
 
@@ -84,6 +84,6 @@ export function useTaskActions() {
 }
 
 export const ACTION_LABELS: Record<TaskAction, string> = {
-  start: "Start", approve: "Approve", answer: "Answer", review: "Review", retry: "Retry", reopen: "Reopen",
+  approve: "Approve", answer: "Answer", review: "Review", retry: "Retry", reopen: "Reopen",
   publish: "Publish", send: "Send", merge: "Merge",
 };

@@ -55,8 +55,6 @@ describe("contract: types match tasks-schema.json", () => {
 describe("taskView: one word, group and action per stored status (contracts-v2 §4)", () => {
   it.each([
     // status, viewer, word, reason, group, action
-    ["proposed", SAM, "Needs you", "Wants to start", null, "start"],
-    ["proposed", PRIYA, "Needs you", "Wants to start", null, "start"],
     ["queued", SAM, "Working", "Starting", "working", null],
     ["working", SAM, "Working", null, "working", null],
     ["working", PRIYA, "Working", null, "working", null],
@@ -147,11 +145,10 @@ describe("taskView: open questions", () => {
     expect(view(task("waiting"), PRIYA, { questions }).reason).toBe("Waiting on Sam or someone");
   });
 
-  it("questions do not change proposed, idle, resolved or failed", () => {
+  it("questions do not change idle, resolved or failed", () => {
     const questions = [q("approval", [SAM])];
     expect(view(task("resolved"), SAM, { questions }).word).toBe("Closed");
     expect(view(task("failed"), SAM, { questions }).reason).toBe("Failed");
-    expect(view(task("proposed"), SAM, { questions }).reason).toBe("Wants to start");
     expect(view(task("idle"), SAM, { questions }).word).toBe("Done");
   });
 });
@@ -181,11 +178,10 @@ describe("taskView: Landing (apply_effect running)", () => {
       .toBe("Applying");
   });
 
-  it("does not change idle, resolved, failed or proposed", () => {
+  it("does not change idle, resolved or failed", () => {
     const effects = [effect("intent")];
     expect(view(task("idle"), SAM, { effects }).group).toBe("idle");
     expect(view(task("resolved"), SAM, { effects }).group).toBe("resolved");
     expect(view(task("failed"), SAM, { effects }).group).toBe("waiting_on_you");
-    expect(view(task("proposed"), SAM, { effects }).group).toBeNull();
   });
 });

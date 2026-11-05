@@ -12,7 +12,7 @@ import logging
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from temporalio.client import WorkflowUpdateFailedError
 from temporalio.service import RPCError
 
@@ -27,23 +27,20 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 # Listing walks the `by-status` GSI one status at a time, live work first.
-_STATUSES = ("waiting", "working", "queued", "proposed", "idle", "failed", "resolved")
+# `proposed`: rows from before 5 Nov 2026, listed last and summarised as Closed (`tasks_access.summarize`).
+_STATUSES = ("waiting", "working", "queued", "idle", "failed", "resolved", "proposed")
 # `needsYou=true`: the viewer's Needs you groups, complete (Home and its rail badge count these).
 _NEEDS_YOU_GROUPS = frozenset({"waiting_on_you", "ready_for_review"})
 # Its bounds: index pages read per source (100 rows each), and task trees read at once.
 _NEEDS_YOU_PAGES = 10
 _NEEDS_YOU_FETCHES = 10
-_GATED = frozenset({"start", "retry", "reopen"})  # a new attempt: today's chat gate first (§14.10)
+_GATED = frozenset({"retry", "reopen"})  # a new attempt: today's chat gate first (§14.10)
 
 Auth = Annotated[AuthContext, Depends(get_current_user)]
 
 
 class VersionBody(BaseModel):
     version: int
-
-
-class BulkStartBody(BaseModel):
-    task_ids: list[str] = Field(alias="taskIds", max_length=100)
 
 
 def _err(http_status: int, code: str, **extra) -> HTTPException:
@@ -166,17 +163,12 @@ async def _act(ws: str, task_id: str, action: str, user_id: str, version: int | 
     task = tree["task"]
     if version is not None and task["version"] != version:
         raise _err(409, "version_conflict", version=task["version"])
-    if action == "start" and task["status"] != "proposed":
-        raise _err(409, "illegal_state", status=task["status"])
     if action in _GATED:
         gate = await chat_gate.gate_chat(user_id=user_id, owner_id=ws, session_key=f"task:{task_id}")
         if gate.get("blocked"):
             raise _err(402, gate.get("code") or "blocked", message=gate.get("message"))
     try:
-        if action == "start":  # a signal, not an update: start (or keep) the workflow, then consent
-            await temporal_client.start_task_workflow(ws, task_id, "propose_start")
-            await temporal_client.task_handle(ws, task_id).signal("start")
-        elif action == "stop":
+        if action == "stop":
             await temporal_client.update_task(ws, task_id, "stop", StopRequest(by_user_id=user_id))
         else:
             await temporal_client.update_task(ws, task_id, action, ActionRequest(user_id, expected_version=version))
@@ -185,20 +177,6 @@ async def _act(ws: str, task_id: str, action: str, user_id: str, version: int | 
     except (temporal_client.TemporalUnavailable, RPCError) as exc:
         raise _err(503, "TEMPORAL_UNAVAILABLE", retryable=True) from exc
     return await _summary(await tasks_repo.get_task_tree(ws, task_id), user_id)
-
-
-@router.post("/tasks/start")
-async def bulk_start(body: BulkStartBody, auth: Auth):
-    """Start each proposed task the caller can see; others (missing, not visible, not proposed) are skipped."""
-    ws = await _workspace(auth)
-    started = []
-    for task_id in dict.fromkeys(body.task_ids):
-        try:
-            started.append(await _act(ws, task_id, "start", auth.user_id, None))
-        except HTTPException as exc:
-            if exc.status_code not in (403, 404, 409):
-                raise
-    return {"tasks": started}
 
 
 @router.get("/tasks/{task_id}")
@@ -229,7 +207,7 @@ async def mark_read(task_id: str, auth: Auth):
 @router.post("/tasks/{task_id}/{action}")
 async def task_action(
     task_id: str,
-    action: Literal["start", "dismiss", "stop", "resolve", "reopen", "retry"],
+    action: Literal["stop", "resolve", "reopen", "retry"],
     body: VersionBody,
     auth: Auth,
 ):

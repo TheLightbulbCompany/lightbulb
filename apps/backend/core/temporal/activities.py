@@ -218,7 +218,8 @@ async def release_slot(ws: str, task_id: str) -> None:
 @activity.defn
 async def begin_attempt(ws: str, task_id: str, input_trigger_ids: list[str], started: bool = False) -> AttemptRef:
     """Idempotent: an attempt not yet ended is returned as is. Task → working. A task still proposed returns
-    `AttemptRef(0, "")`: only Start runs it (the workflow parks the inputs)."""
+    `AttemptRef(0, "")`: only Start runs it (the workflow parks the inputs). Since 5 Nov 2026 nothing creates
+    proposed rows or sends Start: an older proposed row never runs (it reads as Closed)."""
     tree = await tasks_repo.get_task_tree(ws, task_id)
     if tree["task"]["status"] == "proposed" and not started:
         return AttemptRef(0, "")
@@ -782,12 +783,10 @@ async def _apply(
     routed_to: dict[str, list[str]] = {}  # every trigger a start or pass_through covers → its tasks, in order
 
     def slot(tid: str) -> dict:
-        return slots.setdefault(
-            tid, {"lines": [], "refs": [], "starts": [], "proposed": [], "passes": [], "acks": set()}
-        )
+        return slots.setdefault(tid, {"lines": [], "refs": [], "starts": [], "passes": [], "acks": set()})
 
     def ack(sl: dict, line: str | None) -> None:
-        """One ack line per trigger: several start/propose/pass_through decisions on one ask are one message with
+        """One ack line per trigger: several start/pass_through decisions on one ask are one message with
         a card per task, and the model writes the same summary on each (dev, 5 Nov: the line twice). The first
         decision's ack is the message's line."""
         if line and not sl["acks"]:
@@ -836,27 +835,6 @@ async def _apply(
             sl["starts"].append(task_id)
             for tid in dec.trigger_ids:
                 routed_to.setdefault(tid, []).append(task_id)
-        elif isinstance(dec, ts.ProposeTasks):
-            for k, t in enumerate(dec.tasks):
-                task_id = ts.router_task_id(inp.batch_id, i, k)
-                try:
-                    await _ensure_task(
-                        ws,
-                        task_id,
-                        trig,
-                        inp.lane,
-                        "proposed",
-                        title=t.title,
-                        description=t.brief,
-                        specialist=t.specialist,
-                        proposalReason=dec.reason,
-                    )
-                except ValueError:
-                    logger.warning("proposed task dropped for trigger %s", primary, exc_info=True)
-                    continue
-                sl["refs"].append({"taskId": task_id, "role": "suggested"})
-                sl["proposed"].append(task_id)
-            ack(sl, dec.ack)
         elif isinstance(dec, ts.PassThrough):
             if blocked := await task_conversation.gate_input(ws, dec.task_id, trig):  # §14.10, like a start
                 sl["lines"].append(blocked)
@@ -906,7 +884,7 @@ async def _apply(
         ack_thread = (
             f"room:{ref['roomId']}:{ref.get('threadRoot') or message_id}" if ref.get("roomId") and message_id else None
         )
-        for task_id in sl["starts"] + sl["proposed"]:
+        for task_id in sl["starts"]:
             await _subscribe(ws, task_id, ack_thread)
         for task_id in sl["starts"]:
             try:

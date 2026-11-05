@@ -245,10 +245,10 @@ async def test_a_failed_resolution_records_one_tagged_error_sample(monkeypatch):
 
 async def test_the_live_copy_carries_a_router_replys_task_cards():
     item = _item(
-        taskRefs=[{"taskId": "t-1", "role": "started"}, {"taskId": "t-2", "role": "suggested"}], specialist="finance"
+        taskRefs=[{"taskId": "t-1", "role": "started"}, {"taskId": "t-2", "role": "started"}], specialist="finance"
     )
     _, body = await _backend_bytes(item)
     payload = json.loads(body)["payload"]
-    assert payload["taskRefs"] == [{"taskId": "t-1", "role": "started"}, {"taskId": "t-2", "role": "suggested"}]
+    assert payload["taskRefs"] == [{"taskId": "t-1", "role": "started"}, {"taskId": "t-2", "role": "started"}]
     assert payload["specialist"] == "finance"
     assert "routedTo" not in payload  # absent stays absent

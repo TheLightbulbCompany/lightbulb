@@ -1,5 +1,5 @@
 import { useAuth } from "@clerk/expo";
-import { doneByLine, money, specialistLabel, summaryView, useTask, useTaskQuestions } from "@lightbulb/shared";
+import { doneByLine, specialistLabel, summaryView, useTask, useTaskQuestions } from "@lightbulb/shared";
 import { Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import { StyleSheet, Text, View } from "react-native";
@@ -17,7 +17,7 @@ import { useLiveEvents, useSuperAgent } from "../../../providers/live-events";
 
 /**
  * One thread (mockup step 8, the phone): header with its specialist, word and where it runs;
- * Stop / Resolve / Reopen; a Do it / Not now card while suggested (no Resolve, no transcript); the Needs-you card
+ * Stop / Resolve / Reopen; the Needs-you card
  * only while a question is open; the transcript (the task's hidden room) with a steer box; the outputs; Details in a sheet.
  */
 export default function TaskScreen() {
@@ -66,8 +66,7 @@ export default function TaskScreen() {
   // The specialist as the actor: "Growth is working on this" / "Done by Growth" (founder, 5 Nov).
   const doneBy = view ? doneByLine(task.specialist, view, agentNames) : null;
   const live = task.status === "queued" || task.status === "working" || task.status === "waiting";
-  const proposed = task.status === "proposed";
-  const press = async (verb: "stop" | "resolve" | "reopen" | "start" | "dismiss") => {
+  const press = async (verb: "stop" | "resolve" | "reopen") => {
     setPending(true);
     const res = await act(task, verb);
     setPending(false);
@@ -83,28 +82,11 @@ export default function TaskScreen() {
         </View>
         <View style={styles.row}>
           {live ? <ActionButton label="Stop" palette={palette} disabled={pending} onPress={() => void press("stop")} /> : null}
-          {proposed ? null : task.status !== "resolved"
+          {task.status !== "resolved"
             ? <ActionButton label="Close" palette={palette} disabled={pending} onPress={() => void press("resolve")} />
             : <ActionButton label="Reopen" palette={palette} disabled={pending} onPress={() => void press("reopen")} />}
           <ActionButton label="Details" palette={palette} onPress={() => setDetails(true)} />
         </View>
-        {proposed ? (
-          // What it will do, why it was suggested and what it may cost; Do it starts it, Not now dismisses it.
-          <View style={[styles.output, { gap: spacing.xs, borderColor: palette.edge, backgroundColor: palette.surface }]}>
-            {/* One VoiceOver stop for the proposal's words; the two buttons stay their own stops. */}
-            <View accessible accessibilityLabel={[view ? `${view.word}, ${view.reason}` : null, `${actor} wants to: ${task.title}`,
-              task.proposalReason ? `Why: ${task.proposalReason}` : null, task.budgetUsd != null ? `Cost: up to ${money(task.budgetUsd)}` : null].filter(Boolean).join(". ")}
-              style={{ gap: spacing.xs }}>
-              <Text style={[styles.title, { color: palette.fg }]}>{actor} wants to: {task.title}</Text>
-              {task.proposalReason ? <Text style={[styles.meta, { color: palette.fgMute }]}>Why: {task.proposalReason}</Text> : null}
-              {task.budgetUsd != null ? <Text style={[styles.meta, { color: palette.fgMute }]}>Cost: up to {money(task.budgetUsd)}</Text> : null}
-            </View>
-            <View style={styles.row}>
-              <ActionButton label="Do it" palette={palette} primary disabled={pending} onPress={() => void press("start")} />
-              <ActionButton label="Not now" palette={palette} disabled={pending} onPress={() => void press("dismiss")} />
-            </View>
-          </View>
-        ) : null}
         {doneBy ? <Text style={[styles.meta, { color: palette.fgMute }]}>{doneBy}</Text> : null}
         {note ? <Text accessibilityRole="alert" style={[styles.meta, { color: palette.alert }]}>{note}</Text> : null}
         {open ? <NeedsYouCard key={open.id} task={task} question={open} palette={palette} onAnsweredElsewhere={setNote} /> : null}
@@ -114,7 +96,7 @@ export default function TaskScreen() {
           </View>
         ) : null}
       </View>
-      {proposed ? null : <TaskTranscript taskRoomId={detail.taskRoomId} focused={focused} />}
+      <TaskTranscript taskRoomId={detail.taskRoomId} focused={focused} />
       <TaskDetailsSheet detail={detail} visible={details} onClose={() => setDetails(false)} />
     </KeyboardAvoidingView>
   );

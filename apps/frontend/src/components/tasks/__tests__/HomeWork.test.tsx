@@ -25,10 +25,10 @@ const task = (taskId: string, roomId: string, shownGroup: TaskSummary["shownGrou
   watching: false, updatedAt: `2026-11-0${(taskId.charCodeAt(taskId.length - 1) % 9) + 1}T00:00:00Z`, version: 1, ...extra,
 });
 
-// Two rooms; Needs you = waiting on you + ready for review; a proposal and a done request never count.
+// Two rooms; Needs you = waiting on you + ready for review; a done request never counts.
 const TASKS: TaskSummary[] = [
   task("a", "r1", "waiting_on_you"), task("b", "r1", "ready_for_review"), task("c", "r1", "working"),
-  task("d", "r2", "waiting_on_you"), task("e", "r2", "landing"), task("f", "r2", "proposed" as never, { status: "proposed", shownGroup: null }),
+  task("d", "r2", "waiting_on_you"), task("e", "r2", "landing"),
   task("g", "r2", "idle", { watching: true, watchUntil: "2026-12-01T00:00:00Z" }),
   ...["h", "i", "j", "k", "l", "m"].map((id) => task(id, id < "k" ? "r1" : "r2", "resolved")),
   ...["n", "o", "p", "q", "r", "s"].map((id) => task(id, id < "q" ? "r1" : "r2", "idle")),

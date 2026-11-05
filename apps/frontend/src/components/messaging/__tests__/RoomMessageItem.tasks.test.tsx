@@ -59,25 +59,24 @@ describe("RoomMessageItem with the super-agent switch", () => {
     expect(screen.getByText("Agent")).toBeInTheDocument();
   });
 
-  it("started and suggested refs split", async () => {
+  it("one card per ref, no Suggested block", async () => {
     client.list.mockResolvedValue({ tasks: FIXTURES.step02.tasks, next: null });
     render(item(reply));
     expect(await screen.findByText("Workshop signup app")).toBeInTheDocument();
     expect(screen.getByText("Launch email draft")).toBeInTheDocument();
-    const suggested = screen.getByRole("region", { name: "Suggested" });
-    expect(suggested).toHaveTextContent("Stripe fee estimate");
-    expect(suggested).toHaveTextContent("would use a paid tool");
+    expect(screen.getByText("Stripe fee estimate")).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Suggested" })).toBeNull();
     expect(screen.queryByTestId("legacy-task-card")).toBeNull();
   });
 
   it("routed-to copy", async () => {
     const onOpenTask = vi.fn();
-    const { unmount } = render(item({ ...ask, routedTo: { taskIds: ["t-signup"], started: 0, suggested: 0, passThrough: true } }, { onOpenTask }));
+    const { unmount } = render(item({ ...ask, routedTo: { taskIds: ["t-signup"], started: 0, passThrough: true } }, { onOpenTask }));
     await userEvent.click(await screen.findByRole("button", { name: "Sent to Workshop signup app ›" }));
     expect(onOpenTask).toHaveBeenCalledWith("t-signup");
     unmount();
     render(item(ask));
-    expect(screen.getByRole("button", { name: "2 requests started, 1 suggested ›" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "3 requests started ›" })).toBeInTheDocument();
   });
 
   it("agent 👀 chip is not toggleable", async () => {

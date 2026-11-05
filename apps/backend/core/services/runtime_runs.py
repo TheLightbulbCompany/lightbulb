@@ -261,13 +261,14 @@ async def curate(owner_id: str, agent_id: str) -> dict:
 
 
 async def create_run(owner_id: str, identity: RunIdentity, request: RunRequest) -> RunStatus:
-    try:
-        grant = local_session_grants.mint_task(
-            owner_id, identity.agent_id, identity.session_key, identity.run_id, identity.task_id
-        )
-    except (RuntimeError, ApiProblem):
-        grant = None
-        logger.warning("task run local session invocation unavailable")
+    grant = None
+    if identity.mode == "worker":  # a Router batch has no task, run or Worker session a task grant could bind
+        try:
+            grant = local_session_grants.mint_task(
+                owner_id, identity.agent_id, identity.session_key, identity.run_id, identity.task_id
+            )
+        except (RuntimeError, ApiProblem) as exc:
+            logger.warning("task run local session invocation unavailable: %s", type(exc).__name__)
     data = await _call(
         owner_id,
         "/internal/v1/runs",

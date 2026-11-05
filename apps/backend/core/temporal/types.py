@@ -25,8 +25,11 @@ AttemptOutcome = Literal[
 ]
 Admission = Literal["respond", "candidate"]
 StopReason = Literal["stopped", "budget", "watchdog"]
-# The bridge's v1 run statuses (bridge/runs.py, runtime_runs.RunStatus.status).
-RunStatusName = Literal["queued", "running", "stopping", "completed", "failed", "cancelled"]
+# The bridge's v1 run statuses (bridge/runs.py, runtime_runs.RunStatus.status). `waiting_approval` is Lane Q's
+# terminal status (routers/runtime_internal.RunEventBody): without it the `run_event` signal of every such turn
+# failed to deserialize and was dropped. Widening only: an old payload still converts, and the handler only
+# records `last_event` (nothing decides on it), so replaying a once-dropped signal issues no command.
+RunStatusName = Literal["queued", "running", "stopping", "completed", "failed", "cancelled", "waiting_approval"]
 
 _CLASS_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]{0,127}$")
 

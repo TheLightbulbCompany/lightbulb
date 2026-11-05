@@ -7,7 +7,7 @@
 import { useEffect, useRef, useState, type ReactElement, type RefObject } from "react";
 import { ArrowLeft } from "lucide-react";
 import {
-  ApiError, FREE_TEXT_OPTION, answerVerb, askLine, effectLine, effectName, previewRows, specialistLabel, useTask, useTaskQuestions,
+  ApiError, FREE_TEXT_OPTION, answerVerb, askLine, effectLine, effectName, previewRows, specialistLabel, summaryView, useTask, useTaskQuestions,
   type QuestionView, type TaskDetail, type TaskSummary, type TaskTrace,
 } from "@lightbulb/shared";
 import { SessionChat, type ChatWords } from "@/components/messaging/SessionChat";
@@ -65,9 +65,11 @@ function TaskPaneBody({ detail, viewerId }: { detail: TaskDetail; viewerId: stri
   const questions = views?.items ?? [];
   const open = questions.find((q) => q.state === "open");
   const answered = questions.filter((q) => q.state === "answered" && q.answeredBy);
+  // The header's and the Work row's word ("Ready for review", "Waiting on you"), so the card and effects agree with them.
+  const word = summaryView(task, viewerId).word;
   return <div className="room-context-body flex min-h-0 flex-col gap-3">
     <TaskHeader task={task} viewerId={viewerId} />
-    {open && <NeedsYouCard key={open.id} task={task} question={open} />}
+    {open && <NeedsYouCard key={open.id} task={task} question={open} label={word} />}
     {answered.length > 0 && <ul aria-label="Decisions" className="grid gap-1 px-1 text-ui text-muted-foreground">
       {answered.map((q) => <li key={q.id}>{answerLine(q)}</li>)}
     </ul>}
@@ -84,7 +86,7 @@ function TaskPaneBody({ detail, viewerId }: { detail: TaskDetail; viewerId: stri
     </section>}
     {detail.effects.length > 0 && <ul aria-label="Effects" className="grid gap-1 px-1 text-ui">
       {detail.effects.map((e) => {
-        const line = effectLine(e);
+        const line = open && e.state === "proposed" ? word : effectLine(e);
         const warn = e.state === "unknown" || line.startsWith("Didn't happen");
         return <li key={e.idemKey} className="flex flex-wrap items-baseline gap-x-2">
           <span className="font-semibold">{effectName(e)}</span>
@@ -138,7 +140,7 @@ export function TaskHeader({ task, viewerId }: { task: TaskSummary; viewerId: st
 }
 
 /** The open question. Only an answerer gets buttons; everyone else reads who it waits on. Typed text never answers. */
-export function NeedsYouCard({ task, question }: { task: TaskSummary; question: QuestionView }): ReactElement {
+export function NeedsYouCard({ task, question, label = "Waiting on you" }: { task: TaskSummary; question: QuestionView; label?: string }): ReactElement {
   const { answer } = useTaskActions("pane");
   const [pending, setPending] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -156,7 +158,7 @@ export function NeedsYouCard({ task, question }: { task: TaskSummary; question: 
     else { setNote(res.message); if (res.answeredBy) setClosed(true); }
   };
   return <section role="group" aria-labelledby={headingId} className="editorial-card border-l-2 border-l-warn px-3 py-2">
-    <p className="label-caps">{question.canAnswer ? "Waiting on you" : waiting}</p>
+    <p className="label-caps">{question.canAnswer ? label : waiting}</p>
     <h4 id={headingId} className="font-semibold">{heading}</h4>
     {question.text && question.text !== heading && <p className="mt-0.5 whitespace-pre-wrap text-ui">{question.text}</p>}
     {rows.length > 0 && <dl aria-label="What this does" className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 border-t border-border pt-2 text-ui">

@@ -25,7 +25,7 @@ import { cn } from "@/lib/utils";
 import { roomUrlTransform } from "./markdown";
 import { JOIN_LINK_COPIED, joinLinkNote } from "@/hooks/useCopyJoinLink";
 import { copyText, messagePermalink, parseSessionPermalink } from "./messageLinks";
-import { openBrowserPane, openInviteDialog, openPanel, openSessionPanel, useThreadPane, useWorkspaceState } from "@/components/workspace/workspaceController";
+import { openBrowserPane, openInviteDialog, openPanel, openSessionPanel, openTaskPane, useThreadPane, useWorkspaceState } from "@/components/workspace/workspaceController";
 import { capture } from "@/lib/analytics";
 import { RunBrowserPreview } from "./BrowserRunPreview";
 import { cardControls } from "./cardControls";
@@ -653,8 +653,8 @@ function RoomContent({
   }, [onSelectThread]);
 
   const openTask = useCallback((taskId: string) => {
-    // From a card, the card is the way back. From the overview, the Threads button stays the way back:
-    // the row that was pressed leaves the DOM with the overview.
+    // A message's task card opens the workspace pane instead (openTaskPane: pane= in the URL, as from Work).
+    // From the overview, the Threads button stays the way back: the row that was pressed leaves the DOM with the overview.
     if (document.activeElement instanceof HTMLButtonElement && !showOverview) trigger.current = document.activeElement;
     onSelectThread?.(null);
     setSelection({ kind: "task", id: taskId, ...(showOverview ? { from: "overview" as const } : {}) });
@@ -698,7 +698,7 @@ function RoomContent({
       onSelectParticipant={onSelectParticipant} onUpdateMessage={onUpdateMessage} onDownloadAttachment={onDownloadAttachment} onAttachmentUrl={onAttachmentUrl}
       cardsEnabled={cardsEnabled} onCardReply={repliesEnabled && participant ? onCardReply : undefined} cardAnswer={cardAnswers.get(message.messageId) ?? null}
       sessions={visibleSessions} onOpenSession={openSessionPanel}
-      onOpenTask={superAgent ? openTask : undefined} isAgentId={superAgent ? isAgentId : undefined}
+      onOpenTask={superAgent ? openTaskPane : undefined} isAgentId={superAgent ? isAgentId : undefined}
       menuExtras={!message.deletedAt && (onSetPin || (onMarkUnreadFrom && !inThread)) ? <>
         {/* disabled/aria-busy reflect messageActionPending -- shared across every message's
             menu here, same one-pending-pair-per-surface shape as useAsyncAction's doc comment.

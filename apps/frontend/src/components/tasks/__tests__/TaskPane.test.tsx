@@ -235,8 +235,13 @@ describe("NeedsYouCard", () => {
   it("review answer is the apply (no /apply)", async () => {
     const review = approval({ id: "q-email", kind: "review", text: "", title: "Send the launch email?",
       options: [{ id: "request_changes", label: "Request changes", style: "secondary" }, { id: "send", label: "Send", style: "primary" }] });
-    withDetail({ ...step8, task: FIXTURES.step07.tasks[1], questions: [{ ...openRow, qid: "q-email", kind: "review" }] }, [review]);
+    withDetail({ ...step8, task: FIXTURES.step07.tasks[1], questions: [{ ...openRow, qid: "q-email", kind: "review" }],
+      effects: [{ idemKey: "e1", tool: "mail.send", state: "proposed", resultRef: null }] }, [review]);
     pane(SAM, "t-email");
+    // The card and the effect read the Work row's word, not "Waiting on you" / "Waiting for approval".
+    const card = await screen.findByRole("group", { name: "Send the launch email?" });
+    expect(within(card).getByText("Ready for review")).toBeInTheDocument();
+    expect(within(screen.getByRole("list", { name: "Effects" })).getByRole("listitem")).toHaveTextContent("Ready for review");
     await userEvent.click(await screen.findByRole("button", { name: "Send" }));
     expect(client.answer).toHaveBeenCalledWith("t-email", "q-email", expect.objectContaining({ optionId: "send" }));
     const calls = Object.values(client).filter((v) => typeof v === "function").flatMap((fn) => (fn as unknown as { mock: { calls: unknown[][] } }).mock.calls.flat());

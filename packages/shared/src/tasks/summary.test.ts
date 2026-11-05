@@ -106,6 +106,7 @@ describe("formatSchedule", () => {
     expect(formatSchedule(["0 18 * * 1-5"], "America/Los_Angeles", "Europe/Berlin", NOV)).toBe("Tuesdays to Saturdays 3:00");
     expect(formatSchedule(["0 1 * * 6,0"], "Europe/Berlin", "America/Los_Angeles", NOV)).toBe("Fridays and Saturdays 16:00");
     expect(formatSchedule(["0 9 1 * *"], "UTC", "UTC", NOV)).toBe("0 9 1 * *");
+    expect(formatSchedule(["27 10 5 11 *"], "America/New_York", "Europe/London", NOV)).toBe("Once, 5 Nov, 15:27");
     expect(formatSchedule(["0 9 * * 1", "0 9 * * 4"], "UTC", "UTC", NOV)).toBe("Mondays 9:00 and Thursdays 9:00");
   });
 });

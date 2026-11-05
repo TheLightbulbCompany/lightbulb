@@ -316,6 +316,14 @@ function dayWords(dow: string): { label: string; days: (number | null)[]; range?
 export function formatSchedule(cron: readonly string[], tz: string, viewerTz: string, now = Date.now()): string {
   return cron.map((entry) => {
     const [min, hour, dom, mon, dow] = entry.trim().split(/\s+/);
+    // A one-off ("27 10 5 11 *", what a "remind me at …" stores): "Once, 5 Nov, 10:27" in the viewer's zone.
+    // ponytail: assumes this year in `tz`; a one-off set in December for January reads a year early.
+    if (/^\d+$/.test(min) && /^\d+$/.test(hour) && /^\d+$/.test(dom) && /^\d+$/.test(mon) && (dow ?? "*") === "*") {
+      const year = Number(new Intl.DateTimeFormat("en-US", { timeZone: tz, year: "numeric" }).format(new Date(now)));
+      const wall = Date.UTC(year, Number(mon) - 1, Number(dom), Number(hour), Number(min));
+      const instant = wall - zoneOffsetMinutes(wall, tz) * 60_000;
+      return `Once, ${new Intl.DateTimeFormat("en-GB", { timeZone: viewerTz, day: "numeric", month: "short", hour: "numeric", minute: "2-digit", hourCycle: "h23" }).format(new Date(instant))}`;
+    }
     const words = dayWords(dow ?? "*");
     if (dom !== "*" || mon !== "*" || !words || !/^\d+$/.test(min) || !/^\d+$/.test(hour)) return entry;
     const first = words.days[0];

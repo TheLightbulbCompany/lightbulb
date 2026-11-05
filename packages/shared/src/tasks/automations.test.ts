@@ -29,7 +29,11 @@ describe("who turns an automation on (routers/automations.py)", () => {
 describe("automationRowLine (a Scheduled row)", () => {
   const base = { pausedReason: null, match: null, schedule: { cron: ["0 9 * * 1"], tz: "UTC" }, nextRuns: ["2026-11-09T09:00:00Z"] };
   it("always a status, then the next run", () => {
-    expect(automationRowLine({ ...base, status: "active" }, "UTC")).toBe("On · next Mon 9 Nov, 9:00");
+    expect(automationRowLine({ ...base, status: "active" }, "UTC")).toBe("On · Mondays 9:00 · next Mon 9 Nov, 9:00");
+    // A one-off reads as its date, never raw cron; Paused names no next run.
+    const once = { ...base, schedule: { cron: ["27 10 5 11 *"], tz: "UTC" }, nextRuns: ["2026-11-05T10:27:00Z"] };
+    expect(automationRowLine({ ...once, status: "active" }, "UTC")).toBe("On · Once, 5 Nov, 10:27");
+    expect(automationRowLine({ ...once, status: "paused" }, "UTC")).toBe("Paused · Once, 5 Nov, 10:27");
     expect(automationRowLine({ ...base, status: "paused" }, "UTC")).toBe("Paused · Mondays 9:00");
     expect(automationRowLine({ ...base, status: "draft", nextRuns: [] }, "UTC")).toBe("Not turned on · Mondays 9:00");
     expect(automationRowLine({ ...base, status: "active", schedule: null, nextRuns: [], match: { sources: ["mail"] } }, "UTC")).toBe("On · runs on a match");

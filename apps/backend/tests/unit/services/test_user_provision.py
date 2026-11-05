@@ -1155,6 +1155,7 @@ def _arm_provisioning(row, extra_agents=()):
     # The shared pause/resume seam (paperclip_agent_lifecycle), patched in by _arm.
     fake.pause_automation = AsyncMock(return_value={"agent_ids": [], "routine_ids": []})
     fake.resume_automation = AsyncMock(return_value={"heartbeats_resumed": 0, "routines_resumed": 0})
+    fake.disable_timers = AsyncMock(return_value={"agents": [], "routines": []})
     return fake
 
 
@@ -1191,6 +1192,7 @@ async def _arm(provisioning, account, owner_id="org_p"):
         patch("core.services.user_provision.get_admin_session_cookie", AsyncMock(return_value="admin-cookie")),
         patch("core.services.user_provision.pause_owner_automation", provisioning.pause_automation),
         patch("core.services.user_provision.resume_owner_automation", provisioning.resume_automation),
+        patch("core.services.user_provision.disable_timer_automation", provisioning.disable_timers),
         patch("core.services.user_provision.container_repo.try_claim_pass", AsyncMock(return_value=True)),
         patch("core.services.user_provision.container_repo.release_pass", AsyncMock()),
     ):
@@ -1354,6 +1356,7 @@ async def test_arm_is_a_noop_when_heartbeats_are_disabled():
     with patch("core.services.user_provision.settings.NIGHTLY_CEO_HEARTBEATS_ENABLED", False):
         assert await _arm(provisioning, _paid_account()) == "heartbeats_disabled"
     provisioning._admin.set_agent_heartbeat.assert_not_called()
+    provisioning.disable_timers.assert_awaited_once_with("org_p")
 
 
 @pytest.mark.asyncio

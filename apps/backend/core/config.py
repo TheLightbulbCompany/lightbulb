@@ -299,9 +299,10 @@ class Settings(BaseSettings):
     Set true for dev only in ``service-stack.ts``."""
 
     NIGHTLY_CEO_HEARTBEATS_ENABLED: bool = True
-    """Off = ``arm_nightly_ceo`` returns ``heartbeats_disabled`` without touching any
-    agent's Paperclip heartbeat, so a reconcile never re-arms timers an operator switched
-    off (dev, to stop spend). Set false for dev only in ``service-stack.ts``."""
+    """Off = no Paperclip timer wakes (super-agent step 0, dev, to stop spend): starters are
+    seeded without a timer, and ``arm_nightly_ceo`` arms nothing and runs
+    ``disable_timer_automation`` (every timer off, our CEO routines paused; the owner's own
+    routines untouched). Set false for dev only in ``service-stack.ts``."""
 
     TRIAL_WAKE_GATE_ENABLED: bool = True
     """Kill switch for reporting an idle trial workspace as parked. Off = every

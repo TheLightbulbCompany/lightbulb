@@ -23,6 +23,7 @@ from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import container_repo
 from core.repositories.paperclip_repo import PaperclipRepo
+from core.services.agent_routine_provisioning import NIGHTLY_CEO_ROUTINE_TITLE
 from core.services.paperclip_admin_client import PaperclipAdminClient, PaperclipApiError
 from core.services.paperclip_agent_idempotency import (
     build_agent_create_idempotency_key,
@@ -295,6 +296,52 @@ async def resume_owner_automation(owner_id: str) -> dict[str, int]:
     put_metric("paperclip.automation.resume", dimensions={"outcome": "ran"})
     logger.info("paperclip automation resumed owner=%s heartbeats=%d routines=%d", owner_id, heartbeats, routines)
     return {"heartbeats_resumed": heartbeats, "routines_resumed": routines}
+
+
+#: A timer heartbeat switched off: no scheduled wake, assignment and on-demand wakes stay on.
+TIMER_OFF_HEARTBEAT = {"enabled": False, "wakeOnDemand": True}
+
+
+async def disable_timer_automation(owner_id: str, *, dry_run: bool = False) -> dict[str, list[str]]:
+    """Super-agent step 0 (dev only, ``NIGHTLY_CEO_HEARTBEATS_ENABLED`` off): turn off every
+    agent's timer heartbeat and pause the CEO routines WE create (``CEO_ROUTINES`` and the
+    nightly one, assigned to the CEO). Unlike ``pause_owner_automation`` it never touches the
+    owner's own routines and writes nothing to the pause fence, so no resume undoes it.
+    Callers: ``arm_nightly_ceo`` when the switch is off, ``scripts.disable_paperclip_timers``.
+    Idempotent; raises on a Paperclip failure. ``dry_run`` reports without writing."""
+    from core.services.user_provision import CEO_ROUTINES, ceo_agent_id  # user_provision imports this module
+
+    repo = PaperclipRepo(table_name="paperclip-companies")
+    ws = await repo.resolve_owner_row(owner_id, include_inactive=True)
+    if ws is None or not ws.company_id:
+        return {"agents": [], "routines": []}
+    ceo_id = ceo_agent_id(ws)
+    titles = {title for _, title, _, _ in CEO_ROUTINES} | {NIGHTLY_CEO_ROUTINE_TITLE}
+    async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0) as http:
+        admin = PaperclipAdminClient(http_client=http)
+        cookie = await get_admin_session_cookie(http)
+        agents = _rows(await admin.list_agents(session_cookie=cookie, company_id=ws.company_id), "agents")
+        routines = _rows(await admin.list_routines(session_cookie=cookie, company_id=ws.company_id), "routines")
+        agent_ids = [a["id"] for a in agents if a.get("id") and _heartbeat_enabled(a)]
+        routine_ids = [
+            r["id"]
+            for r in routines
+            if r.get("id")
+            and ceo_id
+            and r.get("assigneeAgentId") == ceo_id
+            and r.get("title") in titles
+            and r.get("status") == "active"
+        ]
+        if not dry_run:
+            for agent_id in agent_ids:
+                await admin.set_agent_heartbeat(session_cookie=cookie, agent_id=agent_id, heartbeat=TIMER_OFF_HEARTBEAT)
+            for routine_id in routine_ids:
+                await admin.patch_routine(session_cookie=cookie, routine_id=routine_id, body={"status": "paused"})
+    if not dry_run:
+        logger.info(
+            "paperclip timers disabled owner=%s heartbeats=%d routines=%d", owner_id, len(agent_ids), len(routine_ids)
+        )
+    return {"agents": agent_ids, "routines": routine_ids}
 
 
 async def disarm_owner_nightly_automation(owner_id: str) -> dict[str, int]:

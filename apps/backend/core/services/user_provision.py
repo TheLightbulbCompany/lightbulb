@@ -38,6 +38,7 @@ from core.services.paperclip_provisioning import (
 from core.services.paperclip_agent_lifecycle import (
     _heartbeat_enabled,
     _rows,
+    disable_timer_automation,
     pause_owner_automation,
     resume_owner_automation,
 )
@@ -408,6 +409,8 @@ async def arm_nightly_ceo(owner_id: str) -> str:
         # what our own pause took.
         await resume_owner_automation(owner_id)
         if not settings.NIGHTLY_CEO_HEARTBEATS_ENABLED:
+            # The resume above may have re-enabled timers and routines: turn ours off again.
+            await disable_timer_automation(owner_id)
             return _arm_status("heartbeats_disabled")
 
         provisioning = await build_paperclip_provisioning()

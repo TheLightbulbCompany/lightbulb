@@ -21,17 +21,25 @@ export interface RoomGroup {
 export function groupRooms(
   rooms: readonly DirectoryRoom[],
   sections: readonly RoomSection[],
-  options: { sort: SidebarSort; nameOf: (room: DirectoryRoom) => string; alwaysShow?: readonly string[] },
+  options: {
+    sort: SidebarSort; nameOf: (room: DirectoryRoom) => string; alwaysShow?: readonly string[];
+    /** Super-agent: the one front agent (`@lightbulb`). A DM with any other agent is a specialist's and
+     *  files under a collapsed Specialists group after Team (contracts-v2 §9: one voice, labels behind it). */
+    frontAgentId?: string | null;
+  },
 ): RoomGroup[] {
   const known = new Set(sections.map((section) => section.id));
+  const specialistDm = (room: DirectoryRoom) => options.frontAgentId !== undefined && room.kind === "dm"
+    && room.participants.length === 1 && room.participants[0].kind === "agent" && room.participants[0].id !== options.frontAgentId;
   const bucket = (room: DirectoryRoom) => room.archivedAt ? "archived" : room.starred ? "starred"
     : room.sectionId && known.has(room.sectionId) ? room.sectionId
       : room.kind === "channel" && room.shared ? "external"
-        : room.kind === "channel" ? "channels" : "direct";
+        : room.kind === "channel" ? "channels" : specialistDm(room) ? "specialists" : "direct";
   const order: RoomGroup[] = [
     { id: "starred", label: "Starred", rooms: [], custom: false },
     ...sections.map((section) => ({ id: section.id, label: section.name, rooms: [], custom: true })),
     { id: "direct", label: "Team", rooms: [], custom: false },
+    { id: "specialists", label: "Specialists", rooms: [], custom: false },
     { id: "channels", label: "Channels", rooms: [], custom: false },
     { id: "external", label: "External connections", rooms: [], custom: false },
     { id: "archived", label: "Archived", rooms: [], custom: false },

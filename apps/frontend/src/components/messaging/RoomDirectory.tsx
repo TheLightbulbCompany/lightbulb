@@ -15,6 +15,7 @@ import { copyText, roomPermalink } from "./messageLinks";
 import { isUnreadTarget, nextUnreadRoomId } from "./roomNavigation";
 import { RoomDirectoryRow } from "./RoomDirectoryRow";
 import { groupRooms, type RoomGroup, type SidebarRow, type SidebarSession, type SidebarSort } from "./roomSections";
+import { useSuperAgent } from "@/hooks/useLiveEvents";
 import { foldedEntries, ownWaitingCount, sessionRowGone, sessionRowGroups, sessionRowKey, NEEDS_YOU_GROUP, SESSION_GROUP_FOLD, type SessionGroupBy, type SessionShow } from "./sessionGroups";
 import { SessionListRow } from "./SessionListRow";
 import { SessionSearch } from "./SessionSearch";
@@ -146,6 +147,7 @@ function DirectoryContent({
   ceoAgentId,
   onNavigate,
 }: RoomDirectoryProps) {
+  const superAgent = useSuperAgent();
   const id = useId();
   const [creating, setCreating] = useState(false);
   const [kind, setKind] = useState<RoomKind>("channel");
@@ -237,9 +239,14 @@ function DirectoryContent({
   const dmCounterpart = (room: DirectoryRoom) => room.kind === "dm" && room.participants.length === 1
     ? `${room.participants[0].kind}:${room.participants[0].id}` : null;
   const withDm = new Set(rooms.map(dmCounterpart));
-  const roster = participants.filter((participant) => !withDm.has(`${participant.kind}:${participant.id}`));
+  // Super-agent: the roster lists people and the one front agent; specialists are labels on threads, not
+  // DM partners (their DMs, if any exist, file under Specialists). Off, or while the front agent is still
+  // unknown (/agents not answered yet, or no "ceo" role in the roster): every agent, as today.
+  const oneVoice = superAgent && !!ceoAgentId;
+  const roster = participants.filter((participant) => !withDm.has(`${participant.kind}:${participant.id}`)
+    && (!oneVoice || participant.kind !== "agent" || participant.id === ceoAgentId));
   const groups = groupRooms(rooms, sections, { sort: prefs.sort, nameOf: (room) => roomDisplayName(room, room.participants),
-    alwaysShow: roster.length > 0 ? ["direct"] : [] });
+    alwaysShow: roster.length > 0 ? ["direct"] : [], ...(oneVoice ? { frontAgentId: ceoAgentId } : {}) });
   // `focusRoomTrigger` can run long after the render that captured it (it's
   // attached to a promise settling), so it must read the CURRENT groups, not
   // whatever `groups` was closed over at click time -- a plain ref, kept in
@@ -504,7 +511,7 @@ function DirectoryContent({
   })();
   const renderGroup = (group: RoomGroup) => {
     // Archived starts collapsed, so for it alone a listed id means "expanded".
-    const collapsed = prefs.collapsed.includes(group.id) !== (group.id === "archived");
+    const collapsed = prefs.collapsed.includes(group.id) !== (group.id === "archived" || group.id === "specialists");
     // Collapsing hides rooms, never activity or your place: the header keeps
     // the group's unread count, and the room you are reading stays on screen
     // so `aria-current` survives a ⌘K / next-unread / permalink jump into a

@@ -521,7 +521,7 @@
           "default": null,
           "title": "Resolvedat"
         },
-        "a2ATaskId": {
+        "a2aTaskId": {
           "anyOf": [
             {
               "type": "string"

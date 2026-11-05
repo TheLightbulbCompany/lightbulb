@@ -113,6 +113,11 @@ def run_id(ws: str, task_id: str, n: int) -> str:
     return str(uuid.uuid5(RUN_NS, f"{ws}:{task_id}:{n}"))
 
 
+def router_run_id(ws: str, batch_id: str) -> str:
+    """A Router batch's bridge run id: a retried `router_turn` re-POSTs the same run (a replay)."""
+    return str(uuid.uuid5(RUN_NS, f"{ws}:router:{batch_id}"))
+
+
 #: A Worker's session on the workspace's VM (spec 02 §2.2): one per task, so an attempt resumes the last one's
 #: transcript. The bridge's run route checks keys against this pattern (bridge/runs.py SESSION_KEY_RE).
 WORKER_SESSION_KEY_PATTERN = r"^agent:[0-9a-f-]{36}:lightbulb:task:[0-9a-f-]{36}$"
@@ -246,6 +251,11 @@ def creation_sk(cap_id: str) -> str:
 def slots_sk() -> str:
     """The workspace's Worker slot leases (contracts §9: cap per VM kind)."""
     return "SLOTS"
+
+
+def task_seq_sk() -> str:
+    """The workspace's task identifier counter (`LB-{n}`, spec 01 `next_identifier`)."""
+    return "TASKSEQ"
 
 
 # Spec 03 §5.1: the workspace's own rows under `WS#{ws}` (Lane R, wave1-R Task 6).
@@ -428,7 +438,9 @@ class Task(_Row):
     attempt_count: int = 0
     usage: Usage | None = None
     resolved_at: str | None = None
-    a2a_task_id: str | None = None
+    # Explicit: `to_camel` would make it `a2ATaskId`; the wire name everywhere else (the `a2a:{a2aTaskId}` trigger
+    # id, lane Q's A2A admission) is `a2aTaskId`.
+    a2a_task_id: str | None = Field(None, alias="a2aTaskId")
     ws_channel: str | None = None
     proposal_reason: str | None = None  # why the Router proposed instead of starting (G18)
     stop_requested_by: str | None = None  # who pressed Stop (attributes the stop)

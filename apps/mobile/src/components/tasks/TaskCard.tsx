@@ -6,7 +6,7 @@ import { useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { router } from "expo-router";
 import {
-  putTaskSummary, specialistLabel, summaryView, taskSummaryLine, useTaskCache, useTaskList, type CanonicalRoomMessage, type TaskRef, type TaskSummary, type TaskTone,
+  putTaskSummary, specialistLabel, summaryView, taskSummaryLine, useTask, useTaskCache, useTaskList, type CanonicalRoomMessage, type TaskRef, type TaskSummary, type TaskTone,
 } from "@lightbulb/shared";
 
 import { fonts, radii, spacing, type ChatPalette } from "../../config/theme";
@@ -119,10 +119,20 @@ export function MessageTasks({ message, viewerId, palette, onOpen }: {
   const suggested = refs.filter((r) => r.role === "suggested");
   return (
     <View style={styles.list} accessibilityLabel="Threads in this message">
-      {started.map((r) => <TaskCard key={r.taskId} task={byId.get(r.taskId)} taskId={r.taskId} viewerId={viewerId} palette={palette} onOpen={onOpen} />)}
+      {started.map((r) => <RefCard key={r.taskId} taskId={r.taskId} listed={byId.get(r.taskId)} viewerId={viewerId} palette={palette} onOpen={onOpen} />)}
       {suggested.length > 0 ? <SuggestedBlock refs={suggested} taskById={byId} viewerId={viewerId} palette={palette} onOpen={onOpen} /> : null}
     </View>
   );
+}
+
+/** A card whose task the room's first page doesn't hold (an older thread) reads it by id. */
+function RefCard({ taskId, listed, viewerId, palette, onOpen }: {
+  taskId: string; listed: TaskSummary | undefined; viewerId: string; palette: ChatPalette; onOpen?: (taskId: string) => void;
+}) {
+  const { tasks } = useLiveEvents();
+  const { data, error } = useTask(tasks, listed ? null : taskId);
+  if (!listed && !data && !error) return null;
+  return <TaskCard task={listed ?? data?.task} taskId={taskId} viewerId={viewerId} palette={palette} onOpen={onOpen} />;
 }
 
 export function SuggestedBlock({ refs, taskById, viewerId, palette, onOpen }: {

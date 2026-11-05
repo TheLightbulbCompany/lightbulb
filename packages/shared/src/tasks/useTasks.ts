@@ -27,23 +27,23 @@ export function useTaskList(client: TasksClient, scope: TaskScope | null) {
   return useSWR<TaskList>(scope ? taskListKey(client, scope) : null, () => client.list(scope!), { shouldRetryOnError: false });
 }
 
-/** "Load older" for a list: pages after the first, fetched only when asked, kept beside the first page. */
+/** "Load older" for a list: pages after the first, fetched only when asked. They live in the SWR cache under the
+ *  list's own prefix (`…:older`), so `putTaskSummary` and `task.changed` (`refreshTask`) update their rows too. */
 export function useOlderTasks(client: TasksClient, first: TaskList | undefined, scope: TaskScope | null) {
-  const [older, setOlder] = useState<{ tasks: TaskSummary[]; next: string | null; key: string } | null>(null);
-  const key = scope ? taskListKey(client, scope) : "";
-  const pages = older?.key === key ? older : null; // a new scope or workspace drops the old pages
-  const next = pages ? pages.next : first?.next ?? null;
+  const key = scope ? `${taskListKey(client, scope)}:older` : null;
+  const { data: older, mutate } = useSWR<TaskList>(key, null); // no fetcher: only loadOlder fills it
+  const next = older ? older.next : first?.next ?? null;
   const [loading, setLoading] = useState(false);
   const loadOlder = useCallback(async () => {
     if (!scope || !next) return;
     setLoading(true);
     try {
       const page = await client.list(scope, next);
-      setOlder((o) => ({ key, next: page.next, tasks: [...(o?.key === key ? o.tasks : []), ...page.tasks] }));
+      await mutate((o) => ({ next: page.next, tasks: [...(o?.tasks ?? []), ...page.tasks] }), { revalidate: false });
     } finally { setLoading(false); }
-  }, [client, scope, next, key]);
+  }, [client, scope, next, mutate]);
   const seen = new Set((first?.tasks ?? []).map((t) => t.taskId));
-  return { older: (pages?.tasks ?? []).filter((t) => !seen.has(t.taskId)), hasOlder: !!next, loading, loadOlder };
+  return { older: (older?.tasks ?? []).filter((t) => !seen.has(t.taskId)), hasOlder: !!next, loading, loadOlder };
 }
 
 /** `null` id = no request. */

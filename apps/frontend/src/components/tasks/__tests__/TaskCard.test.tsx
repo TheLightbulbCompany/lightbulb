@@ -63,6 +63,16 @@ describe("TaskCard", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).toBeEnabled());
   });
 
+  it("details that fail to load: the card says so, and its button opens the thread instead of acting blind", async () => {
+    const onOpen = vi.fn();
+    client.questions.mockRejectedValue(new Error("503"));
+    render(<Fresh><TaskCard task={byId("step05", "t-signup")} taskId="t-signup" viewerId={SAM} onOpen={onOpen} /></Fresh>);
+    expect(await screen.findByText("The details didn't load. Open the thread to decide.")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
+    expect(onOpen).toHaveBeenCalledWith("t-signup");
+    expect(client.answer).not.toHaveBeenCalled();
+  });
+
   it("stale version 409 refetches, no second POST", async () => {
     const fees = byId("step03", "t-fees");
     const proposed = { ...byId("step02", "t-fees") };

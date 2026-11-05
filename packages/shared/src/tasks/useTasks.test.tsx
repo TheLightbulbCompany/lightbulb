@@ -8,7 +8,7 @@ import { ApiError } from "../api/error";
 import type { TasksClient } from "./client";
 import { fixtureTask } from "./fixtures";
 import type { TaskDetail, TaskSummary } from "./types";
-import { refreshTask, taskKey, taskListKey, useOlderTasks, useTask, useTaskList } from "./useTasks";
+import { putTaskSummary, refreshTask, taskKey, taskListKey, useOlderTasks, useTask, useTaskList } from "./useTasks";
 
 const t1 = fixtureTask({ taskId: "t1", title: "one", version: 5 });
 const t2 = fixtureTask({ taskId: "t2", title: "two", version: 2 });
@@ -50,21 +50,28 @@ describe("useTasks", () => {
     expect(client.get).not.toHaveBeenCalled();
   });
 
-  it("the list reads one page; older pages load only on demand", async () => {
+  it("the list reads one page; older pages load on demand and still take live updates", async () => {
     const client = fakeClient({
       list: vi.fn(async (_scope: unknown, cursor?: string | null) => (cursor ? { tasks: [t2], next: null } : { tasks: [t1], next: "c1" })),
     } as never);
-    const { hook } = await setup(client);
+    const scope = { kind: "room", roomId: "r1" } as const;
+    const wrapper = ({ children }: { children: ReactNode }) => <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>{children}</SWRConfig>;
+    const hook = renderHook(() => {
+      const list = useTaskList(client, scope);
+      return { list, older: useOlderTasks(client, list.data, scope), swr: useSWRConfig() };
+    }, { wrapper });
+    await waitFor(() => expect(hook.result.current.list.data).toBeTruthy());
     expect(hook.result.current.list.data?.tasks.map((t) => t.taskId)).toEqual(["t1"]);
     expect(client.list).toHaveBeenCalledTimes(1);
-    const wrapper = ({ children }: { children: ReactNode }) => <SWRConfig value={{ provider: () => new Map() }}>{children}</SWRConfig>;
-    const scope = { kind: "room", roomId: "r1" } as const;
-    const older = renderHook(() => useOlderTasks(client, hook.result.current.list.data, scope), { wrapper });
-    expect(older.result.current.hasOlder).toBe(true);
-    await act(async () => { await older.result.current.loadOlder(); });
+    expect(hook.result.current.older.hasOlder).toBe(true);
+    await act(async () => { await hook.result.current.older.loadOlder(); });
     expect(client.list).toHaveBeenLastCalledWith(scope, "c1");
-    expect(older.result.current.older.map((t) => t.taskId)).toEqual(["t2"]);
-    expect(older.result.current.hasOlder).toBe(false);
+    expect(hook.result.current.older.older.map((t) => t.taskId)).toEqual(["t2"]);
+    expect(hook.result.current.older.hasOlder).toBe(false);
+    // A summary written after an action reaches a row from an older page.
+    const { cache, mutate } = hook.result.current.swr;
+    await act(async () => { await putTaskSummary(cache, mutate, { ...t2, status: "resolved" }, client); });
+    expect(hook.result.current.older.older[0].status).toBe("resolved");
   });
 
   it("task.changed refetches only the matching task", async () => {

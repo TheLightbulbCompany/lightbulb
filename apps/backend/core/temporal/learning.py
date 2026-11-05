@@ -272,6 +272,29 @@ async def close_task_attempt(
     no longer holds is a no-op, and the workflow drops a `MergeRef` it has seen."""
     await runtime_runs.stop_task_session(ws, task_id, run_id)
     await signal_merge(ws, specialist_id, MergeRef(task_id, attempt))
+    try:
+        await run_in_thread(tag_overlay, ws, task_id)
+    except Exception:  # noqa: BLE001 -- the next attempt's close tags again; never costs the merge
+        logger.warning("overlay tagging failed task=%s attempt=%s", task_id, attempt, exc_info=True)
+
+
+OVERLAY_TAG = {"TagSet": [{"Key": "lb-kind", "Value": "task-overlay"}]}
+
+
+def tag_overlay(ws: str, task_id: str) -> int:
+    """Tag every object of the task's overlay (all its agents) `lb-kind=task-overlay`, so the bucket's
+    14-day lifecycle rule (container-stack.ts `TaskOverlays`, spec 07 §6) expires it. Backend-side by
+    ruling (contracts §15: the VM's puts carry no tag). Every attempt's close re-tags, so a later
+    attempt's objects are covered; tagging leaves ETags (the merge's CAS) untouched.
+    ponytail: a SIGTERM re-save landing after the LAST attempt's pass stays untagged; tag from O's
+    resolve cleanup too if the bucket shows strays."""
+    s3, bucket = _s3_client(), settings.OWNER_STATE_BUCKET
+    n = 0
+    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=f"{ws}/{OVERLAY_ROOT}/{task_id}/"):
+        for obj in page.get("Contents", []):
+            s3.put_object_tagging(Bucket=bucket, Key=obj["Key"], Tagging=OVERLAY_TAG)
+            n += 1
+    return n
 
 
 def is_task_session_attempt(ws: str, task_id: str, att: dict) -> bool:

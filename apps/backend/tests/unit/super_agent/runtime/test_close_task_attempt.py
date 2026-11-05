@@ -34,9 +34,10 @@ async def test_stops_session_before_signal(monkeypatch):
     client = _Client()
     monkeypatch.setattr(runtime_runs, "stop_task_session", stop)
     monkeypatch.setattr(learning, "get_client", lambda: client)
+    monkeypatch.setattr(learning, "tag_overlay", lambda ws, task_id: order.append(f"tag:{task_id}") or 0)
     await learning.close_task_attempt(WS, TASK, SPEC, 2, "run-2")
     await learning.close_task_attempt(WS, TASK, SPEC, 2, "run-2")  # a retried end_attempt: same ref again
-    assert order == [f"stop:{TASK}:run-2", "signal:LearningWorkflow"] * 2
+    assert order == [f"stop:{TASK}:run-2", "signal:LearningWorkflow", f"tag:{TASK}"] * 2
     assert client.kw["id"] == ts.learning_workflow_id(WS, SPEC) == f"learn:{WS}:{SPEC}"
     assert client.kw["start_signal"] == "merge" and client.kw["start_signal_args"] == [MergeRef(TASK, 2)]
     assert client.state.ws == WS and client.state.specialist_id == SPEC
@@ -140,3 +141,32 @@ async def test_unsealed_attempt_is_skipped_and_recorded(world, monkeypatch):
     report = await learning.merge_learning(WS, SPEC, TASK, 1)
     assert report["skipped"] == "unsealed" and world["puts"] == []
     assert (await learning_repo.get(WS, SPEC, TASK, 1))["state"] == "applied"
+
+
+@pytest.mark.asyncio
+async def test_close_tags_the_task_overlay_for_the_lifecycle_rule(world, monkeypatch):
+    """Audit #13: every object of the task's overlay gets `lb-kind=task-overlay` (the 14-day rule's
+    filter); nothing outside the task is touched; a tagging failure never costs the merge signal."""
+    s3 = world["s3"]
+    _seed(world, lane="shared")
+    other = f"{WS}/hermes-tasks/44444444-4444-4444-8444-444444444444/{SPEC}/memories/MEMORY.md"
+    s3.put_object(Bucket=BUCKET, Key=other, Body=b"x")
+    s3.put_object(Bucket=BUCKET, Key=f"{WS}/hermes/{SPEC}/memories/MEMORY.md", Body=b"profile")
+    signalled = []
+    monkeypatch.setattr(runtime_runs, "stop_task_session", AsyncMock(return_value=True))
+    monkeypatch.setattr(learning, "signal_merge", AsyncMock(side_effect=lambda *a: signalled.append(a)))
+
+    await learning.close_task_attempt(WS, TASK, SPEC, 1)
+
+    def tags(key):
+        return {t["Key"]: t["Value"] for t in s3.get_object_tagging(Bucket=BUCKET, Key=key)["TagSet"]}
+
+    prefix = learning.overlay_prefix(WS, TASK, SPEC)
+    keys = [o["Key"] for o in s3.list_objects_v2(Bucket=BUCKET, Prefix=prefix)["Contents"]]
+    assert len(keys) == 4 and all(tags(k) == {"lb-kind": "task-overlay"} for k in keys)
+    assert tags(other) == {} and tags(f"{WS}/hermes/{SPEC}/memories/MEMORY.md") == {}
+    assert len(signalled) == 1
+
+    monkeypatch.setattr(learning, "tag_overlay", lambda *a: (_ for _ in ()).throw(RuntimeError("s3")))
+    await learning.close_task_attempt(WS, TASK, SPEC, 2)  # logged, not raised
+    assert len(signalled) == 2

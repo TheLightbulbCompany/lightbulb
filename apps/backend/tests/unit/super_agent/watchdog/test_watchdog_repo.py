@@ -120,3 +120,11 @@ async def test_watchdog_rows_invisible_to_task_tree(table):
     tree = await tasks_repo.get_task_tree(WS, TASK)
     assert tree["task"]["taskId"] == TASK
     assert tree["attempts"] == tree["subscriptions"] == tree["questions"] == []
+
+
+async def test_release_cap_gives_one_unit_back(table):
+    assert await repo.take_cap("act", "2026110410", 1) is True
+    assert await repo.take_cap("act", "2026110410", 1) is False
+    await repo.release_cap("act", "2026110410")
+    assert await repo.take_cap("act", "2026110410", 1) is True
+    await repo.release_cap("act", "2026110499")  # never taken: no row, no error

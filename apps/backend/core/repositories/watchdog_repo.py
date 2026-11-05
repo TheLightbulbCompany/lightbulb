@@ -154,6 +154,23 @@ async def take_cap(kind: Literal["act", "judge"], bucket: str, cap: int) -> bool
     return True
 
 
+async def release_cap(kind: Literal["act", "judge"], bucket: str) -> None:
+    """Give back a unit `take_cap` handed out when the action it paid for never happened."""
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"pk": ts.WD_PLATFORM_PK, "sk": ts.wd_cap_sk(kind, bucket)},
+            UpdateExpression="ADD n :minus",
+            ConditionExpression="n > :zero",
+            ExpressionAttributeValues={":minus": -1, ":zero": 0},
+        )
+    except ClientError as exc:
+        if not _condition_failed(exc):
+            raise
+        return
+    _wrote()
+
+
 async def _set(pk: str, sk: str, fields: dict[str, Any]) -> dict:
     names = {f"#f{i}": k for i, k in enumerate(fields)}
     values = {f":f{i}": v for i, v in enumerate(fields.values())}

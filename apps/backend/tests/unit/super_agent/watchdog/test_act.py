@@ -173,3 +173,23 @@ async def test_reconcile_off_and_observe(env):
 
 async def test_none_action_is_skipped(env):
     assert (await wd.watchdog_act(CFG, _p(env, "none", "judge"))).outcome == "skipped"
+
+
+async def test_reconcile_queued_orphan_without_attempt(env):
+    _set(env, status="queued", attemptCount=0)
+    assert (await wd.watchdog_act(CFG, _p(env))).outcome == "done"
+    env.start.assert_awaited_once_with(WS, env.task_id, "reconcile")  # TaskWorkflow restarts it (W6)
+
+
+async def test_reconcile_rechecks_c1_age(env):
+    _set(env, updatedAt=datetime.now(timezone.utc).isoformat())  # the row moved since the scan
+    assert (await wd.watchdog_act(CFG, _p(env))).outcome == "skipped"
+    env.start.assert_not_awaited()
+    assert _wd_rows(env) == []
+
+
+async def test_lost_spend_race_releases_the_cap_unit(env, monkeypatch):
+    monkeypatch.setattr(watchdog_repo, "spend_action", AsyncMock(return_value=None))
+    cfg = WatchdogConfig(fleet_actions_per_hour=1)
+    assert (await wd.watchdog_act(cfg, _p(env))).outcome == "limit"
+    assert await watchdog_repo.take_cap("act", datetime.now(timezone.utc).strftime("%Y%m%d%H"), 1) is True

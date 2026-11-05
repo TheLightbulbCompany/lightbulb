@@ -31,22 +31,13 @@ describe("sidebar with the super-agent on", () => {
   const rowsOf = (region: string) => within(screen.getByRole("region", { name: region })).getAllByRole("button", { name: /^(Lightbulb|Alice|Engineering|Finance)/ })
     .map((b) => NAMES.find((n) => b.textContent?.includes(n)));
 
-  it("rosters people and only Lightbulb, pinned first; specialist DMs sit in a collapsed Specialists group", async () => {
+  it("rosters people and only Lightbulb, pinned first; specialists and their DMs live on the Team page, not here", () => {
     render(<RoomDirectory {...props} />);
     expect(rowsOf("Team")).toEqual(["Lightbulb", "Alice"]);
-    const specialists = screen.getByRole("button", { name: "Expand Specialists" });
-    expect(specialists).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByRole("button", { name: /^Finance/ })).toBeNull();
-    await userEvent.click(specialists);
-    expect(screen.getByRole("button", { name: "Collapse Specialists" })).toBeInTheDocument();
-    expect(rowsOf("Specialists")).toEqual(["Finance"]);
-  });
-
-  it("a specialist off the roster stays findable: Specialists lists it, and a click asks it in the Lightbulb DM", async () => {
-    render(<RoomDirectory {...props} rooms={[]} />);
-    await userEvent.click(screen.getByRole("button", { name: "Expand Specialists" }));
-    await userEvent.click(screen.getByRole("button", { name: "Ask Engineering through Lightbulb" }));
-    expect(openAgentDmWithDraft).toHaveBeenCalledWith("agent_ceo", "@engineering ");
+    expect(screen.queryByRole("region", { name: "Specialists" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Specialists/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^(Finance|Engineering)/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Ask / })).toBeNull();
   });
 
   it("an unknown front agent (roster not resolved, or no ceo role) keeps today's roster", () => {

@@ -2,7 +2,7 @@
 
 import "./workspace.css";
 import { UserButton } from "@clerk/nextjs";
-import { Bell, HelpCircle, Images, LayoutGrid, ListTodo, MessageSquare, Search, Settings } from "lucide-react";
+import { HelpCircle, Home, Images, LayoutGrid, ListTodo, MessageSquare, Search, Settings, Users } from "lucide-react";
 import Link from "next/link";
 import { useActiveTeamRunCount } from "@/components/notifications/teamRunActivity";
 import { useNeedsYouBadge } from "@/components/activity/useNeedsYouBadge";
@@ -10,18 +10,22 @@ import { useSupport } from "@/components/support/SupportProvider";
 import { useCommandPalette } from "@/components/teams/command-palette/CommandPaletteProvider";
 import { recordMessagesNavigation } from "./chatHistory";
 import { HistoryButtons } from "./HistoryButtons";
-import { activateMessagesPanel, openPanel, useWorkspaceState, type Place } from "./workspaceController";
+import { activateMessagesPanel, closePane, openPanel, useWorkspaceState, type Place } from "./workspaceController";
 import { useSuperAgent } from "@/hooks/useLiveEvents";
-import { useThreadsWaitingOnMe } from "@/components/tasks/useRoomThreads";
+import { useHomeNeedsYou } from "@/components/tasks/useRoomThreads";
 import { ThemeToggles } from "@/components/chat/ThemeToggles";
 
-// The five places, and nothing else (spec 3.1). Browser, Files and Mail open in
+// The six places, and nothing else (spec 3.1; Team added 2026-11-05). Browser, Files and Mail open in
 // the right pane (the conversation header, links, ⌘K); Settings is at the bottom.
-const DESTINATIONS: readonly { place: Place; panel: string; label: string; Icon: typeof Bell }[] = [
+const DESTINATIONS: readonly { place: Place; panel: string; label: string; Icon: typeof Home }[] = [
+  // Home is the old Activity place grown: the viewer's threads lead, For you and the feed follow. Its panel key
+  // stays "activity", so every ?panel=activity link (notifications, filters, focus) opens Home.
+  { place: "activity", panel: "activity", label: "Home", Icon: Home },
   { place: "chat", panel: "chat", label: "Chat", Icon: MessageSquare },
-  { place: "activity", panel: "activity", label: "Activity", Icon: Bell },
-  // Every task-board page lives on Work; the rail opens it on Tasks.
+  // Every task-board page lives on Work; the rail opens it on Tasks (on Automations with the super-agent on).
   { place: "work", panel: "teams-issues", label: "Work", Icon: ListTodo },
+  // The owner's AI staff: see, hire and manage specialists, and message one (its DM lives here, not in the sidebar).
+  { place: "team", panel: "teams-agents", label: "Team", Icon: Users },
   // Every document and deliverable (stock Paperclip's Artifacts).
   { place: "library", panel: "teams-artifacts", label: "Library", Icon: Images },
   // Apps the agents built, opened inside the pane.
@@ -38,13 +42,11 @@ export function WorkspaceHeader({ chatReady = true, onNavigate }: {
   const { setOpen } = useCommandPalette();
   const { place: current } = useWorkspaceState();
   const activeTeamRunCount = useActiveTeamRunCount();
-  // Activity's badge: what For you → Needs you shows (the desk, minus dismissed and
-  // snoozed items, plus failed-run groups), plus unseen mentions, DMs and Paperclip items.
-  const attentionCount = useNeedsYouBadge();
-  // With the super-agent on, Work leads with Threads (the overview); today's Tasks board stays a tab.
   const superAgent = useSuperAgent();
-  // With it on, Work badges the threads waiting on you (team runs are the old board's).
-  const waitingOnMe = useThreadsWaitingOnMe();
+  // Home's badge: its Needs you thread rows, plus what For you → Needs you shows (the desk, minus dismissed and
+  // snoozed items, plus failed-run groups) and unseen mentions, DMs and Paperclip items. A thread's question is
+  // counted once, as its thread row.
+  const homeCount = useHomeNeedsYou() + useNeedsYouBadge(superAgent);
   return (
     <nav className="workspace-rail" aria-label="Workspace">
       <HistoryButtons />
@@ -52,22 +54,22 @@ export function WorkspaceHeader({ chatReady = true, onNavigate }: {
         <Search size={20} aria-hidden="true" />
       </button>
       {DESTINATIONS.map(({ place, panel, label, Icon }) => {
-        // Team runs are team work, so their count rides on Work; Activity badges what needs you.
+        // Team runs are team work, so their count rides on Work; Home badges what needs you.
         const runs = place === "work" && !superAgent ? activeTeamRunCount : 0;
-        const waiting = place === "work" && superAgent ? waitingOnMe : 0;
-        const unseen = place === "activity" ? attentionCount : 0;
-        const badge = runs || waiting || unseen;
+        const unseen = place === "activity" ? homeCount : 0;
+        const badge = runs || unseen;
         const accessibleLabel = runs
           ? `${label}, ${runs} active team ${runs === 1 ? "run" : "runs"}`
-          : waiting ? `${label}, ${waiting} ${waiting === 1 ? "thread" : "threads"} waiting on you`
-            : unseen ? `${label}, ${unseen} need${unseen === 1 ? "s" : ""} you` : label;
+          : unseen ? `${label}, ${unseen} need${unseen === 1 ? "s" : ""} you` : label;
         // Messaging never needs the container; the other places do.
         return <button key={place} type="button" aria-label={accessibleLabel} title={accessibleLabel}
           disabled={!chatReady && place !== "chat"}
           aria-current={current === place ? "page" : undefined}
           onClick={() => {
+            // A new place starts clean: the pane belonged to the place being left.
+            if (place !== current) closePane();
             if (place === "chat") { activateMessagesPanel(); recordMessagesNavigation(); }
-            else openPanel(place === "work" && superAgent ? "teams-threads" : panel, {}, { pushUrl: true });
+            else openPanel(place === "work" && superAgent ? "teams-routines" : panel, {}, { pushUrl: true });
             onNavigate?.();
           }}>
           <span className="workspace-rail__icon"><Icon size={20} aria-hidden="true" />

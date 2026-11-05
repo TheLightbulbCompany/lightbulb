@@ -29,6 +29,7 @@ import { cn } from "@/lib/utils";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { notifyApiError } from "@/lib/notify";
 import { handleShellLinkClick } from "@/lib/shellNav";
+import { openChatPanel } from "@/components/workspace/workspaceController";
 import { agentInspectorUrl } from "@/components/teams/shared/lib/agentInspectorUrl";
 import { useAgentMutations } from "@/components/teams/agents/hooks/useAgentMutations";
 import type { CompanyAgent } from "@/components/teams/shared/types";
@@ -124,6 +125,15 @@ export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
         const paused = a.status === "paused";
         return (
           <span className="flex items-center justify-end gap-2">
+            {/* The agent's DM (a specialist's has left the sidebar: Team is where it is reached). */}
+            <button
+              type="button"
+              className="text-ui hover:underline text-[var(--midnight)]"
+              aria-label={`Message ${a.name}`}
+              onClick={() => openChatPanel(a.id)}
+            >
+              Message
+            </button>
             <button
               className="text-ui hover:underline text-[var(--midnight-soft)]"
               onClick={async () => {
@@ -174,7 +184,7 @@ export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
     <div className="editorial-page flex flex-col gap-4 p-4 sm:p-5 lg:p-6 max-w-[1600px] mx-auto w-full">
       <PanelMasthead
         overline="Team"
-        title="Agents"
+        title="Team"
         actions={
           <>
             {/* Hiring moved here from the workspace rail: the same marketplace drawer. */}

@@ -14,7 +14,8 @@ import { useInboxTriage } from "@/components/teams/inbox/hooks/useInboxTriage";
 import { groupFailedRuns } from "@/components/teams/inbox/lib/groupFailedRuns";
 import type { CompanyAgent, CompanyMember } from "@/components/teams/shared/types";
 import { useActivity } from "@/hooks/useActivity";
-import { useLiveEvents } from "@/hooks/useLiveEvents";
+import { useLiveEvents, useSuperAgent } from "@/hooks/useLiveEvents";
+import { HomeWork } from "@/components/tasks/HomeWork";
 import { pageVisible } from "@/hooks/useRooms";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { openPanel, openTaskPane } from "../workspaceController";
@@ -74,11 +75,16 @@ export function feedShown(narrow: boolean | null, tab: ActivityTab): boolean {
   return narrow === false || (narrow === true && tab === "feed");
 }
 
-/** Activity: For you on the left, the team feed on the right; tabs below ~900px. */
+/** Home: with the super-agent on, the viewer's threads (Needs you · Working · Done · Scheduled) lead; below them
+ *  Activity's For you on the left and the team feed on the right (tabs below ~900px). */
 export function ActivityDockPanel({ params }: PanelProps) {
   const { userId, orgId } = useAuth();
   const live = useLiveEvents();
   const activity = useActivity();
+  const superAgent = useSuperAgent();
+  // A thread's question is a Needs you row above: For you keeps the messages and the rest, never the same ask twice.
+  const forYouItems = useMemo(() => superAgent ? activity.items.filter((item) => item.kind !== "task_question") : activity.items,
+    [superAgent, activity.items]);
   const attention = useAttentionFeed();
   const teams = useTeamsApi();
   const { data: humans } = teams.read<{ members?: CompanyMember[] }>("/members");
@@ -114,7 +120,8 @@ export function ActivityDockPanel({ params }: PanelProps) {
     if (newest && pageVisible()) void markSeen(newest).catch(() => {});
   }, [newest, markSeen]);
 
-  return <div ref={pageRef} className="activity-page" data-tab={tab}>
+  return <div ref={pageRef} className={superAgent ? "activity-page activity-page--home" : "activity-page"} data-tab={tab}>
+    {superAgent && <HomeWork viewerId={userId ?? ""} onOpen={openTaskPane} />}
     <div role="tablist" aria-label="Activity" className="activity-page__tabs">
       {([["for-you", "For you"], ["feed", "Feed"]] as const).map(([value, label]) =>
         <button key={value} type="button" role="tab" aria-selected={tab === value} onClick={() => setTab(value)}>{label}</button>)}
@@ -122,7 +129,7 @@ export function ActivityDockPanel({ params }: PanelProps) {
     <div className="activity-page__columns">
       <div className="activity-page__for-you">
         <ForYou
-          activityItems={activity.items}
+          activityItems={forYouItems}
           attentionItems={attention.items}
           failedRuns={runGroups}
           onDismissRuns={(ids) => ids.forEach(ack)}

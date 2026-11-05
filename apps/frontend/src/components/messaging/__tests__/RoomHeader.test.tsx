@@ -26,7 +26,7 @@ const props = {
 it("shows the topic and at most four faces with the remaining count", () => {
   render(<RoomHeader {...props} />);
   expect(screen.getByText("Ship v2")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "View members, 6 in this conversation" })).toHaveTextContent("+2");
+  expect(screen.getByRole("button", { name: "People, 6 in this conversation" })).toHaveTextContent("+2");
 });
 
 it("edits the topic and saves it", async () => {
@@ -138,7 +138,7 @@ it("copies the room link and opens details from the overflow menu", async () => 
   expect(writeText).toHaveBeenCalledWith(expect.stringContaining("room=room-1"));
   await userEvent.click(screen.getByRole("button", { name: "Conversation options" }));
   await userEvent.click(await screen.findByRole("menuitem", { name: "Details" }));
-  expect(onOpenDetails).toHaveBeenCalledWith();
+  expect(onOpenDetails).toHaveBeenCalledWith("about");
 });
 
 it("does not leak a failed star's error into a freshly opened rename dialog", async () => {
@@ -175,15 +175,15 @@ it("hides the pinned count when nothing is pinned", () => {
 // true` here, so the media-query rule can't be observed via computed style;
 // assert the DOM structure the selector needs (the buttons live inside
 // .room-audience) plus the rule's source text instead.
-it("puts the view switches, Conversation options and Search inside .room-audience for the mobile touch-floor rule", () => {
+it("puts About, Conversation options and Search inside .room-audience for the mobile touch-floor rule", () => {
   // The default `search` prop is a bare <span /> -- stand in a real Search
   // trigger (same accessible name RoomMessageSearch renders) so the element
   // the mobile audit flagged is actually exercised here too.
   render(<RoomHeader {...props} onSetPrefs={vi.fn()} search={<button type="button" aria-label="Search this conversation">Search</button>}
-    views={<nav aria-label="Conversation views"><button type="button" aria-label="Details" /></nav>} />);
+    views={<button type="button">About</button>} />);
   const audience = screen.getByRole("button", { name: "Conversation options" }).closest(".room-audience");
   expect(audience).not.toBeNull();
-  expect(within(audience as HTMLElement).getByRole("button", { name: "Details" })).toBeInTheDocument();
+  expect(within(audience as HTMLElement).getByRole("button", { name: "About" })).toBeInTheDocument();
   expect(within(audience as HTMLElement).getByRole("button", { name: "Search this conversation" })).toBeInTheDocument();
 
   const css = readFileSync(path.resolve(__dirname, "../messaging.css"), "utf8");

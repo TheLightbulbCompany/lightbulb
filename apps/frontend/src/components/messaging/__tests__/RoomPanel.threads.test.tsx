@@ -30,24 +30,25 @@ let client: FakeTasksClient;
 beforeEach(() => { live.superAgent = true; client = fakeTasksClient(FIXTURES.step05.tasks); live.tasks = client; });
 
 describe("RoomPanel Threads view (super-agent)", () => {
-  it("the Threads button carries the waiting dot and opens the overview", async () => {
+  it("the About button carries the needs-you dot and opens on the room's requests", async () => {
     render(<Fresh><RoomPanel {...props} /></Fresh>);
-    const button = await screen.findByRole("button", { name: "Threads, 1 waiting on you" });
-    expect(screen.queryByRole("button", { name: /^Tasks/ })).toBeNull();
+    const button = await screen.findByRole("button", { name: "About, 1 needs you" });
+    expect(button).toHaveTextContent("About");
     await userEvent.click(button);
-    const aside = await screen.findByRole("complementary", { name: "Threads" });
+    const aside = await screen.findByRole("complementary", { name: "About" });
+    expect(within(aside).getByRole("tab", { name: "Requests" })).toHaveAttribute("aria-selected", "true");
     expect(within(aside).getByRole("heading", { name: "Waiting on you · 1" })).toBeInTheDocument();
     expect(within(aside).getByRole("heading", { name: "Working · 2" })).toBeInTheDocument();
-    // One room read serves the button and the overview.
+    // One room read serves the button and the tab.
     expect(client.list).toHaveBeenCalledTimes(1);
     // A row opens its thread in the same column.
     await userEvent.click(within(aside).getByRole("button", { name: "Open Workshop signup app, Waiting on you" }));
     expect(await screen.findByRole("complementary", { name: "Thread" })).toHaveAttribute("data-task-pane", "t-signup");
-    // Opened from the overview, Back returns to the overview; from there, Back returns to the conversation.
-    await userEvent.click(screen.getByRole("button", { name: "Back to threads" }));
-    expect(await screen.findByRole("complementary", { name: "Threads" })).toBeInTheDocument();
+    // Opened from About, Back returns to its Threads tab; from there, Back returns to the conversation.
+    await userEvent.click(screen.getByRole("button", { name: "Back to requests" }));
+    expect(within(await screen.findByRole("complementary", { name: "About" })).getByRole("tab", { name: "Requests" })).toHaveAttribute("aria-selected", "true");
     await userEvent.click(screen.getByRole("button", { name: "Back to conversation" }));
-    expect(screen.getByRole("button", { name: "Threads, 1 waiting on you" })).toHaveFocus();
+    expect(screen.getByRole("button", { name: "About, 1 needs you" })).toHaveFocus();
   });
 
   it("a message sent while the workspace is still being set up reads Queued until Lightbulb answers", async () => {
@@ -57,11 +58,13 @@ describe("RoomPanel Threads view (super-agent)", () => {
     expect(screen.queryByText(/^Queued/)).toBeNull();
   });
 
-  it("flag off keeps the Tasks button and makes no /tasks request", () => {
+  it("flag off keeps Tasks in the menu, no Threads tab, and makes no /tasks request", async () => {
     live.superAgent = false;
     render(<Fresh><RoomPanel {...props} /></Fresh>);
-    expect(screen.getByRole("button", { name: "Tasks" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /^Threads/ })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "About" }));
+    expect(within(screen.getByRole("complementary", { name: "About" })).queryByRole("tab", { name: "Requests" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Conversation options" }));
+    expect(await screen.findByRole("menuitem", { name: "Tasks" })).toBeInTheDocument();
     expect(client.list).not.toHaveBeenCalled();
   });
 });

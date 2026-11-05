@@ -22,7 +22,7 @@ import { SessionSearch } from "./SessionSearch";
 import { StartSessionDialog } from "./StartSessionDialog";
 import { readSessionMarks, readSidebarPrefs, writeSessionMarks, writeSidebarPrefs, type SidebarPrefs } from "./sidebarPrefs";
 import { useAsyncAction } from "./useAsyncAction";
-import { openAgentDmWithDraft, openInviteDialog } from "@/components/workspace/workspaceController";
+import { openInviteDialog } from "@/components/workspace/workspaceController";
 import type { DirectoryParticipant, ParticipantSelection, DirectoryRoom } from "./types";
 import "./messaging.css";
 
@@ -240,17 +240,13 @@ function DirectoryContent({
     ? `${room.participants[0].kind}:${room.participants[0].id}` : null;
   const withDm = new Set(rooms.map(dmCounterpart));
   // Super-agent: the roster lists people and the one front agent; specialists are labels on threads, not
-  // DM partners (their DMs, if any exist, file under Specialists). Off, or while the front agent is still
+  // DM partners (they, and any DM with one, live on the Team page). Off, or while the front agent is still
   // unknown (/agents not answered yet, or no "ceo" role in the roster): every agent, as today.
   const oneVoice = superAgent && !!ceoAgentId;
   const roster = participants.filter((participant) => !withDm.has(`${participant.kind}:${participant.id}`)
     && (!oneVoice || participant.kind !== "agent" || participant.id === ceoAgentId));
-  // The specialists taken off the roster stay findable: listed under Specialists, where a click asks them
-  // through the Lightbulb DM (an @mention drafted), the one way they take work now.
-  const askable = oneVoice ? participants.filter((participant) => participant.kind === "agent" && participant.id !== ceoAgentId
-    && !withDm.has(`${participant.kind}:${participant.id}`)) : [];
   const groups = groupRooms(rooms, sections, { sort: prefs.sort, nameOf: (room) => roomDisplayName(room, room.participants),
-    alwaysShow: [...(roster.length > 0 ? ["direct"] : []), ...(askable.length > 0 ? ["specialists"] : [])],
+    alwaysShow: roster.length > 0 ? ["direct"] : [],
     ...(oneVoice ? { frontAgentId: ceoAgentId } : {}) });
   // `focusRoomTrigger` can run long after the render that captured it (it's
   // attached to a promise settling), so it must read the CURRENT groups, not
@@ -514,9 +510,11 @@ function DirectoryContent({
       </div>}
     </section>;
   })();
+  const external = groups.find((group) => group.id === "external");
+  const moreHoldsCurrent = Boolean(currentSessionId) || Boolean(external?.rooms.some((room) => room.roomId === currentRoomId));
   const renderGroup = (group: RoomGroup) => {
     // Archived starts collapsed, so for it alone a listed id means "expanded".
-    const collapsed = prefs.collapsed.includes(group.id) !== (group.id === "archived" || group.id === "specialists");
+    const collapsed = prefs.collapsed.includes(group.id) !== (group.id === "archived");
     // Collapsing hides rooms, never activity or your place: the header keeps
     // the group's unread count, and the room you are reading stays on screen
     // so `aria-current` survives a ⌘K / next-unread / permalink jump into a
@@ -525,10 +523,9 @@ function DirectoryContent({
     const visible = collapsed ? group.rooms.filter((room) => room.roomId === currentRoomId) : group.rooms;
     const listId = `${id}-group-${group.id}`;
     const body = (grip?: ReactNode) => {
-      const rows: Array<{ key: string; label: string; room?: DirectoryRoom; participant?: DirectoryParticipant; ask?: boolean }> = [
+      const rows: Array<{ key: string; label: string; room?: DirectoryRoom; participant?: DirectoryParticipant }> = [
         ...visible.map((room) => ({ key: room.roomId, label: roomDisplayName(room, room.participants), room })),
         ...(group.id === "direct" && !collapsed ? roster.map((participant) => ({ key: `${participant.kind}:${participant.id}`, label: participant.displayName, participant })) : []),
-        ...(group.id === "specialists" && !collapsed ? askable.map((participant) => ({ key: `ask:${participant.id}`, label: participant.displayName, participant, ask: true })) : []),
       ];
       if (group.id === "direct") {
         const unreadOf = (row: typeof rows[number]) => row.room && !row.room.muted ? row.room.unreadCount : 0;
@@ -544,15 +541,7 @@ function DirectoryContent({
         id: group.id, label: group.label, listId, collapsed, grip,
         badge: collapsed && unread > 0 && <span className="room-count" aria-label={`${unread} unread messages in ${group.label}`}>{unread}</span>,
       })}
-      <ul id={listId}>{rows.map(({ key, label, room, participant, ask }) => {
-        if (ask && ceoAgentId) return <li key={key} className="room-directory-row room-directory-row--roster">
-          <button type="button" className="room-directory-entry" aria-label={`Ask ${label} through Lightbulb`}
-            onClick={() => openAgentDmWithDraft(ceoAgentId, participant!.mentionHandle ? `@${participant!.mentionHandle} ` : "")}>
-            <ParticipantAvatar participant={participant!} size="xs" />
-            <span className="min-w-0 flex-1"><span className="block truncate" title={label}>{label}</span></span>
-            <span className="room-directory-tag">Ask</span>
-          </button>
-        </li>;
+      <ul id={listId}>{rows.map(({ key, label, room, participant }) => {
         // A roster row is someone with no DM yet. It carries no overflow menu
         // (star, mute, mark-unread and copy-link all need a room), but it
         // must still reserve that control's width -- see
@@ -620,8 +609,14 @@ function DirectoryContent({
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={reorderSections} accessibility={{ announcements }}>
     <SortableContext items={sections.map((section) => section.id)} strategy={verticalListSortingStrategy}>
     {groups.filter((group) => !TAIL_GROUPS.has(group.id)).map(renderGroup)}
-    {sessionsSection}
-    {groups.filter((group) => TAIL_GROUPS.has(group.id)).map(renderGroup)}
+    {/* Sessions and External connections fold under More (closed by default); it opens itself while the
+        session or shared channel on screen is inside, so `aria-current` stays visible. */}
+    {(sessionsSection || external) && <details className="room-directory-more" open={moreHoldsCurrent || undefined}>
+      <summary className="room-directory-group">More</summary>
+      {sessionsSection}
+      {external && renderGroup(external)}
+    </details>}
+    {groups.filter((group) => group.id === "archived").map(renderGroup)}
     </SortableContext>
     </DndContext>
     {draftedRooms.length > 0 && <section aria-label="Drafts">

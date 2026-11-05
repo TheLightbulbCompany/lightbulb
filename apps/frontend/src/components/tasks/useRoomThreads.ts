@@ -1,27 +1,29 @@
 "use client";
 
-// Threads for a header badge: a room's (the Threads button's waiting dot) or the workspace's (the Work rail).
+// Threads for a badge: a room's (the About button's dot) or the workspace's (the Home rail). Both count Home's
+// Needs you cut (homeSections) of the same list Home renders, so a badge never disagrees with the rows under it.
 // No request at all while the switch is off or outside the live provider (tests).
 
-import useSWR from "swr";
-import { useTaskList, type TasksClient } from "@lightbulb/shared";
+import { useTaskList, type TaskScope, type TasksClient } from "@lightbulb/shared";
+import { homeSections } from "./homeSections";
 import { useOptionalLiveEvents, useSuperAgent } from "@/hooks/useLiveEvents";
 
 const NO_CLIENT = { cacheScope: "" } as TasksClient; // never called: its key is always null
+const WORKSPACE: TaskScope = { kind: "workspace" };
 
-export function useRoomThreads(roomId: string | null | undefined) {
+function useNeedsYouIn(scope: TaskScope | null) {
   const live = useOptionalLiveEvents();
   const on = useSuperAgent();
-  const { data } = useTaskList(live?.tasks ?? NO_CLIENT, on && live && roomId ? { kind: "room", roomId } : null);
+  const { data } = useTaskList(live?.tasks ?? NO_CLIENT, on && live ? scope : null);
   const tasks = data?.tasks ?? [];
-  return { tasks, waitingOnMe: tasks.filter((t) => t.shownGroup === "waiting_on_you").length };
+  return { tasks, waitingOnMe: homeSections(tasks).needsYou.length };
 }
 
-/** Threads with a question waiting on the viewer, workspace-wide, from the needs-you index (one indexed query,
- *  not the thread list). Counts threads, not questions. */
-export function useThreadsWaitingOnMe(): number {
-  const live = useOptionalLiveEvents();
-  const on = useSuperAgent();
-  const { data } = useSWR(on && live ? ["needs-you", live.tasks.cacheScope] : null, () => live!.tasks.needsYou(), { shouldRetryOnError: false });
-  return new Set((data?.items ?? []).map((q) => q.taskId)).size;
+export function useRoomThreads(roomId: string | null | undefined) {
+  return useNeedsYouIn(roomId ? { kind: "room", roomId } : null);
+}
+
+/** Home's Needs you count (first page of the workspace list, as Home shows before "Load older"). */
+export function useHomeNeedsYou(): number {
+  return useNeedsYouIn(WORKSPACE).waitingOnMe;
 }

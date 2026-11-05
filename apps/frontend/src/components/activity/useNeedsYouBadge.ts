@@ -12,7 +12,9 @@ import { groupFailedRuns } from "@/components/teams/inbox/lib/groupFailedRuns";
 import type { AttentionFeedResponse } from "@/components/teams/shared/types";
 
 /** Activity's Paperclip asks that For you → Needs you shows on the desk or as a failed-run group instead. */
-function coveredByNeedsYou(item: ActivityItem, runsKnown: boolean): boolean {
+function coveredByNeedsYou(item: ActivityItem, runsKnown: boolean, taskQuestionsShown: boolean): boolean {
+  // Home lists a thread's open question as a Needs you thread row (counted there), not as an Activity row.
+  if (item.kind === "task_question") return taskQuestionsShown && item.state === "open";
   if (item.kind !== "paperclip" || item.state !== "open") return false;
   if (item.subtype === "approval" || item.subtype === "interaction") return true;
   return runsKnown && item.subtype === "failed_run";
@@ -36,11 +38,15 @@ export function needsYouBadge(input: {
   activityComplete: boolean;
   attention: AttentionFeedResponse | null;
   failedRunGroups: number | null;
+  /** Home shows threads (the super-agent): their open questions are counted as Needs you thread rows instead. */
+  taskQuestionsShown?: boolean;
 }): number {
-  const { serverCount, activityItems, activityComplete, attention, failedRunGroups } = input;
-  if (!attention || !activityComplete) return serverCount;
+  const { serverCount, activityItems, activityComplete, attention, failedRunGroups, taskQuestionsShown = false } = input;
+  // ponytail: with pages unloaded, only the loaded task questions come off; exact once Activity is fully listed.
+  const shownAsThreads = activityItems.filter((item) => item.kind === "task_question" && taskQuestionsShown && item.state === "open").length;
+  if (!attention || !activityComplete) return Math.max(0, serverCount - shownAsThreads);
   const runsKnown = failedRunGroups !== null;
-  const covered = activityItems.filter((item) => coveredByNeedsYou(item, runsKnown)).length;
+  const covered = activityItems.filter((item) => coveredByNeedsYou(item, runsKnown, taskQuestionsShown)).length;
   return Math.max(0, serverCount - covered) + deskCount(attention) + (failedRunGroups ?? 0);
 }
 
@@ -59,7 +65,7 @@ function deskCount(feed: AttentionFeedResponse): number {
 }
 
 /** The rail's Activity badge, from reads the Activity page makes anyway (SWR shares them). */
-export function useNeedsYouBadge(): number {
+export function useNeedsYouBadge(taskQuestionsShown = false): number {
   const { userId, orgId } = useAuth();
   const activity = useActivity();
   const { read } = useTeamsApi();
@@ -74,5 +80,6 @@ export function useNeedsYouBadge(): number {
     activityComplete: !activity.hasMore,
     attention: attention && !attentionError ? attention : null,
     failedRunGroups: runs.isError || runs.isLoading ? null : groups,
+    taskQuestionsShown,
   });
 }

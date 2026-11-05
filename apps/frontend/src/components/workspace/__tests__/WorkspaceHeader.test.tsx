@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
+import { SWRConfig } from "swr";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 
 const setPaletteOpen = vi.fn();
@@ -34,7 +35,8 @@ vi.mock("@clerk/nextjs", () => {
 
 const activityState = { attentionCount: 0 };
 vi.mock("@/components/activity/useNeedsYouBadge", () => ({ useNeedsYouBadge: () => activityState.attentionCount }));
-vi.mock("../workspaceController", () => ({ openPanel: (...args: unknown[]) => openPanel(...args), activateMessagesPanel: () => activateMessagesPanel(), useWorkspaceState: () => ({ place }) }));
+const closePane = vi.fn();
+vi.mock("../workspaceController", () => ({ openPanel: (...args: unknown[]) => openPanel(...args), activateMessagesPanel: () => activateMessagesPanel(), closePane: () => closePane(), useWorkspaceState: () => ({ place }) }));
 
 const recordMessagesNavigation = vi.fn();
 vi.mock("../chatHistory", () => ({ recordMessagesNavigation: () => recordMessagesNavigation() }));
@@ -45,14 +47,14 @@ import { trackTeamRunActivity } from "@/components/notifications/teamRunActivity
 import { WorkspaceHeader } from "../WorkspaceHeader";
 
 describe("WorkspaceHeader", () => {
-  // The five places and nothing else (spec 3.1): Browser, Files and Mail open in the right
-  // pane; Home, Hire, Invite and Connections each have a home elsewhere.
-  it("reads Chat, Activity, Work, Library, Canvas, in that order, and nothing else", () => {
+  // The six places and nothing else (spec 3.1): Browser, Files and Mail open in the right
+  // pane; Hire, Invite and Connections each have a home elsewhere. Home took Activity's place, first.
+  it("reads Home, Chat, Work, Team, Library, Canvas, in that order, and nothing else", () => {
     render(<WorkspaceHeader />);
     const rail = screen.getByRole("navigation", { name: "Workspace" });
     const labels = [...rail.querySelectorAll("button")].map((b) => b.getAttribute("aria-label"));
-    expect(labels.slice(labels.indexOf("Chat"), labels.indexOf("Canvas") + 1)).toEqual(["Chat", "Activity", "Work", "Library", "Canvas"]);
-    for (const gone of ["Mail", "Browser", "Files", "Home", "Messages", "Hire an agent", "Invite people", "Connections"]) {
+    expect(labels.slice(labels.indexOf("Home"), labels.indexOf("Canvas") + 1)).toEqual(["Home", "Chat", "Work", "Team", "Library", "Canvas"]);
+    for (const gone of ["Mail", "Browser", "Files", "Activity", "Messages", "Hire an agent", "Invite people", "Connections"]) {
       expect(screen.queryByRole("button", { name: gone })).toBeNull();
     }
   });
@@ -64,7 +66,7 @@ describe("WorkspaceHeader", () => {
     expect(recordMessagesNavigation).toHaveBeenCalled();
   });
 
-  it.each([["Activity", "activity", "activity"], ["Library", "library", "teams-artifacts"]])("opens %s and marks the current place", (label, current, panel) => {
+  it.each([["Home", "activity", "activity"], ["Team", "team", "teams-agents"], ["Library", "library", "teams-artifacts"]])("opens %s and marks the current place", (label, current, panel) => {
     place = current;
     render(<WorkspaceHeader />);
     const button = screen.getByRole("button", { name: label });
@@ -80,22 +82,32 @@ describe("WorkspaceHeader", () => {
     fireEvent.click(work);
     expect(openPanel).toHaveBeenCalledWith("teams-issues", {}, { pushUrl: true });
   });
-  it("opens Work on Threads while the super-agent switch is on", () => {
+  it("opens Work on Automations while the super-agent switch is on", () => {
     live.superAgent = true;
     try {
       render(<WorkspaceHeader />);
       fireEvent.click(screen.getByRole("button", { name: "Work" }));
-      expect(openPanel).toHaveBeenCalledWith("teams-threads", {}, { pushUrl: true });
+      expect(openPanel).toHaveBeenCalledWith("teams-routines", {}, { pushUrl: true });
     } finally { live.superAgent = false; }
   });
-  it("with the switch on, Work badges the threads waiting on you, not team runs", async () => {
+  it("closes the right pane when it moves to another place, not when the place is the current one", () => {
+    place = "activity";
+    closePane.mockClear();
+    render(<WorkspaceHeader />);
+    fireEvent.click(screen.getByRole("button", { name: "Home" }));
+    expect(closePane).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Work" }));
+    expect(closePane).toHaveBeenCalledOnce();
+  });
+  it("with the switch on, Home badges its Needs you requests plus Activity's, not team runs", async () => {
     live.superAgent = true;
-    // Two open questions on one thread and one on another: two threads.
-    live.tasks = { cacheScope: "org_h", needsYou: vi.fn(async () => ({ next: null, items: [{ taskId: "a" }, { taskId: "a" }, { taskId: "b" }] })) };
+    activityState.attentionCount = 1;
+    const t = (taskId: string, shownGroup: string) => ({ taskId, shownGroup, status: "waiting", watching: false, updatedAt: "2026-11-05T00:00:00Z" });
+    live.tasks = { cacheScope: "org_h", list: vi.fn(async () => ({ next: null, tasks: [t("a", "waiting_on_you"), t("b", "ready_for_review"), t("c", "working")] })) };
     try {
-      render(<WorkspaceHeader />);
-      expect(await screen.findByRole("button", { name: "Work, 2 threads waiting on you" })).toBeInTheDocument();
-    } finally { live.superAgent = false; live.tasks = null; }
+      render(<SWRConfig value={{ provider: () => new Map() }}><WorkspaceHeader /></SWRConfig>);
+      expect(await screen.findByRole("button", { name: "Home, 3 need you" })).toBeInTheDocument();
+    } finally { live.superAgent = false; live.tasks = null; activityState.attentionCount = 0; }
   });
   it("shows active team runs on Work without covering workspace content", () => {
     act(() => trackTeamRunActivity("teams.heartbeat.run.queued", { runId: "run-1" }));
@@ -108,10 +120,10 @@ describe("WorkspaceHeader", () => {
     // Resolve the run so it doesn't leak into the next test's activity count.
     act(() => trackTeamRunActivity("teams.heartbeat.run.status", { runId: "run-1", status: "succeeded" }));
   });
-  it("badges Activity with what needs you (approvals, failed runs, unseen)", () => {
+  it("badges Home with what needs you (approvals, failed runs, unseen)", () => {
     activityState.attentionCount = 3;
     render(<WorkspaceHeader />);
-    const activity = screen.getByRole("button", { name: "Activity, 3 need you" });
+    const activity = screen.getByRole("button", { name: "Home, 3 need you" });
     expect(within(activity).getByText("3")).toBeInTheDocument();
     fireEvent.click(activity);
     expect(openPanel).toHaveBeenCalledWith("activity", {}, { pushUrl: true });

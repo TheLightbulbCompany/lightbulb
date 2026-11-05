@@ -83,7 +83,7 @@ function openBuildForm() {
 describe("AgentsListPanel", () => {
   it("renders empty state when no agents", () => {
     render(<AgentsListPanel />);
-    expect(screen.getByText("Agents")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Team" })).toBeInTheDocument();
     expect(screen.getByText("No agents yet.")).toBeInTheDocument();
   });
 

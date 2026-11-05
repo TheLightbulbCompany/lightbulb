@@ -20,7 +20,7 @@ import {
 import { currentChatViewSearch } from "./chatHistory";
 import { appendPane, buildPanelUrl, clearPanelFromUrl } from "./urlChannel";
 
-export type Place = "chat" | "activity" | "work" | "library" | "canvas";
+export type Place = "chat" | "activity" | "work" | "team" | "library" | "canvas";
 
 /** What a slot shows. `thread` is the room's side column (a thread, its tasks, room details),
  *  portalled into the pane by the room itself (useThreadPane). */
@@ -75,6 +75,7 @@ export function placeOf(main: Slot | null): Place {
   if (main.component === "activity") return "activity";
   if (main.component === "canvas") return "canvas";
   if (main.component === "teams" && main.params.teamsKey === "artifacts") return "library";
+  if (main.component === "teams" && main.params.teamsKey === "agents") return "team";
   return "work";
 }
 

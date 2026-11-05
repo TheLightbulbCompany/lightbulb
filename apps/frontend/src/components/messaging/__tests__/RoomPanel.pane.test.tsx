@@ -1,6 +1,7 @@
 // The conversation's tools and side column in the shell's one right pane, plus the one card
 // rule only RoomPanel can apply: whether the card's author is still in the room.
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { RoomPanel, type RoomPanelProps } from "../RoomPanel";
 import type { RoomMessage, RoomParticipant } from "../types";
@@ -46,37 +47,49 @@ beforeEach(() => {
   shared.statusLoaded = true;
 });
 
-it("offers Browser and Files in the conversation header only inside the shell, each opening the pane", () => {
+/** The room's tools live in the header's ··· menu: open it and read (or pick) one. */
+async function menuTools(): Promise<string[]> {
+  await userEvent.click(screen.getByRole("button", { name: "Conversation options" }));
+  return (await screen.findAllByRole("menuitem")).map((item) => item.textContent ?? "");
+}
+async function pickTool(name: string) {
+  await userEvent.click(screen.getByRole("button", { name: "Conversation options" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name }));
+}
+
+it("offers Browser and Agent files in the conversation menu only inside the shell, each opening the pane", async () => {
   const outside = render(<RoomPanel {...props} />);
-  expect(screen.queryByRole("button", { name: "Files" })).toBeNull();
+  expect(await menuTools()).not.toContain("Agent files");
+  await userEvent.keyboard("{Escape}");
   outside.unmount();
 
   attachShell(() => undefined);
   render(<RoomPanel {...props} />);
-  fireEvent.click(screen.getByRole("button", { name: "Files" }));
+  await pickTool("Agent files");
   expect(getWorkspaceSnapshot().pane).toMatchObject({ panelId: "file-viewer", params: { agent: "friday" } });
-  fireEvent.click(screen.getByRole("button", { name: "Browser" }));
+  await pickTool("Browser");
   expect(getWorkspaceSnapshot().pane?.panelId).toBe("browser");
   expect(getWorkspaceSnapshot().place).toBe("chat");
 });
 
-it("offers Ideas in the conversation header, opening the pane with the DM's agent first", () => {
+it("offers Ideas in the conversation menu, opening the pane with the DM's agent first", async () => {
   attachShell(() => undefined);
   render(<RoomPanel {...props} />);
-  fireEvent.click(screen.getByRole("button", { name: "Ideas" }));
+  await pickTool("Ideas");
   expect(getWorkspaceSnapshot().pane).toMatchObject({ panelId: "ideas", component: "ideas", params: { agent: "friday" } });
   expect(getWorkspaceSnapshot().place).toBe("chat");
 });
 
-it("hides Browser until a status body has landed", () => {
+it("hides Browser until a status body has landed", async () => {
   shared.statusLoaded = false;
   attachShell(() => undefined);
   render(<RoomPanel {...props} />);
-  expect(screen.queryByRole("button", { name: "Browser" })).toBeNull();
-  expect(screen.getByRole("button", { name: "Files" })).toBeInTheDocument();
+  const tools = await menuTools();
+  expect(tools).not.toContain("Browser");
+  expect(tools).toContain("Agent files");
 });
 
-it("shows a thread in the pane, and folds it when something else takes the pane", () => {
+it("shows a thread in the pane, and folds it when something else takes the pane", async () => {
   attachShell(() => undefined);
   const host = document.createElement("div");
   document.body.appendChild(host);
@@ -85,7 +98,7 @@ it("shows a thread in the pane, and folds it when something else takes the pane"
   fireEvent.click(screen.getByRole("button", { name: "Reply in thread" }));
   expect(getWorkspaceSnapshot().pane?.component).toBe("thread");
   expect(within(host).getByRole("complementary", { name: "Thread" })).toHaveTextContent("Reply text");
-  fireEvent.click(screen.getByRole("button", { name: "Files" }));
+  await pickTool("Agent files");
   expect(getWorkspaceSnapshot().pane?.panelId).toBe("file-viewer");
   expect(screen.queryByRole("complementary", { name: "Thread" })).toBeNull();
   host.remove();

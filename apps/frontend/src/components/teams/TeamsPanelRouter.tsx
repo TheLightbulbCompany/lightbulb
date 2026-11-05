@@ -33,7 +33,6 @@ const PANEL_LOADERS: Record<string, () => Promise<React.ComponentType>> = {
   issues: () => import("./panels/IssuesPanel").then((m) => m.IssuesPanel),
   // With the super-agent on, Automations (lane A's rows) with a link to today's routines; off, RoutinesPanel as before.
   routines: () => import("@/components/tasks/AutomationsPanel").then((m) => m.AutomationsPanel),
-  threads: () => import("@/components/tasks/ThreadsPanel").then((m) => m.ThreadsPanel),
   goals: () => import("./panels/GoalsPanel").then((m) => m.GoalsPanel),
   projects: () => import("./panels/ProjectsListPanel").then((m) => m.ProjectsListPanel),
   cases: () => import("./panels/CasesPanel").then((m) => m.CasesPanel),

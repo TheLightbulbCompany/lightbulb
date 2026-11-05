@@ -218,6 +218,51 @@ async def test_gmail_pubsub_oidc(env, client):
     assert env.temporal.started[0][2] == f"hook:{WS}:{PID}:42"
 
 
+async def test_gmail_unarmed_401_not_armed(env, client):
+    """A Gmail hook whose watch is not set up yet refuses deliveries like any other unarmed hook."""
+    await _hook(provider="gmail", signingMode="google_oidc", armed=False)
+    body = json.dumps({"message": {"messageId": "42", "data": "e30="}}).encode()
+    with patch("routers.hooks.verify_google_oidc", return_value=True):
+        r = _post(client, body, {"Authorization": "Bearer a.b.c"})
+    assert r.status_code == 401 and r.json()["detail"] == "not_armed"
+    assert env.temporal.started == []
+
+
+async def test_unavailable_is_logged_with_ids_only(env, client, caplog):
+    from core.temporal.client import TemporalUnavailable
+
+    await _hook()
+    env.temporal.fail = TemporalUnavailable("down")
+    body = _stripe_body()
+    with caplog.at_level("WARNING", logger="routers.hooks"):
+        assert _post(client, body, _stripe_headers(body)).status_code == 503
+    record = next(r for r in caplog.records if r.name == "routers.hooks")
+    assert WS in record.getMessage() and PID in record.getMessage() and record.exc_info
+    assert SECRET not in record.getMessage()
+
+
+async def test_meta_backend_fire_unavailable_still_200_but_logged(env, client, monkeypatch, caplog):
+    from core.temporal.client import TemporalUnavailable
+    from routers import meta_webhook
+
+    await _hook(provider="instagram", signingMode="hmac_sha256")
+    monkeypatch.setattr(settings, "META_WEBHOOK_VERIFY_TOKEN", "vt")
+    monkeypatch.setattr(settings, "PAPERCLIP_INTERNAL_URL", "http://paperclip.internal")
+    env.temporal.fail = TemporalUnavailable("down")
+    binding = {"owner_id": WS, "trigger_public_id": PID, "trigger_secret": "x", "fields": []}
+    body = json.dumps({"object": "instagram", "entry": [{"id": "17841", "time": 1700000000, "changes": []}]}).encode()
+    with (
+        patch.object(meta_webhook, "_signature_valid", AsyncMock(return_value=True)),
+        patch.object(meta_webhook, "_bindings_for_asset", AsyncMock(return_value=[binding])),
+        patch.object(meta_webhook, "billing_repo") as billing,
+        caplog.at_level("WARNING"),
+    ):
+        billing.get_by_owner_id = AsyncMock(return_value={"subscription_status": "active"})
+        r = client.post("/api/v1/hooks/meta", content=body, headers={"X-Hub-Signature-256": "sha256=x"})
+    assert r.status_code == 200
+    assert any(r.name == "routers.meta_webhook" and PID in r.getMessage() for r in caplog.records)
+
+
 async def test_switch_off_forwards_to_paperclip_unchanged(env, client):
     await _hook()
     with (

@@ -274,9 +274,16 @@ async def receive_meta_event(request: Request) -> Response:
             if await flags_for(binding["owner_id"]) and await automations_repo.get_hook(
                 binding["owner_id"], binding["trigger_public_id"]
             ):
-                await hooks.fire_verified(
+                resp = await hooks.fire_verified(
                     binding["owner_id"], binding["trigger_public_id"], body, dedupe_key=idempotency_key
                 )
+                if resp.status_code >= 500:  # Meta still gets its 200 (module docstring); say what was lost
+                    logger.warning(
+                        "meta webhook backend fire unavailable owner=%s trigger=%s status=%s",
+                        binding["owner_id"],
+                        binding["trigger_public_id"],
+                        resp.status_code,
+                    )
                 continue
             await _fire(binding, body, idempotency_key)
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from datetime import datetime, timezone
 
@@ -32,6 +33,8 @@ from core.services.trigger_fire_url import trigger_fire_url
 from core.temporal.automations import FireInput
 from core.temporal.client import get_client
 from routers._public_ingress import _check_rate_limit
+
+logger = logging.getLogger(__name__)
 
 _SECRET_TTL_S = 60
 # (owner, secret name) -> (secret dict or None, fetched at). Rotation shows up within a minute.
@@ -60,13 +63,15 @@ def _bearer(value: str | None) -> str | None:
 
 async def _check(owner_id: str, public_id: str, hook: dict, headers, body: bytes) -> str | None:
     """None when the delivery is genuine, else the 401 reason."""
+    if not hook.get("armed"):
+        return "not_armed"
     if hook["signingMode"] == "google_oidc":  # Gmail Pub/Sub push: a per-delivery Google OIDC JWT
         ok = await asyncio.to_thread(
             verify_google_oidc, _bearer(headers.get("authorization")), trigger_fire_url(owner_id, public_id)
         )
         return None if ok else "bad_signature"
     secret = await _secret(owner_id, hook["secretRef"])
-    if not hook.get("armed") or not secret or not secret.get("secret"):
+    if not secret or not secret.get("secret"):
         return "not_armed"
     return verify(
         hook["signingMode"],
@@ -102,6 +107,7 @@ async def _start(owner_id: str, hook: dict, key: str, body: bytes) -> Response:
     except WorkflowAlreadyStartedError:
         return _json(200, {"status": "duplicate"})
     except Exception:  # Temporal or S3 unreachable: the provider retries
+        logger.warning("hook fire unavailable owner=%s public_id=%s", owner_id, public_id, exc_info=True)
         return _json(503, {"detail": "unavailable"}, {"Retry-After": "30"})
     return _json(202, {"status": "accepted"})
 

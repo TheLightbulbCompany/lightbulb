@@ -490,3 +490,19 @@ async def test_close_run_survives_a_concurrent_edit(env):
     assert row.get("activeRunTaskId") is None and row["runTaskIds"] == [tid] and row["name"] == "Renamed"
     assert await _close_run(WS, "s1", tid, False)  # a late retry (reconcile) is a no-op
     assert (await repo.get_schedule(WS, "s1"))["runTaskIds"] == [tid]
+
+
+async def test_a_one_off_goes_off_after_its_fire(env):
+    """Dev walk R12: a one-off (`remainingRuns: 1`) read "On · Once, 5 Nov" after its time had passed."""
+    from core.services import automation_schedule
+
+    await _active(remainingRuns=1)
+    with patch.object(automation_schedule, "upsert", AsyncMock()) as upsert:
+        trigger_id = await fire_automation(_sched_input(), _ms("2027-01-04T14:00:00+00:00"))
+        assert trigger_id.startswith("sched:") and len(env.enqueued) == 1
+        row = await repo.get_schedule(WS, "s1")
+        assert row["status"] == "paused" and row["pausedReason"] == "ran once"
+        upsert.assert_awaited_once()
+        await _active("s2")  # a recurring one stays on
+        await fire_automation(_sched_input("s2"), _ms("2027-01-04T14:00:00+00:00"))
+        assert (await repo.get_schedule(WS, "s2"))["status"] == "active" and upsert.await_count == 1

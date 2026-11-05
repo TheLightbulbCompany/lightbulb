@@ -994,3 +994,29 @@ async def test_recently_closed_scan_stops_at_its_cap(world, monkeypatch):
     monkeypatch.setattr(acts.tasks_repo, "list_tasks_by_status", counting)
     await acts._closed_tasks(WS, "shared", SAM, {ROOM})
     assert calls.count("resolved") == 2  # 2 pages of 2 rows reach the cap of 4; the 9 rows would need 5
+
+
+@pytest.mark.asyncio
+async def test_an_automation_card_is_the_only_answer(world, monkeypatch):
+    """Dev walk R7: propose_automation posts its confirm card (and marks the trigger) during the run; the Router's
+    reply line, or its prose fallback, would be a second ack beside the card. The other ask still gets its reply."""
+    t1, t2 = await _trig("chat:m1"), await _trig("chat:m2")
+    create = acts.runtime_runs.create_run
+
+    async def run_proposes(ws, identity, request):
+        await repo.set_trigger_routed_to(WS, t1, {"automationId": "sched_1"})  # what the propose route does
+        return await create(ws, identity, request)
+
+    monkeypatch.setattr(acts.runtime_runs, "create_run", run_proposes)
+    world["decisions"] = [
+        {"kind": "reply", "triggerIds": [t1], "text": "I drafted it; turn it on from the card."},
+        {"kind": "reply", "triggerIds": [t2], "text": "March 1 works."},
+    ]
+    await _run([t1, t2])
+    assert [p["text"] for p in world["posts"]] == ["March 1 works."]
+
+    world["posts"].clear()
+    world["decisions"] = []
+    world["output"] = "Drafted the automation."
+    await _run([t1], batch=str(uuid.uuid4()))  # no decision at all: the prose never stands in for the card either
+    assert world["posts"] == []

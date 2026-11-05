@@ -11,7 +11,7 @@ from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from temporalio.service import RPCError
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic.alias_generators import to_camel
 from ulid import ULID
 
@@ -62,6 +62,29 @@ class ProposeIn(BaseModel):
     daily_cap_usd: float = Field(default=10.0, gt=0, le=100)
     builtin: RuleBuiltin | None = None
 
+    @field_validator("deliver_to", mode="before")
+    @classmethod
+    def _room_forms(cls, v):
+        """ "here" is the default (the trigger's room); a bare "#general" is `room:#general` (dev walk R2)."""
+        if isinstance(v, str) and v.strip().lower() in ("here", "room:here"):
+            return None
+        return f"room:{v}" if isinstance(v, str) and v.startswith("#") else v
+
+
+# A batch trigger id the model names without its prefix ("fdab1932-…" for `chat:fdab1932-…`, dev walk R2, 5 Nov:
+# the proposal 400'd `no_room`). Decisions forgive the same slip (router_prompt._resolve); these are the sources
+# a person asks from.
+_BARE_SOURCES = ("chat", "text", "mail")
+
+
+async def _trigger(ws: str, trigger_id: str) -> dict | None:
+    trig = await tasks_repo.get_trigger(ws, trigger_id)
+    if trig is None and ":" not in trigger_id:
+        for source in _BARE_SOURCES:
+            if trig := await tasks_repo.get_trigger(ws, ts.trigger_id(source, trigger_id)):
+                break
+    return trig
+
 
 def _err(http_status: int, code: str, **extra) -> HTTPException:
     return HTTPException(status_code=http_status, detail={"code": code, **extra})
@@ -74,11 +97,12 @@ async def _deliver_room_id(ws: str, requester: str, key: str, here: str) -> str:
     not one failed its task's end_attempt)."""
     if key == here:
         return here
-    try:
-        await check_deliver_room(f"room:{key}", ws, requester)
-        return key
-    except HTTPException:
-        pass
+    if not key.startswith("#"):  # "#general" is always a name
+        try:
+            await check_deliver_room(f"room:{key}", ws, requester)
+            return key
+        except HTTPException:
+            pass
     name = key.removeprefix("#").strip().lower()
     rooms = await messaging_repo.list_rooms_for_member(ws, "human", requester)
     ids = {r["meta"]["roomId"] for r in rooms if str(r["meta"].get("name") or "").strip().lower() == name}
@@ -95,10 +119,8 @@ async def propose(owner_id: str, body: ProposeIn, request: Request) -> dict:
     if not await super_agent_flags.flags_for(owner_id):
         raise _err(404, "not_found")
     room_id, requester, thread_root = body.room_id, body.requester_user_id, body.thread_root
-    for trigger_id in body.trigger_ids:
-        trig = await tasks_repo.get_trigger(owner_id, trigger_id)
-        if trig is None:
-            continue
+    triggers = [t for t in [await _trigger(owner_id, tid) for tid in body.trigger_ids] if t]
+    for trig in triggers:
         ref = trig.get("ref") or {}
         room_id = room_id or ref.get("roomId")
         requester = requester or trig.get("actorUserId")
@@ -165,6 +187,9 @@ async def propose(owner_id: str, body: ProposeIn, request: Request) -> dict:
         await automation_schedule.delete(owner_id, sid)
         await automations_repo.delete_schedule(owner_id, sid)
         raise _err(502, "card_not_posted") from exc
+    for trig in triggers:  # the card is this ask's answer: the Router posts no second line for it (R7)
+        routed = {**(trig.get("routedTo") or {}), "automationId": sid}
+        await tasks_repo.set_trigger_routed_to(owner_id, trig["triggerId"], routed)
     return {"automationId": sid}
 
 

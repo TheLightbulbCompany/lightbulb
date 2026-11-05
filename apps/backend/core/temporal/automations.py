@@ -303,11 +303,13 @@ async def fire_automation(inp: FireInput, at_ms: int) -> str:
         return "skipped:paused"
     if inp.source == "schedule" and await _idle(ws, at_ms):  # a webhook is a real event, Run now a person
         await repo.note_skip(ws, row["scheduleId"], reason="idle")
+        await _turn_off_if_spent(ws, row, inp)
         return "skipped:idle"
     trigger_id = _fire_trigger_id(inp, row, at_ms)
     task_id = ts.router_task_id(trigger_id, 0, 0)
     previous = next((t for t in row.get("runTaskIds") or [] if t != task_id), None)  # newest closed run
     if not await repo.claim_run(ws, row["scheduleId"], task_id):
+        await _turn_off_if_spent(ws, row, inp)
         return "skipped:overlap"
 
     brief = row["policyText"]
@@ -365,7 +367,26 @@ async def fire_automation(inp: FireInput, at_ms: int) -> str:
         },
     )
     await admission.enqueue_trigger(ws, trigger, room_id=room_id)
+    await _turn_off_if_spent(ws, row, inp)  # after the enqueue: a retried fire still finds the row active
     return trigger_id
+
+
+async def _turn_off_if_spent(ws: str, row: dict, inp: FireInput) -> None:
+    """A one-off (`remainingRuns: 1`) has used its only Schedule action: the row goes off ("Paused: ran once")
+    instead of reading "On" with no run left (dev walk R12). ponytail: only one-offs; a counted N>1 would decrement."""
+    from core.repositories import automations_repo as repo
+    from core.repositories.tasks_repo import IllegalTransition
+    from core.services import automation_schedule
+
+    if inp.source != "schedule" or row.get("remainingRuns") != 1:
+        return
+    try:
+        off = await repo.set_status(
+            ws, row["scheduleId"], "paused", reason="ran once", allowed_from=frozenset({"active"})
+        )
+    except IllegalTransition:
+        return  # paused or edited meanwhile
+    await automation_schedule.upsert(off)
 
 
 @activity.defn

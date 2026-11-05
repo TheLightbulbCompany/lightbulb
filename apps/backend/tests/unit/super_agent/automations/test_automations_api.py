@@ -685,3 +685,20 @@ def _admission_world(monkeypatch, adm):
     monkeypatch.setattr(adm.admission.jev, "route_for_router", route)
     monkeypatch.setattr(adm.admission.room_memory, "ingest_message", ingest)
     return w
+
+
+async def test_propose_takes_a_bare_trigger_id_and_here(internal):
+    """Dev walk R2: the Router sent `trigger_ids: ["fdab1932-…"]` (no `chat:`) and the proposal 400'd `no_room`.
+    A bare id resolves to its chat trigger; "here" and "#general" are the trigger's room; the trigger is marked
+    as answered by the card (R7)."""
+    tid = await _chat_trigger()
+    url, auth = f"/api/v1/internal/automations/{WS}/propose", {"Authorization": "Bearer t"}
+    body = {"name": "n", "instructions": "i", "cron": ["0 9 * * 1"], "triggerIds": [tid.removeprefix("chat:")]}
+    seats = [{"meta": {"roomId": ROOM, "name": "general"}}]
+    with patch("core.repositories.messaging_repo.list_rooms_for_member", AsyncMock(return_value=seats)):
+        for deliver in (None, "here", "#general", "room:#general"):
+            r = internal.api.client.post(url, json=body | ({"deliverTo": deliver} if deliver else {}), headers=auth)
+            assert r.status_code == 200, (deliver, r.text)
+            sid = r.json()["automationId"]
+            assert (await repo.get_schedule(WS, sid))["deliverTo"] == f"room:{ROOM}", deliver
+            assert (await tasks_repo.get_trigger(WS, tid))["routedTo"] == {"automationId": sid}

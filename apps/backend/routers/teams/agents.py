@@ -116,6 +116,18 @@ def _mark_seeded(agent, seeded_ids, sidecar=None, starter_ids=()):
     )
 
 
+async def _front_named(owner_id: str, agents: list) -> list:
+    """Under the super-agent switch the front agent is "Lightbulb" (contracts-v2 §9) wherever it shows, as
+    messaging's roster names it; Paperclip still calls it "CEO" (dev walk R6: the Team page and the DM header)."""
+    from core.services import messaging
+
+    front = await messaging._front_agent_id(owner_id)
+    return [
+        {**a, "name": messaging.FRONT_AGENT_NAME} if front and isinstance(a, dict) and a.get("id") == front else a
+        for a in agents
+    ]
+
+
 def _redact_agent(agent):
     """Strip adapter-related fields from an agent record before returning to the browser.
 
@@ -433,7 +445,7 @@ async def list_agents(ctx: TeamsContext = Depends(_ctx)):
     return {
         "agents": [
             _mark_seeded(_redact_agent(a), seeded_ids, sidecars.get(a.get("id")), starter_ids)
-            for a in envelope["agents"]
+            for a in await _front_named(owner_id, envelope["agents"])
         ]
     }
 
@@ -597,7 +609,8 @@ async def get_agent(agent_id: SafeId, ctx: TeamsContext = Depends(_ctx)):
         get_starter_agent_ids(owner_id=owner_id, repo=repo),
     )
     sidecars = await _load_agent_sidecars(owner_id, [agent_id])
-    return _mark_seeded(_redact_agent(upstream), seeded_ids, sidecars.get(agent_id), starter_ids)
+    (named,) = await _front_named(owner_id, [upstream])
+    return _mark_seeded(_redact_agent(named), seeded_ids, sidecars.get(agent_id), starter_ids)
 
 
 @router.patch("/agents/{agent_id}")

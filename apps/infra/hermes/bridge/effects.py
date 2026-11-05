@@ -16,9 +16,11 @@ import logging
 import os
 import re
 import shlex
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from bridge import API, HOOK_TOKEN, OWNER
 
@@ -49,6 +51,34 @@ UNAVAILABLE = "Lightbulb couldn't check this action (effects service unavailable
 _HEREDOC_OPEN = re.compile(r"<<-?\s*(['\"]?)(\w+)\1")
 _PR_URL = re.compile(r"^https?://github\.com/([^/]+/[^/]+)/pull/(\d+)")
 _exit = os._exit  # dev-only fault hooks; tests patch it
+
+# --- the "end this turn waiting_approval" marker ---------------------------------------------------------------
+# A task run's ask_person / request_approval (plugins/lightbulb) cannot change the run's outcome from inside a tool:
+# it leaves this file under the profile's turn-context dir, and turn.py takes it when the turn ends. One module
+# owns the path so the plugin and the bridge can never drift (both import it).
+WAITING_DIR = ".lightbulb-turn"  # == turn.TURN_CONTEXT_DIRNAME == plugins/lightbulb/turn_context.DIRNAME
+WAITING_MAX_AGE_S = 24 * 3600
+
+
+def waiting_marker_path(root, run_id: str) -> Path:
+    return Path(root) / WAITING_DIR / ("waiting-" + hashlib.sha256(run_id.encode()).hexdigest() + ".json")
+
+
+def reap_stale_waiting_markers(root, *, now: float | None = None) -> int:
+    """Drop markers older than a day (a run that died before taking its marker); returns how many."""
+    folder = Path(root) / WAITING_DIR
+    if not folder.is_dir():
+        return 0
+    cutoff = (now if now is not None else time.time()) - WAITING_MAX_AGE_S
+    reaped = 0
+    for path in folder.glob("waiting-*.json"):
+        try:
+            if path.stat().st_mtime < cutoff:
+                path.unlink()
+                reaped += 1
+        except OSError:
+            continue
+    return reaped
 
 
 @dataclass(frozen=True)

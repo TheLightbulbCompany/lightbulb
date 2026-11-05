@@ -1061,18 +1061,30 @@ def _lb_checkpoint():
 
 
 def effects_supported() -> bool:
-    """`effects: "required"` on a run request needs F1 in the image (bridge/runs.py refuses it otherwise)."""
-    return _lb_checkpoint() is not None
+    """`effects: "required"` on a run request needs the F1 module AND F2's call sites in the image (an image with
+    only the module would install a callback nothing calls); bridge/runs.py refuses it otherwise."""
+    if _lb_checkpoint() is None:
+        return False
+    try:
+        return hasattr(importlib.import_module("agent.tool_executor"), "lb_checkpoint")
+    except ImportError:
+        return False
 
 
 def _waiting_marker_path(root, run_id: str) -> Path:
-    # Same file contract as plugins/lightbulb/turn_context.note_waiting; module globals are not shared.
-    return Path(root) / TURN_CONTEXT_DIRNAME / ("waiting-" + hashlib.sha256(run_id.encode()).hexdigest() + ".json")
+    from bridge import effects as _effects  # one owner of the path, shared with plugins/lightbulb/turn_context
+
+    return _effects.waiting_marker_path(root, run_id)
 
 
 def _take_waiting_marker(agent_id: str, run_id: str) -> bool:
-    """True when a task run's ask_person / request_approval asked the turn to end `waiting_approval`."""
-    path = _waiting_marker_path(_profile_dir(agent_id), run_id)
+    """True when a task run's ask_person / request_approval asked the turn to end `waiting_approval`. Markers a
+    dead run never took are reaped after a day."""
+    from bridge import effects as _effects
+
+    root = _profile_dir(agent_id)
+    _effects.reap_stale_waiting_markers(root)
+    path = _effects.waiting_marker_path(root, run_id)
     found = path.exists()
     path.unlink(missing_ok=True)
     return found
@@ -4247,7 +4259,10 @@ def _run_task_turn(identity: dict, request: dict, *, family: str) -> tuple[str, 
     reply = result.get("final_response") or ""
     waiting = (checkpoint is not None and checkpoint.outcome == "waiting_approval") or (
         not paperclip and _take_waiting_marker(agent_id, run_id))
-    if waiting:  # a person decides next; the answer comes back as the next attempt's input
+    if waiting:
+        # On purpose, `waiting` wins over `failed` below: once an effect was held for a person, their decision is
+        # the next step even if the model then errored, and a failed turn must not retry the held effect on its
+        # own. The answer comes back as the next attempt's input.
         return "waiting_approval", None, reply, usage
     if result.get("interrupted") is True:  # not our stop (checked above): Hermes stopped it itself
         return "failed", INTERRUPTED, "", usage

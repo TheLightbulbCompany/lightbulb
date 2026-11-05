@@ -2,7 +2,10 @@
 installed on the Worker's agent, and a turn that needs a person ends `waiting_approval` (poll + terminal event)."""
 # ruff: noqa: F811 -- `quiet_turn` and `threads` are test_runs_v1's fixtures, imported and then requested by name.
 import json
+import os
 import sys
+import time
+import types
 
 import pytest
 
@@ -15,7 +18,11 @@ REQUIRED = {**REQUEST, "effects": "required"}
 
 @pytest.fixture
 def f1(monkeypatch):
+    """The image with the series: F1's module and F2's call sites (tool_executor imports lb_checkpoint)."""
     monkeypatch.setitem(sys.modules, "agent.lb_checkpoint", fake_lb_checkpoint)
+    executor = types.ModuleType("agent.tool_executor")
+    executor.lb_checkpoint = fake_lb_checkpoint
+    monkeypatch.setitem(sys.modules, "agent.tool_executor", executor)
 
 
 @pytest.fixture
@@ -102,6 +109,27 @@ def test_router_runs_get_no_checkpoint(quiet_turn, threads, f1, monkeypatch):
     router = {**IDENTITY, "mode": "router", "lane": "shared",
               "sessionKey": f"agent:{IDENTITY['agentId']}:lightbulb:router:shared"}
     code, _ = _post({"identity": router, "request": REQUIRED})
-    if code == 202:
-        threads[0].run_now()
-        assert getattr(agent, "_lb_checkpoint", None) is None
+    assert code == 202
+    threads[0].run_now()
+    assert getattr(agent, "_lb_checkpoint", None) is None
+
+
+def test_f1_module_without_f2_call_sites_is_unsupported(threads, monkeypatch):
+    monkeypatch.setitem(sys.modules, "agent.lb_checkpoint", fake_lb_checkpoint)
+    monkeypatch.setitem(sys.modules, "agent.tool_executor", types.ModuleType("agent.tool_executor"))  # no lb_checkpoint
+    assert turn.effects_supported() is False
+    assert _post({"identity": IDENTITY, "request": REQUIRED}) == (400, {"error": "unsupported_in_this_version"})
+
+
+def test_stale_waiting_markers_are_reaped_fresh_ones_kept(home):
+    root = home / "profiles" / IDENTITY["agentId"]
+    stale = effects.waiting_marker_path(root, "run-old")
+    fresh = effects.waiting_marker_path(root, RUN)
+    for p in (stale, fresh):
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({"questionId": "q"}))
+    two_days_ago = time.time() - 2 * 24 * 3600
+    os.utime(stale, (two_days_ago, two_days_ago))
+    assert effects.reap_stale_waiting_markers(root) == 1
+    assert not stale.exists() and fresh.exists()
+    assert turn._waiting_marker_path(root, RUN) == fresh  # the bridge reads the same path the plugin writes

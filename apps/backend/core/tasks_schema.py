@@ -427,6 +427,7 @@ class AskedBy(_Model):
 class Answer(_Model):
     option_id: str | None = None
     text: str | None = None
+    trigger_id: str | None = None  # `TRIG#answer:…` holding a free-text answer (payloads carry ids only)
 
 
 class Question(_Row):
@@ -444,6 +445,9 @@ class Question(_Row):
     answer: Answer | None = None
     answered_by: str | None = None
     answered_at: str | None = None
+    reason: str | None = None  # why it was cancelled (stopped, superseded)
+    cancelled_by: str | None = None
+    cancelled_at: str | None = None
     answerer_rule: str | None = None  # questions.answerers() rule, re-checked at answer time
     base_answerers: list[str] = []  # the non-admin part of `answerers` (requester, app creator, holders)
     client_answer_id: str | None = None  # the answer press's retry key

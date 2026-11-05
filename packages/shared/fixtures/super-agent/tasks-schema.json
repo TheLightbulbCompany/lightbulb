@@ -852,6 +852,18 @@
               ],
               "default": null,
               "title": "Text"
+            },
+            "triggerId": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Triggerid"
             }
           },
           "title": "Answer",
@@ -1045,6 +1057,42 @@
           ],
           "default": null,
           "title": "Answeredat"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "cancelledBy": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cancelledby"
+        },
+        "cancelledAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cancelledat"
         },
         "answererRule": {
           "anyOf": [

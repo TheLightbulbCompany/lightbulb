@@ -211,7 +211,7 @@ export interface CanonicalRoomMessage {
   /** A feed post's "Why I created this post" (plain text). Absent on every other message. */
   postReason?: string | null;
   /** Super-agent attrs (contracts-v2 §6), only on messages Lightbulb posts for tasks; absent otherwise. */
-  taskRefs?: { taskId: string; role: "started" | "suggested" }[] | null;
+  taskRefs?: { taskId: string; role: "started" | "suggested"; qid?: string }[] | null;
   /** Specialist handle of a result line ("finance"); the byline reads "Lightbulb · Finance". */
   specialist?: string | null;
   /** On a person's message: where Lightbulb sent it. */

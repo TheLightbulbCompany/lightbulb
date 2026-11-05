@@ -136,7 +136,7 @@ export interface AnswerBody {
 }
 
 /** Message attrs Lightbulb sets on task messages (contracts-v2 §6; absent on every other message). */
-export interface TaskRef { taskId: string; role: "started" | "suggested" }
+export interface TaskRef { taskId: string; role: "started" | "suggested"; qid?: string }
 
 /** Lane A's `GET /api/v1/automations` row (`routers/automations.py _view`, #4754): `nextRuns` are UTC ISO strings. */
 export interface AutomationView {

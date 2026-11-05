@@ -509,8 +509,37 @@ class UpdateMessageRequest(ContractModel):
 
 
 class TaskRef(ContractModel):
+    """A task card on a Lightbulb message. Writers: Router apply (started/suggested), the result post, question
+    cards (+ `qid`: the card's buttons bind to {taskId, qid}). Strict on write (`create_agent_message`);
+    `_read_task_refs` keeps a stored row readable whatever it holds."""
+
     task_id: str
     role: Literal["started", "suggested"]
+    qid: str | None = None
+
+    @model_serializer(mode="wrap")
+    def _drop_absent_qid(self, handler):
+        result = handler(self)
+        if self.qid is None:
+            result.pop("qid", None)
+        return result
+
+
+_TASK_REF_KEYS = {"taskId", "role", "qid"}
+
+
+def _read_task_refs(stored: Any) -> list[TaskRef] | None:
+    """Stored taskRefs for a read: unknown keys ignored, a ref that still does not validate dropped. One odd
+    stored message must never 400 its whole room."""
+    if not isinstance(stored, list):
+        return None
+    refs = []
+    for ref in stored:
+        try:
+            refs.append(TaskRef.model_validate({k: v for k, v in ref.items() if k in _TASK_REF_KEYS}))
+        except (AttributeError, ValueError):
+            logger.warning("unreadable stored taskRef dropped: %r", ref)
+    return refs
 
 
 # Super-agent message attrs: field name -> stored/wire name.
@@ -1271,7 +1300,8 @@ def canonical_message(item: dict[str, Any], *, original_request: bool = False) -
         in_reply_to=item.get("inReplyTo"),
         progress=item.get("progress") is True,
         post_reason=item.get("postReason"),
-        **{name: item.get(stored) for name, stored in _ATTR_FIELDS.items()},
+        **{name: item.get(stored) for name, stored in _ATTR_FIELDS.items() if name != "task_refs"},
+        task_refs=_read_task_refs(item.get("taskRefs")),
         addressed_agent_ids=[
             t["agentId"]
             for t in item.get("dispatchTargets") or []
@@ -5110,6 +5140,9 @@ async def create_agent_message(
         if voice_run and voice_run.get("noPost"):
             put_metric("voice.huddle.late_answer_suppressed")
             raise ApiProblem("ACTION_UNAVAILABLE", "The Live call asked not to post this answer.")
+    if attrs and attrs.get("taskRefs") is not None:
+        # Strict on write: a ref the read model does not know is a bug here, not a stored surprise later.
+        attrs = {**attrs, "taskRefs": [TaskRef.model_validate(r).model_dump() for r in attrs["taskRefs"]]}
     room_id = str(request.room_id)
     agent_id = str(request.agent_id)
     meta = await messaging_repo.get_room(room_id)

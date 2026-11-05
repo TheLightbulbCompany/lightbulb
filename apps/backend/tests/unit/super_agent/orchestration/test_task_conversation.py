@@ -265,3 +265,51 @@ async def test_task_room_seat_never_outlives_can_view(chat, monkeypatch):
     with pytest.raises(ApiProblem) as exc:
         await messaging.require_room_member(WS, "priya", room)
     assert exc.value.error.code == "ROOM_NOT_FOUND"
+
+
+def _stored(seq, task_refs):
+    return {
+        "roomId": ORIGIN,
+        "messageId": str(uuid.UUID(int=seq)),
+        "messageSeq": seq,
+        "roomRevision": seq,
+        "author": {"kind": "agent", "id": CEO, "displayName": "Lightbulb"},
+        "text": "Lightbulb needs your OK",
+        "createdAt": "2026-11-05T10:00:00Z",
+        "taskRefs": task_refs,
+        "kind": "question",
+    }
+
+
+async def test_room_with_a_question_card_lists(monkeypatch):
+    """Dev bug 5 Nov: a question card's `qid` 400'd the whole room's message list. `qid` is part of TaskRef; any
+    other stored key is ignored on read and a ref that still does not validate is dropped, never a 400."""
+    from unittest.mock import AsyncMock
+
+    from core.auth import AuthContext
+
+    rows = [
+        _stored(1, [{"taskId": TID, "role": "started", "qid": "q-1"}]),
+        _stored(2, [{"taskId": TID, "role": "started", "later": "x"}, {"taskId": TID, "role": "mystery"}]),
+        _stored(3, [{"taskId": TID, "role": "suggested"}]),
+    ]
+    monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=({"roomId": ORIGIN}, {})))
+    monkeypatch.setattr(messaging.messaging_repo, "list_messages", AsyncMock(return_value=(rows, None)))
+    page = await messaging.list_messages(AuthContext(user_id="user_sam", org_id=WS), ORIGIN, 0, 50)
+    refs = [m.model_dump()["taskRefs"] for m in page.messages]
+    assert refs == [
+        [{"taskId": TID, "role": "started", "qid": "q-1"}],
+        [{"taskId": TID, "role": "started"}],
+        [{"taskId": TID, "role": "suggested"}],
+    ]
+
+
+async def test_agent_post_task_refs_are_strict_on_write():
+    with pytest.raises(ValueError):
+        await messaging.create_agent_message(
+            WS,
+            messaging.AgentMessageRequest(
+                event_id="e1", room_id=uuid.UUID(ORIGIN), agent_id=uuid.UUID(CEO), text="x", reply_to_message_id=None
+            ),
+            attrs={"taskRefs": [{"taskId": TID, "role": "started", "nope": 1}]},
+        )

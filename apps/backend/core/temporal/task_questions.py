@@ -191,6 +191,8 @@ class TaskQuestionsMixin:
     async def _q_land(self) -> None:
         """Landing (contracts-v2 §4, §8): run each approved draft through its backend executor, then Idle. A refusal
         (definitely not done) goes back to the Worker as input; an unknown outcome is shown and never retried."""
+        # Follow-up (review #4878): an answer accepted just before a Close can still land here; guarding on `_action`
+        # changes commands, so it needs `workflow.patched`. Closing retires unused approvals (effects_repo).
         while self._landings and self._stop_by is None:
             idem, by = self._landings.pop(0)
             try:

@@ -684,9 +684,13 @@ APPROVAL_SCHEMA = {
     "description": "Ask a person to decide something: creates an approval in their Needs you with "
                    "Approve and Reject buttons; approving it wakes you with the answer. Use it for "
                    "every sign-off (a plan, prices, spend, a launch, a public post, a vendor), never a "
-                   "task assigned to the person or a question in chat. On a Lightbulb task, never ask it "
-                   "before sending, spending or publishing: those tools stop for approval by themselves, "
-                   "so just call them. Linked tasks move to in_review. "
+                   "task assigned to the person or a question in chat. On a Lightbulb task these stop for "
+                   "approval by themselves, so don't ask before them: lightbulb-mail.sh / lightbulb-text.sh "
+                   "send, lightbulb app publish, gh pr merge, request_purchase and lightbulb_network send. "
+                   "Any OTHER send, spend or publish still needs request_approval first, once: gog gmail send "
+                   "or calendar invites, a QuickBooks send_invoice, a browser or computer checkout, form "
+                   "submit or post, git push, vercel deploy, npm publish, gh release, gh pr create, or a raw "
+                   "curl with credentials. Linked tasks move to in_review. "
                    "Returns the approval's link: give it to the person in your reply.",
     "parameters": {
         "type": "object",

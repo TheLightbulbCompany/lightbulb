@@ -24,7 +24,7 @@ from temporalio.exceptions import ApplicationError
 
 from core import tasks_schema as ts
 from core.dynamodb import utc_now_iso
-from core.repositories import container_repo, messaging_repo, tasks_repo
+from core.repositories import container_repo, effects_repo, messaging_repo, tasks_repo
 from core.services import (
     chat_gate,
     container_provision,
@@ -105,6 +105,8 @@ async def _move(ws: str, task_id: str, to: str, reason: str | None = None, field
             await learning.set_overlay_tag(ws, task_id, on=True)
     if to in ("resolved", "failed"):  # also on a retry that finds the move done (idempotent)
         await tasks_repo.unsubscribe_all(ws, task_id)
+    if to == "resolved":  # Close means "don't": an approval it left unused never carries over a Reopen
+        await effects_repo.retire_approvals(ws, task_id)
 
 
 def _is_uuid(value: str) -> bool:

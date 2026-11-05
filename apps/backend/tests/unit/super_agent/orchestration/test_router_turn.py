@@ -262,6 +262,33 @@ def test_restates_only_with_an_ack():
     assert not router_prompt.restates("Venues come with rough prices.", {"Growth has the agenda and the venues."})
 
 
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "The fee is $12 for the domain.",
+        "Yes, the domain is available.",
+        "Which domain?",
+        "Working hours are 9-5, the fee is $12.",
+        "The domain costs $12 per year on Porkbun.",
+    ],
+)
+def test_restates_keeps_real_answers(reply):
+    """Review #4878: short answers share stopwords and the noun with the ack; they are answers, not restatements."""
+    assert not router_prompt.restates(reply, {"Growth is buying the domain for the team."})
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "Working: Growth is buying the domain for the team.",
+        "Growth is buying the team's domain.",
+        "Both requests are Working: Engineering has the signup page.",
+    ],
+)
+def test_restates_drops_a_pure_restatement(reply):
+    assert router_prompt.restates(reply, {"Growth is buying the domain for the team."})
+
+
 @pytest.mark.asyncio
 async def test_router_turn_retry_applies_once(world):
     t1 = await _trig("chat:m1")
@@ -1061,5 +1088,6 @@ def test_briefs_carry_no_approval_steps():
     The prompt says the tools gate themselves and briefs hold only the work."""
     text = " ".join(router_prompt.ROUTER_INSTRUCTIONS.split())
     assert "never add approval or confirmation steps to a brief" in text
-    assert "stop for a person's approval by themselves" in text
+    assert "the specialist handles approvals" in text
+    assert "by themselves" not in text  # most send/spend tools do not gate themselves (gog, browser, QuickBooks)
     assert "stops at an approval question" not in text

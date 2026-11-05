@@ -134,3 +134,19 @@ it("a task that resolves to no data reads as unavailable, not Loading forever", 
   expect(await view.findByText("This thread isn\u2019t available to you.")).toBeTruthy();
   await view.unmount();
 });
+
+it("a suggested thread leads with Do it / Not now, why and cost; no Resolve, no steer box", async () => {
+  const proposed = { ...step8.task, status: "proposed" as const, shownGroup: null, proposalReason: "spends money", budgetUsd: 5 };
+  const c = client({ ...step8, task: proposed, questions: [] }, [], "t-suggested");
+  const view = await render(<TaskScreen />);
+  fireEvent.press(await view.findByLabelText("Do it"));
+  await waitFor(() => expect(c.act).toHaveBeenCalledWith("t-suggested", "start", proposed.version));
+  expect(view.getByText(`Engineering wants to: ${proposed.title}`)).toBeTruthy();
+  expect(view.queryByText(/Lightbulb · Engineering ·/)).toBeNull();
+  expect(view.getByText("Why: spends money")).toBeTruthy();
+  expect(view.getByText("Cost: up to $5")).toBeTruthy();
+  expect(view.getByLabelText("Not now")).toBeTruthy();
+  expect(view.queryByLabelText("Resolve")).toBeNull();
+  expect(view.queryByText("Steer this thread…")).toBeNull();
+  await view.unmount();
+});

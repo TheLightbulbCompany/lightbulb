@@ -491,6 +491,7 @@ async def test_propose_creates_draft_and_posts_card(internal):
     assert kw["thread_root"] == "00000000-0000-4000-8000-000000000000"
     assert kw["attrs"] == {"automationId": sid}
     assert not re.search(r"\d", kw["text"])  # the card renders times from the view; the text names none
+    assert kw["text"].endswith("Turn it on with the button on the card.")  # the card's Turn on, never "confirm"
 
 
 async def test_propose_cleans_up_when_the_card_cannot_be_posted(internal):

@@ -35,7 +35,9 @@ from routers.rules import RuleBuiltin, RuleMatchIn, check_scope
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-CONFIRM_TEXT = "Set up below. Confirm on the card."  # the card itself renders when, zone, next runs and budget
+# The card renders when, zone, next run and budget, and a Turn on button whenever the automation is off and the
+# viewer may turn it on (AutomationConfirmCard), so the line names that button.
+CONFIRM_TEXT = "Set up below. Turn it on with the button on the card."
 
 
 class ProposeIn(BaseModel):

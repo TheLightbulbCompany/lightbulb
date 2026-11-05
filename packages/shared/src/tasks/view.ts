@@ -309,12 +309,12 @@ function dayWords(dow: string): { label: string; days: (number | null)[]; range?
 
 /**
  * "Mondays 9:00" for `["0 9 * * 1"]` in `tz`, read in `viewerTz` ("Mondays 14:00" from New York to London).
- * A day-of-month or month field returns the raw entry. Several entries join with " and ".
+ * Anything else (a day-of-month without a month, steps, …) is "Custom schedule", never the raw cron. Several entries join with " and ".
  * ponytail: the conversion uses the next occurrence from `now`; a zone pair whose DST flips between now and
  * then can read an hour off until that day.
  */
 export function formatSchedule(cron: readonly string[], tz: string, viewerTz: string, now = Date.now()): string {
-  return cron.map((entry) => {
+  const parts = cron.map((entry): string | null => {
     const [min, hour, dom, mon, dow] = entry.trim().split(/\s+/);
     // A one-off ("27 10 5 11 *", what a "remind me at …" stores): "Once, 5 Nov, 10:27" in the viewer's zone.
     // ponytail: assumes this year in `tz`; a one-off set in December for January reads a year early.
@@ -325,7 +325,7 @@ export function formatSchedule(cron: readonly string[], tz: string, viewerTz: st
       return `Once, ${new Intl.DateTimeFormat("en-GB", { timeZone: viewerTz, day: "numeric", month: "short", hour: "numeric", minute: "2-digit", hourCycle: "h23" }).format(new Date(instant))}`;
     }
     const words = dayWords(dow ?? "*");
-    if (dom !== "*" || mon !== "*" || !words || !/^\d+$/.test(min) || !/^\d+$/.test(hour)) return entry;
+    if (dom !== "*" || mon !== "*" || !words || !/^\d+$/.test(min) || !/^\d+$/.test(hour)) return null;
     const first = words.days[0];
     const instant = nextInstant(first, Number(hour), Number(min), tz, now);
     const time = new Intl.DateTimeFormat("en-GB", { timeZone: viewerTz, hourCycle: "h23", hour: "numeric", minute: "2-digit" }).format(new Date(instant));
@@ -338,5 +338,8 @@ export function formatSchedule(cron: readonly string[], tz: string, viewerTz: st
       : words.range ? `${day(words.range[0])} to ${day(words.range[1])}`
       : words.days.map((d) => day(d ?? 0)).join(" and ");
     return `${label} ${time}`;
-  }).join(" and ");
+  });
+  return parts.length && parts.every(Boolean) ? parts.join(" and ") : CUSTOM_SCHEDULE;
 }
+
+export const CUSTOM_SCHEDULE = "Custom schedule";

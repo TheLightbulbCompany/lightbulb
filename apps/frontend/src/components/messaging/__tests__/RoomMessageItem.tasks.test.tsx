@@ -91,7 +91,7 @@ describe("RoomMessageItem with the super-agent switch", () => {
 
   it("an automation_confirm card turns the automation on only through its button", async () => {
     automation.current = { ...AUTOMATION };
-    const card = { ...reply, messageId: "m-confirm", text: "Set up below. Confirm on the card.", taskRefs: undefined, kind: "automation_confirm", automationId: "a1" } as RoomMessage;
+    const card = { ...reply, messageId: "m-confirm", text: "Set up below. Turn it on with the button on the card.", taskRefs: undefined, kind: "automation_confirm", automationId: "a1" } as RoomMessage;
     render(item(card));
     const region = await screen.findByRole("region", { name: "Turn on Post signups every Monday" });
     expect(region).toHaveTextContent("Mondays 9:00");
@@ -105,7 +105,7 @@ describe("RoomMessageItem with the super-agent switch", () => {
   it("a member who may not turn a room automation on reads the waiting line, no buttons", async () => {
     clerk.role = "org:member";
     automation.current = { ...AUTOMATION };
-    const card = { ...reply, messageId: "m-confirm", text: "Set up below. Confirm on the card.", taskRefs: undefined, kind: "automation_confirm", automationId: "a1" } as RoomMessage;
+    const card = { ...reply, messageId: "m-confirm", text: "Set up below. Turn it on with the button on the card.", taskRefs: undefined, kind: "automation_confirm", automationId: "a1" } as RoomMessage;
     render(item(card));
     const region = await screen.findByRole("region", { name: "Turn on Post signups every Monday" });
     expect(within(region).getByText("Waiting on a workspace admin")).toBeInTheDocument();
@@ -113,6 +113,24 @@ describe("RoomMessageItem with the super-agent switch", () => {
     // The owner may still drop the proposal (the server's _may_edit).
     expect(within(region).getByRole("button", { name: "Not now" })).toBeInTheDocument();
     clerk.role = "org:admin";
+  });
+
+  it("never prints raw cron, names one next run, and a paused automation is neutral with Turn on", async () => {
+    // The A11 acceptance run leaves the row a paused one-off; any odd cron reads "Custom schedule".
+    automation.current = { ...AUTOMATION, status: "paused", schedule: { cron: ["0 9 1 * *"], tz: "America/New_York" },
+      nextRuns: ["2026-12-01T14:00:00Z", "2027-01-01T14:00:00Z"] };
+    const card = { ...reply, messageId: "m-confirm", text: "Set up below. Turn it on with the button on the card.", taskRefs: undefined, kind: "automation_confirm", automationId: "a1" } as RoomMessage;
+    render(item(card));
+    const region = await screen.findByRole("region", { name: "Turn on Post signups every Monday" });
+    expect(region).toHaveTextContent("Custom schedule");
+    expect(region).not.toHaveTextContent("0 9 1 * *");
+    expect(region).not.toHaveTextContent("2027");
+    const paused = within(region).getByText("Paused");
+    expect(paused).not.toHaveClass("text-ok");
+    expect(within(region).queryByRole("button", { name: "Not now" })).toBeNull();
+    await userEvent.click(within(region).getByRole("button", { name: "Turn on" }));
+    expect(api.post).toHaveBeenCalledWith("/automations/a1/activate", {});
+    expect(await within(region).findByText("On")).toHaveClass("text-ok");
   });
 
   it("flag off is identical to today", async () => {

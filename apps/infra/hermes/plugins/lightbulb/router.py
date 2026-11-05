@@ -97,7 +97,8 @@ def _follow_link(args: dict, *, session_id: str = "", **_kw) -> str:
 PROPOSE_SCHEMA = {
     "name": "propose_automation",
     "description": "Draft a recurring automation for a request in the batch and post its confirm card in the room. "
-                   "Nothing runs until a person turns it on from the card.",
+                   "Nothing runs until a person turns it on with the card's Turn on button; the card already says "
+                   "'Turn it on with the button on the card.', so don't ask anyone to confirm in chat.",
     "parameters": {
         "type": "object",
         "properties": {

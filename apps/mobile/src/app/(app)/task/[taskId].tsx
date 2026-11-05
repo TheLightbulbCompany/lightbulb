@@ -1,5 +1,5 @@
 import { useAuth } from "@clerk/expo";
-import { specialistLabel, summaryView, useTask, useTaskQuestions } from "@lightbulb/shared";
+import { money, specialistLabel, summaryView, useTask, useTaskQuestions } from "@lightbulb/shared";
 import { Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import { StyleSheet, Text, View } from "react-native";
@@ -17,8 +17,8 @@ import { useLiveEvents, useSuperAgent } from "../../../providers/live-events";
 
 /**
  * One thread (mockup step 8, the phone): header with its specialist, word and where it runs;
- * Stop / Resolve / Reopen; the Needs-you card only while a question is open; the transcript
- * (the task's hidden room) with a steer box; the outputs; Details in a sheet.
+ * Stop / Resolve / Reopen; a Do it / Not now card while suggested (no Resolve, no transcript); the Needs-you card
+ * only while a question is open; the transcript (the task's hidden room) with a steer box; the outputs; Details in a sheet.
  */
 export default function TaskScreen() {
   const { taskId } = useLocalSearchParams<{ taskId: string }>();
@@ -43,11 +43,13 @@ export default function TaskScreen() {
   if (!on) return null;
   const task = detail?.task;
   const view = task ? summaryView(task, userId ?? "") : null;
+  // The specialist is the actor ("Growth"): each is its own agent, so no "Lightbulb ·" in front.
+  const actor = task ? specialistLabel(task.specialist, agentNames).replace(/^Lightbulb · /, "") : "";
   const headerOptions = {
     contentStyle: { backgroundColor: palette.ground },
     headerTitle: () => (
       <ConversationHeader title={task?.title ?? "Thread"} avatar={null} palette={palette}
-        status={task ? `${specialistLabel(task.specialist, agentNames)} · ${view?.word}${task.runsOn ? " · Lightbulb cloud" : ""}` : null}
+        status={task ? `${actor} · ${view?.word}${task.runsOn ? " · Lightbulb cloud" : ""}` : null}
         statusTone={view?.tone === "working" ? "live" : "mute"} />
     ),
   };
@@ -62,7 +64,8 @@ export default function TaskScreen() {
   }
   const open = views?.items.find((q) => q.state === "open");
   const live = task.status === "queued" || task.status === "working" || task.status === "waiting";
-  const press = async (verb: "stop" | "resolve" | "reopen") => {
+  const proposed = task.status === "proposed";
+  const press = async (verb: "stop" | "resolve" | "reopen" | "start" | "dismiss") => {
     setPending(true);
     const res = await act(task, verb);
     setPending(false);
@@ -78,11 +81,23 @@ export default function TaskScreen() {
         </View>
         <View style={styles.row}>
           {live ? <ActionButton label="Stop" palette={palette} disabled={pending} onPress={() => void press("stop")} /> : null}
-          {task.status !== "resolved"
+          {proposed ? null : task.status !== "resolved"
             ? <ActionButton label="Resolve" palette={palette} disabled={pending} onPress={() => void press("resolve")} />
             : <ActionButton label="Reopen" palette={palette} disabled={pending} onPress={() => void press("reopen")} />}
           <ActionButton label="Details" palette={palette} onPress={() => setDetails(true)} />
         </View>
+        {proposed ? (
+          // What it will do, why it was suggested and what it may cost; Do it starts it, Not now dismisses it.
+          <View accessibilityLabel={view?.word} style={[styles.output, { gap: spacing.xs, borderColor: palette.edge, backgroundColor: palette.surface }]}>
+            <Text style={[styles.title, { color: palette.fg }]}>{actor} wants to: {task.title}</Text>
+            {task.proposalReason ? <Text style={[styles.meta, { color: palette.fgMute }]}>Why: {task.proposalReason}</Text> : null}
+            {task.budgetUsd != null ? <Text style={[styles.meta, { color: palette.fgMute }]}>Cost: up to {money(task.budgetUsd)}</Text> : null}
+            <View style={styles.row}>
+              <ActionButton label="Do it" palette={palette} primary disabled={pending} onPress={() => void press("start")} />
+              <ActionButton label="Not now" palette={palette} disabled={pending} onPress={() => void press("dismiss")} />
+            </View>
+          </View>
+        ) : null}
         {note ? <Text accessibilityRole="alert" style={[styles.meta, { color: palette.alert }]}>{note}</Text> : null}
         {open ? <NeedsYouCard key={open.id} task={task} question={open} palette={palette} onAnsweredElsewhere={setNote} /> : null}
         {task.output ? (
@@ -91,7 +106,7 @@ export default function TaskScreen() {
           </View>
         ) : null}
       </View>
-      <TaskTranscript taskRoomId={detail.taskRoomId} focused={focused} />
+      {proposed ? null : <TaskTranscript taskRoomId={detail.taskRoomId} focused={focused} />}
       <TaskDetailsSheet detail={detail} visible={details} onClose={() => setDetails(false)} />
     </KeyboardAvoidingView>
   );
@@ -102,6 +117,7 @@ const styles = StyleSheet.create({
   top: { paddingHorizontal: spacing.lg, paddingTop: spacing.md, gap: spacing.sm },
   row: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: spacing.sm },
   meta: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18 },
+  title: { fontFamily: fonts.sansSemiBold, fontSize: 15, lineHeight: 20 },
   note: { fontFamily: fonts.sans, fontSize: 14, lineHeight: 20, padding: spacing.lg },
   output: { borderWidth: 1, borderRadius: radii.md, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
 });

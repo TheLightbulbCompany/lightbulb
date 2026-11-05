@@ -1,8 +1,10 @@
 "use client";
 
 // One thread, opened from a card, a link or a panel (mockup step 8): header with its controls,
-// a Needs-you card only while something is open, the task room as the transcript with a steer
-// box, the outputs, and folded Details. Section order is the mockup's.
+// a Needs-you card only while something is open (a Do it / Not now card while suggested), the task
+// room as read-only progress, the outputs, and folded Details. Section order is the mockup's.
+// Steering is the room's own composer ("Replying to: …", taskReply.ts); "Add a note" only when that
+// composer isn't on screen (opened from Work).
 
 import { useEffect, useRef, useState, type ReactElement, type RefObject } from "react";
 import { ArrowLeft } from "lucide-react";
@@ -12,17 +14,22 @@ import {
 } from "@lightbulb/shared";
 import { SessionChat, type ChatWords } from "@/components/messaging/SessionChat";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { capture } from "@/lib/analytics";
 import { TaskStatus } from "./TaskCard";
+import { sendToTask, useMarkTaskPaneOpen, useRoomComposerShown } from "./taskReply";
 import { useTaskActions } from "./useTaskActions";
 
 const TRANSCRIPT_WORDS: ChatWords = {
-  label: "Thread conversation", title: "Conversation", compose: "Steer this thread…",
-  empty: "Lightbulb posts this thread's progress here. Anything you write steers it.",
+  label: "Thread progress", title: "Progress",
+  empty: "Lightbulb posts this thread's progress here.",
   unavailable: "This thread's conversation isn't available.", full: "This conversation is full.", ended: "This thread is closed.",
 };
 
+/** The specialist as the actor ("Growth"): each is its own agent, so no "Lightbulb ·" in front. */
+const actorName = (specialist: string | null | undefined, names: Parameters<typeof specialistLabel>[1]) =>
+  specialistLabel(specialist, names).replace(/^Lightbulb · /, "");
 const time = (iso: string | null) => (iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "");
 const money = (n: number) => `$${n.toFixed(2).replace(/\.00$/, "")}`;
 
@@ -35,6 +42,7 @@ export function TaskPane({ taskId, viewerId, onClose, headingRef, backLabel = "B
   const gone = error instanceof ApiError && (error.status === 403 || error.status === 404);
   const ownHeading = useRef<HTMLHeadingElement>(null);
   const heading = headingRef ?? ownHeading;
+  useMarkTaskPaneOpen(taskId);
 
   // One read mark per open.
   useEffect(() => {
@@ -67,16 +75,21 @@ function TaskPaneBody({ detail, viewerId }: { detail: TaskDetail; viewerId: stri
   const answered = questions.filter((q) => q.state === "answered" && q.answeredBy);
   // The header's and the Work row's word ("Ready for review", "Waiting on you"), so the card and effects agree with them.
   const word = summaryView(task, viewerId).word;
+  const proposed = task.status === "proposed";
+  // The room's composer steers this thread when it is on screen; otherwise a one-line note here.
+  const composerShown = useRoomComposerShown(task.originRoomId);
   return <div className="room-context-body flex min-h-0 flex-col gap-3">
     <TaskHeader task={task} viewerId={viewerId} />
+    {proposed && <SuggestedCard task={task} viewerId={viewerId} />}
     {open && <NeedsYouCard key={open.id} task={task} question={open} label={word} />}
     {answered.length > 0 && <ul aria-label="Decisions" className="grid gap-1 px-1 text-ui text-muted-foreground">
       {answered.map((q) => <li key={q.id}>{answerLine(q)}</li>)}
     </ul>}
-    <div className="flex min-h-64 flex-1 flex-col">
+    {!proposed && <div className="flex min-h-64 flex-1 flex-col">
       <SessionChat sessionId={detail.taskRoomId} sessionOwnerId={task.ownerUserId ?? ""} words={TRANSCRIPT_WORDS}
-        openChat={async (roomId) => ({ roomId })} onSend={() => capture("task_steer_sent", { taskId: task.taskId, status: task.status })} />
-    </div>
+        openChat={async (roomId) => ({ roomId })} readOnly />
+    </div>}
+    {!proposed && !composerShown && <AddNote task={task} />}
     {task.output && <section aria-label="Outputs" className="editorial-card px-3 py-2 text-ui">
       {/* With a question open on it, the output is reviewed there (its preview and the decision): go to it (audit #25). */}
       {open
@@ -119,7 +132,7 @@ export function TaskHeader({ task, viewerId }: { task: TaskSummary; viewerId: st
   };
   return <section aria-label="Thread status" className="grid gap-1 px-1">
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-ui text-muted-foreground">
-      <span>{specialistLabel(task.specialist, agentNames)}</span>
+      <span className="font-semibold text-foreground">{actorName(task.specialist, agentNames)}</span>
       <TaskStatus task={task} viewerId={viewerId} />
       {task.runsOn && <span><span aria-hidden="true">☁ </span>Lightbulb cloud</span>}
     </div>
@@ -132,11 +145,61 @@ export function TaskHeader({ task, viewerId }: { task: TaskSummary; viewerId: st
           <Button type="button" size="sm" variant="ghost" onClick={() => setConfirmStop(false)}>Keep going</Button>
         </span>
         : <Button type="button" size="sm" variant="outline" disabled={pending} onClick={() => setConfirmStop(true)}>Stop</Button>)}
-      {!live && task.status !== "resolved" && <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={() => void press("resolve")}>Resolve</Button>}
+      {!live && task.status !== "resolved" && task.status !== "proposed" && <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={() => void press("resolve")}>Resolve</Button>}
       {task.status === "resolved" && <Button type="button" size="sm" variant="outline" disabled={pending} onClick={() => void press("reopen")}>Reopen</Button>}
     </div>
     {error && <p role="alert" className="text-ui text-err">{error}</p>}
   </section>;
+}
+
+/** A suggested thread leads with what it will do, why it was suggested and what it may cost; Do it starts it,
+ *  Not now dismisses it (the Suggested block's Start/Dismiss). */
+export function SuggestedCard({ task, viewerId }: { task: TaskSummary; viewerId: string }): ReactElement {
+  const { act } = useTaskActions("pane");
+  const { agentNames } = useLiveEvents();
+  const headingId = `suggested-${task.taskId}`;
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const press = async (verb: "start" | "dismiss") => {
+    setPending(true);
+    const res = await act(task, verb);
+    setPending(false);
+    setError(res.ok ? null : res.message);
+  };
+  return <section aria-labelledby={headingId} className="editorial-card px-3 py-2">
+    <p className="label-caps">{summaryView(task, viewerId).word}</p>
+    <h4 id={headingId} className="font-semibold">{actorName(task.specialist, agentNames)} wants to: {task.title}</h4>
+    {(task.proposalReason || task.budgetUsd != null) && <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 border-t border-border pt-2 text-ui">
+      {task.proposalReason && <><dt className="text-muted-foreground">Why</dt><dd className="min-w-0 break-words">{task.proposalReason}</dd></>}
+      {task.budgetUsd != null && <><dt className="text-muted-foreground">Cost</dt><dd>Up to {money(task.budgetUsd)}</dd></>}
+    </dl>}
+    <div className="mt-2 flex flex-wrap gap-2">
+      <Button type="button" size="sm" disabled={pending} onClick={() => void press("start")}>Do it</Button>
+      <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={() => void press("dismiss")}>Not now</Button>
+    </div>
+    {error && <p role="alert" className="mt-1 text-ui text-err">{error}</p>}
+  </section>;
+}
+
+/** Steering when the room's composer isn't on screen: one line, Enter sends it into the thread's room. */
+function AddNote({ task }: { task: TaskSummary }): ReactElement {
+  const { messaging } = useLiveEvents();
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState("");
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (!open) return <div className="px-1"><Button type="button" size="sm" variant="ghost" onClick={() => setOpen(true)}>Add a note</Button></div>;
+  return <form className="grid gap-1 px-1" onSubmit={(event) => {
+    event.preventDefault();
+    const note = text.trim();
+    if (!note || pending) return;
+    setPending(true);
+    sendToTask(messaging, task, note, "note").then(() => { setText(""); setError(null); }, () => setError("That didn't go through. Try again.")).finally(() => setPending(false));
+  }}>
+    <Input autoFocus aria-label="Add a note" placeholder="Add a note…" value={text} maxLength={4000} disabled={pending}
+      onChange={(event) => setText(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape" && !text) { event.stopPropagation(); setOpen(false); } }} />
+    {error && <p role="alert" className="text-ui text-err">{error}</p>}
+  </form>;
 }
 
 /** The open question. Only an answerer gets buttons; everyone else reads who it waits on. Typed text never answers. */

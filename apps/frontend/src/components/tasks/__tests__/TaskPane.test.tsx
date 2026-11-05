@@ -6,18 +6,16 @@ import { ApiError, type QuestionView, type TaskDetail } from "@lightbulb/shared"
 import { FIXTURES, PRIYA, SAM, answeredApprovalRow, answeredApprovalView, fixtureTask, viewAs } from "@lightbulb/shared/tasks/fixtures";
 import { Fresh, fakeTasksClient, type FakeTasksClient } from "./fakeTasks";
 
-const live = vi.hoisted(() => ({ superAgent: true, tasks: null as unknown }));
+const live = vi.hoisted(() => ({ superAgent: true, tasks: null as unknown, messaging: { sendMessage: vi.fn(async () => ({})) } }));
 const capture = vi.hoisted(() => vi.fn());
 vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useSuperAgent: () => live.superAgent }));
 vi.mock("@/lib/analytics", () => ({ capture }));
-// The transcript is the task room in the ordinary room column; a stand-in records which room it opens.
+// The transcript is the task room in the ordinary room column; a stand-in records which room it opens and whether it is read-only.
 vi.mock("@/components/messaging/SessionChat", () => ({
-  SessionChat: ({ sessionId, openChat, words, onSend }: {
-    sessionId: string; openChat: (id: string) => Promise<{ roomId: string }>; words: { compose?: string }; onSend?: () => void;
-  }) => {
+  SessionChat: ({ sessionId, openChat, readOnly }: { sessionId: string; openChat: (id: string) => Promise<{ roomId: string }>; readOnly?: boolean }) => {
     const [room, setRoom] = useState("");
     useEffect(() => { void openChat(sessionId).then((r) => setRoom(r.roomId)); }, [sessionId, openChat]);
-    return <section aria-label="Transcript" data-room={room}><textarea placeholder={words.compose} /><button onClick={onSend}>Send steer</button></section>;
+    return <section aria-label="Transcript" data-room={room} data-read-only={readOnly ? "yes" : "no"} />;
   },
 }));
 
@@ -87,13 +85,42 @@ describe("TaskPane", () => {
     expect(within(mine).getAllByRole("button").map((b) => b.textContent)).toEqual(["Allow once", "Deny"]);
   });
 
-  it("transcript is the task room; steer fires the event", async () => {
+  it("transcript is the task room, read-only; with no room composer on screen a one-line note steers it", async () => {
+    live.messaging.sendMessage.mockClear();
     pane();
     const transcript = await screen.findByRole("region", { name: "Transcript" });
     await waitFor(() => expect(transcript).toHaveAttribute("data-room", step8.taskRoomId));
-    expect(screen.getByPlaceholderText("Steer this thread…")).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Send steer" }));
-    expect(capture).toHaveBeenCalledWith("task_steer_sent", expect.objectContaining({ taskId: "t-signup" }));
+    expect(transcript).toHaveAttribute("data-read-only", "yes");
+    await userEvent.click(screen.getByRole("button", { name: "Add a note" }));
+    await userEvent.type(screen.getByRole("textbox", { name: "Add a note" }), "Use the blue theme{Enter}");
+    expect(live.messaging.sendMessage).toHaveBeenCalledWith(step8.taskRoomId, expect.objectContaining({ text: "Use the blue theme", mentions: [] }));
+    expect(capture).toHaveBeenCalledWith("task_steer_sent", expect.objectContaining({ taskId: "t-signup", source: "note" }));
+  });
+
+  it("suggested: leads with Do it / Not now, why and cost; no Resolve, no transcript, no note", async () => {
+    const proposed = { ...step8.task, status: "proposed" as const, shownGroup: null, proposalReason: "spends money", budgetUsd: 5 };
+    withDetail({ ...step8, task: proposed, questions: [] }, []);
+    client.act.mockResolvedValueOnce({ ...proposed, status: "working", shownGroup: "working", version: proposed.version + 1 });
+    pane();
+    const card = await screen.findByRole("region", { name: /wants to:/ });
+    // The specialist is the actor, with no "Lightbulb ·" in front; the status word is the shared one.
+    expect(card).toHaveTextContent(`Engineering wants to: ${proposed.title}`);
+    expect(screen.getByRole("region", { name: "Thread status" })).not.toHaveTextContent("Lightbulb ·");
+    expect(card).toHaveTextContent("spends money");
+    expect(card).toHaveTextContent("Up to $5");
+    expect(screen.queryByRole("button", { name: "Resolve" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Transcript" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add a note" })).toBeNull();
+    await userEvent.click(within(card).getByRole("button", { name: "Do it" }));
+    expect(client.act).toHaveBeenCalledWith(proposed.taskId, "start", proposed.version);
+  });
+
+  it("suggested: Not now dismisses it", async () => {
+    const proposed = { ...step8.task, status: "proposed" as const, shownGroup: null };
+    withDetail({ ...step8, task: proposed, questions: [] }, []);
+    pane();
+    await userEvent.click(within(await screen.findByRole("region", { name: /wants to:/ })).getByRole("button", { name: "Not now" }));
+    expect(client.act).toHaveBeenCalledWith(proposed.taskId, "dismiss", proposed.version);
   });
 
   it("answered approval leaves a line", async () => {

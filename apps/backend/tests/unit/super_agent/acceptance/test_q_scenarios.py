@@ -142,7 +142,7 @@ async def test_a09_lands_once_and_ends_idle():
             return _json({})
         if path.endswith("/questions"):
             return _json({"items": [_view("sam")]})
-        detail = _json({"shownGroup": seen["group"]})
+        detail = _json({"task": {"shownGroup": seen["group"]}})
         seen["group"] = "idle" if seen["group"] == "ready_for_review" and rows[2]["state"] == "done" else seen["group"]
         return detail
 

@@ -87,7 +87,10 @@ async def router_runs(ws: str) -> list[dict[str, Any]]:
         attrs = event.activity_task_scheduled_event_attributes
         if attrs.activity_type.name != "router_turn":
             continue
-        (inp,) = await DataConverter.default.decode(list(attrs.input.payloads), [RouterTurnIn])
+        try:
+            (inp,) = await DataConverter.default.decode(list(attrs.input.payloads), [RouterTurnIn])
+        except KeyError:  # a batch recorded by an older worker lacks a field the type now has: skip it
+            continue
         batches.append(inp)
     front = await task_conversation.front_agent_id(ws)
     out = []

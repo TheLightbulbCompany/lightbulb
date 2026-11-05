@@ -1,7 +1,8 @@
-# Vendored verbatim from TheLightbulbCompany/hermes-agent-lightbulb tools/threat_patterns.py @ ed75079
-# (the scan Hermes runs on every memory write, scope="strict" for memory + skills). The learning merge
+# Vendored verbatim from TheLightbulbCompany/hermes-agent-lightbulb tools/threat_patterns.py at the image's
+# SERIES pin c7f3cd81 (apps/infra/hermes/hermes-patches/SERIES; the file is identical at fork HEAD ed75079).
+# It is the scan Hermes runs on every memory write, scope="strict" for memory + skills. The learning merge
 # (spec 07 §3.5) runs in the backend, which cannot import Hermes. Logic and patterns are the fork's,
-# unchanged; only ruff's formatting was applied (the repo's pre-commit). Re-vendor when the fork moves.
+# unchanged; only ruff's formatting was applied (the repo's pre-commit). Re-vendor when the pin moves.
 
 """Shared threat-pattern library (prompt injection / promptware / exfiltration) for
 ``agent/prompt_builder.py``, ``tools/memory_tool.py`` and ``agent/tool_dispatch_helpers.py``.

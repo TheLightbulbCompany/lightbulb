@@ -162,20 +162,24 @@ def _threat(entry: str) -> bool:
     return bool(scan_for_threats(entry, scope="strict"))
 
 
-def _merge_sync(ws: str, specialist_id: str, task_id: str, attempt: int, *, private: bool, prior: dict | None) -> dict:
+def _merge_sync(
+    ws: str, specialist_id: str, task_id: str, attempt: int, *, private: bool, prior: dict | None, interrupted: bool
+) -> dict:
     s3, bucket = _s3_client(), settings.OWNER_STATE_BUCKET
     overlay = overlay_prefix(ws, task_id, specialist_id)
     specialist = hermes_profiles.profile_prefix(ws, specialist_id)
     overlay_files = lm.read_snapshot(s3, bucket, overlay)
     seal = _get(s3, bucket, overlay + lm.SEALED)
     status = lm.check_seal(seal, attempt, overlay_files)
-    # Merge against the base of the earliest attempt of this task not yet applied: T carries every
-    # attempt since, so nothing is counted twice and nothing is lost (learning_merge docstring).
+    # Merge against the base of the earliest attempt of this task whose learning never REACHED the
+    # profile (no row, or a report that applied nothing): T carries every attempt since, so nothing
+    # is counted twice and nothing is lost (learning_merge docstring). A superseded or unsealed
+    # attempt is marked applied for idempotence but applied nothing (#4762 review).
     base_attempt = next(
         (
             k
             for k in range(1, attempt + 1)
-            if (learning_repo.get_sync(ws, specialist_id, task_id, k) or {}).get("state") != "applied"
+            if not ((learning_repo.get_sync(ws, specialist_id, task_id, k) or {}).get("report") or {}).get("applied")
         ),
         attempt,
     )
@@ -183,12 +187,11 @@ def _merge_sync(ws: str, specialist_id: str, task_id: str, attempt: int, *, priv
     base, base_text = lm.parse_base(base_raw) if base_raw else ({}, {})
     if base_raw is None:
         logger.warning("learning merge: no base for task=%s attempt=%s; adding only", task_id, base_attempt)
-    if status is None:
-        task_view = lm.layered_task_view(seal, overlay_files, lambda rel: _get(s3, bucket, specialist + rel) or b"")
-    else:
-        task_view = overlay_files
 
     def plan_for(current: lm.Snapshot, planned: dict[str, str]) -> lm.MergePlan:
+        # The layered view needs C (an untouched file's bytes come from it): built per plan, from the
+        # very snapshot this plan merges against, never a second read of the profile.
+        task_view = lm.layered_task_view(seal, overlay_files, current) if status is None else overlay_files
         plan = lm.plan_merge(
             base,
             task_view,
@@ -205,7 +208,7 @@ def _merge_sync(ws: str, specialist_id: str, task_id: str, attempt: int, *, priv
         learning_repo.put_planned_sync(ws, specialist_id, task_id, attempt, plan.planned)
         return plan
 
-    _, report = lm.run_merge(s3, bucket, specialist, plan_for, planned=prior, force_revision=prior is not None)
+    _, report = lm.run_merge(s3, bucket, specialist, plan_for, planned=prior, force_revision=interrupted)
     return report
 
 
@@ -218,9 +221,19 @@ async def merge_learning(ws: str, specialist_id: str, task_id: str, attempt: int
     if existing and existing.get("state") == "applied":
         return existing.get("report") or {}
     task = await tasks_repo.get_task(ws, task_id)
-    private = (task or {}).get("lane") == "private"
+    if task is None:  # the task row is gone: nothing of it is merged, and the row says so
+        report = lm._empty_report("no_task")
+        await learning_repo.put_planned(ws, specialist_id, task_id, attempt, {})
+        await learning_repo.mark_applied(ws, specialist_id, task_id, attempt, report)
+        return report
+    private = task.get("lane") == "private"
     prior = (existing or {}).get("planned") or None
-    report = await run_in_thread(_merge_sync, ws, specialist_id, task_id, attempt, private=private, prior=prior)
+    # A planned row is an interrupted earlier run: its writes may have landed without the
+    # `.revision` bump, whatever it had planned (even a delete-only plan).
+    interrupted = (existing or {}).get("state") == "planned"
+    report = await run_in_thread(
+        _merge_sync, ws, specialist_id, task_id, attempt, private=private, prior=prior, interrupted=interrupted
+    )
     await learning_repo.mark_applied(ws, specialist_id, task_id, attempt, report)
     return report
 
@@ -264,9 +277,15 @@ def is_task_session_attempt(ws: str, task_id: str, att: dict) -> bool:
 
 
 async def close_task_attempt_if_task_session(ws: str, task_id: str, att: dict, attempt: int) -> None:
-    """O's `end_attempt` hook: nothing for a shared-VM attempt (today's path), else `close_task_attempt`."""
-    if is_task_session_attempt(ws, task_id, att):
+    """O's `end_attempt` hook: nothing for a shared-VM attempt (today's path), else `close_task_attempt`.
+    Never fails `end_attempt`: a Temporal/AgentCore blip here is logged; the task session ages out on
+    its own and the next attempt's merge carries this one's learning (earliest-unapplied base)."""
+    if not is_task_session_attempt(ws, task_id, att):
+        return
+    try:
         await close_task_attempt(ws, task_id, att["agentId"], attempt)
+    except Exception:  # noqa: BLE001
+        logger.warning("close_task_attempt failed task=%s attempt=%s", task_id, attempt, exc_info=True)
 
 
 WORKFLOWS = [LearningWorkflow]

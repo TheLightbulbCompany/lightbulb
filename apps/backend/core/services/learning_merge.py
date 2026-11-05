@@ -39,7 +39,8 @@ Caller contract (V5):
   deltas.
 - Usage idempotence is "C is at the planned sha". Another writer rewriting ``.usage.json`` between
   our put and a replan re-adds the deltas; the workspace VM's unconditional ``save_profile`` is such
-  a writer (and can clobber merged ``memories/*``) until V5 fences it.
+  a writer (and can clobber merged ``memories/*``) until V2/V3b's task mode fences the task side
+  and a workspace turn mid-merge stays rare.
 
 Pure apart from the S3 client the caller passes in and the backend's list of credential dirs.
 """
@@ -176,15 +177,20 @@ def check_seal(seal_raw: bytes | None, attempt: int, task: Snapshot) -> str | No
     return None if all(sealed_files.get(r) == sha for r, sha in now.items()) else "superseded"
 
 
-def layered_task_view(seal_raw: bytes, overlay: Snapshot, current_bytes: Callable[[str], bytes]) -> Snapshot:
+def layered_task_view(seal_raw: bytes, overlay: Snapshot, current: Snapshot) -> Snapshot:
     """T as the task saw it (V5 contract): every learning file ``sealed.json`` lists, bytes from the
     overlay when the task wrote the file, else -- untouched, so its sha is B's -- the specialist's
-    copy, which the plan only ever reads to park a conflicting skill dir. An overlay-only T would
-    archive every skill the task never touched."""
+    copy (its sha stays the seal's; the bytes are only ever read to park a conflicting skill dir).
+    An overlay-only T would archive every skill the task never touched. A sealed file gone from
+    BOTH the overlay and C (a later attempt deleted it mid-run) is left out: there are no bytes to
+    write, and an empty file must never land in the profile (#4762 review)."""
     files = {r: sha for r, sha in (json.loads(seal_raw).get("files") or {}).items() if is_learning_file(r)}
     view: Snapshot = {}
     for rel, sha in files.items():
-        view[rel] = overlay[rel] if rel in overlay else (sha, "", lambda rel=rel: current_bytes(rel))
+        if rel in overlay:
+            view[rel] = overlay[rel]
+        elif rel in current:
+            view[rel] = (sha, current[rel][1], current[rel][2])
     return view
 
 
@@ -302,9 +308,14 @@ def plan_merge(
     def _put(rel: str, body: bytes) -> None:
         ops.append(PlannedPut(rel, body, _sha(body), current[rel][1] if rel in current else ABSENT))
 
+    def _unchanged_in_task(rel: str) -> bool:
+        # The layered view lists a file the task never touched at B's sha with C's bytes (#4762
+        # review): nothing to merge, and reading those bytes would re-count C against B.
+        return rel not in task or (rel in base and task[rel][0] == base[rel][0])
+
     # Memory files.
     for rel, limit, kind in ((MEMORY, memory_limit, "memory"), (USER, user_limit, "user")):
-        if rel not in task:
+        if _unchanged_in_task(rel):
             continue
         cur = _entries(_text(current, rel))
         merged = _merge_entries(
@@ -321,7 +332,7 @@ def plan_merge(
 
     # Usage counters: deltas onto C; state and creation fields stay C's.
     done = USAGE in current and planned.get(USAGE) == current[USAGE][0]
-    if USAGE in task and not done:
+    if not _unchanged_in_task(USAGE) and not done:
         b, t = json.loads(_base_text(USAGE) or "{}"), json.loads(_text(task, USAGE) or "{}")
         c = json.loads(_text(current, USAGE) or "{}")
         merged_usage: dict[str, Any] = {k: dict(v) if isinstance(v, dict) else v for k, v in c.items()}

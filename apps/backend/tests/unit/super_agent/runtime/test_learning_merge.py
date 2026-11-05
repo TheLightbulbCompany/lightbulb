@@ -236,12 +236,26 @@ def test_check_seal_per_attempt():
     assert lm.check_seal(seal(2, {lm.MEMORY: "other"}), 2, t) == "superseded"  # attempt 3 is writing
     assert lm.check_seal(seal(2, {lm.MEMORY: sha, "skills/x/SKILL.md": "untouched"}), 2, t) is None  # layered
     assert lm.check_seal(seal(2, {}), 2, t) == "superseded"  # a file the seal never saw: a later attempt's
-    view = lm.layered_task_view(seal(2, {lm.MEMORY: sha, "skills/x/SKILL.md": "u"}), t, lambda rel: b"from C")
-    assert view[lm.MEMORY] is t[lm.MEMORY] and view["skills/x/SKILL.md"][0] == "u"
+    current = _snap({"skills/x/SKILL.md": b"from C"})
+    listed = seal(2, {lm.MEMORY: sha, "skills/x/SKILL.md": "u", "skills/gone/SKILL.md": "g"})
+    view = lm.layered_task_view(listed, t, current)
+    assert view[lm.MEMORY] is t[lm.MEMORY] and view["skills/x/SKILL.md"][0] == "u"  # the seal's sha (B's)
     assert view["skills/x/SKILL.md"][2]() == b"from C" and "state.db" not in view
+    assert "skills/gone/SKILL.md" not in view  # gone from the overlay AND C: no bytes to write (#4762 review)
     assert lm.base_rel(2) == "base-0002.json"
     plan = _plan({}, {lm.MEMORY: _mem("x")}, {}, superseded=True)
     assert plan.ops == [] and plan.report["skipped"] == "superseded"
+
+
+def test_unchanged_in_task_memory_and_usage_never_merge():
+    """#4762 review: the layered view lists an untouched file at B's sha with C's bytes; the plan
+    must not read those bytes as T (usage would re-count C against B)."""
+    b = {lm.MEMORY: _mem("a"), lm.USAGE: b'{"s": {"use_count": 5}}'}
+    c = {lm.MEMORY: _mem("a", "from another merge"), lm.USAGE: b'{"s": {"use_count": 7}}'}
+    t = {rel: (_snap(b)[rel][0], *_snap(c)[rel][1:]) for rel in b}  # the layered view's shape for an untouched file
+    plan = lm.plan_merge(_manifest(b), t, _snap(c), private=False, sealed=True, threat_scan=lambda e: False,
+                         task_id=TASK, base_text=_texts(b))  # fmt: skip
+    assert plan.ops == [] and plan.report["added"]["memory"] == 0
 
 
 # --- apply against S3 ---------------------------------------------------------------------------

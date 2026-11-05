@@ -44,9 +44,10 @@ logger = logging.getLogger(__name__)
 PROVIDER_KEY = "openai-codex"
 REFRESH_WINDOW_S = 600
 #: The first dev image tag (``h-<YYYY.M.D>-<sha7>``) whose bridge reads the ``auth.json`` marker
-#: and asks the broker (F6 + V11). None until V16's roll records it: the cutover refuses every
-#: image before then (spec 13 §6.3 -- an old image reads the marker as "no refresh token").
-BROKER_MIN_IMAGE_TAG: str | None = None
+#: and asks the broker (F6 + V11). The cutover refuses every image before it (spec 13 §6.3 -- an old
+#: image reads the marker as "no refresh token"). V16 dev roll: main 70f870b22 (#4784 + #4793).
+#: Read only by codex_cutover, which the ops script refuses in prod without --founder-approved.
+BROKER_MIN_IMAGE_TAG: str | None = "h-2026.11.5-70f870b"
 #: How long the cutover holds the cold-wake lease: nothing may start a session mid-move.
 WAKE_LEASE_S = 60
 _TAG_RE = re.compile(r"^h-(\d{4})\.(\d{1,2})\.(\d{1,2})-([0-9a-f]{7})$")

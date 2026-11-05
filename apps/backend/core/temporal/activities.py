@@ -322,6 +322,26 @@ def _usage(raw: dict) -> dict:
     }
 
 
+async def _meter(ws: str, user_id: str | None, raw: dict, kind: str) -> None:
+    """The one usage writer for super-agent runs (the bridge's usage callback skips them): billed to the person
+    who asked, else the workspace (`owner_id`, the same subject the non-room usage path bills)."""
+    usage = _usage(raw)
+    await messaging._record_run_usage(
+        ws,
+        user_id or ws,
+        messaging.RunUsage(
+            model=kind,
+            input_tokens=usage["inputTokens"],
+            output_tokens=usage["outputTokens"],
+            cache_read_tokens=0,
+            cache_write_tokens=0,
+            estimated_cost_usd=usage["costUsd"],
+        ),
+        room_turn=False,
+        event_kind=kind,
+    )
+
+
 @activity.defn
 async def reconcile_attempt(ws: str, task_id: str, n: int) -> str:
     """After a lost `worker_turn`: `running` (re-issue the same run id), `terminal:<outcome>` or `lost`."""
@@ -469,22 +489,8 @@ async def end_attempt(ws: str, task_id: str, n: int, outcome: str, error: str | 
         await push_service.send_push_to_user(
             requester, "Lightbulb", f"{task['title']} didn't finish.", {"taskId": task_id}
         )
-    usage = att.get("usage")
-    if usage and requester:
-        await messaging._record_run_usage(
-            ws,
-            requester,
-            messaging.RunUsage(
-                model="task",
-                input_tokens=int(usage.get("inputTokens") or 0),
-                output_tokens=int(usage.get("outputTokens") or 0),
-                cache_read_tokens=0,
-                cache_write_tokens=0,
-                estimated_cost_usd=usage.get("costUsd"),
-            ),
-            room_turn=False,
-            event_kind="task",
-        )
+    if att.get("usage"):
+        await _meter(ws, requester, att["usage"], "task")
 
 
 @activity.defn
@@ -996,6 +1002,9 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
             "private" if private and user_id else "shared", user_id if private else None, room_id
         )
         status = await _router_run(ws, inp, prompt, memory, ts.trigger_scope(next(iter(to_model.values()))))
+        # Metered once per run id, failed runs too (their tokens were spent); a retried router_turn reads it back.
+        if status.usage and await messaging_repo.claim_usage_receipt(ws, f"router:{status.run_id}"):
+            await _meter(ws, user_id, status.usage, "router")
         if status.status != "completed":
             raise RuntimeError(f"router run {status.status}: {status.error or ''}")
         for tid in to_model:  # propose_automation marks its trigger during the run (routedTo.automationId)

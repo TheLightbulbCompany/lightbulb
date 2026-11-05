@@ -333,6 +333,14 @@ async def test_end_attempt_records_usage_for_requester(world):
     assert world["usage"][0][2] == {"room_turn": False, "event_kind": "task"}
 
 
+async def test_end_attempt_with_no_requester_meters_the_workspace(world):
+    tid = await _task(ownerUserId=None)
+    await _attempt(tid)
+    await _ended(tid, "failed", usage={"inputTokens": 70, "outputTokens": 3})
+    assert [(u, n) for u, n, _ in world["usage"]] == [(WS, 70)]
+    assert world["pushes"] == []  # nobody to tell: pushes stay requester-only
+
+
 async def test_end_attempt_invite_ask_once_per_workspace(world):
     tid = await _task()
     await _attempt(tid)
@@ -469,7 +477,8 @@ async def test_begin_attempt_legacy_proposed_never_runs(world):
 
 
 async def test_bridge_usage_report_skips_task_runs(monkeypatch):
-    """One usage writer for a Worker turn: end_attempt (requester), never the bridge's usage callback too."""
+    """One usage writer for a Worker or Router turn: the activity (end_attempt, router_turn), never the bridge's usage
+    callback too."""
     recorded = []
 
     async def record(*a, **k):
@@ -482,7 +491,8 @@ async def test_bridge_usage_report_skips_task_runs(monkeypatch):
     monkeypatch.setattr(acts.messaging.messaging_repo, "claim_usage_receipt", claim)
     monkeypatch.setattr(acts.messaging.run_analytics, "schedule_run_completed", lambda **k: None)
     usage = {"model": "m", "inputTokens": 5, "outputTokens": 1, "cacheReadTokens": 0, "cacheWriteTokens": 0}
-    for key, expected in ((ts.worker_session_key(CEO, ts.new_task_id()), 0), ("agent:x:main", 1)):
+    router = ts.router_session_key(CEO, "shared", ts.router_room_key(ROOM))
+    for key, expected in ((ts.worker_session_key(CEO, ts.new_task_id()), 0), (router, 0), ("agent:x:main", 1)):
         body = acts.messaging.UsageReportRequest.model_validate(
             {"sessionKey": key, "agentId": CEO, "runId": str(uuid.uuid4()), "success": True, "usage": usage}
         )

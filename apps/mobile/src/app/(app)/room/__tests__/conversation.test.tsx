@@ -772,7 +772,7 @@ describe("conversation screen", () => {
     await off.unmount();
     mockSuperAgent = true;
     await render(<Conversation />);
-    expect(await screen.findByText("Friday now works through Lightbulb. A message here starts a Friday request.")).toBeTruthy();
+    expect(await screen.findByText("To ask Friday for something, mention them in Lightbulb\u2019s chat.")).toBeTruthy();
   });
 
   it("super-agent on: the front agent reads Lightbulb in the header and on its older posts, whatever its seat says", async () => {

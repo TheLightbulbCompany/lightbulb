@@ -47,7 +47,7 @@ describe("TaskPane", () => {
     const waiting = { ...FIXTURES.step05.tasks[0], output: { idemKey: "e", kind: "app" as const, title: "Signup app preview" } };
     withDetail({ ...step8, task: waiting, questions: [openRow] }, [approval()]);
     pane();
-    const status = await screen.findByRole("region", { name: "Thread status" });
+    const status = await screen.findByRole("region", { name: "Request status" });
     const needs = screen.getByRole("group", { name: /provision a database/ });
     const transcript = screen.getByRole("region", { name: "Transcript" });
     const outputs = screen.getByRole("region", { name: "Outputs" });
@@ -61,7 +61,7 @@ describe("TaskPane", () => {
     const { unmount } = pane();
     expect(await screen.findByRole("button", { name: "Stop" })).toBeInTheDocument();
     // Running: Stop (asked once), no Resolve under it.
-    expect(screen.queryByRole("button", { name: "Resolve" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
     expect(screen.getByText("Lightbulb cloud")).toBeInTheDocument();
     unmount();
     withDetail({ ...step8, task: { ...step8.task, status: "resolved", shownGroup: "resolved" } });
@@ -105,10 +105,10 @@ describe("TaskPane", () => {
     const card = await screen.findByRole("region", { name: /wants to:/ });
     // The specialist is the actor, with no "Lightbulb ·" in front; the status word is the shared one.
     expect(card).toHaveTextContent(`Engineering wants to: ${proposed.title}`);
-    expect(screen.getByRole("region", { name: "Thread status" })).not.toHaveTextContent("Lightbulb ·");
+    expect(screen.getByRole("region", { name: "Request status" })).not.toHaveTextContent("Lightbulb ·");
     expect(card).toHaveTextContent("spends money");
     expect(card).toHaveTextContent("Up to $5");
-    expect(screen.queryByRole("button", { name: "Resolve" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
     expect(screen.queryByRole("region", { name: "Transcript" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Add a note" })).toBeNull();
     await userEvent.click(within(card).getByRole("button", { name: "Do it" }));
@@ -149,7 +149,7 @@ describe("TaskPane", () => {
 
   it("marks read once on open", async () => {
     pane();
-    await screen.findByRole("region", { name: "Thread status" });
+    await screen.findByRole("region", { name: "Request status" });
     expect(client.markRead.mock.calls).toEqual([["t-signup"]]);
   });
 
@@ -163,6 +163,9 @@ describe("TaskPane", () => {
     await userEvent.click(screen.getByRole("button", { name: "Stop it" }));
     expect(client.act).toHaveBeenCalledWith("t-signup", "stop", step8.task.version);
     expect(await screen.findByText("Closed")).toBeInTheDocument();
+    // Stopped: the reason shows beside the word, and no "Done by" for work that was not done.
+    expect(screen.getByText("Stopped")).toBeInTheDocument();
+    expect(screen.queryByText(/Done by/)).toBeNull();
   });
 
   it("effects: a refused landing did not happen; unknown says to check first", async () => {
@@ -183,22 +186,22 @@ describe("TaskPane", () => {
   it("a failed load (not 403/404) offers Retry", async () => {
     client.get.mockRejectedValueOnce(new Error("503"));
     pane();
-    expect(await screen.findByRole("alert")).toHaveTextContent("This thread couldn't load.");
+    expect(await screen.findByRole("alert")).toHaveTextContent("This request couldn't load.");
     await userEvent.click(screen.getByRole("button", { name: "Retry" }));
-    expect(await screen.findByRole("region", { name: "Thread status" })).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "Request status" })).toBeInTheDocument();
   });
 
   it("names no runtime until the task has one", async () => {
     withDetail({ ...step8, task: { ...step8.task, runsOn: null } });
     pane();
-    await screen.findByRole("region", { name: "Thread status" });
+    await screen.findByRole("region", { name: "Request status" });
     expect(screen.queryByText("Lightbulb cloud")).toBeNull();
   });
 
   it("forbidden task reads as unavailable", async () => {
     client.get.mockRejectedValue(new ApiError(404, null));
     pane();
-    expect(await screen.findByText("This thread isn't available to you.")).toBeInTheDocument();
+    expect(await screen.findByText("This request isn't available to you.")).toBeInTheDocument();
   });
 });
 
@@ -267,8 +270,8 @@ describe("NeedsYouCard", () => {
     pane(SAM, "t-email");
     // The card and the effect read the Work row's word, not "Waiting for approval".
     const card = await screen.findByRole("group", { name: "Send the launch email?" });
-    expect(within(card).getByText("Needs you")).toBeInTheDocument();
-    expect(within(screen.getByRole("list", { name: "Effects" })).getByRole("listitem")).toHaveTextContent("Needs you");
+    expect(within(card).getByText("Ready for review")).toBeInTheDocument();
+    expect(within(screen.getByRole("list", { name: "Effects" })).getByRole("listitem")).toHaveTextContent("Ready for review");
     await userEvent.click(await screen.findByRole("button", { name: "Send" }));
     expect(client.answer).toHaveBeenCalledWith("t-email", "q-email", expect.objectContaining({ optionId: "send" }));
     const calls = Object.values(client).filter((v) => typeof v === "function").flatMap((fn) => (fn as unknown as { mock: { calls: unknown[][] } }).mock.calls.flat());

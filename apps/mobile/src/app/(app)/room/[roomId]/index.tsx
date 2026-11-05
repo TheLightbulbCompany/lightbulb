@@ -508,7 +508,7 @@ function Conversation() {
       />
       {specialistDm ? (
         <Text accessibilityRole="text" testID="specialist-dm-banner" style={[styles.specialistBanner, { color: palette.fgMute, borderColor: palette.edge }]}>
-          {roomName} now works through Lightbulb. A message here starts a {roomName} request.
+          {`To ask ${roomName} for something, mention them in Lightbulb\u2019s chat.`}
         </Text>
       ) : null}
       {/* The sheet shows its own copy; this one is for a hidden sheet (UI §8). */}

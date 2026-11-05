@@ -48,13 +48,13 @@ describe("RoomPanel Threads view (super-agent)", () => {
     await userEvent.click(button);
     const aside = await screen.findByRole("complementary", { name: "About" });
     expect(within(aside).getByRole("tab", { name: "Requests" })).toHaveAttribute("aria-selected", "true");
-    expect(within(aside).getByRole("heading", { name: "Waiting on you · 1" })).toBeInTheDocument();
+    expect(within(aside).getByRole("heading", { name: "Needs you · 1" })).toBeInTheDocument();
     expect(within(aside).getByRole("heading", { name: "Working · 2" })).toBeInTheDocument();
     // One room read serves the button and the tab.
     expect(client.list).toHaveBeenCalledTimes(1);
     // A row opens its thread in the same column.
-    await userEvent.click(within(aside).getByRole("button", { name: "Open Workshop signup app, Waiting on you" }));
-    expect(await screen.findByRole("complementary", { name: "Thread" })).toHaveAttribute("data-task-pane", "t-signup");
+    await userEvent.click(within(aside).getByRole("button", { name: "Open Workshop signup app, Needs you" }));
+    expect(await screen.findByRole("complementary", { name: "Request" })).toHaveAttribute("data-task-pane", "t-signup");
     // Opened from About, Back returns to its Threads tab; from there, Back returns to the conversation.
     await userEvent.click(screen.getByRole("button", { name: "Back to requests" }));
     expect(within(await screen.findByRole("complementary", { name: "About" })).getByRole("tab", { name: "Requests" })).toHaveAttribute("aria-selected", "true");

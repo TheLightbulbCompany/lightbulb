@@ -100,7 +100,10 @@ async def _admit_trigger(ws: str, trigger_id: str) -> None:
     if trig is None or not await flags_for(ws):
         put_metric("admission.outcome", dimensions={"outcome": "dropped", "source": "trigger"})
         return
-    await _signal(TriggerRef(ws, trigger_id, trig["lane"], trig["admission"]))
+    ref = trig.get("ref") or {}
+    await _signal(
+        TriggerRef(ws, trigger_id, trig["lane"], trig["admission"], ref.get("roomId") or ref.get("deliverRoomId"))
+    )
     put_metric("admission.outcome", dimensions={"outcome": trig["admission"], "source": trig["source"]})
 
 
@@ -163,7 +166,7 @@ async def _admit_message(room_id: str, seq: int) -> None:
     if routed:
         trig["routedTo"] = routed
     await tasks_repo.put_trigger(ws, trig)  # a redelivery replays the stored row
-    await _signal(TriggerRef(ws, trigger_id, base["lane"], admission))
+    await _signal(TriggerRef(ws, trigger_id, base["lane"], admission, room_id))
     put_metric("admission.outcome", dimensions={"outcome": admission, "source": "chat"})
 
 

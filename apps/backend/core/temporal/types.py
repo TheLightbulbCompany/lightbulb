@@ -37,6 +37,7 @@ class TriggerRef:
     trigger_id: str
     lane: str  # "shared" or ts.router_lane_key(user)
     admission: Admission
+    room_id: str | None = None  # where it was said / is answered: a Router batch never spans rooms (audit #6)
 
 
 @dataclass(frozen=True)

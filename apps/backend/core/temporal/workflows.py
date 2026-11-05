@@ -48,6 +48,9 @@ CAN_AFTER_SIGNALS = 2_000
 QUIET_AFTER = timedelta(days=7)
 MAX_SAME_RUN_RECONCILES = 3
 MAX_LOST_ATTEMPTS = 3  # the first attempt plus two new ones, then `failed`
+# A Router batch is one lane in one room: "shared" spans rooms, and a batch's memory audience, open tasks and
+# fallback line are one room's (audit #6). Histories without the marker keep batching by lane.
+PATCH_ROUTER_ROOM_BATCH = "o-router-room-batch-v1"
 
 _SHORT = {"start_to_close_timeout": timedelta(seconds=30), "retry_policy": RetryPolicy(maximum_attempts=5)}
 _ROUTER_TURN = {
@@ -115,8 +118,11 @@ class RouterWorkflow:
         while True:
             await workflow.wait_condition(lambda: bool(self._queue) or self._should_continue_as_new())
             if self._queue:
-                lane = self._queue[0].lane
-                batch = [r for r in self._queue if r.lane == lane][:BATCH_MAX]
+                head = self._queue[0]
+                lane = head.lane
+                by_room = workflow.patched(PATCH_ROUTER_ROOM_BATCH)
+                batch = [r for r in self._queue if r.lane == lane and (not by_room or r.room_id == head.room_id)]
+                batch = batch[:BATCH_MAX]
                 taken = {r.trigger_id for r in batch}
                 self._queue = [r for r in self._queue if r.trigger_id not in taken]
                 trigger_ids = [r.trigger_id for r in batch]

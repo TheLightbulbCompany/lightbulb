@@ -6,6 +6,7 @@ import { useEffect } from "react";
 import { getCurrentTarget } from "../../lib/activeAgent";
 import { parseAgentDeepLink } from "../../lib/deepLink";
 import { shouldSuppressBanner, type NotificationData } from "../../lib/notifications";
+import { useSuperAgent } from "../../providers/live-events";
 
 type TapData = NotificationData & {
   url?: string; source?: string; eventType?: string; issueId?: string; runId?: string;
@@ -80,9 +81,14 @@ let lastRouted: string | undefined;
  */
 export function NotificationTapRouter() {
   const response = Notifications.useLastNotificationResponse();
+  const superAgent = useSuperAgent();
 
   useEffect(() => {
     if (!response) return;
+    // A task question's screen lives behind the switch. Off, or while LiveConfig loads, the tap waits (kept, not
+    // cleared) and the app stays put as it did before; the switch turning on routes it.
+    const tapped = response.notification.request.content.data as TapData | undefined;
+    if (tapped?.source === "task_question" && !superAgent) return;
     Notifications.clearLastNotificationResponse();
     const id = response.notification.request.identifier;
     if (id === lastRouted) return;
@@ -104,7 +110,7 @@ export function NotificationTapRouter() {
       return;
     }
     for (const href of hrefs) router.push(href);
-  }, [response]);
+  }, [response, superAgent]);
 
   return null;
 }

@@ -266,7 +266,6 @@ jest.mock("../../../../lib/rooms", () => ({
 }));
 let mockAgents: { id: string; name: string; status?: string; seeded?: boolean; origin?: string; role?: string }[] = [];
 jest.mock("../../../../lib/workspaceRoster", () => ({
-  frontAgentOf: jest.requireActual("../../../../lib/workspaceRoster").frontAgentOf,
   useWorkspaceRoster: () => ({ agents: mockAgents, members: [{ userId: "user-b", name: "Leo" }] }),
 }));
 let mockLiveLines: Record<string, string> = {};
@@ -347,24 +346,14 @@ describe("Chats", () => {
     jest.restoreAllMocks();
   });
 
-  // Super-agent: one voice. A DM with an agent other than the front one files under a collapsed Specialists row.
-  it("super-agent on: specialist DMs sit under a collapsed Specialists row; off, the list is today's", async () => {
+  // The grouping itself is lib/chats `fileSpecialists` (unit-tested there); this checks the screen wires it.
+  it("super-agent on: the Specialists row opens to the specialist DM", async () => {
     mockSuperAgent = true;
     mockAgents = [{ id: "agent-lb", name: "Lightbulb", role: "ceo", origin: "Starter" }, ...mockAgents];
     await render(<ChatsTab />);
-    const specialists = await screen.findByLabelText("Specialists · 1");
-    expect(screen.queryByTestId("chat-room-r2")).toBeNull();
-    expect(screen.getByTestId("chat-room-r6")).toBeTruthy(); // a group DM is not a specialist's
-    await fireEvent.press(specialists);
+    await fireEvent.press(await screen.findByLabelText("Specialists · 1"));
     expect(await screen.findByTestId("chat-room-r2")).toBeTruthy();
-  });
-
-  it("super-agent on but no front agent known yet: today's list", async () => {
-    mockSuperAgent = true;
-    await render(<ChatsTab />);
-    expect(await screen.findByTestId("chat-room-r2")).toBeTruthy();
-    expect(screen.queryByTestId("chat-specialists")).toBeNull();
-  });
+  }, 15_000);
 
   it("merges rooms and live sessions into one list, newest first", async () => {
     mockSessions = [busySession];

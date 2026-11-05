@@ -49,6 +49,8 @@ jobs:
     # lint, 55 min of pytest), so 75 cancelled the next run as soon as one
     # test file slowed down. 100 still dies 5 h before the default; the real
     # fix is a faster suite (xdist / splitting), not a looser cap.
+    # 2026-11-04: pytest now runs under xdist (-n auto); lower this once a few
+    # parallel runs show the new wall-clock.
     timeout-minutes: 150
 
     steps:
@@ -77,7 +79,10 @@ jobs:
           AWS_ACCESS_KEY_ID: testing
           AWS_SECRET_ACCESS_KEY: testing
           DEBUG: "false"
-        run: uv run pytest tests/ -v --cov=. --cov-report=xml --cov-report=term-missing
+        # pytest-xdist: one worker per core. Tests are process-isolated (moto is in-process,
+        # servers bind port 0), so the suite runs in parallel; `-q` because `-v` per-test
+        # lines from N workers are unreadable. pytest-cov merges worker coverage itself.
+        run: uv run pytest tests/ -q -n auto --cov=. --cov-report=xml --cov-report=term-missing
         working-directory: apps/backend
 
       # This Lambda has its own tests and they used to run in NO job at all. It

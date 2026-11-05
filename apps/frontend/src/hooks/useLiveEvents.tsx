@@ -16,12 +16,15 @@ import {
   ApiError,
   createMessagingClient,
   createRuntimeClient,
+  createTasksClient,
   framesChannelFor,
+  useTaskChangedRefresh,
   useLiveEvents as useSharedLiveEvents,
   type ChatIncomingMessage,
   type LiveEvent,
   type LiveEventOf,
   type RuntimeRpcSource,
+  type TasksClient,
 } from "@lightbulb/shared";
 import { useApi } from "@/lib/api";
 import { readDesktopPermissionGrant } from "@/lib/desktopPermissions";
@@ -45,6 +48,8 @@ export interface LiveEventsContextValue extends RuntimeRpcSource {
   messaging: ReturnType<typeof createMessagingClient>;
   /** The workspace's super-agent switch, from the live config already fetched (contracts-v2 §1). */
   superAgent: boolean;
+  /** The super-agent task routes; only called while `superAgent` is on. */
+  tasks: TasksClient;
   claimActiveRoomSubscription(room: ActiveRoomSubscription): () => void;
   /** Subscribe the active room's frames sibling channel (a Mac tab's view-tier frames) while
    * any claim is held. Ref-counted; the returned function releases this claim once. */
@@ -65,6 +70,8 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
   const api = useApi();
   const messaging = useMemo(() => createMessagingClient(api), [api]);
   const runtimeClient = useMemo(() => createRuntimeClient(api, () => crypto.randomUUID()), [api]);
+  const tasks = useMemo(() => createTasksClient(api), [api]);
+  const refreshTask = useTaskChangedRefresh(tasks);
   const ownerScope = orgId ?? userId ?? null;
   const httpReady = !!isLoaded && !!userId;
   const { data: liveConfig, error: configError, mutate: refreshConfig } = useSWR(
@@ -101,8 +108,9 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     if (event.type === "runtime.resource.invalidated" && (event.payload.resource === "onboarding" || event.payload.resource === "health")) {
       void mutate(["/container/status", `${userId}:${orgId}`]);
     }
+    if (event.type === "task.changed") refreshTask(event.payload);
     for (const handler of eventHandlers.current) handler(event);
-  }, [userId, orgId]);
+  }, [userId, orgId, refreshTask]);
   const dispatchChat = useCallback((frame: ChatIncomingMessage, event: LiveEventOf<"room.run.frame">) => {
     for (const handler of chatHandlers.current) handler(frame, event);
   }, []);
@@ -118,6 +126,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     roomChannel,
     framesChannel,
     sessionFramesChannels,
+    tasksChannel: superAgent,
     onSubscribeError: (channel) => {
       for (const claim of sessionFrameClaims.current) if (claim.channel === channel) claim.onRefused();
     },
@@ -262,6 +271,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     nodeStatusReason,
     messaging,
     superAgent,
+    tasks,
     claimActiveRoomSubscription,
     claimFrames,
     claimSessionFrames,
@@ -280,6 +290,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     nodeStatusReason,
     messaging,
     superAgent,
+    tasks,
     claimActiveRoomSubscription,
     claimFrames,
     claimSessionFrames,

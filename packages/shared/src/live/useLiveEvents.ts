@@ -18,6 +18,8 @@ export interface UseLiveEventsOptions {
   /** A `/session-frames/` channel the authorizer refused: dropped from the socket, not retried.
    *  A transient subscribe error is not reported here; it takes the reconnect path. */
   onSubscribeError?: (channel: string) => void;
+  /** Subscribe the workspace's `/ws/<ws>/tasks` channel (`task.changed`); only while the super-agent switch is on. */
+  tasksChannel?: boolean;
   uuid: () => string;
   onEvent: (event: LiveEvent) => void;
   onChatMessage?: (frame: ChatIncomingMessage, event: LiveEventOf<"room.run.frame">) => void;
@@ -45,6 +47,7 @@ export function useLiveEvents(options: UseLiveEventsOptions): UseLiveEventsResul
     roomChannel,
     framesChannel = null,
     sessionFramesChannels = NO_CHANNELS,
+    tasksChannel: tasksOn = false,
     enabled = true,
   } = options;
   const tokenRef = useRef(options.getToken);
@@ -69,7 +72,8 @@ export function useLiveEvents(options: UseLiveEventsOptions): UseLiveEventsResul
   const live = enabled && !!config && removedFrom !== config.workspaceId;
   const sessionsChannel = config ? `/ws/${config.workspaceId}/sessions` : null;
 
-  const desired = [userChannel, sessionsChannel, roomChannel, framesChannel, ...sessionFramesChannels]
+  const tasksChannel = config && tasksOn ? `/ws/${config.workspaceId}/tasks` : null;
+  const desired = [userChannel, sessionsChannel, tasksChannel, roomChannel, framesChannel, ...sessionFramesChannels]
     .filter((channel): channel is string => !!channel);
   const sessionFramesKey = sessionFramesChannels.join(" ");
   const desiredRef = useRef(desired);
@@ -123,7 +127,7 @@ export function useLiveEvents(options: UseLiveEventsOptions): UseLiveEventsResul
 
   useEffect(() => {
     clientRef.current?.setChannels(desired);
-  }, [userChannel, sessionsChannel, roomChannel, framesChannel, sessionFramesKey]);
+  }, [userChannel, sessionsChannel, tasksChannel, roomChannel, framesChannel, sessionFramesKey]);
 
   // "Connected" is the socket being up with the user's own channel live. It is
   // NOT "every channel I currently want is acked": a freshly claimed room

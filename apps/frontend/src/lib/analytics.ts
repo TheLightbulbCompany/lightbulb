@@ -60,6 +60,17 @@ export const Provider = PHProvider;
  * each group when adding new entries so diffs stay reviewable.
  */
 export type AnalyticsEvent =
+  // Super-agent threads (wave 2). Properties: taskId, source, status, count only; never titles or text.
+  | "overview_opened"
+  | "task_card_opened"
+  | "task_question_answered"
+  | "task_reopened"
+  | "task_resolved"
+  | "task_retried"
+  | "task_steer_sent"
+  | "task_stopped"
+  | "task_suggestion_dismissed"
+  | "task_suggestion_started"
   // Growth: the door into a workspace and the sharing surface (2026-09-30)
   | "join_link_copied"
   | "session_opened"

@@ -37,6 +37,7 @@ const shared = vi.hoisted(() => ({
   liveConnected: false,
   connectionRevision: 1,
   roomChannel: null as string | null,
+  tasksChannel: false as boolean | undefined,
   framesChannel: null as string | null,
   onEvent: null as ((event: { type: string; payload: { resource: string } }) => void) | null,
   config: null as unknown,
@@ -48,10 +49,11 @@ vi.mock("@lightbulb/shared", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@lightbulb/shared")>();
   return {
     ...actual,
-    useLiveEvents: ({ roomChannel, framesChannel, onEvent, config, onConfigStale }: {
+    useLiveEvents: ({ roomChannel, framesChannel, onEvent, config, onConfigStale, tasksChannel }: {
       roomChannel: string | null; framesChannel?: string | null; onEvent: typeof shared.onEvent;
-      config: unknown; onConfigStale?: () => void;
+      config: unknown; onConfigStale?: () => void; tasksChannel?: boolean;
     }) => {
+      shared.tasksChannel = tasksChannel;
       shared.config = config;
       shared.onConfigStale = onConfigStale ?? null;
       shared.roomChannel = roomChannel;
@@ -202,6 +204,20 @@ describe("LiveEventsProvider", () => {
     await waitFor(() => expect(get).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(screen.getByText(`switch:${shown}`)).toBeTruthy());
     // No request of its own: the only call is the live-config fetch the provider already makes.
+    expect(get.mock.calls.map(([path]) => path)).toEqual(["/messaging/live-config"]);
+  });
+
+  it.each([
+    [undefined, false],
+    [{ superAgent: true }, true],
+  ])("asks for the tasks channel only when the switch is on (features %j)", async (features, on) => {
+    get.mockImplementationOnce(async () => ({ ...LIVE_CONFIG, ...(features ? { features } : {}) }));
+    render(<LiveEventsProvider><Probe /></LiveEventsProvider>);
+    await waitFor(() => expect(shared.config).toBeTruthy());
+    expect(shared.tasksChannel).toBe(on);
+    // task.changed with nothing cached fetches nothing (no /tasks request while nothing shows tasks).
+    act(() => shared.onEvent?.({ type: "task.changed", payload: { taskId: "t1", part: "task", version: 2 } } as never));
+    await act(async () => {});
     expect(get.mock.calls.map(([path]) => path)).toEqual(["/messaging/live-config"]);
   });
 

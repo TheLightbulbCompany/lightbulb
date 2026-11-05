@@ -28,14 +28,14 @@ async def _reconcile(env, state: str) -> Fakes:
 
 async def test_taskworkflow_reconcile_reason_never_starts_attempt(temporal_env):
     fakes = await _reconcile(temporal_env, "working:2:live")
-    assert fakes.names() == ["reconcile_state", "end_attempt", "transition"]
+    assert fakes.names() == ["reconcile_state", "end_attempt", "transition", "close_automation_run"]
     assert fakes.args("end_attempt") == [(WS, TID, 2, "runtime_lost", "lost_run")]
     assert fakes.args("transition") == [(WS, TID, "failed", "lost_run")]
 
 
 async def test_reconcile_on_already_ended_attempt_only_transitions(temporal_env):
     fakes = await _reconcile(temporal_env, "working:2:ended")
-    assert fakes.names() == ["reconcile_state", "release_slot", "transition"]
+    assert fakes.names() == ["reconcile_state", "release_slot", "transition", "close_automation_run"]
     assert fakes.args("transition") == [(WS, TID, "failed", "lost_run")]
 
 

@@ -65,6 +65,7 @@ async def test_happy_path_attempt(temporal_env, fakes):
         "begin_attempt",
         "worker_turn",
         "end_attempt",
+        "close_automation_run",  # lane A: an automation run closes after its attempt ended
         "transition",
     ]
     assert fakes.args("end_attempt")[0][3] == "completed"
@@ -86,7 +87,7 @@ async def test_proposed_dismiss(temporal_env, fakes):
         h = await _start(temporal_env, q, reason="migrated")
         await h.execute_update(TaskWorkflow.dismiss, ActionRequest("sam", 1))
         await h.result()
-    assert fakes.names() == ["transition"]
+    assert fakes.names() == ["transition", "close_automation_run"]  # lane A: the run ends with the task
     assert fakes.args("transition") == [(WS, TID, "resolved", "dismissed")]
 
 
@@ -236,7 +237,7 @@ async def test_resolve_wakes_slot_wait(temporal_env, fakes):
         await h.execute_update(TaskWorkflow.resolve, ActionRequest("sam"))
         await h.result()
     assert "begin_attempt" not in fakes.names()
-    assert fakes.names()[-2:] == ["release_slot", "transition"]
+    assert fakes.names()[-3:] == ["release_slot", "transition", "close_automation_run"]
     assert fakes.args("transition") == [(WS, TID, "resolved", "resolved")]
 
 

@@ -23,6 +23,7 @@ from temporalio.exceptions import ActivityError, ApplicationError, CancelledErro
 from temporalio.exceptions import TimeoutError as ActivityTimeout
 from temporalio.workflow import ActivityCancellationType
 
+from core.temporal.automations import PATCH_AUTOMATION_RUN, AutomationRunMixin
 from core.temporal.task_questions import TaskQuestionsMixin
 from core.temporal.types import (
     ActionRequest,
@@ -138,7 +139,7 @@ class RouterWorkflow:
 
 
 @workflow.defn
-class TaskWorkflow(TaskQuestionsMixin):
+class TaskWorkflow(TaskQuestionsMixin, AutomationRunMixin):
     """`task:{ws}:{taskId}`: slot lease → Attempt → `worker_turn` (async, bridge-completed) → `end_attempt`."""
 
     @workflow.init
@@ -175,6 +176,8 @@ class TaskWorkflow(TaskQuestionsMixin):
     async def _after_attempt(self, outcome: str) -> None:
         """An attempt ended (after `end_attempt`)."""
         await self._q_after_attempt(outcome)
+        if workflow.patched(PATCH_AUTOMATION_RUN):  # Lane A: an automation run closes with its task
+            await self._a_after_attempt(outcome)
 
     async def _on_stop(self, by_user_id: str) -> None:
         """A person stopped the task, before the running turn is cancelled (Q cancels open questions)."""
@@ -284,6 +287,8 @@ class TaskWorkflow(TaskQuestionsMixin):
     async def _transition(self, to: str, reason: str | None) -> None:
         await _act("transition", self._ws, self._task_id, to, reason)
         self._status = to
+        if workflow.patched(PATCH_AUTOMATION_RUN):  # Lane A: an automation run ends with its task
+            await self._a_on_transition(to)
 
     def _deferred(self) -> bool:
         """An attempt was refused (budget, proposed) and nothing new has arrived since."""

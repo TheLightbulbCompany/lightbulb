@@ -97,6 +97,10 @@ class Fakes:
         async def reconcile_state(ws: str, task_id: str) -> str:
             return await f._call("reconcile_state", ws, task_id, default="other")
 
+        @activity.defn(name="close_automation_run")  # lane A (automations.py): after an ended attempt
+        async def close_automation_run(ws: str, task_id: str, failed: bool) -> None:
+            await f._call("close_automation_run", ws, task_id, failed)
+
         return [
             router_turn,
             apply_fallback,
@@ -112,6 +116,7 @@ class Fakes:
             end_attempt,
             transition,
             reconcile_state,
+            close_automation_run,
         ]
 
 

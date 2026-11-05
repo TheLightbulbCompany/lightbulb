@@ -16,6 +16,8 @@ from scripts.super_agent.acceptance.o_lib import (
 
 
 async def a06(ctx: Ctx) -> Result:
+    if "approvalQid" not in ctx.state:
+        return Result(False, {"reason": "needs A5: no open approval Question in ctx.state (run A5 first)"})
     task_id, qid = ctx.state["approvalTaskId"], ctx.state["approvalQid"]
     room_id = ctx.state["roomId"]
     q = next(q for q in await task_questions(ctx, "priya", task_id) if q["id"] == qid)

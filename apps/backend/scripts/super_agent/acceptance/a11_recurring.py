@@ -9,6 +9,9 @@ from __future__ import annotations
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from core import tasks_schema as ts
+from core.repositories import user_repo
+from core.services import task_conversation
 from scripts.super_agent.acceptance.ctx import Ctx, Result
 from scripts.super_agent.acceptance.o_lib import ROUTER_REPLY_S, messages, post, rows_of
 
@@ -25,6 +28,19 @@ def _cron_in(minutes: int, tz: str) -> str:
     when = datetime.now(ZoneInfo(tz)).timestamp() + minutes * 60
     t = datetime.fromtimestamp(when, ZoneInfo(tz))
     return f"{t.minute} {t.hour} {t.day} {t.month} *"
+
+
+async def _temporal_paused(ws: str, sid: str) -> bool | None:
+    """Whether the dev Temporal Schedule for the automation is paused; ``None`` when it does not exist."""
+    from temporalio.service import RPCError
+
+    from scripts.super_agent.acceptance.a13_layers import dev_temporal_client
+
+    try:
+        desc = await (await dev_temporal_client()).get_schedule_handle(ts.schedule_workflow_id(ws, sid)).describe()
+    except RPCError:
+        return None
+    return desc.schedule.state.paused
 
 
 async def a11(ctx: Ctx) -> Result:
@@ -47,6 +63,7 @@ async def a11(ctx: Ctx) -> Result:
     )
 
     activated = (await api.post(f"{SCHEDULES}/{sid}/activate")).raise_for_status().json()
+    paused_after_activate = await _temporal_paused(ctx.ws, sid)
     first_run = next(iter(activated["nextRuns"]), None)
     monday_nine = (
         bool(first_run)
@@ -57,6 +74,14 @@ async def a11(ctx: Ctx) -> Result:
     await api.post(f"{SCHEDULES}/{sid}/run")
     run1 = await ctx.wait_for(
         lambda rows: next((t for t in rows_of(rows, "task") if t.get("policyRef") == f"SCHED#{sid}"), None), 60
+    )
+    card = next(
+        (
+            m
+            for m in await messages(ctx, "sam", room_id)
+            if any(r.get("taskId") == (run1 or {}).get("taskId") for r in m.get("taskRefs") or [])
+        ),
+        None,
     )
     second_now = await api.post(f"{SCHEDULES}/{sid}/run")
 
@@ -71,6 +96,7 @@ async def a11(ctx: Ctx) -> Result:
         FIRE_S,
     )
 
+    first_result = (await task_conversation.last_result_text(ctx.ws, first_id)) or "no result posted"
     await api.post(f"{SCHEDULES}/{sid}/pause")
     rows = await ctx.tasks_rows(ctx.ws)
     count = len([t for t in rows_of(rows, "task") if t.get("policyRef") == f"SCHED#{sid}"])
@@ -83,16 +109,21 @@ async def a11(ctx: Ctx) -> Result:
     runs = (await api.get(f"{SCHEDULES}/{sid}/runs")).raise_for_status().json()["runs"]
     checks = {
         "draft_row_with_cron": draft["status"] == "draft" and draft["cron"] == ["0 9 * * 1"],
-        "confirm_card_posted": confirm is not None,
+        "confirm_card_posted_with_automation_id": confirm is not None and sid in str(confirm),
+        "tz_is_sams_zone": tz == await user_repo.get_timezone(ctx.users["sam"]),
         "router_text_has_no_clock_time": ":" not in router_text and " am" not in router_text.lower(),
         "yes_leaves_draft": still_draft,
+        "temporal_schedule_exists_and_runs": paused_after_activate is False,
         "next_run_is_monday_nine": monday_nine,
         "run_now_made_a_task_with_policy_ref": run1 is not None,
+        "run_card_posted_in_room": card is not None,
         "second_run_now_is_409": second_now.status_code == 409,
         "one_off_fired_a_second_task": run2 is not None and (run2.get("previousRunTaskId") == first_id),
+        "run2_description_has_run1_result": run2 is not None and first_result[:60] in (run2.get("description") or ""),
+        "temporal_schedule_paused": await _temporal_paused(ctx.ws, sid) is True,
         "paused_schedule_did_not_fire": after == count,
-        "history_lists_both_runs": {first_id, (run2 or {}).get("taskId")}
-        <= {r.get("id") or r.get("taskId") for r in runs},
+        "history_newest_first": [r.get("id") or r.get("taskId") for r in runs[:2]]
+        == [(run2 or {}).get("taskId"), first_id],
     }
     return Result(
         all(checks.values()), {"scheduleId": sid, "tz": tz, "taskIds": [first_id, (run2 or {}).get("taskId")], **checks}

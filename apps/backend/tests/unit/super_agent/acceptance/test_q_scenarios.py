@@ -122,35 +122,53 @@ async def test_a09_lands_once_and_ends_idle():
     rows = [
         {"type": "task", "taskId": T},
         {"type": "question", "taskId": T, "qid": "q1", "kind": "review", "state": "open"},
+        {
+            "type": "effect",
+            "taskId": T,
+            "idemKey": "k",
+            "kind": "mail.send",
+            "state": "proposed",
+            "operands": {"to": "sa-test-2+clerk_test@thelightbulb.company"},
+        },
     ]
+    rows[2]["operands"] = dict(rows[2]["operands"])
     ctx = Fake(None, rows)
     seen = {"group": "ready_for_review"}
 
     def handler(request, user):
         path = request.url.path
         if path.endswith("/answer"):
-            rows.append(
-                {
-                    "type": "effect",
-                    "taskId": T,
-                    "idemKey": "k",
-                    "kind": "send",
-                    "state": "done",
-                    "resultRef": "ses:1",
-                    "doorUsedAt": "t",
-                }
-            )
+            rows[2].update(state="done", resultRef="ses:1", doorUsedAt="t")
             return _json({})
         if path.endswith("/questions"):
             return _json({"items": [_view("sam")]})
         detail = _json({"shownGroup": seen["group"]})
-        seen["group"] = "idle" if seen["group"] == "ready_for_review" and len(rows) > 2 else seen["group"]
+        seen["group"] = "idle" if seen["group"] == "ready_for_review" and rows[2]["state"] == "done" else seen["group"]
         return detail
 
     ctx.handler = handler
     result = await a09(ctx)
     assert result.passed, result.evidence
     assert result.evidence["groups"] == ["ready_for_review", "idle"]
+
+
+async def test_a09_refuses_to_press_send_for_a_real_recipient():
+    rows = [
+        {"type": "question", "taskId": T, "qid": "q1", "kind": "review", "state": "open"},
+        {
+            "type": "effect",
+            "taskId": T,
+            "idemKey": "k",
+            "kind": "mail.send",
+            "state": "proposed",
+            "operands": {"to": "ann@example.com"},
+        },
+    ]
+    pressed = []
+    ctx = Fake(lambda r, u: pressed.append(r.url.path) or _json({}), rows)
+    result = await a09(ctx)
+    assert not result.passed and result.evidence["reason"].startswith("refusing to press Send")
+    assert pressed == []
 
 
 async def test_a10_reports_why_it_did_not_run():
@@ -167,6 +185,7 @@ async def test_a12_canary_stays_with_priya():
         return _json({"messageId": "m", "messageSeq": 1})
 
     ctx = Fake(handler)
+    ctx.state["samDmRoomId"] = "sdm"
     seen = {}
 
     def priya_sees_it(request, user):
@@ -178,6 +197,10 @@ async def test_a12_canary_stays_with_priya():
             return _json(
                 {"results": [{"text": canary}], "links": []} if user == "priya" else {"results": [], "links": []}
             )
+        if request.url.path.endswith("/messages") and request.method == "GET":
+            return _json(
+                {"messages": [{"author": {"kind": "agent"}, "messageSeq": 2, "text": "Two threads are moving."}]}
+            )
         return _json({"messageId": "m", "messageSeq": 1})
 
     ctx.handler = priya_sees_it
@@ -186,13 +209,30 @@ async def test_a12_canary_stays_with_priya():
         lambda r, u: (
             _json({"results": [{"text": r.content.decode()}], "links": []})
             if r.url.path.endswith("/recall")
-            else _json({"messageId": "m", "messageSeq": 1})
+            else _json({"messageId": "m", "messageSeq": 1, "messages": []})
         )
     )
+    leak.state["samDmRoomId"] = "sdm"
     assert not (await a12(leak)).passed
 
 
-async def test_a11_schedule_lifecycle():
+async def test_a11_schedule_lifecycle(monkeypatch):
+    from scripts.super_agent.acceptance import a11_recurring as mod
+
+    paused = {"v": False}
+
+    async def temporal_paused(ws, sid):
+        return paused["v"]
+
+    async def tz(user_id):
+        return "UTC"
+
+    async def last_result(ws, task_id):
+        return "Signups: 12"
+
+    monkeypatch.setattr(mod, "_temporal_paused", temporal_paused)
+    monkeypatch.setattr(mod.user_repo, "get_timezone", tz)
+    monkeypatch.setattr(mod.task_conversation, "last_result_text", last_result)
     rows: list[dict] = []
     ctx = Fake(None, rows)
 
@@ -213,7 +253,14 @@ async def test_a11_schedule_lifecycle():
                             "messageSeq": 2,
                             "author": {"kind": "agent"},
                             "text": "Mondays, I'll post signups.",
-                        }
+                            "attrs": {"automationId": "s1"},
+                        },
+                        {
+                            "kind": "result",
+                            "messageSeq": 3,
+                            "author": {"kind": "agent"},
+                            "taskRefs": [{"taskId": "t1"}],
+                        },
                     ]
                 }
             )
@@ -228,9 +275,18 @@ async def test_a11_schedule_lifecycle():
             return _json({"runs": [{"id": "t2"}, {"id": "t1"}]})
         if method == "PATCH":
             if not any(r.get("taskId") == "t2" for r in rows):  # the first PATCH is the 2-minute one-off
-                rows.append({"type": "task", "taskId": "t2", "policyRef": "SCHED#s1", "previousRunTaskId": "t1"})
+                rows.append(
+                    {
+                        "type": "task",
+                        "taskId": "t2",
+                        "policyRef": "SCHED#s1",
+                        "previousRunTaskId": "t1",
+                        "description": "Previous run (resolved): Signups: 12",
+                    }
+                )
             return _json({})
         if path.endswith("/pause"):
+            paused["v"] = True
             return _json({})
         return _json({"version": 3})
 

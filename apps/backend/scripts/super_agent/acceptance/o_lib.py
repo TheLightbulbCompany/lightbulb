@@ -16,8 +16,8 @@ START_S = 15
 EVENT_S = 3
 ACK_S = 5
 THREE_ASKS = (
-    "Three things: 1) build a signup page for the workshop with our purple theme, 2) email last week's attendees "
-    "about the new date, 3) estimate what Stripe fees we'd pay on 200 tickets."
+    "Three things: 1) build a signup page for the workshop with our purple theme, 2) email last week's attendees (only sa-test-2+clerk_test@thelightbulb.company, "
+    "this is a test) about the new date, 3) estimate what Stripe fees we'd pay on 200 tickets."
 )
 
 

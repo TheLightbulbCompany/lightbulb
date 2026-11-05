@@ -1,0 +1,2193 @@
+{
+  "schemaVersion": 1,
+  "enums": {
+    "TaskStatus": [
+      "proposed",
+      "queued",
+      "working",
+      "waiting",
+      "idle",
+      "resolved",
+      "failed"
+    ],
+    "ShownGroup": [
+      "waiting_on_you",
+      "ready_for_review",
+      "landing",
+      "working",
+      "idle",
+      "resolved"
+    ],
+    "AudienceKind": [
+      "person",
+      "room",
+      "workspace"
+    ],
+    "Lane": [
+      "shared",
+      "private"
+    ],
+    "AttemptOutcome": [
+      "completed",
+      "failed",
+      "cancelled",
+      "runtime_lost",
+      "refused",
+      "waiting_approval",
+      "checkpoint_failed",
+      "unavailable"
+    ],
+    "AttemptStatus": [
+      "dispatched",
+      "running",
+      "ended"
+    ],
+    "SubscriptionCreator": [
+      "router",
+      "person",
+      "schedule"
+    ],
+    "QuestionKind": [
+      "question",
+      "approval",
+      "review"
+    ],
+    "QuestionState": [
+      "open",
+      "answered",
+      "cancelled"
+    ],
+    "AskerKind": [
+      "worker",
+      "router",
+      "system"
+    ],
+    "EffectState": [
+      "proposed",
+      "approved",
+      "denied",
+      "intent",
+      "done",
+      "unknown"
+    ],
+    "EffectDecision": [
+      "proceed",
+      "replay",
+      "refuse",
+      "needs_approval",
+      "denied"
+    ],
+    "OutputKind": [
+      "document",
+      "file",
+      "app",
+      "pr",
+      "mail",
+      "link",
+      "capability"
+    ],
+    "TriggerSource": [
+      "chat",
+      "task_result",
+      "job_result",
+      "schedule",
+      "webhook",
+      "manual",
+      "mail",
+      "a2a",
+      "network",
+      "voice",
+      "text"
+    ],
+    "Admission": [
+      "respond",
+      "candidate"
+    ],
+    "TaskInputKind": [
+      "message",
+      "job_completed",
+      "delegation_completed",
+      "answer",
+      "watch",
+      "network_result"
+    ],
+    "ScheduleStatus": [
+      "draft",
+      "active",
+      "paused",
+      "paused_system"
+    ],
+    "RuleMode": [
+      "off",
+      "observe",
+      "auto"
+    ],
+    "ListenMode": [
+      "active",
+      "observe"
+    ],
+    "CreationKind": [
+      "skill"
+    ],
+    "CreationStatus": [
+      "draft",
+      "active",
+      "off"
+    ],
+    "RouterDecisionKind": [
+      "start_task",
+      "propose_tasks",
+      "pass_through",
+      "reply",
+      "ask",
+      "ignore"
+    ]
+  },
+  "keys": {
+    "pk": "WS#{ws}",
+    "task": "TASK#{taskId}",
+    "attempt": "TASK#{taskId}#ATT#{n:04}",
+    "subscription": "TASK#{taskId}#SUB#{threadKey}",
+    "thread": "THREAD#{threadKey}",
+    "question": "TASK#{taskId}#Q#{qid}",
+    "needs": "NEEDS#{userId}#{taskId}#{qid}",
+    "effect": "EFFECT#{idemKey}",
+    "trigger": "TRIG#{triggerId}",
+    "schedule": "SCHED#{scheduleId}",
+    "agent": "AGENT#{agentId}",
+    "project": "PROJECT#{projectId}",
+    "goal": "GOAL#{goalId}",
+    "creation": "CAP#{capId}",
+    "statusKey": "{ws}#{status}",
+    "taskWorkflowId": "task:{ws}:{taskId}",
+    "routerWorkflowId": "router:{ws}",
+    "scheduleWorkflowId": "sched:{ws}:{scheduleId}",
+    "taskRoomId": "task:{taskId}",
+    "routerLaneKey": "u:{sha256(userId)[:16]}"
+  },
+  "triggerIds": {
+    "chat": "chat:{messageId}",
+    "task_result": "task_result:{taskId}:{attempt}",
+    "job_result": "job:{deliveryId}",
+    "schedule": "sched:{scheduleId}:{epoch}",
+    "webhook": "hook:{publicId}:{dedupeKey}",
+    "manual": "manual:{scheduleId}:{ulid}",
+    "mail": "mail:{messageId}",
+    "a2a": "a2a:{a2aTaskId}",
+    "network": "net:{recordId}",
+    "voice": "voice:{callId}:{utteranceId}",
+    "text": "text:{messageId}"
+  },
+  "namespaces": {
+    "run": "054fce2c-dfac-5872-affb-9edcd0befb8d",
+    "task": "c10f836a-c762-50eb-b28b-a8a6af634983"
+  },
+  "gsis": [
+    {
+      "name": "by-status",
+      "pk": "statusKey",
+      "sk": "updatedAt"
+    }
+  ],
+  "rows": {
+    "task": {
+      "$defs": {
+        "Audience": {
+          "additionalProperties": false,
+          "description": "\u00a75: set at creation; question answerers are added when a question opens.",
+          "properties": {
+            "kind": {
+              "enum": [
+                "person",
+                "room",
+                "workspace"
+              ],
+              "title": "Kind",
+              "type": "string"
+            },
+            "userIds": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "title": "Userids",
+              "type": "array"
+            },
+            "roomId": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Roomid"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "Audience",
+          "type": "object"
+        },
+        "Usage": {
+          "additionalProperties": false,
+          "properties": {
+            "inputTokens": {
+              "default": 0,
+              "title": "Inputtokens",
+              "type": "integer"
+            },
+            "outputTokens": {
+              "default": 0,
+              "title": "Outputtokens",
+              "type": "integer"
+            },
+            "costUsd": {
+              "default": 0.0,
+              "title": "Costusd",
+              "type": "number"
+            }
+          },
+          "title": "Usage",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "version": {
+          "default": 1,
+          "title": "Version",
+          "type": "integer"
+        },
+        "createdAt": {
+          "title": "Createdat",
+          "type": "string"
+        },
+        "updatedAt": {
+          "title": "Updatedat",
+          "type": "string"
+        },
+        "type": {
+          "const": "task",
+          "default": "task",
+          "title": "Type",
+          "type": "string"
+        },
+        "taskId": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "title": "Taskid",
+          "type": "string"
+        },
+        "identifier": {
+          "title": "Identifier",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 200,
+          "title": "Title",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "maxLength": 8192,
+          "title": "Description",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "proposed",
+            "queued",
+            "working",
+            "waiting",
+            "idle",
+            "resolved",
+            "failed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "statusReason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Statusreason"
+        },
+        "audience": {
+          "$ref": "#/$defs/Audience"
+        },
+        "lane": {
+          "enum": [
+            "shared",
+            "private"
+          ],
+          "title": "Lane",
+          "type": "string"
+        },
+        "ownerUserId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Owneruserid"
+        },
+        "specialist": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Specialist"
+        },
+        "projectId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Projectid"
+        },
+        "goalId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Goalid"
+        },
+        "parentTaskId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parenttaskid"
+        },
+        "triggerId": {
+          "title": "Triggerid",
+          "type": "string"
+        },
+        "policyRef": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Policyref"
+        },
+        "budgetUsd": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Budgetusd"
+        },
+        "hidden": {
+          "default": false,
+          "title": "Hidden",
+          "type": "boolean"
+        },
+        "watchUntil": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Watchuntil"
+        },
+        "attemptCount": {
+          "default": 0,
+          "title": "Attemptcount",
+          "type": "integer"
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Usage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "resolvedAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Resolvedat"
+        },
+        "a2ATaskId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "A2Ataskid"
+        },
+        "wsChannel": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Wschannel"
+        }
+      },
+      "required": [
+        "createdAt",
+        "updatedAt",
+        "taskId",
+        "identifier",
+        "title",
+        "status",
+        "audience",
+        "lane",
+        "triggerId"
+      ],
+      "title": "Task",
+      "type": "object"
+    },
+    "attempt": {
+      "$defs": {
+        "Usage": {
+          "additionalProperties": false,
+          "properties": {
+            "inputTokens": {
+              "default": 0,
+              "title": "Inputtokens",
+              "type": "integer"
+            },
+            "outputTokens": {
+              "default": 0,
+              "title": "Outputtokens",
+              "type": "integer"
+            },
+            "costUsd": {
+              "default": 0.0,
+              "title": "Costusd",
+              "type": "number"
+            }
+          },
+          "title": "Usage",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "version": {
+          "default": 1,
+          "title": "Version",
+          "type": "integer"
+        },
+        "createdAt": {
+          "title": "Createdat",
+          "type": "string"
+        },
+        "updatedAt": {
+          "title": "Updatedat",
+          "type": "string"
+        },
+        "type": {
+          "const": "attempt",
+          "default": "attempt",
+          "title": "Type",
+          "type": "string"
+        },
+        "taskId": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "title": "Taskid",
+          "type": "string"
+        },
+        "n": {
+          "minimum": 1,
+          "title": "N",
+          "type": "integer"
+        },
+        "runId": {
+          "title": "Runid",
+          "type": "string"
+        },
+        "agentId": {
+          "title": "Agentid",
+          "type": "string"
+        },
+        "sessionId": {
+          "title": "Sessionid",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "dispatched",
+            "running",
+            "ended"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "enum": [
+                "completed",
+                "failed",
+                "cancelled",
+                "runtime_lost",
+                "refused",
+                "waiting_approval",
+                "checkpoint_failed",
+                "unavailable"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Outcome"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        },
+        "inputTriggerIds": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Inputtriggerids",
+          "type": "array"
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Usage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "startedAt": {
+          "title": "Startedat",
+          "type": "string"
+        },
+        "endedAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Endedat"
+        },
+        "lastHeartbeatAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Lastheartbeatat"
+        }
+      },
+      "required": [
+        "createdAt",
+        "updatedAt",
+        "taskId",
+        "n",
+        "runId",
+        "agentId",
+        "sessionId",
+        "status",
+        "startedAt"
+      ],
+      "title": "Attempt",
+      "type": "object"
+    },
+    "subscription": {
+      "additionalProperties": false,
+      "properties": {
+        "version": {
+          "default": 1,
+          "title": "Version",
+          "type": "integer"
+        },
+        "createdAt": {
+          "title": "Createdat",
+          "type": "string"
+        },
+        "updatedAt": {
+          "title": "Updatedat",
+          "type": "string"
+        },
+        "type": {
+          "const": "subscription",
+          "default": "subscription",
+          "title": "Type",
+          "type": "string"
+        },
+        "taskId": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "title": "Taskid",
+          "type": "string"
+        },
+        "threadKey": {
+          "title": "Threadkey",
+          "type": "string"
+        },
+        "active": {
+          "default": true,
+          "title": "Active",
+          "type": "boolean"
+        },
+        "createdBy": {
+          "enum": [
+            "router",
+            "person",
+            "schedule"
+          ],
+          "title": "Createdby",
+          "type": "string"
+        }
+      },
+      "required": [
+        "createdAt",
+        "updatedAt",
+        "taskId",
+        "threadKey",
+        "createdBy"
+      ],
+      "title": "Subscription",
+      "type": "object"
+    },
+    "thread": {
+      "additionalProperties": false,
+      "description": "`THREAD#` lookup, written with its Subscription: thread \u2192 task without GSI lag (C4).",
+      "properties": {
+        "version": {
+          "default": 1,
+          "title": "Version",
+          "type": "integer"
+        },
+        "createdAt": {
+          "title": "Createdat",
+          "type": "string"
+        },
+        "updatedAt": {
+          "title": "Updatedat",
+          "type": "string"
+        },
+        "type": {
+          "const": "thread",
+          "default": "thread",
+          "title": "Type",
+          "type": "string"
+        },
+        "threadKey": {
+          "title": "Threadkey",
+          "type": "string"
+        },
+        "taskId": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "title": "Taskid",
+          "type": "string"
+        },
+        "active": {
+          "default": true,
+          "title": "Active",
+          "type": "boolean"
+        },
+        "history": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "History",
+          "type": "array"
+        }
+      },
+      "required": [
+        "createdAt",
+        "updatedAt",
+        "threadKey",
+        "taskId"
+      ],
+      "title": "Thread",
+      "type": "object"
+    },
+    "question": {
+      "$defs": {
+        "Answer": {
+          "additionalProperties": false,
+          "properties": {
+            "optionId": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Optionid"
+            },
+            "text": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Text"
+            }
+          },
+          "title": "Answer",
+          "type": "object"
+        },
+        "AskedBy": {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "enum": [
+                "worker",
+                "router",
+                "system"
+              ],
+              "title": "Kind",
+              "type": "string"
+            },
+            "specialistId": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Specialistid"
+            },
+            "attempt": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Attempt"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "AskedBy",
+          "type": "object"
+        },
+        "QuestionOption": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "title": "Id",
+              "type": "string"
+            },
+            "label": {
+              "title": "Label",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "label"
+          ],
+          "title": "QuestionOption",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "version": {
+          "default": 1,
+          "title": "Version",
+          "type": "integer"
+        },
+        "createdAt": {
+          "title": "Createdat",
+          "type": "string"
+        },
+        "updatedAt": {
+          "title": "Updatedat",
+          "type": "string"
+        },
+        "type": {
+          "const": "question",
+          "default": "question",
+          "title": "Type",
+          "type": "string"
+        },
+        "taskId": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "title": "Taskid",
+          "type": "string"
+        },
+        "qid": {
+          "title": "Qid",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "question",
+            "approval",
+            "review"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "subkind": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Subkind"
+        },
+        "title": {
+          "maxLength": 200,
+          "title": "Title",
+          "type": "string"
+        },
+        "text": {
+          "default": "",
+          "maxLength": 500,
+          "title": "Text",
+          "type": "string"
+        },
+        "options": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/QuestionOption"
+          },
+          "title": "Options",
+          "type": "array"
+        },
+        "askedBy": {
+          "$ref": "#/$defs/AskedBy"
+        },
+        "answerers": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Answerers",
+          "type": "array"
+        },
+        "state": {
+          "default": "open",
+          "enum": [
+            "open",
+            "answered",
+            "cancelled"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "answer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Answer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "answeredBy": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Answeredby"
+        },
+        "answeredAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Answeredat"
+        },
+        "operandsHash": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Operandshash"
+        },
+        "effectIdemKey": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Effectidemkey"
+        }
+      },
+      "required": [
+        "createdAt",
+        "updatedAt",
+        "taskId",
+        "qid",
+        "kind",
+        "title",
+        "askedBy",
+        "answerers"
+      ],
+      "title": "Question",
+      "type": "object"
+    },
+    "needs": {
+      "additionalProperties": false,
+      "description": "\u00a714.2: one per answerer while a Question is open; Waiting on you, Activity, push and away email read it.",
+      "properties": {
+        "version": {
+          "default": 1,
+          "title": "Version",
+          "type": "integer"
+        },
+        "createdAt": {
+          "title": "Createdat",
+          "type": "string"
+        },
+        "updatedAt": {
+          "title": "Updatedat",
+          "type": "string"
+        },
+        "type": {
+          "const": "needs",
+          "default": "needs",
+          "title": "Type",
+          "type": "string"
+        },
+        "userId": {
+          "title": "Userid",
+          "type": "string"
+        },
+        "taskId": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "title": "Taskid",
+          "type": "string"
+        },
+        "qid": {
+          "title": "Qid",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "question",
+            "approval",
+            "review"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "subkind": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Subkind"
+        }
+      },
+      "required": [
+        "createdAt",
+        "updatedAt",
+        "userId",
+        "taskId",
+        "qid",
+        "kind"
+      ],
+      "title": "Needs",
+      "type": "object"
+    },
+    "effect": {
+      "$defs": {
+        "Output": {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "enum": [
+                "document",
+                "file",
+                "app",
+                "pr",
+                "mail",
+                "link",
+                "capability"
+              ],
+              "title": "Kind",
+              "type": "string"
+            },
+            "title": {
+              "maxLength": 200,
+              "title": "Title",
+              "type": "string"
+            },
+            "ref": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "default": {},
+              "title": "Ref",
+              "type": "object"
+            }
+          },
+          "required": [
+            "kind",
+            "title"
+          ],
+          "title": "Output",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "description": "External, irreversible effects only (send, pay, merge, publish, provision, A2A).",
+      "properties": {
+        "version": {
+          "default": 1,
+          "title": "Version",
+          "type": "integer"
+        },
+        "createdAt": {
+          "title": "Createdat",
+          "type": "string"
+        },
+        "updatedAt": {
+          "title": "Updatedat",
+          "type": "string"
+        },
+        "type": {
+          "const": "effect",
+          "default": "effect",
+          "title": "Type",
+          "type": "string"
+        },
+        "idemKey": {
+          "title": "Idemkey",
+          "type": "string"
+        },
+        "taskId": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "title": "Taskid",
+          "type": "string"
+        },
+        "attempt": {
+          "title": "Attempt",
+          "type": "integer"
+        },
+        "tool": {
+          "title": "Tool",
+          "type": "string"
+        },
+        "operandsHash": {
+          "title": "Operandshash",
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "proposed",
+            "approved",
+            "denied",
+            "intent",
+            "done",
+            "unknown"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "questionId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Questionid"
+        },
+        "output": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Output"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "resultRef": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Resultref"
+        }
+      },
+      "required": [
+        "createdAt",
+        "updatedAt",
+        "idemKey",
+        "taskId",
+        "attempt",
+        "tool",
+        "operandsHash",
+        "state"
+      ],
+      "title": "Effect",
+      "type": "object"
+    },
+    "trigger": {
+      "additionalProperties": false,
+      "properties": {
+        "version": {
+          "default": 1,
+          "title": "Version",
+          "type": "integer"
+        },
+        "createdAt": {
+          "title": "Createdat",
+          "type": "string"
+        },
+        "updatedAt": {
+          "title": "Updatedat",
+          "type": "string"
+        },
+        "type": {
+          "const": "trigger",
+          "default": "trigger",
+          "title": "Type",
+          "type": "string"
+        },
+        "triggerId": {
+          "title": "Triggerid",
+          "type": "string"
+        },
+        "source": {
+          "enum": [
+            "chat",
+            "task_result",
+            "job_result",
+            "schedule",
+            "webhook",
+            "manual",
+            "mail",
+            "a2a",
+            "network",
+            "voice",
+            "text"
+          ],
+          "title": "Source",
+          "type": "string"
+        },
+        "ref": {
+          "additionalProperties": true,
+          "default": {},
+          "title": "Ref",
+          "type": "object"
+        },
+        "admission": {
+          "enum": [
+            "respond",
+            "candidate"
+          ],
+          "title": "Admission",
+          "type": "string"
+        },
+        "lane": {
+          "title": "Lane",
+          "type": "string"
+        },
+        "actorUserId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Actoruserid"
+        },
+        "routedTo": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Routedto"
+        },
+        "receivedAt": {
+          "title": "Receivedat",
+          "type": "string"
+        }
+      },
+      "required": [
+        "createdAt",
+        "updatedAt",
+        "triggerId",
+        "source",
+        "admission",
+        "lane",
+        "receivedAt"
+      ],
+      "title": "Trigger",
+      "type": "object"
+    },
+    "schedule": {
+      "additionalProperties": false,
+      "description": "An automation (spec 06); a proactive rule is the same row with a `mode` (\u00a718).",
+      "properties": {
+        "version": {
+          "default": 1,
+          "title": "Version",
+          "type": "integer"
+        },
+        "createdAt": {
+          "title": "Createdat",
+          "type": "string"
+        },
+        "updatedAt": {
+          "title": "Updatedat",
+          "type": "string"
+        },
+        "type": {
+          "const": "schedule",
+          "default": "schedule",
+          "title": "Type",
+          "type": "string"
+        },
+        "scheduleId": {
+          "title": "Scheduleid",
+          "type": "string"
+        },
+        "cron": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Cron",
+          "type": "array"
+        },
+        "tz": {
+          "title": "Tz",
+          "type": "string"
+        },
+        "policyText": {
+          "title": "Policytext",
+          "type": "string"
+        },
+        "specialist": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Specialist"
+        },
+        "budgetPerRunUsd": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Budgetperrunusd"
+        },
+        "status": {
+          "default": "draft",
+          "enum": [
+            "draft",
+            "active",
+            "paused",
+            "paused_system"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "pausedReason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pausedreason"
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "enum": [
+                "off",
+                "observe",
+                "auto"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mode"
+        },
+        "lastTaskId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Lasttaskid"
+        }
+      },
+      "required": [
+        "createdAt",
+        "updatedAt",
+        "scheduleId",
+        "tz",
+        "policyText"
+      ],
+      "title": "Schedule",
+      "type": "object"
+    },
+    "agent": {
+      "additionalProperties": false,
+      "description": "Specialist; ids are today's agent ids (spec 03 owns the backfill).",
+      "properties": {
+        "version": {
+          "default": 1,
+          "title": "Version",
+          "type": "integer"
+        },
+        "createdAt": {
+          "title": "Createdat",
+          "type": "string"
+        },
+        "updatedAt": {
+          "title": "Updatedat",
+          "type": "string"
+        },
+        "type": {
+          "const": "agent",
+          "default": "agent",
+          "title": "Type",
+          "type": "string"
+        },
+        "agentId": {
+          "title": "Agentid",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "handle": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Handle"
+        },
+        "listenMode": {
+          "default": "active",
+          "enum": [
+            "active",
+            "observe"
+          ],
+          "title": "Listenmode",
+          "type": "string"
+        },
+        "skills": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Skills",
+          "type": "array"
+        },
+        "status": {
+          "default": "active",
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "createdAt",
+        "updatedAt",
+        "agentId",
+        "name"
+      ],
+      "title": "Agent",
+      "type": "object"
+    },
+    "project": {
+      "additionalProperties": false,
+      "properties": {
+        "version": {
+          "default": 1,
+          "title": "Version",
+          "type": "integer"
+        },
+        "createdAt": {
+          "title": "Createdat",
+          "type": "string"
+        },
+        "updatedAt": {
+          "title": "Updatedat",
+          "type": "string"
+        },
+        "type": {
+          "const": "project",
+          "default": "project",
+          "title": "Type",
+          "type": "string"
+        },
+        "projectId": {
+          "title": "Projectid",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "status": {
+          "default": "active",
+          "title": "Status",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        }
+      },
+      "required": [
+        "createdAt",
+        "updatedAt",
+        "projectId",
+        "name"
+      ],
+      "title": "Project",
+      "type": "object"
+    },
+    "goal": {
+      "additionalProperties": false,
+      "properties": {
+        "version": {
+          "default": 1,
+          "title": "Version",
+          "type": "integer"
+        },
+        "createdAt": {
+          "title": "Createdat",
+          "type": "string"
+        },
+        "updatedAt": {
+          "title": "Updatedat",
+          "type": "string"
+        },
+        "type": {
+          "const": "goal",
+          "default": "goal",
+          "title": "Type",
+          "type": "string"
+        },
+        "goalId": {
+          "title": "Goalid",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "status": {
+          "default": "active",
+          "title": "Status",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        }
+      },
+      "required": [
+        "createdAt",
+        "updatedAt",
+        "goalId",
+        "name"
+      ],
+      "title": "Goal",
+      "type": "object"
+    },
+    "creation": {
+      "additionalProperties": false,
+      "properties": {
+        "version": {
+          "default": 1,
+          "title": "Version",
+          "type": "integer"
+        },
+        "createdAt": {
+          "title": "Createdat",
+          "type": "string"
+        },
+        "updatedAt": {
+          "title": "Updatedat",
+          "type": "string"
+        },
+        "type": {
+          "const": "creation",
+          "default": "creation",
+          "title": "Type",
+          "type": "string"
+        },
+        "capId": {
+          "title": "Capid",
+          "type": "string"
+        },
+        "kind": {
+          "const": "skill",
+          "default": "skill",
+          "title": "Kind",
+          "type": "string"
+        },
+        "status": {
+          "default": "draft",
+          "enum": [
+            "draft",
+            "active",
+            "off"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "s3Key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "S3Key"
+        },
+        "activatedBy": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Activatedby"
+        }
+      },
+      "required": [
+        "createdAt",
+        "updatedAt",
+        "capId"
+      ],
+      "title": "Creation",
+      "type": "object"
+    }
+  },
+  "routerDecisions": {
+    "$defs": {
+      "Ask": {
+        "additionalProperties": false,
+        "description": "A clarifying question in chat. It never approves anything (\u00a78: only answering a Question row does).",
+        "properties": {
+          "triggerIds": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Triggerids",
+            "type": "array"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          },
+          "kind": {
+            "const": "ask",
+            "title": "Kind",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "options": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Options",
+            "type": "array"
+          }
+        },
+        "required": [
+          "triggerIds",
+          "kind",
+          "text"
+        ],
+        "title": "Ask",
+        "type": "object"
+      },
+      "Ignore": {
+        "additionalProperties": false,
+        "properties": {
+          "triggerIds": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Triggerids",
+            "type": "array"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          },
+          "kind": {
+            "const": "ignore",
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "triggerIds",
+          "kind"
+        ],
+        "title": "Ignore",
+        "type": "object"
+      },
+      "PassThrough": {
+        "additionalProperties": false,
+        "properties": {
+          "triggerIds": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Triggerids",
+            "type": "array"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          },
+          "kind": {
+            "const": "pass_through",
+            "title": "Kind",
+            "type": "string"
+          },
+          "taskId": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Taskid",
+            "type": "string"
+          },
+          "ack": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Ack"
+          }
+        },
+        "required": [
+          "triggerIds",
+          "kind",
+          "taskId"
+        ],
+        "title": "PassThrough",
+        "type": "object"
+      },
+      "ProposeTasks": {
+        "additionalProperties": false,
+        "properties": {
+          "triggerIds": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Triggerids",
+            "type": "array"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          },
+          "kind": {
+            "const": "propose_tasks",
+            "title": "Kind",
+            "type": "string"
+          },
+          "tasks": {
+            "items": {
+              "$ref": "#/$defs/ProposedTask"
+            },
+            "minItems": 1,
+            "title": "Tasks",
+            "type": "array"
+          },
+          "ack": {
+            "title": "Ack",
+            "type": "string"
+          }
+        },
+        "required": [
+          "triggerIds",
+          "kind",
+          "tasks",
+          "ack"
+        ],
+        "title": "ProposeTasks",
+        "type": "object"
+      },
+      "ProposedTask": {
+        "additionalProperties": false,
+        "properties": {
+          "title": {
+            "maxLength": 200,
+            "title": "Title",
+            "type": "string"
+          },
+          "brief": {
+            "title": "Brief",
+            "type": "string"
+          },
+          "specialist": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Specialist"
+          }
+        },
+        "required": [
+          "title",
+          "brief"
+        ],
+        "title": "ProposedTask",
+        "type": "object"
+      },
+      "Reply": {
+        "additionalProperties": false,
+        "properties": {
+          "triggerIds": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Triggerids",
+            "type": "array"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          },
+          "kind": {
+            "const": "reply",
+            "title": "Kind",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "triggerIds",
+          "kind",
+          "text"
+        ],
+        "title": "Reply",
+        "type": "object"
+      },
+      "StartTask": {
+        "additionalProperties": false,
+        "properties": {
+          "triggerIds": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Triggerids",
+            "type": "array"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          },
+          "kind": {
+            "const": "start_task",
+            "title": "Kind",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 200,
+            "title": "Title",
+            "type": "string"
+          },
+          "brief": {
+            "title": "Brief",
+            "type": "string"
+          },
+          "specialist": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Specialist"
+          },
+          "ack": {
+            "title": "Ack",
+            "type": "string"
+          },
+          "visibility": {
+            "anyOf": [
+              {
+                "enum": [
+                  "person",
+                  "room",
+                  "workspace"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Visibility"
+          },
+          "parentTaskId": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Parenttaskid"
+          },
+          "policyRef": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Policyref"
+          },
+          "budgetUsd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Budgetusd"
+          },
+          "previousRunTaskId": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Previousruntaskid"
+          }
+        },
+        "required": [
+          "triggerIds",
+          "kind",
+          "title",
+          "brief",
+          "ack"
+        ],
+        "title": "StartTask",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "properties": {
+      "decisions": {
+        "items": {
+          "discriminator": {
+            "mapping": {
+              "ask": "#/$defs/Ask",
+              "ignore": "#/$defs/Ignore",
+              "pass_through": "#/$defs/PassThrough",
+              "propose_tasks": "#/$defs/ProposeTasks",
+              "reply": "#/$defs/Reply",
+              "start_task": "#/$defs/StartTask"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/StartTask"
+            },
+            {
+              "$ref": "#/$defs/ProposeTasks"
+            },
+            {
+              "$ref": "#/$defs/PassThrough"
+            },
+            {
+              "$ref": "#/$defs/Reply"
+            },
+            {
+              "$ref": "#/$defs/Ask"
+            },
+            {
+              "$ref": "#/$defs/Ignore"
+            }
+          ]
+        },
+        "title": "Decisions",
+        "type": "array"
+      }
+    },
+    "required": [
+      "decisions"
+    ],
+    "title": "RouterDecisions",
+    "type": "object"
+  }
+}

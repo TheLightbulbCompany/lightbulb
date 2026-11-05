@@ -293,6 +293,11 @@ class Settings(BaseSettings):
     so the first gate read after this window sees the new balance and
     un-revokes a paid-up owner (see core/services/metronome_gate.py)."""
 
+    SUPER_AGENT_ENV_ENABLED: bool = False
+    """Super-agent env master (contracts-v2 §1). Off = every workspace is off whatever its
+    ``containers.super_agent`` says. Read only by ``core.services.super_agent_flags.flags_for``.
+    Set true for dev only in ``service-stack.ts``."""
+
     NIGHTLY_CEO_HEARTBEATS_ENABLED: bool = True
     """Off = ``arm_nightly_ceo`` returns ``heartbeats_disabled`` without touching any
     agent's Paperclip heartbeat, so a reconcile never re-arms timers an operator switched

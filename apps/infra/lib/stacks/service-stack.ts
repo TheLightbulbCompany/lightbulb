@@ -21,6 +21,7 @@ import * as sns from "aws-cdk-lib/aws-sns";
 import * as ssm from "aws-cdk-lib/aws-ssm";
 import * as sfn from "aws-cdk-lib/aws-stepfunctions";
 import * as tasks from "aws-cdk-lib/aws-stepfunctions-tasks";
+import { superAgentEnabled } from "../super-agent";
 import {
   allTableArns,
   alertTopicArn,
@@ -1895,6 +1896,9 @@ export class ServiceStack extends cdk.Stack {
       STRIPE_ACCOUNTS_V2_VERSION: props.stripeAccountsV2Version ?? "",
       // Dev keeps timer heartbeats off (spend): arm_nightly_ceo leaves them alone.
       NIGHTLY_CEO_HEARTBEATS_ENABLED: env === "dev" ? "false" : "true",
+      // Super-agent env master: set where the gate is on (dev) and absent elsewhere, so prod's
+      // task definition is unchanged and the backend default (false) holds.
+      ...(superAgentEnabled(env) ? { SUPER_AGENT_ENV_ENABLED: "true" } : {}),
       // PostHog server-side reads for the admin Activity tab.
       // us.posthog.com is the API host for US Cloud (our project lives
       // there). Project ID is public — visible in the PostHog dashboard

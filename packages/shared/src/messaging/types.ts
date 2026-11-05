@@ -395,6 +395,8 @@ export interface LiveConfig {
   region: string;
   userChannelKey: string;
   workspaceId: string;
+  /** Present only while the super-agent switch is on for this workspace; absent or null = off. */
+  features?: { superAgent: boolean } | null;
 }
 
 export interface LocalSessionCapabilities {

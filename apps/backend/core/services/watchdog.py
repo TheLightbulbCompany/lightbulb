@@ -23,7 +23,7 @@ from core import tasks_schema as ts
 from core.observability.metrics import put_metric
 from core.repositories import messaging_repo, tasks_repo, watchdog_repo
 from core.services import jev, runtime_runs, super_agent_flags
-from core.temporal.watchdog_types import Candidate, Proposal, ScanOut, WatchdogConfig
+from core.temporal.watchdog_types import ActOut, Candidate, Proposal, ScanOut, WatchdogConfig
 
 logger = logging.getLogger(__name__)
 
@@ -473,3 +473,82 @@ async def watchdog_judge(cfg: WatchdogConfig, c: Candidate) -> Proposal | None:
     put_metric("watchdog.finding", dimensions={"Check": "judge"})
     # Returned even for "none": the digest lists every judge finding; act skips "none".
     return Proposal(c.ws, c.task_id, c.attempt_n, "judge", action, item["findingId"], round(float(p), 4))
+
+
+# --- act (spec 11 §3.6, §3.7) ------------------------------------------------------------------------
+
+
+def _mode_for(action: str, cfg: WatchdogConfig) -> str:
+    """Wave 2: reconcile follows `cfg.reconcile` (F1: act in dev); every other action is observe only."""
+    if action == "none":
+        return "off"
+    return cfg.reconcile if action == "reconcile" else "observe"
+
+
+async def _escalate_once(p: Proposal) -> None:
+    """A per-task limit was reached: one `ACT#escalate#01` row and one escalate Finding, then record-only."""
+    if await watchdog_repo.spend_action(p.ws, p.task_id, "escalate", limit=1, finding_id=p.finding_id, by="watchdog"):
+        await watchdog_repo.finish_action(p.ws, p.task_id, "escalate", 1, "done")
+        now = datetime.now(timezone.utc)
+        await watchdog_repo.put_finding(
+            {
+                "pk": ts.wd_finding_pk(_day(now)),
+                "sk": ts.wd_finding_sk(p.ws, p.task_id, p.check, p.attempt_n) + "#ESC",
+                "ws": p.ws,
+                "taskId": p.task_id,
+                "attemptN": p.attempt_n,
+                "check": p.check,
+                "mode": "observe",
+                "proposed": "escalate",
+                "at": now.isoformat(),
+            }
+        )
+
+
+@activity.defn
+async def watchdog_act(cfg: WatchdogConfig, p: Proposal, by: str = "watchdog") -> ActOut:
+    outcome = await _act(cfg, p, by)
+    put_metric("watchdog.action", dimensions={"Kind": p.action, "Outcome": outcome})
+    return ActOut(outcome)
+
+
+async def _act(cfg: WatchdogConfig, p: Proposal, by: str) -> str:
+    mode = _mode_for(p.action, cfg)
+    if mode == "off":
+        return "skipped"
+    if mode != "act":
+        return "observed"  # the Finding was written by the scan
+    task = await tasks_repo.get_task(p.ws, p.task_id)  # consistent
+    if not task or task.get("stopRequestedBy") or task["status"] not in ("working", "queued"):
+        return "skipped"  # a person stopped it, or it resolved/failed/moved on since the scan
+    try:
+        wf = await _wf_state(p.ws, p.task_id)
+    except DescribeFailed:
+        return "skipped"
+    if wf is not None and wf.status == "RUNNING":
+        return "skipped"  # live again: not an orphan
+    if await watchdog_repo.count_actions(p.ws, p.task_id, "reconcile") >= cfg.reconciles_per_task:
+        await _escalate_once(p)  # checked before the cap so a task at its limit never spends fleet budget
+        return "limit"
+    hour = datetime.now(timezone.utc).strftime("%Y%m%d%H")
+    if not await watchdog_repo.take_cap("act", hour, cfg.fleet_actions_per_hour):
+        put_metric("watchdog.cap_hit", dimensions={"Kind": "act"})
+        return "capped"  # no per-task row: a fleet storm must not burn tasks' attempts
+    n = await watchdog_repo.spend_action(
+        p.ws, p.task_id, "reconcile", limit=cfg.reconciles_per_task, finding_id=p.finding_id, by=by
+    )
+    if n is None:
+        await _escalate_once(p)
+        return "limit"
+    from core.temporal.client import start_task_workflow
+
+    try:
+        await start_task_workflow(p.ws, p.task_id, "reconcile")
+    except Exception as exc:  # the attempt is spent either way (Paperclip lesson)
+        await watchdog_repo.finish_action(p.ws, p.task_id, "reconcile", n, "failed", type(exc).__name__)
+        return "failed"
+    await watchdog_repo.finish_action(p.ws, p.task_id, "reconcile", n, "done")
+    return "done"
+
+
+WATCHDOG_ACTIVITIES = [watchdog_scan, watchdog_judge, watchdog_act]

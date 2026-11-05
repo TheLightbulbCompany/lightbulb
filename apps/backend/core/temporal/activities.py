@@ -84,10 +84,16 @@ async def _move(ws: str, task_id: str, to: str, reason: str | None = None, field
     task = await _task(ws, task_id)
     if task["status"] == to:
         return
+    from core.temporal import learning  # Lane V: overlay expiry follows the task's terminal state
+
+    if task["status"] in learning.TERMINAL and to not in learning.TERMINAL:
+        await learning.set_overlay_tag(ws, task_id, on=False)  # reopen: untag BEFORE the next attempt
     if to == "working" and task["status"] not in tasks_repo.TRANSITIONS["working"]:
         await tasks_repo.transition_task(ws, task_id, to="queued")
     row = await tasks_repo.transition_task(ws, task_id, to=to, reason=reason, fields=fields)
     await memory_tasks_index.index_task(ws, row)  # memory (M5): the task card follows every status change
+    if to in learning.TERMINAL:
+        await learning.set_overlay_tag(ws, task_id, on=True)
 
 
 def _origin(tree: dict) -> tuple[str | None, str | None]:

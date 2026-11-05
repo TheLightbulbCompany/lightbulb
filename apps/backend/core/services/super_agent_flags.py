@@ -21,7 +21,9 @@ async def flags_for(ws: str) -> bool:
 
 def env_enabled() -> bool:
     """The env master alone, for process-wide wiring with no workspace (the Temporal client in the
-    lifespan, the worker entrypoint). Per-workspace behaviour still asks `flags_for`."""
+    lifespan, the worker entrypoint). Per-workspace behaviour still asks `flags_for` -- except the
+    broker's vend `model` and `POST …/model` (routers/runtime_rpc.py), where custody=backend on the
+    token row decides, so a grant stays served after its workspace switch goes off (#4804)."""
     return settings.SUPER_AGENT_ENV_ENABLED
 
 

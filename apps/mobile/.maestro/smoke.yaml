@@ -1,0 +1,13 @@
+# Smoke: a dev build launches to its first screen. Run against a simulator/device with a
+# dev build installed (`eas build --profile development-simulator`, or `pnpm ios`):
+#   maestro test apps/mobile/.maestro/smoke.yaml
+# Android: maestro test -e APP_ID=company.thelightbulb.mobile apps/mobile/.maestro/smoke.yaml
+appId: ${APP_ID}
+env:
+  APP_ID: co.isol8.mobile
+---
+- launchApp
+- extendedWaitUntil:
+    visible:
+      text: ".*(Lightbulb|Sign in|Continue|Development servers|Chats).*"
+    timeout: 60000

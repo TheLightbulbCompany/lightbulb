@@ -100,3 +100,45 @@ jobs:
       # Extra args after the script name reach the script's last command, `vitest run`.
       - name: Unit tests
         run: pnpm --filter @lightbulb/frontend run test --shard=${{ matrix.shard }}/4
+
+  # Browser e2e (spec 04 §8.3). Its own job so a browser failure never blocks lint or
+  # unit tests; the workflow's `paths` filter already limits it to PRs that touch
+  # client files. Smoke only for now.
+  e2e:
+    name: E2E (Playwright)
+    # Pinned: ubuntu-latest is 26.04, which Playwright 1.58 has no Chromium build for.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --filter @lightbulb/frontend...
+
+      - name: Install Chromium
+        run: pnpm --filter @lightbulb/frontend exec playwright install --with-deps chromium
+
+      - name: Playwright
+        env:
+          NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_DEV }}
+          CLERK_SECRET_KEY: ${{ secrets.CLERK_SECRET_KEY_DEV }}
+          NEXT_PUBLIC_API_URL: https://api-dev.thelightbulb.company/api/v1
+        run: pnpm --filter @lightbulb/frontend run e2e
+
+      - name: Upload report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: apps/frontend/playwright-report
+          retention-days: 7

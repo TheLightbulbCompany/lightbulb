@@ -7,7 +7,8 @@ flips. Rows are the camelCase dicts `automations_repo` returns.
 
 from __future__ import annotations
 
-from datetime import datetime
+import hashlib
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from core.services.jev import _clip
@@ -140,3 +141,51 @@ def matches_on_version(rule: dict) -> int:
     append bumps): an edit starts the promotion count again."""
     version = rule.get("ruleVersion", 1)
     return sum(1 for m in (rule.get("stats") or {}).get("matches") or [] if m.get("version") == version)
+
+
+# --- Built-in: invite prep (observe, on for connected calendars) ---------------------------------------
+
+
+def invite_prep_id(email: str) -> str:
+    return "builtin:invite_prep:" + hashlib.sha256(email.strip().lower().encode()).hexdigest()[:16]
+
+
+def invite_prep_row(email: str, owner_user_id: str) -> dict:
+    """The built-in row for one connected Google account whose owner is a workspace member."""
+    return {
+        "scheduleId": invite_prep_id(email),
+        "name": "Invite prep",
+        "policyText": "When someone invites me to a meeting I haven't answered, prepare a reply for me to send.",
+        "tz": "UTC",  # ponytail: the owner's zone once users.timezone is read here; would_do takes tz per call
+        "ownerUserId": owner_user_id,
+        "match": {"sources": ["calendar"], "account": email},
+        "builtin": "invite_prep",
+        "mode": "observe",
+        "speculative": True,
+        **INVITE_PREP,
+    }
+
+
+def _start(event: dict) -> datetime | None:
+    start = event.get("start") or {}
+    raw = start.get("dateTime") or start.get("date")
+    if not raw:
+        return None
+    dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def open_invite(event: dict, account: str, now: datetime) -> bool:
+    """A Google Calendar event (API shape) the account was invited to and hasn't answered (spec 12 §3.3): it is an
+    attendee with `needsAction`, someone else organized it, it isn't cancelled, and it starts in the future."""
+    me = account.strip().lower()
+    if event.get("status") == "cancelled":
+        return False
+    organizer = event.get("organizer") or {}
+    if organizer.get("self") or str(organizer.get("email") or "").lower() == me:
+        return False
+    mine = [a for a in event.get("attendees") or [] if a.get("self") or str(a.get("email") or "").lower() == me]
+    if not mine or mine[0].get("responseStatus") != "needsAction":
+        return False
+    start = _start(event)
+    return start is not None and start > now

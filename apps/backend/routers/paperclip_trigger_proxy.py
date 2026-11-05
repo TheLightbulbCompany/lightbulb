@@ -119,12 +119,14 @@ import jwt
 from fastapi import APIRouter, HTTPException, Request, Response
 
 from core.config import settings
-from core.repositories import billing_repo, integrations_repo
+from core.repositories import automations_repo, billing_repo, integrations_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services.paperclip_admin_client import PaperclipAdminClient, PaperclipApiError
 from core.services.paperclip_admin_session import get_admin_session_cookie, invalidate_admin_session
 from core.services.provision_gate import has_always_on_entitlement
+from core.services.super_agent_flags import flags_for
 from core.services.trigger_fire_url import trigger_fire_url
+from routers import hooks
 from routers._public_ingress import _check_rate_limit, _client_factory, _extract_caller_ip
 
 logger = logging.getLogger(__name__)
@@ -337,6 +339,13 @@ async def proxy_trigger(owner_id: str, public_id: str, request: Request) -> Resp
     # the guard blocks path/URL injection and unbounded rate-limit keys.
     if not public_id.isalnum() or len(public_id) > 64:
         raise HTTPException(status_code=400, detail="invalid_public_id")
+
+    # Super-agent workspaces verify and fire in the backend (routers/hooks.py) once the trigger has a
+    # HOOK# row; until then (and with the switch off) the delivery takes today's Paperclip path below.
+    if await flags_for(owner_id):
+        hook = await automations_repo.get_hook(owner_id, public_id)
+        if hook is not None:
+            return await hooks.fire(owner_id, public_id, request, hook)
 
     # Entitlement gate — triggers are a paid always-on feature. Unknown
     # owner_id fails closed here (no billing row = not entitled), which

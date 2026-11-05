@@ -300,10 +300,15 @@ export function syncMessagesPanelAgent(agentId?: string): void {
 export function openChatPanelWithDraft(draft: string): boolean {
   const target = _resolveDefaultAgentId();
   if (!target) return false;
-  requestFocusComposer(target, draft);
-  openChatPanel(target);
-  window.dispatchEvent(new CustomEvent("getstarted:focus-composer", { detail: { agentId: target } }));
+  openAgentDmWithDraft(target, draft);
   return true;
+}
+
+/** One agent's DM with the composer focused; a non-empty draft is typed in first. */
+export function openAgentDmWithDraft(agentId: string, draft: string): void {
+  if (draft) requestFocusComposer(agentId, draft);
+  openChatPanel(agentId);
+  window.dispatchEvent(new CustomEvent("getstarted:focus-composer", { detail: { agentId } }));
 }
 
 // Same-place delete of the URL-named detail. Order pinned: (a) replace URL to

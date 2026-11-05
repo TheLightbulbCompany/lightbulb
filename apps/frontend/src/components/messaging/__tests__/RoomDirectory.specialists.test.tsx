@@ -7,10 +7,10 @@ import type { DirectoryParticipant, DirectoryRoom } from "../types";
 
 const live = vi.hoisted(() => ({ superAgent: true }));
 vi.mock("@/hooks/useLiveEvents", () => ({ useSuperAgent: () => live.superAgent }));
-const openChatPanelWithDraft = vi.hoisted(() => vi.fn());
+const openAgentDmWithDraft = vi.hoisted(() => vi.fn());
 vi.mock("@/components/workspace/workspaceController", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/components/workspace/workspaceController")>(),
-  openChatPanelWithDraft,
+  openAgentDmWithDraft,
 }));
 
 const alice: DirectoryParticipant = { kind: "human", id: "alice", displayName: "Alice", mentionHandle: null };
@@ -23,7 +23,7 @@ const props: RoomDirectoryProps = {
   onSelectRoom: vi.fn(), onSelectParticipant: vi.fn(), onCreate: vi.fn().mockResolvedValue(false),
 };
 
-beforeEach(() => { live.superAgent = true; openChatPanelWithDraft.mockClear(); });
+beforeEach(() => { live.superAgent = true; openAgentDmWithDraft.mockClear(); });
 
 describe("sidebar with the super-agent on", () => {
   const NAMES = ["Lightbulb", "Alice", "Engineering", "Finance"];
@@ -42,6 +42,13 @@ describe("sidebar with the super-agent on", () => {
     expect(rowsOf("Specialists")).toEqual(["Finance"]);
   });
 
+  it("an unknown front agent (roster not resolved, or no ceo role) keeps today's roster", () => {
+    render(<RoomDirectory {...props} ceoAgentId={undefined} />);
+    // Today's roster: every agent, alphabetical (nothing to pin without a known CEO).
+    expect(rowsOf("Team")).toEqual(["Alice", "Engineering", "Finance", "Lightbulb"]);
+    expect(screen.queryByRole("region", { name: "Specialists" })).toBeNull();
+  });
+
   it("off: every agent is a roster row under Team and there is no Specialists group", () => {
     live.superAgent = false;
     render(<RoomDirectory {...props} />);
@@ -51,10 +58,16 @@ describe("sidebar with the super-agent on", () => {
 });
 
 describe("SpecialistDmBanner", () => {
-  it("names the specialist and the Ask link prefills the mention in the Lightbulb DM", async () => {
-    render(<SpecialistDmBanner agentName="Finance" handle="finance" />);
+  it("names the specialist and the Ask link opens the front agent's DM with the mention drafted", async () => {
+    render(<SpecialistDmBanner agentName="Finance" handle="finance" frontAgentId="agent_ceo" />);
     expect(screen.getByRole("note")).toHaveTextContent("Finance now works through Lightbulb. A message here starts a Finance thread.");
     await userEvent.click(screen.getByRole("button", { name: "Ask Finance in your Lightbulb DM ›" }));
-    expect(openChatPanelWithDraft).toHaveBeenCalledWith("@finance ");
+    expect(openAgentDmWithDraft).toHaveBeenCalledWith("agent_ceo", "@finance ");
+  });
+
+  it("without a handle, nothing is invented: the DM opens with an empty draft", async () => {
+    render(<SpecialistDmBanner agentName="Finance" handle={null} frontAgentId="agent_ceo" />);
+    await userEvent.click(screen.getByRole("button", { name: "Ask Finance in your Lightbulb DM ›" }));
+    expect(openAgentDmWithDraft).toHaveBeenCalledWith("agent_ceo", "");
   });
 });

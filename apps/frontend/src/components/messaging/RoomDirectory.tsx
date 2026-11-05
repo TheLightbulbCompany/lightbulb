@@ -240,11 +240,13 @@ function DirectoryContent({
     ? `${room.participants[0].kind}:${room.participants[0].id}` : null;
   const withDm = new Set(rooms.map(dmCounterpart));
   // Super-agent: the roster lists people and the one front agent; specialists are labels on threads, not
-  // DM partners (their DMs, if any exist, file under Specialists). Off: every agent, as today.
+  // DM partners (their DMs, if any exist, file under Specialists). Off, or while the front agent is still
+  // unknown (/agents not answered yet, or no "ceo" role in the roster): every agent, as today.
+  const oneVoice = superAgent && !!ceoAgentId;
   const roster = participants.filter((participant) => !withDm.has(`${participant.kind}:${participant.id}`)
-    && (!superAgent || participant.kind !== "agent" || participant.id === ceoAgentId));
+    && (!oneVoice || participant.kind !== "agent" || participant.id === ceoAgentId));
   const groups = groupRooms(rooms, sections, { sort: prefs.sort, nameOf: (room) => roomDisplayName(room, room.participants),
-    alwaysShow: roster.length > 0 ? ["direct"] : [], ...(superAgent ? { frontAgentId: ceoAgentId ?? null } : {}) });
+    alwaysShow: roster.length > 0 ? ["direct"] : [], ...(oneVoice ? { frontAgentId: ceoAgentId } : {}) });
   // `focusRoomTrigger` can run long after the render that captured it (it's
   // attached to a promise settling), so it must read the CURRENT groups, not
   // whatever `groups` was closed over at click time -- a plain ref, kept in

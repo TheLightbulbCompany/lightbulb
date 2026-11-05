@@ -857,9 +857,10 @@ function RoomContent({
           {inShell && <ViewButton label="Files"
             onClick={() => { capture("file_browser_opened"); openPanel("file-viewer", composer.focusAgentId ? { agent: composer.focusAgentId } : {}, { pushUrl: true }); }}><FolderOpen aria-hidden="true" /></ViewButton>}
         </nav>} />
-      {superAgent && visibleRoom?.kind === "dm" && (() => {
+      {superAgent && frontAgentId && visibleRoom?.kind === "dm" && (() => {
+        // Only once the front agent is known: an unresolved roster must not call every agent a specialist.
         const agent = counterparts.length === 1 && counterparts[0].kind === "agent" && counterparts[0].id !== frontAgentId ? counterparts[0] : null;
-        return agent ? <SpecialistDmBanner agentName={agent.displayName} handle={agent.mentionHandle} /> : null;
+        return agent ? <SpecialistDmBanner agentName={agent.displayName} handle={agent.mentionHandle} frontAgentId={frontAgentId} /> : null;
       })()}
       {(state === "reconnecting" || !liveConnected) && <div className="room-state"><p role="status" aria-label="Room status">Reconnecting live updates. You can keep sending messages.</p>
         {onRetry && <Button variant="outline" onClick={onRetry}>Check for updates</Button>}</div>}

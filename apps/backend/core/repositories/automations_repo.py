@@ -100,6 +100,24 @@ async def list_schedules(ws: str) -> list[dict]:
         kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
 
 
+async def scan_schedules() -> list[dict]:
+    """Every automation row of every workspace (the daily reconcile; eventually consistent).
+
+    ponytail: a filtered table scan, fine while the table is dev-sized; switch to `ws-meta` or
+    `super_agent_flags.list_on()` + `list_schedules` when either lands."""
+    kwargs: dict[str, Any] = {
+        "FilterExpression": "begins_with(sk, :p)",
+        "ExpressionAttributeValues": {":p": ts.schedule_sk("")},
+    }
+    out: list[dict] = []
+    while True:
+        page = await run_in_thread(_table().scan, **kwargs)
+        out.extend(plain(page.get("Items", [])))
+        if "LastEvaluatedKey" not in page:
+            return out
+        kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+
+
 async def update_schedule(ws: str, sid: str, fields: dict, *, expected_version: int) -> dict:
     fields = _check_fields(fields)
     row = await _conditional(ws, ts.schedule_sk(sid), fields, condition="#v = :ev", values={":ev": expected_version})

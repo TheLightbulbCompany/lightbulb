@@ -20,6 +20,16 @@ from core.services.super_agent_flags import env_enabled
 logger = logging.getLogger("temporal_worker")
 
 
+async def _ensure_platform_schedules(client) -> None:
+    """Automation reconcile on boot + its daily platform Schedule (lane A). A failure never stops the worker."""
+    try:
+        from core.services.automation_schedule import ensure_platform
+
+        await ensure_platform(client)
+    except Exception:
+        logger.warning("platform schedules not ensured", exc_info=True)
+
+
 async def run() -> int:
     if not env_enabled():
         logger.error("super-agent env master is off; not starting the Temporal worker")
@@ -45,6 +55,7 @@ async def run() -> int:
     try:
         async with worker:  # exit awaits worker.shutdown(): in-flight activities get the graceful window
             logger.info("worker started", extra={"task_queue": settings.TEMPORAL_TASK_QUEUE})
+            await _ensure_platform_schedules(client)
             await stop.wait()
             logger.info("worker stopping")
     finally:

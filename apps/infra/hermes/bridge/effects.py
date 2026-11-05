@@ -28,7 +28,12 @@ EFFECTS_PATH = f"/api/v1/internal/runtime/{OWNER}/effects"
 EXTERNAL_KINDS = ("mail.send", "text.send", "app.publish", "pr.merge", "purchase", "provision", "a2a.send")
 MULTIPLE = "multiple"  # classify(): more than one external action in one command
 SPLIT_THEM = "One external action per command; split them and run each on its own."
-_WRAPPERS = {"env", "nohup", "time", "exec", "command", "builtin", "sudo", "timeout", "doas"}
+_WRAPPERS = {"env", "nohup", "time", "exec", "command", "builtin", "sudo", "timeout", "doas", "nice", "stdbuf",
+             "ionice", "caffeinate"}
+_VALUED_OPTS = {"-n", "-c", "-p", "-t", "-u", "-g", "-s", "--signal", "-k", "--kill-after", "-h", "-C", "-D", "-R", "-T",
+                "-U", "-i", "-o", "-e"}  # a wrapper option whose value is the next token (nice -n 10, ionice -c 2 …)
+_SEPARATOR = re.compile(r"^[;|&]+$")
+_SHELL_C = re.compile(r"^-[a-zA-Z]*c[a-zA-Z]*$")  # -c, -lc, -ec, -xc …
 _SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
 _DECISIONS = {"proceed", "replay", "refuse", "needs_approval", "denied"}
 UNAVAILABLE = "Lightbulb couldn't check this action (effects service unavailable). Do not retry it this turn; say so."
@@ -72,11 +77,11 @@ def _segments(command: str) -> list[tuple[list[str], str | None]]:
             argv = _unwrap(argv)
             if not argv:
                 continue
-            if os.path.basename(argv[0]) in _SHELLS and "-c" in argv[1:]:
-                inner = argv[argv.index("-c") + 1 :]
-                if inner:  # `bash -c "<script>"`: the script is what runs
-                    out.extend(_segments(inner[0]))
-                continue
+            if os.path.basename(argv[0]) in _SHELLS:
+                flag = next((i for i, a in enumerate(argv[1:], 1) if _SHELL_C.match(a)), None)
+                if flag is not None and flag + 1 < len(argv):  # `bash -lc "<script>"`: the script is what runs
+                    out.extend(_segments(argv[flag + 1]))
+                    continue
             out.append((argv, body if first else None))
     return out
 
@@ -93,10 +98,10 @@ def _commands(line: str) -> list[tuple[list[str], bool]]:
     cur: list[str] = []
     first = True
     for t in tokens:
-        if t in (";", "&&", "||", "|", "&", ";;"):
+        if _SEPARATOR.match(t):  # ; && || | & |& ;; …
             if cur:
                 out.append((cur, first))
-            cur, first = [], t != "|"
+            cur, first = [], "|" not in t
         else:
             cur.append(t)
     if cur:
@@ -117,14 +122,10 @@ def _unwrap(argv: list[str]) -> list[str]:
             while i < len(argv) and argv[i].startswith("-"):
                 i += 2 if argv[i] in ("-s", "--signal", "-k", "--kill-after") else 1
             i += 1  # the duration
-        elif base in ("sudo", "doas"):
-            i += 1
-            while i < len(argv) and argv[i].startswith("-"):
-                i += 2 if argv[i] in ("-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U") else 1
         elif base in _WRAPPERS:
             i += 1
             while i < len(argv) and argv[i].startswith("-"):
-                i += 1
+                i += 2 if argv[i] in _VALUED_OPTS else 1
         else:
             break
     return argv[i:]

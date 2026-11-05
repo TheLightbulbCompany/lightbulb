@@ -114,6 +114,13 @@ def test_two_effects_in_one_command_are_multiple():
         "sudo -u agent lightbulb-mail.sh send --to a@b.c --subject S <<'EOF'\nhi\nEOF",
         "bash -c 'lightbulb-mail.sh send --to a@b.c --subject S'",
         "sh -c \"cd /w && lightbulb-mail.sh send --to a@b.c --subject S\"",
+        "bash -lc 'lightbulb-mail.sh send --to a@b.c --subject S'",
+        "sh -ec 'lightbulb-mail.sh send --to a@b.c --subject S'",
+        "nice -n 10 lightbulb-mail.sh send --to a@b.c --subject S",
+        "stdbuf -oL lightbulb-mail.sh send --to a@b.c --subject S",
+        "ionice -c 2 caffeinate -i lightbulb-mail.sh send --to a@b.c --subject S",
+        "echo start |& lightbulb-mail.sh send --to a@b.c --subject S",
+        "true ;; lightbulb-mail.sh send --to a@b.c --subject S",
     ],
 )
 def test_wrappers_and_sh_c_are_seen_through(command):

@@ -197,7 +197,7 @@ async def task_trace(task_id: str, auth: Auth, attempt: Annotated[int | None, Qu
     if n not in attempts:
         raise _err(404, "not_found")
     row = attempts[n]
-    identity = runtime_runs.RunIdentity(row["runId"], ws, task_id, n, row["agentId"])
+    identity = runtime_runs.RunIdentity.for_attempt(ws, task_id, {**row, "n": n})
     try:
         run = await runtime_runs.get_run(ws, identity)
     except (runtime_runs.RunLost, runtime_runs.RunRefused):

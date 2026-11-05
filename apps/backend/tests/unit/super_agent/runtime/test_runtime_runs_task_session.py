@@ -127,3 +127,19 @@ async def test_activities_identity_carries_the_attempts_session_kind(monkeypatch
     assert acts._identity(OWNER, TASK, att).to_wire()["session"] == {"kind": "workspace"}
     monkeypatch.setattr(rr, "session_kind_for", AsyncMock(return_value="task"))
     assert await acts._session_kind(OWNER) == "task"
+
+
+def test_for_attempt_derives_session_kind_from_the_attempt_row():
+    from core.services import runtime_transport
+
+    att = {
+        "runId": RUN,
+        "n": 3,
+        "agentId": "a1",
+        "runSecret": "s",
+        "sessionId": runtime_transport.session_id_for(OWNER, TASK),
+    }
+    task_run = rr.RunIdentity.for_attempt(OWNER, TASK, att)
+    assert (task_run.session_kind, task_run.attempt, task_run.run_secret, task_run.run_id) == ("task", 3, "s", RUN)
+    shared = rr.RunIdentity.for_attempt(OWNER, TASK, {**att, "sessionId": runtime_transport.session_id_for(OWNER)})
+    assert shared.session_kind == "workspace" and shared.to_wire()["session"] == {"kind": "workspace"}

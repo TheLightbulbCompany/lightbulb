@@ -63,6 +63,23 @@ class RunIdentity:
     # by `session_kind_for`, written on the Attempt row by O's `begin_attempt`, never cached on the task.
     session_kind: SessionKind = "workspace"
 
+    @classmethod
+    def for_attempt(cls, owner_id: str, task_id: str, att: dict) -> "RunIdentity":
+        """The one way to name an Attempt's run: the Attempt row records where `begin_attempt` put it (V3), so
+        every reader (worker_turn, the trace route, the watchdog) derives `session_kind` the same way."""
+        kind: SessionKind = (
+            "task" if att.get("sessionId") == runtime_transport.session_id_for(owner_id, task_id) else "workspace"
+        )
+        return cls(
+            att["runId"],
+            owner_id,
+            task_id,
+            att["n"],
+            att["agentId"],
+            run_secret=att.get("runSecret"),
+            session_kind=kind,
+        )
+
     @property
     def session_key(self) -> str:
         if self.mode == "router":

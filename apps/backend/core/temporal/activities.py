@@ -110,11 +110,7 @@ async def _input_text(ws: str, trigger_id: str) -> str:
 
 
 def _identity(ws: str, task_id: str, att: dict) -> runtime_runs.RunIdentity:
-    # The Attempt row records where begin_attempt put the run (V3): its own task session, or the shared VM.
-    kind = "task" if att.get("sessionId") == runtime_transport.session_id_for(ws, task_id) else "workspace"
-    return runtime_runs.RunIdentity(
-        att["runId"], ws, task_id, att["n"], att["agentId"], run_secret=att.get("runSecret"), session_kind=kind
-    )
+    return runtime_runs.RunIdentity.for_attempt(ws, task_id, att)
 
 
 async def _agent_for(ws: str, task: dict) -> str:

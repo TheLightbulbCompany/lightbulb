@@ -259,7 +259,7 @@ class _Scan:
             return
         c5 = False
         try:
-            identity = runtime_runs.RunIdentity(attempt["runId"], ws, task["taskId"], n, attempt["agentId"])
+            identity = runtime_runs.RunIdentity.for_attempt(ws, task["taskId"], {**attempt, "n": n})
             c5 = check_c5((await runtime_runs.get_run(ws, identity)).recent_tools)
         except Exception:  # a lost or busy runtime is C2's business; the judge just has no tool evidence
             logger.info("watchdog: run status unavailable", extra={"taskId": task["taskId"]})
@@ -426,7 +426,7 @@ async def _evidence(c: Candidate, tree: dict) -> tuple[list[dict], list[dict]]:
     att = next((a for a in tree["attempts"] if a["n"] == c.attempt_n), None)
     if att:
         try:
-            identity = runtime_runs.RunIdentity(att["runId"], c.ws, c.task_id, c.attempt_n, att["agentId"])
+            identity = runtime_runs.RunIdentity.for_attempt(c.ws, c.task_id, {**att, "n": c.attempt_n})
             tools = (await runtime_runs.get_run(c.ws, identity)).recent_tools
         except Exception:
             logger.info("watchdog judge: run status unavailable", extra={"taskId": c.task_id})

@@ -136,6 +136,7 @@ def validate_scope(
 
 
 def matches_on_version(rule: dict) -> int:
-    """Matches recorded on the rule's current version: an edit starts the promotion count again."""
-    version = rule.get("version")
+    """Matches recorded on the rule's current `ruleVersion` (not the row's write-lock `version`, which every stats
+    append bumps): an edit starts the promotion count again."""
+    version = rule.get("ruleVersion", 1)
     return sum(1 for m in (rule.get("stats") or {}).get("matches") or [] if m.get("version") == version)

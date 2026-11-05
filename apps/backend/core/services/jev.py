@@ -593,6 +593,10 @@ async def _decide_for_message(
     if answers is None:
         return {"fallback": True, **no_rule}
     who, where = answers.get("who") or {}, answers.get("placement") or {}
+    if rules:  # parsed on its own: a bad `who` neither drops nor invents a rule match
+        no_rule["rule"], no_rule["ruleP"] = rules_mod.parse_match(
+            answers, {r["scheduleId"] for r in rules[: rules_mod.RULES_PER_ROOM]}
+        )
     if who.get("choice") not in (*candidates, "none") or (placement and where.get("choice") not in ("main", "thread")):
         return {"fallback": True, "reason": "invalid_choice", **no_rule}
     probabilities = who.get("probabilities") or {}
@@ -614,10 +618,7 @@ async def _decide_for_message(
         final = "none"
         put_metric("messaging.jev.tie_quiet")
     decision = {"who": final, "whoP": probabilities, "placement": where.get("choice") if placement else None}
-    if rules:
-        decision["rule"], decision["ruleP"] = rules_mod.parse_match(
-            answers, {r["scheduleId"] for r in rules[: rules_mod.RULES_PER_ROOM]}
-        )
+    decision.update(no_rule)
     if final == "none" and human and not to_people:
 
         def high(key: str) -> bool:

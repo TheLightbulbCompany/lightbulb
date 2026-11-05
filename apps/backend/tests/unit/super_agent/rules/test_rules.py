@@ -110,6 +110,7 @@ def test_validate_scope():
 
 
 def test_matches_on_version():
-    row = {"version": 2, "stats": {"matches": [{"version": 1}, {"version": 2}, {"version": 2}]}}
+    row = {"version": 9, "ruleVersion": 2, "stats": {"matches": [{"version": 1}, {"version": 2}, {"version": 2}]}}
     assert rules.matches_on_version(row) == 2
     assert rules.matches_on_version({"version": 1}) == 0
+    assert rules.matches_on_version({"version": 7, "stats": {"matches": [{"version": 1}]}}) == 1  # default 1

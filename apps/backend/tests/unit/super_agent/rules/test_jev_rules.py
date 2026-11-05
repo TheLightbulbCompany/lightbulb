@@ -70,10 +70,13 @@ async def test_jev_misfire_unknown_rule_id(monkeypatch):
 
 
 async def test_jev_misfire_bad_who_no_rule(monkeypatch):
-    rule = {"choice": "s1", "probabilities": {"s1": 0.95, "none": 0.05}}
+    """A bad `who` is a who-fallback; the rule answer is parsed on its own, so it neither drops nor invents one."""
     bad_who = {"choice": "ghost", "probabilities": {"ghost": 1.0}}
+    rule = {"choice": "s1", "probabilities": {"s1": 0.95, "none": 0.05}}
     out, _ = await _run(monkeypatch, {"who": bad_who, "placement": PLACEMENT, "rule": rule}, rules=RULES)
-    assert out == {"fallback": True, "reason": "invalid_choice", "rule": None}
+    assert out == {"fallback": True, "reason": "invalid_choice", "rule": "s1", "ruleP": 0.95}
+    out, _ = await _run(monkeypatch, {"who": bad_who, "placement": PLACEMENT}, rules=RULES)
+    assert out == {"fallback": True, "reason": "invalid_choice", "rule": None, "ruleP": None}
 
 
 @pytest.mark.parametrize("answers", [None, jev.RATE_LIMITED])

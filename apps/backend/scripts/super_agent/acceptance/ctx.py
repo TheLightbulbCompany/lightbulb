@@ -267,14 +267,17 @@ def aws_profile_default() -> None:
     (the harness is dev-only; ``guard()`` refuses anything else)."""
     os.environ.setdefault("AWS_PROFILE", "isol8-admin")
     os.environ.setdefault("AWS_REGION", "us-east-1")
-    settings.OAUTH_TOKENS_TABLE = settings.OAUTH_TOKENS_TABLE or "lightbulb-dev-oauth-tokens"
-    settings.MESSAGING_TABLE = settings.MESSAGING_TABLE or "lightbulb-dev-messaging"
+    if settings.ENVIRONMENT == "dev":
+        settings.OAUTH_TOKENS_TABLE = settings.OAUTH_TOKENS_TABLE or "lightbulb-dev-oauth-tokens"
+        settings.MESSAGING_TABLE = settings.MESSAGING_TABLE or "lightbulb-dev-messaging"
 
 
 def load_backend_secrets() -> None:
     """The backend env some services need when the harness calls them directly (``token_custody`` decrypts the
     token row): ``ENCRYPTION_KEY`` from the dev Secrets Manager secret the backend task definition points at.
-    Never printed; a no-op when the settings already hold it."""
+    Never printed; a no-op when the settings already hold it. Dev only: refuses any other ENVIRONMENT."""
+    if settings.ENVIRONMENT != "dev":
+        raise SystemExit(f"refusing: ENVIRONMENT={settings.ENVIRONMENT!r}; the dev encryption key is for dev only")
     if not settings.ENCRYPTION_KEY:
         from scripts.multiparty_e2e.runner import _secret
 

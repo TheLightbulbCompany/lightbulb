@@ -65,3 +65,14 @@ async def test_per_task_defaults_to_the_backend_rule(monkeypatch):
     monkeypatch.setattr(token_custody, "task_vm_allowed", allowed)
     result = await vm_evidence(FakeCtx([_att(T1, 1, session_id_for(WS, T1))]), ws=WS, task_ids=[T1])
     assert result.passed and result.evidence["perTaskVm"] is True
+
+
+def test_backend_secrets_refuse_outside_dev(monkeypatch):
+    from core.config import settings
+    from scripts.super_agent.acceptance import ctx as ctxmod
+
+    monkeypatch.setattr(settings, "ENVIRONMENT", "prod")
+    monkeypatch.setattr(settings, "ENCRYPTION_KEY", "")
+    with pytest.raises(SystemExit):
+        ctxmod.load_backend_secrets()
+    assert settings.ENCRYPTION_KEY == ""

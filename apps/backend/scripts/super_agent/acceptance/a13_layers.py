@@ -68,7 +68,7 @@ async def dev_temporal_client():
     return await temporal_client.connect()
 
 
-async def router_runs(ws: str) -> list[dict[str, Any]]:
+async def router_runs(ws: str, front: str | None = None) -> list[dict[str, Any]]:
     """One entry per ``router_turn`` batch in the Router workflow's history: ``{batchId, lane, status, decisions,
     tools}``. Temporal: the dev namespace, key from Secrets Manager ``lightbulb/dev/temporal_api_key`` unless the
     ``TEMPORAL_*`` settings are already set. ponytail: reads the current run's history only; a Router that has
@@ -92,7 +92,7 @@ async def router_runs(ws: str) -> list[dict[str, Any]]:
         except KeyError:  # a batch recorded by an older worker lacks a field the type now has: skip it
             continue
         batches.append(inp)
-    front = await task_conversation.front_agent_id(ws)
+    front = front or await task_conversation.front_agent_id(ws)  # the latter reads the Paperclip row
     out = []
     for inp in batches:
         identity = runtime_runs.RunIdentity(
@@ -146,7 +146,7 @@ async def a13(ctx) -> Result:
     rows_check = check_rows(await ctx.tasks_rows(ctx.ws), task_ids)
     legacy = await legacy_rows(ctx.ws, rooms)
     try:
-        runs = await router_runs(ctx.ws)
+        runs = await router_runs(ctx.ws, ctx.state.get("frontAgentId"))
         router = check_router(runs)
     except Exception as exc:  # noqa: BLE001 -- Temporal or the bridge unreachable is a failed check with its reason
         runs, router = [], {"outside": [], "notCompleted": [], "ok": False, "error": f"{type(exc).__name__}: {exc}"}

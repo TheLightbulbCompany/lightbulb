@@ -34,9 +34,16 @@ class WatchFakes:
         self.calls: list[tuple] = []
         self.until: list[str | None] = []
 
+        self.gate: asyncio.Event | None = None  # set: the next check_watch holds until the test opens it
+        self.checking = asyncio.Event()
+
         @activity.defn(name="check_watch")
         async def check(ws: str, task_id: str, spec: WatchSpec) -> str:
             self.calls.append(("check_watch", spec.watch_id, activity.info().scheduled_time))
+            if self.gate is not None:
+                gate, self.gate = self.gate, None
+                self.checking.set()
+                await gate.wait()
             return self.checks.pop(0) if self.checks else "not_met"
 
         @activity.defn(name="watch_met")
@@ -56,7 +63,7 @@ class WatchFakes:
         @activity.defn(name="open_asked_question")
         async def open_q(ws: str, task_id: str, ref: AskRef) -> QuestionRef:
             self.calls.append(("open_asked_question", ref.trigger_id))
-            return QuestionRef("q-1", ["user_sam"], False)
+            return QuestionRef(ref.trigger_id.removeprefix("ask:"), ["user_sam"], False)
 
         @activity.defn(name="relay_question")
         async def relay(ws: str, task_id: str, qid: str) -> None:
@@ -64,6 +71,7 @@ class WatchFakes:
 
         @activity.defn(name="cancel_open_questions")  # Q's, on Stop with a question open
         async def cancel(ws: str, task_id: str, by: str, reason: str) -> list[str]:
+            self.calls.append(("cancel_open_questions", reason))
             return []
 
         @activity.defn(name="remind_question")  # Q's reminder, +24 h on an open question
@@ -219,7 +227,7 @@ async def test_question_work_does_not_wait_behind_a_watch(temporal_env):
         await _until(lambda: "end_attempt" in fakes.names())
         await h.execute_update("add_watch", _spec(every=720, give_up_h=72.0, start=start))
         await _until(lambda: len([c for c in wf.calls if c[0] == "check_watch"]) == 1)
-        assert await h.execute_update("ask", AskRef("ask:a-1", "approval", "approval", True)) == "q-1"
+        assert await h.execute_update("ask", AskRef("ask:q-1", "approval", "approval", True)) == "q-1"
         await temporal_env.sleep(timedelta(hours=25))
         await _until(lambda: ("remind_question", "q-1") in wf.calls)
         assert len([c for c in wf.calls if c[0] == "check_watch"]) >= 2  # the watch kept checking meanwhile
@@ -240,6 +248,53 @@ async def test_give_up_fail(temporal_env):
     # failed is not reachable from idle; the task ends there, it does not sit 7 days and resolve quiet
     assert fakes.args("transition") == [(WS, TID, "resolved", "watch_gave_up")]
     assert ("watch_gave_up", "w1") not in wf.calls
+
+
+async def test_give_up_fail_lands_approved_drafts_and_cancels_open_questions(temporal_env):
+    """An answer lands while one watch is being checked and another gives up (`fail`) in the same pass: the
+    approved draft still lands, the Question left open is cancelled, and only then does the task resolve."""
+    import dataclasses
+
+    from core.temporal.task_questions import AnswerOut, AnswerRef, LandResult
+
+    fakes, wf = Fakes(), WatchFakes(["not_met"] * 10)
+    landed: list[str] = []
+
+    @activity.defn(name="record_answer")
+    async def record(ws: str, task_id: str, ref: AnswerRef) -> AnswerOut:
+        return AnswerOut(f"answer:{ref.qid}", ref.option_id, land_idem_key="eff-1")
+
+    @activity.defn(name="apply_effect")
+    async def apply(ws: str, task_id: str, idem: str, by: str) -> LandResult:
+        landed.append(idem)
+        wf.calls.append(("apply_effect", idem))
+        return LandResult("done")
+
+    wf.activities += [record, apply]
+    start = await temporal_env.get_current_time()
+    slow = _spec(every=60, give_up_h=72.0, on_give_up="fail", start=start)
+    soon = dataclasses.replace(_spec(every=60, give_up_h=1.0, on_give_up="fail", start=start), watch_id="w2")
+    async with _worker(temporal_env, fakes, wf) as q:
+        h = await _idle_task(temporal_env, q)
+        await _until(lambda: "end_attempt" in fakes.names())
+        await h.execute_update("add_watch", slow)
+        await h.execute_update("add_watch", soon)
+        await _until(lambda: len([c for c in wf.calls if c[0] == "check_watch"]) == 2)
+        await h.execute_update("ask", AskRef("ask:a-1", "approval", "approval", True))
+        await h.execute_update("ask", AskRef("ask:a-2", "approval", "approval", True))
+        gate = wf.gate = asyncio.Event()
+        # both due at +60 min: w1's check holds there (the clock stops while it runs), w2 is past its give-up
+        sleeper = asyncio.create_task(temporal_env.sleep(timedelta(minutes=61)))
+        await _until(wf.checking.is_set)
+        await h.execute_update("answer", AnswerRef("a-1", "approve", None, "user_sam", "ca-1"))
+        gate.set()
+        await h.result()
+        sleeper.cancel()
+    assert landed == ["eff-1"]
+    names = [c[0] for c in wf.calls]
+    assert names.index("apply_effect") < names.index("cancel_open_questions")
+    assert ("cancel_open_questions", "watch_gave_up") in wf.calls
+    assert fakes.args("transition")[-1] == (WS, TID, "resolved", "watch_gave_up")
 
 
 async def test_no_watch_changes_nothing(temporal_env):

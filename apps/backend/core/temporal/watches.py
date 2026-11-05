@@ -66,6 +66,8 @@ class WatchMixin:
     _status: str | None
     _landings: list[tuple[str, str]]  # Lane Q's approved drafts waiting to land
     _q_next_remind: Any  # Lane Q: when the earliest open Question's reminder is due
+    _q_land: Any  # Lane Q: land approved drafts
+    _q_cancel_open: Any  # Lane Q: cancel the task's open Questions
     ask: Any  # Lane Q's update: opens and tracks a question on this task
 
     def _w_init(self) -> None:
@@ -156,6 +158,9 @@ class WatchMixin:
             ref = await _act("watch_gave_up", self._ws, self._task_id, spec, result_type=AskRef)
             await self.ask(ref)  # Lane Q opens the Question and keeps the task waiting on it
         else:
+            # Ending the task: an approved draft still lands first; Questions still open are cancelled.
+            await self._q_land()
+            await self._q_cancel_open("watch", "watch_gave_up")
             await self._transition("resolved", "watch_gave_up")
 
     async def _w_sync_until(self) -> None:

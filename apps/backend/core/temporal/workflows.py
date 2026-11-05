@@ -174,11 +174,13 @@ class TaskWorkflow(TaskQuestionsMixin, AutomationRunMixin, WatchMixin):
             await self._q_on_waiting()
         # While watches run, the watch loop waits (checks go on with a Question open) and hands Q's work
         # (an approved draft to land, a reminder due) back here; Q's own wait takes over once no watch is left.
+        watched = False  # without a watch this is exactly Q's wait above: no new commands for older histories
         while self._watches and not self._woken() and self._status != "resolved":
+            watched = True
             await self._w_on_waiting()
             if self._status != "resolved":
                 await self._q_serve()
-        if self._open_qs and not self._woken() and self._status != "resolved":
+        if watched and self._open_qs and not self._woken() and self._status != "resolved":
             await self._q_on_waiting()  # a give-up or unwatch left a Question open: Q's wait, no deadline
 
     async def _before_attempt(self) -> bool:

@@ -207,8 +207,12 @@ class TaskQuestionsMixin:
                 await self._transition("idle", "landed" if res.outcome == "done" else "effect_unknown")
 
     async def _q_on_stop(self, by_user_id: str) -> None:
+        await self._q_cancel_open(by_user_id, "stopped")
+
+    async def _q_cancel_open(self, by: str, reason: str) -> None:
+        """The task is ending: its open Questions are cancelled (an answer after this is refused, not lost)."""
         if self._open_qs:
-            await _act("cancel_open_questions", self._ws, self._task_id, by_user_id, "stopped")
+            await _act("cancel_open_questions", self._ws, self._task_id, by, reason)
             self._open_qs.clear()
             self._nonblocking.clear()
             self._q_remind_at.clear()

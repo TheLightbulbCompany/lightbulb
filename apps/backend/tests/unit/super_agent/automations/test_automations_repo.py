@@ -172,7 +172,7 @@ async def test_update_hook(table):
     assert row["armed"] is True and row["providerHookId"] == "we_1" and row["version"] == 2
     with pytest.raises(VersionConflict):  # a concurrent writer already moved it on
         await repo.update_hook(WS, "pub_1", {"armed": False}, expected_version=1)
-    for bad in ({"publicId": "other"}, {"sig_fail_count": 0}):
+    for bad in ({"publicId": "other"}, {"sig_fail_count": 0}, {"PublicId": "x"}, {"SigFailCount": 1}, {"Armed": True}):
         with pytest.raises(ValueError):
             await repo.update_hook(WS, "pub_1", bad, expected_version=2)
     with pytest.raises(VersionConflict):

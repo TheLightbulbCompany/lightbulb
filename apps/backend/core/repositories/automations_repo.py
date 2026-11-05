@@ -53,7 +53,10 @@ _PROTECTED = frozenset(
 
 def _check_fields(fields: dict) -> dict:
     """The update with camelCase attribute names (rows are stored camel); refuses writer-owned fields in
-    either spelling."""
+    either spelling. Any other casing ("PublicId") is refused rather than written as a stray attribute."""
+    odd = [k for k in fields if k != to_camel(k) and k != k.lower()]
+    if odd:
+        raise ValueError(f"field names must be camelCase or snake_case: {sorted(odd)}")
     camel = {to_camel(k): v for k, v in fields.items()}
     bad = _PROTECTED & set(camel)
     if bad:

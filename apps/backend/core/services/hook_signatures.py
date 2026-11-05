@@ -48,11 +48,11 @@ def _hex(algo, secret: str, msg: bytes) -> str:
 def _stale(ts: str, window: int, now: float) -> bool:
     try:
         t: float = int(ts)  # int, not float: "nan"/"inf" would pass any window
-    except ValueError:
+        if t > 1e11:  # milliseconds
+            t /= 1000
+        return abs(now - t) > window
+    except (ValueError, OverflowError):  # a 400-digit "timestamp" overflows the float math
         return True
-    if t > 1e11:  # milliseconds
-        t /= 1000
-    return abs(now - t) > window
 
 
 def verify(
@@ -138,6 +138,8 @@ def _json(body: bytes) -> dict:
 
 def dedupe_key(provider: str, headers: Mapping[str, str], body: bytes, *, mode: str) -> str:
     """Stable id of one delivery, the same across the provider's retries.
+
+    Call only after ``verify`` returned None: the ids trusted here are trusted because the delivery verified.
 
     Only ids a sender cannot change without the secret: ids inside the body (Stripe ``id``, Pub/Sub
     ``messageId``), Standard Webhooks' signed ``webhook-id``, and Google channel headers in the token

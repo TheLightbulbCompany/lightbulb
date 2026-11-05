@@ -61,6 +61,11 @@ def test_paperclip_style_headers_and_ms_timestamp():
 
 
 def test_non_integer_timestamp_is_stale():
+    huge = "1" + "0" * 400  # int() takes it; dividing or subtracting a float would overflow
+    sig = hmac.new(SECRET.encode(), f"{huge}.".encode() + BODY, hashlib.sha256).hexdigest()
+    assert hs.verify("hmac_sha256", SECRET, {"Stripe-Signature": f"t={huge},v1={sig}"}, BODY, now=NOW) == "stale"
+    h = {"webhook-id": "m", "webhook-timestamp": huge, "webhook-signature": "v1,AAAA"}
+    assert hs.verify("standard_webhooks", "whsec_" + "QUFBQQ==", h, BODY, now=NOW) == "stale"
     for t in ("nan", "inf", "1.5", ""):
         h = {"X-Paperclip-Timestamp": t or " ", "X-Paperclip-Signature": _stripe()}
         assert hs.verify("hmac_sha256", SECRET, h, BODY, now=NOW) == "stale", t

@@ -50,7 +50,7 @@ describe("TaskPane", () => {
     withDetail({ ...step8, task: waiting, questions: [openRow] }, [approval()]);
     pane();
     const status = await screen.findByRole("region", { name: "Thread status" });
-    const needs = screen.getByRole("group", { name: /provision database/ });
+    const needs = screen.getByRole("group", { name: /provision a database/ });
     const transcript = screen.getByRole("region", { name: "Transcript" });
     const outputs = screen.getByRole("region", { name: "Outputs" });
     const details = screen.getByText("Details").closest("details")!;
@@ -75,14 +75,14 @@ describe("TaskPane", () => {
     const waiting = FIXTURES.step05.tasks[0];
     withDetail({ ...step8, task: viewAs(waiting, PRIYA), questions: [openRow] }, [approval({ canAnswer: false, waitingLabel: "Waiting on Sam" })]);
     const { unmount } = pane(PRIYA);
-    const card = await screen.findByRole("group", { name: /provision database/ });
+    const card = await screen.findByRole("group", { name: /provision a database/ });
     expect(card).toHaveTextContent("Waiting on Sam");
     expect(within(card).queryByRole("button")).toBeNull();
     unmount();
 
     withDetail({ ...step8, task: waiting, questions: [openRow] }, [approval()]);
     pane(SAM);
-    const mine = await screen.findByRole("group", { name: "Allow Lightbulb · Engineering to provision database and Stripe" });
+    const mine = await screen.findByRole("group", { name: "Allow Lightbulb · Engineering to provision a database and Stripe payments?" });
     expect(within(mine).getAllByRole("button").map((b) => b.textContent)).toEqual(["Allow once", "Deny"]);
   });
 

@@ -111,7 +111,9 @@ export function summaryView(t: TaskSummary, viewerId: string): SummaryView {
   if (t.status === "resolved" && t.statusReason === "dismissed") return v("Dismissed");
   if (t.status === "resolved") return v(t.statusReason === "stopped" ? "Stopped" : "Resolved", "reopen");
   if (t.status === "failed") return v("Failed", t.ownerUserId === viewerId ? "retry" : null);
-  if (group === "waiting_on_you") return v("Waiting on you", q?.kind === "approval" ? "approve" : "answer");
+  // One-press Approve only for an effect approval (allow_once/deny, questions.py). A worker's own approval ask can
+  // carry any option ids, or none: its card opens the thread instead.
+  if (group === "waiting_on_you") return v("Waiting on you", q?.kind === "approval" && q.options?.some((o) => o.id === "allow_once") ? "approve" : "answer");
   if (group === "ready_for_review") {
     const next = (t.output?.nextStep ?? "review") as TaskAction;
     return v("Ready for review", NEXT_STEPS.has(next) ? next : "review");
@@ -154,7 +156,7 @@ export function taskSummaryLine(t: TaskSummary, viewerId: string): string {
   const q = t.openQuestion;
   const view = summaryView(t, viewerId);
   if (q && q.canAnswer) {
-    if (q.kind === "approval") return askLine(q, t.specialist);
+    if (q.kind === "approval") return `Needs approval: ${q.title}`;
     if (q.kind === "review") return `Ready for review: ${t.output?.title ?? q.title}`;
     return `Needs an answer: ${q.title}`;
   }
@@ -181,21 +183,24 @@ export const FREE_TEXT_OPTION = "answer";
 
 /** What the approver is asked: "Allow Lightbulb · Engineering to send 'Q3' to a@b.c" (the title names the action and
  *  its target, questions.py `title_for`). Other kinds read their title as written. */
-export function askLine(q: { kind: string; title: string; text?: string | null }, specialist: string | null | undefined): string {
-  if (q.kind !== "approval") return q.text || q.title;
+export function askLine(q: { kind: string; title: string; text?: string | null; preview?: unknown }, specialist: string | null | undefined): string {
+  // Only an effect-born approval (it carries a preview; its title is questions.py `title_for`'s "send … to …")
+  // reads as "Allow …"; a worker's own ask keeps its words.
+  if (q.kind !== "approval" || !q.preview) return q.text || q.title;
   const title = q.title.charAt(0).toLowerCase() + q.title.slice(1);
   return `Allow ${specialistLabel(specialist)} to ${title}`;
 }
 
 const PREVIEW_LABELS: Record<string, string> = {
   to: "To", subject: "Subject", body: "Message", text: "Message", amount: "Amount", item: "Item", provider: "Provider",
-  appName: "App", repo: "Repository", number: "PR", target: "To", url: "Link", title: "Title",
+  appName: "App", repo: "Repository", number: "PR", target: "To", merchant: "Merchant", why: "Why", url: "Link", title: "Title",
 };
+/** The card's cut; the pane passes Infinity so a person reads the whole message before acting. */
 const PREVIEW_MAX = 600;
 
 /** The exact effect a person approves (`question.preview` = `{kind, ...operands}`, task_questions.py), as label/value
  *  rows. Known operands first in a fixed order; ids, hashes and nested values are left out. */
-export function previewRows(preview: unknown): { label: string; value: string }[] {
+export function previewRows(preview: unknown, max = PREVIEW_MAX): { label: string; value: string }[] {
   if (!preview || typeof preview !== "object") return [];
   const p = preview as Record<string, unknown>;
   return Object.keys(PREVIEW_LABELS)
@@ -203,7 +208,7 @@ export function previewRows(preview: unknown): { label: string; value: string }[
     .filter((k, _i, keys) => !(k === "target" && keys.includes("to")) && !(k === "text" && keys.includes("body")))
     .map((k) => {
       const raw = Array.isArray(p[k]) ? (p[k] as unknown[]).join(", ") : String(p[k]);
-      const value = k === "number" ? `#${raw}` : raw.length > PREVIEW_MAX ? `${raw.slice(0, PREVIEW_MAX - 1)}…` : raw;
+      const value = k === "number" ? `#${raw}` : raw.length > max ? `${raw.slice(0, max - 1)}…` : raw;
       return { label: PREVIEW_LABELS[k], value };
     });
 }

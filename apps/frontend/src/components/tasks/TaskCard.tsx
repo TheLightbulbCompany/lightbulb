@@ -39,9 +39,10 @@ export function TaskCard({ task, taskId, viewerId, onOpen, hideAction, children 
   const { run } = useTaskActions("card");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // An approval this viewer can give shows what it does before the one-press Approve (the exact effect).
+  // An approval or review this viewer can act on shows what it does before the one press (To, Subject, …).
   const { tasks } = useLiveEvents();
-  const asks = task?.openQuestion?.canAnswer && task.openQuestion.kind === "approval" ? task.openQuestion.qid : null;
+  const q = task?.openQuestion;
+  const asks = q?.canAnswer && (q.kind === "approval" || q.kind === "review") ? q.qid : null;
   const { data: views } = useTaskQuestions(tasks, asks ? taskId : null);
   const preview = previewRows(views?.items.find((q) => q.id === asks)?.preview).slice(0, 3);
   if (!task) {
@@ -79,7 +80,7 @@ export function TaskCard({ task, taskId, viewerId, onOpen, hideAction, children 
     {task.output && !detail?.includes(task.output.title) && <p className="mt-1 truncate text-ui text-muted-foreground"><span aria-hidden="true">📎 </span>{task.output.title}</p>}
     {children}
     {inline && <div className="relative z-10 mt-2 flex items-center gap-2">
-      <Button type="button" size="sm" variant={view.tone === "waiting" || view.tone === "review" ? "default" : "outline"} disabled={pending}
+      <Button type="button" size="sm" variant={view.tone === "waiting" || view.tone === "review" ? "default" : "outline"} disabled={pending || (!!asks && !views)}
         onClick={async (event) => {
           event.stopPropagation();
           setPending(true);

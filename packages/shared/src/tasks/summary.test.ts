@@ -72,7 +72,7 @@ describe("overviewGroups", () => {
 
 describe("summary lines and labels", () => {
   it("lines", () => {
-    expect(taskSummaryLine(byId(FIXTURES.step05.tasks, "t-signup"), SAM)).toBe("Allow Lightbulb · Engineering to provision database and Stripe");
+    expect(taskSummaryLine(byId(FIXTURES.step05.tasks, "t-signup"), SAM)).toBe("Needs approval: Provision database and Stripe");
     expect(taskSummaryLine(byId(FIXTURES.step09.tasks, "t-email"), SAM)).toBe("Applying: Draft: \"Join us Nov 20\" (240 words)");
     expect(taskSummaryLine(byId(FIXTURES.step02.tasks, "t-signup"), SAM)).toBe("Working · Lightbulb · Engineering");
     expect(taskSummaryLine(byId(FIXTURES.step02.tasks, "t-fees"), SAM)).toBe("would use a paid tool");
@@ -119,7 +119,9 @@ describe("questions: the server's option ids and copy", () => {
     expect(primaryOptionId([])).toBeNull();
   });
   it("an approval names who and the exact target; a decision reads Approved", () => {
-    expect(askLine({ kind: "approval", title: "send 'Q3' to a@b.c" }, "finance")).toBe("Allow Lightbulb · Finance to send 'Q3' to a@b.c");
+    expect(askLine({ kind: "approval", title: "send 'Q3' to a@b.c", preview: { kind: "mail.send" } }, "finance")).toBe("Allow Lightbulb · Finance to send 'Q3' to a@b.c");
+    // A worker's own approval ask (no preview) keeps its words.
+    expect(askLine({ kind: "approval", title: "Can I spend $40 on ads?" }, "ads")).toBe("Can I spend $40 on ads?");
     expect(askLine({ kind: "question", title: "Which date?", text: "" }, "finance")).toBe("Which date?");
     expect(answerVerb("allow_once", "Allow once")).toBe("Approved");
     expect(answerVerb("deny")).toBe("Denied");
@@ -130,6 +132,17 @@ describe("questions: the server's option ids and copy", () => {
       .toEqual([{ label: "To", value: "a@b.c, d@e.f" }, { label: "Subject", value: "Q3" }]);
     expect(previewRows({ kind: "pr.merge", repo: "acme/web", number: 12 })).toEqual([{ label: "Repository", value: "acme/web" }, { label: "PR", value: "#12" }]);
     expect(previewRows(null)).toEqual([]);
+  });
+  it("one-press Approve only for an effect approval (allow_once); a worker's own options open the thread", () => {
+    const t = byId(FIXTURES.step05.tasks, "t-signup");
+    expect(summaryView(t, SAM).action).toBe("approve");
+    const custom = { ...t, openQuestion: { ...t.openQuestion!, options: [{ id: "cancel_order", label: "Cancel" }, { id: "go_ahead", label: "Go ahead" }] } };
+    expect(summaryView(custom, SAM).action).toBe("answer");
+    expect(summaryView({ ...t, openQuestion: { ...t.openQuestion!, options: [] } }, SAM).action).toBe("answer");
+  });
+  it("purchase approvals name the merchant and why", () => {
+    expect(previewRows({ kind: "purchase", amount: "$12", merchant: "Namecheap", why: "launch domain", url: "https://x" }))
+      .toEqual([{ label: "Amount", value: "$12" }, { label: "Merchant", value: "Namecheap" }, { label: "Why", value: "launch domain" }, { label: "Link", value: "https://x" }]);
   });
   it("a dismissed suggestion reads Dismissed, with no Reopen", () => {
     const t = { ...byId(FIXTURES.step02.tasks, "t-fees"), status: "resolved" as const, statusReason: "dismissed", shownGroup: "resolved" as const };

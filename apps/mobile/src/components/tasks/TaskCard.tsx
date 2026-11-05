@@ -71,6 +71,9 @@ export function TaskCard({ task, taskId, viewerId, palette, onOpen = openTaskScr
       {inline ? (
         <ActionButton label={ACTION_LABELS[inline]} palette={palette} primary={view.tone === "waiting" || view.tone === "review"} disabled={pending}
           onPress={async () => {
+            // An answer that acts outside (approve, send, publish, merge) is decided on the thread screen, where the
+            // question is shown in full: the card never sends it blind.
+            if (inline !== "start" && inline !== "retry" && inline !== "reopen") { onOpen(taskId); return; }
             setPending(true);
             setError(null);
             const res = await run(task, inline);

@@ -43,7 +43,7 @@ it("word and action per viewer: Sam sees Approve, Priya sees Waiting on Sam", as
   const sam = await render(<Fresh><TaskCard task={waiting} taskId="t-signup" viewerId={SAM} palette={p} /></Fresh>);
   expect(screen.getByText("Waiting on you")).toBeTruthy();
   expect(screen.getByText("Lightbulb · Engineering")).toBeTruthy();
-  expect(screen.getByText("Allow Lightbulb · Engineering to provision database and Stripe")).toBeTruthy();
+  expect(screen.getByText("Needs approval: Provision database and Stripe")).toBeTruthy();
   expect(screen.getByLabelText("Approve")).toBeTruthy();
   await sam.unmount();
 
@@ -53,7 +53,7 @@ it("word and action per viewer: Sam sees Approve, Priya sees Waiting on Sam", as
   await priya.unmount();
 });
 
-it("the card is one button with an accessible name; its action posts the answer and does not open", async () => {
+it("the card is one button with an accessible name; Approve opens the thread screen, never answers blind", async () => {
   const onOpen = jest.fn();
   const view = await render(<Fresh><TaskCard task={byId("step05", "t-signup")} taskId="t-signup" viewerId={SAM} palette={p} onOpen={onOpen} /></Fresh>);
   const card = screen.getByLabelText("Open Workshop signup app, Waiting on you");
@@ -62,10 +62,8 @@ it("the card is one button with an accessible name; its action posts the answer 
   expect(onOpen).toHaveBeenCalledWith("t-signup");
   onOpen.mockClear();
   fireEvent.press(screen.getByLabelText("Approve"));
-  await waitFor(() => expect(client.answer).toHaveBeenCalledWith("t-signup", "q-provision",
-    expect.objectContaining({ optionId: "allow_once", expectVersion: 7 })));
-  expect(onOpen).not.toHaveBeenCalled();
-  // The answer's follow-up writes settle before the tree goes, so the next test starts clean.
+  expect(onOpen).toHaveBeenCalledWith("t-signup");
+  expect(client.answer).not.toHaveBeenCalled();
   await act(async () => {});
   await view.unmount();
 });

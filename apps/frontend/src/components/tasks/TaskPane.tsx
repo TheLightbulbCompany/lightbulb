@@ -130,7 +130,7 @@ export function NeedsYouCard({ task, question }: { task: TaskSummary; question: 
   const headingId = `needs-${question.id}`;
   const waiting = question.waitingLabel ?? `Waiting on ${question.answerers.map((a) => a.name).join(" or ")}`;
   const heading = askLine(question, task.specialist);
-  const rows = previewRows(question.preview);
+  const rows = previewRows(question.preview, Infinity);
   const send = async (optionId: string, typed?: string) => {
     setPending(true);
     const res = await answer(task, question.id, optionId, { expectVersion: question.version, ...(typed ? { text: typed } : {}) });

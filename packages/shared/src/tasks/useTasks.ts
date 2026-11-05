@@ -1,7 +1,7 @@
 // SWR hooks over the task routes, and the `task.changed` refresh (ids only, I1): the client
 // refetches through the authorized API; a task it can no longer see is dropped quietly.
 
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import useSWR, { useSWRConfig, type Cache, type ScopedMutator } from "swr";
 
 import { ApiError } from "../api/error";
@@ -21,22 +21,29 @@ export const questionsKey = (taskId: string) => `task-questions:${taskId}`;
 const listKeys = (cache: Cache, client: Pick<TasksClient, "cacheScope">) =>
   [...cache.keys()].filter((k) => k.startsWith(listPrefix(client)));
 
-/** Pages the list walks before it stops (50 a page server-side, tasks.py). */
-export const LIST_PAGES = 10;
-
-/** Every page of a scope, followed through `next`. `null` scope = no request (switch off or nothing to show).
- *  ponytail: stops after LIST_PAGES pages (500 threads); a "Load older" cursor if a workspace outgrows that. */
+/** The first page of a scope (50, tasks.py). Older pages load on demand (`useOlderTasks`); a card whose task
+ *  isn't on it reads it by id. `null` scope = no request (switch off or nothing to show). */
 export function useTaskList(client: TasksClient, scope: TaskScope | null) {
-  return useSWR<TaskList>(scope ? taskListKey(client, scope) : null, async () => {
-    const all: TaskSummary[] = [];
-    let page = await client.list(scope!);
-    all.push(...page.tasks);
-    for (let n = 1; page.next && n < LIST_PAGES; n++) {
-      page = await client.list(scope!, page.next);
-      all.push(...page.tasks);
-    }
-    return { tasks: all, next: page.next };
-  }, { shouldRetryOnError: false });
+  return useSWR<TaskList>(scope ? taskListKey(client, scope) : null, () => client.list(scope!), { shouldRetryOnError: false });
+}
+
+/** "Load older" for a list: pages after the first, fetched only when asked, kept beside the first page. */
+export function useOlderTasks(client: TasksClient, first: TaskList | undefined, scope: TaskScope | null) {
+  const [older, setOlder] = useState<{ tasks: TaskSummary[]; next: string | null; key: string } | null>(null);
+  const key = scope ? taskListKey(client, scope) : "";
+  const pages = older?.key === key ? older : null; // a new scope or workspace drops the old pages
+  const next = pages ? pages.next : first?.next ?? null;
+  const [loading, setLoading] = useState(false);
+  const loadOlder = useCallback(async () => {
+    if (!scope || !next) return;
+    setLoading(true);
+    try {
+      const page = await client.list(scope, next);
+      setOlder((o) => ({ key, next: page.next, tasks: [...(o?.key === key ? o.tasks : []), ...page.tasks] }));
+    } finally { setLoading(false); }
+  }, [client, scope, next, key]);
+  const seen = new Set((first?.tasks ?? []).map((t) => t.taskId));
+  return { older: (pages?.tasks ?? []).filter((t) => !seen.has(t.taskId)), hasOlder: !!next, loading, loadOlder };
 }
 
 /** `null` id = no request. */

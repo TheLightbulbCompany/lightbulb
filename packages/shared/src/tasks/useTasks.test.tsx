@@ -8,7 +8,7 @@ import { ApiError } from "../api/error";
 import type { TasksClient } from "./client";
 import { fixtureTask } from "./fixtures";
 import type { TaskDetail, TaskSummary } from "./types";
-import { refreshTask, taskKey, taskListKey, useTask, useTaskList } from "./useTasks";
+import { refreshTask, taskKey, taskListKey, useOlderTasks, useTask, useTaskList } from "./useTasks";
 
 const t1 = fixtureTask({ taskId: "t1", title: "one", version: 5 });
 const t2 = fixtureTask({ taskId: "t2", title: "two", version: 2 });
@@ -50,13 +50,21 @@ describe("useTasks", () => {
     expect(client.get).not.toHaveBeenCalled();
   });
 
-  it("the list follows next past the first page (older threads' cards and the overview)", async () => {
+  it("the list reads one page; older pages load only on demand", async () => {
     const client = fakeClient({
       list: vi.fn(async (_scope: unknown, cursor?: string | null) => (cursor ? { tasks: [t2], next: null } : { tasks: [t1], next: "c1" })),
     } as never);
     const { hook } = await setup(client);
-    expect(hook.result.current.list.data?.tasks.map((t) => t.taskId)).toEqual(["t1", "t2"]);
-    expect(client.list).toHaveBeenLastCalledWith({ kind: "room", roomId: "r1" }, "c1");
+    expect(hook.result.current.list.data?.tasks.map((t) => t.taskId)).toEqual(["t1"]);
+    expect(client.list).toHaveBeenCalledTimes(1);
+    const wrapper = ({ children }: { children: ReactNode }) => <SWRConfig value={{ provider: () => new Map() }}>{children}</SWRConfig>;
+    const scope = { kind: "room", roomId: "r1" } as const;
+    const older = renderHook(() => useOlderTasks(client, hook.result.current.list.data, scope), { wrapper });
+    expect(older.result.current.hasOlder).toBe(true);
+    await act(async () => { await older.result.current.loadOlder(); });
+    expect(client.list).toHaveBeenLastCalledWith(scope, "c1");
+    expect(older.result.current.older.map((t) => t.taskId)).toEqual(["t2"]);
+    expect(older.result.current.hasOlder).toBe(false);
   });
 
   it("task.changed refetches only the matching task", async () => {

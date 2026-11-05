@@ -29,7 +29,7 @@ describe("TaskCard", () => {
     const waiting = byId("step05", "t-signup");
     const sam = render(<Fresh><TaskCard task={waiting} taskId="t-signup" viewerId={SAM} /></Fresh>);
     expect(screen.getByText("Waiting on you")).toBeInTheDocument();
-    expect(screen.getByText("Allow Lightbulb · Engineering to provision database and Stripe")).toBeInTheDocument();
+    expect(screen.getByText("Needs approval: Provision database and Stripe")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Approve" })).toBeInTheDocument();
     sam.unmount();
 
@@ -49,6 +49,18 @@ describe("TaskCard", () => {
     await waitFor(() => expect(client.answer).toHaveBeenCalledWith("t-signup", "q-provision",
       expect.objectContaining({ optionId: "allow_once", expectVersion: 7, clientAnswerId: expect.any(String) })));
     expect(onOpen).not.toHaveBeenCalled();
+  });
+
+  it("a review card shows To and Subject before its one-press Send, which waits for them", async () => {
+    const email = FIXTURES.step07.tasks.find((t) => t.taskId === "t-email")!;
+    let resolve!: (v: unknown) => void;
+    client.questions.mockReturnValue(new Promise((r) => { resolve = r; }) as never);
+    render(<Fresh><TaskCard task={email} taskId="t-email" viewerId={SAM} /></Fresh>);
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    resolve({ items: [{ id: "q-email", version: 2, preview: { kind: "mail.send", to: "team@acme.com", subject: "Join us Nov 20" } }] });
+    expect(await screen.findByText("team@acme.com")).toBeInTheDocument();
+    expect(screen.getByText("Join us Nov 20")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).toBeEnabled());
   });
 
   it("stale version 409 refetches, no second POST", async () => {

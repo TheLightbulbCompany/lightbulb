@@ -34,9 +34,13 @@ export function useTaskActions(source: string) {
   const { tasks } = useLiveEvents();
   const { cache, mutate } = useSWRConfig();
 
+  // One task, not every list: its detail and questions re-read, and the fresh summary written into the lists.
   const refetch = useCallback(async (taskId: string) => {
-    const lists = [...cache.keys()].filter((k) => k.startsWith(`tasks:${tasks.cacheScope}:`));
-    await Promise.all([mutate(taskKey(taskId)), mutate(questionsKey(taskId)), ...lists.map((k) => mutate(k))]);
+    const detail = await tasks.get(taskId).catch(() => null);
+    await mutate(questionsKey(taskId));
+    if (!detail) return;
+    await mutate(taskKey(taskId), detail, { revalidate: false });
+    await putTaskSummary(cache, mutate, detail.task, tasks);
   }, [cache, mutate, tasks]);
 
   const act = useCallback(async (task: TaskSummary, verb: TaskVerb): Promise<ActionResult> => {

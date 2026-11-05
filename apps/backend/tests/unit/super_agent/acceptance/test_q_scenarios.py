@@ -241,7 +241,14 @@ async def test_a11_schedule_lifecycle(monkeypatch):
         if path.endswith("/messages") and method == "POST":
             if "Monday" in request.content.decode():
                 rows.append(
-                    {"type": "schedule", "scheduleId": "s1", "status": "draft", "cron": ["0 9 * * 1"], "tz": "UTC"}
+                    {
+                        "type": "schedule",
+                        "scheduleId": "s1",
+                        "status": "draft",
+                        "cron": ["0 9 * * 1"],
+                        "tz": "UTC",
+                        "deliverTo": "room:r1",
+                    }
                 )
             return _json({"messageId": "m", "messageSeq": 1})
         if path.endswith("/messages"):
@@ -317,7 +324,12 @@ async def test_a02_two_started_one_proposed_and_the_estimate_inline():
                 "messages": [
                     {
                         "author": {"kind": "agent", "id": "front"},
-                        "taskRefs": [{}, {}, {}],
+                        "messageSeq": 2,
+                        "taskRefs": [
+                            {"taskId": "t1", "role": "started"},
+                            {"taskId": "t2", "role": "started"},
+                            {"taskId": "t3", "role": "suggested"},
+                        ],
                         "messageId": "c",
                         "text": "On 200 tickets Stripe takes about $1,200 (2.9% + 30c).",
                     }
@@ -427,3 +439,12 @@ async def test_a05_and_a09_fail_fast_when_a2_made_no_tasks():
         ctx.state["taskIds"] = []
         result = await body(ctx)  # would otherwise wait minutes for a Question that cannot appear
         assert not result.passed and result.evidence["reason"].startswith("needs A2")
+
+
+async def test_a04_needs_the_a2_card_to_reply_under():
+    from scripts.super_agent.acceptance.a04_steer import a04
+
+    ctx = Fake(lambda r, u: _json({}))
+    ctx.state.pop("cardMessageId", None)
+    result = await a04(ctx)
+    assert not result.passed and result.evidence["reason"].startswith("needs A2")

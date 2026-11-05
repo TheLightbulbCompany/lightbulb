@@ -13,24 +13,14 @@ import schemathesis
 from hypothesis import HealthCheck, settings
 from schemathesis.checks import not_a_server_error
 
-from core.auth import AuthContext
+from main import app
 
 
-def _make_app():
-    """Create a FastAPI app with mocked dependencies for contract testing."""
-    from main import app
-    from core.auth import get_current_user
-
-    mock_auth = AuthContext(user_id="contract_test_user")
-
-    async def mock_get_current_user():
-        return mock_auth
-
-    app.dependency_overrides[get_current_user] = mock_get_current_user
-    return app
-
-
-app = _make_app()
+# Signed in as contract_test_user per test (tests/contract/conftest.py
+# _signed_in_as_contract_user), not here: an override set at import lived on the
+# shared app for the whole process, so any other test's teardown that cleared it
+# silently turned this fuzz into a signed-out one (401 everywhere) -- the result
+# depended on which tests ran first.
 
 # Exclude endpoints that require infrastructure not available in mock mode:
 # - /ws/* endpoints need API Gateway + DynamoDB connection state
@@ -152,6 +142,12 @@ schema = (
     )
     .exclude(
         path_regex="^/health$",
+    )
+    # Message and session search answer a deliberate 503 SEARCH_UNAVAILABLE when no
+    # search cluster is configured (settings.SEARCH_ENDPOINT), and the harness has none.
+    # Same class as /slack/events. Covered by tests/unit/services/test_message_search.py.
+    .exclude(
+        path_regex="^/api/v1/messaging/(sessions/)?search$",
     )
 )
 

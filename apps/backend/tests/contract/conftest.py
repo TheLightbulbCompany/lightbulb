@@ -193,6 +193,28 @@ def _mock_oauth_external_deps(monkeypatch):
 
         _create_contract_tables(client, _table_name)
 
+        # Two tables are named by env vars, not the prefix. Signed in, the computer/apps
+        # routes look up the caller's live connections (WS_CONNECTIONS_TABLE, GSI
+        # by-owner-id) and the company source route dedups its webhook (WEBHOOK_DEDUP_TABLE).
+        client.create_table(
+            TableName="contract-test-ws-connections",
+            KeySchema=[{"AttributeName": "connectionId", "KeyType": "HASH"}],
+            AttributeDefinitions=[
+                {"AttributeName": "connectionId", "AttributeType": "S"},
+                {"AttributeName": "ownerId", "AttributeType": "S"},
+            ],
+            GlobalSecondaryIndexes=[
+                {
+                    "IndexName": "by-owner-id",
+                    "KeySchema": [{"AttributeName": "ownerId", "KeyType": "HASH"}],
+                    "Projection": {"ProjectionType": "ALL"},
+                }
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        monkeypatch.setenv("WS_CONNECTIONS_TABLE", "contract-test-ws-connections")
+        monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", _table_name("webhook-event-dedup"))
+
         # The messaging table is named by settings.MESSAGING_TABLE, not the prefix.
         # The public session-link routes (/public/session-links/*,
         # /public/session-copies/redeem) take no sign-in and read it first, so
@@ -301,6 +323,29 @@ def _mock_oauth_external_deps(monkeypatch):
         yield
     finally:
         mock.stop()
+
+
+@pytest.fixture(autouse=True)
+def _signed_in_as_contract_user():
+    """Every contract case runs signed in as contract_test_user, set and restored per test.
+
+    The override used to be installed at import of test_api_contracts.py, so it
+    leaked into every test in the process and other tests' teardowns removed it
+    -- whether this fuzz ran signed in depended on test order.
+    """
+    from core.auth import get_current_user
+    from main import app
+
+    async def _user():
+        return AuthContext(user_id="contract_test_user")
+
+    saved = app.dependency_overrides.get(get_current_user)
+    app.dependency_overrides[get_current_user] = _user
+    yield
+    if saved is None:
+        app.dependency_overrides.pop(get_current_user, None)
+    else:
+        app.dependency_overrides[get_current_user] = saved
 
 
 @pytest.fixture

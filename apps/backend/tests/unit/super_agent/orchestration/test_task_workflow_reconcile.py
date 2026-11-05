@@ -5,6 +5,7 @@ any attempt left open is closed as `runtime_lost` first."""
 import uuid
 
 import pytest
+from temporalio import activity
 from temporalio.worker import Worker
 
 from core.temporal.types import TaskStart
@@ -18,8 +19,13 @@ WS, TID = "org_1", "8f14e45f-ceea-467a-9575-8a1b2c3d4e5f"
 async def _reconcile(env, state: str) -> Fakes:
     fakes = Fakes()
     fakes.behaviour["reconcile_state"] = lambda ws, t: state
+
+    @activity.defn(name="cancel_open_questions")  # Lane Q's; a failed orphan's open Questions
+    async def cancel(ws: str, task_id: str, by: str, reason: str) -> list[str]:
+        return await fakes._call("cancel_open_questions", ws, task_id, by, reason, default=[])
+
     queue = f"q-{uuid.uuid4()}"
-    async with Worker(env.client, task_queue=queue, workflows=WORKFLOWS, activities=fakes.activities()):
+    async with Worker(env.client, task_queue=queue, workflows=WORKFLOWS, activities=[*fakes.activities(), cancel]):
         await env.client.execute_workflow(
             TaskWorkflow.run, TaskStart(WS, TID, "reconcile"), id=f"task:{WS}:{uuid.uuid4()}", task_queue=queue
         )
@@ -28,14 +34,28 @@ async def _reconcile(env, state: str) -> Fakes:
 
 async def test_taskworkflow_reconcile_reason_never_starts_attempt(temporal_env):
     fakes = await _reconcile(temporal_env, "working:2:live")
-    assert fakes.names() == ["reconcile_state", "end_attempt", "transition", "close_automation_run"]
+    assert fakes.names() == [
+        "reconcile_state",
+        "end_attempt",
+        "cancel_open_questions",
+        "transition",
+        "close_automation_run",
+    ]
     assert fakes.args("end_attempt") == [(WS, TID, 2, "runtime_lost", "lost_run")]
+    # this run never tracked the orphan's Questions: they are cancelled from the store
+    assert fakes.args("cancel_open_questions") == [(WS, TID, "__system__", "lost_run")]
     assert fakes.args("transition") == [(WS, TID, "failed", "lost_run")]
 
 
 async def test_reconcile_on_already_ended_attempt_only_transitions(temporal_env):
     fakes = await _reconcile(temporal_env, "working:2:ended")
-    assert fakes.names() == ["reconcile_state", "release_slot", "transition", "close_automation_run"]
+    assert fakes.names() == [
+        "reconcile_state",
+        "release_slot",
+        "cancel_open_questions",
+        "transition",
+        "close_automation_run",
+    ]
     assert fakes.args("transition") == [(WS, TID, "failed", "lost_run")]
 
 

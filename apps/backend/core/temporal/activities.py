@@ -598,7 +598,7 @@ async def _deliver(
     ref = trig.get("ref") or {}
     if trig["source"] in ("mail", "text") and not refs and await _deliver_source_reply(ws, trig, text, event_id):
         return None
-    room = ref.get("roomId") or ref.get("deliverRoomId")
+    room = ts.trigger_room(trig)
     if not room:
         logger.warning("trigger %s has nowhere to answer (source %s)", trig["triggerId"], trig["source"])
         return None
@@ -614,7 +614,7 @@ async def _ensure_task(ws: str, task_id: str, trig: dict, lane: str, status: str
         return existing
     ref = trig.get("ref") or {}
     actor = trig.get("actorUserId")
-    room = ref.get("roomId") or ref.get("deliverRoomId")
+    room = ts.trigger_room(trig)
     private = lane != "shared"
     asked = fields.pop("visibility", None)
     # Clamp the model's `visibility` to what the trigger allows (§5): a private lane is always the person's;
@@ -821,7 +821,7 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
     if to_model and script:  # dev fault hook: decisions by exact message text, no Router run
         roster = await messaging.load_agent_roster(ws)
         user_id = next((t.get("actorUserId") for t in to_model.values() if t.get("actorUserId")), None)
-        rooms = {(t.get("ref") or {}).get("roomId") for t in to_model.values()} - {None}
+        rooms = {ts.trigger_room(t) for t in to_model.values()} - {None}
         open_tasks = await _open_tasks(ws, inp.lane, user_id, rooms)
         texts = {tid: await _input_text(ws, tid) for tid in to_model}
         decisions += router_prompt.validate_decisions(
@@ -832,18 +832,16 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
             scope=lambda tid: (
                 inp.lane,
                 to_model[tid].get("actorUserId"),
-                (to_model[tid].get("ref") or {}).get("roomId"),
+                ts.trigger_room(to_model[tid]),
             ),
             in_scope=_task_in_scope,
         )
     elif to_model:
         private = inp.lane != "shared"
         user_id = next((t.get("actorUserId") for t in to_model.values() if t.get("actorUserId")), None)
-        room_id = next(
-            ((t.get("ref") or {}).get("roomId") for t in to_model.values() if (t.get("ref") or {}).get("roomId")), None
-        )
+        room_id = next((r for r in map(ts.trigger_room, to_model.values()) if r), None)
         roster = await messaging.load_agent_roster(ws)
-        rooms = {(t.get("ref") or {}).get("roomId") for t in to_model.values()} - {None}
+        rooms = {ts.trigger_room(t) for t in to_model.values()} - {None}
         open_tasks = await _open_tasks(ws, inp.lane, user_id, rooms)
         views = [await _trigger_view(ws, t) for t in to_model.values()]
         prompt = router_prompt.render_batch(views, roster, open_tasks, lane=inp.lane)
@@ -862,7 +860,7 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
             scope=lambda tid: (
                 inp.lane,
                 to_model[tid].get("actorUserId"),
-                (to_model[tid].get("ref") or {}).get("roomId"),
+                ts.trigger_room(to_model[tid]),
             ),
             in_scope=_task_in_scope,
         )

@@ -100,10 +100,7 @@ async def _admit_trigger(ws: str, trigger_id: str) -> None:
     if trig is None or not await flags_for(ws):
         put_metric("admission.outcome", dimensions={"outcome": "dropped", "source": "trigger"})
         return
-    ref = trig.get("ref") or {}
-    await _signal(
-        TriggerRef(ws, trigger_id, trig["lane"], trig["admission"], ref.get("roomId") or ref.get("deliverRoomId"))
-    )
+    await _signal(TriggerRef(ws, trigger_id, trig["lane"], trig["admission"], ts.trigger_room(trig)))
     put_metric("admission.outcome", dimensions={"outcome": trig["admission"], "source": trig["source"]})
 
 

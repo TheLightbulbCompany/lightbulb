@@ -129,7 +129,8 @@ async def test_record_answer_decides_the_effect_and_writes_the_trigger(world, op
     await effects_repo.put_effect(WS, _effect())
     [ref] = await _run(tq.open_questions, WS, TASK)
     out = await _run(tq.record_answer, WS, TASK, tq.AnswerRef(ref.qid, option, None, SAM, "c-1"))
-    assert out == tq.AnswerOut(f"answer:{ref.qid}:c-1", option)
+    land = f"{TASK}:1:c1" if option == "send" else None  # an approved, parsed draft lands; changes go back
+    assert out == tq.AnswerOut(f"answer:{ref.qid}:c-1", option, land)
     effect = await effects_repo.get_effect(WS, f"{TASK}:1:c1")
     assert (effect["state"], effect["questionId"]) == (state, ref.qid)
     trigger = await tasks_repo.get_trigger(WS, out.trigger_id)

@@ -3,6 +3,10 @@
 Effects are append-only puts on a deterministic key (`EFFECT#{taskId}:{attempt}:{toolCallId}`) and move forward
 only: proposed → approved | denied → intent → done | unknown (a fresh `proceed` is put straight in `intent`).
 `set_effect_state` is for `TaskWorkflow` Activities; `mark_effect_done` is the bridge's `…/effects/{idemKey}/done`.
+A `done` row whose `resultRef` starts with `refused:` did NOT happen (a Landing executor refused it, e.g.
+`refused:rate_limited`): every surface renders it as "Didn't happen: <reason>", and `questions.gate` treats it like
+any `done` row, so the same draft can be asked again. `unknown` = it may have happened; never retried.
+
 An approval is single use: `use_approval` puts `EFFECT#{approvedIdemKey}:use` in the same transaction as the intent it
 lets through; `questions.gate` reads the `:use` row.
 """
@@ -25,7 +29,9 @@ TRANSITIONS: dict[str, frozenset[str]] = {
     "done": frozenset({"intent"}),
     "unknown": frozenset({"intent"}),
 }
-_SET_FORBIDDEN = frozenset({"pk", "sk", "type", "idemKey", "taskId", "state", "version", "createdAt"})
+_SET_FORBIDDEN = frozenset(
+    {"pk", "sk", "type", "idemKey", "taskId", "state", "version", "createdAt", "kind", "operands", "operandsHash"}
+)
 
 
 async def put_effect(ws: str, effect: dict) -> tuple[dict, bool]:

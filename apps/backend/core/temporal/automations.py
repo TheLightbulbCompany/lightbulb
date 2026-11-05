@@ -282,9 +282,11 @@ async def fire_automation(inp: FireInput, at_ms: int) -> str:
     deliver_to = row.get("deliverTo") or "none"
     room_id = deliver_to.removeprefix("room:") if deliver_to.startswith("room:") else None
     dm = deliver_to.startswith("dm:")
-    if dm and deliver_to.removeprefix("dm:") == row["ownerUserId"]:
-        # The owner's DM with Lightbulb (found or created as an agent post to a user does). A dm: naming anyone
-        # else is never delivered: the run is the owner's (person-visible), not another member's to read.
+    if dm and deliver_to.removeprefix("dm:") != row["ownerUserId"]:
+        # Backstop for rows saved before the routes refused it (dm_owner_only): never another member's DM.
+        activity.logger.warning("automation %s delivers to another member's DM; not delivered", row["scheduleId"])
+    elif dm:
+        # The owner's DM with Lightbulb (found or created as an agent post to a user does).
         room_id = await messaging._agent_dm_room_id(ws, row["ownerUserId"], await task_conversation.front_agent_id(ws))
     start = ts.StartTask(
         kind="start_task",

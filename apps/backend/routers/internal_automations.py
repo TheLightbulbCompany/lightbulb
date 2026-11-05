@@ -16,6 +16,7 @@ from core.dynamodb import utc_now_iso
 from core.repositories import automations_repo, messaging_repo, tasks_repo, user_repo
 from core.services import admission, automation_schedule, super_agent_flags, task_conversation
 from core.services.container_auth import _require_hook_token
+from routers.automations import check_dm_owner
 from routers.rules import RuleBuiltin, RuleMatchIn, check_scope
 
 router = APIRouter()
@@ -69,6 +70,7 @@ async def propose(owner_id: str, body: ProposeIn, request: Request) -> dict:
         raise _err(400, "no_room")
     if not requester:
         raise _err(400, "no_requester")
+    check_dm_owner(body.deliver_to, requester)
     if not body.cron and body.match is None:
         raise _err(400, "no_schedule")
     if body.cron and body.match is not None:

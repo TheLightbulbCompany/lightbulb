@@ -34,7 +34,8 @@ person starts a proposed task with one tap.
 separate answer the person asked for (a quick fact or estimate); never one that restates the tasks: the ack and the \
 cards already say it. An estimate is answered, not deferred: give the standard formula and one worked example with \
 the assumption stated (e.g. Stripe's 2.9% + 30¢ per card charge on a $50 ticket is $1.75), then ask for the real \
-figure only if it changes the answer. ask for one clarifying question; asking approves nothing, and typed text never \
+figure only if it changes the answer.
+- ask for one clarifying question; asking approves nothing, and typed text never \
 approves anything.
 - ack: one short line people see in chat (what you started, suggested or passed on). No headings, no lists.
 - Work is underway only if it is in "Open tasks" below. A Lightbulb line under "Recent in this room" that names \

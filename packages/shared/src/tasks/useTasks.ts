@@ -7,7 +7,7 @@ import useSWR, { useSWRConfig, type Cache, type ScopedMutator } from "swr";
 import { ApiError } from "../api/error";
 import type { TaskChanged } from "../live/types";
 import { scopeParam, type TasksClient } from "./client";
-import type { TaskDetail, TaskScope, TaskSummary } from "./types";
+import type { QuestionView, TaskDetail, TaskScope, TaskSummary } from "./types";
 
 type TaskList = { tasks: TaskSummary[]; next: string | null };
 
@@ -16,6 +16,7 @@ const listPrefix = (client: Pick<TasksClient, "cacheScope">) => `tasks:${client.
 export const taskListKey = (client: Pick<TasksClient, "cacheScope">, scope: TaskScope) => `${listPrefix(client)}${scopeParam(scope)}`;
 /** Task ids are UUIDs, unique across workspaces; a task the viewer lost is dropped on its 403. */
 export const taskKey = (taskId: string) => `task:${taskId}`;
+export const questionsKey = (taskId: string) => `task-questions:${taskId}`;
 
 const listKeys = (cache: Cache, client: Pick<TasksClient, "cacheScope">) =>
   [...cache.keys()].filter((k) => k.startsWith(listPrefix(client)));
@@ -28,6 +29,11 @@ export function useTaskList(client: TasksClient, scope: TaskScope | null) {
 /** `null` id = no request. */
 export function useTask(client: TasksClient, taskId: string | null) {
   return useSWR<TaskDetail>(taskId ? taskKey(taskId) : null, () => client.get(taskId!));
+}
+
+/** The viewer-specific question views of one task (`GET /tasks/{id}/questions`); `null` id = no request. */
+export function useTaskQuestions(client: TasksClient, taskId: string | null) {
+  return useSWR<{ items: QuestionView[] }>(taskId ? questionsKey(taskId) : null, () => client.questions(taskId!));
 }
 
 /** Write a fresh summary (e.g. an action's response) into every cached list and the detail. */
@@ -73,6 +79,7 @@ export async function refreshTask({ cache, mutate, client }: RefreshDeps, { task
   }
   await mutate(taskKey(taskId), fresh, { revalidate: false });
   await putTaskSummary(cache, mutate, fresh.task, client);
+  if (cache.get(questionsKey(taskId))) await mutate(questionsKey(taskId));
 }
 
 /** The handler a live provider calls for each `task.changed`. */

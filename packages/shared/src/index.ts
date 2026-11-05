@@ -361,7 +361,7 @@ export { cardReplyRequest, choiceReply, formReply, tableReply } from "./ui/reply
 export type { CardReply } from "./ui/reply";
 export { answerIsFormOf, answerIsFrom, answerIsTableOf, cardAnswerFor, cardAnswersFor } from "./ui/answer";
 export {
-  TASK_STATUSES, SHOWN_GROUPS, GROUP_LABELS, GROUP_ORDER, taskView, summaryView, specialistLabel, overviewGroups, taskSummaryLine,
+  TASK_STATUSES, SHOWN_GROUPS, GROUP_LABELS, GROUP_ORDER, taskView, summaryView, specialistLabel, overviewGroups, taskSummaryLine, effectLine,
 } from "./tasks/view";
 export type {
   EffectRow, OverviewGroup, QuestionRow, ShownGroup, SummaryView, TaskAction, TaskRow, TaskStatus, TaskTone, TaskView, TaskViewInput,
@@ -369,8 +369,8 @@ export type {
 export { OUTPUT_KINDS } from "./tasks/types";
 export type {
   AnswerBody, OutputKind, QuestionKind, QuestionOption, QuestionView, SummaryQuestion, TaskAttempt, TaskDetail, TaskEffect,
-  TaskRef, TaskScope, TaskSubscription, TaskSummary, TaskVerb,
+  TaskQuestionRow, TaskRef, TaskScope, TaskSubscription, TaskSummary, TaskTrace, TaskVerb,
 } from "./tasks/types";
 export { createTasksClient, scopeParam } from "./tasks/client";
 export type { TasksClient } from "./tasks/client";
-export { putTaskSummary, refreshTask, taskKey, taskListKey, useTask, useTaskChangedRefresh, useTaskList } from "./tasks/useTasks";
+export { putTaskSummary, questionsKey, refreshTask, taskKey, taskListKey, useTask, useTaskChangedRefresh, useTaskList, useTaskQuestions } from "./tasks/useTasks";

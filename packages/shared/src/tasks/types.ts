@@ -86,14 +86,38 @@ export interface TaskAttempt {
   usage?: { costUsd?: number } | null;
 }
 
-export interface TaskEffect { idemKey: string; tool: string; state: string; output?: { kind: OutputKind; title: string } | null }
+/** An Effect row (`GET /tasks/{id}`). `resultRef` starting `refused:` on a `done` row means it did NOT happen (lanes/Q.md). */
+export interface TaskEffect {
+  idemKey: string; tool: string; kind?: string; state: string;
+  output?: { kind: OutputKind; title: string } | null; resultRef?: string | null;
+}
 export interface TaskSubscription { threadKey: string; createdBy: "router" | "person" | "schedule"; active?: boolean }
 
-/** `GET /api/v1/tasks/{id}`. */
+/** A Question row as `GET /tasks/{id}` returns it (schema `question`; not viewer-specific — see `QuestionView`). */
+export interface TaskQuestionRow {
+  qid: string;
+  kind: QuestionKind;
+  subkind?: string | null;
+  title: string;
+  text?: string;
+  options?: QuestionOption[];
+  answerers: string[];
+  state: "open" | "answered" | "cancelled";
+  answer?: { optionId?: string | null; text?: string | null } | null;
+  answeredBy?: string | null;
+  answeredAt?: string | null;
+  createdAt: string;
+  version: number;
+}
+
+/** `GET /tasks/{id}/trace?attempt=n`: the Attempt's live tool list from the bridge. */
+export interface TaskTrace { attempt: number; recentTools: unknown[] }
+
+/** `GET /api/v1/tasks/{id}`. Viewer-specific question views come from `GET /tasks/{id}/questions`. */
 export interface TaskDetail {
   task: TaskSummary;
   attempts: TaskAttempt[];
-  questions: QuestionView[];
+  questions: TaskQuestionRow[];
   effects: TaskEffect[];
   subscriptions: TaskSubscription[];
   taskRoomId: string;

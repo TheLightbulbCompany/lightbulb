@@ -2,7 +2,7 @@
 // `optionId ∈ {publish, send, merge, approve}` is the apply.
 
 import type { ApiMethods } from "../api/client";
-import type { AnswerBody, QuestionView, TaskDetail, TaskScope, TaskSummary, TaskVerb } from "./types";
+import type { AnswerBody, QuestionView, TaskDetail, TaskScope, TaskSummary, TaskTrace, TaskVerb } from "./types";
 
 export const scopeParam = (scope: TaskScope): string =>
   scope.kind === "room" ? `room:${scope.roomId}` : scope.kind;
@@ -16,7 +16,7 @@ export interface TasksClient {
   /** `POST /tasks/start`: the summaries of the ones that started; an id absent from `tasks` did not. */
   startMany(taskIds: string[]): Promise<{ tasks: TaskSummary[] }>;
   answer(taskId: string, qid: string, body: AnswerBody): Promise<{ question: QuestionView; next: TaskSummary | null }>;
-  trace(taskId: string, attempt: number): Promise<unknown>;
+  trace(taskId: string, attempt: number): Promise<TaskTrace>;
   markRead(taskId: string): Promise<unknown>;
   needsYou(): Promise<{ items: QuestionView[]; next: string | null }>;
   /** A task's questions, answered and cancelled included (`routers/questions.py`). */
@@ -35,7 +35,7 @@ export function createTasksClient(api: ApiMethods, cacheScope = ""): TasksClient
     startMany: (taskIds) => api.post("/tasks/start", { taskIds }) as Promise<{ tasks: TaskSummary[] }>,
     answer: (taskId, qid, body) =>
       api.post(`${path(taskId)}/questions/${encodeURIComponent(qid)}/answer`, body) as ReturnType<TasksClient["answer"]>,
-    trace: (taskId, attempt) => api.get(`${path(taskId)}/trace?attempt=${attempt}`),
+    trace: (taskId, attempt) => api.get(`${path(taskId)}/trace?attempt=${attempt}`) as Promise<TaskTrace>,
     markRead: (taskId) => api.post(`${path(taskId)}/read`, {}),
     needsYou: () => api.get("/needs-you") as ReturnType<TasksClient["needsYou"]>,
     questions: (taskId) => api.get(`${path(taskId)}/questions`) as ReturnType<TasksClient["questions"]>,

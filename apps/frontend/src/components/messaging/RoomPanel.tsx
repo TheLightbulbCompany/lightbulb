@@ -41,6 +41,8 @@ import { OnboardingBand } from "./OnboardingBand";
 import { RoomLimitBar } from "./RoomLimitBar";
 import type { BillingAccount } from "@/hooks/useBilling";
 import { RoomMessageItem } from "./RoomMessageItem";
+import { TaskPane } from "@/components/tasks/TaskPane";
+import { useSuperAgent } from "@/hooks/useLiveEvents";
 import { RoomMessageSearch } from "./RoomMessageSearch";
 import { RoomTasks } from "./RoomTasks";
 import { taskIdentifiers, useReferencedTasks } from "./MessageTaskCard";
@@ -406,7 +408,8 @@ function RoomContent({
   const [contextCollapsed, setContextCollapsed] = useState(true);
   const [detailsTab, setDetailsTab] = useState<DetailsTab>("members");
   const [editTarget, setEditTarget] = useState<string | null>(null);
-  const [localSelection, setSelection] = useState<{ kind: "thread" | "tasks"; id: string } | null>(null);
+  const superAgent = useSuperAgent();
+  const [localSelection, setSelection] = useState<{ kind: "thread" | "tasks" | "task"; id: string } | null>(null);
   const selection = useMemo(() => selectedThreadId === undefined ? localSelection
     : selectedThreadId ? { kind: "thread" as const, id: selectedThreadId }
       : localSelection?.kind !== "thread" ? localSelection : null, [selectedThreadId, localSelection]);
@@ -484,7 +487,8 @@ function RoomContent({
   const activeSearchTarget = searchTarget && !searchTarget.threadRootMessageId && !selection ? searchTarget : null;
   const parentMessage = selection?.kind === "thread" ? messages.find((message) => message.messageId === selection.id) : undefined;
   const showTasks = selection?.kind === "tasks" && !!onLinkToWork;
-  const showDetail = !!(parentMessage || showTasks);
+  const taskSelection = superAgent && selection?.kind === "task" ? selection.id : null;
+  const showDetail = !!(parentMessage || showTasks || taskSelection);
   const showContext = showDetail || !contextCollapsed;
   const activeRuns = runs.filter((run) => run.state === "running");
   // Any author: a human naming ISO-14 references it as much as an agent does.
@@ -627,6 +631,13 @@ function RoomContent({
     setSelection({ kind, id: targetId });
   }, [onSelectThread]);
 
+  const openTask = useCallback((taskId: string) => {
+    if (document.activeElement instanceof HTMLButtonElement) trigger.current = document.activeElement;
+    onSelectThread?.(null);
+    setSelection({ kind: "task", id: taskId });
+  }, [onSelectThread]);
+  const isAgentId = useCallback((memberId: string) => participants.some((p) => p.kind === "agent" && p.id === memberId), [participants]);
+
   const toggleReaction = useCallback(async (message: RoomMessage, emoji: string) => {
     if (!onSetReaction || !actionable || reactionPending !== null) return;
     setReactionPending(message.messageId);
@@ -664,6 +675,7 @@ function RoomContent({
       onSelectParticipant={onSelectParticipant} onUpdateMessage={onUpdateMessage} onDownloadAttachment={onDownloadAttachment} onAttachmentUrl={onAttachmentUrl}
       cardsEnabled={cardsEnabled} onCardReply={repliesEnabled && participant ? onCardReply : undefined} cardAnswer={cardAnswers.get(message.messageId) ?? null}
       sessions={visibleSessions} onOpenSession={openSessionPanel}
+      onOpenTask={superAgent ? openTask : undefined} isAgentId={superAgent ? isAgentId : undefined}
       menuExtras={!message.deletedAt && (onSetPin || (onMarkUnreadFrom && !inThread)) ? <>
         {/* disabled/aria-busy reflect messageActionPending -- shared across every message's
             menu here, same one-pending-pair-per-surface shape as useAsyncAction's doc comment.
@@ -700,7 +712,7 @@ function RoomContent({
     }
     return body(message.text);
   }, [revealStarter, participants, currentUserId, repliesByRoot, threadActivity, receipts, id, actionable, editTarget, searchTarget,
-    quickReactions, reactionPending, reactionError, onSetReaction, toggleReaction, openDetail,
+    quickReactions, reactionPending, reactionError, onSetReaction, toggleReaction, openDetail, superAgent, openTask, isAgentId,
     onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, onCardReply, cardsEnabled, repliesEnabled, cardAnswers, onSetPin, onMarkUnreadFrom,
     messageActionPending, runMessageAction, pinnedMessageIds, copied, copyError, roomId, visibleSessions]);
   // A run that ended without a saved reply (stopped, failed, no reply) stays where it happened,
@@ -949,7 +961,8 @@ function RoomContent({
         <h3 ref={detailHeading} tabIndex={-1} className="font-semibold">Tasks</h3></header>
       <div className="room-context-body"><RoomTasks tasks={roomTasks} onOpenAll={onLinkToWork!} /></div>
     </aside>}
-    {showDetail && !showTasks && <aside className="room-context" aria-label="Thread" onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeDetail(); } }}>
+    {taskSelection && <TaskPane key={taskSelection} taskId={taskSelection} viewerId={currentUserId} onClose={closeDetail} headingRef={detailHeading} />}
+    {showDetail && !showTasks && !taskSelection && <aside className="room-context" aria-label="Thread" onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeDetail(); } }}>
       <header className="room-context-header"><Button variant="ghost" aria-label="Back to conversation" onClick={closeDetail}><ArrowLeft aria-hidden="true" />Back</Button>
         <h3 ref={detailHeading} tabIndex={-1} className="font-semibold room-wrap">Thread</h3></header>
       <StickToBottom className="room-context-body" pinToken={threadSendToken}>{parentMessage ? <>{renderMessage(parentMessage, true)}

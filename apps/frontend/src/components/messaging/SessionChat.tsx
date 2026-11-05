@@ -30,7 +30,7 @@ const SESSION_WORDS: ChatWords = {
  * the draft. It posts only through the room message door; a chat seat never lets anyone type into
  * the session. Threads and reactions are left out: replies render inline.
  */
-export function SessionChat({ sessionId, sessionOwnerId, openChat, onClose, onRoom, onRead, words = SESSION_WORDS }: {
+export function SessionChat({ sessionId, sessionOwnerId, openChat, onClose, onRoom, onRead, onSend, words = SESSION_WORDS }: {
   /** What openChat opens: a session, or an app in Canvas. */
   sessionId: string;
   /** The session's own person: their name takes the owner colour, as in the terminal. */
@@ -43,6 +43,8 @@ export function SessionChat({ sessionId, sessionOwnerId, openChat, onClose, onRo
   /** The reader's cursor in this chat moved (on open, and on each arrival read while it is open). */
   onRead?: () => void;
   words?: ChatWords;
+  /** A message went out from this column's composer. */
+  onSend?: () => void;
 }) {
   const { userId } = useAuth();
   const rooms = useRooms(null, true, true, false);
@@ -80,6 +82,7 @@ export function SessionChat({ sessionId, sessionOwnerId, openChat, onClose, onRo
     setClientMessageId(crypto.randomUUID());
     try {
       await sendMessage(request);
+      onSend?.();
     } catch (e) {
       if (!textRef.current.trim()) {
         setText(request.text);
@@ -87,7 +90,7 @@ export function SessionChat({ sessionId, sessionOwnerId, openChat, onClose, onRo
       }
       throw e;
     }
-  }, [sendMessage]);
+  }, [sendMessage, onSend]);
 
   const room = roomId && rooms.activeRoom?.roomId === roomId ? rooms.activeRoom : undefined;
   const members = (room?.members ?? []) as RoomParticipant[];

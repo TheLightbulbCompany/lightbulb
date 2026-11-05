@@ -74,3 +74,35 @@ async def test_room_lists_around_a_malformed_message(monkeypatch):
 def test_writes_stay_strict():
     with pytest.raises(ValueError):
         messaging.Author(kind="human", id="u", display_name="x", avatar="y")
+
+
+def test_unknown_author_kind_reads_as_agent_never_system():
+    msg = messaging.canonical_message(_row(author={"kind": "bot", "id": "b", "displayName": "B"}))
+    assert msg.author.kind == "agent"
+
+
+def test_garbage_deleted_at_still_reads_deleted():
+    msg = messaging.canonical_message(_row(deletedAt="not-a-time")).model_dump(mode="json")
+    assert msg["text"] == "" and msg["attachments"] == [] and msg["deletedAt"] == msg["createdAt"]
+
+
+def test_repair_warning_once_per_message(caplog):
+    row = _row(77, via="rolled_back_value")
+    messaging._REPAIR_LOGGED.clear()
+    with caplog.at_level("WARNING"):
+        messaging.canonical_message(row)
+        messaging.canonical_message(row)
+    assert sum("repaired fields" in r.message for r in caplog.records) == 1
+
+
+async def test_list_and_feed_survive_malformed_dispatch_targets(monkeypatch):
+    rows = [
+        _row(1, dispatchTargets=["junk", {"agentId": "a1", "eventKind": "user_request"}]),
+        _row(2, dispatchTargets=5),
+    ]
+    assert [m.addressed_agent_ids for m in messaging._listable(rows)] == [["a1"]]  # 2 is skipped, not a failed room
+    monkeypatch.setattr(messaging, "ensure_feed_room", AsyncMock(return_value=ROOM))
+    monkeypatch.setattr(messaging.messaging_repo, "get_room", AsyncMock(return_value={"lastSeq": 2}))
+    monkeypatch.setattr(messaging.messaging_repo, "list_messages_before", AsyncMock(return_value=rows))
+    feed = await messaging.agent_feed("org_1")
+    assert [p["text"] for p in feed["posts"]] == ["hi"]

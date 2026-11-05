@@ -1315,7 +1315,7 @@ def canonical_message(item: dict[str, Any], *, original_request: bool = False) -
         addressed_agent_ids=[
             t["agentId"]
             for t in item.get("dispatchTargets") or []
-            if t.get("agentId") and t.get("eventKind") == "user_request"
+            if isinstance(t, dict) and t.get("agentId") and t.get("eventKind") == "user_request"
         ],
         attachments=[] if deleted else item.get("attachments") or [],
         # Messages from before 2026-10-02 carry no sessionMentions; their labels name the same ids.
@@ -1337,11 +1337,13 @@ def canonical_message(item: dict[str, Any], *, original_request: bool = False) -
 # on READ only, so one message never fails its room; writes stay strict. These fields cannot be repaired.
 _CORE_FIELDS = {"message_id", "room_id", "message_seq", "room_revision", "created_at", "text"}
 _READ_FALLBACK = {"mentions": [], "run_id": None, "reply_to_message_id": None, "thread_root_message_id": None}
+_REPAIR_LOGGED: dict[Any, None] = {}  # insertion-ordered: the oldest id is evicted past 10k
 
 
 def _repair_author(value: Any) -> dict:
     a = value if isinstance(value, dict) else {}
-    kind = a.get("kind") if a.get("kind") in ("human", "agent", "system") else "system"
+    # An unknown kind reads as "agent", never "system" (the most trusted kind; readState never counts it unread).
+    kind = a.get("kind") if a.get("kind") in ("human", "agent", "system") else "agent"
     return {
         "kind": kind,
         "id": str(a.get("id") or "unknown")[:256],
@@ -1372,6 +1374,10 @@ def _tolerant_message(fields: dict[str, Any], exc: ValidationError) -> Canonical
                 value.pop(loc[1], None)
             elif err["type"] == "too_long" and isinstance(value, list):
                 fields[name] = value[:ATTACHMENT_MAX_COUNT]
+            elif name == "deleted_at":
+                # A stored deletion is never shown live: the text is already blanked (`deleted`); the marker
+                # becomes the message's own createdAt, a valid time clients read as "deleted".
+                fields[name] = fields["created_at"]
             else:
                 field = CanonicalMessage.model_fields[name]
                 fields[name] = (
@@ -1384,7 +1390,11 @@ def _tolerant_message(fields: dict[str, Any], exc: ValidationError) -> Canonical
         except ValidationError as again:
             exc = again
             continue
-        logger.warning("stored message %s read with repaired fields %s", fields["message_id"], sorted(repaired))
+        if fields["message_id"] not in _REPAIR_LOGGED:  # once per message per process
+            _REPAIR_LOGGED[fields["message_id"]] = None
+            if len(_REPAIR_LOGGED) > 10_000:
+                _REPAIR_LOGGED.pop(next(iter(_REPAIR_LOGGED)))
+            logger.warning("stored message %s read with repaired fields %s", fields["message_id"], sorted(repaired))
         return message
     raise exc
 
@@ -2473,7 +2483,7 @@ async def agent_feed(owner_id: str) -> dict[str, Any]:
     # ponytail: the newest 100 rows, top-level kept; a Discuss thread longer than ~80 replies in
     # that window shortens the list. A top-level index if that is ever seen.
     rows = await messaging_repo.list_messages_before(room_id, int(meta.get("lastSeq") or 0) + 1, 100)
-    posts = [canonical_message(row) for row in rows if not row.get("deletedAt") and not row.get("threadRootMessageId")][
+    posts = _listable([row for row in rows if not row.get("deletedAt") and not row.get("threadRootMessageId")])[
         -FEED_AGENT_READ_LIMIT:
     ]
     return {
@@ -3237,7 +3247,7 @@ def _listable(rows: list[dict]) -> list[CanonicalMessage]:
     for row in rows:
         try:
             out.append(canonical_message(row))
-        except (KeyError, TypeError, ValueError):  # ValidationError is a ValueError
+        except (AttributeError, KeyError, TypeError, ValueError):  # ValidationError is a ValueError
             logger.warning(
                 "stored message unreadable, skipped: room=%s seq=%s", row.get("roomId"), row.get("messageSeq")
             )

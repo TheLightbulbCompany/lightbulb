@@ -33,9 +33,9 @@ async def test_env_master_off_ignores_an_on_row(monkeypatch):
     [
         ({"super_agent": True}, True),
         ({"super_agent": False}, False),
-        ({}, False),
-        (None, False),
-        ({"super_agent": "true"}, False),  # only a real bool turns it on
+        ({}, True),  # dev default: on
+        (None, True),
+        ({"super_agent": "false"}, True),  # only a real False opts out
     ],
 )
 async def test_env_master_on_reads_the_workspace_bool(monkeypatch, row, expected):
@@ -104,7 +104,7 @@ async def test_list_on_empty_when_env_master_off(monkeypatch):
     scan.assert_not_awaited()
 
 
-async def test_list_on_returns_only_flagged_owners(monkeypatch):
+async def test_list_on_returns_every_owner_not_opted_out(monkeypatch):
     from core.services.super_agent_flags import list_on
 
     monkeypatch.setattr(settings, "SUPER_AGENT_ENV_ENABLED", True)
@@ -115,7 +115,7 @@ async def test_list_on_returns_only_flagged_owners(monkeypatch):
         {"owner_id": "org_none"},
     ]
     with patch(SCAN, AsyncMock(return_value=rows)):
-        assert await list_on() == ["org_on"]
+        assert await list_on() == ["org_on", "org_str", "org_none"]
 
 
 # --- LiveConfig ------------------------------------------------------------------------------------

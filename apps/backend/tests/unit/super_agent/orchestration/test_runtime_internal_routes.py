@@ -177,6 +177,25 @@ async def test_terminal_stores_the_results_files(api):
     assert (await repo.get_attempt(WS, tid, 1))["attachments"] == files
 
 
+async def test_terminal_attachments_capped_at_the_message_limit(api):
+    from core.services.messaging import ATTACHMENT_MAX_COUNT
+
+    tid = await _task()
+    ref = await _running(tid)
+    f = {"fileName": "a.docx", "contentType": "application/pdf"}
+    files = [{**f, "attachmentId": f"4f1c1f2e-0000-4000-8000-00000000000{i}"} for i in range(ATTACHMENT_MAX_COUNT + 1)]
+    body = {
+        "runSecret": await _secret(tid),
+        "taskId": tid,
+        "attempt": 1,
+        "kind": "terminal",
+        "status": "completed",
+        "output": "Done.",
+        "attachments": files,
+    }
+    assert (await api.post(_url(WS, ref.run_id), json=body, headers=H)).status_code in (400, 422)
+
+
 async def test_run_event_wrong_owner_403(api, monkeypatch):
     tid = await _task()
     ref = await _running(tid)

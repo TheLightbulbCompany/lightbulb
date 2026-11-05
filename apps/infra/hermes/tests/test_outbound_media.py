@@ -374,18 +374,28 @@ def test_task_result_media_uploads_to_the_task_room_and_strips_the_line(home, mo
     work.mkdir(parents=True)
     (work / "agenda.docx").write_bytes(b"PK\x03\x04" + b"\x00" * 10)
     (work / "notes.md").write_text("# notes")
+    (work / "bad.csv").write_bytes(b"\xff\xfe not utf-8")
+    other = _profile_dir("spec") / "work" / "another-task"  # another conversation's file, same profile
+    other.mkdir(parents=True)
+    (other / "private.pdf").write_bytes(b"%PDF-1.7")
+    (_profile_dir("spec") / "memories").mkdir(parents=True)
+    (_profile_dir("spec") / "memories" / "MEMORY.md").write_text("private")
     put = []
     monkeypatch.setattr(turn, "_upload_attachment", lambda room, item: put.append((room, item["fileName"])) or {
         "attachmentId": "a1", "fileName": item["fileName"], "contentType": item["contentType"]})
-    out = f"Here is the agenda.\nMEDIA:{work / 'agenda.docx'}\nMEDIA:{work / 'notes.md'}\nMEDIA:{work / 'gone.pdf'}"
+    out = "\n".join(["Here is the agenda.", f"MEDIA:{work / 'agenda.docx'}", f"MEDIA:{work / 'notes.md'}",
+                     f"MEDIA:{work / 'bad.csv'}", f"MEDIA:{other / 'private.pdf'}",
+                     f"MEDIA:{_profile_dir('spec') / 'memories' / 'MEMORY.md'}", f"MEDIA:{work / 'gone.pdf'}"])
 
     text, files = turn.task_result_media("spec", TASK, out)
 
-    assert put == [(turn.task_room_id(TASK), "agenda.docx")]
-    assert files == [{"attachmentId": "a1", "fileName": "agenda.docx",
-                      "contentType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}]
+    room = turn.task_room_id(TASK)
+    assert put == [(room, "agenda.docx"), (room, "notes.md")]  # text uploads too (#4817 review)
+    assert [f["contentType"] for f in files] == [
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "text/markdown"]
     assert "MEDIA:" not in text and str(home) not in text and text.startswith("Here is the agenda.")
-    assert "notes.md" in text and "gone.pdf" in text  # notes, never a raw path
+    for name in ("bad.csv", "private.pdf", "MEMORY.md", "gone.pdf"):  # notes, never a raw path or the file
+        assert name in text
 
 
 def test_task_room_id_matches_the_backend():
@@ -397,3 +407,19 @@ def test_task_room_id_matches_the_backend():
 def test_a_result_without_media_is_untouched(monkeypatch):
     monkeypatch.setattr(turn, "_upload_attachment", lambda *a: pytest.fail("no upload"))
     assert turn.task_result_media("spec", TASK, "done") == ("done", [])
+
+
+def test_task_result_outbox_only_on_a_task_vm(home, monkeypatch):
+    """#4821 review: on a shared VM `HERMES_HOME/outbox/` holds other conversations' files."""
+    monkeypatch.setattr(turn, "HOME", home)
+    (home / "outbox").mkdir()
+    (home / "outbox" / "shared.pdf").write_bytes(b"%PDF-1.7")
+    monkeypatch.setattr(turn, "_upload_attachment", lambda room, item: {
+        "attachmentId": "a1", "fileName": item["fileName"], "contentType": item["contentType"]})
+    line = f"MEDIA:{home / 'outbox' / 'shared.pdf'}"
+    monkeypatch.setattr(turn.task_mode, "active", lambda: False)
+    text, files = turn.task_result_media("spec", TASK, line)
+    assert files == [] and "shared.pdf" in text and "MEDIA:" not in text
+    monkeypatch.setattr(turn.task_mode, "active", lambda: True)
+    text, files = turn.task_result_media("spec", TASK, line)
+    assert [f["fileName"] for f in files] == ["shared.pdf"]

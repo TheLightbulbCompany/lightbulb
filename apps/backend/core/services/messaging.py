@@ -1409,13 +1409,14 @@ def adopt_uploaded_attachment(
     """Turn an object the runtime PUT itself into an attachment, judged like an inline one.
 
     The runtime chose the id but not the key shape: the object must sit at
-    ``attachments/<room>/<id><suffix>`` for a signed type (text has no head to sniff, and is
-    small enough to go inline). Size comes from a HEAD and the type from a ranged GET of the
-    first bytes, so a 100 MB video is never pulled through the backend. Re-adopting the same id
-    (a retried reply) just rewrites the same metadata."""
+    ``attachments/<room>/<id><suffix>``. Size comes from a HEAD and a signed type from a ranged GET
+    of the first bytes, so a 100 MB video is never pulled through the backend; a text type (no head
+    to sniff, capped at 5 MiB) is read whole and must be valid UTF-8, the inline path's check
+    (``validate_attachment_bytes``) -- a Worker's .md/.csv deliverable arrives this way. Re-adopting
+    the same id (a retried reply) just rewrites the same metadata."""
     content_type = canonical_attachment_content_type(file_name, content_type)
     expected = _ATTACHMENT_SIGNATURES.get(content_type)
-    if not expected or expected[0] is None:
+    if not expected:
         raise ValueError(f"{content_type} cannot be uploaded directly")
     normalized = str(uuid.UUID(attachment_id))
     suffix = expected[1]
@@ -1425,7 +1426,11 @@ def adopt_uploaded_attachment(
         raise ValueError("uploaded attachment not found")
     if not 0 < size <= ATTACHMENT_MAX_BYTES_BY_TYPE[content_type]:
         raise ValueError(f"attachment must be at most {ATTACHMENT_MAX_BYTES_BY_TYPE[content_type]} bytes")
-    if not _signature_ok(content_type, hermes_profiles.get_owner_object_head(key, SNIFF_BYTES)):
+    if expected[0] is None:
+        # Bounded by the HEAD's size (already within the cap): an object swapped in after the HEAD is
+        # never read past it.
+        validate_attachment_bytes(content_type, hermes_profiles.get_owner_object_head(key, size))
+    elif not _signature_ok(content_type, hermes_profiles.get_owner_object_head(key, SNIFF_BYTES)):
         raise ValueError("attachment bytes do not match the declared content type")
     attachment = MessageAttachment(
         id=uuid.UUID(normalized), file_name=_safe_file_name(file_name, suffix), content_type=content_type, size=size

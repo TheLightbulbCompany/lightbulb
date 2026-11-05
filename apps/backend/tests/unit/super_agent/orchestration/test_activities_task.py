@@ -228,7 +228,7 @@ async def test_end_attempt_posts_result_as_lightbulb(world):
     await _attempt(tid)
     await acts.acquire_slot(WS, tid)
     await _ended(tid, "completed")
-    origin, room = world["posts"]
+    room, origin = world["posts"]  # the task room first: it adopts any files
     assert origin["room"] == ROOM and origin["thread_root"] == ROOT and origin["specialist"] == "finance"
     assert origin["kind"] == "result" and origin["task_refs"] == [{"taskId": tid, "role": "started"}]
     assert room["room"] == ts.task_room_id(tid) and room["text"] == "Paid Acme."
@@ -245,9 +245,30 @@ async def test_end_attempt_result_files_go_to_the_task_room_post(world):
     files = [{"attachmentId": str(uuid.uuid4()), "fileName": "agenda.docx", "contentType": "application/pdf"}]
     await repo.update_attempt(WS, tid, 1, {"attachments": files}, allowed_status=frozenset({"dispatched"}))
     await _ended(tid, "completed", output="The agenda is ready.")
-    origin, room = world["posts"]
+    room, origin = world["posts"]  # task room first, the note only once the files are attached
     assert room["room"] == ts.task_room_id(tid) and room["uploaded_attachments"] == files
     assert origin.get("uploaded_attachments") is None and "agenda.docx" in origin["text"]
+
+
+async def test_a_refused_adoption_posts_the_result_without_files_or_note(world, monkeypatch):
+    from core.services import messaging
+
+    tid = await _task(root=ROOT)
+    await _attempt(tid)
+    files = [{"attachmentId": str(uuid.uuid4()), "fileName": "agenda.docx", "contentType": "application/pdf"}]
+    await repo.update_attempt(WS, tid, 1, {"attachments": files}, allowed_status=frozenset({"dispatched"}))
+    real = acts.task_conversation.post_as_lightbulb
+
+    async def refuse_files(ws, room_id, **kw):
+        if kw.get("uploaded_attachments"):
+            raise messaging.ApiProblem("INVALID_REQUEST", "uploaded attachment not found")
+        return await real(ws, room_id, **kw)
+
+    monkeypatch.setattr(acts.task_conversation, "post_as_lightbulb", refuse_files)
+    await _ended(tid, "completed", output="The agenda is ready.")
+    room, origin = world["posts"]
+    assert room["room"] == ts.task_room_id(tid) and not room.get("uploaded_attachments")
+    assert origin["text"] == "The agenda is ready."  # no "(Attached in the task: …)" for a file that never landed
 
 
 async def test_end_attempt_failure_pushes_requester_only(world):

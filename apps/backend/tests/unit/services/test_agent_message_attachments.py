@@ -171,7 +171,7 @@ async def test_an_uploaded_video_is_adopted_by_head_and_sniff(staged, created):
     [
         (None, "video/mp4", "not found"),
         (b"%PDF-1.7 not a video at all", "video/mp4", "do not match"),
-        (MP4, "text/plain", "cannot be uploaded directly"),
+        (MP4, "text/plain", "not found"),  # a text object sits at <id>.txt, not .mp4
     ],
 )
 async def test_an_uploaded_attachment_is_refused_unless_it_is_really_there_and_what_it_claims(
@@ -184,6 +184,19 @@ async def test_an_uploaded_attachment_is_refused_unless_it_is_really_there_and_w
     with pytest.raises(messaging.ApiProblem, match=error):
         await messaging.create_agent_message(OWNER, _request(uploadedAttachments=[_uploaded(att, name, content_type)]))
     created.assert_not_awaited()
+
+
+def test_an_uploaded_text_file_is_read_whole_and_must_be_utf8(staged, monkeypatch):
+    """A Worker's .md/.csv result (task VMs upload every file): adopted when it is UTF-8, as inline text is.
+    Read bounded by the HEAD's size (#4821 review), never with an unbounded GET."""
+    monkeypatch.setattr(messaging.hermes_profiles, "get_owner_object", lambda key: pytest.fail("unbounded read"))
+    good, bad = str(uuid.uuid4()), str(uuid.uuid4())
+    staged[messaging.attachment_key(OWNER, ROOM, f"{good}.md")] = "# Agenda — 9:00".encode()
+    staged[messaging.attachment_key(OWNER, ROOM, f"{bad}.csv")] = b"\xff\xfe not utf-8"
+    adopted = messaging.adopt_uploaded_attachment(OWNER, ROOM, good, "agenda.md", "text/markdown")
+    assert adopted.content_type == "text/markdown" and adopted.size == len("# Agenda — 9:00".encode())
+    with pytest.raises(ValueError, match="do not match"):
+        messaging.adopt_uploaded_attachment(OWNER, ROOM, bad, "data.csv", "text/csv")
 
 
 def test_an_uploaded_video_over_its_cap_is_refused(staged, monkeypatch):

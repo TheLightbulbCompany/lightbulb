@@ -160,9 +160,11 @@ async def test_human_stopped_thread_is_skipped(hooked, table):  # noqa: F811
     assert _sks(table, "TRIG#rule:") == [] and ("rules.match", {"outcome": "human_stopped"}) in hooked["metrics"]
 
 
-async def test_record_conflict_is_logged_not_raised(hooked, table, monkeypatch, caplog):  # noqa: F811
+@pytest.mark.parametrize("error", [VersionConflict("moved"), RuntimeError("dynamodb down")])
+async def test_record_failure_is_logged_not_raised(hooked, table, monkeypatch, caplog, error):  # noqa: F811
+    """A lost record (version conflict, DynamoDB) never fails admission (lead, 5 Nov)."""
     await _rule()
-    monkeypatch.setattr(rules_activities, "record_match", AsyncMock(side_effect=VersionConflict("moved")))
+    monkeypatch.setattr(rules_activities, "record_match", AsyncMock(side_effect=error))
     with caplog.at_level(logging.WARNING):
         await _admit(hooked, _msg())
-    assert "record_match conflict" in caplog.text and _sks(table, "TRIG#rule:") == []
+    assert "record_match failed" in caplog.text and _sks(table, "TRIG#rule:") == []

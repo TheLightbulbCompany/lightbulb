@@ -14,6 +14,7 @@ from ulid import ULID
 from core.repositories import automations_repo, tasks_repo, user_repo
 from core.services import automation_schedule, super_agent_flags, task_conversation
 from core.services.container_auth import _require_hook_token
+from routers.rules import RuleBuiltin, RuleMatchIn, check_scope
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -26,7 +27,7 @@ class ProposeIn(BaseModel):
 
     name: str = Field(min_length=1, max_length=200)
     instructions: str = Field(min_length=1, max_length=20000)
-    cron: list[str] = Field(min_length=1, max_length=4)
+    cron: list[str] = Field(default=[], max_length=4)  # empty for a rule (§18), which fires on its matches
     tz: str | None = None
     specialist_id: str | None = None
     deliver_to: str | None = Field(default=None, pattern=r"^(none|room:\S+|dm:\S+)$")
@@ -36,6 +37,12 @@ class ProposeIn(BaseModel):
     requester_user_id: str | None = None
     room_id: str | None = None
     thread_root: str | None = None
+    # §18: a proactive rule; validated like the create route, always observe, never offered Auto on the card.
+    match: RuleMatchIn | None = None
+    speculative: bool = False
+    time_limit_s: int | None = Field(default=None, ge=60, le=7200)
+    daily_cap_usd: float = Field(default=10.0, gt=0, le=100)
+    builtin: RuleBuiltin | None = None
 
 
 def _err(http_status: int, code: str, **extra) -> HTTPException:
@@ -60,11 +67,25 @@ async def propose(owner_id: str, body: ProposeIn, request: Request) -> dict:
         raise _err(400, "no_room")
     if not requester:
         raise _err(400, "no_requester")
+    if not body.cron and body.match is None:
+        raise _err(400, "no_schedule")
     tz = body.tz or await user_repo.get_timezone(requester)
-    try:
-        automation_schedule.validate_cron(body.cron, tz)
-    except ValueError as exc:
-        raise _err(400, "invalid_schedule", message=str(exc)) from exc
+    if body.cron:
+        try:
+            automation_schedule.validate_cron(body.cron, tz)
+        except ValueError as exc:
+            raise _err(400, "invalid_schedule", message=str(exc)) from exc
+    rule: dict = {}
+    if body.match is not None:
+        rule = {
+            "match": await check_scope(owner_id, requester, body.match, body.builtin),
+            "mode": "observe",
+            "speculative": body.speculative,
+            "timeLimitS": body.time_limit_s,
+            "dailyCapUsd": body.daily_cap_usd,
+            "builtin": body.builtin,
+            "ruleVersion": 1,
+        }
     row, _ = await automations_repo.create_schedule(
         owner_id,
         {
@@ -78,6 +99,7 @@ async def propose(owner_id: str, body: ProposeIn, request: Request) -> dict:
             "budgetPerRunUsd": body.budget_per_run_usd,
             "deliverTo": body.deliver_to or f"room:{room_id}",
             "createdBy": "router",
+            **rule,
         },
     )
     sid = row["scheduleId"]

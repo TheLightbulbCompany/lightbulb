@@ -62,6 +62,8 @@ async def test_needs_approval_writes_proposed_with_draft(api):
     effect = await effects_repo.get_effect(WS, f"{tid}:1:c1")
     assert (effect["state"], effect["questionId"], effect["kind"]) == ("proposed", qid, "mail.send")
     assert effect["operands"]["subject"] == "Q3 invoice" and effect["executorOk"] is True
+    # The draft the task card shows as Ready for review with Send (audit item 11).
+    assert effect["output"] == {"kind": "mail", "title": "Send 'Q3 invoice' to acme@example.com", "ref": {}}
     # The Worker asks again in the same turn: the same open question, one row.
     again = await api.post(_url(WS), json=await _body(tid, "c2"), headers=H)
     assert again.json() == {"decision": "needs_approval", "questionId": qid}

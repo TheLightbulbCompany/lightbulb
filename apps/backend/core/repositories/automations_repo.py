@@ -176,6 +176,50 @@ async def delete_schedule(ws: str, sid: str) -> None:
     await run_in_thread(_table().delete_item, Key={"pk": ts.ws_pk(ws), "sk": ts.schedule_sk(sid)})
 
 
+# --- Rules (contracts §18: an automation row with a `match` scope) -----------------------------------
+
+
+async def list_rules(ws: str) -> list[dict]:
+    """The workspace's rule rows (consistent read).
+    ponytail: one query per admitted message; cache ~30 s if the Jev latency bar slips."""
+    return [r for r in await list_schedules(ws) if r.get("match")]
+
+
+async def _edit_matches(ws: str, sid: str, edit) -> dict | None:
+    """Read-modify-write `stats.matches` under the row's version; one retry on a concurrent write.
+    `edit(matches) -> new list | None` (None = nothing to change). Returns the row, or None if it is missing."""
+    for attempt in range(2):
+        row = await get_schedule(ws, sid)
+        if row is None:
+            return None
+        stats = row.get("stats") or {}
+        new = edit(list(stats.get("matches") or []))
+        if new is None:
+            return row
+        updated = await _conditional(
+            ws,
+            ts.schedule_sk(sid),
+            {"stats": {**stats, "matches": new}},
+            condition="#v = :ev",
+            values={":ev": row["version"]},
+        )
+        if updated is not None:
+            return updated
+    raise VersionConflict(f"schedule {sid}: stats changed twice while recording a match")
+
+
+async def append_match(ws: str, sid: str, entry: dict, *, keep: int = 50) -> dict | None:
+    """Append one observe record (newest last, `keep` newest kept). Idempotent per thread: an entry for the
+    same `threadKey` already on the row is left alone, so a retried `record_match` never counts twice."""
+
+    def edit(matches: list[dict]) -> list[dict] | None:
+        if any(m.get("threadKey") == entry["threadKey"] for m in matches):
+            return None
+        return [*matches, entry][-keep:]
+
+    return await _edit_matches(ws, sid, edit)
+
+
 # --- Hook ------------------------------------------------------------------------------------------
 
 

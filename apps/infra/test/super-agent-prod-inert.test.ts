@@ -33,6 +33,15 @@ describe("super-agent gate", () => {
     }
   });
 
+  it("prod synth grants nothing on per-task overlays (<owner>/hermes-tasks/); dev does", () => {
+    // Matches any resource, statement or ARN naming the prefix, whatever its Sid.
+    const OVERLAYS = /hermes-tasks/;
+    for (const template of synthStage("prod")) {
+      expect(template).not.toMatch(OVERLAYS);
+    }
+    expect(synthStage("dev").join("\n")).toMatch(OVERLAYS);
+  });
+
   it("dev's backend task gets the env master", () => {
     expect(synthStage("dev").join("\n")).toMatch(/"Name":"SUPER_AGENT_ENV_ENABLED","Value":"true"/);
   });

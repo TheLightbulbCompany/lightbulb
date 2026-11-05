@@ -3,12 +3,12 @@
 // The overview's Scheduled tab: the workspace's automations (lane A, `GET /api/v1/automations`).
 
 import type { ReactElement } from "react";
-import { automationStatusLine, useAutomations, type AutomationView, type TaskScope } from "@lightbulb/shared";
+import { automationRowLine, useAutomations, viewerTimeZone, type AutomationView, type TaskScope } from "@lightbulb/shared";
 import { useAutomationSource } from "./automations";
 import { openPanel } from "@/components/workspace/workspaceController";
 
-export function ScheduledList({ scope, onOpen, onOpenAutomation }: {
-  scope: TaskScope; onOpen: (taskId: string) => void; onOpenAutomation?: (id: string) => void;
+export function ScheduledList({ scope, onOpen, onOpenAutomation, viewerTz = viewerTimeZone() }: {
+  scope: TaskScope; onOpen: (taskId: string) => void; onOpenAutomation?: (id: string) => void; viewerTz?: string;
 }): ReactElement {
   const { data, error, mutate } = useAutomations(useAutomationSource());
   // A room's tab keeps the automations that deliver there; the workspace's and a person's show all.
@@ -36,7 +36,7 @@ export function ScheduledList({ scope, onOpen, onOpenAutomation }: {
     <div className="min-w-0 flex-1">
       <button type="button" className="block max-w-full truncate text-left font-semibold after:absolute after:inset-0 after:content-['']"
         onClick={() => open(a)}>{a.name}</button>
-      {automationStatusLine(a) && <p className="truncate text-ui text-muted-foreground">{automationStatusLine(a)}</p>}
+      <p className="truncate text-ui text-muted-foreground">{automationRowLine(a, viewerTz)}</p>
     </div>
   </li>)}</ul>;
 }

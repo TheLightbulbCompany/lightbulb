@@ -20,6 +20,7 @@ vi.mock("@/components/teams/TeamsPanelRouter", () => ({
 }));
 vi.mock("@/hooks/useTeamsApi", () => ({
   useTeamsWorkspaceStatus: () => ({ kind: "ready" }),
+  useTeamsApi: () => ({ read: () => ({ data: undefined }) }),
 }));
 vi.mock("@/components/teams/TeamsStatusOverlays", () => ({
   ProvisioningOverlay: () => null,

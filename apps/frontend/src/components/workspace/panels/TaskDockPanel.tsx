@@ -12,5 +12,9 @@ export function TaskDockPanel({ params }: PanelProps) {
   const on = useSuperAgent();
   const { userId } = useAuth();
   if (!on) return null;
-  return <TaskPane key={params.taskId} taskId={params.taskId} viewerId={userId ?? ""} onClose={closePane} />;
+  // TaskPane is a `.room-context` column, hidden (display: none) outside a `.room-context-host` (messaging.css):
+  // the host makes it fill the pane instead of rendering blank.
+  return <div className="room-context-host flex h-full min-h-0">
+    <TaskPane key={params.taskId} taskId={params.taskId} viewerId={userId ?? ""} onClose={closePane} />
+  </div>;
 }

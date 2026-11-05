@@ -13,6 +13,7 @@ import { roomMarkdown } from "@/components/messaging/roomMarkdown";
 import { RoomDocumentCards } from "@/components/messaging/RoomDocumentCards";
 import { RoomImageAttachments } from "@/components/messaging/RoomImageAttachments";
 import { agentTint } from "@/lib/agentTint";
+import { useOptionalLiveEvents } from "@/hooks/useLiveEvents";
 import { feedTimeline, splitPost } from "./activityPage";
 
 export type FeedClient = Pick<MessagingClient,
@@ -59,6 +60,9 @@ const REFRESH_MS = 60_000;
  */
 export function TeamFeed({ client, scope, currentUserId, onDiscuss, isVisible = ALWAYS, active = true }: TeamFeedProps) {
   const feed = useSWR(["activity-feed", scope], () => client.getFeed());
+  // Super-agent: the front agent's older posts were authored with its seat name ("CEO"); it reads "Lightbulb".
+  const live = useOptionalLiveEvents();
+  const frontAgentId = live?.superAgent ? live.frontAgentId : undefined;
   const roomId = feed.data?.roomId ?? null;
   const room = useSWR(roomId ? ["activity-feed-room", roomId] : null, () => client.getRoom(roomId!), { refreshInterval: REFRESH_MS });
   const newest = room.data?.lastMessageSeq;
@@ -96,7 +100,7 @@ export function TeamFeed({ client, scope, currentUserId, onDiscuss, isVisible = 
           : <ol className="team-feed__list">
             {timeline.map((entry) => entry.type === "divider"
               ? <li key={entry.key} className="team-feed__divider" data-new={entry.key === "new" || undefined}><span>{entry.label}</span></li>
-              : <li key={entry.post.messageId}><FeedPost post={entry.post} client={client} currentUserId={currentUserId}
+              : <li key={entry.post.messageId}><FeedPost post={entry.post} client={client} currentUserId={currentUserId} frontAgentId={frontAgentId}
                 onDiscuss={onDiscuss} onChanged={replacePost} /></li>)}
           </ol>}
   </section>;
@@ -140,14 +144,14 @@ function Brief({ roomId, topic, client, onSaved }: {
   </div>;
 }
 
-function FeedPost({ post, client, currentUserId, onDiscuss, onChanged }: {
-  post: CanonicalRoomMessage; client: FeedClient; currentUserId: string;
+function FeedPost({ post, client, currentUserId, frontAgentId, onDiscuss, onChanged }: {
+  post: CanonicalRoomMessage; client: FeedClient; currentUserId: string; frontAgentId?: string;
   onDiscuss: (post: CanonicalRoomMessage) => void; onChanged: (post: CanonicalRoomMessage) => void;
 }) {
   const [why, setWhy] = useState(false);
   const [pending, setPending] = useState(false);
   const { title, body } = splitPost(post.text);
-  const name = post.author.displayName || "Unknown author";
+  const name = post.author.kind === "agent" && post.author.id === frontAgentId ? "Lightbulb" : post.author.displayName || "Unknown author";
   const likes = post.reactions?.[LIKE] ?? [];
   const liked = likes.includes(currentUserId);
   const toggleLike = async () => {

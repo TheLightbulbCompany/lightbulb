@@ -109,3 +109,14 @@ export function nextRunWords(iso: string, viewerTz: string): string {
   if (Number.isNaN(d.getTime())) return iso;
   return new Intl.DateTimeFormat("en-GB", { timeZone: viewerTz, weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit", hourCycle: "h23" }).format(d);
 }
+
+/** A Scheduled row's line: always a status ("On", "Paused", "Not turned on"), then when it runs next ("next Mon 9 Nov,
+ *  9:00"), else its schedule, else "runs on a match" for a rule. */
+export function automationRowLine(
+  a: Pick<AutomationView, "status" | "pausedReason" | "schedule" | "nextRuns" | "match">, viewerTz: string,
+): string {
+  const status = automationStatusLine(a) ?? "On";
+  const next = a.status === "active" && a.nextRuns?.[0] ? `next ${nextRunWords(a.nextRuns[0], viewerTz)}` : null;
+  const when = next ?? scheduleWords(a, viewerTz) ?? (a.match ? "runs on a match" : null);
+  return [status, when].filter(Boolean).join(" · ");
+}

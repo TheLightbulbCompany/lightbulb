@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canDecide, runNowReason, waitingWords } from "./automations";
+import { automationRowLine, canDecide, runNowReason, waitingWords } from "./automations";
 
 const sam = { userId: "sam", admin: false };
 const admin = { userId: "ana", admin: true };
@@ -23,5 +23,15 @@ describe("who turns an automation on (routers/automations.py)", () => {
     expect(runNowReason({ status: "paused_system" }, true)).toBe("Resume it first");
     expect(runNowReason({ status: "active" }, true)).toBeNull();
     expect(runNowReason({ status: "active" }, false)).toBe("Only its owner or an admin can run it");
+  });
+});
+
+describe("automationRowLine (a Scheduled row)", () => {
+  const base = { pausedReason: null, match: null, schedule: { cron: ["0 9 * * 1"], tz: "UTC" }, nextRuns: ["2026-11-09T09:00:00Z"] };
+  it("always a status, then the next run", () => {
+    expect(automationRowLine({ ...base, status: "active" }, "UTC")).toBe("On · next Mon 9 Nov, 9:00");
+    expect(automationRowLine({ ...base, status: "paused" }, "UTC")).toBe("Paused · Mondays 9:00");
+    expect(automationRowLine({ ...base, status: "draft", nextRuns: [] }, "UTC")).toBe("Not turned on · Mondays 9:00");
+    expect(automationRowLine({ ...base, status: "active", schedule: null, nextRuns: [], match: { sources: ["mail"] } }, "UTC")).toBe("On · runs on a match");
   });
 });

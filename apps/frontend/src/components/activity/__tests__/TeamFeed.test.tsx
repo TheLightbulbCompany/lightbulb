@@ -7,6 +7,8 @@ import { loadFeedPosts, TeamFeed, type FeedClient, type TeamFeedProps } from "..
 import { post } from "./fixtures";
 
 vi.mock("@/components/messaging/RoomDocumentCards", () => ({ RoomDocumentCards: () => null }));
+const live = vi.hoisted(() => ({ value: null as null | { superAgent: boolean; frontAgentId?: string } }));
+vi.mock("@/hooks/useLiveEvents", () => ({ useOptionalLiveEvents: () => live.value }));
 
 const room = {
   roomId: "feed-1", topic: "Keep us posted on money.", lastMessageSeq: 3, lastReadSeq: 1, feed: true,
@@ -53,6 +55,16 @@ describe("TeamFeed", () => {
       .toEqual(["new", "post", "post", "day", "post"]);
     // Viewing the feed moves its read cursor; nothing else counts feed posts.
     await waitFor(() => expect(client.markRead).toHaveBeenCalledWith("feed-1", { lastReadSeq: 3 }));
+  });
+
+  it("super-agent on: the front agent's older posts (seat name 'Finance' here) read Lightbulb", async () => {
+    live.value = { superAgent: true, frontAgentId: "agent-fin" };
+    try {
+      setup();
+      await waitFor(() => expect(posts().length).toBeGreaterThan(0));
+      expect(screen.getAllByText("Lightbulb").length).toBeGreaterThan(0);
+      expect(screen.queryByText("Finance")).toBeNull();
+    } finally { live.value = null; }
   });
 
   it("renders a title line with bold markdown as bold text, never asterisks", async () => {

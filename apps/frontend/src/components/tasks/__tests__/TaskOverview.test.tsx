@@ -38,7 +38,7 @@ describe("TaskOverview", () => {
     expect(headings()).toEqual(["Waiting on you · 0", "Working · 3", "Resolved · 0"]);
     expect(screen.getByText("Nothing needs you")).toBeInTheDocument();
     expect(screen.queryByText("Nothing resolved yet")).toBeNull(); // collapsed by default
-    expect(screen.queryByRole("heading", { name: /Ready for review|Landing|Idle/ })).toBeNull();
+    expect(screen.queryByRole("heading", { name: /Ready for review|Applying|Done/ })).toBeNull();
   });
 
   it("resolved collapsed, toggles and remembers", async () => {
@@ -79,7 +79,7 @@ describe("TaskOverview", () => {
     client = fakeTasksClient(FIXTURES.step09.tasks); live.tasks = client;
     const onOpen = vi.fn();
     overview(room, onOpen);
-    await userEvent.click(await screen.findByRole("button", { name: "Open Stripe fee estimate, Idle" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Open Stripe fee estimate, Done" }));
     expect(onOpen).toHaveBeenCalledWith("t-fees");
     await userEvent.click(screen.getByRole("button", { name: "Resolved · 1" }));
     await userEvent.click(screen.getByRole("button", { name: "Reopen" }));

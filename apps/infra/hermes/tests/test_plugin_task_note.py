@@ -13,6 +13,7 @@ from lightbulb import turn_context  # noqa: E402
 
 from bridge import server, turn  # noqa: E402
 from tests.test_runs_v1 import AUTH, CREATE, IDENTITY, REQUEST, Agent, quiet_turn, threads  # noqa: E402, F401
+from tests.test_voice_call_run import env  # noqa: E402, F401 -- the _run_call harness
 
 TASK = "7d1e2f30-4a5b-4c6d-8e9f-0a1b2c3d4e5f"
 SESSION = f"agent:ceo:lightbulb:task:{TASK}"
@@ -88,3 +89,36 @@ def test_a_worker_run_enables_the_task_toolset(quiet_turn, threads, monkeypatch,
         assert built["enabled_toolsets"] == ["lightbulb", "memory", "lightbulb_task"]
     else:
         assert "enabled_toolsets" not in built
+
+
+# ---- gating: the tool reaches the model only on a Worker run with a runSecret ----------------------------
+def test_router_run_never_gets_the_task_toolset(quiet_turn, threads, monkeypatch):  # noqa: F811
+    from tests.test_runs_v1_router import IDENTITY as ROUTER, _post
+
+    monkeypatch.setattr(turn, "profile_toolsets", lambda: (["lightbulb", "lightbulb_task", "memory"], None))
+    built = {}
+    monkeypatch.setattr(turn, "_construct_agent", lambda *a, **k: built.update(k) or Agent())
+    assert _post({**ROUTER, "runSecret": "s3"})[0] == 202
+    threads[0].run_now()
+    assert built["enabled_toolsets"] == ["lightbulb_router", "memory"]
+
+
+def test_paperclip_run_never_gets_the_task_toolset(monkeypatch):
+    from tests.test_task_own_session import IDENTITY as PC, REQUEST as PC_REQUEST
+
+    monkeypatch.setattr(turn.sync, "ensure_profile", lambda _agent: None)
+    monkeypatch.setattr(turn.sync, "normalize_profile_backends", lambda _agent: None)
+    built = {}
+    monkeypatch.setattr(turn, "_construct_agent", lambda *a, **k: built.update(k, called=True) or Agent())
+    turn.register_paperclip_run(PC, PC_REQUEST)
+    turn._run_native_paperclip({**PC, "taskId": TASK, "runSecret": "s3"}, PC_REQUEST)
+    assert built.get("called") and "enabled_toolsets" not in built  # _construct_agent's own strip applies
+
+
+def test_super_agent_call_never_gets_the_task_toolset(env, home, monkeypatch):  # noqa: F811
+    from tests.test_voice_call_run import IDENTITY as CALL, REQUEST as CALL_REQUEST, _frames
+
+    monkeypatch.setattr(turn, "profile_toolsets", lambda: (["lightbulb", "lightbulb_task", "memory"], None))
+    turn.register_call_run(CALL)
+    assert turn._run_call(CALL, {**CALL_REQUEST, "superAgent": True}, _frames())[0] == "completed"
+    assert env["limits"]["enabled_toolsets"] == ["lightbulb", "memory", "lightbulb_voice_work"]

@@ -678,7 +678,8 @@ def _run_call(identity: dict, request: dict, frames: "VoiceFramePublisher") -> t
             if request.get("superAgent"):  # lane A: work asked aloud may become a task (start_work)
                 enabled, _ = profile_toolsets()
                 if enabled is not None:  # the Router's decision tools stay off a call, as _construct_agent strips them
-                    limits["enabled_toolsets"] = [*(t for t in enabled if t != ROUTER_TOOLSET), VOICE_WORK_TOOLSET]
+                    strip = (ROUTER_TOOLSET, TASK_TOOLSET)  # task_note is a Worker run's alone
+                    limits["enabled_toolsets"] = [*(t for t in enabled if t not in strip), VOICE_WORK_TOOLSET]
             agent = _construct_agent(agent_id, body, frames, call_key, **limits)
             # No compaction inside a spoken turn (67-103 s each, prod 10-07): Hermes's own
             # per-agent switch, which every automatic trigger reads (turn_context_compaction.py:239,

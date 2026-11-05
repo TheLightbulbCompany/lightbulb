@@ -421,6 +421,9 @@ async def worker_ask(owner_id: str, body: AskBody, request: Request) -> dict:
     return await _question_view(opened)
 
 
+NOTE_CAP = 20  # notes per attempt
+
+
 class NoteBody(BaseModel):
     task_id: str = Field(alias="taskId")
     run_id: str = Field(alias="runId")
@@ -436,6 +439,8 @@ async def task_note(owner_id: str, body: NoteBody, request: Request) -> dict:
     await _gate(owner_id, request)
     att = await _attempt_of(owner_id, body.task_id, body.attempt, body.run_id, body.run_secret)
     task = await _current_task(owner_id, att, body.task_id, body.attempt)
+    if not await tasks_repo.count_note(owner_id, body.task_id, body.attempt, NOTE_CAP):
+        raise HTTPException(status_code=429, detail="note_limit")
     room_id = await task_conversation.ensure_task_room(owner_id, task)
     digest = hashlib.sha256(body.text.encode()).hexdigest()[:16]
     message_id = await task_conversation.post_as_lightbulb(
@@ -445,5 +450,6 @@ async def task_note(owner_id: str, body: NoteBody, request: Request) -> dict:
         event_id=f"task-note:{body.task_id}:{body.attempt}:{digest}",
         specialist=task.get("specialist"),
         kind="note",
+        progress=True,  # never a mention or notification, never room memory
     )
     return {"messageId": message_id}

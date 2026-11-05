@@ -257,6 +257,11 @@ async def test_task_note_posts_in_its_own_task_room(api):
     notes = [p for p in api.world["posts"] if p.get("kind") == "note"]
     assert {p["event_id"] for p in notes} == {notes[0]["event_id"]}
     assert notes[0]["room"] == ts.task_room_id(tid) and notes[0]["specialist"] == "finance"
+    assert notes[0]["progress"] is True  # never mentions, notifies or goes into room memory
+    for i in range(18):  # 2 counted above: the 21st note in one attempt is refused
+        assert (await api.post(url, json={**body, "text": f"n{i}"}, headers=H)).status_code == 200
+    capped = await api.post(url, json={**body, "text": "one more"}, headers=H)
+    assert capped.status_code == 429 and capped.json()["detail"] == "note_limit"
     assert (await api.post(url, json={**body, "runSecret": "wrong"}, headers=H)).status_code == 403
     await repo.update_attempt(WS, tid, 1, {"status": "ended"}, allowed_status=frozenset({"running"}))
     stale = await api.post(url, json=body, headers=H)

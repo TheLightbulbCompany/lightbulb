@@ -50,3 +50,15 @@ def table(monkeypatch):
             ).to_item()
         )
         yield t
+
+
+@pytest.fixture
+async def temporal_env():
+    """The time-skipping server (orchestration's conftest is not on this directory's path)."""
+    from temporalio.testing import WorkflowEnvironment
+
+    env = await WorkflowEnvironment.start_time_skipping()
+    try:
+        yield env
+    finally:
+        await env.shutdown()

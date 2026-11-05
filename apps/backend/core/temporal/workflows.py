@@ -23,6 +23,7 @@ from temporalio.exceptions import ActivityError, ApplicationError, CancelledErro
 from temporalio.exceptions import TimeoutError as ActivityTimeout
 from temporalio.workflow import ActivityCancellationType
 
+from core.temporal.task_questions import TaskQuestionsMixin
 from core.temporal.types import (
     ActionRequest,
     AttemptRef,
@@ -137,7 +138,7 @@ class RouterWorkflow:
 
 
 @workflow.defn
-class TaskWorkflow:
+class TaskWorkflow(TaskQuestionsMixin):
     """`task:{ws}:{taskId}`: slot lease → Attempt → `worker_turn` (async, bridge-completed) → `end_attempt`."""
 
     @workflow.init
@@ -158,21 +159,25 @@ class TaskWorkflow:
         self._blocked_at: int | None = None  # `_wakes` when budget or proposed status deferred an attempt
         self._awaiting_start = False  # begin_attempt found a proposed task: only Start runs it
         self.last_event: RunEvent | None = None
+        self._q_init()  # Lane Q: open questions (task_questions.py)
 
     # --- hooks (Q, A, S add behaviour here) ------------------------------------------------------------
 
     async def _on_waiting(self) -> None:
         """The task is about to wait for inputs or actions (idle/waiting)."""
+        await self._q_on_waiting()
 
     async def _before_attempt(self) -> bool:
         """False ⇒ do not start an attempt now; the workflow waits for the next input or action."""
-        return True
+        return await self._q_before_attempt()
 
     async def _after_attempt(self, outcome: str) -> None:
         """An attempt ended (after `end_attempt`)."""
+        await self._q_after_attempt(outcome)
 
     async def _on_stop(self, by_user_id: str) -> None:
         """A person stopped the task, before the running turn is cancelled (Q cancels open questions)."""
+        await self._q_on_stop(by_user_id)
 
     # --- signals ---------------------------------------------------------------------------------------
 
@@ -326,6 +331,7 @@ class TaskWorkflow:
     async def _run_attempt(self) -> WorkerTurnOut | None:
         """One attempt. None ⇒ nothing ran (budget, hook, stop while waiting for a slot)."""
         if not await self._before_attempt():
+            self._blocked_at = self._wakes  # wait for the next input or action, as documented (no busy loop)
             return None
         if not await _act("check_budget", self._ws, self._task_id, result_type=bool):
             self._status = "waiting"  # check_budget wrote waiting/budget

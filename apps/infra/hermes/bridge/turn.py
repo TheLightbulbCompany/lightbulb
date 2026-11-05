@@ -774,6 +774,26 @@ def task_tool_recorder(run_id: str):
     return record
 
 
+#: The Router's decision tools (plugins/lightbulb/router.py): a Router run's only effect is this list.
+ROUTER_TOOLSET = "lightbulb_router"
+ROUTER_RUN_LIMITS = {"enabled_toolsets": [ROUTER_TOOLSET, "memory"], "disabled_toolsets": None,
+                     "skip_background_review": True}
+MAX_DECISIONS = 40
+
+
+def record_decision(run_id: str, decision: dict) -> bool:
+    """Append one Router decision to its run (plugin router tools). False: not a live Router run."""
+    with _RUNS_LOCK:
+        entry = RUNS.get(run_id)
+        if entry is None or (entry.get("identity") or {}).get("mode") != "router":
+            return False
+        decisions = entry.setdefault("decisions", [])
+        if len(decisions) >= MAX_DECISIONS:
+            return False
+        decisions.append(dict(decision))
+        return True
+
+
 def register_paperclip_run(identity: dict, request: dict) -> str:
     return register_durable_run(identity, request, kind="paperclip")
 
@@ -883,6 +903,7 @@ def finish_paperclip_run(run_id: str, outcome: str, *, output: str, error: str |
         request_hash = (entry or {}).get("requestHash")
         kind = (entry or {}).get("kind")
         tools = _recent_tools_field(entry or {})
+        decisions = {"decisions": list(entry["decisions"])} if (entry or {}).get("decisions") is not None else {}
     if identity:
         try:
             sync.put_paperclip_run_record(identity["agentId"], run_id, {
@@ -895,6 +916,7 @@ def finish_paperclip_run(run_id: str, outcome: str, *, output: str, error: str |
                 "state": "ended",
                 "finishedAt": now(),
                 **tools,
+                **decisions,
             }, **_record_dir(kind))
         except Exception:  # noqa: BLE001 -- the turn's own result must not depend on it
             log.error("paperclip run record write FAILED run=%s: a poll after this process "
@@ -939,6 +961,8 @@ def durable_run_status(run_id: str, identity: dict, *, kind: str) -> dict | None
         "status": status,
         "session_id": (snapshot.get("identity") or {}).get(_DURABLE_KINDS[kind][1]),
         **({"recentTools": list(snapshot.get("recentTools") or [])} if kind == "task" else {}),
+        **({"decisions": list(snapshot.get("decisions") or [])}
+           if (snapshot.get("identity") or {}).get("mode") == "router" else {}),
     }
     if snapshot["state"] == "ended":
         usage = snapshot.get("usage") or ZERO_USAGE
@@ -3762,6 +3786,8 @@ def _construct_agent(agent_id: str, body: dict, frames, session_key: str, **limi
                      "tool_progress_callback": frames.activity,
                      "stream_delta_callback": frames.delta, "reasoning_callback": frames.thinking}
     enabled_toolsets, disabled_toolsets = profile_toolsets()
+    if enabled_toolsets is not None:  # the Router's decision tools are only for Router runs (limits re-add them)
+        enabled_toolsets = [t for t in enabled_toolsets if t != ROUTER_TOOLSET]
     db = _session_db(agent_id)
     # A state.db failure fails a room, call or side turn: each runs on its stored transcript.
     if db is None and (ROOM_SESSION_RE.match(session_key) or ":lightbulb:call:" in session_key
@@ -4110,9 +4136,10 @@ def _run_task_turn(identity: dict, request: dict, *, family: str) -> tuple[str, 
     # Same-session Paperclip retries must not replace another active desktop ledger.
     logins = website_logins.prompt_scope(agent_id, None, None, lambda: paperclip_run_aborted(run_id))
     token = identity.get("localSessionToken")
+    router = identity.get("mode") == "router"
     ctx = {"apiUrl": API, "ownerId": OWNER, "hookToken": HOOK_TOKEN, "agentId": agent_id,
            "runId": run_id, "sessionKey": session_id, "roomId": None,
-           "localSessionToken": token, "family": family}
+           "localSessionToken": token, "family": family, "mode": identity.get("mode") or "worker"}
     # Paperclip runs need the same brokered MCP bearers as room turns. Without
     # this scope, ${MCP_POSTHOG_ACCESS_TOKEN} stays literal and PostHog returns 401.
     with _waiting_turn_lock(agent_id, session_id, run_id), _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id, env), _terminal_scope(agent_id, session_id), _desktop_active_turn(session_id, run_id), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):
@@ -4122,6 +4149,8 @@ def _run_task_turn(identity: dict, request: dict, *, family: str) -> tuple[str, 
             if not paperclip:
                 extra["tool_complete_callback"] = task_tool_recorder(run_id)
             memory = {"memory": request["memory"]} if request.get("memory") else {}  # a task's block (spec 07 §5.2)
+            if router:  # decisions only: no execution tools, no background review, no side session
+                extra |= ROUTER_RUN_LIMITS
             agent = _construct_agent(agent_id, {"sessionKey": session_id, **memory}, None, session_id, **extra)
             queued = attach_agent(run_id, agent)
             if paperclip_run_aborted(run_id):

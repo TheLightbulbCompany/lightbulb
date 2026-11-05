@@ -95,6 +95,18 @@ def _normalize_room(raw: str) -> str | None:
     return room if _UUID_RE.match(room) else None
 
 
+#: tasks-schema.json `namespaces.task` (tests/test_router_tools.py checks it): the task room id's namespace.
+TASK_NS = uuid.UUID("c10f836a-c762-50eb-b28b-a8a6af634983")
+TASK_ROOM_ONLY = ("In a task run you post only in the task's own room; Lightbulb posts your result "
+                  "to the people who asked.")
+
+
+def task_room_id(session_key: str) -> str | None:
+    """The task's hidden room (contracts §6) from a Worker session key `agent:<id>:lightbulb:task:<taskId>`."""
+    task_id = session_key.rsplit(":task:", 1)[-1] if ":lightbulb:task:" in session_key else None
+    return str(uuid.uuid5(TASK_NS, f"room:{task_id}")) if task_id else None
+
+
 def _send_room_message(args: dict, *, session_id: str = "", **_kw) -> str:
     ctx = turn_context.read(session_id)
     if not ctx:
@@ -105,6 +117,8 @@ def _send_room_message(args: dict, *, session_id: str = "", **_kw) -> str:
     room = _normalize_room(str(args.get("roomId", "")))
     if not room:
         return "Invalid roomId: expected a room UUID, optionally prefixed 'lightbulb:'."
+    if ctx.get("family") == "task" and room != task_room_id(str(ctx.get("sessionKey") or "")):
+        return TASK_ROOM_ONLY
     if room == _normalize_room(str(ctx.get("voiceRoomId") or "")):
         return VOICE_ROOM_REFUSAL
     text = str(args.get("text") or "").strip()
@@ -974,7 +988,8 @@ def register(ctx) -> None:
                       description=WORKSPACE_SCHEMA["description"], emoji="🏢")
     ctx.register_tool("lightbulb_voice_profile", "lightbulb", VOICE_PROFILE_SCHEMA, _voice_profile,
                       description=VOICE_PROFILE_SCHEMA["description"], emoji="🎙️")
-    from . import desktop
+    from . import desktop, router
 
+    router.register(ctx)
     ctx.register_tool("lightbulb_desktop", "lightbulb", desktop.SCHEMA, desktop.handle,
                       description=desktop.SCHEMA["description"], emoji="🖥️")

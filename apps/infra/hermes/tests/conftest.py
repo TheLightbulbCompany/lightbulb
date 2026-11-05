@@ -78,3 +78,14 @@ def _room_without_session_db(request, monkeypatch):
         monkeypatch.setattr(turn, "_room_history", lambda _agent: ([], None))
         monkeypatch.setattr(turn, "_carry_call_records", lambda *a: None)
         monkeypatch.setattr(turn, "_record_call_exchange", lambda *a: None)
+
+
+@pytest.fixture(autouse=True)
+def run_events(monkeypatch):
+    """v1 runs post heartbeat/terminal events to the backend (bridge/runs.py): recorded here, never sent.
+    tests/test_run_events.py exercises the real poster against a fake urlopen."""
+    from bridge import runs
+
+    sent: list[tuple[dict, dict]] = []
+    monkeypatch.setattr(runs, "_post_event", lambda identity, body: sent.append((identity, body)) or 200)
+    return sent

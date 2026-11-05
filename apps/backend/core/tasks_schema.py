@@ -121,6 +121,15 @@ def worker_session_key(agent_id: str, task_id: str) -> str:
     return f"agent:{agent_id}:lightbulb:task:{task_id}"
 
 
+#: The Router's session on the workspace VM: one per lane (`shared` or `router_lane_key(user)`), on the
+#: CEO agent's profile. The bridge checks keys against this (bridge/runs.py ROUTER_SESSION_KEY_RE).
+ROUTER_SESSION_KEY_PATTERN = r"^agent:[0-9a-f-]{36}:lightbulb:router:(shared|u:[0-9a-f]{16})$"
+
+
+def router_session_key(agent_id: str, lane: str) -> str:
+    return f"agent:{agent_id}:lightbulb:router:{lane}"
+
+
 def router_lane_key(user_id: str) -> str:
     """The Router's private lane for one person; no raw user id in session keys (C12)."""
     return "u:" + hashlib.sha256(user_id.encode()).hexdigest()[:16]
@@ -956,7 +965,7 @@ def export_schema() -> dict[str, Any]:
         "keys": KEY_FORMATS,
         "triggerIds": TRIGGER_ID_FORMATS,
         "namespaces": {"run": str(RUN_NS), "task": str(TASK_NS)},
-        "sessionKeys": {"worker": WORKER_SESSION_KEY_PATTERN},
+        "sessionKeys": {"worker": WORKER_SESSION_KEY_PATTERN, "router": ROUTER_SESSION_KEY_PATTERN},
         "gsis": [{"name": g.name, "pk": g.pk_attr, "sk": g.sk_attr} for g in GSIS],
         "rows": {
             name: model.model_json_schema(by_alias=True, mode="serialization") for name, model in ROW_MODELS.items()

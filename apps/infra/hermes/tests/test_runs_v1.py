@@ -149,8 +149,8 @@ def test_503_while_recycling(threads, monkeypatch):
 
 
 @pytest.mark.parametrize("identity, request_", [
-    ({**IDENTITY, "mode": "router"}, REQUEST),
-    ({**IDENTITY, "session": {"kind": "task"}}, REQUEST),
+    ({**IDENTITY, "mode": "planner"}, REQUEST),
+    ({**IDENTITY, "session": {"kind": "task"}}, REQUEST),  # task sessions stay refused until V3
     (IDENTITY, {**REQUEST, "effects": "required"}),
 ])
 def test_unsupported_mode_and_session_kind(threads, identity, request_):

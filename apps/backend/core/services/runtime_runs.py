@@ -7,7 +7,7 @@ local sessions work in tasks the way they do in Paperclip runs.
 """
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 import httpx
@@ -15,7 +15,7 @@ import httpx
 from core.repositories import container_repo
 from core.services import local_session_grants, runtime_transport
 from core.services.messaging import ApiProblem
-from core.tasks_schema import worker_session_key
+from core.tasks_schema import router_session_key, worker_session_key
 
 logger = logging.getLogger(__name__)
 
@@ -37,29 +37,39 @@ class RuntimeBusy(Exception):
 
 @dataclass(frozen=True)
 class RunIdentity:
+    """A Worker turn of one task, or (mode "router") one Router batch: `task_id` is then the batch id and
+    `agent_id` the CEO's, and the run lives in the lane's Router session (`lane`: "shared" or a lane key)."""
+
     run_id: str
     owner_id: str
     task_id: str
     attempt: int
     agent_id: str
     run_secret: str | None = None  # the Attempt's secret; the bridge echoes it on run events and inputs
+    mode: Literal["worker", "router"] = "worker"
+    lane: str | None = None
 
     @property
     def session_key(self) -> str:
+        if self.mode == "router":
+            return router_session_key(self.agent_id, self.lane or "shared")
         return worker_session_key(self.agent_id, self.task_id)
 
     def to_wire(self) -> dict:
-        return {
+        wire = {
             "runId": self.run_id,
             "ownerId": self.owner_id,
             "taskId": self.task_id,
             "attempt": self.attempt,
             "agentId": self.agent_id,
             "sessionKey": self.session_key,
-            "mode": "worker",
+            "mode": self.mode,
             "session": {"kind": "workspace"},
             **({"runSecret": self.run_secret} if self.run_secret else {}),
         }
+        if self.mode == "router":
+            wire["lane"] = self.lane or "shared"
+        return wire
 
 
 @dataclass(frozen=True)
@@ -91,6 +101,7 @@ class RunStatus:
     error: str | None
     usage: dict | None
     recent_tools: list[dict]
+    decisions: list[dict] = field(default_factory=list)  # a Router run's decisions, in order
 
 
 async def _container(owner_id: str) -> dict:
@@ -133,6 +144,7 @@ def _status(data: dict) -> RunStatus:
         error=data.get("error"),
         usage=data.get("usage"),
         recent_tools=list(data.get("recentTools") or []),
+        decisions=list(data.get("decisions") or []),
     )
 
 

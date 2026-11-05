@@ -12,8 +12,8 @@ CASES = [json.loads(line) for line in DATASET.read_text().splitlines() if line.s
 
 
 def test_dataset_shape():
-    assert len(CASES) == 40 and {c["expect"] for c in CASES} == {"blocked", "posted"}
-    assert sum(c["expect"] == "posted" for c in CASES) == 20
+    assert len(CASES) == 46 and {c["expect"] for c in CASES} == {"blocked", "posted"}
+    assert sum(c["expect"] == "posted" for c in CASES) == 23
 
 
 @pytest.mark.parametrize("case", CASES, ids=[c["id"] for c in CASES])

@@ -7,6 +7,8 @@ const openPanel = vi.fn();
 vi.mock("../workspaceController", () => ({ openPanel: (...a: unknown[]) => openPanel(...a) }));
 const live = vi.hoisted(() => ({ superAgent: false }));
 vi.mock("@/hooks/useLiveEvents", () => ({ useSuperAgent: () => live.superAgent }));
+const issues = vi.hoisted(() => ({ list: [{ id: "i1" }] as unknown[] }));
+vi.mock("@/hooks/useTeamsApi", () => ({ useTeamsApi: () => ({ read: (path: string | null) => ({ data: path ? { issues: issues.list } : undefined }) }) }));
 
 import { WorkTabs, WORK_TEAMS_KEYS } from "../panels/WorkTabs";
 
@@ -30,9 +32,22 @@ describe("WorkTabs", () => {
     live.superAgent = true;
     try {
       render(<WorkTabs teamsKey="threads" />);
-      expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["Threads", "Projects", "Goals", "Automations", "Cases", "Agents", "Money", "Older tasks"]);
+      // Claude-Projects simple: no Projects / Goals / Cases; the old task board last, while it holds any.
+      expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["Threads", "Automations", "Agents", "Money", "Older tasks"]);
       expect(screen.getByRole("tab", { name: "Threads" })).toHaveAttribute("aria-selected", "true");
     } finally { live.superAgent = false; }
+  });
+
+  it("switch on: no Older tasks tab without old tasks; a hidden page opened by link keeps its own tab", () => {
+    live.superAgent = true;
+    issues.list = [];
+    try {
+      const { unmount } = render(<WorkTabs teamsKey="threads" />);
+      expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["Threads", "Automations", "Agents", "Money"]);
+      unmount();
+      render(<WorkTabs teamsKey="goals" />);
+      expect(screen.getByRole("tab", { name: "Goals" })).toHaveAttribute("aria-selected", "true");
+    } finally { live.superAgent = false; issues.list = [{ id: "i1" }]; }
   });
 
   it("covers exactly the pages the Work tab hosts", () => {

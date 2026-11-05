@@ -23,7 +23,7 @@ describe("summaryView: one word per status, group from the server", () => {
     [{ status: "proposed", shownGroup: null }, "Suggested", null, "start", "neutral"],
     [{ status: "queued" }, "Queued", "working", null, "working"],
     [{ status: "working" }, "Working", "working", null, "working"],
-    [{ status: "idle", shownGroup: "idle" }, "Idle", "idle", null, "neutral"],
+    [{ status: "idle", shownGroup: "idle" }, "Done", "idle", null, "neutral"],
     [{ status: "idle", shownGroup: "idle", watching: true, watchUntil: "2026-11-10" }, "Watching", "idle", null, "neutral"],
     [{ status: "resolved", shownGroup: "resolved" }, "Resolved", "resolved", "reopen", "neutral"],
     [{ status: "resolved", shownGroup: "resolved", statusReason: "stopped" }, "Stopped", "resolved", "reopen", "neutral"],

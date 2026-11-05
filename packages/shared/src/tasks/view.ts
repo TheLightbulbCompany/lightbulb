@@ -50,7 +50,8 @@ export function taskView({ task, viewerId, questions, effects, nameOf }: TaskVie
     case "failed": return task.ownerUserId === viewerId
       ? view("Failed", "waiting_on_you", "retry")
       : view("Failed", "idle");
-    case "idle": return view(task.watchUntil ? "Watching" : "Idle", "idle");
+    // Idle with nothing left to watch = the work is finished: people read "Done", not a state name.
+    case "idle": return view(task.watchUntil ? "Watching" : "Done", "idle");
   }
 
   // queued / working / waiting
@@ -128,7 +129,7 @@ export function summaryView(t: TaskSummary, viewerId: string): SummaryView {
     return v("Ready for review", NEXT_STEPS.has(next) ? next : "review");
   }
   if (group === "landing") return v("Applying");
-  if (t.status === "idle") return v(t.watching ? "Watching" : "Idle");
+  if (t.status === "idle") return v(t.watching ? "Watching" : "Done");
   if (q && !q.canAnswer && q.answererNames.length) return v(`Waiting on ${joinNames(q.answererNames)}`);
   // Waiting with no named answerer in the summary: say what it waits for, never a bare "Waiting".
   // ponytail: names the person once the summary carries who (today openQuestion is absent here).
@@ -142,7 +143,7 @@ function joinNames([first, ...rest]: string[]): string {
 
 export const GROUP_LABELS: Record<ShownGroup, string> = {
   waiting_on_you: "Waiting on you", working: "Working", ready_for_review: "Ready for review",
-  landing: "Applying", idle: "Idle", resolved: "Resolved",
+  landing: "Applying", idle: "Done", resolved: "Resolved",
 };
 /** Contract display order (mockup GROUPS). */
 export const GROUP_ORDER: readonly ShownGroup[] = ["waiting_on_you", "working", "ready_for_review", "landing", "idle", "resolved"];

@@ -4,7 +4,7 @@
 
 import { useAuth } from "@clerk/expo";
 import {
-  automationStatusLine, deliveryWords, overviewGroups, scheduleWords, useAutomations, viewerTimeZone, summaryView, taskSummaryLine, useOlderTasks, useTaskList, type TaskScope, type TaskSummary,
+  automationRowLine, deliveryWords, overviewGroups, useAutomations, viewerTimeZone, summaryView, taskSummaryLine, useOlderTasks, useTaskList, type TaskScope, type TaskSummary,
 } from "@lightbulb/shared";
 import { router } from "expo-router";
 import { useContext, useState } from "react";
@@ -132,7 +132,7 @@ export function ScheduledList({ palette, viewerTz, onOpen = (id) => router.push(
           <View style={styles.rowMain}>
             <Text style={[styles.title, { color: palette.fg }]} numberOfLines={1}>{a.name}</Text>
             <Text style={[styles.meta, { color: palette.fgMute }]} numberOfLines={2}>
-              {[scheduleWords(a, viewerTz) ?? "No schedule", deliveryWords(a.deliverTo), automationStatusLine(a)].filter(Boolean).join(" · ")}
+              {[automationRowLine(a, viewerTz), deliveryWords(a.deliverTo)].filter(Boolean).join(" · ")}
             </Text>
           </View>
         </Pressable>

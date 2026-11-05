@@ -60,8 +60,8 @@ describe("taskView: one word, group and action per stored status (contracts-v2 Â
     ["working", SAM, "Working", "working", null],
     ["working", PRIYA, "Working", "working", null],
     ["waiting", SAM, "Waiting on a reply", "working", null],
-    ["idle", SAM, "Idle", "idle", null],
-    ["idle", PRIYA, "Idle", "idle", null],
+    ["idle", SAM, "Done", "idle", null],
+    ["idle", PRIYA, "Done", "idle", null],
     ["resolved", SAM, "Resolved", "resolved", "reopen"],
     ["resolved", PRIYA, "Resolved", "resolved", "reopen"],
     ["failed", SAM, "Failed", "waiting_on_you", "retry"],
@@ -151,7 +151,7 @@ describe("taskView: open questions", () => {
     expect(view(task("resolved"), SAM, { questions }).word).toBe("Resolved");
     expect(view(task("failed"), SAM, { questions }).word).toBe("Failed");
     expect(view(task("proposed"), SAM, { questions }).word).toBe("Suggested");
-    expect(view(task("idle"), SAM, { questions }).word).toBe("Idle");
+    expect(view(task("idle"), SAM, { questions }).word).toBe("Done");
   });
 });
 

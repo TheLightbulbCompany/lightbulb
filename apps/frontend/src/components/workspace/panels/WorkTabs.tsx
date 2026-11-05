@@ -5,6 +5,7 @@
 import { PanelTabs } from "@/components/teams/shell";
 import { WORK_TEAMS_KEYS, WORK_THREADS_KEY } from "../panelRegistry";
 import { useSuperAgent } from "@/hooks/useLiveEvents";
+import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { openPanel } from "../workspaceController";
 
 export { WORK_TEAMS_KEYS };
@@ -20,10 +21,19 @@ const LABELS: Record<(typeof WORK_TEAMS_KEYS)[number] | typeof WORK_THREADS_KEY,
   money: "Money",
 };
 
+/** With the super-agent on, the Paperclip-era pages that threads replace stay out of the strip (Claude Projects:
+ *  the work, its schedules, its people, its money). Their URLs still open them. */
+const SUPER_AGENT_HIDDEN: ReadonlySet<string> = new Set(["projects", "goals", "cases"]);
+
 export function WorkTabs({ teamsKey }: { teamsKey: string }): React.ReactElement {
   const superAgent = useSuperAgent();
-  // With the super-agent on, threads are the work; the Paperclip task board stays reachable as "Older tasks", last.
-  const keys = superAgent ? [WORK_THREADS_KEY, ...WORK_TEAMS_KEYS.filter((k) => k !== "issues"), "issues"] as const : WORK_TEAMS_KEYS;
+  // The Paperclip task board stays reachable as "Older tasks", last, only while it holds any (or is the page shown).
+  const { data: older } = useTeamsApi().read<{ issues?: unknown[] }>(superAgent ? "/issues?excludeRoutineExecutions=true" : null);
+  const showOlder = !!older?.issues?.length || teamsKey === "issues";
+  type Key = keyof typeof LABELS;
+  const keys: readonly Key[] = superAgent
+    ? [WORK_THREADS_KEY, ...WORK_TEAMS_KEYS.filter((k) => k !== "issues" && (!SUPER_AGENT_HIDDEN.has(k) || k === teamsKey)), ...(showOlder ? ["issues" as const] : [])]
+    : WORK_TEAMS_KEYS;
   return (
     <PanelTabs
       ariaLabel="Work"

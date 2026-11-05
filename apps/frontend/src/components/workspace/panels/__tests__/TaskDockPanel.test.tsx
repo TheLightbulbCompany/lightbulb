@@ -33,5 +33,8 @@ describe("TaskDockPanel", () => {
     render(<Fresh><TaskDockPanel id="task-detail" params={{ taskId: "t-signup" }} /></Fresh>);
     expect(await screen.findByRole("heading", { name: "Workshop signup app" })).toBeInTheDocument();
     expect(client.get).toHaveBeenCalledWith("t-signup");
+    // The pane is a `.room-context` column, which messaging.css hides outside a `.room-context-host`: the dock
+    // pane rendered blank on dev (U1). The host is what makes it show.
+    expect(screen.getByRole("complementary", { name: "Thread" }).parentElement).toHaveClass("room-context-host");
   });
 });

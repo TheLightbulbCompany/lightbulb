@@ -620,7 +620,9 @@ async def patch_automation(sid: str, body: AutomationPatch, auth: AuthContext = 
         fields["deliverTo"] = body.deliver_to
     if body.budget_per_run_usd is not None:
         fields["budgetPerRunUsd"] = body.budget_per_run_usd
-    if body.schedule is not None and (row.get("match") or body.match is not None):
+    if body.match is not None and not row.get("match"):
+        raise _err(409, "rule_never_runs")  # an automation does not become a rule: its Schedule and hooks would stay
+    if body.schedule is not None and row.get("match"):
         raise _err(409, "rule_never_runs")  # a rule row must never reach the fire path
     if body.schedule is not None:
         fields.update(_schedule_fields(body.schedule))

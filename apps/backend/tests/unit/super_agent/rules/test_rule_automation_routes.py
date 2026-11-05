@@ -187,11 +187,11 @@ async def test_rule_row_never_reaches_the_fire_path(api, internal):
     r = _as(api).post(f"{BASE}/{view['id']}/run")
     assert r.status_code == 409 and r.json()["detail"]["code"] == "rule_never_runs"
     api.temporal.start_workflow.assert_not_awaited()
-    plain = _as(api).post(BASE, json={"name": "n", "instructions": "i"}).json()
-    r = _as(api).patch(
-        f"{BASE}/{plain['id']}", json={"match": RULE["match"], "schedule": sched, "version": plain["version"]}
-    )
+    # An automation never becomes a rule by PATCH: its Schedule and hooks would stay live behind a rule row.
+    plain = _as(api).post(BASE, json={"name": "n", "instructions": "i", "schedule": sched}).json()
+    r = _as(api).patch(f"{BASE}/{plain['id']}", json={"match": RULE["match"], "version": plain["version"]})
     assert r.status_code == 409 and r.json()["detail"]["code"] == "rule_never_runs"
+    assert (await repo.get_schedule(WS, plain["id"])).get("match") is None
     tid = await _chat_trigger()
     r = internal.api.client.post(PROPOSE, json={**RULE, "cron": ["0 9 * * 1"], "triggerIds": [tid]}, headers=AUTH)
     assert r.status_code == 409 and r.json()["detail"]["code"] == "rule_never_runs"

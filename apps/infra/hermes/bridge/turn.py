@@ -4333,7 +4333,10 @@ def _run_task_turn(identity: dict, request: dict, *, family: str) -> tuple[str, 
                 if _budget_spent(run_id):  # expired before the conversation could take the interrupt
                     return "failed", RUN_BUDGET_EXCEEDED, "", _agent_usage(agent)
                 run = {}
-                if not paperclip and getattr(agent, "_session_db", None) is not None:
+                # A Router run starts clean: what it decides from is the backend's rendering of the batch (the
+                # room's recent lines with the cards each Lightbulb line really carried, the open tasks). Its own
+                # earlier prose is not evidence: on dev a dropped start's ack in the transcript read as "underway".
+                if not paperclip and not router and getattr(agent, "_session_db", None) is not None:
                     run["conversation_history"] = _room_history(agent)[0] or None  # the attempt before this one
                 user_message = request["input"] if paperclip or not queued else f"{request['input']}\n\n{queued}"
                 result = _run_conversation(agent, agent_id, session_id,

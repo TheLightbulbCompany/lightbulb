@@ -2,6 +2,7 @@
 import pytest
 
 from bridge import runs, server, turn
+from tests.test_native_sessions import hermes  # noqa: F401 -- real-session harness
 from tests.test_runs_v1 import AGENT, AUTH, CREATE, REQUEST, TASK, Agent, quiet_turn, threads  # noqa: F401
 
 RUN = "1c6d7e40-5b6c-4d7e-8f90-a1b2c3d4e5f6"
@@ -117,3 +118,26 @@ def test_each_room_runs_in_its_own_session(quiet_turn, threads, monkeypatch):  #
         assert _post({**IDENTITY, "runId": run, "room": room, "sessionKey": f"{LANE_KEY}:{room}"})[0] == 202
         threads[-1].run_now()
     assert keys == [f"{LANE_KEY}:{ROOM_A}", f"{LANE_KEY}:{ROOM_B}"]
+
+
+def test_router_run_starts_without_its_transcript(hermes, home):
+    """Live dev 5 Nov: the per-room Router session replayed an earlier run's prose ("Growth has the checklist") whose
+    start had been dropped, and the next run answered "Already underway". A Router run gets no conversation_history:
+    the backend's rendering (recent lines with their real cards, open tasks) is what it decides from."""
+    from tests import test_native_sessions as ns
+    from tests.test_runs_v1 import REQUEST as REQ
+
+    _acquired, built, _dbs = hermes
+
+    def first(agent):
+        agent._session_db.append_message(agent.session_id, "user", "batch 1")
+        agent._session_db.append_message(agent.session_id, "assistant", "Growth has the day-of checklist.")
+        return {"api_calls": 1, "final_response": "Growth has the day-of checklist."}
+
+    ns.SCRIPT.append(first)
+    second = {**IDENTITY, "runId": "1c6d7e40-5b6c-4d7e-8f90-a1b2c3d4e5f9"}
+    for identity in (IDENTITY, second):
+        turn.register_durable_run(identity, REQ, kind="task")
+        assert turn._run_task_turn(identity, REQ, family="task")[0] == "completed"
+    assert built[0].kw["session_id"] == built[1].kw["session_id"] == KEY
+    assert "conversation_history" not in built[1].calls[0][0]

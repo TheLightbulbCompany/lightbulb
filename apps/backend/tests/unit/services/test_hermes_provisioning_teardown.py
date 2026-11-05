@@ -268,6 +268,11 @@ async def test_a_warm_member_forgets_and_the_runtime_goes_in_the_request(monkeyp
     assert not hermes_provisioning._runtime_teardowns
 
 
+# A hang guard, not a speed assertion: each teardown task makes a dozen moto calls on worker
+# threads, which took over 1 s on a loaded 2-core hosted runner under xdist (TimeoutError).
+TASK_BUDGET_S = 15
+
+
 def _parked(monkeypatch, answers):
     """A parked member: the seam schedules the teardown; ``answers`` is each forget try's outcome."""
     import asyncio
@@ -305,7 +310,7 @@ async def test_a_parked_member_keeps_the_runtime_until_the_forget_lands(monkeypa
     assert row["pk"] == "TEARDOWN#" and row["ownerId"] == "org_a" and row["author"] == "memberkey"
     assert row["row"] == ROW and row["dueAt"] > time.time() + 150
     (task,) = hermes_provisioning._runtime_teardowns
-    await asyncio.wait_for(task, 1)
+    await asyncio.wait_for(task, TASK_BUDGET_S)
     assert calls[calls.index("try:True") :] == ["try:True", "runtime"]
     assert calls.count("try:False") == 2 and calls.index("memory:org_a") < calls.index("runtime")
     assert table.scan()["Items"] == []
@@ -339,7 +344,7 @@ async def test_a_member_that_never_answers_still_loses_its_runtime_after_the_win
     calls = _parked(monkeypatch, [])
     await hermes_provisioning.delete_workspace_runtime("org_a", delete_profiles=True)
     (task,) = hermes_provisioning._runtime_teardowns
-    await asyncio.wait_for(task, 1)
+    await asyncio.wait_for(task, TASK_BUDGET_S)
     assert calls[-1] == "runtime" and "try:True" not in calls and calls.count("try:False") >= 2
 
 
@@ -360,7 +365,7 @@ async def test_a_workspace_provisioned_again_mid_window_keeps_its_names(monkeypa
     monkeypatch.setattr("core.billing.bedrock_gate_tokens.delete_gate_token_rows", revoked)
     monkeypatch.setattr(hermes_provisioning, "_delete_boot_secret", lambda *a: calls.append("secret"))
     (task,) = hermes_provisioning._runtime_teardowns
-    await asyncio.wait_for(task, 1)
+    await asyncio.wait_for(task, TASK_BUDGET_S)
     assert deleted == [ROW["agentcore_runtime_arn"]]
     revoked.assert_awaited_once_with(["hash-1"])
     assert "try:True" not in calls and "runtime" not in calls and "secret" not in calls

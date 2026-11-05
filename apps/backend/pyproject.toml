@@ -70,3 +70,6 @@ line-length = 120
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+markers = [
+    "real_background_workers: run the real lifespan sweepers (tests/conftest.py stubs them by default)",
+]

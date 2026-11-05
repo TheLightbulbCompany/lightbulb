@@ -504,6 +504,7 @@ async def lifespan(app: FastAPI):
     memory_sweeper_stop.set()
     digest_stop.set()
     away_stop.set()
+    apps_sweeper_stop.set()
     gauge_task.cancel()
     if flags_task is not None:
         flags_task.cancel()
@@ -522,6 +523,7 @@ async def lifespan(app: FastAPI):
                 memory_sweeper_task,
                 digest_task,
                 away_task,
+                apps_sweeper_task,
                 gauge_task,
             ]
             if broker is not None:

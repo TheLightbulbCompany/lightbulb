@@ -47,6 +47,73 @@ def pytest_collection_modifyitems(config, items):
     items[:] = keep
 
 
+def _serialize_moto_dynamodb() -> None:
+    """Make moto's DynamoDB apply one request at a time, as DynamoDB applies writes to one item.
+
+    moto's update_item/put_item read the item, evaluate the ConditionExpression and write
+    with no lock, and repo calls run on worker threads (core.dynamodb.run_in_thread). Two
+    racing conditional writes could then both pass the condition, so the "only one wins"
+    tests (billing trial arm, apps invite claim, tasks transition) failed whenever the OS
+    interleaved the threads -- often on the 2-core hosted runners, rarely on a laptop."""
+    import threading
+
+    from moto.dynamodb.responses import DynamoHandler
+
+    lock = threading.RLock()
+    call_action = DynamoHandler.call_action
+
+    def serialized(self):
+        with lock:
+            return call_action(self)
+
+    DynamoHandler.call_action = serialized
+
+
+_serialize_moto_dynamodb()
+
+
+async def _no_background_work(*_args, **_kwargs) -> None:
+    """Stands in for a lifespan background worker."""
+
+
+@pytest.fixture(autouse=True)
+def _no_lifespan_background_workers(request, monkeypatch):
+    """Every TestClient enters the app lifespan, which starts the background sweepers. Outside
+    a moto context those reached real AWS with the dummy credentials (UnrecognizedClientException
+    in the running_gauges loop and the pass-admission sweepers) and kept running after the test.
+    Tests that drive a worker itself opt out with ``@pytest.mark.real_background_workers``."""
+    if request.node.get_closest_marker("real_background_workers"):
+        return
+    import main
+    from core.services import (
+        apps_sweeper,
+        browser_control,
+        daily_digest,
+        durable_activity,
+        memory_api,
+        needs_you_email,
+        run_ledger,
+        session_pickup,
+        voice_calls,
+    )
+
+    monkeypatch.setattr(main, "run_scheduled_worker", _no_background_work)
+    monkeypatch.setattr(main, "_build_teams_event_broker", _no_background_work)
+    monkeypatch.setattr(main, "_running_count_gauge_loop", _no_background_work)
+    for module, name in (
+        (durable_activity, "run_trial_idle_sweeper"),
+        (run_ledger, "run_ledger_sweeper"),
+        (browser_control, "run_autosave_sweeper"),
+        (voice_calls, "voice_call_sweeper"),
+        (session_pickup, "run_pickup_sweeper"),
+        (memory_api, "run_memory_sweeper"),
+        (daily_digest, "run_digest_sweeper"),
+        (needs_you_email, "run_needs_you_sweeper"),
+        (apps_sweeper, "run_apps_sweeper"),
+    ):
+        monkeypatch.setattr(module, name, _no_background_work)
+
+
 @pytest.fixture(autouse=True)
 def _reset_shutdown_flag():
     """Reset the process-global shutdown flag around every test.

@@ -79,3 +79,7 @@ async def test_admission_emits_won_and_lost(monkeypatch):
     stop.set()
     await task
     assert ("lifecycle.pass.claimed", {"pass": "run_ledger", "outcome": "lost"}) in seen
+
+
+# These tests drive the lifespan workers themselves (tests/conftest.py stubs them otherwise).
+pytestmark = pytest.mark.real_background_workers

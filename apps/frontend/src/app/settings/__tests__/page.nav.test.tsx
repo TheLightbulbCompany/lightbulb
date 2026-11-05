@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import React from "react";
 
@@ -79,12 +79,19 @@ import SettingsPage from "../page";
 
 describe("Settings nav — the six groups of the one Settings page", () => {
   beforeEach(() => {
+    // The Profile panel's prefs cards (SessionNotificationsCard, DailySummaryCard) read
+    // /users/me/prefs through SWR, which fetched localhost:8000 for real. On a slow runner
+    // the refused connection landed after jsdom was torn down and SWR's error path touched
+    // `document` ("document is not defined"). A request that never answers keeps this
+    // nav-structure test off the network.
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
     clerk.membership = null; // default: personal owner = admin
     clerk.isLoaded = true;
     nav.panel = null;
     nav.extra = "";
     nav.replace.mockClear();
   });
+  afterEach(() => vi.unstubAllGlobals());
 
   it("renders the six group headers in order", () => {
     const { container } = render(<SettingsPage />);

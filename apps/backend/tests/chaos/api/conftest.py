@@ -21,10 +21,6 @@ import schemathesis
 from main import app
 
 
-async def _no_background_work(*_args, **_kwargs) -> None:
-    """Keep contract requests hermetic while their TestClient enters lifespan."""
-
-
 # Built once; reused by the parametrized tests in this directory.
 schema = schemathesis.openapi.from_asgi("/api/v1/openapi.json", app)
 
@@ -37,24 +33,6 @@ def _signed_out(monkeypatch):
     from core.auth import get_current_user
 
     monkeypatch.delitem(app.dependency_overrides, get_current_user, raising=False)
-
-
-@pytest.fixture(autouse=True)
-def _isolate_lifespan_background_workers(monkeypatch):
-    """Schemathesis enters FastAPI lifespan for every generated ASGI request."""
-    import main
-    from core.services import browser_control, daily_digest, durable_activity, run_ledger
-
-    # NOTE: `_resume_wake_resize_transitions` used to be stubbed here too. It resumed
-    # interrupted ECS wake/resize transitions and went with that runtime; a stub for a name
-    # that no longer exists errors EVERY case in this directory at setup.
-    monkeypatch.setattr(main, "run_scheduled_worker", _no_background_work)
-    monkeypatch.setattr(main, "_build_teams_event_broker", _no_background_work)
-    monkeypatch.setattr(main, "_running_count_gauge_loop", _no_background_work)
-    monkeypatch.setattr(durable_activity, "run_trial_idle_sweeper", _no_background_work)
-    monkeypatch.setattr(run_ledger, "run_ledger_sweeper", _no_background_work)
-    monkeypatch.setattr(browser_control, "run_autosave_sweeper", _no_background_work)
-    monkeypatch.setattr(daily_digest, "run_digest_sweeper", _no_background_work)
 
 
 # Operations that 5xx purely from an unmocked external dependency even when

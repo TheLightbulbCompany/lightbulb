@@ -346,3 +346,7 @@ async def test_device_registration_stores_a_valid_timezone_and_ignores_junk(user
     assert await user_repo.get_timezone("user_test_123") == "Asia/Tokyo"
     assert (await async_client.post("/api/v1/devices", json={**body, "timezone": "junk"})).status_code == 200
     assert await user_repo.get_timezone("user_test_123") == "Asia/Tokyo"
+
+
+# These tests drive the lifespan workers themselves (tests/conftest.py stubs them otherwise).
+pytestmark = pytest.mark.real_background_workers

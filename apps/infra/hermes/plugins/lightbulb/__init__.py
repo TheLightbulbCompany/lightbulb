@@ -673,7 +673,7 @@ def _detail(exc: urllib.error.HTTPError) -> str:
     detail = err.get("detail") if isinstance(err, dict) else None
     if isinstance(detail, dict):
         detail = detail.get("code")
-    return str(detail or "")
+    return detail if isinstance(detail, str) else ""  # a 422's list of field errors is not a code
 
 
 def _task_question(ctx: dict, *, kind: str, subkind: str, title: str, text: str, options: list[dict],

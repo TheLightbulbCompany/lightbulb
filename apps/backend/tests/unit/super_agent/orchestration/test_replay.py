@@ -5,7 +5,7 @@ from pathlib import Path
 from temporalio.client import WorkflowHistory
 from temporalio.worker import Replayer
 
-from core.temporal.workflows import WORKFLOWS
+from core.temporal.registry import ALL_WORKFLOWS as WORKFLOWS
 
 HISTORIES = Path(__file__).parent / "histories"
 

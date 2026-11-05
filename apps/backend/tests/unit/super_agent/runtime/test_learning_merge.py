@@ -234,6 +234,11 @@ def test_check_seal_per_attempt():
     assert lm.check_seal(seal(2, {lm.MEMORY: sha}), 2, t) is None
     assert lm.check_seal(seal(3, {lm.MEMORY: sha}), 2, t) == "superseded"  # attempt 3 already sealed over it
     assert lm.check_seal(seal(2, {lm.MEMORY: "other"}), 2, t) == "superseded"  # attempt 3 is writing
+    assert lm.check_seal(seal(2, {lm.MEMORY: sha, "skills/x/SKILL.md": "untouched"}), 2, t) is None  # layered
+    assert lm.check_seal(seal(2, {}), 2, t) == "superseded"  # a file the seal never saw: a later attempt's
+    view = lm.layered_task_view(seal(2, {lm.MEMORY: sha, "skills/x/SKILL.md": "u"}), t, lambda rel: b"from C")
+    assert view[lm.MEMORY] is t[lm.MEMORY] and view["skills/x/SKILL.md"][0] == "u"
+    assert view["skills/x/SKILL.md"][2]() == b"from C" and "state.db" not in view
     assert lm.base_rel(2) == "base-0002.json"
     plan = _plan({}, {lm.MEMORY: _mem("x")}, {}, superseded=True)
     assert plan.ops == [] and plan.report["skipped"] == "superseded"

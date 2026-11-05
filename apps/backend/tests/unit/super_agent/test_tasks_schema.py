@@ -170,6 +170,7 @@ def test_every_row_type_has_a_model():
         "question",
         "needs",
         "effect",
+        "learn",
         "trigger",
         "schedule",
         "hook",

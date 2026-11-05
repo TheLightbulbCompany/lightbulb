@@ -365,6 +365,11 @@ async def end_attempt(ws: str, task_id: str, n: int, outcome: str, error: str | 
         to, reason = _STATUS_AFTER.get(outcome, ("failed", outcome))
         await _move(ws, task_id, to, reason)
     await release_slot(ws, task_id)
+    # Lane V: a task-session attempt (V3's session kind) stops its own VM and queues its learning
+    # merge (`learn:{ws}:{specialist}`); nothing for a shared-VM attempt. Idempotent on a retry.
+    from core.temporal import learning
+
+    await learning.close_task_attempt_if_task_session(ws, task_id, att, n)
 
     requester = task.get("ownerUserId")
     room, root = _origin(tree)

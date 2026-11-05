@@ -170,7 +170,22 @@ def check_seal(seal_raw: bytes | None, attempt: int, task: Snapshot) -> str | No
         return "unsealed"
     sealed_files = {r: sha for r, sha in (seal.get("files") or {}).items() if is_learning_file(r)}
     now = {r: v[0] for r, v in task.items() if is_learning_file(r)}
-    return None if sealed_files == now else "superseded"
+    # ``task`` is the overlay: every file the task wrote must be at its sealed sha (a later attempt
+    # rewriting it, or a file the seal does not know, means a later attempt owns the overlay); files
+    # the seal lists but the overlay lacks are the ones the task left untouched (layered view).
+    return None if all(sealed_files.get(r) == sha for r, sha in now.items()) else "superseded"
+
+
+def layered_task_view(seal_raw: bytes, overlay: Snapshot, current_bytes: Callable[[str], bytes]) -> Snapshot:
+    """T as the task saw it (V5 contract): every learning file ``sealed.json`` lists, bytes from the
+    overlay when the task wrote the file, else -- untouched, so its sha is B's -- the specialist's
+    copy, which the plan only ever reads to park a conflicting skill dir. An overlay-only T would
+    archive every skill the task never touched."""
+    files = {r: sha for r, sha in (json.loads(seal_raw).get("files") or {}).items() if is_learning_file(r)}
+    view: Snapshot = {}
+    for rel, sha in files.items():
+        view[rel] = overlay[rel] if rel in overlay else (sha, "", lambda rel=rel: current_bytes(rel))
+    return view
 
 
 def parse_base(raw: bytes) -> tuple[Manifest, dict[str, str]]:

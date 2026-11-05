@@ -47,7 +47,7 @@ def _hex(algo, secret: str, msg: bytes) -> str:
 
 def _stale(ts: str, window: int, now: float) -> bool:
     try:
-        t = float(ts)
+        t: float = int(ts)  # int, not float: "nan"/"inf" would pass any window
     except ValueError:
         return True
     if t > 1e11:  # milliseconds
@@ -136,8 +136,14 @@ def _json(body: bytes) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def dedupe_key(provider: str, headers: Mapping[str, str], body: bytes) -> str:
+def dedupe_key(provider: str, headers: Mapping[str, str], body: bytes, *, mode: str) -> str:
     """Stable id of one delivery, the same across the provider's retries.
+
+    Only ids a sender cannot change without the secret: ids inside the body (Stripe ``id``, Pub/Sub
+    ``messageId``), Standard Webhooks' signed ``webhook-id``, and Google channel headers in the token
+    modes (the token is the whole credential there; channel pushes have no body). Raw-body HMAC modes
+    sign no header, so a resent delivery with a fresh ``X-GitHub-Delivery`` must not mint a new key:
+    they key on ``sha256(body)``, which collapses genuine redeliveries too.
 
     Always matches ``^[A-Za-z0-9:_-]{1,128}$`` (safe in trigger ids and S3 keys);
     a provider id outside that shape is hashed."""
@@ -147,30 +153,23 @@ def dedupe_key(provider: str, headers: Mapping[str, str], body: bytes) -> str:
     raw: str | None = None
     if provider == "stripe" and data.get("id"):
         raw = str(data["id"])
-    elif h.get("x-github-delivery"):
-        raw = h["x-github-delivery"]
     elif isinstance(msg, dict) and msg.get("messageId"):
         raw = str(msg["messageId"])
-    elif h.get("x-goog-channel-id") and h.get("x-goog-message-number"):
-        raw = f"{h['x-goog-channel-id']}:{h['x-goog-message-number']}"
-    elif h.get("linear-delivery"):
-        raw = h["linear-delivery"]
-    elif h.get("webhook-id"):
+    elif mode == "standard_webhooks" and h.get("webhook-id"):
         raw = h["webhook-id"]
+    elif mode in ("bearer", "google_channel_token") and h.get("x-goog-channel-id") and h.get("x-goog-message-number"):
+        raw = f"{h['x-goog-channel-id']}:{h['x-goog-message-number']}"
     if raw and _KEY_RE.match(raw):
         return raw
     return hashlib.sha256(raw.encode() if raw else body).hexdigest()
 
 
 def event_type(provider: str, headers: Mapping[str, str], body: bytes) -> str | None:
-    """The event id as ``providers.yaml`` names it (the ids ``HOOK#.events`` filters on).
+    """The event id as ``providers.yaml`` names it (the ids ``HOOK#.events`` filters on), read from the
+    signed body only. GitHub and Sentry name the event only in an unsigned header, so they return None
+    (their events are subscribed at the provider when the hook is registered).
 
     None = unknown, which the caller treats as "matches every filter"."""
-    h = _lower(headers)
-    if provider == "github":
-        return h.get("x-github-event") or None
-    if provider == "sentry":
-        return h.get("sentry-hook-resource") or None
     if provider in ("stripe", "vercel", "linear"):
         value = _json(body).get("type")
         return str(value) if value else None

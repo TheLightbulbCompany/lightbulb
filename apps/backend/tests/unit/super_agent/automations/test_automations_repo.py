@@ -72,6 +72,16 @@ async def test_claim_run_only_when_active_and_free(table):
     assert await repo.claim_run(WS, "missing", "t1") is False
 
 
+async def test_closed_run_cannot_be_claimed_again(table):
+    """A retried fire after its fast run already closed must not re-arm the slot (it would never close)."""
+    await _active()
+    assert await repo.claim_run(WS, "s1", "t1")
+    await repo.close_run(WS, "s1", "t1", failed=False)
+    assert await repo.claim_run(WS, "s1", "t1") is False
+    assert "activeRunTaskId" not in await repo.get_schedule(WS, "s1")
+    assert await repo.claim_run(WS, "s1", "t2") is True
+
+
 async def test_close_run_trims_history_to_50(table):
     await _active()
     for i in range(52):
@@ -116,6 +126,16 @@ async def test_update_stale_version_conflicts(table):
         await repo.update_schedule(WS, "s1", {"name": "x"}, expected_version=1)
     with pytest.raises(ValueError):
         await repo.update_schedule(WS, "s1", {"status": "active"}, expected_version=2)
+    # snake_case spellings of writer-owned fields are refused too, not written as stray attributes
+    for bad in ("active_run_task_id", "run_task_ids", "consecutive_failures", "paused_reason", "schedule_id"):
+        with pytest.raises(ValueError):
+            await repo.update_schedule(WS, "s1", {bad: "x"}, expected_version=2)
+
+
+async def test_update_schedule_snake_case_fields_are_stored_camel(table):
+    row, _ = await repo.create_schedule(WS, _sched())
+    new = await repo.update_schedule(WS, "s1", {"deliver_to": "room:r1"}, expected_version=row["version"])
+    assert new["deliverTo"] == "room:r1" and "deliver_to" not in new
 
 
 async def test_set_status_allowed_from_and_reason(table):
@@ -147,13 +167,16 @@ async def test_put_hook_refuses_none_mode(table):
 
 
 async def test_update_hook(table):
-    await repo.put_hook(WS, _hook())
-    row = await repo.update_hook(WS, "pub_1", {"armed": True, "providerHookId": "we_1"})
-    assert row["armed"] is True and row["providerHookId"] == "we_1"
-    with pytest.raises(ValueError):
-        await repo.update_hook(WS, "pub_1", {"publicId": "other"})
-    with pytest.raises(KeyError):
-        await repo.update_hook(WS, "missing", {"armed": True})
+    hook, _ = await repo.put_hook(WS, _hook())
+    row = await repo.update_hook(WS, "pub_1", {"armed": True, "provider_hook_id": "we_1"}, expected_version=1)
+    assert row["armed"] is True and row["providerHookId"] == "we_1" and row["version"] == 2
+    with pytest.raises(VersionConflict):  # a concurrent writer already moved it on
+        await repo.update_hook(WS, "pub_1", {"armed": False}, expected_version=1)
+    for bad in ({"publicId": "other"}, {"sig_fail_count": 0}):
+        with pytest.raises(ValueError):
+            await repo.update_hook(WS, "pub_1", bad, expected_version=2)
+    with pytest.raises(VersionConflict):
+        await repo.update_hook(WS, "missing", {"armed": True}, expected_version=1)
 
 
 async def test_note_sig_failure_writes_once_a_minute(table):

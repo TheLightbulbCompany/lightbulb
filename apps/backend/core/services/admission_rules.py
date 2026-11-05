@@ -9,12 +9,17 @@ Router's decisions. Order:
    it ended, bot/CI noise is dropped and a person's message is new work.
 3. Bots and CI with no subscription are ignored.
 4. Mail and text from people go to the Router (stranger caps already applied by the caller).
+
+An unknown source raises (a caller typo must not fall through to "respond"). ``addressed`` is not read in v1:
+an addressed bot message with no subscription is still dropped.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, get_args
+
+from core import tasks_schema as ts
 
 DETERMINISTIC_SOURCES = frozenset({"schedule", "manual", "webhook", "voice", "a2a"})
 _ENDED = frozenset({"resolved", "failed"})
@@ -22,7 +27,7 @@ _ENDED = frozenset({"resolved", "failed"})
 
 @dataclass(frozen=True)
 class SourceTrigger:
-    source: str
+    source: ts.TriggerSource
     addressed: bool
     actor_kind: Literal["human", "bot", "ci", "system"]
     thread_key: str | None
@@ -37,6 +42,8 @@ class Verdict:
 
 
 def decide(t: SourceTrigger) -> Verdict:
+    if t.source not in get_args(ts.TriggerSource):
+        raise ValueError(f"unknown trigger source {t.source!r}")
     if t.source in DETERMINISTIC_SOURCES:
         return Verdict("respond", True, f"{t.source}_fire")
     bot = t.actor_kind in ("bot", "ci")

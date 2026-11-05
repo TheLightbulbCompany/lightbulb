@@ -60,6 +60,15 @@ def test_paperclip_style_headers_and_ms_timestamp():
     assert hs.verify("hmac_sha256", SECRET, h, BODY, now=NOW) == "stale"
 
 
+def test_non_integer_timestamp_is_stale():
+    for t in ("nan", "inf", "1.5", ""):
+        h = {"X-Paperclip-Timestamp": t or " ", "X-Paperclip-Signature": _stripe()}
+        assert hs.verify("hmac_sha256", SECRET, h, BODY, now=NOW) == "stale", t
+    sig = _stripe(t="nan")  # even with a signature over "nan.{body}"
+    h = {"Stripe-Signature": f"t=nan,v1={sig}"}
+    assert hs.verify("hmac_sha256", SECRET, h, BODY, now=NOW) == "stale"
+
+
 def test_stripe_header_without_v1_is_missing():
     assert hs.verify("hmac_sha256", SECRET, {"Stripe-Signature": f"t={NOW}"}, BODY, now=NOW) == "missing"
 
@@ -180,37 +189,56 @@ _KEY_RE = re.compile(r"^[A-Za-z0-9:_-]{1,128}$")
 _PUBSUB = json.dumps({"message": {"messageId": "1234567890", "data": "e30="}}).encode()
 
 
+def _h(b: bytes) -> str:
+    return hashlib.sha256(b).hexdigest()
+
+
 @pytest.mark.parametrize(
-    "provider,headers,body,want",
+    "provider,mode,headers,body,want",
     [
-        ("stripe", {}, BODY, "evt_1"),
+        ("stripe", "hmac_sha256", {}, BODY, "evt_1"),
+        ("gmail", "bearer", {}, _PUBSUB, "1234567890"),
+        # Standard Webhooks signs webhook-id, so it is trusted.
+        ("other", "standard_webhooks", {"webhook-id": "msg_2"}, b"{}", "msg_2"),
+        # Google channel pushes have no body; the token is the whole credential, so its headers are the key.
+        ("google_calendar", "bearer", {"X-Goog-Channel-ID": "ch-1", "X-Goog-Message-Number": "7"}, b"", "ch-1:7"),
         (
-            "github",
-            {"X-GitHub-Delivery": "72d3162e-cc78-11e3-81ab-4c9367dc0958"},
-            b"{}",
-            "72d3162e-cc78-11e3-81ab-4c9367dc0958",
+            "google_calendar",
+            "google_channel_token",
+            {"X-Goog-Channel-ID": "c", "X-Goog-Message-Number": "8"},
+            b"",
+            "c:8",
         ),
-        ("gmail", {}, _PUBSUB, "1234567890"),
-        ("google_calendar", {"X-Goog-Channel-ID": "ch-1", "X-Goog-Message-Number": "7"}, b"", "ch-1:7"),
-        ("linear", {"Linear-Delivery": "d-1"}, b"{}", "d-1"),
-        ("other", {"webhook-id": "msg_2"}, b"{}", "msg_2"),
-        ("other", {}, b"hello", hashlib.sha256(b"hello").hexdigest()),
+        # Raw-body HMAC modes do not sign headers: delivery headers are ignored, the body is the key.
+        ("github", "github_hmac", {"X-GitHub-Delivery": "d-1"}, b'{"a":1}', _h(b'{"a":1}')),
+        ("linear", "github_hmac", {"Linear-Delivery": "d-1"}, b'{"a":1}', _h(b'{"a":1}')),
+        ("vercel", "hmac_sha1", {"webhook-id": "w"}, b"{}", _h(b"{}")),
+        ("other", "github_hmac", {"X-Goog-Channel-ID": "c", "X-Goog-Message-Number": "1"}, b"x", _h(b"x")),
+        ("other", "bearer", {}, b"hello", _h(b"hello")),
         # Stripe body id only counts for Stripe.
-        ("other", {}, BODY, hashlib.sha256(BODY).hexdigest()),
+        ("other", "hmac_sha256", {}, BODY, _h(BODY)),
         # A provider id outside the safe shape is hashed, not passed through.
-        ("other", {"webhook-id": "a/b"}, b"{}", hashlib.sha256(b"a/b").hexdigest()),
+        ("other", "standard_webhooks", {"webhook-id": "a/b"}, b"{}", _h(b"a/b")),
     ],
 )
-def test_dedupe_key_per_provider(provider, headers, body, want):
-    key = hs.dedupe_key(provider, headers, body)
+def test_dedupe_key_per_provider(provider, mode, headers, body, want):
+    key = hs.dedupe_key(provider, headers, body, mode=mode)
     assert key == want
     assert _KEY_RE.match(key)
 
 
+def test_unsigned_delivery_header_cannot_mint_a_new_key():
+    """A captured GitHub delivery resent with a fresh X-GitHub-Delivery is still the same delivery."""
+    body = b'{"ref":"refs/heads/main"}'
+    first = hs.dedupe_key("github", {"X-GitHub-Delivery": "d-1"}, body, mode="github_hmac")
+    replay = hs.dedupe_key("github", {"X-GitHub-Delivery": "d-2"}, body, mode="github_hmac")
+    assert first == replay
+
+
 def test_dedupe_key_same_across_stripe_retries():
     # Stripe re-signs a retry with a new t=; the event id is the key.
-    assert hs.dedupe_key("stripe", {"Stripe-Signature": "t=1,v1=a"}, BODY) == hs.dedupe_key(
-        "stripe", {"Stripe-Signature": "t=2,v1=b"}, BODY
+    assert hs.dedupe_key("stripe", {"Stripe-Signature": "t=1,v1=a"}, BODY, mode="hmac_sha256") == hs.dedupe_key(
+        "stripe", {"Stripe-Signature": "t=2,v1=b"}, BODY, mode="hmac_sha256"
     )
 
 
@@ -218,10 +246,12 @@ def test_dedupe_key_same_across_stripe_retries():
     "provider,headers,body,want",
     [
         ("stripe", {}, BODY, "invoice.payment_failed"),
-        ("github", {"X-GitHub-Event": "pull_request"}, b'{"action":"opened"}', "pull_request"),
+        # GitHub and Sentry name the event only in an unsigned header: not trusted (events are
+        # subscribed at the provider instead), so a resent delivery cannot change its event type.
+        ("github", {"X-GitHub-Event": "pull_request"}, b'{"action":"opened"}', None),
         ("vercel", {}, b'{"type":"deployment.error"}', "deployment.error"),
         ("linear", {}, b'{"type":"Issue","action":"create"}', "Issue"),
-        ("sentry", {"Sentry-Hook-Resource": "issue"}, b"{}", "issue"),
+        ("sentry", {"Sentry-Hook-Resource": "issue"}, b"{}", None),
         ("stripe", {}, b"not json", None),
         ("stripe", {}, b"[1]", None),
         ("posthog", {}, b'{"type":"x"}', None),

@@ -83,6 +83,14 @@ async def paying(ws: str) -> bool:
     return has_always_on_entitlement(await billing_repo.get_by_owner_id(ws))
 
 
+async def live(ws: str) -> bool:
+    """May use the platform: paid, or a free trial still running (not canceled, expired or deleted)."""
+    from core.repositories import billing_repo
+    from core.services.provision_gate import should_arm_nightly_ceo
+
+    return should_arm_nightly_ceo(await billing_repo.get_by_owner_id(ws))
+
+
 async def _timezone(ws: str) -> str:
     """The workspace creator's own zone, else UTC (as the old feed routines did)."""
     from core.repositories import user_repo
@@ -97,10 +105,11 @@ async def _timezone(ws: str) -> str:
     return tz if user_repo.valid_timezone(tz) else "UTC"
 
 
-async def ensure(ws: str) -> None:
-    """Idempotent, both ways: the first run once per workspace; feed posts on for everyone; the look around on
-    while it pays, paused (`paused_system: not_paying`) when it stops. An owner's own pause is theirs to keep.
-    Switch off: nothing."""
+async def ensure(ws: str, *, backfill: bool = False) -> None:
+    """Idempotent, both ways: the first run once per workspace; feed posts on while the workspace may use the
+    platform (paid, or a live free trial), the look around while it pays; otherwise `paused_system: not_paying`.
+    An owner's own pause is theirs to keep. Switch off: nothing. `backfill` (the daily reconcile): no first run
+    for a dormant workspace; provisioning and billing changes (`arm_nightly_ceo`) skip that check."""
     from core.repositories import automations_repo as repo
     from core.services import automation_schedule, super_agent_flags
 
@@ -109,7 +118,8 @@ async def ensure(ws: str) -> None:
     if not await super_agent_flags.flags_for(ws):
         return
     # Once, ever; never for a dormant workspace (a deploy's first reconcile reaches every switched-on one).
-    if await tasks_repo.get_trigger(ws, ts.trigger_id("idea", FIRST_RUN_KEY)) is None and not await _dormant(ws):
+    first_run_due = await tasks_repo.get_trigger(ws, ts.trigger_id("idea", FIRST_RUN_KEY)) is None
+    if first_run_due and not (backfill and await _dormant(ws)):
         budget = await reserve(ws, FIRST_RUN_KEY, FIRST_RUN_BUDGET_USD)
         if budget:
             await start_request(
@@ -120,10 +130,10 @@ async def ensure(ws: str) -> None:
                 actor_user_id=ws,
                 budget_usd=budget,
             )
-    is_paying = await paying(ws)
+    is_paying, is_live = await paying(ws), await live(ws)
     tz: str | None = None
     for want in automation_rows(ws, "UTC"):
-        on = is_paying or not paying_only(want["scheduleId"])
+        on = is_paying if paying_only(want["scheduleId"]) else is_live
         row = await repo.get_schedule(ws, want["scheduleId"])
         if row is None:
             if not on:
@@ -147,10 +157,11 @@ def _now_ms() -> int:
 
 
 async def _dormant(ws: str) -> bool:
-    """No human activity for the automations' idle window (a brand-new workspace has none recorded: not dormant)."""
+    """No human activity for the automations' idle window, judged strictly (no container, or never used since
+    created over the window ago, is dormant)."""
     from core.temporal.automations import _idle
 
-    return await _idle(ws, _now_ms())
+    return await _idle(ws, _now_ms(), strict=True)
 
 
 def _today() -> str:
@@ -235,7 +246,7 @@ async def release(ws: str, run_key: str) -> None:
 
 async def fire_budget(ws: str, sid: str, run_key: str, budget: float | None) -> tuple[str | None, float]:
     """Before a proactive fire: `(skip reason, 0)` or `(None, the run's budget held against today's cap)`."""
-    if paying_only(sid) and not await paying(ws):
+    if not await (paying(ws) if paying_only(sid) else live(ws)):
         return NOT_PAYING, 0.0
     held = await reserve(ws, run_key, budget or RUN_BUDGET_USD)
     return (None, held) if held else ("daily_cap", 0.0)

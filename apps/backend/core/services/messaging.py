@@ -2461,6 +2461,7 @@ async def ensure_feed_room(owner_id: str, requester_user_id: str | None = None) 
         source_agent_id=ceo_id,
         client_message_id=None,
         author_member_check=False,  # the CEO writes the feed as an author, never a member
+        attrs={"kind": "welcome"},  # clients recognise the welcome by kind, never by its text
     )
     return room_id
 

@@ -127,7 +127,7 @@ async def reconcile_schedules() -> dict:
     for ws in await super_agent_flags.list_on():
         _beat(f"proactive {ws}")
         try:
-            await proactive.ensure(ws)
+            await proactive.ensure(ws, backfill=True)
             out["proactive"] += 1
         except Exception:  # noqa: BLE001 -- one workspace never stops the reconcile
             logging.getLogger(__name__).warning("reconcile: proactive ensure failed for %s", ws, exc_info=True)
@@ -286,13 +286,22 @@ async def _payload_excerpt(payload_ref: str | None) -> str | None:
     return obj["Body"].read(PAYLOAD_EXCERPT_CHARS * 4).decode("utf-8", errors="replace")[:PAYLOAD_EXCERPT_CHARS]
 
 
-async def _idle(ws: str, at_ms: int) -> bool:
+async def _idle(ws: str, at_ms: int, *, strict: bool = False) -> bool:
     """No human activity (`last_interactive_at`, stamped on every human send) for `IDLE_DAYS`. A row that
-    never recorded any is not idle: nothing to judge by."""
+    never recorded any is not idle: nothing to judge by. `strict` (the proactive layer, which nobody asked
+    for): no container row is idle, and a row with no activity ever is judged by its `created_at`, as the
+    trial scale-to-zero sweep does (`durable_activity._activity_epoch`)."""
     from core.dynamodb import plain
     from core.repositories import container_repo
 
-    last = plain(((await container_repo.get_by_owner_id(ws)) or {}).get("last_interactive_at"))
+    row = await container_repo.get_by_owner_id(ws)
+    if strict:
+        if row is None:
+            return True
+        from core.services.durable_activity import _activity_epoch
+
+        return at_ms / 1000 - _activity_epoch(row) > IDLE_DAYS * 86_400
+    last = plain((row or {}).get("last_interactive_at"))
     if not isinstance(last, (int, float)) or isinstance(last, bool):
         return False
     return at_ms / 1000 - last > IDLE_DAYS * 86_400
@@ -313,7 +322,10 @@ async def fire_automation(inp: FireInput, at_ms: int) -> str:
     row = await repo.get_schedule(ws, inp.schedule_id) if inp.schedule_id else None
     if row is None or row["status"] != "active":
         return "skipped:paused"
-    if inp.source == "schedule" and await _idle(ws, at_ms):  # a webhook is a real event, Run now a person
+    strict = proactive.is_proactive(row["scheduleId"])
+    if inp.source == "schedule" and await _idle(
+        ws, at_ms, strict=strict
+    ):  # a webhook is a real event, Run now a person
         await repo.note_skip(ws, row["scheduleId"], reason="idle")
         await _turn_off_if_spent(ws, row, inp)
         return "skipped:idle"

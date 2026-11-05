@@ -22,6 +22,7 @@ AT = int(NOW.timestamp() * 1000)
 @pytest.fixture
 def world(env, monkeypatch):  # noqa: F811
     billing = {"subscription_status": "active"}
+    env.container["last_interactive_at"] = AT // 1000 - 3_600  # someone wrote an hour before the fires
     upsert = AsyncMock(return_value="created")
     with (
         patch("core.services.super_agent_flags.flags_for", AsyncMock(return_value=True)),
@@ -62,7 +63,7 @@ async def test_trial_gets_first_run_and_feed_and_the_look_around_follows_the_pla
     world.billing["subscription_status"] = "active"
     await proactive.ensure(WS)
     assert set((await _statuses()).values()) == {("active", None)}
-    world.billing["subscription_status"] = "canceled"
+    world.billing["subscription_status"] = "trial_local"  # back on the free plan: feed stays, look around stops
     await proactive.ensure(WS)
     assert await _statuses() == {
         proactive.LOOK_AROUND_ID: ("paused_system", "not_paying"),
@@ -95,7 +96,7 @@ async def test_look_around_fire_is_a_workspace_request_with_the_brief(world):
 
 async def test_not_paying_at_fire_time_skips_the_look_around_but_not_the_feed(world):
     await proactive.ensure(WS)
-    world.billing["subscription_status"] = "past_due"
+    world.billing["subscription_status"] = "trial_local"
     assert await fire_automation(FireInput(WS, proactive.LOOK_AROUND_ID, "schedule"), AT) == "skipped:not_paying"
     assert (await repo.get_schedule(WS, proactive.LOOK_AROUND_ID))["lastSkip"]["reason"] == "not_paying"
     assert (await fire_automation(FireInput(WS, proactive.FEED_ID, "schedule"), AT)).startswith("sched:")
@@ -143,15 +144,54 @@ async def test_fires_reserve_their_budget_and_stop_at_the_daily_cap(world, monke
     assert (await repo.get_schedule(WS, proactive.FEED_ID))["lastSkip"]["reason"] == "daily_cap"
 
 
-async def test_first_run_is_the_workspaces_and_skips_a_dormant_workspace(world):
+async def test_first_run_is_the_workspaces_and_the_backfill_skips_a_dormant_workspace(world):
     world.env.container["last_interactive_at"] = AT // 1000 - 4 * 86_400
     with patch("core.services.proactive._now_ms", return_value=AT):
-        await proactive.ensure(WS)
+        await proactive.ensure(WS, backfill=True)
         assert [t for t, _ in world.env.enqueued if t.source == "idea"] == []  # dormant: no backfill spend
         world.env.container["last_interactive_at"] = AT // 1000 - 3_600
-        await proactive.ensure(WS)
+        await proactive.ensure(WS, backfill=True)
     ((trigger, room),) = [(t, r) for t, r in world.env.enqueued if t.source == "idea"]
     assert trigger.actor_user_id == WS and trigger.lane == "shared" and room is None  # metered as the workspace
+
+
+async def test_the_backfill_skips_a_workspace_nobody_ever_used(world):
+    world.env.container.pop("last_interactive_at")
+    world.env.container["created_at"] = "2026-12-01T00:00:00+00:00"  # no message, ever, since a month ago
+    with patch("core.services.proactive._now_ms", return_value=AT):
+        await proactive.ensure(WS, backfill=True)
+        assert [t for t, _ in world.env.enqueued if t.source == "idea"] == []
+        with patch("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None)):
+            await proactive.ensure(WS, backfill=True)  # no container row at all: dormant too
+        assert [t for t, _ in world.env.enqueued if t.source == "idea"] == []
+
+
+async def test_provisioning_files_the_first_run_before_any_container_exists(world):
+    with patch("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None)):
+        await proactive.ensure(WS)  # provision / billing path: no idle check
+    assert len([t for t, _ in world.env.enqueued if t.source == "idea"]) == 1
+
+
+async def test_a_never_used_workspace_gets_no_feed_posts(world):
+    await proactive.ensure(WS)
+    world.env.container.pop("last_interactive_at")
+    world.env.container["created_at"] = "2026-12-01T00:00:00+00:00"  # created a month ago, nobody ever wrote
+    assert await fire_automation(FireInput(WS, proactive.FEED_ID, "schedule"), AT) == "skipped:idle"
+    with patch("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None)):  # deleted
+        assert await fire_automation(FireInput(WS, proactive.FEED_ID, "schedule"), AT) == "skipped:idle"
+    world.env.container["created_at"] = "2027-01-04T10:00:00+00:00"  # new today: not idle
+    assert (await fire_automation(FireInput(WS, proactive.FEED_ID, "schedule"), AT)).startswith("sched:")
+
+
+async def test_a_canceled_or_expired_workspace_pauses_its_feed_too(world):
+    await proactive.ensure(WS)
+    world.billing["subscription_status"] = "canceled"
+    await proactive.ensure(WS)
+    assert set((await _statuses()).values()) == {("paused_system", "not_paying")}
+    world.billing["subscription_status"] = "trial_local"  # an unexpired free trial: feed back on
+    world.billing["trial_end"] = 4_102_444_800  # 2100
+    await proactive.ensure(WS)
+    assert (await _statuses())[proactive.FEED_ID] == ("active", None)
 
 
 async def test_context_never_shows_a_private_request(world, monkeypatch):

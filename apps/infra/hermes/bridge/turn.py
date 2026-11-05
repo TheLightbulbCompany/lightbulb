@@ -398,12 +398,14 @@ def _voice_body(identity: dict, request: dict) -> dict:
             "recentHistory": request.get("recentHistory") or []}
 
 
-def call_turn_context(identity: dict) -> dict:
+def call_turn_context(identity: dict, request: dict | None = None) -> dict:
     """A spoken turn's plugin turn context. Keyed by the call key: the plugin's tools find it (and
-    the Mac tool's active turn) by the session id Hermes hands them, which is the call's own."""
+    the Mac tool's active turn) by the session id Hermes hands them, which is the call's own.
+    `superAgent` (lane A): the backend set it on the request when work asked aloud may become a task."""
     return {"apiUrl": API, "ownerId": OWNER, "hookToken": HOOK_TOKEN, "agentId": identity["agentId"],
             "runId": identity["runId"], "sessionKey": call_session_key(identity["agentId"], identity["callId"]),
-            "roomId": None, "voiceRoomId": identity["roomId"],
+            "roomId": None, "voiceRoomId": identity["roomId"], "callId": identity["callId"],
+            "superAgent": bool((request or {}).get("superAgent")),
             "localSessionToken": identity.get("localSessionToken"), "family": "call"}
 
 
@@ -606,7 +608,7 @@ def _run_call(identity: dict, request: dict, frames: "VoiceFramePublisher") -> t
         import run_agent  # noqa: F401
     except ImportError:
         pass
-    ctx = call_turn_context(identity)
+    ctx = call_turn_context(identity, request)
     body = _voice_body(identity, request)
     # The room turns' folder path, never filled or removed here: an observed row's "saved at" note
     # names it, and the room's next turn fills it (_observed_text).
@@ -620,7 +622,12 @@ def _run_call(identity: dict, request: dict, frames: "VoiceFramePublisher") -> t
         # The room turn's own environment on the call's key (its own folder and shell), plus the
         # steer-lowered grant a call can get mid-run.
         with _room_turn_env(agent_id, session_key, call_key, run_id, body, frames, ctx, "call"), _call_grant_scope(run_id, ctx):
-            agent = _construct_agent(agent_id, body, frames, call_key, **CALL_RUN_LIMITS)
+            limits = dict(CALL_RUN_LIMITS)
+            if request.get("superAgent"):  # lane A: work asked aloud may become a task (start_work)
+                enabled, _ = profile_toolsets()
+                if enabled is not None:
+                    limits["enabled_toolsets"] = [*enabled, VOICE_WORK_TOOLSET]
+            agent = _construct_agent(agent_id, body, frames, call_key, **limits)
             # No compaction inside a spoken turn (67-103 s each, prod 10-07): Hermes's own
             # per-agent switch, which every automatic trigger reads (turn_context_compaction.py:239,
             # turn_preflight.py:89/289) and Hermes sets the same way on its review fork
@@ -777,6 +784,8 @@ def task_tool_recorder(run_id: str):
 
 #: The Router's decision tools (plugins/lightbulb/router.py): a Router run's only effect is this list.
 ROUTER_TOOLSET = "lightbulb_router"
+# start_work (lane A): only a super-agent Live call re-adds it (_run_call); every other turn strips it.
+VOICE_WORK_TOOLSET = "lightbulb_voice_work"
 ROUTER_RUN_LIMITS = {"enabled_toolsets": [ROUTER_TOOLSET, "memory"], "disabled_toolsets": None,
                      "skip_background_review": True}
 MAX_DECISIONS = 40
@@ -3836,7 +3845,7 @@ def _construct_agent(agent_id: str, body: dict, frames, session_key: str, **limi
                      "stream_delta_callback": frames.delta, "reasoning_callback": frames.thinking}
     enabled_toolsets, disabled_toolsets = profile_toolsets()
     if enabled_toolsets is not None:  # the Router's decision tools are only for Router runs (limits re-add them)
-        enabled_toolsets = [t for t in enabled_toolsets if t != ROUTER_TOOLSET]
+        enabled_toolsets = [t for t in enabled_toolsets if t not in (ROUTER_TOOLSET, VOICE_WORK_TOOLSET)]
     db = _session_db(agent_id)
     # A state.db failure fails a room, call or side turn: each runs on its stored transcript.
     if db is None and (ROOM_SESSION_RE.match(session_key) or ":lightbulb:call:" in session_key

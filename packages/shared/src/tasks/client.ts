@@ -14,10 +14,12 @@ export interface TasksClient {
   get(taskId: string): Promise<TaskDetail>;
   act(taskId: string, verb: TaskVerb, version: number): Promise<TaskSummary>;
   startMany(taskIds: string[]): Promise<unknown>;
-  answer(taskId: string, qid: string, body: AnswerBody): Promise<{ question: QuestionView; next: unknown }>;
+  answer(taskId: string, qid: string, body: AnswerBody): Promise<{ question: QuestionView; next: TaskSummary | null }>;
   trace(taskId: string, attempt: number): Promise<unknown>;
   markRead(taskId: string): Promise<unknown>;
   needsYou(): Promise<{ items: QuestionView[]; next: string | null }>;
+  /** A task's questions, answered and cancelled included (`routers/questions.py`). */
+  questions(taskId: string): Promise<{ items: QuestionView[] }>;
 }
 
 export function createTasksClient(api: ApiMethods, cacheScope = ""): TasksClient {
@@ -35,5 +37,6 @@ export function createTasksClient(api: ApiMethods, cacheScope = ""): TasksClient
     trace: (taskId, attempt) => api.get(`${path(taskId)}/trace?attempt=${attempt}`),
     markRead: (taskId) => api.post(`${path(taskId)}/read`, {}),
     needsYou: () => api.get("/needs-you") as ReturnType<TasksClient["needsYou"]>,
+    questions: (taskId) => api.get(`${path(taskId)}/questions`) as ReturnType<TasksClient["questions"]>,
   };
 }

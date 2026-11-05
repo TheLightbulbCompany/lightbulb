@@ -1011,7 +1011,9 @@ async def send_input(owner: str, event: dict) -> dict:
 
 async def acquire_agent(owner: str, run_id: str, agent_id: str | None = None) -> dict:
     # Only another RUN can hold the browser (one automation connection per session); a person
-    # never does. Wait briefly for that run's turn to release it.
+    # never does. Wait briefly for that run's turn to release it. Task VMs share this one lease per
+    # workspace (contracts §14.11): another VM's run gets the busy answer and the model retries.
+    # ponytail: busy-retry, not FIFO -- a queue of waiting runs if retries starve one.
     # A start or save in flight answers "starting" at once: the bridge polls (202).
     deadline = time.monotonic() + ACQUIRE_WAIT_SECONDS
     while time.monotonic() < deadline:
@@ -1108,6 +1110,19 @@ async def release_agent(owner: str, run_id: str, generation: str) -> dict:
         raise BrowserError("The browser session expired. Its last completed save is available on restart.")
     await _save(owner, old)
     return {"ok": True}
+
+
+async def release_for_run(owner: str, run_id: str) -> bool:
+    """Free the lease `run_id` holds -- its task VM was stopped (or died) before the turn's own
+    release. False, and nothing changes, when that run is not the controller."""
+    state = await container_repo.get_browser_state(owner) or {}
+    if _mode(state) != "agent" or state.get("controller_id") != run_id:
+        return False
+    try:
+        await release_agent(owner, run_id, state["generation"])
+    except BrowserError:
+        return False  # changed hands, or the session expired: nothing of this run's left to free
+    return True
 
 
 def _epoch(value: object) -> float:

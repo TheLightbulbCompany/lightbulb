@@ -22,8 +22,8 @@ WS, SPEC, TASK = "org_c", "a1", "33333333-3333-4333-8333-333333333333"
 async def test_stops_session_before_signal(monkeypatch):
     order: list[str] = []
 
-    async def stop(ws, task_id):
-        order.append(f"stop:{task_id}")
+    async def stop(ws, task_id, run_id=None):
+        order.append(f"stop:{task_id}:{run_id}")
         return True
 
     class _Client:
@@ -34,9 +34,9 @@ async def test_stops_session_before_signal(monkeypatch):
     client = _Client()
     monkeypatch.setattr(runtime_runs, "stop_task_session", stop)
     monkeypatch.setattr(learning, "get_client", lambda: client)
-    await learning.close_task_attempt(WS, TASK, SPEC, 2)
-    await learning.close_task_attempt(WS, TASK, SPEC, 2)  # a retried end_attempt: same ref again
-    assert order == [f"stop:{TASK}", "signal:LearningWorkflow"] * 2
+    await learning.close_task_attempt(WS, TASK, SPEC, 2, "run-2")
+    await learning.close_task_attempt(WS, TASK, SPEC, 2, "run-2")  # a retried end_attempt: same ref again
+    assert order == [f"stop:{TASK}:run-2", "signal:LearningWorkflow"] * 2
     assert client.kw["id"] == ts.learning_workflow_id(WS, SPEC) == f"learn:{WS}:{SPEC}"
     assert client.kw["start_signal"] == "merge" and client.kw["start_signal_args"] == [MergeRef(TASK, 2)]
     assert client.state.ws == WS and client.state.specialist_id == SPEC
@@ -46,16 +46,35 @@ async def test_stops_session_before_signal(monkeypatch):
 async def test_end_attempt_hook_only_for_task_sessions(monkeypatch):
     closed: list[tuple] = []
 
-    async def close(ws, task_id, specialist_id, attempt):
-        closed.append((ws, task_id, specialist_id, attempt))
+    async def close(ws, task_id, specialist_id, attempt, run_id=None):
+        closed.append((ws, task_id, specialist_id, attempt, run_id))
 
     monkeypatch.setattr(learning, "close_task_attempt", close)
     shared = {"agentId": SPEC, "sessionId": runtime_transport.session_id_for(WS)}
     await learning.close_task_attempt_if_task_session(WS, TASK, shared, 1)
     assert closed == []  # today's path: the shared VM, nothing to stop or merge
-    task = {"agentId": SPEC, "sessionId": runtime_transport.session_id_for(WS, TASK)}
+    task = {"agentId": SPEC, "runId": "run-3", "sessionId": runtime_transport.session_id_for(WS, TASK)}
     await learning.close_task_attempt_if_task_session(WS, TASK, task, 3)
-    assert closed == [(WS, TASK, SPEC, 3)]
+    assert closed == [(WS, TASK, SPEC, 3, "run-3")]
+
+
+@pytest.mark.asyncio
+async def test_stop_task_session_releases_browser(monkeypatch):
+    """§14.11: a task VM stopped while its run held the workspace browser frees it at once; a failed
+    release is logged and still answers the stop (the merge signal must follow)."""
+    from core.repositories import container_repo
+    from core.services import browser_control, hermes_provisioning
+
+    monkeypatch.setattr(container_repo, "get_by_owner_id", AsyncMock(return_value={"agentcore_runtime_arn": "arn"}))
+    monkeypatch.setattr(hermes_provisioning, "stop_runtime_session", AsyncMock(return_value=True))
+    release = AsyncMock(return_value=True)
+    monkeypatch.setattr(browser_control, "release_for_run", release)
+    assert await runtime_runs.stop_task_session(WS, TASK, "run-3") is True
+    release.assert_awaited_once_with(WS, "run-3")
+    assert await runtime_runs.stop_task_session(WS, TASK) is True  # no run: no release
+    release.assert_awaited_once()
+    release.side_effect = RuntimeError("ddb")
+    assert await runtime_runs.stop_task_session(WS, TASK, "run-3") is True
 
 
 BUCKET = "test-owner-state"

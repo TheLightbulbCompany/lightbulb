@@ -96,30 +96,49 @@ async def queue_approval(*, company_id: str, approval_id: str, user_ids: list[st
 
         ws = await PaperclipRepo(table_name="paperclip-companies").find_workspace_by_company(company_id)
         owner_id = ws.org_id if ws is not None else ""
-        now = int(time.time())
-        table = messaging_repo._table()
-        for user_id in user_ids:
-            item = {
-                "pk": f"AWAY#{user_id}",
-                "sk": f"A#{company_id}#{approval_id}",
-                "sweep": "away",
-                "deadlineAt": now + DELAY_S,
-                "kind": "approval",
-                "userId": user_id,
-                "ownerId": owner_id,
-                "approvalId": approval_id,
-                "title": title[:200],
-                "body": body[:300],
-                "createdAt": datetime.fromtimestamp(now, timezone.utc).isoformat(),
-                "expiresAt": now + ROW_TTL_S,
-            }
-            try:
-                await run_in_thread(table.put_item, Item=item, ConditionExpression="attribute_not_exists(pk)")
-            except ClientError as exc:
-                if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
-                    raise
+        await _queue(
+            user_ids,
+            f"A#{company_id}#{approval_id}",
+            {"kind": "approval", "ownerId": owner_id, "approvalId": approval_id, "title": title, "body": body},
+        )
     except Exception:
         logger.warning("needs_you_email: approval queue failed company=%s", company_id, exc_info=True)
+
+
+async def queue_question(ws: str, task_id: str, qid: str, user_ids: list[str], title: str, body: str) -> None:
+    """One pending check per answerer of a super-agent Question (contracts-v2 §14.5); the sweep drops it once the
+    Question is no longer open. Never raises."""
+    try:
+        await _queue(
+            user_ids,
+            f"Q#{task_id}#{qid}",
+            {"kind": "task_question", "ownerId": ws, "taskId": task_id, "qid": qid, "title": title, "body": body},
+        )
+    except Exception:
+        logger.warning("needs_you_email: question queue failed task=%s qid=%s", task_id, qid, exc_info=True)
+
+
+async def _queue(user_ids: list[str], sk: str, fields: dict) -> None:
+    now = int(time.time())
+    table = messaging_repo._table()
+    for user_id in user_ids:
+        item = {
+            "pk": f"AWAY#{user_id}",
+            "sk": sk,
+            "sweep": "away",
+            "deadlineAt": now + DELAY_S,
+            **fields,
+            "userId": user_id,
+            "title": fields["title"][:200],
+            "body": fields["body"][:300],
+            "createdAt": datetime.fromtimestamp(now, timezone.utc).isoformat(),
+            "expiresAt": now + ROW_TTL_S,
+        }
+        try:
+            await run_in_thread(table.put_item, Item=item, ConditionExpression="attribute_not_exists(pk)")
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +164,13 @@ def render(row: dict, *, author: str = "", room: dict | None = None, sent: int) 
     """``{subject, lines, url}``: a notification of WHERE something waits, never what it says (owner ruling
     2026-10-19). The message and the approval stay in Lightbulb; the email comes from Lightbulb, never in an
     agent's voice: an agent that wants to reach someone by email uses its own address."""
+    if row["kind"] == "task_question":
+        url = _link({"panel": "task", "taskId": row["taskId"]}, sent)
+        return {
+            "subject": "A decision is waiting in Lightbulb",
+            "lines": ["Lightbulb is waiting on your answer to a task.", f"Open it: {url}"],
+            "url": url,
+        }
     if row["kind"] == "approval":
         who = (row.get("title") or "").split(" · ")[0] or "An agent"
         url = _link({"panel": "teams-approval-detail", "detailId": row["approvalId"]}, sent)
@@ -248,7 +274,14 @@ async def check_one(row: dict, now: datetime) -> bool:
     user_id, kind = row["userId"], row.get("kind")
     message: dict | None = None
     room: dict | None = None
-    if kind == "approval":
+    if kind == "task_question":
+        from core.repositories import questions_repo
+
+        q = await questions_repo.get_question(row["ownerId"], row["taskId"], row["qid"])
+        if q is None or q["state"] != "open" or user_id not in q.get("answerers", []):
+            await _done(row, "seen")  # answered, cancelled, or no longer theirs to answer
+            return False
+    elif kind == "approval":
         if not await _still_in_workspace(row.get("ownerId") or "", user_id):
             await _done(row, "not_member")
             return False
@@ -289,7 +322,7 @@ async def check_one(row: dict, now: datetime) -> bool:
         else:
             await messaging_repo.defer_away_check(row["pk"], row["sk"], now_epoch + PRESENT_S)
         return False
-    slot = "approvals" if kind == "approval" else row["roomId"]
+    slot = "approvals" if kind in ("approval", "task_question") else row["roomId"]
     if not await _claim_room_slot(user_id, slot, now_epoch):
         await _done(row, "room_cap")
         return False

@@ -205,3 +205,22 @@ async def list_findings(
             break
     nxt = base64.urlsafe_b64encode(json.dumps(plain(last)).encode()).decode() if last else None
     return items, nxt
+
+
+async def query_findings(day: str, sk_prefix: str) -> list[dict]:
+    """Every finding of `day` whose sk starts with `sk_prefix` ("" = all), consistent."""
+    kwargs: dict[str, Any] = {
+        "KeyConditionExpression": "pk = :pk",
+        "ExpressionAttributeValues": {":pk": ts.wd_finding_pk(day)},
+        "ConsistentRead": True,
+    }
+    if sk_prefix:
+        kwargs["KeyConditionExpression"] += " AND begins_with(sk, :p)"
+        kwargs["ExpressionAttributeValues"][":p"] = sk_prefix
+    out: list[dict] = []
+    while True:
+        page = await run_in_thread(_table().query, **kwargs)
+        out.extend(plain(i) for i in page.get("Items", []))
+        if "LastEvaluatedKey" not in page:
+            return out
+        kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]

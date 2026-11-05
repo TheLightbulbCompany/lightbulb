@@ -303,6 +303,10 @@ class Settings(BaseSettings):
     TEMPORAL_NAMESPACE: str = "default"
     TEMPORAL_API_KEY: str | None = None
     TEMPORAL_TASK_QUEUE: str = "lightbulb"
+    # Watchdog (spec 11): its own queue and ECS service; `#watchdog` = Lightbulb's own dev workspace + room.
+    TEMPORAL_WATCHDOG_TASK_QUEUE: str = "lightbulb-watchdog"
+    WATCHDOG_OWNER_ID: str = ""
+    WATCHDOG_ROOM_ID: str = ""
 
     NIGHTLY_CEO_HEARTBEATS_ENABLED: bool = True
     """Off = no Paperclip timer wakes (super-agent step 0, dev, to stop spend): starters are

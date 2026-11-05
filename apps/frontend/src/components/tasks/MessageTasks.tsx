@@ -6,7 +6,7 @@
 
 import { useState, type ReactElement } from "react";
 import { useSWRConfig } from "swr";
-import { putTaskSummary, useTaskList, type CanonicalRoomMessage, type TaskRef, type TaskSummary } from "@lightbulb/shared";
+import { putTaskSummary, useTask, useTaskList, type CanonicalRoomMessage, type TaskRef, type TaskSummary } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { capture } from "@/lib/analytics";
@@ -26,9 +26,19 @@ export function MessageTasks({ message, viewerId, onOpen }: {
   const started = refs.filter((r) => r.role === "started");
   const suggested = refs.filter((r) => r.role === "suggested");
   return <div aria-label="Threads in this message">
-    {started.map((r) => <TaskCard key={r.taskId} task={byId.get(r.taskId)} taskId={r.taskId} viewerId={viewerId} onOpen={onOpen} />)}
+    {started.map((r) => <RefCard key={r.taskId} taskId={r.taskId} listed={byId.get(r.taskId)} viewerId={viewerId} onOpen={onOpen} />)}
     {suggested.length > 0 && <SuggestedBlock refs={suggested} taskById={byId} viewerId={viewerId} onOpen={onOpen} />}
   </div>;
+}
+
+/** A card whose task the room list doesn't hold (older than its pages, or another scope) reads it by id. */
+function RefCard({ taskId, listed, viewerId, onOpen }: {
+  taskId: string; listed: TaskSummary | undefined; viewerId: string; onOpen?: (taskId: string) => void;
+}): ReactElement | null {
+  const { tasks } = useLiveEvents();
+  const { data, error } = useTask(tasks, listed ? null : taskId);
+  if (!listed && !data && !error) return null;
+  return <TaskCard task={listed ?? data?.task} taskId={taskId} viewerId={viewerId} onOpen={onOpen} />;
 }
 
 export function SuggestedBlock({ refs, taskById, viewerId, onOpen }: {

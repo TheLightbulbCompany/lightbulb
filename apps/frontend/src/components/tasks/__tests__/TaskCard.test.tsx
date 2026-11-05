@@ -47,8 +47,30 @@ describe("TaskCard", () => {
     onOpen.mockClear();
     await userEvent.click(screen.getByRole("button", { name: "Approve" }));
     await waitFor(() => expect(client.answer).toHaveBeenCalledWith("t-signup", "q-provision",
-      expect.objectContaining({ optionId: "approve", expectVersion: 7, clientAnswerId: expect.any(String) })));
+      expect.objectContaining({ optionId: "allow_once", expectVersion: 7, clientAnswerId: expect.any(String) })));
     expect(onOpen).not.toHaveBeenCalled();
+  });
+
+  it("a review card shows To and Subject before its one-press Send, which waits for them", async () => {
+    const email = FIXTURES.step07.tasks.find((t) => t.taskId === "t-email")!;
+    let resolve!: (v: unknown) => void;
+    client.questions.mockReturnValue(new Promise((r) => { resolve = r; }) as never);
+    render(<Fresh><TaskCard task={email} taskId="t-email" viewerId={SAM} /></Fresh>);
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    resolve({ items: [{ id: "q-email", version: 2, preview: { kind: "mail.send", to: "team@acme.com", subject: "Join us Nov 20" } }] });
+    expect(await screen.findByText("team@acme.com")).toBeInTheDocument();
+    expect(screen.getByText("Join us Nov 20")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).toBeEnabled());
+  });
+
+  it("details that fail to load: the card says so, and its button opens the thread instead of acting blind", async () => {
+    const onOpen = vi.fn();
+    client.questions.mockRejectedValue(new Error("503"));
+    render(<Fresh><TaskCard task={byId("step05", "t-signup")} taskId="t-signup" viewerId={SAM} onOpen={onOpen} /></Fresh>);
+    expect(await screen.findByText("The details didn't load. Open the thread to decide.")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
+    expect(onOpen).toHaveBeenCalledWith("t-signup");
+    expect(client.answer).not.toHaveBeenCalled();
   });
 
   it("stale version 409 refetches, no second POST", async () => {

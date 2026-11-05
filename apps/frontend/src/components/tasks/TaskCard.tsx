@@ -5,7 +5,8 @@
 // dot, never a fill (DESIGN.md).
 
 import { useState, type ReactElement } from "react";
-import { specialistLabel, summaryView, taskSummaryLine, type TaskSummary, type TaskTone } from "@lightbulb/shared";
+import { previewRows, specialistLabel, summaryView, taskSummaryLine, useTaskQuestions, type TaskSummary, type TaskTone } from "@lightbulb/shared";
+import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { Button } from "@/components/ui/button";
 import { capture } from "@/lib/analytics";
 import { cn } from "@/lib/utils";
@@ -38,6 +39,14 @@ export function TaskCard({ task, taskId, viewerId, onOpen, hideAction, children 
   const { run } = useTaskActions("card");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // An approval or review this viewer can act on shows what it does before the one press (To, Subject, …).
+  const { tasks } = useLiveEvents();
+  const q = task?.openQuestion;
+  const asks = q?.canAnswer && (q.kind === "approval" || q.kind === "review") ? q.qid : null;
+  const { data: views, error: viewsError } = useTaskQuestions(tasks, asks ? taskId : null);
+  // Details didn't load: the button opens the thread (where the question shows in full) instead of acting blind.
+  const blind = !!asks && !views && !!viewsError;
+  const preview = previewRows(views?.items.find((q) => q.id === asks)?.preview).slice(0, 3);
   if (!task) {
     return <div className="mt-1.5 max-w-xl rounded-lg border border-dashed border-border px-3 py-2 text-ui text-muted-foreground" data-task-card={taskId}>
       This thread isn&apos;t available
@@ -65,12 +74,18 @@ export function TaskCard({ task, taskId, viewerId, onOpen, hideAction, children 
       </div>
       <TaskStatus task={task} viewerId={viewerId} />
     </div>
+    {preview.length > 0 && <dl aria-label="What this does" className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 text-ui">
+      {preview.map((r) => <div key={r.label} className="contents">
+        <dt className="text-muted-foreground">{r.label}</dt><dd className="min-w-0 truncate">{r.value}</dd>
+      </div>)}
+    </dl>}
     {task.output && !detail?.includes(task.output.title) && <p className="mt-1 truncate text-ui text-muted-foreground"><span aria-hidden="true">📎 </span>{task.output.title}</p>}
     {children}
     {inline && <div className="relative z-10 mt-2 flex items-center gap-2">
-      <Button type="button" size="sm" variant={view.tone === "waiting" || view.tone === "review" ? "default" : "outline"} disabled={pending}
+      <Button type="button" size="sm" variant={view.tone === "waiting" || view.tone === "review" ? "default" : "outline"} disabled={pending || (!!asks && !views && !blind)}
         onClick={async (event) => {
           event.stopPropagation();
+          if (blind) { open(); return; }
           setPending(true);
           setError(null);
           const res = await run(task, inline);
@@ -78,6 +93,7 @@ export function TaskCard({ task, taskId, viewerId, onOpen, hideAction, children 
           if (!res.ok) setError(res.message);
         }}>{ACTION_LABELS[inline]}</Button>
     </div>}
+    {blind && <p className="relative z-10 mt-1 text-ui text-muted-foreground">The details didn&apos;t load. Open the thread to decide.</p>}
     {error && <p role="alert" className="relative z-10 mt-1 text-ui text-err">{error}</p>}
   </div>;
 }

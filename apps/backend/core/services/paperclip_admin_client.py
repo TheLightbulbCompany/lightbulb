@@ -758,7 +758,7 @@ class PaperclipAdminClient:
             if not idempotency_key:
                 raise ValueError("idempotency_replay_only requires idempotency_key")
         try:
-            return await self._post(
+            agent = await self._post(
                 f"/api/companies/{company_id}/agents",
                 json=body,
                 session_cookie=session_cookie,
@@ -777,6 +777,32 @@ class PaperclipAdminClient:
                     body=exc.body,
                 ) from exc
             raise
+        await self._mirror(agent, session_cookie=session_cookie)
+        return agent
+
+    async def _mirror(self, response: Any, *, session_cookie: str, agent_id: str | None = None) -> None:
+        """Mirror an agent write into the super-agent registry (``agent_registry``; no-op unless the env
+        master is on, never raises). Re-reads the agent when the response is not the full agent dict."""
+        from core.config import settings  # lazy, like _headers
+
+        if not settings.SUPER_AGENT_ENV_ENABLED:
+            return
+        from core.services import agent_registry
+
+        agent = response if isinstance(response, dict) and response.get("id") else None
+        if agent is None and isinstance(response, dict) and isinstance(response.get("agent"), dict):
+            agent = response["agent"]
+        try:
+            if agent is None or not (agent.get("companyId") and agent.get("name")):
+                target = (agent or {}).get("id") or agent_id
+                if not target:
+                    return
+                agent = await self.get_agent(session_cookie=session_cookie, agent_id=target)
+        except Exception:  # noqa: BLE001 -- the Paperclip write already succeeded
+            logger.warning("agent_registry mirror: re-read failed agent=%s", agent_id, exc_info=True)
+            put_metric("agent_registry.mirror", dimensions={"result": "error"})
+            return
+        await agent_registry.mirror_from_paperclip(agent)
 
     async def create_agent_api_key(
         self,
@@ -863,11 +889,13 @@ class PaperclipAdminClient:
         whitelisted subset built by the BFF — adapter fields are
         synthesized server-side and never accepted from clients.
         """
-        return await self._patch(
+        agent = await self._patch(
             f"/api/agents/{agent_id}",
             json=body,
             session_cookie=session_cookie,
         )
+        await self._mirror(agent, session_cookie=session_cookie, agent_id=agent_id)
+        return agent
 
     async def set_agent_heartbeat(self, *, session_cookie: str, agent_id: str, heartbeat: dict) -> dict:
         """Merge ``heartbeat`` into the agent's ``runtimeConfig.heartbeat``.
@@ -900,10 +928,17 @@ class PaperclipAdminClient:
         Maps to ``DELETE /api/agents/{agentId}``. 404 is swallowed
         (treated as already-gone) by the underlying ``_delete`` helper.
         """
-        return await self._delete(
+        result = await self._delete(
             f"/api/agents/{agent_id}",
             session_cookie=session_cookie,
         )
+        from core.config import settings  # lazy, like _headers
+
+        if settings.SUPER_AGENT_ENV_ENABLED:
+            from core.services import agent_registry
+
+            await agent_registry.mirror_delete(agent_id)
+        return result
 
     async def get_budgets_overview(self, *, session_cookie: str, company_id: str) -> dict:
         """``GET /api/companies/{id}/budgets/overview`` — policies + spend per scope."""
@@ -964,19 +999,23 @@ class PaperclipAdminClient:
         ``paperclip/server/src/routes/agents.ts``). Not company-scoped —
         Paperclip authorizes from the session cookie.
         """
-        return await self._post(
+        agent = await self._post(
             f"/api/agents/{agent_id}/pause",
             json={},
             session_cookie=session_cookie,
         )
+        await self._mirror(agent, session_cookie=session_cookie, agent_id=agent_id)
+        return agent
 
     async def resume_agent(self, *, session_cookie: str, agent_id: str) -> dict:
         """Resume a paused agent. Maps to ``POST /api/agents/{agentId}/resume``."""
-        return await self._post(
+        agent = await self._post(
             f"/api/agents/{agent_id}/resume",
             json={},
             session_cookie=session_cookie,
         )
+        await self._mirror(agent, session_cookie=session_cookie, agent_id=agent_id)
+        return agent
 
     async def reset_agent_session(
         self,
@@ -1084,11 +1123,13 @@ class PaperclipAdminClient:
             body["metadata"] = metadata
         if status is not None:
             body["status"] = status
-        return await self._patch(
+        agent = await self._patch(
             f"/api/agents/{agent_id}",
             json=body,
             session_cookie=session_cookie,
         )
+        await self._mirror(agent, session_cookie=session_cookie, agent_id=agent_id)
+        return agent
 
     # ------------------------------------------------------------------
     # Heartbeat runs

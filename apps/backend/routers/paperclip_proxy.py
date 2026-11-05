@@ -581,6 +581,33 @@ def _brand_rewrite_html(body: bytes) -> bytes:
 _AGENT_ROUTE_RE = re.compile(r"(?:^|/)agents(?:/|$)")
 
 
+# Agent writes the Paperclip UI makes through this proxy (create is blocked above; edits, pause/resume and
+# delete pass). Mirrored into the super-agent registry like the admin client's own writes.
+_AGENT_WRITE_RE = re.compile(r"^api/agents/(?P<id>[^/]+)(?:/(?:pause|resume|terminate))?/?$", re.IGNORECASE)
+
+
+async def _mirror_agent_write(method: str, path: str, status_code: int, body: bytes) -> None:
+    """Mirror a successful proxied agent write into ``agent_registry`` (env master on only; never raises)."""
+    if not settings.SUPER_AGENT_ENV_ENABLED or not 200 <= status_code < 300:
+        return
+    match = _AGENT_WRITE_RE.match(path)
+    if match is None or method.upper() not in {"PATCH", "POST", "DELETE"}:
+        return
+    from core.services import agent_registry
+
+    if method.upper() == "DELETE":
+        await agent_registry.mirror_delete(match.group("id"))
+        return
+    try:
+        agent = json.loads(body)
+    except ValueError:
+        agent = None
+    if isinstance(agent, dict) and agent.get("id") and agent.get("name") and agent.get("companyId"):
+        await agent_registry.mirror_from_paperclip(agent)
+    else:  # not the full agent: --verify shows the drift, a backfill --apply heals it
+        put_metric("agent_registry.mirror", dimensions={"result": "skipped"})
+
+
 def _redact_agent_secrets_json(body: bytes) -> bytes:
     """Strip the agent secret fields from an agent-route JSON response body.
 
@@ -1342,6 +1369,7 @@ async def proxy(path: str, request: Request) -> Response:
             )
 
     _record_outcome(upstream.status_code)
+    await _mirror_agent_write(request.method, path, upstream.status_code, upstream.content)
 
     # ---- Build the response back to the browser ----
     response_body = upstream.content

@@ -1,8 +1,6 @@
 """tasks_repo against a moto `tasks` table built from `tasks_schema` (keys + GSIs). Review focus 3 and 4
 (wave-1 plan T): concurrent transitions have one winner; a retried create returns the existing row."""
 
-import asyncio
-
 import boto3
 import pytest
 from moto import mock_aws
@@ -121,15 +119,17 @@ async def test_version_conflict(table):
 
 
 async def test_concurrent_transition_one_winner(table):
+    """Two writers that read the same row: the second write's condition (stale version, or a from-status that
+    is no longer current) is what refuses it. Sequential on purpose: moto has no write locking, so a real race
+    under xdist can let both win; DynamoDB's conditional write is the guard being tested."""
     task_id = await _task_in(table, "queued")
-    results = await asyncio.gather(
-        repo.transition_task(WS, task_id, to="working", expected_version=1),
-        repo.transition_task(WS, task_id, to="working", expected_version=1),
-        return_exceptions=True,
-    )
-    wins = [r for r in results if isinstance(r, dict)]
-    losses = [r for r in results if isinstance(r, repo.TasksRepoError)]
-    assert (len(wins), len(losses)) == (1, 1)
+    won = await repo.transition_task(WS, task_id, to="working", expected_version=1)
+    assert won["version"] == 2
+    with pytest.raises(repo.VersionConflict):  # same expected version as the winner
+        await repo.transition_task(WS, task_id, to="working", expected_version=1)
+    with pytest.raises(repo.IllegalTransition) as err:  # no version: the from-status set refuses it
+        await repo.transition_task(WS, task_id, to="working")
+    assert err.value.current == "working"
     assert (await repo.get_task(WS, task_id))["version"] == 2
 
 

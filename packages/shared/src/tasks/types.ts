@@ -1,6 +1,6 @@
 // API shapes for the super-agent task routes (contracts-v2 §4–§6, wave2-README C15).
 // `TaskSummary` mirrors `views.TaskSummary` in `fixtures/super-agent/tasks-schema.json`
-// (built by `tasks_access.summarize`); `types.test.ts` fails if a field drifts.
+// (built by `tasks_access.summarize`); `summary.test.ts` fails if a field drifts.
 
 import type { ShownGroup, TaskStatus } from "./view";
 

@@ -252,3 +252,27 @@ describe("useLiveEvents", () => {
     expect(onConfigStale).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("useLiveEvents tasks channel (super-agent)", () => {
+  async function channelsFor(tasksChannel: boolean | undefined) {
+    FakeSocket.instances = [];
+    renderHook(() => useLiveEvents({
+      config, getToken: vi.fn(async () => "t"), userChannel, roomChannel: null, tasksChannel,
+      uuid: () => `u-${Math.random()}`, onEvent: vi.fn(),
+    }));
+    await flush();
+    const socket = FakeSocket.instances[0];
+    act(() => { socket.open(); socket.ack(); });
+    await flush();
+    return socket.subscriptions().map((s) => s.channel);
+  }
+
+  it("subscribes /ws/<ws>/tasks only when on", async () => {
+    expect(await channelsFor(true)).toEqual([userChannel, sessionsChannel, `/ws/${WS}/tasks`]);
+  });
+
+  it("no tasks channel while off", async () => {
+    expect(await channelsFor(false)).toEqual([userChannel, sessionsChannel]);
+    expect(await channelsFor(undefined)).toEqual([userChannel, sessionsChannel]);
+  });
+});

@@ -122,7 +122,7 @@ export class AppSyncEventsClient {
   }
 
   /** Replace the desired channel set: at most one user channel, at most one workspace
-   *  `/sessions` channel, at most one room channel, and — only alongside that same room
+   *  `/sessions` channel, at most one workspace `/tasks` channel (super-agent switch on), at most one room channel, and — only alongside that same room
    *  channel — its `/frames` sibling
    *  (see framesChannelFor). Any other extra room-family channel, including a
    *  `/frames` channel that does not match the current room, is a `protocol_error`
@@ -136,19 +136,21 @@ export class AppSyncEventsClient {
     const rooms = unique.filter((channel) => channel.includes("/rooms/"));
     const frames = unique.filter((channel) => channel.includes("/frames/"));
     const sessions = unique.filter((channel) => channel.endsWith("/sessions"));
+    const tasks = unique.filter((channel) => channel.endsWith("/tasks"));
     const sessionFrames = unique.filter((channel) => channel.includes("/session-frames/") || channel.startsWith("/pub/"));
     const room = rooms[0];
     const validFrames = frames.filter((channel) => !!room && channel === framesChannelFor(room));
     if (
       users.length > 1 ||
       sessions.length > 1 ||
+      tasks.length > 1 ||
       rooms.length > 1 ||
       frames.length > validFrames.length ||
-      users.length + sessions.length + rooms.length + frames.length + sessionFrames.length !== unique.length
+      users.length + sessions.length + tasks.length + rooms.length + frames.length + sessionFrames.length !== unique.length
     ) {
       this.opts.onError?.("protocol_error");
     }
-    this.desired = [...users.slice(0, 1), ...sessions.slice(0, 1), ...rooms.slice(0, 1), ...validFrames.slice(0, 1), ...sessionFrames];
+    this.desired = [...users.slice(0, 1), ...sessions.slice(0, 1), ...tasks.slice(0, 1), ...rooms.slice(0, 1), ...validFrames.slice(0, 1), ...sessionFrames];
     for (const [channel, sub] of [...this.subs]) {
       if (!this.desired.includes(channel)) this.dropSubscription(channel, sub, true);
     }

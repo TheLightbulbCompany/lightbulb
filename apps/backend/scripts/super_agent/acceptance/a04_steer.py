@@ -46,7 +46,8 @@ async def a04(ctx: Ctx) -> Result:
     ]
     checks = {
         "posted_as_thread_reply": reply.get("threadRootMessageId") == card,
-        "input_reached_task": task_id in ctx.state["taskIds"] and bool(attempts),
+        # A steered input (live run) gets the 👀 and is never recorded on an attempt; a held one is (`begin_attempt`).
+        "input_reached_task": task_id in ctx.state["taskIds"] and (bool(eyes) or bool(attempts)),
         "eyes_ack_within_5s": bool(eyes),
         "no_new_router_decision": len(after) == before,
     }

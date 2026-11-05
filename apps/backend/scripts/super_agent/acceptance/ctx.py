@@ -83,6 +83,8 @@ class Ctx:
     def __init__(self, *, ws: str, users: dict[str, str], clerk: Clerk | None = None):
         self.ws, self.users = ws, users
         self.state: dict[str, Any] = {}
+        # A13 scopes its dev reads (legacy rows, Router batches) to this run: UTC, the rows' own ISO format.
+        self.started_at = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
         self._clerk = clerk
         self._sessions: dict[tuple[str, str], Session] = {}
         self._clients: dict[tuple[str, str], httpx.AsyncClient] = {}

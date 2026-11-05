@@ -26,30 +26,37 @@ from scripts.super_agent.acceptance.ctx import Result
 ROUTER_TOOLS = frozenset(
     {"start_task", "propose_tasks", "pass_through", "reply", "ask", "ignore", "follow_link", "propose_automation"}
     | {"memory", "search", "recall"}
+    | {"tool_describe", "tool_search"}  # Hermes's built-in tool discovery: reads the toolset, acts on nothing
 )
 DEV_TEMPORAL = {"TEMPORAL_ADDRESS": "lightbulb-dev.nv5xx.tmprl.cloud:7233", "TEMPORAL_NAMESPACE": "lightbulb-dev.nv5xx"}
 
 
-async def legacy_rows(ws: str, room_ids: list[str]) -> dict[str, list[str]]:
-    """``{"runs": [sk...], "followUps": [room/sk...]}`` from ``lightbulb-dev-messaging`` (7-day TTL rows)."""
+async def legacy_rows(ws: str, room_ids: list[str], since: str | None = None) -> dict[str, list[str]]:
+    """``{"runs": [sk...], "followUps": [room/sk...]}`` from ``lightbulb-dev-messaging`` (7-day TTL rows). A
+    ``RUN#`` row counts when it is in one of ``room_ids`` or was written at/after ``since`` (this run): an older
+    row from another room is stale history (gate runs 2-4: one ended row of 08:54Z failed every later run)."""
     from boto3.dynamodb.conditions import Key
 
     from core.dynamodb import get_table, run_in_thread
 
     table = get_table("messaging")
 
-    async def query(pk: str, prefix: str) -> list[str]:
-        out: list[str] = []
+    async def query(pk: str, prefix: str) -> list[dict]:
+        out: list[dict] = []
         kwargs: dict[str, Any] = {"KeyConditionExpression": Key("pk").eq(pk) & Key("sk").begins_with(prefix)}
         while True:
             page = await run_in_thread(table.query, **kwargs)
-            out += [item["sk"] for item in page.get("Items", [])]
+            out += page.get("Items", [])
             if not page.get("LastEvaluatedKey"):
                 return out
             kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
 
-    runs = await query(f"OWNER#{ws}", "RUN#")
-    follow_ups = [f"{room}/{sk}" for room in room_ids for sk in await query(f"ROOM#{room}", "FOLLOWUP#")]
+    def this_run(item: dict) -> bool:
+        when = item.get("updatedAt") or item.get("createdAt")
+        return item.get("roomId") in room_ids or not since or not when or when >= since
+
+    runs = [item["sk"] for item in await query(f"OWNER#{ws}", "RUN#") if this_run(item)]
+    follow_ups = [f"{room}/{i['sk']}" for room in room_ids for i in await query(f"ROOM#{room}", "FOLLOWUP#")]
     return {"runs": runs, "followUps": follow_ups}
 
 
@@ -69,8 +76,9 @@ async def dev_temporal_client():
 
 
 async def router_runs(ws: str, front: str | None = None) -> list[dict[str, Any]]:
-    """One entry per ``router_turn`` batch in the Router workflow's history: ``{batchId, lane, status, decisions,
-    tools}``. Temporal: the dev namespace, key from Secrets Manager ``lightbulb/dev/temporal_api_key`` unless the
+    """One entry per ``router_turn`` batch in the Router workflow's history: ``{batchId, lane, at, status,
+    decisions, tools}`` (``at``: when the batch was scheduled, UTC ISO). A batch of scripted starts only
+    (``ref.start``, an automation fire) has no bridge run by design and is left out. Temporal: the dev namespace, key from Secrets Manager ``lightbulb/dev/temporal_api_key`` unless the
     ``TEMPORAL_*`` settings are already set. ponytail: reads the current run's history only; a Router that has
     continued-as-new hides earlier batches -- read ``first_execution_run_id`` chains if that ever matters."""
     from temporalio.converter import DataConverter
@@ -81,7 +89,7 @@ async def router_runs(ws: str, front: str | None = None) -> list[dict[str, Any]]
 
     client = await dev_temporal_client()
     handle = client.get_workflow_handle(ts.router_workflow_id(ws))
-    batches: list[RouterTurnIn] = []
+    batches: list[tuple[str, RouterTurnIn]] = []
     async for event in handle.fetch_history_events():
         if not event.HasField("activity_task_scheduled_event_attributes"):
             continue
@@ -92,13 +100,16 @@ async def router_runs(ws: str, front: str | None = None) -> list[dict[str, Any]]
             (inp,) = await DataConverter.default.decode(list(attrs.input.payloads), [RouterTurnIn])
         except KeyError:  # a batch recorded by an older worker lacks a field the type now has: skip it
             continue
-        batches.append(inp)
+        batches.append((event.event_time.ToDatetime().strftime("%Y-%m-%dT%H:%M:%S"), inp))
     # The front agent A1 saw, else the registry's CEO (as the Router does under the switch): this script runs with
     # the env master off, where front_agent_id falls back to the Paperclip row (gate run 2: KeyError 'created_at').
     front = front or next(a["id"] for a in await agent_registry.roster(ws) if a.get("role") == "ceo")
     out = []
-    for inp in batches:
-        trig = await tasks_repo.get_trigger(ws, inp.trigger_ids[0]) if inp.trigger_ids else None
+    for at, inp in batches:
+        trigs = [await tasks_repo.get_trigger(ws, t) for t in inp.trigger_ids]
+        if trigs and all(isinstance(((t or {}).get("ref") or {}).get("start"), dict) for t in trigs):
+            continue  # deterministic start: the Router applied `ref.start` without a model run
+        trig = trigs[0] if trigs else None
         identity = runtime_runs.RunIdentity(
             ts.router_run_id(ws, inp.batch_id),
             ws,
@@ -118,7 +129,7 @@ async def router_runs(ws: str, front: str | None = None) -> list[dict[str, Any]]
             }
         except Exception as exc:  # noqa: BLE001 -- a run the bridge no longer holds is evidence, not a crash
             entry = {"status": f"unavailable: {type(exc).__name__}: {exc}", "decisions": [], "tools": []}
-        out.append({"batchId": inp.batch_id, "lane": inp.lane, **entry})
+        out.append({"batchId": inp.batch_id, "lane": inp.lane, "at": at, **entry})
     return out
 
 
@@ -161,9 +172,14 @@ async def a13(ctx) -> Result:
         task_ids,
         [ctx.state["firstStartedTaskId"]] if ctx.state.get("firstStartedTaskId") else None,
     )
-    legacy = await legacy_rows(ctx.ws, rooms)
+    since = getattr(ctx, "started_at", None)  # this run only: older batches and rows are other runs' history
+    legacy = await legacy_rows(ctx.ws, rooms, since)
     try:
-        runs = await router_runs(ctx.ws, ctx.state.get("frontAgentId"))
+        runs = [
+            r
+            for r in await router_runs(ctx.ws, ctx.state.get("frontAgentId"))
+            if not since or not r.get("at") or r["at"] >= since
+        ]
         router = check_router(runs)
     except Exception as exc:  # noqa: BLE001 -- Temporal or the bridge unreachable is a failed check with its reason
         runs, router = [], {"outside": [], "notCompleted": [], "ok": False, "error": f"{type(exc).__name__}: {exc}"}

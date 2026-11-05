@@ -422,6 +422,20 @@ async def test_deterministic_start_skips_router_run(world):
 
 
 @pytest.mark.asyncio
+async def test_second_automation_run_task_row_carries_previous_run(world):
+    first = ts.router_task_id("sched:s1:100", 0, 0)
+    start = {"kind": "start_task", "triggerIds": ["sched:s1:200"], "title": "Weekly digest", "brief": "Write it"}
+    t1 = await _trig(
+        "sched:s1:200",
+        source="schedule",
+        actor=None,
+        ref={"deliverRoomId": ROOM, "start": {**start, "ack": "Starting.", "previousRunTaskId": first}},
+    )
+    await _run([t1])
+    assert (await repo.get_task(WS, ts.router_task_id(t1, 0, 0)))["previousRunTaskId"] == first
+
+
+@pytest.mark.asyncio
 async def test_reply_to_mail_trigger_uses_deliver_reply(world, monkeypatch):
     sent = []
 

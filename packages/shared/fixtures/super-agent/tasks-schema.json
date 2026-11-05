@@ -479,6 +479,18 @@
           "default": null,
           "title": "Budgetusd"
         },
+        "previousRunTaskId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Previousruntaskid"
+        },
         "hidden": {
           "default": false,
           "title": "Hidden",

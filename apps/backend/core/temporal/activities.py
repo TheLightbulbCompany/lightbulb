@@ -825,6 +825,7 @@ async def _apply(
                     parentTaskId=dec.parent_task_id,
                     policyRef=dec.policy_ref,
                     budgetUsd=dec.budget_usd,
+                    previousRunTaskId=dec.previous_run_task_id,
                 )
             except ValueError:  # a person-visible task with nobody to see it: this decision only
                 logger.warning("start_task dropped for trigger %s", primary, exc_info=True)

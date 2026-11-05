@@ -13,7 +13,7 @@ from core import tasks_schema as ts
 from core.repositories import user_repo
 from core.services import task_conversation
 from scripts.super_agent.acceptance.ctx import Ctx, Result
-from scripts.super_agent.acceptance.o_lib import ROUTER_REPLY_S, messages, post, rows_of
+from scripts.super_agent.acceptance.o_lib import ROUTER_REPLY_S, messages, poll_messages, post, rows_of
 
 ASK = "every Monday at 9am post signups here"
 FIRE_S = 180
@@ -75,14 +75,14 @@ async def a11(ctx: Ctx) -> Result:
     run1 = await ctx.wait_for(
         lambda rows: next((t for t in rows_of(rows, "task") if t.get("policyRef") == f"SCHED#{sid}"), None), 60
     )
-    card = next(
-        (
-            m
-            for m in await messages(ctx, "sam", room_id)
-            if any(r.get("taskId") == (run1 or {}).get("taskId") for r in m.get("taskRefs") or [])
-        ),
-        None,
-    )
+
+    def run_card(rows: list[dict]) -> dict | None:
+        return next(
+            (m for m in rows if any(r.get("taskId") == (run1 or {}).get("taskId") for r in m.get("taskRefs") or [])),
+            None,
+        )
+
+    card = run_card(await poll_messages(ctx, "sam", room_id, run_card)) if run1 else None  # lands after the row
     second_now = await api.post(f"{SCHEDULES}/{sid}/run")
 
     view = (await api.get(f"{SCHEDULES}/{sid}")).raise_for_status().json()

@@ -16,6 +16,7 @@ from botocore.exceptions import ClientError
 
 from core import tasks_schema as ts
 from core.dynamodb import ddb_safe, plain, run_in_thread, utc_now_iso
+from core.repositories import tasks_repo
 from core.repositories.tasks_repo import TasksRepoError, VersionConflict, _get, _is_condition_failure, _row, _table
 
 __all__ = ["InvalidOption", "NotAnswerer", "NotFound", "NotOpen", "VersionConflict"]
@@ -78,6 +79,8 @@ async def _query(ws: str, prefix: str, *, limit: int | None = None, cursor: str 
 async def open_question(ws: str, q: dict) -> tuple[dict, bool]:
     """Q row + one `NEEDS#` per answerer, atomically. A retry (same qid) returns the stored row unchanged."""
     row = _row(ts.Question, ws, {**q, "state": "open"})
+    if await tasks_repo.get_task(ws, row["taskId"]) is None:
+        raise TasksRepoError(f"task {row['taskId']} not found")  # checked first: no orphan question rows
     table = _table()
     needs = [
         _row(ts.Needs, ws, {"userId": u, "taskId": row["taskId"], "qid": row["qid"], "kind": row["kind"]})
@@ -98,6 +101,7 @@ async def open_question(ws: str, q: dict) -> tuple[dict, bool]:
                 *({"Put": {"TableName": table.name, "Item": ddb_safe(n)}} for n in needs),
             ],
         )
+        await _add_to_audience(ws, row["taskId"], row["answerers"])
         return row, True
     except ClientError as exc:
         if not _is_condition_failure(exc):
@@ -105,7 +109,29 @@ async def open_question(ws: str, q: dict) -> tuple[dict, bool]:
     existing = await get_question(ws, row["taskId"], row["qid"])
     if existing is None:
         raise TasksRepoError(f"question {row['qid']} create failed")
+    await _add_to_audience(ws, row["taskId"], existing["answerers"])  # a retry finishes what a crash left
     return existing, False
+
+
+async def _add_to_audience(ws: str, task_id: str, user_ids: list[str]) -> None:
+    """contracts-v2 §5: a question's answerers join `Task.audience.userIds` (`can_view` trusts only that list).
+    Idempotent; a version race re-reads and retries."""
+    for _ in range(5):
+        task = await tasks_repo.get_task(ws, task_id)
+        if task is None:
+            raise TasksRepoError(f"task {task_id} not found")
+        audience = dict(task.get("audience") or {})
+        current = list(audience.get("userIds") or [])
+        missing = [u for u in user_ids if u not in current]
+        if not missing:
+            return
+        audience["userIds"] = current + missing
+        try:
+            await tasks_repo.update_task_fields(ws, task_id, {"audience": audience}, expected_version=task["version"])
+            return
+        except VersionConflict:
+            continue
+    raise VersionConflict(f"task {task_id}: audience update kept racing")
 
 
 async def get_question(ws: str, task_id: str, qid: str) -> dict | None:

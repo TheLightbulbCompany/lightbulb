@@ -33,6 +33,7 @@ from core.services import (
     push_service,
     runtime_runs,
     runtime_transport,
+    super_agent_faults,
     task_conversation,
 )
 from core.temporal import client as temporal_client
@@ -252,6 +253,14 @@ async def worker_turn(inp: WorkerTurnIn) -> WorkerTurnOut:
         inp.ws, inp.task_id, inp.n, {"taskToken": token}, allowed_status=frozenset({"dispatched", "running"})
     )
     request = await _request(inp.ws, tree["task"], att, tree)
+    fake_ms = super_agent_faults.fault("fake_worker")
+    if fake_ms is not None:  # dev fault hook: no bridge run, a canned result after `ms`
+        await asyncio.sleep(int(fake_ms or 0) / 1000)
+        canned = runtime_runs.RunStatus(
+            att["runId"], "completed", f"Done (fake worker): {tree['task']['title']}", None, None, []
+        )
+        await _store_output(inp.ws, inp.task_id, inp.n, canned)
+        return WorkerTurnOut("completed", None)
     started = time.monotonic()
     while True:
         try:
@@ -780,7 +789,20 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
         else:
             to_model[tid] = trig
     run_text: str | None = None
-    if to_model:
+    if to_model and super_agent_faults.fault("router_turn_timeout") is not None:  # dev fault hook
+        raise TimeoutError("fault: router_turn_timeout")
+    script = super_agent_faults.fault("scripted_router") if to_model else None
+    if to_model and script:  # dev fault hook: decisions by exact message text, no Router run
+        roster = await messaging.load_agent_roster(ws)
+        open_tasks = await _open_tasks(ws, inp.lane, None) if inp.lane == "shared" else []
+        texts = {tid: await _input_text(ws, tid) for tid in to_model}
+        decisions += router_prompt.validate_decisions(
+            await super_agent_faults.scripted_decisions(script, texts),
+            trigger_ids=set(to_model),
+            roster_ids={a["id"] for a in roster},
+            open_task_ids={t["taskId"] for t in open_tasks},
+        )
+    elif to_model:
         private = inp.lane != "shared"
         user_id = next((t.get("actorUserId") for t in to_model.values() if t.get("actorUserId")), None)
         room_id = next(

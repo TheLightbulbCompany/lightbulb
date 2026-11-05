@@ -36,6 +36,10 @@ def set_client(client: Client | None) -> None:
 
 
 def get_client() -> Client:
+    from core.services import super_agent_faults  # dev fault hook; None in prod
+
+    if super_agent_faults.fault("temporal_down") is not None:
+        raise super_agent_faults.temporal_down_error()
     if _client is None:
         raise TemporalUnavailable("Temporal client is not connected")
     return _client

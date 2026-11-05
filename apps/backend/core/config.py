@@ -297,6 +297,8 @@ class Settings(BaseSettings):
     """Super-agent env master (contracts-v2 §1). Off = every workspace is off whatever its
     ``containers.super_agent`` says. Read only by ``core.services.super_agent_flags`` (``flags_for``, ``env_enabled``).
     Set true for dev only in ``service-stack.ts``."""
+    SUPER_AGENT_FAULTS: str = ""
+    """Dev-only fault hooks, ``name[:param],...`` (``core.services.super_agent_faults``). Refused in prod."""
     # Temporal (contracts-v2 §16). Defaults are the local dev server; dev sets the Cloud namespace and
     # injects the key from Secrets Manager ``lightbulb/dev/temporal_api_key``. Key set = API key + TLS.
     TEMPORAL_ADDRESS: str = "localhost:7233"
@@ -640,6 +642,8 @@ class Settings(BaseSettings):
         # Catch a typo'd ENVIRONMENT ("prd") that silently reads as non-prod.
         if env and env not in _KNOWN_ENVIRONMENTS:
             raise ValueError(f"ENVIRONMENT={raw!r} is not one of {sorted(_KNOWN_ENVIRONMENTS)}")
+        if env == "prod" and self.SUPER_AGENT_FAULTS.strip():
+            raise ValueError("SUPER_AGENT_FAULTS is a dev-only fault hook list; it must be empty in prod.")
 
         # The fence assertions below apply ONLY to the actual backend task. The
         # Fargate metadata URI is always injected by the agent for the running

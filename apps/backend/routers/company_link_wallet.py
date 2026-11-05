@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.config import settings
 from core.repositories import billing_repo, oauth_state_repo
-from core.services import link_wallet, purchases
+from core.services import effect_doors, link_wallet, purchases
 from core.services.container_auth import _require_hook_token
 
 logger = logging.getLogger(__name__)
@@ -139,6 +139,13 @@ async def approval_link(request_id: str, auth: Annotated[AuthContext, Depends(ge
 # ---- the agent's door (hook token) ----------------------------------------------------------
 
 
+def _same_amount(a, b) -> bool:
+    try:
+        return float(a) == float(b)
+    except (TypeError, ValueError):
+        return False
+
+
 class PurchaseBody(BaseModel):
     agentId: str = Field(min_length=1, max_length=128)
     merchant: str = Field(max_length=200)
@@ -151,6 +158,22 @@ class PurchaseBody(BaseModel):
 @internal_router.post("/{owner_id}/requests")
 async def agent_request(owner_id: str, body: PurchaseBody, request: Request):
     await _require_hook_token(owner_id, request)
+    try:  # a task run's purchase must be the one a person allowed (Lane Q door gating); legacy agents pass
+        await effect_doors.require_intent(
+            owner_id,
+            body.agentId,
+            "purchase",
+            {"merchant": body.merchant, "url": body.url, "amount": body.amount, "why": body.why},
+            # the tool's amount may be an int where the route parses a float: compare the numbers, not the JSON
+            match=lambda o: (
+                o.get("merchant") == body.merchant
+                and o.get("url") == body.url
+                and _same_amount(o.get("amount"), body.amount)
+                and o.get("why") == body.why
+            ),
+        )
+    except effect_doors.DoorRefused as exc:
+        raise HTTPException(status_code=403, detail={"code": exc.code, "message": str(exc)}) from exc
     try:
         return await purchases.request_purchase(
             owner_id,

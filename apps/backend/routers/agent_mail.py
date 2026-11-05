@@ -33,7 +33,7 @@ from core.repositories.agent_mail_inbox_repo import (
     list_page,
     reply_key,
 )
-from core.services import meeting_invites, messaging
+from core.services import effect_doors, meeting_invites, messaging
 from core.services.agent_email import EMAIL_ADDRESS_RE, ensure_team_address, public_for, team_address
 from core.services.agent_mail_send import _owner_email, send
 from core.services.rate_bucket import RateBucket
@@ -83,6 +83,21 @@ async def send_mail(owner_id: str, body: SendRequest, request: Request) -> dict:
     await _require_hook_token(owner_id, request)
     if body.to and body.reply_key:
         raise HTTPException(status_code=400, detail={"status": "to_and_reply_key"})
+    try:  # a task run's send must be the one a person allowed (Lane Q door gating); legacy agents pass
+        await effect_doors.require_intent(
+            owner_id,
+            body.agent_id,
+            "mail.send",
+            effect_doors.mail_operands(
+                agent_id=body.agent_id,
+                subject=body.subject,
+                body_text=body.body_text,
+                to=body.to,
+                reply_key=body.reply_key,
+            ),
+        )
+    except effect_doors.DoorRefused as exc:
+        raise HTTPException(status_code=403, detail={"status": exc.code, "message": str(exc)}) from exc
     result = await send(
         owner_id=owner_id,
         agent_id=body.agent_id,

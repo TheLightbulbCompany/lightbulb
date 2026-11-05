@@ -20,7 +20,7 @@ from pydantic import BaseModel
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.observability.metrics import put_metric
-from core.services import text_lines
+from core.services import effect_doors, text_lines
 from core.repositories import billing_repo
 from core.repositories.agent_email_repo import (
     drop_member_phones,
@@ -156,6 +156,15 @@ class BusinessPhone(BaseModel):
 @router.post("/u/{owner_id}/send")
 async def hook_send(owner_id: str, body: AgentSend, request: Request) -> dict:
     await _require_hook_token(owner_id, request)
+    try:  # a task run's text must be the one a person allowed (Lane Q door gating); legacy agents pass
+        await effect_doors.require_intent(
+            owner_id,
+            body.agent_id,
+            "text.send",
+            {"agentId": body.agent_id, "replyKey": body.reply_key, "body": body.text.rstrip("\n")},
+        )
+    except effect_doors.DoorRefused as exc:
+        raise HTTPException(status_code=403, detail={"status": exc.code, "message": str(exc)}) from exc
     status = await send_reply(owner_id=owner_id, reply_key=body.reply_key, text=body.text, agent_id=body.agent_id)
     return {"status": status}
 

@@ -194,6 +194,8 @@
     "goal": "GOAL#{goalId}",
     "creation": "CAP#{capId}",
     "slots": "SLOTS",
+    "meta": "META",
+    "pendingBrief": "PENDING_BRIEF",
     "statusKey": "{ws}#{status}",
     "taskWorkflowId": "task:{ws}:{taskId}",
     "routerWorkflowId": "router:{ws}",

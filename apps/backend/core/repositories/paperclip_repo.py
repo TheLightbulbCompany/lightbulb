@@ -24,12 +24,23 @@ writes the settled row without it.
 
 Async repository following the peer repos in ``core/repositories/``: every
 DynamoDB call is wrapped in ``run_in_thread``.
+
+Workspace META store (spec 03 §4.4, wave1-R Task 6): ``_meta_on_tasks()``
+moves workspace rows and pending-brief sentinels to the ``tasks`` table
+(``WS#{org}/META`` and ``WS#{org}/PENDING_BRIEF``, camelCase attributes,
+translated here so ``PaperclipWorkspace`` and every public method are
+unchanged). Identity rows, ``org_company_ids`` and ``find_workspace_by_company``
+stay on this table, and so do the Paperclip-only workspace attributes
+(``company_id``, ``agent_keys``, ``agent_cost_remainder``, the
+``automation_pause*`` fence): they are never copied to META and are read
+back from the old row.
 """
 
 from __future__ import annotations
 
 import logging
 import dataclasses
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -37,6 +48,7 @@ from typing import Literal, Optional
 
 from boto3.dynamodb.conditions import Key
 
+from core import tasks_schema as ts
 from core.dynamodb import get_table, run_in_thread, utc_now_iso
 from core.encryption import decrypt, encrypt
 from core.services.status_events import publish_status_changed
@@ -88,6 +100,71 @@ _PENDING_BRIEF_PREFIX = "__pending_brief__:"
 
 def _pending_brief_key(owner_id: str) -> str:
     return f"{_PENDING_BRIEF_PREFIX}{owner_id}"
+
+
+# --- tasks-table META translation (spec 03 §6.2) ---------------------------
+
+_OLD_ROW_ONLY = frozenset({"company_id", "agent_keys", "agent_cost_remainder"})
+_META_ONLY = frozenset({"sk", "metaKind", "workBackend"})
+
+
+def old_row_only(name: str) -> bool:
+    """Paperclip-only workspace attributes: never copied to META, kept on the old row."""
+    return name in _OLD_ROW_ONLY or name.startswith("automation_pause")
+
+
+def _camel(name: str) -> str:
+    if name == "user_id":
+        return "pk"
+    head, *rest = name.split("_")
+    return head + "".join(part.title() for part in rest)
+
+
+def _snake(name: str) -> str:
+    return re.sub(r"(?<!^)([A-Z])", r"_\1", name).lower()
+
+
+def to_meta_item(item: dict, owner_id: str, sk: str) -> dict:
+    """An old-table workspace row (``sk=META``) or pending-brief sentinel (``sk=PENDING_BRIEF``)
+    as its tasks-table row. Drops the Paperclip-only attributes."""
+    out = {_camel(k): v for k, v in item.items() if k != "user_id" and not old_row_only(k)}
+    out.update(pk=ts.ws_pk(owner_id), sk=sk)
+    if sk == ts.META_SK:
+        out.update(metaKind="workspace", workBackend=out.get("workBackend", "paperclip"))
+    return out
+
+
+def from_meta_item(item: dict) -> dict:
+    """A tasks-table META / PENDING_BRIEF row (or a partial ``Attributes`` map) back in the old
+    table's snake_case shape, ``user_id`` included when the row carries its keys."""
+    out = {_snake(k): v for k, v in item.items() if k not in _META_ONLY and k != "pk"}
+    if "pk" in item:
+        owner = item["pk"].removeprefix("WS#")
+        out["user_id"] = _pending_brief_key(owner) if item.get("sk") == ts.PENDING_BRIEF_SK else owner
+    return out
+
+
+# A bare attribute name in an update/condition/projection expression: not a ``:value`` or
+# ``#name`` placeholder, not a map key after ``.``, not a function name.
+_EXPR_NAME = re.compile(r"(?<![:#\w.])[a-z][a-z0-9_]*\b(?!\s*\()")
+
+
+def _tasks_expressions(kwargs: dict) -> dict:
+    """Rewrite each bare snake_case attribute in the expressions to a ``#camelCase`` name."""
+    names = dict(kwargs.get("ExpressionAttributeNames") or {})
+
+    def sub(match: re.Match) -> str:
+        camel = _camel(match.group(0))
+        names[f"#{camel}"] = camel
+        return f"#{camel}"
+
+    out = dict(kwargs)
+    for key in ("UpdateExpression", "ConditionExpression", "ProjectionExpression"):
+        if key in out:
+            out[key] = _EXPR_NAME.sub(sub, out[key])
+    if names:
+        out["ExpressionAttributeNames"] = names
+    return out
 
 
 # The single "genuinely not started" onboarding-state shape -- SOLE owner
@@ -301,6 +378,61 @@ class PaperclipRepo:
     def _table(self):
         return get_table(self._table_name)
 
+    def _meta_on_tasks(self) -> bool:
+        """Whether workspace rows and pending briefs live on the ``tasks`` table (spec 03 §4.4).
+        PR 6b makes this the super-agent env master, after the dev copy verifies."""
+        return False
+
+    def _ws_table(self):
+        return get_table("tasks") if self._meta_on_tasks() else self._table()
+
+    def _ws_key(self, org_id: str) -> dict:
+        if self._meta_on_tasks():
+            return {"pk": ts.ws_pk(org_id), "sk": ts.META_SK}
+        return {"user_id": org_id}
+
+    def _pending_key(self, owner_id: str) -> dict:
+        if self._meta_on_tasks():
+            return {"pk": ts.ws_pk(owner_id), "sk": ts.PENDING_BRIEF_SK}
+        return {"user_id": _pending_brief_key(owner_id)}
+
+    def _ws_item(self, item: dict, owner_id: str, sk: str) -> dict:
+        return to_meta_item(item, owner_id, sk) if self._meta_on_tasks() else item
+
+    async def _ws_call(self, method: str, key: dict | None = None, **kwargs) -> dict:
+        """One call on the META store. Callers write snake_case expressions; on ``tasks`` they are
+        rewritten to camelCase and the returned ``Item``/``Attributes`` come back snake_case."""
+        if key is not None:
+            kwargs["Key"] = key
+        on_tasks = self._meta_on_tasks()
+        if on_tasks:
+            kwargs = _tasks_expressions(kwargs)
+        resp = await run_in_thread(getattr(self._ws_table(), method), **kwargs)
+        if on_tasks:
+            for k in ("Item", "Attributes"):
+                if resp.get(k):
+                    resp[k] = from_meta_item(resp[k])
+        return resp
+
+    async def _put_old_row_attrs(self, org_id: str, status: str, attrs: dict, absent: list[str]) -> None:
+        """On ``tasks``: keep the Paperclip-only attributes on the old row. ``org_id`` keeps the
+        by-org-id guard working; ``status`` (first write only) is what the agent-key writes
+        condition on."""
+        values = {f":o{i}": v for i, v in enumerate(attrs.values())}
+        names = {f"#o{i}": k for i, k in enumerate(attrs)}
+        sets = ["org_id = :org", "#s = if_not_exists(#s, :s)"] + [f"#o{i} = :o{i}" for i in range(len(attrs))]
+        expr = "SET " + ", ".join(sets)
+        if absent:
+            names.update({f"#x{i}": k for i, k in enumerate(absent)})
+            expr += " REMOVE " + ", ".join(f"#x{i}" for i in range(len(absent)))
+        await run_in_thread(
+            self._table().update_item,
+            Key={"user_id": org_id},
+            UpdateExpression=expr,
+            ExpressionAttributeNames={"#s": "status", **names},
+            ExpressionAttributeValues={":org": org_id, ":s": status, **values},
+        )
+
     # ------------------------------------------------------------------
     # Workspace rows
     # ------------------------------------------------------------------
@@ -362,35 +494,45 @@ class PaperclipRepo:
             if value is not None:
                 item[name] = value.isoformat()
         del item["user_id"]
-        names = {f"#f{i}": k for i, k in enumerate(item)}
+        on_tasks = self._meta_on_tasks()
+        fields = [k for k in _WORKSPACE_OPTIONAL_FIELDS if not (on_tasks and old_row_only(k))]
+        old_attrs = {k: item.pop(k) for k in list(item) if on_tasks and old_row_only(k)}
+        attr = _camel if on_tasks else str
+        names = {f"#f{i}": attr(k) for i, k in enumerate(item)}
         values = {f":f{i}": v for i, v in enumerate(item.values())}
         expr = "SET " + ", ".join(f"#f{i} = :f{i}" for i in range(len(item)))
-        absent = [k for k in _WORKSPACE_OPTIONAL_FIELDS if k not in item]
+        if on_tasks:
+            expr += ", #mk = :mk, #wb = if_not_exists(#wb, :wb)"
+            names.update({"#mk": "metaKind", "#wb": "workBackend"})
+            values.update({":mk": "workspace", ":wb": "paperclip"})
+        absent = [k for k in fields if k not in item]
         if absent:
-            names.update({f"#r{i}": k for i, k in enumerate(absent)})
+            names.update({f"#r{i}": attr(k) for i, k in enumerate(absent)})
             expr += " REMOVE " + ", ".join(f"#r{i}" for i in range(len(absent)))
         kwargs: dict = {
-            "Key": {"user_id": ws.org_id},
             "UpdateExpression": expr,
             "ExpressionAttributeNames": names,
             "ExpressionAttributeValues": {**values, **(condition_values or {})},
         }
         if condition:
             kwargs["ConditionExpression"] = condition
-        await run_in_thread(self._table().update_item, **kwargs)
+        await self._ws_call("update_item", self._ws_key(ws.org_id), **kwargs)
+        if on_tasks:
+            old_fields = [k for k in _WORKSPACE_OPTIONAL_FIELDS if old_row_only(k) and k not in old_attrs]
+            await self._put_old_row_attrs(ws.org_id, ws.status, old_attrs, old_fields)
         publish_status_changed(ws.org_id)
 
     async def get_workspace(self, org_id: str, *, consistent_read: bool = False) -> Optional[PaperclipWorkspace]:
-        resp = await run_in_thread(
-            self._table().get_item,
-            Key={"user_id": org_id},
-            ConsistentRead=consistent_read,
-        )
+        resp = await self._ws_call("get_item", self._ws_key(org_id), ConsistentRead=consistent_read)
         item = resp.get("Item")
         # A missing ``status`` means the key names something other than a
         # workspace row (a pre-migration human row, a sentinel): not a workspace.
         if not item or "status" not in item:
             return None
+        if self._meta_on_tasks():
+            # company_id and the automation pause fence never leave the old row.
+            old = await run_in_thread(self._table().get_item, Key={"user_id": org_id}, ConsistentRead=consistent_read)
+            item.update({k: v for k, v in (old.get("Item") or {}).items() if old_row_only(k)})
         return self._item_to_workspace(item)
 
     @staticmethod
@@ -455,9 +597,9 @@ class PaperclipRepo:
     async def add_member(self, org_id: str, user_id: str) -> None:
         """Record that ``user_id`` joined this workspace's Paperclip company.
         Conditional on the workspace row existing (never resurrects a partial)."""
-        await run_in_thread(
-            self._table().update_item,
-            Key={"user_id": org_id},
+        await self._ws_call(
+            "update_item",
+            self._ws_key(org_id),
             UpdateExpression="ADD member_user_ids :u SET updated_at = :t",
             ConditionExpression="attribute_exists(user_id)",
             ExpressionAttributeValues={":u": {user_id}, ":t": utc_now_iso()},
@@ -467,11 +609,11 @@ class PaperclipRepo:
     async def remove_member(self, org_id: str, user_id: str) -> None:
         """Drop ``user_id`` from the workspace's members. A no-op when the
         workspace row is gone (never resurrects a partial)."""
-        table = self._table()
+        table = self._ws_table()
         try:
-            await run_in_thread(
-                table.update_item,
-                Key={"user_id": org_id},
+            await self._ws_call(
+                "update_item",
+                self._ws_key(org_id),
                 UpdateExpression="DELETE member_user_ids :u SET updated_at = :t",
                 ConditionExpression="attribute_exists(user_id)",
                 ExpressionAttributeValues={":u": {user_id}, ":t": utc_now_iso()},
@@ -500,7 +642,8 @@ class PaperclipRepo:
             KeyConditionExpression=Key("company_id").eq(company_id),
         ):
             for item in page.get("Items", []):
-                if item.get("status") != "active":
+                # On tasks the old row's status is stale; the re-read below checks META's.
+                if not self._meta_on_tasks() and item.get("status") != "active":
                     continue
                 ws = await self.get_workspace(item["user_id"])
                 if ws is not None and ws.status == "active":
@@ -514,10 +657,10 @@ class PaperclipRepo:
         ws = await self.find_workspace_by_company(company_id)
         return sorted(ws.member_user_ids) if ws is not None else []
 
-    async def _query_pages(self, **kwargs):
+    async def _query_pages(self, table=None, **kwargs):
         """Yield each raw Query response page, following ``LastEvaluatedKey``."""
         while True:
-            resp = await run_in_thread(self._table().query, **kwargs)
+            resp = await run_in_thread((table or self._table()).query, **kwargs)
             yield resp
             last_key = resp.get("LastEvaluatedKey")
             if not last_key:
@@ -554,7 +697,6 @@ class PaperclipRepo:
             expr_values[":p"] = scheduled_purge_at.isoformat()
 
         kwargs: dict = {
-            "Key": {"user_id": key},
             "UpdateExpression": update_expr,
             "ExpressionAttributeNames": expr_names,
             "ExpressionAttributeValues": expr_values,
@@ -563,9 +705,9 @@ class PaperclipRepo:
             kwargs["ConditionExpression"] = "attribute_exists(user_id) AND #s <> :guard"
             expr_values[":guard"] = not_if_status
 
-        table = self._table()
+        table = self._ws_table()
         try:
-            await run_in_thread(table.update_item, **kwargs)
+            await self._ws_call("update_item", self._ws_key(key), **kwargs)
             publish_status_changed(key)
             return True
         except table.meta.client.exceptions.ConditionalCheckFailedException:
@@ -695,11 +837,11 @@ class PaperclipRepo:
             "created_at": now,
             "updated_at": now,
         }
-        table = self._table()
+        table = self._ws_table()
         try:
-            await run_in_thread(
-                table.put_item,
-                Item=item,
+            await self._ws_call(
+                "put_item",
+                Item=self._ws_item(item, org_id, ts.META_SK),
                 ConditionExpression="attribute_not_exists(user_id)",
             )
             publish_status_changed(org_id)
@@ -712,6 +854,8 @@ class PaperclipRepo:
             self._table().delete_item,
             Key={"user_id": key},
         )
+        if self._meta_on_tasks():
+            await run_in_thread(self._ws_table().delete_item, Key=self._ws_key(key))
 
     # ------------------------------------------------------------------
     # Identity rows
@@ -1051,11 +1195,11 @@ class PaperclipRepo:
         starter_key = next((key for key, value in company.starter_agent_ids.items() if value == agent_id), None)
         if starter_key is None:
             return
-        table = self._table()
+        table = self._ws_table()
         try:
-            await run_in_thread(
-                table.update_item,
-                Key={"user_id": company.org_id},
+            await self._ws_call(
+                "update_item",
+                self._ws_key(company.org_id),
                 UpdateExpression="REMOVE starter_agent_ids.#starter_key",
                 ConditionExpression="starter_agent_ids.#starter_key = :agent_id",
                 ExpressionAttributeNames={"#starter_key": starter_key},
@@ -1218,11 +1362,11 @@ class PaperclipRepo:
         Never raises.
         """
         now = utc_now_iso()
-        table = self._table()
+        table = self._ws_table()
         try:
-            await run_in_thread(
-                table.update_item,
-                Key={"user_id": org_id},
+            await self._ws_call(
+                "update_item",
+                self._ws_key(org_id),
                 UpdateExpression=("SET first_contact_state = :sending, first_contact_claimed_at = :t, updated_at = :t"),
                 ConditionExpression=(
                     "onboarding_generation = :gen AND "
@@ -1262,11 +1406,11 @@ class PaperclipRepo:
         delivered email into a 500.
         """
         now = utc_now_iso()
-        table = self._table()
+        table = self._ws_table()
         try:
-            await run_in_thread(
-                table.update_item,
-                Key={"user_id": org_id},
+            await self._ws_call(
+                "update_item",
+                self._ws_key(org_id),
                 UpdateExpression=("SET first_contact_state = :s, first_contact_reason = :r, updated_at = :t"),
                 ConditionExpression="onboarding_generation = :gen",
                 ExpressionAttributeValues={
@@ -1314,7 +1458,7 @@ class PaperclipRepo:
         ``record_onboarding_ids`` lands) so a retry isn't permanently locked
         out -- mirrors the old ``release_onboarding_claim`` contract.
         """
-        table = self._table()
+        table = self._ws_table()
         # Bounded retry loop: the CAS itself is the serialization point, but a
         # peer can WIN the claim and then ``revert_funnel_submission`` it back
         # to ``not_started`` on the SAME generation if its downstream seed
@@ -1347,9 +1491,9 @@ class PaperclipRepo:
             if brief:
                 values[":brief"] = brief
             try:
-                await run_in_thread(
-                    table.update_item,
-                    Key={"user_id": org_id},
+                await self._ws_call(
+                    "update_item",
+                    self._ws_key(org_id),
                     UpdateExpression=(
                         "SET funnel_state = :submitted, funnel_submitted_at = :t, "
                         "onboarding_submitted_by = :sub, updated_at = :u" + brief_set
@@ -1405,9 +1549,9 @@ class PaperclipRepo:
         ``ConditionalCheckFailedException`` on a guard failure, propagating
         through the fulfiller's recovery path.
         """
-        await run_in_thread(
-            self._table().update_item,
-            Key={"user_id": org_id},
+        await self._ws_call(
+            "update_item",
+            self._ws_key(org_id),
             UpdateExpression="SET onboarding_goal_id = :g, onboarding_project_id = :p, updated_at = :u",
             ConditionExpression="onboarding_generation = :gen AND funnel_state = :submitted",
             ExpressionAttributeValues={
@@ -1442,11 +1586,11 @@ class PaperclipRepo:
         ``submitted``, or the company was reprovisioned out from under it --
         none of which this caller should touch.
         """
-        table = self._table()
+        table = self._ws_table()
         try:
-            await run_in_thread(
-                table.update_item,
-                Key={"user_id": org_id},
+            await self._ws_call(
+                "update_item",
+                self._ws_key(org_id),
                 UpdateExpression=(
                     "SET funnel_state = :not_started, updated_at = :u "
                     "REMOVE funnel_submitted_at, onboarding_goal_id, onboarding_project_id, "
@@ -1471,11 +1615,11 @@ class PaperclipRepo:
 
     async def complete_funnel_submission(self, org_id: str, *, onboarding_generation: str) -> bool:
         """Complete the generation after its goal, project, and BRIEF.md exist."""
-        table = self._table()
+        table = self._ws_table()
         try:
-            await run_in_thread(
-                table.update_item,
-                Key={"user_id": org_id},
+            await self._ws_call(
+                "update_item",
+                self._ws_key(org_id),
                 UpdateExpression="SET funnel_state = :complete, funnel_completed_at = :t, updated_at = :t",
                 ConditionExpression=(
                     "onboarding_generation = :gen AND funnel_state = :submitted "
@@ -1595,13 +1739,14 @@ class PaperclipRepo:
         if target_agent_id:
             item["target_agent_id"] = target_agent_id
 
-        table = self._table()
+        table = self._ws_table()
+        item = self._ws_item(item, owner_id, ts.PENDING_BRIEF_SK)
         if overwrite:
-            await run_in_thread(table.put_item, Item=item)
+            await self._ws_call("put_item", Item=item)
             return True
         try:
-            await run_in_thread(
-                table.put_item,
+            await self._ws_call(
+                "put_item",
                 Item=item,
                 ConditionExpression="attribute_not_exists(user_id) OR brief_state = :failed",
                 ExpressionAttributeValues={":failed": "failed"},
@@ -1648,11 +1793,7 @@ class PaperclipRepo:
         a just-written item would re-show the funnel to someone who already
         answered it.
         """
-        resp = await run_in_thread(
-            self._table().get_item,
-            Key={"user_id": _pending_brief_key(owner_id)},
-            ConsistentRead=True,
-        )
+        resp = await self._ws_call("get_item", self._pending_key(owner_id), ConsistentRead=True)
         return resp.get("Item")
 
     async def record_pending_brief_failure(self, owner_id: str, *, reason: str) -> int:
@@ -1671,11 +1812,11 @@ class PaperclipRepo:
         + last_error, no brief_state), which ``put_pending_brief``'s guard
         then rejects forever. Item gone means nothing to count -- report 0.
         """
-        table = self._table()
+        table = self._ws_table()
         try:
-            resp = await run_in_thread(
-                table.update_item,
-                Key={"user_id": _pending_brief_key(owner_id)},
+            resp = await self._ws_call(
+                "update_item",
+                self._pending_key(owner_id),
                 UpdateExpression="ADD attempts :one SET last_error = :e, last_attempt_at = :t",
                 ConditionExpression="attribute_exists(user_id)",
                 ExpressionAttributeValues={
@@ -1704,11 +1845,11 @@ class PaperclipRepo:
         ``record_pending_brief_failure``: resurrecting a deleted item as a
         partial would block every future submit. Gone item = nothing to mark.
         """
-        table = self._table()
+        table = self._ws_table()
         try:
-            await run_in_thread(
-                table.update_item,
-                Key={"user_id": _pending_brief_key(owner_id)},
+            await self._ws_call(
+                "update_item",
+                self._pending_key(owner_id),
                 UpdateExpression="SET brief_state = :failed, last_error = :e, failed_at = :t",
                 ConditionExpression="attribute_exists(user_id)",
                 ExpressionAttributeValues={
@@ -1739,11 +1880,7 @@ class PaperclipRepo:
         snapshot is read before the item it is deleting could have been
         written) and still report what they actually removed.
         """
-        resp = await run_in_thread(
-            self._table().delete_item,
-            Key={"user_id": _pending_brief_key(owner_id)},
-            ReturnValues="ALL_OLD",
-        )
+        resp = await self._ws_call("delete_item", self._pending_key(owner_id), ReturnValues="ALL_OLD")
         return bool(resp.get("Attributes"))
 
     async def list_active_workspace_members(self) -> dict[str, set[str]]:
@@ -1756,6 +1893,17 @@ class PaperclipRepo:
         from boto3.dynamodb.conditions import Attr
 
         out: dict[str, set[str]] = {}
+        if self._meta_on_tasks():
+            async for page in self._query_pages(
+                self._ws_table(),
+                IndexName="ws-meta",
+                KeyConditionExpression=Key("metaKind").eq("workspace"),
+                FilterExpression=Attr("status").eq("active"),
+                ProjectionExpression="pk, memberUserIds",
+            ):
+                for item in page.get("Items", []):
+                    out[item["pk"].removeprefix("WS#")] = set(item.get("memberUserIds") or ())
+            return out
         kwargs: dict = {
             "FilterExpression": Attr("user_id").begins_with("org_") & Attr("status").eq("active"),
             "ProjectionExpression": "user_id, member_user_ids",
@@ -1772,19 +1920,32 @@ class PaperclipRepo:
     async def scan_purge_due(self, now: datetime) -> list[PaperclipWorkspace]:
         """Disabled workspace rows whose ``scheduled_purge_at <= now``, via the
         by-status-purge-at GSI (KEYS_ONLY, so each hit is re-read)."""
+        from boto3.dynamodb.conditions import Attr
+
         out: list[PaperclipWorkspace] = []
-        async for page in self._query_pages(
-            IndexName="by-status-purge-at",
-            KeyConditionExpression=(Key("status").eq("disabled") & Key("scheduled_purge_at").lte(now.isoformat())),
-        ):
+        if self._meta_on_tasks():
+            pages = self._query_pages(
+                self._ws_table(),
+                IndexName="ws-meta",
+                KeyConditionExpression=Key("metaKind").eq("workspace"),
+                FilterExpression=Attr("status").eq("disabled") & Attr("scheduledPurgeAt").lte(now.isoformat()),
+                ProjectionExpression="pk",
+            )
+        else:
+            pages = self._query_pages(
+                IndexName="by-status-purge-at",
+                KeyConditionExpression=(Key("status").eq("disabled") & Key("scheduled_purge_at").lte(now.isoformat())),
+            )
+        async for page in pages:
             for item in page.get("Items", []):
-                ws = await self.get_workspace(item["user_id"])
+                org_id = item["pk"].removeprefix("WS#") if "pk" in item else item["user_id"]
+                ws = await self.get_workspace(org_id)
                 if ws is not None:
                     out.append(ws)
                 else:
                     logger.warning(
                         "paperclip_repo.scan_purge_due: GSI returned %s but base item missing",
-                        item.get("user_id"),
+                        org_id,
                     )
         return out
 

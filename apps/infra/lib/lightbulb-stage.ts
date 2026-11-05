@@ -14,6 +14,7 @@ import { AuthStack } from "./stacks/auth-stack";
 import { OpenRouterGateStack } from "./stacks/openrouter-gate-stack";
 import { ContainerStack } from "./stacks/container-stack";
 import { DatabaseStack } from "./stacks/database-stack";
+import { DeployRunnerStack } from "./stacks/deploy-runner-stack";
 import { DnsStack } from "./stacks/dns-stack";
 import { NetworkStack } from "./stacks/network-stack";
 import { ObservabilityStack } from "./stacks/observability-stack";
@@ -394,6 +395,17 @@ export class LightbulbStage extends cdk.Stage {
       wsInternalSecretName: auth.wsInternalSecret.secretName,
     });
     openrouterGate.addDependency(database);
+
+    // Dev deploys itself: a CodeBuild project that runs apps/infra/codebuild/
+    // deploy-dev.sh on every push to main (the self-hosted deploy runner is
+    // offline, 2026-11-05). Prod promotion stays on GitHub Actions, so prod
+    // gets no runner. Depends on nothing; `cdk deploy 'dev/*'` includes it.
+    if (env === "dev") {
+      new DeployRunnerStack(this, `lightbulb-${env}-deploy-runner`, {
+        stackName: `lightbulb-${env}-deploy-runner`,
+        envName: env,
+      });
+    }
 
     // --- Tags ---
     cdk.Tags.of(this).add("Project", "lightbulb");

@@ -1,0 +1,14 @@
+# Buildspec of the lightbulb-dev-deploy CodeBuild project
+# (apps/infra/lib/stacks/deploy-runner-stack.ts). The work is deploy-dev.sh so
+# that "superseded by a newer build" can exit the whole build early: a
+# buildspec command's `exit 0` only ends that command. Both files are read
+# from the pushed commit, so a change ships with the push that carries it.
+version: 0.2
+
+phases:
+  install:
+    runtime-versions:
+      nodejs: 20
+  build:
+    commands:
+      - bash apps/infra/codebuild/deploy-dev.sh

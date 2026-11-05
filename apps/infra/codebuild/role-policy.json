@@ -1,0 +1,23 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AssumeCdkBootstrapRoles",
+      "Effect": "Allow",
+      "Action": "sts:AssumeRole",
+      "Resource": "arn:aws:iam::877352799272:role/cdk-hnb659fds-*-877352799272-us-east-1"
+    },
+    {
+      "Sid": "ReadDeploySecret",
+      "Effect": "Allow",
+      "Action": "secretsmanager:GetSecretValue",
+      "Resource": "arn:aws:secretsmanager:us-east-1:877352799272:secret:lightbulb/dev/deploy-runner-*"
+    },
+    {
+      "Sid": "SerialiseBuilds",
+      "Effect": "Allow",
+      "Action": ["codebuild:ListBuildsForProject", "codebuild:BatchGetBuilds"],
+      "Resource": "arn:aws:codebuild:us-east-1:877352799272:project/lightbulb-dev-deploy"
+    }
+  ]
+}

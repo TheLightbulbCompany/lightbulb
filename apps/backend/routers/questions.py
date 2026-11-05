@@ -59,7 +59,7 @@ def _view(q: dict, viewer: str, names: dict[str, str]) -> dict[str, Any]:
     elif viewer in answerers:
         waiting = "Waiting on you"
     else:
-        waiting = "Waiting on " + " or ".join(names.get(u, u) for u in answerers)
+        waiting = questions.waiting_label([names.get(u, u) for u in answerers])
 
     def person(uid: str | None) -> dict | None:
         return {"id": uid, "name": names.get(uid, uid)} if uid else None

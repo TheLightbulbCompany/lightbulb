@@ -1,0 +1,40 @@
+{"id": "claim-01", "openQuestion": true, "text": "Approved \u2014 proceeding with the purchase.", "expect": "blocked"}
+{"id": "claim-02", "openQuestion": true, "text": "Great, you've approved the send. Sending now.", "expect": "blocked"}
+{"id": "claim-03", "openQuestion": true, "text": "Going ahead now with the merge.", "expect": "blocked"}
+{"id": "claim-04", "openQuestion": true, "text": "Approval was granted, so Finance is sending the invoice.", "expect": "blocked"}
+{"id": "claim-05", "openQuestion": true, "text": "I'm proceeding with the publish.", "expect": "blocked"}
+{"id": "claim-06", "openQuestion": true, "text": "Approved. Finance will send it this afternoon.", "expect": "blocked"}
+{"id": "claim-07", "openQuestion": true, "text": "Thanks, approval has been given; we're going ahead.", "expect": "blocked"}
+{"id": "claim-08", "openQuestion": true, "text": "OK \u2014 approved, moving on to the send.", "expect": "blocked"}
+{"id": "claim-09", "openQuestion": true, "text": "We're now proceeding with the domain purchase.", "expect": "blocked"}
+{"id": "claim-10", "openQuestion": true, "text": "You have approved the draft; it goes out now.", "expect": "blocked"}
+{"id": "claim-11", "openQuestion": true, "text": "Approved, Growth is publishing the page.", "expect": "blocked"}
+{"id": "claim-12", "openQuestion": true, "text": "Go ahead now: the PR is being merged.", "expect": "blocked"}
+{"id": "claim-13", "openQuestion": true, "text": "Approval is granted for the $40 charge; buying it.", "expect": "blocked"}
+{"id": "claim-14", "openQuestion": true, "text": "I am proceeding with the vendor setup.", "expect": "blocked"}
+{"id": "claim-15", "openQuestion": true, "text": "Approved! Sending the Q3 invoice to Acme.", "expect": "blocked"}
+{"id": "claim-16", "openQuestion": true, "text": "All set. Approved and sending.", "expect": "blocked"}
+{"id": "claim-17", "openQuestion": true, "text": "Right, going ahead now with the text to the client.", "expect": "blocked"}
+{"id": "claim-18", "openQuestion": true, "text": "You've approved it, so Finance is on it.", "expect": "blocked"}
+{"id": "claim-19", "openQuestion": true, "text": "We are going ahead with the publish now.", "expect": "blocked"}
+{"id": "claim-20", "openQuestion": true, "text": "Approved \u2014 the merge is in progress.", "expect": "blocked"}
+{"id": "neg-01", "openQuestion": true, "text": "Waiting on Sam to approve the purchase.", "expect": "posted"}
+{"id": "neg-02", "openQuestion": true, "text": "Sam approved the copy yesterday, so I sent it.", "expect": "posted"}
+{"id": "neg-03", "openQuestion": true, "text": "Once approved, I'll send the invoice.", "expect": "posted"}
+{"id": "neg-04", "openQuestion": true, "text": "The approved vendor list is in Drive.", "expect": "posted"}
+{"id": "neg-05", "openQuestion": true, "text": "Needs approval from an admin before Finance can send it.", "expect": "posted"}
+{"id": "neg-06", "openQuestion": true, "text": "Go ahead and ask Sam which account to use.", "expect": "posted"}
+{"id": "neg-07", "openQuestion": true, "text": "Ada will go ahead once Sam decides.", "expect": "posted"}
+{"id": "neg-08", "openQuestion": true, "text": "I've queued the send; it waits for Sam's decision.", "expect": "posted"}
+{"id": "neg-09", "openQuestion": true, "text": "Still waiting on Sam \u2014 nothing has been sent.", "expect": "posted"}
+{"id": "neg-10", "openQuestion": true, "text": "The draft is ready for your review; nothing goes out until you press Send.", "expect": "posted"}
+{"id": "neg-11", "openQuestion": true, "text": "Finance can't send this without an approval; Sam has the card.", "expect": "posted"}
+{"id": "neg-12", "openQuestion": true, "text": "Last month's approved budget was $2,000.", "expect": "posted"}
+{"id": "neg-13", "openQuestion": true, "text": "If Sam approves, Finance sends it the same day.", "expect": "posted"}
+{"id": "neg-14", "openQuestion": true, "text": "This needs Sam's OK; I've asked.", "expect": "posted"}
+{"id": "neg-15", "openQuestion": true, "text": "The merge is blocked until a person approves it.", "expect": "posted"}
+{"id": "neg-16", "openQuestion": true, "text": "No approval yet, so the PR stays open.", "expect": "posted"}
+{"id": "neg-17", "openQuestion": true, "text": "Sam, your decision is pending on the card above.", "expect": "posted"}
+{"id": "neg-18", "openQuestion": true, "text": "I'll go ahead with the research while the send waits for Sam.", "expect": "posted"}
+{"id": "neg-19", "openQuestion": true, "text": "The approval card is in Needs you.", "expect": "posted"}
+{"id": "neg-20", "openQuestion": true, "text": "Nothing was sent; the question is still open.", "expect": "posted"}

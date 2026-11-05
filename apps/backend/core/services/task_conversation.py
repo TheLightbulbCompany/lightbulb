@@ -104,6 +104,13 @@ async def post_as_lightbulb(
     progress: bool = False,
 ) -> str:
     """Post as Lightbulb; idempotent on `event_id`. Returns the message id."""
+    if kind is None:  # Lane Q: never claim an approval a Question row doesn't show (spec 05 §3.5 layer 3)
+        from core.services import questions
+
+        if (hit := await questions.guard_reply(ws, text, task_refs, specialist)) is not None:
+            text, task_id, qid = hit
+            kind = "question"  # one card, bound to {taskId, qid}: the client renders its buttons once
+            task_refs = [{**r, "qid": qid} if r.get("taskId") == task_id else r for r in task_refs or []]
     receipt = await messaging.create_agent_message(
         ws,
         messaging.AgentMessageRequest(

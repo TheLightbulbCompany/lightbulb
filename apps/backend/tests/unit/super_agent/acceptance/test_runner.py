@@ -234,7 +234,7 @@ def dm_handler(created: list[dict], *, lightbulb: bool = True):
         if path.endswith("/messaging/rooms") and request.method == "GET":
             return _ok({"rooms": [{"roomId": "general-1", "name": "general", "kind": "channel"}]})
         if path.endswith("/messaging/rooms/general-1"):
-            agent = {"kind": "agent", "id": "ceo-1", "mentionHandle": "lightbulb" if lightbulb else "ceo"}
+            agent = {"kind": "agent", "id": "ceo-1", "mentionHandle": "lightbulb" if lightbulb else "growth"}
             return _ok({"roomId": "general-1", "members": [{"kind": "human", "id": "user_sam"}, agent]})
         if path.endswith("/messaging/rooms") and request.method == "POST":
             body = json.loads(request.content)

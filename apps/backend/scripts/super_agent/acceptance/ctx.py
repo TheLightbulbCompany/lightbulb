@@ -177,21 +177,7 @@ class Ctx:
             key = f"{label}DmRoomId"
             if key not in self.state:
                 api = self.api(label)
-                rooms = (await api.get("/api/v1/messaging/rooms")).raise_for_status().json().get("rooms") or []
-                general = next((r for r in rooms if (r.get("name") or "").lower() == "general"), None)
-                if general is None:
-                    raise RuntimeError(f"{self.ws}: no #general for {label}")
-                detail = (await api.get(f"/api/v1/messaging/rooms/{general['roomId']}")).raise_for_status().json()
-                front = next(
-                    (
-                        m
-                        for m in detail.get("members", [])
-                        if m.get("kind") == "agent" and m.get("mentionHandle") == "lightbulb"
-                    ),
-                    None,
-                )
-                if front is None:
-                    raise RuntimeError(f"{self.ws}: #general has no @lightbulb member (switch off?)")
+                front = await self._front_agent(api)
                 body = {
                     "clientRoomId": str(
                         uuid.uuid5(uuid.NAMESPACE_URL, f"sa-acceptance-dm|{self.ws}|{user_id}|{front['id']}")
@@ -204,6 +190,22 @@ class Ctx:
                 self.state[key] = dm["roomId"]
             out[label] = self.state[key]
         return out
+
+    async def _front_agent(self, api: httpx.AsyncClient) -> dict:
+        """Lightbulb, the workspace's single front agent: the Lightbulb or CEO agent of a room this run created (A1), else of ``#general`` (dev seeds #general with the CEO handle)."""
+        room_id = self.state.get("roomId")
+        if room_id is None:
+            rooms = (await api.get("/api/v1/messaging/rooms")).raise_for_status().json().get("rooms") or []
+            general = next((r for r in rooms if (r.get("name") or "").lower() == "general"), None)
+            if general is None:
+                raise RuntimeError(f"{self.ws}: no #general")
+            room_id = general["roomId"]
+        detail = (await api.get(f"/api/v1/messaging/rooms/{room_id}")).raise_for_status().json()
+        agents = [m for m in detail.get("members", []) if m.get("kind") == "agent"]
+        front = next((m for m in agents if m.get("mentionHandle") in ("lightbulb", "ceo")), None)
+        if front is None:
+            raise RuntimeError(f"{self.ws}: no @lightbulb/CEO agent in room {room_id} (switch off?)")
+        return front
 
     # ------------------------------------------------------------------ live events
     async def appsync(self, ws: str | None = None, *, user: str = "sam") -> AsyncIterator[dict[str, Any]]:
@@ -260,6 +262,10 @@ def parse_appsync_data(msg: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def aws_profile_default() -> None:
-    """Dev reads (tasks table, Secrets Manager) go through the ``isol8-admin`` profile unless the caller set one."""
+    """Dev reads (tasks table, Secrets Manager) go through the ``isol8-admin`` profile unless the caller set one;
+    the dev tables the scenarios read through backend services (messaging, OAuth tokens) default to ``lightbulb-dev-*``
+    (the harness is dev-only; ``guard()`` refuses anything else)."""
     os.environ.setdefault("AWS_PROFILE", "isol8-admin")
     os.environ.setdefault("AWS_REGION", "us-east-1")
+    settings.OAUTH_TOKENS_TABLE = settings.OAUTH_TOKENS_TABLE or "lightbulb-dev-oauth-tokens"
+    settings.MESSAGING_TABLE = settings.MESSAGING_TABLE or "lightbulb-dev-messaging"

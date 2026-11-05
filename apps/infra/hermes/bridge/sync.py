@@ -1151,9 +1151,13 @@ def _pull_cli_credentials(agent_id: str) -> None:
                     if held and held[0] == obj.get("ETag") and target.is_file():
                         continue  # our own copy, or a rotation not yet written back
                     target.parent.mkdir(parents=True, exist_ok=True)
-                    s3.download_file(S3_BUCKET, obj["Key"], str(target))
-                    _remember_cli_credential(agent_id, rel, obj, target)
-                    _BROKERED_CLI.get(agent_id, set()).discard(rel)  # the backend's token-free form again
+                    # Under the rotate lock: credentials.apply_cli_tokens marks + patches under it too,
+                    # so a mark is never discarded between its mark and its write (the patched token
+                    # would then look like a rotation and be uploaded to every roster key).
+                    with _rotate_lock:
+                        s3.download_file(S3_BUCKET, obj["Key"], str(target))
+                        _remember_cli_credential(agent_id, rel, obj, target)
+                        _BROKERED_CLI.get(agent_id, set()).discard(rel)  # the backend's token-free form again
             local_root = dest / prefix.rstrip("/")
             locals_ = (
                 [p for p in local_root.rglob("*") if p.is_file()]

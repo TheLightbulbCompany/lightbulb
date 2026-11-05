@@ -51,6 +51,8 @@ _attempts: dict[str, int] = {}
 
 #: Worker session key -> {"taskId", "runSecret"} of its latest run (bridge/turn._run_task_turn). In
 #: memory only, like the thread's identity copy: never in RUNS or the S3 run record.
+#: ponytail: never cleared -- one small entry per Worker session the process ever ran (a task VM runs
+#: one; a shared VM is recycled within 7 h). Pop on run end if a long-lived shared VM shows growth.
 _TASKS: dict[str, dict] = {}
 
 

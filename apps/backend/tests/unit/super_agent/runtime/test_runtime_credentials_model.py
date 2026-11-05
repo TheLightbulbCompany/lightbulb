@@ -29,7 +29,7 @@ def wired(monkeypatch):
         AsyncMock(return_value=[{"provider": "microsoft365", "status": "connected"}]),
     )
     monkeypatch.setattr(runtime_rpc.access_token, "get_with_expiry", AsyncMock(return_value=("graph", 1_800_000_000)))
-    monkeypatch.setattr(runtime_rpc, "flags_for", AsyncMock(return_value=True))
+    monkeypatch.setattr(runtime_rpc, "env_enabled", lambda: True)
     vend = AsyncMock(return_value=VEND)
     monkeypatch.setattr(runtime_rpc.token_custody, "codex_vend", vend)
     return {"rpc": runtime_rpc, "vend": vend}
@@ -60,8 +60,8 @@ async def test_expires_at_additive(async_client, wired):
 
 @pytest.mark.asyncio
 async def test_old_payload_shape_still_valid(async_client, wired):
-    # Switch off (prod): no broker read at all, and the payload is exactly today's keys.
-    wired["rpc"].flags_for.return_value = False
+    # Env master off (prod): no broker read at all, and the payload is exactly today's keys.
+    wired["rpc"].env_enabled = lambda: False
     wired["rpc"].access_token.get_with_expiry.return_value = ("graph", 0)
     body = (await async_client.post(URL, json={"agent_id": "ceo"}, headers=HDR)).json()
     assert body == {"tokens": {"microsoft365": "graph"}, "unavailable": []}
@@ -104,8 +104,8 @@ async def test_model_route_codes(async_client, wired):
 
 
 @pytest.mark.asyncio
-async def test_model_route_is_404_with_the_switch_off(async_client, wired):
-    wired["rpc"].flags_for.return_value = False
+async def test_model_route_is_404_with_the_env_master_off(async_client, wired):
+    wired["rpc"].env_enabled = lambda: False
     payload = {"agent_id": "ceo", "presented_sha256": "b" * 64, "force": True}
     r = await async_client.post(URL + "/model", json=payload, headers=HDR)
     assert r.status_code == 404 and r.json()["detail"] == {"code": "not_brokered"}
@@ -117,3 +117,17 @@ async def test_force_requires_presented_hash(async_client, wired):
     r = await async_client.post(URL + "/model", json={"agent_id": "ceo", "force": True}, headers=HDR)
     assert r.status_code == 400  # the app answers request validation errors with 400
     wired["vend"].assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_brokered_grant_is_served_after_the_workspace_switch_goes_off(async_client, wired, monkeypatch):
+    """#4784 re-check: custody decides, not the switch. A custody=backend grant whose workspace switch
+    went off is still vended and refreshed; else the VM's delegate answers "busy" forever."""
+    from core.services import super_agent_flags
+
+    monkeypatch.setattr(super_agent_flags, "flags_for", AsyncMock(return_value=False))
+    body = (await async_client.post(URL, json={"agent_id": "ceo"}, headers=HDR)).json()
+    assert body["model"]["access_token"] == VEND.access_token
+    payload = {"agent_id": "ceo", "presented_sha256": "b" * 64, "force": True}
+    r = await async_client.post(URL + "/model", json=payload, headers=HDR)
+    assert r.status_code == 200 and r.json()["model"]["access_token"] == VEND.access_token

@@ -8,6 +8,7 @@ agents and :mod:`core.repositories.messaging_repo`.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import re
@@ -21,7 +22,16 @@ from collections.abc import Collection
 from typing import Any, Literal
 
 from botocore.exceptions import ClientError
-from pydantic import Base64Bytes, BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
+from pydantic import (
+    Base64Bytes,
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 from pydantic.alias_generators import to_camel
 
 from core.auth import AuthContext, resolve_owner_id
@@ -1284,7 +1294,7 @@ def canonical_message(item: dict[str, Any], *, original_request: bool = False) -
     # never serialize the original text/attachments of a tombstone.
     deleted = bool(item.get("deletedAt")) and not original_request
     edited = "editedText" in item and not original_request
-    return CanonicalMessage(
+    fields = dict(
         message_id=item["messageId"],
         room_id=item["roomId"],
         message_seq=int(item["messageSeq"]),
@@ -1317,6 +1327,66 @@ def canonical_message(item: dict[str, Any], *, original_request: bool = False) -
         edited_at=None if original_request else item.get("editedAt"),
         deleted_at=None if original_request else item.get("deletedAt"),
     )
+    try:
+        return CanonicalMessage(**fields)  # every valid stored row: exactly today's output
+    except ValidationError as exc:
+        return _tolerant_message(fields, exc)
+
+
+# A stored row that no longer validates (a rolled-back enum value, an old extra key, a long name) is repaired
+# on READ only, so one message never fails its room; writes stay strict. These fields cannot be repaired.
+_CORE_FIELDS = {"message_id", "room_id", "message_seq", "room_revision", "created_at", "text"}
+_READ_FALLBACK = {"mentions": [], "run_id": None, "reply_to_message_id": None, "thread_root_message_id": None}
+
+
+def _repair_author(value: Any) -> dict:
+    a = value if isinstance(value, dict) else {}
+    kind = a.get("kind") if a.get("kind") in ("human", "agent", "system") else "system"
+    return {
+        "kind": kind,
+        "id": str(a.get("id") or "unknown")[:256],
+        "displayName": str(a.get("displayName") or "Someone")[:256],
+    }
+
+
+def _tolerant_message(fields: dict[str, Any], exc: ValidationError) -> CanonicalMessage:
+    """Repair what failed and retry: unknown nested keys are ignored, a bad list element or map entry is
+    dropped, any other bad field falls back to its default. One warning per message."""
+    fields = copy.deepcopy(fields)
+    repaired: set[str] = set()
+    for _ in range(5):
+        drops: dict[str, set[int]] = {}
+        for err in exc.errors():
+            loc, name = err["loc"], err["loc"][0]
+            if name in _CORE_FIELDS:
+                raise exc
+            repaired.add(str(name))
+            value = fields.get(name)
+            if name == "author":
+                fields["author"] = _repair_author(value)
+            elif err["type"] == "extra_forbidden" and len(loc) == 3 and isinstance(value, list):
+                value[loc[1]].pop(loc[2], None)  # an unknown key on a list element: ignored
+            elif len(loc) >= 2 and isinstance(loc[1], int) and isinstance(value, list):
+                drops.setdefault(name, set()).add(loc[1])
+            elif len(loc) >= 2 and isinstance(value, dict):
+                value.pop(loc[1], None)
+            elif err["type"] == "too_long" and isinstance(value, list):
+                fields[name] = value[:ATTACHMENT_MAX_COUNT]
+            else:
+                field = CanonicalMessage.model_fields[name]
+                fields[name] = (
+                    _READ_FALLBACK[name] if name in _READ_FALLBACK else field.get_default(call_default_factory=True)
+                )
+        for name, idx in drops.items():
+            fields[name] = [v for i, v in enumerate(fields[name]) if i not in idx]
+        try:
+            message = CanonicalMessage(**fields)
+        except ValidationError as again:
+            exc = again
+            continue
+        logger.warning("stored message %s read with repaired fields %s", fields["message_id"], sorted(repaired))
+        return message
+    raise exc
 
 
 # Local file, empty archive, and spanned archive signatures -- shared by
@@ -3153,13 +3223,25 @@ async def list_messages(
     try:
         if before_seq is None:
             rows, next_after = await messaging_repo.list_messages(room_id, after_seq, limit)
-            return MessagePage(messages=[canonical_message(row) for row in rows], next_after_seq=next_after)
+            return MessagePage(messages=_listable(rows), next_after_seq=next_after)
         rows, next_before = await messaging_repo.list_messages_before_page(room_id, before_seq, limit)
     except ValueError as exc:
         raise ApiProblem("INVALID_REQUEST", str(exc)) from exc
-    return MessagePage(
-        messages=[canonical_message(row) for row in rows], next_after_seq=None, next_before_seq=next_before
-    )
+    return MessagePage(messages=_listable(rows), next_after_seq=None, next_before_seq=next_before)
+
+
+def _listable(rows: list[dict]) -> list[CanonicalMessage]:
+    """A page of messages; a row even the tolerant read cannot show (core fields broken) is skipped and logged,
+    never a failed room."""
+    out = []
+    for row in rows:
+        try:
+            out.append(canonical_message(row))
+        except (KeyError, TypeError, ValueError):  # ValidationError is a ValueError
+            logger.warning(
+                "stored message unreadable, skipped: room=%s seq=%s", row.get("roomId"), row.get("messageSeq")
+            )
+    return out
 
 
 async def update_message(

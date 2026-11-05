@@ -87,8 +87,7 @@ async def test_no_requester_raises(clerk, policy):
 async def test_publish_without_app_asks_the_admins(clerk, policy):
     """Gate run 3: `lightbulb app publish` in the app's folder names no app; its admins still answer."""
     ids, rule, base = await questions.answerers(ORG, TASK, "review", "publish")
-    admins, _, _ = await questions.answerers(ORG, TASK, "approval", "purchase")
-    assert ids == admins and rule == "creator+admins" and base == []
+    assert ids == ["user_ada", "user_bo"] and rule == "creator+admins" and base == []
 
 
 async def test_strict_admin_lookup(clerk, policy):

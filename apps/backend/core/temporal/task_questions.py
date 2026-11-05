@@ -13,6 +13,7 @@ Workflow side: stdlib + `temporalio` only (sandbox). The Activities below import
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
@@ -24,6 +25,7 @@ from temporalio.exceptions import ActivityError, ApplicationError
 from core.temporal.types import TaskInputRef
 
 REMIND_AFTER = timedelta(hours=24)
+_NO_ANSWERER_POST_S = 10  # each no-answerer post, well inside the 30 s Activity timeout
 EXECUTOR_KINDS = frozenset({"mail.send", "app.publish", "pr.merge"})  # effect_executors.EXECUTORS (test pins it)
 _LANDING = {
     "start_to_close_timeout": timedelta(minutes=15),  # an app publish builds and promotes
@@ -345,7 +347,6 @@ async def open_asked_question(ws: str, task_id: str, ref: AskRef) -> QuestionRef
         try:
             ids, rule, base = await questions.answerers(ws, task, ref.kind, ref.subkind)
         except questions.NoAnswerer as err:
-            await _say_no_answerer(ws, task, ask["title"])
             raise _fail(err) from err
         existing, _ = await questions_repo.open_question(
             ws,
@@ -371,32 +372,38 @@ async def open_asked_question(ws: str, task_id: str, ref: AskRef) -> QuestionRef
 
 
 async def _say_no_answerer(ws: str, task: dict, what: str) -> None:
-    """The task is about to end `no_answerer`: say so where it was asked (and in its room), never a silent stop.
-    Keyed on the task and attempt, so a retried Activity posts once. A failed post is logged, never raised: the
-    caller's NoAnswerer must still reach the workflow."""
+    """The task is about to end `no_answerer` (an effect nobody can approve): say so where it was asked and in its
+    room, never a silent stop. Keyed on the task and attempt, so a retried Activity posts once. Each post is capped
+    at 10 s and a failure is logged, never raised: the caller's NoAnswerer must still reach the workflow inside the
+    Activity's timeout. (A Worker's own ask with no answerer does not end the task, so it posts nothing.)"""
     from core.repositories import tasks_repo
     from core.services import task_conversation
 
     text = f"Nobody in this workspace can approve this ({what}), so I've stopped here. An org admin can ask me again."
     key = f"q-no-answerer:{task['taskId']}:{task.get('attemptCount', 0)}"
     refs = [{"taskId": task["taskId"], "role": "started"}]
-    try:
-        room = await task_conversation.ensure_task_room(ws, task)
-        await task_conversation.post_as_lightbulb(
-            ws, room, text=text, event_id=key, specialist=task.get("specialist"), task_refs=refs
+
+    async def post(room: str, event_id: str, thread_root: str | None = None) -> None:
+        await asyncio.wait_for(
+            task_conversation.post_as_lightbulb(
+                ws,
+                room,
+                text=text,
+                event_id=event_id,
+                specialist=task.get("specialist"),
+                thread_root=thread_root,
+                task_refs=refs,
+            ),
+            _NO_ANSWERER_POST_S,
         )
+
+    try:
+        room = await asyncio.wait_for(task_conversation.ensure_task_room(ws, task), _NO_ANSWERER_POST_S)
+        await post(room, key)
         origin = _origin_thread((await tasks_repo.get_task_tree(ws, task["taskId"])).get("subscriptions") or [])
         if origin and origin[0] != room:
-            await task_conversation.post_as_lightbulb(
-                ws,
-                origin[0],
-                text=text,
-                event_id=f"{key}:origin",
-                specialist=task.get("specialist"),
-                thread_root=origin[1],
-                task_refs=refs,
-            )
-    except Exception:  # noqa: BLE001
+            await post(origin[0], f"{key}:origin", origin[1])
+    except Exception:  # noqa: BLE001 -- includes TimeoutError
         activity.logger.warning("no-answerer line not posted for task %s", task["taskId"], exc_info=True)
 
 

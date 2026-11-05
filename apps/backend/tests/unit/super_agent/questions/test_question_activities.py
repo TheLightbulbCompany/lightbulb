@@ -1,6 +1,7 @@
 """lane Q Activities over the moto tasks table (wave2-Q Task 3): open from proposed Effects, relay to answerers
 only and once, record an answer with its Effect decision and Trigger, cancel on Stop."""
 
+import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
@@ -81,6 +82,26 @@ async def test_open_questions_no_answerer(world, monkeypatch):
         await _run(tq.open_questions, WS, TASK)
     assert err.value.type == "NoAnswerer" and err.value.non_retryable
     assert "Nobody in this workspace can approve this" in posts.await_args.kwargs["text"]
+
+
+@pytest.mark.parametrize("failure", ["raises", "hangs"])
+async def test_no_answerer_survives_a_failed_or_hung_post(world, monkeypatch, failure):
+    """The line is best-effort: a post that fails or hangs past its 10 s cap never replaces the NoAnswerer."""
+    from core.services import task_conversation
+
+    async def post(*a, **k):
+        if failure == "raises":
+            raise RuntimeError("messaging down")
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(tq, "_NO_ANSWERER_POST_S", 0.05)
+    monkeypatch.setattr(questions.clerk_admin, "list_organization_members", AsyncMock(return_value=[]))
+    monkeypatch.setattr(task_conversation, "post_as_lightbulb", post)
+    monkeypatch.setattr(task_conversation, "ensure_task_room", AsyncMock(return_value="task-room"))
+    await effects_repo.put_effect(WS, _effect(kind="purchase"))
+    with pytest.raises(ApplicationError) as err:
+        await _run(tq.open_questions, WS, TASK)
+    assert err.value.type == "NoAnswerer"
 
 
 async def test_publish_without_an_app_id_asks_the_admins(world):

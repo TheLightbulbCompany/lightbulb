@@ -63,7 +63,7 @@ export default function AutomationScreen() {
         {/* A draft (proposed, never turned on): Turn on for whoever may decide, who it waits on for everyone else. */}
         {a.status === "draft" && decide ? <ActionButton label="Turn on" palette={palette} primary disabled={pending} onPress={() => void press("activate")} /> : null}
         {a.status === "draft" && !decide ? <Text style={[styles.meta, { color: palette.fgMute }]}>{waitingWords(a)}</Text> : null}
-        {!a.match ? (a.activeRunTaskId
+        {!a.match ? (a.activeRunTaskId && a.status === "active"
           ? <ActionButton label="Running ›" palette={palette} onPress={() => openTaskScreen(a.activeRunTaskId!)} />
           : <ActionButton label="Run now" palette={palette} primary disabled={!!runReason || pending} onPress={async () => {
             setPending(true);

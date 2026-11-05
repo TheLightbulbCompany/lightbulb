@@ -7,7 +7,7 @@
 import { useState, type ReactElement } from "react";
 import { ArrowLeft } from "lucide-react";
 import { useAuth } from "@clerk/nextjs";
-import { ApiError, automationStatusLine, summaryView, useAutomation, useAutomationRuns, useAutomations, type AutomationView } from "@lightbulb/shared";
+import { ApiError, automationRowLine, automationStatusLine, summaryView, useAutomation, useAutomationRuns, useAutomations, type AutomationView } from "@lightbulb/shared";
 import { RoutinesPanel } from "@/components/teams/panels/RoutinesPanel";
 import { Button } from "@/components/ui/button";
 import { useSuperAgent } from "@/hooks/useLiveEvents";
@@ -35,13 +35,13 @@ export function AutomationsPanel({ viewerTz = viewerTimeZone(), onOpenTask = ope
 
 const scheduleLine = (a: AutomationView, viewerTz: string): string => scheduleWords(a, viewerTz) ?? "No schedule";
 
-/** Run now, or "Running ›" while a run is going (opens it). A rule (lane S) has no Run now: it fires on a match.
+/** Run now, or "Running ›" while it is On and a run is going (opens it); a paused row never reads Running. A rule (lane S) has no Run now: it fires on a match.
  *  Disabled with its reason beside it when the viewer may not run it or it isn't on yet. */
 function RunNowButton({ a, onOpenTask, onNote }: { a: AutomationView; onOpenTask: (taskId: string) => void; onNote: (note: string | null) => void }): ReactElement | null {
   const { act } = useAutomationActions();
   const canEdit = useCanEdit();
   if (a.match) return null;
-  if (a.activeRunTaskId) {
+  if (a.activeRunTaskId && a.status === "active") {
     return <Button type="button" size="sm" variant="ghost" className="relative z-10" onClick={() => onOpenTask(a.activeRunTaskId!)}>Running ›</Button>;
   }
   const reason = runNowReason(a, canEdit(a));
@@ -75,7 +75,7 @@ function AutomationList({ viewerTz, onSelect, onOlder, onOpenTask }: {
     {rows.length > 0 && <ul className="grid">{rows.map((a) => <li key={a.id} className="relative flex items-center gap-3 rounded-md px-2 py-2 hover:bg-accent">
       <div className="min-w-0 flex-1">
         <button type="button" className="block max-w-full truncate text-left font-semibold after:absolute after:inset-0 after:content-['']" onClick={() => onSelect(a.id)}>{a.name}</button>
-        <p className="truncate text-ui text-muted-foreground">{[scheduleLine(a, viewerTz), deliveryWords(a.deliverTo), automationStatusLine(a)].filter(Boolean).join(" · ")}</p>
+        <p className="truncate text-ui text-muted-foreground">{[automationRowLine(a, viewerTz), deliveryWords(a.deliverTo)].filter(Boolean).join(" · ")}</p>
       </div>
       <RunNowButton a={a} onOpenTask={onOpenTask} onNote={setNote} />
     </li>)}</ul>}

@@ -95,6 +95,13 @@ describe("AutomationsPanel", () => {
     expect(api.post).not.toHaveBeenCalled();
     unmount();
 
+    // A paused row with a leftover run never reads Running: its button matches its status.
+    routes({ activeRunTaskId: "t-live", status: "paused" });
+    const paused = render(<Fresh><AutomationsPanel viewerTz="America/New_York" /></Fresh>);
+    expect(await screen.findByRole("button", { name: "Run now" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Running ›" })).toBeNull();
+    paused.unmount();
+
     routes();
     api.post.mockRejectedValueOnce(new ApiError(409, { detail: { code: "run_in_progress", taskId: "t-other" } }));
     const again = render(<Fresh><AutomationsPanel viewerTz="America/New_York" /></Fresh>);

@@ -309,9 +309,13 @@ async def test_delete_meta_keeps_a_sibling_hooks_subscription(env):
         first = await _seed("meta_ads", ["leadgen"], resource="1112223334")
         second = await _seed("meta_ads", ["feed"], resource="1112223334")
         assert len(bindings) == 2
+        first_fields, second_fields = bindings[0]["fields"], bindings[1]["fields"]
+        assert first_fields and second_fields and set(first_fields) != set(second_fields)
+        # the second seed subscribes the UNION, not just its own fields (it would overwrite the first's)
+        assert subscribe.await_args.args == (asset, sorted({*first_fields, *second_fields}))
         await automation_hooks.delete(WS, first["trigger_public_id"])
         assert not unsubscribe.called
-        assert subscribe.await_args.args == (asset, ["feed"])  # re-subscribed with the sibling's fields only
+        assert subscribe.await_args.args == (asset, sorted(second_fields))  # narrowed to the sibling's fields
         assert [b["trigger_public_id"] for b in bindings] == [second["trigger_public_id"]]
         await automation_hooks.delete(WS, second["trigger_public_id"])
         unsubscribe.assert_awaited_once_with(asset)

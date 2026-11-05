@@ -99,14 +99,32 @@ runner is offline and there is no Actions budget.
   own builds. No `sts:TagSession`, no cdk.out S3 transport: the GitHub role
   needed those for `configure-aws-credentials` and for moving cdk.out between
   jobs.
-- **Overlap with GitHub.** deploy.yml is untouched; when `DEPLOY_RUNNER`
-  comes back it will deploy dev too and race this on the same stacks. Pick
-  one then: drop the `push` trigger in app.ts, or remove the webhook here
-  (`webhook: false`).
-- **Off switch.** `aws codebuild update-webhook`/`delete-webhook
-  --project-name lightbulb-dev-deploy` stops pushes from building without
-  touching the stack; `cdk destroy dev/lightbulb-dev-deploy-runner` removes
-  it all. Nothing here holds state.
+- **Vercel is optional until the token exists.** If `VERCEL_TOKEN` is not
+  in the secret, the build deploys the stacks and stops there, green, with
+  `VERCEL_TOKEN is not in lightbulb/dev/deploy-runner: ... SKIPPING` in the
+  log. Add it (and the other `VERCEL_*` keys) and the next push ships the
+  frontend and company previews too.
+
+## When the GitHub self-hosted runner returns
+
+deploy.yml is untouched by this: its dev stage still runs on every push to
+main the moment `DEPLOY_RUNNER` is online again. From then on **both**
+GitHub Actions and this project deploy the same dev stacks on every push,
+and two `cdk deploy`s racing on one stack fail with
+`UPDATE_IN_PROGRESS ... can not be updated`. Turn one off before that day:
+
+- Keep CodeBuild, stop GitHub deploying dev: give the `GitHubWorkflow` in
+  `lib/app.ts` `workflowTriggers: { workflowDispatch: {} }` (the default is
+  push-to-main + dispatch; prod promotion is dispatch and keeps working),
+  re-synth, commit deploy.yml.
+- Keep GitHub, stop CodeBuild: one line in `lib/stacks/deploy-runner-stack.ts`,
+  `webhook: true` -> `webhook: false`, and deploy the stack (any dev deploy
+  does it). Instant stop with no deploy:
+  `aws codebuild delete-webhook --project-name lightbulb-dev-deploy`
+  (the next stack deploy recreates it unless the flag is flipped).
+
+`cdk destroy dev/lightbulb-dev-deploy-runner` removes the project, role
+and log group; nothing here holds state.
 
 ## Cost per deploy
 

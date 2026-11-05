@@ -80,6 +80,12 @@ fi
 )
 
 # --- 3. Vercel (= DeployVercelDev, DeployCompanyDev) -------------------------
+# The backend/infra deploy above is what dev needs first; the Vercel token is
+# the founder's, so until it is in the secret the build stops here, green.
+if [ -z "${VERCEL_TOKEN:-}" ]; then
+  echo "VERCEL_TOKEN is not in $SECRET_ID: stacks deployed, SKIPPING the Vercel frontend and company deploys"
+  exit 0
+fi
 export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 corepack enable # pnpm at the root package.json's packageManager version
 npm install -g vercel@63.1.0

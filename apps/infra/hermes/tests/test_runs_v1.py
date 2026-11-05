@@ -270,6 +270,50 @@ def test_run_budget_interrupts_and_fails_the_run(quiet_turn, threads, monkeypatc
     assert (status["status"], status["error"]) == ("failed", "run_budget_exceeded")
 
 
+def test_run_budget_raise_after_interrupt_is_budget_exceeded(quiet_turn, threads, monkeypatch):
+    import threading
+
+    class Raises(Agent):
+        def run_conversation(self, **kw):
+            assert self.budget_hit.wait(2)
+            raise RuntimeError("interrupted mid-request")
+
+        def interrupt(self, **kw):
+            self.budget_hit.set()
+
+    agent = Raises()
+    agent.budget_hit = threading.Event()
+    monkeypatch.setattr(turn, "_construct_agent", lambda *a, **k: agent)
+    real_timer = threading.Timer
+    monkeypatch.setattr(turn.threading, "Timer", lambda _s, fn, args=(): real_timer(0.01, fn, args))
+    assert _post({"identity": IDENTITY, "request": {**REQUEST, "limits": {"run_budget_seconds": 60}}})[0] == 202
+    threads[0].run_now()
+    status = _poll()[1]
+    assert (status["status"], status["error"]) == ("failed", "run_budget_exceeded")
+
+
+def test_run_budget_spent_before_the_conversation_never_starts_it(quiet_turn, threads, monkeypatch):
+    agent = Agent()
+    monkeypatch.setattr(turn, "_construct_agent", lambda *a, **k: agent)
+
+    class Expired:  # the budget runs out between starting the timer and calling the agent
+        def __init__(self, _s, fn, args=()):
+            self.fn, self.args, self.daemon = fn, args, False
+
+        def start(self):
+            self.fn(*self.args)
+
+        def cancel(self):
+            pass
+
+    monkeypatch.setattr(turn.threading, "Timer", Expired)
+    assert _post({"identity": IDENTITY, "request": {**REQUEST, "limits": {"run_budget_seconds": 60}}})[0] == 202
+    threads[0].run_now()
+    status = _poll()[1]
+    assert (status["status"], status["error"]) == ("failed", "run_budget_exceeded")
+    assert agent.calls == []
+
+
 def test_paperclip_routes_are_not_v1():
     assert runs.handle("/internal/paperclip/v1/runs", "POST", AUTH, BODY) is None
 

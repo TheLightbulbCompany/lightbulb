@@ -3909,6 +3909,13 @@ def _run_native_paperclip(identity: dict, request: dict) -> tuple[str, str | Non
     return _run_task_turn(identity, request, family="paperclip")
 
 
+RUN_BUDGET_EXCEEDED = "run_budget_exceeded"
+
+
+def _budget_spent(run_id: str) -> bool:
+    return bool((RUNS.get(run_id) or {}).get("budgetExceeded"))
+
+
 def _budget_expired(run_id: str) -> None:
     """A task run's run_budget_seconds ran out: Hermes's own hard stop, and the run fails."""
     with _RUNS_LOCK:
@@ -3993,6 +4000,8 @@ def _run_task_turn(identity: dict, request: dict, *, family: str) -> tuple[str, 
                 # Hermes's github skill in view, an issue run clones into its conversation folder
                 rules = "\n\n".join(filter(None, (_repo_rule(agent_id), paperclip and identity.get("issueId") and worktrees.prompt_line(agent_id, identity["issueId"], task_worktrees))))
                 system = with_profile_agents_md(agent_id, f"{request['instructions']}\n\n{rules}\n{CHAT_STYLE}")
+                if _budget_spent(run_id):  # expired before the conversation could take the interrupt
+                    return "failed", RUN_BUDGET_EXCEEDED, "", _agent_usage(agent)
                 run = {}
                 if not paperclip and getattr(agent, "_session_db", None) is not None:
                     run["conversation_history"] = _room_history(agent)[0] or None  # the attempt before this one
@@ -4010,8 +4019,8 @@ def _run_task_turn(identity: dict, request: dict, *, family: str) -> tuple[str, 
     usage = _agent_usage(agent)
     if paperclip_run_aborted(run_id):
         return "cancelled", None, "", usage
-    if (RUNS.get(run_id) or {}).get("budgetExceeded"):
-        return "failed", "run_budget_exceeded", "", usage
+    if _budget_spent(run_id):
+        return "failed", RUN_BUDGET_EXCEEDED, "", usage
     reply = result.get("final_response") or ""
     if result.get("interrupted") is True:  # not our stop (checked above): Hermes stopped it itself
         return "failed", INTERRUPTED, "", usage
@@ -4149,6 +4158,8 @@ def _run_durable_turn(identity: dict, request: dict, reserved: bool, *, family: 
         except Exception as exc:  # noqa: BLE001 -- return the class, never exception text/prompt data
             if paperclip_run_aborted(run_id):
                 outcome, error = "cancelled", None
+            elif _budget_spent(run_id):  # Hermes raised on the budget's interrupt instead of returning
+                outcome, error = "failed", RUN_BUDGET_EXCEEDED
             else:
                 provider = getattr((RUNS.get(run_id) or {}).get("agent"), "provider", "")
                 outcome, error = "failed", QUOTA_EXHAUSTED if provider_quota(exc, provider) is not None else type(exc).__name__

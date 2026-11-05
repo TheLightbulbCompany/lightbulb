@@ -101,3 +101,19 @@ async def test_model_route_codes(async_client, wired):
     ).status_code == 401
     other = {**payload, "agent_id": "stranger"}
     assert (await async_client.post(URL + "/model", json=other, headers=HDR)).status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_model_route_is_404_with_the_switch_off(async_client, wired):
+    wired["rpc"].flags_for.return_value = False
+    payload = {"agent_id": "ceo", "presented_sha256": "b" * 64, "force": True}
+    r = await async_client.post(URL + "/model", json=payload, headers=HDR)
+    assert r.status_code == 404 and r.json()["detail"] == {"code": "not_brokered"}
+    wired["vend"].assert_not_awaited()  # no billing or token reads for a workspace that cannot be brokered
+
+
+@pytest.mark.asyncio
+async def test_force_requires_presented_hash(async_client, wired):
+    r = await async_client.post(URL + "/model", json={"agent_id": "ceo", "force": True}, headers=HDR)
+    assert r.status_code == 400  # the app answers request validation errors with 400
+    wired["vend"].assert_not_awaited()

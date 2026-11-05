@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from core.auth import AuthContext, get_current_user
 from core.repositories import integrations_repo
@@ -32,6 +32,13 @@ class RuntimeCredentialRequest(BaseModel):
 class RuntimeModelRequest(RuntimeCredentialRequest):
     presented_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     force: bool = False
+
+    @model_validator(mode="after")
+    def _force_names_the_token(self) -> RuntimeModelRequest:
+        # Spec 13 §5.2: a forced refresh happens only for the token the VM presents.
+        if self.force and not self.presented_sha256:
+            raise ValueError("force requires presented_sha256")
+        return self
 
 
 async def _authorize_vend(owner_id: str, agent_id: str, request: Request) -> None:
@@ -125,9 +132,12 @@ async def runtime_credentials(
 async def runtime_model(owner_id: str, body: RuntimeModelRequest, request: Request, response: Response) -> dict:
     """Forced refresh for the bridge's F6 delegate: the VM got a 401 on the token it presents.
     Refreshes only if that token is still current; otherwise returns the newer one (N VMs, one
-    refresh). 409 busy (lease held), 410 the grant is dead, 404 not backend-custodied."""
+    refresh). 409 busy (lease held), 410 the grant is dead, 404 not backend-custodied (or the
+    super-agent switch is off for this workspace: no brokered grant can exist)."""
     await _authorize_vend(owner_id, body.agent_id, request)
     response.headers["Cache-Control"] = "no-store"
+    if not await flags_for(owner_id):
+        raise HTTPException(status_code=404, detail={"code": "not_brokered"})
     try:
         vend = await token_custody.codex_vend(owner_id, presented_sha256=body.presented_sha256, force=body.force)
     except access_token.ReconnectRequired:

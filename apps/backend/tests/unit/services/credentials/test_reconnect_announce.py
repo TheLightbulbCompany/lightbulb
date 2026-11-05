@@ -78,3 +78,34 @@ async def test_the_item_is_open_until_the_integration_reconnects(monkeypatch):
 
     get.return_value = {"status": "connected"}
     assert await activity._render_reconnect_rows("org_a", rows, None) == []
+
+
+@pytest.mark.asyncio
+async def test_chatgpt_item_renders_from_the_token_row(monkeypatch):
+    """Review of #4723: the broker files ``openai-codex`` (spec 13 §11 R5), which has no
+    integrations row and no registry provider -- the item is open while the token row says
+    ``reconnect_required`` and disappears once the owner reconnects."""
+    rows = [{"kind": "reconnect", "provider": "openai-codex", "createdAt": "2026-10-01T00:00:00+00:00"}]
+    get = AsyncMock(side_effect=AssertionError("integrations row read for ChatGPT"))
+    monkeypatch.setattr("core.repositories.integrations_repo.get", get)
+    monkeypatch.setattr("core.services.oauth_service.resolve_token_owner", AsyncMock(return_value="user_c"))
+    needs = AsyncMock(return_value=True)
+    monkeypatch.setattr("core.services.oauth_service.token_row_needs_reconnect", needs)
+
+    items = await activity._render_reconnect_rows("org_a", rows, None)
+
+    needs.assert_awaited_once_with("user_c", bound_to="org_a")
+    assert len(items) == 1 and items[0].state == "open" and activity.needs_you(items[0])
+    assert items[0].summary.title == "Reconnect ChatGPT"
+    assert items[0].id == activity.reconnect_item_id("openai-codex")
+
+    needs.return_value = False
+    assert await activity._render_reconnect_rows("org_a", rows, None) == []
+
+
+@pytest.mark.asyncio
+async def test_announce_without_reconcile_files_the_item_only(wired):
+    puts, reconcile = wired
+    await access_token._announce_reconnect("org_a", "openai-codex", reconcile=False)
+    reconcile.assert_not_awaited()
+    assert puts.await_count == 2 and all(c.args[0]["provider"] == "openai-codex" for c in puts.await_args_list)

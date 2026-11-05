@@ -681,14 +681,24 @@ async def _render_reconnect_rows(owner_id: str, rows: list[dict], seen: str | No
                 newest[row["provider"]] = row
     items = []
     for provider, row in newest.items():
-        # consistent: the item is filed right after the flip, and a stale "connected" would hide it
-        integration = await integrations_repo.get(owner_id, provider, consistent=True)
-        if not integration or integration.get("status") != "reconnect_required":
-            continue
-        try:
-            name = registry.get_provider(provider).display_name
-        except KeyError:
-            continue
+        if provider == "openai-codex":
+            # ChatGPT login (spec 13): the grant lives on the oauth-tokens row, not an integrations
+            # row, and the backend broker marks it reconnect_required when OpenAI refuses a refresh.
+            from core.services import oauth_service
+
+            connector = await oauth_service.resolve_token_owner(owner_id=owner_id)
+            if not await oauth_service.token_row_needs_reconnect(connector, bound_to=owner_id):
+                continue
+            name = "ChatGPT"
+        else:
+            # consistent: the item is filed right after the flip, and a stale "connected" would hide it
+            integration = await integrations_repo.get(owner_id, provider, consistent=True)
+            if not integration or integration.get("status") != "reconnect_required":
+                continue
+            try:
+                name = registry.get_provider(provider).display_name
+            except KeyError:
+                continue
         created = _when(row["createdAt"])
         actor = ActivityActor(kind="system", id="", name="Lightbulb")
         items.append(

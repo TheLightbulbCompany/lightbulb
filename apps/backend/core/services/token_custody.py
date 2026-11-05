@@ -71,8 +71,10 @@ def _expires_at_s(row: dict) -> int:
 
 
 def _needs_refresh(row: dict, presented_sha256: str | None, force: bool) -> bool:
+    """A forced refresh counts only with the hash of the CURRENT token (spec 13 §5.2): without
+    one, a bridge bug could rotate the family on every call."""
     current = row["tokens"].get("access_token") or ""
-    if force and (presented_sha256 is None or presented_sha256 == _sha(current)):
+    if force and presented_sha256 is not None and presented_sha256 == _sha(current):
         return True
     expires_at = _expires_at_s(row)
     return bool(expires_at) and expires_at - time.time() < REFRESH_WINDOW_S
@@ -105,8 +107,11 @@ async def _post_refresh(refresh_token: str) -> dict:
     except httpx.HTTPError as exc:
         raise RefreshUnavailable(type(exc).__name__) from exc
     if resp.status_code == 200:
-        body = resp.json()
-        if not body.get("access_token"):
+        try:
+            body = resp.json()
+        except ValueError:
+            raise RefreshUnavailable("bad_json") from None
+        if not isinstance(body, dict) or not body.get("access_token"):
             raise RefreshUnavailable("missing_access_token")
         return body
     code = ""
@@ -115,6 +120,7 @@ async def _post_refresh(refresh_token: str) -> dict:
         code = (err.get("code") or err.get("type") or "") if isinstance(err, dict) else str(err or "")
     except Exception:  # noqa: BLE001
         pass
+    code = str(code)[:200]  # response text is unbounded; it reaches logs and exception messages
     if code in _TERMINAL_CODES or resp.status_code in (401, 403):
         raise ValueError(code or f"http_{resp.status_code}")
     raise RefreshUnavailable(f"http_{resp.status_code}")
@@ -145,8 +151,13 @@ async def codex_vend(owner_id: str, *, presented_sha256: str | None = None, forc
 
     async with owner_lifecycle.owner_lifecycle_guard(owner_id):
         row = await oauth_service.get_token_row(user, consistent=True, bound_to=owner_id)
-        if row is None or row.get("custody") != "backend":
-            return None  # revoked or rolled back while we waited
+        if row is None:
+            # A peer's refresh was refused while we waited: say "reconnect" now, not next call.
+            if await oauth_service.token_row_needs_reconnect(user, bound_to=owner_id):
+                raise ReconnectRequired(PROVIDER_KEY)
+            return None  # revoked while we waited
+        if row.get("custody") != "backend":
+            return None  # rolled back while we waited
         if not _needs_refresh(row, presented_sha256, force):  # a peer refreshed while we waited
             _metric("vend", path="fast")
             return _vend(row["tokens"], row, refreshed=False)
@@ -157,7 +168,9 @@ async def codex_vend(owner_id: str, *, presented_sha256: str | None = None, forc
             _metric("reconnect")
             logger.warning("token_broker refresh refused owner=%s code=%s", owner_id, exc)
             await oauth_service.mark_reconnect_required(user, expected_version=row["version"])
-            await _announce_reconnect(owner_id, PROVIDER_KEY)
+            # No MCP wiring for ChatGPT login: the Needs-you item alone (activity renders it
+            # from the token row, not an integrations row).
+            await _announce_reconnect(owner_id, PROVIDER_KEY, reconcile=False)
             raise ReconnectRequired(PROVIDER_KEY) from exc
         _metric("refresh_ms", (time.monotonic() - started) * 1000, unit="Milliseconds")
         # Merge onto what we hold: a response without refresh_token / id_token / account_id keeps

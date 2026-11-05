@@ -75,8 +75,9 @@ async def _mark_reconnect(owner_id: str, provider_key: str, reason: str = "unspe
         await _announce_reconnect(owner_id, provider_key)
 
 
-async def _announce_reconnect(owner_id: str, provider_key: str) -> None:
-    """Best-effort: the flip already stands, so a failure here costs visibility, never the call."""
+async def _announce_reconnect(owner_id: str, provider_key: str, *, reconcile: bool = True) -> None:
+    """Best-effort: the flip already stands, so a failure here costs visibility, never the call.
+    ``reconcile=False`` for a provider with no MCP wiring (ChatGPT login): the item only."""
     from core.dynamodb import utc_now_iso
     from core.repositories import messaging_repo
     from core.services import website_logins
@@ -85,10 +86,11 @@ async def _announce_reconnect(owner_id: str, provider_key: str) -> None:
     from core.services.live_events import publish_owner_users
     from core.services.messaging import make_live_event
 
-    try:
-        await mcp_server.reconcile_integrations(owner_id)  # the profile build skips non-connected rows
-    except Exception:  # noqa: BLE001
-        logger.warning("reconnect profile reconcile failed owner=%s provider=%s", owner_id, provider_key)
+    if reconcile:
+        try:
+            await mcp_server.reconcile_integrations(owner_id)  # the profile build skips non-connected rows
+        except Exception:  # noqa: BLE001
+            logger.warning("reconnect profile reconcile failed owner=%s provider=%s", owner_id, provider_key)
     try:
         created = utc_now_iso()
         for user_id in await website_logins._humans_to_ask(owner_id, None):

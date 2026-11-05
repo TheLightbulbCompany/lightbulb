@@ -391,6 +391,9 @@ def _mirror_turns(client, owner_id: str, memory_id: str, ns: str, after: str | N
             if when < floor:
                 continue
             newest = max(newest, when)
+            tags = {k: v["stringValue"] for k, v in (ev.get("metadata") or {}).items() if "stringValue" in v}
+            if tags.get("source") == "room":
+                continue  # room ingestion wrote this turn's record itself (room_memory)
             for i, payload in enumerate(ev.get("payload") or []):
                 text = ((payload.get("conversational") or {}).get("content") or {}).get("text")
                 turn = _turn_id(sid, ev["eventId"], i)
@@ -403,7 +406,11 @@ def _mirror_turns(client, owner_id: str, memory_id: str, ns: str, after: str | N
                         "namespaces": [ns],
                         "content": {"text": text},
                         "timestamp": when,
-                        "metadata": _strings(speaker=text.partition(": ")[0] if ": " in text else "", session=sid),
+                        "metadata": _strings(
+                            **dict(list(tags.items())[:18]),  # AgentCore takes at most 20 metadata keys
+                            speaker=text.partition(": ")[0] if ": " in text else "",
+                            session=sid,
+                        ),
                     }
                 )
     for chunk in _chunks(records):

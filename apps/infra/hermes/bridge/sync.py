@@ -835,6 +835,9 @@ BACKEND_OWNED_FILES = (
 )
 
 _REVISIONS: dict[str, str] = {}
+#: F5 (spec 02 §2.7): set when a re-pull wrote a key under ``skills/``; ensure_profile clears
+#: Hermes's in-process skills prompt cache once, so the NEXT session's system prompt lists it.
+_SKILLS_TOUCHED: dict[str, bool] = {}
 
 
 def _read_revision(agent_id: str) -> str | None:
@@ -1016,6 +1019,8 @@ def _pull_changed_objects(agent_id: str) -> bool:
                 mtimes[rel] = _change_stamp(target)
                 if obj.get("ETag"):
                     _ETAGS.setdefault(agent_id, {})[rel] = obj["ETag"]
+                if rel.startswith("skills/"):
+                    _SKILLS_TOUCHED[agent_id] = True
     except Exception:  # noqa: BLE001 -- a listing blip must not abort ensure_profile
         log.warning("ensure_profile: recency re-pull failed for %s", agent_id)
         return False
@@ -1194,6 +1199,19 @@ def ensure_profile(agent_id: str) -> None:
     complete = _download_profile(agent_id)
     if revision is not None and complete:
         _REVISIONS[agent_id] = revision
+    if complete and _SKILLS_TOUCHED.pop(agent_id, False):
+        _clear_skills_cache()
+
+
+def _clear_skills_cache() -> None:
+    """F5: Hermes keys its skills prompt cache by dirs/tools/platform, not the manifest, so a
+    skill pulled into a warm process is invisible to new sessions until this runs. Sessions
+    already built keep their stored prompt. Process-global clear is fine (spec 08 R13)."""
+    try:
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+    except ImportError:
+        return
+    clear_skills_system_prompt_cache()
 
 
 # ---- Task 15b: ChatGPT OAuth — the root auth.json's own save/restore leg -----------------------

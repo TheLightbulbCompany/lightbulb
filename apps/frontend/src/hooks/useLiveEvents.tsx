@@ -43,6 +43,8 @@ export interface LiveEventsContextValue extends RuntimeRpcSource {
   /** Why the node is in its current status, when the desktop said (e.g. a pair refusal). */
   nodeStatusReason: string;
   messaging: ReturnType<typeof createMessagingClient>;
+  /** The workspace's super-agent switch, from the live config already fetched (contracts-v2 §1). */
+  superAgent: boolean;
   claimActiveRoomSubscription(room: ActiveRoomSubscription): () => void;
   /** Subscribe the active room's frames sibling channel (a Mac tab's view-tier frames) while
    * any claim is held. Ref-counted; the returned function releases this claim once. */
@@ -77,6 +79,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
   // No longer a member (403): SWR would keep the last config, and with it the socket and every
   // subscription. Dropping it closes them all.
   const config = configError instanceof ApiError && configError.status === 403 ? undefined : liveConfig;
+  const superAgent = config?.features?.superAgent === true;
   const [activeRoomState, setActiveRoomState] = useState<{
     ownerScope: string | null;
     room: ActiveRoomSubscription | null;
@@ -258,6 +261,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     nodeStatus,
     nodeStatusReason,
     messaging,
+    superAgent,
     claimActiveRoomSubscription,
     claimFrames,
     claimSessionFrames,
@@ -275,6 +279,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     nodeStatus,
     nodeStatusReason,
     messaging,
+    superAgent,
     claimActiveRoomSubscription,
     claimFrames,
     claimSessionFrames,
@@ -296,4 +301,9 @@ export function useLiveEvents(): LiveEventsContextValue {
   const value = useContext(LiveEventsContext);
   if (!value) throw new Error("useLiveEvents must be used within a LiveEventsProvider");
   return value;
+}
+
+/** Super-agent UI switch: false until live config says `features.superAgent: true`, and outside a provider. */
+export function useSuperAgent(): boolean {
+  return useContext(LiveEventsContext)?.superAgent ?? false;
 }

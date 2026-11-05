@@ -15,14 +15,15 @@ vi.mock("@clerk/nextjs", () => ({
 }));
 
 const WORKSPACE_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-const get = vi.fn(async () => ({
+const LIVE_CONFIG = {
   schemaVersion: 1,
   httpEndpoint: "https://events.appsync-api.us-east-1.amazonaws.com/event",
   realtimeEndpoint: "wss://events.appsync-realtime-api.us-east-1.amazonaws.com/event/realtime",
   region: "us-east-1",
   userChannelKey: "11111111-1111-4111-8111-111111111111",
   workspaceId: WORKSPACE_ID,
-}));
+};
+const get = vi.fn<(path?: string) => Promise<Record<string, unknown>>>(async () => ({ ...LIVE_CONFIG }));
 const post = vi.fn(async () => ({}));
 vi.mock("@/lib/api", () => ({
   useApi: () => ({ get, post, put: vi.fn(), patch: vi.fn(), del: vi.fn() }),
@@ -66,7 +67,7 @@ vi.mock("@lightbulb/shared", async (importOriginal) => {
   };
 });
 
-import { LiveEventsProvider, useLiveEvents } from "../useLiveEvents";
+import { LiveEventsProvider, useLiveEvents, useSuperAgent } from "../useLiveEvents";
 
 function render(ui: ReactElement) {
   return renderUI(<SWRConfig value={{ provider: () => new Map() }}>{ui}</SWRConfig>);
@@ -187,6 +188,27 @@ describe("LiveEventsProvider", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "claim shared" }));
     await waitFor(() => expect(shared.roomChannel).toBe("/ws/cccccccc-cccc-4ccc-8ccc-cccccccccccc/rooms/room-c/key-c"));
+  });
+
+  it.each([
+    ["absent", undefined, "off"],
+    ["null", null, "off"],
+    ["false", { superAgent: false }, "off"],
+    ["true", { superAgent: true }, "on"],
+  ])("reads the super-agent switch from the live config it already fetches (features %s)", async (_name, features, shown) => {
+    get.mockImplementationOnce(async () => ({ ...LIVE_CONFIG, ...(features === undefined ? {} : { features }) }));
+    function SwitchProbe() { return <div>switch:{useSuperAgent() ? "on" : "off"}</div>; }
+    render(<LiveEventsProvider><SwitchProbe /></LiveEventsProvider>);
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByText(`switch:${shown}`)).toBeTruthy());
+    // No request of its own: the only call is the live-config fetch the provider already makes.
+    expect(get.mock.calls.map(([path]) => path)).toEqual(["/messaging/live-config"]);
+  });
+
+  it("useSuperAgent is off outside a provider (a component rendered on its own)", () => {
+    function SwitchProbe() { return <div>switch:{useSuperAgent() ? "on" : "off"}</div>; }
+    render(<SwitchProbe />);
+    expect(screen.getByText("switch:off")).toBeTruthy();
   });
 
   it("pushes Tauri auth while AppSync is disconnected and again on native node status", async () => {

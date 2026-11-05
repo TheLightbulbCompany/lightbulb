@@ -40,6 +40,8 @@ export interface LiveEventsContextValue extends RuntimeRpcSource {
   liveChannels: readonly string[];
   liveError: string | null;
   messaging: ReturnType<typeof createMessagingClient>;
+  /** The workspace's super-agent switch, from the live config already fetched (contracts-v2 §1). */
+  superAgent: boolean;
   claimActiveRoomSubscription(room: ActiveRoomSubscription): () => void;
   onChatMessage(
     handler: (
@@ -166,6 +168,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  const superAgent = config?.features?.superAgent === true;
   const userChannel = config ? `/ws/${config.workspaceId}/users/${config.userChannelKey}` : null;
   const roomChannel = config && activeRoom
     ? `/ws/${activeRoom.workspaceId ?? config.workspaceId}/rooms/${activeRoom.roomId}/${activeRoom.deliveryKey}`
@@ -224,6 +227,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
       liveChannels: live.liveChannels,
       liveError: configError ? "Live updates are reconnecting." : live.lastError,
       messaging,
+      superAgent,
       claimActiveRoomSubscription,
       onChatMessage,
       rpc: runtime.rpc,
@@ -239,6 +243,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
       live.connectionRevision,
       configError,
       messaging,
+      superAgent,
       runtime,
       claimActiveRoomSubscription,
       onChatMessage,
@@ -259,4 +264,9 @@ export function useLiveEvents(): LiveEventsContextValue {
     throw new Error("useLiveEvents must be used within a LiveEventsProvider");
   }
   return value;
+}
+
+/** Super-agent UI switch: false until live config says `features.superAgent: true`, and outside a provider. */
+export function useSuperAgent(): boolean {
+  return useContext(LiveEventsContext)?.superAgent ?? false;
 }

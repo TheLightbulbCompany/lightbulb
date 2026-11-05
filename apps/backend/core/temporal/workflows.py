@@ -169,10 +169,17 @@ class TaskWorkflow(TaskQuestionsMixin, AutomationRunMixin, WatchMixin):
 
     async def _on_waiting(self) -> None:
         """The task is about to wait for inputs or actions (idle/waiting)."""
-        await self._q_on_waiting()
-        await self._w_on_waiting()
-        if self._open_qs and not self._woken():  # a watch's give-up opened a Question: Q's wait, no deadline
+        self._w_wake = False  # one-shot: an add/poke/unwatch brought the task back here
+        if not self._watches:
             await self._q_on_waiting()
+        # While watches run, the watch loop waits (checks go on with a Question open) and hands Q's work
+        # (an approved draft to land, a reminder due) back here; Q's own wait takes over once no watch is left.
+        while self._watches and not self._woken() and self._status != "resolved":
+            await self._w_on_waiting()
+            if self._status != "resolved":
+                await self._q_serve()
+        if self._open_qs and not self._woken() and self._status != "resolved":
+            await self._q_on_waiting()  # a give-up or unwatch left a Question open: Q's wait, no deadline
 
     async def _before_attempt(self) -> bool:
         """False ⇒ do not start an attempt now; the workflow waits for the next input or action."""
@@ -348,6 +355,8 @@ class TaskWorkflow(TaskQuestionsMixin, AutomationRunMixin, WatchMixin):
                     break
                 continue
             await self._on_waiting()
+            if self._status == "resolved":  # a watch's `fail` give-up ended the task while it waited
+                break
             try:
                 await workflow.wait_condition(self._woken, timeout=QUIET_AFTER)
             except asyncio.TimeoutError:

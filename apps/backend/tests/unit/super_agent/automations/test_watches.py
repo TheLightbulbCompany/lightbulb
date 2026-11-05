@@ -195,6 +195,40 @@ async def test_give_up_asks(temporal_env):
     assert len([c for c in wf.calls if c[0] == "check_watch"]) <= 3  # checks at 0, 30, 60 min, then the ask
 
 
+async def test_question_work_does_not_wait_behind_a_watch(temporal_env):
+    """An approval asked while a watch runs: its +24 h reminder goes out and, once approved, the draft lands at
+    once (not when the watch ends), while the watch keeps checking."""
+    from core.temporal.task_questions import AnswerOut, AnswerRef, LandResult
+
+    fakes, wf = Fakes(), WatchFakes(["not_met"] * 10)
+    landed: list[str] = []
+
+    @activity.defn(name="record_answer")
+    async def record(ws: str, task_id: str, ref: AnswerRef) -> AnswerOut:
+        return AnswerOut(f"answer:{ref.qid}", ref.option_id, land_idem_key="eff-1")
+
+    @activity.defn(name="apply_effect")
+    async def apply(ws: str, task_id: str, idem: str, by: str) -> LandResult:
+        landed.append(idem)
+        return LandResult("done")
+
+    wf.activities += [record, apply]
+    start = await temporal_env.get_current_time()
+    async with _worker(temporal_env, fakes, wf) as q:
+        h = await _idle_task(temporal_env, q)
+        await _until(lambda: "end_attempt" in fakes.names())
+        await h.execute_update("add_watch", _spec(every=720, give_up_h=72.0, start=start))
+        await _until(lambda: len([c for c in wf.calls if c[0] == "check_watch"]) == 1)
+        assert await h.execute_update("ask", AskRef("ask:a-1", "approval", "approval", True)) == "q-1"
+        await temporal_env.sleep(timedelta(hours=25))
+        await _until(lambda: ("remind_question", "q-1") in wf.calls)
+        assert len([c for c in wf.calls if c[0] == "check_watch"]) >= 2  # the watch kept checking meanwhile
+        await h.execute_update("answer", AnswerRef("q-1", "approve", None, "user_sam", "ca-1"))
+        await _until(lambda: landed == ["eff-1"])  # no clock moved: it landed while the watch still runs
+        await h.execute_update("stop", __import__("core.temporal.types", fromlist=["StopRequest"]).StopRequest("sam"))
+        await h.result()
+
+
 async def test_give_up_fail(temporal_env):
     fakes, wf = Fakes(), WatchFakes(["not_met"] * 10)
     start = await temporal_env.get_current_time()
@@ -203,7 +237,8 @@ async def test_give_up_fail(temporal_env):
         await _until(lambda: "end_attempt" in fakes.names())
         await h.execute_update("add_watch", _spec(every=30, give_up_h=1.0, on_give_up="fail", start=start))
         await h.result()  # the task ends on give-up, so the result lets the clock skip
-    assert fakes.args("transition")[0] == (WS, TID, "resolved", "watch_gave_up")  # failed is not reachable from idle
+    # failed is not reachable from idle; the task ends there, it does not sit 7 days and resolve quiet
+    assert fakes.args("transition") == [(WS, TID, "resolved", "watch_gave_up")]
     assert ("watch_gave_up", "w1") not in wf.calls
 
 
@@ -420,6 +455,14 @@ def test_add_watch_give_up_must_be_aware_and_soon(api):
     r = api.client.post(f"/api/v1/internal/tasks/{WS}/{TID}/watches", json=far, headers={"Authorization": "Bearer t"})
     assert r.status_code == 400 and r.json()["detail"]["code"] == "give_up_too_far"
     assert api.updates == []
+    soon = (datetime.now(timezone(timedelta(hours=2))) + timedelta(hours=3)).isoformat()
+    r = api.client.post(
+        f"/api/v1/internal/tasks/{WS}/{TID}/watches",
+        json=_BODY | {"giveUpAt": soon},
+        headers={"Authorization": "Bearer t"},
+    )
+    assert r.status_code == 202 and r.json()["giveUpAt"].endswith("+00:00")  # one offset: watchUntil's max() holds
+    assert api.updates[0][3].give_up_at == r.json()["giveUpAt"]
 
 
 def test_add_watch_validates(api):

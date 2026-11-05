@@ -265,6 +265,7 @@ async def add_watch(owner_id: str, task_id: str, body: WatchIn, request: Request
         raise _err(400, "invalid_give_up_at", message="giveUpAt must carry a UTC offset")
     if at > datetime.now(timezone.utc) + timedelta(days=MAX_GIVE_UP_DAYS):
         raise _err(400, "give_up_too_far", message=f"a watch gives up within {MAX_GIVE_UP_DAYS} days")
+    give_up_at = at.astimezone(timezone.utc).isoformat()  # one offset, so the string max() of watchUntil is right
     spec = WatchSpec(
         watch_id=watch_id_for(task_id, body.kind, body.target),
         kind=body.kind,

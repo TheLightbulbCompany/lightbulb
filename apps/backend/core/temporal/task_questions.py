@@ -166,12 +166,24 @@ class TaskQuestionsMixin:
                 return
             except TimeoutError:
                 pass
-            now = workflow.now()
-            for qid, at in list(self._q_remind_at.items()):
-                if at <= now:
-                    del self._q_remind_at[qid]
-                    if qid in self._open_qs:
-                        await _act("remind_question", self._ws, self._task_id, qid)
+            await self._q_remind_due()
+
+    def _q_next_remind(self) -> datetime | None:
+        """When the earliest open Question is due its +24 h reminder (None: none is)."""
+        return min((t for q, t in self._q_remind_at.items() if q in self._open_qs), default=None)
+
+    async def _q_remind_due(self) -> None:
+        now = workflow.now()
+        for qid, at in list(self._q_remind_at.items()):
+            if at <= now:
+                del self._q_remind_at[qid]
+                if qid in self._open_qs:
+                    await _act("remind_question", self._ws, self._task_id, qid)
+
+    async def _q_serve(self) -> None:
+        """Q's work without Q's wait (a watch is waiting instead): land approved drafts, send due reminders."""
+        await self._q_land()
+        await self._q_remind_due()
 
     async def _q_land(self) -> None:
         """Landing (contracts-v2 §4, §8): run each approved draft through its backend executor, then Idle. A refusal

@@ -63,6 +63,9 @@ class WatchMixin:
     _wakes: int
     _woken: Any
     _transition: Any
+    _status: str | None
+    _landings: list[tuple[str, str]]  # Lane Q's approved drafts waiting to land
+    _q_next_remind: Any  # Lane Q: when the earliest open Question's reminder is due
     ask: Any  # Lane Q's update: opens and tracks a question on this task
 
     def _w_init(self) -> None:
@@ -104,24 +107,33 @@ class WatchMixin:
         self._w_wake = False
         while self._watches and not self._woken():
             await self._w_sync_until()
+            # Q's work (an approved draft to land, a reminder due) never waits behind a watch: return to it
+            remind = self._q_next_remind()
+            if self._landings or (remind is not None and remind <= workflow.now()):
+                break
             due = min(self._w_due.values())
             if due > workflow.now() and not self._w_poked:
                 try:
                     await workflow.wait_condition(
-                        lambda: self._woken() or bool(self._w_poked) or not self._watches,
-                        timeout=due - workflow.now(),
+                        lambda: self._woken() or bool(self._w_poked) or not self._watches or bool(self._landings),
+                        timeout=min(due, remind or due) - workflow.now(),
                     )
                 except asyncio.TimeoutError:
                     pass
                 if self._woken() or not self._watches:
                     break
                 self._w_wake = False  # an add/poke/remove woke us; handled below
+                remind = self._q_next_remind()
+                if self._landings or (remind is not None and remind <= workflow.now()):
+                    break
             for watch_id, spec in list(self._watches.items()):
                 if watch_id not in self._w_poked and self._w_due[watch_id] > workflow.now():
                     continue
                 self._w_poked.discard(watch_id)
                 if spec.give_up_at and _at(spec.give_up_at) <= workflow.now():
                     await self._w_give_up(spec)
+                    if self._status == "resolved":  # a `fail` give-up ended the task
+                        return
                     continue
                 self._w_checks[watch_id] += 1
                 result = await _act("check_watch", self._ws, self._task_id, spec, result_type=str, **_CHECK)
@@ -169,7 +181,8 @@ async def check_watch(ws: str, task_id: str, spec: WatchSpec) -> str:
             # The SSRF-safe fetch the link previews use: public hosts only, pinned to the resolved address.
             async with httpx.AsyncClient(timeout=10.0, follow_redirects=False, trust_env=False) as http:
                 request = await link_preview.pinned_request(http, "GET", str(spec.target.get("url") or ""))
-                resp = await http.send(request)
+                resp = await http.send(request, stream=True)  # the status is all we need: never read the body
+                await resp.aclose()
             return "met" if 200 <= resp.status_code < 300 else "not_met"
         return await _pr_checks(ws, spec.target)
     except link_preview.Refused:

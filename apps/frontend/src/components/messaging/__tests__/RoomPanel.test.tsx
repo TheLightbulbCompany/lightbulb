@@ -53,7 +53,7 @@ it("confirms removal of a non-owner with Cancel focused and restores focus", asy
   const user = userEvent.setup();
   const onRemoveMember = vi.fn().mockResolvedValue(undefined);
   render(<RoomPanel {...props} room={{ ...props.room!, kind: "channel", name: "Launch" }} onRemoveMember={onRemoveMember} />);
-  await user.click(screen.getByRole("button", { name: /^Details/ }));
+  await user.click(screen.getByRole("button", { name: /^About/ }));
   expect(screen.queryByRole("button", { name: "Remove Owner" })).not.toBeInTheDocument();
   const trigger = screen.getByRole("button", { name: "Remove Friday" });
   await user.click(trigger);
@@ -71,7 +71,7 @@ it("confirms removal of a non-owner with Cancel focused and restores focus", asy
 it.each(["dm", "group-dm", "channel"] as const)("does not expose management without room admin permission (%s)", async (kind) => {
   render(<RoomPanel {...props} room={{ ...props.room!, kind }}
     participants={[{ ...owner, role: "member" }, friday]} onRenameRoom={vi.fn()} onRemoveMember={vi.fn()} />);
-  await userEvent.click(screen.getByRole("button", { name: /^Details/ }));
+  await userEvent.click(screen.getByRole("button", { name: /^About/ }));
   expect(screen.queryByRole("button", { name: /Rename (channel|group chat)/ })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Remove Friday" })).not.toBeInTheDocument();
 });
@@ -145,8 +145,8 @@ it("names a DM for its counterpart and uses canonical author and member activity
   const article = screen.getByRole("article", { name: "Message from Friday" });
   expect(within(article).getByRole("img", { name: "Friday" }).parentElement).toHaveAttribute("data-agent-state", "running");
   expect(within(article).getByText("Agent")).toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", { name: "View members, 2 in this conversation" }));
-  const members = screen.getByRole("complementary", { name: "Room details" });
+  fireEvent.click(screen.getByRole("button", { name: "People, 2 in this conversation" }));
+  const members = screen.getByRole("complementary", { name: "About" });
   expect(within(members).getByRole("img", { name: "Friday" }).parentElement).toHaveAttribute("data-agent-state", "running");
   expect(within(members).queryByRole("status", { name: "Work status" })).not.toBeInTheDocument();
 });
@@ -257,26 +257,26 @@ it("opens and closes the real room context on a narrow viewport", async () => {
   narrowViewport();
   render(<RoomPanel {...props} />);
   const history = screen.getByRole("region", { name: "Messages" });
-  await userEvent.click(screen.getByRole("button", { name: /^Details/ }));
+  await userEvent.click(screen.getByRole("button", { name: /^About/ }));
   expect(history).not.toBeVisible();
-  expect(screen.getByRole("complementary", { name: "Room details" })).toBeVisible();
-  expect(screen.getByRole("heading", { name: "Room details" })).toHaveFocus();
+  expect(screen.getByRole("complementary", { name: "About" })).toBeVisible();
+  expect(screen.getByRole("heading", { name: "About" })).toHaveFocus();
   await userEvent.click(screen.getByRole("button", { name: "Back to conversation" }));
   expect(history).toBeVisible();
-  expect(screen.getByRole("button", { name: /^Details/ })).toHaveFocus();
+  expect(screen.getByRole("button", { name: /^About/ })).toHaveFocus();
 });
 
 it("closes the room details panel and restores its trigger on Escape", async () => {
   narrowViewport();
   render(<RoomPanel {...props} />);
   const history = screen.getByRole("region", { name: "Messages" });
-  await userEvent.click(screen.getByRole("button", { name: /^Details/ }));
-  const details = screen.getByRole("complementary", { name: "Room details" });
+  await userEvent.click(screen.getByRole("button", { name: /^About/ }));
+  const details = screen.getByRole("complementary", { name: "About" });
   expect(history).not.toBeVisible();
   fireEvent.keyDown(details, { key: "Escape" });
-  expect(screen.queryByRole("complementary", { name: "Room details" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("complementary", { name: "About" })).not.toBeInTheDocument();
   expect(history).toBeVisible();
-  expect(screen.getByRole("button", { name: /^Details/ })).toHaveFocus();
+  expect(screen.getByRole("button", { name: /^About/ })).toHaveFocus();
 });
 
 it("returns focus to the Details trigger, not <body>, when Escape closes the room details panel at wide width", async () => {
@@ -285,27 +285,13 @@ it("returns focus to the Details trigger, not <body>, when Escape closes the roo
   // effect used to gate its close branch on `isNarrow` and dropped focus to
   // <body> here.
   render(<RoomPanel {...props} />);
-  await userEvent.click(screen.getByRole("button", { name: /^Details/ }));
-  const details = screen.getByRole("complementary", { name: "Room details" });
+  await userEvent.click(screen.getByRole("button", { name: /^About/ }));
+  const details = screen.getByRole("complementary", { name: "About" });
   fireEvent.keyDown(details, { key: "Escape" });
-  expect(screen.queryByRole("complementary", { name: "Room details" })).not.toBeInTheDocument();
-  const trigger = screen.getByRole("button", { name: /^Details/ });
+  expect(screen.queryByRole("complementary", { name: "About" })).not.toBeInTheDocument();
+  const trigger = screen.getByRole("button", { name: /^About/ });
   expect(document.activeElement).toBe(trigger);
   expect(trigger).toHaveFocus();
-});
-
-it("leaves focus on the Conversation tab, not the Details trigger, when it closes an open details panel", async () => {
-  // Same [contextCollapsed]-effect race as the Escape/Jump/search paths --
-  // this tab also closes the room-details panel, so clicking it must not get
-  // yanked back onto the Details trigger.
-  render(<RoomPanel {...props} />);
-  await userEvent.click(screen.getByRole("button", { name: /^Details/ }));
-  expect(screen.getByRole("complementary", { name: "Room details" })).toBeInTheDocument();
-  const conversationTab = screen.getByRole("button", { name: "Conversation" });
-  await userEvent.click(conversationTab);
-  expect(screen.queryByRole("complementary", { name: "Room details" })).not.toBeInTheDocument();
-  expect(document.activeElement).toBe(conversationTab);
-  expect(conversationTab).toHaveFocus();
 });
 
 it.each(["system", "human"] as const)("keeps unmatched %s authors neutral", (kind) => {
@@ -319,11 +305,11 @@ it("shows canonical members and only running work in collapsible room details", 
   const user = userEvent.setup();
   const run: RoomRunView = { roomId: "room", agentId: "friday", runId: "active", state: "running", text: "", thinking: "", tools: [] };
   const { rerender } = render(<RoomPanel {...props} runs={[run, ...(["completed", "failed", "aborted"] as const).map((state) => ({ ...run, runId: state, state }))]} />);
-  expect(screen.queryByRole("complementary", { name: "Room details" })).not.toBeInTheDocument();
-  const toggle = screen.getByRole("button", { name: /^Details/ });
+  expect(screen.queryByRole("complementary", { name: "About" })).not.toBeInTheDocument();
+  const toggle = screen.getByRole("button", { name: /^About/ });
   expect(toggle).toHaveAttribute("aria-expanded", "false");
   await user.click(toggle);
-  const details = screen.getByRole("complementary", { name: "Room details" });
+  const details = screen.getByRole("complementary", { name: "About" });
   expect(within(details).getByText("Friday")).toBeInTheDocument();
   expect(within(details).getByText("Owner")).toBeInTheDocument();
   expect(within(details).getByText("Agent")).toBeInTheDocument();
@@ -331,13 +317,13 @@ it("shows canonical members and only running work in collapsible room details", 
   expect(within(details).getAllByText("Friday is working")).toHaveLength(1);
   expect(toggle).toHaveAttribute("aria-expanded", "true");
   await user.click(toggle);
-  expect(screen.queryByRole("complementary", { name: "Room details" })).not.toBeInTheDocument();
-  expect(screen.getByRole("button", { name: /^Details/ })).toHaveFocus();
+  expect(screen.queryByRole("complementary", { name: "About" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /^About/ })).toHaveFocus();
   expect(toggle).toHaveAttribute("aria-expanded", "false");
   await user.click(toggle);
   expect(toggle).toHaveFocus();
   rerender(<RoomPanel {...props} runs={[{ ...run, state: "completed" }]} />);
-  expect(within(screen.getByRole("complementary", { name: "Room details" })).getByText("No active runs.")).toBeInTheDocument();
+  expect(within(screen.getByRole("complementary", { name: "About" })).getByText("No active runs.")).toBeInTheDocument();
 });
 
 it("shows the newest reply's relative time beside the reply count", () => {
@@ -375,7 +361,7 @@ it("focuses a thread and restores its trigger and collapsed preference on Escape
   expect(onSelectThread).toHaveBeenLastCalledWith(null);
   expect(reply).toHaveFocus();
   expect(screen.queryByRole("complementary")).not.toBeInTheDocument();
-  expect(screen.getByRole("button", { name: /^Details/ })).toHaveAttribute("aria-expanded", "false");
+  expect(screen.getByRole("button", { name: /^About/ })).toHaveAttribute("aria-expanded", "false");
 });
 
 it("keeps a thread open when Escape dismisses its delete dialog or deletion is pending", async () => {
@@ -517,8 +503,8 @@ it("lets wide room details change agent response without giving humans a control
   const user = userEvent.setup();
   const onListenModeChange = vi.fn();
   render(<RoomPanel {...props} onListenModeChange={onListenModeChange} />);
-  await user.click(screen.getByRole("button", { name: /^Details/ }));
-  const details = within(screen.getByRole("complementary", { name: "Room details" }));
+  await user.click(screen.getByRole("button", { name: /^About/ }));
+  const details = within(screen.getByRole("complementary", { name: "About" }));
   const mode = details.getByRole("combobox", { name: "Response for Friday" });
   expect(mode).toHaveValue("mentions");
   expect(within(mode).getAllByRole("option").map((option) => [option.getAttribute("value"), option.textContent])).toEqual([
@@ -535,8 +521,8 @@ it("lets an ordinary member change an agent's response, and nothing else", async
   const onListenModeChange = vi.fn();
   render(<RoomPanel {...props} participants={[{ ...owner, role: "member" }, friday]}
     onRemoveMember={vi.fn()} onListenModeChange={onListenModeChange} />);
-  await user.click(screen.getByRole("button", { name: /^Details/ }));
-  const details = within(screen.getByRole("complementary", { name: "Room details" }));
+  await user.click(screen.getByRole("button", { name: /^About/ }));
+  const details = within(screen.getByRole("complementary", { name: "About" }));
   expect(details.queryByRole("button", { name: "Remove Friday" })).not.toBeInTheDocument();
   await user.selectOptions(details.getByRole("combobox", { name: "Response for Friday" }), "active");
   expect(onListenModeChange).toHaveBeenCalledWith("friday", "active");
@@ -545,8 +531,8 @@ it("lets an ordinary member change an agent's response, and nothing else", async
 it("shows an agent response as read-only text to ordinary members", async () => {
   const user = userEvent.setup();
   render(<RoomPanel {...props} participants={[{ ...owner, role: "member" }, friday]} />);
-  await user.click(screen.getByRole("button", { name: /^Details/ }));
-  const details = within(screen.getByRole("complementary", { name: "Room details" }));
+  await user.click(screen.getByRole("button", { name: /^About/ }));
+  const details = within(screen.getByRole("complementary", { name: "About" }));
   expect(details.getByText("Response: Mentions")).toBeInTheDocument();
   expect(details.queryByRole("combobox", { name: "Response for Friday" })).not.toBeInTheDocument();
 });
@@ -562,7 +548,7 @@ it("adds only eligible non-members to an existing channel", async () => {
     ]}
     onAddMember={onAddMember} />);
 
-  await user.click(screen.getByRole("button", { name: /^Details/ }));
+  await user.click(screen.getByRole("button", { name: /^About/ }));
   await user.click(screen.getByRole("button", { name: "Add members" }));
   expect(screen.getByRole("checkbox", { name: "Colleague" })).toBeInTheDocument();
   expect(screen.getByRole("checkbox", { name: "Atlas" })).toBeInTheDocument();
@@ -579,7 +565,7 @@ it("offers the workspace join link for someone who is not a member yet", async (
   const onCopyJoinLink = vi.fn(async () => undefined);
   render(<RoomPanel {...props} room={{ ...props.room!, kind: "channel", name: "Launch" }} onCopyJoinLink={onCopyJoinLink} />);
 
-  await user.click(screen.getByRole("button", { name: /^Details/ }));
+  await user.click(screen.getByRole("button", { name: /^About/ }));
   await user.click(screen.getByRole("button", { name: "Copy the workspace join link" }));
   expect(onCopyJoinLink).toHaveBeenCalledTimes(1);
   expect(await screen.findByText("Copied. Anyone who opens it and signs in joins this workspace.")).toBeInTheDocument();
@@ -590,7 +576,7 @@ it("sends an admin to Regenerate when the link cannot be shown, instead of rotat
   const onCopyJoinLink = vi.fn(async () => { throw new JoinLinkCopyError("unavailable"); });
   render(<RoomPanel {...props} room={{ ...props.room!, kind: "channel", name: "Launch" }} onCopyJoinLink={onCopyJoinLink} />);
 
-  await user.click(screen.getByRole("button", { name: /^Details/ }));
+  await user.click(screen.getByRole("button", { name: /^About/ }));
   await user.click(screen.getByRole("button", { name: "Copy the workspace join link" }));
   expect(await screen.findByText(/can regenerate it under Settings → Members/)).toBeInTheDocument();
 });
@@ -601,7 +587,7 @@ it("takes one copy at a time so a double click cannot mint two links", async () 
   const onCopyJoinLink = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
   render(<RoomPanel {...props} room={{ ...props.room!, kind: "channel", name: "Launch" }} onCopyJoinLink={onCopyJoinLink} />);
 
-  await user.click(screen.getByRole("button", { name: /^Details/ }));
+  await user.click(screen.getByRole("button", { name: /^About/ }));
   const button = screen.getByRole("button", { name: "Copy the workspace join link" });
   await user.click(button);
   expect(button).toBeDisabled();
@@ -617,7 +603,7 @@ it("tells a non-admin where the join link lives instead of a bare error", async 
   const onCopyJoinLink = vi.fn(async () => { throw new ApiError(403, { detail: "Only a workspace admin" }); });
   render(<RoomPanel {...props} room={{ ...props.room!, kind: "channel", name: "Launch" }} onCopyJoinLink={onCopyJoinLink} />);
 
-  await user.click(screen.getByRole("button", { name: /^Details/ }));
+  await user.click(screen.getByRole("button", { name: /^About/ }));
   await user.click(screen.getByRole("button", { name: "Copy the workspace join link" }));
   expect(await screen.findByText("This workspace's join link is turned off. Ask a workspace admin for a new one.")).toBeInTheDocument();
 });
@@ -651,7 +637,7 @@ it("shows member-add progress and a useful retryable error", async () => {
     room={{ ...props.room!, kind: "channel", name: "Launch" }}
     addMemberCandidates={[{ kind: "human", id: "colleague", displayName: "Colleague", mentionHandle: null }]}
     onAddMember={onAddMember} />);
-  await user.click(screen.getByRole("button", { name: /^Details/ }));
+  await user.click(screen.getByRole("button", { name: /^About/ }));
   await user.click(screen.getByRole("button", { name: "Add members" }));
   await user.click(screen.getByRole("checkbox", { name: "Colleague" }));
   await user.click(screen.getByRole("button", { name: "Add selected" }));
@@ -669,7 +655,7 @@ it("resets member selection and picker state when the room changes", async () =>
   const candidates = [{ kind: "agent" as const, id: "atlas", displayName: "Atlas", mentionHandle: null }];
   const view = render(<RoomPanel {...props} messages={[]} roomId="channel-a" room={{ ...props.room!, roomId: "channel-a", kind: "channel", name: "A" }}
     addMemberCandidates={candidates} onAddMember={vi.fn()} />);
-  await user.click(screen.getByRole("button", { name: /^Details/ }));
+  await user.click(screen.getByRole("button", { name: /^About/ }));
   await user.click(screen.getByRole("button", { name: "Add members" }));
   await user.click(screen.getByRole("checkbox", { name: "Atlas" }));
   expect(screen.getByRole("checkbox", { name: "Atlas" })).toBeChecked();
@@ -678,7 +664,7 @@ it("resets member selection and picker state when the room changes", async () =>
     addMemberCandidates={candidates} onAddMember={vi.fn()} />);
 
   expect(screen.queryByRole("button", { name: "Add selected" })).not.toBeInTheDocument();
-  await user.click(screen.getByRole("button", { name: /^Details/ }));
+  await user.click(screen.getByRole("button", { name: /^About/ }));
   await user.click(screen.getByRole("button", { name: "Add members" }));
   expect(screen.getByRole("checkbox", { name: "Atlas" })).not.toBeChecked();
 });
@@ -711,7 +697,8 @@ it("replaces the narrow conversation only while a selected thread is open", asyn
   render(<RoomPanel {...props} onLinkToWork={onLinkToWork} />);
   const history = screen.getByRole("region", { name: "Messages" });
   expect(history).toBeVisible();
-  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  await user.click(screen.getByRole("button", { name: "Conversation options" }));
+  await user.click(await screen.findByRole("menuitem", { name: "Tasks" }));
   expect(history).not.toBeVisible();
   await user.click(screen.getByRole("button", { name: /All tasks in Tasks/ }));
   expect(onLinkToWork).toHaveBeenCalledOnce();
@@ -952,15 +939,18 @@ it("opens exactly one edit form when the ArrowUp target is also the open thread'
   expect(screen.getAllByRole("textbox", { name: "Edit message" })).toHaveLength(1);
 });
 
-it("labels the details view switch and shows the pinned count once, on the header's pin button", () => {
+it("keeps one labelled About button in the header and shows the pinned count once, on the header's pin button", () => {
   render(<RoomPanel {...props} room={{ ...props.room!, topic: null, starred: false, muted: false, sectionId: null }}
     pinnedMessageIds={["m-1", "m-2"]} />);
-  const views = screen.getByRole("navigation", { name: "Conversation views" });
-  // The view switches sit in the header row, not in a bar of their own.
-  expect(views.closest(".room-header")).not.toBeNull();
-  expect(within(views).getByRole("button", { name: "Details" })).not.toHaveTextContent("2");
+  const about = screen.getByRole("button", { name: "About" });
+  expect(about.closest(".room-header")).not.toBeNull();
+  expect(about).toHaveTextContent("About");
+  expect(about).not.toHaveTextContent("2");
   expect(screen.getByRole("button", { name: "2 pinned messages" })).toHaveTextContent("2");
-  expect(screen.queryByRole("button", { name: "Context" })).not.toBeInTheDocument();
+  // The old icon-only view switches are gone from the header.
+  for (const name of ["Conversation", "Channel", "Details", "Ideas", "Browser", "Files", "Threads"]) {
+    expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
+  }
 });
 
 it("pins and unpins a message from its menu", async () => {
@@ -1038,7 +1028,7 @@ it("opens the details panel on the pins tab from the header pinned count", async
   const onSetPin = vi.fn().mockResolvedValue(undefined);
   render(<RoomPanel {...props} messages={[message]} pinnedMessageIds={[message.messageId]} onSetPin={onSetPin} />);
   await userEvent.click(screen.getByRole("button", { name: "1 pinned message" }));
-  const details = within(screen.getByRole("complementary", { name: "Room details" }));
+  const details = within(screen.getByRole("complementary", { name: "About" }));
   expect(details.getByRole("tab", { name: "Pins", selected: true })).toBeInTheDocument();
   expect(within(details.getByRole("list", { name: "Pinned messages" })).getByText("Hello")).toBeInTheDocument();
   await userEvent.click(details.getByRole("button", { name: "Unpin this message" }));
@@ -1052,15 +1042,15 @@ it("jumps from a pinned message back to it in the conversation", async () => {
   render(<RoomPanel {...props} messages={[message]} pinnedMessageIds={[message.messageId]} />);
   await userEvent.click(screen.getByRole("button", { name: "1 pinned message" }));
   await userEvent.click(screen.getByRole("button", { name: /^Jump to message from Friday at / }));
-  expect(screen.queryByRole("complementary", { name: "Room details" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("complementary", { name: "About" })).not.toBeInTheDocument();
   expect(screen.getByRole("article", { name: "Message from Friday" }).closest("[data-message-id]")).toHaveFocus();
 });
 
 it("offers Listening with no plan lock", async () => {
   const user = userEvent.setup();
   render(<RoomPanel {...props} onListenModeChange={vi.fn()} />);
-  await user.click(screen.getByRole("button", { name: /^Details/ }));
-  const details = within(screen.getByRole("complementary", { name: "Room details" }));
+  await user.click(screen.getByRole("button", { name: /^About/ }));
+  const details = within(screen.getByRole("complementary", { name: "About" }));
   expect(within(details.getByRole("combobox", { name: "Response for Friday" })).getByRole("option", { name: "Listening" })).toBeEnabled();
   expect(details.queryByRole("link", { name: "See plans" })).not.toBeInTheDocument();
 });

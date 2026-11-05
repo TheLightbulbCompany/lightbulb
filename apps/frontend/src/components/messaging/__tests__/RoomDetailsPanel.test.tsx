@@ -74,11 +74,11 @@ it("shows the topic, created date and member count under About", () => {
   expect(screen.getByText("0 members")).toBeInTheDocument();
 });
 
-it("exposes the five tabs as a tablist and moves between them with the arrow keys", async () => {
+it("exposes the five room tabs (no Requests tab without threads) as a tablist and moves between them with the arrow keys", async () => {
   const onSelectTab = vi.fn();
   render(<RoomDetailsPanel {...props} tab="members" onSelectTab={onSelectTab} />);
   const tabs = screen.getByRole("tablist", { name: "Room details" });
-  expect(within(tabs).getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["Members", "Pins", "Files", "Links", "About"]);
+  expect(within(tabs).getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["Members", "Pins", "Files", "Links", "Details"]);
   const members = within(tabs).getByRole("tab", { name: "Members" });
   expect(members).toHaveAttribute("aria-selected", "true");
   expect(screen.getByRole("tabpanel", { name: "Members" })).toHaveTextContent("Members go here");
@@ -163,4 +163,11 @@ it("reports a failed unpin and leaves the row usable", async () => {
   await userEvent.click(screen.getByRole("button", { name: "Unpin this message" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("A room can pin at most 50 messages.");
   expect(screen.getByRole("button", { name: "Unpin this message" })).toBeEnabled();
+});
+
+it("leads with a Requests tab when the room's requests are given, and shows them", () => {
+  render(<RoomDetailsPanel {...props} tab="threads" threads={<p>Room requests</p>} />);
+  const tabs = screen.getByRole("tablist", { name: "Room details" });
+  expect(within(tabs).getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["Requests", "Members", "Pins", "Files", "Links", "Details"]);
+  expect(screen.getByRole("tabpanel", { name: "Requests" })).toHaveTextContent("Room requests");
 });

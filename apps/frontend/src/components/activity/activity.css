@@ -197,3 +197,19 @@
 .feed-post__why-toggle:hover, .feed-post__why-toggle[aria-expanded="true"] { color: var(--fg); }
 .feed-post__why { padding-top: 4px; font-size: var(--text-caption); color: var(--fg-soft); }
 .feed-post__why span { display: block; font-weight: 600; color: var(--fg); }
+
+/* --- Home: threads above For you and the feed; the page scrolls as one ------ */
+
+.activity-page--home { overflow-y: auto; }
+.activity-page--home .activity-page__columns { flex: none; }
+.activity-page--home .activity-page__for-you,
+.activity-page--home .activity-page__feed { overflow: visible; }
+.home-work {
+  display: grid;
+  gap: 16px;
+  width: 100%;
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 16px 16px 16px;
+  border-bottom: 1px solid var(--plane-edge);
+}

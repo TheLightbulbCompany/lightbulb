@@ -71,6 +71,15 @@ vi.mock("@/components/teams/org-chart/OrgChart", () => ({
   },
 }));
 
+// Team › Message: Lightbulb's DM, or (switch on) a specialist asked through Lightbulb's DM with its @handle.
+const live = vi.hoisted(() => ({ superAgent: false }));
+vi.mock("@/hooks/useLiveEvents", () => ({ useSuperAgent: () => live.superAgent }));
+vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({
+  useMessagingWorkspaceOptional: () => ({ directoryProps: { ceoAgentId: "ceo", participants: [{ kind: "agent", id: "fin", mentionHandle: "finance" }] } }),
+}));
+const nav = vi.hoisted(() => ({ openChatPanel: vi.fn(), openAgentDmWithDraft: vi.fn() }));
+vi.mock("@/components/workspace/workspaceController", () => nav);
+
 import { AgentsListPanel } from "@/components/teams/panels/AgentsListPanel";
 
 /** Click through the chooser step ("New agent" → "Build your own"). */
@@ -83,7 +92,7 @@ function openBuildForm() {
 describe("AgentsListPanel", () => {
   it("renders empty state when no agents", () => {
     render(<AgentsListPanel />);
-    expect(screen.getByText("Agents")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Team" })).toBeInTheDocument();
     expect(screen.getByText("No agents yet.")).toBeInTheDocument();
   });
 
@@ -392,5 +401,27 @@ describe("AgentsListPanel — roster / chart views", () => {
     });
     render(<AgentsListPanel />);
     expect(screen.getByRole("alert")).toHaveTextContent("We couldn\u2019t load your agents.");
+  });
+});
+
+describe("Team › Message", () => {
+  const agents = { data: { agents: [{ id: "ceo", name: "Lightbulb", role: "ceo" }, { id: "fin", name: "Finance", role: "general" }] }, isLoading: false, error: null, mutate: vi.fn() };
+  beforeEach(() => { nav.openChatPanel.mockClear(); nav.openAgentDmWithDraft.mockClear(); mockRead.mockReturnValue(agents); });
+  afterEach(() => { live.superAgent = false; mockRead.mockReset(); });
+
+  it("switch on: a specialist is asked in Lightbulb's DM (its DM is not a Router room); Lightbulb opens its own DM", () => {
+    live.superAgent = true;
+    render(<AgentsListPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "Ask Finance through Lightbulb" }));
+    expect(nav.openAgentDmWithDraft).toHaveBeenCalledWith("ceo", "@finance ");
+    fireEvent.click(screen.getByRole("button", { name: "Message Lightbulb" }));
+    expect(nav.openChatPanel).toHaveBeenCalledWith("ceo");
+  });
+
+  it("switch off: every agent's Message opens its DM", () => {
+    render(<AgentsListPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "Message Finance" }));
+    expect(nav.openChatPanel).toHaveBeenCalledWith("fin");
+    expect(nav.openAgentDmWithDraft).not.toHaveBeenCalled();
   });
 });

@@ -32,8 +32,9 @@ interface RoomHeaderProps {
   actionable: boolean;
   pinnedCount: number; // shown beside the facepile; the affordance opens the Details panel's Pins tab
   search: ReactNode; // the shipped <RoomMessageSearch />
-  views?: ReactNode; // RoomPanel's conversation / details / tasks switch
-  onOpenDetails: (tab?: "members" | "pins" | "files" | "links" | "about") => void;
+  views?: ReactNode; // RoomPanel's About button
+  menuItems?: ReactNode; // RoomPanel's room tools (Ideas, Browser, Agent files), in the ··· menu
+  onOpenDetails: (tab?: "threads" | "members" | "pins" | "files" | "links" | "about") => void;
   onAddPeople?: () => void;
   /** Direct header action for channel owners/admins; overflow behavior remains broader. */
   onQuickAddPeople?: () => void;
@@ -63,6 +64,7 @@ export function RoomHeader({
   pinnedCount,
   search,
   views,
+  menuItems,
   onOpenDetails,
   onAddPeople,
   onQuickAddPeople,
@@ -162,14 +164,14 @@ export function RoomHeader({
       {pinnedCount > 0 && <Button type="button" variant="ghost" size="sm"
         aria-label={`${pinnedCount} pinned ${pinnedCount === 1 ? "message" : "messages"}`} onClick={() => onOpenDetails("pins")}>
         <Pin size={14} aria-hidden="true" />{pinnedCount}</Button>}
-      <Button type="button" variant="ghost" className="room-facepile" aria-label={`View members, ${participantCount} in this conversation`}
+      <Button type="button" variant="ghost" className="room-facepile" aria-label={`People, ${participantCount} in this conversation`} title="People"
         onClick={() => onOpenDetails("members")}>
         {faces.map((participant) => <ParticipantAvatar key={`${participant.kind}:${participant.id}`} participant={participant} size="sm" showPresence={false} />)}
         {overflow > 0 && <span className="room-facepile-more text-ui text-muted-foreground">+{overflow}</span>}
       </Button>
       {views}
       <DropdownMenu>
-        <DropdownMenuTrigger asChild><Button ref={optionsTrigger} type="button" variant="ghost" size="icon" aria-label="Conversation options"><MoreHorizontal aria-hidden="true" /></Button></DropdownMenuTrigger>
+        <DropdownMenuTrigger asChild><Button ref={optionsTrigger} type="button" variant="ghost" size="icon" aria-label="Conversation options" title="More"><MoreHorizontal aria-hidden="true" /></Button></DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           {onSetPrefs && <DropdownMenuItem disabled={!actionable || pending}
             onSelect={() => void run(async () => { await onSetPrefs({ starred: !room?.starred }); }, "The star could not be saved.")}>
@@ -180,7 +182,8 @@ export function RoomHeader({
           <DropdownMenuItem onSelect={() => void copyText(roomPermalink(room?.roomId ?? ""))}><Link aria-hidden="true" />Copy link</DropdownMenuItem>
           {onRenameRoom && canEditRoom && !room?.shared && <DropdownMenuItem onSelect={() => { reset(); setNameDraft(room?.name ?? ""); setRenaming(true); }}><Pencil aria-hidden="true" />Rename</DropdownMenuItem>}
           {onAddPeople && <DropdownMenuItem onSelect={onAddPeople}><Users aria-hidden="true" />Add people</DropdownMenuItem>}
-          <DropdownMenuItem onSelect={() => onOpenDetails()}>Details</DropdownMenuItem>
+          {menuItems}
+          <DropdownMenuItem onSelect={() => onOpenDetails("about")}>Details</DropdownMenuItem>
           {canArchive && (room?.archivedAt
             ? <DropdownMenuItem onSelect={() => void run(async () => { await onSetArchived!(false); }, `The ${noun} could not be unarchived.`)}><ArchiveRestore aria-hidden="true" />Unarchive {noun}</DropdownMenuItem>
             : <DropdownMenuItem onSelect={() => { reset(); setArchiving(true); }}><Archive aria-hidden="true" />Archive {noun}</DropdownMenuItem>)}

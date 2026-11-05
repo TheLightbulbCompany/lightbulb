@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { InlineTeamsNavProvider } from "@/components/chat/InlineTeamsNav";
 import type { Issue } from "@/components/teams/shared/types";
@@ -129,22 +130,26 @@ describe("RoomPanel", () => {
 
   describe("Tasks tab", () => {
     const withTasks = { ...props, onLinkToWork: vi.fn() };
-    const openTab = () => fireEvent.click(screen.getByRole("button", { name: /^Tasks/ }));
+    // The off-switch Tasks view sits in the header's ··· menu, its count in the item's name.
+    const openMenu = () => userEvent.click(screen.getByRole("button", { name: "Conversation options" }));
+    const openTab = async () => { await openMenu(); await userEvent.click(await screen.findByRole("menuitem", { name: /^Tasks/ })); };
 
-    it("counts tasks named by agent and human messages, ignoring unknown ids", () => {
+    it("counts tasks named by agent and human messages, ignoring unknown ids", async () => {
       render(<RoomPanel {...withTasks} messages={[base, { ...human, text: "What about ISO-15 and ISO-99?" }]} />);
-      expect(screen.getByRole("button", { name: "Tasks · 2" })).toBeInTheDocument();
-      openTab();
+      await openMenu();
+      expect(await screen.findByRole("menuitem", { name: "Tasks · 2" })).toBeInTheDocument();
+      await userEvent.keyboard("{Escape}");
+      await openTab();
       const panel = screen.getByRole("complementary", { name: "Tasks" });
       expect(within(panel).getByRole("link", { name: /Task 14/ })).toBeInTheDocument();
       expect(within(panel).getByRole("link", { name: /Task 15/ })).toBeInTheDocument();
       expect(within(panel).queryByText("ISO-99")).not.toBeInTheDocument();
     });
 
-    it("groups by what each task needs, with the needs-you action", () => {
+    it("groups by what each task needs, with the needs-you action", async () => {
       teams.issues = [issue(1, { status: "in_review" }), issue(2, { status: "in_progress" }), issue(3, { status: "backlog" }), issue(4, { status: "done" })];
       render(<RoomPanel {...withTasks} messages={[{ ...base, text: "ISO-4 ISO-3 ISO-2 ISO-1" }]} />);
-      openTab();
+      await openTab();
       const panel = screen.getByRole("complementary", { name: "Tasks" });
       expect(within(panel).getAllByRole("heading", { level: 4 }).map((h) => h.textContent)).toEqual(["Needs you", "In progress", "Up next", "Done"]);
       for (const [group, n] of [["Needs you", 1], ["In progress", 2], ["Up next", 3], ["Done", 4]] as const) {
@@ -153,19 +158,21 @@ describe("RoomPanel", () => {
       expect(within(panel).getAllByRole("button", { name: /^(Review|Unblock) / }).map((b) => b.textContent)).toEqual(["Review"]);
     });
 
-    it("shows the empty state without a count when nothing matches or Teams is unavailable", () => {
+    it("shows the empty state without a count when nothing matches or Teams is unavailable", async () => {
       teams.issues = undefined;
       teams.error = new Error("no company");
       render(<RoomPanel {...withTasks} />);
-      expect(screen.getByRole("button", { name: "Tasks" })).toBeInTheDocument();
-      openTab();
+      await openMenu();
+      expect(await screen.findByRole("menuitem", { name: "Tasks" })).toBeInTheDocument();
+      await userEvent.keyboard("{Escape}");
+      await openTab();
       expect(screen.getByText("No tasks mentioned in this room yet.")).toBeInTheDocument();
     });
 
-    it("opens the global Tasks list from the footer", () => {
+    it("opens the global Tasks list from the footer", async () => {
       const onLinkToWork = vi.fn();
       render(<RoomPanel {...props} onLinkToWork={onLinkToWork} />);
-      openTab();
+      await openTab();
       fireEvent.click(screen.getByRole("button", { name: /All tasks in Tasks/ }));
       expect(onLinkToWork).toHaveBeenCalledOnce();
     });

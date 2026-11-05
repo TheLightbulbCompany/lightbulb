@@ -8,12 +8,13 @@ import { useAsyncAction } from "./useAsyncAction";
 import type { RoomRunView, RoomSummary } from "@lightbulb/shared";
 import type { RoomMessage, RoomParticipant } from "./types";
 
-export type DetailsTab = "members" | "pins" | "files" | "links" | "about";
+export type DetailsTab = "threads" | "members" | "pins" | "files" | "links" | "about";
 
-const TABS: Array<{ id: DetailsTab; label: string }> = [
+const ROOM_TABS: Array<{ id: DetailsTab; label: string }> = [
   { id: "members", label: "Members" }, { id: "pins", label: "Pins" },
-  { id: "files", label: "Files" }, { id: "links", label: "Links" }, { id: "about", label: "About" },
+  { id: "files", label: "Files" }, { id: "links", label: "Links" }, { id: "about", label: "Details" },
 ];
+const THREAD_TABS: Array<{ id: DetailsTab; label: string }> = [{ id: "threads", label: "Requests" }, ...ROOM_TABS];
 const URL_PATTERN = /https?:\/\/[^\s<>()]+/g;
 
 interface RoomDetailsPanelProps {
@@ -33,6 +34,8 @@ interface RoomDetailsPanelProps {
   // Leave dialog -- explain why Leave isn't offered rather than saying nothing.
   ownerCannotLeave?: boolean;
   members: ReactNode; // the shipped Members section, lifted verbatim from RoomPanel
+  /** This room's threads (the room-scoped Work overview), first tab when given (super-agent on). */
+  threads?: ReactNode;
 }
 
 /**
@@ -61,7 +64,7 @@ function messageTime(at: string) {
 export function RoomDetailsPanel({
   room,
   roomName,
-  tab,
+  tab: askedTab,
   onSelectTab,
   participants,
   actionable,
@@ -73,8 +76,12 @@ export function RoomDetailsPanel({
   onLeaveRoom,
   ownerCannotLeave,
   members,
+  threads,
 }: RoomDetailsPanelProps) {
   const id = useId();
+  const TABS = threads ? THREAD_TABS : ROOM_TABS;
+  // A "threads" tab asked for with the switch off (a stale state) shows Members.
+  const tab = askedTab === "threads" && !threads ? "members" : askedTab;
   const [confirmLeave, setConfirmLeave] = useState(false);
   const noun = room?.kind === "group-dm" ? "group chat" : "channel";
   const [unpinning, setUnpinning] = useState<string | null>(null);
@@ -146,6 +153,7 @@ export function RoomDetailsPanel({
         onClick={() => selectTab(entry.id)}>{entry.label}</button>)}
     </div>
     <div className="room-context-body" id={`${id}-panel`} role="tabpanel" aria-labelledby={`${id}-tab-${tab}`} tabIndex={0}>
+      {tab === "threads" && threads}
       {tab === "members" && <>{members}{activeWork}</>}
 
       {tab === "pins" && (pinnedMessageIds.length === 0

@@ -11,8 +11,8 @@ import {
 } from "../panelRegistry";
 
 describe("panelRegistry", () => {
-  it("teams-threads is a Work page", () => {
-    expect(describePanel("teams-threads", {})).toMatchObject({ panelId: "teams-work", component: "teams", params: { teamsKey: "threads" } });
+  it("teams-threads (the old Work › Threads overview) opens Home", () => {
+    expect(describePanel("teams-threads", {})).toMatchObject({ panelId: "activity", component: "activity", title: "Home" });
   });
 
   it("task-detail is a pane panel that needs a taskId", () => {
@@ -32,7 +32,7 @@ describe("panelRegistry", () => {
     expect(resolvePanelAlias("teams-skills")).toBe("activity");
     expect(resolvePanelAlias("teams-costs")).toBe("activity");
     expect(describePanel("canvas", { app: "app_1" })).toEqual({ panelId: "canvas", component: "canvas", title: "Canvas", params: { app: "app_1" } });
-    expect(describePanel("teams-dashboard", {})).toMatchObject({ panelId: "activity", component: "activity", title: "Activity" });
+    expect(describePanel("teams-dashboard", {})).toMatchObject({ panelId: "activity", component: "activity", title: "Home" });
     expect(resolvePanelAlias("teams-artifacts")).toBe("teams-artifacts");
     // Money is ONE page: its four absorbed keys alias to its panel id, or the
     // dock (which dedupes by panel id) opens four sibling tabs all called
@@ -209,10 +209,10 @@ describe("panelRegistry", () => {
 
   it("describes the activity feed as a singleton carrying a filter and a focused item", () => {
     expect(describePanel("activity", {})).toEqual({
-      panelId: "activity", component: "activity", title: "Activity", params: {},
+      panelId: "activity", component: "activity", title: "Home", params: {},
     });
     expect(describePanel("activity", { focus: "paperclip:approval:ap-1", filter: "needs-you" })).toEqual({
-      panelId: "activity", component: "activity", title: "Activity",
+      panelId: "activity", component: "activity", title: "Home",
       params: { filter: "needs-you", focus: "paperclip:approval:ap-1" },
     });
     expect(durableParamsFor("activity")).toEqual(["panel", "filter", "focus"]);
@@ -268,9 +268,9 @@ describe("panelRegistry", () => {
     // Same reason as Money's four keys: the dock dedupes by panel id, so a
     // router-level mapping would open a second tab also titled "Agents".
     expect(describePanel("teams-org-chart", {})).toEqual({
-      panelId: "teams-work",
+      panelId: "teams-agents",
       component: "teams",
-      title: "Work",
+      title: "Team",
       params: { teamsKey: "agents", view: "chart" },
     });
     // A plain Agents open carries no view — the panel's stored preference wins.
@@ -289,7 +289,7 @@ describe("panelRegistry", () => {
 
   it("opens Activity for every old Inbox link: the Inbox tab, its Approvals and Activity keys", () => {
     for (const key of ["teams-inbox", "teams-approvals", "teams-activity"]) {
-      expect(describePanel(key, { section: "needs-you" })).toEqual({ panelId: "activity", component: "activity", title: "Activity", params: {} });
+      expect(describePanel(key, { section: "needs-you" })).toEqual({ panelId: "activity", component: "activity", title: "Home", params: {} });
     }
   });
 
@@ -323,7 +323,7 @@ describe("panelRegistry", () => {
 });
 
 describe("Work page: one dock tab for every task-board page", () => {
-  it.each(["issues", "projects", "goals", "routines", "cases", "agents", "money"])("teams-%s opens in the Work tab", (key) => {
+  it.each(["issues", "projects", "goals", "routines", "cases", "money"])("teams-%s opens in the Work tab", (key) => {
     const d = describePanel(`teams-${key}`, {})!;
     expect(d.panelId).toBe("teams-work");
     expect(d.title).toBe("Work");
@@ -331,6 +331,8 @@ describe("Work page: one dock tab for every task-board page", () => {
   });
   it("other Teams pages keep their own tab", () => {
     expect(describePanel("teams-artifacts", {})!.panelId).toBe("teams-artifacts");
+    // Agents is its own place, Team.
+    expect(describePanel("teams-agents", {})).toMatchObject({ panelId: "teams-agents", title: "Team" });
   });
   it("Work owns the union of its pages' durable params", () => {
     expect(durableParamsFor("teams-work")).toEqual(["panel", "agent", "groupBy", "view", "day", "section"]);

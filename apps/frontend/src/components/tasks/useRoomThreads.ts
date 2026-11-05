@@ -1,27 +1,41 @@
 "use client";
 
-// Threads for a header badge: a room's (the Threads button's waiting dot) or the workspace's (the Work rail).
-// No request at all while the switch is off or outside the live provider (tests).
+// Needs you for a badge: the workspace's (the Home rail and Home's Needs you rows) and each room's (the About
+// dot, its share of the same result). One complete read, `GET /tasks?needsYou=true` (every request waiting on the viewer or ready for their
+// review, unpaged), cut by the same `shownGroup` rule Home renders (homeSections), so a badge never disagrees with
+// the rows under it. No request at all while the switch is off or outside the live provider (tests).
 
 import useSWR from "swr";
-import { useTaskList, type TasksClient } from "@lightbulb/shared";
+import { scopeParam, taskListKey, type TaskScope, type TaskSummary, type TasksClient } from "@lightbulb/shared";
 import { useOptionalLiveEvents, useSuperAgent } from "@/hooks/useLiveEvents";
+import { useApi } from "@/lib/api";
+import { homeSections } from "./homeSections";
 
-const NO_CLIENT = { cacheScope: "" } as TasksClient; // never called: its key is always null
+const WORKSPACE: TaskScope = { kind: "workspace" };
+const NONE: TaskSummary[] = [];
 
-export function useRoomThreads(roomId: string | null | undefined) {
+/** The scope's Needs you requests. Keyed under the scope's list prefix, so `task.changed` revalidates it (a new
+ *  ask arrives) and rewrites its rows in place (an answered one leaves the cut). */
+export function useNeedsYouTasks(scope: TaskScope | null): { tasks: TaskSummary[]; loaded: boolean; error: unknown; retry: () => void } {
   const live = useOptionalLiveEvents();
   const on = useSuperAgent();
-  const { data } = useTaskList(live?.tasks ?? NO_CLIENT, on && live && roomId ? { kind: "room", roomId } : null);
-  const tasks = data?.tasks ?? [];
-  return { tasks, waitingOnMe: tasks.filter((t) => t.shownGroup === "waiting_on_you").length };
+  const api = useApi();
+  const client: Pick<TasksClient, "cacheScope"> | undefined = live?.tasks;
+  const key = on && client && scope ? `${taskListKey(client, scope)}:needs-you` : null;
+  const { data, error, mutate } = useSWR<{ tasks: TaskSummary[]; next: string | null }>(key,
+    () => api.get(`/tasks?scope=${encodeURIComponent(scopeParam(scope!))}&needsYou=true`) as Promise<{ tasks: TaskSummary[]; next: string | null }>,
+    { shouldRetryOnError: false });
+  return { tasks: data ? homeSections(data.tasks).needsYou : NONE, loaded: !!data, error, retry: () => void mutate() };
 }
 
-/** Threads with a question waiting on the viewer, workspace-wide, from the needs-you index (one indexed query,
- *  not the thread list). Counts threads, not questions. */
-export function useThreadsWaitingOnMe(): number {
-  const live = useOptionalLiveEvents();
-  const on = useSuperAgent();
-  const { data } = useSWR(on && live ? ["needs-you", live.tasks.cacheScope] : null, () => live!.tasks.needsYou(), { shouldRetryOnError: false });
-  return new Set((data?.items ?? []).map((q) => q.taskId)).size;
+/** A room's About dot: the room's share of the one workspace-wide read (the server's room scope is
+ *  `audience.roomId`), so N open rooms cost no extra requests. */
+export function useRoomThreads(roomId: string | null | undefined) {
+  const { tasks } = useNeedsYouTasks(roomId ? WORKSPACE : null);
+  return { waitingOnMe: roomId ? tasks.filter((t) => t.audience?.roomId === roomId).length : 0 };
+}
+
+/** Home's Needs you count: the rail badge. */
+export function useHomeNeedsYou(): number {
+  return useNeedsYouTasks(WORKSPACE).tasks.length;
 }

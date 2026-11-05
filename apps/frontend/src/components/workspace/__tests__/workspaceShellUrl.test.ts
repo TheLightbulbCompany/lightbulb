@@ -203,7 +203,7 @@ describe("retired-alias deep links keep their meaning end to end", () => {
     // 1. reconciler → 2. openPanel → 3. the params Work's main view mounts with
     navigate("?panel=teams-org-chart");
     const { main } = getWorkspaceSnapshot();
-    expect(main?.panelId).toBe("teams-work");
+    expect(main?.panelId).toBe("teams-agents");
     const mounted = main!.params;
     expect(mounted).toEqual({ teamsKey: "agents", view: "chart" });
 
@@ -244,7 +244,7 @@ describe("URL params map onto place + pane", () => {
     ["?panel=activity&focus=paperclip:approval:a1", "activity", "activity"],
     ["?panel=teams-issues&groupBy=status", "work", "teams-work"],
     ["?panel=teams-money&section=spend", "work", "teams-work"],
-    ["?panel=teams-agents&view=chart", "work", "teams-work"],
+    ["?panel=teams-agents&view=chart", "team", "teams-agents"],
     ["?panel=teams-search", "work", "teams-search"],
     ["?panel=teams-artifacts", "library", "teams-artifacts"],
   ])("%s → the %s place", (search, place, mainId) => {

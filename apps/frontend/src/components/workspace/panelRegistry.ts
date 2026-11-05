@@ -37,6 +37,8 @@ export const RETIRED_PANEL_ALIASES: Readonly<Record<string, string>> = {
   "teams-customers": "teams-money",
   "teams-spend": "teams-money",
   "teams-activity": "activity",
+  // The Work › Threads overview folded into Home (2026-11-05): Home lists the same threads, grouped.
+  "teams-threads": "activity",
   // NOTE: `teams-goals` and `teams-projects` are deliberately NOT aliased —
   // they are their own panels (GoalsPanel / ProjectsListPanel, TEAMS_LIST_KEYS
   // below), same as stock Paperclip's Goals and Projects pages. They used to
@@ -114,9 +116,7 @@ export const NON_COMMAND_PARAMS = [
 ] as const;
 
 const TEAMS_LIST_KEYS: Readonly<Record<string, string>> = {
-  // Super-agent threads overview (a Work page; the tab shows only with the switch on).
-  threads: "Threads",
-  agents: "Agents",
+  agents: "Team",
   inbox: "Inbox",
   issues: "Tasks",
   // Reachable again as their own panels — see the note above
@@ -149,12 +149,11 @@ const TEAMS_LIST_KEYS: Readonly<Record<string, string>> = {
 // The Work place: these task-board pages share ONE main view, "Work", and a tab
 // strip inside it switches between them (panels/WorkTabs.tsx).
 export const WORK_PANEL_ID = "teams-work";
-export const WORK_TEAMS_KEYS = ["issues", "projects", "goals", "routines", "cases", "agents", "money"] as const;
+// Agents left Work for its own place, Team (2026-11-05): the owner hires and manages specialists there.
+export const WORK_TEAMS_KEYS = ["issues", "projects", "goals", "routines", "cases", "money"] as const;
 const WORK_KEY_SET: ReadonlySet<string> = new Set(WORK_TEAMS_KEYS);
-/** Super-agent threads (the overview grouped Waiting on you · Working · …) lead the Work page when the switch is on. */
-export const WORK_THREADS_KEY = "threads";
 export function isWorkTeamsKey(teamsKey: string): boolean {
-  return WORK_KEY_SET.has(teamsKey) || teamsKey === WORK_THREADS_KEY;
+  return WORK_KEY_SET.has(teamsKey);
 }
 
 const TEAMS_DETAIL_KEYS: Readonly<Record<string, string>> = {
@@ -288,8 +287,8 @@ export function describePanel(
     return { panelId: "browser", component: "browser", title: "Browser", params: {} };
   }
 
-  // The viewer's Activity feed (mentions, DMs, thread replies, what Paperclip asks of
-  // them). Singleton: one feed per viewer. The old company-wide view stays the Teams
+  // Home: the viewer's threads (super-agent) above their Activity feed (mentions, DMs, thread
+  // replies, what Paperclip asks of them). Singleton: one per viewer. The old company-wide view stays the Teams
   // Inbox, reachable from inside the feed.
   // `filter` opens a chip (the Tasks header's "Needs you"); `focus` is the item a
   // notification points at (an approval), scrolled to and highlighted.
@@ -297,7 +296,7 @@ export function describePanel(
     const p: Record<string, string> = {};
     if (params.filter) p.filter = params.filter;
     if (params.focus) p.focus = params.focus;
-    return { panelId: "activity", component: "activity", title: "Activity", params: p };
+    return { panelId: "activity", component: "activity", title: "Home", params: p };
   }
 
   // Apps the agents built; `app` opens one inside the pane.
@@ -413,6 +412,7 @@ export function durableParamsFor(panelId: string): string[] {
   if (panelId === "agent-inspector") return ["panel", "agent", "inspectorTab"];
   if (panelId === "control:agents") return ["panel", "agent"];
   if (panelId === WORK_PANEL_ID) return ["panel", "agent", "groupBy", "view", "day", "section"];
+  if (panelId === "teams-agents") return ["panel", "view"];
   if (panelId === "activity") return ["panel", "filter", "focus"];
   if (panelId === "canvas") return ["panel", "app"];
   if (panelId === "mail") return ["panel", "item"];
@@ -433,6 +433,7 @@ export function clearablePanelParamKeys(panelId: string): string[] {
   // (see openMessagePanel / openChatPanel in workspaceController.ts).
   if (panelId === MESSAGES_PANEL_ID) return ["agentId", "agentSelection", "roomId", "messageId", "sessionId", "seq", "sessionIntent"];
   if (panelId === WORK_PANEL_ID) return ["agent", "groupBy", "view", "day", "section"];
+  if (panelId === "teams-agents") return ["view"];
   if (panelId === "activity") return ["filter", "focus"];
   if (panelId === "canvas") return ["app"];
   if (panelId === "mail") return ["item"];

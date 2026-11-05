@@ -29,7 +29,7 @@ describe("parseCommand", () => {
     expect(parseCommand("?panel=credits")).toBeNull();
     // The org chart is a view of the roster now.
     const chartCmd = parseCommand("?panel=teams-org-chart");
-    expect(chartCmd?.descriptor.panelId).toBe("teams-work");
+    expect(chartCmd?.descriptor.panelId).toBe("teams-agents");
     expect(chartCmd?.descriptor.params).toEqual({ teamsKey: "agents", view: "chart" });
   });
 

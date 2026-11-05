@@ -148,13 +148,14 @@ async def get_task(ws: str, task_id: str) -> dict | None:
 
 
 async def get_task_tree(ws: str, task_id: str) -> dict:
-    """The task row with its attempts and subscriptions, from one consistent `begins_with` query."""
+    """The task row with its attempts, subscriptions and Question rows (Lane Q writes them under the task's
+    prefix), from one consistent `begins_with` query."""
     kwargs: dict[str, Any] = {
         "KeyConditionExpression": "pk = :pk AND begins_with(sk, :prefix)",
         "ExpressionAttributeValues": {":pk": ts.ws_pk(ws), ":prefix": ts.task_sk(task_id)},
         "ConsistentRead": True,
     }
-    tree: dict[str, Any] = {"task": None, "attempts": [], "subscriptions": []}
+    tree: dict[str, Any] = {"task": None, "attempts": [], "subscriptions": [], "questions": []}
     while True:
         page = await run_in_thread(_table().query, **kwargs)
         for item in map(plain, page.get("Items", [])):
@@ -164,6 +165,8 @@ async def get_task_tree(ws: str, task_id: str) -> dict:
                 tree["attempts"].append(item)
             elif item.get("type") == "subscription":
                 tree["subscriptions"].append(item)
+            elif item.get("type") == "question":
+                tree["questions"].append(item)
         if "LastEvaluatedKey" not in page:
             return tree
         kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]

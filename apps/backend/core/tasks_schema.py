@@ -203,6 +203,11 @@ def creation_sk(cap_id: str) -> str:
     return f"CAP#{cap_id}"
 
 
+def slots_sk() -> str:
+    """The workspace's Worker slot leases (contracts §9: cap per VM kind)."""
+    return "SLOTS"
+
+
 def status_key(ws: str, status: str) -> str:
     return f"{ws}#{status}"
 
@@ -240,6 +245,7 @@ KEY_FORMATS: dict[str, str] = {
     "project": "PROJECT#{projectId}",
     "goal": "GOAL#{goalId}",
     "creation": "CAP#{capId}",
+    "slots": "SLOTS",
     "statusKey": "{ws}#{status}",
     "taskWorkflowId": "task:{ws}:{taskId}",
     "routerWorkflowId": "router:{ws}",
@@ -348,6 +354,8 @@ class Task(_Row):
     resolved_at: str | None = None
     a2a_task_id: str | None = None
     ws_channel: str | None = None
+    proposal_reason: str | None = None  # why the Router proposed instead of starting (G18)
+    landing_effect: str | None = None  # Effect idemKey while `apply_effect` runs (Lane Q writes)
 
     DERIVED: ClassVar[tuple[str, ...]] = ("statusKey", "workflowId")
 
@@ -619,6 +627,67 @@ ROW_MODELS: dict[str, type[_Row]] = {
 }
 
 
+# --- Views (C15) ------------------------------------------------------------------------------------
+
+
+class SummaryQuestion(_Model):
+    qid: str
+    kind: QuestionKind
+    subkind: str | None = None
+    title: str
+    answerers: list[str]
+    answerer_names: list[str]
+    can_answer: bool
+    options: list[QuestionOption] = []
+
+
+class SummaryOutput(_Model):
+    idem_key: str
+    kind: OutputKind
+    title: str
+    next_step: str | None = None
+
+
+class SummaryActivity(_Model):
+    n: int
+    status: AttemptStatus
+    outcome: AttemptOutcome | None = None
+    last_heartbeat_at: str | None = None
+
+
+class TaskSummary(_Model):
+    """One task as one viewer sees it. `tasks_access.summarize` builds it; clients render it and never
+    re-derive `shownGroup` (viewer-specific; None = proposed, shown in chat's Suggested block)."""
+
+    task_id: TaskId
+    identifier: str
+    title: str
+    status: TaskStatus
+    status_reason: str | None = None
+    shown_group: ShownGroup | None
+    specialist: str | None = None
+    owner_user_id: str | None = None
+    audience: Audience
+    audience_kind: AudienceKind
+    origin_room_id: str | None = None
+    task_room_id: str
+    proposal_reason: str | None = None
+    open_question: SummaryQuestion | None = None
+    landing: str | None = None
+    output: SummaryOutput | None = None
+    watch_until: str | None = None
+    watching: bool
+    runs_on: Literal["task", "workspace"] | None = None
+    activity: SummaryActivity | None = None
+    recent_inputs: list[str] = []
+    attempt_count: int = 0
+    usage: Usage | None = None
+    cost_usd: float = 0.0
+    budget_usd: float | None = None
+    updated_at: str
+    version: int
+
+
 # --- Router decisions (01 §5.3 + C11) ---------------------------------------------------------------
 
 
@@ -731,5 +800,6 @@ def export_schema() -> dict[str, Any]:
         "rows": {
             name: model.model_json_schema(by_alias=True, mode="serialization") for name, model in ROW_MODELS.items()
         },
+        "views": {"TaskSummary": TaskSummary.model_json_schema(by_alias=True, mode="serialization")},
         "routerDecisions": TypeAdapter(RouterDecisions).json_schema(by_alias=True),
     }

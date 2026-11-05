@@ -117,10 +117,17 @@ describe("deploy.yml prod promotion gate", () => {
 describe("desktop-build.yml prod promotion gate", () => {
   const yaml = readFileSync(join(__dirname, "../../../.github/workflows/desktop-build.yml"), "utf8");
   const jobs = jobBlocks(yaml);
+  // #4597 (hosted Mac fallback): a dispatch with hosted_runner runs test-desktop
+  // first, so prod `needs` it. `always()` is only there so a SKIPPED test job (a
+  // normal dispatch on the signing Mac) doesn't skip prod; prod still never runs
+  // on anything but a manual dispatch, and never after a failed or cancelled test.
+  const DESKTOP_PROMOTE_IF =
+    "if: always() && github.event_name == 'workflow_dispatch' && " +
+    "(needs.test-desktop.result == 'success' || needs.test-desktop.result == 'skipped')";
 
   it("gates the entire production desktop job on manual dispatch", () => {
     expect(jobs.has("build-desktop-prod")).toBe(true);
-    expect(jobLevelIf(jobs.get("build-desktop-prod")!)).toBe(PROMOTE_IF);
+    expect(jobLevelIf(jobs.get("build-desktop-prod")!)).toBe(DESKTOP_PROMOTE_IF);
   });
 
   it("builds nothing on a push: there is no development app", () => {
@@ -135,7 +142,11 @@ describe("desktop-build.yml prod promotion gate", () => {
 
   it("runs the Rust tests on pull requests without building", () => {
     expect(jobs.has("test-desktop")).toBe(true);
-    expect(jobLevelIf(jobs.get("test-desktop")!)).toBe("if: github.event_name == 'pull_request'");
+    // Also on a hosted_runner dispatch (#4597), where it runs on a fresh GitHub-hosted
+    // Mac, not the persistent signing one.
+    expect(jobLevelIf(jobs.get("test-desktop")!)).toBe(
+      "if: github.event_name == 'pull_request' || inputs.hosted_runner == true",
+    );
     expect(jobs.get("test-desktop")).toMatch(/cargo test --manifest-path\n\s+apps\/desktop\/src-tauri\/Cargo.toml --lib(?:\r?\n|$)/);
     expect(jobs.get("test-desktop")).toMatch(/--example local_session_probe/);
     // The workflow-level token is `contents: write` for the signing/publishing
@@ -146,10 +157,11 @@ describe("desktop-build.yml prod promotion gate", () => {
 
   it("builds the production app on dispatch with no dependency on the development job", () => {
     // Prod used to need the dev job only to inherit a warm Rust cache, which
-    // now lives on the Mac. The dev job is gone (#3692).
+    // now lives on the Mac. The dev job is gone (#3692). Its only dependency is
+    // the test job (#4597).
     const prod = jobs.get("build-desktop-prod")!;
-    expect(jobLevelIf(prod)).toBe(PROMOTE_IF);
-    expect(prod).not.toMatch(/^ {4}needs:/m);
+    expect(jobLevelIf(prod)).toBe(DESKTOP_PROMOTE_IF);
+    expect(prod).toMatch(/^ {4}needs: test-desktop$/m);
     expect(prod).not.toContain("build-desktop-dev");
   });
 

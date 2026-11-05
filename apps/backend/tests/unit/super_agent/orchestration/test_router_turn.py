@@ -77,7 +77,7 @@ def world(table, monkeypatch):  # noqa: F811
 
     async def get_run(ws, identity):
         w["polls"].append(identity.run_id)
-        return status(identity, "completed")
+        return status(identity, w.get("poll_status", "completed"))
 
     async def start_wf(ws, task_id, reason):
         w["starts"].append((task_id, reason))
@@ -281,6 +281,45 @@ async def test_router_run_with_no_actor_is_metered_to_the_workspace(world):
     with pytest.raises(RuntimeError):
         await _run([t1])
     assert world["metered"] == [(WS, 50, 5, {"room_turn": False, "event_kind": "router"})]
+
+
+@pytest.mark.asyncio
+async def test_a_timed_out_router_run_is_still_metered(world, monkeypatch):
+    t1 = await _trig("chat:m1")
+    world["first_status"] = world["poll_status"] = "running"
+    world["usage"] = {"input_tokens": 300, "output_tokens": 0}
+    monkeypatch.setattr(acts, "ROUTER_BUDGET_S", -1)
+    with pytest.raises(TimeoutError):
+        await _run([t1])
+    assert world["metered"] == [(SAM, 300, 0, {"room_turn": False, "event_kind": "router"})]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_create_meters_the_run_it_left_behind(world, monkeypatch):
+    t1 = await _trig("chat:m1")
+    world["usage"] = {"input_tokens": 80, "output_tokens": 2}
+
+    async def busy(ws, identity, request):
+        raise runtime_runs.RuntimeBusy("503")
+
+    monkeypatch.setattr(acts.runtime_runs, "create_run", busy)
+    with pytest.raises(runtime_runs.RuntimeBusy):
+        await _run([t1])
+    assert world["metered"] == [(SAM, 80, 2, {"room_turn": False, "event_kind": "router"})]
+
+
+@pytest.mark.asyncio
+async def test_workspace_actor_person_task_is_clamped_in_an_org_only(world):
+    mail = {"triggerId": "mail:m1", "source": "mail", "ref": {"text": "hi"}}
+    org = await acts._ensure_task(
+        WS, ts.new_task_id(), {**mail, "actorUserId": WS}, "shared", "queued", title="x", visibility="person"
+    )
+    assert org["audience"]["kind"] == "workspace"  # nobody's user id is an org id
+    me = "user_solo"
+    personal = await acts._ensure_task(
+        me, ts.new_task_id(), {**mail, "actorUserId": me}, "shared", "queued", title="x", visibility="person"
+    )
+    assert (personal["audience"]["kind"], personal["audience"]["userIds"]) == ("person", [me])
 
 
 @pytest.mark.asyncio

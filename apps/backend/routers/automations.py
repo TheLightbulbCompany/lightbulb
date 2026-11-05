@@ -379,7 +379,8 @@ def _may_edit(row: dict, auth: AuthContext) -> None:
 def _may_activate(row: dict, auth: AuthContext) -> None:
     """Turning an automation on: a room automation runs for everyone in the room, so an org admin (the
     Router's proposal is deliverTo=room with ownerUserId=requester); a personal one, its owner only."""
-    if (row.get("deliverTo") or "none").startswith("room:"):
+    # A room automation, or one the workspace itself owns (the proactive layer: owner id = the workspace).
+    if (row.get("deliverTo") or "none").startswith("room:") or row.get("ownerUserId") == auth.org_id:
         require_org_admin(auth)
     elif row.get("ownerUserId") != auth.user_id:
         raise _err(403, "forbidden")

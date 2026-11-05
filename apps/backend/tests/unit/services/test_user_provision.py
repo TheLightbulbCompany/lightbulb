@@ -1251,6 +1251,18 @@ async def test_arm_super_agent_pauses_paperclip_and_arms_nothing():
 
 
 @pytest.mark.asyncio
+async def test_arm_super_agent_ensures_the_proactive_layer_and_never_fails_on_it():
+    provisioning = _arm_provisioning(_company_row(starter_ids={"ceo": "starter-ceo", **_SPECIALISTS}))
+    ensure = AsyncMock(side_effect=RuntimeError("temporal down"))
+    with (
+        patch("core.services.user_provision.flags_for", AsyncMock(return_value=True)),
+        patch("core.services.proactive.ensure", ensure),
+    ):
+        assert await _arm(provisioning, _paid_account()) == "super_agent"
+    ensure.assert_awaited_once_with("org_p")
+
+
+@pytest.mark.asyncio
 async def test_arm_legacy_roster_arms_the_first_seeded_agent():
     provisioning = _arm_provisioning(_company_row())
     assert await _arm(provisioning, _paid_account()) == "armed"

@@ -46,7 +46,8 @@ def test_an_app_idea_passes_kind_app_kind_and_origin_through(tmp_path, monkeypat
     assert (calls[0]["kind"], calls[0]["appKind"], calls[0]["origin"]) == ("app", "dashboard", "Asked weekly")
 
 
-@pytest.mark.parametrize("status, words", [("duplicate", "Already in the Ideas list"), ("cap", "10 suggestions")])
+@pytest.mark.parametrize("status, words", [("duplicate", "Already in the Ideas list"), ("cap", "10 suggestions"),
+                                           ("run_cap", "already filed 3 ideas")])
 def test_says_when_nothing_was_added(tmp_path, monkeypatch, status, words):
     _ctx(tmp_path, monkeypatch)
     monkeypatch.setattr(lightbulb, "_post", lambda *a: {"status": status})
@@ -63,3 +64,13 @@ def test_is_registered_and_never_renders_a_card():
     assert lightbulb.SUGGEST_IDEA_SCHEMA["name"] == "suggest_idea"
     assert "not in chat" in lightbulb.SUGGEST_IDEA_SCHEMA["description"]
     assert json.dumps(lightbulb.SUGGEST_IDEA_SCHEMA["parameters"]["properties"]["size"]["enum"]) == '["project", "task", "quick"]'
+
+
+def test_a_worker_run_sends_its_task_so_one_request_files_at_most_three(tmp_path, monkeypatch):
+    monkeypatch.setattr(turn_context, "_home", lambda: tmp_path)
+    turn_context.write(tmp_path, SESSION, {"apiUrl": "https://api.invalid/", "ownerId": "org_test", "hookToken": "h",
+                                           "agentId": "growth", "taskId": "t-1", "runSecret": "x"})
+    calls = []
+    monkeypatch.setattr(lightbulb, "_post", lambda url, token, body: calls.append(body) or {"status": "added"})
+    lightbulb._suggest_idea({**ARGS, "taskId": "evil"}, session_id=SESSION)
+    assert calls[0]["taskId"] == "t-1"

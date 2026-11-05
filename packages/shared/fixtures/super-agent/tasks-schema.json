@@ -99,7 +99,8 @@
       "text",
       "answer",
       "ask",
-      "watch"
+      "watch",
+      "idea"
     ],
     "Admission": [
       "respond",
@@ -225,6 +226,7 @@
     "answer": "answer:{qid}:{clientAnswerId}",
     "ask": "ask:{qid}",
     "watch": "watch:{taskId}:{watchId}:{n}",
+    "idea": "idea:{key}",
     "rule": "rule:{scheduleId}:{threadHash}"
   },
   "namespaces": {
@@ -1740,7 +1742,8 @@
             "text",
             "answer",
             "ask",
-            "watch"
+            "watch",
+            "idea"
           ],
           "title": "Source",
           "type": "string"

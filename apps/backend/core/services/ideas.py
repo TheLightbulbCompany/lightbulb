@@ -59,6 +59,10 @@ SUGGESTION_CAP = 10
 SUGGESTION_PREFIX = "s-"
 #: An agent's suggestion with no emoji of its own (and every one stored before emojis).
 DEFAULT_EMOJI = "💡"
+#: "Not now" is remembered: a dismissed suggestion's title is not suggested again for this long.
+DISMISS_MEMORY = timedelta(days=14)
+#: Ideas one request (a Worker run, e.g. the daily look around) may file.
+RUN_IDEA_CAP = 3
 
 
 #: Services an idea uses that are not connectors: the team mailbox, the shared browser, Meet.
@@ -163,6 +167,7 @@ class Suggestion(BaseModel):
     kind: Literal["app"] | None = None  # an app idea; None is an ordinary idea
     app_kind: AppKind | None = None
     origin: str | None = Field(default=None, max_length=120)  # one line: what keeps coming back
+    task_id: str | None = Field(default=None, max_length=64)  # the request it was filed from (a Worker run)
 
     @model_validator(mode="after")
     def _app_needs_kind(self):
@@ -338,8 +343,13 @@ async def _started(auth: AuthContext, rows: list[dict]) -> set[str]:
     projects = await _project_statuses(auth, [r["projectId"] for r in rows if r.get("projectId")])
     now = datetime.now(timezone.utc)
     started = set()
+    owner_id = resolve_owner_id(auth)
     for r in rows:
-        if r.get("projectId"):
+        if r.get("taskId"):  # a super-agent start: a Router request, open until it ends
+            from core.services import proactive
+
+            open_ = await proactive.request_open(owner_id, r["taskId"])
+        elif r.get("projectId"):
             open_ = projects.get(r["projectId"]) not in CLOSED_PROJECT_STATUSES | {GONE}
         elif r.get("issueId"):
             open_ = issues.get(r["issueId"]) not in CLOSED_ISSUE_STATUSES | {GONE}
@@ -440,9 +450,19 @@ async def suggest(owner_id: str, suggestion: Suggestion) -> dict:
     # moment can store a duplicate title or an 11th suggestion; bounded by the agents' turns
     # (a handful per day). A per-title conditional row would close it if it ever matters.
     stored = await _suggestions(owner_id, names)
-    if any(_norm(i.title) == title for i in catalog().values()) or any(_norm(r["title"]) == title for r in stored):
+    dismissed = await messaging_repo.dismissed_idea_times(owner_id)
+    remembered = (datetime.now(timezone.utc) - DISMISS_MEMORY).isoformat()
+    # A stored one blocks its title while it is listed (or started), and for DISMISS_MEMORY after "Not now".
+    blocking = [r for r in stored if r["ideaId"] not in dismissed or dismissed[r["ideaId"]] >= remembered]
+    if any(_norm(i.title) == title for i in catalog().values()) or any(_norm(r["title"]) == title for r in blocking):
         return {"status": "duplicate"}
-    dismissed = await messaging_repo.dismissed_ideas(owner_id)
+    if await _super_agent(owner_id):
+        from core.services import proactive
+
+        if any(_norm(t.get("title") or "") == title for t in await proactive.open_requests(owner_id)):
+            return {"status": "duplicate"}
+    if suggestion.task_id and sum(r.get("taskId") == suggestion.task_id for r in stored) >= RUN_IDEA_CAP:
+        return {"status": "run_cap"}
     if sum(r["ideaId"] not in dismissed for r in stored) >= SUGGESTION_CAP:
         return {"status": "cap"}
     idea_id = f"{SUGGESTION_PREFIX}{uuid.uuid4().hex[:12]}"
@@ -458,6 +478,7 @@ async def suggest(owner_id: str, suggestion: Suggestion) -> dict:
             "emoji": suggestion.emoji,
             "createdAt": utc_now_iso(),
             **({"appKind": suggestion.app_kind, "origin": suggestion.origin} if suggestion.app_kind else {}),
+            **({"taskId": suggestion.task_id} if suggestion.task_id else {}),
         },
     )
     return {"status": "added", "id": idea_id}
@@ -556,7 +577,59 @@ async def start(auth: AuthContext, idea_id: str) -> dict:
 
 
 def _ids(start: dict) -> dict:
-    return {"roomId": start["roomId"], **{k: start[k] for k in ("projectId", "issueId") if start.get(k)}}
+    return {"roomId": start["roomId"], **{k: start[k] for k in ("projectId", "issueId", "taskId") if start.get(k)}}
+
+
+async def _super_agent(owner_id: str) -> bool:
+    from core.services import super_agent_flags
+
+    return await super_agent_flags.flags_for(owner_id)
+
+
+async def _start_request(auth: AuthContext, owner_id: str, idea_id: str, job: Job) -> dict:
+    """Super-agent Let's do it: a Router request in the person's DM with Lightbulb, done by the idea's
+    specialist (Lightbulb itself for the top agent's ideas). No Paperclip. Idempotent per (idea, person) while
+    the request is open; once it ends the idea can be started again."""
+    from core.services import proactive, task_conversation
+
+    user_id = auth.user_id
+    for _ in range(2):
+        won, claim = await messaging_repo.claim_idea_start(owner_id, idea_id, user_id)
+        if won:
+            break
+        if claim.get("state") != "open":
+            raise HTTPException(status_code=409, detail="This idea is already starting.")
+        if claim.get("taskId") and await proactive.request_open(owner_id, claim["taskId"]):
+            return _ids(claim)
+        await messaging_repo.close_idea_start(owner_id, idea_id, user_id, claim["startToken"])
+    else:
+        raise HTTPException(status_code=409, detail="This idea is already starting.")
+    try:
+        front = await task_conversation.front_agent_id(owner_id)
+        room_id = await _usable_dm(owner_id, user_id, front)
+        brief = work_description(job)
+        if job.app_kind:
+            brief += f"\n\nBuild this as an app ({job.app_kind.replace('_', ' ')}), origin suggested:{job.id}."
+        key = hashlib.sha256(f"{idea_id}|{user_id}|{claim['startToken']}".encode()).hexdigest()[:32]
+        task_id = await proactive.start_request(
+            owner_id,
+            key=key,
+            title=job.title,
+            brief=brief,
+            actor_user_id=user_id,
+            room_id=room_id,
+            specialist=None if job.agent["id"] == front else job.agent["id"],
+        )
+        fields = {"state": "open", "roomId": room_id, "taskId": task_id, "createdAt": utc_now_iso(),
+                  "agentId": job.agent["id"], "title": job.title, "size": job.size}  # fmt: skip
+        await messaging_repo.update_idea_start(owner_id, idea_id, user_id, fields)
+    except BaseException:
+        try:
+            await messaging_repo.update_idea_start(owner_id, idea_id, user_id, {"claimedAt": 0})
+        except Exception:
+            logger.warning("ideas: could not release the start claim %s/%s", owner_id, idea_id, exc_info=True)
+        raise
+    return {"roomId": room_id, "taskId": task_id}
 
 
 async def _start(auth: AuthContext, idea_id: str) -> dict:
@@ -565,6 +638,8 @@ async def _start(auth: AuthContext, idea_id: str) -> dict:
 
     row, agents, names = await _workspace(resolve_owner_id(auth))
     job = await _job(resolve_owner_id(auth), idea_id, agents, names)  # an unknown idea is a 404 first
+    if await _super_agent(resolve_owner_id(auth)):
+        return await _start_request(auth, resolve_owner_id(auth), idea_id, job)
     ctx = await task_board._context(auth)  # a joined member of this workspace, with a Paperclip session
     owner_id, user_id = ctx.owner_id, auth.user_id
     agent = job.agent

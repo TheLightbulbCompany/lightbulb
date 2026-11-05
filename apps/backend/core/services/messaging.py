@@ -134,6 +134,16 @@ FEED_WELCOME = (
     "Work for tasks, and Library for what we made. For ideas on what we could do next, press the 💡 "
     "at the top of any conversation."
 )
+#: The same welcome in a super-agent workspace: no promised cadence (scheduled posts run on paid plans only) and the
+#: places it really has (Home: Needs you, Ideas, this feed).
+FEED_WELCOME_SUPER_AGENT = (
+    "**This is our feed.** When something here matters to you (money in or out, a customer, "
+    "a blocker, finished work), one of us posts it here, one thing per post, and only when it is worth your time.\n\n"
+    "The brief at the top says what you want to hear about. Edit it any time. "
+    "Press Discuss on a post to talk it through with whoever wrote it.\n\n"
+    "Home shows your company today: Needs you for what is waiting on you, Ideas for what we could do next "
+    "(Do it starts it, Not now puts it away), and this feed."
+)
 # Seeded ONCE per workspace as a CEO-authored message (``ensure_default_room``
 # returns early on any room that already has messages): the first thing a new
 # user reads. Refers to the CEO by ROLE, never a name: agent names are user-editable.
@@ -2432,14 +2442,17 @@ async def ensure_feed_room(owner_id: str, requester_user_id: str | None = None) 
             await join_feed_room(owner_id, row["user_id"])
         except Exception:  # noqa: BLE001 -- one teammate never blocks the feed
             logger.exception("feed seat failed owner=%s user=%s", owner_id, row.get("user_id"))
+    from core.services import super_agent_flags
+
+    welcome = FEED_WELCOME_SUPER_AGENT if await super_agent_flags.flags_for(owner_id) else FEED_WELCOME
     await messaging_repo.create_message(
         room_id=room_id,
         owner_id=owner_id,
         idemp_pk=messaging_repo.room_pk(room_id),
         idemp_sk=messaging_repo.human_idemp_sk("__system__", f"{client_room_id}:welcome"),
-        req_hash=messaging_repo.request_hash(FEED_WELCOME, ceo_id),
+        req_hash=messaging_repo.request_hash(welcome, ceo_id),
         author={"kind": "agent", "id": ceo_id, "displayName": agents[ceo_id]["name"]},
-        text=FEED_WELCOME,
+        text=welcome,
         mentions=[],
         reply_to_message_id=None,
         thread_root_message_id=None,
@@ -2448,6 +2461,7 @@ async def ensure_feed_room(owner_id: str, requester_user_id: str | None = None) 
         source_agent_id=ceo_id,
         client_message_id=None,
         author_member_check=False,  # the CEO writes the feed as an author, never a member
+        attrs={"kind": "welcome"},  # clients recognise the welcome by kind, never by its text
     )
     return room_id
 

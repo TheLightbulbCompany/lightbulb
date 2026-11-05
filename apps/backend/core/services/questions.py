@@ -139,11 +139,12 @@ async def answerers(
         # creator seat to add; its admins still answer, as they would for a named app.
         base = [app["created_by"]] if app and app.get("created_by") else []
     elif rule.startswith("requester"):
-        base = [task["ownerUserId"]] if task.get("ownerUserId") else []
+        base = [task["ownerUserId"]] if task.get("ownerUserId") and task["ownerUserId"] != ws else []
     else:
         base = []
     ids = list(base)
-    if rule.endswith("admins"):
+    # A workspace-owned request (the proactive layer's runs: requester = the workspace) is answered by its admins.
+    if rule.endswith("admins") or (rule.startswith("requester") and task.get("ownerUserId") == ws):
         ids += await _admins(ws)
     ids = list(dict.fromkeys(ids))
     if not ids:

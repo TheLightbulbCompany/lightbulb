@@ -302,3 +302,11 @@ def test_waiting_label_caps_the_names():
 )
 def test_output_for_review_kinds_only(kind, operands, expected):
     assert questions.output_for({"kind": kind, "operands": operands}) == expected
+
+
+async def test_a_workspace_owned_request_asks_the_admins(clerk, policy):
+    """A proactive run's requester is the workspace itself (no person): its admins answer for it."""
+    ids, rule, base = await questions.answerers(ORG, {**TASK, "ownerUserId": ORG}, "question", "question")
+    assert ids == ["user_ada", "user_bo"] and rule == "requester" and base == []
+    ids, _, _ = await questions.answerers(ORG, {**TASK, "ownerUserId": ORG}, "review", "review")
+    assert ids == ["user_ada", "user_bo"]

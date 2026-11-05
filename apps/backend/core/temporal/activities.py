@@ -17,7 +17,7 @@ import secrets
 import logging
 import time
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
@@ -487,6 +487,9 @@ ROUTER_MAX_ITERATIONS = 30
 ROUTER_BUDGET_S = 240  # under the Activity's 5 min start-to-close (workflows._ROUTER_TURN)
 _OPEN_STATUSES = ("working", "waiting", "idle", "queued")
 _OPEN_SCAN = 20
+_CLOSED_STATUSES = ("resolved", "failed")
+_CLOSED_SCAN = 10
+_CLOSED_WITHIN = timedelta(days=1)  # "Recently closed": what a status question can still be about
 
 
 async def _trigger_view(ws: str, trig: dict) -> dict:
@@ -565,6 +568,17 @@ async def _open_tasks(ws: str, lane: str, user_id: str | None, room_ids: set[str
         page, _ = await tasks_repo.list_tasks_by_status(ws, status, limit=_OPEN_SCAN)
         rows += [r for r in page if not r.get("hidden")]
     return [r for r in rows if any(_task_in_scope(r, lane, user_id, room) for room in room_ids or {None})]
+
+
+async def _closed_tasks(ws: str, lane: str, user_id: str | None, room_ids: set[str]) -> list[dict]:
+    """The batch's scope's tasks closed in the last day, newest first: shown with their state, never passed to."""
+    since = (datetime.now(timezone.utc) - _CLOSED_WITHIN).isoformat()
+    rows: list[dict] = []
+    for status in _CLOSED_STATUSES:
+        page, _ = await tasks_repo.list_tasks_by_status(ws, status, limit=_CLOSED_SCAN)
+        rows += [r for r in page if not r.get("hidden") and (r.get("updatedAt") or "") >= since]
+    rows = [r for r in rows if any(_task_in_scope(r, lane, user_id, room) for room in room_ids or {None})]
+    return sorted(rows, key=lambda r: r.get("updatedAt") or "", reverse=True)[:_CLOSED_SCAN]
 
 
 async def _cheap_model(ws: str) -> str | None:
@@ -943,7 +957,8 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
         # message in a room. A batch with none (mail, schedules) has no stored lines; the prompt says so.
         chat = next((t for t in to_model.values() if {"roomId", "messageId"} <= set(t.get("ref") or {})), None)
         recent = await _recent_lines(ws, chat, set(to_model)) if chat else None
-        prompt = router_prompt.render_batch(views, roster, open_tasks, lane=inp.lane, recent=recent)
+        closed = await _closed_tasks(ws, inp.lane, user_id, rooms)
+        prompt = router_prompt.render_batch(views, roster, open_tasks, lane=inp.lane, recent=recent, closed=closed)
         memory = memory_tags.block_for_router(
             "private" if private and user_id else "shared", user_id if private else None, room_id
         )

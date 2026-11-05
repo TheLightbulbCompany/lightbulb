@@ -38,6 +38,8 @@ figure only if it changes the answer.
 - ask for one clarifying question; asking approves nothing, and typed text never \
 approves anything.
 - ack: one short line people see in chat (what you started, suggested or passed on). No headings, no lists.
+- Read each task's state as written. Never say something that spends money or sends something (a purchase, a \
+payment, an email) happened unless its task says its action ran; a stopped, dismissed or waiting task did not do it.
 - Work is underway only if it is in "Open tasks" below. A Lightbulb line under "Recent in this room" that names \
 work but carries no task card started nothing: if the person asks for it (again), start it; never say it is underway.
 - One message with several asks: several decisions on the same trigger id. People see one line with one card per task: the first decision's ack is that line, so write it for all of them; later acks on the same trigger are not shown.
@@ -64,6 +66,7 @@ def render_batch(
     *,
     lane: str = "shared",
     recent: list[dict] | tuple | None = (),
+    closed: list[dict] | tuple = (),
 ) -> str:
     """`triggers`: views from `activities._trigger_view` (triggerId, source, admission, text, who, where, threaded,
     pinnedSpecialist, routedTo); `roster`: registry rows (id, name, title, status); `open_tasks`: task rows;
@@ -101,13 +104,45 @@ def render_batch(
     lines += [f"- {a['id']} · {names[a['id']]} · {_one_line(a.get('title') or '', 80)}" for a in active] or [
         "- none: Lightbulb does the work itself"
     ]
-    lines += ["", "## Open tasks (id · identifier · title · status · specialist)"]
-    lines += [
-        f"- {t['taskId']} · {t.get('identifier') or ''} · {_one_line(t.get('title') or '', 120)} · {t.get('status')} · "
-        f"{names.get(t.get('specialist'), t.get('specialist')) or '-'}"
-        for t in open_tasks
-    ] or ["- none"]
+
+    def row(t: dict) -> str:
+        return (
+            f"- {t['taskId']} · {t.get('identifier') or ''} · {_one_line(t.get('title') or '', 120)} · "
+            f"{status_words(t)} · {names.get(t.get('specialist'), t.get('specialist')) or '-'}"
+        )
+
+    lines += ["", "## Open tasks (id · identifier · title · state · specialist)"]
+    lines += [row(t) for t in open_tasks] or ["- none"]
+    if closed:
+        lines += ["", "## Recently closed (not open: never pass_through to these)"]
+        lines += [row(t) for t in closed]
     return "\n".join(lines)
+
+
+# The task's state in words the model cannot misread (dev, 5 Nov: `idle` read as "queued", a stopped purchase read
+# as "done"). Keyed by (status, statusReason); a reason not listed falls back to the status's own words.
+_STATUS_WORDS: dict[tuple[str, str | None], str] = {
+    ("proposed", None): "proposed, not started (waits for a person to press Start)",
+    ("queued", None): "queued, not started yet",
+    ("working", None): "working now",
+    ("waiting", None): "waiting on a person's answer or approval",
+    ("waiting", "approval"): "waiting on a person's approval; nothing it needs approved has happened",
+    ("waiting", "budget"): "paused: over its budget",
+    ("idle", None): "finished, result posted",
+    ("idle", "landed"): "finished; its approved action ran",
+    ("idle", "effect_unknown"): "finished, but whether its action ran is unknown",
+    ("failed", None): "failed, did not finish",
+    ("resolved", None): "closed",
+    ("resolved", "stopped"): "stopped by a person; nothing more was done",
+    ("resolved", "dismissed"): "dismissed, never started",
+    ("resolved", "no_answerer"): "closed: nobody could approve it; nothing it needed approved happened",
+    ("resolved", "quiet"): "closed after a quiet week",
+}
+
+
+def status_words(task: dict) -> str:
+    status, reason = task.get("status") or "", task.get("statusReason")
+    return _STATUS_WORDS.get((status, reason)) or _STATUS_WORDS.get((status, None)) or status
 
 
 def _resolve(given: str, trigger_ids: set[str]) -> str | None:

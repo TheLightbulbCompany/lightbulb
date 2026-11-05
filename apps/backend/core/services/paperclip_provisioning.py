@@ -72,6 +72,14 @@ SPECIALIST_HEARTBEAT = {
     "skipTimerWhenNoActionableWork": True,
 }
 
+
+def _specialist_heartbeat() -> dict:
+    """``SPECIALIST_HEARTBEAT``, or no timer while ``NIGHTLY_CEO_HEARTBEATS_ENABLED`` is off (dev)."""
+    if settings.NIGHTLY_CEO_HEARTBEATS_ENABLED:
+        return SPECIALIST_HEARTBEAT
+    return {"enabled": False, "wakeOnDemand": True}
+
+
 #: The starter roles, in seed order. ``messaging``/``user_provision`` check a company's
 #: ``starter_agent_ids`` against exactly this set.
 STARTER_ROLE_KEYS = tuple(row[0] for row in STARTER_ROSTER)
@@ -574,7 +582,7 @@ class PaperclipProvisioning:
                         # The CEO keeps the hire authority Paperclip 813 gave role=ceo by
                         # default; every other agent gets the funnel's False.
                         can_create_agents=starter_key == "ceo",
-                        runtime_config=None if starter_key == "ceo" else {"heartbeat": SPECIALIST_HEARTBEAT},
+                        runtime_config=None if starter_key == "ceo" else {"heartbeat": _specialist_heartbeat()},
                     )
                     if isinstance(agent, dict) and agent.get("id"):
                         starter_agent_ids[starter_key] = agent["id"]

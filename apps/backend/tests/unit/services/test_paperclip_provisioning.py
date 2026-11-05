@@ -361,6 +361,27 @@ async def test_provision_org_seeds_specialists_with_a_daily_timer_heartbeat(monk
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("flag", [True, False])
+async def test_specialist_heartbeat_follows_flag(monkeypatch, flag):
+    """Dev's switch off: specialists are seeded with no timer (wake on demand only)."""
+    from core.repositories import container_repo
+    from core.services import paperclip_provisioning
+    from core.services.paperclip_provisioning import SPECIALIST_HEARTBEAT, PaperclipProvisioning
+
+    admin, repo = _build_provision_org_doubles(monkeypatch)
+    monkeypatch.setattr(container_repo, "get_by_owner_id", AsyncMock(return_value={"hook_token": "h"}))
+    monkeypatch.setattr(paperclip_provisioning.settings, "NIGHTLY_CEO_HEARTBEATS_ENABLED", flag)
+
+    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    await svc.provision_org(owner_id="org_x", owner_user_id="user_owner", owner_email="o@example.com")
+
+    configs = {call.kwargs["role"]: call.kwargs.get("runtime_config") for call in admin.create_agent.call_args_list}
+    assert configs.pop("ceo") is None
+    expected = SPECIALIST_HEARTBEAT if flag else {"enabled": False, "wakeOnDemand": True}
+    assert configs and all(c == {"heartbeat": expected} for c in configs.values())
+
+
+@pytest.mark.asyncio
 async def test_provision_org_seeds_paused_starter_routines_for_specialists_only(monkeypatch):
     """Owner ruling: each specialist ships routines, all PAUSED, output to chat only when named."""
     from core.services.paperclip_provisioning import STARTER_ROUTINES, PaperclipProvisioning

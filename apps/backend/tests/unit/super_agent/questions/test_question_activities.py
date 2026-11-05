@@ -159,3 +159,38 @@ async def test_cancel_open_questions(world):
     [ref] = await _run(tq.open_questions, WS, TASK)
     assert await _run(tq.cancel_open_questions, WS, TASK, PRIYA, "stopped") == [ref.qid]
     assert (await questions_repo.get_question(WS, TASK, ref.qid))["state"] == "cancelled"
+
+
+async def test_no_answerer_on_a_later_effect_writes_nothing(world, monkeypatch):
+    """Answerer lists are all computed before any row: a refusal on the 2nd effect leaves no 1st question open."""
+    await effects_repo.put_effect(WS, _effect())  # send → Sam
+    await effects_repo.put_effect(WS, _effect(call="c2", kind="purchase", operands={"item": "x"}))  # admins
+    monkeypatch.setattr(questions.clerk_admin, "list_organization_members", AsyncMock(return_value=[]))
+    with pytest.raises(ApplicationError):
+        await _run(tq.open_questions, WS, TASK)
+    assert await questions_repo.list_for_task(WS, TASK) == []
+    assert (await tasks_repo.get_task(WS, TASK))["audience"]["userIds"] == [SAM]  # nobody added
+
+
+async def test_reminder_says_answer_for_a_plain_question(world, relay):
+    await questions_repo.open_question(
+        WS,
+        {
+            "taskId": TASK,
+            "qid": "q-ask",
+            "kind": "question",
+            "title": "Which client?",
+            "askedBy": {"kind": "worker"},
+            "answerers": [SAM],
+            "answererRule": "requester",
+            "baseAnswerers": [SAM],
+        },
+    )
+    await _run(tq.remind_question, WS, TASK, "q-ask")
+    assert relay["push"].await_args.args[1] == "Still waiting: Lightbulb needs your answer"
+
+
+async def test_note_answerers_unavailable_posts_once(world, relay):
+    await _run(tq.note_answerers_unavailable, WS, TASK)
+    kw = relay["post"].await_args.kwargs
+    assert kw["text"].startswith("Couldn't find who can approve") and kw["event_id"].startswith("q-lookup-failed:")

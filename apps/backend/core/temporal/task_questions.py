@@ -97,9 +97,12 @@ class TaskQuestionsMixin:
         try:
             refs = await _act("open_questions", self._ws, self._task_id, result_type=list[QuestionRef])
         except ActivityError as err:
-            if _error_type(err) != "NoAnswerer":
-                raise
-            await self._transition("resolved", "no_answerer")  # nobody can answer: never a silent wait
+            if _error_type(err) == "NoAnswerer":
+                await self._transition("resolved", "no_answerer")  # nobody can answer: never a silent wait
+            else:
+                # Clerk/policy unreachable after retries (spec 05 R5): stay waiting, say so; a reply re-runs the
+                # Worker, whose repeated call asks again.
+                await _act("note_answerers_unavailable", self._ws, self._task_id)
             return
         now = workflow.now()
         for ref in refs:
@@ -110,22 +113,23 @@ class TaskQuestionsMixin:
             await _act("relay_question", self._ws, self._task_id, ref.qid)
 
     async def _q_on_waiting(self) -> None:
-        """Wait for the earliest reminder (or anything that wakes the task); remind each Question once."""
-        due = [t for q, t in self._q_remind_at.items() if q in self._open_qs]
-        if not due:
-            return
-        wait = max(min(due) - workflow.now(), timedelta(0))
-        try:
-            await workflow.wait_condition(lambda: self._woken() or not self._open_qs, timeout=wait)
-            return
-        except TimeoutError:
-            pass
-        now = workflow.now()
-        for qid, at in list(self._q_remind_at.items()):
-            if at <= now:
-                del self._q_remind_at[qid]
-                if qid in self._open_qs:
-                    await _act("remind_question", self._ws, self._task_id, qid)
+        """While a Question is open the task waits here, with no deadline: the 7-day quiet resolve never ends a task
+        that is waiting on a person. Reminds each Question once at +24 h. Returns when something wakes the task or
+        no Question is open any more."""
+        while self._open_qs:
+            due = [t for q, t in self._q_remind_at.items() if q in self._open_qs]
+            wait = max(min(due) - workflow.now(), timedelta(0)) if due else None
+            try:
+                await workflow.wait_condition(lambda: self._woken() or not self._open_qs, timeout=wait)
+                return
+            except TimeoutError:
+                pass
+            now = workflow.now()
+            for qid, at in list(self._q_remind_at.items()):
+                if at <= now:
+                    del self._q_remind_at[qid]
+                    if qid in self._open_qs:
+                        await _act("remind_question", self._ws, self._task_id, qid)
 
     async def _q_on_stop(self, by_user_id: str) -> None:
         if self._open_qs:
@@ -174,11 +178,12 @@ async def open_questions(ws: str, task_id: str) -> list[QuestionRef]:
     if task is None:
         raise _fail(LookupError(f"task {task_id} not found"))
     refs: dict[str, QuestionRef] = {}
+    new: list[dict] = []
     for effect in await effects_repo.effects_of_task(ws, task_id):
         if effect["state"] != "proposed":
             continue
         qid = effect.get("questionId") or questions.qid_for(effect["idemKey"])
-        if qid in refs:
+        if qid in refs or any(q["qid"] == qid for q in new):
             continue
         existing = await questions_repo.get_question(ws, task_id, qid)
         if existing is not None:
@@ -193,9 +198,8 @@ async def open_questions(ws: str, task_id: str) -> list[QuestionRef]:
         try:
             ids, rule, base = await questions.answerers(ws, task, kind, subkind, app=app)
         except questions.NoAnswerer as err:
-            raise _fail(err) from err
-        row, _ = await questions_repo.open_question(
-            ws,
+            raise _fail(err) from err  # before any row is written: no half-opened set
+        new.append(
             {
                 "taskId": task_id,
                 "qid": qid,
@@ -210,9 +214,12 @@ async def open_questions(ws: str, task_id: str) -> list[QuestionRef]:
                 "operandsHash": effect["operandsHash"],
                 "effectIdemKey": effect["idemKey"],
                 "preview": {"kind": effect["kind"], **(effect.get("operands") or {})},
-            },
+            }
         )
-        refs[qid] = QuestionRef(qid, list(row["answerers"]))
+    # Every answerer list is known; only now write (each open is idempotent, so a retry completes the set).
+    for q in new:
+        row, _ = await questions_repo.open_question(ws, q)
+        refs[q["qid"]] = QuestionRef(q["qid"], list(row["answerers"]))
     return list(refs.values())
 
 
@@ -287,7 +294,8 @@ async def remind_question(ws: str, task_id: str, qid: str) -> None:
     _, body = questions.card_copy(q, label)
     data = {"source": "task_question", "taskId": task_id, "qid": qid}
     for uid in q["answerers"]:
-        await _push_once(f"qremind:{ws}:{qid}:{uid}", uid, f"Still waiting: {label} needs your OK", body, data)
+        need = "needs your answer" if q["kind"] == "question" else "needs your OK"
+        await _push_once(f"qremind:{ws}:{qid}:{uid}", uid, f"Still waiting: {label} {need}", body, data)
 
 
 @activity.defn(name="record_answer")
@@ -336,6 +344,28 @@ async def record_answer(ws: str, task_id: str, ref: AnswerRef) -> AnswerOut:
     return AnswerOut(trigger_id, option)
 
 
+@activity.defn(name="note_answerers_unavailable")
+async def note_answerers_unavailable(ws: str, task_id: str) -> None:
+    """Spec 05 R5: the answerer lookup (Clerk, policy) failed after retries. One line in the task room; the task
+    stays waiting with no open question, and a reply re-runs the Worker, whose repeated call asks again."""
+    from core import tasks_schema as ts
+    from core.repositories import tasks_repo
+    from core.services import task_conversation
+
+    task = await tasks_repo.get_task(ws, task_id)
+    if task is None:
+        return
+    await task_conversation.ensure_task_room(ws, task)
+    await task_conversation.post_as_lightbulb(
+        ws,
+        ts.task_room_id(task_id),
+        text="Couldn't find who can approve this right now. Reply here to try again.",
+        event_id=f"q-lookup-failed:{task_id}:{task.get('attemptCount', 0)}",
+        specialist=task.get("specialist"),
+        task_refs=[{"taskId": task_id, "role": "started"}],
+    )
+
+
 @activity.defn(name="cancel_open_questions")
 async def cancel_open_questions(ws: str, task_id: str, by: str, reason: str) -> list[str]:
     from core.repositories import questions_repo
@@ -343,4 +373,11 @@ async def cancel_open_questions(ws: str, task_id: str, by: str, reason: str) -> 
     return await questions_repo.cancel_open(ws, task_id, by=by, reason=reason)
 
 
-ACTIVITIES = [open_questions, relay_question, remind_question, record_answer, cancel_open_questions]
+ACTIVITIES = [
+    open_questions,
+    relay_question,
+    remind_question,
+    record_answer,
+    note_answerers_unavailable,
+    cancel_open_questions,
+]

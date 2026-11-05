@@ -53,6 +53,10 @@ class QFakes(Fakes):
         async def record_answer(ws: str, task_id: str, ref: AnswerRef) -> AnswerOut:
             return await f._call("record_answer", ws, task_id, ref)
 
+        @activity.defn(name="note_answerers_unavailable")
+        async def note_answerers_unavailable(ws: str, task_id: str) -> None:
+            await f._call("note_answerers_unavailable", ws, task_id)
+
         @activity.defn(name="cancel_open_questions")
         async def cancel_open_questions(ws: str, task_id: str, by: str, reason: str) -> list[str]:
             return await f._call("cancel_open_questions", ws, task_id, by, reason, default=[])
@@ -63,6 +67,7 @@ class QFakes(Fakes):
             relay_question,
             remind_question,
             record_answer,
+            note_answerers_unavailable,
             cancel_open_questions,
         ]
 
@@ -211,3 +216,37 @@ async def test_reminder_once_after_24h(temporal_env, fakes):
         await temporal_env.sleep(timedelta(hours=48))
         await asyncio.sleep(0.3)
     assert fakes.args("remind_question") == [(WS, TID, "q-1")]
+
+
+async def test_open_question_holds_the_task_past_the_quiet_resolve(temporal_env, fakes):
+    """A task waiting on a person is never auto-resolved as quiet (7 days); it waits for the answer."""
+    async with worker(temporal_env, fakes) as q:
+        h = await _start(temporal_env, q)
+        await _until(lambda: "relay_question" in fakes.names())
+        await temporal_env.sleep(timedelta(days=9))
+        await asyncio.sleep(0.3)
+        assert ("resolved", "quiet") not in [(a[2], a[3]) for a in fakes.args("transition")]
+        assert fakes.args("remind_question") == [(WS, TID, "q-1")]
+        await h.execute_update(TaskWorkflow.answer, _press())
+        await _until(lambda: fakes.names().count("begin_attempt") == 2)
+
+
+async def test_answerer_lookup_error_leaves_the_task_waiting(temporal_env, fakes):
+    """Clerk down after the retries: a line in the task room, no failure, and a reply re-runs the Worker."""
+    calls = {"n": 0}
+
+    def flaky(*_):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ApplicationError("clerk down", type="HTTPStatusError", non_retryable=True)
+        return [QuestionRef("q-1", [SAM])]
+
+    fakes.turns = [WorkerTurnOut("waiting_approval"), WorkerTurnOut("waiting_approval")]
+    fakes.behaviour["open_questions"] = flaky
+    async with worker(temporal_env, fakes) as q:
+        h = await _start(temporal_env, q)
+        await _until(lambda: "note_answerers_unavailable" in fakes.names())
+        assert "transition" not in fakes.names() and "relay_question" not in fakes.names()
+        await h.signal(TaskWorkflow.input, TaskInputRef("chat:try-again", "message"))
+        await _until(lambda: "relay_question" in fakes.names())
+    assert fakes.names().count("begin_attempt") == 2

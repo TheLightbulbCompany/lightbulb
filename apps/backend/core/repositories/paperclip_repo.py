@@ -53,6 +53,7 @@ from core import tasks_schema as ts
 from core.dynamodb import get_table, run_in_thread, utc_now_iso
 from core.encryption import decrypt, encrypt
 from core.services.status_events import publish_status_changed
+from core.services.super_agent_flags import env_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -381,8 +382,8 @@ class PaperclipRepo:
 
     def _meta_on_tasks(self) -> bool:
         """Whether workspace rows and pending briefs live on the ``tasks`` table (spec 03 §4.4).
-        PR 6b makes this the super-agent env master, after the dev copy verifies."""
-        return False
+        The env master: dev only, and only after ``copy_workspace_meta --all --verify`` is clean."""
+        return env_enabled()
 
     def _ws_table(self):
         return get_table("tasks") if self._meta_on_tasks() else self._table()

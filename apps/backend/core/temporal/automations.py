@@ -27,7 +27,7 @@ PREVIOUS_RESULT_CHARS = 4_000
 PAYLOAD_EXCERPT_CHARS = 2_000
 BREAKER_FAILURES = 3
 PATCH_AUTOMATION_RUN = "A-automation-run-v1"
-# A Schedule or webhook fire is skipped (no task, no model call) once no human has acted in the workspace
+# A Schedule fire is skipped (no task, no model call) once no human has acted in the workspace
 # for this long; the next fire after anyone sends a message runs again.
 # ponytail: workspace-wide `last_interactive_at`, one clock for every automation; per-automation if asked.
 IDLE_DAYS = 3
@@ -279,7 +279,7 @@ async def fire_automation(inp: FireInput, at_ms: int) -> str:
     row = await repo.get_schedule(ws, inp.schedule_id) if inp.schedule_id else None
     if row is None or row["status"] != "active":
         return "skipped:paused"
-    if inp.source != "manual" and await _idle(ws, at_ms):  # Run now has a person behind it
+    if inp.source == "schedule" and await _idle(ws, at_ms):  # a webhook is a real event, Run now a person
         await repo.note_skip(ws, row["scheduleId"], reason="idle")
         return "skipped:idle"
     trigger_id = _fire_trigger_id(inp, row, at_ms)

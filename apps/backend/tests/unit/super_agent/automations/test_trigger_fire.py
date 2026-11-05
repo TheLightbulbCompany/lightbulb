@@ -142,6 +142,9 @@ async def test_idle_workspace_skips_until_a_human_is_back(env):
     assert await fire_automation(manual, at) == "manual:s1:01HZZ"  # Run now has a person behind it
     assert "lastSkip" not in await repo.get_schedule(WS, "s1")  # a run supersedes the skip
     await repo.close_run(WS, "s1", env.enqueued[0][0].ref["taskId"], failed=False)
+    hook = FireInput(ws=WS, schedule_id="s1", source="webhook", public_id="pub_1", dedupe_key="evt_1")
+    assert await fire_automation(hook, at) == "hook:pub_1:evt_1"  # a real external event always fires
+    await repo.close_run(WS, "s1", env.enqueued[1][0].ref["taskId"], failed=False)
     env.container["last_interactive_at"] = at // 1000 - 60  # someone sent a message: fires run again
     assert (await fire_automation(_sched_input(), at)).startswith("sched:")
 

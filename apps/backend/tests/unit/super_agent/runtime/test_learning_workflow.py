@@ -277,3 +277,18 @@ async def test_two_tasks_same_specialist_serialized_no_lost_entries(temporal_env
     for t in (T1, T2):
         assert (await learning_repo.get(WS, SPEC, t, 1))["report"]["applied"] is True
     runtime_runs.curate.assert_awaited_with(WS, SPEC)
+
+
+@pytest.mark.parametrize("refusal", [runtime_runs.RunRefused("invalid_request"), runtime_runs.RunLost("not_found")])
+async def test_curate_refusal_is_transient(monkeypatch, refusal):
+    """#4772 review: the bridge's 60 s roster cache answers 400 for a specialist written just now, and
+    an image without the route answers 404. Both retry, with backoff that outlasts the cache."""
+    monkeypatch.setattr(runtime_runs, "curate", AsyncMock(side_effect=refusal))
+    with pytest.raises(runtime_runs.RuntimeBusy):
+        await learning.curate_specialist(WS, SPEC)
+    policy = learning._CURATE["retry_policy"]
+    waits = [
+        policy.initial_interval.total_seconds() * policy.backoff_coefficient**i
+        for i in range(policy.maximum_attempts - 1)
+    ]
+    assert sum(waits) > 60 and not policy.non_retryable_error_types

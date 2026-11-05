@@ -227,27 +227,31 @@ def codex_refresh_delegate(access_token: str, refresh_token: str) -> dict:
 # ---- X / QuickBooks / Instagram: the token-free CLI files ---------------------------------------
 def apply_cli_tokens(agent_id: str, tokens: dict[str, str], expires_at: dict[str, int]) -> list[str]:
     """Patch the vended access token (and its expiry) into each CLI file the backend custodies for
-    this workspace. Local only: the file is marked brokered so `sync.save_rotated_cli_credentials`
-    never reads the patch as a rotation to write back. Returns the rels patched."""
-    dest = sync._profile_dir(agent_id)
+    this workspace, in EVERY local profile: the grant is owner-level, and xurl rides the ``$HOME``
+    of whichever profile first ran a shell (sync.save_rotated_cli_credentials), not necessarily
+    ``agent_id``'s. Local only: each file is marked brokered so `sync.save_rotated_cli_credentials`
+    never reads the patch as a rotation to write back. Returns the agent-relative paths patched."""
+    profiles = sync.HOME / "profiles"
+    agents = sorted({agent_id, *(p.name for p in profiles.iterdir() if p.is_dir())} if profiles.is_dir() else {agent_id})
     done: list[str] = []
     for key, rel in CLI_FILES.items():
         token = tokens.get(key)
         if not token:
             continue
-        path = dest / rel
-        if not path.is_file():
-            continue  # not materialized here (not connected, or the pull is still due): nothing to fill
-        try:
-            raw = path.read_bytes()
-            new = _PATCHERS[key](raw, token, int(expires_at.get(key) or 0))
-            if new != raw:
-                _atomic_write(path, new, like=path)
-        except Exception:  # noqa: BLE001 -- the CLI then fails as it does today with a stale token
-            log.warning("brokered %s token not written for agent=%s", key, agent_id, exc_info=True)
-            continue
-        sync.mark_brokered(agent_id, rel)
-        done.append(rel)
+        for agent in agents:
+            path = sync._profile_dir(agent) / rel
+            if not path.is_file():
+                continue  # not materialized here (not connected, or the pull is still due): nothing to fill
+            try:
+                raw = path.read_bytes()
+                new = _PATCHERS[key](raw, token, int(expires_at.get(key) or 0))
+                if new != raw:
+                    _atomic_write(path, new, like=path)
+            except Exception:  # noqa: BLE001 -- the CLI then fails as it does today with a stale token
+                log.warning("brokered %s token not written for agent=%s", key, agent, exc_info=True)
+                continue
+            sync.mark_brokered(agent, rel)
+            done.append(f"{agent}/{rel}")
     return done
 
 

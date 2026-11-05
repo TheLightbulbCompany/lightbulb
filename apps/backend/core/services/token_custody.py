@@ -80,6 +80,34 @@ def _needs_refresh(row: dict, presented_sha256: str | None, force: bool) -> bool
     return bool(expires_at) and expires_at - time.time() < REFRESH_WINDOW_S
 
 
+async def task_vm_allowed(owner_id: str) -> bool:
+    """Spec 13 §5.4: the ONE rule deciding whether a Worker task gets its own AgentCore session.
+
+    False while any rotating credential of the workspace is still the VM's to refresh -- a second
+    VM would spend the single-use refresh token (ChatGPT, X, QuickBooks): the model provider is
+    ChatGPT login and the connector's token row is not ``custody: backend``, or a connected X or
+    QuickBooks row is not. Instagram's token has no refresh token and never blocks. Read every
+    attempt (one consistent token read, one consistent integrations query), never cached: a
+    workspace that switches to ChatGPT login mid-task finishes its running attempt where it is and
+    its next attempt runs in the shared VM."""
+    from core.repositories import integrations_repo
+
+    choice, _ = await resolve_provider_choice(owner_id)
+    if choice == "chatgpt_oauth":
+        user = await oauth_service.resolve_token_owner(owner_id=owner_id)
+        row = await oauth_service.get_token_row(user, consistent=True, bound_to=owner_id)
+        if row is None or row.get("custody") != "backend":
+            return False
+    for row in await integrations_repo.list_for_owner(owner_id, consistent=True):
+        if (
+            row.get("provider") in ("x", "quickbooks")
+            and row.get("status", "connected") == "connected"
+            and row.get("custody") != "backend"
+        ):
+            return False
+    return True
+
+
 def _vend(tokens: dict, row: dict, *, refreshed: bool) -> CodexVend:
     return CodexVend(
         access_token=tokens["access_token"],

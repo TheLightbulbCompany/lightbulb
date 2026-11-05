@@ -16,12 +16,20 @@ from core.config import settings
 from core.repositories import container_repo
 from core.services import local_session_grants, runtime_transport
 from core.services.messaging import ApiProblem
+from core.services.super_agent_flags import flags_for
 from core.tasks_schema import router_session_key, worker_session_key
 
 logger = logging.getLogger(__name__)
 
 CREATE_TIMEOUT_S = 90  # a parked workspace's cold start (54-57 s measured) plus the accept
 POLL_TIMEOUT_S = 25
+CURATE_TIMEOUT_S = 300  # the curator's synchronous review on the workspace VM, under its profile lock
+#: Per-task AgentCore sessions a workspace may have at once (contracts-v2 §9: the shared VM keeps its
+#: cap of 3; O's slot code reads this for task sessions). ponytail: one fixed cap for every plan --
+#: make it per plan when a customer needs more.
+MAX_TASK_VMS_PER_WORKSPACE = 10
+
+SessionKind = Literal["workspace", "task"]
 
 
 class RunLost(Exception):
@@ -50,6 +58,10 @@ class RunIdentity:
     mode: Literal["worker", "router"] = "worker"
     lane: str | None = None
     model: str | None = None  # Router runs: the cheaper model (§9); the bridge overrides the profile's
+    # "task": the run lives in its own AgentCore session (`runtime_transport.session_id_for(owner, task_id)`)
+    # and the bridge latches task mode (read-only specialist profile, task-prefix writes). Decided per attempt
+    # by `session_kind_for`, written on the Attempt row by O's `begin_attempt`, never cached on the task.
+    session_kind: SessionKind = "workspace"
 
     @property
     def session_key(self) -> str:
@@ -66,7 +78,7 @@ class RunIdentity:
             "agentId": self.agent_id,
             "sessionKey": self.session_key,
             "mode": self.mode,
-            "session": {"kind": "workspace"},
+            "session": {"kind": self.session_kind},
             **({"runSecret": self.run_secret} if self.run_secret else {}),
         }
         if self.mode == "router":
@@ -127,15 +139,28 @@ async def _container(owner_id: str) -> dict:
     return container
 
 
-async def _call(owner_id: str, path: str, *, method: str, body: dict, timeout_s: float, grant: str | None = None):
+async def _call(
+    owner_id: str,
+    path: str,
+    *,
+    method: str,
+    body: dict,
+    timeout_s: float,
+    grant: str | None = None,
+    task_id: str | None = None,
+):
     container = await _container(owner_id)
     headers = {"Authorization": f"Bearer {container.get('gateway_token') or ''}"}
     if grant is not None:
         headers["X-Lightbulb-Local-Session-Token"] = grant
+    # The workspace path calls the transport exactly as before; only a task session names its task.
+    session = {"task_id": task_id} if task_id is not None else {}
     try:
         response = await runtime_transport.request(
-            container, path, method=method, json_body=body, headers=headers, timeout_s=timeout_s
+            container, path, method=method, json_body=body, headers=headers, timeout_s=timeout_s, **session
         )
+    except runtime_transport.TaskSessionRefused as exc:
+        raise RunRefused(f"task_session_refused: {exc}") from exc  # a programming error, never retried
     except (httpx.HTTPError, ValueError) as exc:
         raise RuntimeBusy(type(exc).__name__) from exc
     data = response.json()
@@ -168,6 +193,43 @@ def _run_path(identity: RunIdentity, suffix: str = "") -> str:
     return f"/internal/v1/runs/{identity.run_id}{suffix}"
 
 
+def _task_session(identity: RunIdentity) -> dict:
+    return {"task_id": identity.task_id} if identity.session_kind == "task" else {}
+
+
+async def session_kind_for(owner_id: str) -> SessionKind:
+    """Where this attempt runs: its own task session iff the switch is on for the workspace AND no
+    rotating credential is still the VM's to refresh (`token_custody.task_vm_allowed`, spec 13 §5.4).
+    Called by O's `begin_attempt` at every attempt start; the answer is never cached on the task."""
+    if not await flags_for(owner_id):
+        return "workspace"
+    from core.services import token_custody
+
+    return "task" if await token_custody.task_vm_allowed(owner_id) else "workspace"
+
+
+async def stop_task_session(owner_id: str, task_id: str) -> bool:
+    """Stop the task's own AgentCore session (and clear only its warm row). False when the workspace
+    has no runtime; otherwise `hermes_provisioning.stop_runtime_session`'s answer. Called by V's
+    `close_task_attempt` after the seal, before the learning merge is signalled."""
+    from core.services import hermes_provisioning
+
+    container = await container_repo.get_by_owner_id(owner_id) or {}
+    arn = container.get("agentcore_runtime_arn")
+    if not arn:
+        return False
+    return await hermes_provisioning.stop_runtime_session(owner_id, arn, task_id=task_id)
+
+
+async def curate(owner_id: str, agent_id: str) -> dict:
+    """Run the curator for one specialist on the WORKSPACE session (`POST /internal/v1/curate`,
+    spec 07 §3.5: never in a Worker VM). Returns the bridge's `{"ran", "changed"}`."""
+    data = await _call(
+        owner_id, "/internal/v1/curate", method="POST", body={"agentId": agent_id}, timeout_s=CURATE_TIMEOUT_S
+    )
+    return {"ran": bool(data.get("ran")), "changed": bool(data.get("changed"))}
+
+
 async def create_run(owner_id: str, identity: RunIdentity, request: RunRequest) -> RunStatus:
     try:
         grant = local_session_grants.mint_task(
@@ -183,13 +245,19 @@ async def create_run(owner_id: str, identity: RunIdentity, request: RunRequest) 
         body={"identity": identity.to_wire(), "request": request.to_wire()},
         timeout_s=CREATE_TIMEOUT_S,
         grant=grant,
+        **_task_session(identity),
     )
     return _status(data)
 
 
 async def get_run(owner_id: str, identity: RunIdentity) -> RunStatus:
     data = await _call(
-        owner_id, _run_path(identity), method="GET", body={"identity": identity.to_wire()}, timeout_s=POLL_TIMEOUT_S
+        owner_id,
+        _run_path(identity),
+        method="GET",
+        body={"identity": identity.to_wire()},
+        timeout_s=POLL_TIMEOUT_S,
+        **_task_session(identity),
     )
     return _status(data)
 
@@ -201,6 +269,7 @@ async def steer_run(owner_id: str, identity: RunIdentity, text: str, kind: Liter
         method="POST",
         body={"identity": identity.to_wire(), "text": text, "kind": kind},
         timeout_s=POLL_TIMEOUT_S,
+        **_task_session(identity),
     )
     return bool(data.get("accepted"))
 
@@ -212,5 +281,6 @@ async def stop_run(owner_id: str, identity: RunIdentity) -> RunStatus:
         method="POST",
         body={"identity": identity.to_wire()},
         timeout_s=POLL_TIMEOUT_S,
+        **_task_session(identity),
     )
     return _status(data)  # "stopping" (202) while the bridge interrupts it, else the terminal status

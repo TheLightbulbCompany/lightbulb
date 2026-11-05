@@ -142,10 +142,32 @@ async def _free_stale_run(ws: str, row: dict) -> bool:
         return False
     task = await tasks_repo.get_task(ws, task_id)
     if task is not None and task.get("status") not in ("resolved", "failed"):
-        return False
+        # The row can say idle while its workflow is gone (gate run 3: end_attempt failed, the workflow failed
+        # and closed nothing): a closed workflow frees the claim too; anything but completed counts as failed.
+        closed = await _closed_workflow(ws, task_id)
+        if closed is None:
+            return False
+        return await _close_run(ws, row["scheduleId"], task_id, closed != "COMPLETED")
     # a missing task is neither a failure nor a success: the breaker count stays; a failed one counts
     failed = None if task is None else task.get("status") == "failed"
     return await _close_run(ws, row["scheduleId"], task_id, failed)
+
+
+async def _closed_workflow(ws: str, task_id: str) -> str | None:
+    """The task workflow's close status name (COMPLETED, FAILED, TERMINATED…), or None while it runs or when
+    Temporal cannot say (not found, unreachable): only a workflow seen closed frees a claim."""
+    from temporalio.client import WorkflowExecutionStatus
+    from temporalio.service import RPCError
+
+    from core.temporal.client import task_handle
+
+    try:
+        status = (await task_handle(ws, task_id).describe()).status
+    except RPCError:
+        return None
+    if status is None or status in (WorkflowExecutionStatus.RUNNING, WorkflowExecutionStatus.CONTINUED_AS_NEW):
+        return None
+    return status.name
 
 
 @workflow.defn

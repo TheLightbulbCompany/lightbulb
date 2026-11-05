@@ -65,6 +65,7 @@ async def test_happy_path_attempt(temporal_env, fakes):
         "begin_attempt",
         "worker_turn",
         "end_attempt",
+        "close_automation_run",  # lane A: an automation run closes after its attempt ended
         "transition",
     ]
     assert fakes.args("end_attempt")[0][3] == "completed"

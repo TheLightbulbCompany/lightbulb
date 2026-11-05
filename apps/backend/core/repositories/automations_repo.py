@@ -154,7 +154,7 @@ async def claim_run(ws: str, sid: str, task_id: str) -> bool:
     row = await _conditional(
         ws,
         ts.schedule_sk(sid),
-        {"activeRunTaskId": task_id},
+        {"activeRunTaskId": task_id, "lastTaskId": task_id},  # the run in flight is also the latest run
         condition="#s = :active AND (attribute_not_exists(activeRunTaskId) "
         "OR attribute_type(activeRunTaskId, :nul) OR activeRunTaskId = :task) "
         "AND NOT contains(runTaskIds, :task)",

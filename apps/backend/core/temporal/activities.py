@@ -541,12 +541,17 @@ async def _recent_lines(ws: str, trig: dict, batch: set[str]) -> list[dict]:
         if row.get("deletedAt") or row.get("progress") or ts.trigger_id("chat", row.get("messageId", "")) in batch:
             continue
         author = row.get("author") or {}
+        cards = []
+        for card in row.get("taskRefs") or []:
+            # The card's task as it is now: one older than a day, or past the Open scan, is in neither task list.
+            task = await tasks_repo.get_task(ws, card.get("taskId") or "")
+            cards.append({**card, "state": router_prompt.status_words(task)} if task else card)
         out.append(
             {
                 "who": author.get("displayName"),
                 "text": row.get("editedText") or row.get("text") or "",
                 "lightbulb": author.get("kind") == "agent" and author.get("id") == front,
-                "cards": row.get("taskRefs") or [],
+                "cards": cards,
             }
         )
     return out

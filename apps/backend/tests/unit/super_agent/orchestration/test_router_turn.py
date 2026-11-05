@@ -714,6 +714,42 @@ async def test_router_sees_which_lightbulb_lines_really_started_work(world, monk
 
 
 @pytest.mark.asyncio
+async def test_recent_cards_carry_their_task_state_now(world, monkeypatch):
+    """U4 (dev 5 Nov): a room summary read cards with no state. A card's task closed over a day ago, or past the
+    Open scan, is in neither task list, so the card itself carries the task's state as it is now."""
+    old = str(uuid.uuid4())
+
+    async def get_msg(room_id, message_id):
+        return {"messageId": message_id, "messageSeq": 5, "text": "summarize this room", "author": {}}
+
+    async def before(room_id, seq, limit):
+        return [
+            {
+                "messageId": "a",
+                "author": {"kind": "agent", "id": CEO, "displayName": "Lightbulb"},
+                "text": "Growth has the checklist.",
+                "taskRefs": [{"taskId": old, "role": "started"}, {"taskId": "gone", "role": "started"}],
+            }
+        ]
+
+    real_get = acts.tasks_repo.get_task
+
+    async def get_task(ws, task_id):
+        return (
+            {"taskId": old, "status": "idle", "statusReason": None} if task_id == old else await real_get(ws, task_id)
+        )
+
+    monkeypatch.setattr(acts.messaging_repo, "get_message_by_id", get_msg)
+    monkeypatch.setattr(acts.messaging_repo, "list_messages_before", before)
+    monkeypatch.setattr(acts.tasks_repo, "get_task", get_task)
+    t1 = await _trig("chat:m1")
+    world["decisions"] = [{"kind": "reply", "triggerIds": [t1], "text": "Done."}]
+    await _run([t1])
+    prompt = world["runs"][0][1].input
+    assert f"[cards: {old} started (finished, result posted), gone started]" in prompt
+
+
+@pytest.mark.asyncio
 async def test_recent_follows_the_thread_and_the_first_room_trigger(world, monkeypatch):
     """A thread follow-up ("make it shorter") sees its thread; Recent comes from the first trigger with a room
     message even when another trigger leads the batch; Lightbulb's own lines keep up to 1200 characters."""

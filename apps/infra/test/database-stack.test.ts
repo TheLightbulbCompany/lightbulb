@@ -467,3 +467,16 @@ describe("DatabaseStack — workspace join links", () => {
     });
   });
 });
+
+describe("DatabaseStack — containers table", () => {
+  test("per-task AgentCore session rows expire by TTL (session_ttl), in every env", () => {
+    // Only `__session__#<owner>#task#<task>` rows carry session_ttl (container_repo): workspace
+    // rows and container rows never do, so the TTL is inert for them.
+    for (const environment of ["dev", "prod"] as const) {
+      buildStack(environment).hasResourceProperties("AWS::DynamoDB::Table", {
+        TableName: `lightbulb-${environment}-containers`,
+        TimeToLiveSpecification: { AttributeName: "session_ttl", Enabled: true },
+      });
+    }
+  });
+});

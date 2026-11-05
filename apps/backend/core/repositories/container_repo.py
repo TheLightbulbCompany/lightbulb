@@ -1622,6 +1622,7 @@ async def _compare_browser_attr(owner_id: str, attr: str, expected, value) -> bo
 # wake). Its own reserved row, like the browser row above: the owner row a caller holds may
 # predate a stop, and a stale "warm" read is the one direction that re-opens the split-brain race.
 SESSION_KEY_PREFIX = "__session__#"
+SESSION_TTL_MARGIN_S = 3600
 
 
 def _session_key(owner_id: str, task_id: str | None = None) -> dict:
@@ -1645,15 +1646,24 @@ def try_take_wake_lease_sync(
 ) -> bool:
     """Take the cold-wake lease: only when nobody holds a live one AND the session is not warm
     on this runtime."""
+    update = "SET waking_until = :lease, wake_tok = :tok"
+    values: dict = {":lease": now + lease_s, ":tok": token, ":now": now, ":arn": arn}
+    if task_id is not None:
+        # One row per task would otherwise outlive its task forever: a session is gone 8 h after
+        # its claim (AgentCore maxLifetime), and every new claim takes this lease again.
+        from core.services.agentcore_runtime import MAX_LIFETIME_S
+
+        update += ", session_ttl = :ttl"
+        values[":ttl"] = now + MAX_LIFETIME_S + SESSION_TTL_MARGIN_S
     try:
         _get_table().update_item(
             Key=_session_key(owner_id, task_id),
-            UpdateExpression="SET waking_until = :lease, wake_tok = :tok",
+            UpdateExpression=update,
             ConditionExpression=(
                 "(attribute_not_exists(waking_until) OR waking_until < :now)"
                 " AND (attribute_not_exists(warm_until) OR warm_until <= :now OR arn <> :arn)"
             ),
-            ExpressionAttributeValues={":lease": now + lease_s, ":tok": token, ":now": now, ":arn": arn},
+            ExpressionAttributeValues=values,
         )
         return True
     except ClientError as exc:

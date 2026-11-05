@@ -122,6 +122,9 @@ export class DatabaseStack extends cdk.Stack {
 
     this.containersTable = createTable("ContainersTable", "containers", {
       partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
+      // Only per-task AgentCore session rows (`__session__#<owner>#task#<task>`, super-agent
+      // per-task VMs) carry it: a task's warm estimate is dead 8 h after its claim.
+      timeToLiveAttribute: "session_ttl",
     });
     this.containersTable.addGlobalSecondaryIndex({
       indexName: "status-index",

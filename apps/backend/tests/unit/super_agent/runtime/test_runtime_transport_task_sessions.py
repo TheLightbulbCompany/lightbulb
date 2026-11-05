@@ -49,8 +49,12 @@ class _Body:
         return json.dumps({"status": 200, "body": {"ok": True}}).encode()
 
 
-@pytest.mark.asyncio
-async def test_request_routes_task_id_to_invoke(monkeypatch):
+def _task_body(kind: str = "task") -> dict:
+    return {"identity": {"run_id": "r1", "task_id": TASK, "session": {"kind": kind}}}
+
+
+@pytest.fixture
+def invoked(monkeypatch):
     seen: list[str] = []
 
     class _Client:
@@ -59,10 +63,53 @@ async def test_request_routes_task_id_to_invoke(monkeypatch):
             return {"statusCode": 200, "response": _Body()}
 
     monkeypatch.setattr("boto3.client", lambda *a, **k: _Client())
-    container = {"agentcore_runtime_arn": ARN, "owner_id": OWNER}
-    await rt.request(container, "/x", task_id=TASK)
-    await rt.request(container, "/x")
-    assert seen == [rt.session_id_for(OWNER, TASK), rt.session_id_for(OWNER)]
+    return seen
+
+
+CONTAINER = {"agentcore_runtime_arn": ARN, "owner_id": OWNER}
+
+
+@pytest.mark.asyncio
+async def test_request_routes_task_id_to_invoke(invoked):
+    await rt.request(CONTAINER, "/internal/v1/runs", json_body=_task_body(), task_id=TASK)
+    await rt.request(CONTAINER, "/x")
+    assert invoked == [rt.session_id_for(OWNER, TASK), rt.session_id_for(OWNER)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "method", "body"),
+    [
+        ("/internal/v1/runs/r1", "GET", _task_body()),
+        ("/internal/v1/runs/r1/steer", "POST", {**_task_body(), "text": "hi", "kind": "input"}),
+        ("/internal/v1/runs/r1/stop", "POST", _task_body()),
+    ],
+)
+async def test_task_session_allowed_for_every_task_run_call(invoked, path, method, body):
+    await rt.request(CONTAINER, path, method=method, json_body=body, task_id=TASK)
+    assert invoked == [rt.session_id_for(OWNER, TASK)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        ("/plugins/lightbulb-channel/rpc", _task_body()),  # not a runs-v1 call
+        ("/internal/v1/curate", {"agentId": "a1"}),
+        ("/internal/v1/runsx", _task_body()),
+        ("/internal/v1/runs", _task_body("workspace")),  # a workspace run on a task session
+        ("/internal/v1/runs", {"identity": {"task_id": TASK}}),
+        ("/internal/v1/runs", None),
+        ("/internal/v1/runs", {"identity": {"task_id": "another", "session": {"kind": "task"}}}),
+    ],
+)
+async def test_task_session_refused_for_anything_but_a_task_run(invoked, path, body):
+    """16 Sep invariant: only a run that says ``session.kind == "task"`` may reach a task session.
+    A bridge without task mode refuses that kind, so nothing else can make a second microVM write
+    ``<owner>/hermes/``."""
+    with pytest.raises(rt.TaskSessionRefused):
+        await rt.request(CONTAINER, path, json_body=body, task_id=TASK)
+    assert invoked == []
 
 
 @pytest.fixture
@@ -107,6 +154,18 @@ def test_wake_rows_are_per_session(table):
     assert "warm_until" not in container_repo.get_session_sync(OWNER)
     container_repo.extend_session_warm_sync(OWNER, warm_until=now + 900, task_id=TASK)
     assert container_repo.get_session_sync(OWNER, task_id=TASK)["warm_until"] == now + 900
+
+
+def test_task_session_row_expires(table):
+    from core.services.agentcore_runtime import MAX_LIFETIME_S
+
+    now = int(time.time())
+    assert container_repo.try_take_wake_lease_sync(OWNER, arn=ARN, token="t", now=now, lease_s=120, task_id=TASK)
+    assert container_repo.try_take_wake_lease_sync(OWNER, arn=ARN, token="w", now=now, lease_s=120)
+    task_row = container_repo.get_session_sync(OWNER, task_id=TASK)
+    # Past the session's 8 h lifetime the estimate is meaningless: DynamoDB TTL removes the row.
+    assert task_row["session_ttl"] == now + MAX_LIFETIME_S + 3600
+    assert "session_ttl" not in container_repo.get_session_sync(OWNER)
 
 
 def test_ensure_session_uses_the_task_row(table):

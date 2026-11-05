@@ -65,6 +65,30 @@ _NOT_READY_SNIPPETS = ("not ready", "not in valid state", "is still creating", "
 _EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=16, thread_name_prefix="agentcore-invoke")
 
 
+class TaskSessionRefused(ValueError):
+    """A call with ``task_id`` that is not a runs-v1 call for that task's own task run."""
+
+
+_RUNS_V1 = "/internal/v1/runs"
+
+
+def _check_task_call(path: str, json_body: Any, task_id: str) -> None:
+    """Only a runs-v1 call whose identity is THIS task's run with ``session.kind == "task"`` may
+    reach a task session. That kind is what a bridge without task mode refuses, so a task session
+    is never asked to run anything that would restore and write ``<owner>/hermes/`` -- the 16 Sep
+    two-writers corruption (module docstring). Everything else stays on the workspace session."""
+    identity = json_body.get("identity") if isinstance(json_body, dict) else None
+    session = identity.get("session") if isinstance(identity, dict) else None
+    if (
+        (path == _RUNS_V1 or path.startswith(_RUNS_V1 + "/"))
+        and isinstance(session, dict)
+        and session.get("kind") == "task"
+        and identity.get("task_id") == task_id
+    ):
+        return
+    raise TaskSessionRefused(f"task session refused for {path}")
+
+
 @dataclass(frozen=True)
 class RuntimeResponse:
     """A gateway reply."""
@@ -137,10 +161,15 @@ async def request(
     to pass in. ``content`` is a raw body for proxies that forward bytes verbatim (webhooks);
     it wins over ``json_body``.
 
+    With ``task_id``, only a runs-v1 call for that task's task run is sent (:func:`_check_task_call`);
+    anything else raises :class:`TaskSessionRefused` before any wake or invoke.
+
     Failures are httpx-shaped — ``httpx.ReadTimeout`` when the gateway did not answer in time,
     ``httpx.ConnectError`` for anything else in the way — so a caller's existing
     ``except httpx.…`` covers a microVM exactly as it used to cover a task IP.
     """
+    if task_id is not None:
+        _check_task_call(path, None if content is not None else json_body, task_id)
     return await _request_agentcore(
         container,
         path,

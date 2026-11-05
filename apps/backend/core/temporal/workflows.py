@@ -171,6 +171,8 @@ class TaskWorkflow(TaskQuestionsMixin, AutomationRunMixin, WatchMixin):
         """The task is about to wait for inputs or actions (idle/waiting)."""
         await self._q_on_waiting()
         await self._w_on_waiting()
+        if self._open_qs and not self._woken():  # a watch's give-up opened a Question: Q's wait, no deadline
+            await self._q_on_waiting()
 
     async def _before_attempt(self) -> bool:
         """False ⇒ do not start an attempt now; the workflow waits for the next input or action."""

@@ -929,7 +929,7 @@ WATCH_SCHEMA = {
             "number": {"type": "integer", "description": "pr_checks: the PR number"},
             "url": {"type": "string", "description": "url: the address that should answer 2xx"},
             "every_min": {"type": "integer", "description": "Minutes between checks (5 to 1440). Default 30."},
-            "give_up_hours": {"type": "number", "description": "Hours until the task asks instead. Default 24."},
+            "give_up_hours": {"type": "number", "description": "Hours until the task asks instead. Default 24, at most 336."},
         },
         "required": ["kind"],
     },
@@ -966,7 +966,8 @@ def _watch(args: dict, *, session_id: str = "", **_kw) -> str:
     if isinstance(hours, (int, float)) and hours > 0:
         import datetime as _dt
 
-        body["giveUpAt"] = (_dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(hours=float(hours))).isoformat()
+        hours = min(float(hours), 14 * 24)  # the backend's cap: a watch is for something that finishes soon
+        body["giveUpAt"] = (_dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(hours=hours)).isoformat()
     url = f"{ctx['apiUrl'].rstrip('/')}/api/v1/internal/tasks/{ctx['ownerId']}/{ctx['taskId']}/watches"
     try:
         made = _post(url, ctx["hookToken"], body)

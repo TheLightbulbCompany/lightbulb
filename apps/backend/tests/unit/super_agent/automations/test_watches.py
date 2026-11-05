@@ -66,7 +66,11 @@ class WatchFakes:
         async def cancel(ws: str, task_id: str, by: str, reason: str) -> list[str]:
             return []
 
-        self.activities = [check, met, gave_up, until, open_q, relay, cancel]
+        @activity.defn(name="remind_question")  # Q's reminder, +24 h on an open question
+        async def remind(ws: str, task_id: str, qid: str) -> None:
+            self.calls.append(("remind_question", qid))
+
+        self.activities = [check, met, gave_up, until, open_q, relay, cancel, remind]
 
 
 @asynccontextmanager
@@ -180,6 +184,11 @@ async def test_give_up_asks(temporal_env):
         await _until(lambda: ("open_asked_question", "ask:q-1") in wf.calls)
         assert ("watch_gave_up", "w1") in wf.calls
         assert ("relay_question", "q-1") in wf.calls
+        # the task now sits in Q's wait, not the 7-day quiet one: a reminder at +24 h, no resolve at day 8
+        await temporal_env.sleep(timedelta(hours=25))
+        await _until(lambda: ("remind_question", "q-1") in wf.calls)
+        await temporal_env.sleep(timedelta(days=8))
+        await asyncio.sleep(0.5)
         assert "transition" not in fakes.names()  # the task waits on the person, it did not end
         await h.execute_update("stop", __import__("core.temporal.types", fromlist=["StopRequest"]).StopRequest("sam"))
         await h.result()
@@ -237,13 +246,45 @@ def _http(responses: dict[str, httpx.Response]):
     return patch("httpx.AsyncClient", new=fake)
 
 
-async def test_check_watch_url():
-    with _http({"x.test": _resp(200)}):
+def _url_http(response: httpx.Response | None, *, refuse: bool = False):
+    """The SSRF-safe path: `link_preview.pinned_request` builds the request, the client sends it."""
+    from core.services import link_preview
+
+    client = MagicMock()
+    client.build_request = lambda method, url, **kw: httpx.Request(method, url)
+    client.send = AsyncMock(return_value=response)
+
+    @asynccontextmanager
+    async def fake(*a, **k):
+        yield client
+
+    async def pinned(http, method, url, **kw):
+        if refuse:
+            raise link_preview.Refused("non-public address")
+        return http.build_request(method, url)
+
+    return patch("httpx.AsyncClient", new=fake), patch("core.services.link_preview.pinned_request", pinned), client
+
+
+async def test_check_watch_url_goes_through_the_ssrf_safe_fetch():
+    a, b, client = _url_http(_resp(200))
+    with a, b:
         assert await check_watch(WS, TID, _spec(kind="url")) == "met"
-    with _http({"x.test": _resp(503)}):
+    client.send.assert_awaited_once()
+    a, b, _ = _url_http(_resp(503))
+    with a, b:
         assert await check_watch(WS, TID, _spec(kind="url")) == "not_met"
+    a, b, client = _url_http(None, refuse=True)
+    with a, b:
+        assert await check_watch(WS, TID, _spec(kind="url")) == "error"  # a private host is never fetched
+    assert not client.send.called
     with patch("httpx.AsyncClient", side_effect=RuntimeError("dns")):
         assert await check_watch(WS, TID, _spec(kind="url")) == "error"
+
+
+def test_at_reads_a_naive_time_as_utc():
+    assert watches._at("2027-01-01T00:00:00").tzinfo is not None
+    assert watches._at("2027-01-01T00:00:00+02:00").utcoffset() == timedelta(hours=2)
 
 
 async def test_check_watch_pr_checks():
@@ -300,6 +341,9 @@ async def test_watch_gave_up_writes_the_ask_row(table):
     assert row["source"] == "ask" and row["ref"]["options"] == watches.GIVE_UP_OPTIONS
     assert row["ref"]["title"].startswith("Still waiting on the checks on PR acme/site#12")
     assert row["ref"]["qid"] == ref.trigger_id.removeprefix("ask:")
+    # "keep watching" moves the give-up time: the next give-up is a new question, not the answered one
+    later = await watch_gave_up(WS, TID, _spec(give_up_h=48.0))
+    assert later.trigger_id != ref.trigger_id
 
 
 async def test_set_watch_until_updates_the_row(table):
@@ -332,10 +376,15 @@ def api(monkeypatch):
         patch("routers.internal_automations._require_hook_token", AsyncMock(return_value={})),
         patch("core.services.super_agent_flags.flags_for", AsyncMock(return_value=True)),
         patch("routers.runtime_internal._attempt_of", AsyncMock(return_value={"n": 1})) as att,
+        patch("routers.runtime_internal._current_task", AsyncMock(return_value={"taskId": TID})) as current,
         patch("core.temporal.client.update_task", AsyncMock(side_effect=lambda *a: updates.append(a))),
         patch("core.temporal.client.task_handle", lambda ws, tid: handle),
     ):
-        yield type("Api", (), {"client": TestClient(app), "updates": updates, "signals": signals, "attempt": att})()
+        yield type(
+            "Api",
+            (),
+            {"client": TestClient(app), "updates": updates, "signals": signals, "attempt": att, "current": current},
+        )()
 
 
 _BODY = {"runId": "run-1", "attempt": 1, "runSecret": "s", "kind": "pr_checks", "target": PR}
@@ -352,6 +401,25 @@ def test_add_watch_route(api):
         watches.watch_id_for(TID, "pr_checks", PR), "pr_checks", PR, 30, r.json()["giveUpAt"], "ask"
     )
     api.attempt.assert_awaited_once_with(WS, TID, 1, "run-1", "s")
+    api.current.assert_awaited_once_with(WS, {"n": 1}, TID, 1)  # the task's current live attempt, as worker_ask
+
+
+def test_add_watch_refuses_a_stale_attempt(api):
+    from fastapi import HTTPException
+
+    api.current.side_effect = HTTPException(status_code=409, detail="stale_run")
+    r = api.client.post(f"/api/v1/internal/tasks/{WS}/{TID}/watches", json=_BODY, headers={"Authorization": "Bearer t"})
+    assert r.status_code == 409 and api.updates == []
+
+
+def test_add_watch_give_up_must_be_aware_and_soon(api):
+    naive = _BODY | {"giveUpAt": "2027-01-01T00:00:00"}
+    r = api.client.post(f"/api/v1/internal/tasks/{WS}/{TID}/watches", json=naive, headers={"Authorization": "Bearer t"})
+    assert r.status_code == 400 and r.json()["detail"]["code"] == "invalid_give_up_at"
+    far = _BODY | {"giveUpAt": (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()}
+    r = api.client.post(f"/api/v1/internal/tasks/{WS}/{TID}/watches", json=far, headers={"Authorization": "Bearer t"})
+    assert r.status_code == 400 and r.json()["detail"]["code"] == "give_up_too_far"
+    assert api.updates == []
 
 
 def test_add_watch_validates(api):

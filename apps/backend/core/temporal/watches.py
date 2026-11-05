@@ -27,6 +27,7 @@ WatchKind = Literal["pr_checks", "url"]
 _SHORT = {"start_to_close_timeout": timedelta(seconds=30), "retry_policy": RetryPolicy(maximum_attempts=5)}
 _CHECK = {"start_to_close_timeout": timedelta(seconds=60), "retry_policy": RetryPolicy(maximum_attempts=2)}
 MIN_EVERY_MIN, MAX_EVERY_MIN = 5, 24 * 60
+MAX_GIVE_UP_DAYS = 14  # a watch is for something that finishes soon; longer is an automation
 GIVE_UP_OPTIONS = [{"id": "keep", "label": "Keep watching another day"}, {"id": "stop", "label": "Stop watching"}]
 
 
@@ -41,7 +42,9 @@ class WatchSpec:
 
 
 def _at(iso: str) -> datetime:
-    return datetime.fromisoformat(iso)
+    """Aware, so it compares with `workflow.now()`; a naive time (the route refuses them) reads as UTC."""
+    dt = datetime.fromisoformat(iso)
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
 async def _act(name: str, *args: Any, result_type: type | None = None, **opts: Any) -> Any:
@@ -159,12 +162,18 @@ async def check_watch(ws: str, task_id: str, spec: WatchSpec) -> str:
     on the PR's head has concluded (the detail says how)."""
     import httpx
 
+    from core.services import link_preview
+
     try:
         if spec.kind == "url":
-            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as http:
-                resp = await http.get(str(spec.target.get("url") or ""))
+            # The SSRF-safe fetch the link previews use: public hosts only, pinned to the resolved address.
+            async with httpx.AsyncClient(timeout=10.0, follow_redirects=False, trust_env=False) as http:
+                request = await link_preview.pinned_request(http, "GET", str(spec.target.get("url") or ""))
+                resp = await http.send(request)
             return "met" if 200 <= resp.status_code < 300 else "not_met"
         return await _pr_checks(ws, spec.target)
+    except link_preview.Refused:
+        return "error"  # a private or unresolvable host: never met, the give-up time ends it
     except Exception:  # noqa: BLE001 — a flaky provider is "not yet", never a failed task
         return "error"
 
@@ -242,7 +251,8 @@ async def watch_gave_up(ws: str, task_id: str, spec: WatchSpec) -> AskRef:
     from core.services import questions
 
     task = await tasks_repo.get_task(ws, task_id) or {}
-    qid = questions.qid_for(f"{task_id}:watch:{spec.watch_id}")
+    # the give-up time is in the seed: "keep watching" moves it, and the next give-up is a new question
+    qid = questions.qid_for(f"{task_id}:watch:{spec.watch_id}:{spec.give_up_at}")
     trigger_id = ts.trigger_id("ask", qid)
     what = (
         f"the checks on PR {spec.target.get('repo')}#{spec.target.get('number')}"

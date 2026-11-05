@@ -52,6 +52,11 @@ def test_watch_give_up_hours_becomes_an_iso_time(tmp_path, monkeypatch):
     monkeypatch.setattr(lightbulb, "_post", lambda url, token, body: calls.append(body) or {"watchId": "w1"})
     lightbulb._watch({"kind": "url", "url": "https://x.test/ready", "give_up_hours": 2}, session_id=SESSION)
     assert calls[0]["target"] == {"url": "https://x.test/ready"} and calls[0]["giveUpAt"].endswith("+00:00")
+    import datetime as dt
+
+    lightbulb._watch({"kind": "url", "url": "https://x.test/ready", "give_up_hours": 9000}, session_id=SESSION)
+    capped = dt.datetime.fromisoformat(calls[1]["giveUpAt"])
+    assert capped <= dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=14, minutes=1)  # capped at 14 days
 
 
 def test_watch_bad_args_and_refusals(tmp_path, monkeypatch):

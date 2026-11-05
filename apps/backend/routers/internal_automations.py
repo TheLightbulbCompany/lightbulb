@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request, Response
@@ -20,7 +20,14 @@ from core.dynamodb import utc_now_iso
 from core.repositories import automations_repo, messaging_repo, tasks_repo, user_repo
 from core.services import admission, automation_schedule, super_agent_flags, task_conversation
 from core.temporal import client as temporal
-from core.temporal.watches import MAX_EVERY_MIN, MIN_EVERY_MIN, WatchSpec, give_up_default, watch_id_for
+from core.temporal.watches import (
+    MAX_EVERY_MIN,
+    MAX_GIVE_UP_DAYS,
+    MIN_EVERY_MIN,
+    WatchSpec,
+    give_up_default,
+    watch_id_for,
+)
 from core.services.container_auth import _require_hook_token
 from routers.rules import RuleBuiltin, RuleMatchIn, check_scope
 
@@ -233,9 +240,12 @@ def _target_ok(kind: str, target: dict) -> bool:
 
 
 async def _this_tasks_runtime(owner_id: str, task_id: str, attempt: int, run_id: str, run_secret: str) -> None:
-    from routers.runtime_internal import _attempt_of  # O's check: the attempt this runtime speaks for, or 403
+    """O's checks, as the questions route does them: the attempt this runtime speaks for (403), and that it
+    is the task's current live attempt (409: a later attempt never speaks for an earlier one)."""
+    from routers.runtime_internal import _attempt_of, _current_task
 
-    await _attempt_of(owner_id, task_id, attempt, run_id, run_secret)
+    att = await _attempt_of(owner_id, task_id, attempt, run_id, run_secret)
+    await _current_task(owner_id, att, task_id, attempt)
 
 
 @router.post("/internal/tasks/{owner_id}/{task_id}/watches", status_code=202)
@@ -248,9 +258,13 @@ async def add_watch(owner_id: str, task_id: str, body: WatchIn, request: Request
         raise _err(400, "invalid_target")
     give_up_at = body.give_up_at or give_up_default()
     try:
-        datetime.fromisoformat(give_up_at)
+        at = datetime.fromisoformat(give_up_at)
     except ValueError as exc:
         raise _err(400, "invalid_give_up_at") from exc
+    if at.tzinfo is None:  # a naive time cannot be compared with the workflow's clock
+        raise _err(400, "invalid_give_up_at", message="giveUpAt must carry a UTC offset")
+    if at > datetime.now(timezone.utc) + timedelta(days=MAX_GIVE_UP_DAYS):
+        raise _err(400, "give_up_too_far", message=f"a watch gives up within {MAX_GIVE_UP_DAYS} days")
     spec = WatchSpec(
         watch_id=watch_id_for(task_id, body.kind, body.target),
         kind=body.kind,

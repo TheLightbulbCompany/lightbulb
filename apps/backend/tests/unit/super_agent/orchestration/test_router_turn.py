@@ -189,6 +189,7 @@ async def test_three_asks_one_reply_three_cards(world):
     post = world["posts"][0]
     assert post["room"] == ROOM and post["event_id"] == f"router:{BATCH}:0" and post["thread_root"] is None
     assert post["text"] == "On it: paying Acme.\nAnd booking the flights.\nOne more you can start:"
+    assert post["remember"] is False  # acks only: kept out of room memory (audit item 12)
     ids = [r["taskId"] for r in post["task_refs"]]
     assert [r["role"] for r in post["task_refs"]] == ["started", "started", "suggested"]
     assert ids == [ts.router_task_id(BATCH, 0, 0), ts.router_task_id(BATCH, 1, 0), ts.router_task_id(BATCH, 2, 0)]
@@ -379,6 +380,7 @@ async def test_deterministic_start_skips_router_run(world):
             "event_id": f"router:{BATCH}:0",
             "thread_root": None,
             "task_refs": [{"taskId": task_id, "role": "started"}],
+            "remember": False,
         }
     ]
     assert out.started_task_ids == [task_id] and world["starts"] == [(task_id, "router")]
@@ -554,3 +556,4 @@ async def test_ignored_respond_trigger_gets_the_fallback_line(world):
     world["decisions"] = [{"kind": "ignore", "triggerIds": [t1, t2]}]
     await _run([t1, t2])
     assert [(p["event_id"], p["text"]) for p in world["posts"]] == [(f"router:{BATCH}:0", router_prompt.FALLBACK)]
+    assert world["posts"][0]["remember"] is True  # a line Lightbulb said, not an ack: remembered

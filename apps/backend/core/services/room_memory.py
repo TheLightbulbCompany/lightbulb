@@ -99,6 +99,21 @@ def _write(
     memory_sync._put(owner_id, f"MEMTURN#{token}", expiresAt=int(time.time()) + memory_sync._TURN_TTL_S)
 
 
+async def ingest_posted(owner_id: str, room_id: str, message: dict) -> bool:
+    """Lightbulb's own post (`task_conversation.post_as_lightbulb`, which builds ``message`` from what it wrote),
+    stored exactly as a person's message is. Never raises; the switch is read first so switch-off costs nothing."""
+    try:
+        if not settings.AGENTCORE_MEMORY_ID or not await flags_for(owner_id):
+            return False
+        room = await messaging_repo.get_room(room_id)
+    except Exception as exc:  # noqa: BLE001 -- memory never blocks a post
+        logger.warning(
+            "posted ingest failed ws=%s message=%s error=%s", owner_id, message["messageId"], type(exc).__name__
+        )
+        return False
+    return room is not None and await ingest_message(owner_id, room, message)
+
+
 async def ingest_message(owner_id: str, room: dict, message: dict, *, task: dict | None = None) -> bool:
     """Store one committed room message in the lane its room allows. ``room`` is the room's META row,
     ``message`` its MSG row, ``task`` the task row when the message's thread belongs to one (a task room's

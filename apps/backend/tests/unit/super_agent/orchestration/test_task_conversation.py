@@ -218,3 +218,30 @@ async def test_front_agent_reads_registry_when_on(chat, monkeypatch):
     monkeypatch.setattr(tc.agent_registry, "roster", roster)
     monkeypatch.setattr(tc.session_chat, "_default_agents", no_paperclip)
     assert await tc.front_agent_id(WS) == CEO
+
+
+async def test_post_as_lightbulb_goes_into_room_memory(chat, monkeypatch):
+    """Audit item 12: Lightbulb's own posts reach room memory (agent posts get no admit row); progress lines and
+    the Router's ack-only posts (`remember=False`) do not."""
+    from core.services import room_memory
+
+    seen: list[tuple[dict, dict]] = []
+
+    async def ingest(ws, room, message, *, task=None):
+        seen.append((room, message))
+        return True
+
+    async def switch_on(ws):
+        return True
+
+    chat["rooms"][ORIGIN] = {"roomId": ORIGIN, "ownerId": WS, "kind": "channel"}
+    monkeypatch.setattr(room_memory.settings, "AGENTCORE_MEMORY_ID", "mem-1")
+    monkeypatch.setattr(room_memory, "flags_for", switch_on)
+    monkeypatch.setattr(room_memory, "ingest_message", ingest)
+    mid = await tc.post_as_lightbulb(WS, ORIGIN, text="Paid the invoice.", event_id="task:x:1", kind="result")
+    await tc.post_as_lightbulb(WS, ORIGIN, text="Working: browser", event_id="task:x:p", progress=True)
+    await tc.post_as_lightbulb(WS, ORIGIN, text="On it.", event_id="router:b:0", remember=False)
+    ((room, message),) = seen
+    assert room["roomId"] == ORIGIN
+    assert message["messageId"] == mid and message["text"] == "Paid the invoice."
+    assert message["author"] == {"kind": "agent", "id": CEO, "displayName": "Lightbulb"}

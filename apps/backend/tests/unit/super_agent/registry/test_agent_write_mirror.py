@@ -136,6 +136,26 @@ async def test_proxied_agent_write_mirrors(tasks_table, company_lookup):
     assert (await repo.get("org_a", AID))["status"] == "deleted"
 
 
+@pytest.mark.asyncio
+async def test_rejected_hire_mirrors_the_termination(tasks_table, company_lookup):
+    """Paperclip terminates a rejected hire on its own side; the reject re-reads and mirrors it."""
+    state = _agent(status="pending_approval")
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/api/approvals/ap1/reject":
+            state["status"] = "terminated"
+            return httpx.Response(200, json={"id": "ap1", "status": "rejected", "payload": {"agentId": AID}})
+        return httpx.Response(200, json=dict(state))
+
+    client = PaperclipAdminClient(
+        http_client=httpx.AsyncClient(base_url="http://pc", transport=httpx.MockTransport(handler))
+    )
+    with patch.object(settings, "SUPER_AGENT_ENV_ENABLED", True):
+        await repo.put_new("org_a", agent_registry.row_from_paperclip(state))
+        await client.reject_approval(session_cookie="c", approval_id="ap1", reason="no")
+    assert (await repo.get("org_a", AID))["status"] == "deleted"
+
+
 # Agent write routes on Paperclip: create, and PATCH/DELETE/pause/resume of one agent.
 _AGENT_WRITE = re.compile(r"/api/(?:companies/[^/\"']+/agents|agents/[^/\"']+(?:/(?:pause|resume|terminate))?)[\"']?$")
 

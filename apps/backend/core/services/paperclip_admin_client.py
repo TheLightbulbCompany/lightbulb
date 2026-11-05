@@ -1434,12 +1434,19 @@ class PaperclipAdminClient:
         BFF's ``reason`` input is remapped to ``decisionNote`` here —
         sending ``reason`` would be silently stripped and the rejection
         reason lost.
+
+        Rejecting a hire approval makes Paperclip terminate ``payload.agentId`` on its side
+        (``marketplace_hire``), so that agent is re-read and mirrored into the registry.
         """
-        return await self._post(
+        rejected = await self._post(
             f"/api/approvals/{approval_id}/reject",
             json={"decisionNote": reason},
             session_cookie=session_cookie,
         )
+        payload = rejected.get("payload") if isinstance(rejected, dict) else None
+        if isinstance(payload, dict) and payload.get("agentId"):
+            await self._mirror(None, session_cookie=session_cookie, agent_id=payload["agentId"])
+        return rejected
 
     async def get_approval(
         self,

@@ -161,6 +161,31 @@ def test_curator_files_never_taken_from_task():
     assert _plan({}, t, {}).ops == []
 
 
+def test_credential_skill_dirs_never_merged():
+    """Review of #4672: skills/instagram/ and skills/shopify/ hold credentials (hermes_cli
+    projects them); a task's rotated or missing token must never reach the live profile."""
+    for d in ("instagram", "shopify"):
+        b = {f"skills/{d}/SKILL.md": b"s", f"skills/{d}/credentials.json": b"old"}
+        rotated = {**b, f"skills/{d}/credentials.json": b"task-rotated"}
+        assert _plan(b, rotated, b).ops == []
+        assert _plan(b, {f"skills/{d}/SKILL.md": b"s"}, b).ops == []  # missing in T: no delete
+        assert _plan(b, {}, b).ops == []  # removed in T: no archive
+        assert not lm.is_learning_file(f"skills/{d}/credentials.json")
+    assert lm.is_learning_file("skills/research/SKILL.md")
+
+
+def test_missing_base_text_only_adds():
+    # A base without text: memory entries are only ever added (never removed), usage adds nothing.
+    b = {lm.MEMORY: _mem("a"), lm.USAGE: b'{"s": {"use_count": 1}}'}
+    t = {lm.MEMORY: _mem("t1"), lm.USAGE: b'{"s": {"use_count": 9}}'}
+    c = {lm.MEMORY: _mem("a", "h"), lm.USAGE: b'{"s": {"use_count": 2}}'}
+    plan = lm.plan_merge(
+        _manifest(b), _snap(t), _snap(c), private=False, sealed=True, threat_scan=lambda e: False, task_id=TASK
+    )
+    assert _put_body(plan, lm.MEMORY) == _mem("a", "h", "t1")
+    assert [p.key_rel for p in plan.puts] == [lm.MEMORY]
+
+
 def test_workspace_skills_never_merged():
     b = _skill("workspace/foo", "v1")
     plan = _plan(b, _skill("workspace/foo", "v2"), b)

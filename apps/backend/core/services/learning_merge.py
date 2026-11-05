@@ -30,7 +30,18 @@ objects already at their planned sha are skipped, ``SKILL.md`` is written last w
 ``.revision`` is bumped once, last. A rerun after a crash at any write converges on the same
 final state (see ``test_crash_after_k_writes_then_rerun_converges``).
 
-Pure apart from the S3 client the caller passes in: stdlib only.
+Caller contract (V5):
+- ``task`` is the LAYERED task view -- B plus the overlay, minus what ``sealed.json`` says the task
+  deleted -- never a bare overlay listing: an overlay-only T would archive every skill the task
+  did not touch.
+- ``plan_for`` writes the ``LEARN#`` intent row (``plan.planned``) before each apply, including the
+  replans :func:`run_merge` makes on a 412; a stale first-plan row would let a crash re-add usage
+  deltas.
+- Usage idempotence is "C is at the planned sha". Another writer rewriting ``.usage.json`` between
+  our put and a replan re-adds the deltas; the workspace VM's unconditional ``save_profile`` is such
+  a writer (and can clobber merged ``memories/*``) until V5 fences it.
+
+Pure apart from the S3 client the caller passes in and the backend's list of credential dirs.
 """
 
 from __future__ import annotations
@@ -41,6 +52,8 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
+
+from core.services.credentials.hermes_cli import OWNED_PATHS, profile_paths
 
 Manifest = dict[str, tuple[str, str]]  # rel -> (sha256, etag)
 Snapshot = dict[str, tuple[str, str, Callable[[], bytes]]]  # rel -> (sha256, etag, load)
@@ -67,11 +80,19 @@ class CurrentChanged(Exception):
     """A conditional write lost: someone else wrote the specialist profile since we read it."""
 
 
+#: Skill-shaped dirs that are credentials, written only by ``hermes_cli.project`` (the bridge's
+#: ``CLI_CREDENTIAL_PREFIXES``: skills/instagram/, skills/shopify/, skills/vercel/): never merged,
+#: or a task VM's rotated or missing token would overwrite or delete the live one.
+_CREDENTIAL_SKILL_DIRS = tuple(
+    p for m in OWNED_PATHS for p in profile_paths(m) if p.startswith("skills/") and p.endswith("/")
+)
+
+
 def is_learning_file(rel: str) -> bool:
     """Whether ``rel`` (relative to an agent profile root) is something the merge reads."""
     if rel in (MEMORY, USER, USAGE):
         return True
-    if not rel.startswith("skills/"):
+    if not rel.startswith("skills/") or rel.startswith(_CREDENTIAL_SKILL_DIRS):
         return False
     parts = rel.split("/")[1:]
     # Dot dirs/files are the curator's (.archive, .curator_backups, .curator_state) and never
@@ -259,9 +280,9 @@ def plan_merge(
             return ""
         if rel in current and current[rel][0] == base[rel][0]:
             return _text(current, rel)
-        # ponytail: base.json without text (should not happen; the bridge always writes it) --
-        # fall back to "removes nothing", so the merge can only add.
-        return _text(task, rel)
+        # ponytail: base without text (should not happen; the bridge always writes it) -- fall
+        # back so the merge can only add: no memory entry counts as removed, no usage delta.
+        return _text(task, rel) if rel == USAGE else ""
 
     def _put(rel: str, body: bytes) -> None:
         ops.append(PlannedPut(rel, body, _sha(body), current[rel][1] if rel in current else ABSENT))

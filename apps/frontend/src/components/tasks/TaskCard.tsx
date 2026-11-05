@@ -5,7 +5,8 @@
 // dot, never a fill (DESIGN.md).
 
 import { useState, type ReactElement } from "react";
-import { specialistLabel, summaryView, taskSummaryLine, type TaskSummary, type TaskTone } from "@lightbulb/shared";
+import { previewRows, specialistLabel, summaryView, taskSummaryLine, useTaskQuestions, type TaskSummary, type TaskTone } from "@lightbulb/shared";
+import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { Button } from "@/components/ui/button";
 import { capture } from "@/lib/analytics";
 import { cn } from "@/lib/utils";
@@ -38,6 +39,11 @@ export function TaskCard({ task, taskId, viewerId, onOpen, hideAction, children 
   const { run } = useTaskActions("card");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // An approval this viewer can give shows what it does before the one-press Approve (the exact effect).
+  const { tasks } = useLiveEvents();
+  const asks = task?.openQuestion?.canAnswer && task.openQuestion.kind === "approval" ? task.openQuestion.qid : null;
+  const { data: views } = useTaskQuestions(tasks, asks ? taskId : null);
+  const preview = previewRows(views?.items.find((q) => q.id === asks)?.preview).slice(0, 3);
   if (!task) {
     return <div className="mt-1.5 max-w-xl rounded-lg border border-dashed border-border px-3 py-2 text-ui text-muted-foreground" data-task-card={taskId}>
       This thread isn&apos;t available
@@ -65,6 +71,11 @@ export function TaskCard({ task, taskId, viewerId, onOpen, hideAction, children 
       </div>
       <TaskStatus task={task} viewerId={viewerId} />
     </div>
+    {preview.length > 0 && <dl aria-label="What this does" className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 text-ui">
+      {preview.map((r) => <div key={r.label} className="contents">
+        <dt className="text-muted-foreground">{r.label}</dt><dd className="min-w-0 truncate">{r.value}</dd>
+      </div>)}
+    </dl>}
     {task.output && !detail?.includes(task.output.title) && <p className="mt-1 truncate text-ui text-muted-foreground"><span aria-hidden="true">📎 </span>{task.output.title}</p>}
     {children}
     {inline && <div className="relative z-10 mt-2 flex items-center gap-2">

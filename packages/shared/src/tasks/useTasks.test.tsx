@@ -50,6 +50,15 @@ describe("useTasks", () => {
     expect(client.get).not.toHaveBeenCalled();
   });
 
+  it("the list follows next past the first page (older threads' cards and the overview)", async () => {
+    const client = fakeClient({
+      list: vi.fn(async (_scope: unknown, cursor?: string | null) => (cursor ? { tasks: [t2], next: null } : { tasks: [t1], next: "c1" })),
+    } as never);
+    const { hook } = await setup(client);
+    expect(hook.result.current.list.data?.tasks.map((t) => t.taskId)).toEqual(["t1", "t2"]);
+    expect(client.list).toHaveBeenLastCalledWith({ kind: "room", roomId: "r1" }, "c1");
+  });
+
   it("task.changed refetches only the matching task", async () => {
     const t1v6 = { ...t1, version: 6, title: "one (new)" };
     const client = fakeClient();

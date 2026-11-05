@@ -21,9 +21,22 @@ export const questionsKey = (taskId: string) => `task-questions:${taskId}`;
 const listKeys = (cache: Cache, client: Pick<TasksClient, "cacheScope">) =>
   [...cache.keys()].filter((k) => k.startsWith(listPrefix(client)));
 
-/** `null` scope = no request (switch off or nothing to show). */
+/** Pages the list walks before it stops (50 a page server-side, tasks.py). */
+export const LIST_PAGES = 10;
+
+/** Every page of a scope, followed through `next`. `null` scope = no request (switch off or nothing to show).
+ *  ponytail: stops after LIST_PAGES pages (500 threads); a "Load older" cursor if a workspace outgrows that. */
 export function useTaskList(client: TasksClient, scope: TaskScope | null) {
-  return useSWR<TaskList>(scope ? taskListKey(client, scope) : null, () => client.list(scope!), { shouldRetryOnError: false });
+  return useSWR<TaskList>(scope ? taskListKey(client, scope) : null, async () => {
+    const all: TaskSummary[] = [];
+    let page = await client.list(scope!);
+    all.push(...page.tasks);
+    for (let n = 1; page.next && n < LIST_PAGES; n++) {
+      page = await client.list(scope!, page.next);
+      all.push(...page.tasks);
+    }
+    return { tasks: all, next: page.next };
+  }, { shouldRetryOnError: false });
 }
 
 /** `null` id = no request. */

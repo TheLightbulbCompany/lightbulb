@@ -2,7 +2,7 @@
 // returned summary written into the cache, a 409 answered by a refetch and never a second POST.
 
 import { useCallback } from "react";
-import { ApiError, putTaskSummary, questionsKey, taskKey, useTaskCache, type TaskAction, type TaskSummary, type TaskVerb } from "@lightbulb/shared";
+import { ApiError, primaryOptionId, putTaskSummary, questionsKey, taskKey, useTaskCache, type TaskAction, type TaskSummary, type TaskVerb } from "@lightbulb/shared";
 import { randomUUID } from "expo-crypto";
 
 import { useLiveEvents } from "../../providers/live-events";
@@ -66,7 +66,12 @@ export function useTaskActions() {
   }, [tasks, cache, mutate, refetch]);
 
   const run = useCallback((task: TaskSummary, action: TaskAction): Promise<ActionResult> => {
-    if (ANSWERS.has(action) && task.openQuestion) return answer(task, task.openQuestion.qid, action);
+    // An answer posts the question's own primary option id (allow_once, send, …), never the action word.
+    if (ANSWERS.has(action) && task.openQuestion) {
+      const optionId = primaryOptionId(task.openQuestion.options);
+      if (!optionId) return Promise.resolve({ ok: false, message: "Open the thread to answer this." });
+      return answer(task, task.openQuestion.qid, optionId);
+    }
     if (action === "start" || action === "retry" || action === "reopen") return act(task, action);
     return Promise.resolve({ ok: true });
   }, [act, answer]);

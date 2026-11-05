@@ -29,7 +29,7 @@ describe("TaskCard", () => {
     const waiting = byId("step05", "t-signup");
     const sam = render(<Fresh><TaskCard task={waiting} taskId="t-signup" viewerId={SAM} /></Fresh>);
     expect(screen.getByText("Waiting on you")).toBeInTheDocument();
-    expect(screen.getByText("Needs approval: Provision database and Stripe")).toBeInTheDocument();
+    expect(screen.getByText("Allow Lightbulb · Engineering to provision database and Stripe")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Approve" })).toBeInTheDocument();
     sam.unmount();
 
@@ -47,7 +47,7 @@ describe("TaskCard", () => {
     onOpen.mockClear();
     await userEvent.click(screen.getByRole("button", { name: "Approve" }));
     await waitFor(() => expect(client.answer).toHaveBeenCalledWith("t-signup", "q-provision",
-      expect.objectContaining({ optionId: "approve", expectVersion: 7, clientAnswerId: expect.any(String) })));
+      expect.objectContaining({ optionId: "allow_once", expectVersion: 7, clientAnswerId: expect.any(String) })));
     expect(onOpen).not.toHaveBeenCalled();
   });
 

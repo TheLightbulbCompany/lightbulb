@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import schema from "../../fixtures/super-agent/tasks-schema.json";
 import { FIXTURES, PRIYA, SAM, fixtureTask, viewAs } from "./fixtures";
 import { OUTPUT_KINDS, type TaskSummary } from "./types";
-import { effectLine, formatSchedule, overviewGroups, specialistLabel, summaryView, taskSummaryLine } from "./view";
+import { answerVerb, askLine, effectLine, formatSchedule, overviewGroups, previewRows, primaryOptionId, specialistLabel, summaryView, taskSummaryLine } from "./view";
 
 const byId = (ts: TaskSummary[], id: string) => ts.find((t) => t.taskId === id)!;
 
@@ -72,7 +72,7 @@ describe("overviewGroups", () => {
 
 describe("summary lines and labels", () => {
   it("lines", () => {
-    expect(taskSummaryLine(byId(FIXTURES.step05.tasks, "t-signup"), SAM)).toBe("Needs approval: Provision database and Stripe");
+    expect(taskSummaryLine(byId(FIXTURES.step05.tasks, "t-signup"), SAM)).toBe("Allow Lightbulb · Engineering to provision database and Stripe");
     expect(taskSummaryLine(byId(FIXTURES.step09.tasks, "t-email"), SAM)).toBe("Applying: Draft: \"Join us Nov 20\" (240 words)");
     expect(taskSummaryLine(byId(FIXTURES.step02.tasks, "t-signup"), SAM)).toBe("Working · Lightbulb · Engineering");
     expect(taskSummaryLine(byId(FIXTURES.step02.tasks, "t-fees"), SAM)).toBe("would use a paid tool");
@@ -105,5 +105,32 @@ describe("formatSchedule", () => {
     expect(formatSchedule(["0 22 * * 1"], "America/Los_Angeles", "Europe/Berlin", NOV)).toBe("Tuesdays 7:00");
     expect(formatSchedule(["0 9 1 * *"], "UTC", "UTC", NOV)).toBe("0 9 1 * *");
     expect(formatSchedule(["0 9 * * 1", "0 9 * * 4"], "UTC", "UTC", NOV)).toBe("Mondays 9:00 and Thursdays 9:00");
+  });
+});
+
+describe("questions: the server's option ids and copy", () => {
+  it("the one-press option is the question's primary, never a literal", () => {
+    // questions.py kind_and_options: approval [allow_once, deny]; review [send|publish|merge, request_changes].
+    expect(primaryOptionId([{ id: "allow_once" }, { id: "deny" }])).toBe("allow_once");
+    expect(primaryOptionId([{ id: "send" }, { id: "request_changes" }])).toBe("send");
+    expect(primaryOptionId([{ id: "deny", style: "danger" }, { id: "allow_once", style: "primary" }])).toBe("allow_once");
+    expect(primaryOptionId([])).toBeNull();
+  });
+  it("an approval names who and the exact target; a decision reads Approved", () => {
+    expect(askLine({ kind: "approval", title: "send 'Q3' to a@b.c" }, "finance")).toBe("Allow Lightbulb · Finance to send 'Q3' to a@b.c");
+    expect(askLine({ kind: "question", title: "Which date?", text: "" }, "finance")).toBe("Which date?");
+    expect(answerVerb("allow_once", "Allow once")).toBe("Approved");
+    expect(answerVerb("deny")).toBe("Denied");
+    expect(answerVerb("pick_b", "Option B")).toBe("Option B");
+  });
+  it("the preview shows the effect's operands, not its ids", () => {
+    expect(previewRows({ kind: "mail.send", to: ["a@b.c", "d@e.f"], subject: "Q3", idemKey: "x", nested: { a: 1 } }))
+      .toEqual([{ label: "To", value: "a@b.c, d@e.f" }, { label: "Subject", value: "Q3" }]);
+    expect(previewRows({ kind: "pr.merge", repo: "acme/web", number: 12 })).toEqual([{ label: "Repository", value: "acme/web" }, { label: "PR", value: "#12" }]);
+    expect(previewRows(null)).toEqual([]);
+  });
+  it("a dismissed suggestion reads Dismissed, with no Reopen", () => {
+    const t = { ...byId(FIXTURES.step02.tasks, "t-fees"), status: "resolved" as const, statusReason: "dismissed", shownGroup: "resolved" as const };
+    expect(summaryView(t, SAM)).toMatchObject({ word: "Dismissed", action: null });
   });
 });

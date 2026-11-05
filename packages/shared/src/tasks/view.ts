@@ -98,6 +98,8 @@ export function summaryView(t: TaskSummary, viewerId: string): SummaryView {
   const v = (word: string, action: TaskAction | null = null): SummaryView => ({ word, group, action, tone });
   const q = t.openQuestion;
   if (t.status === "proposed") return v("Suggested", "start");
+  // A dismissed suggestion never ran: no Reopen on its card.
+  if (t.status === "resolved" && t.statusReason === "dismissed") return v("Dismissed");
   if (t.status === "resolved") return v(t.statusReason === "stopped" ? "Stopped" : "Resolved", "reopen");
   if (t.status === "failed") return v("Failed", t.ownerUserId === viewerId ? "retry" : null);
   if (group === "waiting_on_you") return v("Waiting on you", q?.kind === "approval" ? "approve" : "answer");
@@ -143,7 +145,7 @@ export function taskSummaryLine(t: TaskSummary, viewerId: string): string {
   const q = t.openQuestion;
   const view = summaryView(t, viewerId);
   if (q && q.canAnswer) {
-    if (q.kind === "approval") return `Needs approval: ${q.title}`;
+    if (q.kind === "approval") return askLine(q, t.specialist);
     if (q.kind === "review") return `Ready for review: ${t.output?.title ?? q.title}`;
     return `Needs an answer: ${q.title}`;
   }
@@ -151,6 +153,60 @@ export function taskSummaryLine(t: TaskSummary, viewerId: string): string {
   if (t.status === "proposed") return t.proposalReason ?? "Suggested";
   if (view.group === "working") return `${view.word} · ${specialistLabel(t.specialist)}`;
   return view.word;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Questions (option ids are the server's: questions.py `kind_and_options`, task_questions.py worker asks).
+
+type OptionLike = { id: string; style?: string };
+
+/** The one-press option: the one the server styles primary (routers/questions.py: the first option unless it is
+ *  deny / request_changes), never a literal. Null when the question has no options (a free-text ask). */
+export function primaryOptionId(options: readonly OptionLike[] | null | undefined): string | null {
+  const o = options ?? [];
+  return (o.find((x) => x.style === "primary") ?? o.find((x) => x.id !== "deny" && x.id !== "request_changes"))?.id ?? null;
+}
+
+/** A free-text question (a worker's ask with no options): answered with optionId "answer" + text (questions.py `answer`). */
+export const FREE_TEXT_OPTION = "answer";
+
+/** What the approver is asked: "Allow Lightbulb · Engineering to send 'Q3' to a@b.c" (the title names the action and
+ *  its target, questions.py `title_for`). Other kinds read their title as written. */
+export function askLine(q: { kind: string; title: string; text?: string | null }, specialist: string | null | undefined): string {
+  if (q.kind !== "approval") return q.text || q.title;
+  const title = q.title.charAt(0).toLowerCase() + q.title.slice(1);
+  return `Allow ${specialistLabel(specialist)} to ${title}`;
+}
+
+const PREVIEW_LABELS: Record<string, string> = {
+  to: "To", subject: "Subject", body: "Message", text: "Message", amount: "Amount", item: "Item", provider: "Provider",
+  appName: "App", repo: "Repository", number: "PR", target: "To", url: "Link", title: "Title",
+};
+const PREVIEW_MAX = 600;
+
+/** The exact effect a person approves (`question.preview` = `{kind, ...operands}`, task_questions.py), as label/value
+ *  rows. Known operands first in a fixed order; ids, hashes and nested values are left out. */
+export function previewRows(preview: unknown): { label: string; value: string }[] {
+  if (!preview || typeof preview !== "object") return [];
+  const p = preview as Record<string, unknown>;
+  return Object.keys(PREVIEW_LABELS)
+    .filter((k) => typeof p[k] === "string" || typeof p[k] === "number" || (Array.isArray(p[k]) && (p[k] as unknown[]).every((v) => typeof v === "string")))
+    .filter((k, _i, keys) => !(k === "target" && keys.includes("to")) && !(k === "text" && keys.includes("body")))
+    .map((k) => {
+      const raw = Array.isArray(p[k]) ? (p[k] as unknown[]).join(", ") : String(p[k]);
+      const value = k === "number" ? `#${raw}` : raw.length > PREVIEW_MAX ? `${raw.slice(0, PREVIEW_MAX - 1)}…` : raw;
+      return { label: PREVIEW_LABELS[k], value };
+    });
+}
+
+const ANSWER_VERBS: Record<string, string> = {
+  allow_once: "Approved", approve: "Approved", deny: "Denied", send: "Sent", publish: "Published", merge: "Merged",
+  request_changes: "Changes requested", answer: "Answered",
+};
+
+/** "Approved" / "Denied" / … for an answered question's option id; unknown ids read as their label. */
+export function answerVerb(optionId: string | null | undefined, label?: string | null): string {
+  return (optionId && ANSWER_VERBS[optionId]) || label || "Answered";
 }
 
 const EFFECT_WORDS: Record<string, string> = {

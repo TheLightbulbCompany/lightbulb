@@ -6,6 +6,8 @@ import { claimRoomTarget } from "../../lib/activeAgent";
 import { NotificationTapRouter, notificationHrefs } from "./NotificationTapRouter";
 
 jest.mock("expo-router", () => ({ router: { push: jest.fn(), dismissTo: jest.fn() } }));
+let mockSuperAgent = false;
+jest.mock("../../providers/live-events", () => ({ useSuperAgent: () => mockSuperAgent }));
 
 const lastResponse = Notifications.useLastNotificationResponse as jest.Mock;
 const clear = Notifications.clearLastNotificationResponse as jest.Mock;
@@ -33,11 +35,22 @@ function reading(roomId: string, threadId: string | null = null) {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockSuperAgent = false;
   lastResponse.mockReturnValue(null);
 });
 afterEach(() => {
   release?.();
   release = null;
+});
+
+it("a task_question tap waits for the switch: off it stays put (kept, not cleared); on it opens the task", async () => {
+  const view = await tap({ source: "task_question", taskId: "t-1", qid: "q-1" });
+  expect(push).not.toHaveBeenCalled();
+  expect(clear).not.toHaveBeenCalled();
+  mockSuperAgent = true;
+  await view.rerender(<NotificationTapRouter />);
+  expect(push).toHaveBeenCalledWith({ pathname: "/(app)/task/[taskId]", params: { taskId: "t-1" } });
+  expect(clear).toHaveBeenCalled();
 });
 
 it("does nothing when the app was not opened from a notification", async () => {

@@ -85,6 +85,15 @@ const TONES: Record<ShownGroup, TaskTone> = {
 };
 const NEXT_STEPS = new Set<TaskAction>(["publish", "send", "merge", "approve"]);
 
+/** The front agent (`@lightbulb`): the backend-authored starter (or legacy seed) root CEO, by role, never by
+ *  display name. Undefined until the roster answers or where no agent holds that role. Web and mobile share it
+ *  so both pick the same agent. */
+export function resolveCeoAgentId(
+  agents: readonly { id: string; role?: string | null; reportsTo?: string | null; origin?: string | null }[],
+): string | undefined {
+  return agents.find((a) => a.role === "ceo" && !a.reportsTo && (a.origin === "Starter" || a.origin === "Seed"))?.id;
+}
+
 /** "finance" → "Lightbulb · Finance"; no specialist → "Lightbulb". */
 export function specialistLabel(specialist: string | null | undefined): string {
   if (!specialist) return "Lightbulb";

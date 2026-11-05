@@ -1,4 +1,5 @@
 import { useOrganization } from "@clerk/expo";
+import { resolveCeoAgentId } from "@lightbulb/shared";
 import { useEffect, useState } from "react";
 
 import { fetchAgents, fetchMembers, useTeamsConfig, type CompanyMember, type TeamsAgent } from "./teamsData";
@@ -54,14 +55,8 @@ export function useWorkspaceRoster(enabled: boolean): { agents: TeamsAgent[]; me
   return { agents, members };
 }
 
-/** The one front agent (`@lightbulb`): the starter roster's CEO (web: getstarted `resolveCeoAgentId`). Undefined
- *  until /teams/agents answers or where no agent holds the role, and then the super-agent grouping stays off. */
-export function frontAgentOf(agents: readonly TeamsAgent[]): string | undefined {
-  return agents.find((a) => a.role === "ceo" && (a.origin === "Starter" || a.origin === "Seed"))?.id;
-}
-
 /** The front agent's id while `enabled` (the room screen asks only for a super-agent DM with an agent). */
 export function useFrontAgentId(enabled: boolean): string | undefined {
   const { agents } = useWorkspaceRoster(enabled);
-  return enabled ? frontAgentOf(agents) : undefined;
+  return enabled ? resolveCeoAgentId(agents) : undefined;
 }

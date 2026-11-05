@@ -3,12 +3,12 @@ import { SymbolView } from "../../../components/ui/SymbolView";
 import {
   agentRingState,
   mergeChats,
+  resolveCeoAgentId,
   roomDisplayName,
   sessionLive,
   sessionMatches,
   sessionUnread,
   useWorkspaceSessions,
-  type ChatEntry,
   type LocalSession,
   type RoomSummary,
   type SessionSeen,
@@ -26,7 +26,7 @@ import { LogoMark } from "../../../components/LogoMark";
 import { NewMessageSheet } from "../../../components/room/NewMessageSheet";
 import { FocusedStatusBar } from "../../../components/ui/FocusedStatusBar";
 import { fonts, radii, spacing, useChatPalette, type ChatPalette } from "../../../config/theme";
-import { archiveSession, otherMembers, readArchivedSessions } from "../../../lib/chats";
+import { archiveSession, fileSpecialists, otherMembers, readArchivedSessions } from "../../../lib/chats";
 import { roomIdsWithDrafts } from "../../../lib/composerDraft";
 import { useDesktopSessionApi, type SessionTargets } from "../../../lib/desktopSessions";
 import { memberName, markSessionsSeenOnDevice } from "../../../lib/localSessions";
@@ -36,7 +36,7 @@ import { usePresence } from "../../../lib/presence";
 import { useMobileRooms } from "../../../lib/rooms";
 import { useTabHeader } from "../../../lib/tabHeader";
 import { roomUrl } from "../../../lib/webLinks";
-import { frontAgentOf, useWorkspaceRoster } from "../../../lib/workspaceRoster";
+import { useWorkspaceRoster } from "../../../lib/workspaceRoster";
 import { useLiveEvents, useSuperAgent } from "../../../providers/live-events";
 
 /** RoomHeader.tsx's own copy — the same two strings the room screen's header shows. */
@@ -112,9 +112,6 @@ const filters: readonly { id: ChatFilter; label: string }[] = [
  * against an older prod backend): rows just fall back to their last-message
  * preview and draw no ring.
  */
-/** A chat row, or the super-agent's Specialists group row. */
-type ListRow = ChatEntry | { kind: "specialists"; key: string; count: number; open: boolean };
-
 export default function Chats() {
   const palette = useChatPalette();
   const params = useLocalSearchParams<{ filter?: string }>();
@@ -226,20 +223,10 @@ export default function Chats() {
   // Super-agent: one voice. A DM with any agent but the front one (`@lightbulb`) files under a collapsed
   // Specialists row at the end. Off, or until the front agent is known, the list is today's.
   const superAgent = useSuperAgent();
-  const frontAgentId = superAgent ? frontAgentOf(agents) : undefined;
+  const frontAgentId = superAgent ? resolveCeoAgentId(agents) : undefined;
   const [specialistsOpen, setSpecialistsOpen] = useState(false);
-  const rows = useMemo((): ListRow[] => {
-    if (!frontAgentId) return entries;
-    const specialist = (entry: ChatEntry) => {
-      if (entry.kind !== "room" || entry.room.kind !== "dm") return false;
-      const others = otherMembers(entry.room, userId);
-      return others.length === 1 && others[0].kind === "agent" && others[0].id !== frontAgentId;
-    };
-    const grouped = entries.filter(specialist);
-    if (!grouped.length) return entries;
-    const open = specialistsOpen || !!needle;
-    return [...entries.filter((e) => !specialist(e)), { kind: "specialists", key: "specialists", count: grouped.length, open }, ...(open ? grouped : [])];
-  }, [entries, frontAgentId, specialistsOpen, needle, userId]);
+  const rows = useMemo(() => fileSpecialists(entries, frontAgentId, userId, specialistsOpen || !!needle),
+    [entries, frontAgentId, specialistsOpen, needle, userId]);
 
   const [prefsError, setPrefsError] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<LocalSession | null>(null);

@@ -71,3 +71,16 @@ describe("soleChannelOwner", () => {
     expect(soleChannelOwner(undefined, "me")).toBe(false);
   });
 });
+
+describe("respondHint with the super-agent on (one voice)", () => {
+  const agent = (id: string, displayName: string, mentionHandle: string): RespondTarget =>
+    ({ kind: "agent", id, displayName, listenMode: "active", mentionHandle });
+  const seated = [agent("a1", "Growth", "growth"), agent("lb", "Lightbulb", "lightbulb"), agent("a2", "Finance", "finance")];
+  it("only Lightbulb may reply in a room where specialists are still seated", () => {
+    expect(respondHint("channel", seated, [], [], true)).toBe("Lightbulb may reply");
+    expect(respondHint("channel", seated, [], [], false)).toBe("Growth may reply · Lightbulb may reply · Finance may reply");
+  });
+  it("with no @lightbulb seat known yet, every agent shows as before", () => {
+    expect(respondHint("channel", [seated[0], seated[2]], [], [], true)).toBe("Growth may reply · Finance may reply");
+  });
+});

@@ -184,6 +184,10 @@ def _merge_sync(
         attempt,
     )
     base_raw = _get(s3, bucket, overlay + lm.base_rel(base_attempt))
+    if base_raw is None and base_attempt != attempt:
+        # The earlier attempts' overlay expired (reopened > 14 days after resolve): this attempt restored
+        # the specialist onto an empty overlay, so its own base is the right B.
+        base_raw = _get(s3, bucket, overlay + lm.base_rel(attempt))
     base, base_text = lm.parse_base(base_raw) if base_raw else ({}, {})
     if base_raw is None:
         logger.warning("learning merge: no base for task=%s attempt=%s; adding only", task_id, base_attempt)
@@ -272,29 +276,44 @@ async def close_task_attempt(
     no longer holds is a no-op, and the workflow drops a `MergeRef` it has seen."""
     await runtime_runs.stop_task_session(ws, task_id, run_id)
     await signal_merge(ws, specialist_id, MergeRef(task_id, attempt))
-    try:
-        await run_in_thread(tag_overlay, ws, task_id)
-    except Exception:  # noqa: BLE001 -- the next attempt's close tags again; never costs the merge
-        logger.warning("overlay tagging failed task=%s attempt=%s", task_id, attempt, exc_info=True)
+    # After the stop (so after the VM's SIGTERM re-save): a task already terminal by now -- end_attempt
+    # moves it before this hook -- gets every object, stragglers included.
+    task = await tasks_repo.get_task(ws, task_id)
+    if task is not None and task.get("status") in TERMINAL:
+        await set_overlay_tag(ws, task_id, on=True)
 
 
+#: Statuses after which the task's overlay may expire. Both reopen (→ queued), which untags first.
+TERMINAL = ("resolved", "failed")
 OVERLAY_TAG = {"TagSet": [{"Key": "lb-kind", "Value": "task-overlay"}]}
+#: Reopened: a value the rule's filter (lb-kind=task-overlay) never matches. Not an empty set: the same
+#: PutObjectTagging call either way.
+_OPEN_TAG = {"TagSet": [{"Key": "lb-kind", "Value": "task-open"}]}
 
 
-def tag_overlay(ws: str, task_id: str) -> int:
-    """Tag every object of the task's overlay (all its agents) `lb-kind=task-overlay`, so the bucket's
-    14-day lifecycle rule (container-stack.ts `TaskOverlays`, spec 07 §6) expires it. Backend-side by
-    ruling (contracts §15: the VM's puts carry no tag). Every attempt's close re-tags, so a later
-    attempt's objects are covered; tagging leaves ETags (the merge's CAS) untouched.
-    ponytail: a SIGTERM re-save landing after the LAST attempt's pass stays untagged; tag from O's
-    resolve cleanup too if the bucket shows strays."""
+def tag_overlay(ws: str, task_id: str, *, on: bool = True) -> int:
+    """Tag (or untag) every object of the task's overlay (all its agents) `lb-kind=task-overlay`, the
+    bucket's 14-day TaskOverlays rule (container-stack.ts, spec 07 §6). S3 Expiration counts from each
+    object's CREATION, so the tag goes on only when the task is terminal (a waiting task's old overlay
+    would expire under it) and comes off on reopen before the next attempt. Backend-side by ruling
+    (contracts §15); untag = `lb-kind=task-open` (PutObjectTagging, the grant #4689 gave). ETags unchanged."""
     s3, bucket = _s3_client(), settings.OWNER_STATE_BUCKET
     n = 0
     for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=f"{ws}/{OVERLAY_ROOT}/{task_id}/"):
         for obj in page.get("Contents", []):
-            s3.put_object_tagging(Bucket=bucket, Key=obj["Key"], Tagging=OVERLAY_TAG)
+            s3.put_object_tagging(Bucket=bucket, Key=obj["Key"], Tagging=OVERLAY_TAG if on else _OPEN_TAG)
             n += 1
     return n
+
+
+async def set_overlay_tag(ws: str, task_id: str, *, on: bool) -> None:
+    """`tag_overlay`, best effort: never fails a status move or the merge signal. A failed untag on
+    reopen at worst lets an overlay older than 14 days expire mid-task; the next attempt then starts
+    from the specialist profile (an empty overlay is the first attempt's path)."""
+    try:
+        await run_in_thread(tag_overlay, ws, task_id, on=on)
+    except Exception:  # noqa: BLE001
+        logger.warning("overlay %s failed task=%s", "tagging" if on else "untagging", task_id, exc_info=True)
 
 
 def is_task_session_attempt(ws: str, task_id: str, att: dict) -> bool:

@@ -19,6 +19,12 @@ beforeEach(() => {
 });
 
 describe("TaskCard", () => {
+  it("a resolved card in the history offers no Reopen (the pane and overview do)", () => {
+    render(<Fresh><TaskCard task={{ ...byId("step02", "t-signup"), status: "resolved", shownGroup: "resolved" }} taskId="t-signup" viewerId={SAM} /></Fresh>);
+    expect(screen.getByText("Resolved")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Reopen" })).toBeNull();
+  });
+
   it("names a specialist that is an agent id from the agents list", () => {
     const id = "5b36216c-196c-48af-ad2a-6817c42a1de3";
     (live as { agentNames?: Map<string, string> }).agentNames = new Map([[id, "Finance"]]);

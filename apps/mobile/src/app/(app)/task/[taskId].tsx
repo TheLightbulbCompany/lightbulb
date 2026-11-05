@@ -47,7 +47,7 @@ export default function TaskScreen() {
     contentStyle: { backgroundColor: palette.ground },
     headerTitle: () => (
       <ConversationHeader title={task?.title ?? "Thread"} avatar={null} palette={palette}
-        status={task ? `${specialistLabel(task.specialist, agentNames)} · ${view?.word} · Lightbulb cloud` : null}
+        status={task ? `${specialistLabel(task.specialist, agentNames)} · ${view?.word}${task.runsOn ? " · Lightbulb cloud" : ""}` : null}
         statusTone={view?.tone === "working" ? "live" : "mute"} />
     ),
   };
@@ -74,7 +74,7 @@ export default function TaskScreen() {
       <View style={styles.top}>
         <View style={styles.row} accessibilityLabel="Thread status">
           <TaskStatus task={task} viewerId={userId ?? ""} palette={palette} />
-          <Text style={[styles.meta, { color: palette.fgMute }]}>☁ Lightbulb cloud</Text>
+          {task.runsOn ? <Text style={[styles.meta, { color: palette.fgMute }]}>☁ Lightbulb cloud</Text> : null}
         </View>
         <View style={styles.row}>
           {live ? <ActionButton label="Stop" palette={palette} disabled={pending} onPress={() => void press("stop")} /> : null}

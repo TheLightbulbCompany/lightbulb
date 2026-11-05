@@ -71,7 +71,7 @@ describe("TaskOverview", () => {
     await screen.findByRole("heading", { name: "Waiting on you · 1" });
     const waiting = screen.getByRole("region", { name: "Waiting on you · 1" });
     expect(within(waiting).getByText("Workshop signup app")).toBeInTheDocument();
-    expect(within(waiting).getByText("Needs approval: Provision database and Stripe")).toBeInTheDocument();
+    expect(within(waiting).getByText(/^Needs approval: Provision database and Stripe/)).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Working · 2" })).toBeInTheDocument();
   });
 

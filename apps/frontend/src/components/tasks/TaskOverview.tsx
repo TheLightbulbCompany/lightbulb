@@ -10,6 +10,7 @@ import { PanelTabs } from "@/components/teams/shell";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
+import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { copyText, taskPermalink } from "@/components/messaging/messageLinks";
 import { TaskStatus } from "./TaskCard";
 import { ScheduledList } from "./ScheduledList";
@@ -38,10 +39,12 @@ export function TaskOverview({ scope, viewerId, onOpen }: {
 
 function OverviewGroups({ scope, viewerId, onOpen }: { scope: TaskScope; viewerId: string; onOpen: (taskId: string) => void }): ReactElement {
   const { tasks } = useLiveEvents();
-  const { data, error } = useTaskList(tasks, scope);
+  const { data, error, mutate } = useTaskList(tasks, scope);
   const { older, hasOlder, loading, loadOlder } = useOlderTasks(tasks, data, scope);
   const [resolvedOpen, setResolvedOpen] = useState(() => readResolvedOpen(viewerId));
-  if (!data) return <p role="status" className="text-ui text-muted-foreground">{error ? "Threads couldn't load. Try again." : "Loading…"}</p>;
+  if (!data) return error
+    ? <p role="alert" className="text-ui text-muted-foreground">Threads couldn&apos;t load. <button type="button" className="underline hover:text-foreground" onClick={() => void mutate()}>Retry</button></p>
+    : <p role="status" className="text-ui text-muted-foreground">Loading…</p>;
   return <div className="grid gap-4">
     {overviewGroups([...data.tasks, ...older]).map((group) => {
       const collapsible = group.id === "resolved";
@@ -84,7 +87,7 @@ export function OverviewRow({ task, viewerId, onOpen }: { task: TaskSummary; vie
     <div className="min-w-0 flex-1">
       <button type="button" onClick={() => onOpen(task.taskId)} aria-label={`Open ${task.title}, ${view.word}`}
         className="block max-w-full truncate text-left font-semibold after:absolute after:inset-0 after:content-['']">{task.title}</button>
-      <p className="truncate text-ui text-muted-foreground">{taskSummaryLine(task, viewerId, agentNames)}</p>
+      <p className="truncate text-ui text-muted-foreground">{taskSummaryLine(task, viewerId, agentNames)}{task.updatedAt && <> · <time dateTime={task.updatedAt} title={new Date(task.updatedAt).toLocaleString()}>{timeAgo(task.updatedAt)}</time></>}</p>
       {error && <p role="alert" className="text-ui text-err">{error}</p>}
       {copied && <p role="status" className="text-ui text-muted-foreground">Link copied</p>}
     </div>

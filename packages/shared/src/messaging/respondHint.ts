@@ -65,12 +65,15 @@ export function respondHint(
   members: readonly RespondTarget[],
   mentions: readonly MemberRef[],
   runningAgentIds: readonly string[],
-  /** Super-agent on: Lightbulb (`@lightbulb`) is the one voice in a room; seated specialists don't answer. With no
-   *  `@lightbulb` seat known yet, every agent shows as before. */
+  /** Super-agent on: Lightbulb (`@lightbulb`) is the one voice; seated specialists never answer on their own. */
   oneVoice = false,
 ): string {
-  const front = oneVoice ? members.find((m) => m.kind === "agent" && m.mentionHandle === "lightbulb") : undefined;
-  if (front) members = [front];
+  if (oneVoice) {
+    const front = members.find((m) => m.kind === "agent" && m.mentionHandle === "lightbulb");
+    // No @lightbulb on the row yet (an older seat): still Lightbulb; a people-only room has no agent to name.
+    if (!front) return members.some((m) => m.kind === "agent") ? "Lightbulb may reply" : "";
+    members = [front];
+  }
   const mentioned = new Set(mentions.filter((ref) => ref.kind === "agent").map((ref) => ref.id));
   const parts: string[] = [];
   for (const member of members) {

@@ -20,7 +20,8 @@ permissions:
 jobs:
   tlc:
     name: TLC
-    runs-on: ubuntu-latest
+    # Self-hosted (vars.CI_RUNNER) again 2026-11-05: GitHub-hosted runs used up the free Actions minutes.
+    runs-on: ${{ vars.CI_RUNNER }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7

@@ -29,10 +29,10 @@ env:
 jobs:
   lint-and-build:
     name: Lint & Build
-    # GitHub-hosted (2026-11-05), not vars.CI_RUNNER: one shared self-hosted box
-    # queued every PR behind the others. Unit tests are their own sharded job
-    # below, so this one is lint + tsc + build (~5m). 30m bounds a hang.
-    runs-on: ubuntu-latest
+    # Self-hosted (vars.CI_RUNNER) again 2026-11-05: GitHub-hosted runs used up the free Actions minutes.
+    # Unit tests are their own sharded job below, so this one is lint + tsc + build
+    # (~5m). 30m bounds a hang.
+    runs-on: ${{ vars.CI_RUNNER }}
     timeout-minutes: 30
     steps:
       - name: Checkout code
@@ -41,8 +41,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
         with:
-          # Per-job install dir: harmless on a fresh hosted runner, and keeps
-          # concurrent jobs apart on a shared self-hosted home (ENOTEMPTY races).
+          # Per-job install dir: runner instances on the box share one home (ENOTEMPTY races).
           dest: ${{ runner.temp }}/setup-pnpm
 
       - name: Setup Node.js
@@ -69,9 +68,9 @@ jobs:
   unit-tests:
     name: Unit tests (shard ${{ matrix.shard }}/4)
     # ~380 jsdom files took 13m serially on the self-hosted box. vitest.config.ts
-    # caps each run at 2 worker threads (the core count of a private-repo
-    # ubuntu-latest runner), so the files are split 4 ways with vitest --shard.
-    runs-on: ubuntu-latest
+    # caps each run at 2 worker threads, so the files are split 4 ways with vitest
+    # --shard across parallel runner instances. Self-hosted (vars.CI_RUNNER) again 2026-11-05: GitHub-hosted runs used up the free Actions minutes.
+    runs-on: ${{ vars.CI_RUNNER }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -84,8 +83,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
         with:
-          # Per-job install dir: harmless on a fresh hosted runner, and keeps
-          # concurrent jobs apart on a shared self-hosted home (ENOTEMPTY races).
+          # Per-job install dir: runner instances on the box share one home (ENOTEMPTY races).
           dest: ${{ runner.temp }}/setup-pnpm
 
       - name: Setup Node.js
@@ -106,8 +104,10 @@ jobs:
   # client files. Smoke only for now.
   e2e:
     name: E2E (Playwright)
-    # Pinned: ubuntu-latest is 26.04, which Playwright 1.58 has no Chromium build for.
-    runs-on: ubuntu-24.04
+    # Self-hosted (vars.CI_RUNNER) again 2026-11-05: GitHub-hosted runs used up the free Actions minutes.
+    # (When it was hosted it was pinned to ubuntu-24.04: Playwright 1.58 has no Chromium
+    # build for ubuntu-latest 26.04.)
+    runs-on: ${{ vars.CI_RUNNER }}
     timeout-minutes: 20
     steps:
       - name: Checkout code
@@ -115,6 +115,9 @@ jobs:
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
+        with:
+          # Per-job install dir: runner instances on the box share one home (ENOTEMPTY races).
+          dest: ${{ runner.temp }}/setup-pnpm
 
       - name: Setup Node.js
         uses: actions/setup-node@v7

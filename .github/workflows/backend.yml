@@ -35,15 +35,14 @@ permissions:
 jobs:
   test:
     name: Lint & Test (shard ${{ matrix.shard }}/4)
-    # GitHub-hosted, not vars.CI_RUNNER: one self-hosted isol8-wsl box queued every
-    # backend PR ~100 min behind the others. Nothing here needs that box -- DynamoDB is
-    # moto in-process and the one docker-backed test is gated off (APPS_DB_IT). CI_RUNNER
-    # itself is unchanged; other workflows still use it.
-    runs-on: ubuntu-latest
+    # Self-hosted (vars.CI_RUNNER) again 2026-11-05: GitHub-hosted runs used up the org's
+    # free Actions minutes. The 4 shards run in parallel as long as the box has >= 4 idle
+    # runner instances (isol8-wsl-1..N); fewer instances only queue shards, never fail them.
+    runs-on: ${{ vars.CI_RUNNER }}
     strategy:
       fail-fast: false
       matrix:
-        # Hosted Linux runners are small, so the suite is split 4 ways by test id
+        # The suite is split 4 ways by test id so shards run on parallel runner instances
         # (tests/conftest.py, BACKEND_TEST_SHARD) and each shard runs under xdist.
         shard: [1, 2, 3, 4]
     # This job had NO cap, so a stalled `Run tests` step billed GitHub's
@@ -59,8 +58,8 @@ jobs:
     # lint, 55 min of pytest), so 75 cancelled the next run as soon as one
     # test file slowed down. 100 still dies 5 h before the default; the real
     # fix is a faster suite (xdist / splitting), not a looser cap.
-    # 2026-11-04: GitHub-hosted, 4 shards x xdist; lower this once a few runs
-    # show the new wall-clock.
+    # 2026-11-04: 4 shards x xdist (10-12 min each on GitHub-hosted); lower this once
+    # a few self-hosted runs show the new wall-clock.
     timeout-minutes: 150
 
     steps:
@@ -70,7 +69,7 @@ jobs:
       - name: Setup uv
         uses: astral-sh/setup-uv@v4
         with:
-          # Hosted runners start empty: cache uv's wheel/download cache, keyed on the lockfile.
+          # Cache uv's wheel/download cache, keyed on the lockfile (Actions cache storage, no minutes).
           enable-cache: true
           cache-dependency-glob: apps/backend/uv.lock
 

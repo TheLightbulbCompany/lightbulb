@@ -17,6 +17,7 @@ vi.mock("@/lib/desktopNotify", () => ({
   onDesktopToast: () => () => {},
   desktopDeviceId: async () => null,
   onSessionNoticeClick: (handler: (sessionId: string) => void) => { mocks.sessionClick = handler; return () => { mocks.sessionClick = null; }; },
+  onTaskNoticeClick: () => () => {},
 }));
 vi.mock("@/lib/notify", () => ({ notifySuccess: mocks.notifySuccess, notifyAttention: mocks.notifyAttention }));
 import { MessageNotifications } from "../MessageNotifications";

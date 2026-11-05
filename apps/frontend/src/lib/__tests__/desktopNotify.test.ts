@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { isDesktopApp, nativeNotify, notificationPermission, onDesktopToast } from "../desktopNotify";
+import { isDesktopApp, nativeNotify, notificationPermission, onDesktopToast, onTaskNoticeClick } from "../desktopNotify";
 
 describe("nativeNotify — browser fallback (no Tauri)", () => {
   let instances: FakeNotification[];
@@ -107,6 +107,19 @@ describe("nativeNotify — Tauri desktop shell", () => {
     invoke.mockRejectedValue(new Error("ipc"));
     expect(await nativeNotify("Title", "Body")).toBe(false);
   });
+
+  it("a task tag the Mac posted opens the thread pane", async () => {
+    const openTask = vi.fn();
+    // The tag the Mac posts for a task question; routing starts here if nothing registered before.
+    // Click routing is already up from the test above (one listener per module), so only the tag matters here.
+    const stop = onTaskNoticeClick(openTask);
+    onClicked?.({ payload: "task:t1" });
+    expect(openTask).toHaveBeenCalledWith("t1");
+    stop();
+    onClicked?.({ payload: "task:t2" });
+    expect(openTask).toHaveBeenCalledTimes(1);
+  });
+
 });
 
 describe("notificationPermission", () => {

@@ -17,7 +17,7 @@ import { useActivity } from "@/hooks/useActivity";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { pageVisible } from "@/hooks/useRooms";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
-import { openPanel } from "../workspaceController";
+import { openPanel, openTaskPane } from "../workspaceController";
 import type { PanelProps } from "../panelComponents";
 
 const TEAMS_DETAIL: Partial<Record<ActivityTarget["kind"], string>> = {
@@ -33,6 +33,11 @@ const TEAMS_DETAIL: Partial<Record<ActivityTarget["kind"], string>> = {
  * (`openPanel("chat", …)` only retargets an agent DM, so a room link through it did nothing.)
  */
 export function openActivityTarget({ kind, id, roomId }: ActivityTarget): void {
+  // A super-agent thread (a task question's "Open task"): the thread pane, not a room.
+  if (kind === "task") {
+    openTaskPane(id);
+    return;
+  }
   if (kind === "session") {
     window.dispatchEvent(new CustomEvent("openRoom", { detail: { sessionId: id } }));
     return;

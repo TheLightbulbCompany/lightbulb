@@ -29,9 +29,10 @@ from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict
 
 import httpx
 
+from core import tasks_schema as ts
 from core.config import settings
 from core.dynamodb import plain, utc_now_iso
-from core.repositories import apps_repo, messaging_repo
+from core.repositories import apps_repo, messaging_repo, tasks_repo
 from core.repositories import provisioning_workflow_repo as wf_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import (
@@ -44,6 +45,7 @@ from core.services import (
     messaging,
     network_proof,
     provisioning_workflow,
+    super_agent_flags,
 )
 from core.services import stripe_provisioning as api
 from core.services import vercel_client as vercel
@@ -83,6 +85,7 @@ class BuilderCaller:
     actor_id: str
     actor_kind: Literal["agent", "person"]
     run_id: str | None = None  # X-Lightbulb-Run: the agent run this call came from
+    run_secret: str | None = None  # X-Lightbulb-Run-Secret: proves a task run is the caller's own (never logged)
 
 
 class AppsRefused(provisioning_workflow.WorkflowRefused):
@@ -1866,6 +1869,28 @@ async def update_settings(
     return await status(owner_id, app_id)
 
 
+async def _requests_by_app(owner_id: str) -> dict[str, dict]:
+    """``{app_id: {task_id, identifier}}`` from the workspace's app Creation rows. Opening the request checks who may
+    see it; the id and its LB-n say nothing. Only where requests exist (prod reads no tasks table); a failed read
+    costs the rows their request link, never the list."""
+    if not await super_agent_flags.flags_for(owner_id):
+        return {}
+    try:
+        made = {c["capId"]: c["taskId"] for c in await tasks_repo.list_creations(owner_id) if c.get("kind") == "app"}
+        made = {app_id: task_id for app_id, task_id in made.items() if task_id}
+        if not made:
+            return {}
+        tasks = {t["taskId"]: t for t in await tasks_repo.batch_get(owner_id, [ts.task_sk(t) for t in made.values()])}
+    except Exception:  # noqa: BLE001 -- Canvas without request links beats no Canvas
+        logger.warning("apps: request links unavailable for %s", owner_id, exc_info=True)
+        return {}
+    return {
+        app_id: {"task_id": task_id, "identifier": tasks[task_id].get("identifier")}
+        for app_id, task_id in made.items()
+        if task_id in tasks
+    }
+
+
 async def list_apps(owner_id: str, auth: AuthContext) -> list[dict]:
     """Canvas's rows: the record as stored (no provider calls), names resolved here, destroyed apps hidden."""
     # By workspace: every member sees its apps, except one shared with its managers only.
@@ -1891,6 +1916,7 @@ async def list_apps(owner_id: str, auth: AuthContext) -> list[dict]:
     )
     people = sorted({a["created_by"] for a in apps if a.get("created_by")})
     names = dict(zip(people, await asyncio.gather(*(messaging.human_display_name(u) for u in people)), strict=True))
+    requests = await _requests_by_app(owner_id)
     agents: dict[str, str] = {}
     if any(a.get("actor_kind") == "agent" for a in apps):
         try:
@@ -1911,6 +1937,8 @@ async def list_apps(owner_id: str, auth: AuthContext) -> list[dict]:
         serving = next((v for v in a.get("versions") or [] if v.get("n") == a.get("live_version")), {})
         uid = a.get("created_by")
         row.update(
+            # The request that made it (a Creation row, super-agent): Canvas opens it. None: made before requests.
+            request=requests.get(a["app_id"]),
             can_open=_can_open(a, auth, bool(member.get(a.get("room_id")))),
             setup_blocker={"message": b["message"]} if (b := a.get("setup_blocker")) else None,
             updated_at=a.get("updated_at"),

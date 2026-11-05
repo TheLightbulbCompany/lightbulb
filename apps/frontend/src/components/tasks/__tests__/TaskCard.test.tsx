@@ -8,6 +8,7 @@ import { Fresh, fakeTasksClient, type FakeTasksClient } from "./fakeTasks";
 const live = vi.hoisted(() => ({ superAgent: true, tasks: null as unknown }));
 vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useSuperAgent: () => live.superAgent }));
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
+vi.mock("@/components/canvas/RequestApp", () => ({ RequestApp: () => null })); // its own test: RequestApp.test.tsx
 
 import { TaskCard } from "../TaskCard";
 

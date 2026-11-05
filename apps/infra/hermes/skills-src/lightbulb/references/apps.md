@@ -22,6 +22,12 @@ is built there, never in a team room, so several apps can be built at once.
   `lightbulb app start "<the request, word for word>" --name <name> --room <roomId> --requested-by <sender id> --json`
   (`sender` id: the user id on their message, never a name), post the line its `next` gives you
   once, and end the turn. If `next` says the app was already started, post nothing. Don't build here.
+- **Working on a request** (your input starts with `# Task:` and names a `Request room:`): hand it over
+  the same way, with that request room as the room and no `--requested-by` (Lightbulb knows who
+  asked): `lightbulb app start "<the request, word for word>" --name <name> --room <request room id> --json`.
+  Answer with the line its `next` gives you as your result, and end. A change to an app that
+  already exists: `lightbulb app ask <name> "<the change, word for word>" --room <request room id>`,
+  then answer "Passed to {app}'s conversation in Canvas." Never build in a request.
 - **A message in a room about an app that already exists** (a change, a question, "ship it"):
   `lightbulb app ask <name> "<the message, word for word>" --room <roomId> --requested-by <sender id> --message-id <message id>`,
   then one line: "Passed to {app}'s conversation in Canvas." The builder answers there. If they

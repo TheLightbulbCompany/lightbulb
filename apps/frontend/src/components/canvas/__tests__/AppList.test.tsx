@@ -4,7 +4,10 @@ import { AppList } from "../AppList";
 import type { AppRow } from "@/hooks/useApps";
 
 const openPanel = vi.fn();
-vi.mock("@/components/workspace/workspaceController", () => ({ openPanel: (...a: unknown[]) => openPanel(...a) }));
+const openTaskPane = vi.fn();
+vi.mock("@/components/workspace/workspaceController", () => ({
+  openPanel: (...a: unknown[]) => openPanel(...a), openTaskPane: (...a: unknown[]) => openTaskPane(...a),
+}));
 
 const app = (over: Partial<AppRow> = {}): AppRow => ({
   app_id: "a1", name: "Invoices", room_id: "r1", room_name: "finance", state: "live", open_to: "room",
@@ -175,5 +178,12 @@ describe("AppList", () => {
     expect(screen.getByText("Details").closest("details")!.textContent).toContain("503 upstream");
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     expect(onRetry).toHaveBeenCalled();
+  });
+
+  it("an app a request made links that request; one made before requests has no link", () => {
+    render(<AppList {...props} apps={[app({ request: { task_id: "t1", identifier: "LB-7" } }), app({ app_id: "a2", name: "Old" })]} />);
+    fireEvent.click(screen.getByRole("button", { name: /Request LB-7/ }));
+    expect(openTaskPane).toHaveBeenCalledWith("t1");
+    expect(screen.getAllByRole("button", { name: /Request/ })).toHaveLength(1);
   });
 });

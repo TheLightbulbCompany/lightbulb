@@ -7,7 +7,7 @@ import { useState } from "react";
 import { ArrowRight, CircleAlert, CircleCheck, Hammer, Hourglass, Plug, Radio, ShieldQuestion } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { AppRow } from "@/hooks/useApps";
-import { openPanel } from "@/components/workspace/workspaceController";
+import { openPanel, openTaskPane } from "@/components/workspace/workspaceController";
 import { Problem, displayName, roomOf } from "./appText";
 import { StartBox } from "./StartBox";
 import "./canvas.css";
@@ -99,6 +99,9 @@ function Row({ app, phase, onOpen, canManage }: { app: AppRow; phase: Phase; onO
     : <button type="button" className="app-item__main" onClick={() => onOpen(app.app_id)}>{body}</button>;
   return <li className="app-item">
     {main}
+    {app.request && <button type="button" className="app-item__act" onClick={() => openTaskPane(app.request!.task_id)}>
+      {app.request.identifier ? `Request ${app.request.identifier}` : "Its request"}<ArrowRight size={14} aria-hidden="true" />
+    </button>}
     {phase.setup && <a className="app-item__act" href="/settings/connections">Open Connections<ArrowRight size={14} aria-hidden="true" /></a>}
     {phase.review && !blocked && <button type="button" className="app-item__act" onClick={() => openPanel("activity", {}, { pushUrl: true })}>
       Review<ArrowRight size={14} aria-hidden="true" />

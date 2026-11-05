@@ -129,6 +129,7 @@
       "observe"
     ],
     "CreationKind": [
+      "app",
       "skill"
     ],
     "CreationStatus": [
@@ -2749,8 +2750,11 @@
           "type": "string"
         },
         "kind": {
-          "const": "skill",
           "default": "skill",
+          "enum": [
+            "app",
+            "skill"
+          ],
           "title": "Kind",
           "type": "string"
         },
@@ -2787,6 +2791,18 @@
           ],
           "default": null,
           "title": "Activatedby"
+        },
+        "taskId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Taskid"
         }
       },
       "required": [

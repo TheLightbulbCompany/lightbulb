@@ -706,3 +706,131 @@ async def test_listing_re_arms_the_stuck_watch_for_apps_still_being_built(chat, 
     seen.clear()
     await svc.list_apps(OWNER, ADA)
     assert seen == []  # already said stuck: nothing more to watch
+
+
+# --- Apps as requests (super-agent, founder 5 Nov 2026): a Worker hands an app over from its request's room ------
+
+WORKER = svc.BuilderCaller(owner_id=OWNER, actor_id=FORGE, actor_kind="agent", run_id="run_1", run_secret="s_1")
+
+
+@pytest.fixture
+async def request_room(chat, monkeypatch):
+    """A request Ada asked in #general (task row + its hidden room), as the Router leaves it; its live run is
+    `run_1` with secret `s_1`. The switch is on."""
+    from core import tasks_schema as ts
+    from core.repositories import tasks_repo
+    from core.services import provisioning_questions, super_agent_flags
+
+    monkeypatch.setattr(svc.messaging_repo, "ensure_workspace_id", AsyncMock(return_value="ch"))
+    switch = {"on": True}
+    monkeypatch.setattr(super_agent_flags, "flags_for", AsyncMock(side_effect=lambda ws: switch["on"]))
+    task_id = ts.new_task_id()
+    await tasks_repo.create_task(
+        OWNER,
+        {
+            "taskId": task_id,
+            "identifier": "LB-7",
+            "title": "Booking page",
+            "status": "queued",
+            "audience": {"kind": "room", "roomId": "room_1"},
+            "lane": "shared",
+            "ownerUserId": "user_1",
+            "triggerId": ts.trigger_id("chat", "m1"),
+        },
+    )
+    await tasks_repo.subscribe(OWNER, task_id, "room:room_1:m1", created_by="router")
+
+    async def task_for_run(owner_id, run_id, run_secret):  # the real one also says None when the switch is off
+        if switch["on"] and (owner_id, run_id, run_secret) == (OWNER, "run_1", "s_1"):
+            return await tasks_repo.get_task(owner_id, task_id)
+        return None
+
+    monkeypatch.setattr(provisioning_questions, "task_for_run", task_for_run)
+    room = ts.task_room_id(task_id)
+    chat.rooms[room] = {"roomId": room, "ownerId": OWNER, "name": "Booking page", "task": {"taskId": task_id}}
+    return type("Req", (), {"task_id": task_id, "room": room, "switch": switch})
+
+
+async def _hand_over(room, caller=WORKER):
+    return await conv.start(caller, "booking", "build a booking page", origin_room_id=room)
+
+
+async def test_a_request_hands_its_app_over_and_canvas_names_the_request(chat, request_room):
+    from core.repositories import tasks_repo
+
+    res = await _hand_over(request_room.room)
+    app = await svc.apps_repo.get(res["app_id"])
+    # Where and by whom come from the request's row: #general, Ada; the app is open to that room.
+    assert (app["origin_room_id"], app["created_by"], app["open_to"]) == ("room_1", "user_1", "room")
+    (post,) = chat.posts
+    assert post["text"].startswith("Ada (in #general): build a booking page")
+    line = f"Started Booking. It's being built in its own conversation in Canvas: {res['canvas_url']}"
+    assert res["next"] == f'answer with this line as your result, then end: "{line}"'
+    (made,) = await tasks_repo.list_creations(OWNER)
+    assert (made["capId"], made["kind"], made["taskId"]) == (res["app_id"], "app", request_room.task_id)
+    (row,) = await svc.list_apps(OWNER, ADA)
+    assert row["request"] == {"task_id": request_room.task_id, "identifier": "LB-7"}
+    # A second hand-over of the same app says it was already started and writes no second Creation.
+    again = await _hand_over(request_room.room)
+    assert again["next"].startswith('answer with this line as your result, then end: "Booking was already started.')
+    assert len(await tasks_repo.list_creations(OWNER)) == 1
+
+
+async def test_only_the_requests_own_run_or_a_person_who_sees_it_may_name_the_request(chat, request_room):
+    from core.repositories import tasks_repo
+    from core.services import tasks_access
+
+    for caller in (
+        AGENT,  # the hook token alone: no run
+        svc.BuilderCaller(owner_id=OWNER, actor_id=FORGE, actor_kind="agent", run_id="run_1", run_secret="wrong"),
+        svc.BuilderCaller(owner_id=OWNER, actor_id="user_bob", actor_kind="person"),  # Bob is not in #general
+    ):
+        with pytest.raises(svc.AppsRefused) as refused:
+            await _hand_over(request_room.room, caller)
+        assert refused.value.code == "not_your_request"
+    assert await svc.apps_repo.list_for_owner(OWNER) == [] and chat.posts == []
+    assert await tasks_repo.list_creations(OWNER) == []
+    with pytest.raises(svc.AppsRefused):  # nor an app's change attributed to that request
+        await conv.ask(AGENT, (await _start())["app_id"], "make it blue", origin={"room_id": request_room.room})
+    # Ada can see her own request: from the CLI, it is hers to name.
+    assert await tasks_access.can_view(await tasks_repo.get_task(OWNER, request_room.task_id), "user_1")
+    res = await _hand_over(request_room.room, svc.BuilderCaller(owner_id=OWNER, actor_id="user_1", actor_kind="person"))
+    assert res["app_id"]
+
+
+async def test_another_workspaces_request_room_is_refused(chat, request_room):
+    chat.rooms["foreign"] = {"roomId": "foreign", "ownerId": "org_other", "task": {"taskId": request_room.task_id}}
+    with pytest.raises(svc.AppsRefused) as refused:
+        await _hand_over("foreign")
+    assert refused.value.code == "room_not_found"
+
+
+async def test_with_the_switch_off_a_request_room_is_nobodys_and_canvas_shows_no_request(chat, request_room):
+    res = await _hand_over(request_room.room)
+    request_room.switch["on"] = False
+    (row,) = await svc.list_apps(OWNER, ADA)
+    assert row["request"] is None
+    with pytest.raises(svc.AppsRefused) as refused:  # the run proof needs the switch
+        await conv.ask(WORKER, res["app_id"], "make it blue", origin={"room_id": request_room.room})
+    assert refused.value.code == "not_your_request"
+
+
+async def test_a_failed_tasks_read_costs_canvas_its_request_links_not_its_list(chat, request_room, monkeypatch):
+    from core.repositories import tasks_repo
+
+    await _hand_over(request_room.room)
+    monkeypatch.setattr(tasks_repo, "list_creations", AsyncMock(side_effect=RuntimeError("ddb down")))
+    (row,) = await svc.list_apps(OWNER, ADA)
+    assert row["request"] is None
+
+
+async def test_a_change_passed_on_from_a_request_names_who_asked_and_where(chat, request_room):
+    res = await _start(origin_room_id="room_1")
+    await conv.ask(WORKER, res["app_id"], "make it blue", origin={"room_id": request_room.room})
+    assert chat.posts[-1]["text"] == "Ada (in #general): make it blue"
+
+
+async def test_an_app_from_no_request_has_no_request_in_canvas(chat):
+    await _start()
+    (row,) = await svc.list_apps(OWNER, ADA)
+    assert row["request"] is None

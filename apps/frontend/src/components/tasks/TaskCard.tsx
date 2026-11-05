@@ -10,6 +10,7 @@ import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { Button } from "@/components/ui/button";
 import { capture } from "@/lib/analytics";
 import { cn } from "@/lib/utils";
+import { RequestApp } from "@/components/canvas/RequestApp";
 import { ACTION_LABELS, useTaskActions } from "./useTaskActions";
 
 const TONE_TEXT: Record<TaskTone, string> = {
@@ -79,6 +80,7 @@ export function TaskCard({ task, taskId, viewerId, onOpen }: TaskCardProps): Rea
       </div>)}
     </dl>}
     {task.output && !detail?.includes(task.output.title) && <p className="mt-1 truncate text-ui text-muted-foreground"><span aria-hidden="true">📎 </span>{task.output.title}</p>}
+    <RequestApp taskId={taskId} />
     {inline && <div className="relative z-10 mt-2 flex items-center gap-2">
       <Button type="button" size="sm" variant={view.tone === "waiting" || view.tone === "review" ? "default" : "outline"} disabled={pending || (!!asks && !views && !blind)}
         onClick={async (event) => {

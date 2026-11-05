@@ -38,6 +38,7 @@ export type AppRow = {
   publishing?: boolean; // a publish is in flight, this person's or an agent's: putting back cancels it
   preview_newer?: boolean; // the ready preview isn't what is live, so Publish has something to do
   previous_version?: { n: number; at: string; rebuild?: boolean } | null; // what "Put back the previous version" goes back to; rebuild: it takes a few minutes
+  request?: { task_id: string; identifier?: string } | null; // the request that made it (super-agent Creation row)
   resources?: { provider: string; service: string; state: string; resource_id?: string; environment?: string }[];
 };
 

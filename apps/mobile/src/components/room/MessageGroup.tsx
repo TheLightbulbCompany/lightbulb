@@ -24,6 +24,9 @@ import { hapticImpact, hapticSelection } from "../../lib/haptics";
 import { attachmentFile } from "../../lib/attachmentFile";
 import type { LocalMessageRow } from "../../lib/rooms";
 import { Bubble, BubbleMeta, Chip, MetaText, AVATAR_GUTTER } from "../conversation/bubbles";
+import { specialistLabel } from "@lightbulb/shared";
+import { useSuperAgent } from "../../providers/live-events";
+import { MessageTasks, RoutedToLine } from "../tasks/TaskCard";
 import { MessageMarkdown } from "../chat/MessageMarkdown";
 import { CardReplyContext, useCardPressState, type CardReplyValue } from "../chat/openui/CardReplyContext";
 import { AttachmentViewerModal } from "./AttachmentViewerModal";
@@ -122,15 +125,25 @@ function ReactionChips({
   currentUserId,
   palette,
   onToggle,
+  isAgentId,
 }: {
   reactions: [string, string[]][];
   currentUserId: string;
   palette: ChatPalette;
   onToggle: (emoji: string, active: boolean) => void;
+  /** Super-agent: a reaction only agents applied (Lightbulb's 👀) is a receipt, shown but not a toggle. */
+  isAgentId?: (id: string) => boolean;
 }) {
   return (
     <>
       {reactions.map(([emoji, users]) => {
+        if (isAgentId && users.length > 0 && users.every(isAgentId)) {
+          return (
+            <View key={emoji} accessible accessibilityRole="image" accessibilityLabel={emoji === "👀" ? "Lightbulb saw this" : `Lightbulb reacted ${emoji}`}>
+              <Chip label={emoji} palette={palette} />
+            </View>
+          );
+        }
         const selected = users.includes(currentUserId);
         return (
           <Chip
@@ -222,6 +235,7 @@ export function MessageGroup({
   cardsEnabled?: boolean;
 }) {
   const palette = useChatPalette();
+  const superAgent = useSuperAgent();
   const [timeShown, setTimeShown] = useState(false);
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
   const mine = message.author.kind === "human" && message.author.id === currentUserId;
@@ -291,7 +305,7 @@ export function MessageGroup({
             />
             <View style={styles.headCol}>
               <Text style={[styles.authorName, { color: palette.fgMute }]} numberOfLines={1}>
-                {message.author.displayName}
+                {superAgent && message.specialist ? specialistLabel(message.specialist) : message.author.displayName}
               </Text>
               <Bubble
                 testID="message-bubble"
@@ -323,6 +337,9 @@ export function MessageGroup({
                     ))
                   : null}
               </Bubble>
+              {!deleted && superAgent && message.taskRefs?.length ? (
+                <MessageTasks message={message} viewerId={currentUserId} palette={palette} />
+              ) : null}
             </View>
           </View>
         ) : (
@@ -362,12 +379,14 @@ export function MessageGroup({
           </View>
         )}
         <BubbleMeta align={mine ? "end" : "start"} palette={palette} indent={mine ? 0 : AVATAR_GUTTER}>
+          {!deleted && superAgent && message.routedTo ? <RoutedToLine message={message} palette={palette} /> : null}
           {!deleted && onToggleReaction && appliedReactions.length > 0 ? (
             <ReactionChips
               reactions={appliedReactions}
               currentUserId={currentUserId}
               palette={palette}
               onToggle={onToggleReaction}
+              isAgentId={superAgent ? (id) => members.some((m) => m.kind === "agent" && m.id === id) : undefined}
             />
           ) : null}
           {!deleted && reactionError ? (

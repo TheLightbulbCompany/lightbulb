@@ -161,7 +161,7 @@ jest.mock("expo-clipboard", () => ({ setStringAsync: (text: string) => mockSetSt
 // marks the room it has open. One hoisted object, never a fresh literal.
 const mockMarkRead = jest.fn(async (_roomId: string, _cursor: { lastReadSeq: number }) => ({}));
 const mockLive = { messaging: { markRead: mockMarkRead } };
-jest.mock("../../../../providers/live-events", () => ({ useLiveEvents: () => mockLive }));
+jest.mock("../../../../providers/live-events", () => ({ useSuperAgent: () => false, useLiveEvents: () => mockLive }));
 
 const mockSummary = (over: Partial<RoomSummary>): RoomSummary => ({
   roomId: "r1",

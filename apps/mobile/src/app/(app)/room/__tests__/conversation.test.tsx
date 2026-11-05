@@ -185,7 +185,7 @@ const mockLive = {
 // One hoisted object, never a fresh literal per call: RoomsPlatform requires a
 // referentially stable `live`, and a new one per render re-fires the history
 // reconcile into "Maximum update depth exceeded".
-jest.mock("../../../../providers/live-events", () => ({ useLiveEvents: () => mockLive }));
+jest.mock("../../../../providers/live-events", () => ({ useSuperAgent: () => false, useLiveEvents: () => mockLive }));
 // The band has its own suite; here only WHERE it mounts is under test.
 jest.mock("../../../../components/room/OnboardingBand", () => ({
   OnboardingBand: () => {

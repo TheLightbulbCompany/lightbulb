@@ -6,6 +6,9 @@ import {
   createRuntimeClient,
   refreshOnboardingStatus,
   useLiveEvents as useSharedLiveEvents,
+  createTasksClient,
+  useTaskChangedRefresh,
+  type TasksClient,
   type ChatIncomingMessage,
   type LiveConfig,
   type LiveEvent,
@@ -42,6 +45,8 @@ export interface LiveEventsContextValue extends RuntimeRpcSource {
   messaging: ReturnType<typeof createMessagingClient>;
   /** The workspace's super-agent switch, from the live config already fetched (contracts-v2 §1). */
   superAgent: boolean;
+  /** The super-agent task routes; only called while `superAgent` is on. */
+  tasks: TasksClient;
   claimActiveRoomSubscription(room: ActiveRoomSubscription): () => void;
   onChatMessage(
     handler: (
@@ -68,6 +73,9 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     [api],
   );
   const ownerScope = organization?.id ?? userId;
+  // Keyed by the signed-in workspace so an org switch never reuses the last org's task lists.
+  const tasks = useMemo(() => createTasksClient(api, ownerScope ?? ""), [api, ownerScope]);
+  const refreshTask = useTaskChangedRefresh(tasks);
   const httpReady = !!isLoaded && !!userId;
   const [config, setConfig] = useState<LiveConfig | null>(null);
   const [configError, setConfigError] = useState<Error | null>(null);
@@ -156,8 +164,9 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     if (event.type === "runtime.resource.invalidated" && (event.payload.resource === "onboarding" || event.payload.resource === "health")) {
       refreshOnboardingStatus();
     }
+    if (event.type === "task.changed") refreshTask(event.payload);
     for (const handler of eventHandlers.current) handler(event);
-  }, []);
+  }, [refreshTask]);
   const dispatchChat = useCallback(
     (
       frame: ChatIncomingMessage,
@@ -182,6 +191,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     onEvent: dispatchEvent,
     onChatMessage: dispatchChat,
     onConfigStale: refreshConfig,
+    tasksChannel: superAgent,
     enabled: foreground && httpReady,
   });
 
@@ -228,6 +238,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
       liveError: configError ? "Live updates are reconnecting." : live.lastError,
       messaging,
       superAgent,
+      tasks,
       claimActiveRoomSubscription,
       onChatMessage,
       rpc: runtime.rpc,
@@ -244,6 +255,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
       configError,
       messaging,
       superAgent,
+      tasks,
       runtime,
       claimActiveRoomSubscription,
       onChatMessage,

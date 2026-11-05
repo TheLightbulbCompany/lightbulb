@@ -345,10 +345,10 @@ async def codex_rollback(owner_id: str, *, dry_run: bool = False) -> str:
     row = await oauth_service.get_token_row(user, consistent=True, bound_to=owner_id)
     if row is None or row.get("custody") != "backend":
         return "already"
+    if dry_run:
+        return "would_rollback"  # before the idle probe: it drains and wakes a live workspace
     if not await session_idle(owner_id):
         return "busy_session"
-    if dry_run:
-        return "would_rollback"
     async with owner_lifecycle.owner_lifecycle_guard(owner_id):
         async with fenced_session(owner_id) as fenced:
             if not fenced:

@@ -401,6 +401,7 @@ async def test_rollback_dry_run_writes_nothing(world):
     assert _row(world)["custody"] == "backend"
     assert "openai-codex" not in _auth(world)["providers"]
     world["stop"].assert_not_awaited()
+    world["idle"].assert_not_awaited()  # a dry run never probes (drains/wakes) the workspace
 
 
 @pytest.mark.asyncio

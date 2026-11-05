@@ -6,7 +6,7 @@ import type { Components, UrlTransform } from "react-markdown";
 import { sessionLabel, sessionStatus, specialistLabel, type CardReply, type LocalSession } from "@lightbulb/shared";
 import { MessageRoutedTo, MessageTasks } from "@/components/tasks/MessageTasks";
 import { AutomationConfirmCard } from "@/components/tasks/AutomationConfirmCard";
-import { useSuperAgent } from "@/hooks/useLiveEvents";
+import { useOptionalLiveEvents, useSuperAgent } from "@/hooks/useLiveEvents";
 import { openMessagePanel } from "@/components/workspace/workspaceController";
 import { Button } from "@/components/ui/button";
 import { Identity } from "@/components/teams/shared/components/Identity";
@@ -127,7 +127,7 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
       {collapsed && timestamp && <time className="sr-only" dateTime={timestamp}>{time}</time>}
       {!collapsed && <div className="room-message-byline">{superAgent && message.specialist
         // A result posted for a specialist reads as the one front agent with its label (contracts-v2 §9).
-        ? <span className="font-semibold truncate" data-specialist={message.specialist}>{specialistLabel(message.specialist)}</span>
+        ? <SpecialistByline specialist={message.specialist} />
         : participant
         ? <ParticipantProfile participant={participant} currentUserId={currentUserId} onMessage={onSelectParticipant} disabled={!actionable} />
         : <span className="font-semibold truncate" title={name}>{name}</span>}
@@ -180,4 +180,10 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
       </Button>}
     </div>
   </article>;
+}
+
+/** "Lightbulb · Finance": a specialist id reads by its name from the agents list (an id is never shown). */
+function SpecialistByline({ specialist }: { specialist: string }): ReactElement {
+  const agentNames = useOptionalLiveEvents()?.agentNames;
+  return <span className="font-semibold truncate" data-specialist={specialist}>{specialistLabel(specialist, agentNames)}</span>;
 }

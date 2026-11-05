@@ -110,11 +110,12 @@ describe("formatSchedule", () => {
   });
 });
 
-describe("specialistLabel", () => {
-  it("names a handle; an id never shows as a name", () => {
+describe("specialistLabel with the agents list", () => {
+  it("an agent id reads by its name; an unknown id never shows; a handle reads as itself", () => {
+    const id = "5b36216c-196c-48af-ad2a-6817c42a1de3";
+    expect(specialistLabel(id, new Map([[id, "Finance"]]))).toBe("Lightbulb · Finance");
+    expect(specialistLabel(id)).toBe("Lightbulb");
     expect(specialistLabel("finance")).toBe("Lightbulb · Finance");
-    expect(specialistLabel("3f2a9c1e-0b4d-4e7a-9a51-2f6c8d0e1b2a")).toBe("Lightbulb");
-    expect(specialistLabel("agent_01HXYZABCDEFGH")).toBe("Lightbulb");
   });
 });
 

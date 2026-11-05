@@ -365,7 +365,7 @@ export {
   FREE_TEXT_OPTION, answerVerb, askLine, previewRows, primaryOptionId,
 } from "./tasks/view";
 export type {
-  EffectRow, OverviewGroup, QuestionRow, ShownGroup, SummaryView, TaskAction, TaskRow, TaskStatus, TaskTone, TaskView, TaskViewInput,
+  AgentNames, EffectRow, OverviewGroup, QuestionRow, ShownGroup, SummaryView, TaskAction, TaskRow, TaskStatus, TaskTone, TaskView, TaskViewInput,
 } from "./tasks/view";
 export { OUTPUT_KINDS } from "./tasks/types";
 export type {
@@ -374,7 +374,7 @@ export type {
 } from "./tasks/types";
 export { createTasksClient, scopeParam } from "./tasks/client";
 export type { TasksClient } from "./tasks/client";
-export { putTaskSummary, questionsKey, refreshTask, taskKey, taskListKey, useTask, useOlderTasks, useTaskCache, useTaskChangedRefresh, useTaskList, useTaskQuestions } from "./tasks/useTasks";
+export { putTaskSummary, questionsKey, refreshTask, taskKey, taskListKey, useAgentNames, useTask, useOlderTasks, useTaskCache, useTaskChangedRefresh, useTaskList, useTaskQuestions } from "./tasks/useTasks";
 export {
   automationStatusLine, budgetLine, canDecide, canEdit, deliveryWords, money, runNow, runNowReason, runsPerMonth, scheduleWords, viewerTimeZone, waitingWords,
 } from "./tasks/automations";

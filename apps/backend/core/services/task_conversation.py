@@ -35,7 +35,7 @@ async def _front_agent(ws: str) -> dict:
             return {
                 "kind": "agent",
                 "id": ceo["id"],
-                "displayName": ceo["name"],
+                "displayName": messaging.FRONT_AGENT_NAME,
                 "mentionHandle": "lightbulb",
                 "role": "member",
                 "listenMode": "mentions",

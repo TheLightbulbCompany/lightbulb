@@ -45,8 +45,26 @@ async def test_flag_on_reads_registry_not_paperclip(tasks_table, paperclip_roste
     await _seed(paperclip_roster)
     with _flag(True), patch(FETCH, AsyncMock(side_effect=AssertionError("paperclip read"))):
         roster = await messaging.load_agent_roster(WS)
-    assert roster == await agent_registry.roster(WS)
+    registry = await agent_registry.roster(WS)
+    front = next((r["id"] for r in registry if r.get("role") == "ceo" and r.get("status") == "active"), None)
+    # Same rows, except the front agent is named "Lightbulb" (contracts-v2 §9).
+    assert roster == [{**r, "name": "Lightbulb"} if r["id"] == front else r for r in registry]
     assert [r["id"] for r in roster] == sorted(r["id"] for r in roster)
+
+
+@pytest.mark.asyncio
+async def test_flag_on_names_the_front_agent_lightbulb(tasks_table, paperclip_roster):
+    await _seed(paperclip_roster)
+    registry = await agent_registry.roster(WS)
+    ceo = next(r for r in registry if r.get("role") == "ceo")
+    with (
+        _flag(True),
+        patch.object(agent_registry, "roster", AsyncMock(return_value=[{**r, "status": "active"} for r in registry])),
+    ):
+        roster = await messaging.load_agent_roster(WS)
+    names = {r["id"]: r["name"] for r in roster}
+    assert names[ceo["id"]] == "Lightbulb"
+    assert all(n != "Lightbulb" for i, n in names.items() if i != ceo["id"])
 
 
 @pytest.mark.asyncio

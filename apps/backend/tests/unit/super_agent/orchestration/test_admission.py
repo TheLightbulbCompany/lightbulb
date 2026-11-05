@@ -327,3 +327,33 @@ def test_admit_pointers_deserialize():
     assert p["triggerId"] == "x"
     with pytest.raises(ValueError):
         openclaw_work.deserialize_pointer(_stream_body({"kind": "admit", "roomId": ROOM}))
+
+
+async def test_no_room_triggers_batch_per_conversation(world, monkeypatch):
+    """Privacy: triggers with no room (agent mail) are batched per outside conversation, so two senders never share
+    one Router prompt (the batch key is TriggerRef.room_id); the same thread batches together."""
+
+    async def put_admit(ws, trigger_id):
+        return None
+
+    monkeypatch.setattr(messaging_repo, "put_admit_trigger", put_admit)
+
+    def mail(tid, session):
+        return ts.Trigger(
+            ws=WS,
+            trigger_id=tid,
+            source="mail",
+            admission="respond",
+            lane="shared",
+            received_at="2026-11-05T10:00:00Z",
+            created_at="x",
+            updated_at="x",
+            ref={"text": "hi", "sessionKey": session},
+        )
+
+    for tid, session in (("mail:a1", "mail:thread-a"), ("mail:b1", "mail:thread-b"), ("mail:a2", "mail:thread-a")):
+        await admission.enqueue_trigger(WS, mail(tid, session))
+        await admission.admit_pointer({"kind": "admit_trigger", "ownerId": WS, "triggerId": tid})
+    a1, b1, a2 = (r.room_id for r in world["router"][-3:])
+    assert a1 and b1 and a1 != b1 and a1 == a2
+    assert "thread-a" not in a1  # hashed: no sender id in the workflow payload

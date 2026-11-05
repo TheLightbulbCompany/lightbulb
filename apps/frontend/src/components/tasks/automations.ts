@@ -12,8 +12,6 @@ import {
 } from "@lightbulb/shared";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { useApi } from "@/lib/api";
-import { useTeamsApi } from "@/hooks/useTeamsApi";
-import type { CompanyAgent } from "@/components/teams/shared/types";
 import { errorCopy } from "./useTaskActions";
 
 export type AutomationVerb = "activate" | "pause" | "resume" | "run";
@@ -83,11 +81,8 @@ export const withCronTime = (cron: readonly string[], time: string): string[] =>
 
 export { budgetLine, deliveryWords, money, runNowReason, runsPerMonth, scheduleWords, viewerTimeZone, waitingWords } from "@lightbulb/shared";
 
-/** "Lightbulb · Finance" for an automation's specialist: a handle reads as itself, an agent id by its roster name. */
+/** "Lightbulb · Finance" for an automation's specialist: an agent id by its name (the live provider's agent names). */
 export function useSpecialistLabel(): (specialistId: string | null | undefined) => string {
-  const { data } = useTeamsApi().read<{ agents?: CompanyAgent[] }>("/agents");
-  return useCallback((id) => {
-    const agent = id ? data?.agents?.find((x) => x.id === id) : undefined;
-    return agent?.name ? `Lightbulb · ${agent.name}` : specialistLabel(id);
-  }, [data]);
+  const { agentNames } = useLiveEvents();
+  return useCallback((id) => specialistLabel(id, agentNames), [agentNames]);
 }

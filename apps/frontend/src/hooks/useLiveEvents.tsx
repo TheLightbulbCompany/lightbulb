@@ -17,6 +17,8 @@ import {
   createMessagingClient,
   createRuntimeClient,
   createTasksClient,
+  useAgentNames,
+  type AgentNames,
   framesChannelFor,
   useTaskChangedRefresh,
   useLiveEvents as useSharedLiveEvents,
@@ -50,6 +52,8 @@ export interface LiveEventsContextValue extends RuntimeRpcSource {
   superAgent: boolean;
   /** The super-agent task routes; only called while `superAgent` is on. */
   tasks: TasksClient;
+  /** Agent id → name while the switch is on (task specialists are agent ids); empty until it loads. */
+  agentNames: AgentNames;
   claimActiveRoomSubscription(room: ActiveRoomSubscription): () => void;
   /** Subscribe the active room's frames sibling channel (a Mac tab's view-tier frames) while
    * any claim is held. Ref-counted; the returned function releases this claim once. */
@@ -88,6 +92,10 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
   // subscription. Dropping it closes them all.
   const config = configError instanceof ApiError && configError.status === 403 ? undefined : liveConfig;
   const superAgent = config?.features?.superAgent === true;
+  // Specialist names for task cards ("Lightbulb · Finance", never the agent id): one read of the agents list while
+  // the switch is on, shared by every card through this context.
+  const agentNames = useAgentNames(superAgent && httpReady ? tasks.cacheScope : null,
+    async () => ((await api.get("/teams/agents")) as { agents?: { id: string; name?: string | null }[] } | null)?.agents ?? []);
   const [activeRoomState, setActiveRoomState] = useState<{
     ownerScope: string | null;
     room: ActiveRoomSubscription | null;
@@ -273,6 +281,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     messaging,
     superAgent,
     tasks,
+    agentNames,
     claimActiveRoomSubscription,
     claimFrames,
     claimSessionFrames,
@@ -292,6 +301,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     messaging,
     superAgent,
     tasks,
+    agentNames,
     claimActiveRoomSubscription,
     claimFrames,
     claimSessionFrames,

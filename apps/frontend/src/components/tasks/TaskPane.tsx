@@ -95,6 +95,7 @@ function answerLine(q: QuestionView): string {
 
 export function TaskHeader({ task, viewerId }: { task: TaskSummary; viewerId: string }): ReactElement {
   const { act } = useTaskActions("pane");
+  const { agentNames } = useLiveEvents();
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [confirmStop, setConfirmStop] = useState(false);
@@ -108,7 +109,7 @@ export function TaskHeader({ task, viewerId }: { task: TaskSummary; viewerId: st
   };
   return <section aria-label="Thread status" className="grid gap-1 px-1">
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-ui text-muted-foreground">
-      <span>{specialistLabel(task.specialist)}</span>
+      <span>{specialistLabel(task.specialist, agentNames)}</span>
       <TaskStatus task={task} viewerId={viewerId} />
       <span><span aria-hidden="true">☁ </span>Lightbulb cloud</span>
     </div>

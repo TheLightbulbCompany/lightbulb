@@ -14,7 +14,7 @@ from botocore.exceptions import ClientError
 
 from core.config import settings
 from core.dynamodb import run_in_thread
-from core.services import memory_sync, workspace_memory
+from core.services import memory_sync, secret_shaped, workspace_memory
 from core.services.super_agent_flags import flags_for
 
 logger = logging.getLogger(__name__)
@@ -34,10 +34,10 @@ def _namespace(ws: str, task: dict) -> str:
 
 
 def card_text(task: dict) -> str:
-    return (
-        f"{task['identifier']} {task['title']} — {task['status']} · {task.get('specialist') or ''}\n"
-        f"{(task.get('description') or '')[:200]}"
-    )
+    """Title and description are redacted before anything reaches memory (description before the cut)."""
+    title = secret_shaped.redact(task["title"])
+    description = secret_shaped.redact(task.get("description") or "")[:200]
+    return f"{task['identifier']} {title} — {task['status']} · {task.get('specialist') or ''}\n{description}"
 
 
 def _claim(ws: str, task_id: str, version: int, record_id: str | None) -> bool:
@@ -97,15 +97,18 @@ def _index(ws: str, task: dict, memory_id: str) -> None:
     record_id = resp["successfulRecords"][0]["memoryRecordId"]
     if _claim(ws, task["taskId"], version, record_id):
         _delete(client, memory_id, prev.get("recordId"))  # the old card only after the new one is in
-    else:
-        _delete(client, memory_id, record_id)  # a newer version won the race
+    elif (memory_sync._get(ws, _sk(task["taskId"])) or {}).get("recordId") != record_id:
+        # a newer version won the race; a duplicate event got the live record back from clientToken
+        _delete(client, memory_id, record_id)
 
 
 async def _run(ws: str, task: dict) -> None:
     memory_id = settings.AGENTCORE_MEMORY_ID
-    if not memory_id or not await flags_for(ws):
+    if not memory_id:
         return
     try:
+        if not await flags_for(ws):
+            return
         await run_in_thread(_index, ws, task, memory_id)
     except Exception as exc:  # noqa: BLE001 -- recall falls back to turns; the next change re-indexes
         logger.warning("task card index failed ws=%s task=%s error=%s", ws, task.get("taskId"), type(exc).__name__)

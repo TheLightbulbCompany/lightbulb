@@ -19,6 +19,7 @@ class FakeAgentCore:
         self.calls: list[str] = []
         self.fail_create = fail_create
         self._n = 0
+        self.tokens: dict[str, str] = {}  # clientToken is idempotent: a replay returns the same record
 
     def batch_create_memory_records(self, *, memoryId, records, clientToken):
         self.calls.append("create")
@@ -26,8 +27,12 @@ class FakeAgentCore:
             raise RuntimeError("throttled")
         ok = []
         for r in records:
+            if clientToken in self.tokens:
+                rid = self.tokens[clientToken]
+                ok.append({"requestIdentifier": r["requestIdentifier"], "memoryRecordId": rid, "status": "SUCCEEDED"})
+                continue
             self._n += 1
-            rid = f"rec-{self._n}"
+            rid = self.tokens[clientToken] = f"rec-{self._n}"
             self.records[rid] = {"ns": r["namespaces"][0], "text": r["content"]["text"], "metadata": r["metadata"]}
             ok.append({"requestIdentifier": r["requestIdentifier"], "memoryRecordId": rid, "status": "SUCCEEDED"})
         return {"successfulRecords": ok, "failedRecords": []}
@@ -176,3 +181,48 @@ def test_script_refuses_prod(monkeypatch):
     monkeypatch.setattr(memory_index_tasks.settings, "ENVIRONMENT", "prod", raising=False)
     with pytest.raises(SystemExit):
         memory_index_tasks.main(["--owner", OWNER])
+
+
+async def test_card_text_redacts_secrets_in_title_and_description(table, core):
+    key = "sk-" + "a" * 30
+    await mti.index_task(OWNER, _task(title=f"Rotate {key}", description=f"token: {key} then go"))
+    [rec] = core.records.values()
+    assert key not in rec["text"]
+    assert rec["text"].startswith("T-42 Rotate [REDACTED] — working")
+    assert rec["text"].endswith("[REDACTED] then go")
+
+
+async def test_duplicate_event_keeps_live_card(table, core, monkeypatch):
+    """The same event twice, both reading the pointer before either claims: the replay's create
+    returns the live record id (same clientToken), its claim fails, and it must not delete that card."""
+    await mti.index_task(OWNER, _task(version=3))
+    live = _pointer()["recordId"]
+    real_get, reads = memory_sync._get, []
+
+    def stale_first_read(*a):
+        reads.append(a)
+        return {} if len(reads) == 1 else real_get(*a)
+
+    monkeypatch.setattr(memory_sync, "_get", stale_first_read)
+    await mti.index_task(OWNER, _task(version=3))
+    assert list(core.records) == [live] and _pointer()["recordId"] == live
+    assert "delete" not in core.calls
+
+
+async def test_flag_lookup_failure_is_off(table, core, caplog):
+    mti.flags_for.side_effect = RuntimeError("flags down")
+    await mti.index_task(OWNER, _task())
+    assert core.calls == [] and "RuntimeError" in caplog.text
+
+
+def test_script_dry_run_by_default(monkeypatch):
+    from scripts import memory_index_tasks
+
+    monkeypatch.setattr(memory_index_tasks.settings, "ENVIRONMENT", "dev", raising=False)
+    monkeypatch.setattr(memory_index_tasks, "_all_tasks", AsyncMock(return_value=[_task()]))
+    index = AsyncMock()
+    monkeypatch.setattr(memory_index_tasks.memory_tasks_index, "index_task", index)
+    memory_index_tasks.main(["--owner", OWNER])
+    index.assert_not_called()
+    memory_index_tasks.main(["--owner", OWNER, "--apply"])
+    index.assert_awaited_once()

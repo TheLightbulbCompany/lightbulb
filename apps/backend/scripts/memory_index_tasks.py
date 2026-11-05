@@ -1,6 +1,6 @@
 """Re-index every task card of one workspace (dev/local only).
 
-uv run python -m scripts.memory_index_tasks --owner org_x [--dry-run]
+uv run python -m scripts.memory_index_tasks --owner org_x [--apply]   (dry run, counting tasks, unless --apply)
 """
 
 import argparse
@@ -24,10 +24,10 @@ async def _all_tasks(owner: str) -> list[dict]:
     return out
 
 
-async def _run(owner: str, dry_run: bool) -> None:
+async def _run(owner: str, apply: bool) -> None:
     tasks = await _all_tasks(owner)
     print(f"{len(tasks)} tasks for {owner}")
-    if dry_run:
+    if not apply:
         return
     for task in tasks:
         await memory_tasks_index.index_task(owner, task)
@@ -36,11 +36,11 @@ async def _run(owner: str, dry_run: bool) -> None:
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--owner", required=True)
-    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--apply", action="store_true", help="write the cards (default: dry run)")
     args = ap.parse_args(argv)
     if settings.ENVIRONMENT == "prod":
         raise SystemExit("refusing to re-index task cards in prod")
-    asyncio.run(_run(args.owner, args.dry_run))
+    asyncio.run(_run(args.owner, args.apply))
 
 
 if __name__ == "__main__":

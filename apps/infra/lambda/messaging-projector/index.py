@@ -250,7 +250,7 @@ def _require_int(value: Any, field: str, *, minimum: int = 0) -> int:
     return value
 
 
-SUPER_AGENT_ATTRS = ("taskRefs", "specialist", "routedTo", "forwardedFrom", "kind")
+SUPER_AGENT_ATTRS = ("taskRefs", "specialist", "routedTo", "forwardedFrom", "kind", "automationId")
 
 
 def _canonical_message(item: dict[str, Any]) -> dict[str, Any]:
@@ -381,7 +381,7 @@ def _canonical_message(item: dict[str, Any]) -> dict[str, Any]:
     # A mid-run progress line (core.services.messaging's canonical_message). Omitted otherwise.
     if item.get("progress") is True:
         message["progress"] = True
-    # Super-agent message attrs (taskRefs, specialist, routedTo, forwardedFrom, kind), as the HTTP read carries them:
+    # Super-agent message attrs (taskRefs, specialist, routedTo, forwardedFrom, kind, automationId), as the HTTP read carries them:
     # the live copy merges over it, so leaving them out dropped a Router reply's task cards until a reload.
     # Omitted when absent, so a legacy message's payload is unchanged.
     for attr in SUPER_AGENT_ATTRS:

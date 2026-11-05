@@ -99,11 +99,18 @@ SESSION = str(uuid.UUID(int=3))
         {"threadRootMessageId": str(uuid.UUID(int=11)), "replyToMessageId": str(uuid.UUID(int=11))},
         # Super-agent attrs ride the live copy, or a Router reply's task cards appear only after a reload.
         {"taskRefs": [{"taskId": "t-1", "role": "started"}], "specialist": "finance", "kind": "result"},
+        {"kind": "automation_confirm", "automationId": "01JAUTO"},  # the card links to its automation
     ],
 )
 async def test_write_path_event_is_byte_equal_to_the_projectors(extra):
     item = _item(**extra)
     assert await _backend_bytes(item) == _projector_bytes(item)
+
+
+async def test_confirm_card_event_carries_its_automation_id():
+    item = _item(kind="automation_confirm", automationId="01JAUTO")
+    backend, projector = await _backend_bytes(item), _projector_bytes(item)
+    assert '"automationId":"01JAUTO"' in backend[1] and backend == projector
 
 
 @pytest.fixture(autouse=True)

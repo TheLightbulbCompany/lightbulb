@@ -137,10 +137,10 @@ def room_message_created_event(item: dict[str, Any]) -> dict[str, Any]:
         message["sessionTargetLabels"] = {s: labels[s] for s in session_mentions if labels.get(s)}
     if item.get("progress") is True:
         message["progress"] = True
-    # Super-agent message attrs (taskRefs, specialist, routedTo, forwardedFrom, kind), as the HTTP read carries them:
+    # Super-agent message attrs (taskRefs, specialist, routedTo, forwardedFrom, kind, automationId), as the HTTP read carries them:
     # the live copy merges over it, so leaving them out dropped a Router reply's task cards until a reload.
     # Omitted when absent, so a legacy message's payload is unchanged.
-    for attr in ("taskRefs", "specialist", "routedTo", "forwardedFrom", "kind"):
+    for attr in ("taskRefs", "specialist", "routedTo", "forwardedFrom", "kind", "automationId"):
         if item.get(attr) is not None:
             message[attr] = item[attr]
     return {

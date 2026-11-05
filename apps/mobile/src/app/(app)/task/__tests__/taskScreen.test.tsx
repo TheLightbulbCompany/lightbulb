@@ -77,7 +77,7 @@ function client(detail: TaskDetail, views: QuestionView[], id: string) {
   mockLive.tasks = c;
   return c;
 }
-beforeEach(() => { mockAuth.userId = SAM; mockRooms.selectRoom.mockClear(); mockSend.mockClear(); });
+beforeEach(() => { mockLive.superAgent = true; mockAuth.userId = SAM; mockRooms.selectRoom.mockClear(); mockSend.mockClear(); });
 
 it("non-answerer sees Waiting on Sam without buttons", async () => {
   mockAuth.userId = PRIYA;
@@ -111,6 +111,26 @@ it("409 shows who answered and removes the buttons, with no second POST", async 
   const view = await render(<TaskScreen />);
   fireEvent.press(await view.findByLabelText("Approve"));
   await waitFor(() => expect(view.queryByLabelText("Approve")).toBeNull());
+  expect(await view.findByText("Already answered by Priya")).toBeTruthy();
   expect(c.answer).toHaveBeenCalledTimes(1);
+  await view.unmount();
+});
+
+it("switch off: a pasted task link renders nothing and fetches or marks nothing", async () => {
+  mockLive.superAgent = false;
+  const c = client({ ...step8, task: waiting }, [approval()], "t-off");
+  const view = await render(<TaskScreen />);
+  expect(view.toJSON()).toBeNull();
+  expect(c.get).not.toHaveBeenCalled();
+  expect(c.markRead).not.toHaveBeenCalled();
+  expect(mockRooms.selectRoom).not.toHaveBeenCalled();
+  await view.unmount();
+});
+
+it("a task that resolves to no data reads as unavailable, not Loading forever", async () => {
+  const c = client({ ...step8, task: waiting }, [], "t-gone");
+  c.get.mockResolvedValue(undefined as never);
+  const view = await render(<TaskScreen />);
+  expect(await view.findByText("This thread isn\u2019t available to you.")).toBeTruthy();
   await view.unmount();
 });

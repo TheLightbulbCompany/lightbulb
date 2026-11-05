@@ -9,7 +9,10 @@ import { fonts, radii, spacing, type ChatPalette } from "../../config/theme";
 import { ActionButton } from "./TaskCard";
 import { useTaskActions } from "./useTaskActions";
 
-export function NeedsYouCard({ task, question, palette }: { task: TaskSummary; question: QuestionView; palette: ChatPalette }) {
+/** `onAnsweredElsewhere` gets the "Already answered by X" line: the refetch drops this card, so the screen shows it. */
+export function NeedsYouCard({ task, question, palette, onAnsweredElsewhere }: {
+  task: TaskSummary; question: QuestionView; palette: ChatPalette; onAnsweredElsewhere?: (message: string) => void;
+}) {
   const { answer } = useTaskActions();
   const [pending, setPending] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -28,7 +31,8 @@ export function NeedsYouCard({ task, question, palette }: { task: TaskSummary; q
                 const res = await answer(task, question.id, o.id, { expectVersion: question.version });
                 setPending(false);
                 if (res.ok) setClosed(true);
-                else { setNote(res.message); if (res.answeredBy) setClosed(true); }
+                else if (res.answeredBy) { setClosed(true); onAnsweredElsewhere?.(res.message); }
+                else setNote(res.message);
               }} />
           ))}
         </View>

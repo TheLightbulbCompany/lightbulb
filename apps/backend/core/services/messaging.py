@@ -702,12 +702,6 @@ class AgentMessageRequest(ContractModel):
     post_reason: str | None = None
     attachments: list[InlineAttachment] = Field(default_factory=list, max_length=ATTACHMENT_MAX_COUNT)
     uploaded_attachments: list[UploadedAttachment] = Field(default_factory=list, max_length=ATTACHMENT_MAX_COUNT)
-    # Super-agent attrs (set by `task_conversation.post_as_lightbulb` only): stored on the MSG row.
-    task_refs: list[TaskRef] | None = None
-    specialist: str | None = None
-    routed_to: dict[str, str] | None = None
-    forwarded_from: dict[str, str] | None = None
-    kind: str | None = None
 
     @field_validator("post_reason")
     @classmethod
@@ -4932,17 +4926,11 @@ async def create_follow_up(owner_id: str, request: FollowUpRequest) -> FollowUpR
     return FollowUpResponse(status=status)
 
 
-def _message_attrs(request: AgentMessageRequest) -> dict | None:
-    """The super-agent attrs a request sets, by stored name; None for every legacy post."""
-    attrs = {
-        stored: ([r.model_dump(by_alias=True) for r in value] if name == "task_refs" else value)
-        for name, stored in _ATTR_FIELDS.items()
-        if (value := getattr(request, name)) is not None
-    }
-    return attrs or None
-
-
-async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> AgentMessageReceiptResponse:
+async def create_agent_message(
+    owner_id: str, request: AgentMessageRequest, *, attrs: dict | None = None
+) -> AgentMessageReceiptResponse:
+    """``attrs``: super-agent message attrs by stored name (`_ATTR_FIELDS`), passed only by backend code
+    (`task_conversation.post_as_lightbulb`); never part of the runtime's request body."""
     late_run = request.event_id.removeprefix("live-late:") if request.event_id.startswith("live-late:") else None
     if late_run:
         # Conversation engine §3.6: "don't post that". Both late-answer doors (the worker's /late-answer
@@ -5108,7 +5096,7 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
             silent=request.progress,
             progress=request.progress,
             post_reason=request.post_reason,
-            attrs=_message_attrs(request),
+            attrs=attrs or None,
             author_member_check=not feed,  # the feed's agents are authors (roster-checked above)
         )
     except messaging_repo.ExtraConditionFailed as exc:  # "don't post that" landed before the commit

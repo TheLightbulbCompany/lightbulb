@@ -42,14 +42,14 @@ def chat(monkeypatch):
         members[meta["roomId"]].append({"kind": "human", "id": user_id})
         return meta
 
-    async def create_agent_message(owner_id, req):
+    async def create_agent_message(owner_id, req, *, attrs=None):
         prior = next((p for p in posts if p["req"].event_id == req.event_id), None)
         if prior:
             return prior["receipt"]
         receipt = messaging.AgentMessageReceiptResponse(
             message_id=uuid.uuid4(), room_id=req.room_id, created_at="2026-11-04T10:00:00Z"
         )
-        posts.append({"req": req, "receipt": receipt})
+        posts.append({"req": req, "receipt": receipt, "attrs": attrs})
         return receipt
 
     async def create_message(**kw):
@@ -61,6 +61,11 @@ def chat(monkeypatch):
         return posts[-1], False
 
     monkeypatch.setattr(tc.session_chat, "_default_agents", default_agents)
+
+    async def switch_off(ws):
+        return False
+
+    monkeypatch.setattr(tc, "flags_for", switch_off)
     monkeypatch.setattr(tc.session_chat, "_seat", seat)
 
     async def display_name(uid):
@@ -102,9 +107,7 @@ async def test_post_as_lightbulb_sets_specialist_label_and_attrs(chat):
     )
     req = chat["posts"][0]["req"]
     assert str(req.agent_id) == CEO and str(req.room_id) == ORIGIN
-    assert req.specialist == "finance" and req.kind == "result"
-    assert [r.model_dump(by_alias=True) for r in req.task_refs] == refs
-    assert messaging._message_attrs(req)["taskRefs"] == refs
+    assert chat["posts"][0]["attrs"] == {"taskRefs": refs, "specialist": "finance", "kind": "result"}
     assert mid == str(chat["posts"][0]["receipt"].message_id)
 
 
@@ -159,7 +162,7 @@ def test_agent_message_attrs_absent_when_flag_off():
         reply_to_message_id=None,
         thread_root_message_id=None,
     )
-    assert messaging._message_attrs(req) is None
+    assert not {"task_refs", "specialist", "routed_to", "forwarded_from", "kind"} & set(type(req).model_fields)
     item = {
         "messageId": str(uuid.uuid4()),
         "roomId": str(uuid.uuid4()),
@@ -176,3 +179,42 @@ def test_agent_message_attrs_absent_when_flag_off():
     )
     wire = with_attrs.model_dump(by_alias=True, mode="json")
     assert wire["specialist"] == "finance" and wire["taskRefs"] == [{"taskId": TID, "role": "started"}]
+
+
+def test_runtime_cannot_set_task_attrs():
+    """The hook-token agent-messages route parses AgentMessageRequest: attrs are not part of it (backend-only)."""
+    body = {
+        "eventId": "e1",
+        "roomId": str(uuid.uuid4()),
+        "agentId": str(uuid.uuid4()),
+        "text": "hi",
+        "replyToMessageId": None,
+        "threadRootMessageId": None,
+        "taskRefs": [{"taskId": TID, "role": "started"}],
+        "specialist": "finance",
+        "kind": "result",
+    }
+    try:
+        req = messaging.AgentMessageRequest.model_validate(body)
+    except Exception:
+        return  # rejected outright
+    assert "specialist" not in req.model_dump(by_alias=True)
+
+
+async def test_front_agent_reads_registry_when_on(chat, monkeypatch):
+    async def switch_on(ws):
+        return True
+
+    async def roster(ws):
+        return [
+            {"id": "x", "role": "engineer", "status": "active", "name": "Eng"},
+            {"id": CEO, "role": "ceo", "status": "active", "name": "Lightbulb"},
+        ]
+
+    async def no_paperclip(ws):
+        raise AssertionError("Paperclip read with the switch on")
+
+    monkeypatch.setattr(tc, "flags_for", switch_on)
+    monkeypatch.setattr(tc.agent_registry, "roster", roster)
+    monkeypatch.setattr(tc.session_chat, "_default_agents", no_paperclip)
+    assert await tc.front_agent_id(WS) == CEO

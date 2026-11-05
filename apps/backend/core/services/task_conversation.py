@@ -13,7 +13,8 @@ import uuid
 from core import tasks_schema as ts
 from core.constants import SYSTEM_ACTOR_ID
 from core.repositories import messaging_repo
-from core.services import messaging, session_chat
+from core.services import agent_registry, messaging, session_chat
+from core.services.super_agent_flags import flags_for
 
 _RESULT_SCAN = 50
 
@@ -23,6 +24,22 @@ class NoFrontAgent(RuntimeError):
 
 
 async def _front_agent(ws: str) -> dict:
+    """The CEO as a room seat: from the `AGENT#` registry when the switch is on (no Paperclip read), else
+    today's Paperclip-backed default (`session_chat._default_agents`)."""
+    if await flags_for(ws):
+        ceo = next(
+            (a for a in await agent_registry.roster(ws) if a.get("role") == "ceo" and a.get("status") == "active"),
+            None,
+        )
+        if ceo:
+            return {
+                "kind": "agent",
+                "id": ceo["id"],
+                "displayName": ceo["name"],
+                "mentionHandle": "lightbulb",
+                "role": "member",
+                "listenMode": "mentions",
+            }
     agents = await session_chat._default_agents(ws)
     if not agents:
         raise NoFrontAgent(ws)
@@ -97,10 +114,8 @@ async def post_as_lightbulb(
             reply_to_message_id=None,
             thread_root_message_id=uuid.UUID(thread_root) if thread_root else None,
             progress=progress,
-            task_refs=task_refs,
-            specialist=specialist,
-            kind=kind,
         ),
+        attrs={k: v for k, v in (("taskRefs", task_refs), ("specialist", specialist), ("kind", kind)) if v is not None},
     )
     return str(receipt.message_id)
 

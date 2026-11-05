@@ -18,9 +18,11 @@ def _call(body):
 
 
 @pytest.fixture(autouse=True)
-def _no_task(monkeypatch):
+def _no_task(home, monkeypatch):
     monkeypatch.setattr(task_mode, "TASK", None)
     monkeypatch.setattr(server.network, "ensure_started", lambda **kw: True)
+    monkeypatch.setattr(server, "_roster_cache", (0.0, ()))
+    (home / "profiles" / AGENT).mkdir(parents=True, exist_ok=True)  # the roster: local profile dirs
 
 
 @pytest.fixture
@@ -81,8 +83,36 @@ def test_curate_busy_or_recycling_is_refused(home, curator):
     assert calls == [] and turn._busy == 0
 
 
+def test_curate_refused_when_a_turn_reserves_before_the_lock(home, curator, monkeypatch):
+    """#4772 review: the first busy check passes, then a turn reserves while curate waits for the
+    profile lock; the check runs again UNDER the lock, so the curator never writes beside a turn."""
+    calls, _ = curator
+    real = sync.profile_lock
+
+    @contextlib.contextmanager
+    def lock(agent_id):
+        assert turn.reserve_turn()  # a room turn lands between the check and the lock
+        with real(agent_id):
+            yield
+
+    monkeypatch.setattr(sync, "profile_lock", lock)
+    try:
+        assert _call({"agentId": AGENT}) == (409, {"error": "busy"})
+    finally:
+        turn.release_turn()
+    assert calls == [] and turn._busy == 0
+
+
+def test_curate_failure_is_500_and_not_saved(home, curator):
+    calls, mod = curator
+    mod.run_curator_review = lambda synchronous: (_ for _ in ()).throw(RuntimeError("review blew up"))
+    assert _call({"agentId": AGENT}) == (500, {"error": "curator_failed"})
+    assert calls == ["restore", "ensure", "should_run_now"] and turn._busy == 0  # no save of a half-moved tree
+
+
 def test_curate_invalid_body(home, curator):
     assert _call({}) == (400, {"error": "invalid_request"})
     assert _call({"agentId": ""}) == (400, {"error": "invalid_request"})
+    assert _call({"agentId": "11111111-2222-4333-8444-555555555555"}) == (400, {"error": "invalid_request"})  # not on the roster
     assert _call("nope") == (400, {"error": "invalid_request"})
     assert server.handle_plugin("/internal/v1/curate", "GET", AUTH, {"agentId": AGENT}) == (404, {"error": "not_found", "path": "/internal/v1/curate"})

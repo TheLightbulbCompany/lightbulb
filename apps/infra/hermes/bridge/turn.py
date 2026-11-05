@@ -150,23 +150,34 @@ def curate_agent(agent_id: str) -> tuple[int, dict]:
     try:
         from bridge import followups  # followups imports this module
 
-        with _busy_lock:
-            live = _busy != 1 or followups.busy()
-        if live:
+        def live() -> bool:
+            with _busy_lock:
+                return _busy != 1 or followups.busy()
+
+        if live():
             return 409, {"error": "busy"}
         try:
             from agent import curator
         except ImportError:
             return 200, {"ran": False, "changed": False}
         with sync.profile_lock(agent_id):
+            # Again UNDER the lock (as _curate_when_idle): a turn that reserved between the check
+            # above and this lock restores and then writes this profile for its whole run, and a
+            # curator moving skills and saving beside it is the 16 Sep double-writer shape.
+            if live():
+                return 409, {"error": "busy"}
             restore_profile(agent_id)
             RESTORED.add(agent_id)
             sync.ensure_profile(agent_id)
             ran = False
-            with _hermes_home_scope(agent_id):
-                if curator.should_run_now():
-                    curator.run_curator_review(synchronous=True)
-                    ran = True
+            try:
+                with _hermes_home_scope(agent_id):
+                    if curator.should_run_now():
+                        curator.run_curator_review(synchronous=True)
+                        ran = True
+            except Exception:  # noqa: BLE001 -- the Activity logs the 500; the VM's own idle pass retries
+                log.warning("curator failed for %s", agent_id, exc_info=True)
+                return 500, {"error": "curator_failed"}
             before = dict(sync._MTIMES.get(agent_id, {}))
             save_profile(agent_id)  # change-only: a no-op unless the seed or the review wrote
             changed = sync._MTIMES.get(agent_id, {}) != before

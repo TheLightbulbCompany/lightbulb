@@ -260,7 +260,7 @@ def handle_plugin(path: str, method: str, headers: dict, body) -> tuple[int, dic
         return paperclip
     if path == "/internal/v1/curate" and method == "POST":  # lane V5b; a task VM was refused above
         agent_id = body.get("agentId") if isinstance(body, dict) else None
-        if not isinstance(agent_id, str) or not agent_id:
+        if not isinstance(agent_id, str) or agent_id not in _roster():  # as profile.warm
             return 400, {"error": "invalid_request"}
         return turn.curate_agent(agent_id)
     task_run = runs.handle(path, method, headers, body)

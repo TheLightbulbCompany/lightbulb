@@ -98,7 +98,9 @@ describe("RoomMessageItem with the super-agent switch", () => {
     render(item(card));
     const region = await screen.findByRole("region", { name: "Turn on Post signups every Monday" });
     expect(within(region).getByText("Waiting on a workspace admin")).toBeInTheDocument();
-    expect(within(region).queryByRole("button")).toBeNull();
+    expect(within(region).queryByRole("button", { name: "Turn on" })).toBeNull();
+    // The owner may still drop the proposal (the server's _may_edit).
+    expect(within(region).getByRole("button", { name: "Not now" })).toBeInTheDocument();
     clerk.role = "org:admin";
   });
 

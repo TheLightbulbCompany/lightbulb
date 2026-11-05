@@ -7,12 +7,13 @@
 import { useState, type ReactElement } from "react";
 import { specialistLabel, type AutomationView } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
-import { budgetLine, scheduleWords, useAutomation, useAutomationActions, useCanDecide, viewerTimeZone, waitingWords } from "./automations";
+import { budgetLine, scheduleWords, useAutomation, useAutomationActions, useCanDecide, useCanEdit, viewerTimeZone, waitingWords } from "./automations";
 
 export function AutomationConfirmCard({ automationId, viewerTz = viewerTimeZone() }: { automationId: string; viewerTz?: string }): ReactElement {
   const { data: a, error } = useAutomation(automationId);
   const { act, remove } = useAutomationActions();
   const canDecide = useCanDecide();
+  const canEdit = useCanEdit();
   const [pending, setPending] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [gone, setGone] = useState(false);
@@ -40,12 +41,13 @@ export function AutomationConfirmCard({ automationId, viewerTz = viewerTimeZone(
     {a.nextRuns.length > 0 && <p className="text-ui text-muted-foreground">Next: {a.nextRuns.slice(0, 3).map((iso) => when(iso, viewerTz)).join(", ")}</p>}
     {a.status !== "draft"
       ? <p className="mt-1 text-ui text-ok">{a.status === "active" ? "On" : "Paused"}</p>
-      : canDecide(a)
+      // The server's rules (routers/automations.py): Turn on is an activate (room → admin only); Not now is an edit (admin or owner).
+      : canDecide(a) || canEdit(a)
         ? <div className="mt-2 flex items-center gap-2">
-          <Button type="button" size="sm" disabled={pending} onClick={() => void run("on")}>Turn on</Button>
-          <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={() => void run("off")}>Not now</Button>
+          {canDecide(a) && <Button type="button" size="sm" disabled={pending} onClick={() => void run("on")}>Turn on</Button>}
+          {!canDecide(a) && <span className="text-ui text-muted-foreground">{waitingWords(a)}</span>}
+          {canEdit(a) && <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={() => void run("off")}>Not now</Button>}
         </div>
-        // The server decides who may turn it on (routers/automations.py); the card shows the same rule, no buttons.
         : <p className="mt-1 text-ui text-muted-foreground">{waitingWords(a)}</p>}
     {note && <p role="alert" className="mt-1 text-ui text-err">{note}</p>}
   </section>;

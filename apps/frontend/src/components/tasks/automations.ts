@@ -62,8 +62,8 @@ export function deliveryWords(deliverTo: string): string | null {
   return deliverTo.startsWith("room:") ? "posts in a room" : "posts in a DM";
 }
 
-/** Who may turn a proposal on, pause it or run it (routers/automations.py): a room-delivered one needs an org admin,
- *  a personal one its owner. */
+/** Who may turn a proposal on or resume it (routers/automations.py `activate`): a room-delivered one needs an org
+ *  admin, a personal one its owner. */
 export function useCanDecide(): (a: Pick<AutomationView, "deliverTo" | "ownerUserId">) => boolean {
   const { userId } = useAuth();
   const { membership } = useOrganization();
@@ -71,7 +71,15 @@ export function useCanDecide(): (a: Pick<AutomationView, "deliverTo" | "ownerUse
   return useCallback((a) => (a.deliverTo.startsWith("room:") ? admin : a.ownerUserId === userId), [admin, userId]);
 }
 
-/** The line others read while they can't decide. */
+/** Who may pause it, run it now or drop a proposal (the server's `_may_edit`): an org admin or its owner. */
+export function useCanEdit(): (a: Pick<AutomationView, "ownerUserId">) => boolean {
+  const { userId } = useAuth();
+  const { membership } = useOrganization();
+  const admin = membership?.role === "org:admin";
+  return useCallback((a) => admin || a.ownerUserId === userId, [admin, userId]);
+}
+
+/** The line others read while they can't turn it on. */
 export const waitingWords = (a: Pick<AutomationView, "deliverTo">): string =>
   a.deliverTo.startsWith("room:") ? "Waiting on a workspace admin" : "Waiting on its owner";
 

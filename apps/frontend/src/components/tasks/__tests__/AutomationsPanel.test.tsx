@@ -58,12 +58,32 @@ describe("AutomationsPanel", () => {
     expect(openTaskPane).toHaveBeenCalledWith("t-other");
     again.unmount();
 
+    // A member who is neither admin nor owner: no Run now, no Pause, the waiting line.
     clerk.role = "org:member";
-    render(<Fresh><AutomationsPanel viewerTz="America/New_York" /></Fresh>);
+    clerk.userId = "user_priya";
+    const member = render(<Fresh><AutomationsPanel viewerTz="America/New_York" /></Fresh>);
     expect(await screen.findByRole("button", { name: "Run now" })).toBeDisabled();
+    expect(screen.getByText("Only its owner or an admin can run it")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Post signups every Monday" }));
     expect(await screen.findByText("Waiting on a workspace admin")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Pause" })).toBeNull();
+    member.unmount();
+
+    // The owner (not an admin) may pause and run a room automation (the server's _may_edit), but not resume it.
+    clerk.userId = "user_sam";
+    routes({ status: "paused", pausedReason: null });
+    render(<Fresh><AutomationsPanel viewerTz="America/New_York" /></Fresh>);
+    await userEvent.click(await screen.findByRole("button", { name: "Post signups every Monday" }));
+    expect(await screen.findByRole("button", { name: "Run now" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Resume" })).toBeNull();
+    expect(screen.getByText("Waiting on a workspace admin")).toBeInTheDocument();
+  });
+
+  it("a rule has no Run now", async () => {
+    routes({ match: { sources: ["mail"] } });
+    render(<Fresh><AutomationsPanel viewerTz="America/New_York" /></Fresh>);
+    await screen.findByRole("button", { name: "Post signups every Monday" });
+    expect(screen.queryByRole("button", { name: "Run now" })).toBeNull();
   });
 
   it("Run now and Pause call lane A's routes", async () => {

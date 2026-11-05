@@ -158,5 +158,7 @@ export interface AutomationView {
   lastTaskId: string | null;
   activeRunTaskId: string | null;
   runCount: number;
+  /** Set on a proactive rule (lane S): matching sources/rooms. A rule has no Run now. */
+  match?: { sources?: string[]; roomIds?: string[] } | null;
   version: number;
 }

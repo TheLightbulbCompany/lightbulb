@@ -14,7 +14,7 @@ import { useSuperAgent } from "@/hooks/useLiveEvents";
 import { openTaskPane } from "@/components/workspace/workspaceController";
 import { statusLine, useAutomations } from "./ScheduledList";
 import {
-  budgetLine, deliveryWords, runNow, scheduleWords, useAutomation, useAutomationActions, useAutomationRuns, useCanDecide, viewerTimeZone, waitingWords,
+  budgetLine, deliveryWords, runNow, scheduleWords, useAutomation, useAutomationActions, useAutomationRuns, useCanDecide, useCanEdit, viewerTimeZone, waitingWords,
 } from "./automations";
 
 export function AutomationsPanel({ viewerTz = viewerTimeZone(), onOpenTask = openTaskPane }: {
@@ -36,20 +36,25 @@ export function AutomationsPanel({ viewerTz = viewerTimeZone(), onOpenTask = ope
 
 const scheduleLine = (a: AutomationView, viewerTz: string): string => scheduleWords(a, viewerTz) ?? "No schedule";
 
-/** Run now, or "Running ›" while a run is going (opens it). The outcome's note shows under the list. */
-function RunNowButton({ a, onOpenTask, onNote }: { a: AutomationView; onOpenTask: (taskId: string) => void; onNote: (note: string | null) => void }): ReactElement {
+/** Run now, or "Running ›" while a run is going (opens it). A rule (lane S) has no Run now: it fires on a match.
+ *  Disabled with its reason beside it when the viewer may not run it or it isn't on yet. */
+function RunNowButton({ a, onOpenTask, onNote }: { a: AutomationView; onOpenTask: (taskId: string) => void; onNote: (note: string | null) => void }): ReactElement | null {
   const { act } = useAutomationActions();
-  const canDecide = useCanDecide();
+  const canEdit = useCanEdit();
+  if (a.match) return null;
   if (a.activeRunTaskId) {
     return <Button type="button" size="sm" variant="ghost" className="relative z-10" onClick={() => onOpenTask(a.activeRunTaskId!)}>Running ›</Button>;
   }
-  return <Button type="button" size="sm" variant="outline" className="relative z-10" disabled={a.status === "draft" || !canDecide(a)}
-    title={!canDecide(a) ? waitingWords(a) : undefined}
-    onClick={async () => {
-      const res = await runNow(act, a);
-      if (res.kind === "running") onOpenTask(res.taskId);
-      onNote(res.kind === "started" ? `${a.name} is running.` : res.kind === "note" ? res.message : null);
-    }}>Run now</Button>;
+  const reason = !canEdit(a) ? "Only its owner or an admin can run it" : a.status === "draft" ? "Turn it on first" : null;
+  return <span className="relative z-10 inline-flex items-center gap-2">
+    {reason && <span className="text-caption text-muted-foreground">{reason}</span>}
+    <Button type="button" size="sm" variant="outline" disabled={!!reason} aria-disabled={!!reason}
+      onClick={async () => {
+        const res = await runNow(act, a);
+        if (res.kind === "running") onOpenTask(res.taskId);
+        onNote(res.kind === "started" ? `${a.name} is running.` : res.kind === "note" ? res.message : null);
+      }}>Run now</Button>
+  </span>;
 }
 
 function AutomationList({ viewerTz, onSelect, onOlder, onOpenTask }: {
@@ -85,6 +90,7 @@ function AutomationDetail({ id, viewerTz, onBack, onOpenTask }: {
   const { data: runs } = useAutomationRuns(id);
   const { act } = useAutomationActions();
   const canDecide = useCanDecide();
+  const canEdit = useCanEdit();
   const { userId } = useAuth();
   const [note, setNote] = useState<string | null>(null);
   const press = async (verb: "pause" | "resume") => {
@@ -103,10 +109,13 @@ function AutomationDetail({ id, viewerTz, onBack, onOpenTask }: {
       <p className="text-ui text-muted-foreground">{[scheduleLine(a, viewerTz), specialistLabel(a.specialistId), budgetLine(a)].filter(Boolean).join(" · ")}</p>
       {statusLine(a) && <p className="text-ui text-warn">{statusLine(a)}</p>}
     </header>
-    {canDecide(a)
-      ? <div className="flex flex-wrap gap-2">
-        {a.status !== "draft" && <Button type="button" size="sm" variant="outline" onClick={() => void press(paused ? "resume" : "pause")}>{paused ? "Resume" : "Pause"}</Button>}
-        <RunNowButton a={a} onOpenTask={onOpenTask} onNote={setNote} />
+    {/* Pause and Run now follow the server's _may_edit (admin or owner); Resume is an activate (room → admin only). */}
+    {canEdit(a) || canDecide(a)
+      ? <div className="flex flex-wrap items-center gap-2">
+        {a.status !== "draft" && !paused && canEdit(a) && <Button type="button" size="sm" variant="outline" onClick={() => void press("pause")}>Pause</Button>}
+        {paused && canDecide(a) && <Button type="button" size="sm" variant="outline" onClick={() => void press("resume")}>Resume</Button>}
+        {paused && !canDecide(a) && <span className="text-ui text-muted-foreground">{waitingWords(a)}</span>}
+        {canEdit(a) && <RunNowButton a={a} onOpenTask={onOpenTask} onNote={setNote} />}
       </div>
       : <p className="text-ui text-muted-foreground">{waitingWords(a)}</p>}
     {note && <p role="status" className="text-ui text-muted-foreground">{note}</p>}

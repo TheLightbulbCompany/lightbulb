@@ -43,10 +43,9 @@ env:
 permissions:
   contents: read
 
-# Every job here is GitHub-hosted (2026-11-05), not vars.CI_RUNNER: the shared
-# self-hosted box queued PRs behind each other and its DNS flakes failed jobs
-# before they ran (run 41958255313: setup-uv got EAI_AGAIN for api.github.com).
-# Docker (image smokes, CDK synth bundling) is on ubuntu-latest too.
+# Self-hosted (vars.CI_RUNNER) again 2026-11-05: GitHub-hosted runs used up the free Actions minutes.
+# The box has Docker (image smokes, CDK synth bundling). Its DNS has flaked
+# before (run 41958255313: setup-uv got EAI_AGAIN for api.github.com); a re-run fixes that.
 jobs:
   # The Hermes bridge (apps/infra/hermes) is Python, so the CDK job above never
   # touches it, and build-hermes-image.yml only BUILDS the image — it runs no
@@ -56,7 +55,7 @@ jobs:
   # to apps/infra/**, and the suite takes under a second.
   hermes-bridge-tests:
     name: Hermes bridge tests
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER }}
     timeout-minutes: 10
     steps:
       - name: Checkout code
@@ -80,7 +79,7 @@ jobs:
   # suite takes under a second once dependencies are installed.
   openrouter-gate-tests:
     name: OpenRouter gate tests
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER }}
     timeout-minutes: 10
     steps:
       - name: Checkout code
@@ -112,7 +111,7 @@ jobs:
   # developer's machine.
   hermes-image-smokes:
     name: Hermes bridge image smokes
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER }}
     timeout-minutes: 15
     steps:
       - name: Checkout code
@@ -176,7 +175,7 @@ jobs:
 
   test:
     name: Synth & Test
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER }}
     # The suite synthesizes every stack; it runs in seconds locally, so a cap
     # this size only catches a hang. Left explicit because an uncapped job
     # bills GitHub's 6-hour default when a step stalls.
@@ -227,7 +226,7 @@ jobs:
       #
       # Docker is required: the WS authorizer Lambda bundles
       # its Python deps in a container, and there is no supported way to skip
-      # bundling. `ubuntu-latest` has a daemon (as does the DEPLOY_RUNNER box,
+      # bundling. The CI_RUNNER box has a daemon (as does the DEPLOY_RUNNER box,
       # which runs this exact synth in deploy.yml).
       - name: Check deploy.yml matches the pipeline definition
         working-directory: apps/infra

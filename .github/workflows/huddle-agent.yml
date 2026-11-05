@@ -21,11 +21,16 @@ on:
 permissions:
   contents: read
 
+# Supersede in-flight runs for the same PR; a push to main gets its own group (its SHA)
+# so a deploy-dev run is never cancelled by the next merge's.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: true
+
 jobs:
   test:
-    # GitHub-hosted (2026-11-05), not vars.CI_RUNNER: the PR gate needs nothing from
-    # the self-hosted box. The deploy jobs below stay on it.
-    runs-on: ubuntu-latest
+    # Self-hosted (vars.CI_RUNNER) again 2026-11-05: GitHub-hosted runs used up the free Actions minutes.
+    runs-on: ${{ vars.CI_RUNNER }}
     timeout-minutes: 15
     defaults:
       run:

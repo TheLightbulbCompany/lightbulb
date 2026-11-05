@@ -20,10 +20,10 @@ concurrency:
 jobs:
   test-core-linux:
     name: TestCoreLinux
-    # GitHub-hosted (2026-11-05), not vars.CI_RUNNER: core builds without Tauri or
-    # Xcode, so nothing here needs the self-hosted box. rust-cache keeps target/ and
-    # the registry between runs, which a fresh hosted runner would otherwise rebuild.
-    runs-on: ubuntu-latest
+    # Self-hosted (vars.CI_RUNNER) again 2026-11-05: GitHub-hosted runs used up the free Actions minutes.
+    # Core builds without Tauri or Xcode, so Linux is enough. rust-cache keeps target/
+    # and the registry between runs.
+    runs-on: ${{ vars.CI_RUNNER }}
     timeout-minutes: 20
     steps:
     - name: Checkout

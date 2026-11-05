@@ -908,3 +908,22 @@ async def test_recently_closed_pages_past_other_scopes(world, monkeypatch):
 def test_effect_unknown_says_check_first():
     words = router_prompt.status_words({"status": "idle", "statusReason": "effect_unknown"})
     assert words == "finished, but its action might have happened: check before saying it did or retrying"
+
+
+@pytest.mark.asyncio
+async def test_recently_closed_scan_stops_at_its_cap(world, monkeypatch):
+    """The paging loop reads at most _CLOSED_MAX_ROWS rows per status, however many closures the day holds."""
+    monkeypatch.setattr(acts, "_CLOSED_PAGE", 2)
+    monkeypatch.setattr(acts, "_CLOSED_MAX_ROWS", 4)
+    for i in range(9):
+        await _open_task({"kind": "room", "roomId": str(uuid.uuid4())}, status="resolved", title=f"Other {i}")
+    calls = []
+    real = acts.tasks_repo.list_tasks_by_status
+
+    async def counting(ws, status, **kw):
+        calls.append(status)
+        return await real(ws, status, **kw)
+
+    monkeypatch.setattr(acts.tasks_repo, "list_tasks_by_status", counting)
+    await acts._closed_tasks(WS, "shared", SAM, {ROOM})
+    assert calls.count("resolved") == 2  # 2 pages of 2 rows reach the cap of 4; the 9 rows would need 5

@@ -490,6 +490,7 @@ _OPEN_SCAN = 20
 _CLOSED_STATUSES = ("resolved", "failed")
 _CLOSED_SCAN = 10  # shown
 _CLOSED_PAGE = 50  # read per query
+_CLOSED_MAX_ROWS = 500  # read per status per Router turn
 _CLOSED_WITHIN = timedelta(days=1)  # "Recently closed": what a status question can still be about
 
 
@@ -579,11 +580,15 @@ async def _closed_tasks(ws: str, lane: str, user_id: str | None, room_ids: set[s
         # `by-status` is sorted by updatedAt, newest first: page until a row is older than the day (other scopes'
         # closures never crowd this scope's out of a fixed-size first page).
         cursor: str | None = None
+        seen = 0
         while True:
             page, cursor = await tasks_repo.list_tasks_by_status(ws, status, limit=_CLOSED_PAGE, cursor=cursor)
+            seen += len(page)
             fresh = [r for r in page if (r.get("updatedAt") or "") >= since]
             rows += [r for r in fresh if not r.get("hidden")]
-            if not cursor or len(fresh) < len(page):
+            # ponytail: at most _CLOSED_MAX_ROWS rows read per status per Router turn; past that a busy workspace's
+            # day of closures is cut short (oldest first). Add a per-room index if that ever matters.
+            if not cursor or len(fresh) < len(page) or seen >= _CLOSED_MAX_ROWS:
                 break
     rows = [r for r in rows if any(_task_in_scope(r, lane, user_id, room) for room in room_ids or {None})]
     return sorted(rows, key=lambda r: r.get("updatedAt") or "", reverse=True)[:_CLOSED_SCAN]

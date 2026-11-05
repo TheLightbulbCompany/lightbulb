@@ -41,6 +41,7 @@ class TestFromIntegration:
             routine_id=None,
             title=None,
             description=None,
+            actor_user_id="user_test_123",
         )
 
     @pytest.mark.asyncio
@@ -119,6 +120,7 @@ class TestFromIntegration:
             routine_id=None,
             title=None,
             description=None,
+            actor_user_id="user_test_123",
         )
 
     @pytest.mark.asyncio
@@ -160,6 +162,7 @@ class TestFromIntegration:
             routine_id=None,
             title=None,
             description=None,
+            actor_user_id="user_test_123",
         )
 
     @pytest.mark.asyncio
@@ -191,6 +194,7 @@ class TestFromIntegration:
             routine_id=None,
             title=None,
             description=None,
+            actor_user_id="user_test_123",
         )
 
     @pytest.mark.asyncio
@@ -224,6 +228,7 @@ class TestFromIntegration:
             routine_id="rt_existing",
             title=None,
             description=None,
+            actor_user_id="user_test_123",
         )
 
     @pytest.mark.asyncio

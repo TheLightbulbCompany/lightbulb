@@ -666,10 +666,13 @@ class Hook(_Row):
     secret_ref: str  # Secrets Manager name, never the value
     armed: bool = False
     provider_hook_id: str | None = None
-    account: str | None = None  # Google watch fields
+    resource: str | None = None  # the provider-side thing hooked: repo, project id, asset id, account
+    account: str | None = None  # Google watch fields (spec 06 §3.6); `page_token` is also S7's sync token
     channel_id: str | None = None
     resource_id: str | None = None
     expires_at: str | None = None
+    page_token: str | None = None
+    topic: str | None = None  # Gmail push: the Pub/Sub topic the watch publishes to
     sig_fail_count: int = 0
     last_sig_fail_at: str | None = None
 

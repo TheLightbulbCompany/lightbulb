@@ -138,6 +138,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
 
@@ -154,6 +155,7 @@ from core.services.credentials import integration_secret_store, registry
 from core.services.paperclip_admin_client import PaperclipAdminClient
 from core.services.paperclip_admin_session import get_admin_session_cookie
 from core.services.paperclip_github_token import github_token as _github_token
+from core.services.super_agent_flags import flags_for
 from core.services.trigger_fire_url import trigger_fire_url
 
 logger = logging.getLogger(__name__)
@@ -515,10 +517,13 @@ async def list_github_repos(owner_id: str) -> list[dict[str, str]]:
     return [{"id": r["full_name"], "label": r["full_name"]} for r in resp.json()]
 
 
-async def _create_github_hook(*, token: str, resource: str, proxy_url: str, events: list[str], secret: str) -> None:
+async def _create_github_hook(
+    *, token: str, resource: str, proxy_url: str, events: list[str], secret: str
+) -> str | None:
     """Create the repo webhook pointed at the trigger proxy, signed with the
-    trigger's own secret. Raises ``ValueError`` with a caller-facing message
-    on the expected refusals (no admin on the repo, duplicate hook)."""
+    trigger's own secret. Returns GitHub's hook id (what a later delete needs).
+    Raises ``ValueError`` with a caller-facing message on the expected
+    refusals (no admin on the repo, duplicate hook)."""
     async with httpx.AsyncClient(timeout=15.0) as http:
         resp = await http.post(
             f"{_GITHUB_API_BASE}/repos/{resource}/hooks",
@@ -540,6 +545,27 @@ async def _create_github_hook(*, token: str, resource: str, proxy_url: str, even
             f"Lightbulb couldn't create the webhook on {resource} — you need admin access to the repository"
         )
     resp.raise_for_status()
+    try:
+        hook_id = resp.json().get("id")
+    except ValueError:
+        hook_id = None
+    return str(hook_id) if hook_id is not None else None
+
+
+async def _delete_github_hook(*, token: str, resource: str, hook_id: str) -> None:
+    """Best-effort delete of a repo webhook whose automation is gone — left
+    behind, GitHub would deliver into a URL that 404s forever. Never masks
+    the caller's own error — only logs its own failure."""
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            resp = await http.delete(
+                f"{_GITHUB_API_BASE}/repos/{resource}/hooks/{hook_id}",
+                headers={**_GITHUB_HEADERS, "Authorization": f"Bearer {token}"},
+            )
+        if resp.status_code != 404:
+            resp.raise_for_status()
+    except Exception:
+        logger.exception("inbound_triggers: delete of GitHub hook %s on %s failed", hook_id, resource)
 
 
 async def _vercel_token(owner_id: str) -> str | None:
@@ -885,6 +911,201 @@ async def _append_platform_block(admin: PaperclipAdminClient, *, cookie: str, ro
     )
 
 
+def _guided_instructions(
+    provider: registry.Provider,
+    inbound: registry.Inbound,
+    *,
+    proxy_url: str,
+    event_label_text: str,
+    event_id_text: str,
+    count: int,
+) -> str:
+    """The paste-this-URL copy for a guided provider: the registry's own text when it has one (every
+    dashboard buries webhooks somewhere different), else the generic sentence."""
+    if inbound.instructions:
+        # `event_labels`/`event_ids` are the plural-safe names the provider
+        # copy uses; `event_label`/`event_id` stay bound to the same rendering
+        # so a template written before multi-select still names every
+        # selected event.
+        return inbound.instructions.format(
+            proxy_url=proxy_url,
+            event_label=event_label_text,
+            event_id=event_id_text,
+            event_labels=event_label_text,
+            event_ids=event_id_text,
+        )
+    noun = "event" if count == 1 else "events"
+    return (
+        f"In your {provider.display_name} dashboard, add a webhook endpoint "
+        f"pointed at {proxy_url} listening for the '{event_label_text}' {noun} "
+        f"({event_id_text}). Paste the signing secret it gives you back into Lightbulb "
+        "to finish arming this automation."
+    )
+
+
+def _gmail_setup_instructions(topic: str, proxy_url: str) -> str:
+    """The one-time Pub/Sub setup for Gmail push. Everything interpolated is
+    fence-validated by the caller (topic regex, proxy_url is ours). The dialog
+    is informational — no paste-back step."""
+    return (
+        "One-time setup in your Google Cloud project: "
+        "(1) enable the Pub/Sub API; "
+        f"(2) create the topic {topic}; "
+        "(3) grant gmail-api-push@system.gserviceaccount.com the Pub/Sub Publisher role on it; "
+        f'(4) create a PUSH subscription to {proxy_url} with "Enable authentication" ON '
+        f"(any service account) and the audience set to exactly {proxy_url}."
+    )
+
+
+@dataclass(frozen=True)
+class _Registration:
+    """What a validated trigger request resolves to, before anything exists anywhere: the registry
+    declarations, the effective registration shape, and the provider-side credentials the auto shapes need.
+    Shared by the Paperclip seed below and the super-agent one (``automation_hooks``)."""
+
+    provider: registry.Provider
+    inbound: registry.Inbound
+    events: list[registry.InboundEvent]
+    registration: str
+    resource: str | None
+    gh_token: str | None = None
+    vercel_token: str | None = None
+    meta_asset: dict[str, str] | None = None
+
+
+async def _resolve_registration(
+    owner_id: str,
+    provider_key: str,
+    event_ids: list[str],
+    *,
+    resource: str | None,
+    topic: str | None,
+) -> _Registration:
+    """Every caller-facing precondition of a trigger request (``ValueError`` names the problem), with the
+    auto shapes' provider credentials fetched up front so a refusal happens before anything is created."""
+    gh_token: str | None = None
+    vercel_token: str | None = None
+    meta_asset: dict[str, str] | None = None
+    provider = registry.get_provider(provider_key)
+    inbound = provider.inbound
+    if inbound is None:
+        raise ValueError(f"{provider_key!r} is not wired as an Automations trigger source")
+
+    # Deduped, caller's order. The FIRST event is the primary one: it names
+    # the registration shape, supplies the starter-prompt override, and (for
+    # the one-event shapes below) is the watch actually opened.
+    ordered = list(dict.fromkeys(event_ids))
+    if not ordered:
+        raise ValueError("pick at least one event")
+    by_id = {e.id: e for e in inbound.events}
+    unknown = [e for e in ordered if e not in by_id]
+    if unknown:
+        raise ValueError(f"unknown event {', '.join(repr(u) for u in unknown)} for provider {provider_key!r}")
+    events = [by_id[e] for e in ordered]
+    event = events[0]
+
+    # Events may override the block-level registration (the google block:
+    # calendar/drive stay auto_google_watch, gmail.poll/gmail.message carry
+    # their own shape) — everything below dispatches on the EFFECTIVE value.
+    registration = event.registration or inbound.webhook_registration
+
+    # One trigger = one URL = one signing mode = one registration shape. Events
+    # that wire up differently physically cannot share it, so say which ones
+    # and send the owner back to add them separately rather than silently
+    # arming the first shape for all of them.
+    shapes = {e.id: (e.registration or inbound.webhook_registration) for e in events}
+    if len(set(shapes.values())) > 1:
+        conflict = ", ".join(f"{eid} ({shape})" for eid, shape in shapes.items())
+        raise ValueError(
+            f"these events wire up differently and can't share one trigger: {conflict} — add them as separate triggers"
+        )
+    # One trigger hands the agent ONLY the delivery body — the proxy forwards
+    # it byte-verbatim (HMAC is over the raw bytes) and the fork's
+    # firePublicTrigger takes `payload: req.body`, so no header reaches the run
+    # context. A provider that names its event only in a header (GitHub's
+    # X-GitHub-Event, Sentry's Sentry-Hook-Resource) would therefore wake the
+    # agent with no way to tell which armed event fired. Isol8AI/isol8#1916 is
+    # the durable fix; until it lands those providers stay one event per
+    # trigger.
+    if len(events) > 1 and not inbound.event_in_body:
+        # Deliberately generic: the reason is a header for GitHub/Sentry but an
+        # owner-templated body for PostHog, and naming the wrong one sends the
+        # owner hunting for something that isn't there.
+        raise ValueError(
+            f"an agent woken by one {provider.display_name} trigger can't tell which event fired from "
+            f"the payload alone, so {', '.join(e.id for e in events)} must be added as separate triggers"
+        )
+    if len(events) > 1 and registration in _ONE_EVENT_REGISTRATIONS:
+        raise ValueError(
+            f"{registration} arms one event per trigger, so {', '.join(e.id for e in events)} "
+            "must be added as separate triggers"
+        )
+
+    # auto_github preconditions up front — a missing repo or token must fail
+    # before anything exists upstream, not after a create/rollback cycle.
+    if registration == "auto_github":
+        if not resource or not _GITHUB_REPO_RE.match(resource):
+            raise ValueError("auto_github needs a repository in the form owner/repo")
+        gh_token = await _github_token(owner_id)
+        if not gh_token:
+            raise ValueError("GitHub is not connected — connect it in the Integrations tab first")
+
+    # auto_vercel preconditions, same posture: fail before anything exists.
+    if registration == "auto_vercel":
+        if not resource or not _VERCEL_PROJECT_RE.match(resource):
+            raise ValueError("auto_vercel needs a Vercel project id (prj_…)")
+        vercel_token = await _vercel_token(owner_id)
+        if not vercel_token:
+            raise ValueError("Vercel is not connected — connect it in the Integrations tab first")
+
+    # auto_meta preconditions, same posture: fail before anything exists. The
+    # asset must be numeric AND present in the owner's live asset list — that
+    # membership check is the ownership fence (nothing else stops an owner
+    # naming a Page they don't administer) as well as the connected check.
+    if registration == "auto_meta":
+        if not resource or not _META_ASSET_RE.match(resource):
+            raise ValueError("auto_meta needs a numeric Meta asset id")
+        asset_lister = _META_ASSET_LISTERS.get(provider_key)
+        if asset_lister is None:
+            raise ValueError(f"{provider_key!r} has no Meta asset lister")
+        try:
+            assets = await asset_lister(owner_id)
+        except LookupError as exc:
+            raise ValueError(
+                f"{provider.display_name} is not connected — connect it in the Integrations tab first"
+            ) from exc
+        meta_asset = next((a for a in assets if a["id"] == resource), None)
+        if meta_asset is None:
+            raise ValueError("That Meta asset isn't on your connected account — reconnect it in the Integrations tab")
+
+    # Google-shape preconditions (push channels, gmail poll, gmail push),
+    # same posture. The resource is a connected Google ACCOUNT email,
+    # validated against the stored inventory rather than a regex — inventory
+    # membership is both the "is Google connected" check and the injection
+    # fence (the email rides into gog's fixed argv and the routine
+    # description, so only values the connect path recorded may pass).
+    if registration in ("auto_google_watch", "poll", "owner_setup"):
+        if not resource:
+            raise ValueError(f"{registration} needs a connected Google account email")
+        accounts = await google_accounts_repo.list_accounts(owner_id)
+        if not any(a["email"] == resource for a in accounts):
+            raise ValueError("That Google account isn't connected — connect it in the Integrations tab first")
+
+    # owner_setup additionally needs the owner's own Pub/Sub topic — the
+    # regex is both a UX check (typo'd topics fail here, not at gog) and the
+    # argv/instructions injection fence.
+    if registration == "owner_setup":
+        if not topic or not _PUBSUB_TOPIC_RE.match(topic):
+            raise ValueError("owner_setup needs a Pub/Sub topic in the form projects/<project>/topics/<name>")
+
+    # inbound.signing_mode IS a native Paperclip signingMode, passed straight
+    # through to the created trigger.
+    if inbound.signing_mode not in _NATIVE_SIGNING_MODES:
+        raise ValueError(f"unsupported inbound.signing_mode {inbound.signing_mode!r}")
+
+    return _Registration(provider, inbound, events, registration, resource, gh_token, vercel_token, meta_asset)
+
+
 async def seed_trigger_routine(
     owner_id: str,
     provider_key: str,
@@ -895,6 +1116,7 @@ async def seed_trigger_routine(
     routine_id: str | None = None,
     title: str | None = None,
     description: str | None = None,
+    actor_user_id: str | None = None,
 ) -> dict[str, Any]:
     """Create a routine + trigger pre-filled from ``provider_key``'s registry
     ``inbound`` declaration, armed for every event in ``event_ids``, and record
@@ -965,17 +1187,35 @@ async def seed_trigger_routine(
     # dedupes too, and recording the raw list would report event_count=2 for
     # a caller that sent the same id twice.
     event_ids = list(dict.fromkeys(event_ids))
-    out = await _seed_trigger_routine(
-        owner_id,
-        provider_key,
-        event_ids,
-        resource=resource,
-        topic=topic,
-        assignee_agent_id=assignee_agent_id,
-        routine_id=routine_id,
-        title=title,
-        description=description,
-    )
+    if await flags_for(owner_id):
+        # Super-agent workspaces: a HOOK# row + Secrets Manager instead of a Paperclip routine (lane A,
+        # Task 8). ``routine_id`` is the automation to attach to; ``assignee_agent_id`` its specialist.
+        from core.services import automation_hooks  # lazy: it reuses this module's helpers
+
+        out = await automation_hooks.seed(
+            owner_id,
+            provider_key,
+            event_ids,
+            resource=resource,
+            topic=topic,
+            specialist=assignee_agent_id,
+            automation_id=routine_id,
+            title=title,
+            description=description,
+            actor_user_id=actor_user_id,
+        )
+    else:
+        out = await _seed_trigger_routine(
+            owner_id,
+            provider_key,
+            event_ids,
+            resource=resource,
+            topic=topic,
+            assignee_agent_id=assignee_agent_id,
+            routine_id=routine_id,
+            title=title,
+            description=description,
+        )
     capture_product_event(
         distinct_id=owner_id,
         event="automation_armed",
@@ -1012,60 +1252,10 @@ async def _seed_trigger_routine(
     is the existing routine to attach to; omitted, it is filled in by the
     create below. Everything downstream reads the same name either way."""
     attach = routine_id is not None
-    provider = registry.get_provider(provider_key)
-    inbound = provider.inbound
-    if inbound is None:
-        raise ValueError(f"{provider_key!r} is not wired as an Automations trigger source")
-
-    # Deduped, caller's order. The FIRST event is the primary one: it names
-    # the registration shape, supplies the starter-prompt override, and (for
-    # the one-event shapes below) is the watch actually opened.
-    ordered = list(dict.fromkeys(event_ids))
-    if not ordered:
-        raise ValueError("pick at least one event")
-    by_id = {e.id: e for e in inbound.events}
-    unknown = [e for e in ordered if e not in by_id]
-    if unknown:
-        raise ValueError(f"unknown event {', '.join(repr(u) for u in unknown)} for provider {provider_key!r}")
-    events = [by_id[e] for e in ordered]
+    reg = await _resolve_registration(owner_id, provider_key, event_ids, resource=resource, topic=topic)
+    provider, inbound, events, registration = reg.provider, reg.inbound, reg.events, reg.registration
+    gh_token, vercel_token, meta_asset = reg.gh_token, reg.vercel_token, reg.meta_asset
     event = events[0]
-
-    # Events may override the block-level registration (the google block:
-    # calendar/drive stay auto_google_watch, gmail.poll/gmail.message carry
-    # their own shape) — everything below dispatches on the EFFECTIVE value.
-    registration = event.registration or inbound.webhook_registration
-
-    # One trigger = one URL = one signing mode = one registration shape. Events
-    # that wire up differently physically cannot share it, so say which ones
-    # and send the owner back to add them separately rather than silently
-    # arming the first shape for all of them.
-    shapes = {e.id: (e.registration or inbound.webhook_registration) for e in events}
-    if len(set(shapes.values())) > 1:
-        conflict = ", ".join(f"{eid} ({shape})" for eid, shape in shapes.items())
-        raise ValueError(
-            f"these events wire up differently and can't share one trigger: {conflict} — add them as separate triggers"
-        )
-    # One trigger hands the agent ONLY the delivery body — the proxy forwards
-    # it byte-verbatim (HMAC is over the raw bytes) and the fork's
-    # firePublicTrigger takes `payload: req.body`, so no header reaches the run
-    # context. A provider that names its event only in a header (GitHub's
-    # X-GitHub-Event, Sentry's Sentry-Hook-Resource) would therefore wake the
-    # agent with no way to tell which armed event fired. Isol8AI/isol8#1916 is
-    # the durable fix; until it lands those providers stay one event per
-    # trigger.
-    if len(events) > 1 and not inbound.event_in_body:
-        # Deliberately generic: the reason is a header for GitHub/Sentry but an
-        # owner-templated body for PostHog, and naming the wrong one sends the
-        # owner hunting for something that isn't there.
-        raise ValueError(
-            f"an agent woken by one {provider.display_name} trigger can't tell which event fired from "
-            f"the payload alone, so {', '.join(e.id for e in events)} must be added as separate triggers"
-        )
-    if len(events) > 1 and registration in _ONE_EVENT_REGISTRATIONS:
-        raise ValueError(
-            f"{registration} arms one event per trigger, so {', '.join(e.id for e in events)} "
-            "must be added as separate triggers"
-        )
 
     # What every renderer below names the selection: one event reads exactly as
     # it always did, several read as a list.
@@ -1080,71 +1270,6 @@ async def _seed_trigger_routine(
     # append a delimited block instead (see _append_platform_block).
     if attach and assignee_agent_id is not None:
         raise ValueError("attaching to an existing automation can't reassign it")
-
-    # auto_github preconditions up front — a missing repo or token must fail
-    # before anything exists upstream, not after a create/rollback cycle.
-    gh_token: str | None = None
-    if registration == "auto_github":
-        if not resource or not _GITHUB_REPO_RE.match(resource):
-            raise ValueError("auto_github needs a repository in the form owner/repo")
-        gh_token = await _github_token(owner_id)
-        if not gh_token:
-            raise ValueError("GitHub is not connected — connect it in the Integrations tab first")
-
-    # auto_vercel preconditions, same posture: fail before anything exists.
-    vercel_token: str | None = None
-    if registration == "auto_vercel":
-        if not resource or not _VERCEL_PROJECT_RE.match(resource):
-            raise ValueError("auto_vercel needs a Vercel project id (prj_…)")
-        vercel_token = await _vercel_token(owner_id)
-        if not vercel_token:
-            raise ValueError("Vercel is not connected — connect it in the Integrations tab first")
-
-    # auto_meta preconditions, same posture: fail before anything exists. The
-    # asset must be numeric AND present in the owner's live asset list — that
-    # membership check is the ownership fence (nothing else stops an owner
-    # naming a Page they don't administer) as well as the connected check.
-    meta_asset: dict[str, str] | None = None
-    if registration == "auto_meta":
-        if not resource or not _META_ASSET_RE.match(resource):
-            raise ValueError("auto_meta needs a numeric Meta asset id")
-        asset_lister = _META_ASSET_LISTERS.get(provider_key)
-        if asset_lister is None:
-            raise ValueError(f"{provider_key!r} has no Meta asset lister")
-        try:
-            assets = await asset_lister(owner_id)
-        except LookupError as exc:
-            raise ValueError(
-                f"{provider.display_name} is not connected — connect it in the Integrations tab first"
-            ) from exc
-        meta_asset = next((a for a in assets if a["id"] == resource), None)
-        if meta_asset is None:
-            raise ValueError("That Meta asset isn't on your connected account — reconnect it in the Integrations tab")
-
-    # Google-shape preconditions (push channels, gmail poll, gmail push),
-    # same posture. The resource is a connected Google ACCOUNT email,
-    # validated against the stored inventory rather than a regex — inventory
-    # membership is both the "is Google connected" check and the injection
-    # fence (the email rides into gog's fixed argv and the routine
-    # description, so only values the connect path recorded may pass).
-    if registration in ("auto_google_watch", "poll", "owner_setup"):
-        if not resource:
-            raise ValueError(f"{registration} needs a connected Google account email")
-        accounts = await google_accounts_repo.list_accounts(owner_id)
-        if not any(a["email"] == resource for a in accounts):
-            raise ValueError("That Google account isn't connected — connect it in the Integrations tab first")
-
-    # owner_setup additionally needs the owner's own Pub/Sub topic — the
-    # regex is both a UX check (typo'd topics fail here, not at gog) and the
-    # argv/instructions injection fence.
-    if registration == "owner_setup":
-        if not topic or not _PUBSUB_TOPIC_RE.match(topic):
-            raise ValueError("owner_setup needs a Pub/Sub topic in the form projects/<project>/topics/<name>")
-
-    # inbound.signing_mode IS a native Paperclip signingMode, passed straight
-    # through to the created trigger.
-    if inbound.signing_mode not in _NATIVE_SIGNING_MODES:
-        raise ValueError(f"unsupported inbound.signing_mode {inbound.signing_mode!r}")
 
     # Only "friday" is used by any live registry template today (Stripe's).
     # Extend this when a second suggested_agent shows up. An explicit assignee
@@ -1377,26 +1502,14 @@ async def _seed_trigger_routine(
             # Per-provider copy from the registry when present — every dashboard
             # buries webhooks somewhere different, and a wrong path strands the
             # owner mid-setup. The generic sentence is only the fallback.
-            if inbound.instructions:
-                # `event_labels`/`event_ids` are the plural-safe names the
-                # provider copy uses; `event_label`/`event_id` stay bound to
-                # the same rendering so a template written before multi-select
-                # still names every selected event.
-                instructions = inbound.instructions.format(
-                    proxy_url=proxy_url,
-                    event_label=event_label_text,
-                    event_id=event_id_text,
-                    event_labels=event_label_text,
-                    event_ids=event_id_text,
-                )
-            else:
-                noun = "event" if len(events) == 1 else "events"
-                instructions = (
-                    f"In your {provider.display_name} dashboard, add a webhook endpoint "
-                    f"pointed at {proxy_url} listening for the '{event_label_text}' {noun} "
-                    f"({event_id_text}). Paste the signing secret it gives you back into Lightbulb "
-                    "to finish arming this automation."
-                )
+            instructions = _guided_instructions(
+                provider,
+                inbound,
+                proxy_url=proxy_url,
+                event_label_text=event_label_text,
+                event_id_text=event_id_text,
+                count=len(events),
+            )
             return {
                 "routine_id": routine_id,
                 "trigger_public_id": public_id,
@@ -1760,17 +1873,7 @@ async def _seed_trigger_routine(
                 resource,
                 event_id_text,
             )
-            # The one-time Pub/Sub setup in the OWNER'S project. Everything
-            # interpolated is fence-validated above (topic regex, proxy_url is
-            # ours). The dialog is informational — no paste-back step.
-            instructions = (
-                "One-time setup in your Google Cloud project: "
-                "(1) enable the Pub/Sub API; "
-                f"(2) create the topic {topic}; "
-                "(3) grant gmail-api-push@system.gserviceaccount.com the Pub/Sub Publisher role on it; "
-                f'(4) create a PUSH subscription to {proxy_url} with "Enable authentication" ON '
-                f"(any service account) and the audience set to exactly {proxy_url}."
-            )
+            instructions = _gmail_setup_instructions(topic, proxy_url)
             return {
                 "routine_id": routine_id,
                 "trigger_public_id": public_id,

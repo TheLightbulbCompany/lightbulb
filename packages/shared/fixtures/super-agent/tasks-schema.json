@@ -2141,6 +2141,18 @@
           "default": null,
           "title": "Providerhookid"
         },
+        "resource": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Resource"
+        },
         "account": {
           "anyOf": [
             {
@@ -2188,6 +2200,30 @@
           ],
           "default": null,
           "title": "Expiresat"
+        },
+        "pageToken": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pagetoken"
+        },
+        "topic": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Topic"
         },
         "sigFailCount": {
           "default": 0,

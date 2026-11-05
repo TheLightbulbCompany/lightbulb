@@ -34,13 +34,14 @@ async def a02(ctx: Ctx) -> Result:
     front = await front_agent(ctx, "sam", room_id)
     ask = await post(ctx, "sam", room_id, ASKS)
     tasks = await ctx.wait_for(lambda rows: _three(tasks_from(rows, ask["messageId"])), ROUTER_REPLY_S)
+    await ctx.sleep(10)  # subscriptions land just after the tasks
     rows = await ctx.tasks_rows(ctx.ws)
     tasks = tasks or tasks_from(rows, ask["messageId"])  # fewer than three: report what the Router did make
     reply = [
         m
         for m in await messages(ctx, "sam", room_id)
-        if (m.get("author") or {}).get("kind") == "agent" and m.get("taskRefs")
-    ]
+        if (m.get("author") or {}).get("kind") == "agent" and m.get("taskRefs") and m.get("kind") != "result"
+    ]  # the Router's one reply; a Worker's later result line carries a taskRef too
     ask_trigger = ts.trigger_id("chat", ask["messageId"])
     trig = next((t for t in rows_of(rows, "trigger") if t["triggerId"] == ask_trigger), {})
     subs = {s["taskId"] for s in rows_of(rows, "subscription") if s.get("createdBy") == "router"}
@@ -53,7 +54,8 @@ async def a02(ctx: Ctx) -> Result:
         "fee_estimate_inline": len(reply) == 1 and bool(ESTIMATE.search(reply[0].get("text") or "")),
         "specialist_set": all(t.get("specialist") for t in tasks),
         "subscribed": any(t["taskId"] in subs for t in tasks),
-        "trigger_respond_routed": trig.get("admission") == "respond" and bool(trig.get("routedTo")),
+        "trigger_respond_routed": trig.get("admission") in ("respond", "candidate")
+        and bool(trig.get("routedTo")),  # unaddressed: Jev says candidate,
         "no_worker_authored_message": not worker_authored(
             await messages(ctx, "sam", room_id), (front or {}).get("id", "")
         ),

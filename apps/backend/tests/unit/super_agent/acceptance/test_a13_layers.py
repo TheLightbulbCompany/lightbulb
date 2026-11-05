@@ -57,7 +57,7 @@ async def test_a13_green_when_rows_link_and_legacy_is_empty(monkeypatch):
         seen["legacy"] = (ws, rooms)
         return {"runs": [], "followUps": []}
 
-    async def runs(ws):
+    async def runs(ws, front=None):
         seen["runs"] = ws
         return [_run("b1", ["start_task", "propose_tasks", "reply"])]
 
@@ -79,7 +79,7 @@ async def test_a13_fails_on_legacy_rows_or_an_execution_tool_or_no_temporal(monk
     async def legacy(ws, rooms):
         return {"runs": ["RUN#x"], "followUps": ["r1/FOLLOWUP#y"]}
 
-    async def runs(ws):
+    async def runs(ws, front=None):
         return [_run("b1", ["start_task"], tools=["terminal"])]
 
     monkeypatch.setattr(a13_layers, "legacy_rows", legacy)
@@ -92,7 +92,7 @@ async def test_a13_fails_on_legacy_rows_or_an_execution_tool_or_no_temporal(monk
     ]
     assert result.evidence["routerOutside"] == [{"batchId": "b1", "names": ["terminal"]}]
 
-    async def down(ws):
+    async def down(ws, front=None):
         raise ConnectionError("temporal unreachable")
 
     monkeypatch.setattr(a13_layers, "router_runs", down)

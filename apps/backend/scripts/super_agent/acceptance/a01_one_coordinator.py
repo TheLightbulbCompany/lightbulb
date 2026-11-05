@@ -26,6 +26,7 @@ async def a01(ctx: Ctx) -> Result:
     )
     ctx.state["roomId"] = room["roomId"]  # A2, A4, A7 post into this room
     front = await front_agent(ctx, "sam", room["roomId"])
+    ctx.state["frontAgentId"] = (front or {}).get("id")  # A13 reads Router runs with it
     first = await post(
         ctx, "sam", room["roomId"], "Hi @lightbulb, we're launching the workshop in March.", mentions=[front["id"]]
     )

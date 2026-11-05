@@ -11,7 +11,9 @@ Mode = Literal["off", "observe", "act"]
 class WatchdogConfig:
     """The schedule's workflow args; changed only through `scripts/watchdog_ctl.py`. No text."""
 
-    reconcile: Literal["off", "observe", "act"] = "act"  # F1: reconcile acts in dev from day one
+    # F1 says reconcile acts in dev from day one; it ships as observe until W6 (TaskWorkflow's reconcile path)
+    # is merged, then `watchdog_ctl --set reconcile=act` (or this default) turns it on.
+    reconcile: Literal["off", "observe", "act"] = "observe"
     tier1: Literal["off", "observe"] = "observe"  # retry, recheck
     tier2: Literal["off", "observe"] = "observe"  # steer, question
     judge: bool = True

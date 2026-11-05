@@ -17,7 +17,7 @@ from core.temporal.watchdog_types import WatchdogConfig
 from .conftest import WS
 
 NOW = datetime(2026, 11, 4, 12, 0, tzinfo=timezone.utc)
-CFG = WatchdogConfig()
+CFG = WatchdogConfig(reconcile="act")
 OFF = WatchdogConfig(reconcile="off", tier1="off", tier2="off", judge=False)
 
 

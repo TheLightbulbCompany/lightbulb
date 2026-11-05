@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import time
 import zlib
 from dataclasses import dataclass
@@ -20,6 +21,7 @@ from temporalio.client import WorkflowExecutionStatus
 from temporalio.service import RPCError, RPCStatusCode
 
 from core import tasks_schema as ts
+from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import messaging_repo, tasks_repo, watchdog_repo
 from core.services import jev, runtime_runs, super_agent_flags
@@ -552,4 +554,126 @@ async def _act(cfg: WatchdogConfig, p: Proposal, by: str) -> str:
     return "done"
 
 
-WATCHDOG_ACTIVITIES = [watchdog_scan, watchdog_judge, watchdog_act]
+# --- tick metric, digest, report, schedule (spec 11 §3.3, §3.10) --------------------------------------
+
+DIGEST_LINES = 20
+REPORT_LABELS = 100
+REPORT_DAYS = 30
+SCHEDULE_ID = "watchdog"
+TICK_EVERY = timedelta(minutes=5)
+TICK_TIMEOUT = timedelta(minutes=4)
+_TIER = {"judge": "tier2", "C3": "tier1", "C4": "tier1", "C1": "reconcile"}
+
+
+@activity.defn
+async def watchdog_tick_metric(mode: str) -> None:
+    """Every tick, also when off: P48 alarms on its silence."""
+    put_metric("watchdog.tick", dimensions={"Mode": mode})
+
+
+def _line(f: dict) -> str:
+    what = f.get("verdict") or f.get("check")
+    p = f" p={f['p']}" if f.get("p") is not None else ""
+    hint = f" hint={f['hint']}" if f.get("hint") else ""
+    return f"{f['findingId']} {what}{p} proposed={f.get('proposed')} mode={f.get('mode')}{hint}"
+
+
+async def _post(text: str, event_id: str) -> None:
+    from core.services.task_conversation import post_as_lightbulb
+
+    await post_as_lightbulb(settings.WATCHDOG_OWNER_ID, settings.WATCHDOG_ROOM_ID, text=text, event_id=event_id)
+
+
+async def report(now: datetime | None = None) -> dict:
+    """Precision per tier over its latest 100 labelled findings (`unsure` left out)."""
+    now = now or datetime.now(timezone.utc)
+    labelled = []
+    # ponytail: 30 day-partition queries per report; add a sparse label GSI if reports get frequent.
+    for d in range(REPORT_DAYS):
+        labelled += [f for f in await watchdog_repo.query_findings(_day(now - timedelta(days=d)), "") if f.get("label")]
+    labelled.sort(key=lambda f: f.get("labelledAt") or "", reverse=True)
+    out: dict = {}
+    for tier in ("tier1", "tier2", "reconcile"):
+        rows = [f for f in labelled if _TIER.get(f.get("check")) == tier][:REPORT_LABELS]
+        judged = [f for f in rows if f["label"] in ("tp", "fp")]
+        tp = sum(f["label"] == "tp" for f in judged)
+        out[tier] = {"n": len(judged), "precision": round(tp / len(judged), 3) if judged else None}
+    return out
+
+
+@activity.defn
+async def watchdog_digest(cfg: WatchdogConfig, finding_ids: list[str], daily: bool) -> None:
+    """One `#watchdog` post per tick with new findings (≤ 20 lines); a daily summary once a day. Silent when
+    nothing is new. Idempotent on the tick's workflow id."""
+    if not (settings.WATCHDOG_OWNER_ID and settings.WATCHDOG_ROOM_ID):
+        logger.info("watchdog digest: no #watchdog room configured")
+        return
+    if finding_ids:
+        rows = [await watchdog_repo.get_finding(*watchdog_repo.finding_key(i)) for i in finding_ids[:DIGEST_LINES]]
+        more = len(finding_ids) - DIGEST_LINES
+        text = "\n".join(
+            [f"Watchdog: {len(finding_ids)} new findings", *(_line(f) for f in rows if f)]
+            + ([f"…and {more} more"] if more > 0 else [])
+        )
+        await _post(text, f"watchdog:digest:{activity.info().workflow_id}")
+    if not daily:
+        return
+    now = datetime.now(timezone.utc)
+    yday = _day(now - timedelta(days=1))
+    found = await watchdog_repo.query_findings(yday, "")
+    if not found:
+        return  # a healthy day is silent
+    counts: dict[str, int] = {}
+    for f in found:
+        counts[f.get("verdict") or f["check"]] = counts.get(f.get("verdict") or f["check"], 0) + 1
+    unlabelled = [f for f in found if not f.get("label")]
+    sample = random.sample(unlabelled, min(DIGEST_LINES, len(unlabelled)))
+    precision = await report(now)
+    text = "\n".join(
+        [
+            f"Watchdog daily {yday}: {len(found)} findings, {len(unlabelled)} unlabelled",
+            " ".join(f"{k}={v}" for k, v in sorted(counts.items())),
+            " ".join(f"{t}: n={r['n']} precision={r['precision']}" for t, r in precision.items()),
+            "Label with: watchdog_ctl --label <id> tp|fp|unsure --by <admin id>",
+            *(_line(f) for f in sample),
+        ]
+    )
+    await _post(text, f"watchdog:daily:{yday}")
+
+
+async def ensure_watchdog_schedule(client) -> bool:
+    """Create the `watchdog` Schedule with the default config if it is missing. Never overwrites the args a
+    maintainer set. No-op unless the env master is on (prod)."""
+    if not super_agent_flags.env_enabled():
+        return False
+    from temporalio.client import (
+        Schedule,
+        ScheduleActionStartWorkflow,
+        ScheduleAlreadyRunningError,
+        ScheduleIntervalSpec,
+        ScheduleOverlapPolicy,
+        SchedulePolicy,
+        ScheduleSpec,
+    )
+
+    try:
+        await client.create_schedule(
+            SCHEDULE_ID,
+            Schedule(
+                action=ScheduleActionStartWorkflow(
+                    "WatchdogWorkflow",
+                    WatchdogConfig(),
+                    id="watchdog-tick",
+                    task_queue=settings.TEMPORAL_WATCHDOG_TASK_QUEUE,
+                    execution_timeout=TICK_TIMEOUT,
+                ),
+                spec=ScheduleSpec(intervals=[ScheduleIntervalSpec(every=TICK_EVERY)]),
+                policy=SchedulePolicy(overlap=ScheduleOverlapPolicy.SKIP, catchup_window=timedelta(minutes=1)),
+            ),
+        )
+    except ScheduleAlreadyRunningError:
+        return False
+    return True
+
+
+WATCHDOG_ACTIVITIES = [watchdog_tick_metric, watchdog_scan, watchdog_judge, watchdog_act, watchdog_digest]

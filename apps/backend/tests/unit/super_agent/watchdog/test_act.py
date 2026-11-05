@@ -17,7 +17,7 @@ from core.temporal.watchdog_types import Proposal, WatchdogConfig
 
 from .conftest import WS
 
-CFG = WatchdogConfig()
+CFG = WatchdogConfig(reconcile="act")
 
 
 def _gone():

@@ -317,19 +317,20 @@ async def fire_automation(inp: FireInput, at_ms: int) -> str:
         await repo.note_skip(ws, row["scheduleId"], reason="idle")
         await _turn_off_if_spent(ws, row, inp)
         return "skipped:idle"
+    trigger_id = _fire_trigger_id(inp, row, at_ms)
+    task_id = ts.router_task_id(trigger_id, 0, 0)
     budget = row.get("budgetPerRunUsd")
     proactive_run = proactive.is_proactive(row["scheduleId"])
-    if proactive_run:  # paying workspaces only, under the workspace's daily proactive cap
-        skip, left = await proactive.fire_check(ws, row["scheduleId"])
+    if proactive_run:  # its budget held against the workspace's daily proactive cap (the look around: a paid plan)
+        skip, budget = await proactive.fire_budget(ws, row["scheduleId"], trigger_id, budget)
         if skip:
             await repo.note_skip(ws, row["scheduleId"], reason=skip)
             return f"skipped:{skip}"
-        budget = min(budget or left, left)
-    trigger_id = _fire_trigger_id(inp, row, at_ms)
-    task_id = ts.router_task_id(trigger_id, 0, 0)
     previous = next((t for t in row.get("runTaskIds") or [] if t != task_id), None)  # newest closed run
     if not await repo.claim_run(ws, row["scheduleId"], task_id):
         await _turn_off_if_spent(ws, row, inp)
+        if proactive_run:
+            await proactive.release(ws, trigger_id)
         return "skipped:overlap"
 
     brief = row["policyText"]

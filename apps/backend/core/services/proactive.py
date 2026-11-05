@@ -1,6 +1,6 @@
 """The proactive layer of a super-agent workspace (product shape, 5 Nov 2026): Ideas start Router requests, the
-first run files 3 ideas, and two platform automations (a daily look around that files ideas, scheduled feed posts)
-run for paying workspaces only, under one daily spend cap.
+first run files 3 ideas, and two platform automations run under one daily spend cap: a daily look around that files
+ideas (paying workspaces only) and scheduled feed posts (every workspace, founder 5 Nov 2026).
 
 No new infrastructure: requests are scripted `start_task` triggers (as automation fires are, C31); the automations
 are ordinary `SCHED#` rows owned by the workspace (Temporal Schedules, per-run budget, 3-day idle skip, pause).
@@ -9,10 +9,11 @@ are ordinary `SCHED#` rows owned by the workspace (Temporal Schedules, per-run b
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timezone
 
 from core import tasks_schema as ts
-from core.dynamodb import utc_now_iso
+from core.dynamodb import ddb_safe, plain, run_in_thread, utc_now_iso
 from core.observability.metrics import put_metric
 
 logger = logging.getLogger(__name__)
@@ -26,7 +27,6 @@ FIRST_RUN_BUDGET_USD = 0.50
 #: Every proactive run of one workspace in one UTC day (first run, look around, feed posts) together.
 DAILY_CAP_USD = 1.00
 NOT_PAYING = "not_paying"
-_RECENT_RUNS = 8  # per automation: more than a day's runs (look around 1, feed 3)
 
 FIRST_RUN_TEXT = (
     "First look at this company. Find out what it does and what it needs now: what the team told Lightbulb "
@@ -66,6 +66,11 @@ def is_proactive(schedule_id: str) -> bool:
     return schedule_id in (LOOK_AROUND_ID, FEED_ID)
 
 
+def paying_only(schedule_id: str) -> bool:
+    """The look around is for paying workspaces; feed posts run for everyone (founder, 5 Nov 2026)."""
+    return schedule_id == LOOK_AROUND_ID
+
+
 def first_run_task_id() -> str:
     return ts.router_task_id(ts.trigger_id("idea", FIRST_RUN_KEY), 0, 0)
 
@@ -93,8 +98,9 @@ async def _timezone(ws: str) -> str:
 
 
 async def ensure(ws: str) -> None:
-    """Idempotent, both ways: the first run once per workspace; the two automations on while it pays, paused
-    (`paused_system: not_paying`) when it stops. An owner's own pause is theirs to keep. Switch off: nothing."""
+    """Idempotent, both ways: the first run once per workspace; feed posts on for everyone; the look around on
+    while it pays, paused (`paused_system: not_paying`) when it stops. An owner's own pause is theirs to keep.
+    Switch off: nothing."""
     from core.repositories import automations_repo as repo
     from core.services import automation_schedule, super_agent_flags
 
@@ -102,27 +108,32 @@ async def ensure(ws: str) -> None:
 
     if not await super_agent_flags.flags_for(ws):
         return
-    if await tasks_repo.get_trigger(ws, ts.trigger_id("idea", FIRST_RUN_KEY)) is None:  # once, ever
-        await start_request(
-            ws,
-            key=FIRST_RUN_KEY,
-            title="First ideas for your company",
-            brief=FIRST_RUN_TEXT + "\n\n" + await context(ws),
-            budget_usd=FIRST_RUN_BUDGET_USD,
-        )
+    # Once, ever; never for a dormant workspace (a deploy's first reconcile reaches every switched-on one).
+    if await tasks_repo.get_trigger(ws, ts.trigger_id("idea", FIRST_RUN_KEY)) is None and not await _dormant(ws):
+        budget = await reserve(ws, FIRST_RUN_KEY, FIRST_RUN_BUDGET_USD)
+        if budget:
+            await start_request(
+                ws,
+                key=FIRST_RUN_KEY,
+                title="First ideas for your company",
+                brief=FIRST_RUN_TEXT + "\n\n" + await context(ws),
+                actor_user_id=ws,
+                budget_usd=budget,
+            )
     is_paying = await paying(ws)
     tz: str | None = None
     for want in automation_rows(ws, "UTC"):
+        on = is_paying or not paying_only(want["scheduleId"])
         row = await repo.get_schedule(ws, want["scheduleId"])
         if row is None:
-            if not is_paying:
+            if not on:
                 continue
             tz = tz or await _timezone(ws)
             row, _ = await repo.create_schedule(ws, {**want, "tz": tz})
         status, reason = row["status"], row.get("pausedReason")
-        if is_paying and (status == "draft" or (status == "paused_system" and reason == NOT_PAYING)):
+        if on and (status == "draft" or (status == "paused_system" and reason == NOT_PAYING)):
             row = await repo.set_status(ws, row["scheduleId"], "active", reason=None, allowed_from=frozenset({status}))
-        elif not is_paying and status in ("draft", "active"):
+        elif not on and status in ("draft", "active"):
             row = await repo.set_status(
                 ws, row["scheduleId"], "paused_system", reason=NOT_PAYING, allowed_from=frozenset({status})
             )
@@ -131,39 +142,103 @@ async def ensure(ws: str) -> None:
         await automation_schedule.upsert(row)
 
 
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+async def _dormant(ws: str) -> bool:
+    """No human activity for the automations' idle window (a brand-new workspace has none recorded: not dormant)."""
+    from core.temporal.automations import _idle
+
+    return await _idle(ws, _now_ms())
+
+
 def _today() -> str:
     return utc_now_iso()[:10]
 
 
-async def spent_today(ws: str) -> float:
-    """Recorded cost of today's (UTC) proactive runs: the first run and the two automations' recent runs.
-    ponytail: a few task-tree reads per fire (≤ 4 fires a day); a per-day counter row if runs get frequent."""
-    from core.repositories import automations_repo as repo
+def _budget_key(ws: str) -> dict:
+    return {"pk": ts.ws_pk(ws), "sk": f"PROACTIVE#{_today()}"}
+
+
+async def _budget_row(ws: str) -> dict:
     from core.repositories import tasks_repo
 
-    ids = {first_run_task_id()}
-    for sid in (LOOK_AROUND_ID, FEED_ID):
-        row = await repo.get_schedule(ws, sid) or {}
-        ids.update(t for t in [row.get("activeRunTaskId"), *(row.get("runTaskIds") or [])[:_RECENT_RUNS]] if t)
-    today, total = _today(), 0.0
-    for task_id in ids:
-        tree = await tasks_repo.get_task_tree(ws, task_id)
-        if tree["task"] and str(tree["task"].get("createdAt") or "").startswith(today):
-            total += sum(float((a.get("usage") or {}).get("costUsd") or 0) for a in tree["attempts"])
-    return total
+    got = await run_in_thread(tasks_repo._table().get_item, Key=_budget_key(ws), ConsistentRead=True)
+    return plain(got.get("Item") or {})
 
 
-async def fire_check(ws: str, sid: str) -> tuple[str | None, float]:
-    """Before a proactive fire: `(skip reason, None)` or `(None, what is left of today's cap)`. Logged."""
-    if not await paying(ws):
+async def _swap(ws: str, row: dict, reserved: float, runs: dict) -> bool:
+    """Write the day's row if nobody changed it since `row` was read."""
+    from botocore.exceptions import ClientError
+
+    from core.repositories import tasks_repo
+
+    version = int(row.get("version") or 0)
+    item = {**_budget_key(ws), "type": "proactive_budget", "reservedUsd": round(reserved, 4), "runs": runs,
+            "version": version + 1}  # fmt: skip
+    try:
+        await run_in_thread(
+            tasks_repo._table().put_item,
+            Item=ddb_safe(item),
+            ConditionExpression="attribute_not_exists(pk) OR version = :v",
+            ExpressionAttributeValues={":v": version},
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        return False
+    return True
+
+
+async def reserved_today(ws: str) -> float:
+    return float((await _budget_row(ws)).get("reservedUsd") or 0)
+
+
+async def reserve(ws: str, run_key: str, amount: float) -> float:
+    """Hold up to `amount` of today's (UTC) proactive cap for one run, before it starts: concurrent fires and Run
+    now can't both take the same headroom. Returns what was held (0 = the cap is used up); idempotent per
+    `run_key`, so a retried fire holds nothing more. The held amount is the run's budget.
+    ponytail: one row per workspace per day, never deleted (a few bytes); a TTL if it ever matters."""
+    for _ in range(8):
+        row = await _budget_row(ws)
+        runs = dict(row.get("runs") or {})
+        if run_key in runs:
+            return float(runs[run_key])
+        reserved = float(row.get("reservedUsd") or 0)
+        take = round(min(amount, DAILY_CAP_USD - reserved), 4)
+        if take <= 0:
+            logger.info(
+                "proactive cap reached ws=%s run=%s reserved=%.2f cap=%.2f", ws, run_key, reserved, DAILY_CAP_USD
+            )
+            put_metric("proactive.daily_cap_hit")
+            return 0.0
+        if await _swap(ws, row, reserved + take, {**runs, run_key: take}):
+            logger.info("proactive reserve ws=%s run=%s usd=%.2f today=%.2f", ws, run_key, take, reserved + take)
+            put_metric("proactive.reserved_today_usd", value=reserved + take, unit="None")
+            return take
+    raise RuntimeError("proactive budget row contended")  # the Activity's retry policy tries again
+
+
+async def release(ws: str, run_key: str) -> None:
+    """Give a run's hold back (it never started: an overlap)."""
+    for _ in range(8):
+        row = await _budget_row(ws)
+        runs = dict(row.get("runs") or {})
+        if run_key not in runs:
+            return
+        take = float(runs.pop(run_key))
+        if await _swap(ws, row, max(0.0, float(row.get("reservedUsd") or 0) - take), runs):
+            return
+    raise RuntimeError("proactive budget row contended")
+
+
+async def fire_budget(ws: str, sid: str, run_key: str, budget: float | None) -> tuple[str | None, float]:
+    """Before a proactive fire: `(skip reason, 0)` or `(None, the run's budget held against today's cap)`."""
+    if paying_only(sid) and not await paying(ws):
         return NOT_PAYING, 0.0
-    spent = await spent_today(ws)
-    logger.info("proactive spend ws=%s automation=%s today=%.4f cap=%.2f", ws, sid, spent, DAILY_CAP_USD)
-    put_metric("proactive.spend_today_usd", value=spent, unit="None")
-    if spent >= DAILY_CAP_USD:
-        put_metric("proactive.daily_cap_hit")
-        return "daily_cap", 0.0
-    return None, DAILY_CAP_USD - spent
+    held = await reserve(ws, run_key, budget or RUN_BUDGET_USD)
+    return (None, held) if held else ("daily_cap", 0.0)
 
 
 async def _brief(ws: str) -> str:
@@ -181,8 +256,12 @@ async def context(ws: str) -> str:
     from core.services.ideas import DISMISS_MEMORY
 
     lines = [f"The brief (what the team wants to hear about): {await _brief(ws)}"]
-    open_titles = [t.get("title") for t in await open_requests(ws)][:20]
-    done, _ = await tasks_repo.list_tasks_by_status(ws, "resolved", limit=10)
+    # Only the workspace's own requests: this text becomes a workspace-visible brief (and maybe a feed post), so a
+    # person's private request or a room's never shows here.
+    shared = lambda rows: [t for t in rows if (t.get("audience") or {}).get("kind") == "workspace"]  # noqa: E731
+    open_titles = [t.get("title") for t in shared(await open_requests(ws))][:20]
+    done, _ = await tasks_repo.list_tasks_by_status(ws, "resolved", limit=30)
+    done = shared(done)[:10]
     dismissed = await messaging_repo.dismissed_idea_times(ws)
     cutoff = (datetime.now(timezone.utc) - DISMISS_MEMORY).isoformat()
     ideas = await messaging_repo.suggested_ideas(ws)
@@ -213,8 +292,11 @@ async def start_request(
 ) -> str:
     """One Router request through admission, applied without a model turn (a scripted `start_task`). Idempotent
     on `key` (the trigger id, hence the task id). With a person it is theirs (their private lane, answered in
-    `room_id`); without one it is the workspace's. Returns the task id."""
+    `room_id`); with the workspace as the actor it is the workspace's (shared lane, metered to the workspace,
+    its admins answer its questions). Returns the task id."""
     from core.services import admission
+
+    person = bool(actor_user_id) and actor_user_id != ws
 
     trigger_id = ts.trigger_id("idea", key)
     task_id = ts.router_task_id(trigger_id, 0, 0)
@@ -225,7 +307,7 @@ async def start_request(
         brief=brief,
         specialist=specialist,
         ack=f"On it: {title}",
-        visibility="person" if actor_user_id else "workspace",
+        visibility="person" if person else "workspace",
         budget_usd=budget_usd,
     )
     now = utc_now_iso()
@@ -234,7 +316,7 @@ async def start_request(
         trigger_id=trigger_id,
         source="idea",
         admission="respond",
-        lane=ts.router_lane_key(actor_user_id) if actor_user_id else "shared",
+        lane=ts.router_lane_key(actor_user_id) if person else "shared",
         actor_user_id=actor_user_id,
         received_at=now,
         created_at=now,

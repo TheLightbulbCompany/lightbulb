@@ -54,17 +54,20 @@ async def test_paying_workspace_gets_both_automations_and_one_first_run(world):
     assert start["visibility"] == "workspace" and start["budgetUsd"] == 0.5 and "suggest_idea" in start["brief"]
 
 
-async def test_trial_gets_first_run_only_and_plan_changes_converge(world):
+async def test_trial_gets_first_run_and_feed_and_the_look_around_follows_the_plan(world):
     world.billing["subscription_status"] = "trial_local"
     await proactive.ensure(WS)
-    assert await _statuses() == {}
+    assert await _statuses() == {proactive.FEED_ID: ("active", None)}  # feed posts for everyone
     assert [t.source for t, _ in world.env.enqueued] == ["idea"]
     world.billing["subscription_status"] = "active"
     await proactive.ensure(WS)
     assert set((await _statuses()).values()) == {("active", None)}
     world.billing["subscription_status"] = "canceled"
     await proactive.ensure(WS)
-    assert set((await _statuses()).values()) == {("paused_system", "not_paying")}
+    assert await _statuses() == {
+        proactive.LOOK_AROUND_ID: ("paused_system", "not_paying"),
+        proactive.FEED_ID: ("active", None),
+    }
     # The owner turned the feed off: paying again never turns it back on.
     world.billing["subscription_status"] = "active"
     await proactive.ensure(WS)
@@ -90,63 +93,84 @@ async def test_look_around_fire_is_a_workspace_request_with_the_brief(world):
     assert "Tell us about customers." in start["brief"] and "suggest_idea" in start["brief"]
 
 
-async def test_not_paying_at_fire_time_skips(world):
+async def test_not_paying_at_fire_time_skips_the_look_around_but_not_the_feed(world):
     await proactive.ensure(WS)
     world.billing["subscription_status"] = "past_due"
-    assert await fire_automation(FireInput(WS, proactive.FEED_ID, "schedule"), AT) == "skipped:not_paying"
-    assert (await repo.get_schedule(WS, proactive.FEED_ID))["lastSkip"]["reason"] == "not_paying"
+    assert await fire_automation(FireInput(WS, proactive.LOOK_AROUND_ID, "schedule"), AT) == "skipped:not_paying"
+    assert (await repo.get_schedule(WS, proactive.LOOK_AROUND_ID))["lastSkip"]["reason"] == "not_paying"
+    assert (await fire_automation(FireInput(WS, proactive.FEED_ID, "schedule"), AT)).startswith("sched:")
 
 
-async def _spent_run(task_id: str, cost: float, created_at: str):
-    await tasks_repo.create_task(
-        WS,
-        {"taskId": task_id, "identifier": "LB-1", "status": "queued", "audience": {"kind": "workspace"},
-         "lane": "shared", "triggerId": "t", "title": "run"},
-    )  # fmt: skip
-    tasks_repo._table().update_item(  # noqa: SLF001 -- the writer stamps now; the test needs another day
-        Key={"pk": ts.ws_pk(WS), "sk": ts.task_sk(task_id)},
-        UpdateExpression="SET createdAt = :c",
-        ExpressionAttributeValues={":c": created_at},
-    )
-    await tasks_repo.put_attempt(
-        WS,
-        task_id,
-        1,
-        {"status": "ended", "agentId": "a1", "sessionId": "s1", "startedAt": created_at, "usage": {"costUsd": cost}},
-    )
+async def test_reserve_is_atomic_idempotent_per_run_and_capped_per_day(world, monkeypatch):
+    import asyncio
 
-
-async def test_daily_cap_counts_todays_proactive_runs_and_trims_the_budget(world, monkeypatch):
     monkeypatch.setattr(proactive, "_today", lambda: "2027-01-04")
-    await proactive.ensure(WS)
-    first_task = proactive.first_run_task_id()
-    await _spent_run(first_task, 0.6, "2027-01-03T23:00:00+00:00")
-    assert await proactive.spent_today(WS) == 0  # yesterday's spend is not today's
-    monkeypatch.setattr(proactive, "_today", lambda: "2027-01-03")
-    assert await proactive.spent_today(WS) == pytest.approx(0.6)
-    tasks_repo._table().update_item(  # noqa: SLF001
-        Key={"pk": ts.ws_pk(WS), "sk": ts.task_sk(first_task)},
-        UpdateExpression="SET createdAt = :c",
-        ExpressionAttributeValues={":c": "2027-01-04T01:00:00+00:00"},
-    )
+    assert await proactive.reserve(WS, "a", 0.5) == 0.5
+    assert await proactive.reserve(WS, "a", 0.5) == 0.5  # a retried fire reserves nothing more
+    assert await proactive.reserve(WS, "b", 0.75) == pytest.approx(0.5)  # trimmed to what is left
+    assert await proactive.reserve(WS, "c", 0.25) == 0
+    await proactive.release(WS, "b")
+    racing = await asyncio.gather(proactive.reserve(WS, "d", 0.4), proactive.reserve(WS, "e", 0.4))
+    assert sum(racing) <= 0.5 + 1e-9 and await proactive.reserved_today(WS) <= proactive.DAILY_CAP_USD + 1e-9
+    monkeypatch.setattr(proactive, "_today", lambda: "2027-01-05")  # a new day, a new cap
+    assert await proactive.reserve(WS, "c", 0.25) == 0.25
+
+
+async def test_fires_reserve_their_budget_and_stop_at_the_daily_cap(world, monkeypatch):
     monkeypatch.setattr(proactive, "_today", lambda: "2027-01-04")
+    await proactive.ensure(WS)  # the first run holds 0.50
+    assert await proactive.reserved_today(WS) == pytest.approx(0.5)
     world.env.enqueued.clear()
-    await fire_automation(FireInput(WS, proactive.LOOK_AROUND_ID, "schedule"), AT)
-    ((trigger, _),) = world.env.enqueued
-    assert trigger.ref["start"]["budgetUsd"] == 0.25  # 0.40 left today: the run's own cap holds
-    await _spent_run(str(uuid.uuid4()), 5.0, "2027-01-04T02:00:00+00:00")  # a person's request is not proactive
-    run = trigger.ref["taskId"]
-    await repo.close_run(WS, proactive.LOOK_AROUND_ID, run, failed=False)
-    await _spent_run(run, 0.3, "2027-01-04T07:00:00+00:00")
-    assert await proactive.spent_today(WS) == pytest.approx(0.9)
+    fire = FireInput(WS, proactive.LOOK_AROUND_ID, "schedule")
+    first = await fire_automation(fire, AT)
+    assert await fire_automation(fire, AT) == first  # an Activity retry: same run, no second reservation
+    ((trigger, _), _) = world.env.enqueued
+    assert trigger.ref["start"]["budgetUsd"] == 0.25 and await proactive.reserved_today(WS) == pytest.approx(0.75)
+    await repo.close_run(WS, proactive.LOOK_AROUND_ID, trigger.ref["taskId"], failed=False)
+    # Another fire while one runs is an overlap: it gives its reservation back.
+    running = str(uuid.uuid4())
+    assert await repo.claim_run(WS, proactive.FEED_ID, running)
+    assert await fire_automation(FireInput(WS, proactive.FEED_ID, "schedule"), AT) == "skipped:overlap"
+    assert await proactive.reserved_today(WS) == pytest.approx(0.75)
+    await repo.close_run(WS, proactive.FEED_ID, running, failed=False)
     world.env.enqueued.clear()
     await fire_automation(FireInput(WS, proactive.FEED_ID, "schedule"), AT)
     ((trigger, _),) = world.env.enqueued
-    assert trigger.ref["start"]["budgetUsd"] == pytest.approx(0.1)  # what is left of today's cap
+    assert trigger.ref["start"]["budgetUsd"] == 0.25
     await repo.close_run(WS, proactive.FEED_ID, trigger.ref["taskId"], failed=False)
-    await _spent_run(trigger.ref["taskId"], 0.2, "2027-01-04T08:00:00+00:00")
     later = AT + 5 * 3_600_000
     assert await fire_automation(FireInput(WS, proactive.FEED_ID, "schedule"), later) == "skipped:daily_cap"
+    assert (await repo.get_schedule(WS, proactive.FEED_ID))["lastSkip"]["reason"] == "daily_cap"
+
+
+async def test_first_run_is_the_workspaces_and_skips_a_dormant_workspace(world):
+    world.env.container["last_interactive_at"] = AT // 1000 - 4 * 86_400
+    with patch("core.services.proactive._now_ms", return_value=AT):
+        await proactive.ensure(WS)
+        assert [t for t, _ in world.env.enqueued if t.source == "idea"] == []  # dormant: no backfill spend
+        world.env.container["last_interactive_at"] = AT // 1000 - 3_600
+        await proactive.ensure(WS)
+    ((trigger, room),) = [(t, r) for t, r in world.env.enqueued if t.source == "idea"]
+    assert trigger.actor_user_id == WS and trigger.lane == "shared" and room is None  # metered as the workspace
+
+
+async def test_context_never_shows_a_private_request(world, monkeypatch):
+    rows = {
+        "working": [
+            {"title": "Draft my resignation", "audience": {"kind": "person", "userIds": ["user_sam"]}},
+            {"title": "Fix the pricing page", "audience": {"kind": "workspace"}},
+            {"title": "Plan the launch room", "audience": {"kind": "room", "roomId": "r1"}},
+        ],
+        "resolved": [{"title": "Private tax return", "audience": {"kind": "person", "userIds": ["user_sam"]}}],
+    }
+
+    async def by_status(ws, status, **_):
+        return rows.get(status, []), None
+
+    monkeypatch.setattr(tasks_repo, "list_tasks_by_status", by_status)
+    text = await proactive.context(WS)
+    assert "Fix the pricing page" in text
+    assert "resignation" not in text and "tax return" not in text and "launch room" not in text
 
 
 def test_trigger_source_idea_is_in_the_contract():

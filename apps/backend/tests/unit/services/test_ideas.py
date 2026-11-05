@@ -948,3 +948,12 @@ async def test_super_agent_suggestion_matching_an_open_request_is_a_duplicate(su
     assert (await ideas.suggest(OWNER, _suggestion()))["status"] == "duplicate"
     super_agent.tasks["t1"]["status"] = "resolved"
     assert (await ideas.suggest(OWNER, _suggestion()))["status"] == "added"
+
+
+@pytest.mark.asyncio
+async def test_one_run_files_at_most_three_ideas(workspace):
+    task = "8f14e45f-ceea-467a-9575-8a1b2c3d4e5f"
+    for n in range(3):
+        assert (await ideas.suggest(OWNER, _suggestion(f"Job {n}", task_id=task)))["status"] == "added"
+    assert (await ideas.suggest(OWNER, _suggestion("Job 3", task_id=task)))["status"] == "run_cap"
+    assert (await ideas.suggest(OWNER, _suggestion("Job 3")))["status"] == "added"  # another run, or none

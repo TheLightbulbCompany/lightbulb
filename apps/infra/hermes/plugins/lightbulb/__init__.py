@@ -277,6 +277,8 @@ def _suggest_idea(args: dict, *, session_id: str = "", **_kw) -> str:
     }
     if str(args.get("emoji") or "").strip():
         body["emoji"] = str(args["emoji"]).strip()
+    if ctx.get("taskId"):  # a Worker run: the backend lets one request file at most 3 ideas
+        body["taskId"] = ctx["taskId"]
     for key, field in (("kind", "kind"), ("app_kind", "appKind"), ("origin", "origin")):
         if str(args.get(key) or "").strip():
             body[field] = str(args[key]).strip()
@@ -294,6 +296,8 @@ def _suggest_idea(args: dict, *, session_id: str = "", **_kw) -> str:
         return "Already in the Ideas list: nothing added."
     if status == "cap":
         return "The Ideas list already has 10 suggestions: nothing added."
+    if status == "run_cap":
+        return "This request already filed 3 ideas: nothing added. File no more."
     return json.dumps(result)
 
 

@@ -61,6 +61,8 @@ SUGGESTION_PREFIX = "s-"
 DEFAULT_EMOJI = "💡"
 #: "Not now" is remembered: a dismissed suggestion's title is not suggested again for this long.
 DISMISS_MEMORY = timedelta(days=14)
+#: Ideas one request (a Worker run, e.g. the daily look around) may file.
+RUN_IDEA_CAP = 3
 
 
 #: Services an idea uses that are not connectors: the team mailbox, the shared browser, Meet.
@@ -165,6 +167,7 @@ class Suggestion(BaseModel):
     kind: Literal["app"] | None = None  # an app idea; None is an ordinary idea
     app_kind: AppKind | None = None
     origin: str | None = Field(default=None, max_length=120)  # one line: what keeps coming back
+    task_id: str | None = Field(default=None, max_length=64)  # the request it was filed from (a Worker run)
 
     @model_validator(mode="after")
     def _app_needs_kind(self):
@@ -458,6 +461,8 @@ async def suggest(owner_id: str, suggestion: Suggestion) -> dict:
 
         if any(_norm(t.get("title") or "") == title for t in await proactive.open_requests(owner_id)):
             return {"status": "duplicate"}
+    if suggestion.task_id and sum(r.get("taskId") == suggestion.task_id for r in stored) >= RUN_IDEA_CAP:
+        return {"status": "run_cap"}
     if sum(r["ideaId"] not in dismissed for r in stored) >= SUGGESTION_CAP:
         return {"status": "cap"}
     idea_id = f"{SUGGESTION_PREFIX}{uuid.uuid4().hex[:12]}"
@@ -473,6 +478,7 @@ async def suggest(owner_id: str, suggestion: Suggestion) -> dict:
             "emoji": suggestion.emoji,
             "createdAt": utc_now_iso(),
             **({"appKind": suggestion.app_kind, "origin": suggestion.origin} if suggestion.app_kind else {}),
+            **({"taskId": suggestion.task_id} if suggestion.task_id else {}),
         },
     )
     return {"status": "added", "id": idea_id}

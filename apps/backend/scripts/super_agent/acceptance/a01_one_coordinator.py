@@ -1,4 +1,8 @@
-"""A1 — one shared room, one coordinator (spec 09 §8.3; mockup step 1)."""
+"""A1 — one shared room, one coordinator (spec 09 §8.3; mockup step 1).
+
+Deviation: the first message @mentions Lightbulb pending the Jev decision on unaddressed greetings (on dev Jev
+ignored "Hi Lightbulb, ..."; no Trigger row, no reply) -- lane O PR to follow; revert to unaddressed once it lands.
+"""
 
 from __future__ import annotations
 
@@ -8,6 +12,8 @@ from scripts.super_agent.acceptance.ctx import Ctx, Result
 from scripts.super_agent.acceptance.o_lib import ROUTER_REPLY_S, create_room, front_agent, messages, post, rows_of
 
 from core import tasks_schema as ts
+
+DUPLICATE_SETTLE_S = 30
 
 
 async def a01(ctx: Ctx) -> Result:
@@ -19,8 +25,6 @@ async def a01(ctx: Ctx) -> Result:
     )
     ctx.state["roomId"] = room["roomId"]  # A2, A4, A7 post into this room
     front = await front_agent(ctx, "sam", room["roomId"])
-    # Addressed on purpose: an unaddressed greeting goes to Jev (admission slow path), which on dev ignored it (no
-    # trigger row, no reply in 180 s, 5 Nov). The mention takes the fast path, so A1 tests the Router, not Jev.
     first = await post(
         ctx, "sam", room["roomId"], "Hi @lightbulb, we're launching the workshop in March.", mentions=[front["id"]]
     )
@@ -40,7 +44,7 @@ async def a01(ctx: Ctx) -> Result:
         if replies:
             break
         await ctx.sleep(2)
-    await ctx.sleep(5)  # a second reply, if the Router wrongly sends one, lands shortly after the first
+    await ctx.sleep(DUPLICATE_SETTLE_S)  # a slow second reply, if the Router wrongly sends one, lands after the first
     replies = [m for m in await messages(ctx, "sam", room["roomId"]) if (m.get("author") or {}).get("kind") == "agent"]
     checks = {
         "one_agent_member_lightbulb": front is not None and front.get("mentionHandle") == "lightbulb",

@@ -1,0 +1,180 @@
+{"rule_id": "bug", "room": "dev", "kind": "positive", "label": "match", "latest": "Login page throws a 500 since this morning's deploy", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "positive", "label": "match", "latest": "Checkout button does nothing on Safari, just tried three times", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "positive", "label": "match", "latest": "The CSV export is missing the last row every time", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "positive", "label": "match", "latest": "Getting 'undefined is not a function' when I open the settings page", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "positive", "label": "match", "latest": "Password reset emails link to a 404", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "positive", "label": "match", "latest": "Dashboard charts show yesterday's numbers even after refresh", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "positive", "label": "match", "latest": "Uploading a PNG over 5MB crashes the editor tab", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "positive", "label": "match", "latest": "Search returns nothing for names with an apostrophe, e.g. O'Brien", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "positive", "label": "match", "latest": "Dark mode makes the error banner text invisible", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "positive", "label": "match", "latest": "Timezone on invoices is off by an hour for London customers", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "positive", "label": "match", "latest": "The mobile nav menu won't close after tapping a link", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "positive", "label": "match", "latest": "Notifications are sent twice for every new comment", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "positive", "label": "match", "latest": "Clicking 'Save draft' logs me out", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "positive", "label": "match", "latest": "The date picker lets you pick Feb 30", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "positive", "label": "match", "latest": "API returns 401 for valid tokens about 1 in 10 calls", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "positive", "label": "match", "latest": "Since the update, the sidebar flickers when you scroll", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "positive", "label": "match", "latest": "Invite emails arrive with the wrong workspace name", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "positive", "label": "match", "latest": "Bulk delete removes one more item than selected", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "positive", "label": "match", "latest": "The pricing page shows $NaN on the annual toggle", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "positive", "label": "match", "latest": "Pagination on the users list skips page 3", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "positive", "label": "match", "latest": "same here, it's broken for me too", "history": [["Maya", "Is the export broken for anyone else? It hangs at 90%"]]}
+{"rule_id": "bug", "room": "dev", "kind": "positive", "label": "match", "latest": "ok repro: open any project, rename it, refresh, old name is back", "history": [["Leo", "renaming projects seems flaky"]]}
+{"rule_id": "bug", "room": "dev", "kind": "positive", "label": "match", "latest": "yep, prod is throwing that error again for every new signup", "history": [["Sam", "anyone seeing signup errors?"]]}
+{"rule_id": "bug", "room": "dev", "kind": "positive", "label": "match", "latest": "found another one: the copy-link button copies the wrong URL", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "positive", "label": "match", "latest": "FYI the webhook retries never stop, we got 400 retries overnight for one event", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "near_miss", "label": "none", "latest": "We should refactor the auth module next sprint", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "near_miss", "label": "none", "latest": "Can we add a dark mode toggle to settings?", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "near_miss", "label": "none", "latest": "Feature idea: let users export to PDF", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "near_miss", "label": "none", "latest": "Bug bash is Thursday at 3, bring snacks", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "near_miss", "label": "none", "latest": "I fixed the login bug, PR is up", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "near_miss", "label": "none", "latest": "Does anyone know why we chose Postgres over Mongo?", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "near_miss", "label": "none", "latest": "The design for the new onboarding looks great", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "near_miss", "label": "none", "latest": "Remember to update the changelog before release", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "near_miss", "label": "none", "latest": "Our bug count went down 30% this month 🎉", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "near_miss", "label": "none", "latest": "Who's reviewing the payments PR?", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "near_miss", "label": "none", "latest": "Customer asked whether we support SSO, do we?", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "near_miss", "label": "none", "latest": "I think the button color should be darker", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "near_miss", "label": "none", "latest": "Let's write tests for the export flow", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "near_miss", "label": "none", "latest": "CI is slow today, 25 minutes per run", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "near_miss", "label": "none", "latest": "The 500 on login was fixed by Leo's revert yesterday", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "near_miss", "label": "none", "latest": "Reading a great article on debugging race conditions", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "near_miss", "label": "none", "latest": "Release notes draft is in the doc", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "near_miss", "label": "none", "latest": "Should we deprecate the v1 API?", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "near_miss", "label": "none", "latest": "The intern found a typo in the README, fixed it", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "near_miss", "label": "none", "latest": "Performance is fine but could be better on large workspaces", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "chatter", "label": "none", "latest": "lol", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "chatter", "label": "none", "latest": "morning all ☕", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "chatter", "label": "none", "latest": "brb lunch", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "chatter", "label": "none", "latest": "great work everyone on the launch", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "chatter", "label": "none", "latest": "who's in for pizza friday?", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "chatter", "label": "none", "latest": "happy birthday Leo!", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "chatter", "label": "none", "latest": "can't believe it's November already", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "chatter", "label": "none", "latest": "that standup was quick", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "chatter", "label": "none", "latest": "thanks!", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "chatter", "label": "none", "latest": "👍", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "rule_question", "label": "none", "latest": "What does the bug rule actually do?", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "rule_question", "label": "none", "latest": "Is the auto-fix thing turned on in this room?", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "rule_question", "label": "none", "latest": "Can we make the bug rule also cover #support?", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "rule_question", "label": "none", "latest": "Who set up the reproduce-and-fix rule?", "history": []}
+{"rule_id": "bug", "room": "dev", "kind": "rule_question", "label": "none", "latest": "How do I turn off the bug-fixing rule?", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "positive", "label": "match", "latest": "Customer Acme wants a refund for their $450 annual plan, they never used it", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "positive", "label": "match", "latest": "Ticket 8812: refund request for $1,200, double charged in October", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "positive", "label": "match", "latest": "Can we refund Jane's $300 order? Item arrived broken", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "positive", "label": "match", "latest": "A customer is asking for their $199 back, says the feature they paid for doesn't work", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "positive", "label": "match", "latest": "Refund request: $2,400 enterprise invoice, contract was cancelled before start", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "positive", "label": "match", "latest": "Bob from Globex wants a refund of $129 for the duplicate seat", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "positive", "label": "match", "latest": "User says they were charged $500 instead of $50 and wants the difference back", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "positive", "label": "match", "latest": "Customer requesting full refund of $899, cancelled within the 30-day window", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "positive", "label": "match", "latest": "Need to process a refund: $150 for order #4421, wrong size shipped", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "positive", "label": "match", "latest": "Escalation: customer demands their $3,000 back or they'll dispute the charge", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "positive", "label": "match", "latest": "Refund ask from a school: $640 for unused licenses", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "positive", "label": "match", "latest": "Please refund $105 to the customer, the coupon didn't apply", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "positive", "label": "match", "latest": "Customer wants a refund on the $720 renewal, forgot to cancel", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "positive", "label": "match", "latest": "Got an email: 'I want my $250 back, the service was down all week'", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "positive", "label": "match", "latest": "Refund needed for invoice INV-2207, $1,050, billed twice", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "positive", "label": "match", "latest": "Customer is asking for a refund of $180 for the add-on they didn't order", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "positive", "label": "match", "latest": "Can someone refund $999? Customer cancelled the same day", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "positive", "label": "match", "latest": "Ticket from Initech: they want the $560 setup fee refunded", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "positive", "label": "match", "latest": "Customer asking for prorated refund, about $340, after downgrading", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "positive", "label": "match", "latest": "Refund request $112.50, shipping was charged twice", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "positive", "label": "match", "latest": "they're asking for a refund now", "history": [["Maya", "Customer from Hooli is upset, they paid $600 for the annual plan and say it's useless"]]}
+{"rule_id": "refund", "room": "support", "kind": "positive", "label": "match", "latest": "yes it was $1,400 and they want all of it back", "history": [["Leo", "what was the amount on that refund request?"]]}
+{"rule_id": "refund", "room": "support", "kind": "positive", "label": "match", "latest": "same customer, now asking for the $220 back as well", "history": [["Maya", "refunded their $90 add-on yesterday"]]}
+{"rule_id": "refund", "room": "support", "kind": "positive", "label": "match", "latest": "ugh another one: $310 refund, says onboarding never happened", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "positive", "label": "match", "latest": "customer replied: they'd like the $175 refunded to the original card", "history": [["Sam", "asked the customer what they'd like us to do"]]}
+{"rule_id": "refund", "room": "support", "kind": "near_miss", "label": "none", "latest": "Customer wants a refund for their $40 monthly plan", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "near_miss", "label": "none", "latest": "Refund request: $12, they forgot to cancel", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "near_miss", "label": "none", "latest": "Can we refund $99? Just under a hundred", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "near_miss", "label": "none", "latest": "Customer asks how our refund policy works", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "near_miss", "label": "none", "latest": "We processed 14 refunds last week, total $3,200", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "near_miss", "label": "none", "latest": "Should we change the refund window from 30 to 14 days?", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "near_miss", "label": "none", "latest": "Customer wants to upgrade to the $500 plan", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "near_miss", "label": "none", "latest": "The $1,200 invoice was paid, thanks to finance", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "near_miss", "label": "none", "latest": "Customer is happy now, no refund needed after all", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "near_miss", "label": "none", "latest": "Refund for $450 already issued yesterday, closing the ticket", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "near_miss", "label": "none", "latest": "Customer asks for a discount on the $800 renewal", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "near_miss", "label": "none", "latest": "Can we offer a $150 credit instead of a refund?", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "near_miss", "label": "none", "latest": "Stripe payout of $5,000 landed", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "near_miss", "label": "none", "latest": "Customer wants a replacement, not a refund, for the $300 item", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "near_miss", "label": "none", "latest": "Reminder: refunds over $1,000 need finance sign-off", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "near_miss", "label": "none", "latest": "A customer is asking about a chargeback they filed with their bank", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "near_miss", "label": "none", "latest": "Our refund rate is 2% this quarter", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "near_miss", "label": "none", "latest": "Customer says the $250 charge is fine, just wanted a receipt", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "near_miss", "label": "none", "latest": "Customer wants to pause their $600 plan for a month", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "near_miss", "label": "none", "latest": "Should refunds go to store credit by default?", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "chatter", "label": "none", "latest": "queue is quiet today", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "chatter", "label": "none", "latest": "coffee?", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "chatter", "label": "none", "latest": "thanks team, great CSAT this week", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "chatter", "label": "none", "latest": "brb", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "chatter", "label": "none", "latest": "ha, classic", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "chatter", "label": "none", "latest": "who's on call tonight?", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "chatter", "label": "none", "latest": "lol that customer email", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "chatter", "label": "none", "latest": "good morning!", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "chatter", "label": "none", "latest": "nice one Maya", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "chatter", "label": "none", "latest": "ok", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "rule_question", "label": "none", "latest": "What does the refund rule do exactly?", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "rule_question", "label": "none", "latest": "Does the refund rule apply to amounts under $100?", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "rule_question", "label": "none", "latest": "Can we raise the refund rule threshold to $200?", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "rule_question", "label": "none", "latest": "Is the refund drafting rule on in observe mode?", "history": []}
+{"rule_id": "refund", "room": "support", "kind": "rule_question", "label": "none", "latest": "Who approves the refunds the rule drafts?", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "positive", "label": "match", "latest": "Can someone send me the latest sales deck? Meeting Globex at 2", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "positive", "label": "match", "latest": "Where's the pitch deck? Need it for the investor call", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "positive", "label": "match", "latest": "Does anyone have the current deck, the one with the new pricing?", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "positive", "label": "match", "latest": "Need the sales deck for tomorrow's demo, link please", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "positive", "label": "match", "latest": "Could I get the pitch deck PDF?", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "positive", "label": "match", "latest": "What's the link to our deck again?", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "positive", "label": "match", "latest": "Please share the newest version of the sales presentation", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "positive", "label": "match", "latest": "Hey, can I grab the deck we used for Initech?", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "positive", "label": "match", "latest": "Anyone got the pitch deck handy?", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "positive", "label": "match", "latest": "Sending a proposal to Hooli, need our latest deck", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "positive", "label": "match", "latest": "Where do we keep the sales deck these days?", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "positive", "label": "match", "latest": "I need the deck for the conference booth tomorrow", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "positive", "label": "match", "latest": "Can you drop the current pitch deck here?", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "positive", "label": "match", "latest": "Customer asked for our slides, which deck should I send and where is it?", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "positive", "label": "match", "latest": "Looking for the enterprise sales deck", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "positive", "label": "match", "latest": "Please send the deck to me before 3", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "positive", "label": "match", "latest": "Is there an updated deck after the rebrand? Need it today", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "positive", "label": "match", "latest": "Link to the Q4 pitch deck?", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "positive", "label": "match", "latest": "I lost the deck link, can someone repost it?", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "positive", "label": "match", "latest": "Need the sales deck in Google Slides format", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "positive", "label": "match", "latest": "yes, the deck please", "history": [["Sam", "Do you want the one-pager or the deck?"]]}
+{"rule_id": "deck", "room": "sales", "kind": "positive", "label": "match", "latest": "same, I need it too", "history": [["Maya", "can someone send the pitch deck?"], ["Leo", "+1"]]}
+{"rule_id": "deck", "room": "sales", "kind": "positive", "label": "match", "latest": "that one's old, do we have the current deck?", "history": [["Leo", "here's the deck from June: link"]]}
+{"rule_id": "deck", "room": "sales", "kind": "positive", "label": "match", "latest": "could you share the deck before the Acme call?", "history": [["Maya", "Acme call moved to 11"]]}
+{"rule_id": "deck", "room": "sales", "kind": "positive", "label": "match", "latest": "and the pitch deck?", "history": [["Sam", "here's the case study PDF"]]}
+{"rule_id": "deck", "room": "sales", "kind": "near_miss", "label": "none", "latest": "I'm updating the sales deck this afternoon", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "near_miss", "label": "none", "latest": "The deck looks great, nice work Maya", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "near_miss", "label": "none", "latest": "Should we add a pricing slide to the deck?", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "near_miss", "label": "none", "latest": "Here's the latest deck: https://slides.example/q4", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "near_miss", "label": "none", "latest": "We need to redo the deck after the rebrand", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "near_miss", "label": "none", "latest": "Globex loved the deck in today's meeting", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "near_miss", "label": "none", "latest": "Deck review at 4pm in the big room", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "near_miss", "label": "none", "latest": "Can someone send me the case study PDF?", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "near_miss", "label": "none", "latest": "Need the pricing sheet for Initech", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "near_miss", "label": "none", "latest": "Where's the contract template?", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "near_miss", "label": "none", "latest": "Customer wants a demo next week", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "near_miss", "label": "none", "latest": "Let's practice the pitch tomorrow", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "near_miss", "label": "none", "latest": "I'll present the deck at the offsite", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "near_miss", "label": "none", "latest": "Who owns the sales deck now?", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "near_miss", "label": "none", "latest": "Our pitch needs a better opening story", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "near_miss", "label": "none", "latest": "Can someone send me the one-pager?", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "near_miss", "label": "none", "latest": "Booked the deck... I mean the boat for the team outing", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "near_miss", "label": "none", "latest": "The deck is too long, 40 slides", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "near_miss", "label": "none", "latest": "Share the demo recording with Hooli", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "near_miss", "label": "none", "latest": "Need logos of our customers for a slide", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "chatter", "label": "none", "latest": "closed Acme!! 🎉", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "chatter", "label": "none", "latest": "lunch?", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "chatter", "label": "none", "latest": "good luck on the call", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "chatter", "label": "none", "latest": "lol", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "chatter", "label": "none", "latest": "thanks all", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "chatter", "label": "none", "latest": "quota day tomorrow", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "chatter", "label": "none", "latest": "nice", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "chatter", "label": "none", "latest": "who's free at 4?", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "chatter", "label": "none", "latest": "morning", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "chatter", "label": "none", "latest": "on it", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "rule_question", "label": "none", "latest": "What does the deck rule do?", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "rule_question", "label": "none", "latest": "Is the share-the-deck rule on here?", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "rule_question", "label": "none", "latest": "Can the deck rule also cover one-pagers?", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "rule_question", "label": "none", "latest": "Who set up the deck rule?", "history": []}
+{"rule_id": "deck", "room": "sales", "kind": "rule_question", "label": "none", "latest": "How do I pause the deck rule?", "history": []}

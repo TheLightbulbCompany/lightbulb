@@ -93,6 +93,10 @@ class Fakes:
         async def transition(ws: str, task_id: str, to: str, reason: str | None) -> None:
             await f._call("transition", ws, task_id, to, reason)
 
+        @activity.defn(name="reconcile_state")
+        async def reconcile_state(ws: str, task_id: str) -> str:
+            return await f._call("reconcile_state", ws, task_id, default="other")
+
         return [
             router_turn,
             apply_fallback,
@@ -107,6 +111,7 @@ class Fakes:
             deliver_input,
             end_attempt,
             transition,
+            reconcile_state,
         ]
 
 

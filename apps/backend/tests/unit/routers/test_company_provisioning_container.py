@@ -628,3 +628,44 @@ def test_the_paid_gate_runs_before_the_body_is_trusted(monkeypatch, client):
     )
     resp = client.post(f"{BASE}/requests", headers=HDRS, json={"provider": "NOPE!", "service": "x y"})
     assert resp.status_code == 402
+
+
+def test_request_from_a_task_run_asks_on_the_task(client, monkeypatch):
+    """Spec 05 P1: `X-Lightbulb-Run` names a live task run (switch on) → `start` gets its task, and the Worker is
+    told to end its turn on the Question."""
+    find = AsyncMock(return_value={"taskId": "t-1"})
+    monkeypatch.setattr(mod.provisioning_questions, "task_for_run", find)
+    row = {
+        "workflow_id": "pwf_1",
+        "state": "awaiting_approval",
+        "provider_name": "posthog",
+        "service_ref": "svc_analytics",
+        "question": {"taskId": "t-1", "qid": "q-1", "workflowId": "pwf_1"},
+    }
+    with patch.object(mod.provisioning_workflow, "start", AsyncMock(return_value=row)) as start:
+        resp = client.post(
+            f"{BASE}/requests",
+            headers={**HDRS, "X-Lightbulb-Run": "run-1", "X-Lightbulb-Run-Secret": "s3cret"},
+            json={"provider": "posthog", "service": "svc_analytics"},
+        )
+    assert resp.status_code == 200
+    find.assert_awaited_once_with("org_a", "run-1", "s3cret")
+    assert start.await_args.kwargs["task_id"] == "t-1"
+    assert resp.json()["questionId"] == "q-1" and resp.json()["message"] == mod.QUESTION_MESSAGE
+    assert "question" not in resp.json()
+
+
+def test_reused_workflow_asked_by_another_task_is_a_plain_reuse(client, monkeypatch):
+    """Task B reusing task A's open ask has no Question of its own to wait on: never A's questionId."""
+    monkeypatch.setattr(mod.provisioning_questions, "task_for_run", AsyncMock(return_value={"taskId": "t-b"}))
+    row = {
+        "workflow_id": "pwf_1",
+        "state": "awaiting_approval",
+        "provider_name": "posthog",
+        "service_ref": "svc_analytics",
+        "reused": True,
+        "question": {"taskId": "t-a", "qid": "q-a", "workflowId": "pwf_1"},
+    }
+    with patch.object(mod.provisioning_workflow, "start", AsyncMock(return_value=row)):
+        resp = client.post(f"{BASE}/requests", headers=HDRS, json={"provider": "posthog", "service": "svc_analytics"})
+    assert "questionId" not in resp.json() and resp.json()["message"] == mod.REUSED_MESSAGE

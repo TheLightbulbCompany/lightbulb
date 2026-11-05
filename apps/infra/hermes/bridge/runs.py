@@ -85,8 +85,14 @@ def _session_key_ok(identity: dict) -> bool:
 def validate_request(request) -> dict:
     if not isinstance(request, dict):
         raise _invalid("run_request")
-    if request.get("effects", "off") != "off":
-        raise Refused(*UNSUPPORTED)
+    effects = request.get("effects", "off")
+    if effects not in ("off", "required"):
+        raise _invalid("run_request")
+    if effects == "required" and not turn.effects_supported():
+        raise Refused(*UNSUPPORTED)  # no F1 in this image: the backend keeps today's path
+    faults = request.get("faults", [])
+    if not (isinstance(faults, list) and all(isinstance(f, str) and f for f in faults)):
+        raise _invalid("run_request")
     limits = request.get("limits", {})
     ok = (
         isinstance(request.get("input"), str) and request["input"]
@@ -235,8 +241,9 @@ def _heartbeats(identity: dict, stop: Event) -> None:
 
 
 def _run_and_report(identity: dict, request: dict) -> None:
-    """Run the turn; heartbeat the backend while it runs and post its terminal status once.
-    Router runs are polled by `router_turn`, not completed by events: they post none."""
+    """Run the turn; heartbeat the backend while it runs and post its terminal status once
+    (`completed | failed | cancelled | waiting_approval`). Router runs are polled by `router_turn`, not
+    completed by events: they post none."""
     events = identity.get("mode") == "worker" and bool(API)
     stop = Event()
     if events:

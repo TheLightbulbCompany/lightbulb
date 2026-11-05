@@ -6,6 +6,7 @@ import collections
 import contextvars
 import fcntl
 import hashlib
+import importlib
 import contextlib
 import json
 import logging
@@ -959,7 +960,8 @@ def durable_run_status(run_id: str, identity: dict, *, kind: str) -> dict | None
     status = snapshot["state"]
     if status == "ended":
         outcome = snapshot.get("outcome")
-        status = "completed" if outcome == "completed" else "cancelled" if outcome == "cancelled" else "failed"
+        status = ("completed" if outcome == "completed" else "cancelled" if outcome == "cancelled"
+                  else "waiting_approval" if outcome == "waiting_approval" else "failed")
     result = {
         "run_id": run_id,
         "status": status,
@@ -976,7 +978,7 @@ def durable_run_status(run_id: str, identity: dict, *, kind: str) -> dict | None
             "output_tokens": int(usage.get("outputTokens") or 0),
             "cached_input_tokens": int(usage.get("cacheReadTokens") or 0),
         }
-        if status == "completed":
+        if status in ("completed", "waiting_approval"):
             result["output"] = snapshot.get("output") or ""
         elif snapshot.get("error"):
             result["error"] = snapshot["error"]
@@ -1048,6 +1050,32 @@ def _lb_inject():
     except ImportError:
         return None
     return lb_inject
+
+
+def _lb_checkpoint():
+    """Lane H's F1 module (save-before-effect checkpoint), or None on an image without the series."""
+    try:
+        return importlib.import_module("agent.lb_checkpoint")
+    except ImportError:
+        return None
+
+
+def effects_supported() -> bool:
+    """`effects: "required"` on a run request needs F1 in the image (bridge/runs.py refuses it otherwise)."""
+    return _lb_checkpoint() is not None
+
+
+def _waiting_marker_path(root, run_id: str) -> Path:
+    # Same file contract as plugins/lightbulb/turn_context.note_waiting; module globals are not shared.
+    return Path(root) / TURN_CONTEXT_DIRNAME / ("waiting-" + hashlib.sha256(run_id.encode()).hexdigest() + ".json")
+
+
+def _take_waiting_marker(agent_id: str, run_id: str) -> bool:
+    """True when a task run's ask_person / request_approval asked the turn to end `waiting_approval`."""
+    path = _waiting_marker_path(_profile_dir(agent_id), run_id)
+    found = path.exists()
+    path.unlink(missing_ok=True)
+    return found
 
 
 def _try_inject(run_id: str, agent, text: str) -> bool:
@@ -4163,6 +4191,14 @@ def _run_task_turn(identity: dict, request: dict, *, family: str) -> tuple[str, 
                 if identity.get("model"):  # the cheaper Router model (§9), chosen by the backend
                     extra["model"] = identity["model"]
             agent = _construct_agent(agent_id, {"sessionKey": session_id, **memory}, None, session_id, **extra)
+            checkpoint = None
+            if request.get("effects") == "required" and not paperclip and not router:
+                # Lane Q (contracts §8): external effects ask the backend before they run; F1 is in the image
+                # (runs.py refused the request otherwise).
+                from bridge import effects as _effects
+
+                checkpoint = _effects.EffectsCallback(identity, request)
+                _lb_checkpoint().install(agent, checkpoint)
             queued = attach_agent(run_id, agent)
             if paperclip_run_aborted(run_id):
                 return "cancelled", None, "", dict(ZERO_USAGE)
@@ -4206,6 +4242,10 @@ def _run_task_turn(identity: dict, request: dict, *, family: str) -> tuple[str, 
     if _budget_spent(run_id):
         return "failed", RUN_BUDGET_EXCEEDED, "", usage
     reply = result.get("final_response") or ""
+    waiting = (checkpoint is not None and checkpoint.outcome == "waiting_approval") or (
+        not paperclip and _take_waiting_marker(agent_id, run_id))
+    if waiting:  # a person decides next; the answer comes back as the next attempt's input
+        return "waiting_approval", None, reply, usage
     if result.get("interrupted") is True:  # not our stop (checked above): Hermes stopped it itself
         return "failed", INTERRUPTED, "", usage
     if result.get("failed") is True:

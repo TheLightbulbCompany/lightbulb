@@ -168,13 +168,48 @@ export function summaryView(t: TaskSummary, viewerId: string): SummaryView {
 
 /** The request pane's actor line, from the same view as the status word: "Finance is working on this" while it
  *  runs, "Done by Finance, ready for your review" / "Finance needs you" when it waits on the viewer, "Done by
- *  Finance" once it is done. Null where nobody did it: a request closed with a reason (stopped, dismissed,
- *  failed): the status line already says why. With no specialist Lightbulb is the actor. */
-export function doneByLine(specialist: string | null | undefined, view: Pick<TaskView, "word" | "reason">, names?: AgentNames): string | null {
-  if (view.word === "Closed" && view.reason) return null;
+ *  Finance" once it is done. Null once Closed (closing says nothing about finishing). With no specialist Lightbulb
+ *  is the actor. `finished`: the run really finished (its attempt completed, or a waiting approval's effect landed);
+ *  without it nothing reads "Done by" (a request can stop, be dismissed or be closed half done). */
+export function doneByLine(specialist: string | null | undefined, view: Pick<TaskView, "word" | "reason">, names?: AgentNames, finished = true): string | null {
+  // Closed says nothing about finishing: a person may have closed it half done or before an approval (dev walk N-F1),
+  // so it never reads "Done by"; the pane shows the specialist's name alone.
+  if (view.word === "Closed") return null;
   const who = specialistLabel(specialist, names);
-  if (view.word === "Needs you") return view.reason === "Ready for review" ? `Done by ${who}, ready for your review` : `${who} needs you`;
-  return view.word === "Done" || view.word === "Closed" ? `Done by ${who}` : `${who} is working on this`;
+  if (view.word === "Needs you") {
+    if (view.reason !== "Ready for review") return `${who} needs you`;
+    return finished ? `Done by ${who}, ready for your review` : `${who} has this ready for your review`;
+  }
+  if (view.word === "Done") return finished ? `Done by ${who}` : null;
+  return `${who} is working on this`;
+}
+
+/** "12s", "4m", "2h", "3d": how long a Working request has been in its current state. */
+export function elapsedShort(fromIso: string, now: number): string {
+  const s = Math.max(0, Math.floor((now - Date.parse(fromIso)) / 1000));
+  if (Number.isNaN(s)) return "";
+  return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m` : s < 86400 ? `${Math.floor(s / 3600)}h` : `${Math.floor(s / 86400)}d`;
+}
+
+/** A Working request's live line, "Growth · working · 12s": the specialist as the actor, what it is doing in a word,
+ *  and for how long (since the request last changed state). Null when the request isn't Working. `text` is the whole
+ *  line; `actor` and `rest` let a client set the actor apart.
+ *  ponytail: the verb is the status reason ("starting", "applying") or "working"; a per-step verb ("writing",
+ *  "browsing") needs the summary to carry the run's current tool. */
+export function activityLine(t: TaskSummary, viewerId: string, names: AgentNames | undefined, now: number): { actor: string; rest: string; text: string } | null {
+  const view = summaryView(t, viewerId);
+  if (view.word !== "Working") return null;
+  const actor = specialistLabel(t.specialist, names);
+  const verb = (view.reason ?? "working").replace(/^./, (c) => c.toLowerCase());
+  const rest = [verb, elapsedShort(t.updatedAt, now)].filter(Boolean).join(" · ");
+  return { actor, rest, text: `${actor} · ${rest}` };
+}
+
+/** The run really finished: an attempt completed, or a waiting approval's effect landed. Only then does a request
+ *  read "Done by" (doneByLine's `finished`); web and mobile share the rule. */
+export function taskFinished({ task, effects }: { task: Pick<TaskSummary, "activity">; effects: readonly Pick<TaskEffect, "state">[] }): boolean {
+  const outcome = task.activity?.outcome;
+  return outcome === "completed" || (outcome === "waiting_approval" && effects.some((e) => e.state === "done"));
 }
 
 function joinNames([first, ...rest]: string[]): string {

@@ -12,7 +12,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { copyText, taskPermalink } from "@/components/messaging/messageLinks";
-import { TaskStatus } from "./TaskCard";
+import { ActorLine, TaskStatus } from "./TaskCard";
 import { ScheduledList } from "./ScheduledList";
 import { useTaskActions } from "./useTaskActions";
 
@@ -33,11 +33,12 @@ export function TaskOverview({ scope, viewerId, onOpen }: {
   return <div className="grid gap-3">
     <PanelTabs ariaLabel="Requests" tabs={[{ value: "overview", label: "Overview" }, { value: "scheduled", label: "Scheduled" }]}
       value={tab} onValueChange={(v) => setTab(v as "overview" | "scheduled")} />
-    {tab === "overview" ? <OverviewGroups scope={scope} viewerId={viewerId} onOpen={onOpen} /> : <ScheduledList scope={scope} onOpen={onOpen} />}
+    {tab === "overview" ? <RequestGroups scope={scope} viewerId={viewerId} onOpen={onOpen} /> : <ScheduledList scope={scope} onOpen={onOpen} />}
   </div>;
 }
 
-function OverviewGroups({ scope, viewerId, onOpen }: { scope: TaskScope; viewerId: string; onOpen: (taskId: string) => void }): ReactElement {
+/** The four status groups for a scope: the room's Requests column, and the Overview tab. */
+export function RequestGroups({ scope, viewerId, onOpen }: { scope: TaskScope; viewerId: string; onOpen: (taskId: string) => void }): ReactElement {
   const { tasks } = useLiveEvents();
   const { data, error, mutate } = useTaskList(tasks, scope);
   const { older, hasOlder, loading, loadOlder } = useOlderTasks(tasks, data, scope);
@@ -86,7 +87,9 @@ export function OverviewRow({ task, viewerId, onOpen }: { task: TaskSummary; vie
     <div className="min-w-0 flex-1">
       <button type="button" onClick={() => onOpen(task.taskId)} aria-label={`Open ${task.title}, ${view.word}`}
         className="block max-w-full truncate text-left font-semibold after:absolute after:inset-0 after:content-['']">{task.title}</button>
-      <p className="truncate text-ui text-muted-foreground">{taskSummaryLine(task, viewerId)}{task.updatedAt && <> · <time dateTime={task.updatedAt} title={new Date(task.updatedAt).toLocaleString()}>{timeAgo(task.updatedAt)}</time></>}</p>
+      {/* Working: who is doing it, live ("Growth · working · 12s"); otherwise what it needs or why, and when. */}
+      {view.word === "Working" ? <ActorLine task={task} viewerId={viewerId} />
+        : <p className="truncate text-ui text-muted-foreground">{taskSummaryLine(task, viewerId)}{task.updatedAt && <> · <time dateTime={task.updatedAt} title={new Date(task.updatedAt).toLocaleString()}>{timeAgo(task.updatedAt)}</time></>}</p>}
       {error && <p role="alert" className="text-ui text-err">{error}</p>}
       {copied && <p role="status" className="text-ui text-muted-foreground">Link copied</p>}
     </div>

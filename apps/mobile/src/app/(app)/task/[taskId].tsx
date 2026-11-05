@@ -1,5 +1,5 @@
 import { useAuth } from "@clerk/expo";
-import { doneByLine, specialistLabel, summaryView, useTask, useTaskQuestions } from "@lightbulb/shared";
+import { doneByLine, taskFinished, specialistLabel, summaryView, useTask, useTaskQuestions } from "@lightbulb/shared";
 import { Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import { StyleSheet, Text, View } from "react-native";
@@ -64,7 +64,8 @@ export default function TaskScreen() {
   }
   const open = views?.items.find((q) => q.state === "open");
   // The specialist as the actor: "Growth is working on this" / "Done by Growth" (founder, 5 Nov).
-  const doneBy = view ? doneByLine(task.specialist, view, agentNames) : null;
+  // "Done by" only when the run really finished (web's rule, taskFinished); never on Closed.
+  const doneBy = view ? doneByLine(task.specialist, view, agentNames, taskFinished(detail)) : null;
   // Stop only while something runs: a request that needs the viewer has nothing to stop.
   const live = view?.word === "Working";
   const press = async (verb: "stop" | "resolve" | "reopen") => {
@@ -89,7 +90,7 @@ export default function TaskScreen() {
         </View>
         {doneBy ? <Text style={[styles.meta, { color: palette.fgMute }]}>{doneBy}</Text> : null}
         {note ? <Text accessibilityRole="alert" style={[styles.meta, { color: palette.alert }]}>{note}</Text> : null}
-        {open ? <NeedsYouCard key={open.id} task={task} question={open} palette={palette} onAnsweredElsewhere={setNote} /> : null}
+        {open ? <NeedsYouCard key={open.id} task={task} question={open} palette={palette} onAnsweredElsewhere={setNote} ended={view?.word === "Closed"} /> : null}
         {task.output ? (
           <View style={[styles.output, { borderColor: palette.edge, backgroundColor: palette.surface }]} accessibilityLabel="Outputs">
             <Text style={[styles.meta, { color: palette.fg }]} numberOfLines={1}>📎 {task.output.title}</Text>

@@ -45,6 +45,8 @@ export interface IdeaStart {
   roomId: string;
   projectId?: string;
   issueId?: string;
+  /** Super-agent: the Router request the idea started (open it, not the DM). */
+  taskId?: string;
 }
 
 export type IdeasClient = Pick<MessagingClient, "listIdeas" | "startIdea" | "dismissIdea">;

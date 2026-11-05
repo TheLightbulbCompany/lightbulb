@@ -38,6 +38,15 @@ import type { DirectoryRoom, DirectoryParticipant, RoomParticipant } from "./typ
 
 /** What the front agent is called while the super-agent switch is on (contracts-v2 §9). */
 const FRONT_AGENT_NAME = "Lightbulb";
+/** The starter front agent's roster (seat) name: shown as Lightbulb while the roster is still loading. */
+const SEAT_NAME = "CEO";
+const FRONT_KEY = "lightbulb.frontAgentId";
+export function readFrontAgentId(scope: string): string | undefined {
+  try { return localStorage.getItem(`${FRONT_KEY}:${scope}`) ?? undefined; } catch { return undefined; }
+}
+function writeFrontAgentId(scope: string, id: string): void {
+  try { localStorage.setItem(`${FRONT_KEY}:${scope}`, id); } catch { /* this load only */ }
+}
 export interface MessagingWorkspaceValue {
   activeRoomId: string | null;
   directoryProps: RoomDirectoryProps;
@@ -449,11 +458,18 @@ export function MessagingWorkspaceProvider({
   // Super-agent: the front agent is "Lightbulb" (@lightbulb) everywhere, whatever its roster name ("CEO").
   // Stored member rows and the Paperclip roster keep the old name, so the one rename happens here.
   const superAgent = useSuperAgent();
-  const frontId = superAgent ? resolveCeoAgentId(agentRoster?.agents ?? []) : undefined;
+  // Until the roster answers, the front agent is the one this browser last saw (else, on a first load, an agent still
+  // named for its seat): a hard load never flashes "CEO" before "Lightbulb" (dev walk R6).
+  const rosterFrontId = superAgent ? resolveCeoAgentId(agentRoster?.agents ?? []) : undefined;
+  useEffect(() => { if (rosterFrontId) writeFrontAgentId(scope, rosterFrontId); }, [scope, rosterFrontId]);
+  const rosterLoading = superAgent && !agentRoster;
+  const frontId = rosterFrontId ?? (rosterLoading ? readFrontAgentId(scope) : undefined);
+  const isFront = useCallback((member: Pick<RoomMember, "id" | "displayName">) => member.id === frontId
+    || (rosterLoading && !frontId && member.displayName === SEAT_NAME), [frontId, rosterLoading]);
   const decorate = useCallback((member: RoomMember): RoomParticipant => member.kind === "agent"
-    ? { ...member, ...(member.id === frontId ? { displayName: FRONT_AGENT_NAME, mentionHandle: "lightbulb" } : {}), agentActivity: activityByAgentId.get(member.id) }
+    ? { ...member, ...(isFront(member) ? { displayName: FRONT_AGENT_NAME, mentionHandle: "lightbulb" } : {}), agentActivity: activityByAgentId.get(member.id) }
     : { ...member, online: online.has(member.id), sharing: sharing.has(member.id) },
-  [activityByAgentId, online, sharing, frontId]);
+  [activityByAgentId, online, sharing, isFront]);
   // A roster row's display name, with the same "Workspace member" fallback everywhere one is missing.
   const rosterName = (member: CompanyMember | undefined) => member?.name || member?.email || "Workspace member";
   const { user: clerkUser } = useUser();
@@ -698,6 +714,14 @@ export function MessagingWorkspaceProvider({
   // owner has already left (hence `recoveredDrafts`). Recomputing when one of
   // those moves is enough, and keeps the walk off the keystroke path for every
   // other room's row.
+  // Emptying the box (a "Replying to" steer, a select-all delete) drops the stored draft now, before the render that
+  // lists draft rooms: the persist effect runs after it, so the sidebar kept "Drafts › room" until something else
+  // re-rendered (dev walk R10).
+  const activeRoomId = rooms.activeRoomId;
+  const changeDraft = useCallback((text: string) => {
+    if (!text.trim() && activeRoomId) clearDraft(draftKey(scope, activeRoomId, null));
+    setDraft(text);
+  }, [scope, activeRoomId]);
   const draftRoomIds = useMemo(
     () => listDraftRoomIds(scope),
     [scope, draft, threadDraft, rooms.activeRoomId, recoveredDrafts],
@@ -715,7 +739,7 @@ export function MessagingWorkspaceProvider({
   const composer: RoomComposerProps = {
     focusAgentId: rooms.activeRoom?.kind === "dm" && agentCounterparts.length === 1 ? agentCounterparts[0].id : undefined,
     text: draft,
-    onTextChange: setDraft,
+    onTextChange: changeDraft,
     members: participants,
     sessionTargets,
     clientMessageId,
@@ -904,7 +928,7 @@ export function MessagingWorkspaceProvider({
     rooms: directoryRooms,
     sections: rooms.sections,
     participants: directoryParticipants,
-    ceoAgentId: resolveCeoAgentId(agentRoster?.agents ?? []),
+    ceoAgentId: resolveCeoAgentId(agentRoster?.agents ?? []) ?? (rosterLoading ? frontId : undefined),
     state: directoryState,
     currentRoomId: rooms.activeRoomId ?? undefined,
     // Picking any conversation leaves focus placement — the session goes back
@@ -1050,7 +1074,7 @@ export function MessagingWorkspaceProvider({
     onStopSubagent: rooms.stopSubagent,
     onSubagentsVisible: rooms.subagentsPollVisible,
     onLinkToWork: () => openPanel("teams-issues", {}, { pushUrl: true }),
-    frontAgentId: resolveCeoAgentId(agentRoster?.agents ?? []),
+    frontAgentId: resolveCeoAgentId(agentRoster?.agents ?? []) ?? (rosterLoading ? frontId : undefined),
     runtimeStarting: setupStarting,
     onDownloadAttachment: rooms.downloadAttachment,
     onAttachmentUrl: rooms.attachmentUrl,

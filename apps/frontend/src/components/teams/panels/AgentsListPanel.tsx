@@ -19,6 +19,8 @@ import {
 import { AgentCreateChooser } from "@/components/agents/AgentCreateChooser";
 import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
 import { OrgChart } from "@/components/teams/org-chart/OrgChart";
+import { TeamCards } from "./TeamCards";
+import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import {
   setAgentsViewMode,
   useAgentsViewMode,
@@ -28,7 +30,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { cn } from "@/lib/utils";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { notifyApiError } from "@/lib/notify";
-import { handleShellLinkClick } from "@/lib/shellNav";
+import { handleShellLinkClick, navigateShell } from "@/lib/shellNav";
 import { openAgentDmWithDraft, openChatPanel } from "@/components/workspace/workspaceController";
 import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingWorkspaceContext";
 import { useSuperAgent } from "@/hooks/useLiveEvents";
@@ -62,16 +64,35 @@ export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
   const nameOf = (agent: CompanyAgent) => agent.id === frontAgentId
     ? directory?.participants.find((p) => p.kind === "agent" && p.id === agent.id)?.displayName || "Lightbulb"
     : agent.name;
+  const handleOf = (agent: CompanyAgent) => directory?.participants.find((p) => p.kind === "agent" && p.id === agent.id)?.mentionHandle;
   const message = (agent: CompanyAgent) => {
     if (!frontAgentId || agent.id === frontAgentId) return openChatPanel(agent.id);
-    const handle = directory?.participants.find((p) => p.kind === "agent" && p.id === agent.id)?.mentionHandle;
+    const handle = handleOf(agent);
     openAgentDmWithDraft(frontAgentId, handle ? `@${handle} ` : "");
+  };
+  const togglePause = async (a: CompanyAgent) => {
+    const paused = a.status === "paused";
+    try {
+      await (paused ? resume(a.id) : pause(a.id));
+    } catch (err) {
+      notifyApiError(err, paused ? "Couldn't resume this agent" : "Couldn't pause this agent");
+    }
+  };
+  const deleteAgent = async (a: CompanyAgent) => {
+    if (!window.confirm(`Delete ${a.name}? This removes the agent and its workspace.`)) return;
+    try {
+      await remove(a.id);
+    } catch (err) {
+      notifyApiError(err, "Couldn't delete this agent");
+    }
   };
   const [creating, setCreating] = useState(false);
   const [search, setSearch] = useState("");
   const storedView = useAgentsViewMode();
   const [viewDeepLink, setViewDeepLink] = useState<AgentsViewMode | null>(initialView ?? null);
   const view = viewDeepLink ?? storedView;
+  // The org chart only exists without the super-agent; a saved or linked chart view never hides Team's search.
+  const chartShown = !superAgent && view === "chart";
   // Adjust-state-during-render, not an effect — the same pattern TasksList
   // uses for its `?groupBy` re-delivery: the workspace merges parameters into an
   // open panel instead of remounting it, and a plain sidebar nav clears them.
@@ -153,26 +174,13 @@ export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
             </button>
             <button
               className="text-ui hover:underline text-[var(--midnight-soft)]"
-              onClick={async () => {
-                try {
-                  await (paused ? resume(a.id) : pause(a.id));
-                } catch (err) {
-                  notifyApiError(err, paused ? "Couldn't resume this agent" : "Couldn't pause this agent");
-                }
-              }}
+              onClick={() => void togglePause(a)}
             >
               {paused ? "Resume" : "Pause"}
             </button>
             <button
               className="text-ui hover:underline text-[var(--err)]"
-              onClick={async () => {
-                if (!window.confirm(`Delete ${a.name}? This removes the agent and its workspace.`)) return;
-                try {
-                  await remove(a.id);
-                } catch (err) {
-                  notifyApiError(err, "Couldn't delete this agent");
-                }
-              }}
+              onClick={() => void deleteAgent(a)}
             >
               Delete
             </button>
@@ -222,12 +230,12 @@ export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
         // Chart view keeps the value (so returning to the list restores the
         // search) but does not offer the box: a control that visibly changes
         // nothing is worse than no control.
-        searchValue={view === "chart" ? "" : search}
+        searchValue={chartShown ? "" : search}
         onSearchChange={setSearch}
-        searchPlaceholder={view === "chart" ? "" : "Find agent..."}
+        searchPlaceholder={chartShown ? "" : "Find agent..."}
         searchAriaLabel="Search agents"
-        hideSearch={view === "chart"}
-        actions={
+        hideSearch={chartShown}
+        actions={superAgent ? undefined : (
           <ViewModeToggle
             view={view}
             onChange={(mode) => {
@@ -236,7 +244,7 @@ export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
               setAgentsViewMode(mode);
             }}
           />
-        }
+        )}
       />
       {isLoading ? (
         <div role="status" className="font-editorial-serif text-xl italic text-[var(--midnight-muted)]">
@@ -253,6 +261,15 @@ export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
           }
           action={{ label: createLabel, onClick: () => setCreating(true) }}
         />
+      ) : superAgent ? (
+        // Super-agent: a card per specialist (what it's for, its skills, its recent requests, Ask). The org chart
+        // was Paperclip's reporting lines; nothing reports to anyone here.
+        <TeamCards agents={filtered} frontAgentId={frontAgentId} nameOf={nameOf} handleOf={handleOf} onAsk={message}
+          actions={(a) => <>
+            <DropdownMenuItem onSelect={() => void togglePause(a)}>{a.status === "paused" ? "Resume" : "Pause"}</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => navigateShell(agentInspectorUrl(a.id))}>Settings</DropdownMenuItem>
+            {a.id !== frontAgentId && <DropdownMenuItem variant="destructive" onSelect={() => void deleteAgent(a)}>Delete</DropdownMenuItem>}
+          </>} />
       ) : view === "chart" ? (
         // The chart draws the WHOLE roster, never the search-filtered slice.
         // An org chart is a structure, and filtering a structure is not a

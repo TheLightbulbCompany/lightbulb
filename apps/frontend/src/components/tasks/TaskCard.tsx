@@ -4,8 +4,8 @@
 // (a stretched button); the one action button sits above it. State colour marks the word and a
 // dot, never a fill (DESIGN.md).
 
-import { useState, type ReactElement } from "react";
-import { previewRows, specialistLabel, summaryView, taskSummaryLine, useTaskQuestions, type TaskSummary, type TaskTone } from "@lightbulb/shared";
+import { useEffect, useState, type ReactElement } from "react";
+import { activityLine, previewRows, specialistLabel, summaryView, taskSummaryLine, useTaskQuestions, type TaskSummary, type TaskTone } from "@lightbulb/shared";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { Button } from "@/components/ui/button";
 import { capture } from "@/lib/analytics";
@@ -25,6 +25,24 @@ export function TaskStatus({ task, viewerId }: { task: TaskSummary; viewerId: st
   </span>;
 }
 
+/** "Growth · working · 12s" while a request is Working (the timer ticks each second); the specialist alone otherwise.
+ *  The actor is its own span, so it reads as the one doing the work. */
+export function ActorLine({ task, viewerId, className }: { task: TaskSummary; viewerId: string; className?: string }): ReactElement {
+  const { agentNames } = useLiveEvents();
+  const [now, setNow] = useState(() => Date.now());
+  const working = summaryView(task, viewerId).word === "Working";
+  useEffect(() => {
+    if (!working) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [working]);
+  const live = activityLine(task, viewerId, agentNames, now);
+  return <p className={cn("truncate text-ui text-muted-foreground", className)} data-live={live ? "" : undefined}>
+    <span className="text-foreground">{live?.actor ?? specialistLabel(task.specialist, agentNames)}</span>
+    {live && <> · {live.rest}</>}
+  </p>;
+}
+
 export interface TaskCardProps {
   /** Undefined: the API no longer returns it (dismissed, hidden, deleted, or not yours to see). */
   task: TaskSummary | undefined;
@@ -38,7 +56,7 @@ export function TaskCard({ task, taskId, viewerId, onOpen }: TaskCardProps): Rea
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // An approval or review this viewer can act on shows what it does before the one press (To, Subject, …).
-  const { tasks, agentNames } = useLiveEvents();
+  const { tasks } = useLiveEvents();
   const q = task?.openQuestion;
   const asks = q?.canAnswer && (q.kind === "approval" || q.kind === "review") ? q.qid : null;
   const { data: views, error: viewsError } = useTaskQuestions(tasks, asks ? taskId : null);
@@ -69,7 +87,7 @@ export function TaskCard({ task, taskId, viewerId, onOpen }: TaskCardProps): Rea
           className="block max-w-full truncate text-left font-semibold after:absolute after:inset-0 after:rounded-lg after:content-[''] focus-visible:outline-none focus-visible:after:outline-2 focus-visible:after:outline-offset-2 focus-visible:after:outline-ring">
           {task.title}
         </button>
-        <p className="truncate text-ui text-muted-foreground">{specialistLabel(task.specialist, agentNames)}</p>
+        <ActorLine task={task} viewerId={viewerId} />
         {detail && <p className="truncate text-ui">{detail}</p>}
       </div>
       <TaskStatus task={task} viewerId={viewerId} />

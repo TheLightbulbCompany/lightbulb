@@ -3,9 +3,9 @@
 // One text box (critique P1-3): the open request pane is steered from its room's composer ("Replying to: …"),
 // so the pane says which request is open and each room says whether its composer is on screen.
 
-import { useEffect, useRef, useState, useSyncExternalStore, type ReactElement } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactElement } from "react";
 import { X } from "lucide-react";
-import { useTask, type TaskSummary, type TasksClient } from "@lightbulb/shared";
+import { putTaskSummary, useTask, useTaskCache, type TaskSummary, type TasksClient } from "@lightbulb/shared";
 import type { RoomComposerProps } from "@/components/messaging/RoomComposer";
 import { Button } from "@/components/ui/button";
 import { useOptionalLiveEvents, type LiveEventsContextValue } from "@/hooks/useLiveEvents";
@@ -54,6 +54,17 @@ export async function sendToTask(messaging: LiveEventsContextValue["messaging"],
   capture("task_steer_sent", { taskId: task.taskId, status: task.status, source });
 }
 
+/** After a steer, a finished request reads Working (with Stop) at once, not "Done" until the revised result lands
+ *  (dev walk N-F4); the next task.changed replaces this guess with the server's row. A request that waits on a person
+ *  stays as it is: typed text never answers a question. */
+export function useShowSteered(tasks: Pick<TasksClient, "cacheScope"> | undefined): (task: TaskSummary) => void {
+  const { cache, mutate } = useTaskCache();
+  return useCallback((task: TaskSummary) => {
+    if (!tasks || task.status !== "idle") return;
+    void putTaskSummary(cache, mutate, { ...task, status: "working", shownGroup: "working", watching: false, updatedAt: new Date().toISOString() }, tasks);
+  }, [tasks, cache, mutate]);
+}
+
 /**
  * The room composer's "Replying to: <request>" while that request's pane is open (and it isn't a suggestion):
  * sending then posts into the request's room. Removing the chip sends to the room as normal and `onRemove`
@@ -67,6 +78,7 @@ export function useTaskReply(roomId: string | null, draft: Pick<RoomComposerProp
   // Optional: a room rendered outside the live provider (tests, the share page) simply has no chip.
   const live = useOptionalLiveEvents();
   const { data } = useTask(live?.tasks as TasksClient, live && roomId ? taskId : null);
+  const showSteered = useShowSteered(live?.tasks);
   const [removed, setRemoved] = useState<string | null>(null);
   // Each send is a fresh composer attempt (its own id), so a sent or failed reply never locks the box.
   const [clientMessageId, setClientMessageId] = useState(() => crypto.randomUUID());
@@ -93,6 +105,7 @@ export function useTaskReply(roomId: string | null, draft: Pick<RoomComposerProp
         draft.onTextChange("");
         try {
           await sendToTask(live.messaging, task, request.text, "composer");
+          showSteered(task);
           setError(null);
         } catch {
           if (!text.current.trim()) draft.onTextChange(request.text);

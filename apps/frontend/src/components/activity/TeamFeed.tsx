@@ -29,7 +29,14 @@ export interface TeamFeedProps {
   isVisible?: () => boolean;
   /** False while the feed column is hidden (the For you tab on a narrow panel): the cursor waits. */
   active?: boolean;
+  /** Home: only the newest `limit` posts, no day dividers and no welcome, then a link to the whole feed. */
+  limit?: number;
 }
+
+/** The feed room's seeded welcome: an intro, not a post. The seed is message kind "welcome"; rooms seeded before that
+ *  are matched by its opening words (core/services/messaging.py FEED_WELCOME*). */
+export const isFeedWelcome = (post: CanonicalRoomMessage) =>
+  post.kind === "welcome" || post.text.startsWith("**This is our feed.**");
 
 const LIKE = "👍";
 const ALWAYS = () => true;
@@ -58,7 +65,7 @@ const REFRESH_MS = 60_000;
  * "New since you looked" and day dividers. People never post here; they Discuss a post in its
  * thread. Viewing the feed moves its read cursor, which nothing else counts.
  */
-export function TeamFeed({ client, scope, currentUserId, onDiscuss, isVisible = ALWAYS, active = true }: TeamFeedProps) {
+export function TeamFeed({ client, scope, currentUserId, onDiscuss, isVisible = ALWAYS, active = true, limit }: TeamFeedProps) {
   const feed = useSWR(["activity-feed", scope], () => client.getFeed());
   // Super-agent: the front agent's older posts were authored with its seat name ("CEO"); it reads "Lightbulb".
   const live = useOptionalLiveEvents();
@@ -85,11 +92,14 @@ export function TeamFeed({ client, scope, currentUserId, onDiscuss, isVisible = 
     ...page, messages: page.messages.map((message) => message.messageId === next.messageId ? next : message),
   }, { revalidate: false });
 
-  const timeline = posts.data ? feedTimeline(posts.data.messages, readAtOpen ?? 0) : [];
+  const all = posts.data ? feedTimeline(posts.data.messages, readAtOpen ?? 0) : [];
+  const compact = limit !== undefined;
+  const postsOnly = all.filter((entry) => entry.type === "post" && !isFeedWelcome(entry.post));
+  const timeline = compact ? postsOnly.slice(0, limit) : all;
   const failed = feed.error || room.error || posts.error;
 
-  return <section className="team-feed" aria-labelledby="team-feed-title">
-    <h2 id="team-feed-title" className="sr-only">Team feed</h2>
+  return <section className={compact ? "team-feed team-feed--compact" : "team-feed"} aria-labelledby="team-feed-title">
+    {compact ? <h2 id="team-feed-title" className="text-ui font-semibold">Feed</h2> : <h2 id="team-feed-title" className="sr-only">Team feed</h2>}
     {roomId && room.data && <Brief roomId={roomId} topic={room.data.topic ?? feed.data?.topic ?? null} client={client} onSaved={setRoom} />}
     {failed && timeline.length === 0
       ? <p role="alert" className="team-feed__empty">Couldn&apos;t load the feed. Try again in a moment.</p>
@@ -100,9 +110,11 @@ export function TeamFeed({ client, scope, currentUserId, onDiscuss, isVisible = 
           : <ol className="team-feed__list">
             {timeline.map((entry) => entry.type === "divider"
               ? <li key={entry.key} className="team-feed__divider" data-new={entry.key === "new" || undefined}><span>{entry.label}</span></li>
-              : <li key={entry.post.messageId}><FeedPost post={entry.post} client={client} currentUserId={currentUserId} frontAgentId={frontAgentId}
+              : <li key={entry.post.messageId}><FeedPost post={entry.post} client={client} currentUserId={currentUserId} frontAgentId={frontAgentId} compact={compact}
                 onDiscuss={onDiscuss} onChanged={replacePost} /></li>)}
           </ol>}
+    {compact && roomId && postsOnly.length > timeline.length && <button type="button" className="justify-self-start text-ui text-muted-foreground underline hover:text-foreground"
+      onClick={() => window.dispatchEvent(new CustomEvent("openRoom", { detail: { roomId } }))}>See the whole feed</button>}
   </section>;
 }
 
@@ -144,8 +156,8 @@ function Brief({ roomId, topic, client, onSaved }: {
   </div>;
 }
 
-function FeedPost({ post, client, currentUserId, frontAgentId, onDiscuss, onChanged }: {
-  post: CanonicalRoomMessage; client: FeedClient; currentUserId: string; frontAgentId?: string;
+function FeedPost({ post, client, currentUserId, frontAgentId, onDiscuss, onChanged, compact = false }: {
+  post: CanonicalRoomMessage; client: FeedClient; currentUserId: string; frontAgentId?: string; compact?: boolean;
   onDiscuss: (post: CanonicalRoomMessage) => void; onChanged: (post: CanonicalRoomMessage) => void;
 }) {
   const [why, setWhy] = useState(false);
@@ -173,7 +185,7 @@ function FeedPost({ post, client, currentUserId, frontAgentId, onDiscuss, onChan
       </div>
       {/* The title line is markdown too: the welcome's "**This is our feed.** When …" is bold text, not asterisks. */}
       <div className="feed-post__title"><MarkdownView skipHtml components={roomMarkdown} urlTransform={roomUrlTransform}>{title}</MarkdownView></div>
-      {body && <MarkdownView skipHtml components={roomMarkdown} urlTransform={roomUrlTransform}>{body}</MarkdownView>}
+      {body && <div className={compact ? "feed-post__body--clamp" : undefined}><MarkdownView skipHtml components={roomMarkdown} urlTransform={roomUrlTransform}>{body}</MarkdownView></div>}
       <RoomDocumentCards text={post.text} />
       {!!post.attachments?.length && <RoomImageAttachments roomId={post.roomId} attachments={post.attachments}
         download={client.downloadAttachment} attachmentUrl={client.attachmentUrl} />}

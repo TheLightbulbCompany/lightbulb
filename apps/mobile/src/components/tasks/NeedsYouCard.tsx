@@ -9,20 +9,23 @@ import { fonts, radii, spacing, type ChatPalette } from "../../config/theme";
 import { ActionButton } from "./TaskCard";
 import { useTaskActions } from "./useTaskActions";
 
-/** `onAnsweredElsewhere` gets the "Already answered by X" line: the refetch drops this card, so the screen shows it. */
-export function NeedsYouCard({ task, question, palette, onAnsweredElsewhere }: {
-  task: TaskSummary; question: QuestionView; palette: ChatPalette; onAnsweredElsewhere?: (message: string) => void;
+/** `onAnsweredElsewhere` gets the "Already answered by X" line: the refetch drops this card, so the screen shows it.
+ *  `ended`: the request is Closed, so the card is read-only and says what became of it (web's N-F1 rule). */
+export function NeedsYouCard({ task, question, palette, onAnsweredElsewhere, ended = false }: {
+  task: TaskSummary; question: QuestionView; palette: ChatPalette; onAnsweredElsewhere?: (message: string) => void; ended?: boolean;
 }) {
   const { answer } = useTaskActions();
   const [pending, setPending] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [closed, setClosed] = useState(false);
   const waiting = question.waitingLabel ?? `Waiting on ${question.answerers.map((a) => a.name).join(" or ")}`;
+  const live = question.canAnswer && !closed && !ended && question.state === "open";
+  const endedLabel = question.kind === "approval" ? "Closed — not approved" : question.kind === "review" ? "Closed — not sent" : "Closed — not answered";
   return (
-    <View accessibilityLabel={question.text || question.title} style={[styles.card, { borderColor: palette.edge, borderLeftColor: palette.warn, backgroundColor: palette.surface }]}>
-      <Text style={[styles.label, { color: palette.fgMute }]}>{(question.canAnswer ? "Waiting on you" : waiting).toUpperCase()}</Text>
+    <View accessibilityLabel={question.text || question.title} style={[styles.card, { borderColor: palette.edge, borderLeftColor: ended ? palette.edge : palette.warn, backgroundColor: palette.surface }]}>
+      <Text style={[styles.label, { color: palette.fgMute }]}>{(ended ? endedLabel : question.canAnswer ? "Waiting on you" : waiting).toUpperCase()}</Text>
       <Text style={[styles.title, { color: palette.fg }]}>{question.text || question.title}</Text>
-      {question.canAnswer && !closed ? (
+      {live ? (
         <View style={styles.actions}>
           {question.options.map((o) => (
             <ActionButton key={o.id} label={o.label} palette={palette} primary={o.style === "primary"} disabled={pending}

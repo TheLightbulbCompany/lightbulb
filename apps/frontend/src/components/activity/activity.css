@@ -213,3 +213,16 @@
   padding: 16px 16px 16px;
   border-bottom: 1px solid var(--plane-edge);
 }
+
+/* --- Home, super-agent: one column, your company today ------------------------ */
+
+.activity-page--today .home-work { max-width: 760px; gap: 24px; padding: 24px 16px 32px; border-bottom: 0; }
+.home-ideas__list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); gap: 8px; margin-top: 4px; }
+.home-mentions { display: grid; gap: 4px; font-size: var(--text-ui); color: var(--fg-mute); }
+.home-mentions button { text-align: left; }
+.team-feed--compact { display: grid; gap: 8px; }
+.team-feed--compact .team-feed__brief { padding-bottom: 8px; }
+.team-feed--compact .team-feed__list { gap: 0; }
+.team-feed--compact .feed-post { padding: 8px 0; }
+.team-feed--compact .team-feed__empty { padding: 8px 0; }
+.feed-post__body--clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }

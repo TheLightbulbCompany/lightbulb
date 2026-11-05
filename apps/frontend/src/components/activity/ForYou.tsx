@@ -135,6 +135,18 @@ export function ForYou(props: ForYouProps) {
   </section>;
 }
 
+/** Home (super-agent): For you's own rows for asks that are not requests (a website login, an extension, a reconnect),
+ *  each with its one action in place (Add login opens its form here). */
+export function ForYouAsks({ items, onRunAction, onNavigate }: {
+  items: readonly ActivityItem[]; onRunAction: ForYouProps["onRunAction"]; onNavigate: ForYouProps["onNavigate"];
+}) {
+  const entries = forYouEntries(items, [], undefined, () => "An agent");
+  if (!entries.length) return null;
+  return <ul className="for-you__list">{entries.map((entry) => <EntryRow key={entry.id} entry={entry} highlighted={false} agentMap={NO_AGENTS}
+    onRunAction={onRunAction} people={[]} onNavigate={onNavigate} />)}</ul>;
+}
+const NO_AGENTS = new Map<string, CompanyAgent>();
+
 function Avatar({ entry }: { entry: Pick<ForYouEntry, "sourceName" | "sourceKind" | "sourceId"> }) {
   return <Identity name={entry.sourceName} avatarOnly size="xs" tint={entry.sourceKind === "agent" ? agentTint(entry.sourceId) : null} />;
 }

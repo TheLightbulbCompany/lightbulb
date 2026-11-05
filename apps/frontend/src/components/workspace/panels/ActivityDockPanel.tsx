@@ -4,8 +4,9 @@ import "@/components/activity/activity.css";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { newestActivityAt, type CanonicalRoomMessage } from "@lightbulb/shared";
-import { ForYou, type ActivityTarget } from "@/components/activity/ForYou";
-import { isForYouFilter } from "@/components/activity/activityPage";
+import { ForYou, ForYouAsks, rowTarget, type ActivityTarget, type ForYouProps } from "@/components/activity/ForYou";
+import { homeExtras, isForYouFilter } from "@/components/activity/activityPage";
+import { HomeIdeas } from "@/components/ideas/HomeIdeas";
 import { TeamFeed } from "@/components/activity/TeamFeed";
 import { draftKey, readDraft, writeDraft } from "@/components/messaging/drafts";
 import { useAcknowledgedRuns } from "@/components/teams/inbox/hooks/useAcknowledgedRuns";
@@ -15,6 +16,7 @@ import { groupFailedRuns } from "@/components/teams/inbox/lib/groupFailedRuns";
 import type { CompanyAgent, CompanyMember } from "@/components/teams/shared/types";
 import { useActivity } from "@/hooks/useActivity";
 import { useLiveEvents, useSuperAgent } from "@/hooks/useLiveEvents";
+import type { ActivityItem } from "@lightbulb/shared";
 import { HomeWork } from "@/components/tasks/HomeWork";
 import { pageVisible } from "@/hooks/useRooms";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
@@ -75,17 +77,56 @@ export function feedShown(narrow: boolean | null, tab: ActivityTab): boolean {
   return narrow === false || (narrow === true && tab === "feed");
 }
 
-/** Home: with the super-agent on, the viewer's threads (Needs you · Working · Done · Scheduled) lead; below them
- *  Activity's For you on the left and the team feed on the right (tabs below ~900px). */
-export function ActivityDockPanel({ params }: PanelProps) {
+/** Home. With the super-agent on, "your company today" (TodayHome); otherwise Activity's For you beside the team feed
+ *  (tabs below ~900px). */
+export function ActivityDockPanel(props: PanelProps) {
+  return useSuperAgent() ? <TodayHome /> : <ActivityHome {...props} />;
+}
+
+/** Feed posts Home shows before "See the whole feed". */
+export const HOME_FEED_POSTS = 5;
+
+/** Your company today, top to bottom: Needs you; your mentions and non-request asks (one compact block); Ideas
+ *  (Do it / Not now); the feed's newest posts under its editable Brief; then Working, Done and Closed. */
+function TodayHome() {
   const { userId, orgId } = useAuth();
   const live = useLiveEvents();
   const activity = useActivity();
-  const superAgent = useSuperAgent();
-  // An open request question is a Needs you row above: For you keeps the messages, answered questions and the rest,
-  // never the same open ask twice.
-  const forYouItems = useMemo(() => superAgent ? activity.items.filter((item) => !(item.kind === "task_question" && item.state === "open")) : activity.items,
-    [superAgent, activity.items]);
+  const scope = orgId ?? userId ?? "signed-out";
+  // Opening Home clears the Activity badge; a newer item arriving while it is on screen does too.
+  const newest = newestActivityAt(activity.items);
+  const { markSeen } = activity;
+  useEffect(() => {
+    if (newest && pageVisible()) void markSeen(newest).catch(() => {});
+  }, [newest, markSeen]);
+  return <div className="activity-page activity-page--home activity-page--today">
+    <HomeWork viewerId={userId ?? ""} onOpen={openTaskPane} between={<>
+      <HomeForYou items={activity.items} onRunAction={activity.runAction} />
+      <HomeIdeas />
+      <TeamFeed client={live.messaging} scope={scope} currentUserId={userId ?? ""} limit={HOME_FEED_POSTS}
+        onDiscuss={(post) => openDiscussion(scope, post)} isVisible={pageVisible} />
+    </>} />
+  </div>;
+}
+
+/** Mentions as one line (how many, who, the newest), and For you's rows for open asks that are not requests. */
+export function HomeForYou({ items, onRunAction }: { items: readonly ActivityItem[]; onRunAction: ForYouProps["onRunAction"] }) {
+  const { mentions, asks } = homeExtras(items);
+  if (!mentions.length && !asks.length) return null;
+  const newest = mentions[0];
+  const target = newest ? rowTarget(newest) : null;
+  return <section aria-label="For you" className="home-mentions">
+    <ForYouAsks items={asks} onRunAction={onRunAction} onNavigate={openActivityTarget} />
+    {newest && <button type="button" className="truncate hover:text-foreground" disabled={!target} onClick={() => target && openActivityTarget(target)}>
+      <span className="font-semibold text-foreground">Mentions · {mentions.length}</span> · {newest.actor.name}: {newest.summary.preview?.text || newest.summary.title}
+    </button>}
+  </section>;
+}
+
+function ActivityHome({ params }: PanelProps) {
+  const { userId, orgId } = useAuth();
+  const live = useLiveEvents();
+  const activity = useActivity();
   const attention = useAttentionFeed();
   const teams = useTeamsApi();
   const { data: humans } = teams.read<{ members?: CompanyMember[] }>("/members");
@@ -121,8 +162,7 @@ export function ActivityDockPanel({ params }: PanelProps) {
     if (newest && pageVisible()) void markSeen(newest).catch(() => {});
   }, [newest, markSeen]);
 
-  return <div ref={pageRef} className={superAgent ? "activity-page activity-page--home" : "activity-page"} data-tab={tab}>
-    {superAgent && <HomeWork viewerId={userId ?? ""} onOpen={openTaskPane} />}
+  return <div ref={pageRef} className="activity-page" data-tab={tab}>
     <div role="tablist" aria-label="Activity" className="activity-page__tabs">
       {([["for-you", "For you"], ["feed", "Feed"]] as const).map(([value, label]) =>
         <button key={value} type="button" role="tab" aria-selected={tab === value} onClick={() => setTab(value)}>{label}</button>)}
@@ -130,7 +170,7 @@ export function ActivityDockPanel({ params }: PanelProps) {
     <div className="activity-page__columns">
       <div className="activity-page__for-you">
         <ForYou
-          activityItems={forYouItems}
+          activityItems={activity.items}
           attentionItems={attention.items}
           failedRuns={runGroups}
           onDismissRuns={(ids) => ids.forEach(ack)}

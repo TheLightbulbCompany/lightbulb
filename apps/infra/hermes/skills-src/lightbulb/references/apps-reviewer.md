@@ -7,7 +7,7 @@ does, and `lightbulb app publish` refuses until it has.
 
 Start a fresh run that knows nothing of how the app was built:
 
-- a Paperclip task assigned to a second agent on the roster (the paperclip skill), or
+- a task for a second agent on the roster (ask Lightbulb to start it, naming them), or
 - a `delegate_task` subagent with fresh context.
 
 Give it only three things: the preview URL (`preview_url` from `up`), the app's purpose in one or

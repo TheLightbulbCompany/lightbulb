@@ -253,6 +253,22 @@ async def append_match(ws: str, sid: str, entry: dict, *, keep: int = 50) -> dic
     return await _edit_matches(ws, sid, edit)
 
 
+async def mark_done_by_human(ws: str, sid: str, thread_key: str) -> bool:
+    """Did-it-yourself: a person started work on a thread this rule observed. True when an entry changed."""
+    changed = False
+
+    def edit(matches: list[dict]) -> list[dict] | None:
+        nonlocal changed
+        hit = [m for m in matches if m.get("threadKey") == thread_key and not m.get("doneByHuman")]
+        if not hit:
+            return None
+        changed = True
+        return [{**m, "doneByHuman": True} if m in hit else m for m in matches]
+
+    await _edit_matches(ws, sid, edit)
+    return changed
+
+
 # --- Hook ------------------------------------------------------------------------------------------
 
 

@@ -37,6 +37,11 @@ def _generate_action_id() -> str:
     return f"{ts_hex}{rand_hex}"
 
 
+def _json_default(o: Any) -> Any:
+    """Decimals stay numbers (parse_float turns them back into Decimal); datetimes and the rest become strings."""
+    return float(o) if isinstance(o, Decimal) else str(o)
+
+
 async def create(
     *,
     admin_user_id: str,
@@ -67,7 +72,7 @@ async def create(
         "target_user_id": target_user_id,
         "action": action,
         # DynamoDB rejects float; a float in the payload (e.g. watchdog_ctl's config) would lose the row.
-        "payload": json.loads(json.dumps(payload), parse_float=Decimal),
+        "payload": json.loads(json.dumps(payload, default=_json_default), parse_float=Decimal),
         "result": result,
         "audit_status": audit_status,
         "http_status": http_status,

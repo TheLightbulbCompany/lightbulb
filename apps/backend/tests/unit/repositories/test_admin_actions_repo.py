@@ -230,3 +230,14 @@ async def test_create_accepts_float_in_payload(dynamodb_table):
 
     item = await admin_actions_repo.create(**_row(payload={"new": {"steer_threshold_p": 0.7}}))
     assert item["payload"]["new"]["steer_threshold_p"] == Decimal("0.7")
+
+
+@pytest.mark.asyncio
+async def test_create_accepts_decimal_and_datetime_in_payload(dynamodb_table):
+    from datetime import datetime, timezone
+
+    from core.repositories import admin_actions_repo
+
+    when = datetime(2026, 11, 5, tzinfo=timezone.utc)
+    item = await admin_actions_repo.create(**_row(payload={"n": Decimal("2.5"), "at": when}))
+    assert item["payload"] == {"n": Decimal("2.5"), "at": str(when)}

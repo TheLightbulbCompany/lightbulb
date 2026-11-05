@@ -48,6 +48,8 @@ CAN_AFTER_SIGNALS = 2_000
 QUIET_AFTER = timedelta(days=7)
 MAX_SAME_RUN_RECONCILES = 3
 MAX_LOST_ATTEMPTS = 3  # the first attempt plus two new ones, then `failed`
+PATCH_CANCEL_QUESTIONS_ON_END = "O-cancel-questions-on-end-v1"  # audit #5
+SYSTEM_ACTOR = "__system__"  # == core.constants.SYSTEM_ACTOR_ID (the sandbox imports no core modules)
 
 _SHORT = {"start_to_close_timeout": timedelta(seconds=30), "retry_policy": RetryPolicy(maximum_attempts=5)}
 _ROUTER_TURN = {
@@ -312,6 +314,10 @@ class TaskWorkflow(TaskQuestionsMixin, AutomationRunMixin, WatchMixin):
     # --- main loop -------------------------------------------------------------------------------------
 
     async def _transition(self, to: str, reason: str | None) -> None:
+        # A task that ends leaves no open Question (Waiting on you, Activity, away email): a resolve, the quiet
+        # resolve, no_answerer, a failure. A Stop cancels them itself, with the person's id (`_q_on_stop`).
+        if to in ("resolved", "failed") and self._stop_by is None and workflow.patched(PATCH_CANCEL_QUESTIONS_ON_END):
+            await self._q_cancel_open(self._action[1] if self._action else SYSTEM_ACTOR, reason or to)
         await _act("transition", self._ws, self._task_id, to, reason)
         self._status = to
         if workflow.patched(PATCH_AUTOMATION_RUN):  # Lane A: an automation run ends with its task

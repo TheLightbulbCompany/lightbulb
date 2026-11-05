@@ -335,12 +335,49 @@ class Steerable(Agent):
 
 @pytest.fixture
 def lb_inject(monkeypatch):
-    """Lane H's F3 module (agent.lb_inject), faked: records what was injected."""
-    injected = []
-    module = types.SimpleNamespace(inject_input=lambda agent, kind, text: injected.append((agent, kind, text)) or True)
+    """F3 with the fork's real gate (tests/fake_lb_inject.py)."""
+    from tests import fake_lb_inject
+
     monkeypatch.setitem(sys.modules, "agent", sys.modules.get("agent") or types.ModuleType("agent"))
-    monkeypatch.setitem(sys.modules, "agent.lb_inject", module)
-    return injected
+    monkeypatch.setitem(sys.modules, "agent.lb_inject", fake_lb_inject)
+    return fake_lb_inject
+
+
+class F3Agent(Agent):
+    """run_conversation as Hermes + F3 drive it: deliver() before each model call, a tool round
+    (tool_complete_callback) when `tools` is set, close() and pending_inputs at the end."""
+
+    def __init__(self, f3, tools=0, between=None):
+        super().__init__()
+        self.f3, self.tools, self.between, self.messages_seen, self.steers = f3, tools, between, [], []
+        self.tool_complete = None
+
+    def steer(self, text):
+        self.steers.append(text)
+        return True
+
+    def run_conversation(self, **kw):
+        self.calls.append(kw)
+        messages = [{"role": "user", "content": kw["user_message"]}]
+        self.f3.deliver(self, messages)  # iteration prep: the turn is open
+        if self.between:
+            self.between()  # something arrives mid-turn
+            self.between = None
+        for i in range(self.tools if len(self.calls) == 1 else 0):
+            messages.append({"role": "tool", "content": "ok"})
+            self.tool_complete(f"c{i}", "terminal", {"i": i}, "ok")
+            self.f3.deliver(self, messages)  # the next model call's iteration prep
+        self.messages_seen.append(messages)
+        self.f3.close(self)
+        return {"api_calls": 1, "final_response": f"pass {len(self.calls)}", "pending_inputs": self.f3.take_pending(self)}
+
+
+def _f3_run(monkeypatch, agent):
+    def construct(*_a, **limits):
+        agent.tool_complete = limits["tool_complete_callback"]
+        return agent
+
+    monkeypatch.setattr(turn, "_construct_agent", construct)
 
 
 def _steer(text, kind, identity=IDENTITY):
@@ -362,9 +399,10 @@ def test_user_steer_reaches_agent_steer(threads):
 
 def test_input_steer_uses_inject_not_steer(threads, lb_inject):
     agent = Steerable()
+    agent._lb_inputs_open = True  # mid-turn: F3's deliver() has opened it
     _running(threads, agent)
     assert _steer("you have been idle 20 minutes", "input") == (200, {"accepted": True})
-    assert lb_inject == [(agent, "input", "you have been idle 20 minutes")]
+    assert agent._lb_inputs == [("input", "you have been idle 20 minutes")]
     assert agent.steers == []
 
 
@@ -376,13 +414,43 @@ def test_input_steer_without_f3_is_refused_not_steered(threads, monkeypatch):
     assert agent.steers == []
 
 
-def test_input_steer_on_queued_run_is_delivered_on_attach(threads, lb_inject):
+def test_input_steer_on_queued_run_is_delivered_after_the_first_tool_round(quiet_turn, threads, lb_inject, monkeypatch):
+    agent = F3Agent(lb_inject, tools=1)
+    _f3_run(monkeypatch, agent)
+    assert _post()[0] == 202
+    assert _steer("nudge", "input") == (200, {"accepted": True})  # held: no open turn yet
+    threads[0].run_now()
+    rows = [m for m in agent.messages_seen[0] if m.get("display_kind") == lb_inject.DISPLAY_KIND]
+    assert len(rows) == 1 and "nudge" in rows[0]["content"]
+    assert len(agent.calls) == 1 and agent.steers == []
+
+
+def test_input_held_with_no_tool_round_is_answered_in_the_same_run(quiet_turn, threads, lb_inject, monkeypatch):
+    agent = F3Agent(lb_inject, tools=0)
+    _f3_run(monkeypatch, agent)
     assert _post()[0] == 202
     assert _steer("nudge", "input") == (200, {"accepted": True})
-    assert lb_inject == []
-    agent = Steerable()
-    turn.attach_agent(RUN, agent)
-    assert lb_inject == [(agent, "input", "nudge")] and agent.steers == []
+    threads[0].run_now()
+    assert len(agent.calls) == 2  # never dropped: a second pass carries it, framed as data
+    assert agent.calls[1]["user_message"] == lb_inject.input_row("input", "nudge")["content"]
+    assert _poll()[1]["output"] == "pass 1\n\npass 2"
+
+
+def test_late_pending_inputs_are_answered_in_the_same_run(quiet_turn, threads, lb_inject, monkeypatch):
+    agent = F3Agent(lb_inject, tools=0, between=lambda: _steer("late nudge", "input"))
+    _f3_run(monkeypatch, agent)
+    assert _post()[0] == 202
+    threads[0].run_now()
+    # Injected into the open turn, never delivered (no tool round after it), handed back as pending_inputs.
+    assert agent.calls[1]["user_message"] == lb_inject.input_row("input", "late nudge")["content"]
+
+
+def test_input_steer_after_the_run_is_refused(quiet_turn, threads, lb_inject, monkeypatch):
+    agent = F3Agent(lb_inject)
+    _f3_run(monkeypatch, agent)
+    assert _post()[0] == 202
+    threads[0].run_now()
+    assert _steer("too late", "input") == (200, {"accepted": False})
 
 
 def test_user_steer_on_queued_run_rides_the_input(quiet_turn, threads, monkeypatch):

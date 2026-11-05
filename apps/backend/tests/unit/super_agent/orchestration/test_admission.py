@@ -245,19 +245,31 @@ async def test_lightbulb_mentions_only_room_skips_jev(world):
 
 
 @pytest.mark.parametrize("listen", ["active", "mentions"])
-async def test_naming_lightbulb_addresses_it(world, listen):
-    """Live A-run: "Hi Lightbulb, we're launching the workshop in March." in #general got no reply. Naming
-    Lightbulb (no @) is addressing it, even in a mentions-only room; no Jev call, nothing pinned."""
+@pytest.mark.parametrize(
+    "text",
+    ["Hi Lightbulb, we're launching the workshop in March.", "Lightbulb, can you draft the agenda?", "lightbulb?"],
+)
+async def test_speaking_to_lightbulb_addresses_it(world, listen, text):
+    """Live A-run: "Hi Lightbulb, we're launching the workshop in March." in #general got no reply. Speaking to
+    Lightbulb by name (no @) addresses it, even in a mentions-only room; no Jev call, nothing pinned."""
     world["listen"] = listen
-    tid = await _admit(world, {**_msg(), "text": "Hi Lightbulb, we're launching the workshop in March."})
+    tid = await _admit(world, {**_msg(), "text": text})
     assert world["router"] == [admission.TriggerRef(WS, tid, "shared", "respond", ROOM)]
     assert world["jev"] == [] and "pinnedSpecialist" not in (await repo.get_trigger(WS, tid))["ref"]
 
 
-async def test_lightbulbs_inside_words_do_not_address_it(world):
+@pytest.mark.parametrize(
+    "text", ["the Lightbulb app is down", "Lightbulb's pricing changed", "update the Lightbulb deck", "lightbulbs"]
+)
+async def test_the_company_name_mid_sentence_is_not_addressing(world, text):
+    """The name in a sentence (the company, the app) is not speaking to Lightbulb: mentions-only stays quiet, and an
+    active room asks Jev as for any unaddressed message."""
     world["listen"] = "mentions"
-    await _admit(world, {**_msg(), "text": "the lightbulbs in the office need changing; mylightbulb.app is down"})
-    assert world["router"] == []
+    await _admit(world, {**_msg(), "text": text})
+    assert world["router"] == [] and world["jev"] == []
+    world["listen"] = "active"
+    await _admit(world, {**_msg(2), "text": text})
+    assert len(world["jev"]) == 1
 
 
 async def test_admit_redelivery_is_idempotent(world):

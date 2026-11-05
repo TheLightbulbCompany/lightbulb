@@ -357,6 +357,26 @@ async def put_trigger(ws: str, trigger: dict) -> tuple[dict, bool]:
     return await _put_new(ws, _row(ts.Trigger, ws, trigger))
 
 
+async def set_trigger_routed_to(ws: str, trigger_id: str, routed: dict[str, str]) -> dict:
+    """Where the Router sent a trigger (`routedTo`, append-only row: this is the one field that changes)."""
+    return await _update(
+        ws, ts.trigger_sk(trigger_id), {"routedTo": routed}, condition="#v >= :zero", values={":zero": 0}
+    )
+
+
+async def next_identifier(ws: str) -> str:
+    """`LB-{n}`: monotonic per workspace (one atomic ADD on the `TASKSEQ` row; gaps are fine)."""
+    resp = await run_in_thread(
+        _table().update_item,
+        Key={"pk": ts.ws_pk(ws), "sk": ts.task_seq_sk()},
+        UpdateExpression="ADD #n :one",
+        ExpressionAttributeNames={"#n": "n"},
+        ExpressionAttributeValues={":one": 1},
+        ReturnValues="UPDATED_NEW",
+    )
+    return f"LB-{int(resp['Attributes']['n'])}"
+
+
 async def get_trigger(ws: str, trigger_id: str) -> dict | None:
     return await _get(ws, ts.trigger_sk(trigger_id))
 

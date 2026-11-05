@@ -86,3 +86,19 @@ def test_enums_mirror_tasks_schema():
     assert get_args(tt.TaskInputKind) == get_args(ts.TaskInputKind)
     assert get_args(tt.AttemptOutcome) == get_args(ts.AttemptOutcome)
     assert get_args(tt.Admission) == get_args(ts.Admission)
+
+
+def test_run_event_converts_every_status_the_route_accepts():
+    """Dev logs (5 Nov): `run_event` for a `waiting_approval` turn failed to deserialize and Temporal dropped
+    the signal. Every status the events route accepts must convert through the workflow's payload converter."""
+    import typing
+
+    from temporalio.converter import DataConverter
+
+    from core.temporal.types import RunEvent
+    from routers.runtime_internal import RunEventBody
+
+    converter = DataConverter.default.payload_converter
+    for status in typing.get_args(RunEventBody.model_fields["status"].annotation):
+        payload = converter.to_payloads([RunEvent("r1", "terminal", status)])
+        assert converter.from_payloads(payload, [RunEvent])[0].status == status

@@ -143,3 +143,18 @@ def test_for_attempt_derives_session_kind_from_the_attempt_row():
     assert (task_run.session_kind, task_run.attempt, task_run.run_secret, task_run.run_id) == ("task", 3, "s", RUN)
     shared = rr.RunIdentity.for_attempt(OWNER, TASK, {**att, "sessionId": runtime_transport.session_id_for(OWNER)})
     assert shared.session_kind == "workspace" and shared.to_wire()["session"] == {"kind": "workspace"}
+
+
+@pytest.mark.asyncio
+async def test_router_runs_mint_no_task_grant(transport, monkeypatch):
+    """Dev logs (5 Nov): every Router batch logged "task run local session invocation unavailable" -- a task
+    grant cannot bind a Router session. A Router run asks for none; a Worker run still gets one."""
+    minted = []
+    monkeypatch.setattr(rr.local_session_grants, "mint_task", lambda *a, **k: minted.append(a) or "grant")
+    router = rr.RunIdentity(
+        run_id=RUN, owner_id=OWNER, task_id=TASK, attempt=1, agent_id="ceo", mode="router", lane="shared", room="r"
+    )
+    await rr.create_run(OWNER, router, rr.RunRequest(input="x", instructions="y"))
+    assert minted == [] and "X-Lightbulb-Local-Session-Token" not in transport[0]["headers"]
+    await rr.create_run(OWNER, _identity("task"), rr.RunRequest(input="x", instructions="y"))
+    assert len(minted) == 1 and transport[1]["headers"]["X-Lightbulb-Local-Session-Token"] == "grant"

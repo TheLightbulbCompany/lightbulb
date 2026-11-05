@@ -188,7 +188,7 @@ async def test_three_asks_one_reply_three_cards(world):
     assert len(world["posts"]) == 1  # one line, three cards (G2)
     post = world["posts"][0]
     assert post["room"] == ROOM and post["event_id"] == f"router:{BATCH}:0" and post["thread_root"] is None
-    assert post["text"] == "On it: paying Acme.\nAnd booking the flights.\nOne more you can start:"
+    assert post["text"] == "On it: paying Acme."  # one ack per trigger: the first decision's (the cards say the rest)
     assert post["remember"] is False  # acks only: kept out of room memory (audit item 12)
     ids = [r["taskId"] for r in post["task_refs"]]
     assert [r["role"] for r in post["task_refs"]] == ["started", "started", "suggested"]
@@ -211,6 +211,23 @@ async def test_three_asks_one_reply_three_cards(world):
     ack_thread = f"room:{ROOM}:{post['id']}"
     assert await repo.task_for_thread(WS, ack_thread) == ids[0]
     assert world["noted"] == [f"room:{ROOM}:{(await repo.get_trigger(WS, t1))['ref']['messageId']}"]
+
+
+@pytest.mark.asyncio
+async def test_same_summary_on_every_decision_posts_once(world):
+    """Dev 5 Nov (#general seq 7): two start_task decisions on one ask both carried the summary ack, and the message
+    showed it twice. One ack line per trigger, whatever the model repeats; a reply's text still shows."""
+    t1 = await _trig("chat:m1")
+    line = "I split this up: Growth has the agenda, and Customer Operations has the venues."
+    world["decisions"] = [
+        _start([t1], title="Agenda", ack=line),
+        _start([t1], title="Venues", specialist=None, ack=line),
+        {"kind": "reply", "triggerIds": [t1], "text": "Venues come with rough prices."},
+    ]
+    await _run([t1])
+    (post,) = world["posts"]
+    assert post["text"] == f"{line}\nVenues come with rough prices."
+    assert len(post["task_refs"]) == 2
 
 
 @pytest.mark.asyncio

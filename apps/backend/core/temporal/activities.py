@@ -676,6 +676,15 @@ async def _apply(
             tid, {"lines": [], "refs": [], "starts": [], "proposed": [], "passes": [], "acks": set()}
         )
 
+    def ack(sl: dict, line: str | None) -> None:
+        """One ack line per trigger: several start/propose/pass_through decisions on one ask are one message with
+        a card per task, and the model writes the same summary on each (dev, 5 Nov: the line twice). The first
+        decision's ack is the message's line."""
+        if line and not sl["acks"]:
+            sl["lines"].append(line)
+        if line:
+            sl["acks"].add(line)
+
     for i, dec in enumerate(decisions):
         primary = dec.trigger_ids[0]
         if not isinstance(dec, ts.Ignore):  # `ignore` on a respond trigger is silence: the fallback line covers it
@@ -711,8 +720,7 @@ async def _apply(
                 logger.warning("start_task dropped for trigger %s", primary, exc_info=True)
                 sl["lines"].append(router_prompt.FALLBACK)
                 continue
-            sl["lines"].append(dec.ack)
-            sl["acks"].add(dec.ack)
+            ack(sl, dec.ack)
             sl["refs"].append({"taskId": task_id, "role": "started"})
             sl["starts"].append(task_id)
             for tid in dec.trigger_ids:
@@ -737,16 +745,13 @@ async def _apply(
                     continue
                 sl["refs"].append({"taskId": task_id, "role": "suggested"})
                 sl["proposed"].append(task_id)
-            sl["lines"].append(dec.ack)
-            sl["acks"].add(dec.ack)
+            ack(sl, dec.ack)
         elif isinstance(dec, ts.PassThrough):
             await temporal_client.signal_task_input(ws, dec.task_id, TaskInputRef(primary, "message"))
             sl["passes"].append(dec.task_id)
             for tid in dec.trigger_ids:
                 routed_to.setdefault(tid, dec.task_id)
-            if dec.ack:
-                sl["lines"].append(dec.ack)
-                sl["acks"].add(dec.ack)
+            ack(sl, dec.ack)
         elif isinstance(dec, ts.Ask):
             sl["lines"].append(dec.text + (f" ({' / '.join(dec.options)})" if dec.options else ""))
         elif isinstance(dec, ts.Reply):

@@ -144,6 +144,39 @@ async def test_run_event_heartbeat_updates_progress_line(api):
     assert [e[0] for e in api.fake.log] == ["heartbeat", "heartbeat"]
 
 
+async def test_progress_line_is_plain_words_and_skips_internal_tools(api):
+    """Live dev bug (5 Nov): "Working: skill_view". An internal tool posts nothing; the first real one
+    posts plain words, once per attempt."""
+    tid = await _task()
+    ref = await _running(tid)
+    body = {"runSecret": await _secret(tid), "taskId": tid, "attempt": 1, "kind": "heartbeat", "status": "running"}
+    await api.post(_url(WS, ref.run_id), json={**body, "recentTools": [{"name": "skill_view"}]}, headers=H)
+    assert not [p for p in api.world["posts"] if p.get("progress")]
+    await api.post(_url(WS, ref.run_id), json={**body, "recentTools": [{"name": "browser_navigate"}]}, headers=H)
+    await api.post(_url(WS, ref.run_id), json={**body, "recentTools": [{"name": "terminal"}]}, headers=H)
+    lines = [p for p in api.world["posts"] if p.get("progress")]
+    assert [p["text"] for p in lines] == ["Using the browser…"]
+
+
+async def test_terminal_stores_the_results_files(api):
+    tid = await _task()
+    ref = await _running(tid)
+    files = [
+        {"attachmentId": "4f1c1f2e-0000-4000-8000-000000000001", "fileName": "a.docx", "contentType": "application/pdf"}
+    ]
+    body = {
+        "runSecret": await _secret(tid),
+        "taskId": tid,
+        "attempt": 1,
+        "kind": "terminal",
+        "status": "completed",
+        "output": "Done.",
+        "attachments": files,
+    }
+    assert (await api.post(_url(WS, ref.run_id), json=body, headers=H)).status_code == 200
+    assert (await repo.get_attempt(WS, tid, 1))["attachments"] == files
+
+
 async def test_run_event_wrong_owner_403(api, monkeypatch):
     tid = await _task()
     ref = await _running(tid)

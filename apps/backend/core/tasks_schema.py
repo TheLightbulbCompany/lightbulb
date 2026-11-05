@@ -488,6 +488,8 @@ class Attempt(_Row):
     terminal_status: str | None = None  # the bridge's terminal run status, once delivered
     output: str | None = Field(None, max_length=65536)  # the Worker's result text (never in a payload)
     recent_tools: list[dict[str, Any]] = []  # last heartbeat's tool calls (trace, progress)
+    progress_posted: bool = False  # the attempt's one progress line went up
+    attachments: list[dict[str, Any]] = []  # uploadedAttachments for the result post (task room keys)
 
     def sk(self) -> str:
         return attempt_sk(self.task_id, self.n)

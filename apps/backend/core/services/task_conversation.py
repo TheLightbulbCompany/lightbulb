@@ -116,6 +116,7 @@ async def post_as_lightbulb(
     progress: bool = False,
     attrs: dict | None = None,
     remember: bool = True,
+    uploaded_attachments: list[dict] | None = None,
 ) -> str:
     """Post as Lightbulb; idempotent on `event_id`. Returns the message id. `attrs`: extra message attributes
     (lane A's confirm card carries `automationId`). The post goes into room memory like a person's message
@@ -139,6 +140,7 @@ async def post_as_lightbulb(
             reply_to_message_id=None,
             thread_root_message_id=uuid.UUID(thread_root) if thread_root else None,
             progress=progress,
+            uploaded_attachments=[messaging.UploadedAttachment.model_validate(a) for a in uploaded_attachments or []],
         ),
         attrs={
             **(attrs or {}),

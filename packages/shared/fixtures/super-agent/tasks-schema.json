@@ -155,6 +155,7 @@
     "effect": "EFFECT#{idemKey}",
     "trigger": "TRIG#{triggerId}",
     "schedule": "SCHED#{scheduleId}",
+    "observed": "OBS#{threadKey}",
     "hook": "HOOK#{publicId}",
     "agent": "AGENT#{agentId}",
     "agentOwner": "AGENTID#{agentId}",
@@ -181,7 +182,8 @@
     "network": "net:{recordId}",
     "voice": "voice:{callId}:{utteranceId}",
     "text": "text:{messageId}",
-    "answer": "answer:{qid}:{clientAnswerId}"
+    "answer": "answer:{qid}:{clientAnswerId}",
+    "rule": "rule:{scheduleId}:{threadHash}"
   },
   "namespaces": {
     "run": "054fce2c-dfac-5872-affb-9edcd0befb8d",
@@ -1438,6 +1440,50 @@
       "type": "object"
     },
     "trigger": {
+      "$defs": {
+        "RuleMatch": {
+          "additionalProperties": false,
+          "description": "\u00a718: what a rule would have done (observe) or did (auto) for this trigger.",
+          "properties": {
+            "schedId": {
+              "title": "Schedid",
+              "type": "string"
+            },
+            "version": {
+              "title": "Version",
+              "type": "integer"
+            },
+            "p": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "P"
+            },
+            "decision": {
+              "title": "Decision",
+              "type": "string"
+            },
+            "wouldDo": {
+              "title": "Woulddo",
+              "type": "string"
+            }
+          },
+          "required": [
+            "schedId",
+            "version",
+            "decision",
+            "wouldDo"
+          ],
+          "title": "RuleMatch",
+          "type": "object"
+        }
+      },
       "additionalProperties": false,
       "properties": {
         "version": {
@@ -1529,6 +1575,17 @@
         "receivedAt": {
           "title": "Receivedat",
           "type": "string"
+        },
+        "ruleMatch": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RuleMatch"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
@@ -1544,6 +1601,137 @@
       "type": "object"
     },
     "schedule": {
+      "$defs": {
+        "MatchEntry": {
+          "additionalProperties": false,
+          "properties": {
+            "at": {
+              "title": "At",
+              "type": "string"
+            },
+            "threadKey": {
+              "title": "Threadkey",
+              "type": "string"
+            },
+            "wouldDo": {
+              "title": "Woulddo",
+              "type": "string"
+            },
+            "version": {
+              "title": "Version",
+              "type": "integer"
+            },
+            "doneByHuman": {
+              "default": false,
+              "title": "Donebyhuman",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "at",
+            "threadKey",
+            "wouldDo",
+            "version"
+          ],
+          "title": "MatchEntry",
+          "type": "object"
+        },
+        "RuleMatchScope": {
+          "additionalProperties": false,
+          "description": "spec 12 \u00a73.1: one source per rule; `room` names its rooms (no \"everywhere\" rule), `calendar` its account.",
+          "properties": {
+            "sources": {
+              "items": {
+                "enum": [
+                  "room",
+                  "calendar"
+                ],
+                "type": "string"
+              },
+              "title": "Sources",
+              "type": "array"
+            },
+            "roomIds": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "title": "Roomids",
+              "type": "array"
+            },
+            "account": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Account"
+            },
+            "repo": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Repo"
+            }
+          },
+          "required": [
+            "sources"
+          ],
+          "title": "RuleMatchScope",
+          "type": "object"
+        },
+        "RuleStats": {
+          "additionalProperties": false,
+          "description": "Capped lists on the rule row (spec 12 \u00a73.1): no new row type.",
+          "properties": {
+            "day": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Day"
+            },
+            "spentUsd": {
+              "default": 0.0,
+              "title": "Spentusd",
+              "type": "number"
+            },
+            "deliveries": {
+              "default": [],
+              "items": {
+                "type": "boolean"
+              },
+              "title": "Deliveries",
+              "type": "array"
+            },
+            "matches": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/MatchEntry"
+              },
+              "title": "Matches",
+              "type": "array"
+            }
+          },
+          "title": "RuleStats",
+          "type": "object"
+        }
+      },
       "additionalProperties": false,
       "description": "An automation (spec 06); a proactive rule is the same row with a `mode` (\u00a718).",
       "properties": {
@@ -1729,6 +1917,90 @@
           ],
           "title": "Createdby",
           "type": "string"
+        },
+        "match": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RuleMatchScope"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "speculative": {
+          "default": false,
+          "title": "Speculative",
+          "type": "boolean"
+        },
+        "timeLimitS": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timelimits"
+        },
+        "dailyCapUsd": {
+          "default": 10.0,
+          "title": "Dailycapusd",
+          "type": "number"
+        },
+        "builtin": {
+          "anyOf": [
+            {
+              "enum": [
+                "invite_prep",
+                "repro_fix"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Builtin"
+        },
+        "promotedBy": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Promotedby"
+        },
+        "promotedAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Promotedat"
+        },
+        "stats": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RuleStats"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
@@ -2265,6 +2537,57 @@
         "capId"
       ],
       "title": "Creation",
+      "type": "object"
+    },
+    "observed": {
+      "additionalProperties": false,
+      "description": "`OBS#{threadKey}`: a rule observed this thread (\u00a718). Written once by `record_match`; never a THREAD# row.",
+      "properties": {
+        "version": {
+          "default": 1,
+          "title": "Version",
+          "type": "integer"
+        },
+        "createdAt": {
+          "title": "Createdat",
+          "type": "string"
+        },
+        "updatedAt": {
+          "title": "Updatedat",
+          "type": "string"
+        },
+        "type": {
+          "const": "observed",
+          "default": "observed",
+          "title": "Type",
+          "type": "string"
+        },
+        "threadKey": {
+          "title": "Threadkey",
+          "type": "string"
+        },
+        "schedId": {
+          "title": "Schedid",
+          "type": "string"
+        },
+        "triggerId": {
+          "title": "Triggerid",
+          "type": "string"
+        },
+        "at": {
+          "title": "At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "createdAt",
+        "updatedAt",
+        "threadKey",
+        "schedId",
+        "triggerId",
+        "at"
+      ],
+      "title": "Observed",
       "type": "object"
     }
   },

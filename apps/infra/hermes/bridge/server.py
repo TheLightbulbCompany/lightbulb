@@ -33,7 +33,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import bridge
-from bridge import GATEWAY_TOKEN, HOOK_TOKEN, OWNER, PORT, STARTED, now
+from bridge import GATEWAY_TOKEN, HOOK_TOKEN, OWNER, PORT, STARTED, now, task_mode
 from bridge import sync, turn, browser_control, followups, mcp_compat, network, recycle, runs, subagents
 
 logging.basicConfig(level=logging.INFO, format="[bridge] %(message)s", stream=sys.stdout)
@@ -234,9 +234,19 @@ def _handle_call_run(path: str, method: str, headers: dict, body) -> tuple[int, 
 def handle_plugin(path: str, method: str, headers: dict, body) -> tuple[int, dict]:
     if not _authorized(headers):
         return 401, {"error": "unauthorized"}
+    # A task VM (spec 02 §3.3) runs its task's runs and answers RPC reads, nothing else: no room
+    # turn, no Paperclip run, no call -- each would restore and write the specialist profile.
+    task_run = path.startswith("/internal/v1/runs")
+    if task_mode.active() and not task_run and path != "/plugins/lightbulb-channel/rpc":
+        return task_mode.Refused.reply
     # A real, authorized invoke: this microVM is claimed, so the network member may start here
-    # (never on a warm-pool instance). No-op without a member key or sessions.json.
-    network.ensure_started(background=True)
+    # (never on a warm-pool instance). No-op without a member key or sessions.json. A task
+    # session never starts one: the workspace member belongs to the workspace VM.
+    identity = body.get("identity") if isinstance(body, dict) else None
+    session = identity.get("session") if isinstance(identity, dict) else None
+    wants_task = task_run and isinstance(session, dict) and session.get("kind") == "task"
+    if not (task_mode.active() or wants_task):
+        network.ensure_started(background=True)
     # The website-login vault token rides every backend invoke (runtime_transport._vault_header);
     # memory only. See bridge/__init__.py's VAULT_TOKEN.
     vault = _header(headers, "X-Lightbulb-Vault")
@@ -467,6 +477,8 @@ def _unavailable(method: str) -> dict:
 # background, so the first RPC of a cold microVM would otherwise find it off.
 def _net(method: str, op: str, body: dict | None = None, run=None) -> dict:
     """``run`` (no arguments) replaces the one engine op when a method does more than ask."""
+    if task_mode.active():  # the workspace member belongs to the workspace VM: never started here
+        return {"ok": False, "error": {"code": "task_mode", "message": f"{method} is not available on a task VM"}}
     if not network.ensure_started(background=False):
         return _unavailable(method)
     try:
@@ -918,6 +930,7 @@ def _save_on_sigterm(signum, _frame) -> None:
         for agent_id in sorted(turn.RESTORED):
             try:
                 sync.save_profile(agent_id)
+                sync.reseal_attempt(agent_id)  # a task VM stopped after its seal: the save above may have moved a sealed file
             except Exception:  # noqa: BLE001 -- one bad profile must not cost the others
                 log.warning("sigterm: save_profile %s failed", agent_id, exc_info=True)
         try:

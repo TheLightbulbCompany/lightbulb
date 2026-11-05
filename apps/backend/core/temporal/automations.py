@@ -80,7 +80,7 @@ async def reconcile_schedules() -> dict:
     deletes = sweep_allowed()
     if not deletes:
         logging.getLogger(__name__).warning("reconcile: tasks table is not this namespace's env; no deletes")
-    out = {"created": 0, "updated": 0, "deleted_orphans": 0, "deleted_drafts": 0, "keepers": 0, "freed_runs": 0}
+    out = {"created": 0, "updated": 0, "deleted_orphans": 0, "deleted_drafts": 0, "keepers": 0}
     cutoff = (datetime.now(timezone.utc) - DRAFT_TTL).isoformat()
     keep: set[str] = set()
     for row in await repo.scan_schedules():
@@ -99,9 +99,6 @@ async def reconcile_schedules() -> dict:
         if row is None:
             continue
         keep.add(asch.schedule_id(row))
-        if await _free_stale_run(ws, row):
-            out["freed_runs"] += 1
-            row = await repo.get_schedule(ws, sid) or row
         changed = await asch.upsert(row)
         if changed:
             out[changed] += 1
@@ -125,22 +122,6 @@ async def reconcile_schedules() -> dict:
         await asch.delete(ws, sid)  # NOT_FOUND = someone else deleted it: done
         out["deleted_orphans"] += 1
     return out
-
-
-async def _free_stale_run(ws: str, row: dict) -> bool:
-    """A claim whose task is gone or ended on a path that closed nothing would skip every later fire for
-    good (SKIP overlap): free it here, counting a failed task as a failure and a missing one as neither."""
-    from core.repositories import tasks_repo
-
-    task_id = row.get("activeRunTaskId")
-    if not task_id:
-        return False
-    task = await tasks_repo.get_task(ws, task_id)
-    if task is not None and task.get("status") not in ("resolved", "failed"):
-        return False
-    # a missing task is neither a failure nor a success: the breaker count stays; a failed one counts
-    failed = None if task is None else task.get("status") == "failed"
-    return await _close_run(ws, row["scheduleId"], task_id, failed)
 
 
 @workflow.defn
@@ -324,33 +305,26 @@ async def close_automation_run(ws: str, task_id: str, failed: bool) -> None:
     """After a task's attempt ended: when the task is an automation run (`policyRef` = `SCHED#…`), free the
     claim, record the run, count the failure; three in a row pause the automation (`paused_system: failures`).
     ponytail: one GetItem per ended attempt of every task; carry policyRef on TaskStart if it ever matters."""
+    from core.repositories import automations_repo as repo
     from core.repositories import tasks_repo
+    from core.repositories.tasks_repo import IllegalTransition, VersionConflict
+    from core.services import automation_schedule
 
     task = await tasks_repo.get_task(ws, task_id)
     policy_ref = (task or {}).get("policyRef") or ""
     if not policy_ref.startswith("SCHED#"):
         return
-    await _close_run(ws, policy_ref.removeprefix("SCHED#"), task_id, failed)
-
-
-async def _close_run(ws: str, sid: str, task_id: str, failed: bool | None) -> bool:
-    """Free the claim and record the run; three failures in a row pause the automation. False when this was
-    not the active run (closed already, or replaced)."""
-    from core.repositories import automations_repo as repo
-    from core.repositories.tasks_repo import IllegalTransition, VersionConflict
-    from core.services import automation_schedule
-
+    sid = policy_ref.removeprefix("SCHED#")
     try:
         row = await repo.close_run(ws, sid, task_id, failed=failed)
-    except VersionConflict:
-        return False
+    except VersionConflict:  # not this automation's active run (already closed, or replaced)
+        return
     if row.get("consecutiveFailures", 0) >= BREAKER_FAILURES and row["status"] == "active":
         try:
             row = await repo.set_status(ws, sid, "paused_system", reason="failures", allowed_from=frozenset({"active"}))
         except IllegalTransition:
-            return True
+            return
         await automation_schedule.upsert(row)
-    return True
 
 
 @workflow.defn

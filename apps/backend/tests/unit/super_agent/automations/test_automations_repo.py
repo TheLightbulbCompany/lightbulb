@@ -102,16 +102,6 @@ async def test_close_run_counts_failures_and_resets_on_success(table):
     assert (await repo.close_run(WS, "s1", "t9", failed=True))["consecutiveFailures"] == 2
 
 
-async def test_close_run_with_an_unknown_outcome_keeps_the_count(table):
-    await _active()
-    for i in range(2):
-        await repo.claim_run(WS, "s1", f"t{i}")
-        await repo.close_run(WS, "s1", f"t{i}", failed=True)
-    await repo.claim_run(WS, "s1", "t9")
-    row = await repo.close_run(WS, "s1", "t9", failed=None)
-    assert row["consecutiveFailures"] == 2 and row["runTaskIds"][0] == "t9"
-
-
 async def test_close_run_retry_is_idempotent(table):
     await _active()
     await repo.claim_run(WS, "s1", "t1")

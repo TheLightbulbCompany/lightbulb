@@ -25,6 +25,7 @@ from temporalio.workflow import ActivityCancellationType
 
 from core.temporal.automations import PATCH_AUTOMATION_RUN, AutomationRunMixin
 from core.temporal.task_questions import TaskQuestionsMixin
+from core.temporal.watches import WatchMixin, WatchSpec
 from core.temporal.types import (
     ActionRequest,
     AttemptRef,
@@ -139,7 +140,7 @@ class RouterWorkflow:
 
 
 @workflow.defn
-class TaskWorkflow(TaskQuestionsMixin, AutomationRunMixin):
+class TaskWorkflow(TaskQuestionsMixin, AutomationRunMixin, WatchMixin):
     """`task:{ws}:{taskId}`: slot lease → Attempt → `worker_turn` (async, bridge-completed) → `end_attempt`."""
 
     @workflow.init
@@ -162,12 +163,14 @@ class TaskWorkflow(TaskQuestionsMixin, AutomationRunMixin):
         self._awaiting_start = False  # begin_attempt found a proposed task: only Start runs it
         self.last_event: RunEvent | None = None
         self._q_init()  # Lane Q: open questions (task_questions.py)
+        self._w_init()  # Lane A: watches (watches.py)
 
     # --- hooks (Q, A, S add behaviour here) ------------------------------------------------------------
 
     async def _on_waiting(self) -> None:
         """The task is about to wait for inputs or actions (idle/waiting)."""
         await self._q_on_waiting()
+        await self._w_on_waiting()
 
     async def _before_attempt(self) -> bool:
         """False ⇒ do not start an attempt now; the workflow waits for the next input or action."""
@@ -204,6 +207,19 @@ class TaskWorkflow(TaskQuestionsMixin, AutomationRunMixin):
         self._attempt_needed = True
         self._awaiting_start = False
         self._wakes += 1
+
+    # Lane A: watches (watches.py)
+    @workflow.update
+    async def add_watch(self, spec: WatchSpec) -> str:
+        return await self._w_add(spec)
+
+    @workflow.signal
+    def watch_poke(self, watch_id: str) -> None:
+        self._w_poke(watch_id)
+
+    @workflow.signal
+    def unwatch(self, watch_id: str) -> None:
+        self._w_remove(watch_id)
 
     @workflow.signal
     def run_event(self, event: RunEvent) -> None:
@@ -296,7 +312,7 @@ class TaskWorkflow(TaskQuestionsMixin, AutomationRunMixin):
 
     def _woken(self) -> bool:
         work = (bool(self._pending) or self._attempt_needed) and not self._deferred()
-        return work or self._action is not None or self._stop_by is not None
+        return work or self._action is not None or self._stop_by is not None or self._w_wake
 
     @workflow.run
     async def run(self, start: TaskStart) -> None:

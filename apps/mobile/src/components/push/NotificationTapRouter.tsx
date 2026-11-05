@@ -1,4 +1,5 @@
 import { approvalActivityId, interactionActivityId } from "@lightbulb/shared";
+import { useAuth } from "@clerk/expo";
 import * as Notifications from "expo-notifications";
 import { router, type Href } from "expo-router";
 import { useEffect } from "react";
@@ -79,18 +80,29 @@ let lastRouted: string | undefined;
  * pushed screen keeps its composer draft in its own state, and unwinding would
  * throw an unsent message away.
  */
+/** A task_question tap held while the switch is off, and the signed-in user + workspace it was tapped under. */
+let held: { id: string; owner: string } | undefined;
+
 export function NotificationTapRouter() {
   const response = Notifications.useLastNotificationResponse();
   const superAgent = useSuperAgent();
+  const { userId, orgId } = useAuth();
+  const owner = `${userId ?? ""}:${orgId ?? userId ?? ""}`;
 
   useEffect(() => {
     if (!response) return;
     // A task question's screen lives behind the switch. Off, or while LiveConfig loads, the tap waits (kept, not
     // cleared) and the app stays put as it did before; the switch turning on routes it.
     const tapped = response.notification.request.content.data as TapData | undefined;
-    if (tapped?.source === "task_question" && !superAgent) return;
-    Notifications.clearLastNotificationResponse();
     const id = response.notification.request.identifier;
+    if (tapped?.source === "task_question") {
+      if (held?.id !== id) held = { id, owner };
+      // Held across a sign-out or a workspace switch: it was someone else's (or another workspace's) tap. Drop it.
+      if (held.owner !== owner) { Notifications.clearLastNotificationResponse(); lastRouted = id; held = undefined; return; }
+      if (!superAgent) return;
+      held = undefined;
+    }
+    Notifications.clearLastNotificationResponse();
     if (id === lastRouted) return;
     lastRouted = id;
 
@@ -110,7 +122,7 @@ export function NotificationTapRouter() {
       return;
     }
     for (const href of hrefs) router.push(href);
-  }, [response, superAgent]);
+  }, [response, superAgent, owner]);
 
   return null;
 }

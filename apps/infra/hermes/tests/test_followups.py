@@ -21,6 +21,7 @@ def _clean(monkeypatch):
     turn.DELEGATION_TURN.clear()
     turn.RESTORED.clear()
     followups._attempts.clear()
+    followups._TASKS.clear()
     monkeypatch.setattr(followups, "_retrying", 0)
     yield
     turn.LAST_TURN.clear()
@@ -484,3 +485,54 @@ def test_a_retry_budget_bounds_sustained_5xx(monkeypatch):
     followups.drain_once()
     assert _drained(q) == []
     assert not followups.busy()
+
+
+# ---- audit #9: a Worker session has no room turn: its completions go to the task's /inputs -------
+TASK = "55555555-5555-4555-8555-555555555555"
+TASK_SESSION = f"agent:ceo:lightbulb:task:{TASK}"
+
+
+@pytest.mark.parametrize("status,final", [(202, "complete"), (403, "drop"), (503, "release")])
+def test_a_worker_sessions_completion_becomes_a_task_input(monkeypatch, status, final):
+    ledger = _Ledger()
+    q = _hermes(monkeypatch, [_evt("d1", TASK_SESSION), _evt("d2", TASK_SESSION)], ledger)
+    followups.remember_task(TASK_SESSION, TASK, "secret-1")
+    sent = []
+    monkeypatch.setattr(followups, "_post_input", lambda body: sent.append(body) or status)
+    monkeypatch.setattr(turn, "_post_backend", lambda *a: pytest.fail("no room follow-up for a task session"))
+
+    followups.drain_once()
+
+    body = sent[0]
+    assert {k: body[k] for k in ("taskId", "sessionKey", "kind", "jobId", "runSecret")} == {
+        "taskId": TASK, "sessionKey": TASK_SESSION, "kind": "delegation_completed", "jobId": "d1,d2",
+        "runSecret": "secret-1"}
+    assert "[IMPORTANT: d1]" in body["text"] and "[IMPORTANT: d2]" in body["text"]
+    assert body["deliveryId"] == str(uuid.uuid5(uuid.NAMESPACE_URL, "lightbulb-task-input:d1,d2"))  # stable on retry
+    assert [c[0] for c in ledger.calls if c[0] != "claim"] == [final, final]
+    assert q.qsize() == (2 if final == "release" else 0)
+
+
+def test_an_unknown_session_with_no_room_turn_is_still_dropped(monkeypatch):
+    ledger = _Ledger()
+    _hermes(monkeypatch, [_evt("d1", TASK_SESSION)], ledger)
+    monkeypatch.setattr(followups, "_post_input", lambda body: pytest.fail("no task known"))
+    followups.drain_once()
+    assert ("drop", "d1", "c-d1") in ledger.calls
+
+
+def test_a_worker_run_registers_its_task_and_starts_the_drain(monkeypatch):
+    seen = []
+    monkeypatch.setattr(followups, "remember_task", lambda *a: seen.append(a))
+    monkeypatch.setattr(followups, "ensure_started", lambda: seen.append("started"))
+    monkeypatch.setattr(turn.sync, "profile_lock", lambda _a: (_ for _ in ()).throw(RuntimeError("stop here")))
+    identity = {"agentId": "ceo", "runId": "r1", "sessionKey": TASK_SESSION, "taskId": TASK, "runSecret": "s"}
+    with pytest.raises(RuntimeError, match="stop here"):
+        turn._run_task_turn(identity, {}, family="task")
+    assert seen == [(TASK_SESSION, TASK, "s"), "started"]
+    seen.clear()
+    with pytest.raises(RuntimeError, match="stop here"):  # Paperclip/router/no-secret runs: untouched
+        turn._run_task_turn({**identity, "sessionId": "p", "runSecret": None}, {}, family="task")
+    with pytest.raises(RuntimeError, match="stop here"):
+        turn._run_task_turn({**identity, "sessionId": "p"}, {}, family="paperclip")
+    assert seen == []

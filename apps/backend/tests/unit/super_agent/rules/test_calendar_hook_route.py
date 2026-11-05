@@ -3,6 +3,7 @@ a push for an ordinary calendar automation fires as A7 built it."""
 
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from boto3.dynamodb.conditions import Key
 
 from core import tasks_schema as ts
@@ -27,9 +28,15 @@ EVENT = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _switch_on(monkeypatch):
+    monkeypatch.setattr(rules_activities, "flags_for", AsyncMock(return_value=True))
+    monkeypatch.setattr(rules_activities, "put_metric", lambda *a, **k: None)
+
+
 async def _calendar(env, *, rule: bool):  # noqa: F811
     env.secrets[f"hook-{PID}"] = {"secret": "chan-tok", "mode": "bearer"}
-    await _hook(provider="google", signingMode="bearer", events=["calendar.changed"], account=ME)
+    await _hook(provider="google", signingMode="bearer", events=["calendar.changed"], account=ME, pageToken="t1")
     row = {"scheduleId": "s1", "name": "n", "ownerUserId": "u", "cron": [], "tz": "UTC", "policyText": "p"}
     if rule:
         row |= {"match": {"sources": ["calendar"], "account": ME}, "mode": "observe"}
@@ -44,28 +51,27 @@ def _trig_rows(table):
 
 async def test_calendar_rule_push_records_and_never_fires(env, client, table):  # noqa: F811
     await _calendar(env, rule=True)
-    with (
-        patch.object(rules_activities, "calendar_invites", AsyncMock(return_value=[EVENT])),
-        patch.object(rules_activities, "put_metric", lambda *a, **k: None),
-    ):
+    with patch.object(rules_activities, "_sync", AsyncMock(return_value=([EVENT], "t2"))):
         r = _post(client, b"", HEADERS)
     assert r.status_code == 202 and r.json() == {"status": "accepted"}
     assert env.temporal.started == [] and _s3_keys(env) == []
     assert _trig_rows(table) == [f"TRIG#{ts.rule_trigger_id('s1', f'cal:{ME}:e1')}"]
+    assert (await automations_repo.get_hook(WS, PID))["pageToken"] == "t2"
 
 
 async def test_calendar_rule_push_gog_down_503(env, client, table):  # noqa: F811
     await _calendar(env, rule=True)
-    with patch.object(rules_activities, "calendar_invites", AsyncMock(side_effect=ValueError("gog down"))):
+    with patch.object(rules_activities, "_sync", AsyncMock(side_effect=ValueError("gog down"))):
         r = _post(client, b"", HEADERS)
     assert r.status_code == 503 and r.headers["Retry-After"] == "30"
     assert env.temporal.started == [] and _trig_rows(table) == []
+    assert (await automations_repo.get_hook(WS, PID))["pageToken"] == "t1"
 
 
 async def test_calendar_push_for_a_plain_automation_fires_as_before(env, client, table):  # noqa: F811
     await _calendar(env, rule=False)
-    with patch.object(rules_activities, "calendar_invites", AsyncMock()) as invites:
+    with patch.object(rules_activities, "_sync", AsyncMock()) as sync:
         r = _post(client, b"", HEADERS)
     assert r.status_code == 202
-    invites.assert_not_awaited()
+    sync.assert_not_awaited()
     assert [s[0] for s in env.temporal.started] == ["TriggerFireWorkflow"] and _trig_rows(table) == []

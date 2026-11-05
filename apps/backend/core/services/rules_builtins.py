@@ -34,7 +34,11 @@ async def ensure_invite_prep(ws: str) -> list[str]:
         if not owner:
             continue
         row, _ = await automations_repo.create_schedule(ws, rules.invite_prep_row(account["email"], owner))
-        if not row.get("hookPublicIds"):
+        if row.get("pausedReason") == "google_watch_broken":  # the keeper gave up: drop the dead watch, open a new one
+            for pid in row.get("hookPublicIds") or []:
+                await automation_hooks.delete(ws, pid)
+            row = await _watch(ws, row["scheduleId"], account["email"], owner)
+        elif not row.get("hookPublicIds"):
             row = await _watch(ws, row["scheduleId"], account["email"], owner)
         ids.append(row["scheduleId"])
     return ids

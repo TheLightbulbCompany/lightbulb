@@ -59,6 +59,22 @@ async def test_ensure_invite_prep_scope_missing(world):
     assert row["status"] == "active" and len(row["hookPublicIds"]) == 1
 
 
+async def test_ensure_invite_prep_rewatches_a_broken_watch(world):
+    """The keeper gave up (three failed renewals): the next ensure drops the dead watch and opens a new one."""
+    (sid,) = await rules_builtins.ensure_invite_prep(WS)
+    (old_pid,) = (await automations_repo.get_schedule(WS, sid))["hookPublicIds"]
+    await automations_repo.set_status(
+        WS, sid, "paused_system", reason="google_watch_broken", allowed_from=frozenset({"active"})
+    )
+    await rules_builtins.ensure_invite_prep(WS)
+    row = await automations_repo.get_schedule(WS, sid)
+    (new_pid,) = row["hookPublicIds"]
+    assert row["status"] == "active" and new_pid != old_pid
+    assert await automations_repo.get_hook(WS, old_pid) is None
+    assert world.env.temporal.cancelled == [f"gwatch:{WS}:{old_pid}"]
+    assert [s[1][1] for s in world.env.temporal.started] == [old_pid, new_pid]
+
+
 async def test_on_google_connect_is_behind_the_switch_and_best_effort(monkeypatch):
     ensure = AsyncMock(side_effect=RuntimeError("clerk down"))
     monkeypatch.setattr(rules_builtins, "ensure_invite_prep", ensure)

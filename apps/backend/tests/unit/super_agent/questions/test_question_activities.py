@@ -194,3 +194,9 @@ async def test_note_answerers_unavailable_posts_once(world, relay):
     await _run(tq.note_answerers_unavailable, WS, TASK)
     kw = relay["post"].await_args.kwargs
     assert kw["text"].startswith("Couldn't find who can approve") and kw["event_id"].startswith("q-lookup-failed:")
+
+
+async def test_note_answerers_unavailable_missing_task_fails(world, relay):
+    with pytest.raises(LookupError):
+        await _run(tq.note_answerers_unavailable, WS, "9f14e45f-ceea-467a-9575-8a1b2c3d4e5f")
+    relay["post"].assert_not_awaited()

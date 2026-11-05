@@ -4,7 +4,9 @@
 (a task's history, answered and cancelled included; visible through `tasks_access.can_view`). Both are 404 unless the
 workspace's switch is on. Mounted before `routers/tasks.py` so `/tasks/{id}/questions` is never read as a task route.
 
-The answer route (`POST …/questions/{qid}/answer`) lands with the `answer` update on `TaskWorkflow` (wave2-Q Task 3).
+`POST /api/v1/tasks/{taskId}/questions/{qid}/answer` is the ONLY way a Question is answered (spec 05 §3.5 layer 1):
+a person's first-party Clerk session only (no computer, hook, hosted-MCP/OAuth or A2A caller), authority re-checked
+now (`questions.can_answer_now`), then the `answer` update on `TaskWorkflow`. Typed text never answers anything.
 """
 
 from __future__ import annotations
@@ -12,12 +14,19 @@ from __future__ import annotations
 import asyncio
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.security import HTTPAuthorizationCredentials
+from pydantic import BaseModel, ConfigDict, Field
+from pydantic.alias_generators import to_camel
 
-from core.auth import AuthContext, get_current_user, resolve_owner_id
-from core.repositories import questions_repo, tasks_repo
-from core.services import super_agent_flags, tasks_access
+from core import tasks_schema as ts
+from core.auth import AuthContext, get_current_user, get_human_session, resolve_owner_id, security_optional
+from core.dynamodb import utc_now_iso
+from core.repositories import effects_repo, questions_repo, tasks_repo
+from core.services import questions, super_agent_flags, tasks_access
 from core.services.messaging import human_display_name
+from core.temporal import client as temporal_client
+from core.temporal.task_questions import AnswerRef
 
 router = APIRouter()
 
@@ -111,3 +120,119 @@ async def task_questions(task_id: str, auth: Annotated[AuthContext, Depends(get_
         raise _not_found()  # not visible reads the same as missing
     qs = sorted(await questions_repo.list_for_task(ws, task_id), key=lambda q: q["createdAt"])
     return {"items": await _views(qs, auth.user_id)}
+
+
+# --- answer -------------------------------------------------------------------------------------------
+
+
+class AnswerBody(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid")
+
+    option_id: str = Field(min_length=1, max_length=64)
+    text: str | None = Field(default=None, max_length=4000)
+    edits: dict | None = None  # accepted for the spec 05 shape; no subkind takes edits in wave 2
+    client_answer_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,64}$")
+    expect_version: int | None = None
+
+
+def _problem(status: int, code: str, **extra: Any) -> HTTPException:
+    return HTTPException(status_code=status, detail={"code": code, **extra})
+
+
+async def person_only(
+    request: Request, credentials: HTTPAuthorizationCredentials | None = Depends(security_optional)
+) -> AuthContext:
+    """A person pressing a button: a computer's proof header is refused before any token is read; then only a
+    first-party Clerk session token (`get_human_session` refuses OAuth/hosted-MCP and template tokens; a hook
+    token is not a Clerk JWT and fails as 401)."""
+    if request.headers.get("X-Lightbulb-Proof"):
+        raise _problem(403, "computer_caller")
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return await get_human_session(credentials)
+
+
+def _failure_codes(err: BaseException) -> set[str]:
+    """Every error type and message along a failed update's cause chain (validator message, Activity type)."""
+    codes: set[str] = set()
+    seen: BaseException | None = err
+    while seen is not None:
+        codes.add(type(seen).__name__)
+        codes.add(str(getattr(seen, "message", "") or ""))
+        if getattr(seen, "type", None):
+            codes.add(seen.type)
+        seen = seen.__cause__ or getattr(seen, "cause", None)
+    return codes
+
+
+async def _answered_view(ws: str, task: dict, qid: str, viewer: str) -> dict[str, Any]:
+    tree = await tasks_repo.get_task_tree(ws, task["taskId"])
+    tree["effects"] = await effects_repo.effects_of_task(ws, task["taskId"])
+    q = next(q for q in tree["questions"] if q["qid"] == qid)
+    [view] = await _views([q], viewer)
+    return {"question": view, "next": tasks_access.summarize(tree, viewer)}
+
+
+def _not_open(q: dict) -> HTTPException:
+    if q["state"] == "cancelled":
+        return _problem(409, "not_open", state="cancelled", by=q.get("cancelledBy"), at=q.get("cancelledAt"))
+    return _problem(409, "not_open", state=q["state"], by=q.get("answeredBy"), at=q.get("answeredAt"))
+
+
+@router.post("/tasks/{task_id}/questions/{qid}/answer")
+async def answer(task_id: str, qid: str, body: AnswerBody, auth: Annotated[AuthContext, Depends(person_only)]):
+    ws = await _workspace(auth)
+    me = auth.user_id
+    task = await tasks_repo.get_task(ws, task_id)
+    if task is None or not await tasks_access.can_view(task, me):
+        raise _not_found()
+    q = await questions_repo.get_question(ws, task_id, qid)
+    if q is None:
+        raise _not_found()
+    if q["state"] != "open":
+        if q["state"] == "answered" and q.get("clientAnswerId") == body.client_answer_id and q.get("answeredBy") == me:
+            return await _answered_view(ws, task, qid, me)  # the same press again
+        raise _not_open(q)
+    if not await questions.can_answer_now(ws, q, me):
+        raise _problem(403, "not_answerer")
+    offered = {o["id"] for o in q.get("options") or []} or {"answer"}
+    if body.option_id not in offered:
+        raise _problem(400, "invalid_option")
+    trigger_id = None
+    if body.text:
+        # The text rides on a Trigger row; the Temporal update carries ids only.
+        trigger_id = ts.trigger_id("answer", qid, body.client_answer_id)
+        await tasks_repo.put_trigger(
+            ws,
+            {
+                "triggerId": trigger_id,
+                "source": "answer",
+                "ref": {"taskId": task_id, "qid": qid, "optionId": body.option_id, "text": body.text},
+                "admission": "respond",
+                "lane": "shared",
+                "actorUserId": me,
+                "receivedAt": utc_now_iso(),
+            },
+        )
+    ref = AnswerRef(qid, body.option_id, trigger_id, me, body.client_answer_id, body.expect_version)
+    try:
+        await temporal_client.update_task(ws, task_id, "answer", ref)
+    except temporal_client.TemporalUnavailable as err:
+        raise _problem(503, "TEMPORAL_UNAVAILABLE", retryable=True) from err
+    except Exception as err:  # noqa: BLE001 -- an update failure: the row says what happened
+        codes = _failure_codes(err)
+        now = await questions_repo.get_question(ws, task_id, qid)
+        if now and now["state"] == "answered" and now.get("clientAnswerId") == body.client_answer_id:
+            return await _answered_view(ws, task, qid, me)
+        if now and now["state"] != "open":
+            raise _not_open(now) from err
+        if "task_closed" in codes:
+            raise _problem(409, "task_closed") from err
+        if {"not_answerer", "NotAnswerer"} & codes:
+            raise _problem(403, "not_answerer") from err
+        if "InvalidOption" in codes:
+            raise _problem(400, "invalid_option") from err
+        if "VersionConflict" in codes:
+            raise _problem(409, "stale_version") from err
+        raise _problem(502, "answer_failed") from err
+    return await _answered_view(ws, task, qid, me)

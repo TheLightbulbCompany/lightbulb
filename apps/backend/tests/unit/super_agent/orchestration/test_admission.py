@@ -244,6 +244,22 @@ async def test_lightbulb_mentions_only_room_skips_jev(world):
     assert world["jev"] == [] and world["router"] == []
 
 
+@pytest.mark.parametrize("listen", ["active", "mentions"])
+async def test_naming_lightbulb_addresses_it(world, listen):
+    """Live A-run: "Hi Lightbulb, we're launching the workshop in March." in #general got no reply. Naming
+    Lightbulb (no @) is addressing it, even in a mentions-only room; no Jev call, nothing pinned."""
+    world["listen"] = listen
+    tid = await _admit(world, {**_msg(), "text": "Hi Lightbulb, we're launching the workshop in March."})
+    assert world["router"] == [admission.TriggerRef(WS, tid, "shared", "respond", ROOM)]
+    assert world["jev"] == [] and "pinnedSpecialist" not in (await repo.get_trigger(WS, tid))["ref"]
+
+
+async def test_lightbulbs_inside_words_do_not_address_it(world):
+    world["listen"] = "mentions"
+    await _admit(world, {**_msg(), "text": "the lightbulbs in the office need changing; mylightbulb.app is down"})
+    assert world["router"] == []
+
+
 async def test_admit_redelivery_is_idempotent(world):
     msg = _msg(targets=[{"agentId": CEO, "eventKind": "user_request"}])
     tid = await _admit(world, msg)

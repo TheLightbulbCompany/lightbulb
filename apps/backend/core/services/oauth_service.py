@@ -40,6 +40,7 @@ from botocore.exceptions import ClientError
 from core.config import settings
 from core.encryption import get_fernet
 from core.repositories import billing_repo
+from core.services.super_agent_flags import flags_for
 
 
 logger = logging.getLogger(__name__)
@@ -326,27 +327,55 @@ async def poll_device_code(*, user_id: str) -> DevicePollResult | object:
     expires_in = body.get("expires_in")
     if expires_in:
         token_fields["expires_at"] = int(time.time() * 1000) + int(expires_in) * 1000
+    # Super-agent (spec 13 T1): a new connect in a workspace with the switch on is backend-custodied
+    # from the start -- the backend alone refreshes it (``version`` is the CAS counter). Switch off:
+    # the row is exactly today's (no custody attribute = the VM rotates it).
+    backend = await flags_for(bound_owner_id)
+    if backend:
+        token_fields["expires_at"] = _expires_at_ms(access_token) or token_fields.get("expires_at") or 0
     tokens_plain = json.dumps(token_fields).encode()
     encrypted = get_fernet().encrypt(tokens_plain)
+    values: dict[str, Any] = {
+        ":ok": "active",
+        ":tok": encrypted,
+        ":acc": account_id or "",
+        # The workspace this sign-in was completed for. A consumption read
+        # that passes a different ``bound_to`` is rejected (see
+        # get_decrypted_tokens) — one ChatGPT account ↔ one container.
+        ":bound": bound_owner_id,
+    }
+    if backend:
+        values.update({":backend": "backend", ":one": 1, ":exp": token_fields["expires_at"]})
 
     _table().update_item(
         Key={"user_id": user_id},
         UpdateExpression=(
-            "SET #s = :ok, encrypted_tokens = :tok, account_id = :acc, bound_owner_id = :bound "
+            ("SET custody = :backend, version = :one, expires_at = :exp, " if backend else "SET ")
+            + "#s = :ok, encrypted_tokens = :tok, account_id = :acc, bound_owner_id = :bound "
             "REMOVE device_auth_id, user_code, #i"
         ),
         ExpressionAttributeNames={"#s": "state", "#i": "interval"},
-        ExpressionAttributeValues={
-            ":ok": "active",
-            ":tok": encrypted,
-            ":acc": account_id or "",
-            # The workspace this sign-in was completed for. A consumption read
-            # that passes a different ``bound_to`` is rejected (see
-            # get_decrypted_tokens) — one ChatGPT account ↔ one container.
-            ":bound": bound_owner_id,
-        },
+        ExpressionAttributeValues=values,
     )
     return DevicePollResult(account_id=account_id, bound_owner_id=bound_owner_id)
+
+
+def _jwt_claims(token: str) -> dict:
+    """The unverified claims of a JWT (``{}`` when it is not one). OpenAI just issued it to us
+    over TLS; we only read opaque fields out of it."""
+    import base64
+
+    try:
+        payload = token.split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+        return claims if isinstance(claims, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _expires_at_ms(access_token: str) -> int | None:
+    exp = _jwt_claims(access_token).get("exp")
+    return int(exp) * 1000 if isinstance(exp, int | float) else None
 
 
 def _extract_account_id(access_token: str) -> str | None:
@@ -417,6 +446,51 @@ async def get_decrypted_tokens(*, user_id: str, bound_to: str | None = None) -> 
         return None
     plain = get_fernet().decrypt(bytes(row["encrypted_tokens"]))
     return json.loads(plain.decode())
+
+
+async def get_token_row(user_id: str, *, consistent: bool = True, bound_to: str | None = None) -> dict | None:
+    """The raw token row (``custody``, ``version``, ``expires_at``, ...) with ``tokens`` decrypted
+    in place of ``encrypted_tokens``. None when there is no active row for ``bound_to``."""
+    row = _table().get_item(Key={"user_id": user_id}, ConsistentRead=consistent).get("Item")
+    if not row or row.get("state") != "active" or not _row_belongs_to(row, bound_to):
+        return None
+    out = {k: v for k, v in row.items() if k != "encrypted_tokens"}
+    out["tokens"] = json.loads(get_fernet().decrypt(bytes(row["encrypted_tokens"])).decode())
+    for key in ("version", "expires_at"):
+        if key in out:
+            out[key] = int(out[key])
+    return out
+
+
+async def cas_update_tokens(user_id: str, *, expected_version: int, tokens: dict) -> bool:
+    """Write refreshed tokens iff the row is still active, backend-custodied and at
+    ``expected_version`` (the broker's conditional write). Bumps ``version``. False when the
+    condition fails: another refresh won, or the row was revoked (it is never resurrected)."""
+    from datetime import UTC, datetime
+
+    expires_at = _expires_at_ms(tokens.get("access_token") or "") or int(tokens.get("expires_at") or 0)
+    tokens = {**tokens, "expires_at": expires_at}
+    try:
+        _table().update_item(
+            Key={"user_id": user_id},
+            UpdateExpression="SET encrypted_tokens = :tok, version = :next, expires_at = :exp, last_refresh = :now",
+            ConditionExpression="version = :v AND custody = :backend AND #s = :active",
+            ExpressionAttributeNames={"#s": "state"},
+            ExpressionAttributeValues={
+                ":tok": get_fernet().encrypt(json.dumps(tokens).encode()),
+                ":next": expected_version + 1,
+                ":exp": expires_at,
+                ":now": datetime.now(UTC).isoformat(),
+                ":v": expected_version,
+                ":backend": "backend",
+                ":active": "active",
+            },
+        )
+        return True
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise
 
 
 async def has_active_oauth(

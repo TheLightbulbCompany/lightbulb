@@ -360,3 +360,5 @@ export type { CardName } from "./ui/library";
 export { cardReplyRequest, choiceReply, formReply, tableReply } from "./ui/reply";
 export type { CardReply } from "./ui/reply";
 export { answerIsFormOf, answerIsFrom, answerIsTableOf, cardAnswerFor, cardAnswersFor } from "./ui/answer";
+export { TASK_STATUSES, SHOWN_GROUPS, taskView } from "./tasks/view";
+export type { EffectRow, QuestionRow, ShownGroup, TaskAction, TaskRow, TaskStatus, TaskView, TaskViewInput } from "./tasks/view";

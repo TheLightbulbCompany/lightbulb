@@ -75,7 +75,7 @@ async def router_runs(ws: str) -> list[dict[str, Any]]:
     continued-as-new hides earlier batches -- read ``first_execution_run_id`` chains if that ever matters."""
     from temporalio.converter import DataConverter
 
-    from core.services import runtime_runs, task_conversation
+    from core.services import agent_registry, runtime_runs
     from core.temporal.types import RouterTurnIn
 
     client = await dev_temporal_client()
@@ -92,7 +92,9 @@ async def router_runs(ws: str) -> list[dict[str, Any]]:
         except KeyError:  # a batch recorded by an older worker lacks a field the type now has: skip it
             continue
         batches.append(inp)
-    front = await task_conversation.front_agent_id(ws)
+    # The registry's CEO, as the Router does under the switch: this script runs with the env master off, where
+    # front_agent_id falls back to the Paperclip workspace row (gate run 2: KeyError 'created_at').
+    front = next(a["id"] for a in await agent_registry.roster(ws) if a.get("role") == "ceo")
     out = []
     for inp in batches:
         identity = runtime_runs.RunIdentity(

@@ -738,3 +738,23 @@ async def test_a_batch_without_a_room_message_says_no_lines_are_known(world):
     world["decisions"] = [{"kind": "reply", "triggerIds": [t1], "text": "Hello."}]
     await _run([t1])
     assert "## Recent in this conversation\n- not available" in world["runs"][0][1].input
+
+
+@pytest.mark.asyncio
+async def test_a_deliver_room_that_is_not_a_room_never_fails_the_batch(world, monkeypatch):
+    """Gate run 2 (A11): a Run-now trigger delivering to `acc-a1-66ac88` crashed _deliver (bad UUID), failed the
+    batch and its fallback, and its task sat queued with no workflow. Now: no post, the task still starts."""
+    t1 = await _trig("manual:s1:r1", source="manual", ref={"deliverRoomId": "acc-a1-66ac88"})
+    world["decisions"] = [_start([t1])]
+    out = await _run([t1])
+    assert out.started_task_ids == [ts.router_task_id(BATCH, 0, 0)] and world["posts"] == []
+    assert world["starts"] == [(ts.router_task_id(BATCH, 0, 0), "router")]
+
+    async def gone(room_id):
+        return None
+
+    monkeypatch.setattr(acts.messaging_repo, "get_room", gone)  # a deleted room: same
+    t2 = await _trig("chat:m2")
+    world["decisions"] = [{"kind": "reply", "triggerIds": [t2], "text": "Hi."}]
+    await _run([t2], batch=str(uuid.UUID(int=7)))
+    assert world["posts"] == []

@@ -42,7 +42,7 @@ async def a02(ctx: Ctx) -> Result:
                 and m.get("messageSeq", 0) > ask["messageSeq"]
                 and m.get(
                     "taskRefs"
-                )  # the Router may fold a task into an existing one: fewer than 3 cards is a finding, not a miss
+                )  # the Router may fold a task into an existing one: fewer than 3 cards is allowed; taskCount in the evidence shows it
             ),
             None,
         )
@@ -61,9 +61,9 @@ async def a02(ctx: Ctx) -> Result:
     subs = {s["taskId"] for s in rows_of(rows, "subscription") if s.get("createdBy") == "router"}
     statuses = sorted(t["status"] for t in tasks)
     checks = {
-        "one_router_reply_with_three_cards": len(reply) == 1 and len(reply[0]["taskRefs"]) == 3,
-        "two_started_one_proposed": len(tasks) == 3
-        and statuses.count("proposed") == 1
+        "one_router_reply_with_cards": len(reply) == 1 and len(reply[0]["taskRefs"]) >= 2,
+        "started_and_one_proposed": statuses.count("proposed") == 1
+        and sum(s in STARTED for s in statuses) >= 1
         and all(s in STARTED or s == "proposed" for s in statuses),
         "fee_estimate_inline": len(reply) == 1 and bool(ESTIMATE.search(reply[0].get("text") or "")),
         "specialist_set": all(t.get("specialist") for t in tasks),

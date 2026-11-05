@@ -1898,7 +1898,15 @@ export class ServiceStack extends cdk.Stack {
       NIGHTLY_CEO_HEARTBEATS_ENABLED: env === "dev" ? "false" : "true",
       // Super-agent env master: set where the gate is on (dev) and absent elsewhere, so prod's
       // task definition is unchanged and the backend default (false) holds.
-      ...(superAgentEnabled(env) ? { SUPER_AGENT_ENV_ENABLED: "true" } : {}),
+      ...(superAgentEnabled(env)
+        ? {
+            SUPER_AGENT_ENV_ENABLED: "true",
+            // Temporal Cloud (contracts-v2 §16); the API key is TEMPORAL_API_KEY in backendContainerSecrets.
+            TEMPORAL_ADDRESS: `lightbulb-${env}.nv5xx.tmprl.cloud:7233`,
+            TEMPORAL_NAMESPACE: `lightbulb-${env}.nv5xx`,
+            TEMPORAL_TASK_QUEUE: "lightbulb",
+          }
+        : {}),
       // PostHog server-side reads for the admin Activity tab.
       // us.posthog.com is the API host for US Cloud (our project lives
       // there). Project ID is public — visible in the PostHog dashboard
@@ -2109,6 +2117,15 @@ export class ServiceStack extends cdk.Stack {
           props.secretNames.sesIngestSecret,
         ),
       ),
+      // Temporal Cloud API key (minted with tcld straight into Secrets Manager). Covered by the
+      // lightbulb/{env}/* read grants like every other secret here.
+      ...(superAgentEnabled(env)
+        ? {
+            TEMPORAL_API_KEY: ecs.Secret.fromSecretsManager(
+              secretsmanager.Secret.fromSecretNameV2(this, "ImportTemporalApiKey", `lightbulb/${env}/temporal_api_key`),
+            ),
+          }
+        : {}),
     };
 
     // ---------------------------------------------------------------------
@@ -2575,6 +2592,43 @@ export class ServiceStack extends cdk.Stack {
 
     // Register with ALB target group
     this.service.attachToApplicationTargetGroup(props.targetGroup);
+
+    // -------------------------------------------------------------------------
+    // Temporal worker (super-agent, dev only; contracts-v2 §16, wave-1 plan T4)
+    // -------------------------------------------------------------------------
+    // The backend image run as `scripts.temporal_worker` on task queue `lightbulb`. No port and no
+    // load balancer: it only dials out to Temporal Cloud (serviceSg allows all egress). SIGTERM ->
+    // worker.shutdown() with a 20 s graceful window, inside the 30 s stopTimeout.
+    if (superAgentEnabled(env)) {
+      const workerTaskDef = new ecs.FargateTaskDefinition(this, "TemporalWorkerTaskDef", {
+        family: `lightbulb-${env}-temporal-worker`,
+        cpu: 512,
+        memoryLimitMiB: 1024,
+        taskRole: this.taskRole,
+        executionRole: taskExecutionRole,
+      });
+      workerTaskDef.addContainer("temporal-worker", {
+        image: ecs.ContainerImage.fromDockerImageAsset(backendImage),
+        // The venv python directly, as the Lambdas do: no `uv run` sync at start.
+        command: ["/app/.venv/bin/python", "-m", "scripts.temporal_worker"],
+        environment: backendContainerEnvironment,
+        secrets: backendContainerSecrets,
+        logging: ecs.LogDrivers.awsLogs({ streamPrefix: "temporal-worker", logGroup }),
+        stopTimeout: cdk.Duration.seconds(30),
+      });
+      new ecs.FargateService(this, "TemporalWorkerService", {
+        serviceName: `lightbulb-${env}-temporal-worker`,
+        cluster: props.container.cluster,
+        taskDefinition: workerTaskDef,
+        desiredCount: 1,
+        capacityProviderStrategies: DEV_SPOT,
+        circuitBreaker: { rollback: true },
+        vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+        securityGroups: [serviceSg],
+        assignPublicIp: false,
+        enableExecuteCommand: true,
+      });
+    }
 
     // Horizontal autoscaling: the machine relay (sub-project D) moved every
     // remaining piece of per-connection state that made a second instance

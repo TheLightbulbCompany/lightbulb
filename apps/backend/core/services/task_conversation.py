@@ -150,8 +150,8 @@ async def forward_card_reply(ws: str, task_id: str, message: dict) -> None:
             client_message_id=None,
             attrs={"forwardedFrom": {"roomId": message["roomId"], "messageId": message["messageId"]}},
         )
-    except messaging_repo.IdempotencyConflict:
-        return
+    except (messaging_repo.IdempotencyConflict, messaging_repo.RoomNotFound):
+        return  # already forwarded, or the task's room is not there yet (nothing to catch up on)
     if not replayed:
         messaging._publish_message_created_soon(item)
 

@@ -424,3 +424,20 @@ async def test_quiet_resolve_after_a_closed_attempt_closes_once(temporal_env):
     await _run_until(temporal_env, fakes, nothing)  # completed → idle → 7-day quiet → resolved
     assert fakes.args("transition") == [(WS, TID, "resolved", "quiet")]
     assert fakes.args("close_automation_run") == [(WS, TID, False)]  # once: after the attempt, not again
+
+
+@pytest.mark.parametrize("user,room", [("user_sam", "dm-sam"), ("user_ada", None)])
+async def test_dm_delivery_resolves_the_owners_dm_with_lightbulb(env, user, room):
+    """Audit item 8: `dm:{owner}` answers in the owner's DM with the front agent; a dm: naming anyone else is not
+    delivered. Either way the run stays person-visible."""
+    await _active(deliverTo=f"dm:{user}")
+    dm = AsyncMock(return_value="dm-sam")
+    with (
+        patch("core.services.messaging._agent_dm_room_id", dm),
+        patch("core.services.task_conversation.front_agent_id", AsyncMock(return_value="agent_ceo")),
+    ):
+        await fire_automation(_sched_input(), _ms("2027-01-04T14:00:00+00:00"))
+    ((trigger, room_id),) = env.enqueued
+    assert room_id == room and trigger.ref["start"]["visibility"] == "person"
+    if room:
+        dm.assert_awaited_once_with(WS, "user_sam", "agent_ceo")

@@ -16,6 +16,7 @@ import base64
 import secrets
 import logging
 import time
+import uuid
 from datetime import timedelta
 
 from temporalio import activity
@@ -33,6 +34,7 @@ from core.services import (
     push_service,
     runtime_runs,
     runtime_transport,
+    source_replies,
     super_agent_faults,
     task_conversation,
 )
@@ -625,15 +627,12 @@ def _thread_key(trig: dict) -> str | None:
     return None
 
 
-async def _deliver_source_reply(ws: str, trig: dict, text: str, event_id: str) -> bool:
-    """A `reply` to a mail/text trigger goes back the way it came (lane A's `source_replies.deliver_reply`,
-    idempotent on `event_id`); False until that module lands, and the reply falls back to the deliver room."""
+async def _room_exists(room_id: str) -> bool:
     try:
-        from core.services import source_replies  # type: ignore[import-not-found]
-    except ImportError:
+        uuid.UUID(room_id)
+    except ValueError:
         return False
-    await source_replies.deliver_reply(ws, trig, text, idempotency_key=event_id)
-    return True
+    return await messaging_repo.get_room(room_id) is not None
 
 
 async def _deliver(
@@ -642,10 +641,14 @@ async def _deliver(
     """Post in the trigger's place: its thread or room (chat), the deliver room (other sources), or back to the
     sender for a plain mail/text reply. Idempotent on `event_id`."""
     ref = trig.get("ref") or {}
-    if trig["source"] in ("mail", "text") and not refs and await _deliver_source_reply(ws, trig, text, event_id):
+    if trig["source"] in ("mail", "text") and not refs:
+        # A plain reply goes back the way it came (lane A's sender), idempotent on `event_id`.
+        await source_replies.deliver_reply(ws, trig, text, idempotency_key=event_id)
         return None
     room = ts.trigger_room(trig)
-    if not room:
+    if not room or not await _room_exists(room):
+        # A deliver room that is not a room (gate run 2: an automation saved with `room:acc-a1-…`) must not fail
+        # the batch: its other triggers' tasks still start, and this trigger's task still runs.
         logger.warning("trigger %s has nowhere to answer (source %s)", trig["triggerId"], trig["source"])
         return None
     return await task_conversation.post_as_lightbulb(
@@ -715,7 +718,7 @@ async def _apply(
     `router_task_id(batch, i, k)`, event ids `router:{batch}:{i}`; returns ids only."""
     slots: dict[str, dict] = {}
     covered: set[str] = set()
-    routed_to: dict[str, str] = {}  # every trigger a start or pass_through covers → its task
+    routed_to: dict[str, list[str]] = {}  # every trigger a start or pass_through covers → its tasks, in order
 
     def slot(tid: str) -> dict:
         return slots.setdefault(
@@ -770,7 +773,7 @@ async def _apply(
             sl["refs"].append({"taskId": task_id, "role": "started"})
             sl["starts"].append(task_id)
             for tid in dec.trigger_ids:
-                routed_to.setdefault(tid, task_id)
+                routed_to.setdefault(tid, []).append(task_id)
         elif isinstance(dec, ts.ProposeTasks):
             for k, t in enumerate(dec.tasks):
                 task_id = ts.router_task_id(inp.batch_id, i, k)
@@ -796,10 +799,14 @@ async def _apply(
             if blocked := await task_conversation.gate_input(ws, dec.task_id, trig):  # §14.10, like a start
                 sl["lines"].append(blocked)
                 continue
-            await temporal_client.signal_task_input(ws, dec.task_id, TaskInputRef(primary, "message"))
+            if (trig.get("routedTo") or {}).get("taskId") != dec.task_id:
+                # Once per trigger and task: a retried router_turn reads the routedTo it recorded and never
+                # signals again (the workflow dedupes in its run; this also covers a run that ended in between).
+                await temporal_client.signal_task_input(ws, dec.task_id, TaskInputRef(primary, "message"))
+                await tasks_repo.set_trigger_routed_to(ws, primary, {"taskId": dec.task_id})
             sl["passes"].append(dec.task_id)
             for tid in dec.trigger_ids:
-                routed_to.setdefault(tid, dec.task_id)
+                routed_to.setdefault(tid, []).append(dec.task_id)
             ack(sl, dec.ack)
         elif isinstance(dec, ts.Ask):
             sl["lines"].append(dec.text + (f" ({' / '.join(dec.options)})" if dec.options else ""))
@@ -812,6 +819,7 @@ async def _apply(
 
     started: list[str] = []
     posted: list[str] = []
+    failed: list[str] = []
     for idx, tid in enumerate(inp.trigger_ids):
         sl, trig = slots.get(tid), triggers.get(tid)
         if not sl or not trig:
@@ -839,12 +847,27 @@ async def _apply(
         for task_id in sl["starts"] + sl["proposed"]:
             await _subscribe(ws, task_id, ack_thread)
         for task_id in sl["starts"]:
-            await temporal_client.start_task_workflow(ws, task_id, "router")
+            try:
+                await temporal_client.start_task_workflow(ws, task_id, "router")
+            except Exception:  # noqa: BLE001 -- one bad start never skips the batch's other starts
+                logger.warning("start_task_workflow failed for task %s", task_id, exc_info=True)
+                failed.append(task_id)
+                continue
             started.append(task_id)
-    for tid, task_id in routed_to.items():
+    # Recorded for what did start, before any raise: a second failure never loses them, and apply_fallback sees a
+    # trigger whose cards are already posted.
+    for tid, task_ids in routed_to.items():
+        # The first task that did start (a trigger fanned out to A, failed, and B, started, records B).
+        task_id = next((t for t in task_ids if t not in failed), None)
+        if task_id is None:
+            continue
         await tasks_repo.set_trigger_routed_to(ws, tid, {"taskId": task_id})
         if _thread_key(triggers[tid]):
             await rules_activities.note_task_started(ws, _thread_key(triggers[tid]))  # rules (S6): did it yourself
+    if failed:
+        # After every other start went out: the Activity retries, and a retried start is a no-op for those
+        # already running (USE_EXISTING), so the failed ones get another go instead of sitting queued.
+        raise RuntimeError(f"start_task_workflow failed for {failed}")
     return RouterTurnOut(inp.batch_id, started, posted)
 
 
@@ -933,9 +956,9 @@ async def apply_fallback(ws: str, trigger_ids: list[str]) -> None:
     for tid in trigger_ids:
         trig = await tasks_repo.get_trigger(ws, tid)
         if trig and trig["admission"] == "respond":
-            await _deliver(
-                ws, trig, router_prompt.FALLBACK, event_id=f"router-fallback:{tid}", refs=None, remember=False
-            )
+            # Work already started for it (its ack and cards are posted): say only that the rest did not start.
+            line = router_prompt.PARTIAL if (trig.get("routedTo") or {}).get("taskId") else router_prompt.FALLBACK
+            await _deliver(ws, trig, line, event_id=f"router-fallback:{tid}", refs=None, remember=False)
 
 
 ACTIVITIES = [

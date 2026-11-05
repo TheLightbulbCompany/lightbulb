@@ -2,8 +2,6 @@
 Review focus 2: a retried `router_turn` applies once."""
 
 import re
-import sys
-import types
 import uuid
 
 import pytest
@@ -424,7 +422,9 @@ async def test_reply_to_mail_trigger_uses_deliver_reply(world, monkeypatch):
     async def deliver_reply(ws, trigger, text, *, idempotency_key):
         sent.append((trigger["triggerId"], text, idempotency_key))
 
-    monkeypatch.setitem(sys.modules, "core.services.source_replies", types.SimpleNamespace(deliver_reply=deliver_reply))
+    # The module activities imported, not sys.modules: once anything imported the real one, `from core.services
+    # import source_replies` reads the package attribute and a sys.modules stand-in is never seen (suite order).
+    monkeypatch.setattr(acts.source_replies, "deliver_reply", deliver_reply)
     t1 = await _trig("mail:abc", source="mail", ref={"text": "Can you send the invoice?", "from": "bob@acme.test"})
     world["decisions"] = [{"kind": "reply", "triggerIds": [t1], "text": "Sent it just now."}]
     await _run([t1])
@@ -738,3 +738,97 @@ async def test_a_batch_without_a_room_message_says_no_lines_are_known(world):
     world["decisions"] = [{"kind": "reply", "triggerIds": [t1], "text": "Hello."}]
     await _run([t1])
     assert "## Recent in this conversation\n- not available" in world["runs"][0][1].input
+
+
+@pytest.mark.asyncio
+async def test_a_deliver_room_that_is_not_a_room_never_fails_the_batch(world, monkeypatch):
+    """Gate run 2 (A11): a Run-now trigger delivering to `acc-a1-66ac88` crashed _deliver (bad UUID), failed the
+    batch and its fallback, and its task sat queued with no workflow. Now: no post, the task still starts."""
+    t1 = await _trig("manual:s1:r1", source="manual", ref={"deliverRoomId": "acc-a1-66ac88"})
+    world["decisions"] = [_start([t1])]
+    out = await _run([t1])
+    assert out.started_task_ids == [ts.router_task_id(BATCH, 0, 0)] and world["posts"] == []
+    assert world["starts"] == [(ts.router_task_id(BATCH, 0, 0), "router")]
+
+    async def gone(room_id):
+        return None
+
+    monkeypatch.setattr(acts.messaging_repo, "get_room", gone)  # a deleted room: same
+    t2 = await _trig("chat:m2")
+    world["decisions"] = [{"kind": "reply", "triggerIds": [t2], "text": "Hi."}]
+    await _run([t2], batch=str(uuid.UUID(int=7)))
+    assert world["posts"] == []
+
+
+async def test_one_failed_start_never_skips_the_others(world, monkeypatch):
+    """A start that fails is logged; the batch's later starts still go out, then the Activity fails so its retry
+    (idempotent for the started ones) gives the failed one another go."""
+    t1 = await _trig("chat:m1")
+    world["decisions"] = [_start([t1]), _start([t1], title="Book the flights", specialist=None)]
+    first = ts.router_task_id(BATCH, 0, 0)
+
+    async def flaky(ws, task_id, reason):
+        if task_id == first:
+            raise RuntimeError("temporal hiccup")
+        world["starts"].append((task_id, reason))
+
+    monkeypatch.setattr(acts.temporal_client, "start_task_workflow", flaky)
+    with pytest.raises(RuntimeError, match="start_task_workflow failed"):
+        await _run([t1])
+    assert world["starts"] == [(ts.router_task_id(BATCH, 1, 0), "router")]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_start_still_records_the_started_ones_and_the_fallback_says_partial(world, monkeypatch):
+    """Review on #4845: the starts that went out are recorded (routedTo, rules note) before the Activity raises,
+    so a second failure loses nothing, and apply_fallback for a trigger with posted cards says only that some of
+    it couldn't start."""
+    t1 = await _trig("chat:m1")
+    t2 = await _trig("chat:m2")
+    world["decisions"] = [_start([t1]), _start([t2], title="Book the flights", specialist=None)]
+    bad = ts.router_task_id(BATCH, 1, 0)
+
+    async def flaky(ws, task_id, reason):
+        if task_id == bad:
+            raise RuntimeError("temporal hiccup")
+        world["starts"].append((task_id, reason))
+
+    monkeypatch.setattr(acts.temporal_client, "start_task_workflow", flaky)
+    with pytest.raises(RuntimeError):
+        await _run([t1, t2])
+    assert (await repo.get_trigger(WS, t1))["routedTo"] == {"taskId": ts.router_task_id(BATCH, 0, 0)}
+    assert (await repo.get_trigger(WS, t2)).get("routedTo") is None
+    await acts.apply_fallback(WS, [t1, t2])
+    lines = {p["event_id"]: p["text"] for p in world["posts"] if p["event_id"].startswith("router-fallback:")}
+    assert lines == {f"router-fallback:{t1}": router_prompt.PARTIAL, f"router-fallback:{t2}": router_prompt.FALLBACK}
+
+
+@pytest.mark.asyncio
+async def test_a_retried_pass_through_signals_once(world):
+    """A retried router_turn (same batch) never signals the task again: routedTo records the pass_through."""
+    open_id = await _open_task({"kind": "room", "roomId": ROOM})
+    t1 = await _trig("chat:m1")
+    world["decisions"] = [{"kind": "pass_through", "triggerIds": [t1], "taskId": open_id}]
+    await _run([t1])
+    await _run([t1])
+    assert world["inputs"] == [(open_id, t1, "message")]
+
+
+@pytest.mark.asyncio
+async def test_a_fanned_out_trigger_records_the_task_that_started(world, monkeypatch):
+    """One ask, two starts: the first failed, the second started. The trigger records the started one, so the
+    fallback says only that some of it couldn't start."""
+    t1 = await _trig("chat:m1")
+    world["decisions"] = [_start([t1]), _start([t1], title="Book the flights", specialist=None)]
+    bad, good = ts.router_task_id(BATCH, 0, 0), ts.router_task_id(BATCH, 1, 0)
+
+    async def flaky(ws, task_id, reason):
+        if task_id == bad:
+            raise RuntimeError("temporal hiccup")
+
+    monkeypatch.setattr(acts.temporal_client, "start_task_workflow", flaky)
+    with pytest.raises(RuntimeError):
+        await _run([t1])
+    assert (await repo.get_trigger(WS, t1))["routedTo"] == {"taskId": good}
+    await acts.apply_fallback(WS, [t1])
+    assert world["posts"][-1]["text"] == router_prompt.PARTIAL

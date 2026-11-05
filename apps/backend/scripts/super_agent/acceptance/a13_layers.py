@@ -68,14 +68,14 @@ async def dev_temporal_client():
     return await temporal_client.connect()
 
 
-async def router_runs(ws: str) -> list[dict[str, Any]]:
+async def router_runs(ws: str, front: str | None = None) -> list[dict[str, Any]]:
     """One entry per ``router_turn`` batch in the Router workflow's history: ``{batchId, lane, status, decisions,
     tools}``. Temporal: the dev namespace, key from Secrets Manager ``lightbulb/dev/temporal_api_key`` unless the
     ``TEMPORAL_*`` settings are already set. ponytail: reads the current run's history only; a Router that has
     continued-as-new hides earlier batches -- read ``first_execution_run_id`` chains if that ever matters."""
     from temporalio.converter import DataConverter
 
-    from core.services import runtime_runs, task_conversation
+    from core.services import agent_registry, runtime_runs
     from core.temporal.types import RouterTurnIn
 
     client = await dev_temporal_client()
@@ -92,7 +92,9 @@ async def router_runs(ws: str) -> list[dict[str, Any]]:
         except KeyError:  # a batch recorded by an older worker lacks a field the type now has: skip it
             continue
         batches.append(inp)
-    front = await task_conversation.front_agent_id(ws)
+    # The front agent A1 saw, else the registry's CEO (as the Router does under the switch): this script runs with
+    # the env master off, where front_agent_id falls back to the Paperclip row (gate run 2: KeyError 'created_at').
+    front = front or next(a["id"] for a in await agent_registry.roster(ws) if a.get("role") == "ceo")
     out = []
     for inp in batches:
         identity = runtime_runs.RunIdentity(
@@ -111,7 +113,7 @@ async def router_runs(ws: str) -> list[dict[str, Any]]:
     return out
 
 
-def check_rows(rows: list[dict], task_ids: list[str]) -> dict[str, Any]:
+def check_rows(rows: list[dict], task_ids: list[str], sub_ids: list[str] | None = None) -> dict[str, Any]:
     """Every task A2 made is a tasks row with its attempt, subscription and routed trigger."""
     by_type: dict[str, list[dict]] = {}
     for r in rows:
@@ -123,7 +125,9 @@ def check_rows(rows: list[dict], task_ids: list[str]) -> dict[str, Any]:
     missing = {
         "task": [t for t in task_ids if t not in tasks],
         "attempt": [t for t in task_ids if t not in attempts],
-        "subscription": [t for t in task_ids if t not in subs],
+        "subscription": [
+            t for t in (sub_ids if sub_ids is not None else task_ids) if t not in subs
+        ],  # one owner per thread
         "routedTrigger": [t for t in task_ids if t in tasks and tasks[t].get("triggerId") not in routed],
     }
     return {"missing": missing, "ok": bool(task_ids) and not any(missing.values())}
@@ -143,10 +147,14 @@ def check_router(runs: list[dict[str, Any]]) -> dict[str, Any]:
 async def a13(ctx) -> Result:
     task_ids = list(ctx.state.get("taskIds") or [])
     rooms = [v for k, v in ctx.state.items() if k == "roomId" or k.endswith("DmRoomId")]
-    rows_check = check_rows(await ctx.tasks_rows(ctx.ws), task_ids)
+    rows_check = check_rows(
+        await ctx.tasks_rows(ctx.ws),
+        task_ids,
+        [ctx.state["firstStartedTaskId"]] if ctx.state.get("firstStartedTaskId") else None,
+    )
     legacy = await legacy_rows(ctx.ws, rooms)
     try:
-        runs = await router_runs(ctx.ws)
+        runs = await router_runs(ctx.ws, ctx.state.get("frontAgentId"))
         router = check_router(runs)
     except Exception as exc:  # noqa: BLE001 -- Temporal or the bridge unreachable is a failed check with its reason
         runs, router = [], {"outside": [], "notCompleted": [], "ok": False, "error": f"{type(exc).__name__}: {exc}"}

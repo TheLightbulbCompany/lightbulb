@@ -11,7 +11,9 @@ from typing import Any
 
 from core import tasks_schema as ts
 
-ROUTER_REPLY_S = 10
+#: Upper bound the scenarios WAIT for the Router (cold start 30-60 s; its turns are sequential per workspace).
+#: The waits return as soon as the thing is there; the observed seconds go in the evidence.
+ROUTER_REPLY_S = 180
 START_S = 15
 EVENT_S = 3
 ACK_S = 5

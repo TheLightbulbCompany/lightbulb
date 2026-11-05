@@ -1041,6 +1041,20 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
+    // Super-agent per-task VMs (lane V): each task VM writes only its overlay
+    // <owner>/hermes-tasks/<task>/<agent>/ under its own per-owner role. The backend's
+    // LearningWorkflow reads it (base, seal, learning files) and, at task end, tags its objects
+    // lb-kind=task-overlay so the replicas bucket's 14-day TaskOverlays rule expires them. Tagging
+    // at task end, not per put, keeps a running or waiting task's overlay out of the rule (S3 counts
+    // expiry from object creation). Read + tag only: the backend never writes overlay content.
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "HermesTaskOverlaysReadTag",
+        actions: ["s3:GetObject", "s3:PutObjectTagging"],
+        resources: [`arn:aws:s3:::lightbulb-${env}-openclaw-replicas/*/hermes-tasks/*`],
+      }),
+    );
+
     // Browser extensions (core/services/browser_extensions.py): every object a session loads
     // (extension ZIPs, our helper, the Chrome policy file) lives under the backend-only
     // browser-state/<owner>/ prefix -- the agent's runtime can write <owner>/*.

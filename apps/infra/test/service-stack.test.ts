@@ -279,6 +279,18 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     expect(grant.Resource).toContain("arn:aws:s3:::lightbulb-dev-openclaw-replicas/marketplace-installs/*");
   });
 
+  test("backend reads and tags super-agent task overlays, and nothing more there", () => {
+    // Lane V: LearningWorkflow reads <owner>/hermes-tasks/<task>/<agent>/ (base, seal, learning
+    // files) and, at task end, tags the overlay lb-kind=task-overlay so the 14-day rule expires it.
+    const statements = Object.values(template.findResources("AWS::IAM::Policy")).flatMap(
+      (resource: any) => resource.Properties?.PolicyDocument?.Statement ?? [],
+    );
+    const grant = statements.find((statement: any) => statement.Sid === "HermesTaskOverlaysReadTag");
+    expect(grant.Effect).toBe("Allow");
+    expect([grant.Action].flat().sort()).toEqual(["s3:GetObject", "s3:PutObjectTagging"]);
+    expect(grant.Resource).toBe("arn:aws:s3:::lightbulb-dev-openclaw-replicas/*/hermes-tasks/*");
+  });
+
   test("backend can write the workspace member's network prefix (sessions.json, state.db cleanup)", () => {
     // The first dev roll of h-2026.10.24-9566ac3 failed every sessions.json write with
     // AccessDenied: the grant covered */hermes/* only, so no workspace member could start.

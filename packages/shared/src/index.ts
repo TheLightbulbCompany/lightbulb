@@ -373,4 +373,4 @@ export type {
 } from "./tasks/types";
 export { createTasksClient, scopeParam } from "./tasks/client";
 export type { TasksClient } from "./tasks/client";
-export { putTaskSummary, questionsKey, refreshTask, taskKey, taskListKey, useTask, useTaskChangedRefresh, useTaskList, useTaskQuestions } from "./tasks/useTasks";
+export { putTaskSummary, questionsKey, refreshTask, taskKey, taskListKey, useTask, useTaskCache, useTaskChangedRefresh, useTaskList, useTaskQuestions } from "./tasks/useTasks";

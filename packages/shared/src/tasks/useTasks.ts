@@ -37,6 +37,12 @@ export function useTaskQuestions(client: TasksClient, taskId: string | null) {
   return useSWR<{ items: QuestionView[] }>(taskId ? questionsKey(taskId) : null, () => client.questions(taskId!), { shouldRetryOnError: false });
 }
 
+/** The SWR cache and mutator the task hooks share; apps use it for their own action hooks. */
+export function useTaskCache(): { cache: Cache; mutate: ScopedMutator } {
+  const { cache, mutate } = useSWRConfig();
+  return { cache, mutate };
+}
+
 /** Write a fresh summary (e.g. an action's response) into every cached list and the detail. */
 export async function putTaskSummary(cache: Cache, mutate: ScopedMutator, task: TaskSummary, client: Pick<TasksClient, "cacheScope">): Promise<void> {
   await Promise.all([

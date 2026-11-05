@@ -224,17 +224,24 @@ def _image_has_broker(image_uri: str) -> bool:
     return bool(have and want and have > want)
 
 
-@asynccontextmanager
-async def fenced_session(owner_id: str) -> AsyncIterator[bool]:
-    """Wait for the workspace session to go idle, stop it, and hold its cold-wake lease for the
-    block. Yields False -- nothing touched -- when a turn is still running at the idle deadline
-    (a mid-turn stop loses that turn's profile writes), the stop is unconfirmed, or the lease is
-    held. Spec 13 §6.1 step 2.1-2.2 and 2.6."""
+async def session_idle(owner_id: str) -> bool:
+    """Spec 13 §6.1 step 2.1, taken OUTSIDE ``owner_lifecycle_guard``: the idle wait runs up to
+    ``ROLL_IDLE_WAIT_S`` (10 min) while the guard's lease is never renewed and is taken over after
+    120 s, so waiting inside it would let a concurrent connect or disconnect slip in. An idle
+    bridge takes its own 120 s refusal hold with the answer, so the stop that follows inside the
+    guard lands before any turn can start. True when there is no runtime to wait for."""
     row = await container_repo.get_by_owner_id(owner_id) or {}
     arn = row.get("agentcore_runtime_arn")
-    if arn and not await hermes_provisioning._wait_for_idle_session(owner_id):
-        yield False
-        return
+    return not arn or await hermes_provisioning._wait_for_idle_session(owner_id)
+
+
+@asynccontextmanager
+async def fenced_session(owner_id: str) -> AsyncIterator[bool]:
+    """Stop the workspace session and hold its cold-wake lease for the block -- step 2.2 and 2.6,
+    inside the guard, right after :func:`session_idle` answered True. Yields False, nothing
+    touched, when the stop is unconfirmed or the lease is held."""
+    row = await container_repo.get_by_owner_id(owner_id) or {}
+    arn = row.get("agentcore_runtime_arn")
     if arn and not await hermes_provisioning.stop_runtime_session(owner_id, arn):
         yield False
         return
@@ -281,6 +288,8 @@ async def codex_cutover(owner_id: str, *, dry_run: bool = False) -> str:
     # session that is busy at the roll's deadline is still on the old image.
     if await hermes_provisioning.roll_runtime_image(owner_id) not in ("current", "updated"):
         return "stale_image"
+    if not await session_idle(owner_id):
+        return "busy_session"
     bucket = settings.OWNER_STATE_BUCKET
     key = f"{hermes_profiles.root_home_prefix(owner_id)}auth.json"
     async with owner_lifecycle.owner_lifecycle_guard(owner_id):
@@ -323,6 +332,8 @@ async def codex_rollback(owner_id: str) -> str:
     row = await oauth_service.get_token_row(user, consistent=True, bound_to=owner_id)
     if row is None or row.get("custody") != "backend":
         return "already"
+    if not await session_idle(owner_id):
+        return "busy_session"
     async with owner_lifecycle.owner_lifecycle_guard(owner_id):
         async with fenced_session(owner_id) as fenced:
             if not fenced:

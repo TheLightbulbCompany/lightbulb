@@ -202,6 +202,42 @@ async def test_cutover_busy_session_retries(world):
 
 
 @pytest.mark.asyncio
+async def test_idle_wait_runs_outside_the_guard(world, monkeypatch):
+    """Lead (5 Nov): the guard's lease is taken over after 120 s and the idle wait can run 10 min,
+    so idle is awaited BEFORE the guard; stop and lease follow inside it, right away."""
+    from contextlib import asynccontextmanager
+
+    from core.services import owner_lifecycle
+
+    order: list[str] = []
+
+    @asynccontextmanager
+    async def guard(owner_id):
+        order.append("guard:enter")
+        yield
+        order.append("guard:exit")
+
+    async def idle(owner_id):
+        order.append("idle")
+        return True
+
+    async def stop(owner_id, arn):
+        order.append("stop")
+        return True
+
+    monkeypatch.setattr(owner_lifecycle, "owner_lifecycle_guard", guard)
+    world["idle"].side_effect = idle
+    world["stop"].side_effect = stop
+    _seed_row(world, tokens=DDB_PAIR)
+    _seed_auth(world, S3_PAIR)
+    assert await token_custody.codex_cutover(OWNER) == "done"
+    assert order == ["idle", "guard:enter", "stop", "guard:exit"]
+    order.clear()
+    assert await token_custody.codex_rollback(OWNER) == "done"
+    assert order == ["idle", "guard:enter", "stop", "guard:exit"]
+
+
+@pytest.mark.asyncio
 async def test_cutover_raced_etag_undoes_row(world, monkeypatch):
     _seed_row(world, tokens=DDB_PAIR)
     _seed_auth(world, S3_PAIR)

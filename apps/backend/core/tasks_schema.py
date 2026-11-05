@@ -128,15 +128,16 @@ def worker_session_key(agent_id: str, task_id: str) -> str:
     return f"agent:{agent_id}:lightbulb:task:{task_id}"
 
 
-#: The Router's session on the workspace VM: one per lane (`shared` or `router_lane_key(user)`) and room
-#: (`router_room_key(room)`; none for a trigger with no room), on the CEO agent's profile. A Router run reads its
-#: session's previous conversation, so one room's batch never sees another room's (or a DM's). The bridge checks
-#: keys against this (bridge/runs.py ROUTER_SESSION_KEY_RE).
-ROUTER_SESSION_KEY_PATTERN = r"^agent:[0-9a-f-]{36}:lightbulb:router:(shared|u:[0-9a-f]{16})(:r:[0-9a-f]{16})?$"
+#: The Router's session on the workspace VM: one per lane (`shared` or `router_lane_key(user)`) and conversation
+#: (`router_room_key(trigger_scope(trig))`), on the CEO agent's profile. A Router run reads its session's previous
+#: conversation, so one room's batch never sees another room's, a DM's or an outside sender's. The room part is
+#: required: no key equals the old per-lane one, whose history mixed every room. The bridge checks keys against this
+#: (bridge/runs.py ROUTER_SESSION_KEY_RE).
+ROUTER_SESSION_KEY_PATTERN = r"^agent:[0-9a-f-]{36}:lightbulb:router:(shared|u:[0-9a-f]{16}):r:[0-9a-f]{16}$"
 
 
-def router_session_key(agent_id: str, lane: str, room: str | None = None) -> str:
-    return f"agent:{agent_id}:lightbulb:router:{lane}" + (f":{room}" if room else "")
+def router_session_key(agent_id: str, lane: str, room: str) -> str:
+    return f"agent:{agent_id}:lightbulb:router:{lane}:{room}"
 
 
 def router_room_key(room_id: str) -> str:
@@ -149,6 +150,17 @@ def trigger_room(trig: dict) -> str | None:
     rule admission (the Router batch key) and router_turn (memory audience, open tasks, delivery) share."""
     ref = trig.get("ref") or {}
     return ref.get("roomId") or ref.get("deliverRoomId")
+
+
+def trigger_scope(trig: dict) -> str:
+    """The conversation a trigger belongs to: its room (`trigger_room`), else its own outside conversation (a mail
+    thread's session, else its sender, else the trigger alone), hashed. The Router batch key and its session: two
+    outside senders never share a Router prompt or session."""
+    room = trigger_room(trig)
+    if room:
+        return room
+    ref = trig.get("ref") or {}
+    return router_room_key(f"{trig.get('source')}:{ref.get('sessionKey') or ref.get('from') or trig['triggerId']}")
 
 
 def router_lane_key(user_id: str) -> str:

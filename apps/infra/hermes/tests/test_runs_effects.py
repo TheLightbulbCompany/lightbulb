@@ -106,8 +106,8 @@ def test_ask_marker_ends_the_turn_waiting_approval(quiet_turn, threads, f1, even
 def test_router_runs_get_no_checkpoint(quiet_turn, threads, f1, monkeypatch):
     agent = Agent()
     monkeypatch.setattr(turn, "_construct_agent", lambda *a, **k: agent)
-    router = {**IDENTITY, "mode": "router", "lane": "shared",
-              "sessionKey": f"agent:{IDENTITY['agentId']}:lightbulb:router:shared"}
+    router = {**IDENTITY, "mode": "router", "lane": "shared", "room": "r:0123456789abcdef",
+              "sessionKey": f"agent:{IDENTITY['agentId']}:lightbulb:router:shared:r:0123456789abcdef"}
     code, _ = _post({"identity": router, "request": REQUIRED})
     assert code == 202
     threads[0].run_now()

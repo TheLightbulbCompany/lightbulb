@@ -24,7 +24,7 @@ _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 #: Must equal tasks-schema.json's worker session key pattern (tests/test_runs_v1.py checks it).
 SESSION_KEY_RE = re.compile(r"^agent:[0-9a-f-]{36}:lightbulb:task:[0-9a-f-]{36}$")
 #: Must equal tasks-schema.json's router session key pattern: one Router session per lane.
-ROUTER_SESSION_KEY_RE = re.compile(r"^agent:[0-9a-f-]{36}:lightbulb:router:(shared|u:[0-9a-f]{16})(:r:[0-9a-f]{16})?$")
+ROUTER_SESSION_KEY_RE = re.compile(r"^agent:[0-9a-f-]{36}:lightbulb:router:(shared|u:[0-9a-f]{16}):r:[0-9a-f]{16}$")
 _RUN_RE = re.compile(r"^/internal/v1/runs/([0-9a-f-]{36})(/stop|/steer)?$")
 MAX_INPUT_BYTES = 200 * 1024
 #: worker_turn's limit, under the bridge's 7 h recycle (contracts-v2 §14.11).
@@ -81,7 +81,7 @@ def _session_key_ok(identity: dict) -> bool:
     key = identity["sessionKey"]
     if identity.get("mode") == "router":
         lane, room = identity.get("lane"), identity.get("room")
-        expected = f"agent:{identity['agentId']}:lightbulb:router:{lane}" + (f":{room}" if room else "")
+        expected = f"agent:{identity['agentId']}:lightbulb:router:{lane}:{room}"  # the room part is required
         return bool(ROUTER_SESSION_KEY_RE.fullmatch(key)) and key == expected
     return identity.get("mode") == "worker" and bool(SESSION_KEY_RE.fullmatch(key)) and (
         key == f"agent:{identity['agentId']}:lightbulb:task:{identity['taskId']}")

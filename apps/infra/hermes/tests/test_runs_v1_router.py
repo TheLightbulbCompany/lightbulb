@@ -6,10 +6,11 @@ from tests.test_runs_v1 import AGENT, AUTH, CREATE, REQUEST, TASK, Agent, quiet_
 
 RUN = "1c6d7e40-5b6c-4d7e-8f90-a1b2c3d4e5f6"
 LANE = "shared"
-KEY = f"agent:{AGENT}:lightbulb:router:{LANE}"
+LANE_KEY = f"agent:{AGENT}:lightbulb:router:{LANE}"  # the old per-lane key: refused now (its history mixed rooms)
 ROOM_A, ROOM_B = "r:0123456789abcdef", "r:fedcba9876543210"
+KEY = f"{LANE_KEY}:{ROOM_A}"
 IDENTITY = {"runId": RUN, "ownerId": "org_test", "taskId": TASK, "attempt": 1, "agentId": AGENT,
-            "sessionKey": KEY, "mode": "router", "lane": LANE, "session": {"kind": "workspace"}}
+            "sessionKey": KEY, "mode": "router", "lane": LANE, "room": ROOM_A, "session": {"kind": "workspace"}}
 
 
 def _post(identity=IDENTITY):
@@ -75,9 +76,10 @@ def test_router_never_side_sessions(quiet_turn, threads, monkeypatch):  # noqa: 
     {**IDENTITY, "lane": "u:abc"},                                            # malformed lane
     {**IDENTITY, "sessionKey": f"agent:{AGENT}:lightbulb:router:u:0123456789abcdef"},  # key names another lane
     {**IDENTITY, "sessionKey": f"agent:{AGENT}:lightbulb:task:{TASK}"},       # a Worker key in Router mode
-    {**IDENTITY, "room": ROOM_A},                                              # the key leaves out its room
-    {**IDENTITY, "room": ROOM_A, "sessionKey": f"{KEY}:{ROOM_B}"},             # the key names another room
-    {**IDENTITY, "room": "r:raw-room-id", "sessionKey": f"{KEY}:r:raw-room-id"},  # not a room hash
+    {**IDENTITY, "sessionKey": LANE_KEY},                                      # the key leaves out its room
+    {**{k: v for k, v in IDENTITY.items() if k != "room"}, "sessionKey": LANE_KEY},  # the old per-lane key
+    {**IDENTITY, "sessionKey": f"{LANE_KEY}:{ROOM_B}"},                        # the key names another room
+    {**IDENTITY, "room": "r:raw-room-id", "sessionKey": f"{LANE_KEY}:r:raw-room-id"},  # not a room hash
 ])
 def test_router_identity_validated(threads, bad):  # noqa: F811
     assert _post(bad)[0] == 400
@@ -112,6 +114,6 @@ def test_each_room_runs_in_its_own_session(quiet_turn, threads, monkeypatch):  #
     monkeypatch.setattr(turn, "_construct_agent", lambda agent_id, body, frames, key, **k: keys.append(key) or Agent())
     for i, room in enumerate((ROOM_A, ROOM_B)):
         run = f"1c6d7e40-5b6c-4d7e-8f90-a1b2c3d4e5f{i}"
-        assert _post({**IDENTITY, "runId": run, "room": room, "sessionKey": f"{KEY}:{room}"})[0] == 202
+        assert _post({**IDENTITY, "runId": run, "room": room, "sessionKey": f"{LANE_KEY}:{room}"})[0] == 202
         threads[-1].run_now()
-    assert keys == [f"{KEY}:{ROOM_A}", f"{KEY}:{ROOM_B}"]
+    assert keys == [f"{LANE_KEY}:{ROOM_A}", f"{LANE_KEY}:{ROOM_B}"]

@@ -1,6 +1,7 @@
 """`router_turn`: render, run, apply (wave-2 O Task 11; contracts-v2 §9, §10; G2, G18, G27).
 Review focus 2: a retried `router_turn` applies once."""
 
+import re
 import sys
 import types
 import uuid
@@ -593,17 +594,20 @@ async def test_ignored_respond_trigger_gets_the_fallback_line(world):
 @pytest.mark.asyncio
 async def test_each_room_has_its_own_router_session(world):
     """Privacy: a Router run reads its session's previous conversation, so two rooms' batches (and a DM's) never
-    share a session; a trigger with no room keeps the lane's."""
+    share a session. A trigger with no room (agent mail) gets its own conversation's session, never the old per-lane
+    key whose history mixed every room; a deliver room is the trigger's room."""
     other = str(uuid.uuid4())
     t1 = await _trig("chat:m1")
     t2 = await _trig("chat:m2", ref={"roomId": other, "messageId": str(uuid.uuid4())})
-    t3 = await _trig("mail:x1", source="mail", ref={"text": "hi"})
-    for i, tid in enumerate((t1, t2, t3)):
+    t3 = await _trig("mail:x1", source="mail", ref={"text": "hi", "sessionKey": "mail:thread-a"})
+    t4 = await _trig("mail:x2", source="mail", ref={"text": "hi", "sessionKey": "mail:thread-b"})
+    t5 = await _trig("sched:s1", source="schedule", ref={"text": "digest", "deliverRoomId": other})
+    for i, tid in enumerate((t1, t2, t3, t4, t5)):
         await _run([tid], batch=str(uuid.UUID(int=i + 1)))
     keys = [identity.session_key for identity, _ in world["runs"]]
-    assert keys == [
-        f"agent:{CEO}:lightbulb:router:shared:{ts.router_room_key(ROOM)}",
-        f"agent:{CEO}:lightbulb:router:shared:{ts.router_room_key(other)}",
-        f"agent:{CEO}:lightbulb:router:shared",
-    ]
+    lane_key = f"agent:{CEO}:lightbulb:router:shared"
+    assert keys[:2] == [f"{lane_key}:{ts.router_room_key(ROOM)}", f"{lane_key}:{ts.router_room_key(other)}"]
+    assert lane_key not in (keys[2], keys[3]) and keys[2] != keys[3]  # two outside senders, two sessions
+    assert keys[4] == keys[1]  # a deliver room's trigger shares its room's session
+    assert all(re.fullmatch(ts.ROUTER_SESSION_KEY_PATTERN, k) for k in keys)
     assert ROOM not in keys[0] and ROOM not in str(world["runs"][0][0].to_wire())

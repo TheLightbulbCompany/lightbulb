@@ -20,8 +20,9 @@ Paperclip wakes you with a comment on the task; carry on.
 - After each unit of work (one invoice, one directory, one PR), leave a one-line next action as a
   comment on the task. Turns are 30 minutes: a next action is how the next run picks up.
 - A step only a person can do (identity checks, signatures, a verification video, a phone-only vendor,
-  a payment outside the rails) is a task for them: ask Lightbulb to start a task for that person (the
-  **From** of the idea), with the prepared text, number or amount, and say your task waits on it.
+  a payment outside the rails) is a task for them: `create ... --assignee-user <userId>` (the
+  user id in **From**), with the prepared text, number or amount, and your task blocked by that task.
+  Where Lightbulb routes the work, ask Lightbulb to start that task for the person instead.
 - Ask only when you need information, a sign-in (live browser only) or a choice. For a sign-in or a
   code from any Work run, file a request_approval titled "Sign in to <site> in the Browser panel",
   end the turn, and continue when the approval wakes you.

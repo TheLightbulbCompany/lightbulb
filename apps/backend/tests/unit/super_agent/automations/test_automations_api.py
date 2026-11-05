@@ -83,7 +83,7 @@ async def _draft(api, user=SAM, **over):
 
 async def _active(api, **over):
     view = await _draft(api, **over)
-    r = _as(api).post(f"{BASE}/{view['id']}/activate")
+    r = _as(api, SAM, admin=True).post(f"{BASE}/{view['id']}/activate")  # a room automation: an admin turns it on
     assert r.status_code == 200, r.text
     return r.json()
 
@@ -203,31 +203,46 @@ async def test_activate_then_pause_resume_matches_temporal(api):
     assert _as(api).post(f"{BASE}/{sid}/resume").status_code == 409  # already active
 
 
-async def test_only_owner_or_admin_activates(api):
-    view = await _draft(api)
+async def test_room_automation_needs_an_org_admin_to_activate(api):
+    """A room automation runs for everyone in the room: turning it on is an org-admin act, even for its owner
+    (the Router's proposal is deliverTo=room with ownerUserId=requester)."""
+    view = await _draft(api, SAM, deliverTo=f"room:{ROOM}")
+    assert _as(api, SAM, admin=False).post(f"{BASE}/{view['id']}/activate").status_code == 403  # owner, member
     assert _as(api, PRIYA, admin=False).post(f"{BASE}/{view['id']}/activate").status_code == 403
     assert _as(api, PRIYA, admin=True).post(f"{BASE}/{view['id']}/activate").status_code == 200
+    r = _as(api, SAM, admin=False).post(BASE, json=_IN | {"deliverTo": f"room:{ROOM}", "activate": True})
+    assert r.status_code == 403 and await repo.list_schedules(WS) and len(await repo.list_schedules(WS)) == 1
 
 
-async def test_activate_rearms_a_broken_google_watch(api):
+async def test_personal_automation_is_activated_by_its_owner_only(api):
+    view = await _draft(api, SAM, deliverTo="none")
+    assert _as(api, PRIYA, admin=True).post(f"{BASE}/{view['id']}/activate").status_code == 403  # admin, not owner
+    assert _as(api, SAM, admin=False).post(f"{BASE}/{view['id']}/activate").status_code == 200
+    r = _as(api, SAM, admin=False).post(BASE, json=_IN | {"deliverTo": "none", "activate": True})
+    assert r.status_code == 200 and r.json()["status"] == "active"
+
+
+def _google_hook(sid, pid, *, armed, expires_at):
+    return {
+        "publicId": pid,
+        "scheduleId": sid,
+        "provider": "google",
+        "events": ["calendar.changed"],
+        "signingMode": "bearer",
+        "secretRef": f"hook-{pid}",
+        "armed": armed,
+        "account": "ada@example.com",
+        "expiresAt": expires_at,
+    }
+
+
+async def test_activate_rearms_only_the_broken_google_watch(api):
     view = await _active(api)
     sid = view["id"]
-    await repo.put_hook(
-        WS,
-        {
-            "publicId": "pub_g",
-            "scheduleId": sid,
-            "provider": "google",
-            "events": ["calendar.changed"],
-            "signingMode": "bearer",
-            "secretRef": "hook-pub_g",
-            "armed": True,
-            "account": "ada@example.com",
-            "expiresAt": "2020-01-01T00:00:00+00:00",
-        },
-    )
+    await repo.put_hook(WS, _google_hook(sid, "pub_broken", armed=False, expires_at="2020-01-01T00:00:00+00:00"))
+    await repo.put_hook(WS, _google_hook(sid, "pub_fine", armed=True, expires_at="2099-01-01T00:00:00+00:00"))
     row = await repo.get_schedule(WS, sid)
-    await repo.update_schedule(WS, sid, {"hookPublicIds": ["pub_g"]}, expected_version=row["version"])
+    await repo.update_schedule(WS, sid, {"hookPublicIds": ["pub_broken", "pub_fine"]}, expected_version=row["version"])
     await repo.set_status(WS, sid, "paused_system", reason="google_watch_broken", allowed_from=frozenset({"active"}))
     with (
         patch("core.services.automation_hooks.renew", AsyncMock(return_value=1_900_000_000_000)) as renew,
@@ -235,27 +250,14 @@ async def test_activate_rearms_a_broken_google_watch(api):
     ):
         r = _as(api).post(f"{BASE}/{sid}/resume")
     assert r.status_code == 200 and r.json()["status"] == "active" and r.json()["pausedReason"] is None
-    renew.assert_awaited_once_with(WS, "pub_g")
-    keeper.assert_awaited_once_with(WS, "pub_g", 1_900_000_000_000)
+    renew.assert_awaited_once_with(WS, "pub_broken")  # the healthy one is left alone
+    keeper.assert_awaited_once_with(WS, "pub_broken", 1_900_000_000_000)
 
 
 async def test_activate_with_a_dead_google_watch_stays_paused(api):
     view = await _active(api)
     sid = view["id"]
-    await repo.put_hook(
-        WS,
-        {
-            "publicId": "pub_g",
-            "scheduleId": sid,
-            "provider": "google",
-            "events": ["calendar.changed"],
-            "signingMode": "bearer",
-            "secretRef": "hook-pub_g",
-            "armed": True,
-            "account": "ada@example.com",
-            "expiresAt": "2020-01-01T00:00:00+00:00",
-        },
-    )
+    await repo.put_hook(WS, _google_hook(sid, "pub_g", armed=True, expires_at="2020-01-01T00:00:00+00:00"))
     row = await repo.get_schedule(WS, sid)
     await repo.update_schedule(WS, sid, {"hookPublicIds": ["pub_g"]}, expected_version=row["version"])
     await repo.set_status(WS, sid, "paused_system", reason="google_watch_broken", allowed_from=frozenset({"active"}))
@@ -460,6 +462,27 @@ async def test_propose_creates_draft_and_posts_card(internal):
     assert kw["thread_root"] == "00000000-0000-4000-8000-000000000000"
     assert kw["attrs"] == {"automationId": sid}
     assert not re.search(r"\d", kw["text"])  # the card renders times from the view; the text names none
+
+
+async def test_propose_cleans_up_when_the_card_cannot_be_posted(internal):
+    tid = await _chat_trigger()
+    internal.post.side_effect = RuntimeError("messaging down")
+    body = {"name": "n", "instructions": "i", "cron": ["0 9 * * 1"], "triggerIds": [tid]}
+    r = internal.api.client.post(
+        f"/api/v1/internal/automations/{WS}/propose", json=body, headers={"Authorization": "Bearer t"}
+    )
+    assert r.status_code == 502 and r.json()["detail"]["code"] == "card_not_posted"
+    assert await repo.list_schedules(WS) == []  # no orphan draft
+    assert ("delete", internal.api.calls[0][1]) in internal.api.calls  # its paused Schedule went too
+
+
+async def test_propose_validates_deliver_to(internal):
+    tid = await _chat_trigger()
+    body = {"name": "n", "instructions": "i", "cron": ["0 9 * * 1"], "triggerIds": [tid], "deliverTo": "everyone"}
+    r = internal.api.client.post(
+        f"/api/v1/internal/automations/{WS}/propose", json=body, headers={"Authorization": "Bearer t"}
+    )
+    assert r.status_code == 422
 
 
 async def test_propose_needs_a_room(internal):

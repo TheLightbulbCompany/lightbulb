@@ -345,6 +345,15 @@ def _may_edit(row: dict, auth: AuthContext) -> None:
         raise _err(403, "forbidden")
 
 
+def _may_activate(row: dict, auth: AuthContext) -> None:
+    """Turning an automation on: a room automation runs for everyone in the room, so an org admin (the
+    Router's proposal is deliverTo=room with ownerUserId=requester); a personal one, its owner only."""
+    if (row.get("deliverTo") or "none").startswith("room:"):
+        require_org_admin(auth)
+    elif row.get("ownerUserId") != auth.user_id:
+        raise _err(403, "forbidden")
+
+
 async def _visible(row: dict, auth: AuthContext) -> bool:
     """Who sees an automation: its owner, an org admin, and the members of the room it delivers to."""
     if auth.is_org_admin or row.get("ownerUserId") == auth.user_id:
@@ -420,10 +429,10 @@ async def _activate(ws: str, row: dict) -> dict:
     """draft / paused / paused_system → active. A Google watch that broke or lapsed while paused is opened
     again first (and its keeper restarted); when that fails the automation stays paused."""
     now = datetime.now(timezone.utc).isoformat()
-    broken = row.get("pausedReason") == "google_watch_broken"
     for pid in row.get("hookPublicIds") or []:
         hook = await automations_repo.get_hook(ws, pid)
-        if hook and hook.get("account") and (broken or (hook.get("expiresAt") or now) <= now):
+        # the broken one (mark_broken disarmed it) or one that lapsed while paused; a healthy watch is left alone
+        if hook and hook.get("account") and (not hook.get("armed") or (hook.get("expiresAt") or now) <= now):
             try:
                 expires_ms = await automation_hooks.renew(ws, pid)
             except Exception as exc:  # noqa: BLE001 — gog refused: the owner has to reconnect Google
@@ -496,7 +505,12 @@ async def create_automation(body: AutomationIn, auth: AuthContext = Depends(get_
     if row.get("cron"):
         await automation_schedule.upsert(row)  # paused until activated
     if body.activate:
-        await require_always_on_entitlement(ws, message=_ACTIVATE_MESSAGE)
+        try:
+            _may_activate(row, auth)
+            await require_always_on_entitlement(ws, message=_ACTIVATE_MESSAGE)
+        except HTTPException:
+            await _destroy(ws, sid)  # not turned on: nothing of it is kept
+            raise
         row = await _activate(ws, row)
     return {**await _view(ws, row), "setup": setup}
 
@@ -555,7 +569,7 @@ async def patch_automation(sid: str, body: AutomationPatch, auth: AuthContext = 
 async def activate_automation(sid: str, auth: AuthContext = Depends(get_current_user)) -> dict:
     ws = await _ws(auth)
     row = await _row(ws, sid, auth)
-    _may_edit(row, auth)
+    _may_activate(row, auth)
     await require_always_on_entitlement(ws, message=_ACTIVATE_MESSAGE)
     return await _view(ws, await _activate(ws, row))
 

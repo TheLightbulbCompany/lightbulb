@@ -4,6 +4,8 @@ room; nothing runs until a person calls `POST /api/v1/automations/{id}/activate`
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
@@ -14,6 +16,7 @@ from core.services import automation_schedule, super_agent_flags, task_conversat
 from core.services.container_auth import _require_hook_token
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 CONFIRM_TEXT = "Set up below. Confirm on the card."  # the card itself renders when, zone, next runs and budget
 
@@ -26,7 +29,7 @@ class ProposeIn(BaseModel):
     cron: list[str] = Field(min_length=1, max_length=4)
     tz: str | None = None
     specialist_id: str | None = None
-    deliver_to: str | None = None
+    deliver_to: str | None = Field(default=None, pattern=r"^(none|room:\S+|dm:\S+)$")
     budget_per_run_usd: float = Field(default=1.0, gt=0, le=100)
     # The batch's trigger ids: the room, requester and thread come from their rows unless given.
     trigger_ids: list[str] = []
@@ -78,14 +81,20 @@ async def propose(owner_id: str, body: ProposeIn, request: Request) -> dict:
         },
     )
     sid = row["scheduleId"]
-    await automation_schedule.upsert(row)  # paused: the card shows the next runs of a draft (S-07)
-    await task_conversation.post_as_lightbulb(
-        owner_id,
-        room_id,
-        text=CONFIRM_TEXT,
-        event_id=f"automation_confirm:{sid}",
-        kind="automation_confirm",
-        thread_root=thread_root,
-        attrs={"automationId": sid},
-    )
+    try:
+        await automation_schedule.upsert(row)  # paused: the card shows the next runs of a draft (S-07)
+        await task_conversation.post_as_lightbulb(
+            owner_id,
+            room_id,
+            text=CONFIRM_TEXT,
+            event_id=f"automation_confirm:{sid}",
+            kind="automation_confirm",
+            thread_root=thread_root,
+            attrs={"automationId": sid},
+        )
+    except Exception as exc:  # noqa: BLE001 — a draft nobody can see is an orphan: take it back out
+        logger.warning("propose: card not posted owner=%s automation=%s", owner_id, sid, exc_info=True)
+        await automation_schedule.delete(owner_id, sid)
+        await automations_repo.delete_schedule(owner_id, sid)
+        raise _err(502, "card_not_posted") from exc
     return {"automationId": sid}

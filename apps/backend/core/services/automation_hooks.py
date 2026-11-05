@@ -351,7 +351,7 @@ async def renew(ws: str, public_id: str) -> int | None:
     account = hook["account"]
     if hook["signingMode"] == GMAIL_PUSH_MODE:
         watch = await google_watch.start_gmail_watch(owner_id=ws, account_email=account, topic=hook["topic"])
-        ms, fields = watch["expiration_ms"], {}
+        ms, fields = watch["expiration_ms"], {"armed": True}
     else:
         secret = await integration_secret_store.get(ws, hook["secretRef"])
         channel = await google_watch.start_watch(
@@ -370,7 +370,7 @@ async def renew(ws: str, public_id: str) -> int | None:
                 resource_id=hook["resourceId"],
             )
         ms = channel["expiration_ms"]
-        fields = {"channelId": channel["channel_id"], "resourceId": channel["resource_id"]}
+        fields = {"channelId": channel["channel_id"], "resourceId": channel["resource_id"], "armed": True}
         if channel.get("page_token") and not hook.get("pageToken"):  # never clobber S7's sync token
             fields["pageToken"] = channel["page_token"]
     await _update_hook(ws, public_id, {**fields, "expiresAt": _iso(ms)})
@@ -399,6 +399,8 @@ async def mark_broken(ws: str, public_id: str) -> None:
     hook = await repo.get_hook(ws, public_id)
     if hook is None:
         return
+    if hook.get("armed"):  # disarmed = the one to re-arm on resume; deliveries on the dead channel 401
+        await _update_hook(ws, public_id, {"armed": False})
     try:
         row = await repo.set_status(
             ws,

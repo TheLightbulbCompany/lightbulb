@@ -80,7 +80,7 @@ async def reconcile_schedules() -> dict:
     deletes = sweep_allowed()
     if not deletes:
         logging.getLogger(__name__).warning("reconcile: tasks table is not this namespace's env; no deletes")
-    out = {"created": 0, "updated": 0, "deleted_orphans": 0, "deleted_drafts": 0, "keepers": 0}
+    out = {"created": 0, "updated": 0, "deleted_orphans": 0, "deleted_drafts": 0, "keepers": 0, "freed_runs": 0}
     cutoff = (datetime.now(timezone.utc) - DRAFT_TTL).isoformat()
     keep: set[str] = set()
     for row in await repo.scan_schedules():
@@ -99,6 +99,9 @@ async def reconcile_schedules() -> dict:
         if row is None:
             continue
         keep.add(asch.schedule_id(row))
+        if await _free_stale_run(ws, row):
+            out["freed_runs"] += 1
+            row = await repo.get_schedule(ws, sid) or row
         changed = await asch.upsert(row)
         if changed:
             out[changed] += 1
@@ -122,6 +125,26 @@ async def reconcile_schedules() -> dict:
         await asch.delete(ws, sid)  # NOT_FOUND = someone else deleted it: done
         out["deleted_orphans"] += 1
     return out
+
+
+async def _free_stale_run(ws: str, row: dict) -> bool:
+    """A claim whose task is gone or ended on a path that closed nothing would skip every later fire for
+    good (SKIP overlap): free it here, counting a failed task as a failure and a missing one as neither."""
+    from core.repositories import automations_repo as repo
+    from core.repositories import tasks_repo
+    from core.repositories.tasks_repo import VersionConflict
+
+    task_id = row.get("activeRunTaskId")
+    if not task_id:
+        return False
+    task = await tasks_repo.get_task(ws, task_id)
+    if task is not None and task.get("status") not in ("resolved", "failed"):
+        return False
+    try:
+        await repo.close_run(ws, row["scheduleId"], task_id, failed=(task or {}).get("status") == "failed")
+    except VersionConflict:  # closed by its workflow between the scan and now
+        return False
+    return True
 
 
 @workflow.defn

@@ -42,7 +42,7 @@ async def test_inbound_lands_in_private_lane_pinned(world):
     start = row["ref"]["start"]
     assert (start["kind"], start["specialist"], start["visibility"]) == ("start_task", "agent-finance", "person")
     assert start["title"] == "Send Acme the Q3 invoice. Thanks." and start["brief"] == ROW["text"]
-    assert start["a2ATaskId"] == "a2a-task-1"  # `to_camel("a2a_task_id")`, the same key Task rows carry
+    assert start["a2aTaskId"] == "a2a-task-1"  # the one wire name, same as Task.a2a_task_id's alias
     assert world["admits"] == [(WS, trigger_id)]
     hosted_mcp.person_dm.assert_awaited_once()
     assert hosted_mcp.person_dm.await_args.kwargs == {"create_key": "a2a-task-1"}
@@ -88,14 +88,22 @@ async def test_switch_off_writes_nothing(world):
 async def test_report_a2a_is_pending_until_governance_lands(world, monkeypatch):
     metrics = []
     monkeypatch.setattr(a2a_admission, "put_metric", lambda name, **kw: metrics.append((name, kw)))
-    await a2a_admission.report_a2a(WS, TASK, "completed")  # the seeded task has no a2aTaskId
+    await a2a_admission.report_a2a(WS, TASK, "completed")  # the seeded task has no A2A id
     assert metrics == []
-    from core.dynamodb import get_table
-
-    get_table("tasks").update_item(
-        Key={"pk": ts.ws_pk(WS), "sk": ts.task_sk(TASK)},
-        UpdateExpression="SET a2ATaskId = :a",
-        ExpressionAttributeValues={":a": "a2a-task-1"},
+    # The key O11 writes when it starts an A2A task (activities.create_task: "a2aTaskId"), through the Task model.
+    row, _ = await tasks_repo.create_task(
+        WS,
+        {
+            "taskId": "1f14e45f-ceea-467a-9575-8a1b2c3d4e5f",
+            "identifier": "LB-2",
+            "title": "From Acme",
+            "status": "queued",
+            "audience": {"kind": "person", "userIds": ["user_sam"]},
+            "lane": "private",
+            "triggerId": "a2a:a2a-task-1",
+            "a2aTaskId": "a2a-task-1",
+        },
     )
-    await a2a_admission.report_a2a(WS, TASK, "completed")
+    assert row["a2aTaskId"] == "a2a-task-1"
+    await a2a_admission.report_a2a(WS, "1f14e45f-ceea-467a-9575-8a1b2c3d4e5f", "completed")
     assert metrics == [("a2a.report_pending", {"dimensions": {"outcome": "completed"}})]

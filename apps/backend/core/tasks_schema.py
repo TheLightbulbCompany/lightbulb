@@ -896,7 +896,8 @@ class StartTask(_Decision):
     policy_ref: str | None = None
     budget_usd: float | None = None
     previous_run_task_id: TaskId | None = None
-    a2a_task_id: str | None = None  # an inbound A2A request's governance row: copied onto the Task (Lane Q)
+    # Same explicit alias as Task.a2a_task_id: one wire name, `a2aTaskId` (`to_camel` would say `a2ATaskId`).
+    a2a_task_id: str | None = Field(None, alias="a2aTaskId")  # an inbound A2A request's governance row
 
 
 class ProposeTasks(_Decision):

@@ -3655,7 +3655,7 @@
             "default": null,
             "title": "Previousruntaskid"
           },
-          "a2ATaskId": {
+          "a2aTaskId": {
             "anyOf": [
               {
                 "type": "string"

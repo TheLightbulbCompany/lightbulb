@@ -29,11 +29,10 @@ env:
 jobs:
   lint-and-build:
     name: Lint & Build
-    runs-on: ${{ vars.CI_RUNNER }}
-    # This job had no cap at all, which on a hosted runner only meant a wasted
-    # 6-hour bill. On the shared self-hosted box it means a wedged `next build`
-    # camps a runner slot that every other workflow is queueing for, so the cap
-    # is now load-bearing. Lint + tsc + build is a ~10m job; 30m bounds a hang.
+    # GitHub-hosted (2026-11-05), not vars.CI_RUNNER: one shared self-hosted box
+    # queued every PR behind the others. Unit tests are their own sharded job
+    # below, so this one is lint + tsc + build (~5m). 30m bounds a hang.
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - name: Checkout code
@@ -42,11 +41,8 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
         with:
-          # Per-job install dir, and load-bearing again now that this job is
-          # back on the self-hosted box: several runner instances share one
-          # home there, so two concurrent jobs installing pnpm into the
-          # default ~/setup-pnpm race each other (ENOTEMPTY on rmdir).
-          # `runner.temp` is per-runner-instance, so this keeps them apart.
+          # Per-job install dir: harmless on a fresh hosted runner, and keeps
+          # concurrent jobs apart on a shared self-hosted home (ENOTEMPTY races).
           dest: ${{ runner.temp }}/setup-pnpm
 
       - name: Setup Node.js
@@ -64,15 +60,43 @@ jobs:
       - name: Type check
         run: pnpm --filter @lightbulb/frontend exec tsc --noEmit
 
-      # ~380 jsdom files. vitest.config.ts caps the run at 2 worker threads,
-      # which matches the core count of the ubuntu-latest runner a private repo
-      # gets; measured peak RSS is well under a gigabyte, so the `test` script's
-      # 8 GB heap ceiling never binds. Raising maxThreads means re-measuring.
-      - name: Unit tests
-        run: pnpm --filter @lightbulb/frontend run test
-
       - name: Build
         env:
           NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY }}
           NEXT_PUBLIC_API_URL: https://api-dev.thelightbulb.company/api/v1
         run: pnpm --filter @lightbulb/frontend run build
+
+  unit-tests:
+    name: Unit tests (shard ${{ matrix.shard }}/4)
+    # ~380 jsdom files took 13m serially on the self-hosted box. vitest.config.ts
+    # caps each run at 2 worker threads (the core count of a private-repo
+    # ubuntu-latest runner), so the files are split 4 ways with vitest --shard.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          # Per-job install dir: harmless on a fresh hosted runner, and keeps
+          # concurrent jobs apart on a shared self-hosted home (ENOTEMPTY races).
+          dest: ${{ runner.temp }}/setup-pnpm
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Extra args after the script name reach the script's last command, `vitest run`.
+      - name: Unit tests
+        run: pnpm --filter @lightbulb/frontend run test --shard=${{ matrix.shard }}/4

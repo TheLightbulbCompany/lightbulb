@@ -43,6 +43,10 @@ env:
 permissions:
   contents: read
 
+# Every job here is GitHub-hosted (2026-11-05), not vars.CI_RUNNER: the shared
+# self-hosted box queued PRs behind each other and its DNS flakes failed jobs
+# before they ran (run 41958255313: setup-uv got EAI_AGAIN for api.github.com).
+# Docker (image smokes, CDK synth bundling) is on ubuntu-latest too.
 jobs:
   # The Hermes bridge (apps/infra/hermes) is Python, so the CDK job above never
   # touches it, and build-hermes-image.yml only BUILDS the image — it runs no
@@ -52,7 +56,7 @@ jobs:
   # to apps/infra/**, and the suite takes under a second.
   hermes-bridge-tests:
     name: Hermes bridge tests
-    runs-on: ${{ vars.CI_RUNNER }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Checkout code
@@ -76,7 +80,7 @@ jobs:
   # suite takes under a second once dependencies are installed.
   openrouter-gate-tests:
     name: OpenRouter gate tests
-    runs-on: ${{ vars.CI_RUNNER }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Checkout code
@@ -108,7 +112,7 @@ jobs:
   # developer's machine.
   hermes-image-smokes:
     name: Hermes bridge image smokes
-    runs-on: ${{ vars.CI_RUNNER }}
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - name: Checkout code
@@ -151,11 +155,10 @@ jobs:
 
   test:
     name: Synth & Test
-    runs-on: ${{ vars.CI_RUNNER }}
+    runs-on: ubuntu-latest
     # The suite synthesizes every stack; it runs in seconds locally, so a cap
     # this size only catches a hang. Left explicit because an uncapped job
-    # bills GitHub's 6-hour default when a step stalls — and on the shared
-    # self-hosted box it would hold a runner slot for those six hours too.
+    # bills GitHub's 6-hour default when a step stalls.
     timeout-minutes: 20
     steps:
       - name: Checkout code
@@ -203,8 +206,8 @@ jobs:
       #
       # Docker is required: the WS authorizer Lambda bundles
       # its Python deps in a container, and there is no supported way to skip
-      # bundling. Both `isol8-wsl` (the self-hosted box, which already runs this
-      # exact synth for DEPLOY_RUNNER) and `ubuntu-latest` have a daemon.
+      # bundling. `ubuntu-latest` has a daemon (as does the DEPLOY_RUNNER box,
+      # which runs this exact synth in deploy.yml).
       - name: Check deploy.yml matches the pipeline definition
         working-directory: apps/infra
         run: |

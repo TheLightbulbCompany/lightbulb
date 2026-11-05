@@ -23,13 +23,19 @@ permissions:
 
 jobs:
   test:
-    runs-on: ${{ vars.CI_RUNNER }}
+    # GitHub-hosted (2026-11-05), not vars.CI_RUNNER: the PR gate needs nothing from
+    # the self-hosted box. The deploy jobs below stay on it.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: apps/huddle-agent
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: apps/huddle-agent/uv.lock
       - run: uv sync
       - run: uv run pytest
 

@@ -10,12 +10,14 @@ from __future__ import annotations
 from scripts.super_agent.acceptance.ctx import Ctx, Result
 from scripts.super_agent.acceptance.o_lib import answer_question, question_row, rows_of, task_questions
 
-ASK_S = 600
+ASK_S = 300
 
 
 async def a05(ctx: Ctx) -> Result:
     # Never the purchase task A3 started: nothing here may approve a purchase.
     task_ids = [t for t in ctx.state.get("taskIds") or [] if t != ctx.state.get("purchaseTaskId")]
+    if not task_ids:
+        return Result(False, {"reason": "needs A2: no task ids in ctx.state"})
     found = await ctx.wait_for(
         lambda rows: next((q for t in task_ids if (q := question_row(rows, t, ("approval",)))), None), ASK_S
     )

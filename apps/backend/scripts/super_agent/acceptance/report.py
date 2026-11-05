@@ -182,6 +182,14 @@ def write_report(path: Path, results: Mapping[str, Any], **meta: Any) -> None:
 
 
 # ---------------------------------------------------------------------- G2: the gate
+async def _guarded(call: Awaitable[Any]) -> Any:
+    """An evidence check that raises is a failed check; it must not lose the run's report."""
+    try:
+        return await call
+    except Exception as exc:  # noqa: BLE001
+        return Result(False, {"error": f"{type(exc).__name__}: {exc}", "traceback": traceback.format_exc()[-2000:]})
+
+
 async def gate(ctx: Ctx, *, rules_expect: Any | None = None, log: Callable[[str], None] = print) -> dict[str, Any]:
     """A1–A13 on the one dev workspace (A0 needs the switch off: run it before the flip), then the evidence
     checks: ``vm_evidence`` over the task ids the scenarios left in ``ctx.state["taskIds"]`` (V17; per-task or workspace
@@ -191,9 +199,9 @@ async def gate(ctx: Ctx, *, rules_expect: Any | None = None, log: Callable[[str]
     from scripts.super_agent.acceptance.vm_evidence import vm_evidence
 
     results: dict[str, Any] = await run_scenarios(ORDER[1:], ctx, log=log)
-    results["VM"] = await vm_evidence(ctx, ws=ctx.ws, task_ids=list(ctx.state.get("taskIds") or []))
+    results["VM"] = await _guarded(vm_evidence(ctx, ws=ctx.ws, task_ids=list(ctx.state.get("taskIds") or [])))
     results["RULES"] = (
-        await rules_observe(ctx, rules_expect)
+        await _guarded(rules_observe(ctx, rules_expect))
         if rules_expect
         else not_implemented("no --rules-expect (lane S, manual)")
     )

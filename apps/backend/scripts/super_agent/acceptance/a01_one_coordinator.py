@@ -7,6 +7,7 @@ ignored "Hi Lightbulb, ..."; no Trigger row, no reply) -- lane O PR to follow; r
 from __future__ import annotations
 
 import time
+import uuid
 
 from scripts.super_agent.acceptance.ctx import Ctx, Result
 from scripts.super_agent.acceptance.o_lib import ROUTER_REPLY_S, create_room, front_agent, messages, post, rows_of
@@ -20,7 +21,7 @@ async def a01(ctx: Ctx) -> Result:
     room = await create_room(
         ctx,
         "sam",
-        "workshop-launch",
+        f"acc-a1-{uuid.uuid4().hex[:6]}",  # distinct names: harness rooms must not clutter the sidebar
         [{"kind": "human", "id": ctx.users["priya"], "role": "member", "listenMode": None}],
     )
     ctx.state["roomId"] = room["roomId"]  # A2, A4, A7 post into this room

@@ -62,6 +62,11 @@ it("opens the shared session a session push is about", async () => {
   expect(push).toHaveBeenCalledWith({ pathname: "/(app)/session/[sessionId]", params: { sessionId: "sess-1" } });
 });
 
+it("opens the task screen a task_question push names, ahead of the room fallback", () => {
+  expect(notificationHrefs({ source: "task_question", taskId: "t-1", roomId: "r-1" }))
+    .toEqual([{ pathname: "/(app)/task/[taskId]", params: { taskId: "t-1" } }]);
+});
+
 it("routes a Teams push to its issue, whatever the event type", async () => {
   await tap({ source: "teams", eventType: "approval.created", issueId: "issue_xyz" });
   expect(push).toHaveBeenCalledWith({

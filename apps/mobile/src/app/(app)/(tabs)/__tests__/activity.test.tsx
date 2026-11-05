@@ -416,6 +416,11 @@ describe("activity links", () => {
     expect(activityHrefs({ kind: "someday", id: "x" })).toEqual([]);
   });
 
+  it("a task link (task_question item) opens its task screen", () => {
+    const { activityHrefs } = jest.requireActual("../../../../lib/activity");
+    expect(activityHrefs({ kind: "task", id: "t-1", roomId: null })).toEqual([{ pathname: "/(app)/task/[taskId]", params: { taskId: "t-1" } }]);
+  });
+
   it("shows only the newest finished item per coding session", async () => {
     // As the backend sends them: every finished turn is its own OPEN item.
     const turn = (id: string, reason: string) => item({

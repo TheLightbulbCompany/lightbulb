@@ -9,7 +9,7 @@ import { shouldSuppressBanner, type NotificationData } from "../../lib/notificat
 
 type TapData = NotificationData & {
   url?: string; source?: string; eventType?: string; issueId?: string; runId?: string;
-  approvalId?: string; interactionId?: string; sessionId?: string;
+  approvalId?: string; interactionId?: string; sessionId?: string; taskId?: string;
 };
 
 /**
@@ -29,6 +29,10 @@ export function notificationHrefs(data: TapData | undefined): Href[] | null {
   // So does an agent's question (a thread interaction), answered inline there.
   if (data?.source === "teams" && data.interactionId && data.issueId) {
     return [{ pathname: "/(app)/(tabs)/activity", params: { focus: interactionActivityId(data.issueId, data.interactionId) } }];
+  }
+  // A super-agent thread's question (task_questions.py push data): its task screen, ahead of the room fallback.
+  if (data?.source === "task_question" && data.taskId) {
+    return [{ pathname: "/(app)/task/[taskId]", params: { taskId: data.taskId } }];
   }
   // One of your shared sessions is waiting for you or finished.
   if (data?.source === "session" && data.sessionId) {

@@ -140,6 +140,19 @@ async def test_admit_explicit_ask_respond(world):
     assert trig["admission"] == "respond" and trig["actorUserId"] == "sam"
 
 
+async def test_admit_message_ingests_memory_once(world, monkeypatch):
+    seen = []
+
+    async def ingest(ws, meta, msg, *, task=None):
+        seen.append((ws, msg["messageId"]))
+        return True
+
+    monkeypatch.setattr(admission.room_memory, "ingest_message", ingest)
+    msg = _msg(targets=[{"agentId": CEO, "eventKind": "user_request"}])
+    await _admit(world, msg)
+    assert seen == [(WS, msg["messageId"])]
+
+
 async def test_specialist_mention_pins(world):
     tid = await _admit(world, _msg(targets=[{"agentId": FIN, "eventKind": "user_request"}]))
     assert (await repo.get_trigger(WS, tid))["ref"]["pinnedSpecialist"] == FIN
@@ -227,7 +240,9 @@ async def test_enqueue_trigger_dedup(world, monkeypatch):
     )
     assert await admission.enqueue_trigger(WS, trig, room_id=ROOM) is True
     assert await admission.enqueue_trigger(WS, trig, room_id=ROOM) is False
-    assert rows == ["sched:s1:100"]
+    # The admit row is re-put on a replay (a MODIFY the outbox Pipe ignores), so a crash between the
+    # TRIG put and the admit put never strands the trigger.
+    assert rows == ["sched:s1:100", "sched:s1:100"]
     assert (await repo.get_trigger(WS, "sched:s1:100"))["ref"]["deliverRoomId"] == ROOM
     await admission.admit_pointer({"kind": "admit_trigger", "ownerId": WS, "triggerId": "sched:s1:100"})
     assert world["router"][-1] == admission.TriggerRef(WS, "sched:s1:100", "shared", "respond")

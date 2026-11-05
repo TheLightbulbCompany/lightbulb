@@ -26,7 +26,7 @@ from core import tasks_schema as ts
 from core.dynamodb import utc_now_iso
 from core.observability.metrics import put_metric
 from core.repositories import messaging_repo, tasks_repo
-from core.services import jev, messaging
+from core.services import jev, messaging, room_memory
 from core.services.openclaw_work import WorkRetry
 from core.services.super_agent_flags import flags_for
 from core.temporal import client as temporal
@@ -69,8 +69,9 @@ async def enqueue_trigger(ws: str, trigger: ts.Trigger, *, room_id: str | None =
     if room_id:
         item["ref"] = {**item.get("ref", {}), "deliverRoomId": room_id}
     _, created = await tasks_repo.put_trigger(ws, item)
-    if created:
-        await messaging_repo.put_admit_trigger(ws, trigger.trigger_id)
+    # Unconditional: a crash between the two puts would otherwise strand the TRIG row for ever. A re-put
+    # of the identical row is a MODIFY, which the outbox Pipe's INSERT filter ignores.
+    await messaging_repo.put_admit_trigger(ws, trigger.trigger_id)
     return created
 
 
@@ -109,6 +110,7 @@ async def _admit_message(room_id: str, seq: int) -> None:
     if meta is None or msg is None or msg.get("deletedAt"):
         return
     ws = meta["ownerId"]
+    await room_memory.ingest_message(ws, meta, msg)  # memory (M4): idempotent, never raises
     author = msg.get("author") or {}
     if author.get("kind") != "human" or not await router_room(meta, ws):
         # ponytail: a switch turned off between write and admit drops this one message's wake;

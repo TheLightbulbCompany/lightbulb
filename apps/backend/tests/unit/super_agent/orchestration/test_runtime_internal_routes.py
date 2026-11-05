@@ -132,13 +132,49 @@ async def test_run_event_heartbeat_updates_progress_line(api):
         "status": "running",
         "recentTools": [{"name": "web_search"}],
     }
+    before = (await repo.get_attempt(WS, tid, 1))["version"]
     await api.post(_url(WS, ref.run_id), json=body, headers=H)
+    # no version bump: the projector publishes no workspace-wide task.changed every 2 minutes
+    assert (await repo.get_attempt(WS, tid, 1))["version"] == before
     body["recentTools"] = [{"name": "terminal"}]
     await api.post(_url(WS, ref.run_id), json=body, headers=H)
     lines = [p for p in api.world["posts"] if p.get("progress")]
     assert len(lines) == 1 and lines[0]["room"] == ts.task_room_id(tid)
     assert (await repo.get_attempt(WS, tid, 1))["recentTools"][0]["name"] == "terminal"
     assert [e[0] for e in api.fake.log] == ["heartbeat", "heartbeat"]
+
+
+async def test_progress_line_is_plain_words_and_skips_internal_tools(api):
+    """Live dev bug (5 Nov): "Working: skill_view". An internal tool posts nothing; the first real one
+    posts plain words, once per attempt."""
+    tid = await _task()
+    ref = await _running(tid)
+    body = {"runSecret": await _secret(tid), "taskId": tid, "attempt": 1, "kind": "heartbeat", "status": "running"}
+    await api.post(_url(WS, ref.run_id), json={**body, "recentTools": [{"name": "skill_view"}]}, headers=H)
+    assert not [p for p in api.world["posts"] if p.get("progress")]
+    await api.post(_url(WS, ref.run_id), json={**body, "recentTools": [{"name": "browser_navigate"}]}, headers=H)
+    await api.post(_url(WS, ref.run_id), json={**body, "recentTools": [{"name": "terminal"}]}, headers=H)
+    lines = [p for p in api.world["posts"] if p.get("progress")]
+    assert [p["text"] for p in lines] == ["Using the browser…"]
+
+
+async def test_terminal_stores_the_results_files(api):
+    tid = await _task()
+    ref = await _running(tid)
+    files = [
+        {"attachmentId": "4f1c1f2e-0000-4000-8000-000000000001", "fileName": "a.docx", "contentType": "application/pdf"}
+    ]
+    body = {
+        "runSecret": await _secret(tid),
+        "taskId": tid,
+        "attempt": 1,
+        "kind": "terminal",
+        "status": "completed",
+        "output": "Done.",
+        "attachments": files,
+    }
+    assert (await api.post(_url(WS, ref.run_id), json=body, headers=H)).status_code == 200
+    assert (await repo.get_attempt(WS, tid, 1))["attachments"] == files
 
 
 async def test_run_event_wrong_owner_403(api, monkeypatch):
@@ -243,3 +279,28 @@ async def test_routes_404_when_switch_off(api):
     api.switch = False
     body = {"runSecret": await _secret(tid), "taskId": tid, "attempt": 1, "kind": "terminal", "status": "completed"}
     assert (await api.post(_url(WS, ref.run_id), json=body, headers=H)).status_code == 404
+
+
+async def test_task_note_posts_in_its_own_task_room(api):
+    """task_note (contracts-v2 §6): the current attempt posts in its task's room as Lightbulb · specialist; the same
+    text twice is one post; a wrong secret, a stale attempt or the switch off never posts."""
+    tid = await _task()
+    ref = await _running(tid)
+    body = {"taskId": tid, "runId": ref.run_id, "attempt": 1, "runSecret": await _secret(tid), "text": "Found the PO."}
+    url = f"/api/v1/internal/runtime/{WS}/notes"
+    assert (await api.post(url, json=body, headers=H)).status_code == 200
+    await api.post(url, json=body, headers=H)
+    notes = [p for p in api.world["posts"] if p.get("kind") == "note"]
+    assert {p["event_id"] for p in notes} == {notes[0]["event_id"]}
+    assert notes[0]["room"] == ts.task_room_id(tid) and notes[0]["specialist"] == "finance"
+    assert notes[0]["progress"] is True  # never mentions, notifies or goes into room memory
+    for i in range(18):  # 2 counted above: the 21st note in one attempt is refused
+        assert (await api.post(url, json={**body, "text": f"n{i}"}, headers=H)).status_code == 200
+    capped = await api.post(url, json={**body, "text": "one more"}, headers=H)
+    assert capped.status_code == 429 and capped.json()["detail"] == "note_limit"
+    assert (await api.post(url, json={**body, "runSecret": "wrong"}, headers=H)).status_code == 403
+    await repo.update_attempt(WS, tid, 1, {"status": "ended"}, allowed_status=frozenset({"running"}))
+    stale = await api.post(url, json=body, headers=H)
+    assert stale.status_code == 409 and stale.json()["detail"] == "stale_run"
+    api.switch = False
+    assert (await api.post(url, json=body, headers=H)).status_code == 404

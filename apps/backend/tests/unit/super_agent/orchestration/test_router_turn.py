@@ -188,7 +188,7 @@ async def test_three_asks_one_reply_three_cards(world):
     assert len(world["posts"]) == 1  # one line, three cards (G2)
     post = world["posts"][0]
     assert post["room"] == ROOM and post["event_id"] == f"router:{BATCH}:0" and post["thread_root"] is None
-    assert post["text"] == "On it: paying Acme.\nAnd booking the flights.\nOne more you can start:"
+    assert post["text"] == "On it: paying Acme."  # one ack per trigger: the first decision's (the cards say the rest)
     assert post["remember"] is False  # acks only: kept out of room memory (audit item 12)
     ids = [r["taskId"] for r in post["task_refs"]]
     assert [r["role"] for r in post["task_refs"]] == ["started", "started", "suggested"]
@@ -211,6 +211,23 @@ async def test_three_asks_one_reply_three_cards(world):
     ack_thread = f"room:{ROOM}:{post['id']}"
     assert await repo.task_for_thread(WS, ack_thread) == ids[0]
     assert world["noted"] == [f"room:{ROOM}:{(await repo.get_trigger(WS, t1))['ref']['messageId']}"]
+
+
+@pytest.mark.asyncio
+async def test_same_summary_on_every_decision_posts_once(world):
+    """Dev 5 Nov (#general seq 7): two start_task decisions on one ask both carried the summary ack, and the message
+    showed it twice. One ack line per trigger, whatever the model repeats; a reply's text still shows."""
+    t1 = await _trig("chat:m1")
+    line = "I split this up: Growth has the agenda, and Customer Operations has the venues."
+    world["decisions"] = [
+        _start([t1], title="Agenda", ack=line),
+        _start([t1], title="Venues", specialist=None, ack=line),
+        {"kind": "reply", "triggerIds": [t1], "text": "Venues come with rough prices."},
+    ]
+    await _run([t1])
+    (post,) = world["posts"]
+    assert post["text"] == f"{line}\nVenues come with rough prices."
+    assert len(post["task_refs"]) == 2
 
 
 @pytest.mark.asyncio
@@ -343,6 +360,18 @@ async def test_gate_chat_refusal_blocks_start(world):
     out = await _run([t1])
     assert out.started_task_ids == [] and world["starts"] == []
     assert await repo.get_task(WS, ts.router_task_id(BATCH, 0, 0)) is None
+    assert world["posts"][0]["text"] == "Your trial's daily limit is reached."
+
+
+@pytest.mark.asyncio
+async def test_gate_chat_refusal_blocks_pass_through(world):
+    """§14.10: a pass_through steers or re-runs a task, so it is gated like a start."""
+    open_id = await _open_task({"kind": "room", "roomId": ROOM})
+    t1 = await _trig("chat:m1")
+    world["gate"] = {"blocked": True, "code": "TRIAL_LIMIT", "message": "Your trial's daily limit is reached."}
+    world["decisions"] = [{"kind": "pass_through", "triggerIds": [t1], "taskId": open_id, "ack": "Passed on."}]
+    await _run([t1])
+    assert world["inputs"] == [] and (await repo.get_trigger(WS, t1)).get("routedTo") is None
     assert world["posts"][0]["text"] == "Your trial's daily limit is reached."
 
 

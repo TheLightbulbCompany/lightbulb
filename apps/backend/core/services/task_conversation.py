@@ -91,6 +91,18 @@ async def ensure_task_room(ws: str, task: dict, *, seat_viewer: str | None = Non
     return room_id
 
 
+async def gate_input(ws: str, task_id: str, trig: dict) -> str | None:
+    """§14.10 for a person's input to a task (a steer, or the attempt it starts): the gate's copy when
+    blocked, else None. Inputs with no person behind them (a delegation result) are not gated."""
+    from core.services import chat_gate
+
+    actor = trig.get("actorUserId")
+    if not actor:
+        return None
+    gate = await chat_gate.gate_chat(user_id=actor, owner_id=ws, session_key=f"task:{task_id}")
+    return gate["message"] if gate.get("blocked") else None
+
+
 async def post_as_lightbulb(
     ws: str,
     room_id: str,
@@ -104,6 +116,7 @@ async def post_as_lightbulb(
     progress: bool = False,
     attrs: dict | None = None,
     remember: bool = True,
+    uploaded_attachments: list[dict] | None = None,
 ) -> str:
     """Post as Lightbulb; idempotent on `event_id`. Returns the message id. `attrs`: extra message attributes
     (lane A's confirm card carries `automationId`). The post goes into room memory like a person's message
@@ -127,6 +140,7 @@ async def post_as_lightbulb(
             reply_to_message_id=None,
             thread_root_message_id=uuid.UUID(thread_root) if thread_root else None,
             progress=progress,
+            uploaded_attachments=[messaging.UploadedAttachment.model_validate(a) for a in uploaded_attachments or []],
         ),
         attrs={
             **(attrs or {}),

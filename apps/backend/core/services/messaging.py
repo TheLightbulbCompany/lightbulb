@@ -1762,6 +1762,15 @@ async def require_room_member(owner_id: str, user_id: str, room_id: str) -> tupl
 
             if not await app_conversation.seat_still_opens(meta["ownerId"], meta["app"]["app_id"], user_id):
                 raise ApiProblem("ROOM_NOT_FOUND", "Room not found.")
+        elif meta.get("task"):
+            # A task's conversation: a seat never outlives `can_view` (left the home room, dropped from the
+            # audience, left the workspace). Seats are never swept, so this door is the check.
+            from core.repositories import tasks_repo  # lazy: avoids an import cycle
+            from core.services import tasks_access
+
+            task = await tasks_repo.get_task(meta["ownerId"], meta["task"]["taskId"])
+            if task is None or not await tasks_access.can_view(task, user_id):
+                raise ApiProblem("ROOM_NOT_FOUND", "Room not found.")
         return meta, member
     # A human of the room's own workspace who lost access keeps the reconcile hint;
     # everyone else (a stranger, or a foreign member viewing from the wrong org) sees nothing.

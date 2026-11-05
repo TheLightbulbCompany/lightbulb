@@ -19,7 +19,15 @@ from botocore.exceptions import ClientError
 
 from core import tasks_schema as ts
 from core.dynamodb import ddb_safe, plain, run_in_thread, utc_now_iso
-from core.repositories.tasks_repo import IllegalTransition, _get, _is_condition_failure, _put_new, _row, _table
+from core.repositories.tasks_repo import (
+    IllegalTransition,
+    _get,
+    _is_condition_failure,
+    _put_new,
+    _row,
+    _table,
+    stamp_channel,
+)
 
 # to-state -> allowed from-states
 TRANSITIONS: dict[str, frozenset[str]] = {
@@ -161,7 +169,7 @@ async def use_approval(ws: str, approved_idem_key: str, operands_hash: str, *, n
                 "ExpressionAttributeValues": {":approved": "approved"},
             }
         }
-        row = _row(ts.Effect, ws, {**new_effect, "state": "intent"})
+        row = await stamp_channel(ws, _row(ts.Effect, ws, {**new_effect, "state": "intent"}))
         extra = [
             {
                 "Put": {

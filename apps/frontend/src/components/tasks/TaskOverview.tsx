@@ -5,7 +5,7 @@
 
 import { useState, type ReactElement } from "react";
 import { MoreHorizontal } from "lucide-react";
-import { overviewGroups, summaryView, taskSummaryLine, useTaskList, type TaskScope, type TaskSummary } from "@lightbulb/shared";
+import { overviewGroups, summaryView, taskSummaryLine, useOlderTasks, useTaskList, type TaskScope, type TaskSummary } from "@lightbulb/shared";
 import { PanelTabs } from "@/components/teams/shell";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -39,10 +39,11 @@ export function TaskOverview({ scope, viewerId, onOpen }: {
 function OverviewGroups({ scope, viewerId, onOpen }: { scope: TaskScope; viewerId: string; onOpen: (taskId: string) => void }): ReactElement {
   const { tasks } = useLiveEvents();
   const { data, error } = useTaskList(tasks, scope);
+  const { older, hasOlder, loading, loadOlder } = useOlderTasks(tasks, data, scope);
   const [resolvedOpen, setResolvedOpen] = useState(() => readResolvedOpen(viewerId));
   if (!data) return <p role="status" className="text-ui text-muted-foreground">{error ? "Threads couldn't load. Try again." : "Loading…"}</p>;
   return <div className="grid gap-4">
-    {overviewGroups(data.tasks).map((group) => {
+    {overviewGroups([...data.tasks, ...older]).map((group) => {
       const collapsible = group.id === "resolved";
       const open = !collapsible || resolvedOpen;
       const headingId = `overview-${group.id}`;
@@ -58,6 +59,8 @@ function OverviewGroups({ scope, viewerId, onOpen }: { scope: TaskScope; viewerI
           : PLACEHOLDERS[group.id] && <p className="mt-1 rounded-lg border border-dashed border-border px-3 py-2 text-ui text-muted-foreground">{PLACEHOLDERS[group.id]}</p>)}
       </section>;
     })}
+    {hasOlder && <button type="button" className="justify-self-start text-ui text-muted-foreground underline hover:text-foreground"
+      disabled={loading} onClick={() => void loadOlder()}>{loading ? "Loading…" : "Load older threads"}</button>}
   </div>;
 }
 

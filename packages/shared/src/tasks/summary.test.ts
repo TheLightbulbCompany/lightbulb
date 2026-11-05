@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import schema from "../../fixtures/super-agent/tasks-schema.json";
 import { FIXTURES, PRIYA, SAM, fixtureTask, viewAs } from "./fixtures";
 import { OUTPUT_KINDS, type TaskSummary } from "./types";
-import { effectLine, formatSchedule, overviewGroups, specialistLabel, summaryView, taskSummaryLine } from "./view";
+import { answerVerb, askLine, effectLine, formatSchedule, overviewGroups, previewRows, primaryOptionId, specialistLabel, summaryView, taskSummaryLine } from "./view";
 
 const byId = (ts: TaskSummary[], id: string) => ts.find((t) => t.taskId === id)!;
 
@@ -116,5 +116,45 @@ describe("specialistLabel with the agents list", () => {
     expect(specialistLabel(id, new Map([[id, "Finance"]]))).toBe("Lightbulb · Finance");
     expect(specialistLabel(id)).toBe("Lightbulb");
     expect(specialistLabel("finance")).toBe("Lightbulb · Finance");
+  });
+});
+
+describe("questions: the server's option ids and copy", () => {
+  it("the one-press option is the question's primary, never a literal", () => {
+    // questions.py kind_and_options: approval [allow_once, deny]; review [send|publish|merge, request_changes].
+    expect(primaryOptionId([{ id: "allow_once" }, { id: "deny" }])).toBe("allow_once");
+    expect(primaryOptionId([{ id: "send" }, { id: "request_changes" }])).toBe("send");
+    expect(primaryOptionId([{ id: "deny", style: "danger" }, { id: "allow_once", style: "primary" }])).toBe("allow_once");
+    expect(primaryOptionId([])).toBeNull();
+  });
+  it("an approval names who and the exact target; a decision reads Approved", () => {
+    expect(askLine({ kind: "approval", title: "send 'Q3' to a@b.c", preview: { kind: "mail.send" } }, "finance")).toBe("Allow Lightbulb · Finance to send 'Q3' to a@b.c");
+    // A worker's own approval ask (no preview) keeps its words.
+    expect(askLine({ kind: "approval", title: "Can I spend $40 on ads?" }, "ads")).toBe("Can I spend $40 on ads?");
+    expect(askLine({ kind: "question", title: "Which date?", text: "" }, "finance")).toBe("Which date?");
+    expect(answerVerb("allow_once", "Allow once")).toBe("Approved");
+    expect(answerVerb("deny")).toBe("Denied");
+    expect(answerVerb("pick_b", "Option B")).toBe("Option B");
+  });
+  it("the preview shows the effect's operands, not its ids", () => {
+    expect(previewRows({ kind: "mail.send", to: ["a@b.c", "d@e.f"], subject: "Q3", idemKey: "x", nested: { a: 1 } }))
+      .toEqual([{ label: "To", value: "a@b.c, d@e.f" }, { label: "Subject", value: "Q3" }]);
+    expect(previewRows({ kind: "pr.merge", repo: "acme/web", number: 12 })).toEqual([{ label: "Repository", value: "acme/web" }, { label: "PR", value: "#12" }]);
+    expect(previewRows(null)).toEqual([]);
+  });
+  it("one-press Approve only for an effect approval (allow_once); a worker's own options open the thread", () => {
+    const t = byId(FIXTURES.step05.tasks, "t-signup");
+    expect(summaryView(t, SAM).action).toBe("approve");
+    const custom = { ...t, openQuestion: { ...t.openQuestion!, options: [{ id: "cancel_order", label: "Cancel" }, { id: "go_ahead", label: "Go ahead" }] } };
+    expect(summaryView(custom, SAM).action).toBe("answer");
+    expect(summaryView({ ...t, openQuestion: { ...t.openQuestion!, options: [] } }, SAM).action).toBe("answer");
+  });
+  it("purchase approvals name the merchant and why", () => {
+    expect(previewRows({ kind: "purchase", amount: "$12", merchant: "Namecheap", why: "launch domain", url: "https://x" }))
+      .toEqual([{ label: "Amount", value: "$12" }, { label: "Merchant", value: "Namecheap" }, { label: "Why", value: "launch domain" }, { label: "Link", value: "https://x" }]);
+  });
+  it("a dismissed suggestion reads Dismissed, with no Reopen", () => {
+    const t = { ...byId(FIXTURES.step02.tasks, "t-fees"), status: "resolved" as const, statusReason: "dismissed", shownGroup: "resolved" as const };
+    expect(summaryView(t, SAM)).toMatchObject({ word: "Dismissed", action: null });
   });
 });

@@ -137,6 +137,13 @@ def router_session_key(agent_id: str, lane: str) -> str:
     return f"agent:{agent_id}:lightbulb:router:{lane}"
 
 
+def trigger_room(trig: dict) -> str | None:
+    """The room a trigger belongs to and is answered in: where it was said (chat), else its deliver room. The one
+    rule admission (the Router batch key) and router_turn (memory audience, open tasks, delivery) share."""
+    ref = trig.get("ref") or {}
+    return ref.get("roomId") or ref.get("deliverRoomId")
+
+
 def router_lane_key(user_id: str) -> str:
     """The Router's private lane for one person; no raw user id in session keys (C12)."""
     return "u:" + hashlib.sha256(user_id.encode()).hexdigest()[:16]
@@ -488,6 +495,8 @@ class Attempt(_Row):
     terminal_status: str | None = None  # the bridge's terminal run status, once delivered
     output: str | None = Field(None, max_length=65536)  # the Worker's result text (never in a payload)
     recent_tools: list[dict[str, Any]] = []  # last heartbeat's tool calls (trace, progress)
+    progress_posted: bool = False  # the attempt's one progress line went up
+    attachments: list[dict[str, Any]] = []  # uploadedAttachments for the result post (task room keys)
 
     def sk(self) -> str:
         return attempt_sk(self.task_id, self.n)

@@ -1157,24 +1157,29 @@ def _task_part(sk: str) -> str:
 
 def _task_changed(record: dict[str, Any]) -> Callable[[], None]:
     """Super-agent tasks table: ids only (I1); clients refetch through the authorized API.
-    Publishes only rows that carry ``wsChannel`` (today only the task row stamps it; attempt,
-    question and subscription rows publish once their writers stamp it too)."""
+    Publishes only rows that carry ``wsChannel`` (``tasks_repo.stamp_channel``: task, attempt, question and
+    effect rows). An effect row (``EFFECT#{idemKey}``) names its task in ``taskId``."""
     if record.get("eventName") not in {"INSERT", "MODIFY"}:
         return _noop
     stream = record.get("dynamodb") or {}
     item = _deserialize_map(stream.get("NewImage") or {})
     sk, channel = item.get("sk"), item.get("wsChannel")
-    if not isinstance(sk, str) or not sk.startswith("TASK#") or not isinstance(channel, str) or not channel:
+    if not isinstance(sk, str) or not isinstance(channel, str) or not channel:
         return _noop
-    part = _task_part(sk)
+    if sk.startswith("EFFECT#") and isinstance(item.get("taskId"), str) and item["taskId"]:
+        part, task_id = "effect", item["taskId"]
+    elif sk.startswith("TASK#"):
+        part, task_id = _task_part(sk), sk.split("#")[1]
+    else:
+        return _noop
     if not part:
         return _noop
     if record["eventName"] == "MODIFY" and _deserialize_map(stream.get("OldImage") or {}).get("version") == item.get("version"):
         return _noop
-    task_id, version = sk.split("#")[1], item.get("version")
+    version = item.get("version")
     event = {  # the standard live envelope (packages/shared/src/live/types.ts parseLiveEvent); anything else is dropped
         "schemaVersion": 1,
-        "eventId": str(uuid5(NAMESPACE_URL, f"task:{task_id}:{part}:{version}")),  # a replayed record dedupes
+        "eventId": str(uuid5(NAMESPACE_URL, f"task:{task_id}:{sk}:{version}")),  # per row: a replayed record dedupes
         "type": "task.changed",
         "occurredAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "payload": {"taskId": task_id, "part": part, "version": version},

@@ -8,7 +8,7 @@ jest.mock("../../../providers/live-events", () => ({ useLiveEvents: () => live, 
 jest.mock("expo-router", () => ({ router: { push: jest.fn() } }));
 jest.mock("expo-crypto", () => ({ randomUUID: () => "00000000-0000-4000-8000-000000000000" }));
 
-import { TaskCard } from "../TaskCard";
+import { MessageTasks, TaskCard } from "../TaskCard";
 
 const p = chatPalette.light;
 const byId = (step: keyof typeof FIXTURES, id: string) => FIXTURES[step].tasks.find((t) => t.taskId === id)!;
@@ -53,7 +53,7 @@ it("word and action per viewer: Sam sees Approve, Priya sees Waiting on Sam", as
   await priya.unmount();
 });
 
-it("the card is one button with an accessible name; its action posts the answer and does not open", async () => {
+it("the card is one button with an accessible name; Approve opens the thread screen, never answers blind", async () => {
   const onOpen = jest.fn();
   const view = await render(<Fresh><TaskCard task={byId("step05", "t-signup")} taskId="t-signup" viewerId={SAM} palette={p} onOpen={onOpen} /></Fresh>);
   const card = screen.getByLabelText("Open Workshop signup app, Waiting on you");
@@ -62,10 +62,20 @@ it("the card is one button with an accessible name; its action posts the answer 
   expect(onOpen).toHaveBeenCalledWith("t-signup");
   onOpen.mockClear();
   fireEvent.press(screen.getByLabelText("Approve"));
-  await waitFor(() => expect(client.answer).toHaveBeenCalledWith("t-signup", "q-provision",
-    expect.objectContaining({ optionId: "approve", expectVersion: 7 })));
-  expect(onOpen).not.toHaveBeenCalled();
-  // The answer's follow-up writes settle before the tree goes, so the next test starts clean.
+  expect(onOpen).toHaveBeenCalledWith("t-signup");
+  expect(client.answer).not.toHaveBeenCalled();
+  await act(async () => {});
+  await view.unmount();
+});
+
+it("a card for a thread older than the room's first page reads it by id", async () => {
+  const old = { ...byId("step05", "t-signup"), taskId: "t-old", title: "Last month's report" };
+  client.get.mockResolvedValue({ task: old, attempts: [], questions: [], effects: [], subscriptions: [], taskRoomId: "tr" } as never);
+  const message = { roomId: "r-old", taskRefs: [{ taskId: "t-old", role: "started" }] } as never;
+  const view = await render(<Fresh><MessageTasks message={message} viewerId={SAM} palette={p} /></Fresh>);
+  expect(await screen.findByText("Last month's report")).toBeTruthy();
+  expect(client.get).toHaveBeenCalledWith("t-old");
+  expect(screen.queryByText("This thread isn't available")).toBeNull();
   await act(async () => {});
   await view.unmount();
 });

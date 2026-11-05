@@ -56,7 +56,10 @@ _SHORT = {"start_to_close_timeout": timedelta(seconds=30), "retry_policy": Retry
 _ROUTER_TURN = {
     "start_to_close_timeout": timedelta(minutes=5),
     "heartbeat_timeout": timedelta(seconds=60),
-    "retry_policy": RetryPolicy(maximum_attempts=4),  # 3 retries
+    # One retry: a stuck batch holds every lane of the workspace's one Router queue (5 min per try), so the
+    # worst case is ~10 min before apply_fallback answers (audit #17). Replay-safe: the policy is not compared
+    # on replay, and an Activity already scheduled keeps the policy it was scheduled with.
+    "retry_policy": RetryPolicy(maximum_attempts=2),
 }
 _WORKER_TURN = {
     "start_to_close_timeout": timedelta(hours=6, minutes=30),  # under the bridge's 7 h recycle (§14.11)
@@ -66,6 +69,7 @@ _WORKER_TURN = {
 }
 
 PATCH_CANCEL_QUESTIONS_ON_END = "O-cancel-questions-on-end-v1"  # audit #5
+PATCH_RECONCILE_CANCEL_QUESTIONS = "O-reconcile-cancel-questions-v1"  # a watchdog-failed orphan's open Questions
 SYSTEM_ACTOR = "__system__"  # == core.constants.SYSTEM_ACTOR_ID (the sandbox imports no core modules)
 
 # Outcome → the status `end_attempt` leaves the task in (the workflow mirrors it to pick its next wait).
@@ -287,8 +291,10 @@ class TaskWorkflow(TaskQuestionsMixin, AutomationRunMixin, WatchMixin):
 
     @retry.validator
     def _validate_retry(self, req: ActionRequest) -> None:
-        if self._running() or self._status not in (None, "failed", "idle"):
-            raise ValueError("retry needs a failed or idle task")
+        # waiting: a budget-blocked task (check_budget) is retried once its budget is raised; an open Question
+        # still holds the attempt (`_before_attempt`).
+        if self._running() or self._status not in (None, "failed", "idle", "waiting"):
+            raise ValueError("retry needs a failed, idle or waiting task")
 
     @workflow.update
     async def reopen(self, req: ActionRequest) -> None:
@@ -324,7 +330,10 @@ class TaskWorkflow(TaskQuestionsMixin, AutomationRunMixin, WatchMixin):
         # A task that ends leaves no open Question (Waiting on you, Activity, away email): a resolve, the quiet
         # resolve, no_answerer, a failure. A Stop cancels them itself, with the person's id (`_q_on_stop`).
         if to in ("resolved", "failed") and self._stop_by is None and workflow.patched(PATCH_CANCEL_QUESTIONS_ON_END):
-            await self._q_cancel_open(self._action[1] if self._action else SYSTEM_ACTOR, reason or to)
+            try:
+                await self._q_cancel_open(self._action[1] if self._action else SYSTEM_ACTOR, reason or to)
+            except ActivityError:  # the task still ends; a Question left open is shown, never answerable
+                workflow.logger.error("cancel_open_questions failed for task %s", self._task_id)
         await _act("transition", self._ws, self._task_id, to, reason)
         self._status = to
         if workflow.patched(PATCH_AUTOMATION_RUN):  # Lane A: an automation run ends with its task
@@ -394,6 +403,12 @@ class TaskWorkflow(TaskQuestionsMixin, AutomationRunMixin, WatchMixin):
             return True
         if live != "live":
             await _act("release_slot", self._ws, self._task_id)
+        if workflow.patched(PATCH_RECONCILE_CANCEL_QUESTIONS):
+            # This run never tracked the orphan's Questions (`_open_qs` is empty): cancel them from the store.
+            try:
+                await _act("cancel_open_questions", self._ws, self._task_id, SYSTEM_ACTOR, "lost_run")
+            except ActivityError:
+                workflow.logger.error("cancel_open_questions failed for task %s", self._task_id)
         await self._transition("failed", "lost_run")
         return False
 

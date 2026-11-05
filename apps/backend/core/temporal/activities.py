@@ -81,20 +81,27 @@ async def _task(ws: str, task_id: str) -> dict:
 
 
 async def _move(ws: str, task_id: str, to: str, reason: str | None = None, fields: dict | None = None) -> None:
-    """Transition unless already there; walks queued first when the edge needs it."""
+    """Transition unless already there; walks queued first when the edge needs it. A task that ends (resolved,
+    failed) lets go of its threads, so later replies there go to the Router (and may start a new task); a retry or
+    reopen takes back the ones no other task has claimed since."""
     task = await _task(ws, task_id)
-    if task["status"] == to:
-        return
-    from core.temporal import learning  # Lane V: overlay expiry follows the task's terminal state
+    if task["status"] != to:
+        from core.temporal import learning  # Lane V: overlay expiry follows the task's terminal state
 
-    if task["status"] in learning.TERMINAL and to not in learning.TERMINAL:
-        await learning.set_overlay_tag(ws, task_id, on=False)  # reopen: untag BEFORE the next attempt
-    if to == "working" and task["status"] not in tasks_repo.TRANSITIONS["working"]:
-        await tasks_repo.transition_task(ws, task_id, to="queued")
-    row = await tasks_repo.transition_task(ws, task_id, to=to, reason=reason, fields=fields)
-    await memory_tasks_index.index_task(ws, row)  # memory (M5): the task card follows every status change
-    if to in learning.TERMINAL:
-        await learning.set_overlay_tag(ws, task_id, on=True)
+        if task["status"] in learning.TERMINAL and to not in learning.TERMINAL:
+            await learning.set_overlay_tag(ws, task_id, on=False)  # reopen: untag BEFORE the next attempt
+            # Retry/reopen takes its threads back before the move (a crash in between redoes both), so a reply
+            # in the original thread reaches this task again instead of starting a second one.
+            await tasks_repo.resubscribe_router_threads(ws, task_id)
+        if task["status"] not in tasks_repo.TRANSITIONS[to] and "queued" in tasks_repo.TRANSITIONS[to]:
+            # e.g. a retried failed/reopened task: failed → queued → working, or → waiting when over budget
+            await tasks_repo.transition_task(ws, task_id, to="queued")
+        row = await tasks_repo.transition_task(ws, task_id, to=to, reason=reason, fields=fields)
+        await memory_tasks_index.index_task(ws, row)  # memory (M5): the task card follows every status change
+        if to in learning.TERMINAL:
+            await learning.set_overlay_tag(ws, task_id, on=True)
+    if to in ("resolved", "failed"):  # also on a retry that finds the move done (idempotent)
+        await tasks_repo.unsubscribe_all(ws, task_id)
 
 
 def _origin(tree: dict) -> tuple[str | None, str | None]:
@@ -340,16 +347,11 @@ async def deliver_input(ws: str, task_id: str, n: int, trigger_id: str) -> bool:
     Gate refused ⇒ today's copy in the task room and the input is consumed; not accepted ⇒ stays pending."""
     trig = await tasks_repo.get_trigger(ws, trigger_id) or {}
     att = await tasks_repo.get_attempt(ws, task_id, n)
-    actor = trig.get("actorUserId")
-    if actor:
-        gate = await chat_gate.gate_chat(
-            user_id=actor, owner_id=ws, session_key=_identity(ws, task_id, att).session_key
+    if blocked := await task_conversation.gate_input(ws, task_id, trig):
+        await task_conversation.post_as_lightbulb(
+            ws, ts.task_room_id(task_id), text=blocked, event_id=f"task-gate:{task_id}:{trigger_id}", remember=False
         )
-        if gate.get("blocked"):
-            await task_conversation.post_as_lightbulb(
-                ws, ts.task_room_id(task_id), text=gate["message"], event_id=f"task-gate:{task_id}:{trigger_id}"
-            )
-            return True
+        return True
     text = await _input_text(ws, trigger_id)
     try:
         accepted = await runtime_runs.steer_run(ws, _identity(ws, task_id, att), text, "input")
@@ -408,12 +410,14 @@ async def end_attempt(ws: str, task_id: str, n: int, outcome: str, error: str | 
     room, root = _origin(tree)
     if outcome == "completed" and att.get("output"):
         text = att["output"]
+        files = att.get("attachments") or []  # PUT by the task VM to the TASK room's keys
         refs = [{"taskId": task_id, "role": "started"}]
         if room:
+            names = ", ".join(f["fileName"] for f in files)
             await task_conversation.post_as_lightbulb(
                 ws,
                 room,
-                text=text,
+                text=f"{text}\n\n_(Attached in the task: {names}.)_" if files else text,
                 event_id=f"task-result:{task_id}:{n}",
                 specialist=task.get("specialist"),
                 thread_root=root,
@@ -428,6 +432,7 @@ async def end_attempt(ws: str, task_id: str, n: int, outcome: str, error: str | 
             event_id=f"task-result-room:{task_id}:{n}",
             specialist=task.get("specialist"),
             kind="result",
+            uploaded_attachments=files,
         )
         if room:
             await messaging.ask_who_should_see(ws, {"roomId": room}, "completed")
@@ -598,7 +603,7 @@ async def _deliver(
     ref = trig.get("ref") or {}
     if trig["source"] in ("mail", "text") and not refs and await _deliver_source_reply(ws, trig, text, event_id):
         return None
-    room = ref.get("roomId") or ref.get("deliverRoomId")
+    room = ts.trigger_room(trig)
     if not room:
         logger.warning("trigger %s has nowhere to answer (source %s)", trig["triggerId"], trig["source"])
         return None
@@ -614,7 +619,7 @@ async def _ensure_task(ws: str, task_id: str, trig: dict, lane: str, status: str
         return existing
     ref = trig.get("ref") or {}
     actor = trig.get("actorUserId")
-    room = ref.get("roomId") or ref.get("deliverRoomId")
+    room = ts.trigger_room(trig)
     private = lane != "shared"
     asked = fields.pop("visibility", None)
     # Clamp the model's `visibility` to what the trigger allows (§5): a private lane is always the person's;
@@ -676,6 +681,15 @@ async def _apply(
             tid, {"lines": [], "refs": [], "starts": [], "proposed": [], "passes": [], "acks": set()}
         )
 
+    def ack(sl: dict, line: str | None) -> None:
+        """One ack line per trigger: several start/propose/pass_through decisions on one ask are one message with
+        a card per task, and the model writes the same summary on each (dev, 5 Nov: the line twice). The first
+        decision's ack is the message's line."""
+        if line and not sl["acks"]:
+            sl["lines"].append(line)
+        if line:
+            sl["acks"].add(line)
+
     for i, dec in enumerate(decisions):
         primary = dec.trigger_ids[0]
         if not isinstance(dec, ts.Ignore):  # `ignore` on a respond trigger is silence: the fallback line covers it
@@ -711,8 +725,7 @@ async def _apply(
                 logger.warning("start_task dropped for trigger %s", primary, exc_info=True)
                 sl["lines"].append(router_prompt.FALLBACK)
                 continue
-            sl["lines"].append(dec.ack)
-            sl["acks"].add(dec.ack)
+            ack(sl, dec.ack)
             sl["refs"].append({"taskId": task_id, "role": "started"})
             sl["starts"].append(task_id)
             for tid in dec.trigger_ids:
@@ -737,16 +750,16 @@ async def _apply(
                     continue
                 sl["refs"].append({"taskId": task_id, "role": "suggested"})
                 sl["proposed"].append(task_id)
-            sl["lines"].append(dec.ack)
-            sl["acks"].add(dec.ack)
+            ack(sl, dec.ack)
         elif isinstance(dec, ts.PassThrough):
+            if blocked := await task_conversation.gate_input(ws, dec.task_id, trig):  # §14.10, like a start
+                sl["lines"].append(blocked)
+                continue
             await temporal_client.signal_task_input(ws, dec.task_id, TaskInputRef(primary, "message"))
             sl["passes"].append(dec.task_id)
             for tid in dec.trigger_ids:
                 routed_to.setdefault(tid, dec.task_id)
-            if dec.ack:
-                sl["lines"].append(dec.ack)
-                sl["acks"].add(dec.ack)
+            ack(sl, dec.ack)
         elif isinstance(dec, ts.Ask):
             sl["lines"].append(dec.text + (f" ({' / '.join(dec.options)})" if dec.options else ""))
         elif isinstance(dec, ts.Reply):
@@ -821,7 +834,7 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
     if to_model and script:  # dev fault hook: decisions by exact message text, no Router run
         roster = await messaging.load_agent_roster(ws)
         user_id = next((t.get("actorUserId") for t in to_model.values() if t.get("actorUserId")), None)
-        rooms = {(t.get("ref") or {}).get("roomId") for t in to_model.values()} - {None}
+        rooms = {ts.trigger_room(t) for t in to_model.values()} - {None}
         open_tasks = await _open_tasks(ws, inp.lane, user_id, rooms)
         texts = {tid: await _input_text(ws, tid) for tid in to_model}
         decisions += router_prompt.validate_decisions(
@@ -832,18 +845,16 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
             scope=lambda tid: (
                 inp.lane,
                 to_model[tid].get("actorUserId"),
-                (to_model[tid].get("ref") or {}).get("roomId"),
+                ts.trigger_room(to_model[tid]),
             ),
             in_scope=_task_in_scope,
         )
     elif to_model:
         private = inp.lane != "shared"
         user_id = next((t.get("actorUserId") for t in to_model.values() if t.get("actorUserId")), None)
-        room_id = next(
-            ((t.get("ref") or {}).get("roomId") for t in to_model.values() if (t.get("ref") or {}).get("roomId")), None
-        )
+        room_id = next((r for r in map(ts.trigger_room, to_model.values()) if r), None)
         roster = await messaging.load_agent_roster(ws)
-        rooms = {(t.get("ref") or {}).get("roomId") for t in to_model.values()} - {None}
+        rooms = {ts.trigger_room(t) for t in to_model.values()} - {None}
         open_tasks = await _open_tasks(ws, inp.lane, user_id, rooms)
         views = [await _trigger_view(ws, t) for t in to_model.values()]
         prompt = router_prompt.render_batch(views, roster, open_tasks, lane=inp.lane)
@@ -862,7 +873,7 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
             scope=lambda tid: (
                 inp.lane,
                 to_model[tid].get("actorUserId"),
-                (to_model[tid].get("ref") or {}).get("roomId"),
+                ts.trigger_room(to_model[tid]),
             ),
             in_scope=_task_in_scope,
         )

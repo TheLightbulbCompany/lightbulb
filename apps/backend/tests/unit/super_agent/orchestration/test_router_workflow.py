@@ -81,6 +81,19 @@ async def test_router_batch_never_spans_rooms(temporal_env, fakes):
     assert sorted(a[0].trigger_ids for a in fakes.args("router_turn")) == [["a", "c"], ["b"]]
 
 
+async def test_router_turn_tries_twice_then_falls_back(temporal_env, fakes):
+    """Audit #17: a failing batch gets one retry (not three) before the fallback, so other lanes wait ~10 min, not 20."""
+
+    def down(inp):
+        raise RuntimeError("bridge down")
+
+    fakes.behaviour["router_turn"] = down
+    h = await _router(temporal_env, fakes, [_ref("a")], wait_turns=3)
+    await h.terminate()
+    assert fakes.names().count("router_turn") == 2
+    assert fakes.args("apply_fallback") == [(WS, ["a"])]
+
+
 async def test_router_dedups_trigger(temporal_env, fakes):
     h = await _router(temporal_env, fakes, [_ref("a"), _ref("a")], wait_turns=1)
     await asyncio.sleep(0.3)

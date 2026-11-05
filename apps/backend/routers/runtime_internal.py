@@ -9,6 +9,8 @@ for the attempt it runs. 404 while the workspace's switch is off.
   the terminal event stores output and usage on the Attempt and completes the Activity once.
 - `POST /api/v1/internal/runtime/{owner}/inputs`: a background job or delegation finished inside a task's
   session; recorded as a Trigger and signalled to the task (dedupe on `deliveryId`).
+- `POST /api/v1/internal/runtime/{owner}/notes`: a Worker's `task_note`, posted in its own task's room
+  (contracts-v2 §6: the only place a Worker posts), by the current live attempt only.
 
 Lane Q appends its effects and questions routes to this router.
 """
@@ -31,7 +33,7 @@ from core import tasks_schema as ts
 from core.dynamodb import utc_now_iso
 from core.repositories import effects_repo, questions_repo, tasks_repo
 from core.services import questions, task_conversation
-from core.services.messaging import human_display_name
+from core.services.messaging import UploadedAttachment, human_display_name
 from core.services.container_auth import _require_hook_token
 from core.services.super_agent_flags import flags_for
 from core.temporal import activities as acts
@@ -75,6 +77,9 @@ class RunEventBody(BaseModel):
     error: str | None = Field(None, max_length=128)
     usage: dict[str, Any] | None = None
     recent_tools: list[dict[str, Any]] = Field(default_factory=list, alias="recentTools", max_length=50)
+    # Files the Worker's result named (`MEDIA:` lines), already PUT by the task VM to the TASK ROOM's
+    # attachment keys; the result post adopts them (an older bridge sends none).
+    attachments: list[UploadedAttachment] = Field(default_factory=list, max_length=10)
 
 
 class InputBody(BaseModel):
@@ -111,7 +116,9 @@ async def run_event(owner_id: str, run_id: str, body: RunEventBody, request: Req
     handle = temporal.get_client().get_async_activity_handle(task_token=base64.b64decode(token))
 
     if body.kind == "heartbeat":
-        first = not att.get("recentTools") and body.recent_tools
+        # One line per attempt, on the first heartbeat with a tool a person would recognise: an internal
+        # tool (reading its own skills, notes) posts nothing, and the line waits for a real one.
+        label = None if att.get("progressPosted") else progress_label(body.recent_tools)
         if att["status"] in _LIVE:
             await tasks_repo.update_attempt(
                 owner_id,
@@ -120,11 +127,13 @@ async def run_event(owner_id: str, run_id: str, body: RunEventBody, request: Req
                 {
                     "lastHeartbeatAt": utc_now_iso(),
                     "recentTools": [_tool_line(t) for t in body.recent_tools[-_TOOLS_KEPT:]],
+                    **({"progressPosted": True} if label else {}),
                 },
                 allowed_status=_LIVE,
+                bump=False,  # every 2 min: no workspace-wide task.changed (a live view polls the trace)
             )
-        if first:
-            await _progress_line(owner_id, body.task_id, body.attempt, body.recent_tools)
+        if label:
+            await _progress_line(owner_id, body.task_id, body.attempt, label)
         try:
             await handle.heartbeat(body.status)
         except AsyncActivityCancelledError:
@@ -135,6 +144,8 @@ async def run_event(owner_id: str, run_id: str, body: RunEventBody, request: Req
         return {"ok": True}
 
     fields: dict[str, Any] = {"terminalStatus": body.status, "output": body.output or ""}
+    if body.attachments:
+        fields["attachments"] = [a.model_dump(mode="json", by_alias=True) for a in body.attachments]
     if body.usage:
         fields["usage"] = acts._usage(body.usage)
     if not await tasks_repo.claim_attempt_terminal(owner_id, body.task_id, body.attempt, fields):
@@ -162,15 +173,48 @@ async def run_event(owner_id: str, run_id: str, body: RunEventBody, request: Req
     return {"ok": True}
 
 
-async def _progress_line(ws: str, task_id: str, n: int, tools: list[dict]) -> None:
-    """§14.11 progress poster: one line per attempt in the task room, on the first heartbeat with tools.
-    Later heartbeats update the Attempt's `recentTools` (the trace and live views read it)."""
-    name = next((t.get("name") or t.get("tool") for t in tools if t.get("name") or t.get("tool")), "tools")
+#: Tools a person would not recognise as work: the Worker reading its own skills, notes or plan.
+_INTERNAL_TOOLS = frozenset(
+    {"skill_view", "skills_list", "skill_manage", "memory", "todo", "session_search", "clarify"}
+)
+#: Tool-id prefix -> what the progress line says (first match wins). ponytail: a short fixed list; an
+#: unknown tool reads "Working on it"; extend here when a tool shows up raw.
+_TOOL_WORDS = (
+    ("web_", "Searching the web"),
+    ("browser_", "Using the browser"),
+    ("terminal", "Running a command"),
+    ("process", "Running a command"),
+    ("execute_code", "Running code"),
+    ("read_file", "Reading files"),
+    ("search_files", "Reading files"),
+    ("write_file", "Writing a file"),
+    ("patch", "Writing a file"),
+    ("image_generate", "Making an image"),
+    ("vision_", "Looking at an image"),
+    ("delegate_task", "Handing part of the work to a helper"),
+    ("mcp_", "Using a connected app"),
+    ("send_message", "Sending a message"),
+)
+
+
+def progress_label(tools: list[dict]) -> str | None:
+    """Plain words for the first non-internal tool of a heartbeat; None when there is none yet."""
+    for tool in tools:
+        name = str(tool.get("name") or tool.get("tool") or "")
+        if not name or name in _INTERNAL_TOOLS:
+            continue
+        return next((words for prefix, words in _TOOL_WORDS if name.startswith(prefix)), "Working on it")
+    return None
+
+
+async def _progress_line(ws: str, task_id: str, n: int, label: str) -> None:
+    """§14.11 progress poster: one line per attempt in the task room (`progress_label`). Every heartbeat
+    updates the Attempt's `recentTools` (the trace and live views read it)."""
     try:
         await task_conversation.post_as_lightbulb(
             ws,
             ts.task_room_id(task_id),
-            text=f"Working: {name}",
+            text=f"{label}…",
             event_id=f"task-progress:{task_id}:{n}",
             progress=True,
         )
@@ -417,3 +461,37 @@ async def worker_ask(owner_id: str, body: AskBody, request: Request) -> dict:
     if opened is None:
         raise HTTPException(status_code=503, detail="question_not_opened")
     return await _question_view(opened)
+
+
+NOTE_CAP = 20  # notes per attempt
+
+
+class NoteBody(BaseModel):
+    task_id: str = Field(alias="taskId")
+    run_id: str = Field(alias="runId")
+    attempt: int = Field(ge=1)
+    run_secret: str = Field(alias="runSecret", min_length=1, max_length=128)
+    text: str = Field(min_length=1, max_length=2000)
+
+
+@router.post("/{owner_id}/notes")
+async def task_note(owner_id: str, body: NoteBody, request: Request) -> dict:
+    """A Worker's progress note in its task's room, as Lightbulb · specialist. The same text twice in one attempt
+    posts once (a tool retry)."""
+    await _gate(owner_id, request)
+    att = await _attempt_of(owner_id, body.task_id, body.attempt, body.run_id, body.run_secret)
+    task = await _current_task(owner_id, att, body.task_id, body.attempt)
+    if not await tasks_repo.count_note(owner_id, body.task_id, body.attempt, NOTE_CAP):
+        raise HTTPException(status_code=429, detail="note_limit")
+    room_id = await task_conversation.ensure_task_room(owner_id, task)
+    digest = hashlib.sha256(body.text.encode()).hexdigest()[:16]
+    message_id = await task_conversation.post_as_lightbulb(
+        owner_id,
+        room_id,
+        text=body.text,
+        event_id=f"task-note:{body.task_id}:{body.attempt}:{digest}",
+        specialist=task.get("specialist"),
+        kind="note",
+        progress=True,  # never a mention or notification, never room memory
+    )
+    return {"messageId": message_id}

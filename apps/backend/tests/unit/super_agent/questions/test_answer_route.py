@@ -137,8 +137,19 @@ async def test_answer_after_stop_409(world):
         "state": "cancelled",
         "by": PRIYA,
         "at": resp.json()["detail"]["at"],
+        "reason": "stopped",
     }
     assert world["updates"] == []
+
+
+@pytest.mark.parametrize("by,reason", [("__system__", "resolved"), ("watch", "watch_gave_up")])
+async def test_answer_after_the_task_ended_names_no_person(world, by, reason):
+    """The task (not a person) closed it: no system id where the client shows a name, and the reason for its copy."""
+    qid = await _question()
+    await questions_repo.cancel_open(WS, TASK, by=by, reason=reason)
+    world["who"]["user"] = ADA
+    detail = (await _press(world, qid)).json()["detail"]
+    assert detail["code"] == "not_open" and detail["by"] is None and detail["reason"] == reason
 
 
 async def test_same_client_answer_id_200_twice(world):

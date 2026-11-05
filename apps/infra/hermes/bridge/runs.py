@@ -261,9 +261,16 @@ def _run_and_report(identity: dict, request: dict) -> None:
         stop.set()
         if events:
             status = turn.durable_run_status(identity["runId"], identity, kind="task") or {}
+            output, files = status.get("output") or "", []
+            if identity.get("taskId"):  # a Worker's result files go to its task room (never a raw MEDIA: path)
+                try:
+                    output, files = turn.task_result_media(identity["agentId"], identity["taskId"], output)
+                except Exception:  # noqa: BLE001 -- the result text still goes up
+                    log.warning("task result media failed run=%s", identity["runId"], exc_info=True)
             _post_event(identity, {"kind": "terminal", "status": status.get("status") or "failed",
-                                   "output": (status.get("output") or "")[:MAX_EVENT_OUTPUT] or None,
-                                   "error": status.get("error"), "usage": status.get("usage")})
+                                   "output": output[:MAX_EVENT_OUTPUT] or None,
+                                   "error": status.get("error"), "usage": status.get("usage"),
+                                   **({"attachments": files} if files else {})})
 
     try:
         turn.run_task_turn(identity, request, True, on_finished=terminal)

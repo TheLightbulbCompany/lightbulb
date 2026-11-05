@@ -506,12 +506,25 @@ async def test_visibility_clamped_to_the_trigger(world):
 
 
 @pytest.mark.asyncio
-async def test_person_task_without_an_actor_is_refused(world):
+async def test_person_task_without_an_actor_drops_only_that_decision(world):
     start = {"title": "x", "brief": "y", "ack": "ok", "visibility": "person"}
     t1 = await _trig("sched:s9:1", source="schedule", actor=None, ref={"deliverRoomId": ROOM, "start": start})
-    with pytest.raises(ValueError, match="names no actor"):
-        await _run([t1])
-    assert world["starts"] == [] and world["posts"] == []
+    t2 = await _trig("chat:m2")
+    world["decisions"] = [{"kind": "reply", "triggerIds": [t2], "text": "Fine."}]
+    out = await _run([t1, t2])
+    assert out.started_task_ids == [] and world["starts"] == []
+    texts = {p["event_id"]: p["text"] for p in world["posts"]}
+    assert texts == {f"router:{BATCH}:0": router_prompt.FALLBACK, f"router:{BATCH}:1": "Fine."}  # the batch went on
+
+
+@pytest.mark.asyncio
+async def test_routed_to_set_on_every_trigger_a_start_covers(world):
+    t1, t2 = await _trig("chat:m1"), await _trig("chat:m2")
+    world["decisions"] = [_start([t1, t2])]
+    await _run([t1, t2])
+    task_id = ts.router_task_id(BATCH, 0, 0)
+    assert [(await repo.get_trigger(WS, t))["routedTo"] for t in (t1, t2)] == [{"taskId": task_id}] * 2
+    assert len(world["noted"]) == 2 and len(world["posts"]) == 1
 
 
 @pytest.mark.asyncio

@@ -647,6 +647,7 @@ async def _apply(
     `router_task_id(batch, i, k)`, event ids `router:{batch}:{i}`; returns ids only."""
     slots: dict[str, dict] = {}
     covered: set[str] = set()
+    routed_to: dict[str, str] = {}  # every trigger a start or pass_through covers → its task
 
     def slot(tid: str) -> dict:
         return slots.setdefault(tid, {"lines": [], "refs": [], "starts": [], "proposed": [], "passes": []})
@@ -667,43 +668,56 @@ async def _apply(
             if gate.get("blocked"):  # §14.10: today's failure copy, no task
                 sl["lines"].append(gate.get("message") or router_prompt.FALLBACK)
                 continue
-            await _ensure_task(
-                ws,
-                task_id,
-                trig,
-                inp.lane,
-                "queued",
-                title=dec.title,
-                description=dec.brief,
-                specialist=dec.specialist,
-                visibility=dec.visibility,
-                parentTaskId=dec.parent_task_id,
-                policyRef=dec.policy_ref,
-                budgetUsd=dec.budget_usd,
-            )
-            sl["lines"].append(dec.ack)
-            sl["refs"].append({"taskId": task_id, "role": "started"})
-            sl["starts"].append(task_id)
-        elif isinstance(dec, ts.ProposeTasks):
-            for k, t in enumerate(dec.tasks):
-                task_id = ts.router_task_id(inp.batch_id, i, k)
+            try:
                 await _ensure_task(
                     ws,
                     task_id,
                     trig,
                     inp.lane,
-                    "proposed",
-                    title=t.title,
-                    description=t.brief,
-                    specialist=t.specialist,
-                    proposalReason=dec.reason,
+                    "queued",
+                    title=dec.title,
+                    description=dec.brief,
+                    specialist=dec.specialist,
+                    visibility=dec.visibility,
+                    parentTaskId=dec.parent_task_id,
+                    policyRef=dec.policy_ref,
+                    budgetUsd=dec.budget_usd,
                 )
+            except ValueError:  # a person-visible task with nobody to see it: this decision only
+                logger.warning("start_task dropped for trigger %s", primary, exc_info=True)
+                sl["lines"].append(router_prompt.FALLBACK)
+                continue
+            sl["lines"].append(dec.ack)
+            sl["refs"].append({"taskId": task_id, "role": "started"})
+            sl["starts"].append(task_id)
+            for tid in dec.trigger_ids:
+                routed_to.setdefault(tid, task_id)
+        elif isinstance(dec, ts.ProposeTasks):
+            for k, t in enumerate(dec.tasks):
+                task_id = ts.router_task_id(inp.batch_id, i, k)
+                try:
+                    await _ensure_task(
+                        ws,
+                        task_id,
+                        trig,
+                        inp.lane,
+                        "proposed",
+                        title=t.title,
+                        description=t.brief,
+                        specialist=t.specialist,
+                        proposalReason=dec.reason,
+                    )
+                except ValueError:
+                    logger.warning("proposed task dropped for trigger %s", primary, exc_info=True)
+                    continue
                 sl["refs"].append({"taskId": task_id, "role": "suggested"})
                 sl["proposed"].append(task_id)
             sl["lines"].append(dec.ack)
         elif isinstance(dec, ts.PassThrough):
             await temporal_client.signal_task_input(ws, dec.task_id, TaskInputRef(primary, "message"))
             sl["passes"].append(dec.task_id)
+            for tid in dec.trigger_ids:
+                routed_to.setdefault(tid, dec.task_id)
             if dec.ack:
                 sl["lines"].append(dec.ack)
         elif isinstance(dec, ts.Ask):
@@ -722,7 +736,7 @@ async def _apply(
         if not sl or not trig:
             continue
         message_id = None
-        if sl["lines"] or sl["refs"]:  # a pass_through without an ack posts nothing but still routes below
+        if sl["lines"] or sl["refs"]:  # a pass_through without an ack posts nothing (routed below)
             text = "\n".join(line for line in sl["lines"] if line) or "On it."
             message_id = await _deliver(
                 ws, trig, text, event_id=f"router:{inp.batch_id}:{idx}", refs=sl["refs"] or None
@@ -738,11 +752,10 @@ async def _apply(
         for task_id in sl["starts"]:
             await temporal_client.start_task_workflow(ws, task_id, "router")
             started.append(task_id)
-        routed = sl["starts"] + sl["passes"]
-        if routed:
-            await tasks_repo.set_trigger_routed_to(ws, tid, {"taskId": routed[0]})
-            if _thread_key(trig):
-                await rules_activities.note_task_started(ws, _thread_key(trig))  # rules (S6): did it yourself
+    for tid, task_id in routed_to.items():
+        await tasks_repo.set_trigger_routed_to(ws, tid, {"taskId": task_id})
+        if _thread_key(triggers[tid]):
+            await rules_activities.note_task_started(ws, _thread_key(triggers[tid]))  # rules (S6): did it yourself
     return RouterTurnOut(inp.batch_id, started, posted)
 
 

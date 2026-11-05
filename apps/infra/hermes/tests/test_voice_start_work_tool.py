@@ -97,7 +97,8 @@ def test_voice_work_toolset_off_every_other_turn(monkeypatch):
 def test_a_super_agent_call_enables_the_voice_work_toolset(env, home, monkeypatch):  # noqa: F811
     from tests.test_voice_call_run import IDENTITY, REQUEST, _frames
 
-    monkeypatch.setattr(turn, "profile_toolsets", lambda: (["lightbulb", "memory"], None))
+    # a profile that lists the Router's toolset: the call never gets it (only Router runs do)
+    monkeypatch.setattr(turn, "profile_toolsets", lambda: (["lightbulb", "lightbulb_router", "memory"], None))
     turn.register_call_run(IDENTITY)
     assert turn._run_call(IDENTITY, {**REQUEST, "superAgent": True}, _frames())[0] == "completed"
     assert env["limits"]["enabled_toolsets"] == ["lightbulb", "memory", "lightbulb_voice_work"]

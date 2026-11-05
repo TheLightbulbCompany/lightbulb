@@ -43,6 +43,8 @@ work but carries no task card started nothing: if the person asks for it (again)
 FALLBACK = "I couldn't get to this, ask me again."
 
 _TEXT_MAX = 2000
+_RECENT_LINE_MAX = 300  # a person's line under "Recent"
+_LIGHTBULB_LINE_MAX = 1200  # Lightbulb's own reply, whole enough to see what it claimed (10 lines: bounded)
 _DECISION = TypeAdapter(ts.RouterDecision)
 
 
@@ -57,11 +59,12 @@ def render_batch(
     open_tasks: list[dict],
     *,
     lane: str = "shared",
-    recent: list[dict] | None = None,
+    recent: list[dict] | tuple | None = (),
 ) -> str:
     """`triggers`: views from `activities._trigger_view` (triggerId, source, admission, text, who, where, threaded,
     pinnedSpecialist, routedTo); `roster`: registry rows (id, name, title, status); `open_tasks`: task rows;
-    `recent`: the room's lines before the batch (`activities._recent_lines`: who, text, lightbulb, cards)."""
+    `recent`: the room's (or thread's) lines before the batch (`activities._recent_lines`: who, text, lightbulb,
+    cards); None: the batch has no room message, so no earlier lines are known."""
     names = {a["id"]: a.get("name") or a["id"] for a in roster}
     lines = [f"# Batch ({'private lane' if lane != 'shared' else 'shared lane'})", "", "## Triggers"]
     for t in triggers:
@@ -78,10 +81,13 @@ def render_batch(
             head += f" · likely specialist: {names.get(likely, likely)} ({likely})"
         lines.append(head)
         lines.append(f"  {_one_line(t.get('who') or 'Someone', 80)}: {_one_line(t.get('text'))}")
-    if recent:
+    if recent is None:
+        lines += ["", "## Recent in this conversation", "- not available: only the message above is known"]
+    elif recent:
         lines += ["", "## Recent in this room (oldest first; a Lightbulb line's cards are the tasks it really started)"]
         for r in recent:
-            line = f"- {_one_line(r.get('who') or 'Someone', 80)}: {_one_line(r.get('text'), 300)}"
+            cap = _LIGHTBULB_LINE_MAX if r.get("lightbulb") else _RECENT_LINE_MAX
+            line = f"- {_one_line(r.get('who') or 'Someone', 80)}: {_one_line(r.get('text'), cap)}"
             if r.get("lightbulb"):
                 cards = ", ".join(f"{c.get('taskId')} {c.get('role') or ''}".strip() for c in r.get("cards") or [])
                 line += f" [cards: {cards}]" if cards else " [no task card]"

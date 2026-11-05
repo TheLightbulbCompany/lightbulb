@@ -693,3 +693,48 @@ async def test_router_sees_which_lightbulb_lines_really_started_work(world, monk
     assert f"- Lightbulb: On it: paying Acme. [cards: {started} started]" in prompt
     assert "Working: x" not in prompt
     assert 'Work is underway only if it is in "Open tasks"' in world["runs"][0][1].instructions
+
+
+@pytest.mark.asyncio
+async def test_recent_follows_the_thread_and_the_first_room_trigger(world, monkeypatch):
+    """A thread follow-up ("make it shorter") sees its thread; Recent comes from the first trigger with a room
+    message even when another trigger leads the batch; Lightbulb's own lines keep up to 1200 characters."""
+    root = str(uuid.uuid4())
+    long_reply = "Here is the checklist. " + "x" * 900
+    seen = {}
+
+    async def get_msg(room_id, message_id):
+        return {"messageId": message_id, "messageSeq": 20, "text": "make it shorter", "author": {}}
+
+    async def thread(room_id, root_id, seq):
+        seen["thread"] = (root_id, seq)
+        return [
+            {
+                "messageId": root,
+                "author": {"kind": "agent", "id": CEO, "displayName": "Lightbulb"},
+                "text": long_reply,
+                "taskRefs": [{"taskId": "t9", "role": "started"}],
+            }
+        ]
+
+    async def before(*a):
+        raise AssertionError("a thread follow-up reads its thread, not the room")
+
+    monkeypatch.setattr(acts.messaging_repo, "get_message_by_id", get_msg)
+    monkeypatch.setattr(acts.messaging_repo, "list_thread", thread)
+    monkeypatch.setattr(acts.messaging_repo, "list_messages_before", before)
+    t_sched = await _trig("sched:s1", source="schedule", ref={"text": "digest", "deliverRoomId": ROOM})
+    t_chat = await _trig("chat:m1", ref={"roomId": ROOM, "messageId": str(uuid.uuid4()), "threadRoot": root})
+    world["decisions"] = [{"kind": "reply", "triggerIds": [t_chat], "text": "Shorter: ok."}]
+    await _run([t_sched, t_chat])
+    prompt = world["runs"][0][1].input
+    assert seen["thread"] == (root, 20)
+    assert f"- Lightbulb: {long_reply} [cards: t9 started]" in prompt
+
+
+@pytest.mark.asyncio
+async def test_a_batch_without_a_room_message_says_no_lines_are_known(world):
+    t1 = await _trig("mail:x1", source="mail", ref={"text": "hi", "sessionKey": "mail:thread-a"})
+    world["decisions"] = [{"kind": "reply", "triggerIds": [t1], "text": "Hello."}]
+    await _run([t1])
+    assert "## Recent in this conversation\n- not available" in world["runs"][0][1].input

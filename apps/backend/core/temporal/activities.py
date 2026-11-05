@@ -523,8 +523,13 @@ async def _recent_lines(ws: str, trig: dict, batch: set[str]) -> list[dict]:
     if not msg or not msg.get("messageSeq"):
         return []
     front = await task_conversation.front_agent_id(ws)
+    seq = int(msg["messageSeq"])
+    if ref.get("threadRoot"):  # a follow-up in a thread ("make it shorter") sees its thread, not the room
+        rows = (await messaging_repo.list_thread(ref["roomId"], ref["threadRoot"], seq))[-_RECENT:]
+    else:
+        rows = await messaging_repo.list_messages_before(ref["roomId"], seq, _RECENT)
     out = []
-    for row in await messaging_repo.list_messages_before(ref["roomId"], int(msg["messageSeq"]), _RECENT):
+    for row in rows:
         if row.get("deletedAt") or row.get("progress") or ts.trigger_id("chat", row.get("messageId", "")) in batch:
             continue
         author = row.get("author") or {}
@@ -893,7 +898,10 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
         rooms = {ts.trigger_room(t) for t in to_model.values()} - {None}
         open_tasks = await _open_tasks(ws, inp.lane, user_id, rooms)
         views = [await _trigger_view(ws, t) for t in to_model.values()]
-        recent = await _recent_lines(ws, next(iter(to_model.values())), set(to_model))
+        # The batch is one conversation (lane, trigger_scope): its lines come from the first trigger that has a
+        # message in a room. A batch with none (mail, schedules) has no stored lines; the prompt says so.
+        chat = next((t for t in to_model.values() if {"roomId", "messageId"} <= set(t.get("ref") or {})), None)
+        recent = await _recent_lines(ws, chat, set(to_model)) if chat else None
         prompt = router_prompt.render_batch(views, roster, open_tasks, lane=inp.lane, recent=recent)
         memory = memory_tags.block_for_router(
             "private" if private and user_id else "shared", user_id if private else None, room_id

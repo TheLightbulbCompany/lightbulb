@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from scripts.super_agent.acceptance.ctx import Ctx, Result
 from scripts.super_agent.acceptance.o_lib import (
+    MONEY_SUBKINDS,
     ACK_S,
     ROUTER_REPLY_S,
     agent_posts,
@@ -19,8 +20,12 @@ async def a06(ctx: Ctx) -> Result:
     if "approvalQid" not in ctx.state:
         return Result(False, {"reason": "needs A5: no open approval Question in ctx.state (run A5 first)"})
     task_id, qid = ctx.state["approvalTaskId"], ctx.state["approvalQid"]
+    if task_id == ctx.state.get("purchaseTaskId"):
+        return Result(False, {"reason": "refusing: A6 never approves the purchase task's Question"})
     room_id = ctx.state["roomId"]
     q = next(q for q in await task_questions(ctx, "priya", task_id) if q["id"] == qid)
+    if q.get("subkind") in MONEY_SUBKINDS:
+        return Result(False, {"reason": "refusing to approve a money Question", "subkind": q.get("subkind")})
     qrow = next(
         r for r in rows_of(await ctx.tasks_rows(ctx.ws), "question") if r["taskId"] == task_id and r["qid"] == qid
     )

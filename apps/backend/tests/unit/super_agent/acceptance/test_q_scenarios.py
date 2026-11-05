@@ -295,9 +295,9 @@ async def test_a11_schedule_lifecycle(monkeypatch):
     assert result.passed, result.evidence
 
 
-async def test_a02_two_started_tasks_and_the_estimate_inline():
-    from scripts.super_agent.acceptance.a02_many_asks import a02
+async def test_a02_two_started_one_proposed_and_the_estimate_inline():
     from core import tasks_schema as ts
+    from scripts.super_agent.acceptance.a02_many_asks import a02
 
     rows: list[dict] = []
     ctx = Fake(None, rows)
@@ -307,10 +307,8 @@ async def test_a02_two_started_tasks_and_the_estimate_inline():
             return _json({"members": [{"kind": "agent", "id": "front"}]})
         if request.method == "POST":
             trig = ts.trigger_id("chat", "m9")
-            rows.extend(
-                {"type": "task", "taskId": f"t{i}", "status": "working", "specialist": "s", "triggerId": trig}
-                for i in (1, 2)
-            )
+            for i, status in enumerate(("working", "working", "proposed"), 1):
+                rows.append({"type": "task", "taskId": f"t{i}", "status": status, "specialist": "s", "triggerId": trig})
             rows.append({"type": "trigger", "triggerId": trig, "admission": "respond", "routedTo": {"taskId": "t1"}})
             rows.append({"type": "subscription", "taskId": "t1", "createdBy": "router"})
             return _json({"messageId": "m9", "messageSeq": 1})
@@ -319,7 +317,7 @@ async def test_a02_two_started_tasks_and_the_estimate_inline():
                 "messages": [
                     {
                         "author": {"kind": "agent", "id": "front"},
-                        "taskRefs": [{}, {}],
+                        "taskRefs": [{}, {}, {}],
                         "messageId": "c",
                         "text": "On 200 tickets Stripe takes about $1,200 (2.9% + 30c).",
                     }
@@ -330,4 +328,39 @@ async def test_a02_two_started_tasks_and_the_estimate_inline():
     ctx.handler = handler
     result = await a02(ctx)
     assert result.passed, result.evidence
-    assert ctx.state["proposedTaskId"] is None
+    assert ctx.state["proposedTaskId"] == "t3"
+
+
+async def test_a03_starts_the_purchase_waits_on_an_open_approval_and_only_stops():
+    from scripts.super_agent.acceptance import a03_start_suggested as mod
+
+    async def no_events(*a, **k):
+        return
+        yield
+
+    rows = [
+        {"type": "task", "taskId": T, "status": "working"},
+        {"type": "question", "taskId": T, "qid": "q1", "kind": "approval", "state": "open", "subkind": "purchase"},
+    ]
+    ctx = Fake(None, rows)
+    ctx.appsync = no_events
+    ctx.state["proposedTaskId"] = T
+    paths = []
+
+    def handler(request, user):
+        paths.append(request.url.path.rsplit("/", 1)[-1])
+        return _json({"task": {"version": 3}})
+
+    ctx.handler = handler
+    result = await mod.a03(ctx)
+    assert result.evidence["purchase_waits_on_open_approval"] and result.evidence["stopped_without_approving"]
+    assert "answer" not in paths and paths[-1] == "stop"
+    assert ctx.state["purchaseTaskId"] == T
+    assert not (await mod.a03(Fake(None))).passed
+
+
+async def test_a06_never_approves_the_purchase():
+    ctx = Fake(lambda r, u: _json({}), _approval_rows())
+    ctx.state.update(approvalTaskId=T, approvalQid="q1", purchaseTaskId=T)
+    result = await a06(ctx)
+    assert not result.passed and result.evidence["reason"].startswith("refusing")

@@ -17,10 +17,13 @@ ROUTER_REPLY_S = 180
 START_S = 15
 EVENT_S = 3
 ACK_S = 5
-THREE_ASKS = (
-    "Three things: 1) build a signup page for the workshop with our purple theme, 2) email last week's attendees (only sa-test-2+clerk_test@thelightbulb.company, "
-    "this is a test) about the new date, 3) estimate what Stripe fees we'd pay on 200 tickets."
+ASKS = (
+    "Four things: 1) build a signup page for the workshop with our purple theme, 2) email last week's attendees "
+    "(only sa-test-2+clerk_test@thelightbulb.company, this is a test) about the new date, 3) estimate what Stripe "
+    "fees we'd pay on 200 tickets, 4) and buy a domain for the workshop signup page (around $15)."
 )
+#: Question subkinds that spend money (core/services/questions.py `_MONEY`): no scenario ever approves one.
+MONEY_SUBKINDS = ("purchase", "spend", "budget_override")
 
 
 async def create_room(ctx: Any, user: str, name: str, members: list[dict]) -> dict:

@@ -6,11 +6,14 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from core import tasks_schema as ts
 from core.auth import AuthContext
+from core.repositories import messaging_repo as repo
 
 from core.services import messaging
 from core.services.messaging import ApiProblem
 from core.services import task_conversation as tc
+from tests.unit.repositories.test_messaging_repo import table  # noqa: F401 -- moto messaging table
 
 OWNER = "org_1"
 SAM = "user_sam"
@@ -105,6 +108,9 @@ def world(monkeypatch):
     monkeypatch.setattr(messaging.messaging_repo, "list_members", AsyncMock(side_effect=lambda r: list(w["members"])))
     monkeypatch.setattr(messaging.messaging_repo, "has_foreign_members", AsyncMock(return_value=False))
     monkeypatch.setattr(messaging.messaging_repo, "get_message_by_id", get_message_by_id)
+    monkeypatch.setattr(messaging.messaging_repo, "get_voice_run", AsyncMock(return_value=None))
+    monkeypatch.setattr(messaging.messaging_repo, "voice_run_may_post", lambda owner, run: {"ConditionCheck": run})
+    monkeypatch.setattr(messaging.messaging_repo, "list_messages_before", AsyncMock(return_value=[]))
     monkeypatch.setattr(messaging.messaging_repo, "create_message", create_message)
     monkeypatch.setattr(messaging, "load_agent_roster", AsyncMock(return_value=ROSTER))
     monkeypatch.setattr(messaging, "human_display_name", AsyncMock(return_value="Sam"))
@@ -121,10 +127,10 @@ def world(monkeypatch):
     return w
 
 
-async def _send(text="pay acme", *, mentions=(), reply_to=None):
+async def _send(text="pay acme", *, mentions=(), reply_to=None, room=ROOM):
     return await messaging.create_human_message(
         AuthContext(user_id=SAM, org_id=OWNER),
-        ROOM,
+        room,
         messaging.CreateMessageRequest(
             client_message_id=uuid.uuid4(),
             text=text,
@@ -135,12 +141,12 @@ async def _send(text="pay acme", *, mentions=(), reply_to=None):
     )
 
 
-async def _post(agent_id=CEO, text="On it", progress=False):
+async def _post(agent_id=CEO, text="On it", progress=False, event_id=None, room=ROOM):
     return await messaging.create_agent_message(
         OWNER,
         messaging.AgentMessageRequest(
-            event_id=f"ev-{uuid.uuid4()}",
-            room_id=uuid.UUID(ROOM),
+            event_id=event_id or f"ev-{uuid.uuid4()}",
+            room_id=uuid.UUID(room),
             agent_id=uuid.UUID(agent_id),
             text=text,
             reply_to_message_id=None,
@@ -202,6 +208,25 @@ async def test_card_reply_forwarded_once(world):
 
 
 @pytest.mark.asyncio
+async def test_card_reply_inside_the_task_room_is_not_forwarded(world):
+    task_room = ts.task_room_id(TASK)
+    world["meta"] = {**world["meta"], "roomId": task_room, "hidden": True, "task": {"taskId": TASK}}
+    world["messages"][CARD]["roomId"] = task_room
+    await _send("yes", reply_to=CARD, room=task_room)
+    assert world["forwarded"] == []  # the card's room is this room: no duplicate line
+
+
+@pytest.mark.asyncio
+async def test_card_reply_forward_failure_never_fails_the_send(world, monkeypatch):
+    async def boom(ws, task_id, message):
+        raise RuntimeError("task room gone")
+
+    monkeypatch.setattr(tc, "forward_card_reply", boom)
+    sent = await _send("yes", reply_to=CARD)
+    assert sent.message_id  # the send landed
+
+
+@pytest.mark.asyncio
 async def test_agent_message_in_router_room_wakes_nobody(world):
     world["members"].append(_agent(FIN, "finance"))
     await _post(text="@finance take this")
@@ -226,6 +251,54 @@ async def test_worker_post_outside_its_task_room_refused(world):
     world["members"] = [_human(), _agent()]
     await _post(agent_id=FIN, text="done")
     assert world["created"][-1]["author"]["id"] == FIN and world["created"][-1]["dispatch_targets"] == []
+    assert world["created"][-1]["author_member_check"] is False  # a stand-in has no MEMBER# row to check
+
+
+@pytest.mark.asyncio
+async def test_a2a_and_live_late_posts_keep_working(world):
+    """Lead ruling (5 Nov): A2A hold cards and Live late answers post as their agent in Router rooms until
+    lane Q's Question holds replace them."""
+    world["members"].append(_agent(FIN, "finance"))
+    for event_id in (f"a2a:{uuid.uuid4()}", f"live-late:{uuid.uuid4()}"):
+        await _post(agent_id=FIN, text="hold", event_id=event_id)
+    assert [c["author"]["id"] for c in world["created"]] == [FIN, FIN]
+    assert all(c["dispatch_targets"] == [] for c in world["created"])
+
+
+@pytest.mark.asyncio
+async def test_worker_posts_in_its_task_room_against_the_store(table, monkeypatch):  # noqa: F811
+    """The real write path: a roster stand-in skips the author MEMBER# check, so the transaction commits;
+    the same Worker is refused in a room people chat in."""
+
+    async def get_task(ws, task_id):
+        return {"taskId": TASK, "specialist": FIN} if task_id == TASK else None
+
+    monkeypatch.setattr(messaging, "_router_room", AsyncMock(return_value=True))
+    monkeypatch.setattr(messaging, "_front_agent_id", AsyncMock(return_value=CEO))
+    monkeypatch.setattr(messaging, "load_agent_roster", AsyncMock(return_value=ROSTER))
+    monkeypatch.setattr(messaging, "human_emails", AsyncMock(return_value={}))
+    monkeypatch.setattr(messaging, "_publish_message_created_soon", lambda item: None)
+    monkeypatch.setattr("core.repositories.tasks_repo.get_task", get_task)
+    task_room = ts.task_room_id(TASK)
+    for room_id, extra in ((task_room, {"hidden": True, "task": {"taskId": TASK}}), (ROOM, None)):
+        await repo.create_room(
+            owner_id=OWNER,
+            room_id=room_id,
+            client_room_id=f"c:{room_id}",
+            creator_user_id=SAM,
+            name="Task · Pay",
+            kind="channel",
+            members=[_human(), _agent()],
+            req_hash=repo.request_hash(room_id),
+            extra=extra,
+        )
+    receipt = await _post(agent_id=FIN, text="Paid Acme.", room=task_room)
+    stored = await repo.get_message_by_id(task_room, str(receipt.message_id))
+    assert stored["author"]["id"] == FIN and stored["dispatchTargets"] == []
+    assert await repo.get_member(task_room, "agent", FIN) is None  # still no seat
+    with pytest.raises(ApiProblem) as err:
+        await _post(agent_id=FIN, text="hi", room=ROOM)
+    assert err.value.error.code == "ROOM_FORBIDDEN"
 
 
 @pytest.mark.asyncio
@@ -238,8 +311,10 @@ async def test_lightbulb_handle_reserved(world):
     assert (await messaging._resolved_member(OWNER, member, ROSTER))["mentionHandle"] == "lightbulb"
     other = messaging.CreateRoomMember(kind="agent", id=FIN, role="member", listen_mode="active")
     assert (await messaging._resolved_member(OWNER, other, ROSTER))["mentionHandle"] == "finance"
+    assert await messaging._handles_for(OWNER, agents) == {CEO: "lightbulb", FIN: "finance"}  # front wins the word
     world["on"] = False
     assert (await messaging._resolved_member(OWNER, member, ROSTER))["mentionHandle"] == "aden"
+    assert await messaging._handles_for(OWNER, agents) == {CEO: "lightbulb", FIN: "finance"}  # legacy: by name
 
 
 @pytest.mark.asyncio

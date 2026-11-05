@@ -628,3 +628,28 @@ def test_the_paid_gate_runs_before_the_body_is_trusted(monkeypatch, client):
     )
     resp = client.post(f"{BASE}/requests", headers=HDRS, json={"provider": "NOPE!", "service": "x y"})
     assert resp.status_code == 402
+
+
+def test_request_from_a_task_run_asks_on_the_task(client, monkeypatch):
+    """Spec 05 P1: `X-Lightbulb-Run` names a live task run (switch on) → `start` gets its task, and the Worker is
+    told to end its turn on the Question."""
+    find = AsyncMock(return_value={"taskId": "t-1"})
+    monkeypatch.setattr(mod.provisioning_questions, "task_for_run", find)
+    row = {
+        "workflow_id": "pwf_1",
+        "state": "awaiting_approval",
+        "provider_name": "posthog",
+        "service_ref": "svc_analytics",
+        "question": {"taskId": "t-1", "qid": "q-1", "workflowId": "pwf_1"},
+    }
+    with patch.object(mod.provisioning_workflow, "start", AsyncMock(return_value=row)) as start:
+        resp = client.post(
+            f"{BASE}/requests",
+            headers={**HDRS, "X-Lightbulb-Run": "run-1"},
+            json={"provider": "posthog", "service": "svc_analytics"},
+        )
+    assert resp.status_code == 200
+    find.assert_awaited_once_with("org_a", "run-1")
+    assert start.await_args.kwargs["task_id"] == "t-1"
+    assert resp.json()["questionId"] == "q-1" and resp.json()["message"] == mod.QUESTION_MESSAGE
+    assert "question" not in resp.json()

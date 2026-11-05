@@ -444,13 +444,17 @@ async def start(
     also: list[dict] | None = None,
     title: str | None = None,
     preapproved_by: str | None = None,
+    task_id: str | None = None,
 ) -> dict:
     """Step 1 of spec §3.2. Refuses loudly rather than opening a workflow that
     cannot finish. ``app_id`` scopes the row to one app's own Project.
 
     An app asks once for everything it needs (the guide: "user approves prerequisite and
     dependent action"): ``also`` names the rest on the card, and those rows pass
-    ``bundled_with`` the carded row and file no card of their own."""
+    ``bundled_with`` the carded row and file no card of their own.
+
+    ``task_id`` (spec 05 P1, super-agent switch on): the ask came from that task's live run, so the consent is a
+    Question on the task instead of a board card (``provisioning_questions``)."""
     account_id = await account_id_for(owner_id)
     if app_id and not await _owned_app(owner_id, app_id):
         raise WorkflowRefused("app_not_found", "That app does not exist")
@@ -538,6 +542,16 @@ async def start(
             fields={"approval": snapshot, "bundled_with": bundled_with},
         )
         return moved or row
+    if task_id and not also:
+        question = await _ask_on_task(owner_id, task_id, row["workflow_id"], snapshot, reason, key=row["workflow_id"])
+        if question is not None:
+            moved = await repo.transition(
+                row["workflow_id"],
+                from_state="ask",
+                to_state="awaiting_approval",
+                fields={"approval": snapshot, "question": question, "bundle": False},
+            )
+            return moved or row
     try:
         approval_id = await provisioning_approvals.request_provider_consent(
             owner_id=owner_id,
@@ -598,6 +612,22 @@ async def on_approved(
     account_id = await account_id_for(row["owner_id"])
     fresh = await _fresh_snapshot(account_id, row)
     if _drifted(row.get("approval") or {}, fresh):
+        if row.get("question"):  # asked on a task: ask that task again, about what it reads now
+            question = await _ask_on_task(
+                row["owner_id"],
+                row["question"]["taskId"],
+                workflow_id,
+                fresh,
+                row.get("reason", ""),
+                key=f"{workflow_id}:{fresh['snapshot_at']}",
+            )
+            if question is not None:
+                return await repo.transition(
+                    workflow_id,
+                    from_state="awaiting_approval",
+                    to_state="awaiting_approval",
+                    fields={"approval": fresh, "question": question, "error_code": "catalog_changed"},
+                )
         approval_id = await provisioning_approvals.request_provider_consent(
             owner_id=row["owner_id"],
             issue_id=row.get("issue_id"),
@@ -1318,6 +1348,20 @@ async def _stale_if_expired(row: dict) -> dict:
     return row
 
 
+async def _ask_on_task(
+    owner_id: str, task_id: str, workflow_id: str, snapshot: dict, reason: str, *, key: str
+) -> dict | None:
+    """The consent as a Question on the task (spec 05 P1), or None to file the board card instead (the task closed,
+    nobody can answer, Temporal unreachable): an ask is never left with no way to answer it."""
+    from core.services import provisioning_questions, task_asks
+
+    try:
+        return await provisioning_questions.ask_consent(owner_id, task_id, workflow_id, snapshot, reason, key)
+    except task_asks.AskRefused as e:
+        logger.warning("provisioning: consent question not opened on %s (%s); filing the card", task_id, e.code)
+        return None
+
+
 async def _reconcile_approval(row: dict) -> dict:
     """Read the consent card and resume the workflow if it has been answered.
 
@@ -1336,6 +1380,19 @@ async def _reconcile_approval(row: dict) -> dict:
             row["workflow_id"], usage_limit=card.get("usage_limit"), approved_by=card.get("approved_by") or "paperclip"
         )
         return moved or row
+    if row.get("question") and not row.get("approval_id"):
+        # Spec 05 P1: the answer is the task's Question row, not a card.
+        from core.services import provisioning_questions
+
+        state, by = await provisioning_questions.answer_of(row["owner_id"], row["question"])
+        if state == "open":
+            return row
+        if state == "rejected":
+            return await on_rejected(row["workflow_id"]) or row
+        return (
+            await on_approved(row["workflow_id"], usage_limit=row.get("usage_limit"), approved_by=by or "question")
+            or row
+        )
     approval_id = row.get("approval_id")
     if not approval_id:
         return row

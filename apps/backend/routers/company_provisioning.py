@@ -26,7 +26,7 @@ from core.auth import AuthContext, get_current_user, require_org_admin, resolve_
 from core.dynamodb import utc_now_iso
 from core.repositories import apps_repo, billing_repo, integrations_repo
 from core.repositories import provisioning_workflow_repo as workflow_repo
-from core.services import provisioning_approvals, provisioning_landing, provisioning_workflow
+from core.services import provisioning_approvals, provisioning_landing, provisioning_questions, provisioning_workflow
 from core.services import stripe_provisioning as api
 from core.services.owner_facts import write_owner_facts
 from core.services.provisioning_workflow import WorkflowRefused, is_offerable, is_transient, provider_of
@@ -214,6 +214,12 @@ FILED_MESSAGE = "Filed an approval card for your owner. Keep working on everythi
 # One open workflow per (provider, service): asking twice is a no-op, not a
 # conflict. Friday retrying after a timeout must not be told the door is shut.
 REUSED_MESSAGE = "You already asked for this one — the same request is still open. Nothing new was filed."
+# Spec 05 P1: asked from a task run, the consent is a Question on the task. The Worker's turn ends on it; the answer
+# comes back as the next turn's input, and reading the request again then moves it on.
+QUESTION_MESSAGE = (
+    "Asked for approval on this task's card. End your turn now: the task waits for the answer and you are resumed "
+    "with it. Then read this request again (GET …/requests/{workflow_id}) to see whether it was approved."
+)
 
 
 def _refusal(e: WorkflowRefused) -> HTTPException:
@@ -448,6 +454,7 @@ async def container_request(owner_id: str, body: ProvisionRequestBody, request: 
     await _require_hook_token(owner_id, request)
     await require_always_on_entitlement(owner_id, message=PAID_MESSAGE)
     _validate(body)
+    task = await provisioning_questions.task_for_run(owner_id, request.headers.get("X-Lightbulb-Run"))
     try:
         # `start` files the consent card, so a board outage arrives here as a
         # PaperclipApiError/httpx error. Unmapped it is a 500 the agent reads as
@@ -462,6 +469,7 @@ async def container_request(owner_id: str, body: ProvisionRequestBody, request: 
                 configuration=body.configuration,
                 issue_id=body.issue_id,
                 reason=body.reason,
+                task_id=(task or {}).get("taskId"),
             ),
         )
     except WorkflowRefused as e:
@@ -469,10 +477,12 @@ async def container_request(owner_id: str, body: ProvisionRequestBody, request: 
     except ProvisioningError as e:
         raise _stripe_failure(e) from e
     reused = bool(row.get("reused"))
+    asked = row.get("question") if row.get("state") == "awaiting_approval" else None
     return {
         **_safe_workflow(row),
         "reused": reused,
-        "message": REUSED_MESSAGE if reused else FILED_MESSAGE,
+        **({"questionId": asked["qid"]} if asked else {}),
+        "message": QUESTION_MESSAGE if asked else REUSED_MESSAGE if reused else FILED_MESSAGE,
     }
 
 

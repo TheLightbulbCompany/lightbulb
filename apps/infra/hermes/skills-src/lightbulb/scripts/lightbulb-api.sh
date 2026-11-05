@@ -62,4 +62,7 @@ args=(-sS -w $'\n%{http_code}' -X "$method" -H "Authorization: Bearer ${OPENCLAW
 # --data-raw, never -d: with -d a body starting with "@" is read as a FILE, and
 # "@-" blocks on stdin under the pty exec until the tool timeout.
 [[ -n "$body" ]] && args+=(-H 'Content-Type: application/json' --data-raw "$body")
+# The run this call comes from (set in room and task turns): a task run's provisioning ask becomes a Question on
+# its task (spec 05 P1); every other route ignores it.
+[[ -n "${LIGHTBULB_RUN_ID:-}" ]] && args+=(-H "X-Lightbulb-Run: ${LIGHTBULB_RUN_ID}")
 curl "${args[@]}" "${ISOL8_API_URL%/}${path}"

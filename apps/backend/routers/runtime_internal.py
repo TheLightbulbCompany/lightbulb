@@ -31,14 +31,13 @@ from temporalio.service import RPCError, RPCStatusCode
 
 from core import tasks_schema as ts
 from core.dynamodb import utc_now_iso
-from core.repositories import effects_repo, questions_repo, tasks_repo
-from core.services import questions, task_conversation
+from core.repositories import effects_repo, tasks_repo
+from core.services import questions, task_asks, task_conversation
 from core.services.messaging import ATTACHMENT_MAX_COUNT, UploadedAttachment, human_display_name
 from core.services.container_auth import _require_hook_token
 from core.services.super_agent_flags import flags_for
 from core.temporal import activities as acts
 from core.temporal import client as temporal
-from core.temporal.task_questions import AskRef
 from core.temporal.types import RunEvent, RunStatusName, RunUsage, TaskInputRef, WorkerTurnOut
 
 router = APIRouter()
@@ -419,47 +418,23 @@ async def worker_ask(owner_id: str, body: AskBody, request: Request) -> dict:
     att = await _attempt_of(owner_id, body.task_id, body.attempt, body.run_id, body.run_secret)
     task = await _current_task(owner_id, att, body.task_id, body.attempt)
     qid = questions.qid_for(f"{body.task_id}:{body.run_id}:{body.tool_call_id}")
-    existing = await questions_repo.get_question(owner_id, body.task_id, qid)
-    if existing is not None:
-        return await _question_view(existing)  # the same ask again (a tool retry) replays
-    trigger_id = ts.trigger_id("ask", qid)
-    await tasks_repo.put_trigger(
-        owner_id,
-        {
-            "triggerId": trigger_id,
-            "source": "ask",
-            "ref": {
-                "taskId": body.task_id,
-                "qid": qid,
-                "kind": body.kind,
-                "subkind": body.subkind,
-                "title": body.title,
-                "text": body.text,
-                "options": [o.model_dump() for o in body.options],
-                "blocking": body.blocking,
-                "attempt": body.attempt,
-                "runId": body.run_id,
-            },
-            "admission": "respond",
-            "lane": task.get("lane") or "shared",
-            "receivedAt": utc_now_iso(),
-        },
-    )
     try:
-        await temporal.update_task(
-            owner_id, body.task_id, "ask", AskRef(trigger_id, body.kind, body.subkind, body.blocking)
+        opened = await task_asks.open_ask(
+            owner_id,
+            task,
+            qid=qid,
+            kind=body.kind,
+            subkind=body.subkind,
+            title=body.title,
+            text=body.text,
+            options=[o.model_dump() for o in body.options],
+            blocking=body.blocking,
+            attempt=body.attempt,
+            run_id=body.run_id,
         )
-    except (temporal.TemporalUnavailable, RPCError) as exc:
-        raise HTTPException(status_code=503, detail="temporal_unavailable") from exc
-    except Exception as exc:  # noqa: BLE001 -- the update was refused (stopped task, nobody can answer)
-        from routers.questions import _failure_codes  # walks the update failure's cause chain
-
-        if "task_closed" in _failure_codes(exc):
-            raise HTTPException(status_code=409, detail="task_closed") from exc
-        raise HTTPException(status_code=409, detail="not_opened") from exc
-    opened = await questions_repo.get_question(owner_id, body.task_id, qid)
-    if opened is None:
-        raise HTTPException(status_code=503, detail="question_not_opened")
+    except task_asks.AskRefused as exc:
+        status = 503 if exc.code in ("temporal_unavailable", "question_not_opened") else 409
+        raise HTTPException(status_code=status, detail=exc.code) from exc
     return await _question_view(opened)
 
 

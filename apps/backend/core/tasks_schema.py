@@ -7,7 +7,7 @@ read that file, and `tests/unit/super_agent/test_tasks_schema.py` fails when it 
 
 Row keys: pk `WS#{ws}`, where `ws` is the workspace owner id (`org_…` / `user_…`). Rows (contracts-v2 §3, plus
 `NEEDS#` restored by §14.2): Task, Attempt, Subscription + `THREAD#` lookup, Question, Needs, Effect, Trigger,
-Schedule, Specialist (`AGENT#`), Project, Goal, Creation (`CAP#`). Cut rows have no builder on purpose.
+Schedule + `HOOK#` webhook pointer, Specialist (`AGENT#`), Project, Goal, Creation (`CAP#`). Cut rows have no builder on purpose.
 """
 
 from __future__ import annotations
@@ -182,6 +182,11 @@ def schedule_sk(schedule_id: str) -> str:
     return f"SCHED#{schedule_id}"
 
 
+def hook_sk(public_id: str) -> str:
+    """spec 06 §3.5: webhook lookup pointer; the key itself binds the public id to the workspace."""
+    return f"HOOK#{public_id}"
+
+
 def agent_sk(agent_id: str) -> str:
     return f"AGENT#{agent_id}"
 
@@ -230,6 +235,7 @@ KEY_FORMATS: dict[str, str] = {
     "effect": "EFFECT#{idemKey}",
     "trigger": "TRIG#{triggerId}",
     "schedule": "SCHED#{scheduleId}",
+    "hook": "HOOK#{publicId}",
     "agent": "AGENT#{agentId}",
     "project": "PROJECT#{projectId}",
     "goal": "GOAL#{goalId}",
@@ -502,9 +508,45 @@ class Schedule(_Row):
     paused_reason: str | None = None
     mode: RuleMode | None = None
     last_task_id: str | None = None
+    name: str = Field(max_length=200)
+    owner_user_id: str
+    deliver_to: str = "none"  # room:{id} | dm:{userId} | none
+    remaining_runs: int | None = None  # 1 = one-off
+    active_run_task_id: str | None = None  # the run in flight (SKIP overlap claim)
+    # History = the run task ids, newest first.
+    # ponytail: capped at 50 on the row; a by-policy GSI if History ever needs more.
+    run_task_ids: list[str] = []
+    consecutive_failures: int = 0
+    hook_public_ids: list[str] = []
+    created_by: Literal["user", "router"] = "user"
 
     def sk(self) -> str:
         return schedule_sk(self.schedule_id)
+
+
+class Hook(_Row):
+    """spec 06 §3.5: one webhook trigger of an automation; append-only pointer, secret in Secrets Manager."""
+
+    type: Literal["hook"] = "hook"
+    public_id: str
+    schedule_id: str
+    provider: str
+    events: list[str] = []  # empty = every event
+    signing_mode: str
+    signature_header: str | None = None
+    replay_window_s: int = 300
+    secret_ref: str  # Secrets Manager name, never the value
+    armed: bool = False
+    provider_hook_id: str | None = None
+    account: str | None = None  # Google watch fields
+    channel_id: str | None = None
+    resource_id: str | None = None
+    expires_at: str | None = None
+    sig_fail_count: int = 0
+    last_sig_fail_at: str | None = None
+
+    def sk(self) -> str:
+        return hook_sk(self.public_id)
 
 
 class Agent(_Row):
@@ -568,6 +610,7 @@ ROW_MODELS: dict[str, type[_Row]] = {
         Effect,
         Trigger,
         Schedule,
+        Hook,
         Agent,
         Project,
         Goal,

@@ -45,6 +45,7 @@ def test_keys():
     assert ts.effect_sk("k1") == "EFFECT#k1"
     assert ts.trigger_sk("chat:m1") == "TRIG#chat:m1"
     assert ts.schedule_sk("s1") == "SCHED#s1"
+    assert ts.hook_sk("pub_1") == "HOOK#pub_1"
     assert ts.agent_sk("a1") == "AGENT#a1"
     assert ts.project_sk("p1") == "PROJECT#p1"
     assert ts.goal_sk("g1") == "GOAL#g1"
@@ -169,6 +170,7 @@ def test_every_row_type_has_a_model():
         "effect",
         "trigger",
         "schedule",
+        "hook",
         "agent",
         "project",
         "goal",

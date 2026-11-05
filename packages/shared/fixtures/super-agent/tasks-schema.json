@@ -154,6 +154,7 @@
     "effect": "EFFECT#{idemKey}",
     "trigger": "TRIG#{triggerId}",
     "schedule": "SCHED#{scheduleId}",
+    "hook": "HOOK#{publicId}",
     "agent": "AGENT#{agentId}",
     "project": "PROJECT#{projectId}",
     "goal": "GOAL#{goalId}",
@@ -1492,6 +1493,74 @@
           ],
           "default": null,
           "title": "Lasttaskid"
+        },
+        "name": {
+          "maxLength": 200,
+          "title": "Name",
+          "type": "string"
+        },
+        "ownerUserId": {
+          "title": "Owneruserid",
+          "type": "string"
+        },
+        "deliverTo": {
+          "default": "none",
+          "title": "Deliverto",
+          "type": "string"
+        },
+        "remainingRuns": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Remainingruns"
+        },
+        "activeRunTaskId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Activeruntaskid"
+        },
+        "runTaskIds": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Runtaskids",
+          "type": "array"
+        },
+        "consecutiveFailures": {
+          "default": 0,
+          "title": "Consecutivefailures",
+          "type": "integer"
+        },
+        "hookPublicIds": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Hookpublicids",
+          "type": "array"
+        },
+        "createdBy": {
+          "default": "user",
+          "enum": [
+            "user",
+            "router"
+          ],
+          "title": "Createdby",
+          "type": "string"
         }
       },
       "required": [
@@ -1499,9 +1568,174 @@
         "updatedAt",
         "scheduleId",
         "tz",
-        "policyText"
+        "policyText",
+        "name",
+        "ownerUserId"
       ],
       "title": "Schedule",
+      "type": "object"
+    },
+    "hook": {
+      "additionalProperties": false,
+      "description": "spec 06 \u00a73.5: one webhook trigger of an automation; append-only pointer, secret in Secrets Manager.",
+      "properties": {
+        "version": {
+          "default": 1,
+          "title": "Version",
+          "type": "integer"
+        },
+        "createdAt": {
+          "title": "Createdat",
+          "type": "string"
+        },
+        "updatedAt": {
+          "title": "Updatedat",
+          "type": "string"
+        },
+        "type": {
+          "const": "hook",
+          "default": "hook",
+          "title": "Type",
+          "type": "string"
+        },
+        "publicId": {
+          "title": "Publicid",
+          "type": "string"
+        },
+        "scheduleId": {
+          "title": "Scheduleid",
+          "type": "string"
+        },
+        "provider": {
+          "title": "Provider",
+          "type": "string"
+        },
+        "events": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Events",
+          "type": "array"
+        },
+        "signingMode": {
+          "title": "Signingmode",
+          "type": "string"
+        },
+        "signatureHeader": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Signatureheader"
+        },
+        "replayWindowS": {
+          "default": 300,
+          "title": "Replaywindows",
+          "type": "integer"
+        },
+        "secretRef": {
+          "title": "Secretref",
+          "type": "string"
+        },
+        "armed": {
+          "default": false,
+          "title": "Armed",
+          "type": "boolean"
+        },
+        "providerHookId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Providerhookid"
+        },
+        "account": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Account"
+        },
+        "channelId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Channelid"
+        },
+        "resourceId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Resourceid"
+        },
+        "expiresAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expiresat"
+        },
+        "sigFailCount": {
+          "default": 0,
+          "title": "Sigfailcount",
+          "type": "integer"
+        },
+        "lastSigFailAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Lastsigfailat"
+        }
+      },
+      "required": [
+        "createdAt",
+        "updatedAt",
+        "publicId",
+        "scheduleId",
+        "provider",
+        "signingMode",
+        "secretRef"
+      ],
+      "title": "Hook",
       "type": "object"
     },
     "agent": {

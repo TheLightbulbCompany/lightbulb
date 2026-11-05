@@ -554,6 +554,18 @@
           "default": null,
           "title": "Proposalreason"
         },
+        "stopRequestedBy": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stoprequestedby"
+        },
         "landingEffect": {
           "anyOf": [
             {
@@ -738,6 +750,64 @@
           ],
           "default": null,
           "title": "Lastheartbeatat"
+        },
+        "taskToken": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tasktoken"
+        },
+        "runSecret": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Runsecret"
+        },
+        "terminalStatus": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Terminalstatus"
+        },
+        "output": {
+          "anyOf": [
+            {
+              "maxLength": 65536,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output"
+        },
+        "recentTools": {
+          "default": [],
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Recenttools",
+          "type": "array"
         }
       },
       "required": [

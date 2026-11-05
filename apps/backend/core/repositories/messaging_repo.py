@@ -1425,7 +1425,9 @@ async def update_message(
     raise AssertionError("unreachable: the second attempt returns or raises")
 
 
-async def set_reaction(owner_id: str, room_id: str, seq: int, user_id: str, emoji: str, active: bool) -> dict:
+async def set_reaction(
+    owner_id: str, room_id: str, seq: int, user_id: str, emoji: str, active: bool, *, member_kind: str = "human"
+) -> dict:
     for _ in range(_SEQ_RETRY_ATTEMPTS):
         message = await get_message(room_id, seq)
         if message is None:
@@ -1462,7 +1464,7 @@ async def set_reaction(owner_id: str, room_id: str, seq: int, user_id: str, emoj
                     {
                         "ConditionCheck": {
                             "TableName": _table().name,
-                            "Key": {"pk": room_pk(room_id), "sk": member_sk("human", user_id)},
+                            "Key": {"pk": room_pk(room_id), "sk": member_sk(member_kind, user_id)},
                             "ConditionExpression": "attribute_exists(sk)",
                         }
                     },

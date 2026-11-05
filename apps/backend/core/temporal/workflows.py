@@ -146,10 +146,11 @@ class TaskWorkflow(TaskQuestionsMixin):
         self._ws, self._task_id = start.ws, start.task_id
         # `migrated` = started by a signal/update-with-start: wait for what came with it.
         self._attempt_needed = start.reason != "migrated"
+        # Consent for a proposed task is an explicit Start only (the route's start, or the `start` signal).
+        self._started = start.reason == "propose_start"
         self._status: str | None = None  # mirror of the row's status, None until this run changes it
         self._pending: list[TaskInputRef] = []
         self._seen_inputs: set[str] = set()
-        self._started = False
         self._action: tuple[str, str] | None = None  # (action, by_user_id) for resolve/dismiss
         self._stop_by: str | None = None
         self._slot_free = False
@@ -350,7 +351,12 @@ class TaskWorkflow(TaskQuestionsMixin):
         inputs, self._pending = self._pending, []
         try:
             ref = await _act(
-                "begin_attempt", self._ws, self._task_id, [i.trigger_id for i in inputs], result_type=AttemptRef
+                "begin_attempt",
+                self._ws,
+                self._task_id,
+                [i.trigger_id for i in inputs],
+                self._started,
+                result_type=AttemptRef,
             )
         except ActivityError:
             await _act("release_slot", self._ws, self._task_id)

@@ -986,6 +986,10 @@ app.include_router(google_accounts.router, prefix="/api/v1", tags=["google-accou
 # write. See routers/automations.py.
 app.include_router(automations.router, prefix="/api/v1", tags=["automations"])
 
+from routers import runtime_internal  # noqa: E402
+
+app.include_router(runtime_internal.router, prefix="/api/v1/internal/runtime", tags=["super-agent"])
+
 # Workspace file browser (the agent's S3 Hermes profile)
 app.include_router(workspace_files.router, prefix="/api/v1/container", tags=["container"])
 

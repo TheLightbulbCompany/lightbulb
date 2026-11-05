@@ -33,11 +33,10 @@ export interface TeamFeedProps {
   limit?: number;
 }
 
-/** The feed room's seeded welcome: an intro, not a post. The seed carries clientMessageId "feed:welcome"; rooms seeded
- *  before that are matched by its opening words (core/services/messaging.py FEED_WELCOME*). */
-export const FEED_WELCOME_ID = "feed:welcome";
+/** The feed room's seeded welcome: an intro, not a post. The seed is message kind "welcome"; rooms seeded before that
+ *  are matched by its opening words (core/services/messaging.py FEED_WELCOME*). */
 export const isFeedWelcome = (post: CanonicalRoomMessage) =>
-  post.clientMessageId === FEED_WELCOME_ID || post.text.startsWith("**This is our feed.**");
+  post.kind === "welcome" || post.text.startsWith("**This is our feed.**");
 
 const LIKE = "👍";
 const ALWAYS = () => true;

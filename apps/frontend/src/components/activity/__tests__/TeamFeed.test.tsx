@@ -151,8 +151,8 @@ describe("TeamFeed", () => {
     const { client } = setup({ limit: 1 });
     client.listMessages.mockResolvedValue({ messages: [
       post(1, { createdAt: today, text: "**This is our feed.** When something here matters to you, one of us posts it." }),
-      // The new seed is known by its id, whatever its words.
-      post(4, { createdAt: today, text: "**Welcome.** Home shows your company today.", clientMessageId: "feed:welcome" }),
+      // The new seed is known by its kind, whatever its words.
+      post(4, { createdAt: today, text: "**Welcome.** Home shows your company today.", kind: "welcome" }),
       post(2, { createdAt: today }),
       post(3, { createdAt: today, text: "**Acme paid**\nStripe confirmed it." }),
     ], nextAfterSeq: null });

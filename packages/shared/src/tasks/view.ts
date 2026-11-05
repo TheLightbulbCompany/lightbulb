@@ -60,6 +60,13 @@ export function taskView({ task, viewerId, questions, effects, nameOf }: TaskVie
   if (effects.some((e) => e.taskId === task.taskId && (e.state === "approved" || e.state === "intent"))) {
     return view("Landing", "landing");
   }
-  if (open.length) return view(`Waiting on ${nameOf(open[0].answerers[0])}`, "working");
+  const others = [...new Set(open.flatMap((q) => q.answerers))];
+  if (others.length) return view(`Waiting on ${waitingOn(others, nameOf)}`, "working");
   return view(task.status === "queued" ? "Queued" : task.status === "working" ? "Working" : "Waiting", "working");
+}
+
+/** Any one answerer can answer: "Sam", "Sam or Alex", "Sam or 2 others". */
+function waitingOn([first, ...rest]: string[], nameOf: (userId: string) => string): string {
+  if (!rest.length) return nameOf(first);
+  return rest.length === 1 ? `${nameOf(first)} or ${nameOf(rest[0])}` : `${nameOf(first)} or ${rest.length} others`;
 }

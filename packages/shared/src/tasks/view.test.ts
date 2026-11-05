@@ -126,6 +126,26 @@ describe("taskView: open questions", () => {
     expect(view(task("waiting"), PRIYA, { questions: [q("approval", ["user-x"])] }).word).toBe("Waiting on someone");
   });
 
+  it.each([
+    [[], "Waiting"],
+    [[SAM], "Waiting on Sam"],
+    [[SAM, "user-alex"], "Waiting on Sam or someone"],
+    [[SAM, "user-alex", "user-kim"], "Waiting on Sam or 2 others"],
+  ] as const)("someone else's answerers %j → %s", (answerers, word) => {
+    const seen: string[] = [];
+    const word_ = view(task("waiting"), PRIYA, {
+      questions: [q("approval", [...answerers])],
+      nameOf: (id) => { seen.push(id); return nameOf(id); },
+    }).word;
+    expect(word_).toBe(word);
+    expect(seen).not.toContain(undefined);
+  });
+
+  it("names answerers across all open questions once each", () => {
+    const questions = [q("approval", [SAM]), q("question", [SAM, "user-alex"])];
+    expect(view(task("waiting"), PRIYA, { questions }).word).toBe("Waiting on Sam or someone");
+  });
+
   it("questions do not change proposed, idle, resolved or failed", () => {
     const questions = [q("approval", [SAM])];
     expect(view(task("resolved"), SAM, { questions }).word).toBe("Resolved");

@@ -54,7 +54,8 @@ def test_registered_under_router_toolset():
             seen.append((name, toolset))
 
     rt.register(Ctx())
-    assert seen == [(k, "lightbulb_router") for k in ("start_task", "propose_tasks", "pass_through", "reply", "ask", "ignore", "follow_link")]
+    assert seen == [(k, "lightbulb_router") for k in (
+        "start_task", "propose_tasks", "pass_through", "reply", "ask", "ignore", "follow_link", "propose_automation")]
 
 
 def test_follow_link_calls_memory_link_route(router_turn, monkeypatch):

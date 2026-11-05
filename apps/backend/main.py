@@ -37,6 +37,7 @@ from routers import (
     agent_text,
     apple_iap,
     automations,
+    internal_automations,
     billing,
     config,
     connections,
@@ -985,6 +986,7 @@ app.include_router(google_accounts.router, prefix="/api/v1", tags=["google-accou
 # pre-filled webhook-triggered routine) + the Stripe guided-paste whsec_
 # write. See routers/automations.py.
 app.include_router(automations.router, prefix="/api/v1", tags=["automations"])
+app.include_router(internal_automations.router, prefix="/api/v1", tags=["super-agent"])  # lane A: Router proposals
 
 from routers import runtime_internal  # noqa: E402
 

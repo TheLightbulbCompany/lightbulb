@@ -19,3 +19,4 @@ provides_tools:
   - reply
   - ask
   - ignore
+  - propose_automation

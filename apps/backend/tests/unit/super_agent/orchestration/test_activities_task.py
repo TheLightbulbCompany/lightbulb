@@ -187,6 +187,7 @@ async def test_worker_turn_stores_token_and_goes_async(world):
     att = await repo.get_attempt(WS, tid, 1)
     assert att["taskToken"] and att["status"] == "running"
     identity, request = world["runs"][0]
+    assert request.effects == "required" and request.to_wire()["effects"] == "required"  # Lane Q: the checkpoint is on
     assert identity.run_id == ref.run_id and "Pay Acme $40" in request.input
 
 

@@ -221,7 +221,11 @@ async def _request(ws: str, task: dict, att: dict, tree: dict) -> runtime_runs.R
     if prev:
         p = max(prev, key=lambda a: a["n"])
         parts.append(f"## Previous attempt\nAttempt {p['n']} ended: {p.get('outcome') or 'unknown'}.")
-    return runtime_runs.RunRequest(input="\n\n".join(x for x in parts if x), instructions=WORKER_INSTRUCTIONS)
+    # Lane Q (contracts §8): every Worker run carries the effect checkpoint; the bridge refuses `required`
+    # until its image has F1, so this lands after that dev roll.
+    return runtime_runs.RunRequest(
+        input="\n\n".join(x for x in parts if x), instructions=WORKER_INSTRUCTIONS, effects="required"
+    )
 
 
 @activity.defn

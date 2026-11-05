@@ -26,6 +26,7 @@ from core.observability.product_analytics import (
 )
 from core.repositories import billing_repo, container_repo, user_repo
 from core.services.provision_dispatch import dispatch_provision
+from core.services.super_agent_flags import flags_for
 from core.services.paperclip_admin_client import PaperclipApiError
 from core.services.paperclip_admin_session import get_admin_session_cookie
 from core.services.paperclip_owner_email import lookup_owner_email
@@ -297,7 +298,10 @@ async def _ensure_feed_routines(admin, cookie: str, owner_id: str, row, ceo_id: 
     Trigger creates carry no key upstream, so a routine left without its schedule trigger (a
     crash between the two calls) gets it on the next reconcile. Created only on the entitled
     branch: a paused owner gets none until resumed, and ``pause_owner_automation`` pauses them
-    with every other active routine. Never raises: the feed must not fail a provision."""
+    with every other active routine. Never raises: the feed must not fail a provision.
+    Super-agent workspaces get none (contracts-v2 §11)."""
+    if await flags_for(owner_id):
+        return
     try:
         routines = _rows(await admin.list_routines(session_cookie=cookie, company_id=row.company_id), "routines")
         by_id = {r.get("id"): r for r in routines}

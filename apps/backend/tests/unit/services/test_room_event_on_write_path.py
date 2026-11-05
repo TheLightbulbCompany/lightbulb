@@ -3,6 +3,7 @@ byte-for-byte the event the projector publishes later for the same row, so the c
 eventId dedupe keeps one copy (packages/shared/src/live/appsyncEvents.ts ``seen``)."""
 
 import asyncio
+import json
 import importlib.util
 import uuid
 from pathlib import Path
@@ -96,6 +97,8 @@ SESSION = str(uuid.UUID(int=3))
         {"sessionMentions": [SESSION], "sessionTargetLabels": {SESSION: "Codex · fix · Ann", "stale": "drop"}},
         {"progress": True, "silent": True, "runId": "run-1", "via": "mcp", "actorUserId": "u"},
         {"threadRootMessageId": str(uuid.UUID(int=11)), "replyToMessageId": str(uuid.UUID(int=11))},
+        # Super-agent attrs ride the live copy, or a Router reply's task cards appear only after a reload.
+        {"taskRefs": [{"taskId": "t-1", "role": "started"}], "specialist": "finance", "kind": "result"},
     ],
 )
 async def test_write_path_event_is_byte_equal_to_the_projectors(extra):
@@ -231,3 +234,14 @@ async def test_a_failed_resolution_records_one_tagged_error_sample(monkeypatch):
         await publisher.publish_message_created(_item())
     assert metrics == [{"outcome": "error", "status_class": "resolve", "source": "write_path"}]
     assert posted == []
+
+
+async def test_the_live_copy_carries_a_router_replys_task_cards():
+    item = _item(
+        taskRefs=[{"taskId": "t-1", "role": "started"}, {"taskId": "t-2", "role": "suggested"}], specialist="finance"
+    )
+    _, body = await _backend_bytes(item)
+    payload = json.loads(body)["payload"]
+    assert payload["taskRefs"] == [{"taskId": "t-1", "role": "started"}, {"taskId": "t-2", "role": "suggested"}]
+    assert payload["specialist"] == "finance"
+    assert "routedTo" not in payload  # absent stays absent

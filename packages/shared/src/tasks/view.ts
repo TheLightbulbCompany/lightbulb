@@ -94,9 +94,18 @@ export function resolveCeoAgentId(
   return agents.find((a) => a.role === "ceo" && !a.reportsTo && (a.origin === "Starter" || a.origin === "Seed"))?.id;
 }
 
-/** "finance" → "Lightbulb · Finance"; no specialist → "Lightbulb". */
-export function specialistLabel(specialist: string | null | undefined): string {
+/** Agent id → display name (from the workspace's agents list; `useAgentNames`). */
+export type AgentNames = ReadonlyMap<string, string>;
+
+const UUID_LIKE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** "finance" → "Lightbulb · Finance"; an agent id → "Lightbulb · <its name>" from `names`; no specialist, or an id
+ *  not (yet) in the list → "Lightbulb" (an id is never shown as a name). */
+export function specialistLabel(specialist: string | null | undefined, names?: AgentNames): string {
   if (!specialist) return "Lightbulb";
+  const named = names?.get(specialist);
+  if (named) return `Lightbulb · ${named}`;
+  if (UUID_LIKE.test(specialist)) return "Lightbulb";
   return `Lightbulb · ${specialist.charAt(0).toUpperCase()}${specialist.slice(1)}`;
 }
 
@@ -148,7 +157,7 @@ export function overviewGroups(ts: readonly TaskSummary[]): OverviewGroup[] {
 }
 
 /** One line under a row's title. */
-export function taskSummaryLine(t: TaskSummary, viewerId: string): string {
+export function taskSummaryLine(t: TaskSummary, viewerId: string, names?: AgentNames): string {
   const q = t.openQuestion;
   const view = summaryView(t, viewerId);
   if (q && q.canAnswer) {
@@ -158,7 +167,7 @@ export function taskSummaryLine(t: TaskSummary, viewerId: string): string {
   }
   if (view.group === "landing") return `Applying: ${t.output?.title ?? "changes"}`;
   if (t.status === "proposed") return t.proposalReason ?? "Suggested";
-  if (view.group === "working") return `${view.word} · ${specialistLabel(t.specialist)}`;
+  if (view.group === "working") return `${view.word} · ${specialistLabel(t.specialist, names)}`;
   return view.word;
 }
 

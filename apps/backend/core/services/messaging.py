@@ -1166,6 +1166,8 @@ def _email_local_part(email: str | None) -> str | None:
 #: Handles no agent derives from its name while the workspace's super-agent switch is on: `@lightbulb` is the
 #: front agent (contracts-v2 §6), set by `_resolved_member` / `task_conversation._front_agent`.
 RESERVED_HANDLES = frozenset({"lightbulb"})
+#: The front agent's display name while the switch is on (contracts-v2 §9); its handle is `lightbulb`.
+FRONT_AGENT_NAME = "Lightbulb"
 
 
 def mention_handles(agents: list[dict[str, Any]], *, reserved: Collection[str] = ()) -> dict[str, str]:
@@ -1503,9 +1505,20 @@ async def load_agent_roster(owner_id: str) -> list[dict[str, Any]]:
     from core.services.paperclip_admin_client import shared_admin_client
     from core.services.paperclip_openclaw_pairing import fetch_paperclip_agents_for_owner
 
+    front_id = None
     try:
         if await super_agent_flags.flags_for(owner_id):
             rows = await agent_registry.roster(owner_id)
+            # The front agent posts and is seated as "Lightbulb" (contracts-v2 §9), whatever its registry name; the
+            # same pick as task_conversation._front_agent (the first active ceo).
+            front_id = next(
+                (
+                    r.get("id")
+                    for r in rows
+                    if isinstance(r, dict) and r.get("role") == "ceo" and r.get("status") == "active"
+                ),
+                None,
+            )
         else:
             rows = await fetch_paperclip_agents_for_owner(
                 owner_id=owner_id,
@@ -1528,7 +1541,12 @@ async def load_agent_roster(owner_id: str) -> list[dict[str, Any]]:
             agent_id = validate_uuid(str(row.get("id", "")), label="agent ID")
         except ApiProblem as exc:
             raise ApiProblem("INTERNAL_ERROR", "The agent roster contains an invalid identity.") from exc
-        roster.append({**row, "id": agent_id, "name": str(row.get("name") or agent_id)[:256]})
+        name = (
+            FRONT_AGENT_NAME
+            if front_id and str(row.get("id")) == str(front_id)
+            else str(row.get("name") or agent_id)[:256]
+        )
+        roster.append({**row, "id": agent_id, "name": name})
     roster.sort(key=lambda row: row["id"])
     return roster
 

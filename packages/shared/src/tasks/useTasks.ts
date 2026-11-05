@@ -1,7 +1,7 @@
 // SWR hooks over the task routes, and the `task.changed` refresh (ids only, I1): the client
 // refetches through the authorized API; a task it can no longer see is dropped quietly.
 
-import { useCallback } from "react";
+import { useCallback, useMemo } from "react";
 import useSWR, { useSWRConfig, type Cache, type ScopedMutator } from "swr";
 
 import { ApiError } from "../api/error";
@@ -93,4 +93,11 @@ export async function refreshTask({ cache, mutate, client }: RefreshDeps, { task
 export function useTaskChangedRefresh(client: TasksClient): (payload: TaskChanged) => void {
   const { cache, mutate } = useSWRConfig();
   return useCallback((payload: TaskChanged) => void refreshTask({ cache, mutate, client }, payload), [cache, mutate, client]);
+}
+
+/** The workspace's agent names by id, one SWR read shared by every caller with the same `key` (each app passes its
+ *  own loader: web the teams API, mobile `/teams/agents`). `null` key = no request. */
+export function useAgentNames(key: string | null, load: () => Promise<readonly { id: string; name?: string | null }[]>): ReadonlyMap<string, string> {
+  const { data } = useSWR(key ? ["agent-names", key] : null, load, { shouldRetryOnError: false, dedupingInterval: 60_000 });
+  return useMemo(() => new Map((data ?? []).filter((a) => a.name).map((a) => [a.id, a.name!])), [data]);
 }

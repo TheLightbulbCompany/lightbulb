@@ -109,3 +109,12 @@ describe("formatSchedule", () => {
     expect(formatSchedule(["0 9 * * 1", "0 9 * * 4"], "UTC", "UTC", NOV)).toBe("Mondays 9:00 and Thursdays 9:00");
   });
 });
+
+describe("specialistLabel with the agents list", () => {
+  it("an agent id reads by its name; an unknown id never shows; a handle reads as itself", () => {
+    const id = "5b36216c-196c-48af-ad2a-6817c42a1de3";
+    expect(specialistLabel(id, new Map([[id, "Finance"]]))).toBe("Lightbulb · Finance");
+    expect(specialistLabel(id)).toBe("Lightbulb");
+    expect(specialistLabel("finance")).toBe("Lightbulb · Finance");
+  });
+});

@@ -24,6 +24,10 @@ from temporalio.exceptions import ActivityError, ApplicationError
 from core.temporal.types import TaskInputRef
 
 REMIND_AFTER = timedelta(hours=24)
+_LANDING = {
+    "start_to_close_timeout": timedelta(minutes=15),  # an app publish builds and promotes
+    "retry_policy": RetryPolicy(maximum_attempts=3),  # a retry never re-sends: apply_effect reads the Effect first
+}
 _SHORT = {"start_to_close_timeout": timedelta(seconds=30), "retry_policy": RetryPolicy(maximum_attempts=5)}
 _DENYING = ("deny", "request_changes")
 
@@ -50,6 +54,13 @@ class QuestionRef:
 class AnswerOut:
     trigger_id: str
     option_id: str
+    land_idem_key: str | None = None  # an approved draft a backend executor lands (Landing), instead of input
+
+
+@dataclass(frozen=True)
+class LandResult:
+    outcome: str  # done | unknown | refused | used
+    trigger_id: str | None = None  # refused: the reason, as input to the next attempt
 
 
 @dataclass(frozen=True)
@@ -84,6 +95,7 @@ class TaskQuestionsMixin:
     def _q_init(self) -> None:
         self._open_qs: dict[str, list[str]] = {}  # qid → answerers (the validator's no-I/O check)
         self._q_remind_at: dict[str, datetime] = {}  # unreminded open questions
+        self._landings: list[tuple[str, str]] = []  # (effect idem key, answered by) waiting to land
 
     # --- hooks -----------------------------------------------------------------------------------------
 
@@ -116,11 +128,18 @@ class TaskQuestionsMixin:
         """While a Question is open the task waits here, with no deadline: the 7-day quiet resolve never ends a task
         that is waiting on a person. Reminds each Question once at +24 h. Returns when something wakes the task or
         no Question is open any more."""
-        while self._open_qs:
+        while True:
+            await self._q_land()
+            if not self._open_qs:
+                return
             due = [t for q, t in self._q_remind_at.items() if q in self._open_qs]
             wait = max(min(due) - workflow.now(), timedelta(0)) if due else None
             try:
-                await workflow.wait_condition(lambda: self._woken() or not self._open_qs, timeout=wait)
+                await workflow.wait_condition(
+                    lambda: self._woken() or not self._open_qs or bool(self._landings), timeout=wait
+                )
+                if self._landings:
+                    continue
                 return
             except TimeoutError:
                 pass
@@ -130,6 +149,21 @@ class TaskQuestionsMixin:
                     del self._q_remind_at[qid]
                     if qid in self._open_qs:
                         await _act("remind_question", self._ws, self._task_id, qid)
+
+    async def _q_land(self) -> None:
+        """Landing (contracts-v2 §4, §8): run each approved draft through its backend executor, then Idle. A refusal
+        (definitely not done) goes back to the Worker as input; an unknown outcome is shown and never retried."""
+        while self._landings and self._stop_by is None:
+            idem, by = self._landings.pop(0)
+            res = await workflow.execute_activity(
+                "apply_effect", args=[self._ws, self._task_id, idem, by], result_type=LandResult, **_LANDING
+            )
+            if res.trigger_id and res.trigger_id not in self._seen_inputs:
+                self._seen_inputs.add(res.trigger_id)
+                self._pending.append(TaskInputRef(res.trigger_id, "answer"))
+                self._wakes += 1
+            elif res.outcome in ("done", "unknown") and not self._open_qs and not self._landings:
+                await self._transition("idle", "landed" if res.outcome == "done" else "effect_unknown")
 
     async def _q_on_stop(self, by_user_id: str) -> None:
         if self._open_qs:
@@ -144,6 +178,9 @@ class TaskQuestionsMixin:
         out = await _act("record_answer", self._ws, self._task_id, ref, result_type=AnswerOut)
         self._open_qs.pop(ref.qid, None)
         self._q_remind_at.pop(ref.qid, None)
+        if out.land_idem_key:
+            self._landings.append((out.land_idem_key, ref.by_user_id))
+            return QuestionResult(ref.qid, "answered", landing=True)
         if out.trigger_id not in self._seen_inputs:
             self._seen_inputs.add(out.trigger_id)
             self._pending.append(TaskInputRef(out.trigger_id, "answer"))
@@ -305,6 +342,7 @@ async def record_answer(ws: str, task_id: str, ref: AnswerRef) -> AnswerOut:
     from core import tasks_schema as ts
     from core.dynamodb import utc_now_iso
     from core.repositories import effects_repo, questions_repo, tasks_repo
+    from core.services import questions
 
     try:
         q = await questions_repo.record_answer(
@@ -322,12 +360,17 @@ async def record_answer(ws: str, task_id: str, ref: AnswerRef) -> AnswerOut:
     except tasks_repo.TasksRepoError as err:
         raise _fail(err) from err
     option = q["answer"]["optionId"]
+    land = None
     if q.get("effectIdemKey"):
         to = "denied" if option in _DENYING else "approved"
         try:
             await effects_repo.set_effect_state(ws, q["effectIdemKey"], to=to, fields={"questionId": ref.qid})
         except tasks_repo.IllegalTransition:
             pass  # a retry after the first run moved it
+        effect = await effects_repo.get_effect(ws, q["effectIdemKey"]) or {}
+        # A reviewed draft the backend can land itself; everything else resumes the Worker (contracts-v2 §8).
+        if to == "approved" and effect.get("executorOk") and questions.REVIEW_KINDS.get(effect.get("kind")) == option:
+            land = q["effectIdemKey"]
     trigger_id = ref.trigger_id or ts.trigger_id("answer", ref.qid, ref.client_answer_id)
     await tasks_repo.put_trigger(
         ws,
@@ -341,7 +384,79 @@ async def record_answer(ws: str, task_id: str, ref: AnswerRef) -> AnswerOut:
             "receivedAt": q["answeredAt"] or utc_now_iso(),
         },
     )
-    return AnswerOut(trigger_id, option)
+    return AnswerOut(trigger_id, option, land)
+
+
+async def _set_landing(ws: str, task_id: str, value: str | None) -> None:
+    """Task `landingEffect` (Lane O's `summarize` shows the Landing group while it is set)."""
+    from core.repositories import tasks_repo
+
+    for _ in range(5):
+        task = await tasks_repo.get_task(ws, task_id)
+        if task is None:
+            raise LookupError(f"task {task_id} not found")
+        if task.get("landingEffect") == value:
+            return
+        try:
+            await tasks_repo.update_task_fields(ws, task_id, {"landingEffect": value}, expected_version=task["version"])
+            return
+        except tasks_repo.VersionConflict:
+            continue
+    raise tasks_repo.VersionConflict(f"task {task_id}: landingEffect kept racing")
+
+
+@activity.defn(name="apply_effect")
+async def apply_effect(ws: str, task_id: str, idem_key: str, answered_by: str) -> LandResult:
+    """Land one approved draft: `approved → intent` (one transaction with the single-use mark) BEFORE the executor,
+    then `done` / `unknown`. A retry that finds `intent` it did not write cannot know whether the send happened:
+    `unknown`, never a second send (a PR merge re-checks GitHub, so it may run again)."""
+    from core import tasks_schema as ts
+    from core.dynamodb import utc_now_iso
+    from core.repositories import effects_repo, tasks_repo
+    from core.services import effect_executors as ex
+
+    effect = await effects_repo.get_effect(ws, idem_key)
+    if effect is None:
+        raise LookupError(f"effect {idem_key} not found")
+    await _set_landing(ws, task_id, idem_key)
+    try:
+        fresh = False
+        if effect["state"] == "approved":
+            fresh = await effects_repo.use_approval(ws, idem_key, effect["operandsHash"])
+            effect = await effects_repo.get_effect(ws, idem_key)
+        if effect["state"] == "approved":
+            return LandResult("used")  # the Worker's own retry used this approval first
+        if effect["state"] in ("done", "unknown"):
+            return LandResult("done" if effect["state"] == "done" else "unknown")
+        if not fresh and effect["kind"] != "pr.merge":
+            await effects_repo.mark_effect_done(ws, idem_key, disposition="unknown", result_ref=None)
+            return LandResult("unknown")
+        try:
+            ref = await ex.EXECUTORS[effect["kind"]](ws, effect.get("operands") or {}, answered_by)
+        except ex.ExecutorRefused as err:
+            # Definitely not done: `done` with the refusal as its result, so the same draft can be asked again.
+            await effects_repo.mark_effect_done(ws, idem_key, disposition="done", result_ref=f"refused:{err.code}")
+            trigger_id = ts.trigger_id("answer", effect.get("questionId") or idem_key, "landing")
+            await tasks_repo.put_trigger(
+                ws,
+                {
+                    "triggerId": trigger_id,
+                    "source": "answer",
+                    "ref": {"taskId": task_id, "refused": err.code, "next": err.next_step, "effect": idem_key},
+                    "admission": "respond",
+                    "lane": "shared",
+                    "actorUserId": answered_by,
+                    "receivedAt": utc_now_iso(),
+                },
+            )
+            return LandResult("refused", trigger_id)
+        except Exception:  # ExecutorUnknown or anything after the request may have left: never retried
+            await effects_repo.mark_effect_done(ws, idem_key, disposition="unknown", result_ref=None)
+            return LandResult("unknown")
+        await effects_repo.mark_effect_done(ws, idem_key, disposition="done", result_ref=ref)
+        return LandResult("done")
+    finally:
+        await _set_landing(ws, task_id, None)
 
 
 @activity.defn(name="note_answerers_unavailable")
@@ -380,4 +495,5 @@ ACTIVITIES = [
     record_answer,
     note_answerers_unavailable,
     cancel_open_questions,
+    apply_effect,
 ]

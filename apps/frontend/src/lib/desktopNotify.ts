@@ -21,10 +21,7 @@ function getTauri(): TauriBridge | null {
 // registered under that tag opens the conversation. One-shot per tag.
 const clickHandlers = new Map<string, () => void>();
 const SESSION_CLICK = "lightbulb.session.";
-// A task question the Mac posted (push source `task_question`): the tag names its thread.
-const TASK_CLICK = "task:";
 let sessionClick: ((sessionId: string) => void) | null = null;
-let taskClick: ((taskId: string) => void) | null = null;
 
 /** Opens the session a Mac request notification is about when its body is clicked. */
 export function onSessionNoticeClick(handler: (sessionId: string) => void): () => void {
@@ -32,13 +29,6 @@ export function onSessionNoticeClick(handler: (sessionId: string) => void): () =
   const tauri = getTauri();
   if (tauri) routeClicks(tauri);
   return () => { if (sessionClick === handler) sessionClick = null; };
-}
-/** Opens the thread a task-question notification is about when its body is clicked. */
-export function onTaskNoticeClick(handler: (taskId: string) => void): () => void {
-  taskClick = handler;
-  const tauri = getTauri();
-  if (tauri) routeClicks(tauri);
-  return () => { if (taskClick === handler) taskClick = null; };
 }
 let routing = false;
 function routeClicks(tauri: TauriBridge): void {
@@ -50,10 +40,6 @@ function routeClicks(tauri: TauriBridge): void {
     // A request the Mac posted itself (a held message, an agent's ask) names its session.
     if (!handler && tag?.startsWith(SESSION_CLICK)) {
       sessionClick?.(tag.slice(SESSION_CLICK.length));
-      return;
-    }
-    if (!handler && tag?.startsWith(TASK_CLICK)) {
-      taskClick?.(tag.slice(TASK_CLICK.length));
       return;
     }
     if (!handler) return;

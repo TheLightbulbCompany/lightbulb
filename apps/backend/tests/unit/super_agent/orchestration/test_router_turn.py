@@ -758,3 +758,21 @@ async def test_a_deliver_room_that_is_not_a_room_never_fails_the_batch(world, mo
     world["decisions"] = [{"kind": "reply", "triggerIds": [t2], "text": "Hi."}]
     await _run([t2], batch=str(uuid.UUID(int=7)))
     assert world["posts"] == []
+
+
+async def test_one_failed_start_never_skips_the_others(world, monkeypatch):
+    """A start that fails is logged; the batch's later starts still go out, then the Activity fails so its retry
+    (idempotent for the started ones) gives the failed one another go."""
+    t1 = await _trig("chat:m1")
+    world["decisions"] = [_start([t1]), _start([t1], title="Book the flights", specialist=None)]
+    first = ts.router_task_id(BATCH, 0, 0)
+
+    async def flaky(ws, task_id, reason):
+        if task_id == first:
+            raise RuntimeError("temporal hiccup")
+        world["starts"].append((task_id, reason))
+
+    monkeypatch.setattr(acts.temporal_client, "start_task_workflow", flaky)
+    with pytest.raises(RuntimeError, match="start_task_workflow failed"):
+        await _run([t1])
+    assert world["starts"] == [(ts.router_task_id(BATCH, 1, 0), "router")]

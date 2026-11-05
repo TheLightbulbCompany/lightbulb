@@ -823,6 +823,7 @@ async def _apply(
 
     started: list[str] = []
     posted: list[str] = []
+    failed: list[str] = []
     for idx, tid in enumerate(inp.trigger_ids):
         sl, trig = slots.get(tid), triggers.get(tid)
         if not sl or not trig:
@@ -850,8 +851,17 @@ async def _apply(
         for task_id in sl["starts"] + sl["proposed"]:
             await _subscribe(ws, task_id, ack_thread)
         for task_id in sl["starts"]:
-            await temporal_client.start_task_workflow(ws, task_id, "router")
+            try:
+                await temporal_client.start_task_workflow(ws, task_id, "router")
+            except Exception:  # noqa: BLE001 -- one bad start never skips the batch's other starts
+                logger.warning("start_task_workflow failed for task %s", task_id, exc_info=True)
+                failed.append(task_id)
+                continue
             started.append(task_id)
+    if failed:
+        # After every other start went out: the Activity retries, and a retried start is a no-op for those
+        # already running (USE_EXISTING), so the failed ones get another go instead of sitting queued.
+        raise RuntimeError(f"start_task_workflow failed for {failed}")
     for tid, task_id in routed_to.items():
         await tasks_repo.set_trigger_routed_to(ws, tid, {"taskId": task_id})
         if _thread_key(triggers[tid]):

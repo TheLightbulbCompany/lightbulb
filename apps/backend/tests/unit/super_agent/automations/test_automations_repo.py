@@ -209,3 +209,46 @@ async def test_note_sig_failure_writes_once_a_minute(table):
     assert row["sigFailCount"] == 2
     assert row["lastSigFailAt"] == (t0 + timedelta(seconds=61)).isoformat()
     assert await repo.note_sig_failure(WS, "missing", now=t0) is False
+
+
+async def test_reconcile_frees_a_claim_whose_task_workflow_closed(table):
+    """Gate run 3: the run's task row said idle but its workflow had FAILED (end_attempt raised), so the claim
+    was never freed and every later fire was skipped as an overlap. Reconcile frees it; a running one stays."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, patch
+
+    from temporalio.client import WorkflowExecutionStatus
+
+    from core.repositories import tasks_repo
+    from core.temporal.automations import _free_stale_run
+
+    tid = "66666666-6666-4666-8666-666666666666"
+    await _active()
+    await tasks_repo.create_task(
+        WS,
+        {
+            "taskId": tid,
+            "identifier": "LB-1",
+            "title": "run",
+            "status": "queued",
+            "audience": {"kind": "workspace"},
+            "lane": "shared",
+            "triggerId": "sched:s1:1",
+            "policyRef": "SCHED#s1",
+        },
+    )
+    table.update_item(  # the row says idle (its attempt completed); the workflow is what failed
+        Key={"pk": f"WS#{WS}", "sk": f"TASK#{tid}"},
+        UpdateExpression="SET #s = :s",
+        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues={":s": "idle"},
+    )
+    assert await repo.claim_run(WS, "s1", tid)
+    status = {"now": WorkflowExecutionStatus.RUNNING}
+    handle = SimpleNamespace(describe=AsyncMock(side_effect=lambda: SimpleNamespace(status=status["now"])))
+    with patch("core.temporal.client.task_handle", lambda ws, task_id: handle):
+        assert not await _free_stale_run(WS, await repo.get_schedule(WS, "s1"))  # still running: left alone
+        status["now"] = WorkflowExecutionStatus.FAILED
+        assert await _free_stale_run(WS, await repo.get_schedule(WS, "s1"))
+    row = await repo.get_schedule(WS, "s1")
+    assert row.get("activeRunTaskId") is None and row["runTaskIds"] == [tid] and row["consecutiveFailures"] == 1

@@ -164,3 +164,71 @@ export function effectLine(effect: Pick<TaskEffect, "state" | "resultRef">): str
   if (ref.startsWith("refused:")) return `Didn't happen: ${ref.slice("refused:".length).replace(/_/g, " ") || "refused"}`;
   return EFFECT_WORDS[effect.state] ?? effect.state;
 }
+
+// ---------------------------------------------------------------------------------------------
+// Schedules (spec 04 §4: plain words in the viewer's time zone; the row stores wall clock in its own zone).
+
+const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const DAY_NAMES: Record<string, number> = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
+
+/** Minutes a zone is ahead of UTC at `ts`, from Intl (no table of zones here). */
+function zoneOffsetMinutes(ts: number, tz: string): number {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz, hourCycle: "h23", year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", second: "numeric",
+  }).formatToParts(new Date(ts));
+  const n = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? 0);
+  const asUtc = Date.UTC(n("year"), n("month") - 1, n("day"), n("hour"), n("minute"), n("second"));
+  return Math.round((asUtc - Math.floor(ts / 1000) * 1000) / 60000);
+}
+
+/** The instant of `h:m` on `tz`'s next calendar day falling on weekday `dow` (today counts). */
+function nextInstant(dow: number | null, h: number, m: number, tz: string, now: number): number {
+  const today = new Intl.DateTimeFormat("en-US", { timeZone: tz, year: "numeric", month: "numeric", day: "numeric" }).formatToParts(new Date(now));
+  const n = (type: string) => Number(today.find((p) => p.type === type)?.value);
+  const base = Date.UTC(n("year"), n("month") - 1, n("day"), h, m);
+  const todayDow = new Date(base).getUTCDay();
+  const ahead = dow === null ? 0 : (dow - todayDow + 7) % 7;
+  const wall = base + ahead * 86_400_000;
+  return wall - zoneOffsetMinutes(wall, tz) * 60_000;
+}
+
+function dayWords(dow: string): { label: string; days: (number | null)[] } | null {
+  if (dow === "*") return { label: "Every day", days: [null] };
+  const one = (token: string) => (/^\d$/.test(token) ? Number(token) % 7 : DAY_NAMES[token.toLowerCase().slice(0, 3)]);
+  const range = dow.match(/^(\w+)-(\w+)$/);
+  if (range) {
+    const [a, b] = [one(range[1]), one(range[2])];
+    if (a === undefined || b === undefined) return null;
+    if (a === 1 && b === 5) return { label: "Weekdays", days: [1] };
+    return { label: `${DAYS[a]}s to ${DAYS[b]}s`, days: [a] };
+  }
+  const days = dow.split(",").map(one);
+  if (days.some((d) => d === undefined)) return null;
+  if (days.length === 2 && days.includes(0) && days.includes(6)) return { label: "Weekends", days: [6] };
+  return { label: days.map((d) => `${DAYS[d]}s`).join(" and "), days };
+}
+
+/**
+ * "Mondays 9:00" for `["0 9 * * 1"]` in `tz`, read in `viewerTz` ("Mondays 14:00" from New York to London).
+ * A day-of-month or month field returns the raw entry. Several entries join with " and ".
+ * ponytail: the conversion uses the next occurrence from `now`; a zone pair whose DST flips between now and
+ * then can read an hour off until that day.
+ */
+export function formatSchedule(cron: readonly string[], tz: string, viewerTz: string, now = Date.now()): string {
+  return cron.map((entry) => {
+    const [min, hour, dom, mon, dow] = entry.trim().split(/\s+/);
+    const words = dayWords(dow ?? "*");
+    if (dom !== "*" || mon !== "*" || !words || !/^\d+$/.test(min) || !/^\d+$/.test(hour)) return entry;
+    const first = words.days[0];
+    const instant = nextInstant(first, Number(hour), Number(min), tz, now);
+    const time = new Intl.DateTimeFormat("en-GB", { timeZone: viewerTz, hourCycle: "h23", hour: "numeric", minute: "2-digit" }).format(new Date(instant));
+    if (first === null) return `${words.label} ${time}`;
+    // The viewer's zone can put the run on the day before or after the row's.
+    const viewerDow = DAY_NAMES[new Intl.DateTimeFormat("en-US", { timeZone: viewerTz, weekday: "short" }).format(new Date(instant)).toLowerCase()];
+    const shift = (viewerDow - first + 7) % 7 === 6 ? -1 : (viewerDow - first + 7) % 7;
+    const label = shift === 0 || words.label === "Weekdays" || words.label === "Weekends"
+      ? words.label
+      : words.days.map((d) => `${DAYS[((d ?? 0) + shift + 7) % 7]}s`).join(" and ");
+    return `${label} ${time}`;
+  }).join(" and ");
+}

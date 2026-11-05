@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import schema from "../../fixtures/super-agent/tasks-schema.json";
 import { FIXTURES, PRIYA, SAM, fixtureTask, viewAs } from "./fixtures";
 import { OUTPUT_KINDS, type TaskSummary } from "./types";
-import { effectLine, overviewGroups, specialistLabel, summaryView, taskSummaryLine } from "./view";
+import { effectLine, formatSchedule, overviewGroups, specialistLabel, summaryView, taskSummaryLine } from "./view";
 
 const byId = (ts: TaskSummary[], id: string) => ts.find((t) => t.taskId === id)!;
 
@@ -90,5 +90,20 @@ describe("effectLine (lanes/Q.md ruling, 5 Nov)", () => {
     expect(effectLine({ state: "done", resultRef: "s3://out" })).toBe("Done");
     expect(effectLine({ state: "unknown", resultRef: null })).toBe("Might have happened — check before retrying");
     expect(effectLine({ state: "intent" })).toBe("Applying");
+  });
+});
+
+describe("formatSchedule", () => {
+  const NOV = Date.UTC(2026, 10, 5, 12); // a Thursday; New York on standard time, London on GMT
+  it("reads the row's wall clock in the viewer's zone", () => {
+    expect(formatSchedule(["0 9 * * 1"], "America/New_York", "America/New_York", NOV)).toBe("Mondays 9:00");
+    expect(formatSchedule(["0 9 * * 1"], "America/New_York", "Europe/London", NOV)).toBe("Mondays 14:00");
+    expect(formatSchedule(["30 18 * * 1-5"], "Europe/London", "Europe/London", NOV)).toBe("Weekdays 18:30");
+    expect(formatSchedule(["0 7 * * *"], "Asia/Tokyo", "Asia/Tokyo", NOV)).toBe("Every day 7:00");
+  });
+  it("shifts the day when the viewer's zone crosses midnight; odd entries stay raw", () => {
+    expect(formatSchedule(["0 22 * * 1"], "America/Los_Angeles", "Europe/Berlin", NOV)).toBe("Tuesdays 7:00");
+    expect(formatSchedule(["0 9 1 * *"], "UTC", "UTC", NOV)).toBe("0 9 1 * *");
+    expect(formatSchedule(["0 9 * * 1", "0 9 * * 4"], "UTC", "UTC", NOV)).toBe("Mondays 9:00 and Thursdays 9:00");
   });
 });

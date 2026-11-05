@@ -5,6 +5,7 @@ import { MessageCircle } from "lucide-react";
 import type { Components, UrlTransform } from "react-markdown";
 import { sessionLabel, sessionStatus, specialistLabel, type CardReply, type LocalSession } from "@lightbulb/shared";
 import { MessageRoutedTo, MessageTasks } from "@/components/tasks/MessageTasks";
+import { AutomationConfirmCard } from "@/components/tasks/AutomationConfirmCard";
 import { useSuperAgent } from "@/hooks/useLiveEvents";
 import { openMessagePanel } from "@/components/workspace/workspaceController";
 import { Button } from "@/components/ui/button";
@@ -148,6 +149,7 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
       {superAgent && message.forwardedFrom && <button type="button" className="block text-ui text-muted-foreground hover:text-foreground hover:underline"
         onClick={() => openMessagePanel(message.forwardedFrom!.roomId, message.forwardedFrom!.messageId)}>
         Forwarded from {message.forwardedFrom.roomName ? `#${message.forwardedFrom.roomName}` : "the conversation"} ›</button>}
+      {!message.deletedAt && superAgent && message.kind === "automation_confirm" && message.automationId && <AutomationConfirmCard automationId={message.automationId} />}
       {!message.deletedAt && superAgent && message.routedTo && <MessageRoutedTo message={message} onOpen={onOpenTask}
         onShowReply={() => document.getElementById(id)?.parentElement?.querySelector(`#${CSS.escape(id)} ~ article`)?.scrollIntoView({ block: "nearest", behavior: "smooth" })} />}
       {!message.deletedAt && <RoomDocumentCards text={message.text} />}

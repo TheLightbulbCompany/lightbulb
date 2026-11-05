@@ -218,8 +218,10 @@ export interface CanonicalRoomMessage {
   routedTo?: { taskIds: string[]; started: number; suggested: number; passThrough: boolean } | null;
   /** On a task-room line: the card reply it was forwarded from. */
   forwardedFrom?: { roomId: string; messageId: string; roomName?: string } | null;
-  /** "result" on a task's result line. */
+  /** "result" on a task's result line; "automation_confirm" on the card that turns an automation on. */
   kind?: string | null;
+  /** The automation an `automation_confirm` card is about (lane A's propose route). */
+  automationId?: string | null;
 }
 
 export interface MessageAttachment {

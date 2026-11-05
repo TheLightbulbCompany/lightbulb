@@ -37,7 +37,7 @@ export function ScheduledList({ scope, onOpen, onOpenAutomation }: {
   return <ul className="grid">{rows.map((a) => <li key={a.id} className="relative flex items-center gap-3 rounded-md px-2 py-1.5 hover:bg-accent">
     <div className="min-w-0 flex-1">
       <button type="button" className="block max-w-full truncate text-left font-semibold after:absolute after:inset-0 after:content-['']"
-        onClick={() => (onOpenAutomation ? onOpenAutomation(a.id) : a.lastRun?.taskId && onOpen(a.lastRun.taskId))}>{a.name}</button>
+        onClick={() => { const t = a.activeRunTaskId ?? a.lastTaskId; if (onOpenAutomation) onOpenAutomation(a.id); else if (t) onOpen(t); }}>{a.name}</button>
       {statusLine(a) && <p className="truncate text-ui text-muted-foreground">{statusLine(a)}</p>}
     </div>
   </li>)}</ul>;

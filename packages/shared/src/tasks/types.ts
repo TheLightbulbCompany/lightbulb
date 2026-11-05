@@ -138,7 +138,7 @@ export interface AnswerBody {
 /** Message attrs Lightbulb sets on task messages (contracts-v2 §6; absent on every other message). */
 export interface TaskRef { taskId: string; role: "started" | "suggested" }
 
-/** Lane A's `GET /api/v1/automations` row (spec 06 §5.1 `AutomationView`; `nextRuns` are UTC, rendered in `schedule.tz`). */
+/** Lane A's `GET /api/v1/automations` row (`routers/automations.py _view`, #4754): `nextRuns` are UTC ISO strings. */
 export interface AutomationView {
   id: string;
   name: string;
@@ -147,13 +147,18 @@ export interface AutomationView {
   pausedReason: string | null;
   schedule: { cron: string[]; tz: string; remainingRuns?: number | null } | null;
   nextRuns: string[];
-  hooks?: unknown[];
+  hooks: { publicId: string; provider: string; events: string[]; fireUrl: string; armed: boolean; lastSigFailAt: string | null }[];
   specialistId: string | null;
-  model?: string | null;
+  /** A room id, a DM target, or "none". */
   deliverTo: string;
-  budgetPerRunUsd: number;
-  estRunsPerMonth?: number | null;
+  budgetPerRunUsd: number | null;
   ownerUserId: string;
-  lastRun: { firedAt: string; source: string; status: string; skippedReason?: string | null; taskId: string | null; costUsd?: number | null } | null;
+  createdBy: "user" | "router";
+  mode: "off" | "observe" | "auto" | null;
+  lastTaskId: string | null;
+  activeRunTaskId: string | null;
+  runCount: number;
+  /** Set on a proactive rule (lane S): matching sources/rooms. A rule has no Run now. */
+  match?: { sources?: string[]; roomIds?: string[] } | null;
   version: number;
 }

@@ -99,3 +99,44 @@ async def test_jev_timeout_no_match(monkeypatch):
     monkeypatch.setattr(jev, "put_metric", lambda *a, **k: None)
     out = await jev._decide_for_message(META, MESSAGE, MESSAGE, MEMBERS, [], rules=RULES)
     assert out == {"fallback": True, "rule": None}
+
+
+# --- route_for_router (O6's entry): the same question rides the Router call ---------------------------
+
+ROUTER_META = {"ownerId": "org_a", "roomId": "r1", "kind": "channel", "name": "dev"}
+
+
+async def _router(monkeypatch, answers, **kw):
+    decide = AsyncMock(return_value=answers)
+    monkeypatch.setattr(jev, "decide", decide)
+    monkeypatch.setattr(jev, "agent_card", AsyncMock(return_value="card"))
+    out = await jev.route_for_router(ROUTER_META, MESSAGE, MEMBERS, [], {"a1": "Lightbulb"}, **kw)
+    return out, decide.await_args.args[1]
+
+
+async def test_router_rules_empty_unchanged(monkeypatch):
+    answers = {"who": {"choice": "none", "probabilities": {"none": 0.9}}}
+    plain, plain_q = await _router(monkeypatch, answers)
+    empty, empty_q = await _router(monkeypatch, answers, rules=())
+    assert plain == empty == {"to": "none", "specialist": None, "confidence": 0.9} and plain_q == empty_q
+
+
+async def test_router_rule_question_and_match(monkeypatch):
+    rule = {"choice": "s1", "probabilities": {"s1": 0.9, "s2": 0.02, "none": 0.08}}
+    out, questions = await _router(
+        monkeypatch, {"who": {"choice": "a1", "probabilities": {"a1": 0.8}}, "rule": rule}, rules=RULES
+    )
+    assert questions["rule"] == rules.jev_question(RULES)
+    assert out == {"to": "router", "specialist": "a1", "confidence": 0.8, "rule": "s1", "ruleP": 0.9}
+
+
+async def test_router_bad_who_keeps_the_rule(monkeypatch):
+    rule = {"choice": "s1", "probabilities": {"s1": 0.9, "none": 0.1}}
+    out, _ = await _router(monkeypatch, {"who": {"choice": "ghost"}, "rule": rule}, rules=RULES)
+    assert out == {"fallback": True, "rule": "s1", "ruleP": 0.9}
+
+
+@pytest.mark.parametrize("answers", [None, jev.RATE_LIMITED])
+async def test_router_jev_down_has_no_rule_key(monkeypatch, answers):
+    out, _ = await _router(monkeypatch, answers, rules=RULES)
+    assert out == {"fallback": True}

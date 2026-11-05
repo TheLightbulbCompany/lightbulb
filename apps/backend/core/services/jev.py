@@ -792,24 +792,40 @@ ROUTER_WHO_INSTRUCTIONS = (
 
 
 async def route_for_router(
-    meta: dict, message: dict, members: list[dict], history: list[dict], specialists: dict[str, str]
+    meta: dict,
+    message: dict,
+    members: list[dict],
+    history: list[dict],
+    specialists: dict[str, str],
+    *,
+    rules: list[dict] | tuple = (),
 ) -> dict:
     """One Jev call for one unaddressed message in a Router room: `{"to": "router"|"none", "specialist",
     "confidence"}`, or `{"fallback": True}` when Jev cannot answer (the caller admits addressed messages only).
-    `specialists`: `{agentId: name}` of `AGENT#` rows with listenMode active (observe ones never run)."""
+    `specialists`: `{agentId: name}` of `AGENT#` rows with listenMode active (observe ones never run).
+    `rules`: the room's proactive rules (contracts §18); they ride the call as one `rule` question and the verdict
+    gains `rule` / `ruleP`, parsed on their own (a bad `who` neither drops nor invents a match). Empty leaves the
+    request and the verdict unchanged. Jev down carries no `rule` key: the caller counts it as unavailable."""
     cards = await asyncio.gather(*(agent_card(meta["ownerId"], a, n) for a, n in specialists.items()))
     criteria = {"lightbulb": ROUTER_CRITERION, **dict(zip(specialists, cards)), "none": NONE_CRITERION}
     state = _state(meta, message, history, members=members, options=list(specialists))
-    answers = await decide(
-        state, {"who": {"type": "choice", "instructions": ROUTER_WHO_INSTRUCTIONS, "criteria": criteria}}
-    )
+    questions = {"who": {"type": "choice", "instructions": ROUTER_WHO_INSTRUCTIONS, "criteria": criteria}}
+    if rules:
+        from core.services import rules as rules_mod  # rules imports jev._clip: import here, not at module top
+
+        questions["rule"] = rules_mod.jev_question(list(rules))
+    answers = await decide(state, questions)
     if not isinstance(answers, dict):  # None (down) or RATE_LIMITED
         return {"fallback": True}
+    extra: dict = {}
+    if rules:
+        ids = {r["scheduleId"] for r in rules[: rules_mod.RULES_PER_ROOM]}
+        extra["rule"], extra["ruleP"] = rules_mod.parse_match(answers, ids)
     who = answers.get("who") or {}
     choice = who.get("choice")
     if choice not in criteria:
-        return {"fallback": True}
+        return {"fallback": True, **extra}
     confidence = float((who.get("probabilities") or {}).get(choice) or 0)
     if choice == "none":
-        return {"to": "none", "specialist": None, "confidence": confidence}
-    return {"to": "router", "specialist": None if choice == "lightbulb" else choice, "confidence": confidence}
+        return {"to": "none", "specialist": None, "confidence": confidence, **extra}
+    return {"to": "router", "specialist": None if choice == "lightbulb" else choice, "confidence": confidence, **extra}

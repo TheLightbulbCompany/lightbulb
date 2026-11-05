@@ -21,3 +21,11 @@ class Decision:
     @classmethod
     def replay(cls, result: str) -> "Decision":
         return cls("replay", result=result)
+
+
+def install(agent, callback, *, timeout_s: float = 10.0) -> None:
+    agent._lb_checkpoint = callback
+
+
+def installed(agent) -> bool:
+    return getattr(agent, "_lb_checkpoint", None) is not None

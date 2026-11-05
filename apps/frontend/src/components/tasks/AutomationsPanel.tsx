@@ -7,13 +7,13 @@
 import { useState, type ReactElement } from "react";
 import { ArrowLeft } from "lucide-react";
 import { useAuth } from "@clerk/nextjs";
-import { automationStatusLine, specialistLabel, summaryView, useAutomation, useAutomationRuns, useAutomations, type AutomationView } from "@lightbulb/shared";
+import { ApiError, automationStatusLine, summaryView, useAutomation, useAutomationRuns, useAutomations, type AutomationView } from "@lightbulb/shared";
 import { RoutinesPanel } from "@/components/teams/panels/RoutinesPanel";
 import { Button } from "@/components/ui/button";
 import { useSuperAgent } from "@/hooks/useLiveEvents";
 import { openTaskPane } from "@/components/workspace/workspaceController";
 import {
-  budgetLine, cronTime, deliveryWords, runNow, runNowReason, scheduleWords, useAutomationActions, useAutomationSource, useCanDecide, useCanEdit, viewerTimeZone, waitingWords, withCronTime,
+  budgetLine, cronTime, deliveryWords, runNow, runNowReason, scheduleWords, useAutomationActions, useAutomationSource, useCanDecide, useCanEdit, useSpecialistLabel, viewerTimeZone, waitingWords, withCronTime,
 } from "./automations";
 
 export function AutomationsPanel({ viewerTz = viewerTimeZone(), onOpenTask = openTaskPane }: {
@@ -87,6 +87,7 @@ function AutomationDetail({ id, viewerTz, onBack, onOpenTask }: {
   id: string; viewerTz: string; onBack: () => void; onOpenTask: (taskId: string) => void;
 }): ReactElement {
   const source = useAutomationSource();
+  const specialistName = useSpecialistLabel();
   const { data: a, error } = useAutomation(source, id);
   const { data: runs } = useAutomationRuns(source, id);
   const { act, edit, remove } = useAutomationActions();
@@ -109,7 +110,7 @@ function AutomationDetail({ id, viewerTz, onBack, onOpenTask }: {
     <Button variant="ghost" aria-label="Back to automations" onClick={onBack}><ArrowLeft aria-hidden="true" />Automations</Button>
     <header className="grid gap-1">
       <h2 className="font-semibold">{a.name}</h2>
-      <p className="text-ui text-muted-foreground">{[scheduleLine(a, viewerTz), specialistLabel(a.specialistId), budgetLine(a)].filter(Boolean).join(" · ")}</p>
+      <p className="text-ui text-muted-foreground">{[scheduleLine(a, viewerTz), specialistName(a.specialistId), budgetLine(a)].filter(Boolean).join(" · ")}</p>
       {automationStatusLine(a) && <p className="text-ui text-warn">{automationStatusLine(a)}</p>}
     </header>
     {/* Pause and Run now follow the server's _may_edit (admin or owner); Resume is an activate (room → admin only). */}
@@ -125,7 +126,7 @@ function AutomationDetail({ id, viewerTz, onBack, onOpenTask }: {
     {editing
       ? <EditAutomation a={a} viewerTz={viewerTz} onCancel={() => setEditing(false)} onSave={async (body) => {
         try { await edit(a.id, body, a.version); setEditing(false); setNote(null); }
-        catch { setNote("That didn't save. It may have changed: reopen it and try again."); }
+        catch (error) { setNote(saveError(error)); }
       }} />
       : <section aria-label="Instructions" className="editorial-card px-3 py-2">
         <h3 className="label-caps">Instructions</h3>
@@ -159,10 +160,11 @@ function AutomationDetail({ id, viewerTz, onBack, onOpenTask }: {
 
 /** Instructions and the time of day (days and zone kept); a rule has no schedule to move. */
 function EditAutomation({ a, viewerTz, onSave, onCancel }: {
-  a: AutomationView; viewerTz: string; onSave: (body: { instructions?: string; schedule?: { cron: string[]; tz: string } }) => Promise<void>; onCancel: () => void;
+  a: AutomationView; viewerTz: string; onSave: (body: { instructions?: string; schedule?: { cron: string[]; tz: string; remainingRuns?: number | null } }) => Promise<void>; onCancel: () => void;
 }): ReactElement {
   const [instructions, setInstructions] = useState(a.instructions);
-  const start = a.schedule ? cronTime(a.schedule.cron) : null;
+  // The time is editable only for one cron entry ("Mondays 9:00"); "9:00 and 17:00" is edited by asking Lightbulb.
+  const start = a.schedule?.cron.length === 1 ? cronTime(a.schedule.cron) : null;
   const [time, setTime] = useState(start ?? "");
   const [saving, setSaving] = useState(false);
   const zone = a.schedule && a.schedule.tz !== viewerTz ? ` (${a.schedule.tz.split("/").pop()?.replace(/_/g, " ")} time)` : "";
@@ -171,7 +173,7 @@ function EditAutomation({ a, viewerTz, onSave, onCancel }: {
     setSaving(true);
     await onSave({
       ...(instructions.trim() !== a.instructions ? { instructions: instructions.trim() } : {}),
-      ...(a.schedule && start && time && time !== start ? { schedule: { cron: withCronTime(a.schedule.cron, time), tz: a.schedule.tz } } : {}),
+      ...(a.schedule && start && time && time !== start ? { schedule: { cron: withCronTime(a.schedule.cron, time), tz: a.schedule.tz, remainingRuns: a.schedule.remainingRuns ?? null } } : {}),
     });
     setSaving(false);
   }}>
@@ -179,6 +181,8 @@ function EditAutomation({ a, viewerTz, onSave, onCancel }: {
       <textarea value={instructions} onChange={(event) => setInstructions(event.target.value)} rows={5} maxLength={20000} required
         className="w-full resize-y rounded-md border border-input bg-background px-2 py-1.5 text-ui" />
     </label>
+    {/* routers/automations.py: an edited rule's instructions make it a new rule, back in observe. */}
+    {a.match && <p className="text-ui text-muted-foreground">Saving puts this rule back to watch-only until it's turned on again.</p>}
     {start && <label className="grid w-fit gap-1 text-ui"><span className="label-caps">Time{zone}</span>
       <input type="time" value={time} onChange={(event) => setTime(event.target.value)} required
         className="rounded-md border border-input bg-background px-2 py-1 text-ui" />
@@ -188,4 +192,11 @@ function EditAutomation({ a, viewerTz, onSave, onCancel }: {
       <Button type="button" size="sm" variant="ghost" onClick={onCancel}>Cancel</Button>
     </div>
   </form>;
+}
+
+/** A failed save in words: a 409 is a newer version, a 400 a schedule or text the server refused. */
+function saveError(error: unknown): string {
+  if (error instanceof ApiError && error.status === 409) return "Someone changed this automation. Reopen it and try again.";
+  if (error instanceof ApiError && error.status === 400) return "That schedule or text wasn't accepted. Check it and try again.";
+  return "That didn't save. Try again.";
 }

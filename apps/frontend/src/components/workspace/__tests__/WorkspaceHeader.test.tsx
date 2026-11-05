@@ -90,13 +90,11 @@ describe("WorkspaceHeader", () => {
   });
   it("with the switch on, Work badges the threads waiting on you, not team runs", async () => {
     live.superAgent = true;
-    const { fixtureTask } = await import("@lightbulb/shared/tasks/fixtures");
-    live.tasks = { cacheScope: "org_h", list: vi.fn(async () => ({ next: null, tasks: [
-      fixtureTask({ taskId: "a", title: "a", shownGroup: "waiting_on_you" }), fixtureTask({ taskId: "b", title: "b", shownGroup: "working" }),
-    ] })) };
+    // Two open questions on one thread and one on another: two threads.
+    live.tasks = { cacheScope: "org_h", needsYou: vi.fn(async () => ({ next: null, items: [{ taskId: "a" }, { taskId: "a" }, { taskId: "b" }] })) };
     try {
       render(<WorkspaceHeader />);
-      expect(await screen.findByRole("button", { name: "Work, 1 thread waiting on you" })).toBeInTheDocument();
+      expect(await screen.findByRole("button", { name: "Work, 2 threads waiting on you" })).toBeInTheDocument();
     } finally { live.superAgent = false; live.tasks = null; }
   });
   it("shows active team runs on Work without covering workspace content", () => {

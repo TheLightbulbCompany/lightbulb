@@ -179,20 +179,21 @@ export function TaskDetails({ detail }: { detail: TaskDetail }): ReactElement {
         : "error" in trace ? <p className="text-muted-foreground">The steps aren&apos;t available.</p>
         : !trace.recentTools.length ? <p className="text-muted-foreground">No steps yet.</p>
         : <ol className="mt-1 max-h-64 overflow-auto text-caption" aria-label={`Run ${trace.attempt} steps`}>
-          {trace.recentTools.map((tool, i) => <li key={i} className="truncate font-mono">{toolLine(tool)}</li>)}
+          {trace.recentTools.map((tool, i) => <li key={i} className="truncate">{toolLine(tool)}</li>)}
         </ol>}
     </details>}
   </details>;
 }
 
-/** One line per bridge tool record, whatever its exact shape. */
+/** One plain line per bridge tool record ("browser_navigate · done" → "Browser navigate · done"). */
 function toolLine(tool: unknown): string {
-  if (typeof tool === "string") return tool;
+  const words = (name: string) => { const w = name.replace(/^mcp__[^_]+__/, "").replace(/[_.]+/g, " ").trim(); return w.charAt(0).toUpperCase() + w.slice(1); };
+  if (typeof tool === "string") return words(tool);
   if (tool && typeof tool === "object") {
     const t = tool as Record<string, unknown>;
     const name = [t.name, t.tool, t.type].find((v) => typeof v === "string") as string | undefined;
     const status = typeof t.status === "string" ? ` · ${t.status}` : "";
-    if (name) return `${name}${status}`;
+    if (name) return `${words(name)}${status}`;
   }
-  return JSON.stringify(tool);
+  return "A step";
 }

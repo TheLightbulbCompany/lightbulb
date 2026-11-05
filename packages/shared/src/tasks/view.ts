@@ -121,7 +121,8 @@ export function summaryView(t: TaskSummary, viewerId: string): SummaryView {
   if (group === "landing") return v("Applying");
   if (t.status === "idle") return v(t.watching ? "Watching" : "Idle");
   if (q && !q.canAnswer && q.answererNames.length) return v(`Waiting on ${joinNames(q.answererNames)}`);
-  // Waiting with no question this viewer can see: someone else's decision, never a bare "Waiting".
+  // Waiting with no named answerer in the summary: say what it waits for, never a bare "Waiting".
+  // ponytail: names the person once the summary carries who (today openQuestion is absent here).
   return v(t.status === "queued" ? "Queued" : t.status === "waiting" ? "Waiting on a reply" : "Working");
 }
 

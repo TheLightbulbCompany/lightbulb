@@ -5,12 +5,13 @@
 // typed text never does (contracts-v2 §8). Not now deletes the draft.
 
 import { useState, type ReactElement } from "react";
-import { specialistLabel, useAutomation, type AutomationView } from "@lightbulb/shared";
+import { useAutomation, type AutomationView } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
-import { budgetLine, scheduleWords, useAutomationActions, useAutomationSource, useCanDecide, useCanEdit, viewerTimeZone, waitingWords } from "./automations";
+import { budgetLine, scheduleWords, useAutomationActions, useAutomationSource, useCanDecide, useCanEdit, useSpecialistLabel, viewerTimeZone, waitingWords } from "./automations";
 
 export function AutomationConfirmCard({ automationId, viewerTz = viewerTimeZone() }: { automationId: string; viewerTz?: string }): ReactElement {
   const { data: a, error } = useAutomation(useAutomationSource(), automationId);
+  const specialistName = useSpecialistLabel();
   const { act, remove } = useAutomationActions();
   const canDecide = useCanDecide();
   const canEdit = useCanEdit();
@@ -37,7 +38,7 @@ export function AutomationConfirmCard({ automationId, viewerTz = viewerTimeZone(
   };
   return <section aria-label={`Turn on ${a.name}`} className="editorial-card mt-1.5 max-w-xl px-3 py-2" data-automation-card={a.id}>
     <p className="font-semibold">{a.status === "draft" ? "Turn on: " : ""}{a.name}</p>
-    <p className="text-ui text-muted-foreground">{lines(a, viewerTz).join(" · ")}</p>
+    <p className="text-ui text-muted-foreground">{lines(a, viewerTz, specialistName).join(" · ")}</p>
     {a.nextRuns.length > 0 && <p className="text-ui text-muted-foreground">Next: {a.nextRuns.slice(0, 3).map((iso) => when(iso, viewerTz)).join(", ")}</p>}
     {a.status !== "draft"
       ? <p className="mt-1 text-ui text-ok">{a.status === "active" ? "On" : "Paused"}</p>
@@ -53,11 +54,11 @@ export function AutomationConfirmCard({ automationId, viewerTz = viewerTimeZone(
   </section>;
 }
 
-function lines(a: AutomationView, viewerTz: string): string[] {
+function lines(a: AutomationView, viewerTz: string, specialistName: (id: string | null | undefined) => string): string[] {
   const out: string[] = [];
   const schedule = scheduleWords(a, viewerTz);
   if (schedule) out.push(schedule);
-  out.push(specialistLabel(a.specialistId));
+  out.push(specialistName(a.specialistId));
   const budget = budgetLine(a);
   if (budget) out.push(budget);
   return out;

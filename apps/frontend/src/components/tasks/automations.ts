@@ -7,11 +7,13 @@ import { useCallback } from "react";
 import { useSWRConfig } from "swr";
 import { useAuth, useOrganization } from "@clerk/nextjs";
 import {
-  automationKey, automationRunsKey, automationsKey, canDecide, canEdit, runNow as runNowShared,
+  automationKey, automationRunsKey, automationsKey, canDecide, canEdit, specialistLabel, runNow as runNowShared,
   type AutomationSource, type AutomationView, type RunNowOutcome,
 } from "@lightbulb/shared";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { useApi } from "@/lib/api";
+import { useTeamsApi } from "@/hooks/useTeamsApi";
+import type { CompanyAgent } from "@/components/teams/shared/types";
 import { errorCopy } from "./useTaskActions";
 
 export type AutomationVerb = "activate" | "pause" | "resume" | "run";
@@ -39,7 +41,7 @@ export function useAutomationActions() {
     await refresh(id);
   }, [api, refresh]);
   /** PATCH /automations/{id} with the row's version (a stale one is a 409 the caller shows). */
-  const edit = useCallback(async (id: string, body: { instructions?: string; schedule?: { cron: string[]; tz: string } }, version: number) => {
+  const edit = useCallback(async (id: string, body: { instructions?: string; schedule?: { cron: string[]; tz: string; remainingRuns?: number | null } }, version: number) => {
     await api.patch(`/automations/${encodeURIComponent(id)}`, { ...body, version });
     await refresh(id);
   }, [api, refresh]);
@@ -72,10 +74,20 @@ export function cronTime(cron: readonly string[]): string | null {
   return /^\d+$/.test(min ?? "") && /^\d+$/.test(hour ?? "") ? `${hour.padStart(2, "0")}:${min.padStart(2, "0")}` : null;
 }
 
-/** Every entry moved to `time` ("HH:MM"), its days kept. */
+/** A single-entry schedule moved to `time` ("HH:MM"), its days kept (several entries are never collapsed to one time). */
 export const withCronTime = (cron: readonly string[], time: string): string[] => {
   const [h, m] = time.split(":").map(Number);
-  return cron.map((entry) => { const [, , ...rest] = entry.trim().split(/\s+/); return [m, h, ...rest].join(" "); });
+  const [, , ...rest] = (cron[0] ?? "").trim().split(/\s+/);
+  return [[m, h, ...rest].join(" ")];
 };
 
 export { budgetLine, deliveryWords, money, runNowReason, runsPerMonth, scheduleWords, viewerTimeZone, waitingWords } from "@lightbulb/shared";
+
+/** "Lightbulb · Finance" for an automation's specialist: a handle reads as itself, an agent id by its roster name. */
+export function useSpecialistLabel(): (specialistId: string | null | undefined) => string {
+  const { data } = useTeamsApi().read<{ agents?: CompanyAgent[] }>("/agents");
+  return useCallback((id) => {
+    const agent = id ? data?.agents?.find((x) => x.id === id) : undefined;
+    return agent?.name ? `Lightbulb · ${agent.name}` : specialistLabel(id);
+  }, [data]);
+}

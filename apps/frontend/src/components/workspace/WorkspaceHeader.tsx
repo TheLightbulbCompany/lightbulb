@@ -12,7 +12,7 @@ import { recordMessagesNavigation } from "./chatHistory";
 import { HistoryButtons } from "./HistoryButtons";
 import { activateMessagesPanel, openPanel, useWorkspaceState, type Place } from "./workspaceController";
 import { useSuperAgent } from "@/hooks/useLiveEvents";
-import { useThreads } from "@/components/tasks/useRoomThreads";
+import { useThreadsWaitingOnMe } from "@/components/tasks/useRoomThreads";
 import { ThemeToggles } from "@/components/chat/ThemeToggles";
 
 // The five places, and nothing else (spec 3.1). Browser, Files and Mail open in
@@ -29,8 +29,6 @@ const DESTINATIONS: readonly { place: Place; panel: string; label: string; Icon:
 ];
 
 /** The global rail: the places, search, history and the account controls. */
-const WORKSPACE = { kind: "workspace" } as const;
-
 export function WorkspaceHeader({ chatReady = true, onNavigate }: {
   chatReady?: boolean;
   /** A destination was picked: the shell closes the phone drawer. */
@@ -46,7 +44,7 @@ export function WorkspaceHeader({ chatReady = true, onNavigate }: {
   // With the super-agent on, Work leads with Threads (the overview); today's Tasks board stays a tab.
   const superAgent = useSuperAgent();
   // With it on, Work badges the threads waiting on you (team runs are the old board's).
-  const { waitingOnMe } = useThreads(superAgent ? WORKSPACE : null);
+  const waitingOnMe = useThreadsWaitingOnMe();
   return (
     <nav className="workspace-rail" aria-label="Workspace">
       <HistoryButtons />

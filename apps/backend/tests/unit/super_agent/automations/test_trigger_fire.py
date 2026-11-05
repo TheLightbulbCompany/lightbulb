@@ -16,6 +16,7 @@ from core.temporal.automations import (
     IDLE_DAYS,
     FireInput,
     TriggerFireWorkflow,
+    _close_run,
     close_automation_run,
     fire_automation,
     schedule_trigger_id,
@@ -467,3 +468,25 @@ async def test_dm_delivery_resolves_the_owners_dm_with_lightbulb(env, user, room
     assert room_id == room and trigger.ref["start"]["visibility"] == "person"
     if room:
         dm.assert_awaited_once_with(WS, "user_sam", "agent_ceo")
+
+
+async def test_close_run_survives_a_concurrent_edit(env):
+    """A pause/edit landing between close_run's read and its conditional write moved the version: the run was
+    not closed and the claim stayed held for good. The close re-reads and applies once, no double History."""
+    await _active()
+    tid = "77777777-7777-4777-8777-777777777777"
+    assert await repo.claim_run(WS, "s1", tid)
+    real_get, edited = repo.get_schedule, []
+
+    async def get_then_edit(ws, sid):
+        row = await real_get(ws, sid)
+        if not edited:  # someone renames the automation right after close_run read it
+            edited.append(await repo.update_schedule(ws, sid, {"name": "Renamed"}, expected_version=row["version"]))
+        return row
+
+    with patch.object(repo, "get_schedule", get_then_edit):
+        assert await _close_run(WS, "s1", tid, False)
+    row = await repo.get_schedule(WS, "s1")
+    assert row.get("activeRunTaskId") is None and row["runTaskIds"] == [tid] and row["name"] == "Renamed"
+    assert await _close_run(WS, "s1", tid, False)  # a late retry (reconcile) is a no-op
+    assert (await repo.get_schedule(WS, "s1"))["runTaskIds"] == [tid]

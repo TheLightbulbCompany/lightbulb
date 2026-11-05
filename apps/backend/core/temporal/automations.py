@@ -389,9 +389,15 @@ async def _close_run(ws: str, sid: str, task_id: str, failed: bool | None) -> bo
     from core.repositories.tasks_repo import IllegalTransition, VersionConflict
     from core.services import automation_schedule
 
-    try:
-        row = await repo.close_run(ws, sid, task_id, failed=failed)
-    except VersionConflict:
+    # close_run re-reads each try: an edit or pause landing between its read and write moves the version, and
+    # giving up there would strand the claim. A run already in History returns the row (no second entry).
+    for _ in range(3):
+        try:
+            row = await repo.close_run(ws, sid, task_id, failed=failed)
+            break
+        except VersionConflict:
+            continue
+    else:
         return False
     if row.get("consecutiveFailures", 0) >= BREAKER_FAILURES and row["status"] == "active":
         try:

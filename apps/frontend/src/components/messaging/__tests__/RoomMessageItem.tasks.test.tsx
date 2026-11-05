@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FIXTURES, LIGHTBULB, SAM } from "@lightbulb/shared/tasks/fixtures";
@@ -8,6 +8,19 @@ const live = vi.hoisted(() => ({ superAgent: true, tasks: null as unknown }));
 vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useSuperAgent: () => live.superAgent, useOptionalLiveEvents: () => live }));
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 vi.mock("../MessageTaskCard", () => ({ MessageTaskCard: () => <div data-testid="legacy-task-card" /> }));
+// The row as the server holds it: activate flips it, and the card's re-read sees the flip.
+const automation = vi.hoisted(() => ({ current: null as Record<string, unknown> | null }));
+const api = vi.hoisted(() => ({
+  get: vi.fn(async (path: string) => path === "/automations/a1" && automation.current ? automation.current : Promise.reject(new Error("404"))),
+  post: vi.fn(async () => { automation.current = { ...automation.current, status: "active" }; return automation.current; }),
+  del: vi.fn(async () => undefined),
+}));
+const AUTOMATION = vi.hoisted(() => ({
+  id: "a1", name: "Post signups every Monday", instructions: "Post the signup count so far in #workshop-launch.", status: "draft", pausedReason: null,
+  schedule: { cron: ["0 9 * * 1"], tz: "America/New_York" }, nextRuns: [], specialistId: null, deliverTo: "room-workshop-launch",
+  budgetPerRunUsd: 1, estRunsPerMonth: 4, ownerUserId: "user_sam", lastRun: null, version: 1,
+}));
+vi.mock("@/lib/api", () => ({ useApi: () => api }));
 
 import { RoomMessageItem } from "../RoomMessageItem";
 import type { RoomMessage } from "../types";
@@ -61,6 +74,19 @@ describe("RoomMessageItem with the super-agent switch", () => {
     expect(chip).not.toHaveAttribute("aria-pressed");
     await userEvent.click(chip);
     expect(onToggleReaction).not.toHaveBeenCalled();
+  });
+
+  it("an automation_confirm card turns the automation on only through its button", async () => {
+    automation.current = { ...AUTOMATION };
+    const card = { ...reply, messageId: "m-confirm", text: "Set up below. Confirm on the card.", taskRefs: undefined, kind: "automation_confirm", automationId: "a1" } as RoomMessage;
+    render(item(card));
+    const region = await screen.findByRole("region", { name: "Turn on Post signups every Monday" });
+    expect(region).toHaveTextContent("Mondays 9:00");
+    expect(region).toHaveTextContent("up to $1 a run, about $4 a month");
+    await userEvent.click(within(region).getByRole("button", { name: "Turn on" }));
+    expect(api.post).toHaveBeenCalledWith("/automations/a1/activate", {});
+    expect(await within(region).findByText("On")).toBeInTheDocument();
+    expect(within(region).queryByRole("button", { name: "Turn on" })).toBeNull();
   });
 
   it("flag off is identical to today", async () => {

@@ -103,3 +103,50 @@ def test_run_request_wire_omits_memory_when_none():
     wire = rr.RunRequest(input="go", instructions="be Finance", memory=block).to_wire()
     assert wire["memory"] == block
     assert {k: v for k, v in wire.items() if k != "memory"} == legacy
+
+
+PEM = (
+    "-----BEGIN RSA PRIVATE KEY-----\n"
+    "MIIEowIBAAKCAQEAu1SU1LfVLPHCozMxH2Mo4lgOEePzNm0tRgeLezV6ffAt0gun\n"
+    "VTLw7onLRnrq0/IzW7yWR7QkrmBL7jTKEn5u+qKhbwKfBstIs+bMY2Zkp18gnTxK\n"
+    "-----END RSA PRIVATE KEY-----"
+)
+JWT = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+
+
+def test_redact_masks_the_whole_pem_block():
+    out = redact(f"here it is {PEM} thanks")
+    assert "MIIE" not in out and "VTLw" not in out and "END RSA" not in out
+    assert out == "here it is [REDACTED] thanks"
+    # a pasted key cut off before its END line loses everything after BEGIN
+    assert redact("key: " + PEM.split("-----END")[0]).count("MIIE") == 0
+
+
+def test_redact_masks_all_three_jwt_segments():
+    out = redact(f"bearer {JWT} ok")
+    assert "SflKx" not in out and "eyJ" not in out
+    assert out == "bearer [REDACTED] ok"
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["password: hunter2", "secret=abc", "token = x1", "api_key: k9", "API-KEY=zz", "Password : p@ss"],
+)
+def test_redact_masks_short_key_value_secrets(text):
+    value = text.split("=")[-1].split(":")[-1].strip()
+    out = redact(text)
+    assert out.endswith("[REDACTED]") and value not in out.replace("[REDACTED]", "")
+
+
+def test_redact_keeps_plain_mentions_of_secret_words():
+    assert redact("we rotated the password yesterday") == "we rotated the password yesterday"
+
+
+def test_router_block_shared_without_room_is_workspace_audience():
+    block = memory_tags.block_for_router("shared", "user_sam", None)
+    assert block["audience"] == {"kind": "workspace"}
+
+
+def test_worker_block_room_audience_without_room_refuses():
+    with pytest.raises(ValueError):
+        memory_tags.block_for_worker(_task(audience={"kind": "room", "userIds": [], "roomId": None}))

@@ -43,6 +43,8 @@ def block_for_worker(task: dict) -> dict:
     if private:
         shown = _person(task.get("ownerUserId"))
     elif audience.get("kind") == "room":
+        if not audience.get("roomId"):
+            raise ValueError("a room audience names its room")
         shown = {"kind": "room", "roomId": audience["roomId"]}
     else:
         shown = {"kind": "workspace"}
@@ -63,10 +65,14 @@ def block_for_worker(task: dict) -> dict:
 def block_for_router(lane: str, user_id: str | None, room_id: str | None) -> dict:
     """A Router turn: it writes nothing (room ingestion is the one writer of room text)."""
     private = lane == "private"
+    if private:
+        audience = _person(user_id)
+    else:  # no reply room (a schedule, mail): links only to workspace-wide tasks
+        audience = {"kind": "room", "roomId": room_id} if room_id else {"kind": "workspace"}
     return {
         "lane": "private" if private else "shared",
         "member": user_id if private else None,
-        "audience": _person(user_id) if private else {"kind": "room", "roomId": room_id},
+        "audience": audience,
         "tags": {},
         "sync": "none",
     }

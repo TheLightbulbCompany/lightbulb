@@ -288,6 +288,66 @@ async def test_delete_google_stops_watch_and_cancels_keeper(env):
     assert env.temporal.cancelled == [f"gwatch:{WS}:{pid}"]
 
 
+async def test_delete_meta_keeps_a_sibling_hooks_subscription(env):
+    """Two automations on one Page share Meta's one subscription: deleting the first keeps the Page
+    subscribed with the sibling's fields; deleting the last unsubscribes it."""
+    asset = {"id": "1112223334", "label": "Acme Page", "object_type": "page", "graph_base": "g", "token": "t"}
+    bindings: list[dict] = []
+    with (
+        patch.dict(inbound_triggers._META_ASSET_LISTERS, {"meta_ads": AsyncMock(return_value=[asset])}),
+        patch("core.services.inbound_triggers._subscribe_meta_asset", AsyncMock()) as subscribe,
+        patch("core.services.inbound_triggers._unsubscribe_meta_asset", AsyncMock()) as unsubscribe,
+        patch(
+            "core.services.inbound_triggers.integrations_repo.get_meta_webhook_bindings",
+            AsyncMock(side_effect=lambda *a: list(bindings)),
+        ),
+        patch(
+            "core.services.inbound_triggers.integrations_repo.set_meta_webhook_bindings",
+            AsyncMock(side_effect=lambda owner, provider, rows: bindings.__setitem__(slice(None), list(rows))),
+        ),
+    ):
+        first = await _seed("meta_ads", ["leadgen"], resource="1112223334")
+        second = await _seed("meta_ads", ["feed"], resource="1112223334")
+        assert len(bindings) == 2
+        first_fields, second_fields = bindings[0]["fields"], bindings[1]["fields"]
+        assert first_fields and second_fields and set(first_fields) != set(second_fields)
+        # the second seed subscribes the UNION, not just its own fields (it would overwrite the first's)
+        assert subscribe.await_args.args == (asset, sorted({*first_fields, *second_fields}))
+        await automation_hooks.delete(WS, first["trigger_public_id"])
+        assert not unsubscribe.called
+        assert subscribe.await_args.args == (asset, sorted(second_fields))  # narrowed to the sibling's fields
+        assert [b["trigger_public_id"] for b in bindings] == [second["trigger_public_id"]]
+        await automation_hooks.delete(WS, second["trigger_public_id"])
+        unsubscribe.assert_awaited_once_with(asset)
+        assert bindings == []
+
+
+async def test_delete_guided_hook_needs_no_temporal(env, monkeypatch):
+    from core.temporal import client as tc
+
+    out = await _seed("stripe", ["invoice.payment_failed"])
+    monkeypatch.setattr(tc, "_client", None)  # a Stripe hook has no keeper: Temporal is never asked
+    await automation_hooks.delete(WS, out["trigger_public_id"])
+    assert await repo.get_hook(WS, out["trigger_public_id"]) is None
+
+
+async def test_seed_link_conflict_unwinds_the_hook(env):
+    from core.repositories.tasks_repo import VersionConflict
+
+    with patch("core.services.automation_hooks.repo.update_schedule", AsyncMock(side_effect=VersionConflict("x"))):
+        with pytest.raises(VersionConflict):
+            await _seed("github", ["pull_request"], resource="acme/site")
+    assert await repo.list_schedules(WS) == []
+    assert not [k for k in env.secrets if k[1].startswith("hook-")]
+    assert not env.http.post.called  # nothing registered provider-side either
+
+
+async def test_attach_refuses_to_reassign(env):
+    first = await _seed("stripe", ["invoice.payment_failed"])
+    with pytest.raises(ValueError, match="can't reassign"):
+        await _seed("stripe", ["charge.refunded"], routine_id=first["automation_id"], assignee_agent_id="agent_x")
+
+
 async def test_arm_stores_secret_and_arms(env):
     out = await _seed("stripe", ["invoice.payment_failed"])
     pid = out["trigger_public_id"]

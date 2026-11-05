@@ -77,6 +77,8 @@ async def seed(
     id_text = it._join_human([e.id for e in events])
 
     if automation_id:
+        if specialist is not None:
+            raise ValueError("attaching to an existing automation can't reassign it")
         sched = await repo.get_schedule(owner_id, automation_id)
         if sched is None:
             raise ValueError(f"automation {automation_id!r} is not in this workspace")
@@ -118,16 +120,16 @@ async def seed(
         "resource": reg.meta_asset["id"] if reg.meta_asset else resource,
     }
     proxy_url = trigger_fire_url(owner_id, public_id)
-    hook, _ = await repo.put_hook(owner_id, hook)
-    await repo.update_schedule(
-        owner_id,
-        sid,
-        {"hookPublicIds": [*sched.get("hookPublicIds", []), public_id]},
-        expected_version=sched["version"],
-    )
-    if secret:
-        await integration_secret_store.put(owner_id, hook["secretRef"], {"secret": secret, "mode": mode})
     try:
+        hook, _ = await repo.put_hook(owner_id, hook)
+        await repo.update_schedule(
+            owner_id,
+            sid,
+            {"hookPublicIds": [*sched.get("hookPublicIds", []), public_id]},
+            expected_version=sched["version"],
+        )
+        if secret:
+            await integration_secret_store.put(owner_id, hook["secretRef"], {"secret": secret, "mode": mode})
         fields = await _register(owner_id, reg, public_id=public_id, proxy_url=proxy_url, secret=secret, topic=topic)
         if fields:
             hook = await repo.update_hook(owner_id, public_id, fields, expected_version=hook["version"])
@@ -197,9 +199,11 @@ async def _register(owner_id: str, reg, *, public_id: str, proxy_url: str, secre
         return {"armed": True, "providerHookId": webhook_id}
     if reg.registration == "auto_meta":
         asset, fields = reg.meta_asset, it._provider_event_names(events)
-        await it._subscribe_meta_asset(asset, fields)
+        # Meta keeps ONE subscription per asset for our app: subscribe the union with the sibling hooks'
+        # fields, or this one would overwrite theirs. The binding below keeps only this hook's own fields.
+        bindings = await integrations_repo.get_meta_webhook_bindings(owner_id, reg.provider.key)
+        await it._subscribe_meta_asset(asset, sorted({*_sibling_fields(bindings, asset["id"]), *fields}))
         try:  # the app-level ingress routes a delivery by this binding (routers/meta_webhook.py)
-            bindings = await integrations_repo.get_meta_webhook_bindings(owner_id, reg.provider.key)
             bindings.append(
                 {
                     "asset_id": asset["id"],
@@ -237,6 +241,11 @@ async def _register(owner_id: str, reg, *, public_id: str, proxy_url: str, secre
         watch = await google_watch.start_gmail_watch(owner_id=owner_id, account_email=account, topic=topic)
         return {"armed": True, "account": account, "topic": topic, "expiresAt": _iso(watch["expiration_ms"])}
     raise ValueError(f"unsupported registration {reg.registration!r}")
+
+
+def _sibling_fields(bindings: list[dict], asset_id: str) -> set[str]:
+    """The Graph fields the owner's other hooks on `asset_id` are bound to."""
+    return {f for b in bindings if b.get("asset_id") == asset_id for f in b.get("fields") or []}
 
 
 async def _unwind(owner_id: str, public_id: str, sid: str, created_row: bool) -> None:
@@ -277,7 +286,8 @@ async def delete(owner_id: str, public_id: str) -> None:
     if hook is None:
         return
     await _unregister(owner_id, hook)
-    await cancel_keeper(owner_id, public_id)
+    if hook.get("account"):  # only Google hooks have a keeper; a Stripe hook's delete never needs Temporal
+        await cancel_keeper(owner_id, public_id)
     await integration_secret_store.delete(owner_id, hook["secretRef"])
     await repo.delete_hook(owner_id, public_id)
     await _unlink(owner_id, hook["scheduleId"], public_id)
@@ -297,14 +307,19 @@ async def _unregister(owner_id: str, hook: dict) -> None:
             if token:
                 await it._delete_vercel_webhook(token=token, webhook_id=hook_id)
         elif provider in it._META_ASSET_LISTERS and resource:
-            assets = await it._META_ASSET_LISTERS[provider](owner_id)
-            asset = next((a for a in assets if a["id"] == resource), None)
-            if asset:
-                await it._unsubscribe_meta_asset(asset)
+            # Meta holds ONE subscription per asset for our app; sibling hooks on the same asset share it.
+            # The binding goes first: a Graph refusal must not leave a dangling route to a deleted hook.
             bindings = await integrations_repo.get_meta_webhook_bindings(owner_id, provider)
             kept = [b for b in bindings if b.get("trigger_public_id") != hook["publicId"]]
             if len(kept) != len(bindings):
                 await integrations_repo.set_meta_webhook_bindings(owner_id, provider, kept)
+            sibling_fields = sorted(_sibling_fields(kept, resource))
+            assets = await it._META_ASSET_LISTERS[provider](owner_id)
+            asset = next((a for a in assets if a["id"] == resource), None)
+            if asset and sibling_fields:
+                await it._subscribe_meta_asset(asset, sibling_fields)  # narrow to what the siblings still want
+            elif asset:
+                await it._unsubscribe_meta_asset(asset)
         elif hook.get("account"):
             if hook["signingMode"] == GMAIL_PUSH_MODE:
                 await google_watch.stop_gmail_watch(owner_id=owner_id, account_email=hook["account"])

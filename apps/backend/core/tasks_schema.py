@@ -420,6 +420,7 @@ class Task(_Row):
     a2a_task_id: str | None = None
     ws_channel: str | None = None
     proposal_reason: str | None = None  # why the Router proposed instead of starting (G18)
+    stop_requested_by: str | None = None  # who pressed Stop (attributes the stop)
     landing_effect: str | None = None  # Effect idemKey while `apply_effect` runs (Lane Q writes)
 
     DERIVED: ClassVar[tuple[str, ...]] = ("statusKey", "workflowId")
@@ -446,6 +447,10 @@ class Attempt(_Row):
     started_at: str
     ended_at: str | None = None
     last_heartbeat_at: str | None = None
+    task_token: str | None = None  # b64 Temporal task token of the async `worker_turn`
+    terminal_status: str | None = None  # the bridge's terminal run status, once delivered
+    output: str | None = Field(None, max_length=65536)  # the Worker's result text (never in a payload)
+    recent_tools: list[dict[str, Any]] = []  # last heartbeat's tool calls (trace, progress)
 
     def sk(self) -> str:
         return attempt_sk(self.task_id, self.n)

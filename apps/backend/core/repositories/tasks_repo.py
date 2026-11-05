@@ -39,7 +39,8 @@ TRANSITIONS: dict[str, frozenset[str | None]] = {
     "proposed": frozenset({None}),
     "queued": frozenset({None, "proposed", "idle", "failed", "resolved"}),
     "working": frozenset({"queued", "waiting"}),
-    "waiting": frozenset({"working"}),
+    # queued/idle → waiting: the per-run budget is checked before an attempt starts (§14.8).
+    "waiting": frozenset({"working", "queued", "idle"}),
     "idle": frozenset({"working", "waiting"}),
     "failed": frozenset({"working"}),
     "resolved": frozenset({"proposed", "queued", "working", "waiting", "idle", "failed"}),
@@ -372,3 +373,56 @@ async def batch_get(ws: str, sks: list[str]) -> list[dict]:
             out.extend(plain(resp.get("Responses", {}).get(table.name, [])))
             request = resp.get("UnprocessedKeys") or None
     return out
+
+
+async def claim_attempt_terminal(ws: str, task_id: str, n: int, fields: dict) -> bool:
+    """Record the bridge's terminal event once: False when one was already recorded (a replayed POST)."""
+    try:
+        await _update(
+            ws,
+            ts.attempt_sk(task_id, n),
+            fields,
+            # created rows carry terminalStatus = null
+            condition="(attribute_not_exists(terminalStatus) OR attribute_type(terminalStatus, :nul))",
+            values={":nul": "NULL"},
+        )
+        return True
+    except ClientError as exc:
+        if not _is_condition_failure(exc):
+            raise
+    return False
+
+
+async def unclaim_attempt_terminal(ws: str, task_id: str, n: int) -> None:
+    await _update(ws, ts.attempt_sk(task_id, n), {"terminalStatus": None}, condition="attribute_exists(#sk)", values={})
+
+
+# --- Slots (contracts §9: Worker leases per workspace) ----------------------------------------------
+
+
+async def get_slots(ws: str) -> dict:
+    return await _get(ws, ts.slots_sk()) or {"leases": {}, "waiters": [], "version": 0}
+
+
+async def put_slots(ws: str, leases: dict[str, int], waiters: list[str], *, expected_version: int) -> bool:
+    """Write the SLOTS row if nobody else did since `expected_version` (0 = absent). False on a lost race."""
+    item = {
+        "pk": ts.ws_pk(ws),
+        "sk": ts.slots_sk(),
+        "type": "slots",
+        "leases": leases,
+        "waiters": waiters,
+        "version": expected_version + 1,
+        "updatedAt": utc_now_iso(),
+    }
+    cond = "attribute_not_exists(sk)" if expected_version == 0 else "version = :ev"
+    kwargs: dict[str, Any] = {"Item": ddb_safe(item), "ConditionExpression": cond}
+    if expected_version:
+        kwargs["ExpressionAttributeValues"] = {":ev": expected_version}
+    try:
+        await run_in_thread(_table().put_item, **kwargs)
+        return True
+    except ClientError as exc:
+        if not _is_condition_failure(exc):
+            raise
+    return False

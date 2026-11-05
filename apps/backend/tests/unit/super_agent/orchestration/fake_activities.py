@@ -54,10 +54,15 @@ class Fakes:
             await f._call("release_slot", ws, task_id)
 
         @activity.defn(name="begin_attempt")
-        async def begin_attempt(ws: str, task_id: str, input_trigger_ids: list[str]) -> AttemptRef:
+        async def begin_attempt(ws: str, task_id: str, input_trigger_ids: list[str], started: bool) -> AttemptRef:
             f.attempts += 1
             return await f._call(
-                "begin_attempt", ws, task_id, input_trigger_ids, default=AttemptRef(f.attempts, f"run-{f.attempts}")
+                "begin_attempt",
+                ws,
+                task_id,
+                input_trigger_ids,
+                started,
+                default=AttemptRef(f.attempts, f"run-{f.attempts}"),
             )
 
         @activity.defn(name="worker_turn")

@@ -3776,6 +3776,96 @@
   },
   {
    "id": "m0401",
+   "roomId": "room_sales",
+   "author": "user_xa",
+   "text": "Acme sells anvils and rockets by mail order.",
+   "ts": "2026-09-07T09:00:00",
+   "threadRoot": null,
+   "taskId": null
+  },
+  {
+   "id": "m0402",
+   "roomId": "room_sales",
+   "author": "user_xb",
+   "text": "Globex is run by Hank Scorpio out of Cypress Creek.",
+   "ts": "2026-09-08T09:00:00",
+   "threadRoot": null,
+   "taskId": null
+  },
+  {
+   "id": "m0403",
+   "roomId": "room_sales",
+   "author": "user_xc",
+   "text": "Initech writes banking software and loves TPS reports.",
+   "ts": "2026-09-09T09:00:00",
+   "threadRoot": null,
+   "taskId": null
+  },
+  {
+   "id": "m0404",
+   "roomId": "room_sales",
+   "author": "user_xd",
+   "text": "Umbrella is the pharmaceutical group in Raccoon City.",
+   "ts": "2026-09-10T09:00:00",
+   "threadRoot": null,
+   "taskId": null
+  },
+  {
+   "id": "m0405",
+   "roomId": "room_sales",
+   "author": "user_xe",
+   "text": "Hooli is the search giant in Palo Alto.",
+   "ts": "2026-09-11T09:00:00",
+   "threadRoot": null,
+   "taskId": null
+  },
+  {
+   "id": "m0406",
+   "roomId": "room_sales",
+   "author": "user_xf",
+   "text": "Stark builds armour and arc reactors.",
+   "ts": "2026-09-12T09:00:00",
+   "threadRoot": null,
+   "taskId": null
+  },
+  {
+   "id": "m0407",
+   "roomId": "room_sales",
+   "author": "user_xa",
+   "text": "Wayne is the Gotham holding company.",
+   "ts": "2026-09-13T09:00:00",
+   "threadRoot": null,
+   "taskId": null
+  },
+  {
+   "id": "m0408",
+   "roomId": "room_sales",
+   "author": "user_xb",
+   "text": "Wonka makes chocolate and everlasting gobstoppers.",
+   "ts": "2026-09-14T09:00:00",
+   "threadRoot": null,
+   "taskId": null
+  },
+  {
+   "id": "m0409",
+   "roomId": "room_sales",
+   "author": "user_xc",
+   "text": "Soylent sells meal replacement drinks.",
+   "ts": "2026-09-15T09:00:00",
+   "threadRoot": null,
+   "taskId": null
+  },
+  {
+   "id": "m0410",
+   "roomId": "room_sales",
+   "author": "user_xd",
+   "text": "Tyrell builds replicants for off-world colonies.",
+   "ts": "2026-09-16T09:00:00",
+   "threadRoot": null,
+   "taskId": null
+  },
+  {
+   "id": "m0411",
    "roomId": "room_ops",
    "author": "user_xf",
    "text": "Coffee machine on three is fixed.",
@@ -3784,7 +3874,7 @@
    "taskId": null
   },
   {
-   "id": "m0402",
+   "id": "m0412",
    "roomId": "room_launch",
    "author": "user_xf",
    "text": "Reminder: expense reports by Friday.",
@@ -3793,7 +3883,7 @@
    "taskId": null
   },
   {
-   "id": "m0403",
+   "id": "m0413",
    "roomId": "room_launch",
    "author": "user_xa",
    "text": "Morning all, standup in five.",
@@ -3802,7 +3892,7 @@
    "taskId": null
   },
   {
-   "id": "m0404",
+   "id": "m0414",
    "roomId": "room_sales",
    "author": "user_xf",
    "text": "Lunch order going in at noon.",
@@ -3811,7 +3901,7 @@
    "taskId": null
   },
   {
-   "id": "m0405",
+   "id": "m0415",
    "roomId": "room_launch",
    "author": "user_xd",
    "text": "Heads up, the VPN restarts tonight.",
@@ -3820,7 +3910,7 @@
    "taskId": null
   },
   {
-   "id": "m0406",
+   "id": "m0416",
    "roomId": "room_launch",
    "author": "user_xf",
    "text": "Morning all, standup in five.",
@@ -3829,7 +3919,7 @@
    "taskId": null
   },
   {
-   "id": "m0407",
+   "id": "m0417",
    "roomId": "room_sales",
    "author": "user_xd",
    "text": "Anyone seen the HDMI adapter?",
@@ -3838,7 +3928,7 @@
    "taskId": null
   },
   {
-   "id": "m0408",
+   "id": "m0418",
    "roomId": "room_launch",
    "author": "user_xd",
    "text": "Who has the conference room booked at two?",
@@ -3847,7 +3937,7 @@
    "taskId": null
   },
   {
-   "id": "m0409",
+   "id": "m0419",
    "roomId": "room_launch",
    "author": "user_xf",
    "text": "Who has the conference room booked at two?",
@@ -3856,7 +3946,7 @@
    "taskId": null
   },
   {
-   "id": "m0410",
+   "id": "m0420",
    "roomId": "room_ops",
    "author": "user_xc",
    "text": "Who has the conference room booked at two?",
@@ -3865,7 +3955,7 @@
    "taskId": null
   },
   {
-   "id": "m0411",
+   "id": "m0421",
    "roomId": "room_eng",
    "author": "user_xb",
    "text": "Reminder: expense reports by Friday.",
@@ -3874,7 +3964,7 @@
    "taskId": null
   },
   {
-   "id": "m0412",
+   "id": "m0422",
    "roomId": "room_sales",
    "author": "user_xf",
    "text": "Heads up, the VPN restarts tonight.",
@@ -3883,7 +3973,7 @@
    "taskId": null
   },
   {
-   "id": "m0413",
+   "id": "m0423",
    "roomId": "room_ops",
    "author": "user_xd",
    "text": "Who has the conference room booked at two?",
@@ -3892,7 +3982,7 @@
    "taskId": null
   },
   {
-   "id": "m0414",
+   "id": "m0424",
    "roomId": "room_ops",
    "author": "user_xf",
    "text": "Anyone seen the HDMI adapter?",
@@ -3901,7 +3991,7 @@
    "taskId": null
   },
   {
-   "id": "m0415",
+   "id": "m0425",
    "roomId": "room_launch",
    "author": "user_xe",
    "text": "Reminder: expense reports by Friday.",
@@ -3910,7 +4000,7 @@
    "taskId": null
   },
   {
-   "id": "m0416",
+   "id": "m0426",
    "roomId": "room_launch",
    "author": "user_xe",
    "text": "Coffee machine on three is fixed.",
@@ -3919,7 +4009,7 @@
    "taskId": null
   },
   {
-   "id": "m0417",
+   "id": "m0427",
    "roomId": "room_eng",
    "author": "user_xc",
    "text": "Anyone seen the HDMI adapter?",
@@ -3928,7 +4018,7 @@
    "taskId": null
   },
   {
-   "id": "m0418",
+   "id": "m0428",
    "roomId": "room_sales",
    "author": "user_xa",
    "text": "Heads up, the VPN restarts tonight.",
@@ -3937,7 +4027,7 @@
    "taskId": null
   },
   {
-   "id": "m0419",
+   "id": "m0429",
    "roomId": "room_launch",
    "author": "user_xd",
    "text": "Anyone seen the HDMI adapter?",
@@ -3946,7 +4036,7 @@
    "taskId": null
   },
   {
-   "id": "m0420",
+   "id": "m0430",
    "roomId": "room_launch",
    "author": "user_xf",
    "text": "Reminder: expense reports by Friday.",
@@ -3955,7 +4045,7 @@
    "taskId": null
   },
   {
-   "id": "m0421",
+   "id": "m0431",
    "roomId": "room_ops",
    "author": "user_xc",
    "text": "Anyone seen the HDMI adapter?",
@@ -3964,7 +4054,7 @@
    "taskId": null
   },
   {
-   "id": "m0422",
+   "id": "m0432",
    "roomId": "room_ops",
    "author": "user_xd",
    "text": "Heads up, the VPN restarts tonight.",
@@ -3973,7 +4063,7 @@
    "taskId": null
   },
   {
-   "id": "m0423",
+   "id": "m0433",
    "roomId": "room_launch",
    "author": "user_xe",
    "text": "Reminder: expense reports by Friday.",
@@ -3982,7 +4072,7 @@
    "taskId": null
   },
   {
-   "id": "m0424",
+   "id": "m0434",
    "roomId": "room_eng",
    "author": "user_xa",
    "text": "Heads up, the VPN restarts tonight.",
@@ -3991,7 +4081,7 @@
    "taskId": null
   },
   {
-   "id": "m0425",
+   "id": "m0435",
    "roomId": "room_launch",
    "author": "user_xc",
    "text": "Heads up, the VPN restarts tonight.",
@@ -4000,7 +4090,7 @@
    "taskId": null
   },
   {
-   "id": "m0426",
+   "id": "m0436",
    "roomId": "room_launch",
    "author": "user_xe",
    "text": "Heads up, the VPN restarts tonight.",
@@ -4009,7 +4099,7 @@
    "taskId": null
   },
   {
-   "id": "m0427",
+   "id": "m0437",
    "roomId": "room_eng",
    "author": "user_xd",
    "text": "Reminder: expense reports by Friday.",
@@ -4018,7 +4108,7 @@
    "taskId": null
   },
   {
-   "id": "m0428",
+   "id": "m0438",
    "roomId": "room_sales",
    "author": "user_xa",
    "text": "Who has the conference room booked at two?",
@@ -4027,7 +4117,7 @@
    "taskId": null
   },
   {
-   "id": "m0429",
+   "id": "m0439",
    "roomId": "room_sales",
    "author": "user_xf",
    "text": "Anyone seen the HDMI adapter?",
@@ -4036,7 +4126,7 @@
    "taskId": null
   },
   {
-   "id": "m0430",
+   "id": "m0440",
    "roomId": "room_eng",
    "author": "user_xb",
    "text": "Anyone seen the HDMI adapter?",
@@ -4045,7 +4135,7 @@
    "taskId": null
   },
   {
-   "id": "m0431",
+   "id": "m0441",
    "roomId": "room_launch",
    "author": "user_xf",
    "text": "Lunch order going in at noon.",
@@ -4054,7 +4144,7 @@
    "taskId": null
   },
   {
-   "id": "m0432",
+   "id": "m0442",
    "roomId": "room_sales",
    "author": "user_xd",
    "text": "Heads up, the VPN restarts tonight.",
@@ -4063,7 +4153,7 @@
    "taskId": null
   },
   {
-   "id": "m0433",
+   "id": "m0443",
    "roomId": "room_ops",
    "author": "user_xa",
    "text": "Coffee machine on three is fixed.",
@@ -4072,7 +4162,7 @@
    "taskId": null
   },
   {
-   "id": "m0434",
+   "id": "m0444",
    "roomId": "room_launch",
    "author": "user_xd",
    "text": "Heads up, the VPN restarts tonight.",
@@ -4081,7 +4171,7 @@
    "taskId": null
   },
   {
-   "id": "m0435",
+   "id": "m0445",
    "roomId": "room_ops",
    "author": "user_xc",
    "text": "Coffee machine on three is fixed.",
@@ -4090,7 +4180,7 @@
    "taskId": null
   },
   {
-   "id": "m0436",
+   "id": "m0446",
    "roomId": "room_ops",
    "author": "user_xc",
    "text": "Nice work this week, everyone.",
@@ -4099,7 +4189,7 @@
    "taskId": null
   },
   {
-   "id": "m0437",
+   "id": "m0447",
    "roomId": "room_eng",
    "author": "user_xa",
    "text": "Lunch order going in at noon.",
@@ -4108,7 +4198,7 @@
    "taskId": null
   },
   {
-   "id": "m0438",
+   "id": "m0448",
    "roomId": "room_launch",
    "author": "user_xc",
    "text": "Lunch order going in at noon.",
@@ -4117,7 +4207,7 @@
    "taskId": null
   },
   {
-   "id": "m0439",
+   "id": "m0449",
    "roomId": "room_ops",
    "author": "user_xa",
    "text": "Reminder: expense reports by Friday.",
@@ -4126,7 +4216,7 @@
    "taskId": null
   },
   {
-   "id": "m0440",
+   "id": "m0450",
    "roomId": "room_launch",
    "author": "user_xf",
    "text": "Anyone seen the HDMI adapter?",
@@ -4135,7 +4225,7 @@
    "taskId": null
   },
   {
-   "id": "m0441",
+   "id": "m0451",
    "roomId": "room_eng",
    "author": "user_xc",
    "text": "Who has the conference room booked at two?",
@@ -4144,7 +4234,7 @@
    "taskId": null
   },
   {
-   "id": "m0442",
+   "id": "m0452",
    "roomId": "room_ops",
    "author": "user_xd",
    "text": "Who has the conference room booked at two?",
@@ -4153,7 +4243,7 @@
    "taskId": null
   },
   {
-   "id": "m0443",
+   "id": "m0453",
    "roomId": "room_eng",
    "author": "user_xd",
    "text": "Anyone seen the HDMI adapter?",
@@ -4162,7 +4252,7 @@
    "taskId": null
   },
   {
-   "id": "m0444",
+   "id": "m0454",
    "roomId": "room_launch",
    "author": "user_xc",
    "text": "Who has the conference room booked at two?",
@@ -4171,7 +4261,7 @@
    "taskId": null
   },
   {
-   "id": "m0445",
+   "id": "m0455",
    "roomId": "room_launch",
    "author": "user_xf",
    "text": "Anyone seen the HDMI adapter?",
@@ -4180,7 +4270,7 @@
    "taskId": null
   },
   {
-   "id": "m0446",
+   "id": "m0456",
    "roomId": "room_sales",
    "author": "user_xb",
    "text": "Anyone seen the HDMI adapter?",
@@ -4189,7 +4279,7 @@
    "taskId": null
   },
   {
-   "id": "m0447",
+   "id": "m0457",
    "roomId": "room_ops",
    "author": "user_xe",
    "text": "Lunch order going in at noon.",
@@ -4198,7 +4288,7 @@
    "taskId": null
   },
   {
-   "id": "m0448",
+   "id": "m0458",
    "roomId": "room_sales",
    "author": "user_xc",
    "text": "Nice work this week, everyone.",
@@ -4207,7 +4297,7 @@
    "taskId": null
   },
   {
-   "id": "m0449",
+   "id": "m0459",
    "roomId": "room_launch",
    "author": "user_xf",
    "text": "Nice work this week, everyone.",
@@ -4216,7 +4306,7 @@
    "taskId": null
   },
   {
-   "id": "m0450",
+   "id": "m0460",
    "roomId": "room_sales",
    "author": "user_xf",
    "text": "Who has the conference room booked at two?",
@@ -4225,7 +4315,7 @@
    "taskId": null
   },
   {
-   "id": "m0451",
+   "id": "m0461",
    "roomId": "room_launch",
    "author": "user_xf",
    "text": "Nice work this week, everyone.",
@@ -4234,7 +4324,7 @@
    "taskId": null
   },
   {
-   "id": "m0452",
+   "id": "m0462",
    "roomId": "room_ops",
    "author": "user_xe",
    "text": "Coffee machine on three is fixed.",
@@ -4243,7 +4333,7 @@
    "taskId": null
   },
   {
-   "id": "m0453",
+   "id": "m0463",
    "roomId": "room_eng",
    "author": "user_xd",
    "text": "Morning all, standup in five.",
@@ -4252,7 +4342,7 @@
    "taskId": null
   },
   {
-   "id": "m0454",
+   "id": "m0464",
    "roomId": "room_sales",
    "author": "user_xb",
    "text": "Heads up, the VPN restarts tonight.",
@@ -4261,7 +4351,7 @@
    "taskId": null
   },
   {
-   "id": "m0455",
+   "id": "m0465",
    "roomId": "room_ops",
    "author": "user_xc",
    "text": "Anyone seen the HDMI adapter?",
@@ -4270,7 +4360,7 @@
    "taskId": null
   },
   {
-   "id": "m0456",
+   "id": "m0466",
    "roomId": "room_eng",
    "author": "user_xc",
    "text": "Anyone seen the HDMI adapter?",
@@ -4279,7 +4369,7 @@
    "taskId": null
   },
   {
-   "id": "m0457",
+   "id": "m0467",
    "roomId": "room_ops",
    "author": "user_xf",
    "text": "Reminder: expense reports by Friday.",
@@ -4288,7 +4378,7 @@
    "taskId": null
   },
   {
-   "id": "m0458",
+   "id": "m0468",
    "roomId": "room_eng",
    "author": "user_xd",
    "text": "Nice work this week, everyone.",
@@ -4297,7 +4387,7 @@
    "taskId": null
   },
   {
-   "id": "m0459",
+   "id": "m0469",
    "roomId": "room_launch",
    "author": "user_xb",
    "text": "Coffee machine on three is fixed.",
@@ -4306,7 +4396,7 @@
    "taskId": null
   },
   {
-   "id": "m0460",
+   "id": "m0470",
    "roomId": "room_launch",
    "author": "user_xb",
    "text": "Heads up, the VPN restarts tonight.",
@@ -4315,7 +4405,7 @@
    "taskId": null
   },
   {
-   "id": "m0461",
+   "id": "m0471",
    "roomId": "room_sales",
    "author": "user_xd",
    "text": "Lunch order going in at noon.",
@@ -4324,7 +4414,7 @@
    "taskId": null
   },
   {
-   "id": "m0462",
+   "id": "m0472",
    "roomId": "room_ops",
    "author": "user_xd",
    "text": "Coffee machine on three is fixed.",
@@ -4333,7 +4423,7 @@
    "taskId": null
   },
   {
-   "id": "m0463",
+   "id": "m0473",
    "roomId": "room_sales",
    "author": "user_xb",
    "text": "Who has the conference room booked at two?",
@@ -4342,7 +4432,7 @@
    "taskId": null
   },
   {
-   "id": "m0464",
+   "id": "m0474",
    "roomId": "room_sales",
    "author": "user_xc",
    "text": "Who has the conference room booked at two?",
@@ -4351,7 +4441,7 @@
    "taskId": null
   },
   {
-   "id": "m0465",
+   "id": "m0475",
    "roomId": "room_eng",
    "author": "user_xb",
    "text": "Lunch order going in at noon.",
@@ -4360,7 +4450,7 @@
    "taskId": null
   },
   {
-   "id": "m0466",
+   "id": "m0476",
    "roomId": "room_eng",
    "author": "user_xe",
    "text": "Reminder: expense reports by Friday.",
@@ -4369,7 +4459,7 @@
    "taskId": null
   },
   {
-   "id": "m0467",
+   "id": "m0477",
    "roomId": "room_launch",
    "author": "user_xf",
    "text": "Nice work this week, everyone.",
@@ -4378,7 +4468,7 @@
    "taskId": null
   },
   {
-   "id": "m0468",
+   "id": "m0478",
    "roomId": "room_ops",
    "author": "user_xd",
    "text": "Reminder: expense reports by Friday.",
@@ -4387,7 +4477,7 @@
    "taskId": null
   },
   {
-   "id": "m0469",
+   "id": "m0479",
    "roomId": "room_ops",
    "author": "user_xc",
    "text": "Lunch order going in at noon.",
@@ -4396,7 +4486,7 @@
    "taskId": null
   },
   {
-   "id": "m0470",
+   "id": "m0480",
    "roomId": "room_launch",
    "author": "user_xd",
    "text": "Anyone seen the HDMI adapter?",
@@ -4405,7 +4495,7 @@
    "taskId": null
   },
   {
-   "id": "m0471",
+   "id": "m0481",
    "roomId": "room_eng",
    "author": "user_xb",
    "text": "Reminder: expense reports by Friday.",
@@ -4414,7 +4504,7 @@
    "taskId": null
   },
   {
-   "id": "m0472",
+   "id": "m0482",
    "roomId": "room_launch",
    "author": "user_xc",
    "text": "Reminder: expense reports by Friday.",
@@ -4423,7 +4513,7 @@
    "taskId": null
   },
   {
-   "id": "m0473",
+   "id": "m0483",
    "roomId": "room_ops",
    "author": "user_xd",
    "text": "Heads up, the VPN restarts tonight.",
@@ -4432,7 +4522,7 @@
    "taskId": null
   },
   {
-   "id": "m0474",
+   "id": "m0484",
    "roomId": "room_ops",
    "author": "user_xc",
    "text": "Morning all, standup in five.",
@@ -4441,7 +4531,7 @@
    "taskId": null
   },
   {
-   "id": "m0475",
+   "id": "m0485",
    "roomId": "room_sales",
    "author": "user_xa",
    "text": "Nice work this week, everyone.",
@@ -4450,7 +4540,7 @@
    "taskId": null
   },
   {
-   "id": "m0476",
+   "id": "m0486",
    "roomId": "room_ops",
    "author": "user_xe",
    "text": "Heads up, the VPN restarts tonight.",
@@ -4459,7 +4549,7 @@
    "taskId": null
   },
   {
-   "id": "m0477",
+   "id": "m0487",
    "roomId": "room_launch",
    "author": "user_xa",
    "text": "Nice work this week, everyone.",
@@ -4468,7 +4558,7 @@
    "taskId": null
   },
   {
-   "id": "m0478",
+   "id": "m0488",
    "roomId": "room_ops",
    "author": "user_xd",
    "text": "Reminder: expense reports by Friday.",
@@ -4477,7 +4567,7 @@
    "taskId": null
   },
   {
-   "id": "m0479",
+   "id": "m0489",
    "roomId": "room_launch",
    "author": "user_xb",
    "text": "Coffee machine on three is fixed.",
@@ -4486,7 +4576,7 @@
    "taskId": null
   },
   {
-   "id": "m0480",
+   "id": "m0490",
    "roomId": "room_sales",
    "author": "user_xe",
    "text": "Who has the conference room booked at two?",
@@ -4495,7 +4585,7 @@
    "taskId": null
   },
   {
-   "id": "m0481",
+   "id": "m0491",
    "roomId": "room_ops",
    "author": "user_xa",
    "text": "Morning all, standup in five.",
@@ -4504,7 +4594,7 @@
    "taskId": null
   },
   {
-   "id": "m0482",
+   "id": "m0492",
    "roomId": "room_launch",
    "author": "user_xb",
    "text": "Reminder: expense reports by Friday.",
@@ -4513,7 +4603,7 @@
    "taskId": null
   },
   {
-   "id": "m0483",
+   "id": "m0493",
    "roomId": "room_launch",
    "author": "user_xf",
    "text": "Anyone seen the HDMI adapter?",
@@ -4522,7 +4612,7 @@
    "taskId": null
   },
   {
-   "id": "m0484",
+   "id": "m0494",
    "roomId": "room_sales",
    "author": "user_xf",
    "text": "Anyone seen the HDMI adapter?",
@@ -4531,7 +4621,7 @@
    "taskId": null
   },
   {
-   "id": "m0485",
+   "id": "m0495",
    "roomId": "room_ops",
    "author": "user_xf",
    "text": "Who has the conference room booked at two?",
@@ -4540,7 +4630,7 @@
    "taskId": null
   },
   {
-   "id": "m0486",
+   "id": "m0496",
    "roomId": "room_launch",
    "author": "user_xa",
    "text": "Anyone seen the HDMI adapter?",
@@ -4549,7 +4639,7 @@
    "taskId": null
   },
   {
-   "id": "m0487",
+   "id": "m0497",
    "roomId": "room_sales",
    "author": "user_xd",
    "text": "Anyone seen the HDMI adapter?",
@@ -4558,7 +4648,7 @@
    "taskId": null
   },
   {
-   "id": "m0488",
+   "id": "m0498",
    "roomId": "room_sales",
    "author": "user_xe",
    "text": "Morning all, standup in five.",
@@ -4567,7 +4657,7 @@
    "taskId": null
   },
   {
-   "id": "m0489",
+   "id": "m0499",
    "roomId": "room_launch",
    "author": "user_xe",
    "text": "Anyone seen the HDMI adapter?",
@@ -4576,7 +4666,7 @@
    "taskId": null
   },
   {
-   "id": "m0490",
+   "id": "m0500",
    "roomId": "room_ops",
    "author": "user_xc",
    "text": "Lunch order going in at noon.",
@@ -4585,7 +4675,7 @@
    "taskId": null
   },
   {
-   "id": "m0491",
+   "id": "m0501",
    "roomId": "room_sales",
    "author": "user_xd",
    "text": "Reminder: expense reports by Friday.",
@@ -4594,7 +4684,7 @@
    "taskId": null
   },
   {
-   "id": "m0492",
+   "id": "m0502",
    "roomId": "room_sales",
    "author": "user_xa",
    "text": "Nice work this week, everyone.",
@@ -4603,7 +4693,7 @@
    "taskId": null
   },
   {
-   "id": "m0493",
+   "id": "m0503",
    "roomId": "room_eng",
    "author": "user_xa",
    "text": "Morning all, standup in five.",
@@ -4612,7 +4702,7 @@
    "taskId": null
   },
   {
-   "id": "m0494",
+   "id": "m0504",
    "roomId": "room_sales",
    "author": "user_xd",
    "text": "Nice work this week, everyone.",
@@ -4621,7 +4711,7 @@
    "taskId": null
   },
   {
-   "id": "m0495",
+   "id": "m0505",
    "roomId": "room_launch",
    "author": "user_xc",
    "text": "Reminder: expense reports by Friday.",
@@ -4630,7 +4720,7 @@
    "taskId": null
   },
   {
-   "id": "m0496",
+   "id": "m0506",
    "roomId": "room_ops",
    "author": "user_xc",
    "text": "Reminder: expense reports by Friday.",
@@ -4639,7 +4729,7 @@
    "taskId": null
   },
   {
-   "id": "m0497",
+   "id": "m0507",
    "roomId": "room_ops",
    "author": "user_xa",
    "text": "Lunch order going in at noon.",
@@ -4648,7 +4738,7 @@
    "taskId": null
   },
   {
-   "id": "m0498",
+   "id": "m0508",
    "roomId": "room_ops",
    "author": "user_xc",
    "text": "Nice work this week, everyone.",
@@ -4657,7 +4747,7 @@
    "taskId": null
   },
   {
-   "id": "m0499",
+   "id": "m0509",
    "roomId": "room_sales",
    "author": "user_xa",
    "text": "Anyone seen the HDMI adapter?",
@@ -4666,7 +4756,7 @@
    "taskId": null
   },
   {
-   "id": "m0500",
+   "id": "m0510",
    "roomId": "room_launch",
    "author": "user_xb",
    "text": "Heads up, the VPN restarts tonight.",
@@ -4675,7 +4765,7 @@
    "taskId": null
   },
   {
-   "id": "m0501",
+   "id": "m0511",
    "roomId": "room_sales",
    "author": "user_xc",
    "text": "Reminder: expense reports by Friday.",
@@ -4684,7 +4774,7 @@
    "taskId": null
   },
   {
-   "id": "m0502",
+   "id": "m0512",
    "roomId": "room_sales",
    "author": "user_xd",
    "text": "Reminder: expense reports by Friday.",
@@ -4693,7 +4783,7 @@
    "taskId": null
   },
   {
-   "id": "m0503",
+   "id": "m0513",
    "roomId": "room_eng",
    "author": "user_xc",
    "text": "Who has the conference room booked at two?",
@@ -4702,7 +4792,7 @@
    "taskId": null
   },
   {
-   "id": "m0504",
+   "id": "m0514",
    "roomId": "room_ops",
    "author": "user_xe",
    "text": "Coffee machine on three is fixed.",
@@ -4711,7 +4801,7 @@
    "taskId": null
   },
   {
-   "id": "m0505",
+   "id": "m0515",
    "roomId": "room_sales",
    "author": "user_xd",
    "text": "Nice work this week, everyone.",
@@ -4720,7 +4810,7 @@
    "taskId": null
   },
   {
-   "id": "m0506",
+   "id": "m0516",
    "roomId": "room_launch",
    "author": "user_xe",
    "text": "Coffee machine on three is fixed.",
@@ -4729,7 +4819,7 @@
    "taskId": null
   },
   {
-   "id": "m0507",
+   "id": "m0517",
    "roomId": "room_ops",
    "author": "user_xa",
    "text": "Reminder: expense reports by Friday.",
@@ -4738,7 +4828,7 @@
    "taskId": null
   },
   {
-   "id": "m0508",
+   "id": "m0518",
    "roomId": "room_launch",
    "author": "user_xe",
    "text": "Coffee machine on three is fixed.",
@@ -4747,7 +4837,7 @@
    "taskId": null
   },
   {
-   "id": "m0509",
+   "id": "m0519",
    "roomId": "room_ops",
    "author": "user_xa",
    "text": "Morning all, standup in five.",
@@ -4756,7 +4846,7 @@
    "taskId": null
   },
   {
-   "id": "m0510",
+   "id": "m0520",
    "roomId": "room_sales",
    "author": "user_xd",
    "text": "Heads up, the VPN restarts tonight.",
@@ -4765,7 +4855,7 @@
    "taskId": null
   },
   {
-   "id": "m0511",
+   "id": "m0521",
    "roomId": "room_eng",
    "author": "user_xf",
    "text": "Who has the conference room booked at two?",
@@ -4774,7 +4864,7 @@
    "taskId": null
   },
   {
-   "id": "m0512",
+   "id": "m0522",
    "roomId": "room_launch",
    "author": "user_xb",
    "text": "Lunch order going in at noon.",
@@ -4783,7 +4873,7 @@
    "taskId": null
   },
   {
-   "id": "m0513",
+   "id": "m0523",
    "roomId": "room_sales",
    "author": "user_xb",
    "text": "Heads up, the VPN restarts tonight.",
@@ -4792,7 +4882,7 @@
    "taskId": null
   },
   {
-   "id": "m0514",
+   "id": "m0524",
    "roomId": "room_launch",
    "author": "user_xc",
    "text": "Nice work this week, everyone.",
@@ -4801,7 +4891,7 @@
    "taskId": null
   },
   {
-   "id": "m0515",
+   "id": "m0525",
    "roomId": "room_eng",
    "author": "user_xc",
    "text": "Heads up, the VPN restarts tonight.",
@@ -4810,7 +4900,7 @@
    "taskId": null
   },
   {
-   "id": "m0516",
+   "id": "m0526",
    "roomId": "room_sales",
    "author": "user_xa",
    "text": "Morning all, standup in five.",
@@ -4819,7 +4909,7 @@
    "taskId": null
   },
   {
-   "id": "m0517",
+   "id": "m0527",
    "roomId": "room_launch",
    "author": "user_xc",
    "text": "Who has the conference room booked at two?",
@@ -4828,7 +4918,7 @@
    "taskId": null
   },
   {
-   "id": "m0518",
+   "id": "m0528",
    "roomId": "room_eng",
    "author": "user_xd",
    "text": "Who has the conference room booked at two?",
@@ -4837,7 +4927,7 @@
    "taskId": null
   },
   {
-   "id": "m0519",
+   "id": "m0529",
    "roomId": "room_sales",
    "author": "user_xd",
    "text": "Lunch order going in at noon.",
@@ -4846,7 +4936,7 @@
    "taskId": null
   },
   {
-   "id": "m0520",
+   "id": "m0530",
    "roomId": "room_eng",
    "author": "user_xd",
    "text": "Who has the conference room booked at two?",
@@ -4855,7 +4945,7 @@
    "taskId": null
   },
   {
-   "id": "m0521",
+   "id": "m0531",
    "roomId": "room_launch",
    "author": "user_xf",
    "text": "Heads up, the VPN restarts tonight.",
@@ -4864,7 +4954,7 @@
    "taskId": null
   },
   {
-   "id": "m0522",
+   "id": "m0532",
    "roomId": "room_sales",
    "author": "user_xc",
    "text": "Heads up, the VPN restarts tonight.",
@@ -4873,7 +4963,7 @@
    "taskId": null
   },
   {
-   "id": "m0523",
+   "id": "m0533",
    "roomId": "room_sales",
    "author": "user_xc",
    "text": "Lunch order going in at noon.",
@@ -4882,7 +4972,7 @@
    "taskId": null
   },
   {
-   "id": "m0524",
+   "id": "m0534",
    "roomId": "room_ops",
    "author": "user_xa",
    "text": "Nice work this week, everyone.",
@@ -4891,7 +4981,7 @@
    "taskId": null
   },
   {
-   "id": "m0525",
+   "id": "m0535",
    "roomId": "room_sales",
    "author": "user_xf",
    "text": "Nice work this week, everyone.",
@@ -4900,7 +4990,7 @@
    "taskId": null
   },
   {
-   "id": "m0526",
+   "id": "m0536",
    "roomId": "room_launch",
    "author": "user_xd",
    "text": "Morning all, standup in five.",
@@ -4909,7 +4999,7 @@
    "taskId": null
   },
   {
-   "id": "m0527",
+   "id": "m0537",
    "roomId": "room_ops",
    "author": "user_xa",
    "text": "Morning all, standup in five.",
@@ -4918,7 +5008,7 @@
    "taskId": null
   },
   {
-   "id": "m0528",
+   "id": "m0538",
    "roomId": "room_eng",
    "author": "user_xb",
    "text": "Who has the conference room booked at two?",
@@ -4927,7 +5017,7 @@
    "taskId": null
   },
   {
-   "id": "m0529",
+   "id": "m0539",
    "roomId": "room_eng",
    "author": "user_xc",
    "text": "Anyone seen the HDMI adapter?",
@@ -4936,7 +5026,7 @@
    "taskId": null
   },
   {
-   "id": "m0530",
+   "id": "m0540",
    "roomId": "room_eng",
    "author": "user_xe",
    "text": "Morning all, standup in five.",
@@ -4945,7 +5035,7 @@
    "taskId": null
   },
   {
-   "id": "m0531",
+   "id": "m0541",
    "roomId": "room_eng",
    "author": "user_xf",
    "text": "Lunch order going in at noon.",
@@ -4954,7 +5044,7 @@
    "taskId": null
   },
   {
-   "id": "m0532",
+   "id": "m0542",
    "roomId": "room_eng",
    "author": "user_xc",
    "text": "Morning all, standup in five.",
@@ -4963,7 +5053,7 @@
    "taskId": null
   },
   {
-   "id": "m0533",
+   "id": "m0543",
    "roomId": "room_launch",
    "author": "user_xa",
    "text": "Reminder: expense reports by Friday.",
@@ -4972,7 +5062,7 @@
    "taskId": null
   },
   {
-   "id": "m0534",
+   "id": "m0544",
    "roomId": "room_launch",
    "author": "user_xd",
    "text": "Heads up, the VPN restarts tonight.",
@@ -4981,7 +5071,7 @@
    "taskId": null
   },
   {
-   "id": "m0535",
+   "id": "m0545",
    "roomId": "room_ops",
    "author": "user_xc",
    "text": "Nice work this week, everyone.",
@@ -4990,7 +5080,7 @@
    "taskId": null
   },
   {
-   "id": "m0536",
+   "id": "m0546",
    "roomId": "room_ops",
    "author": "user_xb",
    "text": "Heads up, the VPN restarts tonight.",
@@ -4999,7 +5089,7 @@
    "taskId": null
   },
   {
-   "id": "m0537",
+   "id": "m0547",
    "roomId": "room_sales",
    "author": "user_xa",
    "text": "Anyone seen the HDMI adapter?",
@@ -5008,7 +5098,7 @@
    "taskId": null
   },
   {
-   "id": "m0538",
+   "id": "m0548",
    "roomId": "room_sales",
    "author": "user_xe",
    "text": "Reminder: expense reports by Friday.",
@@ -5017,7 +5107,7 @@
    "taskId": null
   },
   {
-   "id": "m0539",
+   "id": "m0549",
    "roomId": "room_eng",
    "author": "user_xc",
    "text": "Heads up, the VPN restarts tonight.",
@@ -5026,7 +5116,7 @@
    "taskId": null
   },
   {
-   "id": "m0540",
+   "id": "m0550",
    "roomId": "room_eng",
    "author": "user_xe",
    "text": "Who has the conference room booked at two?",
@@ -5035,7 +5125,7 @@
    "taskId": null
   },
   {
-   "id": "m0541",
+   "id": "m0551",
    "roomId": "room_sales",
    "author": "user_xd",
    "text": "Coffee machine on three is fixed.",
@@ -5044,7 +5134,7 @@
    "taskId": null
   },
   {
-   "id": "m0542",
+   "id": "m0552",
    "roomId": "room_sales",
    "author": "user_xd",
    "text": "Who has the conference room booked at two?",
@@ -5053,7 +5143,7 @@
    "taskId": null
   },
   {
-   "id": "m0543",
+   "id": "m0553",
    "roomId": "room_launch",
    "author": "user_xd",
    "text": "Lunch order going in at noon.",
@@ -5062,7 +5152,7 @@
    "taskId": null
   },
   {
-   "id": "m0544",
+   "id": "m0554",
    "roomId": "room_sales",
    "author": "user_xd",
    "text": "Who has the conference room booked at two?",
@@ -5071,7 +5161,7 @@
    "taskId": null
   },
   {
-   "id": "m0545",
+   "id": "m0555",
    "roomId": "room_launch",
    "author": "user_xc",
    "text": "Who has the conference room booked at two?",
@@ -5080,7 +5170,7 @@
    "taskId": null
   },
   {
-   "id": "m0546",
+   "id": "m0556",
    "roomId": "room_sales",
    "author": "user_xa",
    "text": "Nice work this week, everyone.",
@@ -5089,7 +5179,7 @@
    "taskId": null
   },
   {
-   "id": "m0547",
+   "id": "m0557",
    "roomId": "room_ops",
    "author": "user_xf",
    "text": "Heads up, the VPN restarts tonight.",
@@ -5098,7 +5188,7 @@
    "taskId": null
   },
   {
-   "id": "m0548",
+   "id": "m0558",
    "roomId": "room_sales",
    "author": "user_xb",
    "text": "Coffee machine on three is fixed.",
@@ -5107,7 +5197,7 @@
    "taskId": null
   },
   {
-   "id": "m0549",
+   "id": "m0559",
    "roomId": "room_ops",
    "author": "user_xd",
    "text": "Reminder: expense reports by Friday.",
@@ -5116,7 +5206,7 @@
    "taskId": null
   },
   {
-   "id": "m0550",
+   "id": "m0560",
    "roomId": "room_launch",
    "author": "user_xc",
    "text": "Anyone seen the HDMI adapter?",
@@ -5125,7 +5215,7 @@
    "taskId": null
   },
   {
-   "id": "m0551",
+   "id": "m0561",
    "roomId": "room_eng",
    "author": "user_xe",
    "text": "Anyone seen the HDMI adapter?",
@@ -5134,7 +5224,7 @@
    "taskId": null
   },
   {
-   "id": "m0552",
+   "id": "m0562",
    "roomId": "room_eng",
    "author": "user_xc",
    "text": "Anyone seen the HDMI adapter?",
@@ -5143,7 +5233,7 @@
    "taskId": null
   },
   {
-   "id": "m0553",
+   "id": "m0563",
    "roomId": "room_sales",
    "author": "user_xd",
    "text": "Reminder: expense reports by Friday.",
@@ -5152,7 +5242,7 @@
    "taskId": null
   },
   {
-   "id": "m0554",
+   "id": "m0564",
    "roomId": "room_sales",
    "author": "user_xb",
    "text": "Reminder: expense reports by Friday.",
@@ -5161,7 +5251,7 @@
    "taskId": null
   },
   {
-   "id": "m0555",
+   "id": "m0565",
    "roomId": "room_sales",
    "author": "user_xc",
    "text": "Reminder: expense reports by Friday.",
@@ -5170,7 +5260,7 @@
    "taskId": null
   },
   {
-   "id": "m0556",
+   "id": "m0566",
    "roomId": "room_eng",
    "author": "user_xa",
    "text": "Nice work this week, everyone.",
@@ -5179,7 +5269,7 @@
    "taskId": null
   },
   {
-   "id": "m0557",
+   "id": "m0567",
    "roomId": "room_eng",
    "author": "user_xb",
    "text": "Reminder: expense reports by Friday.",
@@ -5188,7 +5278,7 @@
    "taskId": null
   },
   {
-   "id": "m0558",
+   "id": "m0568",
    "roomId": "room_launch",
    "author": "user_xf",
    "text": "Heads up, the VPN restarts tonight.",
@@ -5197,7 +5287,7 @@
    "taskId": null
   },
   {
-   "id": "m0559",
+   "id": "m0569",
    "roomId": "room_launch",
    "author": "user_xa",
    "text": "Morning all, standup in five.",
@@ -5206,7 +5296,7 @@
    "taskId": null
   },
   {
-   "id": "m0560",
+   "id": "m0570",
    "roomId": "room_ops",
    "author": "user_xb",
    "text": "Heads up, the VPN restarts tonight.",
@@ -5215,7 +5305,7 @@
    "taskId": null
   },
   {
-   "id": "m0561",
+   "id": "m0571",
    "roomId": "room_eng",
    "author": "user_xa",
    "text": "Anyone seen the HDMI adapter?",
@@ -5224,7 +5314,7 @@
    "taskId": null
   },
   {
-   "id": "m0562",
+   "id": "m0572",
    "roomId": "room_sales",
    "author": "user_xa",
    "text": "Morning all, standup in five.",
@@ -5233,7 +5323,7 @@
    "taskId": null
   },
   {
-   "id": "m0563",
+   "id": "m0573",
    "roomId": "room_sales",
    "author": "user_xe",
    "text": "Reminder: expense reports by Friday.",
@@ -5242,7 +5332,7 @@
    "taskId": null
   },
   {
-   "id": "m0564",
+   "id": "m0574",
    "roomId": "room_launch",
    "author": "user_xc",
    "text": "Coffee machine on three is fixed.",
@@ -5251,7 +5341,7 @@
    "taskId": null
   },
   {
-   "id": "m0565",
+   "id": "m0575",
    "roomId": "room_ops",
    "author": "user_xe",
    "text": "Anyone seen the HDMI adapter?",
@@ -5260,7 +5350,7 @@
    "taskId": null
   },
   {
-   "id": "m0566",
+   "id": "m0576",
    "roomId": "room_launch",
    "author": "user_xa",
    "text": "Lunch order going in at noon.",
@@ -5269,7 +5359,7 @@
    "taskId": null
   },
   {
-   "id": "m0567",
+   "id": "m0577",
    "roomId": "room_sales",
    "author": "user_xa",
    "text": "Lunch order going in at noon.",
@@ -5278,7 +5368,7 @@
    "taskId": null
   },
   {
-   "id": "m0568",
+   "id": "m0578",
    "roomId": "room_eng",
    "author": "user_xb",
    "text": "Morning all, standup in five.",
@@ -5287,7 +5377,7 @@
    "taskId": null
   },
   {
-   "id": "m0569",
+   "id": "m0579",
    "roomId": "room_sales",
    "author": "user_xc",
    "text": "Morning all, standup in five.",
@@ -5296,7 +5386,7 @@
    "taskId": null
   },
   {
-   "id": "m0570",
+   "id": "m0580",
    "roomId": "room_sales",
    "author": "user_xa",
    "text": "Lunch order going in at noon.",
@@ -5305,7 +5395,7 @@
    "taskId": null
   },
   {
-   "id": "m0571",
+   "id": "m0581",
    "roomId": "dm_xa",
    "author": "user_xa",
    "text": "Between us, the door code is CANARY-ADA668B3E3AA.",
@@ -5314,7 +5404,7 @@
    "taskId": null
   },
   {
-   "id": "m0572",
+   "id": "m0582",
    "roomId": "dm_xb",
    "author": "user_xb",
    "text": "Between us, the door code is CANARY-2F655F2EE40D.",
@@ -5323,7 +5413,7 @@
    "taskId": null
   },
   {
-   "id": "m0573",
+   "id": "m0583",
    "roomId": "dm_xc",
    "author": "user_xc",
    "text": "Between us, the door code is CANARY-4FEC9EFAC292.",
@@ -5332,7 +5422,7 @@
    "taskId": null
   },
   {
-   "id": "m0574",
+   "id": "m0584",
    "roomId": "dm_xd",
    "author": "user_xd",
    "text": "Between us, the door code is CANARY-341213F38870.",
@@ -5341,7 +5431,7 @@
    "taskId": null
   },
   {
-   "id": "m0575",
+   "id": "m0585",
    "roomId": "dm_xe",
    "author": "user_xe",
    "text": "Between us, the door code is CANARY-CB97080E31B0.",
@@ -5350,7 +5440,7 @@
    "taskId": null
   },
   {
-   "id": "m0576",
+   "id": "m0586",
    "roomId": "dm_xf",
    "author": "user_xf",
    "text": "Between us, the door code is CANARY-8C4C7EE14B90.",
@@ -5359,7 +5449,7 @@
    "taskId": null
   },
   {
-   "id": "m0577",
+   "id": "m0587",
    "roomId": "dm_ab",
    "author": "user_xa",
    "text": "Between us, the door code is CANARY-10327BC71DF3.",
@@ -5368,7 +5458,7 @@
    "taskId": null
   },
   {
-   "id": "m0578",
+   "id": "m0588",
    "roomId": "dm_ab",
    "author": "user_xa",
    "text": "Between us, the door code is CANARY-19F4687DD512.",
@@ -5377,7 +5467,7 @@
    "taskId": null
   },
   {
-   "id": "m0579",
+   "id": "m0589",
    "roomId": "dm_ab",
    "author": "user_xa",
    "text": "Between us, the door code is CANARY-6532CBBC6C94.",
@@ -5386,7 +5476,7 @@
    "taskId": null
   },
   {
-   "id": "m0580",
+   "id": "m0590",
    "roomId": "gdm_ab",
    "author": "user_xb",
    "text": "Between us, the door code is CANARY-8CD5A9FDA2EF.",
@@ -5395,7 +5485,7 @@
    "taskId": null
   },
   {
-   "id": "m0581",
+   "id": "m0591",
    "roomId": "gdm_ab",
    "author": "user_xb",
    "text": "Between us, the door code is CANARY-A3A12790BB01.",
@@ -5404,7 +5494,7 @@
    "taskId": null
   },
   {
-   "id": "m0582",
+   "id": "m0592",
    "roomId": "gdm_ab",
    "author": "user_xb",
    "text": "Between us, the door code is CANARY-175588B409C8.",
@@ -6871,6 +6961,7 @@
    "goldFacts": [
     "1474"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -6890,6 +6981,7 @@
    "goldFacts": [
     "6640"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -6909,6 +7001,7 @@
    "goldFacts": [
     "8701"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -6928,6 +7021,7 @@
    "goldFacts": [
     "1031"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -6947,6 +7041,7 @@
    "goldFacts": [
     "7365"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -6966,6 +7061,7 @@
    "goldFacts": [
     "2421"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -6985,6 +7081,7 @@
    "goldFacts": [
     "3602"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7004,6 +7101,7 @@
    "goldFacts": [
     "3394"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7023,6 +7121,7 @@
    "goldFacts": [
     "1350"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7042,6 +7141,7 @@
    "goldFacts": [
     "4191"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7061,6 +7161,7 @@
    "goldFacts": [
     "6341"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7080,6 +7181,7 @@
    "goldFacts": [
     "6796"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7099,6 +7201,7 @@
    "goldFacts": [
     "3142"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7118,6 +7221,7 @@
    "goldFacts": [
     "4000"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7137,6 +7241,7 @@
    "goldFacts": [
     "2971"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7156,6 +7261,7 @@
    "goldFacts": [
     "8905"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7175,6 +7281,7 @@
    "goldFacts": [
     "2601"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7194,6 +7301,7 @@
    "goldFacts": [
     "2038"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7213,6 +7321,7 @@
    "goldFacts": [
     "4267"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7232,6 +7341,7 @@
    "goldFacts": [
     "5057"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7251,6 +7361,7 @@
    "goldFacts": [
     "8332"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7270,6 +7381,7 @@
    "goldFacts": [
     "1474"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7289,6 +7401,7 @@
    "goldFacts": [
     "6640"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7308,6 +7421,7 @@
    "goldFacts": [
     "8701"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7327,6 +7441,7 @@
    "goldFacts": [
     "1031"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7346,6 +7461,7 @@
    "goldFacts": [
     "7365"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7365,6 +7481,7 @@
    "goldFacts": [
     "2421"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7384,6 +7501,7 @@
    "goldFacts": [
     "3602"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7403,6 +7521,7 @@
    "goldFacts": [
     "3394"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7422,6 +7541,7 @@
    "goldFacts": [
     "1350"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7429,7 +7549,7 @@
   {
    "id": "q031",
    "category": "oblique",
-   "text": "Remind me what we landed on for the end-of-year spend plan with Wonka?",
+   "text": "Remind me what we landed on for the end-of-year spend plan with the candy factory?",
    "audience": {
     "kind": "room",
     "roomId": "room_ops"
@@ -7441,6 +7561,7 @@
    "goldFacts": [
     "1474"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7448,7 +7569,7 @@
   {
    "id": "q032",
    "category": "oblique",
-   "text": "Remind me what we landed on for the sign-up page for the talk with Wonka?",
+   "text": "Remind me what we landed on for the sign-up page for the talk with the candy factory?",
    "audience": {
     "kind": "room",
     "roomId": "room_sales"
@@ -7460,6 +7581,7 @@
    "goldFacts": [
     "6640"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7467,7 +7589,7 @@
   {
    "id": "q033",
    "category": "oblique",
-   "text": "Remind me what we landed on for the home-screen thing with Stark?",
+   "text": "Remind me what we landed on for the home-screen thing with the iron-suit manufacturer?",
    "audience": {
     "kind": "room",
     "roomId": "room_sales"
@@ -7479,6 +7601,7 @@
    "goldFacts": [
     "8701"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7486,7 +7609,7 @@
   {
    "id": "q034",
    "category": "oblique",
-   "text": "Remind me what we landed on for the move of the money tables with Hooli?",
+   "text": "Remind me what we landed on for the move of the money tables with the big tech campus?",
    "audience": {
     "kind": "room",
     "roomId": "room_ops"
@@ -7498,6 +7621,7 @@
    "goldFacts": [
     "1031"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7505,7 +7629,7 @@
   {
    "id": "q035",
    "category": "oblique",
-   "text": "Remind me what we landed on for squaring the October books with Umbrella?",
+   "text": "Remind me what we landed on for squaring the October books with the zombie drug company?",
    "audience": {
     "kind": "room",
     "roomId": "room_eng"
@@ -7517,6 +7641,7 @@
    "goldFacts": [
     "7365"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7524,7 +7649,7 @@
   {
    "id": "q036",
    "category": "oblique",
-   "text": "Remind me what we landed on for the move of the money tables with Wayne?",
+   "text": "Remind me what we landed on for the move of the money tables with the bat-cave family firm?",
    "audience": {
     "kind": "room",
     "roomId": "room_sales"
@@ -7536,6 +7661,7 @@
    "goldFacts": [
     "2421"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7543,7 +7669,7 @@
   {
    "id": "q037",
    "category": "oblique",
-   "text": "Remind me what we landed on for squaring the October books with Acme?",
+   "text": "Remind me what we landed on for squaring the October books with the cartoon hardware catalogue?",
    "audience": {
     "kind": "room",
     "roomId": "room_eng"
@@ -7555,6 +7681,7 @@
    "goldFacts": [
     "3602"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7562,7 +7689,7 @@
   {
    "id": "q038",
    "category": "oblique",
-   "text": "Remind me what we landed on for the announcement blast with Wonka?",
+   "text": "Remind me what we landed on for the announcement blast with the candy factory?",
    "audience": {
     "kind": "room",
     "roomId": "room_ops"
@@ -7574,6 +7701,7 @@
    "goldFacts": [
     "3394"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7581,7 +7709,7 @@
   {
    "id": "q039",
    "category": "oblique",
-   "text": "Remind me what we landed on for what they pay next year with Soylent?",
+   "text": "Remind me what we landed on for what they pay next year with the nutrition shake people?",
    "audience": {
     "kind": "room",
     "roomId": "room_eng"
@@ -7593,6 +7721,7 @@
    "goldFacts": [
     "1350"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7600,7 +7729,7 @@
   {
    "id": "q040",
    "category": "oblique",
-   "text": "Remind me what we landed on for what they pay next year with Wonka?",
+   "text": "Remind me what we landed on for what they pay next year with the candy factory?",
    "audience": {
     "kind": "room",
     "roomId": "room_eng"
@@ -7612,6 +7741,7 @@
    "goldFacts": [
     "4191"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7619,7 +7749,7 @@
   {
    "id": "q041",
    "category": "oblique",
-   "text": "Remind me what we landed on for that sign-in hang with Globex?",
+   "text": "Remind me what we landed on for that sign-in hang with the volcano-lair conglomerate?",
    "audience": {
     "kind": "room",
     "roomId": "room_launch"
@@ -7631,6 +7761,7 @@
    "goldFacts": [
     "6341"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7638,7 +7769,7 @@
   {
    "id": "q042",
    "category": "oblique",
-   "text": "Remind me what we landed on for that sign-in hang with Acme?",
+   "text": "Remind me what we landed on for that sign-in hang with the cartoon hardware catalogue?",
    "audience": {
     "kind": "room",
     "roomId": "room_sales"
@@ -7650,6 +7781,7 @@
    "goldFacts": [
     "6796"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7657,7 +7789,7 @@
   {
    "id": "q043",
    "category": "oblique",
-   "text": "Remind me what we landed on for the words on the plans page with Tyrell?",
+   "text": "Remind me what we landed on for the words on the plans page with the android makers?",
    "audience": {
     "kind": "room",
     "roomId": "room_ops"
@@ -7669,6 +7801,7 @@
    "goldFacts": [
     "3142"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7676,7 +7809,7 @@
   {
    "id": "q044",
    "category": "oblique",
-   "text": "Remind me what we landed on for the end-of-year spend plan with Stark?",
+   "text": "Remind me what we landed on for the end-of-year spend plan with the iron-suit manufacturer?",
    "audience": {
     "kind": "room",
     "roomId": "room_ops"
@@ -7688,6 +7821,7 @@
    "goldFacts": [
     "4000"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7695,7 +7829,7 @@
   {
    "id": "q045",
    "category": "oblique",
-   "text": "Remind me what we landed on for the money-back argument with Globex?",
+   "text": "Remind me what we landed on for the money-back argument with the volcano-lair conglomerate?",
    "audience": {
     "kind": "room",
     "roomId": "room_eng"
@@ -7707,6 +7841,7 @@
    "goldFacts": [
     "2971"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7714,7 +7849,7 @@
   {
    "id": "q046",
    "category": "oblique",
-   "text": "Remind me what we landed on for the end-of-year spend plan with Wonka?",
+   "text": "Remind me what we landed on for the end-of-year spend plan with the candy factory?",
    "audience": {
     "kind": "room",
     "roomId": "room_eng"
@@ -7726,6 +7861,7 @@
    "goldFacts": [
     "1474"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7733,7 +7869,7 @@
   {
    "id": "q047",
    "category": "oblique",
-   "text": "Remind me what we landed on for the sign-up page for the talk with Wonka?",
+   "text": "Remind me what we landed on for the sign-up page for the talk with the candy factory?",
    "audience": {
     "kind": "room",
     "roomId": "room_eng"
@@ -7745,6 +7881,7 @@
    "goldFacts": [
     "6640"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7752,7 +7889,7 @@
   {
    "id": "q048",
    "category": "oblique",
-   "text": "Remind me what we landed on for the home-screen thing with Stark?",
+   "text": "Remind me what we landed on for the home-screen thing with the iron-suit manufacturer?",
    "audience": {
     "kind": "room",
     "roomId": "room_launch"
@@ -7764,6 +7901,7 @@
    "goldFacts": [
     "8701"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7771,7 +7909,7 @@
   {
    "id": "q049",
    "category": "oblique",
-   "text": "Remind me what we landed on for the move of the money tables with Hooli?",
+   "text": "Remind me what we landed on for the move of the money tables with the big tech campus?",
    "audience": {
     "kind": "room",
     "roomId": "room_sales"
@@ -7783,6 +7921,7 @@
    "goldFacts": [
     "1031"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7790,7 +7929,7 @@
   {
    "id": "q050",
    "category": "oblique",
-   "text": "Remind me what we landed on for squaring the October books with Umbrella?",
+   "text": "Remind me what we landed on for squaring the October books with the zombie drug company?",
    "audience": {
     "kind": "room",
     "roomId": "room_ops"
@@ -7802,6 +7941,7 @@
    "goldFacts": [
     "7365"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7809,7 +7949,7 @@
   {
    "id": "q051",
    "category": "oblique",
-   "text": "Remind me what we landed on for the move of the money tables with Wayne?",
+   "text": "Remind me what we landed on for the move of the money tables with the bat-cave family firm?",
    "audience": {
     "kind": "room",
     "roomId": "room_launch"
@@ -7821,6 +7961,7 @@
    "goldFacts": [
     "2421"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7828,7 +7969,7 @@
   {
    "id": "q052",
    "category": "oblique",
-   "text": "Remind me what we landed on for squaring the October books with Acme?",
+   "text": "Remind me what we landed on for squaring the October books with the cartoon hardware catalogue?",
    "audience": {
     "kind": "room",
     "roomId": "room_eng"
@@ -7840,6 +7981,7 @@
    "goldFacts": [
     "3602"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7847,7 +7989,7 @@
   {
    "id": "q053",
    "category": "oblique",
-   "text": "Remind me what we landed on for the announcement blast with Wonka?",
+   "text": "Remind me what we landed on for the announcement blast with the candy factory?",
    "audience": {
     "kind": "room",
     "roomId": "room_ops"
@@ -7859,6 +8001,7 @@
    "goldFacts": [
     "3394"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7866,7 +8009,7 @@
   {
    "id": "q054",
    "category": "oblique",
-   "text": "Remind me what we landed on for what they pay next year with Soylent?",
+   "text": "Remind me what we landed on for what they pay next year with the nutrition shake people?",
    "audience": {
     "kind": "room",
     "roomId": "room_eng"
@@ -7878,6 +8021,7 @@
    "goldFacts": [
     "1350"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7885,7 +8029,7 @@
   {
    "id": "q055",
    "category": "oblique",
-   "text": "Remind me what we landed on for what they pay next year with Wonka?",
+   "text": "Remind me what we landed on for what they pay next year with the candy factory?",
    "audience": {
     "kind": "room",
     "roomId": "room_launch"
@@ -7897,6 +8041,7 @@
    "goldFacts": [
     "4191"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7904,7 +8049,7 @@
   {
    "id": "q056",
    "category": "oblique",
-   "text": "Remind me what we landed on for that sign-in hang with Globex?",
+   "text": "Remind me what we landed on for that sign-in hang with the volcano-lair conglomerate?",
    "audience": {
     "kind": "room",
     "roomId": "room_launch"
@@ -7916,6 +8061,7 @@
    "goldFacts": [
     "6341"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7923,7 +8069,7 @@
   {
    "id": "q057",
    "category": "oblique",
-   "text": "Remind me what we landed on for that sign-in hang with Acme?",
+   "text": "Remind me what we landed on for that sign-in hang with the cartoon hardware catalogue?",
    "audience": {
     "kind": "room",
     "roomId": "room_sales"
@@ -7935,6 +8081,7 @@
    "goldFacts": [
     "6796"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7942,7 +8089,7 @@
   {
    "id": "q058",
    "category": "oblique",
-   "text": "Remind me what we landed on for the words on the plans page with Tyrell?",
+   "text": "Remind me what we landed on for the words on the plans page with the android makers?",
    "audience": {
     "kind": "room",
     "roomId": "room_sales"
@@ -7954,6 +8101,7 @@
    "goldFacts": [
     "3142"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7961,7 +8109,7 @@
   {
    "id": "q059",
    "category": "oblique",
-   "text": "Remind me what we landed on for the end-of-year spend plan with Stark?",
+   "text": "Remind me what we landed on for the end-of-year spend plan with the iron-suit manufacturer?",
    "audience": {
     "kind": "room",
     "roomId": "room_eng"
@@ -7973,6 +8121,7 @@
    "goldFacts": [
     "4000"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7980,7 +8129,7 @@
   {
    "id": "q060",
    "category": "oblique",
-   "text": "Remind me what we landed on for the money-back argument with Globex?",
+   "text": "Remind me what we landed on for the money-back argument with the volcano-lair conglomerate?",
    "audience": {
     "kind": "room",
     "roomId": "room_launch"
@@ -7992,6 +8141,7 @@
    "goldFacts": [
     "2971"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -7999,7 +8149,7 @@
   {
    "id": "q061",
    "category": "oblique",
-   "text": "Remind me what we landed on for the end-of-year spend plan with Wonka?",
+   "text": "Remind me what we landed on for the end-of-year spend plan with the candy factory?",
    "audience": {
     "kind": "room",
     "roomId": "room_launch"
@@ -8011,6 +8161,7 @@
    "goldFacts": [
     "1474"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -8018,7 +8169,7 @@
   {
    "id": "q062",
    "category": "oblique",
-   "text": "Remind me what we landed on for the sign-up page for the talk with Wonka?",
+   "text": "Remind me what we landed on for the sign-up page for the talk with the candy factory?",
    "audience": {
     "kind": "room",
     "roomId": "room_eng"
@@ -8030,6 +8181,7 @@
    "goldFacts": [
     "6640"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -8037,7 +8189,7 @@
   {
    "id": "q063",
    "category": "oblique",
-   "text": "Remind me what we landed on for the home-screen thing with Stark?",
+   "text": "Remind me what we landed on for the home-screen thing with the iron-suit manufacturer?",
    "audience": {
     "kind": "room",
     "roomId": "room_ops"
@@ -8049,6 +8201,7 @@
    "goldFacts": [
     "8701"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -8056,7 +8209,7 @@
   {
    "id": "q064",
    "category": "oblique",
-   "text": "Remind me what we landed on for the move of the money tables with Hooli?",
+   "text": "Remind me what we landed on for the move of the money tables with the big tech campus?",
    "audience": {
     "kind": "room",
     "roomId": "room_sales"
@@ -8068,6 +8221,7 @@
    "goldFacts": [
     "1031"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -8075,7 +8229,7 @@
   {
    "id": "q065",
    "category": "oblique",
-   "text": "Remind me what we landed on for squaring the October books with Umbrella?",
+   "text": "Remind me what we landed on for squaring the October books with the zombie drug company?",
    "audience": {
     "kind": "room",
     "roomId": "room_eng"
@@ -8087,6 +8241,7 @@
    "goldFacts": [
     "7365"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -8094,7 +8249,7 @@
   {
    "id": "q066",
    "category": "oblique",
-   "text": "Remind me what we landed on for the move of the money tables with Wayne?",
+   "text": "Remind me what we landed on for the move of the money tables with the bat-cave family firm?",
    "audience": {
     "kind": "room",
     "roomId": "room_launch"
@@ -8106,6 +8261,7 @@
    "goldFacts": [
     "2421"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -8113,7 +8269,7 @@
   {
    "id": "q067",
    "category": "oblique",
-   "text": "Remind me what we landed on for squaring the October books with Acme?",
+   "text": "Remind me what we landed on for squaring the October books with the cartoon hardware catalogue?",
    "audience": {
     "kind": "room",
     "roomId": "room_launch"
@@ -8125,6 +8281,7 @@
    "goldFacts": [
     "3602"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -8132,7 +8289,7 @@
   {
    "id": "q068",
    "category": "oblique",
-   "text": "Remind me what we landed on for the announcement blast with Wonka?",
+   "text": "Remind me what we landed on for the announcement blast with the candy factory?",
    "audience": {
     "kind": "room",
     "roomId": "room_sales"
@@ -8144,6 +8301,7 @@
    "goldFacts": [
     "3394"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -8151,7 +8309,7 @@
   {
    "id": "q069",
    "category": "oblique",
-   "text": "Remind me what we landed on for what they pay next year with Soylent?",
+   "text": "Remind me what we landed on for what they pay next year with the nutrition shake people?",
    "audience": {
     "kind": "room",
     "roomId": "room_launch"
@@ -8163,6 +8321,7 @@
    "goldFacts": [
     "1350"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -8170,7 +8329,7 @@
   {
    "id": "q070",
    "category": "oblique",
-   "text": "Remind me what we landed on for what they pay next year with Wonka?",
+   "text": "Remind me what we landed on for what they pay next year with the candy factory?",
    "audience": {
     "kind": "room",
     "roomId": "room_ops"
@@ -8182,6 +8341,7 @@
    "goldFacts": [
     "4191"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -8189,7 +8349,7 @@
   {
    "id": "q071",
    "category": "oblique",
-   "text": "Remind me what we landed on for that sign-in hang with Globex?",
+   "text": "Remind me what we landed on for that sign-in hang with the volcano-lair conglomerate?",
    "audience": {
     "kind": "room",
     "roomId": "room_launch"
@@ -8201,6 +8361,7 @@
    "goldFacts": [
     "6341"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -8208,7 +8369,7 @@
   {
    "id": "q072",
    "category": "oblique",
-   "text": "Remind me what we landed on for that sign-in hang with Acme?",
+   "text": "Remind me what we landed on for that sign-in hang with the cartoon hardware catalogue?",
    "audience": {
     "kind": "room",
     "roomId": "room_ops"
@@ -8220,6 +8381,7 @@
    "goldFacts": [
     "6796"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -8227,7 +8389,7 @@
   {
    "id": "q073",
    "category": "oblique",
-   "text": "Remind me what we landed on for the words on the plans page with Tyrell?",
+   "text": "Remind me what we landed on for the words on the plans page with the android makers?",
    "audience": {
     "kind": "room",
     "roomId": "room_eng"
@@ -8239,6 +8401,7 @@
    "goldFacts": [
     "3142"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -8246,7 +8409,7 @@
   {
    "id": "q074",
    "category": "oblique",
-   "text": "Remind me what we landed on for the end-of-year spend plan with Stark?",
+   "text": "Remind me what we landed on for the end-of-year spend plan with the iron-suit manufacturer?",
    "audience": {
     "kind": "room",
     "roomId": "room_launch"
@@ -8258,6 +8421,7 @@
    "goldFacts": [
     "4000"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -8265,7 +8429,7 @@
   {
    "id": "q075",
    "category": "oblique",
-   "text": "Remind me what we landed on for the money-back argument with Globex?",
+   "text": "Remind me what we landed on for the money-back argument with the volcano-lair conglomerate?",
    "audience": {
     "kind": "room",
     "roomId": "room_ops"
@@ -8277,6 +8441,7 @@
    "goldFacts": [
     "2971"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -8284,7 +8449,7 @@
   {
    "id": "q076",
    "category": "oblique",
-   "text": "Remind me what we landed on for the end-of-year spend plan with Wonka?",
+   "text": "Remind me what we landed on for the end-of-year spend plan with the candy factory?",
    "audience": {
     "kind": "room",
     "roomId": "room_ops"
@@ -8296,6 +8461,7 @@
    "goldFacts": [
     "1474"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -8303,7 +8469,7 @@
   {
    "id": "q077",
    "category": "oblique",
-   "text": "Remind me what we landed on for the sign-up page for the talk with Wonka?",
+   "text": "Remind me what we landed on for the sign-up page for the talk with the candy factory?",
    "audience": {
     "kind": "room",
     "roomId": "room_eng"
@@ -8315,6 +8481,7 @@
    "goldFacts": [
     "6640"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -8322,7 +8489,7 @@
   {
    "id": "q078",
    "category": "oblique",
-   "text": "Remind me what we landed on for the home-screen thing with Stark?",
+   "text": "Remind me what we landed on for the home-screen thing with the iron-suit manufacturer?",
    "audience": {
     "kind": "room",
     "roomId": "room_ops"
@@ -8334,6 +8501,7 @@
    "goldFacts": [
     "8701"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -8341,7 +8509,7 @@
   {
    "id": "q079",
    "category": "oblique",
-   "text": "Remind me what we landed on for the move of the money tables with Hooli?",
+   "text": "Remind me what we landed on for the move of the money tables with the big tech campus?",
    "audience": {
     "kind": "room",
     "roomId": "room_ops"
@@ -8353,6 +8521,7 @@
    "goldFacts": [
     "1031"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -8360,7 +8529,7 @@
   {
    "id": "q080",
    "category": "oblique",
-   "text": "Remind me what we landed on for squaring the October books with Umbrella?",
+   "text": "Remind me what we landed on for squaring the October books with the zombie drug company?",
    "audience": {
     "kind": "room",
     "roomId": "room_launch"
@@ -8372,6 +8541,7 @@
    "goldFacts": [
     "7365"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -8390,6 +8560,9 @@
    ],
    "goldFacts": [
     "2889"
+   ],
+   "staleFacts": [
+    "3433"
    ],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
@@ -8410,6 +8583,9 @@
    "goldFacts": [
     "1378"
    ],
+   "staleFacts": [
+    "2674"
+   ],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -8428,6 +8604,9 @@
    ],
    "goldFacts": [
     "7008"
+   ],
+   "staleFacts": [
+    "1443"
    ],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
@@ -8448,6 +8627,9 @@
    "goldFacts": [
     "4197"
    ],
+   "staleFacts": [
+    "6401"
+   ],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -8466,6 +8648,9 @@
    ],
    "goldFacts": [
     "2889"
+   ],
+   "staleFacts": [
+    "3433"
    ],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
@@ -8486,6 +8671,9 @@
    "goldFacts": [
     "1378"
    ],
+   "staleFacts": [
+    "2674"
+   ],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -8504,6 +8692,9 @@
    ],
    "goldFacts": [
     "7008"
+   ],
+   "staleFacts": [
+    "1443"
    ],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
@@ -8524,6 +8715,9 @@
    "goldFacts": [
     "4197"
    ],
+   "staleFacts": [
+    "6401"
+   ],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -8542,6 +8736,9 @@
    ],
    "goldFacts": [
     "2889"
+   ],
+   "staleFacts": [
+    "3433"
    ],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
@@ -8562,6 +8759,9 @@
    "goldFacts": [
     "1378"
    ],
+   "staleFacts": [
+    "2674"
+   ],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -8580,6 +8780,9 @@
    ],
    "goldFacts": [
     "7008"
+   ],
+   "staleFacts": [
+    "1443"
    ],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
@@ -8600,6 +8803,9 @@
    "goldFacts": [
     "4197"
    ],
+   "staleFacts": [
+    "6401"
+   ],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -8618,6 +8824,9 @@
    ],
    "goldFacts": [
     "2889"
+   ],
+   "staleFacts": [
+    "3433"
    ],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
@@ -8638,6 +8847,9 @@
    "goldFacts": [
     "1378"
    ],
+   "staleFacts": [
+    "2674"
+   ],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -8656,6 +8868,9 @@
    ],
    "goldFacts": [
     "7008"
+   ],
+   "staleFacts": [
+    "1443"
    ],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
@@ -8676,6 +8891,9 @@
    "goldFacts": [
     "4197"
    ],
+   "staleFacts": [
+    "6401"
+   ],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -8694,6 +8912,9 @@
    ],
    "goldFacts": [
     "2889"
+   ],
+   "staleFacts": [
+    "3433"
    ],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
@@ -8714,6 +8935,9 @@
    "goldFacts": [
     "1378"
    ],
+   "staleFacts": [
+    "2674"
+   ],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -8732,6 +8956,9 @@
    ],
    "goldFacts": [
     "7008"
+   ],
+   "staleFacts": [
+    "1443"
    ],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
@@ -8752,6 +8979,9 @@
    "goldFacts": [
     "4197"
    ],
+   "staleFacts": [
+    "6401"
+   ],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -8771,6 +9001,7 @@
    "goldFacts": [
     "resolved"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -8790,6 +9021,7 @@
    "goldFacts": [
     "failed"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -8809,6 +9041,7 @@
    "goldFacts": [
     "resolved"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -8828,6 +9061,7 @@
    "goldFacts": [
     "failed"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -8847,6 +9081,7 @@
    "goldFacts": [
     "resolved"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -8866,6 +9101,7 @@
    "goldFacts": [
     "failed"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -8885,6 +9121,7 @@
    "goldFacts": [
     "resolved"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -8904,6 +9141,7 @@
    "goldFacts": [
     "failed"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -8923,6 +9161,7 @@
    "goldFacts": [
     "resolved"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -8942,6 +9181,7 @@
    "goldFacts": [
     "failed"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -8961,6 +9201,7 @@
    "goldFacts": [
     "resolved"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -8980,6 +9221,7 @@
    "goldFacts": [
     "failed"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -8999,6 +9241,7 @@
    "goldFacts": [
     "resolved"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -9018,6 +9261,7 @@
    "goldFacts": [
     "failed"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -9037,6 +9281,7 @@
    "goldFacts": [
     "resolved"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -9056,6 +9301,7 @@
    "goldFacts": [
     "failed"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -9075,6 +9321,7 @@
    "goldFacts": [
     "resolved"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -9094,6 +9341,7 @@
    "goldFacts": [
     "failed"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -9113,6 +9361,7 @@
    "goldFacts": [
     "resolved"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -9132,6 +9381,7 @@
    "goldFacts": [
     "failed"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -9151,6 +9401,7 @@
    "goldFacts": [
     "9088"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": "user_xa"
@@ -9170,6 +9421,7 @@
    "goldFacts": [
     "7405"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": "user_xb"
@@ -9189,6 +9441,7 @@
    "goldFacts": [
     "3243"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": "user_xc"
@@ -9208,6 +9461,7 @@
    "goldFacts": [
     "7233"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": "user_xd"
@@ -9227,6 +9481,7 @@
    "goldFacts": [
     "4822"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": "user_xe"
@@ -9246,6 +9501,7 @@
    "goldFacts": [
     "3386"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": "user_xf"
@@ -9265,6 +9521,7 @@
    "goldFacts": [
     "3056"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": "user_xa"
@@ -9284,6 +9541,7 @@
    "goldFacts": [
     "7428"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": "user_xb"
@@ -9303,6 +9561,7 @@
    "goldFacts": [
     "9088"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": "user_xa"
@@ -9322,6 +9581,7 @@
    "goldFacts": [
     "7405"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": "user_xb"
@@ -9341,6 +9601,7 @@
    "goldFacts": [
     "3243"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": "user_xc"
@@ -9360,6 +9621,7 @@
    "goldFacts": [
     "7233"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": "user_xd"
@@ -9379,6 +9641,7 @@
    "goldFacts": [
     "4822"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": "user_xe"
@@ -9398,6 +9661,7 @@
    "goldFacts": [
     "3386"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": "user_xf"
@@ -9417,6 +9681,7 @@
    "goldFacts": [
     "3056"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": "user_xa"
@@ -9432,6 +9697,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [
     "f3aed0b6-c7ac-4491-aef8-8334e647cb8f"
    ],
@@ -9449,6 +9715,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [
     "1df9fd78-9c65-4938-ab05-37e65affb229"
    ],
@@ -9466,6 +9733,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [
     "65dc9f50-3f63-4f83-ad05-61e6211c70cf"
    ],
@@ -9483,6 +9751,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [
     "4720771f-8ca8-4811-a6d2-287672fdf202"
    ],
@@ -9500,6 +9769,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [
     "5bd86d40-fc89-4b4a-aa50-df4db4d66a3a"
    ],
@@ -9517,6 +9787,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [
     "a8948c89-3b61-4676-a6bb-7dbd2d1c9af0"
    ],
@@ -9534,6 +9805,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [
     "010c4759-482c-4cbc-a343-5cc52eae05cf"
    ],
@@ -9551,6 +9823,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [
     "f3fe39c0-5190-48f5-a0fb-bd119c1caaf7"
    ],
@@ -9568,6 +9841,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [
     "f3aed0b6-c7ac-4491-aef8-8334e647cb8f"
    ],
@@ -9585,6 +9859,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [
     "1df9fd78-9c65-4938-ab05-37e65affb229"
    ],
@@ -9602,6 +9877,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [
     "65dc9f50-3f63-4f83-ad05-61e6211c70cf"
    ],
@@ -9619,6 +9895,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [
     "4720771f-8ca8-4811-a6d2-287672fdf202"
    ],
@@ -9636,6 +9913,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [
     "5bd86d40-fc89-4b4a-aa50-df4db4d66a3a"
    ],
@@ -9653,6 +9931,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [
     "a8948c89-3b61-4676-a6bb-7dbd2d1c9af0"
    ],
@@ -9670,6 +9949,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [
     "010c4759-482c-4cbc-a343-5cc52eae05cf"
    ],
@@ -9687,6 +9967,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [
     "66836886-a260-4d0b-ab45-145c1a81682c"
    ],
@@ -9704,6 +9985,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [
     "570dc195-1c24-42f9-a98c-b3a570ccec31"
    ],
@@ -9721,6 +10003,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [
     "f2ee4e45-19f9-419c-a95f-d7b326b94c7f"
    ],
@@ -9738,6 +10021,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [
     "66836886-a260-4d0b-ab45-145c1a81682c"
    ],
@@ -9755,6 +10039,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [
     "570dc195-1c24-42f9-a98c-b3a570ccec31"
    ],
@@ -9772,6 +10057,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [
     "f2ee4e45-19f9-419c-a95f-d7b326b94c7f"
    ],
@@ -9789,6 +10075,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [
     "66836886-a260-4d0b-ab45-145c1a81682c"
    ],
@@ -9806,6 +10093,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [
     "570dc195-1c24-42f9-a98c-b3a570ccec31"
    ],
@@ -9823,6 +10111,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [
     "f2ee4e45-19f9-419c-a95f-d7b326b94c7f"
    ],
@@ -9840,6 +10129,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [
     "66836886-a260-4d0b-ab45-145c1a81682c"
    ],
@@ -9857,6 +10147,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [
     "570dc195-1c24-42f9-a98c-b3a570ccec31"
    ],
@@ -9874,6 +10165,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [
     "f2ee4e45-19f9-419c-a95f-d7b326b94c7f"
    ],
@@ -9891,6 +10183,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [
     "66836886-a260-4d0b-ab45-145c1a81682c"
    ],
@@ -9908,6 +10201,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [
     "570dc195-1c24-42f9-a98c-b3a570ccec31"
    ],
@@ -9925,6 +10219,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [
     "f2ee4e45-19f9-419c-a95f-d7b326b94c7f"
    ],
@@ -9942,6 +10237,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": true,
    "owner": null
@@ -9957,6 +10253,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": true,
    "owner": null
@@ -9972,6 +10269,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": true,
    "owner": null
@@ -9987,6 +10285,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": true,
    "owner": null
@@ -10002,6 +10301,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": true,
    "owner": null
@@ -10017,6 +10317,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": true,
    "owner": null
@@ -10032,6 +10333,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": true,
    "owner": null
@@ -10047,6 +10349,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": true,
    "owner": null
@@ -10062,6 +10365,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": true,
    "owner": null
@@ -10077,6 +10381,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": true,
    "owner": null
@@ -10092,6 +10397,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": true,
    "owner": null
@@ -10107,6 +10413,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": true,
    "owner": null
@@ -10122,6 +10429,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": true,
    "owner": null
@@ -10137,6 +10445,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": true,
    "owner": null
@@ -10152,6 +10461,7 @@
    "askedAt": "2026-11-02T09:00:00",
    "goldTaskIds": [],
    "goldFacts": [],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": true,
    "owner": null
@@ -10171,6 +10481,7 @@
    "goldFacts": [
     "WONKA-1491"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -10190,6 +10501,7 @@
    "goldFacts": [
     "HOOLI-1048"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -10209,6 +10521,7 @@
    "goldFacts": [
     "ACME-3619"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -10228,6 +10541,7 @@
    "goldFacts": [
     "WONKA-4208"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -10247,6 +10561,7 @@
    "goldFacts": [
     "TYRELL-3159"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -10266,6 +10581,7 @@
    "goldFacts": [
     "GLOBEX-8922"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -10285,6 +10601,7 @@
    "goldFacts": [
     "HOOLI-4284"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -10304,6 +10621,7 @@
    "goldFacts": [
     "WONKA-1491"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -10323,6 +10641,7 @@
    "goldFacts": [
     "HOOLI-1048"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -10342,6 +10661,7 @@
    "goldFacts": [
     "ACME-3619"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -10361,6 +10681,7 @@
    "goldFacts": [
     "WONKA-4208"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -10380,6 +10701,7 @@
    "goldFacts": [
     "TYRELL-3159"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -10399,6 +10721,7 @@
    "goldFacts": [
     "GLOBEX-8922"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -10418,6 +10741,7 @@
    "goldFacts": [
     "HOOLI-4284"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -10437,6 +10761,7 @@
    "goldFacts": [
     "WONKA-1491"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -10456,6 +10781,7 @@
    "goldFacts": [
     "HOOLI-1048"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -10475,6 +10801,7 @@
    "goldFacts": [
     "ACME-3619"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -10494,6 +10821,7 @@
    "goldFacts": [
     "WONKA-4208"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -10513,6 +10841,7 @@
    "goldFacts": [
     "TYRELL-3159"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null
@@ -10532,6 +10861,7 @@
    "goldFacts": [
     "GLOBEX-8922"
    ],
+   "staleFacts": [],
    "forbiddenTaskIds": [],
    "expectAbstain": false,
    "owner": null

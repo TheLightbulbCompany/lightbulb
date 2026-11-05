@@ -69,11 +69,25 @@ async def test_open_questions_never_reopens_a_closed_one(world):
 
 
 async def test_open_questions_no_answerer(world, monkeypatch):
+    """Nobody can answer: the task says so where it was asked (never a silent stop), then NoAnswerer ends it."""
+    from core.services import task_conversation
+
     monkeypatch.setattr(questions.clerk_admin, "list_organization_members", AsyncMock(return_value=[]))
+    posts = AsyncMock(return_value="m-1")
+    monkeypatch.setattr(task_conversation, "post_as_lightbulb", posts)
+    monkeypatch.setattr(task_conversation, "ensure_task_room", AsyncMock(return_value="task-room"))
     await effects_repo.put_effect(WS, _effect(kind="purchase"))
     with pytest.raises(ApplicationError) as err:
         await _run(tq.open_questions, WS, TASK)
     assert err.value.type == "NoAnswerer" and err.value.non_retryable
+    assert "Nobody in this workspace can approve this" in posts.await_args.kwargs["text"]
+
+
+async def test_publish_without_an_app_id_asks_the_admins(world):
+    """Gate run 3 (task d3e55e37): an app.publish the classifier could not name an app for opened no Question."""
+    await effects_repo.put_effect(WS, _effect(kind="app.publish", operands={}))
+    [ref] = await _run(tq.open_questions, WS, TASK)
+    assert ref.answerers == [ADA]
 
 
 @pytest.fixture

@@ -67,7 +67,6 @@ function client(detail: TaskDetail, views: QuestionView[], id: string) {
     list: jest.fn(async () => ({ tasks: [detail.task], next: null })),
     get: jest.fn(async () => detail),
     act: jest.fn(async () => detail.task),
-    startMany: jest.fn(async () => ({ tasks: [] })),
     answer: jest.fn(async () => ({ question: views[0], next: null })),
     trace: jest.fn(async () => ({ attempt: 1, recentTools: [] })),
     markRead: jest.fn(async () => undefined),
@@ -132,21 +131,5 @@ it("a task that resolves to no data reads as unavailable, not Loading forever", 
   c.get.mockResolvedValue(undefined as never);
   const view = await render(<TaskScreen />);
   expect(await view.findByText("This request isn\u2019t available to you.")).toBeTruthy();
-  await view.unmount();
-});
-
-it("a suggested thread leads with Do it / Not now, why and cost; no Resolve, no steer box", async () => {
-  const proposed = { ...step8.task, status: "proposed" as const, shownGroup: null, proposalReason: "spends money", budgetUsd: 5 };
-  const c = client({ ...step8, task: proposed, questions: [] }, [], "t-suggested");
-  const view = await render(<TaskScreen />);
-  fireEvent.press(await view.findByLabelText("Do it"));
-  await waitFor(() => expect(c.act).toHaveBeenCalledWith("t-suggested", "start", proposed.version));
-  expect(view.getByText(`Engineering wants to: ${proposed.title}`)).toBeTruthy();
-  expect(view.queryByText(/Lightbulb · Engineering ·/)).toBeNull();
-  expect(view.getByText("Why: spends money")).toBeTruthy();
-  expect(view.getByText("Cost: up to $5")).toBeTruthy();
-  expect(view.getByLabelText("Not now")).toBeTruthy();
-  expect(view.queryByLabelText("Resolve")).toBeNull();
-  expect(view.queryByText("Steer this thread…")).toBeNull();
   await view.unmount();
 });

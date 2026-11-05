@@ -2,7 +2,6 @@
   "schemaVersion": 1,
   "enums": {
     "TaskStatus": [
-      "proposed",
       "queued",
       "working",
       "waiting",
@@ -139,7 +138,6 @@
     ],
     "RouterDecisionKind": [
       "start_task",
-      "propose_tasks",
       "pass_through",
       "reply",
       "ask",
@@ -357,7 +355,6 @@
         },
         "status": {
           "enum": [
-            "proposed",
             "queued",
             "working",
             "waiting",
@@ -559,18 +556,6 @@
           ],
           "default": null,
           "title": "Wschannel"
-        },
-        "proposalReason": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Proposalreason"
         },
         "stopRequestedBy": {
           "anyOf": [
@@ -3140,7 +3125,6 @@
         },
         "status": {
           "enum": [
-            "proposed",
             "queued",
             "working",
             "waiting",
@@ -3233,18 +3217,6 @@
         "taskRoomId": {
           "title": "Taskroomid",
           "type": "string"
-        },
-        "proposalReason": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Proposalreason"
         },
         "openQuestion": {
           "anyOf": [
@@ -3532,88 +3504,6 @@
         "title": "PassThrough",
         "type": "object"
       },
-      "ProposeTasks": {
-        "additionalProperties": false,
-        "properties": {
-          "triggerIds": {
-            "items": {
-              "type": "string"
-            },
-            "minItems": 1,
-            "title": "Triggerids",
-            "type": "array"
-          },
-          "reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Reason"
-          },
-          "kind": {
-            "const": "propose_tasks",
-            "title": "Kind",
-            "type": "string"
-          },
-          "tasks": {
-            "items": {
-              "$ref": "#/$defs/ProposedTask"
-            },
-            "minItems": 1,
-            "title": "Tasks",
-            "type": "array"
-          },
-          "ack": {
-            "title": "Ack",
-            "type": "string"
-          }
-        },
-        "required": [
-          "triggerIds",
-          "kind",
-          "tasks",
-          "ack"
-        ],
-        "title": "ProposeTasks",
-        "type": "object"
-      },
-      "ProposedTask": {
-        "additionalProperties": false,
-        "properties": {
-          "title": {
-            "maxLength": 200,
-            "title": "Title",
-            "type": "string"
-          },
-          "brief": {
-            "title": "Brief",
-            "type": "string"
-          },
-          "specialist": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Specialist"
-          }
-        },
-        "required": [
-          "title",
-          "brief"
-        ],
-        "title": "ProposedTask",
-        "type": "object"
-      },
       "Reply": {
         "additionalProperties": false,
         "properties": {
@@ -3808,7 +3698,6 @@
               "ask": "#/$defs/Ask",
               "ignore": "#/$defs/Ignore",
               "pass_through": "#/$defs/PassThrough",
-              "propose_tasks": "#/$defs/ProposeTasks",
               "reply": "#/$defs/Reply",
               "start_task": "#/$defs/StartTask"
             },
@@ -3817,9 +3706,6 @@
           "oneOf": [
             {
               "$ref": "#/$defs/StartTask"
-            },
-            {
-              "$ref": "#/$defs/ProposeTasks"
             },
             {
               "$ref": "#/$defs/PassThrough"

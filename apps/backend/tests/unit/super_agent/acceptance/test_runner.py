@@ -98,7 +98,7 @@ def test_runner_refuses_non_dev_table(monkeypatch):
 # ---------------------------------------------------------------------- registry
 def test_parse_scenarios():
     assert report.parse_scenarios("A0-A2") == ["A0", "A1", "A2"]
-    assert report.parse_scenarios("A7,A1, a3") == ["A7", "A1", "A3"]
+    assert report.parse_scenarios("A7,A1, a5") == ["A7", "A1", "A5"]
     assert report.parse_scenarios("A12-A13,A0") == ["A12", "A13", "A0"]
     with pytest.raises(SystemExit):
         report.parse_scenarios("A99")

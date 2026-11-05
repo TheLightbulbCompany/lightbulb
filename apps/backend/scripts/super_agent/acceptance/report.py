@@ -26,7 +26,6 @@ SCENARIOS: dict[str, tuple[str, tuple[str, ...]]] = {
     "A0": ("G", ("a00_parity:a00",)),
     "A1": ("O", ("a01_one_coordinator:a01",)),
     "A2": ("O", ("a02_many_asks:a02",)),
-    "A3": ("O", ("a03_start_suggested:a03",)),
     "A4": ("O", ("a04_steer:a04",)),
     "A5": ("Q", ("a05_approval:a05",)),
     "A6": ("Q", ("a06_go_ahead:a06",)),
@@ -43,7 +42,7 @@ Body = Callable[[Any], Awaitable[Any]]
 
 
 def parse_scenarios(spec: str) -> list[str]:
-    """``A0-A13`` | ``A1,A2,A7`` | ``A3`` (any mix, order kept, unknown names refused)."""
+    """``A0-A13`` | ``A1,A2,A7`` | ``A5`` (any mix, order kept, unknown names refused)."""
     names: list[str] = []
     for part in re.split(r"[,\s]+", spec.strip().upper()):
         if not part:

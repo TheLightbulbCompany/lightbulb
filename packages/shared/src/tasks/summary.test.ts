@@ -20,7 +20,6 @@ describe("contract: TaskSummary matches views.TaskSummary in tasks-schema.json",
 describe("summaryView: one of four words per status, group from the server", () => {
   const t = (over: Partial<TaskSummary>) => fixtureTask({ taskId: "t", title: "x", ...over });
   it.each([
-    [{ status: "proposed", shownGroup: null }, "Needs you", "Wants to start", null, "start", "waiting"],
     [{ status: "queued" }, "Working", "Starting", "working", null, "working"],
     [{ status: "working" }, "Working", null, "working", null, "working"],
     [{ status: "waiting" }, "Working", "Waiting on a reply", "working", null, "working"],
@@ -63,9 +62,9 @@ describe("overviewGroups", () => {
     expect(groups.map((g) => g.label)).toEqual(["Needs you", "Closed"]);
     expect(groups[1]).toMatchObject({ collapsed: true, alwaysShown: true });
   });
-  it("four headings in order; proposed tasks are not in it", () => {
+  it("four headings in order", () => {
     expect(overviewGroups(FIXTURES.step02.tasks).map((g) => [g.id, g.tasks.length]))
-      .toEqual([["needs_you", 0], ["working", 2], ["closed", 0]]);
+      .toEqual([["needs_you", 0], ["working", 3], ["closed", 0]]);
     expect(overviewGroups(FIXTURES.step07.tasks).map((g) => g.id))
       .toEqual(["needs_you", "working", "done", "closed"]);
   });
@@ -76,7 +75,6 @@ describe("summary lines and labels", () => {
     expect(taskSummaryLine(byId(FIXTURES.step05.tasks, "t-signup"), SAM)).toBe("Needs approval: Provision database and Stripe");
     expect(taskSummaryLine(byId(FIXTURES.step09.tasks, "t-email"), SAM)).toBe("Applying: Draft: \"Join us Nov 20\" (240 words)");
     expect(taskSummaryLine(byId(FIXTURES.step02.tasks, "t-signup"), SAM)).toBe("Working");
-    expect(taskSummaryLine(byId(FIXTURES.step02.tasks, "t-fees"), SAM)).toBe("would use a paid tool");
   });
   it("actor line for the request pane", () => {
     expect(doneByLine("finance", { word: "Working", reason: null })).toBe("Finance is working on this");
@@ -85,7 +83,6 @@ describe("summary lines and labels", () => {
     expect(doneByLine(null, { word: "Closed", reason: null })).toBe("Done by Lightbulb");
   });
   it("no actor line for what never ran or ended without a result", () => {
-    expect(doneByLine("finance", { word: "Needs you", reason: "Wants to start" })).toBeNull();
     for (const reason of ["Stopped", "Dismissed", "Failed"]) expect(doneByLine("finance", { word: "Closed", reason })).toBeNull();
   });
   it("ids that are not names never show", () => {

@@ -69,8 +69,6 @@ export type AnalyticsEvent =
   | "task_retried"
   | "task_steer_sent"
   | "task_stopped"
-  | "task_suggestion_dismissed"
-  | "task_suggestion_started"
   // Growth: the door into a workspace and the sharing surface (2026-09-30)
   | "join_link_copied"
   | "session_opened"

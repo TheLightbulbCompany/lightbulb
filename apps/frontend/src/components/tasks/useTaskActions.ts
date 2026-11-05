@@ -10,8 +10,7 @@ import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { capture, type AnalyticsEvent } from "@/lib/analytics";
 
 const VERB_EVENTS: Record<TaskVerb, AnalyticsEvent> = {
-  start: "task_suggestion_started", dismiss: "task_suggestion_dismissed", stop: "task_stopped",
-  resolve: "task_resolved", reopen: "task_reopened", retry: "task_retried",
+  stop: "task_stopped", resolve: "task_resolved", reopen: "task_reopened", retry: "task_retried",
 };
 /** Actions that are an answer to the open question (the answer is the apply; no /apply route). */
 const ANSWERS = new Set<TaskAction>(["approve", "send", "publish", "merge"]);
@@ -89,7 +88,7 @@ export function useTaskActions(source: string) {
       if (!optionId) return Promise.resolve({ ok: false, message: "Open the request to answer this." });
       return answer(task, task.openQuestion.qid, optionId);
     }
-    if (action === "start" || action === "retry" || action === "reopen") return act(task, action);
+    if (action === "retry" || action === "reopen") return act(task, action);
     return Promise.resolve({ ok: true });
   }, [act, answer]);
 
@@ -97,6 +96,6 @@ export function useTaskActions(source: string) {
 }
 
 export const ACTION_LABELS: Record<TaskAction, string> = {
-  start: "Start", approve: "Approve", answer: "Answer", review: "Review", retry: "Retry", reopen: "Reopen",
+  approve: "Approve", answer: "Answer", review: "Review", retry: "Retry", reopen: "Reopen",
   publish: "Publish", send: "Send", merge: "Merge",
 };

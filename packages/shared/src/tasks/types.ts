@@ -29,7 +29,7 @@ export interface TaskSummary {
   status: TaskStatus;
   /** "stopped" on a resolved task a person stopped. */
   statusReason?: string | null;
-  /** Viewer-specific, computed by the server; null = proposed (chat's Suggested block). Never re-derived here. */
+  /** Viewer-specific, computed by the server. Never re-derived here. */
   shownGroup: ShownGroup | null;
   /** Specialist handle ("finance") or agent id; shown by its name ("Finance"). */
   specialist?: string | null;
@@ -38,7 +38,6 @@ export interface TaskSummary {
   audienceKind: "person" | "room" | "workspace";
   originRoomId?: string | null;
   taskRoomId: string;
-  proposalReason?: string | null;
   openQuestion?: SummaryQuestion | null;
   /** The effect being applied (Landing), else null. */
   landing?: string | null;
@@ -124,7 +123,7 @@ export interface TaskDetail {
 }
 
 export type TaskScope = { kind: "room"; roomId: string } | { kind: "mine" } | { kind: "workspace" };
-export type TaskVerb = "start" | "dismiss" | "stop" | "resolve" | "reopen" | "retry";
+export type TaskVerb = "stop" | "resolve" | "reopen" | "retry";
 
 export interface AnswerBody {
   optionId: string | null;
@@ -136,7 +135,7 @@ export interface AnswerBody {
 }
 
 /** Message attrs Lightbulb sets on task messages (contracts-v2 §6; absent on every other message). */
-export interface TaskRef { taskId: string; role: "started" | "suggested"; qid?: string }
+export interface TaskRef { taskId: string; role: "started"; qid?: string }
 
 /** Lane A's `GET /api/v1/automations` row (`routers/automations.py _view`, #4754): `nextRuns` are UTC ISO strings. */
 export interface AutomationView {

@@ -25,12 +25,11 @@ describe("tasks client: routes and bodies (wave2-README C15)", () => {
     ]);
   });
 
-  it("actions, answer, bulk start, trace, read, needs-you", async () => {
+  it("actions, answer, trace, read, needs-you", async () => {
     const { api, get, post } = fakeApi();
     const c = createTasksClient(api);
     await c.act("t", "stop", 4);
     await c.answer("t", "q", { optionId: "approve", clientAnswerId: "c", expectVersion: 2 });
-    await c.startMany(["a", "b"]);
     await c.markRead("t");
     await c.trace("t", 2);
     await c.get("t");
@@ -39,7 +38,6 @@ describe("tasks client: routes and bodies (wave2-README C15)", () => {
     expect(post.mock.calls).toEqual([
       ["/tasks/t/stop", { version: 4 }],
       ["/tasks/t/questions/q/answer", { optionId: "approve", clientAnswerId: "c", expectVersion: 2 }],
-      ["/tasks/start", { taskIds: ["a", "b"] }],
       ["/tasks/t/read", {}],
     ]);
     expect(get.mock.calls.map((x) => (x as unknown[])[0])).toEqual(["/tasks/t/trace?attempt=2", "/tasks/t", "/needs-you", "/tasks/t/questions"]);

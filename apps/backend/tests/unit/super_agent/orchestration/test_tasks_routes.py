@@ -56,7 +56,7 @@ async def _task(status="queued", audience=None, **over) -> str:
             "taskId": ts.new_task_id(),
             "identifier": "LB-1",
             "title": "Draft the memo",
-            "status": "proposed" if status == "proposed" else "queued",
+            "status": "queued",
             "audience": audience or {"kind": "person", "userIds": [SAM]},
             "lane": "private",
             "ownerUserId": SAM,
@@ -64,7 +64,7 @@ async def _task(status="queued", audience=None, **over) -> str:
         }
         | over,
     )
-    if status not in ("proposed", "queued"):
+    if status != "queued":  # `proposed` too: a row stored before 5 Nov 2026
         tasks_repo._table().update_item(
             Key={"pk": row["pk"], "sk": row["sk"]},
             UpdateExpression="SET #s = :s, statusKey = :k",
@@ -119,15 +119,22 @@ async def test_stop_returns_summary_and_attributes_user(world):
     world["update"].assert_awaited_once_with(WS, task, "stop", StopRequest(by_user_id=SAM))
 
 
-async def test_start_409_unless_proposed(world):
-    queued = await _task()
-    resp = await world["client"].post(f"/api/v1/tasks/{queued}/start", json={"version": 1})
-    assert resp.status_code == 409
-    proposed = await _task("proposed")
-    resp = await world["client"].post(f"/api/v1/tasks/{proposed}/start", json={"version": 1})
-    assert resp.status_code == 200
-    world["start"].assert_awaited_once_with(WS, proposed, "propose_start")
-    world["handle"].signal.assert_awaited_once_with("start")
+async def test_no_start_or_dismiss_and_legacy_proposed_reads_closed(world):
+    """5 Nov 2026: requests always start; a row stored `proposed` before then lists as Closed (resolved)."""
+    legacy = await _task("proposed")
+    for verb in ("start", "dismiss"):
+        resp = await world["client"].post(f"/api/v1/tasks/{legacy}/{verb}", json={"version": 1})
+        assert resp.status_code == 422
+    assert (await world["client"].post("/api/v1/tasks/start", json={"taskIds": [legacy]})).status_code in (404, 405)
+    world["start"].assert_not_awaited()
+    (row,) = (await world["client"].get("/api/v1/tasks", params={"scope": "mine"})).json()["tasks"]
+    assert (row["taskId"], row["status"], row["statusReason"], row["shownGroup"]) == (
+        legacy,
+        "resolved",
+        "dismissed",
+        "resolved",
+    )
+    assert "proposalReason" not in row
 
 
 async def test_version_mismatch_409(world):
@@ -145,7 +152,7 @@ async def test_version_mismatch_409(world):
 async def test_temporal_down_503_retryable(world):
     task = await _task("failed")
     world["update"].side_effect = temporal_client.TemporalUnavailable("down")
-    resp = await world["client"].post(f"/api/v1/tasks/{task}/dismiss", json={"version": 1})
+    resp = await world["client"].post(f"/api/v1/tasks/{task}/resolve", json={"version": 1})
     assert resp.status_code == 503
     assert resp.json()["detail"] == {"code": "TEMPORAL_UNAVAILABLE", "retryable": True}
 
@@ -162,15 +169,6 @@ async def test_retry_runs_gate_chat(world):
     resp = await world["client"].post(f"/api/v1/tasks/{task}/retry", json={"version": 1})
     assert resp.status_code == 200
     world["update"].assert_awaited_once_with(WS, task, "retry", ActionRequest(SAM, expected_version=1))
-
-
-async def test_bulk_start_skips_non_viewable(world):
-    mine = await _task("proposed")
-    theirs = await _task("proposed", audience={"kind": "person", "userIds": [PRIYA]}, ownerUserId=PRIYA)
-    resp = await world["client"].post("/api/v1/tasks/start", json={"taskIds": [mine, theirs]})
-    assert resp.status_code == 200
-    assert [t["taskId"] for t in resp.json()["tasks"]] == [mine]
-    world["start"].assert_awaited_once_with(WS, mine, "propose_start")
 
 
 async def test_trace_returns_recent_tools(world, monkeypatch):
@@ -206,14 +204,13 @@ async def test_trace_returns_recent_tools(world, monkeypatch):
 
 
 async def test_routes_404_when_switch_off(world):
-    task = await _task("proposed")
+    task = await _task()
     world["flag"].return_value = False
     c = world["client"]
     for resp in (
         await c.get("/api/v1/tasks", params={"scope": "mine"}),
         await c.get(f"/api/v1/tasks/{task}"),
-        await c.post(f"/api/v1/tasks/{task}/start", json={"version": 1}),
-        await c.post("/api/v1/tasks/start", json={"taskIds": [task]}),
+        await c.post(f"/api/v1/tasks/{task}/stop", json={"version": 1}),
         await c.get(f"/api/v1/tasks/{task}/trace"),
         await c.post(f"/api/v1/tasks/{task}/read"),
     ):

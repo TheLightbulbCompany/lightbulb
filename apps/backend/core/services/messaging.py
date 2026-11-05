@@ -519,12 +519,12 @@ class UpdateMessageRequest(ContractModel):
 
 
 class TaskRef(ContractModel):
-    """A task card on a Lightbulb message. Writers: Router apply (started/suggested), the result post, question
+    """A task card on a Lightbulb message. Writers: Router apply (started), the result post, question
     cards (+ `qid`: the card's buttons bind to {taskId, qid}). Strict on write (`create_agent_message`);
     `_read_task_refs` keeps a stored row readable whatever it holds."""
 
     task_id: str
-    role: Literal["started", "suggested"]
+    role: Literal["started"]
     qid: str | None = None
 
     @model_serializer(mode="wrap")
@@ -546,7 +546,10 @@ def _read_task_refs(stored: Any) -> list[TaskRef] | None:
     refs = []
     for ref in stored:
         try:
-            refs.append(TaskRef.model_validate({k: v for k, v in ref.items() if k in _TASK_REF_KEYS}))
+            kept = {k: v for k, v in ref.items() if k in _TASK_REF_KEYS}
+            if kept.get("role") == "suggested":  # stored before 5 Nov 2026 (proposals removed): an ordinary card
+                kept["role"] = "started"
+            refs.append(TaskRef.model_validate(kept))
         except (AttributeError, ValueError):
             logger.warning("unreadable stored taskRef dropped: %r", ref)
     return refs

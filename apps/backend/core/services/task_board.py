@@ -85,15 +85,16 @@ def _summary(issue: dict, names: dict[str, str]) -> dict:
 
 #: Board status words → task statuses (contracts §4). `blocked` ≈ waiting on a person; `in_review` ≈ idle with output.
 _SA_STATUS = {
-    "backlog": ("proposed",),
+    "backlog": (),  # nothing waits to be started since 5 Nov 2026: requests always start
     "todo": ("queued",),
     "in_progress": ("working",),
     "blocked": ("waiting",),
     "in_review": ("idle",),
-    "done": ("resolved",),  # a stopped task is `resolved` + statusReason=stopped: it lists under done too
+    # A stopped task is `resolved` + statusReason=stopped; a `proposed` row (before 5 Nov 2026) reads as closed.
+    "done": ("resolved", "proposed"),
     "cancelled": ("failed",),
 }
-_SA_OPEN = ("proposed", "queued", "working", "waiting", "idle")
+_SA_OPEN = ("queued", "working", "waiting", "idle")
 # ponytail: one page per status, newest first; a board past 50 open tasks per status needs the cursor.
 _SA_SCAN = 50
 _IDENTIFIER = re.compile(r"^LB-\d{1,9}$")
@@ -120,7 +121,11 @@ async def _sa_task(ws: str, user_id: str, task: str) -> dict:
         raise HTTPException(status_code=404, detail="Task not found")
     if _IDENTIFIER.match(task):
         row = next(
-            (r for r in await _sa_rows(ws, user_id, (*_SA_OPEN, "resolved", "failed")) if r.get("identifier") == task),
+            (
+                r
+                for r in await _sa_rows(ws, user_id, (*_SA_OPEN, "resolved", "failed", "proposed"))
+                if r.get("identifier") == task
+            ),
             None,
         )
         task = row["taskId"] if row else ""

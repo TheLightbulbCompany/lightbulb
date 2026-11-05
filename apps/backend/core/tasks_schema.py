@@ -23,8 +23,9 @@ SCHEMA_VERSION = 1
 
 # --- Enums -----------------------------------------------------------------------------------------
 
-# §4 stored statuses. "stopped" is `resolved` with `statusReason`.
-TaskStatus = Literal["proposed", "queued", "working", "waiting", "idle", "resolved", "failed"]
+# §4 stored statuses. "stopped" is `resolved` with `statusReason`. Rows stored `proposed` before 5 Nov 2026
+# (proposals removed) are read as `resolved`/`dismissed` (`tasks_access.summarize`).
+TaskStatus = Literal["queued", "working", "waiting", "idle", "resolved", "failed"]
 # §4 shown groups: derived by clients from status + open questions + effects, never stored.
 ShownGroup = Literal["waiting_on_you", "ready_for_review", "landing", "working", "idle", "resolved"]
 # §5
@@ -83,7 +84,7 @@ ListenMode = Literal["active", "observe"]
 # §3 + §13: skills only in v1.
 CreationKind = Literal["skill"]
 CreationStatus = Literal["draft", "active", "off"]
-RouterDecisionKind = Literal["start_task", "propose_tasks", "pass_through", "reply", "ask", "ignore"]
+RouterDecisionKind = Literal["start_task", "pass_through", "reply", "ask", "ignore"]
 # Spec 11 (watchdog): check that fired, the judge's verdict, the action it proposes, a platform admin's label.
 WatchdogCheck = Literal["C1", "C2", "C3", "C4", "C5", "C6", "judge"]
 WatchdogVerdict = Literal[
@@ -482,7 +483,6 @@ class Task(_Row):
     # id, lane Q's A2A admission) is `a2aTaskId`.
     a2a_task_id: str | None = Field(None, alias="a2aTaskId")
     ws_channel: str | None = None
-    proposal_reason: str | None = None  # why the Router proposed instead of starting (G18)
     stop_requested_by: str | None = None  # who pressed Stop (attributes the stop)
     landing_effect: str | None = None  # Effect idemKey while `apply_effect` runs (Lane Q writes)
 
@@ -915,7 +915,6 @@ class TaskSummary(_Model):
     audience_kind: AudienceKind
     origin_room_id: str | None = None
     task_room_id: str
-    proposal_reason: str | None = None
     open_question: SummaryQuestion | None = None
     landing: str | None = None
     output: SummaryOutput | None = None
@@ -940,12 +939,6 @@ class _Decision(_Model):
     reason: str | None = None
 
 
-class ProposedTask(_Model):
-    title: str = Field(max_length=200)
-    brief: str
-    specialist: str | None = None
-
-
 class StartTask(_Decision):
     kind: Literal["start_task"]
     title: str = Field(max_length=200)
@@ -959,12 +952,6 @@ class StartTask(_Decision):
     previous_run_task_id: TaskId | None = None
     # Same explicit alias as Task.a2a_task_id: one wire name, `a2aTaskId` (`to_camel` would say `a2ATaskId`).
     a2a_task_id: str | None = Field(None, alias="a2aTaskId")  # an inbound A2A request's governance row
-
-
-class ProposeTasks(_Decision):
-    kind: Literal["propose_tasks"]
-    tasks: list[ProposedTask] = Field(min_length=1)
-    ack: str
 
 
 class PassThrough(_Decision):
@@ -991,7 +978,7 @@ class Ignore(_Decision):
 
 
 RouterDecision = Annotated[
-    StartTask | ProposeTasks | PassThrough | Reply | Ask | Ignore,
+    StartTask | PassThrough | Reply | Ask | Ignore,
     Field(discriminator="kind"),
 ]
 

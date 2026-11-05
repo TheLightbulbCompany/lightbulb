@@ -56,8 +56,6 @@ async def can_view(task: dict, user_id: str) -> bool:
 
 def _shown_group(task: dict, viewer_id: str, open_qs: list[dict], effects: list[dict]) -> str | None:
     status = task["status"]
-    if status == "proposed":
-        return None
     if status == "resolved":
         return "resolved"
     if status == "failed":
@@ -86,6 +84,8 @@ def summarize(tree: dict, viewer_id: str) -> dict[str, Any]:
     """The C15 `TaskSummary` for one viewer. Callers check `can_view(task, viewer_id)` first: this does not. `tree` is `tasks_repo.get_task_tree` plus optional `effects`
     (Effect rows of the task) and `userNames` ({userId: display name}) added by the caller."""
     task = tree["task"]
+    if task.get("status") == "proposed":  # stored before 5 Nov 2026 (proposals removed): it never started, so Closed
+        task = {**task, "status": "resolved", "statusReason": "dismissed"}
     names = tree.get("userNames") or {}
     effects = tree.get("effects") or []
     open_qs = [q for q in tree.get("questions") or [] if q.get("state") == "open"]
@@ -134,7 +134,6 @@ def summarize(tree: dict, viewer_id: str) -> dict[str, Any]:
         "audienceKind": audience.get("kind"),
         "originRoomId": _origin_room(tree.get("subscriptions") or [], audience),
         "taskRoomId": ts.task_room_id(task["taskId"]),
-        "proposalReason": task.get("proposalReason"),
         "openQuestion": question,
         "landing": task.get("landingEffect"),
         "output": output,

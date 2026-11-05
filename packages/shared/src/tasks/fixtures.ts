@@ -23,7 +23,6 @@ export function fixtureTask(over: Partial<TaskSummary> & Pick<TaskSummary, "task
     audienceKind: "room",
     originRoomId: ROOM,
     taskRoomId: `task-room-${over.taskId}`,
-    proposalReason: null,
     openQuestion: null,
     landing: null,
     output: null,
@@ -72,23 +71,20 @@ export function fixtureMessage(over: Partial<CanonicalRoomMessage> & Pick<Canoni
 
 const signup = fixtureTask({ taskId: "t-signup", title: "Workshop signup app", specialist: "engineering" });
 const email = fixtureTask({ taskId: "t-email", title: "Launch email draft", specialist: "marketing" });
-const fees = fixtureTask({
-  taskId: "t-fees", title: "Stripe fee estimate", specialist: "finance",
-  status: "proposed", shownGroup: null, activity: null, attemptCount: 0, proposalReason: "would use a paid tool",
-});
+const fees = fixtureTask({ taskId: "t-fees", title: "Stripe fee estimate", specialist: "finance" });
 
 const ask = fixtureMessage({
   messageId: "m-ask", messageSeq: 1,
   author: { kind: "human", id: SAM, displayName: "Sam" },
   text: "@lightbulb build a signup page for the workshop, draft the launch email, and estimate Stripe fees",
-  routedTo: { taskIds: ["t-signup", "t-email", "t-fees"], started: 2, suggested: 1, passThrough: false },
+  routedTo: { taskIds: ["t-signup", "t-email", "t-fees"], started: 3, passThrough: false },
 });
 const reply = fixtureMessage({
-  messageId: "m-reply", messageSeq: 2, text: "On it: two requests started, one suggested.",
+  messageId: "m-reply", messageSeq: 2, text: "On it: three requests started.",
   taskRefs: [
     { taskId: "t-signup", role: "started" },
     { taskId: "t-email", role: "started" },
-    { taskId: "t-fees", role: "suggested" },
+    { taskId: "t-fees", role: "started" },
   ],
 });
 

@@ -37,13 +37,13 @@ class IllegalTransition(TasksRepoError):
 
 # to-status -> allowed from-statuses; None = a new row (§4).
 TRANSITIONS: dict[str, frozenset[str | None]] = {
-    "proposed": frozenset({None}),
-    "queued": frozenset({None, "proposed", "idle", "failed", "resolved"}),
+    "queued": frozenset({None, "idle", "failed", "resolved"}),
     "working": frozenset({"queued", "waiting"}),
     # queued/idle → waiting: the per-run budget is checked before an attempt starts (§14.8).
     "waiting": frozenset({"working", "queued", "idle"}),
     "idle": frozenset({"working", "waiting"}),
     "failed": frozenset({"working"}),
+    # `proposed`: rows from before 5 Nov 2026 (proposals removed) can still close (quiet, dismissed).
     "resolved": frozenset({"proposed", "queued", "working", "waiting", "idle", "failed"}),
 }
 
@@ -166,8 +166,8 @@ def _check_fields(fields: dict) -> None:
 
 
 async def create_task(ws: str, task: dict) -> tuple[dict, bool]:
-    if task.get("status") not in ("proposed", "queued"):
-        raise ValueError("a task is created proposed or queued")
+    if task.get("status") != "queued":
+        raise ValueError("a task is created queued")
     return await _put_new(ws, _row(ts.Task, ws, task))
 
 

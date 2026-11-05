@@ -30,20 +30,19 @@ it("Finance byline on a result line", async () => {
   expect(screen.queryByText("Lightbulb")).toBeNull();
 });
 
-it("started and suggested refs split under the reply", async () => {
+it("one card per ref under the reply, no Suggested block", async () => {
   await group(reply);
   expect(await screen.findByText("Workshop signup app")).toBeTruthy();
   expect(screen.getByText("Launch email draft")).toBeTruthy();
-  expect(screen.getByText("SUGGESTED")).toBeTruthy();
   expect(screen.getByText("Stripe fee estimate")).toBeTruthy();
-  expect(screen.getByText("would use a paid tool")).toBeTruthy();
+  expect(screen.queryByText("SUGGESTED")).toBeNull();
   expect(list).toHaveBeenCalledTimes(1);
 });
 
 it("the person's message says where it went; the agent's 👀 is a receipt, not a toggle", async () => {
   const onToggleReaction = jest.fn();
   await group({ ...ask, reactions: { "👀": [LIGHTBULB] } }, { onToggleReaction });
-  expect(screen.getByText("2 requests started, 1 suggested ›")).toBeTruthy();
+  expect(screen.getByText("3 requests started ›")).toBeTruthy();
   const chip = screen.getByLabelText("Lightbulb saw this");
   fireEvent.press(chip);
   expect(onToggleReaction).not.toHaveBeenCalled();

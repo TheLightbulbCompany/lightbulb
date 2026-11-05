@@ -211,11 +211,11 @@ export interface CanonicalRoomMessage {
   /** A feed post's "Why I created this post" (plain text). Absent on every other message. */
   postReason?: string | null;
   /** Super-agent attrs (contracts-v2 §6), only on messages Lightbulb posts for tasks; absent otherwise. */
-  taskRefs?: { taskId: string; role: "started" | "suggested"; qid?: string }[] | null;
+  taskRefs?: { taskId: string; role: "started"; qid?: string }[] | null;
   /** Specialist handle of a result line ("finance"); the byline reads "Finance". */
   specialist?: string | null;
   /** On a person's message: where Lightbulb sent it. */
-  routedTo?: { taskIds: string[]; started: number; suggested: number; passThrough: boolean } | null;
+  routedTo?: { taskIds: string[]; started: number; passThrough: boolean } | null;
   /** On a task-room line: the card reply it was forwarded from. */
   forwardedFrom?: { roomId: string; messageId: string; roomName?: string } | null;
   /** "result" on a task's result line; "automation_confirm" on the card that turns an automation on. */

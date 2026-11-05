@@ -33,9 +33,12 @@ def test_tools_record_in_order(router_turn):
     assert turn.RUNS[RUN]["decisions"][0]["triggerIds"] == ["chat:m1"]
 
 
+def test_propose_tasks_is_gone():
+    assert "propose_tasks" not in rt.SCHEMAS  # 5 Nov 2026: requests always start; approvals live inside the task
+
+
 def test_router_tool_rejects_bad_args(router_turn):
-    six = [{"title": f"t{i}", "brief": "b"} for i in range(6)]
-    out = _call("propose_tasks", trigger_ids=["chat:m1"], tasks=six, ack="Here are options")
+    out = _call("start_task", trigger_ids=["chat:m1"], title="t" * 201, brief="b", ack="On it")
     assert "error" in json.loads(out)
     assert json.loads(_call("reply", trigger_ids=[], text="hi"))["error"]
     assert "decisions" not in turn.RUNS[RUN]
@@ -55,7 +58,7 @@ def test_registered_under_router_toolset():
 
     rt.register(Ctx())
     assert seen == [(k, "lightbulb_router") for k in (
-        "start_task", "propose_tasks", "pass_through", "reply", "ask", "ignore", "follow_link", "propose_automation")]
+        "start_task", "pass_through", "reply", "ask", "ignore", "follow_link", "propose_automation")]
 
 
 def test_follow_link_calls_memory_link_route(router_turn, monkeypatch):
@@ -118,8 +121,7 @@ def test_task_ns_matches_schema():
 
 
 @pytest.mark.parametrize("kind,args", [
-    ("propose_tasks", {"tasks": [{"title": "a", "brief": "b", "budget": 9}], "ack": "x"}),  # unknown key
-    ("propose_tasks", {"tasks": [{"title": 5, "brief": "b"}], "ack": "x"}),
+    ("start_task", {"title": 5, "brief": "b", "ack": "x"}),
     ("pass_through", {"task_id": "not-a-uuid"}),
     ("start_task", {"title": "t", "brief": "b", "ack": "a", "visibility": "everyone"}),
     ("reply", {"text": ["not", "text"]}),

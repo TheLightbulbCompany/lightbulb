@@ -28,7 +28,6 @@ export function TaskDetailsSheet({ detail, visible, onClose }: { detail: TaskDet
     <BottomSheet visible={visible} onClose={onClose}>
       <ScrollView contentContainerStyle={styles.body} accessibilityLabel="Details">
         <Text style={[styles.heading, { color: palette.fg }]}>Details</Text>
-        {task.proposalReason ? <Row label="Why" value={task.proposalReason} /> : null}
         <Row label="Attempts" value={String(attempts.length)} />
         {cost ? <Row label="Cost" value={cost} /> : null}
         {effects.length > 0 ? (

@@ -14,7 +14,7 @@ ASK_S = 300
 
 
 async def a05(ctx: Ctx) -> Result:
-    # Never the purchase task A3 started: nothing here may approve a purchase.
+    # Never the purchase task A2 started: nothing here may approve a purchase.
     task_ids = [t for t in ctx.state.get("taskIds") or [] if t != ctx.state.get("purchaseTaskId")]
     if not task_ids:
         return Result(False, {"reason": "needs A2: no task ids in ctx.state"})

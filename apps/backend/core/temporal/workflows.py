@@ -183,6 +183,8 @@ class TaskWorkflow(TaskQuestionsMixin, AutomationRunMixin, WatchMixin):
         # `migrated` = started by a signal/update-with-start: wait for what came with it.
         self._attempt_needed = start.reason != "migrated"
         # Consent for a proposed task is an explicit Start only (the route's start, or the `start` signal).
+        # Proposals were removed 5 Nov 2026 (nothing creates `proposed` rows or sends `start`/`dismiss`); this path,
+        # the `start` signal and the `dismiss` update stay so histories already recorded with them still replay.
         self._started = start.reason == "propose_start"
         self._status: str | None = None  # mirror of the row's status, None until this run changes it
         self._pending: list[TaskInputRef] = []

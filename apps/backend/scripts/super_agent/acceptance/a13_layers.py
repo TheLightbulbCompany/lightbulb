@@ -24,7 +24,7 @@ from scripts.super_agent.acceptance.ctx import Result
 
 #: ``lightbulb_router`` (apps/infra/hermes/tests/test_router_tools.py) plus the read-only memory toolset.
 ROUTER_TOOLS = frozenset(
-    {"start_task", "propose_tasks", "pass_through", "reply", "ask", "ignore", "follow_link", "propose_automation"}
+    {"start_task", "pass_through", "reply", "ask", "ignore", "follow_link", "propose_automation"}
     | {"memory", "search", "recall"}
     | {"tool_describe", "tool_search"}  # Hermes's built-in tool discovery: reads the toolset, acts on nothing
 )

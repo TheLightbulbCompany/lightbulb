@@ -92,10 +92,10 @@ describe("TaskCard", () => {
 
   it("stale version 409 refetches, no second POST", async () => {
     const fees = byId("step03", "t-fees");
-    const proposed = { ...byId("step02", "t-fees") };
+    const failed = { ...byId("step02", "t-fees"), status: "failed" as const, shownGroup: "waiting_on_you" as const };
     client.act.mockRejectedValueOnce(new ApiError(409, null));
     client.get.mockResolvedValue({ task: fees } as never);
-    render(<Fresh><TaskCard task={{ ...proposed, status: "failed", shownGroup: "waiting_on_you" }} taskId="t-fees" viewerId={SAM} /></Fresh>);
+    render(<Fresh><TaskCard task={failed} taskId="t-fees" viewerId={SAM} /></Fresh>);
     await userEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Someone else got to this first");
     expect(client.act).toHaveBeenCalledTimes(1);

@@ -863,3 +863,88 @@ async def test_existing_ideas_unchanged(paperclip):
     started = await ideas.start(AUTH, added["id"])
     [line] = await _lines(started["roomId"])
     assert "lightbulb app" not in line["text"]
+
+
+# ---- Super-agent workspaces: Let's do it starts a request; Not now is remembered (product shape, 5 Nov 2026) ----
+
+
+@pytest.fixture
+def super_agent(workspace, monkeypatch):
+    """The switch on: no Paperclip. The Router side (admission, tasks) is faked; the task rows live in a dict."""
+    from core.repositories import tasks_repo
+    from core.services import admission, super_agent_flags, task_conversation
+
+    monkeypatch.setattr(super_agent_flags, "flags_for", AsyncMock(return_value=True))
+    monkeypatch.setattr(task_conversation, "front_agent_id", AsyncMock(return_value=STARTERS["ceo"]))
+    monkeypatch.setattr(messaging, "_agent_dm_room_id", AsyncMock(return_value="room-dm-A"))
+    tasks: dict[str, dict] = {}
+    enqueued: list = []
+
+    async def enqueue(ws, trigger, *, room_id=None):
+        enqueued.append((ws, trigger, room_id))
+        return True
+
+    async def by_status(ws, status, **_):
+        return [t for t in tasks.values() if t["status"] == status], None
+
+    monkeypatch.setattr(admission, "enqueue_trigger", enqueue)
+    monkeypatch.setattr(tasks_repo, "get_task", AsyncMock(side_effect=lambda ws, tid: tasks.get(tid)))
+    monkeypatch.setattr(tasks_repo, "list_tasks_by_status", by_status)
+    monkeypatch.setattr(task_board, "_context", AsyncMock(side_effect=AssertionError("no Paperclip")))
+    return SimpleNamespace(tasks=tasks, enqueued=enqueued)
+
+
+@pytest.mark.asyncio
+async def test_super_agent_lets_do_it_starts_a_request_in_the_lightbulb_dm(super_agent):
+    added = await ideas.suggest(OWNER, _suggestion())
+    started = await ideas.start(AUTH, added["id"])
+    ((ws, trigger, room_id),) = super_agent.enqueued
+    assert (ws, room_id, trigger.source, trigger.admission) == (OWNER, "room-dm-A", "idea", "respond")
+    assert trigger.actor_user_id == "user_A" and trigger.lane != "shared"  # the person's private lane
+    start = trigger.ref["start"]
+    assert start["title"] == "Answer the 14 open Shopify reviews" and start["visibility"] == "person"
+    assert start["specialist"] == STARTERS["growth"] and "Every review answered" in start["brief"]
+    assert started == {"roomId": "room-dm-A", "taskId": trigger.ref["taskId"]}
+    # Twice is one request while it is open; the idea leaves the list.
+    super_agent.tasks[started["taskId"]] = {"taskId": started["taskId"], "status": "working", "title": "x"}
+    assert await ideas.start(AUTH, added["id"]) == started and len(super_agent.enqueued) == 1
+    assert all(c["id"] != added["id"] for c in (await ideas.list_ideas(AUTH))["ideas"])
+    # Done: it can be started again (a new request).
+    super_agent.tasks[started["taskId"]]["status"] = "resolved"
+    assert any(c["id"] == added["id"] for c in (await ideas.list_ideas(AUTH))["ideas"])
+    again = await ideas.start(AUTH, added["id"])
+    assert again["taskId"] != started["taskId"] and len(super_agent.enqueued) == 2
+
+
+@pytest.mark.asyncio
+async def test_super_agent_catalog_idea_by_the_ceo_goes_to_lightbulb(super_agent):
+    ceo_idea = next(i for i in ideas.catalog().values() if i.owner_role == "ceo")
+    await ideas.start(AUTH, ceo_idea.id)
+    ((_, trigger, _),) = super_agent.enqueued
+    assert trigger.ref["start"]["specialist"] is None  # Lightbulb itself, not a specialist
+
+
+@pytest.mark.asyncio
+async def test_a_dismissed_title_is_not_suggested_again_for_14_days(workspace, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    added = await ideas.suggest(OWNER, _suggestion())
+    await ideas.dismiss(AUTH, added["id"])
+    assert (await ideas.suggest(OWNER, _suggestion(" answer the 14 open shopify REVIEWS")))["status"] == "duplicate"
+    old = (datetime.now(timezone.utc) - timedelta(days=15)).isoformat()
+    repo._table().update_item(  # noqa: SLF001
+        Key={"pk": repo.owner_pk(OWNER), "sk": f"{repo.IDEA_DISMISSED_PREFIX}{added['id']}"},
+        UpdateExpression="SET dismissedAt = :t",
+        ExpressionAttributeValues={":t": old},
+    )
+    again = await ideas.suggest(OWNER, _suggestion())
+    assert again["status"] == "added"
+    assert [c["id"] for c in (await ideas.list_ideas(AUTH))["ideas"] if c.get("suggested")] == [again["id"]]
+
+
+@pytest.mark.asyncio
+async def test_super_agent_suggestion_matching_an_open_request_is_a_duplicate(super_agent):
+    super_agent.tasks["t1"] = {"taskId": "t1", "status": "working", "title": "Answer the 14 open Shopify reviews"}
+    assert (await ideas.suggest(OWNER, _suggestion()))["status"] == "duplicate"
+    super_agent.tasks["t1"]["status"] = "resolved"
+    assert (await ideas.suggest(OWNER, _suggestion()))["status"] == "added"

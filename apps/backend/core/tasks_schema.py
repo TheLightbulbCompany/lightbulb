@@ -71,6 +71,7 @@ TriggerSource = Literal[
     "answer",
     "ask",
     "watch",  # lane A (A12): a task's own watch was met; the input kind is "watch"
+    "idea",  # Ideas "Let's do it" and the proactive first run (core/services/proactive.py)
 ]
 Admission = Literal["respond", "candidate"]
 # C13
@@ -187,6 +188,7 @@ TRIGGER_ID_FORMATS: dict[str, str] = {
     "answer": "answer:{qid}:{clientAnswerId}",  # a person's free-text answer; the Temporal update carries ids only
     "ask": "ask:{qid}",  # a Worker's ask_person / request_approval text; the `ask` update carries ids only
     "watch": "watch:{taskId}:{watchId}:{n}",  # the n-th check of a task's watch found it met (A12)
+    "idea": "idea:{key}",  # an idea start (hash of idea, person, start token) or the workspace's first run
     # §18: one observe/auto match per rule per thread, ever. Not a TriggerSource: the row's `source` is chat/webhook.
     "rule": "rule:{scheduleId}:{threadHash}",
 }

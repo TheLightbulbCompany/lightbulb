@@ -119,6 +119,18 @@ async def reconcile_schedules() -> dict:
                 out["keepers"] += 1
     if not deletes:
         return out
+    # The proactive layer of every switched-on workspace (first run, paying-only automations), daily: a
+    # workspace switched on after provisioning gets it, and a missed billing reconcile converges here.
+    from core.services import proactive, super_agent_flags
+
+    out["proactive"] = 0
+    for ws in await super_agent_flags.list_on():
+        _beat(f"proactive {ws}")
+        try:
+            await proactive.ensure(ws)
+            out["proactive"] += 1
+        except Exception:  # noqa: BLE001 -- one workspace never stops the reconcile
+            logging.getLogger(__name__).warning("reconcile: proactive ensure failed for %s", ws, exc_info=True)
     prefix = ts.schedule_workflow_id("", "").split(":", 1)[0] + ":"
     async for listed in await get_client().list_schedules():
         _beat(listed.id)
@@ -295,7 +307,7 @@ async def fire_automation(inp: FireInput, at_ms: int) -> str:
     from core.dynamodb import utc_now_iso
     from core.repositories import automations_repo as repo
     from core.repositories import tasks_repo
-    from core.services import admission, messaging, task_conversation
+    from core.services import admission, messaging, proactive, task_conversation
 
     ws = inp.ws
     row = await repo.get_schedule(ws, inp.schedule_id) if inp.schedule_id else None
@@ -305,6 +317,14 @@ async def fire_automation(inp: FireInput, at_ms: int) -> str:
         await repo.note_skip(ws, row["scheduleId"], reason="idle")
         await _turn_off_if_spent(ws, row, inp)
         return "skipped:idle"
+    budget = row.get("budgetPerRunUsd")
+    proactive_run = proactive.is_proactive(row["scheduleId"])
+    if proactive_run:  # paying workspaces only, under the workspace's daily proactive cap
+        skip, left = await proactive.fire_check(ws, row["scheduleId"])
+        if skip:
+            await repo.note_skip(ws, row["scheduleId"], reason=skip)
+            return f"skipped:{skip}"
+        budget = min(budget or left, left)
     trigger_id = _fire_trigger_id(inp, row, at_ms)
     task_id = ts.router_task_id(trigger_id, 0, 0)
     previous = next((t for t in row.get("runTaskIds") or [] if t != task_id), None)  # newest closed run
@@ -319,6 +339,8 @@ async def fire_automation(inp: FireInput, at_ms: int) -> str:
         if prev_task or result:
             status = (prev_task or {}).get("status", "unknown")
             brief += f"\n\nPrevious run ({status}): {(result or 'no result posted')[:PREVIOUS_RESULT_CHARS]}"
+    if proactive_run:  # the Brief is its instructions, with what is going on now
+        brief += "\n\n" + await proactive.context(ws)
     excerpt = await _payload_excerpt(inp.payload_ref)
     if excerpt:
         brief += f"\n\nWebhook payload:\n{excerpt}"
@@ -339,9 +361,10 @@ async def fire_automation(inp: FireInput, at_ms: int) -> str:
         brief=brief,
         specialist=row.get("specialist"),
         ack=f"{row['name']}: started.",
-        visibility="room" if room_id and not dm else "person",
+        # A proactive run belongs to the workspace (its owner is the workspace, not a person).
+        visibility="workspace" if proactive_run else ("room" if room_id and not dm else "person"),
         policy_ref=ts.schedule_sk(row["scheduleId"]),
-        budget_usd=row.get("budgetPerRunUsd"),
+        budget_usd=budget,
         previous_run_task_id=previous,
     )
     now = utc_now_iso()

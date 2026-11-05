@@ -106,6 +106,20 @@ async def test_ensure_feed_room_twice_makes_one_room_with_one_welcome(workspace)
 
 
 @pytest.mark.asyncio
+async def test_a_super_agent_feed_welcome_promises_only_what_runs(workspace, monkeypatch):
+    from core.services import super_agent_flags
+
+    monkeypatch.setattr(super_agent_flags, "flags_for", AsyncMock(return_value=True))
+    await messaging.ensure_feed_room(OWNER, "user_A")
+    messages, _ = await repo.list_messages(FEED, 0, 100)
+    text = messages[0]["text"]
+    assert text == messaging.FEED_WELCOME_SUPER_AGENT
+    assert "three" not in text and "💡" not in text and "Work for tasks" not in text
+    for place in ("Home", "Needs you", "Ideas", "feed", "Discuss", "brief"):
+        assert place in text
+
+
+@pytest.mark.asyncio
 async def test_a_later_teammate_joins_once_and_workspace_membership_alone_decides(workspace):
     await messaging.ensure_feed_room(OWNER, "user_A")
     assert await messaging.join_feed_room(OWNER, "user_C") is True

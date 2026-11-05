@@ -403,6 +403,14 @@ async def arm_nightly_ceo(owner_id: str) -> str:
         # Super-agent workspaces never run Paperclip routines or heartbeats (Paperclip is being removed):
         # pause whatever an earlier arm left on (idempotent), arm nothing.
         await pause_owner_automation(owner_id)
+        # Their proactive layer instead (first ideas; look around + feed posts while paying). Every billing
+        # change comes through here, so the paying-only automations follow the plan. Never fails the arm.
+        from core.services import proactive
+
+        try:
+            await proactive.ensure(owner_id)
+        except Exception:  # noqa: BLE001 -- the daily schedule reconcile ensures it again
+            logger.exception("proactive ensure failed for owner=%s", owner_id)
         return _arm_status("super_agent")
     try:
         # Consistent: a reconcile runs right after the billing write it follows.

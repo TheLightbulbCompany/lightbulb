@@ -702,3 +702,17 @@ async def test_propose_takes_a_bare_trigger_id_and_here(internal):
             sid = r.json()["automationId"]
             assert (await repo.get_schedule(WS, sid))["deliverTo"] == f"room:{ROOM}", deliver
             assert (await tasks_repo.get_trigger(WS, tid))["routedTo"] == {"automationId": sid}
+
+
+async def test_a_workspace_owned_automation_is_paused_and_turned_on_by_any_org_admin(api):
+    """The proactive layer's automations (look around, feed posts) belong to the workspace, not a person."""
+    from core.services import proactive
+
+    (look, _) = proactive.automation_rows(WS, "UTC")
+    await repo.create_schedule(WS, look)
+    sid = look["scheduleId"]
+    await repo.set_status(WS, sid, "active", reason=None, allowed_from=frozenset({"draft"}))
+    assert _as(api, PRIYA, admin=False).post(f"{BASE}/{sid}/pause").status_code in (403, 404)
+    assert _as(api, PRIYA, admin=True).post(f"{BASE}/{sid}/pause").json()["status"] == "paused"
+    assert _as(api, SAM, admin=False).post(f"{BASE}/{sid}/activate").status_code in (403, 404)
+    assert _as(api, SAM, admin=True).post(f"{BASE}/{sid}/activate").json()["status"] == "active"

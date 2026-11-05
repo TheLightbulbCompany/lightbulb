@@ -2830,8 +2830,13 @@ async def dismiss_idea(owner_id: str, idea_id: str) -> None:
 
 
 async def dismissed_ideas(owner_id: str) -> set[str]:
+    return set(await dismissed_idea_times(owner_id))
+
+
+async def dismissed_idea_times(owner_id: str) -> dict[str, str]:
+    """Idea id -> when it was dismissed (ISO)."""
     rows = await _query(owner_pk(owner_id), begins_with=IDEA_DISMISSED_PREFIX)
-    return {row["sk"].removeprefix(IDEA_DISMISSED_PREFIX) for row in rows}
+    return {row["sk"].removeprefix(IDEA_DISMISSED_PREFIX): str(row.get("dismissedAt") or "") for row in rows}
 
 
 async def put_suggested_idea(owner_id: str, item: dict[str, Any]) -> None:

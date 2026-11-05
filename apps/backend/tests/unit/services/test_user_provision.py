@@ -1241,6 +1241,16 @@ async def test_arm_paid_sets_ceo_and_specialist_heartbeats():
 
 
 @pytest.mark.asyncio
+async def test_arm_super_agent_pauses_paperclip_and_arms_nothing():
+    provisioning = _arm_provisioning(_company_row(starter_ids={"ceo": "starter-ceo", **_SPECIALISTS}))
+    with patch("core.services.user_provision.flags_for", AsyncMock(return_value=True)):
+        assert await _arm(provisioning, _paid_account()) == "super_agent"
+    provisioning.pause_automation.assert_awaited_once_with("org_p")
+    provisioning.resume_automation.assert_not_awaited()
+    assert _heartbeats(provisioning) == {}
+
+
+@pytest.mark.asyncio
 async def test_arm_legacy_roster_arms_the_first_seeded_agent():
     provisioning = _arm_provisioning(_company_row())
     assert await _arm(provisioning, _paid_account()) == "armed"

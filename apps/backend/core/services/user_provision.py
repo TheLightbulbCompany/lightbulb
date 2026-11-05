@@ -399,6 +399,11 @@ async def arm_nightly_ceo(owner_id: str) -> str:
     classifies it into its retry ABI exactly like a seed failure;
     ``reconcile_runtime`` logs and moves on.
     """
+    if await flags_for(owner_id):
+        # Super-agent workspaces never run Paperclip routines or heartbeats (Paperclip is being removed):
+        # pause whatever an earlier arm left on (idempotent), arm nothing.
+        await pause_owner_automation(owner_id)
+        return _arm_status("super_agent")
     try:
         # Consistent: a reconcile runs right after the billing write it follows.
         account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)

@@ -146,6 +146,7 @@ function AutomationDetail({ id, viewerTz, onBack, onOpenTask }: {
     </div>}
     <section aria-label="History" className="grid gap-1">
       <h3 className="label-caps">History</h3>
+      {runs?.skipped && <p className="px-2 text-ui text-muted-foreground">{runs.skipped.text}</p>}
       {!runs?.runs.length
         ? <p className="text-ui text-muted-foreground">No runs yet.</p>
         : <ul className="grid">{runs.runs.map((t) => <li key={t.taskId}>

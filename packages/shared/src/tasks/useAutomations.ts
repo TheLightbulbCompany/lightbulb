@@ -25,7 +25,10 @@ export function useAutomation({ api, cacheScope }: AutomationSource, id: string 
     () => api.get(`/automations/${encodeURIComponent(id!)}`) as Promise<AutomationView>, noRetry);
 }
 
+/** `skipped`: the latest fire skipped since the last run, in plain words ("Skipped — nobody's been active…"). */
+export interface AutomationRuns { runs: TaskSummary[]; next: string | null; skipped?: { at: string; text: string } | null }
+
 export function useAutomationRuns({ api, cacheScope }: AutomationSource, id: string | null) {
-  return useSWR<{ runs: TaskSummary[]; next: string | null }>(id ? automationRunsKey(cacheScope, id) : null,
-    () => api.get(`/automations/${encodeURIComponent(id!)}/runs`) as Promise<{ runs: TaskSummary[]; next: string | null }>, noRetry);
+  return useSWR<AutomationRuns>(id ? automationRunsKey(cacheScope, id) : null,
+    () => api.get(`/automations/${encodeURIComponent(id!)}/runs`) as Promise<AutomationRuns>, noRetry);
 }

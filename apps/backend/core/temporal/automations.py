@@ -27,6 +27,11 @@ PREVIOUS_RESULT_CHARS = 4_000
 PAYLOAD_EXCERPT_CHARS = 2_000
 BREAKER_FAILURES = 3
 PATCH_AUTOMATION_RUN = "A-automation-run-v1"
+# A Schedule fire is skipped (no task, no model call) once no human has acted in the workspace
+# for this long; the next fire after anyone sends a message runs again.
+# ponytail: workspace-wide `last_interactive_at`, one clock for every automation; per-automation if asked.
+IDLE_DAYS = 3
+IDLE_SKIP_TEXT = f"Skipped — nobody's been active for {IDLE_DAYS} days"
 
 
 @dataclass(frozen=True)
@@ -247,10 +252,22 @@ async def _payload_excerpt(payload_ref: str | None) -> str | None:
     return obj["Body"].read(PAYLOAD_EXCERPT_CHARS * 4).decode("utf-8", errors="replace")[:PAYLOAD_EXCERPT_CHARS]
 
 
+async def _idle(ws: str, at_ms: int) -> bool:
+    """No human activity (`last_interactive_at`, stamped on every human send) for `IDLE_DAYS`. A row that
+    never recorded any is not idle: nothing to judge by."""
+    from core.dynamodb import plain
+    from core.repositories import container_repo
+
+    last = plain(((await container_repo.get_by_owner_id(ws)) or {}).get("last_interactive_at"))
+    if not isinstance(last, (int, float)) or isinstance(last, bool):
+        return False
+    return at_ms / 1000 - last > IDLE_DAYS * 86_400
+
+
 @activity.defn
 async def fire_automation(inp: FireInput, at_ms: int) -> str:
     """One fire → one trigger with a deterministic `start_task` in `ref["start"]` (no Router model turn, C31).
-    Returns the trigger id, or `skipped:paused` / `skipped:overlap`. Idempotent on retry: the same fire maps
+    Returns the trigger id, or `skipped:paused` / `skipped:idle` / `skipped:overlap`. Idempotent on retry: the same fire maps
     to the same trigger and task ids, the claim accepts its own task id again, the trigger put is conditional."""
     from core import tasks_schema as ts
     from core.dynamodb import utc_now_iso
@@ -262,6 +279,9 @@ async def fire_automation(inp: FireInput, at_ms: int) -> str:
     row = await repo.get_schedule(ws, inp.schedule_id) if inp.schedule_id else None
     if row is None or row["status"] != "active":
         return "skipped:paused"
+    if inp.source == "schedule" and await _idle(ws, at_ms):  # a webhook is a real event, Run now a person
+        await repo.note_skip(ws, row["scheduleId"], reason="idle")
+        return "skipped:idle"
     trigger_id = _fire_trigger_id(inp, row, at_ms)
     task_id = ts.router_task_id(trigger_id, 0, 0)
     previous = next((t for t in row.get("runTaskIds") or [] if t != task_id), None)  # newest closed run

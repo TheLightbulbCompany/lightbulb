@@ -99,3 +99,9 @@ async def test_a13_fails_on_legacy_rows_or_an_execution_tool_or_no_temporal(monk
     result = await a13_layers.a13(FakeCtx(_rows()))
     assert "router_ran_only_router_tools" in report.failed_checks(result)
     assert result.evidence["routerError"] == "ConnectionError: temporal unreachable"
+
+
+def test_check_rows_expects_a_subscription_only_for_the_first_started_task():
+    rows = _rows(sub_for=(T1,))  # one owner per thread: T2 has none and that is right
+    assert a13_layers.check_rows(rows, [T1, T2], [T1])["ok"]
+    assert not a13_layers.check_rows(rows, [T1, T2], [T2])["ok"]

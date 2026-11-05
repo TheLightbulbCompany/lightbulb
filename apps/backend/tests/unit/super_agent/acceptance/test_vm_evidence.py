@@ -63,6 +63,7 @@ async def test_per_task_defaults_to_the_backend_rule(monkeypatch):
         return True
 
     monkeypatch.setattr(token_custody, "task_vm_allowed", allowed)
+    monkeypatch.setattr("scripts.super_agent.acceptance.ctx.load_backend_secrets", lambda: None)  # no Secrets Manager
     result = await vm_evidence(FakeCtx([_att(T1, 1, session_id_for(WS, T1))]), ws=WS, task_ids=[T1])
     assert result.passed and result.evidence["perTaskVm"] is True
 

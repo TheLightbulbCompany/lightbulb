@@ -11,7 +11,9 @@ ROUTE_S = ROUTER_REPLY_S  # an unaddressed thread reply may take the Jev route (
 
 
 async def a04(ctx: Ctx) -> Result:
-    room_id, card = ctx.state["roomId"], ctx.state["cardMessageId"]
+    room_id, card = ctx.state["roomId"], ctx.state.get("cardMessageId")
+    if not card:
+        return Result(False, {"reason": "needs A2: no card message in ctx.state to reply under"})
     before = len(rows_of(await ctx.tasks_rows(ctx.ws), "task"))
     reply = await post(
         ctx, "priya", room_id, "Use the purple theme and add a dietary field to the signup.", thread_root=card
@@ -43,6 +45,7 @@ async def a04(ctx: Ctx) -> Result:
         if a["taskId"] == task_id and trigger_id in (a.get("inputTriggerIds") or [])
     ]
     checks = {
+        "posted_as_thread_reply": reply.get("threadRootMessageId") == card,
         "input_reached_task": task_id in ctx.state["taskIds"] and bool(attempts),
         "eyes_ack_within_5s": bool(eyes),
         "no_new_router_decision": len(after) == before,

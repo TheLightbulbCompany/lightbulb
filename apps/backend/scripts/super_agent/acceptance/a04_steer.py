@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from scripts.super_agent.acceptance.ctx import Ctx, Result
-from scripts.super_agent.acceptance.o_lib import ACK_S, messages, post, rows_of
+from scripts.super_agent.acceptance.o_lib import ACK_S, ROUTER_REPLY_S, messages, post, rows_of
 
 from core import tasks_schema as ts
+
+ROUTE_S = ROUTER_REPLY_S  # an unaddressed thread reply may take the Jev route (a candidate), not the 5 s pass-through
 
 
 async def a04(ctx: Ctx) -> Result:
@@ -15,6 +17,13 @@ async def a04(ctx: Ctx) -> Result:
         ctx, "priya", room_id, "Use the purple theme and add a dietary field to the signup.", thread_root=card
     )
     trigger_id = ts.trigger_id("chat", reply["messageId"])
+    eyes = None
+    for _ in range(ACK_S * 2):  # the 👀 ack is a reaction on Priya's reply, read through the messages API
+        mine = [m for m in await messages(ctx, "priya", room_id) if m.get("messageId") == reply["messageId"]]
+        if mine and "👀" in str(mine[0].get("reactions") or ""):
+            eyes = mine[0]["reactions"]
+            break
+        await ctx.sleep(0.5)
     passed = await ctx.wait_for(
         lambda rows: next(
             (
@@ -24,16 +33,9 @@ async def a04(ctx: Ctx) -> Result:
             ),
             None,
         ),
-        ACK_S,
+        ROUTE_S,
     )
     task_id = (passed or {}).get("routedTo", {}).get("taskId")
-    eyes = None
-    for _ in range(ACK_S * 2):  # the 👀 ack is a reaction on Priya's reply, read through the messages API
-        mine = [m for m in await messages(ctx, "priya", room_id) if m.get("messageId") == reply["messageId"]]
-        if mine and "👀" in str(mine[0].get("reactions") or ""):
-            eyes = mine[0]["reactions"]
-            break
-        await ctx.sleep(0.5)
     after = rows_of(await ctx.tasks_rows(ctx.ws), "task")
     attempts = [
         a

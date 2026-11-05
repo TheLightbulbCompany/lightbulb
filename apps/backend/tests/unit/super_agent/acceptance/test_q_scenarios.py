@@ -138,7 +138,7 @@ async def test_a09_lands_once_and_ends_idle():
     def handler(request, user):
         path = request.url.path
         if path.endswith("/answer"):
-            rows[2].update(state="done", resultRef="ses:1", doorUsedAt="t")
+            rows[2].update(state="done", resultRef="ses:1", executorOk=True)
             return _json({})
         if path.endswith("/questions"):
             return _json({"items": [_view("sam")]})

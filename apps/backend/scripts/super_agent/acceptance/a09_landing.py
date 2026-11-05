@@ -72,7 +72,9 @@ async def a09(ctx: Ctx) -> Result:
         "was_ready_for_review": before["task"].get("shownGroup") == "ready_for_review",
         "send_press_accepted": press.status_code == 200,
         "one_effect_ran_once": len(sent) == 1 and sent[0]["state"] == "done" and bool(sent[0].get("resultRef")),
-        "intent_recorded_before_done": bool(sent) and bool(sent[0].get("doorUsedAt")),
+        "executor_ran_with_result": bool(sent)
+        and bool(sent[0].get("executorOk"))
+        and bool(sent[0].get("resultRef")),  # intent-before-tool order is by hand
         "ended_idle": bool(groups) and groups[-1] in ("idle", "resolved"),
     }
     return Result(

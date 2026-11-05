@@ -75,6 +75,7 @@ def test_env_enabled_callers_are_allowlisted():
         BACKEND / "routers" / "paperclip_proxy.py",
         BACKEND / "scripts" / "backfill_agent_registry.py",
         BACKEND / "scripts" / "copy_workspace_meta.py",  # dev-only copy refuses an env without the tasks table
+        BACKEND / "core" / "repositories" / "paperclip_repo.py",  # META store is env-wide (it has fleet scans)
     }
     offenders = [
         str(path.relative_to(BACKEND))

@@ -211,3 +211,13 @@ async def test_reverse_never_overwrites_an_old_row_newer_than_meta(tables):
     assert "org_a: skipped (old row newer)" in lines
     row = old.get_item(Key={"user_id": "org_a"})["Item"]
     assert (row["updated_at"], row["funnel_state"]) == (later, "completed")
+
+
+def test_meta_store_follows_env_master():
+    repo = PaperclipRepo(table_name=cwm.OLD_TABLE)
+    with patch.object(cwm.settings, "SUPER_AGENT_ENV_ENABLED", True):
+        assert repo._meta_on_tasks() is True
+        assert repo._ws_key("org_a") == {"pk": "WS#org_a", "sk": "META"}
+    with patch.object(cwm.settings, "SUPER_AGENT_ENV_ENABLED", False):
+        assert repo._meta_on_tasks() is False
+        assert repo._ws_key("org_a") == {"user_id": "org_a"}

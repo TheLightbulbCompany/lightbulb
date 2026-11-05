@@ -82,6 +82,13 @@ ListenMode = Literal["active", "observe"]
 CreationKind = Literal["skill"]
 CreationStatus = Literal["draft", "active", "off"]
 RouterDecisionKind = Literal["start_task", "propose_tasks", "pass_through", "reply", "ask", "ignore"]
+# Spec 11 (watchdog): check that fired, the judge's verdict, the action it proposes, a platform admin's label.
+WatchdogCheck = Literal["C1", "C2", "C3", "C4", "C5", "C6", "judge"]
+WatchdogVerdict = Literal[
+    "progressing", "looping", "drifting", "stalled_waiting", "blocked_external", "claims_done_without_evidence"
+]
+WatchdogAction = Literal["reconcile", "retry", "recheck", "steer", "question", "escalate", "none"]
+WatchdogLabel = Literal["tp", "fp", "unsure"]
 
 
 # --- Ids and keys ----------------------------------------------------------------------------------
@@ -246,6 +253,28 @@ def schedule_workflow_id(ws: str, schedule_id: str) -> str:
     return f"sched:{ws}:{schedule_id}"
 
 
+# Watchdog rows (spec 11 §5.3). Findings and caps live under platform pks; Actions under the workspace so a
+# task's counters survive any change to the Task row. `WD#` never matches `get_task_tree`'s `TASK#` prefix.
+WD_PLATFORM_PK = "PLATFORM#watchdog"
+
+
+def wd_finding_pk(day: str) -> str:
+    return f"{WD_PLATFORM_PK}#F#{day}"
+
+
+def wd_finding_sk(ws: str, task_id: str, check: str, attempt_n: int, seq: int | None = None) -> str:
+    sk = f"{ws}#{task_id}#{check}#{attempt_n}"
+    return sk if seq is None else f"{sk}#J{seq:02d}"
+
+
+def wd_action_sk(task_id: str, kind: str, n: int) -> str:
+    return f"WD#{task_id}#ACT#{kind}#{n:02d}"
+
+
+def wd_cap_sk(kind: Literal["act", "judge"], bucket: str) -> str:
+    return f"CAP#{kind}#{bucket}"
+
+
 def task_room_id(task_id: str) -> str:
     """§6: every task's hidden conversation room. A uuid (message routes take uuid room ids), fixed per task."""
     return str(uuid.uuid5(TASK_NS, f"room:{task_id}"))
@@ -276,6 +305,11 @@ KEY_FORMATS: dict[str, str] = {
     "scheduleWorkflowId": "sched:{ws}:{scheduleId}",
     "taskRoomId": "uuid5(task, 'room:{taskId}')",
     "routerLaneKey": "u:{sha256(userId)[:16]}",
+    "wdFindingPk": "PLATFORM#watchdog#F#{yyyymmdd}",
+    "wdFinding": "{ws}#{taskId}#{check}#{attemptN}[#J{seq:02}]",
+    "wdAction": "WD#{taskId}#ACT#{kind}#{n:02}",
+    "wdCapPk": "PLATFORM#watchdog",
+    "wdCap": "CAP#{act|judge}#{bucket}",
 }
 
 
@@ -897,6 +931,10 @@ def export_schema() -> dict[str, Any]:
                 "CreationKind": CreationKind,
                 "CreationStatus": CreationStatus,
                 "RouterDecisionKind": RouterDecisionKind,
+                "WatchdogCheck": WatchdogCheck,
+                "WatchdogVerdict": WatchdogVerdict,
+                "WatchdogAction": WatchdogAction,
+                "WatchdogLabel": WatchdogLabel,
             }.items()
         },
         "keys": KEY_FORMATS,

@@ -23,3 +23,11 @@ def env_enabled() -> bool:
     """The env master alone, for process-wide wiring with no workspace (the Temporal client in the
     lifespan, the worker entrypoint). Per-workspace behaviour still asks `flags_for`."""
     return settings.SUPER_AGENT_ENV_ENABLED
+
+
+async def list_on() -> list[str]:
+    """Owner ids with the switch on: the watchdog's scan scope. Empty without a read when the env master is off."""
+    if not settings.SUPER_AGENT_ENV_ENABLED:
+        return []
+    # ponytail: full scan of containers, cached 1 h by the caller; add a sparse GSI when workspaces > ~1k.
+    return [row["owner_id"] for row in await container_repo.scan_all() if row.get("super_agent") is True]

@@ -80,6 +80,34 @@ def test_env_enabled_callers_are_allowlisted():
     assert offenders == []
 
 
+# --- list_on (watchdog scan scope) -----------------------------------------------------------------
+
+SCAN = "core.repositories.container_repo.scan_all"
+
+
+async def test_list_on_empty_when_env_master_off(monkeypatch):
+    from core.services.super_agent_flags import list_on
+
+    monkeypatch.setattr(settings, "SUPER_AGENT_ENV_ENABLED", False)
+    with patch(SCAN, AsyncMock(return_value=[{"owner_id": "org_1", "super_agent": True}])) as scan:
+        assert await list_on() == []
+    scan.assert_not_awaited()
+
+
+async def test_list_on_returns_only_flagged_owners(monkeypatch):
+    from core.services.super_agent_flags import list_on
+
+    monkeypatch.setattr(settings, "SUPER_AGENT_ENV_ENABLED", True)
+    rows = [
+        {"owner_id": "org_on", "super_agent": True},
+        {"owner_id": "org_off", "super_agent": False},
+        {"owner_id": "org_str", "super_agent": "true"},
+        {"owner_id": "org_none"},
+    ]
+    with patch(SCAN, AsyncMock(return_value=rows)):
+        assert await list_on() == ["org_on"]
+
+
 # --- LiveConfig ------------------------------------------------------------------------------------
 
 LEGACY_KEYS = {"schemaVersion", "httpEndpoint", "realtimeEndpoint", "region", "userChannelKey", "workspaceId"}

@@ -142,6 +142,37 @@
       "reply",
       "ask",
       "ignore"
+    ],
+    "WatchdogCheck": [
+      "C1",
+      "C2",
+      "C3",
+      "C4",
+      "C5",
+      "C6",
+      "judge"
+    ],
+    "WatchdogVerdict": [
+      "progressing",
+      "looping",
+      "drifting",
+      "stalled_waiting",
+      "blocked_external",
+      "claims_done_without_evidence"
+    ],
+    "WatchdogAction": [
+      "reconcile",
+      "retry",
+      "recheck",
+      "steer",
+      "question",
+      "escalate",
+      "none"
+    ],
+    "WatchdogLabel": [
+      "tp",
+      "fp",
+      "unsure"
     ]
   },
   "keys": {
@@ -167,7 +198,12 @@
     "routerWorkflowId": "router:{ws}",
     "scheduleWorkflowId": "sched:{ws}:{scheduleId}",
     "taskRoomId": "uuid5(task, 'room:{taskId}')",
-    "routerLaneKey": "u:{sha256(userId)[:16]}"
+    "routerLaneKey": "u:{sha256(userId)[:16]}",
+    "wdFindingPk": "PLATFORM#watchdog#F#{yyyymmdd}",
+    "wdFinding": "{ws}#{taskId}#{check}#{attemptN}[#J{seq:02}]",
+    "wdAction": "WD#{taskId}#ACT#{kind}#{n:02}",
+    "wdCapPk": "PLATFORM#watchdog",
+    "wdCap": "CAP#{act|judge}#{bucket}"
   },
   "triggerIds": {
     "chat": "chat:{messageId}",

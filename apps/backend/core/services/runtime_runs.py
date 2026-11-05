@@ -57,6 +57,7 @@ class RunIdentity:
     run_secret: str | None = None  # the Attempt's secret; the bridge echoes it on run events and inputs
     mode: Literal["worker", "router"] = "worker"
     lane: str | None = None
+    room: str | None = None  # Router runs: `router_room_key(trigger_scope)`, one session per lane and conversation
     model: str | None = None  # Router runs: the cheaper model (§9); the bridge overrides the profile's
     # "task": the run lives in its own AgentCore session (`runtime_transport.session_id_for(owner, task_id)`)
     # and the bridge latches task mode (read-only specialist profile, task-prefix writes). Decided per attempt
@@ -83,7 +84,9 @@ class RunIdentity:
     @property
     def session_key(self) -> str:
         if self.mode == "router":
-            return router_session_key(self.agent_id, self.lane or "shared")
+            if not self.room:
+                raise ValueError("a Router run names its conversation (room)")
+            return router_session_key(self.agent_id, self.lane or "shared", self.room)
         return worker_session_key(self.agent_id, self.task_id)
 
     def to_wire(self) -> dict:
@@ -100,6 +103,8 @@ class RunIdentity:
         }
         if self.mode == "router":
             wire["lane"] = self.lane or "shared"
+            if self.room:
+                wire["room"] = self.room
             if self.model:
                 wire["model"] = self.model
         return wire

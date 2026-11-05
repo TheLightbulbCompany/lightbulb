@@ -530,7 +530,7 @@ async def _cheap_model(ws: str) -> str | None:
     return hermes_profiles._strip_provider_prefix(hermes_profiles.cheap_model_ref(choice, byo))
 
 
-async def _router_run(ws: str, inp: RouterTurnIn, prompt: str, memory: dict) -> runtime_runs.RunStatus:
+async def _router_run(ws: str, inp: RouterTurnIn, prompt: str, memory: dict, scope: str) -> runtime_runs.RunStatus:
     """One Router run in the lane's session, polled to its end (Router runs post no events)."""
     identity = runtime_runs.RunIdentity(
         ts.router_run_id(ws, inp.batch_id),
@@ -540,6 +540,7 @@ async def _router_run(ws: str, inp: RouterTurnIn, prompt: str, memory: dict) -> 
         await task_conversation.front_agent_id(ws),
         mode="router",
         lane=inp.lane,
+        room=ts.router_room_key(scope),  # the batch's conversation: a batch is one (lane, trigger_scope)
         model=await _cheap_model(ws),
     )
     request = runtime_runs.RunRequest(
@@ -861,7 +862,7 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
         memory = memory_tags.block_for_router(
             "private" if private and user_id else "shared", user_id if private else None, room_id
         )
-        status = await _router_run(ws, inp, prompt, memory)
+        status = await _router_run(ws, inp, prompt, memory, ts.trigger_scope(next(iter(to_model.values()))))
         if status.status != "completed":
             raise RuntimeError(f"router run {status.status}: {status.error or ''}")
         run_text = (status.output or "").strip() or None

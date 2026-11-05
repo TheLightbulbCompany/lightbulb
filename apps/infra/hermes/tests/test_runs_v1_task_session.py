@@ -37,8 +37,8 @@ def _poll(identity):
 
 def test_validate_identity_accepts_task_kind_for_worker_only():
     assert runs.validate_identity(TASK_IDENTITY)["session"] == {"kind": "task"}
-    router = {**TASK_IDENTITY, "mode": "router", "lane": "shared",
-              "sessionKey": f"agent:{IDENTITY['agentId']}:lightbulb:router:shared"}
+    router = {**TASK_IDENTITY, "mode": "router", "lane": "shared", "room": "r:0123456789abcdef",
+              "sessionKey": f"agent:{IDENTITY['agentId']}:lightbulb:router:shared:r:0123456789abcdef"}
     with pytest.raises(runs.Refused) as refused:
         runs.validate_identity(router)
     assert refused.value.reply == runs.UNSUPPORTED

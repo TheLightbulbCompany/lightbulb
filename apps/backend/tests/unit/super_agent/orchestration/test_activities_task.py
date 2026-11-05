@@ -237,6 +237,51 @@ async def test_end_attempt_posts_result_as_lightbulb(world):
     assert world["client"].signals == []  # no Router turn per result
 
 
+async def test_end_attempt_with_a_room_name_for_origin_still_ends(world):
+    """Gate run 3: an automation run delivering to `room:acc-a1-e3ffa8` (a name, not an id) failed end_attempt
+    on the post, so the task workflow failed and the automation's run claim was never freed."""
+    tid = ts.new_task_id()
+    await repo.create_task(
+        WS,
+        {
+            "taskId": tid,
+            "identifier": "LB-2",
+            "title": "Weekly signups",
+            "description": "d",
+            "status": "queued",
+            "audience": {"kind": "room", "roomId": "acc-a1-e3ffa8"},
+            "lane": "shared",
+            "triggerId": "manual:s1:f1",
+            "ownerUserId": "sam",
+        },
+    )
+    await repo.subscribe(WS, tid, "room:acc-a1-e3ffa8", created_by="router")
+    await _attempt(tid)
+    await acts.acquire_slot(WS, tid)
+    await _ended(tid, "completed")
+    assert [p["room"] for p in world["posts"]] == [ts.task_room_id(tid)]  # the task room has the result
+    assert world["invites"] == []
+    assert (await repo.get_task(WS, tid))["status"] == "idle"
+
+
+async def test_end_attempt_ends_when_the_origin_room_refuses(world, monkeypatch):
+    """A deleted or left origin room: the task room has the result and the attempt still ends."""
+    tid = await _task(root=ROOT)
+    await _attempt(tid)
+    await acts.acquire_slot(WS, tid)
+    real = acts.task_conversation.post_as_lightbulb
+
+    async def gone(ws, room, **kw):
+        if room == ROOM:
+            raise acts.messaging.ApiProblem("ROOM_NOT_FOUND", "Room not found.")
+        return await real(ws, room, **kw)
+
+    monkeypatch.setattr(acts.task_conversation, "post_as_lightbulb", gone)
+    await _ended(tid, "completed")
+    assert [p["room"] for p in world["posts"]] == [ts.task_room_id(tid)]
+    assert (await repo.get_task(WS, tid))["status"] == "idle"
+
+
 async def test_end_attempt_result_files_go_to_the_task_room_post(world):
     """Live dev bug (5 Nov): a Worker's file reached the room as a raw MEDIA: path. The task VM PUT it to the
     task room's key; the task room post adopts it, the origin post names it."""

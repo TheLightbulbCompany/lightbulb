@@ -108,7 +108,8 @@ PROPOSE_SCHEMA = {
                      "description": "5-field cron lines in the person's zone (runs at least 10 minutes apart)."},
             "tz": {"type": "string", "description": "IANA zone; omit for the requester's own zone."},
             "specialist": {"type": "string", "description": "A specialist id from the roster, or omit."},
-            "deliver_to": {"type": "string", "description": "room:{id} | dm:{userId} | none; default: this room."},
+            "deliver_to": {"type": "string", "description": "Omit to deliver here. Else room:{roomId} (the room's id, never its name) | "
+                                                              "dm:{userId} | none."},
             "budget_per_run_usd": {"type": "number"},
         },
         "required": ["trigger_ids", "name", "instructions", "cron"],
@@ -117,6 +118,16 @@ PROPOSE_SCHEMA = {
 _PROPOSE_KEYS = {"trigger_ids": "triggerIds", "name": "name", "instructions": "instructions", "cron": "cron",
                  "tz": "tz", "specialist": "specialistId", "deliver_to": "deliverTo",
                  "budget_per_run_usd": "budgetPerRunUsd"}
+
+
+def _backend_code(exc: urllib.error.HTTPError) -> str:
+    """The backend's error code (`room_not_found`) so the model can fix its call; the status when there is none."""
+    try:
+        detail = json.loads(exc.read() or b"{}").get("detail")
+    except (ValueError, OSError, AttributeError):
+        detail = None
+    code = detail.get("code") if isinstance(detail, dict) else None
+    return code if isinstance(code, str) and code else f"the backend answered {exc.code}"
 
 
 def _propose_automation(args: dict, *, session_id: str = "", **_kw) -> str:
@@ -143,7 +154,7 @@ def _propose_automation(args: dict, *, session_id: str = "", **_kw) -> str:
     try:
         _post(url, ctx["hookToken"], body)
     except urllib.error.HTTPError as exc:
-        return json.dumps({"error": f"not proposed: the backend answered {exc.code}"})
+        return json.dumps({"error": f"not proposed: {_backend_code(exc)}"})
     except Exception as exc:  # noqa: BLE001
         return json.dumps({"error": f"not proposed: {type(exc).__name__}"})
     return "proposed"

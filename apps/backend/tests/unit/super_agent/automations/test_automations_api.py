@@ -529,6 +529,43 @@ async def test_dm_delivery_is_the_owners_only(api):
     assert r.status_code == 200
 
 
+async def test_propose_resolves_a_room_name_to_its_id(internal):
+    """Gate run 3: the Router saved `room:acc-a1-e3ffa8` (the room's name); its runs could never post there and
+    the run's end_attempt failed. A name of one room the requester sits in resolves to that room's id."""
+    from core.services.messaging import ApiProblem
+
+    tid = await _chat_trigger()
+    other = str(uuid.uuid4())
+    seats = [{"meta": {"roomId": other, "name": "acc-a1-e3ffa8"}}, {"meta": {"roomId": ROOM, "name": "general"}}]
+
+    async def door(ws, user, room):
+        if room != other:
+            raise ApiProblem("ROOM_NOT_FOUND", "Room not found.")
+        return {}, {}
+
+    internal.api.room_door.side_effect = door
+    url, auth = f"/api/v1/internal/automations/{WS}/propose", {"Authorization": "Bearer t"}
+    body = {"name": "n", "instructions": "i", "cron": ["0 9 * * 1"], "triggerIds": [tid]}
+    with patch("core.repositories.messaging_repo.list_rooms_for_member", AsyncMock(return_value=seats)):
+        r = internal.api.client.post(url, json=body | {"deliverTo": "room:acc-a1-e3ffa8"}, headers=auth)
+        assert r.status_code == 200, r.text
+        assert (await repo.get_schedule(WS, r.json()["automationId"]))["deliverTo"] == f"room:{other}"
+        r = internal.api.client.post(url, json=body | {"deliverTo": "room:no-such-room"}, headers=auth)
+        assert r.status_code == 400 and r.json()["detail"]["code"] == "room_not_found"
+        r = internal.api.client.post(url, json=body, headers=auth)  # the default is the trigger's own room
+        assert (await repo.get_schedule(WS, r.json()["automationId"]))["deliverTo"] == f"room:{ROOM}"
+    twins = seats + [{"meta": {"roomId": str(uuid.uuid4()), "name": "acc-a1-e3ffa8"}}]
+    with patch("core.repositories.messaging_repo.list_rooms_for_member", AsyncMock(return_value=twins)):
+        r = internal.api.client.post(url, json=body | {"deliverTo": "room:acc-a1-e3ffa8"}, headers=auth)
+        assert r.status_code == 400 and r.json()["detail"]["code"] == "room_not_found"  # two rooms by that name
+    internal.api.room_door.side_effect = ApiProblem("ROOM_NOT_FOUND", "Room not found.")  # not seated anywhere
+    with patch("core.repositories.messaging_repo.list_rooms_for_member", AsyncMock(return_value=seats)):
+        r = internal.api.client.post(url, json=body | {"deliverTo": f"room:{other}"}, headers=auth)
+        assert r.status_code == 400 and r.json()["detail"]["code"] == "room_not_found"
+        r = internal.api.client.post(url, json=body | {"deliverTo": "room:acc-a1-e3ffa8"}, headers=auth)
+        assert r.status_code == 400 and r.json()["detail"]["code"] == "room_not_found"
+
+
 async def test_propose_dm_is_the_requesters_only(internal):
     tid = await _chat_trigger()
     body = {"name": "n", "instructions": "i", "cron": ["0 9 * * 1"], "triggerIds": [tid], "deliverTo": "dm:user_x"}

@@ -29,7 +29,7 @@ from core.temporal.watches import (
     watch_id_for,
 )
 from core.services.container_auth import _require_hook_token
-from routers.automations import check_dm_owner
+from routers.automations import check_deliver_room, check_dm_owner
 from routers.rules import RuleBuiltin, RuleMatchIn, check_scope
 
 router = APIRouter()
@@ -65,6 +65,28 @@ def _err(http_status: int, code: str, **extra) -> HTTPException:
     return HTTPException(status_code=http_status, detail={"code": code, **extra})
 
 
+async def _deliver_room_id(ws: str, requester: str, key: str, here: str) -> str:
+    """The id of the room a proposed automation delivers to. The model may name a room ("room:acc-a1-e3ffa8",
+    gate run 3) instead of giving its id: a name of exactly one room the requester sits in resolves to its id;
+    anything else is 400 `room_not_found`, as the create/patch routes answer (a run posting to a room that is
+    not one failed its task's end_attempt)."""
+    if key == here:
+        return here
+    try:
+        await check_deliver_room(f"room:{key}", ws, requester)
+        return key
+    except HTTPException:
+        pass
+    name = key.removeprefix("#").strip().lower()
+    rooms = await messaging_repo.list_rooms_for_member(ws, "human", requester)
+    ids = {r["meta"]["roomId"] for r in rooms if str(r["meta"].get("name") or "").strip().lower() == name}
+    if len(ids) == 1:
+        (room_id,) = ids
+        await check_deliver_room(f"room:{room_id}", ws, requester)  # discovery only: recheck the seat (400)
+        return room_id
+    raise _err(400, "room_not_found")
+
+
 @router.post("/internal/automations/{owner_id}/propose")
 async def propose(owner_id: str, body: ProposeIn, request: Request) -> dict:
     await _require_hook_token(owner_id, request)
@@ -84,6 +106,9 @@ async def propose(owner_id: str, body: ProposeIn, request: Request) -> dict:
     if not requester:
         raise _err(400, "no_requester")
     check_dm_owner(body.deliver_to, requester)
+    deliver_to = body.deliver_to or f"room:{room_id}"
+    if deliver_to.startswith("room:"):
+        deliver_to = f"room:{await _deliver_room_id(owner_id, requester, deliver_to.removeprefix('room:'), room_id)}"
     if not body.cron and body.match is None:
         raise _err(400, "no_schedule")
     if body.cron and body.match is not None:
@@ -116,7 +141,7 @@ async def propose(owner_id: str, body: ProposeIn, request: Request) -> dict:
             "policyText": body.instructions.strip(),
             "specialist": body.specialist_id,
             "budgetPerRunUsd": body.budget_per_run_usd,
-            "deliverTo": body.deliver_to or f"room:{room_id}",
+            "deliverTo": deliver_to,
             "createdBy": "router",
             **rule,
         },

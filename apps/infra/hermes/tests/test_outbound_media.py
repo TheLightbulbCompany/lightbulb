@@ -407,3 +407,19 @@ def test_task_room_id_matches_the_backend():
 def test_a_result_without_media_is_untouched(monkeypatch):
     monkeypatch.setattr(turn, "_upload_attachment", lambda *a: pytest.fail("no upload"))
     assert turn.task_result_media("spec", TASK, "done") == ("done", [])
+
+
+def test_task_result_outbox_only_on_a_task_vm(home, monkeypatch):
+    """#4821 review: on a shared VM `HERMES_HOME/outbox/` holds other conversations' files."""
+    monkeypatch.setattr(turn, "HOME", home)
+    (home / "outbox").mkdir()
+    (home / "outbox" / "shared.pdf").write_bytes(b"%PDF-1.7")
+    monkeypatch.setattr(turn, "_upload_attachment", lambda room, item: {
+        "attachmentId": "a1", "fileName": item["fileName"], "contentType": item["contentType"]})
+    line = f"MEDIA:{home / 'outbox' / 'shared.pdf'}"
+    monkeypatch.setattr(turn.task_mode, "active", lambda: False)
+    text, files = turn.task_result_media("spec", TASK, line)
+    assert files == [] and "shared.pdf" in text and "MEDIA:" not in text
+    monkeypatch.setattr(turn.task_mode, "active", lambda: True)
+    text, files = turn.task_result_media("spec", TASK, line)
+    assert [f["fileName"] for f in files] == ["shared.pdf"]

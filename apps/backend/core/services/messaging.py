@@ -1425,7 +1425,9 @@ def adopt_uploaded_attachment(
     if not 0 < size <= ATTACHMENT_MAX_BYTES_BY_TYPE[content_type]:
         raise ValueError(f"attachment must be at most {ATTACHMENT_MAX_BYTES_BY_TYPE[content_type]} bytes")
     if expected[0] is None:
-        validate_attachment_bytes(content_type, hermes_profiles.get_owner_object(key) or b"")
+        # Bounded by the HEAD's size (already within the cap): an object swapped in after the HEAD is
+        # never read past it.
+        validate_attachment_bytes(content_type, hermes_profiles.get_owner_object_head(key, size))
     elif not _signature_ok(content_type, hermes_profiles.get_owner_object_head(key, SNIFF_BYTES)):
         raise ValueError("attachment bytes do not match the declared content type")
     attachment = MessageAttachment(

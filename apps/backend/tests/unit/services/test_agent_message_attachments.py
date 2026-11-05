@@ -186,8 +186,10 @@ async def test_an_uploaded_attachment_is_refused_unless_it_is_really_there_and_w
     created.assert_not_awaited()
 
 
-def test_an_uploaded_text_file_is_read_whole_and_must_be_utf8(staged):
-    """A Worker's .md/.csv result (task VMs upload every file): adopted when it is UTF-8, as inline text is."""
+def test_an_uploaded_text_file_is_read_whole_and_must_be_utf8(staged, monkeypatch):
+    """A Worker's .md/.csv result (task VMs upload every file): adopted when it is UTF-8, as inline text is.
+    Read bounded by the HEAD's size (#4821 review), never with an unbounded GET."""
+    monkeypatch.setattr(messaging.hermes_profiles, "get_owner_object", lambda key: pytest.fail("unbounded read"))
     good, bad = str(uuid.uuid4()), str(uuid.uuid4())
     staged[messaging.attachment_key(OWNER, ROOM, f"{good}.md")] = "# Agenda — 9:00".encode()
     staged[messaging.attachment_key(OWNER, ROOM, f"{bad}.csv")] = b"\xff\xfe not utf-8"

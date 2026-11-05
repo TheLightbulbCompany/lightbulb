@@ -1583,7 +1583,7 @@ def task_result_media(agent_id: str, task_id: str, output: str) -> tuple[str, li
     """A Worker result's `MEDIA:` lines become files on the result post in the task room: each one PUT
     to that room's attachment key (`uploadedAttachments`, adopted by the backend), the line gone. The
     run event carries no file bytes, so everything is uploaded. Only the TASK's own folder
-    (`work/<taskId>/`) and the send-a-file `outbox/` qualify -- never the rest of the profile, so an
+    (`work/<taskId>/`) and, on a task VM only, the send-a-file `outbox/` qualify -- never the rest of the profile, so an
     injected `MEDIA:` line cannot attach another conversation's file. A file that cannot go (outside
     them, missing, wrong bytes, PUT failed) becomes the usual note, never a raw path."""
     if not any(line.startswith(MEDIA_PREFIX) for line in output.splitlines()):
@@ -1592,7 +1592,9 @@ def task_result_media(agent_id: str, task_id: str, output: str) -> tuple[str, li
     lines: list[str] = []
     uploaded: list[dict] = []
     for line in output.splitlines():
-        item = _attachable(line, root, 0, HOME, upload=True) if len(uploaded) < MAX_ATTACHMENTS else (
+        # The send-a-file outbox only on a task VM (its own); on a shared VM it holds other conversations' files.
+        home = HOME if task_mode.active() else None
+        item = _attachable(line, root, 0, home, upload=True) if len(uploaded) < MAX_ATTACHMENTS else (
             _note(Path(line[len(MEDIA_PREFIX):].strip()), f"a message carries at most {MAX_ATTACHMENTS} files", root)
             if line.startswith(MEDIA_PREFIX) else None)
         if item is None:

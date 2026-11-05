@@ -53,10 +53,20 @@ logger = logging.getLogger(__name__)
 
 # ``reaction`` and ``agent_run`` arrive in a later PR (new writers, same shape).
 ActivityKind = Literal[
-    "mention", "dm", "thread_reply", "reaction", "agent_run", "paperclip", "session", "login", "extension", "reconnect"
+    "mention",
+    "dm",
+    "thread_reply",
+    "reaction",
+    "agent_run",
+    "paperclip",
+    "session",
+    "login",
+    "extension",
+    "reconnect",
+    "task_question",
 ]
 ActorKind = Literal["human", "agent", "system"]
-LinkKind = Literal["issue", "room", "thread", "run", "approval", "session"]
+LinkKind = Literal["issue", "room", "thread", "run", "approval", "session", "task"]
 
 DEFAULT_LIMIT = 30
 MAX_LIMIT = 100
@@ -1339,8 +1349,10 @@ _PINNED_ORDER = {
 
 def needs_you(item: ActivityItem) -> bool:
     """Pinned to the top and always counted on the badge: an open approval, a pending
-    issue-thread interaction (an agent waiting on a human), a failed run, or one of your
-    shared sessions still waiting for your input."""
+    issue-thread interaction (an agent waiting on a human), a failed run, one of your
+    shared sessions still waiting for your input, or a task question you can answer."""
+    if item.kind == "task_question":
+        return item.state == "open"
     if item.kind == "session":
         return item.state == "open" and item.subtype in ("waiting", "join_request")
     if item.kind in ("login", "extension", "reconnect"):
@@ -1457,6 +1469,60 @@ async def _paperclip_items(ctx: Any) -> list[ActivityItem]:
 _APPROVAL_PEOPLE = ("requestedByUserId", "decidedByUserId")
 
 
+def render_task_question(q: dict) -> ActivityItem:
+    """An open super-agent Question (contracts-v2 §14.2) for one of its answerers. Copy from `questions.card_copy`.
+    ponytail: Open only; the answer buttons arrive with the answer route (wave2-Q Task 4)."""
+    from core.services import questions
+
+    title, _ = questions.card_copy(q, "Lightbulb")
+    actor = ActivityActor(kind="agent", id="", name="Lightbulb")
+    created = _when(q["createdAt"])
+    return ActivityItem(
+        id=f"taskq:{q['taskId']}:{q['qid']}",
+        kind="task_question",
+        subtype="interaction" if q["kind"] == "question" else "approval",
+        actor=actor,
+        created_at=created,
+        state="open",
+        read=False,  # open = unanswered, as an open Paperclip approval
+        summary=ActivitySummary(
+            title=_clip(title.replace("**", ""), TITLE_CHARS),
+            requester=actor,
+            preview=ActivityPreview(text=_clip(q["text"], PREVIEW_TEXT_CHARS)) if q.get("text") else None,
+            links=[ActivityLink(kind="task", id=q["taskId"], label=_clip(q["title"], TITLE_CHARS))],
+        ),
+        actions=[
+            ActivityAction(
+                id="open", label="Open task", style="primary", navigate=ActionNavigate(kind="task", id=q["taskId"])
+            )
+        ],
+    )
+
+
+async def _task_question_items(owner_id: str, user_id: str) -> list[ActivityItem]:
+    """The viewer's open Questions, from their `NEEDS#` rows; each re-read so a closed one never shows."""
+    from core.repositories import questions_repo
+
+    needs, _ = await questions_repo.needs_for_user(owner_id, user_id, limit=MAX_LIMIT)
+    found = await asyncio.gather(*(questions_repo.get_question(owner_id, n["taskId"], n["qid"]) for n in needs))
+    return [render_task_question(q) for q in found if q and q["state"] == "open" and user_id in q.get("answerers", [])]
+
+
+async def _live_items(owner_id: str, user_id: str, teams_ctx: TeamsCtx) -> tuple[list[ActivityItem], bool]:
+    """Page 1's live decisions and whether Paperclip answered. A super-agent workspace adds its open Questions
+    (§14.2, §14.5); Paperclip's items stay, because room runs there still ask through Paperclip (spec 05 §7),
+    and a Paperclip outage never hides a Question. Every other workspace is exactly as before."""
+    from core.services.super_agent_flags import flags_for
+
+    if not await flags_for(owner_id):
+        paperclip = await _paperclip_within_budget(teams_ctx)
+        return paperclip or [], paperclip is not None
+    paperclip, questions = await asyncio.gather(
+        _paperclip_within_budget(teams_ctx), _task_question_items(owner_id, user_id)
+    )
+    return (paperclip or []) + questions, paperclip is not None
+
+
 async def _paperclip_within_budget(teams_ctx: TeamsCtx) -> list[ActivityItem] | None:
     """Paperclip items, or ``None`` when Paperclip is slow, down or unreachable for
     this viewer. Session resolution and the fetches share one budget."""
@@ -1512,8 +1578,8 @@ async def unseen_counts(owner_id: str, user_id: str, teams_ctx: TeamsCtx) -> dic
     seen = await messaging_repo.get_activity_seen(owner_id, user_id)
     rows = await messaging_repo.list_activity_since(owner_id, user_id, seen, UNSEEN_CAP)
     gates = await _room_gates(owner_id, user_id, {r["roomId"] for r in rows if r.get("roomId")})
-    paperclip = await _paperclip_within_budget(teams_ctx)
-    if paperclip is None:
+    paperclip, ok = await _live_items(owner_id, user_id, teams_ctx)
+    if not ok:
         return None
     counts: dict[str, int] = {}
     for kind in [r["kind"] for r in _unseen_message_rows(rows, gates)] + [
@@ -1529,7 +1595,7 @@ async def list_activity(auth: AuthContext, *, cursor: str | None, limit: int, te
     before = _decode_cursor(cursor) if cursor else None
     limit = max(1, min(int(limit), MAX_LIMIT))
     # Page 1's Paperclip fetch runs alongside every DynamoDB read below, bounded by its budget.
-    paperclip_task = None if cursor else asyncio.create_task(_paperclip_within_budget(teams_ctx))
+    paperclip_task = None if cursor else asyncio.create_task(_live_items(owner_id, user_id, teams_ctx))
     try:
         rows, seen = await asyncio.gather(
             messaging_repo.list_activity(owner_id, user_id, before_sk=before, limit=limit),
@@ -1554,8 +1620,8 @@ async def list_activity(auth: AuthContext, *, cursor: str | None, limit: int, te
         paperclip_task.cancel()
         raise
     unseen_messages = _unseen_message_rows(unseen_rows, gates)
-    fetched = await paperclip_task
-    paperclip, source = (fetched, "ok") if fetched is not None else ([], "unavailable")
+    paperclip, ok = await paperclip_task
+    source = "ok" if ok else "unavailable"
     unseen_paperclip = len(_unseen_paperclip(paperclip, seen))
     unseen = len(unseen_messages) + unseen_paperclip
     pinned = [item for item in items + paperclip if needs_you(item)]

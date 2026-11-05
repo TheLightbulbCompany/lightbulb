@@ -141,6 +141,12 @@ def _check_fields(fields: dict) -> None:
 async def create_task(ws: str, task: dict) -> tuple[dict, bool]:
     if task.get("status") not in ("proposed", "queued"):
         raise ValueError("a task is created proposed or queued")
+    if not task.get("wsChannel"):
+        # The workspace's live channel segment (`/ws/{wsChannel}/tasks`, O9): without it the projector
+        # publishes no `task.changed` for this row. Transitions are update_item, so the stamp survives them.
+        from core.repositories import messaging_repo  # lazy: messaging_repo is the heavier module
+
+        task = {**task, "wsChannel": await messaging_repo.ensure_workspace_id(ws)}
     return await _put_new(ws, _row(ts.Task, ws, task))
 
 

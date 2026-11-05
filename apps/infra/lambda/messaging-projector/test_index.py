@@ -6,6 +6,7 @@ import json
 import threading
 import time
 import unittest
+from uuid import NAMESPACE_URL, uuid5
 import uuid
 from unittest.mock import MagicMock, patch
 
@@ -1717,9 +1718,11 @@ class TaskChangedTests(unittest.TestCase):
             index.process_record(task_record(sk, event="MODIFY", old_version=1))
             channel, event = publish.call_args.args
             self.assertEqual(channel, f"/ws/{WORKSPACE_ID}/tasks")
-            self.assertEqual(set(event), {"type", "data", "at"})
-            self.assertEqual(event["type"], "task.changed")
-            self.assertEqual(event["data"], {"taskId": TASK_ID, "part": part, "version": 2})
+            self.assertEqual(set(event), {"schemaVersion", "eventId", "type", "occurredAt", "payload"})
+            self.assertEqual((event["schemaVersion"], event["type"]), (1, "task.changed"))
+            self.assertEqual(event["payload"], {"taskId": TASK_ID, "part": part, "version": 2})
+            self.assertEqual(event["eventId"], str(uuid5(NAMESPACE_URL, f"task:{TASK_ID}:{part}:2")))
+            self.assertTrue(event["occurredAt"].endswith("Z"))
 
     def test_skips_same_version(self, publish):
         index.process_record(task_record(f"TASK#{TASK_ID}", event="MODIFY", version=3, old_version=3))

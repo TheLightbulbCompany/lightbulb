@@ -1159,10 +1159,13 @@ def _task_changed(record: dict[str, Any]) -> Callable[[], None]:
         return _noop
     if record["eventName"] == "MODIFY" and _deserialize_map(stream.get("OldImage") or {}).get("version") == item.get("version"):
         return _noop
-    event = {
+    task_id, version = sk.split("#")[1], item.get("version")
+    event = {  # the standard live envelope (packages/shared/src/live/types.ts parseLiveEvent); anything else is dropped
+        "schemaVersion": 1,
+        "eventId": str(uuid5(NAMESPACE_URL, f"task:{task_id}:{part}:{version}")),  # a replayed record dedupes
         "type": "task.changed",
-        "data": {"taskId": sk.split("#")[1], "part": part, "version": item.get("version")},
-        "at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "occurredAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "payload": {"taskId": task_id, "part": part, "version": version},
     }
     return lambda: _publish(f"/ws/{channel}/tasks", event)
 

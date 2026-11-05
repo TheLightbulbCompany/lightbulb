@@ -314,10 +314,18 @@ async def watchdog_scan(cfg: WatchdogConfig) -> ScanOut:
         return ScanOut()
     scan = _Scan(cfg, datetime.now(timezone.utc))
     for ws in await _workspaces():
-        for status in ("working", "queued"):
-            for row in await _tasks(ws, status):
-                await scan.live(ws, row)
-        for row in await _tasks(ws, "failed", since=scan.now - FAILED_WINDOW):
-            await scan.failed(ws, row)
-    await scan.hints()
+        try:
+            for status in ("working", "queued"):
+                for row in await _tasks(ws, status):
+                    await scan.live(ws, row)
+            for row in await _tasks(ws, "failed", since=scan.now - FAILED_WINDOW):
+                await scan.failed(ws, row)
+        except Exception:  # one bad workspace never costs the others their tick
+            logger.warning("watchdog scan failed for a workspace", extra={"ws": ws}, exc_info=True)
+            put_metric("watchdog.scan_error", dimensions={"Check": "workspace"})
+    try:
+        await scan.hints()
+    except Exception:
+        logger.warning("watchdog hints failed", exc_info=True)
+        put_metric("watchdog.scan_error", dimensions={"Check": "hints"})
     return ScanOut(scan.candidates, scan.proposals, scan.finding_ids)

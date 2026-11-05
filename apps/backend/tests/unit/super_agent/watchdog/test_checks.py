@@ -344,3 +344,20 @@ async def test_hint_person_stopped(scan_env):
     await wd.watchdog_scan(CFG)
     (f,) = await watchdog_repo.query_findings("20261104", "")
     assert f["hint"] == "person_stopped"
+
+
+async def test_one_workspace_error_does_not_abort_the_tick(scan_env, monkeypatch):
+    scan_env.list_on.return_value = ["org_bad", WS]
+    tid = await _put_task(scan_env.table, "working", 10)
+    scan_env.handles[tid] = FakeHandle(RPCError("gone", RPCStatusCode.NOT_FOUND, b""))
+    real = tasks_repo.list_tasks_by_status
+
+    async def flaky(ws, status, **kw):
+        if ws == "org_bad":
+            raise ValueError("bad row")
+        return await real(ws, status, **kw)
+
+    monkeypatch.setattr(tasks_repo, "list_tasks_by_status", flaky)
+    out = await wd.watchdog_scan(CFG)
+    assert [(p.ws, p.check) for p in out.proposals] == [(WS, "C1")]
+    assert ("watchdog.scan_error", 1.0, {"Check": "workspace"}) in scan_env.metrics

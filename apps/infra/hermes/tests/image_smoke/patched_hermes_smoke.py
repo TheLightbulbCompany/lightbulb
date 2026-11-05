@@ -31,4 +31,9 @@ assert lb_inject.inject_input(SimpleNamespace(), "mail", "x") is False
 # F6: delegate unset -> upstream refresh path
 assert auth_codex._REFRESH_DELEGATE is None and callable(auth_codex.set_refresh_delegate)
 
+# Spike S1 (spec 07 §8.3): the memory plugin tags CreateEvent with metadata; an older botocore refuses it.
+import botocore.session  # noqa: E402
+assert "metadata" in botocore.session.get_session().get_service_model("bedrock-agentcore").operation_model(
+    "CreateEvent").input_shape.members, "botocore too old for tagged memory events"
+
 print("patched hermes ok")

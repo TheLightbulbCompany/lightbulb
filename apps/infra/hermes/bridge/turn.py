@@ -25,7 +25,7 @@ from collections import namedtuple
 from pathlib import Path
 
 from bridge import API, HOME, HOOK_TOKEN, OWNER, now
-from bridge import sync, browser_control, website_logins, worktrees
+from bridge import sync, browser_control, memory_ctx, website_logins, worktrees
 from bridge.sync import restore_profile, save_profile, _profile_dir, pin_profile_defaults
 
 log = logging.getLogger("bridge")
@@ -3742,7 +3742,11 @@ def _construct_agent(agent_id: str, body: dict, frames, session_key: str, **limi
     room = body.get("room") or {}
     user_id = str((body.get("sender") or {}).get("id", ""))
     chat_type = "dm" if room.get("kind") == "dm" else "group"
-    _PRIVATE_DM.set(chat_type == "dm" and bool(_PERSON_ID.fullmatch(user_id)))
+    block = body.get("memory") if memory_ctx.valid(body.get("memory")) else None
+    memory_ctx.MEMORY_CTX.set(block)  # every construction, so no turn inherits another's block
+    # A private-lane turn (a person's Router lane, a private task's Worker) never writes shared notes (L3).
+    _PRIVATE_DM.set((chat_type == "dm" and bool(_PERSON_ID.fullmatch(user_id)))
+                    or (block or {}).get("lane") == "private")
     callbacks = {}
     if frames is not None:
         # stream_delta_callback / reasoning_callback are the per-token text streams (Task 11).
@@ -4117,7 +4121,8 @@ def _run_task_turn(identity: dict, request: dict, *, family: str) -> tuple[str, 
             extra = {"max_iterations": limits["max_iterations"]} if limits.get("max_iterations") else {}
             if not paperclip:
                 extra["tool_complete_callback"] = task_tool_recorder(run_id)
-            agent = _construct_agent(agent_id, {"sessionKey": session_id}, None, session_id, **extra)
+            memory = {"memory": request["memory"]} if request.get("memory") else {}  # a task's block (spec 07 §5.2)
+            agent = _construct_agent(agent_id, {"sessionKey": session_id, **memory}, None, session_id, **extra)
             queued = attach_agent(run_id, agent)
             if paperclip_run_aborted(run_id):
                 return "cancelled", None, "", dict(ZERO_USAGE)

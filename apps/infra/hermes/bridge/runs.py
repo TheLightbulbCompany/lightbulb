@@ -11,7 +11,7 @@ import logging
 import re
 import threading
 
-from bridge import OWNER, turn
+from bridge import OWNER, memory_ctx, turn
 
 log = logging.getLogger("bridge")
 
@@ -78,6 +78,7 @@ def validate_request(request) -> dict:
         and isinstance(limits, dict) and set(limits) <= {"max_iterations", "run_budget_seconds"}
         and all(_positive_int(v) for v in limits.values())
         and limits.get("run_budget_seconds", 0) <= MAX_RUN_BUDGET_S
+        and ("memory" not in request or request["memory"] is None or memory_ctx.valid(request["memory"]))
     )
     if not ok:
         raise _invalid("run_request")

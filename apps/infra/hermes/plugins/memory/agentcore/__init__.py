@@ -155,9 +155,28 @@ def _page(obj) -> list:
     return rows
 
 
-def _page_text(results: list) -> str:
+def _memory_block():
+    """The turn's backend-computed memory block (bridge.memory_ctx, spec 07 §5.2), or None: no block is
+    today's behaviour. Read once in ``initialize``, on the turn's own thread."""
+    try:
+        from bridge.memory_ctx import MEMORY_CTX
+    except ImportError:
+        return None
+    return MEMORY_CTX.get()
+
+
+def _link_line(link: dict) -> str:
+    """backend memory_stages.link_line, copied: change both."""
+    title = " ".join(str(link.get("title") or "").split())
+    day = str(link.get("updatedAt") or "")[:10]
+    head = f"{link.get('identifier')} {title} — {link.get('status')}{f' {day}' if day else ''}"
+    threads = ", ".join(str(t.get("id")) for t in link.get("threads") or [] if isinstance(t, dict))
+    return f"{head} · {link.get('specialist') or '-'} · task:{link.get('id')}" + (f" (threads: {threads})" if threads else "")
+
+
+def _page_text(results: list, links=None) -> str:
     """The page as the hosted MCP's recall gives it (backend memory_stages.page_text, copied: the
-    image does not ship the backend; change both)."""
+    image does not ship the backend; change both). Super-agent task links follow as ``Linked:``."""
     sections: Dict[str, List[str]] = {"Contested:": [], "Current:": [], "Log:": [], "Turns:": []}
     for r in results:
         # The day it held (validFrom), else the day it was stored.
@@ -169,6 +188,7 @@ def _page_text(results: list) -> str:
             sections["Contested:"].append(dated.removeprefix("Contested: "))
         else:
             sections["Current:" if r.get("kind") in _CURRENT_KINDS else "Log:"].append(dated)
+    sections["Linked:"] = [_link_line(lk) for lk in links or [] if isinstance(lk, dict)]
     return "\n".join(f"{head}\n" + "\n".join(lines) for head, lines in sections.items() if lines) or "Nothing found."
 
 
@@ -190,6 +210,17 @@ def _row(issue: dict, dated: bool = False) -> str:
     title = " ".join(str(issue.get("title") or "").split())[:120]
     day = str(issue.get("completedAt") or issue.get("updatedAt") or "")[:10]
     return f"{issue.get('identifier') or ''} {title}".strip() + (f" ({day})" if dated and day else "")
+
+
+def tasks_board(owner: str, audience: dict) -> str:
+    """The super-agent board: read from the tasks table by the backend for this turn's audience, so
+    a super-agent turn never reads Paperclip. "" when the read fails."""
+    try:
+        text = _backend(owner, "board", {"audience": audience}).get("text")
+    except Exception as exc:  # the board is a hint: unreachable means no hint
+        logger.warning("agentcore memory tasks board read failed: %s", type(exc).__name__)
+        return ""
+    return text if isinstance(text, str) else ""
 
 
 def board_snapshot() -> str:
@@ -242,6 +273,7 @@ class AgentCoreMemoryProvider(MemoryProvider):
         self._session = "hermes"
         self._agent = "Agent"
         self._member = ""  # set only on a 1:1 DM turn with a person: their private scope
+        self._block = None  # the turn's memory block (super-agent turns only)
 
     @property
     def name(self) -> str:
@@ -267,6 +299,9 @@ class AgentCoreMemoryProvider(MemoryProvider):
         user_id = str(kwargs.get("user_id") or "")
         private = kwargs.get("chat_type") == "dm" and _HUMAN_ID.fullmatch(user_id)
         self._member = user_id if private else ""
+        self._block = _memory_block()
+        if self._block:  # the backend decided the lane and its person (L2): never the chat type
+            self._member = (self._block.get("member") or "") if self._block.get("lane") == "private" else ""
 
     def system_prompt_block(self) -> str:
         if self._member:
@@ -281,13 +316,20 @@ class AgentCoreMemoryProvider(MemoryProvider):
                 "workspace_memory_search, save a fact worth keeping with remember, and trust the "
                 "task board over a remembered fact.")
 
-    def _search(self, question: str, budget: int) -> List[dict]:
-        """The backend's recall results (contested facts first); a failed or malformed reply raises.
-        In a 1:1 DM the person is named, so their private memory is included."""
+    def _search(self, question: str, budget: int) -> tuple:
+        """The backend's recall (results, links); a failed or malformed reply raises. In a 1:1 DM the
+        person is named, so their private memory is included; a super-agent turn sends its lane and
+        audience, which the backend checks every task link against."""
         body = {"question": question[:_QUERY_MAX], "budget_tokens": budget}
         if self._member:
             body["member"] = self._member
-        return _page(_backend(self._owner, "recall", body))
+        if self._block:
+            body["lane"] = self._block["lane"]
+            if self._block.get("audience"):
+                body["audience"] = self._block["audience"]
+        reply = _backend(self._owner, "recall", body)
+        links = reply.get("links") if isinstance(reply.get("links"), list) else []
+        return _page(reply), links
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         # Hermes keys recall on the persisted user text and skips it for a trivial prompt
@@ -299,9 +341,12 @@ class AgentCoreMemoryProvider(MemoryProvider):
             return ""
         with ThreadPoolExecutor(1) as pool:  # the board read overlaps the recall round trip
             # The profile's secret scope is a contextvar: a bare pool thread would not see it.
-            board = pool.submit(contextvars.copy_context().run, board_snapshot)
+            if self._block and self._block.get("audience"):
+                board = pool.submit(tasks_board, self._owner, self._block["audience"])
+            else:
+                board = pool.submit(contextvars.copy_context().run, board_snapshot)
             try:
-                results = self._search(line, _RECALL_BUDGET)
+                results, _ = self._search(line, _RECALL_BUDGET)
             except Exception as exc:  # recall is best-effort: a slow, denied or malformed reply is "no memory"
                 logger.warning("memory recall failed: %s", type(exc).__name__)  # never the question
                 results = []
@@ -311,12 +356,17 @@ class AgentCoreMemoryProvider(MemoryProvider):
         return "\n\n".join(p for p in ("Remembered:\n" + facts if facts else "", board) if p)
 
     def on_pre_compress(self, messages) -> str:
-        board = board_snapshot() if self.is_available() else ""
+        if not self.is_available():
+            board = ""
+        elif self._block and self._block.get("audience"):
+            board = tasks_board(self._owner, self._block["audience"])
+        else:
+            board = board_snapshot()
         return "\n\n".join(p for p in (KEEP_NOTE, board) if p)
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "", **_) -> None:
-        if not self.is_available():
-            return
+        if not self.is_available() or (self._block and self._block.get("sync") == "none"):
+            return  # sync "none": room ingestion (or nobody) writes this turn's text, never twice
         said = _user_text(user_content or "")
         if self._member and said.strip() and not _speaker(said)[0]:
             said = f"{self._member}: {said}"  # the bridge names every person; this is the fallback
@@ -328,10 +378,14 @@ class AgentCoreMemoryProvider(MemoryProvider):
         if not payload:
             return
         session = _session_id(session_id) if session_id else self._session
+        extra = {}
+        if self._block:  # tags for recall links (spec 07 §3.2); values were checked by the backend
+            tags = {**(self._block.get("tags") or {}), "lane": self._block["lane"]}
+            extra["metadata"] = {k: {"stringValue": str(v)} for k, v in tags.items() if v}
         try:
             _client().create_event(
                 memoryId=self._memory_id, actorId=self._actor(), sessionId=session,
-                eventTimestamp=datetime.now(timezone.utc), payload=payload)
+                eventTimestamp=datetime.now(timezone.utc), payload=payload, **extra)
         except Exception as exc:
             logger.warning("agentcore memory write failed: %s", exc)
 
@@ -382,13 +436,19 @@ class AgentCoreMemoryProvider(MemoryProvider):
         if not self.is_available():
             return json.dumps({"error": "workspace memory is off"})
         try:
-            results = self._search(query, _SEARCH_BUDGET)
+            results, links = self._search(query, _SEARCH_BUDGET)
         except Exception as exc:
             logger.warning("memory search failed: %s", type(exc).__name__)
             return json.dumps({"error": "workspace memory is unavailable right now"})
         turns = sum(r.get("kind") == "turn" for r in results)
         counts = {"facts": len(results) - turns, "turns": turns}
-        return json.dumps({"page": _cut(_page_text(results), _SEARCH_MAX), "counts": counts}, ensure_ascii=False)
+        if links:
+            counts["links"] = len(links)
+        page = _page_text(results, links)
+        at = page.find("\nLinked:\n")  # no line holds a newline, so this is the section's heading
+        if len(page) > _SEARCH_MAX and at > 0:  # cut the evidence above the links, never the links
+            page = _cut(page[:at], _SEARCH_MAX - (len(page) - at)) + page[at:]
+        return json.dumps({"page": _cut(page, _SEARCH_MAX), "counts": counts}, ensure_ascii=False)
 
     def _remember(self, args: Dict[str, Any]) -> str:
         subject, fact = str(args.get("subject") or "").strip(), str(args.get("fact") or "").strip()

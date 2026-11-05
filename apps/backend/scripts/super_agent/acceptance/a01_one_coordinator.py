@@ -15,6 +15,7 @@ async def a01(ctx: Ctx) -> Result:
         "workshop-launch",
         [{"kind": "human", "id": ctx.users["priya"], "role": "member", "listenMode": None}],
     )
+    ctx.state["roomId"] = room["roomId"]  # A2, A4, A7 post into this room
     front = await front_agent(ctx, "sam", room["roomId"])
     first = await post(ctx, "sam", room["roomId"], "Hi Lightbulb, we're launching the workshop in March.")
     trigger_id = ts.trigger_id("chat", first["messageId"])

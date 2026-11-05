@@ -33,7 +33,7 @@ from core import tasks_schema as ts
 from core.dynamodb import utc_now_iso
 from core.repositories import effects_repo, questions_repo, tasks_repo
 from core.services import questions, task_conversation
-from core.services.messaging import UploadedAttachment, human_display_name
+from core.services.messaging import ATTACHMENT_MAX_COUNT, UploadedAttachment, human_display_name
 from core.services.container_auth import _require_hook_token
 from core.services.super_agent_flags import flags_for
 from core.temporal import activities as acts
@@ -79,7 +79,7 @@ class RunEventBody(BaseModel):
     recent_tools: list[dict[str, Any]] = Field(default_factory=list, alias="recentTools", max_length=50)
     # Files the Worker's result named (`MEDIA:` lines), already PUT by the task VM to the TASK ROOM's
     # attachment keys; the result post adopts them (an older bridge sends none).
-    attachments: list[UploadedAttachment] = Field(default_factory=list, max_length=10)
+    attachments: list[UploadedAttachment] = Field(default_factory=list, max_length=ATTACHMENT_MAX_COUNT)
 
 
 class InputBody(BaseModel):

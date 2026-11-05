@@ -1387,7 +1387,10 @@ UPLOAD_SUFFIX = {"video/mp4": ".mp4", "video/webm": ".webm", "video/quicktime": 
                  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
                  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
                  "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
-                 "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif"}
+                 "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif",
+                 # text: only a task result uploads these (task_result_media); the backend adopts a text
+                 # object by reading it whole and requiring UTF-8
+                 "text/csv": ".csv", "text/plain": ".txt", "text/markdown": ".md", "text/html": ".html"}
 # The suffix says what a file CLAIMS to be; these say what it is. The backend re-checks the
 # same signatures and rejects the WHOLE request on a mismatch, so a `creds.png` holding JSON
 # would take a real screenshot down with it -- sniff here, where the line can simply stay text.
@@ -1463,7 +1466,7 @@ def _note(path: Path, why: str, root: Path) -> str:
     return f"_(Couldn't attach {path.name}: {why}; {where}.)_"
 
 
-def _attachable(line: str, root: Path, budget: int, home: Path | None = None) -> dict | str | None:
+def _attachable(line: str, root: Path, budget: int, home: Path | None = None, *, upload: bool = False) -> dict | str | None:
     """Judge one `MEDIA:` line. Returns None for a line that is not one, a note (str) for a
     file that cannot be sent, or the attachment: `{"inline": {...}}` (base64 on the reply POST)
     or `{"upload": Path, ...}` (too big for the POST -- PUT straight to S3 by _post_reply).
@@ -1473,6 +1476,9 @@ def _attachable(line: str, root: Path, budget: int, home: Path | None = None) ->
     room accepts whose BYTES agree with that type, within its per-type cap. A file from the
     outbox is first COPIED into the profile's own `outbox/`: HERMES_HOME itself is never saved
     to S3, so without the copy the only durable trace of it would be the attachment.
+
+    ``upload``: never inline, a text type included (read whole and UTF-8-sniffed here): the task
+    result path, whose run event carries no bytes.
 
     Every rejection logs its reason (a path, never the bytes)."""
     if not line.startswith(MEDIA_PREFIX):
@@ -1503,7 +1509,7 @@ def _attachable(line: str, root: Path, budget: int, home: Path | None = None) ->
         with resolved.open("rb") as fh:
             head = fh.read(SNIFF_BYTES)
         uploadable = MEDIA_SIGNATURES[content_type] is not None
-        inline = content_type not in _VIDEO_TYPES and size <= budget
+        inline = not upload and content_type not in _VIDEO_TYPES and size <= budget
         data = resolved.read_bytes() if inline or not uploadable else head
     except (OSError, ValueError) as exc:  # ValueError: an embedded null byte -- nothing to read
         log.warning("media dropped (unreadable): %s: %s", path, exc)
@@ -1514,7 +1520,7 @@ def _attachable(line: str, root: Path, budget: int, home: Path | None = None) ->
     if inline:
         return {"inline": {"fileName": resolved.name, "contentType": content_type,
                            "dataBase64": base64.b64encode(data).decode()}}
-    if not uploadable:  # text over what is left of the inline budget
+    if not uploadable and not upload:  # text over what is left of the inline budget
         log.info("media dropped (budget): %s", path)
         return _note(resolved, "this reply already carries as much as one message can", root)
     return {"upload": resolved, "fileName": resolved.name, "contentType": content_type, "size": size}
@@ -1576,21 +1582,17 @@ def task_room_id(task_id: str) -> str:
 def task_result_media(agent_id: str, task_id: str, output: str) -> tuple[str, list[dict]]:
     """A Worker result's `MEDIA:` lines become files on the result post in the task room: each one PUT
     to that room's attachment key (`uploadedAttachments`, adopted by the backend), the line gone. The
-    run event carries no file bytes, so everything goes up (budget 0); a file that cannot -- a text
-    type has no signature the backend sniffs, or the PUT failed -- becomes the usual note, never a raw
-    path. ponytail: text files (.md/.csv/.txt) get the note, not the file; inline them on the event if
-    a Worker's text deliverable matters."""
+    run event carries no file bytes, so everything is uploaded. Only the TASK's own folder
+    (`work/<taskId>/`) and the send-a-file `outbox/` qualify -- never the rest of the profile, so an
+    injected `MEDIA:` line cannot attach another conversation's file. A file that cannot go (outside
+    them, missing, wrong bytes, PUT failed) becomes the usual note, never a raw path."""
     if not any(line.startswith(MEDIA_PREFIX) for line in output.splitlines()):
         return output, []
-    root, room = _profile_dir(agent_id), task_room_id(task_id)
+    root, room = _profile_dir(agent_id) / "work" / task_id, task_room_id(task_id)
     lines: list[str] = []
     uploaded: list[dict] = []
     for line in output.splitlines():
-        kind = MEDIA_CONTENT_TYPES.get(Path(line[len(MEDIA_PREFIX):].strip()).suffix.lower()) if line.startswith(MEDIA_PREFIX) else None
-        if kind is not None and kind not in UPLOAD_SUFFIX:
-            lines.append(_note(Path(line[len(MEDIA_PREFIX):].strip()), "text files aren't attached from a task yet", root))
-            continue
-        item = _attachable(line, root, 0, HOME) if len(uploaded) < MAX_ATTACHMENTS else (
+        item = _attachable(line, root, 0, HOME, upload=True) if len(uploaded) < MAX_ATTACHMENTS else (
             _note(Path(line[len(MEDIA_PREFIX):].strip()), f"a message carries at most {MAX_ATTACHMENTS} files", root)
             if line.startswith(MEDIA_PREFIX) else None)
         if item is None:

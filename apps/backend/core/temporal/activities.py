@@ -412,6 +412,22 @@ async def end_attempt(ws: str, task_id: str, n: int, outcome: str, error: str | 
         text = att["output"]
         files = att.get("attachments") or []  # PUT by the task VM to the TASK room's keys
         refs = [{"taskId": task_id, "role": "started"}]
+        # The task room FIRST: it adopts the files. Only once they are attached does the origin post say so;
+        # an adoption the backend refuses (bytes, size, missing object) posts the result without them.
+        await task_conversation.ensure_task_room(ws, task)
+        result_room = dict(
+            text=text, event_id=f"task-result-room:{task_id}:{n}", specialist=task.get("specialist"), kind="result"
+        )
+        try:
+            await task_conversation.post_as_lightbulb(
+                ws, ts.task_room_id(task_id), **result_room, uploaded_attachments=files
+            )
+        except messaging.ApiProblem:
+            if not files:
+                raise
+            logger.warning("task result files not attached task=%s attempt=%s", task_id, n)
+            files = []
+            await task_conversation.post_as_lightbulb(ws, ts.task_room_id(task_id), **result_room)
         if room:
             names = ", ".join(f["fileName"] for f in files)
             await task_conversation.post_as_lightbulb(
@@ -424,16 +440,6 @@ async def end_attempt(ws: str, task_id: str, n: int, outcome: str, error: str | 
                 task_refs=refs,
                 kind="result",
             )
-        await task_conversation.ensure_task_room(ws, task)
-        await task_conversation.post_as_lightbulb(
-            ws,
-            ts.task_room_id(task_id),
-            text=text,
-            event_id=f"task-result-room:{task_id}:{n}",
-            specialist=task.get("specialist"),
-            kind="result",
-            uploaded_attachments=files,
-        )
         if room:
             await messaging.ask_who_should_see(ws, {"roomId": room}, "completed")
     if not first:

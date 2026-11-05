@@ -896,6 +896,7 @@ class StartTask(_Decision):
     policy_ref: str | None = None
     budget_usd: float | None = None
     previous_run_task_id: TaskId | None = None
+    a2a_task_id: str | None = None  # an inbound A2A request's governance row: copied onto the Task (Lane Q)
 
 
 class ProposeTasks(_Decision):

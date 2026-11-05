@@ -41,7 +41,7 @@ from core.services.credentials import (
 from core.services.credentials.apply_connection import RuntimeUnsupportedError
 from core.services.credentials import hermes_cli
 from core.services.credentials.mcp_server import reconcile_integrations
-from core.services import ideas, paperclip_github_token
+from core.services import ideas, paperclip_github_token, rules_builtins
 from core.services.google_identity import seed_agent_google_identity
 from core.services.owner_facts import write_owner_facts
 from core.services import owner_lifecycle
@@ -1303,4 +1303,5 @@ async def oauth_callback(
         # This connect rewrote every profile's cli-env.json from the projection's own keys,
         # dropping each agent's GOG_ACCOUNT. Re-seed the existing assignments.
         await _reseed_surviving_google_assignments(owner_id)
+        await rules_builtins.on_google_connect(owner_id)  # invite-prep built-in (§18), behind the switch
     return _done(f"connected={prov}", origin)

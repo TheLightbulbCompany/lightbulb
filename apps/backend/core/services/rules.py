@@ -166,7 +166,8 @@ def invite_prep_row(email: str, owner_user_id: str) -> dict:
     }
 
 
-def _start(event: dict) -> datetime | None:
+def event_start(event: dict) -> datetime | None:
+    """A Google Calendar event's start as an aware datetime (all-day `date` counts as midnight UTC)."""
     start = event.get("start") or {}
     raw = start.get("dateTime") or start.get("date")
     if not raw:
@@ -187,5 +188,5 @@ def open_invite(event: dict, account: str, now: datetime) -> bool:
     mine = [a for a in event.get("attendees") or [] if a.get("self") or str(a.get("email") or "").lower() == me]
     if not mine or mine[0].get("responseStatus") != "needsAction":
         return False
-    start = _start(event)
+    start = event_start(event)
     return start is not None and start > now

@@ -132,6 +132,16 @@ async def fire(owner_id: str, public_id: str, request: Request, hook: dict | Non
         return _json(401, {"detail": reason})
 
     provider = hook["provider"]
+    if provider == "google" and "calendar.changed" in (hook.get("events") or []):
+        from core.temporal import rules_activities  # a calendar rule's hook records invites, never a workflow
+
+        try:
+            handled = await rules_activities.calendar_rule_fire(owner_id, hook)
+        except Exception:  # gog or DynamoDB unreachable: Google retries
+            logger.warning("calendar rule fire unavailable owner=%s public_id=%s", owner_id, public_id, exc_info=True)
+            return _json(503, {"detail": "unavailable"}, {"Retry-After": "30"})
+        if handled:
+            return _json(202, {"status": "accepted"})
     kind = event_type(provider, headers, body)
     if hook.get("events") and kind is not None and kind not in hook["events"]:
         return _json(200, {"status": "ignored"})

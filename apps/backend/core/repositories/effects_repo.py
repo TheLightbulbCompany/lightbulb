@@ -37,22 +37,31 @@ async def get_effect(ws: str, idem_key: str) -> dict | None:
     return await _get(ws, ts.effect_sk(idem_key))
 
 
-async def effects_for(ws: str, task_id: str, operands_hash: str) -> list[dict]:
-    """The task's Effect (and `:use`) rows with this operands hash, strongly read, oldest first.
-
-    ponytail: one `begins_with EFFECT#{taskId}:` query per call; a task makes a handful of external effects."""
+async def _effects(ws: str, prefix: str) -> list[dict]:
     kwargs: dict[str, Any] = {
         "KeyConditionExpression": "pk = :pk AND begins_with(sk, :p)",
-        "ExpressionAttributeValues": {":pk": ts.ws_pk(ws), ":p": ts.effect_sk(f"{task_id}:")},
+        "ExpressionAttributeValues": {":pk": ts.ws_pk(ws), ":p": ts.effect_sk(prefix)},
         "ConsistentRead": True,
     }
     out: list[dict] = []
     while True:
         page = await run_in_thread(_table().query, **kwargs)
-        out += [plain(i) for i in page.get("Items", []) if i.get("operandsHash") == operands_hash]
+        out += [plain(i) for i in page.get("Items", [])]
         if "LastEvaluatedKey" not in page:
             return sorted(out, key=lambda e: e["createdAt"])
         kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+
+
+async def effects_for(ws: str, task_id: str, operands_hash: str) -> list[dict]:
+    """The task's Effect (and `:use`) rows with this operands hash, strongly read, oldest first.
+
+    ponytail: one `begins_with EFFECT#{taskId}:` query per call; a task makes a handful of external effects."""
+    return [e for e in await _effects(ws, f"{task_id}:") if e.get("operandsHash") == operands_hash]
+
+
+async def effects_of_task(ws: str, task_id: str) -> list[dict]:
+    """The task's Effect rows, oldest first; no `:use` rows."""
+    return [e for e in await _effects(ws, f"{task_id}:") if e.get("type") == "effect"]
 
 
 async def set_effect_state(ws: str, idem_key: str, *, to: str, fields: dict | None = None) -> dict:

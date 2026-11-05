@@ -204,6 +204,29 @@ FALSE_APPROVAL_RE = re.compile(
 _PUSH_MAX = 180
 
 
+def title_for(effect: dict) -> str:
+    """The question's one-liner for an Effect, naming the action and its target ("send 'Q3' to a@b.c")."""
+    o = effect.get("operands") or {}
+    kind = effect.get("kind")
+    if kind == "mail.send":
+        line = f"send '{o.get('subject') or 'a mail'}' to {o.get('to') or 'someone'}"
+    elif kind == "text.send":
+        line = f"send a text to {o.get('to') or 'someone'}"
+    elif kind == "app.publish":
+        line = f"publish {o.get('appName') or 'the app'}"
+    elif kind == "pr.merge":
+        line = f"merge PR #{o.get('number', '?')} in {o.get('repo') or 'the repo'}"
+    elif kind == "purchase":
+        line = f"buy {o.get('item') or 'something'}" + (f" for {o['amount']}" if o.get("amount") else "")
+    elif kind == "provision":
+        line = f"set up {o.get('provider') or 'a provider'}"
+    elif kind == "a2a.send":
+        line = f"message {o.get('target') or 'another agent'}"
+    else:
+        line = f"run {effect.get('tool') or 'a tool'}"
+    return line if len(line) <= 200 else line[:199] + "…"
+
+
 def card_copy(q: dict, specialist_label: str) -> tuple[str, str]:
     """(card title in markdown, push body ≤180 chars) for an open Question."""
     if q["kind"] == "review":

@@ -80,16 +80,24 @@ class RuntimeResponse:
             return None
 
 
-def session_id_for(owner_id: str) -> str:
-    """The ONE AgentCore session id for this workspace.
+def session_id_for(owner_id: str, task_id: str | None = None) -> str:
+    """The ONE AgentCore session id for this workspace, or for one task of it.
 
     Stable per owner, so every backend call lands on the same microVM: that is both the
     latency win (session affinity — AWS routes a reused id back to the same microVM) and the
     single-writer guarantee. A random id per call would quietly fan a workspace across
     concurrent microVMs.
+
+    With ``task_id`` (super-agent per-task VMs, dev only): one stable id per task. Its microVM
+    is a second writer for the owner only in name -- the bridge's task mode restores the
+    specialist profile read-only and writes nothing outside ``<owner>/hermes-tasks/<task>/``,
+    so each S3 prefix still has exactly one writer. ``-t-`` keeps it apart from the
+    workspace id (``t`` is not a hex digit).
     """
-    digest = hashlib.sha256(owner_id.encode()).hexdigest()
-    candidate = f"lb-{owner_id}-{digest[:16]}"
+    if task_id is not None:
+        candidate = f"lb-{owner_id}-t-{hashlib.sha256(task_id.encode()).hexdigest()[:20]}"
+    else:
+        candidate = f"lb-{owner_id}-{hashlib.sha256(owner_id.encode()).hexdigest()[:16]}"
     # Pad rather than truncate: the id must stay unique per owner AND clear the 33-char floor.
     return candidate if len(candidate) >= _MIN_SESSION_ID_LEN else candidate.ljust(_MIN_SESSION_ID_LEN, "0")
 
@@ -121,8 +129,9 @@ async def request(
     content: bytes | None = None,
     headers: dict[str, str] | None = None,
     timeout_s: float = 30.0,
+    task_id: str | None = None,
 ) -> RuntimeResponse:
-    """Send one request to the owner's gateway.
+    """Send one request to the owner's gateway (``task_id``: that task's own session).
 
     Addressing comes from the container row's ``agentcore_runtime_arn`` — there is no address
     to pass in. ``content`` is a raw body for proxies that forward bytes verbatim (webhooks);
@@ -140,6 +149,7 @@ async def request(
         content=content,
         headers=headers,
         timeout_s=timeout_s,
+        task_id=task_id,
     )
 
 
@@ -152,6 +162,7 @@ async def _request_agentcore(
     content: bytes | None,
     headers: dict[str, str] | None,
     timeout_s: float,
+    task_id: str | None = None,
 ) -> RuntimeResponse:
     arn = container.get("agentcore_runtime_arn")
     if not arn:
@@ -193,16 +204,20 @@ async def _request_agentcore(
                 "body": {"method": "health", "params": {}, "timeoutMs": int(AGENTCORE_INGRESS_TIMEOUT_S * 1000)},
             },
             AGENTCORE_INGRESS_TIMEOUT_S + 5.0,
+            task_id,
         )
 
     def _invoke() -> RuntimeResponse:
-        session = _ensure_session(owner_id, arn, deadline, _wake)
+        # Keyword only for a task session: the workspace call keeps its exact pre-task shape.
+        session = _ensure_session(
+            owner_id, arn, deadline, _wake, **({"task_id": task_id} if task_id is not None else {})
+        )
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             # Waited out the whole budget on someone else's wake: the caller's retry path.
             raise httpx.ReadTimeout("agentcore session is still waking")
-        result, text = _invoke_envelope(arn, owner_id, envelope, remaining + margin)
-        _note_invoked(owner_id, session)
+        result, text = _invoke_envelope(arn, owner_id, envelope, remaining + margin, task_id)
+        _note_invoked(owner_id, session, task_id)
         # The contract server answers 200 with the gateway's own status inside; a 503 here is
         # the contract server saying the gateway has not finished booting.
         outer_status = int(result.get("statusCode") or 200)
@@ -250,7 +265,9 @@ def _vault_header(container: dict) -> dict[str, str]:
         return {}
 
 
-def _invoke_envelope(arn: str, owner_id: str, envelope: dict, read_timeout: float) -> tuple[dict, str]:
+def _invoke_envelope(
+    arn: str, owner_id: str, envelope: dict, read_timeout: float, task_id: str | None = None
+) -> tuple[dict, str]:
     """One ``InvokeAgentRuntime`` (plus the not-ready retry). Sync; httpx-shaped failures."""
     import boto3
     from botocore.config import Config
@@ -272,7 +289,7 @@ def _invoke_envelope(arn: str, owner_id: str, envelope: dict, read_timeout: floa
         try:
             result = client.invoke_agent_runtime(
                 agentRuntimeArn=arn,
-                runtimeSessionId=session_id_for(owner_id),
+                runtimeSessionId=session_id_for(owner_id, task_id),
                 contentType="application/json",
                 accept="application/json",
                 # Same compact encoding as the ingress size cap measures, so a body that
@@ -331,7 +348,7 @@ def _warm_until(now: int, started_at: int) -> int:
     return min(now + IDLE_TIMEOUT_S - WARM_MARGIN_S, started_at + MAX_LIFETIME_S - WARM_MARGIN_S)
 
 
-def _ensure_session(owner_id: str, arn: str, deadline: float, wake) -> dict | None:
+def _ensure_session(owner_id: str, arn: str, deadline: float, wake, task_id: str | None = None) -> dict | None:
     """Return once the session is warm (or we warmed it), within the caller's ``deadline``.
 
     Returns the session row to extend after the invoke, or ``None`` when DynamoDB itself failed
@@ -344,15 +361,17 @@ def _ensure_session(owner_id: str, arn: str, deadline: float, wake) -> dict | No
     from core.repositories import container_repo as repo
 
     token = uuid.uuid4().hex
+    # Only a task session names its row; the workspace path calls the repo exactly as before.
+    tk = {"task_id": task_id} if task_id is not None else {}
     try:
         while True:
             now = int(time.time())
-            row = repo.get_session_sync(owner_id)
+            row = repo.get_session_sync(owner_id, **tk)
             # Warm only for THIS runtime: a re-created runtime starts with no session at all.
             if int(row.get("warm_until") or 0) > now and row.get("arn") == arn:
                 return row
             if int(row.get("waking_until") or 0) < now and repo.try_take_wake_lease_sync(
-                owner_id, arn=arn, token=token, now=now, lease_s=WAKE_LEASE_S
+                owner_id, arn=arn, token=token, now=now, lease_s=WAKE_LEASE_S, **tk
             ):
                 break
             if time.monotonic() + _WAKE_POLL_S >= deadline:
@@ -370,19 +389,19 @@ def _ensure_session(owner_id: str, arn: str, deadline: float, wake) -> dict | No
         wake()
     except BaseException:
         try:
-            repo.finish_wake_sync(owner_id, token=token)
+            repo.finish_wake_sync(owner_id, token=token, **tk)
         except Exception:  # noqa: BLE001 -- the lease lapses on its own
             logger.warning("wake lease release failed for owner %s", owner_id, exc_info=True)
         raise
     row = {"warm_until": _warm_until(int(time.time()), started), "started_at": started, "arn": arn}
     try:
-        repo.finish_wake_sync(owner_id, token=token, **row)
+        repo.finish_wake_sync(owner_id, token=token, **tk, **row)
     except (ClientError, BotoCoreError):
         logger.warning("session warm mark failed for owner %s", owner_id, exc_info=True)
     return row
 
 
-def _note_invoked(owner_id: str, session: dict | None) -> None:
+def _note_invoked(owner_id: str, session: dict | None, task_id: str | None = None) -> None:
     """Slide ``warm_until`` after a successful invoke, at most once per ``WARM_EXTEND_STEP_S``."""
     if not session:
         return
@@ -393,6 +412,6 @@ def _note_invoked(owner_id: str, session: dict | None) -> None:
     from core.repositories import container_repo as repo
 
     try:
-        repo.extend_session_warm_sync(owner_id, warm_until=new)
+        repo.extend_session_warm_sync(owner_id, warm_until=new, **({"task_id": task_id} if task_id is not None else {}))
     except Exception:  # noqa: BLE001 -- a missed extend costs one serialized health, later
         logger.warning("session warm extend failed for owner %s", owner_id, exc_info=True)

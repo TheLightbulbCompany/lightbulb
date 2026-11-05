@@ -429,7 +429,7 @@ def _stop_runtime_session(runtime_arn: str, session_id: str) -> None:
     _agentcore_data_client().stop_runtime_session(agentRuntimeArn=runtime_arn, runtimeSessionId=session_id)
 
 
-async def stop_runtime_session(owner_id: str, runtime_arn: str) -> bool:
+async def stop_runtime_session(owner_id: str, runtime_arn: str, task_id: str | None = None) -> bool:
     """THE way to stop an owner's session -- roll, ``--respec``, reconcile restart, the debug
     PATCH, teardown, and any recycle. Never call ``_stop_runtime_session`` directly: this also
     clears the backend's ``__session__#<owner>`` warm estimate, and a stop the backend never saw
@@ -442,6 +442,9 @@ async def stop_runtime_session(owner_id: str, runtime_arn: str) -> bool:
     by SIGTERMing ONE microVM and every later stop with ``ResourceNotFoundException`` while the
     other two stayed alive, so repeating the stop cleans up nothing. Those leftovers age out at
     their own idle/lifetime limit; the single-flight wake is what keeps them from existing.
+
+    ``task_id`` stops that task's own session (super-agent per-task VMs) and clears only its
+    estimate row; the workspace session stays warm.
     """
     from botocore.exceptions import ClientError
 
@@ -449,7 +452,7 @@ async def stop_runtime_session(owner_id: str, runtime_arn: str) -> bool:
     from core.services.runtime_transport import session_id_for
 
     try:
-        await run_in_thread(_stop_runtime_session, runtime_arn, session_id_for(owner_id))
+        await run_in_thread(_stop_runtime_session, runtime_arn, session_id_for(owner_id, task_id))
         stopped = True
     except ClientError as exc:
         # No session to stop is as good as a stop: the next one cold-starts.
@@ -461,7 +464,7 @@ async def stop_runtime_session(owner_id: str, runtime_arn: str) -> bool:
         logger.warning("StopRuntimeSession failed for owner=%s: %s", owner_id, type(exc).__name__)
     try:
         # Cleared even on an unconfirmed stop: "cold" is the safe error (one serialized health).
-        await container_repo.clear_session(owner_id)
+        await container_repo.clear_session(owner_id, **({"task_id": task_id} if task_id is not None else {}))
     except Exception:  # noqa: BLE001
         logger.warning("session estimate clear failed for owner=%s", owner_id, exc_info=True)
     return stopped

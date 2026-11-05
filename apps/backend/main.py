@@ -1129,6 +1129,11 @@ from routers import questions as questions_router  # noqa: E402
 
 app.include_router(questions_router.router, prefix="/api/v1", tags=["questions"])
 
+# Proactive rules (wave2-S): /automations/{id}/mode, /automations/{id}/matches. 404 unless the switch is on.
+from routers import rules as rules_router  # noqa: E402
+
+app.include_router(rules_router.router, prefix="/api/v1", tags=["rules"])
+
 # A person reviews (lists, deletes) what the workspace's agents remember.
 from routers import memory as memory_router  # noqa: E402
 

@@ -186,6 +186,23 @@ async def test_trace_returns_recent_tools(world, monkeypatch):
     assert resp.json() == {"attempt": 1, "recentTools": tools}
     identity = get_run.await_args.args[1]
     assert (identity.run_id, identity.attempt, identity.agent_id) == (ts.run_id(WS, task, 1), 1, "a-1")
+    assert identity.session_kind == "workspace"
+    # A task-session attempt (V3) is read from its own session, or the trace comes back empty.
+    from core.services import runtime_transport
+
+    await tasks_repo.put_attempt(
+        WS,
+        task,
+        2,
+        {
+            "agentId": "a-1",
+            "sessionId": runtime_transport.session_id_for(WS, task),
+            "status": "running",
+            "startedAt": "2026-11-04T00:00:00Z",
+        },
+    )
+    resp = await world["client"].get(f"/api/v1/tasks/{task}/trace", params={"attempt": 2})
+    assert resp.status_code == 200 and get_run.await_args.args[1].session_kind == "task"
 
 
 async def test_routes_404_when_switch_off(world):

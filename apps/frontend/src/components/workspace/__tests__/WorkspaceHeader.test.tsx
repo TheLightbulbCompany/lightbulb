@@ -38,6 +38,8 @@ vi.mock("../workspaceController", () => ({ openPanel: (...args: unknown[]) => op
 
 const recordMessagesNavigation = vi.fn();
 vi.mock("../chatHistory", () => ({ recordMessagesNavigation: () => recordMessagesNavigation() }));
+const live = vi.hoisted(() => ({ superAgent: false }));
+vi.mock("@/hooks/useLiveEvents", () => ({ useSuperAgent: () => live.superAgent }));
 
 import { trackTeamRunActivity } from "@/components/notifications/teamRunActivity";
 import { WorkspaceHeader } from "../WorkspaceHeader";
@@ -77,6 +79,14 @@ describe("WorkspaceHeader", () => {
     expect(work).toHaveAttribute("aria-current", "page");
     fireEvent.click(work);
     expect(openPanel).toHaveBeenCalledWith("teams-issues", {}, { pushUrl: true });
+  });
+  it("opens Work on Threads while the super-agent switch is on", () => {
+    live.superAgent = true;
+    try {
+      render(<WorkspaceHeader />);
+      fireEvent.click(screen.getByRole("button", { name: "Work" }));
+      expect(openPanel).toHaveBeenCalledWith("teams-threads", {}, { pushUrl: true });
+    } finally { live.superAgent = false; }
   });
   it("shows active team runs on Work without covering workspace content", () => {
     act(() => trackTeamRunActivity("teams.heartbeat.run.queued", { runId: "run-1" }));

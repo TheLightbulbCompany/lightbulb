@@ -32,6 +32,7 @@ const PANEL_LOADERS: Record<string, () => Promise<React.ComponentType>> = {
   inbox: () => import("./panels/InboxPanel").then((m) => m.InboxPanel),
   issues: () => import("./panels/IssuesPanel").then((m) => m.IssuesPanel),
   routines: () => import("./panels/RoutinesPanel").then((m) => m.RoutinesPanel),
+  threads: () => import("@/components/tasks/ThreadsPanel").then((m) => m.ThreadsPanel),
   goals: () => import("./panels/GoalsPanel").then((m) => m.GoalsPanel),
   projects: () => import("./panels/ProjectsListPanel").then((m) => m.ProjectsListPanel),
   cases: () => import("./panels/CasesPanel").then((m) => m.CasesPanel),

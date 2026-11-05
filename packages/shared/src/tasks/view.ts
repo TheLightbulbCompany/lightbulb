@@ -169,14 +169,19 @@ export function summaryView(t: TaskSummary, viewerId: string): SummaryView {
 /** The request pane's actor line, from the same view as the status word: "Finance is working on this" while it
  *  runs, "Done by Finance, ready for your review" / "Finance needs you" when it waits on the viewer, "Done by
  *  Finance" once it is done. Null once Closed (closing says nothing about finishing). With no specialist Lightbulb
- *  is the actor. */
-export function doneByLine(specialist: string | null | undefined, view: Pick<TaskView, "word" | "reason">, names?: AgentNames): string | null {
+ *  is the actor. `finished`: the run really finished (its attempt completed, or a waiting approval's effect landed);
+ *  without it nothing reads "Done by" (a request can stop, be dismissed or be closed half done). */
+export function doneByLine(specialist: string | null | undefined, view: Pick<TaskView, "word" | "reason">, names?: AgentNames, finished = true): string | null {
   // Closed says nothing about finishing: a person may have closed it half done or before an approval (dev walk N-F1),
   // so it never reads "Done by"; the pane shows the specialist's name alone.
   if (view.word === "Closed") return null;
   const who = specialistLabel(specialist, names);
-  if (view.word === "Needs you") return view.reason === "Ready for review" ? `Done by ${who}, ready for your review` : `${who} needs you`;
-  return view.word === "Done" ? `Done by ${who}` : `${who} is working on this`;
+  if (view.word === "Needs you") {
+    if (view.reason !== "Ready for review") return `${who} needs you`;
+    return finished ? `Done by ${who}, ready for your review` : `${who} has this ready for your review`;
+  }
+  if (view.word === "Done") return finished ? `Done by ${who}` : null;
+  return `${who} is working on this`;
 }
 
 /** "12s", "4m", "2h", "3d": how long a Working request has been in its current state. */

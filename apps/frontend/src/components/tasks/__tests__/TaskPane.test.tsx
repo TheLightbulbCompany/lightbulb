@@ -265,7 +265,8 @@ describe("NeedsYouCard", () => {
     // The header follows the same state: ready for review, nothing running, so no Stop.
     const status = screen.getByRole("region", { name: "Request status" });
     // The whole line: actor, the status word once, no repeated "Ready for review".
-    expect(status.firstElementChild).toHaveTextContent(/^Done by \w+, ready for your reviewNeeds you$/);
+    // Nothing finished yet (no completed attempt, no landed effect): it has the draft ready, not "Done by".
+    expect(status.firstElementChild).toHaveTextContent(/^\w+ has this ready for your reviewNeeds you$/);
     expect(status).not.toHaveTextContent("is working on this");
     expect(within(status).queryByRole("button", { name: "Stop" })).toBeNull();
     await userEvent.click(await screen.findByRole("button", { name: "Send" }));
@@ -320,5 +321,20 @@ describe("steering a finished request (dev walk N-F4)", () => {
     await userEvent.type(screen.getByRole("textbox", { name: "Add a note" }), "Make it one line{Enter}");
     await waitFor(() => expect(within(status).getByText("Working")).toBeInTheDocument());
     expect(within(status).getByRole("button", { name: "Stop" })).toBeInTheDocument();
+  });
+});
+
+describe("Done by only when the run really finished", () => {
+  it("a completed attempt reads Done by; a Done request whose attempt didn't complete names the specialist alone", async () => {
+    const base = { ...step8.task, status: "idle" as const, shownGroup: "idle" as const, watching: false, specialist: "finance" };
+    withDetail({ ...step8, task: { ...base, activity: { n: 1, status: "ended" as const, outcome: "completed" } }, questions: [] }, []);
+    const first = pane();
+    expect(await screen.findByText("Done by Finance")).toBeInTheDocument();
+    first.unmount();
+    withDetail({ ...step8, task: { ...base, activity: { n: 1, status: "ended" as const, outcome: "cancelled" } }, questions: [] }, []);
+    pane();
+    const status = await screen.findByRole("region", { name: "Request status" });
+    expect(status).not.toHaveTextContent("Done by");
+    expect(within(status).getByText("Finance")).toBeInTheDocument();
   });
 });

@@ -83,7 +83,8 @@ function TaskPaneBody({ detail, viewerId }: { detail: TaskDetail; viewerId: stri
   const composerShown = useRoomComposerShown(task.originRoomId);
   const effects = open ? detail.effects.filter((e) => e.state !== "proposed") : detail.effects;
   return <div className="room-context-body flex min-h-0 flex-col gap-3">
-    <TaskHeader task={task} viewerId={viewerId} />
+    <TaskHeader task={task} viewerId={viewerId} finished={task.activity?.outcome === "completed"
+      || (task.activity?.outcome === "waiting_approval" && detail.effects.some((e) => e.state === "done"))} />
     {open && <NeedsYouCard key={open.id} task={task} question={open} label={word} ended={view.word === "Closed"} />}
     {answered.length > 0 && <ul aria-label="Decisions" className="grid gap-1 px-1 text-ui text-muted-foreground">
       {answered.map((q) => <li key={q.id}>{answerLine(q)}</li>)}
@@ -117,7 +118,9 @@ function answerLine(q: QuestionView): string {
   return `${verb} by ${q.answeredBy!.name} · ${time(q.answeredAt)}`;
 }
 
-export function TaskHeader({ task, viewerId }: { task: TaskSummary; viewerId: string }): ReactElement {
+/** `finished`: the run really finished (an attempt completed, or a waiting approval's effect landed); only then does
+ *  the actor line say "Done by". */
+export function TaskHeader({ task, viewerId, finished = false }: { task: TaskSummary; viewerId: string; finished?: boolean }): ReactElement {
   const { act } = useTaskActions("pane");
   const { agentNames } = useLiveEvents();
   const [error, setError] = useState<string | null>(null);
@@ -127,7 +130,7 @@ export function TaskHeader({ task, viewerId }: { task: TaskSummary; viewerId: st
   // Stop only while something runs: a request that needs the viewer (or is done) has nothing to stop.
   const live = view.word === "Working";
   // The specialist is the actor: "Growth is working on this" / "Done by Growth"; its bare name where nobody did it.
-  const actor = doneByLine(task.specialist, view, agentNames) ?? specialistLabel(task.specialist, agentNames);
+  const actor = doneByLine(task.specialist, view, agentNames, finished) ?? specialistLabel(task.specialist, agentNames);
   const press = async (verb: "stop" | "resolve" | "reopen") => {
     setConfirmStop(false);
     setPending(true);
@@ -140,7 +143,7 @@ export function TaskHeader({ task, viewerId }: { task: TaskSummary; viewerId: st
       <span className="font-semibold text-foreground">{actor}</span>
       <TaskStatus task={task} viewerId={viewerId} />
       {/* "Done by X, ready for your review" already says Ready for review. */}
-      {view.reason && !(view.reason === "Ready for review" && view.word === "Needs you" && actor.startsWith("Done by")) && <span>{view.reason}</span>}
+      {view.reason && !(view.reason === "Ready for review" && view.word === "Needs you" && actor.endsWith("ready for your review")) && <span>{view.reason}</span>}
     </div>
     <div className="flex flex-wrap gap-2">
       {/* A running request is stopped (asked once), never resolved under it; Reopen undoes either. */}

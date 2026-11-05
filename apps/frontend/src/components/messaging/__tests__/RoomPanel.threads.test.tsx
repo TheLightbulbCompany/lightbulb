@@ -186,6 +186,9 @@ describe("RoomPanel Threads view (super-agent)", () => {
     expect(within(list).queryByText("Agent")).toBeNull();
     expect(within(list).queryByRole("combobox")).toBeNull();
     expect(within(list).queryByRole("button", { name: "Remove Lightbulb" })).toBeNull();
+    // No "Active work: No active runs" beside Working requests (N-F5): the Requests column has them.
+    expect(screen.queryByText("No active runs.")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Active work" })).toBeNull();
   });
 
   it("flag off keeps Tasks in the menu, no Threads tab, and makes no /tasks request", async () => {

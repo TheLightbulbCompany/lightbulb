@@ -27,6 +27,9 @@ interface RoomDetailsPanelProps {
   messages: readonly RoomMessage[];
   pinnedMessageIds: readonly string[];
   activeRuns: readonly RoomRunView[];
+  /** Super-agent: no "Active work" line. It counts room-agent runs only, so it said "No active runs" beside a Working
+   *  request (dev walk N-F5); the Requests column beside the conversation shows what is working. */
+  hideActiveWork?: boolean;
   onOpenMessage: (messageId: string) => void;
   onUnpin?: (messageId: string) => Promise<void>;
   onLeaveRoom?: () => Promise<void>;
@@ -71,6 +74,7 @@ export function RoomDetailsPanel({
   messages,
   pinnedMessageIds,
   activeRuns,
+  hideActiveWork = false,
   onOpenMessage,
   onUnpin,
   onLeaveRoom,
@@ -139,7 +143,7 @@ export function RoomDetailsPanel({
   // them rather than re-derived on every one of those renders.
   const files = useMemo(() => messages.filter((message) => !message.deletedAt && message.attachments?.length), [messages]);
   const links = useMemo(() => extractLinks(messages), [messages]);
-  const activeWork = <section aria-labelledby={`${id}-runs`}>
+  const activeWork = hideActiveWork ? null : <section aria-labelledby={`${id}-runs`}>
     <h4 id={`${id}-runs`} className="font-semibold">Active work</h4>
     {activeRuns.length === 0 ? <p className="text-ui text-muted-foreground">No active runs.</p>
       : activeRuns.map((activeRun) => <p key={activeRun.runId} className="room-wrap">

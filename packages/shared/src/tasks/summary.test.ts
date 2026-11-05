@@ -84,6 +84,11 @@ describe("summary lines and labels", () => {
     // Closed never claims it was done: a person can close a request before it finishes (dev walk N-F1).
     expect(doneByLine(null, { word: "Closed", reason: null })).toBeNull();
   });
+  it("Done by only when the run really finished", () => {
+    expect(doneByLine("finance", { word: "Done", reason: null }, undefined, false)).toBeNull();
+    expect(doneByLine("finance", { word: "Needs you", reason: "Ready for review" }, undefined, false)).toBe("Finance has this ready for your review");
+    expect(doneByLine("finance", { word: "Working", reason: null }, undefined, false)).toBe("Finance is working on this");
+  });
   it("no actor line for what never ran or ended without a result", () => {
     for (const reason of ["Stopped", "Dismissed", "Failed"]) expect(doneByLine("finance", { word: "Closed", reason })).toBeNull();
   });

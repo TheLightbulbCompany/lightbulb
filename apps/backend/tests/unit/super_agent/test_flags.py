@@ -77,6 +77,9 @@ def test_env_enabled_callers_are_allowlisted():
         BACKEND / "scripts" / "copy_workspace_meta.py",  # dev-only copy refuses an env without the tasks table
         BACKEND / "core" / "repositories" / "paperclip_repo.py",  # META store is env-wide (it has fleet scans)
         BACKEND / "core" / "services" / "watchdog.py",  # the watchdog schedule is platform-wide
+        # Lane V broker: custody=backend on the token row decides the vend `model` / `POST …/model`, not the
+        # workspace switch (#4804); the env master keeps prod off without a read.
+        BACKEND / "routers" / "runtime_rpc.py",
         BACKEND / "scripts" / "watchdog_ctl.py",
         BACKEND / "scripts" / "work_lambda.py",  # Temporal client for admission (wave-2 O6)
     }

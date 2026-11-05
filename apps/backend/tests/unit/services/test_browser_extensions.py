@@ -65,6 +65,9 @@ def store(monkeypatch):
         # self-hosted runner until the job timeout on every run.
         pytest.param(b"x" * (ext.MAX_BYTES + 1), "10 MB", id="oversized"),
     ],
+    # Explicit ids: a ZIP's bytes carry its write time, so byte ids differ per process and
+    # pytest-xdist refuses to run when its workers collect different test ids.
+    ids=["not_zip", "no_manifest", "nested_manifest", "manifest_v2", "no_name", "oversized"],
 )
 def test_read_manifest_refuses_what_chrome_would_not_load(data, message):
     with pytest.raises(ext.ExtensionError, match=message):

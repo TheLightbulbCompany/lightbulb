@@ -159,6 +159,53 @@ VOICE_PROFILE_SCHEMA = {
 }
 VOICE_ONLY = "lightbulb_voice_profile works only inside a Live voice request."
 
+# start_work: work asked aloud becomes a task (lane A, contracts-v2 §14.1). Offered only on a Live voice turn
+# whose request carries superAgent: true; the ids come from the turn, never from the model.
+START_WORK_SCHEMA = {
+    "name": "start_work",
+    "description": "Hand off work asked for on this call so it goes on after the call: it becomes a task and "
+                   "its result lands in the room. Say one short line that it has started.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "maxLength": 200},
+            "brief": {"type": "string", "description": "What to do, self-contained: the person's words and what they asked for."},
+            "specialist": {"type": "string", "description": "A teammate id from the roster, or omit."},
+        },
+        "required": ["title", "brief"],
+    },
+}
+START_WORK_ONLY = "start_work works only inside a Live voice request in a Lightbulb super-agent workspace."
+
+
+def _start_work(args: dict, *, session_id: str = "", **_kw) -> str:
+    ctx = turn_context.read(session_id)
+    if not ctx or not ctx.get("voiceRoomId") or not ctx.get("superAgent"):
+        return START_WORK_ONLY
+    args = args or {}
+    for field in ("title", "brief"):
+        if not isinstance(args.get(field), str) or not args[field].strip():
+            return json.dumps({"error": f"{field} is required"})
+    if len(args["title"]) > 200:
+        return json.dumps({"error": "title is at most 200 characters"})
+    body = {"runId": ctx["runId"], "callId": ctx.get("callId"), "roomId": ctx["voiceRoomId"],
+            "title": args["title"].strip(), "brief": args["brief"].strip()}
+    if isinstance(args.get("specialist"), str) and args["specialist"]:
+        body["specialist"] = args["specialist"]
+    url = f"{ctx['apiUrl'].rstrip('/')}/api/v1/internal/automations/{ctx['ownerId']}/voice-start"
+    try:
+        _post(url, ctx["hookToken"], body)
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = json.loads(exc.read() or b"{}").get("detail")
+        except Exception:  # noqa: BLE001
+            detail = None
+        code = detail.get("code") if isinstance(detail, dict) else detail
+        return f"Not started: {code or exc.code}"
+    except Exception as exc:  # noqa: BLE001
+        return f"Not started: {type(exc).__name__}"
+    return "started"
+
 
 def _voice_profile(args: dict, *, session_id: str = "", **_kw) -> str:
     ctx = turn_context.read(session_id)
@@ -1059,6 +1106,8 @@ def register(ctx) -> None:
                       description=READ_ROOMS_SCHEMA["description"], emoji="🗂️")
     ctx.register_tool("lightbulb_workspace", "lightbulb", WORKSPACE_SCHEMA, _workspace,
                       description=WORKSPACE_SCHEMA["description"], emoji="🏢")
+    ctx.register_tool("start_work", "lightbulb", START_WORK_SCHEMA, _start_work,
+                      description=START_WORK_SCHEMA["description"], emoji="🚀")
     ctx.register_tool("lightbulb_voice_profile", "lightbulb", VOICE_PROFILE_SCHEMA, _voice_profile,
                       description=VOICE_PROFILE_SCHEMA["description"], emoji="🎙️")
     from . import desktop, router

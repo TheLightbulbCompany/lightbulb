@@ -398,12 +398,14 @@ def _voice_body(identity: dict, request: dict) -> dict:
             "recentHistory": request.get("recentHistory") or []}
 
 
-def call_turn_context(identity: dict) -> dict:
+def call_turn_context(identity: dict, request: dict | None = None) -> dict:
     """A spoken turn's plugin turn context. Keyed by the call key: the plugin's tools find it (and
-    the Mac tool's active turn) by the session id Hermes hands them, which is the call's own."""
+    the Mac tool's active turn) by the session id Hermes hands them, which is the call's own.
+    `superAgent` (lane A): the backend set it on the request when work asked aloud may become a task."""
     return {"apiUrl": API, "ownerId": OWNER, "hookToken": HOOK_TOKEN, "agentId": identity["agentId"],
             "runId": identity["runId"], "sessionKey": call_session_key(identity["agentId"], identity["callId"]),
-            "roomId": None, "voiceRoomId": identity["roomId"],
+            "roomId": None, "voiceRoomId": identity["roomId"], "callId": identity["callId"],
+            "superAgent": bool((request or {}).get("superAgent")),
             "localSessionToken": identity.get("localSessionToken"), "family": "call"}
 
 
@@ -606,7 +608,7 @@ def _run_call(identity: dict, request: dict, frames: "VoiceFramePublisher") -> t
         import run_agent  # noqa: F401
     except ImportError:
         pass
-    ctx = call_turn_context(identity)
+    ctx = call_turn_context(identity, request)
     body = _voice_body(identity, request)
     # The room turns' folder path, never filled or removed here: an observed row's "saved at" note
     # names it, and the room's next turn fills it (_observed_text).

@@ -38,6 +38,7 @@ from routers import (
     apple_iap,
     automations,
     internal_automations,
+    internal_voice,
     billing,
     config,
     connections,
@@ -987,6 +988,7 @@ app.include_router(google_accounts.router, prefix="/api/v1", tags=["google-accou
 # write. See routers/automations.py.
 app.include_router(automations.router, prefix="/api/v1", tags=["automations"])
 app.include_router(internal_automations.router, prefix="/api/v1", tags=["super-agent"])  # lane A: Router proposals
+app.include_router(internal_voice.router, prefix="/api/v1", tags=["super-agent"])  # lane A: voice start_work
 
 from routers import runtime_internal  # noqa: E402
 

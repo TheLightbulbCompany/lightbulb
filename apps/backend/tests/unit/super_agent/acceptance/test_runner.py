@@ -212,6 +212,7 @@ async def test_gate_wires_vm_evidence_and_skips_a0(monkeypatch):
         return False
 
     monkeypatch.setattr(token_custody, "task_vm_allowed", actor)
+    monkeypatch.setattr("scripts.super_agent.acceptance.ctx.load_backend_secrets", lambda: None)  # no Secrets Manager
     ctx = FakeCtx(rows=rows)
 
     async def scenarios(names, c, *, log):

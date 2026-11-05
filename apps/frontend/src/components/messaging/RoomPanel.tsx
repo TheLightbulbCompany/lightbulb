@@ -128,6 +128,8 @@ export interface RoomPanelProps {
   onLinkToWork?: () => void;
   /** Super-agent: the one front agent (`@lightbulb`). A DM with any other agent shows the specialist banner. */
   frontAgentId?: string;
+  /** The workspace runtime is still being set up: with the switch on, the viewer's unanswered message reads "Queued". */
+  runtimeStarting?: boolean;
   onDownloadAttachment?: (roomId: string, attachmentId: string) => Promise<Blob>;
   onAttachmentUrl?: (roomId: string, attachmentId: string) => Promise<{ url: string }>;
   /** A card's click: posts the person's answer in reply to the card (MessagingWorkspaceContext builds it). */
@@ -323,6 +325,7 @@ function RoomContent({
   onSubagentsVisible,
   onLinkToWork,
   frontAgentId,
+  runtimeStarting = false,
   onDownloadAttachment,
   onAttachmentUrl,
   onCardReply,
@@ -340,11 +343,19 @@ function RoomContent({
     ...[...waiting].map(([messageId, agentId]) => [messageId, agentId, "waiting"]),
     ...allRuns.flatMap((run) => (run.steeredMessageIds ?? []).map((messageId) => [messageId, run.agentId, "seen"])),
   ]);
+  // Super-agent, a new workspace: the viewer's latest message with nothing after it is admitted and kept until the
+  // runtime is up (the Router waits for it), so it reads "Queued" rather than looking ignored.
+  const lastTop = [...messages].reverse().find((message) => !message.threadRootMessageId && !message.deletedAt);
+  const queuedId = useSuperAgent() && runtimeStarting && participants.some((p) => p.kind === "agent")
+    && lastTop?.author.kind === "human" && lastTop.author.id === currentUserId
+    ? lastTop.messageId : null;
   const receipts = useMemo(() => {
     const name = (agentId: string) => participants.find((member) => member.kind === "agent" && member.id === agentId)?.displayName ?? "The agent";
-    return new Map((JSON.parse(receiptKey) as [string, string, string][]).map(([messageId, agentId, kind]) =>
+    const out = new Map((JSON.parse(receiptKey) as [string, string, string][]).map(([messageId, agentId, kind]) =>
       [messageId, kind === "seen" ? `${name(agentId)} saw this` : `${name(agentId)} will read this after the current reply`]));
-  }, [receiptKey, participants]);
+    if (queuedId && !out.has(queuedId)) out.set(queuedId, "Queued · Lightbulb answers as soon as setup finishes");
+    return out;
+  }, [receiptKey, participants, queuedId]);
   // Stop is not instant (the backend asks the runtime first): say so until run_ended lands,
   // and give the button back if the request fails.
   const [stopping, setStopping] = useState<ReadonlySet<string>>(() => new Set());

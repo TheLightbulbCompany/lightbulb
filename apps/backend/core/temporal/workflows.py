@@ -51,6 +51,12 @@ MAX_LOST_ATTEMPTS = 3  # the first attempt plus two new ones, then `failed`
 # A Router batch is one lane in one room: "shared" spans rooms, and a batch's memory audience, open tasks and
 # fallback line are one room's (audit #6). Histories without the marker keep batching by lane.
 PATCH_ROUTER_ROOM_BATCH = "o-router-room-batch-v1"
+#: A batch whose runtime is still starting (a new workspace) waits for it instead of getting the fallback reply.
+PATCH_ROUTER_WAITS_FOR_RUNTIME = "c-router-waits-for-runtime-v1"
+RUNTIME_NOT_READY = "RuntimeNotReady"  # activities.RUNTIME_NOT_READY (activities is not sandbox-importable here)
+ROUTER_RUNTIME_WAIT = timedelta(seconds=20)
+# ponytail: 45 x 20 s = 15 min per batch, then today's fallback; a continue-as-new restarts the count.
+ROUTER_RUNTIME_WAITS_MAX = 45
 
 _SHORT = {"start_to_close_timeout": timedelta(seconds=30), "retry_policy": RetryPolicy(maximum_attempts=5)}
 _ROUTER_TURN = {
@@ -103,6 +109,8 @@ class RouterWorkflow:
         self._seen: list[str] = list(state.seen)
         self._seen_set = set(self._seen)
         self._signals = 0
+        # Not-ready waits per batch, keyed by the batch's first trigger (it stays first: the batch goes back in front).
+        self._runtime_waits: dict[str, int] = {}
 
     @workflow.signal
     def trigger(self, ref: TriggerRef) -> None:
@@ -141,7 +149,20 @@ class RouterWorkflow:
                         result_type=RouterTurnOut,
                         **_ROUTER_TURN,
                     )
-                except ActivityError:
+                    self._runtime_waits.pop(head.trigger_id, None)
+                except ActivityError as err:
+                    waited = self._runtime_waits.get(head.trigger_id, 0)
+                    if (
+                        _error_name(err) == RUNTIME_NOT_READY
+                        and waited < ROUTER_RUNTIME_WAITS_MAX
+                        and workflow.patched(PATCH_ROUTER_WAITS_FOR_RUNTIME)
+                    ):
+                        # The workspace is still starting: put the batch back first in line and try again shortly.
+                        self._runtime_waits[head.trigger_id] = waited + 1
+                        self._queue = batch + self._queue
+                        await workflow.sleep(ROUTER_RUNTIME_WAIT)
+                        continue
+                    self._runtime_waits.pop(head.trigger_id, None)
                     try:
                         await _act("apply_fallback", self._ws, trigger_ids)
                     except ActivityError:

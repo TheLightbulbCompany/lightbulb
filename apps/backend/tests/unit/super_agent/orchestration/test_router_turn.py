@@ -103,6 +103,12 @@ def world(table, monkeypatch):  # noqa: F811
     monkeypatch.setattr(acts.task_conversation, "post_as_lightbulb", post)
     monkeypatch.setattr(acts.task_conversation, "ensure_task_room", ensure_room)
     monkeypatch.setattr(acts.task_conversation, "front_agent_id", front)
+    w["ready"] = True
+
+    async def runtime_ready(ws):
+        return w["ready"]
+
+    monkeypatch.setattr(acts, "_runtime_ready", runtime_ready)
     monkeypatch.setattr(acts.messaging, "load_agent_roster", roster)
     monkeypatch.setattr(acts.runtime_runs, "create_run", create_run)
     monkeypatch.setattr(acts.runtime_runs, "get_run", get_run)
@@ -442,6 +448,18 @@ async def test_router_run_polls_until_done(world):
 
 
 @pytest.mark.asyncio
+async def test_router_turn_waits_while_the_runtime_is_still_starting(world):
+    """A new workspace's first message: no run is started (it would fail) and the workflow is told to wait."""
+    from temporalio.exceptions import ApplicationError
+
+    t1 = await _trig("chat:m1")
+    world["ready"] = False
+    with pytest.raises(ApplicationError) as err:
+        await _run([t1])
+    assert err.value.type == acts.RUNTIME_NOT_READY and err.value.non_retryable
+    assert world["runs"] == [] and world["posts"] == []
+
+
 async def test_apply_fallback_posts_once_per_respond(world):
     t1 = await _trig("chat:m1")
     t2 = await _trig("chat:m2", admission="candidate")

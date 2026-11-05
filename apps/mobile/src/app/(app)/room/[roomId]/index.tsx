@@ -53,6 +53,7 @@ import { fonts, radii, spacing, useChatPalette } from "../../../../config/theme"
 import { claimRoomTarget } from "../../../../lib/activeAgent";
 import { hasNativeVoice } from "../../../../lib/webrtc";
 import { useLiveEvents, useSuperAgent } from "../../../../providers/live-events";
+import { useContainerStatusContext } from "../../../../lib/containerStatusContext";
 import { useLive, useRoomLive } from "../../../../providers/live";
 import { JumpToLatest } from "../../../../components/conversation/JumpToLatest";
 import { usePushedScreenKeyboardOffset } from "../../../../lib/keyboardOffset";
@@ -246,6 +247,12 @@ function Conversation() {
   const others = (members ?? []).filter(
     (member) => !(member.kind === "human" && member.id === userId),
   ).map((member) => (superAgentOn && member.kind === "agent" && member.id === frontId ? { ...member, displayName: "Lightbulb" } : member));
+  // Super-agent, a new workspace still being set up: the viewer's latest message, with nothing after it, is admitted
+  // and kept until the runtime is up (the Router waits), so it reads "Queued" rather than looking ignored.
+  const containerStatus = useContainerStatusContext();
+  const queuedLabel = superAgentOn && containerStatus?.kind === "starting" && others.some((m) => m.kind === "agent")
+    && mainMessages[mainMessages.length - 1]?.messageId === lastOwnId
+    ? "Queued · Lightbulb answers as soon as setup finishes" : null;
   const isChannel = room?.kind === "channel";
   const isDm = room?.kind === "dm";
   const isGroupDm = room?.kind === "group-dm";
@@ -627,7 +634,7 @@ function Conversation() {
                   showTime={!noTimeIds.has(item.message.messageId)}
                   readLabel={
                     rows.length === 0 && item.message.messageId === lastOwnId
-                      ? readStateLabel(
+                      ? queuedLabel ?? readStateLabel(
                           readState({
                             message: item.message,
                             roomKind: room?.kind ?? "channel",

@@ -528,6 +528,7 @@ async def _decide_for_message(
     open_lines: list[str] | None = None,
     later: list[dict] | None = None,
     setting: str = "live",
+    rules: list[dict] | tuple = (),
 ) -> dict:
     """``to_people``: the caller already knows whether the message speaks to people (Live hears names,
     not @handles); None reads it from the message (``speaks_to_people``). ``placement=False`` (Live) skips
@@ -535,6 +536,8 @@ async def _decide_for_message(
     ``later``: messages posted after the trigger before the decision (``state.after``), so the
     question rule sees whether someone has answered it since. ``setting="meeting"``: a Google Meet
     (Live's voice worker), told to Jev in one line.
+    ``rules``: in-scope proactive rule rows (contracts §18); they ride this call as one ``rule`` question and the
+    decision gains ``rule``/``ruleP``, parsed independently of ``who``. Empty leaves the request unchanged.
     A ``forced`` reason on a "none" means the policy did not allow it: the caller's fallback picks."""
     candidates = [
         target["agentId"]
@@ -577,15 +580,21 @@ async def _decide_for_message(
             "instructions": PLACEMENT_INSTRUCTIONS,
             "criteria": PLACEMENT_CRITERIA,
         }
+    if rules:
+        from core.services import rules as rules_mod  # rules imports jev._clip: import here, not at module top
+
+        questions["rule"] = rules_mod.jev_question(list(rules))
     # Store only what dispatch reads: who, its probability, placement, and why a "none" was refused.
     answers = await decide(state, questions)
+    # A rule match never depends on `who`, and Jev down is never a match (spec 12 §3.3).
+    no_rule = {"rule": None} if rules else {}
     if answers == RATE_LIMITED:
-        return {"rateLimited": True}
+        return {"rateLimited": True, **no_rule}
     if answers is None:
-        return {"fallback": True}
+        return {"fallback": True, **no_rule}
     who, where = answers.get("who") or {}, answers.get("placement") or {}
     if who.get("choice") not in (*candidates, "none") or (placement and where.get("choice") not in ("main", "thread")):
-        return {"fallback": True, "reason": "invalid_choice"}
+        return {"fallback": True, "reason": "invalid_choice", **no_rule}
     probabilities = who.get("probabilities") or {}
     human = (latest.get("author") or {}).get("kind") == "human"
     final = who["choice"]
@@ -605,6 +614,10 @@ async def _decide_for_message(
         final = "none"
         put_metric("messaging.jev.tie_quiet")
     decision = {"who": final, "whoP": probabilities, "placement": where.get("choice") if placement else None}
+    if rules:
+        decision["rule"], decision["ruleP"] = rules_mod.parse_match(
+            answers, {r["scheduleId"] for r in rules[: rules_mod.RULES_PER_ROOM]}
+        )
     if final == "none" and human and not to_people:
 
         def high(key: str) -> bool:

@@ -243,3 +243,23 @@ async def test_routes_404_when_switch_off(api):
     api.switch = False
     body = {"runSecret": await _secret(tid), "taskId": tid, "attempt": 1, "kind": "terminal", "status": "completed"}
     assert (await api.post(_url(WS, ref.run_id), json=body, headers=H)).status_code == 404
+
+
+async def test_task_note_posts_in_its_own_task_room(api):
+    """task_note (contracts-v2 §6): the current attempt posts in its task's room as Lightbulb · specialist; the same
+    text twice is one post; a wrong secret, a stale attempt or the switch off never posts."""
+    tid = await _task()
+    ref = await _running(tid)
+    body = {"taskId": tid, "runId": ref.run_id, "attempt": 1, "runSecret": await _secret(tid), "text": "Found the PO."}
+    url = f"/api/v1/internal/runtime/{WS}/notes"
+    assert (await api.post(url, json=body, headers=H)).status_code == 200
+    await api.post(url, json=body, headers=H)
+    notes = [p for p in api.world["posts"] if p.get("kind") == "note"]
+    assert {p["event_id"] for p in notes} == {notes[0]["event_id"]}
+    assert notes[0]["room"] == ts.task_room_id(tid) and notes[0]["specialist"] == "finance"
+    assert (await api.post(url, json={**body, "runSecret": "wrong"}, headers=H)).status_code == 403
+    await repo.update_attempt(WS, tid, 1, {"status": "ended"}, allowed_status=frozenset({"running"}))
+    stale = await api.post(url, json=body, headers=H)
+    assert stale.status_code == 409 and stale.json()["detail"] == "stale_run"
+    api.switch = False
+    assert (await api.post(url, json=body, headers=H)).status_code == 404

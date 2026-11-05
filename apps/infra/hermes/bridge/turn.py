@@ -838,6 +838,8 @@ def task_tool_recorder(run_id: str):
 ROUTER_TOOLSET = "lightbulb_router"
 # start_work (lane A): only a super-agent Live call re-adds it (_run_call); every other turn strips it.
 VOICE_WORK_TOOLSET = "lightbulb_voice_work"
+# task_note: only a super-agent Worker run re-adds it (_run_durable_turn); every other turn strips it.
+TASK_TOOLSET = "lightbulb_task"
 ROUTER_RUN_LIMITS = {"enabled_toolsets": [ROUTER_TOOLSET, "memory"], "disabled_toolsets": None,
                      "skip_background_review": True}
 MAX_DECISIONS = 40
@@ -3882,7 +3884,7 @@ def _construct_agent(agent_id: str, body: dict, frames, session_key: str, **limi
                      "stream_delta_callback": frames.delta, "reasoning_callback": frames.thinking}
     enabled_toolsets, disabled_toolsets = profile_toolsets()
     if enabled_toolsets is not None:  # the Router's decision tools are only for Router runs (limits re-add them)
-        enabled_toolsets = [t for t in enabled_toolsets if t not in (ROUTER_TOOLSET, VOICE_WORK_TOOLSET)]
+        enabled_toolsets = [t for t in enabled_toolsets if t not in (ROUTER_TOOLSET, VOICE_WORK_TOOLSET, TASK_TOOLSET)]
     db = _session_db(agent_id)
     # A state.db failure fails a room, call or side turn: each runs on its stored transcript.
     if db is None and (ROOM_SESSION_RE.match(session_key) or ":lightbulb:call:" in session_key
@@ -4254,6 +4256,11 @@ def _run_task_turn(identity: dict, request: dict, *, family: str) -> tuple[str, 
             if not paperclip:
                 extra["tool_complete_callback"] = task_tool_recorder(run_id)
             memory = {"memory": request["memory"]} if request.get("memory") else {}  # a task's block (spec 07 §5.2)
+            if not paperclip and not router and identity.get("taskId") and identity.get("runSecret"):
+                enabled, _ = profile_toolsets()  # a Worker run: its own task room's note tool (task_note)
+                if enabled is not None:
+                    strip = (ROUTER_TOOLSET, VOICE_WORK_TOOLSET)
+                    extra["enabled_toolsets"] = [*(t for t in enabled if t not in strip), TASK_TOOLSET]
             if router:  # decisions only: no execution tools, no background review, no side session
                 extra |= ROUTER_RUN_LIMITS
                 if identity.get("model"):  # the cheaper Router model (§9), chosen by the backend

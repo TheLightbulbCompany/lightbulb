@@ -289,6 +289,11 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
   );
 }
 
+/** The live context, or null outside a provider (a component rendered on its own). */
+export function useOptionalLiveEvents(): LiveEventsContextValue | null {
+  return useContext(LiveEventsContext);
+}
+
 export function useLiveEvents(): LiveEventsContextValue {
   const value = useContext(LiveEventsContext);
   if (!value) {

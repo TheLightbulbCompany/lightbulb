@@ -131,7 +131,8 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
         : participant
         ? <ParticipantProfile participant={participant} currentUserId={currentUserId} onMessage={onSelectParticipant} disabled={!actionable} />
         : <span className="font-semibold truncate" title={name}>{name}</span>}
-        {message.author.kind === "agent" && !(superAgent && message.specialist) && <span className="room-agent-label">Agent</span>}
+        {/* No "Agent" tag beside Lightbulb: a specialist's label or the front agent itself (seated as @lightbulb). */}
+        {message.author.kind === "agent" && !(superAgent && (message.specialist || participant?.mentionHandle === "lightbulb")) && <span className="room-agent-label">Agent</span>}
         {timestamp && <time className="text-ui text-muted-foreground" dateTime={timestamp} title={new Date(timestamp).toLocaleString()}>{time}</time>}
       </div>}
       <RoomMessageContent message={message} currentUserId={currentUserId} actionable={actionable} onUpdate={onUpdateMessage} startEditing={startEditing} onEditingClosed={onEditingClosed} actions={actions} menuExtras={menuExtras}>

@@ -153,7 +153,7 @@ describe("TaskPane", () => {
     ]);
   });
 
-  it("a failed load (not 403/404) offers Retry; a task with no runtime yet names none", async () => {
+  it("a failed load (not 403/404) offers Retry", async () => {
     client.get.mockRejectedValueOnce(new Error("503"));
     pane();
     expect(await screen.findByRole("alert")).toHaveTextContent("This thread couldn't load.");

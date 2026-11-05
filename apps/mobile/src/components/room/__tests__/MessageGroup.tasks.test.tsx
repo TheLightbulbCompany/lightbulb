@@ -3,7 +3,7 @@ import type { CanonicalRoomMessage, RoomMember } from "@lightbulb/shared";
 import { FIXTURES, LIGHTBULB, SAM } from "@lightbulb/shared/tasks/fixtures";
 
 const live = { superAgent: true, tasks: null as unknown };
-jest.mock("../../../providers/live-events", () => ({ useLiveEvents: () => live, useSuperAgent: () => live.superAgent }));
+jest.mock("../../../providers/live-events", () => ({ useLiveEvents: () => live, useOptionalLiveEvents: () => live, useSuperAgent: () => live.superAgent }));
 jest.mock("expo-router", () => ({ router: { push: jest.fn() } }));
 jest.mock("expo-crypto", () => ({ randomUUID: () => "00000000-0000-4000-8000-000000000000" }));
 jest.mock("react-native-safe-area-context", () => ({ useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));

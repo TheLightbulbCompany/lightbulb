@@ -188,7 +188,7 @@ const mockLive = {
 // referentially stable `live`, and a new one per render re-fires the history
 // reconcile into "Maximum update depth exceeded".
 let mockSuperAgent = false;
-jest.mock("../../../../providers/live-events", () => ({ useSuperAgent: () => mockSuperAgent, useLiveEvents: () => mockLive }));
+jest.mock("../../../../providers/live-events", () => ({ useSuperAgent: () => mockSuperAgent, useLiveEvents: () => mockLive, useOptionalLiveEvents: () => mockLive }));
 // The front agent (`@lightbulb`) once the roster answers; only asked for while the switch is on.
 // The band has its own suite; here only WHERE it mounts is under test.
 jest.mock("../../../../components/room/OnboardingBand", () => ({
@@ -779,6 +779,9 @@ describe("conversation screen", () => {
       mockRoomId = "dm-friday";
       await render(<Conversation />);
       expect(await screen.findByLabelText("Lightbulb, idle")).toBeTruthy();
+      // Its older posts (stored as "Friday") read Lightbulb too, avatar and byline from one name.
+      expect((await screen.findAllByText("Lightbulb")).length).toBeGreaterThan(0);
+      expect(screen.queryByText("Friday")).toBeNull();
       expect(screen.queryByTestId("specialist-dm-banner")).toBeNull();
     } finally { mockLive.frontAgentId = "agent-lb"; }
   });

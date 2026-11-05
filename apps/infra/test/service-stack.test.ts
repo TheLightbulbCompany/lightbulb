@@ -1677,6 +1677,47 @@ describe("ServiceStack â€” super-agent temporal-worker (dev only, contracts-v2 Â
     }
   });
 
+  test("dev synth has temporal-watchdog service with --queue lightbulb-watchdog", () => {
+    const services = Object.values(
+      SERVICE_TEMPLATE_DEV.findResources("AWS::ECS::Service", {
+        Properties: { ServiceName: "lightbulb-dev-temporal-watchdog" },
+      }),
+    ) as any[];
+    expect(services).toHaveLength(1);
+    const svc = services[0].Properties;
+    expect(svc.DesiredCount).toBe(1);
+    expect(svc.LoadBalancers).toBeUndefined();
+    expect(svc.DeploymentConfiguration.DeploymentCircuitBreaker).toEqual({ Enable: true, Rollback: true });
+    expect(svc.CapacityProviderStrategy.map((s: any) => s.CapacityProvider)).toContain("FARGATE_SPOT");
+
+    const [tdId] = Object.keys(
+      SERVICE_TEMPLATE_DEV.findResources("AWS::ECS::TaskDefinition", {
+        Properties: { Family: "lightbulb-dev-temporal-watchdog", Cpu: "256", Memory: "512" },
+      }),
+    );
+    expect(svc.TaskDefinition).toEqual({ Ref: tdId });
+    const wd = containers(SERVICE_TEMPLATE_DEV).find((c) => c.Name === "temporal-watchdog");
+    expect(wd.Command.slice(-2)).toEqual(["--queue", "lightbulb-watchdog"]);
+    expect(wd.Command.slice(0, 3)).toEqual(["/app/.venv/bin/python", "-m", "scripts.temporal_worker"]);
+    expect(wd.StopTimeout).toBe(30);
+    const envOf = Object.fromEntries(wd.Environment.map((e: any) => [e.Name, e.Value]));
+    expect(envOf).toMatchObject({
+      TEMPORAL_WATCHDOG_TASK_QUEUE: "lightbulb-watchdog",
+      TEMPORAL_ADDRESS: "lightbulb-dev.nv5xx.tmprl.cloud:7233",
+      SUPER_AGENT_ENV_ENABLED: "true",
+    });
+    expect(Object.keys(envOf)).toEqual(expect.arrayContaining(["WATCHDOG_OWNER_ID", "WATCHDOG_ROOM_ID"]));
+    expect(wd.Secrets.find((s: any) => s.Name === "TEMPORAL_API_KEY")).toBeDefined();
+    // the main worker is untouched: no --queue arg, same image
+    const worker = containers(SERVICE_TEMPLATE_DEV).find((c) => c.Name === "temporal-worker");
+    expect(worker.Command).toEqual(["/app/.venv/bin/python", "-m", "scripts.temporal_worker"]);
+    expect(wd.Image).toEqual(worker.Image);
+  });
+
+  test("prod synth has no temporal-watchdog service", () => {
+    expect(JSON.stringify(PROD.toJSON())).not.toMatch(/watchdog|WATCHDOG_/i);
+  });
+
   test("prod synth has no temporal-worker and no TEMPORAL env", () => {
     expect(
       Object.values(PROD.findResources("AWS::ECS::Service")).filter((s: any) =>

@@ -1122,6 +1122,11 @@ from routers import ideas as ideas_router  # noqa: E402
 
 app.include_router(ideas_router.router, prefix="/api/v1", tags=["ideas"])
 
+# Super-agent Questions (wave2-Q): /needs-you, /tasks/{id}/questions. Mounted before routers/tasks.py.
+from routers import questions as questions_router  # noqa: E402
+
+app.include_router(questions_router.router, prefix="/api/v1", tags=["questions"])
+
 # A person reviews (lists, deletes) what the workspace's agents remember.
 from routers import memory as memory_router  # noqa: E402
 

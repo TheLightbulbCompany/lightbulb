@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import collections
 import contextvars
 import fcntl
 import hashlib
@@ -191,9 +192,13 @@ def attach_agent(run_id: str, agent) -> str | None:
             return None
         entry["agent"], entry["state"] = agent, "running"
         steers = "\n".join(entry.pop("steers", [])) or None
+        inputs = entry.pop("inputs", [])
         aborted = entry["aborted"]
     if aborted:
         _interrupt(run_id, agent)
+    elif inputs:  # a watchdog nudge that arrived while the task run was queued (steer_run kind="input")
+        for text in inputs:
+            _inject_input(run_id, agent, text)
     return steers
 
 
@@ -728,6 +733,48 @@ def _post_late_call_answer(identity: dict, request: dict, output: str) -> None:
         log.warning("late call answer post failed run=%s", identity["runId"], exc_info=True)
 
 
+# ---- recentTools: the last tools a task run called (spec 11 C5; the watchdog's loop check) ---------
+RECENT_TOOLS_MAX = 20
+
+
+def _recent_tools_field(entry: dict) -> dict:
+    """{"recentTools": [...]} for a task run's durable record (under _RUNS_LOCK, or a snapshot)."""
+    tools = entry.get("recentTools")
+    return {"recentTools": list(tools)} if tools is not None else {}
+
+
+def _args_hash(args) -> str:
+    canonical = json.dumps(args if args is not None else {}, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canonical.encode()).hexdigest()[:16]
+
+
+def _tool_failure(result) -> tuple[bool, str | None]:
+    """(ok, errorClass) from what Hermes hands tool_complete_callback: a failed tool's result is an
+    object (or its JSON text) with an `error`, as FramePublisher.tool_complete reads it."""
+    if isinstance(result, str) and result.lstrip().startswith("{"):
+        try:
+            result = json.loads(result)
+        except ValueError:
+            return True, None
+    if isinstance(result, dict) and result.get("error"):
+        kind = result.get("error_type") or result.get("errorClass")
+        return False, kind if isinstance(kind, str) and kind.isidentifier() else "ToolError"
+    return True, None
+
+
+def task_tool_recorder(run_id: str):
+    """The tool_complete_callback a task run's agent gets: name, args hash and outcome only, never
+    the args or result themselves."""
+    def record(call_id, name, args=None, result=None, **_kw) -> None:
+        ok, error_class = _tool_failure(result)
+        item = {"name": str(name), "argsHash": _args_hash(args), "ok": ok, "errorClass": error_class}
+        with _RUNS_LOCK:
+            tools = (RUNS.get(run_id) or {}).get("recentTools")
+            if tools is not None:
+                tools.append(item)
+    return record
+
+
 def register_paperclip_run(identity: dict, request: dict) -> str:
     return register_durable_run(identity, request, kind="paperclip")
 
@@ -760,6 +807,7 @@ def register_durable_run(identity: dict, request: dict, *, kind: str) -> str:
             "error": None,
             "usage": dict(ZERO_USAGE),
             "acceptedAt": time.time(),
+            **({"recentTools": collections.deque(maxlen=RECENT_TOOLS_MAX)} if kind == "task" else {}),
         }
     _put_running_record(run_id)
     return "created"
@@ -785,6 +833,7 @@ def _put_running_record(run_id: str) -> None:
         sync.put_paperclip_run_record(identity["agentId"], run_id, {
             "identity": identity, "requestHash": entry.get("requestHash"), "state": "running",
             "vmId": VM_ID, "acceptedAt": entry.get("acceptedAt"), "heartbeatAt": time.time(),
+            **_recent_tools_field(entry),
         }, prune=False, **_record_dir(entry.get("kind")))
     except Exception:  # noqa: BLE001 -- the run itself must not depend on it
         log.warning("paperclip running record write failed run=%s", run_id, exc_info=True)
@@ -833,6 +882,7 @@ def finish_paperclip_run(run_id: str, outcome: str, *, output: str, error: str |
         identity = dict((entry or {}).get("identity") or {})
         request_hash = (entry or {}).get("requestHash")
         kind = (entry or {}).get("kind")
+        tools = _recent_tools_field(entry or {})
     if identity:
         try:
             sync.put_paperclip_run_record(identity["agentId"], run_id, {
@@ -844,6 +894,7 @@ def finish_paperclip_run(run_id: str, outcome: str, *, output: str, error: str |
                 "usage": dict(usage),
                 "state": "ended",
                 "finishedAt": now(),
+                **tools,
             }, **_record_dir(kind))
         except Exception:  # noqa: BLE001 -- the turn's own result must not depend on it
             log.error("paperclip run record write FAILED run=%s: a poll after this process "
@@ -887,6 +938,7 @@ def durable_run_status(run_id: str, identity: dict, *, kind: str) -> dict | None
         "run_id": run_id,
         "status": status,
         "session_id": (snapshot.get("identity") or {}).get(_DURABLE_KINDS[kind][1]),
+        **({"recentTools": list(snapshot.get("recentTools") or [])} if kind == "task" else {}),
     }
     if snapshot["state"] == "ended":
         usage = snapshot.get("usage") or ZERO_USAGE
@@ -961,7 +1013,22 @@ def report_usage(session_key, agent_id, run_id, success, duration_ms, usage, fam
     return True
 
 
-def steer_run(run_id: str, text: str, grant: str | None = None) -> bool:
+def _inject_input(run_id: str, agent, text: str) -> bool:
+    """A non-user steer (the watchdog's nudge) through Lane H's F3 `agent.lb_inject`. An image without
+    it refuses: falling back to agent.steer would give the text a user's authority (spec 02 §2.5)."""
+    try:
+        from agent.lb_inject import inject_input
+    except ImportError:
+        log.warning("input steer refused run=%s: agent.lb_inject missing from this image", run_id)
+        return False
+    try:
+        return bool(inject_input(agent, "input", text))
+    except Exception:  # noqa: BLE001
+        log.warning("input steer failed run=%s", run_id, exc_info=True)
+        return False
+
+
+def steer_run(run_id: str, text: str, grant: str | None = None, *, kind: str = "user") -> bool:
     """A running turn gets the text through Hermes's own steer (queued as a user row after the
     current tool batch; settle_steers catches one that lands after the last). A turn still
     queued behind this agent's lock keeps it for its user message (attach_agent). A finishing
@@ -971,24 +1038,35 @@ def steer_run(run_id: str, text: str, grant: str | None = None) -> bool:
     ``grant``: a lowered local-session grant, naming nobody, which the backend sends when someone
     other than the run's requester steers it (the speaker of a call turn, the author of a typed
     one). It replaces the turn's grant for the rest of the run, before the steer's text can reach
-    the agent (_call_grant_scope), so the steerer never borrows the requester's access."""
+    the agent (_call_grant_scope), so the steerer never borrows the requester's access.
+
+    ``kind="input"`` (a task run's watchdog nudge) goes through `_inject_input`, never `agent.steer`."""
     with _RUNS_LOCK:
         entry = RUNS.get(run_id)
         if (entry is None or entry["aborted"] or entry["state"] not in ("queued", "running")
-                or entry.get("kind") in ("paperclip", "task")):  # neither reads stashed steers
+                or entry.get("kind") == "paperclip"):  # a Paperclip turn never reads stashed steers
             return False
-        if grant is not None:  # "" clears it: a turn with no grant at all acts for no one
-            entry["grant"] = grant
-            if entry.get("ctx"):
-                _write_call_ctx(entry)
-        if entry["agent"] is None:
-            entry.setdefault("steers", []).append(text)
-            return True
-        try:
-            return bool(entry["agent"].steer(text))
-        except Exception:  # noqa: BLE001
-            log.warning("steer failed run=%s", run_id, exc_info=True)
-            return False
+        if kind == "input":  # task runs only (bridge/runs.py): the watchdog's tier-2 nudge
+            if entry.get("kind") != "task":
+                return False
+            if entry["agent"] is None:
+                entry.setdefault("inputs", []).append(text)  # attach_agent injects it
+                return True
+            agent = entry["agent"]
+        else:
+            if grant is not None:  # "" clears it: a turn with no grant at all acts for no one
+                entry["grant"] = grant
+                if entry.get("ctx"):
+                    _write_call_ctx(entry)
+            if entry["agent"] is None:
+                entry.setdefault("steers", []).append(text)
+                return True
+            try:
+                return bool(entry["agent"].steer(text))
+            except Exception:  # noqa: BLE001
+                log.warning("steer failed run=%s", run_id, exc_info=True)
+                return False
+    return _inject_input(run_id, agent, text)
 
 
 # ---- ingress validation (spec §5 "Ingress"; report 03 §1) -----------------------------------
@@ -3987,8 +4065,10 @@ def _run_task_turn(identity: dict, request: dict, *, family: str) -> tuple[str, 
         budget = None
         try:
             extra = {"max_iterations": limits["max_iterations"]} if limits.get("max_iterations") else {}
+            if not paperclip:
+                extra["tool_complete_callback"] = task_tool_recorder(run_id)
             agent = _construct_agent(agent_id, {"sessionKey": session_id}, None, session_id, **extra)
-            attach_agent(run_id, agent)
+            queued = attach_agent(run_id, agent)
             if paperclip_run_aborted(run_id):
                 return "cancelled", None, "", dict(ZERO_USAGE)
             if limits.get("run_budget_seconds"):
@@ -4005,8 +4085,17 @@ def _run_task_turn(identity: dict, request: dict, *, family: str) -> tuple[str, 
                 run = {}
                 if not paperclip and getattr(agent, "_session_db", None) is not None:
                     run["conversation_history"] = _room_history(agent)[0] or None  # the attempt before this one
+                user_message = request["input"] if paperclip or not queued else f"{request['input']}\n\n{queued}"
                 result = _run_conversation(agent, agent_id, session_id,
-                                           user_message=request["input"], system_message=system, **run)
+                                           user_message=user_message, system_message=system, **run)
+                # A task run answers a steer that landed after its last tool batch in the same run
+                # (as a room turn does, _converse); a Paperclip run takes no steers.
+                while not paperclip and not result.get("failed") and (
+                        pending := settle_steers(run_id, agent, result.get("pending_steer"))):
+                    reply = result.get("final_response") or ""
+                    result = _run_conversation(agent, agent_id, session_id, user_message=pending, system_message=system,
+                                               conversation_history=result.get("messages") or None)
+                    result["final_response"] = "\n\n".join(p for p in (reply, result.get("final_response")) if p)
                 _post_turn.agent = agent
             except Exception:
                 if paperclip_run_aborted(run_id):

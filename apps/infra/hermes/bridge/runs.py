@@ -18,7 +18,7 @@ log = logging.getLogger("bridge")
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 #: Must equal tasks-schema.json's worker session key pattern (tests/test_runs_v1.py checks it).
 SESSION_KEY_RE = re.compile(r"^agent:[0-9a-f-]{36}:lightbulb:task:[0-9a-f-]{36}$")
-_RUN_RE = re.compile(r"^/internal/v1/runs/([0-9a-f-]{36})(/stop)?$")
+_RUN_RE = re.compile(r"^/internal/v1/runs/([0-9a-f-]{36})(/stop|/steer)?$")
 MAX_INPUT_BYTES = 200 * 1024
 #: worker_turn's limit, under the bridge's 7 h recycle (contracts-v2 §14.11).
 MAX_RUN_BUDGET_S = 23_400
@@ -135,6 +135,27 @@ def _poll_or_stop(run_id: str, stop: bool, body) -> tuple[int, dict]:
     return 202, {"run_id": run_id, "status": "stopping", "session_id": identity["sessionKey"]}
 
 
+def _steer(run_id: str, body) -> tuple[int, dict]:
+    """kind "user": the person's words (agent.steer). kind "input": a non-user nudge (the watchdog's),
+    through F3's inject_input; refused on an image without it, never promoted to a user steer."""
+    if not isinstance(body, dict):
+        raise _invalid("run_identity")
+    identity = validate_identity(body.get("identity"), path_run_id=run_id)
+    text, kind = body.get("text"), body.get("kind")
+    if kind not in ("user", "input"):
+        raise _invalid("steer")
+    if not isinstance(text, str) or not text.strip() or len(text.encode()) > turn.MAX_FOLLOWUP_TEXT_BYTES:
+        raise _invalid("steer")
+    try:
+        status = turn.durable_run_status(run_id, identity, kind="task")
+    except Exception:  # noqa: BLE001 -- an S3 blip, as on a poll
+        log.warning("task run status lookup failed run=%s", run_id, exc_info=True)
+        return 503, {"error": "run_status_unavailable"}
+    if status is None:
+        return 404, {"error": "run_not_found"}
+    return 200, {"accepted": turn.steer_run(run_id, text.strip(), kind=kind)}
+
+
 def handle(path: str, method: str, headers: dict, body) -> tuple[int, dict] | None:
     """None when `path` is not a v1 run route. The caller has checked the gateway token."""
     try:
@@ -143,9 +164,11 @@ def handle(path: str, method: str, headers: dict, body) -> tuple[int, dict] | No
         match = _RUN_RE.fullmatch(path)
         if not match:
             return None
-        stop = bool(match.group(2))
-        if method != ("POST" if stop else "GET"):
+        action = match.group(2)
+        if method != ("POST" if action else "GET"):
             return None
-        return _poll_or_stop(match.group(1), stop, body)
+        if action == "/steer":
+            return _steer(match.group(1), body)
+        return _poll_or_stop(match.group(1), action == "/stop", body)
     except Refused as refused:
         return refused.reply

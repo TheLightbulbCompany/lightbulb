@@ -79,7 +79,8 @@ async def test_create_task_refuses_other_statuses(table):
         await repo.create_task(WS, _task(status="working"))
 
 
-EDGES = [(frm, to) for to, froms in repo.TRANSITIONS.items() for frm in froms if frm is not None]
+# Sorted: frozenset order varies per process (hash seed), and xdist workers must collect the same ids.
+EDGES = sorted((frm, to) for to, froms in repo.TRANSITIONS.items() for frm in froms if frm is not None)
 NON_EDGES = [
     (frm, to)
     for to, froms in repo.TRANSITIONS.items()

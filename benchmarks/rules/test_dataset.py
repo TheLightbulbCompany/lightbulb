@@ -4,7 +4,17 @@ uv run pytest ../../benchmarks/rules -q
 
 from collections import Counter
 
+import pytest
+
 import run_eval
+
+
+@pytest.mark.parametrize("env", ["prod", "staging", "local"])
+def test_refuses_outside_dev(env):
+    with pytest.raises(SystemExit):
+        run_eval.check_env(env)
+    run_eval.check_env("dev")
+    run_eval.check_env("")  # unset defaults to dev
 
 
 def test_dataset_shape():

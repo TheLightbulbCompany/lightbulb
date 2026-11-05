@@ -5,7 +5,7 @@
 Every row is judged twice through the production path (`jev._decide_for_message`): once with the rules in scope
 for its room, once without (latency baseline). 180 rows → 360 gateway calls (founder-approved budget, contracts
 §18). `--key-from dev` reads `lightbulb/dev/vercel-ai-gateway` the way the backend does (AWS creds needed);
-`--key-from env` reads `AI_GATEWAY_API_KEY`. Bar: precision ≥ 0.90, recall ≥ 0.60 at 0.7, p95 latency +300 ms.
+`--key-from env` reads `AI_GATEWAY_API_KEY`. Either way ENVIRONMENT must be dev (never prod). Bar: precision ≥ 0.90, recall ≥ 0.60 at 0.7, p95 latency +300 ms.
 """
 
 from __future__ import annotations
@@ -108,6 +108,13 @@ def score(results: list[dict]) -> dict:
     }
 
 
+def check_env(env: str | None = None) -> None:
+    """The eval spends the dev gateway key only, whichever way the key arrives: never from a prod process."""
+    env = (env if env is not None else os.environ.get("ENVIRONMENT")) or "dev"
+    if env != "dev":
+        sys.exit(f"run_eval runs with ENVIRONMENT=dev only (got {env!r})")
+
+
 async def judge(row: dict, all_rules: list[dict], *, baseline: bool) -> dict:
     meta, latest, members, history = conversation(row)
     in_scope = rules.rules_for_room(all_rules, row["room"])
@@ -149,6 +156,7 @@ async def main() -> None:
     ap.add_argument("--no-baseline", action="store_true", help="skip the without-rules call (halves the calls)")
     ap.add_argument("--out", default="")
     args = ap.parse_args()
+    check_env()
     if args.key_from == "env":
         key = os.environ["AI_GATEWAY_API_KEY"]
 
@@ -156,8 +164,6 @@ async def main() -> None:
             return key
 
         jev._gateway_key = env_key
-    elif (os.environ.get("ENVIRONMENT") or "dev") != "dev":
-        sys.exit("--key-from dev needs ENVIRONMENT=dev")
     costs: list[float] = []
     jev.put_metric = lambda name, value=None, **kw: costs.append(value) if name == "messaging.jev.cost" else None
 

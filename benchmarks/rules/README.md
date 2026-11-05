@@ -16,7 +16,7 @@ history), 20 topic near-misses, 10 chatter lines and 5 questions about the rule 
     ENVIRONMENT=dev uv run python ../../benchmarks/rules/run_eval.py --key-from dev --out /tmp/e-rules.jsonl   # 360 calls
 
 `--key-from dev` reads `lightbulb/dev/vercel-ai-gateway` the way the backend does, so it needs AWS credentials.
-`--key-from env` reads `AI_GATEWAY_API_KEY`. The founder approved about 360 calls on the dev key (contracts §18).
+`--key-from env` reads `AI_GATEWAY_API_KEY`. Both refuse to run unless `ENVIRONMENT` is dev (or unset). The founder approved about 360 calls on the dev key (contracts §18).
 That is one full run with baseline. `--no-baseline` halves it.
 
 Bar: precision ≥ 0.90 and recall ≥ 0.60 at 0.7; p95 latency at most +300 ms. If a run lands below the bar, tune

@@ -19,6 +19,7 @@ os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
 os.environ.setdefault("PLATFORM_ADMIN_USER_IDS", "user_platform_admin,admin_1,user_admin_123,user_admin")
 
 import json
+import zlib
 from typing import AsyncGenerator, Generator
 from unittest.mock import AsyncMock, patch
 
@@ -28,6 +29,22 @@ from httpx import ASGITransport, AsyncClient
 
 from core.auth import AuthContext
 from core.middleware import shutdown_aware
+
+
+def pytest_collection_modifyitems(config, items):
+    """BACKEND_TEST_SHARD=k/n keeps every n-th test (by a stable hash of its id) for shard k.
+
+    Backend CI splits the suite across n hosted runners this way. crc32, not hash():
+    every process (each xdist worker too) must pick the same tests."""
+    shard = os.environ.get("BACKEND_TEST_SHARD")
+    if not shard:
+        return
+    k, n = (int(x) for x in shard.split("/"))
+    keep, drop = [], []
+    for item in items:
+        (keep if zlib.crc32(item.nodeid.encode()) % n == k - 1 else drop).append(item)
+    config.hook.pytest_deselected(items=drop)
+    items[:] = keep
 
 
 @pytest.fixture(autouse=True)

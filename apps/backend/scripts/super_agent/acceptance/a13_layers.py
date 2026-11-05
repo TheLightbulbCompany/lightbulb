@@ -75,6 +75,7 @@ async def router_runs(ws: str, front: str | None = None) -> list[dict[str, Any]]
     continued-as-new hides earlier batches -- read ``first_execution_run_id`` chains if that ever matters."""
     from temporalio.converter import DataConverter
 
+    from core.repositories import tasks_repo
     from core.services import agent_registry, runtime_runs
     from core.temporal.types import RouterTurnIn
 
@@ -97,8 +98,16 @@ async def router_runs(ws: str, front: str | None = None) -> list[dict[str, Any]]
     front = front or next(a["id"] for a in await agent_registry.roster(ws) if a.get("role") == "ceo")
     out = []
     for inp in batches:
+        trig = await tasks_repo.get_trigger(ws, inp.trigger_ids[0]) if inp.trigger_ids else None
         identity = runtime_runs.RunIdentity(
-            ts.router_run_id(ws, inp.batch_id), ws, inp.batch_id, 1, front, mode="router", lane=inp.lane
+            ts.router_run_id(ws, inp.batch_id),
+            ws,
+            inp.batch_id,
+            1,
+            front,
+            mode="router",
+            lane=inp.lane,
+            room=ts.router_room_key(ts.trigger_scope(trig)) if trig else None,  # the batch's conversation
         )
         try:
             status = await runtime_runs.get_run(ws, identity)

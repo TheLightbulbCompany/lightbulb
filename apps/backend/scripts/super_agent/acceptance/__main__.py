@@ -40,7 +40,9 @@ async def _run(args, names: list[str], *, is_gate: bool) -> int:
                 from scripts.super_agent.acceptance.rules_observe import Expect
 
                 rules_expect = Expect(**json.loads(Path(args.rules_expect).read_text()))
-            results = await report.gate(ctx, rules_expect=rules_expect)
+            results = await report.gate(
+                ctx, rules_expect=rules_expect, skip=tuple(report.parse_scenarios(args.skip)) if args.skip else ()
+            )
         else:
             results = await report.run_scenarios(names, ctx)
     finally:
@@ -83,6 +85,7 @@ def main(argv=None) -> int:
         p.add_argument("--apply", action="store_true", help="act on dev; without it only the plan is printed")
         p.add_argument("--workspace", default=DEFAULT_WORKSPACE, help="the dev workspace (Clerk org id) to bind to")
     parsers["run"].add_argument("--scenarios", default="A0-A13", help="A0-A13 | A1,A2,A7 | A3")
+    parsers["gate"].add_argument("--skip", default="", help="scenarios to leave out, e.g. A3,A5,A6,A10")
     parsers["gate"].add_argument("--rules-expect", help="JSON of rules_observe.Expect from the lead's manual steps")
     for name in ("run", "gate"):
         parsers[name].add_argument("--report", help="markdown path (a .json sidecar holds the full evidence)")

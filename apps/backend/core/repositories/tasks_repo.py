@@ -18,6 +18,7 @@ from botocore.exceptions import ClientError
 
 from core import tasks_schema as ts
 from core.dynamodb import ddb_safe, get_table, plain, run_in_thread, utc_now_iso
+from core.services import super_agent_faults
 
 
 class TasksRepoError(Exception):
@@ -72,6 +73,7 @@ async def _get(ws: str, sk: str) -> dict | None:
 async def _put_new(ws: str, item: dict) -> tuple[dict, bool]:
     """Put unless the row exists; on a retry return the stored row unchanged."""
     try:
+        super_agent_faults.maybe_conflict()  # dev fault hook: conditional_conflict:<pct>
         await run_in_thread(_table().put_item, Item=ddb_safe(item), ConditionExpression="attribute_not_exists(sk)")
         return item, True
     except ClientError as exc:
@@ -112,6 +114,7 @@ async def _update(
         expr += " REMOVE " + ", ".join(f"#r{i}" for i in range(len(remove)))
     if "#s" in condition:
         names["#s"] = "status"
+    super_agent_faults.maybe_conflict()  # dev fault hook: conditional_conflict:<pct>
     resp = await run_in_thread(
         _table().update_item,
         Key={"pk": ts.ws_pk(ws), "sk": sk},

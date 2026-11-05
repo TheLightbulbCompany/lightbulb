@@ -241,3 +241,21 @@ def card_copy(q: dict, specialist_label: str) -> tuple[str, str]:
     if len(body) > _PUSH_MAX:
         body = body[: _PUSH_MAX - 1].rstrip() + "…"
     return title, body
+
+
+async def guard_reply(ws: str, text: str, task_refs: list[dict] | None, specialist: str | None) -> str | None:
+    """Spec 05 §3.5 layer 3: a Lightbulb reply that names a task with an open Question and claims an approval
+    ("Approved — proceeding") is not posted as written. Returns the card line to post instead, or None."""
+    if not task_refs or not FALSE_APPROVAL_RE.search(text):
+        return None
+    from core.observability.metrics import put_metric
+    from core.repositories import questions_repo
+    from core.services.messaging import human_display_name
+
+    for ref in task_refs:
+        open_qs = await questions_repo.list_open(ws, ref["taskId"])
+        if open_qs:
+            names = [await human_display_name(u) for u in open_qs[0]["answerers"]]
+            put_metric("router.false_approval_blocked")
+            return f"Queued for {specialist or 'Lightbulb'} after {' or '.join(names)}'s decision."
+    return None

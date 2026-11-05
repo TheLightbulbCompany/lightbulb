@@ -485,6 +485,31 @@ async def test_propose_validates_deliver_to(internal):
     assert r.status_code == 422
 
 
+async def test_dm_delivery_is_the_owners_only(api):
+    """Audit item 8 review: `dm:` names the automation's owner; anyone else's DM is refused at save time."""
+    r = _as(api, SAM, admin=True).post(BASE, json=_IN | {"deliverTo": f"dm:{PRIYA}"})
+    assert r.status_code == 400 and r.json()["detail"]["code"] == "dm_owner_only"
+    view = await _draft(api, SAM, deliverTo=f"dm:{SAM}")
+    r = _as(api, PRIYA, admin=True).patch(
+        f"{BASE}/{view['id']}", json={"deliverTo": f"dm:{PRIYA}", "version": view["version"]}
+    )
+    assert r.status_code == 400 and r.json()["detail"]["code"] == "dm_owner_only"  # owner = the row's, not the caller
+    r = _as(api, PRIYA, admin=True).patch(
+        f"{BASE}/{view['id']}", json={"deliverTo": f"dm:{SAM}", "version": view["version"]}
+    )
+    assert r.status_code == 200
+
+
+async def test_propose_dm_is_the_requesters_only(internal):
+    tid = await _chat_trigger()
+    body = {"name": "n", "instructions": "i", "cron": ["0 9 * * 1"], "triggerIds": [tid], "deliverTo": "dm:user_x"}
+    r = internal.api.client.post(
+        f"/api/v1/internal/automations/{WS}/propose", json=body, headers={"Authorization": "Bearer t"}
+    )
+    assert r.status_code == 400 and r.json()["detail"]["code"] == "dm_owner_only"
+    assert await repo.list_schedules(WS) == []
+
+
 async def test_propose_needs_a_room(internal):
     body = {"name": "n", "instructions": "i", "cron": ["0 9 * * 1"], "triggerIds": ["chat:nope"]}
     r = internal.api.client.post(

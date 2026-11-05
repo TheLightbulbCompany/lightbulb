@@ -156,6 +156,21 @@ async def test_record_answer_refusals_are_typed(world):
     assert (await effects_repo.get_effect(WS, f"{TASK}:1:c1"))["state"] == "proposed"
 
 
+async def test_record_answer_rechecks_authority_at_answer_time(world, monkeypatch):
+    """Audit item 15: one rule (`can_answer_now`) at answer time, not the list frozen at open."""
+    await effects_repo.put_effect(WS, _effect())
+    [ref] = await _run(tq.open_questions, WS, TASK)
+    assert SAM in ref.answerers
+    # Outreach tightened to admins after the ask: the requester's seat is gone.
+    monkeypatch.setattr(
+        questions.billing_repo, "get_capability_policy", AsyncMock(return_value={**POLICY, "outreach": True})
+    )
+    with pytest.raises(ApplicationError) as err:
+        await _run(tq.record_answer, WS, TASK, tq.AnswerRef(ref.qid, "send", None, SAM, "c-1"))
+    assert err.value.type == "NotAnswerer"
+    assert (await questions_repo.get_question(WS, TASK, ref.qid))["state"] == "open"
+
+
 async def test_cancel_open_questions(world):
     await effects_repo.put_effect(WS, _effect())
     [ref] = await _run(tq.open_questions, WS, TASK)

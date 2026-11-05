@@ -2647,7 +2647,8 @@ export class ServiceStack extends cdk.Stack {
 
       // Watchdog (spec 11, wave-2 plan W7): the same image on its own task queue and service, so the
       // watchdog keeps ticking when the main worker pool is stuck. The `#watchdog` ids are Lightbulb's own
-      // dev workspace and room (created by hand); empty means the digest logs instead of posting.
+      // dev workspace and room (created by hand); empty means the digest logs instead of posting. Inside
+      // superAgentEnabled(env), so dev only.
       const watchdogTaskDef = new ecs.FargateTaskDefinition(this, "TemporalWatchdogTaskDef", {
         family: `lightbulb-${env}-temporal-watchdog`,
         cpu: 256,
@@ -2661,8 +2662,8 @@ export class ServiceStack extends cdk.Stack {
         environment: {
           ...backendContainerEnvironment,
           TEMPORAL_WATCHDOG_TASK_QUEUE: "lightbulb-watchdog",
-          WATCHDOG_OWNER_ID: "",
-          WATCHDOG_ROOM_ID: "",
+          WATCHDOG_OWNER_ID: "org_3LgB9twuJbYCjGILfOL5JjgQV0p", // Super Agent Test (dev)
+          WATCHDOG_ROOM_ID: "b6619138-2379-5b3c-af96-f28b791d7d8f", // its #watchdog room
         },
         secrets: backendContainerSecrets,
         logging: ecs.LogDrivers.awsLogs({ streamPrefix: "temporal-watchdog", logGroup }),

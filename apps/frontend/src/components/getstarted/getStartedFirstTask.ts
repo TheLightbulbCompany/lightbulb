@@ -1,5 +1,3 @@
-import type { CompanyAgent } from "@/components/teams/shared/types";
-
 // Pre-filled scaffold for the Get Started "Create your first task" step. The
 // user edits it before hitting Create — the point is a populated, CEO-directed
 // first task instead of a blank composer. "[your goal]" is an obvious
@@ -13,16 +11,5 @@ export const ONBOARDING_FIRST_TASK_DESCRIPTION = `You are my CEO. Help me stand 
 - If a needed skill isn't on the team yet, bring it in.
 - Report back with the plan and the first tasks you've kicked off.`;
 
-// Resolve the backend-authored starter (or legacy seed) root CEO so the first
-// task is assigned to the orchestrator without depending on its display name.
-// Returns undefined while that identity is unavailable; the dialog then opens
-// unassigned.
-export function resolveCeoAgentId(agents: CompanyAgent[]): string | undefined {
-  const byRole = agents.find(
-    (a) =>
-      a.role === "ceo" &&
-      !a.reportsTo &&
-      (a.origin === "Starter" || a.origin === "Seed"),
-  );
-  return byRole?.id;
-}
+// The first task goes to the starter root CEO (shared with mobile's one-voice roster).
+export { resolveCeoAgentId } from "@lightbulb/shared";

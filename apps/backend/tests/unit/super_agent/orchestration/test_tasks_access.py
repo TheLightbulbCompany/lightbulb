@@ -151,6 +151,7 @@ def test_summarize_derived_fields():
         "effects": [
             {
                 "idemKey": "e1",
+                "kind": "mail.send",
                 "state": "proposed",
                 "questionId": "q2",
                 "output": {"kind": "mail", "title": "Reply to Acme", "ref": {}},
@@ -165,7 +166,7 @@ def test_summarize_derived_fields():
     assert s["recentInputs"] == ["chat:m9"]
     assert s["activity"]["n"] == 2
     assert s["costUsd"] == 0.4 and s["budgetUsd"] == 5.0 and s["audienceKind"] == "room"
-    assert s["output"] == {"idemKey": "e1", "kind": "mail", "title": "Reply to Acme", "nextStep": "approve"}
+    assert s["output"] == {"idemKey": "e1", "kind": "mail", "title": "Reply to Acme", "nextStep": "send"}
 
 
 def test_summarize_fields_match_schema_export():

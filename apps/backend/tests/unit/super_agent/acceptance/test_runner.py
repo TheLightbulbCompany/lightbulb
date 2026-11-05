@@ -22,17 +22,9 @@ class FakeCtx:
 
     def __init__(self, handler=None, rows: dict[str, list[dict]] | None = None):
         self.ws = "org_on"
-        self.ws_name = "sa-dev-on"
         self.users = {"sam": "user_sam", "priya": "user_priya"}
-        self.fixtures = {"sa-dev-on": "org_on", "sa-dev-off": "org_off", "sa-dev-chatgpt": "org_chatgpt"}
         self.state: dict = {}
         self.handler, self.rows = handler, rows or {}
-        self.children: dict[str, FakeCtx] = {}
-
-    def for_ws(self, name: str) -> FakeCtx:
-        child = self.children.setdefault(name, FakeCtx(self.handler, self.rows))
-        child.ws, child.ws_name = self.fixtures[name], name
-        return child
 
     def api(self, user: str, ws: str | None = None) -> httpx.AsyncClient:
         return httpx.AsyncClient(base_url=ctxmod.API_ROOT, transport=httpx.MockTransport(self.handler))
@@ -42,6 +34,9 @@ class FakeCtx:
 
     async def sleep(self, seconds: float) -> None:
         pass
+
+    async def ensure_dm_rooms(self) -> dict[str, str]:
+        return {}
 
 
 def _ok(data: dict) -> httpx.Response:
@@ -128,7 +123,7 @@ async def test_missing_function_in_present_module_is_not_implemented(monkeypatch
 # ---------------------------------------------------------------------- wait_for
 async def test_wait_for_returns_first_truthy_then_none_on_timeout(monkeypatch):
     monkeypatch.setattr(ctxmod, "POLL_S", 0.001)
-    ctx = Ctx(ws="org", users={}, fixtures={})
+    ctx = Ctx(ws="org", users={})
     pages = iter([[], [{"type": "task", "status": "queued"}], [{"type": "task", "status": "working"}]])
 
     async def rows(ws=None):
@@ -162,7 +157,7 @@ async def test_report_lists_every_check(monkeypatch):
     monkeypatch.setattr(report, "resolve", lambda part: bodies.get(part))
     results = await report.run_scenarios(["A1", "A12", "A5"], FakeCtx(), log=lambda line: None)
     assert results["A1"].passed and not results["A12"].passed and not results["A5"].passed
-    md = report.render_report(results, sha="abc123", fixtures={"sa-dev-on": "org_on"}, faults="")
+    md = report.render_report(results, sha="abc123", workspace="org_on", faults="")
     for check in (
         "one_agent_member_lightbulb",
         "no_double_reply",
@@ -183,7 +178,7 @@ async def test_report_lists_every_check(monkeypatch):
 def test_write_report_keeps_full_evidence_json(tmp_path):
     results = {"A0": Result(True, {"zero_tasks_rows": True, "roomId": "r1"})}
     out = tmp_path / "gates" / "wave2.md"
-    report.write_report(out, results, sha="s", fixtures={}, faults="")
+    report.write_report(out, results, sha="s", workspace="org", faults="")
     assert "| A0 | PASS | zero_tasks_rows | ok |" in out.read_text()
     assert json.loads(out.with_suffix(".md.json").read_text())["A0"]["evidence"]["roomId"] == "r1"
 
@@ -192,36 +187,112 @@ def test_write_report_keeps_full_evidence_json(tmp_path):
 async def test_a00_parity_green_on_legacy_workspace():
     result = await a00(FakeCtx(legacy_handler()))
     assert result.passed, result.evidence
-    assert result.evidence["ws"] == "org_off" and result.evidence["replyMessageId"] == "m2"
+    assert result.evidence["ws"] == "org_on" and result.evidence["replyMessageId"] == "m2"
 
 
 async def test_a00_parity_fails_when_features_or_rows_leak():
-    leaked = FakeCtx(legacy_handler(features=True), rows={"org_off": [{"type": "task", "taskId": "t"}]})
+    leaked = FakeCtx(
+        legacy_handler(features=True), rows={"org_on": [{"sk": "AGENT#a"}, {"sk": "META"}, {"sk": "TASK#t"}]}
+    )
     result = await a00(leaked)
     assert not result.passed
     assert report.failed_checks(result) == ["live_config_has_no_features", "zero_tasks_rows"]
+    assert result.evidence["tasksRows"] == 1  # AGENT#/META rows are not task rows
     silent = await a00(FakeCtx(legacy_handler(reply=False)))
     assert report.failed_checks(silent) == ["room_agent_replied_as_today"]
 
 
 # ---------------------------------------------------------------------- G2 wiring
-async def test_gate_wires_vm_evidence_over_both_runs(monkeypatch):
-    t_on, t_gpt = "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"
-    rows = {
-        "org_on": [{"type": "attempt", "taskId": t_on, "n": 1, "sessionId": session_id_for("org_on", t_on)}],
-        "org_chatgpt": [{"type": "attempt", "taskId": t_gpt, "n": 1, "sessionId": session_id_for("org_chatgpt")}],
-    }
+async def test_gate_wires_vm_evidence_and_skips_a0(monkeypatch):
+    tid = "22222222-2222-4222-8222-222222222222"
+    rows = {"org_on": [{"type": "attempt", "taskId": tid, "n": 1, "sessionId": session_id_for("org_on")}]}
+    from core.services import token_custody
+
+    async def actor(owner_id):
+        return False
+
+    monkeypatch.setattr(token_custody, "task_vm_allowed", actor)
     ctx = FakeCtx(rows=rows)
 
     async def scenarios(names, c, *, log):
-        c.state["taskIds"] = [t_on if c.ws == "org_on" else t_gpt]
-        return {n: Result(True, {"ran_on": c.ws_name, "ok": True}) for n in names}
+        c.state["taskIds"] = [tid]
+        return {n: Result(True, {"ok": True}) for n in names}
 
     monkeypatch.setattr(report, "run_scenarios", scenarios)
     results = await report.gate(ctx, log=lambda line: None)
-    assert set(results) == {*report.ORDER, "A1@sa-dev-chatgpt", "A2@sa-dev-chatgpt", "VM", "RULES"}
-    assert results["A1@sa-dev-chatgpt"].evidence["ran_on"] == "sa-dev-chatgpt"
+    assert set(results) == {*report.ORDER[1:], "VM", "RULES"}
     assert results["VM"].passed, results["VM"].evidence["failures"]
     assert results["RULES"].evidence["reason"].startswith("no --rules-expect")
-    rows["org_chatgpt"][0]["sessionId"] = session_id_for("org_chatgpt", t_gpt)  # ran on a task VM: must fail
+    rows["org_on"][0]["sessionId"] = session_id_for("org_on", tid)  # ran on a task VM under actor custody: must fail
     assert not (await report.gate(ctx, log=lambda line: None))["VM"].passed
+
+
+# ---------------------------------------------------------------------- A12 DM rooms
+def dm_handler(created: list[dict], *, lightbulb: bool = True):
+    def handle(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/messaging/rooms") and request.method == "GET":
+            return _ok({"rooms": [{"roomId": "general-1", "name": "general", "kind": "channel"}]})
+        if path.endswith("/messaging/rooms/general-1"):
+            agent = {"kind": "agent", "id": "ceo-1", "mentionHandle": "lightbulb" if lightbulb else "ceo"}
+            return _ok({"roomId": "general-1", "members": [{"kind": "human", "id": "user_sam"}, agent]})
+        if path.endswith("/messaging/rooms") and request.method == "POST":
+            body = json.loads(request.content)
+            created.append(body)
+            return _ok({"roomId": f"dm-{len(created)}", "kind": "dm"})
+        return httpx.Response(404)
+
+    return handle
+
+
+async def test_ensure_dm_rooms_opens_one_dm_per_user_with_lightbulb():
+    created: list[dict] = []
+    ctx = Ctx(ws="org_on", users={"sam": "user_sam", "priya": "user_priya"})
+    ctx.api = lambda user, ws=None: httpx.AsyncClient(
+        base_url=ctxmod.API_ROOT, transport=httpx.MockTransport(dm_handler(created))
+    )  # type: ignore[method-assign]
+    rooms = await ctx.ensure_dm_rooms()
+    assert rooms == {"sam": "dm-1", "priya": "dm-2"}
+    assert ctx.state == {"samDmRoomId": "dm-1", "priyaDmRoomId": "dm-2"}
+    assert [c["kind"] for c in created] == ["dm", "dm"]
+    assert all(
+        c["members"] == [{"kind": "agent", "id": "ceo-1", "role": "member", "listenMode": "active"}] for c in created
+    )
+    assert created[0]["clientRoomId"] != created[1]["clientRoomId"]  # derived from (ws, user, agent): stable per user
+    assert await ctx.ensure_dm_rooms() == rooms and len(created) == 2  # state wins: no second POST
+
+
+async def test_ensure_dm_rooms_refuses_without_lightbulb_member():
+    ctx = Ctx(ws="org_on", users={"sam": "user_sam"})
+    ctx.api = lambda user, ws=None: httpx.AsyncClient(
+        base_url=ctxmod.API_ROOT, transport=httpx.MockTransport(dm_handler([], lightbulb=False))
+    )  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="@lightbulb"):
+        await ctx.ensure_dm_rooms()
+
+
+async def test_a12_runs_the_dm_lookup_before_its_bodies(monkeypatch):
+    seen: list[dict] = []
+
+    async def a12_router(ctx):
+        seen.append(dict(ctx.state))
+        return Result(True, {"ok": True})
+
+    monkeypatch.setattr(report, "resolve", lambda part: a12_router if part == "a12_router_lanes:a12_router" else None)
+    ctx = FakeCtx()
+
+    async def ensure_dm_rooms():
+        ctx.state["samDmRoomId"], ctx.state["priyaDmRoomId"] = "dm-s", "dm-p"
+        return {"sam": "dm-s", "priya": "dm-p"}
+
+    ctx.ensure_dm_rooms = ensure_dm_rooms  # type: ignore[attr-defined]
+    result = await report.run_scenario("A12", ctx)
+    assert seen == [{"samDmRoomId": "dm-s", "priyaDmRoomId": "dm-p"}]
+    assert not result.passed  # M's body is still missing: the report says so, the lookup still ran
+
+    async def broken():
+        raise RuntimeError("no #general")
+
+    ctx.ensure_dm_rooms = broken  # type: ignore[attr-defined]
+    result = await report.run_scenario("A12", ctx)
+    assert result.evidence["dm_rooms"]["error"] == "RuntimeError: no #general"

@@ -9,6 +9,7 @@ import {
   createTasksClient,
   useTaskChangedRefresh,
   type TasksClient,
+  type ApiMethods,
   type ChatIncomingMessage,
   type LiveConfig,
   type LiveEvent,
@@ -47,6 +48,8 @@ export interface LiveEventsContextValue extends RuntimeRpcSource {
   superAgent: boolean;
   /** The super-agent task routes; only called while `superAgent` is on. */
   tasks: TasksClient;
+  /** The signed-in API client (lane A's automation routes read through it). */
+  api: ApiMethods;
   claimActiveRoomSubscription(room: ActiveRoomSubscription): () => void;
   onChatMessage(
     handler: (
@@ -239,6 +242,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
       messaging,
       superAgent,
       tasks,
+      api,
       claimActiveRoomSubscription,
       onChatMessage,
       rpc: runtime.rpc,
@@ -256,6 +260,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
       messaging,
       superAgent,
       tasks,
+      api,
       runtime,
       claimActiveRoomSubscription,
       onChatMessage,

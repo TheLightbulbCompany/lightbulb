@@ -13,7 +13,7 @@ import uuid
 from core import tasks_schema as ts
 from core.constants import SYSTEM_ACTOR_ID
 from core.repositories import messaging_repo
-from core.services import agent_registry, messaging, session_chat
+from core.services import agent_registry, messaging, room_memory, session_chat
 from core.services.super_agent_flags import flags_for
 
 _RESULT_SCAN = 50
@@ -103,9 +103,12 @@ async def post_as_lightbulb(
     kind: str | None = None,
     progress: bool = False,
     attrs: dict | None = None,
+    remember: bool = True,
 ) -> str:
     """Post as Lightbulb; idempotent on `event_id`. Returns the message id. `attrs`: extra message attributes
-    (lane A's confirm card carries `automationId`)."""
+    (lane A's confirm card carries `automationId`). The post goes into room memory like a person's message
+    (agent posts write no admit row, so admission never ingests them); progress lines, question cards (the
+    Question row holds them) and `remember=False` (the Router's ack-only or fallback posts) stay out."""
     if kind is None:  # Lane Q: never claim an approval a Question row doesn't show (spec 05 §3.5 layer 3)
         from core.services import questions
 
@@ -113,12 +116,13 @@ async def post_as_lightbulb(
             text, task_id, qid = hit
             kind = "question"  # one card, bound to {taskId, qid}: the client renders its buttons once
             task_refs = [{**r, "qid": qid} if r.get("taskId") == task_id else r for r in task_refs or []]
+    agent_id = await front_agent_id(ws)
     receipt = await messaging.create_agent_message(
         ws,
         messaging.AgentMessageRequest(
             event_id=event_id,
             room_id=uuid.UUID(room_id),
-            agent_id=uuid.UUID(await front_agent_id(ws)),
+            agent_id=uuid.UUID(agent_id),
             text=text,
             reply_to_message_id=None,
             thread_root_message_id=uuid.UUID(thread_root) if thread_root else None,
@@ -129,6 +133,17 @@ async def post_as_lightbulb(
             **{k: v for k, v in (("taskRefs", task_refs), ("specialist", specialist), ("kind", kind)) if v is not None},
         },
     )
+    if remember and not progress and kind != "question":  # a question card is already the Question row
+        await room_memory.ingest_posted(
+            ws,
+            room_id,
+            {
+                "messageId": str(receipt.message_id),
+                "text": text,
+                "author": {"kind": "agent", "id": agent_id, "displayName": "Lightbulb"},
+                "threadRootMessageId": thread_root,  # no createdAt: ingest stamps now, which is when it was posted
+            },
+        )
     return str(receipt.message_id)
 
 

@@ -166,12 +166,24 @@ class TaskQuestionsMixin:
                 return
             except TimeoutError:
                 pass
-            now = workflow.now()
-            for qid, at in list(self._q_remind_at.items()):
-                if at <= now:
-                    del self._q_remind_at[qid]
-                    if qid in self._open_qs:
-                        await _act("remind_question", self._ws, self._task_id, qid)
+            await self._q_remind_due()
+
+    def _q_next_remind(self) -> datetime | None:
+        """When the earliest open Question is due its +24 h reminder (None: none is)."""
+        return min((t for q, t in self._q_remind_at.items() if q in self._open_qs), default=None)
+
+    async def _q_remind_due(self) -> None:
+        now = workflow.now()
+        for qid, at in list(self._q_remind_at.items()):
+            if at <= now:
+                del self._q_remind_at[qid]
+                if qid in self._open_qs:
+                    await _act("remind_question", self._ws, self._task_id, qid)
+
+    async def _q_serve(self) -> None:
+        """Q's work without Q's wait (a watch is waiting instead): land approved drafts, send due reminders."""
+        await self._q_land()
+        await self._q_remind_due()
 
     async def _q_land(self) -> None:
         """Landing (contracts-v2 §4, §8): run each approved draft through its backend executor, then Idle. A refusal
@@ -195,8 +207,12 @@ class TaskQuestionsMixin:
                 await self._transition("idle", "landed" if res.outcome == "done" else "effect_unknown")
 
     async def _q_on_stop(self, by_user_id: str) -> None:
+        await self._q_cancel_open(by_user_id, "stopped")
+
+    async def _q_cancel_open(self, by: str, reason: str) -> None:
+        """The task is ending: its open Questions are cancelled (an answer after this is refused, not lost)."""
         if self._open_qs:
-            await _act("cancel_open_questions", self._ws, self._task_id, by_user_id, "stopped")
+            await _act("cancel_open_questions", self._ws, self._task_id, by, reason)
             self._open_qs.clear()
             self._nonblocking.clear()
             self._q_remind_at.clear()
@@ -241,6 +257,8 @@ class TaskQuestionsMixin:
             raise ValueError("task_closed")
         if ref.qid not in self._open_qs:
             raise ValueError("not_open")
+        # Only the first clause of `questions.can_answer_now` (in the stored list, which is what this workflow
+        # holds); the rest of the rule is re-checked at answer time in `record_answer`, the same check the route ran.
         if ref.by_user_id not in self._open_qs[ref.qid]:
             raise ValueError("not_answerer")
 
@@ -434,6 +452,11 @@ async def record_answer(ws: str, task_id: str, ref: AnswerRef) -> AnswerOut:
     from core.repositories import effects_repo, questions_repo, tasks_repo
     from core.services import questions
 
+    # Re-check authority at answer time (spec 05 §3.3), the same rule the route used: a demotion or a tightened
+    # policy between the press and this Activity is refused. An answered row skips it (a retry is idempotent below).
+    now = await questions_repo.get_question(ws, task_id, ref.qid)
+    if now is not None and now["state"] == "open" and not await questions.can_answer_now(ws, now, ref.by_user_id):
+        raise ApplicationError("not_answerer", type="NotAnswerer", non_retryable=True)
     try:
         q = await questions_repo.record_answer(
             ws,

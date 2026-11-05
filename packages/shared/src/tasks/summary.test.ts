@@ -103,6 +103,8 @@ describe("formatSchedule", () => {
   });
   it("shifts the day when the viewer's zone crosses midnight; odd entries stay raw", () => {
     expect(formatSchedule(["0 22 * * 1"], "America/Los_Angeles", "Europe/Berlin", NOV)).toBe("Tuesdays 7:00");
+    expect(formatSchedule(["0 18 * * 1-5"], "America/Los_Angeles", "Europe/Berlin", NOV)).toBe("Tuesdays to Saturdays 3:00");
+    expect(formatSchedule(["0 1 * * 6,0"], "Europe/Berlin", "America/Los_Angeles", NOV)).toBe("Fridays and Saturdays 16:00");
     expect(formatSchedule(["0 9 1 * *"], "UTC", "UTC", NOV)).toBe("0 9 1 * *");
     expect(formatSchedule(["0 9 * * 1", "0 9 * * 4"], "UTC", "UTC", NOV)).toBe("Mondays 9:00 and Thursdays 9:00");
   });

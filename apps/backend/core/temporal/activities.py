@@ -84,10 +84,16 @@ async def _move(ws: str, task_id: str, to: str, reason: str | None = None, field
     task = await _task(ws, task_id)
     if task["status"] == to:
         return
+    from core.temporal import learning  # Lane V: overlay expiry follows the task's terminal state
+
+    if task["status"] in learning.TERMINAL and to not in learning.TERMINAL:
+        await learning.set_overlay_tag(ws, task_id, on=False)  # reopen: untag BEFORE the next attempt
     if to == "working" and task["status"] not in tasks_repo.TRANSITIONS["working"]:
         await tasks_repo.transition_task(ws, task_id, to="queued")
     row = await tasks_repo.transition_task(ws, task_id, to=to, reason=reason, fields=fields)
     await memory_tasks_index.index_task(ws, row)  # memory (M5): the task card follows every status change
+    if to in learning.TERMINAL:
+        await learning.set_overlay_tag(ws, task_id, on=True)
 
 
 def _origin(tree: dict) -> tuple[str | None, str | None]:
@@ -580,7 +586,9 @@ async def _deliver_source_reply(ws: str, trig: dict, text: str, event_id: str) -
     return True
 
 
-async def _deliver(ws: str, trig: dict, text: str, *, event_id: str, refs: list[dict] | None) -> str | None:
+async def _deliver(
+    ws: str, trig: dict, text: str, *, event_id: str, refs: list[dict] | None, remember: bool = True
+) -> str | None:
     """Post in the trigger's place: its thread or room (chat), the deliver room (other sources), or back to the
     sender for a plain mail/text reply. Idempotent on `event_id`."""
     ref = trig.get("ref") or {}
@@ -591,7 +599,7 @@ async def _deliver(ws: str, trig: dict, text: str, *, event_id: str, refs: list[
         logger.warning("trigger %s has nowhere to answer (source %s)", trig["triggerId"], trig["source"])
         return None
     return await task_conversation.post_as_lightbulb(
-        ws, room, text=text, event_id=event_id, thread_root=ref.get("threadRoot"), task_refs=refs
+        ws, room, text=text, event_id=event_id, thread_root=ref.get("threadRoot"), task_refs=refs, remember=remember
     )
 
 
@@ -660,7 +668,9 @@ async def _apply(
     routed_to: dict[str, str] = {}  # every trigger a start or pass_through covers → its task
 
     def slot(tid: str) -> dict:
-        return slots.setdefault(tid, {"lines": [], "refs": [], "starts": [], "proposed": [], "passes": []})
+        return slots.setdefault(
+            tid, {"lines": [], "refs": [], "starts": [], "proposed": [], "passes": [], "acks": set()}
+        )
 
     for i, dec in enumerate(decisions):
         primary = dec.trigger_ids[0]
@@ -698,6 +708,7 @@ async def _apply(
                 sl["lines"].append(router_prompt.FALLBACK)
                 continue
             sl["lines"].append(dec.ack)
+            sl["acks"].add(dec.ack)
             sl["refs"].append({"taskId": task_id, "role": "started"})
             sl["starts"].append(task_id)
             for tid in dec.trigger_ids:
@@ -723,6 +734,7 @@ async def _apply(
                 sl["refs"].append({"taskId": task_id, "role": "suggested"})
                 sl["proposed"].append(task_id)
             sl["lines"].append(dec.ack)
+            sl["acks"].add(dec.ack)
         elif isinstance(dec, ts.PassThrough):
             await temporal_client.signal_task_input(ws, dec.task_id, TaskInputRef(primary, "message"))
             sl["passes"].append(dec.task_id)
@@ -730,6 +742,7 @@ async def _apply(
                 routed_to.setdefault(tid, dec.task_id)
             if dec.ack:
                 sl["lines"].append(dec.ack)
+                sl["acks"].add(dec.ack)
         elif isinstance(dec, ts.Ask):
             sl["lines"].append(dec.text + (f" ({' / '.join(dec.options)})" if dec.options else ""))
         elif isinstance(dec, ts.Reply):
@@ -749,7 +762,15 @@ async def _apply(
         if sl["lines"] or sl["refs"]:  # a pass_through without an ack posts nothing (routed below)
             text = "\n".join(line for line in sl["lines"] if line) or "On it."
             message_id = await _deliver(
-                ws, trig, text, event_id=f"router:{inp.batch_id}:{idx}", refs=sl["refs"] or None
+                ws,
+                trig,
+                text,
+                event_id=f"router:{inp.batch_id}:{idx}",
+                refs=sl["refs"] or None,
+                # Acks and the fallback line are boilerplate: a post of only those stays out of room memory.
+                remember=any(
+                    line and line not in sl["acks"] and line != router_prompt.FALLBACK for line in sl["lines"]
+                ),
             )
         if message_id:
             posted.append(message_id)
@@ -850,7 +871,9 @@ async def apply_fallback(ws: str, trigger_ids: list[str]) -> None:
     for tid in trigger_ids:
         trig = await tasks_repo.get_trigger(ws, tid)
         if trig and trig["admission"] == "respond":
-            await _deliver(ws, trig, router_prompt.FALLBACK, event_id=f"router-fallback:{tid}", refs=None)
+            await _deliver(
+                ws, trig, router_prompt.FALLBACK, event_id=f"router-fallback:{tid}", refs=None, remember=False
+            )
 
 
 ACTIVITIES = [

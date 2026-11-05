@@ -12,7 +12,7 @@ from typing import Any
 
 from core import tasks_schema as ts
 from core.repositories import messaging_repo
-from core.services import clerk_admin
+from core.services import clerk_admin, questions
 
 _ORG_TTL_S = 60.0
 _ORG_CACHE_MAX = 10_000
@@ -115,7 +115,9 @@ def summarize(tree: dict, viewer_id: str) -> dict[str, Any]:
             "idemKey": draft["idemKey"],
             "kind": draft["output"]["kind"],
             "title": draft["output"]["title"],
-            "nextStep": "approve" if draft.get("questionId") else None,
+            "nextStep": (questions.REVIEW_KINDS.get(draft.get("kind")) or "approve")
+            if draft.get("questionId")
+            else None,
         }
 
     usage = task.get("usage")

@@ -5,12 +5,12 @@
 // typed text never does (contracts-v2 §8). Not now deletes the draft.
 
 import { useState, type ReactElement } from "react";
-import { specialistLabel, type AutomationView } from "@lightbulb/shared";
+import { specialistLabel, useAutomation, type AutomationView } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
-import { budgetLine, scheduleWords, useAutomation, useAutomationActions, useCanDecide, useCanEdit, viewerTimeZone, waitingWords } from "./automations";
+import { budgetLine, scheduleWords, useAutomationActions, useAutomationSource, useCanDecide, useCanEdit, viewerTimeZone, waitingWords } from "./automations";
 
 export function AutomationConfirmCard({ automationId, viewerTz = viewerTimeZone() }: { automationId: string; viewerTz?: string }): ReactElement {
-  const { data: a, error } = useAutomation(automationId);
+  const { data: a, error } = useAutomation(useAutomationSource(), automationId);
   const { act, remove } = useAutomationActions();
   const canDecide = useCanDecide();
   const canEdit = useCanEdit();

@@ -131,6 +131,16 @@ ROTATING_CLI_CREDENTIALS = (
 _CLI_PULLED: dict[str, dict[str, tuple[str, str]]] = {}
 _rotate_lock = threading.Lock()
 
+#: agent -> rels of ROTATING_CLI_CREDENTIALS files the bridge filled a BROKERED access token into
+#: (bridge/credentials.apply_cli_tokens, spec 13): the backend custodies the grant, the local
+#: patch is never a rotation to write back. A re-pull (the backend rewrote the file) clears it;
+#: the next vend patches again.
+_BROKERED_CLI: dict[str, set[str]] = {}
+
+
+def mark_brokered(agent_id: str, rel: str) -> None:
+    _BROKERED_CLI.setdefault(agent_id, set()).add(rel)
+
 #: Hazard of putting ``$HOME`` inside the profile: every tool's dotfiles and caches now sit in
 #: the dir ``save_profile`` walks, so an `npm install` or a `git clone` would start uploading
 #: package caches and agent-written credentials to S3 on every turn. These never go up.
@@ -1141,8 +1151,13 @@ def _pull_cli_credentials(agent_id: str) -> None:
                     if held and held[0] == obj.get("ETag") and target.is_file():
                         continue  # our own copy, or a rotation not yet written back
                     target.parent.mkdir(parents=True, exist_ok=True)
-                    s3.download_file(S3_BUCKET, obj["Key"], str(target))
-                    _remember_cli_credential(agent_id, rel, obj, target)
+                    # Under the rotate lock: credentials.apply_cli_tokens marks + patches under it too,
+                    # so a mark is never discarded between its mark and its write (the patched token
+                    # would then look like a rotation and be uploaded to every roster key).
+                    with _rotate_lock:
+                        s3.download_file(S3_BUCKET, obj["Key"], str(target))
+                        _remember_cli_credential(agent_id, rel, obj, target)
+                        _BROKERED_CLI.get(agent_id, set()).discard(rel)  # the backend's token-free form again
             local_root = dest / prefix.rstrip("/")
             locals_ = (
                 [p for p in local_root.rglob("*") if p.is_file()]
@@ -1182,6 +1197,8 @@ def save_rotated_cli_credentials() -> None:
         for rel in ROTATING_CLI_CREDENTIALS:
             rotated = []
             for agent_id, held in list(_CLI_PULLED.items()):
+                if rel in _BROKERED_CLI.get(agent_id, ()):
+                    continue  # a brokered access token the bridge filled in: local only, never written back
                 path = _profile_dir(agent_id) / rel
                 if rel in held and path.is_file() and _sha(new := path.read_bytes()) != held[rel][1]:
                     rotated.append((path.stat().st_mtime_ns, agent_id, new, held[rel][1]))
@@ -1325,6 +1342,21 @@ _ROOT_AUTH_HASH: str | None = None
 #: download once) apart from "checked and there is nothing there" (must stop trying).
 _ROOT_AUTH_ABSENT = ""
 
+#: Spec 13: the root auth.json S3 holds is the backend's custody marker (``providers.openai-codex.
+#: custody == "backend"``, tokens empty); the bridge fills the vended token into the LOCAL copy
+#: (credentials.write_codex_auth) and never writes it back. Set by restore_root_auth from what it
+#: pulled, and by write_codex_auth.
+_CODEX_BROKERED = False
+
+
+def _is_codex_marker(path: Path) -> bool:
+    try:
+        providers = json.loads(path.read_text(encoding="utf-8")).get("providers") or {}
+        state = providers.get("openai-codex") or {}
+    except (OSError, ValueError, AttributeError):
+        return False
+    return isinstance(state, dict) and state.get("custody") == "backend"
+
 
 def restore_root_auth() -> None:
     """Pull ``<owner>/hermes/auth.json`` into the root home when either the compatibility
@@ -1337,7 +1369,7 @@ def restore_root_auth() -> None:
     turns. A marker or auth object that later appears still differs from the recorded state and
     triggers the download.
     """
-    global _ROOT_AUTH_REVISION, _ROOT_AUTH_ETAG, _ROOT_AUTH_HASH
+    global _ROOT_AUTH_REVISION, _ROOT_AUTH_ETAG, _ROOT_AUTH_HASH, _CODEX_BROKERED
     if not S3_BUCKET:
         return
     revision = _root_auth_revision()
@@ -1353,6 +1385,9 @@ def restore_root_auth() -> None:
     _ROOT_AUTH_REVISION = revision if revision is not None else _ROOT_AUTH_ABSENT
     _ROOT_AUTH_ETAG = etag
     _ROOT_AUTH_HASH = _local_auth_hash()
+    # The backend's marker (spec 13): the vend fills the token in locally; this process never
+    # writes the grant back. A real grant pulled later (custody rolled back) ends that.
+    _CODEX_BROKERED = _is_codex_marker(HOME / "auth.json")
 
 
 def save_root_auth() -> None:
@@ -1371,8 +1406,8 @@ def save_root_auth() -> None:
     S3 rejects this warm writer rather than letting it resurrect or overwrite the grant.
     """
     global _ROOT_AUTH_REVISION, _ROOT_AUTH_ETAG, _ROOT_AUTH_HASH
-    if not S3_BUCKET or task_mode.active():
-        return  # a task VM never writes the root grant back (spec 02 §3.3; the broker owns it, spec 13)
+    if not S3_BUCKET or task_mode.active() or _CODEX_BROKERED:
+        return  # a task VM, or a brokered grant: never written back (spec 02 §3.3; the broker owns it, spec 13)
     local_hash = _local_auth_hash()
     if local_hash is None or local_hash == _ROOT_AUTH_HASH:
         return  # no local auth.json, or this turn never touched it

@@ -3,6 +3,7 @@ import { SymbolView } from "../../../components/ui/SymbolView";
 import {
   agentRingState,
   mergeChats,
+  resolveCeoAgentId,
   roomDisplayName,
   sessionLive,
   sessionMatches,
@@ -25,7 +26,7 @@ import { LogoMark } from "../../../components/LogoMark";
 import { NewMessageSheet } from "../../../components/room/NewMessageSheet";
 import { FocusedStatusBar } from "../../../components/ui/FocusedStatusBar";
 import { fonts, radii, spacing, useChatPalette, type ChatPalette } from "../../../config/theme";
-import { archiveSession, otherMembers, readArchivedSessions } from "../../../lib/chats";
+import { archiveSession, fileSpecialists, otherMembers, readArchivedSessions } from "../../../lib/chats";
 import { roomIdsWithDrafts } from "../../../lib/composerDraft";
 import { useDesktopSessionApi, type SessionTargets } from "../../../lib/desktopSessions";
 import { memberName, markSessionsSeenOnDevice } from "../../../lib/localSessions";
@@ -36,7 +37,7 @@ import { useMobileRooms } from "../../../lib/rooms";
 import { useTabHeader } from "../../../lib/tabHeader";
 import { roomUrl } from "../../../lib/webLinks";
 import { useWorkspaceRoster } from "../../../lib/workspaceRoster";
-import { useLiveEvents } from "../../../providers/live-events";
+import { useLiveEvents, useSuperAgent } from "../../../providers/live-events";
 
 /** RoomHeader.tsx's own copy — the same two strings the room screen's header shows. */
 const STAR_FAILED = "The star could not be saved.";
@@ -219,6 +220,14 @@ export default function Chats() {
 
   const rosterById = useMemo(() => new Map(agents.map((agent) => [agent.id, agent])), [agents]);
 
+  // Super-agent: one voice. A DM with any agent but the front one (`@lightbulb`) files under a collapsed
+  // Specialists row at the end. Off, or until the front agent is known, the list is today's.
+  const superAgent = useSuperAgent();
+  const frontAgentId = superAgent ? resolveCeoAgentId(agents) : undefined;
+  const [specialistsOpen, setSpecialistsOpen] = useState(false);
+  const rows = useMemo(() => fileSpecialists(entries, frontAgentId, userId, specialistsOpen || !!needle),
+    [entries, frontAgentId, specialistsOpen, needle, userId]);
+
   const [prefsError, setPrefsError] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<LocalSession | null>(null);
   const onRoomAction = useCallback(
@@ -279,7 +288,7 @@ export default function Chats() {
         // so pressing Search emptied the screen. Dragging the list puts the
         // keyboard away instead.
         keyboardDismissMode="on-drag"
-        data={entries}
+        data={rows}
         keyExtractor={(entry) => entry.key}
         contentContainerStyle={[styles.list, entries.length === 0 && styles.listGrow]}
         keyboardShouldPersistTaps="handled"
@@ -345,6 +354,17 @@ export default function Chats() {
           )
         }
         renderItem={({ item }) => {
+          if (item.kind === "specialists") {
+            const label = `Specialists · ${item.count}`;
+            return (
+              <Pressable testID="chat-specialists" accessibilityRole="button" accessibilityLabel={label}
+                accessibilityState={{ expanded: item.open }} onPress={() => setSpecialistsOpen(!item.open)}
+                style={styles.groupRow} hitSlop={4}>
+                <Text style={[styles.groupLabel, { color: palette.fgMute }]}>{label}</Text>
+                <Text style={[styles.groupLabel, { color: palette.fgMute }]}>{item.open ? "▾" : "▸"}</Text>
+              </Pressable>
+            );
+          }
           if (item.kind === "session") {
             const session = item.session;
             return (
@@ -426,6 +446,8 @@ const styles = StyleSheet.create({
   filter: { minHeight: 36, flex: 1, alignItems: "center", justifyContent: "center", borderRadius: radii.sm },
   list: { paddingBottom: spacing.xl },
   listGrow: { flexGrow: 1 },
+  groupRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", minHeight: 44, paddingHorizontal: spacing.lg, marginTop: spacing.md },
+  groupLabel: { fontFamily: fonts.sansSemiBold, fontSize: 10, letterSpacing: 1.2, lineHeight: 14, textTransform: "uppercase" },
 
   empty: { flex: 1, alignItems: "center", justifyContent: "center", gap: spacing.sm },
   dim: { fontFamily: fonts.sans, fontSize: 15, lineHeight: 22, textAlign: "center" },

@@ -99,7 +99,8 @@
       "voice",
       "text",
       "answer",
-      "ask"
+      "ask",
+      "watch"
     ],
     "Admission": [
       "respond",
@@ -224,6 +225,7 @@
     "text": "text:{messageId}",
     "answer": "answer:{qid}:{clientAnswerId}",
     "ask": "ask:{qid}",
+    "watch": "watch:{taskId}:{watchId}:{n}",
     "rule": "rule:{scheduleId}:{threadHash}"
   },
   "namespaces": {
@@ -1725,7 +1727,8 @@
             "voice",
             "text",
             "answer",
-            "ask"
+            "ask",
+            "watch"
           ],
           "title": "Source",
           "type": "string"

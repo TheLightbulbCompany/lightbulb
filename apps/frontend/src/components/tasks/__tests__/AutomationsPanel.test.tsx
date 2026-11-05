@@ -91,12 +91,14 @@ describe("AutomationsPanel", () => {
     expect(screen.queryByRole("button", { name: "Pause" })).toBeNull();
     member.unmount();
 
-    // The owner (not an admin) may pause and run a room automation (the server's _may_edit), but not resume it.
+    // The owner (not an admin) may pause and run a room automation (the server's _may_edit), but not resume it;
+    // paused, Run now is off (the server's run_now answers 409 not_active).
     clerk.userId = "user_sam";
     routes({ status: "paused", pausedReason: null });
     render(<Fresh><AutomationsPanel viewerTz="America/New_York" /></Fresh>);
     await userEvent.click(await screen.findByRole("button", { name: "Post signups every Monday" }));
-    expect(await screen.findByRole("button", { name: "Run now" })).toBeEnabled();
+    expect(await screen.findByRole("button", { name: "Run now" })).toBeDisabled();
+    expect(screen.getAllByText("Resume it first").length).toBeGreaterThan(0);
     expect(screen.queryByRole("button", { name: "Resume" })).toBeNull();
     expect(screen.getByText("Waiting on a workspace admin")).toBeInTheDocument();
   });

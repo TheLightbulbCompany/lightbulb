@@ -43,7 +43,16 @@ _MERGE = {
     "start_to_close_timeout": timedelta(minutes=5),
     "retry_policy": RetryPolicy(maximum_attempts=5, backoff_coefficient=2.0),
 }
-_CURATE = {"start_to_close_timeout": timedelta(minutes=10), "retry_policy": RetryPolicy(maximum_attempts=2)}
+# Every curate failure is transient (curate_specialist): the bridge caches its roster 60 s, so a
+# specialist first written within that window is a 400 until it refreshes. 30 s + 60 s + 120 s of
+# backoff outlasts that; after the last attempt the next applied merge tries again. Activity
+# options only (no new command): replay-safe without a patch marker.
+_CURATE = {
+    "start_to_close_timeout": timedelta(minutes=10),
+    # a hung bridge holds the specialist's merge queue at most this long, retries included
+    "schedule_to_close_timeout": timedelta(minutes=15),
+    "retry_policy": RetryPolicy(initial_interval=timedelta(seconds=30), backoff_coefficient=2.0, maximum_attempts=4),
+}
 
 
 @dataclass(frozen=True)
@@ -183,7 +192,14 @@ def _merge_sync(
         ),
         attempt,
     )
-    base_raw = _get(s3, bucket, overlay + lm.base_rel(base_attempt))
+    # The FIRST base that exists from there on: an attempt whose restore failed wrote none (the bridge
+    # writes it only after a successful restore), and an overlay reopened > 14 days after resolve has
+    # expired. Never jump straight to this attempt's own base: an unsealed attempt between them may have
+    # written learning that base already contains, and the merge would then never add it.
+    base_raw = None
+    for k in range(base_attempt, attempt + 1):
+        if (base_raw := _get(s3, bucket, overlay + lm.base_rel(k))) is not None:
+            break
     base, base_text = lm.parse_base(base_raw) if base_raw else ({}, {})
     if base_raw is None:
         logger.warning("learning merge: no base for task=%s attempt=%s; adding only", task_id, base_attempt)
@@ -240,8 +256,13 @@ async def merge_learning(ws: str, specialist_id: str, task_id: str, attempt: int
 
 @activity.defn
 async def curate_specialist(ws: str, specialist_id: str) -> dict:
-    """The curator for one specialist on the workspace VM (`POST /internal/v1/curate`)."""
-    return await runtime_runs.curate(ws, specialist_id)
+    """The curator for one specialist on the workspace VM (`POST /internal/v1/curate`). A refusal is
+    transient here, never final: 400 = a specialist the bridge's 60 s roster cache does not list
+    yet, 404 = an image without the route until the roll, 409 = a live turn."""
+    try:
+        return await runtime_runs.curate(ws, specialist_id)
+    except (runtime_runs.RunRefused, runtime_runs.RunLost) as exc:
+        raise runtime_runs.RuntimeBusy(f"curate refused: {exc}") from exc
 
 
 async def signal_merge(ws: str, specialist_id: str, ref: MergeRef) -> None:
@@ -272,6 +293,49 @@ async def close_task_attempt(
     no longer holds is a no-op, and the workflow drops a `MergeRef` it has seen."""
     await runtime_runs.stop_task_session(ws, task_id, run_id)
     await signal_merge(ws, specialist_id, MergeRef(task_id, attempt))
+    # After the stop (so after the VM's SIGTERM re-save): a task already terminal by now -- end_attempt
+    # moves it before this hook -- gets every object, stragglers included.
+    task = await tasks_repo.get_task(ws, task_id)
+    if task is not None and task.get("status") in TERMINAL:
+        await set_overlay_tag(ws, task_id, on=True)
+
+
+#: Statuses after which the task's overlay may expire. Both reopen (→ queued), which untags first.
+TERMINAL = ("resolved", "failed")
+OVERLAY_TAG = {"TagSet": [{"Key": "lb-kind", "Value": "task-overlay"}]}
+#: Reopened: a value the rule's filter (lb-kind=task-overlay) never matches. Not an empty set: the same
+#: PutObjectTagging call either way.
+_OPEN_TAG = {"TagSet": [{"Key": "lb-kind", "Value": "task-open"}]}
+
+
+def tag_overlay(ws: str, task_id: str, *, on: bool = True) -> int:
+    """Tag (or untag) every object of the task's overlay (all its agents) `lb-kind=task-overlay`, the
+    bucket's 14-day TaskOverlays rule (container-stack.ts, spec 07 §6). S3 Expiration counts from each
+    object's CREATION, so the tag goes on only when the task is terminal (a waiting task's old overlay
+    would expire under it) and comes off on reopen before the next attempt. Backend-side by ruling
+    (contracts §15); untag = `lb-kind=task-open` (PutObjectTagging, the grant #4689 gave). ETags unchanged."""
+    s3, bucket = _s3_client(), settings.OWNER_STATE_BUCKET
+    n = 0
+    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=f"{ws}/{OVERLAY_ROOT}/{task_id}/"):
+        for obj in page.get("Contents", []):
+            try:
+                s3.put_object_tagging(Bucket=bucket, Key=obj["Key"], Tagging=OVERLAY_TAG if on else _OPEN_TAG)
+            except Exception as exc:  # noqa: BLE001 -- deleted since the listing (expired, re-saved): skip it
+                if str(getattr(exc, "response", {}).get("Error", {}).get("Code", "")) not in ("NoSuchKey", "404"):
+                    raise
+                continue
+            n += 1
+    return n
+
+
+async def set_overlay_tag(ws: str, task_id: str, *, on: bool) -> None:
+    """`tag_overlay`, best effort: never fails a status move or the merge signal. A failed untag on
+    reopen at worst lets an overlay older than 14 days expire mid-task; the next attempt then starts
+    from the specialist profile (an empty overlay is the first attempt's path)."""
+    try:
+        await run_in_thread(tag_overlay, ws, task_id, on=on)
+    except Exception:  # noqa: BLE001
+        logger.warning("overlay %s failed task=%s", "tagging" if on else "untagging", task_id, exc_info=True)
 
 
 def is_task_session_attempt(ws: str, task_id: str, att: dict) -> bool:

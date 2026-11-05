@@ -67,12 +67,22 @@ def test_calendar_invite_match(event, expected):
 async def test_backfill_refuses_prod(table, google, monkeypatch):
     monkeypatch.setattr(super_agent_flags, "flags_for", AsyncMock(return_value=True))
     monkeypatch.setattr(backfill.settings, "ENVIRONMENT", "prod")
-    assert await backfill.run(WS, dry_run=False) == 2
+    assert await backfill.run(WS, apply=True) == 2
     assert await automations_repo.list_schedules(WS) == []
 
 
 async def test_backfill_refuses_switch_off(table, google, monkeypatch):
     monkeypatch.setattr(super_agent_flags, "flags_for", AsyncMock(return_value=False))
     monkeypatch.setattr(backfill.settings, "ENVIRONMENT", "dev")
-    assert await backfill.run(WS, dry_run=False) == 2
+    assert await backfill.run(WS, apply=True) == 2
     assert await automations_repo.list_schedules(WS) == []
+
+
+async def test_backfill_default_is_dry_run(table, google, monkeypatch, capsys):
+    monkeypatch.setattr(super_agent_flags, "flags_for", AsyncMock(return_value=True))
+    monkeypatch.setattr(backfill.settings, "ENVIRONMENT", "dev")
+    assert await backfill.run(WS) == 0
+    assert await automations_repo.list_schedules(WS) == []
+    assert rules.invite_prep_id(ME) in capsys.readouterr().out
+    assert await backfill.run(WS, apply=True) == 0
+    assert len(await automations_repo.list_schedules(WS)) == 1

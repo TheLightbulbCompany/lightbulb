@@ -188,7 +188,7 @@ async def test_put_condition_raises_when_a_different_generation_already_won(repo
 
     await repo.put_workspace(_make_company(user_id="user_race", onboarding_generation="gen-winner"))
 
-    losing_company = _make_company(user_id="user_race", onboarding_generation="gen-loser")
+    losing_company = _make_company(user_id="user_race", company_id="co_loser", onboarding_generation="gen-loser")
     with pytest.raises(ClientError) as exc_info:
         await repo.put_workspace(
             losing_company,
@@ -196,7 +196,9 @@ async def test_put_condition_raises_when_a_different_generation_already_won(repo
             condition_values={":g": "gen-loser"},
         )
     assert exc_info.value.response["Error"]["Code"] == "ConditionalCheckFailedException"
-    assert (await repo.get_workspace("user_race")).onboarding_generation == "gen-winner"
+    won = await repo.get_workspace("user_race")
+    # On `tasks` both rows are one transaction: the failed META write moved no old-row attribute.
+    assert (won.onboarding_generation, won.company_id) == ("gen-winner", "co_user_race")
 
 
 async def test_starter_agent_ids_round_trip(repo):

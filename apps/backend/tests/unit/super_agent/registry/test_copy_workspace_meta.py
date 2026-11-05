@@ -194,3 +194,20 @@ async def test_refuses_prod_and_env_master_off(tables):
         assert await cwm.main(["--all", "--apply"]) == 2
     with patch.object(cwm.settings, "SUPER_AGENT_ENV_ENABLED", False):
         assert await cwm.main(["--all", "--verify"]) == 2
+
+
+async def test_reverse_never_overwrites_an_old_row_newer_than_meta(tables):
+    """Rollback after a revert: a write that landed on the old row after the copy wins."""
+    old, tasks = tables
+    await _seed()
+    assert await cwm.main(["--all", "--apply"]) == 0
+    later = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+    old.update_item(
+        Key={"user_id": "org_a"},
+        UpdateExpression="SET updated_at = :u, funnel_state = :f",
+        ExpressionAttributeValues={":u": later, ":f": "completed"},
+    )
+    lines = await cwm.copy_reverse(None, apply=True)
+    assert "org_a: skipped (old row newer)" in lines
+    row = old.get_item(Key={"user_id": "org_a"})["Item"]
+    assert (row["updated_at"], row["funnel_state"]) == (later, "completed")

@@ -47,6 +47,7 @@ from enum import Enum
 from typing import Literal, Optional
 
 from boto3.dynamodb.conditions import Key
+from botocore.exceptions import ClientError
 
 from core import tasks_schema as ts
 from core.dynamodb import get_table, run_in_thread, utc_now_iso
@@ -414,10 +415,10 @@ class PaperclipRepo:
                     resp[k] = from_meta_item(resp[k])
         return resp
 
-    async def _put_old_row_attrs(self, org_id: str, status: str, attrs: dict, absent: list[str]) -> None:
-        """On ``tasks``: keep the Paperclip-only attributes on the old row. ``org_id`` keeps the
-        by-org-id guard working; ``status`` (first write only) is what the agent-key writes
-        condition on."""
+    def _old_row_update(self, org_id: str, status: str, attrs: dict, absent: list[str]) -> dict:
+        """On ``tasks``: the old-row half of ``put_workspace``, keeping the Paperclip-only
+        attributes there. ``org_id`` keeps the by-org-id guard working; ``status`` (first write
+        only) is what the agent-key writes condition on."""
         values = {f":o{i}": v for i, v in enumerate(attrs.values())}
         names = {f"#o{i}": k for i, k in enumerate(attrs)}
         sets = ["org_id = :org", "#s = if_not_exists(#s, :s)"] + [f"#o{i} = :o{i}" for i in range(len(attrs))]
@@ -425,13 +426,13 @@ class PaperclipRepo:
         if absent:
             names.update({f"#x{i}": k for i, k in enumerate(absent)})
             expr += " REMOVE " + ", ".join(f"#x{i}" for i in range(len(absent)))
-        await run_in_thread(
-            self._table().update_item,
-            Key={"user_id": org_id},
-            UpdateExpression=expr,
-            ExpressionAttributeNames={"#s": "status", **names},
-            ExpressionAttributeValues={":org": org_id, ":s": status, **values},
-        )
+        return {
+            "TableName": self._table().name,
+            "Key": {"user_id": org_id},
+            "UpdateExpression": expr,
+            "ExpressionAttributeNames": {"#s": "status", **names},
+            "ExpressionAttributeValues": {":org": org_id, ":s": status, **values},
+        }
 
     # ------------------------------------------------------------------
     # Workspace rows
@@ -516,10 +517,27 @@ class PaperclipRepo:
         }
         if condition:
             kwargs["ConditionExpression"] = condition
-        await self._ws_call("update_item", self._ws_key(ws.org_id), **kwargs)
-        if on_tasks:
+        if not on_tasks:
+            await self._ws_call("update_item", self._ws_key(ws.org_id), **kwargs)
+        else:
+            # Both rows in one transaction, so META never lands without company_id on the old row.
             old_fields = [k for k in _WORKSPACE_OPTIONAL_FIELDS if old_row_only(k) and k not in old_attrs]
-            await self._put_old_row_attrs(ws.org_id, ws.status, old_attrs, old_fields)
+            meta = {"TableName": self._ws_table().name, "Key": self._ws_key(ws.org_id), **_tasks_expressions(kwargs)}
+            old = self._old_row_update(ws.org_id, ws.status, old_attrs, old_fields)
+            try:
+                await run_in_thread(
+                    self._table().meta.client.transact_write_items,
+                    TransactItems=[{"Update": meta}, {"Update": old}],
+                )
+            except ClientError as e:
+                reasons = e.response.get("CancellationReasons") or []
+                if any(r.get("Code") == "ConditionalCheckFailed" for r in reasons):
+                    # Same error the single-table path raises, for the G2 mint site's handler.
+                    raise ClientError(
+                        {"Error": {"Code": "ConditionalCheckFailedException", "Message": "put_workspace condition"}},
+                        "UpdateItem",
+                    ) from e
+                raise
         publish_status_changed(ws.org_id)
 
     async def get_workspace(self, org_id: str, *, consistent_read: bool = False) -> Optional[PaperclipWorkspace]:

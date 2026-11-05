@@ -5,7 +5,8 @@ sentinels from ``paperclip-companies`` to ``tasks`` (``WS#{org}/META``, ``WS#{or
 than META's ``updatedAt`` (so a second pass after the flip carries late writes and never
 overwrites newer META). ``--verify`` compares every copied attribute and reports ``missing``,
 ``field:<name>`` or ``meta_newer`` (not a failure); exit 1 on ``missing``/``field``.
-``--reverse --apply`` copies META back onto the old rows (rollback). Paperclip-only attributes
+``--reverse --apply`` copies META back onto the old rows (rollback), skipping any old row
+newer than its META. Paperclip-only attributes
 (``company_id``, ``agent_keys``, ``agent_cost_remainder``, ``automation_pause*``) never move:
 they stay on the old row. Identity rows are never copied.
 
@@ -159,28 +160,48 @@ async def verify(owner_id: str | None) -> list[str]:
 
 async def copy_reverse(owner_id: str | None, *, apply: bool) -> list[str]:
     """Rollback: META attributes back onto the old rows. An UpdateItem, so the Paperclip-only
-    attributes that never left the old row survive; copied attributes META no longer has are removed."""
+    attributes that never left the old row survive; copied attributes META no longer has are removed.
+    An old row newer than its META (written after a revert) is never overwritten."""
     lines = []
     for current in await meta_rows(owner_id):
         item = from_meta_item(current)
         key = item.pop("user_id")
+        existing = await _get(_old(), {"user_id": key})
+        old_at, meta_at = (_stamp(existing), _stamp(item)) if existing else (None, None)
+        if old_at is not None and (meta_at is None or old_at > meta_at):
+            lines.append(f"{key}: skipped (old row newer)")
+            continue
         lines.append(f"{key}: {'restored' if apply else 'would restore'}")
         if not apply:
             continue
-        existing = await _get(_old(), {"user_id": key}) or {}
+        existing = existing or {}
         absent = [k for k in existing if k != "user_id" and not old_row_only(k) and k not in item]
         names = {f"#a{i}": k for i, k in enumerate(item)}
+        values = {f":a{i}": v for i, v in enumerate(item.values())}
         expr = "SET " + ", ".join(f"#a{i} = :a{i}" for i in range(len(item)))
         if absent:
             names.update({f"#x{i}": k for i, k in enumerate(absent)})
             expr += " REMOVE " + ", ".join(f"#x{i}" for i in range(len(absent)))
-        await run_in_thread(
-            _old().update_item,
-            Key={"user_id": key},
-            UpdateExpression=expr,
-            ExpressionAttributeNames=names,
-            ExpressionAttributeValues={f":a{i}": v for i, v in enumerate(item.values())},
-        )
+        # Fence on the old row we just compared: a write to it since then wins.
+        if not existing:
+            cond = "attribute_not_exists(user_id)"
+        elif existing.get("updated_at"):
+            cond, values[":seen"] = "updated_at = :seen", existing["updated_at"]
+        else:
+            cond = "attribute_not_exists(updated_at)"  # ponytail: a sentinel has no version to fence on
+        try:
+            await run_in_thread(
+                _old().update_item,
+                Key={"user_id": key},
+                UpdateExpression=expr,
+                ConditionExpression=cond,
+                ExpressionAttributeNames=names,
+                ExpressionAttributeValues=values,
+            )
+        except ClientError as e:
+            if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+            lines[-1] = f"{key}: skipped (old row changed during the copy)"
     return lines
 
 

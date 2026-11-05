@@ -5,7 +5,7 @@
 
 import { ARTIFACT_PARAM_KEYS, parseArtifactSource } from "./panels/artifactSource";
 
-export type PanelKind = "chat" | "teams" | "control" | "file-viewer" | "browser" | "activity" | "canvas" | "mail" | "ideas" | "artifact";
+export type PanelKind = "chat" | "teams" | "control" | "file-viewer" | "browser" | "activity" | "canvas" | "mail" | "ideas" | "artifact" | "task";
 
 export interface PanelDescriptor {
   panelId: string;
@@ -272,6 +272,12 @@ export function describePanel(
     return { panelId: "artifact", component: "artifact", title: p.name ?? p.ident ?? "File", params: p };
   }
 
+  // One super-agent thread (TaskPane). Only reachable while the switch is on: nothing links here otherwise.
+  if (key === "task-detail") {
+    if (!params.taskId) return null;
+    return { panelId: "task-detail", component: "task", title: "Thread", params: { taskId: params.taskId } };
+  }
+
   if (key === "browser") {
     // Singleton, no params: an owner has ONE AgentCore Browser profile, and the
     // pane watches whichever session is live on it.
@@ -399,6 +405,7 @@ export function durableParamsFor(panelId: string): string[] {
   if (panelId.startsWith("chat:")) return ["panel", "agent", "agentId", "room", "message", "session", "seq"];
   if (panelId === "file-viewer") return ["panel", "path", "agent"];
   if (panelId === "artifact") return ["panel", ...ARTIFACT_PARAM_KEYS];
+  if (panelId === "task-detail") return ["panel", "taskId"];
   if (panelId === "agent-inspector") return ["panel", "agent", "inspectorTab"];
   if (panelId === "control:agents") return ["panel", "agent"];
   if (panelId === WORK_PANEL_ID) return ["panel", "agent", "groupBy", "view", "day", "section"];
@@ -428,6 +435,7 @@ export function clearablePanelParamKeys(panelId: string): string[] {
   if (panelId === "ideas") return ["agent", "idea"];
   if (panelId === "file-viewer") return ["path", "agent"];
   if (panelId === "artifact") return [...ARTIFACT_PARAM_KEYS];
+  if (panelId === "task-detail") return ["taskId"];
   if (panelId === "agent-inspector" || panelId === "control:agents") {
     return ["agentId", "initialTab"];
   }
@@ -439,5 +447,5 @@ export function opensInPane(descriptor: PanelDescriptor): boolean {
   if (descriptor.component === "teams") return !!descriptor.params.detailId;
   return descriptor.component === "file-viewer" || descriptor.component === "browser"
     || descriptor.component === "mail" || descriptor.component === "control" || descriptor.component === "ideas"
-    || descriptor.component === "artifact";
+    || descriptor.component === "artifact" || descriptor.component === "task";
 }

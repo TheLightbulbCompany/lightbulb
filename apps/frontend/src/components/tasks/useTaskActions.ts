@@ -5,7 +5,7 @@
 
 import { useCallback } from "react";
 import { useSWRConfig } from "swr";
-import { ApiError, putTaskSummary, taskKey, type TaskAction, type TaskSummary, type TaskVerb } from "@lightbulb/shared";
+import { ApiError, putTaskSummary, questionsKey, taskKey, type TaskAction, type TaskSummary, type TaskVerb } from "@lightbulb/shared";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { capture, type AnalyticsEvent } from "@/lib/analytics";
 
@@ -36,7 +36,7 @@ export function useTaskActions(source: string) {
 
   const refetch = useCallback(async (taskId: string) => {
     const lists = [...cache.keys()].filter((k) => k.startsWith(`tasks:${tasks.cacheScope}:`));
-    await Promise.all([mutate(taskKey(taskId)), ...lists.map((k) => mutate(k))]);
+    await Promise.all([mutate(taskKey(taskId)), mutate(questionsKey(taskId)), ...lists.map((k) => mutate(k))]);
   }, [cache, mutate, tasks]);
 
   const act = useCallback(async (task: TaskSummary, verb: TaskVerb): Promise<ActionResult> => {

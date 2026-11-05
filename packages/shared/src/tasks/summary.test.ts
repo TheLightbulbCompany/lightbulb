@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import schema from "../../fixtures/super-agent/tasks-schema.json";
 import { FIXTURES, PRIYA, SAM, fixtureTask, viewAs } from "./fixtures";
 import { OUTPUT_KINDS, type TaskSummary } from "./types";
-import { overviewGroups, specialistLabel, summaryView, taskSummaryLine } from "./view";
+import { effectLine, overviewGroups, specialistLabel, summaryView, taskSummaryLine } from "./view";
 
 const byId = (ts: TaskSummary[], id: string) => ts.find((t) => t.taskId === id)!;
 
@@ -80,5 +80,15 @@ describe("summary lines and labels", () => {
   it("specialist label", () => {
     expect(specialistLabel("finance")).toBe("Lightbulb · Finance");
     expect(specialistLabel(null)).toBe("Lightbulb");
+  });
+});
+
+describe("effectLine (lanes/Q.md ruling, 5 Nov)", () => {
+  it("a refused done row did not happen; unknown says to check first", () => {
+    expect(effectLine({ state: "done", resultRef: "refused:rate_limited" })).toBe("Didn't happen: rate limited");
+    expect(effectLine({ state: "done", resultRef: "refused:" })).toBe("Didn't happen: refused");
+    expect(effectLine({ state: "done", resultRef: "s3://out" })).toBe("Done");
+    expect(effectLine({ state: "unknown", resultRef: null })).toBe("Might have happened — check before retrying");
+    expect(effectLine({ state: "intent" })).toBe("Applying");
   });
 });

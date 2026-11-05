@@ -1,0 +1,190 @@
+"use client";
+
+// One thread, opened from a card, a link or a panel (mockup step 8): header with its controls,
+// a Needs-you card only while something is open, the task room as the transcript with a steer
+// box, the outputs, and folded Details. Section order is the mockup's.
+
+import { useEffect, useRef, useState, type ReactElement, type RefObject } from "react";
+import { ArrowLeft } from "lucide-react";
+import {
+  effectLine, specialistLabel, useTask, useTaskQuestions, type QuestionView, type TaskDetail, type TaskSummary, type TaskTrace,
+} from "@lightbulb/shared";
+import { SessionChat, type ChatWords } from "@/components/messaging/SessionChat";
+import { Button } from "@/components/ui/button";
+import { useLiveEvents } from "@/hooks/useLiveEvents";
+import { capture } from "@/lib/analytics";
+import { TaskStatus } from "./TaskCard";
+import { useTaskActions } from "./useTaskActions";
+
+const TRANSCRIPT_WORDS: ChatWords = {
+  label: "Thread conversation", title: "Conversation", compose: "Steer this thread…",
+  empty: "Lightbulb posts this thread's progress here. Anything you write steers it.",
+  unavailable: "This thread's conversation isn't available.", full: "This conversation is full.", ended: "This thread is closed.",
+};
+
+const time = (iso: string | null) => (iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "");
+const money = (n: number) => `$${n.toFixed(2).replace(/\.00$/, "")}`;
+
+export function TaskPane({ taskId, viewerId, onClose, headingRef }: {
+  taskId: string; viewerId: string; onClose: () => void; headingRef?: RefObject<HTMLHeadingElement | null>;
+}): ReactElement {
+  const { tasks } = useLiveEvents();
+  const { data, error } = useTask(tasks, taskId);
+  const ownHeading = useRef<HTMLHeadingElement>(null);
+  const heading = headingRef ?? ownHeading;
+
+  // One read mark per open.
+  useEffect(() => {
+    void tasks.markRead(taskId).catch(() => undefined);
+    capture("task_card_opened", { taskId, source: "pane" });
+  }, [tasks, taskId]);
+  useEffect(() => { heading.current?.focus({ preventScroll: true }); }, [heading, taskId]);
+
+  return <aside className="room-context" aria-label="Thread" data-task-pane={taskId}
+    onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); onClose(); } }}>
+    <header className="room-context-header">
+      <Button variant="ghost" aria-label="Back to conversation" onClick={onClose}><ArrowLeft aria-hidden="true" />Back</Button>
+      <h3 ref={heading} tabIndex={-1} className="min-w-0 truncate font-semibold">{data?.task.title ?? "Thread"}</h3>
+    </header>
+    {!data
+      ? <p role="status" className="p-4 text-ui text-muted-foreground">{error ? "This thread isn't available to you." : "Loading…"}</p>
+      : <TaskPaneBody detail={data} viewerId={viewerId} />}
+  </aside>;
+}
+
+function TaskPaneBody({ detail, viewerId }: { detail: TaskDetail; viewerId: string }): ReactElement {
+  const { tasks } = useLiveEvents();
+  const { task } = detail;
+  // Who may answer, by name, is the viewer's view (Q's route); the detail holds the bare rows.
+  const { data: views } = useTaskQuestions(tasks, detail.questions.length ? task.taskId : null);
+  const questions = views?.items ?? [];
+  const open = questions.find((q) => q.state === "open");
+  const answered = questions.filter((q) => q.state === "answered" && q.answeredBy);
+  return <div className="room-context-body flex min-h-0 flex-col gap-3">
+    <TaskHeader task={task} viewerId={viewerId} />
+    {open && <NeedsYouCard task={task} question={open} />}
+    {answered.length > 0 && <ul aria-label="Decisions" className="grid gap-1 px-1 text-ui text-muted-foreground">
+      {answered.map((q) => <li key={q.id}>{answerLine(q)}</li>)}
+    </ul>}
+    <div className="flex min-h-64 flex-1 flex-col">
+      <SessionChat sessionId={detail.taskRoomId} sessionOwnerId={task.ownerUserId ?? ""} words={TRANSCRIPT_WORDS}
+        openChat={async (roomId) => ({ roomId })} onSend={() => capture("task_steer_sent", { taskId: task.taskId, status: task.status })} />
+    </div>
+    {task.output && <section aria-label="Outputs" className="editorial-card px-3 py-2 text-ui">
+      <span aria-hidden="true">📎 </span>{task.output.title}
+    </section>}
+    {detail.effects.length > 0 && <ul aria-label="Effects" className="grid gap-1 px-1 text-ui">
+      {detail.effects.map((e) => {
+        const line = effectLine(e);
+        const warn = e.state === "unknown" || line.startsWith("Didn't happen");
+        return <li key={e.idemKey} className="flex flex-wrap items-baseline gap-x-2">
+          <span className="font-semibold">{e.output?.title ?? e.tool}</span>
+          <span className={warn ? "text-warn" : "text-muted-foreground"}>{line}</span>
+        </li>;
+      })}
+    </ul>}
+    <TaskDetails detail={detail} />
+  </div>;
+}
+
+function answerLine(q: QuestionView): string {
+  const option = q.options.find((o) => o.id === q.answer?.optionId)?.label;
+  const verb = q.answer?.optionId === "approve" ? "Approved" : q.answer?.optionId === "deny" ? "Denied" : option ? `${option}` : "Answered";
+  return `${verb} by ${q.answeredBy!.name} · ${time(q.answeredAt)}`;
+}
+
+export function TaskHeader({ task, viewerId }: { task: TaskSummary; viewerId: string }): ReactElement {
+  const { act } = useTaskActions("pane");
+  const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
+  const live = task.status === "queued" || task.status === "working" || task.status === "waiting";
+  const press = async (verb: "stop" | "resolve" | "reopen") => {
+    setPending(true);
+    const res = await act(task, verb);
+    setPending(false);
+    setError(res.ok ? null : res.message);
+  };
+  return <section aria-label="Thread status" className="grid gap-1 px-1">
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-ui text-muted-foreground">
+      <span>{specialistLabel(task.specialist)}</span>
+      <TaskStatus task={task} viewerId={viewerId} />
+      <span><span aria-hidden="true">☁ </span>Lightbulb cloud</span>
+    </div>
+    <div className="flex flex-wrap gap-2">
+      {live && <Button type="button" size="sm" variant="outline" disabled={pending} onClick={() => void press("stop")}>Stop</Button>}
+      {task.status !== "resolved"
+        ? <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={() => void press("resolve")}>Resolve</Button>
+        : <Button type="button" size="sm" variant="outline" disabled={pending} onClick={() => void press("reopen")}>Reopen</Button>}
+    </div>
+    {error && <p role="alert" className="text-ui text-err">{error}</p>}
+  </section>;
+}
+
+/** The open question. Only an answerer gets buttons; everyone else reads who it waits on. Typed text never answers. */
+export function NeedsYouCard({ task, question }: { task: TaskSummary; question: QuestionView }): ReactElement {
+  const { answer } = useTaskActions("pane");
+  const [pending, setPending] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const [closed, setClosed] = useState(false);
+  const headingId = `needs-${question.id}`;
+  const waiting = question.waitingLabel ?? `Waiting on ${question.answerers.map((a) => a.name).join(" or ")}`;
+  return <section role="group" aria-labelledby={headingId} className="editorial-card border-l-2 border-l-warn px-3 py-2">
+    <p className="label-caps">{question.canAnswer ? "Waiting on you" : waiting}</p>
+    <h4 id={headingId} className="font-semibold">{question.text || question.title}</h4>
+    {question.canAnswer && !closed && <div className="mt-2 flex flex-wrap gap-2">
+      {question.options.map((o) => <Button key={o.id} type="button" size="sm" disabled={pending}
+        variant={o.style === "primary" ? "default" : o.style === "danger" ? "outline" : "ghost"}
+        onClick={async () => {
+          setPending(true);
+          const res = await answer(task, question.id, o.id, { expectVersion: question.version });
+          setPending(false);
+          if (res.ok) setClosed(true);
+          else { setNote(res.message); if (res.answeredBy) setClosed(true); }
+        }}>{o.label}</Button>)}
+    </div>}
+    {note && <p role="alert" className="mt-1 text-ui text-err">{note}</p>}
+  </section>;
+}
+
+export function TaskDetails({ detail }: { detail: TaskDetail }): ReactElement {
+  const { tasks } = useLiveEvents();
+  const { task, attempts } = detail;
+  const [trace, setTrace] = useState<TaskTrace | { error: true } | null | undefined>(undefined);
+  const latest = attempts.reduce((n, a) => Math.max(n, a.n), 0);
+  const cost = task.budgetUsd != null || task.costUsd
+    ? `${money(task.costUsd ?? 0)}${task.budgetUsd != null ? ` of ${money(task.budgetUsd)} budget` : ""}` : null;
+  return <details className="px-1 text-ui">
+    <summary className="cursor-pointer text-muted-foreground">Details</summary>
+    <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+      {task.proposalReason && <><dt className="text-muted-foreground">Why</dt><dd>{task.proposalReason}</dd></>}
+      <dt className="text-muted-foreground">Attempts</dt><dd>{attempts.length}</dd>
+      {cost && <><dt className="text-muted-foreground">Cost</dt><dd>{cost}</dd></>}
+    </dl>
+    {latest > 0 && <details className="mt-2" onToggle={(event) => {
+      if ((event.currentTarget as HTMLDetailsElement).open && trace === undefined) {
+        setTrace(null);
+        void tasks.trace(task.taskId, latest).then(setTrace, () => setTrace({ error: true }));
+      }
+    }}>
+      <summary className="cursor-pointer text-muted-foreground">Trace</summary>
+      {trace == null ? <p className="text-muted-foreground">Loading…</p>
+        : "error" in trace ? <p className="text-muted-foreground">The trace isn&apos;t available.</p>
+        : !trace.recentTools.length ? <p className="text-muted-foreground">No tool calls yet.</p>
+        : <ol className="mt-1 max-h-64 overflow-auto text-caption" aria-label={`Attempt ${trace.attempt} tools`}>
+          {trace.recentTools.map((tool, i) => <li key={i} className="truncate font-mono">{toolLine(tool)}</li>)}
+        </ol>}
+    </details>}
+  </details>;
+}
+
+/** One line per bridge tool record, whatever its exact shape. */
+function toolLine(tool: unknown): string {
+  if (typeof tool === "string") return tool;
+  if (tool && typeof tool === "object") {
+    const t = tool as Record<string, unknown>;
+    const name = [t.name, t.tool, t.type].find((v) => typeof v === "string") as string | undefined;
+    const status = typeof t.status === "string" ? ` · ${t.status}` : "";
+    if (name) return `${name}${status}`;
+  }
+  return JSON.stringify(tool);
+}

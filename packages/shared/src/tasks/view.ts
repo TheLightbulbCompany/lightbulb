@@ -2,7 +2,7 @@
 // (contracts-v2 §4). Pure; types mirror `fixtures/super-agent/tasks-schema.json` and
 // `view.test.ts` fails if the schema's enums drift.
 
-import type { TaskSummary } from "./types";
+import type { TaskEffect, TaskSummary } from "./types";
 
 export const TASK_STATUSES = ["proposed", "queued", "working", "waiting", "idle", "resolved", "failed"] as const;
 export const SHOWN_GROUPS = ["waiting_on_you", "ready_for_review", "landing", "working", "idle", "resolved"] as const;
@@ -151,4 +151,16 @@ export function taskSummaryLine(t: TaskSummary, viewerId: string): string {
   if (t.status === "proposed") return t.proposalReason ?? "Suggested";
   if (view.group === "working") return `${view.word} · ${specialistLabel(t.specialist)}`;
   return view.word;
+}
+
+const EFFECT_WORDS: Record<string, string> = {
+  proposed: "Waiting for approval", approved: "Approved", denied: "Denied", intent: "Applying", done: "Done",
+  unknown: "Might have happened — check before retrying",
+};
+
+/** One line per external effect. A `done` row whose `resultRef` starts `refused:` did not happen (lanes/Q.md ruling, 5 Nov). */
+export function effectLine(effect: Pick<TaskEffect, "state" | "resultRef">): string {
+  const ref = effect.resultRef ?? "";
+  if (ref.startsWith("refused:")) return `Didn't happen: ${ref.slice("refused:".length).replace(/_/g, " ") || "refused"}`;
+  return EFFECT_WORDS[effect.state] ?? effect.state;
 }

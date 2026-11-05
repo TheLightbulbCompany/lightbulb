@@ -11,6 +11,13 @@ import {
 } from "../panelRegistry";
 
 describe("panelRegistry", () => {
+  it("task-detail is a pane panel that needs a taskId", () => {
+    expect(describePanel("task-detail", { taskId: "t-1" })).toEqual({ panelId: "task-detail", component: "task", title: "Thread", params: { taskId: "t-1" } });
+    expect(describePanel("task-detail", {})).toBeNull();
+    expect(durableParamsFor("task-detail")).toEqual(["panel", "taskId"]);
+    expect(clearablePanelParamKeys("task-detail")).toEqual(["taskId"]);
+  });
+
   it("resolves retired aliases (both routers' maps, merged)", () => {
     expect(resolvePanelAlias("teams-approvals")).toBe("activity");
     // The Inbox tab folded into Activity's For you.

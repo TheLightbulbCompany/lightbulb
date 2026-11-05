@@ -8,6 +8,7 @@ import {
   openChatPanelWithDraft,
   openMessagePanel,
   openSessionPanel,
+  openTaskPane,
   openBrowserPane,
   closePane,
   closeSubjectDeleted,
@@ -87,6 +88,12 @@ describe("places", () => {
     openPanel("activity", {}, { pushUrl: true });
     expect(pushSearchParams).toHaveBeenCalledTimes(1);
     expect(String(vi.mocked(pushSearchParams).mock.calls[0][0])).toBe("panel=activity");
+  });
+
+  it("openTaskPane opens one thread in the pane with a shareable URL", () => {
+    openTaskPane("t-1");
+    expect(snap().pane).toMatchObject({ panelId: "task-detail", component: "task", params: { taskId: "t-1" } });
+    expect(String(vi.mocked(pushSearchParams).mock.calls[0][0])).toBe("panel=task-detail&taskId=t-1");
   });
 
   it("does nothing before the shell is attached", () => {

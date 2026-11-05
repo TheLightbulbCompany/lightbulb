@@ -66,7 +66,7 @@ const live = {
   httpReady: true, liveConnected: false, liveChannels: [] as string[], connectionRevision: 1, messaging,
   onEvent: () => () => {}, claimActiveRoomSubscription: () => () => {},
 };
-vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useOptionalLiveEvents: () => null }));
+vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useOptionalLiveEvents: () => null, useSuperAgent: () => false }));
 
 // The conversation reads its params from the controller, as WorkspaceBody mounts it.
 function Conversation() {

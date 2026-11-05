@@ -2,7 +2,7 @@
 // `viewAs` plays the server's `summarize` for a second viewer (Priya) — tests only, never product code.
 
 import type { CanonicalRoomMessage } from "../messaging/types";
-import type { QuestionView, TaskDetail, TaskSummary } from "./types";
+import type { QuestionView, TaskDetail, TaskQuestionRow, TaskSummary } from "./types";
 
 export const SAM = "user_sam";
 export const PRIYA = "user_priya";
@@ -117,18 +117,25 @@ const result = fixtureMessage({
   taskRefs: [{ taskId: "t-fees", role: "started" }],
 });
 
-const answeredApproval: QuestionView = {
-  id: "q-provision", taskId: "t-signup", kind: "approval", subkind: null,
-  title: "Provision database and Stripe", text: "Allow Lightbulb · Engineering to provision a database and Stripe payments?",
+/** The provision approval after Sam approved it: the row (`GET /tasks/{id}`) and Sam's view (`GET /tasks/{id}/questions`). */
+export const answeredApprovalRow: TaskQuestionRow = {
+  qid: "q-provision", kind: "approval", subkind: null, title: "Provision database and Stripe",
+  text: "Allow Lightbulb · Engineering to provision a database and Stripe payments?",
+  options: [{ id: "deny", label: "Deny" }, { id: "approve", label: "Approve" }],
+  answerers: [SAM], state: "answered", answer: { optionId: "approve", text: null }, answeredBy: SAM,
+  answeredAt: "2026-11-04T14:02:00.000Z", createdAt: AT, version: 2,
+};
+export const answeredApprovalView: QuestionView = {
+  id: "q-provision", taskId: "t-signup", kind: "approval", subkind: null, title: answeredApprovalRow.title, text: answeredApprovalRow.text!,
   options: [{ id: "deny", label: "Deny", style: "danger" }, { id: "approve", label: "Approve", style: "primary" }],
   state: "answered", answerers: [{ id: SAM, name: "Sam" }], canAnswer: false, waitingLabel: null,
-  answer: { optionId: "approve", text: null }, answeredBy: { id: SAM, name: "Sam" }, answeredAt: "2026-11-04T14:02:00.000Z",
+  answer: { optionId: "approve", text: null }, answeredBy: { id: SAM, name: "Sam" }, answeredAt: answeredApprovalRow.answeredAt!,
   createdAt: AT, version: 2,
 };
 
 export interface FixtureStep { messages: CanonicalRoomMessage[]; tasks: TaskSummary[]; details: Record<string, TaskDetail> }
 
-const detail = (task: TaskSummary, questions: QuestionView[] = []): TaskDetail => ({
+const detail = (task: TaskSummary, questions: TaskQuestionRow[] = []): TaskDetail => ({
   task,
   attempts: Array.from({ length: Math.max(task.attemptCount ?? 0, 0) }, (_, i) => ({
     n: i + 1, status: i + 1 === task.attemptCount ? "running" : "ended", outcome: i + 1 === task.attemptCount ? null : "waiting_approval",
@@ -149,7 +156,7 @@ export const FIXTURES = {
   step03: step([ask, reply], [signup, email, feesWorking]),
   step05: step([ask, reply], [signupWaiting, email, feesWorking]),
   step07: step([ask, reply, result], [signupWorking, emailReview, feesDone]),
-  step08: step([ask, reply, result], [signupWorking, emailReview, feesDone], [detail(signupWorking, [answeredApproval])]),
+  step08: step([ask, reply, result], [signupWorking, emailReview, feesDone], [detail(signupWorking, [answeredApprovalRow])]),
   step09: step([ask, reply, result], [
     { ...signupWorking, status: "resolved", shownGroup: "resolved", version: 7, activity: null },
     { ...emailReview, status: "working", shownGroup: "landing", landing: "e-mail", openQuestion: null, version: 5 },

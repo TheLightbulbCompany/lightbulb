@@ -12,6 +12,7 @@ import { CanvasDockPanel } from "./panels/CanvasDockPanel";
 import { MailDockPanel } from "./panels/MailDockPanel";
 import { ArtifactDockPanel } from "./panels/ArtifactDockPanel";
 import { IdeasDockPanel } from "./panels/IdeasDockPanel";
+import { TaskDockPanel } from "./panels/TaskDockPanel";
 
 export interface PanelProps {
   /** The slot's panel id (updatePanelParams' key). */
@@ -30,4 +31,5 @@ export const PANEL_COMPONENTS: Record<PanelKind, ComponentType<PanelProps>> = {
   mail: MailDockPanel,
   ideas: IdeasDockPanel,
   artifact: ArtifactDockPanel,
+  task: TaskDockPanel,
 };

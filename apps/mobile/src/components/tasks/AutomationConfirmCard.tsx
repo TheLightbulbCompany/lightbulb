@@ -1,11 +1,12 @@
-// The card under Lightbulb's "Set up below. Confirm on the card." (the web twin: components/tasks/AutomationConfirmCard):
-// the schedule in the viewer's zone, the next runs, who runs it and what it may spend. Only Turn on activates it;
-// typed text never does (contracts-v2 §8). Not now deletes the draft.
+// The card under Lightbulb's "Set up below. Turn it on with the button on the card." (the web twin:
+// components/tasks/AutomationConfirmCard): the schedule in the viewer's zone (never raw cron), the next run, who runs it
+// and what it may spend. Turn on shows whenever it is off and the viewer may turn it on; typed text never does
+// (contracts-v2 §8). Not now deletes the draft.
 
 import { useState } from "react";
 import { StyleSheet, Text, View } from "react-native";
 import {
-  budgetLine, canDecide, canEdit, nextRunWords, scheduleWords, specialistLabel, useAutomation, viewerTimeZone, waitingWords,
+  automationStatusLine, budgetLine, canDecide, canEdit, nextRunWords, scheduleWords, specialistLabel, useAutomation, viewerTimeZone, waitingWords,
 } from "@lightbulb/shared";
 
 import { fonts, radii, spacing, type ChatPalette } from "../../config/theme";
@@ -52,19 +53,22 @@ export function AutomationConfirmCard({ automationId, palette, viewerTz = viewer
     <View accessibilityLabel={`Turn on ${a.name}`} style={[styles.card, { borderColor: palette.edge, backgroundColor: palette.surface }]}>
       <Text style={[styles.title, { color: palette.fg }]}>{a.status === "draft" ? "Turn on: " : ""}{a.name}</Text>
       <Text style={[styles.meta, { color: palette.fgMute }]}>{meta}</Text>
-      {a.nextRuns.length > 0 ? (
-        <Text style={[styles.meta, { color: palette.fgMute }]}>Next: {a.nextRuns.slice(0, 3).map((iso) => nextRunWords(iso, viewerTz)).join(", ")}</Text>
+      {a.nextRuns[0] ? (
+        <Text style={[styles.meta, { color: palette.fgMute }]}>Next: {nextRunWords(a.nextRuns[0], viewerTz)}</Text>
       ) : null}
       {a.status !== "draft" ? (
-        <Text style={[styles.meta, { color: palette.live }]}>{a.status === "active" ? "On" : "Paused"}</Text>
-      ) : (
-        // The server's rules (routers/automations.py): Turn on is an activate; Not now is an edit (admin or owner).
+        // Only On is green; Paused is a state, not a success.
+        <Text style={[styles.meta, { color: a.status === "active" ? palette.live : palette.fgMute }]}>{automationStatusLine(a) ?? "On"}</Text>
+      ) : null}
+      {a.status !== "active" ? (
+        // The server's rules (routers/automations.py): Turn on is an activate, also from paused; Not now is an edit
+        // (admin or owner) and only drops a draft.
         <View style={styles.actions}>
           {decide ? <ActionButton label="Turn on" palette={palette} primary disabled={pending} onPress={() => void run("on")} />
             : <Text style={[styles.meta, { color: palette.fgMute }]}>{waitingWords(a)}</Text>}
-          {edit ? <ActionButton label="Not now" palette={palette} disabled={pending} onPress={() => void run("off")} /> : null}
+          {edit && a.status === "draft" ? <ActionButton label="Not now" palette={palette} disabled={pending} onPress={() => void run("off")} /> : null}
         </View>
-      )}
+      ) : null}
       {note ? <Text accessibilityRole="alert" style={[styles.meta, { color: palette.alert }]}>{note}</Text> : null}
     </View>
   );

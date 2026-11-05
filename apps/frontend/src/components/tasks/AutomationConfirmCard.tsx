@@ -1,11 +1,12 @@
 "use client";
 
-// The card under Lightbulb's "Set up below. Confirm on the card." (lane A's propose route): the schedule
-// in the viewer's zone, the next runs, who runs it and what it may spend. Only Turn on activates it;
-// typed text never does (contracts-v2 §8). Not now deletes the draft.
+// The card under Lightbulb's "Set up below. Turn it on with the button on the card." (lane A's propose route):
+// the schedule in the viewer's zone (never raw cron), the next run, who runs it and what it may spend. Only Turn on
+// activates it, and it shows whenever it is off and the viewer may turn it on; typed text never does (contracts-v2 §8).
+// Not now deletes the draft.
 
 import { useState, type ReactElement } from "react";
-import { nextRunWords, useAutomation, type AutomationView } from "@lightbulb/shared";
+import { automationStatusLine, nextRunWords, useAutomation, type AutomationView } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { budgetLine, scheduleWords, useAutomationActions, useAutomationSource, useCanDecide, useCanEdit, useSpecialistLabel, viewerTimeZone, waitingWords } from "./automations";
 
@@ -40,17 +41,18 @@ export function AutomationConfirmCard({ automationId, viewerTz = viewerTimeZone(
   return <section aria-label={`Turn on ${a.name}`} className="editorial-card mt-1.5 max-w-xl px-3 py-2" data-automation-card={a.id}>
     <p className="font-semibold">{a.status === "draft" ? "Turn on: " : ""}{a.name}</p>
     <p className="text-ui text-muted-foreground">{lines(a, viewerTz, specialistName).join(" · ")}</p>
-    {a.nextRuns.length > 0 && <p className="text-ui text-muted-foreground">Next: {a.nextRuns.slice(0, 3).map((iso) => nextRunWords(iso, viewerTz)).join(", ")}</p>}
-    {a.status !== "draft"
-      ? <p className="mt-1 text-ui text-ok">{a.status === "active" ? "On" : "Paused"}</p>
-      // The server's rules (routers/automations.py): Turn on is an activate (room → admin only); Not now is an edit (admin or owner).
-      : canDecide(a) || canEdit(a)
-        ? <div className="mt-2 flex items-center gap-2">
-          {canDecide(a) && <Button type="button" size="sm" disabled={pending} onClick={() => void run("on")}>Turn on</Button>}
-          {!canDecide(a) && <span className="text-ui text-muted-foreground">{waitingWords(a)}</span>}
-          {canEdit(a) && <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={() => void run("off")}>Not now</Button>}
-        </div>
-        : <p className="mt-1 text-ui text-muted-foreground">{waitingWords(a)}</p>}
+    {a.nextRuns[0] && <p className="text-ui text-muted-foreground">Next: {nextRunWords(a.nextRuns[0], viewerTz)}</p>}
+    {/* Only On is green; Paused is a state, not a success. */}
+    {a.status !== "draft" && <p className={`mt-1 text-ui ${a.status === "active" ? "text-ok" : "text-muted-foreground"}`}>{automationStatusLine(a) ?? "On"}</p>}
+    {/* The server's rules (routers/automations.py): Turn on is an activate, also from paused (room → admin only);
+        Not now is an edit (admin or owner) and only drops a draft. */}
+    {a.status !== "active" && (canDecide(a) || (a.status === "draft" && canEdit(a))
+      ? <div className="mt-2 flex items-center gap-2">
+        {canDecide(a) ? <Button type="button" size="sm" disabled={pending} onClick={() => void run("on")}>Turn on</Button>
+          : <span className="text-ui text-muted-foreground">{waitingWords(a)}</span>}
+        {a.status === "draft" && canEdit(a) && <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={() => void run("off")}>Not now</Button>}
+      </div>
+      : <p className="mt-1 text-ui text-muted-foreground">{waitingWords(a)}</p>)}
     {note && <p role="alert" className="mt-1 text-ui text-err">{note}</p>}
   </section>;
 }

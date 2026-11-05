@@ -30,7 +30,7 @@ const SESSION_WORDS: ChatWords = {
  * the draft. It posts only through the room message door; a chat seat never lets anyone type into
  * the session. Threads and reactions are left out: replies render inline.
  */
-export function SessionChat({ sessionId, sessionOwnerId, openChat, onClose, onRoom, onRead, onSend, words = SESSION_WORDS }: {
+export function SessionChat({ sessionId, sessionOwnerId, openChat, onClose, onRoom, onRead, onSend, readOnly = false, words = SESSION_WORDS }: {
   /** What openChat opens: a session, or an app in Canvas. */
   sessionId: string;
   /** The session's own person: their name takes the owner colour, as in the terminal. */
@@ -45,6 +45,8 @@ export function SessionChat({ sessionId, sessionOwnerId, openChat, onClose, onRo
   words?: ChatWords;
   /** A message went out from this column's composer. */
   onSend?: () => void;
+  /** No composer: the column only shows the room (a thread's progress, steered from its room's composer). */
+  readOnly?: boolean;
 }) {
   const { userId } = useAuth();
   const rooms = useRooms(null, true, true, false);
@@ -133,7 +135,7 @@ export function SessionChat({ sessionId, sessionOwnerId, openChat, onClose, onRo
         {rooms.optimisticMessages.filter((m) => m.roomId === roomId).map((m) =>
           <p key={m.clientMessageId} className="room-message opacity-60">{m.text}</p>)}
       </RoomTimeline>
-      {archived
+      {readOnly ? null : archived
         ? <p role="status" className="room-composer room-archived text-ui text-muted-foreground">{words.ended}</p>
         : <RoomComposer text={text} onTextChange={setText} members={members} clientMessageId={clientMessageId}
           sendState={rooms.sendState(clientMessageId)} onSubmit={send} onRetry={send}

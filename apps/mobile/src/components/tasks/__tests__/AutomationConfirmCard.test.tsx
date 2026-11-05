@@ -45,3 +45,18 @@ it("a member waits on an admin; the owner can still say Not now, which deletes t
   expect(await screen.findByText("Not set up.")).toBeTruthy();
   await view.unmount();
 });
+
+it("a paused automation reads neutral and offers Turn on to whoever may activate it; no raw cron", async () => {
+  mockRole = "org:admin";
+  mockLive.api.get.mockReset().mockResolvedValue({ ...draft, status: "paused", pausedReason: null, schedule: { cron: ["0 9 1 * *"], tz: "UTC" } });
+  const view = await render(<AutomationConfirmCard automationId="auto-1" palette={chatPalette.light} viewerTz="UTC" />);
+  const paused = await screen.findByText("Paused");
+  expect(paused.props.style).toEqual(expect.arrayContaining([expect.objectContaining({ color: chatPalette.light.fgMute })]));
+  expect(screen.getByText(/Custom schedule/)).toBeTruthy();
+  expect(screen.queryByText(/0 9 1/)).toBeNull();
+  expect(screen.queryByLabelText("Not now")).toBeNull();
+  await fireEvent.press(screen.getByLabelText("Turn on"));
+  expect(mockLive.api.post).toHaveBeenCalledWith("/automations/auto-1/activate", {});
+  await act(async () => {});
+  await view.unmount();
+});

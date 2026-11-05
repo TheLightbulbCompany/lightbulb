@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { automationRowLine, canDecide, runNowReason, waitingWords } from "./automations";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { automationRowLine, canDecide, nextRunWords, runNowReason, scheduleWords, waitingWords } from "./automations";
 
 const sam = { userId: "sam", admin: false };
 const admin = { userId: "ana", admin: true };
@@ -27,6 +27,8 @@ describe("who turns an automation on (routers/automations.py)", () => {
 });
 
 describe("automationRowLine (a Scheduled row)", () => {
+  beforeEach(() => { vi.useFakeTimers({ now: Date.UTC(2026, 10, 5, 12), toFake: ["Date"] }); });
+  afterEach(() => { vi.useRealTimers(); });
   const base = { pausedReason: null, match: null, schedule: { cron: ["0 9 * * 1"], tz: "UTC" }, nextRuns: ["2026-11-09T09:00:00Z"] };
   it("always a status, then the next run", () => {
     expect(automationRowLine({ ...base, status: "active" }, "UTC")).toBe("On · Mondays 9:00 · next Mon 9 Nov, 9:00");
@@ -37,5 +39,17 @@ describe("automationRowLine (a Scheduled row)", () => {
     expect(automationRowLine({ ...base, status: "paused" }, "UTC")).toBe("Paused · Mondays 9:00");
     expect(automationRowLine({ ...base, status: "draft", nextRuns: [] }, "UTC")).toBe("Not turned on · Mondays 9:00");
     expect(automationRowLine({ ...base, status: "active", schedule: null, nextRuns: [], match: { sources: ["mail"] } }, "UTC")).toBe("On · runs on a match");
+  });
+});
+
+describe("the confirm card's words", () => {
+  const NOV = Date.UTC(2026, 10, 5, 12);
+  it("a next run names its year only when it isn't this year", () => {
+    expect(nextRunWords("2026-11-09T09:00:00Z", "UTC", NOV)).toBe("Mon 9 Nov, 9:00");
+    expect(nextRunWords("2027-01-04T09:00:00Z", "UTC", NOV)).toBe("Mon, 4 Jan 2027, 9:00");
+    expect(nextRunWords("not a date", "UTC", NOV)).toBe("");
+  });
+  it("a schedule it can't read is Custom schedule, with no zone echo", () => {
+    expect(scheduleWords({ schedule: { cron: ["0 9 1 * *"], tz: "America/New_York" } }, "Europe/London", NOV)).toBe("Custom schedule");
   });
 });

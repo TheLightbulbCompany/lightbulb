@@ -2,7 +2,7 @@
 
 import { ApiError } from "../api/error";
 import type { AutomationView } from "./types";
-import { formatSchedule } from "./view";
+import { CUSTOM_SCHEDULE, formatSchedule } from "./view";
 
 export const money = (n: number): string => `$${n.toFixed(2).replace(/\.00$/, "")}`;
 
@@ -10,7 +10,7 @@ export const money = (n: number): string => `$${n.toFixed(2).replace(/\.00$/, ""
 export function scheduleWords(a: Pick<AutomationView, "schedule">, viewerTz: string, now = Date.now()): string | null {
   if (!a.schedule) return null;
   const words = formatSchedule(a.schedule.cron, a.schedule.tz, viewerTz, now);
-  if (a.schedule.tz === viewerTz) return words;
+  if (a.schedule.tz === viewerTz || words === CUSTOM_SCHEDULE) return words;
   const zone = a.schedule.tz.split("/").pop()?.replace(/_/g, " ") ?? a.schedule.tz;
   return `${words} (${zone} time: ${formatSchedule(a.schedule.cron, a.schedule.tz, a.schedule.tz, now)})`;
 }
@@ -103,11 +103,15 @@ export const viewerTimeZone = (): string => {
   try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch { return "UTC"; }
 };
 
-/** A next-run time in the viewer's zone: "Mon 10 Nov, 9:00". */
-export function nextRunWords(iso: string, viewerTz: string): string {
+/** A next-run time in the viewer's zone: "Mon 10 Nov, 9:00", with the year when it isn't this year ("Mon, 4 Jan 2027, 9:00"). */
+export function nextRunWords(iso: string, viewerTz: string, now = Date.now()): string {
   const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return new Intl.DateTimeFormat("en-GB", { timeZone: viewerTz, weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit", hourCycle: "h23" }).format(d);
+  if (Number.isNaN(d.getTime())) return "";
+  const year = (t: Date) => new Intl.DateTimeFormat("en-US", { timeZone: viewerTz, year: "numeric" }).format(t);
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone: viewerTz, weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit", hourCycle: "h23",
+    ...(year(d) !== year(new Date(now)) ? { year: "numeric" as const } : {}),
+  }).format(d);
 }
 
 /** A Scheduled row's line: always a status ("On", "Paused", "Not turned on"), its schedule ("Mondays 9:00", or

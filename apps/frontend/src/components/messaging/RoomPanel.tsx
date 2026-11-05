@@ -42,6 +42,7 @@ import { RoomLimitBar } from "./RoomLimitBar";
 import type { BillingAccount } from "@/hooks/useBilling";
 import { RoomMessageItem } from "./RoomMessageItem";
 import { TaskPane } from "@/components/tasks/TaskPane";
+import { useTaskReply } from "@/components/tasks/taskReply";
 import { TaskOverview } from "@/components/tasks/TaskOverview";
 import { SpecialistDmBanner } from "./SpecialistDmBanner";
 import { useRoomThreads } from "@/components/tasks/useRoomThreads";
@@ -508,6 +509,8 @@ function RoomContent({
   const taskSelection = superAgent && selection?.kind === "task" ? selection.id : null;
   const showOverview = superAgent && selection?.kind === "overview";
   const showDetail = !!(parentMessage || showTasks || taskSelection || showOverview);
+  // An open thread pane is steered from this composer ("Replying to: …"); null while the composer isn't shown.
+  const taskReply = useTaskReply(superAgent && !visibleRoom?.feed && !visibleRoom?.archivedAt ? roomId : null, composer);
   // The Threads button's dot: anything in this room waiting on the viewer (no request while off).
   const { waitingOnMe } = useRoomThreads(superAgent ? roomId : null);
   const showContext = showDetail || !contextCollapsed;
@@ -912,6 +915,7 @@ function RoomContent({
       </div> : <>{subagents && messagingClient && onSteerSubagent && onStopSubagent && onSubagentsVisible && <RoomSubagentStrip state={subagents} roomId={roomId}
           agentName={(agentId) => participants.find((m) => m.kind === "agent" && m.id === agentId)?.displayName ?? "Agent"}
           client={messagingClient} onSteer={onSteerSubagent} onStop={onStopSubagent} onVisible={onSubagentsVisible} />}
+        {taskReply?.chip}
         <RoomComposer {...composer} focusToken={focusToken} placeholderDrafts={showFirstReplies ? INCOMPLETE_FIRST_REPLIES : undefined}
         onSubmit={markSent(composer.onSubmit)}
         onRetry={composer.onRetry ? markSent(composer.onRetry) : undefined}
@@ -920,7 +924,7 @@ function RoomContent({
           setEditTarget(own.length ? own[own.length - 1].messageId : null);
         } : undefined}
         disabled={!actionable || composer.disabled}
-        dropTargetRef={historyRef} /></>}
+        dropTargetRef={historyRef} {...taskReply?.composer} /></>}
     </div>
     {dockSide(<>{showContext && !showDetail && <aside className="room-context" aria-label="Room details"
       onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setContextCollapsed(true); } }}>

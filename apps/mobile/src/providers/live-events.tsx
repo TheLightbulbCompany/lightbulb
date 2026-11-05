@@ -7,7 +7,7 @@ import {
   refreshOnboardingStatus,
   useLiveEvents as useSharedLiveEvents,
   createTasksClient,
-  useAgentNames,
+  useAgentDirectory,
   type AgentNames,
   useTaskChangedRefresh,
   type TasksClient,
@@ -52,6 +52,8 @@ export interface LiveEventsContextValue extends RuntimeRpcSource {
   tasks: TasksClient;
   /** Agent id → name while the switch is on (task specialists are agent ids); empty until it loads. */
   agentNames: AgentNames;
+  /** The front agent (displays as "Lightbulb" while the switch is on); undefined until the agents list loads. */
+  frontAgentId: string | undefined;
   /** The signed-in API client (lane A's automation routes read through it). */
   api: ApiMethods;
   claimActiveRoomSubscription(room: ActiveRoomSubscription): () => void;
@@ -187,8 +189,8 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
   const superAgent = config?.features?.superAgent === true;
   // Specialist names for task cards ("Lightbulb · Finance", never the agent id): one read of the agents list while
   // the switch is on, shared by every card through this context.
-  const agentNames = useAgentNames(superAgent && httpReady ? tasks.cacheScope : null,
-    async () => ((await api.get("/teams/agents")) as { agents?: { id: string; name?: string | null }[] } | null)?.agents ?? []);
+  const { names: agentNames, frontAgentId } = useAgentDirectory(superAgent && httpReady ? tasks.cacheScope : null,
+    async () => ((await api.get("/teams/agents")) as { agents?: { id: string; name?: string | null; role?: string | null; reportsTo?: string | null; origin?: string | null }[] } | null)?.agents ?? []);
   const userChannel = config ? `/ws/${config.workspaceId}/users/${config.userChannelKey}` : null;
   const roomChannel = config && activeRoom
     ? `/ws/${activeRoom.workspaceId ?? config.workspaceId}/rooms/${activeRoom.roomId}/${activeRoom.deliveryKey}`
@@ -251,6 +253,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
       superAgent,
       tasks,
       agentNames,
+      frontAgentId,
       api,
       claimActiveRoomSubscription,
       onChatMessage,
@@ -270,6 +273,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
       superAgent,
       tasks,
       agentNames,
+      frontAgentId,
       api,
       runtime,
       claimActiveRoomSubscription,
@@ -283,6 +287,11 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
       {children}
     </LiveEventsContext.Provider>
   );
+}
+
+/** The live context, or null outside a provider (a component rendered on its own). */
+export function useOptionalLiveEvents(): LiveEventsContextValue | null {
+  return useContext(LiveEventsContext);
 }
 
 export function useLiveEvents(): LiveEventsContextValue {

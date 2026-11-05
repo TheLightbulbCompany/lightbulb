@@ -17,7 +17,7 @@ import {
   createMessagingClient,
   createRuntimeClient,
   createTasksClient,
-  useAgentNames,
+  useAgentDirectory,
   type AgentNames,
   framesChannelFor,
   useTaskChangedRefresh,
@@ -94,8 +94,8 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
   const superAgent = config?.features?.superAgent === true;
   // Specialist names for task cards ("Lightbulb · Finance", never the agent id): one read of the agents list while
   // the switch is on, shared by every card through this context.
-  const agentNames = useAgentNames(superAgent && httpReady ? tasks.cacheScope : null,
-    async () => ((await api.get("/teams/agents")) as { agents?: { id: string; name?: string | null }[] } | null)?.agents ?? []);
+  const { names: agentNames } = useAgentDirectory(superAgent && httpReady ? tasks.cacheScope : null,
+    async () => ((await api.get("/teams/agents")) as { agents?: { id: string; name?: string | null; role?: string | null; reportsTo?: string | null; origin?: string | null }[] } | null)?.agents ?? []);
   const [activeRoomState, setActiveRoomState] = useState<{
     ownerScope: string | null;
     room: ActiveRoomSubscription | null;

@@ -25,7 +25,7 @@ import { attachmentFile } from "../../lib/attachmentFile";
 import type { LocalMessageRow } from "../../lib/rooms";
 import { Bubble, BubbleMeta, Chip, MetaText, AVATAR_GUTTER } from "../conversation/bubbles";
 import { specialistLabel } from "@lightbulb/shared";
-import { useLiveEvents, useSuperAgent } from "../../providers/live-events";
+import { useOptionalLiveEvents, useSuperAgent } from "../../providers/live-events";
 import { AutomationConfirmCard } from "../tasks/AutomationConfirmCard";
 import { MessageTasks, RoutedToLine } from "../tasks/TaskCard";
 import { MessageMarkdown } from "../chat/MessageMarkdown";
@@ -237,6 +237,13 @@ export function MessageGroup({
 }) {
   const palette = useChatPalette();
   const superAgent = useSuperAgent();
+  const live = useOptionalLiveEvents();
+  // One author name for the avatar and the byline. Super-agent: a specialist's post reads "Lightbulb · <name>", and
+  // the front agent reads "Lightbulb" on its older posts too (stored as its seat name, "CEO").
+  const authorName = !superAgent ? message.author.displayName
+    : message.specialist ? specialistLabel(message.specialist, live?.agentNames)
+    : message.author.kind === "agent" && message.author.id === live?.frontAgentId ? "Lightbulb"
+    : message.author.displayName;
   const [timeShown, setTimeShown] = useState(false);
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
   const mine = message.author.kind === "human" && message.author.id === currentUserId;
@@ -298,7 +305,7 @@ export function MessageGroup({
         {!mine && !collapsed ? (
           <View style={styles.head}>
             <Avatar
-              name={message.author.displayName}
+              name={authorName}
               kind={message.author.kind}
               size={28}
               ring={agentRing}
@@ -306,7 +313,7 @@ export function MessageGroup({
             />
             <View style={styles.headCol}>
               <Text style={[styles.authorName, { color: palette.fgMute }]} numberOfLines={1}>
-                {superAgent && message.specialist ? <SpecialistName specialist={message.specialist} /> : message.author.displayName}
+                {authorName}
               </Text>
               <Bubble
                 testID="message-bubble"
@@ -496,9 +503,3 @@ const styles = StyleSheet.create({
   metaText: { fontFamily: fonts.sans, fontSize: 12, lineHeight: 18 },
   image: { width: "100%", aspectRatio: 1, borderRadius: 12, maxWidth: 240, marginTop: spacing.sm },
 });
-
-/** "Lightbulb · Finance": a specialist id reads by its name from the agents list (an id is never shown). */
-function SpecialistName({ specialist }: { specialist: string }) {
-  const { agentNames } = useLiveEvents();
-  return <>{specialistLabel(specialist, agentNames)}</>;
-}

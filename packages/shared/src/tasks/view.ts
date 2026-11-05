@@ -94,7 +94,7 @@ export function resolveCeoAgentId(
   return agents.find((a) => a.role === "ceo" && !a.reportsTo && (a.origin === "Starter" || a.origin === "Seed"))?.id;
 }
 
-/** Agent id → display name (from the workspace's agents list; `useAgentNames`). */
+/** Agent id → display name (from the workspace's agents list; `useAgentDirectory`). */
 export type AgentNames = ReadonlyMap<string, string>;
 
 const UUID_LIKE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

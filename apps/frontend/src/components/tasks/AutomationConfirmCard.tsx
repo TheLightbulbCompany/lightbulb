@@ -23,7 +23,8 @@ export function AutomationConfirmCard({ automationId, viewerTz = viewerTimeZone(
       {gone ? "Not set up." : "This automation isn't available."}
     </p>;
   }
-  if (!a) return <p className="mt-1.5 text-ui text-muted-foreground">Loading…</p>;
+  // The card's own height while it loads, so the conversation doesn't jump when it fills in.
+  if (!a) return <div aria-busy="true" aria-label="Loading automation" className="mt-1.5 h-24 max-w-xl rounded-lg border border-border bg-muted/40 motion-safe:animate-pulse" />;
   const run = async (what: "on" | "off") => {
     setPending(true);
     setNote(null);

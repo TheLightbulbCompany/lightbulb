@@ -53,7 +53,6 @@ import { fonts, radii, spacing, useChatPalette } from "../../../../config/theme"
 import { claimRoomTarget } from "../../../../lib/activeAgent";
 import { hasNativeVoice } from "../../../../lib/webrtc";
 import { useLiveEvents, useSuperAgent } from "../../../../providers/live-events";
-import { useFrontAgentId } from "../../../../lib/workspaceRoster";
 import { useLive, useRoomLive } from "../../../../providers/live";
 import { JumpToLatest } from "../../../../components/conversation/JumpToLatest";
 import { usePushedScreenKeyboardOffset } from "../../../../lib/keyboardOffset";
@@ -124,7 +123,7 @@ function Conversation() {
   // `subagents`: the focused screen shows the strip, so only it snapshots and polls (a peek stays read-only) (the shared hook
   // also refreshes on return to the foreground while the strip is visible).
   const rooms = useMobileRooms({ subscribeToRoom: focused, autoSelect: false, visible: focused, boundedHistory: true, subagents: focused });
-  const { messaging } = useLiveEvents();
+  const { messaging, frontAgentId: frontId } = useLiveEvents();
   // The room's own timeline drafts separately from each of its threads.
   const composerDraftKey = useDraftKey(roomId, null);
 
@@ -242,9 +241,11 @@ function Conversation() {
     candidate, ownerName: candidate.session.humanUserId === userId ? "You" : memberName(members, candidate.session.humanUserId),
   })), [sessionCandidates, members, userId]);
   const viewer = members?.find((member) => member.kind === "human" && member.id === userId);
+  // Super-agent: the front agent reads "Lightbulb" whatever its stored seat name ("CEO").
+  const superAgentOn = useSuperAgent();
   const others = (members ?? []).filter(
     (member) => !(member.kind === "human" && member.id === userId),
-  );
+  ).map((member) => (superAgentOn && member.kind === "agent" && member.id === frontId ? { ...member, displayName: "Lightbulb" } : member));
   const isChannel = room?.kind === "channel";
   const isDm = room?.kind === "dm";
   const isGroupDm = room?.kind === "group-dm";
@@ -255,8 +256,7 @@ function Conversation() {
   const isHumanDm = isDm && others[0]?.kind === "human";
   // Super-agent: a DM with a specialist (any agent but the front one) says the specialist now works through
   // Lightbulb. Only once the front agent is known, so an unresolved roster never calls every agent a specialist.
-  const superAgent = useSuperAgent();
-  const frontAgentId = useFrontAgentId(superAgent && dmWithAgent);
+  const frontAgentId = superAgentOn ? frontId : undefined;
   const specialistDm = !!frontAgentId && dmWithAgent && others.length === 1 && others[0]?.id !== frontAgentId;
   // One heartbeat/snapshot loop per screen that shows it (ponytail) — Chats
   // already runs its own, and only a human DM's status line reads this one.

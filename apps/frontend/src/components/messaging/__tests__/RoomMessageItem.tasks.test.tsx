@@ -49,6 +49,16 @@ describe("RoomMessageItem with the super-agent switch", () => {
     expect(screen.queryByText("Agent")).toBeNull();
   });
 
+  it("the front agent's own post carries no Agent tag; another agent's still does", () => {
+    const front = { kind: "agent" as const, id: reply.author.id, displayName: "Lightbulb", mentionHandle: "lightbulb", role: "member" as const, listenMode: null, joinedAt: "", joinedSeq: 0 };
+    const plain = { ...reply, specialist: null } as RoomMessage;
+    const { unmount } = render(item(plain, { participant: front }));
+    expect(screen.queryByText("Agent")).toBeNull();
+    unmount();
+    render(item(plain, { participant: { ...front, displayName: "Growth", mentionHandle: "growth" } }));
+    expect(screen.getByText("Agent")).toBeInTheDocument();
+  });
+
   it("started and suggested refs split", async () => {
     client.list.mockResolvedValue({ tasks: FIXTURES.step02.tasks, next: null });
     render(item(reply));

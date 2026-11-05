@@ -203,8 +203,9 @@ describe("LiveEventsProvider", () => {
     render(<LiveEventsProvider><SwitchProbe /></LiveEventsProvider>);
     await waitFor(() => expect(get).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(screen.getByText(`switch:${shown}`)).toBeTruthy());
-    // No request of its own: the only call is the live-config fetch the provider already makes.
-    expect(get.mock.calls.map(([path]) => path)).toEqual(["/messaging/live-config"]);
+    // Off: only the live-config fetch the provider already makes. On: plus one agents-list read (specialist names
+    // and the front agent), never a /tasks request.
+    expect(get.mock.calls.map(([path]) => path)).toEqual(shown === "on" ? ["/messaging/live-config", "/teams/agents"] : ["/messaging/live-config"]);
   });
 
   it.each([
@@ -218,7 +219,7 @@ describe("LiveEventsProvider", () => {
     // task.changed with nothing cached fetches nothing (no /tasks request while nothing shows tasks).
     act(() => shared.onEvent?.({ type: "task.changed", payload: { taskId: "t1", part: "task", version: 2 } } as never));
     await act(async () => {});
-    expect(get.mock.calls.map(([path]) => path)).toEqual(["/messaging/live-config"]);
+    expect(get.mock.calls.map(([path]) => path)).toEqual(on ? ["/messaging/live-config", "/teams/agents"] : ["/messaging/live-config"]);
   });
 
   it("useSuperAgent is off outside a provider (a component rendered on its own)", () => {

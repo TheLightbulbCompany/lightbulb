@@ -31,7 +31,8 @@ export function AutomationConfirmCard({ automationId, palette, viewerTz = viewer
       </View>
     );
   }
-  if (!a) return <Text style={[styles.meta, { color: palette.fgMute }]}>Loading…</Text>;
+  // The card's own height while it loads, so the conversation doesn't jump when it fills in.
+  if (!a) return <View accessibilityLabel="Loading automation" accessibilityState={{ busy: true }} style={[styles.card, styles.skeleton, { borderColor: palette.edge, backgroundColor: palette.chip }]} />;
   const decide = canDecide(a, viewer);
   const edit = canEdit(a, viewer);
   const run = async (what: "on" | "off") => {
@@ -72,6 +73,7 @@ export function AutomationConfirmCard({ automationId, palette, viewerTz = viewer
 const styles = StyleSheet.create({
   card: { borderWidth: 1, borderRadius: radii.md, paddingHorizontal: spacing.sm, paddingVertical: spacing.xs, gap: spacing.xs, maxWidth: 520 },
   dashed: { borderStyle: "dashed" },
+  skeleton: { height: 96 },
   title: { fontFamily: fonts.sansSemiBold, fontSize: 15, lineHeight: 20 },
   meta: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18 },
   actions: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: spacing.xs },

@@ -150,7 +150,7 @@ def _create(headers: dict, body) -> tuple[int, dict]:
 
 def _poll_or_stop(run_id: str, stop: bool, body) -> tuple[int, dict]:
     identity = validate_identity((body or {}).get("identity") if isinstance(body, dict) else None, path_run_id=run_id)
-    task_mode.check_identity(identity)
+    task_mode.admit(identity)  # latches a fresh VM BEFORE the record read (its overlay's .runs/, not the specialist's)
     try:
         status = turn.durable_run_status(run_id, identity, kind="task")
     except Exception:  # noqa: BLE001 -- the durable-record read failed (an S3 blip)
@@ -173,7 +173,7 @@ def _steer(run_id: str, body) -> tuple[int, dict]:
     if not isinstance(body, dict):
         raise _invalid("run_identity")
     identity = validate_identity(body.get("identity"), path_run_id=run_id)
-    task_mode.check_identity(identity)
+    task_mode.admit(identity)
     text, kind = body.get("text"), body.get("kind")
     if kind not in ("user", "input"):
         raise _invalid("steer")

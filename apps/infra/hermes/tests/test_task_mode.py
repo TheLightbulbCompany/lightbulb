@@ -4,6 +4,7 @@ auth.json, never runs the curator, and refuses every other kind of work. Without
 changes (the last test)."""
 import hashlib
 import json
+import os
 
 import pytest
 
@@ -213,3 +214,84 @@ def test_workspace_mode_unchanged(home, s3):
     _profile("memories/MEMORY.md")
     sync.save_profile(AGENT)
     assert s3.writes == [("upload", SPEC + "memories/MEMORY.md")]
+
+
+def test_ensure_profile_never_repulls_specialist_over_overlay(home, s3):
+    """#4769 review: the specialist's .revision moves (another task's merge) while this task runs;
+    the recency walk must not bring the specialist's copy down over the overlay-layered file."""
+    task_mode.latch(IDENTITY)
+    _seed(s3, **{SPEC + "memories/MEMORY.md": b"v1", SPEC + ".revision": b"r1", SPEC + "config.yaml": b"c",
+                 OVERLAY + "memories/MEMORY.md": b"v2"})
+    sync.restore_profile(AGENT)
+    p = sync._profile_dir(AGENT)
+    assert (p / "memories/MEMORY.md").read_bytes() == b"v2"
+    s3.objects[SPEC + "memories/MEMORY.md"] = (b"v1-merged", 2.0)  # newer than the overlay's copy
+    s3.objects[SPEC + ".revision"] = (b"r2", 2.0)
+    sync.ensure_profile(AGENT)
+    assert (p / "memories/MEMORY.md").read_bytes() == b"v2"
+    assert not [k for _, k in s3.writes if k.startswith(SPEC)]
+
+
+def test_restore_subtree_and_deferred_read_the_task_overlay(home, s3, monkeypatch):
+    """#4769 review: a cold attempt 2+ gets the task's own work/<task> (and deferred trees) back
+    from the overlay; the specialist's work/ is the workspace VM's and never comes down."""
+    task_mode.latch(IDENTITY)
+    monkeypatch.setattr(sync, "_start_deferred_restore", lambda agent_id: None)
+    monkeypatch.setattr(sync, "_DEFERRED_RESTORE_DELAY_S", 0)
+    _seed(s3, **{
+        SPEC + f"work/{TASK}/notes.md": b"spec copy", SPEC + f"work/{TASK}/old.md": b"spec only",
+        OVERLAY + f"work/{TASK}/notes.md": b"task copy", OVERLAY + f"work/{TASK}/new.md": b"task only",
+        SPEC + ".curator_backups/x/a": b"spec backup", OVERLAY + "cache/images/b": b"task media",
+    })
+    sync.restore_profile(AGENT)
+    p = sync._profile_dir(AGENT)
+    assert sync.restore_subtree(AGENT, p / "work" / TASK) == 2
+    assert (p / f"work/{TASK}/notes.md").read_bytes() == b"task copy" and (p / f"work/{TASK}/new.md").exists()
+    assert not (p / f"work/{TASK}/old.md").exists()
+    assert sync._restore_deferred(AGENT) == 2
+    assert (p / ".curator_backups/x/a").exists() and (p / "cache/images/b").read_bytes() == b"task media"
+
+
+def test_reseal_after_a_late_save_keeps_the_same_attempt(home, s3):
+    task_mode.latch(IDENTITY)
+    p = _profile("memories/MEMORY.md")
+    sync.save_profile(AGENT)
+    sync.seal_attempt(AGENT, TASK, 2)
+    (p / "memories/MEMORY.md").write_text("a late write")  # after the final save; the SIGTERM save carries it
+    sync.save_profile(AGENT)
+    sync.reseal_attempt(AGENT)
+    seal = json.loads(s3.objects[OVERLAY + "sealed.json"][0])
+    assert seal["attempt"] == 2 and seal["files"]["memories/MEMORY.md"] == _sha(b"a late write")
+    task_mode.latch({**IDENTITY, "attempt": 3})  # attempt 3 is running: its unfinished files are never sealed as 2's
+    (p / "memories/MEMORY.md").write_text("attempt 3, unfinished")
+    sync.save_profile(AGENT)
+    sync.reseal_attempt(AGENT)
+    assert json.loads(s3.objects[OVERLAY + "sealed.json"][0])["files"]["memories/MEMORY.md"] == _sha(b"a late write")
+
+
+def test_sigterm_save_reseals_a_task_vm(home, s3, monkeypatch):
+    task_mode.latch(IDENTITY)
+    _profile("memories/MEMORY.md")
+    monkeypatch.setattr(turn, "RESTORED", {AGENT})
+    sync.seal_attempt(AGENT, TASK, 2)
+    monkeypatch.setattr(server.network, "stop", lambda: None)
+    monkeypatch.setattr(os, "_exit", lambda code: (_ for _ in ()).throw(SystemExit(code)))
+    with pytest.raises(SystemExit):
+        server._save_on_sigterm(15, None)
+    assert s3.writes[-1] == ("put", OVERLAY + "sealed.json")  # the late save, then the seal again
+
+
+def test_task_mode_refuses_network_rpc(home, monkeypatch):
+    task_mode.latch(IDENTITY)
+    monkeypatch.setattr(server.network, "ensure_started", lambda **kw: (_ for _ in ()).throw(AssertionError("member started")))
+    auth = {"authorization": "Bearer gw-test"}
+    for method in ("network.team", "memory.list"):
+        code, reply = server.handle_plugin("/plugins/lightbulb-channel/rpc", "POST", auth, {"method": method, "params": {}})
+        assert (code, reply["ok"], reply["error"]["code"]) == (200, False, "task_mode"), method
+
+
+def test_bad_identity_on_a_run_create_is_400(home, monkeypatch):
+    monkeypatch.setattr(server.network, "ensure_started", lambda **kw: True)
+    auth = {"authorization": "Bearer gw-test"}
+    assert server.handle_plugin("/internal/v1/runs", "POST", auth, {"identity": "nope"}) == (400, {"error": "invalid_run_identity"})
+    assert server.handle_plugin("/internal/v1/runs", "POST", auth, {"identity": {"session": "task"}})[0] == 400

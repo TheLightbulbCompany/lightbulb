@@ -52,22 +52,19 @@ def latch(identity: dict) -> None:
             return
         if (TASK["taskId"], TASK["agentId"]) != (want["taskId"], want["agentId"]):
             raise Refused()
-        TASK["attempt"] = want["attempt"]
+        TASK["attempt"] = max(TASK["attempt"], want["attempt"])  # a stale poll of an older attempt never regresses it
 
 
 def admit(identity: dict) -> None:
-    """A run create: a task-kind run latches (or matches) this VM; on a latched VM anything else is
-    refused -- a workspace-kind run here would restore and write the specialist profile."""
+    """A run create, poll, stop or steer: a task-kind identity latches (or matches) this VM; on a
+    latched VM anything else is refused -- a workspace-kind run here would restore and write the
+    specialist profile. A poll latches too: after a park the backend's next poll lands on a FRESH
+    process, and an unlatched read would look in the specialist's ``.runs/`` and answer 404, which
+    the backend reads as a lost run (the attempt re-dispatched after every park)."""
     kind = (identity.get("session") or {}).get("kind")
     if kind == "task":
         latch(identity)
     elif TASK is not None:
-        raise Refused()
-
-
-def check_identity(identity: dict) -> None:
-    """A poll, stop or steer: only this task's own runs are answered on a latched VM."""
-    if TASK is not None and (identity.get("taskId"), identity.get("agentId")) != (TASK["taskId"], TASK["agentId"]):
         raise Refused()
 
 

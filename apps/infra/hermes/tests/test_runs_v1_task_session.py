@@ -89,6 +89,27 @@ def test_workspace_run_does_not_seal_or_latch(quiet_turn, threads, monkeypatch):
     assert order == [] and task_mode.active() is None
 
 
+def test_task_poll_and_steer_latch_a_fresh_vm(monkeypatch):
+    """#4769 review: a park ended the process; the backend's next poll lands on a FRESH microVM
+    and must latch before the record read (else it looks in the specialist's .runs/, answers 404,
+    and the attempt is re-dispatched after every park). A workspace-kind poll never latches."""
+    seen = []
+
+    def status(run_id, identity, *, kind):
+        seen.append(task_mode.active())
+        return {"run_id": run_id, "status": "completed", "session_id": identity["sessionKey"]}
+
+    monkeypatch.setattr(turn, "durable_run_status", status)
+    monkeypatch.setattr(turn, "steer_run", lambda *a, **k: True)
+    assert _poll(IDENTITY)[0] == 200 and task_mode.active() is None
+    assert _poll(TASK_IDENTITY)[0] == 200
+    monkeypatch.setattr(task_mode, "TASK", None)
+    body = {"identity": TASK_IDENTITY, "text": "go on", "kind": "user"}
+    assert server.handle_plugin(f"{CREATE}/{IDENTITY['runId']}/steer", "POST", AUTH, body)[0] == 200
+    latched = {"taskId": IDENTITY["taskId"], "agentId": IDENTITY["agentId"], "ownerId": "org_test", "attempt": 1}
+    assert seen == [None, latched, latched]
+
+
 def test_second_task_on_task_vm_refused(threads):
     assert _post(TASK_IDENTITY)[0] == 202
     other = {**TASK_IDENTITY, "runId": OTHER_RUN, "taskId": OTHER_TASK,

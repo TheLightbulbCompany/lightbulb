@@ -475,6 +475,12 @@ def write_prefix(agent_id: str) -> str:
     return f"{S3_PREFIX}/{agent_id}/"
 
 
+def _specialist_per_vm_state(prefixes: list[str], prefix: str, rel: str) -> bool:
+    """Under task mode the specialist's ``state.db*`` and ``work/`` never restore: they are the
+    workspace VM's per-VM state; a task VM starts its own (its overlay's copy, if any, restores)."""
+    return len(prefixes) > 1 and prefix == prefixes[0] and rel.startswith(("state.db", WORK_DIR_PREFIX))
+
+
 def ensure_profile_home(agent_id: str) -> Path:
     """Create the profile's ``home/`` -- the shell's ``$HOME`` for every turn under
     ``TERMINAL_HOME_MODE: profile``. Called from ``restore_profile`` (both paths), so it exists
@@ -611,15 +617,18 @@ def restore_subtree(agent_id: str, path: Path) -> int:
     with profile_lock(agent_id):
         if (agent_id, rel_dir) in _RESTORED_SUBTREES:
             return 0
-        prefix = f"{S3_PREFIX}/{agent_id}/"
-        wanted = []
-        for page in _s3().get_paginator("list_objects_v2").paginate(Bucket=S3_BUCKET, Prefix=prefix + rel_dir):
-            for obj in page.get("Contents", []):
-                rel = obj["Key"][len(prefix):]
-                if rel.endswith("/") or is_lock_sidecar(rel) or _is_git_lock(rel) or (dest / rel).exists():
-                    continue
-                wanted.append((rel, obj))
-        _fan_out(lambda item: _download_one(agent_id, dest, item), wanted)
+        prefixes = read_prefixes(agent_id)
+        wanted: dict[str, tuple[str, dict]] = {}  # a later prefix (the task overlay) wins, as in the cold restore
+        for prefix in prefixes:
+            if _specialist_per_vm_state(prefixes, prefix, rel_dir):
+                continue  # a cold attempt 2+ gets the task's own work/ tree back, never the specialist's copy
+            for page in _s3().get_paginator("list_objects_v2").paginate(Bucket=S3_BUCKET, Prefix=prefix + rel_dir):
+                for obj in page.get("Contents", []):
+                    rel = obj["Key"][len(prefix):]
+                    if rel.endswith("/") or is_lock_sidecar(rel) or _is_git_lock(rel) or (dest / rel).exists():
+                        continue
+                    wanted[rel] = (rel, obj)
+        _fan_out(lambda item: _download_one(agent_id, dest, item), list(wanted.values()))
         _RESTORED_SUBTREES.add((agent_id, rel_dir))
     if wanted:
         log.info("restored %s %s: %d objects", agent_id, rel_dir, len(wanted))
@@ -636,19 +645,19 @@ def _restore_deferred(agent_id: str) -> int:
     and Hermes's kept media caches. Returns the object count."""
     time.sleep(_DEFERRED_RESTORE_DELAY_S)
     dest = _profile_dir(agent_id)
-    prefix = f"{S3_PREFIX}/{agent_id}/"
     subtrees: list[str] = []
     try:
-        for top in _DEFERRED_PREFIXES:
-            for page in _s3().get_paginator("list_objects_v2").paginate(Bucket=S3_BUCKET, Prefix=prefix + top):
-                for obj in page.get("Contents", []):
-                    rel = obj["Key"][len(prefix):]
-                    if is_regenerable_cache(rel):
-                        continue
-                    sub = "/".join(rel.split("/")[:2]) if top == "cache/" else top.rstrip("/")
-                    if "/" in rel[len(top):] or top != "cache/":
-                        if sub not in subtrees:
-                            subtrees.append(sub)
+        for prefix in read_prefixes(agent_id):  # the task overlay's deferred trees too
+            for top in _DEFERRED_PREFIXES:
+                for page in _s3().get_paginator("list_objects_v2").paginate(Bucket=S3_BUCKET, Prefix=prefix + top):
+                    for obj in page.get("Contents", []):
+                        rel = obj["Key"][len(prefix):]
+                        if is_regenerable_cache(rel):
+                            continue
+                        sub = "/".join(rel.split("/")[:2]) if top == "cache/" else top.rstrip("/")
+                        if "/" in rel[len(top):] or top != "cache/":
+                            if sub not in subtrees:
+                                subtrees.append(sub)
         total = sum(restore_subtree(agent_id, dest / sub) for sub in subtrees)
     except Exception:  # noqa: BLE001 -- the next turn of that conversation restores its tree itself
         log.warning("deferred restore failed for %s", agent_id, exc_info=True)
@@ -680,7 +689,6 @@ def _restore_profile(agent_id: str) -> float:
     wanted: dict[str, tuple[str, dict]] = {}  # rel -> (rel, obj); a later prefix (the task overlay) wins
     deferred = 0
     for prefix in prefixes:
-        specialist_under_task = len(prefixes) > 1 and prefix == prefixes[0]
         for page in s3.get_paginator("list_objects_v2").paginate(Bucket=S3_BUCKET, Prefix=prefix):
             for obj in page.get("Contents", []):
                 rel = obj["Key"][len(prefix):]
@@ -690,7 +698,7 @@ def _restore_profile(agent_id: str) -> float:
                     continue  # process-local lock or reinstallable home cache
                 if is_regenerable_cache(rel):
                     continue  # Hermes rebuilds it; never worth a GET
-                if specialist_under_task and rel.startswith(("state.db", WORK_DIR_PREFIX)):
+                if _specialist_per_vm_state(prefixes, prefix, rel):
                     continue  # per-VM state: a task VM starts its own (its overlay's copy, if any, still restores)
                 if rel.startswith(_DEFERRED_PREFIXES):
                     deferred += 1
@@ -1008,6 +1016,11 @@ def _pull_changed_objects(agent_id: str) -> bool:
     down a warm profile mid-turn. Each object is wrapped on its own, so one unreadable key
     cannot mask every key after it -- which, with the verdict this returns, would otherwise be
     permanent and silent."""
+    if task_mode.active():
+        # The walk lists the SPECIALIST prefix: a merge (another task's) moving a learning file
+        # there would come down over the overlay-layered copy this task is working on. The task
+        # VM keeps the tree its cold restore layered; the merge reconciles the two at the end.
+        return True
     dest = _profile_dir(agent_id)
     synced = _SYNCED.setdefault(agent_id, {})
     mtimes = _MTIMES.setdefault(agent_id, {})
@@ -1444,11 +1457,29 @@ def seal_attempt(agent_id: str, task_id: str, attempt: int) -> None:
     """After the attempt's FINAL save: ``sealed.json`` = the sha256 of every learning file as the
     task left them. The merge takes an attempt only with its seal (a VM that died mid-attempt
     leaves none: nothing of it is merged); a later attempt's seal supersedes this one."""
+    global _SEALED_ATTEMPT
     if not S3_BUCKET or not task_mode.active():
         return
     files = {rel: _sha(path.read_bytes()) for rel, path in _learning_files(agent_id).items()}
     body = json.dumps({"attempt": attempt, "taskId": task_id, "files": files}, separators=(",", ":"))
     _s3().put_object(Bucket=S3_BUCKET, Key=f"{write_prefix(agent_id)}sealed.json", Body=body.encode("utf-8"))
+    _SEALED_ATTEMPT = attempt
+
+
+#: The attempt this process sealed last; None until `seal_attempt` ran.
+_SEALED_ATTEMPT: int | None = None
+
+
+def reseal_attempt(agent_id: str) -> None:
+    """After the SIGTERM save of a task VM stopped BETWEEN turns (the backend's stop after the seal):
+    that save may have carried a learning file Hermes touched after the final save, and a sealed
+    sha that no longer matches reads to the merge as "a later attempt is writing" (skipped). Seal
+    the SAME attempt again. Never when a later attempt has latched since: its unfinished files
+    must not be sealed under the earlier attempt's number (it seals itself when it ends, or stays
+    unsealed and the next attempt's merge carries the overlay)."""
+    task = task_mode.active()
+    if task is not None and _SEALED_ATTEMPT is not None and _SEALED_ATTEMPT == task["attempt"]:
+        seal_attempt(agent_id, task["taskId"], _SEALED_ATTEMPT)
 
 
 def put_paperclip_run_record(agent_id: str, run_id: str, record: dict, *, prune: bool = True,

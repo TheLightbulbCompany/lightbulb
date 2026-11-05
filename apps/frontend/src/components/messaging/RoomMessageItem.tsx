@@ -152,7 +152,7 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
       {!message.deletedAt && onToggleReaction && appliedReactions.length > 0 && <div className="flex flex-wrap gap-1 mt-1" aria-label="Message reactions">
         {appliedReactions.map(([emoji, users]) => {
           if (superAgent && isAgentId && users.every(isAgentId)) {
-            return <span key={emoji} className="inline-flex h-8 items-center gap-1 px-3 text-ui text-muted-foreground" aria-label={emoji === "👀" ? "Lightbulb saw this" : `Lightbulb reacted ${emoji}`}>{emoji}</span>;
+            return <span key={emoji} role="img" className="inline-flex h-8 items-center gap-1 px-3 text-ui text-muted-foreground" aria-label={emoji === "👀" ? "Lightbulb saw this" : `Lightbulb reacted ${emoji}`}>{emoji}</span>;
           }
           const selected = users.includes(currentUserId);
           return <Button key={emoji} type="button" size="sm" variant={selected ? "secondary" : "ghost"}

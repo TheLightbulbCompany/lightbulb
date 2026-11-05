@@ -50,12 +50,14 @@ export function SuggestedBlock({ refs, taskById, viewerId, onOpen }: {
   const all = async () => {
     setPending("all");
     try {
-      const res = await tasks.startMany(proposed.map((t) => t.taskId)) as { tasks?: TaskSummary[]; failed?: { taskId: string }[] } | null;
-      for (const t of res?.tasks ?? []) await putTaskSummary(cache, mutate, t, tasks);
-      const failed = new Set((res?.failed ?? []).map((f) => f.taskId));
-      setErrors(Object.fromEntries([...failed].map((id) => [id, "Couldn't start this one. Try again."])));
-      if (!res?.tasks) await Promise.all(proposed.map((t) => refetch(t.taskId)));
-      capture("task_suggestion_started", { source: "start_all", count: proposed.length });
+      // The route answers with the ones that started (#4715); the rest are refetched and keep their card.
+      const res = await tasks.startMany(proposed.map((t) => t.taskId));
+      const started = new Set(res.tasks.map((t) => t.taskId));
+      for (const t of res.tasks) await putTaskSummary(cache, mutate, t, tasks);
+      const failed = proposed.filter((t) => !started.has(t.taskId));
+      await Promise.all(failed.map((t) => refetch(t.taskId)));
+      setErrors(Object.fromEntries(failed.map((t) => [t.taskId, "Couldn't start this one. Try again."])));
+      capture("task_suggestion_started", { source: "start_all", count: started.size });
     } catch (error) {
       setErrors(Object.fromEntries(proposed.map((t) => [t.taskId, errorCopy(error)])));
     } finally {

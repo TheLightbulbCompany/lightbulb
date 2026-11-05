@@ -57,7 +57,7 @@ describe("RoomMessageItem with the super-agent switch", () => {
   it("agent 👀 chip is not toggleable", async () => {
     const onToggleReaction = vi.fn();
     render(item({ ...ask, routedTo: null, reactions: { "👀": [LIGHTBULB] } }, { onToggleReaction, isAgentId: (id) => id === LIGHTBULB }));
-    const chip = screen.getByLabelText("Lightbulb saw this");
+    const chip = screen.getByRole("img", { name: "Lightbulb saw this" });
     expect(chip).not.toHaveAttribute("aria-pressed");
     await userEvent.click(chip);
     expect(onToggleReaction).not.toHaveBeenCalled();

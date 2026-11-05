@@ -10,7 +10,7 @@ export function fakeTasksClient(tasks: TaskSummary[], details: Record<string, Ta
     list: vi.fn(async () => ({ tasks, next: null })),
     get: vi.fn(async (id: string) => details[id]),
     act: vi.fn(async (id: string, verb: string) => ({ ...tasks.find((t) => t.taskId === id)!, status: verb === "start" ? "working" : "resolved" })),
-    startMany: vi.fn(async () => ({})),
+    startMany: vi.fn(async (ids: string[]) => ({ tasks: tasks.filter((t) => ids.includes(t.taskId)).map((t) => ({ ...t, status: "working" as const, shownGroup: "working" as const })) })),
     answer: vi.fn(async () => ({ question: {}, next: null })),
     trace: vi.fn(async () => ({})),
     markRead: vi.fn(async () => ({})),

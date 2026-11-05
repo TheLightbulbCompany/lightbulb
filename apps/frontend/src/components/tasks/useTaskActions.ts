@@ -20,6 +20,8 @@ export type ActionResult = { ok: true } | { ok: false; message: string };
 
 export function errorCopy(error: unknown, answererNames: readonly string[] = []): string {
   if (error instanceof ApiError) {
+    // The billing/trial gate (gate_chat) and a rate limit carry their own copy: show it as written.
+    if (error.status === 402 || error.status === 429) return error.message;
     if (error.status === 409) return "Someone else got to this first. It's up to date now.";
     if (error.status === 403) return answererNames.length ? `Only ${answererNames.join(" or ")} can approve this` : "You can't do this here.";
     if (error.status === 404) return "This thread isn't available.";
@@ -53,10 +55,13 @@ export function useTaskActions(source: string) {
     task: TaskSummary, qid: string, optionId: string, opts: { text?: string; expectVersion?: number } = {},
   ): Promise<ActionResult & { answeredBy?: string }> => {
     try {
+      // The question's own version; when the viewer's view can't be read, the answer goes without one
+      // (the server then checks only that the question is still open) rather than with the task's.
       const expectVersion = opts.expectVersion
-        ?? (await tasks.questions(task.taskId)).items.find((q) => q.id === qid)?.version ?? task.version;
+        ?? (await tasks.questions(task.taskId).catch(() => null))?.items.find((q) => q.id === qid)?.version;
       const res = await tasks.answer(task.taskId, qid, {
-        optionId, ...(opts.text ? { text: opts.text } : {}), clientAnswerId: crypto.randomUUID(), expectVersion,
+        optionId, ...(opts.text ? { text: opts.text } : {}), clientAnswerId: crypto.randomUUID(),
+        ...(expectVersion !== undefined ? { expectVersion } : {}),
       });
       if (res.next) await putTaskSummary(cache, mutate, res.next, tasks);
       else await refetch(task.taskId);

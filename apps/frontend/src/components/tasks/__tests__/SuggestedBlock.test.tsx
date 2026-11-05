@@ -23,7 +23,8 @@ describe("SuggestedBlock", () => {
     expect(screen.queryByRole("button", { name: "Start all" })).toBeNull();
     unmount();
 
-    client.startMany.mockResolvedValue({ tasks: [{ ...a, status: "working", shownGroup: "working" }], failed: [{ taskId: "b" }] } as never);
+    // The route lists only what started: b is absent, so it is refetched and keeps its card with an error.
+    client.startMany.mockResolvedValue({ tasks: [{ ...a, status: "working", shownGroup: "working" }] } as never);
     render(<Fresh><SuggestedBlock refs={[{ taskId: "a", role: "suggested" }, { taskId: "b", role: "suggested" }]}
       taskById={new Map([["a", a], ["b", b]])} viewerId={SAM} /></Fresh>);
     await userEvent.click(screen.getByRole("button", { name: "Start all" }));

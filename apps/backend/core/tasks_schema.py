@@ -206,6 +206,11 @@ def effect_sk(idem_key: str) -> str:
     return f"EFFECT#{idem_key}"
 
 
+def learn_sk(specialist_id: str, task_id: str, attempt: int) -> str:
+    """One learning merge of one attempt into one specialist (spec 07 §3.5; lane V)."""
+    return f"LEARN#{specialist_id}#{task_id}#{attempt:04d}"
+
+
 def trigger_sk(trigger_id: str) -> str:
     return f"TRIG#{trigger_id}"
 
@@ -271,6 +276,11 @@ def task_workflow_id(ws: str, task_id: str) -> str:
     return f"task:{ws}:{task_id}"
 
 
+def learning_workflow_id(ws: str, specialist_id: str) -> str:
+    """The one merge writer per specialist (spec 07 §3.5)."""
+    return f"learn:{ws}:{specialist_id}"
+
+
 def router_workflow_id(ws: str) -> str:
     return f"router:{ws}"
 
@@ -315,6 +325,7 @@ KEY_FORMATS: dict[str, str] = {
     "question": "TASK#{taskId}#Q#{qid}",
     "needs": "NEEDS#{userId}#{taskId}#{qid}",
     "effect": "EFFECT#{idemKey}",
+    "learn": "LEARN#{specialistId}#{taskId}#{attempt:04}",
     "trigger": "TRIG#{triggerId}",
     "schedule": "SCHED#{scheduleId}",
     "observed": "OBS#{threadKey}",
@@ -573,6 +584,23 @@ class Output(_Model):
     ref: dict[str, str] = {}  # {s3Key} / {appId} / {repo, pr} …
 
 
+class LearnIntent(_Row):
+    """A learning merge's intent row (spec 07 §3.5 crash safety 2-3): `planned` ({rel: sha256} of
+    every put) lands before the S3 writes, `applied` + the merge report after; a replay of an
+    applied row is a no-op."""
+
+    type: Literal["learn"] = "learn"
+    specialist_id: str
+    task_id: TaskId
+    attempt: int = Field(ge=1)
+    state: Literal["planned", "applied"]
+    planned: dict[str, str] = {}
+    report: dict[str, Any] | None = None
+
+    def sk(self) -> str:
+        return learn_sk(self.specialist_id, self.task_id, self.attempt)
+
+
 class Effect(_Row):
     """External, irreversible effects only (send, pay, merge, publish, provision, A2A)."""
 
@@ -799,6 +827,7 @@ ROW_MODELS: dict[str, type[_Row]] = {
         Question,
         Needs,
         Effect,
+        LearnIntent,
         Trigger,
         Schedule,
         Hook,

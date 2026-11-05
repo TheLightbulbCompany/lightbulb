@@ -153,3 +153,18 @@ def test_an_empty_grant_clears_a_turns_token(home):
         assert turn.steer_run("run-u", "wake", grant="")
         assert json.loads(turn._turn_context_path(root, ctx["sessionKey"]).read_text())["localSessionToken"] == ""
     assert turn.steer_run("run-u", "Ada again")  # a steer with no header changes nothing
+
+
+def test_paperclip_run_still_refuses_steer():
+    identity = {"runId": "run-pc", "companyId": "c", "agentId": "ceo", "sessionId": "paperclip:company:c:agent:ceo:run:run-pc",
+                "paperclipApiUrl": "u"}
+    turn.register_paperclip_run(identity, {"input": "x", "instructions": "y", "session_id": identity["sessionId"]})
+    turn.attach_agent("run-pc", _agent())
+    assert turn.steer_run("run-pc", "x") is False
+    assert turn.steer_run("run-pc", "x", kind="input") is False
+
+
+def test_a_room_run_refuses_an_input_steer():
+    turn.RUNS.clear(); turn.register_run(RUN)
+    agent = _agent(); turn.attach_agent(RUN, agent)
+    assert turn.steer_run(RUN, "x", kind="input") is False and agent.seen == []

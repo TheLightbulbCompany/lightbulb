@@ -76,7 +76,7 @@ def test_create_poll_complete(quiet_turn, threads, monkeypatch):
     monkeypatch.setattr(turn, "_construct_agent", lambda *a, **k: agent)
 
     code, accepted = _post()
-    assert code == 202 and accepted == {"run_id": RUN, "status": "queued", "session_id": KEY}
+    assert code == 202 and accepted == {"run_id": RUN, "status": "queued", "session_id": KEY, "recentTools": []}
     threads[0].run_now()
 
     code, status = _poll()
@@ -243,7 +243,7 @@ def test_task_family_ctx_has_no_paperclip_env(quiet_turn, threads, monkeypatch):
     ctx = seen["ctx"]
     assert ctx["family"] == "task" and ctx["roomId"] is None and ctx["sessionKey"] == KEY
     assert ctx["runId"] == RUN and ctx["localSessionToken"] == "grant-jwt"
-    assert seen["limits"] == {"max_iterations": 40}
+    assert seen["limits"]["max_iterations"] == 40 and callable(seen["limits"]["tool_complete_callback"])
     assert _poll()[1]["status"] == "completed"
 
 
@@ -316,6 +316,215 @@ def test_run_budget_spent_before_the_conversation_never_starts_it(quiet_turn, th
 
 def test_paperclip_routes_are_not_v1():
     assert runs.handle("/internal/paperclip/v1/runs", "POST", AUTH, BODY) is None
+
+
+# ---- steer (user|input) and recentTools (Task 2; spec 11 C5 and tier-2 steer) ----------------------
+import sys  # noqa: E402
+import types  # noqa: E402
+
+
+class Steerable(Agent):
+    def __init__(self):
+        super().__init__()
+        self.steers = []
+
+    def steer(self, text):
+        self.steers.append(text)
+        return True
+
+
+@pytest.fixture
+def lb_inject(monkeypatch):
+    """F3 with the fork's real gate (tests/fake_lb_inject.py)."""
+    from tests import fake_lb_inject
+
+    monkeypatch.setitem(sys.modules, "agent", sys.modules.get("agent") or types.ModuleType("agent"))
+    monkeypatch.setitem(sys.modules, "agent.lb_inject", fake_lb_inject)
+    return fake_lb_inject
+
+
+class F3Agent(Agent):
+    """run_conversation as Hermes + F3 drive it: deliver() before each model call, a tool round
+    (tool_complete_callback) when `tools` is set, close() and pending_inputs at the end."""
+
+    def __init__(self, f3, tools=0, between=None):
+        super().__init__()
+        self.f3, self.tools, self.between, self.messages_seen, self.steers = f3, tools, between, [], []
+        self.tool_complete = None
+
+    def steer(self, text):
+        self.steers.append(text)
+        return True
+
+    def run_conversation(self, **kw):
+        self.calls.append(kw)
+        messages = [{"role": "user", "content": kw["user_message"]}]
+        self.f3.deliver(self, messages)  # iteration prep: the turn is open
+        if self.between:
+            self.between()  # something arrives mid-turn
+            self.between = None
+        for i in range(self.tools if len(self.calls) == 1 else 0):
+            messages.append({"role": "tool", "content": "ok"})
+            self.tool_complete(f"c{i}", "terminal", {"i": i}, "ok")
+            self.f3.deliver(self, messages)  # the next model call's iteration prep
+        self.messages_seen.append(messages)
+        self.f3.close(self)
+        return {"api_calls": 1, "final_response": f"pass {len(self.calls)}", "pending_inputs": self.f3.take_pending(self)}
+
+
+def _f3_run(monkeypatch, agent):
+    def construct(*_a, **limits):
+        agent.tool_complete = limits["tool_complete_callback"]
+        return agent
+
+    monkeypatch.setattr(turn, "_construct_agent", construct)
+
+
+def _steer(text, kind, identity=IDENTITY):
+    path = f"{CREATE}/{identity['runId']}/steer"
+    return server.handle_plugin(path, "POST", AUTH, {"identity": identity, "text": text, "kind": kind})
+
+
+def _running(threads, agent):
+    assert _post()[0] == 202
+    turn.attach_agent(RUN, agent)
+
+
+def test_user_steer_reaches_agent_steer(threads):
+    agent = Steerable()
+    _running(threads, agent)
+    assert _steer("check Q3 too", "user") == (200, {"accepted": True})
+    assert agent.steers == ["check Q3 too"]
+
+
+def test_input_steer_uses_inject_not_steer(threads, lb_inject):
+    agent = Steerable()
+    agent._lb_inputs_open = True  # mid-turn: F3's deliver() has opened it
+    _running(threads, agent)
+    assert _steer("you have been idle 20 minutes", "input") == (200, {"accepted": True})
+    assert agent._lb_inputs == [("input", "you have been idle 20 minutes")]
+    assert agent.steers == []
+
+
+def test_input_steer_without_f3_is_refused_not_steered(threads, monkeypatch):
+    monkeypatch.setitem(sys.modules, "agent.lb_inject", None)  # import fails: an image without the series
+    agent = Steerable()
+    _running(threads, agent)
+    assert _steer("nudge", "input") == (200, {"accepted": False})
+    assert agent.steers == []
+
+
+def test_input_steer_on_queued_run_is_delivered_after_the_first_tool_round(quiet_turn, threads, lb_inject, monkeypatch):
+    agent = F3Agent(lb_inject, tools=1)
+    _f3_run(monkeypatch, agent)
+    assert _post()[0] == 202
+    assert _steer("nudge", "input") == (200, {"accepted": True})  # held: no open turn yet
+    threads[0].run_now()
+    rows = [m for m in agent.messages_seen[0] if m.get("display_kind") == lb_inject.DISPLAY_KIND]
+    assert len(rows) == 1 and "nudge" in rows[0]["content"]
+    assert len(agent.calls) == 1 and agent.steers == []
+
+
+def test_input_held_with_no_tool_round_is_answered_in_the_same_run(quiet_turn, threads, lb_inject, monkeypatch):
+    agent = F3Agent(lb_inject, tools=0)
+    _f3_run(monkeypatch, agent)
+    assert _post()[0] == 202
+    assert _steer("nudge", "input") == (200, {"accepted": True})
+    threads[0].run_now()
+    assert len(agent.calls) == 2  # never dropped: a second pass carries it, framed as data
+    assert agent.calls[1]["user_message"] == lb_inject.input_row("input", "nudge")["content"]
+    assert _poll()[1]["output"] == "pass 1\n\npass 2"
+
+
+def test_late_pending_inputs_are_answered_in_the_same_run(quiet_turn, threads, lb_inject, monkeypatch):
+    agent = F3Agent(lb_inject, tools=0, between=lambda: _steer("late nudge", "input"))
+    _f3_run(monkeypatch, agent)
+    assert _post()[0] == 202
+    threads[0].run_now()
+    # Injected into the open turn, never delivered (no tool round after it), handed back as pending_inputs.
+    assert agent.calls[1]["user_message"] == lb_inject.input_row("input", "late nudge")["content"]
+
+
+def test_input_steer_after_the_run_is_refused(quiet_turn, threads, lb_inject, monkeypatch):
+    agent = F3Agent(lb_inject)
+    _f3_run(monkeypatch, agent)
+    assert _post()[0] == 202
+    threads[0].run_now()
+    assert _steer("too late", "input") == (200, {"accepted": False})
+
+
+def test_user_steer_on_queued_run_rides_the_input(quiet_turn, threads, monkeypatch):
+    agent = Steerable()
+    monkeypatch.setattr(turn, "_construct_agent", lambda *a, **k: agent)
+    assert _post()[0] == 202
+    assert _steer("also March", "user") == (200, {"accepted": True})
+    threads[0].run_now()
+    assert agent.calls[0]["user_message"] == f"{REQUEST['input']}\n\nalso March"
+
+
+def test_a_steer_after_the_last_tool_batch_is_answered_in_the_same_run(quiet_turn, threads, monkeypatch):
+    class Late(Agent):
+        def run_conversation(self, **kw):
+            self.calls.append(kw)
+            if len(self.calls) == 1:
+                return {"api_calls": 1, "final_response": "first", "pending_steer": "also March", "messages": [1]}
+            return {"api_calls": 1, "final_response": "march too"}
+
+    agent = Late()
+    monkeypatch.setattr(turn, "_construct_agent", lambda *a, **k: agent)
+    assert _post()[0] == 202
+    threads[0].run_now()
+    assert agent.calls[1]["user_message"] == "also March" and agent.calls[1]["conversation_history"] == [1]
+    assert _poll()[1]["output"] == "first\n\nmarch too"
+
+
+def test_steer_on_finished_run_is_false(threads):
+    assert _post()[0] == 202
+    turn.finish_paperclip_run(RUN, "completed", output="x", error=None, usage=turn.ZERO_USAGE)
+    assert _steer("late", "user") == (200, {"accepted": False})
+
+
+def test_steer_validation(threads):
+    assert _post()[0] == 202
+    assert _steer("x", "admin")[0] == 400
+    assert _steer("", "user")[0] == 400
+    assert _steer("x" * (turn.MAX_FOLLOWUP_TEXT_BYTES + 1), "user")[0] == 400
+    assert _steer("x", "user", {**IDENTITY, "attempt": 2})[0] == 404
+
+
+def _complete_tools(callback, n=25):
+    for i in range(n):
+        callback(f"call-{i}", f"tool_{i}", {"b": i, "a": "secret-value"}, "ok")
+
+
+def test_status_has_recent_tools(threads):
+    assert _post()[0] == 202
+    record = turn.task_tool_recorder(RUN)
+    _complete_tools(record)
+    record("call-x", "terminal", {"a": 1, "b": 2}, {"error": "denied"})
+    record("call-y", "terminal", {"b": 2, "a": 1}, '{"error": "boom", "error_type": "TimeoutError"}')
+    tools = _poll()[1]["recentTools"]
+    assert len(tools) == 20 and tools[-1]["name"] == "terminal" and tools[0]["name"] == "tool_7"
+    assert tools[-2]["argsHash"] == tools[-1]["argsHash"] and len(tools[-1]["argsHash"]) == 16
+    assert tools[-2] == {"name": "terminal", "argsHash": tools[-2]["argsHash"], "ok": False, "errorClass": "ToolError"}
+    assert tools[-1]["errorClass"] == "TimeoutError"
+    assert tools[0]["ok"] is True and tools[0]["errorClass"] is None
+
+
+def test_recent_tools_survive_poll_from_s3(home, s3):
+    turn.register_durable_run(IDENTITY, REQUEST, kind="task")
+    _complete_tools(turn.task_tool_recorder(RUN), 3)
+    turn._put_running_record(RUN)  # a heartbeat
+    live = _poll()[1]["recentTools"]
+    turn.RUNS.clear()
+    assert _poll()[1]["recentTools"] == live and len(live) == 3
+
+
+def test_recent_tools_hold_no_args_or_results(threads):
+    assert _post()[0] == 202
+    turn.task_tool_recorder(RUN)("c", "browser", {"url": "https://secret.example/token=abc"}, "RESULT-TEXT")
+    serialized = json.dumps(_poll()[1])
+    assert "secret" not in serialized and "RESULT-TEXT" not in serialized
 
 
 from tests.test_native_sessions import hermes  # noqa: E402,F401  (fixture)

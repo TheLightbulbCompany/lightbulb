@@ -1,8 +1,9 @@
 """Move an X / QuickBooks / Instagram connection to backend custody and back (spec 13 §6.2).
 
-Fences, as for the ChatGPT cutover: ``owner_lifecycle_guard`` (backend writers), a stopped
-workspace session plus a held cold-wake lease (the VM writer: no session can start and rotate the
-grant while we move it). The VM's newest copy of the CLI file is the newest grant (the bridge
+Fences, the ChatGPT cutover's (``token_custody.session_idle`` outside ``owner_lifecycle_guard``,
+then ``fenced_session`` inside it): backend writers wait on the guard; the VM writer is fenced by
+an idle session, stopped, with its cold-wake lease held, so no session can start and rotate the
+grant while we move it. The VM's newest copy of the CLI file is the newest grant (the bridge
 writes one rotation to every profile), so it is what moves into Secrets Manager. Then the row
 flips and the projection rewrites every profile in the access-token-free form.
 
@@ -14,8 +15,6 @@ from __future__ import annotations
 
 import json
 import logging
-import time
-import uuid
 from datetime import datetime, timezone
 from typing import Any
 
@@ -23,8 +22,8 @@ import yaml
 from botocore.exceptions import ClientError
 
 from core.config import settings
-from core.repositories import container_repo, integrations_repo
-from core.services import hermes_provisioning, owner_lifecycle
+from core.repositories import integrations_repo
+from core.services import owner_lifecycle, token_custody
 from core.services.credentials import hermes_cli, integration_secret_store, registry
 from core.dynamodb import run_in_thread
 
@@ -36,7 +35,6 @@ _FILE = {
     "quickbooks": f"{hermes_cli.HOME_DIR}/quickbooks/.env",
     "instagram": "skills/instagram/credentials.json",
 }
-_WAKE_LEASE_S = 120
 
 
 def _s3():
@@ -90,38 +88,6 @@ def _credential(provider: str, raw: bytes) -> dict[str, Any] | None:
     return data if data.get("access_token") else None
 
 
-class _Fenced:
-    """Wait for the workspace session to go idle, stop it, and hold its cold-wake lease for the
-    duration. ``_wait_for_idle_session`` (the roll's guard) has an idle bridge take its
-    refusal hold atomically with answering idle, so no turn starts between that answer and the
-    stop; a session still busy at its deadline is never stopped (``busy_session``): a mid-turn
-    stop loses the turn's profile writes."""
-
-    def __init__(self, owner_id: str):
-        self.owner_id, self.token = owner_id, uuid.uuid4().hex
-
-    async def __aenter__(self) -> bool:
-        container = await container_repo.get_by_owner_id(self.owner_id) or {}
-        arn = container.get("agentcore_runtime_arn")
-        if arn and not await hermes_provisioning._wait_for_idle_session(self.owner_id):
-            return False
-        if arn and not await hermes_provisioning.stop_runtime_session(self.owner_id, arn):
-            return False
-        self.held = await run_in_thread(
-            container_repo.try_take_wake_lease_sync,
-            self.owner_id,
-            arn=arn or "",
-            token=self.token,
-            now=int(time.time()),
-            lease_s=_WAKE_LEASE_S,
-        )
-        return bool(self.held)
-
-    async def __aexit__(self, *exc) -> None:
-        if getattr(self, "held", False):
-            await run_in_thread(container_repo.finish_wake_sync, self.owner_id, token=self.token)
-
-
 async def cli_cutover(owner_id: str, provider: str) -> str:
     p = registry.get_provider(provider)
     if not p.custody_migratable:
@@ -131,8 +97,10 @@ async def cli_cutover(owner_id: str, provider: str) -> str:
         return "no_grant"
     if row.get("custody") == "backend":
         return "already"
+    if not await token_custody.session_idle(owner_id):
+        return "busy_session"
     async with owner_lifecycle.owner_lifecycle_guard(owner_id):
-        async with _Fenced(owner_id) as fenced:
+        async with token_custody.fenced_session(owner_id) as fenced:
             if not fenced:
                 return "busy_session"
             raw = await run_in_thread(_newest_copy, owner_id, _FILE[provider])
@@ -159,8 +127,10 @@ async def cli_rollback(owner_id: str, provider: str) -> str:
     row = await integrations_repo.get(owner_id, provider, consistent=True)
     if not row or row.get("custody") != "backend":
         return "already"
+    if not await token_custody.session_idle(owner_id):
+        return "busy_session"
     async with owner_lifecycle.owner_lifecycle_guard(owner_id):
-        async with _Fenced(owner_id) as fenced:
+        async with token_custody.fenced_session(owner_id) as fenced:
             if not fenced:
                 return "busy_session"
             credential = await integration_secret_store.get(owner_id, provider)

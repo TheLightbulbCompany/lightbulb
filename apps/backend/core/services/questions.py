@@ -23,6 +23,7 @@ EFFECT_KINDS = ("mail.send", "text.send", "app.publish", "pr.merge", "purchase",
 
 #: A draft output a person reviews; the first option lands it (Landing), the second sends it back to the Worker.
 REVIEW_KINDS = {"mail.send": "send", "text.send": "send", "app.publish": "publish", "pr.merge": "merge"}
+_OUTPUT_KINDS = {"mail.send": "mail", "text.send": "mail", "app.publish": "app", "pr.merge": "pr"}
 
 _SUBKINDS = {
     "mail.send": "send",
@@ -249,6 +250,16 @@ def title_for(effect: dict) -> str:
     else:
         line = f"run {effect.get('tool') or 'a tool'}"
     return line if len(line) <= 200 else line[:199] + "…"
+
+
+def output_for(effect: dict) -> dict | None:
+    """The Output (draft) a proposed review-kind Effect carries, so the task shows Ready for review with its next step
+    (Send / Publish / Merge). Approval kinds (purchase, provision, a2a) have no draft to review: None."""
+    kind = _OUTPUT_KINDS.get(effect.get("kind"))
+    if kind is None:
+        return None
+    line = title_for(effect)
+    return {"kind": kind, "title": line[:1].upper() + line[1:]}
 
 
 def card_copy(q: dict, specialist_label: str) -> tuple[str, str]:

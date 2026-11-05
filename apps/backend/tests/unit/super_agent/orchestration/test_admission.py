@@ -45,6 +45,9 @@ def world(table, monkeypatch):  # noqa: F811
         "listen": "active",
         "on": True,
         "temporal_up": True,
+        "front_seated": True,
+        "gate": None,
+        "posts": [],
     }
 
     async def flags(ws):
@@ -57,7 +60,7 @@ def world(table, monkeypatch):  # noqa: F811
         return w["msgs"].get(seq)
 
     async def get_member(room_id, kind, mid):
-        return {"id": CEO, "kind": "agent", "listenMode": w["listen"]} if mid == CEO else None
+        return {"id": CEO, "kind": "agent", "listenMode": w["listen"]} if mid == CEO and w["front_seated"] else None
 
     async def foreign(room_id, owner):
         return False
@@ -80,6 +83,13 @@ def world(table, monkeypatch):  # noqa: F811
     async def nothing(*a, **k):
         return []
 
+    async def gate(ws, task_id, trig):
+        return w["gate"]
+
+    async def post(ws, room_id, **kw):
+        w["posts"].append((room_id, kw["text"], kw.get("thread_root")))
+        return "m1"
+
     async def agents(ws):
         return [
             {"agentId": FIN, "name": "Finance", "listenMode": "active"},
@@ -94,6 +104,8 @@ def world(table, monkeypatch):  # noqa: F811
     monkeypatch.setattr(messaging_repo, "list_members", nothing)
     monkeypatch.setattr(messaging_repo, "list_messages_before", nothing)
     monkeypatch.setattr("core.services.task_conversation.front_agent_id", front)
+    monkeypatch.setattr("core.services.task_conversation.gate_input", gate)
+    monkeypatch.setattr("core.services.task_conversation.post_as_lightbulb", post)
     monkeypatch.setattr("core.repositories.agent_registry_repo.list_agents", agents)
     monkeypatch.setattr(temporal, "signal_router", signal_router)
     monkeypatch.setattr(temporal, "signal_task_input", signal_input)
@@ -120,6 +132,12 @@ async def _admit(w, msg):
 )
 async def test_router_room_exclusions(world, meta, expected):
     assert await admission.router_room({"roomId": ROOM, "ownerId": WS, **meta}, WS) is expected
+
+
+async def test_router_room_needs_lightbulb_seated(world):
+    """Audit #3: a specialist's DM (no Lightbulb seat) keeps today's path; Lightbulb could not answer there."""
+    world["front_seated"] = False
+    assert await admission.router_room({"roomId": ROOM, "ownerId": WS, "kind": "dm"}, WS) is False
 
 
 async def test_router_room_off_when_switch_off(world):
@@ -158,7 +176,7 @@ async def test_specialist_mention_pins(world):
     assert (await repo.get_trigger(WS, tid))["ref"]["pinnedSpecialist"] == FIN
 
 
-async def test_admit_thread_reply_passes_through(world):
+async def _subscribed_task(viewers=("sam",)) -> tuple[str, str]:
     task_id = ts.new_task_id()
     await repo.create_task(
         WS,
@@ -167,16 +185,37 @@ async def test_admit_thread_reply_passes_through(world):
             "identifier": "LB-1",
             "title": "t",
             "status": "queued",
-            "audience": {"kind": "workspace"},
+            "audience": {"kind": "person", "userIds": list(viewers)},
             "lane": "shared",
             "triggerId": "chat:x",
         },
     )
     root = str(uuid.uuid4())
     await repo.subscribe(WS, task_id, f"room:{ROOM}:{root}", created_by="router")
+    return task_id, root
+
+
+async def test_admit_thread_reply_passes_through(world):
+    task_id, root = await _subscribed_task()
     tid = await _admit(world, _msg(root=root))
     assert world["inputs"] == [(task_id, admission.TaskInputRef(tid, "message"))]
     assert world["router"] == [] and world["jev"] == []
+
+
+async def test_thread_reply_by_a_non_viewer_is_routed_not_passed(world):
+    """Audit #16: a reply in a person-only task's thread by someone who cannot view it never reaches the task."""
+    _, root = await _subscribed_task(viewers=("priya",))
+    await _admit(world, _msg(root=root))
+    assert world["inputs"] == [] and len(world["jev"]) == 1
+
+
+async def test_pass_through_gated(world):
+    """§14.10: a reply that would steer or re-run a task passes the chat gate first; blocked ⇒ the copy, no input."""
+    world["gate"] = "Your plan is inactive."
+    _, root = await _subscribed_task()
+    await _admit(world, _msg(root=root))
+    assert world["inputs"] == [] and world["router"] == []
+    assert world["posts"] == [(ROOM, "Your plan is inactive.", root)]
 
 
 async def test_admit_unaddressed_asks_jev_once(world):

@@ -348,6 +348,16 @@ async def unsubscribe(ws: str, task_id: str, thread_key: str) -> None:
         raise TasksRepoError(f"task {task_id} is not subscribed to {thread_key}") from exc
 
 
+async def unsubscribe_all(ws: str, task_id: str) -> None:
+    """Every active subscription of the task, deactivated (a thread another task took over is skipped)."""
+    for sub in (await get_task_tree(ws, task_id))["subscriptions"]:
+        if sub.get("active", True):
+            try:
+                await unsubscribe(ws, task_id, sub["threadKey"])
+            except TasksRepoError:
+                pass
+
+
 async def task_for_thread(ws: str, thread_key: str) -> str | None:
     row = await _get(ws, ts.thread_sk(thread_key))
     return row["taskId"] if row and row["active"] else None

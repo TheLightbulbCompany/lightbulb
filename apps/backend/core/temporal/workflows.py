@@ -287,8 +287,10 @@ class TaskWorkflow(TaskQuestionsMixin, AutomationRunMixin, WatchMixin):
 
     @retry.validator
     def _validate_retry(self, req: ActionRequest) -> None:
-        if self._running() or self._status not in (None, "failed", "idle"):
-            raise ValueError("retry needs a failed or idle task")
+        # waiting: a budget-blocked task (check_budget) is retried once its budget is raised; an open Question
+        # still holds the attempt (`_before_attempt`).
+        if self._running() or self._status not in (None, "failed", "idle", "waiting"):
+            raise ValueError("retry needs a failed, idle or waiting task")
 
     @workflow.update
     async def reopen(self, req: ActionRequest) -> None:

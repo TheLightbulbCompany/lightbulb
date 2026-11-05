@@ -105,8 +105,12 @@ async def _call(owner_id: str, path: str, *, method: str, body: dict, timeout_s:
         )
     except (httpx.HTTPError, ValueError) as exc:
         raise RuntimeBusy(type(exc).__name__) from exc
-    data = response.json() or {}
+    data = response.json()
+    if not isinstance(data, dict):
+        data = {}
     if response.status_code == 404:
+        if data.get("error") == "not_found":  # an older image without /internal/v1/runs: no route, not a lost run
+            raise RunRefused("v1_runs_unsupported")
         raise RunLost(data.get("error") or "run_not_found")
     if response.status_code in (400, 403, 409):
         raise RunRefused(data.get("error") or str(response.status_code))

@@ -114,6 +114,21 @@ async def test_404_is_run_lost(bridge):
         await rr.get_run(OWNER, IDENTITY)
 
 
+async def test_older_image_404_not_found_is_refused_not_lost(bridge):
+    bridge.replies.append((404, {"error": "not_found"}))
+    with pytest.raises(rr.RunRefused):
+        await rr.get_run(OWNER, IDENTITY)
+
+
+async def test_non_object_json_is_tolerated(bridge, monkeypatch):
+    async def request(*_a, **_k):
+        return RuntimeResponse(503, json.dumps(["recycling"]))
+
+    monkeypatch.setattr(rr.runtime_transport, "request", request)
+    with pytest.raises(rr.RuntimeBusy):
+        await rr.get_run(OWNER, IDENTITY)
+
+
 async def test_409_is_refused(bridge):
     bridge.replies[:] = [(409, {"error": "idempotency_conflict"}), (400, {"error": "unsupported_in_this_version"})]
     for _ in range(2):

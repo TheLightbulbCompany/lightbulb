@@ -418,6 +418,19 @@ describe("Team › Message", () => {
     expect(nav.openChatPanel).toHaveBeenCalledWith("ceo");
   });
 
+  it("switch on: the front agent reads as Lightbulb, specialists by name only, one Hire a specialist", () => {
+    live.superAgent = true;
+    mockRead.mockReturnValue({ ...agents, data: { agents: [{ id: "ceo", name: "CEO", role: "ceo" }, { id: "fin", name: "Finance", role: "cfo" }] } });
+    render(<AgentsListPanel />);
+    expect(screen.queryByText("CEO")).toBeNull();
+    expect(screen.getByRole("button", { name: "Message Lightbulb" })).toBeInTheDocument();
+    expect(screen.queryByText("cfo")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add an AI employee" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "New agent" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Hire a specialist" }));
+    expect(screen.getByRole("dialog", { name: "Hire a specialist" })).toBeInTheDocument();
+  });
+
   it("switch off: every agent's Message opens its DM", () => {
     render(<AgentsListPanel />);
     fireEvent.click(screen.getByRole("button", { name: "Message Finance" }));

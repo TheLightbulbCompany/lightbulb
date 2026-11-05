@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import schema from "../../fixtures/super-agent/tasks-schema.json";
 import { FIXTURES, PRIYA, SAM, fixtureTask, viewAs } from "./fixtures";
 import { OUTPUT_KINDS, type TaskSummary } from "./types";
-import { answerVerb, askLine, doneByLine, effectLine, formatSchedule, overviewGroups, previewRows, primaryOptionId, specialistLabel, summaryView, taskSummaryLine } from "./view";
+import { answerVerb, askLine, doneByLine, nameSpecialistIn, effectLine, formatSchedule, overviewGroups, previewRows, primaryOptionId, specialistLabel, summaryView, taskSummaryLine } from "./view";
 
 const byId = (ts: TaskSummary[], id: string) => ts.find((t) => t.taskId === id)!;
 
@@ -78,7 +78,8 @@ describe("summary lines and labels", () => {
   });
   it("actor line for the request pane", () => {
     expect(doneByLine("finance", { word: "Working", reason: null })).toBe("Finance is working on this");
-    expect(doneByLine("finance", { word: "Needs you", reason: "Ready for review" })).toBe("Finance is working on this");
+    expect(doneByLine("finance", { word: "Needs you", reason: "Ready for review" })).toBe("Done by Finance, ready for your review");
+    expect(doneByLine("finance", { word: "Needs you", reason: "Needs approval" })).toBe("Finance needs you");
     expect(doneByLine("finance", { word: "Done", reason: null })).toBe("Done by Finance");
     expect(doneByLine(null, { word: "Closed", reason: null })).toBe("Done by Lightbulb");
   });
@@ -88,6 +89,14 @@ describe("summary lines and labels", () => {
   it("ids that are not names never show", () => {
     for (const id of ["agent_7f3a", "a1b2c3", "5b36216c-196c-48af-ad2a-6817c42a1de3"]) expect(specialistLabel(id)).toBe("Lightbulb");
     expect(specialistLabel("customer success")).toBe("Customer success");
+  });
+  it("a specialist id in a posted line reads as its name", () => {
+    const id = "22cc1ca5-0554-4739-bafe-446e53b919f5";
+    const names = new Map([[id, "Customer Operations"]]);
+    expect(nameSpecialistIn(`**${id}** has a draft ready for review: Email`, id, names)).toBe("**Customer Operations** has a draft ready for review: Email");
+    expect(nameSpecialistIn(`**${id}** asks: when?`, id)).toBe("**Lightbulb** asks: when?");
+    expect(nameSpecialistIn("**finance** asks: when?", "finance", names)).toBe("**finance** asks: when?");
+    expect(askLine({ kind: "approval", title: "Send 'Q3' to a@b.c", preview: { kind: "mail.send" } }, id, names)).toBe("Allow Customer Operations to send 'Q3' to a@b.c");
   });
   it("specialist label", () => {
     expect(specialistLabel("finance")).toBe("Finance");

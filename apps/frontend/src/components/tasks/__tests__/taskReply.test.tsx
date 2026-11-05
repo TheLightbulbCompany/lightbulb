@@ -17,7 +17,7 @@ const step8 = FIXTURES.step08.details["t-signup"];
 
 /** The room's composer as RoomPanel wires it: the chip above, the override's onSubmit, else the room's own send. */
 function Composer({ roomId, roomSend, onTextChange }: { roomId: string; roomSend: (text: string) => void; onTextChange: (t: string) => void }) {
-  const reply = useTaskReply(roomId, { onTextChange });
+  const reply = useTaskReply(roomId, { text: "", onTextChange });
   return <div>
     {reply?.chip}
     <button type="button" onClick={() => void (reply?.composer.onSubmit
@@ -43,12 +43,29 @@ describe("one text box: the room composer replies to the open thread", () => {
     expect(await screen.findByText(step8.task.title, { selector: ".font-semibold.text-foreground" })).toBeInTheDocument();
     expect(screen.getByText(/Replying to:/)).toBeInTheDocument();
     // The room's composer is on screen: no "Add a note" in the pane.
-    expect(screen.queryByRole("button", { name: "Add a note" })).toBeNull();
+    expect(screen.queryByRole("textbox", { name: "Add a note" })).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "Send" }));
     expect(live.messaging.sendMessage).toHaveBeenCalledWith(step8.taskRoomId, expect.objectContaining({ text: "Make it blue", mentions: [], threadRootMessageId: null }));
     expect(roomSend).not.toHaveBeenCalled();
     await waitFor(() => expect(onTextChange).toHaveBeenCalledWith(""));
     expect(capture).toHaveBeenCalledWith("task_steer_sent", expect.objectContaining({ taskId: "t-signup", source: "composer" }));
+  });
+
+  it("the box and the room's stored draft empty when the steer goes, not when it lands; a failure gives it back", async () => {
+    let fail!: (e: Error) => void;
+    live.messaging.sendMessage.mockImplementationOnce(() => new Promise((_, reject) => { fail = reject; }));
+    const onTextChange = vi.fn();
+    render(<Fresh>
+      <Composer roomId={ROOM} roomSend={vi.fn()} onTextChange={onTextChange} />
+      <TaskPane taskId="t-signup" viewerId={SAM} onClose={vi.fn()} />
+    </Fresh>);
+    await screen.findByText(/Replying to:/);
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+    // Still in flight: already cleared (no "Drafts › room" while it posts).
+    expect(onTextChange).toHaveBeenCalledWith("");
+    fail(new Error("offline"));
+    await waitFor(() => expect(onTextChange).toHaveBeenLastCalledWith("Make it blue"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("didn't go through");
   });
 
   it("removing the chip sends to the room as normal", async () => {
@@ -73,7 +90,7 @@ describe("one text box: the room composer replies to the open thread", () => {
       <TaskPane taskId="t-signup" viewerId={SAM} onClose={vi.fn()} />
     </Fresh>);
     // Its own room's composer isn't on screen, so the pane keeps a one-line note.
-    expect(await screen.findByRole("button", { name: "Add a note" })).toBeInTheDocument();
+    expect(await screen.findByRole("textbox", { name: "Add a note" })).toBeInTheDocument();
     expect(screen.queryByText(/Replying to:/)).toBeNull();
   });
 });

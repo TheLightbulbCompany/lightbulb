@@ -8,7 +8,7 @@ import { ApiError } from "../api/error";
 import type { TasksClient } from "./client";
 import { fixtureTask } from "./fixtures";
 import type { TaskDetail, TaskSummary } from "./types";
-import { putTaskSummary, refreshTask, taskKey, taskListKey, useOlderTasks, useTask, useTaskList } from "./useTasks";
+import { putTaskSummary, refreshTask, taskKey, taskListKey, useAgentDirectory, useOlderTasks, useTask, useTaskList } from "./useTasks";
 
 const t1 = fixtureTask({ taskId: "t1", title: "one", version: 5 });
 const t2 = fixtureTask({ taskId: "t2", title: "two", version: 2 });
@@ -139,5 +139,16 @@ describe("useTasks", () => {
     expect(hook.result.current.list.data!.tasks.map((t) => t.taskId)).toEqual(["t2"]);
     expect(hook.result.current.swr.cache.get(taskKey("t1"))?.data).toBeUndefined();
     expect(hook.result.current.list.error).toBeUndefined();
+  });
+});
+
+describe("useAgentDirectory", () => {
+  it("names the front agent Lightbulb, whatever its roster name", async () => {
+    const { result } = renderHook(() => useAgentDirectory("org_a", async () => [
+      { id: "ceo", name: "CEO", role: "ceo", reportsTo: null, origin: "Starter" }, { id: "fin", name: "Finance", role: "cfo", reportsTo: "ceo" },
+    ]), { wrapper: ({ children }: { children: ReactNode }) => <SWRConfig value={{ provider: () => new Map() }}>{children}</SWRConfig> });
+    await waitFor(() => expect(result.current.frontAgentId).toBe("ceo"));
+    expect(result.current.names.get("ceo")).toBe("Lightbulb");
+    expect(result.current.names.get("fin")).toBe("Finance");
   });
 });

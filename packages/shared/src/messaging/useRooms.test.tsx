@@ -116,6 +116,21 @@ describe("useRooms platform seams", () => {
     expect(messaging.listMessages).toHaveBeenCalledWith(room.roomId, 0, 100, { beforeSeq: 2, signal: expect.any(AbortSignal) });
   });
 
+  it("catches the room on screen up from the user channel while another column holds the room channel", async () => {
+    const { result } = renderHook(() => useRooms(platform()), { wrapper });
+    act(() => result.current.selectRoom(room.roomId));
+    await waitFor(() => expect(result.current.messages).toHaveLength(1));
+    const reply = { ...message, messageId: "msg-2", messageSeq: 2, author: { kind: "agent" as const, id: "lb", displayName: "Lightbulb" } };
+    messaging.listMessages.mockResolvedValue({ messages: [reply], nextAfterSeq: null, nextBeforeSeq: null });
+    act(() => { for (const handler of handlers) handler({
+      schemaVersion: 1, eventId: "evt-catch-up", type: "room.message.available", occurredAt: "2026-09-15T00:00:01Z",
+      roomId: room.roomId, messageSeq: 2,
+      payload: { roomId: room.roomId, messageId: "msg-2", messageSeq: 2, notify: true, threadRootMessageId: null, mentionedUserIds: [] },
+    } as LiveEvent); });
+    await waitFor(() => expect(result.current.messages.map((m) => m.messageId)).toEqual(["msg-1", "msg-2"]));
+    expect(messaging.listMessages).toHaveBeenLastCalledWith(room.roomId, 1, 100, { signal: expect.any(AbortSignal) });
+  });
+
   it("unsubscribes from visibility on unmount", () => {
     const { unmount } = renderHook(() => useRooms(platform()), { wrapper });
     expect(visibilityListeners.size).toBe(1);

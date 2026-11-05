@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FIXTURES, SAM } from "@lightbulb/shared/tasks/fixtures";
@@ -67,6 +67,44 @@ describe("RoomPanel Threads view (super-agent)", () => {
     expect(await screen.findByText("Queued · Lightbulb answers as soon as setup finishes")).toBeInTheDocument();
     rerender(<Fresh><RoomPanel {...props} runtimeStarting={false} /></Fresh>);
     expect(screen.queryByText(/^Queued/)).toBeNull();
+  });
+
+  it("after an ask, Lightbulb is on it… until its reply lands; never for an old ask", async () => {
+    const front = { ...lightbulb, mentionHandle: "lightbulb", listenMode: "active" as const };
+    const ask = { ...message, createdAt: new Date().toISOString() };
+    const { rerender } = render(<Fresh><RoomPanel {...props} participants={[sam, front]} messages={[ask]} /></Fresh>);
+    expect(await screen.findByText("Lightbulb is on it…")).toBeInTheDocument();
+    const reply: RoomMessage = { ...ask, messageId: "m2", messageSeq: 2, author: { kind: "agent", id: front.id, displayName: "Lightbulb" }, text: "Done." };
+    rerender(<Fresh><RoomPanel {...props} participants={[sam, front]} messages={[ask, reply]} /></Fresh>);
+    expect(screen.queryByText("Lightbulb is on it…")).toBeNull();
+    rerender(<Fresh><RoomPanel {...props} participants={[sam, front]} messages={[{ ...ask, createdAt: "2026-11-04T14:00:00Z" }]} /></Fresh>);
+    await waitFor(() => expect(screen.queryByText("Lightbulb is on it…")).toBeNull());
+  });
+
+  it("no on it… once the ask's run ended (failed or stopped), or when Lightbulb only listens for mentions", async () => {
+    const front = { ...lightbulb, mentionHandle: "lightbulb", listenMode: "active" as const };
+    const ask = { ...message, messageId: "m-ask", createdAt: new Date().toISOString() };
+    const { rerender } = render(<Fresh><RoomPanel {...props} participants={[sam, front]} messages={[ask]} /></Fresh>);
+    expect(await screen.findByText("Lightbulb is on it…")).toBeInTheDocument();
+    const failed = { roomId: "r1", agentId: front.id, runId: "run-1", text: "", thinking: "", state: "aborted", tools: [], triggerMessageId: "m-ask" } as NonNullable<RoomPanelProps["runs"]>[number];
+    rerender(<Fresh><RoomPanel {...props} participants={[sam, front]} messages={[ask]} runs={[failed]} /></Fresh>);
+    expect(screen.queryByText("Lightbulb is on it…")).toBeNull();
+    rerender(<Fresh><RoomPanel {...props} participants={[sam, { ...front, listenMode: "mentions" }]} messages={[ask]} /></Fresh>);
+    expect(screen.queryByText("Lightbulb is on it…")).toBeNull();
+  });
+
+  it("About › Members lists people and Lightbulb only: no specialists, no Agent tag, no listen mode", async () => {
+    const front = { ...lightbulb, mentionHandle: "lightbulb" };
+    const finance: RoomParticipant = { ...lightbulb, id: "agent_fin", displayName: "Finance", mentionHandle: "finance", listenMode: "mentions" };
+    render(<Fresh><RoomPanel {...props} participants={[sam, front, finance]} onRemoveMember={vi.fn()} onListenModeChange={vi.fn()} /></Fresh>);
+    await userEvent.click(await screen.findByRole("button", { name: /^About/ }));
+    await userEvent.click(within(screen.getByRole("complementary", { name: "About" })).getByRole("tab", { name: "Members" }));
+    const list = within(screen.getByRole("complementary", { name: "About" })).getByRole("heading", { name: "Members" }).closest("section")!;
+    expect(within(list).getByText("Lightbulb")).toBeInTheDocument();
+    expect(within(list).queryByText("Finance")).toBeNull();
+    expect(within(list).queryByText("Agent")).toBeNull();
+    expect(within(list).queryByRole("combobox")).toBeNull();
+    expect(within(list).queryByRole("button", { name: "Remove Lightbulb" })).toBeNull();
   });
 
   it("flag off keeps Tasks in the menu, no Threads tab, and makes no /tasks request", async () => {

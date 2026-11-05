@@ -131,8 +131,10 @@ type DirectoryAgent = { id: string; name?: string | null; role?: string | null; 
  *  which displays as "Lightbulb" with the switch on. `null` key = no request. */
 export function useAgentDirectory(key: string | null, load: () => Promise<readonly DirectoryAgent[]>): { names: ReadonlyMap<string, string>; frontAgentId: string | undefined } {
   const { data } = useSWR(key ? ["agent-names", key] : null, load, { shouldRetryOnError: false, dedupingInterval: 60_000 });
-  return useMemo(() => ({
-    names: new Map((data ?? []).filter((a) => a.name).map((a) => [a.id, a.name!])),
-    frontAgentId: resolveCeoAgentId(data ?? []),
-  }), [data]);
+  return useMemo(() => {
+    const frontAgentId = resolveCeoAgentId(data ?? []);
+    // The front agent's roster name ("CEO") never shows: it is Lightbulb everywhere.
+    const names = new Map((data ?? []).filter((a) => a.name).map((a) => [a.id, a.id === frontAgentId ? "Lightbulb" : a.name!]));
+    return { names, frontAgentId };
+  }, [data]);
 }

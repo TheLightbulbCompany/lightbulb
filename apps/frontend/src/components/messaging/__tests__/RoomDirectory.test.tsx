@@ -742,6 +742,18 @@ it("separates shared channels into External connections, retains their indicator
   expect(screen.queryByRole("menuitem", { name: /Leave/ })).not.toBeInTheDocument();
 });
 
+it("More shows a chevron and how much is inside while closed, so it never reads as empty", () => {
+  const { container } = render(<RoomDirectory ownerScopeId="org" state="ready" participants={[]} sections={[]}
+    onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} rooms={[
+      { ...base, roomId: "own", name: "Launch" },
+      { ...base, roomId: "ext", name: "lightbulb-acme", shared: true, unreadCount: 0 },
+    ]} />);
+  const summary = container.querySelector(".room-directory-more > summary")!;
+  expect(summary.querySelector("svg.room-directory-more-chevron")).not.toBeNull();
+  expect(summary).toHaveAttribute("aria-label", "More, 1 inside");
+  expect(summary).toHaveTextContent("More1");
+});
+
 it("hides empty Channels and External connections sections", () => {
   const props = { ownerScopeId: "org", state: "ready" as const, participants: [], sections: [],
     onSelectRoom: vi.fn(), onSelectParticipant: vi.fn() };

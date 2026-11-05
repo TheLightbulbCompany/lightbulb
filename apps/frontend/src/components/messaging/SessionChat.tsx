@@ -30,7 +30,7 @@ const SESSION_WORDS: ChatWords = {
  * the draft. It posts only through the room message door; a chat seat never lets anyone type into
  * the session. Threads and reactions are left out: replies render inline.
  */
-export function SessionChat({ sessionId, sessionOwnerId, openChat, onClose, onRoom, onRead, onSend, readOnly = false, words = SESSION_WORDS }: {
+export function SessionChat({ sessionId, sessionOwnerId, openChat, onClose, onRoom, onRead, onSend, readOnly = false, hideMessage, words = SESSION_WORDS }: {
   /** What openChat opens: a session, or an app in Canvas. */
   sessionId: string;
   /** The session's own person: their name takes the owner colour, as in the terminal. */
@@ -47,9 +47,13 @@ export function SessionChat({ sessionId, sessionOwnerId, openChat, onClose, onRo
   onSend?: () => void;
   /** Look, don't act: no composer and no live card buttons (a request's progress, steered from its room's composer). */
   readOnly?: boolean;
+  /** Messages shown elsewhere on screen (a request's open question card sits above its progress). */
+  hideMessage?: (message: RoomMessage) => boolean;
 }) {
   const { userId } = useAuth();
-  const rooms = useRooms(null, true, true, false);
+  // Read-only progress sits beside a room: it never takes that room's one live channel (it would stop the room's
+  // replies arriving live); it catches up from the user channel instead.
+  const rooms = useRooms(null, !readOnly, true, false);
   const { selectRoom, sendMessage } = rooms;
   // Nothing is selected until the door (a POST: seat, lifecycle, fence) answers, and then only the
   // room it returns. A room id the session list already names is never loaded ahead of it: that id
@@ -96,7 +100,8 @@ export function SessionChat({ sessionId, sessionOwnerId, openChat, onClose, onRo
 
   const room = roomId && rooms.activeRoom?.roomId === roomId ? rooms.activeRoom : undefined;
   const members = (room?.members ?? []) as RoomParticipant[];
-  const messages = roomId && rooms.activeRoomId === roomId ? rooms.messages : NO_MESSAGES;
+  const roomMessages = roomId && rooms.activeRoomId === roomId ? rooms.messages : NO_MESSAGES;
+  const messages = useMemo(() => hideMessage ? roomMessages.filter((m) => !hideMessage(m)) : roomMessages, [roomMessages, hideMessage]);
   // An agent's card answers here as in a room: the press posts as the person, addressed to the agent, under the card.
   const onCardReply = useCallback(async (reply: CardReply) => { await sendMessage(cardReplyRequest(reply)); }, [sendMessage]);
   const cardAnswers = useMemo(() => cardAnswersFor(messages), [messages]);

@@ -43,10 +43,12 @@ export function WorkspaceHeader({ chatReady = true, onNavigate }: {
   const { place: current } = useWorkspaceState();
   const activeTeamRunCount = useActiveTeamRunCount();
   const superAgent = useSuperAgent();
-  // Home's badge: its Needs you thread rows, plus what For you → Needs you shows (the desk, minus dismissed and
-  // snoozed items, plus failed-run groups) and unseen mentions, DMs and Paperclip items. A thread's question is
-  // counted once, as its thread row.
-  const homeCount = useHomeNeedsYou() + useNeedsYouBadge(superAgent);
+  // Home's badge is Home's Needs you count, from the one read Home renders (super-agent). Without it, what
+  // For you → Needs you shows (the desk, minus dismissed and snoozed items, plus failed-run groups) and unseen
+  // mentions, DMs and Paperclip items.
+  const needsYou = useHomeNeedsYou();
+  const legacyBadge = useNeedsYouBadge(superAgent);
+  const homeCount = superAgent ? needsYou : legacyBadge;
   return (
     <nav className="workspace-rail" aria-label="Workspace">
       <HistoryButtons />

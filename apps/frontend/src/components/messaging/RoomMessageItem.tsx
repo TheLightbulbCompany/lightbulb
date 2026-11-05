@@ -3,7 +3,7 @@
 import { useMemo, type ReactElement, type ReactNode } from "react";
 import { MessageCircle } from "lucide-react";
 import type { Components, UrlTransform } from "react-markdown";
-import { sessionLabel, sessionStatus, specialistLabel, type CardReply, type LocalSession } from "@lightbulb/shared";
+import { nameSpecialistIn, sessionLabel, sessionStatus, specialistLabel, type CardReply, type LocalSession } from "@lightbulb/shared";
 import { MessageRoutedTo, MessageTasks } from "@/components/tasks/MessageTasks";
 import { AutomationConfirmCard } from "@/components/tasks/AutomationConfirmCard";
 import { useOptionalLiveEvents, useSuperAgent } from "@/hooks/useLiveEvents";
@@ -92,6 +92,9 @@ function SessionCard({ sessionId, label, session, onOpen }: {
 
 export function RoomMessageItem({ id, message, text, participant, currentUserId, actionable, inThread, collapsed, startEditing, onEditingClosed, replyCount, lastReplyAt, threadParticipants = [], workingNames = [], receipt, highlighted, mentionsViewer, markdown, urlTransform, quickReactions, reactionPending, reactionError, onToggleReaction, onOpenThread, onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, onCardReply, cardAnswer = null, cardsEnabled = true, sessions = [], onOpenSession, toolbarExtras, menuExtras, personColor, onOpenTask, isAgentId }: RoomMessageItemProps): ReactElement {
   const superAgent = useSuperAgent();
+  const agentNames = useOptionalLiveEvents()?.agentNames;
+  // A line posted for a specialist can carry its id; it reads as the specialist's name, like the byline.
+  const shownText = superAgent ? nameSpecialistIn(text, message.specialist, agentNames) : text;
   const cardReply = useMemo(() => onCardReply && actionable
     ? (replyText: string, clientMessageId: string) => onCardReply({ text: replyText, agentId: message.author.id, messageId: message.messageId, threadRootMessageId: message.threadRootMessageId, clientMessageId })
     : undefined, [onCardReply, actionable, message.author.id, message.messageId, message.threadRootMessageId]);
@@ -137,7 +140,7 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
       </div>}
       <RoomMessageContent message={message} currentUserId={currentUserId} actionable={actionable} onUpdate={onUpdateMessage} startEditing={startEditing} onEditingClosed={onEditingClosed} actions={actions} menuExtras={menuExtras}>
         <CardContext.Provider value={cardContext}>
-          <MarkdownView skipHtml components={markdown} urlTransform={urlTransform}>{text}</MarkdownView>
+          <MarkdownView skipHtml components={markdown} urlTransform={urlTransform}>{shownText}</MarkdownView>
         </CardContext.Provider>
       </RoomMessageContent>
       {!message.deletedAt && !!message.sessionMentions?.length && <div className="flex flex-wrap gap-1 mt-1" aria-label="Referenced sessions">

@@ -54,7 +54,8 @@ describe("sidebar with the super-agent on", () => {
     const { container, rerender } = render(<RoomDirectory {...props} rooms={[shared]} />);
     const more = container.querySelector("details.room-directory-more")!;
     expect(more).toHaveAttribute("open");
-    expect(within(more.querySelector("summary")!).getByLabelText("3 unread or waiting")).toHaveTextContent("3");
+    expect(more.querySelector("summary")).toHaveAttribute("aria-label", "More, 3 unread or waiting");
+    expect(more.querySelector("summary .room-count")).toHaveTextContent("3");
     rerender(<RoomDirectory {...props} rooms={[{ ...shared, unreadCount: 0 }]} />);
     expect(container.querySelector("details.room-directory-more summary .room-count")).toBeNull();
   });

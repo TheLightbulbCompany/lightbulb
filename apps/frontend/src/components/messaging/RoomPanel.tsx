@@ -136,6 +136,8 @@ export interface RoomPanelProps {
   onCardReply?: (reply: CardReply) => Promise<void>;
 }
 
+/** How long a silent ask reads "Lightbulb is on it…" (a reply took ~2 min in the 5 Nov walk). */
+const ON_IT_MS = 5 * 60_000;
 const NO_PINNED_MESSAGES: readonly string[] = [];
 const NO_TASK_IDS: readonly string[] = [];
 const NO_RUNS: readonly RoomRunView[] = [];
@@ -466,6 +468,27 @@ function RoomContent({
     }
     return replies;
   }, [messages]);
+  // Super-agent: the viewer's last ask to Lightbulb with nothing back yet (no later message, no agent reply under it,
+  // no run on screen) reads "Lightbulb is on it…" until its reply or card lands. The Router posts no typing signal,
+  // so this is the client's: an ask names Lightbulb, or Lightbulb listens to everything and no other person is here.
+  // ponytail: gives up after ON_IT_MS of silence; a server "seen" signal would replace the timer.
+  const front = superAgent && !runtimeStarting ? participants.find((p) => p.kind === "agent" && p.mentionHandle === "lightbulb") : undefined;
+  const lastMain = mainMessages.findLast((message) => !message.deletedAt);
+  const askPending = front && lastMain && lastMain.author.kind === "human" && lastMain.author.id === currentUserId
+    && !runs.some((run) => run.state === "running")
+    // A run for this ask that already ended (failed, stopped) shows its own outcome.
+    && !allRuns.some((run) => run.triggerMessageId === lastMain.messageId)
+    && ![...(repliesByRoot.get(lastMain.messageId)?.authors.values() ?? [])].some((author) => author.kind === "agent")
+    && (lastMain.mentions.some((m) => m.kind === "agent" && m.id === front.id) || (front.listenMode === "active" && participants.filter((p) => p.kind === "human").length === 1))
+    ? lastMain : undefined;
+  const [onItExpired, setOnItExpired] = useState<string | null>(null);
+  useEffect(() => {
+    if (!askPending) return;
+    const left = ON_IT_MS - (Date.now() - Date.parse(askPending.createdAt));
+    const timer = window.setTimeout(() => setOnItExpired(askPending.messageId), Math.max(0, left));
+    return () => window.clearTimeout(timer);
+  }, [askPending]);
+  const onIt = askPending && onItExpired !== askPending.messageId ? front : undefined;
   // Only membership changes invalidate history; streamed text/tool frames do not.
   const workingThreadKey = JSON.stringify(runs.filter(run => run.state === "running" && run.threadRootMessageId)
     .map(run => [run.threadRootMessageId, run.agentId]));
@@ -887,7 +910,7 @@ function RoomContent({
           {placeRuns(mainRuns, mainMessages).tail.map(renderRun)}
         </RoomTimeline>
       </div>
-      <p className="room-typing room-typing-live text-ui text-muted-foreground" role="status">{typingMembers.length > 0 ? `${typingMembers.slice(0, 3).map((member) => member.displayName).join(", ")}${typingMembers.length > 3 ? " and others" : ""} ${typingMembers.length === 1 ? "is" : "are"} typing…` : ""}</p>
+      <p className="room-typing room-typing-live text-ui text-muted-foreground" role="status">{typingMembers.length > 0 ? `${typingMembers.slice(0, 3).map((member) => member.displayName).join(", ")}${typingMembers.length > 3 ? " and others" : ""} ${typingMembers.length === 1 ? "is" : "are"} typing…` : onIt ? `${onIt.displayName} is on it…` : ""}</p>
       {copied && <p role="status" aria-label="Link copied" className="sr-only">Link copied</p>}
       {messageActionError && <p role="alert" className="room-typing text-ui text-err">{messageActionError}</p>}
       {!visibleRoom?.archivedAt && <RoomLimitBar account={billing} />}
@@ -941,19 +964,20 @@ function RoomContent({
           </div>
           {visibleRoom?.isDefault && participants.filter((p) => p.kind === "human").length === 1 && (() => {
             const agents = participants.filter((p) => p.kind === "agent").length;
-            return <p className="text-ui text-muted-foreground">1 person · {agents} AI {agents === 1 ? "employee" : "employees"} ·{" "}
+            return <p className="text-ui text-muted-foreground">1 person · {superAgent ? "" : `${agents} AI ${agents === 1 ? "employee" : "employees"} · `}
               <button type="button" className="underline" onClick={openInviteDialog}>Invite people</button></p>;
           })()}
           {onCopyJoinLink && <p className="text-ui text-muted-foreground">Someone not in the workspace yet?{" "}
             <button type="button" className="underline" disabled={inviteBusy} onClick={() => void copyJoinLink()}>Copy the workspace join link</button> and send it to them.
             {inviteNote && <span role="status"> {inviteNote}</span>}</p>}
-          <ul>{participants.map((participant) => <li key={`${participant.kind}:${participant.id}`} className="room-member flex-wrap">
+          {/* Super-agent: people and Lightbulb; specialists and their listen modes are plumbing (the Team page has them). */}
+          <ul>{(superAgent ? participants.filter((p) => p.kind === "human" || p.mentionHandle === "lightbulb") : participants).map((participant) => <li key={`${participant.kind}:${participant.id}`} className="room-member flex-wrap">
             <ParticipantAvatar participant={participant} size="sm" />
             <ParticipantProfile participant={participant} currentUserId={currentUserId} onMessage={onSelectParticipant} disabled={!actionable} className="flex-1 min-w-24" />
-            <span className="text-ui text-muted-foreground">{participant.kind === "agent" ? "Agent" : "Person"}</span>
-            {canManageMembers && onRemoveMember && participant.role !== "owner" && !(visibleRoom?.shared && participant.kind === "human") && <Button type="button" variant="ghost" size="sm" disabled={!actionable}
+            {!(superAgent && participant.kind === "agent") && <span className="text-ui text-muted-foreground">{participant.kind === "agent" ? "Agent" : "Person"}</span>}
+            {canManageMembers && onRemoveMember && participant.role !== "owner" && !(visibleRoom?.shared && participant.kind === "human") && !(superAgent && participant.kind === "agent") && <Button type="button" variant="ghost" size="sm" disabled={!actionable}
               aria-label={`Remove ${participant.displayName}`} onClick={(event) => openManagement({ kind: participant.kind, id: participant.id }, event.currentTarget)}>Remove</Button>}
-            {participant.kind === "agent" && <AgentResponse participant={participant} selectId={`${id}-context-${participant.id}-mode`} onChange={onListenModeChange} />}
+            {participant.kind === "agent" && !superAgent && <AgentResponse participant={participant} selectId={`${id}-context-${participant.id}-mode`} onChange={onListenModeChange} />}
           </li>)}</ul>
           {canAddMembers && memberPickerOpen && <div className="room-member-picker">
             <label className="sr-only" htmlFor={`${id}-member-search`}>Search people</label>

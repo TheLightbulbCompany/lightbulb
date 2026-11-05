@@ -56,7 +56,10 @@ _SHORT = {"start_to_close_timeout": timedelta(seconds=30), "retry_policy": Retry
 _ROUTER_TURN = {
     "start_to_close_timeout": timedelta(minutes=5),
     "heartbeat_timeout": timedelta(seconds=60),
-    "retry_policy": RetryPolicy(maximum_attempts=4),  # 3 retries
+    # One retry: a stuck batch holds every lane of the workspace's one Router queue (5 min per try), so the
+    # worst case is ~10 min before apply_fallback answers (audit #17). Replay-safe: the policy is not compared
+    # on replay, and an Activity already scheduled keeps the policy it was scheduled with.
+    "retry_policy": RetryPolicy(maximum_attempts=2),
 }
 _WORKER_TURN = {
     "start_to_close_timeout": timedelta(hours=6, minutes=30),  # under the bridge's 7 h recycle (§14.11)

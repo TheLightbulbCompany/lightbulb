@@ -9,6 +9,8 @@ for the attempt it runs. 404 while the workspace's switch is off.
   the terminal event stores output and usage on the Attempt and completes the Activity once.
 - `POST /api/v1/internal/runtime/{owner}/inputs`: a background job or delegation finished inside a task's
   session; recorded as a Trigger and signalled to the task (dedupe on `deliveryId`).
+- `POST /api/v1/internal/runtime/{owner}/notes`: a Worker's `task_note`, posted in its own task's room
+  (contracts-v2 §6: the only place a Worker posts), by the current live attempt only.
 
 Lane Q appends its effects and questions routes to this router.
 """
@@ -417,3 +419,37 @@ async def worker_ask(owner_id: str, body: AskBody, request: Request) -> dict:
     if opened is None:
         raise HTTPException(status_code=503, detail="question_not_opened")
     return await _question_view(opened)
+
+
+NOTE_CAP = 20  # notes per attempt
+
+
+class NoteBody(BaseModel):
+    task_id: str = Field(alias="taskId")
+    run_id: str = Field(alias="runId")
+    attempt: int = Field(ge=1)
+    run_secret: str = Field(alias="runSecret", min_length=1, max_length=128)
+    text: str = Field(min_length=1, max_length=2000)
+
+
+@router.post("/{owner_id}/notes")
+async def task_note(owner_id: str, body: NoteBody, request: Request) -> dict:
+    """A Worker's progress note in its task's room, as Lightbulb · specialist. The same text twice in one attempt
+    posts once (a tool retry)."""
+    await _gate(owner_id, request)
+    att = await _attempt_of(owner_id, body.task_id, body.attempt, body.run_id, body.run_secret)
+    task = await _current_task(owner_id, att, body.task_id, body.attempt)
+    if not await tasks_repo.count_note(owner_id, body.task_id, body.attempt, NOTE_CAP):
+        raise HTTPException(status_code=429, detail="note_limit")
+    room_id = await task_conversation.ensure_task_room(owner_id, task)
+    digest = hashlib.sha256(body.text.encode()).hexdigest()[:16]
+    message_id = await task_conversation.post_as_lightbulb(
+        owner_id,
+        room_id,
+        text=body.text,
+        event_id=f"task-note:{body.task_id}:{body.attempt}:{digest}",
+        specialist=task.get("specialist"),
+        kind="note",
+        progress=True,  # never a mention or notification, never room memory
+    )
+    return {"messageId": message_id}

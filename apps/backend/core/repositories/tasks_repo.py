@@ -257,9 +257,27 @@ async def list_tasks_by_status(
 
 async def put_attempt(ws: str, task_id: str, n: int, fields: dict) -> tuple[dict, bool]:
     data = {"runId": ts.run_id(ws, task_id, n), **fields, "taskId": task_id, "n": n}
-    for owned in ("pk", "sk", "version", "createdAt", "updatedAt", "type"):
+    for owned in ("pk", "sk", "version", "createdAt", "updatedAt", "type", "noteCount"):  # noteCount: count_note
         data.pop(owned, None)
     return await _put_new(ws, _row(ts.Attempt, ws, data))
+
+
+async def count_note(ws: str, task_id: str, n: int, cap: int) -> bool:
+    """Count one `task_note` on the attempt; False once it has `cap` (no version bump: not a state change)."""
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"pk": ts.ws_pk(ws), "sk": ts.attempt_sk(task_id, n)},
+            UpdateExpression="ADD #c :one",
+            ConditionExpression="attribute_exists(sk) AND (attribute_not_exists(#c) OR #c < :cap)",
+            ExpressionAttributeNames={"#c": "noteCount"},
+            ExpressionAttributeValues={":one": 1, ":cap": cap},
+        )
+        return True
+    except ClientError as exc:
+        if not _is_condition_failure(exc):
+            raise
+    return False
 
 
 async def get_attempt(ws: str, task_id: str, n: int) -> dict | None:

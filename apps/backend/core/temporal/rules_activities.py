@@ -17,11 +17,9 @@ from core.dynamodb import utc_now_iso
 from core.observability.metrics import put_metric
 from core.repositories import automations_repo, tasks_repo
 from core.repositories.tasks_repo import _put_new, _row
+from core.services.rules import DID_IT_YOURSELF_WINDOW_H
 
 logger = logging.getLogger(__name__)
-
-#: ponytail: same value as `rules.DID_IT_YOURSELF_WINDOW_H` (S2); import it from there once both are on main.
-DID_IT_YOURSELF_WINDOW_H = 24
 
 
 @activity.defn

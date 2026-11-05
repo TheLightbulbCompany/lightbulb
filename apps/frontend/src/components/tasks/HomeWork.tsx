@@ -1,12 +1,11 @@
 "use client";
 
-// Home's top half: every request the viewer can see, cut into Needs you · Working · Done from the server's
-// `shownGroup` (homeSections), with the Work overview's own rows. Needs you is the complete server read the rail
-// badge counts (useNeedsYouTasks); Working and Done come from the paged workspace list.
+// Home's top half: every request the viewer can see, under the four status words (Needs you · Working · Done ·
+// Closed) from the shared `overviewGroups`, so Home can't drift from the words on its rows. Needs you is the
+// complete server read the rail badge counts (useNeedsYouTasks); the rest come from the paged workspace list.
 
 import { useState, type ReactElement } from "react";
-import { useAutomations, useOlderTasks, useTaskList, type TaskScope, type TaskSummary } from "@lightbulb/shared";
-import { homeSections } from "./homeSections";
+import { overviewGroups, useAutomations, useOlderTasks, useTaskList, type TaskScope, type TaskSummary } from "@lightbulb/shared";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { openPanel } from "@/components/workspace/workspaceController";
 import { useAutomationSource } from "./automations";
@@ -24,11 +23,15 @@ export function HomeWork({ viewerId, onOpen }: { viewerId: string; onOpen: (task
   const needs = useNeedsYouTasks(WORKSPACE);
   const { data: scheduled } = useAutomations(useAutomationSource());
   const [doneOpen, setDoneOpen] = useState(false);
+  const [closedOpen, setClosedOpen] = useState(false);
   if (!data || !needs.loaded) return <div className="home-work">{error || needs.error
     ? <p role="alert" className="text-ui text-muted-foreground">Requests couldn&apos;t load. <button type="button" className="underline hover:text-foreground" onClick={() => { void mutate(); needs.retry(); }}>Retry</button></p>
     : <p role="status" className="text-ui text-muted-foreground">Loading…</p>}</div>;
   const needsYou = needs.tasks;
-  const { working, done } = homeSections([...data.tasks, ...older]);
+  const groups = overviewGroups([...data.tasks, ...older]);
+  const newestFirst = (list: TaskSummary[]) => [...list].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+  const of = (id: "working" | "done" | "closed") => groups.find((g) => g.id === id)?.tasks ?? [];
+  const working = of("working"), done = newestFirst(of("done")), closed = newestFirst(of("closed"));
   const rows = (list: TaskSummary[]) => <ul className="mt-1 grid">{list.map((t) => <OverviewRow key={t.taskId} task={t} viewerId={viewerId} onOpen={onOpen} />)}</ul>;
   const automations = scheduled?.automations.length ?? 0;
   return <div className="home-work">
@@ -46,6 +49,13 @@ export function HomeWork({ viewerId, onOpen }: { viewerId: string; onOpen: (task
       {rows(doneOpen ? done : done.slice(0, DONE_FOLD))}
       {done.length > DONE_FOLD && <button type="button" aria-expanded={doneOpen} className="mt-1 text-ui text-muted-foreground underline hover:text-foreground"
         onClick={() => setDoneOpen(!doneOpen)}>{doneOpen ? "Show fewer" : `Show all ${done.length}`}</button>}
+    </section>}
+    {/* Resolved, stopped, dismissed and someone else's failed requests: collapsed until asked for. */}
+    {closed.length > 0 && <section aria-labelledby="home-closed">
+      <h2 id="home-closed" className="text-ui font-semibold">
+        <button type="button" aria-expanded={closedOpen} className="hover:underline" onClick={() => setClosedOpen(!closedOpen)}>Closed · {closed.length}</button>
+      </h2>
+      {closedOpen && rows(closed)}
     </section>}
     {hasOlder && <button type="button" className="justify-self-start text-ui text-muted-foreground underline hover:text-foreground"
       disabled={loading} onClick={() => void loadOlder()}>{loading ? "Loading…" : "Load older requests"}</button>}

@@ -3,7 +3,7 @@
 import { render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { TaskSummary } from "@lightbulb/shared";
+import { overviewGroups, type TaskSummary } from "@lightbulb/shared";
 import { SAM } from "@lightbulb/shared/tasks/fixtures";
 import { Fresh, fakeTasksClient, type FakeTasksClient } from "./fakeTasks";
 
@@ -17,7 +17,6 @@ const openPanel = vi.hoisted(() => vi.fn());
 vi.mock("@/components/workspace/workspaceController", () => ({ openPanel }));
 
 import { HomeWork } from "../HomeWork";
-import { homeSections } from "../homeSections";
 import { useHomeNeedsYou, useRoomThreads } from "../useRoomThreads";
 
 const task = (taskId: string, roomId: string, shownGroup: TaskSummary["shownGroup"], extra: Partial<TaskSummary> = {}): TaskSummary => ({
@@ -32,6 +31,9 @@ const TASKS: TaskSummary[] = [
   task("d", "r2", "waiting_on_you"), task("e", "r2", "landing"), task("f", "r2", "proposed" as never, { status: "proposed", shownGroup: null }),
   task("g", "r2", "idle", { watching: true, watchUntil: "2026-12-01T00:00:00Z" }),
   ...["h", "i", "j", "k", "l", "m"].map((id) => task(id, id < "k" ? "r1" : "r2", "resolved")),
+  ...["n", "o", "p", "q", "r", "s"].map((id) => task(id, id < "q" ? "r1" : "r2", "idle")),
+  // Someone else's failure: the server files it under idle; it reads Closed, not Done.
+  task("t", "r1", "idle", { status: "failed" }),
 ];
 const roomOf = (roomId: string) => TASKS.filter((t) => t.originRoomId === roomId);
 
@@ -46,21 +48,23 @@ beforeEach(() => {
   });
 });
 
-describe("homeSections", () => {
+describe("Home's groups are the shared four (overviewGroups)", () => {
   it("Home's counts are the sum of the per-room counts, group by group", () => {
-    const all = homeSections(TASKS);
-    const rooms = ["r1", "r2"].map((r) => homeSections(roomOf(r)));
-    for (const key of ["needsYou", "working", "done"] as const) {
-      expect(all[key].length).toBe(rooms.reduce((n, r) => n + r[key].length, 0));
+    const count = (ts: TaskSummary[]) => Object.fromEntries(overviewGroups(ts).map((g) => [g.id, g.tasks.map((t) => t.taskId)]));
+    const all = count(TASKS);
+    const rooms = ["r1", "r2"].map((r) => count(roomOf(r)));
+    for (const id of ["needs_you", "working", "done", "closed"]) {
+      expect(all[id].length).toBe(rooms.reduce((n, r) => n + (r[id]?.length ?? 0), 0));
     }
-    expect(all.needsYou.map((t) => t.taskId)).toEqual(["a", "b", "d"]);
-    expect(all.working.map((t) => t.taskId)).toEqual(["c", "e", "g"]);
+    expect(all.needs_you).toEqual(["a", "b", "d"]);
+    expect(all.working).toEqual(["c", "e", "g"]);
     expect(all.done).toHaveLength(6);
+    expect(all.closed).toHaveLength(7);
   });
 });
 
 describe("HomeWork", () => {
-  it("renders Needs you, Working and Done (folded after five) with the same count the badges read", async () => {
+  it("renders Needs you, Working, Done (folded after five) and Closed (collapsed) with the same count the badges read", async () => {
     const onOpen = vi.fn();
     render(<Fresh><HomeWork viewerId={SAM} onOpen={onOpen} /></Fresh>);
     const needs = await screen.findByRole("region", { name: "Needs you · 3" });
@@ -69,6 +73,11 @@ describe("HomeWork", () => {
     expect(within(done).getAllByRole("listitem")).toHaveLength(5);
     await userEvent.click(within(done).getByRole("button", { name: "Show all 6" }));
     expect(within(done).getAllByRole("listitem")).toHaveLength(6);
+    // Closed (resolved and someone else's failure) is its own group, collapsed until opened.
+    const closed = screen.getByRole("region", { name: "Closed · 7" });
+    expect(within(closed).queryAllByRole("listitem")).toHaveLength(0);
+    await userEvent.click(within(closed).getByRole("button", { name: "Closed · 7" }));
+    expect(within(closed).getAllByRole("listitem")).toHaveLength(7);
     // A row opens the request in the pane.
     await userEvent.click(within(needs).getByRole("button", { name: /^Open Request a,/ }));
     expect(onOpen).toHaveBeenCalledWith("a");

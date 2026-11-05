@@ -43,6 +43,9 @@ class FakeCtx:
     async def sleep(self, seconds: float) -> None:
         pass
 
+    async def ensure_dm_rooms(self) -> dict[str, str]:
+        return {}
+
 
 def _ok(data: dict) -> httpx.Response:
     return httpx.Response(200, json=data)
@@ -225,3 +228,74 @@ async def test_gate_wires_vm_evidence_over_both_runs(monkeypatch):
     assert results["RULES"].evidence["reason"].startswith("no --rules-expect")
     rows["org_chatgpt"][0]["sessionId"] = session_id_for("org_chatgpt", t_gpt)  # ran on a task VM: must fail
     assert not (await report.gate(ctx, log=lambda line: None))["VM"].passed
+
+
+# ---------------------------------------------------------------------- A12 DM rooms
+def dm_handler(created: list[dict], *, lightbulb: bool = True):
+    def handle(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/messaging/rooms") and request.method == "GET":
+            return _ok({"rooms": [{"roomId": "general-1", "name": "general", "kind": "channel"}]})
+        if path.endswith("/messaging/rooms/general-1"):
+            agent = {"kind": "agent", "id": "ceo-1", "mentionHandle": "lightbulb" if lightbulb else "ceo"}
+            return _ok({"roomId": "general-1", "members": [{"kind": "human", "id": "user_sam"}, agent]})
+        if path.endswith("/messaging/rooms") and request.method == "POST":
+            body = json.loads(request.content)
+            created.append(body)
+            return _ok({"roomId": f"dm-{len(created)}", "kind": "dm"})
+        return httpx.Response(404)
+
+    return handle
+
+
+async def test_ensure_dm_rooms_opens_one_dm_per_user_with_lightbulb():
+    created: list[dict] = []
+    ctx = Ctx(ws="org_on", users={"sam": "user_sam", "priya": "user_priya"}, fixtures={"sa-dev-on": "org_on"})
+    ctx.api = lambda user, ws=None: httpx.AsyncClient(
+        base_url=ctxmod.API_ROOT, transport=httpx.MockTransport(dm_handler(created))
+    )  # type: ignore[method-assign]
+    rooms = await ctx.ensure_dm_rooms()
+    assert rooms == {"sam": "dm-1", "priya": "dm-2"}
+    assert ctx.state == {"samDmRoomId": "dm-1", "priyaDmRoomId": "dm-2"}
+    assert [c["kind"] for c in created] == ["dm", "dm"]
+    assert all(
+        c["members"] == [{"kind": "agent", "id": "ceo-1", "role": "member", "listenMode": "active"}] for c in created
+    )
+    assert created[0]["clientRoomId"] != created[1]["clientRoomId"]  # derived from (ws, user, agent): stable per user
+    assert await ctx.ensure_dm_rooms() == rooms and len(created) == 2  # state wins: no second POST
+
+
+async def test_ensure_dm_rooms_refuses_without_lightbulb_member():
+    ctx = Ctx(ws="org_on", users={"sam": "user_sam"}, fixtures={})
+    ctx.api = lambda user, ws=None: httpx.AsyncClient(
+        base_url=ctxmod.API_ROOT, transport=httpx.MockTransport(dm_handler([], lightbulb=False))
+    )  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="@lightbulb"):
+        await ctx.ensure_dm_rooms()
+
+
+async def test_a12_runs_the_dm_lookup_before_its_bodies(monkeypatch):
+    seen: list[dict] = []
+
+    async def a12_router(ctx):
+        seen.append(dict(ctx.state))
+        return Result(True, {"ok": True})
+
+    monkeypatch.setattr(report, "resolve", lambda part: a12_router if part == "a12_router_lanes:a12_router" else None)
+    ctx = FakeCtx()
+
+    async def ensure_dm_rooms():
+        ctx.state["samDmRoomId"], ctx.state["priyaDmRoomId"] = "dm-s", "dm-p"
+        return {"sam": "dm-s", "priya": "dm-p"}
+
+    ctx.ensure_dm_rooms = ensure_dm_rooms  # type: ignore[attr-defined]
+    result = await report.run_scenario("A12", ctx)
+    assert seen == [{"samDmRoomId": "dm-s", "priyaDmRoomId": "dm-p"}]
+    assert not result.passed  # M's body is still missing: the report says so, the lookup still ran
+
+    async def broken():
+        raise RuntimeError("no #general")
+
+    ctx.ensure_dm_rooms = broken  # type: ignore[attr-defined]
+    result = await report.run_scenario("A12", ctx)
+    assert result.evidence["dm_rooms"]["error"] == "RuntimeError: no #general"

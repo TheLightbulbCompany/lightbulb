@@ -191,6 +191,44 @@ class Ctx:
     async def sleep(self, seconds: float) -> None:
         await asyncio.sleep(seconds)
 
+    # ------------------------------------------------------------------ A12: each user's DM with @lightbulb
+    async def ensure_dm_rooms(self) -> dict[str, str]:
+        """``ctx.state["samDmRoomId"]`` / ``["priyaDmRoomId"]`` (one per fixture user): the user's DM with the
+        front agent, found as the single ``@lightbulb`` member of ``#general`` (O7 seating) and opened through
+        ``POST /messaging/rooms`` ``kind=dm`` (the route returns the existing DM, so this is idempotent)."""
+        out: dict[str, str] = {}
+        for label, user_id in self.users.items():
+            key = f"{label}DmRoomId"
+            if key not in self.state:
+                api = self.api(label)
+                rooms = (await api.get("/api/v1/messaging/rooms")).raise_for_status().json().get("rooms") or []
+                general = next((r for r in rooms if (r.get("name") or "").lower() == "general"), None)
+                if general is None:
+                    raise RuntimeError(f"{self.ws}: no #general for {label}")
+                detail = (await api.get(f"/api/v1/messaging/rooms/{general['roomId']}")).raise_for_status().json()
+                front = next(
+                    (
+                        m
+                        for m in detail.get("members", [])
+                        if m.get("kind") == "agent" and m.get("mentionHandle") == "lightbulb"
+                    ),
+                    None,
+                )
+                if front is None:
+                    raise RuntimeError(f"{self.ws}: #general has no @lightbulb member (switch off?)")
+                body = {
+                    "clientRoomId": str(
+                        uuid.uuid5(uuid.NAMESPACE_URL, f"sa-acceptance-dm|{self.ws}|{user_id}|{front['id']}")
+                    ),
+                    "name": None,
+                    "kind": "dm",
+                    "members": [{"kind": "agent", "id": front["id"], "role": "member", "listenMode": "active"}],
+                }
+                dm = (await api.post("/api/v1/messaging/rooms", json=body)).raise_for_status().json()
+                self.state[key] = dm["roomId"]
+            out[label] = self.state[key]
+        return out
+
     # ------------------------------------------------------------------ live events
     async def appsync(self, ws: str | None = None, *, user: str = "sam") -> AsyncIterator[dict[str, Any]]:
         """Live events on the workspace's ``/ws/{wsChannel}/tasks`` channel (O9 ``task.changed``), as published:

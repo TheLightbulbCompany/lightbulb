@@ -83,6 +83,11 @@ async def run_scenario(name: str, ctx: Ctx) -> Result:
     """Every body of the scenario in order; an exception is a failed check, never a crashed run."""
     lane, parts = SCENARIOS[name]
     results: dict[str, Result] = {}
+    if name == "A12" and any(resolve(p) for p in parts):
+        try:  # both A12 bodies post into the DM rooms; one lookup here so neither lane invents its own
+            await ctx.ensure_dm_rooms()
+        except Exception as exc:  # noqa: BLE001 -- the report carries it; the bodies then fail on the missing ids
+            results["dm_rooms"] = Result(False, {"error": f"{type(exc).__name__}: {exc}"})
     for part in parts:
         body = resolve(part)
         if body is None:

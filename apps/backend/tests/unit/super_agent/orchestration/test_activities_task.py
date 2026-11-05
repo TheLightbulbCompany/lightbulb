@@ -350,3 +350,31 @@ async def test_bridge_usage_report_skips_task_runs(monkeypatch):
         )
         await acts.messaging.handle_usage_report(WS, body)
         assert len(recorded) == expected
+
+
+async def test_begin_attempt_retry_completes_the_move(world, monkeypatch):
+    """put_attempt landed, the move to working failed: the retry finishes it, so end_attempt can run."""
+    tid = await _task()
+    real = acts._move
+    fails = iter([True])
+
+    async def flaky(ws, task_id, to, reason=None, fields=None):
+        if to == "working" and next(fails, False):
+            raise repo.VersionConflict("lost race")
+        return await real(ws, task_id, to, reason, fields)
+
+    monkeypatch.setattr(acts, "_move", flaky)
+    with pytest.raises(repo.VersionConflict):
+        await acts.begin_attempt(WS, tid, [])
+    assert await acts.begin_attempt(WS, tid, []) == AttemptRef(1, ts.run_id(WS, tid, 1))
+    assert (await repo.get_task(WS, tid))["status"] == "working"
+    await _ended(tid, "completed")
+    assert (await repo.get_task(WS, tid))["status"] == "idle"
+
+
+async def test_attempt_gets_a_run_secret_on_the_wire(world):
+    tid = await _task()
+    await _attempt(tid)
+    att = await repo.get_attempt(WS, tid, 1)
+    assert len(att["runSecret"]) >= 32
+    assert acts._identity(WS, tid, att).to_wire()["runSecret"] == att["runSecret"]

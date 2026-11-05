@@ -763,6 +763,18 @@
           "default": null,
           "title": "Tasktoken"
         },
+        "runSecret": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Runsecret"
+        },
         "terminalStatus": {
           "anyOf": [
             {

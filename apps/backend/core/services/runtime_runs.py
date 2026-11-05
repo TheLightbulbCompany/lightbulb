@@ -42,6 +42,7 @@ class RunIdentity:
     task_id: str
     attempt: int
     agent_id: str
+    run_secret: str | None = None  # the Attempt's secret; the bridge echoes it on run events and inputs
 
     @property
     def session_key(self) -> str:
@@ -57,6 +58,7 @@ class RunIdentity:
             "sessionKey": self.session_key,
             "mode": "worker",
             "session": {"kind": "workspace"},
+            **({"runSecret": self.run_secret} if self.run_secret else {}),
         }
 
 

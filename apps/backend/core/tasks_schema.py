@@ -447,7 +447,8 @@ class Attempt(_Row):
     started_at: str
     ended_at: str | None = None
     last_heartbeat_at: str | None = None
-    task_token: str | None = None  # b64 Temporal task token of the async `worker_turn`
+    task_token: str | None = None  # b64 Temporal task token of the async `worker_turn`; never in a response
+    run_secret: str | None = None  # per-attempt secret the runtime presents on run events/inputs; never in a response
     terminal_status: str | None = None  # the bridge's terminal run status, once delivered
     output: str | None = Field(None, max_length=65536)  # the Worker's result text (never in a payload)
     recent_tools: list[dict[str, Any]] = []  # last heartbeat's tool calls (trace, progress)

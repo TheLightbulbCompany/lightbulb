@@ -146,7 +146,8 @@ class TaskWorkflow(TaskQuestionsMixin):
         self._ws, self._task_id = start.ws, start.task_id
         # `migrated` = started by a signal/update-with-start: wait for what came with it.
         self._attempt_needed = start.reason != "migrated"
-        self._started = start.reason != "migrated"  # a person or the Router chose to run it
+        # Consent for a proposed task is an explicit Start only (the route's start, or the `start` signal).
+        self._started = start.reason == "propose_start"
         self._status: str | None = None  # mirror of the row's status, None until this run changes it
         self._pending: list[TaskInputRef] = []
         self._seen_inputs: set[str] = set()

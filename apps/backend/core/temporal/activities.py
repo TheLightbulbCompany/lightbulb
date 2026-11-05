@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import secrets
 import logging
 import time
 from datetime import timedelta
@@ -89,7 +90,9 @@ async def _input_text(ws: str, trigger_id: str) -> str:
 
 
 def _identity(ws: str, task_id: str, att: dict) -> runtime_runs.RunIdentity:
-    return runtime_runs.RunIdentity(att["runId"], ws, task_id, att["n"], att["agentId"])
+    return runtime_runs.RunIdentity(
+        att["runId"], ws, task_id, att["n"], att["agentId"], run_secret=att.get("runSecret")
+    )
 
 
 async def _agent_for(ws: str, task: dict) -> str:
@@ -178,6 +181,8 @@ async def begin_attempt(ws: str, task_id: str, input_trigger_ids: list[str], sta
     attempts = sorted(tree["attempts"], key=lambda a: a["n"])
     if attempts and attempts[-1]["status"] != "ended":
         last = attempts[-1]
+        # A retry after put_attempt landed: finish the move it may have missed (no-op when done).
+        await _move(ws, task_id, "working", fields={"attemptCount": last["n"]})
         return AttemptRef(last["n"], last["runId"])
     n = len(attempts) + 1
     kind = _session_kind(ws)
@@ -189,6 +194,7 @@ async def begin_attempt(ws: str, task_id: str, input_trigger_ids: list[str], sta
             "agentId": await _agent_for(ws, tree["task"]),
             "sessionId": runtime_transport.session_id_for(ws, task_id if kind == "task" else None),
             "status": "dispatched",
+            "runSecret": secrets.token_urlsafe(32),  # binds run events and inputs to this attempt's runtime
             "inputTriggerIds": input_trigger_ids,
             "startedAt": utc_now_iso(),
         },

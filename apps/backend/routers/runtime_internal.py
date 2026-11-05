@@ -1,4 +1,8 @@
-"""The runtime's callbacks into task orchestration (wave-2 O Task 3; contracts §9, C13). Hook-token authed.
+"""The runtime's callbacks into task orchestration (wave-2 O Task 3; contracts §9, C13).
+
+Auth: the owner's hook token (owner-scoped: every runtime of the workspace holds it) AND the attempt's own
+`runSecret` (minted by `begin_attempt`, sent to the bridge in the run identity), so a runtime can only report
+for the attempt it runs. 404 while the workspace's switch is off.
 
 - `POST /api/v1/internal/runtime/{owner}/runs/{runId}/events`: the bridge's heartbeat (every 2 min) and
   terminal status for a v1 run. Heartbeats heartbeat the async `worker_turn` and record `recentTools`;
@@ -12,6 +16,7 @@ Lane Q appends its effects and questions routes to this router.
 from __future__ import annotations
 
 import base64
+import hmac
 import logging
 from typing import Any, Literal
 
@@ -25,6 +30,7 @@ from core.dynamodb import utc_now_iso
 from core.repositories import tasks_repo
 from core.services import task_conversation
 from core.services.container_auth import _require_hook_token
+from core.services.super_agent_flags import flags_for
 from core.temporal import activities as acts
 from core.temporal import client as temporal
 from core.temporal.types import RunEvent, RunUsage, TaskInputRef, WorkerTurnOut
@@ -35,9 +41,28 @@ logger = logging.getLogger(__name__)
 _LIVE = frozenset({"dispatched", "running"})
 
 
+_TOOLS_KEPT = 20
+
+
+def _tool_line(t: dict) -> dict:
+    """One recentTools entry, bounded (DynamoDB items cap at 400 KB): name, args hash, outcome only."""
+    return {
+        "name": str(t.get("name") or "")[:64],
+        "argsHash": str(t.get("argsHash") or "")[:32],
+        "ok": bool(t.get("ok", True)),
+        "errorClass": (str(t["errorClass"])[:64] if t.get("errorClass") else None),
+    }
+
+
+def _secret_ok(att: dict | None, presented: str | None) -> bool:
+    expected = (att or {}).get("runSecret") or ""
+    return bool(expected and presented) and hmac.compare_digest(presented.encode(), expected.encode())
+
+
 class RunEventBody(BaseModel):
     task_id: str = Field(alias="taskId")
     attempt: int = Field(ge=1)
+    run_secret: str = Field(alias="runSecret", min_length=1, max_length=128)
     kind: Literal["heartbeat", "terminal"]
     status: Literal["queued", "running", "stopping", "completed", "failed", "cancelled"]
     output: str | None = Field(None, max_length=65536)
@@ -53,17 +78,26 @@ class InputBody(BaseModel):
     job_id: str = Field(alias="jobId", max_length=256)
     text: str = Field(max_length=32 * 1024)
     delivery_id: str = Field(alias="deliveryId", min_length=1, max_length=200, pattern=r"^[A-Za-z0-9._:-]+$")
+    run_secret: str = Field(alias="runSecret", min_length=1, max_length=128)
 
 
 def _not_found(exc: RPCError) -> bool:
     return exc.status == RPCStatusCode.NOT_FOUND
 
 
+async def _gate(owner_id: str, request: Request) -> None:
+    """Owner-scoped hook token, then the workspace's switch (off ⇒ 404: the routes do not exist)."""
+    await _require_hook_token(owner_id, request)
+    if not await flags_for(owner_id):
+        raise HTTPException(status_code=404, detail="not_found")
+
+
 @router.post("/{owner_id}/runs/{run_id}/events")
 async def run_event(owner_id: str, run_id: str, body: RunEventBody, request: Request) -> dict:
-    await _require_hook_token(owner_id, request)
+    await _gate(owner_id, request)
     att = await tasks_repo.get_attempt(owner_id, body.task_id, body.attempt)
-    if att is None or att.get("runId") != run_id:
+    # The owner's hook token is shared by all its runtimes: the attempt's own secret binds the event to it.
+    if att is None or att.get("runId") != run_id or not _secret_ok(att, body.run_secret):
         raise HTTPException(status_code=403, detail="run_not_in_workspace")
     token = att.get("taskToken")
     if not token:
@@ -77,7 +111,10 @@ async def run_event(owner_id: str, run_id: str, body: RunEventBody, request: Req
                 owner_id,
                 body.task_id,
                 body.attempt,
-                {"lastHeartbeatAt": utc_now_iso(), "recentTools": body.recent_tools},
+                {
+                    "lastHeartbeatAt": utc_now_iso(),
+                    "recentTools": [_tool_line(t) for t in body.recent_tools[-_TOOLS_KEPT:]],
+                },
                 allowed_status=_LIVE,
             )
         if first:
@@ -137,10 +174,15 @@ async def _progress_line(ws: str, task_id: str, n: int, tools: list[dict]) -> No
 
 @router.post("/{owner_id}/inputs", status_code=202)
 async def task_input(owner_id: str, body: InputBody, request: Request, response: Response) -> dict:
-    await _require_hook_token(owner_id, request)
-    task = await tasks_repo.get_task(owner_id, body.task_id)
+    await _gate(owner_id, request)
+    tree = await tasks_repo.get_task_tree(owner_id, body.task_id)
+    task = tree["task"]
     if task is None:
         raise HTTPException(status_code=404, detail="task_not_found")
+    last = max(tree["attempts"], key=lambda a: a["n"], default=None)
+    key_ok = last is not None and body.session_key == ts.worker_session_key(last["agentId"], body.task_id)
+    if not key_ok or not _secret_ok(last, body.run_secret):
+        raise HTTPException(status_code=403, detail="not_this_tasks_runtime")
     trigger_id = ts.trigger_id("job_result", body.delivery_id)
     _, created = await tasks_repo.put_trigger(
         owner_id,

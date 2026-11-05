@@ -14,7 +14,8 @@ ASK_S = 600
 
 
 async def a05(ctx: Ctx) -> Result:
-    task_ids = list(ctx.state.get("taskIds") or [])
+    # Never the purchase task A3 started: nothing here may approve a purchase.
+    task_ids = [t for t in ctx.state.get("taskIds") or [] if t != ctx.state.get("purchaseTaskId")]
     found = await ctx.wait_for(
         lambda rows: next((q for t in task_ids if (q := question_row(rows, t, ("approval",)))), None), ASK_S
     )

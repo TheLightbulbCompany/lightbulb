@@ -55,6 +55,7 @@ _ADMIN_ONLY = {
     "company_stripe",
 }
 _MONEY = {"purchase", "spend", "budget_override"}
+MONEY_SUBKINDS = frozenset(_MONEY)  # public: the acceptance harness refuses to answer these
 
 
 class NoAnswerer(Exception):

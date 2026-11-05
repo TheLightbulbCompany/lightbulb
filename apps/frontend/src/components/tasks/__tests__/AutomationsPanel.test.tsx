@@ -17,8 +17,8 @@ import { AutomationsPanel } from "../AutomationsPanel";
 
 const signups: AutomationView = {
   id: "a1", name: "Post signups every Monday", instructions: "Post the signup count so far in #workshop-launch.", status: "active", pausedReason: null,
-  schedule: { cron: ["0 9 * * 1"], tz: "America/New_York" }, nextRuns: [], specialistId: "finance", deliverTo: "room-workshop-launch",
-  budgetPerRunUsd: 1, estRunsPerMonth: 4, ownerUserId: "user_sam", lastRun: { firedAt: "2026-11-02T14:00:00Z", source: "schedule", status: "done", taskId: "t-fees" }, version: 3,
+  schedule: { cron: ["0 9 * * 1"], tz: "America/New_York" }, nextRuns: [], hooks: [], specialistId: "finance", deliverTo: "room-workshop-launch",
+  budgetPerRunUsd: 1, ownerUserId: "user_sam", createdBy: "router", mode: null, lastTaskId: "t-fees", activeRunTaskId: null, runCount: 1, version: 3,
 };
 const routes = (over: Partial<AutomationView> = {}) => {
   const a = { ...signups, ...over };
@@ -47,6 +47,7 @@ describe("AutomationsPanel", () => {
     await userEvent.click(screen.getByRole("button", { name: "Post signups every Monday" }));
     await userEvent.click(await screen.findByRole("button", { name: "Pause" }));
     expect(api.post).toHaveBeenCalledWith("/automations/a1/pause", {});
+    expect(screen.getByText(/up to \$1 a run, about \$4 a month/)).toBeInTheDocument();
     expect(within(screen.getByRole("region", { name: "Instructions" })).getByText(/signup count/)).toBeInTheDocument();
   });
 

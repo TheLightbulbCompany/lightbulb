@@ -17,8 +17,8 @@ const api = vi.hoisted(() => ({
 }));
 const AUTOMATION = vi.hoisted(() => ({
   id: "a1", name: "Post signups every Monday", instructions: "Post the signup count so far in #workshop-launch.", status: "draft", pausedReason: null,
-  schedule: { cron: ["0 9 * * 1"], tz: "America/New_York" }, nextRuns: [], specialistId: null, deliverTo: "room-workshop-launch",
-  budgetPerRunUsd: 1, estRunsPerMonth: 4, ownerUserId: "user_sam", lastRun: null, version: 1,
+  schedule: { cron: ["0 9 * * 1"], tz: "America/New_York" }, nextRuns: [], hooks: [], specialistId: null, deliverTo: "room-workshop-launch",
+  budgetPerRunUsd: 1, ownerUserId: "user_sam", createdBy: "router", mode: null, lastTaskId: null, activeRunTaskId: null, runCount: 0, version: 1,
 }));
 vi.mock("@/lib/api", () => ({ useApi: () => api }));
 

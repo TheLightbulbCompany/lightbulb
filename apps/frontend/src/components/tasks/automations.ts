@@ -50,3 +50,24 @@ export const viewerTimeZone = (): string => {
 };
 
 export const money = (n: number): string => `$${n.toFixed(2).replace(/\.00$/, "")}`;
+
+/** Roughly how often a cron list fires a month (every day 30, weekdays 22, N named days 4×N); null when it can't say. */
+export function runsPerMonth(cron: readonly string[]): number | null {
+  let total = 0;
+  for (const entry of cron) {
+    const [, , dom, mon, dow = "*"] = entry.trim().split(/\s+/);
+    if (dom !== "*" || mon !== "*") return null;
+    if (dow === "*") total += 30;
+    else if (dow === "1-5") total += 22;
+    else if (/^[\w,]+$/.test(dow)) total += 4 * dow.split(",").length;
+    else return null;
+  }
+  return total || null;
+}
+
+/** "up to $1 a run, about $4 a month" from the row's budget and schedule. */
+export function budgetLine(a: Pick<AutomationView, "budgetPerRunUsd" | "schedule">): string | null {
+  if (a.budgetPerRunUsd == null) return null;
+  const perMonth = a.schedule ? runsPerMonth(a.schedule.cron) : null;
+  return `up to ${money(a.budgetPerRunUsd)} a run${perMonth ? `, about ${money(a.budgetPerRunUsd * perMonth)} a month` : ""}`;
+}

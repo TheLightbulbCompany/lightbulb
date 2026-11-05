@@ -7,7 +7,7 @@
 import { useState, type ReactElement } from "react";
 import { formatSchedule, specialistLabel, type AutomationView } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
-import { money, useAutomation, useAutomationActions, viewerTimeZone } from "./automations";
+import { budgetLine, useAutomation, useAutomationActions, viewerTimeZone } from "./automations";
 
 export function AutomationConfirmCard({ automationId, viewerTz = viewerTimeZone() }: { automationId: string; viewerTz?: string }): ReactElement {
   const { data: a, error } = useAutomation(automationId);
@@ -54,8 +54,8 @@ function lines(a: AutomationView, viewerTz: string): string[] {
     out.push(a.schedule.tz === viewerTz ? words : `${words} (${a.schedule.tz.replace(/_/g, " ").split("/").pop()} time: ${formatSchedule(a.schedule.cron, a.schedule.tz, a.schedule.tz)})`);
   }
   out.push(specialistLabel(a.specialistId));
-  const perMonth = a.estRunsPerMonth ? `, about ${money(a.budgetPerRunUsd * a.estRunsPerMonth)} a month` : "";
-  out.push(`up to ${money(a.budgetPerRunUsd)} a run${perMonth}`);
+  const budget = budgetLine(a);
+  if (budget) out.push(budget);
   return out;
 }
 

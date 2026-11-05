@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { useSuperAgent } from "@/hooks/useLiveEvents";
 import { openTaskPane } from "@/components/workspace/workspaceController";
 import { statusLine, useAutomations } from "./ScheduledList";
-import { money, useAutomation, useAutomationActions, useAutomationRuns, viewerTimeZone } from "./automations";
+import { budgetLine, useAutomation, useAutomationActions, useAutomationRuns, viewerTimeZone } from "./automations";
 
 export function AutomationsPanel({ viewerTz = viewerTimeZone(), onOpenTask = openTaskPane }: {
   viewerTz?: string; onOpenTask?: (taskId: string) => void;
@@ -83,7 +83,7 @@ function AutomationDetail({ id, viewerTz, onBack, onOpenTask }: {
     <Button variant="ghost" aria-label="Back to automations" onClick={onBack}><ArrowLeft aria-hidden="true" />Automations</Button>
     <header className="grid gap-1">
       <h2 className="font-semibold">{a.name}</h2>
-      <p className="text-ui text-muted-foreground">{[scheduleLine(a, viewerTz), specialistLabel(a.specialistId), `up to ${money(a.budgetPerRunUsd)} a run`].join(" · ")}</p>
+      <p className="text-ui text-muted-foreground">{[scheduleLine(a, viewerTz), specialistLabel(a.specialistId), budgetLine(a)].filter(Boolean).join(" · ")}</p>
       {statusLine(a) && <p className="text-ui text-warn">{statusLine(a)}</p>}
     </header>
     <div className="flex flex-wrap gap-2">

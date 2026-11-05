@@ -219,3 +219,36 @@ async def test_routes_404_when_switch_off(world):
     ):
         assert resp.status_code == 404
     world["start"].assert_not_awaited()
+
+
+async def test_list_needs_you_is_complete_and_matches_shown_group(world):
+    from core.repositories import questions_repo
+
+    asked = await _task("waiting")
+    await questions_repo.open_question(
+        WS,
+        {
+            "taskId": asked,
+            "qid": "q-1",
+            "kind": "question",
+            "title": "Which venue?",
+            "text": "",
+            "options": [],
+            "askedBy": {"kind": "worker", "attempt": 1},
+            "answerers": [SAM],
+            "answererRule": "requester",
+            "baseAnswerers": [SAM],
+        },
+    )
+    failed_mine = await _task("failed")
+    await _task(
+        "failed", ownerUserId=PRIYA, audience={"kind": "workspace"}
+    )  # someone else's failure: Done, not Needs you
+    for _ in range(3):
+        await _task("working")  # plain work never counts
+    resp = await world["client"].get("/api/v1/tasks", params={"scope": "workspace", "needsYou": "true", "limit": 1})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["next"] is None  # unpaged: the whole set, whatever `limit` says
+    assert sorted(t["taskId"] for t in body["tasks"]) == sorted([asked, failed_mine])
+    assert {t["shownGroup"] for t in body["tasks"]} == {"waiting_on_you"}

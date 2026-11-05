@@ -246,7 +246,7 @@ function DirectoryContent({
   const roster = participants.filter((participant) => !withDm.has(`${participant.kind}:${participant.id}`)
     && (!oneVoice || participant.kind !== "agent" || participant.id === ceoAgentId));
   const groups = groupRooms(rooms, sections, { sort: prefs.sort, nameOf: (room) => roomDisplayName(room, room.participants),
-    alwaysShow: roster.length > 0 ? ["direct"] : [],
+    alwaysShow: roster.length > 0 ? ["direct"] : [], currentRoomId,
     ...(oneVoice ? { frontAgentId: ceoAgentId } : {}) });
   // `focusRoomTrigger` can run long after the render that captured it (it's
   // attached to a promise settling), so it must read the CURRENT groups, not

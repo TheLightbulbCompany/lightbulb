@@ -40,6 +40,15 @@ describe("sidebar with the super-agent on", () => {
     expect(screen.queryByRole("button", { name: /^Ask / })).toBeNull();
   });
 
+  it("a specialist DM stays findable under Team while it has unread messages or is open, and hides once read", () => {
+    const { rerender } = render(<RoomDirectory {...props} rooms={[{ ...base, unreadCount: 2 }]} />);
+    expect(rowsOf("Team")).toContain("Finance");
+    rerender(<RoomDirectory {...props} rooms={[base]} currentRoomId="dm-finance" />);
+    expect(rowsOf("Team")).toContain("Finance");
+    rerender(<RoomDirectory {...props} rooms={[base]} currentRoomId={undefined} />);
+    expect(rowsOf("Team")).not.toContain("Finance");
+  });
+
   it("an unknown front agent (roster not resolved, or no ceo role) keeps today's roster", () => {
     render(<RoomDirectory {...props} ceoAgentId={undefined} />);
     // Today's roster: every agent, alphabetical (nothing to pin without a known CEO).

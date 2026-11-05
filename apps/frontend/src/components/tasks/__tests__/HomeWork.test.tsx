@@ -10,7 +10,9 @@ import { Fresh, fakeTasksClient, type FakeTasksClient } from "./fakeTasks";
 const live = vi.hoisted(() => ({ superAgent: true, tasks: null as unknown, agentNames: new Map() }));
 vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useSuperAgent: () => live.superAgent, useOptionalLiveEvents: () => live }));
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
-vi.mock("@/lib/api", () => ({ useApi: () => ({ get: vi.fn(async () => ({ automations: [{ id: "a1" }, { id: "a2" }] })) }) }));
+// The server's complete Needs you read (`/tasks?needsYou=true`) answers from the same rows, by scope; automations too.
+const apiGet = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/api", () => ({ useApi: () => ({ get: apiGet }) }));
 const openPanel = vi.hoisted(() => vi.fn());
 vi.mock("@/components/workspace/workspaceController", () => ({ openPanel }));
 
@@ -34,7 +36,15 @@ const TASKS: TaskSummary[] = [
 const roomOf = (roomId: string) => TASKS.filter((t) => t.originRoomId === roomId);
 
 let client: FakeTasksClient;
-beforeEach(() => { client = fakeTasksClient(TASKS); live.tasks = client; openPanel.mockClear(); });
+beforeEach(() => {
+  client = fakeTasksClient(TASKS); live.tasks = client; openPanel.mockClear();
+  apiGet.mockImplementation(async (path: string) => {
+    if (path === "/automations") return { automations: [{ id: "a1" }, { id: "a2" }] };
+    const scope = decodeURIComponent(/scope=([^&]+)/.exec(path)![1]);
+    const rows = scope.startsWith("room:") ? roomOf(scope.slice(5)) : TASKS;
+    return { tasks: rows.filter((t) => t.shownGroup === "waiting_on_you" || t.shownGroup === "ready_for_review"), next: null };
+  });
+});
 
 describe("homeSections", () => {
   it("Home's counts are the sum of the per-room counts, group by group", () => {
@@ -72,12 +82,24 @@ describe("HomeWork", () => {
     await waitFor(() => expect(badge.current).toBe(3));
   });
 
-  it("each room's About dot counts that room's Needs you rows", async () => {
-    (client.list as unknown as { mockImplementation: (f: (scope: { kind: string; roomId?: string }) => Promise<unknown>) => void })
-      .mockImplementation(async (scope) => ({ tasks: scope.kind === "room" ? roomOf(scope.roomId!) : TASKS, next: null }));
+  it("each room's About dot counts that room's Needs you rows, from the complete read", async () => {
     const { result: r1 } = renderHook(() => useRoomThreads("r1"), { wrapper: Fresh });
     const { result: r2 } = renderHook(() => useRoomThreads("r2"), { wrapper: Fresh });
     await waitFor(() => expect(r1.current.waitingOnMe).toBe(2));
     await waitFor(() => expect(r2.current.waitingOnMe).toBe(1));
+    expect(apiGet).toHaveBeenCalledWith("/tasks?scope=room%3Ar1&needsYou=true");
+  });
+
+  it("Needs you is complete: a request beyond the list's first page still shows and counts", async () => {
+    const old = task("z", "r2", "waiting_on_you", { updatedAt: "2025-01-01T00:00:00Z" });
+    client.list.mockResolvedValue({ tasks: TASKS.slice(0, 3), next: "page-2" }); // the paged list never reaches it
+    const base = apiGet.getMockImplementation()!;
+    apiGet.mockImplementation(async (path: string) => path.includes("needsYou=true")
+      ? { tasks: [...(await base(path)).tasks, old], next: null } : base(path));
+    render(<Fresh><HomeWork viewerId={SAM} onOpen={vi.fn()} /></Fresh>);
+    const needs = await screen.findByRole("region", { name: "Needs you · 4" });
+    expect(within(needs).getByText("Request z")).toBeInTheDocument();
+    const { result: badge } = renderHook(() => useHomeNeedsYou(), { wrapper: Fresh });
+    await waitFor(() => expect(badge.current).toBe(4));
   });
 });

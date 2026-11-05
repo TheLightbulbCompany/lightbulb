@@ -730,7 +730,7 @@ function RoomContent({
     }
     return body(message.text);
   }, [revealStarter, participants, currentUserId, repliesByRoot, threadActivity, receipts, id, actionable, editTarget, searchTarget,
-    quickReactions, reactionPending, reactionError, onSetReaction, toggleReaction, openDetail, superAgent, openTask, isAgentId,
+    quickReactions, reactionPending, reactionError, onSetReaction, toggleReaction, openDetail, superAgent, isAgentId,
     onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, onCardReply, cardsEnabled, repliesEnabled, cardAnswers, onSetPin, onMarkUnreadFrom,
     messageActionPending, runMessageAction, pinnedMessageIds, copied, copyError, roomId, visibleSessions]);
   // A run that ended without a saved reply (stopped, failed, no reply) stays where it happened,

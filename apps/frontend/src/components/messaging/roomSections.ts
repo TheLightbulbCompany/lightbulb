@@ -24,8 +24,10 @@ export function groupRooms(
   options: {
     sort: SidebarSort; nameOf: (room: DirectoryRoom) => string; alwaysShow?: readonly string[];
     /** Super-agent: the one front agent (`@lightbulb`). A DM with any other agent is a specialist's: it leaves the
-     *  sidebar (one voice) and is reached from the Team page, where specialists are hired and managed. */
+     *  sidebar (one voice) and is reached from the Team page, where specialists are hired and managed. It stays
+     *  under Team while it has unread messages or is the open conversation, so nothing new hides. */
     frontAgentId?: string | null;
+    currentRoomId?: string | null;
   },
 ): RoomGroup[] {
   const known = new Set(sections.map((section) => section.id));
@@ -34,7 +36,8 @@ export function groupRooms(
   const bucket = (room: DirectoryRoom) => room.archivedAt ? "archived" : room.starred ? "starred"
     : room.sectionId && known.has(room.sectionId) ? room.sectionId
       : room.kind === "channel" && room.shared ? "external"
-        : room.kind === "channel" ? "channels" : specialistDm(room) ? null : "direct";
+        : room.kind === "channel" ? "channels"
+          : specialistDm(room) && room.unreadCount === 0 && room.roomId !== options.currentRoomId ? null : "direct";
   const order: RoomGroup[] = [
     { id: "starred", label: "Starred", rooms: [], custom: false },
     ...sections.map((section) => ({ id: section.id, label: section.name, rooms: [], custom: true })),

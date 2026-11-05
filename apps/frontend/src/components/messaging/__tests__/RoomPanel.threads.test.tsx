@@ -10,7 +10,9 @@ const live = vi.hoisted(() => ({ superAgent: true, tasks: null as unknown }));
 vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useSuperAgent: () => live.superAgent, useOptionalLiveEvents: () => live }));
 vi.mock("@/components/huddle/useRoomHuddle", () => ({ useRoomHuddle: () => ({ userIds: [], available: false }) }));
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
-vi.mock("@/lib/api", () => ({ useApi: () => ({ get: vi.fn(async () => { throw new Error("no route"); }) }) }));
+// The About dot's complete Needs you read answers from the room's rows; automations have no route here.
+const apiGet = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/api", () => ({ useApi: () => ({ get: apiGet }) }));
 
 import { RoomPanel, type RoomPanelProps } from "../RoomPanel";
 
@@ -27,7 +29,14 @@ const props: RoomPanelProps = {
 // Default SWR dedupe here: the button and the overview share one room read, as in the app.
 const Fresh = ({ children }: { children: React.ReactNode }) => <SWRConfig value={{ provider: () => new Map() }}>{children}</SWRConfig>;
 let client: FakeTasksClient;
-beforeEach(() => { live.superAgent = true; client = fakeTasksClient(FIXTURES.step05.tasks); live.tasks = client; });
+beforeEach(() => {
+  live.superAgent = true; client = fakeTasksClient(FIXTURES.step05.tasks); live.tasks = client;
+  apiGet.mockReset();
+  apiGet.mockImplementation(async (path: string) => {
+    if (!path.includes("needsYou=true")) throw new Error("no route");
+    return { tasks: FIXTURES.step05.tasks.filter((t) => t.shownGroup === "waiting_on_you" || t.shownGroup === "ready_for_review"), next: null };
+  });
+});
 
 describe("RoomPanel Threads view (super-agent)", () => {
   it("the About button carries the needs-you dot and opens on the room's requests", async () => {

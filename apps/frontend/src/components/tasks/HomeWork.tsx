@@ -1,8 +1,8 @@
 "use client";
 
 // Home's top half: every request the viewer can see, cut into Needs you · Working · Done from the server's
-// `shownGroup` (homeSections), with the Work overview's own rows. The rail badge counts the same Needs you rows
-// (useHomeNeedsYou), so the two can never disagree.
+// `shownGroup` (homeSections), with the Work overview's own rows. Needs you is the complete server read the rail
+// badge counts (useNeedsYouTasks); Working and Done come from the paged workspace list.
 
 import { useState, type ReactElement } from "react";
 import { useAutomations, useOlderTasks, useTaskList, type TaskScope, type TaskSummary } from "@lightbulb/shared";
@@ -11,6 +11,7 @@ import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { openPanel } from "@/components/workspace/workspaceController";
 import { useAutomationSource } from "./automations";
 import { OverviewRow } from "./TaskOverview";
+import { useNeedsYouTasks } from "./useRoomThreads";
 
 const WORKSPACE: TaskScope = { kind: "workspace" };
 /** Done shows this many before "Show all". */
@@ -20,12 +21,14 @@ export function HomeWork({ viewerId, onOpen }: { viewerId: string; onOpen: (task
   const { tasks } = useLiveEvents();
   const { data, error, mutate } = useTaskList(tasks, WORKSPACE);
   const { older, hasOlder, loading, loadOlder } = useOlderTasks(tasks, data, WORKSPACE);
+  const needs = useNeedsYouTasks(WORKSPACE);
   const { data: scheduled } = useAutomations(useAutomationSource());
   const [doneOpen, setDoneOpen] = useState(false);
-  if (!data) return <div className="home-work">{error
-    ? <p role="alert" className="text-ui text-muted-foreground">Requests couldn&apos;t load. <button type="button" className="underline hover:text-foreground" onClick={() => void mutate()}>Retry</button></p>
+  if (!data || !needs.loaded) return <div className="home-work">{error || needs.error
+    ? <p role="alert" className="text-ui text-muted-foreground">Requests couldn&apos;t load. <button type="button" className="underline hover:text-foreground" onClick={() => { void mutate(); needs.retry(); }}>Retry</button></p>
     : <p role="status" className="text-ui text-muted-foreground">Loading…</p>}</div>;
-  const { needsYou, working, done } = homeSections([...data.tasks, ...older]);
+  const needsYou = needs.tasks;
+  const { working, done } = homeSections([...data.tasks, ...older]);
   const rows = (list: TaskSummary[]) => <ul className="mt-1 grid">{list.map((t) => <OverviewRow key={t.taskId} task={t} viewerId={viewerId} onOpen={onOpen} />)}</ul>;
   const automations = scheduled?.automations.length ?? 0;
   return <div className="home-work">

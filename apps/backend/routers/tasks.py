@@ -16,7 +16,7 @@ from temporalio.client import WorkflowUpdateFailedError
 from temporalio.service import RPCError
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
-from core.repositories import effects_repo, messaging_repo, tasks_repo
+from core.repositories import effects_repo, messaging_repo, questions_repo, tasks_repo
 from core.services import chat_gate, runtime_runs, super_agent_flags, task_conversation, tasks_access
 from core.services.messaging import human_display_name
 from core.temporal import client as temporal_client
@@ -26,6 +26,8 @@ router = APIRouter()
 
 # Listing walks the `by-status` GSI one status at a time, live work first.
 _STATUSES = ("waiting", "working", "queued", "proposed", "idle", "failed", "resolved")
+# `needsYou=true`: the viewer's Needs you groups, complete (Home and its rail badge count these).
+_NEEDS_YOU_GROUPS = frozenset({"waiting_on_you", "ready_for_review"})
 _GATED = frozenset({"start", "retry", "reopen"})  # a new attempt: today's chat gate first (§14.10)
 
 Auth = Annotated[AuthContext, Depends(get_current_user)]
@@ -73,6 +75,7 @@ async def list_tasks(
     scope: str = "mine",
     cursor: Annotated[str | None, Query(max_length=2048)] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    needs_you: Annotated[bool, Query(alias="needsYou")] = False,
 ):
     ws = await _workspace(auth)
     me = auth.user_id
@@ -90,6 +93,9 @@ async def list_tasks(
         if scope == "mine" and t.get("ownerUserId") != me and me not in (audience.get("userIds") or []):
             return False
         return await tasks_access.can_view(t, me)
+
+    if needs_you:
+        return {"tasks": await _needs_you(ws, me, keep), "next": None}
 
     try:
         i, _, inner = (cursor or "0~").partition("~")
@@ -110,6 +116,34 @@ async def list_tasks(
     # ponytail: one tree query per listed task (≤100); a summary index if lists get hot.
     trees = await asyncio.gather(*(tasks_repo.get_task_tree(ws, t["taskId"]) for t in found))
     return {"tasks": [await _summary(tree, me) for tree in trees if tree["task"]], "next": next_cursor}
+
+
+async def _needs_you(ws: str, me: str, keep) -> list[dict]:
+    """Every task waiting on `me` or ready for their review, unpaged: the tasks behind `me`'s open questions (the
+    `NEEDS#` index) plus the failed tasks `me` owns (Retry is theirs). Kept by the scope's own rule, then by the same
+    `shownGroup` the list shows, so a count and its rows can never disagree."""
+    ids: dict[str, None] = {}
+    cursor: str | None = None
+    while True:
+        rows, cursor = await questions_repo.needs_for_user(ws, me, cursor=cursor)
+        ids.update(dict.fromkeys(r["taskId"] for r in rows))
+        if not cursor:
+            break
+    # ponytail: walks every failed task in the workspace; an owner-keyed index if failures pile up.
+    while True:
+        rows, cursor = await tasks_repo.list_tasks_by_status(ws, "failed", limit=100, cursor=cursor)
+        ids.update(dict.fromkeys(t["taskId"] for t in rows if t.get("ownerUserId") == me))
+        if not cursor:
+            break
+    trees = await asyncio.gather(*(tasks_repo.get_task_tree(ws, tid) for tid in ids))
+    out = []
+    for tree in trees:
+        if tree["task"] is None or not await keep(tree["task"]):
+            continue
+        summary = await _summary(tree, me)
+        if summary.get("shownGroup") in _NEEDS_YOU_GROUPS:
+            out.append(summary)
+    return sorted(out, key=lambda t: t.get("updatedAt") or "", reverse=True)
 
 
 async def _act(ws: str, task_id: str, action: str, user_id: str, version: int | None) -> dict:

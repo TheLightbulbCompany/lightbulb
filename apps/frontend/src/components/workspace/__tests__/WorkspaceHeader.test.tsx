@@ -38,6 +38,9 @@ vi.mock("@/components/activity/useNeedsYouBadge", () => ({ useNeedsYouBadge: () 
 const closePane = vi.fn();
 vi.mock("../workspaceController", () => ({ openPanel: (...args: unknown[]) => openPanel(...args), activateMessagesPanel: () => activateMessagesPanel(), closePane: () => closePane(), useWorkspaceState: () => ({ place }) }));
 
+const apiGet = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/api", () => ({ useApi: () => ({ get: apiGet }) }));
+
 const recordMessagesNavigation = vi.fn();
 vi.mock("../chatHistory", () => ({ recordMessagesNavigation: () => recordMessagesNavigation() }));
 const live = vi.hoisted(() => ({ superAgent: false, tasks: null as unknown }));
@@ -103,7 +106,9 @@ describe("WorkspaceHeader", () => {
     live.superAgent = true;
     activityState.attentionCount = 1;
     const t = (taskId: string, shownGroup: string) => ({ taskId, shownGroup, status: "waiting", watching: false, updatedAt: "2026-11-05T00:00:00Z" });
-    live.tasks = { cacheScope: "org_h", list: vi.fn(async () => ({ next: null, tasks: [t("a", "waiting_on_you"), t("b", "ready_for_review"), t("c", "working")] })) };
+    live.tasks = { cacheScope: "org_h" };
+    // The complete Needs you read (server-filtered; a stray working row is cut client-side by the same rule).
+    apiGet.mockResolvedValue({ next: null, tasks: [t("a", "waiting_on_you"), t("b", "ready_for_review"), t("c", "working")] });
     try {
       render(<SWRConfig value={{ provider: () => new Map() }}><WorkspaceHeader /></SWRConfig>);
       expect(await screen.findByRole("button", { name: "Home, 3 need you" })).toBeInTheDocument();

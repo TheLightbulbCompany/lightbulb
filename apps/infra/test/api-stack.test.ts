@@ -1116,3 +1116,51 @@ describe("ApiStack — message search (OpenSearch Serverless)", () => {
     prod.hasResourceProperties("AWS::SQS::Queue", { QueueName: "lightbulb-prod-message-search-index-batch" });
   });
 });
+
+describe("ApiStack — super-agent tasks table (contracts-v2 §3, dev only)", () => {
+  const SCHEMA = JSON.parse(
+    fs.readFileSync(
+      path.join(__dirname, "../../../packages/shared/fixtures/super-agent/tasks-schema.json"),
+      "utf8",
+    ),
+  ) as { gsis: { name: string; pk: string; sk: string }[] };
+
+  const tasksTable = (template: Template) =>
+    Object.values(template.findResources("AWS::DynamoDB::Table")).filter((r: any) =>
+      String(r.Properties?.TableName ?? "").endsWith("-tasks"),
+    ) as any[];
+
+  test("tasks table exists in dev with pk/sk, PITR, CMK, RETAIN", () => {
+    const tables = tasksTable(API_TEMPLATE);
+    expect(tables).toHaveLength(1);
+    const [t] = tables;
+    expect(t.Properties.TableName).toBe("lightbulb-dev-tasks");
+    expect(t.Properties.KeySchema).toEqual([
+      { AttributeName: "pk", KeyType: "HASH" },
+      { AttributeName: "sk", KeyType: "RANGE" },
+    ]);
+    expect(t.Properties.BillingMode).toBe("PAY_PER_REQUEST");
+    expect(t.Properties.PointInTimeRecoverySpecification.PointInTimeRecoveryEnabled).toBe(true);
+    expect(t.Properties.SSESpecification.KMSMasterKeyId).toBeDefined();
+    expect(t.Properties.StreamSpecification).toBeUndefined();
+    expect(t.Properties.TimeToLiveSpecification).toBeUndefined();
+    expect(t.DeletionPolicy).toBe("Retain");
+    expect(t.UpdateReplacePolicy).toBe("Retain");
+  });
+
+  test("tasks table GSIs match tasks-schema.json", () => {
+    const [t] = tasksTable(API_TEMPLATE);
+    const gsis = t.Properties.GlobalSecondaryIndexes.map((g: any) => ({
+      name: g.IndexName,
+      pk: g.KeySchema.find((k: any) => k.KeyType === "HASH").AttributeName,
+      sk: g.KeySchema.find((k: any) => k.KeyType === "RANGE").AttributeName,
+      projection: g.Projection.ProjectionType,
+    }));
+    expect(gsis).toEqual(SCHEMA.gsis.map((g) => ({ ...g, projection: "ALL" })));
+    expect(SCHEMA.gsis.map((g) => g.name)).toEqual(["by-status", "ws-meta"]);
+  });
+
+  test("prod synth has no tasks table", () => {
+    expect(tasksTable(synthApiStack("prod"))).toHaveLength(0);
+  });
+});

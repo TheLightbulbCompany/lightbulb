@@ -187,6 +187,11 @@
       "name": "by-status",
       "pk": "statusKey",
       "sk": "updatedAt"
+    },
+    {
+      "name": "ws-meta",
+      "pk": "metaKind",
+      "sk": "pk"
     }
   ],
   "rows": {

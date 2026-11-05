@@ -39,6 +39,7 @@ import {
 } from "../table-names";
 import { Construct } from "constructs";
 import { LAUNCH_DOMAIN, ROOT_DOMAIN } from "../domains";
+import { superAgentEnabled } from "../super-agent";
 
 // =============================================================================
 // ApiStack — HTTP API Gateway + WebSocket API Gateway
@@ -585,6 +586,35 @@ export class ApiStack extends cdk.Stack {
       projectionType: dynamodb.ProjectionType.KEYS_ONLY,
     });
     this.messagingTableName = `${tablePrefix(env)}messaging`;
+
+    // Super-agent tasks table (contracts-v2 §3; dev only until a founder-approved rollout). RETAIN in
+    // every env (spec 10 C27). Both GSIs are created with the table because CloudFormation adds at most
+    // one per later update; names and keys mirror core/tasks_schema.py GSIS (api-stack.test.ts reads
+    // the exported tasks-schema.json). No stream, no TTL yet: both are in-place updates when wave 2 needs them.
+    if (superAgentEnabled(env)) {
+      const tasksTable = new dynamodb.Table(this, "TasksTable", {
+        tableName: `${tablePrefix(env)}tasks`,
+        partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING },
+        sortKey: { name: "sk", type: dynamodb.AttributeType.STRING },
+        billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+        encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+        encryptionKey: messagingKey,
+        pointInTimeRecovery: true,
+        removalPolicy: cdk.RemovalPolicy.RETAIN,
+      });
+      tasksTable.addGlobalSecondaryIndex({
+        indexName: "by-status",
+        partitionKey: { name: "statusKey", type: dynamodb.AttributeType.STRING },
+        sortKey: { name: "updatedAt", type: dynamodb.AttributeType.STRING },
+        projectionType: dynamodb.ProjectionType.ALL,
+      });
+      tasksTable.addGlobalSecondaryIndex({
+        indexName: "ws-meta",
+        partitionKey: { name: "metaKind", type: dynamodb.AttributeType.STRING },
+        sortKey: { name: "pk", type: dynamodb.AttributeType.STRING },
+        projectionType: dynamodb.ProjectionType.ALL,
+      });
+    }
 
     const workDlq = new sqs.Queue(this, "OpenClawWorkDlq", {
       queueName: `${resourcePrefix(env)}openclaw-work-dlq.fifo`,

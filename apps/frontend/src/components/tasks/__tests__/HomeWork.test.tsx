@@ -92,7 +92,7 @@ describe("HomeWork", () => {
 
   it("Needs you is complete: a request beyond the list's first page still shows and counts", async () => {
     const old = task("z", "r2", "waiting_on_you", { updatedAt: "2025-01-01T00:00:00Z" });
-    client.list.mockResolvedValue({ tasks: TASKS.slice(0, 3), next: "page-2" }); // the paged list never reaches it
+    client.list.mockResolvedValue({ tasks: TASKS.slice(0, 3), next: "page-2" as never }); // the paged list never reaches it
     const base = apiGet.getMockImplementation()!;
     apiGet.mockImplementation(async (path: string) => path.includes("needsYou=true")
       ? { tasks: [...(await base(path)).tasks, old], next: null } : base(path));

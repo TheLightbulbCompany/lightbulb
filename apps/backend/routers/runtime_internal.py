@@ -39,7 +39,7 @@ from core.services.super_agent_flags import flags_for
 from core.temporal import activities as acts
 from core.temporal import client as temporal
 from core.temporal.task_questions import AskRef
-from core.temporal.types import RunEvent, RunUsage, TaskInputRef, WorkerTurnOut
+from core.temporal.types import RunEvent, RunStatusName, RunUsage, TaskInputRef, WorkerTurnOut
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -72,7 +72,7 @@ class RunEventBody(BaseModel):
     run_secret: str = Field(alias="runSecret", min_length=1, max_length=128)
     kind: Literal["heartbeat", "terminal"]
     # `waiting_approval`: the Worker's turn ended because an external effect needs a person (Lane Q, contracts §8).
-    status: Literal["queued", "running", "stopping", "completed", "failed", "cancelled", "waiting_approval"]
+    status: RunStatusName  # one source with the workflow's RunEvent (a mismatch dropped run_event signals, #4824)
     output: str | None = Field(None, max_length=65536)
     error: str | None = Field(None, max_length=128)
     usage: dict[str, Any] | None = None

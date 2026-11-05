@@ -8,6 +8,7 @@ creates tasks and never stops work (`test_guards.py`).
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 import zlib
@@ -20,8 +21,8 @@ from temporalio.service import RPCError, RPCStatusCode
 
 from core import tasks_schema as ts
 from core.observability.metrics import put_metric
-from core.repositories import tasks_repo, watchdog_repo
-from core.services import runtime_runs, super_agent_flags
+from core.repositories import messaging_repo, tasks_repo, watchdog_repo
+from core.services import jev, runtime_runs, super_agent_flags
 from core.temporal.watchdog_types import Candidate, Proposal, ScanOut, WatchdogConfig
 
 logger = logging.getLogger(__name__)
@@ -329,3 +330,146 @@ async def watchdog_scan(cfg: WatchdogConfig) -> ScanOut:
         logger.warning("watchdog hints failed", exc_info=True)
         put_metric("watchdog.scan_error", dimensions={"Check": "hints"})
     return ScanOut(scan.candidates, scan.proposals, scan.finding_ids)
+
+
+# --- judge (spec 11 §3.5) ----------------------------------------------------------------------------
+
+MAX_JUDGEMENTS_PER_ATTEMPT = 16  # 8 h ÷ 30 min
+JUDGE_TIMEOUT_S = 15.0
+STATE_MAX_CHARS = 24_000
+NOTES = 10
+NOTE_MAX = 1_000
+
+# Changing this text is a PR (spec 11 §3.8): the model never writes text that reaches a Worker or a person.
+VERDICT_INSTRUCTIONS = (
+    "You are checking on a long-running background task done by an AI worker. Judge only from the evidence: the "
+    "task's title and description, the worker's recent notes, its recent tool calls (name, args hash, ok, error "
+    "class), its spend and any open questions. Pick the one verdict that best describes the last stretch of work."
+)
+VERDICT_CRITERIA = {
+    "progressing": "New information or finished steps since the last notes; tool calls vary and succeed.",
+    "looping": "The same calls or the same error repeat with no new result.",
+    "stalled_waiting": "The Worker is waiting on something no one was asked for.",
+    "drifting": "Recent work no longer serves the task's title and description.",
+    "claims_done_without_evidence": "It says it is done but shows no test, output or check.",
+    "blocked_external": "A service, credential or permission outside the Worker keeps failing.",
+}
+QUESTIONS = {"verdict": {"type": "choice", "instructions": VERDICT_INSTRUCTIONS, "criteria": VERDICT_CRITERIA}}
+_STEER = frozenset({"looping", "drifting", "claims_done_without_evidence"})
+_QUESTION = frozenset({"stalled_waiting", "blocked_external"})
+
+
+def verdict_to_action(choice: str, p: float, cfg: WatchdogConfig) -> str:
+    if choice == "progressing" or p < cfg.steer_threshold_p:
+        return "none"
+    if choice in _STEER:
+        return "steer"
+    return "question" if choice in _QUESTION else "none"
+
+
+def judge_state(
+    task: dict,
+    attempt: dict,
+    notes: list[dict],
+    tools: list[dict],
+    usage: dict,
+    open_questions: list[str],
+    previous_verdicts: list[str],
+    *,
+    age_min: int = 0,
+) -> dict:
+    """What Jev sees, ≤ 24k chars, oldest notes dropped first. Watchdog-authored lines never count as progress."""
+    lines = [
+        {"author": (m.get("author") or {}).get("kind"), "text": str(m.get("text") or "")[:NOTE_MAX]}
+        for m in notes
+        if m.get("kind") != "watchdog"
+    ][-NOTES:]
+    state = {
+        "task": {
+            "title": str(task.get("title") or "")[:200],
+            "description": str(task.get("description") or "")[:1000],
+            "specialist": task.get("specialist"),
+            "attemptN": attempt.get("n"),
+            "attemptAgeMin": age_min,
+        },
+        "notes": lines,
+        "tools": [{k: t.get(k) for k in ("name", "argsHash", "ok", "errorClass")} for t in tools[-20:]],
+        "usage": usage,
+        "openQuestions": {"count": len(open_questions), "kinds": sorted(set(open_questions))},
+        "previousVerdicts": previous_verdicts,
+    }
+    while len(json.dumps(state, ensure_ascii=False)) > STATE_MAX_CHARS and lines:
+        lines.pop(0)
+    return state
+
+
+async def _evidence(c: Candidate, tree: dict) -> tuple[list[dict], list[dict]]:
+    notes = await messaging_repo.list_messages_before(ts.task_room_id(c.task_id), 10**18, NOTES + 5)
+    tools: list[dict] = []
+    att = next((a for a in tree["attempts"] if a["n"] == c.attempt_n), None)
+    if att:
+        try:
+            identity = runtime_runs.RunIdentity(att["runId"], c.ws, c.task_id, c.attempt_n, att["agentId"])
+            tools = (await runtime_runs.get_run(c.ws, identity)).recent_tools
+        except Exception:
+            logger.info("watchdog judge: run status unavailable", extra={"taskId": c.task_id})
+    return notes, tools
+
+
+@activity.defn
+async def watchdog_judge(cfg: WatchdogConfig, c: Candidate) -> Proposal | None:
+    """One Jev verdict on a flagged long attempt → a judge Finding (observe) and its Proposal. `None` = nothing
+    recorded (caps, task moved on, Jev down or an invalid answer)."""
+    now = datetime.now(timezone.utc)
+    judged = await judge_findings(c.ws, c.task_id, c.attempt_n, now)
+    if len(judged) >= MAX_JUDGEMENTS_PER_ATTEMPT:
+        return None
+    if not await watchdog_repo.take_cap("judge", _day(now), cfg.judge_per_day):
+        put_metric("watchdog.cap_hit", dimensions={"Kind": "judge"})
+        return None
+    tree = await tasks_repo.get_task_tree(c.ws, c.task_id)
+    task = tree["task"]
+    att = next((a for a in tree["attempts"] if a["n"] == c.attempt_n), None)
+    if not task or not att or task["status"] != "working" or task.get("hidden") or att.get("status") == "ended":
+        return None
+    notes, tools = await _evidence(c, tree)
+    usage = {
+        "tokens": int((task.get("usage") or {}).get("inputTokens") or 0)
+        + int((task.get("usage") or {}).get("outputTokens") or 0),
+        "usd": float((task.get("usage") or {}).get("costUsd") or 0),
+        "budgetUsd": task.get("budgetUsd"),
+    }
+    questions = [q.get("kind") or "question" for q in tree["questions"] if q.get("state") == "open"]
+    state = judge_state(
+        task, att, notes, tools, usage, questions, [j.get("verdict") for j in judged], age_min=c.age_min
+    )
+    answers = await jev.decide(state, QUESTIONS, timeout_s=JUDGE_TIMEOUT_S, metric_prefix="watchdog.judge")
+    if not isinstance(answers, dict):
+        return None
+    verdict = answers.get("verdict") if isinstance(answers.get("verdict"), dict) else {}
+    choice = verdict.get("choice")
+    p = (verdict.get("probabilities") or {}).get(choice)
+    if choice not in VERDICT_CRITERIA or not isinstance(p, (int, float)):
+        return None
+    action = verdict_to_action(choice, float(p), cfg)
+    item, _ = await watchdog_repo.put_finding(
+        {
+            "pk": ts.wd_finding_pk(_day(now)),
+            "sk": ts.wd_finding_sk(c.ws, c.task_id, "judge", c.attempt_n, len(judged) + 1),
+            "ws": c.ws,
+            "taskId": c.task_id,
+            "attemptN": c.attempt_n,
+            "check": "judge",
+            "verdict": choice,
+            "p": round(float(p), 4),
+            "proposed": action,
+            "mode": cfg.tier2,
+            "reasons": list(c.reasons),
+            "at": now.isoformat(),
+            # ponytail: evidence on the row (≤ 24k chars) instead of S3; move to S3 if rows near 400 KB.
+            "evidence": json.dumps(state, ensure_ascii=False),
+        }
+    )
+    put_metric("watchdog.finding", dimensions={"Check": "judge"})
+    # Returned even for "none": the digest lists every judge finding; act skips "none".
+    return Proposal(c.ws, c.task_id, c.attempt_n, "judge", action, item["findingId"], round(float(p), 4))

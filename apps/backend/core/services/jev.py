@@ -127,17 +127,19 @@ async def _gateway_key() -> str | None:
         return _key
 
 
-async def decide(state: dict, questions: dict) -> dict | str | None:
+async def decide(
+    state: dict, questions: dict, *, timeout_s: float = _TIMEOUT_S, metric_prefix: str = "messaging.jev"
+) -> dict | str | None:
     """One Jev call. Returns the ``answers`` dict, ``RATE_LIMITED`` on a 429, or ``None`` on any
-    other failure (never raises)."""
+    other failure (never raises). The watchdog passes its own timeout and prefix, so P26 stays routing's."""
     key = await _gateway_key()
     if not key:
-        put_metric("messaging.jev.decision", dimensions={"outcome": "disabled"})
+        put_metric(f"{metric_prefix}.decision", dimensions={"outcome": "disabled"})
         return None
     started = time.perf_counter()
     outcome = "error"
     try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
+        async with httpx.AsyncClient(timeout=timeout_s) as client:
             response = await client.post(
                 _URL,
                 headers={"Authorization": f"Bearer {key}"},
@@ -169,10 +171,10 @@ async def decide(state: dict, questions: dict) -> dict | str | None:
         outcome = "ok"
         cost = ((payload.get("providerMetadata") or {}).get("gateway") or {}).get("cost")
         if cost is not None:
-            put_metric("messaging.jev.cost", value=float(cost), unit="None")
+            put_metric(f"{metric_prefix}.cost", value=float(cost), unit="None")
         tokens = (payload.get("usage") or {}).get("inputTokens")
         if tokens is not None:
-            put_metric("messaging.jev.input_tokens", value=float(tokens))
+            put_metric(f"{metric_prefix}.input_tokens", value=float(tokens))
         return answers
     except httpx.TimeoutException:
         outcome = "timeout"
@@ -184,8 +186,8 @@ async def decide(state: dict, questions: dict) -> dict | str | None:
         logger.warning("Jev call failed: %s", type(exc).__name__)
         return None
     finally:
-        put_metric("messaging.jev.decision", dimensions={"outcome": outcome})
-        put_metric("messaging.jev.latency", value=(time.perf_counter() - started) * 1000, unit="Milliseconds")
+        put_metric(f"{metric_prefix}.decision", dimensions={"outcome": outcome})
+        put_metric(f"{metric_prefix}.latency", value=(time.perf_counter() - started) * 1000, unit="Milliseconds")
 
 
 # --------------------------------------------------------------------------- agent cards

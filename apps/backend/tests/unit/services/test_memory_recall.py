@@ -93,9 +93,12 @@ def test_namespaces_for():
         "facts": "/owners/own1/",
         "turns": "/turns/own1/",
         "entries": "/entries/own1/",
+        "tasks": "/tasks/own1/",
         "private": "/owners/own1:user_a/",
+        "private_turns": "/turns/own1:user_a/",
+        "private_tasks": "/tasks/own1:user_a/",
     }
-    assert "private" not in TEAM_ONLY
+    assert not any(k.startswith("private") for k in TEAM_ONLY)
 
 
 @pytest.mark.asyncio

@@ -28,7 +28,7 @@ def _live_ids(roster):
 @pytest.mark.asyncio
 async def test_seed_preserves_ids(tasks_table, paperclip):
     report = await agent_registry.seed_from_paperclip(WS)
-    assert report == (7, 0, 1)
+    assert report == (7, 0, 1, 0)
     assert sorted(r["agentId"] for r in await repo.list_agents(WS)) == _live_ids(paperclip)
     for agent_id in _live_ids(paperclip):
         assert await repo.owner_of(agent_id) == WS
@@ -38,13 +38,13 @@ async def test_seed_preserves_ids(tasks_table, paperclip):
 async def test_seed_idempotent(tasks_table, paperclip):
     await agent_registry.seed_from_paperclip(WS)
     before = await repo.list_agents(WS)
-    assert await agent_registry.seed_from_paperclip(WS) == (0, 0, 1)
+    assert await agent_registry.seed_from_paperclip(WS) == (0, 0, 1, 0)
     assert await repo.list_agents(WS) == before
 
 
 @pytest.mark.asyncio
 async def test_seed_dry_run_writes_nothing(tasks_table, paperclip):
-    assert await agent_registry.seed_from_paperclip(WS, dry_run=True) == (7, 0, 1)
+    assert await agent_registry.seed_from_paperclip(WS, dry_run=True) == (7, 0, 1, 0)
     assert await repo.list_agents(WS) == []
 
 
@@ -61,6 +61,7 @@ async def test_verify_diff_kinds(tasks_table, paperclip):
     extra = paperclip.pop(2)
     paperclip.append(missing)
     paperclip[0]["name"] = "Renamed"
+    paperclip[1]["companyId"] = "co-other"
     paperclip[3]["status"] = "running"  # run state, not identity: no diff
     found = await agent_registry.verify(WS)
     assert sorted(found) == sorted(
@@ -68,8 +69,25 @@ async def test_verify_diff_kinds(tasks_table, paperclip):
             Diff("missing_in_registry", missing["id"]),
             Diff("extra_in_registry", extra["id"]),
             Diff("field", paperclip[0]["id"], "name"),
+            Diff("field", paperclip[1]["id"], "companyId"),
         ]
     )
+
+
+@pytest.mark.asyncio
+async def test_apply_soft_deletes_agents_terminated_or_gone_in_paperclip(tasks_table, paperclip):
+    """Paperclip's own writes (a rejected hire, a clean-slate reset) heal on the next --apply."""
+    await agent_registry.seed_from_paperclip(WS)
+    terminated, gone = paperclip[0], paperclip.pop(1)
+    terminated["status"] = "terminated"
+    assert await agent_registry.verify(WS) == [
+        Diff("extra_in_registry", i) for i in sorted([terminated["id"], gone["id"]])
+    ]
+    assert (await agent_registry.seed_from_paperclip(WS, dry_run=True)).deleted == 2
+    assert (await agent_registry.seed_from_paperclip(WS)).deleted == 2
+    assert {(await repo.get(WS, i))["status"] for i in (terminated["id"], gone["id"])} == {"deleted"}
+    assert await agent_registry.verify(WS) == []
+    assert (await agent_registry.seed_from_paperclip(WS)).deleted == 0
 
 
 async def _cli(*argv):

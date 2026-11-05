@@ -186,6 +186,7 @@ class SeedReport(NamedTuple):
     created: int
     updated: int
     skipped_terminated: int
+    deleted: int
 
 
 class Diff(NamedTuple):
@@ -195,7 +196,18 @@ class Diff(NamedTuple):
 
 
 # The fields `verify` compares (registry attr names); status is normalised to active|paused on both sides.
-_VERIFY_FIELDS = ("name", "role", "title", "reportsTo", "persona", "status", "listingId")
+_VERIFY_FIELDS = (
+    "name",
+    "role",
+    "title",
+    "reportsTo",
+    "persona",
+    "status",
+    "listingId",
+    "companyId",
+    "icon",
+    "appearance",
+)
 
 
 async def _paperclip_agents(ws: str) -> list[dict]:
@@ -215,12 +227,15 @@ async def _paperclip_agents(ws: str) -> list[dict]:
 
 async def seed_from_paperclip(ws: str, *, dry_run: bool = False) -> SeedReport:
     """Id-preserving backfill: every non-terminated Paperclip agent → its `AGENT#` row. Idempotent: an
-    unchanged row is not written. A registry row whose agent is terminated or gone is left for `verify`."""
-    created = updated = skipped = 0
+    unchanged row is not written. A registry row whose agent is terminated or gone in Paperclip is soft-deleted:
+    this heals writes Paperclip makes on its own side (a rejected hire, an agent using its own key)."""
+    created = updated = skipped = deleted = 0
+    live: set[str] = set()
     for agent in await _paperclip_agents(ws):
         if agent.get("status") == "terminated":
             skipped += 1
             continue
+        live.add(agent["id"])
         fields = row_from_paperclip(agent)
         existing = await repo.get(ws, agent["id"])
         if existing is None:
@@ -236,7 +251,12 @@ async def seed_from_paperclip(ws: str, *, dry_run: bool = False) -> SeedReport:
             updated += 1
             if not dry_run:
                 await repo.upsert_fields(ws, agent["id"], changed)
-    return SeedReport(created, updated, skipped)
+    for row in await repo.list_agents(ws):
+        if row.get("status") != "deleted" and row["agentId"] not in live:
+            deleted += 1
+            if not dry_run:
+                await repo.mark_deleted(ws, row["agentId"])
+    return SeedReport(created, updated, skipped, deleted)
 
 
 def _comparable(row: dict) -> dict[str, Any]:

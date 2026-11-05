@@ -1,6 +1,7 @@
 """Backfill the super-agent `AGENT#` registry from Paperclip, keeping Paperclip's agent ids (spec 03 §6.1).
 
-DRY RUN BY DEFAULT: prints the planned created/updated counts. `--apply` writes (idempotent). `--verify`
+DRY RUN BY DEFAULT: prints the planned created/updated counts. `--apply` writes (idempotent) and soft-deletes
+registry rows whose agent is terminated or gone in Paperclip. `--verify`
 compares registry and Paperclip and exits 1 on any difference, printing agent ids and field names only (no
 names, no personas). Refuses prod and refuses when the super-agent env master is off (there is no table).
 Runs inside the dev backend task (Paperclip is VPC-internal):
@@ -44,7 +45,7 @@ async def main(argv: list[str] | None = None) -> int:
         else sorted(await PaperclipRepo(table_name="paperclip-companies").list_active_workspace_members())
     )
     failed = diffs = 0
-    totals = [0, 0, 0]
+    totals = [0, 0, 0, 0]
     for ws in owners:
         try:
             if args.verify:
@@ -59,14 +60,14 @@ async def main(argv: list[str] | None = None) -> int:
             print(f"{ws}: ERROR {type(e).__name__}")
             continue
         totals = [t + n for t, n in zip(totals, report)]
-        if report.created or report.updated:
-            print(f"{ws}: created={report.created} updated={report.updated}")
+        if report.created or report.updated or report.deleted:
+            print(f"{ws}: created={report.created} updated={report.updated} deleted={report.deleted}")
     if args.verify:
         print(f"verify: {diffs} differences across {len(owners)} workspaces; {failed} errors")
         return 1 if diffs or failed else 0
     verb = "applied" if args.apply else "would apply (dry run)"
     print(
-        f"{verb}: created={totals[0]} updated={totals[1]} skipped_terminated={totals[2]} "
+        f"{verb}: created={totals[0]} updated={totals[1]} skipped_terminated={totals[2]} deleted={totals[3]} "
         f"across {len(owners)} workspaces; {failed} errors"
     )
     return 1 if failed else 0

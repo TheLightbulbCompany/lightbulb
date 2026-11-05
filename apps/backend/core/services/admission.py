@@ -26,7 +26,6 @@ from core import tasks_schema as ts
 from core.dynamodb import utc_now_iso
 from core.observability.metrics import put_metric
 from core.repositories import automations_repo, messaging_repo, tasks_repo
-from core.repositories.tasks_repo import VersionConflict
 from core.services import jev, messaging, room_memory, rules
 from core.services.openclaw_work import WorkRetry
 from core.services.super_agent_flags import flags_for
@@ -237,8 +236,8 @@ async def _record_rule(ws: str, room_id: str, msg: dict, in_scope: list[dict], v
         await rules_activities.record_match(
             ws, sid, rule.get("ruleVersion", 1), thread_key, ref, verdict.get("ruleP"), would, "chat"
         )
-    except VersionConflict:  # the rule row moved twice under us: the record is lost, admission is not
-        logger.warning("rules: record_match conflict ws=%s rule=%s", ws, sid, exc_info=True)
+    except Exception:  # noqa: BLE001 -- a lost record (version conflict, DynamoDB) never fails admission
+        logger.warning("rules: record_match failed ws=%s rule=%s", ws, sid, exc_info=True)
 
 
 async def _stopped_by_human(ws: str, thread_key: str) -> bool:

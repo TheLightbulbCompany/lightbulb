@@ -64,6 +64,7 @@ from core.services.paperclip_admin_client import PaperclipAdminClient, Paperclip
 from core.services.paperclip_admin_session import get_admin_session_cookie, invalidate_admin_session
 from core.services.trigger_fire_url import trigger_fire_url
 from routers import paperclip_trigger_proxy
+from routers.rules import RuleBuiltin, RuleMatchIn, check_scope, rule_stats
 from routers.teams._guards import WEBHOOK_AUTOMATIONS_MESSAGE, require_always_on_entitlement
 
 logger = logging.getLogger(__name__)
@@ -317,6 +318,12 @@ class AutomationIn(_In):
     schedule: ScheduleIn | None = None
     events: list[EventTriggerIn] = []
     activate: bool = False
+    # §18: with `match` the automation is a proactive rule; it starts in observe.
+    match: RuleMatchIn | None = None
+    speculative: bool = False
+    time_limit_s: int | None = Field(default=None, ge=60, le=7200)
+    daily_cap_usd: float = Field(default=10.0, gt=0, le=100)
+    builtin: RuleBuiltin | None = None
 
 
 class AutomationPatch(_In):
@@ -326,6 +333,10 @@ class AutomationPatch(_In):
     deliver_to: str | None = Field(default=None, pattern=_DELIVER_TO.pattern)
     budget_per_run_usd: float | None = Field(default=None, gt=0, le=100)
     schedule: ScheduleIn | None = None
+    match: RuleMatchIn | None = None
+    speculative: bool | None = None
+    time_limit_s: int | None = Field(default=None, ge=60, le=7200)
+    daily_cap_usd: float | None = Field(default=None, gt=0, le=100)
     version: int
 
 
@@ -355,12 +366,18 @@ def _may_activate(row: dict, auth: AuthContext) -> None:
 
 
 async def _visible(row: dict, auth: AuthContext) -> bool:
-    """Who sees an automation: its owner, an org admin, and the members of the room it delivers to."""
+    """Who sees an automation: its owner, an org admin, and the members of the room it delivers to. A rule's
+    audience is the rooms it watches; a personal (calendar) rule is its owner's alone (lead, 5 Nov)."""
+    match = row.get("match") or {}
+    if "calendar" in match.get("sources", []):
+        return row.get("ownerUserId") == auth.user_id
     if auth.is_org_admin or row.get("ownerUserId") == auth.user_id:
         return True
     deliver_to = row.get("deliverTo") or "none"
-    if deliver_to.startswith("room:"):
-        return await messaging_repo.get_member(deliver_to.removeprefix("room:"), "human", auth.user_id) is not None
+    rooms = [deliver_to.removeprefix("room:")] if deliver_to.startswith("room:") else []
+    for room_id in [*rooms, *(match.get("roomIds") or [])]:
+        if await messaging_repo.get_member(room_id, "human", auth.user_id) is not None:
+            return True
     return False
 
 
@@ -418,6 +435,16 @@ async def _view(ws: str, row: dict) -> dict:
         "ownerUserId": row["ownerUserId"],
         "createdBy": row.get("createdBy") or "user",
         "mode": row.get("mode"),
+        # §18 rule fields; null `match` means an ordinary automation.
+        "match": {k: v for k, v in row["match"].items() if v is not None} if row.get("match") else None,
+        "speculative": bool(row.get("speculative")),
+        "timeLimitS": row.get("timeLimitS"),
+        "dailyCapUsd": row.get("dailyCapUsd"),
+        "builtin": row.get("builtin"),
+        "ruleVersion": row.get("ruleVersion"),
+        "promotedBy": row.get("promotedBy"),
+        "promotedAt": row.get("promotedAt"),
+        "stats": rule_stats(row) if row.get("match") else None,
         "lastTaskId": row.get("lastTaskId"),
         "activeRunTaskId": row.get("activeRunTaskId"),
         "runCount": len(row.get("runTaskIds") or []),
@@ -451,6 +478,31 @@ async def _activate(ws: str, row: dict) -> dict:
     return row
 
 
+async def _may_turn_on_rule(ws: str, row: dict, auth: AuthContext) -> None:
+    """Who turns a rule on (contracts §18; lead, 5 Nov): a personal (calendar) rule its owner alone, a room rule
+    an org admin, within the room cap. 403 / 409 otherwise. Typed text never gets here (C20)."""
+    match = row["match"]
+    if "calendar" in match.get("sources", []):
+        if row.get("ownerUserId") != auth.user_id:
+            raise _err(403, "forbidden")
+    else:
+        require_org_admin(auth)
+        await check_scope(
+            ws, row["ownerUserId"], RuleMatchIn.model_validate(match), row.get("builtin"), except_sid=row["scheduleId"]
+        )
+
+
+async def _turn_on_rule(ws: str, row: dict, auth: AuthContext) -> dict:
+    """A rule turns on in observe, always."""
+    await _may_turn_on_rule(ws, row, auth)
+    row = await _activate(ws, row)
+    if row.get("mode") != "observe":
+        row = await automations_repo.update_schedule(
+            ws, row["scheduleId"], {"mode": "observe"}, expected_version=row["version"]
+        )
+    return row
+
+
 @router.get("")
 async def list_automations(auth: AuthContext = Depends(get_current_user)) -> dict:
     ws = await _ws(auth)
@@ -465,6 +517,18 @@ async def create_automation(body: AutomationIn, auth: AuthContext = Depends(get_
     if body.events:  # a webhook on a provider is an org-admin act, as `from_integration` is today
         require_org_admin(auth)
     fields = _schedule_fields(body.schedule) if body.schedule else {"cron": [], "tz": "UTC"}
+    if body.match is not None and (body.schedule is not None or body.events):
+        raise _err(409, "rule_never_runs")  # a rule fires on its matches, never on a schedule or a webhook
+    if body.match is not None:  # a rule: any member, for rooms they are in or their own calendar; starts in observe
+        fields |= {
+            "match": await check_scope(ws, auth.user_id, body.match, body.builtin),
+            "mode": "observe",
+            "speculative": body.speculative,
+            "timeLimitS": body.time_limit_s,
+            "dailyCapUsd": body.daily_cap_usd,
+            "builtin": body.builtin,
+            "ruleVersion": 1,
+        }
     row, _ = await automations_repo.create_schedule(
         ws,
         {
@@ -506,12 +570,15 @@ async def create_automation(body: AutomationIn, auth: AuthContext = Depends(get_
         await automation_schedule.upsert(row)  # paused until activated
     if body.activate:
         try:
-            _may_activate(row, auth)
+            if row.get("match"):
+                await _may_turn_on_rule(ws, row, auth)
+            else:
+                _may_activate(row, auth)
             await require_always_on_entitlement(ws, message=_ACTIVATE_MESSAGE)
         except HTTPException:
             await _destroy(ws, sid)  # not turned on: nothing of it is kept
             raise
-        row = await _activate(ws, row)
+        row = await (_turn_on_rule(ws, row, auth) if row.get("match") else _activate(ws, row))
     return {**await _view(ws, row), "setup": setup}
 
 
@@ -553,8 +620,25 @@ async def patch_automation(sid: str, body: AutomationPatch, auth: AuthContext = 
         fields["deliverTo"] = body.deliver_to
     if body.budget_per_run_usd is not None:
         fields["budgetPerRunUsd"] = body.budget_per_run_usd
+    if body.match is not None and not row.get("match"):
+        raise _err(409, "rule_never_runs")  # an automation does not become a rule: its Schedule and hooks would stay
+    if body.schedule is not None and row.get("match"):
+        raise _err(409, "rule_never_runs")  # a rule row must never reach the fire path
     if body.schedule is not None:
         fields.update(_schedule_fields(body.schedule))
+    if body.match is not None:
+        fields["match"] = await check_scope(ws, row["ownerUserId"], body.match, row.get("builtin"), except_sid=sid)
+    if body.speculative is not None:
+        fields["speculative"] = body.speculative
+    if body.time_limit_s is not None:
+        fields["timeLimitS"] = body.time_limit_s
+    if body.daily_cap_usd is not None:
+        fields["dailyCapUsd"] = body.daily_cap_usd
+    if (row.get("match") or body.match is not None) and {"policyText", "specialist", "match"} & set(fields):
+        # §18: an edited rule is a new rule: text, scope or specialist bump its version and drop it to observe.
+        # A budget edit keeps the mode.
+        fields["ruleVersion"] = int(row.get("ruleVersion") or 0) + 1
+        fields["mode"] = "observe"
     try:
         row = await automations_repo.update_schedule(ws, sid, fields, expected_version=body.version)
     except VersionConflict as exc:
@@ -569,6 +653,10 @@ async def patch_automation(sid: str, body: AutomationPatch, auth: AuthContext = 
 async def activate_automation(sid: str, auth: AuthContext = Depends(get_current_user)) -> dict:
     ws = await _ws(auth)
     row = await _row(ws, sid, auth)
+    if row.get("match"):
+        await _may_turn_on_rule(ws, row, auth)
+        await require_always_on_entitlement(ws, message=_ACTIVATE_MESSAGE)
+        return await _view(ws, await _turn_on_rule(ws, row, auth))
     _may_activate(row, auth)
     await require_always_on_entitlement(ws, message=_ACTIVATE_MESSAGE)
     return await _view(ws, await _activate(ws, row))
@@ -610,6 +698,8 @@ async def run_now(sid: str, auth: AuthContext = Depends(get_current_user)) -> di
     ws = await _ws(auth)
     row = await _row(ws, sid, auth)
     _may_edit(row, auth)
+    if row.get("match"):
+        raise _err(409, "rule_never_runs")  # observe records; Run now would be the fire path
     if row["status"] != "active":
         raise _err(409, "not_active", status=row["status"])
     gate = await chat_gate.gate_chat(user_id=auth.user_id, owner_id=ws, session_key=f"automation:{sid}")

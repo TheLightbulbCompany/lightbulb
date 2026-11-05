@@ -26,7 +26,7 @@ from collections import namedtuple
 from pathlib import Path
 
 from bridge import API, HOME, HOOK_TOKEN, OWNER, now
-from bridge import sync, browser_control, memory_ctx, website_logins, worktrees
+from bridge import sync, browser_control, memory_ctx, task_mode, website_logins, worktrees
 from bridge.sync import restore_profile, save_profile, _profile_dir, pin_profile_defaults
 
 log = logging.getLogger("bridge")
@@ -115,6 +115,8 @@ def _curate_when_idle() -> None:
     the curator would never come due.
     ponytail: with ``curator.consolidate`` on (we never set it) the LLM pass would hold this
     profile's lock for minutes; turns for that agent would queue behind it."""
+    if task_mode.active():
+        return  # never in a Worker VM: the curator runs on the workspace VM after the merge (spec 07 §3.5)
     with _busy_lock:
         if _busy != 1:
             return
@@ -4380,6 +4382,8 @@ def _run_durable_turn(identity: dict, request: dict, reserved: bool, *, family: 
             sync.restore_root_auth()
             restore_profile(agent_id)
             RESTORED.add(agent_id)
+            if family == "task" and task_mode.active():
+                sync.write_base_manifest(agent_id, int(identity.get("attempt") or 1))  # B for this attempt's merge
             if paperclip_run_aborted(run_id):
                 outcome = "cancelled"
             else:
@@ -4418,6 +4422,11 @@ def _run_durable_turn(identity: dict, request: dict, reserved: bool, *, family: 
             sync.save_root_auth()
         except Exception:  # noqa: BLE001
             log.warning("save_root_auth failed for native Paperclip turn", exc_info=True)
+        if family == "task" and task_mode.active():
+            try:  # AFTER the final save: the seal is the merge's proof the attempt finished (spec 07 §3.5)
+                sync.seal_attempt(agent_id, identity["taskId"], int(identity.get("attempt") or 1))
+            except Exception:  # noqa: BLE001 -- unsealed = skipped by the merge, never merged half
+                log.warning("seal_attempt failed run=%s", run_id, exc_info=True)
     finally:
         hb_stop.set()
         _end_turn()

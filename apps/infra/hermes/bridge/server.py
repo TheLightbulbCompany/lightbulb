@@ -33,7 +33,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import bridge
-from bridge import GATEWAY_TOKEN, HOOK_TOKEN, OWNER, PORT, STARTED, now
+from bridge import GATEWAY_TOKEN, HOOK_TOKEN, OWNER, PORT, STARTED, now, task_mode
 from bridge import sync, turn, browser_control, followups, mcp_compat, network, recycle, runs, subagents
 
 logging.basicConfig(level=logging.INFO, format="[bridge] %(message)s", stream=sys.stdout)
@@ -234,9 +234,17 @@ def _handle_call_run(path: str, method: str, headers: dict, body) -> tuple[int, 
 def handle_plugin(path: str, method: str, headers: dict, body) -> tuple[int, dict]:
     if not _authorized(headers):
         return 401, {"error": "unauthorized"}
+    # A task VM (spec 02 §3.3) runs its task's runs and answers RPC reads, nothing else: no room
+    # turn, no Paperclip run, no call -- each would restore and write the specialist profile.
+    task_run = path.startswith("/internal/v1/runs")
+    if task_mode.active() and not task_run and path != "/plugins/lightbulb-channel/rpc":
+        return task_mode.Refused.reply
     # A real, authorized invoke: this microVM is claimed, so the network member may start here
-    # (never on a warm-pool instance). No-op without a member key or sessions.json.
-    network.ensure_started(background=True)
+    # (never on a warm-pool instance). No-op without a member key or sessions.json. A task
+    # session never starts one: the workspace member belongs to the workspace VM.
+    wants_task = task_run and isinstance(body, dict) and ((body.get("identity") or {}).get("session") or {}).get("kind") == "task"
+    if not (task_mode.active() or wants_task):
+        network.ensure_started(background=True)
     # The website-login vault token rides every backend invoke (runtime_transport._vault_header);
     # memory only. See bridge/__init__.py's VAULT_TOKEN.
     vault = _header(headers, "X-Lightbulb-Vault")

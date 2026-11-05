@@ -33,7 +33,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from bridge import HOME, S3_BUCKET, S3_PREFIX
+from bridge import HOME, S3_BUCKET, S3_PREFIX, task_mode
 
 log = logging.getLogger("bridge")
 
@@ -454,6 +454,27 @@ def _profile_dir(agent_id: str) -> Path:
     return HOME / "profiles" / agent_id
 
 
+def read_prefixes(agent_id: str) -> list[str]:
+    """Where a restore reads from, in order (a later prefix wins): the specialist profile, then --
+    in task mode (spec 02 §3.3) -- the task's own overlay. One entry on a workspace VM: today's."""
+    prefixes = [f"{S3_PREFIX}/{agent_id}/"]
+    if task_mode.active():
+        task_mode.check_agent(agent_id)
+        prefixes.append(task_mode.overlay_prefix() + "/")
+    return prefixes
+
+
+def write_prefix(agent_id: str) -> str:
+    """The ONE prefix every write of this process goes to: the task overlay in task mode, else the
+    specialist profile. The 16 Sep invariant (one writer per S3 profile prefix) with a second
+    microVM in the picture: the overlay has this VM as its one writer, and the specialist profile
+    keeps the workspace VM (plus the backend's learning merge) as its one."""
+    if task_mode.active():
+        task_mode.check_agent(agent_id)
+        return task_mode.overlay_prefix() + "/"
+    return f"{S3_PREFIX}/{agent_id}/"
+
+
 def ensure_profile_home(agent_id: str) -> Path:
     """Create the profile's ``home/`` -- the shell's ``$HOME`` for every turn under
     ``TERMINAL_HOME_MODE: profile``. Called from ``restore_profile`` (both paths), so it exists
@@ -650,29 +671,33 @@ def _restore_profile(agent_id: str) -> float:
     t0 = time.time()
     dest = _profile_dir(agent_id)
     ensure_profile_home(agent_id)
-    prefix = f"{S3_PREFIX}/{agent_id}/"
     s3 = _s3()
     # M6-R51: _download_one records the save baseline (_MTIMES/_SYNCED) per object as it writes
     # it -- without that the first save of the process would upload the entire tree it just
     # downloaded -- and not by a second rglob afterwards: cold-restore latency sits in front of
     # the first reply.
-    wanted: list[tuple[str, dict]] = []
+    prefixes = read_prefixes(agent_id)
+    wanted: dict[str, tuple[str, dict]] = {}  # rel -> (rel, obj); a later prefix (the task overlay) wins
     deferred = 0
-    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=S3_BUCKET, Prefix=prefix):
-        for obj in page.get("Contents", []):
-            rel = obj["Key"][len(prefix):]
-            if not rel or rel.endswith("/"):
-                continue  # directory marker: downloading it onto the directory raises
-            if is_lock_sidecar(rel) or rel.startswith(_RESTORE_SKIP_PREFIXES) or _is_git_lock(rel):
-                continue  # process-local lock or reinstallable home cache
-            if is_regenerable_cache(rel):
-                continue  # Hermes rebuilds it; never worth a GET
-            if rel.startswith(_DEFERRED_PREFIXES):
-                deferred += 1
-                continue
-            wanted.append((rel, obj))
+    for prefix in prefixes:
+        specialist_under_task = len(prefixes) > 1 and prefix == prefixes[0]
+        for page in s3.get_paginator("list_objects_v2").paginate(Bucket=S3_BUCKET, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                rel = obj["Key"][len(prefix):]
+                if not rel or rel.endswith("/"):
+                    continue  # directory marker: downloading it onto the directory raises
+                if is_lock_sidecar(rel) or rel.startswith(_RESTORE_SKIP_PREFIXES) or _is_git_lock(rel):
+                    continue  # process-local lock or reinstallable home cache
+                if is_regenerable_cache(rel):
+                    continue  # Hermes rebuilds it; never worth a GET
+                if specialist_under_task and rel.startswith(("state.db", WORK_DIR_PREFIX)):
+                    continue  # per-VM state: a task VM starts its own (its overlay's copy, if any, still restores)
+                if rel.startswith(_DEFERRED_PREFIXES):
+                    deferred += 1
+                    continue
+                wanted[rel] = (rel, obj)
 
-    _fan_out(lambda item: _download_one(agent_id, dest, item), wanted)
+    _fan_out(lambda item: _download_one(agent_id, dest, item), list(wanted.values()))
     clear_turn_leases(dest / "state.db")
     n = len(wanted)
     _restored.add(agent_id)
@@ -712,7 +737,7 @@ def save_profile(agent_id: str) -> float:
     with _save_lock(agent_id):
         t0 = time.time()
         src = _profile_dir(agent_id)
-        prefix = f"{S3_PREFIX}/{agent_id}/"
+        prefix = write_prefix(agent_id)  # the task overlay in task mode: never the specialist profile
         s3 = _s3()
         mtimes = _MTIMES.setdefault(agent_id, {})
         synced = _SYNCED.setdefault(agent_id, {})
@@ -1138,8 +1163,8 @@ def save_rotated_cli_credentials() -> None:
     replaced only while S3 still holds the exact bytes we rotated FROM, and the PUT is
     ``IfMatch`` on the ETag that check read: a backend connect/disconnect that landed first (or
     lands in between, 412) wins and is skipped, never overwritten. Best-effort per profile."""
-    if not S3_BUCKET:
-        return
+    if not S3_BUCKET or task_mode.active():
+        return  # a task VM is never a second writer of the roster's credential files
     with _rotate_lock:
         for rel in ROTATING_CLI_CREDENTIALS:
             rotated = []
@@ -1333,8 +1358,8 @@ def save_root_auth() -> None:
     S3 rejects this warm writer rather than letting it resurrect or overwrite the grant.
     """
     global _ROOT_AUTH_REVISION, _ROOT_AUTH_ETAG, _ROOT_AUTH_HASH
-    if not S3_BUCKET:
-        return
+    if not S3_BUCKET or task_mode.active():
+        return  # a task VM never writes the root grant back (spec 02 §3.3; the broker owns it, spec 13)
     local_hash = _local_auth_hash()
     if local_hash is None or local_hash == _ROOT_AUTH_HASH:
         return  # no local auth.json, or this turn never touched it
@@ -1356,7 +1381,74 @@ def save_root_auth() -> None:
 
 
 def _run_records_prefix(agent_id: str, runs_dir: str = PAPERCLIP_RUNS_DIR) -> str:
-    return f"{S3_PREFIX}/{agent_id}/{runs_dir}/"
+    return f"{write_prefix(agent_id)}{runs_dir}/"
+
+
+# ---- task mode: base manifest and seal (spec 07 §3.5; lane V2) --------------------------------
+#: The learning files the backend's merge (core/services/learning_merge.py) reads; the three the
+#: entry-level merge needs the starting TEXT of ride in the base manifest.
+LEARNING_TEXT_FILES = ("memories/MEMORY.md", "memories/USER.md", "skills/.usage.json")
+
+
+def is_learning_file(rel: str) -> bool:
+    """Mirrors ``learning_merge.is_learning_file``: the two memory files, ``skills/.usage.json``
+    and skill dirs -- never ``skills/workspace/`` (review G16), the curator's dot files, or a
+    credential skill dir the backend projects (CLI_CREDENTIAL_PREFIXES)."""
+    if rel in LEARNING_TEXT_FILES:
+        return True
+    if not rel.startswith("skills/") or rel.startswith(CLI_CREDENTIAL_PREFIXES):
+        return False
+    parts = rel.split("/")[1:]
+    return not (parts[0] == "workspace" or any(p.startswith(".") for p in parts))
+
+
+def _learning_files(agent_id: str) -> dict[str, Path]:
+    src = _profile_dir(agent_id)
+    out = {}
+    for path in _save_walk(src):
+        rel = path.relative_to(src).as_posix()
+        if path.is_file() and is_learning_file(rel):
+            out[rel] = path
+    return out
+
+
+def write_base_manifest(agent_id: str, attempt: int) -> bool:
+    """B for this attempt's merge: every learning file as the attempt STARTS (sha256, the S3 ETag we
+    restored it at, and the text of the three entry-level files), as ``base-{attempt:04d}.json`` in
+    the task overlay. Once per attempt: False when it is already there (a retried start). The
+    local tree is the right source on a cold start (specialist layered with the overlay) and on a
+    warm one (the end of the previous attempt) alike."""
+    if not S3_BUCKET or not task_mode.active():
+        return False
+    s3, key = _s3(), f"{write_prefix(agent_id)}base-{attempt:04d}.json"
+    try:
+        s3.get_object(Bucket=S3_BUCKET, Key=key)
+        return False
+    except Exception as exc:  # noqa: BLE001 -- only "absent" means "write it"
+        if not _is_absent(exc):
+            raise
+    etags = _ETAGS.get(agent_id, {})
+    files: dict[str, dict] = {}
+    for rel, path in _learning_files(agent_id).items():
+        data = path.read_bytes()
+        entry: dict = {"sha256": _sha(data), "etag": etags.get(rel, "")}
+        if rel in LEARNING_TEXT_FILES:
+            entry["text"] = data.decode("utf-8", errors="replace")
+        files[rel] = entry
+    body = json.dumps({"attempt": attempt, "files": files}, separators=(",", ":")).encode("utf-8")
+    s3.put_object(Bucket=S3_BUCKET, Key=key, Body=body)
+    return True
+
+
+def seal_attempt(agent_id: str, task_id: str, attempt: int) -> None:
+    """After the attempt's FINAL save: ``sealed.json`` = the sha256 of every learning file as the
+    task left them. The merge takes an attempt only with its seal (a VM that died mid-attempt
+    leaves none: nothing of it is merged); a later attempt's seal supersedes this one."""
+    if not S3_BUCKET or not task_mode.active():
+        return
+    files = {rel: _sha(path.read_bytes()) for rel, path in _learning_files(agent_id).items()}
+    body = json.dumps({"attempt": attempt, "taskId": task_id, "files": files}, separators=(",", ":"))
+    _s3().put_object(Bucket=S3_BUCKET, Key=f"{write_prefix(agent_id)}sealed.json", Body=body.encode("utf-8"))
 
 
 def put_paperclip_run_record(agent_id: str, run_id: str, record: dict, *, prune: bool = True,

@@ -35,7 +35,9 @@ async def a00(ctx) -> Result:
     first = (await api.post(f"/api/v1/messaging/rooms/{room_id}/messages", json=body)).raise_for_status().json()
     reply = None
     while reply is None and time.monotonic() - posted < LEGACY_REPLY_S:
-        data = (await api.get(f"/api/v1/messaging/rooms/{room_id}/messages", params={"limit": 50})).raise_for_status()
+        # afterSeq: only what landed after Sam's post (the default page is the room's first 50, oldest first).
+        params = {"afterSeq": first.get("messageSeq", 0), "limit": 50}
+        data = (await api.get(f"/api/v1/messaging/rooms/{room_id}/messages", params=params)).raise_for_status()
         page = data.json()
         reply = next(
             (

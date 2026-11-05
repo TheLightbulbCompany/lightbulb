@@ -59,6 +59,11 @@ def legacy_handler(*, features: bool = False, reply: bool = True):
         if path.endswith("/messages") and request.method == "POST":
             return _ok({"messageId": "m1", "messageSeq": 5})
         if path.endswith("/messages"):
+            # The reply is only on the page after Sam's post: a read without afterSeq=5 gets the room's old head.
+            if request.url.params.get("afterSeq") != "5":
+                return _ok(
+                    {"messages": [{"messageId": "old", "messageSeq": 1, "author": {"kind": "agent", "id": "x"}}]}
+                )
             agent = {"messageId": "m2", "messageSeq": 6, "author": {"kind": "agent", "id": "agent1"}}
             return _ok({"messages": [agent] if reply else []})
         return httpx.Response(404)

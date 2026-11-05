@@ -1503,8 +1503,12 @@ async def _task_question_items(owner_id: str, user_id: str) -> list[ActivityItem
     """The viewer's open Questions, from their `NEEDS#` rows; each re-read so a closed one never shows."""
     from core.repositories import questions_repo
 
-    needs, _ = await questions_repo.needs_for_user(owner_id, user_id, limit=MAX_LIMIT)
-    found = await asyncio.gather(*(questions_repo.get_question(owner_id, n["taskId"], n["qid"]) for n in needs))
+    try:
+        needs, _ = await questions_repo.needs_for_user(owner_id, user_id, limit=MAX_LIMIT)
+        found = await asyncio.gather(*(questions_repo.get_question(owner_id, n["taskId"], n["qid"]) for n in needs))
+    except Exception as exc:  # noqa: BLE001 -- a tasks-table error never takes the feed down
+        logger.warning("activity: task questions unavailable error_type=%s", type(exc).__name__)
+        return []
     return [render_task_question(q) for q in found if q and q["state"] == "open" and user_id in q.get("answerers", [])]
 
 

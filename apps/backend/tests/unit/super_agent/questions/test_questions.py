@@ -96,7 +96,7 @@ async def test_strict_admin_lookup(clerk, policy):
 
 async def test_can_answer_now(clerk, policy):
     ids, rule, base = await questions.answerers(ORG, TASK, "review", "review")
-    q = {"answerers": ids, "answererRule": rule, "baseAnswerers": base}
+    q = {"subkind": "review", "answerers": ids, "answererRule": rule, "baseAnswerers": base}
     assert await questions.can_answer_now(ORG, q, "user_sam")
     assert await questions.can_answer_now(ORG, q, "user_ada")
     assert not await questions.can_answer_now(ORG, q, "user_priya")  # never stored
@@ -110,9 +110,40 @@ async def test_can_answer_now(clerk, policy):
 async def test_can_answer_now_promoted_member_not_stored(clerk, policy):
     """Authority gained after the ask doesn't add a person: stored list AND rule (spec 05 §3.3)."""
     ids, rule, base = await questions.answerers(ORG, TASK, "approval", "purchase")
-    q = {"answerers": ids, "answererRule": rule, "baseAnswerers": base}
+    q = {"subkind": "purchase", "answerers": ids, "answererRule": rule, "baseAnswerers": base}
     clerk["state"]["members"] = [*MEMBERS, {"user_id": "user_new", "role": "org:admin"}]
     assert not await questions.can_answer_now(ORG, q, "user_new")
+
+
+async def test_tightened_policy_blocks_the_requester_of_an_old_question(clerk, policy):
+    """Outreach was open when Sam's send was asked; an admin turned it to admins-only before Sam pressed."""
+    ids, rule, base = await questions.answerers(ORG, TASK, "review", "send")
+    q = {"subkind": "send", "answerers": ids, "answererRule": rule, "baseAnswerers": base}
+    assert ids == ["user_sam"] and await questions.can_answer_now(ORG, q, "user_sam")
+    policy["outreach"] = True
+    assert not await questions.can_answer_now(ORG, q, "user_sam")
+
+
+async def test_tightened_money_policy_keeps_admins_only(clerk, policy):
+    policy["money_moves"] = False
+    ids, rule, base = await questions.answerers(ORG, TASK, "approval", "spend")
+    q = {"subkind": "spend", "answerers": ids, "answererRule": rule, "baseAnswerers": base}
+    policy["money_moves"] = True
+    assert not await questions.can_answer_now(ORG, q, "user_sam")
+    assert await questions.can_answer_now(ORG, q, "user_ada")
+
+
+async def test_removed_member_refused(clerk, policy):
+    ids, rule, base = await questions.answerers(ORG, TASK, "question", "question")
+    q = {"subkind": "question", "answerers": ids, "answererRule": rule, "baseAnswerers": base}
+    clerk["state"]["members"] = [m for m in MEMBERS if m["user_id"] != "user_sam"]
+    assert not await questions.can_answer_now(ORG, q, "user_sam")
+
+
+async def test_missing_rule_fails_closed(clerk, policy):
+    q = {"subkind": "question", "answerers": ["user_sam"], "answererRule": None, "baseAnswerers": ["user_sam"]}
+    assert await questions.can_answer_now(ORG, q, "user_sam") is False
+    assert await questions.can_answer_now(ORG, {"answerers": ["user_sam"]}, "user_sam") is False
 
 
 def test_review_kind_for_drafts():

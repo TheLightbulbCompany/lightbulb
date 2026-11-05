@@ -3,7 +3,8 @@
 Effects are append-only puts on a deterministic key (`EFFECT#{taskId}:{attempt}:{toolCallId}`) and move forward
 only: proposed → approved | denied → intent → done | unknown (a fresh `proceed` is put straight in `intent`).
 `set_effect_state` is for `TaskWorkflow` Activities; `mark_effect_done` is the bridge's `…/effects/{idemKey}/done`.
-An approval is single use: `consume_approval` puts `EFFECT#{approvedIdemKey}:use`, which `questions.gate` reads.
+An approval is single use: `use_approval` puts `EFFECT#{approvedIdemKey}:use` in the same transaction as the intent it
+lets through; `questions.gate` reads the `:use` row.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from core.repositories.tasks_repo import IllegalTransition, _get, _is_condition_
 TRANSITIONS: dict[str, frozenset[str]] = {
     "approved": frozenset({"proposed"}),
     "denied": frozenset({"proposed"}),
-    "intent": frozenset({"approved"}),
+    "intent": frozenset(),  # only `use_approval` enters intent from an approval (single use, one transaction)
     "done": frozenset({"intent"}),
     "unknown": frozenset({"intent"}),
 }
@@ -60,6 +61,9 @@ async def set_effect_state(ws: str, idem_key: str, *, to: str, fields: dict | No
     if _SET_FORBIDDEN & set(fields):
         raise ValueError(f"may not set {sorted(_SET_FORBIDDEN & set(fields))}")
     allowed = TRANSITIONS[to]
+    if not allowed:
+        current = await get_effect(ws, idem_key)
+        raise IllegalTransition(idem_key, current and current["state"], to)
     names = {"#st": "state", "#v": "version", "#u": "updatedAt", "#sk": "sk"}
     vals: dict[str, Any] = {":to": to, ":one": 1, ":now": utc_now_iso()}
     parts = ["#st = :to", "#v = #v + :one", "#u = :now"]
@@ -98,21 +102,69 @@ async def mark_effect_done(
         raise exc
 
 
-async def consume_approval(ws: str, approved_idem_key: str, new_idem_key: str, operands_hash: str) -> bool:
-    """Use an approval once: a conditional put of `EFFECT#{approved}:use`. False if it was already used."""
+async def use_approval(ws: str, approved_idem_key: str, operands_hash: str, *, new_effect: dict | None = None) -> bool:
+    """Use one approval exactly once, in ONE transaction with the effect it lets through: the `:use` row
+    (`attribute_not_exists`) plus either
+    - Landing (`new_effect=None`): the approved row itself `approved → intent`, or
+    - a Worker's retry: a check that the approved row is still `approved` and the retry's own row put in `intent`.
+    So the backend's Landing and a Worker retry racing on one approval can't both proceed. False when it was
+    already used (or is no longer `approved`)."""
+    table = _table()
+    pk = ts.ws_pk(ws)
     now = utc_now_iso()
-    item = {
-        "pk": ts.ws_pk(ws),
+    use = {
+        "pk": pk,
         "sk": ts.effect_sk(f"{approved_idem_key}:use"),
         "type": "effect_use",
         "idemKey": f"{approved_idem_key}:use",
-        "usedBy": new_idem_key,
+        "usedBy": (new_effect or {}).get("idemKey") or approved_idem_key,
         "operandsHash": operands_hash,
         "createdAt": now,
         "updatedAt": now,
     }
+    approved_key = {"pk": pk, "sk": ts.effect_sk(approved_idem_key)}
+    names = {"#st": "state"}
+    if new_effect is None:
+        second = {
+            "Update": {
+                "TableName": table.name,
+                "Key": approved_key,
+                "UpdateExpression": "SET #st = :intent, #v = #v + :one, #u = :now",
+                "ConditionExpression": "#st = :approved",
+                "ExpressionAttributeNames": {**names, "#v": "version", "#u": "updatedAt"},
+                "ExpressionAttributeValues": {":intent": "intent", ":approved": "approved", ":one": 1, ":now": now},
+            }
+        }
+        extra: list[dict] = []
+    else:
+        second = {
+            "ConditionCheck": {
+                "TableName": table.name,
+                "Key": approved_key,
+                "ConditionExpression": "#st = :approved",
+                "ExpressionAttributeNames": names,
+                "ExpressionAttributeValues": {":approved": "approved"},
+            }
+        }
+        row = _row(ts.Effect, ws, {**new_effect, "state": "intent"})
+        extra = [
+            {
+                "Put": {
+                    "TableName": table.name,
+                    "Item": ddb_safe(row),
+                    "ConditionExpression": "attribute_not_exists(sk)",
+                }
+            }
+        ]
     try:
-        await run_in_thread(_table().put_item, Item=item, ConditionExpression="attribute_not_exists(sk)")
+        await run_in_thread(
+            table.meta.client.transact_write_items,
+            TransactItems=[
+                {"Put": {"TableName": table.name, "Item": use, "ConditionExpression": "attribute_not_exists(sk)"}},
+                second,
+                *extra,
+            ],
+        )
         return True
     except ClientError as exc:
         if not _is_condition_failure(exc):

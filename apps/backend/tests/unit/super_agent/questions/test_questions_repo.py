@@ -40,6 +40,24 @@ async def test_open_question_writes_q_and_needs_atomically(table):
     assert [n["qid"] for n in (await repo.needs_for_user(WS, "user_ada"))[0]] == ["q-1"]
 
 
+async def test_open_question_adds_answerers_to_audience(table):
+    from core.repositories import tasks_repo
+
+    await repo.open_question(WS, _q())
+    task = await tasks_repo.get_task(WS, TASK)
+    assert task["audience"]["userIds"] == ["user_sam", "user_ada"]  # Sam kept, Ada added once
+    await repo.open_question(WS, _q())  # a retried open adds nobody twice
+    await repo.open_question(WS, _q("q-2", answerers=["user_ada", "user_bo"], baseAnswerers=[]))
+    assert (await tasks_repo.get_task(WS, TASK))["audience"]["userIds"] == ["user_sam", "user_ada", "user_bo"]
+
+
+async def test_open_question_on_a_missing_task_fails(table):
+    with pytest.raises(repo.TasksRepoError):
+        await repo.open_question(WS, _q(taskId="9f14e45f-ceea-467a-9575-8a1b2c3d4e5f"))
+    assert await repo.list_for_task(WS, "9f14e45f-ceea-467a-9575-8a1b2c3d4e5f") == []
+    assert (await repo.needs_for_user(WS, "user_sam"))[0] == []
+
+
 async def test_open_question_idempotent_and_atomic(table):
     await repo.open_question(WS, _q())
     again, created = await repo.open_question(WS, _q(answerers=["user_priya"], baseAnswerers=["user_priya"]))
@@ -100,6 +118,20 @@ async def test_answer_stale_version(table):
             expected_version=row["version"],
         )
     )["state"] == "answered"
+
+
+async def test_answer_must_name_an_offered_option(table):
+    await repo.open_question(WS, _q())
+    with pytest.raises(repo.InvalidOption):
+        await _answer(option="publish")
+    assert (await repo.list_open(WS, TASK))[0]["state"] == "open"
+
+
+async def test_free_text_question_takes_answer_only(table):
+    await repo.open_question(WS, _q("q-t", kind="question", options=[]))
+    with pytest.raises(repo.InvalidOption):
+        await _answer("q-t", option="allow_once")
+    assert (await _answer("q-t", option="answer"))["state"] == "answered"
 
 
 async def test_answer_unknown_question(table):

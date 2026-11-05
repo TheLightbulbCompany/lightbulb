@@ -276,10 +276,16 @@ async def check_one(row: dict, now: datetime) -> bool:
     room: dict | None = None
     if kind == "task_question":
         from core.repositories import questions_repo
+        from core.services import questions
 
         q = await questions_repo.get_question(row["ownerId"], row["taskId"], row["qid"])
-        if q is None or q["state"] != "open" or user_id not in q.get("answerers", []):
-            await _done(row, "seen")  # answered, cancelled, or no longer theirs to answer
+        if q is None or q["state"] != "open":
+            await _done(row, "seen")  # answered or cancelled
+            return False
+        # Still a workspace member and still allowed to answer under today's rule (a Clerk error raises:
+        # the pass logs it and the row is retried, never sent on a guess).
+        if not await questions.can_answer_now(row["ownerId"], q, user_id):
+            await _done(row, "not_member")
             return False
     elif kind == "approval":
         if not await _still_in_workspace(row.get("ownerId") or "", user_id):

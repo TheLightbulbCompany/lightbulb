@@ -871,7 +871,9 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
         status = await _router_run(ws, inp, prompt, memory, ts.trigger_scope(next(iter(to_model.values()))))
         if status.status != "completed":
             raise RuntimeError(f"router run {status.status}: {status.error or ''}")
-        run_text = (status.output or "").strip() or None
+        # The run's prose answers a trigger only when the Router made no decision at all: with decisions it is a
+        # summary of them ("Growth has the checklist"), which must never stand in for a decision that was dropped.
+        run_text = None if status.decisions else (status.output or "").strip() or None
         decisions += router_prompt.validate_decisions(
             status.decisions,
             trigger_ids=set(to_model),

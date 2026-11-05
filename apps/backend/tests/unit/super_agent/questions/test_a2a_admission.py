@@ -42,7 +42,7 @@ async def test_inbound_lands_in_private_lane_pinned(world):
     start = row["ref"]["start"]
     assert (start["kind"], start["specialist"], start["visibility"]) == ("start_task", "agent-finance", "person")
     assert start["title"] == "Send Acme the Q3 invoice. Thanks." and start["brief"] == ROW["text"]
-    assert start["a2aTaskId"] == "a2a-task-1"
+    assert start["a2ATaskId"] == "a2a-task-1"  # `to_camel("a2a_task_id")`, the same key Task rows carry
     assert world["admits"] == [(WS, trigger_id)]
     hosted_mcp.person_dm.assert_awaited_once()
     assert hosted_mcp.person_dm.await_args.kwargs == {"create_key": "a2a-task-1"}
@@ -94,7 +94,7 @@ async def test_report_a2a_is_pending_until_governance_lands(world, monkeypatch):
 
     get_table("tasks").update_item(
         Key={"pk": ts.ws_pk(WS), "sk": ts.task_sk(TASK)},
-        UpdateExpression="SET a2aTaskId = :a",
+        UpdateExpression="SET a2ATaskId = :a",
         ExpressionAttributeValues={":a": "a2a-task-1"},
     )
     await a2a_admission.report_a2a(WS, TASK, "completed")

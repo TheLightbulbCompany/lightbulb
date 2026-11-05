@@ -84,7 +84,7 @@ async def report_a2a(ws: str, task_id: str, outcome: str) -> None:
     """Tell governance how the task ended (`complete_from_task` / `fail_from_task` / `cancel_from_task` are the A2A
     session's, spec 05 T9). Until they land: a metric and a log line, never a failure."""
     task = await tasks_repo.get_task(ws, task_id)
-    a2a_task_id = (task or {}).get("a2aTaskId")
+    a2a_task_id = (task or {}).get("a2ATaskId")  # the row key `to_camel` gives Task.a2a_task_id
     if not a2a_task_id:
         return
     put_metric("a2a.report_pending", dimensions={"outcome": outcome})

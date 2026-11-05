@@ -69,17 +69,27 @@ class RunRequest:
     max_iterations: int | None = None
     run_budget_seconds: int | None = None
     memory: dict | None = None  # spec 07 §5.2, built by memory_tags; absent = today's behaviour
+    # Lane Q (contracts §8): "required" installs the bridge's effect checkpoint (F1); the bridge refuses it with
+    # `unsupported_in_this_version` until the image carries F1. `faults` are dev-only kill hooks the bridge reads.
+    effects: Literal["off", "required"] = "off"
+    faults: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.effects not in ("off", "required"):
+            raise ValueError(f"effects must be off or required, not {self.effects!r}")
 
     def to_wire(self) -> dict:
         limits = {"max_iterations": self.max_iterations, "run_budget_seconds": self.run_budget_seconds}
         wire = {
             "input": self.input,
             "instructions": self.instructions,
-            "effects": "off",
+            "effects": self.effects,
             "limits": {k: v for k, v in limits.items() if v is not None},
         }
         if self.memory is not None:
             wire["memory"] = self.memory
+        if self.faults:
+            wire["faults"] = list(self.faults)
         return wire
 
 

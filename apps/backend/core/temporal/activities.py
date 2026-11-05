@@ -46,7 +46,13 @@ _STATUS_AFTER = {
     "cancelled": ("resolved", "stopped"),
 }
 _RUNNING = frozenset({"queued", "running", "stopping"})
-_TERMINAL = {"completed": "completed", "failed": "failed", "cancelled": "cancelled"}
+_TERMINAL = {
+    "completed": "completed",
+    "failed": "failed",
+    "cancelled": "cancelled",
+    "waiting_approval": "waiting_approval",  # Lane Q: an external effect needs a person (contracts §8)
+}
+_CLEAN = frozenset({"completed", "waiting_approval"})
 
 
 # --- helpers ---------------------------------------------------------------------------------------
@@ -240,7 +246,7 @@ async def worker_turn(inp: WorkerTurnIn) -> WorkerTurnOut:
             await asyncio.sleep(BUSY_PAUSE_S)
     if status.status in _TERMINAL:  # a replay of a run that already finished
         await _store_output(inp.ws, inp.task_id, inp.n, status)
-        return WorkerTurnOut(_TERMINAL[status.status], None if status.status == "completed" else "RunFailed")
+        return WorkerTurnOut(_TERMINAL[status.status], None if status.status in _CLEAN else "RunFailed")
     await tasks_repo.update_attempt(
         inp.ws, inp.task_id, inp.n, {"status": "running"}, allowed_status=frozenset({"dispatched", "running"})
     )

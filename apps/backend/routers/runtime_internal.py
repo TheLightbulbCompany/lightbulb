@@ -17,18 +17,19 @@ from __future__ import annotations
 
 import base64
 import hmac
+import json
 import logging
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from temporalio.client import AsyncActivityCancelledError
 from temporalio.service import RPCError, RPCStatusCode
 
 from core import tasks_schema as ts
 from core.dynamodb import utc_now_iso
-from core.repositories import tasks_repo
-from core.services import task_conversation
+from core.repositories import effects_repo, tasks_repo
+from core.services import questions, task_conversation
 from core.services.container_auth import _require_hook_token
 from core.services.super_agent_flags import flags_for
 from core.temporal import activities as acts
@@ -39,6 +40,7 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 _LIVE = frozenset({"dispatched", "running"})
+_CLEAN = frozenset({"completed", "waiting_approval"})  # terminal statuses that are not failures
 
 
 _TOOLS_KEPT = 20
@@ -64,7 +66,8 @@ class RunEventBody(BaseModel):
     attempt: int = Field(ge=1)
     run_secret: str = Field(alias="runSecret", min_length=1, max_length=128)
     kind: Literal["heartbeat", "terminal"]
-    status: Literal["queued", "running", "stopping", "completed", "failed", "cancelled"]
+    # `waiting_approval`: the Worker's turn ended because an external effect needs a person (Lane Q, contracts §8).
+    status: Literal["queued", "running", "stopping", "completed", "failed", "cancelled", "waiting_approval"]
     output: str | None = Field(None, max_length=65536)
     error: str | None = Field(None, max_length=128)
     usage: dict[str, Any] | None = None
@@ -135,7 +138,7 @@ async def run_event(owner_id: str, run_id: str, body: RunEventBody, request: Req
         return {"ok": True, "replayed": True}
     outcome = acts._TERMINAL[body.status] if body.status in acts._TERMINAL else "failed"
     try:
-        await handle.complete(WorkerTurnOut(outcome, None if outcome == "completed" else "RunFailed"))
+        await handle.complete(WorkerTurnOut(outcome, None if outcome in _CLEAN else "RunFailed"))
     except RPCError as exc:
         if not _not_found(exc):  # not found = the turn already ended (stopped, timed out): nothing to complete
             await tasks_repo.unclaim_attempt_terminal(owner_id, body.task_id, body.attempt)
@@ -202,3 +205,105 @@ async def task_input(owner_id: str, body: InputBody, request: Request, response:
     except (temporal.TemporalUnavailable, RPCError) as exc:
         raise HTTPException(status_code=503, detail="temporal_unavailable") from exc
     return {"triggerId": trigger_id, "replayed": not created}
+
+
+# --- effects (Lane Q, wave2-Q Task 5; contracts-v2 §8) ---------------------------------------------------
+# One route for every external, irreversible effect a Worker attempts: the bridge's F1 callback asks before the
+# tool runs. Only answering a Question approves; this route only reads the answers (`questions.gate`).
+
+_OPERANDS_MAX = 16 * 1024
+
+
+class EffectBody(BaseModel):
+    task_id: str = Field(alias="taskId")
+    attempt: int = Field(ge=1)
+    run_id: str = Field(alias="runId")
+    run_secret: str = Field(alias="runSecret", min_length=1, max_length=128)
+    tool_call_id: str = Field(alias="toolCallId", min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")
+    kind: Literal["mail.send", "text.send", "app.publish", "pr.merge", "purchase", "provision", "a2a.send"]
+    tool: str = Field(max_length=64)
+    operands: dict[str, Any] = Field(default_factory=dict)
+    operands_hash: str = Field(alias="operandsHash", pattern=r"^[0-9a-f]{64}$")
+    executor_ok: bool = Field(False, alias="executorOk")
+    idem_key: str = Field(alias="idemKey", max_length=256)
+
+    @field_validator("operands")
+    @classmethod
+    def _bounded(cls, v: dict) -> dict:
+        if len(json.dumps(v, default=str)) > _OPERANDS_MAX:
+            raise ValueError("operands over 16 KB")
+        return v
+
+
+class EffectDoneBody(BaseModel):
+    disposition: Literal["done", "unknown"]
+    result_ref: str | None = Field(None, alias="resultRef", max_length=512)
+    run_secret: str = Field(alias="runSecret", min_length=1, max_length=128)
+    run_id: str = Field(alias="runId")
+
+
+async def _attempt_of(owner_id: str, task_id: str, n: int, run_id: str, run_secret: str) -> dict:
+    """The attempt this runtime speaks for, or 403 (wrong run or secret)."""
+    att = await tasks_repo.get_attempt(owner_id, task_id, n)
+    if att is None or att.get("runId") != run_id or not _secret_ok(att, run_secret):
+        raise HTTPException(status_code=403, detail="run_not_in_workspace")
+    return att
+
+
+@router.post("/{owner_id}/effects")
+async def effect_check(owner_id: str, body: EffectBody, request: Request) -> dict:
+    await _gate(owner_id, request)
+    att = await _attempt_of(owner_id, body.task_id, body.attempt, body.run_id, body.run_secret)
+    task = await tasks_repo.get_task(owner_id, body.task_id)
+    # A later attempt never reuses an earlier one's approval; a stopped or ended attempt never gets a new one.
+    if task is None or task.get("attemptCount") != body.attempt or att.get("status") not in _LIVE:
+        raise HTTPException(status_code=409, detail="stale_run")
+    if body.idem_key != f"{body.task_id}:{body.attempt}:{body.tool_call_id}":
+        raise HTTPException(status_code=400, detail="invalid_idem_key")
+    effect = {
+        "idemKey": body.idem_key,
+        "taskId": body.task_id,
+        "attempt": body.attempt,
+        "kind": body.kind,
+        "tool": body.tool,
+        "operands": body.operands,
+        "operandsHash": body.operands_hash,
+        "executorOk": body.executor_ok,
+        "state": "proposed",
+    }
+    for _ in range(2):  # one re-read when the approval was used under us (Landing or a parallel call won)
+        res = questions.gate(effect, await effects_repo.effects_for(owner_id, body.task_id, body.operands_hash))
+        if res.decision != "proceed":
+            break
+        if await effects_repo.use_approval(owner_id, res.approved_idem_key, body.operands_hash, new_effect=effect):
+            return {"decision": "proceed"}
+    if res.decision == "proceed":  # the second read still says proceed but the row is gone: unknown outcome
+        return {"decision": "refuse", "message": "A matching call's approval was just used; check before retrying."}
+    if res.decision == "replay":
+        return {"decision": "replay", "result": res.result_ref}
+    if res.decision == "refuse":
+        return {"decision": "refuse", "message": res.message}
+    if res.decision == "denied":
+        return {"decision": "denied", "questionId": res.qid}
+    # needs_approval: the proposed row is the draft (Output) the person reviews; the workflow opens the Question
+    # once the turn ends `waiting_approval`.
+    row, _ = await effects_repo.put_effect(owner_id, {**effect, "questionId": res.qid})
+    return {"decision": "needs_approval", "questionId": row.get("questionId") or res.qid}
+
+
+@router.post("/{owner_id}/effects/{idem_key}/done")
+async def effect_done(owner_id: str, idem_key: str, body: EffectDoneBody, request: Request) -> dict:
+    """`intent → done | unknown`, the bridge's commit after the tool ran (contracts §7's one forward-only
+    exception). Accepted after Stop too: a late commit still records what happened."""
+    await _gate(owner_id, request)
+    effect = await effects_repo.get_effect(owner_id, idem_key)
+    if effect is None:
+        raise HTTPException(status_code=404, detail="effect_not_found")
+    await _attempt_of(owner_id, effect["taskId"], effect["attempt"], body.run_id, body.run_secret)
+    try:
+        row = await effects_repo.mark_effect_done(
+            owner_id, idem_key, disposition=body.disposition, result_ref=body.result_ref
+        )
+    except tasks_repo.IllegalTransition as exc:
+        raise HTTPException(status_code=409, detail={"code": "not_intent", "state": exc.current}) from exc
+    return {"state": row["state"]}

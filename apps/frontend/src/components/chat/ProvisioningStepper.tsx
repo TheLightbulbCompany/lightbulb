@@ -11,6 +11,7 @@ import { Loader2 } from "lucide-react";
 import { useOrganization, useAuth } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
 import { useBilling } from "@/hooks/useBilling";
+import { useSuperAgent } from "@/hooks/useLiveEvents";
 import { useProvisioningState, type BlockedPayload } from "@/hooks/useProvisioningState";
 import { useRuntimeRpc } from "@/hooks/useRuntimeRpc";
 import { useSystemHealth } from "@/hooks/useSystemHealth";
@@ -200,6 +201,7 @@ export function ProvisioningStepper({
   const { organization } = useOrganization();
   const isOrg = !!organization;
   const { userId: clerkUserId } = useAuth();
+  const superAgent = useSuperAgent();
   // Per-OWNER activation-marker key so a shared/QA browser doesn't let the first
   // account's activation suppress onboarding_ready for a later account's real
   // first cold start. The event is a person-level denominator (PostHog is
@@ -1248,6 +1250,20 @@ export function ProvisioningStepper({
     );
   }
 
+  // Super-agent: #general opens at once and takes a message; the setup's real progress is the banner over it (the
+  // first message waits, admitted, until the runtime answers). Never a card in front of the chat.
+  if (superAgent) {
+    return (
+      <>
+        <AgentsBanner state={isTerminalError ? "failed" : stuck ? "stuck" : timedOut ? "slow" : "welcome"} phase={phase}
+          onCheck={handleAgentsBannerCheck}
+          onSupport={() => capture("support_contact_clicked", { source: "agents_banner", phase, stuck })}
+          isChecking={needsRecover && isRetryingProvision} checkFailed={needsRecover && retryFailed} />
+        {children}
+      </>
+    );
+  }
+
   // Provisioning stepper — animated 4-step flow
   const steps = STEPS_PAID;
   const currentIdx = steps.findIndex((s) => s.phase === phase);
@@ -1627,6 +1643,8 @@ const AGENTS_BANNER_COPY = {
   slow: "Still going — your agents are taking a little longer than usual. You can keep messaging in the meantime.",
   stuck: "Starting your agents is taking longer than it should — something is stuck on our side. Messaging still works; contact us and we'll get it moving.",
   failed: "Setup failed — your agents couldn't start. Messaging still works; retry, or contact support if it keeps failing.",
+  // Super-agent, first minutes: the chat is open and takes a message now; Lightbulb answers it once setup finishes.
+  welcome: "You can write to Lightbulb now — it answers as soon as setup finishes.",
 } as const;
 
 /**
@@ -1662,6 +1680,7 @@ export function agentsBannerProgress(
 const ADVANCING_BANNER_COPY: Partial<Record<keyof typeof AGENTS_BANNER_COPY, string>> = {
   starting: "Your team will be ready in about a minute.",
   slow: AGENTS_BANNER_COPY.slow,
+  welcome: AGENTS_BANNER_COPY.welcome,
 };
 
 /**
@@ -1712,7 +1731,7 @@ function AgentsBanner({
             <span className="text-err">Retry failed — try again or contact support.</span>
           )}
         </span>
-        {state !== "starting" && (
+        {state !== "starting" && state !== "welcome" && (
           <span className="flex gap-4">
             <button type="button" className="underline disabled:opacity-60" onClick={onCheck} disabled={isChecking}>
               {isChecking ? "Retrying…" : state === "failed" ? "Retry" : "Check again"}

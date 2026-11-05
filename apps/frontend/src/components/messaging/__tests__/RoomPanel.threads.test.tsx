@@ -50,6 +50,13 @@ describe("RoomPanel Threads view (super-agent)", () => {
     expect(screen.getByRole("button", { name: "Threads, 1 waiting on you" })).toHaveFocus();
   });
 
+  it("a message sent while the workspace is still being set up reads Queued until Lightbulb answers", async () => {
+    const { rerender } = render(<Fresh><RoomPanel {...props} runtimeStarting /></Fresh>);
+    expect(await screen.findByText("Queued · Lightbulb answers as soon as setup finishes")).toBeInTheDocument();
+    rerender(<Fresh><RoomPanel {...props} runtimeStarting={false} /></Fresh>);
+    expect(screen.queryByText(/^Queued/)).toBeNull();
+  });
+
   it("flag off keeps the Tasks button and makes no /tasks request", () => {
     live.superAgent = false;
     render(<Fresh><RoomPanel {...props} /></Fresh>);

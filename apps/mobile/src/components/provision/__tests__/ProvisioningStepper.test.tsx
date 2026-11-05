@@ -19,6 +19,9 @@ jest.mock("@clerk/expo", () => ({
   useAuth: () => ({ signOut: mockSignOut }),
 }));
 
+let mockSuperAgent = false;
+jest.mock("../../../providers/live-events", () => ({ useSuperAgent: () => mockSuperAgent }));
+
 import { ProvisioningStepper, activeStepIndex } from "../ProvisioningStepper";
 
 type StepperStatus = React.ComponentProps<typeof ProvisioningStepper>["status"];
@@ -101,6 +104,19 @@ describe("ProvisioningStepper time-box", () => {
     expect(screen.getByText("Your workspace is starting…")).toBeTruthy();
     expect(screen.getByText("APP")).toBeTruthy();
     expect(screen.queryByTestId("provision-dot-rail")).toBeNull();
+  });
+
+  it("super-agent on: a slow start never takes over the screen; the chat stays open under the banner", async () => {
+    mockSuperAgent = true;
+    try {
+      await renderStepper({ kind: "starting", phase: "provisioning", substatus: "task_running" });
+      await act(async () => {
+        jest.advanceTimersByTime(60_000);
+      });
+      expect(screen.getByText("APP")).toBeTruthy();
+      expect(screen.queryByTestId("provision-dot-rail")).toBeNull();
+      expect(screen.getByText(/Setting up, step 2 of \d\. You can write to Lightbulb now/)).toBeTruthy();
+    } finally { mockSuperAgent = false; }
   });
 
   it("promotes a slow start to the full-screen stepper past PROMOTE_MS", async () => {

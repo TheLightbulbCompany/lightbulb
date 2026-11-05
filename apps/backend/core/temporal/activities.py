@@ -19,10 +19,11 @@ import time
 from datetime import timedelta
 
 from temporalio import activity
+from temporalio.exceptions import ApplicationError
 
 from core import tasks_schema as ts
 from core.dynamodb import utc_now_iso
-from core.repositories import messaging_repo, tasks_repo
+from core.repositories import container_repo, messaging_repo, tasks_repo
 from core.services import (
     chat_gate,
     container_provision,
@@ -848,6 +849,17 @@ async def _apply(
     return RouterTurnOut(inp.batch_id, started, posted)
 
 
+#: `router_turn`'s error type while the workspace's runtime is still starting: the Router waits, it never falls back.
+RUNTIME_NOT_READY = "RuntimeNotReady"
+
+
+async def _runtime_ready(ws: str) -> bool:
+    """The runtime can take a run: the same rule `/container/status` reports as ready (readiness_state)."""
+    from core.services.readiness_state import resolve_runtime_phase
+
+    return resolve_runtime_phase(await container_repo.get_by_owner_id(ws)) == "ready"
+
+
 @activity.defn
 async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
     """Render the batch, run the Router (cheap model, read-only memory), apply its decisions. Retry-safe: the
@@ -891,6 +903,12 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
             in_scope=_task_in_scope,
         )
     elif to_model:
+        # A message sent while the workspace is still being set up is admitted and kept: the Router workflow waits
+        # for the runtime and answers once it is up (no fallback reply for "not started yet").
+        if not await _runtime_ready(ws):
+            raise ApplicationError(
+                "the workspace runtime is still starting", type=RUNTIME_NOT_READY, non_retryable=True
+            )
         private = inp.lane != "shared"
         user_id = next((t.get("actorUserId") for t in to_model.values() if t.get("actorUserId")), None)
         room_id = next((r for r in map(ts.trigger_room, to_model.values()) if r), None)

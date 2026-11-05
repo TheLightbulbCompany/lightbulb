@@ -16,7 +16,9 @@ vi.mock("swr", async (importOriginal) => {
   };
 });
 
+const mockSuperAgent = vi.hoisted(() => ({ on: false }));
 vi.mock("@/hooks/useLiveEvents", () => ({
+  useSuperAgent: () => mockSuperAgent.on,
   useLiveEvents: () => ({
     liveConnected: true,
     onEvent: () => () => {},
@@ -231,6 +233,21 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     );
     expect(screen.getByText("Setting up your workspace…")).toBeInTheDocument();
     expect(screen.queryByText("children")).not.toBeInTheDocument();
+  });
+
+  it("super-agent on: no setup card at all; the chat is open with a banner saying Lightbulb answers once setup finishes", () => {
+    mockSuperAgent.on = true;
+    try {
+      useProvMock.mockReturnValue({ phase: "normal", blocked: null, refreshInterval: 3000, refresh: vi.fn(), container: null });
+      render(
+        <ProvisioningStepper>
+          <div>children</div>
+        </ProvisioningStepper>,
+      );
+      expect(screen.getByText("children")).toBeInTheDocument();
+      expect(screen.queryByText("Setting up your workspace…", { selector: "h1,h2,h3" })).toBeNull();
+      expect(screen.getByRole("status")).toHaveTextContent("You can write to Lightbulb now — it answers as soon as setup finishes.");
+    } finally { mockSuperAgent.on = false; }
   });
 
   it("renders title + message + action button when admin and not admin_only", () => {

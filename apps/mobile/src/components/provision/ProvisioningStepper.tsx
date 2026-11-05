@@ -73,6 +73,7 @@ import { usePulse } from "../chat/usePulse";
 import { colors, fonts, radii, spacing } from "../../config/theme";
 import type { ContainerStatus } from "../../lib/containerStatus";
 import { Wordmark } from "./Wordmark";
+import { useSuperAgent } from "../../providers/live-events";
 
 /**
  * How long a FIRST-cold-start `starting` container may take before the thin
@@ -346,7 +347,10 @@ export function ProvisioningStepper({ status, onRetry, children }: Props) {
   // mount yet (see `settledOnceRef`), and past the banner budget. `parked`
   // never promotes at all — it's a healthy box waking on its own, measured in
   // seconds, and blanking readable content for it would be a regression.
+  // Super-agent: never promoted. #general stays open and takes a message; Lightbulb answers it once setup finishes.
+  const superAgent = useSuperAgent();
   const promoted =
+    !superAgent &&
     status.kind === "starting" &&
     !settledOnceRef.current &&
     elapsedMs >= PROMOTE_MS;
@@ -387,7 +391,9 @@ export function ProvisioningStepper({ status, onRetry, children }: Props) {
             nothing is waking, and the next message starts the runtime itself
             (its run shows as working). A banner there never cleared. */}
         {status.kind === "starting" ? (
-          <StartingBanner label="Your workspace is starting…" />
+          <StartingBanner label={superAgent
+            ? `Setting up, step ${activeStep + 1} of ${STEPS.length}. You can write to Lightbulb now — it answers as soon as setup finishes.`
+            : "Your workspace is starting…"} />
         ) : null}
         {children}
       </View>

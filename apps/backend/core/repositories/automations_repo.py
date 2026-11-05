@@ -100,6 +100,24 @@ async def list_schedules(ws: str) -> list[dict]:
         kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
 
 
+async def scan_schedules() -> list[dict]:
+    """Every automation row of every workspace (the daily reconcile; eventually consistent).
+
+    ponytail: a filtered table scan, fine while the table is dev-sized; switch to `ws-meta` or
+    `super_agent_flags.list_on()` + `list_schedules` when either lands."""
+    kwargs: dict[str, Any] = {
+        "FilterExpression": "begins_with(sk, :p)",
+        "ExpressionAttributeValues": {":p": ts.schedule_sk("")},
+    }
+    out: list[dict] = []
+    while True:
+        page = await run_in_thread(_table().scan, **kwargs)
+        out.extend(plain(page.get("Items", [])))
+        if "LastEvaluatedKey" not in page:
+            return out
+        kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+
+
 async def update_schedule(ws: str, sid: str, fields: dict, *, expected_version: int) -> dict:
     fields = _check_fields(fields)
     row = await _conditional(ws, ts.schedule_sk(sid), fields, condition="#v = :ev", values={":ev": expected_version})
@@ -172,8 +190,23 @@ async def close_run(ws: str, sid: str, task_id: str, *, failed: bool) -> dict:
     return row
 
 
-async def delete_schedule(ws: str, sid: str) -> None:
-    await run_in_thread(_table().delete_item, Key={"pk": ts.ws_pk(ws), "sk": ts.schedule_sk(sid)})
+async def delete_schedule(ws: str, sid: str, *, only_if_status: str | None = None) -> bool:
+    """Delete the row (gone already is fine). With `only_if_status`, only while it still has that status
+    (a stale draft activated since the reconcile's scan survives). Returns whether it was deleted."""
+    kwargs: dict[str, Any] = {"Key": {"pk": ts.ws_pk(ws), "sk": ts.schedule_sk(sid)}}
+    if only_if_status:
+        kwargs |= {
+            "ConditionExpression": "#s = :s",
+            "ExpressionAttributeNames": {"#s": "status"},
+            "ExpressionAttributeValues": {":s": only_if_status},
+        }
+    try:
+        await run_in_thread(_table().delete_item, **kwargs)
+        return True
+    except ClientError as exc:
+        if not _is_condition_failure(exc):
+            raise
+    return False
 
 
 # --- Rules (contracts §18: an automation row with a `match` scope) -----------------------------------

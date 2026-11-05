@@ -2,6 +2,7 @@
 
 import boto3
 import pytest
+import pytest_asyncio
 from moto import mock_aws
 
 from core import dynamodb, tasks_schema as ts
@@ -32,3 +33,15 @@ def table(monkeypatch):
         )
         monkeypatch.setattr(dynamodb, "_dynamodb_resource", resource)
         yield t
+
+
+@pytest_asyncio.fixture
+async def temporal_env():
+    """Time-skipping Temporal (same harness as orchestration/conftest.py, which this directory cannot see)."""
+    from temporalio.testing import WorkflowEnvironment
+
+    env = await WorkflowEnvironment.start_time_skipping()
+    try:
+        yield env
+    finally:
+        await env.shutdown()

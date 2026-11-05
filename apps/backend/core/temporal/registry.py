@@ -1,7 +1,12 @@
 """Every workflow and activity the worker registers. A new module adds its `WORKFLOWS`/`ACTIVITIES`
 here; `test_registry.py` fails on a duplicate name (contracts-v2 §13)."""
 
-from core.temporal import health, rules_activities, task_questions, workflows
+from core.temporal import automations, health, rules_activities, task_questions, workflows
 
-ALL_WORKFLOWS = [*health.WORKFLOWS, *workflows.WORKFLOWS]
-ALL_ACTIVITIES = [*health.ACTIVITIES, *task_questions.ACTIVITIES, *rules_activities.ACTIVITIES]
+ALL_WORKFLOWS = [*health.WORKFLOWS, *workflows.WORKFLOWS, *automations.WORKFLOWS]
+ALL_ACTIVITIES = [
+    *health.ACTIVITIES,
+    *task_questions.ACTIVITIES,
+    *rules_activities.ACTIVITIES,
+    *automations.ACTIVITIES,
+]

@@ -149,6 +149,16 @@ async def test_set_status_allowed_from_and_reason(table):
     assert "pausedReason" not in row
 
 
+async def test_delete_schedule_only_if_status(table):
+    await repo.create_schedule(WS, _sched())
+    await repo.set_status(WS, "s1", "active", reason=None, allowed_from=frozenset({"draft"}))
+    assert await repo.delete_schedule(WS, "s1", only_if_status="draft") is False  # activated since the scan
+    assert await repo.get_schedule(WS, "s1") is not None
+    await repo.set_status(WS, "s1", "paused", reason=None, allowed_from=frozenset({"active"}))
+    assert await repo.delete_schedule(WS, "s1", only_if_status="paused") is True
+    assert await repo.get_schedule(WS, "s1") is None
+
+
 async def test_delete_schedule(table):
     await repo.create_schedule(WS, _sched())
     await repo.delete_schedule(WS, "s1")

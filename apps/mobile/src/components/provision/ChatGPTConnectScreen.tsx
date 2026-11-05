@@ -138,6 +138,22 @@ export function ChatGPTConnectScreen({ onConnected }: Props) {
         <Text style={styles.waiting}>Waiting for you to complete sign-in…</Text>
       </>
     );
+  } else if (state.status === "plan_required") {
+    // /start refused before any OpenAI sign-in began: the workspace has no paid plan yet.
+    body = (
+      <>
+        <Text style={styles.body}>Signing in with ChatGPT comes with the Workspace plan.</Text>
+        <Text style={styles.waiting}>Choose the plan in Settings → Billing, then come back here to sign in.</Text>
+        <Pressable
+          style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}
+          onPress={() => void start()}
+          accessibilityRole="button"
+          accessibilityLabel="I have the plan, try again"
+        >
+          <Text style={styles.primaryButtonText}>I have the plan — try again</Text>
+        </Pressable>
+      </>
+    );
   } else if (state.status === "error") {
     body = (
       <>

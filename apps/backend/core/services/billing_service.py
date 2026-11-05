@@ -168,6 +168,7 @@ async def create_workspace_checkout(
     return_to: Literal["web", "app"] = "web",
     confirm: bool = False,
     front_desk: bool = False,
+    then: Literal["chatgpt"] | None = None,
 ) -> dict:
     """Create or change the single recurring subscription for a workspace.
 
@@ -377,7 +378,9 @@ async def create_workspace_checkout(
             }
         else:
             urls = {
-                "success_url": f"{settings.FRONTEND_URL}/settings?panel=billing&checkout=success",
+                "success_url": f"{settings.FRONTEND_URL}/settings?panel=providers&action=connect-chatgpt&checkout=success"
+                if then == "chatgpt"
+                else f"{settings.FRONTEND_URL}/settings?panel=billing&checkout=success",
                 "cancel_url": f"{settings.FRONTEND_URL}/settings?panel=billing&checkout=cancel",
             }
         seats = await seats_for_workspace(owner_id)
@@ -411,6 +414,8 @@ async def create_workspace_checkout(
                 f":{return_to}"
                 # The add-on changes the body (a third item, no trial).
                 f":fd{int(front_desk)}"
+                # A ChatGPT return changes the success URL; empty keeps every existing key unchanged.
+                f"{':chatgpt' if then == 'chatgpt' else ''}"
             ),
             expires_at=checkout_expires_at,
         )

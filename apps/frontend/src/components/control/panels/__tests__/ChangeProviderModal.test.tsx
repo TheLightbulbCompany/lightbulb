@@ -23,6 +23,13 @@ vi.mock("@/lib/api", () => ({
 // Pending device-code state so the OAuth stage renders its distinctive copy
 // (verification link + user code) rather than the transient spinner.
 const mockOAuthState = vi.fn();
+// The plan gate in front of ChatGPT sign-in reads billing; a subscriber unless a test says otherwise.
+const mockBilling = vi.hoisted(() => ({ isSubscribed: true, startCheckout: vi.fn(async () => undefined) }));
+vi.mock("@/hooks/useBilling", () => ({
+  useBilling: () => ({ account: { is_subscribed: mockBilling.isSubscribed }, isLoading: false, isSubscribed: mockBilling.isSubscribed,
+    refresh: vi.fn(), startCheckout: mockBilling.startCheckout }),
+}));
+
 vi.mock("@/hooks/useChatGPTOAuth", () => ({
   useChatGPTOAuth: () => ({
     state: mockOAuthState(),
@@ -77,6 +84,17 @@ describe("ChangeProviderModal initialChoice", () => {
       provider_choice: "openrouter_managed",
     }));
     expect(screen.queryByPlaceholderText(/sk-/)).toBeNull();
+  });
+
+  it("a free workspace picking ChatGPT sees the plan step, never a device code; Checkout comes back to sign-in", async () => {
+    mockBilling.isSubscribed = false;
+    try {
+      renderModal("chatgpt_oauth");
+      expect(screen.getByText("Signing in with ChatGPT comes with the Workspace plan.")).toBeInTheDocument();
+      expect(screen.queryByText("ABCD-1234")).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Choose the Workspace plan" }));
+      expect(mockBilling.startCheckout).toHaveBeenCalledWith("workspace", false, "chatgpt");
+    } finally { mockBilling.isSubscribed = true; }
   });
 
   it("opens on the ChatGPT device-code stage for chatgpt_oauth", () => {

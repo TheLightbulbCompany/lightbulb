@@ -376,7 +376,7 @@ export interface LLMPanelProps {
    * here relying on this auto-open. The shell reads its own channel
    * (``?action=change-provider`` on mobile) and threads it down. null = no intent.
    */
-  initialAction?: "change-provider" | null;
+  initialAction?: "change-provider" | "connect-chatgpt" | null;
   /** Fired once the intent is honored so the shell strips its channel. */
   onActionConsumed?: () => void;
 }
@@ -421,23 +421,26 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
   // render-time prev-compare pattern. The companion effect reports consumption
   // so the shell strips its channel; it does not touch the modal's open state.
   const [modalOpen, setModalOpen] = useState(
-    () => initialAction === "change-provider",
+    () => initialAction === "change-provider" || initialAction === "connect-chatgpt",
   );
   // Which credential stage the modal should open on. null = the full picker,
   // which is what the "Change provider" buttons and the ?action= intent want.
   const [modalChoice, setModalChoice] =
-    useState<CredentialProviderChoice | null>(null);
+    useState<CredentialProviderChoice | null>(() => (initialAction === "connect-chatgpt" ? "chatgpt_oauth" : null));
+  // Back from a Checkout started for ChatGPT: the modal waits for the plan, then signs in.
+  const [waitForPlan, setWaitForPlan] = useState(() => initialAction === "connect-chatgpt");
   const [prevInitialAction, setPrevInitialAction] = useState(initialAction);
   if (initialAction !== prevInitialAction) {
     setPrevInitialAction(initialAction);
-    if (initialAction === "change-provider") {
-      setModalChoice(null);
+    if (initialAction === "change-provider" || initialAction === "connect-chatgpt") {
+      setModalChoice(initialAction === "connect-chatgpt" ? "chatgpt_oauth" : null);
+      setWaitForPlan(initialAction === "connect-chatgpt");
       setModalOpen(true);
     }
   }
 
   useEffect(() => {
-    if (initialAction !== "change-provider") return;
+    if (initialAction !== "change-provider" && initialAction !== "connect-chatgpt") return;
     onActionConsumed?.();
   }, [initialAction, onActionConsumed]);
 
@@ -581,6 +584,7 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
         currentByoProvider={user.byo_provider ?? null}
         managedInferenceAvailable={managedAvailable}
         initialChoice={modalChoice}
+        waitForPlan={waitForPlan}
         onClose={() => setModalOpen(false)}
         onCommitted={() => {
           // SWR refetch picks up the new provider_choice. The container

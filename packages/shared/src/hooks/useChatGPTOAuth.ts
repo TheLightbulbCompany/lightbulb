@@ -27,6 +27,8 @@ export type OAuthState =
       expiresAt: number;
     }
   | { status: "completed"; accountId: string | null }
+  /** The workspace isn't on a paid plan: /start refused (402) before any OpenAI sign-in began. */
+  | { status: "plan_required" }
   | { status: "error"; message: string };
 
 type StartResponse = {
@@ -87,6 +89,10 @@ export function useChatGPTOAuth(api: Pick<ApiMethods, "get" | "post">) {
       // providerStepDone effect in ProvisioningStepper).
       if (e instanceof ApiError && e.status === 409) {
         setState({ status: "completed", accountId: null });
+        return;
+      }
+      if (e instanceof ApiError && e.status === 402) {
+        setState({ status: "plan_required" });
         return;
       }
       const message = e instanceof Error ? e.message : "OAuth start failed";

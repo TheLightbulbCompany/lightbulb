@@ -131,8 +131,9 @@ export function useBilling() {
 
   // `confirm` is required to change a live subscription's plan; without it the
   // server changes nothing and answers `confirm_required`.
-  const startCheckout = useCallback(async (plan: "workspace", confirm = false) => {
-    const res = (await api.post("/billing/checkout", { plan, confirm })) as {
+  // `then: "chatgpt"`: Checkout returns straight into ChatGPT sign-in (a free workspace picked ChatGPT).
+  const startCheckout = useCallback(async (plan: "workspace", confirm = false, then?: "chatgpt") => {
+    const res = (await api.post("/billing/checkout", { plan, confirm, ...(then ? { then } : {}) })) as {
       checkout_url?: string;
       updated?: boolean;
     };

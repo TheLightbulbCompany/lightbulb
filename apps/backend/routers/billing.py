@@ -352,6 +352,9 @@ class CheckoutRequest(BaseModel):
     # Required to change the plan of a live subscription; without it the
     # response is ``confirm_required`` with the cost and nothing is changed.
     confirm: bool = False
+    # Where a web Checkout returns: "chatgpt" lands back in ChatGPT sign-in (a free workspace picked ChatGPT,
+    # which needs the plan), else the billing panel.
+    then: Literal["chatgpt"] | None = None
 
 
 @router.post(
@@ -390,6 +393,7 @@ async def create_workspace_checkout(
             plan=body.plan,
             return_to=body.return_to,
             confirm=body.confirm,
+            then=body.then,
         )
     except BillingServiceError as e:
         if str(e) == "checkout_in_progress":

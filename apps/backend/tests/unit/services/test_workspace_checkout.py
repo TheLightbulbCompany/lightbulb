@@ -797,3 +797,26 @@ async def test_a_pending_session_is_reused_only_for_the_same_front_desk_choice(
 
     assert stripe_calls["expire"].called is not reused
     assert stripe_calls["create"].called is not reused
+
+
+@pytest.mark.asyncio
+async def test_workspace_checkout_for_chatgpt_returns_into_chatgpt_sign_in(monkeypatch):
+    """A free workspace that picked ChatGPT: plan -> Checkout -> straight back into ChatGPT sign-in."""
+    monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_workspace")
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"owner_id": "org_1", "stripe_customer_id": "cus_1"}),
+    )
+    create = MagicMock(return_value={"id": "cs_2", "url": "https://checkout.test/cs_2"})
+    monkeypatch.setattr(billing_service.stripe.checkout.Session, "create", create)
+
+    await billing_service.create_workspace_checkout(
+        owner_id="org_1", clerk_user_id="user_1", plan="workspace", then="chatgpt"
+    )
+
+    kwargs = create.call_args.kwargs
+    assert kwargs["success_url"] == (
+        f"{billing_service.settings.FRONTEND_URL}/settings?panel=providers&action=connect-chatgpt&checkout=success"
+    )
+    assert kwargs["idempotency_key"].endswith(":web:fd0:chatgpt")

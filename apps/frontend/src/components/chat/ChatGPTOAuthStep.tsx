@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useChatGPTOAuth, type OAuthState } from "@/hooks/useChatGPTOAuth";
+import { ChatGPTPlanFirst } from "./ChatGPTPlanGate";
 import { replaceSearchParams } from "@/lib/shellNav";
 import { externalLinkClick } from "@/lib/externalAuth";
 
@@ -159,6 +160,9 @@ export function ChatGPTOAuthStep({ onComplete }: Props) {
       />
     );
   }
+
+  // /start refused: no paid plan (the onboarding wizard reaches here after Checkout, so this is a safety net).
+  if (state.status === "plan_required") return <ChatGPTPlanFirst />;
 
   if (state.status === "error") {
     return (

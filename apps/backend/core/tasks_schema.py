@@ -68,6 +68,7 @@ TriggerSource = Literal[
     "voice",
     "text",
     "answer",
+    "ask",
 ]
 Admission = Literal["respond", "candidate"]
 # C13
@@ -149,6 +150,7 @@ TRIGGER_ID_FORMATS: dict[str, str] = {
     "voice": "voice:{callId}:{utteranceId}",
     "text": "text:{messageId}",
     "answer": "answer:{qid}:{clientAnswerId}",  # a person's free-text answer; the Temporal update carries ids only
+    "ask": "ask:{qid}",  # a Worker's ask_person / request_approval text; the `ask` update carries ids only
     # §18: one observe/auto match per rule per thread, ever. Not a TriggerSource: the row's `source` is chat/webhook.
     "rule": "rule:{scheduleId}:{threadHash}",
 }

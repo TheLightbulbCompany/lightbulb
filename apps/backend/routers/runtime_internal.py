@@ -29,12 +29,14 @@ from temporalio.service import RPCError, RPCStatusCode
 
 from core import tasks_schema as ts
 from core.dynamodb import utc_now_iso
-from core.repositories import effects_repo, tasks_repo
+from core.repositories import effects_repo, questions_repo, tasks_repo
 from core.services import questions, task_conversation
+from core.services.messaging import human_display_name
 from core.services.container_auth import _require_hook_token
 from core.services.super_agent_flags import flags_for
 from core.temporal import activities as acts
 from core.temporal import client as temporal
+from core.temporal.task_questions import AskRef
 from core.temporal.types import RunEvent, RunUsage, TaskInputRef, WorkerTurnOut
 
 router = APIRouter()
@@ -324,3 +326,92 @@ async def effect_done(owner_id: str, idem_key: str, body: EffectDoneBody, reques
     except tasks_repo.IllegalTransition as exc:
         raise HTTPException(status_code=409, detail={"code": "not_intent", "state": exc.current}) from exc
     return {"state": row["state"]}
+
+
+# --- a Worker's questions (Lane Q, wave2-Q Task 7) ---------------------------------------------------------
+# `ask_person` / `request_approval` on a task run. The text rides on `TRIG#ask:{qid}`; the `ask` update on
+# TaskWorkflow carries ids only and opens the Question row (one open `question` per task: a new one supersedes).
+
+
+class AskOption(BaseModel):
+    id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,32}$")
+    label: str = Field(min_length=1, max_length=200)
+
+
+class AskBody(BaseModel):
+    task_id: str = Field(alias="taskId")
+    run_id: str = Field(alias="runId")
+    attempt: int = Field(ge=1)
+    run_secret: str = Field(alias="runSecret", min_length=1, max_length=128)
+    tool_call_id: str = Field(alias="toolCallId", min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")
+    kind: Literal["question", "approval"]
+    # Context-free subkinds only (spec 05 §3.3): `publish` needs the app and `a2a_hold` governance's holders, which
+    # a Worker's ask cannot carry, so they are refused here rather than failing after the trigger is written.
+    subkind: Literal["question", "tool", "send", "spend", "purchase", "provider_consent", "review"]
+    title: str = Field(min_length=1, max_length=200)
+    text: str = Field("", max_length=500)
+    options: list[AskOption] = Field(default_factory=list, max_length=4)
+    blocking: bool = False
+
+
+async def _current_task(owner_id: str, att: dict, task_id: str, n: int) -> dict:
+    """The task, when `att` is its current live attempt; 409 otherwise (a later attempt never speaks for an earlier one)."""
+    task = await tasks_repo.get_task(owner_id, task_id)
+    if task is None or task.get("attemptCount") != n or att.get("status") not in _LIVE:
+        raise HTTPException(status_code=409, detail="stale_run")
+    return task
+
+
+async def _question_view(q: dict) -> dict:
+    names = [await human_display_name(u) for u in q.get("answerers") or []]
+    return {"questionId": q["qid"], "state": q["state"], "waitingLabel": questions.waiting_label(names)}
+
+
+@router.post("/{owner_id}/questions")
+async def worker_ask(owner_id: str, body: AskBody, request: Request) -> dict:
+    await _gate(owner_id, request)
+    att = await _attempt_of(owner_id, body.task_id, body.attempt, body.run_id, body.run_secret)
+    task = await _current_task(owner_id, att, body.task_id, body.attempt)
+    qid = questions.qid_for(f"{body.task_id}:{body.run_id}:{body.tool_call_id}")
+    existing = await questions_repo.get_question(owner_id, body.task_id, qid)
+    if existing is not None:
+        return await _question_view(existing)  # the same ask again (a tool retry) replays
+    trigger_id = ts.trigger_id("ask", qid)
+    await tasks_repo.put_trigger(
+        owner_id,
+        {
+            "triggerId": trigger_id,
+            "source": "ask",
+            "ref": {
+                "taskId": body.task_id,
+                "qid": qid,
+                "kind": body.kind,
+                "subkind": body.subkind,
+                "title": body.title,
+                "text": body.text,
+                "options": [o.model_dump() for o in body.options],
+                "blocking": body.blocking,
+                "attempt": body.attempt,
+                "runId": body.run_id,
+            },
+            "admission": "respond",
+            "lane": task.get("lane") or "shared",
+            "receivedAt": utc_now_iso(),
+        },
+    )
+    try:
+        await temporal.update_task(
+            owner_id, body.task_id, "ask", AskRef(trigger_id, body.kind, body.subkind, body.blocking)
+        )
+    except (temporal.TemporalUnavailable, RPCError) as exc:
+        raise HTTPException(status_code=503, detail="temporal_unavailable") from exc
+    except Exception as exc:  # noqa: BLE001 -- the update was refused (stopped task, nobody can answer)
+        from routers.questions import _failure_codes  # walks the update failure's cause chain
+
+        if "task_closed" in _failure_codes(exc):
+            raise HTTPException(status_code=409, detail="task_closed") from exc
+        raise HTTPException(status_code=409, detail="not_opened") from exc
+    opened = await questions_repo.get_question(owner_id, body.task_id, qid)
+    if opened is None:
+        raise HTTPException(status_code=503, detail="question_not_opened")
+    return await _question_view(opened)

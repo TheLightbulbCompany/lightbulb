@@ -217,10 +217,14 @@ async def record_answer(
     return await get_question(ws, task_id, qid)
 
 
-async def cancel_open(ws: str, task_id: str, *, by: str, reason: str) -> list[str]:
-    """Cancel every open question of the task (stop, supersede). Returns the qids it cancelled."""
+async def cancel_open(
+    ws: str, task_id: str, *, by: str, reason: str, kinds: tuple[str, ...] | None = None, except_qid: str | None = None
+) -> list[str]:
+    """Cancel the task's open questions (all, or `kinds` only; stop, supersede). Returns the qids it cancelled."""
     done = []
     for q in await list_open(ws, task_id):
+        if (kinds and q["kind"] not in kinds) or q["qid"] == except_qid:
+            continue
         try:
             await _close(
                 ws, q, {"state": "cancelled", "reason": reason, "cancelledBy": by, "cancelledAt": utc_now_iso()}

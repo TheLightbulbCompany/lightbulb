@@ -40,6 +40,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       git curl jq ripgrep unzip ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
+# ---- Lightbulb patch series over the pinned upstream source ------------------------------
+# hermes-patches/ is the `git format-patch --full-index` export of the private fork
+# TheLightbulbCompany/hermes-agent-lightbulb (its LIGHTBULB.md has the series table and the
+# upstream sync policy). SERIES names the pin this base image was built from
+# (hermes-version.json#base.revision), the fork commit, then the patches in order. Every patch
+# is inert until the bridge installs a checkpoint callback, injects an input or sets a refresh
+# delegate. Applied ONE AT A TIME in SERIES order: a later patch can edit a file an earlier one
+# creates, so a single `git apply --check *.patch` (each checked against the untouched tree)
+# fails. --check first, so a series that no longer fits the base fails the build HERE, not at
+# runtime; the smoke then proves every patch is present and inert. Separate commands, not
+# `--check ... && apply`: under `set -e` a failure on the left of && does not stop the loop.
+COPY hermes-patches/ /tmp/hermes-patches/
+COPY tests/image_smoke/patched_hermes_smoke.py /tmp/patched_hermes_smoke.py
+RUN set -eu; cd /opt/hermes; \
+    for p in $(grep -E '^[0-9]{4}-.*\.patch$' /tmp/hermes-patches/SERIES); do \
+      git apply --check "/tmp/hermes-patches/$p"; \
+      git apply "/tmp/hermes-patches/$p"; \
+    done; \
+    HERMES_HOME=/tmp/patched-smoke python3 /tmp/patched_hermes_smoke.py; \
+    rm -rf /tmp/hermes-patches /tmp/patched_hermes_smoke.py /tmp/patched-smoke
+
 # ---- QuickBooks MCP server -------------------------------------------------
 # Intuit publishes this server only as source. Keep the same pinned commit and
 # dev-dependency build fix used by the retired OpenClaw image; the runtime image

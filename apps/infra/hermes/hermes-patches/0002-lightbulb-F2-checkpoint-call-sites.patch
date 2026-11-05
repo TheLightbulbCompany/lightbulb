@@ -1,0 +1,355 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: prez2307 <prasiddha@gmail.com>
+Date: Wed, 4 Nov 2026 20:07:58 -0500
+Subject: [PATCH 2/4] lightbulb F2 checkpoint call sites
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Two call sites in agent/tool_executor.py (spec 02 §4.1):
+
+- _dispatch_authorized_once: after scope, pre_tool_call and guardrails,
+  before_tool runs inside the start-order step, so a parallel batch acks in
+  call order. refuse -> _blocked_tool_result(block_error_type=
+  "checkpoint_refused") with state.blocked; replay -> the stored result, no
+  dispatch; proceed -> unchanged upstream path.
+- _commit_tool_result: after the append and successful session-DB flush,
+  tool_committed(ref, persisted_result, effect_disposition) for non-blocked
+  calls that passed before_tool (the module tracks them, so skipped,
+  abandoned or timed-out slots never commit); an ack failure sets
+  _incremental_persistence_failed with cause checkpoint_commit_failed and
+  returns None, so the batch stops and the turn ends like a failed flush.
+- After a proceed, an interrupt or deadline that landed during the ack
+  blocks the call (never dispatched). Replay fires the start callback and,
+  on the parallel path, the terminal post_tool_call. The callback runs with
+  the turn's ContextVars (propagate_context_to_thread).
+
+With no callback installed a stubbed two-tool turn is identical to the golden
+transcript recorded at the pin.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ agent/tool_executor.py            |  33 +++-
+ tests/agent/test_lb_checkpoint.py | 254 ++++++++++++++++++++++++++++++
+ 2 files changed, 286 insertions(+), 1 deletion(-)
+
+diff --git a/agent/tool_executor.py b/agent/tool_executor.py
+index dde39df095b7cc0402299fae914fce20daaca59a..5b52b6bce663ab785acf8ac852c5ba7c00120773 100644
+--- a/agent/tool_executor.py
++++ b/agent/tool_executor.py
+@@ -29,6 +29,7 @@ from agent.display import (
+     redact_tool_args_for_display as _redact_tool_args_for_display,
+     _detect_tool_failure,
+ )
++from agent import lb_checkpoint
+ from agent.message_sanitization import coalesce_tool_call_id
+ from agent.inline_tool_executors import (
+     INLINE_TOOL_EXECUTORS,
+@@ -692,7 +693,31 @@ def _dispatch_authorized_once(
+ 
+     from agent.terminal_approval_batch import prepare_current_terminal
+     prepare_current_terminal(ref)
+-    _advance_start_order(lambda: _begin_tool_execution(agent, ref, display_index))
++    # Lightbulb F2: the checkpoint runs inside the start-order step so a batch acks in call order.
++    lb_ref = lb_checkpoint.ToolRef(ref.call_id, ref.name, ref.args)
++    lb_decision = lb_checkpoint.Decision.proceed()
++
++    def _lb_begin() -> None:
++        nonlocal lb_decision
++        lb_decision = lb_checkpoint.before_tool(agent, lb_ref)
++        if lb_decision.kind != "refuse":
++            _begin_tool_execution(agent, ref, display_index)
++
++    _advance_start_order(_lb_begin)
++    if lb_decision.kind == "proceed" and lb_checkpoint.installed(agent):
++        from tools.interrupt import is_interrupted
++        if agent._interrupt_requested or is_interrupted():  # interrupt/deadline landed during the ack
++            lb_checkpoint.forget(agent, lb_ref)
++            lb_decision = lb_checkpoint.Decision.refuse("interrupted before dispatch")
++    if lb_decision.kind == "refuse":
++        state.blocked = True
++        return _blocked_tool_result(
++            agent, ref, block_message=lb_decision.message, block_error_type="checkpoint_refused", guardrail_decision=None,
++        )
++    if lb_decision.kind == "replay":
++        if begin_execution is not None:  # parallel path: no handler runs, so the executor owns the terminal post
++            ref.emit_post(agent, lb_decision.result)
++        return lb_decision.result
+     return _run_with_activity_heartbeat(agent, ref.name, lambda: execute(ref.args))
+ 
+ 
+@@ -1065,6 +1090,12 @@ def _commit_tool_result(
+     messages.append(tool_message)
+     if not _flush_session_db_after_tool_progress(agent, messages, stage=f"tool result {function_name}"):
+         return None
++    if not blocked and not lb_checkpoint.tool_committed(  # Lightbulb F2: ack failure stops the batch
++        agent, lb_checkpoint.ToolRef(tool_call_id, function_name, function_args), persisted_result, effect_disposition,
++    ):
++        agent._incremental_persistence_failed = True  # same turn stop as a failed flush
++        agent._last_persistence_error_cause = "checkpoint_commit_failed"
++        return None
+ 
+     if not blocked:
+         # ``tool.completed`` projects AFTER the canonical append + flush so resume can
+diff --git a/tests/agent/test_lb_checkpoint.py b/tests/agent/test_lb_checkpoint.py
+index 2570f91c21157a628e38c61875f112925fbf76d8..fb16ed7bd1c85e5586e1b84779b9e33803b2c926 100644
+--- a/tests/agent/test_lb_checkpoint.py
++++ b/tests/agent/test_lb_checkpoint.py
+@@ -184,3 +184,257 @@ def test_install_none_uninstalls():
+     lb_checkpoint.install(agent, Recorder())
+     lb_checkpoint.install(agent, None)
+     assert agent._lb_checkpoint is None
++
++
++# ---------------------------------------------------------------------------- F2 (call sites)
++
++def _install(agent, recorder, timeout_s=10.0):
++    from agent import lb_checkpoint
++    lb_checkpoint.install(agent, recorder, timeout_s=timeout_s)
++    return recorder
++
++
++def test_no_callback_is_a_noop():
++    log = []
++    result = _stub_turn(_make_agent(), log)
++    golden = json.loads(GOLDEN.read_text())
++    assert _canonical(result["messages"]) == golden["messages"]
++    assert result["final_response"] == golden["final_response"]
++    # the two calls run as a parallel batch: which handler starts first is not part of the transcript
++    assert sorted(list(e) for e in log) == sorted(golden["handler_log"])
++
++
++def test_before_tool_runs_after_policy_and_before_dispatch():
++    import agent.tool_executor as te
++    agent = _make_agent()
++    order = []
++    real_pre = te._pre_tool_block
++    real_guard = agent._tool_guardrails.before_call
++
++    def pre(a, ref):
++        order.append("pre_tool_call")
++        return real_pre(a, ref)
++
++    def guard(name, args):
++        order.append("guardrails")
++        return real_guard(name, args)
++
++    rec = _install(agent, Recorder())
++    rec.log = order  # interleave checkpoint entries with the policy spies
++    agent._tool_guardrails.before_call = guard
++    with patch.object(te, "_pre_tool_block", side_effect=pre):
++        _run_sequential(agent, ["c1"], order)
++    assert order == ["pre_tool_call", "guardrails", ("before_tool", "c1"), ("handler", "c1"),
++                     ("tool_committed", "c1")]
++
++
++def test_blocked_tool_never_checkpoints():
++    import agent.tool_executor as te
++    agent = _make_agent()
++    rec = _install(agent, Recorder())
++    log = []
++    with patch.object(te, "_pre_tool_block", return_value=("blocked by plugin", {})):
++        messages = _run_sequential(agent, ["c1"], log)
++    assert rec.log == []
++    assert log == []
++    assert "blocked by plugin" in messages[0]["content"]
++
++
++def test_refuse_blocks_handler_and_returns_blocked_result():
++    from agent.lb_checkpoint import Decision
++    agent = _make_agent()
++    rec = _install(agent, Recorder(decide=lambda ref: Decision.refuse("needs approval: send mail")))
++    log = []
++    result = _stub_turn(agent, log)
++    assert log == []  # handler never ran
++    tool_rows = [m for m in result["messages"] if m["role"] == "tool"]
++    assert len(tool_rows) == 2
++    assert all('{"error": "needs approval: send mail"}' in m["content"] for m in tool_rows)
++    assert ("tool_committed", "c1") not in rec.log  # blocked calls have no effect to commit
++    # the turn continued: the model got the refusals and answered
++    assert agent.client.chat.completions.create.call_count == 2
++    assert result["final_response"] == "done"
++
++
++def test_refuse_reports_checkpoint_refused_error_type():
++    import agent.tool_executor as te
++    from agent.lb_checkpoint import Decision
++    agent = _make_agent()
++    _install(agent, Recorder(decide=lambda ref: Decision.refuse("no")))
++    posts = []
++    with patch.object(te, "_emit_terminal_post_tool_call", side_effect=lambda *a, **k: posts.append(k)):
++        _run_sequential(agent, ["c1"], [])
++    assert [p["error_type"] for p in posts] == ["checkpoint_refused"]
++
++
++def test_replay_returns_stored_result_without_dispatch():
++    from agent.lb_checkpoint import Decision
++    agent = _make_agent()
++    rec = _install(agent, Recorder(decide=lambda ref: Decision.replay(f"stored-{ref.tool_call_id}")))
++    log = []
++    messages = _run_sequential(agent, ["c1"], log)
++    assert log == []
++    assert messages[0]["content"] == "stored-c1"
++    assert rec.log == [("before_tool", "c1"), ("tool_committed", "c1")]
++
++
++def test_ack_timeout_fails_closed():
++    agent = _make_agent()
++    _install(agent, Recorder(sleep=1.2), timeout_s=0.2)
++    log = []
++    messages = _run_sequential(agent, ["c1"], log)
++    assert log == []
++    assert '{"error": "checkpoint_unavailable"}' in messages[0]["content"]
++    assert agent._lb_checkpoint_failed == "TimeoutError"
++
++
++def test_ack_raises_fails_closed():
++    agent = _make_agent()
++
++    def boom(ref):
++        raise ConnectionError("backend down")
++
++    _install(agent, Recorder(decide=boom))
++    log = []
++    messages = _run_sequential(agent, ["c1"], log)
++    assert log == []
++    assert '{"error": "checkpoint_unavailable"}' in messages[0]["content"]
++    assert agent._lb_checkpoint_failed == "ConnectionError"
++
++
++def test_commit_ack_failure_stops_batch():
++    agent = _make_agent()
++    rec = _install(agent, Recorder(commit_error=RuntimeError("ack lost")))
++    log = []
++    _run_sequential(agent, ["c1", "c2"], log)
++    assert log == [("handler", "c1")]  # c2 never dispatched
++    assert rec.log == [("before_tool", "c1"), ("tool_committed", "c1")]
++    assert agent._incremental_persistence_failed is True
++
++
++def test_crash_between_dispatch_and_commit_leaves_intent():
++    agent = _make_agent()
++    rec = _install(agent, Recorder())
++    effects = []
++
++    def crash(function_name, function_args, effective_task_id, **kwargs):
++        effects.append(kwargs.get("tool_call_id"))
++        raise SystemExit("process killed mid-tool")
++
++    with patch("model_tools.handle_function_call", side_effect=crash), _persist_passthrough(), \
++            pytest.raises(SystemExit):
++        agent._execute_tool_calls_sequential(
++            SimpleNamespace(content="", tool_calls=[_call("c1")]), [], "task-1")
++    assert effects == ["c1"]
++    assert rec.log == [("before_tool", "c1")]  # intent recorded, no commit: the "unknown" case
++
++
++def test_concurrent_batch_checkpoints_each_call_once_in_start_order():
++    agent = _make_agent()
++    rec = _install(agent, Recorder())
++    threads = set()
++
++    def slow_invoke(name, args, task_id, call_id, **kwargs):
++        threads.add(threading.current_thread().name)
++        time.sleep({"c1": 0.15, "c2": 0.0, "c3": 0.1, "c4": 0.05}[call_id])
++        return f"result-{call_id}"
++
++    real_before = rec.before_tool
++
++    def before_on_worker(ref):
++        threads.add(threading.current_thread().name)
++        return real_before(ref)
++
++    rec.before_tool = before_on_worker
++    ids = ["c1", "c2", "c3", "c4"]
++    messages: list = []
++    with patch.object(agent, "_invoke_tool", side_effect=slow_invoke), _persist_passthrough():
++        agent._execute_tool_calls_concurrent(
++            SimpleNamespace(content="", tool_calls=[_call(c) for c in ids]), messages, "task-1")
++    befores = [c for kind, c in rec.log if kind == "before_tool"]
++    commits = [c for kind, c in rec.log if kind == "tool_committed"]
++    assert befores == ids
++    assert commits == ids
++    assert [m["content"] for m in messages] == [f"result-{c}" for c in ids]
++    assert threading.main_thread().name not in threads
++
++
++# ---------------------------------------------------------------------------- review fixes (#10)
++
++def test_commit_ack_failure_ends_turn():
++    agent = _make_agent()
++    _install(agent, Recorder(commit_error=RuntimeError("ack lost")))
++    result = _stub_turn(agent, [])
++    assert agent.client.chat.completions.create.call_count == 1  # no further model call
++    assert result["failed"] is True
++    assert result["turn_exit_reason"] == "session_persistence_failed"
++    assert result["failure_reason"] == "session_persistence_failed:checkpoint_commit_failed"
++
++
++def test_interrupt_during_ack_does_not_dispatch():
++    from agent.lb_checkpoint import Decision
++    agent = _make_agent()
++
++    def interrupt_then_proceed(ref):
++        agent.interrupt("stop")
++        return Decision.proceed()
++
++    rec = _install(agent, Recorder(decide=interrupt_then_proceed))
++    log = []
++    _run_sequential(agent, ["c1"], log)
++    assert log == []  # the handler never ran
++    assert ("tool_committed", "c1") not in rec.log
++
++
++def test_commit_only_for_calls_that_passed_before_tool():
++    from agent import lb_checkpoint
++    agent = SimpleNamespace()
++    rec = Recorder()
++    lb_checkpoint.install(agent, rec)
++    ref = lb_checkpoint.ToolRef("never-checkpointed", "x", {})
++    assert lb_checkpoint.tool_committed(agent, ref, "r", "unknown") is True
++    assert rec.log == []
++    seen = lb_checkpoint.ToolRef("t1", "x", {})
++    lb_checkpoint.before_tool(agent, seen)
++    lb_checkpoint.tool_committed(agent, seen, "r", None)
++    lb_checkpoint.tool_committed(agent, seen, "r", None)  # once only
++    assert rec.log == [("before_tool", "t1"), ("tool_committed", "t1")]
++
++
++def test_replay_on_parallel_path_emits_post_and_start():
++    import agent.tool_executor as te
++    from agent.lb_checkpoint import Decision
++    agent = _make_agent()
++    _install(agent, Recorder(decide=lambda ref: Decision.replay(f"stored-{ref.tool_call_id}")))
++    posts, starts, log = [], [], []
++    agent.tool_start_callback = lambda call_id, *a: starts.append(call_id)
++    messages: list = []
++    with patch.object(te, "_emit_terminal_post_tool_call", side_effect=lambda *a, **k: posts.append(k["tool_call_id"])), \
++            patch.object(agent, "_invoke_tool", side_effect=_invoke(log)), _persist_passthrough():
++        agent._execute_tool_calls_concurrent(
++            SimpleNamespace(content="", tool_calls=[_call("c1"), _call("c2")]), messages, "task-1")
++    assert log == []
++    assert sorted(posts) == ["c1", "c2"]
++    assert sorted(starts) == ["c1", "c2"]
++    assert [m["content"] for m in messages] == ["stored-c1", "stored-c2"]
++
++
++def test_callback_sees_turn_context_vars():
++    import contextvars
++    from agent import lb_checkpoint
++    from agent.lb_checkpoint import Decision
++    var = contextvars.ContextVar("lb_test_turn", default=None)
++    seen = []
++
++    def decide(ref):
++        seen.append(var.get())
++        return Decision.proceed()
++
++    agent = SimpleNamespace()
++    lb_checkpoint.install(agent, Recorder(decide=decide))
++    token = var.set("turn-42")
++    try:
++        lb_checkpoint.before_tool(agent, lb_checkpoint.ToolRef("t", "x", {}))
++    finally:
++        var.reset(token)
++    assert seen == ["turn-42"]

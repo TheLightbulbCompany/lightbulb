@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 const ROOT = join(__dirname, "../../..");
 const workflow = readFileSync(join(ROOT, ".github/workflows/build-hermes-image.yml"), "utf8");
 const dockerfile = readFileSync(join(ROOT, "apps/infra/hermes/Dockerfile"), "utf8");
-const HERMES_VERSION: { base?: { image?: string } } = JSON.parse(
+const HERMES_VERSION: { base?: { image?: string; revision?: string }; patches?: string } = JSON.parse(
   readFileSync(join(ROOT, "hermes-version.json"), "utf8"),
 );
 
@@ -107,5 +107,50 @@ describe("build-hermes-image workflow", () => {
     const server = readFileSync(join(ROOT, "apps/infra/hermes/bridge/server.py"), "utf8");
     expect(server).not.toContain("diagnostic");
     expect(server).not.toContain("_ws_echo");
+  });
+
+  describe("Lightbulb patch series (wave 1 lane H, spec 02 §4.2)", () => {
+    const PATCH_DIR = join(ROOT, "apps/infra/hermes/hermes-patches");
+    const series = readFileSync(join(PATCH_DIR, "SERIES"), "utf8").split("\n").filter(Boolean);
+    const files = series.filter((line) => /^\d{4}-.*\.patch$/.test(line));
+
+    it("hermes-version.json points at the SERIES and records the pin the base image was built from", () => {
+      expect(HERMES_VERSION.patches).toBe("apps/infra/hermes/hermes-patches/SERIES");
+      expect(series[0]).toBe(`pin=${HERMES_VERSION.base?.revision}`);
+      expect(HERMES_VERSION.base?.revision).toBe("d5b3cad7b98b3bcd157ea8b585759b0bb4fb8a6d");
+      expect(series[1]).toMatch(/^fork=TheLightbulbCompany\/hermes-agent-lightbulb@[0-9a-f]{40}$/);
+    });
+
+    it("SERIES lists every vendored patch exactly once, in number order, and every listed file exists", () => {
+      const onDisk = readdirSync(PATCH_DIR).filter((f) => f.endsWith(".patch")).sort();
+      expect(files).toEqual(onDisk);
+      expect(files.map((f) => f.slice(0, 4))).toEqual(files.map((_, i) => String(i + 1).padStart(4, "0")));
+      for (const f of files) expect(existsSync(join(PATCH_DIR, f))).toBe(true);
+      expect(series.length).toBe(files.length + 2); // pin, fork, then the files: nothing else
+    });
+
+    it("the Dockerfile applies the series one patch at a time, --check before apply, after git is installed and before the bridge", () => {
+      const aptGit = dockerfile.search(/apt-get install[^\n]*\\\n\s*git\b/);
+      const check = dockerfile.indexOf('git apply --check "/tmp/hermes-patches/$p"');
+      const apply = dockerfile.indexOf('; \\\n      git apply "/tmp/hermes-patches/$p"');
+      const bridge = dockerfile.indexOf("COPY bridge /opt/bridge/bridge");
+      expect(aptGit).toBeGreaterThan(-1);
+      expect(check).toBeGreaterThan(aptGit);
+      expect(apply).toBeGreaterThan(check);
+      expect(bridge).toBeGreaterThan(apply);
+      // in SERIES order, never a glob: a later patch edits a file an earlier one creates
+      expect(dockerfile).toContain("/tmp/hermes-patches/SERIES");
+      const code = dockerfile.split("\n").filter((line) => !line.trim().startsWith("#")).join("\n");
+      expect(code).not.toMatch(/git apply[^\n]*\*\.patch/);
+      // under `set -e`, `false && x` does not stop the loop: --check must be its own command
+      expect(code).not.toMatch(/git apply --check[^\n]*&&/);
+    });
+
+    it("the build runs the patched-image smoke and leaves no patch files in the layer", () => {
+      expect(dockerfile).toContain("python3 /tmp/patched_hermes_smoke.py");
+      expect(dockerfile).toContain("rm -rf /tmp/hermes-patches /tmp/patched_hermes_smoke.py");
+      const smoke = readFileSync(join(ROOT, "apps/infra/hermes/tests/image_smoke/patched_hermes_smoke.py"), "utf8");
+      expect(smoke).toContain('print("patched hermes ok")');
+    });
   });
 });

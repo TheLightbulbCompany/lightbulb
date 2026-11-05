@@ -1,0 +1,307 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: prez2307 <prasiddha@gmail.com>
+Date: Wed, 4 Nov 2026 20:17:35 -0500
+Subject: [PATCH 4/4] lightbulb F6 codex refresh delegate
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+hermes_cli/auth_codex.py gains _REFRESH_DELEGATE (None by default) and
+set_refresh_delegate(fn); the first line of refresh_codex_oauth_pure hands the
+refresh to the delegate when one is set (spec 13 §4.3, §5.5). Both refresh
+paths end there: _refresh_codex_auth_tokens and credential_pool's
+_post_tokens_refresh (resolved by name through hermes_cli.auth). Inert when
+unset.
+
+Error contract (read at the pin): failures are hermes_cli.auth_constants.
+AuthError built with _codex_err(message, code, relogin=...), as
+_codex_refresh_failure_error does. The pool quarantines only when
+relogin_required is True AND code is a terminal code (invalid_grant,
+invalid_token, refresh_token_reused, codex_refresh_failed,
+codex_auth_missing_refresh_token). So the bridge delegate raises
+_codex_err(msg, "invalid_grant", relogin=True) for a dead grant (broker 410)
+and any code with relogin=False for busy/5xx/timeout.
+
+_read_codex_tokens accepts the placeholder refresh token
+"lightbulb-brokered" (it only checks non-empty).
+
+With a delegate set: _recover_codex_tokens_from_cli is off, so a Codex CLI
+login on the box can never put a real refresh token into the VM's
+auth.json; the delegate's return is validated (non-empty string tokens, else
+AuthError lightbulb_refresh_invalid, relogin False); and waiters holding the
+same stale access token share one broker refresh (the placeholder refresh
+token never rotates, so the peer-rotation adopt check cannot fire).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ hermes_cli/auth_codex.py                     |  40 +++-
+ tests/hermes_cli/test_lb_refresh_delegate.py | 192 +++++++++++++++++++
+ 2 files changed, 231 insertions(+), 1 deletion(-)
+ create mode 100644 tests/hermes_cli/test_lb_refresh_delegate.py
+
+diff --git a/hermes_cli/auth_codex.py b/hermes_cli/auth_codex.py
+index c3c360a4a9fc365454f0ce991f563c7659f2a350..7f9e44c0a12fd97dde81046c0448cd311702a4f4 100644
+--- a/hermes_cli/auth_codex.py
++++ b/hermes_cli/auth_codex.py
+@@ -18,7 +18,7 @@ import threading
+ import time
+ from contextlib import suppress
+ from pathlib import Path
+-from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Tuple
++from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, List, Optional, Tuple
+ from hermes_cli.auth_constants import (
+     _decode_jwt_claims, AUTH_LOCK_TIMEOUT_SECONDS, AuthError,
+     CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS, CODEX_OAUTH_CLIENT_ID, CODEX_OAUTH_TOKEN_URL,
+@@ -184,6 +184,8 @@ def _save_codex_tokens(
+ 
+ def _recover_codex_tokens_from_cli(reason: str) -> Optional[Dict[str, str]]:
+     """Adopt a valid Codex CLI token pair into Hermes auth, if available."""
++    if _REFRESH_DELEGATE is not None:  # Lightbulb F6: a brokered VM never takes a real refresh token in
++        return None
+     from hermes_cli.auth import _import_codex_cli_tokens, _save_codex_tokens
+     imported = _import_codex_cli_tokens()
+     # Require BOTH tokens before adopting: persisting a payload without a usable refresh_token
+@@ -335,9 +337,45 @@ def _codex_refresh_failure_error(response: "httpx.Response") -> AuthError:
+     return _codex_err(message, code, relogin=relogin_required)
+ 
+ 
++# Lightbulb F6: when set, every Codex refresh (singleton and credential pool) asks this delegate
++# instead of the OAuth endpoint. It returns {"access_token", "refresh_token", "last_refresh"} and
++# raises AuthError the way _codex_refresh_failure_error does: a dead grant (broker 410) as
++# _codex_err(msg, "invalid_grant", relogin=True) so the pool quarantines it; busy/5xx/timeout with
++# relogin=False so it does not. None = upstream behavior.
++_REFRESH_DELEGATE: Optional[Callable[[str, str], Dict[str, Any]]] = None
++
++
++_DELEGATE_LOCK = threading.Lock()
++_DELEGATE_LAST: Optional[Tuple[str, Dict[str, Any]]] = None  # (access token refreshed, its result)
++
++
++def set_refresh_delegate(fn: Optional[Callable[[str, str], Dict[str, Any]]]) -> None:
++    global _REFRESH_DELEGATE, _DELEGATE_LAST
++    with _DELEGATE_LOCK:
++        _REFRESH_DELEGATE, _DELEGATE_LAST = fn, None
++
++
++def _delegate_refresh(access_token: str, refresh_token: str) -> Dict[str, Any]:
++    """One broker refresh per stale access token: waiters holding the same token share it (the
++    placeholder refresh token never rotates, so the peer-rotation adopt check cannot fire)."""
++    global _DELEGATE_LAST
++    with _DELEGATE_LOCK:
++        if _DELEGATE_LAST is not None and _DELEGATE_LAST[0] == access_token:
++            return dict(_DELEGATE_LAST[1])
++        out = _REFRESH_DELEGATE(access_token, refresh_token)
++        if not (isinstance(out, dict) and all(
++                isinstance(out.get(k), str) and out[k].strip() for k in ("access_token", "refresh_token"))):
++            raise _codex_err("Lightbulb token broker returned an invalid refresh result.",
++                             "lightbulb_refresh_invalid", relogin=False)
++        _DELEGATE_LAST = (access_token, dict(out))
++        return dict(out)
++
++
+ def refresh_codex_oauth_pure(
+     access_token: str, refresh_token: str, *, timeout_seconds: float = 20.0) -> Dict[str, Any]:
+     """Refresh Codex OAuth tokens without mutating Hermes auth state."""
++    if _REFRESH_DELEGATE is not None:
++        return _delegate_refresh(access_token, refresh_token)
+     from hermes_cli.auth import _nonempty_str, _utc_now_z
+     del access_token  # Access token is only used by callers to decide whether to refresh.
+     if not _nonempty_str(refresh_token):
+diff --git a/tests/hermes_cli/test_lb_refresh_delegate.py b/tests/hermes_cli/test_lb_refresh_delegate.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..1b27790420f34c9e0cca70b8240fd8c72d0b5299
+--- /dev/null
++++ b/tests/hermes_cli/test_lb_refresh_delegate.py
+@@ -0,0 +1,192 @@
++"""Lightbulb F6: Codex refresh delegate (spec 13 §4.3, §5.5, §8.1).
++
++With a delegate set, every Codex refresh path (``_refresh_codex_auth_tokens`` and the credential
++pool's ``_post_tokens_refresh``) ends in the delegate instead of the OAuth endpoint, so a VM never
++spends a rotating refresh token itself. Token values are synthetic placeholders.
++"""
++import json
++
++import httpx
++import pytest
++
++from hermes_cli import auth, auth_codex
++
++PLACEHOLDER = "lightbulb-brokered"
++
++
++@pytest.fixture(autouse=True)
++def _reset_delegate():
++    yield
++    auth_codex.set_refresh_delegate(None)
++
++
++@pytest.fixture
++def home(tmp_path, monkeypatch):
++    """auth.json shaped like a brokered VM: a real access token, the placeholder refresh token."""
++    hermes_home = tmp_path / "hermes"
++    hermes_home.mkdir()
++    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
++    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "no-codex-cli"))
++    tokens = {"access_token": "vm-at", "refresh_token": PLACEHOLDER}
++    (hermes_home / "auth.json").write_text(json.dumps({
++        "version": 1,
++        "providers": {"openai-codex": {"auth_mode": "chatgpt", "tokens": tokens}},
++        "credential_pool": {"openai-codex": [{
++            "id": "cred-1", "label": "chatgpt", "auth_type": "oauth", "priority": 0,
++            "source": "device_code", **tokens}]},
++    }))
++    return hermes_home / "auth.json"
++
++
++class _Endpoint:
++    """Stands in for the httpx client ``refresh_codex_oauth_pure`` opens."""
++
++    def __init__(self):
++        self.posts = []
++
++    def __enter__(self):
++        return self
++
++    def __exit__(self, *exc):
++        return False
++
++    def post(self, url, *, headers=None, data=None):
++        self.posts.append((url, headers, data))
++        return httpx.Response(200, json={"access_token": "http-at", "refresh_token": "http-rt"})
++
++
++@pytest.fixture
++def endpoint(monkeypatch):
++    ep = _Endpoint()
++    monkeypatch.setattr(auth_codex, "_codex_http_client", lambda **kw: ep)
++    return ep
++
++
++def _brokered(calls):
++    def delegate(access_token, refresh_token):
++        calls.append((access_token, refresh_token))
++        return {"access_token": "broker-at", "refresh_token": PLACEHOLDER, "last_refresh": "2026-11-04T00:00:00Z"}
++    return delegate
++
++
++def test_no_delegate_is_byte_identical(endpoint):
++    out = auth_codex.refresh_codex_oauth_pure("at", "rt")
++    assert endpoint.posts == [(
++        auth_codex.CODEX_OAUTH_TOKEN_URL,
++        {"Content-Type": "application/x-www-form-urlencoded"},
++        {"grant_type": "refresh_token", "refresh_token": "rt", "client_id": auth_codex.CODEX_OAUTH_CLIENT_ID},
++    )]
++    assert out["access_token"] == "http-at" and out["refresh_token"] == "http-rt"
++
++
++def test_delegate_replaces_http(home, endpoint):
++    calls = []
++    auth_codex.set_refresh_delegate(_brokered(calls))
++
++    updated = auth._refresh_codex_auth_tokens({"access_token": "vm-at", "refresh_token": PLACEHOLDER}, 5.0)
++    assert updated["access_token"] == "broker-at"
++
++    from agent.credential_pool import load_pool
++    pool = load_pool("openai-codex")
++    entry = pool._post_tokens_refresh(pool.entries()[0])
++    assert entry.access_token == "broker-at" and entry.refresh_token == PLACEHOLDER
++
++    assert endpoint.posts == []
++    assert calls == [("vm-at", PLACEHOLDER), ("broker-at", PLACEHOLDER)]
++
++
++def _failing(relogin):
++    def delegate(access_token, refresh_token):
++        # terminal = the shape _codex_refresh_failure_error gives a dead grant; transient = relogin False
++        code = "invalid_grant" if relogin else "lightbulb_broker_busy"
++        raise auth_codex._codex_err("broker refused the refresh", code, relogin=relogin)
++    return delegate
++
++
++def test_delegate_terminal_quarantines(home, endpoint):
++    from agent.credential_pool import load_pool
++    auth_codex.set_refresh_delegate(_failing(relogin=True))
++    pool = load_pool("openai-codex")
++    assert pool._refresh_entry(pool.entries()[0], force=True) is None
++    assert [e for e in pool.entries() if e.source == "device_code"] == []
++    assert endpoint.posts == []
++
++
++def test_delegate_transient_does_not_quarantine(home, endpoint):
++    from agent.credential_pool import load_pool
++    auth_codex.set_refresh_delegate(_failing(relogin=False))
++    pool = load_pool("openai-codex")
++    pool._refresh_entry(pool.entries()[0], force=True)
++    assert [e.source for e in load_pool("openai-codex").entries()] == ["device_code"]
++    assert endpoint.posts == []
++
++
++def test_placeholder_refresh_token_passes_read(home):
++    assert auth_codex._read_codex_tokens()["tokens"]["refresh_token"] == PLACEHOLDER
++
++
++# ---------------------------------------------------------------------------- review fixes (#12)
++
++def _jwt(exp):
++    import base64
++
++    def part(payload):
++        return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
++    return f"{part({'alg': 'none'})}.{part({'exp': exp})}.sig"
++
++
++@pytest.fixture
++def codex_cli_file(tmp_path, monkeypatch):
++    """A real-looking Codex CLI login on the box: the broker must never let it into the VM."""
++    import time
++    cli = tmp_path / "codex-cli"
++    cli.mkdir()
++    (cli / "auth.json").write_text(json.dumps({"tokens": {
++        "access_token": _jwt(int(time.time()) + 3600), "refresh_token": "REAL-CLI-REFRESH-TOKEN"}}))
++    monkeypatch.setenv("CODEX_HOME", str(cli))
++    return cli
++
++
++def test_delegate_relogin_never_adopts_codex_cli_tokens(home, endpoint, codex_cli_file):
++    auth_codex.set_refresh_delegate(_failing(relogin=True))
++    with pytest.raises(auth.AuthError):
++        auth._refresh_codex_auth_tokens({"access_token": "vm-at", "refresh_token": PLACEHOLDER}, 5.0)
++    assert "REAL-CLI-REFRESH-TOKEN" not in home.read_text()
++
++
++def test_delegate_missing_tokens_recovery_never_adopts_codex_cli_tokens(home, codex_cli_file):
++    auth_codex.set_refresh_delegate(_brokered([]))
++    assert auth_codex._recover_codex_tokens_from_cli("codex_auth_missing_access_token") is None
++    assert "REAL-CLI-REFRESH-TOKEN" not in home.read_text()
++
++
++@pytest.mark.parametrize("bad", [None, {}, {"access_token": ""}, {"access_token": 5, "refresh_token": "x"}, "tok"])
++def test_delegate_return_is_validated(bad):
++    auth_codex.set_refresh_delegate(lambda at, rt: bad)
++    with pytest.raises(auth.AuthError) as info:
++        auth_codex.refresh_codex_oauth_pure("vm-at", PLACEHOLDER)
++    assert info.value.relogin_required is False  # a broken broker reply is not a dead grant
++
++
++def test_concurrent_waiters_share_one_broker_refresh():
++    import threading
++    import time
++    calls = []
++
++    def slow(access_token, refresh_token):
++        calls.append(access_token)
++        time.sleep(0.2)
++        return {"access_token": "broker-at", "refresh_token": PLACEHOLDER, "last_refresh": "t"}
++
++    auth_codex.set_refresh_delegate(slow)
++    results = []
++    threads = [threading.Thread(target=lambda: results.append(
++        auth_codex.refresh_codex_oauth_pure("stale-at", PLACEHOLDER)["access_token"])) for _ in range(4)]
++    for t in threads:
++        t.start()
++    for t in threads:
++        t.join(5)
++    assert calls == ["stale-at"]
++    assert results == ["broker-at"] * 4
++    auth_codex.refresh_codex_oauth_pure("broker-at", PLACEHOLDER)  # a newer token refreshes again
++    assert calls == ["stale-at", "broker-at"]

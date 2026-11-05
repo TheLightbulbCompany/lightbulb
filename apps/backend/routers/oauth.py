@@ -120,8 +120,9 @@ async def status(ctx: AuthContext = Depends(get_current_user)):
 async def start(ctx: AuthContext = Depends(get_current_user)):
     if ctx.is_org_context:
         await _require_org_oauth_owner(ctx)
-    # ChatGPT sign-in comes with a paid plan (the same rule /billing/provider applies). Refuse BEFORE any OpenAI
-    # device code is requested, so a free workspace never runs the whole sign-in only to be told to pick a plan.
+    # Starting a ChatGPT sign-in needs a paid plan: 402 plan_required unless is_paid_subscription(billing row), checked
+    # BEFORE any OpenAI device code is requested. Only /start is gated; /status, /poll and /disconnect, and connections
+    # already made, are untouched.
     from core.services.provision_gate import is_paid_subscription
 
     if not is_paid_subscription(await billing_repo.get_by_owner_id(resolve_owner_id(ctx))):

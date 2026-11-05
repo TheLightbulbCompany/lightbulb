@@ -236,10 +236,22 @@ def finish_run(run_id: str, outcome: str) -> None:
 
 
 _PAPERCLIP_IDENTITY_KEYS = ("runId", "companyId", "agentId", "sessionId", "issueId")
+_TASK_IDENTITY_KEYS = ("runId", "ownerId", "taskId", "attempt", "agentId", "sessionKey", "mode", "session")
+#: The two run kinds with a durable record: Paperclip's native runs and v1 task runs (bridge/runs.py).
+#: Per kind: the identity fields a record must match, and the identity's session field.
+_DURABLE_KINDS = {
+    "paperclip": (_PAPERCLIP_IDENTITY_KEYS, "sessionId"),
+    "task": (_TASK_IDENTITY_KEYS, "sessionKey"),
+}
 
 
-def _paperclip_fingerprint(identity: dict, request: dict) -> str:
-    routing_identity = {key: identity.get(key) for key in _PAPERCLIP_IDENTITY_KEYS}
+def _record_dir(kind: str) -> dict:
+    """The runs_dir kwarg for sync's record helpers: none for Paperclip, so its calls are unchanged."""
+    return {"runs_dir": sync.TASK_RUNS_DIR} if kind == "task" else {}
+
+
+def _paperclip_fingerprint(identity: dict, request: dict, kind: str = "paperclip") -> str:
+    routing_identity = {key: identity.get(key) for key in _DURABLE_KINDS[kind][0]}
     canonical = json.dumps(
         {"identity": routing_identity, "request": request},
         sort_keys=True,
@@ -249,16 +261,16 @@ def _paperclip_fingerprint(identity: dict, request: dict) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _paperclip_identity_matches(entry: dict, identity: dict) -> bool:
+def _paperclip_identity_matches(entry: dict, identity: dict, kind: str = "paperclip") -> bool:
     stored = entry.get("identity") or {}
-    return entry.get("kind") == "paperclip" and all(
-        stored.get(key) == identity.get(key) for key in _PAPERCLIP_IDENTITY_KEYS
+    return entry.get("kind") == kind and all(
+        stored.get(key) == identity.get(key) for key in _DURABLE_KINDS[kind][0]
     )
 
 
-def _replay_or_conflict(entry: dict, identity: dict, fingerprint: str) -> str:
+def _replay_or_conflict(entry: dict, identity: dict, fingerprint: str, kind: str = "paperclip") -> str:
     """A second POST for a known run id: the same caller and request replays, anything else conflicts."""
-    if _paperclip_identity_matches(entry, identity) and entry.get("requestHash") == fingerprint:
+    if _paperclip_identity_matches(entry, identity, kind) and entry.get("requestHash") == fingerprint:
         return "replayed"
     return "conflict"
 
@@ -717,27 +729,31 @@ def _post_late_call_answer(identity: dict, request: dict, output: str) -> None:
 
 
 def register_paperclip_run(identity: dict, request: dict) -> str:
+    return register_durable_run(identity, request, kind="paperclip")
+
+
+def register_durable_run(identity: dict, request: dict, *, kind: str) -> str:
     """Atomically register a native run, or classify an idempotent replay/conflict."""
     run_id = identity["runId"]
-    fingerprint = _paperclip_fingerprint(identity, request)
+    fingerprint = _paperclip_fingerprint(identity, request, kind)
     # A run that finished on a process that is gone is still this Idempotency-Key's run: its
     # durable record classifies the replay exactly as the in-memory entry would have. Read
     # outside the lock (an S3 GET); only consulted when this process has no entry.
     if run_id not in RUNS:
-        record = _live_record(sync.get_paperclip_run_record(identity["agentId"], run_id))
+        record = _live_record(sync.get_paperclip_run_record(identity["agentId"], run_id, **_record_dir(kind)))
         if record is not None:
-            return _replay_or_conflict({**record, "kind": "paperclip"}, identity, fingerprint)
+            return _replay_or_conflict({**record, "kind": kind}, identity, fingerprint, kind)
     with _RUNS_LOCK:
         existing = RUNS.get(run_id)
         if existing is not None:
-            return _replay_or_conflict(existing, identity, fingerprint)
+            return _replay_or_conflict(existing, identity, fingerprint, kind)
         RUNS[run_id] = {
             "state": "queued",
             "agent": None,
             "aborted": False,
             "outcome": None,
             "started": False,
-            "kind": "paperclip",
+            "kind": kind,
             "identity": dict(identity),
             "requestHash": fingerprint,
             "output": "",
@@ -769,7 +785,7 @@ def _put_running_record(run_id: str) -> None:
         sync.put_paperclip_run_record(identity["agentId"], run_id, {
             "identity": identity, "requestHash": entry.get("requestHash"), "state": "running",
             "vmId": VM_ID, "acceptedAt": entry.get("acceptedAt"), "heartbeatAt": time.time(),
-        }, prune=False)
+        }, prune=False, **_record_dir(entry.get("kind")))
     except Exception:  # noqa: BLE001 -- the run itself must not depend on it
         log.warning("paperclip running record write failed run=%s", run_id, exc_info=True)
 
@@ -816,6 +832,7 @@ def finish_paperclip_run(run_id: str, outcome: str, *, output: str, error: str |
         entry = RUNS.get(run_id)
         identity = dict((entry or {}).get("identity") or {})
         request_hash = (entry or {}).get("requestHash")
+        kind = (entry or {}).get("kind")
     if identity:
         try:
             sync.put_paperclip_run_record(identity["agentId"], run_id, {
@@ -827,7 +844,7 @@ def finish_paperclip_run(run_id: str, outcome: str, *, output: str, error: str |
                 "usage": dict(usage),
                 "state": "ended",
                 "finishedAt": now(),
-            })
+            }, **_record_dir(kind))
         except Exception:  # noqa: BLE001 -- the turn's own result must not depend on it
             log.error("paperclip run record write FAILED run=%s: a poll after this process "
                       "dies will report runtime_lost", run_id, exc_info=True)
@@ -846,17 +863,21 @@ def finish_paperclip_run(run_id: str, outcome: str, *, output: str, error: str |
 
 
 def paperclip_run_status(run_id: str, identity: dict) -> dict | None:
+    return durable_run_status(run_id, identity, kind="paperclip")
+
+
+def durable_run_status(run_id: str, identity: dict, *, kind: str) -> dict | None:
     with _RUNS_LOCK:
         entry = RUNS.get(run_id)
         snapshot = dict(entry) if entry is not None else None
     if snapshot is None:
         # Another process holds (a split session) or held (a stop) the run: its durable record.
-        record = _live_record(sync.get_paperclip_run_record(identity["agentId"], run_id))
+        record = _live_record(sync.get_paperclip_run_record(identity["agentId"], run_id, **_record_dir(kind)))
         if record is None:
             return None
-        snapshot = {**record, "kind": "paperclip",
+        snapshot = {**record, "kind": kind,
                     "state": "running" if record.get("state") == "running" else "ended"}
-    if not _paperclip_identity_matches(snapshot, identity):
+    if not _paperclip_identity_matches(snapshot, identity, kind):
         return None
     status = snapshot["state"]
     if status == "ended":
@@ -865,7 +886,7 @@ def paperclip_run_status(run_id: str, identity: dict) -> dict | None:
     result = {
         "run_id": run_id,
         "status": status,
-        "session_id": (snapshot.get("identity") or {}).get("sessionId"),
+        "session_id": (snapshot.get("identity") or {}).get(_DURABLE_KINDS[kind][1]),
     }
     if snapshot["state"] == "ended":
         usage = snapshot.get("usage") or ZERO_USAGE
@@ -954,7 +975,7 @@ def steer_run(run_id: str, text: str, grant: str | None = None) -> bool:
     with _RUNS_LOCK:
         entry = RUNS.get(run_id)
         if (entry is None or entry["aborted"] or entry["state"] not in ("queued", "running")
-                or entry.get("kind") == "paperclip"):  # a Paperclip turn never reads stashed steers
+                or entry.get("kind") in ("paperclip", "task")):  # neither reads stashed steers
             return False
         if grant is not None:  # "" clears it: a turn with no grant at all acts for no one
             entry["grant"] = grant
@@ -3885,13 +3906,33 @@ def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, st
 
 
 def _run_native_paperclip(identity: dict, request: dict) -> tuple[str, str | None, str, dict]:
-    """Execute the native adapter's already-rendered prompt in the run's own session, without room
-    re-rendering. Nothing is posted to a room for it: Paperclip gets the answer as the run's
-    result. The agent may still post to any room it sits in (lightbulb-post.sh or
-    send_room_message), as a routine post (hop 1, no run id)."""
+    return _run_task_turn(identity, request, family="paperclip")
+
+
+def _budget_expired(run_id: str) -> None:
+    """A task run's run_budget_seconds ran out: Hermes's own hard stop, and the run fails."""
+    with _RUNS_LOCK:
+        entry = RUNS.get(run_id)
+        if entry is None or entry["state"] == "ended":
+            return
+        entry["budgetExceeded"] = True
+        agent = entry["agent"]
+    if agent is not None:
+        _interrupt(run_id, agent)
+
+
+def _run_task_turn(identity: dict, request: dict, *, family: str) -> tuple[str, str | None, str, dict]:
+    """Execute an already-rendered prompt in the run's own session, without room re-rendering:
+    a Paperclip run's (family "paperclip") or a task's Worker turn (family "task", bridge/runs.py).
+    Nothing is posted to a room for it: the caller gets the answer as the run's result. The agent
+    may still post to any room it sits in (lightbulb-post.sh or send_room_message), as a routine
+    post (hop 1, no run id). A task run continues its session's transcript (a retry sees the
+    attempt before it) and has no Paperclip identity, worktree or env."""
+    paperclip = family == "paperclip"
     agent_id = identity["agentId"]
     run_id = identity["runId"]
-    session_id = identity["sessionId"]
+    session_id = identity["sessionId" if paperclip else "sessionKey"]
+    limits = {} if paperclip else (request.get("limits") or {})
     try:
         import run_agent  # noqa: F401
     except ImportError:
@@ -3901,7 +3942,7 @@ def _run_native_paperclip(identity: dict, request: dict) -> tuple[str, str | Non
         # See _run_hermes's own call: normalize BEFORE _terminal_scope below installs, not after.
         sync.normalize_profile_backends(agent_id)
     task_worktrees = []
-    if identity.get("issueId"):  # one worktree per issue; closed tasks' go first, so the disk check sees the space
+    if paperclip and identity.get("issueId"):  # one worktree per issue; closed tasks' go first, so the disk check sees the space
         refused = None
         try:
             worktrees.reap(agent_id, lambda: _live_issues(agent_id))
@@ -3915,8 +3956,8 @@ def _run_native_paperclip(identity: dict, request: dict) -> tuple[str, str | Non
         "PAPERCLIP_AGENT_ID": agent_id,
         "PAPERCLIP_COMPANY_ID": identity["companyId"],
         "PAPERCLIP_RUN_ID": run_id,
-    }
-    if identity.get("issueId"):
+    } if paperclip else {}
+    if paperclip and identity.get("issueId"):
         env["PAPERCLIP_TASK_ID"] = identity["issueId"]
     # The agent dispositions the issue by calling the Paperclip API from a terminal command,
     # so this identity has to reach a SHELL, not just config.yaml's `${VAR}` resolver. Putting
@@ -3924,7 +3965,7 @@ def _run_native_paperclip(identity: dict, request: dict) -> tuple[str, str | Non
     # visible to Hermes's child-env filter, `pin_profile_defaults` lists them in
     # Hermes's per-session env passthrough, and Hermes resolves each value back out of this
     # same scope.
-    browser_lease = browser_control.begin_turn(str(run_id), agent_id, None, "paperclip")
+    browser_lease = browser_control.begin_turn(str(run_id), agent_id, None, family)
     if cdp := browser_control.cdp_url():  # opencli in the shell drives the run's browser
         env["OPENCLI_CDP_ENDPOINT"] = cdp
     # Same-session Paperclip retries must not replace another active desktop ledger.
@@ -3932,32 +3973,45 @@ def _run_native_paperclip(identity: dict, request: dict) -> tuple[str, str | Non
     token = identity.get("localSessionToken")
     ctx = {"apiUrl": API, "ownerId": OWNER, "hookToken": HOOK_TOKEN, "agentId": agent_id,
            "runId": run_id, "sessionKey": session_id, "roomId": None,
-           "localSessionToken": token, "family": "paperclip"}
+           "localSessionToken": token, "family": family}
     # Paperclip runs need the same brokered MCP bearers as room turns. Without
     # this scope, ${MCP_POSTHOG_ACCESS_TOKEN} stays literal and PostHog returns 401.
     with _waiting_turn_lock(agent_id, session_id, run_id), _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id, env), _terminal_scope(agent_id, session_id), _desktop_active_turn(session_id, run_id), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):
+        budget = None
         try:
-            agent = _construct_agent(agent_id, {"sessionKey": session_id}, None, session_id)
+            extra = {"max_iterations": limits["max_iterations"]} if limits.get("max_iterations") else {}
+            agent = _construct_agent(agent_id, {"sessionKey": session_id}, None, session_id, **extra)
             attach_agent(run_id, agent)
             if paperclip_run_aborted(run_id):
                 return "cancelled", None, "", dict(ZERO_USAGE)
+            if limits.get("run_budget_seconds"):
+                budget = threading.Timer(limits["run_budget_seconds"], _budget_expired, (run_id,))
+                budget.daemon = True
+                budget.start()
             try:
                 # the clone rule rides every prompt, a Paperclip issue's too (Codex on #3798): with only
                 # Hermes's github skill in view, an issue run clones into its conversation folder
-                rules = "\n\n".join(filter(None, (_repo_rule(agent_id), identity.get("issueId") and worktrees.prompt_line(agent_id, identity["issueId"], task_worktrees))))
+                rules = "\n\n".join(filter(None, (_repo_rule(agent_id), paperclip and identity.get("issueId") and worktrees.prompt_line(agent_id, identity["issueId"], task_worktrees))))
                 system = with_profile_agents_md(agent_id, f"{request['instructions']}\n\n{rules}\n{CHAT_STYLE}")
+                run = {}
+                if not paperclip and getattr(agent, "_session_db", None) is not None:
+                    run["conversation_history"] = _room_history(agent)[0] or None  # the attempt before this one
                 result = _run_conversation(agent, agent_id, session_id,
-                                           user_message=request["input"], system_message=system)
+                                           user_message=request["input"], system_message=system, **run)
                 _post_turn.agent = agent
             except Exception:
                 if paperclip_run_aborted(run_id):
                     return "cancelled", None, "", _agent_usage(agent)
                 raise
         finally:
+            if budget is not None:
+                budget.cancel()
             browser_control.release(browser_lease)
     usage = _agent_usage(agent)
     if paperclip_run_aborted(run_id):
         return "cancelled", None, "", usage
+    if (RUNS.get(run_id) or {}).get("budgetExceeded"):
+        return "failed", "run_budget_exceeded", "", usage
     reply = result.get("final_response") or ""
     if result.get("interrupted") is True:  # not our stop (checked above): Hermes stopped it itself
         return "failed", INTERRUPTED, "", usage
@@ -4047,11 +4101,35 @@ def _run_paperclip_session(identity: dict, request: dict) -> tuple[str, str | No
         _desktop_state_path(_profile_dir(agent_id), run_id).unlink(missing_ok=True)
 
 
+def _run_task_session(identity: dict, request: dict) -> tuple[str, str | None, str, dict]:
+    """A task's Worker turn: the Paperclip session's desktop ledger, under the task family."""
+    agent_id, run_id = identity["agentId"], identity["runId"]
+    _start_desktop_turn(_profile_dir(agent_id), {
+        "apiUrl": API, "ownerId": OWNER, "hookToken": HOOK_TOKEN, "agentId": agent_id, "runId": run_id,
+        "sessionKey": identity["sessionKey"], "family": "task",
+    })
+    try:
+        return _run_task_turn(identity, request, family="task")
+    finally:
+        cancel_run_desktop(run_id)
+        _desktop_state_path(_profile_dir(agent_id), run_id).unlink(missing_ok=True)
+
+
 def run_paperclip_turn(identity: dict, request: dict, reserved: bool = False) -> None:
     """Run one native Paperclip turn and leave its terminal result in the bounded registry."""
+    _run_durable_turn(identity, request, reserved, family="paperclip")
+
+
+def run_task_turn(identity: dict, request: dict, reserved: bool = False) -> None:
+    """Run one v1 task run (bridge/runs.py) and leave its terminal result in the bounded registry."""
+    _run_durable_turn(identity, request, reserved, family="task")
+
+
+def _run_durable_turn(identity: dict, request: dict, reserved: bool, *, family: str) -> None:
     run_id = identity["runId"]
     agent_id = identity["agentId"]
-    session_id = identity["sessionId"]
+    session_id = identity["sessionId" if family == "paperclip" else "sessionKey"]
+    session = _run_paperclip_session if family == "paperclip" else _run_task_session
     if not reserved:
         _busy_add(1)
     started = time.time()
@@ -4067,14 +4145,14 @@ def run_paperclip_turn(identity: dict, request: dict, reserved: bool = False) ->
             if paperclip_run_aborted(run_id):
                 outcome = "cancelled"
             else:
-                outcome, error, output, usage = _run_paperclip_session(identity, request)
+                outcome, error, output, usage = session(identity, request)
         except Exception as exc:  # noqa: BLE001 -- return the class, never exception text/prompt data
             if paperclip_run_aborted(run_id):
                 outcome, error = "cancelled", None
             else:
                 provider = getattr((RUNS.get(run_id) or {}).get("agent"), "provider", "")
                 outcome, error = "failed", QUOTA_EXHAUSTED if provider_quota(exc, provider) is not None else type(exc).__name__
-                log.error("native Paperclip turn %s failed\n%s", run_id, traceback.format_exc())
+                log.error("native %s turn %s failed\n%s", family, run_id, traceback.format_exc())
         with hb_lock:
             hb_stop.set()
         finish_paperclip_run(run_id, outcome, output=output, error=error, usage=usage)

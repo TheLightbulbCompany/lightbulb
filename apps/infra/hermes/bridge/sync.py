@@ -213,6 +213,8 @@ def is_lock_sidecar(rel: str) -> bool:
 #: S3-only terminal records of native Paperclip runs, under the agent's own profile prefix so
 #: the backend's profile delete takes them with the agent. See put_paperclip_run_record.
 PAPERCLIP_RUNS_DIR = ".paperclip-runs"
+#: The same records for v1 task runs (/internal/v1/runs, bridge/runs.py).
+TASK_RUNS_DIR = ".runs"
 PAPERCLIP_RUN_RECORD_TTL_S = 24 * 3600
 _RUN_RECORD_ID = re.compile(r"^[A-Za-z0-9_-]+$")  # the poll route's own run-id charset
 
@@ -273,6 +275,7 @@ EXCLUDE_GLOBS = (
     # by the bridge, never through the profile dir, so no save may push a local copy over one
     # and no recency pull brings them down.
     f"{PAPERCLIP_RUNS_DIR}/*",
+    f"{TASK_RUNS_DIR}/*",
     # Hermes's local credential vault keeps its Fernet key BESIDE the ciphertext. The bridge
     # routes the vault to the workspace store (bridge/website_logins.py), so nothing should land
     # here -- but a `hermes vault add` run from the agent's own shell still would, and a key
@@ -351,6 +354,7 @@ _RESTORE_SKIP_PREFIXES = (
     *(f"{PROFILE_HOME}/{name}/" for name in _HOME_UNSYNCED),
     PNPM_STORE_PREFIX,
     f"{PAPERCLIP_RUNS_DIR}/",  # read by key on a poll miss, never needed in the profile dir
+    f"{TASK_RUNS_DIR}/",
     WORK_DIR_PREFIX,  # a conversation's tree comes down on its own turn (see _DEFERRED_PREFIXES)
 )
 
@@ -1333,11 +1337,12 @@ def save_root_auth() -> None:
     _ROOT_AUTH_HASH = local_hash
 
 
-def _run_records_prefix(agent_id: str) -> str:
-    return f"{S3_PREFIX}/{agent_id}/{PAPERCLIP_RUNS_DIR}/"
+def _run_records_prefix(agent_id: str, runs_dir: str = PAPERCLIP_RUNS_DIR) -> str:
+    return f"{S3_PREFIX}/{agent_id}/{runs_dir}/"
 
 
-def put_paperclip_run_record(agent_id: str, run_id: str, record: dict, *, prune: bool = True) -> None:
+def put_paperclip_run_record(agent_id: str, run_id: str, record: dict, *, prune: bool = True,
+                             runs_dir: str = PAPERCLIP_RUNS_DIR) -> None:
     """Persist a native Paperclip run's terminal result so a poll that lands on a FRESH process
     (a roll's StopRuntimeSession, an idle park, an OOM right after the turn) still gets the real
     outcome instead of a 404 the backend facade reads as ``runtime_lost``. Raises on a failed
@@ -1346,7 +1351,7 @@ def put_paperclip_run_record(agent_id: str, run_id: str, record: dict, *, prune:
     heartbeat writes, which would otherwise list the prefix every 30 s per live run)."""
     if not S3_BUCKET or not _RUN_RECORD_ID.fullmatch(run_id):
         return  # an id the poll route can never address has nothing to answer
-    s3, prefix = _s3(), _run_records_prefix(agent_id)
+    s3, prefix = _s3(), _run_records_prefix(agent_id, runs_dir)
     s3.put_object(Bucket=S3_BUCKET, Key=f"{prefix}{run_id}.json",
                   Body=json.dumps(record, separators=(",", ":")).encode("utf-8"))
     if not prune:
@@ -1362,13 +1367,13 @@ def put_paperclip_run_record(agent_id: str, run_id: str, record: dict, *, prune:
         log.warning("paperclip run record prune failed for %s", agent_id, exc_info=True)
 
 
-def get_paperclip_run_record(agent_id: str, run_id: str) -> dict | None:
+def get_paperclip_run_record(agent_id: str, run_id: str, *, runs_dir: str = PAPERCLIP_RUNS_DIR) -> dict | None:
     """The record put_paperclip_run_record wrote, or None when there is none. Any other S3
     failure raises: a throttle is "unknown", and answering "not found" would fail a live run."""
     if not S3_BUCKET or not _RUN_RECORD_ID.fullmatch(run_id):
         return None
     try:
-        body = _s3().get_object(Bucket=S3_BUCKET, Key=f"{_run_records_prefix(agent_id)}{run_id}.json")["Body"].read()
+        body = _s3().get_object(Bucket=S3_BUCKET, Key=f"{_run_records_prefix(agent_id, runs_dir)}{run_id}.json")["Body"].read()
     except Exception as exc:  # noqa: BLE001
         if _is_absent(exc):
             return None

@@ -99,9 +99,9 @@ def _send_room_message(args: dict, *, session_id: str = "", **_kw) -> str:
     ctx = turn_context.read(session_id)
     if not ctx:
         return NO_TURN
-    # A Paperclip run's answer is its issue result, never a room post, so any room or thread is
-    # the agent's own call; its post is a routine post (hop 1), with no room-run id to bind to.
-    paperclip = ctx.get("family") == "paperclip"
+    # A Paperclip run's answer is its issue result, never a room post (a task run's likewise), so any
+    # room or thread is the agent's own call; its post is a routine post (hop 1), with no room-run id.
+    paperclip = ctx.get("family") in ("paperclip", "task")
     room = _normalize_room(str(args.get("roomId", "")))
     if not room:
         return "Invalid roomId: expected a room UUID, optionally prefixed 'lightbulb:'."

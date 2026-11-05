@@ -158,7 +158,7 @@ def _post_mac(path: str, body: dict, timeout: float = 20.0) -> tuple[int, dict]:
 
 def begin_turn(run_id: str, agent_id: str, frame_sink=None, family: str = "room", room_id: str | None = None) -> dict:
     """Bind identity only; the first browser tool lazily acquires. ``frame_sink`` publishes a
-    live frame of this run's tab to its room (room turns only). ``family`` (room|paperclip) and
+    live frame of this run's tab to its room (room turns only). ``family`` (room|paperclip|task) and
     ``room_id`` go with the Mac routes."""
     state = {"runId": str(run_id or f"browser:{agent_id}:{uuid.uuid4().hex}"), "agentId": agent_id,
              "generation": None, "snapshotGeneration": None, "pendingSnapshots": {}, "frameSink": frame_sink,

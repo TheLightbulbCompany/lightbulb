@@ -24,6 +24,7 @@ from temporalio.exceptions import ActivityError, ApplicationError
 from core.temporal.types import TaskInputRef
 
 REMIND_AFTER = timedelta(hours=24)
+EXECUTOR_KINDS = frozenset({"mail.send", "app.publish", "pr.merge"})  # effect_executors.EXECUTORS (test pins it)
 _LANDING = {
     "start_to_close_timeout": timedelta(minutes=15),  # an app publish builds and promotes
     "retry_policy": RetryPolicy(maximum_attempts=3),  # a retry never re-sends: apply_effect reads the Effect first
@@ -155,9 +156,15 @@ class TaskQuestionsMixin:
         (definitely not done) goes back to the Worker as input; an unknown outcome is shown and never retried."""
         while self._landings and self._stop_by is None:
             idem, by = self._landings.pop(0)
-            res = await workflow.execute_activity(
-                "apply_effect", args=[self._ws, self._task_id, idem, by], result_type=LandResult, **_LANDING
-            )
+            try:
+                res = await workflow.execute_activity(
+                    "apply_effect", args=[self._ws, self._task_id, idem, by], result_type=LandResult, **_LANDING
+                )
+            except ActivityError:
+                # Landing failed after its retries: unreconcilable, shown plainly, never retried (a row left in
+                # `intent` keeps the gate refusing a repeat until a person looks).
+                workflow.logger.error("apply_effect failed for %s", idem)
+                res = LandResult("unknown")
             if res.trigger_id and res.trigger_id not in self._seen_inputs:
                 self._seen_inputs.add(res.trigger_id)
                 self._pending.append(TaskInputRef(res.trigger_id, "answer"))
@@ -369,7 +376,12 @@ async def record_answer(ws: str, task_id: str, ref: AnswerRef) -> AnswerOut:
             pass  # a retry after the first run moved it
         effect = await effects_repo.get_effect(ws, q["effectIdemKey"]) or {}
         # A reviewed draft the backend can land itself; everything else resumes the Worker (contracts-v2 §8).
-        if to == "approved" and effect.get("executorOk") and questions.REVIEW_KINDS.get(effect.get("kind")) == option:
+        if (
+            to == "approved"
+            and effect.get("executorOk")
+            and questions.REVIEW_KINDS.get(effect.get("kind")) == option
+            and effect.get("kind") in EXECUTOR_KINDS
+        ):
             land = q["effectIdemKey"]
     trigger_id = ref.trigger_id or ts.trigger_id("answer", ref.qid, ref.client_answer_id)
     await tasks_repo.put_trigger(
@@ -405,19 +417,56 @@ async def _set_landing(ws: str, task_id: str, value: str | None) -> None:
     raise tasks_repo.VersionConflict(f"task {task_id}: landingEffect kept racing")
 
 
+async def _answer_trigger_id(ws: str, task_id: str, effect: dict) -> str:
+    """The `TRIG#answer:…` record_answer wrote for this effect's question (what the Worker resumes with)."""
+    from core import tasks_schema as ts
+    from core.repositories import questions_repo
+
+    q = await questions_repo.get_question(ws, task_id, effect.get("questionId") or "")
+    if q is None or not q.get("clientAnswerId"):
+        raise LookupError(f"effect {effect['idemKey']} has no answered question")
+    return ts.trigger_id("answer", q["qid"], q["clientAnswerId"])
+
+
+async def _refused_trigger(
+    ws: str, task_id: str, effect: dict, idem_key: str, code: str, next_step: str | None, answered_by: str
+) -> str:
+    """The refusal as the next attempt's input (idempotent put: a retry re-puts the same trigger)."""
+    from core import tasks_schema as ts
+    from core.dynamodb import utc_now_iso
+    from core.repositories import tasks_repo
+
+    trigger_id = ts.trigger_id("answer", effect.get("questionId") or idem_key, "landing")
+    await tasks_repo.put_trigger(
+        ws,
+        {
+            "triggerId": trigger_id,
+            "source": "answer",
+            "ref": {"taskId": task_id, "refused": code, "next": next_step, "effect": idem_key},
+            "admission": "respond",
+            "lane": "shared",
+            "actorUserId": answered_by,
+            "receivedAt": utc_now_iso(),
+        },
+    )
+    return trigger_id
+
+
 @activity.defn(name="apply_effect")
 async def apply_effect(ws: str, task_id: str, idem_key: str, answered_by: str) -> LandResult:
     """Land one approved draft: `approved → intent` (one transaction with the single-use mark) BEFORE the executor,
     then `done` / `unknown`. A retry that finds `intent` it did not write cannot know whether the send happened:
-    `unknown`, never a second send (a PR merge re-checks GitHub, so it may run again)."""
-    from core import tasks_schema as ts
-    from core.dynamodb import utc_now_iso
-    from core.repositories import effects_repo, tasks_repo
+    `unknown`, never a second send (a PR merge re-checks GitHub, so it may run again). A refusal is `done` with
+    `resultRef "refused:<code>"` (shown as "Didn't happen"), and its trigger is re-put on a retry."""
+    from core.repositories import effects_repo
     from core.services import effect_executors as ex
 
     effect = await effects_repo.get_effect(ws, idem_key)
     if effect is None:
         raise LookupError(f"effect {idem_key} not found")
+    if effect["kind"] not in ex.EXECUTORS:
+        # No backend executor: the Worker runs it, with the answer as its input; the approval is not consumed here.
+        return LandResult("refused", await _answer_trigger_id(ws, task_id, effect))
     await _set_landing(ws, task_id, idem_key)
     try:
         fresh = False
@@ -426,8 +475,18 @@ async def apply_effect(ws: str, task_id: str, idem_key: str, answered_by: str) -
             effect = await effects_repo.get_effect(ws, idem_key)
         if effect["state"] == "approved":
             return LandResult("used")  # the Worker's own retry used this approval first
-        if effect["state"] in ("done", "unknown"):
-            return LandResult("done" if effect["state"] == "done" else "unknown")
+        if effect["state"] == "unknown":
+            return LandResult("unknown")
+        if effect["state"] == "done":
+            if str(effect.get("resultRef") or "").startswith("refused:"):
+                # A retry after the refusal was recorded but before its trigger was: finish that, never "landed".
+                code = effect["resultRef"].removeprefix("refused:")
+                return LandResult(
+                    "refused", await _refused_trigger(ws, task_id, effect, idem_key, code, None, answered_by)
+                )
+            return LandResult("done")
+        if effect["state"] != "intent":
+            raise LookupError(f"effect {idem_key} in state {effect['state']} cannot land")
         if not fresh and effect["kind"] != "pr.merge":
             await effects_repo.mark_effect_done(ws, idem_key, disposition="unknown", result_ref=None)
             return LandResult("unknown")
@@ -436,20 +495,9 @@ async def apply_effect(ws: str, task_id: str, idem_key: str, answered_by: str) -
         except ex.ExecutorRefused as err:
             # Definitely not done: `done` with the refusal as its result, so the same draft can be asked again.
             await effects_repo.mark_effect_done(ws, idem_key, disposition="done", result_ref=f"refused:{err.code}")
-            trigger_id = ts.trigger_id("answer", effect.get("questionId") or idem_key, "landing")
-            await tasks_repo.put_trigger(
-                ws,
-                {
-                    "triggerId": trigger_id,
-                    "source": "answer",
-                    "ref": {"taskId": task_id, "refused": err.code, "next": err.next_step, "effect": idem_key},
-                    "admission": "respond",
-                    "lane": "shared",
-                    "actorUserId": answered_by,
-                    "receivedAt": utc_now_iso(),
-                },
+            return LandResult(
+                "refused", await _refused_trigger(ws, task_id, effect, idem_key, err.code, err.next_step, answered_by)
             )
-            return LandResult("refused", trigger_id)
         except Exception:  # ExecutorUnknown or anything after the request may have left: never retried
             await effects_repo.mark_effect_done(ws, idem_key, disposition="unknown", result_ref=None)
             return LandResult("unknown")

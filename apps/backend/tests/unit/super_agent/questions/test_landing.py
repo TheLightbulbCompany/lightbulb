@@ -166,6 +166,48 @@ async def test_worker_used_the_approval_first(world):
     assert world["sends"] == []
 
 
+async def test_crash_after_refused_done_reports_refused_on_retry(world):
+    """The first run recorded the refusal, then died before its trigger: the retry finishes it, never "landed"."""
+    qid = await _review_question()
+    await _run(tq.record_answer, WS, TASK, tq.AnswerRef(qid, "send", None, SAM, "c-1"))
+    assert await effects_repo.use_approval(WS, IDEM, "h1")
+    await effects_repo.mark_effect_done(WS, IDEM, disposition="done", result_ref="refused:rate_limited")
+    res = await _run(tq.apply_effect, WS, TASK, IDEM, SAM)
+    assert res.outcome == "refused" and res.trigger_id
+    assert (await tasks_repo.get_trigger(WS, res.trigger_id))["ref"]["refused"] == "rate_limited"
+    assert await _run(tq.apply_effect, WS, TASK, IDEM, SAM) == res  # and again: the same trigger, once
+
+
+async def test_review_kind_without_executor_resumes_worker(world):
+    """text.send is a review kind with no backend executor: the answer goes back to the Worker."""
+    await effects_repo.put_effect(
+        WS,
+        {
+            "idemKey": f"{TASK}:1:t1",
+            "taskId": TASK,
+            "attempt": 1,
+            "kind": "text.send",
+            "tool": "terminal",
+            "operands": {"agentId": "a-1", "replyKey": "K1", "body": "On my way"},
+            "operandsHash": "h-t",
+            "state": "proposed",
+            "executorOk": True,
+        },
+    )
+    [ref] = await ActivityEnvironment().run(tq.open_questions, WS, TASK)
+    out = await _run(tq.record_answer, WS, TASK, tq.AnswerRef(ref.qid, "send", None, SAM, "c-1"))
+    assert out.land_idem_key is None and out.trigger_id == f"answer:{ref.qid}:c-1"
+    # A stray Landing call on it: nothing consumed, the Worker gets the answer as input.
+    res = await _run(tq.apply_effect, WS, TASK, f"{TASK}:1:t1", SAM)
+    assert res == tq.LandResult("refused", f"answer:{ref.qid}:c-1")
+    assert (await effects_repo.get_effect(WS, f"{TASK}:1:t1"))["state"] == "approved"
+    assert world["sends"] == []
+
+
+def test_executor_kinds_pinned():
+    assert tq.EXECUTOR_KINDS == set(ex.EXECUTORS)
+
+
 # --- workflow ----------------------------------------------------------------------------------------
 
 
@@ -248,3 +290,23 @@ async def test_request_changes_resumes_worker_without_landing(temporal_env):
         await h.execute_update(TaskWorkflow.answer, _press("request_changes"))
         await _until(lambda: fakes.names().count("begin_attempt") == 2)
     assert "apply_effect" not in fakes.names()
+
+
+async def test_landing_activity_failure_goes_idle_unknown(temporal_env):
+    from temporalio.exceptions import ApplicationError
+
+    fakes = LFakes("done")
+
+    def broken(*_):
+        raise ApplicationError("ddb gone", type="RuntimeError", non_retryable=True)
+
+    fakes.behaviour["apply_effect"] = broken
+    worker, queue = await _wf(temporal_env, fakes)
+    async with worker:
+        h = await temporal_env.client.start_workflow(
+            TaskWorkflow.run, TaskStart(WS, TASK, "router"), id=f"task:{WS}:{uuid.uuid4()}", task_queue=queue
+        )
+        await _until(lambda: "relay_question" in fakes.names())
+        await h.execute_update(TaskWorkflow.answer, _press("send"))
+        await _until(lambda: (WS, TASK, "idle", "effect_unknown") in fakes.args("transition"))
+    assert fakes.names().count("begin_attempt") == 1

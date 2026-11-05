@@ -118,3 +118,10 @@ async def test_gate_sees_the_use_row(table):
     await repo.use_approval(WS, f"{TASK}:1:c1", "h1", new_effect=retry)
     await repo.mark_effect_done(WS, f"{TASK}:2:c7", disposition="done", result_ref="ses:1")
     assert questions.gate(_e(3, "c9"), await repo.effects_for(WS, TASK, "h1")).decision == "needs_approval"
+
+
+async def test_set_effect_state_never_rewrites_the_call(table):
+    await repo.put_effect(WS, _e())
+    for field in ("kind", "operands", "operandsHash", "idemKey"):
+        with pytest.raises(ValueError):
+            await repo.set_effect_state(WS, f"{TASK}:1:c1", to="approved", fields={field: "x"})

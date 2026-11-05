@@ -197,7 +197,7 @@ async def answer(task_id: str, qid: str, body: AnswerBody, auth: Annotated[AuthC
         raise _problem(403, "not_answerer")
     offered = {o["id"] for o in q.get("options") or []} or {"answer"}
     if body.option_id not in offered:
-        raise _problem(422, "invalid_option")
+        raise _problem(400, "invalid_option")
     trigger_id = None
     if body.text:
         # The text rides on a Trigger row; the Temporal update carries ids only.
@@ -231,7 +231,7 @@ async def answer(task_id: str, qid: str, body: AnswerBody, auth: Annotated[AuthC
         if {"not_answerer", "NotAnswerer"} & codes:
             raise _problem(403, "not_answerer") from err
         if "InvalidOption" in codes:
-            raise _problem(422, "invalid_option") from err
+            raise _problem(400, "invalid_option") from err
         if "VersionConflict" in codes:
             raise _problem(409, "stale_version") from err
         raise _problem(502, "answer_failed") from err

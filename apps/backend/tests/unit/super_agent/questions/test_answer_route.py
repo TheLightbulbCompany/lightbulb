@@ -181,11 +181,11 @@ async def test_concurrent_presses_one_winner(world, monkeypatch):
     assert (await questions_repo.get_question(WS, TASK, "q-two"))["state"] == "answered"
 
 
-async def test_invalid_option_422(world):
+async def test_invalid_option_400(world):
     qid = await _question()
     world["who"]["user"] = ADA
     resp = await _press(world, qid, "publish")
-    assert resp.status_code == 422 and world["updates"] == []
+    assert resp.status_code == 400 and world["updates"] == []
 
 
 async def test_temporal_down_503(world, monkeypatch):

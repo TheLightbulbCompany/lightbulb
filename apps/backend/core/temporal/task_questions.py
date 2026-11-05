@@ -354,7 +354,7 @@ async def note_answerers_unavailable(ws: str, task_id: str) -> None:
 
     task = await tasks_repo.get_task(ws, task_id)
     if task is None:
-        return
+        raise LookupError(f"task {task_id} not found")  # a workflow without its row is a bug: fail loudly
     await task_conversation.ensure_task_room(ws, task)
     await task_conversation.post_as_lightbulb(
         ws,

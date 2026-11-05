@@ -49,3 +49,6 @@ next-env.d.ts
 # NICE DCV web client SDK — copied out of the bedrock-agentcore package by
 # scripts/copy-dcv-assets.mjs on predev/prebuild. Build output, not source.
 /public/nice-dcv-web-client-sdk/
+
+# Playwright
+/playwright-report

@@ -11,6 +11,7 @@ import { useCommandPalette } from "@/components/teams/command-palette/CommandPal
 import { recordMessagesNavigation } from "./chatHistory";
 import { HistoryButtons } from "./HistoryButtons";
 import { activateMessagesPanel, openPanel, useWorkspaceState, type Place } from "./workspaceController";
+import { useSuperAgent } from "@/hooks/useLiveEvents";
 import { ThemeToggles } from "@/components/chat/ThemeToggles";
 
 // The five places, and nothing else (spec 3.1). Browser, Files and Mail open in
@@ -39,6 +40,8 @@ export function WorkspaceHeader({ chatReady = true, onNavigate }: {
   // Activity's badge: what For you → Needs you shows (the desk, minus dismissed and
   // snoozed items, plus failed-run groups), plus unseen mentions, DMs and Paperclip items.
   const attentionCount = useNeedsYouBadge();
+  // With the super-agent on, Work leads with Threads (the overview); today's Tasks board stays a tab.
+  const superAgent = useSuperAgent();
   return (
     <nav className="workspace-rail" aria-label="Workspace">
       <HistoryButtons />
@@ -59,7 +62,7 @@ export function WorkspaceHeader({ chatReady = true, onNavigate }: {
           aria-current={current === place ? "page" : undefined}
           onClick={() => {
             if (place === "chat") { activateMessagesPanel(); recordMessagesNavigation(); }
-            else openPanel(panel, {}, { pushUrl: true });
+            else openPanel(place === "work" && superAgent ? "teams-threads" : panel, {}, { pushUrl: true });
             onNavigate?.();
           }}>
           <span className="workspace-rail__icon"><Icon size={20} aria-hidden="true" />

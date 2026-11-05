@@ -8,6 +8,12 @@ export function roomPermalink(roomId: string, origin = window.location.origin): 
   return `${origin}/chat?${params.toString()}`;
 }
 
+/** A super-agent thread: the pane beside the chat (`?panel=task-detail&taskId=`). */
+export function taskPermalink(taskId: string, origin = window.location.origin): string {
+  const params = new URLSearchParams({ panel: "task-detail", taskId });
+  return `${origin}/chat?${params.toString()}`;
+}
+
 export function sessionPermalink(sessionId: string, origin = window.location.origin): string {
   return `${origin}/chat?${new URLSearchParams({ panel: "session", session: sessionId })}`;
 }

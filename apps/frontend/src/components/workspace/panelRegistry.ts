@@ -114,6 +114,8 @@ export const NON_COMMAND_PARAMS = [
 ] as const;
 
 const TEAMS_LIST_KEYS: Readonly<Record<string, string>> = {
+  // Super-agent threads overview (a Work page; the tab shows only with the switch on).
+  threads: "Threads",
   agents: "Agents",
   inbox: "Inbox",
   issues: "Tasks",
@@ -149,8 +151,10 @@ const TEAMS_LIST_KEYS: Readonly<Record<string, string>> = {
 export const WORK_PANEL_ID = "teams-work";
 export const WORK_TEAMS_KEYS = ["issues", "projects", "goals", "routines", "cases", "agents", "money"] as const;
 const WORK_KEY_SET: ReadonlySet<string> = new Set(WORK_TEAMS_KEYS);
+/** Super-agent threads (the overview grouped Waiting on you · Working · …) lead the Work page when the switch is on. */
+export const WORK_THREADS_KEY = "threads";
 export function isWorkTeamsKey(teamsKey: string): boolean {
-  return WORK_KEY_SET.has(teamsKey);
+  return WORK_KEY_SET.has(teamsKey) || teamsKey === WORK_THREADS_KEY;
 }
 
 const TEAMS_DETAIL_KEYS: Readonly<Record<string, string>> = {

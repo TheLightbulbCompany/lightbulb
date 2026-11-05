@@ -11,6 +11,10 @@ import {
 } from "../panelRegistry";
 
 describe("panelRegistry", () => {
+  it("teams-threads is a Work page", () => {
+    expect(describePanel("teams-threads", {})).toMatchObject({ panelId: "teams-work", component: "teams", params: { teamsKey: "threads" } });
+  });
+
   it("task-detail is a pane panel that needs a taskId", () => {
     expect(describePanel("task-detail", { taskId: "t-1" })).toEqual({ panelId: "task-detail", component: "task", title: "Thread", params: { taskId: "t-1" } });
     expect(describePanel("task-detail", {})).toBeNull();

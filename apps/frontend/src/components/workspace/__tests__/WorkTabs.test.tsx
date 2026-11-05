@@ -5,6 +5,8 @@ import { render, screen, fireEvent } from "@testing-library/react";
 
 const openPanel = vi.fn();
 vi.mock("../workspaceController", () => ({ openPanel: (...a: unknown[]) => openPanel(...a) }));
+const live = vi.hoisted(() => ({ superAgent: false }));
+vi.mock("@/hooks/useLiveEvents", () => ({ useSuperAgent: () => live.superAgent }));
 
 import { WorkTabs, WORK_TEAMS_KEYS } from "../panels/WorkTabs";
 
@@ -22,6 +24,15 @@ describe("WorkTabs", () => {
     render(<WorkTabs teamsKey="issues" />);
     fireEvent.mouseDown(screen.getByRole("tab", { name: "Goals" }), { button: 0 });
     expect(openPanel).toHaveBeenCalledWith("teams-goals", {}, { pushUrl: true });
+  });
+
+  it("leads with Threads only while the super-agent switch is on", () => {
+    live.superAgent = true;
+    try {
+      render(<WorkTabs teamsKey="threads" />);
+      expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["Threads", "Tasks", "Projects", "Goals", "Automations", "Cases", "Agents", "Money"]);
+      expect(screen.getByRole("tab", { name: "Threads" })).toHaveAttribute("aria-selected", "true");
+    } finally { live.superAgent = false; }
   });
 
   it("covers exactly the pages the Work tab hosts", () => {

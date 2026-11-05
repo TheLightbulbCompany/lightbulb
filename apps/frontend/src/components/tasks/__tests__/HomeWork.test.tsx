@@ -83,11 +83,10 @@ describe("HomeWork", () => {
   });
 
   it("each room's About dot counts that room's Needs you rows, from the complete read", async () => {
-    const { result: r1 } = renderHook(() => useRoomThreads("r1"), { wrapper: Fresh });
-    const { result: r2 } = renderHook(() => useRoomThreads("r2"), { wrapper: Fresh });
-    await waitFor(() => expect(r1.current.waitingOnMe).toBe(2));
-    await waitFor(() => expect(r2.current.waitingOnMe).toBe(1));
-    expect(apiGet).toHaveBeenCalledWith("/tasks?scope=room%3Ar1&needsYou=true");
+    const { result } = renderHook(() => [useRoomThreads("r1"), useRoomThreads("r2")], { wrapper: Fresh });
+    await waitFor(() => expect(result.current.map((r) => r.waitingOnMe)).toEqual([2, 1]));
+    // One workspace-wide read serves every room.
+    expect(apiGet.mock.calls.filter(([p]) => String(p).includes("needsYou")).map(([p]) => p)).toEqual(["/tasks?scope=workspace&needsYou=true"]);
   });
 
   it("Needs you is complete: a request beyond the list's first page still shows and counts", async () => {

@@ -29,7 +29,9 @@ import { cn } from "@/lib/utils";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { notifyApiError } from "@/lib/notify";
 import { handleShellLinkClick } from "@/lib/shellNav";
-import { openChatPanel } from "@/components/workspace/workspaceController";
+import { openAgentDmWithDraft, openChatPanel } from "@/components/workspace/workspaceController";
+import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingWorkspaceContext";
+import { useSuperAgent } from "@/hooks/useLiveEvents";
 import { agentInspectorUrl } from "@/components/teams/shared/lib/agentInspectorUrl";
 import { useAgentMutations } from "@/components/teams/agents/hooks/useAgentMutations";
 import type { CompanyAgent } from "@/components/teams/shared/types";
@@ -50,6 +52,17 @@ export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
     "/agents",
   );
   const { open: openMarketplace } = useMarketplaceDrawer();
+  // With the super-agent on, only Lightbulb's DM is a Router room: a specialist's own DM keeps the legacy path
+  // (admission.router_room), so no Request, no private lane. A specialist is asked through Lightbulb instead,
+  // its @handle drafted there (admission pins it on the trigger for the Router).
+  const superAgent = useSuperAgent();
+  const directory = useMessagingWorkspaceOptional()?.directoryProps;
+  const frontAgentId = superAgent ? directory?.ceoAgentId : undefined;
+  const message = (agent: CompanyAgent) => {
+    if (!frontAgentId || agent.id === frontAgentId) return openChatPanel(agent.id);
+    const handle = directory?.participants.find((p) => p.kind === "agent" && p.id === agent.id)?.mentionHandle;
+    openAgentDmWithDraft(frontAgentId, handle ? `@${handle} ` : "");
+  };
   const [creating, setCreating] = useState(false);
   const [search, setSearch] = useState("");
   const storedView = useAgentsViewMode();
@@ -125,14 +138,14 @@ export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
         const paused = a.status === "paused";
         return (
           <span className="flex items-center justify-end gap-2">
-            {/* The agent's DM (a specialist's has left the sidebar: Team is where it is reached). */}
+            {/* Lightbulb (or any agent with the switch off): its DM. A specialist: asked in Lightbulb's DM. */}
             <button
               type="button"
               className="text-ui hover:underline text-[var(--midnight)]"
-              aria-label={`Message ${a.name}`}
-              onClick={() => openChatPanel(a.id)}
+              aria-label={frontAgentId && a.id !== frontAgentId ? `Ask ${a.name} through Lightbulb` : `Message ${a.name}`}
+              onClick={() => message(a)}
             >
-              Message
+              {frontAgentId && a.id !== frontAgentId ? "Ask" : "Message"}
             </button>
             <button
               className="text-ui hover:underline text-[var(--midnight-soft)]"

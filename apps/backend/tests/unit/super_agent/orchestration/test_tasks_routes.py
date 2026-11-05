@@ -252,3 +252,14 @@ async def test_list_needs_you_is_complete_and_matches_shown_group(world):
     assert body["next"] is None  # unpaged: the whole set, whatever `limit` says
     assert sorted(t["taskId"] for t in body["tasks"]) == sorted([asked, failed_mine])
     assert {t["shownGroup"] for t in body["tasks"]} == {"waiting_on_you"}
+
+
+async def test_list_needs_you_scan_is_capped_and_logged(world, monkeypatch, caplog):
+    endless = AsyncMock(return_value=([], "more"))  # a failed-task walk that never ends
+    monkeypatch.setattr(tasks_repo, "list_tasks_by_status", endless)
+    with caplog.at_level("WARNING", logger=router_mod.__name__):
+        resp = await world["client"].get("/api/v1/tasks", params={"scope": "workspace", "needsYou": "true"})
+    assert resp.status_code == 200 and resp.json() == {"tasks": [], "next": None}
+    assert endless.await_count == router_mod._NEEDS_YOU_PAGES
+    assert endless.await_args.kwargs["owner_user_id"] == SAM  # filtered by owner in the query
+    assert "failed capped" in caplog.text

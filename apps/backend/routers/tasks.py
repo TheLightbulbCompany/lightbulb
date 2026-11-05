@@ -8,6 +8,7 @@ switch is off. Mounted after `routers/questions.py` so `/tasks/{id}/questions` s
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -23,11 +24,15 @@ from core.temporal import client as temporal_client
 from core.temporal.types import ActionRequest, StopRequest
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 # Listing walks the `by-status` GSI one status at a time, live work first.
 _STATUSES = ("waiting", "working", "queued", "proposed", "idle", "failed", "resolved")
 # `needsYou=true`: the viewer's Needs you groups, complete (Home and its rail badge count these).
 _NEEDS_YOU_GROUPS = frozenset({"waiting_on_you", "ready_for_review"})
+# Its bounds: index pages read per source (100 rows each), and task trees read at once.
+_NEEDS_YOU_PAGES = 10
+_NEEDS_YOU_FETCHES = 10
 _GATED = frozenset({"start", "retry", "reopen"})  # a new attempt: today's chat gate first (§14.10)
 
 Auth = Annotated[AuthContext, Depends(get_current_user)]
@@ -123,24 +128,34 @@ async def _needs_you(ws: str, me: str, keep) -> list[dict]:
     `NEEDS#` index) plus the failed tasks `me` owns (Retry is theirs). Kept by the scope's own rule, then by the same
     `shownGroup` the list shows, so a count and its rows can never disagree."""
     ids: dict[str, None] = {}
-    cursor: str | None = None
-    while True:
-        rows, cursor = await questions_repo.needs_for_user(ws, me, cursor=cursor)
-        ids.update(dict.fromkeys(r["taskId"] for r in rows))
-        if not cursor:
-            break
-    # ponytail: walks every failed task in the workspace; an owner-keyed index if failures pile up.
-    while True:
-        rows, cursor = await tasks_repo.list_tasks_by_status(ws, "failed", limit=100, cursor=cursor)
-        ids.update(dict.fromkeys(t["taskId"] for t in rows if t.get("ownerUserId") == me))
-        if not cursor:
-            break
-    trees = await asyncio.gather(*(tasks_repo.get_task_tree(ws, tid) for tid in ids))
+
+    async def drain(source: str, page) -> None:
+        cursor: str | None = None
+        for _ in range(_NEEDS_YOU_PAGES):
+            rows, cursor = await page(cursor)
+            ids.update(dict.fromkeys(r["taskId"] for r in rows))
+            if not cursor:
+                return
+        logger.warning("needs-you: %s capped at %d pages (ws=%s user=%s)", source, _NEEDS_YOU_PAGES, ws, me)
+
+    await drain("questions", lambda c: questions_repo.needs_for_user(ws, me, cursor=c, limit=100))
+    # The failed tasks `me` owns, filtered in the query (`ownerUserId`); the walk itself is still the workspace's
+    # failed tasks, so it is capped. ponytail: an owner-keyed index if failures pile up past the cap.
+    await drain(
+        "failed", lambda c: tasks_repo.list_tasks_by_status(ws, "failed", limit=100, cursor=c, owner_user_id=me)
+    )
+    gate = asyncio.Semaphore(_NEEDS_YOU_FETCHES)
+
+    async def tree(tid: str) -> dict:
+        async with gate:
+            return await tasks_repo.get_task_tree(ws, tid)
+
+    trees = await asyncio.gather(*(tree(tid) for tid in ids))
     out = []
-    for tree in trees:
-        if tree["task"] is None or not await keep(tree["task"]):
+    for found in trees:
+        if found["task"] is None or not await keep(found["task"]):
             continue
-        summary = await _summary(tree, me)
+        summary = await _summary(found, me)
         if summary.get("shownGroup") in _NEEDS_YOU_GROUPS:
             out.append(summary)
     return sorted(out, key=lambda t: t.get("updatedAt") or "", reverse=True)

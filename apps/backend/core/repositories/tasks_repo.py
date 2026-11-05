@@ -252,9 +252,10 @@ async def update_task_fields(ws: str, task_id: str, fields: dict, *, expected_ve
 
 
 async def list_tasks_by_status(
-    ws: str, status: str, *, limit: int = 50, cursor: str | None = None
+    ws: str, status: str, *, limit: int = 50, cursor: str | None = None, owner_user_id: str | None = None
 ) -> tuple[list[dict], str | None]:
-    """GSI `by-status`, newest first. The cursor is the urlsafe-b64 JSON of `LastEvaluatedKey`."""
+    """GSI `by-status`, newest first. The cursor is the urlsafe-b64 JSON of `LastEvaluatedKey`. `owner_user_id`
+    filters server-side (a page can then come back short or empty with a cursor: `Limit` counts items read)."""
     kwargs: dict[str, Any] = {
         "IndexName": "by-status",
         "KeyConditionExpression": "statusKey = :k",
@@ -262,6 +263,9 @@ async def list_tasks_by_status(
         "ScanIndexForward": False,
         "Limit": limit,
     }
+    if owner_user_id:
+        kwargs["FilterExpression"] = "ownerUserId = :o"
+        kwargs["ExpressionAttributeValues"][":o"] = owner_user_id
     if cursor:
         kwargs["ExclusiveStartKey"] = json.loads(base64.urlsafe_b64decode(cursor))
     page = await run_in_thread(_table().query, **kwargs)

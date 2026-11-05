@@ -1,7 +1,7 @@
 "use client";
 
-// Needs you for a badge: a room's (the About button's dot) or the workspace's (the Home rail and Home's Needs you
-// rows). One complete read, `GET /tasks?needsYou=true` (every request waiting on the viewer or ready for their
+// Needs you for a badge: the workspace's (the Home rail and Home's Needs you rows) and each room's (the About
+// dot, its share of the same result). One complete read, `GET /tasks?needsYou=true` (every request waiting on the viewer or ready for their
 // review, unpaged), cut by the same `shownGroup` rule Home renders (homeSections), so a badge never disagrees with
 // the rows under it. No request at all while the switch is off or outside the live provider (tests).
 
@@ -28,8 +28,11 @@ export function useNeedsYouTasks(scope: TaskScope | null): { tasks: TaskSummary[
   return { tasks: data ? homeSections(data.tasks).needsYou : NONE, loaded: !!data, error, retry: () => void mutate() };
 }
 
+/** A room's About dot: the room's share of the one workspace-wide read (the server's room scope is
+ *  `audience.roomId`), so N open rooms cost no extra requests. */
 export function useRoomThreads(roomId: string | null | undefined) {
-  return { waitingOnMe: useNeedsYouTasks(roomId ? { kind: "room", roomId } : null).tasks.length };
+  const { tasks } = useNeedsYouTasks(roomId ? WORKSPACE : null);
+  return { waitingOnMe: roomId ? tasks.filter((t) => t.audience?.roomId === roomId).length : 0 };
 }
 
 /** Home's Needs you count: the rail badge. */

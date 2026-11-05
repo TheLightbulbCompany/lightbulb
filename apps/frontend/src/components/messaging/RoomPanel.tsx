@@ -846,8 +846,9 @@ function RoomContent({
           {waitingOnMe > 0 && <span aria-hidden="true" className="absolute right-1 top-1 size-1.5 rounded-full bg-warn" />}
         </Button>}
         menuItems={<>
-          {!superAgent && onLinkToWork && <DropdownMenuItem onSelect={() => { onSelectThread?.(null); setSelection({ kind: "tasks", id: "tasks" }); }}>
-            <ListChecks aria-hidden="true" />{roomTasks.length > 0 ? `Tasks · ${roomTasks.length}` : "Tasks"}</DropdownMenuItem>}
+          {/* The Paperclip tasks this room names. With the switch on they are older work: offered only when there are any. */}
+          {onLinkToWork && (!superAgent || roomTasks.length > 0) && <DropdownMenuItem onSelect={() => { onSelectThread?.(null); setSelection({ kind: "tasks", id: "tasks" }); }}>
+            <ListChecks aria-hidden="true" />{superAgent ? `Older tasks · ${roomTasks.length}` : roomTasks.length > 0 ? `Tasks · ${roomTasks.length}` : "Tasks"}</DropdownMenuItem>}
           {/* Ideas: from an agent's DM, that agent's ideas come first. */}
           {inShell && <DropdownMenuItem onSelect={() => { capture("ideas_opened"); openPanel("ideas", composer.focusAgentId ? { agent: composer.focusAgentId } : {}, { pushUrl: true }); }}>
             <Lightbulb aria-hidden="true" />Ideas</DropdownMenuItem>}

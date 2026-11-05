@@ -34,7 +34,9 @@ beforeEach(() => {
   apiGet.mockReset();
   apiGet.mockImplementation(async (path: string) => {
     if (!path.includes("needsYou=true")) throw new Error("no route");
-    return { tasks: FIXTURES.step05.tasks.filter((t) => t.shownGroup === "waiting_on_you" || t.shownGroup === "ready_for_review"), next: null };
+    // The workspace-wide read; the dot keeps this room's share (audience.roomId).
+    return { tasks: FIXTURES.step05.tasks.filter((t) => t.shownGroup === "waiting_on_you" || t.shownGroup === "ready_for_review")
+      .map((t) => ({ ...t, audience: { ...t.audience, roomId: "r1" } })), next: null };
   });
 });
 

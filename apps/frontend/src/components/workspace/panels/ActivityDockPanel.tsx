@@ -82,8 +82,9 @@ export function ActivityDockPanel({ params }: PanelProps) {
   const live = useLiveEvents();
   const activity = useActivity();
   const superAgent = useSuperAgent();
-  // A thread's question is a Needs you row above: For you keeps the messages and the rest, never the same ask twice.
-  const forYouItems = useMemo(() => superAgent ? activity.items.filter((item) => item.kind !== "task_question") : activity.items,
+  // An open request question is a Needs you row above: For you keeps the messages, answered questions and the rest,
+  // never the same open ask twice.
+  const forYouItems = useMemo(() => superAgent ? activity.items.filter((item) => !(item.kind === "task_question" && item.state === "open")) : activity.items,
     [superAgent, activity.items]);
   const attention = useAttentionFeed();
   const teams = useTeamsApi();

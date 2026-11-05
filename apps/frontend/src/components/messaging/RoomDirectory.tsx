@@ -512,6 +512,10 @@ function DirectoryContent({
   })();
   const external = groups.find((group) => group.id === "external");
   const moreHoldsCurrent = Boolean(currentSessionId) || Boolean(external?.rooms.some((room) => room.roomId === currentRoomId));
+  // What More hides: shared-channel unreads and sessions waiting on the viewer. Its heading carries the sum, and it
+  // opens itself while there is any, so nothing new sits out of sight.
+  const moreCount = (external?.rooms ?? []).reduce((n, room) => n + (room.muted ? 0 : room.unreadCount), 0)
+    + ownWaitingCount(sessionRows.map((entry) => entry.row));
   const renderGroup = (group: RoomGroup) => {
     // Archived starts collapsed, so for it alone a listed id means "expanded".
     const collapsed = prefs.collapsed.includes(group.id) !== (group.id === "archived");
@@ -610,9 +614,10 @@ function DirectoryContent({
     <SortableContext items={sections.map((section) => section.id)} strategy={verticalListSortingStrategy}>
     {groups.filter((group) => !TAIL_GROUPS.has(group.id)).map(renderGroup)}
     {/* Sessions and External connections fold under More (closed by default); it opens itself while the
-        session or shared channel on screen is inside, so `aria-current` stays visible. */}
-    {(sessionsSection || external) && <details className="room-directory-more" open={moreHoldsCurrent || undefined}>
-      <summary className="room-directory-group">More</summary>
+        session or shared channel on screen is inside, or while anything in it is unread or waiting. */}
+    {(sessionsSection || external) && <details className="room-directory-more" open={moreHoldsCurrent || moreCount > 0 || undefined}>
+      <summary className="room-directory-group">More
+        {moreCount > 0 && <span className="room-count" aria-label={`${moreCount} unread or waiting`}>{moreCount}</span>}</summary>
       {sessionsSection}
       {external && renderGroup(external)}
     </details>}

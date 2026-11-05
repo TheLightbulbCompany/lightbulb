@@ -49,6 +49,16 @@ describe("sidebar with the super-agent on", () => {
     expect(rowsOf("Team")).not.toContain("Finance");
   });
 
+  it("More carries what it hides: a shared channel's unreads are counted on its heading and open it", () => {
+    const shared: DirectoryRoom = { ...base, roomId: "ext", kind: "channel", name: "partners", shared: true, participants: [alice], unreadCount: 3 };
+    const { container, rerender } = render(<RoomDirectory {...props} rooms={[shared]} />);
+    const more = container.querySelector("details.room-directory-more")!;
+    expect(more).toHaveAttribute("open");
+    expect(within(more.querySelector("summary")!).getByLabelText("3 unread or waiting")).toHaveTextContent("3");
+    rerender(<RoomDirectory {...props} rooms={[{ ...shared, unreadCount: 0 }]} />);
+    expect(container.querySelector("details.room-directory-more summary .room-count")).toBeNull();
+  });
+
   it("an unknown front agent (roster not resolved, or no ceo role) keeps today's roster", () => {
     render(<RoomDirectory {...props} ceoAgentId={undefined} />);
     // Today's roster: every agent, alphabetical (nothing to pin without a known CEO).

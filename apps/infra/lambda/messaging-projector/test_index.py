@@ -6,6 +6,7 @@ import json
 import threading
 import time
 import unittest
+from uuid import NAMESPACE_URL, uuid5
 import uuid
 from unittest.mock import MagicMock, patch
 
@@ -1688,3 +1689,54 @@ class SearchEnqueueTests(unittest.TestCase):
         record["eventName"] = "MODIFY"
         index.process_record(record)
         index._sqs_client.send_message.assert_not_called()
+
+
+TASK_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+TASKS_ARN = "arn:aws:dynamodb:us-east-1:1:table/lightbulb-dev-tasks/stream/2026-11-04T00:00:00.000"
+
+
+def task_record(sk: str, *, event: str = "INSERT", version: int = 2, old_version: int | None = None, **extra) -> dict:
+    row = {"pk": f"WS#{OWNER_ID}", "sk": sk, "version": version, "wsChannel": WORKSPACE_ID,
+           "title": "secret title", "status": "working", **extra}
+    record = {**stream_record(row), "eventName": event, "eventSourceARN": TASKS_ARN}
+    if old_version is not None:
+        record["dynamodb"]["OldImage"] = av_map({**row, "version": old_version})
+    return record
+
+
+@patch("index._publish")
+class TaskChangedTests(unittest.TestCase):
+    def test_publishes_ids_only(self, publish):
+        parts = {
+            f"TASK#{TASK_ID}": "task",
+            f"TASK#{TASK_ID}#ATT#0001": "attempt",
+            f"TASK#{TASK_ID}#Q#q1": "question",
+            f"TASK#{TASK_ID}#SUB#room:x": "subscription",
+        }
+        for sk, part in parts.items():
+            publish.reset_mock()
+            index.process_record(task_record(sk, event="MODIFY", old_version=1))
+            channel, event = publish.call_args.args
+            self.assertEqual(channel, f"/ws/{WORKSPACE_ID}/tasks")
+            self.assertEqual(set(event), {"schemaVersion", "eventId", "type", "occurredAt", "payload"})
+            self.assertEqual((event["schemaVersion"], event["type"]), (1, "task.changed"))
+            self.assertEqual(event["payload"], {"taskId": TASK_ID, "part": part, "version": 2})
+            self.assertEqual(event["eventId"], str(uuid5(NAMESPACE_URL, f"task:{TASK_ID}:{part}:2")))
+            self.assertTrue(event["occurredAt"].endswith("Z"))
+
+    def test_skips_same_version(self, publish):
+        index.process_record(task_record(f"TASK#{TASK_ID}", event="MODIFY", version=3, old_version=3))
+        publish.assert_not_called()
+
+    def test_skips_rows_without_ws_channel(self, publish):
+        index.process_record(task_record(f"TASK#{TASK_ID}#ATT#0001", wsChannel=None))
+        record = task_record(f"TASK#{TASK_ID}")
+        del record["dynamodb"]["NewImage"]["wsChannel"]
+        index.process_record(record)
+        publish.assert_not_called()
+
+    def test_non_task_rows_ignored(self, publish):
+        for sk in ("THREAD#room:x", f"NEEDS#{USER_ID}#{TASK_ID}#q1", "SLOTS", "MSG#00000000000000000001"):
+            index.process_record(task_record(sk))
+        index.process_record({**task_record(f"TASK#{TASK_ID}"), "eventName": "REMOVE"})
+        publish.assert_not_called()

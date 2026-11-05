@@ -72,6 +72,23 @@ async def test_create_task_idempotent(table):
     assert again["version"] == first["version"] == 1
 
 
+async def test_create_task_stamps_ws_channel(table, monkeypatch):
+    """O9: the projector publishes `task.changed` only for rows that carry the workspace's channel segment."""
+    from core.repositories import messaging_repo
+
+    calls = []
+
+    async def ensure_workspace_id(owner_id):
+        calls.append(owner_id)
+        return "11111111-2222-4333-8444-555555555555"
+
+    monkeypatch.setattr(messaging_repo, "ensure_workspace_id", ensure_workspace_id)
+    row, _ = await repo.create_task(WS, _task())
+    assert row["wsChannel"] == "11111111-2222-4333-8444-555555555555" and calls == [WS]
+    row, _ = await repo.create_task(WS, _task(taskId=ts.new_task_id(), wsChannel="given"))
+    assert row["wsChannel"] == "given" and calls == [WS]  # a caller's channel is kept
+
+
 async def test_create_task_refuses_other_statuses(table):
     with pytest.raises(ValueError):
         await repo.create_task(WS, _task(status="working"))

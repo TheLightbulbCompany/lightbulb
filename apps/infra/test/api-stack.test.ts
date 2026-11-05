@@ -496,7 +496,7 @@ describe("ApiStack — canonical messaging storage and work delivery", () => {
   test("messaging stream has exactly the projector and direct Pipe consumers", () => {
     const streamMappings = Object.values(
       API_TEMPLATE.findResources("AWS::Lambda::EventSourceMapping"),
-    ).filter((m: any) => JSON.stringify(m.Properties.EventSourceArn).includes("StreamArn"));
+    ).filter((m: any) => m.Properties.EventSourceArn["Fn::GetAtt"]?.[0]?.startsWith("MessagingTable"));
     expect(streamMappings).toHaveLength(1);
     API_TEMPLATE.resourceCountIs("AWS::Pipes::Pipe", 1);
     API_TEMPLATE.hasResourceProperties("AWS::Lambda::EventSourceMapping", {
@@ -1142,8 +1142,6 @@ describe("ApiStack — super-agent tasks table (contracts-v2 §3, dev only)", ()
     expect(t.Properties.BillingMode).toBe("PAY_PER_REQUEST");
     expect(t.Properties.PointInTimeRecoverySpecification.PointInTimeRecoveryEnabled).toBe(true);
     expect(t.Properties.SSESpecification.KMSMasterKeyId).toBeDefined();
-    expect(t.Properties.StreamSpecification).toBeUndefined();
-    expect(t.Properties.TimeToLiveSpecification).toBeUndefined();
     expect(t.DeletionPolicy).toBe("Retain");
     expect(t.UpdateReplacePolicy).toBe("Retain");
   });
@@ -1162,5 +1160,42 @@ describe("ApiStack — super-agent tasks table (contracts-v2 §3, dev only)", ()
 
   test("prod synth has no tasks table", () => {
     expect(tasksTable(synthApiStack("prod"))).toHaveLength(0);
+  });
+
+  const projectorSources = (template: Template) =>
+    Object.values(template.findResources("AWS::Lambda::EventSourceMapping")).filter(
+      (m: any) => m.Properties.FunctionName?.Ref?.startsWith("MessagingProjector"),
+    ) as any[];
+
+  test("tasks table has stream and TTL and projector source in dev", () => {
+    const [t] = tasksTable(API_TEMPLATE);
+    expect(t.Properties.StreamSpecification).toEqual({ StreamViewType: "NEW_AND_OLD_IMAGES" });
+    expect(t.Properties.TimeToLiveSpecification).toEqual({ AttributeName: "expiresAt", Enabled: true });
+    const tasksId = Object.entries(API_TEMPLATE.findResources("AWS::DynamoDB::Table")).find(
+      ([, r]: [string, any]) => r.Properties.TableName === "lightbulb-dev-tasks",
+    )![0];
+    const sources = projectorSources(API_TEMPLATE).map((m) => m.Properties.EventSourceArn["Fn::GetAtt"][0]);
+    expect(sources).toEqual(expect.arrayContaining([tasksId, expect.stringMatching(/^MessagingTable/)]));
+    expect(sources).toHaveLength(2);
+  });
+
+  test("ws handler admits a member to /ws/{ws}/tasks in dev", () => {
+    const WS = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const code = wsHandlerCode("t", "dev").replace(/^import .*;\n/m, "").replace(/^export /gm, "");
+    const util = { matches: (re: string, v: string) => new RegExp(re).test(v), unauthorized: () => { throw 0; }, dynamodb: { toMapValues: (v: unknown) => v } };
+    const { onSubscribe, parsePath } = new Function("util", `${code}\nreturn { onSubscribe, parsePath };`)(util);
+    const ctx = (rows: unknown[]) => ({ info: { channel: { path: `/ws/${WS}/tasks` } }, identity: { sub: "user_1" }, result: { data: { t: rows } } });
+    expect(onSubscribe.request(ctx([])).tables.t.keys).toEqual([
+      { pk: `WORKSPACE#${WS}`, sk: "META" },
+      { pk: `WORKSPACE#${WS}`, sk: "MEMBER#user_1" },
+    ]);
+    expect(() => onSubscribe.response(ctx([{ workspaceId: WS }, { active: true }]))).not.toThrow();
+    expect(() => onSubscribe.response(ctx([{ workspaceId: WS }, null]))).toThrow();
+    expect(() => parsePath({ info: { channel: { path: `/ws/${WS}/tasks/x` } } })).toThrow();
+  });
+
+  test("prod synth unchanged", () => {
+    expect(wsHandlerCode("t", "prod")).not.toMatch(/tasks/);
+    expect(projectorSources(synthApiStack("prod"))).toHaveLength(1);
   });
 });

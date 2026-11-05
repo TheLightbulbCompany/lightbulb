@@ -89,6 +89,62 @@ async def test_create_task_stamps_ws_channel(table, monkeypatch):
     assert row["wsChannel"] == "given" and calls == [WS]  # a caller's channel is kept
 
 
+async def test_attempt_question_effect_rows_stamp_ws_channel(table):
+    """Audit #10: attempt, Question and Effect changes publish `task.changed` too, so their rows carry the channel;
+    triggers and THREAD# rows (no task view) do not."""
+    from core.repositories import effects_repo, messaging_repo, questions_repo
+
+    channel = await messaging_repo.ensure_workspace_id(WS)
+    task, _ = await repo.create_task(WS, _task())
+    tid = task["taskId"]
+    att, _ = await repo.put_attempt(
+        WS, tid, 1, {"agentId": "a", "sessionId": "s", "status": "dispatched", "startedAt": "2026-11-05T00:00:00Z"}
+    )
+    q, _ = await questions_repo.open_question(
+        WS,
+        {
+            "taskId": tid,
+            "qid": "q-1",
+            "kind": "approval",
+            "subkind": "purchase",
+            "title": "buy",
+            "text": "acme.dev",
+            "options": [{"id": "allow_once", "label": "Allow once"}, {"id": "deny", "label": "Deny"}],
+            "askedBy": {"kind": "worker", "attempt": 1},
+            "answerers": ["sam"],
+            "answererRule": "requester",
+            "baseAnswerers": ["sam"],
+        },
+    )
+    eff, _ = await effects_repo.put_effect(
+        WS,
+        {
+            "idemKey": "k1",
+            "taskId": tid,
+            "attempt": 1,
+            "tool": "mail",
+            "kind": "mail.send",
+            "operands": {},
+            "operandsHash": "h",
+            "state": "proposed",
+        },
+    )
+    for row in (att, q, eff, await repo._get(WS, att["sk"]), await repo._get(WS, q["sk"])):
+        assert row["wsChannel"] == channel
+    trig, _ = await repo.put_trigger(
+        WS,
+        {
+            "triggerId": "chat:m1",
+            "source": "chat",
+            "ref": {},
+            "admission": "respond",
+            "lane": "shared",
+            "receivedAt": "2026-11-05T00:00:00Z",
+        },
+    )
+    assert "wsChannel" not in trig
+
+
 async def test_create_task_refuses_other_statuses(table):
     with pytest.raises(ValueError):
         await repo.create_task(WS, _task(status="working"))

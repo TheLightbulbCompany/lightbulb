@@ -70,8 +70,23 @@ async def _get(ws: str, sk: str) -> dict | None:
     return plain(item) if item else None
 
 
+_LIVE_PREFIXES = ("TASK#", "EFFECT#")
+
+
+async def stamp_channel(ws: str, item: dict) -> dict:
+    """A task, attempt, question or effect row carries the workspace's live channel segment (`/ws/{wsChannel}/tasks`,
+    O9): the projector publishes `task.changed` only for rows that carry it. Updates are update_item, so the stamp
+    survives them."""
+    if item.get("wsChannel") or not str(item.get("sk", "")).startswith(_LIVE_PREFIXES):
+        return item
+    from core.repositories import messaging_repo  # lazy: messaging_repo is the heavier module
+
+    return {**item, "wsChannel": await messaging_repo.ensure_workspace_id(ws)}
+
+
 async def _put_new(ws: str, item: dict) -> tuple[dict, bool]:
     """Put unless the row exists; on a retry return the stored row unchanged."""
+    item = await stamp_channel(ws, item)
     try:
         super_agent_faults.maybe_conflict()  # dev fault hook: conditional_conflict:<pct>
         await run_in_thread(_table().put_item, Item=ddb_safe(item), ConditionExpression="attribute_not_exists(sk)")
@@ -87,6 +102,8 @@ async def _put_new(ws: str, item: dict) -> tuple[dict, bool]:
 
 def _row(model: type[ts._Row], ws: str, data: dict) -> dict:
     now = utc_now_iso()
+    if "ws_channel" not in model.model_fields:  # writer-owned (`stamp_channel`): a copied stored row may carry it
+        data = {k: v for k, v in data.items() if k != "wsChannel"}
     return plain(model.model_validate({**data, "ws": ws, "version": 1, "createdAt": now, "updatedAt": now}).to_item())
 
 
@@ -144,12 +161,6 @@ def _check_fields(fields: dict) -> None:
 async def create_task(ws: str, task: dict) -> tuple[dict, bool]:
     if task.get("status") not in ("proposed", "queued"):
         raise ValueError("a task is created proposed or queued")
-    if not task.get("wsChannel"):
-        # The workspace's live channel segment (`/ws/{wsChannel}/tasks`, O9): without it the projector
-        # publishes no `task.changed` for this row. Transitions are update_item, so the stamp survives them.
-        from core.repositories import messaging_repo  # lazy: messaging_repo is the heavier module
-
-        task = {**task, "wsChannel": await messaging_repo.ensure_workspace_id(ws)}
     return await _put_new(ws, _row(ts.Task, ws, task))
 
 

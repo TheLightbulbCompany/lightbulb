@@ -78,7 +78,7 @@ async def _query(ws: str, prefix: str, *, limit: int | None = None, cursor: str 
 
 async def open_question(ws: str, q: dict) -> tuple[dict, bool]:
     """Q row + one `NEEDS#` per answerer, atomically. A retry (same qid) returns the stored row unchanged."""
-    row = _row(ts.Question, ws, {**q, "state": "open"})
+    row = await tasks_repo.stamp_channel(ws, _row(ts.Question, ws, {**q, "state": "open"}))
     if await tasks_repo.get_task(ws, row["taskId"]) is None:
         raise TasksRepoError(f"task {row['taskId']} not found")  # checked first: no orphan question rows
     table = _table()

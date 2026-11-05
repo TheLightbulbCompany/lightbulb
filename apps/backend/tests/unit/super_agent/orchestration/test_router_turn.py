@@ -850,3 +850,44 @@ async def test_a_fanned_out_trigger_records_the_task_that_started(world, monkeyp
     assert (await repo.get_trigger(WS, t1))["routedTo"] == {"taskId": good}
     await acts.apply_fallback(WS, [t1])
     assert world["posts"][-1]["text"] == router_prompt.PARTIAL
+
+
+@pytest.mark.asyncio
+async def test_router_reads_each_task_state_in_plain_words(world):
+    """Dev 5 Nov (DM, "How is everything going?"): an `idle` blurb task read as "still queued" and a stopped domain
+    purchase read as "done". The Router now gets unambiguous words per state, recently closed tasks labelled, and
+    the rule that a spend or send happened only when its task says its action ran."""
+    room = {"kind": "room", "roomId": ROOM}
+
+    async def task(title, status, reason=None):
+        tid = await _open_task(room, status="queued", title=title)
+        if status == "idle":
+            await repo.transition_task(WS, tid, to="working")
+        if status != "queued":
+            await repo.transition_task(WS, tid, to=status, reason=reason)
+        return tid
+
+    await task("Write March workshop invite blurb", "idle")
+    await task("Buy workshop signup domain", "resolved", "stopped")
+    await task("Email attendees about the date", "waiting", "approval")
+    await task("Make the day-of checklist", "queued")
+    t1 = await _trig("chat:m1")
+    world["decisions"] = [{"kind": "reply", "triggerIds": [t1], "text": "Here is where things are."}]
+    await _run([t1])
+    prompt, instructions = world["runs"][0][1].input, world["runs"][0][1].instructions
+    assert "Write March workshop invite blurb · finished, result posted" in prompt
+    assert "Make the day-of checklist · queued, not started yet" in prompt
+    assert "Email attendees about the date · waiting on a person's approval" in prompt
+    closed = prompt.split("## Recently closed")[1]
+    assert "Buy workshop signup domain · stopped by a person; nothing more was done" in closed
+    assert "Buy workshop signup domain" not in prompt.split("## Recently closed")[0]
+    assert "unless its task says its action ran" in instructions
+
+
+def test_status_words_cover_every_status():
+    for status in ("proposed", "queued", "working", "waiting", "idle", "failed", "resolved"):
+        assert router_prompt.status_words({"status": status}) != status
+    assert (
+        router_prompt.status_words({"status": "idle", "statusReason": "landed"}) == "finished; its approved action ran"
+    )
+    assert router_prompt.status_words({"status": "resolved", "statusReason": "odd"}) == "closed"

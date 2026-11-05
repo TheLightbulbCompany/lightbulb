@@ -118,3 +118,49 @@ async def test_reconcile_workflow_runs_the_activity(temporal_env):
             ScheduleReconcileWorkflow.run, id=f"r-{uuid.uuid4()}", task_queue=queue
         )
     assert out["created"] == 1
+
+
+@pytest.mark.parametrize(
+    "ns,prefix,endpoint,allowed",
+    [
+        ("lightbulb-dev.nv5xx", "lightbulb-dev-", None, True),
+        ("lightbulb-prod.nv5xx", "lightbulb-prod-", None, True),
+        ("lightbulb-dev.nv5xx", "lightbulb-prod-", None, False),  # worker table is not this namespace's env
+        ("lightbulb-dev.nv5xx", "local-", None, False),
+        ("lightbulb-dev.nv5xx", "lightbulb-dev-", "http://localhost:8000", False),  # local DynamoDB
+        ("default", "lightbulb-dev-", "http://localhost:8000", True),  # a local dev server owns nothing shared
+    ],
+)
+def test_sweep_allowed_only_when_table_matches_namespace(monkeypatch, ns, prefix, endpoint, allowed):
+    from core import dynamodb
+    from core.config import settings
+    from core.temporal import automations
+
+    monkeypatch.setattr(settings, "TEMPORAL_NAMESPACE", ns)
+    monkeypatch.setattr(settings, "DYNAMODB_ENDPOINT_URL", endpoint, raising=False)
+    monkeypatch.setattr(dynamodb, "_table_prefix", prefix)
+    assert automations.sweep_allowed() is allowed
+
+
+async def test_worker_boot_hook_times_out(monkeypatch):
+    import asyncio
+
+    from scripts import temporal_worker
+
+    async def hang(client):
+        await asyncio.sleep(60)
+
+    monkeypatch.setattr(asch, "ensure_platform", hang)
+    monkeypatch.setattr(temporal_worker, "PLATFORM_BOOT_TIMEOUT_S", 0.05)
+    await asyncio.wait_for(temporal_worker._ensure_platform_schedules(object()), 2)  # returns, only logs
+
+
+@pytest.mark.parametrize("bad", [["0 9 32 * *"], ["0 9 * 13 *"], ["0 9 * * 8"], ["0 9 0 * *"], ["0 9 * * FOO"]])
+def test_cron_day_month_weekday_ranges(bad):
+    with pytest.raises(ValueError):
+        asch.validate_cron(bad, "UTC")
+
+
+def test_cron_day_fields_accept_names_and_sunday_7():
+    asch.validate_cron(["0 9 1-31 JAN-DEC SUN-SAT"], "UTC")
+    asch.validate_cron(["0 9 * * 7"], "UTC")

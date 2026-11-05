@@ -190,8 +190,23 @@ async def close_run(ws: str, sid: str, task_id: str, *, failed: bool) -> dict:
     return row
 
 
-async def delete_schedule(ws: str, sid: str) -> None:
-    await run_in_thread(_table().delete_item, Key={"pk": ts.ws_pk(ws), "sk": ts.schedule_sk(sid)})
+async def delete_schedule(ws: str, sid: str, *, only_if_status: str | None = None) -> bool:
+    """Delete the row (gone already is fine). With `only_if_status`, only while it still has that status
+    (a stale draft activated since the reconcile's scan survives). Returns whether it was deleted."""
+    kwargs: dict[str, Any] = {"Key": {"pk": ts.ws_pk(ws), "sk": ts.schedule_sk(sid)}}
+    if only_if_status:
+        kwargs |= {
+            "ConditionExpression": "#s = :s",
+            "ExpressionAttributeNames": {"#s": "status"},
+            "ExpressionAttributeValues": {":s": only_if_status},
+        }
+    try:
+        await run_in_thread(_table().delete_item, **kwargs)
+        return True
+    except ClientError as exc:
+        if not _is_condition_failure(exc):
+            raise
+    return False
 
 
 # --- Rules (contracts §18: an automation row with a `match` scope) -----------------------------------

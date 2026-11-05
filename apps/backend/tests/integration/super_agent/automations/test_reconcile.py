@@ -2,6 +2,8 @@
 
 from datetime import datetime, timedelta, timezone
 
+from unittest.mock import AsyncMock, patch
+
 import boto3
 import pytest
 from moto import mock_aws
@@ -101,6 +103,42 @@ async def test_reconcile_deletes_orphan_schedule(table, client, ws):
         await _describe(client, ws, "gone")
 
 
+async def test_reconcile_keeps_schedule_whose_row_appeared_after_the_scan(table, client, ws, monkeypatch):
+    row = await _active(ws, "late")
+    await asch.upsert(row)
+    monkeypatch.setattr(repo, "scan_schedules", AsyncMock(return_value=[]))  # the scan missed it
+    try:
+        out = await reconcile_schedules()
+        assert out["deleted_orphans"] == 0
+        assert (await _describe(client, ws, "late")).schedule.state.paused is False
+    finally:
+        await _cleanup(ws, "late")
+
+
+async def test_reconcile_refuses_deletes_when_table_is_another_env(table, client, ws, monkeypatch):
+    from core.temporal import automations
+
+    await asch.upsert({"pk": f"WS#{ws}", "scheduleId": "orph", "cron": ["0 9 * * 1"], "tz": "UTC", "status": "active"})
+    monkeypatch.setattr(automations, "sweep_allowed", lambda: False)
+    try:
+        out = await reconcile_schedules()
+        assert out["deleted_orphans"] == 0
+        await _describe(client, ws, "orph")  # still there
+    finally:
+        await _cleanup(ws, "orph")
+
+
+async def test_event_only_automation_has_no_schedule(table, client, ws):
+    row = await _active(ws, "ev", cron=[])
+    assert await asch.upsert(row) is None
+    await asch.upsert(row | {"cron": ["0 9 * * 1"]})  # it had one, then became event-only
+    assert await asch.upsert(row) == "updated"
+    from temporalio.service import RPCError
+
+    with pytest.raises(RPCError):
+        await _describe(client, ws, "ev")
+
+
 async def test_reconcile_deletes_stale_draft(table, client, ws):
     row, _ = await repo.create_schedule(ws, _sched("d", hookPublicIds=["pub_d"]))
     await repo.put_hook(
@@ -122,7 +160,9 @@ async def test_reconcile_deletes_stale_draft(table, client, ws):
     )
     fresh, _ = await repo.create_schedule(ws, _sched("f"))
     try:
-        out = await reconcile_schedules()
+        with patch("core.services.credentials.integration_secret_store.delete", AsyncMock(return_value=True)) as rm:
+            out = await reconcile_schedules()
+        rm.assert_awaited_once_with(ws, "hook-pub_d")
         assert out["deleted_drafts"] >= 1
         assert await repo.get_schedule(ws, "d") is None
         assert await repo.get_hook(ws, "pub_d") is None

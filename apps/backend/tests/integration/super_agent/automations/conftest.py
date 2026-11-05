@@ -20,7 +20,7 @@ def pytest_collection_modifyitems(items):
         return
     skip = pytest.mark.skip(reason="no Temporal dev server on localhost:7233")
     for item in items:
-        if "super_agent/automations" in str(item.fspath):
+        if "integration/super_agent/automations" in str(item.fspath):
             item.add_marker(skip)
 
 

@@ -45,8 +45,16 @@ RECONCILE_WORKFLOW_ID = "reconcile:schedules"
 _FIELD = re.compile(r"^[A-Za-z0-9*,/-]+$")
 
 
-def _expand(field: str, lo: int, hi: int) -> set[int]:
-    """Values of one numeric cron field (`*`, `a`, `a-b`, `*/n`, `a-b/n`, comma lists)."""
+_MONTHS = {m: i for i, m in enumerate("JAN FEB MAR APR MAY JUN JUL AUG SEP OCT NOV DEC".split(), 1)}
+_DAYS = {d: i for i, d in enumerate("SUN MON TUE WED THU FRI SAT".split())}
+# (low, high, names) for minute, hour, day of month, month, day of week (7 = Sunday too)
+_RANGES = ((0, 59, {}), (0, 23, {}), (1, 31, {}), (1, 12, _MONTHS), (0, 7, _DAYS))
+
+
+def _expand(field: str, lo: int, hi: int, names: dict[str, int] | None = None) -> set[int]:
+    """Values of one cron field (`*`, `a`, `a-b`, `*/n`, `a-b/n`, comma lists, JAN/MON names)."""
+    if names:
+        field = re.sub(r"[A-Za-z]+", lambda m: str(names[m.group().upper()]), field)
     out: set[int] = set()
     for part in field.split(","):
         rng, _, step = part.partition("/")
@@ -75,8 +83,8 @@ def validate_cron(cron: list[str], tz: str) -> None:
         if len(fields) != 5 or not all(_FIELD.match(f) for f in fields):
             raise ValueError(f"not a 5-field cron: {expr!r}")
         try:
-            mins, hours = _expand(fields[0], 0, 59), _expand(fields[1], 0, 23)
-        except ValueError as exc:
+            mins, hours, *_ = (_expand(f, lo, hi, names) for f, (lo, hi, names) in zip(fields, _RANGES))
+        except (ValueError, KeyError) as exc:
             raise ValueError(f"bad cron {expr!r}: {exc}") from None
         minutes |= {h * 60 + m for h in hours for m in mins}
     # ponytail: minute-of-day union ignores day fields, so two entries on different days that are close in
@@ -134,15 +142,21 @@ def build(row: dict) -> Schedule:
 
 
 async def upsert(row: dict) -> Literal["created", "updated"] | None:
-    """Make the Temporal Schedule match the row. None = it already did."""
+    """Make the Temporal Schedule match the row. None = it already did. An event-only automation (no cron)
+    has no Schedule; one left from an earlier cron is deleted ("updated")."""
     handle = get_client().get_schedule_handle(schedule_id(row))
     try:
         desc = await handle.describe()
     except RPCError as exc:
         if exc.status != RPCStatusCode.NOT_FOUND:
             raise
+        if not row["cron"]:
+            return None
         await get_client().create_schedule(schedule_id(row), build(row))
         return "created"
+    if not row["cron"]:
+        await delete(_ws(row), row["scheduleId"])
+        return "updated"
     if fingerprint_of(desc) != fingerprint(row) or desc.schedule.spec.time_zone_name != row["tz"]:
         new = build(row)
         await handle.update(lambda _: ScheduleUpdate(schedule=new))

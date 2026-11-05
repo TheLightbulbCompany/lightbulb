@@ -297,7 +297,7 @@ jobs:
               exit 0
             fi
             git diff -- ../../.github/workflows/deploy.yml
-            cat >&2 <<'MSG'
+            cat >&2 \<<'MSG'
 
             ============================================================
             .github/workflows/deploy.yml is OUT OF SYNC with the pipeline

@@ -7,6 +7,7 @@ process answers the lightbulb-channel paths plus Paperclip's native run lifecycl
   POST /plugins/lightbulb-channel/inbound/<agentId>   202 accepted, then the turn runs in a thread
   POST /plugins/lightbulb-channel/rpc                  health, models.*, skills.*, browser.*
   /internal/paperclip/v1/runs[/<id>[/stop]]            create, poll, and interrupt a real turn
+  /internal/v1/runs[/<id>[/stop]]                      the same for a task's Worker turn (bridge/runs.py)
 
 A turn = restore the agent's profile dir from S3 (once per process), run one Hermes AIAgent turn
 under that profile's HERMES_HOME, post run.started/run.ended and the reply to the backend with the
@@ -33,7 +34,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import bridge
 from bridge import GATEWAY_TOKEN, HOOK_TOKEN, OWNER, PORT, STARTED, now
-from bridge import sync, turn, browser_control, followups, mcp_compat, network, recycle, subagents
+from bridge import sync, turn, browser_control, followups, mcp_compat, network, recycle, runs, subagents
 
 logging.basicConfig(level=logging.INFO, format="[bridge] %(message)s", stream=sys.stdout)
 log = logging.getLogger("bridge")
@@ -247,6 +248,9 @@ def handle_plugin(path: str, method: str, headers: dict, body) -> tuple[int, dic
     paperclip = _handle_paperclip_run(path, method, headers, body)
     if paperclip is not None:
         return paperclip
+    task_run = runs.handle(path, method, headers, body)
+    if task_run is not None:
+        return task_run
     control = _RUN_CONTROL_RE.match(path)
     if control and method == "POST" and control.group(2) == "abort":
         run_id = control.group(1)

@@ -12,12 +12,18 @@ What merges: ``memories/MEMORY.md`` and ``memories/USER.md`` (entry-level), skil
 ``skills/workspace/`` (review G16), not the curator's files, not ``state.db``/``work/``/sessions/
 logs/cache/home/media/credentials, not the backend-owned files.
 
-``base.json`` (written by the bridge at the first task restore)::
+Per-attempt base (review of #4672): attempt k's start is the specialist copy layered with the
+overlay attempt k-1 left, so B is per attempt. The bridge writes ``base-{k:04d}.json``
+(:func:`base_rel`) at attempt k's first restore::
 
     {"files": {rel: {"sha256": str, "etag": str, "text"?: str}}}
 
 ``text`` is carried for the three small files whose merge needs B's content (the two memory files
-and ``skills/.usage.json``); skill dirs only need hashes.
+and ``skills/.usage.json``); skill dirs only need hashes. The overlay itself is one prefix, so a
+later attempt may overwrite attempt k's T before attempt k's merge runs: :func:`check_seal` then
+answers ``superseded`` and attempt k is skipped. The workflow merges attempt m against the base of
+the earliest attempt of that task not yet applied -- T_m carries every attempt since then -- so
+nothing is counted twice and nothing is lost.
 
 Crash safety: every write is conditional on the ETag the merge read (412 -> :class:`CurrentChanged`),
 objects already at their planned sha are skipped, ``SKILL.md`` is written last within a skill dir,
@@ -46,6 +52,10 @@ USAGE = "skills/.usage.json"
 SKILL_MD = "SKILL.md"
 REVISION = ".revision"
 ARCHIVE_DIR = "skills/.archive/"
+CONFLICTS_DIR = "learning/conflicts/"
+SEALED = "sealed.json"
+#: Read with C so archive and park writes are conditional on what is already there.
+_AUX_PREFIXES = (ARCHIVE_DIR, CONFLICTS_DIR)
 #: ``if_match`` value meaning "the object must not exist yet" (``IfNoneMatch: *``).
 ABSENT = ""
 
@@ -118,6 +128,28 @@ def _empty_report(skipped: str | None = None) -> dict:
         "dropped_threats": 0,
         "skipped": skipped,
     }
+
+
+def base_rel(attempt: int) -> str:
+    """The overlay file holding attempt ``attempt``'s base (relative to the overlay agent root)."""
+    return f"base-{attempt:04d}.json"
+
+
+def check_seal(seal_raw: bytes | None, attempt: int, task: Snapshot) -> str | None:
+    """None when T is exactly what attempt ``attempt`` sealed; ``"unsealed"`` when it never
+    sealed (the VM died: its learning is not merged); ``"superseded"`` when a later attempt has
+    sealed over it or is writing the overlay (that attempt's merge takes T instead)."""
+    if not seal_raw:
+        return "unsealed"
+    seal = json.loads(seal_raw)
+    sealed_attempt = int(seal.get("attempt") or 0)
+    if sealed_attempt > attempt:
+        return "superseded"
+    if sealed_attempt < attempt:
+        return "unsealed"
+    sealed_files = {r: sha for r, sha in (seal.get("files") or {}).items() if is_learning_file(r)}
+    now = {r: v[0] for r, v in task.items() if is_learning_file(r)}
+    return None if sealed_files == now else "superseded"
 
 
 def parse_base(raw: bytes) -> tuple[Manifest, dict[str, str]]:
@@ -197,6 +229,7 @@ def plan_merge(
     task_id: str,
     base_text: dict[str, str] | None = None,
     planned: dict[str, str] | None = None,
+    superseded: bool = False,
 ) -> MergePlan:
     """Plan the writes that fold T into C. Pure.
 
@@ -204,9 +237,12 @@ def plan_merge(
     already at its planned sha is done, which keeps the one non-idempotent rule (usage counter
     deltas) from adding twice on a rerun.
     """
+    if superseded:
+        return MergePlan([], [], _empty_report("superseded"))
     if not sealed:
         return MergePlan([], [], _empty_report("unsealed"))
     report = _empty_report()
+    aux = {rel: v for rel, v in current.items() if rel.startswith(_AUX_PREFIXES)}
     ops: list[PlannedPut | PlannedDelete] = []
     base_text = base_text or {}
     planned = planned or {}
@@ -306,7 +342,9 @@ def plan_merge(
         def park(reason: str) -> None:
             for r in _skill_md_last(tu):
                 body = task[r][2]()
-                ops.append(PlannedPut(f"learning/conflicts/{task_id}/{r}", body, _sha(body), None))
+                dest = f"{CONFLICTS_DIR}{task_id}/{r}"
+                # Only over the version we read (an earlier attempt's park), never blind.
+                ops.append(PlannedPut(dest, body, _sha(body), aux[dest][1] if dest in aux else ABSENT))
             report["parked"].append({"skill": name, "reason": reason})
 
         if in_t and not in_b:
@@ -324,9 +362,19 @@ def plan_merge(
                 park("both_changed")
         elif in_b and not in_t and in_c and between({}):
             # Removed in T, untouched in C: archive (the curator never deletes, nor do we).
+            dest = f"{ARCHIVE_DIR}{name}/"
+            # What we archive is B's dir (C is B or a partial delete of it): compare against B.
+            mine = {r[len(unit) + 1 :]: bs[r] for r in bu}
+            taken = {r[len(dest) :]: v[0] for r, v in aux.items() if r.startswith(dest)}
+            # A partial copy of ours (a crashed earlier run) is ours; anything else is someone's.
+            if any(mine.get(r) != sha for r, sha in taken.items()):
+                # The curator (or another merge) already archived a different "<name>": never
+                # overwrite an archive; this one gets its own dir.
+                dest = f"{ARCHIVE_DIR}{name}.{task_id}/"
             for r in _skill_md_last(cu):
                 body = current[r][2]()
-                ops.append(PlannedPut(ARCHIVE_DIR + r[len("skills/") :], body, _sha(body), None))
+                key = dest + r[len(unit) + 1 :]
+                ops.append(PlannedPut(key, body, _sha(body), aux[key][1] if key in aux else ABSENT))
             for r in sorted(cu, key=lambda r: r == md):  # SKILL.md last: the dir stays whole until then
                 ops.append(PlannedDelete(r, current[r][1]))
             report["archived"].append(name)
@@ -407,7 +455,7 @@ def read_snapshot(s3, bucket: str, prefix: str) -> Snapshot:
     for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix):
         for obj in page.get("Contents", []):
             rel = obj["Key"][len(prefix) :]
-            if not is_learning_file(rel):
+            if not (is_learning_file(rel) or rel.startswith(_AUX_PREFIXES)):
                 continue
             got = s3.get_object(Bucket=bucket, Key=obj["Key"])
             body = got["Body"].read()
@@ -419,18 +467,25 @@ def run_merge(
     s3,
     bucket: str,
     prefix: str,
-    plan_for: Callable[[Snapshot], MergePlan],
+    plan_for: Callable[[Snapshot, dict[str, str]], MergePlan],
     *,
+    planned: dict[str, str] | None = None,
     attempts: int = 3,
     force_revision: bool = False,
 ) -> tuple[MergePlan, dict]:
     """Read C, plan, apply; on a lost conditional write re-read C and replan, up to ``attempts``
-    times, then raise :class:`CurrentChanged` (Temporal retries the Activity with backoff)."""
+    times, then raise :class:`CurrentChanged` (Temporal retries the Activity with backoff).
+
+    ``plan_for(current, planned)`` gets every sha planned so far -- the intent row's from an
+    interrupted earlier run plus each failed retry's here -- so a write that already landed is
+    never planned again (usage deltas would count twice)."""
+    planned = dict(planned or {})
     for attempt in range(1, attempts + 1):
-        plan = plan_for(read_snapshot(s3, bucket, prefix))
+        plan = plan_for(read_snapshot(s3, bucket, prefix), planned)
         try:
             return plan, apply_plan(s3, bucket, prefix, plan, force_revision=force_revision)
         except CurrentChanged:
+            planned.update(plan.planned)
             if attempt == attempts:
                 raise
             # Writes before the 412 may have landed: bump ``.revision`` on the retry regardless.

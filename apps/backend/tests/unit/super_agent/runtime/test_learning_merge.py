@@ -179,12 +179,48 @@ def test_unsealed_attempt_is_skipped():
     assert plan.ops == [] and plan.report["skipped"] == "unsealed"
 
 
+def test_archive_never_overwrites_an_existing_archive():
+    b = _skill("s", "v1")
+    curator_archive = {"skills/.archive/s/SKILL.md": b"curator's older s"}
+    plan = _plan(b, {}, {**b, **curator_archive})
+    archive_puts = [p for p in plan.puts if p.key_rel.startswith("skills/.archive/")]
+    assert [p.key_rel for p in archive_puts] == [f"skills/.archive/s.{TASK}/SKILL.md"]
+    assert all(p.if_match == lm.ABSENT for p in archive_puts)
+    # A free archive dir: must-not-exist put (a replay at the same sha is skipped by apply).
+    plan = _plan(b, {}, b)
+    assert [(p.key_rel, p.if_match) for p in plan.puts] == [("skills/.archive/s/SKILL.md", lm.ABSENT)]
+
+
+def test_park_put_is_conditional_on_the_existing_object():
+    parked = f"learning/conflicts/{TASK}/skills/s/SKILL.md"
+    plan = _plan({}, _skill("s", "mine"), _skill("s", "theirs"))
+    assert [(p.key_rel, p.if_match) for p in plan.puts] == [(parked, lm.ABSENT)]
+    # An earlier attempt of this task parked another version: overwrite only that version.
+    plan = _plan({}, _skill("s", "mine v2"), {**_skill("s", "theirs"), parked: b"mine v1"})
+    assert [(p.key_rel, p.if_match) for p in plan.puts] == [(parked, f'"e-{parked}"')]
+
+
+def test_check_seal_per_attempt():
+    t = _snap({lm.MEMORY: _mem("x"), "state.db": b"db"})
+    seal = lambda attempt, files: json.dumps({"attempt": attempt, "files": files}).encode()  # noqa: E731
+    sha = t[lm.MEMORY][0]
+    assert lm.check_seal(None, 2, t) == "unsealed"
+    assert lm.check_seal(seal(1, {lm.MEMORY: sha}), 2, t) == "unsealed"  # attempt 2 never sealed
+    assert lm.check_seal(seal(2, {lm.MEMORY: sha}), 2, t) is None
+    assert lm.check_seal(seal(3, {lm.MEMORY: sha}), 2, t) == "superseded"  # attempt 3 already sealed over it
+    assert lm.check_seal(seal(2, {lm.MEMORY: "other"}), 2, t) == "superseded"  # attempt 3 is writing
+    assert lm.base_rel(2) == "base-0002.json"
+    plan = _plan({}, {lm.MEMORY: _mem("x")}, {}, superseded=True)
+    assert plan.ops == [] and plan.report["skipped"] == "superseded"
+
+
 # --- apply against S3 ---------------------------------------------------------------------------
 
 B = {
     lm.MEMORY: _mem("a", "b"),
     lm.USAGE: json.dumps({"s": {"use_count": 1}}).encode(),
     **_skill("s", "v1", {"x.md": "x"}),
+    **_skill("old", "o", {"q.md": "q"}),  # removed in T: archived
 }
 T = {
     lm.MEMORY: _mem("a", "t1"),
@@ -216,9 +252,9 @@ def _state(s3) -> dict[str, bytes]:
     return out
 
 
-def _planner(planned=None):
+def _planner():
     base, texts = _manifest(B), _texts(B)
-    return lambda current: lm.plan_merge(
+    return lambda current, planned: lm.plan_merge(
         base,
         _snap(T),
         current,
@@ -241,6 +277,7 @@ def test_merge_applies_to_s3(s3):
     assert state["skills/s/SKILL.md"] == b"v2" and "skills/s/x.md" not in state and state["skills/s/y.md"] == b"y"
     assert state["skills/new/SKILL.md"] == b"n"
     assert state["SOUL.md"] == b"soul"
+    assert state["skills/.archive/old/SKILL.md"] == b"o" and "skills/old/SKILL.md" not in state
 
 
 class _Crash(Exception):
@@ -277,10 +314,10 @@ def test_crash_after_k_writes_then_rerun_converges(s3):
         for obj in s3.list_objects_v2(Bucket=BUCKET, Prefix=PREFIX).get("Contents", []):
             s3.delete_object(Bucket=BUCKET, Key=obj["Key"])
         _seed(s3, C)
-        planned = _planner()(lm.read_snapshot(s3, BUCKET, PREFIX)).planned  # the LEARN# intent row
+        planned = _planner()(lm.read_snapshot(s3, BUCKET, PREFIX), {}).planned  # the LEARN# intent row
         with pytest.raises(_Crash):
             lm.run_merge(_CrashAfter(s3, k), BUCKET, PREFIX, _planner())
-        lm.run_merge(s3, BUCKET, PREFIX, _planner(planned), force_revision=True)
+        lm.run_merge(s3, BUCKET, PREFIX, _planner(), planned=planned, force_revision=True)
         assert _state(s3) == clean, f"diverged after crash at write {k}"
         assert s3.get_object(Bucket=BUCKET, Key=PREFIX + lm.REVISION)
 
@@ -289,11 +326,11 @@ def test_412_rereads_current_and_retries_then_fails(s3):
     _seed(s3, C)
     reads = []
 
-    def planner(current):
+    def planner(current, planned):
         reads.append(1)
         # Someone saves MEMORY.md between our read and our write, every time.
         s3.put_object(Bucket=BUCKET, Key=PREFIX + lm.MEMORY, Body=_mem("h", "a", "b", f"w{len(reads)}"))
-        return _planner()(current)
+        return _planner()(current, planned)
 
     with pytest.raises(lm.CurrentChanged):
         lm.run_merge(s3, BUCKET, PREFIX, planner)
@@ -302,14 +339,34 @@ def test_412_rereads_current_and_retries_then_fails(s3):
     # One interfering write only: the retry rereads C and keeps the other writer's entry.
     reads.clear()
 
-    def once(current):
+    def once(current, planned):
         reads.append(1)
         if len(reads) == 1:
             s3.put_object(Bucket=BUCKET, Key=PREFIX + lm.MEMORY, Body=_mem("h", "a", "b", "other"))
-        return _planner()(current)
+        return _planner()(current, planned)
 
     lm.run_merge(s3, BUCKET, PREFIX, once)
     assert _state(s3)[lm.MEMORY] == _mem("h", "a", "other", "t1")
+
+
+def test_412_after_usage_put_does_not_double_count_usage(s3):
+    """Review repro (#4672): the usage put lands, then a later op loses its condition. The replan
+    must know the usage file is already at its planned sha, or the T-B delta is added twice."""
+    _seed(s3, C)
+    real_put = s3.put_object
+    interfered = []
+
+    def put(**kw):
+        result = real_put(**kw)
+        if kw["Key"] == PREFIX + lm.USAGE and not interfered:
+            interfered.append(1)  # another writer lands between our usage put and the skill puts
+            real_put(Bucket=BUCKET, Key=PREFIX + "skills/new/z.md", Body=b"someone else's")
+        return result
+
+    s3.put_object = put
+    lm.run_merge(s3, BUCKET, PREFIX, _planner())
+    assert interfered
+    assert json.loads(_state(s3)[lm.USAGE])["s"]["use_count"] == 3  # B=1, T=3, C=1
 
 
 def test_skill_md_written_last_and_revision_bumped_last_once(s3):

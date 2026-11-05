@@ -19,6 +19,7 @@ Temporal down ⇒ `WorkRetry` (the FIFO redelivers). Nothing here runs while the
 from __future__ import annotations
 
 import logging
+import re
 
 from temporalio.service import RPCError
 
@@ -35,6 +36,9 @@ from core.temporal.types import TaskInputRef, TriggerRef
 logger = logging.getLogger(__name__)
 
 _HISTORY = 20
+# Lightbulb spoken to (a vocative at the start: "Hi Lightbulb, …", "Lightbulb, can you…", "lightbulb?"), not the
+# company's name mid-sentence ("the Lightbulb app is down"), which goes to Jev like any unaddressed message.
+_LIGHTBULB_NAME = re.compile(r"^\W*(?:(?:hey|hi|hello|yo|ok|okay)\s+)?lightbulb\b\s*[,:?!]", re.IGNORECASE)
 
 
 async def router_room(meta: dict, owner_id: str) -> bool:
@@ -160,13 +164,15 @@ async def _admit_message(room_id: str, seq: int) -> None:
     front = await _front_member(room_id, ws)
     listen = (front or {}).get("listenMode") or "active"
     addressed = [t["agentId"] for t in msg.get("dispatchTargets") or [] if t.get("eventKind") == "user_request"]
+    # "Hi Lightbulb, ..." without the @: speaking to Lightbulb by name addresses it, like an @mention of its seat.
+    named = bool(_LIGHTBULB_NAME.search(msg.get("text") or ""))
     pinned = next((a for a in addressed if not front or a != front["id"]), None)
     if pinned:
         ref["pinnedSpecialist"] = pinned
     routed: dict[str, str] | None = None
     if listen == "observe":
         admission = None
-    elif addressed or meta.get("kind") == "dm":
+    elif addressed or named or meta.get("kind") == "dm":
         admission = "respond"
     elif listen == "mentions":
         admission = None

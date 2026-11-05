@@ -157,6 +157,24 @@ def deserialize_pointer(body: str) -> dict[str, Any]:
         if not isinstance(value["ownerId"], str) or not value["ownerId"]:
             raise ValueError("invalid ownerId")
         return value
+    if kind == "admit":  # super-agent admission (core/services/admission.py)
+        if set(value) != {"kind", "roomId", "throughSeq"}:
+            raise ValueError("invalid admit pointer")
+        try:
+            value["roomId"] = str(uuid.UUID(value["roomId"]))
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise ValueError("invalid admit identity") from exc
+        seq = value["throughSeq"]
+        if isinstance(seq, bool) or not isinstance(seq, (int, Decimal)) or seq != int(seq) or seq < 1:
+            raise ValueError("invalid throughSeq")
+        value["throughSeq"] = int(seq)
+        return value
+    if kind == "admit_trigger":
+        if set(value) != {"kind", "ownerId", "triggerId"} or not all(
+            isinstance(value[k], str) and value[k] for k in ("ownerId", "triggerId")
+        ):
+            raise ValueError("invalid admit_trigger pointer")
+        return value
     raise ValueError("unknown work pointer kind")
 
 
@@ -346,6 +364,10 @@ class OpenClawWorkWorker:
                 await self._room_follow_up(pointer)
             elif pointer["kind"] == "network_wake":
                 await self._network_wake(pointer)
+            elif pointer["kind"] in ("admit", "admit_trigger"):
+                from core.services import admission  # lazy: admission imports messaging
+
+                await admission.admit_pointer(pointer)
             else:
                 await self._runtime_operation(pointer)
             await asyncio.to_thread(

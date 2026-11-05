@@ -776,3 +776,40 @@ async def route(
     except Exception:  # noqa: BLE001 -- routing must never break dispatch
         logger.warning("Jev routing failed", exc_info=True)
         return None
+
+
+# --- Super-agent Router admission (contracts-v2 §10, §14.7; wave-2 O Task 6) ------------------------
+
+ROUTER_CRITERION = (
+    "Lightbulb, the workspace's coordinator: anything someone in the room wants done, answered, checked "
+    "or remembered, when no specialist below clearly owns it."
+)
+ROUTER_WHO_INSTRUCTIONS = (
+    "Nobody addressed this message to an agent. Pick who should handle it: a specialist whose criterion "
+    "clearly fits, Lightbulb for any other request of the agents, or none when people are talking among "
+    "themselves, chatting, or nothing is asked."
+)
+
+
+async def route_for_router(
+    meta: dict, message: dict, members: list[dict], history: list[dict], specialists: dict[str, str]
+) -> dict:
+    """One Jev call for one unaddressed message in a Router room: `{"to": "router"|"none", "specialist",
+    "confidence"}`, or `{"fallback": True}` when Jev cannot answer (the caller admits addressed messages only).
+    `specialists`: `{agentId: name}` of `AGENT#` rows with listenMode active (observe ones never run)."""
+    cards = await asyncio.gather(*(agent_card(meta["ownerId"], a, n) for a, n in specialists.items()))
+    criteria = {"lightbulb": ROUTER_CRITERION, **dict(zip(specialists, cards)), "none": NONE_CRITERION}
+    state = _state(meta, message, history, members=members, options=list(specialists))
+    answers = await decide(
+        state, {"who": {"type": "choice", "instructions": ROUTER_WHO_INSTRUCTIONS, "criteria": criteria}}
+    )
+    if not isinstance(answers, dict):  # None (down) or RATE_LIMITED
+        return {"fallback": True}
+    who = answers.get("who") or {}
+    choice = who.get("choice")
+    if choice not in criteria:
+        return {"fallback": True}
+    confidence = float((who.get("probabilities") or {}).get(choice) or 0)
+    if choice == "none":
+        return {"to": "none", "specialist": None, "confidence": confidence}
+    return {"to": "router", "specialist": None if choice == "lightbulb" else choice, "confidence": confidence}

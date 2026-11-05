@@ -403,6 +403,54 @@ async def test_tombstone_retry_tolerates_already_deleted_records(table, agentcor
     assert out["mirrored"] == 1
 
 
+async def test_mirror_turns_copies_tags_and_skips_room_source(table, agentcore):
+    """Worker events carry tags onto their turn records; room-ingested events already have a record."""
+    agentcore.add_response("list_memory_records", {"memoryRecordSummaries": []})
+    agentcore.add_response(
+        "list_sessions", {"sessionSummaries": [{"sessionId": "s1", "actorId": OWNER, "createdAt": T0}]}
+    )
+
+    def ev(eid, text, **tags):
+        return {
+            "memoryId": MEM,
+            "actorId": OWNER,
+            "sessionId": "s1",
+            "eventId": eid,
+            "eventTimestamp": T0,
+            "payload": [{"conversational": {"role": "USER", "content": {"text": text}}}],
+            "metadata": {k: {"stringValue": v} for k, v in tags.items()},
+        }
+
+    agentcore.add_response(
+        "list_events",
+        {"events": [ev("ev1", "Ana: ship it", taskId="t1", source="worker"), ev("ev2", "Bo: hi", source="room")]},
+    )
+    agentcore.add_response(
+        "batch_create_memory_records",
+        {"successfulRecords": [], "failedRecords": []},
+        {
+            "memoryId": MEM,
+            "records": [
+                {
+                    "requestIdentifier": memory_sync._turn_id("s1", "ev1", 0),
+                    "namespaces": [NS["turns"]],
+                    "content": {"text": "Ana: ship it"},
+                    "timestamp": T0,
+                    "metadata": {
+                        "taskId": {"stringValue": "t1"},
+                        "source": {"stringValue": "worker"},
+                        "speaker": {"stringValue": "Ana"},
+                        "session": {"stringValue": "s1"},
+                    },
+                }
+            ],
+            "clientToken": ANY,
+        },
+    )
+    out = await run(Member())
+    assert out["turns"] == 1
+
+
 async def test_concurrent_sync_returns_at_once_while_lease_is_held(table, agentcore):
     assert memory_sync._take_lease(OWNER)
     member = Member()

@@ -40,7 +40,7 @@ describe("AutomationsPanel", () => {
     routes({ specialistId: "agt-fin", schedule: { cron: ["0 9 * * 1", "0 17 * * 1"], tz: "America/New_York" } });
     render(<Fresh><AutomationsPanel viewerTz="America/New_York" /></Fresh>);
     await userEvent.click(await screen.findByRole("button", { name: "Post signups every Monday" }));
-    expect(await screen.findByText(/Lightbulb · Finance desk/)).toBeInTheDocument();
+    expect(await screen.findByText(/Finance desk/)).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Edit" }));
     expect(screen.getByRole("form", { name: "Edit automation" }).querySelector("input[type=time]")).toBeNull();
   });

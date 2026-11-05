@@ -40,6 +40,8 @@ export interface RoomComposerProps {
   label?: string;
   /** The visible hint in the empty box; the room's own by default. */
   placeholder?: string;
+  /** False hides the "who will reply" line (a reply into a request goes to its specialist, not the room's agents). */
+  showRespondHint?: boolean;
   onTypingChange?: (typing: boolean) => void;
   onUploadAttachment?: (file: File) => Promise<MessageAttachment>;
   onEditLast?: () => void;
@@ -82,7 +84,16 @@ function TypeaheadList<T>({ id, label, items, activeIndex, optionId, renderRow, 
   </div>;
 }
 
+type DraftAttachment = { key: number; file: File; preview?: string; attachment?: MessageAttachment; error?: string };
+const NO_ATTACHMENTS: DraftAttachment[] = [];
+
 export function RoomComposer(props: RoomComposerProps) {
+  // A focusToken change focuses the field even when it lands with a remount (the "Replying to" chip's X).
+  const seenFocusToken = useRef(props.focusToken);
+  // Attachments outlive a remount that was not a send (toggling the "Replying to" chip swaps clientMessageId):
+  // the attempt mirrors them here and the next attempt starts with them unless the last one sent them.
+  const carried = useRef<{ items: DraftAttachment[]; sent: boolean }>({ items: [], sent: false });
+  useEffect(() => () => { for (const item of carried.current.items) if (item.preview) URL.revokeObjectURL(item.preview); }, []);
   const restoreFocusAfterSend = useRef(false);
   const requestFocusAfterSend = useCallback(() => { restoreFocusAfterSend.current = true; }, []);
   const cancelFocusAfterSend = useCallback(() => { restoreFocusAfterSend.current = false; }, []);
@@ -92,7 +103,7 @@ export function RoomComposer(props: RoomComposerProps) {
     return true;
   }, []);
   return <ComposerAttempt key={props.clientMessageId} {...props} requestFocusAfterSend={requestFocusAfterSend}
-    cancelFocusAfterSend={cancelFocusAfterSend} consumeFocusAfterSend={consumeFocusAfterSend} />;
+    cancelFocusAfterSend={cancelFocusAfterSend} consumeFocusAfterSend={consumeFocusAfterSend} seenFocusToken={seenFocusToken} carried={carried} />;
 }
 
 function ComposerAttempt({
@@ -113,6 +124,7 @@ function ComposerAttempt({
   placeholderDrafts,
   label = "Message",
   placeholder,
+  showRespondHint = true,
   onTypingChange,
   onUploadAttachment,
   onEditLast,
@@ -122,15 +134,18 @@ function ComposerAttempt({
   requestFocusAfterSend,
   cancelFocusAfterSend,
   consumeFocusAfterSend,
+  seenFocusToken,
+  carried,
 }: RoomComposerProps & {
   requestFocusAfterSend: () => void;
   cancelFocusAfterSend: () => void;
   consumeFocusAfterSend: () => boolean;
+  seenFocusToken: RefObject<number | undefined>;
+  carried: RefObject<{ items: DraftAttachment[]; sent: boolean }>;
 }) {
   const superAgent = useSuperAgent();
   const fieldId = useId();
   const field = useRef<HTMLTextAreaElement>(null);
-  const seenFocusToken = useRef(focusToken);
   useEffect(() => {
     if (focusToken === undefined || focusToken === seenFocusToken.current) return;
     seenFocusToken.current = focusToken;
@@ -152,8 +167,10 @@ function ComposerAttempt({
   const retryLocked = useRef(false);
   const attachmentInput = useRef<HTMLInputElement>(null);
   const previews = useRef(new Set<string>());
-  const nextAttachmentKey = useRef(0);
-  const [attachments, setAttachments] = useState<Array<{ key: number; file: File; preview?: string; attachment?: MessageAttachment; error?: string }>>([]);
+  const [allAttachments, setAttachments] = useState<DraftAttachment[]>(() => (carried.current.sent ? [] : carried.current.items));
+  const nextAttachmentKey = useRef(Math.max(0, ...allAttachments.map((item) => item.key + 1)));
+  // A composer that can't upload (a reply into a request) doesn't send them either: they wait for the room's.
+  const attachments = onUploadAttachment ? allAttachments : NO_ATTACHMENTS;
   const [attachmentError, setAttachmentError] = useState("");
   const [staleNotice, setStaleNotice] = useState("");
   const evidenceVersion = useRef(0);
@@ -179,7 +196,17 @@ function ComposerAttempt({
   }, [text]);
   const toolbarButtons = useRef<(HTMLButtonElement | null)[]>([]);
 
-  useEffect(() => () => previews.current.forEach((preview) => URL.revokeObjectURL(preview)), []);
+  useEffect(() => {
+    carried.current.sent = false;
+    for (const item of allAttachments) if (item.preview) previews.current.add(item.preview);
+    // An upload still running when the last attempt unmounted reported to it: run it again here.
+    for (const item of allAttachments) if (!item.attachment && !item.error) uploadItem(item.key, item.file);
+    // Mount only: this attempt adopts what the last one left.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => { carried.current.items = allAttachments; }, [allAttachments, carried]);
+  // Previews die with the attempt only when it sent them; otherwise the next attempt shows them.
+  useEffect(() => () => { if (carried.current.sent) previews.current.forEach((preview) => URL.revokeObjectURL(preview)); }, [carried]);
 
   useEffect(() => {
     if (!focusAgentId) return;
@@ -490,6 +517,8 @@ function ComposerAttempt({
       setRetryPending(true);
     }
     setSubmitted(true);
+    // Only a composer that sends attachments uses them up (a request reply leaves them for the room).
+    if (onUploadAttachment) carried.current.sent = true;
     onTypingChange?.(false);
     const version = evidenceVersion.current;
     const markUncertain = () => {
@@ -512,7 +541,7 @@ function ComposerAttempt({
     replaceText(next.text, next.selectionStart, next.selectionEnd);
   }
 
-  const hint = respondHint(roomKind, members, mentions, runningAgentIds, superAgent);
+  const hint = showRespondHint ? respondHint(roomKind, members, mentions, runningAgentIds, superAgent) : null;
   // Who-will-reply matters at the moment of sending, not while the box is empty.
   const showHint = !!hint && hasContent;
 

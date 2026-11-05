@@ -41,15 +41,16 @@ export function TaskCard({ task, taskId, viewerId, palette, onOpen = openTaskScr
   if (!task) {
     return (
       <View style={[styles.card, styles.unavailable, { borderColor: palette.edge }]} testID={`task-card-${taskId}`}>
-        <Text style={[styles.meta, { color: palette.fgMute }]}>{"This thread isn't available"}</Text>
+        <Text style={[styles.meta, { color: palette.fgMute }]}>{"This request isn't available"}</Text>
       </View>
     );
   }
   const view = summaryView(task, viewerId);
-  // Reopen lives on the thread screen and the Work list, not on every resolved card in the history (audit #30).
+  // Reopen lives on the request screen and the Work list, not on every resolved card in the history (audit #30).
   const inline = !hideAction && view.action && view.action !== "answer" && view.action !== "review" && view.action !== "reopen" ? view.action : null;
-  const line = taskSummaryLine(task, viewerId, agentNames);
-  const detail = line === view.word || line.startsWith(`${view.word} ·`) ? null : line;
+  // The specialist is the actor, by its own name ("Growth"), on its own line (founder, 5 Nov).
+  const line = taskSummaryLine(task, viewerId);
+  const detail = line === view.word ? null : line;
   // The open target and the action are siblings, never nested: a screen reader reaches each on its own (audit #23).
   return (
     <View style={[styles.card, { borderColor: palette.edge, backgroundColor: palette.surface }]} testID={`task-card-${taskId}`}>
@@ -122,7 +123,7 @@ export function MessageTasks({ message, viewerId, palette, onOpen }: {
   const started = refs.filter((r) => r.role === "started");
   const suggested = refs.filter((r) => r.role === "suggested");
   return (
-    <View style={styles.list} accessibilityLabel="Threads in this message">
+    <View style={styles.list} accessibilityLabel="Requests in this message">
       {started.map((r) => <RefCard key={r.taskId} taskId={r.taskId} listed={byId.get(r.taskId)} viewerId={viewerId} palette={palette} onOpen={onOpen} />)}
       {suggested.length > 0 ? <SuggestedBlock refs={suggested} taskById={byId} viewerId={viewerId} palette={palette} onOpen={onOpen} /> : null}
     </View>
@@ -195,7 +196,7 @@ export function SuggestedBlock({ refs, taskById, viewerId, palette, onOpen }: {
   );
 }
 
-/** "Sent to Workshop signup app ›" under a person's message (one thread opens it; several name the count). */
+/** "Sent to Workshop signup app ›" under a person's message (one request opens it; several name the count). */
 export function RoutedToLine({ message, palette, onOpen = openTaskScreen }: {
   message: CanonicalRoomMessage; palette: ChatPalette; onOpen?: (taskId: string) => void;
 }) {
@@ -206,8 +207,8 @@ export function RoutedToLine({ message, palette, onOpen = openTaskScreen }: {
   if (!routedTo || !routedTo.taskIds.length) return null;
   const { taskIds, started, suggested } = routedTo;
   const label = single
-    ? `Sent to ${data?.tasks.find((t) => t.taskId === taskIds[0])?.title ?? "a thread"}`
-    : [`Sent to ${started} ${started === 1 ? "thread" : "threads"}`, suggested ? `${suggested} suggested` : ""].filter(Boolean).join(", ");
+    ? `Sent to ${data?.tasks.find((t) => t.taskId === taskIds[0])?.title ?? "a request"}`
+    : [`${started} ${started === 1 ? "request" : "requests"} started`, suggested ? `${suggested} suggested` : ""].filter(Boolean).join(", ");
   return (
     <Pressable accessibilityRole="button" accessibilityLabel={`${label} ›`} hitSlop={8} disabled={!single} onPress={() => onOpen(taskIds[0])}>
       <Text style={[styles.meta, { color: palette.fgMute }]}>{label} ›</Text>

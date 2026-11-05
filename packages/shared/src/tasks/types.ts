@@ -31,7 +31,7 @@ export interface TaskSummary {
   statusReason?: string | null;
   /** Viewer-specific, computed by the server; null = proposed (chat's Suggested block). Never re-derived here. */
   shownGroup: ShownGroup | null;
-  /** Specialist handle ("finance"); shown as "Lightbulb · Finance". */
+  /** Specialist handle ("finance") or agent id; shown by its name ("Finance"). */
   specialist?: string | null;
   ownerUserId?: string | null;
   audience: { kind: "person" | "room" | "workspace"; userIds?: string[]; roomId?: string | null };

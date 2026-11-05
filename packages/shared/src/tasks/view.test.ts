@@ -6,6 +6,7 @@ import {
   QUESTION_KINDS,
   QUESTION_STATES,
   SHOWN_GROUPS,
+  STATUS_WORDS,
   TASK_STATUSES,
   taskView,
   type EffectRow,
@@ -53,50 +54,50 @@ describe("contract: types match tasks-schema.json", () => {
 
 describe("taskView: one word, group and action per stored status (contracts-v2 §4)", () => {
   it.each([
-    // status, viewer, word, group, action
-    ["proposed", SAM, "Suggested", null, "start"],
-    ["proposed", PRIYA, "Suggested", null, "start"],
-    ["queued", SAM, "Queued", "working", null],
-    ["working", SAM, "Working", "working", null],
-    ["working", PRIYA, "Working", "working", null],
-    ["waiting", SAM, "Waiting on a reply", "working", null],
-    ["idle", SAM, "Done", "idle", null],
-    ["idle", PRIYA, "Done", "idle", null],
-    ["resolved", SAM, "Resolved", "resolved", "reopen"],
-    ["resolved", PRIYA, "Resolved", "resolved", "reopen"],
-    ["failed", SAM, "Failed", "waiting_on_you", "retry"],
-    ["failed", PRIYA, "Failed", "idle", null],
-  ] as const)("%s as %s → %s / %s / %s", (status, viewer, word, group, action) => {
-    expect(view(task(status), viewer)).toEqual({ word, group, action });
+    // status, viewer, word, reason, group, action
+    ["proposed", SAM, "Needs you", "Wants to start", null, "start"],
+    ["proposed", PRIYA, "Needs you", "Wants to start", null, "start"],
+    ["queued", SAM, "Working", "Starting", "working", null],
+    ["working", SAM, "Working", null, "working", null],
+    ["working", PRIYA, "Working", null, "working", null],
+    ["waiting", SAM, "Working", "Waiting on a reply", "working", null],
+    ["idle", SAM, "Done", null, "idle", null],
+    ["idle", PRIYA, "Done", null, "idle", null],
+    ["resolved", SAM, "Closed", null, "resolved", "reopen"],
+    ["resolved", PRIYA, "Closed", null, "resolved", "reopen"],
+    ["failed", SAM, "Needs you", "Failed", "waiting_on_you", "retry"],
+    ["failed", PRIYA, "Closed", "Failed", "idle", null],
+  ] as const)("%s as %s → %s (%s) / %s / %s", (status, viewer, word, reason, group, action) => {
+    expect(view(task(status), viewer)).toEqual({ word, reason, group, action });
   });
 
-  it("covers every stored status", () => {
-    for (const status of TASK_STATUSES) expect(view(task(status), SAM).word).toBeTruthy();
+  it("covers every stored status with one of the four words", () => {
+    for (const status of TASK_STATUSES) expect(STATUS_WORDS).toContain(view(task(status), SAM).word);
   });
 
-  it("idle with watchUntil reads Watching, still in Idle", () => {
+  it("idle with watchUntil is still Working: it wakes itself", () => {
     expect(view(task("idle", { watchUntil: "2026-11-05T00:00:00Z" }), SAM))
-      .toEqual({ word: "Watching", group: "idle", action: null });
+      .toEqual({ word: "Working", reason: "Checking back later", group: "idle", action: null });
   });
 
-  it("failed with no owner shows Failed in Idle for everyone", () => {
-    expect(view(task("failed", { ownerUserId: null }), SAM)).toEqual({ word: "Failed", group: "idle", action: null });
+  it("failed with no owner is Closed in Idle for everyone", () => {
+    expect(view(task("failed", { ownerUserId: null }), SAM)).toEqual({ word: "Closed", reason: "Failed", group: "idle", action: null });
   });
 });
 
 describe("taskView: open questions", () => {
   it.each([
-    ["approval", "Waiting on you", "waiting_on_you", "approve"],
-    ["question", "Waiting on you", "waiting_on_you", "answer"],
+    ["approval", "Needs approval", "waiting_on_you", "approve"],
+    ["question", "Needs an answer", "waiting_on_you", "answer"],
     ["review", "Ready for review", "ready_for_review", "review"],
-  ] as const)("%s for me → %s", (kind, word, group, action) => {
-    expect(view(task("waiting"), SAM, { questions: [q(kind, [SAM])] })).toEqual({ word, group, action });
+  ] as const)("%s for me → Needs you (%s)", (kind, reason, group, action) => {
+    expect(view(task("waiting"), SAM, { questions: [q(kind, [SAM])] })).toEqual({ word: "Needs you", reason, group, action });
   });
 
   it.each(["approval", "question", "review"] as const)(
     "%s for someone else → Waiting on <name>, grouped Working, no action", (kind) => {
       expect(view(task("waiting"), PRIYA, { questions: [q(kind, [SAM])] }))
-        .toEqual({ word: "Waiting on Sam", group: "working", action: null });
+        .toEqual({ word: "Working", reason: "Waiting on Sam", group: "working", action: null });
     });
 
   it("one of several answerers is enough to make it mine", () => {
@@ -105,7 +106,7 @@ describe("taskView: open questions", () => {
 
   it("my approval outranks someone else's and my review", () => {
     const questions = [q("approval", [PRIYA]), q("review", [SAM]), q("approval", [SAM])];
-    expect(view(task("waiting"), SAM, { questions })).toEqual({ word: "Waiting on you", group: "waiting_on_you", action: "approve" });
+    expect(view(task("waiting"), SAM, { questions })).toEqual({ word: "Needs you", reason: "Needs approval", group: "waiting_on_you", action: "approve" });
   });
 
   it("my review outranks someone else's approval", () => {
@@ -115,7 +116,7 @@ describe("taskView: open questions", () => {
 
   it.each(["answered", "cancelled"] as const)("%s questions are ignored", (state) => {
     expect(view(task("waiting"), SAM, { questions: [q("approval", [SAM], state)] }))
-      .toEqual({ word: "Waiting on a reply", group: "working", action: null });
+      .toEqual({ word: "Working", reason: "Waiting on a reply", group: "working", action: null });
   });
 
   it("questions of another task are ignored", () => {
@@ -123,7 +124,7 @@ describe("taskView: open questions", () => {
   });
 
   it("unknown answerer name falls back through nameOf", () => {
-    expect(view(task("waiting"), PRIYA, { questions: [q("approval", ["user-x"])] }).word).toBe("Waiting on someone");
+    expect(view(task("waiting"), PRIYA, { questions: [q("approval", ["user-x"])] }).reason).toBe("Waiting on someone");
   });
 
   it.each([
@@ -131,26 +132,26 @@ describe("taskView: open questions", () => {
     [[SAM], "Waiting on Sam"],
     [[SAM, "user-alex"], "Waiting on Sam or someone"],
     [[SAM, "user-alex", "user-kim"], "Waiting on Sam or 2 others"],
-  ] as const)("someone else's answerers %j → %s", (answerers, word) => {
+  ] as const)("someone else's answerers %j → %s", (answerers, reason) => {
     const seen: string[] = [];
-    const word_ = view(task("waiting"), PRIYA, {
+    const got = view(task("waiting"), PRIYA, {
       questions: [q("approval", [...answerers])],
       nameOf: (id) => { seen.push(id); return nameOf(id); },
-    }).word;
-    expect(word_).toBe(word);
+    }).reason;
+    expect(got).toBe(reason);
     expect(seen).not.toContain(undefined);
   });
 
   it("names answerers across all open questions once each", () => {
     const questions = [q("approval", [SAM]), q("question", [SAM, "user-alex"])];
-    expect(view(task("waiting"), PRIYA, { questions }).word).toBe("Waiting on Sam or someone");
+    expect(view(task("waiting"), PRIYA, { questions }).reason).toBe("Waiting on Sam or someone");
   });
 
   it("questions do not change proposed, idle, resolved or failed", () => {
     const questions = [q("approval", [SAM])];
-    expect(view(task("resolved"), SAM, { questions }).word).toBe("Resolved");
-    expect(view(task("failed"), SAM, { questions }).word).toBe("Failed");
-    expect(view(task("proposed"), SAM, { questions }).word).toBe("Suggested");
+    expect(view(task("resolved"), SAM, { questions }).word).toBe("Closed");
+    expect(view(task("failed"), SAM, { questions }).reason).toBe("Failed");
+    expect(view(task("proposed"), SAM, { questions }).reason).toBe("Wants to start");
     expect(view(task("idle"), SAM, { questions }).word).toBe("Done");
   });
 });
@@ -158,7 +159,7 @@ describe("taskView: open questions", () => {
 describe("taskView: Landing (apply_effect running)", () => {
   it.each(["approved", "intent"] as const)("an %s effect on a live task → Landing", (state) => {
     for (const status of ["queued", "working", "waiting"] as const) {
-      expect(view(task(status), SAM, { effects: [effect(state)] })).toEqual({ word: "Applying", group: "landing", action: null });
+      expect(view(task(status), SAM, { effects: [effect(state)] })).toEqual({ word: "Working", reason: "Applying", group: "landing", action: null });
     }
   });
 
@@ -176,7 +177,7 @@ describe("taskView: Landing (apply_effect running)", () => {
   });
 
   it("Landing outranks waiting on someone else", () => {
-    expect(view(task("waiting"), PRIYA, { effects: [effect("intent")], questions: [q("approval", [SAM])] }).word)
+    expect(view(task("waiting"), PRIYA, { effects: [effect("intent")], questions: [q("approval", [SAM])] }).reason)
       .toBe("Applying");
   });
 

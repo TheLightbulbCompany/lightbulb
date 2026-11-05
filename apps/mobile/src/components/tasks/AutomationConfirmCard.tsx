@@ -48,14 +48,14 @@ export function AutomationConfirmCard({ automationId, palette, viewerTz = viewer
       setPending(false);
     }
   };
+  // An unreadable date reads as nothing, never a bare "Next:".
+  const next = a.nextRuns[0] ? nextRunWords(a.nextRuns[0], viewerTz) : "";
   const meta = [scheduleWords(a, viewerTz), specialistLabel(a.specialistId, agentNames), budgetLine(a)].filter(Boolean).join(" · ");
   return (
     <View accessibilityLabel={`Turn on ${a.name}`} style={[styles.card, { borderColor: palette.edge, backgroundColor: palette.surface }]}>
       <Text style={[styles.title, { color: palette.fg }]}>{a.status === "draft" ? "Turn on: " : ""}{a.name}</Text>
       <Text style={[styles.meta, { color: palette.fgMute }]}>{meta}</Text>
-      {a.nextRuns[0] ? (
-        <Text style={[styles.meta, { color: palette.fgMute }]}>Next: {nextRunWords(a.nextRuns[0], viewerTz)}</Text>
-      ) : null}
+      {next ? <Text style={[styles.meta, { color: palette.fgMute }]}>Next: {next}</Text> : null}
       {a.status !== "draft" ? (
         // Only On is green; Paused is a state, not a success.
         <Text style={[styles.meta, { color: a.status === "active" ? palette.live : palette.fgMute }]}>{automationStatusLine(a) ?? "On"}</Text>

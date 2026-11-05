@@ -1,7 +1,7 @@
 "use client";
 
-// The overview beside the chat (mockup step 3): threads grouped Waiting on you · Working · Ready for
-// review · Applying · Idle · Resolved, from the server's `shownGroup`. A second tab lists Scheduled work.
+// The overview beside the chat (mockup step 3): requests grouped Needs you · Working · Done · Closed,
+// from the server's `shownGroup`. A second tab lists Scheduled work.
 
 import { useState, type ReactElement } from "react";
 import { MoreHorizontal } from "lucide-react";
@@ -17,7 +17,7 @@ import { ScheduledList } from "./ScheduledList";
 import { useTaskActions } from "./useTaskActions";
 
 const RESOLVED_OPEN_KEY = "lightbulb.overview.resolvedOpen";
-const PLACEHOLDERS: Partial<Record<string, string>> = { waiting_on_you: "Nothing needs you", resolved: "Nothing resolved yet" };
+const PLACEHOLDERS: Partial<Record<string, string>> = { needs_you: "Nothing needs you", closed: "Nothing closed yet" };
 
 function readResolvedOpen(viewerId: string): boolean {
   try { return localStorage.getItem(`${RESOLVED_OPEN_KEY}:${viewerId}`) === "1"; } catch { return false; }
@@ -31,7 +31,7 @@ export function TaskOverview({ scope, viewerId, onOpen }: {
 }): ReactElement {
   const [tab, setTab] = useState<"overview" | "scheduled">("overview");
   return <div className="grid gap-3">
-    <PanelTabs ariaLabel="Threads" tabs={[{ value: "overview", label: "Overview" }, { value: "scheduled", label: "Scheduled" }]}
+    <PanelTabs ariaLabel="Requests" tabs={[{ value: "overview", label: "Overview" }, { value: "scheduled", label: "Scheduled" }]}
       value={tab} onValueChange={(v) => setTab(v as "overview" | "scheduled")} />
     {tab === "overview" ? <OverviewGroups scope={scope} viewerId={viewerId} onOpen={onOpen} /> : <ScheduledList scope={scope} onOpen={onOpen} />}
   </div>;
@@ -43,11 +43,11 @@ function OverviewGroups({ scope, viewerId, onOpen }: { scope: TaskScope; viewerI
   const { older, hasOlder, loading, loadOlder } = useOlderTasks(tasks, data, scope);
   const [resolvedOpen, setResolvedOpen] = useState(() => readResolvedOpen(viewerId));
   if (!data) return error
-    ? <p role="alert" className="text-ui text-muted-foreground">Threads couldn&apos;t load. <button type="button" className="underline hover:text-foreground" onClick={() => void mutate()}>Retry</button></p>
+    ? <p role="alert" className="text-ui text-muted-foreground">Requests couldn&apos;t load. <button type="button" className="underline hover:text-foreground" onClick={() => void mutate()}>Retry</button></p>
     : <p role="status" className="text-ui text-muted-foreground">Loading…</p>;
   return <div className="grid gap-4">
     {overviewGroups([...data.tasks, ...older]).map((group) => {
-      const collapsible = group.id === "resolved";
+      const collapsible = group.collapsed;
       const open = !collapsible || resolvedOpen;
       const headingId = `overview-${group.id}`;
       return <section key={group.id} aria-labelledby={headingId}>
@@ -63,7 +63,7 @@ function OverviewGroups({ scope, viewerId, onOpen }: { scope: TaskScope; viewerI
       </section>;
     })}
     {hasOlder && <button type="button" className="justify-self-start text-ui text-muted-foreground underline hover:text-foreground"
-      disabled={loading} onClick={() => void loadOlder()}>{loading ? "Loading…" : "Load older threads"}</button>}
+      disabled={loading} onClick={() => void loadOlder()}>{loading ? "Loading…" : "Load older requests"}</button>}
   </div>;
 }
 
@@ -72,7 +72,6 @@ export function OverviewRow({ task, viewerId, onOpen }: { task: TaskSummary; vie
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const view = summaryView(task, viewerId);
-  const { agentNames } = useLiveEvents();
   const copyLink = async () => {
     const ok = await copyText(taskPermalink(task.taskId));
     setCopied(ok);
@@ -87,7 +86,7 @@ export function OverviewRow({ task, viewerId, onOpen }: { task: TaskSummary; vie
     <div className="min-w-0 flex-1">
       <button type="button" onClick={() => onOpen(task.taskId)} aria-label={`Open ${task.title}, ${view.word}`}
         className="block max-w-full truncate text-left font-semibold after:absolute after:inset-0 after:content-['']">{task.title}</button>
-      <p className="truncate text-ui text-muted-foreground">{taskSummaryLine(task, viewerId, agentNames)}{task.updatedAt && <> · <time dateTime={task.updatedAt} title={new Date(task.updatedAt).toLocaleString()}>{timeAgo(task.updatedAt)}</time></>}</p>
+      <p className="truncate text-ui text-muted-foreground">{taskSummaryLine(task, viewerId)}{task.updatedAt && <> · <time dateTime={task.updatedAt} title={new Date(task.updatedAt).toLocaleString()}>{timeAgo(task.updatedAt)}</time></>}</p>
       {error && <p role="alert" className="text-ui text-err">{error}</p>}
       {copied && <p role="status" className="text-ui text-muted-foreground">Link copied</p>}
     </div>
@@ -99,7 +98,7 @@ export function OverviewRow({ task, viewerId, onOpen }: { task: TaskSummary; vie
         <DropdownMenuContent align="end">
           <DropdownMenuItem onSelect={() => onOpen(task.taskId)}>Open</DropdownMenuItem>
           <DropdownMenuItem onSelect={() => void copyLink()}>Copy link</DropdownMenuItem>
-          {task.status !== "resolved" && <DropdownMenuItem onSelect={() => void press("resolve")}>Resolve</DropdownMenuItem>}
+          {task.status !== "resolved" && <DropdownMenuItem onSelect={() => void press("resolve")}>Close</DropdownMenuItem>}
         </DropdownMenuContent>
       </DropdownMenu>
     </div>

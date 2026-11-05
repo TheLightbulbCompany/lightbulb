@@ -94,7 +94,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
   // subscription. Dropping it closes them all.
   const config = configError instanceof ApiError && configError.status === 403 ? undefined : liveConfig;
   const superAgent = config?.features?.superAgent === true;
-  // Specialist names for task cards ("Lightbulb · Finance", never the agent id): one read of the agents list while
+  // Specialist names for task cards ("Finance", never the agent id): one read of the agents list while
   // the switch is on, shared by every card through this context.
   const { names: agentNames, frontAgentId } = useAgentDirectory(superAgent && httpReady ? tasks.cacheScope : null,
     async () => ((await api.get("/teams/agents")) as { agents?: { id: string; name?: string | null; role?: string | null; reportsTo?: string | null; origin?: string | null }[] } | null)?.agents ?? []);

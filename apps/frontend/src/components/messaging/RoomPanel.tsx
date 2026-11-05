@@ -500,8 +500,9 @@ function RoomContent({
   const showTasks = selection?.kind === "tasks" && !!onLinkToWork;
   const taskSelection = superAgent && selection?.kind === "task" ? selection.id : null;
   const showDetail = !!(parentMessage || showTasks || taskSelection);
-  // An open thread pane is steered from this composer ("Replying to: …"); null while the composer isn't shown.
-  const taskReply = useTaskReply(superAgent && !visibleRoom?.feed && !visibleRoom?.archivedAt ? roomId : null, composer);
+  // An open request pane is steered from this composer ("Replying to: …"); null while the composer isn't shown.
+  const taskReply = useTaskReply(superAgent && !visibleRoom?.feed && !visibleRoom?.archivedAt ? roomId : null, composer,
+    () => setFocusToken((t) => t + 1));
   // The About button's dot: anything in this room that needs the viewer (Home's Needs you cut; no request while off).
   const { waitingOnMe } = useRoomThreads(superAgent ? roomId : null);
   const showContext = showDetail || !contextCollapsed;

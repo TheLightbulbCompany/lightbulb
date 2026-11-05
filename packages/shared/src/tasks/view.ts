@@ -1,5 +1,6 @@
 // Task row → the one status word, overview group and primary action every client shows
-// (contracts-v2 §4). Pure; types mirror `fixtures/super-agent/tasks-schema.json` and
+// (contracts-v2 §4). A task is a "request" to people, and it reads as one of four words:
+// Working, Needs you, Done, Closed (founder ruling, 5 Nov 2026); `reason` is the short line under it. Pure; types mirror `fixtures/super-agent/tasks-schema.json` and
 // `view.test.ts` fails if the schema's enums drift.
 
 import type { TaskEffect, TaskSummary } from "./types";
@@ -23,8 +24,14 @@ export interface EffectRow { taskId: string; idemKey: string; state: (typeof EFF
 
 export type TaskAction = "start" | "approve" | "answer" | "review" | "retry" | "reopen" | "publish" | "send" | "merge";
 
+/** The only four statuses people see. */
+export const STATUS_WORDS = ["Working", "Needs you", "Done", "Closed"] as const;
+export type StatusWord = (typeof STATUS_WORDS)[number];
+
 export interface TaskView {
-  word: string;
+  word: StatusWord;
+  /** Why, in a few words, where the UI has room ("Ready for review", "Waiting on Sam"); null when the word says it all. */
+  reason: string | null;
   /** null = not in the overview (a proposed task lives in chat's Suggested block). */
   group: ShownGroup | null;
   action: TaskAction | null;
@@ -40,33 +47,38 @@ export interface TaskViewInput {
   nameOf: (userId: string) => string;
 }
 
-const view = (word: string, group: ShownGroup | null, action: TaskAction | null = null): TaskView =>
-  ({ word, group, action });
+const view = (word: StatusWord, group: ShownGroup | null, action: TaskAction | null = null, reason: string | null = null): TaskView =>
+  ({ word, reason, group, action });
 
 export function taskView({ task, viewerId, questions, effects, nameOf }: TaskViewInput): TaskView {
   switch (task.status) {
-    case "proposed": return view("Suggested", null, "start");
-    case "resolved": return view("Resolved", "resolved", "reopen");
+    case "proposed": return view("Needs you", null, "start", "Wants to start");
+    case "resolved": return view("Closed", "resolved", "reopen");
+    // Failed is the owner's to retry; for anyone else it ended.
     case "failed": return task.ownerUserId === viewerId
-      ? view("Failed", "waiting_on_you", "retry")
-      : view("Failed", "idle");
-    // Idle with nothing left to watch = the work is finished: people read "Done", not a state name.
-    case "idle": return view(task.watchUntil ? "Watching" : "Done", "idle");
+      ? view("Needs you", "waiting_on_you", "retry", "Failed")
+      : view("Closed", "idle", null, "Failed");
+    // Idle with a watch armed is still going: it wakes itself when the watched thing finishes (watches.py).
+    case "idle": return task.watchUntil ? view("Working", "idle", null, "Checking back later") : view("Done", "idle");
   }
 
   // queued / working / waiting
   const open = questions.filter((q) => q.taskId === task.taskId && q.state === "open");
   const mine = open.filter((q) => q.answerers.includes(viewerId));
   const ask = mine.find((q) => q.kind !== "review");
-  if (ask) return view("Waiting on you", "waiting_on_you", ask.kind === "approval" ? "approve" : "answer");
-  if (mine.length) return view("Ready for review", "ready_for_review", "review");
+  if (ask) return ask.kind === "approval"
+    ? view("Needs you", "waiting_on_you", "approve", "Needs approval")
+    : view("Needs you", "waiting_on_you", "answer", "Needs an answer");
+  if (mine.length) return view("Needs you", "ready_for_review", "review", "Ready for review");
   if (effects.some((e) => e.taskId === task.taskId && (e.state === "approved" || e.state === "intent"))) {
-    return view("Applying", "landing");
+    return view("Working", "landing", null, "Applying");
   }
   const others = [...new Set(open.flatMap((q) => q.answerers))];
-  if (others.length) return view(`Waiting on ${waitingOn(others, nameOf)}`, "working");
-  return view(task.status === "queued" ? "Queued" : task.status === "working" ? "Working" : "Waiting on a reply", "working");
+  if (others.length) return view("Working", "working", null, `Waiting on ${waitingOn(others, nameOf)}`);
+  return view("Working", "working", null, LIVE_REASONS[task.status]);
 }
+
+const LIVE_REASONS: Record<string, string | null> = { queued: "Starting", working: null, waiting: "Waiting on a reply" };
 
 /** Any one answerer can answer: "Sam", "Sam or Alex", "Sam or 2 others". */
 function waitingOn([first, ...rest]: string[], nameOf: (userId: string) => string): string {
@@ -80,10 +92,6 @@ function waitingOn([first, ...rest]: string[], nameOf: (userId: string) => strin
 export type TaskTone = "working" | "waiting" | "review" | "landing" | "neutral";
 export interface SummaryView extends TaskView { tone: TaskTone }
 
-const TONES: Record<ShownGroup, TaskTone> = {
-  waiting_on_you: "waiting", ready_for_review: "review", landing: "landing",
-  working: "working", idle: "neutral", resolved: "neutral",
-};
 const NEXT_STEPS = new Set<TaskAction>(["publish", "send", "merge", "approve"]);
 
 /** The front agent (`@lightbulb`): the backend-authored starter (or legacy seed) root CEO, by role, never by
@@ -98,42 +106,67 @@ export function resolveCeoAgentId(
 /** Agent id → display name (from the workspace's agents list; `useAgentDirectory`). */
 export type AgentNames = ReadonlyMap<string, string>;
 
-const UUID_LIKE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** A handle that reads as a name ("finance", "customer success"); anything with digits, underscores or other marks
+ *  is an id ("agent_7f3", a uuid) and never shown. */
+const HANDLE = /^[a-z]+(?:[ -][a-z]+)*$/i;
 
-/** "finance" → "Lightbulb · Finance"; an agent id → "Lightbulb · <its name>" from `names`; no specialist, or an id
- *  not (yet) in the list → "Lightbulb" (an id is never shown as a name). */
+/** The specialist as the actor, by its own name (each is its own profile; founder, 5 Nov): "finance" → "Finance";
+ *  an agent id → its name from `names`; no specialist, or an id not (yet) in the list → "Lightbulb" (an id is never
+ *  shown as a name: only a letters-only handle is). */
 export function specialistLabel(specialist: string | null | undefined, names?: AgentNames): string {
   if (!specialist) return "Lightbulb";
   const named = names?.get(specialist);
-  if (named) return `Lightbulb · ${named}`;
-  if (UUID_LIKE.test(specialist)) return "Lightbulb";
-  return `Lightbulb · ${specialist.charAt(0).toUpperCase()}${specialist.slice(1)}`;
+  if (named) return named;
+  if (!HANDLE.test(specialist)) return "Lightbulb";
+  return `${specialist.charAt(0).toUpperCase()}${specialist.slice(1)}`;
 }
 
-/** Word, tone and the one action for a summary, from the server's `shownGroup`. */
+function toneOf(word: StatusWord, group: ShownGroup | null): TaskTone {
+  if (word === "Working") return group === "landing" ? "landing" : "working";
+  if (word === "Needs you") return group === "ready_for_review" ? "review" : "waiting";
+  return "neutral";
+}
+
+/** Word, reason, tone and the one action for a summary, from the server's `shownGroup`. */
 export function summaryView(t: TaskSummary, viewerId: string): SummaryView {
   const group = t.shownGroup;
-  const tone = group ? TONES[group] : "neutral";
-  const v = (word: string, action: TaskAction | null = null): SummaryView => ({ word, group, action, tone });
+  const v = (word: StatusWord, reason: string | null = null, action: TaskAction | null = null): SummaryView =>
+    ({ word, reason, group, action, tone: toneOf(word, group) });
   const q = t.openQuestion;
-  if (t.status === "proposed") return v("Suggested", "start");
+  if (t.status === "proposed") return v("Needs you", "Wants to start", "start");
   // A dismissed suggestion never ran: no Reopen on its card.
-  if (t.status === "resolved" && t.statusReason === "dismissed") return v("Dismissed");
-  if (t.status === "resolved") return v(t.statusReason === "stopped" ? "Stopped" : "Resolved", "reopen");
-  if (t.status === "failed") return v("Failed", t.ownerUserId === viewerId ? "retry" : null);
+  if (t.status === "resolved" && t.statusReason === "dismissed") return v("Closed", "Dismissed");
+  if (t.status === "resolved") return v("Closed", t.statusReason === "stopped" ? "Stopped" : null, "reopen");
+  // The owner's failed request needs them (retry); anyone else's is over (the server files it under idle).
+  if (t.status === "failed") return t.ownerUserId === viewerId ? v("Needs you", "Failed", "retry") : v("Closed", "Failed");
   // One-press Approve only for an effect approval (allow_once/deny, questions.py). A worker's own approval ask can
-  // carry any option ids, or none: its card opens the thread instead.
-  if (group === "waiting_on_you") return v("Waiting on you", q?.kind === "approval" && q.options?.some((o) => o.id === "allow_once") ? "approve" : "answer");
+  // carry any option ids, or none: its card opens the request instead.
+  if (group === "waiting_on_you") {
+    return q?.kind === "approval"
+      ? v("Needs you", "Needs approval", q.options?.some((o) => o.id === "allow_once") ? "approve" : "answer")
+      : v("Needs you", "Needs an answer", "answer");
+  }
   if (group === "ready_for_review") {
     const next = (t.output?.nextStep ?? "review") as TaskAction;
-    return v("Ready for review", NEXT_STEPS.has(next) ? next : "review");
+    return v("Needs you", "Ready for review", NEXT_STEPS.has(next) ? next : "review");
   }
-  if (group === "landing") return v("Applying");
-  if (t.status === "idle") return v(t.watching ? "Watching" : "Done");
-  if (q && !q.canAnswer && q.answererNames.length) return v(`Waiting on ${joinNames(q.answererNames)}`);
+  if (group === "landing") return v("Working", "Applying");
+  // Watching = idle with a watch armed: it wakes itself when the watched thing finishes (watches.py), so it is
+  // still Working, not Done.
+  if (t.status === "idle") return t.watching ? v("Working", "Checking back later") : v("Done");
+  if (q && !q.canAnswer && q.answererNames.length) return v("Working", `Waiting on ${joinNames(q.answererNames)}`);
   // Waiting with no named answerer in the summary: say what it waits for, never a bare "Waiting".
   // ponytail: names the person once the summary carries who (today openQuestion is absent here).
-  return v(t.status === "queued" ? "Queued" : t.status === "waiting" ? "Waiting on a reply" : "Working");
+  return v("Working", LIVE_REASONS[t.status] ?? null);
+}
+
+/** The request pane's actor line: "Finance is working on this" while it runs, "Done by Finance" once it is done.
+ *  Null where nobody did it: a suggestion not yet started, or a request closed with a reason (stopped, dismissed,
+ *  failed): the status line already says why. With no specialist Lightbulb is the actor. */
+export function doneByLine(specialist: string | null | undefined, view: Pick<TaskView, "word" | "reason">, names?: AgentNames): string | null {
+  if (view.reason === "Wants to start" || (view.word === "Closed" && view.reason)) return null;
+  const who = specialistLabel(specialist, names);
+  return view.word === "Done" || view.word === "Closed" ? `Done by ${who}` : `${who} is working on this`;
 }
 
 function joinNames([first, ...rest]: string[]): string {
@@ -141,38 +174,40 @@ function joinNames([first, ...rest]: string[]): string {
   return rest.length === 1 ? `${first} or ${rest[0]}` : `${first} or ${rest.length} others`;
 }
 
-export const GROUP_LABELS: Record<ShownGroup, string> = {
-  waiting_on_you: "Waiting on you", working: "Working", ready_for_review: "Ready for review",
-  landing: "Applying", idle: "Done", resolved: "Resolved",
+/** Overview headings: the four status words, in this order. */
+export type OverviewGroupId = "needs_you" | "working" | "done" | "closed";
+export const GROUP_ORDER: readonly OverviewGroupId[] = ["needs_you", "working", "done", "closed"];
+export const GROUP_LABELS: Record<OverviewGroupId, StatusWord> = {
+  needs_you: "Needs you", working: "Working", done: "Done", closed: "Closed",
 };
-/** Contract display order (mockup GROUPS). */
-export const GROUP_ORDER: readonly ShownGroup[] = ["waiting_on_you", "working", "ready_for_review", "landing", "idle", "resolved"];
 
 export interface OverviewGroup {
-  /** A shown group, or one of the server's `idle` group's parts ("watching", "failed"). */
-  id: ShownGroup | "watching" | "failed"; label: string; tasks: TaskSummary[]; alwaysShown: boolean; collapsed: boolean;
+  id: OverviewGroupId; label: StatusWord; tasks: TaskSummary[]; alwaysShown: boolean; collapsed: boolean;
 }
 
-/** Waiting on you and Resolved always (Resolved collapsed); the rest only when non-empty. Proposed tasks are skipped. */
+/** The heading a summary sits under; matches `summaryView`'s word without needing the viewer (the server's
+ *  `shownGroup` already is per viewer). Null = proposed (chat's Suggested block, not the overview). */
+function overviewGroupOf(t: TaskSummary): OverviewGroupId | null {
+  switch (t.shownGroup) {
+    case "waiting_on_you": case "ready_for_review": return "needs_you";
+    case "working": case "landing": return "working";
+    case "resolved": return "closed";
+    // The server's idle group also holds watched and (someone else's) failed requests.
+    case "idle": return t.status === "failed" ? "closed" : t.watching ? "working" : "done";
+    default: return null;
+  }
+}
+
+/** Needs you and Closed always (Closed collapsed); the rest only when non-empty. Proposed tasks are skipped. */
 export function overviewGroups(ts: readonly TaskSummary[]): OverviewGroup[] {
-  return GROUP_ORDER.flatMap((id): OverviewGroup[] => {
-    const tasks = ts.filter((t) => t.shownGroup === id);
-    const group = (gid: OverviewGroup["id"], label: string, rows: TaskSummary[]): OverviewGroup =>
-      ({ id: gid, label, tasks: rows, alwaysShown: gid === "waiting_on_you" || gid === "resolved", collapsed: gid === "resolved" });
-    // The server's `idle` group also holds watched and (someone else's) failed threads: each heading matches its rows.
-    if (id === "idle") {
-      return [
-        group("idle", GROUP_LABELS.idle, tasks.filter((t) => t.status === "idle" && !t.watching)),
-        group("watching", "Watching", tasks.filter((t) => t.status === "idle" && t.watching)),
-        group("failed", "Failed", tasks.filter((t) => t.status === "failed")),
-      ];
-    }
-    return [group(id, GROUP_LABELS[id], tasks)];
-  }).filter((g) => g.alwaysShown || g.tasks.length > 0);
+  return GROUP_ORDER.map((id): OverviewGroup => ({
+    id, label: GROUP_LABELS[id], tasks: ts.filter((t) => overviewGroupOf(t) === id),
+    alwaysShown: id === "needs_you" || id === "closed", collapsed: id === "closed",
+  })).filter((g) => g.alwaysShown || g.tasks.length > 0);
 }
 
-/** One line under a row's title. */
-export function taskSummaryLine(t: TaskSummary, viewerId: string, names?: AgentNames): string {
+/** One line under a row's title: what it needs, or why it reads its word. The specialist is its own line. */
+export function taskSummaryLine(t: TaskSummary, viewerId: string): string {
   const q = t.openQuestion;
   const view = summaryView(t, viewerId);
   if (q && q.canAnswer) {
@@ -181,9 +216,8 @@ export function taskSummaryLine(t: TaskSummary, viewerId: string, names?: AgentN
     return `Needs an answer: ${q.title}`;
   }
   if (view.group === "landing") return `Applying: ${t.output?.title ?? "changes"}`;
-  if (t.status === "proposed") return t.proposalReason ?? "Suggested";
-  if (view.group === "working") return `${view.word} · ${specialistLabel(t.specialist, names)}`;
-  return view.word;
+  if (t.status === "proposed") return t.proposalReason ?? "Wants to start";
+  return view.reason ?? view.word;
 }
 
 const EFFECT_NAMES: Record<string, string> = {
@@ -211,7 +245,7 @@ export function primaryOptionId(options: readonly OptionLike[] | null | undefine
 /** A free-text question (a worker's ask with no options): answered with optionId "answer" + text (questions.py `answer`). */
 export const FREE_TEXT_OPTION = "answer";
 
-/** What the approver is asked: "Allow Lightbulb · Engineering to send 'Q3' to a@b.c" (the title names the action and
+/** What the approver is asked: "Allow Engineering to send 'Q3' to a@b.c" (the title names the action and
  *  its target, questions.py `title_for`). Other kinds read their title as written. */
 export function askLine(q: { kind: string; title: string; text?: string | null; preview?: unknown }, specialist: string | null | undefined): string {
   // Only an effect-born approval (it carries a preview; its title is questions.py `title_for`'s "send … to …")

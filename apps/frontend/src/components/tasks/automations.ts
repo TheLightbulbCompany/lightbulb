@@ -81,7 +81,7 @@ export const withCronTime = (cron: readonly string[], time: string): string[] =>
 
 export { budgetLine, deliveryWords, money, runNowReason, runsPerMonth, scheduleWords, viewerTimeZone, waitingWords } from "@lightbulb/shared";
 
-/** "Lightbulb · Finance" for an automation's specialist: an agent id by its name (the live provider's agent names). */
+/** "Finance" for an automation's specialist: an agent id by its name (the live provider's agent names). */
 export function useSpecialistLabel(): (specialistId: string | null | undefined) => string {
   const { agentNames } = useLiveEvents();
   return useCallback((id) => specialistLabel(id, agentNames), [agentNames]);

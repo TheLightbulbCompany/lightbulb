@@ -27,7 +27,7 @@ it("an admin turns a room automation on; the card names the specialist and the n
   mockRole = "org:admin";
   const view = await render(<AutomationConfirmCard automationId="auto-1" palette={chatPalette.light} viewerTz="UTC" />);
   expect(await screen.findByText("Turn on: Monday signup count")).toBeTruthy();
-  expect(screen.getByText(/Lightbulb · Finance/)).toBeTruthy();
+  expect(screen.getByText(/Finance/)).toBeTruthy();
   expect(screen.getByText(/Next: Mon 9 Nov, 9:00/)).toBeTruthy();
   await fireEvent.press(screen.getByLabelText("Turn on"));
   expect(mockLive.api.post).toHaveBeenCalledWith("/automations/auto-1/activate", {});

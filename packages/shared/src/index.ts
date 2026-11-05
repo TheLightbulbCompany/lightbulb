@@ -361,11 +361,11 @@ export { cardReplyRequest, choiceReply, formReply, tableReply } from "./ui/reply
 export type { CardReply } from "./ui/reply";
 export { answerIsFormOf, answerIsFrom, answerIsTableOf, cardAnswerFor, cardAnswersFor } from "./ui/answer";
 export {
-  TASK_STATUSES, SHOWN_GROUPS, GROUP_LABELS, GROUP_ORDER, resolveCeoAgentId, taskView, summaryView, specialistLabel, overviewGroups, taskSummaryLine, effectLine, effectName, formatSchedule,
+  TASK_STATUSES, SHOWN_GROUPS, STATUS_WORDS, GROUP_LABELS, GROUP_ORDER, resolveCeoAgentId, taskView, summaryView, specialistLabel, doneByLine, overviewGroups, taskSummaryLine, effectLine, effectName, formatSchedule,
   FREE_TEXT_OPTION, answerVerb, askLine, previewRows, primaryOptionId,
 } from "./tasks/view";
 export type {
-  AgentNames, EffectRow, OverviewGroup, QuestionRow, ShownGroup, SummaryView, TaskAction, TaskRow, TaskStatus, TaskTone, TaskView, TaskViewInput,
+  AgentNames, EffectRow, OverviewGroup, OverviewGroupId, QuestionRow, ShownGroup, StatusWord, SummaryView, TaskAction, TaskRow, TaskStatus, TaskTone, TaskView, TaskViewInput,
 } from "./tasks/view";
 export { OUTPUT_KINDS } from "./tasks/types";
 export type {

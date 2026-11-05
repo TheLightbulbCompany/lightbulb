@@ -38,10 +38,12 @@ export function AutomationConfirmCard({ automationId, viewerTz = viewerTimeZone(
       setPending(false);
     }
   };
+  // An unreadable date reads as nothing, never a bare "Next:".
+  const next = a.nextRuns[0] ? nextRunWords(a.nextRuns[0], viewerTz) : "";
   return <section aria-label={`Turn on ${a.name}`} className="editorial-card mt-1.5 max-w-xl px-3 py-2" data-automation-card={a.id}>
     <p className="font-semibold">{a.status === "draft" ? "Turn on: " : ""}{a.name}</p>
     <p className="text-ui text-muted-foreground">{lines(a, viewerTz, specialistName).join(" · ")}</p>
-    {a.nextRuns[0] && <p className="text-ui text-muted-foreground">Next: {nextRunWords(a.nextRuns[0], viewerTz)}</p>}
+    {next && <p className="text-ui text-muted-foreground">Next: {next}</p>}
     {/* Only On is green; Paused is a state, not a success. */}
     {a.status !== "draft" && <p className={`mt-1 text-ui ${a.status === "active" ? "text-ok" : "text-muted-foreground"}`}>{automationStatusLine(a) ?? "On"}</p>}
     {/* The server's rules (routers/automations.py): Turn on is an activate, also from paused (room → admin only);

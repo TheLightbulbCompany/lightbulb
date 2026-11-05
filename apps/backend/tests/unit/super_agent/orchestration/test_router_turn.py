@@ -758,7 +758,7 @@ async def test_recent_cards_carry_their_task_state_now(world, monkeypatch):
     world["decisions"] = [{"kind": "reply", "triggerIds": [t1], "text": "Done."}]
     await _run([t1])
     prompt = world["runs"][0][1].input
-    assert f"[cards: {old} started (finished, result posted), {private} started, gone started]" in prompt
+    assert f"[cards: {old} started (Done: finished, result posted), {private} started, gone started]" in prompt
     assert reads == [sorted(ts.task_sk(i) for i in (old, private, "gone"))]  # one read for every card
 
 
@@ -924,11 +924,11 @@ async def test_router_reads_each_task_state_in_plain_words(world):
     world["decisions"] = [{"kind": "reply", "triggerIds": [t1], "text": "Here is where things are."}]
     await _run([t1])
     prompt, instructions = world["runs"][0][1].input, world["runs"][0][1].instructions
-    assert "Write March workshop invite blurb · finished, result posted" in prompt
-    assert "Make the day-of checklist · queued, not started yet" in prompt
-    assert "Email attendees about the date · waiting on a person's approval" in prompt
+    assert "Write March workshop invite blurb · Done: finished, result posted" in prompt
+    assert "Make the day-of checklist · Working: queued, not started yet" in prompt
+    assert "Email attendees about the date · Working: waiting on a person's approval" in prompt
     closed = prompt.split("## Recently closed")[1]
-    assert "Buy workshop signup domain · stopped by a person; nothing more was done" in closed
+    assert "Buy workshop signup domain · Closed: stopped by a person; nothing more was done" in closed
     assert "Buy workshop signup domain" not in prompt.split("## Recently closed")[0]
     assert "unless its task says its action ran" in instructions
 
@@ -937,9 +937,10 @@ def test_status_words_cover_every_status():
     for status in ("proposed", "queued", "working", "waiting", "idle", "failed", "resolved"):
         assert router_prompt.status_words({"status": status}) != status
     assert (
-        router_prompt.status_words({"status": "idle", "statusReason": "landed"}) == "finished; its approved action ran"
+        router_prompt.status_words({"status": "idle", "statusReason": "landed"})
+        == "Done: finished; its approved action ran"
     )
-    assert router_prompt.status_words({"status": "resolved", "statusReason": "odd"}) == "closed"
+    assert router_prompt.status_words({"status": "resolved", "statusReason": "odd"}) == "Closed"
 
 
 @pytest.mark.asyncio
@@ -956,7 +957,27 @@ async def test_recently_closed_pages_past_other_scopes(world, monkeypatch):
 
 def test_effect_unknown_says_check_first():
     words = router_prompt.status_words({"status": "idle", "statusReason": "effect_unknown"})
-    assert words == "finished, but its action might have happened: check before saying it did or retrying"
+    assert words == "Done: finished, but its action might have happened: check before claiming or retrying"
+
+
+def test_status_words_lead_with_the_four_words_people_see():
+    """Founder, 5 Nov: Working, Needs you, Done, Closed, the same mapping the apps show (shared view.ts)."""
+    for status in ("proposed", "queued", "working", "waiting", "idle", "failed", "resolved"):
+        assert router_prompt.status_words({"status": status}).split(":")[0] in {
+            "Working",
+            "Needs you",
+            "Done",
+            "Closed",
+        }
+    # "Needs you" only for what is on the asker: their own failed task; someone else's reads Closed.
+    failed = {"status": "failed", "ownerUserId": "u-sam"}
+    assert router_prompt.status_words(failed, "u-sam").startswith("Needs you:")
+    assert router_prompt.status_words(failed, "u-priya").startswith("Closed:")
+    assert router_prompt.status_words(failed).startswith("Closed:")
+    assert router_prompt.status_words({"status": "waiting", "statusReason": "approval"}, "u-sam").startswith("Working:")
+    watched = router_prompt.status_words({"status": "idle", "watchUntil": "2026-11-06T00:00:00+00:00"})
+    assert watched.startswith("Working:")
+    assert '"request"' in router_prompt.ROUTER_INSTRUCTIONS
 
 
 @pytest.mark.asyncio

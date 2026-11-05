@@ -1,5 +1,5 @@
 import { useAuth } from "@clerk/expo";
-import { money, specialistLabel, summaryView, useTask, useTaskQuestions } from "@lightbulb/shared";
+import { doneByLine, money, specialistLabel, summaryView, useTask, useTaskQuestions } from "@lightbulb/shared";
 import { Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import { StyleSheet, Text, View } from "react-native";
@@ -44,12 +44,12 @@ export default function TaskScreen() {
   const task = detail?.task;
   const view = task ? summaryView(task, userId ?? "") : null;
   // The specialist is the actor ("Growth"): each is its own agent, so no "Lightbulb ·" in front.
-  const actor = task ? specialistLabel(task.specialist, agentNames).replace(/^Lightbulb · /, "") : "";
+  const actor = task ? specialistLabel(task.specialist, agentNames) : "";
   const headerOptions = {
     contentStyle: { backgroundColor: palette.ground },
     headerTitle: () => (
-      <ConversationHeader title={task?.title ?? "Thread"} avatar={null} palette={palette}
-        status={task ? `${actor} · ${view?.word}${task.runsOn ? " · Lightbulb cloud" : ""}` : null}
+      <ConversationHeader title={task?.title ?? "Request"} avatar={null} palette={palette}
+        status={task && view ? [actor, view.word, view.reason, task.runsOn ? "Lightbulb cloud" : null].filter(Boolean).join(" · ") : null}
         statusTone={view?.tone === "working" ? "live" : "mute"} />
     ),
   };
@@ -58,11 +58,13 @@ export default function TaskScreen() {
     return (
       <View style={[styles.container, { backgroundColor: palette.ground }]}>
         <Stack.Screen options={headerOptions} />
-        <Text accessibilityRole="text" style={[styles.note, { color: palette.fgMute }]}>{error || !isValidating ? "This thread isn\u2019t available to you." : "Loading…"}</Text>
+        <Text accessibilityRole="text" style={[styles.note, { color: palette.fgMute }]}>{error || !isValidating ? "This request isn\u2019t available to you." : "Loading…"}</Text>
       </View>
     );
   }
   const open = views?.items.find((q) => q.state === "open");
+  // The specialist as the actor: "Growth is working on this" / "Done by Growth" (founder, 5 Nov).
+  const doneBy = view ? doneByLine(task.specialist, view, agentNames) : null;
   const live = task.status === "queued" || task.status === "working" || task.status === "waiting";
   const proposed = task.status === "proposed";
   const press = async (verb: "stop" | "resolve" | "reopen" | "start" | "dismiss") => {
@@ -75,29 +77,35 @@ export default function TaskScreen() {
     <KeyboardAvoidingView style={[styles.container, { backgroundColor: palette.ground }]} behavior="padding" keyboardVerticalOffset={keyboardOffset}>
       <Stack.Screen options={headerOptions} />
       <View style={styles.top}>
-        <View style={styles.row} accessibilityLabel="Thread status">
+        <View style={styles.row} accessibilityLabel="Request status">
           <TaskStatus task={task} viewerId={userId ?? ""} palette={palette} />
           {task.runsOn ? <Text style={[styles.meta, { color: palette.fgMute }]}>☁ Lightbulb cloud</Text> : null}
         </View>
         <View style={styles.row}>
           {live ? <ActionButton label="Stop" palette={palette} disabled={pending} onPress={() => void press("stop")} /> : null}
           {proposed ? null : task.status !== "resolved"
-            ? <ActionButton label="Resolve" palette={palette} disabled={pending} onPress={() => void press("resolve")} />
+            ? <ActionButton label="Close" palette={palette} disabled={pending} onPress={() => void press("resolve")} />
             : <ActionButton label="Reopen" palette={palette} disabled={pending} onPress={() => void press("reopen")} />}
           <ActionButton label="Details" palette={palette} onPress={() => setDetails(true)} />
         </View>
         {proposed ? (
           // What it will do, why it was suggested and what it may cost; Do it starts it, Not now dismisses it.
-          <View accessibilityLabel={view?.word} style={[styles.output, { gap: spacing.xs, borderColor: palette.edge, backgroundColor: palette.surface }]}>
-            <Text style={[styles.title, { color: palette.fg }]}>{actor} wants to: {task.title}</Text>
-            {task.proposalReason ? <Text style={[styles.meta, { color: palette.fgMute }]}>Why: {task.proposalReason}</Text> : null}
-            {task.budgetUsd != null ? <Text style={[styles.meta, { color: palette.fgMute }]}>Cost: up to {money(task.budgetUsd)}</Text> : null}
+          <View style={[styles.output, { gap: spacing.xs, borderColor: palette.edge, backgroundColor: palette.surface }]}>
+            {/* One VoiceOver stop for the proposal's words; the two buttons stay their own stops. */}
+            <View accessible accessibilityLabel={[view ? `${view.word}, ${view.reason}` : null, `${actor} wants to: ${task.title}`,
+              task.proposalReason ? `Why: ${task.proposalReason}` : null, task.budgetUsd != null ? `Cost: up to ${money(task.budgetUsd)}` : null].filter(Boolean).join(". ")}
+              style={{ gap: spacing.xs }}>
+              <Text style={[styles.title, { color: palette.fg }]}>{actor} wants to: {task.title}</Text>
+              {task.proposalReason ? <Text style={[styles.meta, { color: palette.fgMute }]}>Why: {task.proposalReason}</Text> : null}
+              {task.budgetUsd != null ? <Text style={[styles.meta, { color: palette.fgMute }]}>Cost: up to {money(task.budgetUsd)}</Text> : null}
+            </View>
             <View style={styles.row}>
               <ActionButton label="Do it" palette={palette} primary disabled={pending} onPress={() => void press("start")} />
               <ActionButton label="Not now" palette={palette} disabled={pending} onPress={() => void press("dismiss")} />
             </View>
           </View>
         ) : null}
+        {doneBy ? <Text style={[styles.meta, { color: palette.fgMute }]}>{doneBy}</Text> : null}
         {note ? <Text accessibilityRole="alert" style={[styles.meta, { color: palette.alert }]}>{note}</Text> : null}
         {open ? <NeedsYouCard key={open.id} task={task} question={open} palette={palette} onAnsweredElsewhere={setNote} /> : null}
         {task.output ? (

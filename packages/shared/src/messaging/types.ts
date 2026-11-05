@@ -212,7 +212,7 @@ export interface CanonicalRoomMessage {
   postReason?: string | null;
   /** Super-agent attrs (contracts-v2 §6), only on messages Lightbulb posts for tasks; absent otherwise. */
   taskRefs?: { taskId: string; role: "started" | "suggested"; qid?: string }[] | null;
-  /** Specialist handle of a result line ("finance"); the byline reads "Lightbulb · Finance". */
+  /** Specialist handle of a result line ("finance"); the byline reads "Finance". */
   specialist?: string | null;
   /** On a person's message: where Lightbulb sent it. */
   routedTo?: { taskIds: string[]; started: number; suggested: number; passThrough: boolean } | null;

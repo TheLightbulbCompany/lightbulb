@@ -185,7 +185,7 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
   </article>;
 }
 
-/** "Lightbulb · Finance": a specialist id reads by its name from the agents list (an id is never shown). With the
+/** "Finance": a specialist id reads by its name from the agents list (an id is never shown). With the
  *  author seated, the label keeps the author's hover card (audit #28). */
 function SpecialistByline({ specialist, participant, currentUserId, onMessage, disabled }: {
   specialist: string; participant?: RoomParticipant; currentUserId: string;

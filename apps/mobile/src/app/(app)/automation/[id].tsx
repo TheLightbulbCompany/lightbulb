@@ -15,7 +15,7 @@ import { useSuperAgent } from "../../../providers/live-events";
 /**
  * One automation (mockup step 11 on the phone): its schedule in the viewer's zone, instructions,
  * who runs it and what it may spend, Pause/Resume and Run now under the server's two rules, and a
- * history in which every run is its own thread.
+ * history in which every run is its own request.
  */
 export default function AutomationScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -83,7 +83,7 @@ export default function AutomationScreen() {
         <Text style={[styles.label, { color: palette.fgMute }]}>HISTORY</Text>
         {runs?.skipped && <Text style={[styles.meta, { color: palette.fgMute }]}>{runs.skipped.text}</Text>}
         {!runs ? <LoadState what="History" error={!!runsError} onRetry={() => void retryRuns()} palette={palette} />
-          : !runs.runs.length ? <Text style={[styles.meta, { color: palette.fgMute }]}>No runs yet. Each run opens as its own thread.</Text>
+          : !runs.runs.length ? <Text style={[styles.meta, { color: palette.fgMute }]}>No runs yet. Each run opens as its own request.</Text>
           : <View style={[styles.list, { borderColor: palette.edge, backgroundColor: palette.surface }]}>{runs.runs.map((t, i) => (
             <Pressable key={t.taskId} accessibilityRole="button" accessibilityLabel={`Open ${t.title}`} onPress={() => openTaskScreen(t.taskId)}
               style={({ pressed }) => [styles.row, { backgroundColor: pressed ? palette.hover : "transparent", borderColor: palette.edge, borderTopWidth: i === 0 ? 0 : StyleSheet.hairlineWidth }]}>

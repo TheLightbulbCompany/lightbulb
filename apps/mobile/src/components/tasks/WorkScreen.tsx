@@ -1,5 +1,5 @@
 // The Work tab with the super-agent on (mockup step 3 on the phone): Overview · Scheduled. The overview
-// groups the workspace's threads by the server's `shownGroup`; a row opens the task screen. Scheduled
+// groups the workspace's requests by the server's `shownGroup`; a row opens the task screen. Scheduled
 // lists the automations; a row opens its detail.
 
 import { useAuth } from "@clerk/expo";
@@ -22,7 +22,7 @@ const SEGMENTS: readonly { key: Segment; label: string }[] = [
   { key: "overview", label: "Overview" },
   { key: "scheduled", label: "Scheduled" },
 ];
-const PLACEHOLDERS: Partial<Record<string, string>> = { waiting_on_you: "Nothing needs you", resolved: "Nothing resolved yet" };
+const PLACEHOLDERS: Partial<Record<string, string>> = { needs_you: "Nothing needs you", closed: "Nothing closed yet" };
 
 export function WorkScreen({ scope = { kind: "workspace" }, onOpenOldBoard, viewerTz = viewerTimeZone() }: {
   scope?: TaskScope; onOpenOldBoard?: () => void; viewerTz?: string;
@@ -54,11 +54,11 @@ export function OverviewList({ scope, palette, onOpen = openTaskScreen }: { scop
   const { data, error, mutate } = useTaskList(tasks, scope);
   const { older, hasOlder, loading, loadOlder } = useOlderTasks(tasks, data, scope);
   const [resolvedOpen, setResolvedOpen] = useState(false);
-  if (!data) return <LoadState what="Threads" error={!!error} onRetry={() => void mutate()} palette={palette} />;
+  if (!data) return <LoadState what="Requests" error={!!error} onRetry={() => void mutate()} palette={palette} />;
   return (
     <View style={styles.groups}>
       {overviewGroups([...data.tasks, ...older]).map((group) => {
-        const collapsible = group.id === "resolved";
+        const collapsible = group.collapsed;
         const open = !collapsible || resolvedOpen;
         const heading = `${group.label} · ${group.tasks.length}`;
         return (
@@ -85,9 +85,9 @@ export function OverviewList({ scope, palette, onOpen = openTaskScreen }: { scop
         );
       })}
       {hasOlder ? (
-        <Pressable accessibilityRole="button" accessibilityLabel="Load older threads" accessibilityState={{ busy: loading }} disabled={loading}
+        <Pressable accessibilityRole="button" accessibilityLabel="Load older requests" accessibilityState={{ busy: loading }} disabled={loading}
           onPress={() => void loadOlder()} style={styles.oldLink} hitSlop={8}>
-          <Text style={[styles.link, { color: palette.link }]}>{loading ? "Loading…" : "Load older threads"}</Text>
+          <Text style={[styles.link, { color: palette.link }]}>{loading ? "Loading…" : "Load older requests"}</Text>
         </Pressable>
       ) : null}
     </View>
@@ -97,14 +97,13 @@ export function OverviewList({ scope, palette, onOpen = openTaskScreen }: { scop
 function OverviewRow({ task, viewerId, palette, onOpen, first }: {
   task: TaskSummary; viewerId: string; palette: ChatPalette; onOpen: (taskId: string) => void; first: boolean;
 }) {
-  const { agentNames } = useLiveEvents();
   const view = summaryView(task, viewerId);
   return (
     <Pressable accessibilityRole="button" accessibilityLabel={`Open ${task.title}, ${view.word}`} onPress={() => onOpen(task.taskId)}
       style={({ pressed }) => [styles.row, { backgroundColor: pressed ? palette.hover : "transparent", borderColor: palette.edge, borderTopWidth: first ? 0 : StyleSheet.hairlineWidth }]}>
       <View style={styles.rowMain}>
         <Text style={[styles.title, { color: palette.fg }]} numberOfLines={1}>{task.title}</Text>
-        <Text style={[styles.meta, { color: palette.fgMute }]} numberOfLines={1}>{taskSummaryLine(task, viewerId, agentNames)}</Text>
+        <Text style={[styles.meta, { color: palette.fgMute }]} numberOfLines={1}>{taskSummaryLine(task, viewerId)}</Text>
       </View>
       <TaskStatus task={task} viewerId={viewerId} palette={palette} />
     </Pressable>

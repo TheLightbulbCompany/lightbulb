@@ -45,8 +45,8 @@ describe("MessageTasks while the room list is not in", () => {
     const message = { roomId: "r1", taskRefs: [{ taskId: "a", role: "started" }] } as unknown as CanonicalRoomMessage;
     client.list.mockRejectedValueOnce(new Error("503"));
     render(<Fresh><MessageTasks message={message} viewerId={SAM} /></Fresh>);
-    expect(screen.getByLabelText("Loading threads")).toBeInTheDocument();
-    expect(await screen.findByRole("alert")).toHaveTextContent("Threads couldn't load.");
+    expect(screen.getByLabelText("Loading requests")).toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Requests couldn't load.");
     expect(screen.queryByText(/isn't available/)).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(await screen.findByText("Task a")).toBeInTheDocument();

@@ -45,8 +45,10 @@ describe("useSuperAgent (mobile)", () => {
     await render(<LiveEventsProvider><SwitchProbe /></LiveEventsProvider>);
     await waitFor(() => expect(mockGet).toHaveBeenCalled());
     await waitFor(() => expect(screen.getByText(`switch:${shown}`)).toBeTruthy());
-    // No request of its own: every GET is the live-config fetch the provider already makes.
-    expect(new Set(mockGet.mock.calls.map(([path]) => path))).toEqual(new Set(["/messaging/live-config"]));
+    // Off: only the live-config fetch the provider already makes. On: plus the agents list (specialist names and the
+    // front agent), never a /tasks request.
+    await waitFor(() => expect(new Set(mockGet.mock.calls.map(([path]) => path)))
+      .toEqual(new Set(shown === "on" ? ["/messaging/live-config", "/teams/agents"] : ["/messaging/live-config"])));
   });
 
   it("is off outside a provider", async () => {

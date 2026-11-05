@@ -1900,6 +1900,10 @@ async def list_apps(owner_id: str, auth: AuthContext) -> list[dict]:
     out = []
     for a in apps:
         state = a.get("state") or ""
+        if state not in _DRIVE_STOP and not a.get("stuck"):
+            # The stuck watch lives in one process: after a restart, or for an app started before the watch
+            # was armed at start, Canvas's list read is what re-arms it (a no-op while one is alive).
+            watch(owner_id, a["app_id"])
         row = _view(a, await _rows(a, all_rows), state, await _agent_working(owner_id, a, state))
         del row["versions"]
         previous = _previous_version(a)

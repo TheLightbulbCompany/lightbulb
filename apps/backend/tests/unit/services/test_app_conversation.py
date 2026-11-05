@@ -694,3 +694,15 @@ async def test_a_started_app_is_watched_and_a_canvas_request_says_where_it_came_
         chat.posts[-1]["text"]
         == "Ada (in Canvas): A booking page for haircuts\n\nThis conversation builds Booking Haircuts, named booking-haircuts."
     )
+
+
+async def test_listing_re_arms_the_stuck_watch_for_apps_still_being_built(chat, monkeypatch):
+    res = await _start()  # reserved, builder quiet: the kind of app a restart used to leave "Building" forever
+    seen: list[str] = []
+    monkeypatch.setattr(svc, "watch", lambda owner, app_id: seen.append(app_id))
+    await svc.list_apps(OWNER, ADA)
+    assert seen == [res["app_id"]]
+    await svc.apps_repo.patch(res["app_id"], {"stuck": {"at": "x", "step": "building"}})
+    seen.clear()
+    await svc.list_apps(OWNER, ADA)
+    assert seen == []  # already said stuck: nothing more to watch

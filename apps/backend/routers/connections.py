@@ -46,7 +46,6 @@ from core.services.google_identity import seed_agent_google_identity
 from core.services.owner_facts import write_owner_facts
 from core.services import owner_lifecycle
 from core.services.owner_lifecycle import OwnerLifecycleBusyError, owner_lifecycle_guard
-from core.services.super_agent_flags import flags_for
 
 logger = logging.getLogger(__name__)
 
@@ -78,9 +77,12 @@ def _retains_secret(p: registry.Provider, row: dict | None = None) -> bool:
 async def _connect_custody(owner_id: str, p: registry.Provider) -> str | None:
     """``"backend"`` for a custody-migratable provider connected in a workspace with the
     super-agent switch on (spec 13: the backend holds the rotating grant from the start), else
-    None -- the row gets no custody attribute and today's rule applies."""
-    if p.custody_migratable and await flags_for(owner_id):
-        return "backend"
+    None -- the row gets no custody attribute and today's rule applies.
+
+    Off in code until V11 rolls: the bridge does not yet fill a vended token into the CLI files,
+    so a backend-custody connect would leave X/QuickBooks/Instagram with token-free files nothing
+    fills (review of #4691). V11 restores:
+    ``return "backend" if p.custody_migratable and await flags_for(owner_id) else None``."""
     return None
 
 
@@ -1255,6 +1257,10 @@ async def oauth_callback(
             # wiring succeeds.
             custody = await _connect_custody(owner_id, p)
             row_hint = {"custody": custody} if custody else None
+            if custody:
+                # Carried on the credential so every materialization (this one, a reprovision
+                # from the retained secret) writes the access-token-free form.
+                credential = {**credential, "custody": custody}
             if _retains_secret(p, row_hint):
                 await integration_secret_store.put(owner_id, prov, credential)
             try:

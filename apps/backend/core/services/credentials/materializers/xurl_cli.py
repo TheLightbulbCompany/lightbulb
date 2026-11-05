@@ -132,20 +132,25 @@ def _token_username(credential: dict[str, Any]) -> str:
 
 
 def write(owner_id: str, provider_key: str, credential: dict[str, Any]) -> str:
-    """Write/replace Isol8's xurl app entry and return the connected handle/id."""
+    """Write/replace Isol8's xurl app entry and return the connected handle/id.
+
+    ``custody: backend`` (spec 13): the backend alone refreshes X's single-use refresh token, so
+    the file carries no token and no client secret -- the bridge fills the vended access token and
+    its expiry in locally each turn and never uploads it."""
     username = _token_username(credential)
+    brokered = credential.get("custody") == "backend"
     entry = {
         "client_id": credential["client_id"],
-        "client_secret": credential.get("client_secret") or "",
+        "client_secret": "" if brokered else credential.get("client_secret") or "",
         "redirect_uri": credential.get("redirect_uri") or _default_redirect_uri(provider_key),
         "default_user": username,
         "oauth2_tokens": {
             username: {
                 "type": "oauth2",
                 "oauth2": {
-                    "access_token": credential["access_token"],
-                    "refresh_token": credential.get("refresh_token") or "",
-                    "expiration_time": _token_expiration_epoch(credential),
+                    "access_token": "" if brokered else credential["access_token"],
+                    "refresh_token": "" if brokered else credential.get("refresh_token") or "",
+                    "expiration_time": 0 if brokered else _token_expiration_epoch(credential),
                 },
             },
         },

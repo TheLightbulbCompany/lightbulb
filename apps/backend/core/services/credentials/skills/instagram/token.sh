@@ -26,6 +26,18 @@ if [ ! -r "$CRED" ]; then
 fi
 
 token=$(jq -r '.access_token // empty' "$CRED" 2>/dev/null)
+
+# Backend custody (spec 13): the backend renews the token and the bridge writes the current one
+# here each turn. Print it; never renew from the VM.
+if [ "$(jq -r '.custody // empty' "$CRED" 2>/dev/null)" = "backend" ]; then
+  if [ -z "$token" ]; then
+    echo "instagram: no token yet for this turn — try again in a minute" >&2
+    exit 1
+  fi
+  printf '%s' "$token"
+  exit 0
+fi
+
 if [ -z "$token" ]; then
   echo "instagram: credentials hold no access_token — reconnect in Settings → Connections" >&2
   exit 1

@@ -26,6 +26,7 @@ import type { LocalMessageRow } from "../../lib/rooms";
 import { Bubble, BubbleMeta, Chip, MetaText, AVATAR_GUTTER } from "../conversation/bubbles";
 import { specialistLabel } from "@lightbulb/shared";
 import { useLiveEvents, useSuperAgent } from "../../providers/live-events";
+import { AutomationConfirmCard } from "../tasks/AutomationConfirmCard";
 import { MessageTasks, RoutedToLine } from "../tasks/TaskCard";
 import { MessageMarkdown } from "../chat/MessageMarkdown";
 import { CardReplyContext, useCardPressState, type CardReplyValue } from "../chat/openui/CardReplyContext";
@@ -339,6 +340,9 @@ export function MessageGroup({
               </Bubble>
               {!deleted && superAgent && message.taskRefs?.length ? (
                 <MessageTasks message={message} viewerId={currentUserId} palette={palette} />
+              ) : null}
+              {!deleted && superAgent && message.kind === "automation_confirm" && message.automationId ? (
+                <AutomationConfirmCard automationId={message.automationId} palette={palette} />
               ) : null}
             </View>
           </View>

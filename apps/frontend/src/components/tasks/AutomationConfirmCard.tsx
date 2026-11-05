@@ -5,7 +5,7 @@
 // typed text never does (contracts-v2 §8). Not now deletes the draft.
 
 import { useState, type ReactElement } from "react";
-import { useAutomation, type AutomationView } from "@lightbulb/shared";
+import { nextRunWords, useAutomation, type AutomationView } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { budgetLine, scheduleWords, useAutomationActions, useAutomationSource, useCanDecide, useCanEdit, useSpecialistLabel, viewerTimeZone, waitingWords } from "./automations";
 
@@ -39,7 +39,7 @@ export function AutomationConfirmCard({ automationId, viewerTz = viewerTimeZone(
   return <section aria-label={`Turn on ${a.name}`} className="editorial-card mt-1.5 max-w-xl px-3 py-2" data-automation-card={a.id}>
     <p className="font-semibold">{a.status === "draft" ? "Turn on: " : ""}{a.name}</p>
     <p className="text-ui text-muted-foreground">{lines(a, viewerTz, specialistName).join(" · ")}</p>
-    {a.nextRuns.length > 0 && <p className="text-ui text-muted-foreground">Next: {a.nextRuns.slice(0, 3).map((iso) => when(iso, viewerTz)).join(", ")}</p>}
+    {a.nextRuns.length > 0 && <p className="text-ui text-muted-foreground">Next: {a.nextRuns.slice(0, 3).map((iso) => nextRunWords(iso, viewerTz)).join(", ")}</p>}
     {a.status !== "draft"
       ? <p className="mt-1 text-ui text-ok">{a.status === "active" ? "On" : "Paused"}</p>
       // The server's rules (routers/automations.py): Turn on is an activate (room → admin only); Not now is an edit (admin or owner).
@@ -64,8 +64,3 @@ function lines(a: AutomationView, viewerTz: string, specialistName: (id: string 
   return out;
 }
 
-function when(iso: string, tz: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return new Intl.DateTimeFormat("en-GB", { timeZone: tz, weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit", hourCycle: "h23" }).format(d);
-}

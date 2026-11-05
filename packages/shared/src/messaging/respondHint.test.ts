@@ -80,7 +80,8 @@ describe("respondHint with the super-agent on (one voice)", () => {
     expect(respondHint("channel", seated, [], [], true)).toBe("Lightbulb may reply");
     expect(respondHint("channel", seated, [], [], false)).toBe("Growth may reply · Lightbulb may reply · Finance may reply");
   });
-  it("with no @lightbulb seat known yet, every agent shows as before", () => {
-    expect(respondHint("channel", [seated[0], seated[2]], [], [], true)).toBe("Growth may reply · Finance may reply");
+  it("with no @lightbulb seat on the row, it is still Lightbulb, never the specialists", () => {
+    expect(respondHint("channel", [seated[0], seated[2]], [], [], true)).toBe("Lightbulb may reply");
+    expect(respondHint("dm", [{ kind: "human", id: "h", displayName: "Ana", listenMode: null }], [], [], true)).toBe("");
   });
 });

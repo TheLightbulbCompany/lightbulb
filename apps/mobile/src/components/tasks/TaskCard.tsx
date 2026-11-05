@@ -49,14 +49,15 @@ export function TaskCard({ task, taskId, viewerId, palette, onOpen = openTaskScr
   const inline = !hideAction && view.action && view.action !== "answer" && view.action !== "review" ? view.action : null;
   const line = taskSummaryLine(task, viewerId, agentNames);
   const detail = line === view.word || line.startsWith(`${view.word} ·`) ? null : line;
+  // The open target and the action are siblings, never nested: a screen reader reaches each on its own (audit #23).
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={`Open ${task.title}, ${view.word}`}
-      onPress={() => onOpen(taskId)}
-      style={({ pressed }) => [styles.card, { borderColor: palette.edge, backgroundColor: pressed ? palette.hover : palette.surface }]}
-      testID={`task-card-${taskId}`}
-    >
+    <View style={[styles.card, { borderColor: palette.edge, backgroundColor: palette.surface }]} testID={`task-card-${taskId}`}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`Open ${task.title}, ${view.word}`}
+        onPress={() => onOpen(taskId)}
+        style={({ pressed }) => [styles.open, pressed ? { backgroundColor: palette.hover } : null]}
+      >
       <View style={styles.row}>
         <View style={styles.main}>
           <Text style={[styles.title, { color: palette.fg }]} numberOfLines={1}>{task.title}</Text>
@@ -68,6 +69,7 @@ export function TaskCard({ task, taskId, viewerId, palette, onOpen = openTaskScr
         </View>
         <TaskStatus task={task} viewerId={viewerId} palette={palette} />
       </View>
+      </Pressable>
       {children}
       {inline ? (
         <ActionButton label={ACTION_LABELS[inline]} palette={palette} primary={view.tone === "waiting" || view.tone === "review"} disabled={pending}
@@ -83,7 +85,7 @@ export function TaskCard({ task, taskId, viewerId, palette, onOpen = openTaskScr
           }} />
       ) : null}
       {error ? <Text accessibilityRole="alert" style={[styles.meta, { color: palette.alert }]}>{error}</Text> : null}
-    </Pressable>
+    </View>
   );
 }
 
@@ -216,6 +218,7 @@ const styles = StyleSheet.create({
   list: { gap: spacing.xs, marginTop: spacing.xs },
   card: { borderWidth: 1, borderRadius: radii.md, paddingHorizontal: spacing.sm, paddingVertical: spacing.xs, gap: spacing.xs, maxWidth: 520 },
   unavailable: { borderStyle: "dashed" },
+  open: { borderRadius: radii.sm, marginHorizontal: -spacing.xs, paddingHorizontal: spacing.xs, minHeight: 44, justifyContent: "center" },
   row: { flexDirection: "row", alignItems: "flex-start", gap: spacing.sm },
   main: { flex: 1, minWidth: 0, gap: 2 },
   title: { fontFamily: fonts.sansSemiBold, fontSize: 15, lineHeight: 20 },

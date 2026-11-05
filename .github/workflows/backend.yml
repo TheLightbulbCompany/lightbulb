@@ -34,8 +34,18 @@ permissions:
 
 jobs:
   test:
-    name: Lint & Test
-    runs-on: ${{ vars.CI_RUNNER }}
+    name: Lint & Test (shard ${{ matrix.shard }}/4)
+    # GitHub-hosted, not vars.CI_RUNNER: one self-hosted isol8-wsl box queued every
+    # backend PR ~100 min behind the others. Nothing here needs that box -- DynamoDB is
+    # moto in-process and the one docker-backed test is gated off (APPS_DB_IT). CI_RUNNER
+    # itself is unchanged; other workflows still use it.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Hosted Linux runners are small, so the suite is split 4 ways by test id
+        # (tests/conftest.py, BACKEND_TEST_SHARD) and each shard runs under xdist.
+        shard: [1, 2, 3, 4]
     # This job had NO cap, so a stalled `Run tests` step billed GitHub's
     # 6-hour default instead of failing — run 31562062289 sat in pytest for
     # 27+ minutes with no way to tell a slow suite from a hung one. The cap is
@@ -49,8 +59,8 @@ jobs:
     # lint, 55 min of pytest), so 75 cancelled the next run as soon as one
     # test file slowed down. 100 still dies 5 h before the default; the real
     # fix is a faster suite (xdist / splitting), not a looser cap.
-    # 2026-11-04: pytest now runs under xdist (-n auto); lower this once a few
-    # parallel runs show the new wall-clock.
+    # 2026-11-04: GitHub-hosted, 4 shards x xdist; lower this once a few runs
+    # show the new wall-clock.
     timeout-minutes: 150
 
     steps:
@@ -59,6 +69,10 @@ jobs:
 
       - name: Setup uv
         uses: astral-sh/setup-uv@v4
+        with:
+          # Hosted runners start empty: cache uv's wheel/download cache, keyed on the lockfile.
+          enable-cache: true
+          cache-dependency-glob: apps/backend/uv.lock
 
       - name: Install dependencies
         run: uv sync --frozen
@@ -79,6 +93,7 @@ jobs:
           AWS_ACCESS_KEY_ID: testing
           AWS_SECRET_ACCESS_KEY: testing
           DEBUG: "false"
+          BACKEND_TEST_SHARD: ${{ matrix.shard }}/4
         # pytest-xdist: one worker per core. Tests are process-isolated (moto is in-process,
         # servers bind port 0), so the suite runs in parallel; `-q` because `-v` per-test
         # lines from N workers are unreadable. pytest-cov merges worker coverage itself.
@@ -90,6 +105,7 @@ jobs:
       # shared-secret header -- and a change to it shipped unverified because the
       # infra job only synthesizes templates and never executes Lambda code.
       - name: Run SES inbound Lambda tests
+        if: matrix.shard == 1
         env:
           AWS_DEFAULT_REGION: us-east-1
           AWS_ACCESS_KEY_ID: testing
@@ -101,6 +117,7 @@ jobs:
       # WebSocket $connect, so a regression here is chat down, not a degraded
       # edge case.
       - name: Run ws-connect Lambda tests
+        if: matrix.shard == 1
         env:
           AWS_DEFAULT_REGION: us-east-1
           AWS_ACCESS_KEY_ID: testing
@@ -110,6 +127,7 @@ jobs:
 
       # Decides who may hear a public session link's terminal.
       - name: Run pub-authorizer Lambda tests
+        if: matrix.shard == 1
         env:
           AWS_DEFAULT_REGION: us-east-1
           AWS_ACCESS_KEY_ID: testing
@@ -121,6 +139,7 @@ jobs:
       # regression reached production: this Lambda builds the live payload every
       # browser and phone renders a new message from, and its tests ran nowhere.
       - name: Run messaging-projector Lambda tests
+        if: matrix.shard == 1
         env:
           AWS_DEFAULT_REGION: us-east-1
           AWS_ACCESS_KEY_ID: testing
@@ -129,6 +148,7 @@ jobs:
         working-directory: apps/backend
 
       - name: Run messaging-search-indexer Lambda tests
+        if: matrix.shard == 1
         env:
           AWS_DEFAULT_REGION: us-east-1
           AWS_ACCESS_KEY_ID: testing
@@ -142,6 +162,7 @@ jobs:
       # suite ran nowhere in CI (it uses `python -m unittest discover`, not
       # pytest, so the backend suite never collected it).
       - name: Run OpenRouter settlement Lambda tests
+        if: matrix.shard == 1
         env:
           AWS_DEFAULT_REGION: us-east-1
           AWS_ACCESS_KEY_ID: testing

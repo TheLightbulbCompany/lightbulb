@@ -30,6 +30,16 @@ schema = schemathesis.openapi.from_asgi("/api/v1/openapi.json", app)
 
 
 @pytest.fixture(autouse=True)
+def _signed_out(monkeypatch):
+    """The negative fuzz runs signed out. Remove any get_current_user override a
+    test that ran earlier in this process left on the shared app; the authed slice
+    sets its own afterwards."""
+    from core.auth import get_current_user
+
+    monkeypatch.delitem(app.dependency_overrides, get_current_user, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_lifespan_background_workers(monkeypatch):
     """Schemathesis enters FastAPI lifespan for every generated ASGI request."""
     import main

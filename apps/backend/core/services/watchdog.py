@@ -332,6 +332,21 @@ async def watchdog_scan(cfg: WatchdogConfig) -> ScanOut:
     return ScanOut(scan.candidates, scan.proposals, scan.finding_ids)
 
 
+# --- reconcile state (read by TaskWorkflow's reconcile start, on the main queue) ------------------------
+
+
+@activity.defn
+async def reconcile_state(ws: str, task_id: str) -> str:
+    """`{status}:{n}:live|ended` for a `queued`/`working` row (n = its last attempt, 0 = none), or `other` when
+    the task moved on since the watchdog looked (do nothing)."""
+    task = await tasks_repo.get_task(ws, task_id)
+    if not task or task["status"] not in ("working", "queued") or task.get("stopRequestedBy"):
+        return "other"  # moved on, or a person stopped it: never touched
+    n = int(task.get("attemptCount") or 0)
+    attempt = await tasks_repo.get_attempt(ws, task_id, n) if n else None
+    return f"{task['status']}:{n}:{'live' if attempt and attempt.get('status') != 'ended' else 'ended'}"
+
+
 # --- judge (spec 11 §3.5) ----------------------------------------------------------------------------
 
 MAX_JUDGEMENTS_PER_ATTEMPT = 16  # 8 h ÷ 30 min

@@ -296,7 +296,10 @@ class TaskWorkflow(TaskQuestionsMixin):
     @workflow.run
     async def run(self, start: TaskStart) -> None:
         lost = 0
-        while True:
+        # A reconcile start (the watchdog) runs the loop only when it restarted a queued orphan; it still
+        # waits for handlers below, so an update racing the start is never left hanging.
+        active = start.reason != "reconcile" or await self._reconcile()
+        while active:
             if self._stop_by is not None:
                 if self._status != "resolved":
                     await self._transition("resolved", "stopped")
@@ -328,6 +331,24 @@ class TaskWorkflow(TaskQuestionsMixin):
                 await self._transition("resolved", "quiet")
                 break
         await workflow.wait_condition(workflow.all_handlers_finished)
+
+    async def _reconcile(self) -> bool:
+        """The watchdog's start for an orphaned row (spec 11 §3.6, Lane W). Any attempt left open is closed as
+        `runtime_lost` first (releases its slot). A queued task then runs normally (True); a working one is
+        failed `lost_run` and never re-attempted; a task that moved on is left alone."""
+        state = await _act("reconcile_state", self._ws, self._task_id, result_type=str)
+        if state == "other":
+            return False
+        status, n, live = state.split(":")
+        if live == "live":
+            await _act("end_attempt", self._ws, self._task_id, int(n), "runtime_lost", "lost_run")
+        if status == "queued":
+            self._attempt_needed = True
+            return True
+        if live != "live":
+            await _act("release_slot", self._ws, self._task_id)
+        await self._transition("failed", "lost_run")
+        return False
 
     async def _run_attempt(self) -> WorkerTurnOut | None:
         """One attempt. None ⇒ nothing ran (budget, hook, stop while waiting for a slot)."""

@@ -794,13 +794,21 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
     script = super_agent_faults.fault("scripted_router") if to_model else None
     if to_model and script:  # dev fault hook: decisions by exact message text, no Router run
         roster = await messaging.load_agent_roster(ws)
-        open_tasks = await _open_tasks(ws, inp.lane, None) if inp.lane == "shared" else []
+        user_id = next((t.get("actorUserId") for t in to_model.values() if t.get("actorUserId")), None)
+        rooms = {(t.get("ref") or {}).get("roomId") for t in to_model.values()} - {None}
+        open_tasks = await _open_tasks(ws, inp.lane, user_id, rooms)
         texts = {tid: await _input_text(ws, tid) for tid in to_model}
         decisions += router_prompt.validate_decisions(
             await super_agent_faults.scripted_decisions(script, texts),
             trigger_ids=set(to_model),
             roster_ids={a["id"] for a in roster},
-            open_task_ids={t["taskId"] for t in open_tasks},
+            open_tasks={t["taskId"]: t for t in open_tasks},
+            scope=lambda tid: (
+                inp.lane,
+                to_model[tid].get("actorUserId"),
+                (to_model[tid].get("ref") or {}).get("roomId"),
+            ),
+            in_scope=_task_in_scope,
         )
     elif to_model:
         private = inp.lane != "shared"

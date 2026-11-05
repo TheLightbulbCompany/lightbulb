@@ -646,6 +646,11 @@ export class ContainerStack extends cdk.Stack {
         // year. Prefix-scoped so the Litestream and per-owner state above is never expired.
         { id: "SessionsFree", prefix: "sessions/free/", expiration: cdk.Duration.days(30) },
         { id: "SessionsWorkspace", prefix: "sessions/workspace/", expiration: cdk.Duration.days(365) },
+        // Super-agent task overlays (<owner>/hermes-tasks/<task>/<agent>/): every object a
+        // per-task VM writes carries this tag; 14 days after its last write the overlay goes
+        // (spec 07 §6). Tag-scoped, never prefix-scoped: Litestream and specialist profile
+        // objects are never tagged, and in prod nothing is, so the rule is inert there.
+        { id: "TaskOverlays", tagFilters: { "lb-kind": "task-overlay" }, expiration: cdk.Duration.days(14) },
       ],
     });
 

@@ -204,7 +204,7 @@ class Ctx:
                 rooms = (await api.get("/api/v1/messaging/rooms")).raise_for_status().json().get("rooms") or []
                 general = next((r for r in rooms if (r.get("name") or "").lower() == "general"), None)
                 if general is None:
-                    raise RuntimeError(f"{self.ws_name}: no #general for {label}")
+                    raise RuntimeError(f"{self.ws}: no #general for {label}")
                 detail = (await api.get(f"/api/v1/messaging/rooms/{general['roomId']}")).raise_for_status().json()
                 front = next(
                     (
@@ -215,7 +215,7 @@ class Ctx:
                     None,
                 )
                 if front is None:
-                    raise RuntimeError(f"{self.ws_name}: #general has no @lightbulb member (switch off?)")
+                    raise RuntimeError(f"{self.ws}: #general has no @lightbulb member (switch off?)")
                 body = {
                     "clientRoomId": str(
                         uuid.uuid5(uuid.NAMESPACE_URL, f"sa-acceptance-dm|{self.ws}|{user_id}|{front['id']}")

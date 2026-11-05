@@ -1755,7 +1755,43 @@ def _mutate_root_auth(owner_id: str, mutate) -> bool:
     raise RuntimeError(f"root auth document for {owner_id} changed during three conditional writes")
 
 
-def stage_codex_auth(owner_id: str, tokens: dict, *, only_if_absent: bool = False) -> None:
+#: Spec 13 §3.4: what root ``auth.json`` holds for a backend-custodied ChatGPT grant. No tokens --
+#: the bridge vends them per turn and never writes this file back.
+CODEX_MARKER: dict = {"custody": "backend", "tokens": {}}
+
+
+class MarkerRaced(Exception):
+    """``stage_codex_marker``'s one conditional put lost: ``auth.json`` moved since it was read."""
+
+
+def stage_codex_marker(owner_id: str, *, expected_etag: str | None, existing: dict | None) -> None:
+    """Cutover step 5 (spec 13 §6.1): replace the ``openai-codex`` entry of the ``auth.json`` the
+    caller read (``existing``, at ``expected_etag``) with the marker, in ONE conditional put --
+    no retry loop, because the caller holds the fences and a lost write means one was missed
+    (:class:`MarkerRaced`; the caller undoes its row). Other providers' state survives; the
+    compatibility ``auth.revision`` is bumped last. Sync -- call via ``run_in_thread``."""
+    import json
+
+    bucket = settings.OWNER_STATE_BUCKET
+    if not bucket:
+        raise RuntimeError("OWNER_STATE_BUCKET is not configured; refusing to report an auth write")
+    prefix = root_home_prefix(owner_id)
+    blob = dict(existing or {})
+    providers = blob.get("providers")
+    providers = dict(providers) if isinstance(providers, dict) else {}
+    providers["openai-codex"] = dict(CODEX_MARKER)
+    blob["providers"] = providers
+    blob["active_provider"] = "openai-codex"
+    try:
+        _s3_put_conditionally(bucket, f"{prefix}auth.json", json.dumps(blob), expected_etag)
+    except Exception as exc:  # noqa: BLE001 -- classify S3's conditional conflict only
+        if _is_precondition_failure(exc):
+            raise MarkerRaced(owner_id) from exc
+        raise
+    _s3_put(bucket, f"{prefix}auth.revision", uuid.uuid4().hex)
+
+
+def stage_codex_auth(owner_id: str, tokens: dict, *, only_if_absent: bool = False, custody: str | None = None) -> None:
     """Write the owner's ChatGPT grant into the ROOT ``auth.json``, once per connect — not into
     any per-profile ``config.yaml``/``.env``.
 
@@ -1773,6 +1809,10 @@ def stage_codex_auth(owner_id: str, tokens: dict, *, only_if_absent: bool = Fals
     provider and a concurrent refresh/reconnect survive rather than being clobbered. The
     compatibility ``auth.revision`` marker is written last for bridge images that still poll it;
     current images also fence warm write-through with the auth object's own ETag.
+
+    ``custody="backend"`` (spec 13): the grant is the backend's, so what lands here is the
+    :data:`CODEX_MARKER`, never the tokens -- a reconnect must not hand the VM a refresh token
+    the broker is also rotating.
     """
     from datetime import datetime, timezone
 
@@ -1783,11 +1823,14 @@ def stage_codex_auth(owner_id: str, tokens: dict, *, only_if_absent: bool = Fals
         providers = dict(providers) if isinstance(providers, dict) else {}
         if only_if_absent and providers.get("openai-codex"):
             return False  # a reconcile never replaces a grant the runtime may have rotated
-        providers["openai-codex"] = {
-            "tokens": payload,
-            "last_refresh": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            "auth_mode": "chatgpt",
-        }
+        if custody == "backend":
+            providers["openai-codex"] = dict(CODEX_MARKER)
+        else:
+            providers["openai-codex"] = {
+                "tokens": payload,
+                "last_refresh": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "auth_mode": "chatgpt",
+            }
         blob["providers"] = providers
         blob["active_provider"] = "openai-codex"
         return True

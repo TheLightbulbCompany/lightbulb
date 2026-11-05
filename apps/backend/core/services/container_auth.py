@@ -69,12 +69,14 @@ async def push_oauth_credential_to_container(*, owner_id: str, connector_id: str
     from core.services import oauth_service
 
     try:
-        tokens = await oauth_service.get_decrypted_tokens(user_id=connector_id, bound_to=owner_id)
+        row = await oauth_service.get_token_row(connector_id, consistent=False, bound_to=owner_id)
     except Exception as exc:  # noqa: BLE001 — best-effort
         logger.warning("push_oauth_credential: token read failed for owner=%s: %s", owner_id, exc)
         return False
-    if not tokens:
+    if not row or not row.get("tokens"):
         return False
-    await run_in_thread(stage_codex_auth, owner_id, tokens, only_if_absent=only_if_absent)
+    # A backend-custodied grant (spec 13) stages the marker, never the tokens.
+    custody = {"custody": "backend"} if row.get("custody") == "backend" else {}
+    await run_in_thread(stage_codex_auth, owner_id, row["tokens"], only_if_absent=only_if_absent, **custody)
     logger.info("push_oauth_credential: staged fresh ChatGPT token", extra={"owner_id": owner_id})
     return True

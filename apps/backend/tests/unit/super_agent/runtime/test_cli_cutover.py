@@ -15,6 +15,8 @@ import pytest
 import yaml
 from moto import mock_aws
 
+from core.repositories import container_repo
+from core.services import hermes_provisioning, owner_lifecycle
 from core.services.credentials import cli_cutover
 from core.services.credentials.materializers import instagram_cli, qbo_dotenv, xurl_cli
 
@@ -104,18 +106,16 @@ def world(monkeypatch):
 
     state = {"row": {"provider": "x", "status": "connected"}, "secret": None, "projected": []}
     monkeypatch.setattr(cli_cutover.settings, "OWNER_STATE_BUCKET", BUCKET)
-    monkeypatch.setattr(cli_cutover.owner_lifecycle, "owner_lifecycle_guard", _guard)
-    monkeypatch.setattr(
-        cli_cutover.container_repo, "get_by_owner_id", AsyncMock(return_value={"agentcore_runtime_arn": "arn:rt"})
-    )
+    monkeypatch.setattr(owner_lifecycle, "owner_lifecycle_guard", _guard)
+    monkeypatch.setattr(container_repo, "get_by_owner_id", AsyncMock(return_value={"agentcore_runtime_arn": "arn:rt"}))
     stop = AsyncMock(return_value=True)
-    monkeypatch.setattr(cli_cutover.hermes_provisioning, "stop_runtime_session", stop)
+    monkeypatch.setattr(hermes_provisioning, "stop_runtime_session", stop)
     idle = AsyncMock(return_value=True)
-    monkeypatch.setattr(cli_cutover.hermes_provisioning, "_wait_for_idle_session", idle)
+    monkeypatch.setattr(hermes_provisioning, "_wait_for_idle_session", idle)
     lease = MagicMock(return_value=True)
     finish = MagicMock()
-    monkeypatch.setattr(cli_cutover.container_repo, "try_take_wake_lease_sync", lease)
-    monkeypatch.setattr(cli_cutover.container_repo, "finish_wake_sync", finish)
+    monkeypatch.setattr(container_repo, "try_take_wake_lease_sync", lease)
+    monkeypatch.setattr(container_repo, "finish_wake_sync", finish)
     monkeypatch.setattr(cli_cutover.integrations_repo, "get", AsyncMock(side_effect=lambda *a, **k: state["row"]))
 
     async def _set_custody(owner, provider, custody, *, expected=None):

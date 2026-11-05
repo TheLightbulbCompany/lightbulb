@@ -953,6 +953,10 @@ class RuntimeOperation(ContractModel):
     error: RuntimeErrorDto | None
 
 
+class LiveFeatures(ContractModel):
+    super_agent: bool
+
+
 class LiveConfig(ContractModel):
     schema_version: Literal[1] = 1
     http_endpoint: str
@@ -960,6 +964,8 @@ class LiveConfig(ContractModel):
     region: str
     user_channel_key: uuid.UUID
     workspace_id: uuid.UUID
+    # Present only while the super-agent switch is on (contracts-v2 §1); absent = off = today's payload.
+    features: LiveFeatures | None = None
 
 
 class ApiError(ContractModel):

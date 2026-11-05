@@ -56,6 +56,7 @@ from core.services import (
 from core.services import local_session_grants
 from core.services import container_rpc, message_search, runtime_transport, voice_calls
 from core.services.live_events import get_live_event_publisher, publish_room_activity
+from core.services.super_agent_flags import flags_for
 from core.services.paperclip_admin_client import PaperclipApiError, shared_admin_client
 from core.services.paperclip_admin_session import get_admin_session_cookie
 from core.services.messaging import (
@@ -73,6 +74,7 @@ from core.services.messaging import (
     CreateMessageRequest,
     CreateRoomRequest,
     LiveConfig,
+    LiveFeatures,
     MarkUnreadRequest,
     MemberPrefsRequest,
     MessagePage,
@@ -807,7 +809,7 @@ async def get_feed(auth: AuthContext = Depends(get_current_user)):
     return await service.get_feed(auth)
 
 
-@router.get("/messaging/live-config", response_model=LiveConfig)
+@router.get("/messaging/live-config", response_model=LiveConfig, response_model_exclude_none=True)
 async def live_config(auth: AuthContext = Depends(get_current_user)):
     owner_id = resolve_owner_id(auth)
     key = await messaging_repo.ensure_user_stream(owner_id, auth.user_id)
@@ -830,6 +832,7 @@ async def live_config(auth: AuthContext = Depends(get_current_user)):
         region=settings.APPSYNC_EVENTS_REGION or settings.AWS_REGION,
         user_channel_key=key,
         workspace_id=workspace_id,
+        features=LiveFeatures(super_agent=True) if await flags_for(owner_id) else None,
     )
 
 

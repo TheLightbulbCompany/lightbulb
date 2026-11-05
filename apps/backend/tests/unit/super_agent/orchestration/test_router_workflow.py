@@ -2,6 +2,7 @@
 
 import asyncio
 import uuid
+from datetime import timedelta
 
 import pytest
 from temporalio.worker import Worker
@@ -92,6 +93,35 @@ async def test_router_turn_tries_twice_then_falls_back(temporal_env, fakes):
     await h.terminate()
     assert fakes.names().count("router_turn") == 2
     assert fakes.args("apply_fallback") == [(WS, ["a"])]
+
+
+async def test_router_waits_for_a_starting_runtime_then_answers(temporal_env, fakes):
+    """A message sent while a new workspace is still being set up is kept, not answered with the fallback: the
+    Router waits for the runtime and runs the same batch once it is up."""
+    from temporalio.exceptions import ApplicationError
+
+    calls = {"n": 0}
+
+    def starting(inp):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise ApplicationError("starting", type="RuntimeNotReady", non_retryable=True)
+
+    fakes.behaviour["router_turn"] = starting
+    queue = f"q-{uuid.uuid4()}"
+    async with Worker(temporal_env.client, task_queue=queue, workflows=WORKFLOWS, activities=fakes.activities()):
+        h = await temporal_env.client.start_workflow(
+            RouterWorkflow.run, RouterState(WS), id=f"router:{uuid.uuid4()}", task_queue=queue
+        )
+        await h.signal(RouterWorkflow.trigger, _ref("a"))
+        for _ in range(20):  # the wait is a workflow timer: skip time until the third try ran
+            if fakes.names().count("router_turn") >= 3:
+                break
+            await temporal_env.sleep(timedelta(seconds=21))
+            await asyncio.sleep(0.1)
+        await h.terminate()
+    assert [a[0].trigger_ids for a in fakes.args("router_turn")] == [["a"], ["a"], ["a"]]
+    assert fakes.args("apply_fallback") == []
 
 
 async def test_router_dedups_trigger(temporal_env, fakes):

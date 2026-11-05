@@ -9,6 +9,7 @@ import { useBilling } from "@/hooks/useBilling";
 import { useAgents } from "@/hooks/useAgents";
 import { useRosterEntries } from "@/components/agents/useRosterEntries";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
+import { useChatReady } from "@/components/chat/shell/useChatReady";
 import type { CompanyAgent, CompanyMember } from "@/components/teams/shared/types";
 import { resolveCeoAgentId } from "@/components/getstarted/getStartedFirstTask";
 import { useSuperAgent } from "@/hooks/useLiveEvents";
@@ -288,6 +289,8 @@ export function MessagingWorkspaceProvider({
   const setRoomTyping = rooms.setTyping;
   const sendRoomMessage = rooms.sendMessage;
   const teams = useTeamsApi();
+  // The runtime is still being set up (a new workspace): a Router room's first message shows as queued.
+  const { setupStarting } = useChatReady();
   const { agents } = useAgents();
   const roster = useRosterEntries(agents);
   const activityByAgentId = useMemo(() => new Map(roster.map((entry) => [entry.agent.id, entry.state])), [roster]);
@@ -1048,6 +1051,7 @@ export function MessagingWorkspaceProvider({
     onSubagentsVisible: rooms.subagentsPollVisible,
     onLinkToWork: () => openPanel("teams-issues", {}, { pushUrl: true }),
     frontAgentId: resolveCeoAgentId(agentRoster?.agents ?? []),
+    runtimeStarting: setupStarting,
     onDownloadAttachment: rooms.downloadAttachment,
     onAttachmentUrl: rooms.attachmentUrl,
   } : null;

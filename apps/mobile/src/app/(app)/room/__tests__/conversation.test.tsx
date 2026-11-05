@@ -188,6 +188,8 @@ const mockLive = {
 // referentially stable `live`, and a new one per render re-fires the history
 // reconcile into "Maximum update depth exceeded".
 let mockSuperAgent = false;
+let mockContainer: { kind: string } | null = null;
+jest.mock("../../../../lib/containerStatusContext", () => ({ useContainerStatusContext: () => mockContainer }));
 jest.mock("../../../../providers/live-events", () => ({ useSuperAgent: () => mockSuperAgent, useLiveEvents: () => mockLive, useOptionalLiveEvents: () => mockLive }));
 // The front agent (`@lightbulb`) once the roster answers; only asked for while the switch is on.
 // The band has its own suite; here only WHERE it mounts is under test.
@@ -244,6 +246,7 @@ describe("conversation screen", () => {
     mockMessages = [...mockBase];
     mockRoomId = "room-1";
     mockSuperAgent = false;
+    mockContainer = null;
     mockIsPreview = false;
     mockFocused = true;
     mockLive.messaging.listRooms.mockReset().mockImplementation(async () => ({ rooms: [mockRoom] }));
@@ -784,6 +787,18 @@ describe("conversation screen", () => {
       expect(screen.queryByText("Friday")).toBeNull();
       expect(screen.queryByTestId("specialist-dm-banner")).toBeNull();
     } finally { mockLive.frontAgentId = "agent-lb"; }
+  });
+
+  it("super-agent, setup still running: my unanswered message reads Queued; once ready it reads as before", async () => {
+    mockSuperAgent = true;
+    mockContainer = { kind: "starting" };
+    const view = await render(<Conversation />);
+    expect(await screen.findByText("Queued · Lightbulb answers as soon as setup finishes")).toBeTruthy();
+    await view.unmount();
+    mockContainer = { kind: "ready" };
+    await render(<Conversation />);
+    await screen.findByText("mine");
+    expect(screen.queryByText(/^Queued/)).toBeNull();
   });
 
   it("titles an agent DM with the agent and its idle status, opening details", async () => {

@@ -22,6 +22,7 @@ vi.mock("@clerk/nextjs", () => ({
 }));
 
 vi.mock("@/hooks/useLiveEvents", () => ({
+  useSuperAgent: () => false,
   useLiveEvents: () => ({ isConnected: true, onEvent: () => () => {} }),
 }));
 

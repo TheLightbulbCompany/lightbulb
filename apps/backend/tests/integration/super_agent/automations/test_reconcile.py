@@ -115,6 +115,26 @@ async def test_reconcile_keeps_schedule_whose_row_appeared_after_the_scan(table,
         await _cleanup(ws, "late")
 
 
+async def test_reconcile_acts_on_the_current_row_not_the_scanned_one(table, client, ws, monkeypatch):
+    """A pause (or delete) after the scan must not be undone by upserting the stale scanned row."""
+    stale = await _active(ws, "p")
+    await asch.upsert(stale)
+    await repo.set_status(ws, "p", "paused", reason=None, allowed_from=frozenset({"active"}))
+    await asch.pause(ws, "p", "paused by Sam")
+    gone = await _active(ws, "g")
+    await repo.delete_schedule(ws, "g")
+    monkeypatch.setattr(repo, "scan_schedules", AsyncMock(return_value=[stale, gone]))
+    try:
+        await reconcile_schedules()
+        assert (await _describe(client, ws, "p")).schedule.state.paused is True
+        from temporalio.service import RPCError
+
+        with pytest.raises(RPCError):  # a row deleted after the scan gets no Schedule
+            await _describe(client, ws, "g")
+    finally:
+        await _cleanup(ws, "p", "g")
+
+
 async def test_reconcile_refuses_deletes_when_table_is_another_env(table, client, ws, monkeypatch):
     from core.temporal import automations
 

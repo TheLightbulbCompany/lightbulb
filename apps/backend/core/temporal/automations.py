@@ -85,6 +85,11 @@ async def reconcile_schedules() -> dict:
                     await repo.delete_hook(ws, public_id)
                 out["deleted_drafts"] += 1
             continue
+        # The scan is stale: act on the current row (consistent read), so a pause or delete since the scan
+        # is not undone. A row gone since the scan gets no Schedule (the sweep below re-checks too).
+        row = await repo.get_schedule(ws, sid)
+        if row is None:
+            continue
         keep.add(asch.schedule_id(row))
         changed = await asch.upsert(row)
         if changed:

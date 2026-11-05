@@ -231,6 +231,22 @@ async def internal_recall(owner_id: str, body: InternalRecallBody, request: Requ
     return await _guard(memory_api.recall_page(owner_id, member, **fields, use_expand=False, audience=audience))
 
 
+class BoardBody(BaseModel):
+    audience: AudienceBody
+
+
+@internal_router.post("/board/{owner_id}")
+async def internal_board(owner_id: str, body: BoardBody, request: Request) -> dict:
+    """The task board a super-agent turn reads instead of Paperclip's, filtered for its audience."""
+    await container_auth._require_hook_token(owner_id, request)
+    audience = body.audience.model_dump(exclude_none=True)
+    if audience["kind"] == "room" and not audience.get("roomId"):
+        raise HTTPException(status_code=422, detail="a room audience names its room")
+    if not await memory_api.flags_for(owner_id):
+        return {"text": ""}
+    return {"text": await memory_links.board_text(owner_id, audience)}
+
+
 @internal_router.post("/link/{owner_id}")
 async def internal_link(owner_id: str, body: LinkBody, request: Request) -> dict:
     """The Router's second hop (``follow_link``): one task as ``audience`` may see it; 404 otherwise."""

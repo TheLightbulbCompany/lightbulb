@@ -9,6 +9,7 @@ only when ``link_visible`` passes for the asking audience; the card's text is ne
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime, timedelta
 
 from core import tasks_schema as ts
 from core.repositories import messaging_repo, tasks_repo
@@ -101,3 +102,45 @@ async def read_link(ws: str, task_id: str, audience: dict) -> dict | None:
         "threads": threads[:MAX_THREADS],
         "lastResult": await task_conversation.last_result_text(ws, task_id),
     }
+
+
+BOARD_ROWS = 10
+BOARD_DONE_DAYS = 14
+_BOARD_SCAN = 50  # rows read per status before the visibility filter
+
+
+async def _visible_rows(ws: str, status: str, audience: dict, since: str = "") -> list[dict]:
+    rows, _ = await tasks_repo.list_tasks_by_status(ws, status, limit=_BOARD_SCAN)
+    rows = [r for r in rows if str(r.get("updatedAt") or "") >= since]
+    keep = await asyncio.gather(*(link_visible(r, audience) for r in rows))
+    return [r for r, ok in zip(rows, keep, strict=True) if ok][:BOARD_ROWS]
+
+
+def _board_row(task: dict, dated: bool = False) -> str:
+    title = " ".join(str(task.get("title") or "").split())[:120]
+    day = str(task.get("updatedAt") or "")[:10]
+    return f"{task.get('identifier') or ''} {title}".strip() + (f" ({day})" if dated and day else "")
+
+
+async def board_text(ws: str, audience: dict) -> str:
+    """The super-agent task board for one audience, in the plugin's board wording (it replaces the
+    Paperclip read on super-agent turns): working and waiting, and resolved in the last 14 days."""
+    since = (datetime.now(UTC) - timedelta(days=BOARD_DONE_DAYS)).isoformat()
+    doing, waiting, done = await asyncio.gather(
+        _visible_rows(ws, "working", audience),
+        _visible_rows(ws, "waiting", audience),
+        _visible_rows(ws, "resolved", audience, since),
+    )
+    lines = []
+    if doing:
+        lines.append("In progress: " + "; ".join(map(_board_row, doing)))
+    if waiting:
+        lines.append("Waiting: " + "; ".join(map(_board_row, waiting)))
+    if done:
+        lines.append(f"Done in the last {BOARD_DONE_DAYS} days: " + "; ".join(_board_row(t, True) for t in done))
+    if not lines:
+        return ""
+    return (
+        f"Task board, partial: in progress, waiting and recently done only, up to {BOARD_ROWS} each, not the "
+        "whole board. Live: it wins over a remembered fact that says otherwise.\n" + "\n".join(lines)
+    )

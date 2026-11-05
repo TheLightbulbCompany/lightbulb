@@ -1624,25 +1624,30 @@ async def _compare_browser_attr(owner_id: str, attr: str, expected, value) -> bo
 SESSION_KEY_PREFIX = "__session__#"
 
 
-def _session_key(owner_id: str) -> dict:
-    return {"owner_id": f"{SESSION_KEY_PREFIX}{owner_id}"}
+def _session_key(owner_id: str, task_id: str | None = None) -> dict:
+    """``__session__#<owner>``, or ``__session__#<owner>#task#<task>`` for a per-task session:
+    one row per AgentCore session, so a task's wake never blocks (or warms) the workspace's."""
+    suffix = f"#task#{task_id}" if task_id is not None else ""
+    return {"owner_id": f"{SESSION_KEY_PREFIX}{owner_id}{suffix}"}
 
 
 def _conditional_miss(exc: ClientError) -> bool:
     return exc.response["Error"]["Code"] == "ConditionalCheckFailedException"
 
 
-def get_session_sync(owner_id: str) -> dict:
+def get_session_sync(owner_id: str, *, task_id: str | None = None) -> dict:
     """Strongly consistent; ``{}`` when there is no row. Sync -- the wake runs on the invoke pool."""
-    return _get_table().get_item(Key=_session_key(owner_id), ConsistentRead=True).get("Item") or {}
+    return _get_table().get_item(Key=_session_key(owner_id, task_id), ConsistentRead=True).get("Item") or {}
 
 
-def try_take_wake_lease_sync(owner_id: str, *, arn: str, token: str, now: int, lease_s: int) -> bool:
+def try_take_wake_lease_sync(
+    owner_id: str, *, arn: str, token: str, now: int, lease_s: int, task_id: str | None = None
+) -> bool:
     """Take the cold-wake lease: only when nobody holds a live one AND the session is not warm
     on this runtime."""
     try:
         _get_table().update_item(
-            Key=_session_key(owner_id),
+            Key=_session_key(owner_id, task_id),
             UpdateExpression="SET waking_until = :lease, wake_tok = :tok",
             ConditionExpression=(
                 "(attribute_not_exists(waking_until) OR waking_until < :now)"
@@ -1658,7 +1663,13 @@ def try_take_wake_lease_sync(owner_id: str, *, arn: str, token: str, now: int, l
 
 
 def finish_wake_sync(
-    owner_id: str, *, token: str, warm_until: int | None = None, started_at: int | None = None, arn: str | None = None
+    owner_id: str,
+    *,
+    token: str,
+    warm_until: int | None = None,
+    started_at: int | None = None,
+    arn: str | None = None,
+    task_id: str | None = None,
 ) -> None:
     """Drop the lease we hold; with ``warm_until`` also record the session as warm on ``arn``.
     A lease taken over (expired) or cleared by a stop is left alone."""
@@ -1668,7 +1679,7 @@ def finish_wake_sync(
         values.update({":w": warm_until, ":s": started_at, ":arn": arn})
     try:
         _get_table().update_item(
-            Key=_session_key(owner_id),
+            Key=_session_key(owner_id, task_id),
             UpdateExpression=update,
             ConditionExpression="wake_tok = :tok",
             ExpressionAttributeValues=values,
@@ -1678,11 +1689,11 @@ def finish_wake_sync(
             raise
 
 
-def extend_session_warm_sync(owner_id: str, *, warm_until: int) -> None:
+def extend_session_warm_sync(owner_id: str, *, warm_until: int, task_id: str | None = None) -> None:
     """Move ``warm_until`` forward; never resurrect a row a stop cleared."""
     try:
         _get_table().update_item(
-            Key=_session_key(owner_id),
+            Key=_session_key(owner_id, task_id),
             UpdateExpression="SET warm_until = :w",
             ConditionExpression="attribute_exists(warm_until) AND warm_until < :w",
             ExpressionAttributeValues={":w": warm_until},
@@ -1692,6 +1703,6 @@ def extend_session_warm_sync(owner_id: str, *, warm_until: int) -> None:
             raise
 
 
-async def clear_session(owner_id: str) -> None:
+async def clear_session(owner_id: str, *, task_id: str | None = None) -> None:
     """Forget the session: the next invoke takes the cold path (one serialized ``health``)."""
-    await run_in_thread(_get_table().delete_item, Key=_session_key(owner_id))
+    await run_in_thread(_get_table().delete_item, Key=_session_key(owner_id, task_id))

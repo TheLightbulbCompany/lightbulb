@@ -14,70 +14,110 @@ import boto3
 import pytest
 from moto import mock_aws
 
+from core import tasks_schema as ts
 from core.repositories.paperclip_repo import (
     FunnelClaimResult,
     PaperclipIdentity,
     PaperclipRepo,
     PaperclipWorkspace,
+    from_meta_item,
 )
 
 TABLE_NAME = "test-paperclip-companies"
 
 
-@pytest.fixture
-def repo():
+def create_companies_table(resource, name: str = TABLE_NAME):
+    """The paperclip-companies table with the prod GSIs (database-stack.ts)."""
+    return resource.create_table(
+        TableName=name,
+        KeySchema=[{"AttributeName": "user_id", "KeyType": "HASH"}],
+        AttributeDefinitions=[
+            {"AttributeName": "user_id", "AttributeType": "S"},
+            {"AttributeName": "status", "AttributeType": "S"},
+            {"AttributeName": "scheduled_purge_at", "AttributeType": "S"},
+            {"AttributeName": "org_id", "AttributeType": "S"},
+            {"AttributeName": "company_id", "AttributeType": "S"},
+        ],
+        BillingMode="PAY_PER_REQUEST",
+        GlobalSecondaryIndexes=[
+            {
+                "IndexName": "by-status-purge-at",
+                "KeySchema": [
+                    {"AttributeName": "status", "KeyType": "HASH"},
+                    {"AttributeName": "scheduled_purge_at", "KeyType": "RANGE"},
+                ],
+                "Projection": {"ProjectionType": "KEYS_ONLY"},
+            },
+            {
+                # Used by org_company_ids() (the duplicate-company guard).
+                "IndexName": "by-org-id",
+                "KeySchema": [
+                    {"AttributeName": "org_id", "KeyType": "HASH"},
+                ],
+                "Projection": {"ProjectionType": "ALL"},
+            },
+            {
+                # Mirrors the prod table (database-stack.ts). Load-bearing
+                # for the seed-claim / failed-marker tests: DynamoDB
+                # rejects any PutItem whose company_id is an empty STRING
+                # once this index exists, so those writes must OMIT the
+                # attribute — a table without this GSI cannot catch that.
+                "IndexName": "by-company-id",
+                "KeySchema": [
+                    {"AttributeName": "company_id", "KeyType": "HASH"},
+                ],
+                "Projection": {
+                    "ProjectionType": "INCLUDE",
+                    "NonKeyAttributes": ["status"],
+                },
+            },
+        ],
+    )
+
+
+def create_tasks_table(resource):
+    """The `tasks` table as `tasks_schema` defines it (keys + GSIs, projection ALL like api-stack.ts)."""
+    attrs = {"pk", "sk"} | {a for g in ts.GSIS for a in (g.pk_attr, g.sk_attr)}
+    return resource.create_table(
+        TableName="tasks",
+        KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}],
+        AttributeDefinitions=[{"AttributeName": a, "AttributeType": "S"} for a in sorted(attrs)],
+        GlobalSecondaryIndexes=[
+            {
+                "IndexName": g.name,
+                "KeySchema": [
+                    {"AttributeName": g.pk_attr, "KeyType": "HASH"},
+                    {"AttributeName": g.sk_attr, "KeyType": "RANGE"},
+                ],
+                "Projection": {"ProjectionType": "ALL"},
+            }
+            for g in ts.GSIS
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+
+
+def raw_workspace(repo, org_id: str) -> dict | None:
+    """The stored workspace row in snake_case, from whichever store the repo writes."""
+    if repo._meta_on_tasks():
+        item = repo._ws_table().get_item(Key=repo._ws_key(org_id)).get("Item")
+        return from_meta_item(item) if item else None
+    return repo._table().get_item(Key={"user_id": org_id}).get("Item")
+
+
+@pytest.fixture(params=["paperclip", "tasks"])
+def repo(request):
+    """Every test runs against both META stores (wave1-R Task 6): the old table, and `tasks`."""
     with mock_aws():
         resource = boto3.resource("dynamodb", region_name="us-east-1")
-        resource.create_table(
-            TableName=TABLE_NAME,
-            KeySchema=[{"AttributeName": "user_id", "KeyType": "HASH"}],
-            AttributeDefinitions=[
-                {"AttributeName": "user_id", "AttributeType": "S"},
-                {"AttributeName": "status", "AttributeType": "S"},
-                {"AttributeName": "scheduled_purge_at", "AttributeType": "S"},
-                {"AttributeName": "org_id", "AttributeType": "S"},
-                {"AttributeName": "company_id", "AttributeType": "S"},
-            ],
-            BillingMode="PAY_PER_REQUEST",
-            GlobalSecondaryIndexes=[
-                {
-                    "IndexName": "by-status-purge-at",
-                    "KeySchema": [
-                        {"AttributeName": "status", "KeyType": "HASH"},
-                        {"AttributeName": "scheduled_purge_at", "KeyType": "RANGE"},
-                    ],
-                    "Projection": {"ProjectionType": "KEYS_ONLY"},
-                },
-                {
-                    # Used by org_company_ids() (the duplicate-company guard).
-                    "IndexName": "by-org-id",
-                    "KeySchema": [
-                        {"AttributeName": "org_id", "KeyType": "HASH"},
-                    ],
-                    "Projection": {"ProjectionType": "ALL"},
-                },
-                {
-                    # Mirrors the prod table (database-stack.ts). Load-bearing
-                    # for the seed-claim / failed-marker tests: DynamoDB
-                    # rejects any PutItem whose company_id is an empty STRING
-                    # once this index exists, so those writes must OMIT the
-                    # attribute — a table without this GSI cannot catch that.
-                    "IndexName": "by-company-id",
-                    "KeySchema": [
-                        {"AttributeName": "company_id", "KeyType": "HASH"},
-                    ],
-                    "Projection": {
-                        "ProjectionType": "INCLUDE",
-                        "NonKeyAttributes": ["status"],
-                    },
-                },
-            ],
-        )
+        create_tasks_table(resource)
+        create_companies_table(resource)
         # Patch the shared dynamodb resource so the repo's get_table()
         # call resolves to this moto-backed resource.
         with (
             patch("core.dynamodb._table_prefix", ""),
             patch("core.dynamodb._dynamodb_resource", resource),
+            patch.object(PaperclipRepo, "_meta_on_tasks", lambda self: request.param == "tasks"),
         ):
             yield PaperclipRepo(table_name=TABLE_NAME, region="us-east-1")
 
@@ -148,7 +188,7 @@ async def test_put_condition_raises_when_a_different_generation_already_won(repo
 
     await repo.put_workspace(_make_company(user_id="user_race", onboarding_generation="gen-winner"))
 
-    losing_company = _make_company(user_id="user_race", onboarding_generation="gen-loser")
+    losing_company = _make_company(user_id="user_race", company_id="co_loser", onboarding_generation="gen-loser")
     with pytest.raises(ClientError) as exc_info:
         await repo.put_workspace(
             losing_company,
@@ -156,7 +196,9 @@ async def test_put_condition_raises_when_a_different_generation_already_won(repo
             condition_values={":g": "gen-loser"},
         )
     assert exc_info.value.response["Error"]["Code"] == "ConditionalCheckFailedException"
-    assert (await repo.get_workspace("user_race")).onboarding_generation == "gen-winner"
+    won = await repo.get_workspace("user_race")
+    # On `tasks` both rows are one transaction: the failed META write moved no old-row attribute.
+    assert (won.onboarding_generation, won.company_id) == ("gen-winner", "co_user_race")
 
 
 async def test_starter_agent_ids_round_trip(repo):
@@ -335,7 +377,7 @@ async def test_workspace_round_trips_with_members_and_provisioner(repo):
     assert ws.org_id == "org_acme" and ws.company_id == "co_org_acme"
     assert ws.provisioner_user_id == "user_a"
     assert ws.member_user_ids == {"user_a", "user_b"}
-    raw = repo._table().get_item(Key={"user_id": "org_acme"})["Item"]
+    raw = raw_workspace(repo, "org_acme")
     # Company facts only: no credential ever lands on a workspace row.
     assert raw["org_id"] == "org_acme"
     assert not {"paperclip_user_id", "paperclip_password_encrypted", "service_token_encrypted"} & set(raw)
@@ -1215,5 +1257,5 @@ async def test_put_workspace_still_clears_fields_the_snapshot_does_not_carry(rep
     await repo.put_workspace(_make_company("org_k", funnel_state="submitted"))
     await repo.put_workspace(_make_company("org_k"))
 
-    item = repo._table().get_item(Key={"user_id": "org_k"})["Item"]
+    item = raw_workspace(repo, "org_k")
     assert "funnel_state" not in item

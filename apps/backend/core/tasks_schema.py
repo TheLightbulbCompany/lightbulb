@@ -237,6 +237,11 @@ def slots_sk() -> str:
     return "SLOTS"
 
 
+# Spec 03 §5.1: the workspace's own rows under `WS#{ws}` (Lane R, wave1-R Task 6).
+META_SK = "META"
+PENDING_BRIEF_SK = "PENDING_BRIEF"
+
+
 def status_key(ws: str, status: str) -> str:
     return f"{ws}#{status}"
 
@@ -299,6 +304,8 @@ KEY_FORMATS: dict[str, str] = {
     "goal": "GOAL#{goalId}",
     "creation": "CAP#{capId}",
     "slots": "SLOTS",
+    "meta": "META",
+    "pendingBrief": "PENDING_BRIEF",
     "statusKey": "{ws}#{status}",
     "taskWorkflowId": "task:{ws}:{taskId}",
     "routerWorkflowId": "router:{ws}",

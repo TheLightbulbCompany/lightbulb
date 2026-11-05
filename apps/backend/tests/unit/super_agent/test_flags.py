@@ -74,6 +74,7 @@ def test_env_enabled_callers_are_allowlisted():
         BACKEND / "core" / "services" / "paperclip_admin_client.py",
         BACKEND / "routers" / "paperclip_proxy.py",
         BACKEND / "scripts" / "backfill_agent_registry.py",
+        BACKEND / "scripts" / "copy_workspace_meta.py",  # dev-only copy refuses an env without the tasks table
     }
     offenders = [
         str(path.relative_to(BACKEND))

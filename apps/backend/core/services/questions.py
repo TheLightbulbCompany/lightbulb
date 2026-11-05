@@ -10,6 +10,7 @@ Only answering a Question approves. Nothing here maps message text to an answer.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from dataclasses import dataclass
 
@@ -68,6 +69,13 @@ def kind_and_options(effect_kind: str) -> tuple[ts.QuestionKind, list[str]]:
     if action:
         return "review", [action, "request_changes"]
     return "approval", ["allow_once", "deny"]
+
+
+def operands_hash(kind: str, operands: dict) -> str:
+    """The canonical effect hash shared with the bridge (bridge/effects.py `operands_hash`): sha256 of
+    `{kind, **operands}` as sorted, compact JSON. Every backend door and the effects route compute it themselves."""
+    canonical = json.dumps({"kind": kind, **operands}, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 def qid_for(idem_key: str) -> str:

@@ -43,7 +43,16 @@ _MERGE = {
     "start_to_close_timeout": timedelta(minutes=5),
     "retry_policy": RetryPolicy(maximum_attempts=5, backoff_coefficient=2.0),
 }
-_CURATE = {"start_to_close_timeout": timedelta(minutes=10), "retry_policy": RetryPolicy(maximum_attempts=2)}
+# Every curate failure is transient (curate_specialist): the bridge caches its roster 60 s, so a
+# specialist first written within that window is a 400 until it refreshes. 30 s + 60 s + 120 s of
+# backoff outlasts that; after the last attempt the next applied merge tries again. Activity
+# options only (no new command): replay-safe without a patch marker.
+_CURATE = {
+    "start_to_close_timeout": timedelta(minutes=10),
+    # a hung bridge holds the specialist's merge queue at most this long, retries included
+    "schedule_to_close_timeout": timedelta(minutes=15),
+    "retry_policy": RetryPolicy(initial_interval=timedelta(seconds=30), backoff_coefficient=2.0, maximum_attempts=4),
+}
 
 
 @dataclass(frozen=True)
@@ -240,8 +249,13 @@ async def merge_learning(ws: str, specialist_id: str, task_id: str, attempt: int
 
 @activity.defn
 async def curate_specialist(ws: str, specialist_id: str) -> dict:
-    """The curator for one specialist on the workspace VM (`POST /internal/v1/curate`)."""
-    return await runtime_runs.curate(ws, specialist_id)
+    """The curator for one specialist on the workspace VM (`POST /internal/v1/curate`). A refusal is
+    transient here, never final: 400 = a specialist the bridge's 60 s roster cache does not list
+    yet, 404 = an image without the route until the roll, 409 = a live turn."""
+    try:
+        return await runtime_runs.curate(ws, specialist_id)
+    except (runtime_runs.RunRefused, runtime_runs.RunLost) as exc:
+        raise runtime_runs.RuntimeBusy(f"curate refused: {exc}") from exc
 
 
 async def signal_merge(ws: str, specialist_id: str, ref: MergeRef) -> None:

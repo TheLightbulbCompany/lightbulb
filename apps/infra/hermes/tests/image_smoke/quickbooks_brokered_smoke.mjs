@@ -86,6 +86,14 @@ write("T3");
 const qbo3 = await QuickbooksClient.getInstance();
 assert(qbo3.token === "T3", "a store without an expiry must still be adopted");
 
+// 3b. A host that wrote the expiry in MILLISECONDS (a bridge bug, not the contract) is read as
+//     seconds: the token still expires within its hour, not in the year 57000.
+write("T3ms", (Math.floor(Date.now() / 1000) + 3600) * 1000);
+const ms = await quickbooksClient.refreshAccessToken();
+assert(ms.access_token === "T3ms" && ms.expires_in > 0 && ms.expires_in <= 3600, `a ms expiry must be read as seconds, got expires_in=${ms.expires_in}`);
+write("T3");
+assert((await QuickbooksClient.getInstance()).token === "T3", "back to the seconds contract");
+
 // 4. The server never writes the store.
 assert(fs.readFileSync(store, "utf8") === fs.readFileSync(store, "utf8") && !before.includes("T2"), "sanity");
 assert(fs.readFileSync(store, "utf8").includes("QUICKBOOKS_ACCESS_TOKEN=T3"), "the store must hold exactly what the host wrote");

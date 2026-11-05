@@ -1,0 +1,195 @@
+"""Admission: which messages and source events reach the Router (contracts-v2 §10, §14.7; wave-2 O Task 6).
+
+Every source writes one `WORK#ADMIT#` outbox row (a Router room's human message, in `create_message`'s
+transaction; other sources through `enqueue_trigger`). The FIFO consumer (`openclaw_work`) calls
+`admit_pointer`, which, in order:
+
+1. reads META + MSG (a message) or the TRIG row (another source);
+2. thread pass-through: a reply on a thread an open task subscribes to, or a message in a task's own room,
+   goes to that task (`signal_task_input`);
+3. fast path in code: a DM, an @mention or name-address (the MSG's `user_request` targets) ⇒ `respond`;
+   Lightbulb's per-room listen mode: `observe` ⇒ nothing, `mentions` ⇒ addressed only;
+4. unaddressed ⇒ one Jev call (`jev.route_for_router`): Router or nobody, and which specialist fits;
+   Jev down ⇒ addressed only (§14.7);
+5. records the TRIG row (deterministic id: a redelivery is a replay) and signal-with-starts the Router.
+
+Temporal down ⇒ `WorkRetry` (the FIFO redelivers). Nothing here runs while the workspace's switch is off.
+"""
+
+from __future__ import annotations
+
+import logging
+
+from temporalio.service import RPCError
+
+from core import tasks_schema as ts
+from core.dynamodb import utc_now_iso
+from core.observability.metrics import put_metric
+from core.repositories import messaging_repo, tasks_repo
+from core.services import jev, messaging
+from core.services.openclaw_work import WorkRetry
+from core.services.super_agent_flags import flags_for
+from core.temporal import client as temporal
+from core.temporal.types import TaskInputRef, TriggerRef
+
+logger = logging.getLogger(__name__)
+
+_HISTORY = 20
+
+
+async def router_room(meta: dict, owner_id: str) -> bool:
+    """A room people chat with Lightbulb in: switch on, and not an app/feed/vendor/session/meeting room or one
+    shared with another organization. A task's own room is a Router room."""
+    if not meta or not await flags_for(owner_id):
+        return False
+    if meta.get("task"):
+        return True
+    if (
+        meta.get("app")
+        or meta.get("meeting")
+        or messaging.is_session_room(meta)
+        or messaging.is_feed_room(meta)
+        or messaging.is_vendor_room(meta)
+    ):
+        return False
+    return not await messaging_repo.has_foreign_members(meta["roomId"], owner_id)
+
+
+def lane_for(meta: dict, author: dict) -> str:
+    """A DM is the person's private lane; every other room shares one lane."""
+    if meta.get("kind") == "dm" and author.get("kind") == "human":
+        return ts.router_lane_key(author["id"])
+    return "shared"
+
+
+async def enqueue_trigger(ws: str, trigger: ts.Trigger, *, room_id: str | None = None) -> bool:
+    """Record a non-message trigger and its one admission row. False: already enqueued (same trigger id).
+    `room_id`: where Lightbulb answers it, stored on the trigger's ref."""
+    item = trigger.model_dump(by_alias=True)
+    if room_id:
+        item["ref"] = {**item.get("ref", {}), "deliverRoomId": room_id}
+    _, created = await tasks_repo.put_trigger(ws, item)
+    if created:
+        await messaging_repo.put_admit_trigger(ws, trigger.trigger_id)
+    return created
+
+
+async def admit_pointer(pointer: dict) -> None:
+    if pointer["kind"] == "admit_trigger":
+        return await _admit_trigger(pointer["ownerId"], pointer["triggerId"])
+    return await _admit_message(pointer["roomId"], pointer["throughSeq"])
+
+
+async def _signal(ref: TriggerRef) -> None:
+    try:
+        await temporal.signal_router(ref)
+    except (temporal.TemporalUnavailable, RPCError) as exc:
+        raise WorkRetry(type(exc).__name__) from exc
+
+
+async def _to_task(ws: str, task_id: str, trigger_id: str) -> None:
+    try:
+        await temporal.signal_task_input(ws, task_id, TaskInputRef(trigger_id, "message"))
+    except (temporal.TemporalUnavailable, RPCError) as exc:
+        raise WorkRetry(type(exc).__name__) from exc
+
+
+async def _admit_trigger(ws: str, trigger_id: str) -> None:
+    trig = await tasks_repo.get_trigger(ws, trigger_id)
+    if trig is None or not await flags_for(ws):
+        put_metric("admission.outcome", dimensions={"outcome": "dropped", "source": "trigger"})
+        return
+    await _signal(TriggerRef(ws, trigger_id, trig["lane"], trig["admission"]))
+    put_metric("admission.outcome", dimensions={"outcome": trig["admission"], "source": trig["source"]})
+
+
+async def _admit_message(room_id: str, seq: int) -> None:
+    meta = await messaging_repo.get_room(room_id)
+    msg = await messaging_repo.get_message(room_id, seq)
+    if meta is None or msg is None or msg.get("deletedAt"):
+        return
+    ws = meta["ownerId"]
+    author = msg.get("author") or {}
+    if author.get("kind") != "human" or not await router_room(meta, ws):
+        # ponytail: a switch turned off between write and admit drops this one message's wake;
+        # re-dispatching legacy WORK#MESSAGE rows here is not worth it for a dev-only flip.
+        put_metric("admission.outcome", dimensions={"outcome": "dropped", "source": "chat"})
+        return
+    trigger_id = ts.trigger_id("chat", msg["messageId"])
+    ref = {"roomId": room_id, "messageId": msg["messageId"]}
+    if msg.get("threadRootMessageId"):
+        ref["threadRoot"] = msg["threadRootMessageId"]
+    base = {
+        "triggerId": trigger_id,
+        "source": "chat",
+        "actorUserId": author["id"],
+        "lane": lane_for(meta, author),
+        "receivedAt": utc_now_iso(),
+    }
+
+    # 2. pass-through: the task's own room, or a thread a task subscribes to
+    task_id = (meta.get("task") or {}).get("taskId")
+    if not task_id and msg.get("threadRootMessageId"):
+        task_id = await tasks_repo.task_for_thread(ws, f"room:{room_id}:{msg['threadRootMessageId']}")
+    if task_id:
+        await tasks_repo.put_trigger(ws, {**base, "ref": ref, "admission": "respond", "routedTo": {"taskId": task_id}})
+        await _to_task(ws, task_id, trigger_id)
+        put_metric("admission.outcome", dimensions={"outcome": "pass_through", "source": "chat"})
+        return
+
+    # 3. fast path
+    front = await _front_member(room_id, ws)
+    listen = (front or {}).get("listenMode") or "active"
+    addressed = [t["agentId"] for t in msg.get("dispatchTargets") or [] if t.get("eventKind") == "user_request"]
+    pinned = next((a for a in addressed if not front or a != front["id"]), None)
+    if pinned:
+        ref["pinnedSpecialist"] = pinned
+    routed: dict[str, str] | None = None
+    if listen == "observe":
+        admission = None
+    elif addressed or meta.get("kind") == "dm":
+        admission = "respond"
+    elif listen == "mentions":
+        admission = None
+    else:
+        # 4. slow path: one Jev call for an unaddressed message
+        admission, routed = await _ask_jev(meta, msg, ws)
+    if admission is None:
+        put_metric("admission.outcome", dimensions={"outcome": "ignored", "source": "chat"})
+        return
+    trig = {**base, "ref": ref, "admission": admission}
+    if routed:
+        trig["routedTo"] = routed
+    await tasks_repo.put_trigger(ws, trig)  # a redelivery replays the stored row
+    await _signal(TriggerRef(ws, trigger_id, base["lane"], admission))
+    put_metric("admission.outcome", dimensions={"outcome": admission, "source": "chat"})
+
+
+async def _front_member(room_id: str, ws: str) -> dict | None:
+    from core.services import task_conversation
+
+    try:
+        return await messaging_repo.get_member(room_id, "agent", await task_conversation.front_agent_id(ws))
+    except task_conversation.NoFrontAgent:
+        return None
+
+
+async def _ask_jev(meta: dict, msg: dict, ws: str) -> tuple[str | None, dict | None]:
+    from core.repositories import agent_registry_repo
+
+    members = await messaging_repo.list_members(meta["roomId"])
+    history = await messaging_repo.list_messages_before(meta["roomId"], int(msg["messageSeq"]), _HISTORY)
+    # §14.7: `AGENT#` listenMode active = a Jev candidate; observe never runs.
+    listening = {
+        a["agentId"]: a.get("name") or a["agentId"]
+        for a in await agent_registry_repo.list_agents(ws)
+        if a.get("status", "active") == "active" and a.get("listenMode", "active") == "active"
+    }
+    verdict = await jev.route_for_router(meta, msg, members, history, listening)
+    if verdict.get("fallback"):
+        put_metric("admission.jev", dimensions={"outcome": "fallback"})
+        return None, None  # §14.7: Jev down ⇒ addressed messages only
+    if verdict["to"] != "router":
+        return None, None
+    routed = {"specialist": verdict["specialist"]} if verdict.get("specialist") else None
+    return "candidate", routed

@@ -247,6 +247,16 @@ def work_netwake_sk(ulid: str) -> str:
     return f"WORK#NETWAKE#{ulid}"
 
 
+def work_admit_sk(seq: int) -> str:
+    """Super-agent admission outbox (contracts-v2 §10): one row per human message in a Router room."""
+    return f"WORK#ADMIT#{int(seq):020d}"
+
+
+def work_admit_trigger_sk(trigger_id: str) -> str:
+    """Admission outbox for a non-message source (`admission.enqueue_trigger`), under `OWNER#<ws>`."""
+    return f"WORK#ADMIT#T#{trigger_id}"
+
+
 def followup_sk(follow_up_id: str) -> str:
     return f"FOLLOWUP#{follow_up_id}"
 
@@ -897,6 +907,35 @@ async def create_room(
 # ---------------------------------------------------------------------------
 
 
+def _work_admit_item(table_name: str, owner_id: str, room_id: str, message_id: str, seq: int) -> dict:
+    return {
+        "Put": {
+            "TableName": table_name,
+            "Item": {
+                "pk": room_pk(room_id),
+                "sk": work_admit_sk(seq),
+                "payload": {"kind": "admit", "roomId": room_id, "throughSeq": seq},
+                "messageGroupId": _sha256(f"admit|{owner_id}|{room_id}"),
+                "messageDeduplicationId": _sha256(f"admit|{message_id}"),
+                "expiresAt": _expires_at(),
+            },
+        }
+    }
+
+
+async def put_admit_trigger(owner_id: str, trigger_id: str) -> None:
+    """The one `WORK#ADMIT#` outbox row for a non-message trigger (its TRIG row is already written)."""
+    item = {
+        "pk": owner_pk(owner_id),
+        "sk": work_admit_trigger_sk(trigger_id),
+        "payload": {"kind": "admit_trigger", "ownerId": owner_id, "triggerId": trigger_id},
+        "messageGroupId": _sha256(f"admit|{owner_id}"),
+        "messageDeduplicationId": _sha256(f"admit-trigger|{owner_id}|{trigger_id}"),
+        "expiresAt": _expires_at(),
+    }
+    await run_in_thread(_table().put_item, Item=item)
+
+
 def _work_message_item(table_name: str, owner_id: str, room_id: str, message_id: str, seq: int, agent_id: str) -> dict:
     group, dedup = room_fifo_ids(owner_id, room_id, agent_id, message_id)
     return {
@@ -1008,6 +1047,7 @@ async def create_message(
     post_reason: str | None = None,
     attrs: dict | None = None,
     author_member_check: bool = True,
+    admit: bool = False,
 ) -> tuple[dict, bool]:
     """Strong-read ``META.lastSeq`` then conditionally transact: bump META, put
     the immutable ``MSG``, put the ``IDEMP`` receipt, put one ``WORK#MESSAGE``
@@ -1169,7 +1209,10 @@ async def create_message(
                 del items[1]  # the author MEMBER check
             source_condition_start = len(items)
             items.extend(extra_conditions or [])
-            items.extend(_work_message_item(table_name, owner_id, room_id, message_id, seq, a) for a in target_ids)
+            if admit:  # a Router room: one admission row; the targets stay on the MSG row for reference
+                items.append(_work_admit_item(table_name, owner_id, room_id, message_id, seq))
+            else:
+                items.extend(_work_message_item(table_name, owner_id, room_id, message_id, seq, a) for a in target_ids)
             # One tiny row per @mentioned human (members only, so <= MAX_ROOM_MEMBERS);
             # with the agent targets that is <= 32 + 4 fixed + 1 READ + 1 thread root, well under 100.
             mentioned = {m["id"] for m in mentions if m.get("kind") == "human"}

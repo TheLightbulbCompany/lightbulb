@@ -12,6 +12,8 @@ vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useSuperAge
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 const apiGet = vi.hoisted(() => vi.fn(async () => { throw new Error("no automations route"); }));
 vi.mock("@/lib/api", () => ({ useApi: () => ({ get: apiGet }) }));
+const copyText = vi.hoisted(() => vi.fn(async () => true));
+vi.mock("@/components/messaging/messageLinks", async (importOriginal) => ({ ...await importOriginal<typeof import("@/components/messaging/messageLinks")>(), copyText }));
 
 import { TaskOverview } from "../TaskOverview";
 
@@ -84,10 +86,19 @@ describe("TaskOverview", () => {
     expect(client.act).toHaveBeenCalledWith("t-signup", "reopen", 7);
   });
 
+  it("Copy link copies the thread's permalink and says so", async () => {
+    overview();
+    await userEvent.click(await screen.findByRole("button", { name: "More for Workshop signup app" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "Copy link" }));
+    expect(copyText).toHaveBeenCalledWith(expect.stringMatching(/\/chat\?panel=task-detail&taskId=t-signup$/));
+    expect(await screen.findByRole("status")).toHaveTextContent("Link copied");
+  });
+
   it("scheduled tab shows the empty state until automations exist", async () => {
     overview();
     await userEvent.click(await screen.findByRole("tab", { name: "Scheduled" }));
     expect(await screen.findByText("Ask @lightbulb to put recurring work on a schedule.")).toBeInTheDocument();
     expect(apiGet).toHaveBeenCalledWith("/automations");
+    expect(client.cacheScope).toBe("org_test"); // the SWR key carries it: ["automations", cacheScope]
   });
 });

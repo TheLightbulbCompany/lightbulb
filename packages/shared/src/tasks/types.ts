@@ -137,3 +137,23 @@ export interface AnswerBody {
 
 /** Message attrs Lightbulb sets on task messages (contracts-v2 §6; absent on every other message). */
 export interface TaskRef { taskId: string; role: "started" | "suggested" }
+
+/** Lane A's `GET /api/v1/automations` row (spec 06 §5.1 `AutomationView`; `nextRuns` are UTC, rendered in `schedule.tz`). */
+export interface AutomationView {
+  id: string;
+  name: string;
+  instructions: string;
+  status: "draft" | "active" | "paused" | "paused_system";
+  pausedReason: string | null;
+  schedule: { cron: string[]; tz: string; remainingRuns?: number | null } | null;
+  nextRuns: string[];
+  hooks?: unknown[];
+  specialistId: string | null;
+  model?: string | null;
+  deliverTo: string;
+  budgetPerRunUsd: number;
+  estRunsPerMonth?: number | null;
+  ownerUserId: string;
+  lastRun: { firedAt: string; source: string; status: string; skippedReason?: string | null; taskId: string | null; costUsd?: number | null } | null;
+  version: number;
+}

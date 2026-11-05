@@ -637,10 +637,12 @@ function RoomContent({
   }, [onSelectThread]);
 
   const openTask = useCallback((taskId: string) => {
-    if (document.activeElement instanceof HTMLButtonElement) trigger.current = document.activeElement;
+    // From a card, the card is the way back. From the overview, the Threads button stays the way back:
+    // the row that was pressed leaves the DOM with the overview.
+    if (document.activeElement instanceof HTMLButtonElement && !showOverview) trigger.current = document.activeElement;
     onSelectThread?.(null);
     setSelection({ kind: "task", id: taskId });
-  }, [onSelectThread]);
+  }, [onSelectThread, showOverview]);
   const isAgentId = useCallback((memberId: string) => participants.some((p) => p.kind === "agent" && p.id === memberId), [participants]);
 
   const toggleReaction = useCallback(async (message: RoomMessage, emoji: string) => {

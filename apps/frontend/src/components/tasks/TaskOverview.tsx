@@ -10,7 +10,7 @@ import { PanelTabs } from "@/components/teams/shell";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
-import { copyText } from "@/components/messaging/messageLinks";
+import { copyText, taskPermalink } from "@/components/messaging/messageLinks";
 import { TaskStatus } from "./TaskCard";
 import { ScheduledList } from "./ScheduledList";
 import { useTaskActions } from "./useTaskActions";
@@ -64,7 +64,14 @@ function OverviewGroups({ scope, viewerId, onOpen }: { scope: TaskScope; viewerI
 export function OverviewRow({ task, viewerId, onOpen }: { task: TaskSummary; viewerId: string; onOpen: (taskId: string) => void }): ReactElement {
   const { act } = useTaskActions("overview");
   const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
   const view = summaryView(task, viewerId);
+  const copyLink = async () => {
+    const ok = await copyText(taskPermalink(task.taskId));
+    setCopied(ok);
+    setError(ok ? null : "Could not copy the link.");
+    if (ok) setTimeout(() => setCopied(false), 2000);
+  };
   const press = async (verb: "resolve" | "reopen") => {
     const res = await act(task, verb);
     setError(res.ok ? null : res.message);
@@ -75,6 +82,7 @@ export function OverviewRow({ task, viewerId, onOpen }: { task: TaskSummary; vie
         className="block max-w-full truncate text-left font-semibold after:absolute after:inset-0 after:content-['']">{task.title}</button>
       <p className="truncate text-ui text-muted-foreground">{taskSummaryLine(task, viewerId)}</p>
       {error && <p role="alert" className="text-ui text-err">{error}</p>}
+      {copied && <p role="status" className="text-ui text-muted-foreground">Link copied</p>}
     </div>
     <TaskStatus task={task} viewerId={viewerId} />
     <div className="relative z-10 flex items-center">
@@ -83,7 +91,7 @@ export function OverviewRow({ task, viewerId, onOpen }: { task: TaskSummary; vie
         <DropdownMenuTrigger asChild><Button type="button" size="icon-sm" variant="ghost" aria-label={`More for ${task.title}`}><MoreHorizontal aria-hidden="true" /></Button></DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           <DropdownMenuItem onSelect={() => onOpen(task.taskId)}>Open</DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => void copyText(`${window.location.origin}/chat?panel=task-detail&taskId=${encodeURIComponent(task.taskId)}`)}>Copy link</DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => void copyLink()}>Copy link</DropdownMenuItem>
           {task.status !== "resolved" && <DropdownMenuItem onSelect={() => void press("resolve")}>Resolve</DropdownMenuItem>}
         </DropdownMenuContent>
       </DropdownMenu>

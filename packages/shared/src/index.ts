@@ -369,7 +369,7 @@ export type {
 export { OUTPUT_KINDS } from "./tasks/types";
 export type {
   AnswerBody, OutputKind, QuestionKind, QuestionOption, QuestionView, SummaryQuestion, TaskAttempt, TaskDetail, TaskEffect,
-  TaskQuestionRow, TaskRef, TaskScope, TaskSubscription, TaskSummary, TaskTrace, TaskVerb,
+  AutomationView, TaskQuestionRow, TaskRef, TaskScope, TaskSubscription, TaskSummary, TaskTrace, TaskVerb,
 } from "./tasks/types";
 export { createTasksClient, scopeParam } from "./tasks/client";
 export type { TasksClient } from "./tasks/client";

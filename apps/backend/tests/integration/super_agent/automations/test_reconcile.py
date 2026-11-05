@@ -257,6 +257,12 @@ async def test_reconcile_frees_a_claim_whose_task_is_gone_or_ended(table, client
     assert await repo.claim_run(ws, "e", tid)
     gone = await _active(ws, "g")
     assert await repo.claim_run(ws, "g", "44444444-4444-4444-8444-444444444444")  # its task row never existed
+    for sid in ("e", "g"):  # both already failed twice: the ended one trips the breaker, the gone one must not
+        table.update_item(
+            Key={"pk": f"WS#{ws}", "sk": f"SCHED#{sid}"},
+            UpdateExpression="SET consecutiveFailures = :n",
+            ExpressionAttributeValues={":n": 2},
+        )
     live = await _active(ws, "l")
     live_tid = "55555555-5555-4555-8555-555555555555"
     await tasks_repo.create_task(
@@ -277,8 +283,9 @@ async def test_reconcile_frees_a_claim_whose_task_is_gone_or_ended(table, client
         out = await reconcile_schedules()
         assert out["freed_runs"] == 2
         e, g, lv = [await repo.get_schedule(ws, sid) for sid in ("e", "g", "l")]
-        assert e.get("activeRunTaskId") is None and e["runTaskIds"] == [tid] and e["consecutiveFailures"] == 1
-        assert g.get("activeRunTaskId") is None and g["consecutiveFailures"] == 0  # gone is not a failure
+        assert e.get("activeRunTaskId") is None and e["runTaskIds"] == [tid] and e["consecutiveFailures"] == 3
+        assert (e["status"], e["pausedReason"]) == ("paused_system", "failures")  # the breaker applies here too
+        assert g.get("activeRunTaskId") is None and g["consecutiveFailures"] == 2 and g["status"] == "active"
         assert lv["activeRunTaskId"] == live_tid  # a live run is left alone
         assert (await reconcile_schedules())["freed_runs"] == 0
     finally:

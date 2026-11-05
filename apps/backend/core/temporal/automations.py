@@ -130,9 +130,7 @@ async def reconcile_schedules() -> dict:
 async def _free_stale_run(ws: str, row: dict) -> bool:
     """A claim whose task is gone or ended on a path that closed nothing would skip every later fire for
     good (SKIP overlap): free it here, counting a failed task as a failure and a missing one as neither."""
-    from core.repositories import automations_repo as repo
     from core.repositories import tasks_repo
-    from core.repositories.tasks_repo import VersionConflict
 
     task_id = row.get("activeRunTaskId")
     if not task_id:
@@ -140,11 +138,9 @@ async def _free_stale_run(ws: str, row: dict) -> bool:
     task = await tasks_repo.get_task(ws, task_id)
     if task is not None and task.get("status") not in ("resolved", "failed"):
         return False
-    try:
-        await repo.close_run(ws, row["scheduleId"], task_id, failed=(task or {}).get("status") == "failed")
-    except VersionConflict:  # closed by its workflow between the scan and now
-        return False
-    return True
+    # a missing task is neither a failure nor a success: the breaker count stays; a failed one counts
+    failed = None if task is None else task.get("status") == "failed"
+    return await _close_run(ws, row["scheduleId"], task_id, failed)
 
 
 @workflow.defn
@@ -328,26 +324,33 @@ async def close_automation_run(ws: str, task_id: str, failed: bool) -> None:
     """After a task's attempt ended: when the task is an automation run (`policyRef` = `SCHED#…`), free the
     claim, record the run, count the failure; three in a row pause the automation (`paused_system: failures`).
     ponytail: one GetItem per ended attempt of every task; carry policyRef on TaskStart if it ever matters."""
-    from core.repositories import automations_repo as repo
     from core.repositories import tasks_repo
-    from core.repositories.tasks_repo import IllegalTransition, VersionConflict
-    from core.services import automation_schedule
 
     task = await tasks_repo.get_task(ws, task_id)
     policy_ref = (task or {}).get("policyRef") or ""
     if not policy_ref.startswith("SCHED#"):
         return
-    sid = policy_ref.removeprefix("SCHED#")
+    await _close_run(ws, policy_ref.removeprefix("SCHED#"), task_id, failed)
+
+
+async def _close_run(ws: str, sid: str, task_id: str, failed: bool | None) -> bool:
+    """Free the claim and record the run; three failures in a row pause the automation. False when this was
+    not the active run (closed already, or replaced)."""
+    from core.repositories import automations_repo as repo
+    from core.repositories.tasks_repo import IllegalTransition, VersionConflict
+    from core.services import automation_schedule
+
     try:
         row = await repo.close_run(ws, sid, task_id, failed=failed)
-    except VersionConflict:  # not this automation's active run (already closed, or replaced)
-        return
+    except VersionConflict:
+        return False
     if row.get("consecutiveFailures", 0) >= BREAKER_FAILURES and row["status"] == "active":
         try:
             row = await repo.set_status(ws, sid, "paused_system", reason="failures", allowed_from=frozenset({"active"}))
         except IllegalTransition:
-            return
+            return True
         await automation_schedule.upsert(row)
+    return True
 
 
 @workflow.defn

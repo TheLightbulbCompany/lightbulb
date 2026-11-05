@@ -39,12 +39,17 @@ async def run() -> int:
     )
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
-    for sig in (signal.SIGTERM, signal.SIGINT):
+    signals = (signal.SIGTERM, signal.SIGINT)
+    for sig in signals:
         loop.add_signal_handler(sig, stop.set)
-    async with worker:  # exit awaits worker.shutdown(): in-flight activities get the graceful window
-        logger.info("worker started", extra={"task_queue": settings.TEMPORAL_TASK_QUEUE})
-        await stop.wait()
-        logger.info("worker stopping")
+    try:
+        async with worker:  # exit awaits worker.shutdown(): in-flight activities get the graceful window
+            logger.info("worker started", extra={"task_queue": settings.TEMPORAL_TASK_QUEUE})
+            await stop.wait()
+            logger.info("worker stopping")
+    finally:
+        for sig in signals:
+            loop.remove_signal_handler(sig)
     return 0
 
 

@@ -1618,3 +1618,84 @@ describe("ServiceStack — workspace memory recall", () => {
     expect(rw.Resource).toBe("arn:aws:s3:::lightbulb-dev-openclaw-replicas/sessions/*");
   });
 });
+
+describe("ServiceStack — super-agent temporal-worker (dev only, contracts-v2 §16)", () => {
+  const PROD = buildServiceStack("prod");
+
+  const containers = (template: Template) =>
+    Object.values(template.findResources("AWS::ECS::TaskDefinition")).flatMap(
+      (td: any) => td.Properties.ContainerDefinitions,
+    ) as any[];
+
+  test("dev synth has temporal-worker service and TEMPORAL env", () => {
+    const services = Object.values(
+      SERVICE_TEMPLATE_DEV.findResources("AWS::ECS::Service", {
+        Properties: { ServiceName: "lightbulb-dev-temporal-worker" },
+      }),
+    ) as any[];
+    expect(services).toHaveLength(1);
+    const svc = services[0].Properties;
+    expect(svc.DesiredCount).toBe(1);
+    expect(svc.LoadBalancers).toBeUndefined();
+    expect(svc.DeploymentConfiguration.DeploymentCircuitBreaker).toEqual({ Enable: true, Rollback: true });
+    expect(svc.CapacityProviderStrategy.map((s: any) => s.CapacityProvider)).toContain("FARGATE_SPOT");
+    expect(svc.NetworkConfiguration.AwsvpcConfiguration.AssignPublicIp).toBe("DISABLED");
+
+    const [tdId] = Object.keys(
+      SERVICE_TEMPLATE_DEV.findResources("AWS::ECS::TaskDefinition", {
+        Properties: { Family: "lightbulb-dev-temporal-worker" },
+      }),
+    );
+    expect(svc.TaskDefinition).toEqual({ Ref: tdId });
+    const worker = containers(SERVICE_TEMPLATE_DEV).find((c) => c.Name === "temporal-worker");
+    expect(worker.Command).toEqual(["/app/.venv/bin/python", "-m", "scripts.temporal_worker"]);
+    expect(worker.StopTimeout).toBe(30);
+    expect(worker.HealthCheck).toBeUndefined();
+
+    for (const c of [worker, containers(SERVICE_TEMPLATE_DEV).find((c) => c.Name === "backend")]) {
+      const envOf = Object.fromEntries(c.Environment.map((e: any) => [e.Name, e.Value]));
+      expect(envOf).toMatchObject({
+        TEMPORAL_ADDRESS: "lightbulb-dev.nv5xx.tmprl.cloud:7233",
+        TEMPORAL_NAMESPACE: "lightbulb-dev.nv5xx",
+        TEMPORAL_TASK_QUEUE: "lightbulb",
+        SUPER_AGENT_ENV_ENABLED: "true",
+      });
+      const key = c.Secrets.find((s: any) => s.Name === "TEMPORAL_API_KEY");
+      expect(JSON.stringify(key.ValueFrom)).toContain("secret:lightbulb/dev/temporal_api_key");
+    }
+  });
+
+  test("prod synth has no temporal-worker and no TEMPORAL env", () => {
+    expect(
+      Object.values(PROD.findResources("AWS::ECS::Service")).filter((s: any) =>
+        String(s.Properties.ServiceName).includes("temporal"),
+      ),
+    ).toHaveLength(0);
+    const json = JSON.stringify(PROD.toJSON());
+    expect(json).not.toMatch(/TEMPORAL_|temporal_api_key|temporal-worker/);
+  });
+
+  test("every Lambda's env stays under the 4 KB limit with the Temporal secret added", () => {
+    // Resolve intrinsics to their deployed length: an ARN Join renders its literal parts plus the
+    // partition/region/account, a bare Ref/GetAtt is a resource id or ARN (bounded at 128 here).
+    const render = (v: any): string => {
+      if (typeof v === "string") return v;
+      if (v?.["Fn::Join"]) return v["Fn::Join"][1].map(render).join(v["Fn::Join"][0]);
+      if (v?.Ref === "AWS::Partition") return "aws";
+      if (v?.Ref === "AWS::Region") return "us-east-1";
+      if (v?.Ref === "AWS::AccountId") return "877352799272";
+      return "x".repeat(128);
+    };
+    const fns = Object.values(SERVICE_TEMPLATE_DEV.findResources("AWS::Lambda::Function")) as any[];
+    const sizes = fns.map((fn) =>
+      Object.entries(fn.Properties?.Environment?.Variables ?? {}).reduce(
+        (n, [k, v]) => n + k.length + render(v).length,
+        0,
+      ),
+    );
+    expect(sizes.length).toBeGreaterThan(0);
+    for (const size of sizes) expect(size).toBeLessThan(4096);
+    // the provisioner/work-consumer map now carries the key; it must actually be measured here
+    expect(JSON.stringify(fns)).toContain("temporal_api_key");
+  });
+});

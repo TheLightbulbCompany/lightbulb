@@ -1,5 +1,5 @@
 pin=d5b3cad7b98b3bcd157ea8b585759b0bb4fb8a6d
-fork=TheLightbulbCompany/hermes-agent-lightbulb@ed75079efab7a5af512fec955eec63b7b731d3ac
+fork=TheLightbulbCompany/hermes-agent-lightbulb@c7f3cd81d98a30d27e89020264b4d4c69c22ff73
 0001-lightbulb-F1-checkpoint.patch
 0002-lightbulb-F2-checkpoint-call-sites.patch
 0003-lightbulb-F3-inject-input.patch

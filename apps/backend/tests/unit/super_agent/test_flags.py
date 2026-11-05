@@ -61,6 +61,25 @@ def test_no_other_reader():
     assert offenders == []
 
 
+def test_env_enabled_callers_are_allowlisted():
+    """`env_enabled()` is the env master without a workspace: only process-wide wiring may call it.
+    Anything with a workspace asks `flags_for`."""
+    allowed = {
+        BACKEND / "core" / "services" / "super_agent_flags.py",
+        BACKEND / "core" / "config.py",  # names it in the setting's docstring
+        BACKEND / "main.py",  # Temporal client in the lifespan
+        BACKEND / "scripts" / "temporal_worker.py",
+    }
+    offenders = [
+        str(path.relative_to(BACKEND))
+        for path in BACKEND.rglob("*.py")
+        if path not in allowed
+        and not {".venv", "tests", "vendor", "node_modules"} & set(path.relative_to(BACKEND).parts)
+        and "env_enabled" in path.read_text(errors="ignore")
+    ]
+    assert offenders == []
+
+
 # --- LiveConfig ------------------------------------------------------------------------------------
 
 LEGACY_KEYS = {"schemaVersion", "httpEndpoint", "realtimeEndpoint", "region", "userChannelKey", "workspaceId"}

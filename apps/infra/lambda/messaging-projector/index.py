@@ -1134,10 +1134,45 @@ def _noop() -> None:
     return None
 
 
+_TASK_PARTS = {"ATT": "attempt", "Q": "question", "SUB": "subscription"}
+
+
+def _task_part(sk: str) -> str:
+    """TASK#{id} | TASK#{id}#ATT#n | TASK#{id}#Q#q | TASK#{id}#SUB#k; anything else is ''."""
+    segments = sk.split("#")
+    return "task" if len(segments) == 2 else _TASK_PARTS.get(segments[2], "") if len(segments) > 3 else ""
+
+
+def _task_changed(record: dict[str, Any]) -> Callable[[], None]:
+    """Super-agent tasks table: ids only (I1); clients refetch through the authorized API.
+    Publishes only rows that carry ``wsChannel`` (today only the task row stamps it; attempt,
+    question and subscription rows publish once their writers stamp it too)."""
+    if record.get("eventName") not in {"INSERT", "MODIFY"}:
+        return _noop
+    stream = record.get("dynamodb") or {}
+    item = _deserialize_map(stream.get("NewImage") or {})
+    sk, channel = item.get("sk"), item.get("wsChannel")
+    if not isinstance(sk, str) or not sk.startswith("TASK#") or not isinstance(channel, str) or not channel:
+        return _noop
+    part = _task_part(sk)
+    if not part:
+        return _noop
+    if record["eventName"] == "MODIFY" and _deserialize_map(stream.get("OldImage") or {}).get("version") == item.get("version"):
+        return _noop
+    event = {
+        "type": "task.changed",
+        "data": {"taskId": sk.split("#")[1], "part": part, "version": item.get("version")},
+        "at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+    return lambda: _publish(f"/ws/{channel}/tasks", event)
+
+
 def prepare_record(record: dict[str, Any]) -> Callable[[], None]:
     """Validate a record and run its order-insensitive work; return the ordered rest."""
     if not isinstance(record, dict):
         raise ValueError("record must be an object")
+    if "-tasks/stream/" in str(record.get("eventSourceARN") or ""):
+        return _task_changed(record)
     if record.get("eventName") not in {"INSERT", "MODIFY"}:
         return _noop
     image = (record.get("dynamodb") or {}).get("NewImage")

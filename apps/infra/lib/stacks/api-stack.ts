@@ -180,7 +180,11 @@ function parsePath(ctx) {
   if (p[3] === 'session-frames' && p.length === 5 && util.matches(UUID, p[4])) {
     return { kind: 'sessions', workspaceId: p[2], sessionId: p[4] };
   }
-  util.unauthorized();
+${superAgentEnabled(env) ? `  // /ws/{workspaceId}/tasks: super-agent task.changed ids (dev only), the same member check as /sessions.
+  if (p[3] === 'tasks' && p.length === 4) {
+    return { kind: 'sessions', workspaceId: p[2] };
+  }
+` : ""}  util.unauthorized();
 }
 function metaKey(path) {
   if (path.kind === 'rooms') return { pk: 'ROOM#' + path.roomId, sk: 'META' };
@@ -590,9 +594,11 @@ export class ApiStack extends cdk.Stack {
     // Super-agent tasks table (contracts-v2 §3; dev only until a founder-approved rollout). RETAIN in
     // every env (spec 10 C27). Both GSIs are created with the table because CloudFormation adds at most
     // one per later update; names and keys mirror core/tasks_schema.py GSIS (api-stack.test.ts reads
-    // the exported tasks-schema.json). No stream, no TTL yet: both are in-place updates when wave 2 needs them.
+    // the exported tasks-schema.json). Stream feeds MessagingProjector's task.changed events; TTL `expiresAt`
+    // is set only on RTURN# rows (spec 01 §3.10).
+    let tasksTable: dynamodb.Table | undefined;
     if (superAgentEnabled(env)) {
-      const tasksTable = new dynamodb.Table(this, "TasksTable", {
+      tasksTable = new dynamodb.Table(this, "TasksTable", {
         tableName: `${tablePrefix(env)}tasks`,
         partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING },
         sortKey: { name: "sk", type: dynamodb.AttributeType.STRING },
@@ -601,6 +607,8 @@ export class ApiStack extends cdk.Stack {
         encryptionKey: messagingKey,
         pointInTimeRecovery: true,
         removalPolicy: cdk.RemovalPolicy.RETAIN,
+        stream: dynamodb.StreamViewType.NEW_AND_OLD_IMAGES,
+        timeToLiveAttribute: "expiresAt",
       });
       tasksTable.addGlobalSecondaryIndex({
         indexName: "by-status",
@@ -860,6 +868,20 @@ export class ApiStack extends cdk.Stack {
       },
     );
     projectorFn.addEventSource(projectorEventSource);
+    if (tasksTable) {
+      // task.changed (ids only) on /ws/{wsChannel}/tasks; index.py routes by the stream ARN.
+      projectorFn.addEventSource(
+        new lambdaEventSources.DynamoEventSource(tasksTable, {
+          startingPosition: lambda.StartingPosition.TRIM_HORIZON,
+          batchSize: 25,
+          reportBatchItemFailures: true,
+          bisectBatchOnError: true,
+          maxRecordAge: cdk.Duration.hours(1),
+          retryAttempts: 3,
+          onFailure: new lambdaEventSources.S3OnFailureDestination(projectorFailureBucket),
+        }),
+      );
+    }
 
     // ---- Message search: OpenSearch Serverless NextGen ----
     // The projector only ENQUEUES a row pointer; a VPC indexer re-reads the row

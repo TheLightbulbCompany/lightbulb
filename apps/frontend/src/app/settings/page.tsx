@@ -325,7 +325,9 @@ function ModelPanel() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const action = searchParams.get("action") === "change-provider" ? "change-provider" : null;
+  const raw = searchParams.get("action");
+  // "connect-chatgpt": Checkout's return for a free workspace that picked ChatGPT (routers/billing.py `then`).
+  const action = raw === "change-provider" || raw === "connect-chatgpt" ? raw : null;
   return (
     <LLMPanel
       initialAction={action}

@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useChatGPTOAuth, type OAuthState } from "@/hooks/useChatGPTOAuth";
+import { ChatGPTPlanFirst, ChatGPTPlanGate } from "./ChatGPTPlanGate";
 import { replaceSearchParams } from "@/lib/shellNav";
 import { externalLinkClick } from "@/lib/externalAuth";
 
@@ -115,7 +116,13 @@ function DeviceCodePanel({
   );
 }
 
-export function ChatGPTOAuthStep({ onComplete }: Props) {
+/** The onboarding ChatGPT step: the plan is checked before sign-in starts (a free signup that picked ChatGPT goes
+ *  plan → Checkout → back here), then the device-code flow. */
+export function ChatGPTOAuthStep(props: Props) {
+  return <ChatGPTPlanGate then="chatgpt_onboarding"><ChatGPTOAuthSignIn {...props} /></ChatGPTPlanGate>;
+}
+
+function ChatGPTOAuthSignIn({ onComplete }: Props) {
   // The hook owns the on-mount status probe + auto-start. If tokens are
   // already on file (e.g. user completed in another tab, or the wizard
   // re-mounted between /poll and the next gate refresh), the hook lands
@@ -159,6 +166,9 @@ export function ChatGPTOAuthStep({ onComplete }: Props) {
       />
     );
   }
+
+  // /start refused 402 although billing read as paid (a stale billing cache, or the plan lapsed in between).
+  if (state.status === "plan_required") return <ChatGPTPlanFirst then="chatgpt_onboarding" />;
 
   if (state.status === "error") {
     return (

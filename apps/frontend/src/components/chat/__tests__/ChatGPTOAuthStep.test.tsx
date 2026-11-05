@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { act, render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { ChatGPTOAuthStep } from "../ChatGPTOAuthStep";
+import { markCheckoutReturn } from "@/lib/checkoutReturn";
 import type { OAuthState } from "@/hooks/useChatGPTOAuth";
 
 const startMock = vi.fn();
@@ -37,6 +38,13 @@ function completedState(): MockHookValue {
     disconnect: vi.fn(),
   };
 }
+
+// The plan gate in front of the step reads billing: a subscriber unless a test says otherwise.
+const billing = vi.hoisted(() => ({ isSubscribed: true, refresh: vi.fn(), startCheckout: vi.fn(async () => undefined) }));
+vi.mock("@/hooks/useBilling", () => ({
+  useBilling: () => ({ account: { is_subscribed: billing.isSubscribed }, isLoading: false, isSubscribed: billing.isSubscribed,
+    refresh: billing.refresh, startCheckout: billing.startCheckout }),
+}));
 
 vi.mock("@/hooks/useChatGPTOAuth", () => ({
   useChatGPTOAuth: () => stateRef.current,
@@ -130,5 +138,45 @@ describe("ChatGPTOAuthStep", () => {
     expect(target).not.toMatch(/provider=/);
     expect(target).toMatch(/checkout=success/);
     replaceStateSpy.mockRestore();
+  });
+});
+
+describe("ChatGPTOAuthStep plan gate (free signup that picked ChatGPT)", () => {
+  it("shows the plan step first and sends Checkout back to the onboarding step", async () => {
+    sessionStorage.clear();
+    billing.isSubscribed = false;
+    searchParams = new URLSearchParams();
+    try {
+      render(<ChatGPTOAuthStep onComplete={vi.fn()} />);
+      fireEvent.click(screen.getByRole("button", { name: "Choose the Workspace plan" }));
+      expect(billing.startCheckout).toHaveBeenCalledWith("workspace", false, "chatgpt_onboarding");
+    } finally { billing.isSubscribed = true; }
+  });
+
+  it("mounted after the shell stripped ?checkout= (provider picker first): still waits, never sells the plan again", () => {
+    billing.isSubscribed = false;
+    searchParams = new URLSearchParams("provider=chatgpt_oauth"); // already stripped
+    markCheckoutReturn();
+    try {
+      render(<ChatGPTOAuthStep onComplete={vi.fn()} />);
+      expect(screen.getByText("Confirming your plan…")).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Choose the Workspace plan" })).toBeNull();
+    } finally { billing.isSubscribed = true; searchParams = new URLSearchParams(); sessionStorage.clear(); }
+  });
+
+  it("back from Checkout with the webhook slow: never the plan step again; 'still being confirmed' with Check again", async () => {
+    vi.useFakeTimers();
+    billing.isSubscribed = false;
+    searchParams = new URLSearchParams("provider=chatgpt_oauth&checkout=success");
+    try {
+      render(<ChatGPTOAuthStep onComplete={vi.fn()} />);
+      expect(screen.getByText("Confirming your plan…")).toBeInTheDocument();
+      await act(async () => { vi.advanceTimersByTime(31_000); });
+      expect(screen.getByText("Your payment is still being confirmed.")).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Choose the Workspace plan" })).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Check again" }));
+      expect(billing.refresh).toHaveBeenCalled();
+      expect(screen.getByText("Confirming your plan…")).toBeInTheDocument();
+    } finally { billing.isSubscribed = true; searchParams = new URLSearchParams(); vi.useRealTimers(); }
   });
 });

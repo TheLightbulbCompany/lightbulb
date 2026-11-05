@@ -160,6 +160,14 @@ class BillingService:
         )
 
 
+#: Where a web Checkout started for ChatGPT returns (`then`): ChatGPT sign-in in Settings → Model, or the onboarding
+#: wizard's ChatGPT step (ProvisioningStepper keeps ?provider=). Fixed paths: `then` is an allowlisted Literal.
+_CHECKOUT_RETURNS = {
+    "chatgpt": "/settings?panel=providers&action=connect-chatgpt&checkout=success",
+    "chatgpt_onboarding": "/chat?provider=chatgpt_oauth&checkout=success",
+}
+
+
 async def create_workspace_checkout(
     *,
     owner_id: str,
@@ -168,6 +176,7 @@ async def create_workspace_checkout(
     return_to: Literal["web", "app"] = "web",
     confirm: bool = False,
     front_desk: bool = False,
+    then: Literal["chatgpt", "chatgpt_onboarding"] | None = None,
 ) -> dict:
     """Create or change the single recurring subscription for a workspace.
 
@@ -377,7 +386,7 @@ async def create_workspace_checkout(
             }
         else:
             urls = {
-                "success_url": f"{settings.FRONTEND_URL}/settings?panel=billing&checkout=success",
+                "success_url": f"{settings.FRONTEND_URL}{_CHECKOUT_RETURNS.get(then or '', '/settings?panel=billing&checkout=success')}",
                 "cancel_url": f"{settings.FRONTEND_URL}/settings?panel=billing&checkout=cancel",
             }
         seats = await seats_for_workspace(owner_id)
@@ -411,6 +420,8 @@ async def create_workspace_checkout(
                 f":{return_to}"
                 # The add-on changes the body (a third item, no trial).
                 f":fd{int(front_desk)}"
+                # A ChatGPT return changes the success URL; empty keeps every existing key unchanged.
+                f"{':' + then if then else ''}"
             ),
             expires_at=checkout_expires_at,
         )

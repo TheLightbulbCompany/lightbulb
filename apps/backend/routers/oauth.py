@@ -120,6 +120,15 @@ async def status(ctx: AuthContext = Depends(get_current_user)):
 async def start(ctx: AuthContext = Depends(get_current_user)):
     if ctx.is_org_context:
         await _require_org_oauth_owner(ctx)
+    # ChatGPT sign-in comes with a paid plan (the same rule /billing/provider applies). Refuse BEFORE any OpenAI
+    # device code is requested, so a free workspace never runs the whole sign-in only to be told to pick a plan.
+    from core.services.provision_gate import is_paid_subscription
+
+    if not is_paid_subscription(await billing_repo.get_by_owner_id(resolve_owner_id(ctx))):
+        raise HTTPException(
+            status_code=402,
+            detail={"code": "plan_required", "message": "Signing in with ChatGPT needs the Workspace plan."},
+        )
     try:
         # Bind the session to the workspace it is being started for, decided
         # HERE under the owner gate (org_id in org context, the user's own id

@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useBilling } from "@/hooks/useBilling";
 import { replaceSearchParams } from "@/lib/shellNav";
+import { markCheckoutReturn } from "@/lib/checkoutReturn";
 
 export function useCheckoutReturn(): { showSubscriptionSuccess: boolean } {
   const searchParams = useSearchParams();
@@ -32,6 +33,8 @@ export function useCheckoutReturn(): { showSubscriptionSuccess: boolean } {
   useEffect(() => {
     if (!showSubscriptionSuccess) return;
 
+    // Remembered before the strip below, for screens that mount later (ChatGPTPlanGate).
+    markCheckoutReturn();
     refreshBilling();
     const params = new URLSearchParams(searchParams.toString());
     params.delete("checkout");

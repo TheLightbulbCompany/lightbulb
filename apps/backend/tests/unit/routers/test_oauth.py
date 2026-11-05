@@ -29,6 +29,13 @@ def workspace_oauth_dependencies():
 
 
 @pytest.fixture(autouse=True)
+def paid_plan():
+    """ChatGPT sign-in needs a paid plan (/start checks it first); the router tests run as a subscriber."""
+    with patch("core.services.provision_gate.is_paid_subscription", return_value=True) as m:
+        yield m
+
+
+@pytest.fixture(autouse=True)
 def provider_revoke_mock():
     """Keep unrelated router tests off the real container-row/runtime cleanup path."""
     with patch("routers.oauth.revoke_provider_auth_in_container", new=AsyncMock(return_value=True)) as m:
@@ -89,6 +96,17 @@ async def test_start_returns_user_code_and_verification_uri(async_client):
     assert body["verification_uri"] == "https://chatgpt.com/codex"
     assert body["interval"] == 5
     assert body["expires_in"] == 900
+
+
+@pytest.mark.asyncio
+async def test_start_refuses_402_without_a_paid_plan_before_any_device_code(async_client, paid_plan):
+    """A free workspace never starts the OpenAI sign-in: the plan is checked first."""
+    paid_plan.return_value = False
+    with patch("routers.oauth.request_device_code", new=AsyncMock()) as request:
+        resp = await async_client.post("/api/v1/oauth/chatgpt/start")
+    assert resp.status_code == 402
+    assert resp.json()["detail"]["code"] == "plan_required"
+    request.assert_not_awaited()
 
 
 @pytest.mark.asyncio

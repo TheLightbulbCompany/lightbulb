@@ -5,6 +5,7 @@ import { Loader2 } from "lucide-react";
 import { useApi } from "@/lib/api";
 import { externalLinkClick } from "@/lib/externalAuth";
 import { useChatGPTOAuth } from "@/hooks/useChatGPTOAuth";
+import { ChatGPTPlanFirst, ChatGPTPlanGate } from "@/components/chat/ChatGPTPlanGate";
 import {
   commitProviderChoice,
   providerCommitErrorMessage,
@@ -81,6 +82,8 @@ interface ChangeProviderModalProps {
   managedInferenceAvailable?: boolean;
   /** Open past the picker, on this choice's credential stage. */
   initialChoice?: CredentialProviderChoice | null;
+  /** Just back from a Checkout started for ChatGPT: wait for the plan to land before offering it again. */
+  waitForPlan?: boolean;
   onClose: () => void;
   onCommitted: () => void;
 }
@@ -91,6 +94,7 @@ export function ChangeProviderModal({
   currentByoProvider,
   managedInferenceAvailable = false,
   initialChoice = null,
+  waitForPlan = false,
   onClose,
   onCommitted,
 }: ChangeProviderModalProps) {
@@ -115,6 +119,7 @@ export function ChangeProviderModal({
             currentByoProvider={currentByoProvider}
             managedInferenceAvailable={managedInferenceAvailable}
             initialChoice={initialChoice}
+            waitForPlan={waitForPlan}
             onClose={onClose}
             onCommitted={onCommitted}
           />
@@ -129,6 +134,7 @@ interface BodyProps {
   currentByoProvider?: ByoProvider | null;
   managedInferenceAvailable: boolean;
   initialChoice?: CredentialProviderChoice | null;
+  waitForPlan?: boolean;
   onClose: () => void;
   onCommitted: () => void;
 }
@@ -138,6 +144,7 @@ function ChangeProviderBody({
   currentByoProvider,
   managedInferenceAvailable,
   initialChoice = null,
+  waitForPlan = false,
   onClose,
   onCommitted,
 }: BodyProps) {
@@ -208,11 +215,14 @@ function ChangeProviderBody({
         />
       )}
 
+      {/* The plan is checked before any sign-in starts: a free workspace sees the plan step, never a device code. */}
       {stage.kind === "chatgpt-oauth" && (
-        <ChatGPTOAuthStage
-          onComplete={() => void commit("chatgpt_oauth")}
-          onCancel={() => setStage({ kind: "picker" })}
-        />
+        <ChatGPTPlanGate waitForPlan={waitForPlan}>
+          <ChatGPTOAuthStage
+            onComplete={() => void commit("chatgpt_oauth")}
+            onCancel={() => setStage({ kind: "picker" })}
+          />
+        </ChatGPTPlanGate>
       )}
 
       {stage.kind === "byo-key" && (
@@ -364,6 +374,8 @@ function ChatGPTOAuthStage({ onComplete, onCancel }: ChatGPTOAuthStageProps) {
           </li>
         </ol>
       )}
+
+      {state.status === "plan_required" && <ChatGPTPlanFirst />}
 
       {state.status === "error" && (
         <div className="space-y-3 py-4">

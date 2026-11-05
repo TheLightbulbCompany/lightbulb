@@ -17,6 +17,7 @@ const replaceSearchParams = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/shellNav", () => ({ replaceSearchParams }));
 
 import { useCheckoutReturn } from "../useCheckoutReturn";
+import { recentCheckoutReturn } from "@/lib/checkoutReturn";
 
 describe("useCheckoutReturn", () => {
   beforeEach(() => {
@@ -40,5 +41,14 @@ describe("useCheckoutReturn", () => {
     act(() => vi.advanceTimersByTime(30_000));
     expect(billing.refresh).toHaveBeenCalledTimes(refreshesAfterActive);
     vi.useRealTimers();
+  });
+
+  it("remembers the return for the tab before stripping ?checkout= (a late-mounting ChatGPT step reads it)", () => {
+    sessionStorage.clear();
+    nav.search = "checkout=success&provider=chatgpt_oauth";
+    renderHook(() => useCheckoutReturn());
+    expect(recentCheckoutReturn()).toBe(true);
+    expect(replaceSearchParams).toHaveBeenCalled();
+    expect(recentCheckoutReturn(Date.now() + 11 * 60_000)).toBe(false);
   });
 });

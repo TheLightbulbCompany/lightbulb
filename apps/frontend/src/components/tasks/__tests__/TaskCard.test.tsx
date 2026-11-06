@@ -69,9 +69,10 @@ describe("TaskCard", () => {
     client.questions.mockResolvedValue({ items: [qv()] } as never);
     const sam = render(<Fresh><TaskCard task={waiting} taskId="t-signup" viewerId={SAM} /></Fresh>);
     expect(screen.getByText("Needs you")).toBeInTheDocument();
-    // The one decision card on the card itself: the question, then Deny / Allow once / Always allow (UX slice 2).
+    // The one decision card on the card itself: the question, then Deny / Allow once (UX slice 2); a Worker's own ask
+    // (no preview) can't be remembered, so no Always allow (W12-9).
     const card = await screen.findByRole("group", { name: "Provision database and Stripe" });
-    expect(within(card).getAllByRole("button").map((b) => b.textContent)).toEqual(["Deny", "Allow once", "Always allow"]);
+    expect(within(card).getAllByRole("button").map((b) => b.textContent)).toEqual(["Deny", "Allow once"]);
     expect(screen.queryByText("Needs approval: Provision database and Stripe")).toBeNull(); // said once, by the card
     sam.unmount();
 

@@ -228,7 +228,8 @@ describe("the one decision card", () => {
   it("puts Deny first and shows Always allow disabled when it can't be remembered", async () => {
     const { decisionButtons, ALWAYS_ALLOW_UNAVAILABLE } = await import("./view");
     const opts = [{ id: "allow_once", label: "Allow once", style: "primary" }, { id: "deny", label: "Deny", style: "danger" }];
-    expect(decisionButtons(opts)).toEqual([
+    // An outside action that names no fixed target: Always allow shows, disabled with the reason.
+    expect(decisionButtons(opts, "a2a", { kind: "a2a.send" })).toEqual([
       { id: "deny", label: "Deny", style: "danger" },
       { id: "allow_once", label: "Allow once", style: "primary" },
       { id: "allow_always", label: "Always allow", style: "secondary", disabledReason: ALWAYS_ALLOW_UNAVAILABLE },
@@ -240,6 +241,9 @@ describe("the one decision card", () => {
     // Money and provider consent are never remembered: no Always allow at all, even one the server sent.
     expect(decisionButtons(opts, "purchase").map((b) => b.id)).toEqual(["deny", "allow_once"]);
     expect(decisionButtons(bindable, "provider_consent").map((b) => b.id)).toEqual(["deny", "allow_once"]);
+    // A Worker's own ask (dev, W12-9): `preview: null`, no rule can cover it, so no Always allow and no false reason.
+    expect(decisionButtons(opts, "send", null).map((b) => b.id)).toEqual(["deny", "allow_once"]);
+    expect(decisionButtons(opts).map((b) => b.id)).toEqual(["deny", "allow_once"]);
     // A card made before Always allow existed (W11-3): one fixed recipient, no allow_always option, so no wrong reason.
     expect(decisionButtons(opts, "send", { kind: "mail.send", to: "ann@example.com" }).map((b) => b.id)).toEqual(["deny", "allow_once"]);
     expect(decisionButtons(opts, "send", { kind: "mail.send", to: "" }).at(-1)?.disabledReason).toBe(ALWAYS_ALLOW_UNAVAILABLE);

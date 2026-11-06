@@ -117,7 +117,7 @@ ProjectIcon = Literal[
     "chart-line", "users", "calendar", "package", "leaf", "briefcase",
 ]  # fmt: skip
 ProjectColor = Literal["project-1", "project-2", "project-3", "project-4", "project-5", "project-6"]
-PAUSED_ROOM_TEXT = "This project is paused. Resume it in Settings."
+PAUSED_ROOM_TEXT = "This project is paused. Resume it to send."
 MAX_PINNED_MESSAGES = messaging_repo.MAX_PINNED_MESSAGES
 MAX_SECTIONS = 20
 SECTION_NAME_MAX_CHARS = 40

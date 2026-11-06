@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useApi } from "@/lib/api";
 import { notifyApiError } from "@/lib/notify";
+import { Switch } from "@/components/ui/switch";
 
 type UserPrefs = { timezone: string; dailySummary: boolean; awayEmail?: boolean };
 
@@ -55,13 +56,11 @@ export function DailySummaryCard() {
               waiting on you.
             </div>
           </div>
-          <input
-            type="checkbox"
+          <Switch
             aria-label="Daily summary"
             checked={prefs.dailySummary}
             disabled={busy}
-            onChange={(event) => void toggle("dailySummary", event.target.checked)}
-          />
+            onCheckedChange={(on) => void toggle("dailySummary", on)} />
         </label>
       </div>
       <div className="settings-card">
@@ -73,13 +72,11 @@ export function DailySummaryCard() {
               Lightbulb. Never between 10pm and 8am.
             </div>
           </div>
-          <input
-            type="checkbox"
+          <Switch
             aria-label="Email me when I'm away"
             checked={prefs.awayEmail !== false}
             disabled={busy}
-            onChange={(event) => void toggle("awayEmail", event.target.checked)}
-          />
+            onCheckedChange={(on) => void toggle("awayEmail", on)} />
         </label>
       </div>
     </>

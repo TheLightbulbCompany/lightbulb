@@ -51,6 +51,8 @@ export interface RoomComposerProps {
   runningAgentIds?: readonly string[];
   /** The viewer: with the super-agent on, whether the formatting bar shows is remembered per person. */
   viewerId?: string;
+  /** Set while sending must wait (a paused project): Send calls it instead and the draft stays in the box. */
+  onHeld?: () => void;
 }
 
 /** Super-agent (UX slice 4): the composer rests as one line; Aa shows the formatting bar and the choice is kept per
@@ -145,6 +147,7 @@ function ComposerAttempt({
   roomKind,
   runningAgentIds = [],
   viewerId,
+  onHeld,
   requestFocusAfterSend,
   cancelFocusAfterSend,
   consumeFocusAfterSend,
@@ -533,6 +536,7 @@ function ComposerAttempt({
     if (retry
       ? disabled || !!error || uploading || uploadFailed || !hasContent || !clientMessageId || effectiveState !== "rejected" || !onRetry || retryLocked.current
       : !canSend || locked.current) return;
+    if (!retry && onHeld) return onHeld();
     // A handle that stopped matching would otherwise go out as plain text without a word.
     if (!retry && staleKey && !sendStale) {
       setStaleNotice(staleKey);
@@ -577,7 +581,7 @@ function ComposerAttempt({
   // The box's parts, laid out as one line (super-agent) or as the classic two rows.
   const textarea = <>
     <Textarea ref={field} id={fieldId} value={text} disabled={!editable} rows={1} aria-invalid={!!error}
-      aria-describedby={`${fieldId}-help ${fieldId}-status${showHint ? ` ${fieldId}-respond` : ""}`} placeholder={placeholder ?? (label === "Reply to thread" ? "Reply to thread…" : "Message the conversation · @ to mention")}
+      aria-describedby={`${fieldId}-help ${fieldId}-status${showHint ? ` ${fieldId}-respond` : ""}`} placeholder={placeholder ?? (label === "Reply to thread" ? "Reply to thread…" : superAgent ? "Ask Lightbulb…" : "Message the conversation · @ to mention")}
       aria-autocomplete="list" aria-expanded={listOpen} aria-controls={listOpen ? `${fieldId}-targets` : undefined}
       aria-activedescendant={listOpen ? `${fieldId}-option-${activeIndex}` : undefined}
       onChange={(event) => { onTextChange(event.target.value); onTypingChange?.(!!event.target.value.trim()); syncTrigger(event.target.value, event.target.selectionStart); }}

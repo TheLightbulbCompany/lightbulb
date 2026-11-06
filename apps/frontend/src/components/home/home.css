@@ -7,7 +7,7 @@
 .home-projects__col > .frame-doc__title { margin-bottom: -8px; }
 .home-projects__needs { display: flex; align-items: center; gap: 8px; justify-self: start; min-height: 32px; padding: 0 12px; border: 1px solid var(--edge); border-radius: 999px; font-size: var(--text-ui); color: var(--muted-foreground); }
 .home-projects__needs:hover { background: var(--muted); color: var(--foreground); }
-.home-projects__dot { display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 9999px; background: var(--warn); flex: none; vertical-align: middle; }
+.home-projects__dot { display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 9999px; background: var(--warn-hue); flex: none; vertical-align: middle; }
 .home-projects__needs .home-projects__dot { margin-right: 0; }
 .home-projects__ask { display: flex; align-items: center; gap: 8px; padding: 8px 8px 8px 16px; border: 1px solid var(--input); border-radius: 12px; background: var(--background); }
 .home-projects__ask:focus-within { border-color: var(--ring); }

@@ -292,3 +292,20 @@ it("explains ownership with no Delete offer when the owner may not delete the ro
   expect(within(dialog).queryByRole("button", { name: "Delete channel" })).not.toBeInTheDocument();
   expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeInTheDocument();
 });
+
+it("compact (super-agent): people, pins and Go live sit in the header; ⋯ holds mute, copy link, archive, leave, delete", async () => {
+  const onOpenDetails = vi.fn();
+  render(<RoomHeader {...props} onOpenDetails={onOpenDetails} compact room={{ ...room, kind: "group-dm" }}
+    onSetPrefs={vi.fn()} onLeaveRoom={vi.fn()} onSetArchived={vi.fn()} />);
+  await userEvent.click(screen.getByRole("button", { name: "People, 6 here" }));
+  expect(onOpenDetails).toHaveBeenCalledWith("members");
+  await userEvent.click(screen.getByRole("button", { name: "2 pinned messages" }));
+  expect(onOpenDetails).toHaveBeenCalledWith("pins");
+  await userEvent.click(screen.getByRole("button", { name: "More" }));
+  for (const name of ["Mute", "Copy link", "Archive group chat", "Leave"]) expect(await screen.findByRole("menuitem", { name })).toBeInTheDocument();
+  await userEvent.keyboard("{Escape}");
+  // name ▾ keeps the details, not the rare actions.
+  await userEvent.click(screen.getByRole("button", { name: /Roadmap/ }));
+  expect(await screen.findByRole("menuitem", { name: "Details" })).toBeInTheDocument();
+  expect(screen.queryByRole("menuitem", { name: "Mute" })).toBeNull();
+});

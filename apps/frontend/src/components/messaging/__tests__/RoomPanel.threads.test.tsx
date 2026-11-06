@@ -44,7 +44,7 @@ const nameMenu = async (item: string) => {
 };
 // A project's People and Details moved to its settings modal (UX slice 6); Pins and Links stay ⋯ views of the pane.
 const toolsMenu = async (item: string) => {
-  await userEvent.click(await screen.findByRole("button", { name: "More tools" }));
+  await userEvent.click(await screen.findByRole("button", { name: "More" }));
   await userEvent.click(await screen.findByRole("menuitem", { name: item }));
 };
 // Default SWR dedupe here: the button and the overview share one room read, as in the app.
@@ -297,10 +297,10 @@ describe("RoomPanel Threads view (super-agent)", () => {
     act(() => setThreadPaneHost(host));
     try {
       render(<Fresh><RoomPanel {...props} /></Fresh>);
-      // The header: Tasks, Files, Scheduled and ⋯ right of the name, nothing else.
+      // The header, like prod and Slack: Search, the views, people with their count, then ⋯ for the rare ones.
       const header = document.querySelector<HTMLElement>(".room-header")!;
       const controls = [...header.querySelectorAll(".room-audience button")].map((b) => b.getAttribute("aria-label"));
-      expect(controls).toEqual(["Tasks", "Files", "Scheduled", "More tools"]);
+      expect(controls).toEqual(["Search in channel", "Tasks", "Files", "Scheduled", expect.stringMatching(/^People, \d+ here$/), "More"]);
       await userEvent.click(screen.getByRole("button", { name: "Scheduled" }));
       const list = await within(host).findByRole("complementary", { name: "Scheduled" });
       expect(getWorkspaceSnapshot().pane?.title).toBe("Scheduled");
@@ -354,19 +354,22 @@ describe("RoomPanel Threads view (super-agent)", () => {
     } finally { host.remove(); _resetControllerForTests(); }
   });
 
-  it("⋯ holds the tools: Search in channel (⌘F), Pinned messages, Links", async () => {
+  it("Search is a header icon (and ⌘F); ⋯ keeps Links and the rare actions (Copy link)", async () => {
     nothingNeedsYou();
     Object.assign(live, { messaging: { warmSearch: vi.fn(async () => undefined), searchMessages: vi.fn(async () => ({ hits: [] })) } });
     render(<Fresh><RoomPanel {...props} /></Fresh>);
-    await userEvent.click(await screen.findByRole("button", { name: "More tools" }));
-    for (const name of [/Search in channel/, /Pinned messages/, "Links"]) expect(await screen.findByRole("menuitem", { name })).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("menuitem", { name: /Search in channel/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "Search in channel" }));
     expect(await screen.findByRole("dialog", { name: "Search this chat" })).toBeInTheDocument();
     await userEvent.keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Search this chat" })).toBeNull());
     // ⌘F opens it too.
     await userEvent.keyboard("{Meta>}f{/Meta}");
     expect(await screen.findByRole("dialog", { name: "Search this chat" })).toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Search this chat" })).toBeNull());
+    await userEvent.click(screen.getByRole("button", { name: "More" }));
+    for (const name of ["Links", "Copy link"]) expect(await screen.findByRole("menuitem", { name })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: /Search in channel/ })).toBeNull();
   });
 
   it("Lightbulb's messages read as Lightbulb, with no Coordinator or Agent tag (W8-7)", async () => {

@@ -874,7 +874,7 @@ button.session-group-header:focus-visible, .session-group-more:focus-visible, .s
 
 /* ── Super-agent frame (UX slice 4) ─────────────────────────────────────────
    The project header: 48 tall, the name ▾ on the left at 600, at most four 28 controls on a 32 pitch on the right, their
-   labels only from 1280 px. The transcript and the composer share one 680 column, centred in what the pane leaves.
+   labels only from 1280 px. The transcript and the composer run the full width, left-aligned, as in prod and Slack.
    The composer rests as one 48 line (+ · text · Aa @ ↑), radius 12, and carries the page's one shadow. */
 .room-header[data-compact] { min-height: 48px; padding-block: 0; gap: 8px; }
 .room-header[data-compact] .room-audience { gap: 4px; }
@@ -887,8 +887,6 @@ button.session-group-header:focus-visible, .session-group-more:focus-visible, .s
 .room-name-menu > button:hover, .room-name-menu > button[data-state="open"] { background: color-mix(in srgb, var(--midnight) 6%, transparent); }
 .room-name-menu > button:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
 .room-name-menu > button > svg { flex: none; color: var(--muted-foreground); }
-.room-panel[data-frame] .room-history-content { width: 100%; max-width: calc(680px + 2 * var(--room-gutter)); margin-inline: auto; }
-.room-panel[data-frame] .room-conversation > :is(.room-composer, .room-typing, .room-limit-bar, .project-paused) { width: calc(100% - 40px); max-width: 680px; margin-inline: auto; }
 .room-composer[data-compact] { padding: 9px 10px 9px 6px; border-radius: var(--radius-lg); box-shadow: var(--shadow-pop); }
 .room-composer-row { display: flex; align-items: flex-end; gap: 4px; min-height: 28px; }
 .room-composer-row > .room-editor { flex: 1; min-width: 0; align-self: center; }

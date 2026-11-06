@@ -2,7 +2,7 @@
 
 import { createPortal } from "react-dom";
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { ArrowLeft, Check, Chrome, Circle, CircleAlert, Clock, FolderOpen, Info, Lightbulb, Link, ListChecks, Pin, Search, Square } from "lucide-react";
+import { ArrowLeft, Check, Chrome, Circle, CircleAlert, Clock, FolderOpen, Info, Lightbulb, Link, ListChecks, Search, Square } from "lucide-react";
 import type { Components } from "react-markdown";
 import { cardAnswersFor, LISTEN_MODE_LABELS, listenModeOptions, soleChannelOwner, useStatusLoaded, type CardReply, type CreateMessageRequest, type ListenMode, type MemberPrefsRequest, type MemberRef, type PatchRoomRequest, type UpdateMessageRequest } from "@lightbulb/shared";
 import { ToolActivityTrace } from "@/components/chat/ToolActivityTrace";
@@ -1050,8 +1050,7 @@ function RoomContent({
           </li>)}</ul>
         </section>;
   return <section
-    className={cn("room-panel", showContext && !sideHost && "room-has-context", showDetail ? "room-has-detail" : "room-has-default-context")} aria-label={roomName}
-    data-frame={superAgent || undefined}>
+    className={cn("room-panel", showContext && !sideHost && "room-has-context", showDetail ? "room-has-detail" : "room-has-default-context")} aria-label={roomName}>
     <div className="room-conversation" hidden={showContext && isNarrow && !sideHost} onClickCapture={closeOverlay} onFocusCapture={closeOverlay}>
       {/* Keyboard: the column sits after every message's toolbar in tab order, so one link jumps there first. */}
       {superAgent && !visibleRoom?.feed && <button type="button" className="room-skip-link" onClick={skipToRequests}>Skip to tasks</button>}
@@ -1088,10 +1087,13 @@ function RoomContent({
         onSetArchived={onSetArchived} onDeleteRoom={onDeleteRoom}
         compact={superAgent}
         onPatchRoom={onPatchRoom} settingsPeople={membersSection} memoryClient={messagingClient} openSettings={openSettings} onSettingsOpened={onSettingsOpened}
-        // Super-agent (UX slice 4): at most four controls right of the name, all views of this project: Tasks (its warn
-        // dot = something here needs you while the pane is closed), Files, Scheduled, and ⋯ for the tools. Labels show
-        // from 1280 px (messaging.css). Without it the room keeps About, Files, Browser and Ideas as before.
+        // Super-agent: Search, then this project's views: Tasks (its warn dot = something here needs you while the pane
+        // is closed), Files, Scheduled, and Browser while there is one, as in prod. View labels show from 1280 px
+        // (messaging.css). Without it the room keeps About, Files, Browser and Ideas as before.
         views={superAgent ? <>
+          <Button type="button" variant="ghost" size="icon-sm" className="room-view-toggle" disabled={!actionable}
+            aria-label="Search in channel" title="Search (⌘F)" onClick={() => setSearchToken((token) => token + 1)}>
+            <Search aria-hidden="true" /></Button>
           {!visibleRoom?.feed && <Button ref={contextTrigger} type="button" variant="ghost" size="sm" className="room-view-toggle relative" aria-pressed={requestsShown}
             aria-label={waitingOnMe > 0 ? `Tasks, ${waitingOnMe} need${waitingOnMe === 1 ? "s" : ""} you` : "Tasks"} title="Tasks"
             onClick={() => { if (!requestsShown) capture("overview_opened", { source: "room", count: waitingOnMe }); toggleView("tasks"); }}>
@@ -1105,6 +1107,9 @@ function RoomContent({
           {!visibleRoom?.feed && <Button type="button" variant="ghost" size="sm" className="room-view-toggle" aria-pressed={scheduledShown} aria-label="Scheduled" title="Scheduled"
             onClick={() => toggleView("scheduled")}>
             <Clock aria-hidden="true" /><span>Scheduled</span></Button>}
+          {inShell && browserAvailable && <Button type="button" variant="ghost" size="icon-sm" className="room-view-toggle" aria-pressed={pane?.panelId === "browser"} aria-label="Browser" title="Browser"
+            onClick={() => { if (pane?.panelId === "browser") return closePane(); capture("browser_view_opened"); openBrowserPane(); }}>
+            <Chrome aria-hidden="true" /></Button>}
         </> : <>
           <Button ref={contextTrigger} type="button" variant="ghost" size="sm" className="room-view-about relative"
             aria-expanded={!contextCollapsed} aria-label="About"
@@ -1124,14 +1129,8 @@ function RoomContent({
             <Lightbulb aria-hidden="true" /><span>Ideas</span></Button>}
         </>}
         toolItems={<>
-          <DropdownMenuItem disabled={!actionable} onSelect={() => setSearchToken((token) => token + 1)}>
-            <Search aria-hidden="true" />Search in channel<span className="ml-auto text-caption text-muted-foreground">⌘F</span></DropdownMenuItem>
-          {inShell && browserAvailable && <DropdownMenuItem onSelect={() => { capture("browser_view_opened"); openBrowserPane(); }}>
-            <Chrome aria-hidden="true" />Browser</DropdownMenuItem>}
           {inShell && <DropdownMenuItem onSelect={() => { capture("ideas_opened"); openPanel("ideas", composer.focusAgentId ? { agent: composer.focusAgentId } : {}, { pushUrl: true }); }}>
             <Lightbulb aria-hidden="true" />Ideas</DropdownMenuItem>}
-          <DropdownMenuItem onSelect={() => { closeDetail(); setDetailsTab("pins"); setContextCollapsed(false); }}>
-            <Pin aria-hidden="true" />Pinned messages{pinnedMessageIds.length > 0 ? ` · ${pinnedMessageIds.length}` : ""}</DropdownMenuItem>
           <DropdownMenuItem onSelect={() => { closeDetail(); setDetailsTab("links"); setContextCollapsed(false); }}>
             <Link aria-hidden="true" />Links</DropdownMenuItem>
           {/* The Paperclip tasks this room names: older work, offered only when there are any. */}

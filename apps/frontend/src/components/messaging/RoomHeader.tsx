@@ -143,7 +143,9 @@ export function RoomHeader({
     setTopicDraft(room?.topic ?? "");
   }
 
-  function restoreOptionsFocus() { (compact ? topicTrigger : optionsTrigger).current?.focus(); }
+  // Leave, Archive and Delete are ⋯'s; Settings is name ▾'s.
+  function restoreOptionsFocus() { optionsTrigger.current?.focus(); }
+  function restoreNameFocus() { (compact ? topicTrigger : optionsTrigger).current?.focus(); }
   function restoreSettingsFocus(event: Event) {
     event.preventDefault();
     if (handedOff.current) { handedOff.current = false; return; }
@@ -157,10 +159,10 @@ export function RoomHeader({
     if (from === "home") {
       // Back to Home, onto the card's ⋯ once Home has rendered it.
       openPanel("home");
-      focusWhenShown(`.home-projects__more[data-room-id="${id}"]`, restoreOptionsFocus);
+      focusWhenShown(`.home-projects__more[data-room-id="${id}"]`, restoreNameFocus);
       return;
     }
-    restoreOptionsFocus();
+    restoreNameFocus();
   }
 
   function cancelTopicEdit() {
@@ -309,17 +311,6 @@ export function RoomHeader({
           {onSetPrefs && <DropdownMenuItem disabled={!actionable || pending}
             onSelect={() => void run(async () => { await onSetPrefs({ starred: !room?.starred }); }, "The pin could not be saved.")}>
             {room?.starred ? <PinOff aria-hidden="true" /> : <Pin aria-hidden="true" />}{room?.starred ? "Unpin" : "Pin"}</DropdownMenuItem>}
-          {onSetPrefs && <DropdownMenuItem disabled={!actionable || pending}
-            onSelect={() => void run(async () => { await onSetPrefs({ muted: !room?.muted }); }, "The notification setting could not be saved.")}>
-            {room?.muted ? <Bell aria-hidden="true" /> : <BellOff aria-hidden="true" />}{room?.muted ? "Unmute" : "Mute"}</DropdownMenuItem>}
-          <DropdownMenuItem onSelect={() => void copyText(roomPermalink(room?.roomId ?? ""))}><Link aria-hidden="true" />Copy link</DropdownMenuItem>
-          {canArchive && (room?.archivedAt
-            ? <DropdownMenuItem onSelect={() => void run(async () => { await onSetArchived!(false); }, `The ${noun} could not be unarchived.`)}><ArchiveRestore aria-hidden="true" />Unarchive {noun}</DropdownMenuItem>
-            : !projectSettings && <DropdownMenuItem onSelect={() => { reset(); setArchiving(true); }}><Archive aria-hidden="true" />Archive {noun}</DropdownMenuItem>)}
-          {((onLeaveRoom && canLeave) || ownerCannotLeave) && <><DropdownMenuSeparator />
-            <DropdownMenuItem variant="destructive" onSelect={() => { reset(); setLeaving(true); }}><LogOut aria-hidden="true" />Leave</DropdownMenuItem></>}
-          {canDelete && !projectSettings && <><DropdownMenuSeparator />
-            <DropdownMenuItem variant="destructive" onSelect={() => { reset(); setDeleteDraft(""); setDeleting(true); }}><Trash2 aria-hidden="true" />Delete channel</DropdownMenuItem></>}
         </DropdownMenuContent>
       </DropdownMenu>
       {live}
@@ -327,17 +318,41 @@ export function RoomHeader({
       {room?.shared && <span className="room-directory-tag" title="Shared between this workspace and Lightbulb">Shared</span>}
       {topicForm}
     </div>
+    {/* Like prod and Slack: the common actions sit in the header as icons (search and the views come in `views`),
+        people as a facepile with the count, Pinned when there are pins, Go live; ⋯ keeps the rare ones. */}
     <div className="room-audience">
-      {/* The search dialog is opened from ⋯ (and ⌘F); it renders no button of its own here. */}
+      {/* The dialog only; its trigger is the search icon in `views` (and ⌘F). */}
       {search}
       <LiveStrip roomId={room?.roomId} members={participants} />
       {views}
+      {pinnedCount > 0 && <Button type="button" variant="ghost" size="sm" className="room-view-toggle" title="Pinned messages"
+        aria-label={`${pinnedCount} pinned ${pinnedCount === 1 ? "message" : "messages"}`} onClick={() => onOpenDetails("pins")}>
+        <Pin aria-hidden="true" />{pinnedCount}</Button>}
+      {goLive && <Button type="button" variant="ghost" size="icon-sm" className="room-view-toggle" disabled={Boolean(huddle.joining)}
+        aria-label={huddle.joining === room.roomId ? "Joining…" : "Go live"} title="Go live"
+        onClick={() => void huddle.join(room.roomId, room.kind === "channel" ? `#${roomName}` : roomName)}><Mic aria-hidden="true" /></Button>}
+      <Button type="button" variant="ghost" className="room-facepile" aria-label={`People, ${participantCount} here`} title="People"
+        onClick={() => projectSettings ? setSettings("people") : onOpenDetails("members")}>
+        {faces.map((participant) => <ParticipantAvatar key={`${participant.kind}:${participant.id}`} participant={participant} size="sm" showPresence={false} />)}
+        <span className="room-facepile-more text-ui text-muted-foreground">{participantCount}</span>
+      </Button>
       <DropdownMenu>
-        <DropdownMenuTrigger asChild><Button ref={optionsTrigger} type="button" variant="ghost" size="icon-sm" className="room-view-toggle" aria-label="More tools" title="More"><MoreHorizontal aria-hidden="true" /></Button></DropdownMenuTrigger>
+        <DropdownMenuTrigger asChild><Button ref={optionsTrigger} type="button" variant="ghost" size="icon-sm" className="room-view-toggle" aria-label="More" title="More"><MoreHorizontal aria-hidden="true" /></Button></DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           {toolItems}
-          {goLive && <DropdownMenuItem disabled={Boolean(huddle.joining)} onSelect={() => void huddle.join(room.roomId, room.kind === "channel" ? `#${roomName}` : roomName)}>
-            <Mic aria-hidden="true" />{huddle.joining === room.roomId ? "Joining…" : "Go live"}</DropdownMenuItem>}
+          {toolItems && <DropdownMenuSeparator />}
+          {onSetPrefs && <DropdownMenuItem disabled={!actionable || pending}
+            onSelect={() => void run(async () => { await onSetPrefs({ muted: !room?.muted }); }, "The notification setting could not be saved.")}>
+            {room?.muted ? <Bell aria-hidden="true" /> : <BellOff aria-hidden="true" />}{room?.muted ? "Unmute" : "Mute"}</DropdownMenuItem>}
+          <DropdownMenuItem onSelect={() => void copyText(roomPermalink(room?.roomId ?? ""))}><Link aria-hidden="true" />Copy link</DropdownMenuItem>
+          {projectSettings && <DropdownMenuItem onSelect={() => setSettings("general")}><Settings aria-hidden="true" />Settings</DropdownMenuItem>}
+          {canArchive && (room?.archivedAt
+            ? <DropdownMenuItem onSelect={() => void run(async () => { await onSetArchived!(false); }, `The ${noun} could not be unarchived.`)}><ArchiveRestore aria-hidden="true" />Unarchive {noun}</DropdownMenuItem>
+            : <DropdownMenuItem onSelect={() => { reset(); setArchiving(true); }}><Archive aria-hidden="true" />Archive {noun}</DropdownMenuItem>)}
+          {((onLeaveRoom && canLeave) || ownerCannotLeave) && <><DropdownMenuSeparator />
+            <DropdownMenuItem variant="destructive" onSelect={() => { reset(); setLeaving(true); }}><LogOut aria-hidden="true" />Leave</DropdownMenuItem></>}
+          {canDelete && <><DropdownMenuSeparator />
+            <DropdownMenuItem variant="destructive" onSelect={() => { reset(); setDeleteDraft(""); setDeleting(true); }}><Trash2 aria-hidden="true" />Delete channel</DropdownMenuItem></>}
         </DropdownMenuContent>
       </DropdownMenu>
     </div>

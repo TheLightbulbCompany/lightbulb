@@ -37,9 +37,12 @@ interface WorkspaceSidebarProps {
   chatReady: boolean;
   /** A destination was picked: the shell closes the phone drawer. */
   onNavigate?: () => void;
+  id?: string;
+  /** Open as the narrow-window drawer: a modal dialog over the conversation. */
+  dialog?: boolean;
 }
 
-export function WorkspaceSidebar({ onRecoveryReprovision, onNavigate }: WorkspaceSidebarProps): React.ReactElement {
+export function WorkspaceSidebar({ onRecoveryReprovision, onNavigate, id, dialog = false }: WorkspaceSidebarProps): React.ReactElement {
   const { user } = useUser();
   const { account, isSubscribed } = useBilling();
   // The server has no Tauri bridge, so it renders the browser answer and the client corrects it.
@@ -82,7 +85,7 @@ export function WorkspaceSidebar({ onRecoveryReprovision, onNavigate }: Workspac
   }, [drawerState.freshlyInstalledAgentId, setFreshlyInstalled]);
 
   return (
-    <div className="cream-sidebar">
+    <div id={id} className="cream-sidebar" {...(dialog ? { role: "dialog", "aria-modal": true, "aria-label": "Conversations" } : {})}>
       <div className="sidebar-header">
         <h1 className="workspace-name" title={workspaceName}>
           {memberships.length > 1 ? (

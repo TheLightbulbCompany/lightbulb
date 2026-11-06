@@ -456,17 +456,21 @@
 .workspace-shell .workspace-switcher { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; padding: 0; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; }
 .workspace-shell .workspace-switcher:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; border-radius: 4px; }
 .workspace-shell .sidebar-footer { padding: 12px 16px; }
+/* Without the super-agent, narrow windows keep a slimmer sidebar column. */
+@media (max-width: 1000px) {
+  .workspace-shell:not([data-super-agent="true"]) { grid-template-columns: 56px 220px minmax(0, 1fr); }
+}
 /* Only Chat has a sidebar (and full screen folds it into the chat column). The
    phone drawer below keeps it in every place. */
 @media (min-width: 600px) {
   .workspace-shell[data-sidebar="false"] { grid-template-columns: 56px minmax(0, 1fr); grid-template-areas: "rail main"; }
   .workspace-shell[data-sidebar="false"] > .cream-sidebar { display: none; }
 }
-/* Narrow windows (600-999 px): the conversations sidebar leaves the grid and opens as a drawer beside the rail,
-   from the menu bar Chat shows above the conversation (dev walk W8-2). The main view keeps the width. */
+/* Super-agent, narrow windows (600-999 px): the conversations sidebar leaves the grid and opens as a drawer (a modal
+   dialog, WorkspaceShell) beside the rail, from the menu bar Chat shows above the conversation (dev walk W8-2). */
 @media (min-width: 600px) and (max-width: 999px) {
-  .workspace-shell[data-sidebar="true"] { grid-template-columns: 56px minmax(0, 1fr); grid-template-areas: "rail main"; }
-  .workspace-shell > .cream-sidebar {
+  .workspace-shell[data-super-agent="true"][data-sidebar="true"] { grid-template-columns: 56px minmax(0, 1fr); grid-template-areas: "rail main"; }
+  .workspace-shell[data-super-agent="true"] > .cream-sidebar {
     display: none;
     position: fixed;
     top: 0;
@@ -476,15 +480,15 @@
     width: 264px;
     box-shadow: var(--shadow-lift);
   }
-  .workspace-shell[data-sidebar="true"][data-nav-open="true"] > .cream-sidebar { display: flex; }
-  .workspace-shell[data-sidebar="true"][data-nav-open="true"] > .workspace-nav-backdrop {
+  .workspace-shell[data-super-agent="true"][data-sidebar="true"][data-nav-open="true"] > .cream-sidebar { display: flex; }
+  .workspace-shell[data-super-agent="true"][data-sidebar="true"][data-nav-open="true"] > .workspace-nav-backdrop {
     display: block;
     position: fixed;
     inset: 0 0 0 56px;
     z-index: var(--z-overlay);
     background: color-mix(in srgb, var(--midnight) 30%, transparent);
   }
-  .workspace-shell[data-sidebar="true"] .workspace-phone-bar {
+  .workspace-shell[data-super-agent="true"][data-sidebar="true"] .workspace-phone-bar {
     flex: none;
     display: flex;
     align-items: center;
@@ -493,7 +497,7 @@
     padding: 0 4px;
     border-bottom: 1px solid var(--edge);
   }
-  .workspace-shell .workspace-phone-bar button {
+  .workspace-shell[data-super-agent="true"] .workspace-phone-bar button {
     display: grid;
     place-items: center;
     width: 32px;
@@ -501,14 +505,15 @@
     border-radius: 7px;
     color: var(--midnight-soft);
   }
-  .workspace-shell .workspace-phone-bar button:hover { background: var(--cream-deeper); color: var(--midnight); }
-  .workspace-shell .workspace-phone-bar button:focus-visible { outline: 2px solid var(--midnight); outline-offset: -2px; }
+  .workspace-shell[data-super-agent="true"] .workspace-phone-bar button:hover { background: var(--cream-deeper); color: var(--midnight); }
+  .workspace-shell[data-super-agent="true"] .workspace-phone-bar button:focus-visible { outline: 2px solid var(--midnight); outline-offset: -2px; }
 }
-/* Below 736 px (rail 56 + main 360 + pane 320) the main view and the pane cannot both keep their minimums side by
-   side, so the pane opens as a sheet over the main view (with its close button). Full screen still puts it beside
-   the chat column. A request pane there carries its own steer line (the room's composer is under the sheet). */
+/* Where the main view (360) and the pane (320) cannot both keep their minimums side by side, the pane opens as a
+   sheet over the main view (a modal dialog with its close button, RightPane). Full screen still puts it beside the
+   chat column. Super-agent: rail 56 + 360 + 320 = 736 px (no sidebar column below 1000 px), and a request pane there
+   carries its own steer line. Without it: rail 56 + sidebar 220 + 360 + 320 = 956 px. Keep PANE_SHEET_QUERIES in sync. */
 @media (min-width: 600px) and (max-width: 735px) {
-  .workspace-body:not([data-full]) > .workspace-pane {
+  .workspace-shell[data-super-agent="true"] .workspace-body:not([data-full]) > .workspace-pane {
     position: absolute;
     inset: 0;
     z-index: var(--z-chrome);
@@ -516,9 +521,22 @@
     min-width: 0;
     max-width: none;
   }
-  .workspace-body:not([data-full]) > .workspace-pane > .workspace-pane__resize { display: none; }
-  .workspace-body[data-full] > .workspace-view--chat { flex: 0 1 360px; }
-  .workspace-body[data-full] > .workspace-pane { min-width: 0; }
+  .workspace-shell[data-super-agent="true"] .workspace-body:not([data-full]) > .workspace-pane > .workspace-pane__resize { display: none; }
+  .workspace-shell[data-super-agent="true"] .workspace-body[data-full] > .workspace-view--chat { flex: 0 1 360px; }
+  .workspace-shell[data-super-agent="true"] .workspace-body[data-full] > .workspace-pane { min-width: 0; }
+}
+@media (min-width: 600px) and (max-width: 955px) {
+  .workspace-shell:not([data-super-agent="true"]) .workspace-body:not([data-full]) > .workspace-pane {
+    position: absolute;
+    inset: 0;
+    z-index: var(--z-chrome);
+    width: auto !important;
+    min-width: 0;
+    max-width: none;
+  }
+  .workspace-shell:not([data-super-agent="true"]) .workspace-body:not([data-full]) > .workspace-pane > .workspace-pane__resize { display: none; }
+  .workspace-shell:not([data-super-agent="true"]) .workspace-body[data-full] > .workspace-view--chat { flex: 0 1 360px; }
+  .workspace-shell:not([data-super-agent="true"]) .workspace-body[data-full] > .workspace-pane { min-width: 0; }
 }
 /* Phone widths: one column. The rail and the sidebar leave the grid and open
    together as a drawer from .workspace-phone-bar (WorkspaceShell's navOpen). */

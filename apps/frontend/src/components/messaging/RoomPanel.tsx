@@ -49,6 +49,8 @@ import { useRoomOutputs } from "@/components/tasks/useRoomOutputs";
 import { SpecialistDmBanner } from "./SpecialistDmBanner";
 import { useRoomThreads } from "@/components/tasks/useRoomThreads";
 import { useSuperAgent } from "@/hooks/useLiveEvents";
+import { useMediaQuery } from "@/hooks/useMediaQuery";
+import { PANE_SHEET_QUERIES } from "@/components/workspace/paneSheet";
 import { RoomMessageSearch } from "./RoomMessageSearch";
 import { RoomTasks } from "./RoomTasks";
 import { taskIdentifiers, useReferencedTasks } from "./MessageTaskCard";
@@ -207,19 +209,7 @@ export function namesAgent(text: string, name: string): boolean {
 }
 
 const narrowQuery = "(max-width: 859px)";
-/** In the shell, the right pane is a sheet over the conversation below this width (workspace.css); wider it sits
- *  beside it (the sidebar folds into a drawer below 1000 px, so an 800 px window still has room, W8-1). */
-export const PANE_SHEET_QUERY = "(max-width: 735px)";
 const overlayQuery = "(min-width: 860px) and (max-width: 1179px)";
-
-function useMedia(query: string): boolean {
-  const subscribe = useCallback((callback: () => void) => {
-    const media = window.matchMedia(query);
-    media.addEventListener("change", callback);
-    return () => media.removeEventListener("change", callback);
-  }, [query]);
-  return useSyncExternalStore(subscribe, () => window.matchMedia(query).matches, () => false);
-}
 
 /** The background subagents a run started outlive its card: they stay under the reply that replaced it. */
 function savedDelegations(state: RoomSubagents | undefined, entry: MessageDelegations | undefined) {
@@ -455,10 +445,11 @@ function RoomContent({
   const historyRef = useRef<HTMLDivElement>(null);
   // The shell's right pane: the room's tools open it (Browser, Files) beside the conversation.
   const { ready: inShell, pane, place, fullScreen } = useWorkspaceState();
-  // Narrow = a side column would cover the conversation: in the shell, when its pane is a sheet; alone, below 860 px.
-  const roomNarrow = useMedia(narrowQuery);
-  const paneSheet = useMedia(PANE_SHEET_QUERY);
-  const isNarrow = inShell ? paneSheet && !fullScreen : roomNarrow;
+  // Narrow = a side column would cover the conversation: with the super-agent in the shell, when its pane is a sheet
+  // (an 800 px window has room beside it, W8-1); otherwise below 860 px, as before.
+  const roomNarrow = useMediaQuery(narrowQuery);
+  const paneSheet = useMediaQuery(PANE_SHEET_QUERIES.superAgent);
+  const isNarrow = inShell && superAgent ? paneSheet && !fullScreen : roomNarrow;
   // The shell keeps the room mounted (hidden) on Home and Work: the remembered Requests column comes back only while
   // the room is on screen, or a hard load opened it over Home (dev walk W7-2).
   const roomOnScreen = !inShell || place === "chat" || fullScreen;

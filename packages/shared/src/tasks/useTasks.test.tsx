@@ -8,7 +8,7 @@ import { ApiError } from "../api/error";
 import type { TasksClient } from "./client";
 import { fixtureTask } from "./fixtures";
 import type { TaskDetail, TaskSummary } from "./types";
-import { NEEDS_YOU_KEY_SUFFIX, putTaskSummary, refreshTask, taskKey, taskListKey, useAgentDirectory, useOlderTasks, useTask, useTaskList } from "./useTasks";
+import { NEEDS_YOU_COALESCE_MS, NEEDS_YOU_KEY_SUFFIX, putTaskSummary, refreshTask, taskKey, taskListKey, useAgentDirectory, useOlderTasks, useTask, useTaskList } from "./useTasks";
 
 const t1 = fixtureTask({ taskId: "t1", title: "one", version: 5 });
 const t2 = fixtureTask({ taskId: "t2", title: "two", version: 2 });
@@ -128,10 +128,20 @@ describe("useTasks", () => {
     await waitFor(() => expect(hook.result.current.cut.data && hook.result.current.list.data).toBeTruthy());
     const deps = { cache: hook.result.current.swr.cache, mutate: hook.result.current.swr.mutate, client };
     needsYou.mockClear();
-    // A question opened on a request no detail has open, and a known request's own row moving on: both re-read it.
-    await act(() => refreshTask(deps, { taskId: "t-elsewhere", part: "question", version: 1 }));
-    await act(() => refreshTask(deps, { taskId: "t1", part: "task", version: 9 }));
-    expect(needsYou).toHaveBeenCalledTimes(2);
+    vi.useFakeTimers();
+    try {
+      // A burst (a question opened elsewhere, a known request's row moving on, an attempt): one re-read, after it.
+      await act(() => refreshTask(deps, { taskId: "t-elsewhere", part: "question", version: 1 }));
+      await act(() => refreshTask(deps, { taskId: "t1", part: "task", version: 9 }));
+      await act(() => refreshTask(deps, { taskId: "t1", part: "attempt", version: 2 }));
+      expect(needsYou).not.toHaveBeenCalled();
+      await act(async () => { await vi.advanceTimersByTimeAsync(NEEDS_YOU_COALESCE_MS); });
+      expect(needsYou).toHaveBeenCalledTimes(1);
+      // The next burst gets its own.
+      await act(() => refreshTask(deps, { taskId: "t2", part: "question", version: 1 }));
+      await act(async () => { await vi.advanceTimersByTimeAsync(NEEDS_YOU_COALESCE_MS); });
+      expect(needsYou).toHaveBeenCalledTimes(2);
+    } finally { vi.useRealTimers(); }
   });
 
   it("a non-task event for a task with no open detail fetches nothing", async () => {

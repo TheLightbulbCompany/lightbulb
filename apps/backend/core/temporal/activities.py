@@ -956,7 +956,7 @@ async def _apply(
     routed_to: dict[str, list[str]] = {}  # every trigger a start or pass_through covers → its tasks, in order
 
     def slot(tid: str) -> dict:
-        return slots.setdefault(tid, {"lines": [], "refs": [], "starts": [], "passes": [], "acks": set(), "notes": []})
+        return slots.setdefault(tid, {"lines": [], "refs": [], "starts": [], "passes": [], "acks": set()})
 
     def ack(sl: dict, line: str | None) -> None:
         """One ack line per trigger: several start/pass_through decisions on one ask are one message with
@@ -1027,9 +1027,10 @@ async def _apply(
             for tid in dec.trigger_ids:
                 routed_to.setdefault(tid, []).append(dec.task_id)
             ack(sl, dec.ack)
-        elif isinstance(dec, ts.Note):  # walk 14: an FYI is answered and remembered, never left in silence
+        elif isinstance(dec, ts.Note):
+            # Walk 14: an FYI gets one line, never silence. The Router writes no memory (spec 07 §3.1): room ingestion
+            # already stored the person's message, so the fact is not written twice.
             ack(sl, router_prompt.NOTED)
-            sl["notes"].append(dec.fact)
         elif isinstance(dec, ts.Ask):
             sl["lines"].append(dec.text + (f" ({' / '.join(dec.options)})" if dec.options else ""))
         elif isinstance(dec, ts.Reply):
@@ -1073,9 +1074,6 @@ async def _apply(
             posted.append(message_id)
         else:
             await _read_quietly(ws, trig)
-        # After the reply is out. Once per trigger and batch: an applied-again turn (retry, early apply) writes none.
-        if sl["notes"] and await messaging_repo.claim_usage_receipt(ws, f"note:{inp.batch_id}:{idx}"):
-            await _remember_notes(ws, trig, inp.lane, sl["notes"])
         ref = trig.get("ref") or {}
         ack_thread = (
             f"room:{ref['roomId']}:{ref.get('threadRoot') or message_id}" if ref.get("roomId") and message_id else None
@@ -1105,30 +1103,6 @@ async def _apply(
         # already running (USE_EXISTING), so the failed ones get another go instead of sitting queued.
         raise RuntimeError(f"start_task_workflow failed for {failed}")
     return RouterTurnOut(inp.batch_id, started, posted)
-
-
-async def _remember_notes(ws: str, trig: dict, lane: str, facts: list[str]) -> None:
-    """A `note` decision's facts, through the same remember path as the CLI's and the hosted MCP's. The memory
-    engine keeps no room tag, so the project's name leads the fact for recall to find it ("walk-14 bakery: …").
-    Never raises: the reply is already posted. ponytail: the receipt is claimed first, so a crash in between loses
-    the fact; the person can say it again."""
-    from core.services import memory_api  # lazy, like the other service imports that pull in the network member
-
-    room = ts.trigger_room(trig)
-    meta = await messaging_repo.get_room(room) if room and await _room_exists(room) else None
-    project = (meta or {}).get("name") if meta and not messaging.is_feed_room(meta) else None
-    for fact in facts:
-        try:
-            await memory_api.remember(
-                ws,
-                subject=project or "Lightbulb note",
-                fact=f"{project}: {fact}" if project else fact,
-                kind="fact",
-                scope="team" if lane == "shared" else "me",
-                on_behalf_of=trig.get("actorUserId"),
-            )
-        except Exception as exc:  # noqa: BLE001 -- includes Refused (a secret-shaped fact is never stored)
-            logger.warning("router note not remembered trigger=%s error=%s", trig.get("triggerId"), type(exc).__name__)
 
 
 async def _read_quietly(ws: str, trig: dict) -> None:

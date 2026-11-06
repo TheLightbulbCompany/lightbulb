@@ -3632,7 +3632,7 @@
       },
       "Note": {
         "additionalProperties": false,
-        "description": "A fact someone told Lightbulb to keep, with nothing to do now: one short reply, the fact in project memory.",
+        "description": "A fact someone told Lightbulb to keep, with nothing to do now: one short reply. Room ingestion remembers it.",
         "properties": {
           "triggerIds": {
             "items": {

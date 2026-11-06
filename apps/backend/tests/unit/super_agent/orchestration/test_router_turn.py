@@ -1384,15 +1384,12 @@ async def test_project_instructions_skip_the_feed_and_are_fenced(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_note_is_answered_and_remembered_once_under_the_project(world, monkeypatch):
-    """Walk 14: an FYI got "reading…" and silence, and was not remembered."""
+async def test_a_note_is_answered_in_one_line_and_writes_no_memory(world, monkeypatch):
+    """Walk 14: an FYI got "reading…" and silence. Room ingestion stores the message itself (spec 07 §3.1)."""
     from core.services import memory_api
 
-    saved = []
-
     async def remember(owner_id, **kw):
-        saved.append((owner_id, kw))
-        return {"queued": False, "neighbours": []}
+        raise AssertionError("the Router writes no memory")
 
     monkeypatch.setattr(memory_api, "remember", remember)
     t1 = await _trig("chat:m1", admission="candidate")
@@ -1400,19 +1397,7 @@ async def test_a_note_is_answered_and_remembered_once_under_the_project(world, m
     await _run([t1])
     await _run([t1])  # a retried turn
     assert [p["text"] for p in world["posts"]] == [router_prompt.NOTED]
-    assert world["posts"][0]["remember"] is False  # the line is boilerplate; the fact goes to memory
-    assert saved == [
-        (
-            WS,
-            {
-                "subject": "general",
-                "fact": "general: The levain starter dates from 2009.",
-                "kind": "fact",
-                "scope": "team",
-                "on_behalf_of": SAM,
-            },
-        )
-    ]
+    assert world["posts"][0]["remember"] is False  # boilerplate: the person's own message is what is remembered
 
 
 @pytest.mark.asyncio

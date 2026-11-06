@@ -79,7 +79,7 @@ SCHEMAS = {
     "note": _schema(
         "note",
         "Someone told you a fact to keep for this project (a date, a preference, a detail), with nothing to do "
-        "now. Lightbulb answers with one short line and saves `fact` to the project's memory.",
+        "now. Lightbulb answers with one short line; the message is already in the project's memory.",
         {"fact": {"type": "string", "description": "The fact, self-contained, in one sentence."}},
         ["fact"],
     ),

@@ -994,7 +994,7 @@ class Ask(_Decision):
 
 
 class Note(_Decision):
-    """A fact someone told Lightbulb to keep, with nothing to do now: one short reply, the fact in project memory."""
+    """A fact someone told Lightbulb to keep, with nothing to do now: one short reply. Room ingestion remembers it."""
 
     kind: Literal["note"]
     fact: str = Field(min_length=1, max_length=2000)

@@ -27,7 +27,7 @@ export function AutomationConfirmCard({ automationId, palette, viewerTz = viewer
   const [gone, setGone] = useState(false);
   // Not now deletes the draft, so a later read is a 404 (dev walk 10, W10-6): a plain line, never a dead box.
   if (gone || (!a && (error as { status?: number } | undefined)?.status === 404)) {
-    return <Text style={[styles.meta, { color: palette.fgMute }]}>Not set up.</Text>;
+    return <Text style={[styles.meta, { color: palette.fgMute }]}>This schedule was removed.</Text>;
   }
   if (!a && error) {
     return (

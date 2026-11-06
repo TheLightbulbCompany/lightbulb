@@ -42,7 +42,7 @@ it("a member waits on an admin; the owner can still say Not now, which deletes t
   expect(screen.queryByLabelText("Turn on")).toBeNull();
   await fireEvent.press(screen.getByLabelText("Not now"));
   expect(mockLive.api.del).toHaveBeenCalledWith("/automations/auto-1");
-  expect(await screen.findByText("Not set up.")).toBeTruthy();
+  expect(await screen.findByText("This schedule was removed.")).toBeTruthy();
   await view.unmount();
 });
 

@@ -257,7 +257,8 @@ async def test_two_tasks_same_specialist_serialized_no_lost_entries(temporal_env
         deadline = time.time() + 30
         while time.time() < deadline:
             rows = [await learning_repo.get(WS, SPEC, t, 1) for t in (T1, T2)]
-            if all(r and r.get("state") == "applied" for r in rows):
+            # Curate runs after the queue drains, so wait for it too: cancelling on "applied" alone races it.
+            if all(r and r.get("state") == "applied" for r in rows) and runtime_runs.curate.await_count:
                 break
             await asyncio.sleep(0.1)
         else:

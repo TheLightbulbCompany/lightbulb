@@ -1,5 +1,6 @@
 """Task routes (wave2-O Task 8, C15) over a moto `tasks` table; Temporal, the chat gate and the task room are faked."""
 
+import re
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -391,3 +392,108 @@ async def test_q_reads_fixed_pages_and_stops_at_limit(world, monkeypatch):
     assert len(resp["tasks"]) == 6 and resp["next"] is None
     assert len(trees) == 6
     assert set(pages) == {router_mod._SEARCH_PAGE}
+
+
+# --- No run credential in any task response (security: attempt rows carry runSecret and taskToken) ---------------
+
+_RUN_SECRET, _TASK_TOKEN = "rs-LEAKCANARY", "tt-LEAKCANARY"
+# Keys that match /secret|token|key/i and are known not to be credentials. A new match fails until it is reviewed.
+_SAFE_KEYS = {"idemKey", "threadKey", "effectIdemKey", "inputTokens", "outputTokens"}
+_SUSPECT = re.compile(r"secret|token|key", re.I)
+
+
+def _keys(value) -> set[str]:
+    if isinstance(value, dict):
+        return set(value).union(*(_keys(v) for v in value.values()))
+    if isinstance(value, list):
+        return set().union(*(_keys(v) for v in value))
+    return set()
+
+
+async def _task_with_credentials() -> str:
+    from core.repositories import effects_repo, questions_repo
+
+    task = await _task(
+        "waiting",
+        outputs=[{"id": "o1", "kind": "document", "title": "Memo", "ref": {}, "createdAt": "2026-11-04T00:01:00Z"}],
+    )
+    await tasks_repo.put_attempt(
+        WS,
+        task,
+        1,
+        {
+            "agentId": "a-1",
+            "sessionId": "s",
+            "status": "ended",
+            "outcome": "completed",
+            "output": "Drafted the memo.",
+            "usage": {"inputTokens": 3, "outputTokens": 4, "costUsd": 0.01},
+            "startedAt": "2026-11-04T00:00:00Z",
+            "endedAt": "2026-11-04T00:01:00Z",
+            "runSecret": _RUN_SECRET,
+            "taskToken": _TASK_TOKEN,
+            "recentTools": [{"name": "web_search"}],
+        },
+    )
+    await questions_repo.open_question(
+        WS,
+        {
+            "taskId": task,
+            "qid": "q-1",
+            "kind": "question",
+            "title": "Which venue?",
+            "text": "",
+            "options": [],
+            "askedBy": {"kind": "worker", "attempt": 1},
+            "answerers": [SAM],
+            "answererRule": "requester",
+            "baseAnswerers": [SAM],
+        },
+    )
+    await effects_repo.put_effect(
+        WS,
+        {
+            "idemKey": f"{task}:1:c1",
+            "taskId": task,
+            "attempt": 1,
+            "kind": "mail.send",
+            "tool": "send_email",
+            "operands": {"to": "a@b.c"},
+            "operandsHash": "h",
+            "state": "proposed",
+        },
+    )
+    return task
+
+
+async def test_task_detail_attempts_are_allow_listed(world):
+    task = await _task_with_credentials()
+    resp = await world["client"].get(f"/api/v1/tasks/{task}")
+    assert resp.status_code == 200
+    (att,) = resp.json()["attempts"]
+    assert set(att) == {"n", "status", "outcome", "startedAt", "endedAt", "usage", "output"}
+    assert "runSecret" not in resp.text and "taskToken" not in resp.text
+    assert "LEAKCANARY" not in resp.text
+
+
+async def test_no_task_payload_carries_a_credential_like_key(world, monkeypatch):
+    task = await _task_with_credentials()
+    tools = [{"name": "web_search", "status": "done"}]
+    monkeypatch.setattr(
+        runtime_runs, "get_run", AsyncMock(return_value=runtime_runs.RunStatus("r", "ended", None, None, None, tools))
+    )
+    c = world["client"]
+    responses = [
+        await c.get(f"/api/v1/tasks/{task}"),
+        await c.get("/api/v1/tasks", params={"scope": "mine"}),
+        await c.get("/api/v1/tasks", params={"scope": "workspace", "needsYou": "true"}),
+        await c.get("/api/v1/tasks", params={"scope": "mine", "q": "memo"}),
+        await c.get("/api/v1/tasks/outputs"),
+        await c.get(f"/api/v1/tasks/{task}/trace", params={"attempt": 1}),
+    ]
+    for resp in responses:
+        assert resp.status_code == 200, resp.request.url
+        assert "LEAKCANARY" not in resp.text, resp.request.url
+        suspect = {k for k in _keys(resp.json()) if _SUSPECT.search(k)} - _SAFE_KEYS
+        assert not suspect, (resp.request.url, suspect)
+    assert any(resp.json().get("attempts") for resp in responses)  # the scan saw an attempt

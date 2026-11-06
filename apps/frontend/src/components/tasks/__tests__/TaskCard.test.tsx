@@ -40,20 +40,20 @@ describe("TaskCard", () => {
     const { unmount } = render(<Fresh><TaskCard task={byId("step02", "t-signup")} taskId="t-signup" viewerId={SAM} /></Fresh>);
     expect(screen.getByText("Working")).toBeInTheDocument();
     expect(screen.getByText("Engineering")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Allow once" })).toBeNull();
     unmount();
 
     const waiting = byId("step05", "t-signup");
     const sam = render(<Fresh><TaskCard task={waiting} taskId="t-signup" viewerId={SAM} /></Fresh>);
     expect(screen.getByText("Needs you")).toBeInTheDocument();
     expect(screen.getByText("Needs approval: Provision database and Stripe")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Approve" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Allow once" })).toBeInTheDocument();
     sam.unmount();
 
     render(<Fresh><TaskCard task={viewAs(waiting, PRIYA)} taskId="t-signup" viewerId={PRIYA} /></Fresh>);
     expect(screen.getByText("Working")).toBeInTheDocument();
     expect(screen.getByText("Waiting on Sam")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Allow once" })).toBeNull();
   });
 
   it("whole card opens, inner button does not", async () => {
@@ -63,7 +63,7 @@ describe("TaskCard", () => {
     await userEvent.click(screen.getByRole("button", { name: "Open Workshop signup app, Needs you" }));
     expect(onOpen).toHaveBeenCalledWith("t-signup");
     onOpen.mockClear();
-    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
+    await userEvent.click(screen.getByRole("button", { name: "Allow once" }));
     await waitFor(() => expect(client.answer).toHaveBeenCalledWith("t-signup", "q-provision",
       expect.objectContaining({ optionId: "allow_once", expectVersion: 7, clientAnswerId: expect.any(String) })));
     expect(onOpen).not.toHaveBeenCalled();
@@ -86,7 +86,7 @@ describe("TaskCard", () => {
     client.questions.mockRejectedValue(new Error("503"));
     render(<Fresh><TaskCard task={byId("step05", "t-signup")} taskId="t-signup" viewerId={SAM} onOpen={onOpen} /></Fresh>);
     expect(await screen.findByText("The details didn't load. Open the request to decide.")).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
+    await userEvent.click(screen.getByRole("button", { name: "Allow once" }));
     expect(onOpen).toHaveBeenCalledWith("t-signup");
     expect(client.answer).not.toHaveBeenCalled();
   });

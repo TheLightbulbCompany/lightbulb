@@ -45,6 +45,7 @@ import { useTaskReply } from "@/components/tasks/taskReply";
 import { RequestGroups } from "@/components/tasks/TaskOverview";
 import { ScheduledList } from "@/components/tasks/ScheduledList";
 import { readRequestsOpen, writeRequestsOpen } from "@/components/tasks/requestsColumn";
+import { useRoomOutputs } from "@/components/tasks/useRoomOutputs";
 import { SpecialistDmBanner } from "./SpecialistDmBanner";
 import { useRoomThreads } from "@/components/tasks/useRoomThreads";
 import { useSuperAgent } from "@/hooks/useLiveEvents";
@@ -444,12 +445,16 @@ function RoomContent({
   const trigger = useRef<HTMLButtonElement | null>(null);
   const detailHeading = useRef<HTMLHeadingElement>(null);
   const contextHeading = useRef<HTMLHeadingElement>(null);
+  const requestsHeading = useRef<HTMLHeadingElement>(null);
   const contextTrigger = useRef<HTMLButtonElement>(null);
   const contextWasOpen = useRef(false);
   const historyRef = useRef<HTMLDivElement>(null);
   const isNarrow = useSyncExternalStore(subscribeNarrow, getNarrow, getServerNarrow);
   // The shell's right pane: the room's tools open it (Browser, Files) beside the conversation.
-  const { ready: inShell, pane } = useWorkspaceState();
+  const { ready: inShell, pane, place, fullScreen } = useWorkspaceState();
+  // The shell keeps the room mounted (hidden) on Home and Work: the remembered Requests column comes back only while
+  // the room is on screen, or a hard load opened it over Home (dev walk W7-2).
+  const roomOnScreen = !inShell || place === "chat" || fullScreen;
   // Super-agent: the room's Requests sit in a column beside the conversation, open unless this person closed it.
   // It folds (without forgetting the choice) while something else has the pane (Browser, Files, Ideas) and on narrow
   // screens, where a column would cover the conversation.
@@ -544,13 +549,15 @@ function RoomContent({
   // Wide: the remembered choice, unless Escape put it away in this room. Narrow: a sheet over the conversation, opened
   // by the toggle each time (a column there would cover the conversation).
   const requestsWanted = isNarrow ? requestsSheet : requestsPref && requestsDismissedIn !== roomId;
-  const requestsShown = superAgent && requestsWanted && !paneBusy && !visibleRoom?.feed && contextCollapsed;
+  const requestsShown = superAgent && requestsWanted && !paneBusy && !visibleRoom?.feed && contextCollapsed && roomOnScreen;
   // An open request pane is steered from this composer ("Replying to: …"); null while the composer isn't shown.
   const taskReply = useTaskReply(superAgent && !visibleRoom?.feed && !visibleRoom?.archivedAt ? roomId : null, composer,
     () => setFocusToken((t) => t + 1));
   // The About button's dot: anything in this room that needs the viewer (Home's Needs you cut; no request while off).
   const { waitingOnMe } = useRoomThreads(superAgent ? roomId : null);
   const showContext = showDetail || !contextCollapsed || requestsShown;
+  const filesShown = !contextCollapsed && detailsTab === "files";
+  const roomOutputs = useRoomOutputs(superAgent ? roomId : null);
   const activeRuns = runs.filter((run) => run.state === "running");
   // Any author: a human naming ISO-14 references it as much as an agent does.
   // ponytail: loaded pages only; a task named only in unloaded history is missing until scrolled in.
@@ -868,6 +875,8 @@ function RoomContent({
   return <section
     className={cn("room-panel", showContext && !sideHost && "room-has-context", showDetail ? "room-has-detail" : "room-has-default-context")} aria-label={roomName}>
     <div className="room-conversation" hidden={showContext && isNarrow && !sideHost} onClickCapture={closeOverlay} onFocusCapture={closeOverlay}>
+      {/* Keyboard: the column sits after every message's toolbar in tab order, so one link jumps there first. */}
+      {requestsShown && <button type="button" className="room-skip-link" onClick={() => requestsHeading.current?.focus()}>Skip to requests</button>}
       <RoomHeader room={visibleRoom} roomName={roomName} counterparts={counterparts} participants={participants} participantCount={participants.length}
         canEditRoom={canEditRoom} canLeave={canLeaveRoom} ownerCannotLeave={ownerCannotLeave} ownerHandsOff={canLeaveRoom && visibleRoom?.kind === "channel" && viewer?.role === "owner"} actionable={actionable} pinnedCount={pinnedMessageIds.length}
         search={<RoomMessageSearch roomId={roomId}
@@ -917,9 +926,13 @@ function RoomContent({
             onClick={() => { closeDetail(); setContextCollapsed(!contextCollapsed); }}>
             <Info aria-hidden="true" />About
           </Button>}
-          {inShell && <Button type="button" variant="ghost" size="sm" className="room-view-toggle" aria-pressed={pane?.panelId === "file-viewer"} aria-label="Files"
+          {/* Super-agent: this room's files (attachments and what its requests made), never the runtime's disk (W7-8). */}
+          {inShell && (superAgent ? <Button type="button" variant="ghost" size="sm" className="room-view-toggle" aria-pressed={filesShown} aria-label="Files"
+            onClick={() => { closeDetail(); if (filesShown) setContextCollapsed(true); else { capture("file_browser_opened"); setDetailsTab("files"); setContextCollapsed(false); } }}>
+            <FolderOpen aria-hidden="true" /><span>Files</span></Button>
+            : <Button type="button" variant="ghost" size="sm" className="room-view-toggle" aria-pressed={pane?.panelId === "file-viewer"} aria-label="Files"
             onClick={() => { if (pane?.panelId === "file-viewer") return closePane(); capture("file_browser_opened"); openPanel("file-viewer", composer.focusAgentId ? { agent: composer.focusAgentId } : {}, { pushUrl: true }); }}>
-            <FolderOpen aria-hidden="true" /><span>Files</span></Button>}
+            <FolderOpen aria-hidden="true" /><span>Files</span></Button>)}
           {/* The shared Browser once a status body has landed (it can only show its empty state before). */}
           {inShell && browserAvailable && <Button type="button" variant="ghost" size="sm" className="room-view-toggle" aria-pressed={pane?.panelId === "browser"} aria-label="Browser"
             onClick={() => { if (pane?.panelId === "browser") return closePane(); capture("browser_view_opened"); openBrowserPane(); }}>
@@ -991,10 +1004,11 @@ function RoomContent({
         disabled={!actionable || composer.disabled}
         dropTargetRef={historyRef} {...taskReply?.composer} /></>}
     </div>
-    {dockSide(<>{showContext && !showDetail && <aside className="room-context" aria-label="About"
+    {dockSide(<>{!contextCollapsed && !showDetail && <aside className="room-context" aria-label="About"
       onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setContextCollapsed(true); } }}>
       <header className="room-context-header"><Button variant="ghost" aria-label="Back to conversation" onClick={() => setContextCollapsed(true)}><ArrowLeft aria-hidden="true" /></Button><h3 ref={contextHeading} tabIndex={-1} className="font-semibold">About</h3></header>
       <RoomDetailsPanel room={visibleRoom} roomName={roomName} tab={detailsTab} onSelectTab={setDetailsTab}
+        outputs={superAgent ? roomOutputs : undefined} onOpenOutput={openTask}
         participants={participants} actionable={actionable}
         messages={messages} pinnedMessageIds={pinnedMessageIds} activeRuns={activeRuns} hideActiveWork={superAgent}
         onUnpin={onSetPin ? (messageId) => onSetPin(messageId, false) : undefined}
@@ -1060,7 +1074,7 @@ function RoomContent({
     </aside>}
     {requestsShown && !showDetail && <aside className="room-context" aria-label="Requests"
       onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeRequests("here"); } }}>
-      <header className="room-context-header"><h3 className="flex-1 font-semibold">Requests</h3>
+      <header className="room-context-header"><h3 ref={requestsHeading} tabIndex={-1} className="flex-1 font-semibold">Requests</h3>
         <Button variant="ghost" size="icon-sm" aria-label="Close requests" title="Close" onClick={() => closeRequests("remember")}><X aria-hidden="true" /></Button></header>
       <div className="room-context-body"><RequestGroups scope={{ kind: "room", roomId }} viewerId={currentUserId} onOpen={openTask} /></div>
     </aside>}

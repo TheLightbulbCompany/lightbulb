@@ -362,7 +362,7 @@ export type { CardReply } from "./ui/reply";
 export { answerIsFormOf, answerIsFrom, answerIsTableOf, cardAnswerFor, cardAnswersFor } from "./ui/answer";
 export {
   TASK_STATUSES, SHOWN_GROUPS, STATUS_WORDS, GROUP_LABELS, GROUP_ORDER, resolveCeoAgentId, taskView, summaryView, specialistLabel, nameSpecialistIn, doneByLine, taskFinished, activityLine, elapsedShort, overviewGroups, taskSummaryLine, effectLine, effectName, formatSchedule,
-  FREE_TEXT_OPTION, answerVerb, askLine, previewRows, primaryOptionId,
+  FREE_TEXT_OPTION, answerVerb, askLine, moneyText, previewRows, primaryOptionId,
 } from "./tasks/view";
 export type {
   AgentNames, EffectRow, OverviewGroup, OverviewGroupId, QuestionRow, ShownGroup, StatusWord, SummaryView, TaskAction, TaskRow, TaskStatus, TaskTone, TaskView, TaskViewInput,

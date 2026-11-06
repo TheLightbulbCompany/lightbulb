@@ -6,7 +6,7 @@ import { SWRConfig } from "swr";
 import { fakeTasksClient, type FakeTasksClient } from "@/components/tasks/__tests__/fakeTasks";
 import type { RoomMessage, RoomParticipant } from "../types";
 
-const live = vi.hoisted(() => ({ superAgent: true, tasks: null as unknown }));
+const live = vi.hoisted(() => ({ superAgent: true, tasks: null as unknown, onEvent: () => () => undefined }));
 vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useSuperAgent: () => live.superAgent, useOptionalLiveEvents: () => live }));
 vi.mock("@/components/huddle/useRoomHuddle", () => ({ useRoomHuddle: () => ({ userIds: [], available: false }) }));
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
@@ -16,7 +16,7 @@ vi.mock("@/lib/api", () => ({ useApi: () => ({ get: apiGet }) }));
 
 import { RoomPanel, namesAgent, type RoomPanelProps } from "../RoomPanel";
 import { act } from "@testing-library/react";
-import { _resetControllerForTests, attachShell, closePane, getWorkspaceSnapshot, openBrowserPane, setThreadPaneHost } from "@/components/workspace/workspaceController";
+import { _resetControllerForTests, attachShell, closePane, getWorkspaceSnapshot, openBrowserPane, openPanel, setThreadPaneHost } from "@/components/workspace/workspaceController";
 vi.mock("@/lib/shellNav", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()), pushSearchParams: vi.fn(), replaceSearchParams: vi.fn(),
 }));
@@ -140,6 +140,68 @@ describe("RoomPanel Threads view (super-agent)", () => {
     const about = await screen.findByRole("complementary", { name: "About" });
     await userEvent.click(within(about).getByRole("button", { name: "Back to conversation" }));
     expect(screen.getByRole("button", { name: /^Requests/ })).toHaveFocus();
+  });
+
+  it("W7-2: About never rides on the Requests column; its Back closes it and the column comes back", async () => {
+    localStorage.clear();
+    render(<Fresh><RoomPanel {...props} /></Fresh>);
+    await screen.findByRole("complementary", { name: "Requests" });
+    expect(screen.queryByRole("complementary", { name: "About" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: /^People/ }));
+    const about = await screen.findByRole("complementary", { name: "About" });
+    expect(screen.queryByRole("complementary", { name: "Requests" })).toBeNull();
+    await userEvent.click(within(about).getByRole("button", { name: "Back to conversation" }));
+    expect(screen.queryByRole("complementary", { name: "About" })).toBeNull();
+    expect(await screen.findByRole("complementary", { name: "Requests" })).toBeInTheDocument();
+  });
+
+  it("W7-2: on a hard load at Home the hidden room claims no pane; the remembered column comes back in the room", async () => {
+    localStorage.clear();
+    _resetControllerForTests();
+    attachShell(() => undefined);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    act(() => setThreadPaneHost(host));
+    act(() => { openPanel("activity"); });
+    try {
+      render(<Fresh><RoomPanel {...props} /></Fresh>);
+      await screen.findByRole("button", { name: /^Requests/ });
+      expect(getWorkspaceSnapshot().pane).toBeNull();
+      expect(screen.queryByRole("complementary", { name: /Requests|About/ })).toBeNull();
+    } finally { host.remove(); _resetControllerForTests(); localStorage.clear(); }
+  });
+
+  it("W7-8: Files lists the room's attachments and what its requests made, never the runtime's disk", async () => {
+    localStorage.clear();
+    _resetControllerForTests();
+    attachShell(() => undefined);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    act(() => setThreadPaneHost(host));
+    const made = { ...FIXTURES.step05.tasks[0], taskId: "t-made", title: "Write the welcome", output: { idemKey: "o-1", kind: "document" as const, title: "Welcome note" } };
+    client = fakeTasksClient([...FIXTURES.step05.tasks, made]); live.tasks = client;
+    try {
+      render(<Fresh><RoomPanel {...props} /></Fresh>);
+      const files = await screen.findByRole("button", { name: "Files" });
+      await userEvent.click(files);
+      expect(getWorkspaceSnapshot().pane?.panelId).not.toBe("file-viewer");
+      expect(files).toHaveAttribute("aria-pressed", "true");
+      const about = await within(host).findByRole("complementary", { name: "About" });
+      expect(within(about).getByRole("tab", { name: "Files" })).toHaveAttribute("aria-selected", "true");
+      const list = await within(about).findByRole("list", { name: "Made by requests" });
+      expect(within(list).getAllByRole("listitem")).toHaveLength(1);
+      expect(list).toHaveTextContent("Welcome noteWrite the welcome");
+      await userEvent.click(within(list).getByRole("button", { name: "Open Write the welcome" }));
+      expect(await within(host).findByRole("complementary", { name: "Request" })).toHaveAttribute("data-task-pane", "t-made");
+    } finally { host.remove(); _resetControllerForTests(); localStorage.clear(); }
+  });
+
+  it("W7 keyboard: a skip link jumps to the Requests column", async () => {
+    localStorage.clear();
+    render(<Fresh><RoomPanel {...props} /></Fresh>);
+    await screen.findByRole("complementary", { name: "Requests" });
+    await userEvent.click(screen.getByRole("button", { name: "Skip to requests" }));
+    expect(screen.getByRole("heading", { name: "Requests" })).toHaveFocus();
   });
 
   it("on a narrow screen the toggle opens the Requests as a sheet over the conversation, and closes it", async () => {

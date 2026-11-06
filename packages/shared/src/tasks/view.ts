@@ -254,7 +254,7 @@ export function taskSummaryLine(t: TaskSummary, viewerId: string): string {
   const q = t.openQuestion;
   const view = summaryView(t, viewerId);
   if (q && q.canAnswer) {
-    if (q.kind === "approval") return `Needs approval: ${q.title}`;
+    if (q.kind === "approval") return `Needs approval: ${q.subkind === "purchase" ? withCurrency(q.title) : q.title}`;
     if (q.kind === "review") return `Ready for review: ${t.output?.title ?? q.title}`;
     return `Needs an answer: ${q.title}`;
   }
@@ -293,7 +293,9 @@ export function askLine(q: { kind: string; title: string; text?: string | null; 
   // Only an effect-born approval (it carries a preview; its title is questions.py `title_for`'s "send … to …")
   // reads as "Allow …"; a worker's own ask keeps its words.
   if (q.kind !== "approval" || !q.preview) return q.text || q.title;
-  const title = q.title.charAt(0).toLowerCase() + q.title.slice(1);
+  const p = q.preview as Record<string, unknown>;
+  const raw = p.kind === "purchase" ? withCurrency(q.title, p.currency) : q.title;
+  const title = raw.charAt(0).toLowerCase() + raw.slice(1);
   return `Allow ${specialistLabel(specialist, names)} to ${title}`;
 }
 
@@ -314,9 +316,22 @@ export function previewRows(preview: unknown, max = PREVIEW_MAX): { label: strin
     .filter((k, _i, keys) => !(k === "target" && keys.includes("to")) && !(k === "text" && keys.includes("body")))
     .map((k) => {
       const raw = Array.isArray(p[k]) ? (p[k] as unknown[]).join(", ") : String(p[k]);
-      const value = k === "number" ? `#${raw}` : raw.length > max ? `${raw.slice(0, max - 1)}…` : raw;
+      const value = k === "number" ? `#${raw}` : k === "amount" ? moneyText(raw, p.currency) : raw.length > max ? `${raw.slice(0, max - 1)}…` : raw;
       return { label: PREVIEW_LABELS[k], value };
     });
+}
+
+/** An amount as money ("11.81" → "$11.81"): the preview's currency, else USD. A non-number is shown as written. */
+export function moneyText(amount: unknown, currency?: unknown): string {
+  const n = typeof amount === "number" ? amount : typeof amount === "string" && /^\d+(\.\d+)?$/.test(amount.trim()) ? Number(amount) : NaN;
+  if (!Number.isFinite(n)) return String(amount);
+  const code = typeof currency === "string" && /^[A-Za-z]{3}$/.test(currency) ? currency.toUpperCase() : "USD";
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: code }).format(n);
+}
+
+/** A purchase title's bare amount ("buy x for 11.81", questions.py `title_for`) with its currency. */
+function withCurrency(title: string, currency?: unknown): string {
+  return title.replace(/ for (\d+(?:\.\d+)?)$/, (_m, n: string) => ` for ${moneyText(n, currency)}`);
 }
 
 const ANSWER_VERBS: Record<string, string> = {

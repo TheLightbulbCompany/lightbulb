@@ -185,3 +185,17 @@ describe("taskView: Landing (apply_effect running)", () => {
     expect(view(task("failed"), SAM, { effects }).group).toBe("waiting_on_you");
   });
 });
+
+describe("money in approvals (dev walk W7-9)", () => {
+  it("an amount reads with its currency, USD by default, everywhere the purchase is shown", async () => {
+    const { askLine, moneyText, previewRows, taskSummaryLine } = await import("./view");
+    expect(moneyText("11.81")).toBe("$11.81");
+    expect(moneyText(11.81, "eur")).toBe("€11.81");
+    expect(moneyText("about 12")).toBe("about 12");
+    const q = { kind: "approval", title: "buy austinworkshop2027.com for 11.81", preview: { kind: "purchase", item: "austinworkshop2027.com", amount: "11.81" } };
+    expect(askLine(q, "Engineering")).toBe("Allow Engineering to buy austinworkshop2027.com for $11.81");
+    expect(previewRows(q.preview)).toContainEqual({ label: "Amount", value: "$11.81" });
+    const task = { status: "waiting", shownGroup: "waiting_on_you", openQuestion: { qid: "q", kind: "approval", subkind: "purchase", title: q.title, answerers: ["u"], answererNames: ["U"], canAnswer: true } };
+    expect(taskSummaryLine(task as never, "u")).toBe("Needs approval: buy austinworkshop2027.com for $11.81");
+  });
+});

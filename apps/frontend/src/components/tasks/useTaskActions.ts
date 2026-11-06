@@ -97,6 +97,14 @@ export function useTaskActions(source: string) {
   return { act, answer, run, refetch };
 }
 
+/** The card's button: an answer reads as the question's own primary option ("Allow once"), the pane's word for the
+ *  same press (dev walk W7-9), else the action's word. */
+export function actionLabel(task: TaskSummary, action: TaskAction): string {
+  const options = task.openQuestion?.options;
+  const primary = ANSWERS.has(action) && options ? options.find((o) => o.id === primaryOptionId(options)) : undefined;
+  return primary?.label ?? ACTION_LABELS[action];
+}
+
 export const ACTION_LABELS: Record<TaskAction, string> = {
   approve: "Approve", answer: "Answer", review: "Review", retry: "Retry", reopen: "Reopen",
   publish: "Publish", send: "Send", merge: "Merge",

@@ -165,10 +165,16 @@ it("keeps empty reaction and reply rows out of the message and groups its action
   const ownMessage = { ...message, author: { kind: "human" as const, id: "owner", displayName: "Owner" } };
   render(<RoomPanel {...props} messages={[ownMessage]} onSetReaction={vi.fn()} onUpdateMessage={vi.fn()} />);
   const article = screen.getByRole("article", { name: "Message from Owner" });
-  const actions = within(article).getByRole("group", { name: "Message actions" });
+  const actions = within(article).getByRole("toolbar", { name: "Message actions" });
   expect(within(actions).getByRole("button", { name: "Add reaction" })).toBeInTheDocument();
   expect(within(actions).getByRole("button", { name: "Reply in thread" })).toBeInTheDocument();
   expect(within(actions).getByRole("button", { name: "Message actions" })).toBeInTheDocument();
+  // W7: one tab stop per message, "Message actions"; the arrow keys walk the rest.
+  const stops = within(actions).getAllByRole("button").filter((button) => button.tabIndex === 0);
+  expect(stops.map((button) => button.getAttribute("aria-label"))).toEqual(["Message actions"]);
+  fireEvent.keyDown(within(actions).getByRole("button", { name: "Message actions" }), { key: "Home" });
+  expect(document.activeElement).toBe(within(actions).getAllByRole("button")[0]);
+  expect(within(actions).getAllByRole("button").filter((button) => button.tabIndex === 0)).toEqual([document.activeElement]);
   expect(within(article).queryByLabelText("Message reactions")).not.toBeInTheDocument();
   expect(article.querySelector(".room-reply")).toBeNull();
   expect(within(article).queryByText("Reply in thread")).not.toBeInTheDocument();

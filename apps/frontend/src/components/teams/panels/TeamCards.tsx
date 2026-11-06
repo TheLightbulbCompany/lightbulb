@@ -2,7 +2,7 @@
 
 // Team, super-agent (product shape, 5 Nov 2026): one card per specialist saying what it is for, what it can use
 // (its Hermes profile's skills), the requests it did lately, and Ask. Each specialist is its own profile, so it is
-// shown as itself. Lightbulb leads as the coordinator: it starts every request and hands it on.
+// shown as itself. Lightbulb leads, one line: it coordinates your requests (never "Coordinator" or its roster "CEO").
 
 import { useMemo, type ReactElement } from "react";
 import { useAuth } from "@clerk/nextjs";
@@ -22,16 +22,26 @@ export const SKILLS_SHOWN = 6;
 /** Recent requests per card. */
 export const RECENT_SHOWN = 3;
 
-interface Skill { name: string; description?: string; disabled?: boolean; eligible?: boolean }
+interface Skill { name: string; description?: string; disabled?: boolean; eligible?: boolean; source?: string }
 
-/** What a specialist is for, in one line: its title, else its persona's first sentence, else what its skills say,
- *  else (Lightbulb) what a coordinator does. Null when there is nothing true to say. */
-export function purposeLine(agent: Pick<CompanyAgent, "title" | "capabilities">, skills: readonly Skill[], front: boolean): string | null {
-  const title = agent.title?.trim();
-  if (title) return title;
+/** Lightbulb's one line on its card. */
+export const FRONT_LINE = "Coordinates your requests";
+
+/** Every profile has these (the runtime's own tooling, Lightbulb's plumbing), so they say nothing about a specialist
+ *  (dev walk W7-7). ponytail: a name list; a `userFacing` flag from the bridge if the image's skills churn. */
+const PLUMBING_SKILLS = new Set(["lightbulb", "paperclip", "claude-code", "codex", "opencode", "computer-use", "hermes-agent", "native-mcp", "mcporter"]);
+const PLUMBING_SOURCES = new Set(["autonomous-ai-agents", "mcp"]);
+export const userFacingSkills = (skills: readonly Skill[]): Skill[] =>
+  skills.filter((s) => !s.disabled && !PLUMBING_SKILLS.has(s.name.toLowerCase()) && !PLUMBING_SOURCES.has(s.source ?? ""));
+
+/** What a specialist is for, in one line: its persona's first sentence, else its title unless that is just its name
+ *  (or a roster role like "CEO"), else what its skills say. Null when there is nothing true to say. */
+export function purposeLine(agent: Pick<CompanyAgent, "title" | "capabilities" | "name" | "role">, skills: readonly Skill[]): string | null {
   const persona = agent.capabilities?.trim().split(/(?<=[.!?])\s/)[0];
   if (persona) return persona.length > 140 ? `${persona.slice(0, 139)}…` : persona;
-  if (front) return "Starts every request and hands it to the right specialist.";
+  const title = agent.title?.trim();
+  const same = (word: string | null | undefined) => !!word && word.trim().toLowerCase() === title?.toLowerCase();
+  if (title && !same(agent.name) && !same(agent.role)) return title;
   const names = skills.slice(0, 3).map((s) => s.name);
   if (!names.length) return null;
   const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
@@ -78,15 +88,16 @@ function TeamCard({ agent, name, front, recent, loaded, viewerId, onAsk, menu }:
   // asking on a guess starts a microVM.
   const statusLoaded = useStatusLoaded();
   const { data: raw } = useRuntimeRpc<{ skills?: Skill[] } | Skill[]>(statusLoaded ? "skills.status" : null, { agentId: agent.id });
-  const skills = (Array.isArray(raw) ? raw : raw?.skills ?? []).filter((s) => !s.disabled);
-  const purpose = purposeLine(agent, skills, front);
+  const skills = userFacingSkills(Array.isArray(raw) ? raw : raw?.skills ?? []);
+  // Lightbulb: its one line only (its roster title is "CEO", its persona the coordinator's instructions).
+  const purpose = front ? null : purposeLine(agent, skills);
   const headingId = `team-${agent.id}`;
   const paused = agent.status === "paused";
   return <li className="editorial-card flex flex-col gap-2 px-4 py-3" aria-labelledby={headingId}>
     <div className="flex items-start gap-2">
       <div className="min-w-0 flex-1">
         <h3 id={headingId} className="truncate font-semibold">{name}</h3>
-        <p className="text-ui text-muted-foreground">{front ? "Coordinator" : "Specialist"}{paused && <> · <span className="text-warn">Paused</span></>}</p>
+        <p className="text-ui text-muted-foreground">{front ? FRONT_LINE : "Specialist"}{paused && <> · <span className="text-warn">Paused</span></>}</p>
       </div>
       <DropdownMenu>
         <DropdownMenuTrigger asChild><Button type="button" size="icon-sm" variant="ghost" aria-label={`More for ${name}`}><MoreHorizontal aria-hidden="true" /></Button></DropdownMenuTrigger>

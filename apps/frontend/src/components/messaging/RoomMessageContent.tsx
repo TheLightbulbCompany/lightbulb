@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { MoreHorizontal } from "lucide-react";
 import type { CanonicalRoomMessage, UpdateMessageRequest } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
@@ -32,6 +32,23 @@ export function RoomMessageContent({ message, currentUserId, actionable, onUpdat
   const trigger = useRef<HTMLButtonElement>(null);
   const root = useRef<HTMLDivElement>(null);
   const cancel = useRef<HTMLButtonElement>(null);
+  const bar = useRef<HTMLDivElement>(null);
+  // One tab stop per message (dev walk W7: Tab walked 8 buttons on every message): "Message actions" when there is
+  // one, else the first button; the arrow keys move along the toolbar. Re-applied each render (the buttons change).
+  const stop = useRef<number | null>(null);
+  useEffect(() => { roveTo(bar.current, stop.current); });
+  const onBarKey = (event: KeyboardEvent<HTMLDivElement>) => {
+    const buttons = barButtons(bar.current);
+    const at = buttons.indexOf(event.target as HTMLButtonElement);
+    if (at < 0) return;
+    const next = event.key === "ArrowRight" ? (at + 1) % buttons.length : event.key === "ArrowLeft" ? (at - 1 + buttons.length) % buttons.length
+      : event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : -1;
+    if (next < 0) return;
+    event.preventDefault();
+    stop.current = next;
+    roveTo(bar.current, next);
+    buttons[next].focus();
+  };
   const ownMessage = message.author.kind === "human" && message.author.id === currentUserId && !message.deletedAt;
   const [editRequested, setEditRequested] = useState(startEditing);
   if (editRequested !== startEditing) {
@@ -73,7 +90,8 @@ export function RoomMessageContent({ message, currentUserId, actionable, onUpdat
       <div className="flex flex-wrap gap-2"><Button type="button" variant="outline" disabled={pending} onClick={() => { setRequest(null); restoreFocus(); onEditingClosed?.(); }}>Cancel edit</Button>
         <Button type="submit" disabled={!actionable || pending || (!request!.text!.trim() && !message.attachments?.length)}>{pending ? "Saving…" : "Save changes"}</Button></div>
     </form> : <>{children}{message.editedAt && <span className="text-ui text-muted-foreground"> (edited)</span>}</>}
-    {!editing && (actions || menuExtras || (ownMessage && onUpdate)) && <div className="room-message-actions" role="group" aria-label="Message actions">
+    {!editing && (actions || menuExtras || (ownMessage && onUpdate)) && <div ref={bar} className="room-message-actions" role="toolbar" aria-label="Message actions" onKeyDown={onBarKey}
+      onFocus={(event) => { const at = barButtons(bar.current).indexOf(event.target as unknown as HTMLButtonElement); if (at >= 0) { stop.current = at; roveTo(bar.current, at); } }}>
       {actions}
       {(menuExtras || (ownMessage && onUpdate)) && <DropdownMenu>
       <DropdownMenuTrigger asChild><Button ref={trigger} type="button" variant="ghost" size="icon-sm" disabled={!actionable || pending} aria-label="Message actions"><MoreHorizontal aria-hidden="true" /></Button></DropdownMenuTrigger>
@@ -98,4 +116,15 @@ export function RoomMessageContent({ message, currentUserId, actionable, onUpdat
       </DialogContent>
     </Dialog>
   </div>;
+}
+
+const barButtons = (bar: HTMLElement | null): HTMLButtonElement[] => bar ? [...bar.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")] : [];
+
+/** Roving tabindex: only button `at` (default: "Message actions", else the first) is in the tab order. */
+function roveTo(bar: HTMLElement | null, at: number | null): void {
+  const buttons = barButtons(bar);
+  if (!buttons.length) return;
+  const more = buttons.findIndex((button) => button.getAttribute("aria-label") === "Message actions");
+  const pick = at !== null && at < buttons.length ? at : more >= 0 ? more : 0;
+  buttons.forEach((button, i) => { button.tabIndex = i === pick ? 0 : -1; });
 }

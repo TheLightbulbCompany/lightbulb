@@ -12,7 +12,7 @@ const client = vi.hoisted(() => ({
 const controller = vi.hoisted(() => ({ openMessagePanel: vi.fn(), openPanel: vi.fn(), updatePanelParams: vi.fn() }));
 
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ isLoaded: true, userId: "u1", orgId: "o1" }) }));
-vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => ({ messaging: client }) }));
+vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => ({ messaging: client, agentNames: new Map() }) }));
 vi.mock("@/lib/notify", () => ({ notifyApiError: vi.fn() }));
 vi.mock("@/components/workspace/workspaceController", () => controller);
 
@@ -81,19 +81,25 @@ describe("Ideas pane: the list", () => {
 });
 
 describe("Ideas pane: sizes and suggestions", () => {
-  it("puts an agent's suggestion under For you, first; its detail has no turnaround or your part", async () => {
+  it("W7: shows the team's suggestions as Home does (Do it / Not now), the catalog only while there are none", async () => {
     const suggestion: Idea = { ...idea("s-1", "growth", "Growth"), suggested: true, ourTurnaround: undefined, yourPart: undefined };
     client.listIdeas.mockResolvedValue({ ...catalog, ideas: [suggestion, ...catalog.ideas] });
     renderPanel();
-    await waitFor(() => expect(rowTitles()).toHaveLength(6));
-    const forYou = screen.getByRole("region", { name: "For you" });
-    expect(within(forYou).getAllByRole("button").map((b) => b.getAttribute("aria-labelledby") && b.textContent)).toHaveLength(1);
-    expect(within(forYou).getByRole("button", { name: "Title s-1" })).toBeInTheDocument();
-    expect(screen.getAllByRole("heading", { level: 2 })[0]).toHaveTextContent("For you");
-    await userEvent.click(row("Title s-1"));
-    expect(screen.getByText("Growth takes this")).toBeInTheDocument();
-    expect(screen.queryByText(/Your part:/)).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Let's do it" })).toBeInTheDocument();
+    const suggested = await screen.findByRole("region", { name: "Suggested · 1" });
+    const item = within(suggested).getByRole("listitem", { name: "Title s-1" });
+    expect(item).toHaveTextContent("Growth would do this");
+    expect(within(item).getByRole("button", { name: "Do it" })).toBeInTheDocument();
+    // The catalog is the starters, not shown beside suggestions.
+    expect(rowTitles()).toHaveLength(0);
+    await userEvent.click(within(item).getByRole("button", { name: "Not now" }));
+    await waitFor(() => expect(client.dismissIdea).toHaveBeenCalledWith("s-1"));
+  });
+
+  it("with no suggestions, the catalog sections are the starters under one lead line", async () => {
+    renderPanel();
+    await waitFor(() => expect(rowTitles()).toHaveLength(5));
+    expect(screen.getByText(/Or start with one of these:/)).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: /^Suggested/ })).toBeNull();
   });
 });
 

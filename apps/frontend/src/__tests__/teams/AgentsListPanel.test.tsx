@@ -82,8 +82,10 @@ vi.mock("@/hooks/useLiveEvents", () => ({
 }));
 const skills = vi.hoisted(() => ({ byAgent: {} as Record<string, unknown> }));
 vi.mock("@/hooks/useRuntimeRpc", () => ({ useRuntimeRpc: (_m: string | null, params: { agentId: string }) => ({ data: skills.byAgent[params.agentId] }) }));
+const DEFAULT_DIRECTORY = { ceoAgentId: "ceo", participants: [{ kind: "agent", id: "fin", mentionHandle: "finance" }] } as Record<string, unknown>;
+const directory = vi.hoisted(() => ({ props: null as Record<string, unknown> | null }));
 vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({
-  useMessagingWorkspaceOptional: () => ({ directoryProps: { ceoAgentId: "ceo", participants: [{ kind: "agent", id: "fin", mentionHandle: "finance" }] } }),
+  useMessagingWorkspaceOptional: () => ({ directoryProps: directory.props ?? DEFAULT_DIRECTORY }),
 }));
 const nav = vi.hoisted(() => ({ openChatPanel: vi.fn(), openAgentDmWithDraft: vi.fn() }));
 vi.mock("@/components/workspace/workspaceController", () => nav);
@@ -454,9 +456,10 @@ describe("Team › Message", () => {
     try {
       render(<SWRConfig value={{ provider: () => new Map() }}><AgentsListPanel /></SWRConfig>);
       const cards = screen.getAllByRole("listitem").filter((li) => li.closest("[aria-label='Specialists']") && li.querySelector("h3"));
-      // Lightbulb leads, as the coordinator.
+      // Lightbulb leads, with one line: never "Coordinator" or its roster "CEO" (W7-7).
       expect(within(cards[0]).getByRole("heading", { name: "Lightbulb" })).toBeInTheDocument();
-      expect(within(cards[0]).getByText("Starts every request and hands it to the right specialist.")).toBeInTheDocument();
+      expect(within(cards[0]).getByText("Coordinates your requests")).toBeInTheDocument();
+      expect(within(cards[0]).queryByText(/Coordinator|CEO/)).toBeNull();
       const fin = cards.find((c) => within(c).queryByRole("heading", { name: "Finance" }))!;
       // No title or persona: the line comes from its skills; disabled skills don't show.
       expect(within(fin).getByText("Works with stripe and quickbooks.")).toBeInTheDocument();
@@ -471,6 +474,30 @@ describe("Team › Message", () => {
       expect(screen.queryByRole("button", { name: "Org chart view" })).toBeNull();
       expect(screen.queryByTestId("org-chart")).toBeNull();
     } finally { skills.byAgent = {}; teamTasks.list = []; }
+  });
+
+  it("W7-7: Ask drafts the @handle when the open room has no specialists; cards hide plumbing skills and never repeat the name", () => {
+    live.superAgent = true;
+    directory.props = { ceoAgentId: "ceo", participants: [{ kind: "agent", id: "fin", mentionHandle: null }],
+      rooms: [{ participants: [{ kind: "agent", id: "fin", mentionHandle: "finance-2" }] }] };
+    mockRead.mockReturnValue({ ...agents, data: { agents: [
+      { id: "ceo", name: "CEO", role: "ceo", title: "CEO" } as AgentRow,
+      { id: "fin", name: "Finance", role: "general" },
+      { id: "eng", name: "Engineering", role: "engineer", title: "Engineering" } as AgentRow,
+    ] } });
+    skills.byAgent = { eng: { skills: [{ name: "paperclip" }, { name: "codex" }, { name: "hermes-agent" }, { name: "github" }] } };
+    try {
+      render(<SWRConfig value={{ provider: () => new Map() }}><AgentsListPanel /></SWRConfig>);
+      fireEvent.click(screen.getByRole("button", { name: "Ask Finance through Lightbulb" }));
+      expect(nav.openAgentDmWithDraft).toHaveBeenCalledWith("ceo", "@finance-2 ");
+      // In no room at all: the handle the server derives from the name.
+      fireEvent.click(screen.getByRole("button", { name: "Ask Engineering through Lightbulb" }));
+      expect(nav.openAgentDmWithDraft).toHaveBeenCalledWith("ceo", "@engineering ");
+      const eng = screen.getAllByRole("listitem").find((li) => within(li).queryByRole("heading", { name: "Engineering" }))!;
+      expect(within(eng).getByRole("list", { name: "Engineering's skills" })).toHaveTextContent(/^github$/);
+      expect(within(eng).getByText("Works with github.")).toBeInTheDocument();
+      expect(within(eng).getAllByText("Engineering")).toHaveLength(1);
+    } finally { skills.byAgent = {}; directory.props = null; }
   });
 
   it("switch off: every agent's Message opens its DM", () => {

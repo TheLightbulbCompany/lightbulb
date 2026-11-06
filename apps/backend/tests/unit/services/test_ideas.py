@@ -9,7 +9,7 @@ from fastapi import HTTPException
 
 from core.auth import AuthContext
 from core.repositories import messaging_repo as repo
-from core.services import hermes_profiles, ideas, messaging, task_board
+from core.services import hermes_profiles, ideas, messaging, proactive, task_board
 from tests.unit.repositories.test_messaging_repo import table  # noqa: F401  (the moto messaging table)
 
 OWNER = "org_1"
@@ -887,11 +887,16 @@ def super_agent(workspace, monkeypatch):
     async def by_status(ws, status, **_):
         return [t for t in tasks.values() if t["status"] == status], None
 
+    async def row_now(ws, trigger, task_id, start, room_id):
+        rows.append((trigger.trigger_id, task_id, start.specialist, room_id))
+
+    rows: list = []
     monkeypatch.setattr(admission, "enqueue_trigger", enqueue)
+    monkeypatch.setattr(proactive, "_row_now", row_now)
     monkeypatch.setattr(tasks_repo, "get_task", AsyncMock(side_effect=lambda ws, tid: tasks.get(tid)))
     monkeypatch.setattr(tasks_repo, "list_tasks_by_status", by_status)
     monkeypatch.setattr(task_board, "_context", AsyncMock(side_effect=AssertionError("no Paperclip")))
-    return SimpleNamespace(tasks=tasks, enqueued=enqueued)
+    return SimpleNamespace(tasks=tasks, enqueued=enqueued, rows=rows)
 
 
 @pytest.mark.asyncio
@@ -905,6 +910,9 @@ async def test_super_agent_lets_do_it_starts_a_request_in_the_lightbulb_dm(super
     assert start["title"] == "Answer the 14 open Shopify reviews" and start["visibility"] == "person"
     assert start["specialist"] == STARTERS["growth"] and "Every review answered" in start["brief"]
     assert started == {"roomId": "room-dm-A", "taskId": trigger.ref["taskId"]}
+    # Dev walk 7 (W7-1): the request row exists when start answers, so the pane it opens never says "isn't
+    # available" while the Router's queue catches up.
+    assert super_agent.rows == [(trigger.trigger_id, started["taskId"], STARTERS["growth"], "room-dm-A")]
     # Twice is one request while it is open; the idea leaves the list.
     super_agent.tasks[started["taskId"]] = {"taskId": started["taskId"], "status": "working", "title": "x"}
     assert await ideas.start(AUTH, added["id"]) == started and len(super_agent.enqueued) == 1

@@ -67,7 +67,7 @@ export function WorkspaceHeader({ chatReady = true, onNavigate }: {
   return (
     <nav className="workspace-rail" aria-label="Workspace">
       <HistoryButtons />
-      <button type="button" className="workspace-rail__search" aria-label="Search messages, agents, issues, and projects" title="Search (⌘/Ctrl K)" onClick={() => { setOpen(true); onNavigate?.(); }}>
+      <button type="button" className="workspace-rail__search" aria-label={superAgent ? "Search projects, tasks, files and messages" : "Search messages, agents, issues, and projects"} title="Search (⌘/Ctrl K)" onClick={() => { setOpen(true); onNavigate?.(); }}>
         <Search size={20} aria-hidden="true" />
       </button>
       {(superAgent ? SUPER_AGENT_DESTINATIONS : DESTINATIONS).map(({ place, panel, label, Icon }) => {

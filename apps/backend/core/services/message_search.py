@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import httpx
 from botocore.auth import SigV4Auth
@@ -30,6 +31,15 @@ MARK_START, MARK_END = "\u0001", "\u0002"
 _SEARCH_TIMEOUT_S = 25.0  # under API Gateway's 30 s; a cold start can take 10–30 s
 _SOURCE = ["messageId", "roomId", "messageSeq", "threadRootMessageId", "authorName", "authorKind", "createdAt", "text"]
 _OPERATORS = set('"-+|*()~')
+
+# New messages reach the index in a batch drain (MESSAGE_SEARCH_BATCH_MINUTES = 39 in
+# apps/infra/lib/stacks/api-stack.ts), so the last hour is read live from DynamoDB.
+_FRESH_WINDOW = timedelta(minutes=60)
+_FRESH_ROOMS = 20  # the most recently active rooms
+_FRESH_PER_ROOM = 30  # newest rows read per room
+# DynamoDB reads one search may run at once (live scan and room recheck together): the
+# process's thread pool is 6 (core/dynamodb.py), and one search must never take it over.
+_READS_AT_ONCE = 3
 
 _credentials = None
 _client: httpx.AsyncClient | None = None
@@ -135,18 +145,21 @@ async def search(auth: AuthContext, request: MessageSearchRequest) -> MessageSea
     if not settings.SEARCH_ENDPOINT:
         raise ApiProblem("SEARCH_UNAVAILABLE", "Message search is not available yet.")
     q = request.q.strip()
-    rooms = await messaging.searchable_rooms(resolve_owner_id(auth), auth.user_id)
+    metas = await messaging.searchable_room_metas(resolve_owner_id(auth), auth.user_id)
     if request.room_id is not None:
-        room_id = str(request.room_id)
-        if room_id not in rooms:
+        metas = [meta for meta in metas if meta["roomId"] == str(request.room_id)]
+        if not metas:
             raise ApiProblem("ROOM_NOT_FOUND", "Room not found.")
-        rooms = {room_id: rooms[room_id]}
+    rooms = {meta["roomId"]: meta["ownerId"] for meta in metas}
     if not q or not rooms:
         return MessageSearchResponse(hits=[])
     indexes = ",".join(sorted({index_name(owner) for owner in rooms.values()}))
+    gate = asyncio.Semaphore(_READS_AT_ONCE)
     try:
-        response = await _request(
-            "POST", f"/{indexes}/_search?ignore_unavailable=true", build_query(q, list(rooms), request.limit)
+        # The live scan runs while the index answers, not after it.
+        response, fresh = await asyncio.gather(
+            _request("POST", f"/{indexes}/_search?ignore_unavailable=true", build_query(q, list(rooms), request.limit)),
+            _unindexed_rows(q, metas, gate),
         )
     except httpx.TimeoutException as exc:
         raise _unavailable() from exc
@@ -162,21 +175,22 @@ async def search(auth: AuthContext, request: MessageSearchRequest) -> MessageSea
     rows = await messaging_repo.get_messages_by_keys(
         [(h["_source"]["roomId"], h["_source"]["messageSeq"]) for h in candidates]
     )
-    # The search call can outlast a membership removal: re-read membership (strongly)
-    # for exactly the rooms that have hits, so removed members never see their text.
-    owner_id, limit = resolve_owner_id(auth), asyncio.Semaphore(messaging._SUMMARY_CONCURRENCY)
+    # The search call can outlast a membership removal: for exactly the rooms that have hits,
+    # apply the room door's full rule (membership, plus session, app and task rooms) again.
+    owner_id = resolve_owner_id(auth)
 
     async def reads(room_id: str) -> bool:
-        async with limit:
-            return await messaging.still_reads_room(owner_id, auth.user_id, room_id, rooms[room_id])
+        async with gate:
+            return await messaging.still_opens_room(owner_id, auth.user_id, room_id)
 
-    room_ids = sorted({h["_source"]["roomId"] for h in candidates})
+    room_ids = sorted({h["_source"]["roomId"] for h in candidates} | {row["roomId"] for row in fresh})
     readable = {r for r, ok in zip(room_ids, await asyncio.gather(*(reads(r) for r in room_ids))) if ok}
-    hits = []
+    hits = [_fresh_hit(row, q) for row in fresh if row["roomId"] in readable]
+    seen = {hit.message_id for hit in hits}
     for hit in candidates:
         source = hit["_source"]
         row = rows.get((source["roomId"], source["messageSeq"]))
-        if source["roomId"] not in readable or row is None or row.get("deletedAt"):
+        if source["roomId"] not in readable or row is None or row.get("deletedAt") or source["messageId"] in seen:
             continue
         if (row["editedText"] if "editedText" in row else row.get("text") or "") != source.get("text", ""):
             continue
@@ -193,7 +207,75 @@ async def search(auth: AuthContext, request: MessageSearchRequest) -> MessageSea
                 snippet=snippet,
             )
         )
-    return MessageSearchResponse(hits=hits)
+    return MessageSearchResponse(hits=hits[: request.limit])
+
+
+def _row_text(row: dict) -> str:
+    return row["editedText"] if "editedText" in row else row.get("text") or ""
+
+
+def _terms(q: str) -> list[str]:
+    return "".join(" " if c in _OPERATORS else c for c in q).lower().split()
+
+
+async def _unindexed_rows(q: str, metas: list[dict], gate: asyncio.Semaphore) -> list[dict]:
+    """Messages too new for the index: the last hour of the most recently active rooms,
+    read from DynamoDB and kept when they hold every word of ``q``. Newest first.
+
+    ponytail: a plain substring match (no stemming, no typos) over <= 20 rooms x 30 rows;
+    the index answers everything older, so this only bridges the drain."""
+    terms = _terms(q)
+    since = datetime.now(timezone.utc) - _FRESH_WINDOW
+
+    def recent(stamp: object) -> bool:
+        try:
+            return isinstance(stamp, str) and datetime.fromisoformat(stamp) >= since
+        except ValueError:
+            return False
+
+    active = sorted((m for m in metas if recent(m.get("lastMessageAt"))), key=lambda m: m["lastMessageAt"])
+    active = active[-_FRESH_ROOMS:]
+    if not terms or not active:
+        return []
+
+    async def tail(meta: dict) -> list[dict]:
+        async with gate:
+            return await messaging_repo.list_messages_before(
+                meta["roomId"], int(meta.get("lastSeq") or 0) + 1, _FRESH_PER_ROOM
+            )
+
+    rows = [row for rows in await asyncio.gather(*(tail(m) for m in active)) for row in rows]
+    return sorted(
+        (
+            row
+            for row in rows
+            if not row.get("deletedAt")
+            and recent(row.get("createdAt"))
+            and all(term in _row_text(row).lower() for term in terms)
+        ),
+        key=lambda row: (row["createdAt"], int(row["messageSeq"])),
+        reverse=True,
+    )
+
+
+def _fresh_hit(row: dict, q: str) -> MessageSearchHit:
+    """A hit for a row the index has not seen yet; the snippet marks the first word like the index's highlight."""
+    text, term = _row_text(row), _terms(q)[0]
+    at = max(text.lower().find(term), 0)
+    start = max(0, at - 60)
+    end = at + len(term)
+    snippet = f"{text[start:at]}{MARK_START}{text[at:end]}{MARK_END}{text[end : start + 160]}"
+    author = row.get("author") or {}
+    return MessageSearchHit(
+        message_id=row["messageId"],
+        room_id=row["roomId"],
+        message_seq=int(row["messageSeq"]),
+        thread_root_message_id=row.get("threadRootMessageId"),
+        author_name=author.get("displayName") or "",
+        author_kind=author.get("kind") or "",
+        created_at=row["createdAt"],
+        snippet=snippet,
+    )
 
 
 class SessionSearchRequest(ContractModel):

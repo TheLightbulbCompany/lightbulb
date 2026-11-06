@@ -51,7 +51,7 @@ beforeEach(() => {
       // A builtin job is Settings' (Proactive), never counted here.
       { id: "builtin:feed", name: "Feed posts", status: "active", deliverTo: "none", schedule: null },
       // A one-off already past won't run again: not Scheduled (W13).
-      { id: "a3", name: "Post the signups once", status: "active", deliverTo: "room:r1", schedule: { cron: ["21 6 5 1 *"], tz: "UTC" }, runCount: 1 },
+      { id: "a3", name: "Post the signups once", status: "paused", pausedReason: "ran once", deliverTo: "room:r1", schedule: { cron: ["21 6 5 11 *"], tz: "UTC", remainingRuns: 1 } },
     ] };
     const scope = decodeURIComponent(/scope=([^&]+)/.exec(path)![1]);
     const rows = scope.startsWith("room:") ? roomOf(scope.slice(5)) : TASKS;
@@ -77,7 +77,9 @@ describe("Home's groups are the shared four (overviewGroups)", () => {
 describe("HomeWork", () => {
   it("renders Needs you, Working, Done (collapsed, folded after five) and Closed (collapsed) with the same count the badges read", async () => {
     const onOpen = vi.fn();
-    client.list.mockResolvedValue({ tasks: TASKS, next: "page-2" as never });
+    const older = ["u", "v"].map((id) => task(id, "r1", "idle", { updatedAt: "2026-10-01T00:00:00Z" }));
+    client.list.mockImplementation((async (_scope: unknown, cursor?: unknown) => cursor === "page-2"
+      ? { tasks: older, next: null } : { tasks: TASKS, next: "page-2" }) as never);
     render(<Fresh><HomeWork viewerId={SAM} onOpen={onOpen} /></Fresh>);
     const needs = await screen.findByRole("region", { name: "Needs you · 3" });
     // A collapsed count is not an empty list (W11-4): no "Show more" until Done or Closed is open.
@@ -90,10 +92,11 @@ describe("HomeWork", () => {
     await userEvent.click(within(done).getByRole("button", { name: "Done · 6" }));
     expect(within(done).getByRole("button", { name: "Done · 6" })).toHaveAttribute("aria-expanded", "true");
     expect(within(done).getAllByRole("listitem")).toHaveLength(5);
-    // One "Show more" per group: the rows already here first, then the next page.
+    // One "Show more" per group: one click shows the next five, fetching the next page when the loaded rows run short
+    // (6 here), so its rows appear without a second click.
     await userEvent.click(within(done).getByRole("button", { name: "Show more" }));
-    expect(within(done).getAllByRole("listitem")).toHaveLength(6);
-    expect(within(done).getByRole("button", { name: "Show more" })).toBeInTheDocument(); // page 2 waits
+    await waitFor(() => expect(within(done).getAllByRole("listitem")).toHaveLength(8));
+    expect(within(done).queryByRole("button", { name: "Show more" })).toBeNull();
     // Activity spans projects: a row names its project.
     expect(within(done).getByText("Request n").closest("li")).toHaveTextContent("Request n· cafe menu");
     // Closed (resolved and someone else's failure) is its own group, collapsed until opened.

@@ -229,6 +229,15 @@ it("applies the URL's command on mount: a retired alias opens Activity, a detail
   expect(screen.getByRole("region", { name: "Task" })).toBeInTheDocument();
 });
 
+it("?panel=home opens Home in the old shell when the super-agent switch is off (W13 review)", () => {
+  window.history.replaceState(null, "", "/chat?panel=home");
+  const view = renderReady();
+  expect(getWorkspaceSnapshot().place).toBe("home");
+  expect(getWorkspaceSnapshot().main).toMatchObject({ component: "home" });
+  expect(shellOf(view)).not.toHaveAttribute("data-super-agent");
+  expect(new URLSearchParams(window.location.search).get("panel")).toBe("home");
+});
+
 it("restores the room and the Browser beside it from ?panel=chat&room=…&pane=browser on reload", () => {
   window.history.replaceState(null, "", "/chat?panel=chat&room=r-launch&pane=browser");
   renderReady();

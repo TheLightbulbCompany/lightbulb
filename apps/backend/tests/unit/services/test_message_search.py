@@ -330,7 +330,7 @@ async def test_a_live_hit_is_dropped_when_membership_is_revoked(monkeypatch):
     assert [c.args[2] for c in recheck.await_args_list] == [ROOM_A]
 
 
-@pytest.mark.parametrize("index", ["asleep", "503"])
+@pytest.mark.parametrize("index", ["asleep", "503", "unreachable"])
 async def test_live_hits_do_not_wait_for_a_cold_index(monkeypatch, index):
     """W13: "pumpkin" waited 8 s behind a waking index and the palette read the wait as No results."""
     import asyncio
@@ -346,10 +346,28 @@ async def test_live_hits_do_not_wait_for_a_cold_index(monkeypatch, index):
     async def asleep(*args, **kwargs):
         await asyncio.sleep(5)
 
-    request = asleep if index == "asleep" else AsyncMock(return_value=_response(503, {}))
-    with _rooms({ROOM_A: "org_me"}, lastMessageAt=now, lastSeq=1), patch.object(message_search, "_request", request):
-        result = await asyncio.wait_for(message_search.search(_auth(), _req(q="pumpkin")), 1)
+    request = {
+        "asleep": asleep,
+        "503": AsyncMock(return_value=_response(503, {})),
+        "unreachable": AsyncMock(side_effect=httpx.ConnectError("refused")),
+    }[index]
+    unretrieved = []
+    loop = asyncio.get_running_loop()
+    loop.set_exception_handler(lambda _loop, context: unretrieved.append(context))
+    try:
+        with (
+            _rooms({ROOM_A: "org_me"}, lastMessageAt=now, lastSeq=1),
+            patch.object(message_search, "_request", request),
+        ):
+            result = await asyncio.wait_for(message_search.search(_auth(), _req(q="pumpkin")), 1)
+        import gc
+
+        gc.collect()
+        await asyncio.sleep(0)
+    finally:
+        loop.set_exception_handler(None)
     assert [h.message_id for h in result.hits] == ["m1"]
+    assert unretrieved == []  # the index call's failure was read, never left for asyncio to log
 
 
 def _closed_room(monkeypatch, kind):

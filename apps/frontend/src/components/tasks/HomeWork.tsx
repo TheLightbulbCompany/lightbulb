@@ -45,9 +45,13 @@ export function HomeWork({ viewerId, onOpen, between, asks, askCount = 0, schedu
     return room ? roomDisplayName(room, room.participants) : null;
   };
   const rows = (list: TaskSummary[]) => <ul className="mt-1 grid">{list.map((t) => <OverviewRow key={t.taskId} task={t} viewerId={viewerId} onOpen={onOpen} project={projectOf(t)} />)}</ul>;
-  // One "Show more" per group: the next rows already here, else the next page (older pages mostly add Done and Closed).
+  // One "Show more" per group: one click shows the next rows, fetching the next page too when the loaded ones run
+  // short (older pages mostly add Done and Closed), so the new rows appear without a second click.
   const more = (list: TaskSummary[], shown: number, setShown: (n: number) => void) => (shown < list.length || hasOlder) && <ShowMore
-    loading={shown >= list.length && loading} onMore={() => { if (shown < list.length) setShown(shown + DONE_FOLD); else void loadOlder(); }} />;
+    loading={shown >= list.length && loading} onMore={() => {
+      setShown(shown + DONE_FOLD);
+      if (shown + DONE_FOLD > list.length && hasOlder) void loadOlder();
+    }} />;
   const failed = error || needs.error;
   const status = failed
     ? <p role="alert" className="text-ui text-muted-foreground">Tasks couldn&apos;t load. <button type="button" className="underline hover:text-foreground" onClick={() => { void mutate(); needs.retry(); }}>Retry</button></p>

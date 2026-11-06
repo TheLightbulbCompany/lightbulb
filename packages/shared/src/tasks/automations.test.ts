@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { automationRowLine, canDecide, deliveryRoomId, deliveryWords, nextRunWords, runNowReason, scheduleWords, waitingWords } from "./automations";
+import { automationRowLine, canDecide, deliveryRoomId, deliveryWords, nextRunWords, runNowReason, runsAgain, scheduleWords, waitingWords } from "./automations";
 
 const sam = { userId: "sam", admin: false };
 const admin = { userId: "ana", admin: true };
@@ -78,5 +78,35 @@ describe("W8: the time zone and the room are always named", () => {
     expect(deliveryWords("none")).toBeNull();
     expect(deliveryRoomId("room:r8")).toBe("r8");
     expect(deliveryRoomId("dm:sam")).toBeNull();
+  });
+});
+
+describe("runsAgain: Activity's Scheduled lists only what will run again (W13)", () => {
+  const now = Date.UTC(2026, 10, 6, 12, 0); // 6 Nov 2026 12:00 UTC
+  const once = (cron: string, extra: Record<string, unknown> = {}) =>
+    ({ schedule: { cron: [cron], tz: "UTC", remainingRuns: null }, pausedReason: null, nextRuns: [], ...extra });
+
+  it("a recurring schedule always does, paused or not; an event rule too", () => {
+    expect(runsAgain(once("0 9 * * 1", { pausedReason: "paused by you" }), now)).toBe(true);
+    expect(runsAgain({ schedule: null, pausedReason: null, nextRuns: [] }, now)).toBe(true);
+  });
+
+  it("a one-off the server turned off after its run does not", () => {
+    expect(runsAgain(once("0 13 6 11 *", { pausedReason: "ran once" }), now)).toBe(false);
+  });
+
+  it("an old unlimited one-off already past does not, though Temporal lists next year's repeat", () => {
+    expect(runsAgain(once("21 6 5 11 *", { nextRuns: ["2027-11-05T06:21:00+00:00"] }), now)).toBe(false);
+    expect(runsAgain(once("0 13 6 11 *"), now)).toBe(true); // later today
+  });
+
+  it("a December ask for January is next year's, not hidden", () => {
+    const dec = Date.UTC(2026, 11, 20, 12, 0);
+    expect(runsAgain(once("0 9 5 1 *"), dec)).toBe(true);
+  });
+
+  it("a one-off limited to one run trusts the server's next fire time, whatever the year", () => {
+    const july = once("0 9 1 7 *", { schedule: { cron: ["0 9 1 7 *"], tz: "UTC", remainingRuns: 1 }, nextRuns: ["2027-07-01T09:00:00+00:00"] });
+    expect(runsAgain(july, now)).toBe(true);
   });
 });

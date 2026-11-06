@@ -224,7 +224,7 @@ describe("LiveEventsProvider", () => {
   });
 
   it("until the live config answers, the switch is what this browser last saw for this person and workspace (W12-18)", async () => {
-    let answer: (value: unknown) => void = () => {};
+    let answer: (value: Record<string, unknown>) => void = () => {};
     get.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
     localStorage.setItem("lightbulb.lastKnown.superAgent:user-a:org-a", "1");
     localStorage.setItem("lightbulb.lastKnown.superAgent:user-a:org-b", "0");

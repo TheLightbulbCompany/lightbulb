@@ -476,14 +476,18 @@ function dayWords(dow: string): { label: string; days: (number | null)[]; range?
   return { label: days.map((d) => `${DAYS[d]}s`).join(" and "), days };
 }
 
-/** When a one-off cron entry ("27 10 5 11 *": minute, hour, day and month, any weekday) fires, else null.
- *  ponytail: assumes this year in `tz`; a one-off set in December for January reads a year early. */
+/** When a one-off cron entry ("27 10 5 11 *": minute, hour, day and month, any weekday) is meant to fire, else null.
+ *  The cron has no year, so it is the occurrence nearest `now`: a one-off set in December for 5 January is next
+ *  year's, and one that fired yesterday is this year's (Temporal would repeat it a year on; that is not "again"). */
 export function oneOffInstant(entry: string, tz: string, now = Date.now()): number | null {
   const [min, hour, dom, mon, dow] = entry.trim().split(/\s+/);
   if (!(/^\d+$/.test(min) && /^\d+$/.test(hour) && /^\d+$/.test(dom) && /^\d+$/.test(mon) && (dow ?? "*") === "*")) return null;
   const year = Number(new Intl.DateTimeFormat("en-US", { timeZone: tz, year: "numeric" }).format(new Date(now)));
-  const wall = Date.UTC(year, Number(mon) - 1, Number(dom), Number(hour), Number(min));
-  return wall - zoneOffsetMinutes(wall, tz) * 60_000;
+  const at = (y: number) => {
+    const wall = Date.UTC(y, Number(mon) - 1, Number(dom), Number(hour), Number(min));
+    return wall - zoneOffsetMinutes(wall, tz) * 60_000;
+  };
+  return [year - 1, year, year + 1].map(at).reduce((best, t) => (Math.abs(t - now) < Math.abs(best - now) ? t : best));
 }
 
 /**

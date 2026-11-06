@@ -162,14 +162,21 @@ async def search(auth: AuthContext, request: MessageSearchRequest) -> MessageSea
     index = asyncio.create_task(
         _request("POST", f"/{indexes}/_search?ignore_unavailable=true", build_query(q, list(rooms), request.limit))
     )
+    # Whatever becomes of the index call (cancelled below, or failed after the live rows answered), its exception is
+    # read here, so asyncio never logs "Task exception was never retrieved".
+    index.add_done_callback(lambda task: task.cancelled() or task.exception())
     fresh: list[dict] = []
     response: httpx.Response | None = None
     try:
         fresh = await _unindexed_rows(q, metas, gate)
         response = await (asyncio.wait_for(index, _FRESH_ALONE_AFTER_S) if fresh else index)
-    except (TimeoutError, httpx.TimeoutException) as exc:
+    except (TimeoutError, httpx.HTTPError) as exc:
+        # Slow, unreachable or refusing: live rows still answer. Without them a timeout is the retryable warm-up
+        # 503, and any other transport failure is raised as before.
         if not fresh:
-            raise _unavailable() from exc
+            if isinstance(exc, (TimeoutError, httpx.TimeoutException)):
+                raise _unavailable() from exc
+            raise
     finally:
         index.cancel()  # a no-op once it answered
     if response is not None and response.status_code >= 500:

@@ -19,7 +19,7 @@ import { agentInspectorUrl } from "@/components/teams/shared/lib/agentInspectorU
 import { useFilteredCommandResults } from "./useFilteredCommandResults";
 import { useRoomCommandResults } from "@/components/messaging/roomCommands";
 import { useMessageSearch } from "@/components/messaging/useMessageSearch";
-import { plainSnippet } from "@/components/messaging/searchSnippet";
+import { plainSnippet, SearchSnippet } from "@/components/messaging/searchSnippet";
 import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingWorkspaceContext";
 import { roomDisplayName } from "@lightbulb/shared";
 import { openTaskPane } from "@/components/workspace/workspaceController";
@@ -99,6 +99,7 @@ function CommandPaletteContent({ open, onOpenChange }: CommandPaletteProps) {
     return {
       id: `message:${hit.messageId}`,
       label: plainSnippet(hit.snippet),
+      snippet: hit.snippet,
       sublabel: room ? `${hit.authorName || "Unknown author"} · ${roomDisplayName(room, room.participants)}` : hit.authorName || "Unknown author",
       run: () => workspace?.openNotificationTarget(hit.roomId, hit.threadRootMessageId, hit.messageId),
     };
@@ -175,7 +176,7 @@ function CommandPaletteContent({ open, onOpenChange }: CommandPaletteProps) {
                 fontFamily: "var(--font-serif), Georgia, serif",
               }}
             >
-              {warming ? "Search is starting up…" : "No results."}
+              {warming ? "Search is starting up…" : messageSearch.state === "loading" ? "Searching…" : "No results."}
             </div>
           ) : (
             <>
@@ -224,7 +225,7 @@ function CommandPaletteContent({ open, onOpenChange }: CommandPaletteProps) {
                   {messageHits.map((m) => {
                     const idx = flatItems.findIndex((it) => it.kind === "message" && it.id === m.id);
                     return (
-                      <Row key={m.id} label={m.label} sublabel={m.sublabel} selected={selectedIndex === idx}
+                      <Row key={m.id} label={<SearchSnippet snippet={m.snippet} />} sublabel={m.sublabel} selected={selectedIndex === idx}
                         onMouseEnter={() => setSelectedIndex(idx)} onClick={() => select(flatItems[idx])} />
                     );
                   })}
@@ -336,7 +337,7 @@ function Row({
   onClick,
 }: {
   Icon?: CommandPaletteAction["Icon"];
-  label: string;
+  label: React.ReactNode;
   sublabel?: string;
   selected: boolean;
   onMouseEnter: () => void;

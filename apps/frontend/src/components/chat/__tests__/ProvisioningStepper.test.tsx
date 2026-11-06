@@ -1267,3 +1267,78 @@ describe("agents banner progress", () => {
     });
   });
 });
+
+describe("a returning workspace skips the hold (W12-18)", () => {
+  const baseProv = { phase: "normal", blocked: null, refreshInterval: 3000, refresh: vi.fn() };
+  const ready = { container_status: "running", runtime_phase: "ready" };
+  const mount = () => render(<ProvisioningStepper><div>children</div></ProvisioningStepper>);
+  const seenReady = () => { useProvMock.mockReturnValue({ ...baseProv, container: ready }); mount().unmount(); };
+  const loading = (extra: Record<string, unknown> = {}) => useProvMock.mockReturnValue({ ...baseProv, phase: "loading", container: null, ...extra });
+
+  beforeEach(() => {
+    localStorage.clear();
+    useProvMock.mockReset();
+    clerkMockUser = null;
+    clerkMockOrganization = null;
+    billingMockIsSubscribed = true;
+    billingMockAccount = { provider_choice: "bedrock_claude" };
+  });
+  afterEach(() => { vi.useRealTimers(); mockSuperAgent.on = false; });
+
+  it("draws the app while the first status read is out once this browser saw it ready", () => {
+    loading();
+    const first = mount();
+    expect(screen.getByRole("status")).toHaveTextContent("Getting your workspace ready…");
+    first.unmount();
+    seenReady();
+    loading();
+    mount();
+    expect(screen.getByText("children")).toBeInTheDocument();
+    expect(screen.queryByText("Getting your workspace ready…")).toBeNull();
+  });
+
+  it("never past an error, and only for about 3 s", () => {
+    seenReady();
+    loading({ error: new Error("401: token did not verify") });
+    mount().unmount();
+    expect(screen.queryByText("children")).toBeNull();
+    vi.useFakeTimers();
+    loading();
+    mount();
+    expect(screen.getByText("children")).toBeInTheDocument();
+    act(() => { vi.advanceTimersByTime(3_000); });
+    expect(screen.queryByText("children")).toBeNull();
+    expect(screen.getByText("Getting your workspace ready…")).toBeInTheDocument();
+  });
+
+  it.each([
+    ["a sign-up gate", () => useProvMock.mockReturnValue({ ...baseProv, phase: "needs-signup", container: null })],
+    ["no plan (the payment picker)", () => {
+      billingMockIsSubscribed = false;
+      useProvMock.mockReturnValue({ ...baseProv, container: null });
+    }],
+  ])("forgets it on any settled answer that is not ready: %s", (_name, answer) => {
+    seenReady();
+    answer();
+    mount().unmount();
+    billingMockIsSubscribed = true;
+    loading();
+    mount();
+    expect(screen.getByText("Getting your workspace ready…")).toBeInTheDocument();
+  });
+
+  it("a box that stops or starts never remounts the app: typed text survives the banner coming and going", () => {
+    mockSuperAgent.on = true;
+    const app = () => <ProvisioningStepper><input aria-label="composer" defaultValue="" /></ProvisioningStepper>;
+    useProvMock.mockReturnValue({ ...baseProv, container: ready });
+    const view = render(app());
+    fireEvent.change(screen.getByLabelText("composer"), { target: { value: "half a thought" } });
+    useProvMock.mockReturnValue({ ...baseProv, container: { container_status: "running", runtime_phase: "starting", container_substatus: "gateway_healthy" } });
+    view.rerender(app());
+    expect(screen.getByRole("status")).toBeInTheDocument(); // the banner is up
+    expect(screen.getByLabelText("composer")).toHaveValue("half a thought");
+    useProvMock.mockReturnValue({ ...baseProv, container: ready });
+    view.rerender(app());
+    expect(screen.getByLabelText("composer")).toHaveValue("half a thought");
+  });
+});

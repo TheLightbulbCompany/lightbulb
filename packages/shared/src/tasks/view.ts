@@ -476,6 +476,20 @@ function dayWords(dow: string): { label: string; days: (number | null)[]; range?
   return { label: days.map((d) => `${DAYS[d]}s`).join(" and "), days };
 }
 
+/** When a one-off cron entry ("27 10 5 11 *": minute, hour, day and month, any weekday) is meant to fire, else null.
+ *  The cron has no year, so it is the occurrence nearest `now`: a one-off set in December for 5 January is next
+ *  year's, and one that fired yesterday is this year's (Temporal would repeat it a year on; that is not "again"). */
+export function oneOffInstant(entry: string, tz: string, now = Date.now()): number | null {
+  const [min, hour, dom, mon, dow] = entry.trim().split(/\s+/);
+  if (!(/^\d+$/.test(min) && /^\d+$/.test(hour) && /^\d+$/.test(dom) && /^\d+$/.test(mon) && (dow ?? "*") === "*")) return null;
+  const year = Number(new Intl.DateTimeFormat("en-US", { timeZone: tz, year: "numeric" }).format(new Date(now)));
+  const at = (y: number) => {
+    const wall = Date.UTC(y, Number(mon) - 1, Number(dom), Number(hour), Number(min));
+    return wall - zoneOffsetMinutes(wall, tz) * 60_000;
+  };
+  return [year - 1, year, year + 1].map(at).reduce((best, t) => (Math.abs(t - now) < Math.abs(best - now) ? t : best));
+}
+
 /**
  * "Mondays 9:00" for `["0 9 * * 1"]` in `tz`, read in `viewerTz` ("Mondays 14:00" from New York to London).
  * Anything else (a day-of-month without a month, steps, …) is "Custom schedule", never the raw cron. Several entries join with " and ".
@@ -486,12 +500,9 @@ export function formatSchedule(cron: readonly string[], tz: string, viewerTz: st
   const parts = cron.map((entry): string | null => {
     const [min, hour, dom, mon, dow] = entry.trim().split(/\s+/);
     // A one-off ("27 10 5 11 *", what a "remind me at …" stores): "Once, 5 Nov, 10:27" in the viewer's zone.
-    // ponytail: assumes this year in `tz`; a one-off set in December for January reads a year early.
-    if (/^\d+$/.test(min) && /^\d+$/.test(hour) && /^\d+$/.test(dom) && /^\d+$/.test(mon) && (dow ?? "*") === "*") {
-      const year = Number(new Intl.DateTimeFormat("en-US", { timeZone: tz, year: "numeric" }).format(new Date(now)));
-      const wall = Date.UTC(year, Number(mon) - 1, Number(dom), Number(hour), Number(min));
-      const instant = wall - zoneOffsetMinutes(wall, tz) * 60_000;
-      return `Once, ${new Intl.DateTimeFormat("en-GB", { timeZone: viewerTz, day: "numeric", month: "short", hour: "numeric", minute: "2-digit", hourCycle: "h23" }).format(new Date(instant))}`;
+    const once = oneOffInstant(entry, tz, now);
+    if (once !== null) {
+      return `Once, ${new Intl.DateTimeFormat("en-GB", { timeZone: viewerTz, day: "numeric", month: "short", hour: "numeric", minute: "2-digit", hourCycle: "h23" }).format(new Date(once))}`;
     }
     const words = dayWords(dow ?? "*");
     if (dom !== "*" || mon !== "*" || !words || !/^\d+$/.test(min) || !/^\d+$/.test(hour)) return null;

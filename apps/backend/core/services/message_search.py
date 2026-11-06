@@ -40,6 +40,9 @@ _FRESH_PER_ROOM = 30  # newest rows read per room
 # DynamoDB reads one search may run at once (live scan and room recheck together): the
 # process's thread pool is 6 (core/dynamodb.py), and one search must never take it over.
 _READS_AT_ONCE = 3
+# A cold index takes 10-30 s to wake (_SEARCH_TIMEOUT_S). Live rows wait this long for it, then answer alone:
+# W13 "pumpkin" sat behind a waking index for 8 s and the palette read the wait as "No results".
+_FRESH_ALONE_AFTER_S = 2.0
 
 _credentials = None
 _client: httpx.AsyncClient | None = None
@@ -155,21 +158,37 @@ async def search(auth: AuthContext, request: MessageSearchRequest) -> MessageSea
         return MessageSearchResponse(hits=[])
     indexes = ",".join(sorted({index_name(owner) for owner in rooms.values()}))
     gate = asyncio.Semaphore(_READS_AT_ONCE)
+    # The live scan runs while the index answers, not after it.
+    index = asyncio.create_task(
+        _request("POST", f"/{indexes}/_search?ignore_unavailable=true", build_query(q, list(rooms), request.limit))
+    )
+    # Whatever becomes of the index call (cancelled below, or failed after the live rows answered), its exception is
+    # read here, so asyncio never logs "Task exception was never retrieved".
+    index.add_done_callback(lambda task: task.cancelled() or task.exception())
+    fresh: list[dict] = []
+    response: httpx.Response | None = None
     try:
-        # The live scan runs while the index answers, not after it.
-        response, fresh = await asyncio.gather(
-            _request("POST", f"/{indexes}/_search?ignore_unavailable=true", build_query(q, list(rooms), request.limit)),
-            _unindexed_rows(q, metas, gate),
-        )
-    except httpx.TimeoutException as exc:
-        raise _unavailable() from exc
-    if response.status_code >= 500:
+        fresh = await _unindexed_rows(q, metas, gate)
+        response = await (asyncio.wait_for(index, _FRESH_ALONE_AFTER_S) if fresh else index)
+    except (TimeoutError, httpx.HTTPError) as exc:
+        # Slow, unreachable or refusing: live rows still answer. Without them a timeout is the retryable warm-up
+        # 503, and any other transport failure is raised as before.
+        if not fresh:
+            if isinstance(exc, (TimeoutError, httpx.TimeoutException)):
+                raise _unavailable() from exc
+            raise
+    finally:
+        index.cancel()  # a no-op once it answered
+    if response is not None and response.status_code >= 500:
         logger.warning("message search unavailable status=%s", response.status_code)
-        raise _unavailable()
-    if response.status_code != 200:
+        if not fresh:
+            raise _unavailable()
+        response = None
+    if response is not None and response.status_code != 200:
         logger.error("message search rejected status=%s", response.status_code)
         raise ApiProblem("INTERNAL_ERROR", "Search failed.")
-    candidates = [h for h in response.json().get("hits", {}).get("hits", []) if h["_source"].get("roomId") in rooms]
+    found = response.json().get("hits", {}).get("hits", []) if response is not None else []
+    candidates = [h for h in found if h["_source"].get("roomId") in rooms]
     # The index is eventually consistent; DynamoDB is the truth. A hit survives only
     # while its row exists, is not deleted, and still carries the text that was indexed.
     rows = await messaging_repo.get_messages_by_keys(

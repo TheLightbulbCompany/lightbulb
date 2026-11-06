@@ -2,7 +2,7 @@
 
 import { ApiError } from "../api/error";
 import type { AutomationView } from "./types";
-import { CUSTOM_SCHEDULE, formatSchedule } from "./view";
+import { CUSTOM_SCHEDULE, formatSchedule, oneOffInstant } from "./view";
 
 export const money = (n: number): string => `$${n.toFixed(2).replace(/\.00$/, "")}`;
 
@@ -18,6 +18,22 @@ export function scheduleWords(a: Pick<AutomationView, "schedule">, viewerTz: str
   const zone = zoneName(a.schedule.tz);
   if (a.schedule.tz === viewerTz) return `${words} ${zone}`;
   return `${words} (${zone}: ${formatSchedule(a.schedule.cron, a.schedule.tz, a.schedule.tz, now)})`;
+}
+
+/** False once an automation can't fire again: a one-off the server turned off after its run ("Paused: ran once",
+ *  `_turn_off_if_spent`), or one whose every entry is a one-off already past. Activity's Scheduled lists only what
+ *  will run again (W13); a paused weekly one still counts, it runs on resume. */
+export function runsAgain(a: Pick<AutomationView, "schedule" | "pausedReason" | "nextRuns">, now = Date.now()): boolean {
+  if (a.pausedReason === "ran once") return false;
+  const s = a.schedule;
+  if (!s?.cron.length) return true;
+  const onceAt = s.cron.map((entry) => oneOffInstant(entry, s.tz, now));
+  if (onceAt.some((t) => t === null)) return true; // a recurring entry
+  // A one-off limited to its one run (`remainingRuns: 1`) has a server-side next fire time until it runs: trust it,
+  // whatever year. Older one-offs carry no limit, and Temporal repeats them a year on, so their date decides.
+  const next = a.nextRuns?.[0] ? Date.parse(a.nextRuns[0]) : NaN;
+  if (s.remainingRuns === 1 && next > now) return true;
+  return onceAt.some((t) => (t as number) > now);
 }
 
 /** Where a run posts, in words (never the raw target id): "posts to #walk-8" when the room's label is known. */

@@ -20,6 +20,9 @@ import { CommandPalette } from "@/components/teams/command-palette/CommandPalett
 
 const hit = { messageId: "m1", roomId: "r1", messageSeq: 1, threadRootMessageId: "t1", authorName: "Ann",
   authorKind: "human", createdAt: "2026-10-04T00:00:00Z", snippet: "the \u0001zzq\u0002 fix" };
+// The label is split around the highlighted match: find the element whose whole text is the snippet.
+const snippetText = (text: string) => (_: string, el: Element | null) =>
+  el?.tagName === "SPAN" && el.textContent === text && !Array.from(el.children).some((child) => child.textContent === text);
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -38,13 +41,14 @@ describe("palette Messages group", () => {
   test("renders the hit with plain snippet and author · room", async () => {
     await typeQuery("zzq");
     expect(screen.getByText("Messages")).toBeInTheDocument();
-    expect(screen.getByText("the zzq fix")).toBeInTheDocument();
+    expect(screen.getByText(snippetText("the zzq fix"))).toBeInTheDocument();
+    expect(screen.getByText("zzq").tagName).toBe("MARK");
     expect(screen.getByText("Ann · general")).toBeInTheDocument();
   });
 
   test("click opens the target", async () => {
     await typeQuery("zzq");
-    fireEvent.click(screen.getByText("the zzq fix"));
+    fireEvent.click(screen.getByText(snippetText("the zzq fix")));
     expect(open).toHaveBeenCalledWith("r1", "t1", "m1");
   });
 

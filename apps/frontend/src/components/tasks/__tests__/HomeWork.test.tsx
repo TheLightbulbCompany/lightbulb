@@ -15,6 +15,9 @@ vi.mock("@/hooks/useActivity", () => ({ useActivity: () => ({ items: [] }) }));
 const apiGet = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/api", () => ({ useApi: () => ({ get: apiGet }) }));
 const openPanel = vi.hoisted(() => vi.fn());
+vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({
+  useMessagingWorkspaceOptional: () => ({ directoryProps: { rooms: [{ roomId: "r1", kind: "channel", name: "cafe menu", participants: [] }] } }),
+}));
 vi.mock("@/components/workspace/workspaceController", () => ({ openPanel }));
 
 import { HomeWork } from "../HomeWork";
@@ -47,6 +50,8 @@ beforeEach(() => {
       { id: "a2", name: "Morning digest", status: "paused", deliverTo: "dm", schedule: null },
       // A builtin job is Settings' (Proactive), never counted here.
       { id: "builtin:feed", name: "Feed posts", status: "active", deliverTo: "none", schedule: null },
+      // A one-off already past won't run again: not Scheduled (W13).
+      { id: "a3", name: "Post the signups once", status: "paused", pausedReason: "ran once", deliverTo: "room:r1", schedule: { cron: ["21 6 5 11 *"], tz: "UTC", remainingRuns: 1 } },
     ] };
     const scope = decodeURIComponent(/scope=([^&]+)/.exec(path)![1]);
     const rows = scope.startsWith("room:") ? roomOf(scope.slice(5)) : TASKS;
@@ -72,26 +77,34 @@ describe("Home's groups are the shared four (overviewGroups)", () => {
 describe("HomeWork", () => {
   it("renders Needs you, Working, Done (collapsed, folded after five) and Closed (collapsed) with the same count the badges read", async () => {
     const onOpen = vi.fn();
-    client.list.mockResolvedValue({ tasks: TASKS, next: "page-2" as never });
+    const older = ["u", "v"].map((id) => task(id, "r1", "idle", { updatedAt: "2026-10-01T00:00:00Z" }));
+    client.list.mockImplementation((async (_scope: unknown, cursor?: unknown) => cursor === "page-2"
+      ? { tasks: older, next: null } : { tasks: TASKS, next: "page-2" }) as never);
     render(<Fresh><HomeWork viewerId={SAM} onOpen={onOpen} /></Fresh>);
     const needs = await screen.findByRole("region", { name: "Needs you · 3" });
-    // A collapsed count is not an empty list (W11-4): no "Load older tasks" until Done or Closed is open.
+    // A collapsed count is not an empty list (W11-4): no "Show more" until Done or Closed is open.
     await screen.findByRole("region", { name: "Done · 6" });
-    expect(screen.queryByRole("button", { name: "Load older tasks" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Show more" })).toBeNull();
     expect(screen.getByRole("region", { name: "Working · 3" })).toBeInTheDocument();
     // Done collapses by default, like Closed (07 §2).
     const done = screen.getByRole("region", { name: "Done · 6" });
     expect(within(done).queryAllByRole("listitem")).toHaveLength(0);
     await userEvent.click(within(done).getByRole("button", { name: "Done · 6" }));
     expect(within(done).getByRole("button", { name: "Done · 6" })).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByRole("button", { name: "Load older tasks" })).toBeInTheDocument();
     expect(within(done).getAllByRole("listitem")).toHaveLength(5);
-    await userEvent.click(within(done).getByRole("button", { name: "Show all 6" }));
-    expect(within(done).getAllByRole("listitem")).toHaveLength(6);
+    // One "Show more" per group: one click shows the next five, fetching the next page when the loaded rows run short
+    // (6 here), so its rows appear without a second click.
+    await userEvent.click(within(done).getByRole("button", { name: "Show more" }));
+    await waitFor(() => expect(within(done).getAllByRole("listitem")).toHaveLength(8));
+    expect(within(done).queryByRole("button", { name: "Show more" })).toBeNull();
+    // Activity spans projects: a row names its project.
+    expect(within(done).getByText("Request n").closest("li")).toHaveTextContent("Request n· cafe menu");
     // Closed (resolved and someone else's failure) is its own group, collapsed until opened.
     const closed = screen.getByRole("region", { name: "Closed · 7" });
     expect(within(closed).queryAllByRole("listitem")).toHaveLength(0);
     await userEvent.click(within(closed).getByRole("button", { name: "Closed · 7" }));
+    expect(within(closed).getAllByRole("listitem")).toHaveLength(5);
+    await userEvent.click(within(closed).getByRole("button", { name: "Show more" }));
     expect(within(closed).getAllByRole("listitem")).toHaveLength(7);
     // A row opens the request in the pane.
     await userEvent.click(within(needs).getByRole("button", { name: /^Open Request a,/ }));
@@ -108,8 +121,10 @@ describe("HomeWork", () => {
     expect(new URLSearchParams(window.location.search).get("room")).toBe("r1");
     await userEvent.click(within(scheduled).getByRole("button", { name: /Morning digest/ }));
     expect(openPanel).toHaveBeenCalledWith("automation", { id: "a2" }, { pushUrl: true });
-    // The old task board is one link away.
-    await userEvent.click(screen.getByRole("button", { name: /Older tasks/ }));
+    expect(within(scheduled).queryByText("Post the signups once")).toBeNull();
+    // The old task board is one link away, once, at the foot.
+    expect(screen.getAllByRole("button", { name: /old board/ })).toHaveLength(1);
+    await userEvent.click(screen.getByRole("button", { name: /old board/ }));
     expect(openPanel).toHaveBeenCalledWith("teams-issues", {}, { pushUrl: true });
 
     // The rail badge and each room's About dot count the same rows.
@@ -134,7 +149,7 @@ describe("HomeWork", () => {
     const needs = await screen.findByRole("region", { name: "Needs you · 4" });
     expect(within(needs).getByText("Request z")).toBeInTheDocument();
     // No Done or Closed group on this page: the older pages are one link away.
-    expect(screen.getByRole("button", { name: "Load older tasks" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show more" })).toBeInTheDocument();
     const { result: badge } = renderHook(() => useNeedsYouCount(), { wrapper: Fresh });
     await waitFor(() => expect(badge.current).toBe(4));
   });

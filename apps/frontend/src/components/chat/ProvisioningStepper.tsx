@@ -63,6 +63,7 @@ export function resolvePostAgentPhase(): "ready" {
 }
 
 import type { ProviderChoiceId as ProviderChoice } from "@/lib/providerCards";
+import { readLastKnown, writeLastKnown } from "@/lib/lastKnown";
 
 function isProviderChoice(v: string | null): v is ProviderChoice {
   return v === "chatgpt_oauth" || v === "byo_key";
@@ -176,6 +177,9 @@ function RotatingIdeas({ eyebrow }: { eyebrow: string }) {
 // bare spinner where the structured provisioning UI was supposed to be, and no
 // text anywhere said what was being waited on. One label, one live region, one
 // place to change it. (Motion is unchanged — same Loader2, same spin.)
+/** How long a last-known-ready workspace may draw the app before the first status answer (W12-18). */
+const HOLD_SKIP_MS = 3_000;
+
 function StepperHold() {
   return (
     <div
@@ -211,6 +215,7 @@ export function ProvisioningStepper({
   const {
     account,
     isLoading: billingLoading,
+    error: billingError,
     isSubscribed,
     refresh: refreshBilling,
     startCheckout,
@@ -287,6 +292,7 @@ export function ProvisioningStepper({
     blocked,
     container,
     refresh,
+    error: statusError,
   } = useProvisioningState();
   const checkAgain = async () => {
     try {
@@ -716,6 +722,24 @@ export function ProvisioningStepper({
     const interval = setInterval(tick, 1000);
     return () => clearInterval(interval);
   }, [phase]);
+
+  // W12-18: a workspace this browser last saw ready skips the hold below while /billing/account and the first
+  // /container/status answer (1-3.5 s on a dev cold load): the app draws at once and this gate still decides when
+  // they do. Any settled answer that is not ready forgets it, so the next load waits again. Never past an error (a
+  // token that won't verify, a failed read), and never past HOLD_SKIP_MS: after that the hold shows as before.
+  const passedScope = `${clerkUserId ?? "anon"}:${organization?.id ?? "personal"}`;
+  const settled = !billingLoading && gatePhase !== "loading";
+  useEffect(() => {
+    if (phase === "ready") writeLastKnown("gatePassed", passedScope, true);
+    else if (settled) writeLastKnown("gatePassed", passedScope, false);
+  }, [phase, settled, passedScope]);
+  const [skipExpired, setSkipExpired] = useState(false);
+  useEffect(() => {
+    if (settled) return;
+    const timer = setTimeout(() => setSkipExpired(true), HOLD_SKIP_MS);
+    return () => clearTimeout(timer);
+  }, [settled]);
+  const skipHold = !skipExpired && !statusError && !billingError && readLastKnown("gatePassed", passedScope) === true;
 
   // Chat-first onboarding begins after this provisioning gate. The backend
   // captures the first canonical-room human message only when normal per-room
@@ -1184,7 +1208,8 @@ export function ProvisioningStepper({
   // out means the next thing a new trial user sees is workspace provisioning,
   // not a payment step they don't need.
   if (billingLoading || gatePhase === "loading") {
-    return <StepperHold />;
+    // The same shape as the ready branch above, so the app is not remounted when the answers land.
+    return skipHold ? <>{children}{null}</> : <StepperHold />;
   }
 
   // Pre-signup user — render the three signup paths inline. Each card links
@@ -1224,12 +1249,14 @@ export function ProvisioningStepper({
   // first message waits, admitted, until the runtime answers). Never a card in front of the chat.
   if (superAgent) {
     return (
+      // The app first, the banner after (drawn on top by `order-first`): every branch keeps children at the same
+      // place, so a box that stops or starts never remounts the app (composer text and scroll survive).
       <>
+        {children}
         <AgentsBanner state={isTerminalError ? "failed" : stuck ? "stuck" : timedOut ? "slow" : "welcome"} phase={phase}
           onCheck={handleAgentsBannerCheck}
           onSupport={() => capture("support_contact_clicked", { source: "agents_banner", phase, stuck })}
           isChecking={needsRecover && isRetryingProvision} checkFailed={needsRecover && retryFailed} />
-        {children}
       </>
     );
   }
@@ -1241,6 +1268,7 @@ export function ProvisioningStepper({
   if (container) {
     return (
       <>
+        {children}
         <AgentsBanner
           state={
             isTerminalError
@@ -1259,7 +1287,6 @@ export function ProvisioningStepper({
           isChecking={needsRecover && isRetryingProvision}
           checkFailed={needsRecover && retryFailed}
         />
-        {children}
       </>
     );
   }
@@ -1717,7 +1744,7 @@ function AgentsBanner({
     <div
       role="status"
       aria-live="polite"
-      className={`bg-cream border-b px-4 py-2 text-ui ${
+      className={`order-first bg-cream border-b px-4 py-2 text-ui ${
         state === "failed" ? "border-err text-err" : alarming ? "border-warn text-warn" : "border-[var(--edge)] text-[var(--midnight-muted)]"
       }`}
     >

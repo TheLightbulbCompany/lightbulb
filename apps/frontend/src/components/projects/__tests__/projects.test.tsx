@@ -83,6 +83,37 @@ describe("project settings", () => {
     expect(within(dialog).getByRole("heading", { name: "Members" })).toBeInTheDocument();
   });
 
+  it("Memory lists what Lightbulb noted here; an admin forgets one, a member can't; empty says how to add (W15-5)", async () => {
+    const fact = { messageId: "m-1", fact: "Classes cap at 12 kids.", notedAt: new Date().toISOString() };
+    const memoryClient = { listRoomMemory: vi.fn().mockResolvedValue({ items: [fact] }), forgetRoomMemory: vi.fn().mockResolvedValue(undefined) };
+    const { unmount } = render(header({ memoryClient }));
+    let dialog = await openSettings();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Memory" }));
+    expect(within(dialog).getByText("What Lightbulb remembers here")).toBeInTheDocument();
+    expect(await within(dialog).findByText("Classes cap at 12 kids.")).toBeInTheDocument();
+    expect(memoryClient.listRoomMemory).toHaveBeenCalledWith("room-1");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Forget: Classes cap at 12 kids." }));
+    expect(memoryClient.forgetRoomMemory).toHaveBeenCalledWith("room-1", "m-1");
+    expect(await within(dialog).findByText(/Tell Lightbulb things about this project/)).toBeInTheDocument();
+    unmount();
+
+    render(header({ memoryClient: { ...memoryClient, listRoomMemory: vi.fn().mockResolvedValue({ items: [fact] }) }, canEditRoom: false }));
+    dialog = await openSettings();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Memory" }));
+    expect(await within(dialog).findByText("Classes cap at 12 kids.")).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: /^Forget/ })).toBeNull();
+  });
+
+  it("a failed Forget puts the fact back and says so", async () => {
+    const fact = { messageId: "m-1", fact: "We only use Caputo flour.", notedAt: new Date().toISOString() };
+    render(header({ memoryClient: { listRoomMemory: vi.fn().mockResolvedValue({ items: [fact] }), forgetRoomMemory: vi.fn().mockRejectedValue(new Error("no")) } }));
+    const dialog = await openSettings();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Memory" }));
+    await userEvent.click(await within(dialog).findByRole("button", { name: "Forget: We only use Caputo flour." }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("That couldn't be forgotten.");
+    expect(within(dialog).getByText("We only use Caputo flour.")).toBeInTheDocument();
+  });
+
   it("at desktop width the phone-only section select stays hidden and the body sits in the content column (W13-1)", async () => {
     // jsdom applies the real stylesheets but no @media block, which is the desktop layout. messaging.css's
     // `.room-input { display: block }` loads after projects.css and used to show the select at every width, pushing

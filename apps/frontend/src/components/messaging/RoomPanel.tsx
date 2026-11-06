@@ -1069,7 +1069,7 @@ function RoomContent({
         onSetPrefs={onSetPrefs} onRenameRoom={onRenameRoom} onSetTopic={onSetTopic} onLeaveRoom={onLeaveRoom}
         onSetArchived={onSetArchived} onDeleteRoom={onDeleteRoom}
         compact={superAgent}
-        onPatchRoom={onPatchRoom} settingsPeople={membersSection} openSettings={openSettings} onSettingsOpened={onSettingsOpened}
+        onPatchRoom={onPatchRoom} settingsPeople={membersSection} memoryClient={messagingClient} openSettings={openSettings} onSettingsOpened={onSettingsOpened}
         // Super-agent (UX slice 4): at most four controls right of the name, all views of this project: Tasks (its warn
         // dot = something here needs you while the pane is closed), Files, Scheduled, and ⋯ for the tools. Labels show
         // from 1280 px (messaging.css). Without it the room keeps About, Files, Browser and Ideas as before.

@@ -63,6 +63,16 @@
 .project-row__control { display: flex; align-items: center; gap: 8px; flex: none; }
 .project-row__control .project-field { height: 32px; width: 280px; max-width: 100%; }
 .project-saved { font-size: var(--text-caption); color: var(--muted-foreground); }
+/* What Lightbulb remembers here: one hairline row per fact; Forget shows on hover/focus where there is a hover. */
+.project-memory__list { display: grid; }
+.project-memory__item { display: flex; align-items: center; gap: 12px; min-height: 40px; padding: 6px 0; border-top: 1px solid var(--edge-soft); }
+.project-memory__item:first-child { border-top: 0; }
+.project-memory__fact { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.project-memory__when { flex: none; font-size: var(--text-caption); color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+@media (hover: hover) {
+  .project-memory__forget { opacity: 0; }
+  .project-memory__item:hover .project-memory__forget, .project-memory__forget:focus-visible { opacity: 1; }
+}
 .project-count { justify-self: end; font-size: var(--text-caption); color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
 
 /* Paused: one line above the composer. */

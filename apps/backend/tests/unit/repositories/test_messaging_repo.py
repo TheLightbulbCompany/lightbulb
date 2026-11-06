@@ -1060,6 +1060,18 @@ async def test_set_pin_appends_removes_is_idempotent_and_caps_at_fifty(table):
 
 
 @pytest.mark.asyncio
+async def test_noted_rows_list_newest_first_overwrite_on_retry_and_forget(table):
+    room_id, _ = await _room()
+    await repo.put_noted(room_id, "m-1", "Classes cap at 12 kids.", actor_user_id=USER_A)
+    await repo.put_noted(room_id, "m-2", "We only use Caputo flour.")
+    await repo.put_noted(room_id, "m-1", "Classes cap at 12 kids.")  # a retried Router turn
+    assert [r["messageId"] for r in await repo.list_noted(room_id)] == ["m-2", "m-1"]
+    await repo.delete_noted(room_id, "m-2")
+    await repo.delete_noted(room_id, "m-2")  # idempotent
+    assert [r["fact"] for r in await repo.list_noted(room_id)] == ["Classes cap at 12 kids."]
+
+
+@pytest.mark.asyncio
 async def test_mark_unread_from_a_sequence_leaves_that_message_and_everything_after_unread(table):
     room_id, _ = await _room()
     for index in range(1, 6):

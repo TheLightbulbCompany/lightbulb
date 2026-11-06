@@ -431,6 +431,17 @@ async def _react_eyes(ws: str, ref: dict) -> None:
     await _react(ws, ref, "👀")  # cosmetic: never fails the steer
 
 
+async def _record_noted(trig: dict, fact: str) -> None:
+    """The room message a `note` acknowledged, listed in the project's Memory. Best effort, like the reaction."""
+    ref = trig.get("ref") or {}
+    if not (ref.get("roomId") and ref.get("messageId")):
+        return
+    try:
+        await messaging_repo.put_noted(ref["roomId"], ref["messageId"], fact, actor_user_id=trig.get("actorUserId"))
+    except Exception:
+        logger.warning("noted row failed", exc_info=True)
+
+
 async def _react(ws: str, ref: dict, emoji: str) -> None:
     """Lightbulb's reaction on the trigger's message, shown live. Best effort: a reaction never fails a turn."""
     if not (ref.get("roomId") and ref.get("messageId")):
@@ -1062,7 +1073,8 @@ async def _apply(
         elif isinstance(dec, ts.Note):
             # Walk 14: an FYI is visibly received. Addressed to Lightbulb: one line. A room message nobody addressed
             # to it: a ✅ on the message, no line. The Router writes no memory (spec 07 §3.1): room ingestion already
-            # stored the person's message.
+            # stored the person's message. Which message was noted is room metadata (W15-5: Settings › Memory).
+            await _record_noted(trig, dec.fact)
             if trig["admission"] == "respond":
                 ack(sl, router_prompt.NOTED)
             else:

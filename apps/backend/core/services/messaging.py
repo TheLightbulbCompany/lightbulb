@@ -858,6 +858,16 @@ class ReadCursorRequest(ContractModel):
     last_read_seq: int = Field(ge=0)
 
 
+class NotedFact(ContractModel):
+    message_id: str
+    fact: str
+    noted_at: str
+
+
+class RoomMemoryResponse(ContractModel):
+    items: list[NotedFact]
+
+
 class ReadCursorResponse(ContractModel):
     room_id: uuid.UUID
     last_read_seq: int = Field(ge=0)
@@ -3546,6 +3556,23 @@ async def set_pin(auth: AuthContext, room_id: str, message_id: str, pinned: bool
     if int(meta["revision"]) != previous_revision:
         await _publish_room_metadata(meta)
     return await _room_detail(meta, auth.user_id, member)
+
+
+async def list_room_memory(auth: AuthContext, room_id: str) -> RoomMemoryResponse:
+    """What Lightbulb noted in this room (the Router's `note` decisions): any member reads it (W15-5)."""
+    await require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
+    rows = await messaging_repo.list_noted(room_id)
+    return RoomMemoryResponse(
+        items=[NotedFact(message_id=r["messageId"], fact=r["fact"], noted_at=r["notedAt"]) for r in rows]
+    )
+
+
+async def forget_room_memory(auth: AuthContext, room_id: str, message_id: str) -> None:
+    """Drop a noted fact from the list: the room's owner or admin, like Instructions. Idempotent."""
+    _meta, member = await require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
+    if member.get("role") not in {"owner", "admin"}:
+        raise ApiProblem("ROOM_FORBIDDEN", "Room owner or admin access required.")
+    await messaging_repo.delete_noted(room_id, validate_uuid(message_id, label="message ID"))
 
 
 async def _validate_message_links(

@@ -13,7 +13,7 @@ import { useHuddle } from "@/components/huddle/HuddleProvider";
 import { LiveStrip } from "@/components/huddle/LiveStrip";
 import { useAsyncAction } from "./useAsyncAction";
 import type { RoomParticipant } from "./types";
-import { ProjectSettingsDialog, type SettingsFrom, type SettingsSection } from "@/components/projects/ProjectSettingsDialog";
+import { ProjectSettingsDialog, type ProjectSettingsProps, type SettingsFrom, type SettingsSection } from "@/components/projects/ProjectSettingsDialog";
 import { openPanel } from "@/components/workspace/workspaceController";
 import { ProjectTile } from "@/components/projects/ProjectTile";
 
@@ -54,6 +54,8 @@ interface RoomHeaderProps {
   /** Super-agent projects (UX slice 6): name ▾ › Settings opens a modal over the project with these. */
   onPatchRoom?: (request: PatchRoomRequest) => Promise<void>;
   settingsPeople?: ReactNode;
+  /** Settings › Memory's "What Lightbulb remembers here". */
+  memoryClient?: ProjectSettingsProps["memoryClient"];
   /** Open Settings now (a sidebar row's or Home card's ⋯ › Settings), then `onSettingsOpened`. */
   openSettings?: SettingsFrom | null;
   onSettingsOpened?: () => void;
@@ -91,6 +93,7 @@ export function RoomHeader({
   toolItems,
   onPatchRoom,
   settingsPeople,
+  memoryClient,
   openSettings = null,
   onSettingsOpened,
 }: RoomHeaderProps) {
@@ -339,7 +342,7 @@ export function RoomHeader({
     {error && !renaming && !leaving && !archiving && !deleting && <p role="alert" className="room-header-error text-ui text-err">{error}</p>}
     {dialogs}
     {projectSettings && room && <ProjectSettingsDialog room={room} roomName={roomName} section={settings} onSection={setSettings} onCloseAutoFocus={restoreSettingsFocus}
-      canEdit={canEditRoom} actionable={actionable} onRename={onRenameRoom} onSetTopic={onSetTopic} onPatch={onPatchRoom} people={settingsPeople}
+      canEdit={canEditRoom} actionable={actionable} onRename={onRenameRoom} onSetTopic={onSetTopic} onPatch={onPatchRoom} people={settingsPeople} memoryClient={memoryClient}
       onArchive={canArchive && !room.archivedAt ? () => { handedOff.current = true; setSettings(null); reset(); setArchiving(true); } : undefined}
       onDelete={canDelete ? () => { handedOff.current = true; setSettings(null); reset(); setDeleteDraft(""); setDeleting(true); } : undefined} />}
   </header>;

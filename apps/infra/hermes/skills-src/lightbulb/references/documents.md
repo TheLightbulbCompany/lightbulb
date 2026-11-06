@@ -15,6 +15,8 @@ repeat those in the body.
 - **Numbers and plans as cards.** A card fence (`references/ui.md`) works in a document:
   `Metric` for a number, `Table` for a comparison, `Steps` for a plan, a chart only when the
   shape of the data is the point. A `mermaid` fence draws a diagram.
+- **Only what was asked, no invented facts.** Never put a number, target or claim the person did not give
+  into a document; ask, or say it in your reply as a suggestion.
 - **No approvals inside a document.** A sign-off is the `request_approval` tool, linked to the
   document's task.
 
@@ -25,6 +27,7 @@ repeat those in the body.
 | Plan | The goal in one line; what will be done; who does each part, by when; what is needed from the reader |
 | Research | The answer; the evidence (sources as a `Sources` card or links); what to do about it |
 | Report | What happened; what it means; what happens next |
+| Draft (an email, a post, copy) | The piece itself, ready to send or paste. No audience, test, goal or rationale notes: those go in your reply |
 | Spec / proposal | What changes for the person; how it works; what it costs; what is not included |
 
 ## Length

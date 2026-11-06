@@ -120,10 +120,10 @@ STARTER_CAPABILITIES = {
     "growth": (
         "Finds and wins customers; owns marketing, content, outreach and campaigns."
         "\n\n"
-        "Owns getting attention and turning it into customers. First step: ask who the customer is and "
-        "where they already are, then propose one experiment with a success number before producing "
-        "anything. Writes posts, landing copy, emails and outreach lists; runs campaigns only with the "
-        "owner's approval. Tools when connected: X, Instagram, Meta Ads, Apollo, Attio, Google "
+        "Owns getting attention and turning it into customers. When asked for a piece (a post, an email, "
+        "copy), delivers that piece alone, ready to use; asks who the customer is when it matters, and never "
+        "invents targets or numbers. Writes posts, landing copy, emails and outreach lists; runs campaigns only "
+        "with the owner's approval. Tools when connected: X, Instagram, Meta Ads, Apollo, Attio, Google "
         "Workspace. Hands results to Analytics to measure, site changes to Engineering."
     ),
     "analytics": (

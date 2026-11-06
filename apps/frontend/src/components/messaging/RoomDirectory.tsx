@@ -26,7 +26,7 @@ import { StartSessionDialog } from "./StartSessionDialog";
 import { readSessionMarks, readSidebarPrefs, writeSessionMarks, writeSidebarPrefs, type SidebarPrefs } from "./sidebarPrefs";
 import { useAsyncAction } from "./useAsyncAction";
 import { openInviteDialog } from "@/components/workspace/workspaceController";
-import type { DirectoryParticipant, ParticipantSelection, DirectoryRoom } from "./types";
+import { isProjectRoom, type DirectoryParticipant, type ParticipantSelection, type DirectoryRoom } from "./types";
 import "./messaging.css";
 
 export interface ConversationCreation {
@@ -580,7 +580,7 @@ function DirectoryContent({
         </li>;
         return <RoomDirectoryRow key={room.roomId} room={room} label={label} sections={sections}
           needsYou={needsYouTasks.filter((t) => t.audience?.roomId === room.roomId).length} project={superAgent}
-          onOpenSettings={onOpenSettings && room.kind === "channel" && !room.shared && !room.feed ? () => onOpenSettings(room.roomId) : undefined}
+          onOpenSettings={onOpenSettings && isProjectRoom(room) && !room.shared && !room.feed ? () => onOpenSettings(room.roomId) : undefined}
           active={room.roomId === currentRoomId} draft={draftRoomIds.includes(room.roomId)}
           busy={markingUnread === room.roomId || (savePrefs.pending && actingRoomId === room.roomId)}
           onSelect={() => onSelectRoom(room.roomId)}

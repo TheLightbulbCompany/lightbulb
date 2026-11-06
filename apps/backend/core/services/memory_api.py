@@ -81,6 +81,14 @@ async def recall_page(
     ns = workspace_memory.namespaces_for(owner_id, user_id)
     _sync_in_background(owner_id, memory_id)
     links = await flags_for(owner_id)
+    if links and audience and audience.get("kind") == "room":
+        from core.services import (
+            room_memory,
+        )  # lazy: room_memory imports memory_sync, which imports this module's peers
+
+        # A group chat's own scope, read only when the page is for that chat (its members are the readers).
+        if group := await room_memory.group_room_by_id(owner_id, audience.get("roomId")):
+            ns |= workspace_memory.room_namespaces(owner_id, group)
     page = await memory_recall.recall(
         memory_id=memory_id,
         namespaces=ns,

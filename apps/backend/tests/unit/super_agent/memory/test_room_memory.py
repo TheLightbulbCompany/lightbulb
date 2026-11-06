@@ -64,7 +64,7 @@ def core(monkeypatch):
 
 
 def _room(kind="channel", members=(SAM, PRIYA, LB), **extra) -> dict:
-    return {"roomId": ROOM, "kind": kind, "members": list(members), **extra}
+    return {"roomId": ROOM, "ownerId": OWNER, "kind": kind, "members": list(members), **extra}
 
 
 def _msg(text="Ship the Acme deck Friday", author=None, **extra) -> dict:
@@ -118,9 +118,30 @@ async def test_dm_between_people_writes_nothing(table, core):
     assert core.events == [] and core.records == []
 
 
-async def test_group_dm_writes_nothing(table, core):
-    assert await room_memory.ingest_message(OWNER, _room("group-dm"), _msg()) is False
+async def test_group_dm_without_an_agent_writes_nothing(table, core):
+    assert await room_memory.ingest_message(OWNER, _room("group-dm", (SAM, PRIYA)), _msg()) is False
     assert core.events == [] and core.records == []
+
+
+async def test_group_chat_with_lightbulb_writes_its_own_scope_never_the_team(table, core):
+    """Founder ruling (6 Nov 2026): remembered, but only for that chat's members."""
+    assert await room_memory.ingest_message(OWNER, _room("group-dm"), _msg()) is True
+    [ev] = core.events
+    assert ev["actorId"] == f"org_1:room_{ROOM}" and _meta(ev)["lane"] == "room"
+    assert core.records[0]["namespaces"] == [f"/turns/org_1:room_{ROOM}/"]
+
+
+async def test_a_group_chat_tasks_room_writes_the_chats_scope(table, core):
+    task = {"taskId": TASK, "lane": "shared", "audience": {"kind": "room", "roomId": ROOM}}
+    home = _room("group-dm")
+    with patch.object(room_memory.messaging_repo, "get_room", AsyncMock(return_value=home)):
+        room = {**_room(members=(LB,), task={"taskId": TASK}), "roomId": "task:" + TASK}
+        assert await room_memory.ingest_message(OWNER, room, _msg(), task=task) is True
+    assert core.events[0]["actorId"] == f"org_1:room_{ROOM}"
+
+
+async def test_another_workspaces_group_chat_is_never_a_scope(table, core):
+    assert await room_memory.group_room("org_2", _room("group-dm")) is None
 
 
 async def test_network_and_a2a_messages_never_written(table, core):

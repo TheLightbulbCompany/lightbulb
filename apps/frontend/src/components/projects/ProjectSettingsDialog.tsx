@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { notifyApiError } from "@/lib/notify";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
+import { roomNoun } from "@/components/messaging/types";
 import { ProjectIconPicker } from "./ProjectTile";
 
 export type SettingsSection = "general" | "memory" | "people";
@@ -23,6 +24,7 @@ const SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "general", label: "General" }, { id: "memory", label: "Memory" }, { id: "people", label: "People" },
 ];
 const SAVED_MS = 2000;
+const UNDO_MS = 5000; // a forgotten fact stays in its row with Undo this long before it is really forgotten (W16-7)
 
 /** "Saved" for 2 s after `token` changes (0 = never saved). */
 function Saved({ token }: { token: number }): ReactElement | null {
@@ -41,7 +43,7 @@ export interface ProjectSettingsProps {
   roomName: string;
   section: SettingsSection | null;
   onSection: (section: SettingsSection | null) => void;
-  /** The room's owner or admin: name, icon, Instructions, Archive. */
+  /** A channel's owner or admin, or any member of a DM or group chat with Lightbulb: icon, Instructions, Pause, Forget. */
   canEdit: boolean;
   actionable: boolean;
   onRename?: (name: string) => Promise<void>;
@@ -66,7 +68,7 @@ export function ProjectSettingsDialog(props: ProjectSettingsProps): ReactElement
   return <Dialog open={section !== null} onOpenChange={(open) => { if (!open) { flush.current?.(); onSection(null); } }}>
     <DialogContent className="project-settings" onCloseAutoFocus={onCloseAutoFocus}>
       <div className="project-settings__head">
-        <DialogTitle asChild><h2 className="truncate">{roomName} · Channel settings</h2></DialogTitle>
+        <DialogTitle asChild><h2 className="truncate">{roomName} · {props.room.kind === "channel" ? "Channel" : "Chat"} settings</h2></DialogTitle>
         <DialogClose asChild><Button type="button" variant="ghost" size="icon-sm" aria-label="Close settings"><X aria-hidden="true" /></Button></DialogClose>
       </div>
       {section && <SettingsBody {...props} section={section} flush={flush} />}
@@ -77,9 +79,10 @@ export function ProjectSettingsDialog(props: ProjectSettingsProps): ReactElement
 function SettingsBody({ room, roomName, section, onSection, canEdit, actionable, onRename, onSetTopic, onPatch, onArchive, onDelete, people, memoryClient, flush }: ProjectSettingsProps & { section: SettingsSection; flush: Flush }): ReactElement {
   const id = useId();
   const { membership } = useOrganization();
-  // The backend lets a room owner/admin pause, and a workspace admin too (pause alone).
-  // Never #general or the channel shared with the Lightbulb team.
-  const canPause = !!onPatch && (canEdit || membership?.role === "org:admin") && !room.isDefault && !room.shared;
+  // The backend lets a channel's owner/admin pause it, and a workspace admin too (pause alone); a chat with Lightbulb is
+  // its people's (`canEdit`), never an admin's. Never #general or the channel shared with the Lightbulb team.
+  const canPause = !!onPatch && (canEdit || (room.kind === "channel" && membership?.role === "org:admin")) && !room.isDefault && !room.shared;
+  const noun = roomNoun(room.kind);
   const [name, setName] = useState(roomName);
   const [topic, setTopic] = useState(room.topic ?? "");
   const [saved, setSaved] = useState<Record<string, number>>({});
@@ -110,7 +113,7 @@ function SettingsBody({ room, roomName, section, onSection, canEdit, actionable,
     <div className="project-row">
       <div className="project-row__text">
         <p className="project-row__label"><label htmlFor={`${id}-name`}>Name and icon</label></p>
-        <p className="project-row__hint">How this channel shows in the sidebar and on Home.</p>
+        <p className="project-row__hint">How this {noun} shows in the sidebar and on Home.</p>
       </div>
       <div className="project-row__control">
         <Saved token={saved.name ?? 0} />
@@ -126,30 +129,34 @@ function SettingsBody({ room, roomName, section, onSection, canEdit, actionable,
     </div>
     {canPause && <div className="project-row">
       <div className="project-row__text">
-        <p className="project-row__label">{paused ? "Paused" : "Pause channel"}</p>
+        <p className="project-row__label">{paused ? "Paused" : `Pause ${noun}`}</p>
         <p className="project-row__hint">Stops new tasks and schedules here. Running tasks finish. Undo any time.</p>
       </div>
       <div className="project-row__control">
         <Saved token={saved.pause ?? 0} />
         <Button type="button" size="sm" variant="outline" className="h-7" disabled={!actionable || busy}
-          onClick={() => void save("pause", () => onPatch!({ paused: !paused }), paused ? "The channel could not be resumed." : "The channel could not be paused.")}>
+          onClick={() => void save("pause", () => onPatch!({ paused: !paused }), paused ? `The ${noun} could not be resumed.` : `The ${noun} could not be paused.`)}>
           {paused ? "Resume" : "Pause"}</Button>
       </div>
     </div>}
     {onArchive && <div className="project-row">
       <div className="project-row__text">
-        <p className="project-row__label">Archive channel</p>
+        <p className="project-row__label">Archive {noun}</p>
         <p className="project-row__hint">Hides it from the sidebar. Undo any time.</p>
       </div>
       <div className="project-row__control"><Button type="button" size="sm" variant="outline" className="h-7" disabled={!actionable} onClick={onArchive}>Archive</Button></div>
     </div>}
-    {onDelete && <div className="project-row">
-      <div className="project-row__text">
-        <p className="project-row__label">Delete channel</p>
-        <p className="project-row__hint">Removes it and its chat for everyone. Can&apos;t be undone.</p>
+    {/* Off the first screen (W16-9): Delete sits apart at the bottom, an outline button, its confirm still asks. */}
+    {onDelete && <section className="project-danger" aria-labelledby={`${id}-danger`}>
+      <h3 id={`${id}-danger`}>Danger zone</h3>
+      <div className="project-row">
+        <div className="project-row__text">
+          <p className="project-row__label">Delete {noun}</p>
+          <p className="project-row__hint">Removes it and its chat for everyone. Can&apos;t be undone.</p>
+        </div>
+        <div className="project-row__control"><Button type="button" size="sm" variant="outline" className="project-danger__button h-7" disabled={!actionable} onClick={onDelete}>Delete</Button></div>
       </div>
-      <div className="project-row__control"><Button type="button" size="sm" variant="destructive" className="h-7" disabled={!actionable} onClick={onDelete}>Delete</Button></div>
-    </div>}
+    </section>}
   </>;
 
   const memory = <>
@@ -160,7 +167,7 @@ function SettingsBody({ room, roomName, section, onSection, canEdit, actionable,
           <p className="project-row__label mr-auto"><label htmlFor={`${id}-topic`}>Instructions</label></p>
           <Saved token={saved.topic ?? 0} />
         </div>
-        <p id={`${id}-topic-hint`} className="project-row__hint">Lightbulb and the specialists read this before every task in this channel.</p>
+        <p id={`${id}-topic-hint`} className="project-row__hint">Lightbulb and the specialists read this before every task in this {noun}.</p>
         <textarea id={`${id}-topic`} className="project-textarea" style={{ minHeight: 120 }} aria-describedby={`${id}-topic-hint`}
           value={topic} maxLength={ROOM_TOPIC_MAX_CHARS} disabled={!editable || !onSetTopic}
           placeholder="Sell 200 loaves through the new site by 1 Dec. Always cc sam@acme.com on customer email."
@@ -169,7 +176,7 @@ function SettingsBody({ room, roomName, section, onSection, canEdit, actionable,
         <span className="project-count">{topic.length.toLocaleString()} / {ROOM_TOPIC_MAX_CHARS.toLocaleString()}</span>
       </div>
     </div>
-    {memoryClient && <Remembered roomId={room.roomId} client={memoryClient} canForget={canEdit && actionable} />}
+    {memoryClient && <Remembered roomId={room.roomId} noun={noun} client={memoryClient} canForget={canEdit && actionable} />}
   </>;
 
   return <>
@@ -181,44 +188,72 @@ function SettingsBody({ room, roomName, section, onSection, canEdit, actionable,
       {SECTIONS.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
     </select>
     <div className="project-settings__body">
-      <DialogDescription className="sr-only">Settings for the #{roomName} channel.</DialogDescription>
+      <DialogDescription className="sr-only">{room.kind === "channel" ? `Settings for the #${roomName} channel.` : `Settings for ${roomName}.`}</DialogDescription>
       {section === "general" ? general : section === "memory" ? memory : <><h3>People</h3><div className="pt-3">{people}</div></>}
       {error && <p role="alert" className="mt-3 text-ui text-err break-words">{error}</p>}
     </div>
   </>;
 }
 
-/** What Lightbulb noted from this project's messages, newest first; the room's owner/admin can forget one. */
-function Remembered({ roomId, client, canForget }: { roomId: string; client: NonNullable<ProjectSettingsProps["memoryClient"]>; canForget: boolean }): ReactElement {
+/** What Lightbulb noted from this project's messages, newest first; whoever runs it can forget one. Forget keeps the
+ *  row where it is, struck through with Undo in Forget's place, for 5 s (W16-7): nothing slides under the pointer, a
+ *  slip is undone, and a double click undoes rather than forgetting a second fact. Closing settings forgets for real. */
+function Remembered({ roomId, noun, client, canForget }: { roomId: string; noun: "channel" | "chat"; client: NonNullable<ProjectSettingsProps["memoryClient"]>; canForget: boolean }): ReactElement {
   const headingId = useId();
   const [items, setItems] = useState<NotedFact[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [undoable, setUndoable] = useState<ReadonlySet<string>>(new Set());
+  // Each pending forget: its timer and the call that commits it (run early when settings close).
+  const pending = useRef(new Map<string, { timer: ReturnType<typeof setTimeout>; commit: () => void }>());
+  const open = useRef(true);
   useEffect(() => {
     let live = true;
     client.listRoomMemory(roomId).then((r) => { if (live) setItems(r.items); },
       () => { if (live) setError("What Lightbulb remembers couldn't be loaded. Close and open Settings to try again."); });
     return () => { live = false; };
   }, [client, roomId]);
+  useEffect(() => {
+    const all = pending.current;
+    open.current = true;
+    return () => { open.current = false; for (const { timer, commit } of all.values()) { clearTimeout(timer); commit(); } all.clear(); };
+  }, []);
+  const settle = (id: string) => { pending.current.delete(id); setUndoable((s) => { const n = new Set(s); n.delete(id); return n; }); };
   const forget = (item: NotedFact) => {
     setError(null);
-    setItems((all) => all && all.filter((i) => i.messageId !== item.messageId));
-    client.forgetRoomMemory(roomId, item.messageId).catch(() => {
-      setItems((all) => all && [...all, item].sort((a, b) => b.notedAt.localeCompare(a.notedAt)));
-      setError("That couldn't be forgotten. Try again.");
-    });
+    const commit = () => {
+      client.forgetRoomMemory(roomId, item.messageId).then(
+        () => setItems((all) => all && all.filter((i) => i.messageId !== item.messageId)),
+        // Still open: say so beside the list. Closed meanwhile: a toast, where the person now looks.
+        (e) => { if (open.current) setError("That couldn't be forgotten. Try again."); else notifyApiError(e, "That couldn't be forgotten."); });
+    };
+    const timer = setTimeout(() => { settle(item.messageId); commit(); }, UNDO_MS);
+    pending.current.set(item.messageId, { timer, commit });
+    setUndoable((s) => new Set(s).add(item.messageId));
+  };
+  const undo = (item: NotedFact) => {
+    const p = pending.current.get(item.messageId);
+    if (p) clearTimeout(p.timer);
+    settle(item.messageId);
   };
   return <section className="project-row project-memory" aria-labelledby={headingId}>
     <div className="project-row__text grid gap-2">
       <p id={headingId} className="project-row__label">What Lightbulb remembers here</p>
       {items === null && !error && <p className="project-row__hint">Loading…</p>}
-      {items?.length === 0 && <p className="project-row__hint">Tell Lightbulb things about this channel and they&apos;ll show up here.</p>}
+      {items?.length === 0 && <p className="project-row__hint">Tell Lightbulb things about this {noun} and they&apos;ll show up here.</p>}
       {!!items?.length && <ul className="project-memory__list">
-        {items.map((item) => <li key={item.messageId} className="project-memory__item">
-          <span className="project-memory__fact">{item.fact}</span>
-          <time className="project-memory__when" dateTime={item.notedAt}>{timeAgo(item.notedAt)}</time>
-          {canForget && <Button type="button" variant="ghost" size="sm" className="project-memory__forget h-6 px-2"
-            aria-label={`Forget: ${item.fact}`} onClick={() => forget(item)}>Forget</Button>}
-        </li>)}
+        {items.map((item) => {
+          const gone = undoable.has(item.messageId);
+          return <li key={item.messageId} className="project-memory__item" data-forgotten={gone || undefined}>
+            <span className="project-memory__fact">{item.fact}</span>
+            {gone ? <span role="status" className="project-memory__when">Forgotten</span>
+              : <time className="project-memory__when" dateTime={item.notedAt}>{timeAgo(item.notedAt)}</time>}
+            {canForget && (gone
+              ? <Button type="button" variant="ghost" size="sm" className="project-memory__forget h-6 px-2"
+                  aria-label={`Undo forget: ${item.fact}`} onClick={() => undo(item)}>Undo</Button>
+              : <Button type="button" variant="ghost" size="sm" className="project-memory__forget h-6 px-2"
+                  aria-label={`Forget: ${item.fact}`} onClick={() => forget(item)}>Forget</Button>)}
+          </li>;
+        })}
       </ul>}
       {error && <p role="alert" className="text-ui text-err">{error}</p>}
     </div>

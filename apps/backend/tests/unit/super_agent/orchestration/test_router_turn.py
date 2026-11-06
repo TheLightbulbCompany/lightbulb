@@ -584,7 +584,8 @@ async def test_private_lane_batch_reads_only_that_users_triggers(world):
     assert identity.lane == lane
     assert identity.session_key == f"agent:{CEO}:lightbulb:router:{lane}:{ts.router_room_key(ROOM)}"
     task = await repo.get_task(WS, ts.router_task_id(BATCH, 0, 0))
-    assert task["lane"] == "private" and task["audience"] == {"kind": "person", "userIds": [SAM], "roomId": None}
+    # The DM's id rides along so the DM's Tasks pane lists it; `userIds` alone still decide who sees it.
+    assert task["lane"] == "private" and task["audience"] == {"kind": "person", "userIds": [SAM], "roomId": ROOM}
 
 
 @pytest.mark.asyncio

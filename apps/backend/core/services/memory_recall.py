@@ -160,6 +160,10 @@ async def _search_part(
     if include_private and "private" in namespaces:
         for extra in variants:
             jobs.append(("claim", retrieve(namespaces["private"], extra)))
+    if "room" in namespaces:  # a group chat's own scope: only ever passed for a page in that chat
+        for extra in variants:
+            jobs.append(("claim", retrieve(namespaces["room"], extra)))
+        jobs.append(("turn", retrieve(namespaces["room_turns"], created)))
     if tasks:
         if include_private and "private_turns" in namespaces:
             jobs.append(("turn", retrieve(namespaces["private_turns"], created)))

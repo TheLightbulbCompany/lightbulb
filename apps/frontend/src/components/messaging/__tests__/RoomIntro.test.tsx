@@ -37,3 +37,15 @@ it("first asks only while nobody has asked; a channel without a goal gets genera
   expect(new Set(long.map((a) => a.label)).size).toBe(3);
   expect(long[0].ask.length).toBeLessThan(300);
 });
+
+it("a DM with Lightbulb opens like a project, says chat, and the first-run DM takes no asks on top of its first moves", () => {
+  const lightbulb = { kind: "agent", id: "lb", displayName: "Lightbulb", mentionHandle: "lightbulb", role: "member", listenMode: "active", joinedAt: "", joinedSeq: 0 } as const;
+  const dm = { ...room, kind: "dm", shared: false, topic: null, members: [lightbulb] } as unknown as RoomSummary;
+  const { rerender } = render(<RoomIntro room={dm} roomName="Lightbulb" participants={[lightbulb]} superAgent fresh onPickAsk={vi.fn()} />);
+  expect(screen.getByText("Ask for anything this chat needs; Lightbulb hands it to the right specialist.")).toBeInTheDocument();
+  expect(screen.getAllByRole("button")).toHaveLength(3);
+  rerender(<RoomIntro room={{ ...dm, firstRun: true }} roomName="Lightbulb" participants={[lightbulb]} superAgent fresh onPickAsk={vi.fn()} />);
+  expect(screen.queryByRole("button")).toBeNull();
+  rerender(<RoomIntro room={{ ...dm, members: [] }} roomName="Sam" participants={[]} superAgent fresh onPickAsk={vi.fn()} />);
+  expect(screen.getByText("Messages here are private to the two of you.")).toBeInTheDocument();
+});

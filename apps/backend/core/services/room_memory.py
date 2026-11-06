@@ -6,7 +6,9 @@ who may read the room:
 
 - a channel, or a shared task's room → the team actor ``<o>``, ``/turns/<o>/``
 - a person's DM with an agent, or a private task's room → ``<o>:<u>``, ``/turns/<o>:<u>/``
-- a DM between people, a group DM, an A2A dispatch, a progress line → nothing
+- a group chat with Lightbulb, or a shared task's room whose task is that chat's → the chat's own scope
+  ``<o>:room_<roomId>`` (founder ruling, 6 Nov 2026: recalled only in that chat, never workspace-wide)
+- a DM between people, a group DM without an agent, an A2A dispatch, a progress line → nothing
 
 Idempotent on the message id (SQS redelivers): the event's ``clientToken`` and the turn record's
 ``requestIdentifier`` both derive from it, and a ``MEMTURN#`` row marks it done. Best effort: a failure
@@ -46,6 +48,32 @@ def _lane(room: dict, members: list[dict], task: dict | None) -> tuple[str, str 
         if len(humans) == 1 and agents:
             return "private", humans[0]
     return None  # people-only DMs, group DMs, anything else
+
+
+async def group_room(owner_id: str, room: dict, task: dict | None = None) -> str | None:
+    """The group chat whose own memory scope ``room`` writes to and recall reads, else None: a group chat with an agent
+    in it, or the hidden room of a shared task whose audience is one."""
+    if room.get("task"):
+        if task is None:
+            task = await tasks_repo.get_task(owner_id, room["task"]["taskId"])
+        audience = (task or {}).get("audience") or {}
+        if (task or {}).get("lane") == "private" or audience.get("kind") != "room" or not audience.get("roomId"):
+            return None
+        room = await messaging_repo.get_room(audience["roomId"]) or {}
+    if room.get("kind") != "group-dm" or room.get("ownerId") != owner_id:
+        return None
+    members = room.get("members") or await messaging_repo.list_members(room["roomId"])
+    return room["roomId"] if any(m.get("kind") == "agent" for m in members) else None
+
+
+async def group_room_by_id(owner_id: str, room_id: str | None) -> str | None:
+    """`group_room` for a room id (recall's room audience). Never raises: no scope is the safe answer."""
+    try:
+        room = await messaging_repo.get_room(room_id) if room_id else None
+        return await group_room(owner_id, room) if room else None
+    except Exception as exc:  # noqa: BLE001 -- recall answers without the chat's scope rather than failing
+        logger.warning("group scope lookup failed ws=%s error=%s", owner_id, type(exc).__name__)
+        return None
 
 
 def _skip(message: dict) -> bool:
@@ -128,12 +156,16 @@ async def ingest_message(owner_id: str, room: dict, message: dict, *, task: dict
         if task is None and room.get("task"):
             task = await tasks_repo.get_task(owner_id, room["task"]["taskId"])
         members = room.get("members") or await messaging_repo.list_members(room_id)
-        lane = _lane(room, members, task)
-        if lane is None:
-            return False
-        kind, person = lane
-        names = workspace_memory.namespaces_for(owner_id, person)
-        actor, ns = (f"{owner_id}:{person}", names["private_turns"]) if person else (owner_id, names["turns"])
+        if group := await group_room(owner_id, {**room, "members": members}, task):
+            kind, actor = "room", workspace_memory.room_actor(owner_id, group)
+            ns = workspace_memory.room_namespaces(owner_id, group)["room_turns"]
+        else:
+            lane = _lane(room, members, task)
+            if lane is None:
+                return False
+            kind, person = lane
+            names = workspace_memory.namespaces_for(owner_id, person)
+            actor, ns = (f"{owner_id}:{person}", names["private_turns"]) if person else (owner_id, names["turns"])
         root = message.get("threadRootMessageId") or message["messageId"]
         author = message.get("author") or {}
         text = f"{author.get('displayName') or 'Someone'}: {secret_shaped.redact(message['text'])}"[:_MAX_TEXT]

@@ -16,7 +16,7 @@ import { FIRST_MOVE_LABEL, openFirstMoves, useFirstMoves } from "@/components/id
 import { NewProjectDialog } from "@/components/projects/NewProjectDialog";
 import { ProjectTile } from "@/components/projects/ProjectTile";
 import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingWorkspaceContext";
-import type { DirectoryRoom } from "@/components/messaging/types";
+import { isProjectRoom, type DirectoryRoom } from "@/components/messaging/types";
 import { useNeedsYouCount, useNeedsYouTasks } from "@/components/tasks/useRoomThreads";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { activateMessagesPanel, closePane, openAgentDmWithDraft, openPanel } from "@/components/workspace/workspaceController";
@@ -212,7 +212,7 @@ function ProjectCard({ room, counts, capped, viewerId, onSetPrefs, onOpenSetting
       <DropdownMenuContent align="end">
         {onSetPrefs && <DropdownMenuItem onSelect={() => act(() => onSetPrefs(room.roomId, { starred: !room.starred }), "The pin could not be saved.")}>
           {room.starred ? <PinOff aria-hidden="true" /> : <Pin aria-hidden="true" />}{room.starred ? "Unpin" : "Pin"}</DropdownMenuItem>}
-        {onOpenSettings && room.kind === "channel" && <DropdownMenuItem onSelect={() => onOpenSettings(room.roomId, "home")}><Settings aria-hidden="true" />Settings</DropdownMenuItem>}
+        {onOpenSettings && isProjectRoom(room) && <DropdownMenuItem onSelect={() => onOpenSettings(room.roomId, "home")}><Settings aria-hidden="true" />Settings</DropdownMenuItem>}
         {canArchive && <DropdownMenuItem onSelect={() => act(() => onPatchRoom!(room.roomId, { archived: true }), "The channel could not be archived.")}><Archive aria-hidden="true" />Archive</DropdownMenuItem>}
       </DropdownMenuContent>
     </DropdownMenu>}

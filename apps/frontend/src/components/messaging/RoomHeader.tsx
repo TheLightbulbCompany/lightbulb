@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { Archive, ArchiveRestore, Bell, BellOff, ChevronDown, Hash, Info, Link, LogOut, MessageCircle, Mic, MoreHorizontal, Pencil, Pin, PinOff, Settings, Star, Trash2, UserPlus, Users } from "lucide-react";
+import { Archive, ArchiveRestore, Bell, BellOff, Brain, ChevronDown, Hash, Info, Link, LogOut, MessageCircle, Mic, MoreHorizontal, Pencil, Pin, PinOff, Settings, Star, Trash2, UserPlus, Users } from "lucide-react";
 import { liveMarker, ROOM_TOPIC_MAX_CHARS, type MemberPrefsRequest, type PatchRoomRequest, type RoomSummary } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -12,7 +12,7 @@ import { useRoomHuddle } from "@/components/huddle/useRoomHuddle";
 import { useHuddle } from "@/components/huddle/HuddleProvider";
 import { LiveStrip } from "@/components/huddle/LiveStrip";
 import { useAsyncAction } from "./useAsyncAction";
-import type { RoomParticipant } from "./types";
+import { isProjectRoom, type RoomParticipant } from "./types";
 import { ProjectSettingsDialog, type ProjectSettingsProps, type SettingsFrom, type SettingsSection } from "@/components/projects/ProjectSettingsDialog";
 import { openPanel } from "@/components/workspace/workspaceController";
 import { ProjectTile } from "@/components/projects/ProjectTile";
@@ -108,9 +108,9 @@ export function RoomHeader({
   const [archiving, setArchiving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteDraft, setDeleteDraft] = useState("");
-  // A project's settings (super-agent channels): the modal replaces Details, People, Add a topic and the menu's
-  // Archive and Delete rows (it opens their confirms below).
-  const projectSettings = compact && room?.kind === "channel" && !room.feed;
+  // A project's settings (super-agent: every channel, and a DM or group chat with Lightbulb): the modal replaces
+  // Details, People, Add a topic and the menu's Archive and Delete rows (it opens their confirms below).
+  const projectSettings = compact && !!room && !room.feed && isProjectRoom(room);
   const [settings, setSettings] = useState<SettingsSection | null>(null);
   // One-shot, like RoomPanel's openAddPeople: open (own state, adjusted during render), then tell the caller it was
   // handled (its state, so after render).
@@ -284,9 +284,9 @@ export function RoomHeader({
 
   if (compact) return <header className="room-header" data-compact="">
     <div className="room-title">
-      {room?.kind === "dm" && counterparts.length === 1
-        ? <ParticipantAvatar participant={counterparts[0]} size="sm" />
-        : projectSettings ? <ProjectTile icon={room.icon} color={room.color} name={roomName} size={24} />
+      {/* A chat's tile once someone picks one; until then its avatar or faces. */}
+      {projectSettings && (room.kind === "channel" || room.icon) ? <ProjectTile icon={room.icon} color={room.color} name={roomName} size={24} />
+        : room?.kind === "dm" && counterparts.length === 1 ? <ParticipantAvatar participant={counterparts[0]} size="sm" />
         : <Icon size={20} aria-hidden="true" />}
       <DropdownMenu>
         <h2 className="room-name-menu"><DropdownMenuTrigger asChild>
@@ -295,6 +295,8 @@ export function RoomHeader({
         <DropdownMenuContent align="start">
           {projectSettings ? <>
             <DropdownMenuItem onSelect={() => setSettings("general")}><Settings aria-hidden="true" />Settings</DropdownMenuItem>
+            {/* What Lightbulb knows here, one pick from the header (W16-8), not Settings › Memory. */}
+            {memoryClient && <DropdownMenuItem onSelect={() => setSettings("memory")}><Brain aria-hidden="true" />Memory</DropdownMenuItem>}
             <DropdownMenuItem onSelect={() => setSettings("people")}><Users aria-hidden="true" />People</DropdownMenuItem>
           </> : <>
             <DropdownMenuItem onSelect={() => onOpenDetails("about")}><Info aria-hidden="true" />Details</DropdownMenuItem>

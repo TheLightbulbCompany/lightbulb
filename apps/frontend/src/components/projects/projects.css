@@ -73,6 +73,12 @@
   .project-memory__forget { opacity: 0; }
   .project-memory__item:hover .project-memory__forget, .project-memory__forget:focus-visible { opacity: 1; }
 }
+/* Forgotten, for the 5 s Undo window: the row keeps its place and height; Undo stays shown where Forget was. */
+.project-memory__item[data-forgotten] .project-memory__fact { color: var(--muted-foreground); text-decoration: line-through; }
+.project-memory__item[data-forgotten] .project-memory__forget { opacity: 1; }
+/* Danger zone: apart at the bottom of General; an outline button with red text, never a filled red block (W16-9). */
+.project-danger { margin-top: 32px; }
+.project-danger__button { color: var(--err); }
 .project-count { justify-self: end; font-size: var(--text-caption); color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
 
 /* Paused: one line above the composer. */

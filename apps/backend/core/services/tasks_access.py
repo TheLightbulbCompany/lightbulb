@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from collections.abc import Collection
 from typing import Any
 
 from core import tasks_schema as ts
@@ -172,20 +173,28 @@ def plain_line(text: str, limit: int = LINE_MAX) -> str:
     return cut.rstrip(" ,;:-、，") + "…"
 
 
-def seen_by_whole_room(task: dict, room: str | None) -> bool:
-    """Everyone in `room` can open the task (`can_view`'s audience rules): a workspace task, or this room's own. Only
-    then may the line in that room carry what the task said."""
+def seen_by_whole_room(task: dict, room: str | None, humans: Collection[str] = ()) -> bool:
+    """Everyone in `room` can open the task (`can_view`'s audience rules): a workspace task, this room's own, or a
+    person task of this room whose `userIds` cover every person in it now (`humans`: the room's current human members,
+    so a DM someone was added to stops qualifying). Only then may the line in that room carry what the task said."""
     audience = task.get("audience") or {}
+    if audience.get("kind") == "person":
+        return (
+            bool(room)
+            and audience.get("roomId") == room
+            and bool(humans)
+            and set(humans) <= set(audience.get("userIds") or [])
+        )
     return audience.get("kind") == "workspace" or (audience.get("kind") == "room" and audience.get("roomId") == room)
 
 
-def result_line(tree: dict, room: str | None) -> str | None:
+def result_line(tree: dict, room: str | None, humans: Collection[str] = ()) -> str | None:
     """What came of a finished task, for the line in `room`: the result's first sentence, else the newest output's
     title, else the task's title; why a failed one didn't finish. None while it works (or watches), and when someone
     in the room can't open the task (its words never leak there; a person-only task never shows any)."""
     task = tree["task"]
     status = task.get("status")
-    if status not in ("idle", "failed") or not seen_by_whole_room(task, room):
+    if status not in ("idle", "failed") or not seen_by_whole_room(task, room, humans):
         return None
     if status == "failed":  # a watch armed before it failed changes nothing: it failed
         return f"Didn't finish: {_FAILED_WHY.get(task.get('statusReason') or '', 'something went wrong')}."
@@ -226,10 +235,10 @@ def text_output(task: dict, n: int, message_id: str) -> dict:
     }
 
 
-def result_text(tree: dict, room: str | None) -> str | None:
+def result_text(tree: dict, room: str | None, humans: Collection[str] = ()) -> str | None:
     """The finish message for `room`: a short result whole (walk 15), else `result_line`. Same privacy as
     `result_line`: None wherever someone in the room can't open the task, so its words never reach them."""
-    line = result_line(tree, room)
+    line = result_line(tree, room, humans)
     if line is None or tree["task"].get("status") != "idle":
         return line
     att = max(tree.get("attempts") or [], key=lambda a: a.get("n", 0), default=None)

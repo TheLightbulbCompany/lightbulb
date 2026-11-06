@@ -58,8 +58,9 @@ export function DecisionCard({ task, question, ended = false, compact = false, f
   const { place } = useWorkspaceState();
   const roomId = task.audience?.roomId ?? null;
   const projectRoom = roomId && (place !== "chat" || directory?.currentRoomId !== roomId)
-    ? directory?.rooms.find((r) => r.roomId === roomId && r.kind === "channel") : undefined;
-  const project = projectRoom ? `#${roomDisplayName(projectRoom, projectRoom.participants)}` : null;
+    ? directory?.rooms.find((r) => r.roomId === roomId) : undefined;
+  // Every room a task can belong to names it: a channel as #name, a DM or group chat by its name.
+  const project = projectRoom ? `${projectRoom.kind === "channel" ? "#" : ""}${roomDisplayName(projectRoom, projectRoom.participants)}` : null;
   const buttons = decisionButtons(question.options, question.subkind, question.preview);
   const unavailable = buttons.find((b) => b.disabledReason)?.disabledReason;
   const send = async (optionId: string, typed?: string) => {

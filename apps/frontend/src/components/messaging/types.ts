@@ -15,6 +15,17 @@ export const roomKindLabel = {
   "group-dm": "Group chat",
 } as const;
 
+/** Super-agent: a room with the project UX (settings, Memory, Pause, icon, starter asks) -- every channel, and any DM or
+ *  group chat Lightbulb is in (founder ruling, 6 Nov 2026). Callers still leave out the feed and the shared channel. */
+export function isProjectRoom(room: Pick<RoomSummary, "kind" | "members"> | null | undefined): boolean {
+  return !!room && (room.kind === "channel" || (room.members ?? []).some((member) => member.kind === "agent"));
+}
+
+/** What settings and copy call the room: a channel is a channel; a DM or group chat is a chat. */
+export function roomNoun(kind: RoomSummary["kind"] | undefined): "channel" | "chat" {
+  return kind === "channel" ? "channel" : "chat";
+}
+
 /** `online` is presence for people (a recent heartbeat from a tab in use); agents carry `agentActivity` instead.
  *  `sharing` is a live shared terminal session, from the workspace list. */
 export type RoomParticipant = RoomMember & { agentActivity?: RosterState; online?: boolean; sharing?: boolean };

@@ -62,6 +62,7 @@ import { RoomTimeline, StickToBottom } from "./RoomTimeline";
 import { buildTimeline, collapseRuns, delegationIdOf, linkifyMentions, linkifySessionMentions, placeRuns, parseMentionHref, roomDisplayName, type LocalSession, type MessageDelegations, type MessagingClient, type RoomRunView, type RoomSubagents, type RoomSummary } from "@lightbulb/shared";
 import { TypingReveal } from "./TypingReveal";
 import { useAsyncAction } from "./useAsyncAction";
+import { isProjectRoom, roomNoun as projectNoun } from "./types";
 import type {
   PendingRoomMessage,
   DirectoryParticipant,
@@ -628,7 +629,10 @@ function RoomContent({
   const canAddMembers = !!visibleRoom && !!onAddMember && !visibleRoom.shared;
   const isRoomAdmin = viewer?.role === "owner" || viewer?.role === "admin";
   const canManageMembers = visibleRoom?.kind === "channel" && isRoomAdmin;
-  const canEditRoom = visibleRoom?.kind !== "dm" && isRoomAdmin;
+  // A DM or group chat with Lightbulb is run by its people (founder ruling, 6 Nov 2026): Instructions, icon, Pause,
+  // Forget. Renaming stays a channel or group chat owner's (the header is handed onRenameRoom only for them).
+  const chatProject = superAgent && !!visibleRoom && visibleRoom.kind !== "channel" && !visibleRoom.feed && isProjectRoom(visibleRoom);
+  const canEditRoom = chatProject || (visibleRoom?.kind !== "dm" && isRoomAdmin);
   // A group chat's creator holds no powers there, so anyone may leave one. A channel owner
   // leaving hands the channel to another person in it (the backend picks them) -- but
   // alone in it, they can only delete it: the Leave dialog explains that and offers Delete.
@@ -1165,9 +1169,9 @@ function RoomContent({
       {!visibleRoom?.archivedAt && <RoomLimitBar account={billing} />}
       {paused && <div className="project-paused" role={pausedAsk ? "alert" : "status"}>
         {/* A Send while paused keeps the ask in the box and says so here, next to Resume (W12-11). */}
-        <span>{pausedAsk ? "This channel is paused. Resume it to send." : "Paused. New tasks and schedules wait."}</span>
+        <span>{pausedAsk ? `This ${projectNoun(visibleRoom?.kind)} is paused. Resume it to send.` : "Paused. New tasks and schedules wait."}</span>
         {onPatchRoom && canPause && <Button type="button" size="sm" variant="ghost" className="h-7" disabled={!actionable || messageActionPending}
-          onClick={() => void runMessageAction(() => onPatchRoom({ paused: false }), "The channel could not be resumed.")}>Resume</Button>}
+          onClick={() => void runMessageAction(() => onPatchRoom({ paused: false }), `The ${projectNoun(visibleRoom?.kind)} could not be resumed.`)}>Resume</Button>}
       </div>}
       {showFirstReplies && <FirstReplyChips onPick={(text) => { if (composer.text.trim() === "") composer.onTextChange(text); setFocusToken((t) => t + 1); }} />}
       {visibleRoom?.feed ? <div className="room-composer room-archived" role="status">

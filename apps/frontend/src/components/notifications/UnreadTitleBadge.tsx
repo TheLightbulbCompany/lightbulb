@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { useNeedsYouCount } from "@/components/tasks/useRoomThreads";
 
 /**
  * Owns the browser tab title: the place (`title`), prefixed with the count while
@@ -26,4 +27,10 @@ export function UnreadTitleBadge({ unread, title }: { unread: number; title?: st
   }, [unread, title]);
 
   return null;
+}
+
+/** With the super-agent the tab title and Dock carry needsYouCount, the same number as the Activity badge and Home's
+ *  "N need you" line (UX audit slice 2), not unread messages. */
+export function NeedsYouTitleBadge({ title }: { title?: string }) {
+  return <UnreadTitleBadge unread={useNeedsYouCount()} title={title} />;
 }

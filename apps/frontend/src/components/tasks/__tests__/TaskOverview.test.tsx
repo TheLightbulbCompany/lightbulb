@@ -79,7 +79,12 @@ describe("TaskOverview", () => {
     client = fakeTasksClient(FIXTURES.step09.tasks); live.tasks = client;
     const onOpen = vi.fn();
     overview(room, onOpen);
-    await userEvent.click(await screen.findByRole("button", { name: "Open Stripe fee estimate, Done" }));
+    // Done is collapsed by default (07 §2); its rows are one line, with no status word of their own.
+    await userEvent.click(await screen.findByRole("button", { name: "Done · 1" }));
+    const row = screen.getByRole("button", { name: "Open Stripe fee estimate, Done" }).closest("li")!;
+    expect(row.textContent!.match(/Done/g) ?? []).toHaveLength(0);
+    expect(row.querySelectorAll("p")).toHaveLength(1);
+    await userEvent.click(screen.getByRole("button", { name: "Open Stripe fee estimate, Done" }));
     expect(onOpen).toHaveBeenCalledWith("t-fees");
     await userEvent.click(screen.getByRole("button", { name: "Closed · 1" }));
     await userEvent.click(screen.getByRole("button", { name: "Reopen" }));

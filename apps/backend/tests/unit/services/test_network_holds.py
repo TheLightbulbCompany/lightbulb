@@ -59,7 +59,11 @@ async def test_a_notice_files_one_item_per_asked_human_with_no_text(env):
         assert item.state == "open" and item.summary.preview is None
         assert item.summary.reason == activity.NETWORK_HOLD_REASON
         assert "Aden's Claude" in item.summary.title
-        assert [a.id for a in item.actions] == ["send", "decline", "allow"]
+        assert [(a.id, a.label) for a in item.actions] == [
+            ("decline", "Deny"),
+            ("send", "Send"),
+            ("allow", "Always allow"),
+        ]
 
 
 async def test_an_app_session_hold_goes_to_that_person_only(env):

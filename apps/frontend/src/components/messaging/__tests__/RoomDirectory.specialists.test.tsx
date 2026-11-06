@@ -6,7 +6,7 @@ import { SpecialistDmBanner } from "../SpecialistDmBanner";
 import type { DirectoryParticipant, DirectoryRoom } from "../types";
 
 const live = vi.hoisted(() => ({ superAgent: true }));
-vi.mock("@/hooks/useLiveEvents", () => ({ useSuperAgent: () => live.superAgent }));
+vi.mock("@/hooks/useLiveEvents", () => ({ useSuperAgent: () => live.superAgent, useOptionalLiveEvents: () => null }));
 const openAgentDmWithDraft = vi.hoisted(() => vi.fn());
 vi.mock("@/components/workspace/workspaceController", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/components/workspace/workspaceController")>(),
@@ -55,9 +55,11 @@ describe("sidebar with the super-agent on", () => {
     const more = container.querySelector("details.room-directory-more")!;
     expect(more).toHaveAttribute("open");
     expect(more.querySelector("summary")).toHaveAttribute("aria-label", "More, 3 unread or waiting");
-    expect(more.querySelector("summary .room-count")).toHaveTextContent("3");
+    // No number (07 §1): needsYouCount is the only number; unread is ink on the heading.
+    expect(more.querySelector("summary .room-count")).toBeNull();
+    expect(more.querySelector("summary")).toHaveAttribute("data-unread");
     rerender(<RoomDirectory {...props} rooms={[{ ...shared, unreadCount: 0 }]} />);
-    expect(container.querySelector("details.room-directory-more summary .room-count")).toBeNull();
+    expect(container.querySelector("details.room-directory-more summary")).not.toHaveAttribute("data-unread");
   });
 
   it("an unknown front agent (roster not resolved, or no ceo role) keeps today's roster", () => {
@@ -87,5 +89,21 @@ describe("SpecialistDmBanner", () => {
     render(<SpecialistDmBanner agentName="Finance" handle={null} frontAgentId="agent_ceo" />);
     await userEvent.click(screen.getByRole("button", { name: "Ask Finance ›" }));
     expect(openAgentDmWithDraft).toHaveBeenCalledWith("agent_ceo", "");
+  });
+});
+
+describe("one number on screen (UX slice 2)", () => {
+  it("a project row's unread is weight, not a pill; needs-you is a warn dot", async () => {
+    const { RoomDirectoryRow } = await import("../RoomDirectoryRow");
+    const room: DirectoryRoom = { ...base, roomId: "p1", kind: "channel", name: "spring-sale", participants: [alice], unreadCount: 4 };
+    const { container } = render(<ul><RoomDirectoryRow room={room} label="spring-sale" active={false} busy={false} sections={[]}
+      onSelect={vi.fn()} onCopyLink={vi.fn()} needsYou={2} noCounts /></ul>);
+    const row = screen.getByRole("button", { name: /^spring-sale/ });
+    expect(row).toHaveAccessibleName(expect.stringContaining("2 need you"));
+    expect(row).toHaveAccessibleName(expect.stringContaining("Unread"));
+    expect(row).not.toHaveAccessibleName(expect.stringContaining("4"));
+    expect(container.querySelector(".room-count")).toBeNull();
+    expect(container.querySelector("[data-needs-you]")).not.toBeNull();
+    expect(row).toHaveClass("font-semibold");
   });
 });

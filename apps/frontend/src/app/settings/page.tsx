@@ -27,6 +27,7 @@ import { LLMPanel } from "@/components/control/panels/LLMPanel";
 import { IntegrationsPanel } from "@/components/control/panels/IntegrationsPanel";
 import { SkillsTab } from "@/components/control/panels/SkillsTab";
 import { ConnectionsPanel } from "@/components/control/panels/ConnectionsPanel";
+import { ApprovalsPanel } from "@/components/settings/AgentGuardrails";
 import { SettingsPanel as CompanySettingsPanel } from "@/components/teams/panels/SettingsPanel";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 import { SettingsNav } from "@/components/settings/SettingsNav";
@@ -48,6 +49,7 @@ type Panel =
   | "profile"
   | "workspace"
   | "members"
+  | "approvals"
   | "connections"
   | "billing"
   | "usage"
@@ -715,6 +717,7 @@ const PANELS: Record<Panel, () => React.ReactElement> = {
   profile: ProfilePanel,
   workspace: WorkspacePanel,
   members: MembersPanel,
+  approvals: ApprovalsPanel,
   connections: ConnectionsPanel,
   billing: BillingPanel,
   usage: UsagePanel,

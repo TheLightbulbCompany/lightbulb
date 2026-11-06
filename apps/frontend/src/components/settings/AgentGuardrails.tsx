@@ -1,9 +1,8 @@
 "use client";
 
-// What agents may do, and the kill switch. This is what remains of the retired
-// Accounts tab: its other two sections (where money lands, what agents can use)
-// were already on Connections, so this sits at the foot of Settings →
-// Connections, under the one list of what the team is connected to.
+// Settings › Approvals (UX audit slice 2): how agents ask, what they may do
+// without asking (the Always-allow rules a decision card wrote), and the kill
+// switch. It used to sit at the foot of Connections, under ~20 integrations.
 //
 // The approval mode (founder ruling 6 Nov 2026) replaced the four "Ask me
 // first" switches: one choice per workspace, read on the server by the effects
@@ -12,6 +11,7 @@
 // card. Never ask is admin-only behind a typed word, checked on both sides.
 
 import { useState } from "react";
+import { ApiError, effectName } from "@lightbulb/shared";
 import useSWR, { useSWRConfig } from "swr";
 import { ShieldAlert } from "lucide-react";
 
@@ -21,6 +21,24 @@ import { useApi } from "@/lib/api";
 import { notifyApiError, notifyError, notifySuccess } from "@/lib/notify";
 
 const POLICY_PATH = "/company/policy";
+const RULES_PATH = "/company/policy/always-allow";
+
+/** One Always-allow rule (questions.always_allow_rules): an action kind and the one target it is allowed for. */
+type AlwaysRule = { id: string; kind: string; key: string; value: string };
+
+/** "Email · priya@acme.com": the action in words (the card's own names) and its one target. */
+const ruleLine = (rule: AlwaysRule) => `${effectName({ kind: rule.kind, tool: rule.kind })} · ${rule.value}`;
+
+/** Settings › Approvals, its own page under Members. */
+export function ApprovalsPanel() {
+  return (
+    <div className="settings-panel" id="panel-approvals" role="tabpanel">
+      <h1 className="settings-page-title">Approvals</h1>
+      <p className="settings-page-desc">When agents stop for your yes, and what they may do without asking.</p>
+      <AgentGuardrails />
+    </div>
+  );
+}
 
 /** The exact string `POST /company/revoke-all` compares against — anything else is a 422. */
 const REVOKE_CONFIRM = "revoke";
@@ -49,6 +67,9 @@ export function AgentGuardrails() {
   const canManage = useIsWorkspaceAdmin();
 
   const [open, setOpen] = useState(true);
+  const [rulesOpen, setRulesOpen] = useState(true);
+  const [dangerOpen, setDangerOpen] = useState(true);
+  const [removing, setRemoving] = useState<string | null>(null);
   const [revokeOpen, setRevokeOpen] = useState(false);
   const [typed, setTyped] = useState("");
   const [neverOpen, setNeverOpen] = useState(false);
@@ -59,6 +80,26 @@ export function AgentGuardrails() {
     POLICY_PATH,
     (p: string) => api.get(p) as Promise<CapabilityPolicy>,
   );
+
+  const rules = useSWR<{ rules: AlwaysRule[] }>(
+    canManage ? RULES_PATH : null,
+    (p: string) => api.get(p) as Promise<{ rules: AlwaysRule[] }>,
+  );
+
+  async function removeRule(rule: AlwaysRule) {
+    setRemoving(rule.id);
+    try {
+      await api.del(`${RULES_PATH}/${encodeURIComponent(rule.id)}`);
+    } catch (e) {
+      // Already gone (404): the re-read below drops it all the same.
+      if (!(e instanceof ApiError && e.status === 404)) {
+        notifyApiError(e, "Couldn't remove that rule. Try again.");
+      }
+    } finally {
+      await rules.mutate();
+      setRemoving(null);
+    }
+  }
 
   // Hoisted so the JSX below narrows — a property read off the SWR result does not.
   const policyMap = policy.data;
@@ -114,7 +155,7 @@ export function AgentGuardrails() {
   return (
     <div className="flex flex-col gap-4">
       <PanelSection
-        label="Guardrails"
+        label="How agents ask"
         open={open}
         onOpenChange={setOpen}
       >
@@ -152,7 +193,7 @@ export function AgentGuardrails() {
                 </label>
               ))}
               <p className="text-caption" style={{ color: "var(--midnight-muted)" }}>
-                Anyone who answers an approval can choose Always allow for that recipient, app or repo.
+                Anyone who answers a task can choose Always allow for that recipient, app or repo. Those rules are listed below.
               </p>
             </fieldset>
           )}
@@ -163,29 +204,74 @@ export function AgentGuardrails() {
             </p>
           )}
 
-          {canManage && (
-            <div className="mt-1 flex flex-col gap-2 border-t pt-3" style={{ borderColor: "var(--edge)" }}>
-              <p className="text-ui" style={{ color: "var(--midnight)" }}>
-                Revoke everything
-              </p>
-              <p className="text-caption" style={{ color: "var(--midnight-muted)" }}>
-                Cancels open provider setups, deletes our copies of your credentials, and disconnects
-                your connected apps and Stripe. It does not cancel or delete anything you already own at those providers.
-              </p>
-              <div>
-                <EditorialButton
-                  variant="destructive"
-                  size="sm"
-                  disabled={busy}
-                  onClick={() => setRevokeOpen(true)}
-                >
-                  Revoke everything
-                </EditorialButton>
-              </div>
-            </div>
-          )}
         </div>
       </PanelSection>
+
+      {canManage && (
+        <PanelSection label="Always allowed" count={rules.data?.rules.length} open={rulesOpen} onOpenChange={setRulesOpen}>
+          <div className="py-3">
+            {rules.error && !rules.data && (
+              <p className="text-ui" style={{ color: "var(--err)" }}>
+                Couldn&apos;t load the rules. Refresh to try again.
+              </p>
+            )}
+            {rules.data && rules.data.rules.length === 0 && (
+              <p className="text-caption" style={{ color: "var(--midnight-muted)" }}>
+                Nothing yet. Press Always allow on a decision card and the rule shows here.
+              </p>
+            )}
+            {rules.data && rules.data.rules.length > 0 && (
+              <ul className="flex flex-col" aria-label="Always allowed">
+                {rules.data.rules.map((rule) => (
+                  <li key={rule.id} className="flex items-center gap-3 border-b py-2 last:border-b-0" style={{ borderColor: "var(--edge)" }}>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-ui" style={{ color: "var(--midnight)" }}>
+                        {ruleLine(rule)}
+                      </span>
+                      <span className="block text-caption" style={{ color: "var(--midnight-muted)" }}>
+                        Any specialist, without asking
+                      </span>
+                    </span>
+                    <EditorialButton
+                      variant="secondary"
+                      size="sm"
+                      disabled={removing !== null}
+                      aria-label={`Remove ${ruleLine(rule)}`}
+                      onClick={() => void removeRule(rule)}
+                    >
+                      {removing === rule.id ? "Removing…" : "Remove"}
+                    </EditorialButton>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </PanelSection>
+      )}
+
+      {canManage && (
+        <PanelSection label="Danger zone" open={dangerOpen} onOpenChange={setDangerOpen}>
+          <div className="flex flex-col gap-2 py-3">
+            <p className="text-ui" style={{ color: "var(--midnight)" }}>
+              Revoke everything
+            </p>
+            <p className="text-caption" style={{ color: "var(--midnight-muted)" }}>
+              Cancels open provider setups, deletes our copies of your credentials, and disconnects
+              your connected apps and Stripe. It does not cancel or delete anything you already own at those providers.
+            </p>
+            <div>
+              <EditorialButton
+                variant="destructive"
+                size="sm"
+                disabled={busy}
+                onClick={() => setRevokeOpen(true)}
+              >
+                Revoke everything
+              </EditorialButton>
+            </div>
+          </div>
+        </PanelSection>
+      )}
 
       <EditorialDialog
         open={revokeOpen}

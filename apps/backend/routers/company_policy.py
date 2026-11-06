@@ -1,4 +1,4 @@
-"""Owner capability policy + revoke-all — /api/v1/company/{policy,revoke-all}.
+"""Owner capability policy, its Always-allow rules + revoke-all — /api/v1/company/{policy,policy/always-allow,revoke-all}.
 
 The map (`money_moves`/`outreach`/`publishing`/`provisioning` → "requires
 owner approval?", absent ⇒ True, fail-closed) plus `approval_mode` (ask | auto | never_ask, absent ⇒ auto). The
@@ -64,6 +64,25 @@ async def patch_policy(body: dict[str, bool | str], auth: Annotated[AuthContext,
     if billing_repo.APPROVAL_MODE_KEY in body:
         await questions.audit(auth.user_id, owner_id, "approval.mode", {"mode": body[billing_repo.APPROVAL_MODE_KEY]})
     return updated
+
+
+@router.get("/policy/always-allow")
+async def list_always_allow(auth: Annotated[AuthContext, Depends(get_current_user)]):
+    """Settings › Approvals: every Always-allow rule a decision card wrote (questions.add_always_allow)."""
+    return {"rules": await questions.always_allow_rules(_owner(auth))}
+
+
+@router.delete("/policy/always-allow/{rule_id}")
+async def remove_always_allow(rule_id: str, auth: Annotated[AuthContext, Depends(get_current_user)]):
+    """Remove one: that action asks again. 404 when it is already gone; 409 when the rules kept changing."""
+    owner_id = _owner(auth)
+    try:
+        removed = await questions.remove_always_allow(owner_id, rule_id, by=auth.user_id)
+    except questions.RulesBusy:
+        raise HTTPException(status_code=409, detail="busy") from None
+    if not removed:
+        raise HTTPException(status_code=404, detail="No such rule")
+    return {"removed": rule_id}
 
 
 class RevokeAllBody(BaseModel):

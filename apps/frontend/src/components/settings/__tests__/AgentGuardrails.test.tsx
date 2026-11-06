@@ -11,8 +11,9 @@ import { SWRConfig } from "swr";
 const get = vi.fn();
 const patch = vi.fn();
 const post = vi.fn();
+const del = vi.fn();
 vi.mock("@/lib/api", () => ({
-  useApi: () => ({ get, patch, post }),
+  useApi: () => ({ get, patch, post, del }),
   BACKEND_URL: "",
 }));
 
@@ -30,6 +31,7 @@ vi.mock("@/hooks/useIsWorkspaceAdmin", () => ({
 
 import { AgentGuardrails } from "../AgentGuardrails";
 
+let rules: { id: string; kind: string; key: string; value: string }[] = [];
 const POLICY = { money_moves: true, outreach: true, publishing: true, provisioning: true, approval_mode: "auto" };
 
 function renderPanel() {
@@ -43,7 +45,9 @@ function renderPanel() {
 beforeEach(() => {
   vi.clearAllMocks();
   canManage = true;
-  get.mockResolvedValue({ ...POLICY });
+  rules = [{ id: "always-1", kind: "mail.send", key: "to", value: "priya@acme.com" }];
+  get.mockImplementation(async (path: string) => (path === "/company/policy/always-allow" ? { rules } : { ...POLICY }));
+  del.mockImplementation(async () => { rules = []; return { removed: "always-1" }; });
   patch.mockResolvedValue({ ...POLICY });
   post.mockResolvedValue({ revoked: ["workflows_cancelled:2"] });
 });
@@ -151,5 +155,24 @@ describe("AgentGuardrails — revoke everything", () => {
     );
     await waitFor(() => expect(notifyApiError).toHaveBeenCalled());
     expect(screen.getByLabelText("Type revoke to confirm")).toBeInTheDocument();
+  });
+});
+
+describe("Settings › Approvals — Always allowed", () => {
+  it("lists each rule by action and target, and Remove drops it", async () => {
+    renderPanel();
+    const list = await screen.findByRole("list", { name: "Always allowed" });
+    expect(list).toHaveTextContent("Email · priya@acme.com");
+    fireEvent.click(screen.getByRole("button", { name: "Remove Email · priya@acme.com" }));
+    await waitFor(() => expect(del).toHaveBeenCalledWith("/company/policy/always-allow/always-1"));
+    expect(await screen.findByText(/Nothing yet/)).toBeInTheDocument();
+  });
+
+  it("is not read for a non-admin (the route is admin-only)", async () => {
+    canManage = false;
+    renderPanel();
+    await screen.findByRole("radio", { name: /Auto/ });
+    expect(get).not.toHaveBeenCalledWith("/company/policy/always-allow");
+    expect(screen.queryByRole("list", { name: "Always allowed" })).toBeNull();
   });
 });

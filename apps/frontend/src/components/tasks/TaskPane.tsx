@@ -9,7 +9,7 @@
 import { useEffect, useRef, useState, type ReactElement, type RefObject } from "react";
 import { ArrowLeft } from "lucide-react";
 import {
-  ApiError, FREE_TEXT_OPTION, answerVerb, askLine, effectLine, effectName, previewRows, specialistLabel, summaryView, useTask, useTaskQuestions,
+  ApiError, answerVerb, askLine, effectLine, effectName, specialistLabel, summaryView, useTask, useTaskQuestions,
   type QuestionView, type TaskDetail, type TaskEffect, type TaskSummary, type TaskTrace,
 } from "@lightbulb/shared";
 import { SessionChat, type ChatWords } from "@/components/messaging/SessionChat";
@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { capture } from "@/lib/analytics";
+import { DecisionCard, endedLabel } from "./DecisionCard";
 import { TaskStatus } from "./TaskCard";
 import { sendToTask, useMarkTaskPaneOpen, useMarkTaskSteerable, useRoomComposerShown, useShowSteered } from "./taskReply";
 import { useTaskActions } from "./useTaskActions";
@@ -79,9 +80,7 @@ function TaskPaneBody({ detail, viewerId }: { detail: TaskDetail; viewerId: stri
   // Progress leaves it out, as it does a card for this very task (a Closed one read as an empty card, W7-4).
   const hideCard = (m: { kind?: string | null; taskRefs?: { taskId: string }[] | null }) =>
     m.kind === "question" || (!!m.taskRefs?.length && m.taskRefs.every((r) => r.taskId === task.taskId));
-  // The header's reason ("Ready for review", "Needs approval"), else its word, so the card agrees with it.
   const view = summaryView(task, viewerId);
-  const word = view.reason ?? view.word;
   // The room's composer steers this task when it is on screen; otherwise a one-line note here.
   const composerShown = useRoomComposerShown(task.originRoomId);
   const effects = open ? detail.effects.filter((e) => e.state !== "proposed") : detail.effects;
@@ -93,7 +92,7 @@ function TaskPaneBody({ detail, viewerId }: { detail: TaskDetail; viewerId: stri
   const effectRows = effectFooter(effects, closed);
   return <div className="room-context-body flex min-h-0 flex-col gap-3">
     <TaskHeader task={task} viewerId={viewerId} />
-    {open && <NeedsYouCard key={open.id} task={task} question={open} label={word} ended={closed} />}
+    {open && <DecisionCard key={open.id} task={task} question={open} ended={closed} />}
     {decided.length > 0 && <ul aria-label="Decisions" className="grid gap-1 px-1 text-ui text-muted-foreground">
       {decided.map((d) => <li key={d.id}>{d.line}</li>)}
     </ul>}
@@ -142,7 +141,6 @@ export function effectFooter(effects: readonly TaskEffect[], closed: boolean): {
     .map(({ key, name, line, warn }) => ({ key, name, line, warn: warn || line.startsWith("Didn't happen") }));
 }
 
-const endedLabel = (kind: string) => kind === "approval" ? "Closed — not approved" : kind === "review" ? "Closed — not sent" : "Closed — not answered";
 
 function answerLine(q: QuestionView): string {
   const verb = answerVerb(q.answer?.optionId, q.options.find((o) => o.id === q.answer?.optionId)?.label);
@@ -214,65 +212,6 @@ function AddNote({ task, autoFocus = false }: { task: TaskSummary; autoFocus?: b
       onChange={(event) => setText(event.target.value)} />
     {error && <p role="alert" className="text-ui text-err">{error}</p>}
   </form>;
-}
-
-/** The open question. Only an answerer gets buttons; everyone else reads who it waits on. Typed text never answers. */
-/** `ended`: the request is Closed, so the question can't be answered any more (dev walk N-F1): read-only, saying what
- *  became of it, never live Allow once / Deny. Request changes asks what should change before it sends (N-F2). */
-export function NeedsYouCard({ task, question, label = "Needs you", ended = false }: { task: TaskSummary; question: QuestionView; label?: string; ended?: boolean }): ReactElement {
-  const { answer } = useTaskActions("pane");
-  const { agentNames } = useLiveEvents();
-  const [pending, setPending] = useState(false);
-  const [note, setNote] = useState<string | null>(null);
-  const [closed, setClosed] = useState(false);
-  const [text, setText] = useState("");
-  // Request changes: the reason first, then the one press (it goes to the specialist with the answer).
-  const [changes, setChanges] = useState<string | null>(null);
-  const headingId = `needs-${question.id}`;
-  const waiting = question.waitingLabel ?? `Waiting on ${question.answerers.map((a) => a.name).join(" or ")}`;
-  const heading = askLine(question, task.specialist, agentNames);
-  const rows = previewRows(question.preview, Infinity);
-  const send = async (optionId: string, typed?: string) => {
-    setPending(true);
-    const res = await answer(task, question.id, optionId, { expectVersion: question.version, ...(typed ? { text: typed } : {}) });
-    setPending(false);
-    if (res.ok) setClosed(true);
-    else { setNote(res.message); if (res.answeredBy) setClosed(true); }
-  };
-  const live = question.canAnswer && !closed && !ended && question.state === "open";
-  return <section role="group" aria-labelledby={headingId} className={`editorial-card border-l-2 px-3 py-2 ${ended ? "border-l-border" : "border-l-warn"}`}>
-    <p className="label-caps">{ended ? endedLabel(question.kind) : question.canAnswer ? label : waiting}</p>
-    <h4 id={headingId} className="font-semibold">{heading}</h4>
-    {question.text && question.text !== heading && <p className="mt-0.5 whitespace-pre-wrap text-ui">{question.text}</p>}
-    {rows.length > 0 && <dl aria-label="What this does" className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 border-t border-border pt-2 text-ui">
-      {rows.map((r) => <div key={r.label} className="contents">
-        <dt className="text-muted-foreground">{r.label}</dt><dd className="min-w-0 whitespace-pre-wrap break-words">{r.value}</dd>
-      </div>)}
-    </dl>}
-    {live && changes !== null && <form className="mt-2 grid gap-2" onSubmit={(event) => { event.preventDefault(); if (changes.trim()) void send("request_changes", changes.trim()); }}>
-      <label className="grid gap-1 text-ui">What should change?
-        <textarea autoFocus value={changes} onChange={(event) => setChanges(event.target.value)} rows={2} maxLength={4000}
-          className="w-full resize-y rounded-md border border-input bg-background px-2 py-1.5 text-ui focus-visible:outline-2 focus-visible:outline-ring" />
-      </label>
-      <div className="flex gap-2">
-        <Button type="submit" size="sm" disabled={pending || !changes.trim()}>Send changes</Button>
-        <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={() => setChanges(null)}>Cancel</Button>
-      </div>
-    </form>}
-    {live && changes === null && (question.options.length
-      ? <div className="mt-2 flex flex-wrap gap-2">
-        {question.options.map((o) => <Button key={o.id} type="button" size="sm" disabled={pending}
-          variant={o.style === "primary" ? "default" : o.style === "danger" ? "outline" : "ghost"}
-          onClick={() => (o.id === "request_changes" ? setChanges("") : void send(o.id))}>{o.label}</Button>)}
-      </div>
-      // A free-text ask (no options): the answer is what the person types, posted as optionId "answer".
-      : <form className="mt-2 grid gap-2" onSubmit={(event) => { event.preventDefault(); if (text.trim()) void send(FREE_TEXT_OPTION, text.trim()); }}>
-        <textarea aria-label="Your answer" value={text} onChange={(event) => setText(event.target.value)} rows={3} maxLength={4000}
-          className="w-full resize-y rounded-md border border-input bg-background px-2 py-1.5 text-ui focus-visible:outline-2 focus-visible:outline-ring" />
-        <div><Button type="submit" size="sm" disabled={pending || !text.trim()}>Send answer</Button></div>
-      </form>)}
-    {note && <p role="alert" className="mt-1 text-ui text-err">{note}</p>}
-  </section>;
 }
 
 export function TaskDetails({ detail }: { detail: TaskDetail }): ReactElement {

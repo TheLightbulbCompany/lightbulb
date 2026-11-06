@@ -10,7 +10,6 @@ import { WebsiteLoginsSection } from "@/components/control/panels/WebsiteLoginsS
 import { BrowserExtensionsSection } from "@/components/control/panels/BrowserExtensionsSection";
 import { AgentKeysSection } from "@/components/control/panels/AgentKeysSection";
 import { LinkWalletSection } from "@/components/control/panels/LinkWalletSection";
-import { AgentGuardrails } from "@/components/settings/AgentGuardrails";
 import { useConnections } from "@/hooks/useConnections";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 
@@ -73,9 +72,6 @@ export function ConnectionsPanel() {
 
         <ConnectionsList canManage={canManage} exclude={["stripe"]} />
 
-        {/* What agents may do with all of the above, and the kill switch
-            (from the retired Accounts tab). */}
-        <AgentGuardrails />
       </div>
     </div>
   );

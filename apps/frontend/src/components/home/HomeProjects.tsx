@@ -13,7 +13,7 @@ import { orderIdeas, overviewGroups, roomDisplayName, summaryView, useTaskList, 
 import { Button } from "@/components/ui/button";
 import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingWorkspaceContext";
 import type { DirectoryRoom } from "@/components/messaging/types";
-import { useNeedsYouTasks } from "@/components/tasks/useRoomThreads";
+import { useNeedsYouCount, useNeedsYouTasks } from "@/components/tasks/useRoomThreads";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { activateMessagesPanel, closePane, openAgentDmWithDraft, openPanel } from "@/components/workspace/workspaceController";
 import { useIdeas } from "@/hooks/useIdeas";
@@ -67,6 +67,7 @@ export function HomeProjects(): ReactElement {
   const { tasks } = useLiveEvents();
   const { data } = useTaskList(tasks, WORKSPACE);
   const needs = useNeedsYouTasks(WORKSPACE);
+  const needsYouCount = useNeedsYouCount();
   const counts = roomCounts(needs.tasks, data?.tasks ?? []);
   // The list leads with live requests (waiting, working, queued), so Working is complete unless the first page is
   // all live and more pages follow: then each Working count is a floor.
@@ -86,10 +87,10 @@ export function HomeProjects(): ReactElement {
 
   return <div className="home-projects">
     <h1 className="text-title font-semibold">Home</h1>
-    {needs.tasks.length > 0 && <button type="button" className="home-projects__needs"
+    {needsYouCount > 0 && <button type="button" className="home-projects__needs"
       onClick={() => { closePane(); openPanel("activity", {}, { pushUrl: true }); }}>
       <span className="home-projects__dot" aria-hidden="true" />
-      <span><span className="font-semibold text-foreground">{needWord(needs.tasks.length)}</span> · Review</span>
+      <span><span className="font-semibold text-foreground">{needWord(needsYouCount)}</span> · Review</span>
       <ChevronRight size={14} aria-hidden="true" />
     </button>}
     {messaging && <AskLightbulb onAsk={messaging.askLightbulb} />}

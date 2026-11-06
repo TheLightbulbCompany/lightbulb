@@ -453,3 +453,18 @@ def test_revoke_all_requires_the_exact_confirm_word(client, body):
 def test_org_member_is_403_on_every_route(member_client, method, path, body):
     resp = getattr(member_client, method)(path, **({"json": body} if body is not None else {}))
     assert resp.status_code == 403
+
+
+def test_always_allow_rules_list_and_remove(client, monkeypatch):
+    rules = [{"id": "always-abc", "kind": "mail.send", "key": "to", "value": "x@example.com"}]
+    monkeypatch.setattr(mod.questions, "always_allow_rules", AsyncMock(return_value=rules))
+    monkeypatch.setattr(mod.questions, "remove_always_allow", AsyncMock(side_effect=[True, False]))
+    assert client.get("/api/v1/company/policy/always-allow").json() == {"rules": rules}
+    assert client.delete("/api/v1/company/policy/always-allow/always-abc").status_code == 200
+    mod.questions.remove_always_allow.assert_awaited_with("org_a", "always-abc", by="user_admin")
+    assert client.delete("/api/v1/company/policy/always-allow/always-abc").status_code == 404
+
+
+def test_always_allow_rules_are_admin_only(member_client):
+    assert member_client.get("/api/v1/company/policy/always-allow").status_code == 403
+    assert member_client.delete("/api/v1/company/policy/always-allow/always-abc").status_code == 403

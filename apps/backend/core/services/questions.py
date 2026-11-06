@@ -231,6 +231,52 @@ async def add_always_allow(ws: str, kind: str, operands: dict, *, by: str) -> No
     raise RulesBusy(ws)
 
 
+ALWAYS_PREFIX = "always-"
+
+
+async def always_allow_rules(ws: str) -> list[dict]:
+    """The workspace's Always-allow rules (the ones `add_always_allow` wrote), for Settings › Approvals: what kind of
+    action each lets through and for which target, e.g. `{"id", "kind": "mail.send", "key": "to", "value": "a@b.c"}`."""
+    from core.repositories import a2a_repo
+    from core.services import a2a_rules
+
+    doc = await a2a_repo.get_rules(ws)
+    if not doc:
+        return []
+    out = []
+    for r in a2a_rules.Rules.model_validate(doc).rules:
+        bound = (r.when.operands_equal if r.when else None) or {}
+        if r.id.startswith(ALWAYS_PREFIX) and r.effect == "allow" and len(bound) == 1:
+            ((key, value),) = bound.items()
+            out.append({"id": r.id, "kind": r.skill, "key": key, "value": value})
+    return out
+
+
+async def remove_always_allow(ws: str, rule_id: str, *, by: str) -> bool:
+    """Remove one Always-allow rule: that action asks again. Only `always-*` rules (an admin's own A2A rules are
+    edited where they were written). Conditional on the revision it read, like `add_always_allow`, so a rule another
+    card writes in between is kept. False when no such rule exists (already removed)."""
+    from core.repositories import a2a_repo
+    from core.services import a2a_rules, a2a_tasks
+
+    if not rule_id.startswith(ALWAYS_PREFIX):
+        return False
+    for _ in range(_RULE_WRITE_TRIES):
+        doc = await a2a_repo.get_rules(ws)
+        if not doc:
+            return False
+        rules = a2a_rules.Rules.model_validate(doc)
+        kept = [r for r in rules.rules if r.id != rule_id]
+        if len(kept) == len(rules.rules):
+            return False
+        rules.rules = kept
+        new = {**rules.model_dump(exclude_none=True), "revision": a2a_tasks.revision(rules)}
+        if await a2a_repo.put_rules_if(ws, new, doc):
+            await audit(by, ws, "approval.always_allow_removed", {"ruleId": rule_id})
+            return True
+    raise RulesBusy(ws)
+
+
 async def audit(actor: str, ws: str, action: str, payload: dict) -> None:
     """One row in the admin-actions audit table (who changed how agents ask, and when). A failed write is logged
     CRITICAL and never undoes the change (the routers/users.py self-wipe posture)."""

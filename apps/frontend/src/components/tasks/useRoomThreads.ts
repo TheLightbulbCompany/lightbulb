@@ -8,6 +8,8 @@
 import useSWR from "swr";
 import { NEEDS_YOU_KEY_SUFFIX, overviewGroups, scopeParam, taskListKey, type TaskScope, type TaskSummary, type TasksClient } from "@lightbulb/shared";
 import { useOptionalLiveEvents, useSuperAgent } from "@/hooks/useLiveEvents";
+import { homeExtras } from "@/components/activity/activityPage";
+import { useActivity } from "@/hooks/useActivity";
 import { useApi } from "@/lib/api";
 
 const WORKSPACE: TaskScope = { kind: "workspace" };
@@ -38,7 +40,12 @@ export function useRoomThreads(roomId: string | null | undefined) {
   return { waitingOnMe: roomId ? tasks.filter((t) => t.audience?.roomId === roomId).length : 0 };
 }
 
-/** Home's Needs you count: the rail badge. */
-export function useHomeNeedsYou(): number {
-  return useNeedsYouTasks(WORKSPACE).tasks.length;
+/** needsYouCount, the one count (UX audit slice 2): the workspace's Needs you tasks plus the open asks that are not
+ *  tasks (a website sign-in, a browser extension, a held message), exactly what Activity's Needs you block lists. The
+ *  rail badge, Home's "N need you" line and the tab title all read it; nothing computes its own.
+ *  ponytail: the asks come from Activity's loaded pages (newest first); an ask past them counts once it loads. */
+export function useNeedsYouCount(): number {
+  const tasks = useNeedsYouTasks(WORKSPACE).tasks.length;
+  const { items } = useActivity();
+  return tasks + homeExtras(items).asks.length;
 }

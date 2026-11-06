@@ -82,7 +82,7 @@ it("non-answerer sees Waiting on Sam without buttons", async () => {
   mockAuth.userId = PRIYA;
   client({ ...step8, task: viewAs(waiting, PRIYA) }, [approval({ canAnswer: false, waitingLabel: "Waiting on Sam" })], "t-priya");
   const view = await render(<TaskScreen />);
-  expect(await view.findByText("WAITING ON SAM")).toBeTruthy();
+  expect((await view.findAllByText("Waiting on Sam")).length).toBeGreaterThan(0); // no caps eyebrow: the one decision card's muted meta line
   expect(view.queryByLabelText("Approve")).toBeNull();
   expect(view.queryByLabelText("Deny")).toBeNull();
   await view.unmount();

@@ -213,3 +213,29 @@ describe("money in approvals (dev walk W7-9)", () => {
     expect(previewRows({ kind: "provision", amount: 3, currency: "USD" })).toContainEqual({ label: "Amount", value: "3" });
   });
 });
+
+describe("the one decision card", () => {
+  it("asks the title, never the text, for a worker's own question", async () => {
+    const { askLine } = await import("./view");
+    const q = { kind: "question", title: "What is the workshop's exact new date?", text: "I'll use it in the test email." };
+    expect(askLine(q, "Growth")).toBe("What is the workshop's exact new date?");
+    expect(askLine({ ...q, title: "" }, "Growth")).toBe("I'll use it in the test email.");
+  });
+  it("puts Deny first and shows Always allow disabled when it can't be remembered", async () => {
+    const { decisionButtons, ALWAYS_ALLOW_UNAVAILABLE } = await import("./view");
+    const opts = [{ id: "allow_once", label: "Allow once", style: "primary" }, { id: "deny", label: "Deny", style: "danger" }];
+    expect(decisionButtons(opts)).toEqual([
+      { id: "deny", label: "Deny", style: "danger" },
+      { id: "allow_once", label: "Allow once", style: "primary" },
+      { id: "allow_always", label: "Always allow", style: "secondary", disabledReason: ALWAYS_ALLOW_UNAVAILABLE },
+    ]);
+    const bindable = [opts[0], { id: "allow_always", label: "Always allow", style: "secondary" }, opts[1]];
+    expect(decisionButtons(bindable).map((b) => [b.id, b.disabledReason])).toEqual([["deny", undefined], ["allow_once", undefined], ["allow_always", undefined]]);
+    // A review or a provisioning ask has no Allow once: nothing is added.
+    expect(decisionButtons([{ id: "send", label: "Send" }, { id: "request_changes", label: "Request changes" }]).map((b) => b.id)).toEqual(["request_changes", "send"]);
+  });
+  it("names who asks and how long ago", async () => {
+    const { decisionMeta } = await import("./view");
+    expect(decisionMeta({ createdAt: new Date(0).toISOString() }, "Growth", undefined, 7 * 3600 * 1000)).toBe("Growth · 7h ago");
+  });
+});

@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@lightbulb/shared";
@@ -13,6 +13,16 @@ vi.mock("@/components/canvas/RequestApp", () => ({ RequestApp: () => null })); /
 import { TaskCard } from "../TaskCard";
 
 const byId = (step: keyof typeof FIXTURES, id: string) => FIXTURES[step].tasks.find((t) => t.taskId === id)!;
+
+/** A question as the viewer's view returns it (the decision card's input). */
+const qv = (over: Record<string, unknown> = {}) => ({
+  id: "q-provision", taskId: "t-signup", kind: "approval", subkind: null, title: "Provision database and Stripe", text: "",
+  options: [{ id: "allow_once", label: "Allow once", style: "primary" }, { id: "deny", label: "Deny", style: "danger" }],
+  state: "open", answerers: [{ id: SAM, name: "Sam" }], canAnswer: true, waitingLabel: null,
+  answer: null, answeredBy: null, answeredAt: null, createdAt: "2026-11-04T14:00:00Z", version: 7, ...over,
+});
+const REVIEW = { id: "q-email", taskId: "t-email", kind: "review", title: "Send the launch email?", version: 2,
+  options: [{ id: "send", label: "Send", style: "primary" }, { id: "request_changes", label: "Request changes", style: "secondary" }] };
 let client: FakeTasksClient;
 beforeEach(() => {
   client = fakeTasksClient(FIXTURES.step05.tasks);
@@ -36,7 +46,7 @@ describe("TaskCard", () => {
     } finally { delete (live as { agentNames?: unknown }).agentNames; }
   });
 
-  it("word, meta and action per status and viewer", () => {
+  it("word, meta and action per status and viewer", async () => {
     const { unmount } = render(<Fresh><TaskCard task={byId("step02", "t-signup")} taskId="t-signup" viewerId={SAM} /></Fresh>);
     expect(screen.getByText("Working")).toBeInTheDocument();
     expect(screen.getByText("Engineering")).toBeInTheDocument();
@@ -44,10 +54,13 @@ describe("TaskCard", () => {
     unmount();
 
     const waiting = byId("step05", "t-signup");
+    client.questions.mockResolvedValue({ items: [qv()] } as never);
     const sam = render(<Fresh><TaskCard task={waiting} taskId="t-signup" viewerId={SAM} /></Fresh>);
     expect(screen.getByText("Needs you")).toBeInTheDocument();
-    expect(screen.getByText("Needs approval: Provision database and Stripe")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Allow once" })).toBeInTheDocument();
+    // The one decision card on the card itself: the question, then Deny / Allow once / Always allow (UX slice 2).
+    const card = await screen.findByRole("group", { name: "Provision database and Stripe" });
+    expect(within(card).getAllByRole("button").map((b) => b.textContent)).toEqual(["Deny", "Allow once", "Always allow"]);
+    expect(screen.queryByText("Needs approval: Provision database and Stripe")).toBeNull(); // said once, by the card
     sam.unmount();
 
     render(<Fresh><TaskCard task={viewAs(waiting, PRIYA)} taskId="t-signup" viewerId={PRIYA} /></Fresh>);
@@ -58,12 +71,12 @@ describe("TaskCard", () => {
 
   it("whole card opens, inner button does not", async () => {
     const onOpen = vi.fn();
-    client.questions.mockResolvedValue({ items: [{ id: "q-provision", version: 7 }] } as never);
+    client.questions.mockResolvedValue({ items: [qv()] } as never);
     render(<Fresh><TaskCard task={byId("step05", "t-signup")} taskId="t-signup" viewerId={SAM} onOpen={onOpen} /></Fresh>);
     await userEvent.click(screen.getByRole("button", { name: "Open Workshop signup app, Needs you" }));
     expect(onOpen).toHaveBeenCalledWith("t-signup");
     onOpen.mockClear();
-    await userEvent.click(screen.getByRole("button", { name: "Allow once" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Allow once" }));
     await waitFor(() => expect(client.answer).toHaveBeenCalledWith("t-signup", "q-provision",
       expect.objectContaining({ optionId: "allow_once", expectVersion: 7, clientAnswerId: expect.any(String) })));
     expect(onOpen).not.toHaveBeenCalled();
@@ -74,19 +87,21 @@ describe("TaskCard", () => {
     let resolve!: (v: unknown) => void;
     client.questions.mockReturnValue(new Promise((r) => { resolve = r; }) as never);
     render(<Fresh><TaskCard task={email} taskId="t-email" viewerId={SAM} /></Fresh>);
-    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
-    resolve({ items: [{ id: "q-email", version: 2, preview: { kind: "mail.send", to: "team@acme.com", subject: "Join us Nov 20" } }] });
+    // Nothing to press until the card can show what it sends.
+    expect(screen.queryByRole("button", { name: "Send" })).toBeNull();
+    resolve({ items: [qv({ ...REVIEW, preview: { kind: "mail.send", to: "team@acme.com", subject: "Join us Nov 20" } })] });
     expect(await screen.findByText("team@acme.com")).toBeInTheDocument();
     expect(screen.getByText("Join us Nov 20")).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).toBeEnabled());
+    expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
   });
 
-  it("details that fail to load: the card says so, and its button opens the request instead of acting blind", async () => {
+  it("details that fail to load: the card says so and offers no blind answer", async () => {
     const onOpen = vi.fn();
     client.questions.mockRejectedValue(new Error("503"));
     render(<Fresh><TaskCard task={byId("step05", "t-signup")} taskId="t-signup" viewerId={SAM} onOpen={onOpen} /></Fresh>);
     expect(await screen.findByText("The details didn't load. Open the task to decide.")).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Allow once" }));
+    expect(screen.queryByRole("button", { name: "Allow once" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Open Workshop signup app, Needs you" }));
     expect(onOpen).toHaveBeenCalledWith("t-signup");
     expect(client.answer).not.toHaveBeenCalled();
   });
@@ -109,10 +124,10 @@ describe("TaskCard", () => {
   });
 
   it("review card's next step is the answer (no /apply)", async () => {
-    client.questions.mockResolvedValue({ items: [{ id: "q-email", version: 2 }] } as never);
+    client.questions.mockResolvedValue({ items: [qv(REVIEW)] } as never);
     render(<Fresh><TaskCard task={byId("step07", "t-email")} taskId="t-email" viewerId={SAM} /></Fresh>);
     expect(screen.getByText(/Join us Nov 20/)).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Send" }));
     await waitFor(() => expect(client.answer).toHaveBeenCalledWith("t-email", "q-email", expect.objectContaining({ optionId: "send" })));
   });
 });

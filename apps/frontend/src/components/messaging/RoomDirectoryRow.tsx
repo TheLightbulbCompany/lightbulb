@@ -37,9 +37,14 @@ export function RoomDirectoryRow({ room, label, active, busy, draft, onSelect, o
   // with the word "Muted" so colour is never the only signal).
   const badge = !room.muted && room.unreadCount > 0;
   const faces = room.participants.slice(0, 2);
+  const agentDm = room.kind === "dm" && room.participants.length === 1 && room.participants[0].kind === "agent";
+  // Its own name, said once (dev walk W8: the text sat in child spans and read as an unnamed button): the room, what it
+  // is, then the marks the row shows.
+  const name = [label, roomKindLabel[room.kind], agentDm && "Agent", room.starred && "Starred", room.muted && "Muted", room.shared && "Shared",
+    badge && `${room.unreadCount} unread messages`, draft && "Unsent draft"].filter(Boolean).join(", ");
   return <li className="room-directory-row">
     <button type="button" className={`room-directory-entry ${badge ? "font-semibold" : ""} ${room.muted ? "room-directory-muted" : ""}`}
-      aria-current={active ? "page" : undefined} onClick={onSelect}>
+      aria-current={active ? "page" : undefined} aria-label={name} onClick={onSelect}>
       {room.kind === "dm" && room.participants.length === 1
         ? <ParticipantAvatar participant={room.participants[0]} size="xs" />
         : room.kind === "group-dm" && faces.length > 0
@@ -51,7 +56,7 @@ export function RoomDirectoryRow({ room, label, active, busy, draft, onSelect, o
         <span className="sr-only">{roomKindLabel[room.kind]}</span>
       </span>
       {/* Same tag the roster rows carry, so an agent reads as an agent whether or not a DM exists yet. */}
-      {room.kind === "dm" && room.participants.length === 1 && room.participants[0].kind === "agent" && <span className="room-directory-tag">Agent</span>}
+      {agentDm && <span className="room-directory-tag">Agent</span>}
       {room.starred && <Star size={12} role="img" aria-label="Starred" className="room-directory-star" />}
       {room.muted && <span className="room-directory-tag">Muted</span>}
       {room.shared && <span className="room-directory-tag" title={SHARED_ROOM_HINT}>Shared</span>}

@@ -7,8 +7,9 @@ import { _resetControllerForTests, activateMessagesPanel, getWorkspaceSnapshot, 
 import { PANE_DEFAULT_WIDTH, paneWidthKey } from "../RightPane";
 
 const state = vi.hoisted(() => ({
-  phase: "selecting", selectProps: vi.fn(), organization: null as { id: string } | null, chatReady: true,
+  phase: "selecting", selectProps: vi.fn(), organization: null as { id: string } | null, chatReady: true, superAgent: false,
 }));
+vi.mock("@/hooks/useLiveEvents", async (importOriginal) => ({ ...await importOriginal<object>(), useSuperAgent: () => state.superAgent }));
 vi.mock("@/hooks/useOnboardingGate", () => ({ useOnboardingGate: () => state.phase }));
 vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({ isSignedIn: true, userId: "user_1", orgId: "org_1" }),
@@ -38,8 +39,8 @@ vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({
   ),
 }));
 vi.mock("../WorkspaceSidebar", () => ({
-  WorkspaceSidebar: ({ onRecoveryReprovision, chatReady, onNavigate }: { onRecoveryReprovision: () => void; chatReady: boolean; onNavigate: () => void }) => (
-    <nav aria-label="Workspace">
+  WorkspaceSidebar: ({ onRecoveryReprovision, chatReady, onNavigate, id, dialog }: { onRecoveryReprovision: () => void; chatReady: boolean; onNavigate: () => void; id?: string; dialog?: boolean }) => (
+    <nav className="cream-sidebar" id={id} {...(dialog ? { role: "dialog", "aria-modal": true, "aria-label": "Conversations" } : { "aria-label": "Workspace" })}>
       <button onClick={onRecoveryReprovision} data-ready={chatReady}>Recover</button>
       <button onClick={onNavigate}>Open a room</button>
     </nav>
@@ -300,4 +301,72 @@ it("closes the phone drawer when the window widens past the phone breakpoint", (
   expect(view.container.querySelector(".workspace-shell")).toHaveAttribute("data-nav-open", "false");
   expect(main).not.toHaveAttribute("inert");
   vi.unstubAllGlobals();
+});
+
+const stubMedia = (matches: (query: string) => boolean) => {
+  const listeners = new Map<string, () => void>();
+  vi.stubGlobal("matchMedia", (query: string) => ({
+    matches: matches(query), media: query,
+    addEventListener: (_: string, cb: () => void) => { listeners.set(query, cb); },
+    removeEventListener: () => {},
+  }));
+  return listeners;
+};
+
+it("super-agent, narrow window (600-999 px): the drawer is a modal sidebar; focus starts and stays in it, the rail is inert, it closes past 1000 px (W8-2)", () => {
+  state.superAgent = true;
+  const listeners = stubMedia((q) => q === "(min-width: 600px)");
+  try {
+    const view = renderReady();
+    const shell = shellOf(view);
+    expect(shell).toHaveAttribute("data-super-agent", "true");
+    const menu = screen.getByRole("button", { name: "Open menu" });
+    expect(menu).toHaveAttribute("aria-controls", "workspace-sidebar");
+    fireEvent.click(menu);
+    const dialog = screen.getByRole("dialog", { name: "Conversations" });
+    expect(dialog).toHaveAttribute("aria-modal", "true");
+    expect(dialog).toHaveAttribute("id", "workspace-sidebar");
+    expect(screen.getByRole("button", { name: "Recover" })).toHaveFocus();
+    expect(view.container.querySelector(".workspace-rail")).toHaveAttribute("inert");
+    // Tab from the last stop wraps to the first; Shift+Tab from the first to the last.
+    screen.getByRole("button", { name: "Open a room" }).focus();
+    fireEvent.keyDown(shell, { key: "Tab" });
+    expect(screen.getByRole("button", { name: "Recover" })).toHaveFocus();
+    fireEvent.keyDown(shell, { key: "Tab", shiftKey: true });
+    expect(screen.getByRole("button", { name: "Open a room" })).toHaveFocus();
+    act(() => listeners.get("(min-width: 1000px)")?.());
+    expect(shell).toHaveAttribute("data-nav-open", "false");
+    expect(view.container.querySelector(".workspace-rail")).not.toHaveAttribute("inert");
+  } finally { state.superAgent = false; vi.unstubAllGlobals(); }
+});
+
+it("without the super-agent the drawer is the phone one: no modal sidebar, rail reachable, it closes past 600 px", () => {
+  const listeners = stubMedia((q) => q === "(min-width: 600px)");
+  try {
+    const view = renderReady();
+    expect(shellOf(view)).not.toHaveAttribute("data-super-agent");
+    fireEvent.click(screen.getByRole("button", { name: "Open menu" }));
+    expect(screen.queryByRole("dialog", { name: "Conversations" })).toBeNull();
+    expect(view.container.querySelector(".workspace-rail")).not.toHaveAttribute("inert");
+    act(() => listeners.get("(min-width: 600px)")?.());
+    expect(shellOf(view)).toHaveAttribute("data-nav-open", "false");
+  } finally { vi.unstubAllGlobals(); }
+});
+
+it("a pane that is a sheet is a modal dialog: what it covers is inert and Escape closes it", () => {
+  state.superAgent = true;
+  stubMedia((q) => q === "(max-width: 735px)");
+  try {
+    const view = renderReady();
+    act(() => openPanel("file-viewer"));
+    const pane = view.container.querySelector(".workspace-pane")!;
+    expect(pane).toHaveAttribute("role", "dialog");
+    expect(pane).toHaveAttribute("aria-modal", "true");
+    const covered = [...pane.parentElement!.children].filter((c) => c !== pane);
+    expect(covered.length).toBeGreaterThan(0);
+    covered.forEach((c) => expect(c).toHaveAttribute("inert"));
+    fireEvent.keyDown(pane, { key: "Escape" });
+    expect(view.container.querySelector(".workspace-pane")).toBeNull();
+    covered.forEach((c) => expect(c).not.toHaveAttribute("inert"));
+  } finally { state.superAgent = false; vi.unstubAllGlobals(); }
 });

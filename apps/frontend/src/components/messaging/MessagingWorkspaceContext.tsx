@@ -735,10 +735,14 @@ export function MessagingWorkspaceProvider({
     if (!text.trim() && activeRoomId) clearDraft(draftKey(scope, activeRoomId, null));
     setDraft(text);
   }, [scope, activeRoomId]);
-  const draftRoomIds = useMemo(
-    () => listDraftRoomIds(scope),
-    [scope, draft, threadDraft, rooms.activeRoomId, recoveredDrafts],
-  );
+  // Read back from storage AFTER the persist effects above have written this render's text (an effect declared later
+  // runs later). Computed during render it saw the previous write, so a drafted "@growth " that was then cleared, or a
+  // first keystroke, left the sidebar one change behind (dev walk W8-11).
+  const [draftRoomIds, setDraftRoomIds] = useState<string[]>(() => listDraftRoomIds(scope));
+  useEffect(() => {
+    const next = listDraftRoomIds(scope);
+    setDraftRoomIds((current) => current.length === next.length && current.every((id, i) => id === next[i]) ? current : next);
+  }, [scope, draft, threadDraft, rooms.activeRoomId, recoveredDrafts]);
 
   const agentCounterparts = participants.filter((member) => member.kind === "agent");
   const runningAgentIds = rooms.runs.filter((run) => run.state === "running").map((run) => run.agentId);

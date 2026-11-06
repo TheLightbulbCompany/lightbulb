@@ -6,20 +6,29 @@ import { CUSTOM_SCHEDULE, formatSchedule } from "./view";
 
 export const money = (n: number): string => `$${n.toFixed(2).replace(/\.00$/, "")}`;
 
-/** The schedule in the viewer's zone, and the row's own zone named when it differs: "Mondays 14:00 (New York time: Mondays 9:00)". */
+/** "America/New_York" → "New York time"; UTC is just "UTC". */
+const zoneName = (tz: string): string => /^(Etc\/)?(UTC|GMT|Universal|Zulu)$/.test(tz) ? "UTC" : `${tz.split("/").pop()?.replace(/_/g, " ") ?? tz} time`;
+
+/** The schedule with its time zone always named (dev walk W8): "Mondays 9:00 New York time" in the row's own zone, or the
+ *  viewer's time with the row's zone beside it when they differ: "Mondays 14:00 (New York time: Mondays 9:00)". */
 export function scheduleWords(a: Pick<AutomationView, "schedule">, viewerTz: string, now = Date.now()): string | null {
   if (!a.schedule) return null;
   const words = formatSchedule(a.schedule.cron, a.schedule.tz, viewerTz, now);
-  if (a.schedule.tz === viewerTz || words === CUSTOM_SCHEDULE) return words;
-  const zone = a.schedule.tz.split("/").pop()?.replace(/_/g, " ") ?? a.schedule.tz;
-  return `${words} (${zone} time: ${formatSchedule(a.schedule.cron, a.schedule.tz, a.schedule.tz, now)})`;
+  if (words === CUSTOM_SCHEDULE) return words;
+  const zone = zoneName(a.schedule.tz);
+  if (a.schedule.tz === viewerTz) return `${words} ${zone}`;
+  return `${words} (${zone}: ${formatSchedule(a.schedule.cron, a.schedule.tz, a.schedule.tz, now)})`;
 }
 
-/** Where a run posts, in words (never the raw target id). */
-export function deliveryWords(deliverTo: string): string | null {
+/** Where a run posts, in words (never the raw target id): "posts to #walk-8" when the room's label is known. */
+export function deliveryWords(deliverTo: string, roomLabel?: string | null): string | null {
   if (!deliverTo || deliverTo === "none") return null;
-  return deliverTo.startsWith("room:") ? "posts in a room" : "posts in a DM";
+  if (!deliverTo.startsWith("room:")) return "posts in a DM";
+  return roomLabel ? `posts to ${roomLabel}` : "posts in a room";
 }
+
+/** The room id a `room:<id>` target names, else null. */
+export const deliveryRoomId = (deliverTo: string): string | null => deliverTo.startsWith("room:") ? deliverTo.slice("room:".length) : null;
 
 /** Roughly how often a cron list fires a month (every day 30, weekdays 22, N named days 4×N); null when it can't say. */
 export function runsPerMonth(cron: readonly string[]): number | null {

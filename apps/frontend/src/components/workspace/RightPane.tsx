@@ -5,12 +5,16 @@
 // remembered per person; the browser opens at half the width. Expand gives it
 // the screen beside a narrow chat column (WorkspaceShell). Below 600 px it is a
 // full-screen sheet over the main view (workspace.css).
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { Maximize2, Minimize2, X } from "lucide-react";
 import type { PanelKind } from "./panelRegistry";
 import { PANEL_COMPONENTS } from "./panelComponents";
 import { closePane, setPaneFullScreen, setThreadPaneHost, type Slot } from "./workspaceController";
+import { useSuperAgent } from "@/hooks/useLiveEvents";
+import { useMediaQuery } from "@/hooks/useMediaQuery";
+import { trapTab } from "@/lib/focusTrap";
+import { paneSheetQuery } from "./paneSheet";
 
 export const PANE_MIN_WIDTH = 320;
 export const PANE_DEFAULT_WIDTH = 440;
@@ -94,9 +98,22 @@ export function RightPane({ pane, fullScreen }: { pane: Slot; fullScreen: boolea
     commit(clampTo(paneEl, paneEl.getBoundingClientRect().width + step));
   };
 
+  // A sheet over the main view (workspace.css): modal, so what it covers is inert, Tab stays in it and Escape closes it.
+  const sheet = useMediaQuery(paneSheetQuery(useSuperAgent())) && !fullScreen;
+  useEffect(() => {
+    const el = paneRef.current;
+    if (!sheet || !el?.parentElement) return;
+    const covered = [...el.parentElement.children].filter((c) => c !== el && !c.hasAttribute("inert"));
+    covered.forEach((c) => c.setAttribute("inert", ""));
+    return () => covered.forEach((c) => c.removeAttribute("inert"));
+  }, [sheet]);
+
   const Panel = pane.component === "thread" ? null : PANEL_COMPONENTS[pane.component as PanelKind];
   return (
     <section ref={paneRef} className="workspace-pane" aria-label={pane.title} data-pane={pane.component}
+      {...(sheet ? { role: "dialog", "aria-modal": true } : {})}
+      // Inner columns handle their own Escape first (and stop it); what reaches here closes the sheet.
+      onKeyDown={sheet ? (event) => { if (event.key === "Escape") closePane(); else trapTab(event, [paneRef.current]); } : undefined}
       style={fullScreen ? undefined : { width }}>
       {!fullScreen && <div className="workspace-pane__resize" role="separator" aria-orientation="vertical"
         aria-label="Resize the pane" tabIndex={0} onPointerDown={startResize} onKeyDown={nudge}

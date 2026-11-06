@@ -21,7 +21,7 @@ vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({
   useMessagingWorkspaceOptional: () => messaging.value,
 }));
 
-import { HomeProjects, cardLabel, projectRooms, roomCounts, workingCapped } from "../HomeProjects";
+import { HomeProjects, cardLabel, previewLine, projectRooms, roomCounts, workingCapped } from "../HomeProjects";
 
 const task = (taskId: string, roomId: string, shownGroup: TaskSummary["shownGroup"]): TaskSummary => ({
   taskId, identifier: taskId, title: `Request ${taskId}`, status: shownGroup === "resolved" ? "resolved" : "working",
@@ -80,6 +80,18 @@ describe("Working's page cap", () => {
 });
 
 describe("projectRooms", () => {
+  it("W8-9: a preview reads the request's status once it settled after the latest message, else the message", () => {
+    const said = (createdAt: string) => room("walk", { lastMessage: { messageId: "m", seq: 1, authorId: "g", authorKind: "agent", authorName: "Growth",
+      textPreview: "Growth is writing the welcome note.", hasAttachments: false, createdAt, threadRootMessageId: null } });
+    const done = { ...task("w", "walk", "idle"), status: "idle" as const, title: "Welcome note", updatedAt: "2026-11-05T22:02:00Z" };
+    const stopped = { ...task("s", "walk", "resolved"), title: "Hiring pipeline", statusReason: "stopped", updatedAt: "2026-11-05T22:03:00Z" };
+    expect(previewLine(said("2026-11-05T22:01:00Z"), [done])).toBe("Welcome note · Done");
+    expect(previewLine(said("2026-11-05T22:01:00Z"), [done, stopped])).toBe("Hiring pipeline · Stopped");
+    // Still working, or the message is newer: the message.
+    expect(previewLine(said("2026-11-05T22:01:00Z"), [{ ...done, status: "working", shownGroup: "working" }])).toBe("Growth: Growth is writing the welcome note.");
+    expect(previewLine(said("2026-11-05T22:05:00Z"), [done])).toBe("Growth: Growth is writing the welcome note.");
+  });
+
   it("keeps channels and group chats, newest first; drops DMs, archived, the feed and the shared channel", () => {
     expect(projectRooms(ROOMS).map((r) => r.roomId)).toEqual(["launch", "site"]);
   });

@@ -76,7 +76,34 @@ export async function putTaskSummary(cache: Cache, mutate: ScopedMutator, task: 
 
 export interface RefreshDeps { cache: Cache; mutate: ScopedMutator; client: TasksClient }
 
-export async function refreshTask({ cache, mutate, client }: RefreshDeps, { taskId, part, version }: TaskChanged): Promise<void> {
+/** A Needs-you read (`/tasks?needsYou=true`, the rail badge and Home's needs-you line) is cached under its scope's list
+ *  key plus this suffix. Its membership is the server's filter, so an event never edits it in place: it is re-read. */
+export const NEEDS_YOU_KEY_SUFFIX = ":needs-you";
+
+/** One trailing re-read per burst: a run emits many events (attempt, question, effect rows) in a row. */
+export const NEEDS_YOU_COALESCE_MS = 750;
+const pendingNeedsYou = new WeakMap<Cache, { timer: ReturnType<typeof setTimeout>; deps: RefreshDeps }>();
+
+/** Re-read every Needs-you cut once, NEEDS_YOU_COALESCE_MS after the first event of a burst (the latest deps win). */
+function scheduleNeedsYou(deps: RefreshDeps): void {
+  const pending = pendingNeedsYou.get(deps.cache);
+  if (pending) { pending.deps = deps; return; }
+  const entry = { deps, timer: setTimeout(() => {
+    pendingNeedsYou.delete(deps.cache);
+    const { cache, mutate, client } = entry.deps;
+    for (const k of listKeys(cache, client)) if (k.endsWith(NEEDS_YOU_KEY_SUFFIX)) void mutate(k);
+  }, NEEDS_YOU_COALESCE_MS) };
+  pendingNeedsYou.set(deps.cache, entry);
+}
+
+export async function refreshTask(deps: RefreshDeps, changed: TaskChanged): Promise<void> {
+  // Every change can move a request into or out of Needs you (a new approval, an answer, a stop): re-read those cuts
+  // after the event that updates the room's cards, so the badge never waits for Activity to open (dev walk W8-3).
+  scheduleNeedsYou(deps);
+  await refreshRows(deps, changed);
+}
+
+async function refreshRows({ cache, mutate, client }: RefreshDeps, { taskId, part, version }: TaskChanged): Promise<void> {
   const lists = listKeys(cache, client);
   const detail = cache.get(taskKey(taskId))?.data as TaskDetail | undefined;
   // An attempt, Question or Effect row counts its own versions from 1: only an open detail cares about it.

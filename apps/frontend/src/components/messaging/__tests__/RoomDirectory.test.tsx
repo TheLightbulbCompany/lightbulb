@@ -1134,3 +1134,13 @@ it("ends the list with an Invite someone row that opens the invite dialog, and n
   // Closes the phone drawer, like the rail's Invite.
   expect(onNavigate).toHaveBeenCalledTimes(1);
 });
+
+it("every conversation button carries its own accessible name: the room, its kind, then its marks (dev walk W8)", () => {
+  render(<RoomDirectory ownerScopeId="org" state="ready" sections={[]} participants={[]} draftRoomIds={["friday-dm"]}
+    onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} rooms={[
+      { ...base, starred: true },
+      { ...base, roomId: "friday-dm", kind: "dm", name: null, participants: [friday], unreadCount: 2 },
+    ]} />);
+  expect(screen.getByRole("button", { name: "Launch, Channel, Starred" })).toHaveAttribute("aria-label", "Launch, Channel, Starred");
+  expect(screen.getAllByRole("button", { name: "Friday, Direct message, Agent, 2 unread messages, Unsent draft" })[0]).toBeInTheDocument();
+});

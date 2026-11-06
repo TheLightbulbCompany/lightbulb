@@ -1415,3 +1415,13 @@ describe("askLightbulb (Home's Ask box)", () => {
     expect(state.selectRoom).not.toHaveBeenCalled();
   });
 });
+
+it("a drafted handle shows the draft mark at once, and clearing it removes the mark (dev walk W8-11)", () => {
+  const view = compose();
+  act(() => { panel.composer.onTextChange("@growth "); });
+  expect(directory.draftRoomIds).toContain("room-1");
+  act(() => { panel.composer.onTextChange(""); });
+  expect(directory.draftRoomIds).not.toContain("room-1");
+  expect(localStorage.getItem(draftKey("org", "room-1", null))).toBeNull();
+  view.unmount();
+});

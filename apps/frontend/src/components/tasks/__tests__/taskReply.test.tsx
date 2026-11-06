@@ -42,8 +42,8 @@ describe("one text box: the room composer replies to the open thread", () => {
     </Fresh>);
     expect(await screen.findByText(step8.task.title, { selector: ".font-semibold.text-foreground" })).toBeInTheDocument();
     expect(screen.getByText(/Replying to:/)).toBeInTheDocument();
-    // The room's composer is on screen: no "Add a note" in the pane.
-    expect(screen.queryByRole("textbox", { name: "Add a note" })).toBeNull();
+    // The room's composer is on screen: no steer line in the pane.
+    expect(screen.queryByRole("textbox", { name: "Steer this request" })).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "Send" }));
     expect(live.messaging.sendMessage).toHaveBeenCalledWith(step8.taskRoomId, expect.objectContaining({ text: "Make it blue", mentions: [], threadRootMessageId: null }));
     expect(roomSend).not.toHaveBeenCalled();
@@ -90,7 +90,7 @@ describe("one text box: the room composer replies to the open thread", () => {
       <TaskPane taskId="t-signup" viewerId={SAM} onClose={vi.fn()} />
     </Fresh>);
     // Its own room's composer isn't on screen, so the pane keeps a one-line note.
-    expect(await screen.findByRole("textbox", { name: "Add a note" })).toBeInTheDocument();
+    expect(await screen.findByRole("textbox", { name: "Steer this request" })).toBeInTheDocument();
     expect(screen.queryByText(/Replying to:/)).toBeNull();
   });
 });

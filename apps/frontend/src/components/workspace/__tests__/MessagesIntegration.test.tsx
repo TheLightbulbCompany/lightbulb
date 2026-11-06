@@ -158,7 +158,7 @@ describe("Messages room/controller boundary", () => {
   it("keeps the exact clicked DM, while an explicit same-agent shortcut can retarget it", async () => {
     renderWorkspace();
     await waitFor(() => expect(screen.getByLabelText("Selected room")).toHaveTextContent("a-first"));
-    fireEvent.click(await screen.findByRole("button", { name: "General Channel" }));
+    fireEvent.click(await screen.findByRole("button", { name: "General, Channel" }));
     await waitFor(() => expect(screen.getByLabelText("Selected room")).toHaveTextContent("channel"));
     expect(getWorkspaceSnapshot()).toMatchObject({ focusedChatAgentId: null, visibleChatAgentIds: [] });
     fireEvent.click(await screen.findByRole("button", { name: /Exact Alpha.*Direct message/ }));

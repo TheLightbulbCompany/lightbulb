@@ -10,7 +10,7 @@ import { useEffect, useRef, useState, type ReactElement, type RefObject } from "
 import { ArrowLeft } from "lucide-react";
 import {
   ApiError, FREE_TEXT_OPTION, taskFinished, answerVerb, askLine, doneByLine, effectLine, effectName, previewRows, specialistLabel, summaryView, useTask, useTaskQuestions,
-  type QuestionView, type TaskDetail, type TaskSummary, type TaskTrace,
+  type QuestionView, type TaskDetail, type TaskEffect, type TaskSummary, type TaskTrace,
 } from "@lightbulb/shared";
 import { SessionChat, type ChatWords } from "@/components/messaging/SessionChat";
 import { Button } from "@/components/ui/button";
@@ -70,8 +70,9 @@ function TaskPaneBody({ detail, viewerId }: { detail: TaskDetail; viewerId: stri
   const { data: views } = useTaskQuestions(tasks, detail.questions.length ? task.taskId : null);
   const questions = views?.items ?? [];
   const open = questions.find((q) => q.state === "open");
-  // Decisions: what became of each ask (answered by whom, or closed unanswered).
-  const decided = questions.filter((q) => (q.state === "answered" && q.answeredBy) || q.state === "cancelled");
+  // Decisions: what became of each ask (answered by whom, or closed unanswered), one line each (W8-4): a Close
+  // superseded by a Reopen's new live ask of the same kind is gone, and the same closed ask asked again reads once.
+  const decided = decisionLines(questions, open, (q) => q.state === "cancelled" ? `${endedLabel(q.kind)}: ${askLine(q, task.specialist, agentNames)}` : answerLine(q));
   // A question's card is posted into the task room too: shown once (open at the top, else a Decision line), so
   // Progress leaves it out, as it does a card for this very request (a Closed one read as an empty card, W7-4).
   const hideCard = (m: { kind?: string | null; taskRefs?: { taskId: string }[] | null }) =>
@@ -83,11 +84,12 @@ function TaskPaneBody({ detail, viewerId }: { detail: TaskDetail; viewerId: stri
   const composerShown = useRoomComposerShown(task.originRoomId);
   const effects = open ? detail.effects.filter((e) => e.state !== "proposed") : detail.effects;
   const closed = view.word === "Closed";
+  const effectRows = effectFooter(effects, closed);
   return <div className="room-context-body flex min-h-0 flex-col gap-3">
     <TaskHeader task={task} viewerId={viewerId} finished={taskFinished(detail)} />
     {open && <NeedsYouCard key={open.id} task={task} question={open} label={word} ended={closed} />}
     {decided.length > 0 && <ul aria-label="Decisions" className="grid gap-1 px-1 text-ui text-muted-foreground">
-      {decided.map((q) => <li key={q.id}>{q.state === "cancelled" ? `${endedLabel(q.kind)}: ${askLine(q, task.specialist, agentNames)}` : answerLine(q)}</li>)}
+      {decided.map((d) => <li key={d.id}>{d.line}</li>)}
     </ul>}
     <div className="flex min-h-64 flex-1 flex-col">
       <SessionChat sessionId={detail.taskRoomId} sessionOwnerId={task.ownerUserId ?? ""} words={TRANSCRIPT_WORDS}
@@ -99,19 +101,36 @@ function TaskPaneBody({ detail, viewerId }: { detail: TaskDetail; viewerId: stri
     {task.output && !open && <section aria-label="Outputs" className="editorial-card px-3 py-2 text-ui">
       <span aria-hidden="true">📎 </span>{task.output.title}
     </section>}
-    {effects.length > 0 && <ul aria-label="Effects" className="grid gap-1 px-1 text-ui">
-      {effects.map((e) => {
-        // An approval nobody gave before Close: it won't happen, so it no longer waits (W7-4).
-        const line = closed && e.state === "proposed" ? "Not approved" : effectLine(e);
-        const warn = e.state === "unknown" || line.startsWith("Didn't happen");
-        return <li key={e.idemKey} className="flex flex-wrap items-baseline gap-x-2">
-          <span className="font-semibold">{effectName(e)}</span>
-          <span className={warn ? "text-warn" : "text-muted-foreground"}>{line}</span>
-        </li>;
-      })}
+    {effectRows.length > 0 && <ul aria-label="Effects" className="grid gap-1 px-1 text-ui">
+      {effectRows.map(({ key, name, line, warn }) => <li key={key} className="flex flex-wrap items-baseline gap-x-2">
+        <span className="font-semibold">{name}</span>
+        <span className={warn ? "text-warn" : "text-muted-foreground"}>{line}</span>
+      </li>)}
     </ul>}
     <TaskDetails detail={detail} />
   </div>;
+}
+
+/** One line per decision, in order: a closed ask is dropped once a new ask of its kind is live (Reopen asked again),
+ *  and identical lines (the same purchase closed twice) read once, at the latest. */
+export function decisionLines(questions: readonly QuestionView[], open: QuestionView | undefined, lineOf: (q: QuestionView) => string): { id: string; line: string }[] {
+  const decided = questions.filter((q) => (q.state === "answered" && q.answeredBy) || (q.state === "cancelled" && q.kind !== open?.kind));
+  const lines = decided.map((q) => ({ id: q.id, line: lineOf(q) }));
+  return lines.filter((d, i) => !lines.slice(i + 1).some((later) => later.line === d.line));
+}
+
+/** The effects footer: one row per effect, except that the proposals a Close left unapproved (each Reopen proposes
+ *  again) read once: "Purchase · Not approved", not one row per attempt. */
+export function effectFooter(effects: readonly TaskEffect[], closed: boolean): { key: string; name: string; line: string; warn: boolean }[] {
+  const rows = effects.map((e) => ({
+    key: e.idemKey, name: effectName(e),
+    // An approval nobody gave before Close: it won't happen, so it no longer waits (W7-4).
+    line: closed && e.state === "proposed" ? "Not approved" : effectLine(e),
+    warn: e.state === "unknown",
+    notApproved: closed && e.state === "proposed",
+  }));
+  return rows.filter((r, i) => !r.notApproved || !rows.slice(i + 1).some((later) => later.notApproved && later.name === r.name))
+    .map(({ key, name, line, warn }) => ({ key, name, line, warn: warn || line.startsWith("Didn't happen") }));
 }
 
 const endedLabel = (kind: string) => kind === "approval" ? "Closed — not approved" : kind === "review" ? "Closed — not sent" : "Closed — not answered";
@@ -178,7 +197,7 @@ function AddNote({ task }: { task: TaskSummary }): ReactElement {
     setPending(true);
     sendToTask(messaging, task, note, "note").then(() => { setText(""); setError(null); showSteered(task); }, () => setError("That didn't go through. Try again.")).finally(() => setPending(false));
   }}>
-    <Input aria-label="Add a note" placeholder="Add a note…" value={text} maxLength={4000} disabled={pending}
+    <Input aria-label="Steer this request" placeholder="Steer this request…" value={text} maxLength={4000} disabled={pending}
       onChange={(event) => setText(event.target.value)} />
     {error && <p role="alert" className="text-ui text-err">{error}</p>}
   </form>;

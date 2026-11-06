@@ -16,10 +16,25 @@ import { openPanel } from "@/components/workspace/workspaceController";
 /** Starter chips under an empty lane. */
 export const STARTERS = 4;
 
+/** The starter chips under an empty Ideas list: the same few on Activity and in a room's Ideas pane (W8). */
+export const starterIdeas = (ideas: readonly Idea[]): Idea[] => orderIdeas(ideas).filter((idea) => !idea.suggested).slice(0, STARTERS);
+
+/** No suggestions yet: what the team will do here, and the starter chips. */
+export function IdeaStarters({ ideas, onOpen }: { ideas: readonly Idea[]; onOpen: (ideaId: string) => void }): ReactElement {
+  const starters = starterIdeas(ideas);
+  return <div className="mt-1 rounded-lg border border-dashed border-border px-3 py-2">
+    <p className="text-ui text-muted-foreground">Your team suggests ideas here as it learns your company. Or start with one of these:</p>
+    {starters.length > 0 && <ul aria-label="Starter ideas" className="mt-2 flex flex-wrap gap-2">
+      {starters.map((idea) => <li key={idea.id}>
+        <Button type="button" size="sm" variant="outline" onClick={() => onOpen(idea.id)}>{idea.title}</Button>
+      </li>)}
+    </ul>}
+  </div>;
+}
+
 export function HomeIdeas(): ReactElement {
   const { ideas, loading, error, refresh, startAndOpen, dismiss } = useIdeas();
   const suggested = ideas.filter((idea) => idea.suggested);
-  const starters = orderIdeas(ideas).filter((idea) => !idea.suggested).slice(0, STARTERS);
   return <section aria-labelledby="home-ideas" className="home-ideas">
     <h2 id="home-ideas" className="text-ui font-semibold">Ideas{suggested.length > 0 && ` · ${suggested.length}`}</h2>
     {error ? <p role="alert" className="mt-1 text-ui text-muted-foreground">Ideas couldn&apos;t load. <button type="button" className="underline hover:text-foreground" onClick={() => void refresh()}>Retry</button></p>
@@ -27,16 +42,7 @@ export function HomeIdeas(): ReactElement {
         {suggested.map((idea) => <IdeaItem key={idea.id} idea={idea} onStart={startAndOpen} onDismiss={dismiss} />)}
       </ul>
       : loading ? <p role="status" className="mt-1 text-ui text-muted-foreground">Loading…</p>
-      : <div className="mt-1 rounded-lg border border-dashed border-border px-3 py-2">
-        <p className="text-ui text-muted-foreground">Your team suggests ideas here as it learns your company. Or start with one of these:</p>
-        {starters.length > 0 && <ul aria-label="Starter ideas" className="mt-2 flex flex-wrap gap-2">
-          {starters.map((idea) => <li key={idea.id}>
-            <Button type="button" size="sm" variant="outline" onClick={() => { capture("ideas_opened", { source: "home_starter" }); openPanel("ideas", { idea: idea.id }, { pushUrl: true }); }}>
-              {idea.title}
-            </Button>
-          </li>)}
-        </ul>}
-      </div>}
+      : <IdeaStarters ideas={ideas} onOpen={(id) => { capture("ideas_opened", { source: "home_starter" }); openPanel("ideas", { idea: id }, { pushUrl: true }); }} />}
   </section>;
 }
 

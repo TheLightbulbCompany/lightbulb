@@ -13,6 +13,9 @@ import { useSearchParams } from "next/navigation";
 import { OrganizationList, useAuth, useOrganization } from "@clerk/nextjs";
 import { useOnboardingGate } from "@/hooks/useOnboardingGate";
 import { useAgents } from "@/hooks/useAgents";
+import { useSuperAgent } from "@/hooks/useLiveEvents";
+import { trapTab } from "@/lib/focusTrap";
+import { drawerUntil } from "./paneSheet";
 import { replaceSearchParams } from "@/lib/shellNav";
 import { capture } from "@/lib/analytics";
 import { ProvisioningStepper } from "@/components/chat/ProvisioningStepper";
@@ -142,7 +145,7 @@ function AuthenticatedWorkspace({ workspaceName }: { workspaceName: string }): R
   }, [defaultId]);
 
   const [recoveryTriggered, setRecoveryTriggered] = useState(false);
-  // Phone widths only: the rail + sidebar drawer. Wider, the CSS ignores it.
+  // Phone widths: the rail + sidebar drawer; narrow windows (600-999 px): the sidebar drawer. Wider, the CSS ignores it.
   // The drawer is open only at the place it was opened: any navigation (rail,
   // sidebar, + Task, a link) moves the main view, the pane or the URL, which
   // closes it without each caller remembering to.
@@ -150,24 +153,40 @@ function AuthenticatedWorkspace({ workspaceName }: { workspaceName: string }): R
   const [navOpenAt, setNavOpenAt] = useState<string | null>(null);
   const navOpen = navOpenAt === navPlace;
   const closeNav = useCallback(() => setNavOpenAt(null), []);
+  const superAgent = useSuperAgent();
+  // Super-agent on a narrow window (600-999 px): the drawer is the sidebar alone, beside a rail that stays on screen.
+  const [sidebarOnly, setSidebarOnly] = useState(false);
+  const openNav = () => {
+    setSidebarOnly(superAgent && !!window.matchMedia?.("(min-width: 600px)")?.matches);
+    setNavOpenAt(navPlace);
+  };
   const shellRef = useRef<HTMLDivElement>(null);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
+  const drawerParts = () => {
+    const shell = shellRef.current;
+    return sidebarOnly ? [shell?.querySelector(".cream-sidebar")] : [shell?.querySelector(".workspace-rail"), shell?.querySelector(".cream-sidebar")];
+  };
   useEffect(() => {
     if (!navOpen) return;
     // Keyboard and switch users land in the drawer, not behind its backdrop
     // (the main column is `inert` while it is open), and return to the menu button.
     // The first ENABLED control: Back is first in the rail and is disabled with no history.
-    shellRef.current?.querySelector<HTMLElement>(".workspace-rail button:not(:disabled)")?.focus();
+    const shell = shellRef.current;
+    shell?.querySelector<HTMLElement>(sidebarOnly ? ".cream-sidebar button:not(:disabled)" : ".workspace-rail button:not(:disabled)")?.focus();
+    // Modal: the rail beside a sidebar-only drawer is out of reach too.
+    const rail = sidebarOnly ? shell?.querySelector<HTMLElement>(".workspace-rail") : null;
+    rail?.setAttribute("inert", "");
     const menuButton = menuButtonRef.current;
-    // Widening past the phone breakpoint hides the drawer's backdrop, so
+    // Widening past the drawer breakpoint hides the drawer's backdrop, so
     // close it there rather than leave the main column inert with no way out.
-    const wide = window.matchMedia?.("(min-width: 600px)");
+    const wide = window.matchMedia?.(`(min-width: ${drawerUntil(superAgent)}px)`);
     wide?.addEventListener("change", closeNav);
     return () => {
       wide?.removeEventListener("change", closeNav);
+      rail?.removeAttribute("inert");
       menuButton?.focus();
     };
-  }, [navOpen, closeNav]);
+  }, [navOpen, closeNav, sidebarOnly, superAgent]);
 
   useUserSyncOnce(true);
   useChatThemeAccountSync(true);
@@ -301,19 +320,20 @@ function AuthenticatedWorkspace({ workspaceName }: { workspaceName: string }): R
             <InvitePeopleDialog />
             <div className="workspace-shell" ref={shellRef} data-nav-open={navOpen}
               // Only Chat has a sidebar; full screen folds it into the chat column.
-              data-sidebar={place === "chat" && !fullScreen}
-              onKeyDown={navOpen ? (e) => { if (e.key === "Escape") closeNav(); } : undefined}>
+              data-sidebar={place === "chat" && !fullScreen} data-super-agent={superAgent || undefined}
+              onKeyDown={navOpen ? (e) => { if (e.key === "Escape") closeNav(); else trapTab(e, drawerParts()); } : undefined}>
               {/* Before the drawer in the DOM, so the drawer paints over it. */}
               <div className="workspace-nav-backdrop" onClick={closeNav} />
               <WorkspaceHeader chatReady={chatReady} onNavigate={closeNav} />
               <WorkspaceSidebar
+                id="workspace-sidebar" dialog={navOpen && sidebarOnly}
                 chatReady={chatReady}
                 onRecoveryReprovision={() => setRecoveryTriggered(true)}
                 onNavigate={closeNav}
               />
               <div className="workspace-main" inert={navOpen}>
                 <div className="workspace-phone-bar">
-                  <button type="button" ref={menuButtonRef} aria-label="Open menu" aria-expanded={navOpen} onClick={() => setNavOpenAt(navPlace)}>
+                  <button type="button" ref={menuButtonRef} aria-label="Open menu" aria-expanded={navOpen} aria-controls="workspace-sidebar" onClick={openNav}>
                     <Menu size={20} aria-hidden="true" />
                   </button>
                   <span className="workspace-name">{workspaceName}</span>

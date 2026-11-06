@@ -7,9 +7,10 @@ import { useCallback } from "react";
 import { useSWRConfig } from "swr";
 import { useAuth, useOrganization } from "@clerk/nextjs";
 import {
-  automationKey, automationRunsKey, automationsKey, canDecide, canEdit, specialistLabel, runNow as runNowShared,
+  automationKey, automationRunsKey, automationsKey, canDecide, canEdit, deliveryRoomId, deliveryWords, roomDisplayName, specialistLabel, runNow as runNowShared,
   type AutomationSource, type AutomationView, type RunNowOutcome,
 } from "@lightbulb/shared";
+import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingWorkspaceContext";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { useApi } from "@/lib/api";
 import { errorCopy } from "./useTaskActions";
@@ -85,4 +86,15 @@ export { budgetLine, deliveryWords, money, runNowReason, runsPerMonth, scheduleW
 export function useSpecialistLabel(): (specialistId: string | null | undefined) => string {
   const { agentNames } = useLiveEvents();
   return useCallback((id) => specialistLabel(id, agentNames), [agentNames]);
+}
+
+/** Where an automation posts, naming the room the viewer knows it as: "posts to #walk-8" (dev walk W8). */
+export function useDeliveryWords(): (deliverTo: string) => string | null {
+  const rooms = useMessagingWorkspaceOptional()?.directoryProps.rooms;
+  return useCallback((deliverTo) => {
+    const id = deliveryRoomId(deliverTo);
+    const room = id ? rooms?.find((r) => r.roomId === id) : undefined;
+    const name = room ? roomDisplayName(room, room.participants) : null;
+    return deliveryWords(deliverTo, name ? (room!.kind === "channel" ? `#${name}` : name) : null);
+  }, [rooms]);
 }

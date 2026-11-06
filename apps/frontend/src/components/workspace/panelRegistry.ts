@@ -5,7 +5,7 @@
 
 import { ARTIFACT_PARAM_KEYS, parseArtifactSource } from "./panels/artifactSource";
 
-export type PanelKind = "chat" | "teams" | "control" | "file-viewer" | "browser" | "activity" | "canvas" | "mail" | "ideas" | "artifact" | "task";
+export type PanelKind = "chat" | "teams" | "control" | "file-viewer" | "browser" | "activity" | "home" | "canvas" | "mail" | "ideas" | "artifact" | "task";
 
 export interface PanelDescriptor {
   panelId: string;
@@ -287,17 +287,20 @@ export function describePanel(
     return { panelId: "browser", component: "browser", title: "Browser", params: {} };
   }
 
-  // Home: the viewer's threads (super-agent) above their Activity feed (mentions, DMs, thread
-  // replies, what Paperclip asks of them). Singleton: one per viewer. The old company-wide view stays the Teams
-  // Inbox, reachable from inside the feed.
+  // Activity: the viewer's requests (super-agent: Needs you, mentions, Ideas, the feed, Working/Done/Closed; it was
+  // Home until 6 Nov 2026), else their Activity feed (mentions, DMs, thread replies, what Paperclip asks of them).
+  // Singleton: one per viewer. The old company-wide view stays the Teams Inbox, reachable from inside the feed.
   // `filter` opens a chip (the Tasks header's "Needs you"); `focus` is the item a
   // notification points at (an approval), scrolled to and highlighted.
   if (key === "activity") {
     const p: Record<string, string> = {};
     if (params.filter) p.filter = params.filter;
     if (params.focus) p.focus = params.focus;
-    return { panelId: "activity", component: "activity", title: "Home", params: p };
+    return { panelId: "activity", component: "activity", title: "Activity", params: p };
   }
+
+  // Home (super-agent, 6 Nov 2026): the chats and the project spaces. Singleton, no params.
+  if (key === "home") return { panelId: "home", component: "home", title: "Home", params: {} };
 
   // Apps the agents built; `app` opens one inside the pane.
   if (key === "canvas") {

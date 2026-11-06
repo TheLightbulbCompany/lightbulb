@@ -102,7 +102,22 @@ describe("WorkspaceHeader", () => {
     fireEvent.click(screen.getByRole("button", { name: "Work" }));
     expect(closePane).toHaveBeenCalledOnce();
   });
-  it("with the switch on, Home badges exactly its Needs you count: not Activity's, not team runs", async () => {
+  it("with the switch on, reads Home (chats and projects), Activity, Chat, Work, Team, Library, Canvas", () => {
+    live.superAgent = true;
+    place = "home";
+    try {
+      render(<WorkspaceHeader />);
+      const rail = screen.getByRole("navigation", { name: "Workspace" });
+      const labels = [...rail.querySelectorAll("button")].map((b) => b.getAttribute("aria-label"));
+      expect(labels.slice(labels.indexOf("Home"), labels.indexOf("Canvas") + 1)).toEqual(["Home", "Activity", "Chat", "Work", "Team", "Library", "Canvas"]);
+      expect(screen.getByRole("button", { name: "Home" })).toHaveAttribute("aria-current", "page");
+      fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+      expect(openPanel).toHaveBeenCalledWith("activity", {}, { pushUrl: true });
+      fireEvent.click(screen.getByRole("button", { name: "Home" }));
+      expect(openPanel).toHaveBeenCalledWith("home", {}, { pushUrl: true });
+    } finally { live.superAgent = false; place = "activity"; }
+  });
+  it("with the switch on, Activity badges exactly its Needs you count: not the legacy badge, not team runs", async () => {
     live.superAgent = true;
     activityState.attentionCount = 1;
     const t = (taskId: string, shownGroup: string) => ({ taskId, shownGroup, status: "waiting", watching: false, updatedAt: "2026-11-05T00:00:00Z" });
@@ -111,7 +126,8 @@ describe("WorkspaceHeader", () => {
     apiGet.mockResolvedValue({ next: null, tasks: [t("a", "waiting_on_you"), t("b", "ready_for_review"), t("c", "working")] });
     try {
       render(<SWRConfig value={{ provider: () => new Map() }}><WorkspaceHeader /></SWRConfig>);
-      expect(await screen.findByRole("button", { name: "Home, 2 need you" })).toBeInTheDocument();
+      expect(await screen.findByRole("button", { name: "Activity, 2 need you" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Home" })).toBeInTheDocument();
     } finally { live.superAgent = false; live.tasks = null; activityState.attentionCount = 0; }
   });
   it("shows active team runs on Work without covering workspace content", () => {

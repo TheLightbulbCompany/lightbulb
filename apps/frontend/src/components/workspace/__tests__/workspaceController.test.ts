@@ -55,6 +55,7 @@ describe("places", () => {
   });
 
   it.each([
+    ["home", "home"],
     ["activity", "activity"],
     ["teams-issues", "work"],
     ["teams-routines", "work"],

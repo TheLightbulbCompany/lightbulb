@@ -11,8 +11,13 @@ import {
 } from "../panelRegistry";
 
 describe("panelRegistry", () => {
-  it("teams-threads (the old Work › Threads overview) opens Home", () => {
-    expect(describePanel("teams-threads", {})).toMatchObject({ panelId: "activity", component: "activity", title: "Home" });
+  it("?panel=home opens Home (chats and projects); ?panel=activity keeps its filter and focus links", () => {
+    expect(describePanel("home", { filter: "x" })).toEqual({ panelId: "home", component: "home", title: "Home", params: {} });
+    expect(describePanel("activity", { filter: "approvals", focus: "a-1" })).toEqual({
+      panelId: "activity", component: "activity", title: "Activity", params: { filter: "approvals", focus: "a-1" } });
+  });
+  it("teams-threads (the old Work › Threads overview) opens Activity", () => {
+    expect(describePanel("teams-threads", {})).toMatchObject({ panelId: "activity", component: "activity", title: "Activity" });
   });
 
   it("task-detail is a pane panel that needs a taskId", () => {
@@ -32,7 +37,7 @@ describe("panelRegistry", () => {
     expect(resolvePanelAlias("teams-skills")).toBe("activity");
     expect(resolvePanelAlias("teams-costs")).toBe("activity");
     expect(describePanel("canvas", { app: "app_1" })).toEqual({ panelId: "canvas", component: "canvas", title: "Canvas", params: { app: "app_1" } });
-    expect(describePanel("teams-dashboard", {})).toMatchObject({ panelId: "activity", component: "activity", title: "Home" });
+    expect(describePanel("teams-dashboard", {})).toMatchObject({ panelId: "activity", component: "activity", title: "Activity" });
     expect(resolvePanelAlias("teams-artifacts")).toBe("teams-artifacts");
     // Money is ONE page: its four absorbed keys alias to its panel id, or the
     // dock (which dedupes by panel id) opens four sibling tabs all called
@@ -209,10 +214,10 @@ describe("panelRegistry", () => {
 
   it("describes the activity feed as a singleton carrying a filter and a focused item", () => {
     expect(describePanel("activity", {})).toEqual({
-      panelId: "activity", component: "activity", title: "Home", params: {},
+      panelId: "activity", component: "activity", title: "Activity", params: {},
     });
     expect(describePanel("activity", { focus: "paperclip:approval:ap-1", filter: "needs-you" })).toEqual({
-      panelId: "activity", component: "activity", title: "Home",
+      panelId: "activity", component: "activity", title: "Activity",
       params: { filter: "needs-you", focus: "paperclip:approval:ap-1" },
     });
     expect(durableParamsFor("activity")).toEqual(["panel", "filter", "focus"]);
@@ -289,7 +294,7 @@ describe("panelRegistry", () => {
 
   it("opens Activity for every old Inbox link: the Inbox tab, its Approvals and Activity keys", () => {
     for (const key of ["teams-inbox", "teams-approvals", "teams-activity"]) {
-      expect(describePanel(key, { section: "needs-you" })).toEqual({ panelId: "activity", component: "activity", title: "Home", params: {} });
+      expect(describePanel(key, { section: "needs-you" })).toEqual({ panelId: "activity", component: "activity", title: "Activity", params: {} });
     }
   });
 

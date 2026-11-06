@@ -2,7 +2,7 @@
 
 import "./workspace.css";
 import { UserButton } from "@clerk/nextjs";
-import { HelpCircle, Home, Images, LayoutGrid, ListTodo, MessageSquare, Search, Settings, Users } from "lucide-react";
+import { Bell, HelpCircle, Home, Images, LayoutGrid, ListTodo, MessageSquare, Search, Settings, Users } from "lucide-react";
 import Link from "next/link";
 import { useActiveTeamRunCount } from "@/components/notifications/teamRunActivity";
 import { useNeedsYouBadge } from "@/components/activity/useNeedsYouBadge";
@@ -17,7 +17,8 @@ import { ThemeToggles } from "@/components/chat/ThemeToggles";
 
 // The six places, and nothing else (spec 3.1; Team added 2026-11-05). Browser, Files and Mail open in
 // the right pane (the conversation header, links, ⌘K); Settings is at the bottom.
-const DESTINATIONS: readonly { place: Place; panel: string; label: string; Icon: typeof Home }[] = [
+type Destination = { place: Place; panel: string; label: string; Icon: typeof Home };
+const DESTINATIONS: readonly Destination[] = [
   // Home is the old Activity place grown: the viewer's threads lead, For you and the feed follow. Its panel key
   // stays "activity", so every ?panel=activity link (notifications, filters, focus) opens Home.
   { place: "activity", panel: "activity", label: "Home", Icon: Home },
@@ -30,6 +31,14 @@ const DESTINATIONS: readonly { place: Place; panel: string; label: string; Icon:
   { place: "library", panel: "teams-artifacts", label: "Library", Icon: Images },
   // Apps the agents built, opened inside the pane.
   { place: "canvas", panel: "canvas", label: "Canvas", Icon: LayoutGrid },
+];
+
+// Super-agent (founder, 6 Nov 2026): Home is the chats and the project spaces; what Home showed (Needs you, mentions,
+// Ideas, the feed, Working/Done/Closed) is Activity, which keeps the panel key "activity" and every link to it.
+const SUPER_AGENT_DESTINATIONS: readonly Destination[] = [
+  { place: "home", panel: "home", label: "Home", Icon: Home },
+  { place: "activity", panel: "activity", label: "Activity", Icon: Bell },
+  ...DESTINATIONS.slice(1),
 ];
 
 /** The global rail: the places, search, history and the account controls. */
@@ -55,8 +64,9 @@ export function WorkspaceHeader({ chatReady = true, onNavigate }: {
       <button type="button" className="workspace-rail__search" aria-label="Search messages, agents, issues, and projects" title="Search (⌘/Ctrl K)" onClick={() => { setOpen(true); onNavigate?.(); }}>
         <Search size={20} aria-hidden="true" />
       </button>
-      {DESTINATIONS.map(({ place, panel, label, Icon }) => {
-        // Team runs are team work, so their count rides on Work; Home badges what needs you.
+      {(superAgent ? SUPER_AGENT_DESTINATIONS : DESTINATIONS).map(({ place, panel, label, Icon }) => {
+        // Team runs are team work, so their count rides on Work; Activity (Home without the super-agent) badges what
+        // needs you.
         const runs = place === "work" && !superAgent ? activeTeamRunCount : 0;
         const unseen = place === "activity" ? homeCount : 0;
         const badge = runs || unseen;

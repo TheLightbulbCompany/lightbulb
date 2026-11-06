@@ -38,9 +38,7 @@ vi.mock("@/components/workspace/workspaceController", () => ({
 }));
 vi.mock("@/hooks/useActivity", () => ({ useActivity: () => ({ refresh: live.refreshActivity }) }));
 vi.mock("@/lib/api", () => ({ useApi: () => ({ get: live.apiGet }) }));
-vi.mock("@/hooks/useTeamsApi", () => ({
-  useTeamsApi: () => ({ read: () => ({ data: { agents: [{ id: "agent-1", name: "Pulse" }] } }) }),
-}));
+vi.mock("@/hooks/useTeamsApi", () => ({ useTeamsApi: () => ({ read: () => ({ data: undefined }) }) }));
 vi.mock("@/lib/shellNav", () => ({ pushSearchParams: (params: URLSearchParams) => live.pushSearchParams(params) }));
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 vi.mock("@/lib/desktopNotify", () => ({ nativeNotify: (...args: unknown[]) => live.nativeNotify(...args) }));
@@ -63,6 +61,7 @@ beforeEach(() => {
   live.nativeNotify.mockResolvedValue(false);
   live.refreshActivity.mockResolvedValue([]);
   live.apiGet.mockImplementation(async (path: string) => {
+    if (path === "/teams/agents") return { agents: [{ id: "agent-1", name: "Pulse" }] };
     if (path === "/teams/issues/iss-400") return { identifier: "ISOA-400", title: "Draft the launch posts" };
     throw new Error("not found");
   });

@@ -1318,9 +1318,14 @@ async def human_emails(members: list[dict[str, Any]]) -> dict[str, str]:
     if not human_ids:
         return {}
 
+    # Bounded like the room summaries (see _SUMMARY_CONCURRENCY): the room list now
+    # passes every room's members at once, so this can be many people.
+    limit = asyncio.Semaphore(_SUMMARY_CONCURRENCY)
+
     async def _lookup(user_id: str) -> dict | None:
         try:
-            return await user_repo.get(user_id)
+            async with limit:
+                return await user_repo.get(user_id)
         except Exception:
             logger.warning("human_emails lookup failed", extra={"user_id": user_id}, exc_info=True)
             return None

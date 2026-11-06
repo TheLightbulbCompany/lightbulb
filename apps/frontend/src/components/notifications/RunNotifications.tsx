@@ -168,9 +168,12 @@ type RunAction = Extract<RunToastAction, { kind: "working" | "success" | "failur
 
 /** "Pulse · ISOA-400" / "Finished: Draft launch posts" for a team (Paperclip) run. */
 async function teamRunCopy(action: RunAction, agents: Agent[], ctx: ExecuteContext): Promise<{ title: string; body: string }> {
-  const issue = (action.issueId ? await ctx.apiGet(`/teams/issues/${action.issueId}`).catch(() => null) : null) as
-    { identifier?: string | null; title?: string | null } | null;
-  const name = ctx.teamAgents?.find((agent) => agent.id === action.agentId)?.name
+  const [issue, fetched] = await Promise.all([
+    action.issueId ? ctx.apiGet(`/teams/issues/${action.issueId}`).catch(() => null) : null,
+    ctx.teamAgents ? null : ctx.apiGet("/teams/agents").catch(() => null),
+  ]) as [{ identifier?: string | null; title?: string | null } | null, { agents?: { id: string; name?: string }[] } | null];
+  const teamAgents = ctx.teamAgents ?? fetched?.agents;
+  const name = teamAgents?.find((agent) => agent.id === action.agentId)?.name
     ?? agents.find((agent) => agent.id === action.agentId)?.name ?? "An agent";
   const title = notificationTitle(name, issue?.identifier || null);
   if (action.kind === "failure") return { title, body: runFailureLine(action.errorCode, action.error) };
@@ -254,7 +257,7 @@ function executeAction(action: RunToastAction, agents: Agent[], ctx: ExecuteCont
 }
 
 export function RunNotifications() {
-  const { onEvent, onChatMessage } = useLiveEvents();
+  const { onEvent, onChatMessage, superAgent } = useLiveEvents();
   const { agents } = useAgents();
   const workspace = useWorkspaceState();
 
@@ -266,7 +269,9 @@ export function RunNotifications() {
   const agentsRef = useRef<Agent[]>([]);
   const { refresh: refreshActivity } = useActivity();
   const api = useApi();
-  const { data: teamAgents } = useTeamsApi().read<{ agents?: { id: string; name?: string }[] }>("/agents");
+  // Shares the live provider's /teams/agents read: only once live config says a super-agent workspace
+  // is chosen. Otherwise nothing is read here and a team-run toast fetches the list itself, as before.
+  const { data: teamAgents } = useTeamsApi().read<{ agents?: { id: string; name?: string }[] }>(superAgent ? "/agents" : null);
   const execRef = useRef<ExecuteContext>({ refreshActivity, apiGet: api.get });
   const roomView = useSyncExternalStore(subscribeRoomView, getRoomView, getRoomView);
 

@@ -75,7 +75,8 @@ export interface LiveEventsContextValue extends RuntimeRpcSource {
 
 const LiveEventsContext = createContext<LiveEventsContextValue | null>(null);
 
-export function LiveEventsProvider({ children }: { children: ReactNode }) {
+/** `preloadRooms`: start the room list here (the chat surface only; Settings has no room list). */
+export function LiveEventsProvider({ children, preloadRooms = false }: { children: ReactNode; preloadRooms?: boolean }) {
   const { getToken, isLoaded, userId, orgId } = useAuth();
   const { user } = useUser();
   const api = useApi();
@@ -89,8 +90,8 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
   // The room list gates "Loading chats…". Start it with this provider's first reads instead of
   // when the workspace mounts; useRooms picks up the in-flight request under the same key.
   useEffect(() => {
-    if (httpReady && userId) void preload(roomsListKey(userId, orgId), () => messaging.listRooms()).catch(() => undefined);
-  }, [httpReady, userId, orgId, messaging]);
+    if (preloadRooms && httpReady && userId) void preload(roomsListKey(userId, orgId), () => messaging.listRooms()).catch(() => undefined);
+  }, [preloadRooms, httpReady, userId, orgId, messaging]);
   const { data: liveConfig, error: configError, mutate: refreshConfig } = useSWR(
     httpReady ? ["messaging-live-config", userId, ownerScope] : null,
     () => messaging.getLiveConfig(),

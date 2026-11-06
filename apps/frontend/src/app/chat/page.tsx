@@ -39,7 +39,7 @@ export default function ChatPage() {
   return (
     <Suspense fallback={<div className="h-dvh w-full" style={{ background: "var(--cream)" }} />}>
       <MarketplaceDrawerProvider>
-        <LiveEventsProvider>
+        <LiveEventsProvider preloadRooms>
           {/* Inside the live provider: a super-agent workspace's old Settings keys open the place in the shell. */}
           <SettingsRedirect>
           {/* Live is held above the shell, so it survives navigation inside /chat. */}

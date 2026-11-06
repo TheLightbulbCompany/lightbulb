@@ -1,9 +1,9 @@
 """Owner capability policy + revoke-all — /api/v1/company/{policy,revoke-all}.
 
-The P0d slice: this router ships the policy ROW and its owner surface only.
 The map (`money_moves`/`outreach`/`publishing`/`provisioning` → "requires
-owner approval?", absent ⇒ True, fail-closed) is deliberately NOT enforced
-inside any rail yet — enforcement wiring is P1.
+owner approval?", absent ⇒ True, fail-closed) plus `approval_mode` (ask | auto | never_ask, absent ⇒ auto). The
+mode is read by the super-agent effects route (`runtime_internal.effect_check`); `outreach`/`money_moves` pick who
+answers a card; `publishing`/`provisioning` have no reader.
 
 Gating copies routers/company_provisioning.py's owner-route admin check: org
 context requires org:admin, and the owner is the org, never the member who
@@ -24,7 +24,7 @@ from pydantic import BaseModel
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.repositories import billing_repo, container_repo, integrations_repo, slack_installs_repo
-from core.services import account_wipe, company_stripe, link_wallet, slack_install_service, website_logins
+from core.services import account_wipe, company_stripe, link_wallet, questions, slack_install_service, website_logins
 from core.services.credentials import integration_secret_store
 from core.services.owner_facts import write_owner_facts
 from routers import connections
@@ -45,15 +45,24 @@ async def get_policy(auth: Annotated[AuthContext, Depends(get_current_user)]):
     return await billing_repo.get_capability_policy(_owner(auth))
 
 
+#: The typed word that turns on Never ask (admin-only, like "revoke"): checked here, not only in the UI.
+NEVER_ASK_CONFIRM = "never ask"
+
+
 @router.patch("/policy")
-async def patch_policy(body: dict[str, bool], auth: Annotated[AuthContext, Depends(get_current_user)]):
+async def patch_policy(body: dict[str, bool | str], auth: Annotated[AuthContext, Depends(get_current_user)]):
     owner_id = _owner(auth)
+    confirm = body.pop("confirm", None)
+    if body.get(billing_repo.APPROVAL_MODE_KEY) == "never_ask" and confirm != NEVER_ASK_CONFIRM:
+        raise HTTPException(status_code=422, detail=f'Never ask needs confirm exactly "{NEVER_ASK_CONFIRM}"')
     try:
         updated = await billing_repo.set_capability_policy(owner_id, body)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
     if updated is None:
         raise HTTPException(status_code=404, detail="No billing account")
+    if billing_repo.APPROVAL_MODE_KEY in body:
+        await questions.audit(auth.user_id, owner_id, "approval.mode", {"mode": body[billing_repo.APPROVAL_MODE_KEY]})
     return updated
 
 

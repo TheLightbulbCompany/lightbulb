@@ -31,7 +31,7 @@ from temporalio.service import RPCError, RPCStatusCode
 
 from core import tasks_schema as ts
 from core.dynamodb import utc_now_iso
-from core.repositories import effects_repo, questions_repo, tasks_repo
+from core.repositories import billing_repo, effects_repo, questions_repo, tasks_repo
 from core.services import questions, task_asks, task_conversation
 from core.services.messaging import ATTACHMENT_MAX_COUNT, UploadedAttachment, human_display_name
 from core.services.container_auth import _require_hook_token
@@ -305,6 +305,21 @@ async def _attempt_of(owner_id: str, task_id: str, n: int, run_id: str, run_secr
     return att
 
 
+async def _mode_allows(ws: str, kind: str, operands: dict) -> str | None:
+    """`mode:<mode>` when the workspace's approval mode lets this action go ahead without a card, else None. Read
+    here on the server (the VM never sees it). Members and limits are read only when the Auto list needs them; a
+    Clerk error fails closed (asks)."""
+    mode = (await billing_repo.get_capability_policy(ws))["approval_mode"]
+    members: set[str] = set()
+    if mode == "auto" and kind in ("mail.send", "text.send"):
+        try:
+            members = await questions.member_emails(ws)
+        except Exception:  # noqa: BLE001 -- an unreadable roster is nobody: the card asks
+            logger.warning("approval mode: members unreadable ws=%s", ws, exc_info=True)
+    limits = await billing_repo.get_purchase_limits(ws) if mode == "auto" and kind == "purchase" else None
+    return None if questions.asks(mode, kind, operands, members=members, limits=limits) else f"mode:{mode}"
+
+
 @router.post("/{owner_id}/effects")
 async def effect_check(owner_id: str, body: EffectBody, request: Request) -> dict:
     await _gate(owner_id, request)
@@ -351,6 +366,17 @@ async def effect_check(owner_id: str, body: EffectBody, request: Request) -> dic
         return {"decision": "refuse", "message": res.message}
     if res.decision == "denied":
         return {"decision": "denied", "questionId": res.qid}
+    # needs_approval, unless a standing rule or the workspace's approval mode lets it through without a card. The
+    # intent row it goes ahead on is the log (and what a backend door and the bridge's `done` look for).
+    rule = await questions.rule_effect(owner_id, task.get("specialist"), body.kind, body.operands)
+    if rule and rule[0] == "deny":
+        return {"decision": "denied", "questionId": None}
+    allowed_by = f"rule:{rule[1]}" if rule else await _mode_allows(owner_id, body.kind, body.operands)
+    if allowed_by:
+        row, created = await effects_repo.put_effect(owner_id, {**effect, "state": "intent", "allowedBy": allowed_by})
+        if created:
+            return {"decision": "proceed"}
+        # this very call was already asked about (its row is proposed): it waits for that answer
     # needs_approval: the proposed row is the draft (Output) the person reviews; the workflow opens the Question
     # once the turn ends `waiting_approval`.
     row, _ = await effects_repo.put_effect(

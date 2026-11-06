@@ -5,14 +5,11 @@
 // were already on Connections, so this sits at the foot of Settings →
 // Connections, under the one list of what the team is connected to.
 //
-// ⚠️ HONESTY NOTE — the Guardrails switches are RECORDED, NOT ENFORCED.
-// `routers/company_policy.py` lines 3-6 state it outright: the map is stored on
-// the billing row and no rail reads it yet; enforcement is P1. The section says
-// so IN THE UI (not just in this comment), because an owner who believes a
-// switch is a fence is worse off than one who sees no switch at all. The
-// control that actually bites today is "Revoke everything", which composes live
-// primitives: cancel open provisioning workflows, delete our copies of the
-// credentials, sever the Stripe Connect link.
+// The approval mode (founder ruling 6 Nov 2026) replaced the four "Ask me
+// first" switches: one choice per workspace, read on the server by the effects
+// route (`runtime_internal.effect_check`), so an agent can never change it.
+// The old keys stay stored: `outreach`/`money_moves` still pick who answers a
+// card. Never ask is admin-only behind a typed word, checked on both sides.
 
 import { useState } from "react";
 import useSWR, { useSWRConfig } from "swr";
@@ -22,69 +19,27 @@ import { PanelSection, EditorialDialog, EditorialButton, EditorialInput } from "
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 import { useApi } from "@/lib/api";
 import { notifyApiError, notifyError, notifySuccess } from "@/lib/notify";
-import { cn } from "@/lib/utils";
 
 const POLICY_PATH = "/company/policy";
 
 /** The exact string `POST /company/revoke-all` compares against — anything else is a 422. */
 const REVOKE_CONFIRM = "revoke";
 
-type CapabilityPolicy = {
-  money_moves: boolean;
-  outreach: boolean;
-  publishing: boolean;
-  provisioning: boolean;
-};
+/** The exact word `PATCH /company/policy` wants before it stores Never ask (422 otherwise). */
+const NEVER_ASK_CONFIRM = "never ask";
 
-// Keys mirror billing_repo.CAPABILITY_POLICY_KEYS; `true` = "ask me first"
-// (the backend fills an absent key as true, fail-closed).
-const POLICY_ROWS: { key: keyof CapabilityPolicy; label: string; detail: string }[] = [
-  { key: "money_moves", label: "Moving money", detail: "Paying for a service, issuing a refund, changing a price." },
-  { key: "outreach", label: "Contacting people", detail: "Emailing or messaging anyone outside the company." },
-  { key: "publishing", label: "Publishing", detail: "Posting anything the public can see." },
-  { key: "provisioning", label: "Signing up for services", detail: "Creating an account or resource on a provider." },
+type ApprovalMode = "ask" | "auto" | "never_ask";
+type CapabilityPolicy = { approval_mode: ApprovalMode };
+
+const MODES: { value: ApprovalMode; label: string; detail: string }[] = [
+  { value: "ask", label: "Ask", detail: "Agents ask before every outside action: sending, spending, publishing, deleting." },
+  {
+    value: "auto",
+    label: "Auto",
+    detail: "Agents ask only before mailing or texting people outside the workspace, spending over your purchase limit, or deleting outside data.",
+  },
+  { value: "never_ask", label: "Never ask", detail: "Agents never ask. Every action is still logged, and spending limits still apply." },
 ];
-
-function PolicySwitch({
-  checked,
-  disabled,
-  label,
-  onToggle,
-}: {
-  checked: boolean;
-  disabled?: boolean;
-  label: string;
-  onToggle: (next: boolean) => void;
-}) {
-  // No shared Switch primitive exists in ui/ — same styled role="switch"
-  // button RoutinesPanel uses for its enable toggle.
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      aria-label={`${checked ? "Stop asking" : "Ask me"} before ${label.toLowerCase()}`}
-      disabled={disabled}
-      onClick={() => onToggle(!checked)}
-      className={cn(
-        "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition-colors",
-        "disabled:cursor-not-allowed disabled:opacity-50",
-      )}
-      style={{
-        backgroundColor: checked ? "var(--midnight)" : "var(--cream-deep)",
-        borderColor: checked ? "var(--midnight)" : "var(--edge)",
-      }}
-    >
-      <span
-        aria-hidden="true"
-        className={cn(
-          "inline-block h-3.5 w-3.5 transform rounded-full bg-cream shadow-sm transition-transform",
-          checked ? "translate-x-[18px]" : "translate-x-0.5",
-        )}
-      />
-    </button>
-  );
-}
 
 export function AgentGuardrails() {
   const api = useApi();
@@ -96,6 +51,8 @@ export function AgentGuardrails() {
   const [open, setOpen] = useState(true);
   const [revokeOpen, setRevokeOpen] = useState(false);
   const [typed, setTyped] = useState("");
+  const [neverOpen, setNeverOpen] = useState(false);
+  const [neverTyped, setNeverTyped] = useState("");
   const [busy, setBusy] = useState(false);
 
   const policy = useSWR<CapabilityPolicy>(
@@ -106,20 +63,26 @@ export function AgentGuardrails() {
   // Hoisted so the JSX below narrows — a property read off the SWR result does not.
   const policyMap = policy.data;
 
-  async function togglePolicy(key: keyof CapabilityPolicy, next: boolean) {
+  async function setMode(mode: ApprovalMode) {
     const current = policy.data;
-    if (!current) return;
+    if (!current || current.approval_mode === mode) return;
+    if (mode === "never_ask" && !neverOpen) {
+      setNeverOpen(true);
+      return;
+    }
     setBusy(true);
     try {
-      // Optimistic + rollbackOnError: a 422/404 puts the switch back where it
-      // was without any local mirror of the map.
-      await policy.mutate(async () => (await api.patch(POLICY_PATH, { [key]: next })) as CapabilityPolicy, {
-        optimisticData: { ...current, [key]: next },
+      const body = mode === "never_ask" ? { approval_mode: mode, confirm: NEVER_ASK_CONFIRM } : { approval_mode: mode };
+      // Optimistic + rollbackOnError: a 422/403 puts the choice back.
+      await policy.mutate(async () => (await api.patch(POLICY_PATH, body)) as CapabilityPolicy, {
+        optimisticData: { ...current, approval_mode: mode },
         rollbackOnError: true,
         revalidate: false,
       });
+      setNeverOpen(false);
+      setNeverTyped("");
     } catch (e) {
-      notifyApiError(e, "Couldn't save that preference.");
+      notifyApiError(e, "Couldn't change how agents ask.");
     } finally {
       setBusy(false);
     }
@@ -156,58 +119,47 @@ export function AgentGuardrails() {
         onOpenChange={setOpen}
       >
         <div className="flex flex-col gap-3 py-3">
-          {/* Not a footnote. The switches below are a recorded preference, and
-              the owner has to know that before they read one as a fence. */}
-          <p
-            role="note"
-            className="rounded-md border p-3 text-ui"
-            style={{
-              borderColor: "var(--edge)",
-              background: "var(--cream-deep)",
-              color: "var(--midnight-muted)",
-            }}
-          >
-            <span style={{ color: "var(--midnight)" }}>Recorded, not yet enforced.</span> We store
-            these preferences on your account and your agents will follow them once approval
-            enforcement ships. Today they change nothing on their own — to actually cut off access,
-            use Revoke everything below.
-          </p>
-
           {policy.error && !policy.data && (
             <p className="text-ui" style={{ color: "var(--err)" }}>
               Couldn&apos;t load your guardrails. Refresh to try again.
             </p>
           )}
 
-          {policyMap &&
-            POLICY_ROWS.map((row) => (
-              <div key={row.key} className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-ui" style={{ color: "var(--midnight)" }}>
-                    Ask me first: {row.label}
-                  </p>
-                  <p className="text-caption" style={{ color: "var(--midnight-muted)" }}>
-                    {row.detail}
-                  </p>
-                </div>
-                {canManage ? (
-                  <PolicySwitch
-                    checked={policyMap[row.key]}
-                    disabled={busy}
-                    label={row.label}
-                    onToggle={(next) => void togglePolicy(row.key, next)}
+          {policyMap && (
+            <fieldset className="flex flex-col gap-2" disabled={!canManage || busy}>
+              <legend className="mb-1 text-ui" style={{ color: "var(--midnight)" }}>
+                When agents ask first
+              </legend>
+              {MODES.map((m) => (
+                <label key={m.value} className="flex cursor-pointer items-start gap-3">
+                  <input
+                    type="radio"
+                    name="approval-mode"
+                    value={m.value}
+                    checked={policyMap.approval_mode === m.value}
+                    onChange={() => void setMode(m.value)}
+                    className="mt-1"
                   />
-                ) : (
-                  <span className="text-caption" style={{ color: "var(--midnight-muted)" }}>
-                    {policyMap[row.key] ? "Ask first" : "Don’t ask"}
+                  <span className="min-w-0">
+                    <span className="block text-ui" style={{ color: "var(--midnight)" }}>
+                      {m.label}
+                      {m.value === "auto" && <span style={{ color: "var(--midnight-muted)" }}> (default)</span>}
+                    </span>
+                    <span className="block text-caption" style={{ color: "var(--midnight-muted)" }}>
+                      {m.detail}
+                    </span>
                   </span>
-                )}
-              </div>
-            ))}
+                </label>
+              ))}
+              <p className="text-caption" style={{ color: "var(--midnight-muted)" }}>
+                Anyone who answers a request can choose Always allow for that recipient, app or repo.
+              </p>
+            </fieldset>
+          )}
 
           {!canManage && (
             <p className="text-caption" style={{ color: "var(--midnight-muted)" }}>
-              A workspace admin changes these.
+              A workspace admin changes this.
             </p>
           )}
 
@@ -284,6 +236,49 @@ export function AgentGuardrails() {
           spellCheck={false}
           value={typed}
           onChange={(e) => setTyped(e.target.value)}
+        />
+      </EditorialDialog>
+
+      <EditorialDialog
+        open={neverOpen}
+        onOpenChange={(next) => {
+          if (!next && !busy) {
+            setNeverOpen(false);
+            setNeverTyped("");
+          }
+        }}
+        title="Turn on Never ask?"
+        description="Agents will mail people outside the workspace, spend within your limits and delete outside data without asking anyone. Every action is still logged."
+        footer={
+          <>
+            <EditorialButton
+              variant="secondary"
+              size="sm"
+              disabled={busy}
+              onClick={() => {
+                setNeverOpen(false);
+                setNeverTyped("");
+              }}
+            >
+              Cancel
+            </EditorialButton>
+            <EditorialButton
+              variant="destructive"
+              size="sm"
+              disabled={busy || neverTyped.trim() !== NEVER_ASK_CONFIRM}
+              onClick={() => void setMode("never_ask")}
+            >
+              {busy ? "Saving…" : "Turn on Never ask"}
+            </EditorialButton>
+          </>
+        }
+      >
+        <EditorialInput
+          label={`Type ${NEVER_ASK_CONFIRM} to confirm`}
+          autoComplete="off"
+          spellCheck={false}
+          value={neverTyped}
+          onChange={(e) => setNeverTyped(e.target.value)}
         />
       </EditorialDialog>
     </div>

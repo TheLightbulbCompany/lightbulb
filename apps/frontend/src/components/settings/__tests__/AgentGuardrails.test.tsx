@@ -2,8 +2,8 @@
 // retired Accounts tab and now sits at the foot of Settings → Connections,
 // under the one list of what the team is connected to.
 //
-// The guardrail switches are recorded, not enforced; the typed revoke
-// confirmation and the admin gate are what this suite pins.
+// One approval mode (Ask / Auto / Never ask) replaced the four switches; Never
+// ask and revoke each sit behind a typed word, and only admins change them.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { SWRConfig } from "swr";
@@ -30,7 +30,7 @@ vi.mock("@/hooks/useIsWorkspaceAdmin", () => ({
 
 import { AgentGuardrails } from "../AgentGuardrails";
 
-const POLICY = { money_moves: true, outreach: true, publishing: true, provisioning: true };
+const POLICY = { money_moves: true, outreach: true, publishing: true, provisioning: true, approval_mode: "auto" };
 
 function renderPanel() {
   return render(
@@ -48,50 +48,60 @@ beforeEach(() => {
   post.mockResolvedValue({ revoked: ["workflows_cancelled:2"] });
 });
 
-describe("AgentGuardrails — guardrails (recorded, NOT enforced)", () => {
-  it("says so in the UI, not just in a code comment", async () => {
+describe("AgentGuardrails — approval mode", () => {
+  it("shows the three modes with the stored one chosen", async () => {
     renderPanel();
-    await screen.findByText("Ask me first: Moving money");
-    expect(screen.getByRole("note")).toHaveTextContent(/Recorded, not yet enforced/i);
+    const auto = await screen.findByRole("radio", { name: /Auto/ });
+    expect(auto).toBeChecked();
+    expect(screen.getByRole("radio", { name: /^Ask/ })).not.toBeChecked();
+    expect(screen.getByRole("radio", { name: /Never ask/ })).not.toBeChecked();
+    expect(screen.queryAllByRole("switch")).toHaveLength(0); // the four Ask-me-first switches are gone
   });
 
-  it("PATCHes exactly the one key that was toggled", async () => {
+  it("PATCHes the chosen mode", async () => {
+    patch.mockResolvedValue({ ...POLICY, approval_mode: "ask" });
     renderPanel();
-    const sw = await screen.findByRole("switch", { name: /before moving money/i });
-    expect(sw).toHaveAttribute("aria-checked", "true");
-    fireEvent.click(sw);
-    await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
-    expect(patch).toHaveBeenCalledWith("/company/policy", { money_moves: false });
+    fireEvent.click(await screen.findByRole("radio", { name: /^Ask/ }));
+    await waitFor(() => expect(patch).toHaveBeenCalledWith("/company/policy", { approval_mode: "ask" }));
+    await waitFor(() => expect(screen.getByRole("radio", { name: /^Ask/ })).toBeChecked());
   });
 
-  it("a 422 notifies and rolls the switch back to its prior position", async () => {
-    patch.mockRejectedValue(new Error("422 unknown capability keys"));
+  it("Never ask waits for the typed word and sends it", async () => {
+    patch.mockResolvedValue({ ...POLICY, approval_mode: "never_ask" });
     renderPanel();
-    const sw = await screen.findByRole("switch", { name: /before moving money/i });
-    fireEvent.click(sw);
-    await waitFor(() => expect(notifyApiError).toHaveBeenCalled());
+    fireEvent.click(await screen.findByRole("radio", { name: /Never ask/ }));
+    expect(patch).not.toHaveBeenCalled();
+    const input = await screen.findByLabelText("Type never ask to confirm");
+    const confirm = screen.getByRole("button", { name: "Turn on Never ask" });
+    expect(confirm).toBeDisabled();
+    fireEvent.change(input, { target: { value: "never ask" } });
+    fireEvent.click(confirm);
     await waitFor(() =>
-      expect(screen.getByRole("switch", { name: /before moving money/i })).toHaveAttribute(
-        "aria-checked",
-        "true",
-      ),
+      expect(patch).toHaveBeenCalledWith("/company/policy", { approval_mode: "never_ask", confirm: "never ask" }),
     );
   });
 
-  it("shows a non-admin the recorded state read-only, with no revoke control", async () => {
+  it("a failed save notifies and puts the choice back", async () => {
+    patch.mockRejectedValue(new Error("403"));
+    renderPanel();
+    fireEvent.click(await screen.findByRole("radio", { name: /^Ask/ }));
+    await waitFor(() => expect(notifyApiError).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByRole("radio", { name: /Auto/ })).toBeChecked());
+  });
+
+  it("shows a non-admin the mode read-only, with no revoke control", async () => {
     canManage = false;
     renderPanel();
-    await screen.findByText("Ask me first: Moving money");
-    expect(screen.queryAllByRole("switch")).toHaveLength(0);
+    expect(await screen.findByRole("radio", { name: /Auto/ })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "Revoke everything" })).not.toBeInTheDocument();
-    expect(screen.getByText("A workspace admin changes these.")).toBeInTheDocument();
+    expect(screen.getByText("A workspace admin changes this.")).toBeInTheDocument();
   });
 });
 
 describe("AgentGuardrails — revoke everything", () => {
   async function openDialog() {
     renderPanel();
-    await screen.findByText("Ask me first: Moving money");
+    await screen.findByRole("radio", { name: /Auto/ });
     fireEvent.click(screen.getByRole("button", { name: "Revoke everything" }));
     return screen.findByLabelText("Type revoke to confirm");
   }

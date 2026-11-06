@@ -187,6 +187,8 @@ describe("questions: the server's option ids and copy", () => {
     expect(askLine({ kind: "approval", title: "Can I spend $40 on ads?" }, "ads")).toBe("Can I spend $40 on ads?");
     expect(askLine({ kind: "question", title: "Which date?", text: "" }, "finance")).toBe("Which date?");
     expect(answerVerb("allow_once", "Allow once")).toBe("Approved");
+    expect(answerVerb("allow_always", "Always allow")).toBe("Always allowed");
+    expect(primaryOptionId([{ id: "allow_once", style: "primary" }, { id: "allow_always", style: "secondary" }, { id: "deny", style: "danger" }])).toBe("allow_once");
     expect(answerVerb("deny")).toBe("Denied");
     expect(answerVerb("pick_b", "Option B")).toBe("Option B");
   });

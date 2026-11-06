@@ -55,7 +55,7 @@ async def test_open_questions_one_per_proposed_effect(world):
     rows = {q["qid"]: q for q in await questions_repo.list_for_task(WS, TASK)}
     mail = rows[questions.qid_for(f"{TASK}:1:c1")]
     assert (mail["kind"], mail["subkind"], mail["title"]) == ("review", "send", "send 'Q3 invoice' to acme@example.com")
-    assert [o["id"] for o in mail["options"]] == ["send", "request_changes"]
+    assert [o["id"] for o in mail["options"]] == ["send", "allow_always", "request_changes"]
     assert mail["effectIdemKey"] == f"{TASK}:1:c1" and mail["preview"]["subject"] == "Q3 invoice"
     assert (await tasks_repo.get_task(WS, TASK))["audience"]["userIds"] == [SAM, ADA]
     assert len(await _run(tq.open_questions, WS, TASK)) == 2  # idempotent
@@ -198,6 +198,34 @@ async def test_record_answer_decides_the_effect_and_writes_the_trigger(world, op
     assert trigger["ref"] == {"taskId": TASK, "qid": ref.qid, "optionId": option} and trigger["actorUserId"] == SAM
     # The Activity retried after it already ran: same answer back, nothing moves twice.
     assert await _run(tq.record_answer, WS, TASK, tq.AnswerRef(ref.qid, option, None, SAM, "c-1")) == out
+
+
+async def test_record_answer_allow_always_approves_lands_and_writes_one_rule(world, monkeypatch):
+    rule = AsyncMock()
+    monkeypatch.setattr(questions, "add_always_allow", rule)
+    await effects_repo.put_effect(WS, _effect())
+    [ref] = await _run(tq.open_questions, WS, TASK)
+    out = await _run(tq.record_answer, WS, TASK, tq.AnswerRef(ref.qid, "allow_always", None, SAM, "c-1"))
+    assert out.land_idem_key == f"{TASK}:1:c1"  # this one is sent now, like Send
+    assert (await effects_repo.get_effect(WS, f"{TASK}:1:c1"))["state"] == "approved"
+    rule.assert_awaited_once_with(
+        WS, "mail.send", {"to": "acme@example.com", "subject": "Q3 invoice", "body": "hi"}, by=SAM
+    )
+
+
+async def test_a_stale_card_cannot_approve_a_second_send(world):
+    """The mode changed while the card was open and the same mail went ahead without it: answering the old card
+    records the answer but uses its approval up at once, so a later identical call is asked again, not let through."""
+    await effects_repo.put_effect(WS, _effect())
+    [ref] = await _run(tq.open_questions, WS, TASK)
+    await asyncio.sleep(0.01)
+    await effects_repo.put_effect(WS, _effect(call="c2", state="intent", operandsHash="h-c1", allowedBy="mode:auto"))
+    out = await _run(tq.record_answer, WS, TASK, tq.AnswerRef(ref.qid, "send", None, SAM, "c-1"))
+    assert out.land_idem_key is None  # never landed a second time
+    await effects_repo.mark_effect_done(WS, f"{TASK}:1:c2", disposition="done", result_ref="mail:sent")
+    later = {**_effect(call="c3"), "operandsHash": "h-c1"}
+    prior = await effects_repo.effects_for(WS, TASK, "h-c1")
+    assert questions.gate(later, prior).decision == "needs_approval"
 
 
 async def test_record_answer_refusals_are_typed(world):

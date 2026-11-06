@@ -78,15 +78,18 @@ async def effects_of_task(ws: str, task_id: str) -> list[dict]:
     return [e for e in await _effects(ws, f"{task_id}:") if e.get("type") == "effect"]
 
 
-async def retire_approvals(ws: str, task_id: str) -> list[str]:
+async def retire_approvals(ws: str, task_id: str, *, only: str | None = None, used_by: str = "closed") -> list[str]:
     """A closed task's approved-but-unused approvals are used up (a `:use` row, `usedBy: "closed"`), so a Reopen asks
-    again instead of running on an approval given before Close (`questions.gate` reads `:use`). Idempotent; a use
-    that won the race stands. Returns the approved idem keys it retired."""
+    again instead of running on an approval given before Close (`questions.gate` reads `:use`). `only`: just that
+    approval (a stale card, `usedBy: "superseded"`). Idempotent; a use that won the race stands. Returns the
+    approved idem keys it retired."""
     rows = await _effects(ws, f"{task_id}:")
     used = {r["idemKey"].removesuffix(":use") for r in rows if r.get("type") == "effect_use"}
     done = []
     for r in rows:
         if r.get("type") != "effect" or r.get("state") != "approved" or r["idemKey"] in used:
+            continue
+        if only is not None and r["idemKey"] != only:
             continue
         now = utc_now_iso()
         try:
@@ -98,7 +101,7 @@ async def retire_approvals(ws: str, task_id: str) -> list[str]:
                         "sk": ts.effect_sk(f"{r['idemKey']}:use"),
                         "type": "effect_use",
                         "idemKey": f"{r['idemKey']}:use",
-                        "usedBy": "closed",
+                        "usedBy": used_by,
                         "operandsHash": r["operandsHash"],
                         "createdAt": now,
                         "updatedAt": now,

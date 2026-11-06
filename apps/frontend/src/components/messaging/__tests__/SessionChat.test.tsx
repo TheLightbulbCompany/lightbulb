@@ -153,3 +153,12 @@ it("answers an agent's card as the person, addressed to the agent, under the car
     text: "Studio", mentions: [{ kind: "agent", id: "agent-ceo" }], replyToMessageId: "card", threadRootMessageId: null,
   })));
 });
+
+it("draws a task's lifecycle line as a quiet rule, not a message (UX slice 3)", async () => {
+  const done = { ...fromBob, messageId: "m2", messageSeq: 2, author: { kind: "agent" as const, id: "ceo", displayName: "Lightbulb" }, text: "Closed by Sam", kind: "marker" };
+  rooms.value.messages = [fromBob, done];
+  render(<SessionChat sessionId="s1" sessionOwnerId="user_alice" openChat={vi.fn(async () => detail)} readOnly />);
+  const rule = await screen.findByRole("separator", { name: /^Closed by Sam at / });
+  expect(rule).toHaveTextContent("Closed by Sam");
+  expect(screen.queryByRole("article", { name: "Message from Lightbulb" })).toBeNull();
+});

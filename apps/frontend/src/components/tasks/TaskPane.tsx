@@ -2,9 +2,8 @@
 
 // One task, opened from a card, a link or a panel (mockup step 8): header with its controls,
 // a Needs-you card only while something is open, the task
-// room as read-only progress, the outputs, and folded Details. Section order is the mockup's.
-// Steering is the room's own composer ("Replying to: …", taskReply.ts); a one-line note only when that
-// composer isn't on screen (opened from Home or Work).
+// room as read-only progress (with its lifecycle lines), its steps, the outputs, and folded Details.
+// Steering lives here, in the pane's own box (UX slice 3): the room's composer stays the room's.
 
 import { useEffect, useRef, useState, type ReactElement, type RefObject } from "react";
 import { ArrowLeft } from "lucide-react";
@@ -18,13 +17,13 @@ import { Input } from "@/components/ui/input";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { capture } from "@/lib/analytics";
 import { DecisionCard, endedLabel } from "./DecisionCard";
-import { TaskStatus } from "./TaskCard";
-import { sendToTask, useMarkTaskPaneOpen, useMarkTaskSteerable, useRoomComposerShown, useShowSteered } from "./taskReply";
+import { ActorLine, TaskStatus } from "./TaskCard";
+import { sendToTask, useShowSteered } from "./taskReply";
 import { useTaskActions } from "./useTaskActions";
 
 const TRANSCRIPT_WORDS: ChatWords = {
   label: "Task progress", title: "Progress",
-  empty: "Lightbulb posts this task's progress here.",
+  empty: "Each step of this task shows here as it happens.",
   unavailable: "This task's progress isn't available.", full: "This task's progress is full.", ended: "This task is closed.",
 };
 
@@ -41,7 +40,6 @@ export function TaskPane({ taskId, viewerId, onClose, headingRef, backLabel = "B
   const gone = error instanceof ApiError && (error.status === 403 || error.status === 404);
   const ownHeading = useRef<HTMLHeadingElement>(null);
   const heading = headingRef ?? ownHeading;
-  useMarkTaskPaneOpen(taskId);
 
   // One read mark per open.
   useEffect(() => {
@@ -57,6 +55,8 @@ export function TaskPane({ taskId, viewerId, onClose, headingRef, backLabel = "B
     <header className="room-context-header">
       <Button variant="ghost" aria-label={backLabel} onClick={onClose}><ArrowLeft aria-hidden="true" />Back</Button>
       <h3 ref={heading} tabIndex={-1} className="min-w-0 truncate font-semibold">{who}</h3>
+      {/* The status sits in the header row (as Claude's thread header does); the body never repeats it. */}
+      {data && <TaskStatus task={data.task} viewerId={viewerId} />}
     </header>
     {!data
       ? !error ? <p role="status" className="p-4 text-ui text-muted-foreground">Loading…</p>
@@ -81,14 +81,11 @@ function TaskPaneBody({ detail, viewerId }: { detail: TaskDetail; viewerId: stri
   const hideCard = (m: { kind?: string | null; taskRefs?: { taskId: string }[] | null }) =>
     m.kind === "question" || (!!m.taskRefs?.length && m.taskRefs.every((r) => r.taskId === task.taskId));
   const view = summaryView(task, viewerId);
-  // The room's composer steers this task when it is on screen; otherwise a one-line note here.
-  const composerShown = useRoomComposerShown(task.originRoomId);
   const effects = open ? detail.effects.filter((e) => e.state !== "proposed") : detail.effects;
   const closed = view.word === "Closed";
   // Steering is offered while it runs or needs the viewer; a Done task only after Follow up; a Closed one never.
   const [followUp, setFollowUp] = useState(false);
   const steerable = view.word === "Working" || view.word === "Needs you" || (view.word === "Done" && followUp);
-  useMarkTaskSteerable(task.taskId, steerable);
   const effectRows = effectFooter(effects, closed);
   return <div className="room-context-body flex min-h-0 flex-col gap-3">
     <TaskHeader task={task} viewerId={viewerId} />
@@ -100,11 +97,12 @@ function TaskPaneBody({ detail, viewerId }: { detail: TaskDetail; viewerId: stri
       <SessionChat sessionId={detail.taskRoomId} sessionOwnerId={task.ownerUserId ?? ""} words={TRANSCRIPT_WORDS}
         openChat={async (roomId) => ({ roomId })} readOnly hideMessage={hideCard} />
     </div>
-    {/* One text box: the room's composer when it is on screen, else this line; never beside a typed answer. */}
+    <TaskSteps detail={detail} live={view.word === "Working"} />
+    {/* The pane's own steer box; never beside a typed answer. */}
     {view.word === "Done" && !followUp && <div className="px-1">
       <Button type="button" size="sm" variant="outline" onClick={() => setFollowUp(true)}>Follow up</Button>
     </div>}
-    {steerable && !composerShown && !(open?.canAnswer && !open.options.length) && <AddNote task={task} autoFocus={followUp} />}
+    {steerable && !(open?.canAnswer && !open.options.length) && <AddNote task={task} autoFocus={followUp} />}
     {/* With a question open, its card above already shows the output and the pending effect. */}
     {task.output && !open && <section aria-label="Outputs" className="editorial-card px-3 py-2 text-ui">
       <span aria-hidden="true">📎 </span>{task.output.title}
@@ -157,7 +155,18 @@ export function TaskHeader({ task, viewerId }: { task: TaskSummary; viewerId: st
   const view = summaryView(task, viewerId);
   // Stop only while something runs: a task that needs the viewer (or is done) has nothing to stop.
   const live = view.word === "Working";
-  const press = async (verb: "stop" | "resolve" | "reopen") => {
+  // After the status word changes, every button is inert for 600 ms: a press meant for Stop can't land on what
+  // took its place (UX audit 2).
+  const [shownWord, setShownWord] = useState(view.word);
+  const [settling, setSettling] = useState(false);
+  if (shownWord !== view.word) { setShownWord(view.word); setSettling(true); }
+  useEffect(() => {
+    if (!settling) return;
+    const timer = window.setTimeout(() => setSettling(false), 600);
+    return () => window.clearTimeout(timer);
+  }, [settling]);
+  const busy = pending || settling;
+  const press = async (verb: "stop" | "resolve" | "reopen" | "retry") => {
     setConfirmStop(false);
     setPending(true);
     const res = await act(task, verb);
@@ -165,24 +174,29 @@ export function TaskHeader({ task, viewerId }: { task: TaskSummary; viewerId: st
     setError(res.ok ? null : res.message);
   };
   return <section aria-label="Task status" className="grid gap-1 px-1">
+    {/* The task's title; while it runs, the live line beside it ("Growth · working · 14s", the seconds tick),
+        else the reason once. The word itself sits in the pane's header row. */}
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-ui text-muted-foreground">
       <span className="min-w-0 font-semibold text-foreground">{task.title}</span>
-      <TaskStatus task={task} viewerId={viewerId} />
-      {view.reason && <span>{view.reason}</span>}
+      {live ? <ActorLine task={task} viewerId={viewerId} className="tabular-nums" /> : view.reason && <span>{view.reason}</span>}
     </div>
     {/* Fixed slots (UX audit 2, P0): Stop, Close and Reopen never take each other's place, so a press can't land on
         a button that changed under the cursor. A running task is stopped (asked once, on its own row), never
         resolved under it; Reopen undoes either and runs nothing. */}
     <div className="flex gap-2">
       <span data-action-slot="stop" className="w-[4.5rem]">
-        {live && <Button type="button" size="sm" variant="outline" disabled={pending || confirmStop} aria-expanded={confirmStop}
+        {live && <Button type="button" size="sm" variant="outline" disabled={busy || confirmStop} aria-expanded={confirmStop}
           onClick={() => setConfirmStop(true)}>Stop</Button>}
       </span>
+      {/* A failed task runs again from here, on its own slot (the owner's; the server's view offers it). */}
+      <span data-action-slot="retry" className="w-[4.5rem]">
+        {view.action === "retry" && <Button type="button" size="sm" disabled={busy} onClick={() => void press("retry")}>Retry</Button>}
+      </span>
       <span data-action-slot="close" className="w-[4.5rem]">
-        {!live && task.status !== "resolved" && <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={() => void press("resolve")}>Close</Button>}
+        {!live && task.status !== "resolved" && <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => void press("resolve")}>Close</Button>}
       </span>
       <span data-action-slot="reopen" className="w-[5rem]">
-        {task.status === "resolved" && <Button type="button" size="sm" variant="outline" disabled={pending} onClick={() => void press("reopen")}>Reopen</Button>}
+        {task.status === "resolved" && <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => void press("reopen")}>Reopen</Button>}
       </span>
     </div>
     {live && confirmStop && <span role="group" aria-label="Stop this task?" className="inline-flex items-center gap-2 text-ui">
@@ -215,10 +229,7 @@ function AddNote({ task, autoFocus = false }: { task: TaskSummary; autoFocus?: b
 }
 
 export function TaskDetails({ detail }: { detail: TaskDetail }): ReactElement {
-  const { tasks } = useLiveEvents();
   const { task, attempts } = detail;
-  const [trace, setTrace] = useState<TaskTrace | { error: true } | null | undefined>(undefined);
-  const latest = attempts.reduce((n, a) => Math.max(n, a.n), 0);
   const cost = task.budgetUsd != null || task.costUsd
     ? `${money(task.costUsd ?? 0)}${task.budgetUsd != null ? ` of ${money(task.budgetUsd)} budget` : ""}` : null;
   return <details className="px-1 text-ui">
@@ -228,20 +239,33 @@ export function TaskDetails({ detail }: { detail: TaskDetail }): ReactElement {
       {task.runsOn && <><dt className="text-muted-foreground">Runs on</dt><dd>Lightbulb cloud</dd></>}
       {cost && <><dt className="text-muted-foreground">Cost</dt><dd>{cost}</dd></>}
     </dl>
-    {latest > 0 && <details className="mt-2" onToggle={(event) => {
-      if ((event.currentTarget as HTMLDetailsElement).open && trace === undefined) {
-        setTrace(null);
-        void tasks.trace(task.taskId, latest).then(setTrace, () => setTrace({ error: true }));
-      }
-    }}>
-      <summary className="cursor-pointer text-muted-foreground">Steps</summary>
-      {trace == null ? <p className="text-muted-foreground">Loading…</p>
-        : "error" in trace ? <p className="text-muted-foreground">The steps aren&apos;t available.</p>
-        : !trace.recentTools.length ? <p className="text-muted-foreground">No steps yet.</p>
-        : <ol className="mt-1 max-h-64 overflow-auto text-caption" aria-label={`Run ${trace.attempt} steps`}>
-          {trace.recentTools.map((tool, i) => <li key={i} className="truncate">{toolLine(tool)}</li>)}
-        </ol>}
-    </details>}
+  </details>;
+}
+
+/** The latest run's steps, under Progress: read when opened, and again every few seconds while it runs. */
+function TaskSteps({ detail, live }: { detail: TaskDetail; live: boolean }): ReactElement | null {
+  const { tasks } = useLiveEvents();
+  const latest = detail.attempts.reduce((n, a) => Math.max(n, a.n), 0);
+  const [open, setOpen] = useState(false);
+  const [trace, setTrace] = useState<TaskTrace | { error: true } | null>(null);
+  const taskId = detail.task.taskId;
+  useEffect(() => {
+    if (!open || !latest) return;
+    let alive = true;
+    const read = () => void tasks.trace(taskId, latest).then((t) => { if (alive) setTrace(t); }, () => { if (alive) setTrace({ error: true }); });
+    read();
+    const timer = live ? window.setInterval(read, 5000) : undefined;
+    return () => { alive = false; window.clearInterval(timer); };
+  }, [open, live, latest, taskId, tasks]);
+  if (!latest) return null;
+  return <details className="px-1 text-ui" onToggle={(event) => setOpen((event.currentTarget as HTMLDetailsElement).open)}>
+    <summary className="cursor-pointer text-muted-foreground">Steps{detail.attempts.length > 1 ? ` · run ${latest}` : ""}</summary>
+    {trace == null ? <p className="text-muted-foreground">Loading…</p>
+      : "error" in trace ? <p className="text-muted-foreground">The steps aren&apos;t available.</p>
+      : !trace.recentTools.length ? <p className="text-muted-foreground">No steps yet.</p>
+      : <ol className="mt-1 max-h-64 overflow-auto text-caption" aria-label={`Run ${trace.attempt} steps`}>
+        {trace.recentTools.map((tool, i) => <li key={i} className="truncate">{toolLine(tool)}</li>)}
+      </ol>}
   </details>;
 }
 

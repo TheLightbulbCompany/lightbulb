@@ -23,11 +23,12 @@ async def a07(ctx: Ctx) -> Result:
     finance = done  # the finished task; its specialist labels the result
     task_id = (finance or {}).get("taskId")
 
-    def results(rows: list[dict]) -> list[dict]:  # a thread reply under the card (`end_attempt`'s thread_root)
+    def results(rows: list[dict]) -> list[dict]:  # the one-line result in the main chat (`activities._announce`)
         return [
             m
             for m in rows
-            if m.get("kind") == "result" and any(r.get("taskId") == task_id for r in m.get("taskRefs") or [])
+            if m.get("kind") in ("result", "task_line")
+            and any(r.get("taskId") == task_id for r in m.get("taskRefs") or [])
         ]
 
     # The task goes idle before `end_attempt` posts the result (run 4: read once, between the two).

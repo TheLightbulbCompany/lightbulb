@@ -4,9 +4,10 @@
 // One shared room list read (SWR dedupes it across every message in the room).
 
 import type { ReactElement } from "react";
+import { ChevronRight } from "lucide-react";
 import { useTask, useTaskList, type CanonicalRoomMessage, type TaskSummary } from "@lightbulb/shared";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
-import { TaskCard } from "./TaskCard";
+import { TaskCard, TaskDot } from "./TaskCard";
 
 export function MessageTasks({ message, viewerId, onOpen }: {
   message: CanonicalRoomMessage; viewerId: string; onOpen?: (taskId: string) => void;
@@ -26,9 +27,27 @@ export function MessageTasks({ message, viewerId, onOpen }: {
         {refs.map((r) => <div key={r.taskId} className="mt-1.5 h-14 max-w-xl rounded-lg border border-border bg-muted/40 motion-safe:animate-pulse" />)}
       </div>;
   }
+  // The Router's one-line result ("Done: …") carries its task as a chip, not a second card (UX slice 3).
+  const Ref = message.kind === "task_line" ? RefChip : RefCard;
   return <div aria-label="Tasks in this message">
-    {refs.map((r) => <RefCard key={r.taskId} taskId={r.taskId} listed={byId.get(r.taskId)} viewerId={viewerId} onOpen={onOpen} />)}
+    {refs.map((r) => <Ref key={r.taskId} taskId={r.taskId} listed={byId.get(r.taskId)} viewerId={viewerId} onOpen={onOpen} />)}
   </div>;
+}
+
+/** One line: the task's live dot and title; it opens the task. */
+function RefChip({ taskId, listed, viewerId, onOpen }: {
+  taskId: string; listed: TaskSummary | undefined; viewerId: string; onOpen?: (taskId: string) => void;
+}): ReactElement | null {
+  const { tasks } = useLiveEvents();
+  const { data } = useTask(tasks, listed ? null : taskId);
+  const task = listed ?? data?.task;
+  if (!task) return null;
+  return <button type="button" data-task-chip={taskId} onClick={() => onOpen?.(taskId)}
+    className="mt-1 inline-flex max-w-full items-center gap-1.5 rounded-md border border-border px-2 py-0.5 text-ui hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring">
+    <TaskDot task={task} viewerId={viewerId} />
+    <span className="min-w-0 truncate font-semibold">{task.title}</span>
+    <ChevronRight aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
+  </button>;
 }
 
 /** A card whose task the room list doesn't hold (older than its pages, or another scope) reads it by id. */

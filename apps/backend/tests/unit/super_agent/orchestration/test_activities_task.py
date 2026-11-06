@@ -41,6 +41,7 @@ class FakeClient:
 def world(table, monkeypatch):  # noqa: F811
     w = {
         "posts": [],
+        "marks": [],  # lifecycle markers in the task room (UX slice 3), kept apart from the posts people read
         "pushes": [],
         "usage": [],
         "invites": [],
@@ -54,6 +55,9 @@ def world(table, monkeypatch):  # noqa: F811
     }
 
     async def post(ws, room_id, **kw):
+        if kw.get("kind") == "marker":
+            w["marks"].append((room_id, kw["text"], kw["event_id"]))
+            return "mark"
         w["posts"].append({"room": room_id, **kw})
         return f"m{len(w['posts'])}"
 
@@ -242,9 +246,13 @@ async def test_end_attempt_posts_result_as_lightbulb(world):
     await acts.acquire_slot(WS, tid)
     await _ended(tid, "completed")
     room, origin = world["posts"]  # the task room first: it adopts any files
-    assert origin["room"] == ROOM and origin["thread_root"] == ROOT and origin["specialist"] == "finance"
-    assert origin["kind"] == "result" and origin["task_refs"] == [{"taskId": tid, "role": "started"}]
-    assert room["room"] == ts.task_room_id(tid) and room["text"] == "Paid Acme."
+    # UX slice 3: the main chat gets one line with the task as its chip, never the result in a reply thread.
+    assert origin["room"] == ROOM and "thread_root" not in origin and origin["text"] == "Done: Paid Acme."
+    assert origin["kind"] == "task_line" and origin["task_refs"] == [{"taskId": tid, "role": "started"}]
+    assert room["room"] == ts.task_room_id(tid) and room["text"] == "Paid Acme." and room["kind"] == "result"
+    assert [m[1] for m in world["marks"]] == ["Started", "Done"]
+    await acts.end_attempt(WS, tid, 1, "completed", None)  # a retried end_attempt posts nothing new
+    assert len({p["event_id"] for p in world["posts"]}) == 2 and len({m[2] for m in world["marks"]}) == 2
     assert (await repo.get_task(WS, tid))["status"] == "idle"
     assert tid not in (await repo.get_slots(WS))["leases"]
     assert world["client"].signals == []  # no Router turn per result
@@ -303,9 +311,9 @@ async def test_end_attempt_result_files_go_to_the_task_room_post(world):
     files = [{"attachmentId": str(uuid.uuid4()), "fileName": "agenda.docx", "contentType": "application/pdf"}]
     await repo.update_attempt(WS, tid, 1, {"attachments": files}, allowed_status=frozenset({"dispatched"}))
     await _ended(tid, "completed", output="The agenda is ready.")
-    room, origin = world["posts"]  # task room first, the note only once the files are attached
+    room, origin = world["posts"]  # task room first: the files live in the task, the main chat gets one line
     assert room["room"] == ts.task_room_id(tid) and room["uploaded_attachments"] == files
-    assert origin.get("uploaded_attachments") is None and "agenda.docx" in origin["text"]
+    assert origin.get("uploaded_attachments") is None and origin["text"] == "Done: The agenda is ready."
     # UX slice 5: the file stays on the task as what it made, openable from the task room
     (out,) = (await repo.get_task(WS, tid))["outputs"]
     assert (out["id"], out["kind"], out["ref"]["roomId"]) == (
@@ -333,7 +341,7 @@ async def test_a_refused_adoption_posts_the_result_without_files_or_note(world, 
     await _ended(tid, "completed", output="The agenda is ready.")
     room, origin = world["posts"]
     assert room["room"] == ts.task_room_id(tid) and not room.get("uploaded_attachments")
-    assert origin["text"] == "The agenda is ready."  # no "(Attached in the task: …)" for a file that never landed
+    assert origin["text"] == "Done: The agenda is ready."
     assert not (await repo.get_task(WS, tid)).get("outputs")
 
 
@@ -341,7 +349,9 @@ async def test_end_attempt_failure_pushes_requester_only(world):
     tid = await _task()
     await _attempt(tid)
     await _ended(tid, "failed")
-    assert world["pushes"] == ["sam"] and world["posts"] == []
+    (line,) = world["posts"]  # the main chat says it didn't finish, with the task (and its Retry) as the chip
+    assert world["pushes"] == ["sam"] and line["kind"] == "task_line" and line["text"].startswith("Didn't finish:")
+    assert world["marks"][-1][1] == "Didn't finish"
     assert (await repo.get_task(WS, tid))["status"] == "failed"
 
 
@@ -617,3 +627,39 @@ async def test_reopen_after_close_asks_again(world):
     assert [e["usedBy"] for e in await effects_repo.effects_for(WS, tid, "h2") if e.get("type") == "effect_use"] == [
         f"{tid}:1:d2"
     ]
+
+
+async def test_an_automation_room_keeps_the_whole_result(world):
+    """No Router thread (an automation delivers to its room): the result itself is the room's post, no one-liner."""
+    tid = ts.new_task_id()
+    await repo.create_task(
+        WS,
+        {
+            "taskId": tid,
+            "identifier": "LB-3",
+            "title": "Weekly signups",
+            "description": "d",
+            "status": "queued",
+            "audience": {"kind": "room", "roomId": ROOM},
+            "lane": "shared",
+            "triggerId": "manual:s2:f2",
+            "ownerUserId": "sam",
+        },
+    )
+    await _attempt(tid)
+    await _ended(tid, "completed", output="41 signups this week.")
+    room, origin = world["posts"]
+    assert origin["room"] == ROOM and origin["kind"] == "result" and origin["text"] == "41 signups this week."
+
+
+async def test_reopen_and_person_closes_post_no_workflow_marker(world):
+    """A person's Close, Stop and Reopen are marked by the route with their name; the workflow's move adds none."""
+    tid = await _task()
+    await _attempt(tid)
+    await _ended(tid, "completed")
+    marks = len(world["marks"])
+    await acts.transition(WS, tid, "resolved", "resolved")
+    await acts.transition(WS, tid, "idle", "reopened")
+    assert len(world["marks"]) == marks
+    await acts.transition(WS, tid, "resolved", "quiet")  # nobody closed it: the workflow says Closed
+    assert world["marks"][-1][1] == "Closed"

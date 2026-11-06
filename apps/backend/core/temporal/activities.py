@@ -235,6 +235,7 @@ async def begin_attempt(ws: str, task_id: str, input_trigger_ids: list[str], sta
         last = attempts[-1]
         # A retry after put_attempt landed: finish the move it may have missed (no-op when done).
         await _move(ws, task_id, "working", fields={"attemptCount": last["n"]})
+        await _announce(ws, task_id, "working")
         return AttemptRef(last["n"], last["runId"])
     n = len(attempts) + 1
     kind = await _session_kind(ws)
@@ -252,6 +253,7 @@ async def begin_attempt(ws: str, task_id: str, input_trigger_ids: list[str], sta
         },
     )
     await _move(ws, task_id, "working", fields={"attemptCount": n})
+    await _announce(ws, task_id, "working")
     return AttemptRef(n, att["runId"])
 
 
@@ -455,6 +457,7 @@ async def end_attempt(ws: str, task_id: str, n: int, outcome: str, error: str | 
         )
     tree = await tasks_repo.get_task_tree(ws, task_id)
     task = tree["task"]
+    to = reason = None
     if outcome != "runtime_lost":  # the workflow decides between another attempt and `failed`
         to, reason = _STATUS_AFTER.get(outcome, ("failed", outcome))
         await _move(ws, task_id, to, reason)
@@ -494,7 +497,10 @@ async def end_attempt(ws: str, task_id: str, n: int, outcome: str, error: str | 
             await task_conversation.post_as_lightbulb(ws, ts.task_room_id(task_id), **result_room)
         for f in files:  # what it made stays on the task for every status (UX slice 5)
             await tasks_access.record_output(ws, task_id, tasks_access.file_output(task_id, f))  # best effort
-        if room:
+        # A Router conversation gets one line in its main chat (`_announce`), never the whole result in a reply
+        # thread (UX slice 3): the result lives in the task. With no Router thread (an automation's room) the
+        # result itself is the post.
+        if room and not root:
             names = ", ".join(f["fileName"] for f in files)
             try:
                 await task_conversation.post_as_lightbulb(
@@ -503,15 +509,20 @@ async def end_attempt(ws: str, task_id: str, n: int, outcome: str, error: str | 
                     text=f"{text}\n\n_(Attached in the task: {names}.)_" if files else text,
                     event_id=f"task-result:{task_id}:{n}",
                     specialist=task.get("specialist"),
-                    thread_root=root,
                     task_refs=refs,
                     kind="result",
                 )
-                await messaging.ask_who_should_see(ws, {"roomId": room}, "completed")
             except messaging.ApiProblem:
                 # A deleted or left room: the task room has the result, and the attempt must still end (a
                 # failed end_attempt fails the workflow and strands an automation's run claim).
                 logger.warning("end_attempt: origin room refused the result task=%s attempt=%s", task_id, n)
+    if to:
+        await _announce(ws, task_id, to, reason)
+    if room and outcome == "completed" and att.get("output"):
+        try:
+            await messaging.ask_who_should_see(ws, {"roomId": room}, "completed")
+        except messaging.ApiProblem:
+            logger.warning("end_attempt: invite ask not posted task=%s attempt=%s", task_id, n)
     if not first:
         return
     if outcome in ("failed", "refused", "unavailable", "checkpoint_failed") and requester:
@@ -531,6 +542,76 @@ async def transition(ws: str, task_id: str, to: str, reason: str | None) -> None
         task = await _task(ws, task_id)
         if task["status"] != to:
             raise
+    await _announce(ws, task_id, to, reason)
+
+
+# --- lifecycle lines (UX slice 3) ----------------------------------------------------------------------
+
+_MARKS = {"working": "Started", "waiting": "Needs you", "idle": "Done", "failed": "Didn't finish", "resolved": "Closed"}
+#: A person's Close, Stop or Reopen: the route marks it with their name (routers/tasks.py `_act`).
+_PERSON_REASONS = frozenset({"resolved", "stopped", "dismissed", "reopened"})
+_FAILED_WHY = {
+    "refused": "the computer it runs on refused it",
+    "unavailable": "the computer it runs on wasn't available",
+    "runtime_lost": "the run was lost",
+    "lost_run": "the run was lost",
+    "checkpoint_failed": "its work couldn't be saved",
+}
+_LINE_MAX = 200
+
+
+def _first_line(text: str) -> str:
+    line = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+    return line if len(line) <= _LINE_MAX else line[: _LINE_MAX - 1].rstrip() + "…"
+
+
+def _result_line(tree: dict, to: str, reason: str | None) -> str:
+    """The main chat's one line: "Done: <what came of it>." / "Didn't finish: <why>. Retry from the task." No model."""
+    if to == "failed":
+        return f"Didn't finish: {_FAILED_WHY.get(reason or '', 'something went wrong')}. Retry from the task."
+    task = tree["task"]
+    att = max(tree.get("attempts") or [], key=lambda a: a["n"], default=None)
+    said = _first_line(att.get("output") or "") if att and att.get("outcome") == "completed" else ""
+    outputs = task.get("outputs") or []
+    what = said or (outputs[-1].get("title") if outputs else "")
+    return f"Done: {what}" if what else "Done."
+
+
+async def _announce(ws: str, task_id: str, to: str, reason: str | None = None) -> None:
+    """One marker line in the task room per status change ("Started", "Needs you", "Done", "Closed"), and at Done or
+    Didn't finish one line in the main chat of the Router conversation it came from, with the task as a chip. Keyed
+    on the attempt and status, so a retried Activity posts once. Cosmetic: a failure is logged, never raised."""
+    try:
+        tree = await tasks_repo.get_task_tree(ws, task_id)
+        task = tree["task"]
+        if task is None or task["status"] != to or to not in _MARKS or reason in _PERSON_REASONS:
+            return
+        if to == "idle" and task.get("watchUntil"):  # still working: it wakes itself (watches.py)
+            return
+        n = int(task.get("attemptCount") or 0)
+        await task_conversation.ensure_task_room(ws, task)
+        await task_conversation.post_as_lightbulb(
+            ws,
+            ts.task_room_id(task_id),
+            text=_MARKS[to],
+            event_id=f"task-mark:{task_id}:{n}:{to}",
+            kind="marker",
+            progress=True,  # never a notification, never room memory
+            remember=False,
+        )
+        room, root = _origin(tree)
+        if to in ("idle", "failed") and root and room and _is_uuid(room):
+            await task_conversation.post_as_lightbulb(
+                ws,
+                room,
+                text=_result_line(tree, to, reason),
+                event_id=f"task-line:{task_id}:{n}:{to}",
+                specialist=task.get("specialist"),  # the specialist is the actor ("Lightbulb · Growth")
+                task_refs=[{"taskId": task_id, "role": "started"}],
+                kind="task_line",
+            )
+    except Exception:  # noqa: BLE001 -- a status change never fails over its line
+        logger.warning("lifecycle line not posted task=%s to=%s", task_id, to, exc_info=True)
 
 
 # --- Router ----------------------------------------------------------------------------------------

@@ -293,14 +293,24 @@ async def test_the_company_name_mid_sentence_is_not_addressing(world, text):
 
 async def test_paused_project_posts_nothing_and_answers_the_latest_ask_on_resume(world, monkeypatch):
     """UX slice 6 + W18-8: a paused project takes no Router turn and posts no public line (the paused bar tells the
-    sender). The latest message that spoke to Lightbulb is answered on Resume, once."""
-    asks: dict[str, int] = {}
+    sender). Resume answers the resumer's own latest ask, else the latest anyone's, once, and never for someone who
+    has left the room since."""
+    asks: dict[str, tuple[int, str]] = {}
 
-    async def put_ask(room_id, seq):
-        asks[room_id] = max(seq, asks.get(room_id, 0))
+    async def put_ask(room_id, seq, author_id):
+        asks[author_id] = max((seq, author_id), asks.get(author_id, (0, author_id)))
 
-    async def pop_ask(room_id):
-        return asks.pop(room_id, None)
+    async def pop_ask(room_id, prefer=None):
+        if not asks:
+            return None
+        seq, who = asks[prefer] if prefer in asks else max(asks.values())
+        asks.clear()
+        return {"seq": seq, "authorId": who}
+
+    members = {"sam", "ann"}
+
+    async def get_member(room_id, kind, mid):
+        return {"id": mid} if kind == "human" and mid in members else None
 
     monkeypatch.setattr(messaging_repo, "put_paused_ask", put_ask)
     monkeypatch.setattr(messaging_repo, "pop_paused_ask", pop_ask)
@@ -311,8 +321,9 @@ async def test_paused_project_posts_nothing_and_answers_the_latest_ask_on_resume
         world, {**_msg(4), "text": "Priya will run the sign-up table."}
     )  # W17-2: people talking to people are not an ask
     root = str(uuid.uuid4())
-    await _admit(world, {**_msg(3, root=root), "text": "hey Lightbulb, you there?"})  # the latest ask, in a thread
+    await _admit(world, {**_msg(3, root=root, author="ann"), "text": "hey Lightbulb, you there?"})  # a thread ask
     assert world["router"] == [] and world["jev"] == [] and world["posts"] == []
+    monkeypatch.setattr(messaging_repo, "get_member", get_member)
 
     seqs = []
 
@@ -320,9 +331,43 @@ async def test_paused_project_posts_nothing_and_answers_the_latest_ask_on_resume
         seqs.append((room_id, seq))
 
     monkeypatch.setattr(admission, "_admit_message", admit)
-    await admission.answer_paused_ask(ROOM)
-    await admission.answer_paused_ask(ROOM)  # a second Resume answers nothing
-    assert seqs == [(ROOM, 3)]
+    await admission.answer_paused_ask(ROOM, "sam")  # Sam resumes: Sam's own ask, not Ann's later one
+    await admission.answer_paused_ask(ROOM, "sam")  # a second Resume answers nothing
+    assert seqs == [(ROOM, 2)]
+    asks["ann"] = (3, "ann")
+    await admission.answer_paused_ask(ROOM, "bo")  # someone with no ask resumes: the latest anyone's
+    assert seqs[-1] == (ROOM, 3)
+    asks["ann"] = (5, "ann")
+    members.discard("ann")
+    await admission.answer_paused_ask(ROOM, "bo")  # Ann left while paused: nothing is answered
+    assert seqs == [(ROOM, 2), (ROOM, 3)]
+
+
+async def test_a_message_opening_with_a_persons_handle_skips_jev_and_ends_reading(world, monkeypatch):
+    """W18-7: "@priya thanks" is people talking (Jev's own `addressed_to_people` rule): no Jev call, no Router turn,
+    and the read receipt ends the sender's "reading…". A handle in passing ("price? cc @priya") still goes to Jev."""
+    reads = []
+
+    async def members(room_id):
+        return [
+            {"kind": "human", "id": "priya", "displayName": "Priya"},
+            {"kind": "human", "id": "sam", "displayName": "Sam"},
+        ]
+
+    async def emails(rows):
+        return {"priya": "priya@example.com"}
+
+    async def read_quietly(ws, ref):
+        reads.append(ref["messageId"])
+
+    monkeypatch.setattr(messaging_repo, "list_members", members)
+    monkeypatch.setattr("core.services.messaging.human_emails", emails)
+    monkeypatch.setattr("core.services.task_conversation.read_quietly", read_quietly)
+    priya = [{"kind": "human", "id": "priya"}]
+    await _admit(world, {**_msg(1), "text": "@priya thanks for running the table!", "mentions": priya})
+    assert world["jev"] == [] and world["router"] == [] and reads == [_msg(1)["messageId"]]
+    await _admit(world, {**_msg(2), "text": "price? cc @priya", "mentions": priya})
+    assert len(world["jev"]) == 1
 
 
 @pytest.mark.parametrize("source", ["voice", "a2a", "idea", "schedule"])

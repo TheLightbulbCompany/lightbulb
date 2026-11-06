@@ -14,9 +14,8 @@ describe("normalizeCtaLinks (W17-3)", () => {
   it("turns the walk-17 email's button into a CTA line, and Copy into its words", () => {
     expect(normalizeCtaLinks(WALK17_EMAIL).split("\n").at(-1)).toBe("[BOOK YOUR SPOT]");
     expect(plainCta(WALK17_EMAIL).split("\n").at(-1)).toBe("BOOK YOUR SPOT");
-    // Copy keeps the rest word for word, less the "Preview text:" line (W18).
-    expect(plainCta(WALK17_EMAIL).split("\n").slice(0, -1).join("\n"))
-      .toBe(WALK17_EMAIL.split("\n").slice(0, -1).filter((line) => !line.startsWith("Preview text:")).join("\n"));
+    // Copy keeps the rest word for word: meta lines go only from what a task made (resultPiece), never here.
+    expect(plainCta(WALK17_EMAIL).split("\n").slice(0, -1).join("\n")).toBe(WALK17_EMAIL.split("\n").slice(0, -1).join("\n"));
   });
 
   it.each([
@@ -63,7 +62,7 @@ describe("stripMetaLines", () => {
   it("drops an email's preview-text and preheader lines, keeps the subject and body (W18)", () => {
     const email = "Subject: Tea tasting with Mei\n\n**Preview text:** Join us for tea\nPreheader: tins\n\nHi all,\nCome taste.";
     expect(stripMetaLines(email)).toBe("Subject: Tea tasting with Mei\n\n\nHi all,\nCome taste.");
-    expect(plainCta("Hi\nPreview text: x")).toBe("Hi\n");
+    expect(plainCta("Hi\nPreview text: x")).toBe("Hi\nPreview text: x");  // an uploaded file's Copy keeps it
     expect(stripMetaLines("We preview text: drafts first.")).toBe("We preview text: drafts first.");
   });
 });

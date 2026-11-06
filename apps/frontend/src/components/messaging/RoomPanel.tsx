@@ -234,6 +234,16 @@ const roomMarkdown: Partial<Components> = {
 /** "Hi Lightbulb, …" asks Lightbulb as much as "@lightbulb" does (dev walk R8): the name spoken TO it at the start,
  *  exactly admission's `_LIGHTBULB_NAME` (apps/backend/core/services/admission.py). The name mid-sentence ("the
  *  Lightbulb app is down") is not an ask: the server sends that to Jev, which may let it pass. */
+/** A message that opens with a mentioned person's @handle and names no agent ("@priya thanks"): the server's
+ *  people-only rule (jev `addressed_to_people`). */
+export function opensWithPerson(message: Pick<RoomMessage, "text" | "mentions">, participants: readonly Pick<RoomParticipant, "kind" | "id" | "mentionHandle">[]): boolean {
+  if (message.mentions.some((m) => m.kind === "agent")) return false;
+  const handle = /^\s*@([A-Za-z0-9_-]+)/.exec(message.text)?.[1].toLowerCase();
+  if (!handle) return false;
+  const people = new Set(message.mentions.filter((m) => m.kind === "human").map((m) => m.id));
+  return participants.some((p) => p.kind === "human" && people.has(p.id) && p.mentionHandle?.toLowerCase() === handle);
+}
+
 export function namesAgent(text: string, name: string): boolean {
   const escaped = name.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return !!escaped && new RegExp(`^\\W*(?:(?:hey|hi|hello|yo|ok|okay)\\s+)?${escaped}\\b\\s*[,:?!]`, "i").test(text);
@@ -550,10 +560,16 @@ function RoomContent({
   const lastMine = lastMain && lastMain.author.kind === "human" && lastMain.author.id === currentUserId ? lastMain : undefined;
   const speaksToLightbulb = (message: RoomMessage) => !!lightbulbSeat && (room?.kind === "dm"
     || message.mentions.some((m) => m.kind === "agent" && m.id === lightbulbSeat.id) || namesAgent(message.text, lightbulbSeat.displayName));
-  // W18-7: no "reading…" where Lightbulb takes no turn: a paused room, or a message for people only ("@Priya thanks").
-  const forPeopleOnly = !!lastMine && lastMine.mentions.length > 0 && lastMine.mentions.every((m) => m.kind === "human") && !speaksToLightbulb(lastMine);
-  // W18-8: the paused note is the sender's alone (the bar under their message), and Resume answers it.
-  const pausedAsk = paused && !!lastMine && speaksToLightbulb(lastMine);
+  // W18-7: no "reading…" where Lightbulb takes no turn: a paused room, or a message for people only. The server's
+  // rule (admission `_to_people`, Jev's `addressed_to_people`): it OPENS with a mentioned person's @handle and names
+  // no agent. A handle in passing ("price? cc @priya") still goes to Jev and the Router, so it still reads.
+  const forPeopleOnly = !!lastMine && room?.kind !== "dm" && !speaksToLightbulb(lastMine) && opensWithPerson(lastMine, participants);
+  // W18-8: the paused note is the sender's alone (the bar above the composer), main chat or thread. Resume answers the
+  // resumer's own latest ask from the pause window, else the latest anyone's (`answer_paused_ask`), and says whose.
+  const pauseAsks = paused && visibleRoom?.pausedAt ? messages.filter((m) => !m.deletedAt && m.author.kind === "human"
+    && Date.parse(m.createdAt) >= Date.parse(visibleRoom.pausedAt!) && speaksToLightbulb(m)) : [];
+  const ownPauseAsk = pauseAsks.findLast((m) => m.author.id === currentUserId);
+  const resumeAnswers = ownPauseAsk ?? pauseAsks.at(-1);
   const askPending = front && lastMine && !paused && !forPeopleOnly
     && !runs.some((run) => run.state === "running")
     // A run for this ask that already ended (failed, stopped) shows its own outcome.
@@ -1161,9 +1177,9 @@ function RoomContent({
       {messageActionError && <p role="alert" className="room-typing text-ui text-err">{messageActionError}</p>}
       {!visibleRoom?.archivedAt && <RoomLimitBar account={billing} />}
       {paused && <div className="project-paused" role="status">
-        <span>{pausedAsk ? "Lightbulb is paused here, so it hasn't answered you. Only you see this." : "Lightbulb is paused here."}</span>
+        <span>{ownPauseAsk ? "Lightbulb is paused here, so it hasn't answered you. Only you see this." : "Lightbulb is paused here."}</span>
         {onPatchRoom && canPause && <Button type="button" size="sm" variant="ghost" className="h-7" disabled={!actionable || messageActionPending}
-          onClick={() => void runMessageAction(() => onPatchRoom({ paused: false }), `The ${projectNoun(visibleRoom?.kind)} could not be resumed.`)}>{pausedAsk ? "Resume and answer" : "Resume"}</Button>}
+          onClick={() => void runMessageAction(() => onPatchRoom({ paused: false }), `The ${projectNoun(visibleRoom?.kind)} could not be resumed.`)}>{!resumeAnswers ? "Resume" : resumeAnswers === ownPauseAsk ? "Resume and answer" : `Resume and answer ${resumeAnswers.author.displayName}`}</Button>}
       </div>}
       {showFirstReplies && <FirstReplyChips onPick={(text) => { if (composer.text.trim() === "") composer.onTextChange(text); setFocusToken((t) => t + 1); }} />}
       {visibleRoom?.feed ? <div className="room-composer room-archived" role="status">

@@ -1131,7 +1131,7 @@ async def test_pause_and_resume_a_project_are_audited(monkeypatch):
     await messaging.patch_room(auth, "chan", messaging.PatchRoomRequest(paused=False))
     assert patch_meta.await_args.args[1] == {"pausedAt": None, "pausedBy": None}
     assert audit.await_args.args[2] == "project.resumed"
-    answer.assert_awaited_once_with("chan")  # W18-8: the question asked while paused is answered now
+    answer.assert_awaited_once_with("chan", "admin")  # W18-8: the question asked while paused is answered now
 
 
 @pytest.mark.asyncio

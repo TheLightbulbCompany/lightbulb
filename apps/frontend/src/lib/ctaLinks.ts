@@ -38,12 +38,13 @@ export function normalizeCtaLinks(markdown: string): string {
   }).join("\n");
 }
 
-/** An email draft's meta lines ("Preview text: …", "Preheader: …", W18): notes for an email tool, not the email. */
+/** An email draft's meta lines ("Preview text: …", "Preheader: …", W18): notes for an email tool, not the email.
+ *  Only for what a task made (`resultPiece`, a task's file in the viewer); never a file someone uploaded. */
 export function stripMetaLines(text: string): string {
   return text.replace(/^[ \t]*(?:[-*+][ \t]+)?(?:\*\*|__)?(?:preview[ \t]+text|preheader(?:[ \t]+text)?)(?:\*\*|__)?[ \t]*:.*(?:\n|$)/gim, "");
 }
 
-/** Copy's text: placeholder links as their words, a call-to-action line as its words without brackets, no meta lines. */
+/** Copy's text: placeholder links as their words, and a call-to-action line as its words without brackets. */
 export function plainCta(text: string): string {
-  return normalizeCtaLinks(stripMetaLines(text)).replace(/^([ \t]*(?:[-*+][ \t]+)?)\[([^\]\n]{2,60})\][ \t]*$/gm, "$1$2");
+  return normalizeCtaLinks(text).replace(/^([ \t]*(?:[-*+][ \t]+)?)\[([^\]\n]{2,60})\][ \t]*$/gm, "$1$2");
 }

@@ -145,3 +145,24 @@ it("super-agent: a short text result opens as the doc itself, its button line co
     host.remove();
   } finally { superAgent.on = false; }
 });
+
+it("a task's email file drops its Preview text line; a file someone uploaded is copied as it is (W18)", async () => {
+  superAgent.on = true;
+  try {
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    const email = "# Tea tasting\n\nPreview text: Join us for tea\n\nHi all, come taste.";
+    for (const [id, task, copied] of [["t-md", "t1", "# Tea tasting\n\n\nHi all, come taste."], ["up-md", undefined, email]] as const) {
+      downloadBlob.mockResolvedValue(new Blob([email], { type: "text/markdown" }));
+      const host = document.createElement("span");
+      document.body.appendChild(host);
+      const { unmount } = render(<PaneActionsHost.Provider value={host}>
+        <ArtifactDockPanel id="artifact" params={{ src: "attachment", room: "r1", id, name: "invite.md", type: "text/markdown", ...(task ? { task } : {}) }} />
+      </PaneActionsHost.Provider>);
+      await userEvent.click(await within(host).findByRole("button", { name: "Copy text" }));
+      await vi.waitFor(() => expect(writeText).toHaveBeenLastCalledWith(copied));
+      unmount();
+      host.remove();
+    }
+  } finally { superAgent.on = false; }
+});

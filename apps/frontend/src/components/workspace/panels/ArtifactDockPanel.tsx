@@ -20,6 +20,7 @@ import { roomDisplayName } from "@lightbulb/shared";
 import { blobText } from "@/components/media/readBlob";
 import { formatBytes } from "@/lib/utils";
 import { docPreview, fileTypeWord, plainCta, resultPiece } from "@/components/creations/docText";
+import { stripMetaLines } from "@/lib/ctaLinks";
 import type { PanelProps } from "../panelComponents";
 import { DocumentContents } from "./DocumentContents";
 import { CONTENTS_MIN_HEADINGS, outlineOf } from "./documentOutline";
@@ -79,6 +80,7 @@ function FilePane({ source, task, from }: { source: FileSource; task: string | n
   useEffect(() => { clients.current = { api, teams, tasks }; });
   // Keyed on the source's content: an equal-but-new params object must not refetch or revoke the shown URL.
   const sourceKey = JSON.stringify(source);
+  const fromTask = !!task;
   useEffect(() => {
     const source = JSON.parse(sourceKey) as FileSource;
     let live = true;
@@ -88,7 +90,12 @@ function FilePane({ source, task, from }: { source: FileSource; task: string | n
       : source.src === "attachment"
       ? api.downloadBlob(`/messaging/rooms/${encodeURIComponent(source.room)}/attachments/${encodeURIComponent(source.id)}`)
       : teams.download(issueAttachmentContentPath(source.issue, source.id));
-    fetchBlob.then((blob) => {
+    // A task's text output drops an email's "Preview text:" lines (W18): its viewer and Copy read the email alone.
+    // A file someone uploaded is shown as it is. (A short text result is already cut by `resultPiece`.)
+    const shown = fromTask && source.src !== "text"
+      ? fetchBlob.then(async (blob) => /^text\/(markdown|plain)\b/.test(blob.type) ? new Blob([stripMetaLines(await blobText(blob))], { type: blob.type }) : blob)
+      : fetchBlob;
+    shown.then((blob) => {
       if (!live) return;
       // The viewer type is what the server served, never the URL's `type` param: a link that
       // says "pdf" over HTML bytes would otherwise put the page in an unsandboxed iframe on our
@@ -102,7 +109,7 @@ function FilePane({ source, task, from }: { source: FileSource; task: string | n
       setState({ status: "ready", blob: typed, url, name, type });
     }).catch((e) => { if (live) setState({ status: "error", message: describeError(e) }); });
     return () => { live = false; if (url) URL.revokeObjectURL(url); };
-  }, [sourceKey]);
+  }, [sourceKey, fromTask]);
   const superAgent = useSuperAgent();
   const text = state.status === "ready" && (state.type === "text/markdown" || state.type === "text/plain");
   // Super-agent: a text doc is titled by its first heading (RightPane reads `heading`; the file name is the line under).

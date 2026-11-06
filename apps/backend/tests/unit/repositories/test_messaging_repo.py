@@ -1647,11 +1647,15 @@ async def test_an_owner_who_wrote_before_setup_finished_still_gets_the_welcome_a
 
 @pytest.mark.asyncio
 async def test_paused_ask_keeps_the_latest_and_pops_once(table):
-    """W18-8: the latest message that spoke to Lightbulb while paused; an older redelivery never replaces it."""
+    """W18-8: each person's latest ask while paused (an older redelivery never replaces it); Resume takes the
+    resumer's own, else the latest anyone's, and clears the window."""
     room = str(uuid.uuid4())
     assert await repo.pop_paused_ask(room) is None
-    await repo.put_paused_ask(room, 5)
-    await repo.put_paused_ask(room, 3)
-    await repo.put_paused_ask(room, 7)
-    assert await repo.pop_paused_ask(room) == 7
-    assert await repo.pop_paused_ask(room) is None
+    await repo.put_paused_ask(room, 5, USER_A)
+    await repo.put_paused_ask(room, 3, USER_A)
+    await repo.put_paused_ask(room, 7, USER_B)
+    assert await repo.pop_paused_ask(room, USER_A) == {"seq": 5, "authorId": USER_A}
+    assert await repo.pop_paused_ask(room, USER_A) is None
+    await repo.put_paused_ask(room, 5, USER_A)
+    await repo.put_paused_ask(room, 7, USER_B)
+    assert await repo.pop_paused_ask(room, "someone-else") == {"seq": 7, "authorId": USER_B}

@@ -407,10 +407,91 @@ async def test_a05_and_a09_fail_fast_when_a2_made_no_tasks():
         assert not result.passed and result.evidence["reason"].startswith("needs A2")
 
 
-async def test_a04_needs_the_a2_card_to_reply_under():
+def _a04_ctx(status: str, *, eyes: bool = True):
+    """A4 over a fake room: Sam's ask gets a one-task card, the task row is ``status``, Priya's reply routes to it."""
+    steer = "33333333-3333-4333-8333-333333333333"
+    rows = [
+        {"type": "task", "taskId": steer, "status": status},
+        {"type": "trigger", "triggerId": "chat:rep", "routedTo": {"taskId": steer}},
+    ]
+    calls = []
+
+    def handler(request, user):
+        path = request.url.path
+        calls.append((request.method, path, user))
+        if path.endswith("/stop"):
+            return _json({}, 200)
+        if "/tasks/" in path:
+            return _json({"task": {"version": 3}})
+        if request.method == "POST":
+            if user == "sam":
+                return _json({"messageId": "ask", "messageSeq": 5})
+            return _json({"messageId": "rep", "messageSeq": 7, "threadRootMessageId": "card"})
+        card = {
+            "messageId": "card",
+            "messageSeq": 6,
+            "author": {"kind": "agent"},
+            "taskRefs": [{"taskId": steer, "role": "started"}],
+        }
+        reply = {"messageId": "rep", "messageSeq": 7, "reactions": [{"emoji": "👀"}] if eyes else []}
+        return _json({"messages": [card, reply]})
+
+    ctx = Fake(handler, rows)
+    return ctx, steer, calls
+
+
+async def test_a04_steers_its_own_working_task_and_sees_the_eyes():
+    from scripts.super_agent.acceptance.a04_steer import a04
+
+    ctx, steer, calls = _a04_ctx("working")
+    result = await a04(ctx)
+    assert result.passed, result.evidence
+    assert result.evidence["taskId"] == steer and result.evidence["stopped"] == 200
+    assert ("POST", "/api/v1/messaging/rooms/r1/messages", "priya") in calls
+    assert calls[-1] == ("POST", f"/api/v1/tasks/{steer}/stop", "sam")  # the research is stopped after the steer
+
+
+async def test_a04_without_the_eyes_fails_only_that_check():
+    from scripts.super_agent.acceptance.a04_steer import a04
+
+    result = await a04(_a04_ctx("working", eyes=False)[0])
+    assert not result.passed and result.evidence["eyes_ack_within_5s"] is False
+    assert result.evidence["input_reached_task"] is False  # no 👀 and no held attempt: the input never landed
+
+
+async def test_a04_never_replies_to_a_task_that_is_not_working():
+    from scripts.super_agent.acceptance.a04_steer import a04
+
+    ctx, steer, calls = _a04_ctx("idle")  # the #4876 shape: the task already ended, a reply would only be held
+    result = await a04(ctx)
+    assert not result.passed and result.evidence["reason"] == "steer task never reached working"
+    assert not [c for c in calls if c[2] == "priya"]
+    assert calls[-1] == ("POST", f"/api/v1/tasks/{steer}/stop", "sam")
+
+
+async def test_a04_stops_the_task_when_the_steer_raises():
+    import pytest
+
+    from scripts.super_agent.acceptance.a04_steer import a04
+
+    ctx, steer, calls = _a04_ctx("working")
+    inner = ctx.handler
+
+    def handler(request, user):
+        if user == "priya" and request.method == "POST":
+            raise httpx.ConnectError("api down")  # the reply post fails after the task is working
+        return inner(request, user)
+
+    ctx.handler = handler
+    with pytest.raises(httpx.ConnectError):
+        await a04(ctx)
+    assert calls[-1] == ("POST", f"/api/v1/tasks/{steer}/stop", "sam")
+
+
+async def test_a04_needs_the_a1_room():
     from scripts.super_agent.acceptance.a04_steer import a04
 
     ctx = Fake(lambda r, u: _json({}))
-    ctx.state.pop("cardMessageId", None)
+    ctx.state.pop("roomId")
     result = await a04(ctx)
-    assert not result.passed and result.evidence["reason"].startswith("needs A2")
+    assert not result.passed and result.evidence["reason"].startswith("needs A1")

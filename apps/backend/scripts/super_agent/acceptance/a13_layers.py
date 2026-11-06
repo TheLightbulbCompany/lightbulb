@@ -6,7 +6,9 @@ Three reads, each a module function a test can stand in for:
 - ``ctx.tasks_rows``: every task id A2 left in ``ctx.state["taskIds"]`` has its task row, an attempt, a
   subscription and a routed trigger.
 - ``legacy_rows``: the dev messaging table has no ``RUN#`` row under ``OWNER#{ws}`` and no ``FOLLOWUP#`` row under
-  any room the run used (``roomId`` + the DM rooms) -- the legacy room-run path never ran for this workspace.
+  any room the run used (``roomId`` + the DM rooms) -- the legacy room-run path never ran for this workspace,
+  except in an app's conversation room (room meta ``app``, "App · ..."): #4876 builds the app there on the
+  legacy room-run path by design, so those rows are reported as ``appRuns`` and do not fail the check.
 - ``router_runs``: every ``router_turn`` batch in the ``router:{ws}`` workflow's history, read back from the bridge
   (``runtime_runs.get_run``): its decisions are Router tools only. The bridge records ``recentTools`` for task runs
   only, so for a Router run the decisions ARE its tool log (``lightbulb_router`` tools record decisions and nothing
@@ -31,8 +33,15 @@ ROUTER_TOOLS = frozenset(
 DEV_TEMPORAL = {"TEMPORAL_ADDRESS": "lightbulb-dev.nv5xx.tmprl.cloud:7233", "TEMPORAL_NAMESPACE": "lightbulb-dev.nv5xx"}
 
 
+async def is_app_room(room_id: str) -> bool:
+    """An app's conversation room (``app_conversation._create``: room meta ``app``)."""
+    from core.repositories import messaging_repo
+
+    return bool(((await messaging_repo.get_room(room_id)) or {}).get("app"))
+
+
 async def legacy_rows(ws: str, room_ids: list[str], since: str | None = None) -> dict[str, list[str]]:
-    """``{"runs": [sk...], "followUps": [room/sk...]}`` from ``lightbulb-dev-messaging`` (7-day TTL rows). A
+    """``{"runs": [sk...], "appRuns": [sk...], "followUps": [room/sk...]}`` from ``lightbulb-dev-messaging`` (7-day TTL rows). A
     ``RUN#`` row counts when it is in one of ``room_ids`` or was written at/after ``since`` (this run): an older
     row from another room is stale history (gate runs 2-4: one ended row of 08:54Z failed every later run)."""
     from boto3.dynamodb.conditions import Key
@@ -55,9 +64,12 @@ async def legacy_rows(ws: str, room_ids: list[str], since: str | None = None) ->
         when = item.get("updatedAt") or item.get("createdAt")
         return item.get("roomId") in room_ids or not since or not when or when >= since
 
-    runs = [item["sk"] for item in await query(f"OWNER#{ws}", "RUN#") if this_run(item)]
+    items = [item for item in await query(f"OWNER#{ws}", "RUN#") if this_run(item)]
+    app_rooms = {room for room in {i.get("roomId") for i in items} if room and await is_app_room(room)}
+    runs = [i["sk"] for i in items if i.get("roomId") not in app_rooms]
+    app_runs = [i["sk"] for i in items if i.get("roomId") in app_rooms]
     follow_ups = [f"{room}/{i['sk']}" for room in room_ids for i in await query(f"ROOM#{room}", "FOLLOWUP#")]
-    return {"runs": runs, "followUps": follow_ups}
+    return {"runs": runs, "appRuns": app_runs, "followUps": follow_ups}
 
 
 async def dev_temporal_client():

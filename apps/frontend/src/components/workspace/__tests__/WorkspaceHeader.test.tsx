@@ -88,13 +88,17 @@ describe("WorkspaceHeader", () => {
     fireEvent.click(work);
     expect(openPanel).toHaveBeenCalledWith("teams-issues", {}, { pushUrl: true });
   });
-  it("opens Work on Automations while the super-agent switch is on", () => {
+  it("with the switch on, Settings is a place in the shell (aria-current), not a link out of it", () => {
     live.superAgent = true;
+    place = "settings";
     try {
       render(<WorkspaceHeader />);
-      fireEvent.click(screen.getByRole("button", { name: "Work" }));
-      expect(openPanel).toHaveBeenCalledWith("teams-routines", {}, { pushUrl: true });
-    } finally { live.superAgent = false; }
+      const settings = screen.getByRole("button", { name: "Settings" });
+      expect(settings).toHaveAttribute("aria-current", "page");
+      expect(screen.queryByRole("link", { name: "Settings" })).toBeNull();
+      fireEvent.click(settings);
+      expect(openPanel).toHaveBeenCalledWith("settings", {}, { pushUrl: true });
+    } finally { live.superAgent = false; place = "activity"; }
   });
   it("closes the right pane when it moves to another place, not when the place is the current one", () => {
     place = "activity";
@@ -105,19 +109,31 @@ describe("WorkspaceHeader", () => {
     fireEvent.click(screen.getByRole("button", { name: "Work" }));
     expect(closePane).toHaveBeenCalledOnce();
   });
-  it("with the switch on, reads Home (chats and projects), Activity, Chat, Work, Team, Library, Canvas", () => {
+  it("with the switch on, reads Home, Activity, Library, Canvas, Team, Settings: no Chat, no Work; a project lights nothing", () => {
     live.superAgent = true;
     place = "home";
     try {
       render(<WorkspaceHeader />);
       const rail = screen.getByRole("navigation", { name: "Workspace" });
       const labels = [...rail.querySelectorAll("button")].map((b) => b.getAttribute("aria-label"));
-      expect(labels.slice(labels.indexOf("Home"), labels.indexOf("Canvas") + 1)).toEqual(["Home", "Activity", "Chat", "Work", "Team", "Library", "Canvas"]);
+      expect(labels.slice(labels.indexOf("Home"), labels.indexOf("Team") + 1)).toEqual(["Home", "Activity", "Library", "Canvas", "Team"]);
+      expect(labels).toContain("Settings");
+      expect(labels).not.toContain("Chat");
+      expect(labels).not.toContain("Work");
       expect(screen.getByRole("button", { name: "Home" })).toHaveAttribute("aria-current", "page");
       fireEvent.click(screen.getByRole("button", { name: "Activity" }));
       expect(openPanel).toHaveBeenCalledWith("activity", {}, { pushUrl: true });
       fireEvent.click(screen.getByRole("button", { name: "Home" }));
       expect(openPanel).toHaveBeenCalledWith("home", {}, { pushUrl: true });
+    } finally { live.superAgent = false; place = "activity"; }
+  });
+  it("with the switch on, a project (the Chat place) lights no rail place", () => {
+    live.superAgent = true;
+    place = "chat";
+    try {
+      render(<WorkspaceHeader />);
+      const rail = screen.getByRole("navigation", { name: "Workspace" });
+      expect(rail.querySelector('[aria-current="page"]')).toBeNull();
     } finally { live.superAgent = false; place = "activity"; }
   });
   it("with the switch on, Activity badges exactly its Needs you count: not the legacy badge, not team runs", async () => {

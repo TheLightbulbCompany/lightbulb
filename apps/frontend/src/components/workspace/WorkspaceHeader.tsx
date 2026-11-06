@@ -35,11 +35,16 @@ const DESTINATIONS: readonly Destination[] = [
 
 // Super-agent (founder, 6 Nov 2026): Home is the chats and the project spaces; what Home showed (Needs you, mentions,
 // Ideas, the feed, Working/Done/Closed) is Activity, which keeps the panel key "activity" and every link to it.
+// UX slice 4: no Chat (a project or a DM is opened from the sidebar, which every place shows) and no Work (its tasks
+// are in Activity, its schedules in each project's Scheduled view and Activity's Scheduled group, Money in Settings ›
+// Business). Settings is a place at the foot, inside the shell.
 const SUPER_AGENT_DESTINATIONS: readonly Destination[] = [
   { place: "home", panel: "home", label: "Home", Icon: Home },
   { place: "activity", panel: "activity", label: "Activity", Icon: Bell },
-  ...DESTINATIONS.slice(1),
+  // Then Library · Canvas · Team (Creations replaces Library and Canvas in slice 5).
+  ...(["library", "canvas", "team"] as const).map((place) => DESTINATIONS.find((d) => d.place === place)!),
 ];
+const SETTINGS: Destination = { place: "settings", panel: "settings", label: "Settings", Icon: Settings };
 
 /** The global rail: the places, search, history and the account controls. */
 export function WorkspaceHeader({ chatReady = true, onNavigate }: {
@@ -97,7 +102,12 @@ export function WorkspaceHeader({ chatReady = true, onNavigate }: {
           account button. */}
       <ThemeToggles />
       <button type="button" onClick={() => { openSupport(); onNavigate?.(); }} aria-label="Get help" title="Get help"><HelpCircle size={20} aria-hidden="true" /></button>
-      <Link href="/settings" aria-label="Settings" title="Settings"><Settings size={20} aria-hidden="true" /></Link>
+      {superAgent
+        ? <button type="button" aria-label={SETTINGS.label} title={SETTINGS.label} aria-current={current === "settings" ? "page" : undefined}
+          onClick={() => { if (current !== "settings") closePane(); openPanel(SETTINGS.panel, {}, { pushUrl: true }); onNavigate?.(); }}>
+          <Settings size={20} aria-hidden="true" />
+        </button>
+        : <Link href="/settings" aria-label="Settings" title="Settings"><Settings size={20} aria-hidden="true" /></Link>}
       <UserButton appearance={{ elements: { avatarBox: "h-8 w-8" } }} />
     </nav>
   );

@@ -151,7 +151,10 @@ describe("HomeProjects", () => {
     const value = directory(ROOMS);
     messaging.value = value;
     render(<Fresh><HomeProjects /></Fresh>);
-    await userEvent.click(screen.getByRole("button", { name: "New project" }));
+    // Frame A (UX slice 4): the page's one primary action sits in the title row, beside "Home".
+    const title = screen.getByRole("heading", { level: 1, name: "Home" }).parentElement!;
+    expect(title).toHaveClass("frame-doc__title");
+    await userEvent.click(within(title).getByRole("button", { name: "New project" }));
     await userEvent.type(screen.getByLabelText("Project name"), "Hiring{Enter}");
     expect(value.directoryProps.onCreate).toHaveBeenCalledWith({ kind: "channel", name: "Hiring", members: [] });
     expect(ctl.activateMessagesPanel).toHaveBeenCalled();

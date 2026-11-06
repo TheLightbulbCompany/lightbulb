@@ -850,3 +850,28 @@ button.session-group-header:focus-visible, .session-group-more:focus-visible, .s
 .room-directory-more[open] > summary > .room-directory-more-chevron { transform: rotate(90deg); }
 @media (prefers-reduced-motion: reduce) { .room-directory-more-chevron { transition: none; } }
 @media (hover: none), (pointer: coarse) { .room-directory-more > summary { min-height: 44px; } }
+
+/* ── Super-agent frame (UX slice 4) ─────────────────────────────────────────
+   The project header: 48 tall, the name ▾ on the left at 600, at most four 28 controls on a 32 pitch on the right, their
+   labels only from 1280 px. The transcript and the composer share one 680 column, centred in what the pane leaves.
+   The composer rests as one 48 line (+ · text · Aa @ ↑), radius 12, and carries the page's one shadow. */
+.room-header[data-compact] { min-height: 48px; padding-block: 0; gap: 8px; }
+.room-header[data-compact] .room-audience { gap: 4px; }
+.room-header[data-compact] .room-view-toggle { height: 28px; min-width: 28px; padding-inline: 6px; }
+@media (max-width: 1279px) { .room-header[data-compact] .room-view-toggle > span:not([aria-hidden]) { display: none; } }
+.room-name-menu { min-width: 0; font-size: 1rem; }
+.room-name-menu > button { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; height: 28px; margin-left: -4px; padding: 0 4px; border-radius: 6px; font-weight: 600; color: var(--foreground); transition: background-color 120ms var(--ease-out); }
+.room-name-menu > button:hover, .room-name-menu > button[data-state="open"] { background: color-mix(in srgb, var(--midnight) 6%, transparent); }
+.room-name-menu > button:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.room-name-menu > button > svg { flex: none; color: var(--muted-foreground); }
+.room-panel[data-frame] .room-history-content { width: 100%; max-width: calc(680px + 2 * var(--room-gutter)); margin-inline: auto; }
+.room-panel[data-frame] .room-conversation > :is(.room-composer, .room-typing, .room-limit-bar) { width: calc(100% - 40px); max-width: 680px; margin-inline: auto; }
+.room-composer[data-compact] { padding: 9px 10px 9px 6px; border-radius: var(--radius-lg); box-shadow: var(--shadow-pop); }
+.room-composer-row { display: flex; align-items: flex-end; gap: 4px; min-height: 28px; }
+.room-composer-row > textarea { flex: 1; min-width: 0; align-self: center; }
+.room-composer-row .room-composer-actions { flex: none; }
+.room-composer-row .room-send { margin-left: 0; }
+.room-composer-plus { display: inline-flex; }
+.room-composer[data-compact] .room-format { padding-bottom: 4px; border-bottom: 1px solid var(--edge-soft); }
+.room-composer[data-compact] p[role="status"]:empty { display: none; }
+@media (pointer: coarse) { .room-composer-row .room-composer-actions > button, .room-composer-plus button { width: 44px; height: 44px; } }

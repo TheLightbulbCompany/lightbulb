@@ -49,10 +49,10 @@ export function useAutomationActions() {
 
 /** Who may turn a proposal on or resume it (shared `canDecide`, the server's two predicates). */
 export function useCanDecide(): (a: Pick<AutomationView, "deliverTo" | "ownerUserId" | "match">) => boolean {
-  const { userId } = useAuth();
+  const { userId, orgId } = useAuth();
   const { membership } = useOrganization();
   const admin = membership?.role === "org:admin";
-  return useCallback((a) => canDecide(a, { userId: userId ?? null, admin }), [admin, userId]);
+  return useCallback((a) => canDecide(a, { userId: userId ?? null, admin, orgId: orgId ?? null }), [admin, userId, orgId]);
 }
 
 /** Who may pause it, run it now or drop a proposal (the server's `_may_edit`): an org admin or its owner. */

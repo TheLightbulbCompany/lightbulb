@@ -40,7 +40,8 @@ import { RightPane } from "./RightPane";
 import { WorkspaceSidebar } from "./WorkspaceSidebar";
 import { WorkspaceHeader } from "./WorkspaceHeader";
 import { InvitePeopleDialog } from "./InvitePeopleDialog";
-import { MESSAGES_PANEL_ID, resolvePanelAlias, type PanelKind } from "./panelRegistry";
+import { MESSAGES_PANEL_ID, resolvePanelAlias, setSuperAgentAliases, type PanelKind } from "./panelRegistry";
+import { parseCommand } from "./urlChannel";
 import { deriveReconcilerAction, isCommandTargetOpen } from "./workspaceShellReconciler";
 import {
   attachShell,
@@ -111,7 +112,8 @@ function WorkspaceBody(): React.ReactElement {
       <div className="workspace-view workspace-view--chat" hidden={place !== "chat" && !fullScreen}>
         <ChatPanel id={MESSAGES_PANEL_ID} params={chatParams} />
       </div>
-      {main && Main && (
+      {/* Settings renders outside the provisioning gate (SettingsMain), so it is never drawn here. */}
+      {main && Main && main.component !== "settings" && (
         <div className="workspace-view" hidden={fullScreen}>
           <Main key={main.panelId} id={main.panelId} params={main.params} />
         </div>
@@ -119,6 +121,16 @@ function WorkspaceBody(): React.ReactElement {
       {pane && <RightPane key={pane.panelId} pane={pane} fullScreen={fullScreen} />}
     </div>
   );
+}
+
+/** Settings is reachable while the workspace is still being provisioned: the provision gate's and the trial emails'
+ *  Billing and Model links land here, so it sits outside ProvisioningStepper's ready-gate (which would only draw the
+ *  gate card again). */
+function SettingsMain(): React.ReactElement | null {
+  const { main } = useWorkspaceState();
+  if (main?.component !== "settings") return null;
+  const Settings = PANEL_COMPONENTS.settings;
+  return <div className="workspace-view workspace-view--settings"><Settings key={main.panelId} id={main.panelId} params={main.params} /></div>;
 }
 
 function AuthenticatedWorkspace({ workspaceName }: { workspaceName: string }): React.ReactElement {
@@ -243,6 +255,25 @@ function AuthenticatedWorkspace({ workspaceName }: { workspaceName: string }): R
     }
   }, []);
 
+  // Super-agent (UX slice 4): Work's keys open their new homes (panelRegistry's aliases), and /chat with nothing
+  // named lands on Home, not a conversation. The switch arrives with the live config, often after the first
+  // reconcile, so the URL is reconciled again once it does.
+  useEffect(() => {
+    setSuperAgentAliases(superAgent);
+    if (!superAgent || !getWorkspaceSnapshot().ready) return;
+    lastAppliedRef.current = null;
+    runReconciler(window.location.search);
+    const { place, chatParams } = getWorkspaceSnapshot();
+    if (!parseCommand(window.location.search) && place === "chat" && !chatParams.roomId && !chatParams.sessionId) {
+      openPanel("home");
+      // Keep what the URL carries (a Stripe or OAuth return: ?provider=…&checkout=…); only `panel` is set.
+      const sp = new URLSearchParams(window.location.search);
+      sp.set("panel", "home");
+      replaceSearchParams(sp);
+    }
+    return () => setSuperAgentAliases(false);
+  }, [superAgent, runReconciler]);
+
   useEffect(() => {
     // searchParams is the re-run TRIGGER only. Reconcile against the LIVE
     // window.location.search: a strip via replaceSearchParams (History API)
@@ -324,8 +355,9 @@ function AuthenticatedWorkspace({ workspaceName }: { workspaceName: string }): R
             <ChatHistorySync />
             <InvitePeopleDialog />
             <div className="workspace-shell" ref={shellRef} data-nav-open={navOpen}
-              // Only Chat has a sidebar; full screen folds it into the chat column.
-              data-sidebar={place === "chat" && !fullScreen} data-super-agent={superAgent || undefined}
+              // Without the super-agent only Chat has a sidebar; with it, every place does (UX slice 4). Full screen folds it
+              // into the chat column.
+              data-sidebar={(superAgent || place === "chat") && !fullScreen} data-super-agent={superAgent || undefined}
               onKeyDown={navOpen ? (e) => { if (e.key === "Escape") closeNav(); else trapTab(e, drawerParts()); } : undefined}>
               {/* Before the drawer in the DOM, so the drawer paints over it. */}
               <div className="workspace-nav-backdrop" onClick={closeNav} />
@@ -352,11 +384,15 @@ function AuthenticatedWorkspace({ workspaceName }: { workspaceName: string }): R
                       <p>Subscription confirmed! Your agent is being upgraded.</p>
                     </div>
                   )}
-                  {recoveryTriggered ? (
-                    <ProvisioningStepper trigger="recovery">{body}</ProvisioningStepper>
-                  ) : (
-                    <ProvisioningStepper>{body}</ProvisioningStepper>
-                  )}
+                  {/* Hidden, never unmounted, while Settings shows: the conversation keeps its state. */}
+                  <div className="workspace-gated" hidden={place === "settings"}>
+                    {recoveryTriggered ? (
+                      <ProvisioningStepper trigger="recovery">{body}</ProvisioningStepper>
+                    ) : (
+                      <ProvisioningStepper>{body}</ProvisioningStepper>
+                    )}
+                  </div>
+                  <SettingsMain />
                 </div>
               </div>
             </div>

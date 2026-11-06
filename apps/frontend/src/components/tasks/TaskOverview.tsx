@@ -1,12 +1,11 @@
 "use client";
 
 // The overview beside the chat (mockup step 3): requests grouped Needs you · Working · Done · Closed,
-// from the server's `shownGroup`. A second tab lists Scheduled work.
+// from the server's `shownGroup`.
 
 import { useState, type ReactElement } from "react";
 import { MoreHorizontal } from "lucide-react";
 import { overviewGroups, summaryView, taskSummaryLine, useOlderTasks, useTaskList, useTaskQuestions, type TaskScope, type TaskSummary } from "@lightbulb/shared";
-import { PanelTabs } from "@/components/teams/shell";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
@@ -14,7 +13,6 @@ import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { copyText, taskPermalink } from "@/components/messaging/messageLinks";
 import { DecisionCard } from "./DecisionCard";
 import { ActorLine } from "./TaskCard";
-import { ScheduledList } from "./ScheduledList";
 import { useTaskActions } from "./useTaskActions";
 
 const RESOLVED_OPEN_KEY = "lightbulb.overview.resolvedOpen";
@@ -27,15 +25,12 @@ function writeResolvedOpen(viewerId: string, open: boolean): void {
   try { localStorage.setItem(`${RESOLVED_OPEN_KEY}:${viewerId}`, open ? "1" : "0"); } catch { /* private mode: per-session only */ }
 }
 
+/** A scope's tasks, grouped. Scheduled work is its own view (ScheduledList: a project pane's Scheduled, Activity's
+ *  Scheduled group), never a second tab here (UX slice 4). */
 export function TaskOverview({ scope, viewerId, onOpen }: {
   scope: TaskScope; viewerId: string; onOpen: (taskId: string) => void;
 }): ReactElement {
-  const [tab, setTab] = useState<"overview" | "scheduled">("overview");
-  return <div className="grid gap-3">
-    <PanelTabs ariaLabel="Tasks" tabs={[{ value: "overview", label: "Overview" }, { value: "scheduled", label: "Scheduled" }]}
-      value={tab} onValueChange={(v) => setTab(v as "overview" | "scheduled")} />
-    {tab === "overview" ? <RequestGroups scope={scope} viewerId={viewerId} onOpen={onOpen} /> : <ScheduledList scope={scope} onOpen={onOpen} />}
-  </div>;
+  return <RequestGroups scope={scope} viewerId={viewerId} onOpen={onOpen} />;
 }
 
 /** The four status groups for a scope: the room's Requests column, and the Overview tab. */

@@ -45,6 +45,8 @@ interface RoomDetailsPanelProps {
   onOpenOutput?: (taskId: string) => void;
   /** The room has requests past the first page: Files offers "Show older" (useRoomOutputs). */
   olderOutputs?: { loading: boolean; load: () => void };
+  /** One view, no tab strip: the project pane's Files view (super-agent), titled "Files" by its header. */
+  hideTabs?: boolean;
 }
 
 /**
@@ -90,6 +92,7 @@ export function RoomDetailsPanel({
   outputs,
   onOpenOutput,
   olderOutputs,
+  hideTabs = false,
 }: RoomDetailsPanelProps) {
   const id = useId();
   const TABS = threads ? THREAD_TABS : ROOM_TABS;
@@ -160,12 +163,12 @@ export function RoomDetailsPanel({
   </section>;
 
   return <>
-    <div className="room-details-tabs" role="tablist" aria-label="Room details" onKeyDown={onTabKeyDown}>
+    {!hideTabs && <div className="room-details-tabs" role="tablist" aria-label="Room details" onKeyDown={onTabKeyDown}>
       {TABS.map((entry) => <button key={entry.id} type="button" role="tab" id={`${id}-tab-${entry.id}`}
         aria-controls={`${id}-panel`} aria-selected={entry.id === tab} tabIndex={entry.id === tab ? 0 : -1}
         onClick={() => selectTab(entry.id)}>{entry.label}</button>)}
-    </div>
-    <div className="room-context-body" id={`${id}-panel`} role="tabpanel" aria-labelledby={`${id}-tab-${tab}`} tabIndex={0}>
+    </div>}
+    <div className="room-context-body" id={`${id}-panel`} {...(hideTabs ? {} : { role: "tabpanel", "aria-labelledby": `${id}-tab-${tab}`, tabIndex: 0 })}>
       {tab === "threads" && threads}
       {tab === "members" && <>{members}{activeWork}</>}
 

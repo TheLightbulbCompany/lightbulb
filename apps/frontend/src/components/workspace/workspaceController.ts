@@ -20,7 +20,7 @@ import {
 import { currentChatViewSearch } from "./chatHistory";
 import { appendPane, buildPanelUrl, clearPanelFromUrl } from "./urlChannel";
 
-export type Place = "home" | "chat" | "activity" | "work" | "team" | "library" | "canvas";
+export type Place = "home" | "chat" | "activity" | "work" | "team" | "library" | "canvas" | "settings";
 
 /** What a slot shows. `thread` is the room's side column (a thread, its tasks, room details),
  *  portalled into the pane by the room itself (useThreadPane). */
@@ -75,6 +75,7 @@ export function placeOf(main: Slot | null): Place {
   if (main.component === "home") return "home";
   if (main.component === "activity") return "activity";
   if (main.component === "canvas") return "canvas";
+  if (main.component === "settings") return "settings";
   if (main.component === "teams" && main.params.teamsKey === "artifacts") return "library";
   if (main.component === "teams" && main.params.teamsKey === "agents") return "team";
   return "work";
@@ -356,7 +357,7 @@ const ownsPane = (owner: string) => _pane?.panelId === THREAD_PANE_ID && _pane.p
  * room folds the column with `close`. Returns where to portal the column, or null to keep it
  * inline (no shell mounted, or the pane not the room's yet).
  */
-export function useThreadPane(open: boolean, close: () => void, title: string): HTMLElement | null {
+export function useThreadPane(open: boolean, close: () => void, title: string, item = false): HTMLElement | null {
   const owner = useId();
   const { ready, pane } = useWorkspaceState();
   const host = useSyncExternalStore(subscribeHost, () => _threadHost, () => null);
@@ -371,14 +372,15 @@ export function useThreadPane(open: boolean, close: () => void, title: string): 
     const opening = open && !wasOpen.current;
     wasOpen.current = open;
     if (open && (opening || ownsPane(owner))) {
-      if (ownsPane(owner) && _pane!.title === title) return;
+      // `item`: one task (or thread) is open in the column, so the pane takes the item width (RightPane).
+      if (ownsPane(owner) && _pane!.title === title && (_pane!.params.item === "1") === item) return;
       if (!ownsPane(owner)) clearPaneFromUrl(_pane);
-      _pane = { panelId: THREAD_PANE_ID, component: "thread", title, params: { owner } };
+      _pane = { panelId: THREAD_PANE_ID, component: "thread", title, params: item ? { owner, item: "1" } : { owner } };
       commit();
     } else if (!open && ownsPane(owner)) {
       dropPane();
     }
-  }, [open, ready, owner, title]);
+  }, [open, ready, owner, title, item]);
   useEffect(() => () => { if (ownsPane(owner)) dropPane(); }, [owner]);
   const wasMine = useRef(false);
   useEffect(() => {

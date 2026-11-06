@@ -101,4 +101,17 @@ describe("filterNavActions", () => {
   test("returns empty when no match", () => {
     expect(filterNavActions("xyzzy")).toHaveLength(0);
   });
+
+  test("super-agent: no Work or Money; Settings, Business, Scheduled and Approvals open in the shell", () => {
+    const actions = filterNavActions("", true);
+    const byId = Object.fromEntries(actions.map((a) => [a.id, a.path]));
+    for (const gone of ["go-money", "go-issues", "go-routines", "go-projects", "go-goals", "go-cases"]) expect(byId).not.toHaveProperty(gone);
+    expect(byId["go-settings"]).toBe("/chat?panel=settings");
+    expect(byId["go-business"]).toBe("/chat?panel=settings&section=business");
+    expect(byId["go-scheduled"]).toBe("/chat?panel=activity&section=scheduled");
+    expect(byId["go-approvals"]).toBe("/chat?panel=settings&section=approvals");
+    expect(filterNavActions("revenue", true).map((a) => a.id)).toEqual(["go-business"]);
+    // Approvals is an admin's row: a member is never offered it.
+    expect(filterNavActions("", true, false).map((a) => a.id)).not.toContain("go-approvals");
+  });
 });

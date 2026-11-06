@@ -38,9 +38,10 @@ export default function ChatPage() {
   // the pane colour so any suspension reads as the page settling.
   return (
     <Suspense fallback={<div className="h-dvh w-full" style={{ background: "var(--cream)" }} />}>
-      <SettingsRedirect>
       <MarketplaceDrawerProvider>
         <LiveEventsProvider>
+          {/* Inside the live provider: a super-agent workspace's old Settings keys open the place in the shell. */}
+          <SettingsRedirect>
           {/* Live is held above the shell, so it survives navigation inside /chat. */}
           <HuddleProvider>
             <WorkspaceShell />
@@ -52,9 +53,9 @@ export default function ChatPage() {
           <RunNotifications />
           {/* The page's one browser live-view connection, shared by the panel and previews. */}
           <SharedLiveViewHost />
+          </SettingsRedirect>
         </LiveEventsProvider>
       </MarketplaceDrawerProvider>
-      </SettingsRedirect>
     </Suspense>
   );
 }

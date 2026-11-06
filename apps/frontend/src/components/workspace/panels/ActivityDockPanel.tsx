@@ -80,7 +80,7 @@ export function feedShown(narrow: boolean | null, tab: ActivityTab): boolean {
 /** Home. With the super-agent on, "your company today" (TodayHome); otherwise Activity's For you beside the team feed
  *  (tabs below ~900px). */
 export function ActivityDockPanel(props: PanelProps) {
-  return useSuperAgent() ? <TodayHome /> : <ActivityHome {...props} />;
+  return useSuperAgent() ? <TodayHome scheduledOpen={props.params.section === "scheduled"} /> : <ActivityHome {...props} />;
 }
 
 /** Feed posts Home shows before "See the whole feed". */
@@ -88,7 +88,7 @@ export const HOME_FEED_POSTS = 5;
 
 /** Your company today, top to bottom: Needs you (decision cards and non-task asks); your mentions (one line); Ideas
  *  (Do it / Not now); the feed's newest posts under its editable Brief; then Working, Done and Closed. */
-function TodayHome() {
+function TodayHome({ scheduledOpen }: { scheduledOpen: boolean }) {
   const { userId, orgId } = useAuth();
   const live = useLiveEvents();
   const activity = useActivity();
@@ -100,15 +100,17 @@ function TodayHome() {
     if (newest && pageVisible()) void markSeen(newest).catch(() => {});
   }, [newest, markSeen]);
   const { asks } = homeExtras(activity.items);
-  return <div className="activity-page activity-page--home activity-page--today">
-    <HomeWork viewerId={userId ?? ""} onOpen={openTaskPane} askCount={asks.length}
+  // Frame A: the 880 column, titled.
+  return <div className="activity-page activity-page--home activity-page--today"><div className="frame-doc">
+    <div className="frame-doc__title"><h1>Activity</h1></div>
+    <HomeWork viewerId={userId ?? ""} onOpen={openTaskPane} askCount={asks.length} scheduledOpen={scheduledOpen}
       asks={<ForYouAsks items={asks} onRunAction={activity.runAction} onNavigate={openActivityTarget} />} between={<>
       <HomeForYou items={activity.items} />
       <HomeIdeas />
       <TeamFeed client={live.messaging} scope={scope} currentUserId={userId ?? ""} limit={HOME_FEED_POSTS}
         onDiscuss={(post) => openDiscussion(scope, post)} isVisible={pageVisible} />
     </>} />
-  </div>;
+  </div></div>;
 }
 
 /** Mentions as one line (how many, who, the newest). Open asks that are not tasks sit in Needs you, in its count. */

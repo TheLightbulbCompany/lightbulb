@@ -36,25 +36,31 @@ describe(".workspace-shell viewport", () => {
     expect(css).toMatch(/@media \(max-width: 1000px\) \{\s*\.workspace-shell:not\(\[data-super-agent="true"\]\) \{ grid-template-columns: 56px 220px minmax\(0, 1fr\); \}/);
   });
 
-  it("opens the pane as a sheet wherever the main view and the pane cannot both keep their minimums", () => {
-    // jsdom computes no layout: derive each breakpoint from the minimums and that layout's chrome.
-    const sheets = [
-      { gate: '[data-super-agent="true"]', chrome: 56, query: PANE_SHEET_QUERIES.superAgent }, // rail only below 1000 px
-      { gate: ':not([data-super-agent="true"])', chrome: 56 + 220, query: PANE_SHEET_QUERIES.classic },
-    ];
-    for (const { gate, chrome, query } of sheets) {
-      const fits = chrome + MAIN_MIN_WIDTH + PANE_MIN_WIDTH;
-      expect(query).toBe(`(max-width: ${fits - 1}px)`);
-      const block = css.slice(css.indexOf(`@media (min-width: 600px) and (max-width: ${fits - 1}px)`));
-      expect(block.startsWith("@media")).toBe(true);
-      const sheet = block.slice(0, block.indexOf("}"));
-      expect(sheet).toContain(`.workspace-shell${gate} .workspace-body:not([data-full]) > .workspace-pane {`);
-      expect(sheet).toMatch(/position:\s*absolute/);
-      expect(sheet).toMatch(/inset:\s*0/);
-      expect(sheet).toMatch(/width:\s*auto !important/);
-      // Full screen is excluded from the sheet, so it still sits beside the chat column.
-      expect(block).toContain(`.workspace-shell${gate} .workspace-body[data-full] > .workspace-view--chat { flex: 0 1 360px; }`);
-    }
+  it("without the super-agent, opens the pane as a sheet wherever the main view and the pane cannot both keep their minimums", () => {
+    // jsdom computes no layout: derive the breakpoint from the minimums and that layout's chrome (rail + sidebar).
+    const gate = ':not([data-super-agent="true"])';
+    const fits = 56 + 220 + MAIN_MIN_WIDTH + 320;
+    expect(PANE_SHEET_QUERIES.classic).toBe(`(max-width: ${fits - 1}px)`);
+    const block = css.slice(css.indexOf(`@media (min-width: 600px) and (max-width: ${fits - 1}px)`));
+    expect(block.startsWith("@media")).toBe(true);
+    const sheet = block.slice(0, block.indexOf("}"));
+    expect(sheet).toContain(`.workspace-shell${gate} .workspace-body:not([data-full]) > .workspace-pane {`);
+    expect(sheet).toMatch(/position:\s*absolute/);
+    expect(sheet).toMatch(/inset:\s*0/);
+    expect(sheet).toMatch(/width:\s*auto !important/);
+    // Full screen is excluded from the sheet, so it still sits beside the chat column.
+    expect(block).toContain(`.workspace-shell${gate} .workspace-body[data-full] > .workspace-view--chat { flex: 0 1 360px; }`);
+  });
+
+  it("super-agent (UX slice 4): below 1000 px the pane is an overlay sheet from the right over a scrim, never squeezing the transcript", () => {
+    expect(PANE_SHEET_QUERIES.superAgent).toBe("(max-width: 999px)");
+    expect(PANE_MIN_WIDTH).toBe(360);
+    const block = css.slice(css.indexOf('.workspace-shell[data-super-agent="true"] .workspace-pane[data-sheet] {'));
+    const sheet = block.slice(0, block.indexOf("}"));
+    expect(sheet).toMatch(/position:\s*absolute/);
+    expect(sheet).toMatch(/inset:\s*0 0 0 auto/);
+    expect(sheet).toMatch(/width:\s*min\(520px, 100% - 56px\)/);
+    expect(css).toMatch(/\.workspace-pane-scrim \{[^}]*position:\s*absolute/);
   });
 });
 

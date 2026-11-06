@@ -85,8 +85,13 @@ export function HomeProjects(): ReactElement {
   const fresh = directory?.state === "ready" && projects.every((r) => r.isDefault);
   const openDm = () => { if (frontId) openAgentDmWithDraft(frontId, ""); else activateMessagesPanel(); };
 
-  return <div className="home-projects">
-    <h1 className="text-title font-semibold">Home</h1>
+  return <div className="home-projects"><div className="frame-doc home-projects__col">
+    {/* Frame A: the title and the page's one primary action on the same line. */}
+    <div className="frame-doc__title">
+      <h1>Home</h1>
+      {directory?.onCreate && !creating && <Button type="button" size="sm" className="h-7" onClick={() => setCreating(true)}>
+        <Plus aria-hidden="true" />New project</Button>}
+    </div>
     {needsYouCount > 0 && <button type="button" className="home-projects__needs"
       onClick={() => { closePane(); openPanel("activity", {}, { pushUrl: true }); }}>
       <span className="home-projects__dot" aria-hidden="true" />
@@ -114,8 +119,6 @@ export function HomeProjects(): ReactElement {
           <span className="sr-only">Find a project</span>
           <input type="search" placeholder="Find a project" value={query} onChange={(e) => setQuery(e.target.value)} />
         </label>}
-        {directory?.onCreate && !creating && <Button type="button" size="sm" variant="outline" onClick={() => setCreating(true)}>
-          <Plus aria-hidden="true" />New project</Button>}
       </div>
       {creating && directory?.onCreate && <NewProject busy={!!directory.creationBusy} error={directory.creationError}
         onCancel={() => setCreating(false)}
@@ -132,7 +135,7 @@ export function HomeProjects(): ReactElement {
         : q ? <p className="text-ui text-muted-foreground">No project matches “{query.trim()}”.</p> : null}
       {fresh && !creating && <StartAProject onStart={() => setCreating(true)} />}
     </section>
-  </div>;
+  </div></div>;
 }
 
 /** Sends straight into the Lightbulb DM and opens it; a failed send keeps the text and says so. */

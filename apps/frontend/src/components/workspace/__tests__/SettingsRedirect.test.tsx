@@ -11,6 +11,9 @@ vi.mock("next/navigation", () => ({
   useSearchParams: () => new URLSearchParams(search),
 }));
 
+const live = vi.hoisted(() => ({ value: null as null | { superAgent: boolean; httpReady: boolean; featuresLoaded: boolean } }));
+vi.mock("@/hooks/useLiveEvents", () => ({ useOptionalLiveEvents: () => live.value }));
+
 import { SettingsRedirect } from "../SettingsRedirect";
 
 // /chat?panel=<a key Settings took> must land on that Settings section — from a
@@ -20,6 +23,7 @@ describe("SettingsRedirect", () => {
   beforeEach(() => {
     replace.mockClear();
     search = "";
+    live.value = null;
   });
 
   it("sends a moved panel key to its Settings section and renders nothing", () => {
@@ -34,5 +38,15 @@ describe("SettingsRedirect", () => {
     render(<SettingsRedirect><div>shell</div></SettingsRedirect>);
     expect(screen.getByText("shell")).toBeInTheDocument();
     expect(replace).not.toHaveBeenCalled();
+  });
+
+  it("super-agent (UX slice 4): goes straight to the Settings place in the shell, once the live config has said so", () => {
+    search = "panel=usage&connected=github";
+    live.value = { superAgent: false, httpReady: true, featuresLoaded: false };
+    const { rerender } = render(<SettingsRedirect><div>shell</div></SettingsRedirect>);
+    expect(replace).not.toHaveBeenCalled();
+    live.value = { superAgent: true, httpReady: true, featuresLoaded: true };
+    rerender(<SettingsRedirect><div>shell</div></SettingsRedirect>);
+    expect(replace).toHaveBeenCalledWith("/chat?panel=settings&connected=github&section=usage");
   });
 });

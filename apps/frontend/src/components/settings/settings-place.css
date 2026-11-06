@@ -1,0 +1,50 @@
+/* Settings as a place in the shell (super-agent, UX slice 4): Frame A, a 184 nav beside the content, the panels set in
+   Satoshi (the /settings route's serif title stays there). Under 760 the nav becomes a select above the content. */
+.settings-place { height: 100%; overflow-y: auto; background: var(--cream); container: settings-place / inline-size; }
+.settings-place__layout { display: grid; grid-template-columns: 184px minmax(0, 1fr); gap: 32px; align-items: start; padding-bottom: 48px; }
+.settings-place__picker { display: none; }
+.settings-place .settings-nav { position: sticky; top: 0; height: auto; padding: 0; border: 0; background: none; }
+.settings-place .settings-nav-section { margin-bottom: 16px; }
+.settings-place .settings-nav-section-label {
+  padding: 0 8px;
+  margin-bottom: 4px;
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--midnight-muted);
+}
+.settings-place .settings-nav-items { gap: 2px; flex-direction: column; }
+.settings-place .settings-nav-item { min-height: 32px; padding: 4px 8px; gap: 8px; font-size: 15px; line-height: 22px; font-weight: 400; }
+.settings-place .settings-nav-item.active { font-weight: 600; }
+@media (pointer: coarse) { .settings-place .settings-nav-item { min-height: 44px; } }
+.settings-place__content { min-width: 0; color: var(--midnight); }
+.settings-place__why { margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--edge); font-size: 13px; line-height: 18px; color: var(--midnight-muted); }
+.settings-place .settings-page-title { font-family: var(--font-sans); font-size: 15px; line-height: 22px; font-weight: 600; margin-bottom: 2px; }
+.settings-place .settings-page-desc { font-size: 13px; line-height: 18px; color: var(--midnight-muted); margin-bottom: 24px; }
+@container settings-place (max-width: 760px) {
+  .settings-place__layout { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .settings-place .settings-nav { display: none; }
+  .settings-place__picker { display: block; }
+  .settings-place__picker select {
+    width: 100%;
+    min-height: 44px;
+    padding: 0 12px;
+    border: 1px solid var(--edge);
+    border-radius: var(--radius-md);
+    background: var(--cream);
+    color: var(--midnight);
+    font: inherit;
+    font-size: 16px;
+  }
+}
+
+/* The settings row pattern (Proactive, Business): label 15/500 and one muted line on the left, the control on the
+   right, a hairline between rows, no card per row. */
+.settings-rows { margin-top: 32px; }
+.settings-rows__head { font-size: 15px; line-height: 22px; font-weight: 600; padding-bottom: 8px; border-bottom: 1px solid var(--edge); }
+.settings-rows__row { display: flex; align-items: center; gap: 16px; min-height: 56px; padding: 8px 0; border-bottom: 1px solid var(--edge-soft); }
+.settings-rows__text { flex: 1; min-width: 0; }
+.settings-rows__label { display: block; font-size: 15px; line-height: 22px; font-weight: 500; color: var(--midnight); }
+.settings-rows__line { font-size: 13px; line-height: 18px; color: var(--midnight-muted); }

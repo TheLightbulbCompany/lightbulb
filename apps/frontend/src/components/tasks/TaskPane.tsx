@@ -6,7 +6,6 @@
 // Steering lives here, in the pane's own box (UX slice 3): the room's composer stays the room's.
 
 import { useEffect, useRef, useState, type ReactElement, type RefObject } from "react";
-import { ArrowLeft } from "lucide-react";
 import {
   ApiError, answerVerb, askLine, effectLine, effectName, specialistLabel, summaryView, useTask, useTaskQuestions,
   type QuestionView, type TaskDetail, type TaskEffect, type TaskSummary, type TaskTrace,
@@ -14,6 +13,7 @@ import {
 import { SessionChat, type ChatWords } from "@/components/messaging/SessionChat";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PaneHeader } from "@/components/workspace/PaneHeader";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { capture } from "@/lib/analytics";
 import { DecisionCard, endedLabel } from "./DecisionCard";
@@ -31,8 +31,13 @@ const TRANSCRIPT_WORDS: ChatWords = {
 const time = (iso: string | null) => (iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "");
 const money = (n: number) => `$${n.toFixed(2).replace(/\.00$/, "")}`;
 
-export function TaskPane({ taskId, viewerId, onClose, headingRef, backLabel = "Back to chat" }: {
-  taskId: string; viewerId: string; onClose: () => void; headingRef?: RefObject<HTMLHeadingElement | null>; backLabel?: string;
+export function TaskPane({ taskId, viewerId, onClose, onBack, headingRef }: {
+  taskId: string; viewerId: string;
+  /** ✕: the pane closes. */
+  onClose: () => void;
+  /** "‹ Tasks": back to the project's Tasks list (absent when the task was opened from Activity or a link). */
+  onBack?: () => void;
+  headingRef?: RefObject<HTMLHeadingElement | null>;
 }): ReactElement {
   const { tasks, agentNames } = useLiveEvents();
   const { data, error, mutate } = useTask(tasks, taskId);
@@ -48,16 +53,13 @@ export function TaskPane({ taskId, viewerId, onClose, headingRef, backLabel = "B
   }, [tasks, taskId]);
   useEffect(() => { heading.current?.focus({ preventScroll: true }); }, [heading, taskId]);
 
-  // The pane is the specialist's: its name is the title, the task's own title leads the body.
-  const who = data ? specialistLabel(data.task.specialist, agentNames) : "Task";
+  // One header row (UX slice 4): "‹ Tasks", the task's title, then who and its one status word as muted meta. The
+  // body never repeats them; while it runs, the live line under the header ticks the seconds.
+  const who = data ? specialistLabel(data.task.specialist, agentNames) : null;
   return <aside className="room-context" aria-label="Task" data-task-pane={taskId}
-    onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); onClose(); } }}>
-    <header className="room-context-header">
-      <Button variant="ghost" aria-label={backLabel} onClick={onClose}><ArrowLeft aria-hidden="true" />Back</Button>
-      <h3 ref={heading} tabIndex={-1} className="min-w-0 truncate font-semibold">{who}</h3>
-      {/* The status sits in the header row (as Claude's thread header does); the body never repeats it. */}
-      {data && <TaskStatus task={data.task} viewerId={viewerId} />}
-    </header>
+    onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); (onBack ?? onClose)(); } }}>
+    <PaneHeader crumb={onBack ? { label: "Tasks", onBack } : undefined} title={data?.task.title ?? "Task"} headingRef={heading} onClose={onClose}
+      meta={data && <span className="inline-flex items-center gap-1.5">{who} · <TaskStatus task={data.task} viewerId={viewerId} /></span>} />
     {!data
       ? !error ? <p role="status" className="p-4 text-ui text-muted-foreground">Loading…</p>
         : gone ? <p role="status" className="p-4 text-ui text-muted-foreground">This task isn&apos;t available to you.</p>
@@ -145,8 +147,8 @@ function answerLine(q: QuestionView): string {
   return `${verb} by ${q.answeredBy!.name} · ${time(q.answeredAt)}`;
 }
 
-/** The task's title and its one status word, with the reason beside it only when it adds one; the pane's title is
- *  already the specialist, so nothing here repeats who or the word ("Done by X · Done", audit 02 P2). */
+/** The task's lifecycle controls, with the reason under the header only when it adds one; the header already carries
+ *  the title, who and the word, so nothing here repeats them ("Done by X · Done", audit 02 P2). */
 export function TaskHeader({ task, viewerId }: { task: TaskSummary; viewerId: string }): ReactElement {
   const { act } = useTaskActions("pane");
   const [error, setError] = useState<string | null>(null);
@@ -174,12 +176,8 @@ export function TaskHeader({ task, viewerId }: { task: TaskSummary; viewerId: st
     setError(res.ok ? null : res.message);
   };
   return <section aria-label="Task status" className="grid gap-1 px-1">
-    {/* The task's title; while it runs, the live line beside it ("Growth · working · 14s", the seconds tick),
-        else the reason once. The word itself sits in the pane's header row. */}
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-ui text-muted-foreground">
-      <span className="min-w-0 font-semibold text-foreground">{task.title}</span>
-      {live ? <ActorLine task={task} viewerId={viewerId} className="tabular-nums" /> : view.reason && <span>{view.reason}</span>}
-    </div>
+    {/* While it runs, the live line ("Growth · working · 14s", the seconds tick), else the reason once. */}
+    {live ? <ActorLine task={task} viewerId={viewerId} className="tabular-nums" /> : view.reason && <p className="text-ui text-muted-foreground">{view.reason}</p>}
     {/* Fixed slots (UX audit 2, P0): Stop, Close and Reopen never take each other's place, so a press can't land on
         a button that changed under the cursor. A running task is stopped (asked once, on its own row), never
         resolved under it; Reopen undoes either and runs nothing. */}

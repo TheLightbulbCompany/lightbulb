@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 
 const messaging = vi.hoisted(() => ({ searchMessages: vi.fn(), warmSearch: vi.fn() }));
 const open = vi.hoisted(() => vi.fn());
-vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => ({ messaging }) }));
+vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => ({ messaging }), useSuperAgent: () => false }));
 vi.mock("@/components/teams/command-palette/useFilteredCommandResults", () => ({
   useFilteredCommandResults: () => ({ agents: [], issues: [], projects: [] }),
 }));

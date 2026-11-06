@@ -6,6 +6,7 @@ vi.mock("@/components/teams/command-palette/useFilteredCommandResults", () => ({
 }));
 vi.mock("@/hooks/useLiveEvents", () => ({
   useLiveEvents: () => ({ messaging: { searchMessages: vi.fn().mockResolvedValue({ hits: [] }), warmSearch: vi.fn().mockResolvedValue(undefined) } }),
+  useSuperAgent: () => false,
 }));
 vi.mock("@/components/settings/CompanyStripeSection", () => ({
   useCompanyStripeStatus: () => ({ data: null }),

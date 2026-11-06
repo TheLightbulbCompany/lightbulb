@@ -14,6 +14,8 @@ import { MailDockPanel } from "./panels/MailDockPanel";
 import { ArtifactDockPanel } from "./panels/ArtifactDockPanel";
 import { IdeasDockPanel } from "./panels/IdeasDockPanel";
 import { TaskDockPanel } from "./panels/TaskDockPanel";
+import { AutomationDockPanel } from "./panels/AutomationDockPanel";
+import { SettingsPlace } from "@/components/settings/SettingsPlace";
 
 export interface PanelProps {
   /** The slot's panel id (updatePanelParams' key). */
@@ -34,4 +36,6 @@ export const PANEL_COMPONENTS: Record<PanelKind, ComponentType<PanelProps>> = {
   ideas: IdeasDockPanel,
   artifact: ArtifactDockPanel,
   task: TaskDockPanel,
+  automation: AutomationDockPanel,
+  settings: SettingsPlace,
 };

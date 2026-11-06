@@ -7,7 +7,7 @@ const live = vi.hoisted(() => ({ superAgent: false, tasks: null as unknown }));
 vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useSuperAgent: () => live.superAgent }));
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ userId: SAM }) }));
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
-vi.mock("../../workspaceController", () => ({ closePane: vi.fn() }));
+vi.mock("../../workspaceController", () => ({ closePane: vi.fn(), setPaneFullScreen: vi.fn(), useWorkspaceState: () => ({ ready: true, fullScreen: false, pane: { panelId: "task-detail" } }) }));
 vi.mock("@/components/messaging/SessionChat", () => ({ SessionChat: () => <section aria-label="Transcript" /> }));
 
 import { TaskDockPanel } from "../TaskDockPanel";

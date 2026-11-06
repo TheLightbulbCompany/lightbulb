@@ -122,10 +122,19 @@ async def _front_named(owner_id: str, agents: list) -> list:
     from core.services import messaging
 
     front = await messaging._front_agent_id(owner_id)
-    return [
-        {**a, "name": messaging.FRONT_AGENT_NAME} if front and isinstance(a, dict) and a.get("id") == front else a
-        for a in agents
-    ]
+    handles: dict[str, str] = {}
+    if front:  # each agent's @handle as rooms seat it: Team › Ask drafts "@growth " (dev walk 7, W7-7)
+        try:
+            handles = await messaging._handles_for(owner_id, await messaging.load_agent_roster(owner_id))
+        except Exception:  # noqa: BLE001 -- no handles beats no Team page
+            logger.warning("teams: agent handles unavailable for %s", owner_id, exc_info=True)
+    out = []
+    for a in agents:
+        if front and isinstance(a, dict):
+            a = {**a, **({"name": messaging.FRONT_AGENT_NAME} if a.get("id") == front else {})}
+            a["mentionHandle"] = handles.get(a.get("id"))
+        out.append(a)
+    return out
 
 
 def _redact_agent(agent):

@@ -600,3 +600,31 @@ def test_list_and_get_agent_name_the_front_agent_lightbulb(client, monkeypatch):
 
     monkeypatch.setattr(messaging, "_front_agent_id", AsyncMock(return_value=None))  # switch off: Paperclip's name
     assert client.get("/api/v1/teams/agents/ceo").json()["name"] == "CEO"
+
+
+def test_list_agents_carries_each_agents_handle_under_the_switch(client, monkeypatch):
+    """Dev walk 7 (W7-7): Team › Ask drafted nothing. The page took a specialist's @handle from the open room's
+    member rows, and a super-agent room seats only Lightbulb. Each agent now carries the handle rooms use."""
+    from routers.teams import agents as agents_mod
+    from core.services import messaging
+
+    ceo, growth = "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"
+    admin = MagicMock()
+    admin.list_agents = AsyncMock(
+        return_value={"agents": [{"id": ceo, "name": "CEO"}, {"id": growth, "name": "Growth"}]}
+    )
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(agents_mod, "get_seeded_agent_ids", AsyncMock(return_value=set()))
+    monkeypatch.setattr(messaging, "_front_agent_id", AsyncMock(return_value=ceo))
+    monkeypatch.setattr(
+        messaging,
+        "load_agent_roster",
+        AsyncMock(return_value=[{"id": ceo, "name": "Lightbulb"}, {"id": growth, "name": "Growth"}]),
+    )
+    handles = {a["id"]: a.get("mentionHandle") for a in client.get("/api/v1/teams/agents").json()["agents"]}
+    assert handles == {ceo: "lightbulb", growth: "growth"}
+
+    monkeypatch.setattr(
+        messaging, "load_agent_roster", AsyncMock(side_effect=messaging.ApiProblem("RUNTIME_UNAVAILABLE", "down"))
+    )
+    assert client.get("/api/v1/teams/agents").status_code == 200  # no handles beats no Team page

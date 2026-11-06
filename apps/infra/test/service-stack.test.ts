@@ -867,6 +867,15 @@ describe("ServiceStack — openclaw-work consumer Lambda", () => {
     });
   });
 
+  test("dev drains through a live alias with one provisioned (warm) consumer", () => {
+    template.hasResourceProperties("AWS::Lambda::Alias", {
+      Name: "live",
+      ProvisionedConcurrencyConfig: { ProvisionedConcurrentExecutions: 1 },
+    });
+    const mapping = Object.values(template.findResources("AWS::Lambda::EventSourceMapping"))[0] as any;
+    expect(JSON.stringify(mapping.Properties.FunctionName)).toMatch(/WorkConsumerLive/);
+  });
+
   test("starts the SQS mapping after ECS replaces old in-process pollers", () => {
     const serviceId = Object.keys(template.findResources("AWS::ECS::Service"))[0];
     const mapping = Object.values(template.findResources("AWS::Lambda::EventSourceMapping"))[0] as any;

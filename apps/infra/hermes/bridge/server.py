@@ -973,6 +973,7 @@ def main() -> None:
     # shared per-room cache (media/messaging/attachments/) -- neither may outlive its turn.
     shutil.rmtree(sync.turn_media_root(), ignore_errors=True)
     mcp_compat.install()
+    turn.install_router_tool_search()
     browser_control.install()
     log.info("bridge on 0.0.0.0:%d home=%s owner=%s", PORT, sync.HOME, OWNER)
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()

@@ -846,6 +846,34 @@ ROUTER_RUN_LIMITS = {"enabled_toolsets": [ROUTER_TOOLSET, "memory"], "disabled_t
 MAX_DECISIONS = 40
 #: Router turns read memory but never write it (founder ruling: durable learning happens in Workers).
 _ROUTER_TURN: contextvars.ContextVar[bool] = contextvars.ContextVar("lightbulb_router_turn", default=False)
+def install_router_tool_search() -> bool:
+    """A Router turn sees its decision tools up front, never behind Hermes's tool_search.
+
+    Hermes defers every plugin tool behind tool_search/tool_describe/tool_call unless
+    ``tools.tool_search.enabled`` is ``off`` (config.yaml; pinned 0.21.3 ``tools/tool_search.py``
+    ``ToolSearchConfig``). On a Router run that is all of ``lightbulb_router``, so the model spent two
+    lookups (~2-3 s each) before its first decision (dev walk 14: 4 of 6 model calls). The setting is per
+    profile and the front agent's profile runs other turns too, so it is off for Router turns only:
+    ``model_tools`` reads ``tools.tool_search.load_config`` at each assembly, in the thread that builds
+    the agent, after ``_construct_agent`` set ``_ROUTER_TURN``. The Router's toolset selection is its own
+    tool-defs cache key, so no other turn reads the list built here."""
+    try:
+        from tools import tool_search
+    except ImportError:  # not in the Hermes image (unit tests)
+        return False
+    original = tool_search.load_config
+    if getattr(original, "_lightbulb_router", False):
+        return True
+    off = tool_search.ToolSearchConfig.from_raw({"enabled": "off"})
+
+    def load_config():
+        return off if _ROUTER_TURN.get() else original()
+
+    load_config._lightbulb_router = True
+    tool_search.load_config = load_config
+    return True
+
+
 ROUTER_NOTES_READ_ONLY = ("Lightbulb's coordinator reads notes but does not write them: the specialist doing "
                           "the work records what should be remembered.")
 

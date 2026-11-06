@@ -207,6 +207,7 @@ DECISIONS = [
     },
     {"kind": "pass_through", "triggerIds": ["chat:m1"], "taskId": TASK, "ack": None},
     {"kind": "ask", "triggerIds": ["chat:m1"], "text": "Which one?"},
+    {"kind": "note", "triggerIds": ["chat:m1"], "fact": "The starter dates from 2009."},
     {"kind": "ignore", "triggerIds": ["chat:m1"]},
 ]
 

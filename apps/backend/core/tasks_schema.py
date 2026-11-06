@@ -87,7 +87,7 @@ ListenMode = Literal["active", "observe"]
 # Creations). Skills next.
 CreationKind = Literal["app", "skill"]
 CreationStatus = Literal["draft", "active", "off"]
-RouterDecisionKind = Literal["start_task", "pass_through", "reply", "ask", "ignore"]
+RouterDecisionKind = Literal["start_task", "pass_through", "reply", "ask", "note", "ignore"]
 # Spec 11 (watchdog): check that fired, the judge's verdict, the action it proposes, a platform admin's label.
 WatchdogCheck = Literal["C1", "C2", "C3", "C4", "C5", "C6", "judge"]
 WatchdogVerdict = Literal[
@@ -993,12 +993,19 @@ class Ask(_Decision):
     options: list[str] = []
 
 
+class Note(_Decision):
+    """A fact someone told Lightbulb to keep, with nothing to do now: one short reply, the fact in project memory."""
+
+    kind: Literal["note"]
+    fact: str = Field(min_length=1, max_length=2000)
+
+
 class Ignore(_Decision):
     kind: Literal["ignore"]
 
 
 RouterDecision = Annotated[
-    StartTask | PassThrough | Reply | Ask | Ignore,
+    StartTask | PassThrough | Reply | Ask | Note | Ignore,
     Field(discriminator="kind"),
 ]
 

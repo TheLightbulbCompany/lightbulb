@@ -76,6 +76,13 @@ SCHEMAS = {
         {"text": {"type": "string"}, "options": {"type": "array", "items": {"type": "string"}}},
         ["text"],
     ),
+    "note": _schema(
+        "note",
+        "Someone told you a fact to keep for this project (a date, a preference, a detail), with nothing to do "
+        "now. Lightbulb answers with one short line and saves `fact` to the project's memory.",
+        {"fact": {"type": "string", "description": "The fact, self-contained, in one sentence."}},
+        ["fact"],
+    ),
     "ignore": _schema("ignore", "Nothing to do for these triggers.", {}, []),
 }
 
@@ -220,7 +227,7 @@ def _problem(kind: str, args: dict) -> str | None:
         return "task_id must be a task id from the batch"
     if kind == "start_task" and args.get("visibility") not in (None, "person", "room", "workspace"):
         return "visibility is person, room or workspace"
-    for field in ("ack", "text", "brief", "title", "reason", "specialist"):
+    for field in ("ack", "text", "brief", "title", "reason", "specialist", "fact"):
         if field in args and args[field] is not None and not isinstance(args[field], str):
             return f"{field} must be text"
     return None

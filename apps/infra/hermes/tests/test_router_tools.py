@@ -58,7 +58,7 @@ def test_registered_under_router_toolset():
 
     rt.register(Ctx())
     assert seen == [(k, "lightbulb_router") for k in (
-        "start_task", "pass_through", "reply", "ask", "ignore", "follow_link", "propose_automation")]
+        "start_task", "pass_through", "reply", "ask", "note", "ignore", "follow_link", "propose_automation")]
 
 
 def test_follow_link_calls_memory_link_route(router_turn, monkeypatch):
@@ -168,3 +168,32 @@ def test_request_approval_names_the_self_gating_tools_and_keeps_the_rest_gated()
     for ungated in ("gog gmail send", "send_invoice", "checkout", "git push", "vercel deploy", "npm publish"):
         assert ungated in text
     assert "the specialist handles approvals" in rt.SCHEMAS["start_task"]["description"]
+
+
+def test_note_records_the_fact(router_turn):
+    assert _call("note", trigger_ids=["chat:m1"], fact="The levain starter dates from 2009.") == "recorded"
+    assert turn.RUNS[RUN]["decisions"] == [
+        {"kind": "note", "triggerIds": ["chat:m1"], "fact": "The levain starter dates from 2009."}]
+    assert "error" in json.loads(_call("note", trigger_ids=["chat:m1"]))
+
+
+def test_router_turns_see_their_tools_without_tool_search(monkeypatch):
+    """Walk 14: Router tools sat behind tool_search (two ~3 s lookups per turn); other turns keep it."""
+    import sys
+    import types
+
+    class Config:
+        @classmethod
+        def from_raw(cls, raw):
+            return raw
+
+    fake = types.SimpleNamespace(ToolSearchConfig=Config, load_config=lambda: {"enabled": "auto"})
+    monkeypatch.setitem(sys.modules, "tools", types.SimpleNamespace(tool_search=fake))
+    monkeypatch.setitem(sys.modules, "tools.tool_search", fake)
+    assert turn.install_router_tool_search() and turn.install_router_tool_search()  # once, idempotent
+    assert fake.load_config() == {"enabled": "auto"}
+    token = turn._ROUTER_TURN.set(True)
+    try:
+        assert fake.load_config() == {"enabled": "off"}
+    finally:
+        turn._ROUTER_TURN.reset(token)

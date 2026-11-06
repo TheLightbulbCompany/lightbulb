@@ -134,7 +134,11 @@ async def test_approved_once_then_asks_again(api, monkeypatch):
     assert done.status_code == 200 and done.json()["state"] == "done"
     # Right after it landed, the same mail again replays it (gate run 9: never a duplicate send) ...
     fourth = await api.post(_url(WS), json=await _body(tid, "c4"), headers=H)
-    assert fourth.json() == {"decision": "replay", "result": "mail:sent"}
+    assert fourth.json()["decision"] == "replay"
+    assert (
+        fourth.json()["result"].startswith("Already done in this task at ")
+        and "not sent again" in fourth.json()["result"]
+    )
     # ... and past the window it is a second send: a fresh approval, the old one is spent.
     monkeypatch.setattr(ri, "_recent_since", lambda: "9999")
     fifth = await api.post(_url(WS), json=await _body(tid, "c5"), headers=H)

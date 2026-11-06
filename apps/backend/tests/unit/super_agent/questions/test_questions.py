@@ -236,7 +236,16 @@ def test_gate_replays_a_recent_identical_done_call():
     effect = _eff("T:1:c2", "proposed")
     done = {**_eff("T:1:c1", "done"), "updatedAt": "2026-11-06T05:56:50+00:00", "resultRef": "ses:1"}
     res = questions.gate(effect, [done], recent_since="2026-11-06T05:47:07+00:00")
-    assert res == questions.GateResult("replay", result_ref="ses:1")
+    assert res == questions.GateResult(
+        "replay", result_ref="ses:1", message="Already done in this task at 2026-11-06T05:56:50+00:00; not sent again."
+    )
+
+
+def test_gate_recent_refused_call_asks_again():
+    """A `refused:` done row never happened (effects_repo): within the window it is re-askable, not replayed."""
+    effect = _eff("T:1:c2", "proposed")
+    done = {**_eff("T:1:c1", "done"), "updatedAt": "2026-11-06T05:56:50+00:00", "resultRef": "refused:rate_limited"}
+    assert questions.gate(effect, [done], recent_since="2026-11-06T05:47:07+00:00").decision == "needs_approval"
 
 
 def test_gate_deny_wins_over_later_retry_approval():

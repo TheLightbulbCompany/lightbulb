@@ -371,7 +371,7 @@ async def effect_check(owner_id: str, body: EffectBody, request: Request) -> dic
     if res.decision == "proceed":  # the second read still says proceed but the row is gone: unknown outcome
         return {"decision": "refuse", "message": "A matching call's approval was just used; check before retrying."}
     if res.decision == "replay":
-        return {"decision": "replay", "result": res.result_ref}
+        return {"decision": "replay", "result": res.message or res.result_ref}
     if res.decision == "refuse":
         return {"decision": "refuse", "message": res.message}
     if res.decision == "denied":

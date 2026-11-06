@@ -164,7 +164,7 @@ async def test_auto_duplicate_identical_send_replays_instead_of_sending_twice(ap
     assert first.json() == {"decision": "proceed"}
     await _land(tid, "c1")
     second = await api.post(_url(), json=await _body(tid, "c2", "mail.send", ops), headers=H)
-    assert second.json() == {"decision": "replay", "result": "ses:1"}
+    assert second.json()["decision"] == "replay" and second.json()["result"].endswith("; not sent again.")
     assert await effects_repo.get_effect(WS, f"{tid}:1:c2") is None  # no second row: one email
 
 

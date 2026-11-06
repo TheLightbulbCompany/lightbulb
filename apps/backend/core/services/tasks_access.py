@@ -180,7 +180,7 @@ def seen_by_whole_room(task: dict, room: str | None) -> bool:
 
 
 def result_line(tree: dict, room: str | None) -> str | None:
-    """What came of a finished task, for the line in `room`: the result's first sentence(s), else the newest output's
+    """What came of a finished task, for the line in `room`: the result's first sentence, else the newest output's
     title, else the task's title; why a failed one didn't finish. None while it works (or watches), and when someone
     in the room can't open the task (its words never leak there; a person-only task never shows any)."""
     task = tree["task"]
@@ -193,6 +193,10 @@ def result_line(tree: dict, room: str | None) -> str | None:
         return None
     att = max(tree.get("attempts") or [], key=lambda a: a.get("n", 0), default=None)
     said = plain_line(att.get("output") or "") if att and att.get("outcome") == "completed" else ""
+    # The first sentence only: it says what was made; what follows (a suggestion, a figure) stays in the task.
+    # ponytail: "e.g. " ends a sentence here; an abbreviation list if real lines get cut short.
+    if end := _SENTENCE_END.search(said):
+        said = said[: end.end()]
     outputs = task.get("outputs") or []
     made = plain_line(outputs[-1].get("title") or "") if outputs else ""
     return said or made or plain_line(task.get("title") or "") or None

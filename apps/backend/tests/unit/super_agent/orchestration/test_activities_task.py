@@ -678,7 +678,7 @@ async def test_a_workspace_task_carries_its_result_line(world):
     tid = await _task(audience={"kind": "workspace"})
     await _attempt(tid)
     await _ended(tid, "completed", output='**"Fast," says Linear.** More below.\n\n- detail')
-    assert world["posts"][-1]["room"] == ROOM and world["posts"][-1]["text"] == '"Fast," says Linear. More below.'
+    assert world["posts"][-1]["room"] == ROOM and world["posts"][-1]["text"] == '"Fast," says Linear.'
 
 
 async def test_a_task_of_another_room_says_only_done(world):

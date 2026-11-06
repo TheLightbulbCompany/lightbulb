@@ -60,7 +60,10 @@ WORKER_INSTRUCTIONS = (
     "belongs to a teammate or a person, follow the lightbulb skill's references/tasks.md. You never create a "
     "schedule: no Paperclip routine, cron job or timer. When the task asks for something recurring, do not set it "
     'up; answer that it is an automation the person asks Lightbulb for ("every Monday at 9, …") and confirms '
-    "on its card."
+    "on its card. A file you make holds only what the person asked for, ready to use: no audience, test, goal or "
+    "rationale notes in it; say those in your answer if they matter. Never invent a number, target or claim the "
+    'person did not give: ask, or offer it in your answer as "Suggestion: …". Open your answer with one sentence '
+    'saying what you made ("Drafted the welcome email."), not a figure from it.'
 )
 
 _STATUS_AFTER = {

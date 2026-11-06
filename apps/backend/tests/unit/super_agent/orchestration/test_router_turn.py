@@ -1283,6 +1283,21 @@ def test_workers_never_schedule():
     assert "never create a schedule" in WORKER_INSTRUCTIONS and "routine" in WORKER_INSTRUCTIONS
 
 
+def test_workers_deliver_only_what_was_asked():
+    """Walk 14 (W14-6): Growth's email opened with "Audience: … Test: … aim for 8%" and its reply led with the 8%
+    nobody set. The Worker's instructions keep notes out of the file, forbid invented numbers and open the answer
+    with what was made; the Growth persona no longer asks for "one experiment with a success number"."""
+    from core.services.paperclip_provisioning import STARTER_CAPABILITIES
+    from core.temporal.activities import WORKER_INSTRUCTIONS
+
+    text = " ".join(WORKER_INSTRUCTIONS.split())
+    assert "only what the person asked for" in text and "no audience, test, goal or rationale notes" in text
+    assert "Never invent a number, target or claim" in text and "Suggestion:" in text
+    assert "Open your answer with one sentence saying what you made" in text
+    assert "success number" not in STARTER_CAPABILITIES["growth"]
+    assert "never invents targets or numbers" in STARTER_CAPABILITIES["growth"]
+
+
 def test_briefs_carry_no_approval_steps():
     """Gate run 6 (A9): "the task stops at an approval question" made the Router write "present … for approval; send
     only after explicit approval" into a brief, and the Worker asked a plain approval before mail.send asked again.

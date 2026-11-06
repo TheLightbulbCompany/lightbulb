@@ -307,6 +307,17 @@ def test_plain_line_ends_at_a_sentence_within_the_limit():
     assert len(ta.plain_line(long_cjk)) == ta.LINE_MAX and ta.plain_line(long_cjk).endswith("…")
 
 
+def test_result_line_is_the_first_sentence_of_the_reply():
+    """Walk 14 (W14-6): the finish line read "Drafted the launch email …, with an 8% seven-day signup target. It
+    features …": the whole reply. It is the first sentence only, what was made; the rest stays in the task."""
+    reply = "Drafted the welcome email (cafe-menu.md). Suggestion: aim for 8% signups in seven days."
+    att = [{"n": 1, "status": "ended", "outcome": "completed", "output": reply}]
+    tree = {"task": _task({"kind": "room", "roomId": "r1"}, status="idle"), "attempts": att}
+    assert ta.result_line(tree, "r1") == "Drafted the welcome email (cafe-menu.md)."
+    one = [{**att[0], "output": "Fees on a $50.25 ticket are $1.76 (2.9% + 30¢)"}]  # no sentence end: all of it
+    assert ta.result_line({**tree, "attempts": one}, "r1") == "Fees on a $50.25 ticket are $1.76 (2.9% + 30¢)"
+
+
 def test_result_line_follows_the_privacy_rule():
     done = {"kind": "room", "roomId": "r1"}
     att = [{"n": 1, "status": "ended", "outcome": "completed", "output": "**Paid** Acme.\n\nDetails…"}]

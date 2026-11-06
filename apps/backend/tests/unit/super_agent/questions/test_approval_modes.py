@@ -67,10 +67,9 @@ def test_ask_asks_for_everything_and_never_ask_for_nothing(kind):
 
 
 def test_allow_always_is_offered_only_with_a_target_to_bind():
-    assert questions.kind_and_options("purchase", {"merchant": "Acme"}) == (
-        "approval",
-        ["allow_once", "allow_always", "deny"],
-    )
+    # Money and provider consent are never remembered: Deny / Allow once only, even with a merchant or provider.
+    assert questions.kind_and_options("purchase", {"merchant": "Acme"}) == ("approval", ["allow_once", "deny"])
+    assert questions.kind_and_options("provision", {"provider": "neon"}) == ("approval", ["allow_once", "deny"])
     assert questions.kind_and_options("mail.send", {"to": "a@b.c"}) == (
         "review",
         ["send", "allow_always", "request_changes"],
@@ -207,6 +206,40 @@ async def test_always_allow_rule_lets_the_second_identical_action_through(api, m
     # Another recipient is not covered by the rule.
     other = await api.post(_url(), json=await _body(tid, "c3", "mail.send", {"to": "y@example.com"}), headers=H)
     assert other.json()["decision"] == "needs_approval"
+
+
+@pytest.mark.parametrize(
+    ("kind", "operands"), [("purchase", {"merchant": "Acme", "amount": "999"}), ("provision", {"provider": "neon"})]
+)
+async def test_an_existing_always_allow_rule_never_lets_money_or_a_provider_skip_its_card(
+    api, mode, monkeypatch, rules_doc, kind, operands
+):
+    """A rule an older card wrote (before money was never remembered) binds the merchant or provider; it is ignored,
+    so the purchase still faces the mode and its cap, and the provision still asks. A new one is never written."""
+    from core.services import a2a_rules
+
+    key = "merchant" if kind == "purchase" else "provider"
+    rules = a2a_rules.default_rules(WS, ["user_ada"])
+    rules.rules.append(
+        a2a_rules.Rule(
+            id="always-old",
+            resource="agent:*",
+            skill=kind,
+            requesters=[f"org:{WS}"],
+            effect="allow",
+            when=a2a_rules.When(operands_equal={key: operands[key]}),
+        )
+    )
+    rules_doc[WS] = rules.model_dump(exclude_none=True)
+    assert await questions.rule_effect(WS, None, kind, operands) is None
+    mode["approval_mode"] = "ask"
+    tid = await _started()
+    resp = await api.post(_url(), json=await _body(tid, "c1", kind, operands), headers=H)
+    assert resp.json()["decision"] == "needs_approval"
+    monkeypatch.setattr(questions, "_admins", AsyncMock(return_value=["user_ada"]))
+    before = dict(rules_doc)
+    await questions.add_always_allow(WS, kind, operands, by="user_sam")
+    assert rules_doc == before
 
 
 async def test_add_always_allow_keeps_the_a2a_defaults_and_is_idempotent(monkeypatch):

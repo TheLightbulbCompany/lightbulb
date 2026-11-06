@@ -1158,6 +1158,8 @@ function RoomContent({
           agentName={(agentId) => participants.find((m) => m.kind === "agent" && m.id === agentId)?.displayName ?? "Agent"}
           client={messagingClient} onSteer={onSteerSubagent} onStop={onStopSubagent} onVisible={onSubagentsVisible} />}
         <RoomComposer {...composer} viewerId={currentUserId} focusToken={focusToken} placeholderDrafts={showFirstReplies ? INCOMPLETE_FIRST_REPLIES : undefined}
+        // A chat without Lightbulb is people talking: "Message Priya Test", not "Ask Lightbulb…" (W17-10).
+        placeholder={composer.placeholder ?? (superAgent && !participants.some((p) => p.kind === "agent") ? `Message ${roomName}` : undefined)}
         onSubmit={markSent(composer.onSubmit)}
         onRetry={composer.onRetry ? markSent(composer.onRetry) : undefined}
         onEditLast={onUpdateMessage ? () => {

@@ -170,7 +170,7 @@ function SettingsBody({ room, roomName, section, onSection, canEdit, actionable,
         <p id={`${id}-topic-hint`} className="project-row__hint">Lightbulb and the specialists read this before every task in this {noun}.</p>
         <textarea id={`${id}-topic`} className="project-textarea" style={{ minHeight: 120 }} aria-describedby={`${id}-topic-hint`}
           value={topic} maxLength={ROOM_TOPIC_MAX_CHARS} disabled={!editable || !onSetTopic}
-          placeholder="Sell 200 loaves through the new site by 1 Dec. Always cc sam@acme.com on customer email."
+          placeholder="What this is for, and how Lightbulb should work here"
           onChange={(e) => setTopic(e.target.value)}
           onBlur={() => { if (topicDirty) void save("topic", () => onSetTopic!(topic.trim() || null), "The instructions could not be saved."); }} />
         <span className="project-count">{topic.length.toLocaleString()} / {ROOM_TOPIC_MAX_CHARS.toLocaleString()}</span>

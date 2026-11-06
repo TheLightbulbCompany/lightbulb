@@ -471,6 +471,14 @@ describe("RoomPanel Threads view (super-agent)", () => {
     expect(onPatchRoom).toHaveBeenCalledWith({ paused: false });
   });
 
+  it("W17-10: a DM between two people says Message <name>, not Ask Lightbulb", async () => {
+    const priya: RoomParticipant = { ...sam, id: "u-priya", displayName: "Priya Test", role: "member" };
+    const { rerender } = render(<Fresh><RoomPanel {...props} room={{ ...props.room!, kind: "dm", name: null }} participants={[sam, priya]} /></Fresh>);
+    expect(await screen.findByPlaceholderText("Message Priya Test")).toBeInTheDocument();
+    rerender(<Fresh><RoomPanel {...props} /></Fresh>);
+    expect(await screen.findByPlaceholderText("Ask Lightbulb…")).toBeInTheDocument();
+  });
+
   it("W17-2: pause stops Lightbulb, not people: Send in a paused chat sends", async () => {
     const onSubmit = vi.fn();
     const paused = { ...props.room!, pausedAt: "2026-11-06T10:00:00Z" };

@@ -159,17 +159,13 @@ async def test_paused_schedule_fire_is_noop(env):
     assert env.enqueued == [] and (await repo.get_schedule(WS, "s1")).get("activeRunTaskId") is None
 
 
-async def test_fire_into_a_paused_project_skips_and_is_recorded(env, monkeypatch):
+async def test_fire_into_a_paused_project_skips_and_is_recorded(env):
     """UX slice 6: every fire into a paused project skips (Run now too); History reads "Skipped: project paused"."""
     from core.repositories import messaging_repo
     from core.temporal.automations import SKIP_TEXTS
 
     rooms = {"r1": {"roomId": "r1", "pausedAt": "2027-01-04T13:00:00+00:00"}}
-
-    async def get_room(room_id):
-        return rooms.get(room_id)
-
-    monkeypatch.setattr(messaging_repo, "get_room", get_room)
+    messaging_repo.get_room.side_effect = lambda room_id: rooms.get(room_id)  # env's mock: undone with env
     await _active()
     at = _ms("2027-01-04T14:00:00+00:00")
     assert await fire_automation(_sched_input(), at) == "skipped:room_paused"

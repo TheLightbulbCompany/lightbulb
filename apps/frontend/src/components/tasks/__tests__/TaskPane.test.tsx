@@ -12,12 +12,14 @@ vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useSuperAge
 vi.mock("@/lib/analytics", () => ({ capture }));
 // The transcript is the task room in the ordinary room column; a stand-in records which room it opens and whether it is read-only.
 vi.mock("@/components/messaging/SessionChat", () => ({
-  SessionChat: ({ sessionId, openChat, readOnly, hideMessage }: { sessionId: string; openChat: (id: string) => Promise<{ roomId: string }>; readOnly?: boolean; hideMessage?: (m: { kind?: string; taskRefs?: { qid?: string }[] }) => boolean }) => {
+  SessionChat: ({ sessionId, openChat, readOnly, hideMessage }: { sessionId: string; openChat: (id: string) => Promise<{ roomId: string }>; readOnly?: boolean; hideMessage?: (m: { kind?: string; taskRefs?: { qid?: string; taskId?: string }[] }) => boolean }) => {
     const [room, setRoom] = useState("");
     useEffect(() => { void openChat(sessionId).then((r) => setRoom(r.roomId)); }, [sessionId, openChat]);
     return <section aria-label="Transcript" data-room={room} data-read-only={readOnly ? "yes" : "no"}
       data-hides={["question", "result"].filter((kind) => hideMessage?.({ kind })).join(",")}
-      data-keeps-cancelled={hideMessage?.({ kind: "question", taskRefs: [{ qid: "q-gone" }] }) ? "no" : "yes"} />;
+      data-keeps-cancelled={hideMessage?.({ kind: "question", taskRefs: [{ qid: "q-gone" }] }) ? "no" : "yes"}
+      data-hides-own-card={hideMessage?.({ kind: "message", taskRefs: [{ taskId: "t-signup" }] }) ? "yes" : "no"}
+      data-hides-other-card={hideMessage?.({ kind: "message", taskRefs: [{ taskId: "t-other" }] }) ? "yes" : "no"} />;
   },
 }));
 
@@ -89,12 +91,21 @@ describe("TaskPane", () => {
     expect(within(mine).getAllByRole("button").map((b) => b.textContent)).toEqual(["Allow once", "Deny"]);
   });
 
-  it("a cancelled question's card stays in Progress (it has no other place)", async () => {
-    withDetail({ ...step8, questions: [{ ...openRow, qid: "q-gone", state: "cancelled" as const }] }, [approval({ id: "q-gone", state: "cancelled" })]);
+  it("W7-4: a closed purchase leaves no card in Progress; Decisions says it closed unapproved and the footer says Not approved", async () => {
+    const closed = { ...step8, task: { ...step8.task, status: "resolved" as const, shownGroup: "resolved" as const },
+      questions: [{ ...openRow, qid: "q-gone", state: "cancelled" as const }],
+      effects: [{ idemKey: "e1", tool: "purchase", kind: "purchase", state: "proposed" }] };
+    withDetail(closed, [approval({ id: "q-gone", state: "cancelled" })]);
     pane();
     const transcript = await screen.findByRole("region", { name: "Transcript" });
-    await waitFor(() => expect(transcript).toHaveAttribute("data-keeps-cancelled", "yes"));
-    expect(transcript).toHaveAttribute("data-hides", "question");
+    // The cancelled ask's card and the request's own card are left out (they read as an empty card); others stay.
+    await waitFor(() => expect(transcript).toHaveAttribute("data-keeps-cancelled", "no"));
+    expect(transcript).toHaveAttribute("data-hides-own-card", "yes");
+    expect(transcript).toHaveAttribute("data-hides-other-card", "no");
+    expect(within(screen.getByRole("list", { name: "Decisions" })).getByText(/^Closed — not approved: /)).toBeInTheDocument();
+    const effects = screen.getByRole("list", { name: "Effects" });
+    expect(effects).toHaveTextContent("Not approved");
+    expect(effects).not.toHaveTextContent("Waiting for approval");
   });
 
   it("transcript is the task room, read-only; with no room composer on screen a one-line note steers it", async () => {

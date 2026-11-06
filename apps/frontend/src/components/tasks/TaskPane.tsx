@@ -64,29 +64,30 @@ export function TaskPane({ taskId, viewerId, onClose, headingRef, backLabel = "B
 }
 
 function TaskPaneBody({ detail, viewerId }: { detail: TaskDetail; viewerId: string }): ReactElement {
-  const { tasks } = useLiveEvents();
+  const { tasks, agentNames } = useLiveEvents();
   const { task } = detail;
   // Who may answer, by name, is the viewer's view (Q's route); the detail holds the bare rows.
   const { data: views } = useTaskQuestions(tasks, detail.questions.length ? task.taskId : null);
   const questions = views?.items ?? [];
   const open = questions.find((q) => q.state === "open");
-  const answered = questions.filter((q) => q.state === "answered" && q.answeredBy);
-  // A question's card is posted into the task room too: shown once (open at the top, answered as a Decision line),
-  // so Progress leaves it out; a cancelled one has no other place and stays in Progress.
-  const cancelled = new Set(questions.filter((q) => q.state === "cancelled").map((q) => q.id));
-  const hideCard = (m: { kind?: string | null; taskRefs?: { qid?: string }[] | null }) =>
-    m.kind === "question" && !m.taskRefs?.some((r) => r.qid && cancelled.has(r.qid));
+  // Decisions: what became of each ask (answered by whom, or closed unanswered).
+  const decided = questions.filter((q) => (q.state === "answered" && q.answeredBy) || q.state === "cancelled");
+  // A question's card is posted into the task room too: shown once (open at the top, else a Decision line), so
+  // Progress leaves it out, as it does a card for this very request (a Closed one read as an empty card, W7-4).
+  const hideCard = (m: { kind?: string | null; taskRefs?: { taskId: string }[] | null }) =>
+    m.kind === "question" || (!!m.taskRefs?.length && m.taskRefs.every((r) => r.taskId === task.taskId));
   // The header's reason ("Ready for review", "Needs approval"), else its word, so the card agrees with it.
   const view = summaryView(task, viewerId);
   const word = view.reason ?? view.word;
   // The room's composer steers this request when it is on screen; otherwise a one-line note here.
   const composerShown = useRoomComposerShown(task.originRoomId);
   const effects = open ? detail.effects.filter((e) => e.state !== "proposed") : detail.effects;
+  const closed = view.word === "Closed";
   return <div className="room-context-body flex min-h-0 flex-col gap-3">
     <TaskHeader task={task} viewerId={viewerId} finished={taskFinished(detail)} />
-    {open && <NeedsYouCard key={open.id} task={task} question={open} label={word} ended={view.word === "Closed"} />}
-    {answered.length > 0 && <ul aria-label="Decisions" className="grid gap-1 px-1 text-ui text-muted-foreground">
-      {answered.map((q) => <li key={q.id}>{answerLine(q)}</li>)}
+    {open && <NeedsYouCard key={open.id} task={task} question={open} label={word} ended={closed} />}
+    {decided.length > 0 && <ul aria-label="Decisions" className="grid gap-1 px-1 text-ui text-muted-foreground">
+      {decided.map((q) => <li key={q.id}>{q.state === "cancelled" ? `${endedLabel(q.kind)}: ${askLine(q, task.specialist, agentNames)}` : answerLine(q)}</li>)}
     </ul>}
     <div className="flex min-h-64 flex-1 flex-col">
       <SessionChat sessionId={detail.taskRoomId} sessionOwnerId={task.ownerUserId ?? ""} words={TRANSCRIPT_WORDS}
@@ -100,7 +101,8 @@ function TaskPaneBody({ detail, viewerId }: { detail: TaskDetail; viewerId: stri
     </section>}
     {effects.length > 0 && <ul aria-label="Effects" className="grid gap-1 px-1 text-ui">
       {effects.map((e) => {
-        const line = effectLine(e);
+        // An approval nobody gave before Close: it won't happen, so it no longer waits (W7-4).
+        const line = closed && e.state === "proposed" ? "Not approved" : effectLine(e);
         const warn = e.state === "unknown" || line.startsWith("Didn't happen");
         return <li key={e.idemKey} className="flex flex-wrap items-baseline gap-x-2">
           <span className="font-semibold">{effectName(e)}</span>
@@ -111,6 +113,8 @@ function TaskPaneBody({ detail, viewerId }: { detail: TaskDetail; viewerId: stri
     <TaskDetails detail={detail} />
   </div>;
 }
+
+const endedLabel = (kind: string) => kind === "approval" ? "Closed — not approved" : kind === "review" ? "Closed — not sent" : "Closed — not answered";
 
 function answerLine(q: QuestionView): string {
   const verb = answerVerb(q.answer?.optionId, q.options.find((o) => o.id === q.answer?.optionId)?.label);
@@ -204,9 +208,8 @@ export function NeedsYouCard({ task, question, label = "Needs you", ended = fals
     else { setNote(res.message); if (res.answeredBy) setClosed(true); }
   };
   const live = question.canAnswer && !closed && !ended && question.state === "open";
-  const endedLabel = question.kind === "approval" ? "Closed — not approved" : question.kind === "review" ? "Closed — not sent" : "Closed — not answered";
   return <section role="group" aria-labelledby={headingId} className={`editorial-card border-l-2 px-3 py-2 ${ended ? "border-l-border" : "border-l-warn"}`}>
-    <p className="label-caps">{ended ? endedLabel : question.canAnswer ? label : waiting}</p>
+    <p className="label-caps">{ended ? endedLabel(question.kind) : question.canAnswer ? label : waiting}</p>
     <h4 id={headingId} className="font-semibold">{heading}</h4>
     {question.text && question.text !== heading && <p className="mt-0.5 whitespace-pre-wrap text-ui">{question.text}</p>}
     {rows.length > 0 && <dl aria-label="What this does" className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 border-t border-border pt-2 text-ui">

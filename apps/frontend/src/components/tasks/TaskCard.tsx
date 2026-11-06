@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button";
 import { capture } from "@/lib/analytics";
 import { cn } from "@/lib/utils";
 import { RequestApp } from "@/components/canvas/RequestApp";
-import { ACTION_LABELS, useTaskActions } from "./useTaskActions";
+import { actionLabel, useTaskActions } from "./useTaskActions";
 
 const TONE_TEXT: Record<TaskTone, string> = {
   working: "text-info", waiting: "text-warn", review: "text-foreground", landing: "text-ok", neutral: "text-muted-foreground",
@@ -109,7 +109,7 @@ export function TaskCard({ task, taskId, viewerId, onOpen }: TaskCardProps): Rea
           const res = await run(task, inline);
           setPending(false);
           if (!res.ok) setError(res.message);
-        }}>{ACTION_LABELS[inline]}</Button>
+        }}>{actionLabel(task, inline)}</Button>
     </div>}
     {blind && <p className="relative z-10 mt-1 text-ui text-muted-foreground">The details didn&apos;t load. Open the request to decide.</p>}
     {error && <p role="alert" className="relative z-10 mt-1 text-ui text-err">{error}</p>}

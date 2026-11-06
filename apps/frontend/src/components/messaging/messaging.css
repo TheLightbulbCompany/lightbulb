@@ -30,13 +30,18 @@
 .room-facepile > .room-facepile-more { margin-left: 2px; } /* the faces overlap; the count must not, or "+2" reads "-2" */
 .room-live { display: inline-flex; align-items: center; }
 .room-live-dot { width: 8px; height: 8px; border-radius: 9999px; background: var(--live); flex: none; }
-.room-history { --room-gutter: 20px; position: relative; display: flex; flex-direction: column; min-height: 0; flex: 1; overflow: auto; overscroll-behavior: contain; padding: 16px var(--room-gutter); }
+/* The gutter is the content's padding, not the scroller's: rows bleed into it (full-width hover), and on the scroller
+   Chrome adds its inline-end padding past that bleed, a sideways scroll that focus then used (dev walk W7, clipped text). */
+.room-history { --room-gutter: 20px; position: relative; display: flex; flex-direction: column; min-height: 0; flex: 1; overflow: hidden auto; overscroll-behavior: contain; padding: 16px 0; }
 .room-history > :first-child { margin-top: auto; }
 .room-timeline { position: relative; display: flex; flex-direction: column; min-height: 0; flex: 1; }
 .room-timeline-item { outline: none; border-radius: 6px; }
 /* Everything inside the scroller. flex-shrink: 0 keeps its box at content height
    so the ResizeObserver in useStickToBottom sees every growth (runs, previews, images). */
-.room-history-content { display: flex; flex-direction: column; flex-shrink: 0; }
+.room-history-content { display: flex; flex-direction: column; flex-shrink: 0; padding-inline: var(--room-gutter); }
+/* Hidden until focused: the first Tab in a room offers the Requests column before every message's toolbar. */
+.room-skip-link { position: absolute; top: 8px; left: 8px; z-index: 5; padding: 4px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--background); font-size: var(--text-ui); transform: translateY(-200%); }
+.room-skip-link:focus { transform: none; outline: 2px solid var(--ring); outline-offset: 2px; }
 /* Jump/deep-link target: a warm flash that fades on its own (Slack-style). */
 .room-timeline-item[data-highlight="true"], .room-message-highlight { animation: room-highlight-fade 2s var(--ease-out, ease-out); }
 @keyframes room-highlight-fade { from { background: color-mix(in srgb, var(--bulb) 28%, transparent); } to { background: transparent; } }
@@ -449,7 +454,7 @@
 
 @media (max-width: 859px) {
   .room-header { padding: 12px; gap: 8px; }
-  .room-history { --room-gutter: 12px; padding: 8px var(--room-gutter); }
+  .room-history { --room-gutter: 12px; padding: 8px 0; }
   .room-typing { padding: 0 12px; }
   .room-composer { margin: 0 8px max(8px, env(safe-area-inset-bottom)); padding: 8px; }
   .room-limit-bar { margin: 0 8px 8px; flex-wrap: wrap; }

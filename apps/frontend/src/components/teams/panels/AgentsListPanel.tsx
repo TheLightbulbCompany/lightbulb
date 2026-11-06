@@ -47,6 +47,13 @@ export interface AgentsListPanelProps {
   initialView?: AgentsViewMode | null;
 }
 
+/** `messaging.py` `_handle_candidate`: the name in ASCII, lowercased, runs of anything else as "-", 32 at most.
+ *  ponytail: no collision suffix (two agents with one name); the room members' handle wins when there is one. */
+export function derivedHandle(name: string): string | null {
+  const handle = name.normalize("NFKD").replace(/[^\x00-\x7f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32);
+  return handle && handle !== "lightbulb" ? handle : null;
+}
+
 export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
   const { read } = useTeamsApi();
   const { pause, resume, remove } = useAgentMutations();
@@ -64,7 +71,10 @@ export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
   const nameOf = (agent: CompanyAgent) => agent.id === frontAgentId
     ? directory?.participants.find((p) => p.kind === "agent" && p.id === agent.id)?.displayName || "Lightbulb"
     : agent.name;
-  const handleOf = (agent: CompanyAgent) => directory?.participants.find((p) => p.kind === "agent" && p.id === agent.id)?.mentionHandle;
+  // The directory's handles come from the open room's members only, so from Lightbulb's DM (no specialists in it) Ask
+  // drafted nothing (dev walk W7-7): any room that has the agent, else the handle the server derives from its name.
+  const handleOf = (agent: CompanyAgent) => [...(directory?.participants ?? []), ...(directory?.rooms ?? []).flatMap((r) => r.participants)]
+    .find((p) => p.kind === "agent" && p.id === agent.id && p.mentionHandle)?.mentionHandle ?? derivedHandle(agent.name);
   const message = (agent: CompanyAgent) => {
     if (!frontAgentId || agent.id === frontAgentId) return openChatPanel(agent.id);
     const handle = handleOf(agent);

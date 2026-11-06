@@ -40,7 +40,8 @@ export function HomeIdeas(): ReactElement {
   </section>;
 }
 
-function IdeaItem({ idea, onStart, onDismiss }: {
+/** One suggested idea: what, why, who would do it, Not now and Do it. Home and the room's Ideas pane show the same. */
+export function IdeaItem({ idea, onStart, onDismiss }: {
   idea: Idea; onStart: (ideaId: string) => Promise<string | null>; onDismiss: (ideaId: string) => void;
 }): ReactElement {
   const { agentNames } = useLiveEvents();

@@ -110,7 +110,14 @@ ATTACHMENT_MAX_BYTES = max(v for t, v in ATTACHMENT_MAX_BYTES_BY_TYPE.items() if
 ATTACHMENT_MAX_BASE64_CHARS = -(-ATTACHMENT_MAX_BYTES // 3) * 4
 ATTACHMENT_MAX_COUNT = 4
 ROOM_NAME_MAX_CHARS = 200
-ROOM_TOPIC_MAX_CHARS = 250
+ROOM_TOPIC_MAX_CHARS = 2000  # a project's Instructions (UX slice 6)
+# A project's tile (UX slice 6): one of 12 lucide glyphs and one of 6 colour tokens (--project-1..6).
+ProjectIcon = Literal[
+    "sparkles", "rocket", "shopping-bag", "megaphone", "code", "pen-line",
+    "chart-line", "users", "calendar", "package", "leaf", "briefcase",
+]  # fmt: skip
+ProjectColor = Literal["project-1", "project-2", "project-3", "project-4", "project-5", "project-6"]
+PAUSED_ROOM_TEXT = "This project is paused. Resume it in Settings."
 MAX_PINNED_MESSAGES = messaging_repo.MAX_PINNED_MESSAGES
 MAX_SECTIONS = 20
 SECTION_NAME_MAX_CHARS = 40
@@ -223,6 +230,7 @@ API_ERROR_STATUS = {
     "PIN_LIMIT": 409,
     "ROOM_ARCHIVED": 409,
     "ROOM_NOT_ARCHIVABLE": 409,
+    "ROOM_NOT_PAUSABLE": 409,
     "ROOM_NOT_DELETABLE": 409,
     "RUN_NOT_ACTIVE": 409,
     "SUBAGENT_NOT_FOUND": 404,
@@ -362,6 +370,11 @@ class RoomSummary(ContractModel):
     # Set while the channel is archived: history stays readable, nothing new posts.
     archived_at: datetime | None = None
     archived_by: str | None = None
+    icon: ProjectIcon | None = None
+    color: ProjectColor | None = None
+    # Set while the project is paused: Lightbulb takes no new message and its schedules skip; running tasks finish.
+    paused_at: datetime | None = None
+    paused_by: str | None = None
     # A session's chat room (hidden from the room list): the session it talks beside.
     session: SessionRef | None = None
     # The workspace feed (Activity): listed, but clients hide it from the conversation list.
@@ -459,19 +472,31 @@ class CreateRoomRequest(ContractModel):
     # `messaging_repo.MAX_ROOM_MEMBERS`, enforced below as a 409 MEMBER_LIMIT
     # so callers get a reachable, meaningful error instead of a Pydantic 400.
     members: list[CreateRoomMember] = Field(max_length=256)
+    topic: str | None = None
+    icon: ProjectIcon | None = None
+    color: ProjectColor | None = None
 
     @field_validator("name")
     @classmethod
     def validate_name(cls, value: str | None) -> str | None:
         return validate_room_name(value)
 
+    @field_validator("topic")
+    @classmethod
+    def validate_topic(cls, value: str | None) -> str | None:
+        return validate_room_topic(value)
+
 
 class PatchRoomRequest(ContractModel):
     name: str | None = None
     topic: str | None = None
+    icon: ProjectIcon | None = None
+    color: ProjectColor | None = None
     # A PATCH field rather than /archive + /unarchive routes: it rides this route's admin
     # check, revision CAS and metadata live event unchanged.
     archived: bool | None = None
+    # Same shape as `archived`; a workspace admin may also set it (audited).
+    paused: bool | None = None
 
     @field_validator("name")
     @classmethod
@@ -486,7 +511,7 @@ class PatchRoomRequest(ContractModel):
     def named_updates(self) -> dict[str, Any]:
         """Only the fields the caller sent, so a topic-only PATCH cannot blank
         the name (and vice versa) while an explicit null still clears one."""
-        return {key: getattr(self, key) for key in ("name", "topic") if key in self.model_fields_set}
+        return {key: getattr(self, key) for key in ("name", "topic", "icon", "color") if key in self.model_fields_set}
 
 
 class MemberPrefsRequest(ContractModel):
@@ -1964,6 +1989,10 @@ def _room_summary_fields(meta: dict, member: dict, read: dict | None, mention_co
         "is_default": is_default_room(meta),
         "archived_at": meta.get("archivedAt"),
         "archived_by": meta.get("archivedBy"),
+        "icon": meta.get("icon"),
+        "color": meta.get("color"),
+        "paused_at": meta.get("pausedAt"),
+        "paused_by": meta.get("pausedBy"),
         "session": SessionRef(session_id=meta["session"]["sessionId"]) if meta.get("session") else None,
         "feed": is_feed_room(meta),
     }
@@ -2832,6 +2861,11 @@ async def create_room(auth: AuthContext, request: CreateRoomRequest) -> RoomDeta
                 kind=request.kind,
                 members=members,
                 req_hash=req_hash,
+                extra=(
+                    {k: v for k, v in (("topic", request.topic), ("icon", request.icon), ("color", request.color)) if v}
+                    if request.kind != "dm"
+                    else None
+                ),
                 dm_pair=dm_pair,
                 dm_pair_replaces=stale_room,
             )
@@ -2866,8 +2900,18 @@ async def patch_room(auth: AuthContext, room_id: str, request: PatchRoomRequest)
     # is a plain member (both clients create it that way) -- and it is their shared
     # conversation, so any member may archive/unarchive one. Everything else is owner/admin.
     # The feed's topic is the team's brief: any member edits it, like a channel topic (spec §4.2).
-    feed_brief = is_feed_room(meta) and set(updates) == {"topic"} and request.archived is None
-    if member.get("role") not in {"owner", "admin"} and (updates or meta.get("kind") != "group-dm") and not feed_brief:
+    feed_brief = (
+        is_feed_room(meta) and set(updates) == {"topic"} and request.archived is None and request.paused is None
+    )
+    room_admin = member.get("role") in {"owner", "admin"}
+    # Pause/resume alone: a workspace admin may do it too (UX slice 6); a group DM's members may not.
+    pause_only = request.paused is not None and not updates and request.archived is None
+    if (
+        not room_admin
+        and (updates or meta.get("kind") != "group-dm" or request.paused is not None)
+        and not feed_brief
+        and not (pause_only and auth.is_org_admin)
+    ):
         raise ApiProblem("ROOM_FORBIDDEN", "Room owner or admin access required.")
     # A DM's display name is derived from its counterpart; a stored name would
     # shadow it with nothing in the UI able to clear it. (Finding from #2483,
@@ -2888,12 +2932,30 @@ async def patch_room(auth: AuthContext, room_id: str, request: PatchRoomRequest)
             updates |= {"archivedAt": utc_now().isoformat(), "archivedBy": auth.user_id}
         else:
             updates |= {"archivedAt": None, "archivedBy": None}
+    if (request.icon or request.color) and meta.get("kind") != "channel":
+        raise ApiProblem("ROOM_FORBIDDEN", "Only a project has an icon and colour.")
+    paused = None
+    if request.paused is not None and request.paused != bool(meta.get("pausedAt")):
+        if meta.get("kind") != "channel" or is_feed_room(meta) or is_vendor_room(meta) or is_session_room(meta):
+            raise ApiProblem("ROOM_NOT_PAUSABLE", "Only a project can be paused.")
+        paused = request.paused
+        updates |= (
+            {"pausedAt": utc_now().isoformat(), "pausedBy": auth.user_id}
+            if paused
+            else {"pausedAt": None, "pausedBy": None}
+        )
     if not updates:
         return await _room_detail(meta, auth.user_id)
     try:
         meta = await messaging_repo.patch_room_meta(room_id, updates)
     except messaging_repo.RoomNotFound as exc:
         raise ApiProblem("ROOM_NOT_FOUND", "Room not found.") from exc
+    if paused is not None:
+        from core.services import questions  # lazy: the admin-actions audit row
+
+        await questions.audit(
+            auth.user_id, owner_id, "project.paused" if paused else "project.resumed", {"roomId": room_id}
+        )
     if updates.get("archivedAt"):
         await livekit_huddles.close_room(room_id)  # an archived channel holds no huddle; never raises
     await _publish_room_metadata(meta)

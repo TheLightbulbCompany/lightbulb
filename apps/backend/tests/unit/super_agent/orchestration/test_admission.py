@@ -272,6 +272,34 @@ async def test_the_company_name_mid_sentence_is_not_addressing(world, text):
     assert len(world["jev"]) == 1
 
 
+async def test_paused_project_gets_one_line_per_pause_and_no_router_turn(world, monkeypatch):
+    """UX slice 6: a paused project takes no Router turn; Lightbulb says so once per pause (keyed on pausedAt)."""
+    from core.services import messaging
+
+    keys = []
+
+    async def post(ws, room_id, **kw):
+        keys.append(kw["event_id"])
+        world["posts"].append((room_id, kw["text"], kw.get("thread_root")))
+        return "m1"
+
+    monkeypatch.setattr("core.services.task_conversation.post_as_lightbulb", post)
+    world["meta"] = {**world["meta"], "pausedAt": "2026-11-06T10:00:00Z"}
+    await _admit(world, _msg(1, targets=[{"agentId": CEO, "eventKind": "user_request"}]))
+    await _admit(world, _msg(2))
+    assert world["router"] == [] and world["jev"] == []
+    assert {p[1] for p in world["posts"]} == {messaging.PAUSED_ROOM_TEXT}
+    assert set(keys) == {f"paused:{ROOM}:2026-11-06T10:00:00Z"}  # post_as_lightbulb dedupes on it: one line
+
+
+async def test_paused_project_still_passes_replies_to_running_tasks(world):
+    """Running tasks finish: a reply in a running task's thread still reaches it."""
+    task_id, root = await _subscribed_task()
+    world["meta"] = {**world["meta"], "pausedAt": "2026-11-06T10:00:00Z"}
+    await _admit(world, _msg(2, root=root))
+    assert [t for t, _ in world["inputs"]] == [task_id] and world["posts"] == []
+
+
 async def test_admit_redelivery_is_idempotent(world):
     msg = _msg(targets=[{"agentId": CEO, "eventKind": "user_request"}])
     tid = await _admit(world, msg)

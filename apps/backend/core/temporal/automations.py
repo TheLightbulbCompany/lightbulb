@@ -32,6 +32,7 @@ PATCH_AUTOMATION_RUN = "A-automation-run-v1"
 # ponytail: workspace-wide `last_interactive_at`, one clock for every automation; per-automation if asked.
 IDLE_DAYS = 3
 IDLE_SKIP_TEXT = f"Skipped — nobody's been active for {IDLE_DAYS} days"
+SKIP_TEXTS = {"idle": IDLE_SKIP_TEXT, "room_paused": "Skipped: project paused"}  # History, by `lastSkip.reason`
 
 
 @dataclass(frozen=True)
@@ -310,12 +311,12 @@ async def _idle(ws: str, at_ms: int, *, strict: bool = False) -> bool:
 @activity.defn
 async def fire_automation(inp: FireInput, at_ms: int) -> str:
     """One fire → one trigger with a deterministic `start_task` in `ref["start"]` (no Router model turn, C31).
-    Returns the trigger id, or `skipped:paused` / `skipped:idle` / `skipped:overlap`. Idempotent on retry: the same fire maps
+    Returns the trigger id, or `skipped:paused` / `skipped:idle` / `skipped:room_paused` / `skipped:overlap`. Idempotent on retry: the same fire maps
     to the same trigger and task ids, the claim accepts its own task id again, the trigger put is conditional."""
     from core import tasks_schema as ts
     from core.dynamodb import utc_now_iso
     from core.repositories import automations_repo as repo
-    from core.repositories import tasks_repo
+    from core.repositories import messaging_repo, tasks_repo
     from core.services import admission, messaging, proactive, task_conversation
 
     ws = inp.ws
@@ -329,6 +330,13 @@ async def fire_automation(inp: FireInput, at_ms: int) -> str:
         await repo.note_skip(ws, row["scheduleId"], reason="idle")
         await _turn_off_if_spent(ws, row, inp)
         return "skipped:idle"
+    deliver_to = row.get("deliverTo") or "none"
+    if deliver_to.startswith("room:"):  # a paused project (UX slice 6): every fire skips, Run now included
+        target = await messaging_repo.get_room(deliver_to.removeprefix("room:"))
+        if target and target.get("pausedAt"):
+            await repo.note_skip(ws, row["scheduleId"], reason="room_paused")
+            await _turn_off_if_spent(ws, row, inp)
+            return "skipped:room_paused"
     trigger_id = _fire_trigger_id(inp, row, at_ms)
     task_id = ts.router_task_id(trigger_id, 0, 0)
     budget = row.get("budgetPerRunUsd")
@@ -358,7 +366,6 @@ async def fire_automation(inp: FireInput, at_ms: int) -> str:
     if excerpt:
         brief += f"\n\nWebhook payload:\n{excerpt}"
 
-    deliver_to = row.get("deliverTo") or "none"
     room_id = deliver_to.removeprefix("room:") if deliver_to.startswith("room:") else None
     dm = deliver_to.startswith("dm:")
     if dm and deliver_to.removeprefix("dm:") != row["ownerUserId"]:

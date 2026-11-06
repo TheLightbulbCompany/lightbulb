@@ -78,6 +78,12 @@ export interface RoomSummary {
   /** Set while the channel is archived: history stays readable, nothing new posts. */
   archivedAt?: string | null;
   archivedBy?: string | null;
+  /** A project's tile (UX slice 6); absent = the neutral tile with the name's first letter. */
+  icon?: ProjectIcon | null;
+  color?: ProjectColor | null;
+  /** Set while the project is paused: Lightbulb takes no new message there and its schedules skip. */
+  pausedAt?: string | null;
+  pausedBy?: string | null;
   /** Set once the channel's owner deleted it. The backend hides a deleted room, so clients rarely see it. */
   deletedAt?: string | null;
   /** A session's chat (hidden from the room list): the session it talks beside. Absent on every other room. */
@@ -143,10 +149,26 @@ export interface SectionsRequest {
   sections: RoomSection[];
 }
 
+/** The 12 lucide glyphs a project tile may use (kebab-case lucide names). */
+export const PROJECT_ICONS = [
+  "sparkles", "rocket", "shopping-bag", "megaphone", "code", "pen-line",
+  "chart-line", "users", "calendar", "package", "leaf", "briefcase",
+] as const;
+export type ProjectIcon = (typeof PROJECT_ICONS)[number];
+/** Colour tokens `--project-1..6`. */
+export const PROJECT_COLORS = ["project-1", "project-2", "project-3", "project-4", "project-5", "project-6"] as const;
+export type ProjectColor = (typeof PROJECT_COLORS)[number];
+/** A project's Instructions (its room topic). */
+export const ROOM_TOPIC_MAX_CHARS = 2000;
+
 export interface CreateRoomRequest {
   clientRoomId: string;
   name: string | null;
   kind: RoomKind;
+  /** Channels only (ignored on a DM). */
+  topic?: string | null;
+  icon?: ProjectIcon | null;
+  color?: ProjectColor | null;
   members: Array<{
     kind: MemberKind;
     id: string;
@@ -160,6 +182,11 @@ export interface PatchRoomRequest {
   topic?: string | null;
   /** Owner/admin only, channels only; never #general or the shared channel. */
   archived?: boolean;
+  /** Channels only; null clears. */
+  icon?: ProjectIcon | null;
+  color?: ProjectColor | null;
+  /** Projects only. Room owner/admin or a workspace admin; audited. */
+  paused?: boolean;
 }
 
 export interface UpsertRoomMemberRequest {

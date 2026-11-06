@@ -655,6 +655,14 @@ def test_validate_decisions_keeps_order_and_drops_only_bad():
     assert not acts._task_in_scope({"audience": {"kind": "person", "userIds": [PRIYA]}}, lane, SAM, None)
 
 
+def test_render_batch_carries_project_instructions():
+    """UX slice 6: the project's Instructions (its room topic) reach the Router's brief."""
+    trig = {"triggerId": "chat:1", "source": "chat", "admission": "respond", "text": "draft it", "who": "Sam"}
+    text = router_prompt.render_batch([trig], ROSTER, [], instructions="Always sign emails 'Sam from Acme'")
+    assert "## Project instructions" in text and "Always sign emails 'Sam from Acme'" in text
+    assert "## Project instructions" not in router_prompt.render_batch([trig], ROSTER, [])
+
+
 def test_render_batch_shape():
     text = router_prompt.render_batch(
         [

@@ -1156,6 +1156,7 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
             closed=closed,
             asker=user_id,
             now=await _local_now(ws, user_id),
+            instructions=((await messaging_repo.get_room(room_id)) or {}).get("topic") if room_id else None,
         )
         memory = memory_tags.block_for_router(
             "private" if private and user_id else "shared", user_id if private else None, room_id

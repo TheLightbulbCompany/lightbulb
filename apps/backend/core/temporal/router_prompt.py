@@ -90,19 +90,27 @@ def render_batch(
     closed: list[dict] | tuple = (),
     asker: str | None = None,
     now: str | None = None,
+    instructions: str | None = None,
 ) -> str:
     """`triggers`: views from `activities._trigger_view` (triggerId, source, admission, text, who, where, threaded,
     pinnedSpecialist, routedTo); `roster`: registry rows (id, name, title, status); `open_tasks`: task rows;
     `recent`: the room's (or thread's) lines before the batch (`activities._recent_lines`: who, text, lightbulb,
     cards, each with its task's `state` when the task exists); None: the batch has no room message, so no earlier
     lines are known. `asker`: the person the batch answers (first trigger's actor); "Needs you" is theirs only.
-    `now`: `local_now` in the asker's zone."""
+    `now`: `local_now` in the asker's zone. `instructions`: the project's Instructions (its room topic)."""
     names = {a["id"]: a.get("name") or a["id"] for a in roster}
     lines = [f"# Batch ({'private lane' if lane != 'shared' else 'shared lane'})", ""]
     if now:
         lines += [
             f"Now: {now}. This is the asker's own time: use it, never UTC, for today, tomorrow and any date or "
             "time you say, and name the zone when you give the time.",
+            "",
+        ]
+    if instructions:
+        lines += [
+            "## Project instructions (set by the people in this project; follow them here, and put them in any "
+            "brief you hand a specialist)",
+            instructions.strip(),
             "",
         ]
     lines.append("## Triggers")

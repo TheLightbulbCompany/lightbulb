@@ -160,6 +160,18 @@ async def _admit_message(room_id: str, seq: int) -> None:
         put_metric("admission.outcome", dimensions={"outcome": "pass_through", "source": "chat"})
         return
 
+    # A paused project (UX slice 6): no Router turn, one line per pause. Running tasks were passed through above.
+    if meta.get("pausedAt"):
+        await task_conversation.post_as_lightbulb(
+            ws,
+            room_id,
+            text=messaging.PAUSED_ROOM_TEXT,
+            event_id=f"paused:{room_id}:{meta['pausedAt']}",
+            remember=False,
+        )
+        put_metric("admission.outcome", dimensions={"outcome": "paused", "source": "chat"})
+        return
+
     # 3. fast path
     front = await _front_member(room_id, ws)
     listen = (front or {}).get("listenMode") or "active"

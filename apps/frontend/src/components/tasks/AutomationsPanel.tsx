@@ -178,7 +178,7 @@ function EditAutomation({ a, viewerTz, onSave, onCancel }: {
         className="w-full resize-y rounded-md border border-input bg-background px-2 py-1.5 text-ui" />
     </label>
     {/* routers/automations.py: an edited rule's instructions make it a new rule, back in observe. */}
-    {a.match && <p className="text-ui text-muted-foreground">Saving puts this rule back to watch-only until it's turned on again.</p>}
+    {a.match && <p className="text-ui text-muted-foreground">Saving puts this rule back to watch-only until it&apos;s turned on again.</p>}
     {start && <label className="grid w-fit gap-1 text-ui"><span className="label-caps">Time{zone}</span>
       <input type="time" value={time} onChange={(event) => setTime(event.target.value)} required
         className="rounded-md border border-input bg-background px-2 py-1 text-ui" />

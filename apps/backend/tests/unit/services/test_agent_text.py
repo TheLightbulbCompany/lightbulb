@@ -6,8 +6,8 @@ from core.services import openclaw_work
 
 
 def test_agents_read_typed_text_without_escapes():
-    stored = "\\_\\_init\\_\\_, 3\\*4 then 5\\*6, \\~x\\~, a_b_c, \\*\\*not bold\\*\\*, \\# hi, **bold**"
-    assert agent_text(stored) == "__init__, 3*4 then 5*6, ~x~, a_b_c, **not bold**, # hi, **bold**"
+    stored = "\\_\\_init\\_\\_, 3\\*4 then 5\\*6, \\~x\\~, a_b_c, \\*\\*not bold\\*\\*\n\\# hi, **bold**"
+    assert agent_text(stored) == "__init__, 3*4 then 5*6, ~x~, a_b_c, **not bold**\n# hi, **bold**"
     assert "\\" not in agent_text(stored)
 
 
@@ -16,9 +16,38 @@ def test_code_keeps_its_backslashes():
     assert agent_text(stored) == "run `a\\*b` then\n```\nprint('\\*')\n```\n3*4"
 
 
-def test_a_typed_backslash_survives_and_plain_text_is_unchanged():
-    assert agent_text("C:\\path\\\\\\*x") == "C:\\path\\*x"
+def test_only_the_composers_escapes_come_off():
+    assert agent_text("\\\\server\\share and a\\.b and C:\\temp") == "\\\\server\\share and a\\.b and C:\\temp"
+    assert (
+        agent_text("\\# h\n\\> q\n  \\- d\n\\+ p\n\\=\n2024\\. y\n1\\) z") == "# h\n> q\n  - d\n+ p\n=\n2024. y\n1) z"
+    )
+    assert agent_text("mid \\# stays") == "mid \\# stays"
     assert agent_text("plain text") == "plain text"
+
+
+def test_double_backtick_code_keeps_its_backslashes():
+    assert agent_text("``a\\*b`c`` then 3\\*4") == "``a\\*b`c`` then 3*4"
+
+
+def test_the_search_index_copy_matches():
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[4] / "infra" / "lambda" / "messaging-search-indexer" / "index.py"
+    spec = importlib.util.spec_from_file_location("messaging_search_indexer_index", path)
+    indexer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(indexer)
+    for text in ["\\_\\_init\\_\\_", "``a\\*b`` 3\\*4", "\\# h\n1\\. x", "\\\\server", "plain"]:
+        assert indexer.agent_text(text) == agent_text(text)
+    item = {
+        "roomId": "r",
+        "messageId": "m",
+        "messageSeq": 1,
+        "createdAt": "t",
+        "text": "fix \\_\\_init\\_\\_",
+        "author": {},
+    }
+    assert indexer.document(item)["text"] == "fix __init__"
 
 
 def test_runtime_ingress_carries_clean_text():
@@ -33,3 +62,28 @@ def test_runtime_ingress_carries_clean_text():
         "createdAt": "2026-11-06T00:00:00Z",
     }
     assert openclaw_work._public_message(row)["text"] == "fix __init__ for 3*4"
+
+
+def test_jev_reads_clean_text():
+    from datetime import datetime, timezone
+
+    from core.services import jev
+
+    message = {"messageId": "m", "author": {"kind": "human", "id": "u", "displayName": "Ana"}, "text": "fix 3\\*4"}
+    assert jev._line(message)["text"] == "fix 3*4"
+    run = {"agentId": "a", "triggerMessageId": "m", "dispatchedAt": None}
+    (line,) = jev._open_lines([run], [{"id": "a", "displayName": "Finance"}], [message], datetime.now(timezone.utc))
+    assert "\\" not in line and "3*4" in line
+
+
+def test_watchdog_notes_read_clean_text():
+    import inspect
+
+    from core.services import watchdog
+
+    params = inspect.signature(watchdog.judge_state).parameters
+    args = {name: [] if name in {"notes", "tools", "open_questions", "previous_verdicts"} else {} for name in params}
+    args = {k: v for k, v in args.items() if params[k].default is inspect.Parameter.empty}
+    args["notes"] = [{"kind": "comment", "author": {"kind": "human"}, "text": "\\_\\_init\\_\\_ broke"}]
+    out = str(watchdog.judge_state(**args))
+    assert "__init__ broke" in out and "\\_" not in out

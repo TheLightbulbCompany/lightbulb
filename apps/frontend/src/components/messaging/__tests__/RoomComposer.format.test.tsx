@@ -192,3 +192,21 @@ it("W18 prod block: typing _ * ~ makes no formatting; inside code nothing is tra
   typeKeys("def __init__(self):");
   expect(composerValue()).toBe("```\ndef __init__(self):\n```");
 });
+
+it("review #4954: inline code keeps its backslashes on read-back; a handle opening with _ stays a handle", () => {
+  for (const stored of ["`code \\* x` and `` a\\*b`c ``", "```\nprint('\\*')\n```"]) {
+    render(<RoomComposer text={stored} onTextChange={vi.fn()} members={[]}
+      clientMessageId="11111111-1111-4111-8111-111111111111" sendState="idle" onSubmit={vi.fn()} />);
+    expect(field()).toHaveTextContent(stored.includes("```") ? "print('\\*')" : "code \\* x");
+    // Touched, it writes the same text back.
+    selectInComposer(0, 0);
+    typeKeys("");
+    act(() => editorOf(field()).update(() => { lexical.$getRoot().selectEnd(); }, { discrete: true }));
+    expect(composerValue()).toBe(stored);
+    cleanup();
+  }
+  render(<Harness />);
+  typeInComposer("");
+  typeKeys("ping @_ops now");
+  expect(composerValue()).toBe("ping @_ops now");
+});

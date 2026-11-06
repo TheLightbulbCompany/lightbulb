@@ -110,3 +110,14 @@ it("founder 6 Nov: edit opens as formatted text, not markdown source", async () 
   expect(input).toHaveTextContent("ship it, __init__");
   expect(input).not.toHaveTextContent("*");
 });
+
+it("review #4954: an edit saved unchanged keeps markdown the box can't show (a mobile # heading, __bold__)", async () => {
+  const user = userEvent.setup();
+  const update = vi.fn().mockResolvedValue(undefined);
+  const mobile = { ...message, text: "# heading\n__init__ and `code \\* x`" };
+  render(<RoomMessageContent message={mobile} currentUserId="me" actionable onUpdate={update}>x</RoomMessageContent>);
+  await user.click(screen.getByRole("button", { name: "Message actions" }));
+  await user.click(screen.getByRole("menuitem", { name: "Edit message" }));
+  await user.click(screen.getByRole("button", { name: "Save changes" }));
+  expect(update).toHaveBeenCalledWith("one", expect.objectContaining({ text: mobile.text }));
+});

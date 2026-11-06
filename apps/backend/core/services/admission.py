@@ -306,7 +306,7 @@ async def _record_rule(ws: str, room_id: str, msg: dict, in_scope: list[dict], v
     ref = {"roomId": room_id, "messageId": msg["messageId"]}
     if msg.get("threadRootMessageId"):
         ref["threadRoot"] = msg["threadRootMessageId"]
-    would = rules.would_do(rule, {"text": msg.get("text") or ""}, rule.get("tz") or "UTC")
+    would = rules.would_do(rule, {"text": messaging_repo.agent_text(msg.get("text") or "")}, rule.get("tz") or "UTC")
     try:
         await rules_activities.record_match(
             ws, sid, rule.get("ruleVersion", 1), thread_key, ref, verdict.get("ruleP"), would, "chat"

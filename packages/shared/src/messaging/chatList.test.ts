@@ -125,6 +125,7 @@ describe("plainPreview", () => {
     expect(plainPreview("edit __init__.py")).toBe("edit __init__.py");
     // The composer escapes what was typed; the preview shows it as typed.
     expect(plainPreview("\\_\\_init\\_\\_ and 3\\*4, \\*\\*not bold\\*\\*")).toBe("__init__ and 3*4, **not bold**");
+    expect(plainPreview("use \\`x\\` here, `code`, \\\\server")).toBe("use `x` here, code, \\\\server");
   });
   it("drops markdown markers and collapses lines", () => {
     expect(plainPreview("Where the two PRs stand:\n\n**#3379, the cleanup:** every `review`\n- one")).toBe(

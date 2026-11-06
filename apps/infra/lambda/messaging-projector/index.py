@@ -68,8 +68,11 @@ _PLAIN_RULES = (
     (re.compile(r"!?\[([^\]]*)\]\([^)]*\)"), r"\1"),
     (re.compile(r"^\s*([-*_])(\s*\1){2,}\s*$", re.M), ""),
     (re.compile(r"^\s{0,3}(#{1,6}\s+|>\s?|[-*+]\s+|\d+[.)]\s+)", re.M), ""),
-    (re.compile(r"\*\*|__|~~|`"), ""),
-    (re.compile(r"\\([!-/:-@\[-`{-~])"), r"\1"),
+    (re.compile(r"\*\*|__|~~|(?<!\\)`"), ""),
+    # The composer's escapes last, so a typed `x` keeps its backticks and **x** its stars.
+    (re.compile(r"\\([*_~`])"), r"\1"),
+    (re.compile(r"^(\s*)\\([#>+=-])", re.M), r"\1\2"),
+    (re.compile(r"^(\s*\d+)\\([.)])", re.M), r"\1\2"),
     (re.compile(r"\s+"), " "),
 )
 

@@ -4412,7 +4412,7 @@ async def address(
     ``understand`` (Live; conversation understanding §4.2): ``{cards, open, floor}``. The line is also cut
     where a new request begins, the same call says what each part is and whose job it is, and the answer
     gains ``parts`` (``{index, text, kind, who, asked, drops}``), ``pieces``, ``named``, ``amends`` and ``drops``."""
-    text = str(latest.get("text") or "")
+    text = messaging_repo.agent_text(str(latest.get("text") or ""))
     out: dict = {"agents": [], "humans": [], "hold": False, "anyone": False, "path": "none"}
     cands = address_candidates(text, members, live=live)
     mentioned = {ref.get("id") for ref in latest.get("mentions") or [] if ref.get("kind") == "agent"}

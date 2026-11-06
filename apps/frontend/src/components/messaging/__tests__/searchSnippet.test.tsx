@@ -19,6 +19,7 @@ describe("search snippets", () => {
 
   it("shows the composer's escaped characters as typed", () => {
     expect(snippetText("\\_\\_init\\_\\_ and 3\\*4 then 5\\*6 \\~x\\~")).toBe("__init__ and 3*4 then 5*6 ~x~");
+    expect(snippetText("use \\`x\\` here")).toBe("use `x` here");
   });
 
   it("reads as plain text: markdown syntax dropped, the match still marked (W13)", () => {

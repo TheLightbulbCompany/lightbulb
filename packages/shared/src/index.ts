@@ -245,7 +245,7 @@ export { mergeSessionRows } from "./messaging/sessionRow";
 // `SessionState` is already the label state above; the row's is exported under its own name.
 export type { EngineRecord, SessionRow, SessionState as SessionRowState, SessionViewer } from "./messaging/sessionRow";
 export { CLI_ONLY, conversationOnly, sessionScreenNotice } from "./messaging/sessionStates";
-export { agentRingState, mergeChats, roomActivityAt, roomPreview, sessionActivityAt, sessionPreview, sessionRingState } from "./messaging/chatList";
+export { agentRingState, mergeChats, roomActivityAt, roomPreview, sessionActivityAt, sessionPreview, sessionRingState, unescapeTyped } from "./messaging/chatList";
 export type { AvatarRing, ChatEntry, MergeChatsOptions } from "./messaging/chatList";
 export { lastOwnMessageId, readState, readStateLabel, UNPROMPTED_LABEL, unpromptedLabel } from "./messaging/readState";
 export type { ReadState } from "./messaging/readState";

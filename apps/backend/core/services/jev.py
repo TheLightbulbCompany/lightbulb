@@ -365,7 +365,7 @@ def _line(message: dict, names: dict[str, str] | None = None, by_id: dict | None
         line["to"] = to
     if author.get("id") in options:
         line["self"] = True
-    line["text"] = str(message.get("text") or "")[:1000] or " ".join(
+    line["text"] = messaging_repo.agent_text(str(message.get("text") or ""))[:1000] or " ".join(
         "[image]"
         if str(a.get("contentType", "")).startswith("image/")
         else "[video]"
@@ -647,7 +647,7 @@ def _open_lines(runs: list[dict], members: list[dict], history: list[dict], now:
         when = _parse_ts(run.get("dispatchedAt"))
         ago = f", {int((now - when).total_seconds())} s ago" if when else ""
         what = (
-            f'{_name(trigger.get("author") or {})}\'s "{str(trigger.get("text") or "")[:120]}"'
+            f'{_name(trigger.get("author") or {})}\'s "{messaging_repo.agent_text(str(trigger.get("text") or ""))[:120]}"'
             if trigger
             else "an earlier request"
         )

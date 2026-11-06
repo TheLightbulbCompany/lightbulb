@@ -17,6 +17,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -76,6 +77,35 @@ def doc_id(room_id: str, sk: str) -> str:
     return f"{room_id}:{int(sk.removeprefix('MSG#'))}"
 
 
+# Code (a fence, or a span of n backticks closed by n), else one of the composer's escapes:
+# * _ ~ ` anywhere, # > - + = and "1." at a line start. Nothing else: `\\server\share`, `a\.b` stay.
+_AGENT_ESCAPES = re.compile(
+    r"(?P<code>```[\s\S]*?```|(?P<ticks>`+)(?:(?!(?P=ticks)).)+?(?P=ticks))"
+    r"|\\(?P<ch>[*_~`])"
+    r"|^(?P<lead>[ \t]*)\\(?P<blk>[#>+=-])"
+    r"|^(?P<num>[ \t]*\d+)\\(?P<dot>[.)])",
+    re.M,
+)
+
+
+def _agent_unescape(match: re.Match[str]) -> str:
+    if match["code"]:
+        return match["code"]
+    if match["ch"]:
+        return match["ch"]
+    if match["blk"]:
+        return match["lead"] + match["blk"]
+    return match["num"] + match["dot"]
+
+
+def agent_text(text: str) -> str:
+    """A message's text as an agent reads it: the web composer escapes what a person typed
+    (``3\\*4``, ``\\_\\_init\\_\\_``) so it shows literally; agents (and search) get it back
+    clean. Code is left as is. A copy of messaging_repo.agent_text
+    (apps/backend/core/repositories/messaging_repo.py); test_agent_text keeps them identical."""
+    return _AGENT_ESCAPES.sub(_agent_unescape, text) if "\\" in text else text
+
+
 def document(item: dict[str, Any]) -> dict[str, Any] | None:
     if item.get("deletedAt"):
         return None
@@ -85,7 +115,8 @@ def document(item: dict[str, Any]) -> dict[str, Any] | None:
         "messageId": item["messageId"],
         "messageSeq": int(item["messageSeq"]),
         "createdAt": item["createdAt"],
-        "text": item["editedText"] if "editedText" in item else item.get("text") or "",
+        # Indexed as typed: an escaped \_\_init\_\_ would tokenize to "_init" and never match __init__.
+        "text": agent_text(item["editedText"] if "editedText" in item else item.get("text") or ""),
         "authorName": author.get("displayName") or "",
         "authorKind": author.get("kind") or "",
         "authorId": author.get("id") or "",

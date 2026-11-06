@@ -65,14 +65,22 @@ export function roomPreview(
   return room.kind === "dm" ? body : `${last.authorName}: ${body}`;
 }
 
+/** The web composer's escapes back to what was typed: `*_~` and backticks anywhere, `# > - + =` and "1." at a line
+ *  start (backend `agent_text`). Other backslashes (`\\server\share`, `a\.b`) stay. Run after stripping marks that
+ *  skip escaped characters, so a typed `x` keeps its backticks. */
+export const unescapeTyped = (text: string): string =>
+  text
+    .replace(/\\([*_~`])/g, "$1")
+    .replace(/^(\s*)\\([#>+=-])/gm, "$1$2")
+    .replace(/^(\s*\d+)\\([.)])/gm, "$1$2");
+
 /** A one-line list preview: markdown markers (bold `**`, code ticks, headings,
  * quotes, list bullets) dropped and whitespace collapsed. `__` is kept: it is
  * far likelier an identifier (`__init__.py`) than emphasis. */
 export const plainPreview = (text: string): string =>
-  text
-    .replace(/(\*\*|`)/g, "")
-    .replace(/^\s{0,3}(#{1,6}|>|[-*+]|\d+\.)\s+/gm, "")
-    .replace(/\\([!-/:-@[-`{-~])/g, "$1") // the composer's escapes (3\*4): what was typed
+  unescapeTyped(text
+    .replace(/\*\*|(?<!\\)`/g, "")
+    .replace(/^\s{0,3}(#{1,6}|>|[-*+]|\d+\.)\s+/gm, ""))
     .replace(/\s+/g, " ")
     .trim();
 

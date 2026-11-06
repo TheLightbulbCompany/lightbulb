@@ -10,7 +10,10 @@ export function plainPreview(markdown: string): string {
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1") // links and images keep their text
     .replace(/^\s*([-*_])(\s*\1){2,}\s*$/gm, "") // horizontal rules
     .replace(/^\s{0,3}(#{1,6}\s+|>\s?|[-*+]\s+|\d+[.)]\s+)/gm, "") // heading, quote, list markers
-    .replace(/\*\*|__|~~|`/g, "")
+    .replace(/\*\*|__|~~|(?<!\\)`/g, "")
+    .replace(/\\([*_~`])/g, "$1") // the composer's escapes, after the marks: a typed `x` keeps its backticks
+    .replace(/^(\s*)\\([#>+=-])/gm, "$1$2")
+    .replace(/^(\s*\d+)\\([.)])/gm, "$1$2")
     .replace(/\s+/g, " ")
     .trim();
 }

@@ -12,7 +12,7 @@ export function fakeTasksClient(tasks: TaskSummary[], details: Record<string, Ta
     get: vi.fn(async (id: string) => details[id]),
     act: vi.fn(async (id: string) => ({ ...tasks.find((t) => t.taskId === id)!, status: "resolved" as const })),
     answer: vi.fn(async () => ({ question: {}, next: null })),
-    trace: vi.fn(async (_id: string, attempt: number) => ({ attempt, recentTools: [] })),
+    trace: vi.fn(async (_id: string, attempt: number) => ({ attempt, recentTools: [] as unknown[] })),
     markRead: vi.fn(async () => ({})),
     needsYou: vi.fn(async () => ({ items: [], next: null })),
     questions: vi.fn(async () => ({ items: [] })),

@@ -149,6 +149,18 @@ describe("Made here", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
+  it("reads again when it mounts after a task made something while the pane showed the task (dev walk 12, W12-6)", async () => {
+    const strip = <MadeHere roomId="r-walk7" onOpenTask={vi.fn()} onAllFiles={vi.fn()} />;
+    const { rerender } = render(<Fresh>{strip}</Fresh>);
+    await waitFor(() => expect(client.outputs).toHaveBeenCalledTimes(1));
+    rerender(<Fresh>{null}</Fresh>);
+    client.outputs.mockResolvedValue({ outputs: [DOC], next: null });
+    rerender(<Fresh>{strip}</Fresh>);
+    await waitFor(() => expect(client.outputs).toHaveBeenCalledTimes(2));
+    const region = await screen.findByRole("region", { name: "Made here" });
+    expect(within(region).getByText("Welcome note.md")).toBeInTheDocument();
+  });
+
   it("shows up to four tiles named by title; a mail tile opens its task here; All files switches the view", async () => {
     client.outputs.mockResolvedValue({ outputs: [APP, DOC, MAIL, out({ id: "x" }), out({ id: "y" })], next: null });
     const onOpenTask = vi.fn();

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import schema from "../../fixtures/super-agent/tasks-schema.json";
+import type { TaskSummary } from "./types";
 import {
   EFFECT_STATES,
   QUESTION_KINDS,
@@ -9,6 +10,8 @@ import {
   STATUS_WORDS,
   TASK_STATUSES,
   stepLines,
+  chipState,
+  clockTime,
   taskView,
   type EffectRow,
   type QuestionRow,
@@ -247,6 +250,38 @@ describe("the one decision card", () => {
   });
 });
 
+describe("stepLines (dev walk 12, W12-7)", () => {
+  it("hides skill reads and tool lookups behind real work and merges the runs between them", () => {
+    const run = ["skill_view", "skill_view", "skill_view", "tool_describe", "skill_view", "skill_view",
+      "terminal", "terminal", "terminal", "terminal", "write_file"].map((name) => ({ name, ok: true }));
+    expect(stepLines(run)).toEqual(["Ran 4 commands", "Wrote a file"]);
+  });
+  it("names overhead plainly when it is all there is", () => {
+    expect(stepLines(["skill_view", "skills_list", "tool_describe"])).toEqual(["Checked how to do it", "Prepared tools"]);
+  });
+});
+
+describe("chipState (dev walk 12, W12-1)", () => {
+  const at = (s: number) => new Date(Date.UTC(2026, 10, 6, 5, 9, s)).toISOString();
+  const now = Date.parse(at(38));
+  const summary = (extra: Partial<TaskSummary>): TaskSummary => ({
+    taskId: "t1", identifier: "T-1", title: "Taglines", status: "working", shownGroup: "working",
+    audience: { kind: "room", roomId: "r1" }, audienceKind: "room", taskRoomId: "tr", watching: false,
+    updatedAt: at(0), version: 1, ...extra,
+  });
+  it("ticks while working and keeps the run's length once done", () => {
+    const run = { n: 1, status: "running" as const, startedAt: at(0) };
+    expect(chipState(summary({ activity: run }), SAM, now)).toEqual({ mark: "working", word: "Working", time: "0:38" });
+    expect(chipState(summary({ status: "idle", shownGroup: "idle", activity: { ...run, status: "ended", endedAt: at(62) } }), SAM, now))
+      .toEqual({ mark: "done", word: "Done", time: "1:02" });
+  });
+  it("says Didn't finish for a failed task, and no time before a run starts", () => {
+    expect(chipState(summary({ status: "failed", ownerUserId: SAM }), SAM, now).word).toBe("Didn't finish");
+    expect(chipState(summary({ status: "queued" }), SAM, now)).toEqual({ mark: "working", word: "Working", time: null });
+  });
+  it("formats hours", () => expect(clockTime(3_725_000)).toBe("1:02:05"));
+});
+
 describe("stepLines (dev walk 10, W10-3)", () => {
   it("groups runs of one tool and names them for people", () => {
     const run = [
@@ -255,7 +290,7 @@ describe("stepLines (dev walk 10, W10-3)", () => {
       { name: "web_extract", ok: true }, { name: "web_extract", ok: true },
       { name: "terminal", ok: true }, { name: "terminal", ok: false },
     ];
-    expect(stepLines(run)).toEqual(["Read skill", "Searched the web · 9", "Read 2 pages", "Ran a command", "Ran a command · failed"]);
+    expect(stepLines(run)).toEqual(["Searched the web · 9", "Read 2 pages", "Ran a command", "Ran a command · failed"]);
     expect(stepLines(["mcp__lightbulb__web_search", {}])).toEqual(["Searched the web", "A step"]);
   });
 });

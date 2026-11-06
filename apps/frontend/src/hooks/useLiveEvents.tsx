@@ -83,8 +83,10 @@ export function LiveEventsProvider({ children, preloadRooms = false }: { childre
   const messaging = useMemo(() => createMessagingClient(api), [api]);
   const runtimeClient = useMemo(() => createRuntimeClient(api, () => crypto.randomUUID()), [api]);
   const ownerScope = orgId ?? userId ?? null;
-  // Keyed by the signed-in workspace so a Clerk org switch never reuses the last org's task lists.
-  const tasks = useMemo(() => createTasksClient(api, ownerScope ?? ""), [api, ownerScope]);
+  // Keyed by the signed-in workspace and person: a task list is one viewer's (the server keeps only the tasks they may
+  // view), so an org switch or another person signing in here never reuses the last one's lists (dev walk 12).
+  const taskScope = [orgId, userId].filter(Boolean).join(":");
+  const tasks = useMemo(() => createTasksClient(api, taskScope), [api, taskScope]);
   const refreshTask = useTaskChangedRefresh(tasks);
   const httpReady = !!isLoaded && !!userId;
   // The room list gates "Loading chats…". Start it with this provider's first reads instead of

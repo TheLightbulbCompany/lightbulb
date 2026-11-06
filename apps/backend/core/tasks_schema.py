@@ -913,6 +913,8 @@ class SummaryActivity(_Model):
     status: AttemptStatus
     outcome: AttemptOutcome | None = None
     last_heartbeat_at: str | None = None
+    started_at: str | None = None  # the chip's timer: "Working 0:38", "Done · 1:02"
+    ended_at: str | None = None
 
 
 class TaskSummary(_Model):

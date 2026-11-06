@@ -3047,6 +3047,30 @@
               ],
               "default": null,
               "title": "Lastheartbeatat"
+            },
+            "startedAt": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Startedat"
+            },
+            "endedAt": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Endedat"
             }
           },
           "required": [

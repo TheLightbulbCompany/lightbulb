@@ -71,7 +71,11 @@ export interface TaskSummary {
   watchUntil?: string | null;
   watching: boolean;
   runsOn?: "task" | "workspace" | null;
-  activity?: { n: number; status: "dispatched" | "running" | "ended"; outcome?: string | null; lastHeartbeatAt?: string | null } | null;
+  activity?: {
+    n: number; status: "dispatched" | "running" | "ended"; outcome?: string | null; lastHeartbeatAt?: string | null;
+    /** The latest run's start and end: the chip's timer ("Working 0:38", "Done · 1:02"). */
+    startedAt?: string | null; endedAt?: string | null;
+  } | null;
   recentInputs?: string[];
   attemptCount?: number;
   usage?: { inputTokens?: number; outputTokens?: number; costUsd?: number } | null;

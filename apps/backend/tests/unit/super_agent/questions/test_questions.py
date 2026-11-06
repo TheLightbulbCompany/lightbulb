@@ -209,6 +209,15 @@ def test_gate_pending_question_is_reused_not_reasked():
     assert (res.decision, res.qid) == ("needs_approval", "q-open")
 
 
+def test_gate_never_reuses_a_question_that_was_closed():
+    """Dev walk 7 (W7-3): a purchase asked, Closed, then Reopened. The new attempt's identical call found the first
+    attempt's proposed row and reused its qid, whose Question Close had cancelled: no new Question, and the request
+    sat "waiting on a reply" for good. A closed Question is never reused; the call asks afresh."""
+    effect = _eff("T:2:c5", "proposed", attempt=2)
+    res = questions.gate(effect, [_eff("T:1:c4", "proposed", attempt=1, qid="q-gone")], closed={"q-gone"})
+    assert (res.decision, res.qid) == ("needs_approval", questions.qid_for("T:2:c5"))
+
+
 def test_gate_replays_same_idem_key_done():
     effect = _eff("T:2:c4", "proposed", attempt=2)
     done = {**_eff("T:2:c4", "done", attempt=2), "resultRef": "ses:abc"}
@@ -302,6 +311,20 @@ def test_waiting_label_caps_the_names():
 )
 def test_output_for_review_kinds_only(kind, operands, expected):
     assert questions.output_for({"kind": kind, "operands": operands}) == expected
+
+
+@pytest.mark.parametrize(
+    "operands,title",
+    [
+        # Dev walk 7 (W7-9): request_purchase sends the total in US dollars, as a bare number.
+        ({"amount": "11.81", "merchant": "Porkbun"}, "buy from Porkbun for $11.81"),
+        ({"amount": 35, "merchant": "Acme Hosting"}, "buy from Acme Hosting for $35.00"),
+        ({"item": "acme.dev", "amount": "$12"}, "buy acme.dev for $12"),
+        ({}, "buy something"),
+    ],
+)
+def test_a_purchase_title_names_the_currency(operands, title):
+    assert questions.title_for({"kind": "purchase", "operands": operands}) == title
 
 
 async def test_a_workspace_owned_request_asks_the_admins(clerk, policy):

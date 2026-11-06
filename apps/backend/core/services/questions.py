@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Collection
 from dataclasses import dataclass
 
 from core import tasks_schema as ts
@@ -176,11 +177,12 @@ class GateResult:
     result_ref: str | None = None  # a `replay`'s stored result
 
 
-def gate(effect: dict, prior: list[dict]) -> GateResult:
+def gate(effect: dict, prior: list[dict], closed: Collection[str] = ()) -> GateResult:
     """Decide one external effect from the task's earlier rows with the same `operandsHash` (pure).
 
     Same call already done → replay. Any matching call with an unknown outcome → refuse (never a second send).
-    Denied before → denied, no new card. An approved, unused answer → proceed (single use). An open ask → reuse it.
+    Denied before → denied, no new card. An approved, unused answer → proceed (single use). An open ask → reuse it;
+    one whose Question is `closed` (cancelled by a Close; dev walk 7: a Reopen then waited for good) is never reused.
     Otherwise a new approval with a deterministic qid.
     """
     idem = effect["idemKey"]
@@ -202,7 +204,7 @@ def gate(effect: dict, prior: list[dict]) -> GateResult:
         if p["state"] == "approved" and p["idemKey"] not in used:
             return GateResult("proceed", qid=p.get("questionId"), approved_idem_key=p["idemKey"])
     for p in effects:
-        if p["state"] == "proposed" and p.get("questionId"):
+        if p["state"] == "proposed" and p.get("questionId") and p["questionId"] not in closed:
             return GateResult("needs_approval", qid=p["questionId"])
     return GateResult("needs_approval", qid=qid_for(idem))
 
@@ -244,7 +246,8 @@ def title_for(effect: dict) -> str:
     elif kind == "pr.merge":
         line = f"merge PR #{o.get('number', '?')} in {o.get('repo') or 'the repo'}"
     elif kind == "purchase":
-        line = f"buy {o.get('item') or 'something'}" + (f" for {o['amount']}" if o.get("amount") else "")
+        what = o.get("item") or (f"from {o['merchant']}" if o.get("merchant") else "something")
+        line = f"buy {what}" + (f" for {dollars(o['amount'])}" if o.get("amount") else "")
     elif kind == "provision":
         line = f"set up {o.get('provider') or 'a provider'}"
     elif kind == "a2a.send":
@@ -252,6 +255,15 @@ def title_for(effect: dict) -> str:
     else:
         line = f"run {effect.get('tool') or 'a tool'}"
     return line if len(line) <= 200 else line[:199] + "…"
+
+
+def dollars(amount: object) -> str:
+    """A purchase amount as people read it. `request_purchase` sends the total in US dollars as a bare number
+    ("11.81", 35: dev walk 7 showed "for 11.81"); anything already written with its currency stays as written."""
+    try:
+        return f"${float(str(amount)):,.2f}"
+    except ValueError:
+        return str(amount)
 
 
 def output_for(effect: dict) -> dict | None:

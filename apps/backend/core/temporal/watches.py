@@ -23,7 +23,7 @@ from temporalio.common import RetryPolicy
 from core.temporal.task_questions import AskRef
 from core.temporal.types import TaskInputRef
 
-WatchKind = Literal["pr_checks", "url"]
+WatchKind = Literal["pr_checks", "url", "app"]  # app: a request waiting on the app it handed over (W7-5)
 _SHORT = {"start_to_close_timeout": timedelta(seconds=30), "retry_policy": RetryPolicy(maximum_attempts=5)}
 _CHECK = {"start_to_close_timeout": timedelta(seconds=60), "retry_policy": RetryPolicy(maximum_attempts=2)}
 MIN_EVERY_MIN, MAX_EVERY_MIN = 5, 24 * 60
@@ -35,7 +35,7 @@ GIVE_UP_OPTIONS = [{"id": "keep", "label": "Keep watching another day"}, {"id": 
 class WatchSpec:
     watch_id: str
     kind: WatchKind
-    target: dict[str, Any] = field(default_factory=dict)  # pr_checks: {repo, number}; url: {url}
+    target: dict[str, Any] = field(default_factory=dict)  # pr_checks: {repo, number}; url: {url}; app: {appId}
     every_min: int = 30
     give_up_at: str = ""  # ISO 8601, UTC
     on_give_up: Literal["ask", "fail"] = "ask"
@@ -182,6 +182,10 @@ async def check_watch(ws: str, task_id: str, spec: WatchSpec) -> str:
     from core.services import link_preview
 
     try:
+        if spec.kind == "app":
+            from core.services import app_conversation
+
+            return await app_conversation.app_progress(ws, str(spec.target.get("appId") or ""))
         if spec.kind == "url":
             # The SSRF-safe fetch the link previews use: public hosts only, pinned to the resolved address.
             async with httpx.AsyncClient(timeout=10.0, follow_redirects=False, trust_env=False) as http:
@@ -232,13 +236,18 @@ async def watch_met(ws: str, task_id: str, spec: WatchSpec, n: int, result: str)
     from core.repositories import tasks_repo
 
     task = await tasks_repo.get_task(ws, task_id) or {}
-    what = (
-        f"PR {spec.target.get('repo')}#{spec.target.get('number')} checks finished"
-        if spec.kind == "pr_checks"
-        else f"{spec.target.get('url')} answered"
-    )
-    detail = result.partition(":")[2]
-    text = f"Watch met: {what}" + (f" ({detail})" if detail else "") + "."
+    if spec.kind == "app":
+        from core.services import app_conversation
+
+        text = await app_conversation.app_progress_text(ws, str(spec.target.get("appId") or ""), result)
+    else:
+        what = (
+            f"PR {spec.target.get('repo')}#{spec.target.get('number')} checks finished"
+            if spec.kind == "pr_checks"
+            else f"{spec.target.get('url')} answered"
+        )
+        detail = result.partition(":")[2]
+        text = f"Watch met: {what}" + (f" ({detail})" if detail else "") + "."
     trigger_id = ts.trigger_id("watch", task_id, spec.watch_id, n)
     await tasks_repo.put_trigger(
         ws,
@@ -275,6 +284,8 @@ async def watch_gave_up(ws: str, task_id: str, spec: WatchSpec) -> AskRef:
     what = (
         f"the checks on PR {spec.target.get('repo')}#{spec.target.get('number')}"
         if spec.kind == "pr_checks"
+        else "the app's first version"
+        if spec.kind == "app"
         else f"{spec.target.get('url')}"
     )
     await tasks_repo.put_trigger(

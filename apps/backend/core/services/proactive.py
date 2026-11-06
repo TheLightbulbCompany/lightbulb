@@ -300,11 +300,13 @@ async def start_request(
     room_id: str | None = None,
     specialist: str | None = None,
     budget_usd: float | None = None,
+    row_now: bool = False,
 ) -> str:
     """One Router request through admission, applied without a model turn (a scripted `start_task`). Idempotent
     on `key` (the trigger id, hence the task id). With a person it is theirs (their private lane, answered in
     `room_id`); with the workspace as the actor it is the workspace's (shared lane, metered to the workspace,
-    its admins answer its questions). Returns the task id."""
+    its admins answer its questions). `row_now`: the request's row is written before this returns, for a client
+    that opens it at once (an idea's Do it). Returns the task id."""
     from core.services import admission
 
     person = bool(actor_user_id) and actor_user_id != ws
@@ -335,7 +337,35 @@ async def start_request(
         ref={"taskId": task_id, "start": start.model_dump(by_alias=True)},
     )
     await admission.enqueue_trigger(ws, trigger, room_id=room_id)
+    if row_now:
+        await _row_now(ws, trigger, task_id, start, room_id)
     return task_id
+
+
+async def _row_now(ws: str, trigger: ts.Trigger, task_id: str, start: ts.StartTask, room_id: str | None) -> None:
+    """The row the Router's scripted start writes (same id, same fields: it then finds this one), written now. Dev
+    walk 7 (W7-1): Do it opened the request ~25 s before the Router's queue reached it ("This request isn't
+    available to you"). A start the chat gate refuses gets no row: the Router posts why and starts nothing."""
+    from core.services import chat_gate
+    from core.temporal import activities
+
+    gate = await chat_gate.gate_chat(user_id=trigger.actor_user_id or "", owner_id=ws, session_key=f"task:{task_id}")
+    if gate.get("blocked"):
+        return
+    item = trigger.model_dump(by_alias=True)
+    item["ref"] = {**item.get("ref", {}), **({"deliverRoomId": room_id} if room_id else {})}
+    await activities._ensure_task(
+        ws,
+        task_id,
+        item,
+        trigger.lane,
+        "queued",
+        title=start.title,
+        description=start.brief,
+        specialist=start.specialist,
+        visibility=start.visibility,
+        budgetUsd=start.budget_usd,
+    )
 
 
 async def open_requests(ws: str) -> list[dict]:

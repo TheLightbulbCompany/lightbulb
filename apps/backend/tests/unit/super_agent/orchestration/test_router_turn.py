@@ -302,6 +302,16 @@ def test_restates_drops_a_pure_restatement(reply):
     assert router_prompt.restates(reply, {"Growth is buying the domain for the team."})
 
 
+def test_restates_the_walk_7_double_line():
+    """Dev walk 7 (N-F3), as posted in #walk-7: the digit in the room's name ("#walk-7") read as a number, so the
+    restatement counted as an answer and both lines went out. A room name or @handle is not a number."""
+    ack = "Growth is writing the three-line welcome note for this room."
+    assert router_prompt.restates(
+        "Growth has the request and is working on the three-line welcome note for #walk-7.", {ack}
+    )
+    assert not router_prompt.restates("It's 3 lines, about 40 words, for #walk-7.", {ack})
+
+
 @pytest.mark.asyncio
 async def test_router_turn_retry_applies_once(world):
     t1 = await _trig("chat:m1")
@@ -1154,6 +1164,22 @@ async def test_an_automation_card_is_the_only_answer(world, monkeypatch):
     world["output"] = "Drafted the automation."
     await _run([t1], batch=str(uuid.uuid4()))  # no decision at all: the prose never stands in for the card either
     assert world["posts"] == []
+
+
+def test_recurring_asks_are_automations_not_requests():
+    """Dev walk 7 (W7-6): "every Monday at 9am post a one-line summary of this room here" became a start_task; its
+    Worker made an Active Paperclip routine in UTC, with no confirm card. The prompt listed five tools and not
+    propose_automation, and said to start everything: recurring work is propose_automation, never start_task."""
+    text = " ".join(router_prompt.ROUTER_INSTRUCTIONS.split())
+    assert "ignore, propose_automation)" in text
+    assert "Recurring work" in text and "propose_automation, never start_task" in text
+
+
+def test_workers_never_schedule():
+    """W7-6: the Worker's instructions say a schedule is Lightbulb's automation, never a routine or cron it makes."""
+    from core.temporal.activities import WORKER_INSTRUCTIONS
+
+    assert "never create a schedule" in WORKER_INSTRUCTIONS and "routine" in WORKER_INSTRUCTIONS
 
 
 def test_briefs_carry_no_approval_steps():

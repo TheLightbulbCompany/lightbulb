@@ -70,6 +70,26 @@ async def test_needs_approval_writes_proposed_with_draft(api):
     assert len(await effects_repo.effects_for(WS, tid, HASH)) == 2  # c2's row shares the qid; no new question
 
 
+async def test_a_reopened_task_asks_again_after_close_cancelled_the_question(api, monkeypatch):
+    """Dev walk 7 (W7-3): the closed task's Question is cancelled; the same call after Reopen gets a new qid (a new
+    Question the workflow opens), never the cancelled one."""
+    from core.repositories import questions_repo
+
+    tid = await _started(api)
+    first = (await api.post(_url(WS), json=await _body(tid), headers=H)).json()["questionId"]
+    monkeypatch.setattr(questions_repo, "list_for_task", _async([{"qid": first, "state": "cancelled", "taskId": tid}]))
+    again = await api.post(_url(WS), json=await _body(tid, "c2"), headers=H)
+    assert again.json() == {"decision": "needs_approval", "questionId": questions.qid_for(f"{tid}:1:c2")}
+    assert (await effects_repo.get_effect(WS, f"{tid}:1:c2"))["questionId"] == questions.qid_for(f"{tid}:1:c2")
+
+
+def _async(value):
+    async def f(*_a, **_k):
+        return value
+
+    return f
+
+
 async def test_same_operands_after_deny_returns_denied(api):
     tid = await _started(api)
     await api.post(_url(WS), json=await _body(tid), headers=H)

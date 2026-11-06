@@ -324,7 +324,12 @@ async def open_questions(ws: str, task_id: str) -> list[QuestionRef]:
                 "baseAnswerers": base,
                 "operandsHash": effect["operandsHash"],
                 "effectIdemKey": effect["idemKey"],
-                "preview": {"kind": effect["kind"], **(effect.get("operands") or {})},
+                "preview": {
+                    "kind": effect["kind"],
+                    **(effect.get("operands") or {}),
+                    # request_purchase's amount is US dollars (its schema); the card says so (dev walk 7).
+                    **({"currency": "USD"} if effect["kind"] == "purchase" else {}),
+                },
             }
         )
     # Every answerer list is known; only now write (each open is idempotent, so a retry completes the set).
@@ -420,6 +425,19 @@ def _origin_thread(subscriptions: list[dict]) -> tuple[str, str | None] | None:
     return None
 
 
+async def _specialist_label(ws: str, specialist: str | None) -> str:
+    """The name a card says ("Engineering"), never the specialist's id (dev walk 7); Lightbulb when none or unknown."""
+    from core.services import messaging
+
+    if not specialist:
+        return "Lightbulb"
+    try:
+        roster = await messaging.load_agent_roster(ws)
+    except Exception:  # noqa: BLE001 -- a roster blip never holds a card back
+        return "Lightbulb"
+    return next((a["name"] for a in roster if a["id"] == specialist), "Lightbulb")
+
+
 async def _push_once(key: str, user_id: str, title: str, body: str, data: dict) -> None:
     from core.services import push_service, webhook_dedup
 
@@ -442,7 +460,7 @@ async def relay_question(ws: str, task_id: str, qid: str) -> None:
     task = tree["task"]
     if q is None or task is None or q["state"] != "open":
         return
-    label = task.get("specialist") or "Lightbulb"
+    label = await _specialist_label(ws, task.get("specialist"))
     title, body = questions.card_copy(q, label)
     refs = [{"taskId": task_id, "role": "started", "qid": qid}]  # the card's buttons bind to {taskId, qid}
     room = await task_conversation.ensure_task_room(ws, task)
@@ -479,7 +497,7 @@ async def remind_question(ws: str, task_id: str, qid: str) -> None:
     task = await tasks_repo.get_task(ws, task_id)
     if q is None or task is None or q["state"] != "open":
         return
-    label = task.get("specialist") or "Lightbulb"
+    label = await _specialist_label(ws, task.get("specialist"))
     _, body = questions.card_copy(q, label)
     data = {"source": "task_question", "taskId": task_id, "qid": qid}
     for uid in q["answerers"]:

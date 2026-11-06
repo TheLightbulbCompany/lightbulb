@@ -834,3 +834,64 @@ async def test_an_app_from_no_request_has_no_request_in_canvas(chat):
     await _start()
     (row,) = await svc.list_apps(OWNER, ADA)
     assert row["request"] is None
+
+
+# --- The request follows its app (dev walk 7, W7-5): Working while it builds, Needs you when hosting is blocked --------
+
+
+@pytest.fixture
+def armed(monkeypatch):
+    from core.temporal import client as temporal
+
+    calls: list = []
+
+    async def update_task(ws, task_id, name, arg):
+        calls.append((ws, task_id, name, arg))
+        return arg.watch_id
+
+    monkeypatch.setattr(temporal, "update_task", update_task)
+    monkeypatch.setattr(conv, "hosting_blocker", AsyncMock(return_value=None))
+    return calls
+
+
+async def test_a_request_watches_the_app_it_handed_over(chat, request_room, armed):
+    res = await _hand_over(request_room.room)
+    ((ws, task_id, name, spec),) = armed
+    assert (ws, task_id, name) == (OWNER, request_room.task_id, "add_watch")
+    assert (spec.kind, spec.target, spec.every_min, spec.on_give_up) == ("app", {"appId": res["app_id"]}, 5, "ask")
+    # A start not from a request (a room, the CLI) arms nothing.
+    await _start()
+    assert len(armed) == 1
+
+
+async def test_a_request_never_hands_over_an_app_its_workspace_cannot_host(chat, request_room, armed):
+    """Walk 7: the builder found no services account, said so in the app's own conversation and the request read
+    Done. Now the request's own run is told to ask the admins (Needs you) before any app or builder exists."""
+    conv.hosting_blocker.return_value = "services_account_needed"
+    with pytest.raises(svc.AppsRefused) as refused:
+        await _hand_over(request_room.room)
+    assert refused.value.code == "hosting_needs_admin"
+    assert 'subkind "provider_consent"' in refused.value.next and "set up hosting for Booking" in refused.value.next
+    assert await svc.apps_repo.list_for_owner(OWNER) == [] and chat.posts == [] and armed == []
+
+
+@pytest.mark.parametrize(
+    "fields,blocker,result",
+    [
+        ({"state": "building"}, None, "not_met"),
+        ({"state": "requested"}, None, "not_met"),
+        ({"state": "requested"}, "services_account_needed", "met:blocked"),
+        ({"state": "ready"}, None, "met:ready"),
+        ({"state": "live"}, None, "met:ready"),
+        ({"state": "failed"}, None, "met:failed"),
+        ({"state": "destroyed"}, None, "met:removed"),
+    ],
+)
+async def test_app_progress_is_what_the_request_shows(chat, armed, fields, blocker, result):
+    res = await _start()
+    await svc.apps_repo.patch(res["app_id"], fields)
+    conv.hosting_blocker.return_value = blocker
+    assert await conv.app_progress(OWNER, res["app_id"]) == result
+    assert await conv.app_progress("org_other", res["app_id"]) == "met:removed"  # never another workspace's app
+    text = await conv.app_progress_text(OWNER, res["app_id"], result)
+    assert "Booking" in text or result == "not_met"

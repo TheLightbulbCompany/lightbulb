@@ -619,6 +619,7 @@ async def _start_request(auth: AuthContext, owner_id: str, idea_id: str, job: Jo
             actor_user_id=user_id,
             room_id=room_id,
             specialist=None if job.agent["id"] == front else job.agent["id"],
+            row_now=True,  # the client opens the request at once (dev walk 7, W7-1)
         )
         fields = {"state": "open", "roomId": room_id, "taskId": task_id, "createdAt": utc_now_iso(),
                   "agentId": job.agent["id"], "title": job.title, "size": job.size}  # fmt: skip

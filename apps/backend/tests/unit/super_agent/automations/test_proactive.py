@@ -237,3 +237,38 @@ async def test_daily_reconcile_ensures_every_switched_on_workspace(table):
     ):
         out = await automations.reconcile_schedules()
     assert [c.args[0] for c in ensure.await_args_list] == ["org_bad", WS] and out["proactive"] == 1
+
+
+async def test_row_now_writes_the_request_the_router_would(world, monkeypatch):
+    """Dev walk 7 (W7-1): an idea's Do it opened its request ~25 s before the Router wrote the row. `row_now` writes
+    the same row (deterministic id, same fields) at once; the Router's scripted start then finds it."""
+    from core.repositories import tasks_repo
+    from core.services import chat_gate, task_conversation
+
+    monkeypatch.setattr(chat_gate, "gate_chat", AsyncMock(return_value={"blocked": False}))
+    monkeypatch.setattr(task_conversation, "ensure_task_room", AsyncMock(return_value="task-room"))
+    monkeypatch.setattr("core.services.memory_tasks_index.index_task", AsyncMock())
+    task_id = await proactive.start_request(
+        WS,
+        key="k1",
+        title="Plan",
+        brief="Do the plan.",
+        actor_user_id="user_a",
+        room_id="dm-1",
+        specialist="spec-1",
+        row_now=True,
+    )
+    row = await tasks_repo.get_task(WS, task_id)
+    assert (row["status"], row["title"], row["description"], row["specialist"]) == (
+        "queued",
+        "Plan",
+        "Do the plan.",
+        "spec-1",
+    )
+    assert (row["audience"]["kind"], row["audience"]["userIds"], row["lane"]) == ("person", ["user_a"], "private")
+
+    monkeypatch.setattr(chat_gate, "gate_chat", AsyncMock(return_value={"blocked": True, "message": "Out of credit."}))
+    blocked = await proactive.start_request(
+        WS, key="k2", title="Plan", brief="Do it.", actor_user_id="user_a", room_id="dm-1", row_now=True
+    )
+    assert await tasks_repo.get_task(WS, blocked) is None  # the Router says why and starts nothing

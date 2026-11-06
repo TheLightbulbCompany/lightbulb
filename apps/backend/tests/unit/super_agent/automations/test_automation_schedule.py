@@ -171,6 +171,7 @@ def test_cron_day_fields_accept_names_and_sunday_7():
     [
         (["0 9 6 11 *"], None, 1),  # one date: a one-off, else it fires again next year
         (["0 9 6 11 *"], 3, 3),  # an explicit count stands
+        (["0 9 6 11 *"], 0, 0),  # 0 = no limit: every year on that date
         (["0 9 * * 1"], None, None),  # weekly
         (["0 9 1 * *"], None, None),  # monthly
         (["0 9 6 11 1"], None, None),  # date OR weekday: recurring
@@ -193,3 +194,21 @@ def test_cleanup_finds_a_one_off_only_once_its_date_passed():
     assert not is_past(row | {"createdAt": "2026-11-05T12:00:00+00:00"}, now)  # created after 06:21 NY: next year
     assert not is_past(row | {"cron": ["0 9 5 1 *"], "createdAt": "2026-10-01T00:00:00+00:00"}, now)  # Jan 2027
     assert is_past(row | {"cron": ["0 9 * * 1"], "runTaskIds": ["t1"]}, now)  # a run counts
+
+
+def test_remaining_runs_zero_builds_an_unlimited_schedule():
+    assert asch.build(_row(remainingRuns=0)).state.limited_actions is False
+    one = asch.build(_row(remainingRuns=1)).state
+    assert one.limited_actions is True and one.remaining_actions == 1
+
+
+def test_one_off_passed_counts_from_when_the_schedule_was_set():
+    from datetime import datetime, timezone
+
+    now = datetime(2026, 11, 6, 12, tzinfo=timezone.utc)
+    row = _row(cron=["21 6 5 11 *"], remainingRuns=1, createdAt="2026-01-01T00:00:00+00:00")
+    assert asch.one_off_passed(row | {"scheduleSetAt": "2026-11-04T00:00:00+00:00"}, now).day == 5
+    assert asch.one_off_passed(row | {"scheduleSetAt": "2026-11-06T00:00:00+00:00"}, now) is None  # Nov 2027
+    assert asch.one_off_passed(row, now) is not None  # no scheduleSetAt: createdAt
+    assert asch.one_off_passed(row | {"remainingRuns": 0}, now) is None  # yearly
+    assert asch.one_off_passed(_row(remainingRuns=1, createdAt="2026-01-01T00:00:00+00:00"), now) is None  # undated

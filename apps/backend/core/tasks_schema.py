@@ -738,7 +738,8 @@ class Schedule(_Row):
     name: str = Field(max_length=200)
     owner_user_id: str
     deliver_to: str = "none"  # room:{id} | dm:{userId} | none
-    remaining_runs: int | None = None  # 1 = one-off
+    remaining_runs: int | None = None  # 1 = one-off, 0 = no limit
+    schedule_set_at: str | None = None  # when cron was last written: a one-off's date counts from it
     active_run_task_id: str | None = None  # the run in flight (SKIP overlap claim)
     # History = the run task ids, newest first.
     # ponytail: capped at 50 on the row; a by-policy GSI if History ever needs more.

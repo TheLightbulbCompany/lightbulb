@@ -225,6 +225,34 @@ async def test_activate_then_pause_resume_matches_temporal(api):
     assert _as(api).post(f"{BASE}/{sid}/resume").status_code == 409  # already active
 
 
+async def test_a_one_off_whose_date_passed_will_not_turn_on(api):
+    """Turned on after its date, a one-off would wait a year: 409 with words the card can show."""
+    view = await _draft(api, schedule={"cron": ["21 6 5 11 *"], "tz": "America/New_York"})
+    assert view["schedule"]["remainingRuns"] == 1
+    row = await repo.get_schedule(WS, view["id"])
+    await repo.update_schedule(
+        WS, view["id"], {"scheduleSetAt": "2026-11-04T12:00:00+00:00"}, expected_version=row["version"]
+    )
+    r = _as(api).post(f"{BASE}/{view['id']}/activate")
+    assert r.status_code == 409
+    assert r.json()["detail"] == {
+        "code": "one_off_passed",
+        "message": "This was for 5 Nov; set a new time to turn it on.",
+    }
+    assert (await repo.get_schedule(WS, view["id"]))["status"] == "draft"
+    # a new time (set now, so its date is ahead) turns on
+    cur = _as(api).get(f"{BASE}/{view['id']}").json()
+    patch = {"schedule": {"cron": ["21 6 5 11 *"], "tz": "America/New_York"}, "version": cur["version"]}
+    assert _as(api).patch(f"{BASE}/{view['id']}", json=patch).status_code == 200
+    assert _as(api).post(f"{BASE}/{view['id']}/activate").status_code == 200
+
+
+async def test_remaining_runs_zero_keeps_a_dated_cron_yearly(api):
+    view = await _draft(api, schedule={"cron": ["0 9 5 11 *"], "tz": "UTC", "remainingRuns": 0})
+    assert view["schedule"]["remainingRuns"] == 0
+    assert _as(api).post(f"{BASE}/{view['id']}/activate").status_code == 200
+
+
 async def test_room_automation_needs_an_org_admin_to_activate(api):
     """A room automation runs for everyone in the room: turning it on is an org-admin act, even for its owner
     (the Router's proposal is deliverTo=room with ownerUserId=requester)."""
@@ -506,6 +534,21 @@ async def test_a_dated_cron_is_a_one_off_from_propose_and_patch(internal):
     patch = {"schedule": {"cron": ["30 8 7 11 *"], "tz": "UTC", "remainingRuns": None}, "version": row["version"]}
     r = _as(internal.api).patch(f"{BASE}/{row['scheduleId']}", json=patch)
     assert r.status_code == 200 and r.json()["schedule"]["remainingRuns"] == 1
+
+
+async def test_propose_repeat_yearly_keeps_a_dated_cron_unlimited(internal):
+    body = {
+        "name": "n",
+        "instructions": "i",
+        "cron": ["0 9 5 11 *"],
+        "repeat": "yearly",
+        "triggerIds": [await _chat_trigger()],
+    }
+    r = internal.api.client.post(
+        f"/api/v1/internal/automations/{WS}/propose", json=body, headers={"Authorization": "Bearer t"}
+    )
+    assert r.status_code == 200, r.text
+    assert (await repo.get_schedule(WS, r.json()["automationId"]))["remainingRuns"] == 0
 
 
 async def test_propose_cleans_up_when_the_card_cannot_be_posted(internal):

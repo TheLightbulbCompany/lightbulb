@@ -19,7 +19,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
 
 from temporalio.service import RPCError
 
@@ -28,24 +27,11 @@ from core.services import automation_schedule
 from core.temporal import client as temporal_client
 
 
-def first_fire(cron: str, tz: str, after: datetime) -> datetime:
-    """The first fire of a dated cron (`M H D Mo *`) after `after`: this year's date, else next year's."""
-    minute, hour, day, month = (int(f) for f in cron.split()[:4])
-    for year in (after.year, after.year + 1):
-        at = datetime(year, month, day, hour, minute, tzinfo=ZoneInfo(tz))
-        if at > after:
-            return at
-    raise AssertionError("unreachable")
-
-
 def is_past(row: dict, now: datetime) -> bool:
-    if row.get("runTaskIds"):
-        return True
-    created = datetime.fromisoformat(row["createdAt"])
-    try:
-        return first_fire(row["cron"][0], row["tz"], created) <= now
-    except ValueError:  # an undated `remainingRuns: 1` cron: Temporal already limits it; only a run counts
-        return False
+    """Already ran, or its date (counted from when its schedule was set) has gone by."""
+    return (
+        bool(row.get("runTaskIds")) or automation_schedule.one_off_passed({**row, "remainingRuns": 1}, now) is not None
+    )
 
 
 async def _temporal(row: dict) -> str:

@@ -1103,18 +1103,6 @@ export function MessagingWorkspaceProvider({
     }
   }, [superAgent, freshLanding, explicitPickCount]);
 
-  const askFrontId = directoryProps.ceoAgentId;
-  const { selectDm: resolveDmRoom, resourceSource: { client: messagingClient } } = rooms;
-  const askLightbulb = useCallback(async (text: string) => {
-    if (!askFrontId) throw new Error("Lightbulb isn't ready yet.");
-    // Sent before the DM opens, so its history load already holds the message.
-    const roomId = await resolveDmRoom({ kind: "agent", id: askFrontId }, { activate: false });
-    if (!roomId) throw new Error("Couldn't open your conversation with Lightbulb.");
-    await messagingClient.sendMessage(roomId, { clientMessageId: crypto.randomUUID(), text, mentions: [], replyToMessageId: null, threadRootMessageId: null });
-    await selectAgentDm(askFrontId);
-    activateMessagesPanel();
-  }, [askFrontId, resolveDmRoom, messagingClient, selectAgentDm]);
-
   // Muted rooms never badge anywhere: not the sidebar, not the browser-tab title.
   const openRoomTarget = useCallback((roomId: string, targetThreadId: string | null, messageId?: string) => {
     // The room may be the one focus covers; opening it has to uncover it.
@@ -1125,6 +1113,17 @@ export function MessagingWorkspaceProvider({
     if (messageId && !targetThreadId) setTarget({ roomId, messageId });
     activateMessagesPanel();
   }, [closeSession, selectRoom]);
+  const askFrontId = directoryProps.ceoAgentId;
+  const { selectDm: resolveDmRoom, resourceSource: { client: messagingClient } } = rooms;
+  const askLightbulb = useCallback(async (text: string) => {
+    if (!askFrontId) throw new Error("Lightbulb isn't ready yet.");
+    // One resolve (it creates the DM when there is none), one send, then open that same room: nothing after the
+    // send can fail, so a sent message is never reported as unsent. Sent first, so the DM's history load holds it.
+    const roomId = await resolveDmRoom({ kind: "agent", id: askFrontId }, { activate: false });
+    if (!roomId) throw new Error("Couldn't open your conversation with Lightbulb.");
+    await messagingClient.sendMessage(roomId, { clientMessageId: crypto.randomUUID(), text, mentions: [], replyToMessageId: null, threadRootMessageId: null });
+    openRoomTarget(roomId, null);
+  }, [askFrontId, resolveDmRoom, messagingClient, openRoomTarget]);
   const listedRoomIds = useMemo(() => new Set(rooms.rooms.map((room) => room.roomId)), [rooms.rooms]);
   const lookupRoom = rooms.resourceSource.client.getRoom;
   const openNotificationTarget = useCallback((roomId: string, targetThreadId: string | null, messageId?: string) => {

@@ -21,7 +21,7 @@ vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({
   useMessagingWorkspaceOptional: () => messaging.value,
 }));
 
-import { HomeProjects, projectRooms, roomCounts } from "../HomeProjects";
+import { HomeProjects, cardLabel, projectRooms, roomCounts, workingCapped } from "../HomeProjects";
 
 const task = (taskId: string, roomId: string, shownGroup: TaskSummary["shownGroup"]): TaskSummary => ({
   taskId, identifier: taskId, title: `Request ${taskId}`, status: shownGroup === "resolved" ? "resolved" : "working",
@@ -70,6 +70,15 @@ describe("roomCounts", () => {
   });
 });
 
+describe("Working's page cap", () => {
+  it("a floor (N+) only when the first page is all live and more follow", () => {
+    expect(workingCapped({ tasks: TASKS, next: "p2" })).toBe(false); // a done row on the page: every live one is in
+    expect(workingCapped({ tasks: TASKS.filter((t) => t.shownGroup !== "resolved"), next: "p2" })).toBe(true);
+    expect(workingCapped({ tasks: TASKS.filter((t) => t.shownGroup !== "resolved"), next: null })).toBe(false);
+    expect(cardLabel("Launch", { working: 50, needsYou: 1 }, true)).toBe("Launch, Working 50+, 1 needs you");
+  });
+});
+
 describe("projectRooms", () => {
   it("keeps channels and group chats, newest first; drops DMs, archived, the feed and the shared channel", () => {
     expect(projectRooms(ROOMS).map((r) => r.roomId)).toEqual(["launch", "site"]);
@@ -104,7 +113,9 @@ describe("HomeProjects", () => {
     const opened = vi.fn();
     window.addEventListener("openRoom", (e) => opened((e as CustomEvent).detail), { once: true });
     render(<Fresh><HomeProjects /></Fresh>);
-    await userEvent.click(screen.getByRole("button", { name: /^Spring launch/ }));
+    const card = await screen.findByRole("button", { name: "Spring launch, Working 2, 2 need you" });
+    expect(card).toHaveAccessibleDescription(/Ship the sale page/);
+    await userEvent.click(card);
     expect(opened).toHaveBeenCalledWith({ roomId: "launch", threadId: null });
     await userEvent.click(within(screen.getByRole("region", { name: "Chats" })).getByRole("button"));
     expect(ctl.openAgentDmWithDraft).toHaveBeenLastCalledWith(FRONT, "");

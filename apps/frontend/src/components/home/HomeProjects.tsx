@@ -51,12 +51,26 @@ export function projectRooms(rooms: readonly DirectoryRoom[]): DirectoryRoom[] {
 const openRoom = (roomId: string) => window.dispatchEvent(new CustomEvent("openRoom", { detail: { roomId, threadId: null } }));
 const needWord = (n: number) => `${n} need${n === 1 ? "s" : ""} you`;
 
+/** Working counts are floors when the loaded page holds nothing but live requests and more pages follow. */
+export function workingCapped(list: { tasks: readonly TaskSummary[]; next: string | null } | undefined): boolean {
+  if (!list?.next) return false;
+  const settled = overviewGroups(list.tasks).filter((g) => g.id === "done" || g.id === "closed");
+  return settled.every((g) => g.tasks.length === 0);
+}
+const workingWord = (n: number, capped: boolean) => `Working ${n}${capped ? "+" : ""}`;
+/** A card's accessible name: the project and its counts (topic and snippet are its description). */
+export const cardLabel = (name: string, counts: RoomCounts | undefined, capped: boolean) =>
+  [name, counts?.working ? workingWord(counts.working, capped) : "", counts?.needsYou ? needWord(counts.needsYou) : ""].filter(Boolean).join(", ");
+
 export function HomeProjects(): ReactElement {
   const messaging = useMessagingWorkspaceOptional();
   const { tasks } = useLiveEvents();
   const { data } = useTaskList(tasks, WORKSPACE);
   const needs = useNeedsYouTasks(WORKSPACE);
   const counts = roomCounts(needs.tasks, data?.tasks ?? []);
+  // The list leads with live requests (waiting, working, queued), so Working is complete unless the first page is
+  // all live and more pages follow: then each Working count is a floor.
+  const capped = workingCapped(data);
   const directory = messaging?.directoryProps;
   const frontId = directory?.ceoAgentId;
   const rooms = directory?.rooms ?? [];
@@ -71,22 +85,23 @@ export function HomeProjects(): ReactElement {
   const openDm = () => { if (frontId) openAgentDmWithDraft(frontId, ""); else activateMessagesPanel(); };
 
   return <div className="home-projects">
+    <h1 className="text-title font-semibold">Home</h1>
     {needs.tasks.length > 0 && <button type="button" className="home-projects__needs"
       onClick={() => { closePane(); openPanel("activity", {}, { pushUrl: true }); }}>
       <span className="home-projects__dot" aria-hidden="true" />
       <span><span className="font-semibold text-foreground">{needWord(needs.tasks.length)}</span> · Review</span>
       <ChevronRight size={14} aria-hidden="true" />
     </button>}
-    <h1 className="text-title font-semibold">Home</h1>
     {messaging && <AskLightbulb onAsk={messaging.askLightbulb} />}
 
-    <section aria-label="Chats">
+    <section aria-labelledby="home-chats-heading" className="home-projects__section">
+      <h2 id="home-chats-heading" className="text-ui font-semibold">Chats</h2>
       <button type="button" className="home-projects__dm" onClick={() => openDm()}>
         <span className="min-w-0 flex-1">
           <span className="block font-semibold">Lightbulb</span>
           <span className="block truncate text-ui text-muted-foreground">{dm?.lastMessage ? snippet(dm) : "Your conversation with Lightbulb"}</span>
         </span>
-        <RoomMeta room={dm} counts={dm ? counts.get(dm.roomId) : undefined} />
+        <RoomMeta room={dm} counts={dm ? counts.get(dm.roomId) : undefined} capped={capped} />
       </button>
     </section>
 
@@ -111,7 +126,7 @@ export function HomeProjects(): ReactElement {
         : directory.state === "error" ? <p role="alert" className="text-ui text-muted-foreground">Projects couldn&apos;t load.{" "}
           {directory.onRetry && <button type="button" className="underline hover:text-foreground" onClick={directory.onRetry}>Retry</button>}</p>
         : shown.length > 0 ? <ul className="home-projects__grid">
-          {shown.map((room) => <li key={room.roomId}><ProjectCard room={room} counts={counts.get(room.roomId)} /></li>)}
+          {shown.map((room) => <li key={room.roomId}><ProjectCard room={room} counts={counts.get(room.roomId)} capped={capped} /></li>)}
         </ul>
         : q ? <p className="text-ui text-muted-foreground">No project matches “{query.trim()}”.</p> : null}
       {fresh && !creating && <StartAProject onStart={() => setCreating(true)} />}
@@ -150,21 +165,25 @@ const snippet = (room: DirectoryRoom) => {
   return m.authorKind === "system" ? text : `${m.authorName}: ${text}`;
 };
 
-function RoomMeta({ room, counts }: { room?: DirectoryRoom; counts?: RoomCounts }): ReactElement {
+function RoomMeta({ room, counts, capped = false }: { room?: DirectoryRoom; counts?: RoomCounts; capped?: boolean }): ReactElement {
   return <span className="home-projects__meta">
     {room?.lastMessageAt && <time dateTime={room.lastMessageAt}>{timeAgo(room.lastMessageAt)}</time>}
-    {!!counts?.working && <span>Working {counts.working}</span>}
+    {!!counts?.working && <span>{workingWord(counts.working, capped)}</span>}
     {!!counts?.needsYou && <span className="font-semibold text-foreground"><span className="home-projects__dot" aria-hidden="true" />{needWord(counts.needsYou)}</span>}
   </span>;
 }
 
-function ProjectCard({ room, counts }: { room: DirectoryRoom; counts?: RoomCounts }): ReactElement {
+function ProjectCard({ room, counts, capped }: { room: DirectoryRoom; counts?: RoomCounts; capped: boolean }): ReactElement {
   const name = roomDisplayName(room, room.participants);
-  return <button type="button" className="home-projects__card" onClick={() => openRoom(room.roomId)}>
+  const describedBy = `home-card-${room.roomId}`;
+  return <button type="button" className="home-projects__card" onClick={() => openRoom(room.roomId)}
+    aria-label={cardLabel(name, counts, capped)} aria-describedby={room.topic || room.lastMessage ? describedBy : undefined}>
     <span className="block truncate font-semibold">{name}</span>
-    {room.topic && <span className="line-clamp-2 text-ui text-muted-foreground">{room.topic}</span>}
-    {room.lastMessage && <span className="block truncate text-ui text-muted-foreground">{snippet(room)}</span>}
-    <RoomMeta room={room} counts={counts} />
+    <span id={describedBy} className="contents">
+      {room.topic && <span className="line-clamp-2 text-ui text-muted-foreground">{room.topic}</span>}
+      {room.lastMessage && <span className="block truncate text-ui text-muted-foreground">{snippet(room)}</span>}
+    </span>
+    <RoomMeta room={room} counts={counts} capped={capped} />
   </button>;
 }
 

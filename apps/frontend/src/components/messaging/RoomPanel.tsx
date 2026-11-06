@@ -202,10 +202,12 @@ const roomMarkdown: Partial<Components> = {
   },
 };
 
-/** "Hi Lightbulb, …" asks Lightbulb as much as "@lightbulb" does (dev walk R8): its name as a whole word. */
+/** "Hi Lightbulb, …" asks Lightbulb as much as "@lightbulb" does (dev walk R8): the name spoken TO it at the start,
+ *  exactly admission's `_LIGHTBULB_NAME` (apps/backend/core/services/admission.py). The name mid-sentence ("the
+ *  Lightbulb app is down") is not an ask: the server sends that to Jev, which may let it pass. */
 export function namesAgent(text: string, name: string): boolean {
   const escaped = name.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return !!escaped && new RegExp(`(^|[^\\p{L}\\p{N}_])${escaped}($|[^\\p{L}\\p{N}_])`, "iu").test(text);
+  return !!escaped && new RegExp(`^\\W*(?:(?:hey|hi|hello|yo|ok|okay)\\s+)?${escaped}\\b\\s*[,:?!]`, "i").test(text);
 }
 
 const narrowQuery = "(max-width: 859px)";
@@ -489,7 +491,9 @@ function RoomContent({
   }, [messages]);
   // Super-agent: the viewer's last ask to Lightbulb with nothing back yet (no later message, no agent reply under it,
   // no run on screen) reads "Lightbulb is on it…" until its reply or card lands. The Router posts no typing signal,
-  // so this is the client's: an ask names Lightbulb, or Lightbulb listens to everything and no other person is here.
+  // so this is the client's, and it promises only what admission's fast path promises: a DM, an @mention of
+  // Lightbulb's seat, or "Hi Lightbulb, …", unless Lightbulb only observes. Anything else goes to Jev and the Router,
+  // which may stay quiet and say nothing, so "on it" would hang for minutes and vanish (dev walk W9-1).
   // ponytail: gives up after ON_IT_MS of silence; a server "seen" signal would replace the timer.
   const front = superAgent && !runtimeStarting ? participants.find((p) => p.kind === "agent" && p.mentionHandle === "lightbulb") : undefined;
   const lastMain = mainMessages.findLast((message) => !message.deletedAt);
@@ -498,8 +502,8 @@ function RoomContent({
     // A run for this ask that already ended (failed, stopped) shows its own outcome.
     && !allRuns.some((run) => run.triggerMessageId === lastMain.messageId)
     && ![...(repliesByRoot.get(lastMain.messageId)?.authors.values() ?? [])].some((author) => author.kind === "agent")
-    && (lastMain.mentions.some((m) => m.kind === "agent" && m.id === front.id) || ((room?.kind === "dm" || front.listenMode === "active") && namesAgent(lastMain.text, front.displayName))
-      || (front.listenMode === "active" && participants.filter((p) => p.kind === "human").length === 1))
+    && front.listenMode !== "observe"
+    && (room?.kind === "dm" || lastMain.mentions.some((m) => m.kind === "agent" && m.id === front.id) || namesAgent(lastMain.text, front.displayName))
     ? lastMain : undefined;
   const [onItExpired, setOnItExpired] = useState<string | null>(null);
   useEffect(() => {

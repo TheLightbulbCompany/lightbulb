@@ -6,7 +6,7 @@
 
 import "./creations.css";
 import { useMemo, useState, type ReactElement } from "react";
-import { MoreHorizontal, X } from "lucide-react";
+import { File as FileIcon, MoreHorizontal, X } from "lucide-react";
 import { elapsedShort, specialistLabel, type OutputKind } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -69,7 +69,7 @@ export function ProjectFiles({ roomId, viewerId, messages, onOpenTask }: {
       : <table className="project-files__table">
         <thead><tr><th scope="col">Name</th><th scope="col">Made by</th><th scope="col">Date</th><th scope="col"><span className="sr-only">Actions</span></th></tr></thead>
         <tbody>{rows.map((row) => {
-          const Icon = KIND_ICON[row.output.kind];
+          const Icon = KIND_ICON[row.output.kind] ?? FileIcon;
           const open = () => openOutput(row.output, onOpenTask);
           return <tr key={row.key}>
             <td><button type="button" className="project-files__name" onClick={open}>

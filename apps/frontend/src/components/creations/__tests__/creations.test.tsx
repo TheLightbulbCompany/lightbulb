@@ -102,6 +102,29 @@ describe("Creations", () => {
     expect(await screen.findByText("Everything Lightbulb and the specialists make lands here.")).toBeInTheDocument();
   });
 
+  it("frames only public, openable apps, and at most six; the rest (Load more too) show the glyph", async () => {
+    const row = (id: string, over = {}) => ({ app_id: id, name: id, state: "live", open_to: "public", can_open: true, live_url: `https://${id}.example`, preview_url: null, ...over });
+    apps.apps = [row("p0", { open_to: "workspace" }), row("p1", { can_open: false }), ...Array.from({ length: 8 }, (_, i) => row(`a${i}`))];
+    const app = (id: string) => out({ id: `app:${id}`, kind: "app", title: id, ref: { appId: id }, taskId: `t-${id}` });
+    client.outputs.mockResolvedValueOnce({ outputs: [app("p0"), app("p1"), ...Array.from({ length: 8 }, (_, i) => app(`a${i}`)), DOC, MAIL], next: "c2" })
+      .mockResolvedValueOnce({ outputs: [app("a9")], next: null });
+    apps.apps.push(row("a9"));
+    const { container } = render(<Fresh><CreationsGrid /></Fresh>);
+    await screen.findByRole("list", { name: "Creations" });
+    const srcs = () => [...container.querySelectorAll("iframe")].map((f) => f.getAttribute("src"));
+    expect(srcs()).toEqual(["a0", "a1", "a2", "a3", "a4", "a5"].map((id) => `https://${id}.example`));
+    await userEvent.click(screen.getByRole("button", { name: "Load more" }));
+    await screen.findByText("a9");
+    expect(srcs()).toHaveLength(6);
+  });
+
+  it("a Make tile says so when Lightbulb isn't ready to take the ask", async () => {
+    ctl.openChatPanelWithDraft.mockReturnValueOnce(false);
+    render(<Fresh><CreationsGrid /></Fresh>);
+    await userEvent.click(screen.getByRole("button", { name: /Make an app/ }));
+    expect(screen.getByRole("status")).toHaveTextContent("Lightbulb isn't ready yet.");
+  });
+
   it("Load more reads the next page", async () => {
     client.outputs.mockResolvedValueOnce({ outputs: Array.from({ length: 12 }, (_, i) => out({ id: `o${i}`, taskId: `t${i}` })), next: "c2" })
       .mockResolvedValueOnce({ outputs: [MAIL], next: null });

@@ -39,7 +39,7 @@ export function CanvasDockPanel({ id, params }: PanelProps) {
     if (error) return <AppList apps={[]} loading={false} error={error} onRetry={refresh} onOpen={() => {}} />;
     return <div className="canvas">
       <p className="canvas__notice">{loading ? "Opening…" : "That app isn't in this workspace."}</p>
-      {!loading && <button type="button" className="app-view__btn" onClick={close}>All apps</button>}
+      {!loading && <button type="button" className="app-view__btn" onClick={close}>{superAgent ? "All creations" : "All apps"}</button>}
     </div>;
   }
   if (superAgent) return <CreationsGrid />;

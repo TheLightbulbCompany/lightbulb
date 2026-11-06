@@ -97,7 +97,7 @@ export default function TaskScreen() {
                 <Text style={[styles.meta, { color: palette.fgMute }]}>{KIND_WORD[o.kind]}</Text></>;
               return opens ? (
                 <Pressable key={o.id} accessibilityRole="button" accessibilityLabel={`Open ${o.title}`} style={styles.outputRow}
-                  onPress={() => void openOutput(o, { attachmentUrl: messaging.attachmentUrl, appUrl: (id) => api.post(`/apps/${encodeURIComponent(id)}/open`, {}) as Promise<{ url: string }> })
+                  onPress={() => void openOutput(o, { attachmentUrl: messaging.attachmentUrl, appUrl: (id) => openApp(api, id) })
                     .catch(() => setNote("That couldn\u2019t open. Try again."))}>{row}</Pressable>
               ) : <View key={o.id} style={styles.outputRow}>{row}</View>;
             })}
@@ -117,6 +117,14 @@ const KIND_WORD: Record<TaskOutput["kind"], string> = {
 /** Mail and a capability have nothing to open beyond this task (its transcript shows them). */
 const canOpen = (o: TaskOutput) => (o.kind === "app" && !!o.ref.appId) || ((o.kind === "document" || o.kind === "file") && !!o.ref.roomId && !!o.ref.attachmentId)
   || ((o.kind === "link" || o.kind === "pr") && /^https?:\/\//.test(o.ref.url ?? ""));
+
+/** An app's open pass: its live version, else (a preview-only app, not published yet) its preview. */
+async function openApp(api: { get(path: string): Promise<unknown>; post(path: string, body: unknown): Promise<unknown> }, appId: string): Promise<{ url: string }> {
+  const { apps } = await api.get("/apps") as { apps: { app_id: string; live_url: string | null; live_version: number | null }[] };
+  const row = apps.find((a) => a.app_id === appId);
+  const preview = !!row && !row.live_url && row.live_version == null;
+  return api.post(`/apps/${encodeURIComponent(appId)}/open${preview ? "?target=preview" : ""}`, {}) as Promise<{ url: string }>;
+}
 
 /** An output in the in-app browser: a link as is, an app through its open pass, a doc or file by its short-lived URL. */
 async function openOutput(o: TaskOutput, deps: {

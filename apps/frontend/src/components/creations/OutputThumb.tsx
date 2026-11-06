@@ -23,16 +23,19 @@ function useAttachmentImage(ref: Record<string, string>, on: boolean): string | 
   return data?.url;
 }
 
-export function OutputThumb({ output, app, size = "tile" }: {
+export function OutputThumb({ output, app, size = "tile", frame = true }: {
   output: Pick<TaskOutput, "kind" | "title" | "ref">;
   /** The app's row, for its page; without one an app shows its glyph. */
   app?: AppRow;
   /** "tile": Creations' 16:10 tile, with the extension or host under the glyph. "mini": Made here's 88×56. */
   size?: "tile" | "mini";
+  /** false: never frame the app's page (the grid frames only its first few). */
+  frame?: boolean;
 }): ReactElement {
   const image = (output.kind === "file" || output.kind === "document") && output.ref?.contentType?.startsWith("image/");
   const src = useAttachmentImage(output.ref ?? {}, !!image);
-  const page = output.kind === "app" ? app?.live_url ?? app?.preview_url : null;
+  // Only a public app frames as itself: any other shows its sign-in door, so it gets the glyph.
+  const page = frame && output.kind === "app" && app?.open_to === "public" && app.can_open !== false ? app.live_url ?? app.preview_url : null;
   if (page && /^https?:\/\//.test(page)) {
     // A live preview, not a control: lazy (only tiles on screen load), sandboxed, and out of the tab order.
     return <span className="output-thumb output-thumb--page" data-size={size}>

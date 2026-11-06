@@ -8,7 +8,7 @@ const mockAuth = { userId: SAM as string };
 // One task id per test: the shared SWR cache keys `task:<id>` and `task-questions:<id>` are global (not per
 // workspace), so a second test on the same id would read the first test's rows for SWR's dedupe window.
 const mockParams = { taskId: "t-signup" };
-const mockLive = { superAgent: true, tasks: null as unknown, messaging: { attachmentUrl: jest.fn(async () => ({ url: "https://files.example/n.md" })) }, api: { post: jest.fn() } };
+const mockLive = { superAgent: true, tasks: null as unknown, messaging: { attachmentUrl: jest.fn(async () => ({ url: "https://files.example/n.md" })) }, api: { get: jest.fn(async () => ({ apps: [{ app_id: "app1", live_url: null, live_version: null }] })), post: jest.fn(async () => ({ url: "https://preview.example/app1" })) } };
 const mockOpenBrowser = jest.fn(async (_url: string) => undefined);
 jest.mock("expo-web-browser", () => ({ openBrowserAsync: (url: string) => mockOpenBrowser(url) }));
 const mockRooms = {
@@ -92,6 +92,16 @@ it("lists what the task made; a doc opens by its short-lived URL, mail is a row"
   fireEvent.press(view.getByLabelText("Open Welcome note.md"));
   await waitFor(() => expect(mockOpenBrowser).toHaveBeenCalledWith("https://files.example/n.md"));
   expect(mockLive.messaging.attachmentUrl).toHaveBeenCalledWith("r1", "a1");
+  await view.unmount();
+});
+
+it("a preview-only app opens its preview", async () => {
+  const outputs: TaskOutput[] = [{ id: "app:1", kind: "app", title: "Walk7 Signup", ref: { appId: "app1" }, createdAt: "2026-11-06T10:00:00Z" }];
+  client({ ...step8, task: { ...waiting, outputs } }, [], "t-app-preview");
+  const view = await render(<TaskScreen />);
+  fireEvent.press(await view.findByLabelText("Open Walk7 Signup"));
+  await waitFor(() => expect(mockOpenBrowser).toHaveBeenCalledWith("https://preview.example/app1"));
+  expect(mockLive.api.post).toHaveBeenCalledWith("/apps/app1/open?target=preview", {});
   await view.unmount();
 });
 

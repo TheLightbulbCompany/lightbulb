@@ -26,7 +26,21 @@ logger = logging.getLogger(__name__)
 def general_url(owner_id: str) -> str:
     from core.services.messaging import default_room_id
 
-    return f"{settings.FRONTEND_URL.rstrip('/')}/chat?panel=chat&room={default_room_id(owner_id)}"
+    return room_url(default_room_id(owner_id))
+
+
+def room_url(room_id: str) -> str:
+    return f"{settings.FRONTEND_URL.rstrip('/')}/chat?panel=chat&room={room_id}"
+
+
+async def owner_start_url(owner_id: str, owner_user_id: str) -> tuple[str, bool]:
+    """Where the owner starts, and whether it is their chat with Lightbulb (super-agent: the first-run DM)."""
+    from core.services import messaging
+
+    front = await messaging._front_agent_id(owner_id)
+    if not front:
+        return general_url(owner_id), False
+    return room_url(await messaging._agent_dm_room_id(owner_id, owner_user_id, front)), True
 
 
 def _greeting(first_name: str | None) -> str:
@@ -34,8 +48,27 @@ def _greeting(first_name: str | None) -> str:
     return f"Hi {name}," if name else "Hi,"
 
 
-def owner_welcome(*, first_name: str | None, workspace: str, url: str) -> tuple[str, str]:
-    """(subject, text) for the person who created the workspace."""
+def owner_welcome(*, first_name: str | None, workspace: str, url: str, lightbulb_chat: bool = False) -> tuple[str, str]:
+    """(subject, text) for the person who created the workspace. ``lightbulb_chat``: the super-agent start, their
+    chat with Lightbulb instead of the general project."""
+    if lightbulb_chat:
+        return (
+            f"Your team at {workspace} is ready",
+            f"""{_greeting(first_name)}
+
+I'm Lightbulb. Your workspace is set up. I hand work to the specialists (Engineering, Finance, Growth, Analytics and Customer Operations) and show you each task.
+
+Tell me what the business is (a website is enough). I'll write a short plan in our chat and ask you for one decision. While I work, invite the person who should see it with you. They can approve it too.
+
+Your chat with Lightbulb: {url}
+
+We run in your workspace's own cloud, so routines and email keep going when your laptop is closed. Spend, sends and deploys wait for a person. Your 30 days are free.
+
+Reply to this email if anything is unclear.
+
+— Lightbulb, {workspace}
+""",
+        )
     return (
         f"Your team at {workspace} is ready",
         f"""{_greeting(first_name)}
@@ -83,8 +116,12 @@ async def send_owner_welcome(owner_id: str, owner_user_id: str) -> str:
     from core.services.agent_mail_owner_send import send_to_owner
 
     user = await clerk_admin.get_user(owner_user_id) or {}
+    url, lightbulb_chat = await owner_start_url(owner_id, owner_user_id)
     subject, text = owner_welcome(
-        first_name=user.get("first_name"), workspace=await _workspace_name(owner_id), url=general_url(owner_id)
+        first_name=user.get("first_name"),
+        workspace=await _workspace_name(owner_id),
+        url=url,
+        lightbulb_chat=lightbulb_chat,
     )
     from core.services.agent_mail_tenant import ensure_tenant
 

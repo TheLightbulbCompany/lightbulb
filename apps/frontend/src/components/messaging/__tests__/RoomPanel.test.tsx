@@ -1147,6 +1147,17 @@ it("never shows the pre-typed replies outside the starter channel", () => {
   expect(screen.queryByRole("button", { name: "I'm starting" })).toBeNull();
 });
 
+it("with the switch, shows the pre-typed replies after a message the owner sent before setup finished", () => {
+  const early = { ...message, messageId: "h0", author: { kind: "human" as const, id: "owner", displayName: "Owner" } };
+  const welcome = { ...message, messageSeq: 2, kind: "first_run" };
+  const room = { ...props.room!, kind: "dm" as const, firstRun: true };
+  const view = render(<RoomPanel {...props} room={room} messages={[early, welcome]} />);
+  expect(screen.getByRole("button", { name: "I'm starting" })).toBeInTheDocument();
+  const answer = { ...early, messageId: "h1", messageSeq: 3 };
+  view.rerender(<RoomPanel {...props} room={{ ...room, firstRun: false }} messages={[early, welcome, answer]} />);
+  expect(screen.queryByRole("button", { name: "I'm starting" })).toBeNull();
+});
+
 it("with the switch, shows the pre-typed replies in the first-run Lightbulb DM and not under #general's team line", () => {
   const view = render(<RoomPanel {...props} room={{ ...props.room!, kind: "dm", firstRun: true }} messages={[{ ...message, kind: "first_run" }]} />);
   expect(screen.getByRole("button", { name: "I'm starting" })).toBeInTheDocument();

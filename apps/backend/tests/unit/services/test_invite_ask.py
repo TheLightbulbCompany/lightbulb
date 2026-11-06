@@ -33,14 +33,16 @@ def fx(monkeypatch):
     monkeypatch.setattr(messaging.messaging_repo, "claim_room_marker", claim)
     monkeypatch.setattr(messaging.messaging_repo, "release_room_marker", release)
     monkeypatch.setattr(messaging.messaging_repo, "get_member", AsyncMock(return_value={"id": CEO}))
-    first = {DM: {"messageSeq": 1, "kind": messaging.FIRST_RUN_KIND}}
-    monkeypatch.setattr(messaging.messaging_repo, "get_message", AsyncMock(side_effect=lambda r, _s: first.get(r)))
+    rooms = {DM: {"roomId": DM, "kind": "dm"}, "other-room": {"roomId": "other-room", "kind": "channel"}}
+    monkeypatch.setattr(messaging.messaging_repo, "get_room", AsyncMock(side_effect=rooms.get))
+    front = AsyncMock(return_value=None)  # the switch is off unless a test turns it on
+    monkeypatch.setattr(messaging, "_front_agent_id", front)
     monkeypatch.setattr(messaging, "load_agent_roster", AsyncMock(return_value=[{"id": CEO, "name": "Ada"}]))
     create = AsyncMock(return_value=({}, False))
     monkeypatch.setattr(messaging.messaging_repo, "create_message", create)
     org = AsyncMock(return_value={"members_count": 1})
     monkeypatch.setattr(messaging.clerk_admin, "get_organization", org)
-    return MagicMock(create=create, org=org, claimed=claimed)
+    return MagicMock(create=create, org=org, claimed=claimed, front=front)
 
 
 def _row(room_id=GENERAL):
@@ -88,9 +90,13 @@ async def test_a_clerk_read_that_cannot_answer_lets_a_later_run_ask(fx):
 
 
 @pytest.mark.asyncio
-async def test_with_the_switch_the_ask_follows_the_first_run_into_the_lightbulb_dm_once(fx):
-    """Super-agent: the first run is in the owner's Lightbulb DM (seq 1 kind first_run); one ask per workspace."""
+async def test_with_the_switch_the_ask_follows_the_first_run_into_the_lightbulb_dm_once_signed_lightbulb(fx):
+    """Super-agent: the first run is in the owner's Lightbulb DM; one ask per workspace, in Lightbulb's name."""
+    await messaging.ask_who_should_see(OWNER, _row(DM), "completed")
+    fx.create.assert_not_awaited()  # switch off: a DM is not where the first run is
+    fx.front.return_value = CEO
     await messaging.ask_who_should_see(OWNER, _row(DM), "completed")
     await messaging.ask_who_should_see(OWNER, _row(GENERAL), "completed")
     fx.create.assert_awaited_once()
-    assert fx.create.call_args.kwargs["room_id"] == DM
+    kwargs = fx.create.call_args.kwargs
+    assert kwargs["room_id"] == DM and kwargs["author"]["displayName"] == "Lightbulb"

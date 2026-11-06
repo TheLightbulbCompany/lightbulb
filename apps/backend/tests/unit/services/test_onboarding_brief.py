@@ -116,15 +116,19 @@ async def test_deleted_specialist_does_not_block_capture_for_remaining_target():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "room, first_kind, captured",
+    "room, history, captured, closed",
     [
-        ("lightbulb-dm", "first_run", True),  # super-agent: the welcome is the owner's Lightbulb DM's seq 1
-        ("lightbulb-dm", None, False),  # any other young room is not the first run
-        ("general", "team_welcome", False),  # super-agent #general holds only the team line
-        ("general", None, True),  # flag off: unchanged
+        # super-agent: the first human message after the welcome in the owner's Lightbulb DM
+        ("lightbulb-dm", [("agent", "first_run")], True, True),
+        # ...also when the owner wrote before setup finished: the welcome follows their message
+        ("lightbulb-dm", [("human", None), ("agent", "first_run")], True, True),
+        ("lightbulb-dm", [("agent", "first_run"), ("human", None)], False, False),  # already answered
+        ("lightbulb-dm", [("agent", None)], False, False),  # any other young room is not the first run
+        ("general", [("agent", "team_welcome")], False, False),  # super-agent #general holds only the team line
+        ("general", [("agent", None)], True, False),  # flag off: unchanged
     ],
 )
-async def test_the_first_run_is_captured_where_the_welcome_is(room, first_kind, captured):
+async def test_the_first_run_is_captured_where_the_welcome_is(room, history, captured, closed):
     from core.services.messaging import default_room_id
 
     repo = MagicMock()
@@ -132,23 +136,44 @@ async def test_the_first_run_is_captured_where_the_welcome_is(room, first_kind, 
         return_value=SimpleNamespace(status="active", starter_agent_ids={"ceo": FRIDAY_ID}, funnel_state="not_started")
     )
     repo.put_pending_brief = AsyncMock(return_value=True)
+    earlier = [
+        {"messageSeq": seq, "author": {"kind": kind}, **({"kind": mkind} if mkind else {})}
+        for seq, (kind, mkind) in enumerate(history, start=1)
+    ]
     message = {
         "roomId": default_room_id(OWNER) if room == "general" else room,
-        "messageSeq": 2,
+        "messageSeq": len(earlier) + 1,
         "messageId": "msg_first",
         "text": "Here's our website: acme.com",
         "author": {"kind": "human", "id": OWNER},
         "dispatchTargets": [{"agentId": FRIDAY_ID, "eventKind": "user_request"}],
     }
-    welcome = {"messageSeq": 1, "author": {"kind": "agent"}, **({"kind": first_kind} if first_kind else {})}
+    close = AsyncMock()
     with (
         patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
         patch("core.services.onboarding_brief.reconcile_pending_brief", new=AsyncMock()),
-        patch("core.repositories.messaging_repo.list_messages_between", new=AsyncMock(return_value=[welcome])),
+        patch("core.repositories.messaging_repo.list_messages_between", new=AsyncMock(return_value=earlier)),
+        patch("core.services.messaging.close_first_run", new=close),
     ):
         assert await capture_first_workspace_message(OWNER, message) is captured
         # A busy room is never read as the first-run DM.
         assert await capture_first_workspace_message(OWNER, {**message, "roomId": "x", "messageSeq": 40}) is False
+    assert close.await_count == int(closed)
+
+
+@pytest.mark.asyncio
+async def test_a_short_first_answer_still_closes_the_first_run():
+    """ "ok" is no brief, but it is the owner's answer: the next load lands on Home."""
+    close = AsyncMock()
+    welcome = [{"messageSeq": 1, "author": {"kind": "agent"}, "kind": "first_run"}]
+    message = {"roomId": "lightbulb-dm", "messageSeq": 2, "messageId": "m", "text": "ok",
+               "author": {"kind": "human", "id": OWNER}, "dispatchTargets": []}  # fmt: skip
+    with (
+        patch("core.repositories.messaging_repo.list_messages_between", new=AsyncMock(return_value=welcome)),
+        patch("core.services.messaging.close_first_run", new=close),
+    ):
+        assert await capture_first_workspace_message(OWNER, message) is False
+    close.assert_awaited_once_with("lightbulb-dm")
 
 
 @pytest.mark.asyncio

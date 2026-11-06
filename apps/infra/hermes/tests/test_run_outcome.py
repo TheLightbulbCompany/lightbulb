@@ -92,6 +92,11 @@ def test_with_the_switch_the_first_run_line_follows_the_welcome_into_the_lightbu
     plain = [{**welcome[0], "kind": None}]
     assert turn.FIRST_RUN_LINE not in turn._observe_prompt("ceo", {**dm, "recentHistory": plain})
     # #general then holds only the team line: a teammate's first message there is no first run.
+    # The owner wrote before setup finished: the welcome follows their message, and their next one is the answer.
+    early = [{"author": {"kind": "human"}, "text": "hi", "messageSeq": 1}, {**welcome[0], "messageSeq": 2}]
+    assert turn.FIRST_RUN_LINE in turn._observe_prompt("ceo", {**dm, "recentHistory": early})
+    answered = [*early, {"author": {"kind": "human"}, "text": "acme.com", "messageSeq": 3}]
+    assert turn.FIRST_RUN_LINE not in turn._observe_prompt("ceo", {**dm, "recentHistory": answered})
     team = [{**welcome[0], "kind": "team_welcome"}]
     general = {"kind": "channel", "id": turn.default_room_id(turn.OWNER)}
     assert turn.FIRST_RUN_LINE not in turn._observe_prompt("ceo", {**dm, "room": general, "recentHistory": team})

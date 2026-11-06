@@ -189,7 +189,10 @@ def invite_ask_text() -> str:
 
 
 #: Super-agent (UX slice 6): the welcome and its first-reply chips sit in the owner's Lightbulb DM, marked by this
-#: message kind (seq 1). Clients, onboarding intake and the Hermes bridge recognise the first-run room by it.
+#: message kind (usually seq 1; after the owner's own messages when they wrote before provisioning finished).
+#: Clients, onboarding intake and the Hermes bridge find the welcome by it. The room's META ``firstRun`` says the
+#: first run is still open: set with the DM, cleared by the owner's first answer (``close_first_run``), so a
+#: workspace is "fresh" (lands in the DM) only until then.
 FIRST_RUN_KIND = "first_run"
 #: ...and #general keeps one line for the people who join later (they are seated there, never in the DM).
 TEAM_WELCOME_KIND = "team_welcome"
@@ -212,9 +215,14 @@ def team_welcome(workspace_name: str | None) -> str:
     return _TEAM_WELCOME.format(workspace=_workspace_label(workspace_name))
 
 
-def is_first_run_message(row: dict | None) -> bool:
-    """A room whose seq-1 message is this is the owner's first-run DM (super-agent)."""
-    return bool(row) and int(row.get("messageSeq") or 0) == 1 and row.get("kind") == FIRST_RUN_KIND
+async def close_first_run(room_id: str) -> None:
+    """The owner answered: the first run is no longer open, so the next load lands on Home. Best effort."""
+    try:
+        meta = await messaging_repo.get_room(room_id)
+        if meta and meta.get("firstRun"):
+            await messaging_repo.patch_room_meta(room_id, {"firstRun": None})
+    except Exception:  # noqa: BLE001 -- a stale flag only keeps the DM as the landing
+        logger.warning("first run not closed for room %s", room_id, exc_info=True)
 
 
 ROOM_ARCHIVED_MESSAGE = "This project is archived. Unarchive it to post."
@@ -2402,7 +2410,8 @@ async def ensure_default_room(owner_id: str, owner_user_id: str) -> str | None:
         owner_id=owner_id,
         idemp_pk=messaging_repo.room_pk(room_id),
         idemp_sk=messaging_repo.human_idemp_sk("__system__", f"{client_room_id}:welcome"),
-        req_hash=messaging_repo.request_hash(welcome, ceo_id),
+        # The team line's hash leaves the org name out: a rename between attempts must replay, not conflict.
+        req_hash=messaging_repo.request_hash(TEAM_WELCOME_KIND if attrs else welcome, ceo_id),
         author={"kind": "agent", "id": ceo_id, "displayName": agents[ceo_id]["name"]},
         text=welcome,
         mentions=[],
@@ -2418,20 +2427,17 @@ async def ensure_default_room(owner_id: str, owner_user_id: str) -> str | None:
 
 
 async def _post_first_run_welcome(owner_id: str, owner_user_id: str, front: str, text: str) -> str:
-    """The welcome as the owner's Lightbulb DM's seq 1, marked ``FIRST_RUN_KIND``. Replays land on the same
-    message (the idempotency key); a DM the owner already wrote in is left alone."""
-    room_id = await _agent_dm_room_id(owner_id, owner_user_id, front)
-    meta = await messaging_repo.get_room(room_id) or {}
-    if int(meta.get("lastSeq") or 0) > 0 and not is_first_run_message(await messaging_repo.get_message(room_id, 1)):
-        return room_id
-    if not meta.get("firstRun"):  # the room list's `firstRun`: where a fresh workspace lands
-        await messaging_repo.patch_room_meta(room_id, {"firstRun": True})
-    await messaging_repo.create_message(
+    """The welcome in the owner's Lightbulb DM, kind ``FIRST_RUN_KIND``. A new DM is created with ``firstRun`` in
+    the same write, so it is never visible without it. A DM the owner already wrote in (before provisioning
+    finished) still gets the welcome, after their messages. Replays land on the same message."""
+    room_id = await _agent_dm_room_id(owner_id, owner_user_id, front, meta_extra={"firstRun": True})
+    _, replayed = await messaging_repo.create_message(
         room_id=room_id,
         owner_id=owner_id,
         idemp_pk=messaging_repo.room_pk(room_id),
         idemp_sk=messaging_repo.human_idemp_sk("__system__", f"first-run:{owner_id}:welcome"),
-        req_hash=messaging_repo.request_hash(text, front),
+        # The org name is in the text, not the hash: a rename between attempts replays instead of conflicting.
+        req_hash=messaging_repo.request_hash(FIRST_RUN_KIND, front),
         author={"kind": "agent", "id": front, "displayName": FRONT_AGENT_NAME},
         text=text,
         mentions=[],
@@ -2443,6 +2449,10 @@ async def _post_first_run_welcome(owner_id: str, owner_user_id: str, front: str,
         client_message_id=None,
         attrs={"kind": FIRST_RUN_KIND},
     )
+    # A DM that existed already (found, not created) gets the flag now; never again on a replay, which would reopen
+    # a first run the owner has since answered.
+    if not replayed and not (await messaging_repo.get_room(room_id) or {}).get("firstRun"):
+        await messaging_repo.patch_room_meta(room_id, {"firstRun": True})
     return room_id
 
 
@@ -2882,7 +2892,8 @@ async def _live_dm(room_id: str, user_id: str, counterpart: CreateRoomMember) ->
     return meta
 
 
-async def create_room(auth: AuthContext, request: CreateRoomRequest) -> RoomDetail:
+async def create_room(auth: AuthContext, request: CreateRoomRequest, *, meta_extra: dict | None = None) -> RoomDetail:
+    """``meta_extra``: server-only META fields written with the room (never from a request)."""
     owner_id = resolve_owner_id(auth)
     project_fields = {
         k: v for k, v in (("topic", request.topic), ("icon", request.icon), ("color", request.color)) if v
@@ -2942,7 +2953,7 @@ async def create_room(auth: AuthContext, request: CreateRoomRequest) -> RoomDeta
                 kind=request.kind,
                 members=members,
                 req_hash=req_hash,
-                extra=project_fields,
+                extra={**project_fields, **(meta_extra or {})},
                 dm_pair=dm_pair,
                 dm_pair_replaces=stale_room,
             )
@@ -5260,9 +5271,10 @@ async def ask_who_should_see(owner_id: str, row: dict, outcome: str) -> None:
     if outcome != "completed" or not room_id:
         return
     general = default_room_id(owner_id)
-    # Super-agent: the first run is in the owner's Lightbulb DM. The marker stays on #general's id either way, so
-    # the ask is once per workspace, wherever it lands.
-    if room_id != general and not is_first_run_message(await messaging_repo.get_message(room_id, 1)):
+    front = await _front_agent_id(owner_id)
+    # Super-agent: the first run is in the owner's Lightbulb DM. In a one-person workspace (checked below) any DM
+    # with Lightbulb is that DM. The marker stays on #general's id either way: one ask per workspace.
+    if room_id != general and not (front and ((await messaging_repo.get_room(room_id)) or {}).get("kind") == "dm"):
         return
     if not await messaging_repo.claim_room_marker(general, INVITE_ASK_MARKER):
         return
@@ -5278,7 +5290,11 @@ async def ask_who_should_see(owner_id: str, row: dict, outcome: str) -> None:
     ceo_id = (getattr(company, "starter_agent_ids", None) or {}).get("ceo") if company else None
     if not ceo_id or await messaging_repo.get_member(room_id, "agent", ceo_id) is None:
         return  # a legacy roster or a CEO removed from #general: nobody to ask in its voice
-    name = next((a["name"] for a in await load_agent_roster(owner_id) if a["id"] == ceo_id), "Lightbulb")
+    name = (
+        FRONT_AGENT_NAME  # super-agent: every post in a people's room is Lightbulb's
+        if front
+        else next((a["name"] for a in await load_agent_roster(owner_id) if a["id"] == ceo_id), "Lightbulb")
+    )
     text = invite_ask_text()
     await messaging_repo.create_message(
         room_id=room_id,
@@ -5873,7 +5889,7 @@ class AgentPostRequest(ContractModel):
         return self
 
 
-async def _agent_dm_room_id(owner_id: str, user_id: str, agent_id: str) -> str:
+async def _agent_dm_room_id(owner_id: str, user_id: str, agent_id: str, *, meta_extra: dict | None = None) -> str:
     """The human↔agent DM, created through the same ``create_room`` the web client's
     ``selectDm`` calls (agent ``active``) when none exists. The client room id is derived
     from the pair, so two racing posts converge on one room instead of two DMs."""
@@ -5894,6 +5910,7 @@ async def _agent_dm_room_id(owner_id: str, user_id: str, agent_id: str) -> str:
             kind="dm",
             members=[CreateRoomMember(kind="agent", id=agent_id, role="member", listen_mode="active")],
         ),
+        meta_extra=meta_extra,
     )
     return str(detail.room_id)
 

@@ -21,6 +21,27 @@ def test_owner_version_is_lightbulb_speaking_and_promises_nothing_false():
     assert all(ord(ch) < 0x2000 or ch in "—" for ch in subject + text)  # no emoji
 
 
+def test_with_the_switch_the_owner_is_sent_to_their_chat_with_lightbulb():
+    _, text = welcome_email.owner_welcome(first_name="Ada", workspace="Acme", url=URL, lightbulb_chat=True)
+    assert f"Your chat with Lightbulb: {URL}" in text
+    assert "general" not in text and "#" not in text
+
+
+@pytest.mark.asyncio
+async def test_the_owner_start_url_is_the_lightbulb_dm_with_the_switch():
+    from core.services import messaging
+
+    with (
+        patch.object(messaging, "_front_agent_id", new=AsyncMock(return_value="ceo")),
+        patch.object(messaging, "_agent_dm_room_id", new=AsyncMock(return_value="dm-1")) as dm,
+    ):
+        url, chat = await welcome_email.owner_start_url("org_1", "user_1")
+    assert url.endswith("/chat?panel=chat&room=dm-1") and chat
+    dm.assert_awaited_once_with("org_1", "user_1", "ceo")
+    with patch.object(messaging, "_front_agent_id", new=AsyncMock(return_value=None)):
+        assert await welcome_email.owner_start_url("org_1", "user_1") == (welcome_email.general_url("org_1"), False)
+
+
 def test_teammate_version_names_the_inviter_when_known():
     subject, text = welcome_email.teammate_welcome(first_name="Sam", inviter="Ada", workspace="Acme", url=URL)
     assert subject == "You're in Acme on Lightbulb"

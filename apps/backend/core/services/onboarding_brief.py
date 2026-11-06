@@ -393,23 +393,18 @@ _FIRST_RUN_DM_SEQS = 20
 
 
 async def capture_first_workspace_message(owner_id: str, message: dict) -> bool:
-    """Turn the first human message in the canonical room into onboarding intake."""
+    """Turn the owner's first answer in the first-run room into onboarding intake: the first human message in the
+    canonical #general, or (super-agent) the first human message after the welcome in the owner's Lightbulb DM.
+    That answer also closes the DM's first run (``messaging.close_first_run``), captured or not."""
     from core.repositories.paperclip_repo import PaperclipRepo
-    from core.services.messaging import FIRST_RUN_KIND, TEAM_WELCOME_KIND, default_room_id
+    from core.services.messaging import FIRST_RUN_KIND, TEAM_WELCOME_KIND, close_first_run, default_room_id
 
     author = message.get("author") or {}
     text = str(message.get("text") or "").strip()
+    message_seq = int(message.get("messageSeq") or 0)
     in_general = message.get("roomId") == default_room_id(owner_id)
-    if (
-        # Elsewhere only a young room can be the first-run DM (its seq 1 is checked below).
-        not (in_general or int(message.get("messageSeq") or 0) <= _FIRST_RUN_DM_SEQS)
-        or int(message.get("messageSeq") or 0) < 1
-        or author.get("kind") != "human"
-        or len(text) < 3
-    ):
-        return False
-    if len(text) > 2000:
-        put_metric("OnboardingBriefTooLong")
+    # Elsewhere only a young room can be the first-run DM (its welcome is checked below).
+    if message_seq < 1 or author.get("kind") != "human" or not (in_general or message_seq <= _FIRST_RUN_DM_SEQS):
         return False
     target_agent_id = next(
         (
@@ -419,16 +414,27 @@ async def capture_first_workspace_message(owner_id: str, message: dict) -> bool:
         ),
         None,
     )
-    if target_agent_id is None:
-        return False
+    eligible = len(text) >= 3 and target_agent_id is not None
+    if in_general and not eligible:
+        return False  # #general can be long: no history read for a message that could not be captured anyway
 
-    message_seq = int(message.get("messageSeq") or 0)
     earlier = await messaging_repo.list_messages_between(str(message["roomId"]), 1, message_seq - 1)
-    if any((row.get("author") or {}).get("kind") == "human" for row in earlier):
+    humans = [i for i, row in enumerate(earlier) if (row.get("author") or {}).get("kind") == "human"]
+    welcome = next((i for i, row in enumerate(earlier) if row.get("kind") == FIRST_RUN_KIND), None)
+    if welcome is not None:
+        # Super-agent: the welcome in the owner's Lightbulb DM. Messages the owner sent before it (before provisioning
+        # finished) do not count; the first one after it is the answer.
+        if any(i > welcome for i in humans):
+            return False
+        await close_first_run(str(message["roomId"]))
+    elif not in_general or humans:
         return False
-    # Super-agent: the first run is in the owner's Lightbulb DM (seq 1 marked first_run); general holds a team line.
-    first_kind = earlier[0].get("kind") if earlier and int(earlier[0].get("messageSeq") or 0) == 1 else None
-    if first_kind != FIRST_RUN_KIND and (not in_general or first_kind == TEAM_WELCOME_KIND):
+    elif earlier and int(earlier[0].get("messageSeq") or 0) == 1 and earlier[0].get("kind") == TEAM_WELCOME_KIND:
+        return False  # super-agent #general holds only the team line
+    if not eligible:
+        return False
+    if len(text) > 2000:
+        put_metric("OnboardingBriefTooLong")
         return False
 
     repo = PaperclipRepo(table_name="paperclip-companies")

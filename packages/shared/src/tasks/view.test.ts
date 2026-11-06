@@ -266,8 +266,12 @@ describe("the one decision card", () => {
       { label: "Message", value: "Hi, The Austin workshop has a new date. To: everyone\nBest, The team" },
     ]);
     expect(askFields("Please check.\nTo: ann@example.com\nSubject: Hi")).toEqual({ intro: "Please check.", preview: { to: "ann@example.com", subject: "Hi" } });
-    // Prose, or a recipient without a subject, is left as written.
-    expect(askFields("Send \u201c[TEST] Austin\u201d only to sa-test-2@x.co. The body labels it TEST ONLY.")).toBeNull();
+    // The prose shape (W14): "Send “…” only to <email>. <the body>".
+    expect(askFields("Send \u201c[TEST] Austin\u201d only to sa-test-2+clerk_test@x.company. The body labels it TEST ONLY.")).toEqual({
+      intro: "", preview: { to: "sa-test-2+clerk_test@x.company", subject: "[TEST] Austin", body: "The body labels it TEST ONLY." } });
+    expect(askFields("Send \u201cHi\u201d to ann@example.com")?.preview).toEqual({ to: "ann@example.com", subject: "Hi" });
+    // Prose without that shape, or a recipient without a subject, is left as written.
+    expect(askFields("Send it to ann@example.com when ready.")).toBeNull();
     expect(askFields("Reply To: ann@example.com when done")).toBeNull();
     expect(askFields("To: x Subject: <img src=x>")?.preview.subject).toBe("<img src=x>");
   });
@@ -277,7 +281,7 @@ describe("stepLines (dev walk 12, W12-7)", () => {
   it("hides skill reads and tool lookups behind real work and merges the runs between them", () => {
     const run = ["skill_view", "skill_view", "skill_view", "tool_describe", "skill_view", "skill_view",
       "terminal", "terminal", "terminal", "terminal", "write_file"].map((name) => ({ name, ok: true }));
-    expect(stepLines(run)).toEqual(["Ran 4 commands", "Wrote a file"]);
+    expect(stepLines(run)).toEqual(["Wrote a file"]);
   });
   it("names overhead plainly when it is all there is", () => {
     expect(stepLines(["skill_view", "skills_list", "tool_describe"])).toEqual(["Checked how to do it", "Prepared tools"]);
@@ -318,7 +322,9 @@ describe("stepLines (dev walk 10, W10-3)", () => {
       { name: "web_extract", ok: true }, { name: "web_extract", ok: true },
       { name: "terminal", ok: true }, { name: "terminal", ok: false },
     ];
-    expect(stepLines(run)).toEqual(["Searched the web · 9", "Read 2 pages", "Ran a command", "Ran a command · failed"]);
+    expect(stepLines(run)).toEqual(["Searched the web · 9", "Read 2 pages", "Worked on it · failed"]);
+    // Commands alone: one line, never "Ran 5 commands" for writing an email (W14).
+    expect(stepLines(["terminal", "terminal", "execute_code"])).toEqual(["Worked on it"]);
     expect(stepLines(["mcp__lightbulb__web_search", {}])).toEqual(["Searched the web", "A step"]);
   });
 });
@@ -327,7 +333,7 @@ describe("stepNow (dev walk 13, W13-5)", () => {
   it("says the latest step as it happens, in the steps' own words", () => {
     expect(stepNow([])).toBe("Getting started…");
     expect(stepNow([{ name: "terminal" }, { name: "web_search" }])).toBe("Searching the web…");
-    expect(stepNow([{ name: "terminal", ok: true }])).toBe("Running a command…");
+    expect(stepNow([{ name: "terminal", ok: true }])).toBe("Working on it…");
     expect(stepNow(["write_file"])).toBe("Writing a file…");
     expect(stepNow(["skill_view"])).toBe("Checking how to do it…");
     expect(stepNow(["tool_describe"])).toBe("Preparing tools…");

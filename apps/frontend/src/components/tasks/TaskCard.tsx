@@ -6,6 +6,7 @@
 
 import { useEffect, useState, type ReactElement } from "react";
 import { activityLine, specialistLabel, summaryView, taskSummaryLine, useTaskQuestions, type TaskSummary, type TaskTone } from "@lightbulb/shared";
+import { Check } from "lucide-react";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { Button } from "@/components/ui/button";
 import { capture } from "@/lib/analytics";
@@ -21,8 +22,11 @@ const TONE_TEXT: Record<TaskTone, string> = {
 
 export function TaskStatus({ task, viewerId }: { task: TaskSummary; viewerId: string }): ReactElement {
   const view = summaryView(task, viewerId);
-  return <span className={cn("inline-flex shrink-0 items-center gap-1.5 text-caption font-semibold", TONE_TEXT[view.tone])} data-tone={view.tone}>
-    <span aria-hidden="true" className={cn("size-1.5 rounded-full bg-current", view.tone === "working" && "motion-safe:animate-pulse")} />
+  // Done is the chat chip's green ✓ here too (W14): one mark for finished work, wherever it shows.
+  const done = view.word === "Done";
+  return <span className={cn("inline-flex shrink-0 items-center gap-1.5 text-caption font-semibold", done ? "text-ok" : TONE_TEXT[view.tone])} data-tone={view.tone}>
+    {done ? <Check aria-hidden="true" className="size-3.5" strokeWidth={2} />
+      : <span aria-hidden="true" className={cn("size-1.5 rounded-full bg-current", view.tone === "working" && "motion-safe:animate-pulse")} />}
     {view.word}
   </span>;
 }

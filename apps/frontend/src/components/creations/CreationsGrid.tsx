@@ -18,6 +18,10 @@ import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { KIND_FILTERS, KIND_WORD, openOutput, outputName } from "./openOutput";
 import { isTextDoc, OutputThumb } from "./OutputThumb";
 import { useCreations } from "./useCreations";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+
+/** Radix Select has no empty value: "all projects" is this sentinel. */
+const ALL = "__all__";
 
 /** Live app pages framed on the grid, and docs previewed (each kind its own count); every one after these (Load more
  *  included) shows its glyph. */
@@ -78,10 +82,13 @@ export function CreationsGrid(): ReactElement {
       <div className="creations__seg" role="group" aria-label="Show">
         {KIND_FILTERS.map((f) => <button key={f.id} type="button" aria-pressed={kind === f.id} onClick={() => setKind(f.id)}>{f.label}</button>)}
       </div>
-      <select className="creations__select" aria-label="Project" value={roomId} onChange={(e) => setRoomId(e.target.value)}>
-        <option value="">All projects</option>
-        {projects.map((r) => <option key={r.roomId} value={r.roomId}>{roomDisplayName(r, r.participants)}</option>)}
-      </select>
+      <Select value={roomId || ALL} onValueChange={(v) => setRoomId(v === ALL ? "" : v)}>
+        <SelectTrigger size="sm" className="creations__select" aria-label="Project"><SelectValue /></SelectTrigger>
+        <SelectContent position="popper" align="end">
+          <SelectItem value={ALL}>All projects</SelectItem>
+          {projects.map((r) => <SelectItem key={r.roomId} value={r.roomId}>{roomDisplayName(r, r.participants)}</SelectItem>)}
+        </SelectContent>
+      </Select>
     </div>
 
     {error ? <p role="alert" className="creations__note">Creations couldn&apos;t load.{" "}

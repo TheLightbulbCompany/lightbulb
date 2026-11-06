@@ -94,7 +94,7 @@ describe("RoomMessageItem with the super-agent switch", () => {
     const card = { ...reply, messageId: "m-confirm", text: "Set up below. Turn it on with the button on the card.", taskRefs: undefined, kind: "automation_confirm", automationId: "a1" } as RoomMessage;
     render(item(card));
     const region = await screen.findByRole("region", { name: "Turn on Post signups every Monday" });
-    expect(region).toHaveTextContent("Mondays 9:00");
+    expect(region).toHaveTextContent("Mondays 9:00 AM");
     expect(region).toHaveTextContent("up to $1 a run, about $4 a month");
     await userEvent.click(within(region).getByRole("button", { name: "Turn on" }));
     expect(api.post).toHaveBeenCalledWith("/automations/a1/activate", {});

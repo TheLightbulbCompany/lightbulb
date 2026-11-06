@@ -378,8 +378,13 @@ export function previewRows(preview: unknown, max = PREVIEW_MAX): { label: strin
  *  fields as a preview-shaped object for previewRows, and the words before them. Null unless both a recipient and a
  *  subject are labelled, so ordinary prose with a stray "To:" is left alone. The body runs to the end of the text, so
  *  a "To:" inside it stays in it. Plain strings only: the card renders them as text, never as HTML. */
+const SEND_TO = /^\s*Send\s+[“"‘'](.+?)[”"’']\s+(?:only\s+)?to\s+([^\s@]+@[^\s@]+?\.[A-Za-z]{2,})\.?(?:\s+([\s\S]*))?$/;
+
 export function askFields(text: string | null | undefined): { intro: string; preview: { to: string; subject: string; body?: string } } | null {
   if (!text) return null;
+  // The prose shape (W14): "Send “<subject>” only to <email>. <what the body says>": the same rows, the rest as the body.
+  const sent = SEND_TO.exec(text);
+  if (sent) return { intro: "", preview: { to: sent[2], subject: sent[1].trim(), ...(sent[3]?.trim() ? { body: sent[3].trim() } : {}) } };
   const label = /(^|\s)(Recipient|To|Subject|Body|Message):[ \t]*/g;
   const marks: { key: "to" | "subject" | "body"; at: number; from: number }[] = [];
   for (let m = label.exec(text); m; m = label.exec(text)) {
@@ -498,19 +503,25 @@ export function oneOffInstant(entry: string, tz: string, now = Date.now()): numb
  * ponytail: the conversion uses the next occurrence from `now`; a zone pair whose DST flips between now and
  * then can read an hour off until that day.
  */
+/** One clock format everywhere a task or schedule shows a time (W14): "7:20 AM", as chat says it. A plain space
+ *  before AM/PM (ICU's narrow no-break space reads the same but trips copy and tests). */
+export function timeOfDay(at: Date | number, timeZone?: string): string {
+  return new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit", ...(timeZone ? { timeZone } : {}) }).format(at).replace(/\u202f/g, " ");
+}
+
 export function formatSchedule(cron: readonly string[], tz: string, viewerTz: string, now = Date.now()): string {
   const parts = cron.map((entry): string | null => {
     const [min, hour, dom, mon, dow] = entry.trim().split(/\s+/);
     // A one-off ("27 10 5 11 *", what a "remind me at …" stores): "Once, 5 Nov, 10:27" in the viewer's zone.
     const once = oneOffInstant(entry, tz, now);
     if (once !== null) {
-      return `Once, ${new Intl.DateTimeFormat("en-GB", { timeZone: viewerTz, day: "numeric", month: "short", hour: "numeric", minute: "2-digit", hourCycle: "h23" }).format(new Date(once))}`;
+      return `Once, ${new Intl.DateTimeFormat("en-GB", { timeZone: viewerTz, day: "numeric", month: "short" }).format(new Date(once))}, ${timeOfDay(once, viewerTz)}`;
     }
     const words = dayWords(dow ?? "*");
     if (dom !== "*" || mon !== "*" || !words || !/^\d+$/.test(min) || !/^\d+$/.test(hour)) return null;
     const first = words.days[0];
     const instant = nextInstant(first, Number(hour), Number(min), tz, now);
-    const time = new Intl.DateTimeFormat("en-GB", { timeZone: viewerTz, hourCycle: "h23", hour: "numeric", minute: "2-digit" }).format(new Date(instant));
+    const time = timeOfDay(instant, viewerTz);
     if (first === null) return `${words.label} ${time}`;
     // The viewer's zone can put the run on the day before or after the row's.
     const viewerDow = DAY_NAMES[new Intl.DateTimeFormat("en-US", { timeZone: viewerTz, weekday: "short" }).format(new Date(instant)).toLowerCase()];
@@ -540,7 +551,7 @@ const INTERNAL_STEPS: Record<string, string> = {
   "Read skill": "Checked how to do it", "Listed skills": "Checked how to do it", "Looked up a tool": "Prepared tools",
 };
 
-/** The run's latest step, said as it happens (dev walk 13, W13-5): "Searching the web…", "Running a command…",
+/** The run's latest step, said as it happens (dev walk 13, W13-5): "Searching the web…", "Working on it…" (a command),
  *  "Writing a file…"; "Getting started…" before the first. Internal steps read as "Checking how to do it…".
  *  ponytail: the last recorded tool stands for what runs now; the bridge's live tool frame would be exact. */
 export function stepNow(tools: readonly unknown[]): string {
@@ -552,6 +563,7 @@ export function stepNow(tools: readonly unknown[]): string {
   const gerund = display.gerund.replace(/:$/, "");
   const internal = INTERNAL_NOW[gerund];
   if (internal) return `${internal}…`;
+  if (display.kind === "command") return "Working on it…";
   const noun = /^\w+$/.test(gerund) ? STEP_NOUNS[display.kind] : undefined;
   return `${noun ? `${gerund} ${noun[0]}` : gerund}…`;
 }
@@ -560,16 +572,20 @@ const INTERNAL_NOW: Record<string, string> = {
   "Reading skill": "Checking how to do it", "Listing skills": "Checking how to do it", "Looking up a tool": "Preparing tools",
 };
 
-/** One line per run of the same step: "Searched the web · 9", "Read 2 pages", "Ran a command", "… · failed".
+/** One line per run of the same step: "Searched the web · 9", "Read 2 pages", "Worked on it · failed".
  *  Internal steps ("Checked how to do it", "Prepared tools") show only when nothing else ran. */
 export function stepLines(tools: readonly unknown[]): string[] {
   const steps = tools.map((tool) => {
     const t = (typeof tool === "string" ? { name: tool } : tool ?? {}) as Record<string, unknown>;
     const name = [t.name, t.tool, t.type].find((v) => typeof v === "string") as string | undefined;
     const display = name ? resolveToolDisplay(name, {}) : null;
+    const failed = t.ok === false || t.status === "failed";
+    // A shell command is how the work gets done, not what was done (W14: writing an email read "Ran 5 commands"): it
+    // reads "Worked on it" and, like overhead, hides behind a step that says what happened, unless it failed.
+    if (display?.kind === "command") return { past: "Worked on it", kind: display.kind, internal: !failed, failed };
     const past = display?.past.replace(/:$/, "") ?? "";
     const internal = INTERNAL_STEPS[past];
-    return { past: internal ?? past, kind: display?.kind, internal: !!internal, failed: t.ok === false || t.status === "failed" };
+    return { past: internal ?? past, kind: display?.kind, internal: !!internal, failed };
   });
   const shown = steps.some((s) => !s.internal) ? steps.filter((s) => !s.internal) : steps;
   return collapseRepeats(shown, (s) => `${s.past}|${s.failed}`).map(({ item, count }) => {

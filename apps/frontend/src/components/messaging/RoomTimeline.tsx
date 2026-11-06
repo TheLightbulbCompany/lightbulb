@@ -35,7 +35,7 @@ interface RoomTimelineProps {
 
 // Slack-like "near the bottom": within this many px the reader keeps following.
 const BOTTOM_THRESHOLD_PX = 80;
-const HIGHLIGHT_MS = 2000;
+const HIGHLIGHT_MS = 2600;
 
 const escapeSelector = (value: string) => typeof CSS !== "undefined" && "escape" in CSS ? CSS.escape(value) : value.replace(/["\\]/g, "\\$&");
 

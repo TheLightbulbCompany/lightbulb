@@ -172,14 +172,15 @@ export function AgentGuardrails() {
                 When agents ask first
               </legend>
               {MODES.map((m) => (
-                <label key={m.value} className="flex cursor-pointer items-start gap-3">
+                // Option rows, not bare browser radios (W14): the input keeps keyboard and screen-reader behaviour, drawn as ours.
+                <label key={m.value} className="flex cursor-pointer items-start gap-3 rounded-lg border border-[var(--edge)] px-3 py-2.5 transition-colors duration-(--dur-fast) hover:bg-[var(--muted)] has-[:checked]:border-[var(--foreground)] has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-[var(--ring)] has-[:disabled]:cursor-default has-[:disabled]:hover:bg-transparent">
                   <input
                     type="radio"
                     name="approval-mode"
                     value={m.value}
                     checked={policyMap.approval_mode === m.value}
                     onChange={() => void setMode(m.value)}
-                    className="mt-1 accent-[var(--foreground)]"
+                    className="mt-[3px] size-4 shrink-0 appearance-none rounded-full border border-[var(--muted-foreground)] bg-[var(--background)] outline-none transition-[border-width] duration-(--dur-fast) checked:border-[5px] checked:border-[var(--foreground)]"
                   />
                   <span className="min-w-0">
                     <span className="block text-ui" style={{ color: "var(--midnight)" }}>

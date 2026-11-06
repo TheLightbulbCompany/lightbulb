@@ -299,6 +299,9 @@ export function describePanel(
     const p: Record<string, string> = {};
     for (const k of ARTIFACT_PARAM_KEYS) if (params[k]) p[k] = params[k];
     if (!parseArtifactSource(p)) return null;
+    // Where "‹" and Escape return ("task:<id>", "files"): in the URL, so the reconcile of the pushed URL (and a
+    // reload) keeps it. It was a one-shot, and that reconcile's re-open cleared it: Escape closed the pane (W14-5).
+    if (params.back && /^(task:[\w-]+|tasks|files|scheduled)$/.test(params.back)) p.back = params.back;
     return { panelId: "artifact", component: "artifact", title: p.name ?? p.ident ?? "File", params: p };
   }
 
@@ -453,7 +456,7 @@ export function durableParamsFor(panelId: string): string[] {
   // agent OR agentId) so an externally-authored chat link clears fully.
   if (panelId.startsWith("chat:")) return ["panel", "agent", "agentId", "room", "message", "session", "seq"];
   if (panelId === "file-viewer") return ["panel", "path", "agent"];
-  if (panelId === "artifact") return ["panel", ...ARTIFACT_PARAM_KEYS];
+  if (panelId === "artifact") return ["panel", ...ARTIFACT_PARAM_KEYS, "back"];
   if (panelId === "task-detail") return ["panel", "taskId"];
   if (panelId === "agent-inspector") return ["panel", "agent", "inspectorTab"];
   if (panelId === "control:agents") return ["panel", "agent"];
@@ -489,7 +492,7 @@ export function clearablePanelParamKeys(panelId: string): string[] {
   if (panelId === "mail") return ["item"];
   if (panelId === "ideas") return ["agent", "idea"];
   if (panelId === "file-viewer") return ["path", "agent"];
-  // `back` is a one-shot (openOutput): a file opened from elsewhere must not keep the last one's way back.
+  // `back` (openOutput): a file opened from elsewhere must not keep the last one's way back.
   // `heading` is the shown doc's own (ArtifactDockPanel): the next file reads its own.
   if (panelId === "artifact") return [...ARTIFACT_PARAM_KEYS, "back", "heading", "headingOf"];
   if (panelId === "task-detail") return ["taskId"];

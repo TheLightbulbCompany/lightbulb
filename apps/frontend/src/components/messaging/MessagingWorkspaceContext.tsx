@@ -860,7 +860,10 @@ export function MessagingWorkspaceProvider({
   // Permalink target: opened via openMessage (a room permalink), cleared 3s
   // after opening rather than persisting indefinitely once the highlight has
   // had time to land.
-  const [target, setTarget] = useState<{ roomId: string; messageId: string | null } | null>(null);
+  const [target, setTarget] = useState<{ roomId: string; messageId: string | null; token?: number } | null>(null);
+  // Each jump is its own (⌘K to the same message twice still scrolls and flashes, W14): RoomTimeline keys on it. Past
+  // the room search's own tokens, so the two never collide.
+  const jumpToken = useRef(1_000_000);
   const selectRoom = chooseRoom;
   const selectDm = rooms.selectDm;
   const closeSession = useCallback(() => setSessionFocus(null), []);
@@ -1046,6 +1049,7 @@ export function MessagingWorkspaceProvider({
     room: rooms.activeRoom,
     readSeqAtOpen: readSeqAtOpen.current?.roomId === rooms.activeRoomId ? readSeqAtOpen.current.seq : null,
     targetMessageId: target?.roomId === rooms.activeRoomId ? target.messageId : null,
+    targetToken: target?.roomId === rooms.activeRoomId ? target.token : undefined,
     state: roomState,
     httpReady: rooms.httpReady,
     liveConnected: rooms.liveConnected,
@@ -1147,7 +1151,7 @@ export function MessagingWorkspaceProvider({
     selectRoom(roomId);
     setNotificationTarget({ roomId, threadId: targetThreadId });
     // A room-level message is scrolled to, like a search hit; a thread reply is in the opened thread.
-    if (messageId && !targetThreadId) setTarget({ roomId, messageId });
+    if (messageId && !targetThreadId) setTarget({ roomId, messageId, token: ++jumpToken.current });
     activateMessagesPanel();
   }, [closeSession, selectRoom]);
   const askFrontId = directoryProps.ceoAgentId;

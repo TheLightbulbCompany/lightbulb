@@ -6,7 +6,7 @@
 // search across agents/issues/projects. Drops "create" actions until #3d
 // (NewIssueDialog) merges.
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { Dialog as DialogPrimitive } from "radix-ui";
 import { Dialog, DialogPortal, DialogTitle } from "@/components/ui/dialog";
@@ -53,15 +53,24 @@ export interface CommandPaletteProps {
 // No open/close animation, deliberately: ⌘K is keyboard-initiated and fires
 // dozens of times a day, where motion only reads as lag (Raycast has none).
 export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
+  const superAgent = useSuperAgent();
+  // A result was opened: focus stays where it took the person (the message it scrolled to), not back on the page.
+  const opened = useRef(false);
+  const change = (next: boolean) => { if (next) opened.current = false; onOpenChange(next); };
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={change}>
       <DialogPortal>
         <DialogPrimitive.Overlay
           className="fixed inset-0 z-50"
-          style={{ background: "color-mix(in srgb, var(--midnight) 45%, transparent)" }}
+          // Super-agent: the app's one --scrim (W14: a light grey sheet over the dark app).
+          style={{ background: superAgent ? "var(--scrim)" : "color-mix(in srgb, var(--midnight) 45%, transparent)" }}
         />
         <DialogPrimitive.Content
-          className="editorial-card fixed left-[50%] top-[50%] z-50 grid w-full max-w-xl translate-x-[-50%] translate-y-[-50%] gap-0 overflow-hidden border-0 p-0 shadow-lg sm:rounded-lg"
+          onCloseAutoFocus={(event) => { if (opened.current) event.preventDefault(); }}
+          // Super-agent: pinned from the top, not centred, so results arriving never move the box (W14: 312→319→302).
+          className={superAgent
+            ? "editorial-card fixed left-[50%] top-[14vh] z-50 grid w-full max-w-xl translate-x-[-50%] gap-0 overflow-hidden border-0 p-0 shadow-lg sm:rounded-lg"
+            : "editorial-card fixed left-[50%] top-[50%] z-50 grid w-full max-w-xl translate-x-[-50%] translate-y-[-50%] gap-0 overflow-hidden border-0 p-0 shadow-lg sm:rounded-lg"}
           style={{
             background: "var(--cream)",
             border: "1px solid var(--edge)",
@@ -69,14 +78,14 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
           }}
         >
           <DialogTitle className="sr-only">Command palette</DialogTitle>
-          {open ? <CommandPaletteContent open={open} onOpenChange={onOpenChange} /> : null}
+          {open ? <CommandPaletteContent open={open} onOpenChange={onOpenChange} onRun={() => { opened.current = true; }} /> : null}
         </DialogPrimitive.Content>
       </DialogPortal>
     </Dialog>
   );
 }
 
-function CommandPaletteContent({ open, onOpenChange }: CommandPaletteProps) {
+function CommandPaletteContent({ open, onOpenChange, onRun }: CommandPaletteProps & { onRun?: () => void }) {
   const router = useRouter();
   const [query, setQuery] = useState("");
   const [rawSelectedIndex, setSelectedIndex] = useState(0);
@@ -123,6 +132,7 @@ function CommandPaletteContent({ open, onOpenChange }: CommandPaletteProps) {
   const selectedIndex = Math.min(rawSelectedIndex, Math.max(0, flatItems.length - 1));
 
   const select = (item: FlatItem) => {
+    onRun?.();
     onOpenChange(false);
     if (item.run) { item.run(); return; }
     // In-shell `/chat?...` targets commit through the History API (same
@@ -167,7 +177,8 @@ function CommandPaletteContent({ open, onOpenChange }: CommandPaletteProps) {
           style={{ color: "var(--midnight)" }}
         />
       </div>
-      <div className="max-h-[60vh] overflow-y-auto py-2" style={{ background: "var(--cream)" }}>
+      {/* Super-agent: while a search is typed the list keeps its height (results land without the box resizing). */}
+      <div className={superAgent && query.trim() ? "h-[min(360px,60vh)] overflow-y-auto py-2" : "max-h-[60vh] overflow-y-auto py-2"} style={{ background: "var(--cream)" }}>
           {flatItems.length === 0 ? (
             <div
               className="px-4 py-8 text-center text-ui italic"
@@ -225,7 +236,7 @@ function CommandPaletteContent({ open, onOpenChange }: CommandPaletteProps) {
                   {messageHits.map((m) => {
                     const idx = flatItems.findIndex((it) => it.kind === "message" && it.id === m.id);
                     return (
-                      <Row key={m.id} label={<SearchSnippet snippet={m.snippet} />} sublabel={m.sublabel} selected={selectedIndex === idx}
+                      <Row key={m.id} label={<SearchSnippet snippet={m.snippet} around={superAgent} />} sublabel={m.sublabel} selected={selectedIndex === idx}
                         onMouseEnter={() => setSelectedIndex(idx)} onClick={() => select(flatItems[idx])} />
                     );
                   })}

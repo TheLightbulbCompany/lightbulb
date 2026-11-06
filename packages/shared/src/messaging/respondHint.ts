@@ -60,6 +60,8 @@ export interface RespondTarget {
  * and live run state, so it can never disagree with what the backend will
  * actually do.
  */
+const ONE_VOICE_READS = "Lightbulb reads every message here";
+
 export function respondHint(
   roomKind: RoomKind | undefined,
   members: readonly RespondTarget[],
@@ -71,7 +73,7 @@ export function respondHint(
   if (oneVoice) {
     const front = members.find((m) => m.kind === "agent" && m.mentionHandle === "lightbulb");
     // No @lightbulb on the row yet (an older seat): still Lightbulb; a people-only room has no agent to name.
-    if (!front) return members.some((m) => m.kind === "agent") ? "Lightbulb may reply" : "";
+    if (!front) return members.some((m) => m.kind === "agent") ? ONE_VOICE_READS : "";
     members = [front];
   }
   const mentioned = new Set(mentions.filter((ref) => ref.kind === "agent").map((ref) => ref.id));
@@ -88,8 +90,9 @@ export function respondHint(
     if (!willReply) parts.push(`${member.displayName} when mentioned`);
     else if (runningAgentIds.includes(member.id)) parts.push(`${member.displayName} is working — sending now steers that run`);
     // An unaddressed active ("Listening") agent passes the cheap relevance gate first.
-    // One voice says it one way everywhere (W13): the Router may hand the ask to a specialist, or answer none.
-    else parts.push(`${member.displayName} ${addressed && !oneVoice ? "will" : "may"} reply`);
+    // One voice says it one way everywhere (W13), and says what happens, not a hedge (W14: "may reply" read as maybe
+    // not): Lightbulb reads every message; it answers, hands it to a specialist, or notes it.
+    else parts.push(oneVoice ? ONE_VOICE_READS : `${member.displayName} ${addressed ? "will" : "may"} reply`);
   }
   return parts.join(" · ");
 }

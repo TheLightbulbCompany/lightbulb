@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
 import { render } from "@testing-library/react";
-import { plainSnippet, SearchSnippet, snippetParts, snippetText } from "../searchSnippet";
+import { plainSnippet, SearchSnippet, snippetAround, snippetParts, snippetText } from "../searchSnippet";
 
 describe("search snippets", () => {
   it("splits on the server's match marks", () => {
@@ -26,5 +26,17 @@ describe("search snippets", () => {
     const { container } = render(<SearchSnippet snippet={"**\u0001chai\u0002** bun"} />);
     expect(container.textContent).toBe("chai bun");
     expect(container.querySelector("mark")?.textContent).toBe("chai");
+  });
+});
+
+describe("snippetAround (W14)", () => {
+  it("starts a mid-word fragment at its next word and keeps the match in view", () => {
+    expect(snippetAround("ort email newsletter announcing the sourdough subscription, \u0001caraway\u0002 rye loaf and Thursday pickup."))
+      .toBe("…sourdough subscription, \u0001caraway\u0002 rye loaf and Thursday pickup.");
+    expect(snippetAround("wsletter announcing. Mention the \u0001caraway\u0002 rye loaf")).toBe("…announcing. Mention the \u0001caraway\u0002 rye loaf");
+  });
+  it("leaves a snippet that opens near its match alone", () => {
+    expect(snippetAround("Write about the \u0001caraway\u0002 loaf")).toBe("Write about the \u0001caraway\u0002 loaf");
+    expect(snippetAround("\u0001caraway\u0002 rye")).toBe("\u0001caraway\u0002 rye");
   });
 });

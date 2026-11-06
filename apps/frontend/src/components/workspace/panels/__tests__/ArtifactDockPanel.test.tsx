@@ -1,4 +1,5 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeAll, expect, it, vi } from "vitest";
 
 const downloadBlob = vi.fn();
@@ -6,8 +7,11 @@ const teamsRead = vi.fn();
 const teamsDownload = vi.fn();
 vi.mock("@/lib/api", () => ({ useApi: () => ({ get: vi.fn(), downloadBlob }) }));
 vi.mock("@/hooks/useTeamsApi", () => ({ useTeamsApi: () => ({ read: teamsRead, download: teamsDownload }) }));
-vi.mock("@/components/workspace/workspaceController", () => ({ closePane: vi.fn(), openPanel: vi.fn() }));
+vi.mock("@/components/workspace/workspaceController", () => ({ closePane: vi.fn(), openPanel: vi.fn(), updatePanelParams: vi.fn() }));
+const superAgent = { on: false };
+vi.mock("@/hooks/useLiveEvents", () => ({ useSuperAgent: () => superAgent.on }));
 import { ArtifactDockPanel } from "../ArtifactDockPanel";
+import { PaneActionsHost } from "../../PaneHeader";
 
 beforeAll(() => {
   URL.createObjectURL = vi.fn(() => "blob:x");
@@ -84,4 +88,24 @@ it("encodes every path segment taken from the URL", async () => {
   teamsRead.mockReturnValue({ data: undefined });
   render(<ArtifactDockPanel id="artifact" params={{ src: "paperclip", kind: "document", issue: "../i", key: "k/1" }} />);
   expect(teamsRead).toHaveBeenCalledWith("/issues/..%2Fi/documents/k%2F1");
+});
+
+it("super-agent: a text doc's Copy and Download sit in the pane header, not on a row of their own (W14)", async () => {
+  superAgent.on = true;
+  try {
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    downloadBlob.mockResolvedValue(new Blob(["# Menu\n\nRye on Thursday."], { type: "text/markdown" }));
+    const host = document.createElement("span");
+    document.body.appendChild(host);
+    render(<PaneActionsHost.Provider value={host}>
+      <ArtifactDockPanel id="artifact" params={{ src: "attachment", room: "r1", id: "att9", name: "menu.md", type: "text/markdown" }} />
+    </PaneActionsHost.Provider>);
+    const header = within(host);
+    expect(await header.findByRole("link", { name: /^Download menu\.md/ })).toHaveAttribute("download", "menu.md");
+    await userEvent.click(header.getByRole("button", { name: "Copy text" }));
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith("# Menu\n\nRye on Thursday."));
+    expect(await header.findByRole("button", { name: "Copied" })).toBeInTheDocument();
+    host.remove();
+  } finally { superAgent.on = false; }
 });

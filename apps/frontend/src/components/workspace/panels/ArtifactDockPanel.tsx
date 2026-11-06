@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Download } from "lucide-react";
+import { useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { Check, Copy, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { FileViewerContent, isPaneViewable, normalizeContentType } from "@/components/media/FileViewerContent";
 import { DocumentRow } from "@/components/teams/issues/DocumentRow";
@@ -21,6 +22,7 @@ import type { PanelProps } from "../panelComponents";
 import { DocumentContents } from "./DocumentContents";
 import { CONTENTS_MIN_HEADINGS, outlineOf } from "./documentOutline";
 import { parseArtifactSource, type ArtifactSource } from "./artifactSource";
+import { PaneActionsHost } from "../PaneHeader";
 
 type Loaded = { status: "loading" } | { status: "ready"; blob: Blob; url: string; name: string; type: string } | { status: "error"; message: string };
 
@@ -110,15 +112,38 @@ function FilePane({ source }: { source: FileSource }) {
       : <p className="p-4 text-ui text-muted-foreground">No preview for this file type. Use Download.</p>)}
   </>;
   if (!superAgent) return <PaneFrame actions={download}>{body}</PaneFrame>;
-  // Super-agent: the file name and size as a quiet line with Download at its end, then the doc set as a document.
-  return (
-    <PaneFrame actions={<>
-      <span className="doc-view__file" title={source.name ?? undefined}>{source.name ?? "File"}{state.status === "ready" ? ` · ${formatBytes(state.blob.size)}` : ""}</span>
-      {download}
-    </>}>
-      {text ? <div className="doc-view">{body}</div> : body}
-    </PaneFrame>
-  );
+  // Super-agent: Copy (a text doc) and Download sit in the pane's header beside Expand and ✕, no row of their own
+  // (W14); the file name and size are Download's label. Then the doc set as a document.
+  return <>
+    {state.status === "ready" && <HeaderActions>
+      {text && <CopyText blob={state.blob} />}
+      <a className="pane-header__icon" href={state.url} download={state.name}
+        aria-label={`Download ${state.name} (${formatBytes(state.blob.size)})`} title={`Download ${state.name} · ${formatBytes(state.blob.size)}`}>
+        <Download size={16} aria-hidden="true" />
+      </a>
+    </HeaderActions>}
+    <PaneFrame>{text ? <div className="doc-view">{body}</div> : body}</PaneFrame>
+  </>;
+}
+
+/** Into the drawn pane header's action slot (RightPane); nowhere when there is none. */
+function HeaderActions({ children }: { children: React.ReactNode }) {
+  const host = useContext(PaneActionsHost);
+  return host ? createPortal(children, host) : null;
+}
+
+/** Copy a text doc's words: the icon turns to a check for a moment. */
+function CopyText({ blob }: { blob: Blob }) {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const timer = window.setTimeout(() => setCopied(false), 1500);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
+  return <button type="button" className="pane-header__icon" aria-label={copied ? "Copied" : "Copy text"} title={copied ? "Copied" : "Copy text"}
+    onClick={() => void blobText(blob).then((t) => navigator.clipboard.writeText(t)).then(() => setCopied(true), () => undefined)}>
+    {copied ? <Check size={16} aria-hidden="true" /> : <Copy size={16} aria-hidden="true" />}
+  </button>;
 }
 
 /** The document view: title, who changed it and when, a contents list, and the reviewable row (comments, versions). */

@@ -9,6 +9,7 @@ import { useMemo, useState, type ReactElement } from "react";
 import { MoreHorizontal, X } from "lucide-react";
 import { specialistLabel, type OutputKind } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import type { RoomMessage } from "@/components/messaging/types";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
@@ -57,9 +58,12 @@ export function ProjectFiles({ roomId, viewerId, messages, onOpenTask }: {
 
   return <div className="project-files">
     <div className="project-files__bar">
-      <select className="creations__select" aria-label="Type" value={type} onChange={(e) => setType(e.target.value)}>
-        {KIND_FILTERS.map((f) => <option key={f.id} value={f.id}>{f.id === "all" ? "All types" : f.label}</option>)}
-      </select>
+      <Select value={type} onValueChange={setType}>
+        <SelectTrigger size="sm" className="creations__select" aria-label="Type"><SelectValue /></SelectTrigger>
+        <SelectContent position="popper" align="start">
+          {KIND_FILTERS.map((f) => <SelectItem key={f.id} value={f.id}>{f.id === "all" ? "All types" : f.label}</SelectItem>)}
+        </SelectContent>
+      </Select>
       {copied && <span role="status" className="project-files__status">Link copied</span>}
     </div>
     {error ? <p role="alert" className="project-files__note">Files couldn&apos;t load.{" "}

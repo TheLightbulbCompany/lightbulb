@@ -77,8 +77,7 @@ describe("TaskPane", () => {
     unmount();
     withDetail({ ...step8, task: { ...step8.task, status: "resolved", shownGroup: "resolved" } });
     pane();
-    await userEvent.click(await screen.findByRole("button", { name: "More for this task" }));
-    expect(await screen.findByRole("menuitem", { name: "Reopen" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Reopen" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
   });
 
@@ -171,8 +170,9 @@ describe("TaskPane", () => {
   });
 
   it("counts the steps in plain words in the heading (dev walk 12, W12-7)", async () => {
-    client.trace.mockResolvedValueOnce({ attempt: 2, recentTools: ["skill_view", "tool_describe", "terminal", "terminal", "write_file"].map((name) => ({ name, ok: true })) as unknown[] });
+    client.trace.mockResolvedValueOnce({ attempt: 2, recentTools: ["skill_view", "tool_describe", "terminal", "web_search", "write_file"].map((name) => ({ name, ok: true })) as unknown[] });
     pane();
+    // Commands are how, not what (W14): "Searched the web", "Wrote a file".
     expect(await screen.findByText(/^Steps · 2\b/)).toBeInTheDocument();
   });
 
@@ -408,10 +408,9 @@ describe("steering a finished request (dev walk N-F4)", () => {
     const status = await screen.findByRole("region", { name: "Task status" });
     const header = screen.getByRole("banner");
     expect(within(header).getByText("Done")).toBeInTheDocument();
-    // Done: no steer box until Follow up (UX audit 2, P0).
-    expect(screen.queryByRole("textbox", { name: "Steer this task" })).toBeNull();
-    await userEvent.click(screen.getByRole("button", { name: "Follow up" }));
-    await userEvent.type(screen.getByRole("textbox", { name: "Steer this task" }), "Make it one line{Enter}");
+    // Done: one box, the follow-up (W14: "Follow up" is no longer a button beside the steer box).
+    expect(screen.queryByRole("button", { name: "Follow up" })).toBeNull();
+    await userEvent.type(screen.getByRole("textbox", { name: "Follow up on this task" }), "Make it one line{Enter}");
     await waitFor(() => expect(within(header).getByText("Working")).toBeInTheDocument());
     // The lifecycle buttons sit in the header row (W11-2), not on a line of their own under it.
     expect(within(header).getByRole("button", { name: "Stop" })).toBeInTheDocument();
@@ -422,10 +421,10 @@ describe("steering a finished request (dev walk N-F4)", () => {
 describe("action slots (UX audit 2, P0)", () => {
   const slots = () => [...document.querySelectorAll("[data-action-slot]")].map((el) => `${el.getAttribute("data-action-slot")}:${el.textContent}`);
 
-  it("Stop and Retry keep their own slots; Close and Reopen sit in ⋯; the Stop confirm takes their place", async () => {
+  it("Stop and Retry keep their own slots; Close task and Reopen are one quiet action (W14); the Stop confirm takes their place", async () => {
     const first = pane();
     await screen.findByRole("button", { name: "Stop" });
-    expect(slots()).toEqual(["stop:Stop", "retry:"]);
+    expect(slots()).toEqual(["stop:Stop", "retry:", "close:"]);
     expect(screen.queryByRole("button", { name: "More for this task" })).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "Stop" }));
     expect(within(screen.getByRole("banner")).getByRole("group", { name: "Stop this task?" })).toBeInTheDocument();
@@ -433,15 +432,14 @@ describe("action slots (UX audit 2, P0)", () => {
     first.unmount();
     withDetail({ ...step8, task: { ...step8.task, status: "idle", shownGroup: "idle", watching: false }, questions: [] }, []);
     const second = pane();
-    await userEvent.click(await screen.findByRole("button", { name: "More for this task" }));
-    await userEvent.click(await screen.findByRole("menuitem", { name: "Close" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Close task" }));
     await waitFor(() => expect(client.act).toHaveBeenCalledWith("t-signup", "resolve", step8.task.version));
     second.unmount();
     withDetail({ ...step8, task: { ...step8.task, status: "resolved", shownGroup: "resolved" }, questions: [] }, []);
     pane();
-    await userEvent.click(await screen.findByRole("button", { name: "More for this task" }));
-    expect(await screen.findByRole("menuitem", { name: "Reopen" })).toBeInTheDocument();
-    expect(screen.queryByRole("menuitem", { name: "Close" })).toBeNull();
+    expect(await screen.findByRole("button", { name: "Reopen" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Close task" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "More for this task" })).toBeNull();
   });
 
   it("a Done task says Done once, with no Mark done beside it (dev walk 13, W13-3)", async () => {
@@ -455,9 +453,8 @@ describe("action slots (UX audit 2, P0)", () => {
   it("a Closed request offers no steering and no Follow up", async () => {
     withDetail({ ...step8, task: { ...step8.task, status: "resolved", shownGroup: "resolved" }, questions: [] }, []);
     pane();
-    await screen.findByRole("button", { name: "More for this task" });
-    expect(screen.queryByRole("textbox", { name: "Steer this task" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Follow up" })).toBeNull();
+    await screen.findByRole("button", { name: "Reopen" });
+    expect(screen.queryByRole("textbox", { name: /Steer this task|Follow up/ })).toBeNull();
   });
 });
 
@@ -485,8 +482,8 @@ describe("task loop (UX slice 3)", () => {
     expect(retry.closest("[data-action-slot]")).toHaveAttribute("data-action-slot", "retry");
     await userEvent.click(retry);
     await waitFor(() => expect(client.act).toHaveBeenCalledWith("t-signup", "retry", step8.task.version));
-    // The fake answers Closed: ⋯ (Reopen) is inert for 600 ms, then live.
-    const more = await screen.findByRole("button", { name: "More for this task" });
+    // The fake answers Closed: Reopen is inert for 600 ms, then live.
+    const more = await screen.findByRole("button", { name: "Reopen" });
     expect(more).toBeDisabled();
     await waitFor(() => expect(more).toBeEnabled(), { timeout: 1500 });
   });

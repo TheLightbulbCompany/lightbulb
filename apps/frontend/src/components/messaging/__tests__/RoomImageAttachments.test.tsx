@@ -142,7 +142,7 @@ describe("RoomImageAttachments", () => {
       <RoomImageAttachments roomId="room-1" attachments={[{ id: "a1", fileName: "menu.md", contentType: "text/markdown", size: 328 }]} download={vi.fn()} />
     </OutputBackContext.Provider>);
     await userEvent.click(screen.getByRole("button", { name: "Open menu.md" }));
-    expect(openPanel).toHaveBeenLastCalledWith("artifact", expect.objectContaining({ id: "a1" }), { pushUrl: true, oneShots: { back: "task:t9" } });
+    expect(openPanel).toHaveBeenLastCalledWith("artifact", expect.objectContaining({ id: "a1", back: "task:t9" }), { pushUrl: true });
   });
 
   it("plays a video from a presigned URL, never the byte route, with the sibling image as its poster", async () => {

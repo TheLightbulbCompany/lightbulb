@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { WorkspaceShell } from "../WorkspaceShell";
 import { _resetControllerForTests, activateMessagesPanel, getWorkspaceSnapshot, closePane, openAgentDmWithDraft, openPanel, updatePanelParams, useThreadPane } from "../workspaceController";
 import { PANE_DEFAULT_WIDTH, paneWidthKey } from "../RightPane";
+import { parseCommand } from "../urlChannel";
 
 const state = vi.hoisted(() => ({
   phase: "selecting", selectProps: vi.fn(), organization: null as { id: string } | null, chatReady: true, superAgent: false, gated: false,
@@ -525,7 +526,13 @@ it("W12-5: a file opened from a task goes back to that task: '‹ Task' and Esca
   try {
     const view = renderReady();
     const doc = { src: "attachment", room: "r1", id: "a1", name: "taglines.md" };
-    act(() => openPanel("artifact", doc, { pushUrl: true, oneShots: { back: "task:t-1" } }));
+    act(() => openPanel("artifact", { ...doc, back: "task:t-1" }, { pushUrl: true }));
+    // W14-5: the shell then reconciles the URL it just pushed and re-opens the pane from it (WorkspaceShell's
+    // reconciler, which jsdom's mocked searchParams never triggers). The way back must survive that re-open.
+    const fromUrl = parseCommand(window.location.search)?.pane;
+    expect(fromUrl?.params.back).toBe("task:t-1");
+    act(() => openPanel(fromUrl!.key, fromUrl!.params));
+    expect(screen.getByRole("button", { name: "Back to task" })).toBeInTheDocument();
     const pane = view.container.querySelector<HTMLElement>(".workspace-pane")!;
     // W13-7: the doc keeps the task's width, and reads by a name (then its first heading), never its file name.
     expect(pane.style.width).toBe("clamp(520px, 50%, 60%)");
@@ -538,10 +545,10 @@ it("W12-5: a file opened from a task goes back to that task: '‹ Task' and Esca
     fireEvent.keyDown(pane, { key: "Escape" });
     expect(getWorkspaceSnapshot().pane).toMatchObject({ component: "task", params: { taskId: "t-1" } });
     // Opened again from elsewhere (no way back): no crumb, and Escape closes.
-    act(() => openPanel("artifact", doc, { pushUrl: true, oneShots: { back: "task:t-1" } }));
+    act(() => openPanel("artifact", { ...doc, back: "task:t-1" }, { pushUrl: true }));
     act(() => openPanel("artifact", { ...doc, id: "a2" }, { pushUrl: true }));
     expect(screen.queryByRole("button", { name: "Back to task" })).toBeNull();
-    act(() => openPanel("artifact", doc, { pushUrl: true, oneShots: { back: "task:t-1" } }));
+    act(() => openPanel("artifact", { ...doc, back: "task:t-1" }, { pushUrl: true }));
     fireEvent.click(screen.getByRole("button", { name: "Back to task" }));
     expect(getWorkspaceSnapshot().pane).toMatchObject({ component: "task", params: { taskId: "t-1" } });
   } finally { state.superAgent = false; }

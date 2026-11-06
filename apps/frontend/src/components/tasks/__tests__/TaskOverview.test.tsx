@@ -141,7 +141,7 @@ describe("TaskOverview", () => {
     expect(screen.queryByText("Daily look around")).toBeNull(); // a builtin job is never a project's schedule
     expect(within(cards).getAllByRole("button")).toHaveLength(3);
     await userEvent.click(within(cards).getByRole("button", { name: /Weekly signups/ }));
-    expect(onDraft).toHaveBeenCalledWith("Every Monday at 9:00, have Growth post last week's signups here.");
+    expect(onDraft).toHaveBeenCalledWith("Every Monday at 9:00 AM, have Growth post last week's signups here.");
     expect(apiGet).toHaveBeenCalledTimes(1); // read once; nothing created
   });
 

@@ -21,10 +21,31 @@ export function snippetText(snippet: string): string {
     .trim();
 }
 
+/** A snippet that opens on the match (W14: "caraway" read "ort email newsletter announcing…" with the word cut off
+ *  at the row's end): a fragment the index cut mid-word ("ort email…", lowercase first) starts at its next word, and
+ *  one with more than `before` characters ahead of the match starts at the word boundary that leaves `before` of
+ *  context. Either cut is marked "…". The match marks are kept. */
+export function snippetAround(snippet: string, before = 28): string {
+  let text = snippetText(snippet);
+  let cut = false;
+  const first = text.indexOf("\u0001");
+  if (first !== 0 && /^[a-z]/.test(text)) {
+    const space = text.search(/\s/);
+    if (space > 0 && (first < 0 || space < first)) { text = text.slice(space + 1); cut = true; }
+  }
+  const at = text.indexOf("\u0001");
+  if (at > before) {
+    const space = text.indexOf(" ", at - before);
+    text = text.slice(space >= 0 && space < at ? space + 1 : at);
+    cut = true;
+  }
+  return cut ? `…${text}` : text;
+}
+
 export const plainSnippet = (snippet: string) => snippetText(snippet).replace(/[\u0001\u0002]/g, "");
 
-export function SearchSnippet({ snippet }: { snippet: string }) {
-  return <>{snippetParts(snippet).map((part, index) => part.match
+export function SearchSnippet({ snippet, around = false }: { snippet: string; around?: boolean }) {
+  return <>{snippetParts(around ? snippetAround(snippet) : snippet).map((part, index) => part.match
     ? <mark key={index} className="rounded-[2px] bg-[color-mix(in_srgb,var(--link)_22%,transparent)] text-inherit">{part.text}</mark>
     : part.text)}</>;
 }

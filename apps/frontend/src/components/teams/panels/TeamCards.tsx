@@ -78,7 +78,8 @@ function TeamCard({ agent, name, front, recent, loaded, viewerId, onAsk, menu }:
     <div className="flex items-start gap-2">
       <div className="min-w-0 flex-1">
         <h3 id={headingId} className="truncate font-semibold">{name}</h3>
-        {(front || paused) && <p className="text-ui text-muted-foreground">{front && FRONT_LINE}{front && paused && " · "}{paused && <span className="text-warn">Paused</span>}</p>}
+        {/* Lightbulb's line reads like any specialist's purpose, not muted (W14). */}
+        {(front || paused) && <p className="text-ui">{front && FRONT_LINE}{front && paused && " · "}{paused && <span className="text-warn">Paused</span>}</p>}
       </div>
       <DropdownMenu>
         <DropdownMenuTrigger asChild><Button type="button" size="icon-sm" variant="ghost" aria-label={`More for ${name}`}><MoreHorizontal aria-hidden="true" /></Button></DropdownMenuTrigger>
@@ -90,7 +91,8 @@ function TeamCard({ agent, name, front, recent, loaded, viewerId, onAsk, menu }:
       {recent.length ? recent.map((t) => <button key={t.taskId} type="button" onClick={() => openTaskPane(t.taskId)}
         aria-label={`Open ${t.title}, ${summaryView(t, viewerId).word}`}
         className="-mx-1 flex items-center gap-2 rounded-xs px-1 py-0.5 text-left text-ui hover:bg-accent">
-        <span className="min-w-0 flex-1 truncate">{t.title}</span><TaskStatus task={t} viewerId={viewerId} />
+        {/* The status only when it says something: a recent task is Done, so "• Done" on every row was noise (W14). */}
+        <span className="min-w-0 flex-1 truncate">{t.title}</span>{!["Done", "Closed"].includes(summaryView(t, viewerId).word) && <TaskStatus task={t} viewerId={viewerId} />}
       </button>) : <p className="text-ui text-muted-foreground">{loaded ? "No tasks yet." : "Loading…"}</p>}
     </section>
     <div className="mt-auto pt-1">

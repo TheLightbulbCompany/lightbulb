@@ -2,7 +2,7 @@
 
 import { ApiError } from "../api/error";
 import type { AutomationView } from "./types";
-import { CUSTOM_SCHEDULE, formatSchedule, oneOffInstant } from "./view";
+import { timeOfDay, CUSTOM_SCHEDULE, formatSchedule, oneOffInstant } from "./view";
 
 export const money = (n: number): string => `$${n.toFixed(2).replace(/\.00$/, "")}`;
 
@@ -134,10 +134,11 @@ export function nextRunWords(iso: string, viewerTz: string, now = Date.now()): s
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
   const year = (t: Date) => new Intl.DateTimeFormat("en-US", { timeZone: viewerTz, year: "numeric" }).format(t);
-  return new Intl.DateTimeFormat("en-GB", {
-    timeZone: viewerTz, weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit", hourCycle: "h23",
+  const day = new Intl.DateTimeFormat("en-GB", {
+    timeZone: viewerTz, weekday: "short", day: "numeric", month: "short",
     ...(year(d) !== year(new Date(now)) ? { year: "numeric" as const } : {}),
   }).format(d);
+  return `${day}, ${timeOfDay(d, viewerTz)}`;
 }
 
 /** A Scheduled row's line: always a status ("On", "Paused", "Not turned on"), its schedule ("Mondays 9:00", or

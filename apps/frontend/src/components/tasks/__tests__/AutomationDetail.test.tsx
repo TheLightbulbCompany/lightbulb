@@ -96,12 +96,12 @@ describe("AutomationDetail (the automation pane)", () => {
 
   it("schedule in the viewer's time zone, naming the room it posts to (W8)", async () => {
     const { unmount } = render(<Detail viewerTz="Europe/London" />);
-    expect(await screen.findByText(/Mondays 14:00 \(New York time: Mondays 9:00\) · posts in a room/)).toBeInTheDocument();
+    expect(await screen.findByText(/Mondays 2:00 PM \(New York time: Mondays 9:00 AM\) · posts in a room/)).toBeInTheDocument();
     unmount();
     messaging.value = { directoryProps: { rooms: [{ roomId: "room-workshop-launch", kind: "channel", name: "walk-8", participants: [] }] } };
     try {
       render(<Detail />);
-      expect(await screen.findByText(/^Mondays 9:00 New York time · posts to walk-8 · /)).toBeInTheDocument();
+      expect(await screen.findByText(/^Mondays 9:00 AM New York time · posts to walk-8 · /)).toBeInTheDocument();
     } finally { messaging.value = null; }
   });
 

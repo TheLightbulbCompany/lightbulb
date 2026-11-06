@@ -76,15 +76,15 @@ describe("respondHint with the super-agent on (one voice)", () => {
   const agent = (id: string, displayName: string, mentionHandle: string): RespondTarget =>
     ({ kind: "agent", id, displayName, listenMode: "active", mentionHandle });
   const seated = [agent("a1", "Growth", "growth"), agent("lb", "Lightbulb", "lightbulb"), agent("a2", "Finance", "finance")];
-  it("only Lightbulb may reply in a room where specialists are still seated", () => {
-    expect(respondHint("channel", seated, [], [], true)).toBe("Lightbulb may reply");
+  it("only Lightbulb answers in a room where specialists are still seated, said plainly (W14)", () => {
+    expect(respondHint("channel", seated, [], [], true)).toBe("Lightbulb reads every message here");
     // The same words in the Lightbulb DM and when @mentioned (W13: "may" in a project, "will" in the DM).
-    expect(respondHint("dm", seated, [], [], true)).toBe("Lightbulb may reply");
-    expect(respondHint("channel", seated, [{ kind: "agent", id: "lb" }], [], true)).toBe("Lightbulb may reply");
+    expect(respondHint("dm", seated, [], [], true)).toBe("Lightbulb reads every message here");
+    expect(respondHint("channel", seated, [{ kind: "agent", id: "lb" }], [], true)).toBe("Lightbulb reads every message here");
     expect(respondHint("channel", seated, [], [], false)).toBe("Growth may reply · Lightbulb may reply · Finance may reply");
   });
   it("with no @lightbulb seat on the row, it is still Lightbulb, never the specialists", () => {
-    expect(respondHint("channel", [seated[0], seated[2]], [], [], true)).toBe("Lightbulb may reply");
+    expect(respondHint("channel", [seated[0], seated[2]], [], [], true)).toBe("Lightbulb reads every message here");
     expect(respondHint("dm", [{ kind: "human", id: "h", displayName: "Ana", listenMode: null }], [], [], true)).toBe("");
   });
 });

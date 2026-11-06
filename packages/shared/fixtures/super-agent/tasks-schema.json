@@ -1541,6 +1541,18 @@
           "default": null,
           "title": "Questionid"
         },
+        "allowedBy": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Allowedby"
+        },
         "output": {
           "anyOf": [
             {

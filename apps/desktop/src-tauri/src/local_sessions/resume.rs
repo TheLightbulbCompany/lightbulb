@@ -528,9 +528,13 @@ fn prepare(w: &Wanted, own: bool, home: &Path) -> std::result::Result<Option<(Pa
     use crate::holder::manager;
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_micros() as u64);
     let sessions = claude_config(home).join("sessions");
+    let written = super::snapshot::find_transcript(&claude_config(home), &w.conversation_id)
+        .and_then(|t| fs::metadata(t).ok()?.modified().ok())
+        .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_micros() as u64);
     for h in manager::list().iter().filter(|h| h.argv.iter().any(|a| a == &w.conversation_id) && !manager::is_ended(h)) {
         let born = crate::holder::identity::read(h.pid).map(|me| me.birth_micros);
-        if w.provider != "claude" || !stuck_before_start(h, born, now, &sessions) {
+        if w.provider != "claude" || !stuck_before_start(h, born, written, now, &sessions) {
             return Ok(None);
         }
         // Stuck on a dialog nobody sees (a trust prompt): it never registers, so it would hold this
@@ -573,10 +577,12 @@ pub(crate) fn claude_config(home: &Path) -> PathBuf {
     std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from).unwrap_or_else(|| home.join(".claude"))
 }
 
-/// A held Claude run that started over a minute ago (`born`, `now` in µs) and still has no
-/// `<sessions>/<pid>.json`: Claude writes that file once its start-up dialogs are answered.
-fn stuck_before_start(h: &crate::holder::manager::HolderInfo, born: Option<u64>, now: u64, sessions: &Path) -> bool {
-    born.is_some_and(|b| now.saturating_sub(b) > 60_000_000) && !sessions.join(format!("{}.json", h.provider_pid)).exists()
+/// A held Claude run that started over a minute ago (`born`, `now` in µs), still has no
+/// `<sessions>/<pid>.json` (Claude writes it once its start-up dialogs are answered), and whose
+/// transcript was last `written` before it started: proof it wrote nothing, so ending it loses nothing.
+fn stuck_before_start(h: &crate::holder::manager::HolderInfo, born: Option<u64>, written: Option<u64>, now: u64, sessions: &Path) -> bool {
+    born.is_some_and(|b| now.saturating_sub(b) > 60_000_000 && written.is_some_and(|w| w < b))
+        && !sessions.join(format!("{}.json", h.provider_pid)).exists()
 }
 
 /// Claude's global config, where it keeps the folders a person trusted.
@@ -623,15 +629,16 @@ fn claude_trust(config: &Path, folder: &Path, own: bool) -> std::result::Result<
         Some(_) if !own => return Err("not trusted, and only this Mac's own human can trust it".into()),
         Some(_) => {}
     }
-    // A symlinked config (a dotfiles manager) is written through: the link stays a link.
-    let config = fs::canonicalize(config).map_err(|e| format!("resolve: {e}"))?;
-    let locked = lock_claude_config(&config);
+    // Locked by the path as given, as Claude locks it; a symlinked config (a dotfiles manager) is
+    // written through to its target, so the link stays a link.
+    let target = fs::canonicalize(config).map_err(|e| format!("resolve: {e}"))?;
+    let locked = lock_claude_config(config);
     if !locked {
         relay_log("resume: Claude's config lock not taken; writing without it");
     }
     let written = (|| {
         // Read again under the lock: what Claude saved meanwhile is kept.
-        let mut doc = read(&config)?.ok_or("config removed")?;
+        let mut doc = read(&target)?.ok_or("config removed")?;
         let key = trust_key(folder).ok_or("folder is not UTF-8")?;
         doc.as_object_mut()
             .ok_or("not an object")?
@@ -644,11 +651,11 @@ fn claude_trust(config: &Path, folder: &Path, own: bool) -> std::result::Result<
             .as_object_mut()
             .ok_or("project is not an object")?
             .insert("hasTrustDialogAccepted".into(), Value::Bool(true));
-        super::backup_once(&config)?;
-        replace(&config, serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?.as_bytes()).map_err(|e| format!("write: {e}"))
+        super::backup_once(&target)?;
+        replace(&target, serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?.as_bytes()).map_err(|e| format!("write: {e}"))
     })();
     if locked {
-        let _ = fs::remove_dir(lock_path(&config));
+        let _ = fs::remove_dir(lock_path(config));
     }
     written
 }
@@ -659,8 +666,8 @@ fn lock_path(config: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
-/// Claude's own lock on its config (proper-lockfile: a `<config>.lock` directory, on the resolved
-/// path; stale after 10 s). Claude re-reads and merges under it, so neither side loses a save.
+/// Claude's own lock on its config (a `<config>.lock` directory beside the path Claude uses;
+/// stale after 10 s). Claude re-reads and merges under it, so neither side loses a save.
 /// False when it could not be taken within about a second.
 fn lock_claude_config(config: &Path) -> bool {
     for _ in 0..20 {
@@ -1105,7 +1112,12 @@ mod tests {
         let link = home_path.join("link.json");
         std::os::unix::fs::symlink(&config, &link).unwrap();
         fs::write(&config, "{}").unwrap();
+        // The lock is the link's own `<path>.lock`, as Claude takes it: held by Claude, we wait it out.
+        fs::create_dir(lock_path(&link)).unwrap();
+        let release = { let l = lock_path(&link); std::thread::spawn(move || { std::thread::sleep(Duration::from_millis(200)); fs::remove_dir(l).unwrap() }) };
         claude_trust(&link, &folder, true).unwrap();
+        release.join().unwrap();
+        assert!(!lock_path(&config).exists() && !lock_path(&link).exists());
         assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
         assert_eq!(serde_json::from_str::<Value>(&fs::read_to_string(&config).unwrap()).unwrap()["projects"][key]["hasTrustDialogAccepted"], true);
         // No config (Claude never ran here): nothing is created. Not JSON: refused, left as it is.
@@ -1128,10 +1140,14 @@ mod tests {
             argv: vec!["/c/claude".into(), "--resume".into(), CONV.into()],
         };
         let now = 1_000_000_000_000;
-        assert!(stuck_before_start(&h, Some(now - 61_000_000), now, sessions.path()));
-        assert!(!stuck_before_start(&h, Some(now - 30_000_000), now, sessions.path()), "still starting");
-        assert!(!stuck_before_start(&h, None, now, sessions.path()), "unknown age");
+        let born = Some(now - 61_000_000);
+        let before = Some(now - 120_000_000);
+        assert!(stuck_before_start(&h, born, before, now, sessions.path()));
+        assert!(!stuck_before_start(&h, Some(now - 30_000_000), before, now, sessions.path()), "still starting");
+        assert!(!stuck_before_start(&h, None, before, now, sessions.path()), "unknown age");
+        assert!(!stuck_before_start(&h, born, Some(now - 1_000_000), now, sessions.path()), "it wrote the transcript");
+        assert!(!stuck_before_start(&h, born, None, now, sessions.path()), "no transcript to prove it");
         fs::write(sessions.path().join("52155.json"), "{}").unwrap();
-        assert!(!stuck_before_start(&h, Some(now - 61_000_000), now, sessions.path()), "Claude started");
+        assert!(!stuck_before_start(&h, born, before, now, sessions.path()), "Claude started");
     }
 }

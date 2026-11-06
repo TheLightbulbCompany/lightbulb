@@ -272,6 +272,8 @@
   --plane-selected: #2E2E33;
   --plane-hover:    #26262A;
 
+  --scrim: rgb(0 0 0 / 0.6);
+
   --project-1: #3B3552;
   --project-2: #234240;
   --project-3: #4A4129;
@@ -369,6 +371,9 @@
     0 4px 12px color-mix(in srgb, var(--midnight) 8%, transparent),
     0 12px 32px color-mix(in srgb, var(--midnight) 10%, transparent);
   --shadow-lift: 0 16px 40px color-mix(in srgb, var(--midnight) 10%, transparent);
+  /* The modal backdrop. Ink at 80% on the light planes; the dark theme overrides it, since its ink is light and the
+     scrim read as a pale grey sheet over the dark app (W13). */
+  --scrim: color-mix(in srgb, var(--midnight) 80%, transparent);
 
   /* Frame A (UX slice 4): every list page (Home, Activity, Settings) is one centred column this wide. */
   --frame-doc: 880px;

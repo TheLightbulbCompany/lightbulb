@@ -88,7 +88,8 @@ export function respondHint(
     if (!willReply) parts.push(`${member.displayName} when mentioned`);
     else if (runningAgentIds.includes(member.id)) parts.push(`${member.displayName} is working — sending now steers that run`);
     // An unaddressed active ("Listening") agent passes the cheap relevance gate first.
-    else parts.push(`${member.displayName} ${addressed ? "will" : "may"} reply`);
+    // One voice says it one way everywhere (W13): the Router may hand the ask to a specialist, or answer none.
+    else parts.push(`${member.displayName} ${addressed && !oneVoice ? "will" : "may"} reply`);
   }
   return parts.join(" · ");
 }

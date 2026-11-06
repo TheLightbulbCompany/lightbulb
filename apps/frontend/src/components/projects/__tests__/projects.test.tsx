@@ -16,6 +16,8 @@ import { RoomDirectoryRow } from "@/components/messaging/RoomDirectoryRow";
 import { groupRooms } from "@/components/messaging/roomSections";
 import type { DirectoryRoom } from "@/components/messaging/types";
 import { goalTemplates, pickTemplates } from "@/components/tasks/scheduleTemplates";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 const room: RoomSummary = {
   roomId: "room-1", name: "Spring sale", kind: "channel", roomRevision: 3, lastMessageSeq: 9,
@@ -79,6 +81,23 @@ describe("project settings", () => {
     expect(within(dialog).queryByText(/What Lightbulb remembers/)).toBeNull();
     await userEvent.click(within(dialog).getByRole("button", { name: "People" }));
     expect(within(dialog).getByRole("heading", { name: "Members" })).toBeInTheDocument();
+  });
+
+  it("at desktop width the phone-only section select stays hidden and the body sits in the content column (W13-1)", async () => {
+    // jsdom applies the real stylesheets but no @media block, which is the desktop layout. messaging.css's
+    // `.room-input { display: block }` loads after projects.css and used to show the select at every width, pushing
+    // the body into the 160 px nav column so Memory couldn't be clicked.
+    const style = document.createElement("style");
+    const css = (f: string) => readFileSync(resolve(__dirname, "../..", f), "utf8");
+    // messaging.css whole trips jsdom's selector engine, so only its `.room-input` rule, after projects.css as in the app.
+    style.textContent = `${css("projects/projects.css")}\n${css("messaging/messaging.css").match(/^\.room-input \{[^}]*\}/m)![0]}`;
+    document.head.appendChild(style);
+    try {
+      render(header());
+      const dialog = await openSettings();
+      expect(getComputedStyle(within(dialog).getByLabelText("Section")).display).toBe("none");
+      expect(getComputedStyle(dialog.querySelector(".project-settings__body")!).gridColumn).toBe("2");
+    } finally { style.remove(); }
   });
 
   it("Archive in the modal opens the header's confirm; a sidebar ⋯ › Settings opens it in one shot", async () => {

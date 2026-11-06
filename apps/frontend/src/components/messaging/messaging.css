@@ -104,7 +104,10 @@
 .room-composer[data-dropping] { border-color: var(--ring); border-style: dashed; }
 .room-drop-hint { padding: 0 4px; }
 .room-composer textarea { min-height: 24px; max-height: 200px; resize: none; overflow-y: auto; box-shadow: none; border: 0; padding: 2px 4px; border-radius: 0; background: transparent; font-size: var(--text-ui); line-height: var(--text-ui--line-height); caret-color: var(--foreground); }
-.room-composer textarea:focus-visible { outline: none; box-shadow: none; }
+/* The box's border is the composer's focus ring; the panel-wide focus outline below (same specificity, later) drew a
+   second ring around the textarea inside it (W13). The ancestor classes out-rank it. */
+.room-composer textarea:focus-visible,
+:is(.room-panel, .room-context-host) .room-composer textarea:focus-visible { outline: none; box-shadow: none; }
 .room-composer-help { font-size: var(--text-caption); padding: 0 4px; }
 .room-respond-hint { padding: 0 4px; font-size: var(--text-caption); }
 .room-composer-actions { display: flex; align-items: center; justify-content: flex-start; gap: 2px; }
@@ -871,7 +874,7 @@ button.session-group-header:focus-visible, .session-group-more:focus-visible, .s
 .room-name-menu > button:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
 .room-name-menu > button > svg { flex: none; color: var(--muted-foreground); }
 .room-panel[data-frame] .room-history-content { width: 100%; max-width: calc(680px + 2 * var(--room-gutter)); margin-inline: auto; }
-.room-panel[data-frame] .room-conversation > :is(.room-composer, .room-typing, .room-limit-bar) { width: calc(100% - 40px); max-width: 680px; margin-inline: auto; }
+.room-panel[data-frame] .room-conversation > :is(.room-composer, .room-typing, .room-limit-bar, .project-paused) { width: calc(100% - 40px); max-width: 680px; margin-inline: auto; }
 .room-composer[data-compact] { padding: 9px 10px 9px 6px; border-radius: var(--radius-lg); box-shadow: var(--shadow-pop); }
 .room-composer-row { display: flex; align-items: flex-end; gap: 4px; min-height: 28px; }
 .room-composer-row > textarea { flex: 1; min-width: 0; align-self: center; }
@@ -881,3 +884,6 @@ button.session-group-header:focus-visible, .session-group-more:focus-visible, .s
 .room-composer[data-compact] .room-format { padding-bottom: 4px; border-bottom: 1px solid var(--edge-soft); }
 .room-composer[data-compact] p[role="status"]:empty { display: none; }
 @media (pointer: coarse) { .room-composer-row .room-composer-actions > button, .room-composer-plus button { width: 44px; height: 44px; } }
+
+/* Lightbulb's face: its mark on the neutral tile, sized to the circle rather than the 1.35em text mark (W13). */
+.participant-avatar .participant-avatar__mark { height: 62%; vertical-align: 0; }

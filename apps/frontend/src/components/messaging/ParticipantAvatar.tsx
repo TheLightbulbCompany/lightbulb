@@ -1,5 +1,6 @@
 import { Terminal } from "lucide-react";
 import { Identity, type IdentityProps } from "@/components/teams/shared/components/Identity";
+import { LogoMark } from "@/components/Logo";
 import { agentTint } from "@/lib/agentTint";
 import type { DirectoryParticipant, RoomParticipant } from "./types";
 
@@ -32,9 +33,11 @@ export function ParticipantAvatar({ participant, size = "default", showPresence 
   // facepile hides its dot but is still the same agent, and losing the tint
   // there would make the pile unreadable — which is the whole problem the
   // tint exists to solve.
-  const tint = participant.kind === "agent" ? agentTint(participant.id) : null;
+  // Lightbulb (the front agent, handle `lightbulb`) wears its mark, not "LI" initials (W13).
+  const lightbulb = participant.kind === "agent" && participant.mentionHandle === "lightbulb";
+  const tint = participant.kind === "agent" && !lightbulb ? agentTint(participant.id) : null;
   return <span className="participant-avatar" data-agent-state={label ? activity : undefined} data-presence={presence} data-sharing={sharing ? "true" : undefined}>
-    <Identity name={participant.displayName} avatarOnly size={size} tint={tint} />
+    <Identity name={participant.displayName} avatarOnly size={size} tint={tint} mark={lightbulb ? <LogoMark className="participant-avatar__mark" /> : undefined} />
     {label && <span className="sr-only">{label}</span>}
     {online && <span className="sr-only">Online</span>}
     {isAgent && <span className="sr-only">Agent, always available</span>}

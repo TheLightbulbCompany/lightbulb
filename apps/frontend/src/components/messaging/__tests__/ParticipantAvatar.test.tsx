@@ -60,3 +60,11 @@ it("never marks an agent or a quiet facepile face as sharing", () => {
   render(<ParticipantAvatar participant={{ kind: "human", id: "h-2", displayName: "Bob", mentionHandle: null, sharing: true }} showPresence={false} />);
   expect(screen.getByRole("img", { name: "Bob" }).parentElement).not.toHaveAttribute("data-sharing");
 });
+
+it("Lightbulb wears its mark, not \"LI\" initials (W13)", () => {
+  const { container } = render(<ParticipantAvatar participant={{ kind: "agent", id: "lb", displayName: "Lightbulb", mentionHandle: "lightbulb" }} />);
+  expect(container.querySelector("svg.participant-avatar__mark")).not.toBeNull();
+  expect(screen.queryByText("LI")).toBeNull();
+  render(<ParticipantAvatar participant={{ kind: "agent", id: "a-1", displayName: "Friday", mentionHandle: "friday" }} />);
+  expect(screen.getByText("FR")).toBeInTheDocument();
+});

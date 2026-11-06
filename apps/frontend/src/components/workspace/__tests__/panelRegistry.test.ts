@@ -376,6 +376,8 @@ describe("Work page: one dock tab for every task-board page", () => {
     try {
       expect(describePanel("teams-artifacts", {})).toEqual({ panelId: "canvas", component: "canvas", title: "Creations", params: {} });
       expect(describePanel("canvas", { app: "a1" })?.params).toEqual({ app: "a1" });
+      // The rail's `panel=creations` (W13) is the same panel; an old `panel=canvas` link keeps working.
+      expect(describePanel("creations", {})).toEqual({ panelId: "canvas", component: "canvas", title: "Creations", params: {} });
     } finally { setSuperAgentAliases(false); }
   });
 });

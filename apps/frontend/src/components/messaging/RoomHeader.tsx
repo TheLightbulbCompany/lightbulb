@@ -297,7 +297,8 @@ export function RoomHeader({
             <DropdownMenuItem onSelect={() => onOpenDetails("about")}><Info aria-hidden="true" />Details</DropdownMenuItem>
             <DropdownMenuItem onSelect={() => onOpenDetails("members")}><Users aria-hidden="true" />People</DropdownMenuItem>
           </>}
-          {onAddPeople && <DropdownMenuItem onSelect={onAddPeople}><UserPlus aria-hidden="true" />Add people</DropdownMenuItem>}
+          {/* A project's People (Settings › People) has Add members, so one People item, not two (W13). */}
+          {!projectSettings && onAddPeople && <DropdownMenuItem onSelect={onAddPeople}><UserPlus aria-hidden="true" />Add people</DropdownMenuItem>}
           {!projectSettings && onRenameRoom && canEditRoom && !room?.shared && <DropdownMenuItem onSelect={() => { reset(); setNameDraft(room?.name ?? ""); setRenaming(true); }}><Pencil aria-hidden="true" />Rename</DropdownMenuItem>}
           {!projectSettings && onSetTopic && canEditRoom && <DropdownMenuItem disabled={!actionable} onSelect={() => { reset(); setEditingTopic(true); }}><Pencil aria-hidden="true" />{room?.topic ? "Edit topic" : "Add a topic"}</DropdownMenuItem>}
           {onSetPrefs && <DropdownMenuItem disabled={!actionable || pending}

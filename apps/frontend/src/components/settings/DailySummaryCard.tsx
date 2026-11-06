@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useApi } from "@/lib/api";
 import { notifyApiError } from "@/lib/notify";
 import { Switch } from "@/components/ui/switch";
+import { SettingRow } from "./SettingRow";
 
 type UserPrefs = { timezone: string; dailySummary: boolean; awayEmail?: boolean };
 
@@ -11,7 +12,8 @@ type UserPrefs = { timezone: string; dailySummary: boolean; awayEmail?: boolean 
 // (push + email at 08:00 local). Per human, default on; the email's one-click
 // unsubscribe flips the same pref. Beside it, "Email me when I'm away" (awayEmail): a DM,
 // @mention or approval still unseen five minutes later, while away, gets one email.
-export function DailySummaryCard() {
+// `rows` (super-agent Profile): the two switches in the row pattern, not a card each (W13-10).
+export function DailySummaryCard({ rows = false }: { rows?: boolean }) {
   const api = useApi();
   const [prefs, setPrefs] = useState<UserPrefs | null>(null);
   const [busy, setBusy] = useState(false);
@@ -45,6 +47,18 @@ export function DailySummaryCard() {
     }
   };
 
+  if (rows) return (
+    <>
+      <SettingRow label="Daily summary" htmlFor="pref-daily-summary"
+        line={`A notification and email at 8am (${prefs.timezone}) when approvals, tasks or mentions are waiting on you.`}>
+        <Switch id="pref-daily-summary" checked={prefs.dailySummary} disabled={busy} onCheckedChange={(on) => void toggle("dailySummary", on)} />
+      </SettingRow>
+      <SettingRow label="Email me when I'm away" htmlFor="pref-away-email"
+        line="One email when a message, a mention or an approval waits five minutes while you're away. Never 10pm to 8am.">
+        <Switch id="pref-away-email" checked={prefs.awayEmail !== false} disabled={busy} onCheckedChange={(on) => void toggle("awayEmail", on)} />
+      </SettingRow>
+    </>
+  );
   return (
     <>
       <div className="settings-card">

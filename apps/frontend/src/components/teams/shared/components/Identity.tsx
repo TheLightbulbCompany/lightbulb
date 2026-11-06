@@ -7,6 +7,7 @@
 // fallback path; if a shadcn Avatar primitive ever lands, swap the inline
 // span for the real one.
 
+import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 type IdentitySize = "xs" | "sm" | "default" | "lg";
@@ -27,6 +28,8 @@ export interface IdentityProps {
    * keeps the neutral tile. Initials flip to --on-agent-tint, and the border
    * is dropped: a tinted circle already reads as its own shape. */
   tint?: string | null;
+  /** A drawn face in place of the initials (Lightbulb's mark, not "LI"). */
+  mark?: ReactNode;
 }
 
 function deriveInitials(name: string): string {
@@ -57,6 +60,7 @@ export function Identity({
   className,
   avatarOnly = false,
   tint = null,
+  mark,
 }: IdentityProps) {
   const displayInitials = initials ?? deriveInitials(name);
 
@@ -86,7 +90,7 @@ export function Identity({
         }
         aria-hidden={avatarUrl ? undefined : true}
       >
-        {avatarUrl ? (
+        {mark ? mark : avatarUrl ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
             src={avatarUrl}

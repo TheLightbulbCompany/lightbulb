@@ -97,7 +97,7 @@ export const SETTINGS_NAV_SECTIONS: NavSection[] = [
   },
 ];
 
-// Super-agent (UX slice 4): the same Settings inside the shell, in five plain groups, 13 rows. Business (what
+// Super-agent (UX slice 4): the same Settings inside the shell, in plain groups. Business (what
 // Work › Money showed) joins Plan; Model's single row folds into Plan; Budgets and Marketplace are not shown.
 const ROW = (id: string) => SETTINGS_NAV_SECTIONS.flatMap((s) => s.items).find((item) => item.id === id)!;
 export const SUPER_AGENT_SETTINGS_NAV_SECTIONS: NavSection[] = [
@@ -110,8 +110,11 @@ export const SUPER_AGENT_SETTINGS_NAV_SECTIONS: NavSection[] = [
       { id: "business", name: "Business", icon: "business", panel: "business" },
       { ...ROW("providers"), name: "Model & credits" }],
   },
-  { label: "Advanced", items: [ROW("skills"), ROW("mcp"), ROW("local-mcp"), ROW("desktop")] },
+  // Shown only to a workspace that has used them (SettingsPlace's useShowsDeveloper): a coding session, the desktop
+  // app, or an MCP server of its own (W13-10). Session notifications live under Desktop here, not in Profile.
+  { label: "Developer", items: [ROW("skills"), ROW("mcp"), ROW("local-mcp"), ROW("desktop")] },
 ];
+export const DEVELOPER_PANELS: ReadonlySet<string> = new Set(["skills", "mcp", "local-mcp", "desktop"]);
 
 // =============================================================================
 // Icons

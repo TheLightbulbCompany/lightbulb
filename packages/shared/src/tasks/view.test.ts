@@ -251,6 +251,24 @@ describe("the one decision card", () => {
   it("names who asks and how long ago", async () => {
     const { decisionMeta } = await import("./view");
     expect(decisionMeta({ createdAt: new Date(0).toISOString() }, "Growth", undefined, 7 * 3600 * 1000)).toBe("Growth · 7h ago");
+    expect(decisionMeta({ createdAt: new Date(0).toISOString() }, "Growth", undefined, 7 * 3600 * 1000, "Spring sale")).toBe("Growth · Spring sale · 7h ago");
+  });
+  it("splits a Worker's labelled email ask into To, Subject and the body (W13-4)", async () => {
+    const { askFields, previewRows } = await import("./view");
+    const walk = "Recipient: sa-test-2+clerk_test@thelightbulb.company Subject: New Austin workshop date: March 1, 2027 Body: Hi, The Austin workshop has a new date. To: everyone\nBest, The team";
+    const parsed = askFields(walk)!;
+    expect(parsed.intro).toBe("");
+    expect(previewRows(parsed.preview, Infinity)).toEqual([
+      { label: "To", value: "sa-test-2+clerk_test@thelightbulb.company" },
+      { label: "Subject", value: "New Austin workshop date: March 1, 2027" },
+      // The body runs to the end: a "To:" inside it stays in it.
+      { label: "Message", value: "Hi, The Austin workshop has a new date. To: everyone\nBest, The team" },
+    ]);
+    expect(askFields("Please check.\nTo: ann@example.com\nSubject: Hi")).toEqual({ intro: "Please check.", preview: { to: "ann@example.com", subject: "Hi" } });
+    // Prose, or a recipient without a subject, is left as written.
+    expect(askFields("Send \u201c[TEST] Austin\u201d only to sa-test-2@x.co. The body labels it TEST ONLY.")).toBeNull();
+    expect(askFields("Reply To: ann@example.com when done")).toBeNull();
+    expect(askFields("To: x Subject: <img src=x>")?.preview.subject).toBe("<img src=x>");
   });
 });
 

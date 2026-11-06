@@ -67,7 +67,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Setup uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@v7
         with:
           # Cache uv's wheel/download cache, keyed on the lockfile (Actions cache storage, no minutes).
           enable-cache: true

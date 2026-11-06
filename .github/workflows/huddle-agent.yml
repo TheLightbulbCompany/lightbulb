@@ -37,7 +37,7 @@ jobs:
         working-directory: apps/huddle-agent
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
           cache-dependency-glob: apps/huddle-agent/uv.lock

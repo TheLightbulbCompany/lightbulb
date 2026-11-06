@@ -210,11 +210,13 @@ async def _progress_line(ws: str, task_id: str, n: int, label: str) -> None:
     """§14.11 progress poster: one line per attempt in the task room (`progress_label`). Every heartbeat
     updates the Attempt's `recentTools` (the trace and live views read it)."""
     try:
+        task = await tasks_repo.get_task(ws, task_id) or {}
         await task_conversation.post_as_lightbulb(
             ws,
             ts.task_room_id(task_id),
             text=f"{label}…",
             event_id=f"task-progress:{task_id}:{n}",
+            specialist=task.get("specialist"),  # the specialist doing the work posts it, like its result (N-F6)
             progress=True,
         )
     except Exception:

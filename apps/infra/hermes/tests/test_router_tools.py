@@ -146,3 +146,25 @@ def test_router_memory_is_read_only():
 
 def test_router_remember_is_open_outside_a_router_turn():
     assert turn.memory_pre_tool_call("remember", {"text": "x"}) is None
+
+
+def test_start_task_tells_the_router_not_to_write_approval_steps():
+    """Gate run 6 (A9): the old "ask for approval inside the task" text put approval steps into briefs."""
+    from plugins.lightbulb import router
+
+    text = router.SCHEMAS["start_task"]["description"]
+    assert "never add approval or confirmation steps to the brief" in text and "ask for approval" not in text
+
+
+def test_request_approval_names_the_self_gating_tools_and_keeps_the_rest_gated():
+    """Review #4878: only bridge/effects.py's classified calls gate themselves; every other send, spend or publish
+    still needs request_approval first."""
+    from plugins.lightbulb import APPROVAL_SCHEMA
+
+    text = APPROVAL_SCHEMA["description"]
+    for gated in ("lightbulb-mail.sh", "lightbulb app publish", "gh pr merge", "request_purchase", "lightbulb_network"):
+        assert gated in text
+    assert "OTHER send, spend or publish still needs request_approval first" in text
+    for ungated in ("gog gmail send", "send_invoice", "checkout", "git push", "vercel deploy", "npm publish"):
+        assert ungated in text
+    assert "the specialist handles approvals" in rt.SCHEMAS["start_task"]["description"]

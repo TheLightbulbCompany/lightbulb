@@ -142,6 +142,19 @@ async def test_answer_after_stop_409(world):
     assert world["updates"] == []
 
 
+async def test_answer_after_close_is_refused_and_no_effect_applies(world):
+    """N-F1: a closed task whose Question was left open (the end-of-task cancel failed) is never answered: 409
+    `task_closed`, no update (no fresh run for a finished task), the purchase Effect stays `proposed`."""
+    qid = await _question()
+    await tasks_repo.transition_task(WS, TASK, to="resolved", reason="resolved")
+    world["who"]["user"] = ADA
+    resp = await _press(world, qid)
+    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "task_closed"
+    assert world["updates"] == []
+    assert (await questions_repo.get_question(WS, TASK, qid))["state"] == "open"
+    assert (await effects_repo.get_effect(WS, f"{TASK}:1:c1"))["state"] == "proposed"
+
+
 @pytest.mark.parametrize("by,reason", [("__system__", "resolved"), ("watch", "watch_gave_up")])
 async def test_answer_after_the_task_ended_names_no_person(world, by, reason):
     """The task (not a person) closed it: no system id where the client shows a name, and the reason for its copy."""

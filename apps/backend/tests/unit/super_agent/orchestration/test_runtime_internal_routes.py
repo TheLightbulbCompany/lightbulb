@@ -140,6 +140,7 @@ async def test_run_event_heartbeat_updates_progress_line(api):
     await api.post(_url(WS, ref.run_id), json=body, headers=H)
     lines = [p for p in api.world["posts"] if p.get("progress")]
     assert len(lines) == 1 and lines[0]["room"] == ts.task_room_id(tid)
+    assert lines[0]["specialist"] == "finance"  # N-F6: posted by the specialist doing the work, not Lightbulb
     assert (await repo.get_attempt(WS, tid, 1))["recentTools"][0]["name"] == "terminal"
     assert [e[0] for e in api.fake.log] == ["heartbeat", "heartbeat"]
 

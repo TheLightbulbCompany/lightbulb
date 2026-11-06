@@ -78,6 +78,42 @@ async def effects_of_task(ws: str, task_id: str) -> list[dict]:
     return [e for e in await _effects(ws, f"{task_id}:") if e.get("type") == "effect"]
 
 
+async def retire_approvals(ws: str, task_id: str) -> list[str]:
+    """A closed task's approved-but-unused approvals are used up (a `:use` row, `usedBy: "closed"`), so a Reopen asks
+    again instead of running on an approval given before Close (`questions.gate` reads `:use`). Idempotent; a use
+    that won the race stands. Returns the approved idem keys it retired."""
+    rows = await _effects(ws, f"{task_id}:")
+    used = {r["idemKey"].removesuffix(":use") for r in rows if r.get("type") == "effect_use"}
+    done = []
+    for r in rows:
+        if r.get("type") != "effect" or r.get("state") != "approved" or r["idemKey"] in used:
+            continue
+        now = utc_now_iso()
+        try:
+            await run_in_thread(
+                _table().put_item,
+                Item=ddb_safe(
+                    {
+                        "pk": ts.ws_pk(ws),
+                        "sk": ts.effect_sk(f"{r['idemKey']}:use"),
+                        "type": "effect_use",
+                        "idemKey": f"{r['idemKey']}:use",
+                        "usedBy": "closed",
+                        "operandsHash": r["operandsHash"],
+                        "createdAt": now,
+                        "updatedAt": now,
+                    }
+                ),
+                ConditionExpression="attribute_not_exists(#sk)",
+                ExpressionAttributeNames={"#sk": "sk"},
+            )
+            done.append(r["idemKey"])
+        except ClientError as exc:
+            if not _is_condition_failure(exc):
+                raise
+    return done
+
+
 async def set_effect_state(ws: str, idem_key: str, *, to: str, fields: dict | None = None) -> dict:
     """Move one Effect forward (`TRANSITIONS`); raises `IllegalTransition` otherwise."""
     fields = fields or {}

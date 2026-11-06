@@ -40,7 +40,8 @@ def _schema(name: str, description: str, props: dict, required: list[str]) -> di
 SCHEMAS = {
     "start_task": _schema(
         "start_task", "Start one task now for a request in the batch. `ack` is the one line people see. "
-        "Paid or risky steps (spend, send, publish) ask for approval inside the task on their own.",
+        "Write the brief as the work itself: the specialist handles approvals for sending, spending "
+        "and publishing, so never add approval or confirmation steps to the brief.",
         {**_TASK["properties"], "ack": {"type": "string"},
          "visibility": {"type": "string", "enum": ["person", "room", "workspace"]}},
         ["title", "brief", "ack"]),

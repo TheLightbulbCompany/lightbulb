@@ -516,3 +516,58 @@ async def test_attempt_gets_a_run_secret_on_the_wire(world):
     att = await repo.get_attempt(WS, tid, 1)
     assert len(att["runSecret"]) >= 32
     assert acts._identity(WS, tid, att).to_wire()["runSecret"] == att["runSecret"]
+
+
+async def test_reopen_after_close_asks_again(world):
+    """Review #4878: an approval given before Close is used up when the task closes, so a Reopen's repeated call
+    asks again (`questions.gate` → needs_approval), never `proceed` on the old answer. A used approval stays used."""
+    from core.repositories import effects_repo
+    from core.services import questions
+
+    tid = await _task()
+    await _attempt(tid)
+
+    async def approved(n):
+        idem = f"{tid}:1:c{n}"
+        await effects_repo.put_effect(
+            WS,
+            {
+                "idemKey": idem,
+                "taskId": tid,
+                "attempt": 1,
+                "kind": "purchase",
+                "tool": "request_purchase",
+                "operands": {"n": n},
+                "operandsHash": f"h{n}",
+                "state": "proposed",
+            },
+        )
+        await effects_repo.set_effect_state(WS, idem, to="approved")
+        return idem
+
+    await approved(1)  # approved, never used
+    used = await approved(2)
+    assert await effects_repo.use_approval(
+        WS,
+        used,
+        "h2",
+        new_effect={
+            "idemKey": f"{tid}:1:d2",
+            "taskId": tid,
+            "attempt": 1,
+            "kind": "purchase",
+            "tool": "request_purchase",
+            "operands": {"n": 2},
+            "operandsHash": "h2",
+        },
+    )
+    retry = {"idemKey": f"{tid}:2:c1", "taskId": tid, "attempt": 2, "kind": "purchase", "operandsHash": "h1"}
+    assert questions.gate(retry, await effects_repo.effects_for(WS, tid, "h1")).decision == "proceed"
+    await acts.end_attempt(WS, tid, 1, "cancelled", None)  # Stop/Close: resolved
+    await acts.transition(WS, tid, "resolved", "resolved")  # a retried transition is a no-op
+    assert questions.gate(retry, await effects_repo.effects_for(WS, tid, "h1")).decision == "needs_approval"
+    uses = [e for e in await effects_repo.effects_for(WS, tid, "h1") if e.get("type") == "effect_use"]
+    assert [u["usedBy"] for u in uses] == ["closed"]
+    assert [e["usedBy"] for e in await effects_repo.effects_for(WS, tid, "h2") if e.get("type") == "effect_use"] == [
+        f"{tid}:1:d2"
+    ]

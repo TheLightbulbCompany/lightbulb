@@ -45,6 +45,8 @@ export function useTaskActions(source: string) {
   const act = useCallback(async (task: TaskSummary, verb: TaskVerb): Promise<ActionResult> => {
     try {
       await putTaskSummary(cache, mutate, await tasks.act(task.taskId, verb, task.version), tasks);
+      // Close/Stop cancel the task's open questions on the server: re-read them, or a stale open card keeps its buttons.
+      await mutate(questionsKey(task.taskId));
       capture(VERB_EVENTS[verb], { taskId: task.taskId, source, status: task.status });
       return { ok: true };
     } catch (error) {

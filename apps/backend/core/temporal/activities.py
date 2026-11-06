@@ -24,7 +24,7 @@ from temporalio.exceptions import ApplicationError
 
 from core import tasks_schema as ts
 from core.dynamodb import utc_now_iso
-from core.repositories import container_repo, messaging_repo, tasks_repo
+from core.repositories import container_repo, effects_repo, messaging_repo, tasks_repo
 from core.services import (
     chat_gate,
     container_provision,
@@ -105,6 +105,8 @@ async def _move(ws: str, task_id: str, to: str, reason: str | None = None, field
             await learning.set_overlay_tag(ws, task_id, on=True)
     if to in ("resolved", "failed"):  # also on a retry that finds the move done (idempotent)
         await tasks_repo.unsubscribe_all(ws, task_id)
+    if to == "resolved":  # Close means "don't": an approval it left unused never carries over a Reopen
+        await effects_repo.retire_approvals(ws, task_id)
 
 
 def _is_uuid(value: str) -> bool:
@@ -803,6 +805,7 @@ async def _apply(
     # is the answer, so no Router reply or fallback line is posted beside it (dev walk R7: one line above the card,
     # another below).
     carded = {tid for tid, t in triggers.items() if (t.get("routedTo") or {}).get("automationId")}
+    replies: list[tuple[dict, str]] = []
     covered.update(carded)
     for i, dec in enumerate(decisions):
         primary = dec.trigger_ids[0]
@@ -862,8 +865,11 @@ async def _apply(
             sl["lines"].append(dec.text + (f" ({' / '.join(dec.options)})" if dec.options else ""))
         elif isinstance(dec, ts.Reply):
             if primary not in carded:
-                sl["lines"].append(dec.text)
+                replies.append((sl, dec.text))  # after every ack is known: a later start's ack counts too
         activity.heartbeat("apply")
+    for sl, text in replies:
+        if not router_prompt.restates(text, sl["acks"]):
+            sl["lines"].append(text)
     for tid, trig in triggers.items():  # a `respond` trigger is never left in silence
         if tid not in covered and trig["admission"] == "respond":
             slot(tid)["lines"].append(run_text or router_prompt.FALLBACK)

@@ -162,7 +162,7 @@ describe("useTasks", () => {
     await act(() => refreshTask(deps(), { taskId: "t1", part: "task", version: 9 }));
     expect(client.get).toHaveBeenCalledTimes(1);
     expect(hook.result.current.list.data!.tasks.map((t) => t.taskId)).toEqual(["t2"]);
-    expect(hook.result.current.swr.cache.get(taskKey("t1"))?.data).toBeUndefined();
+    expect(hook.result.current.swr.cache.get(taskKey(client, "t1"))?.data).toBeUndefined();
     expect(hook.result.current.list.error).toBeUndefined();
   });
 });

@@ -16,8 +16,10 @@ type TaskList = { tasks: TaskSummary[]; next: string | null };
 const listPrefix = (client: Pick<TasksClient, "cacheScope">) => `tasks:${client.cacheScope}:`;
 export const taskListKey = (client: Pick<TasksClient, "cacheScope">, scope: TaskScope) => `${listPrefix(client)}${scopeParam(scope)}`;
 /** Task ids are UUIDs, unique across workspaces; a task the viewer lost is dropped on its 403. */
-export const taskKey = (taskId: string) => `task:${taskId}`;
-export const questionsKey = (taskId: string) => `task-questions:${taskId}`;
+/** A task's detail and its questions are one viewer's (who may see it, who may answer): keyed by the client's scope
+ *  (org + user) like the lists, so another person signed in on the same app never reads them from the cache. */
+export const taskKey = (client: Pick<TasksClient, "cacheScope">, taskId: string) => `task:${client.cacheScope}:${taskId}`;
+export const questionsKey = (client: Pick<TasksClient, "cacheScope">, taskId: string) => `task-questions:${client.cacheScope}:${taskId}`;
 
 const listKeys = (cache: Cache, client: Pick<TasksClient, "cacheScope">) =>
   [...cache.keys()].filter((k) => k.startsWith(listPrefix(client)));
@@ -50,12 +52,12 @@ export function useOlderTasks(client: TasksClient, first: TaskList | undefined, 
 /** `null` id = no request. */
 /** `null` id = no request. No retry on an error: a stale link's 404 would otherwise refetch forever. */
 export function useTask(client: TasksClient, taskId: string | null) {
-  return useSWR<TaskDetail>(taskId ? taskKey(taskId) : null, () => client.get(taskId!), { shouldRetryOnError: false });
+  return useSWR<TaskDetail>(taskId ? taskKey(client, taskId) : null, () => client.get(taskId!), { shouldRetryOnError: false });
 }
 
 /** The viewer-specific question views of one task (`GET /tasks/{id}/questions`); `null` id = no request. */
 export function useTaskQuestions(client: TasksClient, taskId: string | null) {
-  return useSWR<{ items: QuestionView[] }>(taskId ? questionsKey(taskId) : null, () => client.questions(taskId!), { shouldRetryOnError: false });
+  return useSWR<{ items: QuestionView[] }>(taskId ? questionsKey(client, taskId) : null, () => client.questions(taskId!), { shouldRetryOnError: false });
 }
 
 /** The SWR cache and mutator the task hooks share; apps use it for their own action hooks. */
@@ -67,7 +69,7 @@ export function useTaskCache(): { cache: Cache; mutate: ScopedMutator } {
 /** Write a fresh summary (e.g. an action's response) into every cached list and the detail. */
 export async function putTaskSummary(cache: Cache, mutate: ScopedMutator, task: TaskSummary, client: Pick<TasksClient, "cacheScope">): Promise<void> {
   await Promise.all([
-    mutate<TaskDetail>(taskKey(task.taskId), (d) => (d ? { ...d, task } : d), { revalidate: false }),
+    mutate<TaskDetail>(taskKey(client, task.taskId), (d) => (d ? { ...d, task } : d), { revalidate: false }),
     ...listKeys(cache, client).map((k) => mutate<TaskList>(
       k, (d) => (d ? { ...d, tasks: d.tasks.map((t) => (t.taskId === task.taskId ? task : t)) } : d), { revalidate: false },
     )),
@@ -105,7 +107,7 @@ export async function refreshTask(deps: RefreshDeps, changed: TaskChanged): Prom
 
 async function refreshRows({ cache, mutate, client }: RefreshDeps, { taskId, part, version }: TaskChanged): Promise<void> {
   const lists = listKeys(cache, client);
-  const detail = cache.get(taskKey(taskId))?.data as TaskDetail | undefined;
+  const detail = cache.get(taskKey(client, taskId))?.data as TaskDetail | undefined;
   // An attempt, Question or Effect row counts its own versions from 1: only an open detail cares about it.
   if (part !== "task") {
     if (detail) await refetch({ cache, mutate, client }, taskId, lists);
@@ -132,7 +134,7 @@ async function refetch({ cache, mutate, client }: RefreshDeps, taskId: string, l
   } catch (error) {
     if (error instanceof ApiError && (error.status === 403 || error.status === 404)) {
       await Promise.all([
-        mutate(taskKey(taskId), undefined, { revalidate: false }),
+        mutate(taskKey(client, taskId), undefined, { revalidate: false }),
         ...lists.map((k) => mutate<TaskList>(
           k, (d) => (d ? { ...d, tasks: d.tasks.filter((t) => t.taskId !== taskId) } : d), { revalidate: false },
         )),
@@ -140,9 +142,9 @@ async function refetch({ cache, mutate, client }: RefreshDeps, taskId: string, l
     }
     return; // anything else: the next event or focus revalidation catches up
   }
-  await mutate(taskKey(taskId), fresh, { revalidate: false });
+  await mutate(taskKey(client, taskId), fresh, { revalidate: false });
   await putTaskSummary(cache, mutate, fresh.task, client);
-  if (cache.get(questionsKey(taskId))) await mutate(questionsKey(taskId));
+  if (cache.get(questionsKey(client, taskId))) await mutate(questionsKey(client, taskId));
 }
 
 /** The handler a live provider calls for each `task.changed`. */

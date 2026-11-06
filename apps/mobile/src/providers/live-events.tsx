@@ -82,8 +82,10 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     [api],
   );
   const ownerScope = organization?.id ?? userId;
-  // Keyed by the signed-in workspace so an org switch never reuses the last org's task lists.
-  const tasks = useMemo(() => createTasksClient(api, ownerScope ?? ""), [api, ownerScope]);
+  // Keyed by the signed-in workspace and person: task reads are one viewer's (the server keeps only what they may view),
+  // so an org switch or another person signing in never reuses the last one's cached tasks.
+  const taskScope = [organization?.id, userId].filter(Boolean).join(":");
+  const tasks = useMemo(() => createTasksClient(api, taskScope), [api, taskScope]);
   const refreshTask = useTaskChangedRefresh(tasks);
   const httpReady = !!isLoaded && !!userId;
   const [config, setConfig] = useState<LiveConfig | null>(null);

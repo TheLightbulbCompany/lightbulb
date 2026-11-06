@@ -4,7 +4,8 @@ import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { SWRConfig } from "swr";
 import React from "react";
 
-import { useOnboardingStatus } from "./useOnboardingStatus";
+import { useOnboardingStatus, useResetSwrOnUserChange } from "./useOnboardingStatus";
+import useSWR, { mutate as globalMutate } from "swr";
 import type { StatusContract } from "./statusContract";
 
 /**
@@ -349,5 +350,19 @@ describe("useOnboardingStatus", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("useResetSwrOnUserChange", () => {
+  it("drops cached reads when the person changes, never on the first sign-in", async () => {
+    await globalMutate("viewer-read", "alice's rows", { revalidate: false });
+    const { rerender } = renderHook(({ userId }: { userId: string | null | undefined }) => {
+      useResetSwrOnUserChange(userId);
+      return useSWR("viewer-read", null).data;
+    }, { initialProps: { userId: undefined as string | null | undefined } });
+    rerender({ userId: "alice" });
+    expect(await globalMutate("viewer-read", (d: unknown) => d, { revalidate: false })).toBe("alice's rows");
+    rerender({ userId: null });
+    await waitFor(async () => expect(await globalMutate("viewer-read", (d: unknown) => d, { revalidate: false })).toBeUndefined());
   });
 });

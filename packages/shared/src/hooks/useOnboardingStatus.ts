@@ -22,7 +22,7 @@
  * this hook is a PURE READER of the composer's contract; it never re-derives
  * readiness itself.
  */
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import useSWR, { mutate } from "swr";
 
 import { fetchJsonWithStatus, type ApiClientConfig } from "../api/client";
@@ -192,4 +192,15 @@ export function refreshOnboardingStatus(swrKey = "/container/status"): void {
  *  workspace B would render A's cached answers until each revalidated. */
 export function resetSwrCache(): void {
   void mutate(() => true, undefined);
+}
+
+/** Drop every cached SWR read when the signed-in person changes (sign-out, or another account on this app). Most keys
+ *  carry no user (a task, a room's detail, `/billing/account`), and each holds what one viewer may see: without this
+ *  the next person would render the last one's answers until each revalidated. Nothing to drop on the first sign-in. */
+export function useResetSwrOnUserChange(userId: string | null | undefined): void {
+  const last = useRef(userId);
+  useEffect(() => {
+    if (last.current && last.current !== userId) void mutate(() => true, undefined, { revalidate: false });
+    last.current = userId;
+  }, [userId]);
 }

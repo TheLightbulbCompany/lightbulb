@@ -5,8 +5,8 @@ import type { ReactNode } from "react";
 
 // Every out-of-scope name a jest.mock factory reaches for is `mock`-prefixed (babel-plugin-jest-hoist).
 const mockAuth = { userId: SAM as string };
-// One task id per test: the shared SWR cache keys `task:<id>` and `task-questions:<id>` are global (not per
-// workspace), so a second test on the same id would read the first test's rows for SWR's dedupe window.
+// One task id per test: the shared SWR cache keys `task:<scope>:<id>` and `task-questions:<scope>:<id>` share the fake
+// client's one scope, so a second test on the same id would read the first test's rows for SWR's dedupe window.
 const mockParams = { taskId: "t-signup" };
 const mockLive = { superAgent: true, tasks: null as unknown, messaging: { attachmentUrl: jest.fn(async () => ({ url: "https://files.example/n.md" })) }, api: { get: jest.fn(async () => ({ apps: [{ app_id: "app1", live_url: null, live_version: null }] })), post: jest.fn(async () => ({ url: "https://preview.example/app1" })) } };
 const mockOpenBrowser = jest.fn(async (_url: string) => undefined);

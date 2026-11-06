@@ -397,6 +397,14 @@ async fn start(dir: Option<&Path>, w: &Wanted, me: &Resumer) -> std::result::Res
             }
         }
     }
+    if w.provider == "claude" {
+        // Nobody is at this terminal to answer Claude's trust dialog, and until it is answered
+        // Claude writes no session file, so Lightbulb never sees the run and the resume waits
+        // forever. The folder passed the owner's approved-folder check above: that is the consent.
+        if let Err(e) = trust_claude_folder(&claude_global_config(&home_dir()), &folder) {
+            relay_log(&format!("{} resume: Claude trust not recorded: {e}", &w.session_id[..8]));
+        }
+    }
     let held = crate::session_start::start_held(folder, argv).await.map_err(|e| {
         relay_log(&format!("{} resume launch failed: {e}", &w.session_id[..w.session_id.len().min(8)]));
         "LAUNCH_FAILED"
@@ -546,6 +554,56 @@ fn prepare(w: &Wanted, own: bool, home: &Path) -> std::result::Result<Option<(Pa
 
 pub(crate) fn claude_config(home: &Path) -> PathBuf {
     std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from).unwrap_or_else(|| home.join(".claude"))
+}
+
+/// Claude's global config, where it keeps the folders a person trusted.
+fn claude_global_config(home: &Path) -> PathBuf {
+    std::env::var_os("CLAUDE_CONFIG_DIR").map_or_else(|| home.join(".claude.json"), |d| PathBuf::from(d).join(".claude.json"))
+}
+
+/// Record `folder` as trusted in Claude's `config`, as accepting Claude's trust dialog there does
+/// (`projects[<folder>].hasTrustDialogAccepted`, the key Claude's own error text names). Claude's
+/// trust of a parent stops at a git root, so a new worktree under a trusted folder is untrusted.
+/// Claude saves this file by merging into what is on disk, so the entry survives its next save.
+/// A missing config is left missing; one that is not a JSON object is left as it is.
+fn trust_claude_folder(config: &Path, folder: &Path) -> std::result::Result<(), String> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let text = match fs::read_to_string(config) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("read: {e}")),
+    };
+    let mut doc: Value = serde_json::from_str(&text).map_err(|e| format!("not JSON: {e}"))?;
+    let key = folder.to_str().ok_or("folder is not UTF-8")?;
+    if doc["projects"][key]["hasTrustDialogAccepted"] == true {
+        return Ok(());
+    }
+    let project = doc
+        .as_object_mut()
+        .ok_or("not an object")?
+        .entry("projects")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or("projects is not an object")?
+        .entry(key)
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or("project is not an object")?;
+    project.insert("hasTrustDialogAccepted".into(), Value::Bool(true));
+    super::backup_once(config)?;
+    // Renamed over it: Claude never reads a half-written file.
+    let tmp = config.with_file_name(format!(".claude.json.lightbulb-{}", uuid::Uuid::new_v4().simple()));
+    let written = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&tmp)
+        .and_then(|mut f| f.write_all(serde_json::to_string_pretty(&doc).map_err(std::io::Error::other)?.as_bytes()))
+        .and_then(|()| fs::rename(&tmp, config));
+    if written.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    written.map_err(|e| format!("write: {e}"))
 }
 
 pub(crate) fn approved_folder(folder: &Path, approved: &[PathBuf]) -> std::result::Result<PathBuf, &'static str> {
@@ -914,5 +972,44 @@ mod tests {
         if crate::session_start::tools(home.path()).iter().all(|t| t["id"] != "codex") {
             assert_eq!(prepare(&w, false, home.path()), Err("TOOL_UNAVAILABLE"));
         }
+    }
+
+    /// A resume starts `claude --resume` in the folder the conversation last ran in, with nobody at
+    /// the terminal. A folder Claude has not trusted yet (a new git worktree: Claude's trust stops
+    /// at a git root, so a trusted parent does not cover it) shows Claude's trust dialog there, and
+    /// Claude writes no `~/.claude/sessions/<pid>.json` until it is answered: Lightbulb never sees
+    /// the run, and the resume waits forever (prod 2026-11-05, "Opening this session on your Mac…").
+    #[test]
+    fn resume_trusts_its_approved_folder_for_claude_before_it_starts() {
+        let home = tempfile::tempdir().unwrap();
+        let config = home.path().join(".claude.json");
+        let folder = Path::new("/Users/x/repo/worktree");
+        std::fs::write(&config, r#"{"oauthAccount":{"a":1},"projects":{"/Users/x":{"hasTrustDialogAccepted":true,"allowedTools":["Bash"]}}}"#).unwrap();
+        trust_claude_folder(&config, folder).unwrap();
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+        assert_eq!(doc["projects"]["/Users/x/repo/worktree"]["hasTrustDialogAccepted"], true);
+        assert_eq!(doc["projects"]["/Users/x"]["allowedTools"], json!(["Bash"]), "other projects are kept");
+        assert_eq!(doc["oauthAccount"], json!({"a": 1}), "every other key is kept");
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&config).unwrap().permissions().mode() & 0o777, 0o600);
+        // Already trusted: the file is not rewritten.
+        let before = std::fs::read(&config).unwrap();
+        std::fs::write(&config, &before).unwrap();
+        let mtime = std::fs::metadata(&config).unwrap().modified().unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        trust_claude_folder(&config, folder).unwrap();
+        assert_eq!(std::fs::metadata(&config).unwrap().modified().unwrap(), mtime);
+        // A project entry Claude already has keeps its other fields.
+        std::fs::write(&config, r#"{"projects":{"/Users/x/repo/worktree":{"hasTrustDialogAccepted":false,"allowedTools":["Edit"]}}}"#).unwrap();
+        trust_claude_folder(&config, folder).unwrap();
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+        assert_eq!(doc["projects"]["/Users/x/repo/worktree"], json!({"hasTrustDialogAccepted": true, "allowedTools": ["Edit"]}));
+        // No config (Claude never ran here) or one that is not JSON: nothing is written.
+        let none = home.path().join("missing.json");
+        assert!(trust_claude_folder(&none, folder).is_ok());
+        assert!(!none.exists());
+        std::fs::write(&config, "{not json").unwrap();
+        assert!(trust_claude_folder(&config, folder).is_err());
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), "{not json");
     }
 }

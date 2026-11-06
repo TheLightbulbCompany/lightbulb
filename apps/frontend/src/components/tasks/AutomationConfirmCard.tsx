@@ -23,7 +23,7 @@ export function AutomationConfirmCard({ automationId, viewerTz = viewerTimeZone(
   // Not now deletes the draft, so every later read of this card is a 404 (dev walk 10, W10-6): it says what
   // happened, in a plain line, never a dead box. Any other failed read offers Retry.
   if (gone || (!a && (error as { status?: number } | undefined)?.status === 404)) {
-    return <p className="mt-1 text-ui text-muted-foreground">Not set up.</p>;
+    return <p className="mt-1 text-ui text-muted-foreground">This schedule was removed.</p>;
   }
   if (!a && error) {
     return <p role="alert" className="mt-1 text-ui text-muted-foreground">

@@ -1,6 +1,6 @@
 """Build-time smoke for the Lightbulb patch series (Dockerfile, right after the series applies).
 
-Not under tests/smoke/: infra-ci runs those against the UNPATCHED upstream base image. This one
+Not under tests/smoke/: infra-ci runs those as bridge smokes (bridge/ mounted). This one
 runs inside the image build after hermes-patches/ is applied, and proves every patch is present
 and inert by default (no checkpoint callback, no injected input, no refresh delegate)."""
 

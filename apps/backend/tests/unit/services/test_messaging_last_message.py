@@ -144,7 +144,7 @@ def test_backend_preview_matches_the_projector_copy():
         "messageId": "m",
         "messageSeq": 7,
         "author": {"kind": "agent", "id": "a", "displayName": "Friday"},
-        "text": "```py\nx\n```\n> **quoted** `code` ~~gone~~ \\_\\_init\\_\\_ 3\\*4 " + "y" * 200,
+        "text": "```py\nx\n```\n> **quoted** `code` ~~gone~~ \\_\\_init\\_\\_ 3\\*4 \\`x\\` " + "y" * 200,
         "attachments": [{"id": "f"}],
         "createdAt": "2026-09-24T00:00:00Z",
         "threadRootMessageId": None,
@@ -156,3 +156,5 @@ def test_preview_shows_the_composers_escaped_characters_as_typed(table):
     assert repo._plain_preview("\\_\\_init\\_\\_ and 3\\*4 then 5\\*6, \\*\\*not bold\\*\\*") == (
         "__init__ and 3*4 then 5*6, **not bold**"
     )
+    # A typed `x` keeps its backticks; real code marks still go.
+    assert repo._plain_preview("\\# 1: use \\`x\\` here, `code`") == "# 1: use `x` here, code"

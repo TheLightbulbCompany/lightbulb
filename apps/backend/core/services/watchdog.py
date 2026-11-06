@@ -397,7 +397,10 @@ def judge_state(
 ) -> dict:
     """What Jev sees, ≤ 24k chars, oldest notes dropped first. Watchdog-authored lines never count as progress."""
     lines = [
-        {"author": (m.get("author") or {}).get("kind"), "text": str(m.get("text") or "")[:NOTE_MAX]}
+        {
+            "author": (m.get("author") or {}).get("kind"),
+            "text": messaging_repo.agent_text(str(m.get("text") or ""))[:NOTE_MAX],
+        }
         for m in notes
         if m.get("kind") != "watchdog"
     ][-NOTES:]

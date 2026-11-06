@@ -48,9 +48,18 @@ export function trimComposerEscapes(markdown: string): string {
   return markdown.split(/(?<!\\)(```[\s\S]*?```|`[^`\n]*`)/)
     .map((segment, index) => (index % 2 ? segment : segment
       .replace(/(?:https?:\/\/|www\.)[^\s<]+/g, (url) => url.replace(/\\([!-/:-@[-`{-~])/g, "$1"))
-      .replace(/(?<=[\p{L}\p{N}])((?:\\_)+)(?=[\p{L}\p{N}])/gu, (run) => run.replace(/\\/g, ""))))
+      .replace(/(?<=[\p{L}\p{N}])((?:\\_)+)(?=[\p{L}\p{N}])/gu, (run) => run.replace(/\\/g, ""))
+      // A handle may open with _ (@_ops): unescaped, or the mention grammar never sees it.
+      .replace(/(^|[\s(])@((?:\\_)+)/g, (_all, before: string, run: string) => `${before}@${run.replace(/\\/g, "")}`)))
     .join("");
 }
+
+/** Lexical reads `\*` inside an inline code span as an escape and drops the backslash (fences are fine); doubled
+ *  first, the span reads back as written. */
+const keepCodeBackslashes = (markdown: string) => markdown.split(/(```[\s\S]*?```)/)
+  .map((part, index) => (index % 2 ? part : part.replace(/(?<!\\)(`+)([^`\n]*?)\1(?!`)/g,
+    (_all, ticks: string, body: string) => `${ticks}${body.replace(/\\(?=[!-/:-@[-`{-~])/g, "\\\\")}${ticks}`)))
+  .join("");
 
 /** The message the box holds, as markdown (one "\n" per line, as typed; typed `*_~` and line-start `#` escaped). */
 export const $composerMarkdown = () => trimComposerEscapes($convertToMarkdownString([LITERAL_TEXT, ...FORMAT_TRANSFORMERS], undefined, true));
@@ -98,6 +107,9 @@ function Bridge({ value, onChange, onTrigger, editable, onKeyDown, onPasteFiles,
   const [editor] = useLexicalComposerContext();
   // The markdown this box last read in or wrote out: a `value` that differs came from outside (a draft, a starter, a send).
   const known = useRef<string | null>(null);
+  // What arrived and how the box writes it back: an untouched box gives back what arrived (an edit saved unchanged
+  // keeps a mobile message's # heading or __bold__ as it was).
+  const imported = useRef<{ value: string; markdown: string } | null>(null);
   const trigger = useRef<{ key: string; trigger: CompletionTrigger } | null>(null);
   const latest = useRef({ onChange, onTrigger, onKeyDown, onPasteFiles, onBlur });
   useLayoutEffect(() => { latest.current = { onChange, onTrigger, onKeyDown, onPasteFiles, onBlur }; });
@@ -106,10 +118,11 @@ function Bridge({ value, onChange, onTrigger, editable, onKeyDown, onPasteFiles,
     if (value === known.current) return;
     known.current = value;
     editor.update(() => {
-      $convertFromMarkdownString(value, FORMAT_TRANSFORMERS, undefined, true);
+      $convertFromMarkdownString(keepCodeBackslashes(value), FORMAT_TRANSFORMERS, undefined, true);
       // A box that has focus keeps typing at the end of what arrived (a starter, a restored draft).
       if (editor.getRootElement()?.contains(document.activeElement)) $getRoot().selectEnd();
     }, { discrete: true, tag: "composer-external" });
+    imported.current = { value, markdown: editor.getEditorState().read($composerMarkdown) };
   }, [editor, value]);
 
   useEffect(() => { editor.setEditable(editable); }, [editor, editable]);
@@ -122,7 +135,8 @@ function Bridge({ value, onChange, onTrigger, editable, onKeyDown, onPasteFiles,
   }, [editor]);
 
   useEffect(() => editor.registerUpdateListener(({ editorState, tags }) => {
-    const markdown = editorState.read($composerMarkdown);
+    const written = editorState.read($composerMarkdown);
+    const markdown = written === imported.current?.markdown ? imported.current.value : written;
     if (!tags.has("composer-external") && markdown !== known.current) {
       known.current = markdown;
       latest.current.onChange(markdown);

@@ -400,7 +400,7 @@ async def capture_first_workspace_message(owner_id: str, message: dict) -> bool:
     from core.services.messaging import FIRST_RUN_KIND, TEAM_WELCOME_KIND, close_first_run, default_room_id
 
     author = message.get("author") or {}
-    text = str(message.get("text") or "").strip()
+    text = messaging_repo.agent_text(str(message.get("text") or "")).strip()
     message_seq = int(message.get("messageSeq") or 0)
     in_general = message.get("roomId") == default_room_id(owner_id)
     # Elsewhere only a young room can be the first-run DM (its welcome is checked below).

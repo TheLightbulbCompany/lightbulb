@@ -75,7 +75,11 @@
 .made-here__all { display: inline-flex; align-items: center; gap: 2px; min-height: 24px; font-size: 13px; line-height: 18px; font-weight: 500; color: var(--muted-foreground); }
 .made-here__all:hover { color: var(--foreground); }
 .made-here__row { display: flex; flex-wrap: wrap; gap: 8px; }
-.made-here__tile { display: block; border-radius: 6px; }
+.made-here__tile { display: grid; gap: 4px; width: 88px; border-radius: 6px; text-align: left; }
+.made-here__name {
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
+  font-size: 13px; line-height: 18px; color: var(--foreground); overflow-wrap: anywhere;
+}
 .made-here__tile:hover .output-thumb { border-color: var(--muted-foreground); }
 .made-here__tile:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 

@@ -245,29 +245,33 @@ export function TaskDetails({ detail }: { detail: TaskDetail }): ReactElement {
   </details>;
 }
 
-/** The latest run's steps, under Progress: read when opened, and again every few seconds while it runs. */
+/** The latest run's steps, under Progress, counted in the heading ("Steps · 2"), in plain words (W12-7). */
 function TaskSteps({ detail, live }: { detail: TaskDetail; live: boolean }): ReactElement | null {
   const { tasks } = useLiveEvents();
   const latest = detail.attempts.reduce((n, a) => Math.max(n, a.n), 0);
   const [open, setOpen] = useState(false);
   const [trace, setTrace] = useState<TaskTrace | { error: true } | null>(null);
   const taskId = detail.task.taskId;
+  // Read once up front, so the heading can count the steps; again every few seconds while it runs and is open.
   useEffect(() => {
-    if (!open || !latest) return;
+    if (!latest) return;
     let alive = true;
     const read = () => void tasks.trace(taskId, latest).then((t) => { if (alive) setTrace(t); }, () => { if (alive) setTrace({ error: true }); });
     read();
-    const timer = live ? window.setInterval(read, 5000) : undefined;
+    const timer = live && open ? window.setInterval(read, 5000) : undefined;
     return () => { alive = false; window.clearInterval(timer); };
   }, [open, live, latest, taskId, tasks]);
   if (!latest) return null;
+  const lines = trace && !("error" in trace) ? stepLines(trace.recentTools) : null;
   return <details className="px-1 text-ui" onToggle={(event) => setOpen((event.currentTarget as HTMLDetailsElement).open)}>
-    <summary className="cursor-pointer text-muted-foreground">Steps{detail.attempts.length > 1 ? ` · run ${latest}` : ""}</summary>
+    <summary className="cursor-pointer text-muted-foreground">
+      Steps{lines?.length ? ` · ${lines.length}` : ""}{detail.attempts.length > 1 ? ` · run ${latest}` : ""}
+    </summary>
     {trace == null ? <p className="text-muted-foreground">Loading…</p>
-      : "error" in trace ? <p className="text-muted-foreground">The steps aren&apos;t available.</p>
-      : !trace.recentTools.length ? <p className="text-muted-foreground">No steps yet.</p>
-      : <ol className="mt-1 max-h-64 overflow-auto text-caption" aria-label={`Run ${trace.attempt} steps`}>
-        {stepLines(trace.recentTools).map((line, i) => <li key={i} className="truncate">{line}</li>)}
+      : !lines ? <p className="text-muted-foreground">The steps aren&apos;t available.</p>
+      : !lines.length ? <p className="text-muted-foreground">No steps yet.</p>
+      : <ol className="mt-1 max-h-64 overflow-auto text-caption" aria-label={`Run ${latest} steps`}>
+        {lines.map((line, i) => <li key={i} className="truncate">{line}</li>)}
       </ol>}
   </details>;
 }

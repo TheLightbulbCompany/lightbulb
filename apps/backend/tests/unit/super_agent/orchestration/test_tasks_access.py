@@ -144,6 +144,8 @@ def test_summarize_derived_fields():
                 "sessionId": "lb-org_1-t-abc",
                 "inputTriggerIds": ["chat:m9"],
                 "lastHeartbeatAt": "2026-11-04T10:05:00Z",
+                "startedAt": "2026-11-04T10:04:00Z",
+                "endedAt": "2026-11-04T10:05:02Z",
             },
         ],
         "subscriptions": [{"threadKey": "room:r1:m1", "createdBy": "router", "active": True}],
@@ -165,6 +167,8 @@ def test_summarize_derived_fields():
     assert s["runsOn"] == "task"
     assert s["recentInputs"] == ["chat:m9"]
     assert s["activity"]["n"] == 2
+    # The chip's timer: the latest run's start and end (dev walk 12, W12-1).
+    assert (s["activity"]["startedAt"], s["activity"]["endedAt"]) == ("2026-11-04T10:04:00Z", "2026-11-04T10:05:02Z")
     assert s["costUsd"] == 0.4 and s["budgetUsd"] == 5.0 and s["audienceKind"] == "room"
     assert s["output"] == {"idemKey": "e1", "kind": "mail", "title": "Reply to Acme", "nextStep": "send"}
 

@@ -42,3 +42,27 @@ it("the Router's ack carries its task as a compact chip with the specialist, nev
   if (task.specialist) expect(chip.textContent).toContain("·");
   expect(document.querySelector("[data-task-card]")).toBeNull();
 });
+
+it("one task, one live chip: Working with its timer, then Done with the run's length and what it made (dev walk 12, W12-1)", async () => {
+  const base = FIXTURES.step08.tasks[0];
+  const started = new Date(Date.now() - 38_000).toISOString();
+  const working = { ...base, status: "working" as const, shownGroup: "working" as const, activity: { n: 1, status: "running" as const, startedAt: started } };
+  live.tasks = fakeTasksClient([working], FIXTURES.step08.details);
+  const msg = (kind?: "task_line") => ({
+    messageId: kind ? "m9" : "m8", roomId: ROOM, messageSeq: 8, roomRevision: 1, author: { kind: "agent", id: "ceo", displayName: "Lightbulb" },
+    text: "x", mentions: [], replyToMessageId: null, threadRootMessageId: null, createdAt: started, runId: null,
+    kind, taskRefs: [{ taskId: base.taskId, role: "started" }],
+  }) as CanonicalRoomMessage;
+  const { unmount } = render(<Fresh><MessageTasks message={msg()} viewerId={SAM} /></Fresh>);
+  expect(await screen.findByRole("button", { name: /Working · 0:3\d/ })).toHaveAttribute("data-mark", "working");
+  unmount();
+
+  const done = { ...working, status: "idle" as const, shownGroup: "idle" as const,
+    activity: { ...working.activity, status: "ended" as const, endedAt: new Date(Date.parse(started) + 62_000).toISOString() },
+    outputs: [{ id: "file:1", kind: "file" as const, title: "bakery-tagline-options.md", ref: {}, createdAt: started }] };
+  live.tasks = fakeTasksClient([done], FIXTURES.step08.details);
+  render(<Fresh><MessageTasks message={msg()} viewerId={SAM} /><MessageTasks message={msg("task_line")} viewerId={SAM} /></Fresh>);
+  const chips = await screen.findAllByRole("button", { name: new RegExp(`${base.title}, Done · 1:02`) });
+  expect(chips).toHaveLength(2);
+  expect(screen.getAllByRole("button", { name: "Open bakery-tagline-options.md" })).toHaveLength(2);
+});

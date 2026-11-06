@@ -6,14 +6,14 @@
 
 import "./creations.css";
 import { useMemo, useState, type ReactElement } from "react";
-import { File as FileIcon, MoreHorizontal, X } from "lucide-react";
+import { MoreHorizontal, X } from "lucide-react";
 import { elapsedShort, specialistLabel, type OutputKind } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import type { RoomMessage } from "@/components/messaging/types";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { KIND_FILTERS, openOutput, outputLink, type Openable } from "./openOutput";
-import { KIND_ICON } from "./OutputThumb";
+import { iconOf } from "./OutputThumb";
 import { useCreations } from "./useCreations";
 
 type Row = { key: string; output: Openable; madeBy: string; at: string; shared: boolean };
@@ -69,11 +69,10 @@ export function ProjectFiles({ roomId, viewerId, messages, onOpenTask }: {
       : <table className="project-files__table">
         <thead><tr><th scope="col">Name</th><th scope="col">Made by</th><th scope="col">Date</th><th scope="col"><span className="sr-only">Actions</span></th></tr></thead>
         <tbody>{rows.map((row) => {
-          const Icon = KIND_ICON[row.output.kind] ?? FileIcon;
           const open = () => openOutput(row.output, onOpenTask);
           return <tr key={row.key}>
             <td><button type="button" className="project-files__name" onClick={open}>
-              <Icon size={16} strokeWidth={1.75} aria-hidden="true" /><span>{row.output.title}</span>
+              {iconOf(row.output, 16)}<span>{row.output.title}</span>
             </button></td>
             <td className="project-files__muted">{row.madeBy}</td>
             <td className="project-files__muted"><time dateTime={row.at}>{elapsedShort(row.at, now)}</time></td>

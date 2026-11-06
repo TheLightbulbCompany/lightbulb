@@ -266,6 +266,8 @@ def summarize(tree: dict, viewer_id: str) -> dict[str, Any]:
             "status": last["status"],
             "outcome": last.get("outcome"),
             "lastHeartbeatAt": last.get("lastHeartbeatAt"),
+            "startedAt": last.get("startedAt"),
+            "endedAt": last.get("endedAt"),
         },
         "recentInputs": list(last.get("inputTriggerIds") or []) if last else [],
         "attemptCount": task.get("attemptCount", 0),

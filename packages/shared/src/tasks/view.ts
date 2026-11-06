@@ -188,6 +188,33 @@ export function activityLine(t: TaskSummary, viewerId: string, names: AgentNames
   return { actor, rest, text: `${actor} · ${rest}` };
 }
 
+/** "0:38", "1:02:05": a run's length on a task chip. */
+export function clockTime(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = String(s % 60).padStart(2, "0");
+  return h ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`;
+}
+
+export type ChipMark = "working" | "waiting" | "done" | "failed" | "closed";
+
+/** A task chip's live state (dev walk 12, W12-1): "Working · 0:38" → "Done · 1:02", or "Didn't finish". The time is
+ *  the latest run's: ticking while it works, its length once it ended; none before a run starts. */
+export function chipState(t: TaskSummary, viewerId: string, now: number): { mark: ChipMark; word: string; time: string | null } {
+  const view = summaryView(t, viewerId);
+  const run = t.activity;
+  const from = run?.startedAt ? Date.parse(run.startedAt) : NaN;
+  const to = run?.endedAt ? Date.parse(run.endedAt) : NaN;
+  const ran = !Number.isNaN(from) && !Number.isNaN(to) ? clockTime(to - from) : null;
+  if (t.status === "failed") return { mark: "failed", word: "Didn't finish", time: null };
+  if (t.status === "resolved" && (t.statusReason === "stopped" || t.statusReason === "dismissed")) {
+    return { mark: "closed", word: t.statusReason === "stopped" ? "Stopped" : "Closed", time: null };
+  }
+  // A person's Close after the work ended still reads as the work's outcome.
+  if (view.word === "Done" || t.status === "resolved") return { mark: "done", word: "Done", time: ran };
+  if (view.word === "Needs you") return { mark: "waiting", word: view.reason === "Ready for review" ? "Ready for review" : "Needs you", time: null };
+  return { mark: "working", word: "Working", time: !Number.isNaN(from) && Number.isNaN(to) ? clockTime(now - from) : null };
+}
+
 function joinNames([first, ...rest]: string[]): string {
   if (!rest.length) return first;
   return rest.length === 1 ? `${first} or ${rest[0]}` : `${first} or ${rest.length} others`;
@@ -467,19 +494,28 @@ const STEP_NOUNS: Partial<Record<ToolKind, [string, string]>> = {
   fetch: ["a page", "pages"], browse: ["a page", "pages"], message: ["a message", "messages"], delegate: ["a task", "tasks"],
 };
 
-/** One line per run of the same tool: "Searched the web · 9", "Read 2 pages", "Ran a command", "… · failed". */
+/** Overhead the agent does before the work (dev walk 12, W12-7): its own how-to notes and tool lookups. In plain words,
+ *  and hidden when the run has a step that did something. */
+const INTERNAL_STEPS: Record<string, string> = {
+  "Read skill": "Checked how to do it", "Listed skills": "Checked how to do it", "Looked up a tool": "Prepared tools",
+};
+
+/** One line per run of the same step: "Searched the web · 9", "Read 2 pages", "Ran a command", "… · failed".
+ *  Internal steps ("Checked how to do it", "Prepared tools") show only when nothing else ran. */
 export function stepLines(tools: readonly unknown[]): string[] {
   const steps = tools.map((tool) => {
     const t = (typeof tool === "string" ? { name: tool } : tool ?? {}) as Record<string, unknown>;
     const name = [t.name, t.tool, t.type].find((v) => typeof v === "string") as string | undefined;
-    return { name: name ?? "", failed: t.ok === false || t.status === "failed" };
+    const display = name ? resolveToolDisplay(name, {}) : null;
+    const past = display?.past.replace(/:$/, "") ?? "";
+    const internal = INTERNAL_STEPS[past];
+    return { past: internal ?? past, kind: display?.kind, internal: !!internal, failed: t.ok === false || t.status === "failed" };
   });
-  return collapseRepeats(steps, (s) => `${s.name}|${s.failed}`).map(({ item, count }) => {
-    if (!item.name) return count > 1 ? `${count} steps` : "A step";
-    const display = resolveToolDisplay(item.name, {});
-    const past = display.past.replace(/:$/, "");
-    const noun = /^\w+$/.test(past) ? STEP_NOUNS[display.kind] : undefined;  // "Ran" takes a noun; "Searched the web" has one
-    const line = noun ? `${past} ${count > 1 ? `${count} ${noun[1]}` : noun[0]}` : count > 1 ? `${past} · ${count}` : past;
+  const shown = steps.some((s) => !s.internal) ? steps.filter((s) => !s.internal) : steps;
+  return collapseRepeats(shown, (s) => `${s.past}|${s.failed}`).map(({ item, count }) => {
+    if (!item.past) return count > 1 ? `${count} steps` : "A step";
+    const noun = /^\w+$/.test(item.past) && item.kind ? STEP_NOUNS[item.kind] : undefined;  // "Ran" takes a noun; "Searched the web" has one
+    const line = noun ? `${item.past} ${count > 1 ? `${count} ${noun[1]}` : noun[0]}` : count > 1 && !item.internal ? `${item.past} · ${count}` : item.past;
     return item.failed ? `${line} · failed` : line;
   });
 }

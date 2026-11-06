@@ -38,6 +38,10 @@ export function useCreations(filter: CreationsFilter | null) {
   const { data: roomTasks } = useTaskList(tasks, roomScope);
   const made = roomTasks?.tasks.reduce((n, t) => n + (t.outputs?.length ?? 0), 0);
   const seen = useRef<number | undefined>(undefined);
+  // Mounting over a cached read re-reads it: the strip unmounts while the pane shows a task, so a task that made
+  // something meanwhile was never counted here (dev walk 12, W12-6). SWR's own mount revalidation skips a cached page.
+  const cached = useRef(data !== undefined);
+  useEffect(() => { if (cached.current) { cached.current = false; void mutate(); } }, [mutate]);
   useEffect(() => {
     if (made === undefined) return;
     if (seen.current !== undefined && seen.current !== made) void mutate();

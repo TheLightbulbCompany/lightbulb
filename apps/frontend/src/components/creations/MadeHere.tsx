@@ -1,7 +1,7 @@
 "use client";
 
 // "Made here" (super-agent, UX slice 5): the newest four things this project's tasks made, at the top of its Tasks
-// pane. Hidden until the project has made something; "All files ›" switches the pane to Files.
+// pane, each with its name under it. Hidden until the project has made something; "All files ›" switches the pane to Files.
 
 import "./creations.css";
 import type { ReactElement } from "react";
@@ -28,6 +28,7 @@ export function MadeHere({ roomId, onOpenTask, onAllFiles }: {
       {outputs.slice(0, 4).map((o) => <li key={`${o.taskId}:${o.id}`}>
         <button type="button" className="made-here__tile" title={o.title} aria-label={`Open ${o.title}`} onClick={() => openOutput(o, onOpenTask)}>
           <OutputThumb output={o} size="mini" app={o.kind === "app" ? apps.find((a) => a.app_id === o.ref?.appId) : undefined} />
+          <span className="made-here__name">{o.title}</span>
         </button>
       </li>)}
     </ul>

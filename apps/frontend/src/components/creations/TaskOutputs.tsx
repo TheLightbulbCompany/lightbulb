@@ -5,10 +5,10 @@
 
 import "./creations.css";
 import type { ReactElement } from "react";
-import { ChevronRight, File as FileIcon } from "lucide-react";
+import { ChevronRight } from "lucide-react";
 import type { TaskSummary } from "@lightbulb/shared";
 import { openOutput } from "./openOutput";
-import { KIND_ICON } from "./OutputThumb";
+import { iconOf } from "./OutputThumb";
 
 export function TaskOutputs({ task, max, onOpenTask }: {
   task: Pick<TaskSummary, "taskId" | "outputs">;
@@ -24,9 +24,8 @@ export function TaskOutputs({ task, max, onOpenTask }: {
   const rest = outputs.length - shown.length;
   return <ul className="task-outputs" aria-label="Made by this task">
     {shown.map((o) => {
-      const Icon = KIND_ICON[o.kind] ?? FileIcon;
       const opensTask = o.kind === "mail" || o.kind === "capability";
-      const body = <><Icon size={14} strokeWidth={1.75} aria-hidden="true" /><span className="task-outputs__title">{o.title}</span></>;
+      const body = <>{iconOf(o)}<span className="task-outputs__title">{o.title}</span></>;
       return <li key={o.id}>
         {opensTask && !onOpenTask ? <span className="task-outputs__chip">{body}</span>
           : <button type="button" className="task-outputs__chip" aria-label={`Open ${o.title}`}

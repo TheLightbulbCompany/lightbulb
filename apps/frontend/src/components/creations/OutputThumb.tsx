@@ -11,9 +11,17 @@ import type { AppRow } from "@/hooks/useApps";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { extensionOf, hostOf } from "./openOutput";
 
-export const KIND_ICON: Record<OutputKind, LucideIcon> = {
+const KIND_ICON: Record<OutputKind, LucideIcon> = {
   app: AppWindow, document: FileText, file: FileIcon, mail: Mail, link: ArrowUpRight, pr: ArrowUpRight, capability: Sparkles,
 };
+
+const TEXT_FILES = new Set(["MD", "TXT", "PDF", "DOC", "DOCX", "RTF", "CSV"]);
+
+/** An output's glyph: by kind, and a text file (a .md a task wrote as a file) as a document. */
+export function iconOf(o: Pick<TaskOutput, "kind" | "title" | "ref">, size = 14, strokeWidth = 1.75): ReactElement {
+  const Icon = o.kind === "file" && TEXT_FILES.has(extensionOf(o)) ? FileText : KIND_ICON[o.kind] ?? FileIcon;
+  return <Icon size={size} strokeWidth={strokeWidth} aria-hidden="true" />;
+}
 
 /** A short-lived address for an image a task made (presigned; refetched by SWR when the tile comes back). */
 function useAttachmentImage(ref: Record<string, string>, on: boolean): string | undefined {
@@ -48,10 +56,9 @@ export function OutputThumb({ output, app, size = "tile", frame = true }: {
       <img src={src} alt="" loading="lazy" />
     </span>;
   }
-  const Icon = KIND_ICON[output.kind] ?? FileIcon;
   const note = output.kind === "link" || output.kind === "pr" ? hostOf(output) : output.kind === "document" || output.kind === "file" ? extensionOf(output) : "";
   return <span className="output-thumb output-thumb--glyph" data-size={size}>
-    <Icon size={size === "mini" ? 18 : 24} strokeWidth={1.5} aria-hidden="true" />
+    {iconOf(output, size === "mini" ? 18 : 24, 1.5)}
     {size === "tile" && note && <span className="output-thumb__note">{note}</span>}
   </span>;
 }

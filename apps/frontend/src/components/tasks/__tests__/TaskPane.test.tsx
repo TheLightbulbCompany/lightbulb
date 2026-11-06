@@ -153,17 +153,21 @@ describe("TaskPane", () => {
     expect(await screen.findByText(/^Approved by Sam · /)).toBeInTheDocument();
   });
 
-  it("details folded, trace on demand, cost line", async () => {
+  it("details folded, steps read once up front, cost line", async () => {
     pane();
     await screen.findByText("Details");
-    expect(client.trace).not.toHaveBeenCalled();
     await userEvent.click(screen.getByText("Details"));
     expect(screen.getByText("$0.84 of $5 budget")).toBeInTheDocument();
-    // Steps sit under Progress, not inside Details (UX slice 3).
-    await userEvent.click(screen.getByText(/^Steps/));
+    // Steps sit under Progress, not inside Details (UX slice 3); read once so the heading can count them (W12-7).
     await waitFor(() => expect(client.trace).toHaveBeenCalledWith("t-signup", 2));
-    expect(client.trace).toHaveBeenCalledTimes(1);
+    await userEvent.click(screen.getByText(/^Steps/));
     expect(await screen.findByText("No steps yet.")).toBeInTheDocument();
+  });
+
+  it("counts the steps in plain words in the heading (dev walk 12, W12-7)", async () => {
+    client.trace.mockResolvedValueOnce({ attempt: 2, recentTools: ["skill_view", "tool_describe", "terminal", "terminal", "write_file"].map((name) => ({ name, ok: true })) as unknown[] });
+    pane();
+    expect(await screen.findByText(/^Steps · 2\b/)).toBeInTheDocument();
   });
 
   it("cost hidden when nothing spent and no budget", async () => {

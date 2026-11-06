@@ -3,11 +3,13 @@
 // Request cards under a Lightbulb message (`taskRefs`) and the "Sent to …" line under a person's message (`routedTo`). Only rendered with the switch on.
 // One shared room list read (SWR dedupes it across every message in the room).
 
-import type { ReactElement } from "react";
-import { ChevronRight } from "lucide-react";
-import { specialistLabel, useTask, useTaskList, type CanonicalRoomMessage, type TaskSummary } from "@lightbulb/shared";
+import { useEffect, useState, type ReactElement } from "react";
+import { Check, ChevronRight } from "lucide-react";
+import { chipState, specialistLabel, useTask, useTaskList, type CanonicalRoomMessage, type ChipMark, type TaskSummary } from "@lightbulb/shared";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
-import { TaskCard, TaskDot } from "./TaskCard";
+import { cn } from "@/lib/utils";
+import { TaskOutputs } from "@/components/creations/TaskOutputs";
+import { TaskCard } from "./TaskCard";
 
 export function MessageTasks({ message, viewerId, onOpen }: {
   message: CanonicalRoomMessage; viewerId: string; onOpen?: (taskId: string) => void;
@@ -35,22 +37,45 @@ export function MessageTasks({ message, viewerId, onOpen }: {
   </div>;
 }
 
-/** One line: the task's live dot, title and specialist; it opens the task. */
+const MARK_TEXT: Record<ChipMark, string> = {
+  working: "text-info", waiting: "text-warn", done: "text-ok", failed: "text-err", closed: "text-muted-foreground",
+};
+
+/** One task, one chip (dev walk 12, W12-1): its title, specialist and live state, "Working · 0:38" → "Done · 1:02"
+ *  or "Didn't finish", read from the room's one task list, so the ack and the finish line always agree. What it made
+ *  sits under it, each thing openable. */
 function RefChip({ taskId, listed, viewerId, onOpen }: {
   taskId: string; listed: TaskSummary | undefined; viewerId: string; onOpen?: (taskId: string) => void;
 }): ReactElement | null {
   const { tasks, agentNames } = useLiveEvents();
   const { data } = useTask(tasks, listed ? null : taskId);
   const task = listed ?? data?.task;
-  if (!task) return null;
+  const [now, setNow] = useState(() => Date.now());
+  const state = task ? chipState(task, viewerId, now) : null;
+  const ticking = state?.mark === "working" && !!state.time;
+  useEffect(() => {
+    if (!ticking) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [ticking]);
+  if (!task || !state) return null;
   const who = task.specialist ? specialistLabel(task.specialist, agentNames) : null;
-  return <button type="button" data-task-chip={taskId} onClick={() => onOpen?.(taskId)}
-    className="mt-1 inline-flex max-w-full items-center gap-1.5 rounded-md border border-border px-2 py-0.5 text-ui hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring">
-    <TaskDot task={task} viewerId={viewerId} />
-    <span className="min-w-0 truncate font-semibold">{task.title}</span>
-    {who && <span className="shrink-0 text-muted-foreground">· {who}</span>}
-    <ChevronRight aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
-  </button>;
+  const status = state.time ? `${state.word} · ${state.time}` : state.word;
+  return <div>
+    <button type="button" data-task-chip={taskId} data-mark={state.mark} onClick={() => onOpen?.(taskId)}
+      aria-label={`Open ${task.title}, ${status}`}
+      className="mt-1 inline-flex max-w-full items-center gap-1.5 rounded-md border border-border px-2 py-0.5 text-ui hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring">
+      <span className="min-w-0 truncate font-semibold">{task.title}</span>
+      {who && <span className="shrink-0 text-muted-foreground">· {who}</span>}
+      <span className={cn("inline-flex shrink-0 items-center gap-1 tabular-nums", MARK_TEXT[state.mark])}>
+        {state.mark === "done" ? <Check aria-hidden="true" className="size-3.5" strokeWidth={2} />
+          : <span aria-hidden="true" className={cn("size-1.5 rounded-full bg-current", state.mark === "working" && "motion-safe:animate-pulse")} />}
+        {status}
+      </span>
+      <ChevronRight aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
+    </button>
+    <TaskOutputs task={task} max={2} onOpenTask={() => onOpen?.(taskId)} />
+  </div>;
 }
 
 /** A card whose task the room list doesn't hold (older than its pages, or another scope) reads it by id. */

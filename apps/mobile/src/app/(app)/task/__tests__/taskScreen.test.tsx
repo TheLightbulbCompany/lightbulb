@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
-import { ApiError, type QuestionView, type TaskDetail } from "@lightbulb/shared";
+import { ApiError, type QuestionView, type TaskDetail, type TaskOutput } from "@lightbulb/shared";
 import { FIXTURES, PRIYA, SAM, viewAs } from "@lightbulb/shared/tasks/fixtures";
 import type { ReactNode } from "react";
 
@@ -8,7 +8,9 @@ const mockAuth = { userId: SAM as string };
 // One task id per test: the shared SWR cache keys `task:<id>` and `task-questions:<id>` are global (not per
 // workspace), so a second test on the same id would read the first test's rows for SWR's dedupe window.
 const mockParams = { taskId: "t-signup" };
-const mockLive = { superAgent: true, tasks: null as unknown };
+const mockLive = { superAgent: true, tasks: null as unknown, messaging: { attachmentUrl: jest.fn(async () => ({ url: "https://files.example/n.md" })) }, api: { get: jest.fn(async () => ({ apps: [{ app_id: "app1", live_url: null, live_version: null }] })), post: jest.fn(async () => ({ url: "https://preview.example/app1" })) } };
+const mockOpenBrowser = jest.fn(async (_url: string) => undefined);
+jest.mock("expo-web-browser", () => ({ openBrowserAsync: (url: string) => mockOpenBrowser(url) }));
 const mockRooms = {
   selectRoom: jest.fn(), messages: [] as unknown[], activeRoom: null, historyLoading: false, liveConnected: true,
   attachmentUrl: jest.fn(), uploadAttachment: jest.fn(), setTyping: jest.fn(),
@@ -77,6 +79,31 @@ function client(detail: TaskDetail, views: QuestionView[], id: string) {
   return c;
 }
 beforeEach(() => { mockLive.superAgent = true; mockAuth.userId = SAM; mockRooms.selectRoom.mockClear(); mockSend.mockClear(); });
+
+it("lists what the task made; a doc opens by its short-lived URL, mail is a row", async () => {
+  const outputs: TaskOutput[] = [
+    { id: "file:1", kind: "document", title: "Welcome note.md", ref: { roomId: "r1", attachmentId: "a1" }, createdAt: "2026-11-06T10:00:00Z" },
+    { id: "effect:1", kind: "mail", title: "Hello, Priya", ref: {}, createdAt: "2026-11-06T10:01:00Z" },
+  ];
+  client({ ...step8, task: { ...waiting, outputs } }, [], "t-outputs");
+  const view = await render(<TaskScreen />);
+  expect(await view.findByText("Hello, Priya")).toBeTruthy();
+  expect(view.queryByLabelText("Open Hello, Priya")).toBeNull();
+  fireEvent.press(view.getByLabelText("Open Welcome note.md"));
+  await waitFor(() => expect(mockOpenBrowser).toHaveBeenCalledWith("https://files.example/n.md"));
+  expect(mockLive.messaging.attachmentUrl).toHaveBeenCalledWith("r1", "a1");
+  await view.unmount();
+});
+
+it("a preview-only app opens its preview", async () => {
+  const outputs: TaskOutput[] = [{ id: "app:1", kind: "app", title: "Walk7 Signup", ref: { appId: "app1" }, createdAt: "2026-11-06T10:00:00Z" }];
+  client({ ...step8, task: { ...waiting, outputs } }, [], "t-app-preview");
+  const view = await render(<TaskScreen />);
+  fireEvent.press(await view.findByLabelText("Open Walk7 Signup"));
+  await waitFor(() => expect(mockOpenBrowser).toHaveBeenCalledWith("https://preview.example/app1"));
+  expect(mockLive.api.post).toHaveBeenCalledWith("/apps/app1/open?target=preview", {});
+  await view.unmount();
+});
 
 it("non-answerer sees Waiting on Sam without buttons", async () => {
   mockAuth.userId = PRIYA;

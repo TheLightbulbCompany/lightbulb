@@ -368,4 +368,14 @@ describe("Work page: one dock tab for every task-board page", () => {
       expect(describePanel("teams-issues", {})?.panelId).toBe("teams-work");
     } finally { setSuperAgentAliases(false); }
   });
+
+  it("UX slice 5: with the switch on, Library opens Creations (the canvas panel) and ?app= still opens one app; off, unchanged", () => {
+    expect(describePanel("teams-artifacts", {})?.panelId).not.toBe("canvas");
+    expect(describePanel("canvas", {})?.title).toBe("Canvas");
+    setSuperAgentAliases(true);
+    try {
+      expect(describePanel("teams-artifacts", {})).toEqual({ panelId: "canvas", component: "canvas", title: "Creations", params: {} });
+      expect(describePanel("canvas", { app: "a1" })?.params).toEqual({ app: "a1" });
+    } finally { setSuperAgentAliases(false); }
+  });
 });

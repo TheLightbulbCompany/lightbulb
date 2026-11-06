@@ -7,7 +7,6 @@ import { safeHref } from "@/components/teams/shared/lib/safeHref";
 import { useAsyncAction } from "./useAsyncAction";
 import type { RoomRunView, RoomSummary } from "@lightbulb/shared";
 import type { RoomMessage, RoomParticipant } from "./types";
-import type { RoomOutput } from "@/components/tasks/useRoomOutputs";
 
 export type DetailsTab = "threads" | "members" | "pins" | "files" | "links" | "about";
 
@@ -40,13 +39,6 @@ interface RoomDetailsPanelProps {
   members: ReactNode; // the shipped Members section, lifted verbatim from RoomPanel
   /** This room's threads (the room-scoped Work overview), first tab when given (super-agent on). */
   threads?: ReactNode;
-  /** Super-agent: what this room's requests made, listed first under Files (the runtime's disk never is). */
-  outputs?: readonly RoomOutput[];
-  onOpenOutput?: (taskId: string) => void;
-  /** The room has requests past the first page: Files offers "Show older" (useRoomOutputs). */
-  olderOutputs?: { loading: boolean; load: () => void };
-  /** One view, no tab strip: the project pane's Files view (super-agent), titled "Files" by its header. */
-  hideTabs?: boolean;
 }
 
 /**
@@ -89,10 +81,6 @@ export function RoomDetailsPanel({
   ownerCannotLeave,
   members,
   threads,
-  outputs,
-  onOpenOutput,
-  olderOutputs,
-  hideTabs = false,
 }: RoomDetailsPanelProps) {
   const id = useId();
   const TABS = threads ? THREAD_TABS : ROOM_TABS;
@@ -163,12 +151,12 @@ export function RoomDetailsPanel({
   </section>;
 
   return <>
-    {!hideTabs && <div className="room-details-tabs" role="tablist" aria-label="Room details" onKeyDown={onTabKeyDown}>
+    <div className="room-details-tabs" role="tablist" aria-label="Room details" onKeyDown={onTabKeyDown}>
       {TABS.map((entry) => <button key={entry.id} type="button" role="tab" id={`${id}-tab-${entry.id}`}
         aria-controls={`${id}-panel`} aria-selected={entry.id === tab} tabIndex={entry.id === tab ? 0 : -1}
         onClick={() => selectTab(entry.id)}>{entry.label}</button>)}
-    </div>}
-    <div className="room-context-body" id={`${id}-panel`} {...(hideTabs ? {} : { role: "tabpanel", "aria-labelledby": `${id}-tab-${tab}`, tabIndex: 0 })}>
+    </div>
+    <div className="room-context-body" id={`${id}-panel`} role="tabpanel" aria-labelledby={`${id}-tab-${tab}`} tabIndex={0}>
       {tab === "threads" && threads}
       {tab === "members" && <>{members}{activeWork}</>}
 
@@ -197,18 +185,8 @@ export function RoomDetailsPanel({
           </li>;
         })}</ul>)}
 
-      {tab === "files" && !!outputs?.length && <ul aria-label="Made by tasks">{outputs.map((output) => <li key={output.taskId} className="room-details-row">
-        <Paperclip size={14} aria-hidden="true" className="mt-1" />
-        <div className="flex-1 min-w-0">
-          <p className="room-wrap">{output.title}</p>
-          <p className="text-ui text-muted-foreground room-wrap">{output.request}</p>
-        </div>
-        {onOpenOutput && <Button type="button" variant="ghost" size="sm" aria-label={`Open ${output.request}`} onClick={() => onOpenOutput(output.taskId)}>Open</Button>}
-      </li>)}</ul>}
-      {tab === "files" && olderOutputs && <Button type="button" variant="ghost" size="sm" className="justify-self-start" disabled={olderOutputs.loading}
-        onClick={olderOutputs.load}>{olderOutputs.loading ? "Loading…" : "Show older"}</Button>}
       {tab === "files" && (files.length === 0
-        ? outputs?.length ? null : <p className="text-ui text-muted-foreground">{outputs ? "No files yet. Files shared here and what tasks make show up here." : "No files in the messages loaded so far. Scroll back in the chat to load more."}</p>
+        ? <p className="text-ui text-muted-foreground">No files in the messages loaded so far. Scroll back in the chat to load more.</p>
         : <ul aria-label="Shared files">{files.map((message) => <li key={message.messageId} className="room-details-row">
           <Paperclip size={14} aria-hidden="true" className="mt-1" />
           <div className="flex-1 min-w-0">

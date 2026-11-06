@@ -196,8 +196,12 @@ describe("RoomPanel Threads view (super-agent)", () => {
     const host = document.createElement("div");
     document.body.appendChild(host);
     act(() => setThreadPaneHost(host));
-    const made = { ...FIXTURES.step05.tasks[0], taskId: "t-made", title: "Write the welcome", output: { idemKey: "o-1", kind: "document" as const, title: "Welcome note" } };
+    const made = { ...FIXTURES.step05.tasks[0], taskId: "t-made", title: "Write the welcome" };
     client = fakeTasksClient([...FIXTURES.step05.tasks, made]); live.tasks = client;
+    client.outputs.mockResolvedValue({ next: null, outputs: [{
+      id: "effect:1", kind: "mail", title: "Welcome note", ref: {}, createdAt: "2026-11-06T10:00:00Z", taskId: "t-made", identifier: "LB-9",
+      taskTitle: "Write the welcome", taskStatus: "resolved", specialist: "growth", roomId: "r1",
+    }] });
     try {
       render(<Fresh><RoomPanel {...props} /></Fresh>);
       const files = await screen.findByRole("button", { name: "Files" });
@@ -209,10 +213,12 @@ describe("RoomPanel Threads view (super-agent)", () => {
       expect(within(about).getByRole("heading", { level: 3, name: "Files" })).toBeInTheDocument();
       expect(within(about).queryByRole("tab")).toBeNull();
       expect(getWorkspaceSnapshot().pane?.title).toBe("Files");
-      const list = await within(about).findByRole("list", { name: "Made by tasks" });
-      expect(within(list).getAllByRole("listitem")).toHaveLength(1);
-      expect(list).toHaveTextContent("Welcome noteWrite the welcome");
-      await userEvent.click(within(list).getByRole("button", { name: "Open Write the welcome" }));
+      // A table: Name · Made by · Date; a mail row opens its task (the transcript shows what was sent).
+      const table = await within(about).findByRole("table");
+      expect(within(table).getAllByRole("row")).toHaveLength(2);
+      expect(within(table).getByRole("row", { name: /Welcome note/ })).toHaveTextContent("Growth");
+      expect(client.outputs).toHaveBeenCalledWith(expect.objectContaining({ roomId: "r1" }));
+      await userEvent.click(within(table).getByRole("button", { name: "Welcome note" }));
       expect(await within(host).findByRole("complementary", { name: "Task" })).toHaveAttribute("data-task-pane", "t-made");
     } finally { host.remove(); _resetControllerForTests(); localStorage.clear(); }
   });

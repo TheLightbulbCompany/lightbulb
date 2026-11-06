@@ -109,14 +109,14 @@ describe("WorkspaceHeader", () => {
     fireEvent.click(screen.getByRole("button", { name: "Work" }));
     expect(closePane).toHaveBeenCalledOnce();
   });
-  it("with the switch on, reads Home, Activity, Library, Canvas, Team, Settings: no Chat, no Work; a project lights nothing", () => {
+  it("with the switch on, reads Home, Activity, Creations, Team, Settings: no Chat, no Work, no Library or Canvas; a project lights nothing", () => {
     live.superAgent = true;
     place = "home";
     try {
       render(<WorkspaceHeader />);
       const rail = screen.getByRole("navigation", { name: "Workspace" });
       const labels = [...rail.querySelectorAll("button")].map((b) => b.getAttribute("aria-label"));
-      expect(labels.slice(labels.indexOf("Home"), labels.indexOf("Team") + 1)).toEqual(["Home", "Activity", "Library", "Canvas", "Team"]);
+      expect(labels.slice(labels.indexOf("Home"), labels.indexOf("Team") + 1)).toEqual(["Home", "Activity", "Creations", "Team"]);
       expect(labels).toContain("Settings");
       expect(labels).not.toContain("Chat");
       expect(labels).not.toContain("Work");

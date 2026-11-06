@@ -374,11 +374,11 @@ export type {
 } from "./tasks/view";
 export { OUTPUT_KINDS } from "./tasks/types";
 export type {
-  AnswerBody, OutputKind, QuestionKind, QuestionOption, QuestionView, SummaryQuestion, TaskAttempt, TaskDetail, TaskEffect,
+  AnswerBody, CreationOutput, OutputKind, QuestionKind, QuestionOption, QuestionView, SummaryQuestion, TaskAttempt, TaskDetail, TaskEffect, TaskOutput,
   AutomationView, TaskQuestionRow, TaskRef, TaskScope, TaskSubscription, TaskSummary, TaskTrace, TaskVerb,
 } from "./tasks/types";
 export { createTasksClient, scopeParam } from "./tasks/client";
-export type { TasksClient } from "./tasks/client";
+export type { OutputsFilter, TasksClient } from "./tasks/client";
 export type { DirectoryAgent } from "./tasks/useTasks";
 export { NEEDS_YOU_KEY_SUFFIX, putTaskSummary, questionsKey, refreshTask, taskKey, taskListKey, agentDirectory, useAgentDirectory, useTask, useOlderTasks, useTaskCache, useTaskChangedRefresh, useTaskList, useTaskQuestions } from "./tasks/useTasks";
 export {

@@ -172,17 +172,3 @@ it("leads with a Requests tab when the room's requests are given, and shows them
   expect(screen.getByRole("tabpanel", { name: "Tasks" })).toHaveTextContent("Room requests");
 });
 
-it("Files lists what requests made, opens one, and offers Show older when the room has more requests", async () => {
-  vi.useRealTimers();
-  const onOpenOutput = vi.fn();
-  const load = vi.fn();
-  render(<RoomDetailsPanel {...props} tab="files" outputs={[{ taskId: "t1", title: "Q3 plan", request: "Draft the Q3 plan" }]}
-    onOpenOutput={onOpenOutput} olderOutputs={{ loading: false, load }} />);
-  const made = screen.getByRole("list", { name: "Made by tasks" });
-  expect(within(made).getByText("Q3 plan")).toBeInTheDocument();
-  await userEvent.click(within(made).getByRole("button", { name: "Open Draft the Q3 plan" }));
-  expect(onOpenOutput).toHaveBeenCalledWith("t1");
-  await userEvent.click(screen.getByRole("button", { name: "Show older" }));
-  expect(load).toHaveBeenCalled();
-  expect(screen.queryByText(/No files/)).toBeNull();
-});

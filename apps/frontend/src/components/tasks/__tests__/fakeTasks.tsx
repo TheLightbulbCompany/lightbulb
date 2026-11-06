@@ -2,7 +2,7 @@
 import type { ReactNode } from "react";
 import { SWRConfig } from "swr";
 import { vi } from "vitest";
-import type { TaskDetail, TaskSummary, TasksClient } from "@lightbulb/shared";
+import type { CreationOutput, OutputsFilter, TaskDetail, TaskSummary, TasksClient } from "@lightbulb/shared";
 
 export function fakeTasksClient(tasks: TaskSummary[], details: Record<string, TaskDetail> = {}) {
   return {
@@ -15,6 +15,7 @@ export function fakeTasksClient(tasks: TaskSummary[], details: Record<string, Ta
     markRead: vi.fn(async () => ({})),
     needsYou: vi.fn(async () => ({ items: [], next: null })),
     questions: vi.fn(async () => ({ items: [] })),
+    outputs: vi.fn<(filter?: OutputsFilter) => Promise<{ outputs: CreationOutput[]; next: string | null }>>(async () => ({ outputs: [], next: null })),
   } satisfies Record<keyof TasksClient, unknown>;
 }
 

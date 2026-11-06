@@ -50,6 +50,18 @@ export function statusLine(app: AppRow): string | null {
   }
 }
 
+/** Super-agent (Creations, UX slice 5): where an app stands in the four words, warn text; null once it is ready or
+ *  live. Setting up, building or stuck reads "Waiting on Engineering · 5 min" (never "Stopped"); a failure or an
+ *  owner's approval reads "Needs you". */
+export function creationState(app: AppRow, who: string, now: number): string | null {
+  if (app.state === "failed" || app.state === "awaiting_approval" || app.setup_blocker) return "Needs you";
+  if (!app.stuck && !["requested", "provisioning", "building"].includes(app.state)) return null;
+  const since = Date.parse(app.stuck?.at ?? app.updated_at ?? "");
+  if (Number.isNaN(since)) return `Waiting on ${who}`;
+  const min = Math.max(1, Math.round((now - since) / 60_000));
+  return `Waiting on ${who} · ${min < 60 ? `${min} min` : min < 1440 ? `${Math.floor(min / 60)}h` : `${Math.floor(min / 1440)}d`}`;
+}
+
 /** The backend's refusal code (`{detail: {code}}`), for the refusals where "Try again" would be false. */
 export const refusalCode = (err: unknown) => (err as { body?: { detail?: { code?: string } } })?.body?.detail?.code;
 

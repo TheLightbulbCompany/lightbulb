@@ -223,11 +223,13 @@ export function shellSettingsHref(settingsHref: string): string {
 // null.
 
 // Super-agent (UX slice 4): Work dissolved. Its Automations open Activity's Scheduled group, and Money is
-// Settings › Business. The switch is per workspace, so the shell sets it (setSuperAgentAliases) and a
+// Settings › Business. Library opens Creations (slice 5). The switch is per workspace, so the shell sets it (setSuperAgentAliases) and a
 // switch-off workspace keeps every key exactly as before.
 const SUPER_AGENT_ALIASES: Readonly<Record<string, string>> = {
   "teams-routines": "activity",
   "teams-money": "settings",
+  // UX slice 5: Creations (the canvas panel) replaces Library.
+  "teams-artifacts": "canvas",
 };
 let _superAgentAliases = false;
 export function setSuperAgentAliases(on: boolean): void {
@@ -345,7 +347,7 @@ export function describePanel(
   if (key === "canvas") {
     const p: Record<string, string> = {};
     if (params.app) p.app = params.app;
-    return { panelId: "canvas", component: "canvas", title: "Canvas", params: p };
+    return { panelId: "canvas", component: "canvas", title: _superAgentAliases ? "Creations" : "Canvas", params: p };
   }
 
   // The workspace's shared agent mailbox: mail in and out, meetings and their

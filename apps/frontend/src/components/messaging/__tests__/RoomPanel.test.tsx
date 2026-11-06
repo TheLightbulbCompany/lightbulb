@@ -1147,6 +1147,13 @@ it("never shows the pre-typed replies outside the starter channel", () => {
   expect(screen.queryByRole("button", { name: "I'm starting" })).toBeNull();
 });
 
+it("with the switch, shows the pre-typed replies in the first-run Lightbulb DM and not under #general's team line", () => {
+  const view = render(<RoomPanel {...props} room={{ ...props.room!, kind: "dm", firstRun: true }} messages={[{ ...message, kind: "first_run" }]} />);
+  expect(screen.getByRole("button", { name: "I'm starting" })).toBeInTheDocument();
+  view.rerender(<RoomPanel {...props} room={{ ...props.room!, isDefault: true }} messages={[{ ...message, kind: "team_welcome" }]} />);
+  expect(screen.queryByRole("button", { name: "I'm starting" })).toBeNull();
+});
+
 it("streams the CEO's first message in the starter channel until a human has written", () => {
   window.sessionStorage.clear();
   vi.useFakeTimers();

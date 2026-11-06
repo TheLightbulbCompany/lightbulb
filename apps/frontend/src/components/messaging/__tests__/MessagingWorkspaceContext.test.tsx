@@ -1196,6 +1196,14 @@ describe("opening #general once it is seeded", () => {
     expect(workspaceValue.activeRoomId).toBe("general");
   });
 
+  it("opens the first-run Lightbulb DM, not #general, in a fresh super-agent workspace", () => {
+    const firstRun = { ...dm, roomId: "lightbulb-dm", firstRun: true };
+    list = [general, vendor, firstRun];
+    render(shell());
+    expect(workspaceValue.activeRoomId).toBe("lightbulb-dm");
+    expect(selectRoomSpy).not.toHaveBeenCalledWith("general");
+  });
+
   it("leaves a returning viewer on their most recent room when any other room exists", () => {
     list = [dm, general, vendor];
     render(shell());

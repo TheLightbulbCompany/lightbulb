@@ -2838,13 +2838,15 @@ def default_room_id(owner_id: str) -> str:
 
 
 def _first_run(body: dict) -> bool:
-    """A person's first message in the canonical #general (by id) whose WHOLE history (it starts at seq 1, so nothing was
-    trimmed) is only agents': a fresh workspace's #general, where seq 1 is the seeded welcome, when
-    its owner first answers. A busy room's window never starts at seq 1."""
+    """A person's first message in the first-run room whose WHOLE history (it starts at seq 1, so nothing was
+    trimmed) is only agents': where seq 1 is the seeded welcome, when its owner first answers. A busy room's window
+    never starts at seq 1. The room is the canonical #general (by id), or with the super-agent switch the owner's
+    Lightbulb DM, whose seq 1 is kind "first_run" (#general then opens with a "team_welcome" line instead)."""
     history = body.get("recentHistory") or []
+    first = next((m for m in history if m.get("messageSeq") == 1), None)
+    in_general = (body.get("room") or {}).get("id") == default_room_id(OWNER) and first is not None and first.get("kind") != "team_welcome"
     return ((body.get("sender") or {}).get("kind") == "human"
-            and (body.get("room") or {}).get("id") == default_room_id(OWNER)
-            and any(m.get("messageSeq") == 1 for m in history)
+            and (in_general or (first is not None and first.get("kind") == "first_run"))
             and all((m.get("author") or {}).get("kind") == "agent" for m in history))
 
 

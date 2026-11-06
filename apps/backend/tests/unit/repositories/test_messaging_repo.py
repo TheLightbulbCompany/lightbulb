@@ -1566,3 +1566,42 @@ async def test_away_checks_ride_the_deadline_index_and_leave_it(table):
     assert await repo.list_due_away_checks(now) == []
     await repo.finish_away_check("AWAY#user_b", "M#r#due")
     assert await repo.get_away_check("AWAY#user_b", "M#r#due") is None
+
+
+@pytest.mark.asyncio
+async def test_with_the_switch_the_welcome_and_chips_go_to_the_owners_lightbulb_dm(table, monkeypatch):
+    """UX slice 6: a super-agent owner's first run is a chat with Lightbulb, so the welcome is their DM's seq 1
+    (kind first_run, the room marked firstRun); #general keeps one team line. A replay changes nothing."""
+    from core.repositories.paperclip_repo import PaperclipRepo
+    from core.services import messaging, task_conversation
+
+    keys = messaging._STARTER_KEYS
+    starter_ids = {key: f"10000000-0000-4000-8000-00000000000{i}" for i, key in enumerate(keys, start=1)}
+    ceo = starter_ids["ceo"]
+
+    async def owner_row(*_args, **_kwargs):
+        return SimpleNamespace(status="active", starter_agent_ids=starter_ids)
+
+    monkeypatch.setattr(PaperclipRepo, "resolve_owner_row", owner_row)
+    roster = [{"id": agent_id, "name": key} for key, agent_id in starter_ids.items()]
+    monkeypatch.setattr(messaging, "load_agent_roster", lambda _owner: asyncio.sleep(0, result=roster))
+    monkeypatch.setattr(messaging, "human_display_name", lambda _user: asyncio.sleep(0, result="Workspace Owner"))
+    monkeypatch.setattr(messaging, "_front_agent_id", lambda _owner: asyncio.sleep(0, result=ceo))
+    monkeypatch.setattr(task_conversation, "front_agent_id", lambda _owner: asyncio.sleep(0, result=ceo))
+    monkeypatch.setattr(messaging.clerk_admin, "get_organization", AsyncMock(return_value={"name": "Acme"}))
+
+    general = await messaging.ensure_default_room(OWNER, USER_A)
+    dm = await messaging._agent_dm_room_id(OWNER, USER_A, ceo)
+    for _ in range(2):  # the replay is a no-op
+        (welcome,), _ = await repo.list_messages(dm, 0, 100)
+        assert (welcome["text"], welcome["kind"], welcome["author"]["displayName"]) == (
+            messaging.default_room_welcome("Acme"),
+            messaging.FIRST_RUN_KIND,
+            messaging.FRONT_AGENT_NAME,
+        )
+        assert (await repo.get_room(dm))["firstRun"] is True
+        (line,), _ = await repo.list_messages(general, 0, 100)
+        assert (line["text"], line["kind"]) == (messaging.team_welcome("Acme"), messaging.TEAM_WELCOME_KIND)
+        assert await messaging.ensure_default_room(OWNER, USER_A) == general
+    summaries = {s.room_id: s for s in await messaging._room_summaries(OWNER, USER_A)}
+    assert summaries[uuid.UUID(dm)].first_run and not summaries[uuid.UUID(general)].first_run

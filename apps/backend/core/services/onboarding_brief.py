@@ -388,15 +388,21 @@ def _claim_age_s(submitted_at) -> float | None:
 _draining: set[str] = set()
 
 
+#: How young a non-general room must be for its message to be read as the first-run DM's answer.
+_FIRST_RUN_DM_SEQS = 20
+
+
 async def capture_first_workspace_message(owner_id: str, message: dict) -> bool:
     """Turn the first human message in the canonical room into onboarding intake."""
     from core.repositories.paperclip_repo import PaperclipRepo
-    from core.services.messaging import default_room_id
+    from core.services.messaging import FIRST_RUN_KIND, TEAM_WELCOME_KIND, default_room_id
 
     author = message.get("author") or {}
     text = str(message.get("text") or "").strip()
+    in_general = message.get("roomId") == default_room_id(owner_id)
     if (
-        message.get("roomId") != default_room_id(owner_id)
+        # Elsewhere only a young room can be the first-run DM (its seq 1 is checked below).
+        not (in_general or int(message.get("messageSeq") or 0) <= _FIRST_RUN_DM_SEQS)
         or int(message.get("messageSeq") or 0) < 1
         or author.get("kind") != "human"
         or len(text) < 3
@@ -419,6 +425,10 @@ async def capture_first_workspace_message(owner_id: str, message: dict) -> bool:
     message_seq = int(message.get("messageSeq") or 0)
     earlier = await messaging_repo.list_messages_between(str(message["roomId"]), 1, message_seq - 1)
     if any((row.get("author") or {}).get("kind") == "human" for row in earlier):
+        return False
+    # Super-agent: the first run is in the owner's Lightbulb DM (seq 1 marked first_run); general holds a team line.
+    first_kind = earlier[0].get("kind") if earlier and int(earlier[0].get("messageSeq") or 0) == 1 else None
+    if first_kind != FIRST_RUN_KIND and (not in_general or first_kind == TEAM_WELCOME_KIND):
         return False
 
     repo = PaperclipRepo(table_name="paperclip-companies")

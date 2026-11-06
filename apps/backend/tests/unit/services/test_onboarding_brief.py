@@ -115,6 +115,43 @@ async def test_deleted_specialist_does_not_block_capture_for_remaining_target():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "room, first_kind, captured",
+    [
+        ("lightbulb-dm", "first_run", True),  # super-agent: the welcome is the owner's Lightbulb DM's seq 1
+        ("lightbulb-dm", None, False),  # any other young room is not the first run
+        ("general", "team_welcome", False),  # super-agent #general holds only the team line
+        ("general", None, True),  # flag off: unchanged
+    ],
+)
+async def test_the_first_run_is_captured_where_the_welcome_is(room, first_kind, captured):
+    from core.services.messaging import default_room_id
+
+    repo = MagicMock()
+    repo.resolve_owner_row = AsyncMock(
+        return_value=SimpleNamespace(status="active", starter_agent_ids={"ceo": FRIDAY_ID}, funnel_state="not_started")
+    )
+    repo.put_pending_brief = AsyncMock(return_value=True)
+    message = {
+        "roomId": default_room_id(OWNER) if room == "general" else room,
+        "messageSeq": 2,
+        "messageId": "msg_first",
+        "text": "Here's our website: acme.com",
+        "author": {"kind": "human", "id": OWNER},
+        "dispatchTargets": [{"agentId": FRIDAY_ID, "eventKind": "user_request"}],
+    }
+    welcome = {"messageSeq": 1, "author": {"kind": "agent"}, **({"kind": first_kind} if first_kind else {})}
+    with (
+        patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
+        patch("core.services.onboarding_brief.reconcile_pending_brief", new=AsyncMock()),
+        patch("core.repositories.messaging_repo.list_messages_between", new=AsyncMock(return_value=[welcome])),
+    ):
+        assert await capture_first_workspace_message(OWNER, message) is captured
+        # A busy room is never read as the first-run DM.
+        assert await capture_first_workspace_message(OWNER, {**message, "roomId": "x", "messageSeq": 40}) is False
+
+
+@pytest.mark.asyncio
 async def test_first_human_message_without_dispatch_target_does_not_seed_onboarding():
     repo = MagicMock()
     repo.resolve_owner_row = AsyncMock(

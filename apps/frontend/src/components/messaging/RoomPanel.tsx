@@ -72,6 +72,10 @@ import type {
 } from "./types";
 import "./messaging.css";
 
+/** A starter room's seeded welcome: its seq 1, from an agent, and not #general's super-agent team line. */
+const isWelcome = (message: RoomMessage) =>
+  message.messageSeq === 1 && message.author.kind === "agent" && message.kind !== "team_welcome";
+
 export interface RoomPanelProps {
   ownerScopeId: string;
   currentUserId: string;
@@ -487,8 +491,10 @@ function RoomContent({
   const visibleRoom = room?.roomId === roomId ? room : undefined;
   const actionable = httpReady && !!visibleRoom;
   // The welcome (seq 1) must be loaded: useRooms keeps only the newest 100, so a long agent-only run hides it.
-  const showFirstReplies = Boolean(room?.isDefault) && !room?.archivedAt
-    && messages[0]?.messageSeq === 1
+  // The welcome is seq 1 of the starter room: #general, or (super-agent) the owner's Lightbulb DM, `firstRun`. #general
+  // then opens with a team line (kind "team_welcome"), which is no welcome.
+  const starterRoom = Boolean(room?.isDefault || room?.firstRun);
+  const showFirstReplies = starterRoom && !!messages[0] && isWelcome(messages[0]) && !room?.archivedAt
     && !messages.some((m) => m.author.kind === "human")
     && pendingMessages.length === 0
     && actionable && !composer.disabled;
@@ -815,8 +821,8 @@ function RoomContent({
     }
   }, [onSetReaction, actionable, reactionPending, currentUserId]);
 
-  const welcomeRoom = Boolean(room?.isDefault) && inShell;
-  const revealStarter = Boolean(room?.isDefault) && !messages.some((m) => m.author.kind === "human");
+  const welcomeRoom = starterRoom && inShell;
+  const revealStarter = starterRoom && !messages.some((m) => m.author.kind === "human");
   // One pass per message list, so a keystroke (which re-renders the panel) re-scans nothing.
   const { cardsEnabled, repliesEnabled } = cardControls(room);
   const cardAnswers = useMemo(() => cardAnswersFor(messages), [messages]);
@@ -871,7 +877,7 @@ function RoomContent({
         {copyError === message.messageId && <p role="alert" className="text-ui text-err">Could not copy the link.</p>}
       </> : undefined} />;
     // The seeded CEO welcome streams in until a human has written (client-side, cosmetic).
-    if (revealStarter && !inThread && message.messageSeq === 1 && message.author.kind === "agent") {
+    if (revealStarter && !inThread && isWelcome(message)) {
       return <TypingReveal key={message.messageId} text={message.text} playKey={message.roomId}>{body}</TypingReveal>;
     }
     return body(message.text);
@@ -893,7 +899,7 @@ function RoomContent({
   const renderMainMessage = useCallback((message: RoomMessage, collapsed: boolean) => <>
     {renderMessage(message, false, collapsed)}
     {/* The CEO's welcome carries the top idea as a proposal and points at the 💡 (spec 2026-10-14 §4.4). */}
-    {welcomeRoom && message.messageSeq === 1 && message.author.kind === "agent" && <WelcomeIdea />}
+    {welcomeRoom && isWelcome(message) && <WelcomeIdea />}
     {savedDelegations(delegationState, delegationsByMessage?.get(message.messageId))}
     {settledRuns.get(message.messageId)?.map(renderRun)}
   </>,

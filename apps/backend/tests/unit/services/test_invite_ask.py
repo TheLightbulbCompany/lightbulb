@@ -11,6 +11,7 @@ from core.services import messaging
 OWNER = "org_1"
 CEO = str(uuid.UUID(int=20))
 GENERAL = messaging.default_room_id(OWNER)
+DM = "lightbulb-dm"
 
 
 @pytest.fixture
@@ -32,6 +33,8 @@ def fx(monkeypatch):
     monkeypatch.setattr(messaging.messaging_repo, "claim_room_marker", claim)
     monkeypatch.setattr(messaging.messaging_repo, "release_room_marker", release)
     monkeypatch.setattr(messaging.messaging_repo, "get_member", AsyncMock(return_value={"id": CEO}))
+    first = {DM: {"messageSeq": 1, "kind": messaging.FIRST_RUN_KIND}}
+    monkeypatch.setattr(messaging.messaging_repo, "get_message", AsyncMock(side_effect=lambda r, _s: first.get(r)))
     monkeypatch.setattr(messaging, "load_agent_roster", AsyncMock(return_value=[{"id": CEO, "name": "Ada"}]))
     create = AsyncMock(return_value=({}, False))
     monkeypatch.setattr(messaging.messaging_repo, "create_message", create)
@@ -82,3 +85,12 @@ async def test_a_clerk_read_that_cannot_answer_lets_a_later_run_ask(fx):
     fx.org.return_value = {"members_count": 1}
     await messaging.ask_who_should_see(OWNER, _row(), "completed")
     fx.create.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_with_the_switch_the_ask_follows_the_first_run_into_the_lightbulb_dm_once(fx):
+    """Super-agent: the first run is in the owner's Lightbulb DM (seq 1 kind first_run); one ask per workspace."""
+    await messaging.ask_who_should_see(OWNER, _row(DM), "completed")
+    await messaging.ask_who_should_see(OWNER, _row(GENERAL), "completed")
+    fx.create.assert_awaited_once()
+    assert fx.create.call_args.kwargs["room_id"] == DM

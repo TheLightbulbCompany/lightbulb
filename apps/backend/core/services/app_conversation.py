@@ -477,7 +477,9 @@ async def app_progress(owner_id: str, app_id: str, since: str = "") -> str:
     if state in ("ready", "live"):
         return "met:ready"
     if state == "failed":
-        return "met:failed" if (app.get("updated_at") or "") > since else "not_met"
+        # The real failure time (`failure.at`, apps_service._record_state), never `updated_at`: an upload or a
+        # Canvas read bumps that while the builder is still retrying. A row failed before the stamp: news unless asked.
+        return "met:failed" if ((app.get("failure") or {}).get("at") or "") > since or not since else "not_met"
     if state == "requested" and not app.get("sources") and await hosting_blocker(owner_id):
         return "met:blocked"
     if (app.get("stuck") or {}).get("at", "") > since:

@@ -7,6 +7,7 @@ refetch path asks it. `summarize` is pure over a task tree and returns the `Task
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any
 
@@ -14,6 +15,7 @@ from core import tasks_schema as ts
 from core.repositories import messaging_repo, tasks_repo
 from core.services import clerk_admin, questions
 
+_log = logging.getLogger(__name__)
 _ORG_TTL_S = 60.0
 _ORG_CACHE_MAX = 10_000
 _org_cache: dict[str, tuple[float, set[str]]] = {}
@@ -185,11 +187,11 @@ def effect_output(effect: dict) -> dict | None:
     if drafted is None:
         return None
     o = effect.get("operands") or {}
-    ref = {"idemKey": effect["idemKey"]} | {k: str(o[k]) for k in _EFFECT_REF_KEYS if o.get(k) not in (None, "")}
+    ref = {"idemKey": effect["idemKey"]} | {k: str(o[k])[:200] for k in _EFFECT_REF_KEYS if o.get(k) not in (None, "")}
     if effect.get("kind") == "pr.merge" and "repo" in ref and "number" in ref:
         ref["url"] = f"https://github.com/{ref['repo']}/pull/{ref['number']}"
     if effect.get("resultRef"):
-        ref["resultRef"] = str(effect["resultRef"])
+        ref["resultRef"] = str(effect["resultRef"])[:200]
     return {"id": f"effect:{effect['idemKey']}", "kind": drafted["kind"], "title": drafted["title"], "ref": ref}
 
 
@@ -210,5 +212,19 @@ def file_output(task_id: str, file: dict) -> dict:
 
 
 async def record_effect_output(ws: str, effect: dict) -> None:
-    if out := effect_output(effect):
-        await tasks_repo.add_task_output(ws, effect["taskId"], out)
+    """Best effort: the effect being done matters more than the output row, so a failed write logs and goes on."""
+    try:
+        out = effect_output(effect)
+    except Exception:  # noqa: BLE001
+        _log.warning("effect %s: no output", effect.get("idemKey"), exc_info=True)
+        return
+    if out:
+        await record_output(ws, effect["taskId"], out)
+
+
+async def record_output(ws: str, task_id: str, output: dict) -> None:
+    """`tasks_repo.add_task_output` that never fails its caller (an effect's done, a run's end)."""
+    try:
+        await tasks_repo.add_task_output(ws, task_id, output)
+    except Exception:  # noqa: BLE001
+        _log.warning("task %s: output %s not recorded", task_id, output.get("id"), exc_info=True)

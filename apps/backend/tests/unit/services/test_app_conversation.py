@@ -938,6 +938,29 @@ async def test_asking_a_stalled_app_again_from_its_request_watches_it_again(chat
     await svc.apps_repo.patch(res["app_id"], {"stuck": {"at": "9999-01-01T00:00:00Z", "step": "building"}})
     assert await conv.app_progress(OWNER, res["app_id"], since) == "met:stuck"
     await svc.apps_repo.patch(res["app_id"], {"stuck": None, "state": "failed"})
-    assert await conv.app_progress(OWNER, res["app_id"], "9999-01-01T00:00:00Z") == "not_met"
+    assert await conv.app_progress(OWNER, res["app_id"], since) == "not_met"  # no failure stamped after the ask
+    # The builder uploads and Canvas reads while it retries: updated_at moves on, no new failure. Never news.
+    await svc.apps_repo.patch(res["app_id"], {"failure": {"code": "x", "message": "m", "at": "2026-01-01T00:00:00Z"}})
+    await svc.apps_repo.patch(res["app_id"], {"sources": {"s1": {}}})
+    assert (await svc.apps_repo.get(res["app_id"]))["updated_at"] > since
+    assert await conv.app_progress(OWNER, res["app_id"], since) == "not_met"
+    # A failure recorded after the ask is.
+    app = await svc.apps_repo.get(res["app_id"])
+    await svc._record_state(app, "failed", {"code": "build_failed", "message": "npm install failed"})
     assert await conv.app_progress(OWNER, res["app_id"], since) == "met:failed"
+    assert await conv.app_progress(OWNER, res["app_id"], "9999-01-01T00:00:00Z") == "not_met"
     assert len((await tasks_repo.get_task(OWNER, request_room.task_id))["outputs"]) == 1  # one app, one output
+
+
+async def test_a_failure_is_stamped_when_it_happens_not_when_the_row_moves(chat):
+    """`failure.at` (the app watch's clock) is set entering failed and on a different error, never on a read."""
+    app = await svc.apps_repo.get((await _start())["app_id"])
+    app["sources"] = {"s1": {}}  # past `requested`
+    err = {"code": "build_failed", "message": "npm install failed"}
+    await svc._record_state(app, "failed", err)
+    first = (await svc.apps_repo.get(app["app_id"]))["failure"]
+    assert (first["code"], first["message"]) == ("build_failed", "npm install failed") and first["at"]
+    await svc._record_state(app, "failed", err)  # a read of the same failure
+    assert (await svc.apps_repo.get(app["app_id"]))["failure"] == first
+    await svc._record_state(app, "failed", {**err, "message": "tsc failed"})  # a new failure while failed
+    assert (await svc.apps_repo.get(app["app_id"]))["failure"]["message"] == "tsc failed"

@@ -248,3 +248,19 @@ def test_file_output_is_a_document_or_a_file_in_the_task_room():
     assert (
         ta.file_output(TID, {"attachmentId": "f2", "fileName": "a.png", "contentType": "image/png"})["kind"] == "file"
     )
+
+
+def test_effect_refs_are_capped():
+    out = ta.effect_output(_effect(operands={"to": "a" * 500, "subject": "s" * 500}, resultRef="r" * 500))
+    assert all(len(v) <= 200 for v in out["ref"].values())
+
+
+async def test_output_writes_never_fail_their_caller(monkeypatch):
+    """Review fix: an effect's done and a run's end matter more than the output row."""
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(ta.tasks_repo, "add_task_output", AsyncMock(side_effect=RuntimeError("ddb down")))
+    await ta.record_effect_output(WS, _effect())
+    await ta.record_output(WS, TID, {"id": "file:f1", "kind": "file", "title": "a"})
+    await ta.record_effect_output(WS, {"state": "done"})  # malformed row: logged, not raised
+    assert ta.tasks_repo.add_task_output.await_count == 2

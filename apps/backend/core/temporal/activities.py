@@ -493,7 +493,7 @@ async def end_attempt(ws: str, task_id: str, n: int, outcome: str, error: str | 
             files = []
             await task_conversation.post_as_lightbulb(ws, ts.task_room_id(task_id), **result_room)
         for f in files:  # what it made stays on the task for every status (UX slice 5)
-            await tasks_repo.add_task_output(ws, task_id, tasks_access.file_output(task_id, f))
+            await tasks_access.record_output(ws, task_id, tasks_access.file_output(task_id, f))  # best effort
         if room:
             names = ", ".join(f["fileName"] for f in files)
             try:

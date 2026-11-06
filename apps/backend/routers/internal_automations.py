@@ -61,6 +61,8 @@ class ProposeIn(BaseModel):
     time_limit_s: int | None = Field(default=None, ge=60, le=7200)
     daily_cap_usd: float = Field(default=10.0, gt=0, le=100)
     builtin: RuleBuiltin | None = None
+    # A cron that pins one date is a one-off; "yearly" keeps it every year on that date.
+    repeat: Literal["yearly"] | None = None
 
     @field_validator("deliver_to", mode="before")
     @classmethod
@@ -162,6 +164,8 @@ async def propose(owner_id: str, body: ProposeIn, request: Request) -> dict:
             "ownerUserId": requester,
             "cron": body.cron,
             "tz": tz,
+            "remainingRuns": 0 if body.repeat else automation_schedule.remaining_runs(body.cron, None),
+            "scheduleSetAt": datetime.now(timezone.utc).isoformat(),
             "policyText": body.instructions.strip(),
             "specialist": body.specialist_id,
             "budgetPerRunUsd": body.budget_per_run_usd,

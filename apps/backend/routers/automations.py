@@ -299,7 +299,7 @@ class _In(BaseModel):
 class ScheduleIn(_In):
     cron: list[str] = Field(min_length=1, max_length=4)  # 5-field, wall clock in `tz`
     tz: str
-    remaining_runs: int | None = Field(default=None, ge=1)  # 1 = one-off
+    remaining_runs: int | None = Field(default=None, ge=0)  # 1 = one-off, 0 = no limit (a dated cron yearly)
 
 
 class EventTriggerIn(_In):
@@ -414,7 +414,9 @@ def _schedule_fields(schedule: ScheduleIn) -> dict:
         automation_schedule.validate_cron(schedule.cron, schedule.tz)
     except ValueError as exc:
         raise _err(400, "invalid_schedule", message=str(exc)) from exc
-    return {"cron": schedule.cron, "tz": schedule.tz, "remainingRuns": schedule.remaining_runs}
+    remaining = automation_schedule.remaining_runs(schedule.cron, schedule.remaining_runs)
+    now = datetime.now(timezone.utc).isoformat()  # a one-off's date counts from here (`one_off_passed`)
+    return {"cron": schedule.cron, "tz": schedule.tz, "remainingRuns": remaining, "scheduleSetAt": now}
 
 
 async def _view(ws: str, row: dict) -> dict:
@@ -476,6 +478,8 @@ async def _view(ws: str, row: dict) -> dict:
 async def _activate(ws: str, row: dict) -> dict:
     """draft / paused / paused_system → active. A Google watch that broke or lapsed while paused is opened
     again first (and its keeper restarted); when that fails the automation stays paused."""
+    if at := automation_schedule.one_off_passed(row, datetime.now(timezone.utc)):
+        raise _err(409, "one_off_passed", message=f"This was for {at.day} {at:%b}; set a new time to turn it on.")
     now = datetime.now(timezone.utc).isoformat()
     for pid in row.get("hookPublicIds") or []:
         hook = await automations_repo.get_hook(ws, pid)

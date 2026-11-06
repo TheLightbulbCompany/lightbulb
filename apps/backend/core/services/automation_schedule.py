@@ -15,6 +15,7 @@ import json
 import re
 from datetime import datetime, timedelta
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 from temporalio.client import (
     Client,
@@ -95,6 +96,41 @@ def validate_cron(cron: list[str], tz: str) -> None:
         raise ValueError(f"runs must be at least {MIN_INTERVAL_MIN} minutes apart")
 
 
+def remaining_runs(cron: list[str], remaining: int | None) -> int | None:
+    """The `remainingRuns` to store. A cron that pins one minute of one date (`0 9 6 11 *`) is a one-off: the
+    Schedule would fire it again every year, so with no count given it gets one run. Every writer (the
+    create/patch routes, the Router's propose) stores this. `0` is an explicit "no limit" (every year on
+    that date); `None` would read as a one-off again on the next edit."""
+    if remaining is None and len(cron) == 1:
+        fields = cron[0].split()
+        if len(fields) == 5 and fields[4] == "*" and all(f.isdigit() for f in fields[:4]):
+            return 1
+    return remaining
+
+
+def first_fire(cron: str, tz: str, after: datetime) -> datetime:
+    """The first fire of a dated cron (`M H D Mo *`) after `after`. ValueError for an undated one."""
+    minute, hour, day, month = (int(f) for f in cron.split()[:4])
+    for year in (after.year, after.year + 1):
+        at = datetime(year, month, day, hour, minute, tzinfo=ZoneInfo(tz))
+        if at > after:
+            return at
+    raise ValueError(f"no fire after {after}")
+
+
+def one_off_passed(row: dict, now: datetime) -> datetime | None:
+    """The time a dated one-off was for, once it has passed (its first fire after the schedule was set);
+    turned on now it would wait a year. None for anything else."""
+    cron = row.get("cron") or []
+    if row.get("remainingRuns") != 1 or len(cron) != 1:
+        return None
+    try:
+        at = first_fire(cron[0], row["tz"], datetime.fromisoformat(row.get("scheduleSetAt") or row["createdAt"]))
+    except ValueError:
+        return None
+    return at if at <= now else None
+
+
 def _ws(row: dict) -> str:
     return row["pk"].removeprefix("WS#")
 
@@ -136,7 +172,9 @@ def build(row: dict) -> Schedule:
         spec=ScheduleSpec(cron_expressions=list(row["cron"]), time_zone_name=row["tz"]),
         policy=SchedulePolicy(overlap=ScheduleOverlapPolicy.SKIP, catchup_window=timedelta(minutes=1)),
         state=ScheduleState(
-            paused=_paused(row), limited_actions=remaining is not None, remaining_actions=remaining or 0
+            paused=_paused(row),
+            limited_actions=bool(remaining),
+            remaining_actions=remaining or 0,  # 0 = no limit
         ),
     )
 

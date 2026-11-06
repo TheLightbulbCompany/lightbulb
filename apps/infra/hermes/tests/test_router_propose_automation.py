@@ -50,6 +50,7 @@ def test_propose_automation_posts_route(router_turn, monkeypatch):
         specialist="agent_growth",
         deliver_to="room:r1",
         budget_per_run_usd=2.5,
+        repeat="yearly",
     )
     assert out == "proposed"
     (url, token, body), = posted
@@ -63,6 +64,7 @@ def test_propose_automation_posts_route(router_turn, monkeypatch):
         "specialistId": "agent_growth",
         "deliverTo": "room:r1",
         "budgetPerRunUsd": 2.5,
+        "repeat": "yearly",
     }
 
 

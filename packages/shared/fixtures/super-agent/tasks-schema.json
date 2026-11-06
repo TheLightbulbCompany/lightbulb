@@ -2165,6 +2165,18 @@
           "default": null,
           "title": "Remainingruns"
         },
+        "scheduleSetAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Schedulesetat"
+        },
         "activeRunTaskId": {
           "anyOf": [
             {

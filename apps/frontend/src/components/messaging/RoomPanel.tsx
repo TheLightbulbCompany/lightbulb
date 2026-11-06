@@ -514,10 +514,8 @@ function RoomContent({
   const showFirstReplies = starterRoom && unanswered && !room?.archivedAt
     && pendingMessages.length === 0
     && actionable && !composer.disabled;
+  // Pause stops Lightbulb, not people (W17-2): messages always send; Lightbulb notes it once if someone asks it.
   const paused = superAgent && !!visibleRoom?.pausedAt && !visibleRoom.archivedAt;
-  // A Send while paused: the ask stays in the composer and the paused bar says why (W12-11).
-  const [pausedAsk, setPausedAsk] = useState(false);
-  if (pausedAsk && !paused) setPausedAsk(false);
   const mainMessages = useMemo(() => messages.filter((message) => message.threadRootMessageId === null), [messages]);
   // One pass, as in the mobile timeline, instead of a full history scan per row.
   const repliesByRoot = useMemo(() => {
@@ -1168,9 +1166,8 @@ function RoomContent({
       {copied && <p role="status" aria-label="Link copied" className="sr-only">Link copied</p>}
       {messageActionError && <p role="alert" className="room-typing text-ui text-err">{messageActionError}</p>}
       {!visibleRoom?.archivedAt && <RoomLimitBar account={billing} />}
-      {paused && <div className="project-paused" role={pausedAsk ? "alert" : "status"}>
-        {/* A Send while paused keeps the ask in the box and says so here, next to Resume (W12-11). */}
-        <span>{pausedAsk ? `This ${projectNoun(visibleRoom?.kind)} is paused. Resume it to send.` : "Paused. New tasks and schedules wait."}</span>
+      {paused && <div className="project-paused" role="status">
+        <span>Lightbulb is paused here.</span>
         {onPatchRoom && canPause && <Button type="button" size="sm" variant="ghost" className="h-7" disabled={!actionable || messageActionPending}
           onClick={() => void runMessageAction(() => onPatchRoom({ paused: false }), `The ${projectNoun(visibleRoom?.kind)} could not be resumed.`)}>Resume</Button>}
       </div>}
@@ -1194,7 +1191,6 @@ function RoomContent({
           setEditTarget(own.length ? own[own.length - 1].messageId : null);
         } : undefined}
         disabled={!actionable || composer.disabled}
-        onHeld={paused ? () => setPausedAsk(true) : undefined}
         dropTargetRef={historyRef} /></>}
     </div>
     {dockSide(<>{!contextCollapsed && !showDetail && <aside className="room-context" aria-label="About"

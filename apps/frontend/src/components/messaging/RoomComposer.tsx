@@ -51,8 +51,6 @@ export interface RoomComposerProps {
   runningAgentIds?: readonly string[];
   /** The viewer: with the super-agent on, whether the formatting bar shows is remembered per person. */
   viewerId?: string;
-  /** Set while sending must wait (a paused project): Send calls it instead and the draft stays in the box. */
-  onHeld?: () => void;
 }
 
 /** Super-agent: the composer is one line with the formatting bar shown above it by default (founder, 6 Nov 2026); Aa
@@ -147,7 +145,6 @@ function ComposerAttempt({
   roomKind,
   runningAgentIds = [],
   viewerId,
-  onHeld,
   requestFocusAfterSend,
   cancelFocusAfterSend,
   consumeFocusAfterSend,
@@ -540,7 +537,6 @@ function ComposerAttempt({
     if (retry
       ? disabled || !!error || uploading || uploadFailed || !hasContent || !clientMessageId || effectiveState !== "rejected" || !onRetry || retryLocked.current
       : !canSend || locked.current) return;
-    if (!retry && onHeld) return onHeld();
     // A handle that stopped matching would otherwise go out as plain text without a word.
     if (!retry && staleKey && !sendStale) {
       setStaleNotice(staleKey);

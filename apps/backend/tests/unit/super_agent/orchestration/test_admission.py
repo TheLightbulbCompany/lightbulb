@@ -305,11 +305,14 @@ async def test_paused_project_gets_one_line_per_pause_and_no_router_turn(world, 
     monkeypatch.setattr("core.services.task_conversation.post_as_lightbulb", post)
     world["meta"] = {**world["meta"], "pausedAt": "2026-11-06T10:00:00Z"}
     await _admit(world, _msg(1, targets=[{"agentId": CEO, "eventKind": "user_request"}]))
-    await _admit(world, _msg(2))
+    await _admit(world, {**_msg(2), "text": "Lightbulb, draft the flyer"})
+    await _admit(
+        world, {**_msg(4), "text": "Priya will run the sign-up table."}
+    )  # W17-2: people talking to people get no line
     root = str(uuid.uuid4())
-    await _admit(world, _msg(3, root=root))
+    await _admit(world, {**_msg(5, root=root), "text": "hey Lightbulb, you there?"})
     assert world["router"] == [] and world["jev"] == []
-    assert {p[1] for p in world["posts"]} == {messaging.PAUSED_ROOM_TEXT}
+    assert {p[1] for p in world["posts"]} == {messaging.PAUSED_ROOM_TEXT} and len(keys) == 3
     # post_as_lightbulb dedupes on the key: one line per pause in the main chat, one in the thread, said there
     assert keys[:2] == [f"paused:{ROOM}:top:2026-11-06T10:00:00Z"] * 2
     assert keys[2] == f"paused:{ROOM}:{root}:2026-11-06T10:00:00Z" and world["posts"][2][2] == root

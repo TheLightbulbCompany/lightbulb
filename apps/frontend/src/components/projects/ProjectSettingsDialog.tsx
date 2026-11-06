@@ -129,8 +129,8 @@ function SettingsBody({ room, roomName, section, onSection, canEdit, actionable,
     </div>
     {canPause && <div className="project-row">
       <div className="project-row__text">
-        <p className="project-row__label">{paused ? "Paused" : `Pause ${noun}`}</p>
-        <p className="project-row__hint">Stops new tasks and schedules here. Running tasks finish. Undo any time.</p>
+        <p className="project-row__label">{paused ? "Lightbulb is paused" : "Pause Lightbulb"}</p>
+        <p className="project-row__hint">Lightbulb stops replying and starting tasks or schedules here. People keep chatting. Running tasks finish.</p>
       </div>
       <div className="project-row__control">
         <Saved token={saved.pause ?? 0} />

@@ -2,6 +2,7 @@
 Review focus 2: a retried `router_turn` applies once."""
 
 import re
+from datetime import datetime, timedelta, timezone
 import uuid
 
 import pytest
@@ -1492,6 +1493,20 @@ async def test_a_note_on_an_unaddressed_room_message_is_a_quiet_check(world, no_
 
 
 @pytest.mark.asyncio
+async def test_a_candidate_the_router_names_in_no_decision_still_gets_a_check(
+    world, no_memory_writes, reactions, noted_rows
+):
+    """Walk 16: a candidate ends silent only on the Router's own `ignore`. One it left out (its note dropped, or never
+    written) gets the ✅ a note would; an ignored one stays quiet."""
+    t1 = await _trig("chat:m1", admission="candidate")
+    t2 = await _trig("chat:m2", admission="candidate")
+    world["decisions"] = [{"kind": "ignore", "triggerIds": [t2]}]
+    await _run([t1, t2])
+    assert world["posts"] == [] and reactions == [(ROOM, "✅")]
+    assert noted_rows == []
+
+
+@pytest.mark.asyncio
 async def test_a_note_on_mail_is_an_ignore(world, no_memory_writes, reactions, noted_rows, monkeypatch):
     sent = []
 
@@ -1638,3 +1653,34 @@ async def test_the_reading_line_follows_the_router_run(world, monkeypatch):
         (ROOM, "room.typing.changed", "Lightbulb is writing a reply…", 0),
         (ROOM, "room.typing.changed", None, 1),  # cleared after the reply is posted
     ]
+
+
+@pytest.mark.asyncio
+async def test_a_line_unchanged_for_8_s_reads_still_working(monkeypatch):
+    """Walk 16: a cold runtime held the run's start 43 s under one "reading…". Eight seconds after admission with no
+    stage, and eight seconds into one stage, the line says "still working…"; a new stage replaces it."""
+    clock = [100.0]
+    monkeypatch.setattr(acts, "time", type("T", (), {"monotonic": staticmethod(lambda: clock[0])}))
+    labels = []
+
+    async def publish(self, ttl, label):
+        labels.append(label)
+
+    monkeypatch.setattr(acts._StageLine, "_publish", publish)
+    received = (datetime.now(timezone.utc) - timedelta(seconds=3)).isoformat()
+    line = acts._StageLine(WS, [{"source": "chat", "ref": {"roomId": ROOM}, "receivedAt": received}])
+    await line.update(None)
+    clock[0] += 4
+    await line.update(None)  # 7 s after admission: the client's own "reading…"
+    assert labels == []
+    clock[0] += 1.5
+    await line.update(None)
+    assert labels == [acts.STILL_WORKING]
+    running = runtime_runs.RunStatus("r", "running", "", None, None, [], [], None)
+    await line.update(running)
+    assert labels[-1] == "Lightbulb is thinking…"
+    clock[0] += 8
+    await line.update(running)
+    assert labels[-1] == acts.STILL_WORKING
+    await line.update(runtime_runs.RunStatus("r", "running", "", None, None, [], [], "reply"))
+    assert labels[-1] == "Lightbulb is writing a reply…"

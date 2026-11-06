@@ -39,7 +39,9 @@ Each rolled owner also gets ``sync_paperclip_adapter_config`` (one PATCH per ``h
 agent), so a fleet roll also converges every agent's adapterConfig onto today's builder.
 
 This is a SEQUENTIAL loop, and the idle wait is per owner: budget ~55-90 s extra for each parked
-owner (the probe cold-boots its microVM) and up to ~10.5 min for each busy one.
+owner (the probe cold-boots its microVM) and up to ~10.5 min for each busy one. An owner whose
+session was warm before the roll gets it woken again on the new spec (~40-55 s more), so its next
+message does not wait out the cold start.
 """
 
 from __future__ import annotations

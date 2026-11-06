@@ -99,3 +99,24 @@ async def test_stopping_typing_or_an_archived_room_wakes_nothing():
     await _type(False, prewake=prewake)
     await _type(True, prewake=prewake, meta={"ownerId": "org_host", "archivedAt": "2026-10-01"})
     prewake.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_creating_a_room_with_agents_wakes_the_runtime_for_its_first_message():
+    """Dev walk 16: the first answer in a new project took 54 s, 39 s of it the runtime's cold start."""
+    member = lambda kind, mid, mode: MagicMock(kind=kind, id=mid, display_name=mid.upper(), listen_mode=mode)  # noqa: E731
+    detail = MagicMock(
+        room_id=uuid.UUID(ROOM),
+        members=[member("human", "user_a", None), member("agent", "ceo", "active"), member("agent", "obs", "observe")],
+    )
+    prewake = MagicMock()
+    with (
+        patch("routers.messaging.resolve_owner_id", return_value="org_1"),
+        patch.object(router.service, "create_room", AsyncMock(return_value=detail)),
+        patch.object(router.voice_calls, "prewake_owner", prewake),
+    ):
+        assert await router.create_room(MagicMock(kind="channel"), caller=(_auth("user_a"), None)) is detail
+        prewake.assert_called_once_with("org_1", [{"id": "ceo", "name": "CEO"}], ROOM)
+        detail.members = [member("human", "user_a", None)]
+        await router.create_room(MagicMock(kind="channel"), caller=(_auth("user_a"), None))
+        prewake.assert_called_once()  # no agent to answer: nothing to wake

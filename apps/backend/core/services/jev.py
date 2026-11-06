@@ -820,6 +820,10 @@ async def route_for_router(
 
         questions["rule"] = rules_mod.jev_question(list(rules))
     answers = await decide(state, questions)
+    if answers is None:
+        # One more try on a timeout or error (p99 ~0.7 s against a 3 s cap): one slow call left "FYI: we have floor
+        # cushions for 15 kids" unread and silent (dev walk 16). A rate limit is not retried.
+        answers = await decide(state, questions)
     if not isinstance(answers, dict):  # None (down) or RATE_LIMITED
         return {"fallback": True}
     extra: dict = {}

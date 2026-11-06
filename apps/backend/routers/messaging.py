@@ -893,7 +893,15 @@ async def create_room(request: CreateRoomRequest, caller=Depends(person_or_compu
     auth, label = caller
     if label is not None and request.kind != "dm":
         raise ApiProblem("ROOM_FORBIDDEN", "A computer opens direct messages only.")
-    return await service.create_room(auth, request)
+    detail = await service.create_room(auth, request)
+    # A new project's first message is next: start a cold runtime now, as typing does (dev walk 16: 54 s to the first
+    # answer, 39 s of it the wake). Fire and forget; the single-flight wake dedupes.
+    team = [
+        {"id": m.id, "name": m.display_name} for m in detail.members if m.kind == "agent" and m.listen_mode != "observe"
+    ]
+    if team:
+        voice_calls.prewake_owner(resolve_owner_id(auth), team, str(detail.room_id))
+    return detail
 
 
 @router.get("/messaging/rooms/{room_id}", response_model=RoomDetail)

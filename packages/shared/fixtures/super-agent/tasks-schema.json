@@ -3349,18 +3349,6 @@
           "default": null,
           "title": "Originroomid"
         },
-        "resultLine": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Resultline"
-        },
         "taskRoomId": {
           "title": "Taskroomid",
           "type": "string"

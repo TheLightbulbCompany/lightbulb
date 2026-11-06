@@ -317,6 +317,9 @@ def test_restates_the_walk_10_double_line():
     only that the task is underway, in lower case."""
     ack = "Growth is researching three competitor taglines."
     assert router_prompt.restates("Growth has the task and is working on it.", {ack})
+    # Review #4905: a status word beside a number, a price or a question is still an answer.
+    assert not router_prompt.restates("Both tasks are working; the Stripe fee on a $50 ticket is $1.75.", {ack})
+    assert not router_prompt.restates("The task is working out to about $1,200 a month, is that ok?", {ack})
     assert "exactly one sentence" in router_prompt.ROUTER_INSTRUCTIONS
     assert 'never with "#"' in router_prompt.ROUTER_INSTRUCTIONS
 

@@ -211,9 +211,11 @@ def status_words(task: dict, asker: str | None = None) -> str:
 # A status line: the reply opens with a task-state word as a label ("Working: …") or says tasks are in it.
 _STATUS_LINE = re.compile(
     r"^\s*(?:Working|Needs you)\s*:|\b(?:task|tasks|request|requests|both|all)\b[^.?!]*\b(?:is|are)\s+"
-    r"(?:working|needs you)\b",
-    re.IGNORECASE,  # "Growth has the task and is working on it." (dev walk 10) is the ack again
+    r"(?:Working|Needs you)\b"
 )
+# "Growth has the task and is working on it." (dev walk 10): the ack again, in lower case. Checked after the number
+# guard, so "The task is working out to about $1,200 a month" stays an answer (review #4905).
+_UNDERWAY = re.compile(r"\b(?:has|have|got)\s+(?:the|this|its|their)?\s*(?:task|tasks)\b[^.?!]*\bworking\b", re.I)
 _WORD = re.compile(r"[a-z]+")
 _NAMES = re.compile(r"[#@][\w-]+")
 _STOP = frozenset(
@@ -234,6 +236,8 @@ def restates(reply: str, acks: set[str]) -> bool:
         return True
     if re.search(r"[\d$?]", _NAMES.sub("", reply)):  # a room or handle ("#walk-7") is not a number (dev walk 7)
         return False
+    if _UNDERWAY.search(reply):
+        return True
     words = set(_WORD.findall(reply.lower())) - _STOP
     said = set(_WORD.findall(" ".join(acks).lower())) - _STOP
     return bool(words) and len(words & said) * 2 >= len(words)

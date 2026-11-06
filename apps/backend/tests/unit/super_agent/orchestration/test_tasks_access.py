@@ -266,37 +266,53 @@ async def test_output_writes_never_fail_their_caller(monkeypatch):
     assert ta.tasks_repo.add_task_output.await_count == 2
 
 
-# --- Dev walk 10: the card's one-line result (W10-1, W10-2) ---------------------------------------------------------
+# --- Dev walk 10: the main chat's one-line result (W10-1, W10-2) -----------------------------------------------------
 
 
-def test_plain_line_strips_markdown_and_ends_at_a_sentence():
+@pytest.mark.parametrize(
+    ("text", "line"),
+    [
+        ("## Taglines\n\n- [Linear](https://linear.app) `ships` _fast_.", "Linear ships fast."),  # heading skipped
+        ("# Three taglines", "Three taglines"),  # a heading alone is the line
+        ("```python\nprint(1)\n```\nIt prints 1.", "It prints 1."),  # a leading code block says nothing
+        ("| Brand | Tagline |\n|---|---|\n| Linear | Fast |", "Brand · Tagline Linear · Fast"),  # no pipes
+        ("5 * 3 = 15, and 2 * 4 = 8.", "5 * 3 = 15, and 2 * 4 = 8."),  # arithmetic, not italics
+        ("See [the docs (v2)](https://x.dev/a_(b)) now.", "See the docs (v2) now."),  # nested parentheses
+        ("Read <https://x.dev> and [the guide][1].\n[1]: https://x.dev/g", "Read https://x.dev and the guide."),
+        ("<p>Done <b>today</b>.</p>", "Done today."),  # raw HTML
+        ("Use snake_case names.", "Use snake_case names."),
+        ("![chart](https://x.dev/c.png)", ""),  # an image says nothing: the caller falls back
+    ],
+)
+def test_plain_line_strips_markdown(text, line):
+    assert ta.plain_line(text) == line
+
+
+def test_plain_line_ends_at_a_sentence_within_the_limit():
     walk = (
         '**"Your competitors say fast."** Linear: "Built for speed." Notion: "One workspace." Asana leads with teams.'
     )
     line = ta.plain_line(walk)
     assert "*" not in line and len(line) <= ta.LINE_MAX and line.endswith(".")
     assert line.startswith('"Your competitors say fast."')
-    assert ta.plain_line("## Taglines\n\n- [Linear](https://linear.app) `ships` _fast_.") == "Taglines"
-    assert ta.plain_line("# Three taglines\nFound three taglines. Details in the file.") == (
-        "Three taglines Found three taglines. Details in the file."
-    )
-    one = "word " * 60  # one sentence longer than the line: cut at a word, never mid-word
-    cut = ta.plain_line(one)
+    cut = ta.plain_line("word " * 60)  # one sentence longer than the line: cut at a word, never mid-word
     assert len(cut) <= ta.LINE_MAX and cut.endswith("word…")
-    assert ta.plain_line("Use snake_case names.") == "Use snake_case names."
+    cjk = "我们找到了三条竞争对手的标语。" * 12  # CJK: its own sentence ends, and no space needed to cut
+    assert ta.plain_line(cjk).endswith("。") and len(ta.plain_line(cjk)) <= ta.LINE_MAX
+    long_cjk = "竞" * 200
+    assert len(ta.plain_line(long_cjk)) == ta.LINE_MAX and ta.plain_line(long_cjk).endswith("…")
 
 
-def test_result_line_is_the_cards_in_place_result():
+def test_result_line_follows_the_privacy_rule():
     done = {"kind": "room", "roomId": "r1"}
-    sub = [{"createdBy": "router", "threadKey": "room:r1:m1"}]
     att = [{"n": 1, "status": "ended", "outcome": "completed", "output": "**Paid** Acme.\n\nDetails…"}]
-    tree = {"task": _task(done, status="idle"), "attempts": att, "subscriptions": sub}
-    assert ta.summarize(tree, "sam")["resultLine"] == "Paid Acme."
-    assert ta.summarize({**tree, "task": _task(done)}, "sam")["resultLine"] is None  # still working
+    tree = {"task": _task(done, status="idle"), "attempts": att}
+    assert ta.result_line(tree, "r1") == "Paid Acme."
+    assert ta.result_line({**tree, "task": _task(done)}, "r1") is None  # still working
     # Someone in the room can't open it: no words there; a person-only task never shows any.
-    other = {**tree, "task": _task({"kind": "room", "roomId": "r2"}, status="idle")}
-    assert ta.summarize(other, "sam")["resultLine"] is None
-    mine = {**tree, "task": _task({"kind": "person", "userIds": ["sam"]}, status="idle")}
-    assert ta.summarize(mine, "sam")["resultLine"] is None
-    failed = {**tree, "task": _task({"kind": "workspace"}, status="failed", statusReason="refused")}
-    assert ta.summarize(failed, "sam")["resultLine"] == "Didn't finish: the computer it runs on refused it."
+    assert ta.result_line({**tree, "task": _task({"kind": "room", "roomId": "r2"}, status="idle")}, "r1") is None
+    assert ta.result_line({**tree, "task": _task({"kind": "person", "userIds": ["sam"]}, status="idle")}, "r1") is None
+    failed = _task({"kind": "workspace"}, status="failed", statusReason="refused", watchUntil="2026-11-10")
+    assert ta.result_line({**tree, "task": failed}, "r1") == "Didn't finish: the computer it runs on refused it."
+    image = [{**att[0], "output": "![chart](https://x.dev/c.png)"}]
+    assert ta.result_line({"task": _task(done, status="idle"), "attempts": image}, "r1") == "Pay the invoice"

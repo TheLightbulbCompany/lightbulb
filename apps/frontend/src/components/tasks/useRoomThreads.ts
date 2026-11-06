@@ -6,7 +6,7 @@
 // the rows under it. No request at all while the switch is off or outside the live provider (tests).
 
 import useSWR from "swr";
-import { overviewGroups, scopeParam, taskListKey, type TaskScope, type TaskSummary, type TasksClient } from "@lightbulb/shared";
+import { NEEDS_YOU_KEY_SUFFIX, overviewGroups, scopeParam, taskListKey, type TaskScope, type TaskSummary, type TasksClient } from "@lightbulb/shared";
 import { useOptionalLiveEvents, useSuperAgent } from "@/hooks/useLiveEvents";
 import { useApi } from "@/lib/api";
 
@@ -17,14 +17,14 @@ export const needsYouOf = (ts: readonly TaskSummary[]): TaskSummary[] =>
   overviewGroups(ts).find((g) => g.id === "needs_you")?.tasks ?? [];
 const NONE: TaskSummary[] = [];
 
-/** The scope's Needs you requests. Keyed under the scope's list prefix, so `task.changed` revalidates it (a new
- *  ask arrives) and rewrites its rows in place (an answered one leaves the cut). */
+/** The scope's Needs you requests. Keyed under the scope's list prefix with NEEDS_YOU_KEY_SUFFIX, so every
+ *  `task.changed` re-reads it (refreshTask): a new ask arrives and an answered one leaves while you sit in a room. */
 export function useNeedsYouTasks(scope: TaskScope | null): { tasks: TaskSummary[]; loaded: boolean; error: unknown; retry: () => void } {
   const live = useOptionalLiveEvents();
   const on = useSuperAgent();
   const api = useApi();
   const client: Pick<TasksClient, "cacheScope"> | undefined = live?.tasks;
-  const key = on && client && scope ? `${taskListKey(client, scope)}:needs-you` : null;
+  const key = on && client && scope ? `${taskListKey(client, scope)}${NEEDS_YOU_KEY_SUFFIX}` : null;
   const { data, error, mutate } = useSWR<{ tasks: TaskSummary[]; next: string | null }>(key,
     () => api.get(`/tasks?scope=${encodeURIComponent(scopeParam(scope!))}&needsYou=true`) as Promise<{ tasks: TaskSummary[]; next: string | null }>,
     { shouldRetryOnError: false });

@@ -1,14 +1,14 @@
 // @vitest-environment jsdom
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { SWRConfig, useSWRConfig } from "swr";
+import useSWR, { SWRConfig, useSWRConfig } from "swr";
 import { describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "../api/error";
 import type { TasksClient } from "./client";
 import { fixtureTask } from "./fixtures";
 import type { TaskDetail, TaskSummary } from "./types";
-import { putTaskSummary, refreshTask, taskKey, taskListKey, useAgentDirectory, useOlderTasks, useTask, useTaskList } from "./useTasks";
+import { NEEDS_YOU_KEY_SUFFIX, putTaskSummary, refreshTask, taskKey, taskListKey, useAgentDirectory, useOlderTasks, useTask, useTaskList } from "./useTasks";
 
 const t1 = fixtureTask({ taskId: "t1", title: "one", version: 5 });
 const t2 = fixtureTask({ taskId: "t2", title: "two", version: 2 });
@@ -117,6 +117,21 @@ describe("useTasks", () => {
     }
     expect(client.get.mock.calls).toEqual([["t1"], ["t1"], ["t1"]]);
     expect(client.list).not.toHaveBeenCalled();
+  });
+
+  it("every event re-reads the Needs you cut, so the badge follows a new approval without opening Activity (W8-3)", async () => {
+    const client = fakeClient();
+    const needsYou = vi.fn(async () => ({ tasks: [] as TaskSummary[], next: null }));
+    const key = `${taskListKey(client, { kind: "workspace" })}${NEEDS_YOU_KEY_SUFFIX}`;
+    const wrapper = ({ children }: { children: ReactNode }) => <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>{children}</SWRConfig>;
+    const hook = renderHook(() => ({ cut: useSWR(key, needsYou), list: useTaskList(client, { kind: "room", roomId: "r1" }), swr: useSWRConfig() }), { wrapper });
+    await waitFor(() => expect(hook.result.current.cut.data && hook.result.current.list.data).toBeTruthy());
+    const deps = { cache: hook.result.current.swr.cache, mutate: hook.result.current.swr.mutate, client };
+    needsYou.mockClear();
+    // A question opened on a request no detail has open, and a known request's own row moving on: both re-read it.
+    await act(() => refreshTask(deps, { taskId: "t-elsewhere", part: "question", version: 1 }));
+    await act(() => refreshTask(deps, { taskId: "t1", part: "task", version: 9 }));
+    expect(needsYou).toHaveBeenCalledTimes(2);
   });
 
   it("a non-task event for a task with no open detail fetches nothing", async () => {

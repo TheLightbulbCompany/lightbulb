@@ -449,7 +449,8 @@ describe("Team › Message", () => {
       { id: "ceo", name: "CEO", role: "ceo" },
       { id: "growth", name: "Growth", role: "cmo", title: "Finds you customers" } as AgentRow,
     ] } });
-    skills.byAgent = { fin: { skills: [{ name: "stripe" }, { name: "quickbooks" }, { name: "off", disabled: true }] } };
+    skills.byAgent = { fin: { skills: [{ name: "stripe", description: "Payments and finance" }, { name: "quickbooks", description: "Finance books" },
+      { name: "off", description: "finance", disabled: true }, { name: "canva", description: "Design posters" }] } };
     teamTasks.list = [
       { taskId: "t1", identifier: "t1", title: "Reconcile October", status: "idle", shownGroup: "idle", specialist: "fin", audience: { kind: "room" }, audienceKind: "room", taskRoomId: "tr", watching: false, updatedAt: "2026-11-05T10:00:00Z", version: 1 },
       { taskId: "t2", identifier: "t2", title: "Plan the week", status: "working", shownGroup: "working", specialist: null, audience: { kind: "room" }, audienceKind: "room", taskRoomId: "tr", watching: false, updatedAt: "2026-11-05T10:00:00Z", version: 1 },
@@ -486,7 +487,7 @@ describe("Team › Message", () => {
       { id: "fin", name: "Finance", role: "general" },
       { id: "eng", name: "Engineering", role: "engineer", title: "Engineering" } as AgentRow,
     ] } });
-    skills.byAgent = { eng: { skills: [{ name: "paperclip" }, { name: "codex" }, { name: "hermes-agent" }, { name: "github" }] } };
+    skills.byAgent = { eng: { skills: [{ name: "paperclip" }, { name: "codex" }, { name: "hermes-agent" }, { name: "github", description: "Engineering on GitHub" }] } };
     try {
       render(<SWRConfig value={{ provider: () => new Map() }}><AgentsListPanel /></SWRConfig>);
       fireEvent.click(screen.getByRole("button", { name: "Ask Finance through Lightbulb" }));
@@ -499,6 +500,29 @@ describe("Team › Message", () => {
       expect(within(eng).getByText("Works with github.")).toBeInTheDocument();
       expect(within(eng).getAllByText("Engineering")).toHaveLength(1);
     } finally { skills.byAgent = {}; directory.props = null; }
+  });
+
+  it("W8-7: each card shows its own top skills from the same enabled set, never the same tags and +N more", () => {
+    live.superAgent = true;
+    mockRead.mockReturnValue({ ...agents, data: { agents: [
+      { id: "ceo", name: "CEO", role: "ceo" },
+      { id: "growth", name: "Growth", role: "cmo", capabilities: "Finds and wins customers; owns marketing and outreach." } as AgentRow,
+      { id: "fin", name: "Finance", role: "cfo", capabilities: "Keeps the books and pays invoices." } as AgentRow,
+    ] } });
+    const same = { skills: [
+      { name: "ascii-video", description: "Render ASCII video" }, { name: "seo-audit", description: "Marketing site audit" },
+      { name: "cold-email", description: "Outreach to customers" }, { name: "invoice-pay", description: "Pay invoices" },
+      { name: "bookkeeping", description: "Keep the books" },
+    ] };
+    skills.byAgent = { ceo: same, growth: same, fin: same };
+    try {
+      render(<SWRConfig value={{ provider: () => new Map() }}><AgentsListPanel /></SWRConfig>);
+      const card = (name: string) => screen.getAllByRole("listitem").find((li) => within(li).queryByRole("heading", { name }))!;
+      expect(within(card("Growth")).getByRole("list", { name: "Growth's skills" })).toHaveTextContent(/^(seo-audit|cold-email){2}$/);
+      expect(within(card("Finance")).getByRole("list", { name: "Finance's skills" })).toHaveTextContent(/^(invoice-pay|bookkeeping){2}$/);
+      expect(within(card("Lightbulb")).queryByRole("list", { name: "Lightbulb's skills" })).toBeNull();
+      expect(screen.queryByText(/more$/)).toBeNull();
+    } finally { skills.byAgent = {}; }
   });
 
   it("the server's mentionHandle wins over a room's and the derived one (GET /teams/agents, #4885)", () => {

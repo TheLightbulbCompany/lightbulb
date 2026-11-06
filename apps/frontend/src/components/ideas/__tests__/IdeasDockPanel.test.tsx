@@ -18,6 +18,7 @@ vi.mock("@/components/workspace/workspaceController", () => controller);
 
 import { IdeasDockPanel } from "@/components/workspace/panels/IdeasDockPanel";
 import { WelcomeIdea } from "../IdeaCard";
+import { starterIdeas } from "../HomeIdeas";
 
 const idea = (id: string, agentId: string, agentName: string, kind: Idea["kind"] = "agency", ownerRole = "growth"): Idea => ({
   id, ownerRole, emoji: `e-${id}`, kind, size: kind === "agency" ? "project" : "task", businessTypes: ["any"], title: `Title ${id}`, why: `Why ${id}`,
@@ -37,7 +38,11 @@ function renderPanel(params: Record<string, string> = {}) {
 }
 
 const rowTitles = () => [...document.querySelectorAll(".idea-item__title")].map((el) => el.textContent);
-const row = (title: string) => screen.getByRole("button", { name: title });
+// The catalog rows live under the pane's folded "All ideas" (the welcome card has its own row).
+const row = (title: string) => {
+  const all = document.querySelector<HTMLElement>(".ideas-pane__all");
+  return (all ? within(all) : screen).getByRole("button", { name: title });
+};
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -81,7 +86,7 @@ describe("Ideas pane: the list", () => {
 });
 
 describe("Ideas pane: sizes and suggestions", () => {
-  it("W7: shows the team's suggestions as Home does (Do it / Not now), the catalog only while there are none", async () => {
+  it("W7: shows the team's suggestions as Activity does (Do it / Not now), the catalog folded", async () => {
     const suggestion: Idea = { ...idea("s-1", "growth", "Growth"), suggested: true, ourTurnaround: undefined, yourPart: undefined };
     client.listIdeas.mockResolvedValue({ ...catalog, ideas: [suggestion, ...catalog.ideas] });
     renderPanel();
@@ -89,17 +94,22 @@ describe("Ideas pane: sizes and suggestions", () => {
     const item = within(suggested).getByRole("listitem", { name: "Title s-1" });
     expect(item).toHaveTextContent("Growth would do this");
     expect(within(item).getByRole("button", { name: "Do it" })).toBeInTheDocument();
-    // The catalog is the starters, not shown beside suggestions.
-    expect(rowTitles()).toHaveLength(0);
+    // No starter chips beside suggestions; the catalog stays folded under All ideas.
+    expect(screen.queryByRole("list", { name: "Starter ideas" })).toBeNull();
+    expect(document.querySelector<HTMLDetailsElement>(".ideas-pane__all")!.open).toBe(false);
     await userEvent.click(within(item).getByRole("button", { name: "Not now" }));
     await waitFor(() => expect(client.dismissIdea).toHaveBeenCalledWith("s-1"));
   });
 
-  it("with no suggestions, the catalog sections are the starters under one lead line", async () => {
+  it("W8: with no suggestions, Activity's starter chips under one lead line; a chip opens its idea", async () => {
     renderPanel();
-    await waitFor(() => expect(rowTitles()).toHaveLength(5));
+    const chips = await screen.findByRole("list", { name: "Starter ideas" });
+    expect(within(chips).getAllByRole("button").map((b) => b.textContent)).toEqual(starterIdeas(catalog.ideas).map((i) => i.title));
     expect(screen.getByText(/Or start with one of these:/)).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: /^Suggested/ })).toBeNull();
+    expect(document.querySelector<HTMLDetailsElement>(".ideas-pane__all")!.open).toBe(false);
+    await userEvent.click(within(chips).getByRole("button", { name: "Title b" }));
+    expect(screen.getByRole("article", { name: "Title b" })).toBeInTheDocument();
   });
 });
 

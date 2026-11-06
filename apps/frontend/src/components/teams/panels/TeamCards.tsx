@@ -1,7 +1,7 @@
 "use client";
 
 // Team, super-agent (product shape, 5 Nov 2026): one card per specialist saying what it is for, what it can use
-// (its Hermes profile's skills), the requests it did lately, and Ask. Each specialist is its own profile, so it is
+// (its own top skills), the requests it did lately, and Ask. Each specialist is its own profile, so it is
 // shown as itself. Lightbulb leads, one line: it coordinates your requests (never "Coordinator" or its roster "CEO").
 
 import { useMemo, type ReactElement } from "react";
@@ -17,8 +17,8 @@ import { openTaskPane } from "@/components/workspace/workspaceController";
 import type { CompanyAgent } from "@/components/teams/shared/types";
 
 const WORKSPACE: TaskScope = { kind: "workspace" };
-/** Skills named on a card before "+N more". */
-export const SKILLS_SHOWN = 6;
+/** Skills named on a card. */
+export const SKILLS_SHOWN = 5;
 /** Recent requests per card. */
 export const RECENT_SHOWN = 3;
 
@@ -33,6 +33,22 @@ const PLUMBING_SKILLS = new Set(["lightbulb", "paperclip", "claude-code", "codex
 const PLUMBING_SOURCES = new Set(["autonomous-ai-agents", "mcp"]);
 export const userFacingSkills = (skills: readonly Skill[]): Skill[] =>
   skills.filter((s) => !s.disabled && !PLUMBING_SKILLS.has(s.name.toLowerCase()) && !PLUMBING_SOURCES.has(s.source ?? ""));
+
+const COMMON = new Set(["with", "from", "that", "this", "your", "into", "about", "when", "what", "them", "they", "their", "have", "will",
+  "make", "uses", "using", "work", "works", "owns", "help", "helps", "agent", "skill", "skills", "tool", "tools", "lightbulb"]);
+/** Word stems of a text, for matching a skill to what a specialist is for ("customers" and "customer" meet). */
+const stems = (text: string): Set<string> =>
+  new Set(text.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 4 && !COMMON.has(w)).map((w) => w.slice(0, 6)));
+
+/** A specialist's own top skills (dev walk W8-7). Every profile carries the image's whole set, so the full list is the
+ *  same on every card; these are the enabled ones its persona, title or role talks about, best match first. None when
+ *  nothing matches: an empty row says more than 47 tags shared by everyone.
+ *  ponytail: word overlap; a per-agent skill list from the roster replaces it once the backend keeps one. */
+export function topSkills(agent: Pick<CompanyAgent, "title" | "capabilities" | "name" | "role">, skills: readonly Skill[], n = SKILLS_SHOWN): Skill[] {
+  const about = stems(`${agent.name} ${agent.title ?? ""} ${agent.role ?? ""} ${agent.capabilities ?? ""}`);
+  return skills.map((skill, i) => ({ skill, i, score: [...stems(`${skill.name} ${skill.description ?? ""}`)].filter((w) => about.has(w)).length }))
+    .filter((x) => x.score > 0).sort((a, b) => b.score - a.score || a.i - b.i).slice(0, n).map((x) => x.skill);
+}
 
 /** What a specialist is for, in one line: its persona's first sentence, else its title unless that is just its name
  *  (or a roster role like "CEO"), else what its skills say. Null when there is nothing true to say. */
@@ -69,7 +85,9 @@ export function TeamCards({ agents, frontAgentId, nameOf, handleOf, onAsk, actio
   const { data } = useTaskList(tasks, WORKSPACE);
   // Lightbulb first: it is the one every request starts with.
   const ordered = useMemo(() => [...agents].sort((a, b) => Number(b.id === frontAgentId) - Number(a.id === frontAgentId)), [agents, frontAgentId]);
-  return <ul className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3" aria-label="Specialists">
+  // Columns follow the panel's own width, not the viewport's (the rail, a drawer or the pane take part of it), and
+  // every track is minmax(0, …) so a long request title truncates instead of widening the page (dev walk W8-2).
+  return <ul className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,18rem),1fr))] gap-3" aria-label="Specialists">
     {ordered.map((agent) => {
       const front = agent.id === frontAgentId;
       const recent = (data?.tasks ?? [])
@@ -88,12 +106,12 @@ function TeamCard({ agent, name, front, recent, loaded, viewerId, onAsk, menu }:
   // asking on a guess starts a microVM.
   const statusLoaded = useStatusLoaded();
   const { data: raw } = useRuntimeRpc<{ skills?: Skill[] } | Skill[]>(statusLoaded ? "skills.status" : null, { agentId: agent.id });
-  const skills = userFacingSkills(Array.isArray(raw) ? raw : raw?.skills ?? []);
   // Lightbulb: its one line only (its roster title is "CEO", its persona the coordinator's instructions).
+  const skills = front ? [] : topSkills(agent, userFacingSkills(Array.isArray(raw) ? raw : raw?.skills ?? []));
   const purpose = front ? null : purposeLine(agent, skills);
   const headingId = `team-${agent.id}`;
   const paused = agent.status === "paused";
-  return <li className="editorial-card flex flex-col gap-2 px-4 py-3" aria-labelledby={headingId}>
+  return <li className="editorial-card flex min-w-0 flex-col gap-2 px-4 py-3" aria-labelledby={headingId}>
     <div className="flex items-start gap-2">
       <div className="min-w-0 flex-1">
         <h3 id={headingId} className="truncate font-semibold">{name}</h3>
@@ -108,11 +126,10 @@ function TeamCard({ agent, name, front, recent, loaded, viewerId, onAsk, menu }:
     {skills.length > 0 && <div>
       <h4 className="sr-only">Skills</h4>
       <ul aria-label={`${name}'s skills`} className="flex flex-wrap gap-1">
-        {skills.slice(0, SKILLS_SHOWN).map((s) => <li key={s.name} title={s.description} className="rounded-xs border border-border px-1.5 text-caption text-muted-foreground">{s.name}</li>)}
-        {skills.length > SKILLS_SHOWN && <li className="px-1 text-caption text-muted-foreground">+{skills.length - SKILLS_SHOWN} more</li>}
+        {skills.map((s) => <li key={s.name} title={s.description} className="rounded-xs border border-border px-1.5 text-caption text-muted-foreground">{s.name}</li>)}
       </ul>
     </div>}
-    <section aria-label={`${name}'s recent requests`} className="grid gap-0.5 border-t border-border pt-2">
+    <section aria-label={`${name}'s recent requests`} className="grid grid-cols-[minmax(0,1fr)] gap-0.5 border-t border-border pt-2">
       {recent.length ? recent.map((t) => <button key={t.taskId} type="button" onClick={() => openTaskPane(t.taskId)}
         aria-label={`Open ${t.title}, ${summaryView(t, viewerId).word}`}
         className="-mx-1 flex items-center gap-2 rounded-xs px-1 py-0.5 text-left text-ui hover:bg-accent">

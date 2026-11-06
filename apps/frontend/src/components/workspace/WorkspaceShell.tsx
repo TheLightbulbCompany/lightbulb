@@ -142,7 +142,7 @@ function AuthenticatedWorkspace({ workspaceName }: { workspaceName: string }): R
   }, [defaultId]);
 
   const [recoveryTriggered, setRecoveryTriggered] = useState(false);
-  // Phone widths only: the rail + sidebar drawer. Wider, the CSS ignores it.
+  // Phone widths: the rail + sidebar drawer; narrow windows (600-999 px): the sidebar drawer. Wider, the CSS ignores it.
   // The drawer is open only at the place it was opened: any navigation (rail,
   // sidebar, + Task, a link) moves the main view, the pane or the URL, which
   // closes it without each caller remembering to.
@@ -156,12 +156,14 @@ function AuthenticatedWorkspace({ workspaceName }: { workspaceName: string }): R
     if (!navOpen) return;
     // Keyboard and switch users land in the drawer, not behind its backdrop
     // (the main column is `inert` while it is open), and return to the menu button.
-    // The first ENABLED control: Back is first in the rail and is disabled with no history.
-    shellRef.current?.querySelector<HTMLElement>(".workspace-rail button:not(:disabled)")?.focus();
+    // The first ENABLED control: Back is first in the rail and is disabled with no history. On a narrow window
+    // (600-999 px) the rail stays on screen and the drawer is the sidebar alone, so focus starts there.
+    const phone = !window.matchMedia?.("(min-width: 600px)")?.matches;
+    shellRef.current?.querySelector<HTMLElement>(phone ? ".workspace-rail button:not(:disabled)" : ".cream-sidebar button:not(:disabled)")?.focus();
     const menuButton = menuButtonRef.current;
-    // Widening past the phone breakpoint hides the drawer's backdrop, so
+    // Widening past the drawer breakpoint hides the drawer's backdrop, so
     // close it there rather than leave the main column inert with no way out.
-    const wide = window.matchMedia?.("(min-width: 600px)");
+    const wide = window.matchMedia?.("(min-width: 1000px)");
     wide?.addEventListener("change", closeNav);
     return () => {
       wide?.removeEventListener("change", closeNav);

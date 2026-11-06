@@ -76,7 +76,20 @@ export async function putTaskSummary(cache: Cache, mutate: ScopedMutator, task: 
 
 export interface RefreshDeps { cache: Cache; mutate: ScopedMutator; client: TasksClient }
 
-export async function refreshTask({ cache, mutate, client }: RefreshDeps, { taskId, part, version }: TaskChanged): Promise<void> {
+/** A Needs-you read (`/tasks?needsYou=true`, the rail badge and Home's needs-you line) is cached under its scope's list
+ *  key plus this suffix. Its membership is the server's filter, so an event never edits it in place: it is re-read. */
+export const NEEDS_YOU_KEY_SUFFIX = ":needs-you";
+
+export async function refreshTask(deps: RefreshDeps, changed: TaskChanged): Promise<void> {
+  // Every change can move a request into or out of Needs you (a new approval, an answer, a stop): re-read those cuts
+  // on the same event that updates the room's cards, so the badge never waits for Activity to open (dev walk W8-3).
+  await Promise.all([
+    refreshRows(deps, changed),
+    ...listKeys(deps.cache, deps.client).filter((k) => k.endsWith(NEEDS_YOU_KEY_SUFFIX)).map((k) => deps.mutate(k)),
+  ]);
+}
+
+async function refreshRows({ cache, mutate, client }: RefreshDeps, { taskId, part, version }: TaskChanged): Promise<void> {
   const lists = listKeys(cache, client);
   const detail = cache.get(taskKey(taskId))?.data as TaskDetail | undefined;
   // An attempt, Question or Effect row counts its own versions from 1: only an open detail cares about it.

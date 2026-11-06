@@ -108,6 +108,27 @@ describe("TaskPane", () => {
     expect(effects).not.toHaveTextContent("Waiting for approval");
   });
 
+  it("W8-4: after Reopen the old Closed line hides under the new live approval; a second Close reads once, one footer row", async () => {
+    const purchase = (state: "proposed", idemKey: string) => ({ idemKey, tool: "purchase", kind: "purchase", state });
+    // Reopened: the first ask was closed, the new one is live.
+    withDetail({ ...step8, task: FIXTURES.step05.tasks[0], questions: [{ ...openRow, qid: "q-1", state: "cancelled" as const }, { ...openRow, qid: "q-2" }],
+      effects: [purchase("proposed", "e1"), purchase("proposed", "e2")] },
+    [approval({ id: "q-1", state: "cancelled", createdAt: "2026-11-05T22:08:00Z" }), approval({ id: "q-2", createdAt: "2026-11-05T22:11:00Z" })]);
+    const { unmount } = pane();
+    await screen.findByRole("group", { name: /provision a database/ });
+    expect(screen.queryByRole("list", { name: "Decisions" })).toBeNull();
+    unmount();
+    // Closed again: two cancelled asks for the same thing, two unapproved proposals.
+    withDetail({ ...step8, task: { ...step8.task, status: "resolved" as const, shownGroup: "resolved" as const },
+      questions: [{ ...openRow, qid: "q-1", state: "cancelled" as const }, { ...openRow, qid: "q-2", state: "cancelled" as const }],
+      effects: [purchase("proposed", "e1"), purchase("proposed", "e2")] },
+    [approval({ id: "q-1", state: "cancelled" }), approval({ id: "q-2", state: "cancelled" })]);
+    pane();
+    const decisions = await screen.findByRole("list", { name: "Decisions" });
+    expect(within(decisions).getAllByRole("listitem")).toHaveLength(1);
+    expect(within(screen.getByRole("list", { name: "Effects" })).getAllByRole("listitem")).toHaveLength(1);
+  });
+
   it("transcript is the task room, read-only; with no room composer on screen a one-line note steers it", async () => {
     live.messaging.sendMessage.mockClear();
     pane();
@@ -117,8 +138,8 @@ describe("TaskPane", () => {
     // The question card shows once, at the top: its copy in the task room is left out of Progress.
     expect(transcript).toHaveAttribute("data-hides", "question");
     // One line, already there: no button that opens a second box.
-    expect(screen.queryByRole("button", { name: "Add a note" })).toBeNull();
-    await userEvent.type(screen.getByRole("textbox", { name: "Add a note" }), "Use the blue theme{Enter}");
+    expect(screen.queryByRole("button", { name: "Steer this request" })).toBeNull();
+    await userEvent.type(screen.getByRole("textbox", { name: "Steer this request" }), "Use the blue theme{Enter}");
     expect(live.messaging.sendMessage).toHaveBeenCalledWith(step8.taskRoomId, expect.objectContaining({ text: "Use the blue theme", mentions: [] }));
     expect(capture).toHaveBeenCalledWith("task_steer_sent", expect.objectContaining({ taskId: "t-signup", source: "note" }));
   });
@@ -329,7 +350,7 @@ describe("steering a finished request (dev walk N-F4)", () => {
     pane();
     const status = await screen.findByRole("region", { name: "Request status" });
     expect(within(status).getByText("Done")).toBeInTheDocument();
-    await userEvent.type(screen.getByRole("textbox", { name: "Add a note" }), "Make it one line{Enter}");
+    await userEvent.type(screen.getByRole("textbox", { name: "Steer this request" }), "Make it one line{Enter}");
     await waitFor(() => expect(within(status).getByText("Working")).toBeInTheDocument());
     expect(within(status).getByRole("button", { name: "Stop" })).toBeInTheDocument();
   });

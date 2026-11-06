@@ -134,9 +134,8 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
         : participant
         ? <ParticipantProfile participant={participant} currentUserId={currentUserId} onMessage={onSelectParticipant} disabled={!actionable} />
         : <span className="font-semibold truncate" title={name}>{name}</span>}
-        {/* Super-agent: Lightbulb reads as the coordinator (it starts requests; specialists do them, named on their cards
-            and on their own results). No "Agent" tag beside a specialist's label. */}
-        {superAgent && message.author.kind === "agent" && !message.specialist && participant?.mentionHandle === "lightbulb" && <span className="room-agent-label">Coordinator</span>}
+        {/* Super-agent: Lightbulb is just Lightbulb (no tag, W8-7); specialists are named on their cards and their own
+            results. No "Agent" tag beside either. */}
         {message.author.kind === "agent" && !(superAgent && (message.specialist || participant?.mentionHandle === "lightbulb")) && <span className="room-agent-label">Agent</span>}
         {timestamp && <time className="text-ui text-muted-foreground" dateTime={timestamp} title={new Date(timestamp).toLocaleString()}>{time}</time>}
       </div>}

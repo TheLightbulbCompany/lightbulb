@@ -9,7 +9,7 @@
 import "./home.css";
 import { useState, type FormEvent, type ReactElement } from "react";
 import { ChevronRight, Plus, Search } from "lucide-react";
-import { orderIdeas, overviewGroups, roomDisplayName, useTaskList, type TaskScope, type TaskSummary } from "@lightbulb/shared";
+import { orderIdeas, overviewGroups, roomDisplayName, summaryView, useTaskList, type TaskScope, type TaskSummary } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingWorkspaceContext";
 import type { DirectoryRoom } from "@/components/messaging/types";
@@ -99,7 +99,7 @@ export function HomeProjects(): ReactElement {
       <button type="button" className="home-projects__dm" onClick={() => openDm()}>
         <span className="min-w-0 flex-1">
           <span className="block font-semibold">Lightbulb</span>
-          <span className="block truncate text-ui text-muted-foreground">{dm?.lastMessage ? snippet(dm) : "Your conversation with Lightbulb"}</span>
+          <span className="block truncate text-ui text-muted-foreground">{dm?.lastMessage ? previewLine(dm, data?.tasks ?? []) : "Your conversation with Lightbulb"}</span>
         </span>
         <RoomMeta room={dm} counts={dm ? counts.get(dm.roomId) : undefined} capped={capped} />
       </button>
@@ -126,7 +126,7 @@ export function HomeProjects(): ReactElement {
         : directory.state === "error" ? <p role="alert" className="text-ui text-muted-foreground">Projects couldn&apos;t load.{" "}
           {directory.onRetry && <button type="button" className="underline hover:text-foreground" onClick={directory.onRetry}>Retry</button>}</p>
         : shown.length > 0 ? <ul className="home-projects__grid">
-          {shown.map((room) => <li key={room.roomId}><ProjectCard room={room} counts={counts.get(room.roomId)} capped={capped} /></li>)}
+          {shown.map((room) => <li key={room.roomId}><ProjectCard room={room} counts={counts.get(room.roomId)} capped={capped} preview={previewLine(room, data?.tasks ?? [])} /></li>)}
         </ul>
         : q ? <p className="text-ui text-muted-foreground">No project matches “{query.trim()}”.</p> : null}
       {fresh && !creating && <StartAProject onStart={() => setCreating(true)} />}
@@ -165,6 +165,21 @@ const snippet = (room: DirectoryRoom) => {
   return m.authorKind === "system" ? text : `${m.authorName}: ${text}`;
 };
 
+/** A card's preview: the room's latest message, unless one of its requests settled after it (Done, Stopped, Closed).
+ *  Then the request's status, so "Growth is writing…" or "On it: …" never outlives the request (dev walk W8-9).
+ *  ponytail: the listed page of requests; an older request settling is caught by the next message. */
+export function previewLine(room: DirectoryRoom, tasks: readonly TaskSummary[]): string {
+  const at = room.lastMessage ? Date.parse(room.lastMessage.createdAt) : -Infinity;
+  const latest = tasks.filter((t) => (t.audience?.roomId ?? t.originRoomId) === room.roomId)
+    .reduce<TaskSummary | null>((a, t) => (!a || Date.parse(t.updatedAt) > Date.parse(a.updatedAt) ? t : a), null);
+  if (latest && Date.parse(latest.updatedAt) > at) {
+    // Done and Closed read the same for every viewer (only a failed request depends on who looks).
+    const view = summaryView(latest, "");
+    if (view.word === "Done" || (view.word === "Closed" && latest.status === "resolved")) return `${latest.title} · ${view.reason ?? view.word}`;
+  }
+  return snippet(room);
+}
+
 function RoomMeta({ room, counts, capped = false }: { room?: DirectoryRoom; counts?: RoomCounts; capped?: boolean }): ReactElement {
   return <span className="home-projects__meta">
     {room?.lastMessageAt && <time dateTime={room.lastMessageAt}>{timeAgo(room.lastMessageAt)}</time>}
@@ -173,7 +188,7 @@ function RoomMeta({ room, counts, capped = false }: { room?: DirectoryRoom; coun
   </span>;
 }
 
-function ProjectCard({ room, counts, capped }: { room: DirectoryRoom; counts?: RoomCounts; capped: boolean }): ReactElement {
+function ProjectCard({ room, counts, capped, preview }: { room: DirectoryRoom; counts?: RoomCounts; capped: boolean; preview: string }): ReactElement {
   const name = roomDisplayName(room, room.participants);
   const describedBy = `home-card-${room.roomId}`;
   return <button type="button" className="home-projects__card" onClick={() => openRoom(room.roomId)}
@@ -181,7 +196,7 @@ function ProjectCard({ room, counts, capped }: { room: DirectoryRoom; counts?: R
     <span className="block truncate font-semibold">{name}</span>
     <span id={describedBy} className="contents">
       {room.topic && <span className="line-clamp-2 text-ui text-muted-foreground">{room.topic}</span>}
-      {room.lastMessage && <span className="block truncate text-ui text-muted-foreground">{snippet(room)}</span>}
+      {room.lastMessage && <span className="block truncate text-ui text-muted-foreground">{preview}</span>}
     </span>
     <RoomMeta room={room} counts={counts} capped={capped} />
   </button>;

@@ -8,11 +8,12 @@
 import { useState, type ReactElement } from "react";
 import { automationStatusLine, nextRunWords, useAutomation, type AutomationView } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
-import { budgetLine, scheduleWords, useAutomationActions, useAutomationSource, useCanDecide, useCanEdit, useSpecialistLabel, viewerTimeZone, waitingWords } from "./automations";
+import { budgetLine, scheduleWords, useAutomationActions, useAutomationSource, useCanDecide, useCanEdit, useDeliveryWords, useSpecialistLabel, viewerTimeZone, waitingWords } from "./automations";
 
 export function AutomationConfirmCard({ automationId, viewerTz = viewerTimeZone() }: { automationId: string; viewerTz?: string }): ReactElement {
   const { data: a, error } = useAutomation(useAutomationSource(), automationId);
   const specialistName = useSpecialistLabel();
+  const delivery = useDeliveryWords();
   const { act, remove } = useAutomationActions();
   const canDecide = useCanDecide();
   const canEdit = useCanEdit();
@@ -42,7 +43,7 @@ export function AutomationConfirmCard({ automationId, viewerTz = viewerTimeZone(
   const next = a.nextRuns[0] ? nextRunWords(a.nextRuns[0], viewerTz) : "";
   return <section aria-label={`Turn on ${a.name}`} className="editorial-card mt-1.5 max-w-xl px-3 py-2" data-automation-card={a.id}>
     <p className="font-semibold">{a.status === "draft" ? "Turn on: " : ""}{a.name}</p>
-    <p className="text-ui text-muted-foreground">{lines(a, viewerTz, specialistName).join(" · ")}</p>
+    <p className="text-ui text-muted-foreground">{lines(a, viewerTz, specialistName, delivery).join(" · ")}</p>
     {next && <p className="text-ui text-muted-foreground">Next: {next}</p>}
     {/* Only On is green; Paused is a state, not a success. */}
     {a.status !== "draft" && <p className={`mt-1 text-ui ${a.status === "active" ? "text-ok" : "text-muted-foreground"}`}>{automationStatusLine(a) ?? "On"}</p>}
@@ -59,10 +60,12 @@ export function AutomationConfirmCard({ automationId, viewerTz = viewerTimeZone(
   </section>;
 }
 
-function lines(a: AutomationView, viewerTz: string, specialistName: (id: string | null | undefined) => string): string[] {
+function lines(a: AutomationView, viewerTz: string, specialistName: (id: string | null | undefined) => string, delivery: (deliverTo: string) => string | null): string[] {
   const out: string[] = [];
   const schedule = scheduleWords(a, viewerTz);
   if (schedule) out.push(schedule);
+  const where = delivery(a.deliverTo);
+  if (where) out.push(where);
   out.push(specialistName(a.specialistId));
   const budget = budgetLine(a);
   if (budget) out.push(budget);

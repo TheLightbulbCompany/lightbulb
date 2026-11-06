@@ -39,7 +39,7 @@ vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({
 }));
 vi.mock("../WorkspaceSidebar", () => ({
   WorkspaceSidebar: ({ onRecoveryReprovision, chatReady, onNavigate }: { onRecoveryReprovision: () => void; chatReady: boolean; onNavigate: () => void }) => (
-    <nav aria-label="Workspace">
+    <nav aria-label="Workspace" className="cream-sidebar">
       <button onClick={onRecoveryReprovision} data-ready={chatReady}>Recover</button>
       <button onClick={onNavigate}>Open a room</button>
     </nav>
@@ -299,5 +299,20 @@ it("closes the phone drawer when the window widens past the phone breakpoint", (
   act(() => onChange?.());
   expect(view.container.querySelector(".workspace-shell")).toHaveAttribute("data-nav-open", "false");
   expect(main).not.toHaveAttribute("inert");
+  vi.unstubAllGlobals();
+});
+
+it("on a narrow window (600-999 px) the drawer is the sidebar alone: focus starts in it and it closes past 1000 px (W8-2)", () => {
+  const listeners = new Map<string, () => void>();
+  vi.stubGlobal("matchMedia", (query: string) => ({
+    matches: query === "(min-width: 600px)", media: query,
+    addEventListener: (_: string, cb: () => void) => { listeners.set(query, cb); },
+    removeEventListener: () => {},
+  }));
+  const view = renderReady();
+  fireEvent.click(screen.getByRole("button", { name: "Open menu" }));
+  expect(screen.getByRole("button", { name: "Recover" })).toHaveFocus();
+  act(() => listeners.get("(min-width: 1000px)")?.());
+  expect(view.container.querySelector(".workspace-shell")).toHaveAttribute("data-nav-open", "false");
   vi.unstubAllGlobals();
 });

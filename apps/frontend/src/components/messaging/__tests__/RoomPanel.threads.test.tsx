@@ -204,6 +204,46 @@ describe("RoomPanel Threads view (super-agent)", () => {
     expect(screen.getByRole("heading", { name: "Requests" })).toHaveFocus();
   });
 
+  it("W8-6: Skip to requests is the room's first Tab stop even with the column closed; it opens the column and lands there", async () => {
+    localStorage.clear();
+    localStorage.setItem(`lightbulb.room.requestsOpen:${SAM}`, "0");
+    try {
+      render(<Fresh><RoomPanel {...props} /></Fresh>);
+      await screen.findByRole("button", { name: /^Requests/ });
+      expect(screen.queryByRole("complementary", { name: "Requests" })).toBeNull();
+      await userEvent.tab();
+      const skip = screen.getByRole("button", { name: "Skip to requests" });
+      expect(skip).toHaveFocus();
+      await userEvent.keyboard("{Enter}");
+      await waitFor(() => expect(screen.getByRole("heading", { name: "Requests" })).toHaveFocus());
+    } finally { localStorage.clear(); }
+  });
+
+  it("W8-1: in the shell on a window where the pane is a sheet, an open request carries its own steer line", async () => {
+    localStorage.clear();
+    _resetControllerForTests();
+    attachShell(() => undefined);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    act(() => setThreadPaneHost(host));
+    const wide = window.matchMedia;
+    window.matchMedia = ((query: string) => ({ matches: query === "(max-width: 735px)", media: query, onchange: null,
+      addListener: vi.fn(), removeListener: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn() })) as unknown as typeof window.matchMedia;
+    try {
+      const reply: RoomMessage = { ...message, messageId: "m2", messageSeq: 2, author: { kind: "agent", id: lightbulb.id, displayName: "Lightbulb" }, text: "On it.", taskRefs: [{ taskId: "t-signup" }] } as RoomMessage;
+      // A working request with its detail (step 8): steering is what it takes.
+      client = fakeTasksClient(FIXTURES.step08.tasks, FIXTURES.step08.details); live.tasks = client;
+      render(<Fresh><RoomPanel {...props} messages={[message, reply]} /></Fresh>);
+      // A sheet would cover the conversation: closed until asked for.
+      expect(screen.queryByRole("complementary", { name: "Requests" })).toBeNull();
+      const card = (await screen.findAllByRole("button", { name: /^Open Workshop signup app/ })).find((b) => b.closest("[data-task-card]"))!;
+      await userEvent.click(card);
+      const pane = await within(host).findByRole("complementary", { name: "Request" });
+      expect(await within(pane).findByRole("textbox", { name: "Steer this request" })).toBeInTheDocument();
+      expect(screen.queryByText(/Replying to:/)).toBeNull();
+    } finally { window.matchMedia = wide; host.remove(); _resetControllerForTests(); localStorage.clear(); }
+  });
+
   it("on a narrow screen the toggle opens the Requests as a sheet over the conversation, and closes it", async () => {
     localStorage.clear();
     const wide = window.matchMedia;
@@ -235,12 +275,12 @@ describe("RoomPanel Threads view (super-agent)", () => {
     expect(await screen.findByRole("complementary", { name: "Requests" })).toBeInTheDocument();
   });
 
-  it("Lightbulb's messages read as the coordinator", async () => {
+  it("Lightbulb's messages read as Lightbulb, with no Coordinator or Agent tag (W8-7)", async () => {
     const front = { ...lightbulb, mentionHandle: "lightbulb" };
     const reply: RoomMessage = { ...message, messageId: "m2", messageSeq: 2, author: { kind: "agent", id: front.id, displayName: "Lightbulb" }, text: "On it." };
     render(<Fresh><RoomPanel {...props} participants={[sam, front]} messages={[message, reply]} /></Fresh>);
     const article = await screen.findByRole("article", { name: "Message from Lightbulb" });
-    expect(within(article).getByText("Coordinator")).toBeInTheDocument();
+    expect(within(article).queryByText("Coordinator")).toBeNull();
     expect(within(article).queryByText("Agent")).toBeNull();
   });
 

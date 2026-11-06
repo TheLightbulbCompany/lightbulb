@@ -15,6 +15,8 @@ const openPanel = vi.hoisted(() => vi.fn());
 vi.mock("@/components/workspace/workspaceController", () => ({ openTaskPane, openPanel }));
 const clerk = vi.hoisted(() => ({ userId: "user_sam", role: "org:admin" as string | undefined }));
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ userId: clerk.userId }), useOrganization: () => ({ membership: clerk.role ? { role: clerk.role } : null }) }));
+const messaging = vi.hoisted(() => ({ value: null as unknown }));
+vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({ useMessagingWorkspaceOptional: () => messaging.value }));
 import { ApiError } from "@lightbulb/shared";
 
 import { AutomationsPanel } from "../AutomationsPanel";
@@ -85,6 +87,16 @@ describe("AutomationsPanel", () => {
     unmount();
     render(<Fresh><AutomationsPanel viewerTz="Europe/London" /></Fresh>);
     expect(await screen.findByText(/Mondays 14:00 \(New York time: Mondays 9:00\) · posts in a room/)).toBeInTheDocument();
+  });
+
+  it("W8: the row and the detail name the time zone and the room it posts to", async () => {
+    messaging.value = { directoryProps: { rooms: [{ roomId: "room-workshop-launch", kind: "channel", name: "walk-8", participants: [] }] } };
+    try {
+      render(<Fresh><AutomationsPanel viewerTz="America/New_York" /></Fresh>);
+      expect(await screen.findByText(/Mondays 9:00 New York time · .*posts to #walk-8/)).toBeInTheDocument();
+      await userEvent.click(screen.getByRole("button", { name: "Post signups every Monday" }));
+      expect(await screen.findByText(/^Mondays 9:00 New York time · posts to #walk-8 · /)).toBeInTheDocument();
+    } finally { messaging.value = null; }
   });
 
   it("Run now follows the server's rules: a live run is opened, not restarted; only an admin may run a room automation", async () => {

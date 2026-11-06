@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/button";
 import { useSuperAgent } from "@/hooks/useLiveEvents";
 import { openTaskPane } from "@/components/workspace/workspaceController";
 import {
-  budgetLine, cronTime, deliveryWords, runNow, runNowReason, scheduleWords, useAutomationActions, useAutomationSource, useCanDecide, useCanEdit, useSpecialistLabel, viewerTimeZone, waitingWords, withCronTime,
+  budgetLine, cronTime, runNow, runNowReason, scheduleWords, useAutomationActions, useAutomationSource, useCanDecide, useCanEdit, useDeliveryWords, useSpecialistLabel, viewerTimeZone, waitingWords, withCronTime,
 } from "./automations";
 
 export function AutomationsPanel({ viewerTz = viewerTimeZone(), onOpenTask = openTaskPane }: {
@@ -57,6 +57,7 @@ function AutomationList({ viewerTz, onSelect, onOpenTask }: {
 }): ReactElement {
   const { data, error } = useAutomations(useAutomationSource());
   const [note, setNote] = useState<string | null>(null);
+  const delivery = useDeliveryWords();
   const rows = data?.automations ?? [];
   return <div className="grid gap-3">
     <h2 className="font-semibold">Automations</h2>
@@ -68,7 +69,7 @@ function AutomationList({ viewerTz, onSelect, onOpenTask }: {
     {rows.length > 0 && <ul className="grid">{rows.map((a) => <li key={a.id} className="relative flex items-center gap-3 rounded-md px-2 py-2 hover:bg-accent">
       <div className="min-w-0 flex-1">
         <button type="button" className="block max-w-full truncate text-left font-semibold after:absolute after:inset-0 after:content-['']" onClick={() => onSelect(a.id)}>{a.name}</button>
-        <p className="truncate text-ui text-muted-foreground">{[automationRowLine(a, viewerTz), deliveryWords(a.deliverTo)].filter(Boolean).join(" · ")}</p>
+        <p className="truncate text-ui text-muted-foreground">{[automationRowLine(a, viewerTz), delivery(a.deliverTo)].filter(Boolean).join(" · ")}</p>
       </div>
       <RunNowButton a={a} onOpenTask={onOpenTask} onNote={setNote} />
     </li>)}</ul>}
@@ -81,6 +82,7 @@ function AutomationDetail({ id, viewerTz, onBack, onOpenTask }: {
 }): ReactElement {
   const source = useAutomationSource();
   const specialistName = useSpecialistLabel();
+  const delivery = useDeliveryWords();
   const { data: a, error } = useAutomation(source, id);
   const { data: runs } = useAutomationRuns(source, id);
   const { act, edit, remove } = useAutomationActions();
@@ -103,7 +105,7 @@ function AutomationDetail({ id, viewerTz, onBack, onOpenTask }: {
     <Button variant="ghost" aria-label="Back to automations" onClick={onBack}><ArrowLeft aria-hidden="true" />Automations</Button>
     <header className="grid gap-1">
       <h2 className="font-semibold">{a.name}</h2>
-      <p className="text-ui text-muted-foreground">{[scheduleLine(a, viewerTz), specialistName(a.specialistId), budgetLine(a)].filter(Boolean).join(" · ")}</p>
+      <p className="text-ui text-muted-foreground">{[scheduleLine(a, viewerTz), delivery(a.deliverTo), specialistName(a.specialistId), budgetLine(a)].filter(Boolean).join(" · ")}</p>
       {automationStatusLine(a) && <p className="text-ui text-warn">{automationStatusLine(a)}</p>}
     </header>
     {/* Pause and Run now follow the server's _may_edit (admin or owner); Resume is an activate (room → admin only). */}

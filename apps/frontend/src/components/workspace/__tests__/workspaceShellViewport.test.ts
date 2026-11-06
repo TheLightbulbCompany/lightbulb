@@ -27,11 +27,19 @@ describe(".workspace-shell viewport", () => {
     expect(phone).toMatch(/\[data-nav-open="true"\] > :is\(\.workspace-rail, \.cream-sidebar\) \{ display: flex; \}/);
   });
 
+  it("folds the conversations sidebar into a drawer below 1000 px, beside the rail (W8-2)", () => {
+    const narrow = css.slice(css.indexOf("@media (min-width: 600px) and (max-width: 999px)"));
+    expect(narrow).toMatch(/\.workspace-shell\[data-sidebar="true"\] \{ grid-template-columns: 56px minmax\(0, 1fr\); grid-template-areas: "rail main"; \}/);
+    expect(narrow).toMatch(/\.workspace-shell\[data-sidebar="true"\]\[data-nav-open="true"\] > \.cream-sidebar \{ display: flex; \}/);
+  });
+
   it("opens the pane as a sheet wherever the main view and the pane cannot both keep their minimums", () => {
-    // jsdom computes no layout: derive the breakpoint from the minimums and the tablet grid.
-    const tablet = css.slice(css.indexOf("@media (max-width: 1000px)"));
-    const [rail, sidebar] = /grid-template-columns:\s*(\d+)px (\d+)px/.exec(tablet)!.slice(1).map(Number);
-    const fits = rail + sidebar + MAIN_MIN_WIDTH + PANE_MIN_WIDTH; // 956
+    // jsdom computes no layout: derive the breakpoint from the minimums and the narrow grid (rail only below 1000 px).
+    const narrow = css.slice(css.indexOf("@media (min-width: 600px) and (max-width: 999px)"));
+    const rail = Number(/grid-template-columns:\s*(\d+)px minmax/.exec(narrow)![1]);
+    const fits = rail + MAIN_MIN_WIDTH + PANE_MIN_WIDTH; // 736
+    // The room uses the same width to decide that its composer is covered (its pane gets a steer line, W8-1).
+    expect(readFileSync(resolve(process.cwd(), "src/components/messaging/RoomPanel.tsx"), "utf8")).toContain(`PANE_SHEET_QUERY = "(max-width: ${fits - 1}px)"`);
     const block = css.slice(css.indexOf(`@media (min-width: 600px) and (max-width: ${fits - 1}px)`));
     expect(block.startsWith("@media")).toBe(true);
     const sheet = block.slice(0, block.indexOf("}"));

@@ -207,15 +207,19 @@ export function namesAgent(text: string, name: string): boolean {
 }
 
 const narrowQuery = "(max-width: 859px)";
+/** In the shell, the right pane is a sheet over the conversation below this width (workspace.css); wider it sits
+ *  beside it (the sidebar folds into a drawer below 1000 px, so an 800 px window still has room, W8-1). */
+export const PANE_SHEET_QUERY = "(max-width: 735px)";
 const overlayQuery = "(min-width: 860px) and (max-width: 1179px)";
 
-function subscribeNarrow(callback: () => void) {
-  const media = window.matchMedia(narrowQuery);
-  media.addEventListener("change", callback);
-  return () => media.removeEventListener("change", callback);
+function useMedia(query: string): boolean {
+  const subscribe = useCallback((callback: () => void) => {
+    const media = window.matchMedia(query);
+    media.addEventListener("change", callback);
+    return () => media.removeEventListener("change", callback);
+  }, [query]);
+  return useSyncExternalStore(subscribe, () => window.matchMedia(query).matches, () => false);
 }
-const getNarrow = () => window.matchMedia(narrowQuery).matches;
-const getServerNarrow = () => false;
 
 /** The background subagents a run started outlive its card: they stay under the reply that replaced it. */
 function savedDelegations(state: RoomSubagents | undefined, entry: MessageDelegations | undefined) {
@@ -449,9 +453,12 @@ function RoomContent({
   const contextTrigger = useRef<HTMLButtonElement>(null);
   const contextWasOpen = useRef(false);
   const historyRef = useRef<HTMLDivElement>(null);
-  const isNarrow = useSyncExternalStore(subscribeNarrow, getNarrow, getServerNarrow);
   // The shell's right pane: the room's tools open it (Browser, Files) beside the conversation.
   const { ready: inShell, pane, place, fullScreen } = useWorkspaceState();
+  // Narrow = a side column would cover the conversation: in the shell, when its pane is a sheet; alone, below 860 px.
+  const roomNarrow = useMedia(narrowQuery);
+  const paneSheet = useMedia(PANE_SHEET_QUERY);
+  const isNarrow = inShell ? paneSheet && !fullScreen : roomNarrow;
   // The shell keeps the room mounted (hidden) on Home and Work: the remembered Requests column comes back only while
   // the room is on screen, or a hard load opened it over Home (dev walk W7-2).
   const roomOnScreen = !inShell || place === "chat" || fullScreen;
@@ -550,8 +557,10 @@ function RoomContent({
   // by the toggle each time (a column there would cover the conversation).
   const requestsWanted = isNarrow ? requestsSheet : requestsPref && requestsDismissedIn !== roomId;
   const requestsShown = superAgent && requestsWanted && !paneBusy && !visibleRoom?.feed && contextCollapsed && roomOnScreen;
-  // An open request pane is steered from this composer ("Replying to: …"); null while the composer isn't shown.
-  const taskReply = useTaskReply(superAgent && !visibleRoom?.feed && !visibleRoom?.archivedAt ? roomId : null, composer,
+  // An open request pane is steered from this composer ("Replying to: …"); null while the composer isn't shown,
+  // including when a side column covers it on a narrow window: the request pane then has its own steer line (W8-1).
+  const composerCovered = isNarrow && (showDetail || !contextCollapsed || requestsShown);
+  const taskReply = useTaskReply(superAgent && !visibleRoom?.feed && !visibleRoom?.archivedAt && !composerCovered ? roomId : null, composer,
     () => setFocusToken((t) => t + 1));
   // The About button's dot: anything in this room that needs the viewer (Home's Needs you cut; no request while off).
   const { waitingOnMe } = useRoomThreads(superAgent ? roomId : null);
@@ -680,6 +689,20 @@ function RoomContent({
     else { setRequestsPref(false); writeRequestsOpen(currentUserId, false); }
   };
   const sideHost = useThreadPane(showContext, () => { closeDetail(); setContextCollapsed(true); }, sideTitle);
+  // Skip to requests: the room's first Tab stop whenever it has Requests (W8-6). It opens the column (or sheet) when
+  // it is closed, then lands on its heading.
+  const focusRequests = useRef(false);
+  const skipToRequests = () => {
+    if (requestsShown && !showDetail) { requestsHeading.current?.focus(); return; }
+    focusRequests.current = true;
+    closeDetail(); setContextCollapsed(true);
+    if (!requestsWanted || paneBusy) openRequests();
+  };
+  useEffect(() => {
+    if (!requestsShown || showDetail || !focusRequests.current) return;
+    focusRequests.current = false;
+    requestsHeading.current?.focus();
+  }, [requestsShown, showDetail]);
 
   const openMemberPicker = useCallback(() => {
     closeDetail();
@@ -876,7 +899,7 @@ function RoomContent({
     className={cn("room-panel", showContext && !sideHost && "room-has-context", showDetail ? "room-has-detail" : "room-has-default-context")} aria-label={roomName}>
     <div className="room-conversation" hidden={showContext && isNarrow && !sideHost} onClickCapture={closeOverlay} onFocusCapture={closeOverlay}>
       {/* Keyboard: the column sits after every message's toolbar in tab order, so one link jumps there first. */}
-      {requestsShown && <button type="button" className="room-skip-link" onClick={() => requestsHeading.current?.focus()}>Skip to requests</button>}
+      {superAgent && !visibleRoom?.feed && <button type="button" className="room-skip-link" onClick={skipToRequests}>Skip to requests</button>}
       <RoomHeader room={visibleRoom} roomName={roomName} counterparts={counterparts} participants={participants} participantCount={participants.length}
         canEditRoom={canEditRoom} canLeave={canLeaveRoom} ownerCannotLeave={ownerCannotLeave} ownerHandsOff={canLeaveRoom && visibleRoom?.kind === "channel" && viewer?.role === "owner"} actionable={actionable} pinnedCount={pinnedMessageIds.length}
         search={<RoomMessageSearch roomId={roomId}

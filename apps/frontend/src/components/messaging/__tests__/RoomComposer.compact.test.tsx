@@ -6,6 +6,7 @@ const live = vi.hoisted(() => ({ superAgent: true }));
 vi.mock("@/hooks/useLiveEvents", () => ({ useSuperAgent: () => live.superAgent }));
 
 import { RoomComposer, type RoomComposerProps } from "../RoomComposer";
+import "@/test-utils/composer"; // the lazy editor, loaded
 
 const base: RoomComposerProps = {
   text: "", onTextChange: vi.fn(), members: [], viewerId: "user_sam", onUploadAttachment: vi.fn(),

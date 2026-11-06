@@ -884,6 +884,7 @@ button.session-group-header:focus-visible, .session-group-more:focus-visible, .s
 .room-composer-row > .room-editor { flex: 1; min-width: 0; align-self: center; }
 /* The WYSIWYG box (W18-4): formatting shows as it will be sent. */
 .room-editor { position: relative; max-height: 200px; overflow-y: auto; }
+.room-editor-plain { display: block; width: 100%; min-height: 24px; resize: none; border: 0; padding: 2px 4px; background: transparent; outline: none; font: inherit; font-size: var(--text-ui); line-height: var(--text-ui--line-height); color: inherit; }
 .room-editor-input { min-height: 24px; padding: 2px 4px; outline: none; font-size: var(--text-ui); line-height: var(--text-ui--line-height); caret-color: var(--foreground); white-space: pre-wrap; overflow-wrap: anywhere; }
 .room-editor-input[contenteditable="false"] { color: var(--muted-foreground); }
 .room-editor-placeholder { position: absolute; inset: 2px 4px auto; color: var(--muted-foreground); font-size: var(--text-ui); line-height: var(--text-ui--line-height); pointer-events: none; user-select: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

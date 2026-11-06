@@ -91,3 +91,22 @@ it("resolves a hand-typed human handle on send", () => {
     mentions: [{ kind: "human", id: "user-aden" }, { kind: "agent", id: "agent-friday" }],
   }));
 });
+
+it("W18-2: two people both called Alex Kim — each mention notifies the one picked", () => {
+  const twins: RoomParticipant[] = [
+    { ...members[0], id: "alex-1", displayName: "Alex Kim", mentionHandle: "alex" },
+    { ...members[0], id: "alex-2", displayName: "Alex Kim", mentionHandle: "alex-kim", joinedSeq: 3 },
+  ];
+  const onSubmit = vi.fn();
+  function Twins() {
+    const [text, setText] = useState("");
+    return <RoomComposer text={text} onTextChange={setText} members={twins}
+      clientMessageId="11111111-1111-4111-8111-111111111111" sendState="idle" onSubmit={onSubmit} />;
+  }
+  render(<Twins />);
+  type("hi @Alex");
+  fireEvent.click(screen.getAllByRole("option", { name: /Alex Kim/ })[1]);
+  expect(composerValue()).toBe("hi @Alex Kim ");
+  fireEvent.keyDown(field(), { key: "Enter" });
+  expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ mentions: [{ kind: "human", id: "alex-2" }] }));
+});

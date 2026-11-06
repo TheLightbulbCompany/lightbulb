@@ -27,11 +27,15 @@ function tokenEntries(participants: readonly MentionTarget[]): TokenEntry[] {
       [participant.mentionHandle, participant.kind === "human" || !participant.mentionHandle ? participant.displayName : null]
         .map((token, index) => ({ participant, token, isHandle: index === 0 })))
     .filter((entry): entry is TokenEntry => !!entry.token)
-    // Longest token first so @Aden Kim beats @Aden; on a tie the handle wins,
-    // because one person's handle can be another's display name and the owner
-    // of the handle is who the sender meant.
-    .sort((left, right) => right.token.length - left.token.length
-      || Number(right.isHandle) - Number(left.isHandle));
+    // Longest token first so @Aden Kim beats @Aden. On a tie an agent's handle
+    // wins (@growth is the agent), then a person's name: the composer types people
+    // by name, and their email-derived handle is never shown, so a name that
+    // equals someone else's handle means the named person (W18-2).
+    .sort((left, right) => right.token.length - left.token.length || tieRank(right) - tieRank(left));
+}
+
+function tieRank(entry: TokenEntry): number {
+  return entry.isHandle ? (entry.participant.kind === "agent" ? 2 : 0) : 1;
 }
 
 const tokenPattern = (entries: readonly TokenEntry[]) =>
@@ -69,9 +73,8 @@ function grammarFor(participants: readonly MentionTarget[]): { entries: TokenEnt
 
 export function linkifyMentions(
   text: string,
-  // Unused: the composer resolves typed @tokens to structured mentions on
-  // send. This rewrite links any member token found in the text regardless of
-  // whether it is also present here as a structured mention.
+  // The message's structured mentions: when two people share a token (two
+  // "Alex Kim"s), the chip goes to the one the message actually mentioned.
   mentions: readonly MemberRef[],
   participants: readonly MentionTarget[],
 ): string {
@@ -79,7 +82,8 @@ export function linkifyMentions(
   if (pattern === null) return text;
   const rewrite = (segment: string) =>
     segment.replace(pattern, (match, lead: string, token: string) => {
-      const entry = entries.find((candidate) => candidate.token.toLowerCase() === token.toLowerCase());
+      const same = entries.filter((candidate) => candidate.token.toLowerCase() === token.toLowerCase());
+      const entry = same.find((candidate) => mentions.some((ref) => ref.kind === candidate.participant.kind && ref.id === candidate.participant.id)) ?? same[0];
       if (!entry) return match;
       // A person's chip reads as their name, whatever was typed: handles are derived from email (W18-2). The id stays in the href.
       const label = entry.participant.kind === "human" && entry.participant.displayName ? entry.participant.displayName.replace(/[\\[\]]/g, "") : token;

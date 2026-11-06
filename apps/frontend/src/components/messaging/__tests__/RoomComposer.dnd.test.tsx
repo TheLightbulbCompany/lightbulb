@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { MessageAttachment } from "@lightbulb/shared";
 import { RoomComposer } from "../RoomComposer";
+import "@/test-utils/composer"; // the lazy editor, loaded
 
 const attachment: MessageAttachment = { id: "att-1", fileName: "shot.png", contentType: "image/png", size: 8 };
 

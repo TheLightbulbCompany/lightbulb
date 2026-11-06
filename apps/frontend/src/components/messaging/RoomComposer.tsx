@@ -1,12 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ComponentType, type ReactNode, type RefObject } from "react";
 import { AtSign, Bold, CaseSensitive, Code, FileText, Italic, Link2, List, ListOrdered, Paperclip, Plus, RotateCcw, Send, SmilePlus, SquareCode, Strikethrough, X } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { ApiError, MESSAGE_ATTACHMENT_ACCEPT, MESSAGE_ATTACHMENT_MAX_BYTES, MESSAGE_ATTACHMENT_MAX_COUNT, resolveMessageAttachmentContentType, resolveTypedMentions, resolveTypedSessionMentions, respondHint, searchEmoji, sessionMatches, sessionTitle, type CompletionTrigger, type CreateMessageRequest, type MarkdownStyle, type MessageAttachment, type MessageAttachmentContentType, type MemberRef, type RoomKind, type SessionMentionCandidate, type MentionTarget, sessionAgentName } from "@lightbulb/shared";
 import { useSuperAgent } from "@/hooks/useLiveEvents";
 import { Button } from "@/components/ui/button";
-import { ComposerEditor, type ComposerEditorHandle } from "./ComposerEditor";
+import type { ComposerEditorHandle, ComposerEditorProps } from "./ComposerEditor";
 import { consumeFocusComposerRequest } from "@/lib/focusComposerRequest";
 import { formatBytes } from "@/lib/utils";
 import { EmojiPicker, recordRecentEmoji } from "./EmojiPicker";
@@ -68,7 +68,31 @@ function writeFormatOpen(viewerId: string, open: boolean): void {
   try { localStorage.setItem(formatKey(viewerId), open ? "1" : "0"); } catch { /* private mode: this session only */ }
 }
 
+// The WYSIWYG box (Lexical, ~125 KB gzip) is its own chunk, fetched as soon as this module loads; until it lands the
+// composer is a plain box with the same text, so nothing typed is lost.
+let LoadedEditor: ComponentType<ComposerEditorProps> | null = null;
+export const composerEditorReady: Promise<void> = typeof window === "undefined" ? Promise.resolve()
+  : import("./ComposerEditor").then((module) => { LoadedEditor = module.ComposerEditor; });
+
 const sameMember = (left: MemberRef, right: MemberRef) => left.kind === right.kind && left.id === right.id;
+const uniqueRefs = (refs: MemberRef[]) => refs.filter((ref, index) => refs.findIndex((other) => sameMember(other, ref)) === index);
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** The picks whose `@token` is still in the text: as many picks per token as the token still appears. */
+function keptPicks(text: string, picks: readonly { token: string; ref: MemberRef }[]): MemberRef[] {
+  const used = new Map<string, number>();
+  return picks.flatMap((pick) => {
+    const key = pick.token.toLowerCase();
+    const seen = used.get(key) ?? 0;
+    const count = text.match(new RegExp(`(^|[\\s(])@${escapeRegExp(pick.token)}(?![\\w.-])`, "gi"))?.length ?? 0;
+    if (count <= seen) return [];
+    used.set(key, seen + 1);
+    return [pick.ref];
+  });
+}
+
+/** Markdown with nothing to send: empty, or only an empty bullet, number, quote or code fence. */
+export const isBlankMarkdown = (text: string) => text.split("\n").every((line) => /^\s*(?:[-*+]|\d+\.|>|```[\w-]*)?\s*$/.test(line));
 
 const FORMAT_CONTROLS: { style: MarkdownStyle; label: string; Icon: typeof Bold; keys?: string }[] = [
   { style: "bold", label: "Bold", Icon: Bold, keys: "Meta+B Control+B" },
@@ -176,6 +200,10 @@ function ComposerAttempt({
   const [trigger, setTrigger] = useState<CompletionTrigger | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
   const [selectedSessions, setSelectedSessions] = useState<Record<string, string>>({});
+  const [picked, setPicked] = useState<{ token: string; ref: MemberRef }[]>([]);
+  const [editorLoaded, setEditorLoaded] = useState(() => !!LoadedEditor);
+  useEffect(() => { if (!editorLoaded) void composerEditorReady.then(() => setEditorLoaded(true)); }, [editorLoaded]);
+  const plainFocused = useRef(false);
   const [submitted, setSubmitted] = useState(sendState !== "idle");
   const [callbackUncertain, setCallbackUncertain] = useState(false);
   const [retryPending, setRetryPending] = useState(false);
@@ -299,13 +327,19 @@ function ComposerAttempt({
   const emojiOptions = trigger?.kind === "emoji" ? searchEmoji(trigger.query).slice(0, 8) : [];
   const emojiOpen = emojiOptions.length > 0;
   const listOpen = mentionOpen || emojiOpen;
-  // Mentions are derived purely from the typed text — what renders as a
-  // structured mention on send is exactly what the composer's own typeahead
-  // inserted (or what the sender typed by hand). There is no separate
-  // "picked mentions" side-state to drift from the text.
-  const mentions = resolveTypedMentions(text, members);
+  // Mentions come from the text, except where the sender picked someone from the list: that pick is kept by id while
+  // its token is still in the text, so two people named "Alex Kim" each get the one picked (W18-2).
+  const pickedRefs = keptPicks(text, picked);
+  const pickedTokens = new Set(picked.map((pick) => pick.token.toLowerCase()));
+  const everyone = [...members, ...outsiders];
+  const wasPicked = (ref: MemberRef) => pickedRefs.some((pick) => sameMember(pick, ref));
+  // A token someone was picked for resolves to the pick, never to another person who shares it.
+  const fromText = (people: readonly MentionTarget[]) => resolveTypedMentions(text, people).filter((ref) => wasPicked(ref)
+    || !everyone.some((person) => sameMember(person, ref) && [person.displayName, person.mentionHandle].some((token) => !!token && pickedTokens.has(token.toLowerCase()))));
+  const isMember = (ref: MemberRef) => members.some((member) => sameMember(member, ref));
+  const mentions = uniqueRefs([...pickedRefs.filter(isMember), ...fromText(members)]);
   // Named with @ but not here: asked about on send (W18-3).
-  const outsideMentions = canInvite ? resolveTypedMentions(text, outsiders).filter((ref) => !members.some((member) => sameMember(member, ref))) : [];
+  const outsideMentions = canInvite ? uniqueRefs([...pickedRefs, ...fromText(outsiders)].filter((ref) => !isMember(ref))) : [];
   const [invite, setInvite] = useState<{ people: MemberRef[]; error?: string; adding?: boolean } | null>(null);
   const { ids: sessionMentions, unresolved: staleHandles } = resolveTypedSessionMentions(text, sessionTargets.map(({ candidate }) => candidate), selectedSessions);
   const staleKey = staleHandles.join(" ");
@@ -329,7 +363,7 @@ function ComposerAttempt({
   // A draft that is exactly a pre-typed chip prefix is unfinished whatever is attached:
   // the onboarding capture reads the text alone and is one-shot.
   const incompleteDraft = !!placeholderDrafts?.includes(trimmed);
-  const hasContent = !incompleteDraft && (trimmed.length > 0 || attachments.some((item) => item.attachment));
+  const hasContent = !incompleteDraft && (!isBlankMarkdown(text) || attachments.some((item) => item.attachment));
   const canSend = !disabled && !error && !uploading && !uploadFailed && hasContent && !!clientMessageId && effectiveState === "idle" && !submitted && !uncertain;
   const editable = !disabled && !pending && !uncertain && effectiveState !== "persisted" && !retryPending;
   const status = uncertain
@@ -504,6 +538,7 @@ function ComposerAttempt({
     const token = option.kind === "session" ? `@${option.option.candidate.handle}`
       : option.member.kind === "agent" && option.member.mentionHandle ? `@${option.member.mentionHandle}` : `@${option.member.displayName}`;
     if (option.kind === "session") setSelectedSessions((current) => ({ ...current, [option.option.candidate.handle.toLowerCase()]: option.option.candidate.session.sessionId }));
+    else setPicked((current) => [...current, { token: token.slice(1), ref: { kind: option.member.kind, id: option.member.id } }]);
     setTrigger(null);
     field.current?.replaceTrigger(token);
   }
@@ -616,7 +651,7 @@ function ComposerAttempt({
     }
     // Plain ArrowUp only — ⌥↑ is the window-level previous-room shortcut,
     // and swallowing it here would make it dead from the composer.
-    if (event.key === "ArrowUp" && !event.altKey && !text && onEditLast) {
+    if (event.key === "ArrowUp" && !event.altKey && isBlankMarkdown(text) && onEditLast) {
       onEditLast();
       return true;
     }
@@ -634,8 +669,17 @@ function ComposerAttempt({
     return false;
   }
 
-  const textarea = <ComposerEditor handleRef={field} id={fieldId} value={text} editable={editable} label={label}
-    placeholder={placeholder ?? (label === "Reply to thread" ? "Reply to thread…" : superAgent ? "Ask Lightbulb…" : "Message the conversation · @ to mention")}
+  const boxPlaceholder = placeholder ?? (label === "Reply to thread" ? "Reply to thread…" : superAgent ? "Ask Lightbulb…" : "Message the conversation · @ to mention");
+  const Editor = editorLoaded ? LoadedEditor : null;
+  const textarea = !Editor ? <textarea id={fieldId} className="room-editor room-editor-plain" rows={1} aria-label={label} placeholder={boxPlaceholder}
+    value={text} disabled={!editable} aria-describedby={`${fieldId}-help ${fieldId}-status`}
+    onFocus={() => { plainFocused.current = true; }} onBlur={() => { plainFocused.current = false; onTypingChange?.(false); }}
+    onChange={(event) => { onTextChange(event.target.value); onTypingChange?.(!!event.target.value.trim()); }}
+    onKeyDown={(event) => {
+      if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) { event.preventDefault(); submit(false, true); }
+    }} />
+  : <Editor handleRef={field} id={fieldId} value={text} editable={editable} label={label} autoFocus={plainFocused.current}
+    placeholder={boxPlaceholder}
     ariaProps={{
       "aria-invalid": !!error,
       "aria-describedby": `${fieldId}-help ${fieldId}-status${showHint ? ` ${fieldId}-respond` : ""}`,

@@ -26,9 +26,18 @@ const { $isLinkNode, TOGGLE_LINK_COMMAND } = linkApi;
 const { $createCodeNode, $isCodeNode } = code;
 const { $setBlocksType } = selectionApi;
 
-/** The message the box holds, as markdown (one "\n" per line, as typed). An underscore inside a word (an email,
- *  snake_case) can never be emphasis, so it goes out bare: "clerk_test@…", not "clerk\_test@…" for agents to copy. */
-export const $composerMarkdown = () => $convertToMarkdownString(COMPOSER_TRANSFORMERS, undefined, true).replace(/(\w)\\_(?=\w)/g, "$1_");
+/** Lexical escapes every `*`, `_`, `` ` `` and `~` in plain text ("3\*4", "\_\_init\_\_", "\*\*bold\*\*"). A chat sends what was
+ *  typed: agents read the raw text and copy it, and a pasted **bold** should render bold. So those escapes come off
+ *  everywhere outside code, where Lexical never adds them. */
+export function unescapeComposerMarkdown(markdown: string): string {
+  // Odd segments are code: a fence or an inline span opened by an unescaped backtick.
+  return markdown.split(/(?<!\\)(```[\s\S]*?```|`[^`\n]*`)/)
+    .map((segment, index) => (index % 2 ? segment : segment.replace(/\\([*_`~])/g, "$1")))
+    .join("");
+}
+
+/** The message the box holds, as markdown (one "\n" per line, as typed). */
+export const $composerMarkdown = () => unescapeComposerMarkdown($convertToMarkdownString(COMPOSER_TRANSFORMERS, undefined, true));
 
 export interface ComposerEditorHandle {
   /** Focus with the caret at the end. */
@@ -59,6 +68,8 @@ export interface ComposerEditorProps {
   onBlur: () => void;
   ariaProps: Record<`aria-${string}`, string | boolean | undefined>;
   handleRef: Ref<ComposerEditorHandle>;
+  /** Take focus, caret at the end, on mount (the plain box it replaced had it). */
+  autoFocus?: boolean;
 }
 
 const FORMATS = { bold: "bold", italic: "italic", strike: "strikethrough", code: "code" } as const;
@@ -67,7 +78,7 @@ function $topBlock(node: LexicalNode): LexicalNode {
   return node.getTopLevelElement() ?? node;
 }
 
-function Bridge({ value, onChange, onTrigger, editable, onKeyDown, onPasteFiles, onBlur, handleRef }: ComposerEditorProps) {
+function Bridge({ value, onChange, onTrigger, editable, onKeyDown, onPasteFiles, onBlur, handleRef, autoFocus }: ComposerEditorProps) {
   const [editor] = useLexicalComposerContext();
   // The markdown this box last read in or wrote out: a `value` that differs came from outside (a draft, a starter, a send).
   const known = useRef<string | null>(null);
@@ -86,6 +97,13 @@ function Bridge({ value, onChange, onTrigger, editable, onKeyDown, onPasteFiles,
   }, [editor, value]);
 
   useEffect(() => { editor.setEditable(editable); }, [editor, editable]);
+  useEffect(() => {
+    if (!autoFocus) return;
+    editor.update(() => { $getRoot().selectEnd(); }, { discrete: true });
+    editor.getRootElement()?.focus({ preventScroll: true });
+    // Mount only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editor]);
 
   useEffect(() => editor.registerUpdateListener(({ editorState, tags }) => {
     const markdown = editorState.read($composerMarkdown);
@@ -142,7 +160,11 @@ function Bridge({ value, onChange, onTrigger, editable, onKeyDown, onPasteFiles,
 
   useImperativeHandle(handleRef, () => {
     // Commands dispatched from a click commit at once (outside an update Lexical defers them to a microtask).
-    const dispatch = <P,>(command: LexicalCommand<P>, payload: P) => editor.update(() => { editor.dispatchCommand(command, payload); }, { discrete: true });
+    // A press with no caret in the box (it never had focus) acts at its end, as Slack does.
+    const dispatch = <P,>(command: LexicalCommand<P>, payload: P) => editor.update(() => {
+      if (!$isRangeSelection($getSelection())) $getRoot().selectEnd();
+      editor.dispatchCommand(command, payload);
+    }, { discrete: true });
     const $selection = () => {
       const selection = $getSelection();
       return $isRangeSelection(selection) ? selection : $getRoot().selectEnd();

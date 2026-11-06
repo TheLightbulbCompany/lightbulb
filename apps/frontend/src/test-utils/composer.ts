@@ -3,6 +3,10 @@
 import { act, screen } from "@testing-library/react";
 import { $composerMarkdown, COMPOSER_TRANSFORMERS, editorOf } from "@/components/messaging/ComposerEditor";
 import { lexical, markdown } from "@/components/messaging/lexical";
+import { composerEditorReady } from "@/components/messaging/RoomComposer";
+
+// The editor is a lazy chunk; tests render the composer with it already loaded.
+await composerEditorReady;
 
 export const composerBox = (name: string | RegExp = "Message") => screen.getByRole("textbox", { name });
 

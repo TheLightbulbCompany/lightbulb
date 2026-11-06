@@ -82,6 +82,7 @@ from core.services.messaging import (
     ReadCursorRequest,
     ReadCursorResponse,
     RoomDetail,
+    RoomMemoryResponse,
     RoomListResponse,
     MessageAttachment,
     RunEventRequest,
@@ -1040,6 +1041,17 @@ async def pin_room_message(room_id: str, message_id: str, auth: AuthContext = De
 @router.delete("/messaging/rooms/{room_id}/pins/{message_id}", response_model=RoomDetail)
 async def unpin_room_message(room_id: str, message_id: str, auth: AuthContext = Depends(get_current_user)):
     return await service.set_pin(auth, room_id, message_id, False)
+
+
+@router.get("/messaging/rooms/{room_id}/memory", response_model=RoomMemoryResponse)
+async def list_room_memory(room_id: str, auth: AuthContext = Depends(get_current_user)):
+    return await service.list_room_memory(auth, room_id)
+
+
+@router.delete("/messaging/rooms/{room_id}/memory/{message_id}", status_code=204)
+async def forget_room_memory(room_id: str, message_id: str, auth: AuthContext = Depends(get_current_user)):
+    await service.forget_room_memory(auth, room_id, message_id)
+    return Response(status_code=204)
 
 
 @router.post("/messaging/rooms/{room_id}/attachments", response_model=MessageAttachment, status_code=201)

@@ -1691,6 +1691,34 @@ async def release_room_marker(room_id: str, name: str) -> None:
     await run_in_thread(_table().delete_item, Key={"pk": room_pk(room_id), "sk": f"MARKER#{name}"})
 
 
+async def put_noted(room_id: str, message_id: str, fact: str, *, actor_user_id: str | None = None) -> None:
+    """``NOTED#<messageId>``: a message the Router's `note` decision acknowledged, with the fact it read (W15-5:
+    what project Settings › Memory lists). Room metadata, not memory; a retried turn keeps the first row."""
+    item = {
+        "pk": room_pk(room_id),
+        "sk": f"NOTED#{message_id}",
+        "messageId": message_id,
+        "fact": fact,
+        "notedAt": utc_now_iso(),
+    }
+    if actor_user_id:
+        item["actorUserId"] = actor_user_id
+    try:
+        await run_in_thread(_table().put_item, Item=item, ConditionExpression="attribute_not_exists(sk)")
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+
+
+async def list_noted(room_id: str) -> list[dict]:
+    """Newest first. ponytail: one partition query, no paging; a project holds a few dozen notes."""
+    return sorted(await _query(room_pk(room_id), begins_with="NOTED#"), key=lambda r: r["notedAt"], reverse=True)
+
+
+async def delete_noted(room_id: str, message_id: str) -> None:
+    await run_in_thread(_table().delete_item, Key={"pk": room_pk(room_id), "sk": f"NOTED#{message_id}"})
+
+
 async def release_autojoin(room_id: str, user_id: str) -> None:
     await run_in_thread(_table().delete_item, Key={"pk": room_pk(room_id), "sk": autojoin_sk(user_id)})
 

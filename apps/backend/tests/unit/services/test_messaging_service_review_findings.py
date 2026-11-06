@@ -1243,3 +1243,41 @@ async def test_create_refuses_project_fields_off_a_channel(monkeypatch, kind, fi
         )
     assert exc.value.error.code == "INVALID_REQUEST"
     create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_room_memory_lists_for_members_and_only_owners_or_admins_forget(monkeypatch):
+    """W15-5: Settings › Memory lists what Lightbulb noted; Forget is the project's owner/admin's."""
+    auth = AuthContext(user_id="member", org_id="org_1")
+    room_id, mid = str(uuid.uuid4()), str(uuid.uuid4())
+    rows = [{"messageId": mid, "fact": "Classes cap at 12 kids.", "notedAt": "2026-11-06T13:40:00+00:00"}]
+    member = AsyncMock(return_value=({"ownerId": "org_1"}, {"role": "member"}))
+    monkeypatch.setattr(messaging, "require_room_member", member)
+    monkeypatch.setattr(messaging.messaging_repo, "list_noted", AsyncMock(return_value=rows))
+    delete = AsyncMock()
+    monkeypatch.setattr(messaging.messaging_repo, "delete_noted", delete)
+
+    listed = await messaging.list_room_memory(auth, room_id)
+    assert listed.model_dump(by_alias=True) == {
+        "items": [{"messageId": mid, "fact": "Classes cap at 12 kids.", "notedAt": "2026-11-06T13:40:00+00:00"}]
+    }
+    with pytest.raises(ApiProblem) as exc:
+        await messaging.forget_room_memory(auth, room_id, mid)
+    assert exc.value.error.code == "ROOM_FORBIDDEN" and delete.await_count == 0
+
+    member.return_value = ({"ownerId": "org_1"}, {"role": "admin"})
+    await messaging.forget_room_memory(auth, room_id, mid)
+    delete.assert_awaited_once_with(room_id, mid)
+
+
+@pytest.mark.asyncio
+async def test_room_memory_is_closed_to_non_members(monkeypatch):
+    async def deny(*_args):
+        raise ApiProblem("ROOM_NOT_FOUND", "Room not found.")
+
+    monkeypatch.setattr(messaging, "require_room_member", deny)
+    auth = AuthContext(user_id="stranger", org_id="org_1")
+    with pytest.raises(ApiProblem):
+        await messaging.list_room_memory(auth, str(uuid.uuid4()))
+    with pytest.raises(ApiProblem):
+        await messaging.forget_room_memory(auth, str(uuid.uuid4()), str(uuid.uuid4()))

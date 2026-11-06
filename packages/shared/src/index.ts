@@ -300,6 +300,8 @@ export type {
   SessionSearchResponse,
   ActiveRoomRun,
   RoomDetail,
+  NotedFact,
+  RoomMemoryResponse,
   RoomKind,
   RoomListResponse,
   RoomMember,

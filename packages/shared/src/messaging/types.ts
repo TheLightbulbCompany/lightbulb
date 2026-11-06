@@ -401,6 +401,17 @@ export interface ReadCursorRequest {
   lastReadSeq: number;
 }
 
+/** A fact Lightbulb noted from a room message (project Settings › Memory, W15-5). */
+export interface NotedFact {
+  messageId: string;
+  fact: string;
+  notedAt: string;
+}
+
+export interface RoomMemoryResponse {
+  items: NotedFact[];
+}
+
 export interface ReadCursorResponse {
   roomId: string;
   lastReadSeq: number;

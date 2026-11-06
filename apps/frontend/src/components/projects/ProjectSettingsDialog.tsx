@@ -3,15 +3,17 @@
 // Project settings (UX slice 6): a modal over the project, so Esc puts you back exactly where you were (pane, scroll,
 // draft). General (name and icon, Pause, Archive, Delete) · Memory (the Instructions every task here reads) · People
 // (the Members content, handed in). Each field saves on change or blur and says "Saved" beside itself for 2 s.
-// ponytail: "What Lightbulb remembers here" stays hidden: memory-engine facts carry no project tag yet (08 §6c spike).
+// "What Lightbulb remembers here" lists the facts the Router noted from this project's messages (W15-5). Memory-engine
+// facts carry no project tag (08 §6c spike), so the noted messages are the exact, honest list.
 
 import { useEffect, useId, useRef, useState, type MutableRefObject, type ReactElement, type ReactNode } from "react";
 import { useOrganization } from "@clerk/nextjs";
 import { X } from "lucide-react";
-import { ROOM_TOPIC_MAX_CHARS, type PatchRoomRequest, type RoomSummary } from "@lightbulb/shared";
+import { ROOM_TOPIC_MAX_CHARS, type MessagingClient, type NotedFact, type PatchRoomRequest, type RoomSummary } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { notifyApiError } from "@/lib/notify";
+import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { ProjectIconPicker } from "./ProjectTile";
 
 export type SettingsSection = "general" | "memory" | "people";
@@ -49,6 +51,8 @@ export interface ProjectSettingsProps {
   onArchive?: () => void;
   onDelete?: () => void;
   people: ReactNode;
+  /** Reads and forgets what Lightbulb noted here; without it the list is not shown. */
+  memoryClient?: Pick<MessagingClient, "listRoomMemory" | "forgetRoomMemory">;
   /** Where focus goes once it closes (the trigger it was opened from). */
   onCloseAutoFocus?: (event: Event) => void;
 }
@@ -70,7 +74,7 @@ export function ProjectSettingsDialog(props: ProjectSettingsProps): ReactElement
   </Dialog>;
 }
 
-function SettingsBody({ room, roomName, section, onSection, canEdit, actionable, onRename, onSetTopic, onPatch, onArchive, onDelete, people, flush }: ProjectSettingsProps & { section: SettingsSection; flush: Flush }): ReactElement {
+function SettingsBody({ room, roomName, section, onSection, canEdit, actionable, onRename, onSetTopic, onPatch, onArchive, onDelete, people, memoryClient, flush }: ProjectSettingsProps & { section: SettingsSection; flush: Flush }): ReactElement {
   const id = useId();
   const { membership } = useOrganization();
   // The backend lets a room owner/admin pause, and a workspace admin too (pause alone).
@@ -165,6 +169,7 @@ function SettingsBody({ room, roomName, section, onSection, canEdit, actionable,
         <span className="project-count">{topic.length.toLocaleString()} / {ROOM_TOPIC_MAX_CHARS.toLocaleString()}</span>
       </div>
     </div>
+    {memoryClient && <Remembered roomId={room.roomId} client={memoryClient} canForget={canEdit && actionable} />}
   </>;
 
   return <>
@@ -181,4 +186,41 @@ function SettingsBody({ room, roomName, section, onSection, canEdit, actionable,
       {error && <p role="alert" className="mt-3 text-ui text-err break-words">{error}</p>}
     </div>
   </>;
+}
+
+/** What Lightbulb noted from this project's messages, newest first; the room's owner/admin can forget one. */
+function Remembered({ roomId, client, canForget }: { roomId: string; client: NonNullable<ProjectSettingsProps["memoryClient"]>; canForget: boolean }): ReactElement {
+  const headingId = useId();
+  const [items, setItems] = useState<NotedFact[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    client.listRoomMemory(roomId).then((r) => { if (live) setItems(r.items); },
+      () => { if (live) setError("What Lightbulb remembers couldn't be loaded. Close and open Settings to try again."); });
+    return () => { live = false; };
+  }, [client, roomId]);
+  const forget = (item: NotedFact) => {
+    setError(null);
+    setItems((all) => all && all.filter((i) => i.messageId !== item.messageId));
+    client.forgetRoomMemory(roomId, item.messageId).catch(() => {
+      setItems((all) => all && [...all, item].sort((a, b) => b.notedAt.localeCompare(a.notedAt)));
+      setError("That couldn't be forgotten. Try again.");
+    });
+  };
+  return <section className="project-row project-memory" aria-labelledby={headingId}>
+    <div className="project-row__text grid gap-2">
+      <p id={headingId} className="project-row__label">What Lightbulb remembers here</p>
+      {items === null && !error && <p className="project-row__hint">Loading…</p>}
+      {items?.length === 0 && <p className="project-row__hint">Tell Lightbulb things about this project and they&apos;ll show up here.</p>}
+      {!!items?.length && <ul className="project-memory__list">
+        {items.map((item) => <li key={item.messageId} className="project-memory__item">
+          <span className="project-memory__fact">{item.fact}</span>
+          <time className="project-memory__when" dateTime={item.notedAt}>{timeAgo(item.notedAt)}</time>
+          {canForget && <Button type="button" variant="ghost" size="sm" className="project-memory__forget h-6 px-2"
+            aria-label={`Forget: ${item.fact}`} onClick={() => forget(item)}>Forget</Button>}
+        </li>)}
+      </ul>}
+      {error && <p role="alert" className="text-ui text-err">{error}</p>}
+    </div>
+  </section>;
 }

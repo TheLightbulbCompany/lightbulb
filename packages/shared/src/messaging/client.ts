@@ -20,6 +20,7 @@ import type {
   PatchRoomRequest,
   ReadCursorRequest,
   ReadCursorResponse,
+  RoomMemoryResponse,
   RoomDetail,
   RoomListResponse,
   FeedResponse,
@@ -170,6 +171,10 @@ export interface MessagingClient {
   /** What was said in the coding sessions the caller may read. */
   searchSessions(query: string, options?: { limit?: number }): Promise<SessionSearchResponse>;
   setPin(roomId: string, messageId: string, pinned: boolean): Promise<RoomDetail>;
+  /** What Lightbulb noted in this room, newest first. */
+  listRoomMemory(roomId: string): Promise<RoomMemoryResponse>;
+  /** Forget one noted fact (the room's owner or admin). */
+  forgetRoomMemory(roomId: string, messageId: string): Promise<void>;
   setTyping(request: TypingRequest): Promise<void>;
   abortRun(runId: string): Promise<AbortRunResponse>;
   steerRun(runId: string, request: SteerRunRequest): Promise<SteerRunResponse>;
@@ -329,6 +334,10 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
     setPin: (roomId, messageId, pinned) => (pinned
       ? api.put(`${roomPath(roomId)}/pins/${encodeURIComponent(messageId)}`, {})
       : api.del(`${roomPath(roomId)}/pins/${encodeURIComponent(messageId)}`)) as Promise<RoomDetail>,
+    listRoomMemory: (roomId) => api.get(`${roomPath(roomId)}/memory`) as Promise<RoomMemoryResponse>,
+    async forgetRoomMemory(roomId, messageId) {
+      await api.del(`${roomPath(roomId)}/memory/${encodeURIComponent(messageId)}`);
+    },
     async setTyping(request) {
       await api.post("/messaging/typing", request);
     },

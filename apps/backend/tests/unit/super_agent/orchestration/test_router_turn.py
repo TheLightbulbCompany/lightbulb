@@ -1408,8 +1408,19 @@ def reactions(monkeypatch):
     return got
 
 
+@pytest.fixture
+def noted_rows(monkeypatch):
+    got = []
+
+    async def put_noted(room_id, message_id, fact, *, actor_user_id=None):
+        got.append((room_id, message_id, fact))
+
+    monkeypatch.setattr(acts.messaging_repo, "put_noted", put_noted)
+    return got
+
+
 @pytest.mark.asyncio
-async def test_a_note_addressed_to_lightbulb_gets_one_line(world, no_memory_writes, reactions):
+async def test_a_note_addressed_to_lightbulb_gets_one_line(world, no_memory_writes, reactions, noted_rows):
     """Walk 14: an FYI got "reading…" and silence. Room ingestion stores the message itself (spec 07 §3.1)."""
     t1 = await _trig("chat:m1")
     world["decisions"] = [_note(t1)]
@@ -1417,18 +1428,22 @@ async def test_a_note_addressed_to_lightbulb_gets_one_line(world, no_memory_writ
     await _run([t1])  # a retried turn
     assert [p["text"] for p in world["posts"]] == [router_prompt.NOTED]
     assert world["posts"][0]["remember"] is False and reactions == []
+    mid = (await repo.get_trigger(WS, t1))["ref"]["messageId"]
+    # W15-5: listed in the project's Memory (the repo keeps one row per message)
+    assert set(noted_rows) == {(ROOM, mid, "The levain starter dates from 2009.")}
 
 
 @pytest.mark.asyncio
-async def test_a_note_on_an_unaddressed_room_message_is_a_quiet_check(world, no_memory_writes, reactions):
+async def test_a_note_on_an_unaddressed_room_message_is_a_quiet_check(world, no_memory_writes, reactions, noted_rows):
     t1 = await _trig("chat:m1", admission="candidate")
     world["decisions"] = [_note(t1)]
     await _run([t1])
     assert world["posts"] == [] and reactions == [(ROOM, "✅")]
+    assert len(noted_rows) == 1
 
 
 @pytest.mark.asyncio
-async def test_a_note_on_mail_is_an_ignore(world, no_memory_writes, reactions, monkeypatch):
+async def test_a_note_on_mail_is_an_ignore(world, no_memory_writes, reactions, noted_rows, monkeypatch):
     sent = []
 
     async def deliver_reply(ws, trigger, text, *, idempotency_key):
@@ -1439,6 +1454,7 @@ async def test_a_note_on_mail_is_an_ignore(world, no_memory_writes, reactions, m
     world["decisions"] = [_note(t1)]
     await _run([t1])
     assert sent == [] and world["posts"] == [] and reactions == []
+    assert noted_rows == []
 
 
 @pytest.mark.asyncio

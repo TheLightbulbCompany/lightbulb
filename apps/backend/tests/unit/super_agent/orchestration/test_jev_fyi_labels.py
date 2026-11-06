@@ -29,6 +29,8 @@ LABELLED = [
     # Capacity caps: the two FYIs that went silent in walks 15 and 16.
     ("FYI: we have floor cushions for 15 kids, so that's the most we can seat.", FYI),
     ("We cap each class at 12 kids.", FYI),
+    # Who does what, said to the group (walk 17, silent in a group chat with Priya); said to Priya, it is chatter.
+    ("Priya will run the club sign-up table.", FYI),
     ("Priya, the meeting moved to 3pm.", CHAT),
     ("I'll call the supplier after lunch.", CHAT),
     ("running 10 min late, sorry", CHAT),
@@ -41,6 +43,7 @@ LABELLED = [
     ("ok sounds good", CHAT),
     ("Sam, can you count the cushions before Saturday?", CHAT),
     ("Priya I'll set the chairs out at 10", CHAT),
+    ("Priya, you run the sign-up table.", CHAT),
 ]
 
 
@@ -50,6 +53,17 @@ def test_the_criterion_names_what_an_fyi_is_and_what_chatter_is():
         assert cue in crit
     assert "said to no one in particular" in crit and "even about the work" in who
     assert "the meeting moved to 3pm" in who  # person-to-person work talk stays out
+    # Walk 17: who does what, said to the group, is the team's to keep; said to that person, it is theirs.
+    assert "who does what" in crit and '"Priya, you run the sign-up table"' in who
+
+
+def test_the_router_notes_who_does_what_said_to_the_group():
+    from core.temporal import router_prompt
+
+    rules = router_prompt.ROUTER_INSTRUCTIONS
+    note = rules[rules.index("- note when") : rules.index("- ask for one")]
+    assert 'who does what in the team: "Priya will run the sign-up table"' in note
+    assert '"Priya, you run the sign-up table"' in note.split("not a note")[1]
     assert sum(1 for _, label in LABELLED if label == FYI) == sum(1 for _, label in LABELLED if label == CHAT)
 
 

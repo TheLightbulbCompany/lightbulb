@@ -72,6 +72,7 @@ def _wire(monkeypatch, *, current_image, row=ROW):
         return {"busy": 0}
 
     monkeypatch.setattr(container_rpc, "call", _health)
+    monkeypatch.setattr(hermes_provisioning, "_session_warm", AsyncMock(return_value=False))  # a parked workspace
     return calls
 
 
@@ -82,6 +83,16 @@ async def test_roll_updates_waits_and_stops_the_session_on_drift(monkeypatch):
     assert [c[0] for c in calls] == ["update", "ready", "health", "stop"]
     assert calls[0] == ("update", "arn:rt", {"req": "org_a", "profile": "org_a-ab12cd34ef"})
     assert calls[3][1] == "arn:rt" and calls[3][2].startswith("lb-org_a-")
+
+
+@pytest.mark.asyncio
+async def test_a_roll_wakes_again_a_session_that_was_in_use(monkeypatch):
+    """Dev walk 16: the roll stopped a session the walk was using, and the next message waited 39 s for the cold
+    start. A session warm before the roll is woken on the new spec once stopped; a parked one stays parked (above)."""
+    calls = _wire(monkeypatch, current_image="x:old")
+    monkeypatch.setattr(hermes_provisioning, "_session_warm", AsyncMock(return_value=True))
+    assert await hermes_provisioning.roll_runtime_image("org_a") == "updated"
+    assert [c[0] for c in calls] == ["update", "ready", "health", "stop", "health"]
 
 
 @pytest.mark.asyncio

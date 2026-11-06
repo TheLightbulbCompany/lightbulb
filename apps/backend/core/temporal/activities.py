@@ -1021,8 +1021,11 @@ async def _apply(
     carded = {tid for tid, t in triggers.items() if (t.get("routedTo") or {}).get("automationId")}
     replies: list[tuple[dict, str]] = []
     covered.update(carded)
+    ignored: set[str] = set()  # the Router chose silence for these (people talking to each other)
     for i, dec in enumerate(decisions, start=first):
         primary = dec.trigger_ids[0]
+        if isinstance(dec, ts.Ignore):
+            ignored.update(dec.trigger_ids)
         if _silent(dec, triggers):  # nothing is posted for it: a respond trigger it leaves gets the fallback line
             dec = ts.Ignore(kind="ignore", trigger_ids=dec.trigger_ids)
         if not isinstance(dec, ts.Ignore):  # `ignore` on a respond trigger is silence: the fallback line covers it
@@ -1100,6 +1103,10 @@ async def _apply(
     for tid, trig in triggers.items():  # a `respond` trigger is never left in silence
         if tid not in covered and trig["admission"] == "respond":
             slot(tid)["lines"].append(run_text or router_prompt.FALLBACK)
+        elif tid not in covered and tid not in ignored and trig.get("source") == "chat":
+            # A chat candidate ends silent only on the Router's own `ignore`: one it named in no decision gets the
+            # ✅ a note would (the message is already in room memory), never "reading…" and then nothing (walk 16).
+            slot(tid)["react"] = True
 
     started: list[str] = []
     posted: list[str] = []
@@ -1180,6 +1187,19 @@ _STAGE_WORDS = {
 }
 STAGE_TTL_S = 30  # a lost clear ends the line on its own
 STAGE_REFRESH_S = 10  # re-sent while a stage holds, inside the TTL
+#: A line unchanged this long (from the message's admission) reads "still working…": a cold runtime holds the run's
+#: start for 40-55 s with nothing to report (dev walk 16: "reading…" frozen 43 s, then "thinking…" 11 s).
+STILL_AFTER_S = 8
+STILL_WORKING = "Lightbulb is still working…"
+
+
+def _age_s(triggers: list[dict]) -> float:
+    """Seconds since the oldest trigger was admitted (0 when unknown)."""
+    try:
+        oldest = min(datetime.fromisoformat(t["receivedAt"]) for t in triggers if t.get("receivedAt"))
+        return max(0.0, (datetime.now(timezone.utc) - oldest).total_seconds())
+    except (ValueError, TypeError):  # none, or an unreadable stamp
+        return 0.0
 
 
 class _StageLine:
@@ -1192,17 +1212,30 @@ class _StageLine:
         self.rooms = sorted(
             {(t.get("ref") or {}).get("roomId") for t in triggers if t.get("source") == "chat"} - {None}
         )
-        self.label: str | None = None
+        self.label: str | None = None  # the line clients show now
+        self.stage: str | None = None  # the run's own stage line, None before the run reports one
+        self.since = time.monotonic() - _age_s(triggers)  # when the line last changed: the message's admission first
         self.sent = 0.0
         self.agent_id: str | None = None
 
-    async def update(self, status: runtime_runs.RunStatus) -> None:
-        words = _STAGE_WORDS.get(status.stage)
-        label = f"Lightbulb is {words}…" if words else self.label
-        if not label or (label == self.label and time.monotonic() - self.sent < STAGE_REFRESH_S):
+    async def update(self, status: runtime_runs.RunStatus | None) -> None:
+        """`status` from a poll; None from `hold` (no news: only the time moved)."""
+        words = _STAGE_WORDS.get(status.stage) if status is not None else None
+        stage = f"Lightbulb is {words}…" if words else self.stage
+        now = time.monotonic()
+        if stage != self.stage:
+            self.stage, self.since = stage, now
+        label = STILL_WORKING if now - self.since >= STILL_AFTER_S else stage
+        if not label or (label == self.label and now - self.sent < STAGE_REFRESH_S):
             return
-        self.label, self.sent = label, time.monotonic()
+        self.label, self.sent = label, now
         await self._publish(STAGE_TTL_S, label)
+
+    async def hold(self) -> None:
+        """Ticks the line while the run's start or a poll keeps it from changing; cancelled when the run returns."""
+        while True:
+            await asyncio.sleep(1)
+            await self.update(None)
 
     async def clear(self) -> None:
         if self.label:
@@ -1361,11 +1394,15 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
             return bool(named) and set(to_model) <= named
 
         stage = _StageLine(ws, list(to_model.values()))
+        hold = asyncio.create_task(stage.hold())
         try:
             status = await _router_run(ws, inp, prompt, memory, scope, user_id, settled, stage.update)
         except Exception:
+            hold.cancel()  # before the clear, or a last tick could put the line back
             await stage.clear()
             raise
+        finally:
+            hold.cancel()
         early = status.status in _RUNNING
         if not early and status.status != "completed":
             raise RuntimeError(f"router run {status.status}: {status.error or ''}")

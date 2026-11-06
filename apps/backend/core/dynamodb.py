@@ -8,9 +8,28 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Callable, TypeVar
 
+import threading
+
 import boto3
+from boto3.dynamodb.transform import TransformationInjector
 
 from core.config import settings
+
+# boto3 builds a call's Key/Attr conditions with ONE ConditionExpressionBuilder per client, reset and refilled per call,
+# so two threads querying through one shared resource at once can swap placeholders: "Invalid KeyConditionExpression:
+# KeyConditionExpressions must only contain one condition per key" (dev walk 16: GET /messaging/rooms 500 while its
+# per-room mention counts ran side by side; boto3 issue #1604). The build is pure string work, so one lock costs nothing.
+# Patched on the class at import, before any resource registers the handler (resources are built lazily).
+_inject_condition_expressions = TransformationInjector.inject_condition_expressions
+_inject_lock = threading.Lock()
+
+
+def _locked_inject(self, params, model, **kwargs):
+    with _inject_lock:
+        return _inject_condition_expressions(self, params, model, **kwargs)
+
+
+TransformationInjector.inject_condition_expressions = _locked_inject
 
 _table_prefix: str = getattr(settings, "DYNAMODB_TABLE_PREFIX", "")
 _dynamodb_resource = None

@@ -61,3 +61,19 @@ async def test_jev_answers_map(jev_calls, monkeypatch, answer, expected):
 
     monkeypatch.setattr(jev, "decide", decide)
     assert await jev.route_for_router(META, MSG, [], [], {"fin": "Finance"}) == expected
+
+
+@pytest.mark.parametrize("first,calls", [(None, 2), (jev.RATE_LIMITED, 1)])
+async def test_a_failed_jev_call_is_tried_once_more(jev_calls, monkeypatch, first, calls):
+    """Dev walk 16: one Jev timeout (3 s cap, p99 ~0.7 s) dropped "FYI: we have floor cushions for 15 kids…" in
+    silence. A timeout or error gets one more call; a rate limit does not."""
+    answers = [first, {"who": {"choice": "lightbulb", "probabilities": {"lightbulb": 0.9}}}]
+
+    async def decide(state, questions):
+        jev_calls.append(1)
+        return answers[len(jev_calls) - 1]
+
+    monkeypatch.setattr(jev, "decide", decide)
+    out = await jev.route_for_router(META, MSG, [], [], {})
+    assert len(jev_calls) == calls
+    assert out == ({"to": "router", "specialist": None, "confidence": 0.9} if calls == 2 else {"fallback": True})

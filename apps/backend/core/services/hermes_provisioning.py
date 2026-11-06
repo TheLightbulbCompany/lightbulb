@@ -1092,6 +1092,25 @@ async def _browser_profile_id(owner_id: str, row: dict) -> str:
     return await browser_sessions.ensure_browser_profile(owner_id) or row.get("browser_profile_id") or ""
 
 
+async def _session_warm(owner_id: str, arn: str) -> bool:
+    """The backend's warm estimate for this runtime's workspace session (``runtime_transport``)."""
+    row = await run_in_thread(container_repo.get_session_sync, owner_id)
+    return int(row.get("warm_until") or 0) > int(time.time()) and row.get("arn") == arn
+
+
+async def _rewake(owner_id: str) -> None:
+    """Start the rolled session again, on the new spec, for a workspace that was in use: otherwise the next message
+    pays the 40-55 s cold start (dev walk 16: the first answer after a roll took 54 s, 39 s of it the wake). A parked
+    one stays parked. Best effort: a failed wake costs only that cold start."""
+    from core.services import container_rpc
+    from core.services.runtime_transport import AGENTCORE_INGRESS_TIMEOUT_S
+
+    try:
+        await container_rpc.call(owner_id, "health", timeout_s=AGENTCORE_INGRESS_TIMEOUT_S)
+    except Exception:  # noqa: BLE001
+        logger.warning("roll_runtime_image: owner=%s rolled session not re-woken", owner_id, exc_info=True)
+
+
 async def roll_runtime_image(
     owner_id: str, *, dry_run: bool = False, restart_session: bool = False, respec: bool = False
 ) -> str:
@@ -1175,6 +1194,8 @@ async def roll_runtime_image(
         # UPDATING, READY — is left to retry-at-use at first invoke.
         if (await run_in_thread(_runtime_status, arn)) in _TERMINAL_STATUSES:
             raise AgentCoreRuntimeCreateFailed(f"AgentCore runtime {arn} failed to update")
+    # Read before the idle probe, which itself wakes a parked session.
+    was_warm = await _session_warm(owner_id, arn)
     idle = await _wait_for_idle_session(owner_id)
     if idle:
         from core.billing.bedrock_gate_tokens import expire_superseded_gate_tokens
@@ -1189,6 +1210,8 @@ async def roll_runtime_image(
             # Either order leaves a gap where one turn sees a new/old env-profile pair and is refused
             # (sync.py); after the stop, that gap is a cold start that has no old env to fall back on.
             await write_profiles(owner_id)
+        if stopped and was_warm:
+            await _rewake(owner_id)
     else:
         logger.warning(
             "roll_runtime_image: owner=%s updated but a turn was still running after %.0fs -- warm session "

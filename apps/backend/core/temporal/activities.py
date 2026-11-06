@@ -17,7 +17,7 @@ import secrets
 import logging
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 
 from temporalio import activity
@@ -787,6 +787,7 @@ async def _router_run(
     scope: str,
     user_id: str | None,
     settled: Callable[[runtime_runs.RunStatus], bool] = lambda _status: False,
+    progress: Callable[[runtime_runs.RunStatus], Awaitable[None]] | None = None,
 ) -> runtime_runs.RunStatus:
     """One Router run in the lane's session, polled to its end (Router runs post no events), its usage metered.
     Returned still running, unmetered, once `settled(status)` holds: the decisions are in and the rest of the run
@@ -808,6 +809,8 @@ async def _router_run(
             status = await runtime_runs.get_run(ws, identity)
         started = time.monotonic()
         while status.status in _RUNNING:
+            if progress is not None:
+                await progress(status)
             if settled(status):
                 return status
             if time.monotonic() - started > ROUTER_BUDGET_S:
@@ -1176,6 +1179,66 @@ async def _read_quietly(ws: str, trig: dict) -> None:
         logger.warning("router read receipt failed for trigger %s", trig.get("triggerId"), exc_info=True)
 
 
+#: The line under a person's message while the Router works on it (walk 15: 10-17 s of one unchanging "reading…").
+#: Keyed by the tool the run has started writing (Hermes names it before its arguments stream); None is a run that has
+#: not picked one yet. A tool not listed (a memory read, ignore, note) keeps the line it has.
+_STAGE_WORDS = {
+    None: "thinking",
+    "reply": "writing a reply",
+    "ask": "writing a reply",
+    "start_task": "handing this to a specialist",
+    "pass_through": "passing this to the task",
+    "propose_automation": "drafting an automation",
+}
+STAGE_TTL_S = 30  # a lost clear ends the line on its own
+STAGE_REFRESH_S = 10  # re-sent while a stage holds, inside the TTL
+
+
+class _StageLine:
+    """Lightbulb's `room.typing.changed` in the rooms of the batch's chat messages, with a `label` that clients show
+    in place of "Lightbulb is reading…" (one without the label reads "Lightbulb is typing…"). Fixed words only, never
+    the run's text, so no reply filter applies. Best-effort: a lost event leaves the client's own reading line."""
+
+    def __init__(self, ws: str, triggers: list[dict]):
+        self.ws = ws
+        self.rooms = sorted(
+            {(t.get("ref") or {}).get("roomId") for t in triggers if t.get("source") == "chat"} - {None}
+        )
+        self.label: str | None = None
+        self.sent = 0.0
+        self.agent_id: str | None = None
+
+    async def update(self, status: runtime_runs.RunStatus) -> None:
+        words = _STAGE_WORDS.get(status.stage)
+        label = f"Lightbulb is {words}…" if words else self.label
+        if not label or (label == self.label and time.monotonic() - self.sent < STAGE_REFRESH_S):
+            return
+        self.label, self.sent = label, time.monotonic()
+        await self._publish(STAGE_TTL_S, label)
+
+    async def clear(self) -> None:
+        if self.label:
+            self.label = None
+            await self._publish(0, None)
+
+    async def _publish(self, ttl: int, label: str | None) -> None:
+        if not self.rooms:
+            return
+        try:
+            self.agent_id = self.agent_id or await task_conversation.front_agent_id(self.ws)
+            expires = (datetime.now(timezone.utc) + timedelta(seconds=ttl)).isoformat()
+            for room_id in self.rooms:
+                payload = {"roomId": room_id, "userId": self.agent_id, "displayName": "Lightbulb", "expiresAt": expires}
+                await messaging._publish_room_event(
+                    room_id,
+                    messaging.make_live_event(
+                        "room.typing.changed", payload | ({"label": label} if label else {}), room_id=room_id
+                    ),
+                )
+        except Exception:  # noqa: BLE001 -- the line never fails a Router turn
+            logger.warning("router stage line not sent", exc_info=True)
+
+
 #: `router_turn`'s error type while the workspace's runtime is still starting: the Router waits, it never falls back.
 RUNTIME_NOT_READY = "RuntimeNotReady"
 
@@ -1309,7 +1372,12 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
             named = {tid for dec in validated(status.decisions or []) for tid in dec.trigger_ids}
             return bool(named) and set(to_model) <= named
 
-        status = await _router_run(ws, inp, prompt, memory, scope, user_id, settled)
+        stage = _StageLine(ws, list(to_model.values()))
+        try:
+            status = await _router_run(ws, inp, prompt, memory, scope, user_id, settled, stage.update)
+        except Exception:
+            await stage.clear()
+            raise
         early = status.status in _RUNNING
         if not early and status.status != "completed":
             raise RuntimeError(f"router run {status.status}: {status.error or ''}")
@@ -1321,6 +1389,7 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
         if early:
             applied = decisions + validated(status.decisions)
             out = await _apply(ws, inp, triggers, applied, run_text)
+            await stage.clear()  # after the posts, so the line goes as the answer lands (not back to "reading…")
             final = await _finish_router_run(ws, inp, scope, user_id, turn_started + ROUTER_BUDGET_S)
             # Validation keeps order and drops item by item, so the applied decisions are a prefix of the final ones.
             tail = validated(final.decisions or [])[len(applied) - len(decisions) :] if final else []
@@ -1347,6 +1416,9 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
                 [*out.posted_message_ids, *more.posted_message_ids],
             )
         decisions += validated(status.decisions)
+        out = await _apply(ws, inp, triggers, decisions, run_text)
+        await stage.clear()
+        return out
     return await _apply(ws, inp, triggers, decisions, run_text)
 
 

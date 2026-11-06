@@ -48,6 +48,21 @@ def test_router_run_returns_decisions(quiet_turn, threads, monkeypatch, run_even
     assert run_events == []  # router_turn polls; only Worker runs post run events
 
 
+def test_router_run_reports_the_tool_it_is_writing(quiet_turn, threads, monkeypatch):  # noqa: F811
+    seen = {}
+
+    class Writing(Agent):
+        def run_conversation(self, **kw):
+            seen["tool_gen"]("reply")  # Hermes: the tool's name has streamed in, its arguments have not
+            seen["status"] = _poll()[1]
+            return {"api_calls": 1, "final_response": "ok"}
+
+    monkeypatch.setattr(turn, "_construct_agent", lambda *a, **k: seen.update(tool_gen=k["tool_gen_callback"]) or Writing())
+    _post()
+    threads[0].run_now()
+    assert seen["status"]["status"] == "running" and seen["status"]["stage"] == "reply"
+
+
 def test_router_agent_has_exact_tool_surface(quiet_turn, threads, monkeypatch):  # noqa: F811
     built = {}
     monkeypatch.setattr(turn, "_construct_agent", lambda *a, **k: built.update(k) or Agent())

@@ -1558,3 +1558,34 @@ async def test_react_sets_lightbulbs_reaction_and_shows_it_live(monkeypatch):
     await acts._react(WS, {"roomId": ROOM, "messageId": "m"}, "✅")
     assert calls == [(ROOM, 7, CEO, "✅", True, "agent")]
     assert events == [(ROOM, "room.message.reactions.changed")]
+
+
+@pytest.mark.asyncio
+async def test_the_reading_line_follows_the_router_run(world, monkeypatch):
+    """Walk 15: "reading…" sat unchanged for 10-17 s. The line names the run's stage, then goes once the answer posts."""
+    t1 = await _trig("chat:m1")
+    world["first_status"] = "running"
+    stages = iter(
+        [
+            ("running", "follow_link", []),
+            ("running", "reply", []),
+            ("completed", None, [{"kind": "reply", "triggerIds": [t1], "text": "Paris."}]),
+        ]
+    )
+    events = []
+
+    async def get_run(ws, identity):
+        state, stage, decisions = next(stages)
+        return runtime_runs.RunStatus(identity.run_id, state, "", None, None, [], decisions, stage)
+
+    async def publish(room_id, event):
+        events.append((room_id, event["type"], event["payload"].get("label"), len(world["posts"])))
+
+    monkeypatch.setattr(acts.runtime_runs, "get_run", get_run)
+    monkeypatch.setattr(acts.messaging, "_publish_room_event", publish)
+    await _run([t1])
+    assert events == [
+        (ROOM, "room.typing.changed", "Lightbulb is thinking…", 0),
+        (ROOM, "room.typing.changed", "Lightbulb is writing a reply…", 0),
+        (ROOM, "room.typing.changed", None, 1),  # cleared after the reply is posted
+    ]

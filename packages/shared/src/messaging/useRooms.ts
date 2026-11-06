@@ -40,6 +40,8 @@ export interface TypingMember {
   userId: string;
   displayName: string;
   expiresAt: string;
+  /** Lightbulb's Router stage, the whole line ("Lightbulb is writing a reply…"), shown instead of "is typing…". */
+  label?: string;
 }
 
 /** Read/delivery receipts for the active room. Seeded from its detail (`readCursors`,
@@ -956,6 +958,9 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
       // promise settled -- clear the optimistic duplicate now rather than
       // waiting on that fetch (which may be hung; see sendMessage's timeout).
       clearPersistedOptimistic([event.payload]);
+      // The author's own line ends with its post (Lightbulb's stage line, before the backend's clear lands).
+      const authorId = event.payload.author.id;
+      setTyping((current) => current.has(authorId) ? new Map([...current].filter(([id]) => id !== authorId)) : current);
       if (event.payload.messageSeq > previous + 1) void reconcile(previous).catch(() => {});
       refreshRoomsSoon();
       return;

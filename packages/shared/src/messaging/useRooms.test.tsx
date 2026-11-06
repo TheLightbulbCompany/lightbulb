@@ -1196,6 +1196,24 @@ describe("read and delivery receipts", () => {
     expect(result.current.receipts.agentReads.get("agent-1")?.has("m-3")).toBe(true);
   });
 
+  it("keeps Lightbulb's stage label on its typing line until its post lands (walk 15)", async () => {
+    const { result } = renderHook(() => useRooms(platform()), { wrapper });
+    act(() => result.current.selectRoom(room.roomId));
+    await waitFor(() => expect(result.current.activeRoom?.roomId).toBe(room.roomId));
+    const expiresAt = new Date(Date.now() + 30_000).toISOString();
+    act(() => { for (const handler of handlers) handler({
+      schemaVersion: 1, eventId: "evt-stage", type: "room.typing.changed", occurredAt: "2026-09-26T00:00:05Z", roomId: room.roomId,
+      payload: { roomId: room.roomId, userId: "agent-1", displayName: "Lightbulb", expiresAt, label: "Lightbulb is writing a reply…" },
+    } as LiveEvent); });
+    expect(result.current.typingMembers.map((m) => m.label)).toEqual(["Lightbulb is writing a reply…"]);
+    act(() => { for (const handler of handlers) handler({
+      schemaVersion: 1, eventId: "evt-reply", type: "room.message.created", occurredAt: "2026-09-26T00:00:06Z",
+      roomId: room.roomId, messageSeq: 2, roomRevision: 1,
+      payload: { ...message, messageId: "msg-2", messageSeq: 2, author: { kind: "agent", id: "agent-1", displayName: "Lightbulb" } },
+    } as LiveEvent); });
+    expect(result.current.typingMembers).toEqual([]);
+  });
+
   it("yields empty maps for a detail with no receipt fields (an older cached response)", async () => {
     const { result } = renderHook(() => useRooms(platform()), { wrapper });
     act(() => result.current.selectRoom(room.roomId));

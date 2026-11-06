@@ -412,6 +412,17 @@ describe("RoomPanel Threads view (super-agent)", () => {
     await waitFor(() => expect(screen.queryByText("Lightbulb is reading…")).toBeNull());
   });
 
+  it("Lightbulb's Router stage replaces reading…; a person typing comes first (walk 15)", async () => {
+    const front = { ...lightbulb, mentionHandle: "lightbulb", listenMode: "active" as const };
+    const ask = { ...message, text: "Hi Lightbulb, what's the capital of France?", createdAt: new Date().toISOString() };
+    const stage = { userId: front.id, displayName: "Lightbulb", label: "Lightbulb is writing a reply…" };
+    const { rerender } = render(<Fresh><RoomPanel {...props} participants={[sam, front]} messages={[ask]} typingMembers={[stage]} /></Fresh>);
+    expect(await screen.findByText("Lightbulb is writing a reply…")).toBeInTheDocument();
+    expect(screen.queryByText("Lightbulb is reading…")).toBeNull();
+    rerender(<Fresh><RoomPanel {...props} participants={[sam, front]} messages={[ask]} typingMembers={[stage, { userId: "u2", displayName: "Priya" }]} /></Fresh>);
+    expect(screen.getByText("Priya is typing…")).toBeInTheDocument();
+  });
+
   it("a message sent while the workspace is still being set up reads Queued until Lightbulb answers", async () => {
     const { rerender } = render(<Fresh><RoomPanel {...props} runtimeStarting /></Fresh>);
     expect(await screen.findByText("Queued · Lightbulb answers as soon as setup finishes")).toBeInTheDocument();

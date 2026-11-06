@@ -891,6 +891,18 @@ def record_decision(run_id: str, decision: dict) -> bool:
         return True
 
 
+def router_stage_recorder(run_id: str):
+    """A Router run's tool_gen_callback: Hermes names a tool call as soon as its name streams in, before its
+    arguments (`reply`'s text, `start_task`'s brief) are written. The backend's poll turns it into the live
+    "Lightbulb is writing a reply…" line (walk 15). The name only, never the arguments."""
+    def record(name, *_a, **_kw) -> None:
+        with _RUNS_LOCK:
+            entry = RUNS.get(run_id)
+            if entry is not None:
+                entry["stage"] = str(name)
+    return record
+
+
 def register_paperclip_run(identity: dict, request: dict) -> str:
     return register_durable_run(identity, request, kind="paperclip")
 
@@ -1061,6 +1073,7 @@ def durable_run_status(run_id: str, identity: dict, *, kind: str) -> dict | None
         **({"recentTools": list(snapshot.get("recentTools") or [])} if kind == "task" else {}),
         **({"decisions": list(snapshot.get("decisions") or [])}
            if (snapshot.get("identity") or {}).get("mode") == "router" else {}),
+        **({"stage": snapshot["stage"]} if snapshot.get("stage") else {}),
     }
     if snapshot["state"] == "ended":
         usage = snapshot.get("usage") or ZERO_USAGE
@@ -4344,6 +4357,7 @@ def _run_task_turn(identity: dict, request: dict, *, family: str) -> tuple[str, 
                     extra["enabled_toolsets"] = [*(t for t in enabled if t not in strip), TASK_TOOLSET]
             if router:  # decisions only: no execution tools, no background review, no side session
                 extra |= ROUTER_RUN_LIMITS
+                extra["tool_gen_callback"] = router_stage_recorder(run_id)
                 if identity.get("model"):  # the cheaper Router model (§9), chosen by the backend
                     extra["model"] = identity["model"]
             agent = _construct_agent(agent_id, {"sessionKey": session_id, **memory}, None, session_id, **extra)

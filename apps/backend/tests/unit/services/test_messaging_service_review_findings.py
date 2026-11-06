@@ -1402,6 +1402,7 @@ def _noted_fixture(monkeypatch, kind, joined, role="member"):
     monkeypatch.setattr(messaging.messaging_repo, "list_noted", AsyncMock(return_value=rows))
     delete = AsyncMock()
     monkeypatch.setattr(messaging.messaging_repo, "delete_noted", delete)
+    monkeypatch.setattr(messaging, "_router_room", AsyncMock(return_value=True))  # Lightbulb seated
     return old, new, delete
 
 
@@ -1431,3 +1432,13 @@ async def test_a_channel_lists_every_note_to_a_late_joiner(monkeypatch):
     _, _, _ = _noted_fixture(monkeypatch, "channel", "2026-11-05T00:00:00+00:00")
     listed = await messaging.list_room_memory(AuthContext(user_id="late", org_id="org_1"), str(uuid.uuid4()))
     assert len(listed.items) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_member_cannot_forget_once_lightbulb_left_the_group_chat(monkeypatch):
+    _, new, delete = _noted_fixture(monkeypatch, "group-dm", "2026-10-01T00:00:00+00:00")
+    monkeypatch.setattr(messaging, "_router_room", AsyncMock(return_value=False))
+    with pytest.raises(ApiProblem) as exc:
+        await messaging.forget_room_memory(AuthContext(user_id="m", org_id="org_1"), str(uuid.uuid4()), new)
+    assert exc.value.error.code == "ROOM_FORBIDDEN"
+    delete.assert_not_awaited()

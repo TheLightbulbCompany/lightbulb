@@ -49,3 +49,10 @@ it("a DM with Lightbulb opens like a project, says chat, and the first-run DM ta
   rerender(<RoomIntro room={{ ...dm, members: [] }} roomName="Sam" participants={[]} superAgent fresh onPickAsk={vi.fn()} />);
   expect(screen.getByText("Messages here are private to the two of you.")).toBeInTheDocument();
 });
+
+it("a specialist's DM is not a project: Lightbulb has to be in it", () => {
+  const growth = { kind: "agent", id: "g", displayName: "Growth", mentionHandle: "growth", role: "member", listenMode: "active", joinedAt: "", joinedSeq: 0 } as const;
+  const dm = { ...room, kind: "dm", shared: false, topic: null, members: [growth] } as unknown as RoomSummary;
+  render(<RoomIntro room={dm} roomName="Growth" participants={[growth]} superAgent fresh onPickAsk={vi.fn()} />);
+  expect(screen.getByText("Growth replies to everything you send here.")).toBeInTheDocument();
+});

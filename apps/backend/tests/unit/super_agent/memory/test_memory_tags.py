@@ -150,3 +150,32 @@ def test_router_block_shared_without_room_is_workspace_audience():
 def test_worker_block_room_audience_without_room_refuses():
     with pytest.raises(ValueError):
         memory_tags.block_for_worker(_task(audience={"kind": "room", "userIds": [], "roomId": None}))
+
+
+def test_worker_block_person_task_in_a_shared_room_writes_nothing():
+    """Review 2c: a person-visible task from a channel or group chat never syncs into team memory."""
+    block = memory_tags.block_for_worker(_task(audience={"kind": "person", "userIds": ["user_sam"], "roomId": "r1"}))
+    assert block["sync"] == "none" and block["member"] is None
+
+
+async def test_a_group_chat_tasks_worker_writes_nothing_whatever_its_audience(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from core.services import room_memory
+    from core.temporal import activities as acts
+
+    monkeypatch.setattr(acts, "_local_now", AsyncMock(return_value="now"))
+    group = AsyncMock(return_value="r1")
+    monkeypatch.setattr(room_memory, "group_room_by_id", group)
+    tree = {"attempts": []}
+    att = {"n": 1, "inputTriggerIds": []}
+    for audience in (
+        {"kind": "room", "userIds": [], "roomId": "r1"},
+        {"kind": "person", "userIds": ["u"], "roomId": "r1"},
+    ):
+        req = await acts._request("org_1", _task(title="t", audience=audience), att, tree)
+        assert req.memory["sync"] == "none"
+    group.assert_awaited_with("org_1", "r1")
+    group.return_value = None  # a channel's room task keeps writing team events, as before
+    req = await acts._request("org_1", _task(title="t"), att, tree)
+    assert req.memory["sync"] == "events"

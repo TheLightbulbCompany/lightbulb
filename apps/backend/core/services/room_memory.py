@@ -5,7 +5,7 @@ tagged ``CreateEvent`` (the claim extractor's input) and one turn record (recall
 who may read the room:
 
 - a channel, or a shared task's room → the team actor ``<o>``, ``/turns/<o>/``
-- a person's DM with an agent, or a private task's room → ``<o>:<u>``, ``/turns/<o>:<u>/``
+- a person's DM with an agent, or a private or person-visible task's room → ``<o>:<u>``, ``/turns/<o>:<u>/``
 - a group chat with Lightbulb, or a shared task's room whose task is that chat's → the chat's own scope
   ``<o>:room_<roomId>`` (founder ruling, 6 Nov 2026: recalled only in that chat, never workspace-wide)
 - a DM between people, a group DM without an agent, an A2A dispatch, a progress line → nothing
@@ -36,7 +36,8 @@ def _lane(room: dict, members: list[dict], task: dict | None) -> tuple[str, str 
     if room.get("task"):  # a task's hidden room follows the task's lane
         if task is None:
             return None
-        if task.get("lane") == "private":
+        if task.get("lane") == "private" or (task.get("audience") or {}).get("kind") == "person":
+            # A person-visible task is that person's wherever it was asked (a DM, a group chat, a channel).
             return ("private", task["ownerUserId"]) if task.get("ownerUserId") else None
         return "shared", None
     kind = room.get("kind")
@@ -57,7 +58,9 @@ async def group_room(owner_id: str, room: dict, task: dict | None = None) -> str
         if task is None:
             task = await tasks_repo.get_task(owner_id, room["task"]["taskId"])
         audience = (task or {}).get("audience") or {}
-        if (task or {}).get("lane") == "private" or audience.get("kind") != "room" or not audience.get("roomId"):
+        # Keyed on the room it came from. A private or person-visible task is its person's (`_lane` → private lane),
+        # never a scope the rest of the chat reads.
+        if (task or {}).get("lane") == "private" or audience.get("kind") == "person" or not audience.get("roomId"):
             return None
         room = await messaging_repo.get_room(audience["roomId"]) or {}
     if room.get("kind") != "group-dm" or room.get("ownerId") != owner_id:

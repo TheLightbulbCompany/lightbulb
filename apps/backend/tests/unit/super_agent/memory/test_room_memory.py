@@ -208,3 +208,32 @@ async def test_members_read_when_meta_has_none(table, core):
     with patch.object(room_memory.messaging_repo, "list_members", AsyncMock(return_value=[SAM, LB])):
         assert await room_memory.ingest_message(OWNER, room, _msg()) is True
     assert core.events[0]["actorId"] == "org_1:user_sam"
+
+
+async def test_a_person_task_from_a_group_chat_or_channel_never_writes_team_memory(table, core):
+    """Review 2c: a person-visible task asked in a group chat or channel is its person's: private lane, never team."""
+    for kind in ("group-dm", "channel"):
+        task = {
+            "taskId": TASK,
+            "lane": "shared",
+            "ownerUserId": "user_sam",
+            "audience": {"kind": "person", "userIds": ["user_sam"], "roomId": ROOM},
+        }
+        with patch.object(room_memory.messaging_repo, "get_room", AsyncMock(return_value=_room(kind))):
+            room = {**_room(members=(LB,), task={"taskId": TASK}), "roomId": "task:" + TASK}
+            msg = _msg(text=f"Draft for {kind}", messageId=f"{kind}-m")
+            assert await room_memory.ingest_message(OWNER, room, msg, task=task) is True
+    assert {ev["actorId"] for ev in core.events} == {"org_1:user_sam"}
+    assert all(ns != f"/turns/{OWNER}/" for r in core.records for ns in r["namespaces"])
+
+
+async def test_a_dm_task_room_writes_the_private_lane(table, core):
+    task = {
+        "taskId": TASK,
+        "lane": "private",
+        "ownerUserId": "user_sam",
+        "audience": {"kind": "person", "userIds": ["user_sam"], "roomId": ROOM},
+    }
+    room = {**_room(members=(LB,), task={"taskId": TASK}), "roomId": "task:" + TASK}
+    assert await room_memory.ingest_message(OWNER, room, _msg(), task=task) is True
+    assert core.events[0]["actorId"] == "org_1:user_sam"

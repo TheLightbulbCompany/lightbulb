@@ -297,10 +297,8 @@ async def _request(ws: str, task: dict, att: dict, tree: dict) -> runtime_runs.R
     # Lane Q (contracts §8): every Worker run carries the effect checkpoint; the bridge refuses `required`
     # until its image has F1, so this lands after that dev roll.
     memory = memory_tags.block_for_worker(task)  # memory (M2): the Worker writes in the task's lane
-    if memory["audience"].get("kind") == "room" and await room_memory.group_room_by_id(
-        ws, memory["audience"]["roomId"]
-    ):
-        # A group chat's task: the Worker's own events would land in team memory (workspace-wide). Its posts reach the
+    if await room_memory.group_room_by_id(ws, (task.get("audience") or {}).get("roomId")):
+        # A group chat's task (any audience kind): the Worker's own events would land in team memory (workspace-wide). Its posts reach the
         # chat's own scope through room ingestion; recall still reads that scope (founder ruling, 6 Nov 2026).
         memory["sync"] = "none"
     return runtime_runs.RunRequest(
@@ -960,9 +958,10 @@ async def _ensure_task(ws: str, task_id: str, trig: dict, lane: str, status: str
     audience = {"kind": kind}
     if kind == "person":
         audience["userIds"] = [actor]
-        if private and room:
-            # A DM's task lists in that DM's Tasks pane, Made here and Files (`routers/tasks.py` filter on roomId);
-            # `can_view` still reads `userIds` only, so a person later added to the DM never sees it.
+        if room:
+            # Where it came from (a DM, group chat or channel): its Tasks pane, Made here and Files list it
+            # (`routers/tasks.py` filters on roomId), and memory keys on it. `can_view` still reads `userIds` only, so
+            # nobody else in that room, now or later, sees it.
             audience["roomId"] = room
     elif kind == "room":
         audience["roomId"] = room

@@ -58,7 +58,9 @@ def block_for_worker(task: dict) -> dict:
             specialist=task.get("specialist"),
             source="worker",
         ),
-        "sync": "events",
+        # A person-visible task in a shared room (a channel or group chat) is that person's: its Worker's events would
+        # land in team memory, workspace-wide. Its task room's posts reach the person's private lane by room ingestion.
+        "sync": "none" if not private and audience.get("kind") == "person" else "events",
     }
 
 

@@ -16,10 +16,14 @@ export const roomKindLabel = {
 } as const;
 
 /** Super-agent: a room with the project UX (settings, Memory, Pause, icon, starter asks) -- every channel, and any DM or
- *  group chat Lightbulb is in (founder ruling, 6 Nov 2026). Callers still leave out the feed and the shared channel. */
+ *  group chat Lightbulb is in (founder ruling, 6 Nov 2026). Callers still leave out the feed and the shared channel.
+ *  Lightbulb, not any agent (a specialist's DM is not one), as the backend's `router_room`: under the switch the
+ *  `lightbulb` handle is reserved for the front agent (`messaging._handles_for`). */
 export function isProjectRoom(room: Pick<RoomSummary, "kind" | "members"> | null | undefined): boolean {
-  return !!room && (room.kind === "channel" || (room.members ?? []).some((member) => member.kind === "agent"));
+  return !!room && (room.kind === "channel"
+    || (room.members ?? []).some((member) => member.kind === "agent" && member.mentionHandle === LIGHTBULB_HANDLE));
 }
+const LIGHTBULB_HANDLE = "lightbulb";
 
 /** What settings and copy call the room: a channel is a channel; a DM or group chat is a chat. */
 export function roomNoun(kind: RoomSummary["kind"] | undefined): "channel" | "chat" {

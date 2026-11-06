@@ -3593,9 +3593,13 @@ async def list_room_memory(auth: AuthContext, room_id: str) -> RoomMemoryRespons
 async def forget_room_memory(auth: AuthContext, room_id: str, message_id: str) -> None:
     """Drop a noted fact from the list: a channel's owner or admin, like Instructions; any member of a DM or group chat
     (founder ruling, 6 Nov 2026), and only a fact they can see. Idempotent."""
-    meta, member = await require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
+    owner_id = resolve_owner_id(auth)
+    meta, member = await require_room_member(owner_id, auth.user_id, room_id)
     message_id = validate_uuid(message_id, label="message ID")
-    if meta.get("kind") == "channel" and member.get("role") not in {"owner", "admin"}:
+    room_admin = member.get("role") in {"owner", "admin"}
+    # A chat's members forget only while it is a chat with Lightbulb (as Pause and Instructions): once Lightbulb is
+    # removed it is a people-only chat again, back to its owner's say.
+    if not room_admin and (meta.get("kind") == "channel" or not await _router_room(meta, owner_id)):
         raise ApiProblem("ROOM_FORBIDDEN", "Room owner or admin access required.")
     if meta.get("kind") != "channel":
         shown = _noted_shown(meta, member, await messaging_repo.list_noted(room_id))

@@ -48,8 +48,10 @@ the assumption stated (e.g. Stripe's 2.9% + 30¢ per card charge on a $50 ticket
 figure only if it changes the answer.
 - ask for one clarifying question; asking approves nothing, and typed text never \
 approves anything.
-- ack: one short line people see in chat (what you started or passed on). No headings, no lists.
-- Words people see (ack, reply, ask): a task is a "task" (specialists pick up tasks), never a "request" or a "thread" (a thread is only a reply thread on a message). A room is a "project", never a "channel". A task's status is one of four words, the one each task line below starts with: Working, Needs you, Done, Closed; a short reason after it is fine ("Needs you: ready for review"). Name the specialist doing it by its name ("Growth is working on it").
+- ack: exactly one sentence people see in chat: who does what ("Growth is researching three competitor \
+taglines."). Say it once: no second sentence that the specialist has the task or is working on it, no greeting, no \
+headings, no lists. The task's card under it already shows who has it and its status.
+- Words people see (ack, reply, ask): a task is a "task" (specialists pick up tasks), never a "request" or a "thread" (a thread is only a reply thread on a message). A room is a "project", never a "channel"; name a project by its name alone ("walk-9"), never with "#" before it. A task's status is one of four words, the one each task line below starts with: Working, Needs you, Done, Closed; a short reason after it is fine ("Needs you: ready for review"). Name the specialist doing it by its name ("Growth is researching it").
 - Read each task's state as written. Never say something that spends money or sends something (a purchase, a \
 payment, an email) happened unless its task says its action ran; a stopped, dismissed or waiting task did not do it.
 - Work is underway only if it is in "Open tasks" below. A Lightbulb line under "Recent in this room" that names \
@@ -209,7 +211,8 @@ def status_words(task: dict, asker: str | None = None) -> str:
 # A status line: the reply opens with a task-state word as a label ("Working: …") or says tasks are in it.
 _STATUS_LINE = re.compile(
     r"^\s*(?:Working|Needs you)\s*:|\b(?:task|tasks|request|requests|both|all)\b[^.?!]*\b(?:is|are)\s+"
-    r"(?:Working|Needs you)\b"
+    r"(?:working|needs you)\b",
+    re.IGNORECASE,  # "Growth has the task and is working on it." (dev walk 10) is the ack again
 )
 _WORD = re.compile(r"[a-z]+")
 _NAMES = re.compile(r"[#@][\w-]+")

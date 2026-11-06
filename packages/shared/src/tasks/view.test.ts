@@ -8,6 +8,7 @@ import {
   SHOWN_GROUPS,
   STATUS_WORDS,
   TASK_STATUSES,
+  stepLines,
   taskView,
   type EffectRow,
   type QuestionRow,
@@ -240,5 +241,18 @@ describe("the one decision card", () => {
   it("names who asks and how long ago", async () => {
     const { decisionMeta } = await import("./view");
     expect(decisionMeta({ createdAt: new Date(0).toISOString() }, "Growth", undefined, 7 * 3600 * 1000)).toBe("Growth · 7h ago");
+  });
+});
+
+describe("stepLines (dev walk 10, W10-3)", () => {
+  it("groups runs of one tool and names them for people", () => {
+    const run = [
+      { name: "skill_view", ok: true },
+      ...Array.from({ length: 9 }, () => ({ name: "web_search", ok: true })),
+      { name: "web_extract", ok: true }, { name: "web_extract", ok: true },
+      { name: "terminal", ok: true }, { name: "terminal", ok: false },
+    ];
+    expect(stepLines(run)).toEqual(["Read skill", "Searched the web · 9", "Read 2 pages", "Ran a command", "Ran a command · failed"]);
+    expect(stepLines(["mcp__lightbulb__web_search", {}])).toEqual(["Searched the web", "A step"]);
   });
 });

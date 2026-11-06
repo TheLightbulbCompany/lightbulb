@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from core import tasks_schema as ts
 from scripts.super_agent.acceptance.ctx import Ctx, Result
 from scripts.super_agent.acceptance.o_lib import front_agent, poll_messages, rows_of, worker_authored
 
@@ -23,17 +24,14 @@ async def a07(ctx: Ctx) -> Result:
     finance = done  # the finished task; its specialist labels the result
     task_id = (finance or {}).get("taskId")
 
-    def results(rows: list[dict]) -> list[dict]:  # the one-line result in the main chat (`activities._announce`)
-        return [
-            m
-            for m in rows
-            if m.get("kind") in ("result", "task_line")
-            and any(r.get("taskId") == task_id for r in m.get("taskRefs") or [])
-        ]
+    def results(rows: list[dict]) -> list[dict]:  # the result line in the task's room (`activities.end_attempt`)
+        return [m for m in rows if m.get("kind") == "result"]
 
+    # A Router task's main chat card shows its result in place (dev walk 10): the result post is in the task room.
     # The task goes idle before `end_attempt` posts the result (run 4: read once, between the two).
-    room_rows = await poll_messages(ctx, "sam", room_id, results, limit=100)
-    result = results(room_rows)
+    task_room = ts.task_room_id(task_id) if task_id else room_id
+    result = results(await poll_messages(ctx, "sam", task_room, results, limit=100))
+    room_rows = await poll_messages(ctx, "sam", room_id, lambda rows: rows, limit=100)
     checks = {
         "a_started_task_finished": done is not None,
         "result_posted_by_lightbulb": bool(result)

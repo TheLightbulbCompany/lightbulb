@@ -49,7 +49,7 @@ export function TaskCard({ task, taskId, viewerId, palette, onOpen = openTaskScr
   // Reopen lives on the request screen and the Work list, not on every resolved card in the history (audit #30).
   const inline = view.action && view.action !== "answer" && view.action !== "review" && view.action !== "reopen" ? view.action : null;
   // The specialist is the actor, by its own name ("Growth"), on its own line (founder, 5 Nov).
-  const line = taskSummaryLine(task, viewerId);
+  const line = task.resultLine || taskSummaryLine(task, viewerId); // a finished card says what came of it, in place (dev walk 10)
   const detail = line === view.word ? null : line;
   // The open target and the action are siblings, never nested: a screen reader reaches each on its own (audit #23).
   return (

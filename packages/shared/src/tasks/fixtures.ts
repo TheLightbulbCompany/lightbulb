@@ -22,6 +22,7 @@ export function fixtureTask(over: Partial<TaskSummary> & Pick<TaskSummary, "task
     audience: { kind: "room", userIds: [], roomId: ROOM },
     audienceKind: "room",
     originRoomId: ROOM,
+    resultLine: null,
     taskRoomId: `task-room-${over.taskId}`,
     openQuestion: null,
     landing: null,

@@ -930,6 +930,9 @@ class TaskSummary(_Model):
     audience: Audience
     audience_kind: AudienceKind
     origin_room_id: str | None = None
+    # What came of a finished task, one plain line for its card in the origin room; None while it works or when
+    # someone in that room can't open it (`tasks_access.result_line`).
+    result_line: str | None = None
     task_room_id: str
     open_question: SummaryQuestion | None = None
     landing: str | None = None

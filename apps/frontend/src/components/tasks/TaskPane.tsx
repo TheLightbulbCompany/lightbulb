@@ -7,7 +7,7 @@
 
 import { useEffect, useRef, useState, type ReactElement, type RefObject } from "react";
 import {
-  ApiError, answerVerb, askLine, effectLine, effectName, specialistLabel, summaryView, useTask, useTaskQuestions,
+  ApiError, answerVerb, askLine, effectLine, effectName, specialistLabel, stepLines, summaryView, useTask, useTaskQuestions,
   type QuestionView, type TaskDetail, type TaskEffect, type TaskSummary, type TaskTrace,
 } from "@lightbulb/shared";
 import { SessionChat, type ChatWords } from "@/components/messaging/SessionChat";
@@ -262,20 +262,7 @@ function TaskSteps({ detail, live }: { detail: TaskDetail; live: boolean }): Rea
       : "error" in trace ? <p className="text-muted-foreground">The steps aren&apos;t available.</p>
       : !trace.recentTools.length ? <p className="text-muted-foreground">No steps yet.</p>
       : <ol className="mt-1 max-h-64 overflow-auto text-caption" aria-label={`Run ${trace.attempt} steps`}>
-        {trace.recentTools.map((tool, i) => <li key={i} className="truncate">{toolLine(tool)}</li>)}
+        {stepLines(trace.recentTools).map((line, i) => <li key={i} className="truncate">{line}</li>)}
       </ol>}
   </details>;
-}
-
-/** One plain line per bridge tool record ("browser_navigate · done" → "Browser navigate · done"). */
-function toolLine(tool: unknown): string {
-  const words = (name: string) => { const w = name.replace(/^mcp__[^_]+__/, "").replace(/[_.]+/g, " ").trim(); return w.charAt(0).toUpperCase() + w.slice(1); };
-  if (typeof tool === "string") return words(tool);
-  if (tool && typeof tool === "object") {
-    const t = tool as Record<string, unknown>;
-    const name = [t.name, t.tool, t.type].find((v) => typeof v === "string") as string | undefined;
-    const status = typeof t.status === "string" ? ` · ${t.status}` : "";
-    if (name) return `${words(name)}${status}`;
-  }
-  return "A step";
 }

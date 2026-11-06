@@ -60,6 +60,9 @@ export interface TaskSummary {
   audience: { kind: "person" | "room" | "workspace"; userIds?: string[]; roomId?: string | null };
   audienceKind: "person" | "room" | "workspace";
   originRoomId?: string | null;
+  /** What came of a finished task, one plain line for its card in the origin room (`tasks_access.result_line`);
+   *  null while it works or when someone in that room can't open it. */
+  resultLine?: string | null;
   taskRoomId: string;
   openQuestion?: SummaryQuestion | null;
   /** The effect being applied (Landing), else null. */

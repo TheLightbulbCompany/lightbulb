@@ -264,3 +264,39 @@ async def test_output_writes_never_fail_their_caller(monkeypatch):
     await ta.record_output(WS, TID, {"id": "file:f1", "kind": "file", "title": "a"})
     await ta.record_effect_output(WS, {"state": "done"})  # malformed row: logged, not raised
     assert ta.tasks_repo.add_task_output.await_count == 2
+
+
+# --- Dev walk 10: the card's one-line result (W10-1, W10-2) ---------------------------------------------------------
+
+
+def test_plain_line_strips_markdown_and_ends_at_a_sentence():
+    walk = (
+        '**"Your competitors say fast."** Linear: "Built for speed." Notion: "One workspace." Asana leads with teams.'
+    )
+    line = ta.plain_line(walk)
+    assert "*" not in line and len(line) <= ta.LINE_MAX and line.endswith(".")
+    assert line.startswith('"Your competitors say fast."')
+    assert ta.plain_line("## Taglines\n\n- [Linear](https://linear.app) `ships` _fast_.") == "Taglines"
+    assert ta.plain_line("# Three taglines\nFound three taglines. Details in the file.") == (
+        "Three taglines Found three taglines. Details in the file."
+    )
+    one = "word " * 60  # one sentence longer than the line: cut at a word, never mid-word
+    cut = ta.plain_line(one)
+    assert len(cut) <= ta.LINE_MAX and cut.endswith("word…")
+    assert ta.plain_line("Use snake_case names.") == "Use snake_case names."
+
+
+def test_result_line_is_the_cards_in_place_result():
+    done = {"kind": "room", "roomId": "r1"}
+    sub = [{"createdBy": "router", "threadKey": "room:r1:m1"}]
+    att = [{"n": 1, "status": "ended", "outcome": "completed", "output": "**Paid** Acme.\n\nDetails…"}]
+    tree = {"task": _task(done, status="idle"), "attempts": att, "subscriptions": sub}
+    assert ta.summarize(tree, "sam")["resultLine"] == "Paid Acme."
+    assert ta.summarize({**tree, "task": _task(done)}, "sam")["resultLine"] is None  # still working
+    # Someone in the room can't open it: no words there; a person-only task never shows any.
+    other = {**tree, "task": _task({"kind": "room", "roomId": "r2"}, status="idle")}
+    assert ta.summarize(other, "sam")["resultLine"] is None
+    mine = {**tree, "task": _task({"kind": "person", "userIds": ["sam"]}, status="idle")}
+    assert ta.summarize(mine, "sam")["resultLine"] is None
+    failed = {**tree, "task": _task({"kind": "workspace"}, status="failed", statusReason="refused")}
+    assert ta.summarize(failed, "sam")["resultLine"] == "Didn't finish: the computer it runs on refused it."

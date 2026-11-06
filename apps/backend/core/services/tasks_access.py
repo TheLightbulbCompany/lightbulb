@@ -8,6 +8,7 @@ refetch path asks it. `summarize` is pure over a task tree and returns the `Task
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Any
 
@@ -82,6 +83,67 @@ def _origin_room(subscriptions: list[dict], audience: dict) -> str | None:
     return audience.get("roomId")
 
 
+# --- The task's one-line result (UX slice 3, dev walk 10) ------------------------------------------------------------
+# The card in the chat it came from says what came of it, in place: one item per task, no second message.
+
+_FAILED_WHY = {
+    "refused": "the computer it runs on refused it",
+    "unavailable": "the computer it runs on wasn't available",
+    "runtime_lost": "the run was lost",
+    "lost_run": "the run was lost",
+    "checkpoint_failed": "its work couldn't be saved",
+}
+LINE_MAX = 120
+_MD_LINK = re.compile(r"!?\[([^\]]*)\]\([^)]*\)")  # [text](url) and ![alt](src) -> text
+_MD_LEAD = re.compile(r"^(?:#{1,6}\s+|>\s*|[-*+]\s+|\d+[.)]\s+)+")  # heading, quote, list marker
+_MD_MARKS = re.compile(r"(\*\*|__|\*|`+|~~|(?<!\w)_|_(?!\w))")  # bold, italic, code, strike (never snake_case)
+_SENTENCE_END = re.compile(r"[.!?…][\"'”’)\]]*(?=\s|$)")
+
+
+def plain_line(text: str, limit: int = LINE_MAX) -> str:
+    """The first paragraph of `text` as one plain sentence-bounded line of at most `limit` chars: markdown stripped,
+    whole sentences while they fit, else the first sentence cut at a word with "…"."""
+    para: list[str] = []
+    for raw in (text or "").splitlines():
+        line = _MD_MARKS.sub("", _MD_LEAD.sub("", _MD_LINK.sub(r"\1", raw.strip()))).strip()
+        if not line or set(line) <= set("-=*_|: "):  # blank, a rule or a table edge ends the paragraph
+            if para:
+                break
+            continue
+        para.append(line)
+    flat = " ".join(" ".join(para).split())
+    if len(flat) <= limit:
+        return flat
+    ends = [m.end() for m in _SENTENCE_END.finditer(flat) if m.end() <= limit]
+    if ends:
+        return flat[: ends[-1]]
+    cut = flat[: limit - 1].rsplit(" ", 1)[0].rstrip(" ,;:-")
+    return cut + "…"
+
+
+def seen_by_whole_room(task: dict, room: str | None) -> bool:
+    """Everyone in `room` can open the task (`can_view`'s audience rules): a workspace task, or this room's own. Only
+    then may the card in that room carry what the task said."""
+    audience = task.get("audience") or {}
+    return audience.get("kind") == "workspace" or (audience.get("kind") == "room" and audience.get("roomId") == room)
+
+
+def result_line(tree: dict, room: str | None) -> str | None:
+    """What came of a finished task, for its card in `room`: the result's first sentence(s), else the newest output's
+    title; why a failed one didn't finish. None while it works, and when someone in the room can't open the task
+    (its words never leak there; a person-only task never shows any)."""
+    task = tree["task"]
+    status = task.get("status")
+    if status not in ("idle", "failed") or task.get("watchUntil") or not seen_by_whole_room(task, room):
+        return None
+    if status == "failed":
+        return f"Didn't finish: {_FAILED_WHY.get(task.get('statusReason') or '', 'something went wrong')}."
+    att = max(tree.get("attempts") or [], key=lambda a: a.get("n", 0), default=None)
+    said = plain_line(att.get("output") or "") if att and att.get("outcome") == "completed" else ""
+    outputs = task.get("outputs") or []
+    return said or (plain_line(outputs[-1].get("title") or "") if outputs else "") or None
+
+
 def summarize(tree: dict, viewer_id: str) -> dict[str, Any]:
     """The C15 `TaskSummary` for one viewer. Callers check `can_view(task, viewer_id)` first: this does not. `tree` is `tasks_repo.get_task_tree` plus optional `effects`
     (Effect rows of the task) and `userNames` ({userId: display name}) added by the caller."""
@@ -134,7 +196,8 @@ def summarize(tree: dict, viewer_id: str) -> dict[str, Any]:
         "ownerUserId": task.get("ownerUserId"),
         "audience": audience,
         "audienceKind": audience.get("kind"),
-        "originRoomId": _origin_room(tree.get("subscriptions") or [], audience),
+        "originRoomId": (origin := _origin_room(tree.get("subscriptions") or [], audience)),
+        "resultLine": result_line({**tree, "task": task}, origin),
         "taskRoomId": ts.task_room_id(task["taskId"]),
         "openQuestion": question,
         "landing": task.get("landingEffect"),

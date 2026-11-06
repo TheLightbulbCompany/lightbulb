@@ -19,17 +19,22 @@ export function AutomationConfirmCard({ automationId, palette, viewerTz = viewer
   automationId: string; palette: ChatPalette; viewerTz?: string;
 }) {
   const { agentNames } = useLiveEvents();
-  const { data: a, error } = useAutomation(useAutomationSource(), automationId);
+  const { data: a, error, mutate } = useAutomation(useAutomationSource(), automationId);
   const { act, remove } = useAutomationActions();
   const viewer = useAutomationViewer();
   const [pending, setPending] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [gone, setGone] = useState(false);
-  if (gone || (!a && error)) {
+  // Not now deletes the draft, so a later read is a 404 (dev walk 10, W10-6): a plain line, never a dead box.
+  if (gone || (!a && (error as { status?: number } | undefined)?.status === 404)) {
+    return <Text style={[styles.meta, { color: palette.fgMute }]}>Not set up.</Text>;
+  }
+  if (!a && error) {
     return (
-      <View style={[styles.card, styles.dashed, { borderColor: palette.edge }]}>
-        <Text style={[styles.meta, { color: palette.fgMute }]}>{gone ? "Not set up." : "This automation isn’t available."}</Text>
-      </View>
+      <Text style={[styles.meta, { color: palette.fgMute }]}>
+        This automation couldn’t load.{" "}
+        <Text accessibilityRole="button" onPress={() => void mutate()} style={{ textDecorationLine: "underline" }}>Retry</Text>
+      </Text>
     );
   }
   // The card's own height while it loads, so the conversation doesn't jump when it fills in.
@@ -76,7 +81,6 @@ export function AutomationConfirmCard({ automationId, palette, viewerTz = viewer
 
 const styles = StyleSheet.create({
   card: { borderWidth: 1, borderRadius: radii.md, paddingHorizontal: spacing.sm, paddingVertical: spacing.xs, gap: spacing.xs, maxWidth: 520 },
-  dashed: { borderStyle: "dashed" },
   skeleton: { height: 96 },
   title: { fontFamily: fonts.sansSemiBold, fontSize: 15, lineHeight: 20 },
   meta: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18 },

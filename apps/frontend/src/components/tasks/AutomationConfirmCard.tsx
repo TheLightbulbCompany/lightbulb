@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button";
 import { budgetLine, scheduleWords, useAutomationActions, useAutomationSource, useCanDecide, useCanEdit, useDeliveryWords, useSpecialistLabel, viewerTimeZone, waitingWords } from "./automations";
 
 export function AutomationConfirmCard({ automationId, viewerTz = viewerTimeZone() }: { automationId: string; viewerTz?: string }): ReactElement {
-  const { data: a, error } = useAutomation(useAutomationSource(), automationId);
+  const { data: a, error, mutate } = useAutomation(useAutomationSource(), automationId);
   const specialistName = useSpecialistLabel();
   const delivery = useDeliveryWords();
   const { act, remove } = useAutomationActions();
@@ -20,9 +20,14 @@ export function AutomationConfirmCard({ automationId, viewerTz = viewerTimeZone(
   const [pending, setPending] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [gone, setGone] = useState(false);
-  if (gone || (!a && error)) {
-    return <p className="mt-1.5 max-w-xl rounded-lg border border-dashed border-border px-3 py-2 text-ui text-muted-foreground">
-      {gone ? "Not set up." : "This automation isn't available."}
+  // Not now deletes the draft, so every later read of this card is a 404 (dev walk 10, W10-6): it says what
+  // happened, in a plain line, never a dead box. Any other failed read offers Retry.
+  if (gone || (!a && (error as { status?: number } | undefined)?.status === 404)) {
+    return <p className="mt-1 text-ui text-muted-foreground">Not set up.</p>;
+  }
+  if (!a && error) {
+    return <p role="alert" className="mt-1 text-ui text-muted-foreground">
+      This automation couldn&apos;t load. <button type="button" className="underline hover:text-foreground" onClick={() => void mutate()}>Retry</button>
     </p>;
   }
   // The card's own height while it loads, so the conversation doesn't jump when it fills in.

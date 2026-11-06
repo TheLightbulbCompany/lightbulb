@@ -95,6 +95,18 @@ def validate_cron(cron: list[str], tz: str) -> None:
         raise ValueError(f"runs must be at least {MIN_INTERVAL_MIN} minutes apart")
 
 
+def remaining_runs(cron: list[str], remaining: int | None) -> int | None:
+    """The `remainingRuns` to store. A cron that pins one minute of one date (`0 9 6 11 *`) is a one-off: the
+    Schedule would fire it again every year, so it gets one run whatever the caller sent. Every writer (the
+    create/patch routes, the Router's propose) stores this. ponytail: an every-year-on-this-date automation
+    reads as a one-off too; give it `remainingRuns` > 1 or a weekday field if anyone ever wants one."""
+    if remaining is None and len(cron) == 1:
+        fields = cron[0].split()
+        if len(fields) == 5 and fields[4] == "*" and all(f.isdigit() for f in fields[:4]):
+            return 1
+    return remaining
+
+
 def _ws(row: dict) -> str:
     return row["pk"].removeprefix("WS#")
 

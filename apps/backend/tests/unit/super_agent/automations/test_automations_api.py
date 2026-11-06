@@ -494,6 +494,20 @@ async def test_propose_creates_draft_and_posts_card(internal):
     assert kw["text"].endswith("Turn it on with the button on the card.")  # the card's Turn on, never "confirm"
 
 
+async def test_a_dated_cron_is_a_one_off_from_propose_and_patch(internal):
+    """`0 9 6 11 *` matches every year: stored with no run count it would fire again next 6 Nov."""
+    body = {"name": "n", "instructions": "i", "cron": ["0 9 6 11 *"], "triggerIds": [await _chat_trigger()]}
+    r = internal.api.client.post(
+        f"/api/v1/internal/automations/{WS}/propose", json=body, headers={"Authorization": "Bearer t"}
+    )
+    assert r.status_code == 200, r.text
+    row = await repo.get_schedule(WS, r.json()["automationId"])
+    assert row["remainingRuns"] == 1
+    patch = {"schedule": {"cron": ["30 8 7 11 *"], "tz": "UTC", "remainingRuns": None}, "version": row["version"]}
+    r = _as(internal.api).patch(f"{BASE}/{row['scheduleId']}", json=patch)
+    assert r.status_code == 200 and r.json()["schedule"]["remainingRuns"] == 1
+
+
 async def test_propose_cleans_up_when_the_card_cannot_be_posted(internal):
     tid = await _chat_trigger()
     internal.post.side_effect = RuntimeError("messaging down")

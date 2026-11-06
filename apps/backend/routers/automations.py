@@ -414,7 +414,8 @@ def _schedule_fields(schedule: ScheduleIn) -> dict:
         automation_schedule.validate_cron(schedule.cron, schedule.tz)
     except ValueError as exc:
         raise _err(400, "invalid_schedule", message=str(exc)) from exc
-    return {"cron": schedule.cron, "tz": schedule.tz, "remainingRuns": schedule.remaining_runs}
+    remaining = automation_schedule.remaining_runs(schedule.cron, schedule.remaining_runs)
+    return {"cron": schedule.cron, "tz": schedule.tz, "remainingRuns": remaining}
 
 
 async def _view(ws: str, row: dict) -> dict:

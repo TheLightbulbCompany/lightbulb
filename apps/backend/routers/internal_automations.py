@@ -162,6 +162,7 @@ async def propose(owner_id: str, body: ProposeIn, request: Request) -> dict:
             "ownerUserId": requester,
             "cron": body.cron,
             "tz": tz,
+            "remainingRuns": automation_schedule.remaining_runs(body.cron, None),  # a dated cron is a one-off
             "policyText": body.instructions.strip(),
             "specialist": body.specialist_id,
             "budgetPerRunUsd": body.budget_per_run_usd,

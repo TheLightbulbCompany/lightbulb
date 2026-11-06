@@ -164,3 +164,32 @@ def test_cron_day_month_weekday_ranges(bad):
 def test_cron_day_fields_accept_names_and_sunday_7():
     asch.validate_cron(["0 9 1-31 JAN-DEC SUN-SAT"], "UTC")
     asch.validate_cron(["0 9 * * 7"], "UTC")
+
+
+@pytest.mark.parametrize(
+    ("cron", "given", "stored"),
+    [
+        (["0 9 6 11 *"], None, 1),  # one date: a one-off, else it fires again next year
+        (["0 9 6 11 *"], 3, 3),  # an explicit count stands
+        (["0 9 * * 1"], None, None),  # weekly
+        (["0 9 1 * *"], None, None),  # monthly
+        (["0 9 6 11 1"], None, None),  # date OR weekday: recurring
+        (["0 9,17 6 11 *"], None, None),
+        (["0 9 6 11 *", "0 9 7 11 *"], None, None),
+    ],
+)
+def test_a_dated_cron_is_stored_as_one_run(cron, given, stored):
+    assert asch.remaining_runs(cron, given) == stored
+
+
+def test_cleanup_finds_a_one_off_only_once_its_date_passed():
+    from datetime import datetime, timezone
+
+    from scripts.limit_past_one_off_automations import is_past
+
+    now = datetime(2026, 11, 6, 12, tzinfo=timezone.utc)
+    row = {"cron": ["21 6 5 11 *"], "tz": "America/New_York", "createdAt": "2026-11-05T10:00:00+00:00"}
+    assert is_past(row, now)
+    assert not is_past(row | {"createdAt": "2026-11-05T12:00:00+00:00"}, now)  # created after 06:21 NY: next year
+    assert not is_past(row | {"cron": ["0 9 5 1 *"], "createdAt": "2026-10-01T00:00:00+00:00"}, now)  # Jan 2027
+    assert is_past(row | {"cron": ["0 9 * * 1"], "runTaskIds": ["t1"]}, now)  # a run counts

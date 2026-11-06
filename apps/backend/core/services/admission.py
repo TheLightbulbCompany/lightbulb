@@ -108,16 +108,30 @@ async def paused_room(room_id: str | None) -> dict | None:
     return meta if meta and meta.get("pausedAt") else None
 
 
-async def post_paused_notice(ws: str, meta: dict, thread_root: str | None = None) -> None:
-    """One line per pause and thread, in the thread the person wrote in (keyed on pausedAt: a resume re-arms it)."""
-    await task_conversation.post_as_lightbulb(
-        ws,
-        meta["roomId"],
-        text=messaging.PAUSED_ROOM_TEXT,
-        event_id=f"paused:{meta['roomId']}:{thread_root or 'top'}:{meta['pausedAt']}",
-        thread_root=thread_root,
-        remember=False,
-    )
+async def answer_paused_ask(room_id: str, resumed_by: str | None = None) -> None:
+    """Resume (W18-8): the resumer's own latest ask from the pause window, else the latest anyone's, gets its Router
+    turn now. Its trigger was never written, so this is its first admission. Never for someone who has left the room
+    since. Best effort: a lost answer never fails Resume."""
+    ask = await messaging_repo.pop_paused_ask(room_id, resumed_by)
+    if ask is None or not ask.get("authorId"):
+        return
+    if await messaging_repo.get_member(room_id, "human", ask["authorId"]) is None:
+        return  # left (or was removed) while paused: no answer to a room they can't read
+    try:
+        await _admit_message(room_id, ask["seq"])
+    except Exception:  # noqa: BLE001 -- Temporal down (WorkRetry) or a deleted message: the person asks again
+        logger.warning("paused ask not answered room=%s seq=%s", room_id, ask["seq"], exc_info=True)
+
+
+async def _to_people(meta: dict, msg: dict) -> bool:
+    """W18-7: a message that opens with a person's @handle ("@priya thanks") is people talking (Jev's
+    `addressed_to_people`): no Jev call and no Router turn, so the sender's "reading…" ends on the read receipt.
+    Members are read only when the text opens with "@" and mentions a person."""
+    text = str(msg.get("text") or "").lstrip()
+    if not text.startswith("@") or not any(r.get("kind") == "human" for r in msg.get("mentions") or []):
+        return False
+    members = await messaging_repo.list_members(meta["roomId"])
+    return jev.addressed_to_people(msg, messaging.with_human_handles(members, await messaging.human_emails(members)))
 
 
 async def _admit_trigger(ws: str, trigger_id: str) -> None:
@@ -189,11 +203,12 @@ async def _admit_message(room_id: str, seq: int) -> None:
     # "Hi Lightbulb, ..." without the @: speaking to Lightbulb by name addresses it, like an @mention of its seat.
     named = bool(_LIGHTBULB_NAME.search(msg.get("text") or ""))
 
-    # Paused (W17-2): Lightbulb stops, people keep talking. No Router turn; one line per pause and thread, and only
-    # when the person spoke to Lightbulb. Running tasks were passed through above.
+    # Paused (W17-2): Lightbulb stops, people keep talking. No Router turn and no line in the room (W18-8: the
+    # paused bar tells the sender, nobody else); the latest message that spoke to Lightbulb is answered on Resume.
+    # Running tasks were passed through above.
     if meta.get("pausedAt"):
         if addressed or named or meta.get("kind") == "dm":
-            await post_paused_notice(ws, meta, ref.get("threadRoot"))
+            await messaging_repo.put_paused_ask(room_id, int(msg["messageSeq"]), author["id"])
         put_metric("admission.outcome", dimensions={"outcome": "paused", "source": "chat"})
         return
     pinned = next((a for a in addressed if not front or a != front["id"]), None)
@@ -205,6 +220,8 @@ async def _admit_message(room_id: str, seq: int) -> None:
     elif addressed or named or meta.get("kind") == "dm":
         admission = "respond"
     elif listen == "mentions":
+        admission = None
+    elif await _to_people(meta, msg):
         admission = None
     else:
         # 4. slow path: one Jev call for an unaddressed message

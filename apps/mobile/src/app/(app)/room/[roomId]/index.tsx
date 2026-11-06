@@ -720,6 +720,12 @@ function Conversation() {
         </Text>
       ) : (
         <>
+        {/* W18-8: no public paused note any more; mobile has no paused bar, so one quiet line says it. */}
+        {room?.pausedAt ? (
+          <Text accessibilityRole="text" style={[styles.paused, { color: palette.fgSoft }]}>
+            Lightbulb is paused here. People can still chat.
+          </Text>
+        ) : null}
         <RoomSubagentStrip
           state={rooms.subagents}
           roomId={roomId ?? ""}
@@ -799,6 +805,7 @@ const styles = StyleSheet.create({
   },
   errorText: { fontFamily: fonts.sans, fontSize: 14, lineHeight: 20 },
   archived: { fontFamily: fonts.sans, fontSize: 14, lineHeight: 20, textAlign: "center", padding: spacing.md },
+  paused: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18, textAlign: "center", paddingHorizontal: spacing.md, paddingTop: spacing.sm },
   retryText: { fontFamily: fonts.sansMedium, fontSize: 13, lineHeight: 18 },
   olderLoading: { marginVertical: spacing.md },
   timeline: { flex: 1 },

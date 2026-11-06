@@ -1684,6 +1684,44 @@ async def release_room_marker(room_id: str, name: str) -> None:
     await run_in_thread(_table().delete_item, Key={"pk": room_pk(room_id), "sk": f"MARKER#{name}"})
 
 
+async def put_paused_ask(room_id: str, seq: int, author_id: str) -> None:
+    """``PAUSEDASK#<userId>``: each person's latest message that spoke to Lightbulb while the room was paused
+    (W18-8), answered on Resume. A later seq replaces an earlier one; an older redelivery never wins."""
+    try:
+        await run_in_thread(
+            _table().put_item,
+            Item={
+                "pk": room_pk(room_id),
+                "sk": f"PAUSEDASK#{author_id}",
+                "seq": int(seq),
+                "authorId": author_id,
+                "createdAt": utc_now_iso(),
+            },
+            ConditionExpression="attribute_not_exists(sk) OR seq < :s",
+            ExpressionAttributeValues={":s": int(seq)},
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+
+
+async def pop_paused_ask(room_id: str, prefer_author: str | None = None) -> dict | None:
+    """The ask Resume answers: ``prefer_author``'s own latest, else the latest anyone's (``{"seq", "authorId"}``).
+    Every row goes, each delete returning what it removed: two Resumes answer it once.
+    ponytail: one partition query; a pause window holds a few askers."""
+    rows = await _query(room_pk(room_id), begins_with="PAUSEDASK#")
+    taken = []
+    for row in rows:
+        resp = await run_in_thread(_table().delete_item, Key={"pk": row["pk"], "sk": row["sk"]}, ReturnValues="ALL_OLD")
+        if resp.get("Attributes"):
+            taken.append(resp["Attributes"])
+    if not taken:
+        return None
+    own = [r for r in taken if r.get("authorId") == prefer_author]
+    best = max(own or taken, key=lambda r: int(r["seq"]))
+    return {"seq": int(best["seq"]), "authorId": best.get("authorId")}
+
+
 async def put_noted(room_id: str, message_id: str, fact: str, *, actor_user_id: str | None = None) -> None:
     """``NOTED#<messageId>``: a message the Router's `note` decision acknowledged, with the fact it read (W15-5:
     what project Settings › Memory lists). Room metadata, not memory; a retried turn keeps the first row."""

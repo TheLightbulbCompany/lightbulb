@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isPlaceholderUrl, normalizeCtaLinks, plainCta } from "../ctaLinks";
+import { isPlaceholderUrl, normalizeCtaLinks, plainCta, stripMetaLines } from "../ctaLinks";
 
 // The walk-17 florist email, as GET /tasks/095ed80d…/outputs[0].ref.text returned it on dev (6 Nov 2026).
 const WALK17_EMAIL = [
@@ -14,6 +14,7 @@ describe("normalizeCtaLinks (W17-3)", () => {
   it("turns the walk-17 email's button into a CTA line, and Copy into its words", () => {
     expect(normalizeCtaLinks(WALK17_EMAIL).split("\n").at(-1)).toBe("[BOOK YOUR SPOT]");
     expect(plainCta(WALK17_EMAIL).split("\n").at(-1)).toBe("BOOK YOUR SPOT");
+    // Copy keeps the rest word for word: meta lines go only from what a task made (resultPiece), never here.
     expect(plainCta(WALK17_EMAIL).split("\n").slice(0, -1).join("\n")).toBe(WALK17_EMAIL.split("\n").slice(0, -1).join("\n"));
   });
 
@@ -54,5 +55,14 @@ describe("normalizeCtaLinks (W17-3)", () => {
   it("knows a placeholder from a link", () => {
     for (const url of ["", " ", "#", "[BOOKING LINK]", "{{link}}", "{link}", "<BOOKING LINK>", "BOOKING_URL", "link-here"]) expect(isPlaceholderUrl(url)).toBe(true);
     for (const url of ["https://a.b", "mailto:a@b.c", "mention:x", "/a", "#top", "?q=1", "./a.md", "shop.example.com"]) expect(isPlaceholderUrl(url)).toBe(false);
+  });
+});
+
+describe("stripMetaLines", () => {
+  it("drops an email's preview-text and preheader lines, keeps the subject and body (W18)", () => {
+    const email = "Subject: Tea tasting with Mei\n\n**Preview text:** Join us for tea\nPreheader: tins\n\nHi all,\nCome taste.";
+    expect(stripMetaLines(email)).toBe("Subject: Tea tasting with Mei\n\n\nHi all,\nCome taste.");
+    expect(plainCta("Hi\nPreview text: x")).toBe("Hi\nPreview text: x");  // an uploaded file's Copy keeps it
+    expect(stripMetaLines("We preview text: drafts first.")).toBe("We preview text: drafts first.");
   });
 });

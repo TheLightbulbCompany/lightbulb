@@ -924,6 +924,7 @@ def _archive_fixture(monkeypatch, meta, role="admin"):
     monkeypatch.setattr(messaging, "_room_detail", AsyncMock(return_value="detail"))
     monkeypatch.setattr(messaging, "_publish_room_metadata", publish)
     monkeypatch.setattr(messaging, "_router_room", AsyncMock(return_value=False))  # no Lightbulb seated
+    monkeypatch.setattr(messaging.messaging_repo, "pop_paused_ask", AsyncMock(return_value=None))
     return patch_meta, publish
 
 
@@ -1123,9 +1124,14 @@ async def test_pause_and_resume_a_project_are_audited(monkeypatch):
     await messaging.patch_room(auth, "chan", messaging.PatchRoomRequest(paused=True))  # already paused: no-op
     assert patch_meta.await_count == 1 and audit.await_count == 1
 
+    from core.services import admission
+
+    answer = AsyncMock()
+    monkeypatch.setattr(admission, "answer_paused_ask", answer)
     await messaging.patch_room(auth, "chan", messaging.PatchRoomRequest(paused=False))
     assert patch_meta.await_args.args[1] == {"pausedAt": None, "pausedBy": None}
     assert audit.await_args.args[2] == "project.resumed"
+    answer.assert_awaited_once_with("chan", "admin")  # W18-8: the question asked while paused is answered now
 
 
 @pytest.mark.asyncio

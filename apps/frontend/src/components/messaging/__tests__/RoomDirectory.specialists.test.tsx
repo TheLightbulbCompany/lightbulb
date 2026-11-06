@@ -35,8 +35,23 @@ describe("sidebar with the super-agent on", () => {
     expect(boxes[0]).toHaveAccessibleName("Select Lightbulb");
     expect(boxes[0].closest(".room-choice")!.querySelector(".participant-avatar__mark")).not.toBeNull();
     expect(boxes[0]).not.toBeChecked();
-    await userEvent.selectOptions(within(dialog).getByLabelText("Type"), "group-dm");
-    expect(within(screen.getByRole("dialog", { name: "New group chat" })).getByRole("checkbox", { name: "Select Lightbulb" })).toBeChecked();
+    // W18: Type is a segmented control, not a dropdown.
+    expect(within(dialog).queryByRole("combobox", { name: "Type" })).toBeNull();
+    await userEvent.click(within(within(dialog).getByRole("group", { name: "Type" })).getByRole("button", { name: "Group chat" }));
+    const group = screen.getByRole("dialog", { name: "New group chat" });
+    expect(within(group).getByRole("button", { name: "Group chat" })).toHaveAttribute("aria-pressed", "true");
+    expect(within(group).getByRole("checkbox", { name: "Select Lightbulb" })).toBeChecked();
+    // W18: the replies menu says what it does, with a visible label.
+    const replies = within(group).getByRole("combobox", { name: "Lightbulb replies" });
+    expect(within(replies).getAllByRole("option").map((o) => o.textContent)).toEqual(["To everything", "When mentioned", "Never"]);
+    // W18: a picked person stays in sight as a chip while the filter hides their row.
+    await userEvent.click(within(group).getByRole("checkbox", { name: "Select Alice" }));
+    await userEvent.type(within(group).getByRole("searchbox"), "fin");
+    expect(within(group).queryByRole("checkbox", { name: "Select Alice" })).toBeNull();
+    const picked = within(group).getByRole("list", { name: "Selected" });
+    expect(within(picked).getByText("Alice")).toBeInTheDocument();
+    await userEvent.click(within(picked).getByRole("button", { name: "Remove Alice" }));
+    expect(within(picked).queryByText("Alice")).toBeNull();
     // Anchored at the top: the dialog grows downward instead of re-centring.
     expect(screen.getByRole("dialog", { name: "New group chat" }).className).toMatch(/top-\[8dvh\]/);
   });
@@ -62,7 +77,7 @@ describe("sidebar with the super-agent on", () => {
 
   it("rosters people and only Lightbulb, pinned first; specialists and their DMs live on the Team page, not here", () => {
     render(<RoomDirectory {...props} />);
-    expect(rowsOf("People")).toEqual(["Lightbulb", "Alice"]);
+    expect(rowsOf("Chats")).toEqual(["Lightbulb", "Alice"]);
     expect(screen.queryByRole("region", { name: "Specialists" })).toBeNull();
     expect(screen.queryByRole("button", { name: /Specialists/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /^(Finance|Engineering)/ })).toBeNull();
@@ -71,11 +86,11 @@ describe("sidebar with the super-agent on", () => {
 
   it("a specialist DM stays findable under Team while it has unread messages or is open, and hides once read", () => {
     const { rerender } = render(<RoomDirectory {...props} rooms={[{ ...base, unreadCount: 2 }]} />);
-    expect(rowsOf("People")).toContain("Finance");
+    expect(rowsOf("Chats")).toContain("Finance");
     rerender(<RoomDirectory {...props} rooms={[base]} currentRoomId="dm-finance" />);
-    expect(rowsOf("People")).toContain("Finance");
+    expect(rowsOf("Chats")).toContain("Finance");
     rerender(<RoomDirectory {...props} rooms={[base]} currentRoomId={undefined} />);
-    expect(rowsOf("People")).not.toContain("Finance");
+    expect(rowsOf("Chats")).not.toContain("Finance");
   });
 
   it("More carries what it hides: a shared channel's unreads are counted on its heading and open it", () => {
@@ -93,7 +108,7 @@ describe("sidebar with the super-agent on", () => {
   it("an unknown front agent (roster not resolved, or no ceo role) keeps today's roster", () => {
     render(<RoomDirectory {...props} ceoAgentId={undefined} />);
     // Today's roster: every agent, alphabetical (nothing to pin without a known CEO).
-    expect(rowsOf("People")).toEqual(["Alice", "Engineering", "Finance", "Lightbulb"]);
+    expect(rowsOf("Chats")).toEqual(["Alice", "Engineering", "Finance", "Lightbulb"]);
     expect(screen.queryByRole("region", { name: "Specialists" })).toBeNull();
   });
 

@@ -4,7 +4,7 @@ import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors, type Announcements, type DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { ChevronDown, ChevronRight, GripVertical, History, MoreHorizontal, Pencil, Plus, SlidersHorizontal, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronRight, GripVertical, History, MoreHorizontal, Pencil, Plus, SlidersHorizontal, Trash2, X } from "lucide-react";
 import { listenModeOptions, roomDisplayName, soleChannelOwner, type ListenMode, type SessionMarks, type SessionRow, type MemberPrefsRequest, type PatchRoomRequest, type ProjectColor, type ProjectIcon, type RoomKind, type RoomSection } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -100,6 +100,9 @@ const SECTION_NAME_MAX_CHARS = 40;
 const MAX_SECTIONS = 20;
 // Groups shown below Sessions; everything else sits above it.
 const TAIL_GROUPS = new Set(["external", "archived"]);
+
+/** The new chat dialog's words for an agent's listen mode (W18): what it does, not a stored mode's name. */
+const REPLIES: Record<ListenMode, string> = { active: "To everything", mentions: "When mentioned", observe: "Never" };
 
 export function RoomDirectory(props: RoomDirectoryProps) {
   // Keyed on the owner scope alone: every dependent read (active=, the
@@ -692,19 +695,30 @@ function DirectoryContent({
         <DialogDescription>Choose the people and agents you want to talk with.</DialogDescription>
       </div>
       <div className="room-creation-body">
+      {superAgent ? <div className="room-kind-seg" role="group" aria-label="Type">
+        {/* W18: two choices as one segmented control, not a dropdown. A channel is New channel's. */}
+        {(["dm", "group-dm"] as const).map((value) => <button key={value} type="button" aria-pressed={kind === value} disabled={creationBusy}
+          onClick={() => { if (kind !== value) chooseKind(value); }}>{value === "dm" ? "Direct message" : "Group chat"}</button>)}
+      </div> : <>
       <label htmlFor={`${id}-kind`}>Type</label>
       <select id={`${id}-kind`} className="room-input" value={kind} disabled={creationBusy}
         onChange={(event) => chooseKind(event.target.value as RoomKind)}>
-        {!superAgent && <option value="channel">Channel</option>}
+        <option value="channel">Channel</option>
         <option value="dm">Direct message</option>
         <option value="group-dm">Group chat</option>
-      </select>
+      </select></>}
       {kind !== "dm" && <><label htmlFor={`${id}-name`}>{kind === "channel" ? "Channel name" : "Group chat name (optional)"}</label>
         <input id={`${id}-name`} className="room-input" value={name} maxLength={80} disabled={creationBusy} onChange={(event) => setName(event.target.value)} /></>}
       <p className="text-ui text-muted-foreground">Only selected workspace members can read this chat.</p>
       <div className="room-picker">
         <p className="text-ui font-semibold">People and agents · {selected.size} selected</p>
         <label htmlFor={`${id}-search`} className="sr-only">Find people and agents</label>
+        {/* Who is picked stays in sight while the filter narrows the list (W18). */}
+        {selected.size > 0 && <ul className="room-picked" aria-label="Selected">{[...selected.keys()].map((key) => {
+          const picked = participants.find((p) => `${p.kind}:${p.id}` === key);
+          return picked && <li key={key}><span className="truncate">{picked.displayName}</span>
+            <button type="button" aria-label={`Remove ${picked.displayName}`} disabled={creationBusy} onClick={() => toggleParticipant(picked, false)}><X size={12} aria-hidden="true" /></button></li>;
+        })}</ul>}
         <input id={`${id}-search`} className="room-input" type="search" placeholder="Find a person or agent…" value={query} onChange={(event) => setQuery(event.target.value)} />
         <div className="room-picker-list">{visibleParticipants.map((participant) => {
           const key = `${participant.kind}:${participant.id}`;
@@ -714,10 +728,11 @@ function DirectoryContent({
             <ParticipantAvatar participant={participant} size="sm" showPresence={false} />
             <span className="min-w-0 flex-1"><span className="block truncate" title={participant.displayName}>{participant.displayName}</span>
               <span className="text-ui text-muted-foreground">{participant.kind === "agent" ? participant.mentionHandle ? `@${participant.mentionHandle}` : "Agent" : "Person"}</span></span>
-            {selection?.kind === "agent" && <label className="sr-only" htmlFor={`${id}-${participant.id}-listen`}>Response for {participant.displayName}</label>}
+            {selection?.kind === "agent" && <label className={superAgent ? "room-listen-field" : "sr-only"} htmlFor={`${id}-${participant.id}-listen`}>
+              {superAgent ? `${participant.displayName} replies` : `Response for ${participant.displayName}`}</label>}
             {selection?.kind === "agent" && <select id={`${id}-${participant.id}-listen`} className="room-listen-mode" value={selection.listenMode ?? "mentions"} disabled={creationBusy}
               onChange={(event) => setListenMode(participant, event.target.value as ListenMode)}>
-              {listenModeOptions().map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+              {listenModeOptions().map((option) => <option key={option.value} value={option.value}>{superAgent ? REPLIES[option.value] : option.label}</option>)}
             </select>}</>;
           return <div className="room-choice" key={key}>{content}</div>;
         })}</div>

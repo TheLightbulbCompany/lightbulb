@@ -1308,6 +1308,7 @@ def test_workers_deliver_only_what_was_asked():
     assert "Open your answer with one sentence saying what you made" in text
     # Walk 17 (W17-3): "[**BOOK YOUR SPOT**]([BOOKING LINK])" reached chat, the viewer and Copy as raw markdown.
     assert "Never write a placeholder link" in text and '"Book your spot: (link to add)"' in text
+    assert 'no "Preview text:", "Preheader:" or other meta lines' in text  # W18: an email is subject + body
     assert "success number" not in STARTER_CAPABILITIES["growth"]
     assert "never invents targets or numbers" in STARTER_CAPABILITIES["growth"]
 
@@ -1354,9 +1355,8 @@ async def test_router_prompt_carries_the_askers_local_time(world, monkeypatch):
 
 
 async def test_a_turn_queued_before_a_pause_starts_nothing(world, monkeypatch):
-    """UX slice 6: router_turn re-checks pause. A chat trigger gets the paused line in its own thread; a scripted
-    start (a schedule fire queued before the pause) starts no task."""
-    from core.services import messaging
+    """UX slice 6: router_turn re-checks pause. A chat trigger and a scripted start (a schedule fire queued before
+    the pause) start nothing; nothing is posted in the room (W18-8: the paused bar tells the sender)."""
 
     async def paused_room(room_id):
         return {"roomId": room_id, "kind": "channel", "pausedAt": "2026-11-06T10:00:00Z"}
@@ -1368,9 +1368,7 @@ async def test_a_turn_queued_before_a_pause_starts_nothing(world, monkeypatch):
     out = await _run([t1, t2])
     assert world["runs"] == [] and world["starts"] == [] and out.started_task_ids == []
     assert await repo.get_task(WS, ts.router_task_id(t2, 0, 0)) is None
-    ((post,),) = [[p for p in world["posts"]]]
-    assert post["text"] == messaging.PAUSED_ROOM_TEXT and post["thread_root"] == root
-    assert post["event_id"] == f"paused:{ROOM}:{root}:2026-11-06T10:00:00Z"
+    assert world["posts"] == []
 
 
 async def test_project_instructions_skip_the_feed_and_are_fenced(monkeypatch):
@@ -1440,7 +1438,8 @@ async def test_a_note_addressed_to_lightbulb_gets_one_line(world, no_memory_writ
     world["decisions"] = [_note(t1)]
     await _run([t1])
     await _run([t1])  # a retried turn
-    assert [p["text"] for p in world["posts"]] == [router_prompt.NOTED]  # the fact isn't in the message
+    # the fact isn't in the message, so the person's own words are said back (W18-5)
+    assert [p["text"] for p in world["posts"]] == ["Noted: pay acme and book the flights."]
     assert world["posts"][0]["remember"] is False and reactions == []
     mid = (await repo.get_trigger(WS, t1))["ref"]["messageId"]
     # W15-5: listed in the project's Memory (the repo keeps one row per message)
@@ -1469,7 +1468,7 @@ def test_a_noted_line_carries_only_what_the_message_said():
     assert router_prompt.noted("The oven is closed on Mondays.", "fyi the oven is closed on Mondays") == (
         "Noted: the oven is closed on Mondays."
     )
-    # The review's bypasses (#4933): each falls back to the plain line.
+    # The review's bypasses (#4933): each falls back to the person's own words, never the fact.
     for fact in (
         "Priya caps each class at 12 kids.",  # a leading name
         "We cap each class at 12 kids; mail sam@acme.test.",  # a lowercase email
@@ -1482,7 +1481,24 @@ def test_a_noted_line_carries_only_what_the_message_said():
         "",
     ):
         heard = said + " if we need to"
-        assert router_prompt.noted(fact, heard) == router_prompt.NOTED, fact
+        assert router_prompt.noted(fact, heard) == "Noted: we cap each class at 12 kids, $35 each if we need to.", fact
+    assert router_prompt.noted("Anything.", "x" * 200) == router_prompt.NOTED  # too long to say back
+    assert router_prompt.noted("Anything.", "Lightbulb, FYI") == router_prompt.NOTED  # nothing left to say back
+
+
+def test_a_channel_note_says_the_persons_words_when_the_fact_borrows_one():
+    """W18-5: "shop" came from the channel's name, so the fact failed the echo guard and channels got the plain line
+    (2/2) while DMs echoed. The person's own words, without the address, are said back instead."""
+    assert router_prompt.noted("The shop closes on Mondays.", "Lightbulb, FYI we close on Mondays.") == (
+        "Noted: we close on Mondays."
+    )
+    assert (
+        router_prompt.noted(
+            "The shop closes on Mondays, and the tasting agenda is three oolongs.",
+            "@lightbulb for the record: we close on Mondays, and the tasting agenda is three oolongs.",
+        )
+        == "Noted: we close on Mondays, and the tasting agenda is three oolongs."
+    )
 
 
 @pytest.mark.asyncio

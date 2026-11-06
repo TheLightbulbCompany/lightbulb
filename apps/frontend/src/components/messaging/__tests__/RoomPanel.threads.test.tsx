@@ -471,6 +471,53 @@ describe("RoomPanel Threads view (super-agent)", () => {
     expect(onPatchRoom).toHaveBeenCalledWith({ paused: false });
   });
 
+  it("W18-7: no reading… in a paused room, or on a message that opens with a person's @handle (the server's rule)", async () => {
+    const front = { ...lightbulb, mentionHandle: "lightbulb", listenMode: "active" as const };
+    const priya: RoomParticipant = { ...sam, id: "u-priya", displayName: "Priya", mentionHandle: "priya", role: "member" };
+    const people = [sam, priya, front];
+    const now = new Date().toISOString();
+    const ask = { ...message, text: "Hi Lightbulb, can you help?", createdAt: now };
+    const toPriya = { ...message, text: "@priya thanks for running the table!", mentions: [{ kind: "human" as const, id: "u-priya" }], createdAt: now };
+    const shows = () => screen.queryByText("Lightbulb is reading…") !== null;
+    const { rerender } = render(<Fresh><RoomPanel {...props} participants={people} messages={[ask]} /></Fresh>);
+    expect(await screen.findByText("Lightbulb is reading…")).toBeInTheDocument();
+    rerender(<Fresh><RoomPanel {...props} room={{ ...props.room!, pausedAt: "2026-11-06T10:00:00Z" }} participants={people} messages={[ask]} /></Fresh>);
+    expect(shows()).toBe(false);
+    rerender(<Fresh><RoomPanel {...props} participants={people} messages={[toPriya]} /></Fresh>);
+    expect(shows()).toBe(false);
+    // A handle in passing still goes to Jev and the Router: it reads.
+    rerender(<Fresh><RoomPanel {...props} participants={people} messages={[{ ...toPriya, text: "price? cc @priya" }]} /></Fresh>);
+    expect(shows()).toBe(true);
+    // An opening handle that is nobody here, or Lightbulb named too: it reads.
+    rerender(<Fresh><RoomPanel {...props} participants={people} messages={[{ ...toPriya, text: "@ghost can anyone help? cc @priya" }]} /></Fresh>);
+    expect(shows()).toBe(true);
+    rerender(<Fresh><RoomPanel {...props} participants={people} messages={[{ ...toPriya, mentions: [...toPriya.mentions, { kind: "agent" as const, id: front.id }] }]} /></Fresh>);
+    expect(shows()).toBe(true);
+  });
+
+  it("W18-8: the paused note is the sender's (main chat or thread), and Resume says whose ask it answers", async () => {
+    const front = { ...lightbulb, mentionHandle: "lightbulb", listenMode: "active" as const };
+    const onPatchRoom = vi.fn().mockResolvedValue(undefined);
+    const paused = { ...props.room!, pausedAt: "2026-11-06T10:00:00Z" };
+    const ask = { ...message, text: "Lightbulb, what should the tasting cost?", createdAt: new Date().toISOString() };
+    const view = (messages: RoomMessage[]) => <Fresh><RoomPanel {...props} room={paused} participants={[sam, front]} messages={messages} onPatchRoom={onPatchRoom} canPause /></Fresh>;
+    const { rerender } = render(view([ask]));
+    expect(await screen.findByText("Lightbulb is paused here, so it hasn't answered you. Only you see this.")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Resume and answer" }));
+    expect(onPatchRoom).toHaveBeenCalledWith({ paused: false });
+    // A thread ask gets the note too.
+    rerender(view([{ ...ask, messageId: "m-t", threadRootMessageId: "root" }]));
+    expect(await screen.findByText("Lightbulb is paused here, so it hasn't answered you. Only you see this.")).toBeInTheDocument();
+    // Someone else's ask: no note for the viewer; Resume names whose ask it answers.
+    const theirs = { ...ask, author: { kind: "human" as const, id: "u-priya", displayName: "Priya" } };
+    rerender(view([theirs]));
+    expect(await screen.findByText("Lightbulb is paused here.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Resume and answer Priya" })).toBeInTheDocument();
+    // An ask from before the pause is not in its window.
+    rerender(view([{ ...ask, createdAt: "2026-11-06T09:00:00Z" }]));
+    expect(screen.getByRole("button", { name: "Resume" })).toBeInTheDocument();
+  });
+
   it("W17-10: a DM between two people says Message <name>, not Ask Lightbulb", async () => {
     const priya: RoomParticipant = { ...sam, id: "u-priya", displayName: "Priya Test", role: "member" };
     const { rerender } = render(<Fresh><RoomPanel {...props} room={{ ...props.room!, kind: "dm", name: null }} participants={[sam, priya]} /></Fresh>);

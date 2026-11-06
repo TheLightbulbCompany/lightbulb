@@ -145,10 +145,10 @@ async def _input_text(ws: str, trigger_id: str) -> str:
     trig = await tasks_repo.get_trigger(ws, trigger_id) or {}
     ref = trig.get("ref") or {}
     if ref.get("text"):
-        return str(ref["text"])[:INPUT_MAX]
+        return messaging_repo.agent_text(str(ref["text"]))[:INPUT_MAX]
     if ref.get("roomId") and ref.get("messageId"):
         msg = await messaging_repo.get_message_by_id(ref["roomId"], ref["messageId"]) or {}
-        return (msg.get("editedText") or msg.get("text") or "")[:INPUT_MAX]
+        return messaging_repo.agent_text(msg.get("editedText") or msg.get("text") or "")[:INPUT_MAX]
     return ""
 
 
@@ -721,7 +721,7 @@ async def _recent_lines(ws: str, trig: dict, batch: set[str], lane: str, user_id
         out.append(
             {
                 "who": author.get("displayName"),
-                "text": row.get("editedText") or row.get("text") or "",
+                "text": messaging_repo.agent_text(row.get("editedText") or row.get("text") or ""),
                 "lightbulb": author.get("kind") == "agent" and author.get("id") == front,
                 "cards": cards,
             }

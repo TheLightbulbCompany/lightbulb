@@ -73,6 +73,8 @@ function writeFormatOpen(viewerId: string, open: boolean): void {
 let LoadedEditor: ComponentType<ComposerEditorProps> | null = null;
 export const composerEditorReady: Promise<void> = typeof window === "undefined" ? Promise.resolve()
   : import("./ComposerEditor").then((module) => { LoadedEditor = module.ComposerEditor; });
+/** The WYSIWYG box once its chunk has landed (the edit form uses it too). */
+export const loadedComposerEditor = () => LoadedEditor;
 
 const sameMember = (left: MemberRef, right: MemberRef) => left.kind === right.kind && left.id === right.id;
 const uniqueRefs = (refs: MemberRef[]) => refs.filter((ref, index) => refs.findIndex((other) => sameMember(other, ref)) === index);

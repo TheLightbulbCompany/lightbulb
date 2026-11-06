@@ -171,7 +171,8 @@ async def ingest_message(owner_id: str, room: dict, message: dict, *, task: dict
             actor, ns = (f"{owner_id}:{person}", names["private_turns"]) if person else (owner_id, names["turns"])
         root = message.get("threadRootMessageId") or message["messageId"]
         author = message.get("author") or {}
-        text = f"{author.get('displayName') or 'Someone'}: {secret_shaped.redact(message['text'])}"[:_MAX_TEXT]
+        clean = messaging_repo.agent_text(message["text"])
+        text = f"{author.get('displayName') or 'Someone'}: {secret_shaped.redact(clean)}"[:_MAX_TEXT]
         meta = memory_tags.tags(
             threadId=f"room:{room_id}:{root}",
             roomId=room_id,

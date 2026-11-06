@@ -123,6 +123,8 @@ describe("ring states", () => {
 describe("plainPreview", () => {
   it("keeps double underscores, which are usually identifiers", () => {
     expect(plainPreview("edit __init__.py")).toBe("edit __init__.py");
+    // The composer escapes what was typed; the preview shows it as typed.
+    expect(plainPreview("\\_\\_init\\_\\_ and 3\\*4, \\*\\*not bold\\*\\*")).toBe("__init__ and 3*4, **not bold**");
   });
   it("drops markdown markers and collapses lines", () => {
     expect(plainPreview("Where the two PRs stand:\n\n**#3379, the cleanup:** every `review`\n- one")).toBe(

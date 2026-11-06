@@ -69,6 +69,7 @@ _PLAIN_RULES = (
     (re.compile(r"^\s*([-*_])(\s*\1){2,}\s*$", re.M), ""),
     (re.compile(r"^\s{0,3}(#{1,6}\s+|>\s?|[-*+]\s+|\d+[.)]\s+)", re.M), ""),
     (re.compile(r"\*\*|__|~~|`"), ""),
+    (re.compile(r"\\([!-/:-@\[-`{-~])"), r"\1"),
     (re.compile(r"\s+"), " "),
 )
 

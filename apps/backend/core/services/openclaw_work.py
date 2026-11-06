@@ -220,6 +220,7 @@ def _public_message(row: dict[str, Any]) -> dict[str, Any]:
     for key in ("attachments", "addressedAgentIds"):
         if not message[key]:
             del message[key]
+    message["text"] = messaging_repo.agent_text(message.get("text") or "")
     return message
 
 
@@ -840,7 +841,7 @@ class OpenClawWorkWorker:
             return False  # adjacent to the side effect: queued work must not outlive membership
         ambient = event_kind == "room_event"
         kind = "ambient" if ambient and run.get("eventKind") == "room_event" else "addressed"
-        text = f"{author.get('displayName') or 'A teammate'}: {message.get('text') or ''}"
+        text = f"{author.get('displayName') or 'A teammate'}: {messaging_repo.agent_text(message.get('text') or '')}"
         if kind == "ambient":
             # An ambient line into an ambient run may stand it down (routing v2 §4.1; the bridge
             # maps a [SILENT] pass, also after a steer). Anything addressed -- the run, or the

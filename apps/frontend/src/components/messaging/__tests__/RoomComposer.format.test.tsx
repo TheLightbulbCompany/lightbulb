@@ -6,6 +6,7 @@ import { composerBox, composerValue, selectInComposer, typeInComposer, typeKeys 
 import { editorOf } from "../ComposerEditor";
 import { lexical } from "../lexical";
 import type { RoomParticipant } from "../types";
+import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
 
 function Harness({ members = [] }: { members?: readonly RoomParticipant[] }) {
   const [text, setText] = useState("ship it");
@@ -102,7 +103,7 @@ it("suppresses the shortcut while the mention typeahead is open", () => {
   expect(composerValue()).toBe("ship it @fri");
 });
 
-it("review: what was typed goes out as typed — no backslashes outside code", () => {
+it("founder 6 Nov: typed characters go out escaped so they show as typed; code and URLs are untouched", () => {
   const onSubmit = vi.fn();
   function Send() {
     const [text, setText] = useState("");
@@ -110,27 +111,50 @@ it("review: what was typed goes out as typed — no backslashes outside code", (
       clientMessageId="11111111-1111-4111-8111-111111111111" sendState="idle" onSubmit={onSubmit} />;
   }
   render(<Send />);
-  // Plain text runs, as typing or pasting leaves them (no markdown read in).
-  const plain = (value: string) => act(() => {
-    editorOf(field()).update(() => {
-      const root = lexical.$getRoot();
-      root.clear();
-      const paragraph = lexical.$createParagraphNode() as unknown as { append(node: unknown): void };
-      paragraph.append(lexical.$createTextNode(value));
-      (root as unknown as { append(node: unknown): void }).append(paragraph);
-      root.selectEnd();
-    }, { discrete: true });
-  });
-  for (const value of ["3*4", "x_", "**bold**", "__init__ and **kwargs", "~approx~", "```js\nconst a = 1;\n```"]) {
-    plain(value);
-    expect(composerValue()).toBe(value);
+  const cases: [string, string][] = [
+    ["__init__", "\\_\\_init\\_\\_"], ["3*4 then 5*6", "3\\*4 then 5\\*6"], ["~x~", "\\~x\\~"], ["a_b_c", "a_b_c"],
+    ["**not bold**", "\\*\\*not bold\\*\\*"], ["# not a heading", "\\# not a heading"],
+    ["see https://x.com/a_b~c, @growth_lead", "see https://x.com/a_b~c, @growth_lead"],
+  ];
+  for (const [typed, stored] of cases) {
+    typeInComposer("");
+    typeKeys(typed);
+    expect(field().querySelector("strong, em, s, .font-semibold, .italic, .line-through, a")).toBeNull();
+    expect(composerValue()).toBe(stored);
+    // Read back (a draft, an edit): still the literal text, nothing formatted.
+    typeInComposer(stored);
+    expect(field()).toHaveTextContent(typed);
+    expect(field().querySelector("strong, em, s, .font-semibold, .italic, .line-through")).toBeNull();
+    expect(composerValue()).toBe(stored);
+    // And the sent message shows exactly what was typed.
+    const { container, unmount } = render(<MarkdownView skipHtml>{stored}</MarkdownView>);
+    expect(container).toHaveTextContent(typed);
+    expect(container.querySelector("strong, em, del, h1")).toBeNull();
+    unmount();
   }
-  // Inside a real code block nothing is escaped either.
+  // Inside a real code block nothing is escaped.
   typeInComposer("```\na*b_c\n```");
   expect(field().querySelector("code")).not.toBeNull();
   expect(composerValue()).toBe("```\na*b_c\n```");
   fireEvent.keyDown(field(), { key: "Enter" });
   expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ text: "```\na*b_c\n```" }));
+});
+
+it("founder 6 Nov: toolbar bold and italic survive a draft read back, shown formatted, not as **", () => {
+  render(<Harness />);
+  select(0, 4);
+  fireEvent.click(screen.getByRole("button", { name: "Bold" }));
+  select(5, 7);
+  fireEvent.click(screen.getByRole("button", { name: "Italic" }));
+  const saved = composerValue();
+  expect(saved).toBe("**ship** *it*");
+  cleanup();
+  render(<RoomComposer text={saved} onTextChange={vi.fn()} members={[]}
+    clientMessageId="11111111-1111-4111-8111-111111111111" sendState="idle" onSubmit={vi.fn()} />);
+  expect(field().querySelector(".font-semibold")).toHaveTextContent("ship");
+  expect(field().querySelector(".italic")).toHaveTextContent("it");
+  expect(field()).not.toHaveTextContent("*");
+  expect(composerValue()).toBe(saved);
 });
 
 it("review: an empty bullet, quote or code block is nothing to send", () => {
@@ -155,33 +179,16 @@ it("review: an empty bullet, quote or code block is nothing to send", () => {
   }
 });
 
-it("W18 prod block: typed text is stored exactly as typed — no emphasis from _ * ~, nothing inside code", () => {
-  function Typed({ onText }: { onText: (text: string) => void }) {
-    const [text, setText] = useState("");
-    return <RoomComposer text={text} onTextChange={(next) => { setText(next); onText(next); }} members={[]}
-      clientMessageId="11111111-1111-4111-8111-111111111111" sendState="idle" onSubmit={vi.fn()} />;
-  }
-  let stored = "";
-  const { unmount } = render(<Typed onText={(text) => { stored = text; }} />);
+it("W18 prod block: typing _ * ~ makes no formatting; inside code nothing is transformed or escaped", () => {
+  render(<Harness />);
   for (const value of ["__init__", "run __main__ now", "~tilde~", "3*4 then 5*6", "**not bold** _nor this_"]) {
     typeInComposer("");
     typeKeys(value);
     expect(field().querySelector("strong, em, s, .font-semibold, .italic, .line-through")).toBeNull();
-    expect(composerValue()).toBe(value);
-    expect(stored).toBe(value);
+    expect(field()).toHaveTextContent(value);
   }
-  // Inside a code block nothing is transformed.
   typeInComposer("```\n```");
   selectInComposer(0, 0);
   typeKeys("def __init__(self):");
   expect(composerValue()).toBe("```\ndef __init__(self):\n```");
-  unmount();
-
-  // A stored draft with all of them reads back and sends unchanged.
-  const draft = "__init__ and run __main__, ~tilde~, 3*4 then 5*6\n```\ndef __init__(self):\n    return **kwargs\n```";
-  const onSubmit = vi.fn();
-  render(<RoomComposer text={draft} onTextChange={vi.fn()} members={[]}
-    clientMessageId="11111111-1111-4111-8111-111111111111" sendState="idle" onSubmit={onSubmit} />);
-  expect(field().querySelector("strong, em, s, .font-semibold, .italic, .line-through")).toBeNull();
-  expect(composerValue()).toBe(draft);
 });

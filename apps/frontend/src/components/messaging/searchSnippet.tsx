@@ -16,7 +16,8 @@ export function snippetText(snippet: string): string {
     .replace(/(^|\n)[ \t]*(#{1,6}|>|[-*+]|\d+[.)])[ \t]+/g, "$1")
     .replace(/\*\*|__|~~/g, "")
     .replace(/(^|[\s(\u0001])[*_](?=[^*_\s])/g, "$1")
-    .replace(/([^*_\s])[*_](?=$|[\s.,;:!?)\u0002])/g, "$1")
+    .replace(/([^*_\s\\])[*_](?=$|[\s.,;:!?)\u0002])/g, "$1")
+    .replace(/\\([!-/:-@[-`{-~])/g, "$1") // the composer's escapes (3\*4): what was typed
     .replace(/\s+/g, " ")
     .trim();
 }

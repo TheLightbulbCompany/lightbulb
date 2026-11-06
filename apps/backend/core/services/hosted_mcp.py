@@ -376,7 +376,11 @@ async def messages_for(auth: AuthContext, room_id: str, after_seq: int | None = 
         page = await messaging.list_messages(auth, room_id, 0, count, room.last_message_seq + 1)
     else:
         page = await messaging.list_messages(auth, room_id, max(0, after_seq), count)
-    return page.model_dump(mode="json", by_alias=True)
+    out = page.model_dump(mode="json", by_alias=True)
+    for message in out.get("messages") or []:
+        if isinstance(message.get("text"), str):
+            message["text"] = messaging_repo.agent_text(message["text"])
+    return out
 
 
 async def receipt_for(auth: AuthContext, room_id: str, request_id: uuid.UUID) -> dict:

@@ -17,6 +17,10 @@ describe("search snippets", () => {
     expect(container.querySelector("mark")?.textContent).toBe("hi");
   });
 
+  it("shows the composer's escaped characters as typed", () => {
+    expect(snippetText("\\_\\_init\\_\\_ and 3\\*4 then 5\\*6 \\~x\\~")).toBe("__init__ and 3*4 then 5*6 ~x~");
+  });
+
   it("reads as plain text: markdown syntax dropped, the match still marked (W13)", () => {
     expect(snippetText("[Invite someone](https://dev.thelightbulb.company/chat?panel=invite) to **\u0001chai\u0002** now"))
       .toBe("Invite someone to \u0001chai\u0002 now");

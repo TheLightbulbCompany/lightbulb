@@ -181,8 +181,13 @@ function AuthenticatedWorkspace({ workspaceName }: { workspaceName: string }): R
     // close it there rather than leave the main column inert with no way out.
     const wide = window.matchMedia?.(`(min-width: ${drawerUntil(superAgent)}px)`);
     wide?.addEventListener("change", closeNav);
+    // Narrowing to a phone turns a sidebar-only drawer into the phone drawer (rail and sidebar): the rail is back in it.
+    const tablet = sidebarOnly ? window.matchMedia?.("(min-width: 600px)") : undefined;
+    const toPhone = () => { if (!tablet?.matches) setSidebarOnly(false); };
+    tablet?.addEventListener("change", toPhone);
     return () => {
       wide?.removeEventListener("change", closeNav);
+      tablet?.removeEventListener("change", toPhone);
       rail?.removeAttribute("inert");
       menuButton?.focus();
     };

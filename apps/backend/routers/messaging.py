@@ -242,7 +242,7 @@ async def agent_read_messages(
     if read.workspace_only and not hosted_mcp.workspace_wide(
         await service.get_room(read.auth, room_id), await hosted_mcp.workspace_people(read.auth.org_id)
     ):
-        raise ApiProblem("ROOM_FORBIDDEN", "In a meeting only channels the whole workspace is in can be read.")
+        raise ApiProblem("ROOM_FORBIDDEN", "In a meeting only projects the whole workspace is in can be read.")
     return await hosted_mcp.messages_for(read.auth, room_id, after_seq, limit)
 
 

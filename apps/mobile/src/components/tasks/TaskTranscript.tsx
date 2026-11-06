@@ -40,7 +40,7 @@ export function TaskTranscript({ taskRoomId, focused, onSteered }: {
   const draftKey = useDraftKey(taskRoomId, null);
 
   return (
-    <View style={styles.host} accessibilityLabel="Request conversation">
+    <View style={styles.host} accessibilityLabel="Task progress">
       <FlatList
         testID="task-transcript"
         inverted
@@ -51,7 +51,7 @@ export function TaskTranscript({ taskRoomId, focused, onSteered }: {
         keyboardShouldPersistTaps="handled"
         ListHeaderComponent={<LocalMessageRows rows={rows} onRetry={(id) => void retry(id)} attachmentUrl={rooms.attachmentUrl} members={members} currentUserId={userId ?? ""} />}
         ListEmptyComponent={rooms.historyLoading ? null : (
-          <Text style={[styles.empty, { color: palette.fgMute }]}>{"Lightbulb posts this request's progress here. Anything you write steers it."}</Text>
+          <Text style={[styles.empty, { color: palette.fgMute }]}>{"Lightbulb posts this task's progress here. Anything you write steers it."}</Text>
         )}
         renderItem={({ item }) => {
           if (item.kind === "date") return <View style={styles.date}><MetaText palette={palette}>{item.label}</MetaText></View>;
@@ -65,7 +65,7 @@ export function TaskTranscript({ taskRoomId, focused, onSteered }: {
       />
       <RoomComposer
         members={members}
-        placeholder="Steer this request…"
+        placeholder="Steer this task…"
         disabled={!canSend}
         reconnecting={!rooms.liveConnected}
         onSend={async (draft) => { await send(draft); onSteered?.(); }}

@@ -16,7 +16,7 @@ from core.services.paperclip_agent_lifecycle import AgentLifecycleConflict
 @pytest.mark.asyncio
 async def test_final_root_conflict_is_stable_409_before_runtime_lookup(monkeypatch):
     delete_everywhere = AsyncMock(
-        side_effect=AgentLifecycleConflict("The final root CEO cannot be deleted or demoted.")
+        side_effect=AgentLifecycleConflict("Lightbulb's coordinator cannot be deleted or demoted.")
     )
     monkeypatch.setattr(rpc, "delete_agent_everywhere", delete_everywhere)
     call_mock = AsyncMock()
@@ -34,7 +34,7 @@ async def test_final_root_conflict_is_stable_409_before_runtime_lookup(monkeypat
     err = exc_info.value
     assert err.error.code == "AGENT_LIFECYCLE_CONFLICT"
     assert err.status_code == 409
-    assert "final root CEO" in err.error.message
+    assert "coordinator cannot be deleted" in err.error.message
     delete_everywhere.assert_awaited_once_with(owner_id="o1", agent_id="friday-uuid")
     call_mock.assert_not_awaited()
 

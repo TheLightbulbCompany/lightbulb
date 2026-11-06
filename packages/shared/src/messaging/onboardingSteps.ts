@@ -179,9 +179,9 @@ export function buildSetupSteps({
     ...(typeof humanSpoke === "boolean"
       ? [{
           id: "tell-ceo" as const,
-          label: "Tell your CEO about the business",
+          label: "Tell Lightbulb about the business",
           detail: "A website or a sentence",
-          doneDetail: "Your CEO has it",
+          doneDetail: "Lightbulb has it",
           done: humanSpoke,
           repeatable: false,
           adminOnly: false,
@@ -204,7 +204,7 @@ export function buildSetupSteps({
       ? [{
           id: "approval" as const,
           label: "Answer your first approval",
-          detail: "Your CEO will ask for one decision",
+          detail: "When a task needs your decision",
           doneDetail: "Answered",
           done: approvalAnswered,
           repeatable: true,
@@ -234,7 +234,7 @@ export function buildSetupSteps({
           id: "context" as const,
           label: "Share your context",
           detail: "Paste what you've told Claude or ChatGPT",
-          doneDetail: "Your CEO has it",
+          doneDetail: "Lightbulb has it",
           done: contextImported,
           repeatable: true,
           adminOnly: true,

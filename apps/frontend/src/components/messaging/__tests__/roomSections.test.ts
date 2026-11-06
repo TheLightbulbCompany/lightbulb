@@ -32,7 +32,7 @@ describe("groupRooms", () => {
       [{ id: "s-1", name: "Ship" }],
       { sort: "name", nameOf },
     );
-    expect(groups.map((group) => group.label)).toEqual(["Starred", "Ship", "Team", "Channels", "External connections", "Archived"]);
+    expect(groups.map((group) => group.label)).toEqual(["Starred", "Ship", "People", "Projects", "External connections", "Archived"]);
     expect(groups[0].rooms.map((value) => value.roomId)).toEqual(["alpha"]);
     expect(groups[1].rooms.map((value) => value.roomId)).toEqual(["shipping"]);
     expect(groups[2].rooms.map((value) => value.roomId)).toEqual(["dm-1"]);
@@ -45,7 +45,7 @@ describe("groupRooms", () => {
       [],
       { sort: "name", nameOf },
     );
-    expect(groups.map((group) => group.label)).toEqual(["Channels", "External connections"]);
+    expect(groups.map((group) => group.label)).toEqual(["Projects", "External connections"]);
     expect(groups[0].rooms.map((value) => value.roomId)).toEqual(["internal"]);
     expect(groups[1].rooms.map((value) => value.roomId)).toEqual(["shared"]);
   });
@@ -54,12 +54,12 @@ describe("groupRooms", () => {
     expect(groupRooms([room("shared", { shared: true })], [], { sort: "name", nameOf }).map((group) => group.label))
       .toEqual(["External connections"]);
     expect(groupRooms([room("internal")], [], { sort: "name", nameOf }).map((group) => group.label))
-      .toEqual(["Channels"]);
+      .toEqual(["Projects"]);
   });
 
   it("keeps group DMs inside Team", () => {
     const groups = groupRooms([room("g", { kind: "group-dm" }), room("d", { kind: "dm" })], [], { sort: "name", nameOf });
-    expect(groups.map((group) => group.label)).toEqual(["Team"]);
+    expect(groups.map((group) => group.label)).toEqual(["People"]);
     expect(groups[0].rooms.map((value) => value.roomId)).toEqual(["d", "g"]);
   });
 
@@ -75,7 +75,7 @@ describe("groupRooms", () => {
 
   it("drops empty groups and a section that no longer exists falls back to its kind", () => {
     const groups = groupRooms([room("orphan", { sectionId: "gone" })], [{ id: "s-1", name: "Ship" }], { sort: "name", nameOf });
-    expect(groups.map((group) => group.label)).toEqual(["Channels"]);
+    expect(groups.map((group) => group.label)).toEqual(["Projects"]);
   });
 
   it("sorts alphabetically by default and unread-first on request", () => {
@@ -98,7 +98,7 @@ describe("archived rooms", () => {
       [{ id: "s-1", name: "Ship" }],
       { sort: "name", nameOf },
     );
-    expect(groups.map((group) => group.label)).toEqual(["Channels", "Archived"]);
+    expect(groups.map((group) => group.label)).toEqual(["Projects", "Archived"]);
     expect(groups[1].rooms.map((value) => value.roomId)).toEqual(["fav", "kept", "old"]);
   });
 
@@ -109,6 +109,6 @@ describe("archived rooms", () => {
       { sort: "name", nameOf },
     );
     expect(groups.map((group) => [group.label, group.rooms.map((value) => value.roomId)]))
-      .toEqual([["Team", ["dm-1"]], ["Archived", ["trio"]]]);
+      .toEqual([["People", ["dm-1"]], ["Archived", ["trio"]]]);
   });
 });

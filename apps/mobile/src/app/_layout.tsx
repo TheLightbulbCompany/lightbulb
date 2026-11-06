@@ -1,5 +1,4 @@
 import { ClerkProvider } from "@clerk/expo";
-import { Inter_400Regular, Inter_600SemiBold } from "@expo-google-fonts/inter";
 import { useFonts } from "expo-font";
 import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
@@ -41,7 +40,7 @@ function useNavigationTheme() {
 const publishableKey = process.env.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY;
 
 // Hold the splash screen until fonts are ready so the first frame renders in
-// Satoshi / Inter rather than flashing system fonts.
+// Satoshi rather than flashing system fonts.
 SplashScreen.preventAutoHideAsync().catch(() => {
   // Reloads / fast refresh can reject this; the splash is already hidden.
 });
@@ -54,8 +53,6 @@ export default function RootLayout() {
     "Satoshi-Bold": require("../../assets/fonts/satoshi/Satoshi-Bold.ttf"),
     "Satoshi-Italic": require("../../assets/fonts/satoshi/Satoshi-Italic.ttf"),
     "Satoshi-BoldItalic": require("../../assets/fonts/satoshi/Satoshi-BoldItalic.ttf"),
-    Inter_400Regular,
-    Inter_600SemiBold,
   });
   // On font-load failure we still proceed — unknown fontFamily names fall
   // back to system fonts. Never leave the user on a blank screen.

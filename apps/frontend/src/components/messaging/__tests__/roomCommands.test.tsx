@@ -44,7 +44,7 @@ it("ranks a matching room first, runs it via openMessage + activateMessagesPanel
     initialProps: { query: "road" },
   });
 
-  expect(result.current[0]).toMatchObject({ label: "roadmap", sublabel: "Channel" });
+  expect(result.current[0]).toMatchObject({ label: "roadmap", sublabel: "Project" });
   result.current[0].run();
   expect(openMessage).toHaveBeenCalledWith("room-roadmap", null);
   expect(activateMessagesPanel).toHaveBeenCalled();

@@ -85,7 +85,7 @@ describe("TaskCard", () => {
     const onOpen = vi.fn();
     client.questions.mockRejectedValue(new Error("503"));
     render(<Fresh><TaskCard task={byId("step05", "t-signup")} taskId="t-signup" viewerId={SAM} onOpen={onOpen} /></Fresh>);
-    expect(await screen.findByText("The details didn't load. Open the request to decide.")).toBeInTheDocument();
+    expect(await screen.findByText("The details didn't load. Open the task to decide.")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Allow once" }));
     expect(onOpen).toHaveBeenCalledWith("t-signup");
     expect(client.answer).not.toHaveBeenCalled();
@@ -104,7 +104,7 @@ describe("TaskCard", () => {
 
   it("missing task renders unavailable row", () => {
     render(<Fresh><TaskCard task={undefined} taskId="gone" viewerId={SAM} /><TaskCard task={byId("step02", "t-email")} taskId="t-email" viewerId={SAM} /></Fresh>);
-    expect(screen.getByText("This request isn't available")).toBeInTheDocument();
+    expect(screen.getByText("This task isn't available")).toBeInTheDocument();
     expect(screen.getByText("Launch email draft")).toBeInTheDocument();
   });
 

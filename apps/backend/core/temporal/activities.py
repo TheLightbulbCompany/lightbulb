@@ -272,7 +272,7 @@ async def _request(ws: str, task: dict, att: dict, tree: dict) -> runtime_runs.R
     # The request's room id: a Worker hands an app over from it (`lightbulb app start --room`, skill references/apps.md).
     parts = [
         f"# Task: {task['title']}",
-        f"Request room: {ts.task_room_id(task['taskId'])}",
+        f"Task room: {ts.task_room_id(task['taskId'])}",
         f"Now: {await _local_now(ws, task.get('ownerUserId'))} (the requester's own time: use it, never UTC, "
         "for today and any date or time)",
         task.get("description") or "",

@@ -7,13 +7,13 @@ const GROUPS: { name: string; rows: [string, string][] }[] = [
   {
     name: "Move around",
     rows: [
-      ["⌘K", "Jump to a conversation, person or agent"],
+      ["⌘K", "Jump to a project, person or agent"],
       ["⌘[", "Back"],
       ["⌘]", "Forward"],
-      ["⌥↑", "Previous conversation"],
-      ["⌥↓", "Next conversation"],
-      ["⌥⇧↑", "Previous unread conversation"],
-      ["⌥⇧↓", "Next unread conversation"],
+      ["⌥↑", "Previous chat"],
+      ["⌥↓", "Next chat"],
+      ["⌥⇧↑", "Previous unread chat"],
+      ["⌥⇧↓", "Next unread chat"],
       ["Esc", "Close the typeahead, then the thread or overlay"],
       ["⌘/", "Show this sheet"],
     ],

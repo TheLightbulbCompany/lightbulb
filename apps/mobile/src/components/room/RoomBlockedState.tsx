@@ -11,9 +11,9 @@ export type RoomBlockedStateKind = "loading" | "access-removed" | "unavailable";
  * paraphrase.
  */
 const MESSAGE: Record<RoomBlockedStateKind, string> = {
-  loading: "Loading conversation…",
-  "access-removed": "Access removed. You can no longer view this conversation.",
-  unavailable: "This conversation is unavailable.",
+  loading: "Loading chat…",
+  "access-removed": "Access removed. You can no longer view this chat.",
+  unavailable: "This chat is unavailable.",
 };
 
 /**

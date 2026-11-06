@@ -30,7 +30,7 @@ import { ListRow } from "../ui/ListRow";
 export type ChatRowAction = "markRead" | "markUnread" | "mute" | "star" | "copyLink" | "archive" | "rename";
 
 /**
- * The channel leading tile: the `#` glyph column. Fixed-size tile: the `#`
+ * A project's leading tile: a folder glyph (never a `#`). Fixed-size tile: the glyph
  * never scales with the reader's text size, or it spills out of it.
  */
 export function ChannelTile({ size = 52, palette }: { size?: number; palette: ChatPalette }) {
@@ -41,9 +41,7 @@ export function ChannelTile({ size = 52, palette }: { size?: number; palette: Ch
         { width: size, height: size, borderRadius: size > 32 ? radii.lg : radii.md, backgroundColor: palette.selected },
       ]}
     >
-      <Text style={[styles.channelHash, { color: palette.fgSoft }]} maxFontSizeMultiplier={1}>
-        #
-      </Text>
+      <SymbolView accessibilityElementsHidden name="folder" size={Math.round(size * 0.42)} tintColor={palette.fgSoft} />
     </View>
   );
 }
@@ -161,8 +159,8 @@ export function RoomChatRow({
   const unread = hasUnread && !room.muted;
   const readAction: ChatRowAction = hasUnread ? "markRead" : "markUnread";
   const readLabel = hasUnread ? "Mark read" : "Mark unread";
-  const muteLabel = room.muted ? "Unmute conversation" : "Mute conversation";
-  const starLabel = room.starred ? "Unstar conversation" : "Star conversation";
+  const muteLabel = room.muted ? "Unmute" : "Mute";
+  const starLabel = room.starred ? "Unstar" : "Star";
   // The row's Pressable is one VoiceOver focus stop, so a DM counterpart's
   // sharing badge on the Avatar (see RoomLeading) is never independently
   // reached — it has to ride the row's own label, same as the former RoomRow.
@@ -393,7 +391,6 @@ export function SessionChatRow({
 
 const styles = StyleSheet.create({
   channelTile: { alignItems: "center", justifyContent: "center" },
-  channelHash: { fontFamily: fonts.sansSemiBold, fontSize: 22 },
   groupLead: { width: 52, height: 52 },
   groupSecond: { position: "absolute", left: 16, top: 16 },
   accessory: { fontFamily: fonts.sans, fontSize: 13 },

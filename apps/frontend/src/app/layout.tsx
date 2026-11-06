@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { Geist_Mono, Inter } from "next/font/google";
+import { Geist_Mono } from "next/font/google";
 import localFont from "next/font/local";
 import { ClerkProvider } from "@clerk/nextjs";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
@@ -25,12 +25,6 @@ import "./globals.css";
 const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
   subsets: ["latin"],
-});
-
-const inter = Inter({
-  variable: "--font-inter",
-  subsets: ["latin"],
-  display: "swap",
 });
 
 const satoshi = localFont({
@@ -100,7 +94,7 @@ export default function RootLayout({
       <html
         lang="en"
         suppressHydrationWarning
-        className={`${satoshi.variable} ${inter.variable} ${geistMono.variable}`}
+        className={`${satoshi.variable} ${geistMono.variable}`}
       >
         <head>
           <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />

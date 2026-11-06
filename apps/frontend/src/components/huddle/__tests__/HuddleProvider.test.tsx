@@ -31,7 +31,7 @@ import { LiveStrip } from "../LiveStrip";
 function Probe() {
   const h = useHuddle();
   return <>
-    <button onClick={() => void h.join("r1", "#general")}>join {h.roomId ?? "none"}</button>
+    <button onClick={() => void h.join("r1", "general")}>join {h.roomId ?? "none"}</button>
     <button onClick={() => h.talkStart("a1")}>talk a1</button>
     <button onClick={() => h.talkStart()}>talk anyone</button>
     <span data-testid="notice">{h.agentNotice ? `${h.agentNotice.kind}:${h.agentNotice.agentId}` : ""}</span>
@@ -42,7 +42,7 @@ const mount = (here = "r1") => render(<HuddleProvider><Probe /><LiveStrip roomId
 const joinNow = async (here?: string) => {
   mount(here);
   fireEvent.click(screen.getByText("join none"));
-  await screen.findByRole("group", { name: "Live in #general" });
+  await screen.findByRole("group", { name: "Live in general" });
 };
 const openDetails = () => fireEvent.click(screen.getByRole("button", { name: /Details$/ }));
 
@@ -182,7 +182,7 @@ it("an idle room ends Live and says why", async () => {
   expect(await screen.findByRole("alert")).toHaveTextContent("Live ended — no one was talking.");
 });
 
-it("in another room's header it is a compact Live in #general with Return and Leave", async () => {
+it("in another room's header it is a compact Live in general with Return and Leave", async () => {
   const seen: unknown[] = [];
   const onOpen = (e: Event) => seen.push((e as CustomEvent).detail);
   window.addEventListener("openRoom", onOpen);
@@ -199,7 +199,7 @@ it("in another room's header it is a compact Live in #general with Return and Le
 });
 
 it.each([
-  [{ status: 404, body: { code: "ROOM_NOT_FOUND", message: "x" } }, "This channel no longer exists."],
+  [{ status: 404, body: { code: "ROOM_NOT_FOUND", message: "x" } }, "This project no longer exists."],
   [Object.assign(new Error("none"), { name: "NotFoundError" }), "No microphone found."],
 ])("a failed join maps %j to plain words", async (error, text) => {
   lk.post.mockRejectedValueOnce(error);

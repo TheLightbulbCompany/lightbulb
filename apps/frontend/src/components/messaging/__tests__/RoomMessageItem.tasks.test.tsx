@@ -77,7 +77,7 @@ describe("RoomMessageItem with the super-agent switch", () => {
     expect(onOpenTask).toHaveBeenCalledWith("t-signup");
     unmount();
     render(item(ask));
-    expect(screen.getByRole("button", { name: "3 requests started ›" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "3 tasks started ›" })).toBeInTheDocument();
   });
 
   it("agent 👀 chip is not toggleable", async () => {

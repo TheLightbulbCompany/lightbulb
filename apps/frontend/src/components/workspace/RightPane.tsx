@@ -22,6 +22,8 @@ export const PANE_DEFAULT_WIDTH = 440;
 export const MAIN_MIN_WIDTH = 360;
 const KEY_STEP = 16;
 const OWN_HEADER: ReadonlySet<Slot["component"]> = new Set(["thread", "task"]);
+// The specialist's own name heads its pane (AgentInspectorPanel), so the bar carries no second title.
+const ownsHeader = (pane: Slot) => OWN_HEADER.has(pane.component) || pane.panelId === "agent-inspector";
 
 export const paneWidthKey = (userId: string | null | undefined) => `lightbulb.pane.width.${userId ?? "signed-out"}`;
 
@@ -139,7 +141,7 @@ export function RightPane({ pane, fullScreen }: { pane: Slot; fullScreen: boolea
         aria-valuenow={measured.now} aria-valuemin={PANE_MIN_WIDTH} aria-valuemax={Math.max(PANE_MIN_WIDTH, measured.max)} />}
       <header className="workspace-pane__bar">
         {/* A thread (the room's column, a task) carries its own titled header: the bar keeps only its controls. */}
-        <span className="workspace-pane__title">{OWN_HEADER.has(pane.component) ? null : pane.title}</span>
+        <span className="workspace-pane__title">{ownsHeader(pane) ? null : pane.title}</span>
         <button type="button" className="workspace-pane__full" aria-label={fullScreen ? "Exit full screen" : "Full screen"}
           title={fullScreen ? "Exit full screen" : "Full screen"} onClick={() => setPaneFullScreen(!fullScreen)}>
           {fullScreen ? <Minimize2 size={16} aria-hidden="true" /> : <Maximize2 size={16} aria-hidden="true" />}

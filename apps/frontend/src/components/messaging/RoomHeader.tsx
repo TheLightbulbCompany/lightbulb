@@ -1,7 +1,7 @@
 "use client";
 
 import { useId, useRef, useState, type ReactNode } from "react";
-import { Archive, ArchiveRestore, Bell, BellOff, Hash, Link, LogOut, MessageCircle, Mic, MoreHorizontal, Pencil, Pin, Star, Trash2, UserPlus, Users } from "lucide-react";
+import { Archive, ArchiveRestore, Bell, BellOff, Folder, Link, LogOut, MessageCircle, Mic, MoreHorizontal, Pencil, Pin, Star, Trash2, UserPlus, Users } from "lucide-react";
 import { liveMarker, type MemberPrefsRequest, type RoomSummary } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -92,7 +92,9 @@ export function RoomHeader({
   // offer them. A group chat has no admins, so any member may archive it.
   const canArchive = !!onSetArchived && (room?.kind === "group-dm"
     || (canEditRoom && room?.kind === "channel" && !room.shared && !room.isDefault));
-  const noun = room?.kind === "group-dm" ? "group chat" : "channel";
+  const noun = room?.kind === "group-dm" ? "group chat" : "project";
+  // What the room is called in copy: a direct message is a chat, never a project.
+  const what = room?.kind === "dm" ? "chat" : noun;
   const { pending, error, run, reset } = useAsyncAction();
   const topicTrigger = useRef<HTMLButtonElement>(null);
   const optionsTrigger = useRef<HTMLButtonElement>(null);
@@ -115,7 +117,7 @@ export function RoomHeader({
     topicTrigger.current?.focus();
   }
 
-  const Icon = room?.kind === "channel" ? Hash : room?.kind === "group-dm" ? Users : MessageCircle;
+  const Icon = room?.kind === "channel" ? Folder : room?.kind === "group-dm" ? Users : MessageCircle;
   const faces = counterparts.slice(0, FACES);
   const overflow = Math.max(0, participantCount - faces.length);
 
@@ -154,7 +156,7 @@ export function RoomHeader({
       {/* Every room kind; a room with no listening agent is a people-only voice room (no Lightbulb). */}
       {!huddle.room && room && huddlesOn && !room.guest && (
         <Button type="button" variant="ghost" size="sm" disabled={Boolean(huddle.joining)}
-          onClick={() => void huddle.join(room.roomId, room.kind === "channel" ? `#${roomName}` : roomName)}>
+          onClick={() => void huddle.join(room.roomId, roomName)}>
           <Mic className="h-4 w-4" aria-hidden="true" /> {huddle.joining === room.roomId ? "Joining…" : "Go live"}
         </Button>
       )}
@@ -164,21 +166,21 @@ export function RoomHeader({
       {pinnedCount > 0 && <Button type="button" variant="ghost" size="sm"
         aria-label={`${pinnedCount} pinned ${pinnedCount === 1 ? "message" : "messages"}`} onClick={() => onOpenDetails("pins")}>
         <Pin size={14} aria-hidden="true" />{pinnedCount}</Button>}
-      <Button type="button" variant="ghost" className="room-facepile" aria-label={`People, ${participantCount} in this conversation`} title="People"
+      <Button type="button" variant="ghost" className="room-facepile" aria-label={`People, ${participantCount} here`} title="People"
         onClick={() => onOpenDetails("members")}>
         {faces.map((participant) => <ParticipantAvatar key={`${participant.kind}:${participant.id}`} participant={participant} size="sm" showPresence={false} />)}
         {overflow > 0 && <span className="room-facepile-more text-ui text-muted-foreground">+{overflow}</span>}
       </Button>
       {views}
       <DropdownMenu>
-        <DropdownMenuTrigger asChild><Button ref={optionsTrigger} type="button" variant="ghost" size="icon" aria-label="Conversation options" title="More"><MoreHorizontal aria-hidden="true" /></Button></DropdownMenuTrigger>
+        <DropdownMenuTrigger asChild><Button ref={optionsTrigger} type="button" variant="ghost" size="icon" aria-label="Options" title="More"><MoreHorizontal aria-hidden="true" /></Button></DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           {onSetPrefs && <DropdownMenuItem disabled={!actionable || pending}
             onSelect={() => void run(async () => { await onSetPrefs({ starred: !room?.starred }); }, "The star could not be saved.")}>
-            <Star aria-hidden="true" fill={room?.starred ? "currentColor" : "none"} />{room?.starred ? "Unstar this conversation" : "Star this conversation"}</DropdownMenuItem>}
+            <Star aria-hidden="true" fill={room?.starred ? "currentColor" : "none"} />{room?.starred ? "Unstar" : "Star"}</DropdownMenuItem>}
           {onSetPrefs && <DropdownMenuItem disabled={!actionable || pending}
             onSelect={() => void run(async () => { await onSetPrefs({ muted: !room?.muted }); }, "The notification setting could not be saved.")}>
-            {room?.muted ? <Bell aria-hidden="true" /> : <BellOff aria-hidden="true" />}{room?.muted ? "Unmute this conversation" : "Mute this conversation"}</DropdownMenuItem>}
+            {room?.muted ? <Bell aria-hidden="true" /> : <BellOff aria-hidden="true" />}{room?.muted ? "Unmute" : "Mute"}</DropdownMenuItem>}
           <DropdownMenuItem onSelect={() => void copyText(roomPermalink(room?.roomId ?? ""))}><Link aria-hidden="true" />Copy link</DropdownMenuItem>
           {onRenameRoom && canEditRoom && !room?.shared && <DropdownMenuItem onSelect={() => { reset(); setNameDraft(room?.name ?? ""); setRenaming(true); }}><Pencil aria-hidden="true" />Rename</DropdownMenuItem>}
           {onAddPeople && <DropdownMenuItem onSelect={onAddPeople}><Users aria-hidden="true" />Add people</DropdownMenuItem>}
@@ -190,7 +192,7 @@ export function RoomHeader({
           {((onLeaveRoom && canLeave) || ownerCannotLeave) && <><DropdownMenuSeparator />
             <DropdownMenuItem variant="destructive" onSelect={() => { reset(); setLeaving(true); }}><LogOut aria-hidden="true" />Leave</DropdownMenuItem></>}
           {canDelete && <><DropdownMenuSeparator />
-            <DropdownMenuItem variant="destructive" onSelect={() => { reset(); setDeleteDraft(""); setDeleting(true); }}><Trash2 aria-hidden="true" />Delete channel</DropdownMenuItem></>}
+            <DropdownMenuItem variant="destructive" onSelect={() => { reset(); setDeleteDraft(""); setDeleting(true); }}><Trash2 aria-hidden="true" />Delete project</DropdownMenuItem></>}
         </DropdownMenuContent>
       </DropdownMenu>
     </div>
@@ -199,15 +201,15 @@ export function RoomHeader({
       <DialogContent className="max-w-[calc(100%-2rem)] sm:max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto"
         onOpenAutoFocus={(event) => { event.preventDefault(); renameInput.current?.focus(); }}
         onCloseAutoFocus={(event) => { event.preventDefault(); restoreOptionsFocus(); }}>
-        <DialogHeader><DialogTitle>Rename conversation</DialogTitle>
-          <DialogDescription>Choose a name that helps your team find this conversation.</DialogDescription>
+        <DialogHeader><DialogTitle>Rename {what}</DialogTitle>
+          <DialogDescription>Choose a name that helps your team find this {what}.</DialogDescription>
         </DialogHeader>
         <form className="grid gap-4" onSubmit={(event) => {
           event.preventDefault();
           void run(async () => { await onRenameRoom!(nameDraft.trim()); }, "The name could not be saved.", () => setRenaming(false));
         }}>
           <div className="grid gap-2">
-            <label htmlFor={`${id}-rename`} className="text-ui font-medium">Conversation name</label>
+            <label htmlFor={`${id}-rename`} className="text-ui font-medium">Name</label>
             <input ref={renameInput} id={`${id}-rename`} className="room-input" value={nameDraft} maxLength={200} required disabled={pending}
               onChange={(event) => setNameDraft(event.target.value)} />
           </div>
@@ -225,10 +227,10 @@ export function RoomHeader({
         onCloseAutoFocus={(event) => { event.preventDefault(); restoreOptionsFocus(); }}>
         <DialogHeader><DialogTitle className="break-words">{ownerCannotLeave ? `Can't leave ${roomName}` : `Leave ${roomName}?`}</DialogTitle>
           <DialogDescription>
-            {ownerCannotLeave ? "You are the only person in this channel. Delete it instead."
+            {ownerCannotLeave ? "You are the only person in this project. Delete it instead."
               : ownerHandsOff
-                ? "You will lose access to this conversation and its messages. Ownership passes to another member."
-                : "You will lose access to this conversation and its messages."}
+                ? `You will lose access to this ${what} and its messages. Ownership passes to another member.`
+                : `You will lose access to this ${what} and its messages.`}
           </DialogDescription>
         </DialogHeader>
         {error && <p role="alert" className="text-ui text-err break-words">{error}</p>}
@@ -236,7 +238,7 @@ export function RoomHeader({
           <Button ref={leaveCancel} type="button" variant="outline" disabled={pending} onClick={() => { setLeaving(false); reset(); }}>Cancel</Button>
           {ownerCannotLeave
             ? (canDelete && <Button type="button" variant="destructive" disabled={pending}
-                onClick={() => { setLeaving(false); reset(); setDeleteDraft(""); setDeleting(true); }}>Delete channel</Button>)
+                onClick={() => { setLeaving(false); reset(); setDeleteDraft(""); setDeleting(true); }}>Delete project</Button>)
             : <Button type="button" variant="destructive" disabled={!actionable || pending}
                 onClick={() => void run(async () => { await onLeaveRoom!(); }, `The ${noun} could not be left.`, () => setLeaving(false))}>
                 {pending ? "Leaving…" : `Leave ${noun}`}
@@ -264,12 +266,12 @@ export function RoomHeader({
       <DialogContent className="max-w-[calc(100%-2rem)] sm:max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto"
         onCloseAutoFocus={(event) => { event.preventDefault(); restoreOptionsFocus(); }}>
         <DialogHeader><DialogTitle className="break-words">Delete {roomName}?</DialogTitle>
-          <DialogDescription>The channel disappears for every member and agents stop responding in it. This can&apos;t be undone.</DialogDescription>
+          <DialogDescription>The project disappears for every member and agents stop responding in it. This can&apos;t be undone.</DialogDescription>
         </DialogHeader>
         <form className="grid gap-4" onSubmit={(event) => {
           event.preventDefault();
           if (deleteDraft !== roomName) return;
-          void run(async () => { await onDeleteRoom!(); }, "The channel could not be deleted.", () => setDeleting(false));
+          void run(async () => { await onDeleteRoom!(); }, "The project could not be deleted.", () => setDeleting(false));
         }}>
           <div className="grid gap-2">
             <label htmlFor={`${id}-delete`} className="text-ui font-medium">Type <strong className="break-words">{roomName}</strong> to confirm</label>
@@ -280,7 +282,7 @@ export function RoomHeader({
           <DialogFooter className="gap-2">
             <Button type="button" variant="outline" disabled={pending} onClick={() => { setDeleting(false); reset(); }}>Cancel</Button>
             <Button type="submit" variant="destructive" disabled={!actionable || pending || deleteDraft !== roomName}>
-              {pending ? "Deleting…" : "Delete channel"}
+              {pending ? "Deleting…" : "Delete project"}
             </Button>
           </DialogFooter>
         </form>

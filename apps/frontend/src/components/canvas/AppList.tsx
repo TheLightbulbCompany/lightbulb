@@ -76,10 +76,10 @@ function Row({ app, phase, onOpen, canManage }: { app: AppRow; phase: Phase; onO
   const dn = displayName(app);
   const blocked = !app.can_open;
   const asker = app.created_by_name ?? app.requested_by;
-  const where = app.room_name ? `#${app.room_name}` : null;
+  const where = app.room_name ?? null;
   const spend = (app.spend_month_cents ?? 0) > 0 ? `$${(app.spend_month_cents! / 100).toFixed(2)} this month` : null;
   const next = blocked
-    ? (app.room_id ? (app.room_name ? `Ask in #${app.room_name} to open it.` : "Ask whoever shared it to open it.") : "Not shared with you.")
+    ? (app.room_id ? (app.room_name ? `Ask in ${app.room_name} to open it.` : "Ask whoever shared it to open it.") : "Not shared with you.")
     : phase.next;
   const meta = [asker ? `Asked by ${asker}${where ? ` in ${where}` : ""}` : where ? `From ${where}` : null, ago(stamp(app)), spend].filter(Boolean);
   const body = <>
@@ -100,7 +100,7 @@ function Row({ app, phase, onOpen, canManage }: { app: AppRow; phase: Phase; onO
   return <li className="app-item">
     {main}
     {app.request && <button type="button" className="app-item__act" onClick={() => openTaskPane(app.request!.task_id)}>
-      {app.request.identifier ? `Request ${app.request.identifier}` : "Its request"}<ArrowRight size={14} aria-hidden="true" />
+      {app.request.identifier ? `Task ${app.request.identifier}` : "Its task"}<ArrowRight size={14} aria-hidden="true" />
     </button>}
     {phase.setup && <a className="app-item__act" href="/settings/connections">Open Connections<ArrowRight size={14} aria-hidden="true" /></a>}
     {phase.review && !blocked && <button type="button" className="app-item__act" onClick={() => openPanel("activity", {}, { pushUrl: true })}>

@@ -51,7 +51,7 @@ async def test_renamed_final_root_ceo_cannot_be_deleted(monkeypatch):
         ],
     )
 
-    with pytest.raises(RuntimeError, match="final root CEO"):
+    with pytest.raises(RuntimeError, match="coordinator cannot be deleted"):
         await lifecycle.prepare_paperclip_agent_delete(owner_id="owner", agent_id="root")
 
     admin.list_routines.assert_not_awaited()

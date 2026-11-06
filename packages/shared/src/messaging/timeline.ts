@@ -326,7 +326,7 @@ export function roomDisplayName(
   room: Pick<RoomSummary, "kind" | "name"> | undefined,
   participants: readonly Pick<RoomMember, "displayName">[],
 ): string {
-  if (!room) return "Conversation";
+  if (!room) return "Chat";
   // A channel's `#` is the surface's to draw (the phone's tile and composer,
   // the web's Live label), so a name saved with one ("#to-do-updates") read as
   // "##to-do-updates" there.
@@ -334,5 +334,5 @@ export function roomDisplayName(
   const names = participants.map((participant) => participant.displayName);
   if (room.kind === "dm") return names[0] ?? "Direct message";
   if (room.kind === "group-dm") return names.length ? names.join(" and ") : "Group chat";
-  return "Untitled channel";
+  return "Untitled project";
 }

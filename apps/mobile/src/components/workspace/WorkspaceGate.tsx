@@ -198,7 +198,7 @@ function CreateWorkspace({ onCheckAgain }: { onCheckAgain: () => void }) {
           Create a workspace
         </Text>
         <Text style={styles.body}>
-          Your agents and conversations live in a workspace. Create one on the web, then come
+          Your agents, projects and chats live in a workspace. Create one on the web, then come
           back here.
         </Text>
         <Text style={styles.body}>

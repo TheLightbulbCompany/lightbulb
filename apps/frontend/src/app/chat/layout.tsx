@@ -3,7 +3,7 @@ import { ThemeStamp } from "@/components/ThemeStamp";
 export const dynamic = "force-dynamic";
 
 export const metadata = {
-  title: 'Chat - Lightbulb',
+  title: 'Lightbulb',
   description: 'AI agent chat',
 }
 

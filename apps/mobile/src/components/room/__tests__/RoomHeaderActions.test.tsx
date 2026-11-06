@@ -21,8 +21,8 @@ describe("RoomHeaderActions", () => {
         onToggleMute={() => {}}
       />,
     );
-    const star = screen.getByLabelText("Star this conversation");
-    const mute = screen.getByLabelText("Mute this conversation");
+    const star = screen.getByLabelText("Star");
+    const mute = screen.getByLabelText("Mute");
     expect(star.props.accessibilityState.selected).toBe(false);
     expect(mute.props.accessibilityState.selected).toBe(false);
   });
@@ -36,8 +36,8 @@ describe("RoomHeaderActions", () => {
         onToggleMute={() => {}}
       />,
     );
-    const star = screen.getByLabelText("Unstar this conversation");
-    const mute = screen.getByLabelText("Unmute this conversation");
+    const star = screen.getByLabelText("Unstar");
+    const mute = screen.getByLabelText("Unmute");
     expect(star.props.accessibilityState.selected).toBe(true);
     expect(mute.props.accessibilityState.selected).toBe(true);
   });
@@ -53,8 +53,8 @@ describe("RoomHeaderActions", () => {
         onToggleMute={onToggleMute}
       />,
     );
-    await fireEvent.press(screen.getByLabelText("Star this conversation"));
-    await fireEvent.press(screen.getByLabelText("Mute this conversation"));
+    await fireEvent.press(screen.getByLabelText("Star"));
+    await fireEvent.press(screen.getByLabelText("Mute"));
     expect(onToggleStar).toHaveBeenCalledTimes(1);
     expect(onToggleMute).toHaveBeenCalledTimes(1);
   });
@@ -70,7 +70,7 @@ describe("RoomHeaderActions", () => {
         onToggleMute={() => {}}
       />,
     );
-    const star = screen.getByLabelText("Star this conversation");
+    const star = screen.getByLabelText("Star");
     expect(star.props.accessibilityState.disabled).toBe(true);
     await fireEvent.press(star);
     expect(onToggleStar).not.toHaveBeenCalled();
@@ -81,7 +81,7 @@ describe("RoomHeaderActions", () => {
     await render(
       <RoomHeaderActions starred={false} muted={false} onToggleStar={jest.fn()} onToggleMute={jest.fn()} voice={{ label: "Go live", onPress }} />,
     );
-    expect(screen.queryByLabelText("Star this conversation")).toBeNull();
+    expect(screen.queryByLabelText("Star")).toBeNull();
     await fireEvent.press(screen.getByLabelText("Go live"));
     expect(onPress).toHaveBeenCalled();
   });

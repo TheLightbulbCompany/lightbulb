@@ -181,7 +181,7 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
                 className="mt-1 w-full rounded-lg border border-[var(--edge)] bg-cream-deep px-3 py-2 text-ui text-[var(--midnight)] disabled:opacity-50">
                 <option value="">Choose an agent…</option>
                 {rosterAgents.map((a) => (
-                  <option key={a.id} value={a.id}>{a.name}{a.role === "ceo" ? " — CEO" : a.title ? ` — ${a.title}` : ""}</option>
+                  <option key={a.id} value={a.id}>{a.name}{a.role === "ceo" ? " — Coordinator" : a.title ? ` — ${a.title}` : ""}</option>
                 ))}
               </select>
             </label>

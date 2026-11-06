@@ -112,7 +112,7 @@ export function useTaskReply(roomId: string | null, draft: Pick<RoomComposerProp
     </div>,
     composer: {
       clientMessageId, sendState: "idle", members: [], sessionTargets: [], onRetry: undefined, onReconcile: undefined,
-      onUploadAttachment: undefined, onEditLast: undefined, label: `Reply to ${task.title}`, placeholder: "Steer this request…",
+      onUploadAttachment: undefined, onEditLast: undefined, label: `Reply to ${task.title}`, placeholder: "Steer this task…",
       // It goes to the request's specialist, so the room's "who will reply" line would name the wrong agent.
       showRespondHint: false,
       onSubmit: async (request) => {

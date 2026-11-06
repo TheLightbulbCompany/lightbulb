@@ -57,7 +57,7 @@ describe("an unanswered request", () => {
     const { result } = renderHook(() => useSessionJoinRequest(client(pick), session({ pickupRequest: "pending", pickupRequestedAt: old }), "pickup"));
     expect(result.current.again).toBe(true);
     await act(async () => { await result.current.ask(); });
-    expect(result.current.error).toBe("Could not send your request. Try again.");
+    expect(result.current.error).toBe("Could not send that. Try again.");
     expect(result.current.again).toBe(true);
   });
 

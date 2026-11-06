@@ -40,8 +40,8 @@ export function ParticipantProfile({ participant, currentUserId, onMessage, disa
       </div>
       <dl className="space-y-3 text-ui">
         {participant.mentionHandle && <div><dt className="text-muted-foreground">Mention</dt><dd className="break-words">@{participant.mentionHandle}</dd></div>}
-        <div><dt className="text-muted-foreground">Role in this conversation</dt><dd>{participant.role === "owner" ? "Owner" : participant.role === "admin" ? "Admin" : "Member"}</dd></div>
-        {joined && <div><dt className="text-muted-foreground">Joined this conversation</dt><dd><time dateTime={participant.joinedAt}>{new Date(participant.joinedAt).toLocaleDateString([], { month: "long", day: "numeric", year: "numeric" })}</time></dd></div>}
+        <div><dt className="text-muted-foreground">Role here</dt><dd>{participant.role === "owner" ? "Owner" : participant.role === "admin" ? "Admin" : "Member"}</dd></div>
+        {joined && <div><dt className="text-muted-foreground">Joined</dt><dd><time dateTime={participant.joinedAt}>{new Date(participant.joinedAt).toLocaleDateString([], { month: "long", day: "numeric", year: "numeric" })}</time></dd></div>}
       </dl>
       {!isSelf && onMessage && <Button type="button" disabled={disabled || busy} onClick={async () => {
         setBusy(true);
@@ -49,8 +49,8 @@ export function ParticipantProfile({ participant, currentUserId, onMessage, disa
         try { await onMessage(participant); setOpen(false); }
         catch { setError(true); }
         finally { setBusy(false); }
-      }}><MessageCircle size={16} aria-hidden="true" />{busy ? "Opening conversation…" : "Message"}</Button>}
-      {error && <p role="alert" className="text-ui text-err">Could not open this conversation. Try again.</p>}
+      }}><MessageCircle size={16} aria-hidden="true" />{busy ? "Opening chat…" : "Message"}</Button>}
+      {error && <p role="alert" className="text-ui text-err">Could not open this chat. Try again.</p>}
     </DialogContent>
   </Dialog>;
 }

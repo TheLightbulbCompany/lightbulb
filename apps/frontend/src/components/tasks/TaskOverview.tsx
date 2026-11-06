@@ -31,7 +31,7 @@ export function TaskOverview({ scope, viewerId, onOpen }: {
 }): ReactElement {
   const [tab, setTab] = useState<"overview" | "scheduled">("overview");
   return <div className="grid gap-3">
-    <PanelTabs ariaLabel="Requests" tabs={[{ value: "overview", label: "Overview" }, { value: "scheduled", label: "Scheduled" }]}
+    <PanelTabs ariaLabel="Tasks" tabs={[{ value: "overview", label: "Overview" }, { value: "scheduled", label: "Scheduled" }]}
       value={tab} onValueChange={(v) => setTab(v as "overview" | "scheduled")} />
     {tab === "overview" ? <RequestGroups scope={scope} viewerId={viewerId} onOpen={onOpen} /> : <ScheduledList scope={scope} onOpen={onOpen} />}
   </div>;
@@ -44,7 +44,7 @@ export function RequestGroups({ scope, viewerId, onOpen }: { scope: TaskScope; v
   const { older, hasOlder, loading, loadOlder } = useOlderTasks(tasks, data, scope);
   const [resolvedOpen, setResolvedOpen] = useState(() => readResolvedOpen(viewerId));
   if (!data) return error
-    ? <p role="alert" className="text-ui text-muted-foreground">Requests couldn&apos;t load. <button type="button" className="underline hover:text-foreground" onClick={() => void mutate()}>Retry</button></p>
+    ? <p role="alert" className="text-ui text-muted-foreground">Tasks couldn&apos;t load. <button type="button" className="underline hover:text-foreground" onClick={() => void mutate()}>Retry</button></p>
     : <p role="status" className="text-ui text-muted-foreground">Loading…</p>;
   return <div className="grid gap-4">
     {overviewGroups([...data.tasks, ...older]).map((group) => {
@@ -64,7 +64,7 @@ export function RequestGroups({ scope, viewerId, onOpen }: { scope: TaskScope; v
       </section>;
     })}
     {hasOlder && <button type="button" className="justify-self-start text-ui text-muted-foreground underline hover:text-foreground"
-      disabled={loading} onClick={() => void loadOlder()}>{loading ? "Loading…" : "Load older requests"}</button>}
+      disabled={loading} onClick={() => void loadOlder()}>{loading ? "Loading…" : "Load older tasks"}</button>}
   </div>;
 }
 
@@ -73,6 +73,7 @@ export function OverviewRow({ task, viewerId, onOpen }: { task: TaskSummary; vie
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const view = summaryView(task, viewerId);
+  const line = taskSummaryLine(task, viewerId);
   const copyLink = async () => {
     const ok = await copyText(taskPermalink(task.taskId));
     setCopied(ok);
@@ -89,7 +90,7 @@ export function OverviewRow({ task, viewerId, onOpen }: { task: TaskSummary; vie
         className="block max-w-full truncate text-left font-semibold after:absolute after:inset-0 after:content-['']">{task.title}</button>
       {/* Working: who is doing it, live ("Growth · working · 12s"); otherwise what it needs or why, and when. */}
       {view.word === "Working" ? <ActorLine task={task} viewerId={viewerId} />
-        : <p className="truncate text-ui text-muted-foreground">{taskSummaryLine(task, viewerId)}{task.updatedAt && <> · <time dateTime={task.updatedAt} title={new Date(task.updatedAt).toLocaleString()}>{timeAgo(task.updatedAt)}</time></>}</p>}
+        : <p className="truncate text-ui text-muted-foreground">{line}{line && task.updatedAt && " · "}{task.updatedAt && <time dateTime={task.updatedAt} title={new Date(task.updatedAt).toLocaleString()}>{timeAgo(task.updatedAt)}</time>}</p>}
       {error && <p role="alert" className="text-ui text-err">{error}</p>}
       {copied && <p role="status" className="text-ui text-muted-foreground">Link copied</p>}
     </div>

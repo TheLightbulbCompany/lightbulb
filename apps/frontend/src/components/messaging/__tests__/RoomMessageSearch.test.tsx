@@ -15,7 +15,7 @@ const hit = { messageId: "m1", roomId: "r1", messageSeq: 3, threadRootMessageId:
 afterEach(() => { vi.useRealTimers(); vi.clearAllMocks(); });
 
 async function typeQuery(value: string) {
-  fireEvent.click(screen.getByRole("button", { name: "Search this conversation" }));
+  fireEvent.click(screen.getByRole("button", { name: "Search this chat" }));
   fireEvent.change(screen.getByRole("searchbox", { name: "Search messages" }), { target: { value } });
   await act(async () => { await vi.advanceTimersByTimeAsync(300); });
 }

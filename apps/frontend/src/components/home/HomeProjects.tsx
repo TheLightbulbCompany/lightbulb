@@ -99,7 +99,7 @@ export function HomeProjects(): ReactElement {
       <button type="button" className="home-projects__dm" onClick={() => openDm()}>
         <span className="min-w-0 flex-1">
           <span className="block font-semibold">Lightbulb</span>
-          <span className="block truncate text-ui text-muted-foreground">{dm?.lastMessage ? previewLine(dm, data?.tasks ?? []) : "Your conversation with Lightbulb"}</span>
+          <span className="block truncate text-ui text-muted-foreground">{dm?.lastMessage ? previewLine(dm, data?.tasks ?? []) : "Your chat with Lightbulb"}</span>
         </span>
         <RoomMeta room={dm} counts={dm ? counts.get(dm.roomId) : undefined} capped={capped} />
       </button>

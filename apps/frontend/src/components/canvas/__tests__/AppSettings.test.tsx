@@ -34,7 +34,7 @@ beforeEach(() => {
 describe("AppSettings", () => {
   it("offers Only me, and no room choice for an app that came from no room", async () => {
     const { unmount } = render(<AppSettings app={app({ is_creator: true })} onClose={vi.fn()} />);
-    expect(screen.getByLabelText("#finance (this room)")).toBeTruthy();
+    expect(screen.getByLabelText("finance (this room)")).toBeTruthy();
     fireEvent.click(screen.getByLabelText("Only me (and workspace admins)"));
     expect(screen.getByText("Only you and workspace admins will be able to open it.")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Change who can open it" }));
@@ -87,8 +87,8 @@ describe("AppSettings", () => {
 
   it("narrowing asks first and names who loses access", async () => {
     render(<AppSettings app={app({ open_to: "workspace" })} onClose={vi.fn()} />);
-    fireEvent.click(screen.getByLabelText("#finance (this room)"));
-    expect(screen.getByText("Everyone in the workspace outside #finance will lose access.")).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("finance (this room)"));
+    expect(screen.getByText("Everyone in the workspace outside finance will lose access.")).toBeTruthy();
     expect(update).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Change who can open it" }));
     await waitFor(() => expect(update).toHaveBeenCalledWith("a1", { open_to: "room" }));
@@ -97,7 +97,7 @@ describe("AppSettings", () => {
   it("choosing people I invite asks first", () => {
     render(<AppSettings app={app()} onClose={vi.fn()} />);
     fireEvent.click(screen.getByLabelText("People I invite"));
-    expect(screen.getByText(/People in #finance will lose access unless you invite them/)).toBeTruthy();
+    expect(screen.getByText(/People in finance will lose access unless you invite them/)).toBeTruthy();
     expect(update).not.toHaveBeenCalled();
   });
 
@@ -106,7 +106,7 @@ describe("AppSettings", () => {
     fireEvent.click(screen.getByLabelText("People I invite"));
     expect((screen.getByLabelText("People I invite") as HTMLInputElement).checked).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    expect((screen.getByLabelText("#finance (this room)") as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByLabelText("finance (this room)") as HTMLInputElement).checked).toBe(true);
     expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
     expect(update).not.toHaveBeenCalled();
   });
@@ -121,13 +121,13 @@ describe("AppSettings", () => {
   it("picking the current audience while confirming sends nothing", () => {
     render(<AppSettings app={app()} onClose={vi.fn()} />);
     fireEvent.click(screen.getByLabelText("People I invite"));
-    fireEvent.click(screen.getByLabelText("#finance (this room)"));
+    fireEvent.click(screen.getByLabelText("finance (this room)"));
     expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
-    expect((screen.getByLabelText("#finance (this room)") as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByLabelText("finance (this room)") as HTMLInputElement).checked).toBe(true);
     expect(update).not.toHaveBeenCalled();
   });
 
-  const labels = { room: "#finance (this room)", workspace: "Everyone in the workspace", invited: "People I invite", public: "Anyone with the link" } as const;
+  const labels = { room: "finance (this room)", workspace: "Everyone in the workspace", invited: "People I invite", public: "Anyone with the link" } as const;
   const widening = ["room>workspace"];
   const modes = Object.keys(labels) as (keyof typeof labels)[];
   const pairs = modes.flatMap((f) => modes.filter((t) => t !== f).map((t) => [f, t] as const));
@@ -268,7 +268,7 @@ describe("AppSettings", () => {
     unmount();
     render(<AppSettings app={app({ can_publish: true, preview_url: "https://p" })} onClose={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Publish" }));
-    expect(screen.getByText("Make this preview live for #finance? You can put back the version live now from here.")).toBeTruthy();
+    expect(screen.getByText("Make this preview live for finance? You can put back the version live now from here.")).toBeTruthy();
     fireEvent.click(screen.getAllByRole("button", { name: "Publish" })[0]);
     await waitFor(() => expect(publish).toHaveBeenCalledWith("a1"));
   });

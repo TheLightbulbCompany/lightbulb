@@ -61,6 +61,6 @@ describe("TeamsPanelRouter detail branch", () => {
   it("renders Unknown panel when a detail key arrives without a detailId", () => {
     render(<TeamsPanelRouter panel="issue-detail" />);
     expect(screen.queryByTestId("issue-detail")).toBeNull();
-    expect(screen.getByText(/Unknown panel/)).toBeInTheDocument();
+    expect(screen.getByText(/This page is no longer here/)).toBeInTheDocument();
   });
 });

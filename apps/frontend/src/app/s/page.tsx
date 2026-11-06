@@ -318,7 +318,7 @@ export default function SessionLinkPageRoute() {
       setPage(p => p && { ...p, me: { ...p.me, canAsk: false, join: join === "member" ? undefined : join } });
       if (join === "member") reopen.current();
     } catch (e) {
-      setAskError(e instanceof ApiError && e.message ? e.message : "Could not send your request. Try again.");
+      setAskError(e instanceof ApiError && e.message ? e.message : "Could not send that. Try again.");
     } finally { setAsking(false); }
   }, [token]);
   const canAsk = !!page?.me.canAsk;

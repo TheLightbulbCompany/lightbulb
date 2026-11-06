@@ -27,6 +27,7 @@ const MATERIAL: Record<string, AndroidSymbol> = {
   "bubble.left.and.bubble.right": "forum",
   "building.2": "apartment",
   "chart.bar": "bar_chart",
+  folder: "folder",
   checkmark: "check",
   "checkmark.circle": "check_circle",
   "checkmark.square": "check_box",

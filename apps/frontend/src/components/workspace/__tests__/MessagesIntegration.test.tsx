@@ -158,7 +158,7 @@ describe("Messages room/controller boundary", () => {
   it("keeps the exact clicked DM, while an explicit same-agent shortcut can retarget it", async () => {
     renderWorkspace();
     await waitFor(() => expect(screen.getByLabelText("Selected room")).toHaveTextContent("a-first"));
-    fireEvent.click(await screen.findByRole("button", { name: "General, Channel" }));
+    fireEvent.click(await screen.findByRole("button", { name: "General, Project" }));
     await waitFor(() => expect(screen.getByLabelText("Selected room")).toHaveTextContent("channel"));
     expect(getWorkspaceSnapshot()).toMatchObject({ focusedChatAgentId: null, visibleChatAgentIds: [] });
     fireEvent.click(await screen.findByRole("button", { name: /Exact Alpha.*Direct message/ }));
@@ -194,8 +194,8 @@ describe("Messages room/controller boundary", () => {
     renderWorkspace();
     await waitFor(() => expect(getWorkspaceSnapshot().focusedChatAgentId).toBe("agent-a"));
     await waitFor(() => expect(screen.getByLabelText("Selected room")).toHaveTextContent("a-first"));
-    fireEvent.click(await screen.findByRole("button", { name: "New conversation" }));
-    fireEvent.change(screen.getByLabelText("Conversation type"), { target: { value: "dm" } });
+    fireEvent.click(await screen.findByRole("button", { name: "New chat or project" }));
+    fireEvent.change(screen.getByLabelText("Type"), { target: { value: "dm" } });
     fireEvent.click(screen.getByLabelText("Select Beta"));
     fireEvent.click(screen.getByRole("button", { name: "Start direct message" }));
     await waitFor(() => expect(screen.getByLabelText("Selected room")).toHaveTextContent("b-new"));

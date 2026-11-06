@@ -131,7 +131,7 @@ describe("RoomPanel", () => {
   describe("Tasks tab", () => {
     const withTasks = { ...props, onLinkToWork: vi.fn() };
     // The off-switch Tasks view sits in the header's ··· menu, its count in the item's name.
-    const openMenu = () => userEvent.click(screen.getByRole("button", { name: "Conversation options" }));
+    const openMenu = () => userEvent.click(screen.getByRole("button", { name: "Options" }));
     const openTab = async () => { await openMenu(); await userEvent.click(await screen.findByRole("menuitem", { name: /^Tasks/ })); };
 
     it("counts tasks named by agent and human messages, ignoring unknown ids", async () => {

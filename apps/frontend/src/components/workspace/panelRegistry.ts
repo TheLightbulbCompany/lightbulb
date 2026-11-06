@@ -53,6 +53,16 @@ export const RETIRED_PANEL_ALIASES: Readonly<Record<string, string>> = {
   // The Support placeholder was removed (owner ruling) when Cases landed; old
   // links and saved layouts open Cases instead of an unknown panel.
   "teams-support": "teams-cases",
+  // Deleted tabs (2026-10-14, stage 1 of the product simplification): an old link or a
+  // mobile-built `?panel=teams-<key>` opens Home, never a dead-end page.
+  "teams-publish": "home",
+  "teams-seo": "home",
+  "teams-ads": "home",
+  "teams-identity": "home",
+  "teams-domain-site": "home",
+  "teams-compliance": "home",
+  "teams-contracts": "home",
+  "teams-leads": "home",
 };
 
 // The sections of the Money page — the set an absorbed key or a `?section=`
@@ -133,17 +143,6 @@ const TEAMS_LIST_KEYS: Readonly<Record<string, string>> = {
   // The one ledger page. The four keys it absorbed live in
   // RETIRED_PANEL_ALIASES, not here — one page, one panel id.
   money: "Money",
-  // Deleted tabs (2026-10-14, stage 1 of the product simplification). The keys
-  // stay so an old link or a mobile-built `?panel=teams-<key>` still opens a
-  // titled tab that shows the router's "Unknown panel" line instead of nothing.
-  publish: "Publish",
-  seo: "SEO & AEO",
-  ads: "Ads",
-  identity: "Identity",
-  "domain-site": "Domain & Site",
-  compliance: "Compliance",
-  contracts: "Contracts",
-  leads: "Leads",
 };
 
 // The Work place: these task-board pages share ONE main view, "Work", and a tab
@@ -275,10 +274,10 @@ export function describePanel(
     return { panelId: "artifact", component: "artifact", title: p.name ?? p.ident ?? "File", params: p };
   }
 
-  // One super-agent request (TaskPane). Only reachable while the switch is on: nothing links here otherwise.
+  // One super-agent task (TaskPane). Only reachable while the switch is on: nothing links here otherwise.
   if (key === "task-detail") {
     if (!params.taskId) return null;
-    return { panelId: "task-detail", component: "task", title: "Request", params: { taskId: params.taskId } };
+    return { panelId: "task-detail", component: "task", title: "Task", params: { taskId: params.taskId } };
   }
 
   if (key === "browser") {
@@ -319,7 +318,7 @@ export function describePanel(
   // Ideas (spec 2026-10-14 §4.4), opened by the 💡 in a conversation header. Singleton;
   // `agent` puts that teammate's ideas first (opened from its DM).
   if (key === "ideas") {
-    // `idea` opens that idea's detail (the CEO welcome's row links here).
+    // `idea` opens that idea's detail (the welcome's row links here).
     const p: Record<string, string> = {};
     if (params.agent) p.agent = params.agent;
     if (params.idea) p.idea = params.idea;
@@ -330,7 +329,7 @@ export function describePanel(
     const p: Record<string, string> = { controlKey: "agent-inspector" };
     if (params.agent) p.agentId = params.agent;
     if (params.inspectorTab) p.initialTab = params.inspectorTab;
-    return { panelId: "agent-inspector", component: "control", title: "Agent Inspector", params: p };
+    return { panelId: "agent-inspector", component: "control", title: "Specialist", params: p };
   }
 
   // Retired (task-8): a session is a view inside Messages, never its own

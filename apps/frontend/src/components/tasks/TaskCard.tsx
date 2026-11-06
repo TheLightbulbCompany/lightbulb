@@ -65,7 +65,7 @@ export function TaskCard({ task, taskId, viewerId, onOpen }: TaskCardProps): Rea
   const preview = previewRows(views?.items.find((q) => q.id === asks)?.preview).slice(0, 3);
   if (!task) {
     return <div className="mt-1.5 max-w-xl rounded-lg border border-dashed border-border px-3 py-2 text-ui text-muted-foreground" data-task-card={taskId}>
-      This request isn&apos;t available
+      This task isn&apos;t available
     </div>;
   }
   const view = summaryView(task, viewerId);
@@ -111,7 +111,7 @@ export function TaskCard({ task, taskId, viewerId, onOpen }: TaskCardProps): Rea
           if (!res.ok) setError(res.message);
         }}>{actionLabel(task, inline)}</Button>
     </div>}
-    {blind && <p className="relative z-10 mt-1 text-ui text-muted-foreground">The details didn&apos;t load. Open the request to decide.</p>}
+    {blind && <p className="relative z-10 mt-1 text-ui text-muted-foreground">The details didn&apos;t load. Open the task to decide.</p>}
     {error && <p role="alert" className="relative z-10 mt-1 text-ui text-err">{error}</p>}
   </div>;
 }

@@ -58,7 +58,7 @@ def test_post_without_a_ceo_is_409(admin):
     with _company(), patch.object(mod.context_import, "merge_context") as merge:
         resp = admin.post("/api/v1/company/context", json={"text": "x"})
     assert resp.status_code == 409
-    assert "CEO" in resp.json()["detail"]
+    assert "Lightbulb" in resp.json()["detail"]
     merge.assert_not_called()
 
 

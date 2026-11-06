@@ -65,10 +65,10 @@ export function MessagingConversation() {
   }
   return roomProps
     ? <RoomPanel {...roomProps} />
-    : <section className="room-panel room-blocked" aria-label="No conversation selected">
+    : <section className="room-panel room-blocked" aria-label="No chat selected">
         <p role="status">{directoryProps.state === "ready" && directoryProps.rooms.length === 0
           // No rooms at all only happens before setup seeds #general.
           ? "Your team is getting ready — #general will open here."
-          : "Choose or create a conversation."}</p>
+          : "Choose a chat or create a project."}</p>
       </section>;
 }

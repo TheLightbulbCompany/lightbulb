@@ -80,7 +80,7 @@ export function HireManagerDialog({
           {agents.map((a) => (
             <option key={a.id} value={a.id}>
               {a.name}
-              {a.role === "ceo" ? " — CEO" : a.title ? ` — ${a.title}` : ""}
+              {a.role === "ceo" ? " — Coordinator" : a.title ? ` — ${a.title}` : ""}
             </option>
           ))}
         </select>

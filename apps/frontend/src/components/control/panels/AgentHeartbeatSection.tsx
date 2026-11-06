@@ -16,7 +16,7 @@ const NOT_ARMED: Record<string, string> = {
   not_entitled: "Heartbeats need an active plan or trial.",
   company_not_active: "Your team is still being set up. Try again in a minute.",
   heartbeats_disabled: "Heartbeats are turned off for this workspace.",
-  friday_not_seeded: "This workspace has no CEO to wake yet.",
+  friday_not_seeded: "Lightbulb isn't set up in this workspace yet.",
 };
 
 function formatInterval(sec: number): string {

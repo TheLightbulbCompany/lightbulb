@@ -268,7 +268,7 @@ function ProfilePanel() {
           </div>
         </div>
         <div className="settings-card-desc" style={{ marginTop: 0 }}>
-          To update your name, email, or password, use the account menu in the top-right corner of the app.
+          To update your name, email, or password, use the account menu at the bottom left of the app.
         </div>
       </div>
 

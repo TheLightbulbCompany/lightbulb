@@ -31,10 +31,10 @@ describe("TaskDockPanel", () => {
   it("mounts the thread pane when on", async () => {
     live.superAgent = true;
     render(<Fresh><TaskDockPanel id="task-detail" params={{ taskId: "t-signup" }} /></Fresh>);
-    expect(await screen.findByRole("heading", { name: "Workshop signup app" })).toBeInTheDocument();
+    expect(await screen.findByText("Workshop signup app")).toBeInTheDocument();
     expect(client.get).toHaveBeenCalledWith("t-signup");
     // The pane is a `.room-context` column, which messaging.css hides outside a `.room-context-host`: the dock
     // pane rendered blank on dev (U1). The host is what makes it show.
-    expect(screen.getByRole("complementary", { name: "Request" }).parentElement).toHaveClass("room-context-host");
+    expect(screen.getByRole("complementary", { name: "Task" }).parentElement).toHaveClass("room-context-host");
   });
 });

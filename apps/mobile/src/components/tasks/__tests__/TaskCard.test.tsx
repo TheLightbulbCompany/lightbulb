@@ -34,7 +34,7 @@ it("a missing task reads as unavailable", async () => {
   // First in the file: RNTL's async render after a test whose action is still settling can hand back
   // an empty tree (seen with the two tests below ahead of it), so this one runs before any press.
   const view = await render(<Fresh><TaskCard task={undefined} taskId="gone" viewerId={SAM} palette={p} /></Fresh>);
-  expect(view.getByText("This request isn't available")).toBeTruthy();
+  expect(view.getByText("This task isn't available")).toBeTruthy();
 });
 
 it("word and action per viewer: Sam sees Approve, Priya sees Waiting on Sam", async () => {
@@ -74,7 +74,7 @@ it("a card for a request older than the room's first page reads it by id", async
   const view = await render(<Fresh><MessageTasks message={message} viewerId={SAM} palette={p} /></Fresh>);
   expect(await screen.findByText("Last month's report")).toBeTruthy();
   expect(client.get).toHaveBeenCalledWith("t-old");
-  expect(screen.queryByText("This request isn't available")).toBeNull();
+  expect(screen.queryByText("This task isn't available")).toBeNull();
   await act(async () => {});
   await view.unmount();
 });

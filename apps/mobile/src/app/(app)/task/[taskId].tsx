@@ -1,5 +1,5 @@
 import { useAuth } from "@clerk/expo";
-import { doneByLine, taskFinished, specialistLabel, summaryView, useTask, useTaskQuestions } from "@lightbulb/shared";
+import { specialistLabel, summaryView, useTask, useTaskQuestions } from "@lightbulb/shared";
 import { Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import { StyleSheet, Text, View } from "react-native";
@@ -16,7 +16,7 @@ import { usePushedScreenKeyboardOffset } from "../../../lib/keyboardOffset";
 import { useLiveEvents, useSuperAgent } from "../../../providers/live-events";
 
 /**
- * One thread (mockup step 8, the phone): header with its specialist, word and where it runs;
+ * One task (mockup step 8, the phone): the specialist's name as the title, the task's title under it;
  * Stop / Resolve / Reopen; the Needs-you card
  * only while a question is open; the transcript (the task's hidden room) with a steer box; the outputs; Details in a sheet.
  */
@@ -48,9 +48,8 @@ export default function TaskScreen() {
   const headerOptions = {
     contentStyle: { backgroundColor: palette.ground },
     headerTitle: () => (
-      <ConversationHeader title={task?.title ?? "Request"} avatar={null} palette={palette}
-        status={task && view ? [actor, view.word, view.reason].filter(Boolean).join(" · ") : null}
-        statusTone={view?.tone === "working" ? "live" : "mute"} />
+      <ConversationHeader title={task ? actor : "Task"} avatar={null} palette={palette}
+        status={task?.title ?? null} statusTone="mute" />
     ),
   };
 
@@ -58,15 +57,12 @@ export default function TaskScreen() {
     return (
       <View style={[styles.container, { backgroundColor: palette.ground }]}>
         <Stack.Screen options={headerOptions} />
-        <Text accessibilityRole="text" style={[styles.note, { color: palette.fgMute }]}>{error || !isValidating ? "This request isn\u2019t available to you." : "Loading…"}</Text>
+        <Text accessibilityRole="text" style={[styles.note, { color: palette.fgMute }]}>{error || !isValidating ? "This task isn\u2019t available to you." : "Loading…"}</Text>
       </View>
     );
   }
   const open = views?.items.find((q) => q.state === "open");
-  // The specialist as the actor: "Growth is working on this" / "Done by Growth" (founder, 5 Nov).
-  // "Done by" only when the run really finished (web's rule, taskFinished); never on Closed.
-  const doneBy = view ? doneByLine(task.specialist, view, agentNames, taskFinished(detail)) : null;
-  // Stop only while something runs: a request that needs the viewer has nothing to stop.
+  // Stop only while something runs: a task that needs the viewer has nothing to stop.
   const live = view?.word === "Working";
   const press = async (verb: "stop" | "resolve" | "reopen") => {
     setPending(true);
@@ -78,8 +74,10 @@ export default function TaskScreen() {
     <KeyboardAvoidingView style={[styles.container, { backgroundColor: palette.ground }]} behavior="padding" keyboardVerticalOffset={keyboardOffset}>
       <Stack.Screen options={headerOptions} />
       <View style={styles.top}>
-        <View style={styles.row} accessibilityLabel="Request status">
+        {/* One status word, the reason once: the title already names the specialist (audit 02 P2). */}
+        <View style={styles.row} accessibilityLabel="Task status">
           <TaskStatus task={task} viewerId={userId ?? ""} palette={palette} />
+          {view?.reason ? <Text style={[styles.meta, { color: palette.fgMute }]}>{view.reason}</Text> : null}
         </View>
         <View style={styles.row}>
           {live ? <ActionButton label="Stop" palette={palette} disabled={pending} onPress={() => void press("stop")} /> : null}
@@ -88,7 +86,6 @@ export default function TaskScreen() {
             : <ActionButton label="Reopen" palette={palette} disabled={pending} onPress={() => void press("reopen")} />}
           <ActionButton label="Details" palette={palette} onPress={() => setDetails(true)} />
         </View>
-        {doneBy ? <Text style={[styles.meta, { color: palette.fgMute }]}>{doneBy}</Text> : null}
         {note ? <Text accessibilityRole="alert" style={[styles.meta, { color: palette.alert }]}>{note}</Text> : null}
         {open ? <NeedsYouCard key={open.id} task={task} question={open} palette={palette} onAnsweredElsewhere={setNote} ended={view?.word === "Closed"} /> : null}
         {task.output ? (

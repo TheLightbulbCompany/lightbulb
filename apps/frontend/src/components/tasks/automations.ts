@@ -95,6 +95,6 @@ export function useDeliveryWords(): (deliverTo: string) => string | null {
     const id = deliveryRoomId(deliverTo);
     const room = id ? rooms?.find((r) => r.roomId === id) : undefined;
     const name = room ? roomDisplayName(room, room.participants) : null;
-    return deliveryWords(deliverTo, name ? (room!.kind === "channel" ? `#${name}` : name) : null);
+    return deliveryWords(deliverTo, name ?? null);
   }, [rooms]);
 }

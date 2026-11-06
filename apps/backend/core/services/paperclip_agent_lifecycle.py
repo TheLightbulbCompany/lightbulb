@@ -117,7 +117,7 @@ async def sync_agent_adapter_config(owner_id: str) -> int:
 
 
 _ISSUE_PAGE_SIZE = 1000
-FINAL_ROOT_CEO_CONFLICT = "The final root CEO cannot be deleted or demoted."
+FINAL_ROOT_CEO_CONFLICT = "Lightbulb's coordinator cannot be deleted or demoted."
 
 
 class AgentLifecycleConflict(RuntimeError):

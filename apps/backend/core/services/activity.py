@@ -282,10 +282,10 @@ def _newer_than(created: datetime, seen: str | None) -> bool:
 def _where(meta: dict) -> str:
     kind, name = meta.get("kind"), meta.get("name")
     if kind == "channel":
-        return f"#{name}" if name else "a channel"
+        return name or "a project"
     if kind == "group-dm":
         return name or "a group chat"
-    return "your conversation"
+    return "your chat"
 
 
 def _message_title(kind: str, actor: str, meta: dict) -> str:

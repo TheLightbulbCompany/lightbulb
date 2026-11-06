@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import schema from "../../fixtures/super-agent/tasks-schema.json";
 import { FIXTURES, PRIYA, SAM, fixtureTask, viewAs } from "./fixtures";
 import { OUTPUT_KINDS, type TaskSummary } from "./types";
-import { activityLine, elapsedShort, taskFinished, answerVerb, askLine, doneByLine, nameSpecialistIn, effectLine, formatSchedule, overviewGroups, previewRows, primaryOptionId, specialistLabel, summaryView, taskSummaryLine } from "./view";
+import { activityLine, elapsedShort, answerVerb, askLine, nameSpecialistIn, effectLine, formatSchedule, overviewGroups, previewRows, primaryOptionId, specialistLabel, summaryView, taskSummaryLine } from "./view";
 
 const byId = (ts: TaskSummary[], id: string) => ts.find((t) => t.taskId === id)!;
 
@@ -74,31 +74,7 @@ describe("summary lines and labels", () => {
   it("lines", () => {
     expect(taskSummaryLine(byId(FIXTURES.step05.tasks, "t-signup"), SAM)).toBe("Needs approval: Provision database and Stripe");
     expect(taskSummaryLine(byId(FIXTURES.step09.tasks, "t-email"), SAM)).toBe("Applying: Draft: \"Join us Nov 20\" (240 words)");
-    expect(taskSummaryLine(byId(FIXTURES.step02.tasks, "t-signup"), SAM)).toBe("Working");
-  });
-  it("actor line for the request pane", () => {
-    expect(doneByLine("finance", { word: "Working", reason: null })).toBe("Finance is working on this");
-    expect(doneByLine("finance", { word: "Needs you", reason: "Ready for review" })).toBe("Done by Finance, ready for your review");
-    expect(doneByLine("finance", { word: "Needs you", reason: "Needs approval" })).toBe("Finance needs you");
-    expect(doneByLine("finance", { word: "Done", reason: null })).toBe("Done by Finance");
-    // Closed never claims it was done: a person can close a request before it finishes (dev walk N-F1).
-    expect(doneByLine(null, { word: "Closed", reason: null })).toBeNull();
-  });
-  it("taskFinished: a completed attempt, or a waiting approval whose effect landed", () => {
-    const t = (outcome: string | null) => ({ activity: { n: 1, status: "ended" as const, outcome } });
-    expect(taskFinished({ task: t("completed"), effects: [] })).toBe(true);
-    expect(taskFinished({ task: t("waiting_approval"), effects: [{ state: "proposed" }] })).toBe(false);
-    expect(taskFinished({ task: t("waiting_approval"), effects: [{ state: "done" }] })).toBe(true);
-    expect(taskFinished({ task: t("cancelled"), effects: [] })).toBe(false);
-    expect(taskFinished({ task: {}, effects: [] })).toBe(false);
-  });
-  it("Done by only when the run really finished", () => {
-    expect(doneByLine("finance", { word: "Done", reason: null }, undefined, false)).toBeNull();
-    expect(doneByLine("finance", { word: "Needs you", reason: "Ready for review" }, undefined, false)).toBe("Finance has this ready for your review");
-    expect(doneByLine("finance", { word: "Working", reason: null }, undefined, false)).toBe("Finance is working on this");
-  });
-  it("no actor line for what never ran or ended without a result", () => {
-    for (const reason of ["Stopped", "Dismissed", "Failed"]) expect(doneByLine("finance", { word: "Closed", reason })).toBeNull();
+    expect(taskSummaryLine(byId(FIXTURES.step02.tasks, "t-signup"), SAM)).toBe("");
   });
   it("ids that are not names never show", () => {
     for (const id of ["agent_7f3a", "a1b2c3", "5b36216c-196c-48af-ad2a-6817c42a1de3"]) expect(specialistLabel(id)).toBe("Lightbulb");

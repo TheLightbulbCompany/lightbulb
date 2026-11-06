@@ -1,6 +1,6 @@
 "use client";
 
-// One request, opened from a card, a link or a panel (mockup step 8): header with its controls,
+// One task, opened from a card, a link or a panel (mockup step 8): header with its controls,
 // a Needs-you card only while something is open, the task
 // room as read-only progress, the outputs, and folded Details. Section order is the mockup's.
 // Steering is the room's own composer ("Replying to: …", taskReply.ts); a one-line note only when that
@@ -9,7 +9,7 @@
 import { useEffect, useRef, useState, type ReactElement, type RefObject } from "react";
 import { ArrowLeft } from "lucide-react";
 import {
-  ApiError, FREE_TEXT_OPTION, taskFinished, answerVerb, askLine, doneByLine, effectLine, effectName, previewRows, specialistLabel, summaryView, useTask, useTaskQuestions,
+  ApiError, FREE_TEXT_OPTION, answerVerb, askLine, effectLine, effectName, previewRows, specialistLabel, summaryView, useTask, useTaskQuestions,
   type QuestionView, type TaskDetail, type TaskEffect, type TaskSummary, type TaskTrace,
 } from "@lightbulb/shared";
 import { SessionChat, type ChatWords } from "@/components/messaging/SessionChat";
@@ -22,19 +22,19 @@ import { sendToTask, useMarkTaskPaneOpen, useMarkTaskSteerable, useRoomComposerS
 import { useTaskActions } from "./useTaskActions";
 
 const TRANSCRIPT_WORDS: ChatWords = {
-  label: "Request progress", title: "Progress",
-  empty: "Lightbulb posts this request's progress here.",
-  unavailable: "This request's conversation isn't available.", full: "This conversation is full.", ended: "This request is closed.",
+  label: "Task progress", title: "Progress",
+  empty: "Lightbulb posts this task's progress here.",
+  unavailable: "This task's progress isn't available.", full: "This task's progress is full.", ended: "This task is closed.",
 };
 
 
 const time = (iso: string | null) => (iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "");
 const money = (n: number) => `$${n.toFixed(2).replace(/\.00$/, "")}`;
 
-export function TaskPane({ taskId, viewerId, onClose, headingRef, backLabel = "Back to conversation" }: {
+export function TaskPane({ taskId, viewerId, onClose, headingRef, backLabel = "Back to chat" }: {
   taskId: string; viewerId: string; onClose: () => void; headingRef?: RefObject<HTMLHeadingElement | null>; backLabel?: string;
 }): ReactElement {
-  const { tasks } = useLiveEvents();
+  const { tasks, agentNames } = useLiveEvents();
   const { data, error, mutate } = useTask(tasks, taskId);
   // A 403/404 is final ("not available"); anything else (network, 5xx) gets Retry.
   const gone = error instanceof ApiError && (error.status === 403 || error.status === 404);
@@ -49,16 +49,18 @@ export function TaskPane({ taskId, viewerId, onClose, headingRef, backLabel = "B
   }, [tasks, taskId]);
   useEffect(() => { heading.current?.focus({ preventScroll: true }); }, [heading, taskId]);
 
-  return <aside className="room-context" aria-label="Request" data-task-pane={taskId}
+  // The pane is the specialist's: its name is the title, the task's own title leads the body.
+  const who = data ? specialistLabel(data.task.specialist, agentNames) : "Task";
+  return <aside className="room-context" aria-label="Task" data-task-pane={taskId}
     onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); onClose(); } }}>
     <header className="room-context-header">
       <Button variant="ghost" aria-label={backLabel} onClick={onClose}><ArrowLeft aria-hidden="true" />Back</Button>
-      <h3 ref={heading} tabIndex={-1} className="min-w-0 truncate font-semibold">{data?.task.title ?? "Request"}</h3>
+      <h3 ref={heading} tabIndex={-1} className="min-w-0 truncate font-semibold">{who}</h3>
     </header>
     {!data
       ? !error ? <p role="status" className="p-4 text-ui text-muted-foreground">Loading…</p>
-        : gone ? <p role="status" className="p-4 text-ui text-muted-foreground">This request isn&apos;t available to you.</p>
-        : <p role="alert" className="p-4 text-ui text-muted-foreground">This request couldn&apos;t load. <button type="button" className="underline hover:text-foreground" onClick={() => void mutate()}>Retry</button></p>
+        : gone ? <p role="status" className="p-4 text-ui text-muted-foreground">This task isn&apos;t available to you.</p>
+        : <p role="alert" className="p-4 text-ui text-muted-foreground">This task couldn&apos;t load. <button type="button" className="underline hover:text-foreground" onClick={() => void mutate()}>Retry</button></p>
       : <TaskPaneBody detail={data} viewerId={viewerId} />}
   </aside>;
 }
@@ -74,23 +76,23 @@ function TaskPaneBody({ detail, viewerId }: { detail: TaskDetail; viewerId: stri
   // superseded by a Reopen's new live ask of the same kind is gone, and the same closed ask asked again reads once.
   const decided = decisionLines(questions, open, (q) => q.state === "cancelled" ? `${endedLabel(q.kind)}: ${askLine(q, task.specialist, agentNames)}` : answerLine(q));
   // A question's card is posted into the task room too: shown once (open at the top, else a Decision line), so
-  // Progress leaves it out, as it does a card for this very request (a Closed one read as an empty card, W7-4).
+  // Progress leaves it out, as it does a card for this very task (a Closed one read as an empty card, W7-4).
   const hideCard = (m: { kind?: string | null; taskRefs?: { taskId: string }[] | null }) =>
     m.kind === "question" || (!!m.taskRefs?.length && m.taskRefs.every((r) => r.taskId === task.taskId));
   // The header's reason ("Ready for review", "Needs approval"), else its word, so the card agrees with it.
   const view = summaryView(task, viewerId);
   const word = view.reason ?? view.word;
-  // The room's composer steers this request when it is on screen; otherwise a one-line note here.
+  // The room's composer steers this task when it is on screen; otherwise a one-line note here.
   const composerShown = useRoomComposerShown(task.originRoomId);
   const effects = open ? detail.effects.filter((e) => e.state !== "proposed") : detail.effects;
   const closed = view.word === "Closed";
-  // Steering is offered while it runs or needs the viewer; a Done request only after Follow up; a Closed one never.
+  // Steering is offered while it runs or needs the viewer; a Done task only after Follow up; a Closed one never.
   const [followUp, setFollowUp] = useState(false);
   const steerable = view.word === "Working" || view.word === "Needs you" || (view.word === "Done" && followUp);
   useMarkTaskSteerable(task.taskId, steerable);
   const effectRows = effectFooter(effects, closed);
   return <div className="room-context-body flex min-h-0 flex-col gap-3">
-    <TaskHeader task={task} viewerId={viewerId} finished={taskFinished(detail)} />
+    <TaskHeader task={task} viewerId={viewerId} />
     {open && <NeedsYouCard key={open.id} task={task} question={open} label={word} ended={closed} />}
     {decided.length > 0 && <ul aria-label="Decisions" className="grid gap-1 px-1 text-ui text-muted-foreground">
       {decided.map((d) => <li key={d.id}>{d.line}</li>)}
@@ -147,19 +149,16 @@ function answerLine(q: QuestionView): string {
   return `${verb} by ${q.answeredBy!.name} · ${time(q.answeredAt)}`;
 }
 
-/** `finished`: the run really finished (an attempt completed, or a waiting approval's effect landed); only then does
- *  the actor line say "Done by". */
-export function TaskHeader({ task, viewerId, finished = false }: { task: TaskSummary; viewerId: string; finished?: boolean }): ReactElement {
+/** The task's title and its one status word, with the reason beside it only when it adds one; the pane's title is
+ *  already the specialist, so nothing here repeats who or the word ("Done by X · Done", audit 02 P2). */
+export function TaskHeader({ task, viewerId }: { task: TaskSummary; viewerId: string }): ReactElement {
   const { act } = useTaskActions("pane");
-  const { agentNames } = useLiveEvents();
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [confirmStop, setConfirmStop] = useState(false);
   const view = summaryView(task, viewerId);
-  // Stop only while something runs: a request that needs the viewer (or is done) has nothing to stop.
+  // Stop only while something runs: a task that needs the viewer (or is done) has nothing to stop.
   const live = view.word === "Working";
-  // The specialist is the actor: "Growth is working on this" / "Done by Growth"; its bare name where nobody did it.
-  const actor = doneByLine(task.specialist, view, agentNames, finished) ?? specialistLabel(task.specialist, agentNames);
   const press = async (verb: "stop" | "resolve" | "reopen") => {
     setConfirmStop(false);
     setPending(true);
@@ -167,15 +166,14 @@ export function TaskHeader({ task, viewerId, finished = false }: { task: TaskSum
     setPending(false);
     setError(res.ok ? null : res.message);
   };
-  return <section aria-label="Request status" className="grid gap-1 px-1">
+  return <section aria-label="Task status" className="grid gap-1 px-1">
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-ui text-muted-foreground">
-      <span className="font-semibold text-foreground">{actor}</span>
+      <span className="min-w-0 font-semibold text-foreground">{task.title}</span>
       <TaskStatus task={task} viewerId={viewerId} />
-      {/* "Done by X, ready for your review" already says Ready for review. */}
-      {view.reason && !(view.reason === "Ready for review" && view.word === "Needs you" && actor.endsWith("ready for your review")) && <span>{view.reason}</span>}
+      {view.reason && <span>{view.reason}</span>}
     </div>
     {/* Fixed slots (UX audit 2, P0): Stop, Close and Reopen never take each other's place, so a press can't land on
-        a button that changed under the cursor. A running request is stopped (asked once, on its own row), never
+        a button that changed under the cursor. A running task is stopped (asked once, on its own row), never
         resolved under it; Reopen undoes either and runs nothing. */}
     <div className="flex gap-2">
       <span data-action-slot="stop" className="w-[4.5rem]">
@@ -189,8 +187,8 @@ export function TaskHeader({ task, viewerId, finished = false }: { task: TaskSum
         {task.status === "resolved" && <Button type="button" size="sm" variant="outline" disabled={pending} onClick={() => void press("reopen")}>Reopen</Button>}
       </span>
     </div>
-    {live && confirmStop && <span role="group" aria-label="Stop this request?" className="inline-flex items-center gap-2 text-ui">
-      <span>Stop this request?</span>
+    {live && confirmStop && <span role="group" aria-label="Stop this task?" className="inline-flex items-center gap-2 text-ui">
+      <span>Stop this task?</span>
       <Button type="button" size="sm" variant="outline" disabled={pending} onClick={() => void press("stop")}>Stop it</Button>
       <Button type="button" size="sm" variant="ghost" onClick={() => setConfirmStop(false)}>Keep going</Button>
     </span>}
@@ -198,7 +196,7 @@ export function TaskHeader({ task, viewerId, finished = false }: { task: TaskSum
   </section>;
 }
 
-/** Steering when the room's composer isn't on screen: one line, Enter sends it into the request's room. */
+/** Steering when the room's composer isn't on screen: one line, Enter sends it into the task's room. */
 function AddNote({ task, autoFocus = false }: { task: TaskSummary; autoFocus?: boolean }): ReactElement {
   const { messaging, tasks } = useLiveEvents();
   const [text, setText] = useState("");
@@ -212,7 +210,7 @@ function AddNote({ task, autoFocus = false }: { task: TaskSummary; autoFocus?: b
     setPending(true);
     sendToTask(messaging, task, note, "note").then(() => { setText(""); setError(null); showSteered(task); }, () => setError("That didn't go through. Try again.")).finally(() => setPending(false));
   }}>
-    <Input aria-label="Steer this request" placeholder="Steer this request…" autoFocus={autoFocus} value={text} maxLength={4000} disabled={pending}
+    <Input aria-label="Steer this task" placeholder="Steer this task…" autoFocus={autoFocus} value={text} maxLength={4000} disabled={pending}
       onChange={(event) => setText(event.target.value)} />
     {error && <p role="alert" className="text-ui text-err">{error}</p>}
   </form>;

@@ -10,7 +10,7 @@ export type WorkState = "ready" | "queued" | "working" | "paused" | "stopped" | 
 export type RoomState = "loading" | "ready" | "reconnecting" | "unavailable" | "access-removed";
 
 export const roomKindLabel = {
-  channel: "Channel",
+  channel: "Project",
   dm: "Direct message",
   "group-dm": "Group chat",
 } as const;

@@ -82,7 +82,7 @@ it("lets a person attach a file, as the phone's room screen does", async () => {
 it("says access was removed, with no composer, when sharing pauses while the chat is open", async () => {
   rooms.value = { ...rooms.value, accessRemoved: true, messages: [] };
   render(<SessionChat sessionId="s1" sessionOwnerId="user_alice" openChat={vi.fn(async () => detail)} onClose={vi.fn()} />);
-  expect(await screen.findByText("Access removed. You can no longer view this conversation.")).toBeInTheDocument();
+  expect(await screen.findByText("Access removed. You can no longer view this chat.")).toBeInTheDocument();
   expect(screen.queryByLabelText("Message the people here")).not.toBeInTheDocument();
 });
 

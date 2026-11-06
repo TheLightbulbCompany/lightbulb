@@ -278,9 +278,9 @@ export const fonts = {
   loraItalic: "Satoshi-Italic",
   /** Agent monograms. */
   loraBoldItalic: "Satoshi-BoldItalic",
-  /** Reading text — message bodies (web: `--font-body`). */
-  body: "Inter_400Regular",
-  bodySemiBold: "Inter_600SemiBold",
+  /** Reading text — message bodies (web: `--font-body`). Satoshi too: one face everywhere. */
+  body: "Satoshi-Regular",
+  bodySemiBold: "Satoshi-Bold",
   /** Platform monospace — code only. */
   mono: Platform.select({ ios: "Menlo", default: "monospace" }) as string,
 } as const;

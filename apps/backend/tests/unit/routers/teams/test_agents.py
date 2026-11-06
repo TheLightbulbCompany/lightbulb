@@ -445,7 +445,7 @@ def test_patch_agent_rejects_moving_final_root_ceo_under_a_manager(client, monke
     )
 
     assert r.status_code == 409
-    assert r.json()["detail"] == "The final root CEO cannot be deleted or demoted."
+    assert r.json()["detail"] == "Lightbulb's coordinator cannot be deleted or demoted."
     admin.patch_agent.assert_not_awaited()
 
 
@@ -488,7 +488,7 @@ def test_delete_agent_maps_final_root_conflict_to_409(client, monkeypatch):
     from core.services.paperclip_agent_lifecycle import AgentLifecycleConflict
 
     delete_everywhere = AsyncMock(
-        side_effect=AgentLifecycleConflict("The final root CEO cannot be deleted or demoted.")
+        side_effect=AgentLifecycleConflict("Lightbulb's coordinator cannot be deleted or demoted.")
     )
     monkeypatch.setattr(agents_mod, "delete_agent_everywhere", delete_everywhere)
     admin = MagicMock()
@@ -497,7 +497,7 @@ def test_delete_agent_maps_final_root_conflict_to_409(client, monkeypatch):
 
     r = client.delete("/api/v1/teams/agents/friday_id", headers={"Authorization": "Bearer x"})
     assert r.status_code == 409
-    assert r.json()["detail"] == "The final root CEO cannot be deleted or demoted."
+    assert r.json()["detail"] == "Lightbulb's coordinator cannot be deleted or demoted."
     delete_everywhere.assert_awaited_once_with(owner_id="o1", agent_id="friday_id")
 
 

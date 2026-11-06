@@ -159,7 +159,7 @@ describe("RoomChatRow", () => {
     const onAction = jest.fn();
     await render(<RoomChatRow room={dm} others={[ceo]} viewerId="me" ring={null} live={null} hasDraft={false} palette={p} onAction={onAction} />);
     await fireEvent.press(screen.getByLabelText("Mark read", { includeHiddenElements: true }));
-    await fireEvent.press(screen.getByLabelText("Mute conversation", { includeHiddenElements: true }));
+    await fireEvent.press(screen.getByLabelText("Mute", { includeHiddenElements: true }));
     expect(onAction.mock.calls).toEqual([["markRead"], ["mute"]]);
   });
 });

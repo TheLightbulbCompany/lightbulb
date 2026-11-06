@@ -86,7 +86,7 @@ export function RoomHeaderActions({
           disabled={disabled}
           hitSlop={8}
           accessibilityRole="button"
-          accessibilityLabel={starred ? "Unstar this conversation" : "Star this conversation"}
+          accessibilityLabel={starred ? "Unstar" : "Star"}
           accessibilityState={{ selected: starred, disabled: !!disabled }}
           // An ARRAY, never a function: reanimated only attaches an animated
           // style it can see in the prop itself, and a function style is opaque
@@ -135,7 +135,7 @@ export function RoomHeaderActions({
         disabled={disabled}
         hitSlop={8}
         accessibilityRole="button"
-        accessibilityLabel={muted ? "Unmute this conversation" : "Mute this conversation"}
+        accessibilityLabel={muted ? "Unmute" : "Mute"}
         accessibilityState={{ selected: muted, disabled: !!disabled }}
         style={[styles.button, muteScale.style]}
       >

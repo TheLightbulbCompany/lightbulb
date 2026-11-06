@@ -7,7 +7,7 @@ const room = { roomId: "ext", kind: "channel", name: "lightbulb-acme", shared: t
 
 it("tells a new user the shared room is their line to the Lightbulb team", () => {
   render(<RoomIntro room={room} roomName="lightbulb-acme" participants={[]} />);
-  expect(screen.getByText("This channel is shared with the Lightbulb team — ask us anything here.")).toBeInTheDocument();
+  expect(screen.getByText("This project is shared with the Lightbulb team — ask us anything here.")).toBeInTheDocument();
 });
 
 it("keeps the ordinary channel intro for unshared rooms", () => {

@@ -17,7 +17,7 @@ export function errorCopy(error: unknown, answererNames: readonly string[] = [])
     if (error.status === 402 || error.status === 429) return error.message;
     if (error.status === 409) return "Someone else got to this first. It's up to date now.";
     if (error.status === 403) return answererNames.length ? `Only ${answererNames.join(" or ")} can approve this` : "You can't do this here.";
-    if (error.status === 404) return "This request isn't available.";
+    if (error.status === 404) return "This task isn't available.";
     if (error.status === 503) return "Lightbulb is busy. Try again in a moment.";
   }
   return "That didn't go through. Try again.";
@@ -73,7 +73,7 @@ export function useTaskActions() {
     // An answer posts the question's own primary option id (allow_once, send, …), never the action word.
     if (ANSWERS.has(action) && task.openQuestion) {
       const optionId = primaryOptionId(task.openQuestion.options);
-      if (!optionId) return Promise.resolve({ ok: false, message: "Open the request to answer this." });
+      if (!optionId) return Promise.resolve({ ok: false, message: "Open the task to answer this." });
       return answer(task, task.openQuestion.qid, optionId);
     }
     if (action === "retry" || action === "reopen") return act(task, action);

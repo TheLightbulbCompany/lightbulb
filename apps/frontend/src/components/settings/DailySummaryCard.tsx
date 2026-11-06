@@ -51,7 +51,7 @@ export function DailySummaryCard() {
           <div>
             <div className="settings-card-title">Daily summary</div>
             <div className="settings-card-desc">
-              A notification and email at 8am ({prefs.timezone}) when approvals, assigned issues or mentions are
+              A notification and email at 8am ({prefs.timezone}) when approvals, tasks or mentions are
               waiting on you.
             </div>
           </div>

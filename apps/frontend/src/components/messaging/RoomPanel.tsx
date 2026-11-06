@@ -257,14 +257,14 @@ function RoomBoundary(props: RoomPanelProps) {
   }
   const composer = retainAttempt(props.composer);
   const threadComposer = props.threadComposer && { ...props.threadComposer, composer: retainAttempt(props.threadComposer.composer) };
-  if (props.state === "loading") return <section className="room-panel room-blocked" aria-label="Loading conversation">
-    <p role="status" aria-label="Room status">Loading conversation…</p><div className="room-skeleton" aria-hidden="true"><span /><span /><span /></div>
+  if (props.state === "loading") return <section className="room-panel room-blocked" aria-label="Loading chat">
+    <p role="status" aria-label="Room status">Loading chat…</p><div className="room-skeleton" aria-hidden="true"><span /><span /><span /></div>
   </section>;
   const matchingIdentity = !!props.ownerScopeId && !!props.roomId && props.room?.roomId === props.roomId &&
     props.messages.every((message) => message.roomId === props.roomId) &&
     (props.pendingMessages ?? []).every((message) => message.roomId === props.roomId);
-  if (!matchingIdentity || props.state === "access-removed" || props.state === "unavailable") return <section className="room-panel room-blocked" aria-label="Conversation unavailable">
-    <p role="status" aria-label="Room status">{props.state === "access-removed" ? "Access removed. You can no longer view this conversation." : "This conversation is unavailable."}</p>
+  if (!matchingIdentity || props.state === "access-removed" || props.state === "unavailable") return <section className="room-panel room-blocked" aria-label="Chat unavailable">
+    <p role="status" aria-label="Room status">{props.state === "access-removed" ? "Access removed. You can no longer view this chat." : "This chat is unavailable."}</p>
     {matchingIdentity && props.state === "unavailable" && props.onRetry && <Button variant="outline" onClick={props.onRetry}>Try again</Button>}
   </section>;
   return <RoomContent {...props} composer={composer} threadComposer={threadComposer} />;
@@ -582,7 +582,7 @@ function RoomContent({
   const ownerCannotLeave = !visibleRoom?.shared && ownerAlone;
   // A group chat has no admins: any member archives and unarchives it.
   const canUnarchive = !!onSetArchived && (visibleRoom?.kind === "group-dm" || isRoomAdmin);
-  const roomNoun = visibleRoom?.kind === "group-dm" ? "group chat" : "channel";
+  const roomNoun = visibleRoom?.kind === "group-dm" ? "group chat" : "project";
   const normalizedMemberQuery = memberQuery.trim().toLocaleLowerCase();
   const memberMatches = (name: string) => !normalizedMemberQuery || name.toLocaleLowerCase().includes(normalizedMemberQuery);
   const filteredAddMemberCandidates = addMemberCandidates.filter((candidate) => memberMatches(candidate.displayName));
@@ -606,7 +606,7 @@ function RoomContent({
       await onRemoveMember({ kind: removalTarget.kind, id: removalTarget.id });
       setManagement(null);
     } catch (error) {
-      setManagementError(error instanceof Error ? error.message : "The channel could not be updated. Try again.");
+      setManagementError(error instanceof Error ? error.message : "The project could not be updated. Try again.");
     } finally {
       setManagementPending(false);
     }
@@ -668,7 +668,7 @@ function RoomContent({
   // when something else takes the pane, the column folds.
   const counterparts = participants.filter((participant) => participant.kind !== "human" || participant.id !== currentUserId);
   const roomName = roomDisplayName(visibleRoom, counterparts);
-  const sideTitle = `${showTasks ? "Tasks" : taskSelection ? "Request" : showScheduled ? "Scheduled" : showDetail ? "Thread" : contextCollapsed ? "Requests" : "About"} · ${roomName}`;
+  const sideTitle = `${showTasks ? "Tasks" : taskSelection ? "Task" : showScheduled ? "Scheduled" : showDetail ? "Thread" : contextCollapsed ? "Tasks" : "About"} · ${roomName}`;
   const openRequests = () => {
     setRequestsDismissedIn(null);
     if (isNarrow) setRequestsSheet(true);
@@ -795,10 +795,10 @@ function RoomContent({
           () => onSetPin(message.messageId, !pinnedMessageIds.includes(message.messageId)),
           "The pin could not be saved.",
         )}>{messageActionPending ? (pinnedMessageIds.includes(message.messageId) ? "Unpinning…" : "Pinning…")
-          : (pinnedMessageIds.includes(message.messageId) ? "Unpin from conversation" : "Pin to conversation")}</DropdownMenuItem>}
+          : (pinnedMessageIds.includes(message.messageId) ? "Unpin" : "Pin")}</DropdownMenuItem>}
         {onMarkUnreadFrom && !inThread && <DropdownMenuItem disabled={messageActionPending} aria-busy={messageActionPending} onSelect={() => void runMessageAction(
           () => onMarkUnreadFrom(message.messageSeq),
-          "The conversation could not be marked unread.",
+          "The chat could not be marked unread.",
         )}>{messageActionPending ? "Marking unread…" : "Mark unread from here"}</DropdownMenuItem>}
       </> : undefined}
       toolbarExtras={!message.deletedAt ? <>
@@ -894,7 +894,7 @@ function RoomContent({
     className={cn("room-panel", showContext && !sideHost && "room-has-context", showDetail ? "room-has-detail" : "room-has-default-context")} aria-label={roomName}>
     <div className="room-conversation" hidden={showContext && isNarrow && !sideHost} onClickCapture={closeOverlay} onFocusCapture={closeOverlay}>
       {/* Keyboard: the column sits after every message's toolbar in tab order, so one link jumps there first. */}
-      {superAgent && !visibleRoom?.feed && <button type="button" className="room-skip-link" onClick={skipToRequests}>Skip to requests</button>}
+      {superAgent && !visibleRoom?.feed && <button type="button" className="room-skip-link" onClick={skipToRequests}>Skip to tasks</button>}
       <RoomHeader room={visibleRoom} roomName={roomName} counterparts={counterparts} participants={participants} participantCount={participants.length}
         canEditRoom={canEditRoom} canLeave={canLeaveRoom} ownerCannotLeave={ownerCannotLeave} ownerHandsOff={canLeaveRoom && visibleRoom?.kind === "channel" && viewer?.role === "owner"} actionable={actionable} pinnedCount={pinnedMessageIds.length}
         search={<RoomMessageSearch roomId={roomId}
@@ -931,13 +931,13 @@ function RoomContent({
         // leads instead (members, pins, files, links). The ··· menu keeps the rare things.
         views={<>
           {superAgent ? !visibleRoom?.feed && <Button ref={contextTrigger} type="button" variant="ghost" size="sm" className="room-view-toggle relative" aria-pressed={requestsShown}
-            aria-label={waitingOnMe > 0 ? `Requests, ${waitingOnMe} need${waitingOnMe === 1 ? "s" : ""} you` : "Requests"}
+            aria-label={waitingOnMe > 0 ? `Tasks, ${waitingOnMe} need${waitingOnMe === 1 ? "s" : ""} you` : "Tasks"}
             onClick={() => {
               closeDetail(); setContextCollapsed(true);
               if (requestsShown) closeRequests("remember");
               else { openRequests(); capture("overview_opened", { source: "room", count: waitingOnMe }); }
             }}>
-            <ListChecks aria-hidden="true" /><span>Requests</span>
+            <ListChecks aria-hidden="true" /><span>Tasks</span>
             {waitingOnMe > 0 && <span aria-hidden="true" className="absolute right-1 top-1 size-1.5 rounded-full bg-warn" />}
           </Button> : <Button ref={contextTrigger} type="button" variant="ghost" size="sm" className="room-view-about relative"
             aria-expanded={!contextCollapsed} aria-label="About"
@@ -988,7 +988,7 @@ function RoomContent({
             {visibleRoom?.isDefault && <OnboardingBand participants={participants}
               humanSpoke={pendingMessages.length > 0 || mainMessages.some((message) => message.author.kind === "human")} />}
           </> : null}
-          empty={!historyComplete ? <p className="room-empty">Load older messages to see the start of this conversation.</p> : null}>
+          empty={!historyComplete ? <p className="room-empty">Load older messages to see the start of this chat.</p> : null}>
           {pendingMessages.filter((message) => message.threadRootMessageId === null).map((message) => <article key={message.clientMessageId} className="room-message opacity-60" aria-label={`Pending message from ${viewer?.displayName ?? "You"}`}>
             <Identity name={viewer?.displayName ?? "You"} avatarOnly size="default" /><div className="room-message-content"><div className="room-message-byline"><span className="font-semibold">{viewer?.displayName ?? "You"}</span><span className="text-ui text-muted-foreground">Sending…</span></div><MarkdownView skipHtml components={roomMarkdown} urlTransform={roomUrlTransform}>{linkifyMentions(message.text, message.mentions, participants)}</MarkdownView></div>
           </article>)}
@@ -1024,7 +1024,7 @@ function RoomContent({
     </div>
     {dockSide(<>{!contextCollapsed && !showDetail && <aside className="room-context" aria-label="About"
       onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setContextCollapsed(true); } }}>
-      <header className="room-context-header"><Button variant="ghost" aria-label="Back to conversation" onClick={() => setContextCollapsed(true)}><ArrowLeft aria-hidden="true" /></Button><h3 ref={contextHeading} tabIndex={-1} className="font-semibold">About</h3></header>
+      <header className="room-context-header"><Button variant="ghost" aria-label="Back to chat" onClick={() => setContextCollapsed(true)}><ArrowLeft aria-hidden="true" /></Button><h3 ref={contextHeading} tabIndex={-1} className="font-semibold">About</h3></header>
       <RoomDetailsPanel room={visibleRoom} roomName={roomName} tab={detailsTab} onSelectTab={setDetailsTab}
         outputs={superAgent ? roomOutputs.outputs : undefined} onOpenOutput={openTask}
         olderOutputs={superAgent && roomOutputs.hasOlder ? { loading: roomOutputs.loading, load: () => void roomOutputs.loadOlder() } : undefined}
@@ -1091,26 +1091,26 @@ function RoomContent({
           </div>}
         </section>} />
     </aside>}
-    {requestsShown && !showDetail && <aside className="room-context" aria-label="Requests"
+    {requestsShown && !showDetail && <aside className="room-context" aria-label="Tasks"
       onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeRequests("here"); } }}>
-      <header className="room-context-header"><h3 ref={requestsHeading} tabIndex={-1} className="flex-1 font-semibold">Requests</h3>
-        <Button variant="ghost" size="icon-sm" aria-label="Close requests" title="Close" onClick={() => closeRequests("remember")}><X aria-hidden="true" /></Button></header>
+      <header className="room-context-header"><h3 ref={requestsHeading} tabIndex={-1} className="flex-1 font-semibold">Tasks</h3>
+        <Button variant="ghost" size="icon-sm" aria-label="Close tasks" title="Close" onClick={() => closeRequests("remember")}><X aria-hidden="true" /></Button></header>
       <div className="room-context-body"><RequestGroups scope={{ kind: "room", roomId }} viewerId={currentUserId} onOpen={openTask} /></div>
     </aside>}
     {showScheduled && <aside className="room-context" aria-label="Scheduled" onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeDetail(); } }}>
-      <header className="room-context-header"><Button variant="ghost" aria-label={requestsWanted ? "Back to requests" : "Back to conversation"} onClick={closeDetail}><ArrowLeft aria-hidden="true" />Back</Button>
+      <header className="room-context-header"><Button variant="ghost" aria-label={requestsWanted ? "Back to tasks" : "Back to chat"} onClick={closeDetail}><ArrowLeft aria-hidden="true" />Back</Button>
         <h3 ref={detailHeading} tabIndex={-1} className="font-semibold">Scheduled</h3></header>
       <div className="room-context-body"><ScheduledList scope={{ kind: "room", roomId }} onOpen={openTask} /></div>
     </aside>}
     {showTasks && <aside className="room-context" aria-label="Tasks" onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeDetail(); } }}>
-      <header className="room-context-header"><Button variant="ghost" aria-label="Back to conversation" onClick={closeDetail}><ArrowLeft aria-hidden="true" />Back</Button>
+      <header className="room-context-header"><Button variant="ghost" aria-label="Back to chat" onClick={closeDetail}><ArrowLeft aria-hidden="true" />Back</Button>
         <h3 ref={detailHeading} tabIndex={-1} className="font-semibold">Tasks</h3></header>
       <div className="room-context-body"><RoomTasks tasks={roomTasks} onOpenAll={onLinkToWork!} /></div>
     </aside>}
     {taskSelection && <TaskPane key={taskSelection} taskId={taskSelection} viewerId={currentUserId} headingRef={detailHeading}
-      {...(localSelection?.from === "about" || (superAgent && requestsWanted) ? { onClose: closeDetail, backLabel: "Back to requests" } : { onClose: closeDetail })} />}
+      {...(localSelection?.from === "about" || (superAgent && requestsWanted) ? { onClose: closeDetail, backLabel: "Back to tasks" } : { onClose: closeDetail })} />}
     {showDetail && !showTasks && !taskSelection && !showScheduled && <aside className="room-context" aria-label="Thread" onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeDetail(); } }}>
-      <header className="room-context-header"><Button variant="ghost" aria-label="Back to conversation" onClick={closeDetail}><ArrowLeft aria-hidden="true" />Back</Button>
+      <header className="room-context-header"><Button variant="ghost" aria-label="Back to chat" onClick={closeDetail}><ArrowLeft aria-hidden="true" />Back</Button>
         <h3 ref={detailHeading} tabIndex={-1} className="font-semibold room-wrap">Thread</h3></header>
       <StickToBottom className="room-context-body" pinToken={threadSendToken}>{parentMessage ? <>{renderMessage(parentMessage, true)}
         {(() => {
@@ -1132,7 +1132,7 @@ function RoomContent({
         onOpenAutoFocus={(event) => { event.preventDefault(); managementCancel.current?.focus(); }}
         onCloseAutoFocus={(event) => { event.preventDefault(); (managementTrigger.current?.isConnected ? managementTrigger.current : contextHeading.current)?.focus(); }}>
         <DialogHeader><DialogTitle>Remove member</DialogTitle>
-          <DialogDescription className="break-words">{`Remove ${removalTarget?.displayName ?? "this member"} from ${roomName}? They will lose access to this channel and its messages.`}</DialogDescription>
+          <DialogDescription className="break-words">{`Remove ${removalTarget?.displayName ?? "this member"} from ${roomName}? They will lose access to this project and its messages.`}</DialogDescription>
         </DialogHeader>
         <form className="grid gap-4" onSubmit={(event) => { event.preventDefault(); void saveManagement(); }}>
           {managementError && <p role="alert" className="text-ui text-err break-words">{managementError}</p>}

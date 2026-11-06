@@ -96,7 +96,7 @@ it("approve posts optionId approve with the question's version; steer goes into 
   expect(c.markRead).toHaveBeenCalledWith("t-approve");
   // The transcript is the task's hidden room; its composer steers it.
   expect(mockRooms.selectRoom).toHaveBeenCalledWith("task-room-t-approve");
-  expect(view.getByText("Steer this request…")).toBeTruthy();
+  expect(view.getByText("Steer this task…")).toBeTruthy();
   fireEvent.press(view.getByLabelText("Send steer"));
   await waitFor(() => expect(mockSend).toHaveBeenCalledWith({ text: "use the brand purple" }));
   await view.unmount();
@@ -130,6 +130,6 @@ it("a task that resolves to no data reads as unavailable, not Loading forever", 
   const c = client({ ...step8, task: waiting }, [], "t-gone");
   c.get.mockResolvedValue(undefined as never);
   const view = await render(<TaskScreen />);
-  expect(await view.findByText("This request isn\u2019t available to you.")).toBeTruthy();
+  expect(await view.findByText("This task isn\u2019t available to you.")).toBeTruthy();
   await view.unmount();
 });

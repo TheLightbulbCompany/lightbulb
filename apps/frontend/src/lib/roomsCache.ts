@@ -35,13 +35,13 @@ export const roomsCache: RoomsPersistence = {
   },
 };
 
-/** Sign-out: drop any pending write and every scope's list. */
-export function clearRoomsCache(): void {
-  if (timer) clearTimeout(timer);
-  timer = null;
-  pending.clear();
+/** Sign-out: drop any pending write and every scope's list. With a `userId:orgId` scope (a 401/403 for it), that
+ *  scope's only. */
+export function clearRoomsCache(scope?: string): void {
+  if (scope) pending.delete(PREFIX + scope);
+  else { if (timer) clearTimeout(timer); timer = null; pending.clear(); }
   try {
     const keys = Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i));
-    for (const key of keys) if (key?.startsWith(PREFIX)) localStorage.removeItem(key);
+    for (const key of keys) if (key && (scope ? key === PREFIX + scope : key.startsWith(PREFIX))) localStorage.removeItem(key);
   } catch { /* nothing to drop */ }
 }

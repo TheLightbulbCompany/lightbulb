@@ -64,6 +64,7 @@ export function resolvePostAgentPhase(): "ready" {
 
 import type { ProviderChoiceId as ProviderChoice } from "@/lib/providerCards";
 import { readLastKnown, writeLastKnown } from "@/lib/lastKnown";
+import { clearRoomsCache } from "@/lib/roomsCache";
 
 function isProviderChoice(v: string | null): v is ProviderChoice {
   return v === "chatgpt_oauth" || v === "byo_key";
@@ -177,6 +178,9 @@ function RotatingIdeas({ eyebrow }: { eyebrow: string }) {
 // bare spinner where the structured provisioning UI was supposed to be, and no
 // text anywhere said what was being waited on. One label, one live region, one
 // place to change it. (Motion is unchanged — same Loader2, same spin.)
+/** How long a last-known-ready workspace may draw the app before `/container/status` is even asked (W12-18, W15-7). */
+const HOLD_SKIP_MS = 3_000;
+
 function StepperHold() {
   return (
     <div
@@ -201,7 +205,7 @@ export function ProvisioningStepper({
 }) {
   const { organization } = useOrganization();
   const isOrg = !!organization;
-  const { userId: clerkUserId } = useAuth();
+  const { userId: clerkUserId, orgId: clerkOrgId } = useAuth();
   const superAgent = useSuperAgent();
   // Per-OWNER activation-marker key so a shared/QA browser doesn't let the first
   // account's activation suppress onboarding_ready for a later account's real
@@ -290,6 +294,7 @@ export function ProvisioningStepper({
     container,
     refresh,
     error: statusError,
+    requested: statusRequested,
   } = useProvisioningState();
   const checkAgain = async () => {
     try {
@@ -723,15 +728,31 @@ export function ProvisioningStepper({
   // W12-18: a workspace this browser last saw ready skips the hold below while /billing/account and the first
   // /container/status answer (1-3.5 s on a dev cold load): the app draws at once and this gate still decides when
   // they do. Any settled answer that is not ready forgets it, so the next load waits again. Never past an error (a
-  // token that won't verify, a failed read). No time limit: once the app is drawn, swapping it for the hold when a slow
-  // answer passed 3 s blanked Home until the answer landed, then remounted it (W15-7: 5.2 s → 9.4 s on dev).
+  // token that won't verify, a failed read). Once /container/status is asked, the app stays however slow the answer:
+  // swapping it for the hold at 3 s blanked Home until the answer landed (W15-7: 5.2 s → 9.4 s on dev). Not asked by
+  // HOLD_SKIP_MS (the token never verified: a removed or revoked member sends nothing, so no error ever comes): the
+  // hold, as before.
   const passedScope = `${clerkUserId ?? "anon"}:${organization?.id ?? "personal"}`;
   const settled = !billingLoading && gatePhase !== "loading";
   useEffect(() => {
     if (phase === "ready") writeLastKnown("gatePassed", passedScope, true);
     else if (settled) writeLastKnown("gatePassed", passedScope, false);
   }, [phase, settled, passedScope]);
-  const skipHold = !statusError && !billingError && readLastKnown("gatePassed", passedScope) === true;
+  const [skipExpired, setSkipExpired] = useState(false);
+  useEffect(() => {
+    if (settled || statusRequested) return;
+    const timer = setTimeout(() => setSkipExpired(true), HOLD_SKIP_MS);
+    return () => clearTimeout(timer);
+  }, [settled, statusRequested]);
+  // Refused (401/403): this person may no longer open this workspace, so its kept room list goes, and the skip.
+  const authStatus = (e: unknown) => (e as { status?: unknown } | undefined)?.status;
+  const refused = [statusError, billingError].some((e) => authStatus(e) === 401 || authStatus(e) === 403);
+  useEffect(() => {
+    if (!refused || !clerkUserId) return;
+    clearRoomsCache(`${clerkUserId}:${clerkOrgId ?? clerkUserId}`);  // useRooms' scope (roomsListKey)
+    writeLastKnown("gatePassed", passedScope, false);
+  }, [refused, clerkUserId, clerkOrgId, passedScope]);
+  const skipHold = !skipExpired && !statusError && !billingError && readLastKnown("gatePassed", passedScope) === true;
 
   // Chat-first onboarding begins after this provisioning gate. The backend
   // captures the first canonical-room human message only when normal per-room

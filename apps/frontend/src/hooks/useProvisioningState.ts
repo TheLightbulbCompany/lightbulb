@@ -66,6 +66,9 @@ export interface ProvisioningStateResult {
    * instead of a silently stuck UI). */
   error: Error | undefined;
   isLoading: boolean;
+  /** The token verified and `/container/status` was asked (it may still be on its way). False while a token for this
+   *  workspace has not verified, e.g. a removed member's: no request goes out, so no error ever comes back. */
+  requested?: boolean;
 }
 
 /**
@@ -194,8 +197,9 @@ export function useProvisioningState(
     visibility: webVisibilityAdapter,
   });
 
+  const requested = scope.eligible && verifiedScope === scope;
   if (!classified) {
-    return { phase: "loading", container: null, blocked: null, refresh, error: networkError, isLoading };
+    return { phase: "loading", container: null, blocked: null, refresh, error: networkError, isLoading, requested };
   }
 
   switch (classified.kind) {
@@ -207,6 +211,7 @@ export function useProvisioningState(
         refresh,
         error: networkError,
         isLoading,
+        requested,
       };
     case "team-pending":
       // Backend Task 8: org members whose admin-owned workspace hasn't
@@ -214,14 +219,14 @@ export function useProvisioningState(
       // "waiting on your admin" empty-state; the shared bounded loop
       // keeps polling so we transition to `normal` automatically once the
       // admin's container appears.
-      return { phase: "team-pending", container: null, blocked: null, refresh, error: networkError, isLoading };
+      return { phase: "team-pending", container: null, blocked: null, refresh, error: networkError, isLoading, requested };
     case "needs-signup":
       // "Owner has never started signup": gate would fire signup_required
       // for an admin, but /container/status converts that to 404 so the
       // chat surface renders the ProviderPicker (whose workspace CTA calls
       // POST /billing/checkout) instead of trapping the admin in a
       // Subscribe-loop UI.
-      return { phase: "needs-signup", container: null, blocked: null, refresh, error: networkError, isLoading };
+      return { phase: "needs-signup", container: null, blocked: null, refresh, error: networkError, isLoading, requested };
     case "blocked":
       return {
         phase: "blocked",
@@ -230,6 +235,7 @@ export function useProvisioningState(
         refresh,
         error: networkError,
         isLoading,
+        requested,
       };
     case "unrecognized":
     default:
@@ -253,6 +259,7 @@ export function useProvisioningState(
         refresh,
         error: networkError ?? new Error(`Unexpected /container/status status: ${classified.status}`),
         isLoading,
+        requested,
       };
   }
 }

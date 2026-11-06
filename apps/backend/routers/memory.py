@@ -221,14 +221,18 @@ async def dismiss_draft(draft_id: str, auth: AuthContext = Depends(caller)) -> R
 @internal_router.post("/recall/{owner_id}")
 async def internal_recall(owner_id: str, body: InternalRecallBody, request: Request) -> dict:
     """Recall for the workspace's agents: the team scope, plus the private scope of ``member`` (sent
-    only from a 1:1 DM with that person). No question expansion: the plugin waits seconds, not a model call."""
+    only from a 1:1 DM with that person). No question expansion and no rerank: the plugin's recall runs
+    before the Router's model call, so every model call here adds to every reply (rerank 60-410 ms on dev,
+    6 Nov 2026)."""
     await container_auth._require_hook_token(owner_id, request)
     fields = body.model_dump(exclude={"member", "lane", "audience"})
     member = body.member
     if member is not None and not workspace_memory._MEMBER_ID.fullmatch(member):
         raise HTTPException(status_code=422, detail="member must be a user id")
     audience = _audience(member, body.lane, body.audience)
-    return await _guard(memory_api.recall_page(owner_id, member, **fields, use_expand=False, audience=audience))
+    return await _guard(
+        memory_api.recall_page(owner_id, member, **fields, use_expand=False, use_rerank=False, audience=audience)
+    )
 
 
 class BoardBody(BaseModel):

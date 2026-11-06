@@ -297,7 +297,7 @@ def test_internal_recall_runs_as_the_workspace(hook):
     assert r.json() == PAGE and seen == ["org_a"]
     kw = rec.await_args.kwargs
     assert kw["include_private"] is False and "private" not in kw["namespaces"] and kw["budget_tokens"] == 400
-    assert kw["use_expand"] is False  # the plugin waits 3 s: no model call on its path
+    assert kw["use_expand"] is False and kw["use_rerank"] is False  # no model call before the Router's
 
 
 def test_internal_recall_in_a_dm_adds_that_persons_private_scope(hook):

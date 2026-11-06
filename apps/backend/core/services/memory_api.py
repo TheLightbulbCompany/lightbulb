@@ -66,6 +66,7 @@ async def recall_page(
     budget_tokens: int = 8000,
     limit: int = 100,
     use_expand: bool = True,
+    use_rerank: bool = True,
     audience: dict | None = None,
 ) -> dict:
     """The evidence page. ``user_id`` adds that person's private scope; ``None`` is the workspace.
@@ -89,6 +90,7 @@ async def recall_page(
         limit=limit,
         include_private=user_id is not None,
         use_expand=use_expand,
+        use_rerank=use_rerank,
         **({"tasks": True} if links else {}),
     )
     if links:

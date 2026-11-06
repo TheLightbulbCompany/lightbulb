@@ -38,6 +38,7 @@ _SUBKINDS = {
 
 OPTION_LABELS = {
     "allow_once": "Allow once",
+    "allow_always": "Always allow",
     "deny": "Deny",
     "send": "Send",
     "publish": "Publish",
@@ -67,11 +68,131 @@ def subkind_for(effect_kind: str) -> str:
     return _SUBKINDS[effect_kind]
 
 
-def kind_and_options(effect_kind: str) -> tuple[ts.QuestionKind, list[str]]:
+def kind_and_options(effect_kind: str, operands: dict | None = None) -> tuple[ts.QuestionKind, list[str]]:
+    """The card's buttons. `allow_always` (a standing rule, `add_always_allow`) only when the call names a target
+    the rule can bind to: a button that could not make a rule is not offered."""
+    always = ["allow_always"] if _target(effect_kind, operands or {}) else []
     action = REVIEW_KINDS.get(effect_kind)
     if action:
-        return "review", [action, "request_changes"]
-    return "approval", ["allow_once", "deny"]
+        return "review", [action, *always, "request_changes"]
+    return "approval", ["allow_once", *always, "deny"]
+
+
+# --- approval modes (founder ruling 6 Nov 2026) --------------------------------------------------------------
+# One mode per workspace, stored in the capability policy (`billing_repo`, key `approval_mode`, default auto) and
+# read by the effects route only, so a Worker's VM can never change it. Ask: every classified outside action stops
+# for a person. Auto: only the fixed list below. Never ask: nothing stops; the intent row still logs every action.
+# The floors hold in every mode, outside this module: Hermes deny list, purchase caps and Link's approval, credit
+# caps, A2A outside_org deny, one action per command, typed chat never approves.
+
+APPROVAL_MODES = billing_repo.APPROVAL_MODES
+_RECIPIENT_KINDS = frozenset({"mail.send", "text.send", "invite.send"})
+_EMAIL = re.compile(r"[^\s,;<>\"']+@[^\s,;<>\"']+")
+
+
+def asks(mode: str, kind: str, operands: dict, *, members: Collection[str] = (), limits: dict | None = None) -> bool:
+    """Whether this outside action stops for a person's yes (pure). Auto stops only for money over the per-purchase
+    cap, a recipient who is not a workspace member (`members`: their emails, lower-case), and deletes of outside
+    data; publish, merge, provision and agent messages go ahead. Unknown mode or unreadable operands: ask."""
+    if mode == "never_ask":
+        return False
+    if mode != "auto":
+        return True
+    if kind == "delete":
+        return True
+    if kind in _RECIPIENT_KINDS:
+        to = _EMAIL.findall(str(operands.get("to") or "").lower())
+        return not to or any(r not in members for r in to)  # a reply or a phone number names no member: ask
+    if kind == "purchase":
+        cap = int((limits or {}).get("perPurchaseCents") or 0)
+        try:
+            cents = round(float(str(operands["amount"]).lstrip("$").replace(",", "")) * 100)
+        except (KeyError, ValueError):
+            return True
+        return cap <= 0 or cents > cap
+    return False
+
+
+async def member_emails(ws: str) -> set[str]:
+    """The workspace members' primary emails, lower-case, strictly read (a Clerk error raises: the caller asks)."""
+    if not ws.startswith("org_"):
+        return {(await clerk_admin.get_primary_email(ws)).lower()}
+    members = await clerk_admin.list_organization_members(ws, strict=True)
+    return {m["email"].lower() for m in members if m.get("email")}
+
+
+#: The operand an Always-allow rule binds to: the recipient, app, repo, merchant, provider or agent.
+_TARGET_KEYS = {
+    "mail.send": "to",
+    "text.send": "to",
+    "app.publish": "appId",
+    "pr.merge": "repo",
+    "purchase": "merchant",
+    "provision": "provider",
+    "a2a.send": "to",
+}
+
+
+def _target(kind: str, operands: dict) -> tuple[str, str] | None:
+    key = _TARGET_KEYS.get(kind)
+    value = operands.get(key) if key else None
+    return (key, value) if isinstance(value, str) and value else None
+
+
+async def rule_effect(ws: str, specialist: str | None, kind: str, operands: dict) -> str | None:
+    """ "allow" | "deny" when a stored rule names this action (`a2a_rules.decide` over the workspace's Rules
+    document), else None. The A2A defaults and holders never decide an effect: only a rule for this skill does."""
+    from core.repositories import a2a_repo
+    from core.services import a2a_rules
+
+    doc = await a2a_repo.get_rules(ws)
+    if not doc:
+        return None
+    d = a2a_rules.decide(
+        a2a_rules.Rules.model_validate(doc),
+        org=ws,
+        requester_person="",
+        requester_org=ws,
+        chain_agents=[],
+        resource=f"agent:{specialist or '*'}",
+        skill=kind,
+        session_person=None,
+        exception=None,
+        origin_is_person=False,
+        operands=operands,
+    )
+    return d.effect if d.effect != "hold" and d.rule not in ("default", "holder") else None
+
+
+async def add_always_allow(ws: str, kind: str, operands: dict) -> None:
+    """The card's Always allow: one workspace-wide `allow` rule for this action kind and target in the workspace's
+    Rules document (any answerer may make it: ruling 6 Nov 2026). Idempotent: the id comes from kind and target.
+
+    ponytail: read-modify-write of one document, no condition; a rules PUT racing it can drop this rule (the next
+    Always allow writes it again). A conditional put on `revision` when that race shows up."""
+    from core.repositories import a2a_repo
+    from core.services import a2a_rules, a2a_tasks
+
+    target = _target(kind, operands)
+    if target is None:
+        return
+    key, value = target
+    rid = "always-" + hashlib.sha256(f"{kind}\0{key}\0{value}".encode()).hexdigest()[:16]
+    doc = await a2a_repo.get_rules(ws)
+    rules = a2a_rules.Rules.model_validate(doc) if doc else a2a_rules.default_rules(ws, await _admins(ws))
+    if any(r.id == rid for r in rules.rules):
+        return
+    rules.rules.append(
+        a2a_rules.Rule(
+            id=rid,
+            resource="agent:*",
+            skill=kind,
+            requesters=[f"org:{ws}"],
+            effect="allow",
+            when=a2a_rules.When(operands_equal={key: value}),
+        )
+    )
+    await a2a_repo.put_rules(ws, {**rules.model_dump(exclude_none=True), "revision": a2a_tasks.revision(rules)})
 
 
 def operands_hash(kind: str, operands: dict) -> str:

@@ -19,7 +19,7 @@ from core.repositories import billing_repo  # noqa: E402
 from main import app  # noqa: E402
 from routers import company_policy as mod  # noqa: E402
 
-ALL_TRUE = {"money_moves": True, "outreach": True, "publishing": True, "provisioning": True}
+ALL_TRUE = {"money_moves": True, "outreach": True, "publishing": True, "provisioning": True, "approval_mode": "auto"}
 
 
 @pytest.fixture
@@ -110,6 +110,46 @@ def test_patch_unknown_capability_is_422_and_writes_nothing(client):
         patch.object(billing_repo, "run_in_thread", run),
     ):
         resp = client.patch("/api/v1/company/policy", json={"bogus": True})
+    assert resp.status_code == 422
+    run.assert_not_awaited()
+
+
+# --- approval mode (founder ruling 6 Nov 2026) ----------------------------
+
+
+def _patch_mode(c, body):
+    run = AsyncMock(return_value={})
+    with (
+        patch.object(billing_repo, "get_by_owner_id", AsyncMock(return_value={"owner_id": "org_a"})),
+        patch.object(billing_repo, "_get_table", MagicMock()),
+        patch.object(billing_repo, "run_in_thread", run),
+    ):
+        return c.patch("/api/v1/company/policy", json=body), run
+
+
+def test_approval_mode_ask_and_auto_are_stored(client):
+    resp, run = _patch_mode(client, {"approval_mode": "ask"})
+    assert resp.status_code == 200 and resp.json()["approval_mode"] == "ask"
+    assert run.await_args.kwargs["ExpressionAttributeValues"] == {":p": {"approval_mode": "ask"}}
+
+
+def test_never_ask_needs_the_typed_confirmation(client):
+    resp, run = _patch_mode(client, {"approval_mode": "never_ask"})
+    assert resp.status_code == 422
+    run.assert_not_awaited()
+    resp, run = _patch_mode(client, {"approval_mode": "never_ask", "confirm": "never ask"})
+    assert resp.status_code == 200 and resp.json()["approval_mode"] == "never_ask"
+    assert run.await_args.kwargs["ExpressionAttributeValues"] == {":p": {"approval_mode": "never_ask"}}
+
+
+def test_never_ask_is_admin_only(member_client):
+    resp, run = _patch_mode(member_client, {"approval_mode": "never_ask", "confirm": "never ask"})
+    assert resp.status_code == 403
+    run.assert_not_awaited()
+
+
+def test_unknown_mode_is_422(client):
+    resp, run = _patch_mode(client, {"approval_mode": "yolo"})
     assert resp.status_code == 422
     run.assert_not_awaited()
 

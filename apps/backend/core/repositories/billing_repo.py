@@ -1516,28 +1516,41 @@ async def list_company_stripe_owners() -> list[str]:
 # explicitly-set keys are ever persisted; defaults are filled on read.
 
 CAPABILITY_POLICY_KEYS = ("money_moves", "outreach", "publishing", "provisioning")
+# The workspace's approval mode (founder ruling 6 Nov 2026), in the same map: questions.APPROVAL_MODES, absent = auto.
+# It replaces the four "Ask me first" toggles on the Guardrails page; `outreach` and `money_moves` stay stored and
+# still pick who answers a card (questions._rule_for). A per-specialist override can sit beside it later.
+APPROVAL_MODE_KEY = "approval_mode"
+APPROVAL_MODES = ("ask", "auto", "never_ask")
 
 
-def _fill_capability_policy(stored: dict | None) -> dict[str, bool]:
+def _fill_capability_policy(stored: dict | None) -> dict:
     stored = stored or {}
-    return {k: bool(stored.get(k, True)) for k in CAPABILITY_POLICY_KEYS}
+    mode = stored.get(APPROVAL_MODE_KEY)
+    return {
+        **{k: bool(stored.get(k, True)) for k in CAPABILITY_POLICY_KEYS},
+        APPROVAL_MODE_KEY: mode if mode in APPROVAL_MODES else "auto",
+    }
 
 
-async def get_capability_policy(owner_id: str) -> dict[str, bool]:
+async def get_capability_policy(owner_id: str) -> dict:
     row = await get_by_owner_id(owner_id) or {}
     return _fill_capability_policy(row.get("capability_policy"))
 
 
-async def set_capability_policy(owner_id: str, updates: dict[str, bool]) -> dict[str, bool] | None:
+async def set_capability_policy(owner_id: str, updates: dict) -> dict | None:
     """Merge ``updates`` over the stored map and write it. Raises ValueError on
-    an unknown key; ``None`` = no billing row. Returns the filled map."""
-    unknown = set(updates) - set(CAPABILITY_POLICY_KEYS)
+    an unknown key or mode; ``None`` = no billing row. Returns the filled map."""
+    unknown = set(updates) - {*CAPABILITY_POLICY_KEYS, APPROVAL_MODE_KEY}
     if unknown:
         raise ValueError(f"unknown capability keys: {sorted(unknown)}")
+    if APPROVAL_MODE_KEY in updates and updates[APPROVAL_MODE_KEY] not in APPROVAL_MODES:
+        raise ValueError(f"approval_mode must be one of {list(APPROVAL_MODES)}")
+    if any(not isinstance(v, bool) for k, v in updates.items() if k != APPROVAL_MODE_KEY):
+        raise ValueError("capability keys take true or false")
     row = await get_by_owner_id(owner_id)
     if row is None:
         return None
-    merged = {**(row.get("capability_policy") or {}), **{k: bool(v) for k, v in updates.items()}}
+    merged = {**(row.get("capability_policy") or {}), **updates}
     try:
         await run_in_thread(
             _get_table().update_item,

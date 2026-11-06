@@ -300,7 +300,7 @@ async def open_questions(ws: str, task_id: str) -> list[QuestionRef]:
             if existing["state"] == "open":
                 refs[qid] = QuestionRef(qid, list(existing["answerers"]))
             continue  # answered or cancelled: never reopened
-        kind, options = questions.kind_and_options(effect["kind"])
+        kind, options = questions.kind_and_options(effect["kind"], effect.get("operands"))
         subkind = questions.subkind_for(effect["kind"])
         app = None
         if subkind == "publish" and (effect.get("operands") or {}).get("appId"):
@@ -543,11 +543,14 @@ async def record_answer(ws: str, task_id: str, ref: AnswerRef) -> AnswerOut:
         except tasks_repo.IllegalTransition:
             pass  # a retry after the first run moved it
         effect = await effects_repo.get_effect(ws, q["effectIdemKey"]) or {}
+        if option == "allow_always" and effect:
+            # Allow this one and make it a standing rule (idempotent: a retried Activity writes the same rule).
+            await questions.add_always_allow(ws, effect["kind"], effect.get("operands") or {})
         # A reviewed draft the backend can land itself; everything else resumes the Worker (contracts-v2 §8).
         if (
             to == "approved"
             and effect.get("executorOk")
-            and questions.REVIEW_KINDS.get(effect.get("kind")) == option
+            and option in (questions.REVIEW_KINDS.get(effect.get("kind")), "allow_always")
             and effect.get("kind") in EXECUTOR_KINDS
         ):
             land = q["effectIdemKey"]

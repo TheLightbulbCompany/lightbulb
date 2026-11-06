@@ -21,6 +21,18 @@ OPERANDS = {"agentId": "a-1", "to": "acme@example.com", "subject": "Q3 invoice",
 HASH = ri.operands_hash("mail.send", OPERANDS)
 
 
+@pytest.fixture(autouse=True)
+def _no_rules(monkeypatch):
+    """No stored Rules document and the default mode (the messaging and billing tables are not part of this suite):
+    every mail here goes to an outsider, so Auto asks, as these tests expect."""
+    from unittest.mock import AsyncMock
+
+    from core.repositories import a2a_repo, billing_repo
+
+    monkeypatch.setattr(a2a_repo, "get_rules", AsyncMock(return_value=None))
+    monkeypatch.setattr(billing_repo, "get_by_owner_id", AsyncMock(return_value=None))
+
+
 def _url(ws):
     return f"/api/v1/internal/runtime/{ws}/effects"
 

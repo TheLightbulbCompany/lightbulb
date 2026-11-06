@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { AtSign, Bold, CaseSensitive, Code, FileText, Italic, Link2, List, ListOrdered, Paperclip, Plus, RotateCcw, Send, SmilePlus, SquareCode, Strikethrough, X } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { ApiError, MESSAGE_ATTACHMENT_ACCEPT, MESSAGE_ATTACHMENT_MAX_BYTES, MESSAGE_ATTACHMENT_MAX_COUNT, activeTrigger, applyCompletion, resolveMessageAttachmentContentType, resolveTypedMentions, resolveTypedSessionMentions, respondHint, searchEmoji, sessionMatches, sessionTitle, wrapSelection, type CompletionTrigger, type CreateMessageRequest, type MarkdownStyle, type MessageAttachment, type MessageAttachmentContentType, type MemberRef, type RoomKind, type SessionMentionCandidate, sessionAgentName } from "@lightbulb/shared";
+import { ApiError, MESSAGE_ATTACHMENT_ACCEPT, MESSAGE_ATTACHMENT_MAX_BYTES, MESSAGE_ATTACHMENT_MAX_COUNT, activeTrigger, applyCompletion, resolveMessageAttachmentContentType, resolveTypedMentions, resolveTypedSessionMentions, respondHint, searchEmoji, sessionMatches, sessionTitle, wrapSelection, type CompletionTrigger, type CreateMessageRequest, type MarkdownStyle, type MessageAttachment, type MessageAttachmentContentType, type MemberRef, type RoomKind, type SessionMentionCandidate, type MentionTarget, sessionAgentName } from "@lightbulb/shared";
 import { useSuperAgent } from "@/hooks/useLiveEvents";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -51,6 +51,11 @@ export interface RoomComposerProps {
   runningAgentIds?: readonly string[];
   /** The viewer: with the super-agent on, whether the formatting bar shows is remembered per person. */
   viewerId?: string;
+  /** Workspace people who aren't here: the @ list offers them marked "Not in channel", and sending asks to add them (W18-3). */
+  outsiders?: readonly MentionTarget[];
+  onAddPeople?: (people: MemberRef[]) => Promise<void>;
+  /** "#tea shop" or "this group chat", for "Priya isn't in #tea shop". */
+  roomLabel?: string;
 }
 
 /** Super-agent: the composer is one line with the formatting bar shown above it by default (founder, 6 Nov 2026); Aa
@@ -145,6 +150,9 @@ function ComposerAttempt({
   roomKind,
   runningAgentIds = [],
   viewerId,
+  outsiders = [],
+  onAddPeople,
+  roomLabel = "this chat",
   requestFocusAfterSend,
   cancelFocusAfterSend,
   consumeFocusAfterSend,
@@ -276,14 +284,18 @@ function ComposerAttempt({
   const mentionable = focusAgentId
     ? [...members.filter((member) => member.id === focusAgentId), ...members.filter((member) => member.id !== focusAgentId)]
     : members;
-  type MentionOption = { kind: "member"; member: RoomParticipant } | { kind: "session"; option: RoomComposerSessionOption };
+  type MentionOption = { kind: "member"; member: MentionTarget; outside?: boolean } | { kind: "session"; option: RoomComposerSessionOption };
+  const matchesQuery = (member: MentionTarget) => {
+    const needle = trigger?.query.toLocaleLowerCase() ?? "";
+    return !needle
+      || member.displayName.toLocaleLowerCase().includes(needle)
+      || (member.kind === "agent" && (member.mentionHandle ?? "").toLocaleLowerCase().includes(needle));
+  };
+  // People here first; then, once something is typed, workspace people who aren't (Slack's "Not in channel").
+  const canInvite = !!onAddPeople && outsiders.length > 0;
   const memberOptions: MentionOption[] = trigger?.kind === "mention"
-    ? mentionable.filter((member) => {
-        const needle = trigger.query.toLocaleLowerCase();
-        return !needle
-          || member.displayName.toLocaleLowerCase().includes(needle)
-          || (member.mentionHandle ?? "").toLocaleLowerCase().includes(needle);
-      }).map((member) => ({ kind: "member" as const, member }))
+    ? [...mentionable.filter(matchesQuery).map((member) => ({ kind: "member" as const, member })),
+      ...(canInvite && trigger.query ? outsiders.filter(matchesQuery).slice(0, 5).map((member) => ({ kind: "member" as const, member, outside: true })) : [])]
     : [];
   const sessionOptions: MentionOption[] = trigger?.kind === "mention"
     ? sessionTargets.filter(({ candidate, ownerName }) => {
@@ -303,6 +315,9 @@ function ComposerAttempt({
   // inserted (or what the sender typed by hand). There is no separate
   // "picked mentions" side-state to drift from the text.
   const mentions = resolveTypedMentions(text, members);
+  // Named with @ but not here: asked about on send (W18-3).
+  const outsideMentions = canInvite ? resolveTypedMentions(text, outsiders).filter((ref) => !members.some((member) => sameMember(member, ref))) : [];
+  const [invite, setInvite] = useState<{ people: MemberRef[]; error?: string; adding?: boolean } | null>(null);
   const { ids: sessionMentions, unresolved: staleHandles } = resolveTypedSessionMentions(text, sessionTargets.map(({ candidate }) => candidate), selectedSessions);
   const staleKey = staleHandles.join(" ");
   const authorized = mentions.every((mention) => members.some((member) => sameMember(member, mention)));
@@ -338,8 +353,8 @@ function ComposerAttempt({
           ? "Message saved"
           : "";
 
-  function request(): CreateMessageRequest {
-    return { clientMessageId, text, mentions, ...(sessionMentions.length ? { sessionMentions } : {}), replyToMessageId, threadRootMessageId, attachmentIds: attachments.flatMap((item) => item.attachment ? [item.attachment.id] : []) };
+  function request(extra: MemberRef[] = []): CreateMessageRequest {
+    return { clientMessageId, text, mentions: [...mentions, ...extra], ...(sessionMentions.length ? { sessionMentions } : {}), replyToMessageId, threadRootMessageId, attachmentIds: attachments.flatMap((item) => item.attachment ? [item.attachment.id] : []) };
   }
 
   function supportedType(file: File): MessageAttachmentContentType | undefined {
@@ -512,8 +527,9 @@ function ComposerAttempt({
 
   function choose(option: MentionOption) {
     if (!trigger) return;
+    // A person by name (their handle comes from their email, W18-2); an agent by its handle.
     const token = option.kind === "session" ? `@${option.option.candidate.handle}`
-      : option.member.mentionHandle ? `@${option.member.mentionHandle}` : `@${option.member.displayName}`;
+      : option.member.kind === "agent" && option.member.mentionHandle ? `@${option.member.mentionHandle}` : `@${option.member.displayName}`;
     if (option.kind === "session") setSelectedSessions((current) => ({ ...current, [option.option.candidate.handle.toLowerCase()]: option.option.candidate.session.sessionId }));
     const next = applyCompletion(text, trigger, token);
     replaceText(next.text, next.caret, next.caret);
@@ -533,7 +549,7 @@ function ComposerAttempt({
     replaceText(next.text, next.caret, next.caret);
   }
 
-  function submit(retry = false, restoreFocus = false, sendStale = false) {
+  function submit(retry = false, restoreFocus = false, sendStale = false, added: MemberRef[] | "skip" | null = null) {
     if (retry
       ? disabled || !!error || uploading || uploadFailed || !hasContent || !clientMessageId || effectiveState !== "rejected" || !onRetry || retryLocked.current
       : !canSend || locked.current) return;
@@ -542,6 +558,12 @@ function ComposerAttempt({
       setStaleNotice(staleKey);
       return;
     }
+    // Slack: "Priya isn't in #x — Add them / Do nothing".
+    if (!retry && outsideMentions.length > 0 && added === null) {
+      setInvite({ people: outsideMentions });
+      return;
+    }
+    setInvite(null);
     setStaleNotice("");
     locked.current = true;
     if (restoreFocus) requestFocusAfterSend();
@@ -561,10 +583,22 @@ function ComposerAttempt({
       setRetryPending(false);
     };
     try {
-      void Promise.resolve((retry ? onRetry! : onSubmit)(request())).catch(markUncertain);
+      void Promise.resolve((retry ? onRetry! : onSubmit)(request(Array.isArray(added) ? added : []))).catch(markUncertain);
     } catch {
       markUncertain();
     }
+  }
+
+  async function addAndSend() {
+    if (!invite || !onAddPeople || invite.adding) return;
+    setInvite({ ...invite, adding: true, error: undefined });
+    try {
+      await onAddPeople(invite.people);
+    } catch (reason) {
+      setInvite({ people: invite.people, error: reason instanceof Error && reason.message ? reason.message : "They could not be added. Try again." });
+      return;
+    }
+    submit(false, true, true, invite.people);
   }
 
   function format(style: MarkdownStyle) {
@@ -688,7 +722,7 @@ function ComposerAttempt({
       renderRow={(entry) => entry.kind === "member" ? <>
         <ParticipantAvatar participant={entry.member} size="sm" />
         <span className="min-w-0 flex-1 text-left"><span className="block truncate" title={entry.member.displayName}>{entry.member.displayName}</span>
-          <span className="text-muted-foreground text-ui">{entry.member.mentionHandle ? `@${entry.member.mentionHandle}` : "Person"}</span></span>
+          <span className="text-muted-foreground text-ui">{entry.outside ? `Not in ${roomLabel.startsWith("#") ? "channel" : "this chat"}` : entry.member.kind === "agent" && entry.member.mentionHandle ? `@${entry.member.mentionHandle}` : "Person"}</span></span>
       </> : <>
         <span className="flex size-8 items-center justify-center rounded-md bg-muted" aria-hidden="true"><SessionToolIcon provider={entry.option.candidate.session.provider} /></span>
         <span className="min-w-0 flex-1 text-left"><span className="block truncate" title={sessionTitle(entry.option.candidate.session)}>{sessionAgentName(entry.option.candidate.session.provider)} · {sessionTitle(entry.option.candidate.session)}</span>
@@ -714,6 +748,12 @@ function ComposerAttempt({
         <Button type="button" variant="ghost" size="icon-sm" aria-label={`Remove ${item.file.name}`} disabled={!editable} onClick={() => removeAttachment(item.key)}><X aria-hidden="true" /></Button>
       </div>)}</div>}
     {attachmentError && <p role="alert" className="text-ui text-err">{attachmentError}</p>}
+    {invite && <div role="alert" className="room-invite-prompt text-ui">
+      <span>{invite.people.map((ref) => outsiders.find((person) => sameMember(person, ref))?.displayName ?? "Someone").join(", ")} {invite.people.length === 1 ? "isn't" : "aren't"} in {roomLabel}.</span>
+      <Button type="button" size="sm" disabled={invite.adding} onClick={() => void addAndSend()}>{invite.adding ? "Adding…" : invite.people.length === 1 ? "Add them" : "Add them all"}</Button>
+      <Button type="button" size="sm" variant="ghost" disabled={invite.adding} onClick={() => submit(false, true, true, "skip")}>Do nothing</Button>
+      {invite.error && <span className="text-err">{invite.error}</span>}
+    </div>}
     {staleKey && staleNotice === staleKey && <p role="alert" className="text-ui text-warn">
       {staleHandles.map((handle) => `@${handle}`).join(", ")} no longer {staleHandles.length === 1 ? "matches" : "match"} a shared session. Remove it or send anyway.{" "}
       <Button type="button" variant="link" size="sm" className="h-auto p-0" onClick={() => submit(false, true, true)}>Send anyway</Button></p>}
@@ -740,7 +780,8 @@ function ComposerAttempt({
       {mentionButton}
       {sendButton}
     </div>}
-    {showHint && <p id={`${fieldId}-respond`} className="room-respond-hint text-ui text-muted-foreground">{hint}</p>}
+    {/* The line is held while the box is empty, so the bar above never moves when the hint appears (W18-4). */}
+    {(showHint || (compact && hint)) && <p id={`${fieldId}-respond`} className="room-respond-hint text-ui text-muted-foreground" data-held={!showHint || undefined}>{hint}</p>}
     <p id={`${fieldId}-help`} className={error ? "text-ui text-err" : "sr-only"}>{error || "Enter to send · Shift+Enter for a new line."}</p>
     <p id={`${fieldId}-status`} role="status" className={uncertain ? "text-ui text-warn" : effectiveState === "rejected" ? "text-ui text-err" : "text-ui text-muted-foreground"}>{status}</p>
     {uncertain && onReconcile && <Button type="button" variant="outline" disabled={disabled} onClick={() => onReconcile(clientMessageId)}>Check message status</Button>}

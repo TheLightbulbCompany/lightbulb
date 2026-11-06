@@ -114,6 +114,8 @@
 :is(.room-panel, .room-context-host) .room-composer textarea:focus-visible { outline: none; box-shadow: none; }
 .room-composer-help { font-size: var(--text-caption); padding: 0 4px; }
 .room-respond-hint { padding: 0 4px; font-size: var(--text-caption); }
+.room-respond-hint[data-held] { visibility: hidden; }
+.room-invite-prompt { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 2px 4px; }
 .room-composer-actions { display: flex; align-items: center; justify-content: flex-start; gap: 2px; }
 .room-composer-actions > button { width: 28px; height: 28px; border-radius: 6px; }
 .room-send { margin-left: auto; }

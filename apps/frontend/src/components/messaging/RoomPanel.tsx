@@ -644,6 +644,12 @@ function RoomContent({
   // A group chat has no admins: any member archives and unarchives it.
   const canUnarchive = !!onSetArchived && (visibleRoom?.kind === "group-dm" || isRoomAdmin);
   const roomNoun = visibleRoom?.kind === "group-dm" ? "group chat" : "channel";
+  // @ someone who isn't here, then "Add them" on send (W18-3). A DM's add starts a new chat, so not there.
+  const composerPeople = canAddMembers && (visibleRoom?.kind === "channel" || visibleRoom?.kind === "group-dm") ? {
+    outsiders: addMemberCandidates.filter((candidate) => candidate.kind === "human"),
+    onAddPeople: async (people: MemberRef[]) => { for (const person of people) await onAddMember!(person); },
+    roomLabel: visibleRoom.kind === "channel" ? `#${roomDisplayName(visibleRoom, [])}` : "this group chat",
+  } : {};
   const normalizedMemberQuery = memberQuery.trim().toLocaleLowerCase();
   const memberMatches = (name: string) => !normalizedMemberQuery || name.toLocaleLowerCase().includes(normalizedMemberQuery);
   const filteredAddMemberCandidates = addMemberCandidates.filter((candidate) => memberMatches(candidate.displayName));
@@ -732,6 +738,12 @@ function RoomContent({
   // when something else takes the pane, the column folds.
   const counterparts = participants.filter((participant) => participant.kind !== "human" || participant.id !== currentUserId);
   const roomName = roomDisplayName(visibleRoom, counterparts);
+  // Slack's placeholders (W18-9): "Message #tea shop", "Message Priya Test"; only the DM with Lightbulb alone asks it.
+  // Paused or not, the same words: the banner says it is paused.
+  const lightbulbDm = visibleRoom?.kind === "dm" && counterparts.length > 0 && counterparts.every((p) => p.kind === "agent" && p.mentionHandle === "lightbulb");
+  const composerPlaceholder = !superAgent ? undefined
+    : lightbulbDm ? "Ask Lightbulb…"
+    : `Message ${visibleRoom?.kind === "channel" ? `#${roomName}` : roomName}`;
   // Super-agent: the pane's title is the label of what opened it (the room is beside it, so no " · <room>").
   const sideTitle = superAgent
     ? showTasks ? "Older tasks" : taskSelection ? "Task" : showDetail ? "Thread" : !contextCollapsed ? "Details"
@@ -1158,9 +1170,8 @@ function RoomContent({
       </div> : <>{subagents && messagingClient && onSteerSubagent && onStopSubagent && onSubagentsVisible && <RoomSubagentStrip state={subagents} roomId={roomId}
           agentName={(agentId) => participants.find((m) => m.kind === "agent" && m.id === agentId)?.displayName ?? "Agent"}
           client={messagingClient} onSteer={onSteerSubagent} onStop={onStopSubagent} onVisible={onSubagentsVisible} />}
-        <RoomComposer {...composer} viewerId={currentUserId} focusToken={focusToken} placeholderDrafts={showFirstReplies ? INCOMPLETE_FIRST_REPLIES : undefined}
-        // A chat without Lightbulb is people talking: "Message Priya Test", not "Ask Lightbulb…" (W17-10).
-        placeholder={composer.placeholder ?? (superAgent && !participants.some((p) => p.kind === "agent") ? `Message ${roomName}` : undefined)}
+        <RoomComposer {...composer} {...composerPeople} viewerId={currentUserId} focusToken={focusToken} placeholderDrafts={showFirstReplies ? INCOMPLETE_FIRST_REPLIES : undefined}
+        placeholder={composer.placeholder ?? composerPlaceholder}
         onSubmit={markSent(composer.onSubmit)}
         onRetry={composer.onRetry ? markSent(composer.onRetry) : undefined}
         onEditLast={onUpdateMessage ? () => {
@@ -1241,7 +1252,8 @@ function RoomContent({
           </div>;
         })()}
       </> : null}</StickToBottom>
-      {parentMessage && threadComposer?.parentMessageId === parentMessage.messageId && <RoomComposer {...threadComposer.composer} label="Reply to thread"
+      {/* The same controls as the main box (W18-11): one component, one layout. */}
+      {parentMessage && threadComposer?.parentMessageId === parentMessage.messageId && <RoomComposer {...threadComposer.composer} {...composerPeople} viewerId={currentUserId} label="Reply to thread"
         onSubmit={(request) => { setThreadSendToken((token) => token + 1); return threadComposer.composer.onSubmit(request); }} disabled={!actionable || !!visibleRoom?.archivedAt || threadComposer.composer.disabled} />}
     </aside>}</>)}
     {/* One Add people flow (W17-6): the header, the sidebar's ⋯ and Members all open this; a DM's add starts a new group chat. */}

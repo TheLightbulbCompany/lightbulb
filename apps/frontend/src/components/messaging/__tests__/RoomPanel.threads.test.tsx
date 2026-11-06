@@ -476,7 +476,12 @@ describe("RoomPanel Threads view (super-agent)", () => {
     const { rerender } = render(<Fresh><RoomPanel {...props} room={{ ...props.room!, kind: "dm", name: null }} participants={[sam, priya]} /></Fresh>);
     expect(await screen.findByPlaceholderText("Message Priya Test")).toBeInTheDocument();
     rerender(<Fresh><RoomPanel {...props} /></Fresh>);
+    expect(await screen.findByPlaceholderText("Message #workshop-launch")).toBeInTheDocument();
+    const front = { ...lightbulb, mentionHandle: "lightbulb" };
+    rerender(<Fresh><RoomPanel {...props} room={{ ...props.room!, kind: "dm", name: null }} participants={[sam, front]} /></Fresh>);
     expect(await screen.findByPlaceholderText("Ask Lightbulb…")).toBeInTheDocument();
+    rerender(<Fresh><RoomPanel {...props} room={{ ...props.room!, kind: "group-dm", name: "walk-18 group" }} participants={[sam, front, priya]} /></Fresh>);
+    expect(await screen.findByPlaceholderText("Message walk-18 group")).toBeInTheDocument();
   });
 
   it("W17-2: pause stops Lightbulb, not people: Send in a paused chat sends", async () => {

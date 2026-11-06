@@ -81,7 +81,9 @@ export function linkifyMentions(
     segment.replace(pattern, (match, lead: string, token: string) => {
       const entry = entries.find((candidate) => candidate.token.toLowerCase() === token.toLowerCase());
       if (!entry) return match;
-      return `${lead}[@${token}](${MENTION_SCHEME}${entry.participant.kind}:${entry.participant.id})`;
+      // A person's chip reads as their name, whatever was typed: handles are derived from email (W18-2). The id stays in the href.
+      const label = entry.participant.kind === "human" && entry.participant.displayName ? entry.participant.displayName.replace(/[\\[\]]/g, "") : token;
+      return `${lead}[@${label}](${MENTION_SCHEME}${entry.participant.kind}:${entry.participant.id})`;
     });
   return proseSegments(text)
     .map((segment, index) => (index % 2 === 0 ? rewrite(segment) : segment))

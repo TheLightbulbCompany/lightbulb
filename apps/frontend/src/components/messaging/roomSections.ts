@@ -28,6 +28,8 @@ export function groupRooms(
      *  under Team while it has unread messages or is the open conversation, so nothing new hides. */
     frontAgentId?: string | null;
     currentRoomId?: string | null;
+    /** Super-agent (UX slice 6): the starred group reads "Pinned", like the row's Pin. */
+    pinned?: boolean;
   },
 ): RoomGroup[] {
   const known = new Set(sections.map((section) => section.id));
@@ -39,7 +41,7 @@ export function groupRooms(
         : room.kind === "channel" ? "channels"
           : specialistDm(room) && room.unreadCount === 0 && room.roomId !== options.currentRoomId ? null : "direct";
   const order: RoomGroup[] = [
-    { id: "starred", label: "Starred", rooms: [], custom: false },
+    { id: "starred", label: options.pinned ? "Pinned" : "Starred", rooms: [], custom: false },
     ...sections.map((section) => ({ id: section.id, label: section.name, rooms: [], custom: true })),
     { id: "direct", label: "People", rooms: [], custom: false },
     { id: "channels", label: "Projects", rooms: [], custom: false },

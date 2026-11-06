@@ -6,7 +6,7 @@ import { FIXTURES } from "@lightbulb/shared/tasks/fixtures";
 import { Fresh } from "./fakeTasks";
 
 const live = vi.hoisted(() => ({ superAgent: true, tasks: { cacheScope: "org_test" }, agentNames: new Map([["agt-fin", "Finance desk"]]) }));
-vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useSuperAgent: () => live.superAgent }));
+vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useSuperAgent: () => live.superAgent, useOptionalLiveEvents: () => live }));
 const api = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(async () => ({})), del: vi.fn(async () => undefined), patch: vi.fn(async () => ({})) }));
 vi.mock("@/lib/api", () => ({ useApi: () => api }));
 vi.mock("@/components/teams/panels/RoutinesPanel", () => ({ RoutinesPanel: () => <div data-testid="routines-panel">Routines (today)</div> }));

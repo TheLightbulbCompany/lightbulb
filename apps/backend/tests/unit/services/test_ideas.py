@@ -104,7 +104,7 @@ async def test_list_is_agency_first_then_by_title_with_agents_and_no_prices(work
                           "size", "businessTypes", "emoji", "agentId", "agentName"}  # fmt: skip
     assert len({c["emoji"] for c in cards}) == 35  # every idea its own picture
     # No prices in the app (owner, 2026-10-15): they stay in the YAML for marketing only.
-    assert set(body) == {"ideas", "anyStarted", "anyDismissed"}
+    assert set(body) == {"ideas", "anyStarted", "anyDismissed", "firstRunTaskId"}
     assert body["anyStarted"] is False and body["anyDismissed"] is False
     assert first["agentId"] == STARTERS[first["ownerRole"]]
 
@@ -444,6 +444,28 @@ async def test_a_suggestion_is_stored_and_listed_first_marked_for_you(workspace)
     assert first["emoji"] == "💡"  # the agent gave none
     picked = await ideas.suggest(OWNER, _suggestion("Reply to the 3 refund emails", emoji="📮"))
     assert next(c for c in (await ideas.list_ideas(AUTH))["ideas"] if c["id"] == picked["id"])["emoji"] == "📮"
+
+
+@pytest.mark.asyncio
+async def test_the_first_runs_ideas_are_marked_first_run(workspace):
+    """UX slice 6: the first run's ideas are the owner's "Pick a first move"; the list names that task to re-read on."""
+    first = await ideas.suggest(OWNER, _suggestion(task_id=proactive.first_run_task_id()))
+    other = await ideas.suggest(OWNER, _suggestion("Reply to the 3 refund emails", task_id="another-task"))
+    listed = await ideas.list_ideas(AUTH)
+    cards = {c["id"]: c for c in listed["ideas"]}
+    assert cards[first["id"]]["firstRun"] is True and "firstRun" not in cards[other["id"]]
+    assert listed["firstRunTaskId"] == proactive.first_run_task_id()
+
+
+@pytest.mark.asyncio
+async def test_a_started_first_move_whose_task_finished_is_not_a_first_move_again(workspace, monkeypatch):
+    """Started is decided: once its task ends the idea is listed again, never as "Pick a first move"."""
+    added = await ideas.suggest(OWNER, _suggestion(task_id=proactive.first_run_task_id()))
+    await repo.claim_idea_start(OWNER, added["id"], "user_A")
+    await repo.update_idea_start(OWNER, added["id"], "user_A", {"state": "open", "taskId": "t-done"})
+    monkeypatch.setattr(proactive, "request_open", AsyncMock(return_value=False))  # the task finished
+    card = next(c for c in (await ideas.list_ideas(AUTH))["ideas"] if c["id"] == added["id"])
+    assert "firstRun" not in card
 
 
 @pytest.mark.asyncio

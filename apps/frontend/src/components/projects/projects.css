@@ -1,0 +1,84 @@
+/* Projects (UX slice 6): the tile, its picker, New project and the settings modal. Tokens only; hairlines, no shadows
+   on cards; Satoshi via the body. */
+
+.project-tile { display: inline-grid; place-items: center; flex: none; width: var(--tile); height: var(--tile); border-radius: calc(var(--tile) / 4);
+  background: var(--tile-bg, var(--cream-deeper)); color: var(--tile-fg, var(--muted-foreground)); font-weight: 600; font-size: calc(var(--tile) * .5); line-height: 1; }
+.project-tile svg { width: calc(var(--tile) * .6); height: calc(var(--tile) * .6); }
+.project-tile[data-size="16"] { --tile: 16px; }
+.project-tile[data-size="20"] { --tile: 20px; }
+.project-tile[data-size="24"] { --tile: 24px; }
+.project-tile[data-size="32"] { --tile: 32px; border-radius: 8px; }
+.project-tile[data-color], .project-picker__swatch { --tile-fg: var(--foreground); }
+[data-color="project-1"] { --tile-bg: var(--project-1); }
+[data-color="project-2"] { --tile-bg: var(--project-2); }
+[data-color="project-3"] { --tile-bg: var(--project-3); }
+[data-color="project-4"] { --tile-bg: var(--project-4); }
+[data-color="project-5"] { --tile-bg: var(--project-5); }
+[data-color="project-6"] { --tile-bg: var(--project-6); }
+
+.project-picker-trigger { display: inline-flex; align-items: center; gap: 2px; height: 28px; padding: 0 4px; border-radius: 6px; color: var(--muted-foreground); }
+.project-picker-trigger:hover { background: var(--accent); color: var(--foreground); }
+.project-picker { width: 248px; padding: 8px; display: grid; gap: 8px; }
+.project-picker__grid { display: grid; grid-template-columns: repeat(6, 28px); justify-content: space-between; row-gap: 4px; }
+.project-picker__grid button { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 6px; color: var(--foreground); transition: background-color var(--dur-fast) ease-out; }
+.project-picker__grid button:hover { background: var(--accent); }
+.project-picker__grid button[aria-pressed="true"] { background: var(--accent); box-shadow: inset 0 0 0 1px var(--foreground); }
+.project-picker__grid svg { width: 16px; height: 16px; }
+.project-picker__swatch { display: block; width: 18px; height: 18px; border-radius: 999px; background: var(--tile-bg); box-shadow: inset 0 0 0 1px var(--edge); }
+
+/* New project: 520, the icon picker inside the name field (40 tall). */
+.project-new { max-width: min(520px, calc(100% - 2rem)); }
+.project-field { display: flex; align-items: center; gap: 4px; height: 40px; padding: 0 8px 0 4px; border: 1px solid var(--input); border-radius: 8px; background: var(--background); }
+.project-field:focus-within { border-color: var(--ring); }
+.project-field input { flex: 1; min-width: 0; height: 100%; border: 0; background: transparent; font: inherit; color: var(--foreground); outline: none; }
+.project-textarea { width: 100%; min-height: 80px; padding: 8px 12px; border: 1px solid var(--input); border-radius: 8px; background: var(--background); font: inherit; color: var(--foreground); resize: vertical; outline: none; }
+.project-textarea:focus { border-color: var(--ring); }
+.project-field input::placeholder, .project-textarea::placeholder { color: var(--muted-foreground); }
+
+/* Settings: a modal over the project, nav 160 + content 720 (920 wide); a full-screen sheet under 760. */
+.project-settings { display: grid; grid-template-columns: 160px minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); gap: 0; width: 920px; max-width: calc(100% - 2rem);
+  height: min(720px, calc(100dvh - 64px)); padding: 0; border-radius: 12px; overflow: hidden; }
+.project-settings__head { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; height: 52px; padding: 0 12px 0 20px; border-bottom: 1px solid var(--edge); }
+.project-settings__head h2 { min-width: 0; margin-right: auto; font-size: var(--text-ui); line-height: var(--text-ui--line-height); font-weight: 600; }
+.project-settings__nav { display: grid; align-content: start; gap: 2px; padding: 12px 8px; border-right: 1px solid var(--edge); }
+.project-settings__nav button { height: 32px; padding: 0 10px; border-radius: 6px; text-align: left; color: var(--muted-foreground); transition: background-color var(--dur-fast) ease-out; }
+.project-settings__nav button:hover { background: var(--accent); color: var(--foreground); }
+.project-settings__nav button[aria-current="page"] { background: var(--accent); color: var(--foreground); font-weight: 600; }
+.project-settings__select { display: none; }
+.project-settings__body { overflow-y: auto; padding: 20px 28px 32px; }
+.project-settings__body h3 { font-size: var(--text-ui); line-height: var(--text-ui--line-height); font-weight: 600; padding-bottom: 12px; border-bottom: 1px solid var(--edge); }
+.project-row { display: flex; align-items: flex-start; gap: 16px; padding: 16px 0; border-bottom: 1px solid var(--edge); }
+.project-row:last-child { border-bottom: 0; }
+.project-row__text { flex: 1; min-width: 0; }
+.project-row__label { font-weight: 500; }
+.project-row__hint { font-size: var(--text-caption); line-height: var(--text-caption--line-height); color: var(--muted-foreground); }
+.project-row__control { display: flex; align-items: center; gap: 8px; flex: none; }
+.project-row__control .project-field { height: 32px; width: 280px; max-width: 100%; }
+.project-saved { font-size: var(--text-caption); color: var(--muted-foreground); }
+.project-count { justify-self: end; font-size: var(--text-caption); color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+
+/* Paused: one line above the composer. */
+.project-paused { display: flex; align-items: center; gap: 8px; min-height: 32px; margin: 0 16px 8px; padding: 0 4px 0 12px; border: 1px solid var(--edge); border-radius: 8px;
+  font-size: var(--text-caption); color: var(--muted-foreground); }
+.project-paused span { margin-right: auto; }
+
+/* First run: the three first moves under Lightbulb's line in the DM. */
+.first-moves { display: grid; gap: 8px; max-width: 640px; }
+.first-moves ul { display: grid; gap: 8px; }
+
+@media (max-width: 759px) {
+  .project-settings { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr); width: 100%; max-width: 100%; height: 100dvh; border-radius: 0; border: 0; }
+  .project-settings__nav { display: none; }
+  .project-settings__select { display: block; margin: 12px 16px 0; }
+  .project-settings__body { padding: 12px 16px 24px; }
+  .project-row { flex-wrap: wrap; }
+  .project-row__control .project-field { width: 100%; }
+}
+@media (pointer: coarse) {
+  .project-picker__grid { grid-template-columns: repeat(6, 36px); }
+  .project-picker__grid button { width: 36px; height: 36px; }
+  .project-picker { width: 272px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .project-picker__grid button, .project-settings__nav button { transition: none; }
+}

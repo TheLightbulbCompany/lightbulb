@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useAuth, useUser } from "@clerk/nextjs";
-import { canChangeListenMode, cardReplyRequest, markSessionRead, markSessionsSeen, markSessionUnread, resolveTypedMentions, roomDisplayName, runView, sessionArchived, sessionMentionCandidates, sessionUnread, useWorkspaceSessions, workspaceSections, type CardReply, type CreateMessageRequest, type ListenMode, type MemberRef, type RoomMember, type SessionSource, type RoomSummary } from "@lightbulb/shared";
+import { canChangeListenMode, cardReplyRequest, markSessionRead, markSessionsSeen, markSessionUnread, resolveTypedMentions, roomDisplayName, runView, sessionArchived, sessionMentionCandidates, sessionUnread, useWorkspaceSessions, workspaceSections, type CardReply, type CreateMessageRequest, type ListenMode, type MemberRef, type PatchRoomRequest, type RoomMember, type SessionSource, type RoomSummary } from "@lightbulb/shared";
 import { useRooms } from "@/hooks/useRooms";
 import { useCopyJoinLink } from "@/hooks/useCopyJoinLink";
 import { useBilling } from "@/hooks/useBilling";
@@ -28,6 +28,7 @@ import { readSessionSeen, writeSessionSeen } from "./sidebarPrefs";
 import { ShortcutSheet } from "./ShortcutSheet";
 import type { RoomComposerProps } from "./RoomComposer";
 import type { RoomDirectoryProps, ConversationCreation } from "./RoomDirectory";
+import type { SettingsFrom } from "@/components/projects/ProjectSettingsDialog";
 import type { RoomPanelProps } from "./RoomPanel";
 import type { SessionFocusTarget } from "./SessionFocus";
 import { bridge } from "./localTerminal";
@@ -224,7 +225,7 @@ export function MessagingWorkspaceProvider({
   subscribeToRoom?: boolean;
   observeRuns?: boolean;
 }) {
-  const { userId, orgId } = useAuth();
+  const { userId, orgId, orgRole } = useAuth();
   const scope = orgId ?? userId ?? "signed-out";
   // A room's Add people lists workspace members only, which is where people looked for "invite my
   // cofounder" and found nothing (Second Catch, 2026-10-08); the room panel offers the join link too.
@@ -232,6 +233,8 @@ export function MessagingWorkspaceProvider({
   const copyJoinLink = useCallback(() => copyJoinLinkFor("room_members"), [copyJoinLinkFor]);
   // ⋯ → Add people on a sidebar row: open that room, then its member picker (one-shot).
   const [addPeopleRoomId, setAddPeopleRoomId] = useState<string | null>(null);
+  // ⋯ › Settings on a sidebar row or a Home card (super-agent): open that project, then its settings (one-shot).
+  const [settingsTarget, setSettingsTarget] = useState<{ roomId: string; from: SettingsFrom } | null>(null);
   // Focus placement: a session opened from the sidebar or a link takes the
   // middle of the panel; sessions live in the workspace, not in a room.
   const [sessionFocus, setSessionFocus] = useState<SessionFocusTarget | null>(null);
@@ -804,8 +807,10 @@ export function MessagingWorkspaceProvider({
     try {
       markExplicitScope();
       const startToken = pickToken();
-      await rooms.createRoom({ clientRoomId: crypto.randomUUID(), ...creation });
+      const created = await rooms.createRoom({ clientRoomId: crypto.randomUUID(), ...creation });
       bumpPickIfCurrent(startToken);
+      // Super-agent: a new project is pinned (UX slice 6). A failed pin never fails the create.
+      if (superAgent && creation.kind === "channel") await rooms.setRoomPrefs(created.roomId, { starred: true }).catch(() => {});
       return true;
     } catch (error) {
       setCreationError(error instanceof Error ? error.message : "The chat could not be created.");
@@ -958,6 +963,13 @@ export function MessagingWorkspaceProvider({
     onSelectRoom: (roomId: string) => { closeSession(); chooseRoom(roomId); },
     currentUserId: userId ?? undefined,
     onAddPeople: (roomId: string) => { closeSession(); chooseRoom(roomId); setAddPeopleRoomId(roomId); },
+    ...(superAgent ? {
+      onOpenSettings: (roomId: string, from: SettingsFrom = "sidebar") => { closeSession(); chooseRoom(roomId); activateMessagesPanel(); setSettingsTarget({ roomId, from }); },
+      onPatchRoom: async (roomId: string, request: PatchRoomRequest) => {
+        await rooms.resourceSource.client.updateRoom(roomId, request);
+        await (roomId === rooms.activeRoomId ? Promise.all([rooms.refreshRoom(), rooms.refreshRooms()]) : rooms.refreshRooms());
+      },
+    } : {}),
     onSelectParticipant: async (participant: DirectoryParticipant) => { closeSession(); await selectParticipant(participant); },
     openingParticipant,
     onMarkUnread: rooms.markUnread,
@@ -1087,6 +1099,16 @@ export function MessagingWorkspaceProvider({
       ? { onRemoveMember: rooms.removeMember } : {}),
     ...(!activeFeed && rooms.activeRoom && rooms.activeRoom.kind !== "dm" ? { onCopyJoinLink: copyJoinLink } : {}),
     openAddPeople: addPeopleRoomId !== null && addPeopleRoomId === rooms.activeRoomId,
+    openSettings: settingsTarget && settingsTarget.roomId === rooms.activeRoomId ? settingsTarget.from : null,
+    // Super-agent projects: icon, colour and pause. The server decides who may (room owner/admin, or a workspace
+    // admin pausing); a refusal surfaces where it was asked.
+    ...(superAgent && rooms.activeRoom?.kind === "channel" && !activeFeed ? {
+      onPatchRoom: async (request: PatchRoomRequest) => { await rooms.updateRoom(request); },
+      // The server's pause rule: the room's owner/admin, or a workspace admin; never #general or the shared channel.
+      canPause: !rooms.activeRoom.isDefault && !rooms.activeRoom.shared
+        && (["owner", "admin"].includes(viewerRole) || orgRole === "org:admin"),
+    } : {}),
+    onSettingsOpened: () => setSettingsTarget(null),
     onAddPeopleOpened: () => setAddPeopleRoomId(null),
     onAbortRun: (runId) => rooms.abortRun(runId),
     subagents: rooms.subagents,

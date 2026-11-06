@@ -113,6 +113,18 @@ describe("TaskOverview", () => {
     expect(client.cacheScope).toBe("org_test"); // the SWR key carries it: ["automations", cacheScope]
   });
 
+  it("a project's empty Scheduled view: three starter cards; a tap only drafts the ask (UX slice 6)", async () => {
+    const onDraft = vi.fn();
+    apiGet.mockResolvedValueOnce({ automations: [{ id: "builtin:look-around", name: "Daily look around", deliverTo: null }] });
+    render(<Fresh><ScheduledList scope={room} onOpen={vi.fn()} onDraft={onDraft} /></Fresh>);
+    const cards = await screen.findByRole("list", { name: "Starter schedules" });
+    expect(screen.queryByText("Daily look around")).toBeNull(); // a builtin job is never a project's schedule
+    expect(within(cards).getAllByRole("button")).toHaveLength(3);
+    await userEvent.click(within(cards).getByRole("button", { name: /Weekly signups/ }));
+    expect(onDraft).toHaveBeenCalledWith("Every Monday at 9:00, have Growth post last week's signups here.");
+    expect(apiGet).toHaveBeenCalledTimes(1); // read once; nothing created
+  });
+
   it("the Scheduled view: a failed read says so with Retry, never the empty prompt", async () => {
     apiGet.mockRejectedValueOnce(new Error("503"));
     render(<Fresh><ScheduledList scope={room} onOpen={vi.fn()} /></Fresh>);

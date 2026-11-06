@@ -4,7 +4,7 @@ import { createPortal } from "react-dom";
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { ArrowLeft, Check, Chrome, Circle, CircleAlert, Clock, FolderOpen, Info, Lightbulb, Link, ListChecks, Pin, Search, Square } from "lucide-react";
 import type { Components } from "react-markdown";
-import { cardAnswersFor, LISTEN_MODE_LABELS, listenModeOptions, soleChannelOwner, useStatusLoaded, type CardReply, type CreateMessageRequest, type ListenMode, type MemberPrefsRequest, type MemberRef, type UpdateMessageRequest } from "@lightbulb/shared";
+import { cardAnswersFor, LISTEN_MODE_LABELS, listenModeOptions, soleChannelOwner, useStatusLoaded, type CardReply, type CreateMessageRequest, type ListenMode, type MemberPrefsRequest, type MemberRef, type PatchRoomRequest, type UpdateMessageRequest } from "@lightbulb/shared";
 import { ToolActivityTrace } from "@/components/chat/ToolActivityTrace";
 import { DelegateCard } from "./DelegateCard";
 import { RoomSubagentStrip } from "./RoomSubagentStrip";
@@ -43,6 +43,9 @@ import { RoomMessageItem } from "./RoomMessageItem";
 import { TaskPane } from "@/components/tasks/TaskPane";
 import { RequestGroups } from "@/components/tasks/TaskOverview";
 import { ScheduledList } from "@/components/tasks/ScheduledList";
+import { FirstMoves } from "@/components/ideas/FirstMoves";
+import type { SettingsFrom } from "@/components/projects/ProjectSettingsDialog";
+import "@/components/projects/projects.css";
 import { PaneHeader } from "@/components/workspace/PaneHeader";
 import { ROOM_PANE_VIEW_EVENT } from "@/components/workspace/panels/AutomationDockPanel";
 import { MadeHere } from "@/components/creations/MadeHere";
@@ -113,6 +116,13 @@ export interface RoomPanelProps {
   /** One-shot: open the member picker as soon as this room allows adding (the sidebar's ⋯ → Add people). */
   openAddPeople?: boolean;
   onAddPeopleOpened?: () => void;
+  /** One-shot: open the project's settings (a sidebar row's or Home card's ⋯ › Settings). Super-agent projects. */
+  openSettings?: SettingsFrom | null;
+  onSettingsOpened?: () => void;
+  /** Super-agent projects: icon, colour and pause (UX slice 6). */
+  onPatchRoom?: (request: PatchRoomRequest) => Promise<void>;
+  /** The viewer may pause and resume this project (the paused bar's Resume). */
+  canPause?: boolean;
   onRenameRoom?: (name: string) => Promise<void>;
   onRemoveMember?: (member: MemberRef) => Promise<void>;
   pinnedMessageIds?: readonly string[];
@@ -309,6 +319,10 @@ function RoomContent({
   onCopyJoinLink,
   openAddPeople = false,
   onAddPeopleOpened,
+  openSettings = null,
+  onSettingsOpened,
+  onPatchRoom,
+  canPause = false,
   onRenameRoom,
   onRemoveMember,
   pinnedMessageIds = NO_PINNED_MESSAGES,
@@ -931,6 +945,56 @@ function RoomContent({
   }
 
   const dockSide = (column: React.ReactNode) => sideHost ? createPortal(column, sideHost) : column;
+  // The Members content: the About pane's tab, and (super-agent projects) the settings modal's People.
+  const membersSection = <section aria-labelledby={`${id}-context-members`}>
+          <div className="room-members-heading"><h4 id={`${id}-context-members`} className="font-semibold">Members</h4>
+            {canAddMembers && <Button type="button" variant="outline" aria-expanded={memberPickerOpen} onClick={() => {
+              if (!memberPickerOpen) { setMemberError(undefined); setMemberQuery(""); }
+              setMemberPickerOpen(!memberPickerOpen);
+            }}>Add members</Button>}
+          </div>
+          {visibleRoom?.isDefault && participants.filter((p) => p.kind === "human").length === 1 && (() => {
+            const agents = participants.filter((p) => p.kind === "agent").length;
+            return <p className="text-ui text-muted-foreground">1 person · {superAgent ? "" : `${agents} AI ${agents === 1 ? "employee" : "employees"} · `}
+              <button type="button" className="underline" onClick={openInviteDialog}>Invite people</button></p>;
+          })()}
+          {onCopyJoinLink && <p className="text-ui text-muted-foreground">Someone not in the workspace yet?{" "}
+            <button type="button" className="underline" disabled={inviteBusy} onClick={() => void copyJoinLink()}>Copy the workspace join link</button> and send it to them.
+            {inviteNote && <span role="status"> {inviteNote}</span>}</p>}
+          {/* Super-agent: people and Lightbulb; specialists and their listen modes are plumbing (the Team page has them). */}
+          <ul>{(superAgent ? participants.filter((p) => p.kind === "human" || p.mentionHandle === "lightbulb") : participants).map((participant) => <li key={`${participant.kind}:${participant.id}`} className="room-member flex-wrap">
+            <ParticipantAvatar participant={participant} size="sm" />
+            <ParticipantProfile participant={participant} currentUserId={currentUserId} onMessage={onSelectParticipant} disabled={!actionable} className="flex-1 min-w-24" />
+            {!(superAgent && participant.kind === "agent") && <span className="text-ui text-muted-foreground">{participant.kind === "agent" ? "Agent" : "Person"}</span>}
+            {canManageMembers && onRemoveMember && participant.role !== "owner" && !(visibleRoom?.shared && participant.kind === "human") && !(superAgent && participant.kind === "agent") && <Button type="button" variant="ghost" size="sm" disabled={!actionable}
+              aria-label={`Remove ${participant.displayName}`} onClick={(event) => openManagement({ kind: participant.kind, id: participant.id }, event.currentTarget)}>Remove</Button>}
+            {participant.kind === "agent" && !superAgent && <AgentResponse participant={participant} selectId={`${id}-context-${participant.id}-mode`} onChange={onListenModeChange} />}
+          </li>)}</ul>
+          {canAddMembers && memberPickerOpen && <div className="room-member-picker">
+            <label className="sr-only" htmlFor={`${id}-member-search`}>Search people</label>
+            <input id={`${id}-member-search`} type="search" className="room-input" placeholder="Search people" value={memberQuery}
+              onChange={(event) => setMemberQuery(event.target.value)} />
+            {filteredCurrentMembers.length > 0 && <section aria-label="Current members">
+              <p className="text-ui font-medium">Current members</p>
+              <ul>{filteredCurrentMembers.map((member) => <li key={`${member.kind}:${member.id}`} className="room-member-choice text-muted-foreground">
+                <ParticipantAvatar participant={member} size="sm" /><span>{member.displayName}</span><span className="text-ui">Already here</span>
+              </li>)}</ul>
+            </section>}
+            {addMemberCandidates.length === 0 ? <p className="text-ui text-muted-foreground">Everyone in your workspace is already here.</p>
+              : <><fieldset disabled={addingMembers}><legend className="text-ui font-medium">Eligible people</legend>
+                {filteredAddMemberCandidates.length === 0
+                  ? <p className="text-ui text-muted-foreground">No eligible people match your search.</p>
+                  : filteredAddMemberCandidates.map((candidate) => {
+                    const key = `${candidate.kind}:${candidate.id}`;
+                    return <label key={key} className="room-member-choice"><input type="checkbox" aria-label={candidate.displayName} checked={selectedMembers.includes(key)}
+                      onChange={(event) => setSelectedMembers((current) => event.target.checked ? [...current, key] : current.filter((item) => item !== key))} />
+                      <ParticipantAvatar participant={candidate} size="sm" /><span>{candidate.displayName}</span><span className="text-ui text-muted-foreground">{candidate.kind === "agent" ? "Agent" : "Person"}</span></label>;
+                  })}
+              </fieldset>
+              <Button type="button" disabled={selectedMembers.length === 0 || addingMembers} onClick={() => void addSelectedMembers()}>{addingMembers ? "Adding…" : "Add selected"}</Button></>}
+            {memberError && <p role="alert" className="text-ui text-err">{memberError}</p>}
+          </div>}
+        </section>;
   return <section
     className={cn("room-panel", showContext && !sideHost && "room-has-context", showDetail ? "room-has-detail" : "room-has-default-context")} aria-label={roomName}
     data-frame={superAgent || undefined}>
@@ -969,6 +1033,7 @@ function RoomContent({
         onSetPrefs={onSetPrefs} onRenameRoom={onRenameRoom} onSetTopic={onSetTopic} onLeaveRoom={onLeaveRoom}
         onSetArchived={onSetArchived} onDeleteRoom={onDeleteRoom}
         compact={superAgent}
+        onPatchRoom={onPatchRoom} settingsPeople={membersSection} openSettings={openSettings} onSettingsOpened={onSettingsOpened}
         // Super-agent (UX slice 4): at most four controls right of the name, all views of this project: Tasks (its warn
         // dot = something here needs you while the pane is closed), Files, Scheduled, and ⋯ for the tools. Labels show
         // from 1280 px (messaging.css). Without it the room keeps About, Files, Browser and Ideas as before.
@@ -1046,12 +1111,19 @@ function RoomContent({
             <Identity name={viewer?.displayName ?? "You"} avatarOnly size="default" /><div className="room-message-content"><div className="room-message-byline"><span className="font-semibold">{viewer?.displayName ?? "You"}</span><span className="text-ui text-muted-foreground">Sending…</span></div><MarkdownView skipHtml components={roomMarkdown} urlTransform={roomUrlTransform}>{linkifyMentions(message.text, message.mentions, participants)}</MarkdownView></div>
           </article>)}
           {placeRuns(mainRuns, mainMessages).tail.map(renderRun)}
+          {/* First run (UX slice 6): the first run's ideas wait here, in the Lightbulb DM, until each is decided. */}
+          {superAgent && frontAgentId && visibleRoom?.kind === "dm" && counterparts.length === 1 && counterparts[0].id === frontAgentId && <FirstMoves />}
         </RoomTimeline>
       </div>
       <p className="room-typing room-typing-live text-ui text-muted-foreground" role="status">{typingMembers.length > 0 ? `${typingMembers.slice(0, 3).map((member) => member.displayName).join(", ")}${typingMembers.length > 3 ? " and others" : ""} ${typingMembers.length === 1 ? "is" : "are"} typing…` : onIt ? `${onIt.displayName} is on it…` : ""}</p>
       {copied && <p role="status" aria-label="Link copied" className="sr-only">Link copied</p>}
       {messageActionError && <p role="alert" className="room-typing text-ui text-err">{messageActionError}</p>}
       {!visibleRoom?.archivedAt && <RoomLimitBar account={billing} />}
+      {superAgent && visibleRoom?.pausedAt && !visibleRoom.archivedAt && <div className="project-paused" role="status">
+        <span>Paused. New tasks and schedules wait.</span>
+        {onPatchRoom && canPause && <Button type="button" size="sm" variant="ghost" className="h-7" disabled={!actionable || messageActionPending}
+          onClick={() => void runMessageAction(() => onPatchRoom({ paused: false }), "The project could not be resumed.")}>Resume</Button>}
+      </div>}
       {showFirstReplies && <FirstReplyChips onPick={(text) => { if (composer.text.trim() === "") composer.onTextChange(text); setFocusToken((t) => t + 1); }} />}
       {visibleRoom?.feed ? <div className="room-composer room-archived" role="status">
         <p className="text-ui text-muted-foreground">Only agents post to the feed. Reply to a post in its thread.</p>
@@ -1092,55 +1164,7 @@ function RoomContent({
           setContextCollapsed(true);
           setSearchTarget({ messageId, threadRootMessageId: null, token: ++searchTargetToken.current });
         }}
-        members={<section aria-labelledby={`${id}-context-members`}>
-          <div className="room-members-heading"><h4 id={`${id}-context-members`} className="font-semibold">Members</h4>
-            {canAddMembers && <Button type="button" variant="outline" aria-expanded={memberPickerOpen} onClick={() => {
-              if (!memberPickerOpen) { setMemberError(undefined); setMemberQuery(""); }
-              setMemberPickerOpen(!memberPickerOpen);
-            }}>Add members</Button>}
-          </div>
-          {visibleRoom?.isDefault && participants.filter((p) => p.kind === "human").length === 1 && (() => {
-            const agents = participants.filter((p) => p.kind === "agent").length;
-            return <p className="text-ui text-muted-foreground">1 person · {superAgent ? "" : `${agents} AI ${agents === 1 ? "employee" : "employees"} · `}
-              <button type="button" className="underline" onClick={openInviteDialog}>Invite people</button></p>;
-          })()}
-          {onCopyJoinLink && <p className="text-ui text-muted-foreground">Someone not in the workspace yet?{" "}
-            <button type="button" className="underline" disabled={inviteBusy} onClick={() => void copyJoinLink()}>Copy the workspace join link</button> and send it to them.
-            {inviteNote && <span role="status"> {inviteNote}</span>}</p>}
-          {/* Super-agent: people and Lightbulb; specialists and their listen modes are plumbing (the Team page has them). */}
-          <ul>{(superAgent ? participants.filter((p) => p.kind === "human" || p.mentionHandle === "lightbulb") : participants).map((participant) => <li key={`${participant.kind}:${participant.id}`} className="room-member flex-wrap">
-            <ParticipantAvatar participant={participant} size="sm" />
-            <ParticipantProfile participant={participant} currentUserId={currentUserId} onMessage={onSelectParticipant} disabled={!actionable} className="flex-1 min-w-24" />
-            {!(superAgent && participant.kind === "agent") && <span className="text-ui text-muted-foreground">{participant.kind === "agent" ? "Agent" : "Person"}</span>}
-            {canManageMembers && onRemoveMember && participant.role !== "owner" && !(visibleRoom?.shared && participant.kind === "human") && !(superAgent && participant.kind === "agent") && <Button type="button" variant="ghost" size="sm" disabled={!actionable}
-              aria-label={`Remove ${participant.displayName}`} onClick={(event) => openManagement({ kind: participant.kind, id: participant.id }, event.currentTarget)}>Remove</Button>}
-            {participant.kind === "agent" && !superAgent && <AgentResponse participant={participant} selectId={`${id}-context-${participant.id}-mode`} onChange={onListenModeChange} />}
-          </li>)}</ul>
-          {canAddMembers && memberPickerOpen && <div className="room-member-picker">
-            <label className="sr-only" htmlFor={`${id}-member-search`}>Search people</label>
-            <input id={`${id}-member-search`} type="search" className="room-input" placeholder="Search people" value={memberQuery}
-              onChange={(event) => setMemberQuery(event.target.value)} />
-            {filteredCurrentMembers.length > 0 && <section aria-label="Current members">
-              <p className="text-ui font-medium">Current members</p>
-              <ul>{filteredCurrentMembers.map((member) => <li key={`${member.kind}:${member.id}`} className="room-member-choice text-muted-foreground">
-                <ParticipantAvatar participant={member} size="sm" /><span>{member.displayName}</span><span className="text-ui">Already here</span>
-              </li>)}</ul>
-            </section>}
-            {addMemberCandidates.length === 0 ? <p className="text-ui text-muted-foreground">Everyone in your workspace is already here.</p>
-              : <><fieldset disabled={addingMembers}><legend className="text-ui font-medium">Eligible people</legend>
-                {filteredAddMemberCandidates.length === 0
-                  ? <p className="text-ui text-muted-foreground">No eligible people match your search.</p>
-                  : filteredAddMemberCandidates.map((candidate) => {
-                    const key = `${candidate.kind}:${candidate.id}`;
-                    return <label key={key} className="room-member-choice"><input type="checkbox" aria-label={candidate.displayName} checked={selectedMembers.includes(key)}
-                      onChange={(event) => setSelectedMembers((current) => event.target.checked ? [...current, key] : current.filter((item) => item !== key))} />
-                      <ParticipantAvatar participant={candidate} size="sm" /><span>{candidate.displayName}</span><span className="text-ui text-muted-foreground">{candidate.kind === "agent" ? "Agent" : "Person"}</span></label>;
-                  })}
-              </fieldset>
-              <Button type="button" disabled={selectedMembers.length === 0 || addingMembers} onClick={() => void addSelectedMembers()}>{addingMembers ? "Adding…" : "Add selected"}</Button></>}
-            {memberError && <p role="alert" className="text-ui text-err">{memberError}</p>}
-          </div>}
-        </section>} />
+        members={membersSection} />
     </aside>}
     {/* Super-agent: the project's three list views, each titled by the toggle that opened it, with the one ✕. */}
     {requestsShown && !showDetail && <aside className="room-context" aria-label="Tasks"
@@ -1159,6 +1183,11 @@ function RoomContent({
       <PaneHeader title="Scheduled" onClose={closeView} />
       {/* A row opens the automation in this pane, with "‹ Scheduled" back here (AutomationDockPanel). */}
       <div className="room-context-body"><ScheduledList scope={{ kind: "room", roomId }} onOpen={openTask}
+        onDraft={visibleRoom?.archivedAt ? undefined : (text) => {
+          // Never over a draft the person started: the template goes under it.
+          composer.onTextChange(composer.text.trim() ? `${composer.text.trimEnd()}\n\n${text}` : text);
+          setFocusToken((t) => t + 1);
+        }}
         onOpenAutomation={(id) => openPanel("automation", { id }, { pushUrl: true })} /></div>
     </aside>}
     {showTasks && <aside className="room-context" aria-label="Tasks" onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeDetail(); } }}>

@@ -30,7 +30,8 @@ vi.mock("@clerk/nextjs", () => {
       Link: () => null,
     },
   );
-  return { UserButton };
+  // useNeedsYouCount's first-move read waits for auth: none here.
+  return { UserButton, useAuth: () => ({ isLoaded: false, userId: null, orgId: null }) };
 });
 
 const activityState = { attentionCount: 0 };

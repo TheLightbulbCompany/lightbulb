@@ -442,6 +442,24 @@ describe("Team › Message", () => {
     expect(screen.getByRole("dialog", { name: "Hire a specialist" })).toBeInTheDocument();
   });
 
+  it("switch on: Team sits in the Frame A column with its title row; no Specialist subline; search only from 10 agents (UX slice 6)", () => {
+    live.superAgent = true;
+    const roster = (n: number) => [{ id: "ceo", name: "CEO", role: "ceo" }, ...Array.from({ length: n - 1 }, (_, i) => ({ id: `a${i}`, name: `Agent ${i}`, role: "engineer" }))];
+    mockRead.mockReturnValue({ ...agents, data: { agents: roster(3) } });
+    const { unmount } = render(<AgentsListPanel />);
+    const title = screen.getByRole("heading", { level: 1, name: "Team" }).parentElement!;
+    expect(title).toHaveClass("frame-doc__title");
+    expect(within(title).getByRole("button", { name: "Hire a specialist" })).toBeInTheDocument();
+    expect(title.closest(".frame-doc")).not.toBeNull();
+    expect(screen.queryByText("Specialist")).toBeNull();
+    expect(screen.queryByRole("searchbox")).toBeNull();
+    expect(screen.queryByLabelText("Search agents")).toBeNull();
+    unmount();
+    mockRead.mockReturnValue({ ...agents, data: { agents: roster(10) } });
+    render(<AgentsListPanel />);
+    expect(screen.getByLabelText("Search agents")).toBeInTheDocument();
+  });
+
   it("switch on: a card per specialist says what it's for, its skills and recent requests, with Ask; no org chart", async () => {
     live.superAgent = true;
     mockRead.mockReturnValue({ ...agents, data: { agents: [

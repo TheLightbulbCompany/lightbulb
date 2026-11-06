@@ -8,9 +8,13 @@
 
 import "./home.css";
 import { useState, type FormEvent, type ReactElement } from "react";
-import { ChevronRight, Plus, Search } from "lucide-react";
-import { orderIdeas, overviewGroups, roomDisplayName, summaryView, useTaskList, type TaskScope, type TaskSummary } from "@lightbulb/shared";
+import { Archive, ChevronRight, CircleDashed, MoreHorizontal, Pin, PinOff, Plus, Search, Settings } from "lucide-react";
+import { orderIdeas, overviewGroups, roomDisplayName, useTaskList, type Idea, type MemberPrefsRequest, type PatchRoomRequest, type TaskScope, type TaskSummary } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { FIRST_MOVE_LABEL, openFirstMoves, useFirstMoves } from "@/components/ideas/FirstMoves";
+import { NewProjectDialog } from "@/components/projects/NewProjectDialog";
+import { ProjectTile } from "@/components/projects/ProjectTile";
 import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingWorkspaceContext";
 import type { DirectoryRoom } from "@/components/messaging/types";
 import { useNeedsYouCount, useNeedsYouTasks } from "@/components/tasks/useRoomThreads";
@@ -58,7 +62,7 @@ export function workingCapped(list: { tasks: readonly TaskSummary[]; next: strin
   return settled.every((g) => g.tasks.length === 0);
 }
 const workingWord = (n: number, capped: boolean) => `Working ${n}${capped ? "+" : ""}`;
-/** A card's accessible name: the project and its counts (topic and snippet are its description). */
+/** A card's accessible name: the project and its counts. */
 export const cardLabel = (name: string, counts: RoomCounts | undefined, capped: boolean) =>
   [name, counts?.working ? workingWord(counts.working, capped) : "", counts?.needsYou ? needWord(counts.needsYou) : ""].filter(Boolean).join(", ");
 
@@ -68,6 +72,7 @@ export function HomeProjects(): ReactElement {
   const { data } = useTaskList(tasks, WORKSPACE);
   const needs = useNeedsYouTasks(WORKSPACE);
   const needsYouCount = useNeedsYouCount();
+  const firstMoves = useFirstMoves();
   const counts = roomCounts(needs.tasks, data?.tasks ?? []);
   // The list leads with live requests (waiting, working, queued), so Working is complete unless the first page is
   // all live and more pages follow: then each Working count is a floor.
@@ -79,62 +84,69 @@ export function HomeProjects(): ReactElement {
   const projects = projectRooms(rooms);
   const [query, setQuery] = useState("");
   const q = query.trim().toLowerCase();
-  const shown = q ? projects.filter((r) => `${roomDisplayName(r, r.participants)} ${r.topic ?? ""}`.toLowerCase().includes(q)) : projects;
+  const shown = q ? projects.filter((r) => roomDisplayName(r, r.participants).toLowerCase().includes(q)) : projects;
+  // Pinned first (the sidebar's Pinned group: the same `starred` setting), then the rest.
+  const pinned = shown.filter((r) => r.starred);
+  const rest = shown.filter((r) => !r.starred);
   const [creating, setCreating] = useState(false);
   // A new workspace: nothing but the seeded #general (and DMs) yet.
   const fresh = directory?.state === "ready" && projects.every((r) => r.isDefault);
   const openDm = () => { if (frontId) openAgentDmWithDraft(frontId, ""); else activateMessagesPanel(); };
+  // The one needs-you item is the first move: say so, and go straight to it.
+  const onlyFirstMove = needsYouCount === 1 && firstMoves.length > 0;
+  const card = (room: DirectoryRoom) => <li key={room.roomId}><ProjectCard room={room} counts={counts.get(room.roomId)} capped={capped}
+    viewerId={directory?.currentUserId} onSetPrefs={directory?.onSetPrefs} onOpenSettings={directory?.onOpenSettings} onPatchRoom={directory?.onPatchRoom} /></li>;
 
   return <div className="home-projects"><div className="frame-doc home-projects__col">
     {/* Frame A: the title and the page's one primary action on the same line. */}
     <div className="frame-doc__title">
       <h1>Home</h1>
-      {directory?.onCreate && !creating && <Button type="button" size="sm" className="h-7" onClick={() => setCreating(true)}>
+      {directory?.onCreate && <Button type="button" size="sm" className="h-7" onClick={() => setCreating(true)}>
         <Plus aria-hidden="true" />New project</Button>}
     </div>
     {needsYouCount > 0 && <button type="button" className="home-projects__needs"
-      onClick={() => { closePane(); openPanel("activity", {}, { pushUrl: true }); }}>
+      onClick={() => { if (onlyFirstMove) { openFirstMoves(); return; } closePane(); openPanel("activity", {}, { pushUrl: true }); }}>
       <span className="home-projects__dot" aria-hidden="true" />
-      <span><span className="font-semibold text-foreground">{needWord(needsYouCount)}</span> · Review</span>
+      <span><span className="font-semibold text-foreground">{needWord(needsYouCount)}</span> · {onlyFirstMove ? FIRST_MOVE_LABEL : "Review"}</span>
       <ChevronRight size={14} aria-hidden="true" />
     </button>}
     {messaging && <AskLightbulb onAsk={messaging.askLightbulb} />}
 
     <section aria-labelledby="home-chats-heading" className="home-projects__section">
-      <h2 id="home-chats-heading" className="text-ui font-semibold">Chats</h2>
+      <h2 id="home-chats-heading" className="home-projects__label">Chats</h2>
       <button type="button" className="home-projects__dm" onClick={() => openDm()}>
-        <span className="min-w-0 flex-1">
-          <span className="block font-semibold">Lightbulb</span>
-          <span className="block truncate text-ui text-muted-foreground">{dm?.lastMessage ? previewLine(dm, data?.tasks ?? []) : "Your chat with Lightbulb"}</span>
-        </span>
-        <RoomMeta room={dm} counts={dm ? counts.get(dm.roomId) : undefined} capped={capped} />
+        <span className="min-w-0 flex-1 truncate font-semibold">Lightbulb</span>
+        <RoomState room={dm} counts={dm ? counts.get(dm.roomId) : undefined} capped={capped} />
       </button>
     </section>
 
+    {pinned.length > 0 && <section aria-labelledby="home-pinned-heading" className="home-projects__section">
+      <h2 id="home-pinned-heading" className="home-projects__label">Pinned</h2>
+      <ul className="home-projects__grid">{pinned.map(card)}</ul>
+    </section>}
+
     <section aria-labelledby="home-projects-heading" className="home-projects__section">
       <div className="home-projects__head">
-        <h2 id="home-projects-heading" className="text-ui font-semibold">Projects</h2>
+        <h2 id="home-projects-heading" className="home-projects__label">Projects</h2>
         {projects.length > 3 && <label className="home-projects__search">
           <Search size={14} aria-hidden="true" />
           <span className="sr-only">Find a project</span>
           <input type="search" placeholder="Find a project" value={query} onChange={(e) => setQuery(e.target.value)} />
         </label>}
       </div>
-      {creating && directory?.onCreate && <NewProject busy={!!directory.creationBusy} error={directory.creationError}
-        onCancel={() => setCreating(false)}
-        onCreate={async (name) => {
-          const created = await directory.onCreate!({ kind: "channel", name, members: [] });
-          if (created !== false) { setCreating(false); activateMessagesPanel(); }
-        }} />}
       {!directory || directory.state === "loading" ? <p role="status" className="text-ui text-muted-foreground">Loading…</p>
         : directory.state === "error" ? <p role="alert" className="text-ui text-muted-foreground">Projects couldn&apos;t load.{" "}
           {directory.onRetry && <button type="button" className="underline hover:text-foreground" onClick={directory.onRetry}>Retry</button>}</p>
-        : shown.length > 0 ? <ul className="home-projects__grid">
-          {shown.map((room) => <li key={room.roomId}><ProjectCard room={room} counts={counts.get(room.roomId)} capped={capped} preview={previewLine(room, data?.tasks ?? [])} /></li>)}
-        </ul>
-        : q ? <p className="text-ui text-muted-foreground">No project matches “{query.trim()}”.</p> : null}
-      {fresh && !creating && <StartAProject onStart={() => setCreating(true)} />}
+        : rest.length > 0 ? <ul className="home-projects__grid">{rest.map(card)}</ul>
+        : q && !pinned.length ? <p className="text-ui text-muted-foreground">No project matches “{query.trim()}”.</p> : null}
+      {fresh && <StartAProject onStart={() => setCreating(true)} firstMoves={firstMoves} />}
     </section>
+    {directory?.onCreate && <NewProjectDialog open={creating} onOpenChange={setCreating} busy={!!directory.creationBusy} error={directory.creationError}
+      onCreate={async (creation) => {
+        const created = await directory.onCreate!(creation);
+        if (created !== false) activateMessagesPanel();
+        return created !== false;
+      }} />}
   </div></div>;
 }
 
@@ -162,77 +174,65 @@ function AskLightbulb({ onAsk }: { onAsk: (text: string) => Promise<void> }): Re
   </div>;
 }
 
-const snippet = (room: DirectoryRoom) => {
-  const m = room.lastMessage;
-  if (!m) return room.topic ?? "";
-  const text = m.textPreview || (m.hasAttachments ? "Sent an attachment" : "");
-  return m.authorKind === "system" ? text : `${m.authorName}: ${text}`;
-};
-
-/** A card's preview: the room's latest message, unless one of its requests settled after it (Done, Stopped, Closed).
- *  Then the request's status, so "Growth is writing…" or "On it: …" never outlives the request (dev walk W8-9).
- *  ponytail: the listed page of requests; an older request settling is caught by the next message. */
-export function previewLine(room: DirectoryRoom, tasks: readonly TaskSummary[]): string {
-  const at = room.lastMessage ? Date.parse(room.lastMessage.createdAt) : -Infinity;
-  const latest = tasks.filter((t) => (t.audience?.roomId ?? t.originRoomId) === room.roomId)
-    .reduce<TaskSummary | null>((a, t) => (!a || Date.parse(t.updatedAt) > Date.parse(a.updatedAt) ? t : a), null);
-  if (latest && Date.parse(latest.updatedAt) > at) {
-    // Done and Closed read the same for every viewer (only a failed request depends on who looks).
-    const view = summaryView(latest, "");
-    if (view.word === "Done" || (view.word === "Closed" && latest.status === "resolved")) return `${latest.title} · ${view.reason ?? view.word}`;
-  }
-  return snippet(room);
-}
-
-function RoomMeta({ room, counts, capped = false }: { room?: DirectoryRoom; counts?: RoomCounts; capped?: boolean }): ReactElement {
+/** A card's one state line: "● N needs you · age" (warn), "◔ N working · age" (info), else the age alone. */
+function RoomState({ room, counts, capped = false }: { room?: DirectoryRoom; counts?: RoomCounts; capped?: boolean }): ReactElement {
+  const age = room?.lastMessageAt ? <time dateTime={room.lastMessageAt}>{timeAgo(room.lastMessageAt)}</time> : null;
   return <span className="home-projects__meta">
-    {room?.lastMessageAt && <time dateTime={room.lastMessageAt}>{timeAgo(room.lastMessageAt)}</time>}
-    {!!counts?.working && <span>{workingWord(counts.working, capped)}</span>}
-    {!!counts?.needsYou && <span className="font-semibold text-foreground"><span className="home-projects__dot" aria-hidden="true" />{needWord(counts.needsYou)}</span>}
+    {counts?.needsYou ? <><span className="home-projects__dot" aria-hidden="true" /><span className="text-foreground">{needWord(counts.needsYou)}</span>{age && " · "}</>
+      : counts?.working ? <><CircleDashed size={12} aria-hidden="true" className="text-info" /><span>{counts.working}{capped ? "+" : ""} working</span>{age && " · "}</>
+      : null}
+    {age}
   </span>;
 }
 
-function ProjectCard({ room, counts, capped, preview }: { room: DirectoryRoom; counts?: RoomCounts; capped: boolean; preview: string }): ReactElement {
-  const name = roomDisplayName(room, room.participants);
-  const describedBy = `home-card-${room.roomId}`;
-  return <button type="button" className="home-projects__card" onClick={() => openRoom(room.roomId)}
-    aria-label={cardLabel(name, counts, capped)} aria-describedby={room.topic || room.lastMessage ? describedBy : undefined}>
-    <span className="block truncate font-semibold">{name}</span>
-    <span id={describedBy} className="contents">
-      {room.topic && <span className="line-clamp-2 text-ui text-muted-foreground">{room.topic}</span>}
-      {room.lastMessage && <span className="block truncate text-ui text-muted-foreground">{preview}</span>}
-    </span>
-    <RoomMeta room={room} counts={counts} capped={capped} />
-  </button>;
-}
-
-function NewProject({ busy, error, onCreate, onCancel }: {
-  busy: boolean; error?: string; onCreate: (name: string) => Promise<void>; onCancel: () => void;
+/** Tile · name · state and age. ⋯ (hover): Pin/Unpin · Settings · Archive. No topic, no message preview. */
+function ProjectCard({ room, counts, capped, viewerId, onSetPrefs, onOpenSettings, onPatchRoom }: {
+  room: DirectoryRoom; counts?: RoomCounts; capped: boolean; viewerId?: string;
+  onSetPrefs?: (roomId: string, prefs: MemberPrefsRequest) => Promise<void>;
+  onOpenSettings?: (roomId: string, from?: "home") => void;
+  onPatchRoom?: (roomId: string, request: PatchRoomRequest) => Promise<void>;
 }): ReactElement {
-  const [name, setName] = useState("");
-  return <form className="home-projects__new" aria-label="New project" onSubmit={(e) => { e.preventDefault(); if (name.trim() && !busy) void onCreate(name.trim()); }}>
-    <label htmlFor="home-new-project" className="text-ui font-semibold">Project name</label>
-    <input id="home-new-project" className="room-input" value={name} maxLength={80} disabled={busy} autoFocus
-      placeholder="Launch the spring sale" onChange={(e) => setName(e.target.value)} />
-    {error && <p role="alert" className="text-ui text-err">{error}</p>}
-    <div className="flex gap-2">
-      <Button type="submit" size="sm" disabled={!name.trim() || busy}>{busy ? "Creating…" : "Create project"}</Button>
-      <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={onCancel}>Cancel</Button>
-    </div>
-  </form>;
+  const name = roomDisplayName(room, room.participants);
+  const [failed, setFailed] = useState<string | null>(null);
+  const role = room.members.find((m) => m.kind === "human" && m.id === viewerId)?.role;
+  // The backend archives only a project's owner or admin's, never #general.
+  const canArchive = !!onPatchRoom && room.kind === "channel" && !room.isDefault && (role === "owner" || role === "admin");
+  const act = (action: () => Promise<void>, fallback: string) => { setFailed(null); action().catch((e) => setFailed(e instanceof Error && e.message ? e.message : fallback)); };
+  return <div className="home-projects__card-wrap">
+    <button type="button" className="home-projects__card" onClick={() => openRoom(room.roomId)} aria-label={cardLabel(name, counts, capped)}>
+      <ProjectTile icon={room.icon} color={room.color} name={name} size={32} />
+      <span className="grid min-w-0 flex-1">
+        <span className="truncate font-semibold">{name}</span>
+        <RoomState room={room} counts={counts} capped={capped} />
+      </span>
+    </button>
+    {(onSetPrefs || onOpenSettings || canArchive) && <DropdownMenu>
+      <DropdownMenuTrigger asChild><Button type="button" variant="ghost" size="icon-sm" className="home-projects__more" data-room-id={room.roomId} aria-label={`More for ${name}`}><MoreHorizontal aria-hidden="true" /></Button></DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        {onSetPrefs && <DropdownMenuItem onSelect={() => act(() => onSetPrefs(room.roomId, { starred: !room.starred }), "The pin could not be saved.")}>
+          {room.starred ? <PinOff aria-hidden="true" /> : <Pin aria-hidden="true" />}{room.starred ? "Unpin" : "Pin"}</DropdownMenuItem>}
+        {onOpenSettings && room.kind === "channel" && <DropdownMenuItem onSelect={() => onOpenSettings(room.roomId, "home")}><Settings aria-hidden="true" />Settings</DropdownMenuItem>}
+        {canArchive && <DropdownMenuItem onSelect={() => act(() => onPatchRoom!(room.roomId, { archived: true }), "The project could not be archived.")}><Archive aria-hidden="true" />Archive</DropdownMenuItem>}
+      </DropdownMenuContent>
+    </DropdownMenu>}
+    {failed && <p role="alert" className="text-caption text-err">{failed}</p>}
+  </div>;
 }
 
-/** A new workspace: start a project, or begin from one of the catalog's ideas. */
-function StartAProject({ onStart }: { onStart: () => void }): ReactElement {
+/** A new workspace: start a project, or begin from the first run's ideas (else the catalog's). */
+function StartAProject({ onStart, firstMoves }: { onStart: () => void; firstMoves: readonly Idea[] }): ReactElement {
   const { ideas } = useIdeas();
-  const starters = orderIdeas(ideas).filter((idea) => !idea.suggested).slice(0, HOME_STARTERS);
+  const starters = firstMoves.length ? firstMoves : orderIdeas(ideas).filter((idea) => !idea.suggested).slice(0, HOME_STARTERS);
   return <div className="home-projects__start">
-    <p className="text-ui text-muted-foreground">A project is a room where you and Lightbulb work on one thing.</p>
+    <p className="text-ui text-muted-foreground">A project is where you and Lightbulb work on one thing.</p>
     <div className="flex flex-wrap gap-2">
       <Button type="button" size="sm" onClick={onStart}><Plus aria-hidden="true" />Start a project</Button>
-      {starters.length > 0 && <ul aria-label="Starter ideas" className="contents">
+      {starters.length > 0 && <ul aria-label={firstMoves.length ? "First moves" : "Starter ideas"} className="contents">
         {starters.map((idea) => <li key={idea.id}>
-          <Button type="button" size="sm" variant="outline" onClick={() => { capture("ideas_opened", { source: "home_starter" }); openPanel("ideas", { idea: idea.id }, { pushUrl: true }); }}>
+          <Button type="button" size="sm" variant="outline" onClick={() => {
+            if (firstMoves.length) { openFirstMoves(); return; }
+            capture("ideas_opened", { source: "home_starter" }); openPanel("ideas", { idea: idea.id }, { pushUrl: true });
+          }}>
             {idea.title}
           </Button>
         </li>)}

@@ -1,6 +1,8 @@
-"""A9 — Ready for review -> Landing -> Idle (spec 09 §8.3; Q Task 11 step 3), clean run.
+"""A9 — Ready for review -> Landing -> Idle (spec 09 §8.3; Q Task 11 step 3), clean run; A9b — a member email under
+Auto goes ahead with no card (#4891).
 
-Takes the task from A2 whose Effect is proposed behind an open ``review`` Question (the email), checks every
+Takes the task from A2 whose Effect is proposed behind an open ``review`` Question (the email to ``OUTSIDER_EMAIL``,
+not a member, so Auto still asks), checks every
 recipient is a ``+clerk_test@thelightbulb.company`` address (otherwise fails WITHOUT pressing), presses Send as
 Sam and watches the Effect and the shown group. Not asserted here, by hand: the two fault runs
 (``kill_after_effect_intent`` / ``kill_after_tool_before_done`` are env on the dev service; ``--faults`` only
@@ -11,12 +13,24 @@ from __future__ import annotations
 
 import re
 
-from scripts.super_agent.acceptance.ctx import Ctx, Result
-from scripts.super_agent.acceptance.o_lib import answer_question, question_row, rows_of, task_detail, task_questions
+from scripts.super_agent.acceptance.ctx import SECOND_USER_EMAIL, Ctx, Result
+from scripts.super_agent.acceptance.o_lib import (
+    answer_question,
+    post,
+    question_row,
+    rows_of,
+    task_detail,
+    task_questions,
+)
 
 TEST_ADDRESS = re.compile(r"^[^@\s]+\+clerk_test@thelightbulb\.company$", re.I)
 REVIEW_S = 300
 LAND_S = 120
+AUTO_S = 300
+MEMBER_ASK = (
+    f"Email Priya ({SECOND_USER_EMAIL}, a workspace member; only her, this is a test) one line: "
+    "the workshop date moved to next Friday."
+)
 
 
 def _effects(rows: list[dict], task_id: str) -> list[dict]:
@@ -87,4 +101,45 @@ async def a09(ctx: Ctx) -> Result:
             "byHand": "outbound log has one email; fault runs; Apps publish gate",
             **checks,
         },
+    )
+
+
+def _to(effect: dict) -> list[str]:
+    return [
+        a.strip().lower() for a in re.split(r"[,;]", str((effect.get("operands") or {}).get("to") or "")) if a.strip()
+    ]
+
+
+async def a09b(ctx: Ctx) -> Result:
+    """Sam asks for an email to Priya (a member): under Auto it goes ahead with no card, logged as its intent row
+    (``allowedBy: "mode:auto"``). Nothing is pressed here; Priya's address is ``+clerk_test`` (never receives mail)."""
+    room_id = ctx.state.get("roomId")
+    if not room_id:
+        return Result(False, {"reason": "needs A1: no room id in ctx.state"})
+    before = {e["idemKey"] for e in rows_of(await ctx.tasks_rows(ctx.ws), "effect")}
+    await post(ctx, "sam", room_id, MEMBER_ASK)
+    member = SECOND_USER_EMAIL.lower()
+    effect = await ctx.wait_for(
+        lambda rows: next(
+            (
+                e
+                for e in rows_of(rows, "effect")
+                if e["idemKey"] not in before and e.get("kind") == "mail.send" and _to(e) == [member]
+            ),
+            None,
+        ),
+        AUTO_S,
+    )
+    if effect is None:
+        return Result(False, {"reason": f"no new mail.send effect to {member}"})
+    task_id = effect["taskId"]
+    rows = await ctx.tasks_rows(ctx.ws)
+    checks = {
+        "went_ahead_as_intent": effect.get("state") in ("intent", "done", "unknown") and not effect.get("questionId"),
+        "allowed_by_mode_auto": effect.get("allowedBy") == "mode:auto",
+        "no_card": question_row(rows, task_id, ("review", "approval")) is None,
+    }
+    return Result(
+        all(checks.values()),
+        {"taskId": task_id, "idemKey": effect["idemKey"], "state": effect.get("state"), **checks},
     )

@@ -7,10 +7,11 @@ import httpx
 from scripts.super_agent.acceptance import ctx as ctxmod
 from scripts.super_agent.acceptance.a05_approval import a05
 from scripts.super_agent.acceptance.a06_go_ahead import a06
-from scripts.super_agent.acceptance.a09_landing import a09
+from scripts.super_agent.acceptance.a09_landing import a09, a09b
 from scripts.super_agent.acceptance.a10_a2a import a10
 from scripts.super_agent.acceptance.a11_recurring import a11
 from scripts.super_agent.acceptance.a12_private_lane import a12
+from scripts.super_agent.acceptance.o_lib import OUTSIDER_EMAIL
 
 T = "11111111-1111-4111-8111-111111111111"
 SAM, PRIYA = "user_sam", "user_priya"
@@ -128,7 +129,7 @@ async def test_a09_lands_once_and_ends_idle():
             "idemKey": "k",
             "kind": "mail.send",
             "state": "proposed",
-            "operands": {"to": "sa-test-2+clerk_test@thelightbulb.company"},
+            "operands": {"to": OUTSIDER_EMAIL},
         },
     ]
     rows[2]["operands"] = dict(rows[2]["operands"])
@@ -169,6 +170,44 @@ async def test_a09_refuses_to_press_send_for_a_real_recipient():
     result = await a09(ctx)
     assert not result.passed and result.evidence["reason"].startswith("refusing to press Send")
     assert pressed == []
+
+
+def _member_mail(**over):
+    return {
+        "type": "effect",
+        "taskId": T,
+        "idemKey": "new",
+        "kind": "mail.send",
+        "state": "intent",
+        "allowedBy": "mode:auto",
+        "operands": {"to": ctxmod.SECOND_USER_EMAIL},
+        **over,
+    }
+
+
+def _a09b_ctx(effect, *extra):
+    rows = [{"type": "effect", "taskId": T, "idemKey": "old", "kind": "mail.send", "operands": {"to": OUTSIDER_EMAIL}}]
+    ctx = Fake(None, rows)
+    # the post is what makes the member email: rows seen before it hold only the old one
+    ctx.handler = lambda r, u: rows.extend([effect, *extra]) or _json({"messageId": "m9", "messageSeq": 9})
+    return ctx
+
+
+async def test_a09b_member_email_goes_ahead_without_a_card():
+    result = await a09b(_a09b_ctx(_member_mail()))
+    assert result.passed, result.evidence
+
+
+async def test_a09b_fails_when_the_member_email_asks():
+    card = {"type": "question", "taskId": T, "qid": "q2", "kind": "review", "state": "open"}
+    result = await a09b(_a09b_ctx(_member_mail(state="proposed", allowedBy=None, questionId="q2"), card))
+    assert not result.passed
+    assert result.evidence["no_card"] is False and result.evidence["allowed_by_mode_auto"] is False
+
+
+async def test_a09b_without_a_new_member_email_fails_with_reason():
+    result = await a09b(_a09b_ctx(_member_mail(operands={"to": OUTSIDER_EMAIL})))
+    assert not result.passed and "no new mail.send" in result.evidence["reason"]
 
 
 async def test_a10_reports_why_it_did_not_run():

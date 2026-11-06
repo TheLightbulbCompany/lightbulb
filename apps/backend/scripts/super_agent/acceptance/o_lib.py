@@ -15,12 +15,14 @@ from core.services.questions import MONEY_SUBKINDS
 #: Upper bound the scenarios WAIT for the Router (cold start 30-60 s; its turns are sequential per workspace).
 #: The waits return as soon as the thing is there; the observed seconds go in the evidence.
 ROUTER_REPLY_S = 180
+#: A9's recipient: matches the +clerk_test rule but is NOT a workspace member, so Auto mode still asks (#4891).
+OUTSIDER_EMAIL = "acceptance-outsider+clerk_test@thelightbulb.company"
 START_S = 15
 EVENT_S = 3
 ACK_S = 5
 ASKS = (
     "Four things: 1) build a signup page for the workshop with our purple theme, 2) email last week's attendees "
-    "(only sa-test-2+clerk_test@thelightbulb.company, this is a test) about the new date, 3) estimate what Stripe "
+    f"(only {OUTSIDER_EMAIL}, this is a test) about the new date, 3) estimate what Stripe "
     "fees we'd pay on 200 tickets, 4) and buy a domain for the workshop signup page (around $15)."
 )
 

@@ -31,7 +31,7 @@ SCENARIOS: dict[str, tuple[str, tuple[str, ...]]] = {
     "A6": ("Q", ("a06_go_ahead:a06",)),
     "A7": ("O", ("a07_one_voice:a07",)),
     "A8": ("O", ("a08_open_thread:a08",)),
-    "A9": ("Q", ("a09_landing:a09",)),
+    "A9": ("Q", ("a09_landing:a09", "a09_landing:a09b")),
     "A10": ("Q", ("a10_a2a:a10",)),
     "A11": ("A", ("a11_recurring:a11",)),
     "A12": ("O+M", ("a12_router_lanes:a12_router", "a12_private_lane:a12")),

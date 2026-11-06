@@ -7,13 +7,15 @@ refetch path asks it. `summarize` is pure over a task tree and returns the `Task
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any
 
 from core import tasks_schema as ts
-from core.repositories import messaging_repo
+from core.repositories import messaging_repo, tasks_repo
 from core.services import clerk_admin, questions
 
+_log = logging.getLogger(__name__)
 _ORG_TTL_S = 60.0
 _ORG_CACHE_MAX = 10_000
 _org_cache: dict[str, tuple[float, set[str]]] = {}
@@ -137,6 +139,7 @@ def summarize(tree: dict, viewer_id: str) -> dict[str, Any]:
         "openQuestion": question,
         "landing": task.get("landingEffect"),
         "output": output,
+        "outputs": task.get("outputs") or [],
         "watchUntil": task.get("watchUntil"),
         "watching": task["status"] == "idle" and bool(task.get("watchUntil")),
         "runsOn": None if not last else ("task" if "-t-" in (last.get("sessionId") or "") else "workspace"),
@@ -156,3 +159,72 @@ def summarize(tree: dict, viewer_id: str) -> dict[str, Any]:
         "updatedAt": task["updatedAt"],
         "version": task["version"],
     }
+
+
+# --- What a task made (UX slice 5) ---------------------------------------------------------------------------------
+# `TaskSummary.output` is only the draft waiting on a review; `outputs` stays on the task row for every status, written
+# when an effect lands (`record_effect_output`), when a result attaches files (`activities.end_attempt`) and when a
+# request hands an app to Apps (`app_conversation`).
+
+DOC_TYPES = (
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/msword",
+    "application/pdf",
+    "application/vnd.oasis.opendocument.text",
+    "text/markdown",
+    "text/plain",
+    "text/html",
+)
+_EFFECT_REF_KEYS = ("to", "subject", "appId", "appName", "repo", "number")
+
+
+def effect_output(effect: dict) -> dict | None:
+    """The output a landed review-kind Effect leaves (mail sent, PR merged, app published). None for an approval kind
+    (purchase, provision, a2a), a refusal (`refused:…` did not happen) and anything not `done`."""
+    if effect.get("state") != "done" or str(effect.get("resultRef") or "").startswith("refused:"):
+        return None
+    drafted = effect.get("output") or questions.output_for(effect)
+    if drafted is None:
+        return None
+    o = effect.get("operands") or {}
+    ref = {"idemKey": effect["idemKey"]} | {k: str(o[k])[:200] for k in _EFFECT_REF_KEYS if o.get(k) not in (None, "")}
+    if effect.get("kind") == "pr.merge" and "repo" in ref and "number" in ref:
+        ref["url"] = f"https://github.com/{ref['repo']}/pull/{ref['number']}"
+    if effect.get("resultRef"):
+        ref["resultRef"] = str(effect["resultRef"])[:200]
+    return {"id": f"effect:{effect['idemKey']}", "kind": drafted["kind"], "title": drafted["title"], "ref": ref}
+
+
+def file_output(task_id: str, file: dict) -> dict:
+    """A file a result attached in the task room; opened by `GET /messaging/rooms/{roomId}/attachments/{id}/url`."""
+    ctype = file.get("contentType") or ""
+    return {
+        "id": f"file:{file['attachmentId']}",
+        "kind": "document" if ctype in DOC_TYPES else "file",
+        "title": (file.get("fileName") or "file")[:200],
+        "ref": {
+            "roomId": ts.task_room_id(task_id),
+            "attachmentId": str(file["attachmentId"]),
+            "fileName": file.get("fileName") or "",
+            "contentType": ctype,
+        },
+    }
+
+
+async def record_effect_output(ws: str, effect: dict) -> None:
+    """Best effort: the effect being done matters more than the output row, so a failed write logs and goes on."""
+    try:
+        out = effect_output(effect)
+    except Exception:  # noqa: BLE001
+        _log.warning("effect %s: no output", effect.get("idemKey"), exc_info=True)
+        return
+    if out:
+        await record_output(ws, effect["taskId"], out)
+
+
+async def record_output(ws: str, task_id: str, output: dict) -> None:
+    """`tasks_repo.add_task_output` that never fails its caller (an effect's done, a run's end)."""
+    try:
+        await tasks_repo.add_task_output(ws, task_id, output)
+    except Exception:  # noqa: BLE001
+        _log.warning("task %s: output %s not recorded", task_id, output.get("id"), exc_info=True)

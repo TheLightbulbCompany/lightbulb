@@ -1154,13 +1154,22 @@ def _state(app: dict, rows: dict) -> tuple[str, AppError | None]:
     return "ready", app.get("error") or app.get("publish_error") or _host_warning(app) or _renewal_hold(app)
 
 
-async def _record_state(app: dict, state: str) -> str:
+async def _record_state(app: dict, state: str, err: AppError | None = None) -> str:
+    """Persist the shown state. Entering `failed`, or a different error while failed, stamps `failure` {at, code,
+    message}: when it really failed, which a request's app watch compares (an upload or a read only bumps
+    `updated_at`)."""
     if app.get("state") == "requested" and not app.get("sources"):
         return "requested"  # reserved by `app start`; the first upload adopts it
     record = "live" if state == "ready" and app.get("live_version") else state
-    if app.get("state") != record:
+    fields: dict = {"state": record}
+    if record == "failed":
+        seen = {"code": (err or {}).get("code"), "message": (err or {}).get("message")}
+        old = app.get("failure") or {}
+        if app.get("state") != "failed" or {k: old.get(k) for k in seen} != seen:
+            fields["failure"] = {**seen, "at": utc_now_iso()}
+    if app.get("state") != record or "failure" in fields:
         # Only over the state this copy saw: a reader from before a release must not undo its "live".
-        moved = await _patch(app, {"state": record}, expect={"state": app.get("state")})
+        moved = await _patch(app, fields, expect={"state": app.get("state")})
         if moved and record in ("ready", "live"):
             await apps_room.post_origin_ready_line(app, _display(app), _canvas_url(app["app_id"]))
     return record
@@ -1168,7 +1177,7 @@ async def _record_state(app: dict, state: str) -> str:
 
 async def _result(app: dict, rows: dict, transient: AppError | None, cost_cents: int | None = None) -> UpResult:
     state, err = _state(app, rows)
-    await _record_state(app, state)
+    await _record_state(app, state, err)
     built = app.get("preview_built") or {}
     res: UpResult = {
         "app_id": app["app_id"],
@@ -1655,7 +1664,7 @@ async def status(owner_id: str, app_id: str) -> AppStatus:
     before = _moment(app)
     rows, _ = await _progress(app)
     state, err = _state(app, rows)
-    record = await _record_state(app, state)
+    record = await _record_state(app, state, err)
     if _moment(app) != before:
         await _moved(app)
     elif record not in _DRIVE_STOP:

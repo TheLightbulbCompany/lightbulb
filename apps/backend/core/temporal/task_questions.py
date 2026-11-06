@@ -684,7 +684,10 @@ async def apply_effect(ws: str, task_id: str, idem_key: str, answered_by: str) -
         except Exception:  # ExecutorUnknown or anything after the request may have left: never retried
             await effects_repo.mark_effect_done(ws, idem_key, disposition="unknown", result_ref=None)
             return LandResult("unknown")
-        await effects_repo.mark_effect_done(ws, idem_key, disposition="done", result_ref=ref)
+        row = await effects_repo.mark_effect_done(ws, idem_key, disposition="done", result_ref=ref)
+        from core.services import tasks_access
+
+        await tasks_access.record_effect_output(ws, row)  # what it made stays on the task (UX slice 5)
         return LandResult("done")
     finally:
         await _set_landing(ws, task_id, None)

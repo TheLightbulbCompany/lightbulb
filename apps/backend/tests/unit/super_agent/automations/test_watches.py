@@ -449,7 +449,10 @@ async def test_an_app_watch_asks_the_app_and_wakes_the_worker_with_what_to_say(t
         app_conversation, "app_progress_text", AsyncMock(return_value="Booking's first version is ready.")
     )
     assert await check_watch(WS, TID, spec) == "met:ready"
-    app_conversation.app_progress.assert_awaited_with(WS, "app_1")
+    app_conversation.app_progress.assert_awaited_with(WS, "app_1", "")
+    again = WatchSpec(watch_id="w-app2", kind="app", target={"appId": "app_1", "since": "t0"}, every_min=5)
+    await check_watch(WS, TID, again)  # a "try again" watch: only news after it counts
+    app_conversation.app_progress.assert_awaited_with(WS, "app_1", "t0")
     tid = await watch_met(WS, TID, spec, 1, "met:ready")
     assert (await tasks_repo.get_trigger(WS, tid))["ref"]["text"] == "Booking's first version is ready."
 

@@ -292,6 +292,54 @@
           "title": "Audience",
           "type": "object"
         },
+        "TaskOutput": {
+          "additionalProperties": false,
+          "description": "What a task made, kept on its row for every status (UX slice 5): a landed effect (mail, PR, published app),\na file its result attached, an app it handed to Apps. `id` dedupes a retried write: `effect:{idemKey}`,\n`file:{attachmentId}`, `app:{appId}`.",
+          "properties": {
+            "kind": {
+              "enum": [
+                "document",
+                "file",
+                "app",
+                "pr",
+                "mail",
+                "link",
+                "capability"
+              ],
+              "title": "Kind",
+              "type": "string"
+            },
+            "title": {
+              "maxLength": 200,
+              "title": "Title",
+              "type": "string"
+            },
+            "ref": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "default": {},
+              "title": "Ref",
+              "type": "object"
+            },
+            "id": {
+              "title": "Id",
+              "type": "string"
+            },
+            "createdAt": {
+              "title": "Createdat",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "title",
+            "id",
+            "createdAt"
+          ],
+          "title": "TaskOutput",
+          "type": "object"
+        },
         "Usage": {
           "additionalProperties": false,
           "properties": {
@@ -583,6 +631,14 @@
           ],
           "default": null,
           "title": "Landingeffect"
+        },
+        "outputs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/TaskOutput"
+          },
+          "title": "Outputs",
+          "type": "array"
         }
       },
       "required": [
@@ -3115,6 +3171,54 @@
           "title": "SummaryQuestion",
           "type": "object"
         },
+        "TaskOutput": {
+          "additionalProperties": false,
+          "description": "What a task made, kept on its row for every status (UX slice 5): a landed effect (mail, PR, published app),\na file its result attached, an app it handed to Apps. `id` dedupes a retried write: `effect:{idemKey}`,\n`file:{attachmentId}`, `app:{appId}`.",
+          "properties": {
+            "kind": {
+              "enum": [
+                "document",
+                "file",
+                "app",
+                "pr",
+                "mail",
+                "link",
+                "capability"
+              ],
+              "title": "Kind",
+              "type": "string"
+            },
+            "title": {
+              "maxLength": 200,
+              "title": "Title",
+              "type": "string"
+            },
+            "ref": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "default": {},
+              "title": "Ref",
+              "type": "object"
+            },
+            "id": {
+              "title": "Id",
+              "type": "string"
+            },
+            "createdAt": {
+              "title": "Createdat",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "title",
+            "id",
+            "createdAt"
+          ],
+          "title": "TaskOutput",
+          "type": "object"
+        },
         "Usage": {
           "additionalProperties": false,
           "properties": {
@@ -3282,6 +3386,14 @@
             }
           ],
           "default": null
+        },
+        "outputs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/TaskOutput"
+          },
+          "title": "Outputs",
+          "type": "array"
         },
         "watchUntil": {
           "anyOf": [

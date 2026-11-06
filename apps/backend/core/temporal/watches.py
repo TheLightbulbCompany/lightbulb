@@ -35,7 +35,7 @@ GIVE_UP_OPTIONS = [{"id": "keep", "label": "Keep watching another day"}, {"id": 
 class WatchSpec:
     watch_id: str
     kind: WatchKind
-    target: dict[str, Any] = field(default_factory=dict)  # pr_checks: {repo, number}; url: {url}; app: {appId}
+    target: dict[str, Any] = field(default_factory=dict)  # pr_checks: {repo, number}; url: {url}; app: {appId, since?}
     every_min: int = 30
     give_up_at: str = ""  # ISO 8601, UTC
     on_give_up: Literal["ask", "fail"] = "ask"
@@ -185,7 +185,10 @@ async def check_watch(ws: str, task_id: str, spec: WatchSpec) -> str:
         if spec.kind == "app":
             from core.services import app_conversation
 
-            return await app_conversation.app_progress(ws, str(spec.target.get("appId") or ""))
+            target = spec.target
+            return await app_conversation.app_progress(
+                ws, str(target.get("appId") or ""), str(target.get("since") or "")
+            )
         if spec.kind == "url":
             # The SSRF-safe fetch the link previews use: public hosts only, pinned to the resolved address.
             async with httpx.AsyncClient(timeout=10.0, follow_redirects=False, trust_env=False) as http:

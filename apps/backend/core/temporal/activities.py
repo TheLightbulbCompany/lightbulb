@@ -39,6 +39,7 @@ from core.services import (
     source_replies,
     super_agent_faults,
     task_conversation,
+    tasks_access,
 )
 from core.temporal import client as temporal_client
 from core.temporal import router_prompt, rules_activities
@@ -491,6 +492,8 @@ async def end_attempt(ws: str, task_id: str, n: int, outcome: str, error: str | 
             logger.warning("task result files not attached task=%s attempt=%s", task_id, n)
             files = []
             await task_conversation.post_as_lightbulb(ws, ts.task_room_id(task_id), **result_room)
+        for f in files:  # what it made stays on the task for every status (UX slice 5)
+            await tasks_access.record_output(ws, task_id, tasks_access.file_output(task_id, f))  # best effort
         if room:
             names = ", ".join(f["fileName"] for f in files)
             try:

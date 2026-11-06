@@ -252,6 +252,30 @@ async def update_task_fields(ws: str, task_id: str, fields: dict, *, expected_ve
     raise VersionConflict(f"task {task_id}: not at version {expected_version} (or missing)")
 
 
+MAX_OUTPUTS = 50  # ponytail: the newest 50 per task on its row; an OUT# row per output if a task makes more
+
+
+async def add_task_output(ws: str, task_id: str, output: dict) -> bool:
+    """Append one `TaskOutput` to the task's `outputs` unless its `id` is there (a retried write). Bumps the version,
+    so the projector tells clients. False when it was there already or the task is gone."""
+    item = ts.TaskOutput.model_validate({"createdAt": utc_now_iso(), **output}).model_dump(by_alias=True)
+    for _ in range(5):
+        task = await get_task(ws, task_id)
+        if task is None:
+            return False
+        outputs = task.get("outputs") or []
+        if any(o.get("id") == item["id"] for o in outputs):
+            return False
+        try:
+            await update_task_fields(
+                ws, task_id, {"outputs": [*outputs, item][-MAX_OUTPUTS:]}, expected_version=task["version"]
+            )
+            return True
+        except VersionConflict:
+            continue  # the workflow moved the row under us: read it again
+    raise VersionConflict(f"task {task_id}: outputs write kept losing the race")
+
+
 async def list_tasks_by_status(
     ws: str, status: str, *, limit: int = 50, cursor: str | None = None, owner_user_id: str | None = None
 ) -> tuple[list[dict], str | None]:

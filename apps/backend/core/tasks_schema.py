@@ -459,6 +459,21 @@ class _Row(_Model):
     DERIVED: ClassVar[tuple[str, ...]] = ()
 
 
+class Output(_Model):
+    kind: OutputKind
+    title: str = Field(max_length=200)
+    ref: dict[str, str] = {}  # {s3Key} / {appId} / {repo, pr} …
+
+
+class TaskOutput(Output):
+    """What a task made, kept on its row for every status (UX slice 5): a landed effect (mail, PR, published app),
+    a file its result attached, an app it handed to Apps. `id` dedupes a retried write: `effect:{idemKey}`,
+    `file:{attachmentId}`, `app:{appId}`."""
+
+    id: str
+    created_at: str
+
+
 class Task(_Row):
     type: Literal["task"] = "task"
     task_id: TaskId
@@ -489,6 +504,7 @@ class Task(_Row):
     ws_channel: str | None = None
     stop_requested_by: str | None = None  # who pressed Stop (attributes the stop)
     landing_effect: str | None = None  # Effect idemKey while `apply_effect` runs (Lane Q writes)
+    outputs: list[TaskOutput] = []  # what it made, oldest first (`tasks_repo.add_task_output`)
 
     DERIVED: ClassVar[tuple[str, ...]] = ("statusKey", "workflowId")
 
@@ -611,12 +627,6 @@ class Needs(_Row):
 
     def sk(self) -> str:
         return needs_sk(self.user_id, self.task_id, self.qid)
-
-
-class Output(_Model):
-    kind: OutputKind
-    title: str = Field(max_length=200)
-    ref: dict[str, str] = {}  # {s3Key} / {appId} / {repo, pr} …
 
 
 class LearnIntent(_Row):
@@ -923,7 +933,8 @@ class TaskSummary(_Model):
     task_room_id: str
     open_question: SummaryQuestion | None = None
     landing: str | None = None
-    output: SummaryOutput | None = None
+    output: SummaryOutput | None = None  # the draft waiting on a review, else None
+    outputs: list[TaskOutput] = []  # what it made, for every status
     watch_until: str | None = None
     watching: bool
     runs_on: Literal["task", "workspace"] | None = None

@@ -426,7 +426,7 @@
 .all-sessions-day { padding: 0 8px 4px; font-size: var(--text-caption); font-weight: 600; color: var(--muted-foreground); }
 .room-count { display: inline-block; min-width: 18px; padding: 0 6px; border-radius: 999px; font-size: var(--text-2xs); font-weight: 600; line-height: 18px; text-align: center; color: var(--on-info); background: var(--info); font-variant-numeric: tabular-nums; }
 .room-creation-dialog { width: min(520px, calc(100vw - 32px)); max-width: 520px; padding: 0; overflow: hidden; border-radius: 8px; font-family: var(--font-sans); }
-.room-creation { display: flex; flex-direction: column; max-height: calc(100dvh - 32px); min-height: 0; }
+.room-creation { display: flex; flex-direction: column; max-height: calc(92dvh - 16px); min-height: 0; }
 .room-creation-header { display: grid; gap: 8px; padding: 24px 48px 16px 24px; flex-shrink: 0; }
 .room-creation-body { display: flex; flex-direction: column; gap: 8px; padding: 0 24px 16px; overflow-y: auto; overscroll-behavior: contain; min-height: 0; }
 .room-creation-body .room-picker { display: grid; gap: 8px; margin-top: 8px; }

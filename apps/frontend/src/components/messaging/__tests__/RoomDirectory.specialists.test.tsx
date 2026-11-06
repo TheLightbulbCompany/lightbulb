@@ -26,6 +26,21 @@ const props: RoomDirectoryProps = {
 beforeEach(() => { live.superAgent = true; openAgentDmWithDraft.mockClear(); });
 
 describe("sidebar with the super-agent on", () => {
+  it("W17-8: New chat lists Lightbulb first with its mark, and a group chat starts with it picked", async () => {
+    render(<RoomDirectory {...props} onCreate={vi.fn().mockResolvedValue(true)} />);
+    await userEvent.click(screen.getByRole("button", { name: "New channel or chat" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "New chat" }));
+    const dialog = await screen.findByRole("dialog", { name: "New direct message" });
+    const boxes = within(dialog).getAllByRole("checkbox");
+    expect(boxes[0]).toHaveAccessibleName("Select Lightbulb");
+    expect(boxes[0].closest(".room-choice")!.querySelector(".participant-avatar__mark")).not.toBeNull();
+    expect(boxes[0]).not.toBeChecked();
+    await userEvent.selectOptions(within(dialog).getByLabelText("Type"), "group-dm");
+    expect(within(screen.getByRole("dialog", { name: "New group chat" })).getByRole("checkbox", { name: "Select Lightbulb" })).toBeChecked();
+    // Anchored at the top: the dialog grows downward instead of re-centring.
+    expect(screen.getByRole("dialog", { name: "New group chat" }).className).toMatch(/top-\[8dvh\]/);
+  });
+
   it("+ › New channel opens the New channel dialog; + › New chat keeps DM and group chat, not Channel (UX slice 6)", async () => {
     const onCreate = vi.fn().mockResolvedValue(true);
     render(<RoomDirectory {...props} onCreate={onCreate} />);

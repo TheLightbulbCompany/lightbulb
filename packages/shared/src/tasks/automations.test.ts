@@ -5,6 +5,16 @@ const sam = { userId: "sam", admin: false };
 const admin = { userId: "ana", admin: true };
 
 describe("who turns an automation on (routers/automations.py)", () => {
+  it("a job the workspace owns (the builtin proactive jobs) is resumed by an org admin, never a member (_may_activate)", () => {
+    const builtin = { deliverTo: "none", ownerUserId: "org_1", match: null };
+    expect(canDecide(builtin, { ...admin, orgId: "org_1" })).toBe(true);
+    expect(canDecide(builtin, { ...sam, orgId: "org_1" })).toBe(false);
+    // Without the workspace id it stays the owner rule (nobody's user id is the org's).
+    expect(canDecide(builtin, admin)).toBe(false);
+    // A personal one is still its owner's.
+    expect(canDecide({ deliverTo: "dm:sam", ownerUserId: "sam", match: null }, { ...sam, orgId: "org_1" })).toBe(true);
+  });
+
   it("a rule goes by its match, not deliverTo", () => {
     const room = { deliverTo: "none", ownerUserId: "sam", match: { roomIds: ["r1"] } };
     expect(canDecide(room, sam)).toBe(false);

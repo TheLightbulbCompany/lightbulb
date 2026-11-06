@@ -111,5 +111,7 @@ describe("filterNavActions", () => {
     expect(byId["go-scheduled"]).toBe("/chat?panel=activity&section=scheduled");
     expect(byId["go-approvals"]).toBe("/chat?panel=settings&section=approvals");
     expect(filterNavActions("revenue", true).map((a) => a.id)).toEqual(["go-business"]);
+    // Approvals is an admin's row: a member is never offered it.
+    expect(filterNavActions("", true, false).map((a) => a.id)).not.toContain("go-approvals");
   });
 });

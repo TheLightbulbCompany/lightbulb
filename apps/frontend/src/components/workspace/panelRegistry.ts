@@ -205,6 +205,17 @@ export function settingsHrefFor(search: string): string | null {
   return qs ? `/settings?${qs}` : "/settings";
 }
 
+/** A /settings URL as the Settings place in the shell (super-agent): `?panel=` becomes `section`, every other param
+ *  (OAuth/Stripe returns, ?action=) kept. */
+export function shellSettingsHref(settingsHref: string): string {
+  const next = new URLSearchParams(settingsHref.split("?")[1] ?? "");
+  const section = next.get("panel");
+  next.set("panel", "settings");
+  next.delete("section");
+  if (section) next.set("section", section);
+  return `/chat?${next.toString()}`;
+}
+
 // Key-map membership must be OWN-property only (Object.hasOwn): the `in`
 // operator walks the prototype chain, so Object.prototype keys
 // ("constructor", "valueOf", …) in a crafted ?panel URL would pass validation

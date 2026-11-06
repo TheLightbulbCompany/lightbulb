@@ -13,6 +13,7 @@ import { Dialog, DialogPortal, DialogTitle } from "@/components/ui/dialog";
 import { Search } from "lucide-react";
 import { filterNavActions, type CommandPaletteAction } from "./commandPaletteActions";
 import { useSuperAgent } from "@/hooks/useLiveEvents";
+import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 import { navigateShell, teamsDetailUrl } from "@/lib/shellNav";
 import { agentInspectorUrl } from "@/components/teams/shared/lib/agentInspectorUrl";
 import { useFilteredCommandResults } from "./useFilteredCommandResults";
@@ -78,9 +79,10 @@ function CommandPaletteContent({ open, onOpenChange }: CommandPaletteProps) {
   const [rawSelectedIndex, setSelectedIndex] = useState(0);
 
   const superAgent = useSuperAgent();
+  const admin = useIsWorkspaceAdmin();
   const navResults = useMemo(
-    () => filterNavActions(query, superAgent),
-    [query, superAgent],
+    () => filterNavActions(query, superAgent, admin),
+    [query, superAgent, admin],
   );
   const { agents, issues, projects } = useFilteredCommandResults(query, open);
   const conversations = useRoomCommandResults(query, open);

@@ -236,6 +236,12 @@
   background: var(--cream);
 }
 
+/* The provisioning gate's box (WorkspaceShell): the body fills it as it filled .workspace-content. Settings, outside the
+   gate, takes its place while it shows. */
+.workspace-gated { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.workspace-gated[hidden] { display: none; }
+.workspace-view--settings { flex: 1; }
+
 /* The place's main view and the one right pane, side by side. */
 .workspace-body {
   position: relative;

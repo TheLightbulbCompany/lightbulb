@@ -8,7 +8,8 @@ import Link from "next/link";
 import { UserButton } from "@clerk/nextjs";
 import { Logo } from "@/components/Logo";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
-import { useSuperAgent } from "@/hooks/useLiveEvents";
+import { useOptionalLiveEvents } from "@/hooks/useLiveEvents";
+import { shellSettingsHref } from "@/components/workspace/panelRegistry";
 import { SettingsNav } from "@/components/settings/SettingsNav";
 import { navKeyDown, PANELS, type Panel } from "@/components/settings/SettingsPlace";
 import {
@@ -35,19 +36,17 @@ export default function SettingsPage() {
 function SettingsPageInner() {
   // Super-agent (UX slice 4): Settings lives inside the shell. Old /settings URLs and bookmarks open it there, with
   // `?panel=` as its section and every other param kept (OAuth/Stripe returns, ?action=).
-  return useSuperAgent() ? <ToShellSettings /> : <LegacySettingsPage />;
+  const live = useOptionalLiveEvents();
+  // Until the live config answers, which page this is is unknown: render nothing rather than flash the old one.
+  if (live?.httpReady && live.featuresLoaded === false) return null;
+  return live?.superAgent ? <ToShellSettings /> : <LegacySettingsPage />;
 }
 
 function ToShellSettings() {
   const router = useRouter();
   const searchParams = useSearchParams();
   useEffect(() => {
-    const next = new URLSearchParams(searchParams.toString());
-    const section = next.get("panel");
-    next.set("panel", "settings");
-    next.delete("section");
-    if (section) next.set("section", section);
-    router.replace(`/chat?${next.toString()}`);
+    router.replace(shellSettingsHref(`/settings?${searchParams.toString()}`));
   }, [router, searchParams]);
   return null;
 }

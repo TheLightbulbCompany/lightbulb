@@ -20,6 +20,7 @@
 .settings-place .settings-nav-item.active { font-weight: 600; }
 @media (pointer: coarse) { .settings-place .settings-nav-item { min-height: 44px; } }
 .settings-place__content { min-width: 0; color: var(--midnight); }
+.settings-place__why { margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--edge); font-size: 13px; line-height: 18px; color: var(--midnight-muted); }
 .settings-place .settings-page-title { font-family: var(--font-sans); font-size: 15px; line-height: 22px; font-weight: 600; margin-bottom: 2px; }
 .settings-place .settings-page-desc { font-size: 13px; line-height: 18px; color: var(--midnight-muted); margin-bottom: 24px; }
 @container settings-place (max-width: 760px) {

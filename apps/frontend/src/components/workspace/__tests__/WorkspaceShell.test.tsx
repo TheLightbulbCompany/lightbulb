@@ -7,7 +7,7 @@ import { _resetControllerForTests, activateMessagesPanel, getWorkspaceSnapshot, 
 import { PANE_DEFAULT_WIDTH, paneWidthKey } from "../RightPane";
 
 const state = vi.hoisted(() => ({
-  phase: "selecting", selectProps: vi.fn(), organization: null as { id: string } | null, chatReady: true, superAgent: false,
+  phase: "selecting", selectProps: vi.fn(), organization: null as { id: string } | null, chatReady: true, superAgent: false, gated: false,
 }));
 vi.mock("@/hooks/useLiveEvents", async (importOriginal) => ({ ...await importOriginal<object>(), useSuperAgent: () => state.superAgent }));
 vi.mock("@/hooks/useOnboardingGate", () => ({ useOnboardingGate: () => state.phase }));
@@ -50,7 +50,9 @@ vi.mock("../ChatHistorySync", () => ({ ChatHistorySync: () => null }));
 vi.mock("../InvitePeopleDialog", () => ({ InvitePeopleDialog: () => null }));
 vi.mock("../WorkspaceHeader", () => ({ WorkspaceHeader: () => <nav className="workspace-rail"><button disabled>Back</button><button>Search</button></nav> }));
 vi.mock("@/components/chat/ProvisioningStepper", () => ({
-  ProvisioningStepper: ({ children, trigger }: { children: ReactNode; trigger?: string }) => <div data-testid="stepper" data-trigger={trigger}>{children}</div>,
+  // `gated`: the workspace is still being provisioned, so the stepper draws its gate card instead of the body.
+  ProvisioningStepper: ({ children, trigger }: { children: ReactNode; trigger?: string }) => <div data-testid="stepper" data-trigger={trigger}>
+    {state.gated ? <p>Setting up your workspace</p> : children}</div>,
 }));
 vi.mock("@/components/chat/InlineTeamsNav", () => ({ InlineTeamsNavProvider: ({ children }: { children: ReactNode }) => children }));
 vi.mock("@/components/teams/TeamsEventsProvider", () => ({ TeamsEventsProvider: ({ children }: { children: ReactNode }) => children }));
@@ -65,6 +67,7 @@ vi.mock("@/components/chat/shell/useUserSyncOnce", () => ({ useUserSyncOnce: () 
 vi.mock("@/components/chat/shell/useCheckoutReturn", () => ({ useCheckoutReturn: () => ({ showSubscriptionSuccess: true }) }));
 vi.mock("@/components/chat/shell/useChatReady", () => ({ useChatReady: () => ({ chatReady: state.chatReady }) }));
 beforeEach(() => {
+  state.gated = false;
   state.phase = "selecting";
   state.organization = null;
   state.chatReady = true;
@@ -448,5 +451,45 @@ it("UX slice 4: a task opens at the item width (not stored); the list keeps its 
     expect(window.localStorage.getItem(paneWidthKey("user_1"))).toBe("500");
     act(() => openPanel("file-viewer"));
     expect(view.container.querySelector<HTMLElement>(".workspace-pane")!.style.width).toBe("500px");
+  } finally { state.superAgent = false; }
+});
+
+it("UX slice 4: Settings opens while the workspace is still being provisioned (the gate's Billing and Model links)", () => {
+  state.superAgent = true;
+  state.gated = true;
+  try {
+    renderReady();
+    expect(screen.getByText("Setting up your workspace")).toBeVisible();
+    act(() => openPanel("settings", { section: "billing" }));
+    expect(screen.getByTestId("panel-settings")).toBeInTheDocument();
+    // The gate is hidden, not unmounted, while Settings shows; leaving Settings brings it back.
+    expect(screen.getByTestId("stepper").parentElement).toHaveAttribute("hidden");
+    act(() => openPanel("home"));
+    expect(screen.queryByTestId("panel-settings")).toBeNull();
+    expect(screen.getByTestId("stepper").parentElement).not.toHaveAttribute("hidden");
+  } finally { state.superAgent = false; state.gated = false; }
+});
+
+it("UX slice 4: landing on Home keeps a Stripe return's params and only sets panel", () => {
+  state.superAgent = true;
+  window.history.replaceState(null, "", "/chat?provider=chatgpt_oauth&checkout=success");
+  try {
+    renderReady();
+    const sp = new URLSearchParams(window.location.search);
+    expect(sp.get("panel")).toBe("home");
+    expect(sp.get("provider")).toBe("chatgpt_oauth");
+    expect(sp.get("checkout")).toBe("success");
+  } finally { state.superAgent = false; }
+});
+
+it("UX slice 4: the specialist profile pane has the one header with ✕, and Escape closes it at any width", () => {
+  state.superAgent = true;
+  try {
+    const view = renderReady();
+    act(() => openPanel("agent-inspector", { agent: "agt-1" }));
+    const pane = view.container.querySelector<HTMLElement>(".workspace-pane")!;
+    expect(within(pane).getAllByRole("button", { name: "Close pane" })).toHaveLength(1);
+    fireEvent.keyDown(pane, { key: "Escape" });
+    expect(view.container.querySelector(".workspace-pane")).toBeNull();
   } finally { state.superAgent = false; }
 });

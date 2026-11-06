@@ -57,7 +57,7 @@ vi.mock("@clerk/nextjs", () => ({
       primaryEmailAddress: { emailAddress: "test@isol8.co" },
     },
   }),
-  useAuth: () => ({ getToken: () => Promise.resolve("jwt"), isLoaded: true }),
+  useAuth: () => ({ getToken: () => Promise.resolve("jwt"), isLoaded: true, userId: "user_sam", orgId: "org_1" }),
   useOrganization: () => ({ membership: clerk.membership, organization: null, isLoaded: clerk.isLoaded }),
   useClerk: () => ({ signOut: vi.fn() }),
   UserButton: () => <div data-testid="user-button" />,
@@ -77,7 +77,7 @@ const live = vi.hoisted(() => ({ superAgent: true }));
 vi.mock("@/hooks/useLiveEvents", () => ({
   useSuperAgent: () => live.superAgent,
   useLiveEvents: () => ({ tasks: { cacheScope: "org_test" } }),
-  useOptionalLiveEvents: () => null,
+  useOptionalLiveEvents: () => ({ superAgent: live.superAgent, httpReady: true, featuresLoaded: true }),
 }));
 const shell = vi.hoisted(() => ({ openPanel: vi.fn(), updatePanelParams: vi.fn(), replaceSearchParams: vi.fn() }));
 vi.mock("@/components/workspace/workspaceController", () => ({ openPanel: shell.openPanel, updatePanelParams: shell.updatePanelParams }));
@@ -87,7 +87,8 @@ vi.mock("@/components/teams/panels/MoneyPanel", () => ({
 }));
 const api = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(async () => ({})) }));
 vi.mock("@/lib/api", async (importOriginal) => ({ ...(await importOriginal<object>()), useApi: () => api }));
-const job = (id: string, status: string) => ({ id, name: id, status, ownerUserId: null, deliverTo: "none", match: null });
+// The builtin jobs belong to the workspace (owner id = the org), as the server stores them.
+const job = (id: string, status: string) => ({ id, name: id, status, ownerUserId: "org_1", deliverTo: "none", match: null });
 
 import { SWRConfig } from "swr";
 import SettingsPage from "../page";
@@ -135,7 +136,8 @@ describe("Settings place (super-agent)", () => {
     expect(screen.getByTestId("llm-panel")).toHaveAttribute("data-action", "change-provider");
   });
 
-  it("Workspace: Daily look around and Feed posts switches pause and resume the builtin jobs", async () => {
+  it("Workspace: Daily look around and Feed posts switches pause and resume the builtin jobs (an org admin)", async () => {
+    clerk.membership = { role: "org:admin" };
     place({ section: "workspace" });
     const look = await screen.findByRole("switch", { name: "Daily look around" });
     const feed = screen.getByRole("switch", { name: "Feed posts" });
@@ -145,6 +147,24 @@ describe("Settings place (super-agent)", () => {
     await vi.waitFor(() => expect(api.post).toHaveBeenCalledWith("/automations/builtin%3Alook_around/pause", {}));
     fireEvent.click(feed);
     await vi.waitFor(() => expect(api.post).toHaveBeenCalledWith("/automations/builtin%3Afeed/resume", {}));
+  });
+
+  it("a member can't resume a workspace's builtin job (the server's _may_activate)", async () => {
+    clerk.membership = { role: "org:member" };
+    place({ section: "workspace" });
+    // Workspace is admin-free; the switch is there but off-limits to resume.
+    expect(await screen.findByRole("switch", { name: "Feed posts" })).toBeDisabled();
+  });
+
+  it("a link to a row this person can't open says why, in one line, rather than silently opening Profile", () => {
+    clerk.membership = { role: "org:member" };
+    const { unmount } = place({ section: "usage" });
+    expect(screen.getByRole("status")).toHaveTextContent("Usage is for workspace admins. Ask one to open it.");
+    expect(screen.getByRole("tab", { name: /Profile/ })).toHaveAttribute("aria-selected", "true");
+    unmount();
+    clerk.membership = null;
+    place({ section: "budgets" });
+    expect(screen.getByRole("status")).toHaveTextContent("Budgets isn't part of Settings any more.");
   });
 
   it("/settings redirects into the shell with its section and every other param; off, the page renders as before", () => {

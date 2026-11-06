@@ -853,6 +853,12 @@ export function SettingsPlace({ id, params }: PanelProps) {
   // Derived, not latched: isAdmin reads false until Clerk knows the membership, so a deep-linked admin row
   // re-resolves once it does.
   const active: Panel = rows.find((row) => row.panel === params.section)?.panel ?? "profile";
+  // A link that names a row this person can't open here says why, in one line, above Profile.
+  const named = params.section && active !== params.section
+    ? SETTINGS_NAV_SECTIONS.flatMap((s) => s.items).find((item) => item.panel === params.section) : undefined;
+  const why = !named ? null
+    : ADMIN_ONLY_PANELS.has(named.panel!) && !isAdmin ? `${named.name} is for workspace admins. Ask one to open it.`
+      : `${named.name} isn't part of Settings any more.`;
   const select = (section: string) => {
     openPanel("settings", { section });
     // Moving between rows is not a new place: Back leaves Settings rather than walking its rows.
@@ -877,6 +883,7 @@ export function SettingsPlace({ id, params }: PanelProps) {
           <SettingsNav mode="tabs" sections={sections} isAdmin={isAdmin} activePanel={active} onSelectPanel={select}
             onPanelKeyDown={(e, item) => navKeyDown(e, item, rows, select)} />
           <section className="settings-place__content" aria-label={rows.find((r) => r.panel === active)?.name ?? "Settings"}>
+            {why && <p role="status" className="settings-place__why">{why}</p>}
             <ShellActionContext.Provider value={shellAction}>
               <Active key={active} />
             </ShellActionContext.Provider>

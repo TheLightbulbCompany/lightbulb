@@ -69,9 +69,10 @@ const needsAdmin = (a: Pick<AutomationView, "deliverTo" | "match">): boolean =>
 export const waitingWords = (a: Pick<AutomationView, "deliverTo" | "match">): string =>
   needsAdmin(a) ? "Waiting on a workspace admin" : "Waiting on its owner";
 
-/** Turn on / Resume. */
-export const canDecide = (a: DecideRow, viewer: { userId: string | null; admin: boolean }): boolean =>
-  needsAdmin(a) ? viewer.admin : a.ownerUserId === viewer.userId;
+/** Turn on / Resume (`_may_activate`): a room automation, or one the workspace itself owns (the proactive layer's
+ *  builtin jobs: owner id = the workspace's `orgId`), is an org admin's call; anything else its owner's. */
+export const canDecide = (a: DecideRow, viewer: { userId: string | null; admin: boolean; orgId?: string | null }): boolean =>
+  needsAdmin(a) || (!!viewer.orgId && a.ownerUserId === viewer.orgId) ? viewer.admin : a.ownerUserId === viewer.userId;
 
 /** Why Run now is off, or null when it may run (the server's `run_now`: `_may_edit`, then status must be active). */
 export function runNowReason(a: Pick<AutomationView, "status">, mayEdit: boolean): string | null {

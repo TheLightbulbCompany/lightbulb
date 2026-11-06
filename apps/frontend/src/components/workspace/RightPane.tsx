@@ -156,18 +156,25 @@ export function RightPane({ pane, fullScreen }: { pane: Slot; fullScreen: boolea
   // Super-agent: no shell bar. An item that carries its own header (the room's column, a task, an automation) draws
   // the one PaneHeader; every other kind gets one here, titled by what opened it.
   const resizable = !fullScreen && !item && !(superAgent && sheet);
+  // Super-agent: RightPane draws the header for every kind without its own (the specialist profile included: its
+  // name heads the body, so the bar used to carry no ✕ at all), and Escape closes those at every width.
+  const drawsHeader = superAgent && !OWN_HEADER.has(pane.component);
+  const escapes = sheet || drawsHeader;
   return (<>
     {superAgent && sheet && <div className="workspace-pane-scrim" aria-hidden="true" onClick={closePane} />}
     <section ref={paneRef} className="workspace-pane" aria-label={pane.title} data-pane={pane.component}
       data-item={item || undefined} data-sheet={(superAgent && sheet) || undefined}
       {...(sheet ? { role: "dialog", "aria-modal": true } : {})}
       // Inner columns handle their own Escape first (and stop it); what reaches here closes the sheet.
-      onKeyDown={sheet ? (event) => { if (event.key === "Escape") closePane(); else trapTab(event, [paneRef.current]); } : undefined}
+      onKeyDown={escapes ? (event) => {
+        if (event.key === "Escape" && !event.defaultPrevented) closePane();
+        else if (sheet) trapTab(event, [paneRef.current]);
+      } : undefined}
       style={fullScreen || (superAgent && sheet) ? undefined : { width: item ? ITEM_WIDTH : width }}>
       {resizable && <div className="workspace-pane__resize" role="separator" aria-orientation="vertical"
         aria-label="Resize the pane" tabIndex={0} onPointerDown={startResize} onKeyDown={nudge}
         aria-valuenow={measured.now} aria-valuemin={minWidth} aria-valuemax={Math.max(minWidth, measured.max)} />}
-      {superAgent ? !ownsHeader(pane) && <PaneHeader title={pane.title} />
+      {superAgent ? drawsHeader && <PaneHeader title={pane.title} />
         : <header className="workspace-pane__bar">
           {/* A thread (the room's column, a task) carries its own titled header: the bar keeps only its controls. */}
           <span className="workspace-pane__title">{ownsHeader(pane) ? null : pane.title}</span>

@@ -301,6 +301,25 @@ describe("RoomPanel Threads view (super-agent)", () => {
     } finally { host.remove(); _resetControllerForTests(); }
   });
 
+  it("entered by a ?pane= deep link: closing that pane leaves the pane closed, even with something needing you", async () => {
+    _resetControllerForTests();
+    attachShell(() => undefined);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    act(() => setThreadPaneHost(host));
+    act(() => { openPanel("automation", { id: "a1" }); });
+    try {
+      render(<Fresh><RoomPanel {...props} /></Fresh>);
+      // Something needs you here (the dot), but the deep link had the pane.
+      await screen.findByRole("button", { name: "Tasks, 1 needs you" });
+      expect(getWorkspaceSnapshot().pane?.panelId).toBe("automation");
+      act(() => closePane());
+      await new Promise((r) => setTimeout(r, 20));
+      expect(getWorkspaceSnapshot().pane).toBeNull();
+      expect(screen.queryByRole("complementary", { name: "Tasks" })).toBeNull();
+    } finally { host.remove(); _resetControllerForTests(); }
+  });
+
   it("⋯ holds the tools: Search in project (⌘F), Pinned messages, Links", async () => {
     nothingNeedsYou();
     Object.assign(live, { messaging: { warmSearch: vi.fn(async () => undefined), searchMessages: vi.fn(async () => ({ hits: [] })) } });

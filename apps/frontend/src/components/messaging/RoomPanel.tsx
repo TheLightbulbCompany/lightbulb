@@ -564,6 +564,10 @@ function RoomContent({
   // busy (a ?pane= deep link wins). Adjusted during render, like the visit reset above.
   if (superAgent && visit && !paneState.auto && !paneState.closed && !paneState.view && waitingOnMe > 0 && !pane && !selection && !visibleRoom?.feed) {
     setPaneState({ visit, view: "tasks", closed: false, auto: true });
+  } else if (superAgent && visit && !paneState.auto && paneBusy) {
+    // Entered with something else in the pane (a ?pane= deep link): that was this visit's opening, so closing it
+    // leaves the pane closed rather than popping Tasks open.
+    setPaneState((current) => current.visit === visit ? { ...current, auto: true } : { visit, view: null, closed: false, auto: true });
   }
   const showContext = showDetail || !contextCollapsed || requestsShown || filesViewShown || scheduledShown;
   const roomOutputs = useRoomOutputs(superAgent ? roomId : null);

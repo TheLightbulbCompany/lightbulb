@@ -50,6 +50,8 @@ export interface LiveEventsContextValue extends RuntimeRpcSource {
   messaging: ReturnType<typeof createMessagingClient>;
   /** The workspace's super-agent switch, from the live config already fetched (contracts-v2 §1). */
   superAgent: boolean;
+  /** The live config answered (or failed), so `superAgent` is final: a redirect that depends on it waits for this. */
+  featuresLoaded?: boolean;
   /** The super-agent task routes; only called while `superAgent` is on. */
   tasks: TasksClient;
   /** Agent id → name while the switch is on (task specialists are agent ids); empty until it loads. */
@@ -94,6 +96,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
   // subscription. Dropping it closes them all.
   const config = configError instanceof ApiError && configError.status === 403 ? undefined : liveConfig;
   const superAgent = config?.features?.superAgent === true;
+  const featuresLoaded = config !== undefined || configError !== undefined;
   // Specialist names for task cards ("Finance", never the agent id): one read of the agents list while
   // the switch is on, shared by every card through this context.
   const { names: agentNames, frontAgentId } = useAgentDirectory(superAgent && httpReady ? tasks.cacheScope : null,
@@ -282,6 +285,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     nodeStatusReason,
     messaging,
     superAgent,
+    featuresLoaded,
     tasks,
     agentNames,
     frontAgentId,
@@ -303,6 +307,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     nodeStatusReason,
     messaging,
     superAgent,
+    featuresLoaded,
     tasks,
     agentNames,
     frontAgentId,

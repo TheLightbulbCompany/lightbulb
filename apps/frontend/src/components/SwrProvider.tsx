@@ -1,6 +1,8 @@
 "use client";
 
+import { useAuth } from "@clerk/nextjs";
 import { SWRConfig } from "swr";
+import { useResetSwrOnUserChange } from "@lightbulb/shared";
 
 /**
  * App-wide SWR defaults.
@@ -24,6 +26,8 @@ import { SWRConfig } from "swr";
  * care about — is unaffected.
  */
 export function SwrProvider({ children }: { children: React.ReactNode }) {
+  // Cached reads are one viewer's: a sign-out or another account drops them all.
+  useResetSwrOnUserChange(useAuth().userId);
   return (
     <SWRConfig value={{ revalidateOnFocus: false, revalidateOnReconnect: true }}>
       {children}

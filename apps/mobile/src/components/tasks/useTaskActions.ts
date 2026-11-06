@@ -30,9 +30,9 @@ export function useTaskActions() {
   // One task, not every list: its detail and questions re-read, and the fresh summary written into the lists.
   const refetch = useCallback(async (taskId: string) => {
     const detail = await tasks.get(taskId).catch(() => null);
-    await mutate(questionsKey(taskId));
+    await mutate(questionsKey(tasks, taskId));
     if (!detail) return;
-    await mutate(taskKey(taskId), detail, { revalidate: false });
+    await mutate(taskKey(tasks, taskId), detail, { revalidate: false });
     await putTaskSummary(cache, mutate, detail.task, tasks);
   }, [cache, mutate, tasks]);
 

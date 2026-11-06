@@ -36,9 +36,9 @@ export function useTaskActions(source: string) {
   // One task, not every list: its detail and questions re-read, and the fresh summary written into the lists.
   const refetch = useCallback(async (taskId: string) => {
     const detail = await tasks.get(taskId).catch(() => null);
-    await mutate(questionsKey(taskId));
+    await mutate(questionsKey(tasks, taskId));
     if (!detail) return;
-    await mutate(taskKey(taskId), detail, { revalidate: false });
+    await mutate(taskKey(tasks, taskId), detail, { revalidate: false });
     await putTaskSummary(cache, mutate, detail.task, tasks);
   }, [cache, mutate, tasks]);
 
@@ -46,7 +46,7 @@ export function useTaskActions(source: string) {
     try {
       await putTaskSummary(cache, mutate, await tasks.act(task.taskId, verb, task.version), tasks);
       // Close/Stop cancel the task's open questions on the server: re-read them, or a stale open card keeps its buttons.
-      await mutate(questionsKey(task.taskId));
+      await mutate(questionsKey(tasks, task.taskId));
       capture(VERB_EVENTS[verb], { taskId: task.taskId, source, status: task.status });
       return { ok: true };
     } catch (error) {

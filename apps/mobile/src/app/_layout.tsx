@@ -1,4 +1,5 @@
-import { ClerkProvider } from "@clerk/expo";
+import { ClerkProvider, useAuth } from "@clerk/expo";
+import { useResetSwrOnUserChange } from "@lightbulb/shared";
 import { useFonts } from "expo-font";
 import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
@@ -44,6 +45,12 @@ const publishableKey = process.env.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY;
 SplashScreen.preventAutoHideAsync().catch(() => {
   // Reloads / fast refresh can reject this; the splash is already hidden.
 });
+
+/** Cached reads are one viewer's: a sign-out or another account drops them all. */
+function SwrUserScope(): null {
+  useResetSwrOnUserChange(useAuth().userId);
+  return null;
+}
 
 export default function RootLayout() {
   const [fontsLoaded, fontError] = useFonts({
@@ -99,6 +106,7 @@ export default function RootLayout() {
               every header follows the navigation theme. Mounts BEFORE the Stack:
               entries merge in mount order and the last one wins. */}
           <StatusBar style="dark" />
+          <SwrUserScope />
           <ThemeProvider value={navTheme}>
             <Stack
               screenOptions={{

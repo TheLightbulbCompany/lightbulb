@@ -65,7 +65,7 @@ describe("TaskPane", () => {
     const { unmount } = pane();
     expect(await screen.findByRole("button", { name: "Stop" })).toBeInTheDocument();
     // Running: Stop (asked once), no Resolve under it.
-    expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Mark done" })).toBeNull();
     // Where it runs is plumbing: Details only.
     expect(screen.getByText("Lightbulb cloud").closest("details")).not.toBeNull();
     expect(within(screen.getByRole("region", { name: "Task status" })).queryByText("Lightbulb cloud")).toBeNull();
@@ -377,7 +377,7 @@ describe("steering a finished request (dev walk N-F4)", () => {
 describe("action slots (UX audit 2, P0)", () => {
   const slots = () => [...document.querySelectorAll("[data-action-slot]")].map((el) => `${el.getAttribute("data-action-slot")}:${el.textContent}`);
 
-  it("Stop, Close and Reopen each keep their own slot; the Stop confirm takes their place", async () => {
+  it("Stop, Mark done and Reopen each keep their own slot; the Stop confirm takes their place", async () => {
     const first = pane();
     await screen.findByRole("button", { name: "Stop" });
     expect(slots()).toEqual(["stop:Stop", "retry:", "close:", "reopen:"]);
@@ -387,8 +387,8 @@ describe("action slots (UX audit 2, P0)", () => {
     first.unmount();
     withDetail({ ...step8, task: { ...step8.task, status: "idle", shownGroup: "idle", watching: false }, questions: [] }, []);
     const second = pane();
-    await screen.findByRole("button", { name: "Close" });
-    expect(slots()).toEqual(["stop:", "retry:", "close:Close", "reopen:"]);
+    await screen.findByRole("button", { name: "Mark done" });
+    expect(slots()).toEqual(["stop:", "retry:", "close:Mark done", "reopen:"]);
     second.unmount();
     withDetail({ ...step8, task: { ...step8.task, status: "resolved", shownGroup: "resolved" }, questions: [] }, []);
     pane();

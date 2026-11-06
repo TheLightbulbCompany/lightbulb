@@ -203,7 +203,7 @@ function TaskActions({ task, viewerId, onError }: { task: TaskSummary; viewerId:
       {view.action === "retry" && <Button type="button" size="sm" disabled={busy} onClick={() => void press("retry")}>Retry</Button>}
     </span>
     <span data-action-slot="close" className="empty:hidden">
-      {!live && task.status !== "resolved" && <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => void press("resolve")}>Close</Button>}
+      {!live && task.status !== "resolved" && <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => void press("resolve")}>Mark done</Button>}
     </span>
     <span data-action-slot="reopen" className="empty:hidden">
       {task.status === "resolved" && <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => void press("reopen")}>Reopen</Button>}

@@ -487,7 +487,8 @@ export function clearablePanelParamKeys(panelId: string): string[] {
   if (panelId === "mail") return ["item"];
   if (panelId === "ideas") return ["agent", "idea"];
   if (panelId === "file-viewer") return ["path", "agent"];
-  if (panelId === "artifact") return [...ARTIFACT_PARAM_KEYS];
+  // `back` is a one-shot (openOutput): a file opened from elsewhere must not keep the last one's way back.
+  if (panelId === "artifact") return [...ARTIFACT_PARAM_KEYS, "back"];
   if (panelId === "task-detail") return ["taskId"];
   if (panelId === "agent-inspector" || panelId === "control:agents") {
     return ["agentId", "initialTab"];

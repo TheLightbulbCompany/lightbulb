@@ -24,7 +24,7 @@ import { cn } from "@/lib/utils";
 import { roomUrlTransform } from "./markdown";
 import { JOIN_LINK_COPIED, joinLinkNote } from "@/hooks/useCopyJoinLink";
 import { copyText, messagePermalink, parseSessionPermalink } from "./messageLinks";
-import { THREAD_PANE_ID, closePane, openBrowserPane, openInviteDialog, openPanel, openSessionPanel, useThreadPane, useWorkspaceState } from "@/components/workspace/workspaceController";
+import { THREAD_PANE_ID, closePane, openBrowserPane, openInviteDialog, openPanel, openSessionPanel, uncoverComposer, useThreadPane, useWorkspaceState } from "@/components/workspace/workspaceController";
 import { capture } from "@/lib/analytics";
 import { RunBrowserPreview } from "./BrowserRunPreview";
 import { cardControls } from "./cardControls";
@@ -735,8 +735,10 @@ function RoomContent({
   useEffect(() => {
     if (!superAgent || !roomOnScreen) return;
     const onView = (event: Event) => {
-      const view = (event as CustomEvent<{ view?: string | null }>).detail?.view;
+      const { view, taskId } = (event as CustomEvent<{ view?: string | null; taskId?: string }>).detail ?? {};
       if (view === null) { setPaneState((current) => ({ ...current, view: null, closed: true })); return; }
+      // Back from a doc the task made: the task again, its "‹ Tasks" still there.
+      if (view === "task" && taskId) { setContextCollapsed(true); setSelection({ kind: "task", id: taskId }); return; }
       if (view !== "tasks" && view !== "files" && view !== "scheduled") return;
       setSelection(null); setContextCollapsed(true);
       setPaneState((current) => ({ ...current, view }));
@@ -1204,7 +1206,9 @@ function RoomContent({
       {/* A row opens the automation in this pane, with "‹ Scheduled" back here (AutomationDockPanel). */}
       <div className="room-context-body"><ScheduledList scope={{ kind: "room", roomId }} onOpen={openTask}
         onDraft={visibleRoom?.archivedAt ? undefined : (text) => {
-          // Never over a draft the person started: the template goes under it.
+          // Never over a draft the person started: the template goes under it. A sheet covering the composer (narrow
+          // widths) closes, so the draft is seen and focused.
+          uncoverComposer();
           composer.onTextChange(composer.text.trim() ? `${composer.text.trimEnd()}\n\n${text}` : text);
           setFocusToken((t) => t + 1);
         }}

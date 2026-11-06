@@ -31,7 +31,7 @@ export function PaneHeader({ crumb, title, meta, actions, onClose, headingRef }:
         title={fullScreen ? "Exit full screen" : "Full screen"} onClick={() => setPaneFullScreen(!fullScreen)}>
         {fullScreen ? <Minimize2 size={16} aria-hidden="true" /> : <Maximize2 size={16} aria-hidden="true" />}
       </button>}
-      <button type="button" className="pane-header__icon" data-pane-close aria-label="Close pane" title="Close" onClick={onClose ?? closePane}>
+      <button type="button" className="pane-header__icon" data-pane-close aria-label="Close pane" title="Close panel" onClick={onClose ?? closePane}>
         <X size={16} aria-hidden="true" />
       </button>
     </span>

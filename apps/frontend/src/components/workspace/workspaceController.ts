@@ -7,6 +7,7 @@
 "use client";
 
 import { useEffect, useId, useRef, useSyncExternalStore } from "react";
+import { flushSync } from "react-dom";
 import { pushSearchParams, replaceSearchParams } from "@/lib/shellNav";
 import { deferFocusComposerRequest, requestFocusComposer } from "@/lib/focusComposerRequest";
 import {
@@ -307,9 +308,15 @@ export function openChatPanelWithDraft(draft: string): boolean {
   return true;
 }
 
+/** A draft is about to land in the main composer: a full-screen sheet over it (narrow widths, RightPane) closes
+ *  first, and synchronously, so the composer is on screen and no longer inert when it takes focus. */
+export function uncoverComposer(): void {
+  if (_pane && document.querySelector(".workspace-pane[data-sheet]")) flushSync(closePane);
+}
+
 /** One agent's DM with the composer focused; a non-empty draft is typed in first. */
 export function openAgentDmWithDraft(agentId: string, draft: string): void {
-  if (draft) requestFocusComposer(agentId, draft);
+  if (draft) { uncoverComposer(); requestFocusComposer(agentId, draft); }
   openChatPanel(agentId);
   window.dispatchEvent(new CustomEvent("getstarted:focus-composer", { detail: { agentId } }));
 }

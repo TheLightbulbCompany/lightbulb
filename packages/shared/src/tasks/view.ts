@@ -339,7 +339,7 @@ function withCurrency(title: string, currency?: unknown): string {
 }
 
 const ANSWER_VERBS: Record<string, string> = {
-  allow_once: "Approved", approve: "Approved", deny: "Denied", send: "Sent", publish: "Published", merge: "Merged",
+  allow_once: "Approved", allow_always: "Always allowed", approve: "Approved", deny: "Denied", send: "Sent", publish: "Published", merge: "Merged",
   request_changes: "Changes requested", answer: "Answered",
 };
 

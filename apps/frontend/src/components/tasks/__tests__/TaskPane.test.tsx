@@ -23,7 +23,7 @@ vi.mock("@/components/messaging/SessionChat", () => ({
   },
 }));
 
-import { TaskPane } from "../TaskPane";
+import { TaskPane, clock } from "../TaskPane";
 
 const approval = (over: Partial<QuestionView> = {}): QuestionView => ({
   id: "q-provision", taskId: "t-signup", kind: "approval", subkind: null, title: "Provision database and Stripe",
@@ -435,11 +435,17 @@ describe("task loop (UX slice 3)", () => {
     await waitFor(() => expect(reopen).toBeEnabled(), { timeout: 1500 });
   });
 
-  it("while it runs, the header says who and Working once; nothing under it repeats them (W12-17)", async () => {
+  it("while it runs, the header says who, Working and the clock once; nothing under it repeats them (W12-17)", async () => {
     withDetail({ ...step8, task: { ...step8.task, updatedAt: new Date(Date.now() - 14_000).toISOString() } });
     pane();
-    expect(await screen.findAllByText("Working")).not.toHaveLength(0);
+    const header = within(screen.getByRole("banner"));
+    expect(await header.findByText(/^0:1[45]$/)).toBeInTheDocument();
+    expect(header.getByText("Working").closest(".pane-header__meta")).toHaveTextContent(/^Engineering · Working · 0:1[45]$/);
     expect(screen.queryByText(/working · \d+s/)).toBeNull();
     expect(document.querySelector("[data-live]")).toBeNull();
+  });
+
+  it("clock: m:ss under an hour, h:mm:ss after", () => {
+    expect([clock(0), clock(48), clock(725), clock(3725)]).toEqual(["0:00", "0:48", "12:05", "1:02:05"]);
   });
 });

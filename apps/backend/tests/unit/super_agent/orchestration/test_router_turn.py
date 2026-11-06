@@ -1383,21 +1383,62 @@ async def test_project_instructions_skip_the_feed_and_are_fenced(monkeypatch):
     assert "never remove an approval step" in router_prompt.ROUTER_INSTRUCTIONS
 
 
-@pytest.mark.asyncio
-async def test_a_note_is_answered_in_one_line_and_writes_no_memory(world, monkeypatch):
-    """Walk 14: an FYI got "reading…" and silence. Room ingestion stores the message itself (spec 07 §3.1)."""
+def _note(tid):
+    return {"kind": "note", "triggerIds": [tid], "fact": "The levain starter dates from 2009."}
+
+
+@pytest.fixture
+def no_memory_writes(monkeypatch):
     from core.services import memory_api
 
     async def remember(owner_id, **kw):
-        raise AssertionError("the Router writes no memory")
+        raise AssertionError("the Router writes no memory (spec 07 §3.1)")
 
     monkeypatch.setattr(memory_api, "remember", remember)
-    t1 = await _trig("chat:m1", admission="candidate")
-    world["decisions"] = [{"kind": "note", "triggerIds": [t1], "fact": "The levain starter dates from 2009."}]
+
+
+@pytest.fixture
+def reactions(monkeypatch):
+    got = []
+
+    async def react(ws, ref, emoji):
+        got.append((ref.get("roomId"), emoji))
+
+    monkeypatch.setattr(acts, "_react", react)
+    return got
+
+
+@pytest.mark.asyncio
+async def test_a_note_addressed_to_lightbulb_gets_one_line(world, no_memory_writes, reactions):
+    """Walk 14: an FYI got "reading…" and silence. Room ingestion stores the message itself (spec 07 §3.1)."""
+    t1 = await _trig("chat:m1")
+    world["decisions"] = [_note(t1)]
     await _run([t1])
     await _run([t1])  # a retried turn
     assert [p["text"] for p in world["posts"]] == [router_prompt.NOTED]
-    assert world["posts"][0]["remember"] is False  # boilerplate: the person's own message is what is remembered
+    assert world["posts"][0]["remember"] is False and reactions == []
+
+
+@pytest.mark.asyncio
+async def test_a_note_on_an_unaddressed_room_message_is_a_quiet_check(world, no_memory_writes, reactions):
+    t1 = await _trig("chat:m1", admission="candidate")
+    world["decisions"] = [_note(t1)]
+    await _run([t1])
+    assert world["posts"] == [] and reactions == [(ROOM, "✅")]
+
+
+@pytest.mark.asyncio
+async def test_a_note_on_mail_is_an_ignore(world, no_memory_writes, reactions, monkeypatch):
+    sent = []
+
+    async def deliver_reply(ws, trigger, text, *, idempotency_key):
+        sent.append(text)
+
+    monkeypatch.setattr(acts.source_replies, "deliver_reply", deliver_reply)
+    t1 = await _trig("mail:abc", source="mail", admission="candidate", ref={"text": "FYI", "from": "bob@acme.test"})
+    world["decisions"] = [_note(t1)]
+    await _run([t1])
+    assert sent == [] and world["posts"] == [] and reactions == []
 
 
 @pytest.mark.asyncio
@@ -1423,20 +1464,81 @@ async def test_the_ack_posts_once_every_trigger_has_a_decision_before_the_run_en
     assert len(world["metered"]) == 1  # the tail meters the run once it ends
 
 
-@pytest.mark.asyncio
-async def test_a_decision_recorded_after_the_early_apply_still_starts(world):
-    t1 = await _trig("chat:m1")
-    world["first_status"] = "running"
-    world["decisions"] = [_start([t1])]
+def _late(world, extra):
     real_get = acts.runtime_runs.get_run
 
     async def get_run(ws, identity):
-        world["decisions"] = [_start([t1]), _start([t1], title="Book the flights", ack="And the flights.")]
+        world["decisions"] = [*world["decisions"][:1], *extra]
         return await real_get(ws, identity)
 
-    acts.runtime_runs.get_run = get_run
+    return real_get, get_run
+
+
+@pytest.mark.asyncio
+async def test_a_task_recorded_after_the_early_apply_starts_with_its_own_card(world):
+    t1 = await _trig("chat:m1")
+    world["first_status"] = "running"
+    world["decisions"] = [_start([t1])]
+    real_get, acts.runtime_runs.get_run = _late(world, [_start([t1], title="Book the flights", ack="And the flights.")])
     try:
         await _run([t1])
     finally:
         acts.runtime_runs.get_run = real_get
-    assert len(world["posts"]) == 1 and len({t for t, _ in world["starts"]}) == 2
+    assert [p["event_id"] for p in world["posts"]] == [f"router:{BATCH}:0", f"router:{BATCH}:late1:0"]
+    assert world["posts"][1]["task_refs"] == [{"taskId": ts.router_task_id(BATCH, 1, 0), "role": "started"}]
+    assert len({t for t, _ in world["starts"]}) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_reply_recorded_after_the_early_apply_posts_on_its_own(world):
+    t1 = await _trig("chat:m1")
+    world["first_status"] = "running"
+    world["decisions"] = [_start([t1])]
+    late = {"kind": "reply", "triggerIds": [t1], "text": "Flights from SFO run about $420."}
+    real_get, acts.runtime_runs.get_run = _late(world, [late])
+    try:
+        await _run([t1])
+        await _run([t1])  # a retried turn: the late message is not posted twice
+    finally:
+        acts.runtime_runs.get_run = real_get
+    assert [p["text"] for p in world["posts"]] == ["On it: paying Acme.", "Flights from SFO run about $420."]
+
+
+@pytest.mark.asyncio
+async def test_the_tail_waits_only_within_the_turns_budget(world, monkeypatch):
+    t1 = await _trig("chat:m1")
+    world["first_status"] = world["poll_status"] = "running"  # the run never ends
+    world["decisions"] = [_start([t1])]
+    monkeypatch.setattr(acts, "ROUTER_BUDGET_S", 0)
+    await _run([t1])
+    assert len(world["posts"]) == 1 and len(world["polls"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_react_sets_lightbulbs_reaction_and_shows_it_live(monkeypatch):
+    calls, events = [], []
+
+    async def get_msg(room_id, message_id):
+        return {"messageId": message_id, "messageSeq": 7}
+
+    async def set_reaction(ws, room_id, seq, user_id, emoji, active, *, member_kind="human"):
+        calls.append((room_id, seq, user_id, emoji, active, member_kind))
+        return {"updated": True}
+
+    async def publish(room_id, event):
+        events.append((room_id, event["type"] if isinstance(event, dict) and "type" in event else event))
+
+    async def front(ws):
+        return CEO
+
+    monkeypatch.setattr(acts.messaging_repo, "get_message_by_id", get_msg)
+    monkeypatch.setattr(acts.messaging_repo, "set_reaction", set_reaction)
+    monkeypatch.setattr(acts.task_conversation, "front_agent_id", front)
+    monkeypatch.setattr(
+        acts.messaging, "canonical_message", lambda item: type("M", (), {"model_dump": lambda *a, **k: item})()
+    )
+    monkeypatch.setattr(acts.messaging, "make_live_event", lambda kind, payload, room_id: {"type": kind})
+    monkeypatch.setattr(acts.messaging, "_publish_room_event", publish)
+    await acts._react(WS, {"roomId": ROOM, "messageId": "m"}, "✅")
+    assert calls == [(ROOM, 7, CEO, "✅", True, "agent")]
+    assert events == [(ROOM, "room.message.reactions.changed")]

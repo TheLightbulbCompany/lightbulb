@@ -62,6 +62,17 @@ async def test_open_questions_one_per_proposed_effect(world):
     assert len(await questions_repo.list_for_task(WS, TASK)) == 2
 
 
+async def test_a_purchase_preview_carries_its_currency(world):
+    """Dev walk 7 (W7-9): "11.81" with no currency. The amount is US dollars (request_purchase's contract)."""
+    await effects_repo.put_effect(
+        WS, _effect(kind="purchase", operands={"merchant": "Porkbun", "amount": "11.81", "url": "u", "why": "w"})
+    )
+    await _run(tq.open_questions, WS, TASK)
+    (q,) = await questions_repo.list_for_task(WS, TASK)
+    assert q["title"] == "buy from Porkbun for $11.81"
+    assert (q["preview"]["amount"], q["preview"]["currency"]) == ("11.81", "USD")
+
+
 async def test_open_questions_never_reopens_a_closed_one(world):
     await effects_repo.put_effect(WS, _effect())
     [ref] = await _run(tq.open_questions, WS, TASK)
@@ -149,6 +160,20 @@ async def test_relay_question_idempotent_and_only_to_answerers(world, relay):
     title, body, data = relay["push"].await_args.args[1:]
     assert data == {"source": "task_question", "taskId": TASK, "qid": ref.qid} and len(body) <= 180
     assert relay["away"].await_args.args[3] == [ADA]
+
+
+async def test_relay_names_the_specialist_not_its_id(world, relay, monkeypatch):
+    """Dev walk 7: the card read "**ee033f05-…** needs your OK to …": the specialist's id, not its name."""
+    from core.services import messaging
+
+    spec = "ee033f05-875e-4049-b2d6-2e74309bd5db"
+    task = await tasks_repo.get_task(WS, TASK)
+    await tasks_repo.update_task_fields(WS, TASK, {"specialist": spec}, expected_version=task["version"])
+    monkeypatch.setattr(messaging, "load_agent_roster", AsyncMock(return_value=[{"id": spec, "name": "Engineering"}]))
+    await effects_repo.put_effect(WS, _effect(kind="purchase", operands={"item": "acme.dev"}))
+    [ref] = await _run(tq.open_questions, WS, TASK)
+    await _run(tq.relay_question, WS, TASK, ref.qid)
+    assert relay["post"].await_args.kwargs["text"] == "**Engineering** needs your OK to buy acme.dev"
 
 
 async def test_relay_skips_a_closed_question(world, relay):

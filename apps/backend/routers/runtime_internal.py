@@ -31,7 +31,7 @@ from temporalio.service import RPCError, RPCStatusCode
 
 from core import tasks_schema as ts
 from core.dynamodb import utc_now_iso
-from core.repositories import effects_repo, tasks_repo
+from core.repositories import effects_repo, questions_repo, tasks_repo
 from core.services import questions, task_asks, task_conversation
 from core.services.messaging import ATTACHMENT_MAX_COUNT, UploadedAttachment, human_display_name
 from core.services.container_auth import _require_hook_token
@@ -328,8 +328,10 @@ async def effect_check(owner_id: str, body: EffectBody, request: Request) -> dic
         "executorOk": body.executor_ok,
         "state": "proposed",
     }
+    # Questions a Close cancelled: their proposed calls are never reused after a Reopen (dev walk 7).
+    closed = {q["qid"] for q in await questions_repo.list_for_task(owner_id, body.task_id) if q["state"] == "cancelled"}
     for _ in range(2):  # one re-read when the approval was used under us (Landing or a parallel call won)
-        res = questions.gate(effect, await effects_repo.effects_for(owner_id, body.task_id, body.operands_hash))
+        res = questions.gate(effect, await effects_repo.effects_for(owner_id, body.task_id, body.operands_hash), closed)
         if res.decision != "proceed":
             break
         if res.approved_idem_key == body.idem_key:

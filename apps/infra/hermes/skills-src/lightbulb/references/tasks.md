@@ -17,5 +17,9 @@ Paperclip handoff in the other references (issues, assignments, courier pattern,
   vendor, a payment outside the rails) is a task for that person: ask Lightbulb to
   start it with the prepared text, number or amount, and say your task waits on it.
 - **Software pieces** (repo, first feature, deploy, CI): ask Lightbulb to start a
-  task per piece. Confirmations are approvals in Needs you; monitors are routines.
+  task per piece. Confirmations are approvals in Needs you.
+- **Never create a schedule** (a Paperclip routine, a cron job, a timer). Recurring
+  work is an automation the person asks Lightbulb for ("every Monday at 9, …") and
+  turns on from its card; when your task asks for one, say that in your result
+  and set nothing up.
 - **Notes go in this task's own room.** Lightbulb posts your result for you.

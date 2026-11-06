@@ -56,7 +56,10 @@ INPUT_MAX = 32 * 1024
 WORKER_INSTRUCTIONS = (
     "You are working on one task for this workspace. Do the work, then answer with the result the person "
     "asked for. Post notes only in this task's own room; Lightbulb posts your result for you. For work that "
-    "belongs to a teammate or a person, follow the lightbulb skill's references/tasks.md."
+    "belongs to a teammate or a person, follow the lightbulb skill's references/tasks.md. You never create a "
+    "schedule: no Paperclip routine, cron job or timer. When the task asks for something recurring, do not set it "
+    'up; answer that it is an automation the person asks Lightbulb for ("every Monday at 9, …") and confirms '
+    "on its card."
 )
 
 _STATUS_AFTER = {

@@ -627,14 +627,14 @@ export function MessagingWorkspaceProvider({
       const roomId = activeRoomIdRef.current;
       if (!roomId) return;
       const stored = readDraft(event.key);
-      if (event.key === draftKey(scope, roomId, null) && stored.at > draftEditedAt.current && stored.text !== draftRef.current) {
+      if (event.key === draftKey(scope, roomId, null) && stored.at >= draftEditedAt.current && stored.text !== draftRef.current) {
         draftEditedAt.current = stored.at;
         persisted.current = { roomId, text: stored.text };
         draftRef.current = stored.text;
         setDraft(stored.text);
       }
       const thread = threadIdRef.current;
-      if (thread && event.key === draftKey(scope, roomId, thread) && stored.at > threadDraftEditedAt.current && stored.text !== threadDraftRef.current) {
+      if (thread && event.key === draftKey(scope, roomId, thread) && stored.at >= threadDraftEditedAt.current && stored.text !== threadDraftRef.current) {
         threadDraftEditedAt.current = stored.at;
         threadDraftRef.current = stored.text;
         setThreadDraft(stored.text);

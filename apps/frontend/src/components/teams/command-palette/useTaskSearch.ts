@@ -1,7 +1,8 @@
 "use client";
 
 // ⌘K's Tasks and Files groups (W12-3): tasks by title and what they made by name, from `GET /tasks?q=` and
-// `GET /tasks/outputs?q=`. The server keeps only what the viewer can open (`tasks_access.can_view`).
+// `GET /tasks/outputs?q=`. The server keeps only what the viewer can open (`tasks_access.can_view`). Each keystroke
+// aborts the previous request, so only the latest query reaches the server's task walk.
 
 import { useEffect, useState } from "react";
 import type { CreationOutput, TaskSummary } from "@lightbulb/shared";
@@ -21,17 +22,17 @@ export function useTaskSearch(query: string, enabled: boolean): Found {
 
   useEffect(() => {
     if (!active) return;
-    let live = true;
+    const abort = new AbortController();
     const timer = setTimeout(() => {
       // A failed half shows nothing for that group; the rest of the palette still answers.
       void Promise.all([
-        tasks.list({ kind: "workspace" }, null, term).then((r) => r.tasks, () => []),
-        tasks.outputs({ q: term, limit: 10 }).then((r) => r.outputs, () => []),
+        tasks.searchTasks(term, MAX, abort.signal).then((r) => r.tasks, () => []),
+        tasks.outputs({ q: term, limit: MAX }, abort.signal).then((r) => r.outputs, () => []),
       ]).then(([found, files]) => {
-        if (live) setResult({ term, found: { tasks: found.slice(0, MAX), files: files.slice(0, MAX) } });
+        if (!abort.signal.aborted) setResult({ term, found: { tasks: found, files: files.slice(0, MAX) } });
       });
     }, DEBOUNCE_MS);
-    return () => { live = false; clearTimeout(timer); };
+    return () => { abort.abort(); clearTimeout(timer); };
   }, [active, term, tasks]);
 
   return active && result.term === term ? result.found : NONE;

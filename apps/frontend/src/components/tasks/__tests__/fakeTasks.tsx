@@ -8,6 +8,7 @@ export function fakeTasksClient(tasks: TaskSummary[], details: Record<string, Ta
   return {
     cacheScope: "org_test",
     list: vi.fn(async () => ({ tasks, next: null })),
+    searchTasks: vi.fn(async () => ({ tasks: [], next: null })),
     get: vi.fn(async (id: string) => details[id]),
     act: vi.fn(async (id: string) => ({ ...tasks.find((t) => t.taskId === id)!, status: "resolved" as const })),
     answer: vi.fn(async () => ({ question: {}, next: null })),

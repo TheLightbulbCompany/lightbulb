@@ -342,21 +342,52 @@ async def test_retry_and_reopen_are_refused_in_a_paused_project(world, monkeypat
 
 
 async def test_q_finds_visible_tasks_and_outputs_by_name(world):
-    """W12-3 (⌘K): `q` keeps tasks by title or identifier and outputs by title or file name; hidden tasks stay out."""
+    """W12-3 (⌘K): `q` keeps tasks by title or identifier and outputs by title or file name; hidden tasks and
+    their outputs stay out."""
     bakery = await _task("resolved", title="Bakery taglines")
     await _task(title="Something else")
-    await _task("resolved", title="Bakery secret", audience={"kind": "person", "userIds": [PRIYA]}, ownerUserId=PRIYA)
+    hidden = await _task(
+        "resolved", title="Bakery secret", audience={"kind": "person", "userIds": [PRIYA]}, ownerUserId=PRIYA
+    )
     await tasks_repo.add_task_output(
         WS,
         bakery,
         {"id": "file:f1", "kind": "document", "title": "Taglines", "ref": {"fileName": "bakery.md"}, "createdAt": "1"},
     )
     await tasks_repo.add_task_output(WS, bakery, {"id": "app:a1", "kind": "app", "title": "Menu", "createdAt": "2"})
+    await tasks_repo.add_task_output(
+        WS, hidden, {"id": "file:f2", "kind": "file", "title": "bakery.csv", "createdAt": "3"}
+    )
 
-    tasks = (await world["client"].get("/api/v1/tasks", params={"scope": "workspace", "q": "BAKERY"})).json()["tasks"]
-    assert [t["taskId"] for t in tasks] == [bakery]
+    tasks = (await world["client"].get("/api/v1/tasks", params={"scope": "workspace", "q": "BAKERY"})).json()
+    assert [t["taskId"] for t in tasks["tasks"]] == [bakery]
     outputs = (await world["client"].get("/api/v1/tasks/outputs", params={"q": "bakery"})).json()["outputs"]
-    assert [o["id"] for o in outputs] == ["file:f1"]
-    assert (await world["client"].get("/api/v1/tasks/outputs", params={"q": "menu"})).json()["outputs"][0][
-        "id"
-    ] == "app:a1"
+    assert [o["id"] for o in outputs] == ["file:f1"]  # file:f2's task is Priya's alone
+    menu = (await world["client"].get("/api/v1/tasks/outputs", params={"q": "menu"})).json()["outputs"]
+    assert [o["id"] for o in menu] == ["app:a1"]
+
+
+async def test_q_reads_fixed_pages_and_stops_at_limit(world, monkeypatch):
+    """A search reads full pages (no shrinking re-reads), reads trees for `limit` tasks only, and has no `next`."""
+    for n in range(8):
+        await _task(title=f"Bakery {n}")
+    pages = []
+    real = tasks_repo.list_tasks_by_status
+
+    async def spy(ws, status, **kw):
+        pages.append(kw["limit"])
+        return await real(ws, status, **kw)
+
+    trees = []
+    real_tree = tasks_repo.get_task_tree
+
+    async def tree_spy(ws, task_id):
+        trees.append(task_id)
+        return await real_tree(ws, task_id)
+
+    monkeypatch.setattr(tasks_repo, "list_tasks_by_status", spy)
+    monkeypatch.setattr(tasks_repo, "get_task_tree", tree_spy)
+    resp = (await world["client"].get("/api/v1/tasks", params={"scope": "mine", "q": "bakery", "limit": 6})).json()
+    assert len(resp["tasks"]) == 6 and resp["next"] is None
+    assert len(trees) == 6
+    assert set(pages) == {router_mod._SEARCH_PAGE}

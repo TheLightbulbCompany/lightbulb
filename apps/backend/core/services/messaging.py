@@ -2124,6 +2124,15 @@ async def still_reads_room(owner_id: str, user_id: str, room_id: str, room_owner
     return member is not None and messaging_repo.member_home(member, room_owner) == owner_id
 
 
+async def still_opens_room(owner_id: str, user_id: str, room_id: str) -> bool:
+    """``require_room_member`` as a yes/no: membership plus the session, app and task room rules."""
+    try:
+        await require_room_member(owner_id, user_id, room_id)
+    except ApiProblem:
+        return False
+    return True
+
+
 async def searchable_room_metas(owner_id: str, user_id: str) -> list[dict]:
     """The META row of every room the caller can read right now -- the same membership
     rule as ``require_room_member``."""

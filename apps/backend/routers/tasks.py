@@ -95,8 +95,7 @@ async def list_tasks(
     needs_you: Annotated[bool, Query(alias="needsYou")] = False,
     q: Annotated[str | None, Query(max_length=200)] = None,
 ):
-    """`q` keeps tasks whose title or identifier holds it (⌘K). ponytail: with `q` the walk reads every task in the
-    scope until `limit` match; a title index if workspaces outgrow that."""
+    """`q` keeps tasks whose title or identifier holds it (⌘K): the first `limit` matches, no `next` (`_search`)."""
     ws = await _workspace(auth)
     me = auth.user_id
     room = scope.removeprefix("room:") if scope.startswith("room:") else None
@@ -119,10 +118,37 @@ async def list_tasks(
     if needs_you:
         return {"tasks": await _needs_you(ws, me, keep), "next": None}
 
-    found, next_cursor = await _walk(ws, cursor, limit, keep)
+    found, next_cursor = await _search(ws, limit, keep) if q else await _walk(ws, cursor, limit, keep)
     # ponytail: one tree query per listed task (≤100); a summary index if lists get hot.
     trees = await asyncio.gather(*(tasks_repo.get_task_tree(ws, t["taskId"]) for t in found))
     return {"tasks": [await _summary(tree, me) for tree in trees if tree["task"]], "next": next_cursor}
+
+
+# `q` reads: fixed pages of the `by-status` index, filtered in memory, at most this many pages in all.
+_SEARCH_PAGE = 100
+_SEARCH_PAGES = 10
+
+
+async def _search(ws: str, limit: int, keep) -> tuple[list[dict], None]:
+    """The first `limit` task rows `keep` takes, live work first, with no cursor: a search shows its top matches.
+    `keep` runs only until `limit` match, so its per-row reads stop there too.
+
+    ponytail: matches past the first 1,000 tasks read are not found; a title index if workspaces outgrow that."""
+    found: list[dict] = []
+    pages = 0
+    for status in _STATUSES:
+        cursor: str | None = None
+        while pages < _SEARCH_PAGES:
+            rows, cursor = await tasks_repo.list_tasks_by_status(ws, status, limit=_SEARCH_PAGE, cursor=cursor)
+            pages += 1
+            for t in rows:
+                if await keep(t):
+                    found.append(t)
+                    if len(found) >= limit:
+                        return found, None
+            if not cursor:
+                break
+    return found, None
 
 
 async def _walk(ws: str, cursor: str | None, limit: int, keep) -> tuple[list[dict], str | None]:
@@ -155,7 +181,7 @@ async def list_outputs(
 ):
     """What tasks made (Creations, UX slice 5): every output of every task the viewer can see, any status, newest
     first within a page. `kind` repeats (`kind=link&kind=pr`: the Links filter in one read). `q` keeps outputs whose
-    title or file name holds it (⌘K). `limit` counts tasks; `next` pages on like `GET /tasks`. Declared before
+    title or file name holds it (⌘K): the first `limit` tasks with one, no `next`. `limit` counts tasks; `next` pages on like `GET /tasks`. Declared before
     `/tasks/{id}`.
 
     ponytail: walks the workspace's tasks by status and keeps those with outputs; an outputs index if it gets slow."""
@@ -173,7 +199,7 @@ async def list_outputs(
             return False
         return await tasks_access.can_view(t, auth.user_id)
 
-    found, next_cursor = await _walk(ws, cursor, limit, keep)
+    found, next_cursor = await _search(ws, limit, keep) if q else await _walk(ws, cursor, limit, keep)
     outputs = [
         {
             **o,

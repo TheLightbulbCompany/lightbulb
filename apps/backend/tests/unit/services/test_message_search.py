@@ -6,6 +6,7 @@ import pytest
 
 from core.services import message_search
 from core.services.messaging import ApiProblem
+from core.services.messaging import still_opens_room as real_still_opens_room
 
 ROOM_A = "11111111-1111-4111-8111-111111111111"
 ROOM_B = "22222222-2222-4222-8222-222222222222"
@@ -37,6 +38,7 @@ def _on(monkeypatch):
     _rows(monkeypatch, {(r, s): {"text": t} for r in (ROOM_A, ROOM_B) for s, t in ((1, "x"), (4, "x"))})
     monkeypatch.setattr(message_search.settings, "SEARCH_ENDPOINT", "https://c.us-east-1.aoss.amazonaws.com")
     monkeypatch.setattr(message_search.messaging, "still_reads_room", AsyncMock(return_value=True))
+    monkeypatch.setattr(message_search.messaging, "still_opens_room", AsyncMock(return_value=True))
     monkeypatch.setattr(message_search, "resolve_owner_id", lambda auth: "org_me")
 
 
@@ -232,8 +234,8 @@ async def test_membership_revoked_during_the_search_drops_only_that_rooms_hits(m
     def src(room):
         return {"_source": {"messageId": "m", "roomId": room, "messageSeq": 1, "createdAt": "t", "text": "x"}}
 
-    recheck = AsyncMock(side_effect=lambda owner, user, room, room_owner: room == ROOM_A)
-    monkeypatch.setattr(message_search.messaging, "still_reads_room", recheck)
+    recheck = AsyncMock(side_effect=lambda owner, user, room: room == ROOM_A)
+    monkeypatch.setattr(message_search.messaging, "still_opens_room", recheck)
     rooms = {ROOM_A: "org_me", ROOM_B: "org_me"}
     body = {"hits": {"hits": [src(ROOM_A), src(ROOM_B)]}}
     with (
@@ -247,7 +249,7 @@ async def test_membership_revoked_during_the_search_drops_only_that_rooms_hits(m
 async def test_the_recheck_only_queries_rooms_that_have_hits(monkeypatch):
     src = {"_source": {"messageId": "m", "roomId": ROOM_A, "messageSeq": 1, "createdAt": "t", "text": "x"}}
     recheck = AsyncMock(return_value=True)
-    monkeypatch.setattr(message_search.messaging, "still_reads_room", recheck)
+    monkeypatch.setattr(message_search.messaging, "still_opens_room", recheck)
     rooms = {ROOM_A: "org_me", ROOM_B: "org_me"}
     with (
         _rooms(rooms),
@@ -313,18 +315,60 @@ async def test_a_live_hit_is_dropped_when_membership_is_revoked(monkeypatch):
     from datetime import datetime, timezone
 
     now = datetime.now(timezone.utc).isoformat()
-    monkeypatch.setattr(message_search.messaging, "still_reads_room", AsyncMock(return_value=False))
-    monkeypatch.setattr(
-        message_search.messaging_repo,
-        "list_messages_before",
-        AsyncMock(
-            return_value=[
-                {"roomId": ROOM_A, "messageId": "m1", "messageSeq": 1, "createdAt": now, "text": "bakery"},
-            ]
-        ),
+    recheck = AsyncMock(return_value=False)
+    monkeypatch.setattr(message_search.messaging, "still_opens_room", recheck)
+    tail = AsyncMock(
+        return_value=[{"roomId": ROOM_A, "messageId": "m1", "messageSeq": 1, "createdAt": now, "text": "bakery"}]
     )
+    monkeypatch.setattr(message_search.messaging_repo, "list_messages_before", tail)
     with (
         _rooms({ROOM_A: "org_me"}, lastMessageAt=now, lastSeq=1),
         patch.object(message_search, "_request", AsyncMock(return_value=_response(200, {"hits": {"hits": []}}))),
     ):
         assert (await message_search.search(_auth(), _req(q="bakery"))).hits == []
+    tail.assert_awaited_once()  # the room WAS scanned and matched; the recheck is what dropped it
+    assert [c.args[2] for c in recheck.await_args_list] == [ROOM_A]
+
+
+def _closed_room(monkeypatch, kind):
+    """ROOM_A, where the caller is still a member but the session/app/task behind the room shuts them out."""
+    from core.repositories import local_sessions_repo, tasks_repo
+    from core.services import app_conversation, tasks_access
+
+    extra = {
+        "session": {"session": {"ownerId": "someone_else", "sessionId": "s1"}},
+        "app": {"app": {"app_id": "a1"}},
+        "task": {"task": {"taskId": "t1"}},
+    }[kind]
+    meta = {"roomId": ROOM_A, "ownerId": "org_me", **extra}
+    monkeypatch.setattr(message_search.messaging_repo, "get_room", AsyncMock(return_value=meta))
+    monkeypatch.setattr(
+        message_search.messaging_repo, "get_member", AsyncMock(return_value={"id": "user_a", "homeOwnerId": "org_me"})
+    )
+    monkeypatch.setattr(local_sessions_repo, "get_session", AsyncMock(return_value={"removedAt": 1}))
+    monkeypatch.setattr(app_conversation, "seat_still_opens", AsyncMock(return_value=False))
+    monkeypatch.setattr(tasks_repo, "get_task", AsyncMock(return_value={"taskId": "t1"}))
+    monkeypatch.setattr(tasks_access, "can_view", AsyncMock(return_value=False))
+
+
+@pytest.mark.parametrize("kind", ["session", "app", "task"])
+@pytest.mark.parametrize("path", ["live", "indexed"])
+async def test_hits_follow_the_room_doors_full_rule(monkeypatch, kind, path):
+    """A removed session, an app the caller can no longer open, a task they cannot view: no hits, live or indexed."""
+    from datetime import datetime, timezone
+
+    monkeypatch.setattr(message_search.messaging, "still_opens_room", real_still_opens_room)
+    _closed_room(monkeypatch, kind)
+    now = datetime.now(timezone.utc).isoformat()
+    row = {"roomId": ROOM_A, "messageId": "m1", "messageSeq": 1, "createdAt": now, "text": "bakery"}
+    tail = AsyncMock(return_value=[row] if path == "live" else [])
+    monkeypatch.setattr(message_search.messaging_repo, "list_messages_before", tail)
+    _rows(monkeypatch, {(ROOM_A, 1): {"text": "bakery"}})
+    indexed = [{"_source": {**row, "text": "bakery"}}] if path == "indexed" else []
+    with (
+        _rooms({ROOM_A: "org_me"}, lastMessageAt=now, lastSeq=1),
+        patch.object(message_search, "_request", AsyncMock(return_value=_response(200, {"hits": {"hits": indexed}}))),
+    ):
+        assert (await message_search.search(_auth(), _req(q="bakery"))).hits == []
+    if path == "live":
+        tail.assert_awaited_once()

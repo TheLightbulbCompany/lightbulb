@@ -36,7 +36,10 @@ _OPERATORS = set('"-+|*()~')
 # apps/infra/lib/stacks/api-stack.ts), so the last hour is read live from DynamoDB.
 _FRESH_WINDOW = timedelta(minutes=60)
 _FRESH_ROOMS = 20  # the most recently active rooms
-_FRESH_PER_ROOM = 100  # newest rows read per room
+_FRESH_PER_ROOM = 30  # newest rows read per room
+# DynamoDB reads one search may run at once (live scan and room recheck together): the
+# process's thread pool is 6 (core/dynamodb.py), and one search must never take it over.
+_READS_AT_ONCE = 3
 
 _credentials = None
 _client: httpx.AsyncClient | None = None
@@ -151,9 +154,12 @@ async def search(auth: AuthContext, request: MessageSearchRequest) -> MessageSea
     if not q or not rooms:
         return MessageSearchResponse(hits=[])
     indexes = ",".join(sorted({index_name(owner) for owner in rooms.values()}))
+    gate = asyncio.Semaphore(_READS_AT_ONCE)
     try:
-        response = await _request(
-            "POST", f"/{indexes}/_search?ignore_unavailable=true", build_query(q, list(rooms), request.limit)
+        # The live scan runs while the index answers, not after it.
+        response, fresh = await asyncio.gather(
+            _request("POST", f"/{indexes}/_search?ignore_unavailable=true", build_query(q, list(rooms), request.limit)),
+            _unindexed_rows(q, metas, gate),
         )
     except httpx.TimeoutException as exc:
         raise _unavailable() from exc
@@ -169,15 +175,14 @@ async def search(auth: AuthContext, request: MessageSearchRequest) -> MessageSea
     rows = await messaging_repo.get_messages_by_keys(
         [(h["_source"]["roomId"], h["_source"]["messageSeq"]) for h in candidates]
     )
-    # The search call can outlast a membership removal: re-read membership (strongly)
-    # for exactly the rooms that have hits, so removed members never see their text.
-    owner_id, limit = resolve_owner_id(auth), asyncio.Semaphore(messaging._SUMMARY_CONCURRENCY)
+    # The search call can outlast a membership removal: for exactly the rooms that have hits,
+    # apply the room door's full rule (membership, plus session, app and task rooms) again.
+    owner_id = resolve_owner_id(auth)
 
     async def reads(room_id: str) -> bool:
-        async with limit:
-            return await messaging.still_reads_room(owner_id, auth.user_id, room_id, rooms[room_id])
+        async with gate:
+            return await messaging.still_opens_room(owner_id, auth.user_id, room_id)
 
-    fresh = await _unindexed_rows(q, metas)
     room_ids = sorted({h["_source"]["roomId"] for h in candidates} | {row["roomId"] for row in fresh})
     readable = {r for r, ok in zip(room_ids, await asyncio.gather(*(reads(r) for r in room_ids))) if ok}
     hits = [_fresh_hit(row, q) for row in fresh if row["roomId"] in readable]
@@ -213,11 +218,11 @@ def _terms(q: str) -> list[str]:
     return "".join(" " if c in _OPERATORS else c for c in q).lower().split()
 
 
-async def _unindexed_rows(q: str, metas: list[dict]) -> list[dict]:
+async def _unindexed_rows(q: str, metas: list[dict], gate: asyncio.Semaphore) -> list[dict]:
     """Messages too new for the index: the last hour of the most recently active rooms,
     read from DynamoDB and kept when they hold every word of ``q``. Newest first.
 
-    ponytail: a plain substring match (no stemming, no typos) over <= 20 rooms x 100 rows;
+    ponytail: a plain substring match (no stemming, no typos) over <= 20 rooms x 30 rows;
     the index answers everything older, so this only bridges the drain."""
     terms = _terms(q)
     since = datetime.now(timezone.utc) - _FRESH_WINDOW
@@ -232,10 +237,9 @@ async def _unindexed_rows(q: str, metas: list[dict]) -> list[dict]:
     active = active[-_FRESH_ROOMS:]
     if not terms or not active:
         return []
-    limit = asyncio.Semaphore(messaging._SUMMARY_CONCURRENCY)
 
     async def tail(meta: dict) -> list[dict]:
-        async with limit:
+        async with gate:
             return await messaging_repo.list_messages_before(
                 meta["roomId"], int(meta.get("lastSeq") or 0) + 1, _FRESH_PER_ROOM
             )

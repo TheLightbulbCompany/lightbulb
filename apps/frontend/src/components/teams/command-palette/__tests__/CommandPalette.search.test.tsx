@@ -4,7 +4,7 @@
 import { describe, test, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 
-const list = vi.fn();
+const searchTasks = vi.fn();
 const outputs = vi.fn();
 const openTaskPane = vi.fn();
 const openOutput = vi.fn();
@@ -15,7 +15,7 @@ vi.mock("@/hooks/useLiveEvents", () => ({
   useSuperAgent: () => superAgent,
   useLiveEvents: () => ({ tasks: tasksClient }),
 }));
-const tasksClient = { list, outputs };
+const tasksClient = { searchTasks, outputs };
 vi.mock("@/hooks/useIsWorkspaceAdmin", () => ({ useIsWorkspaceAdmin: () => false }));
 vi.mock("../useFilteredCommandResults", () => ({
   useFilteredCommandResults: () => ({ agents: [], issues: [{ id: "i1", title: "bakery issue" }], projects: [] }),
@@ -36,7 +36,7 @@ const doc = { id: "file:f1", kind: "document", title: "bakery.md", ref: {}, crea
 beforeEach(() => {
   superAgent = true;
   vi.clearAllMocks();
-  list.mockResolvedValue({ tasks: [{ taskId: "t1", title: "Bakery taglines" }], next: null });
+  searchTasks.mockResolvedValue({ tasks: [{ taskId: "t1", title: "Bakery taglines" }], next: null });
   outputs.mockResolvedValue({ outputs: [doc], next: null });
 });
 
@@ -47,8 +47,8 @@ describe("command palette search (super-agent)", () => {
     fireEvent.change(input, { target: { value: "bakery" } });
 
     fireEvent.click(await screen.findByText("Bakery taglines"));
-    expect(list).toHaveBeenCalledWith({ kind: "workspace" }, null, "bakery");
-    expect(outputs).toHaveBeenCalledWith({ q: "bakery", limit: 10 });
+    expect(searchTasks).toHaveBeenCalledWith("bakery", 6, expect.any(AbortSignal));
+    expect(outputs).toHaveBeenCalledWith({ q: "bakery", limit: 6 }, expect.any(AbortSignal));
     expect(openTaskPane).toHaveBeenCalledWith("t1");
     expect(screen.queryByText("bakery issue")).not.toBeInTheDocument();
   });
@@ -60,11 +60,23 @@ describe("command palette search (super-agent)", () => {
     expect(openOutput).toHaveBeenCalledWith(doc);
   });
 
+  test("typing on aborts the request for the older query", async () => {
+    searchTasks.mockImplementation(() => new Promise(() => {}));
+    render(<CommandPalette open onOpenChange={() => {}} />);
+    const input = screen.getByRole("textbox");
+    fireEvent.change(input, { target: { value: "bak" } });
+    await waitFor(() => expect(searchTasks).toHaveBeenCalledTimes(1));
+    const first = searchTasks.mock.calls[0][2] as AbortSignal;
+    fireEvent.change(input, { target: { value: "bakery" } });
+    expect(first.aborted).toBe(true);
+    await waitFor(() => expect(searchTasks).toHaveBeenLastCalledWith("bakery", 6, expect.any(AbortSignal)));
+  });
+
   test("without the super-agent nothing asks the task routes", async () => {
     superAgent = false;
     render(<CommandPalette open onOpenChange={() => {}} />);
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "bakery" } });
     expect(await screen.findByText("bakery issue")).toBeInTheDocument();
-    await waitFor(() => expect(list).not.toHaveBeenCalled());
+    await waitFor(() => expect(searchTasks).not.toHaveBeenCalled());
   });
 });

@@ -16,15 +16,21 @@ export function MadeHere({ roomId, onOpenTask, onAllFiles }: {
   onOpenTask: (taskId: string) => void;
   onAllFiles: () => void;
 }): ReactElement | null {
-  const { outputs } = useCreations({ roomId, limit: 4 });
+  const { outputs, loading, expected } = useCreations({ roomId, limit: 4 });
   const { apps } = useApps();
-  if (!outputs.length) return null;
+  // The room's task list already says something was made: hold the strip's place with blank tiles while the outputs
+  // read lands, so the list below never jumps down ~140 px a second after it draws (W15-8).
+  const ghosts = !outputs.length && loading ? Math.min(expected, 4) : 0;
+  if (!outputs.length && !ghosts) return null;
   return <section className="made-here" aria-labelledby={`made-here-${roomId}`}>
     <div className="made-here__head">
       <h4 id={`made-here-${roomId}`} className="creations__label">Made here</h4>
       <button type="button" className="made-here__all" onClick={onAllFiles}>All files<ChevronRight size={14} aria-hidden="true" /></button>
     </div>
-    <ul className="made-here__row">
+    <ul className="made-here__row" aria-busy={ghosts > 0 || undefined}>
+      {Array.from({ length: ghosts }, (_, i) => <li key={i} className="made-here__tile" aria-hidden="true">
+        <span className="output-thumb" data-size="mini" /><span className="made-here__name">&nbsp;</span>
+      </li>)}
       {outputs.slice(0, 4).map((o) => <li key={`${o.taskId}:${o.id}`}>
         <button type="button" className="made-here__tile" title={o.title} aria-label={`Open ${outputName(o)}`} onClick={() => openOutput(o, onOpenTask, "tasks")}>
           <OutputThumb output={o} size="mini" app={o.kind === "app" ? apps.find((a) => a.app_id === o.ref?.appId) : undefined} />

@@ -116,6 +116,12 @@ describe("RoomPanel Threads view (super-agent)", () => {
     await userEvent.click(card);
     expect(await screen.findByRole("complementary", { name: "Task" })).toHaveAttribute("data-task-pane", "t-signup");
     expect(screen.getByRole("button", { name: "Back to tasks" })).toBeInTheDocument();
+    // Escape: task → list, focus on the list's heading (not the chip in chat), so the next Escape closes the pane (W15-11).
+    await userEvent.keyboard("{Escape}");
+    const list = await screen.findByRole("complementary", { name: "Tasks" });
+    expect(list).toContainElement(document.activeElement as HTMLElement);
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("complementary", { name: "Tasks" })).toBeNull();
   });
 
   it("in the shell the column takes the right pane, folds while Browser has it, and comes back when Browser closes", async () => {

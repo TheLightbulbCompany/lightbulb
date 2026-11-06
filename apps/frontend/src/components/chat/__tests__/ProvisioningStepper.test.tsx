@@ -1297,17 +1297,44 @@ describe("a returning workspace skips the hold (W12-18)", () => {
     expect(screen.queryByText("Getting your workspace ready…")).toBeNull();
   });
 
-  it("never past an error, and only for about 3 s", () => {
+  it("never past an error", () => {
     seenReady();
     loading({ error: new Error("401: token did not verify") });
-    mount().unmount();
+    mount();
     expect(screen.queryByText("children")).toBeNull();
+  });
+
+  it("with /container/status on its way, the app stays drawn however slow the answer (W15-7)", () => {
+    seenReady();
     vi.useFakeTimers();
-    loading();
+    loading({ requested: true });
+    mount();
+    act(() => { vi.advanceTimersByTime(10_000); });
+    expect(screen.getByText("children")).toBeInTheDocument();
+    expect(screen.queryByText("Getting your workspace ready…")).toBeNull();
+  });
+
+  it("nothing asked by 3 s (a token that never verifies, e.g. a removed member): the hold, as before", () => {
+    seenReady();
+    vi.useFakeTimers();
+    loading({ requested: false });
     mount();
     expect(screen.getByText("children")).toBeInTheDocument();
     act(() => { vi.advanceTimersByTime(3_000); });
     expect(screen.queryByText("children")).toBeNull();
+    expect(screen.getByText("Getting your workspace ready…")).toBeInTheDocument();
+  });
+
+  it("a 401/403 drops this person's kept room list for the workspace, and the skip", () => {
+    seenReady();
+    localStorage.setItem("lightbulb.rooms:user-test:org-test", "{}");
+    localStorage.setItem("lightbulb.rooms:user-other:org-test", "{}");
+    loading({ requested: true, error: Object.assign(new Error("Unexpected /container/status status: 403"), { status: 403 }) });
+    mount().unmount();
+    expect(localStorage.getItem("lightbulb.rooms:user-test:org-test")).toBeNull();
+    expect(localStorage.getItem("lightbulb.rooms:user-other:org-test")).toBe("{}");
+    loading({ requested: true });
+    mount();
     expect(screen.getByText("Getting your workspace ready…")).toBeInTheDocument();
   });
 

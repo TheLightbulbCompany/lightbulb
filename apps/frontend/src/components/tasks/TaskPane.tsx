@@ -313,7 +313,7 @@ function TaskSteps({ detail, live, trace }: { detail: TaskDetail; live: boolean;
   if (!latest) return null;
   const lines = trace && !("error" in trace) ? stepLines(trace.recentTools) : null;
   return <details className="group px-1 text-ui" open={live || undefined}>
-    <Summary>Steps{lines?.length ? ` · ${lines.length}` : ""}{detail.attempts.length > 1 ? ` · run ${latest}` : ""}</Summary>
+    <Summary>Steps{lines ? ` · ${lines.length}` : ""}{detail.attempts.length > 1 ? ` · run ${latest}` : ""}</Summary>
     {trace == null ? <p className="text-muted-foreground">Loading…</p>
       : !lines ? <p className="text-muted-foreground">The steps aren&apos;t available.</p>
       : !lines.length ? <p className="text-muted-foreground">No steps yet.</p>

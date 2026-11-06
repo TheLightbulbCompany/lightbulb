@@ -24,7 +24,7 @@ import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingW
 import { roomDisplayName } from "@lightbulb/shared";
 import { openTaskPane } from "@/components/workspace/workspaceController";
 import { KIND_WORD, openOutput } from "@/components/creations/openOutput";
-import { useTaskSearch } from "./useTaskSearch";
+import { MIN_TERM, useTaskSearch } from "./useTaskSearch";
 
 type FlatItem = {
   kind: "conversation" | "task" | "file" | "message" | "nav" | "agent" | "issue" | "project";
@@ -52,6 +52,15 @@ export interface CommandPaletteProps {
 //
 // No open/close animation, deliberately: ⌘K is keyboard-initiated and fires
 // dozens of times a day, where motion only reads as lag (Raycast has none).
+/** Hits whose text holds the query as a whole word come first; the rest keep the index's order. */
+export function wholeWordFirst<T extends { snippet: string }>(hits: readonly T[], query: string): T[] {
+  const term = query.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  if (!term) return [...hits];
+  const word = new RegExp(`(^|[^\\p{L}\\p{N}])${term}($|[^\\p{L}\\p{N}])`, "iu");
+  const exact = (h: T) => word.test(plainSnippet(h.snippet));
+  return [...hits.filter(exact), ...hits.filter((h) => !exact(h))];
+}
+
 export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   const superAgent = useSuperAgent();
   // A result was opened: focus stays where it took the person (the message it scrolled to), not back on the page.
@@ -102,8 +111,9 @@ function CommandPaletteContent({ open, onOpenChange, onRun }: CommandPaletteProp
   const found = useTaskSearch(query, open && superAgent);
   const conversations = useRoomCommandResults(query, open);
   const workspace = useMessagingWorkspaceOptional();
-  const messageSearch = useMessageSearch(query, { enabled: open && !!workspace, limit: 8, minLength: 2 });
-  const messageHits = useMemo(() => messageSearch.hits.map((hit) => {
+  const messageSearch = useMessageSearch(query, { enabled: open && !!workspace, limit: 8, minLength: MIN_TERM });
+  // Whole-word matches first: the index also matches near spellings ("Lindell" found "on-line hello", W15-10).
+  const messageHits = useMemo(() => wholeWordFirst(messageSearch.hits, query).map((hit) => {
     const room = workspace?.directoryProps?.rooms.find((candidate) => candidate.roomId === hit.roomId);
     return {
       id: `message:${hit.messageId}`,
@@ -112,7 +122,7 @@ function CommandPaletteContent({ open, onOpenChange, onRun }: CommandPaletteProp
       sublabel: room ? `${hit.authorName || "Unknown author"} · ${roomDisplayName(room, room.participants)}` : hit.authorName || "Unknown author",
       run: () => workspace?.openNotificationTarget(hit.roomId, hit.threadRootMessageId, hit.messageId),
     };
-  }), [messageSearch.hits, workspace]);
+  }), [messageSearch.hits, query, workspace]);
   const warming = messageSearch.state === "warming";
 
   const flatItems = useMemo<FlatItem[]>(() => {

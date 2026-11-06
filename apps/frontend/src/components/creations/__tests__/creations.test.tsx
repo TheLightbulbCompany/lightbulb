@@ -146,6 +146,15 @@ describe("Creations", () => {
 });
 
 describe("Made here", () => {
+  it("holds its place with blank tiles while the outputs read is out, when the task list shows something made (W15-8)", async () => {
+    client = fakeTasksClient([{ taskId: "t1", outputs: [DOC, MAIL] } as unknown as TaskSummary]);
+    live.tasks = client;
+    client.outputs.mockReturnValue(new Promise(() => {}));
+    render(<Fresh><MadeHere roomId="r-walk7" onOpenTask={vi.fn()} onAllFiles={vi.fn()} /></Fresh>);
+    const strip = await screen.findByRole("region", { name: "Made here" });
+    expect(within(strip).getByRole("list", { hidden: true }).children).toHaveLength(2);
+  });
+
   it("is hidden while the project has made nothing", async () => {
     const { container } = render(<Fresh><MadeHere roomId="r-walk7" onOpenTask={vi.fn()} onAllFiles={vi.fn()} /></Fresh>);
     await waitFor(() => expect(client.outputs).toHaveBeenCalledWith(expect.objectContaining({ roomId: "r-walk7", limit: 4 })));
@@ -229,7 +238,7 @@ describe("Files", () => {
     render(<Fresh><ProjectFiles roomId="r-walk7" viewerId="u1" messages={[msg] as never} onOpenTask={vi.fn()} /></Fresh>);
     const table = await screen.findByRole("table");
     expect(within(table).getByRole("row", { name: /Welcome note/ })).toHaveTextContent("Growth");
-    expect(within(table).getByRole("row", { name: /logo\.png/ })).toHaveTextContent("Priya (shared)");
+    expect(within(table).getByRole("row", { name: /Logo/ })).toHaveTextContent("Priya (shared)");
     expect(screen.queryByRole("complementary", { name: "Tip" })).toBeNull();
     await userEvent.click(screen.getByRole("combobox", { name: "Type" }));
     await userEvent.click(await screen.findByRole("option", { name: "Apps" }));

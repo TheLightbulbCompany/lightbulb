@@ -687,7 +687,9 @@ function RoomContent({
 
   useEffect(() => {
     if (selection) detailHeading.current?.focus({ preventScroll: true });
-    else trigger.current?.focus({ preventScroll: true });
+    // Back to the project's list ("‹ Tasks", Escape): focus stays in the pane, on its heading, so the next Escape
+    // closes it. The chip in chat that opened the task took it, and Escape there did nothing (W15-11).
+    else (requestsHeading.current ?? trigger.current)?.focus({ preventScroll: true });
   }, [selection]);
 
   useEffect(() => {

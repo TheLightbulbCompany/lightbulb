@@ -587,7 +587,9 @@ export function stepLines(tools: readonly unknown[]): string[] {
     const internal = INTERNAL_STEPS[past];
     return { past: internal ?? past, kind: display?.kind, internal: !!internal, failed };
   });
-  const shown = steps.some((s) => !s.internal) ? steps.filter((s) => !s.internal) : steps;
+  // Overhead alone reads as its latest line, so the count never drops when the first real step hides it (W15-11:
+  // "Steps · 2" went to "· 1" while working).
+  const shown = steps.some((s) => !s.internal) ? steps.filter((s) => !s.internal) : steps.slice(-1);
   return collapseRepeats(shown, (s) => `${s.past}|${s.failed}`).map(({ item, count }) => {
     if (!item.past) return count > 1 ? `${count} steps` : "A step";
     const noun = /^\w+$/.test(item.past) && item.kind ? STEP_NOUNS[item.kind] : undefined;  // "Ran" takes a noun; "Searched the web" has one

@@ -12,7 +12,7 @@ vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useSuperAge
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 const apiGet = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/api", () => ({ useApi: () => ({ get: apiGet }) }));
-const ctl = vi.hoisted(() => ({ openPanel: vi.fn(), closePane: vi.fn(), openAgentDmWithDraft: vi.fn(), openChatPanelWithDraft: vi.fn(), activateMessagesPanel: vi.fn() }));
+const ctl = vi.hoisted(() => ({ openPanel: vi.fn(), closePane: vi.fn(), openAgentDmWithDraft: vi.fn(), activateMessagesPanel: vi.fn() }));
 vi.mock("@/components/workspace/workspaceController", () => ctl);
 const ideas = vi.hoisted(() => ({ ideas: [] as unknown[] }));
 vi.mock("@/hooks/useIdeas", () => ({ useIdeas: () => ideas }));
@@ -48,7 +48,8 @@ const ROOMS = [
   room("feed", { name: "Feed", feed: true }),
   room("vendor", { name: "Lightbulb team", shared: true }),
 ];
-const directory = (rooms: DirectoryRoom[], extra = {}) => ({ directoryProps: { rooms, ceoAgentId: FRONT, state: "ready", onCreate: vi.fn(async () => true), ...extra } });
+const directory = (rooms: DirectoryRoom[], extra = {}) => ({ directoryProps: { rooms, ceoAgentId: FRONT, state: "ready", onCreate: vi.fn(async () => true), ...extra },
+  askLightbulb: vi.fn(async (_text: string) => {}) });
 
 beforeEach(() => {
   live.tasks = fakeTasksClient(TASKS);
@@ -97,7 +98,9 @@ describe("HomeProjects", () => {
     expect(within(chats).getByText("1 needs you")).toBeInTheDocument();
   });
 
-  it("a card opens its room; the DM row and Ask open the Lightbulb DM", async () => {
+  it("a card opens its room; the DM row opens the Lightbulb DM; Ask sends into it", async () => {
+    const value = directory(ROOMS);
+    messaging.value = value;
     const opened = vi.fn();
     window.addEventListener("openRoom", (e) => opened((e as CustomEvent).detail), { once: true });
     render(<Fresh><HomeProjects /></Fresh>);
@@ -106,7 +109,18 @@ describe("HomeProjects", () => {
     await userEvent.click(within(screen.getByRole("region", { name: "Chats" })).getByRole("button"));
     expect(ctl.openAgentDmWithDraft).toHaveBeenLastCalledWith(FRONT, "");
     await userEvent.type(screen.getByLabelText("Ask Lightbulb"), "Plan the launch{Enter}");
-    expect(ctl.openAgentDmWithDraft).toHaveBeenLastCalledWith(FRONT, "Plan the launch");
+    expect(value.askLightbulb).toHaveBeenCalledWith("Plan the launch");
+    expect(screen.getByLabelText("Ask Lightbulb")).toHaveValue("");
+  });
+
+  it("a failed Ask keeps the text and says why", async () => {
+    const value = directory(ROOMS);
+    value.askLightbulb.mockRejectedValueOnce(new Error("Lightbulb isn't ready yet."));
+    messaging.value = value;
+    render(<Fresh><HomeProjects /></Fresh>);
+    await userEvent.type(screen.getByLabelText("Ask Lightbulb"), "Hi{Enter}");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Lightbulb isn't ready yet.");
+    expect(screen.getByLabelText("Ask Lightbulb")).toHaveValue("Hi");
   });
 
   it("New project creates a channel and opens it", async () => {

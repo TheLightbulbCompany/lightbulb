@@ -15,7 +15,7 @@ import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingW
 import type { DirectoryRoom } from "@/components/messaging/types";
 import { useNeedsYouTasks } from "@/components/tasks/useRoomThreads";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
-import { activateMessagesPanel, closePane, openAgentDmWithDraft, openChatPanelWithDraft, openPanel } from "@/components/workspace/workspaceController";
+import { activateMessagesPanel, closePane, openAgentDmWithDraft, openPanel } from "@/components/workspace/workspaceController";
 import { useIdeas } from "@/hooks/useIdeas";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { capture } from "@/lib/analytics";
@@ -68,7 +68,7 @@ export function HomeProjects(): ReactElement {
   const [creating, setCreating] = useState(false);
   // A new workspace: nothing but the seeded #general (and DMs) yet.
   const fresh = directory?.state === "ready" && projects.every((r) => r.isDefault);
-  const openDm = (draft = "") => { if (frontId) openAgentDmWithDraft(frontId, draft); else if (!draft || !openChatPanelWithDraft(draft)) activateMessagesPanel(); };
+  const openDm = () => { if (frontId) openAgentDmWithDraft(frontId, ""); else activateMessagesPanel(); };
 
   return <div className="home-projects">
     {needs.tasks.length > 0 && <button type="button" className="home-projects__needs"
@@ -78,7 +78,7 @@ export function HomeProjects(): ReactElement {
       <ChevronRight size={14} aria-hidden="true" />
     </button>}
     <h1 className="text-title font-semibold">Home</h1>
-    <AskLightbulb onAsk={(text) => openDm(text)} />
+    {messaging && <AskLightbulb onAsk={messaging.askLightbulb} />}
 
     <section aria-label="Chats">
       <button type="button" className="home-projects__dm" onClick={() => openDm()}>
@@ -119,14 +119,28 @@ export function HomeProjects(): ReactElement {
   </div>;
 }
 
-function AskLightbulb({ onAsk }: { onAsk: (text: string) => void }): ReactElement {
+/** Sends straight into the Lightbulb DM and opens it; a failed send keeps the text and says so. */
+function AskLightbulb({ onAsk }: { onAsk: (text: string) => Promise<void> }): ReactElement {
   const [text, setText] = useState("");
-  const submit = (e: FormEvent) => { e.preventDefault(); if (!text.trim()) return; onAsk(text.trim()); setText(""); };
-  return <form className="home-projects__ask" onSubmit={submit}>
-    <label htmlFor="home-ask" className="sr-only">Ask Lightbulb</label>
-    <input id="home-ask" placeholder="Ask Lightbulb…" value={text} onChange={(e) => setText(e.target.value)} autoComplete="off" />
-    <Button type="submit" size="sm" disabled={!text.trim()}>Ask</Button>
-  </form>;
+  const [sending, setSending] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!text.trim() || sending) return;
+    setSending(true);
+    setFailed(null);
+    try { await onAsk(text.trim()); setText(""); }
+    catch (error) { setFailed(error instanceof Error ? error.message : "Couldn't send. Try again."); }
+    finally { setSending(false); }
+  };
+  return <div className="grid gap-1">
+    <form className="home-projects__ask" onSubmit={(e) => void submit(e)} aria-busy={sending}>
+      <label htmlFor="home-ask" className="sr-only">Ask Lightbulb</label>
+      <input id="home-ask" placeholder="Ask Lightbulb…" value={text} onChange={(e) => setText(e.target.value)} autoComplete="off" />
+      <Button type="submit" size="sm" disabled={!text.trim() || sending}>{sending ? "Sending…" : "Ask"}</Button>
+    </form>
+    {failed && <p role="alert" className="text-ui text-err">{failed}</p>}
+  </div>;
 }
 
 const snippet = (room: DirectoryRoom) => {

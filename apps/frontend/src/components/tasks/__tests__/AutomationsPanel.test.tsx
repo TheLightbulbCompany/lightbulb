@@ -158,7 +158,7 @@ describe("AutomationsPanel", () => {
     expect(openTaskPane).toHaveBeenCalledWith("t-fees");
   });
 
-  it("off: RoutinesPanel unchanged and no automations read; on: Older automations reaches it", async () => {
+  it("off: RoutinesPanel unchanged and no automations read; on: the Paperclip routines are retired", async () => {
     live.superAgent = false;
     const { unmount } = render(<Fresh><AutomationsPanel /></Fresh>);
     expect(screen.getByTestId("routines-panel")).toBeInTheDocument();
@@ -166,7 +166,8 @@ describe("AutomationsPanel", () => {
     unmount();
     live.superAgent = true;
     render(<Fresh><AutomationsPanel viewerTz="America/New_York" /></Fresh>);
-    await userEvent.click(await screen.findByRole("button", { name: "Older automations" }));
-    expect(screen.getByTestId("routines-panel")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Automations" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Older automations" })).toBeNull();
+    expect(screen.queryByTestId("routines-panel")).toBeNull();
   });
 });

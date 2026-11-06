@@ -73,8 +73,9 @@ export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
     : agent.name;
   // The directory's handles come from the open room's members only, so from Lightbulb's DM (no specialists in it) Ask
   // drafted nothing (dev walk W7-7): any room that has the agent, else the handle the server derives from its name.
-  const handleOf = (agent: CompanyAgent) => [...(directory?.participants ?? []), ...(directory?.rooms ?? []).flatMap((r) => r.participants)]
-    .find((p) => p.kind === "agent" && p.id === agent.id && p.mentionHandle)?.mentionHandle ?? derivedHandle(agent.name);
+  // The server's handle first (GET /teams/agents `mentionHandle`, #4885), then a room's, then the derived one.
+  const handleOf = (agent: CompanyAgent) => agent.mentionHandle || [...(directory?.participants ?? []), ...(directory?.rooms ?? []).flatMap((r) => r.participants)]
+    .find((p) => p.kind === "agent" && p.id === agent.id && p.mentionHandle)?.mentionHandle || derivedHandle(agent.name);
   const message = (agent: CompanyAgent) => {
     if (!frontAgentId || agent.id === frontAgentId) return openChatPanel(agent.id);
     const handle = handleOf(agent);

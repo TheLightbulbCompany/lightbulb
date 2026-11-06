@@ -2,7 +2,7 @@
 
 // Work › Automations with the switch on (mockup step 11): one object per automation with its schedule in
 // the viewer's time zone, its instructions, Pause and Run now, and a history in which every run is its
-// own request. Off, today's RoutinesPanel renders untouched; "Older automations" reaches it when on.
+// own request. Off, today's RoutinesPanel renders untouched; on, the Paperclip routines are not shown at all.
 
 import { useState, type ReactElement } from "react";
 import { ArrowLeft } from "lucide-react";
@@ -20,16 +20,12 @@ export function AutomationsPanel({ viewerTz = viewerTimeZone(), onOpenTask = ope
   viewerTz?: string; onOpenTask?: (taskId: string) => void;
 }): ReactElement {
   const on = useSuperAgent();
-  const [legacy, setLegacy] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
-  if (!on || legacy) return <>
-    {on && <p className="px-6 pt-3 text-ui"><button type="button" className="underline" onClick={() => setLegacy(false)}>‹ Automations</button></p>}
-    <RoutinesPanel />
-  </>;
+  if (!on) return <RoutinesPanel />;
   return <div className="px-6 py-4">
     {selected
       ? <AutomationDetail id={selected} viewerTz={viewerTz} onBack={() => setSelected(null)} onOpenTask={onOpenTask} />
-      : <AutomationList viewerTz={viewerTz} onSelect={setSelected} onOlder={() => setLegacy(true)} onOpenTask={onOpenTask} />}
+      : <AutomationList viewerTz={viewerTz} onSelect={setSelected} onOpenTask={onOpenTask} />}
   </div>;
 }
 
@@ -56,17 +52,14 @@ function RunNowButton({ a, onOpenTask, onNote }: { a: AutomationView; onOpenTask
   </span>;
 }
 
-function AutomationList({ viewerTz, onSelect, onOlder, onOpenTask }: {
-  viewerTz: string; onSelect: (id: string) => void; onOlder: () => void; onOpenTask: (taskId: string) => void;
+function AutomationList({ viewerTz, onSelect, onOpenTask }: {
+  viewerTz: string; onSelect: (id: string) => void; onOpenTask: (taskId: string) => void;
 }): ReactElement {
   const { data, error } = useAutomations(useAutomationSource());
   const [note, setNote] = useState<string | null>(null);
   const rows = data?.automations ?? [];
   return <div className="grid gap-3">
-    <div className="flex items-baseline justify-between gap-3">
-      <h2 className="font-semibold">Automations</h2>
-      <button type="button" className="text-ui text-muted-foreground underline" onClick={onOlder}>Older automations</button>
-    </div>
+    <h2 className="font-semibold">Automations</h2>
     {data && rows.length > 0 && <p className="text-ui text-muted-foreground">To add one, ask @lightbulb in any chat (&ldquo;every Monday at 9, …&rdquo;).</p>}
     {!data && <p role="status" className="text-ui text-muted-foreground">{error ? "Automations aren't available yet." : "Loading…"}</p>}
     {data && rows.length === 0 && <p className="rounded-lg border border-dashed border-border px-3 py-2 text-ui text-muted-foreground">

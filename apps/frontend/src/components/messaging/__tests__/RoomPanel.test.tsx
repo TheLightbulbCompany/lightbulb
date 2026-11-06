@@ -165,7 +165,7 @@ it("keeps empty reaction and reply rows out of the message and groups its action
   const ownMessage = { ...message, author: { kind: "human" as const, id: "owner", displayName: "Owner" } };
   render(<RoomPanel {...props} messages={[ownMessage]} onSetReaction={vi.fn()} onUpdateMessage={vi.fn()} />);
   const article = screen.getByRole("article", { name: "Message from Owner" });
-  const actions = within(article).getByRole("toolbar", { name: "Message actions" });
+  const actions = within(article).getByRole("toolbar", { name: "Message tools" });
   expect(within(actions).getByRole("button", { name: "Add reaction" })).toBeInTheDocument();
   expect(within(actions).getByRole("button", { name: "Reply in thread" })).toBeInTheDocument();
   expect(within(actions).getByRole("button", { name: "Message actions" })).toBeInTheDocument();

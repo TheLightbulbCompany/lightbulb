@@ -43,6 +43,8 @@ interface RoomDetailsPanelProps {
   /** Super-agent: what this room's requests made, listed first under Files (the runtime's disk never is). */
   outputs?: readonly RoomOutput[];
   onOpenOutput?: (taskId: string) => void;
+  /** The room has requests past the first page: Files offers "Show older" (useRoomOutputs). */
+  olderOutputs?: { loading: boolean; load: () => void };
 }
 
 /**
@@ -87,6 +89,7 @@ export function RoomDetailsPanel({
   threads,
   outputs,
   onOpenOutput,
+  olderOutputs,
 }: RoomDetailsPanelProps) {
   const id = useId();
   const TABS = threads ? THREAD_TABS : ROOM_TABS;
@@ -199,6 +202,8 @@ export function RoomDetailsPanel({
         </div>
         {onOpenOutput && <Button type="button" variant="ghost" size="sm" aria-label={`Open ${output.request}`} onClick={() => onOpenOutput(output.taskId)}>Open</Button>}
       </li>)}</ul>}
+      {tab === "files" && olderOutputs && <Button type="button" variant="ghost" size="sm" className="justify-self-start" disabled={olderOutputs.loading}
+        onClick={olderOutputs.load}>{olderOutputs.loading ? "Loading…" : "Show older"}</Button>}
       {tab === "files" && (files.length === 0
         ? outputs?.length ? null : <p className="text-ui text-muted-foreground">{outputs ? "No files yet. Files shared here and what requests make show up here." : "No files in the messages loaded so far. Scroll back in the conversation to load more."}</p>
         : <ul aria-label="Shared files">{files.map((message) => <li key={message.messageId} className="room-details-row">

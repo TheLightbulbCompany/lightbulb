@@ -209,6 +209,38 @@ describe("useRooms platform seams", () => {
     }));
   });
 
+  it("two concurrent opens of one DM share a clientRoomId, so the server makes exactly one room", async () => {
+    messaging.listRooms.mockResolvedValue({ rooms: [], sections: [] });
+    // The server is idempotent on clientRoomId (rooms.py create): same id, same room.
+    const made = new Map<string, RoomDetail>();
+    let release!: () => void;
+    const gate = new Promise<void>((done) => { release = done; });
+    messaging.createRoom.mockImplementation(async ({ clientRoomId }: { clientRoomId: string }) => {
+      await gate;
+      if (!made.has(clientRoomId)) made.set(clientRoomId, { ...room, roomId: `dm-${made.size + 1}`, kind: "dm" });
+      return made.get(clientRoomId)!;
+    });
+    let n = 0;
+    const fresh = () => `00000000-0000-4000-8000-00000000000${++n}`;
+    const { result } = renderHook(() => useRooms(platform({ uuid: fresh }), { autoSelect: false }), { wrapper });
+    await waitFor(() => expect(result.current.roomsLoading).toBe(false));
+    let both!: Promise<(string | null)[]>;
+    await act(async () => {
+      both = Promise.all([
+        result.current.selectDm({ kind: "agent", id: "agent-1" }, { activate: false }),
+        result.current.selectDm({ kind: "agent", id: "agent-1" }, { activate: false }),
+      ]);
+      await waitFor(() => expect(messaging.createRoom).toHaveBeenCalledTimes(2));
+      release();
+      await both;
+    });
+    const ids = messaging.createRoom.mock.calls.map(([request]) => (request as { clientRoomId: string }).clientRoomId);
+    expect(new Set(ids).size).toBe(1);
+    expect(made.size).toBe(1);
+    // The later request wins; the superseded one resolves null rather than activating a stale room.
+    expect(await both).toEqual([null, "dm-1"]);
+  });
+
   // `activate: false` is the picker seam: a sheet that resolves a room only to
   // navigate to it must not leave its own hook instance holding that room, or
   // the detail SWR (refreshInterval 60s) polls it for the rest of the session.

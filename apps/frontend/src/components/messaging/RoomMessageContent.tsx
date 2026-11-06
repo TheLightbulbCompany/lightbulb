@@ -90,7 +90,7 @@ export function RoomMessageContent({ message, currentUserId, actionable, onUpdat
       <div className="flex flex-wrap gap-2"><Button type="button" variant="outline" disabled={pending} onClick={() => { setRequest(null); restoreFocus(); onEditingClosed?.(); }}>Cancel edit</Button>
         <Button type="submit" disabled={!actionable || pending || (!request!.text!.trim() && !message.attachments?.length)}>{pending ? "Saving…" : "Save changes"}</Button></div>
     </form> : <>{children}{message.editedAt && <span className="text-ui text-muted-foreground"> (edited)</span>}</>}
-    {!editing && (actions || menuExtras || (ownMessage && onUpdate)) && <div ref={bar} className="room-message-actions" role="toolbar" aria-label="Message actions" onKeyDown={onBarKey}
+    {!editing && (actions || menuExtras || (ownMessage && onUpdate)) && <div ref={bar} className="room-message-actions" role="toolbar" aria-label="Message tools" onKeyDown={onBarKey}
       onFocus={(event) => { const at = barButtons(bar.current).indexOf(event.target as unknown as HTMLButtonElement); if (at >= 0) { stop.current = at; roveTo(bar.current, at); } }}>
       {actions}
       {(menuExtras || (ownMessage && onUpdate)) && <DropdownMenu>

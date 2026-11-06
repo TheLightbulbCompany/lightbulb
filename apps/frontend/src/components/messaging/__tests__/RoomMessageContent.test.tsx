@@ -69,3 +69,31 @@ it("keeps edit and delete above nothing and extras above them on the viewer's ow
     "Pin to conversation", "Edit message", "Delete message",
   ]);
 });
+
+it("is one tab stop: Message actions starts in the tab order, the arrows wrap, Home and End jump, focus moves the stop", async () => {
+  const user = userEvent.setup();
+  render(<><button type="button">Before</button>
+    <RoomMessageContent message={message} currentUserId="me" actionable onUpdate={vi.fn()}
+      actions={<><button type="button">React</button><button type="button">Reply</button></>}>Original</RoomMessageContent></>);
+  const bar = screen.getByRole("toolbar", { name: "Message tools" });
+  const [react, reply, more] = within(bar).getAllByRole("button");
+  const stops = () => within(bar).getAllByRole("button").filter((b) => b.tabIndex === 0);
+  expect(stops()).toEqual([more]);
+  screen.getByRole("button", { name: "Before" }).focus();
+  await user.tab();
+  expect(more).toHaveFocus();
+  await user.keyboard("{ArrowRight}");
+  expect(react).toHaveFocus();
+  await user.keyboard("{ArrowLeft}");
+  expect(more).toHaveFocus();
+  await user.keyboard("{Home}");
+  expect(react).toHaveFocus();
+  await user.keyboard("{End}");
+  expect(more).toHaveFocus();
+  await user.keyboard("{ArrowLeft}");
+  expect(reply).toHaveFocus();
+  expect(stops()).toEqual([reply]);
+  // Tab leaves the toolbar after one stop, rather than walking every button.
+  await user.tab();
+  expect(bar).not.toContainElement(document.activeElement as HTMLElement);
+});

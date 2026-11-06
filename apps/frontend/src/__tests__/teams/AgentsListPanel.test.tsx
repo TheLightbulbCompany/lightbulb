@@ -17,6 +17,7 @@ interface AgentRow {
   seeded?: boolean;
   origin?: "Seed" | "Marketplace" | "Custom";
   marketplace?: { listingId: string; slug: string; version: number; seller: string };
+  mentionHandle?: string | null;
 }
 interface AgentsResp {
   // Undefined while loading / on error — the panel's two non-row states.
@@ -90,7 +91,7 @@ vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({
 const nav = vi.hoisted(() => ({ openChatPanel: vi.fn(), openAgentDmWithDraft: vi.fn() }));
 vi.mock("@/components/workspace/workspaceController", () => nav);
 
-import { AgentsListPanel } from "@/components/teams/panels/AgentsListPanel";
+import { AgentsListPanel, derivedHandle } from "@/components/teams/panels/AgentsListPanel";
 
 /** Click through the chooser step ("New agent" → "Build your own"). */
 function openBuildForm() {
@@ -498,6 +499,29 @@ describe("Team › Message", () => {
       expect(within(eng).getByText("Works with github.")).toBeInTheDocument();
       expect(within(eng).getAllByText("Engineering")).toHaveLength(1);
     } finally { skills.byAgent = {}; directory.props = null; }
+  });
+
+  it("the server's mentionHandle wins over a room's and the derived one (GET /teams/agents, #4885)", () => {
+    live.superAgent = true;
+    directory.props = { ceoAgentId: "ceo", participants: [], rooms: [{ participants: [{ kind: "agent", id: "fin", mentionHandle: "finance-2" }] }] };
+    mockRead.mockReturnValue({ ...agents, data: { agents: [
+      { id: "ceo", name: "CEO", role: "ceo" }, { id: "fin", name: "Finance", role: "general", mentionHandle: "finance-3" } as AgentRow,
+    ] } });
+    try {
+      render(<SWRConfig value={{ provider: () => new Map() }}><AgentsListPanel /></SWRConfig>);
+      fireEvent.click(screen.getByRole("button", { name: "Ask Finance through Lightbulb" }));
+      expect(nav.openAgentDmWithDraft).toHaveBeenCalledWith("ceo", "@finance-3 ");
+    } finally { directory.props = null; }
+  });
+
+  it("derivedHandle matches messaging.py _handle_candidate", () => {
+    expect(derivedHandle("Zoë")).toBe("zoe");
+    expect(derivedHandle("Growth & Ops")).toBe("growth-ops");
+    // Cut at 32 after trimming, like the server (which may leave a trailing "-" the same way).
+    expect(derivedHandle("Head of Platform Reliability Engineering East")).toBe("head-of-platform-reliability-eng");
+    // Nothing ASCII: the server falls back to agent-<id>, which the client can't know, so no draft handle.
+    expect(derivedHandle("!!!")).toBeNull();
+    expect(derivedHandle("Lightbulb")).toBeNull();
   });
 
   it("switch off: every agent's Message opens its DM", () => {

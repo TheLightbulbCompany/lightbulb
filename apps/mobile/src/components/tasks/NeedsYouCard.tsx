@@ -23,7 +23,7 @@ export function NeedsYouCard({ task, question, palette, onAnsweredElsewhere, end
   const live = question.canAnswer && !closed && !ended && question.state === "open";
   const endedLabel = question.kind === "approval" ? "Closed — not approved" : question.kind === "review" ? "Closed — not sent" : "Closed — not answered";
   const heading = askLine(question, task.specialist);
-  const buttons = decisionButtons(question.options);
+  const buttons = decisionButtons(question.options, question.subkind);
   const unavailable = buttons.find((b) => b.disabledReason)?.disabledReason;
   return (
     <View accessibilityLabel={heading} style={[styles.card, { borderColor: palette.edge, borderLeftColor: ended ? palette.edge : palette.warn, backgroundColor: palette.surface }]}>

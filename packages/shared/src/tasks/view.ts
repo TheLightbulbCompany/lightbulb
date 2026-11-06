@@ -284,13 +284,18 @@ export const ALWAYS_ALLOW_UNAVAILABLE = "Can't be remembered: this names no fixe
 
 export interface DecisionButton { id: string; label: string; style: "primary" | "secondary" | "danger"; disabledReason?: string }
 
+/** Money and provider consent are never remembered (questions.py `NEVER_REMEMBERED`): no Always allow at all. */
+const NEVER_REMEMBERED = new Set(["purchase", "spend", "budget_override", "provider_consent"]);
+
 /** The one decision card's buttons, the same on every surface (web pane, card, Activity; phone): Deny / Request
  *  changes first, then the server's options in order. An approval the server can't remember (it offers Allow once but
- *  no Always allow) still shows Always allow, disabled with the reason, so the person knows why it is missing. */
-export function decisionButtons(options: readonly (OptionLike & { label: string })[]): DecisionButton[] {
+ *  no Always allow) still shows Always allow, disabled with the reason, so the person knows why it is missing; a
+ *  purchase or provider ask (`subkind`) shows no Always allow at all. */
+export function decisionButtons(options: readonly (OptionLike & { label: string })[], subkind?: string | null): DecisionButton[] {
   const style = (o: OptionLike): DecisionButton["style"] => (o.style === "primary" || o.style === "danger" ? o.style : "secondary");
   const out: DecisionButton[] = [...options.filter((o) => SAFE_OPTIONS.has(o.id)), ...options.filter((o) => !SAFE_OPTIONS.has(o.id))]
     .map((o) => ({ id: o.id, label: o.label, style: style(o) }));
+  if (NEVER_REMEMBERED.has(subkind ?? "")) return out.filter((b) => b.id !== "allow_always");
   if (options.some((o) => o.id === "allow_once") && !options.some((o) => o.id === "allow_always")) {
     out.push({ id: "allow_always", label: "Always allow", style: "secondary", disabledReason: ALWAYS_ALLOW_UNAVAILABLE });
   }

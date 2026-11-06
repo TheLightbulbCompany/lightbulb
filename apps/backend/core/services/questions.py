@@ -142,16 +142,17 @@ async def member_emails(ws: str) -> set[str]:
     return {m["email"].lower() for m in members if m.get("email")}
 
 
-#: The operand an Always-allow rule binds to: the recipient, app, repo, merchant, provider or agent.
+#: The operand an Always-allow rule binds to: the recipient, app, repo or agent.
 _TARGET_KEYS = {
     "mail.send": "to",
     "text.send": "to",
     "app.publish": "appId",
     "pr.merge": "repo",
-    "purchase": "merchant",
-    "provision": "provider",
     "a2a.send": "to",
 }
+#: Money and provider consent are never remembered: no Always allow on the card, and no stored allow rule (an older
+#: card's, or an admin's) ever lets one through. Every purchase and provision faces the mode and the purchase caps.
+NEVER_REMEMBERED = frozenset({"purchase", "provision"})
 
 
 def _target(kind: str, operands: dict) -> tuple[str, str] | None:
@@ -163,7 +164,8 @@ def _target(kind: str, operands: dict) -> tuple[str, str] | None:
 async def rule_effect(ws: str, specialist: str | None, kind: str, operands: dict) -> tuple[str, str] | None:
     """`("allow" | "deny", rule id)` when a stored rule names this action (`a2a_rules.decide` over the workspace's
     Rules document), else None. The A2A defaults and holders never decide an effect: only a rule for this skill
-    does. A mail with cc/bcc is never covered: a rule binds `to` alone."""
+    does. A mail with cc/bcc is never covered: a rule binds `to` alone. An allow for a purchase or provision is
+    ignored (`NEVER_REMEMBERED`): a deny still holds."""
     from core.repositories import a2a_repo
     from core.services import a2a_rules
 
@@ -185,7 +187,11 @@ async def rule_effect(ws: str, specialist: str | None, kind: str, operands: dict
         origin_is_person=False,
         operands=operands,
     )
-    return (d.effect, d.rule) if d.effect != "hold" and d.rule not in ("default", "holder") else None
+    if d.effect == "hold" or d.rule in ("default", "holder"):
+        return None
+    if d.effect == "allow" and kind in NEVER_REMEMBERED:
+        return None
+    return (d.effect, d.rule)
 
 
 class RulesBusy(Exception):

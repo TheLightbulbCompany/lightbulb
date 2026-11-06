@@ -40,7 +40,7 @@ export function DecisionCard({ task, question, ended = false, compact = false, f
   const waiting = question.waitingLabel ?? `Waiting on ${question.answerers.map((a) => a.name).join(" or ")}`;
   const heading = askLine(question, task.specialist, agentNames);
   const rows = compact ? previewRows(question.preview).slice(0, 3) : previewRows(question.preview, Infinity);
-  const buttons = decisionButtons(question.options);
+  const buttons = decisionButtons(question.options, question.subkind);
   const unavailable = buttons.find((b) => b.disabledReason)?.disabledReason;
   const send = async (optionId: string, typed?: string) => {
     setPending(true);

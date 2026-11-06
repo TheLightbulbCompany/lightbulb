@@ -593,8 +593,15 @@ export function MessagingWorkspaceProvider({
   // Persist as the owner types — recomputed structured mentions come from
   // the same resolveTypedMentions the send path uses, so a restored draft's
   // mentions are exactly what would be dispatched if sent as-is.
+  // Only when this tab's text changes. A re-run for new participants (someone posted, presence moved) wrote the text
+  // this tab still held over a draft a send or another tab had cleared: "@growth" came back after Growth posted (W17-7).
+  // Text read from storage on a room switch is not written back either.
+  const persisted = useRef<{ roomId: string; text: string } | null>(null);
   useEffect(() => {
     if (!rooms.activeRoomId) return;
+    const prev = persisted.current;
+    persisted.current = { roomId: rooms.activeRoomId, text: draft };
+    if (!prev || prev.roomId !== rooms.activeRoomId || prev.text === draft) return;
     writeDraft(draftKey(scope, rooms.activeRoomId, null), { text: draft, mentions: resolveTypedMentions(draft, participants) });
   }, [scope, rooms.activeRoomId, draft, participants]);
 
@@ -857,6 +864,19 @@ export function MessagingWorkspaceProvider({
     });
   }
 
+  /** Several at once. A DM stays private (#4943): one new group chat with everyone in it plus them, opened. */
+  async function addMembers(members: MemberRef[]) {
+    const dm = rooms.activeRoom?.kind === "dm" ? rooms.activeRoom : null;
+    if (!dm) { for (const member of members) await addMember(member); return; }
+    const others = dm.members.filter((m) => !(m.kind === "human" && m.id === userId));
+    await rooms.createRoom({
+      clientRoomId: crypto.randomUUID(),
+      kind: "group-dm",
+      name: null,
+      members: [...others, ...members].map((m) => ({ kind: m.kind, id: m.id, role: "member" as const, listenMode: m.kind === "agent" ? "active" as const : null })),
+    });
+  }
+
   // Permalink target: opened via openMessage (a room permalink), cleared 3s
   // after opening rather than persisting indefinitely once the highlight has
   // had time to land.
@@ -1105,10 +1125,11 @@ export function MessagingWorkspaceProvider({
       } : {}),
     ...(!activeFeed && rooms.activeRoom && !rooms.activeRoom.shared
       && (rooms.activeRoom.kind !== "channel" || ["owner", "admin"].includes(viewerRole)) ? {
-      // Super-agent: people only; a specialist is reached through Lightbulb (Team › Ask), and Members can't remove one.
-      addMemberCandidates: directoryParticipants.filter((candidate) => !(superAgent && candidate.kind === "agent")
-        && !rooms.activeRoom!.members.some((member) => member.kind === candidate.kind && member.id === candidate.id)),
+      // People and agents, Lightbulb first (W17-6: "bring Lightbulb into my chat with Priya").
+      addMemberCandidates: directoryParticipants.filter((candidate) => !rooms.activeRoom!.members.some((member) => member.kind === candidate.kind && member.id === candidate.id))
+        .sort((a, b) => Number(b.kind === "agent" && b.mentionHandle === "lightbulb") - Number(a.kind === "agent" && a.mentionHandle === "lightbulb")),
       onAddMember: addMember,
+      onAddMembers: addMembers,
     } : {}),
     ...(!activeFeed && rooms.activeRoom?.kind === "channel" && ["owner", "admin"].includes(viewerRole)
       ? { onRemoveMember: rooms.removeMember } : {}),

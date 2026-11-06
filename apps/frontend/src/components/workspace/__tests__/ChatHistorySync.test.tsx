@@ -7,10 +7,12 @@ const workspace = vi.hoisted(() => ({
   value: { activeRoomId: null as string | null, sessionFocus: null as Focus, explicitPickCount: 0 },
 }));
 const activateMessagesPanel = vi.hoisted(() => vi.fn());
+const leavePaneFor = vi.hoisted(() => vi.fn());
+const shell = vi.hoisted(() => ({ place: "chat" }));
 vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({
   useMessagingWorkspace: () => workspace.value,
 }));
-vi.mock("../workspaceController", () => ({ activateMessagesPanel }));
+vi.mock("../workspaceController", () => ({ activateMessagesPanel, leavePaneFor, useWorkspaceState: () => ({ place: shell.place }) }));
 
 import { ChatHistorySync } from "../ChatHistorySync";
 import { recordMessagesNavigation } from "../chatHistory";
@@ -23,10 +25,27 @@ function view(activeRoomId: string | null, sessionFocus: Focus = null, picked = 
 afterEach(() => {
   window.history.replaceState(null, "", "/chat");
   workspace.value = { activeRoomId: null, sessionFocus: null, explicitPickCount: 0 };
+  shell.place = "chat";
   vi.clearAllMocks();
 });
 
 describe("ChatHistorySync", () => {
+  it("W17-9: another room, or Chat from another place, asks the pane to leave; the first room on load does not", () => {
+    const view2 = render(<ChatHistorySync />);
+    view("room-a");
+    view2.rerender(<ChatHistorySync />); // the room resolves on load
+    expect(leavePaneFor).not.toHaveBeenCalled();
+    shell.place = "library"; // Creations, a doc opened there
+    view2.rerender(<ChatHistorySync />);
+    shell.place = "chat"; // back to the same room in Chat
+    view2.rerender(<ChatHistorySync />);
+    expect(leavePaneFor).toHaveBeenLastCalledWith("room-a");
+    view("room-b", null, true);
+    view2.rerender(<ChatHistorySync />);
+    expect(leavePaneFor).toHaveBeenLastCalledWith("room-b");
+    expect(leavePaneFor).toHaveBeenCalledTimes(2);
+  });
+
   it("leaves the cold load's automatic picks alone", () => {
     const shell = render(<ChatHistorySync />);
     view("vendor");

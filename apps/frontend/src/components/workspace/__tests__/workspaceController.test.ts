@@ -20,6 +20,7 @@ import {
   refreshWorkspaceSnapshot,
   getWorkspaceSnapshot,
   useThreadPane,
+  leavePaneFor,
   _resetControllerForTests,
 } from "../workspaceController";
 import { MESSAGES_PANEL_ID } from "../panelRegistry";
@@ -46,6 +47,22 @@ beforeEach(() => {
   window.history.replaceState(null, "", "/chat");
   defaultAgent = "agent-ceo";
   attachShell(() => defaultAgent);
+});
+
+describe("a pane item belongs to where it was opened (W17-9)", () => {
+  it("stays for its own room, closes for another; the browser stays", () => {
+    openPanel("artifact", { src: "text", task: "t1", n: "1", from: "room-florist" }, { pushUrl: true });
+    leavePaneFor("room-florist");
+    expect(snap().pane?.panelId).toBe("artifact");
+    leavePaneFor("room-dm");
+    expect(snap().pane).toBeNull();
+    openTaskPane("t1");
+    leavePaneFor("room-dm");
+    expect(snap().pane).toBeNull();
+    openBrowserPane();
+    leavePaneFor("room-dm");
+    expect(snap().pane?.panelId).toBe("browser");
+  });
 });
 
 describe("places", () => {

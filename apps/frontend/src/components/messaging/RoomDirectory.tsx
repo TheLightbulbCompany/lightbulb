@@ -10,7 +10,6 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { ParticipantAvatar } from "./ParticipantAvatar";
-import { Identity } from "@/components/teams/shared/components/Identity";
 import { copyText, roomPermalink } from "./messageLinks";
 import { isUnreadTarget, nextUnreadRoomId } from "./roomNavigation";
 import { RoomDirectoryRow } from "./RoomDirectoryRow";
@@ -237,10 +236,17 @@ function DirectoryContent({
     : kind === "group-dm" ? name.trim().length <= 80 : true;
   const validCount = kind === "dm" ? selected.size === 1 : kind === "group-dm" ? selected.size >= 2 : true;
   const canCreate = !!onCreate && validName && validCount && selected.size <= 31;
+  // Lightbulb leads the picker with its mark, and starts a group chat already picked when the super-agent is on (W17-8).
+  const isLightbulb = (p: DirectoryParticipant) => p.kind === "agent" && (ceoAgentId ? p.id === ceoAgentId : p.mentionHandle === "lightbulb");
   const visibleParticipants = participants.filter((participant) => {
     const needle = query.toLocaleLowerCase();
     return participant.displayName.toLocaleLowerCase().includes(needle) || participant.mentionHandle?.includes(needle);
-  });
+  }).sort((a, b) => Number(isLightbulb(b)) - Number(isLightbulb(a)));
+  const chooseKind = (next: RoomKind) => {
+    setKind(next);
+    const lightbulb = superAgent && next === "group-dm" ? participants.find(isLightbulb) : undefined;
+    setSelected(lightbulb ? new Map([[`agent:${lightbulb.id}`, { kind: "agent", id: lightbulb.id, role: "member", listenMode: "active" }]]) : new Map());
+  };
   const partialError = state === "error" && rooms.length > 0;
   // Muted rooms are unread but never a jump destination -- same predicate
   // the Alt+Shift+Arrow shortcut uses, so the chevron cannot disagree with it.
@@ -672,7 +678,8 @@ function DirectoryContent({
     </section>}
     <button type="button" className="room-directory-entry" onClick={() => { openInviteDialog(); onNavigate?.(); }}><Plus size={16} aria-hidden="true" />Invite someone</button>
     {superAgent && onCreate && <NewProjectDialog open={newProject} onOpenChange={setNewProject} onCreate={onCreate} busy={creationBusy} error={creationError} />}
-    <DialogContent className="room-creation-dialog" showCloseButton={!creationBusy}>
+    {/* Anchored at the top so Type and the filter grow it downward, never re-centre it (W17-8). */}
+    <DialogContent className="room-creation-dialog top-[8dvh] translate-y-0" showCloseButton={!creationBusy}>
     <form aria-label="Create a chat or channel" className="room-creation" aria-busy={creationBusy}
       onSubmit={async (event) => {
         event.preventDefault();
@@ -687,7 +694,7 @@ function DirectoryContent({
       <div className="room-creation-body">
       <label htmlFor={`${id}-kind`}>Type</label>
       <select id={`${id}-kind`} className="room-input" value={kind} disabled={creationBusy}
-        onChange={(event) => { setKind(event.target.value as RoomKind); setSelected(new Map()); }}>
+        onChange={(event) => chooseKind(event.target.value as RoomKind)}>
         {!superAgent && <option value="channel">Channel</option>}
         <option value="dm">Direct message</option>
         <option value="group-dm">Group chat</option>
@@ -704,7 +711,7 @@ function DirectoryContent({
           const selection = selected.get(key);
           const content = <>
             <input aria-label={`Select ${participant.displayName}`} type="checkbox" checked={!!selection} disabled={creationBusy || (!selection && selected.size >= 31)} onChange={(event) => toggleParticipant(participant, event.target.checked)} />
-            <Identity name={participant.displayName} avatarOnly size="sm" />
+            <ParticipantAvatar participant={participant} size="sm" showPresence={false} />
             <span className="min-w-0 flex-1"><span className="block truncate" title={participant.displayName}>{participant.displayName}</span>
               <span className="text-ui text-muted-foreground">{participant.kind === "agent" ? participant.mentionHandle ? `@${participant.mentionHandle}` : "Agent" : "Person"}</span></span>
             {selection?.kind === "agent" && <label className="sr-only" htmlFor={`${id}-${participant.id}-listen`}>Response for {participant.displayName}</label>}

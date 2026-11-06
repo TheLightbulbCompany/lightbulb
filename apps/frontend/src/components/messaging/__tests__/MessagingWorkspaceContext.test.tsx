@@ -1436,6 +1436,20 @@ it("a drafted handle shows the draft mark at once, and clearing it removes the m
   view.unmount();
 });
 
+it("W17-7: someone posting never writes back a draft that a send or another tab cleared", () => {
+  const view = compose();
+  act(() => { panel.composer.onTextChange("@growth "); });
+  expect(localStorage.getItem(draftKey("org", "room-1", null))).not.toBeNull();
+  localStorage.removeItem(draftKey("org", "room-1", null)); // sent from another tab
+  // Growth posts in the DM: the room's people change, and this tab still holds the text it typed.
+  state.activeRoom = { ...room, members: [...room.members, { ...room.members[1], id: "agent-growth", displayName: "Growth", mentionHandle: "growth" }] };
+  view.rerender(<MessagingWorkspaceProvider initialAgentId="agent-friday" subscribeToRoom>
+    <MessagingDirectory /><MessagingConversation />
+  </MessagingWorkspaceProvider>);
+  expect(localStorage.getItem(draftKey("org", "room-1", null))).toBeNull();
+  view.unmount();
+});
+
 // Dev walk W9-2: Chrome runs queued key events before React's scheduled (default-lane) work, so every keystroke
 // that left a default-lane update behind counted as one more nested update; past 50 the next keystroke's setState
 // threw React #185 and that character was lost.

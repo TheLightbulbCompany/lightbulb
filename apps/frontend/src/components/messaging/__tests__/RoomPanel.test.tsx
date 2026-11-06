@@ -555,7 +555,7 @@ it("adds only eligible non-members to an existing channel", async () => {
     onAddMember={onAddMember} />);
 
   await user.click(screen.getByRole("button", { name: /^About/ }));
-  await user.click(screen.getByRole("button", { name: "Add members" }));
+  await user.click(within(screen.getByRole("complementary", { name: "About" })).getByRole("button", { name: "Add people" }));
   expect(screen.getByRole("checkbox", { name: "Colleague" })).toBeInTheDocument();
   expect(screen.getByRole("checkbox", { name: "Atlas" })).toBeInTheDocument();
   expect(screen.queryByRole("checkbox", { name: "Owner" })).not.toBeInTheDocument();
@@ -644,15 +644,15 @@ it("shows member-add progress and a useful retryable error", async () => {
     addMemberCandidates={[{ kind: "human", id: "colleague", displayName: "Colleague", mentionHandle: null }]}
     onAddMember={onAddMember} />);
   await user.click(screen.getByRole("button", { name: /^About/ }));
-  await user.click(screen.getByRole("button", { name: "Add members" }));
+  await user.click(within(screen.getByRole("complementary", { name: "About" })).getByRole("button", { name: "Add people" }));
   await user.click(screen.getByRole("checkbox", { name: "Colleague" }));
   await user.click(screen.getByRole("button", { name: "Add selected" }));
   expect(screen.getByRole("button", { name: "Adding…" })).toBeDisabled();
   await act(async () => reject(new Error("You do not have permission to add members.")));
   expect(screen.getByRole("alert")).toHaveTextContent("You do not have permission to add members.");
   expect(screen.getByRole("button", { name: "Add selected" })).toBeEnabled();
-  await user.click(screen.getByRole("button", { name: "Add members" }));
-  await user.click(screen.getByRole("button", { name: "Add members" }));
+  await user.keyboard("{Escape}");
+  await user.click(within(screen.getByRole("complementary", { name: "About" })).getByRole("button", { name: "Add people" }));
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });
 
@@ -662,7 +662,7 @@ it("resets member selection and picker state when the room changes", async () =>
   const view = render(<RoomPanel {...props} messages={[]} roomId="channel-a" room={{ ...props.room!, roomId: "channel-a", kind: "channel", name: "A" }}
     addMemberCandidates={candidates} onAddMember={vi.fn()} />);
   await user.click(screen.getByRole("button", { name: /^About/ }));
-  await user.click(screen.getByRole("button", { name: "Add members" }));
+  await user.click(within(screen.getByRole("complementary", { name: "About" })).getByRole("button", { name: "Add people" }));
   await user.click(screen.getByRole("checkbox", { name: "Atlas" }));
   expect(screen.getByRole("checkbox", { name: "Atlas" })).toBeChecked();
 
@@ -671,7 +671,7 @@ it("resets member selection and picker state when the room changes", async () =>
 
   expect(screen.queryByRole("button", { name: "Add selected" })).not.toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: /^About/ }));
-  await user.click(screen.getByRole("button", { name: "Add members" }));
+  await user.click(within(screen.getByRole("complementary", { name: "About" })).getByRole("button", { name: "Add people" }));
   expect(screen.getByRole("checkbox", { name: "Atlas" })).not.toBeChecked();
 });
 
@@ -694,6 +694,30 @@ it.each(["dm", "group-dm"] as const)("opens a searchable Add people picker from 
   await user.click(screen.getByRole("button", { name: "Add selected" }));
 
   expect(onAddMember).toHaveBeenCalledWith({ kind: "agent", id: "atlas" });
+  // One flow, in a dialog: no Details pane opens behind it, and it closes once added (W17-6).
+  expect(screen.queryByRole("complementary", { name: "About" })).toBeNull();
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Add people" })).toBeNull());
+});
+
+it("W17-6: several picked in a DM start one group chat with all of them", async () => {
+  const user = userEvent.setup();
+  const onAddMember = vi.fn(async () => undefined);
+  const onAddMembers = vi.fn(async () => undefined);
+  render(<RoomPanel {...props} room={{ ...props.room!, kind: "dm", name: null }}
+    addMemberCandidates={[
+      { kind: "agent", id: "lb", displayName: "Lightbulb", mentionHandle: "lightbulb" },
+      { kind: "human", id: "colleague", displayName: "Colleague", mentionHandle: null },
+    ]}
+    onAddMember={onAddMember} onAddMembers={onAddMembers} />);
+  await user.click(screen.getByRole("button", { name: "Options" }));
+  await user.click(screen.getByRole("menuitem", { name: "Add people" }));
+  const dialog = screen.getByRole("dialog", { name: "Add people" });
+  expect(dialog).toHaveTextContent("Adding someone starts a new group chat with them. This chat stays private.");
+  await user.click(within(dialog).getByRole("checkbox", { name: "Lightbulb" }));
+  await user.click(within(dialog).getByRole("checkbox", { name: "Colleague" }));
+  await user.click(within(dialog).getByRole("button", { name: "Add selected" }));
+  expect(onAddMembers).toHaveBeenCalledWith([{ kind: "agent", id: "lb" }, { kind: "human", id: "colleague" }]);
+  expect(onAddMember).not.toHaveBeenCalled();
 });
 
 it("replaces the narrow conversation only while a selected thread is open", async () => {

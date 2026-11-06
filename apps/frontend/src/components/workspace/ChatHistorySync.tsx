@@ -5,9 +5,10 @@ import { useMessagingWorkspace } from "@/components/messaging/MessagingWorkspace
 import { setCurrentEntryNamer } from "@/lib/shellNav";
 import { currentChatViewSearch, recordChatView, resetChatView, setUnrecordedView } from "./chatHistory";
 import { parseCommand } from "./urlChannel";
-import { activateMessagesPanel } from "./workspaceController";
+import { activateMessagesPanel, leavePaneFor, useWorkspaceState } from "./workspaceController";
 
-/** Puts the person's room, DM and session picks into browser history (desktop shell only). */
+/** Puts the person's room, DM and session picks into browser history, and closes a pane item that is not the new
+ *  room's (desktop shell only). */
 export function ChatHistorySync(): null {
   const { activeRoomId, sessionFocus, explicitPickCount } = useMessagingWorkspace();
   const seenPicks = useRef(explicitPickCount);
@@ -29,6 +30,16 @@ export function ChatHistorySync(): null {
     seenPicks.current = explicitPickCount;
     recordChatView({ roomId: activeRoomId, sessionId }, explicit);
   }, [activeRoomId, sessionId, composing, explicitPickCount]);
+  // Into Chat from another place, or to another room: a pane item that is not this room's closes (W17-9). The room's
+  // first resolution on load is not a move (a reloaded pane stays).
+  const { place } = useWorkspaceState();
+  const seen = useRef({ roomId: activeRoomId, place });
+  useEffect(() => {
+    const was = seen.current;
+    seen.current = { roomId: activeRoomId, place };
+    if (place !== "chat" || !was.roomId || (was.roomId === activeRoomId && was.place === "chat")) return;
+    leavePaneFor(activeRoomId);
+  }, [activeRoomId, place]);
   useEffect(() => {
     // A bare /chat entry carries no command for the reconciler; Back onto one
     // shows Messages instead of leaving the last panel on screen.

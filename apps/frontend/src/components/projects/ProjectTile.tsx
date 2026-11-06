@@ -23,25 +23,27 @@ const COLOR_NAMES = ["Lavender", "Teal", "Sand", "Rose", "Olive", "Slate"] as co
 
 export interface ProjectIdentity { icon?: ProjectIcon | null; color?: ProjectColor | null }
 
-export function ProjectTile({ icon, color, size }: ProjectIdentity & { name: string; size: 16 | 20 | 24 | 32 }): ReactElement {
-  const Glyph = icon ? GLYPHS[icon] : Hash;
+/** `chat`: a DM or group chat. "#" means a channel, so a chat's default is the people glyph (W17-4). */
+export function ProjectTile({ icon, color, size, chat }: ProjectIdentity & { name: string; size: 16 | 20 | 24 | 32; chat?: boolean }): ReactElement {
+  const Glyph = icon ? GLYPHS[icon] : chat ? Users : Hash;
   return <span aria-hidden="true" className="project-tile" data-size={size} data-color={color ?? undefined}><Glyph /></span>;
 }
 
 /** The tile as a button that opens "#" (the default) plus 12 glyphs and 6 colours; each pick saves at once. */
-export function ProjectIconPicker({ icon, color, name, onChange, disabled, className }: ProjectIdentity & {
-  name: string; onChange: (next: ProjectIdentity) => void; disabled?: boolean; className?: string;
+export function ProjectIconPicker({ icon, color, name, onChange, disabled, className, chat }: ProjectIdentity & {
+  name: string; onChange: (next: ProjectIdentity) => void; disabled?: boolean; className?: string; chat?: boolean;
 }): ReactElement {
+  const Default = chat ? Users : Hash;
   return <Popover>
     <PopoverTrigger asChild>
-      <button type="button" className={cn("project-picker-trigger", className)} disabled={disabled} aria-label="Channel icon and colour">
-        <ProjectTile icon={icon} color={color} name={name} size={20} /><ChevronDown size={12} aria-hidden="true" />
+      <button type="button" className={cn("project-picker-trigger", className)} disabled={disabled} aria-label={chat ? "Chat icon and colour" : "Channel icon and colour"}>
+        <ProjectTile icon={icon} color={color} name={name} size={20} chat={chat} /><ChevronDown size={12} aria-hidden="true" />
       </button>
     </PopoverTrigger>
     <PopoverContent align="start" className="project-picker">
       <div role="group" aria-label="Icon" className="project-picker__grid">
-        <button type="button" aria-label="Hash (default)" aria-pressed={!icon} onClick={() => onChange({ icon: null, color })}><Hash aria-hidden="true" /></button>
-        {PROJECT_ICONS.map((g) => {
+        <button type="button" aria-label={chat ? "People (default)" : "Hash (default)"} aria-pressed={!icon} onClick={() => onChange({ icon: null, color })}><Default aria-hidden="true" /></button>
+        {PROJECT_ICONS.filter((g) => !(chat && g === "users")).map((g) => {
           const Glyph = GLYPHS[g];
           return <button key={g} type="button" aria-label={GLYPH_NAMES[g]} aria-pressed={icon === g}
             onClick={() => onChange({ icon: icon === g ? null : g, color })}><Glyph aria-hidden="true" /></button>;

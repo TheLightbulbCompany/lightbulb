@@ -464,21 +464,28 @@ describe("RoomPanel Threads view (super-agent)", () => {
     const onPatchRoom = vi.fn().mockResolvedValue(undefined);
     const paused = { ...props.room!, pausedAt: "2026-11-06T10:00:00Z" };
     const { rerender } = render(<Fresh><RoomPanel {...props} room={paused} onPatchRoom={onPatchRoom} /></Fresh>);
-    const bar = await screen.findByText("Paused. New tasks and schedules wait.");
+    const bar = await screen.findByText("Lightbulb is paused here.");
     expect(within(bar.parentElement!).queryByRole("button", { name: "Resume" })).toBeNull();
     rerender(<Fresh><RoomPanel {...props} room={paused} onPatchRoom={onPatchRoom} canPause /></Fresh>);
     await userEvent.click(within(bar.parentElement!).getByRole("button", { name: "Resume" }));
     expect(onPatchRoom).toHaveBeenCalledWith({ paused: false });
   });
 
-  it("W12-11: Send in a paused channel keeps the ask in the composer and says how to send it", async () => {
+  it("W17-10: a DM between two people says Message <name>, not Ask Lightbulb", async () => {
+    const priya: RoomParticipant = { ...sam, id: "u-priya", displayName: "Priya Test", role: "member" };
+    const { rerender } = render(<Fresh><RoomPanel {...props} room={{ ...props.room!, kind: "dm", name: null }} participants={[sam, priya]} /></Fresh>);
+    expect(await screen.findByPlaceholderText("Message Priya Test")).toBeInTheDocument();
+    rerender(<Fresh><RoomPanel {...props} /></Fresh>);
+    expect(await screen.findByPlaceholderText("Ask Lightbulb…")).toBeInTheDocument();
+  });
+
+  it("W17-2: pause stops Lightbulb, not people: Send in a paused chat sends", async () => {
     const onSubmit = vi.fn();
     const paused = { ...props.room!, pausedAt: "2026-11-06T10:00:00Z" };
-    render(<Fresh><RoomPanel {...props} room={paused} canPause onPatchRoom={vi.fn()} composer={{ ...props.composer, text: "Write the tagline", onSubmit }} /></Fresh>);
+    render(<Fresh><RoomPanel {...props} room={paused} canPause onPatchRoom={vi.fn()} composer={{ ...props.composer, text: "Priya will run the sign-up table.", onSubmit }} /></Fresh>);
     await userEvent.click(await screen.findByRole("button", { name: /^Send/ }));
-    expect(onSubmit).not.toHaveBeenCalled();
-    expect(await screen.findByRole("alert")).toHaveTextContent("This channel is paused. Resume it to send.");
-    expect(screen.getByRole("textbox", { name: /Message/ })).toHaveValue("Write the tagline");
+    expect(onSubmit).toHaveBeenCalled();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("About › Members lists people and Lightbulb only: no specialists, no Agent tag, no listen mode", async () => {

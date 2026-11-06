@@ -119,6 +119,8 @@ export interface RoomPanelProps {
   onUpdateMessage?: (messageId: string, request: UpdateMessageRequest) => Promise<void>;
   addMemberCandidates?: readonly DirectoryParticipant[];
   onAddMember?: (member: MemberRef) => Promise<void>;
+  /** Several at once (a DM: one new group chat with all of them). Without it, `onAddMember` runs once each. */
+  onAddMembers?: (members: MemberRef[]) => Promise<void>;
   /** Copies the workspace join link (minting one if there is none): the door for someone not in the
    *  workspace yet. Any workspace member may copy it. */
   onCopyJoinLink?: () => Promise<void>;
@@ -331,6 +333,7 @@ function RoomContent({
   onUpdateMessage,
   addMemberCandidates = [],
   onAddMember,
+  onAddMembers,
   onCopyJoinLink,
   openAddPeople = false,
   onAddPeopleOpened,
@@ -514,10 +517,8 @@ function RoomContent({
   const showFirstReplies = starterRoom && unanswered && !room?.archivedAt
     && pendingMessages.length === 0
     && actionable && !composer.disabled;
+  // Pause stops Lightbulb, not people (W17-2): messages always send; Lightbulb notes it once if someone asks it.
   const paused = superAgent && !!visibleRoom?.pausedAt && !visibleRoom.archivedAt;
-  // A Send while paused: the ask stays in the composer and the paused bar says why (W12-11).
-  const [pausedAsk, setPausedAsk] = useState(false);
-  if (pausedAsk && !paused) setPausedAsk(false);
   const mainMessages = useMemo(() => messages.filter((message) => message.threadRootMessageId === null), [messages]);
   // One pass, as in the mobile timeline, instead of a full history scan per row.
   const repliesByRoot = useMemo(() => {
@@ -677,11 +678,12 @@ function RoomContent({
     setAddingMembers(true);
     setMemberError(undefined);
     try {
-      for (const key of selectedMembers) {
-        const member = addMemberCandidates.find((candidate) => `${candidate.kind}:${candidate.id}` === key);
-        if (member) await onAddMember({ kind: member.kind, id: member.id });
-      }
+      const chosen = selectedMembers.flatMap((key) => addMemberCandidates.filter((c) => `${c.kind}:${c.id}` === key).map((c) => ({ kind: c.kind, id: c.id })));
+      // Several at once from a DM start ONE group chat with all of them (one add each would start one chat each).
+      if (onAddMembers && chosen.length > 1) await onAddMembers(chosen);
+      else for (const member of chosen) await onAddMember(member);
       setSelectedMembers([]);
+      setMemberPickerOpen(false);
     } catch (error) {
       setMemberError(error instanceof Error ? error.message : "Members could not be added.");
     } finally {
@@ -796,13 +798,11 @@ function RoomContent({
   }, [requestsShown, showDetail]);
 
   const openMemberPicker = useCallback(() => {
-    closeDetail();
-    setDetailsTab("members");
     setMemberError(undefined);
     setMemberQuery("");
+    setSelectedMembers([]);
     setMemberPickerOpen(true);
-    setContextCollapsed(false);
-  }, [closeDetail]);
+  }, []);
   useEffect(() => {
     if (!openAddPeople || !canAddMembers) return;
     openMemberPicker();
@@ -993,10 +993,7 @@ function RoomContent({
   // The Members content: the About pane's tab, and (super-agent projects) the settings modal's People.
   const membersSection = <section aria-labelledby={`${id}-context-members`}>
           <div className="room-members-heading"><h4 id={`${id}-context-members`} className="font-semibold">Members</h4>
-            {canAddMembers && <Button type="button" variant="outline" aria-expanded={memberPickerOpen} onClick={() => {
-              if (!memberPickerOpen) { setMemberError(undefined); setMemberQuery(""); }
-              setMemberPickerOpen(!memberPickerOpen);
-            }}>Add members</Button>}
+            {canAddMembers && <Button type="button" variant="outline" aria-haspopup="dialog" onClick={openMemberPicker}>Add people</Button>}
           </div>
           {(visibleRoom?.isDefault || firstRunDm) && participants.filter((p) => p.kind === "human").length === 1 && (() => {
             const agents = participants.filter((p) => p.kind === "agent").length;
@@ -1015,31 +1012,6 @@ function RoomContent({
               aria-label={`Remove ${participant.displayName}`} onClick={(event) => openManagement({ kind: participant.kind, id: participant.id }, event.currentTarget)}>Remove</Button>}
             {participant.kind === "agent" && !superAgent && <AgentResponse participant={participant} selectId={`${id}-context-${participant.id}-mode`} onChange={onListenModeChange} />}
           </li>)}</ul>
-          {canAddMembers && memberPickerOpen && <div className="room-member-picker">
-            {visibleRoom?.kind === "dm" && <p className="text-ui text-muted-foreground">Adding someone starts a new group chat with them. This chat stays private.</p>}
-            <label className="sr-only" htmlFor={`${id}-member-search`}>Search people</label>
-            <input id={`${id}-member-search`} type="search" className="room-input" placeholder="Search people" value={memberQuery}
-              onChange={(event) => setMemberQuery(event.target.value)} />
-            {filteredCurrentMembers.length > 0 && <section aria-label="Current members">
-              <p className="text-ui font-medium">Current members</p>
-              <ul>{filteredCurrentMembers.map((member) => <li key={`${member.kind}:${member.id}`} className="room-member-choice text-muted-foreground">
-                <ParticipantAvatar participant={member} size="sm" /><span>{member.displayName}</span><span className="text-ui">Already here</span>
-              </li>)}</ul>
-            </section>}
-            {addMemberCandidates.length === 0 ? <p className="text-ui text-muted-foreground">Everyone in your workspace is already here.</p>
-              : <><fieldset disabled={addingMembers}><legend className="text-ui font-medium">Eligible people</legend>
-                {filteredAddMemberCandidates.length === 0
-                  ? <p className="text-ui text-muted-foreground">No eligible people match your search.</p>
-                  : filteredAddMemberCandidates.map((candidate) => {
-                    const key = `${candidate.kind}:${candidate.id}`;
-                    return <label key={key} className="room-member-choice"><input type="checkbox" aria-label={candidate.displayName} checked={selectedMembers.includes(key)}
-                      onChange={(event) => setSelectedMembers((current) => event.target.checked ? [...current, key] : current.filter((item) => item !== key))} />
-                      <ParticipantAvatar participant={candidate} size="sm" /><span>{candidate.displayName}</span><span className="text-ui text-muted-foreground">{candidate.kind === "agent" ? "Agent" : "Person"}</span></label>;
-                  })}
-              </fieldset>
-              <Button type="button" disabled={selectedMembers.length === 0 || addingMembers} onClick={() => void addSelectedMembers()}>{addingMembers ? "Adding…" : "Add selected"}</Button></>}
-            {memberError && <p role="alert" className="text-ui text-err">{memberError}</p>}
-          </div>}
         </section>;
   return <section
     className={cn("room-panel", showContext && !sideHost && "room-has-context", showDetail ? "room-has-detail" : "room-has-default-context")} aria-label={roomName}
@@ -1168,9 +1140,8 @@ function RoomContent({
       {copied && <p role="status" aria-label="Link copied" className="sr-only">Link copied</p>}
       {messageActionError && <p role="alert" className="room-typing text-ui text-err">{messageActionError}</p>}
       {!visibleRoom?.archivedAt && <RoomLimitBar account={billing} />}
-      {paused && <div className="project-paused" role={pausedAsk ? "alert" : "status"}>
-        {/* A Send while paused keeps the ask in the box and says so here, next to Resume (W12-11). */}
-        <span>{pausedAsk ? `This ${projectNoun(visibleRoom?.kind)} is paused. Resume it to send.` : "Paused. New tasks and schedules wait."}</span>
+      {paused && <div className="project-paused" role="status">
+        <span>Lightbulb is paused here.</span>
         {onPatchRoom && canPause && <Button type="button" size="sm" variant="ghost" className="h-7" disabled={!actionable || messageActionPending}
           onClick={() => void runMessageAction(() => onPatchRoom({ paused: false }), `The ${projectNoun(visibleRoom?.kind)} could not be resumed.`)}>Resume</Button>}
       </div>}
@@ -1187,6 +1158,8 @@ function RoomContent({
           agentName={(agentId) => participants.find((m) => m.kind === "agent" && m.id === agentId)?.displayName ?? "Agent"}
           client={messagingClient} onSteer={onSteerSubagent} onStop={onStopSubagent} onVisible={onSubagentsVisible} />}
         <RoomComposer {...composer} viewerId={currentUserId} focusToken={focusToken} placeholderDrafts={showFirstReplies ? INCOMPLETE_FIRST_REPLIES : undefined}
+        // A chat without Lightbulb is people talking: "Message Priya Test", not "Ask Lightbulb…" (W17-10).
+        placeholder={composer.placeholder ?? (superAgent && !participants.some((p) => p.kind === "agent") ? `Message ${roomName}` : undefined)}
         onSubmit={markSent(composer.onSubmit)}
         onRetry={composer.onRetry ? markSent(composer.onRetry) : undefined}
         onEditLast={onUpdateMessage ? () => {
@@ -1194,7 +1167,6 @@ function RoomContent({
           setEditTarget(own.length ? own[own.length - 1].messageId : null);
         } : undefined}
         disabled={!actionable || composer.disabled}
-        onHeld={paused ? () => setPausedAsk(true) : undefined}
         dropTargetRef={historyRef} /></>}
     </div>
     {dockSide(<>{!contextCollapsed && !showDetail && <aside className="room-context" aria-label="About"
@@ -1271,6 +1243,38 @@ function RoomContent({
       {parentMessage && threadComposer?.parentMessageId === parentMessage.messageId && <RoomComposer {...threadComposer.composer} label="Reply to thread"
         onSubmit={(request) => { setThreadSendToken((token) => token + 1); return threadComposer.composer.onSubmit(request); }} disabled={!actionable || !!visibleRoom?.archivedAt || threadComposer.composer.disabled} />}
     </aside>}</>)}
+    {/* One Add people flow (W17-6): the header, the sidebar's ⋯ and Members all open this; a DM's add starts a new group chat. */}
+    <Dialog open={canAddMembers && memberPickerOpen} onOpenChange={(open) => { if (!addingMembers) setMemberPickerOpen(open); }}>
+      <DialogContent className="max-w-[calc(100%-2rem)] sm:max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto top-[12dvh] translate-y-0">
+        <DialogHeader><DialogTitle>Add people</DialogTitle>
+          <DialogDescription>{visibleRoom?.kind === "dm" ? "Adding someone starts a new group chat with them. This chat stays private." : `People and agents you add can read this ${roomNoun}.`}</DialogDescription>
+        </DialogHeader>
+        <div className="room-member-picker">
+          <label className="sr-only" htmlFor={`${id}-member-search`}>Search people</label>
+          <input id={`${id}-member-search`} type="search" className="room-input" placeholder="Search people" value={memberQuery}
+            onChange={(event) => setMemberQuery(event.target.value)} />
+          {filteredCurrentMembers.length > 0 && <section aria-label="Current members">
+            <p className="text-ui font-medium">Current members</p>
+            <ul>{filteredCurrentMembers.map((member) => <li key={`${member.kind}:${member.id}`} className="room-member-choice text-muted-foreground">
+              <ParticipantAvatar participant={member} size="sm" /><span>{member.displayName}</span><span className="text-ui">Already here</span>
+            </li>)}</ul>
+          </section>}
+          {addMemberCandidates.length === 0 ? <p className="text-ui text-muted-foreground">Everyone in your workspace is already here.</p>
+            : <><fieldset disabled={addingMembers}><legend className="text-ui font-medium">Eligible people</legend>
+              {filteredAddMemberCandidates.length === 0
+                ? <p className="text-ui text-muted-foreground">No eligible people match your search.</p>
+                : filteredAddMemberCandidates.map((candidate) => {
+                  const key = `${candidate.kind}:${candidate.id}`;
+                  return <label key={key} className="room-member-choice"><input type="checkbox" aria-label={candidate.displayName} checked={selectedMembers.includes(key)}
+                    onChange={(event) => setSelectedMembers((current) => event.target.checked ? [...current, key] : current.filter((item) => item !== key))} />
+                    <ParticipantAvatar participant={candidate} size="sm" /><span>{candidate.displayName}</span><span className="text-ui text-muted-foreground">{candidate.kind === "agent" ? "Agent" : "Person"}</span></label>;
+                })}
+            </fieldset>
+            <Button type="button" disabled={selectedMembers.length === 0 || addingMembers} onClick={() => void addSelectedMembers()}>{addingMembers ? "Adding…" : "Add selected"}</Button></>}
+          {memberError && <p role="alert" className="text-ui text-err">{memberError}</p>}
+        </div>
+      </DialogContent>
+    </Dialog>
     <Dialog open={management !== null && canManageMembers} onOpenChange={(open) => { if (!open && !managementPending) setManagement(null); }}>
       <DialogContent className="max-w-[calc(100%-2rem)] sm:max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto"
         onOpenAutoFocus={(event) => { event.preventDefault(); managementCancel.current?.focus(); }}

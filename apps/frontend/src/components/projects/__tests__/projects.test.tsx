@@ -63,7 +63,8 @@ describe("channel settings", () => {
     rerender(header({ onPatchRoom, room: { ...room, pausedAt: "2026-11-06T10:01:00Z" } }));
     await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Resume" }));
     await waitFor(() => expect(onPatchRoom).toHaveBeenLastCalledWith({ paused: false }));
-    expect(screen.getAllByText("Paused")).toHaveLength(2); // the header's tag and the row's label
+    expect(screen.getByText("Paused")).toBeInTheDocument(); // the header tag
+    expect(screen.getByText("Lightbulb is paused")).toBeInTheDocument(); // the row label
     await userEvent.keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
@@ -174,8 +175,13 @@ describe("channel settings", () => {
     await userEvent.click(screen.getByRole("button", { name: /Spring sale/ }));
     await userEvent.click(await screen.findByRole("menuitem", { name: "Settings" }));
     const dialog = await screen.findByRole("dialog", { name: "Spring sale · Chat settings" });
-    expect(within(dialog).getByText("Pause chat")).toBeInTheDocument();
+    expect(within(dialog).getByText("Pause Lightbulb")).toBeInTheDocument();
     expect(within(dialog).getByText(/How this chat shows/)).toBeInTheDocument();
+    // W17-4: "#" means a channel; a chat's picker neither offers it nor defaults to it.
+    await userEvent.click(within(dialog).getByRole("button", { name: "Chat icon and colour" }));
+    expect(await screen.findByRole("button", { name: "People (default)" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.queryByRole("button", { name: "Hash (default)" })).toBeNull();
+    expect(document.querySelector(".project-picker .lucide-hash")).toBeNull();
   });
 
   it("a people-only group chat has no project settings", async () => {

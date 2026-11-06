@@ -16,6 +16,7 @@ import { FIRST_MOVE_LABEL, openFirstMoves, useFirstMoves } from "@/components/id
 import { NewProjectDialog } from "@/components/projects/NewProjectDialog";
 import { ProjectTile } from "@/components/projects/ProjectTile";
 import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingWorkspaceContext";
+import { RoomGlyph } from "@/components/messaging/RoomDirectoryRow";
 import { isProjectRoom, type DirectoryRoom } from "@/components/messaging/types";
 import { useNeedsYouCount, useNeedsYouTasks } from "@/components/tasks/useRoomThreads";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
@@ -44,11 +45,20 @@ export function roomCounts(needsYou: readonly TaskSummary[], listed: readonly Ta
   return out;
 }
 
-/** The rooms Home shows as projects: every conversation but DMs (the Lightbulb DM has its own row; a specialist's
- *  lives on Team), archived rooms, the feed, session chats and the shared vendor channel. Newest activity first. */
+const latest = (r: DirectoryRoom) => (r.lastMessageAt ? Date.parse(r.lastMessageAt) : -Infinity);
+const listed = (r: DirectoryRoom) => !r.archivedAt && !r.feed && !r.session && !r.shared;
+
+/** The rooms Home shows as channel cards: channels only (a group chat is a chat, W17-4), not archived rooms, the feed,
+ *  session chats or the shared vendor channel. Newest activity first. */
 export function projectRooms(rooms: readonly DirectoryRoom[]): DirectoryRoom[] {
-  const latest = (r: DirectoryRoom) => (r.lastMessageAt ? Date.parse(r.lastMessageAt) : -Infinity);
-  return rooms.filter((r) => r.kind !== "dm" && !r.archivedAt && !r.feed && !r.session && !r.shared)
+  return rooms.filter((r) => r.kind === "channel" && listed(r)).sort((a, b) => latest(b) - latest(a));
+}
+
+/** Home's Chats after the Lightbulb DM, as the sidebar's People: DMs with people and group chats, with avatars. A
+ *  specialist's DM lives on Team. Newest activity first. */
+export function chatRooms(rooms: readonly DirectoryRoom[], frontId?: string): DirectoryRoom[] {
+  const agentOnly = (r: DirectoryRoom) => r.kind === "dm" && r.participants.every((p) => p.kind === "agent");
+  return rooms.filter((r) => r.kind !== "channel" && listed(r) && !agentOnly(r) && !(frontId && r.kind === "dm" && r.participants.some((p) => p.id === frontId)))
     .sort((a, b) => latest(b) - latest(a));
 }
 
@@ -82,6 +92,7 @@ export function HomeProjects(): ReactElement {
   const rooms = directory?.rooms ?? [];
   const dm = frontId ? rooms.find((r) => r.kind === "dm" && r.participants.some((p) => p.kind === "agent" && p.id === frontId)) : undefined;
   const projects = projectRooms(rooms);
+  const chats = chatRooms(rooms, frontId);
   const [query, setQuery] = useState("");
   const q = query.trim().toLowerCase();
   const shown = q ? projects.filter((r) => roomDisplayName(r, r.participants).toLowerCase().includes(q)) : projects;
@@ -116,9 +127,18 @@ export function HomeProjects(): ReactElement {
     <section aria-labelledby="home-chats-heading" className="home-projects__section">
       <h2 id="home-chats-heading" className="home-projects__label">Chats</h2>
       <button type="button" className="home-projects__dm" onClick={() => openDm()}>
+        {dm && <RoomGlyph room={dm} label="Lightbulb" project={false} />}
         <span className="min-w-0 flex-1 truncate font-semibold">Lightbulb</span>
         <RoomState room={dm} counts={dm ? counts.get(dm.roomId) : undefined} capped={capped} />
       </button>
+      {chats.map((room) => {
+        const name = roomDisplayName(room, room.participants);
+        return <button key={room.roomId} type="button" className="home-projects__dm" onClick={() => openRoom(room.roomId)}>
+          <RoomGlyph room={room} label={name} project />
+          <span className="min-w-0 flex-1 truncate font-semibold">{name}</span>
+          <RoomState room={room} counts={counts.get(room.roomId)} capped={capped} />
+        </button>;
+      })}
     </section>
 
     {pinned.length > 0 && <section aria-labelledby="home-pinned-heading" className="home-projects__section">

@@ -182,18 +182,20 @@ async def _admit_message(room_id: str, seq: int) -> None:
         put_metric("admission.outcome", dimensions={"outcome": "pass_through", "source": "chat"})
         return
 
-    # A paused project (UX slice 6): no Router turn, one line per pause. Running tasks were passed through above.
-    if meta.get("pausedAt"):
-        await post_paused_notice(ws, meta, ref.get("threadRoot"))
-        put_metric("admission.outcome", dimensions={"outcome": "paused", "source": "chat"})
-        return
-
     # 3. fast path
     front = await _front_member(room_id, ws)
     listen = (front or {}).get("listenMode") or "active"
     addressed = [t["agentId"] for t in msg.get("dispatchTargets") or [] if t.get("eventKind") == "user_request"]
     # "Hi Lightbulb, ..." without the @: speaking to Lightbulb by name addresses it, like an @mention of its seat.
     named = bool(_LIGHTBULB_NAME.search(msg.get("text") or ""))
+
+    # Paused (W17-2): Lightbulb stops, people keep talking. No Router turn; one line per pause and thread, and only
+    # when the person spoke to Lightbulb. Running tasks were passed through above.
+    if meta.get("pausedAt"):
+        if addressed or named or meta.get("kind") == "dm":
+            await post_paused_notice(ws, meta, ref.get("threadRoot"))
+        put_metric("admission.outcome", dimensions={"outcome": "paused", "source": "chat"})
+        return
     pinned = next((a for a in addressed if not front or a != front["id"]), None)
     if pinned:
         ref["pinnedSpecialist"] = pinned

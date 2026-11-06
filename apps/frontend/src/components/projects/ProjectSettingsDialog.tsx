@@ -118,7 +118,7 @@ function SettingsBody({ room, roomName, section, onSection, canEdit, actionable,
       <div className="project-row__control">
         <Saved token={saved.name ?? 0} />
         <div className="project-field">
-          <ProjectIconPicker icon={room.icon} color={room.color} name={name} disabled={!editable || !onPatch}
+          <ProjectIconPicker icon={room.icon} color={room.color} name={name} chat={room.kind !== "channel"} disabled={!editable || !onPatch}
             onChange={(next) => void save("name", () => onPatch!({ icon: next.icon ?? null, color: next.color ?? null }), "The icon could not be saved.")} />
           <input id={`${id}-name`} value={name} maxLength={200} disabled={!editable || !onRename || room.shared}
             onChange={(e) => setName(e.target.value)}
@@ -129,8 +129,8 @@ function SettingsBody({ room, roomName, section, onSection, canEdit, actionable,
     </div>
     {canPause && <div className="project-row">
       <div className="project-row__text">
-        <p className="project-row__label">{paused ? "Paused" : `Pause ${noun}`}</p>
-        <p className="project-row__hint">Stops new tasks and schedules here. Running tasks finish. Undo any time.</p>
+        <p className="project-row__label">{paused ? "Lightbulb is paused" : "Pause Lightbulb"}</p>
+        <p className="project-row__hint">Lightbulb stops replying and starting tasks or schedules here. People keep chatting. Running tasks finish.</p>
       </div>
       <div className="project-row__control">
         <Saved token={saved.pause ?? 0} />
@@ -170,7 +170,7 @@ function SettingsBody({ room, roomName, section, onSection, canEdit, actionable,
         <p id={`${id}-topic-hint`} className="project-row__hint">Lightbulb and the specialists read this before every task in this {noun}.</p>
         <textarea id={`${id}-topic`} className="project-textarea" style={{ minHeight: 120 }} aria-describedby={`${id}-topic-hint`}
           value={topic} maxLength={ROOM_TOPIC_MAX_CHARS} disabled={!editable || !onSetTopic}
-          placeholder="Sell 200 loaves through the new site by 1 Dec. Always cc sam@acme.com on customer email."
+          placeholder="What this is for, and how Lightbulb should work here"
           onChange={(e) => setTopic(e.target.value)}
           onBlur={() => { if (topicDirty) void save("topic", () => onSetTopic!(topic.trim() || null), "The instructions could not be saved."); }} />
         <span className="project-count">{topic.length.toLocaleString()} / {ROOM_TOPIC_MAX_CHARS.toLocaleString()}</span>

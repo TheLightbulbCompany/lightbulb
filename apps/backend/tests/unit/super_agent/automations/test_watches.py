@@ -148,6 +148,19 @@ async def test_pr_checks_met_wakes_task(temporal_env):
     assert wf.until[0] == _spec(start=start).give_up_at and wf.until[-1] is None
 
 
+async def test_an_app_watch_rides_the_workflow(temporal_env):
+    """The new kind crosses the update and the Activity payloads (a Literal the converter checks)."""
+    fakes, wf = Fakes(), WatchFakes(["met:ready"])
+    spec = WatchSpec(watch_id="w1", kind="app", target={"appId": "app_1"}, every_min=5, give_up_at=_spec().give_up_at)
+    async with _worker(temporal_env, fakes, wf) as q:
+        h = await _idle_task(temporal_env, q)
+        await _until(lambda: "end_attempt" in fakes.names())
+        assert await h.execute_update("add_watch", spec) == "w1"
+        await _until(lambda: fakes.names().count("begin_attempt") == 2)
+        await h.result()
+    assert ("watch_met", "w1", 1, "met:ready") in wf.calls
+
+
 async def test_idle_watching_sets_watch_until(temporal_env):
     fakes, wf = Fakes(), WatchFakes(["not_met", "not_met", "not_met"])
     start = await temporal_env.get_current_time()
@@ -421,6 +434,24 @@ async def test_watch_met_writes_the_input_trigger(table):
     assert row["source"] == "watch" and row["lane"] == "shared"
     assert row["ref"]["text"] == "Watch met: PR acme/site#12 checks finished (failed:ci)."
     assert await watch_met(WS, TID, _spec(), 3, "met:failed:ci") == tid  # a retry is the same row
+
+
+async def test_an_app_watch_asks_the_app_and_wakes_the_worker_with_what_to_say(table, monkeypatch):
+    """W7-5: a request watching the app it handed over; check and the wake text come from app_conversation."""
+    from core.services import app_conversation
+
+    await _task(table)
+    spec = WatchSpec(
+        watch_id="w-app", kind="app", target={"appId": "app_1"}, every_min=5, give_up_at=_spec().give_up_at
+    )
+    monkeypatch.setattr(app_conversation, "app_progress", AsyncMock(return_value="met:ready"))
+    monkeypatch.setattr(
+        app_conversation, "app_progress_text", AsyncMock(return_value="Booking's first version is ready.")
+    )
+    assert await check_watch(WS, TID, spec) == "met:ready"
+    app_conversation.app_progress.assert_awaited_with(WS, "app_1")
+    tid = await watch_met(WS, TID, spec, 1, "met:ready")
+    assert (await tasks_repo.get_trigger(WS, tid))["ref"]["text"] == "Booking's first version is ready."
 
 
 async def test_watch_gave_up_writes_the_ask_row(table):

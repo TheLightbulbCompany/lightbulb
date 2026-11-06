@@ -327,6 +327,8 @@ async def start(
     request = await _request_of(caller, origin_room_id)
     if request:  # started by a request: the app comes from where it was asked, for the person who asked
         origin_room_id, requested_by = request[1], request[0].get("ownerUserId")
+        if await hosting_blocker(owner_id):  # Needs you on the request, not a note in a conversation nobody reads
+            raise _hosting_refusal(svc._display({"name": name}))
     if origin_room_id:
         await svc._check_room(owner_id, origin_room_id)
         if ((await messaging_repo.get_room(origin_room_id)) or {}).get("app"):
@@ -365,6 +367,8 @@ async def start(
     message = await _relay(app, meta, key, text)
     # Watched from the request, not the first upload: a builder that never uploads still ends in "stopped".
     svc.watch(owner_id, app["app_id"])
+    if request:
+        await _watch_from_request(owner_id, request[0]["taskId"], app["app_id"])
     display, canvas_url = svc._display(app), svc._canvas_url(app["app_id"])
     line = f"Started {display}. It's being built in its own conversation in Canvas: {canvas_url}"
     if request:  # a Worker: its result is the request's answer, posted for it
@@ -383,6 +387,103 @@ async def start(
         "next": next_,
         "relayed": not message.get("replayed"),  # whether the builder heard a new request line just now
     }
+
+
+# --- The request follows its app (dev walk 7, W7-5) -----------------------------------------------------------
+# A Worker's result used to be "Started {app}", so the request read Done while the app was still being built or
+# could not be built at all. Now the request watches its app (watches.py, kind "app"): Working while it builds; the
+# Worker is woken when it is ready (Done), failed or removed; a workspace that cannot host apps is a Needs you
+# for the admins before anything is started.
+
+APP_WATCH_EVERY_MIN = 5  # ponytail: a 5-minute poll; poke the watch at the ready line if that is too slow
+APP_WATCH_DAYS = 2
+
+
+async def hosting_blocker(owner_id: str) -> str | None:
+    """Why this workspace cannot host an app now (`services_account_needed`, `no_company_stripe_account`): only an
+    admin can fix it, in Settings › Connections. None when it can, or when billing does not answer (the builder's own
+    check still runs)."""
+    from core.services import provisioning_workflow
+
+    try:
+        await provisioning_workflow.account_id_for(owner_id)
+    except provisioning_workflow.WorkflowRefused as e:
+        return e.code if e.code in svc._SETUP_CODES else None
+    except Exception:  # noqa: BLE001
+        logger.warning("apps: hosting check failed for %s", owner_id, exc_info=True)
+    return None
+
+
+def _hosting_next(display: str) -> str:
+    return (
+        f'call request_approval with subkind "provider_consent", title "set up hosting for {display}" and the '
+        'summary "This workspace needs a services account to host apps. An admin adds one from the Stripe card in '
+        'Settings → Connections, then presses Allow.", then end your turn. When it is answered, run this start '
+        "again."
+    )
+
+
+def _hosting_refusal(display: str) -> AppsRefused:
+    return AppsRefused(
+        "hosting_needs_admin",
+        "This workspace needs a services account to host apps; an admin adds one in Settings → Connections.",
+        _hosting_next(display),
+    )
+
+
+async def _watch_from_request(owner_id: str, task_id: str, app_id: str) -> None:
+    """The request waits on its app (idle with `watchUntil`: Working). Best effort: a failed arm leaves today's
+    behaviour (the request reads Done once the Worker answers)."""
+    from core.temporal import client as temporal
+    from core.temporal.watches import WatchSpec, watch_id_for
+
+    target = {"appId": app_id}
+    spec = WatchSpec(
+        watch_id=watch_id_for(task_id, "app", target),
+        kind="app",
+        target=target,
+        every_min=APP_WATCH_EVERY_MIN,
+        give_up_at=(datetime.now(UTC) + timedelta(days=APP_WATCH_DAYS)).isoformat(),
+        on_give_up="ask",
+    )
+    try:
+        await temporal.update_task(owner_id, task_id, "add_watch", spec)
+    except Exception:  # noqa: BLE001
+        logger.warning("apps: request %s does not watch app %s", task_id, app_id, exc_info=True)
+
+
+async def app_progress(owner_id: str, app_id: str) -> str:
+    """`check_watch` for an app: `met:ready` (a preview people can open: Done), `met:failed`, `met:removed`,
+    `met:blocked` (never built: the workspace cannot host it), else `not_met`."""
+    app = await apps_repo.get(app_id)
+    if not app or app.get("owner_id") != owner_id or app.get("state") == "destroyed":
+        return "met:removed"
+    state = app.get("state")
+    if state in ("ready", "live"):
+        return "met:ready"
+    if state == "failed":
+        return "met:failed"
+    if state == "requested" and not app.get("sources") and await hosting_blocker(owner_id):
+        return "met:blocked"
+    return "not_met"
+
+
+async def app_progress_text(owner_id: str, app_id: str, result: str) -> str:
+    """The input that wakes the request's Worker when its app watch is met: what happened and what to answer."""
+    app = await apps_repo.get(app_id) or {}
+    display = svc._display(app) if app.get("name") else "The app"
+    url = svc._canvas_url(app_id)
+    what = result.partition(":")[2]
+    if what == "ready":
+        return f"{display}'s first version is ready in Canvas: {url}. Answer with one short line saying so, then end."
+    if what == "failed":
+        err = (app.get("error") or app.get("publish_error") or {}).get("message") or "the build failed"
+        return f"{display} did not build ({err}). Answer with one line saying so and that its builder is on it in Canvas: {url}."
+    if what == "blocked":
+        return f"{display} cannot be built yet. {_hosting_next(display)}"
+    if what == "removed":
+        return f"{display} was removed. Answer with one line saying so, then end."
+    return ""
 
 
 _FILLER = {

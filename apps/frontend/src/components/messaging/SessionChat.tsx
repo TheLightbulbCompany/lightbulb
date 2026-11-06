@@ -112,6 +112,8 @@ export function SessionChat({ sessionId, sessionOwnerId, openChat, onClose, onRo
   useEffect(() => { if (lastReadSeq !== undefined) onRead?.(); }, [lastReadSeq, onRead]);
   const me = userId ?? "";
   const renderMessage = (message: RoomMessage, collapsed: boolean) => {
+    // A task's lifecycle line ("Started", "Done", "Closed by Sam"): a quiet rule across the transcript, not a message.
+    if (message.kind === "marker") return <TaskMarker key={message.messageId} id={`session-chat-${message.messageId}`} text={message.text} at={message.createdAt} />;
     const participant = members.find((m) => m.kind === message.author.kind && m.id === message.author.id);
     return <RoomMessageItem key={message.messageId}
     id={`session-chat-${message.messageId}`} message={message} text={message.text} participant={participant}
@@ -147,4 +149,12 @@ export function SessionChat({ sessionId, sessionOwnerId, openChat, onClose, onRo
           onReconcile={(id) => rooms.reconcileSend(id)} onUploadAttachment={rooms.uploadAttachment} disabled={!roomId || !rooms.httpReady} label={words.compose ?? "Message the people here"} placeholder={words.compose ?? "Message the people here"} roomKind="channel" />}
     </>}
   </aside>;
+}
+
+function TaskMarker({ id, text, at }: { id: string; text: string; at: string }) {
+  const time = Number.isNaN(Date.parse(at)) ? "" : new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return <p id={id} role="separator" aria-label={time ? `${text} at ${time}` : text}
+    className="flex items-center gap-3 px-4 py-1.5 text-caption text-muted-foreground before:h-px before:flex-1 before:bg-border after:h-px after:flex-1 after:bg-border">
+    <span>{text}{time && <> · <time dateTime={at}>{time}</time></>}</span>
+  </p>;
 }

@@ -41,7 +41,6 @@ import { RoomLimitBar } from "./RoomLimitBar";
 import type { BillingAccount } from "@/hooks/useBilling";
 import { RoomMessageItem } from "./RoomMessageItem";
 import { TaskPane } from "@/components/tasks/TaskPane";
-import { useTaskReply } from "@/components/tasks/taskReply";
 import { RequestGroups } from "@/components/tasks/TaskOverview";
 import { ScheduledList } from "@/components/tasks/ScheduledList";
 import { readRequestsOpen, writeRequestsOpen } from "@/components/tasks/requestsColumn";
@@ -552,11 +551,6 @@ function RoomContent({
   // by the toggle each time (a column there would cover the conversation).
   const requestsWanted = isNarrow ? requestsSheet : requestsPref && requestsDismissedIn !== roomId;
   const requestsShown = superAgent && requestsWanted && !paneBusy && !visibleRoom?.feed && contextCollapsed && roomOnScreen;
-  // An open request pane is steered from this composer ("Replying to: …"); null while the composer isn't shown,
-  // including when a side column covers it on a narrow window: the request pane then has its own steer line (W8-1).
-  const composerCovered = isNarrow && (showDetail || !contextCollapsed || requestsShown);
-  const taskReply = useTaskReply(superAgent && !visibleRoom?.feed && !visibleRoom?.archivedAt && !composerCovered ? roomId : null, composer,
-    () => setFocusToken((t) => t + 1));
   // The About button's dot: anything in this room that needs the viewer (Home's Needs you cut; no request while off).
   const { waitingOnMe } = useRoomThreads(superAgent ? roomId : null);
   const showContext = showDetail || !contextCollapsed || requestsShown;
@@ -1011,7 +1005,6 @@ function RoomContent({
       </div> : <>{subagents && messagingClient && onSteerSubagent && onStopSubagent && onSubagentsVisible && <RoomSubagentStrip state={subagents} roomId={roomId}
           agentName={(agentId) => participants.find((m) => m.kind === "agent" && m.id === agentId)?.displayName ?? "Agent"}
           client={messagingClient} onSteer={onSteerSubagent} onStop={onStopSubagent} onVisible={onSubagentsVisible} />}
-        {taskReply?.chip}
         <RoomComposer {...composer} focusToken={focusToken} placeholderDrafts={showFirstReplies ? INCOMPLETE_FIRST_REPLIES : undefined}
         onSubmit={markSent(composer.onSubmit)}
         onRetry={composer.onRetry ? markSent(composer.onRetry) : undefined}
@@ -1020,7 +1013,7 @@ function RoomContent({
           setEditTarget(own.length ? own[own.length - 1].messageId : null);
         } : undefined}
         disabled={!actionable || composer.disabled}
-        dropTargetRef={historyRef} {...taskReply?.composer} /></>}
+        dropTargetRef={historyRef} /></>}
     </div>
     {dockSide(<>{!contextCollapsed && !showDetail && <aside className="room-context" aria-label="About"
       onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setContextCollapsed(true); } }}>

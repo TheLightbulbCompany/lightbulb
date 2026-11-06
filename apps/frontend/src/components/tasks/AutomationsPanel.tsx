@@ -32,18 +32,30 @@ export function AutomationsPanel({ viewerTz = viewerTimeZone(), onOpenTask = ope
 const scheduleLine = (a: AutomationView, viewerTz: string): string => scheduleWords(a, viewerTz) ?? "No schedule";
 
 /** Run now, or "Running ›" while it is On and a run is going (opens it); a paused row never reads Running. A rule (lane S) has no Run now: it fires on a match.
- *  Disabled with its reason beside it when the viewer may not run it or it isn't on yet. */
+ *  When it can't run, the reason takes the button's place, never a dead Run now (UX slice 3): a paused one offers its
+ *  one action, Resume, to whoever may resume it. */
 function RunNowButton({ a, onOpenTask, onNote }: { a: AutomationView; onOpenTask: (taskId: string) => void; onNote: (note: string | null) => void }): ReactElement | null {
   const { act } = useAutomationActions();
   const canEdit = useCanEdit();
+  const canDecide = useCanDecide();
+  const [resuming, setResuming] = useState(false);  // one press: a double click resumes once
   if (a.match) return null;
   if (a.activeRunTaskId && a.status === "active") {
     return <Button type="button" size="sm" variant="ghost" className="relative z-10" onClick={() => onOpenTask(a.activeRunTaskId!)}>Running ›</Button>;
   }
+  const paused = a.status === "paused" || a.status === "paused_system";
+  if (paused && canDecide(a)) {
+    return <Button type="button" size="sm" variant="outline" className="relative z-10" disabled={resuming}
+      onClick={() => {
+        if (resuming) return;
+        setResuming(true);
+        act(a.id, "resume").then(() => onNote(null), () => onNote("That didn't go through. Try again.")).finally(() => setResuming(false));
+      }}>Resume</Button>;
+  }
   const reason = runNowReason(a, canEdit(a));
+  if (reason) return <span className="relative z-10 text-caption text-muted-foreground">{paused ? `${waitingWords(a)} to resume it` : reason}</span>;
   return <span className="relative z-10 inline-flex items-center gap-2">
-    {reason && <span className="text-caption text-muted-foreground">{reason}</span>}
-    <Button type="button" size="sm" variant="outline" disabled={!!reason} aria-disabled={!!reason}
+    <Button type="button" size="sm" variant="outline"
       onClick={async () => {
         const res = await runNow(act, a);
         if (res.kind === "running") onOpenTask(res.taskId);
@@ -114,7 +126,7 @@ function AutomationDetail({ id, viewerTz, onBack, onOpenTask }: {
         {a.status !== "draft" && !paused && canEdit(a) && <Button type="button" size="sm" variant="outline" onClick={() => void press("pause")}>Pause</Button>}
         {paused && canDecide(a) && <Button type="button" size="sm" variant="outline" onClick={() => void press("resume")}>Resume</Button>}
         {paused && !canDecide(a) && <span className="text-ui text-muted-foreground">{waitingWords(a)}</span>}
-        {canEdit(a) && <RunNowButton a={a} onOpenTask={onOpenTask} onNote={setNote} />}
+        {canEdit(a) && !paused && <RunNowButton a={a} onOpenTask={onOpenTask} onNote={setNote} />}
       </div>
       : <p className="text-ui text-muted-foreground">{waitingWords(a)}</p>}
     {note && <p role="status" className="text-ui text-muted-foreground">{note}</p>}

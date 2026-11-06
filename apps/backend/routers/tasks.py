@@ -222,7 +222,32 @@ async def _act(ws: str, task_id: str, action: str, user_id: str, version: int | 
         raise _err(409, "illegal_state") from exc
     except (temporal_client.TemporalUnavailable, RPCError) as exc:
         raise _err(503, "TEMPORAL_UNAVAILABLE", retryable=True) from exc
+    await _mark_action(ws, task, action, user_id)
     return await _summary(await tasks_repo.get_task_tree(ws, task_id), user_id)
+
+
+_ACTION_MARKS = {"resolve": "Closed", "stop": "Stopped", "reopen": "Reopened"}
+
+
+async def _mark_action(ws: str, task: dict, action: str, user_id: str) -> None:
+    """The task room's marker for a person's Close, Stop or Reopen, by name ("Closed by Sam"); the workflow's own
+    status changes are marked by `activities._announce`. Keyed on the version acted on: one line per press."""
+    mark = _ACTION_MARKS.get(action)
+    if not mark:
+        return
+    try:
+        await task_conversation.ensure_task_room(ws, task)
+        await task_conversation.post_as_lightbulb(
+            ws,
+            ts.task_room_id(task["taskId"]),
+            text=f"{mark} by {await human_display_name(user_id)}",
+            event_id=f"task-mark:{task['taskId']}:{action}:{task['version']}",
+            kind="marker",
+            progress=True,
+            remember=False,
+        )
+    except Exception:  # noqa: BLE001 -- the action happened; its line is cosmetic
+        logger.warning("action marker not posted task=%s action=%s", task["taskId"], action, exc_info=True)
 
 
 @router.get("/tasks/{task_id}")

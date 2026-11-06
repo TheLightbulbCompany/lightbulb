@@ -798,7 +798,7 @@ it("clears the sending room's stored draft when the owner switches rooms mid-sen
   expect(localStorage.getItem(draftKey("org", "room-1", null))).toBeNull();
 });
 
-it("emptying the box (a Replying to steer) drops the room from Drafts in the same render (dev walk R10)", () => {
+it("emptying the box drops the room from Drafts in the same render (dev walk R10)", () => {
   const view = compose();
   // Typing: the stored draft lands after each render, so the sidebar lists the room from the next keystroke.
   act(() => { panel.composer.onTextChange("make it"); });

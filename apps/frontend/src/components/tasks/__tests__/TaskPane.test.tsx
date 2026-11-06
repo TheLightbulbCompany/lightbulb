@@ -133,7 +133,7 @@ describe("TaskPane", () => {
     expect(within(screen.getByRole("list", { name: "Effects" })).getAllByRole("listitem")).toHaveLength(1);
   });
 
-  it("transcript is the task room, read-only; with no room composer on screen a one-line note steers it", async () => {
+  it("transcript is the task room, read-only; the pane's own line steers it (the room composer is never taken over)", async () => {
     live.messaging.sendMessage.mockClear();
     pane();
     const transcript = await screen.findByRole("region", { name: "Transcript" });
@@ -159,7 +159,8 @@ describe("TaskPane", () => {
     expect(client.trace).not.toHaveBeenCalled();
     await userEvent.click(screen.getByText("Details"));
     expect(screen.getByText("$0.84 of $5 budget")).toBeInTheDocument();
-    await userEvent.click(screen.getByText("Steps"));
+    // Steps sit under Progress, not inside Details (UX slice 3).
+    await userEvent.click(screen.getByText(/^Steps/));
     await waitFor(() => expect(client.trace).toHaveBeenCalledWith("t-signup", 2));
     expect(client.trace).toHaveBeenCalledTimes(1);
     expect(await screen.findByText("No steps yet.")).toBeInTheDocument();
@@ -302,9 +303,10 @@ describe("NeedsYouCard", () => {
     expect(screen.queryByRole("list", { name: "Effects" })).toBeNull();
     // The header follows the same state: ready for review, nothing running, so no Stop.
     const status = screen.getByRole("region", { name: "Task status" });
-    // The whole line: the task's title, the status word once, the reason once; never "Done by" (the title names who).
-    expect(status.firstElementChild).toHaveTextContent(/Needs youReady for review$/);
-    expect(status).not.toHaveTextContent(/Done by|ready for your review/);
+    // The whole line: the task's title and the reason once; the status word sits once, in the header row.
+    expect(status.firstElementChild).toHaveTextContent(/Ready for review$/);
+    expect(status.firstElementChild).not.toHaveTextContent(/Needs you|Done by|ready for your review/);
+    expect(screen.getByRole("banner")).toHaveTextContent(/Needs you$/);
     expect(status).not.toHaveTextContent("is working on this");
     expect(within(status).queryByRole("button", { name: "Stop" })).toBeNull();
     await userEvent.click(await screen.findByRole("button", { name: "Send" }));
@@ -355,12 +357,13 @@ describe("steering a finished request (dev walk N-F4)", () => {
     withDetail({ ...step8, task: done, questions: [] }, []);
     pane();
     const status = await screen.findByRole("region", { name: "Task status" });
-    expect(within(status).getByText("Done")).toBeInTheDocument();
+    const header = screen.getByRole("banner");
+    expect(within(header).getByText("Done")).toBeInTheDocument();
     // Done: no steer box until Follow up (UX audit 2, P0).
     expect(screen.queryByRole("textbox", { name: "Steer this task" })).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "Follow up" }));
     await userEvent.type(screen.getByRole("textbox", { name: "Steer this task" }), "Make it one line{Enter}");
-    await waitFor(() => expect(within(status).getByText("Working")).toBeInTheDocument());
+    await waitFor(() => expect(within(header).getByText("Working")).toBeInTheDocument());
     expect(within(status).getByRole("button", { name: "Stop" })).toBeInTheDocument();
   });
 });
@@ -371,18 +374,18 @@ describe("action slots (UX audit 2, P0)", () => {
   it("Stop, Close and Reopen each keep their own slot; the Stop confirm is on its own row", async () => {
     const first = pane();
     await userEvent.click(await screen.findByRole("button", { name: "Stop" }));
-    expect(slots()).toEqual(["stop:Stop", "close:", "reopen:"]);
+    expect(slots()).toEqual(["stop:Stop", "retry:", "close:", "reopen:"]);
     expect(screen.getByRole("group", { name: "Stop this task?" }).closest("[data-action-slot]")).toBeNull();
     first.unmount();
     withDetail({ ...step8, task: { ...step8.task, status: "idle", shownGroup: "idle", watching: false }, questions: [] }, []);
     const second = pane();
     await screen.findByRole("button", { name: "Close" });
-    expect(slots()).toEqual(["stop:", "close:Close", "reopen:"]);
+    expect(slots()).toEqual(["stop:", "retry:", "close:Close", "reopen:"]);
     second.unmount();
     withDetail({ ...step8, task: { ...step8.task, status: "resolved", shownGroup: "resolved" }, questions: [] }, []);
     pane();
     await screen.findByRole("button", { name: "Reopen" });
-    expect(slots()).toEqual(["stop:", "close:", "reopen:Reopen"]);
+    expect(slots()).toEqual(["stop:", "retry:", "close:", "reopen:Reopen"]);
   });
 
   it("a Closed request offers no steering and no Follow up", async () => {
@@ -401,8 +404,31 @@ describe("one status word, the specialist as the title (audit 02 P2)", () => {
     pane();
     expect(await screen.findByRole("heading", { level: 3, name: "Finance" })).toBeInTheDocument();
     const status = await screen.findByRole("region", { name: "Task status" });
-    expect(status).not.toHaveTextContent("Done by");
-    expect(status.textContent?.match(/Done/g)).toHaveLength(1);
+    expect(screen.getByRole("complementary", { name: "Task" })).not.toHaveTextContent("Done by");
+    // The word once, in the header row beside the specialist (UX slice 3), not again in the body.
+    expect(within(screen.getByRole("banner")).getByText("Done")).toBeInTheDocument();
+    expect(status).not.toHaveTextContent("Done");
   });
 });
 
+describe("task loop (UX slice 3)", () => {
+  it("a failed task offers Retry in its own slot, which runs it again", async () => {
+    withDetail({ ...step8, task: { ...step8.task, status: "failed", shownGroup: "waiting_on_you", ownerUserId: SAM }, questions: [] }, []);
+    pane();
+    const retry = await screen.findByRole("button", { name: "Retry" });
+    expect(retry.closest("[data-action-slot]")).toHaveAttribute("data-action-slot", "retry");
+    await userEvent.click(retry);
+    await waitFor(() => expect(client.act).toHaveBeenCalledWith("t-signup", "retry", step8.task.version));
+    // The fake answers Closed: the button that took Retry's row is inert for 600 ms, then live.
+    const reopen = await screen.findByRole("button", { name: "Reopen" });
+    expect(reopen).toBeDisabled();
+    await waitFor(() => expect(reopen).toBeEnabled(), { timeout: 1500 });
+  });
+
+  it("while it runs, one live line names the specialist and the seconds", async () => {
+    withDetail({ ...step8, task: { ...step8.task, updatedAt: new Date(Date.now() - 14_000).toISOString() } });
+    pane();
+    const status = await screen.findByRole("region", { name: "Task status" });
+    expect(status.querySelector("[data-live]")).toHaveTextContent(/^Engineering · working · 1[45]s$/);
+  });
+});

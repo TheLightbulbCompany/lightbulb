@@ -311,3 +311,15 @@ async def test_outputs_lists_what_visible_tasks_made_with_filters(world):
         if t["taskId"] == done
     ]
     assert [o["id"] for o in row["outputs"]] == ["app:a1"]
+
+
+async def test_close_and_reopen_leave_a_marker_by_name(world, monkeypatch):
+    """UX slice 3: the task's transcript says who closed or reopened it; Retry leaves no person marker."""
+    post = AsyncMock(return_value="m1")
+    monkeypatch.setattr(task_conversation, "post_as_lightbulb", post)
+    task = await _task("idle")
+    assert (await world["client"].post(f"/api/v1/tasks/{task}/resolve", json={"version": 1})).status_code == 200
+    assert (await world["client"].post(f"/api/v1/tasks/{task}/retry", json={"version": 1})).status_code == 200
+    (call,) = post.await_args_list
+    assert call.kwargs["text"] == f"Closed by {SAM}" and call.kwargs["kind"] == "marker" and call.kwargs["progress"]
+    assert call.kwargs["event_id"] == f"task-mark:{task}:resolve:1"

@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AutomationView } from "@lightbulb/shared";
@@ -107,10 +107,19 @@ describe("AutomationsPanel", () => {
     expect(api.post).not.toHaveBeenCalled();
     unmount();
 
-    // A paused row with a leftover run never reads Running: its button matches its status.
+    // A paused row with a leftover run never reads Running, and offers its one action, Resume, not a dead Run now.
     routes({ activeRunTaskId: "t-live", status: "paused" });
     const paused = render(<Fresh><AutomationsPanel viewerTz="America/New_York" /></Fresh>);
-    expect(await screen.findByRole("button", { name: "Run now" })).toBeDisabled();
+    const resume = await screen.findByRole("button", { name: "Resume" });
+    expect(resume).toBeEnabled();
+    let release!: () => void;
+    api.post.mockImplementationOnce(() => new Promise((r) => { release = () => r({}); }));
+    await userEvent.dblClick(resume);
+    expect(api.post).toHaveBeenCalledTimes(1);  // a double click resumes once
+    release();
+    await waitFor(() => expect(resume).toBeEnabled());
+    api.post.mockClear();
+    expect(screen.queryByRole("button", { name: "Run now" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Running ›" })).toBeNull();
     paused.unmount();
 
@@ -125,23 +134,23 @@ describe("AutomationsPanel", () => {
     clerk.role = "org:member";
     clerk.userId = "user_priya";
     const member = render(<Fresh><AutomationsPanel viewerTz="America/New_York" /></Fresh>);
-    expect(await screen.findByRole("button", { name: "Run now" })).toBeDisabled();
-    expect(screen.getByText("Only its owner or an admin can run it")).toBeInTheDocument();
+    expect(await screen.findByText("Only its owner or an admin can run it")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Run now" })).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "Post signups every Monday" }));
     expect(await screen.findByText("Waiting on a workspace admin")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Pause" })).toBeNull();
     member.unmount();
 
     // The owner (not an admin) may pause and run a room automation (the server's _may_edit), but not resume it;
-    // paused, Run now is off (the server's run_now answers 409 not_active).
+    // paused, there is no Run now (the server's run_now answers 409 not_active): the row says who can resume it.
     clerk.userId = "user_sam";
     routes({ status: "paused", pausedReason: null });
     render(<Fresh><AutomationsPanel viewerTz="America/New_York" /></Fresh>);
+    expect(await screen.findByText("Waiting on a workspace admin to resume it")).toBeInTheDocument();
     await userEvent.click(await screen.findByRole("button", { name: "Post signups every Monday" }));
-    expect(await screen.findByRole("button", { name: "Run now" })).toBeDisabled();
-    expect(screen.getAllByText("Resume it first").length).toBeGreaterThan(0);
+    expect(await screen.findByText("Waiting on a workspace admin")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Run now" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Resume" })).toBeNull();
-    expect(screen.getByText("Waiting on a workspace admin")).toBeInTheDocument();
   });
 
   it("a rule has no Run now", async () => {

@@ -26,6 +26,13 @@ export function TaskStatus({ task, viewerId }: { task: TaskSummary; viewerId: st
   </span>;
 }
 
+/** The status as a dot alone, named for screen readers (a chip's live state). */
+export function TaskDot({ task, viewerId }: { task: TaskSummary; viewerId: string }): ReactElement {
+  const view = summaryView(task, viewerId);
+  return <span role="img" aria-label={view.word} data-tone={view.tone}
+    className={cn("size-1.5 shrink-0 rounded-full bg-current", TONE_TEXT[view.tone], view.tone === "working" && "motion-safe:animate-pulse")} />;
+}
+
 /** "Growth · working · 12s" while a request is Working (the timer ticks each second); the specialist alone otherwise.
  *  The actor is its own span, so it reads as the one doing the work. */
 export function ActorLine({ task, viewerId, className, inline = false }: { task: TaskSummary; viewerId: string; className?: string; inline?: boolean }): ReactElement {

@@ -447,21 +447,23 @@ it("UX slice 4, switch off: the sidebar stays Chat's alone and /chat opens the c
   expect(shellOf(view)).toHaveAttribute("data-sidebar", "false");
 });
 
-it("UX slice 4: a task opens at the item width (not stored); the list keeps its stored width", () => {
+it("W16-10: a list and a task share one pane width, so the header's toggles never move; a dragged width is both's", () => {
   state.superAgent = true;
-  window.localStorage.setItem(paneWidthKey("user_1"), "500");
   try {
     const view = renderReady();
     act(() => openPanel("task-detail", { taskId: "t1" }));
-    const pane = view.container.querySelector<HTMLElement>(".workspace-pane")!;
-    expect(pane).toHaveAttribute("data-item", "true");
-    expect(pane.style.width).toBe("clamp(520px, 50%, 60%)");
-    // No resize handle on an item, and the stored list width is untouched.
-    expect(pane.querySelector(".workspace-pane__resize")).toBeNull();
-    expect(window.localStorage.getItem(paneWidthKey("user_1"))).toBe("500");
+    const pane = () => view.container.querySelector<HTMLElement>(".workspace-pane")!;
+    expect(pane()).toHaveAttribute("data-item", "true");
+    expect(pane().style.width).toBe("clamp(520px, 50%, 60%)");
     act(() => openPanel("file-viewer"));
-    expect(view.container.querySelector<HTMLElement>(".workspace-pane")!.style.width).toBe("500px");
-  } finally { state.superAgent = false; }
+    expect(pane().style.width).toBe("clamp(520px, 50%, 60%)");
+    view.unmount();
+    window.localStorage.setItem(paneWidthKey("user_1"), "500");
+    const again = renderReady();
+    act(() => openPanel("task-detail", { taskId: "t1" }));
+    expect(again.container.querySelector<HTMLElement>(".workspace-pane")!.style.width).toBe("500px");
+    expect(again.container.querySelector(".workspace-pane__resize")).not.toBeNull();
+  } finally { state.superAgent = false; window.localStorage.removeItem(paneWidthKey("user_1")); }
 });
 
 it("UX slice 4: Settings opens while the workspace is still being provisioned (the gate's Billing and Model links)", () => {

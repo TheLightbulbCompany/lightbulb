@@ -215,14 +215,30 @@ def short_result(att: dict | None) -> str | None:
     return text if 0 < len(text) <= SHORT_RESULT_MAX else None
 
 
-def text_output(task: dict, n: int, message_id: str) -> dict:
-    """A short result kept as what the task made (Made here, Files, Creations): it opens its task, where the result
-    post holds the text."""
+def result_piece(text: str) -> str:
+    """The deliverable in a short result: what follows its first paragraph ("Drafted the post." + the post), else all
+    of it. The chat's Copy (MessageTasks `resultPiece`) cuts the same way."""
+    body = text.strip()
+    cut = body.find("\n\n")
+    return (body[cut:].strip() if cut >= 0 else "") or body
+
+
+_SUBJECT = re.compile(r"^\s*\**subject\**\s*:", re.IGNORECASE | re.MULTILINE)
+
+
+def text_output(task: dict, n: int, message_id: str, text: str = "") -> dict:
+    """A short result kept as what the task made (Made here, Files, Creations). `ref.text` is the deliverable itself,
+    so a library opens, names and previews it without its task (walk 16); an email draft (a "Subject:" line) is Mail."""
+    piece = result_piece(text)
     return {
         "id": f"text:{n}",
-        "kind": "document",
+        "kind": "mail" if _SUBJECT.search(piece) else "document",
         "title": plain_line(task.get("title") or "Result", 200),
-        "ref": {"roomId": ts.task_room_id(task["taskId"]), "messageId": message_id},
+        "ref": {
+            "roomId": ts.task_room_id(task["taskId"]),
+            "messageId": message_id,
+            **({"text": piece} if piece else {}),
+        },
     }
 
 

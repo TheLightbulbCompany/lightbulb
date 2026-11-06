@@ -10,7 +10,7 @@ import type { OutputKind, TaskOutput } from "@lightbulb/shared";
 import type { AppRow } from "@/hooks/useApps";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { blobText } from "@/components/media/readBlob";
-import { docPreview, readableName } from "./docText";
+import { docPreview, readableName, textName } from "./docText";
 import { extensionOf, hostOf } from "./openOutput";
 
 const KIND_ICON: Record<OutputKind, LucideIcon> = {
@@ -67,6 +67,13 @@ function useDocPreview(ref: Record<string, string>, on: boolean) {
   return { face, preview: preview?.key === key ? preview.value : undefined };
 }
 
+/** A short result's face: its name as the title, then its next lines (an email's subject line is the name). */
+function textFace(text: string): { heading: string | null; lines: string[] } {
+  const heading = textName(text) || null;
+  const lines = docPreview(text, 6).lines.filter((l) => l !== heading && !/^subject\s*:/i.test(l)).slice(0, 3);
+  return { heading, lines };
+}
+
 export function OutputThumb({ output, app, size = "tile", frame = true }: {
   output: Pick<TaskOutput, "kind" | "title" | "ref">;
   /** The app's row, for its page; without one an app shows its glyph. */
@@ -78,7 +85,9 @@ export function OutputThumb({ output, app, size = "tile", frame = true }: {
 }): ReactElement {
   const image = (output.kind === "file" || output.kind === "document") && output.ref?.contentType?.startsWith("image/");
   const src = useAttachmentImage(output.ref ?? {}, !!image);
-  const { face, preview } = useDocPreview(output.ref ?? {}, frame && isTextDoc(output));
+  const { face, preview: read } = useDocPreview(output.ref ?? {}, frame && isTextDoc(output));
+  // A short text result carries its words (`ref.text`): its face is them, no read (W16-3).
+  const preview = output.ref?.text ? textFace(output.ref.text) : read;
   // Only a public app frames as itself: any other shows its sign-in door, so it gets the glyph.
   const page = frame && output.kind === "app" && app?.open_to === "public" && app.can_open !== false ? app.live_url ?? app.preview_url : null;
   if (page && /^https?:\/\//.test(page)) {

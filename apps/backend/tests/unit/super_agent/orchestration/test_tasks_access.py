@@ -331,3 +331,14 @@ def test_result_line_follows_the_privacy_rule():
     assert ta.result_line({**tree, "task": failed}, "r1") == "Didn't finish: the computer it runs on refused it."
     image = [{**att[0], "output": "![chart](https://x.dev/c.png)"}]
     assert ta.result_line({"task": _task(done, status="idle"), "attempts": image}, "r1") == "Pay the invoice"
+
+
+def test_a_short_result_output_carries_its_words_and_an_email_draft_is_mail():
+    """Walk 16: a library item opened its task and was named after it; an email draft was filed as Doc."""
+    task = {"taskId": TID, "title": "Draft parent email"}
+    mail = ta.text_output(task, 1, "m1", "Drafted the parent email.\n\nSubject: Story-time\n\nHi parents,\n\n[Sign up]")
+    assert mail["kind"] == "mail" and mail["ref"]["text"] == "Subject: Story-time\n\nHi parents,\n\n[Sign up]"
+    post = ta.text_output(task, 2, "m2", "Saturday story-time is back!")
+    assert (
+        post["id"] == "text:2" and post["kind"] == "document" and post["ref"]["text"] == "Saturday story-time is back!"
+    )

@@ -2,7 +2,7 @@
 
 import { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Check, Copy, Download } from "lucide-react";
+import { Check, ChevronRight, Copy, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { FileViewerContent, isPaneViewable, normalizeContentType } from "@/components/media/FileViewerContent";
 import { DocumentRow } from "@/components/teams/issues/DocumentRow";
@@ -13,11 +13,13 @@ import { useUser } from "@clerk/nextjs";
 import { actorName } from "@/components/teams/shared/lib/actorName";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { useApi } from "@/lib/api";
-import { openPanel, updatePanelParams } from "../workspaceController";
-import { useSuperAgent } from "@/hooks/useLiveEvents";
+import { openPanel, openTaskPane, updatePanelParams, useWorkspaceState } from "../workspaceController";
+import { useLiveEvents, useSuperAgent } from "@/hooks/useLiveEvents";
+import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingWorkspaceContext";
+import { roomDisplayName } from "@lightbulb/shared";
 import { blobText } from "@/components/media/readBlob";
 import { formatBytes } from "@/lib/utils";
-import { docPreview } from "@/components/creations/docText";
+import { docPreview, plainCta, resultPiece } from "@/components/creations/docText";
 import type { PanelProps } from "../panelComponents";
 import { DocumentContents } from "./DocumentContents";
 import { CONTENTS_MIN_HEADINGS, outlineOf } from "./documentOutline";
@@ -37,7 +39,8 @@ export function ArtifactDockPanel({ params }: PanelProps) {
   if (!source) return <PaneFrame><p role="alert" className="p-4 text-ui">This link does not point at a file.</p></PaneFrame>;
   if (source.src === "file") return <OpenInFiles agent={source.agent} path={source.path} />;
   if (source.src === "paperclip" && source.kind === "document") return <DocumentPane source={source} />;
-  return <FilePane key={`${source.src}:${source.id}`} source={source} />;
+  return <FilePane key={source.src === "text" ? `text:${source.task}:${source.n}` : `${source.src}:${source.id}`} source={source}
+    task={params.task ?? null} from={params.from ?? null} />;
 }
 
 /** A workspace file is the existing Files pane's job: hand it over. */
@@ -58,21 +61,31 @@ function PaneFrame({ actions, children }: { actions?: React.ReactNode; children:
 
 type FileSource = Exclude<ArtifactSource, { src: "file" } | { kind: "document" }>;
 
-function FilePane({ source }: { source: FileSource }) {
+/** A short result's words as a markdown doc: attempt n's answer, its deliverable part (as chat's Copy has it). */
+async function textResult(tasks: ReturnType<typeof useLiveEvents>["tasks"], taskId: string, n: string): Promise<Blob> {
+  const detail = await tasks.get(taskId);
+  const text = detail.attempts.find((a) => String(a.n) === n)?.output ?? "";
+  if (!text.trim()) throw Object.assign(new Error("no result"), { status: 404 });
+  return new Blob([resultPiece(text) ?? text.trim()], { type: "text/markdown" });
+}
+
+function FilePane({ source, task, from }: { source: FileSource; task: string | null; from: string | null }) {
   const api = useApi();
   const teams = useTeamsApi();
+  const { tasks } = useLiveEvents();
   const [state, setState] = useState<Loaded>({ status: "loading" });
   // The clients may be new objects every render; the fetch must run once per source, not per render.
-  const clients = useRef({ api, teams });
-  useEffect(() => { clients.current = { api, teams }; });
+  const clients = useRef({ api, teams, tasks });
+  useEffect(() => { clients.current = { api, teams, tasks }; });
   // Keyed on the source's content: an equal-but-new params object must not refetch or revoke the shown URL.
   const sourceKey = JSON.stringify(source);
   useEffect(() => {
     const source = JSON.parse(sourceKey) as FileSource;
     let live = true;
     let url: string | undefined;
-    const { api, teams } = clients.current;
-    const fetchBlob = source.src === "attachment"
+    const { api, teams, tasks } = clients.current;
+    const fetchBlob = source.src === "text" ? textResult(tasks, source.task, source.n)
+      : source.src === "attachment"
       ? api.downloadBlob(`/messaging/rooms/${encodeURIComponent(source.room)}/attachments/${encodeURIComponent(source.id)}`)
       : teams.download(issueAttachmentContentPath(source.issue, source.id));
     fetchBlob.then((blob) => {
@@ -84,7 +97,9 @@ function FilePane({ source }: { source: FileSource }) {
       const type = normalizeContentType(blob.type) || "application/octet-stream";
       const typed = new Blob([blob], { type });
       url = URL.createObjectURL(typed);
-      setState({ status: "ready", blob: typed, url, name: source.name ?? "file", type });
+      // A text result downloads as "<its name>.md".
+      const name = source.src === "text" ? `${(source.name ?? "Result").replace(/[\\/:*?"<>|]+/g, " ").trim() || "Result"}.md` : source.name ?? "file";
+      setState({ status: "ready", blob: typed, url, name, type });
     }).catch((e) => { if (live) setState({ status: "error", message: describeError(e) }); });
     return () => { live = false; if (url) URL.revokeObjectURL(url); };
   }, [sourceKey]);
@@ -93,9 +108,9 @@ function FilePane({ source }: { source: FileSource }) {
   // Super-agent: a text doc is titled by its first heading (RightPane reads `heading`; the file name is the line under).
   // The heading names the doc it came from (`headingOf`): a slow read of one doc never titles the next.
   const blob = state.status === "ready" ? state.blob : null;
-  const docId = source.id;
+  const docId = source.src === "text" ? undefined : source.id;
   useEffect(() => {
-    if (!superAgent || !text || !blob) return;
+    if (!superAgent || !text || !blob || !docId) return;
     let live = true;
     void blobText(blob.slice(0, 4096)).then((t) => {
       const heading = docPreview(t, 0).heading;
@@ -122,8 +137,24 @@ function FilePane({ source }: { source: FileSource }) {
         <Download size={16} aria-hidden="true" />
       </a>
     </HeaderActions>}
-    <PaneFrame>{text ? <div className="doc-view">{body}</div> : body}</PaneFrame>
+    <PaneFrame>
+      <DocOrigin task={task} from={from} />
+      {text ? <div className="doc-view">{body}</div> : body}
+    </PaneFrame>
   </>;
+}
+
+/** Where a doc came from: its channel when that isn't the one on screen (a ⌘K or Creations open), and its task. */
+function DocOrigin({ task, from }: { task: string | null; from: string | null }) {
+  const { place, chatParams } = useWorkspaceState();
+  const room = useMessagingWorkspaceOptional()?.directoryProps?.rooms.find((r) => r.roomId === from);
+  const here = place === "chat" && chatParams.roomId === from;
+  const channel = room && !here ? `${room.kind === "channel" ? "#" : ""}${roomDisplayName(room, room.participants)}` : null;
+  if (!task && !channel) return null;
+  return <p className="doc-origin">
+    {channel && <span className="doc-origin__channel">From {channel}</span>}
+    {task && <button type="button" className="doc-origin__task" onClick={() => openTaskPane(task)}>Open task<ChevronRight size={14} aria-hidden="true" /></button>}
+  </p>;
 }
 
 /** Into the drawn pane header's action slot (RightPane); nowhere when there is none. */
@@ -141,7 +172,7 @@ function CopyText({ blob }: { blob: Blob }) {
     return () => window.clearTimeout(timer);
   }, [copied]);
   return <button type="button" className="pane-header__icon" aria-label={copied ? "Copied" : "Copy text"} title={copied ? "Copied" : "Copy text"}
-    onClick={() => void blobText(blob).then((t) => navigator.clipboard.writeText(t)).then(() => setCopied(true), () => undefined)}>
+    onClick={() => void blobText(blob).then((t) => navigator.clipboard.writeText(plainCta(t))).then(() => setCopied(true), () => undefined)}>
     {copied ? <Check size={16} aria-hidden="true" /> : <Copy size={16} aria-hidden="true" />}
   </button>;
 }

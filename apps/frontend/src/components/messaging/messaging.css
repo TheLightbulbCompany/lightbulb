@@ -32,7 +32,7 @@
 .room-live-dot { width: 8px; height: 8px; border-radius: 9999px; background: var(--live); flex: none; }
 /* The gutter is the content's padding, not the scroller's: rows bleed into it (full-width hover), and on the scroller
    Chrome adds its inline-end padding past that bleed, a sideways scroll that focus then used (dev walk W7, clipped text). */
-.room-history { --room-gutter: 20px; position: relative; display: flex; flex-direction: column; min-height: 0; flex: 1; overflow: hidden auto; overscroll-behavior: contain; padding: 16px 0; }
+.room-history { --room-gutter: 20px; --room-pad: 16px; position: relative; display: flex; flex-direction: column; min-height: 0; flex: 1; overflow: hidden auto; overscroll-behavior: contain; padding: var(--room-pad) 0; }
 .room-history > :first-child { margin-top: auto; }
 .room-timeline { position: relative; display: flex; flex-direction: column; min-height: 0; flex: 1; }
 .room-timeline-item { outline: none; border-radius: 6px; }
@@ -53,7 +53,9 @@
    pill masks the text scrolling under it instead of floating over it (W15-11);
    inline, band and rule read as the usual divider. Only the pill is hit. */
 .room-day { position: relative; }
-.room-date-divider { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: center; height: 32px; margin: 0; pointer-events: none; font-size: var(--text-caption); font-weight: 500; color: var(--muted-foreground); background: linear-gradient(var(--border), var(--border)) center / 100% 1px no-repeat, var(--background); }
+/* top: the scroller's own padding, negated: sticky holds inside that padding, so at 0 a 16 px strip of text showed above
+   the pinned band (W16-11). */
+.room-date-divider { position: sticky; top: calc(-1 * var(--room-pad, 0px)); z-index: 2; display: flex; align-items: center; justify-content: center; height: 32px; margin: 0; pointer-events: none; font-size: var(--text-caption); font-weight: 500; color: var(--muted-foreground); background: linear-gradient(var(--border), var(--border)) center / 100% 1px no-repeat, var(--background); }
 .room-date-divider span { pointer-events: auto; padding: 2px 8px; border: 1px solid var(--border); border-radius: 999px; background: var(--background); box-shadow: var(--shadow-sm); }
 .room-new-line { display: flex; align-items: center; gap: 8px; margin: 8px 0 4px; font-size: var(--text-caption); font-weight: 600; color: var(--info); }
 .room-new-line::after { content: ""; flex: 1; border-top: 1px solid var(--info); }
@@ -64,7 +66,8 @@
 .room-message [role="img"] > .overflow-hidden { width: 36px; height: 36px; border-radius: 6px; font-size: var(--text-caption); }
 .room-history .room-message { margin: 0 calc(-1 * var(--room-gutter)); padding-inline: var(--room-gutter); }
 .room-message:hover, .room-message:focus-within { background: var(--plane-hover); }
-.room-message-actions { position: absolute; top: -14px; right: var(--room-gutter, 0px); z-index: 3; display: flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 6px; background: var(--background); opacity: 0; pointer-events: none; }
+/* top: the row's own 8 px padding, so it never rises over the row above (W16-11: it covered a task chip's right end). */
+.room-message-actions { position: absolute; top: -8px; right: var(--room-gutter, 0px); z-index: 3; display: flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 6px; background: var(--background); opacity: 0; pointer-events: none; }
 .room-message:hover .room-message-actions, .room-message:focus-within .room-message-actions, .room-message-actions:has([data-state="open"]) { opacity: 1; pointer-events: auto; }
 .room-message-actions button { border-radius: 4px; }
 .room-quick-reactions { display: inline-flex; gap: 2px; }
@@ -460,7 +463,7 @@
 
 @media (max-width: 859px) {
   .room-header { padding: 12px; gap: 8px; }
-  .room-history { --room-gutter: 12px; padding: 8px 0; }
+  .room-history { --room-gutter: 12px; --room-pad: 8px; }
   .room-typing { padding: 0 12px; }
   .room-composer { margin: 0 8px max(8px, env(safe-area-inset-bottom)); padding: 8px; }
   .room-limit-bar { margin: 0 8px 8px; flex-wrap: wrap; }

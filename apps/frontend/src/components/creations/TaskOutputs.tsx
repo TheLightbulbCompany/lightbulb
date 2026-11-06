@@ -4,10 +4,10 @@
 // A chip opens the output; past `max`, "+N more" opens the task.
 
 import "./creations.css";
-import type { ReactElement } from "react";
+import { useContext, type ReactElement } from "react";
 import { ChevronRight } from "lucide-react";
 import type { TaskSummary } from "@lightbulb/shared";
-import { openOutput } from "./openOutput";
+import { OutputBackContext, openOutput } from "./openOutput";
 import { iconOf } from "./OutputThumb";
 
 export function TaskOutputs({ task, max, onOpenTask }: {
@@ -20,6 +20,8 @@ export function TaskOutputs({ task, max, onOpenTask }: {
 }): ReactElement | null {
   // A short text result (`text:` id) is shown whole where these chips sit (the finish message, the task): no chip.
   const outputs = (task.outputs ?? []).filter((o) => !o.id.startsWith("text:"));
+  // In the open task its file goes back to the task ("‹ Task"); on its chip in chat, back to the chat (W16-2).
+  const back = useContext(OutputBackContext) ?? "chat";
   if (!outputs.length) return null;
   const shown = max === undefined ? outputs : outputs.slice(0, max);
   const rest = outputs.length - shown.length;
@@ -30,8 +32,7 @@ export function TaskOutputs({ task, max, onOpenTask }: {
       return <li key={o.id}>
         {opensTask && !onOpenTask ? <span className="task-outputs__chip">{body}</span>
           : <button type="button" className="task-outputs__chip" aria-label={`Open ${o.title}`}
-            // In the open task or on its card in chat, the file's way back is this task ("‹ Task", Escape).
-            onClick={(e) => { e.stopPropagation(); openOutput({ ...o, taskId: task.taskId }, onOpenTask ? () => onOpenTask() : undefined, `task:${task.taskId}`); }}>
+            onClick={(e) => { e.stopPropagation(); openOutput({ ...o, taskId: task.taskId }, onOpenTask ? () => onOpenTask() : undefined, back); }}>
             {body}<ChevronRight size={14} aria-hidden="true" className="task-outputs__chev" />
           </button>}
       </li>;

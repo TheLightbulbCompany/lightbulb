@@ -8,13 +8,24 @@ import { createContext } from "react";
 import type { OutputKind, TaskOutput } from "@lightbulb/shared";
 import { openPanel } from "@/components/workspace/workspaceController";
 import { buildPanelUrl } from "@/components/workspace/urlChannel";
-import { readableName } from "./docText";
+import { readableName, textName } from "./docText";
 
-export type Openable = Pick<TaskOutput, "kind" | "title" | "ref"> & { taskId: string };
+export type Openable = Pick<TaskOutput, "kind" | "title" | "ref"> & {
+  taskId: string;
+  id?: string;
+  /** The channel its task belongs to (`CreationOutput.roomId`): the viewer names it when it isn't the one on screen. */
+  roomId?: string | null;
+};
+
+/** A short text result (`text:{n}`, walk 15): its words live on the task's attempt n. */
+export const textResultOf = (o: Pick<Openable, "id">): string | null => o.id?.startsWith("text:") ? o.id.slice(5) : null;
 
 /** The panel an output opens in, or the outside address of a link or PR. */
 function target(o: Openable): { panel: string; params: Record<string, string> } | { url: string } | null {
   const ref = o.ref ?? {};
+  // A short text result opens as a doc, whatever its kind (an email draft is Mail): the deliverable, not its task (W16-2).
+  const n = textResultOf(o);
+  if (n) return { panel: "artifact", params: { src: "text", task: o.taskId, n, name: outputName(o) } };
   switch (o.kind) {
     case "app": return ref.appId ? { panel: "canvas", params: { app: ref.appId } } : null;
     case "document":
@@ -37,7 +48,12 @@ export function openOutput(o: Openable, openTask?: (taskId: string) => void, bac
   if (t && "url" in t) { window.open(t.url, "_blank", "noopener,noreferrer"); return; }
   // Only a file in the pane has a way back; an app opens as the place.
   // `back` rides in the pane's URL params: a one-shot was dropped when the pushed URL was reconciled (W14-5).
-  if (t) { openPanel(t.panel, back && t.panel === "artifact" ? { ...t.params, back } : t.params, { pushUrl: true }); return; }
+  if (t) {
+    // A doc names its task and channel (`task`, `from`): the viewer links back to the task and says where it came from.
+    const doc = t.panel === "artifact" ? { task: o.taskId, ...(o.roomId ? { from: o.roomId } : {}), ...(back ? { back } : {}) } : {};
+    openPanel(t.panel, { ...t.params, ...doc }, { pushUrl: true });
+    return;
+  }
   if (openTask) openTask(o.taskId);
   else openPanel("task-detail", { taskId: o.taskId }, { pushUrl: true });
 }
@@ -52,9 +68,13 @@ export function outputLink(o: Openable): string {
   return "url" in t ? t.url : new URL(buildPanelUrl(t.panel, t.params), window.location.origin).toString();
 }
 
-/** What a person calls it: a doc or file by a readable name ("Autumn specials menu blurbs"), never its file name. */
-export const outputName = (o: Pick<TaskOutput, "kind" | "title">): string =>
-  o.kind === "document" || o.kind === "file" ? readableName(o.title) : o.title;
+/** What a person calls it: a doc or file by a readable name ("Autumn specials menu blurbs"), never its file name; a short
+ *  text result by its own words (an email by its subject, else its first line), never its task's title (W16-3). */
+export const outputName = (o: Pick<TaskOutput, "kind" | "title" | "ref">): string => {
+  const text = o.ref?.text;
+  if (text) return textName(text) || o.title;
+  return o.kind === "document" || o.kind === "file" ? readableName(o.title) : o.title;
+};
 
 /** The word for a kind ("App · walk-7 · 2h"). */
 export const KIND_WORD: Record<OutputKind, string> = {

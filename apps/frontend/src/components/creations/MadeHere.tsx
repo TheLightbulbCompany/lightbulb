@@ -32,7 +32,7 @@ export function MadeHere({ roomId, onOpenTask, onAllFiles }: {
         <span className="output-thumb" data-size="mini" /><span className="made-here__name">&nbsp;</span>
       </li>)}
       {outputs.slice(0, 4).map((o) => <li key={`${o.taskId}:${o.id}`}>
-        <button type="button" className="made-here__tile" title={o.title} aria-label={`Open ${outputName(o)}`} onClick={() => openOutput(o, onOpenTask, "tasks")}>
+        <button type="button" className="made-here__tile" title={outputName(o)} aria-label={`Open ${outputName(o)}`} onClick={() => openOutput(o, onOpenTask, "tasks")}>
           <OutputThumb output={o} size="mini" app={o.kind === "app" ? apps.find((a) => a.app_id === o.ref?.appId) : undefined} />
           <span className="made-here__name">{outputName(o)}</span>
         </button>

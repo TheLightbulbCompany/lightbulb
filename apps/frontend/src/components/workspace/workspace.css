@@ -629,6 +629,12 @@
 /* Super-agent doc viewer (W13-7): Copy and Download in the header (W14), then the doc set as a document, a readable
    measure with real heading steps, not a raw file at body size against the pane edge. */
 .doc-view > div { max-width: 640px; margin: 0 auto; padding: 32px 28px 56px; }
+/* Where a doc came from (W16-2): its channel when it isn't the one on screen, and its task. Above the page, in its column. */
+.doc-origin { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; max-width: 640px; margin: 0 auto; padding: 16px 28px 0; font-size: 13px; line-height: 18px; color: var(--muted-foreground); }
+.doc-origin + .doc-view > div { padding-top: 20px; }
+.doc-origin__task { display: inline-flex; align-items: center; gap: 2px; min-height: 24px; font-weight: 500; color: var(--muted-foreground); border-radius: 4px; }
+.doc-origin__task:hover { color: var(--foreground); }
+.doc-origin__task:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 .doc-view > pre { padding: 32px 28px 56px; font-size: 13px; line-height: 20px; }
 .doc-view :is(h1, h2, h3) { color: var(--midnight); font-weight: 600; text-wrap: balance; }
 .doc-view h1 { margin: 0 0 16px; font-size: 26px; line-height: 32px; letter-spacing: -0.015em; }

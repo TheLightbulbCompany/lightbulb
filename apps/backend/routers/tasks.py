@@ -313,7 +313,7 @@ async def get_task(task_id: str, auth: Auth):
     effects = await effects_repo.effects_of_task(ws, task_id)
     return {
         "task": await _summary({**tree, "effects": effects}, auth.user_id),
-        "attempts": tree["attempts"],
+        "attempts": [tasks_access.attempt_view(a) for a in tree["attempts"]],
         "questions": tree["questions"],
         "effects": effects,
         "subscriptions": tree["subscriptions"],

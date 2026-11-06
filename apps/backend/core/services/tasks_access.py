@@ -236,6 +236,16 @@ def result_text(tree: dict, room: str | None) -> str | None:
     return short_result(att) or line
 
 
+#: What a client reads of an Attempt (web TaskPane, mobile TaskDetailsSheet, `TaskAttempt` in packages/shared). An
+#: allow-list, never the raw row: the row holds the run's credentials (`runSecret`, `taskToken`) and runtime internals.
+ATTEMPT_FIELDS = ("n", "status", "outcome", "startedAt", "endedAt", "usage", "output")
+
+
+def attempt_view(att: dict) -> dict[str, Any]:
+    """One Attempt as a response may carry it: `ATTEMPT_FIELDS` only."""
+    return {k: att[k] for k in ATTEMPT_FIELDS if k in att}
+
+
 def summarize(tree: dict, viewer_id: str) -> dict[str, Any]:
     """The C15 `TaskSummary` for one viewer. Callers check `can_view(task, viewer_id)` first: this does not. `tree` is `tasks_repo.get_task_tree` plus optional `effects`
     (Effect rows of the task) and `userNames` ({userId: display name}) added by the caller."""

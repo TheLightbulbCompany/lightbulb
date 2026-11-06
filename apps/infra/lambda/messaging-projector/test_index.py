@@ -1724,6 +1724,12 @@ class TaskChangedTests(unittest.TestCase):
             self.assertEqual(event["eventId"], str(uuid5(NAMESPACE_URL, f"task:{TASK_ID}:{sk}:2")))
             self.assertTrue(event["occurredAt"].endswith("Z"))
 
+    def test_attempt_credentials_never_published(self, publish):
+        """An attempt row holds the run's runSecret and Temporal taskToken; the event carries ids only."""
+        index.process_record(task_record(f"TASK#{TASK_ID}#ATT#0001", runSecret="rs-SECRET", taskToken="tt-SECRET"))
+        _, event = publish.call_args.args
+        self.assertNotIn("SECRET", json.dumps(event))
+
     def test_effect_row_publishes_for_its_task(self, publish):
         """Audit #10: an Effect change (approved, landed) reaches the task's viewers."""
         index.process_record(task_record("EFFECT#idem-1", event="MODIFY", old_version=1, taskId=TASK_ID))

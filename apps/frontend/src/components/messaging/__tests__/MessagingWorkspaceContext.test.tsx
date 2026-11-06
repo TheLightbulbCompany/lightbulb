@@ -5,7 +5,7 @@ import { ApiError, EMPTY_ROOM_SUBAGENTS, resolveTypedMentions, type CanonicalRoo
 import type { RoomDirectoryProps } from "../RoomDirectory";
 import type { RoomPanelProps } from "../RoomPanel";
 import { RoomComposer } from "../RoomComposer";
-import { draftKey } from "../drafts";
+import { clearDraft, draftKey, readDraft } from "../drafts";
 import { requestFocusComposer, _resetFocusComposerRequestForTests } from "@/lib/focusComposerRequest";
 import type { LiveRoomRun } from "@lightbulb/shared";
 
@@ -805,7 +805,7 @@ it("clears the sending room's stored draft when the owner switches rooms mid-sen
     await sending;
   });
 
-  expect(localStorage.getItem(draftKey("org", "room-1", null))).toBeNull();
+  expect(readDraft(draftKey("org", "room-1", null)).text).toBe("");
 });
 
 it("emptying the box drops the room from Drafts in the same render (dev walk R10)", () => {
@@ -816,7 +816,7 @@ it("emptying the box drops the room from Drafts in the same render (dev walk R10
   expect(directory.draftRoomIds).toContain("room-1");
   act(() => { panel.composer.onTextChange(""); });
   expect(directory.draftRoomIds).not.toContain("room-1");
-  expect(localStorage.getItem(draftKey("org", "room-1", null))).toBeNull();
+  expect(readDraft(draftKey("org", "room-1", null)).text).toBe("");
   view.unmount();
 });
 
@@ -1442,7 +1442,7 @@ it("a drafted handle shows the draft mark at once, and clearing it removes the m
   expect(directory.draftRoomIds).toContain("room-1");
   act(() => { panel.composer.onTextChange(""); });
   expect(directory.draftRoomIds).not.toContain("room-1");
-  expect(localStorage.getItem(draftKey("org", "room-1", null))).toBeNull();
+  expect(readDraft(draftKey("org", "room-1", null)).text).toBe("");
   view.unmount();
 });
 
@@ -1456,7 +1456,23 @@ it("W17-7: someone posting never writes back a draft that a send or another tab 
   view.rerender(<MessagingWorkspaceProvider initialAgentId="agent-friday" subscribeToRoom>
     <MessagingDirectory /><MessagingConversation />
   </MessagingWorkspaceProvider>);
-  expect(localStorage.getItem(draftKey("org", "room-1", null))).toBeNull();
+  expect(readDraft(draftKey("org", "room-1", null)).text).toBe("");
+  view.unmount();
+});
+
+it("W17-7: a send in another tab empties this tab's box, so it can never save the old text again", () => {
+  const view = compose();
+  act(() => { panel.composer.onTextChange("@growth "); });
+  const key = draftKey("org", "room-1", null);
+  act(() => {
+    clearDraft(key); // the other tab sent it, a moment later
+    window.dispatchEvent(new StorageEvent("storage", { key }));
+  });
+  expect(panel.composer.text).toBe("");
+  act(() => { view.rerender(<MessagingWorkspaceProvider initialAgentId="agent-friday" subscribeToRoom>
+    <MessagingDirectory /><MessagingConversation />
+  </MessagingWorkspaceProvider>); });
+  expect(readDraft(key).text).toBe("");
   view.unmount();
 });
 

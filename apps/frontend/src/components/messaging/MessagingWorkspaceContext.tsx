@@ -21,7 +21,7 @@ import { NeedsYouTitleBadge, UnreadTitleBadge } from "@/components/notifications
 import { useSessionNotificationPrefs } from "@/components/settings/SessionNotificationsCard";
 import { hasBlockingShortcutDialog } from "@/components/teams/shared/lib/keyboardShortcuts";
 import { capture } from "@/lib/analytics";
-import { clearDraft, draftKey, listDraftRoomIds, readDraft, writeDraft } from "./drafts";
+import { clearDraft, draftKey, isDraftKey, listDraftRoomIds, readDraft, writeDraft } from "./drafts";
 import { adjacentRoomId, nextUnreadRoomId } from "./roomNavigation";
 import { usePresence } from "./usePresence";
 import { readSessionSeen, writeSessionSeen } from "./sidebarPrefs";
@@ -367,6 +367,10 @@ export function MessagingWorkspaceProvider({
   draftRef.current = draft;
   const threadDraftRef = useRef(threadDraft);
   threadDraftRef.current = threadDraft;
+  // When this tab's text was last edited (or adopted from storage): a write carries it, so a tab holding older text
+  // never overwrites a newer draft or a clear from a send (W17-7).
+  const draftEditedAt = useRef(0);
+  const threadDraftEditedAt = useRef(0);
   const [creationBusy, setCreationBusy] = useState(false);
   const [openingParticipant, setOpeningParticipant] = useState<string | null>(null);
   // Bumped whenever a draft is written for a room OTHER than the active one —
@@ -437,7 +441,9 @@ export function MessagingWorkspaceProvider({
   // structured mentions come back on their own once the text re-renders.
   if (draftRoomId !== rooms.activeRoomId) {
     setDraftRoomId(rooms.activeRoomId);
-    setDraft(rooms.activeRoomId ? readDraft(draftKey(scope, rooms.activeRoomId, null)).text : "");
+    const stored = rooms.activeRoomId ? readDraft(draftKey(scope, rooms.activeRoomId, null)) : null;
+    draftEditedAt.current = stored?.at ?? 0;
+    setDraft(stored?.text ?? "");
     setClientMessageId(crypto.randomUUID());
     setThreadId(null);
     setDraftThreadId(null);
@@ -445,7 +451,9 @@ export function MessagingWorkspaceProvider({
     setThreadClientMessageId(crypto.randomUUID());
   } else if (draftThreadId !== threadId) {
     setDraftThreadId(threadId);
-    setThreadDraft(rooms.activeRoomId && threadId ? readDraft(draftKey(scope, rooms.activeRoomId, threadId)).text : "");
+    const stored = rooms.activeRoomId && threadId ? readDraft(draftKey(scope, rooms.activeRoomId, threadId)) : null;
+    threadDraftEditedAt.current = stored?.at ?? 0;
+    setThreadDraft(stored?.text ?? "");
     setThreadClientMessageId(crypto.randomUUID());
   }
 
@@ -602,13 +610,39 @@ export function MessagingWorkspaceProvider({
     const prev = persisted.current;
     persisted.current = { roomId: rooms.activeRoomId, text: draft };
     if (!prev || prev.roomId !== rooms.activeRoomId || prev.text === draft) return;
-    writeDraft(draftKey(scope, rooms.activeRoomId, null), { text: draft, mentions: resolveTypedMentions(draft, participants) });
+    writeDraft(draftKey(scope, rooms.activeRoomId, null), { text: draft, mentions: resolveTypedMentions(draft, participants) }, draftEditedAt.current);
   }, [scope, rooms.activeRoomId, draft, participants]);
 
   useEffect(() => {
     if (!rooms.activeRoomId || !threadId) return;
-    writeDraft(draftKey(scope, rooms.activeRoomId, threadId), { text: threadDraft, mentions: resolveTypedMentions(threadDraft, participants) });
+    writeDraft(draftKey(scope, rooms.activeRoomId, threadId), { text: threadDraft, mentions: resolveTypedMentions(threadDraft, participants) }, threadDraftEditedAt.current);
   }, [scope, rooms.activeRoomId, threadId, threadDraft, participants]);
+
+  // Another tab edited, sent or cleared a draft: a newer one replaces what this tab holds, so a stale tab stops
+  // carrying (and re-saving) text the person already sent (W17-7).
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (!isDraftKey(event.key)) return;
+      setDraftRoomIds(listDraftRoomIds(scope));
+      const roomId = activeRoomIdRef.current;
+      if (!roomId) return;
+      const stored = readDraft(event.key);
+      if (event.key === draftKey(scope, roomId, null) && stored.at > draftEditedAt.current && stored.text !== draftRef.current) {
+        draftEditedAt.current = stored.at;
+        persisted.current = { roomId, text: stored.text };
+        draftRef.current = stored.text;
+        setDraft(stored.text);
+      }
+      const thread = threadIdRef.current;
+      if (thread && event.key === draftKey(scope, roomId, thread) && stored.at > threadDraftEditedAt.current && stored.text !== threadDraftRef.current) {
+        threadDraftEditedAt.current = stored.at;
+        threadDraftRef.current = stored.text;
+        setThreadDraft(stored.text);
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [scope]);
 
   /**
    * Park a failed message's text in a room's stored draft — but never on top of
@@ -695,12 +729,14 @@ export function MessagingWorkspaceProvider({
         && threadClientMessageIdRef.current === rotatedTo && threadDraftRef.current.trim() === "";
       if (thread) {
         if (sameRoom && threadComposerHeld && threadIdRef.current === request.threadRootMessageId) {
+          threadDraftEditedAt.current = Date.now();
           setThreadDraft(request.text);
           setThreadClientMessageId(request.clientMessageId);
         } else if (roomId && request.threadRootMessageId) {
           recoverDraft(draftKey(scope, roomId, request.threadRootMessageId), request);
         }
       } else if (sameRoom && composerHeld) {
+        draftEditedAt.current = Date.now();
         setDraft(request.text);
         setClientMessageId(request.clientMessageId);
       } else if (roomId) {
@@ -748,9 +784,14 @@ export function MessagingWorkspaceProvider({
   // re-rendered (dev walk R10).
   const activeRoomId = rooms.activeRoomId;
   const changeDraft = useCallback((text: string) => {
+    draftEditedAt.current = Date.now();
     if (!text.trim() && activeRoomId) clearDraft(draftKey(scope, activeRoomId, null));
     setDraft(text);
   }, [scope, activeRoomId]);
+  const changeThreadDraft = useCallback((text: string) => {
+    threadDraftEditedAt.current = Date.now();
+    setThreadDraft(text);
+  }, []);
   // Read back from storage AFTER the persist effects above have written this render's text (an effect declared later
   // runs later). Computed during render it saw the previous write, so a drafted "@growth " that was then cleared, or a
   // first keystroke, left the sidebar one change behind (dev walk W8-11).
@@ -795,7 +836,7 @@ export function MessagingWorkspaceProvider({
     parentMessageId: threadId,
     composer: {
       text: threadDraft,
-      onTextChange: setThreadDraft,
+      onTextChange: changeThreadDraft,
       members: participants,
       sessionTargets,
       clientMessageId: threadClientMessageId,

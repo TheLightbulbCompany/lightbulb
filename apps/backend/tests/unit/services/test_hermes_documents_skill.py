@@ -18,4 +18,7 @@ def test_the_skill_routes_document_writing_to_the_documents_reference(tmp_path):
         assert phrase in doc, phrase
     cvd = (out / "lightbulb/references/chat-vs-document.md").read_text()
     assert "references/documents.md" in cvd
+    # Walk 18/19: a document is markdown unless the person asks for Word or PDF, and then once (never both).
+    assert "Markdown (`.md`) unless the person asks for another format" in doc and "never the same piece twice" in doc
+    assert "`.md` unless the person asked for another" in cvd and "`.docx`/`.pdf`)" not in cvd
     assert "documents.md" in (REPO / "apps/infra/hermes/skills-src/lightbulb/MAINTENANCE.md").read_text()

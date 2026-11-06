@@ -18,6 +18,7 @@ import { useLiveEvents, useSuperAgent } from "@/hooks/useLiveEvents";
 import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingWorkspaceContext";
 import { roomDisplayName } from "@lightbulb/shared";
 import { blobText } from "@/components/media/readBlob";
+import { DOCX } from "@/components/media/DocxPreview";
 import { formatBytes } from "@/lib/utils";
 import { docPreview, fileTypeWord, plainCta, resultPiece } from "@/components/creations/docText";
 import { stripMetaLines } from "@/lib/ctaLinks";
@@ -150,7 +151,7 @@ function FilePane({ source, task, from }: { source: FileSource; task: string | n
     </HeaderActions>}
     <PaneFrame>
       <DocOrigin task={task} from={from} />
-      {text ? <div className="doc-view">{body}</div> : body}
+      {text || (state.status === "ready" && state.type === DOCX) ? <div className="doc-view">{body}</div> : body}
     </PaneFrame>
   </>;
 }

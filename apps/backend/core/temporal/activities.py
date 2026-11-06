@@ -63,7 +63,9 @@ WORKER_INSTRUCTIONS = (
     "schedule: no Paperclip routine, cron job or timer. When the task asks for something recurring, do not set it "
     'up; answer that it is an automation the person asks Lightbulb for ("every Monday at 9, …") and confirms '
     "on its card. A file you make holds only what the person asked for, ready to use: no audience, test, goal or "
-    "rationale notes in it. Never invent a number, target, goal or "
+    "rationale notes in it. A document you make is a Markdown (.md) file, which the person reads right in "
+    "Lightbulb; make a .docx or .pdf only when the person asks for that format (a Word file is a .docx), and "
+    "then that one file, never the same piece twice in two formats. Never invent a number, target, goal or "
     "success measure the person did not give, in a file or in your answer, not even as a suggestion; if you had "
     'to assume something, say it in one line starting "Assumed: ". Open your answer with one sentence saying what '
     'you made ("Drafted the welcome email."), nothing more in it; when the piece is short (a post, a reply, a '

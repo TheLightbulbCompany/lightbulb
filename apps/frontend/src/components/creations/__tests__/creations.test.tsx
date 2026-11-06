@@ -248,6 +248,23 @@ describe("doc faces (W13)", () => {
   });
 });
 
+describe("a Word file's tile", () => {
+  it("Made here shows a .docx as its first lines, read whole through the room's attachment route", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const docx = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    const SHEET = out({ id: "file:f2", title: "tea-tasting-sign-up.docx", ref: { roomId: "r-walk7", attachmentId: "att2", fileName: "tea-tasting-sign-up.docx", contentType: docx } });
+    client.outputs.mockResolvedValue({ outputs: [SHEET], next: null });
+    live.messaging.downloadAttachment.mockResolvedValue(new Blob([readFileSync(join(__dirname, "../../media/__tests__/fixtures/signup.docx"))], { type: docx }));
+    render(<Fresh><MadeHere roomId="r-walk7" onOpenTask={vi.fn()} onAllFiles={vi.fn()} /></Fresh>);
+    const strip = await screen.findByRole("region", { name: "Made here" });
+    expect(await within(strip).findByText("Tea tasting sign-up")).toBeInTheDocument();
+    expect(within(strip).getByText("Saturday, 2 to 4 pm. Add your name below.")).toBeInTheDocument();
+    // The whole file (a zip's directory is at its end), by a cancellable read.
+    expect(live.messaging.downloadAttachment).toHaveBeenCalledWith("r-walk7", "att2", { signal: expect.any(AbortSignal) });
+  });
+});
+
 describe("Files", () => {
   it("an empty channel shows the tip at the foot; dismissed, it stays dismissed", async () => {
     const { unmount } = render(<Fresh><ProjectFiles roomId="r-walk7" viewerId="u1" messages={[]} onOpenTask={vi.fn()} /></Fresh>);

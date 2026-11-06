@@ -17,7 +17,7 @@ import { activateMessagesPanel, getWorkspaceSnapshot, openPanel, useWorkspaceSta
 import { placeTabTitle } from "@/components/workspace/tabTitle";
 import { parseCommand } from "@/components/workspace/urlChannel";
 import { MessageNotifications } from "@/components/notifications/MessageNotifications";
-import { UnreadTitleBadge } from "@/components/notifications/UnreadTitleBadge";
+import { NeedsYouTitleBadge, UnreadTitleBadge } from "@/components/notifications/UnreadTitleBadge";
 import { useSessionNotificationPrefs } from "@/components/settings/SessionNotificationsCard";
 import { hasBlockingShortcutDialog } from "@/components/teams/shared/lib/keyboardShortcuts";
 import { capture } from "@/lib/analytics";
@@ -1189,7 +1189,7 @@ export function MessagingWorkspaceProvider({
     askLightbulb,
   }}><MessageNotifications activeRoomId={rooms.activeRoomId} threadId={threadId} roomVisible={roomVisible} sideRoomIds={sideRoomIds} rooms={rooms.rooms}
     onOpen={openNotificationTarget} activeSessionId={sessionFocus?.sessionId ?? null}
-    onOpenSession={(sessionId) => { openSession(sessionId); activateMessagesPanel(); }} /><ShortcutSheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} /><UnreadTitleBadge unread={unreadTotal + needingYou} title={tabTitle} />{children}
+    onOpenSession={(sessionId) => { openSession(sessionId); activateMessagesPanel(); }} /><ShortcutSheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} />{superAgent ? <NeedsYouTitleBadge title={tabTitle} /> : <UnreadTitleBadge unread={unreadTotal + needingYou} title={tabTitle} />}{children}
     {selectRoomError && <div role="alert" className="px-4 py-2 text-ui text-err">{selectRoomError}{" "}
       <button type="button" className="underline underline-offset-4" onClick={() => setSelectErrorDismissed(rooms.selectRoomError)}>Dismiss</button>
     </div>}</MessagingWorkspaceContext.Provider>;

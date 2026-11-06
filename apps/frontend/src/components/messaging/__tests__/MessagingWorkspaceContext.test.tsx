@@ -26,6 +26,8 @@ vi.mock("@/components/agents/useRosterEntries", () => ({ useRosterEntries: mocks
 vi.mock("@/components/chat/shell/useChatReady", () => ({ useChatReady: () => ({ chatReady: true, setupStarting: false }) }));
 const teams = vi.hoisted(() => ({ agentsLoading: false, superAgent: false }));
 vi.mock("@/hooks/useLiveEvents", async (importOriginal) => ({ ...(await importOriginal<object>()), useSuperAgent: () => teams.superAgent }));
+// The tab title reads needsYouCount under the super-agent (its own tests: HomeWork, WorkspaceHeader).
+vi.mock("@/components/tasks/useRoomThreads", async (importOriginal) => ({ ...(await importOriginal<object>()), useNeedsYouCount: () => 0 }));
 vi.mock("@/hooks/useTeamsApi", () => ({ useTeamsApi: () => ({
   read: (path: string) => ({ data: path === "/agents"
     ? (teams.agentsLoading ? undefined : { agents: [{ id: "agent-friday", name: "Friday" }, { id: "agent-atlas", name: "Atlas", role: "ceo", origin: "Starter" }] })

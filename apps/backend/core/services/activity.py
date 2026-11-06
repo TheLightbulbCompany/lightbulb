@@ -765,8 +765,9 @@ def render_network_hold(row: dict, *, seen: str | None) -> ActivityItem:
             links=[],
         ),
         actions=[
+            # Safe first, the decision card's verbs (UX audit slice 2): Deny, not Decline.
+            ActivityAction(id="decline", label="Deny"),
             ActivityAction(id="send", label="Send", style="primary"),
-            ActivityAction(id="decline", label="Decline"),
             ActivityAction(id="allow", label="Always allow"),
         ]
         if open_
@@ -783,7 +784,7 @@ async def _render_network_hold_rows(owner_id: str, rows: list[dict], seen: str |
 
 
 async def _run_network_hold_action(auth: AuthContext, hold_id: str, action_id: str) -> ActivityItem:
-    """Send / Decline / Always allow, for a person the hold was filed to."""
+    """Deny / Send / Always allow, for a person the hold was filed to."""
     from core.services import network_member
 
     owner_id = resolve_owner_id(auth)

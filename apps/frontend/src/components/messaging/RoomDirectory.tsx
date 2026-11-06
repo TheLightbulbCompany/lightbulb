@@ -16,6 +16,7 @@ import { isUnreadTarget, nextUnreadRoomId } from "./roomNavigation";
 import { RoomDirectoryRow } from "./RoomDirectoryRow";
 import { groupRooms, type RoomGroup, type SidebarRow, type SidebarSession, type SidebarSort } from "./roomSections";
 import { useSuperAgent } from "@/hooks/useLiveEvents";
+import { useNeedsYouTasks } from "@/components/tasks/useRoomThreads";
 import { foldedEntries, ownWaitingCount, sessionRowGone, sessionRowGroups, sessionRowKey, NEEDS_YOU_GROUP, SESSION_GROUP_FOLD, type SessionGroupBy, type SessionShow } from "./sessionGroups";
 import { SessionListRow } from "./SessionListRow";
 import { SessionSearch } from "./SessionSearch";
@@ -148,6 +149,8 @@ function DirectoryContent({
   onNavigate,
 }: RoomDirectoryProps) {
   const superAgent = useSuperAgent();
+  // A project's warn dot: its share of the one Needs you read (needsYouCount's tasks), so the sidebar agrees with the badge.
+  const needsYouTasks = useNeedsYouTasks(superAgent ? { kind: "workspace" } : null).tasks;
   const id = useId();
   const [creating, setCreating] = useState(false);
   const [kind, setKind] = useState<RoomKind>("channel");
@@ -338,8 +341,8 @@ function DirectoryContent({
 
   // Shared by the Sessions group and every room group below: collapse
   // button, aria wiring, chevron, label, and an optional trailing badge.
-  function groupHeader({ id: groupId, label, listId, collapsed, grip, badge }: {
-    id: string; label: string; listId: string; collapsed: boolean; grip?: ReactNode; badge?: ReactNode;
+  function groupHeader({ id: groupId, label, listId, collapsed, grip, badge, unread = false }: {
+    id: string; label: string; listId: string; collapsed: boolean; grip?: ReactNode; badge?: ReactNode; unread?: boolean;
   }) {
     return <div className="room-directory-group-header">
       {grip}
@@ -348,7 +351,7 @@ function DirectoryContent({
         onClick={() => toggleCollapsed(groupId)}>
         {collapsed ? <ChevronRight aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}
       </Button>
-      <h3 className="room-directory-group">{label}</h3>
+      <h3 className="room-directory-group" data-unread={unread || undefined}>{label}</h3>
       {badge}
     </div>;
   }
@@ -545,7 +548,10 @@ function DirectoryContent({
       return <>
       {groupHeader({
         id: group.id, label: group.label, listId, collapsed, grip,
-        badge: collapsed && unread > 0 && <span className="room-count" aria-label={`${unread} unread messages in ${group.label}`}>{unread}</span>,
+        badge: collapsed && unread > 0 && (superAgent
+          ? <span className="sr-only">Unread messages in {group.label}</span>
+          : <span className="room-count" aria-label={`${unread} unread messages in ${group.label}`}>{unread}</span>),
+        unread: superAgent && collapsed && unread > 0,
       })}
       <ul id={listId}>{rows.map(({ key, label, room, participant }) => {
         // A roster row is someone with no DM yet. It carries no overflow menu
@@ -563,6 +569,7 @@ function DirectoryContent({
           </button>
         </li>;
         return <RoomDirectoryRow key={room.roomId} room={room} label={label} sections={sections}
+          needsYou={needsYouTasks.filter((t) => t.audience?.roomId === room.roomId).length} noCounts={superAgent}
           active={room.roomId === currentRoomId} draft={draftRoomIds.includes(room.roomId)}
           busy={markingUnread === room.roomId || (savePrefs.pending && actingRoomId === room.roomId)}
           onSelect={() => onSelectRoom(room.roomId)}
@@ -618,11 +625,11 @@ function DirectoryContent({
     {/* Sessions and External connections fold under More (closed by default); it opens itself while the
         session or shared channel on screen is inside, or while anything in it is unread or waiting. */}
     {(sessionsSection || external) && <details className="room-directory-more" open={moreHoldsCurrent || moreCount > 0 || undefined}>
-      <summary className="room-directory-group"
+      <summary className="room-directory-group" data-unread={(superAgent && moreCount > 0) || undefined}
         aria-label={moreCount > 0 ? `More, ${moreCount} unread or waiting` : moreItems > 0 ? `More, ${moreItems} inside` : "More"}>
         <ChevronRight aria-hidden="true" className="room-directory-more-chevron" />More
         {moreCount > 0
-          ? <span className="room-count" aria-hidden="true">{moreCount}</span>
+          ? !superAgent && <span className="room-count" aria-hidden="true">{moreCount}</span>
           : moreItems > 0 && <span className="text-muted-foreground" aria-hidden="true">{moreItems}</span>}</summary>
       {sessionsSection}
       {external && renderGroup(external)}

@@ -11,7 +11,7 @@ describe("SETTINGS_NAV_SECTIONS", () => {
       SETTINGS_NAV_SECTIONS.map((s) => [s.label, s.items.map((i) => i.id)]),
     ).toEqual([
       ["YOU", ["profile"]],
-      ["WORKSPACE", ["workspace", "members"]],
+      ["WORKSPACE", ["workspace", "members", "approvals"]],
       ["CONNECTIONS", ["connections"]],
       ["PLAN AND USAGE", ["billing", "usage", "budgets"]],
       ["MODEL", ["providers"]],

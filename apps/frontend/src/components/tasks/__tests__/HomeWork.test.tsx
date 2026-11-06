@@ -1,5 +1,5 @@
 // Home's grouping, and the one count three places show: Home's Needs you heading, the Home rail badge
-// (useHomeNeedsYou) and each room's About dot (useRoomThreads) all cut the same summaries the same way.
+// (useNeedsYouCount) and each room's About dot (useRoomThreads) all cut the same summaries the same way.
 import { render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -10,6 +10,7 @@ import { Fresh, fakeTasksClient, type FakeTasksClient } from "./fakeTasks";
 const live = vi.hoisted(() => ({ superAgent: true, tasks: null as unknown, agentNames: new Map() }));
 vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useSuperAgent: () => live.superAgent, useOptionalLiveEvents: () => live }));
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
+vi.mock("@/hooks/useActivity", () => ({ useActivity: () => ({ items: [] }) }));
 // The server's complete Needs you read (`/tasks?needsYou=true`) answers from the same rows, by scope; automations too.
 const apiGet = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/api", () => ({ useApi: () => ({ get: apiGet }) }));
@@ -17,7 +18,7 @@ const openPanel = vi.hoisted(() => vi.fn());
 vi.mock("@/components/workspace/workspaceController", () => ({ openPanel }));
 
 import { HomeWork } from "../HomeWork";
-import { useHomeNeedsYou, useRoomThreads } from "../useRoomThreads";
+import { useNeedsYouCount, useRoomThreads } from "../useRoomThreads";
 
 const task = (taskId: string, roomId: string, shownGroup: TaskSummary["shownGroup"], extra: Partial<TaskSummary> = {}): TaskSummary => ({
   taskId, identifier: taskId, title: `Request ${taskId}`, status: shownGroup === "resolved" ? "resolved" : shownGroup === "idle" ? "idle" : "working",
@@ -64,12 +65,15 @@ describe("Home's groups are the shared four (overviewGroups)", () => {
 });
 
 describe("HomeWork", () => {
-  it("renders Needs you, Working, Done (folded after five) and Closed (collapsed) with the same count the badges read", async () => {
+  it("renders Needs you, Working, Done (collapsed, folded after five) and Closed (collapsed) with the same count the badges read", async () => {
     const onOpen = vi.fn();
     render(<Fresh><HomeWork viewerId={SAM} onOpen={onOpen} /></Fresh>);
     const needs = await screen.findByRole("region", { name: "Needs you · 3" });
     expect(screen.getByRole("region", { name: "Working · 3" })).toBeInTheDocument();
+    // Done collapses by default, like Closed (07 §2).
     const done = screen.getByRole("region", { name: "Done · 6" });
+    expect(within(done).queryAllByRole("listitem")).toHaveLength(0);
+    await userEvent.click(within(done).getByRole("button", { name: "Done · 6" }));
     expect(within(done).getAllByRole("listitem")).toHaveLength(5);
     await userEvent.click(within(done).getByRole("button", { name: "Show all 6" }));
     expect(within(done).getAllByRole("listitem")).toHaveLength(6);
@@ -87,7 +91,7 @@ describe("HomeWork", () => {
     expect(openPanel).toHaveBeenCalledWith("teams-routines", {}, { pushUrl: true });
 
     // The rail badge and each room's About dot count the same rows.
-    const { result: badge } = renderHook(() => useHomeNeedsYou(), { wrapper: Fresh });
+    const { result: badge } = renderHook(() => useNeedsYouCount(), { wrapper: Fresh });
     await waitFor(() => expect(badge.current).toBe(3));
   });
 
@@ -107,7 +111,7 @@ describe("HomeWork", () => {
     render(<Fresh><HomeWork viewerId={SAM} onOpen={vi.fn()} /></Fresh>);
     const needs = await screen.findByRole("region", { name: "Needs you · 4" });
     expect(within(needs).getByText("Request z")).toBeInTheDocument();
-    const { result: badge } = renderHook(() => useHomeNeedsYou(), { wrapper: Fresh });
+    const { result: badge } = renderHook(() => useNeedsYouCount(), { wrapper: Fresh });
     await waitFor(() => expect(badge.current).toBe(4));
   });
 
@@ -119,6 +123,12 @@ describe("HomeWork", () => {
     const closed = screen.getByRole("region", { name: "Closed · 7" });
     const order = [needs, slot, working, closed];
     for (let i = 1; i < order.length; i++) expect(order[i - 1].compareDocumentPosition(order[i]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("Needs you holds the non-task asks too, in one count", async () => {
+    render(<Fresh><HomeWork viewerId={SAM} onOpen={vi.fn()} askCount={1} asks={<p>Sign in to porkbun.com again</p>} /></Fresh>);
+    const needs = await screen.findByRole("region", { name: "Needs you · 4" });
+    expect(within(needs).getByText("Sign in to porkbun.com again")).toBeInTheDocument();
   });
 
   it("the slots show while requests are still loading", () => {

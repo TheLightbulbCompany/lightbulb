@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "@testing-library/react";
-import { UnreadTitleBadge } from "../UnreadTitleBadge";
+import { NeedsYouTitleBadge, UnreadTitleBadge } from "../UnreadTitleBadge";
+
+const count = vi.hoisted(() => ({ n: 0 }));
+vi.mock("@/components/tasks/useRoomThreads", () => ({ useNeedsYouCount: () => count.n }));
 
 describe("UnreadTitleBadge", () => {
   beforeEach(() => {
@@ -41,6 +44,17 @@ describe("UnreadTitleBadge", () => {
   it("restores the base title on unmount", () => {
     const { unmount } = render(<UnreadTitleBadge unread={5} />);
     expect(document.title).toBe("(5) Lightbulb");
+    unmount();
+    expect(document.title).toBe("Lightbulb");
+  });
+});
+
+describe("NeedsYouTitleBadge", () => {
+  it("prefixes the tab title with needsYouCount, the badge's number", () => {
+    document.title = "Lightbulb";
+    count.n = 3;
+    const { unmount } = render(<NeedsYouTitleBadge />);
+    expect(document.title).toBe("(3) Lightbulb");
     unmount();
     expect(document.title).toBe("Lightbulb");
   });

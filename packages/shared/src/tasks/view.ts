@@ -264,15 +264,43 @@ export function primaryOptionId(options: readonly OptionLike[] | null | undefine
 export const FREE_TEXT_OPTION = "answer";
 
 /** What the approver is asked: "Allow Engineering to send 'Q3' to a@b.c" (the title names the action and
- *  its target, questions.py `title_for`). Other kinds read their title as written. */
+ *  its target, questions.py `title_for`). Other kinds read their title as written: the title is the question, `text`
+ *  is context under it (UX audit 3, P0 #1), so the text stands in only when there is no title. */
 export function askLine(q: { kind: string; title: string; text?: string | null; preview?: unknown }, specialist: string | null | undefined, names?: AgentNames): string {
   // Only an effect-born approval (it carries a preview; its title is questions.py `title_for`'s "send … to …")
   // reads as "Allow …"; a worker's own ask keeps its words.
-  if (q.kind !== "approval" || !q.preview) return q.text || q.title;
+  if (q.kind !== "approval" || !q.preview) return q.title || q.text || "";
   const p = q.preview as Record<string, unknown>;
   const raw = MONEY_KINDS.has(String(p.kind)) ? withCurrency(q.title, p.currency) : q.title;
   const title = raw.charAt(0).toLowerCase() + raw.slice(1);
   return `Allow ${specialistLabel(specialist, names)} to ${title}`;
+}
+
+/** Answers that leave things as they were: the decision card puts them first (safe first). */
+const SAFE_OPTIONS = new Set(["deny", "request_changes"]);
+/** Why Always allow is offered but can't be pressed: the server only makes a rule that names a fixed target
+ *  (questions.py `_target`), so an ask without one gets no `allow_always` option. */
+export const ALWAYS_ALLOW_UNAVAILABLE = "Can't be remembered: this names no fixed recipient, app or repo";
+
+export interface DecisionButton { id: string; label: string; style: "primary" | "secondary" | "danger"; disabledReason?: string }
+
+/** The one decision card's buttons, the same on every surface (web pane, card, Activity; phone): Deny / Request
+ *  changes first, then the server's options in order. An approval the server can't remember (it offers Allow once but
+ *  no Always allow) still shows Always allow, disabled with the reason, so the person knows why it is missing. */
+export function decisionButtons(options: readonly (OptionLike & { label: string })[]): DecisionButton[] {
+  const style = (o: OptionLike): DecisionButton["style"] => (o.style === "primary" || o.style === "danger" ? o.style : "secondary");
+  const out: DecisionButton[] = [...options.filter((o) => SAFE_OPTIONS.has(o.id)), ...options.filter((o) => !SAFE_OPTIONS.has(o.id))]
+    .map((o) => ({ id: o.id, label: o.label, style: style(o) }));
+  if (options.some((o) => o.id === "allow_once") && !options.some((o) => o.id === "allow_always")) {
+    out.push({ id: "allow_always", label: "Always allow", style: "secondary", disabledReason: ALWAYS_ALLOW_UNAVAILABLE });
+  }
+  return out;
+}
+
+/** The card's muted first line: who asks and how long ago ("Growth · 7h ago"). */
+export function decisionMeta(q: { createdAt: string }, specialist: string | null | undefined, names: AgentNames | undefined, now: number): string {
+  const age = elapsedShort(q.createdAt, now);
+  return age ? `${specialistLabel(specialist, names)} · ${age} ago` : specialistLabel(specialist, names);
 }
 
 const PREVIEW_LABELS: Record<string, string> = {

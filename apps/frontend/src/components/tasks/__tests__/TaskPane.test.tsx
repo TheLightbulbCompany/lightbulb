@@ -52,7 +52,7 @@ describe("TaskPane", () => {
     withDetail({ ...step8, task: waiting, questions: [openRow] }, [approval()]);
     pane();
     const status = await screen.findByRole("region", { name: "Task status" });
-    const needs = screen.getByRole("group", { name: /provision a database/ });
+    const needs = screen.getByRole("group", { name: /Provision database and Stripe/ });
     const transcript = screen.getByRole("region", { name: "Transcript" });
     expect(screen.queryByRole("region", { name: "Outputs" })).toBeNull();
     const details = screen.getByText("Details").closest("details")!;
@@ -80,15 +80,19 @@ describe("TaskPane", () => {
     const waiting = FIXTURES.step05.tasks[0];
     withDetail({ ...step8, task: viewAs(waiting, PRIYA), questions: [openRow] }, [approval({ canAnswer: false, waitingLabel: "Waiting on Sam" })]);
     const { unmount } = pane(PRIYA);
-    const card = await screen.findByRole("group", { name: /provision a database/ });
+    const card = await screen.findByRole("group", { name: /Provision database and Stripe/ });
     expect(card).toHaveTextContent("Waiting on Sam");
     expect(within(card).queryByRole("button")).toBeNull();
     unmount();
 
     withDetail({ ...step8, task: waiting, questions: [openRow] }, [approval()]);
     pane(SAM);
-    const mine = await screen.findByRole("group", { name: "Allow Lightbulb · Engineering to provision a database and Stripe payments?" });
-    expect(within(mine).getAllByRole("button").map((b) => b.textContent)).toEqual(["Allow once", "Deny"]);
+    const mine = await screen.findByRole("group", { name: "Provision database and Stripe" });
+    // The one card's verbs, safe first; this ask names no fixed target, so Always allow shows disabled with why.
+    expect(within(mine).getAllByRole("button").map((b) => b.textContent)).toEqual(["Deny", "Allow once", "Always allow"]);
+    expect(within(mine).getByRole("button", { name: "Always allow" })).toBeDisabled();
+    expect(within(mine).getByRole("button", { name: "Always allow" })).toHaveAccessibleDescription(/Can't be remembered/);
+    expect(mine).toHaveTextContent(/^Engineering · \d+[smhd] ago/);
   });
 
   it("W7-4: a closed purchase leaves no card in Progress; Decisions says it closed unapproved and the footer says Not approved", async () => {
@@ -115,7 +119,7 @@ describe("TaskPane", () => {
       effects: [purchase("proposed", "e1"), purchase("proposed", "e2")] },
     [approval({ id: "q-1", state: "cancelled", createdAt: "2026-11-05T22:08:00Z" }), approval({ id: "q-2", createdAt: "2026-11-05T22:11:00Z" })]);
     const { unmount } = pane();
-    await screen.findByRole("group", { name: /provision a database/ });
+    await screen.findByRole("group", { name: /Provision database and Stripe/ });
     expect(screen.queryByRole("list", { name: "Decisions" })).toBeNull();
     unmount();
     // Closed again: two cancelled asks for the same thing, two unapproved proposals.
@@ -289,9 +293,11 @@ describe("NeedsYouCard", () => {
     withDetail({ ...step8, task: FIXTURES.step07.tasks[1], questions: [{ ...openRow, qid: "q-email", kind: "review" }],
       effects: [{ idemKey: "e1", tool: "mail.send", state: "proposed", resultRef: null }] }, [review]);
     pane(SAM, "t-email");
-    // The card and the effect read the Work row's word, not "Waiting for approval".
+    // The card carries no status word (the card itself means "needs you"): who asks, then the question.
     const card = await screen.findByRole("group", { name: "Send the launch email?" });
-    expect(within(card).getByText("Ready for review")).toBeInTheDocument();
+    expect(card).not.toHaveTextContent("Ready for review");
+    // Safe first: Request changes before Send.
+    expect(within(card).getAllByRole("button").map((b) => b.textContent)).toEqual(["Request changes", "Send"]);
     // The pending send is the card itself: no second row repeating it below.
     expect(screen.queryByRole("list", { name: "Effects" })).toBeNull();
     // The header follows the same state: ready for review, nothing running, so no Stop.
@@ -311,7 +317,7 @@ describe("NeedsYouCard", () => {
     const closed = { ...FIXTURES.step05.tasks[0], status: "resolved" as const, shownGroup: "resolved" as const };
     withDetail({ ...step8, task: closed, questions: [openRow] }, [approval()]);
     pane();
-    const card = await screen.findByRole("group", { name: /provision a database/ });
+    const card = await screen.findByRole("group", { name: /Provision database and Stripe/ });
     expect(within(card).getByText("Closed — not approved")).toBeInTheDocument();
     expect(within(card).queryByRole("button")).toBeNull();
     expect(screen.getByRole("region", { name: "Task status" })).not.toHaveTextContent("Done by");

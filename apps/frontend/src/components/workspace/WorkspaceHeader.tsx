@@ -12,7 +12,7 @@ import { recordMessagesNavigation } from "./chatHistory";
 import { HistoryButtons } from "./HistoryButtons";
 import { activateMessagesPanel, closePane, openPanel, useWorkspaceState, type Place } from "./workspaceController";
 import { useSuperAgent } from "@/hooks/useLiveEvents";
-import { useHomeNeedsYou } from "@/components/tasks/useRoomThreads";
+import { useNeedsYouCount } from "@/components/tasks/useRoomThreads";
 import { ThemeToggles } from "@/components/chat/ThemeToggles";
 
 // The six places, and nothing else (spec 3.1; Team added 2026-11-05). Browser, Files and Mail open in
@@ -52,10 +52,10 @@ export function WorkspaceHeader({ chatReady = true, onNavigate }: {
   const { place: current } = useWorkspaceState();
   const activeTeamRunCount = useActiveTeamRunCount();
   const superAgent = useSuperAgent();
-  // Home's badge is Home's Needs you count, from the one read Home renders (super-agent). Without it, what
+  // Activity's badge is needsYouCount, the one count Activity, Home and the tab title read (super-agent). Without it, what
   // For you → Needs you shows (the desk, minus dismissed and snoozed items, plus failed-run groups) and unseen
   // mentions, DMs and Paperclip items.
-  const needsYou = useHomeNeedsYou();
+  const needsYou = useNeedsYouCount();
   const legacyBadge = useNeedsYouBadge(superAgent);
   const homeCount = superAgent ? needsYou : legacyBadge;
   return (

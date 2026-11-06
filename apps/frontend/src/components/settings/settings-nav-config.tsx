@@ -35,7 +35,7 @@ export type NavSection = { label: string; items: NavItem[] };
 // in the app — which is the gap this panel exists to close. The admin gate is
 // load-bearing for org members, though: a join link is a credential, so only an
 // admin may see or mint one (the panel and the backend both re-check).
-export const ADMIN_ONLY_PANELS = new Set(["usage", "members"]);
+export const ADMIN_ONLY_PANELS = new Set(["usage", "members", "approvals"]);
 
 // The one Settings page (product simplification, 2026-10-14): Control's panels,
 // the Teams Settings tab and the Accounts tab all live here, in six groups.
@@ -51,6 +51,9 @@ export const SETTINGS_NAV_SECTIONS: NavSection[] = [
       { id: "workspace", name: "Workspace", icon: "workspace", panel: "workspace" },
       // The roster and the join link. Admin-gated via ADMIN_ONLY_PANELS.
       { id: "members", name: "Members", icon: "members", panel: "members" },
+      // How agents ask (Ask / Auto / Never ask), the Always-allow rules, the kill switch. Admin-gated: the
+      // policy routes are admin-only (company_policy._owner).
+      { id: "approvals", name: "Approvals", icon: "approvals", panel: "approvals" },
     ],
   },
   {
@@ -122,6 +125,13 @@ export function NavIcon({ icon }: { icon: string }) {
           <circle cx="9" cy="7" r="4" />
           <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
           <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+        </svg>
+      );
+    case "approvals":
+      return (
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+          <path d="m9 12 2 2 4-4" />
         </svg>
       );
     case "billing":

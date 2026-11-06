@@ -34,6 +34,8 @@ vi.mock("@clerk/nextjs", () => {
 });
 
 const activityState = { attentionCount: 0 };
+const activityItems = vi.hoisted(() => ({ items: [] as unknown[] }));
+vi.mock("@/hooks/useActivity", () => ({ useActivity: () => activityItems }));
 vi.mock("@/components/activity/useNeedsYouBadge", () => ({ useNeedsYouBadge: () => activityState.attentionCount }));
 const closePane = vi.fn();
 vi.mock("../workspaceController", () => ({ openPanel: (...args: unknown[]) => openPanel(...args), activateMessagesPanel: () => activateMessagesPanel(), closePane: () => closePane(), useWorkspaceState: () => ({ place }) }));
@@ -48,6 +50,7 @@ vi.mock("@/hooks/useLiveEvents", () => ({ useSuperAgent: () => live.superAgent, 
 
 import { trackTeamRunActivity } from "@/components/notifications/teamRunActivity";
 import { WorkspaceHeader } from "../WorkspaceHeader";
+import { loginAsk } from "@/components/activity/__tests__/fixtures";
 
 describe("WorkspaceHeader", () => {
   // The six places and nothing else (spec 3.1): Browser, Files and Mail open in the right
@@ -119,6 +122,8 @@ describe("WorkspaceHeader", () => {
   });
   it("with the switch on, Activity badges exactly its Needs you count: not the legacy badge, not team runs", async () => {
     live.superAgent = true;
+    // A website sign-in ask is not a task, but it needs you all the same: one count (UX audit slice 2).
+    activityItems.items = [loginAsk];
     activityState.attentionCount = 1;
     const t = (taskId: string, shownGroup: string) => ({ taskId, shownGroup, status: "waiting", watching: false, updatedAt: "2026-11-05T00:00:00Z" });
     live.tasks = { cacheScope: "org_h" };
@@ -126,9 +131,9 @@ describe("WorkspaceHeader", () => {
     apiGet.mockResolvedValue({ next: null, tasks: [t("a", "waiting_on_you"), t("b", "ready_for_review"), t("c", "working")] });
     try {
       render(<SWRConfig value={{ provider: () => new Map() }}><WorkspaceHeader /></SWRConfig>);
-      expect(await screen.findByRole("button", { name: "Activity, 2 need you" })).toBeInTheDocument();
+      expect(await screen.findByRole("button", { name: "Activity, 3 need you" })).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Home" })).toBeInTheDocument();
-    } finally { live.superAgent = false; live.tasks = null; activityState.attentionCount = 0; }
+    } finally { live.superAgent = false; live.tasks = null; activityState.attentionCount = 0; activityItems.items = []; }
   });
   it("shows active team runs on Work without covering workspace content", () => {
     act(() => trackTeamRunActivity("teams.heartbeat.run.queued", { runId: "run-1" }));

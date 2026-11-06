@@ -37,9 +37,6 @@ vi.mock("@/components/control/panels/BrowserExtensionsSection", () => ({
 vi.mock("@/components/control/panels/AgentKeysSection", () => ({
   AgentKeysSection: () => <div />,
 }));
-vi.mock("@/components/settings/AgentGuardrails", () => ({
-  AgentGuardrails: () => <div data-testid="agent-guardrails" />,
-}));
 
 import { ConnectionsPanel } from "../ConnectionsPanel";
 
@@ -112,15 +109,13 @@ describe("ConnectionsPanel", () => {
     expect(replace).toHaveBeenCalledWith("/settings?panel=connections");
   });
 
-  // Accounts folded in: one list of what the team is connected to, then what
-  // agents may do with it.
-  it("renders as a Settings section and ends with the agent guardrails", () => {
+  // How agents ask moved to its own Settings › Approvals page (UX audit slice 2).
+  it("renders as a Settings section, without the approval settings", () => {
     const { container } = render(<ConnectionsPanel />);
     expect(container.querySelector("#panel-connections")).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 1, name: "Connections" })).toBeInTheDocument();
-    const list = screen.getByTestId("connections-list");
-    const guardrails = screen.getByTestId("agent-guardrails");
-    expect(list.compareDocumentPosition(guardrails) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByTestId("connections-list")).toBeInTheDocument();
+    expect(screen.queryByText("How agents ask")).toBeNull();
   });
 
   it("leaves the URL alone when there is no return to handle", () => {

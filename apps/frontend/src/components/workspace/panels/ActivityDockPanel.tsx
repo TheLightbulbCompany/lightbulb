@@ -4,7 +4,7 @@ import "@/components/activity/activity.css";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { newestActivityAt, type CanonicalRoomMessage } from "@lightbulb/shared";
-import { ForYou, ForYouAsks, rowTarget, type ActivityTarget, type ForYouProps } from "@/components/activity/ForYou";
+import { ForYou, ForYouAsks, rowTarget, type ActivityTarget } from "@/components/activity/ForYou";
 import { homeExtras, isForYouFilter } from "@/components/activity/activityPage";
 import { HomeIdeas } from "@/components/ideas/HomeIdeas";
 import { TeamFeed } from "@/components/activity/TeamFeed";
@@ -86,7 +86,7 @@ export function ActivityDockPanel(props: PanelProps) {
 /** Feed posts Home shows before "See the whole feed". */
 export const HOME_FEED_POSTS = 5;
 
-/** Your company today, top to bottom: Needs you; your mentions and non-request asks (one compact block); Ideas
+/** Your company today, top to bottom: Needs you (decision cards and non-task asks); your mentions (one line); Ideas
  *  (Do it / Not now); the feed's newest posts under its editable Brief; then Working, Done and Closed. */
 function TodayHome() {
   const { userId, orgId } = useAuth();
@@ -99,9 +99,11 @@ function TodayHome() {
   useEffect(() => {
     if (newest && pageVisible()) void markSeen(newest).catch(() => {});
   }, [newest, markSeen]);
+  const { asks } = homeExtras(activity.items);
   return <div className="activity-page activity-page--home activity-page--today">
-    <HomeWork viewerId={userId ?? ""} onOpen={openTaskPane} between={<>
-      <HomeForYou items={activity.items} onRunAction={activity.runAction} />
+    <HomeWork viewerId={userId ?? ""} onOpen={openTaskPane} askCount={asks.length}
+      asks={<ForYouAsks items={asks} onRunAction={activity.runAction} onNavigate={openActivityTarget} />} between={<>
+      <HomeForYou items={activity.items} />
       <HomeIdeas />
       <TeamFeed client={live.messaging} scope={scope} currentUserId={userId ?? ""} limit={HOME_FEED_POSTS}
         onDiscuss={(post) => openDiscussion(scope, post)} isVisible={pageVisible} />
@@ -109,17 +111,16 @@ function TodayHome() {
   </div>;
 }
 
-/** Mentions as one line (how many, who, the newest), and For you's rows for open asks that are not requests. */
-export function HomeForYou({ items, onRunAction }: { items: readonly ActivityItem[]; onRunAction: ForYouProps["onRunAction"] }) {
-  const { mentions, asks } = homeExtras(items);
-  if (!mentions.length && !asks.length) return null;
+/** Mentions as one line (how many, who, the newest). Open asks that are not tasks sit in Needs you, in its count. */
+export function HomeForYou({ items }: { items: readonly ActivityItem[] }) {
+  const { mentions } = homeExtras(items);
+  if (!mentions.length) return null;
   const newest = mentions[0];
-  const target = newest ? rowTarget(newest) : null;
-  return <section aria-label="For you" className="home-mentions">
-    <ForYouAsks items={asks} onRunAction={onRunAction} onNavigate={openActivityTarget} />
-    {newest && <button type="button" className="truncate hover:text-foreground" disabled={!target} onClick={() => target && openActivityTarget(target)}>
+  const target = rowTarget(newest);
+  return <section aria-label="Mentions" className="home-mentions">
+    <button type="button" className="truncate hover:text-foreground" disabled={!target} onClick={() => target && openActivityTarget(target)}>
       <span className="font-semibold text-foreground">Mentions · {mentions.length}</span> · {newest.actor.name}: {newest.summary.preview?.text || newest.summary.title}
-    </button>}
+    </button>
   </section>;
 }
 

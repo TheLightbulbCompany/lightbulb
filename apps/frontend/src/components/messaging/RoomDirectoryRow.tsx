@@ -24,13 +24,17 @@ interface RoomDirectoryRowProps {
   onAddPeople?: () => void;
   onMoveToSection?: (sectionId: string | null) => void;
   sections: readonly RoomSection[];
+  /** Tasks in this room waiting on the viewer: a warn dot (never counted twice: the number lives on Activity). */
+  needsYou?: number;
+  /** Super-agent: unread is the row's weight, never a number, so needsYouCount is the only number on screen (07 §1). */
+  noCounts?: boolean;
   /** Handed this row's overflow trigger so the confirm dialog can return focus to it. */
   onLeave?: (trigger: HTMLButtonElement | null) => void;
 }
 
 const SHARED_ROOM_HINT = "Your direct line to the Lightbulb team";
 
-export function RoomDirectoryRow({ room, label, active, busy, draft, onSelect, onToggleStar, onToggleMute, onMarkUnread, onCopyLink, onAddPeople, onMoveToSection, sections, onLeave }: RoomDirectoryRowProps) {
+export function RoomDirectoryRow({ room, label, active, busy, draft, onSelect, onToggleStar, onToggleMute, onMarkUnread, onCopyLink, onAddPeople, onMoveToSection, sections, onLeave, needsYou = 0, noCounts = false }: RoomDirectoryRowProps) {
   const actionsTrigger = useRef<HTMLButtonElement>(null);
   const Icon = room.kind === "channel" ? Folder : room.kind === "group-dm" ? Users : MessageCircle;
   // A muted room never carries a badge (spec: muted rows are muted-coloured,
@@ -41,7 +45,7 @@ export function RoomDirectoryRow({ room, label, active, busy, draft, onSelect, o
   // Its own name, said once (dev walk W8: the text sat in child spans and read as an unnamed button): the room, what it
   // is, then the marks the row shows.
   const name = [label, roomKindLabel[room.kind], agentDm && "Agent", room.starred && "Starred", room.muted && "Muted", room.shared && "Shared",
-    badge && `${room.unreadCount} unread messages`, draft && "Unsent draft"].filter(Boolean).join(", ");
+    needsYou > 0 && `${needsYou} need${needsYou === 1 ? "s" : ""} you`, badge && (noCounts ? "Unread" : `${room.unreadCount} unread messages`), draft && "Unsent draft"].filter(Boolean).join(", ");
   return <li className="room-directory-row">
     <button type="button" className={`room-directory-entry ${badge ? "font-semibold" : ""} ${room.muted ? "room-directory-muted" : ""}`}
       aria-current={active ? "page" : undefined} aria-label={name} onClick={onSelect}>
@@ -60,7 +64,8 @@ export function RoomDirectoryRow({ room, label, active, busy, draft, onSelect, o
       {room.starred && <Star size={12} role="img" aria-label="Starred" className="room-directory-star" />}
       {room.muted && <span className="room-directory-tag">Muted</span>}
       {room.shared && <span className="room-directory-tag" title={SHARED_ROOM_HINT}>Shared</span>}
-      {badge && <span className="room-count" aria-label={`${room.unreadCount} unread messages`}>{room.unreadCount}</span>}
+      {needsYou > 0 && <span aria-hidden="true" data-needs-you className="size-2 shrink-0 rounded-full bg-warn" />}
+      {badge && !noCounts && <span className="room-count" aria-label={`${room.unreadCount} unread messages`}>{room.unreadCount}</span>}
       {draft && <Pencil size={14} role="img" aria-label="Unsent draft" className="text-muted-foreground" />}
     </button>
     <DropdownMenu>

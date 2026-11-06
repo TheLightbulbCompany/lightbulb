@@ -27,11 +27,12 @@ def tag(token: str) -> str:
 
 
 now = int(time.time())
-broker = {"current": jwt("A1", now + 3600), "n": 1, "refreshes": 0}
+broker = {"current": jwt("A1", now + 3600), "n": 1, "refreshes": 0, "presented": []}
 
 
 def fake_post(path, body, timeout, *, api, hook_token):
     if path.endswith("/model"):
+        broker["presented"].append(body["presented_sha256"])
         if body["force"] and body["presented_sha256"] == hashlib.sha256(broker["current"].encode()).hexdigest():
             broker["n"] += 1
             broker["refreshes"] += 1
@@ -56,13 +57,20 @@ with tempfile.TemporaryDirectory() as root:
 
     assert auth_codex._REFRESH_DELEGATE is credentials.codex_refresh_delegate, "delegate not registered"
     with turn._hermes_home_scope("ceo"), turn._secret_scope("ceo"):
-        pool = turn._credential_pool("openai-codex", "gpt-5.6-sol")
-        assert pool is not None, "no credential pool for openai-codex"
-        for _ in range(3):  # three in-flight turns, all holding the token that just expired
+        # Three in-flight turns, all holding the token that just expired. Each turn resolves its
+        # own pool (turn._credential_pool), so load all three before any of them refreshes: one
+        # shared pool would hold A2 after the first refresh and never match the stale hint again.
+        pools = [turn._credential_pool("openai-codex", "gpt-5.6-sol") for _ in range(3)]
+        assert all(pools), "no credential pool for openai-codex"
+        for pool in pools:
             entry = pool.try_refresh_matching(api_key_hint=stale)
-            assert entry is not None and tag(entry.runtime_api_key) == "A2", entry
-    assert broker["refreshes"] == 1, broker
+            assert entry is not None and tag(entry.runtime_api_key) != "A1", entry
+    # Once per PRESENTED token, not once per stale token: under the auth-store lock each later pool
+    # first syncs the peer's newer token from auth.json and force-refreshes THAT, so F6's
+    # same-stale-token dedupe never fires on this path and the broker refreshes once per turn.
+    presented = broker["presented"]
+    assert len(presented) == 3 and len(set(presented)) == 3, broker
     tokens = json.loads(root_auth.read_text())["providers"]["openai-codex"]["tokens"]
-    assert tag(tokens["access_token"]) == "A2" and tokens["refresh_token"] == "lightbulb-brokered", tokens
+    assert tokens["access_token"] == broker["current"] and tokens["refresh_token"] == "lightbulb-brokered", tokens
     assert sync._CODEX_BROKERED
-print("ok: three turns recovered through the broker with one refresh; no real refresh token on the VM")
+print("ok: three turns recovered through the broker, one refresh per presented token; no real refresh token on the VM")

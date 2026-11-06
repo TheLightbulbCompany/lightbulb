@@ -63,7 +63,8 @@ export function TaskPane({ taskId, viewerId, onClose, onBack, headingRef }: {
   return <aside className="room-context" aria-label="Task" data-task-pane={taskId}
     onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); (onBack ?? onClose)(); } }}>
     <PaneHeader crumb={onBack ? { label: "Tasks", onBack } : undefined} title={data?.task.title ?? "Task"} headingRef={heading} onClose={onClose}
-      meta={data && <span className="inline-flex items-center gap-1.5">{who} · <TaskStatus task={data.task} viewerId={viewerId} /></span>}
+      meta={data && <span className="inline-flex items-center gap-1.5">{who} · <TaskStatus task={data.task} viewerId={viewerId} />
+        {summaryView(data.task, viewerId).word === "Working" && <> · <Ticking since={data.task.updatedAt} /></>}</span>}
       actions={data && <TaskActions task={data.task} viewerId={viewerId} onError={setActionError} />} />
     {!data
       ? !error ? <p role="status" className="p-4 text-ui text-muted-foreground">Loading…</p>
@@ -160,6 +161,24 @@ export function TaskHeader({ task, viewerId, error }: { task: TaskSummary; viewe
   </section>;
 }
 
+/** How long it has been working, "0:48" (since it last changed state, as the list's live line), ticking each second.
+ *  In the header's meta, which never truncates (W12-17). */
+export function Ticking({ since }: { since: string }): ReactElement {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  return <time dateTime={since} className="tabular-nums">{clock(Math.max(0, Math.floor((now - Date.parse(since)) / 1000)) || 0)}</time>;
+}
+
+/** 48 → "0:48", 725 → "12:05", 3725 → "1:02:05". */
+export const clock = (s: number): string => {
+  const two = (n: number) => String(n).padStart(2, "0");
+  const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60;
+  return h ? `${h}:${two(m)}:${two(s % 60)}` : `${m}:${two(s % 60)}`;
+};
+
 /** The task's lifecycle buttons, in the pane header's row at the right (W11-2). */
 function TaskActions({ task, viewerId, onError }: { task: TaskSummary; viewerId: string; onError: (message: string | null) => void }): ReactElement {
   const { act } = useTaskActions("pane");
@@ -203,7 +222,7 @@ function TaskActions({ task, viewerId, onError }: { task: TaskSummary; viewerId:
       {view.action === "retry" && <Button type="button" size="sm" disabled={busy} onClick={() => void press("retry")}>Retry</Button>}
     </span>
     <span data-action-slot="close" className="empty:hidden">
-      {!live && task.status !== "resolved" && <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => void press("resolve")}>Close</Button>}
+      {!live && task.status !== "resolved" && <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => void press("resolve")}>Mark done</Button>}
     </span>
     <span data-action-slot="reopen" className="empty:hidden">
       {task.status === "resolved" && <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => void press("reopen")}>Reopen</Button>}

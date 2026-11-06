@@ -16,6 +16,7 @@ import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { trapTab } from "@/lib/focusTrap";
 import { paneSheetQuery } from "./paneSheet";
 import { PaneHeader } from "./PaneHeader";
+import { leavePane } from "./panels/AutomationDockPanel";
 
 /** The narrowest a list pane is dragged to (super-agent; 320 without it). */
 export const PANE_MIN_WIDTH = 360;
@@ -160,6 +161,26 @@ export function RightPane({ pane, fullScreen }: { pane: Slot; fullScreen: boolea
   // name heads the body, so the bar used to carry no ✕ at all), and Escape closes those at every width.
   const drawsHeader = superAgent && !OWN_HEADER.has(pane.component);
   const escapes = sheet || drawsHeader;
+  // A file opened from inside the pane (a task's output, Made here, Files) goes back there: "‹ Task", and Escape.
+  const back = pane.params.back || null;
+  const crumb = back ? { label: back.startsWith("task:") ? "Task" : back[0].toUpperCase() + back.slice(1), onBack: () => leavePane(back) } : undefined;
+  // One Escape stack (doc → task → list → closed) at every width: Escape with focus nowhere (on the page body, e.g.
+  // after the control that opened the sheet went inert under it) is Escape in the pane's innermost column, so it pops
+  // one level there instead of doing nothing.
+  useEffect(() => {
+    if (!superAgent) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented || (event.target !== document.body && event.target !== document.documentElement)) return;
+      if (document.querySelector("[role='alertdialog'], [role='dialog']:not(.workspace-pane)")) return;
+      const titles = paneRef.current?.querySelectorAll<HTMLElement>(".pane-header__title");
+      const inner = titles?.[titles.length - 1] ?? paneRef.current;
+      if (!inner) return;
+      inner.focus({ preventScroll: true });
+      inner.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [superAgent]);
   return (<>
     {superAgent && sheet && <div className="workspace-pane-scrim" aria-hidden="true" onClick={closePane} />}
     <section ref={paneRef} className="workspace-pane" aria-label={pane.title} data-pane={pane.component}
@@ -167,14 +188,14 @@ export function RightPane({ pane, fullScreen }: { pane: Slot; fullScreen: boolea
       {...(sheet ? { role: "dialog", "aria-modal": true } : {})}
       // Inner columns handle their own Escape first (and stop it); what reaches here closes the sheet.
       onKeyDown={escapes ? (event) => {
-        if (event.key === "Escape" && !event.defaultPrevented) closePane();
+        if (event.key === "Escape" && !event.defaultPrevented) { if (back) leavePane(back); else closePane(); }
         else if (sheet) trapTab(event, [paneRef.current]);
       } : undefined}
       style={fullScreen || (superAgent && sheet) ? undefined : { width: item ? ITEM_WIDTH : width }}>
       {resizable && <div className="workspace-pane__resize" role="separator" aria-orientation="vertical"
         aria-label="Resize the pane" tabIndex={0} onPointerDown={startResize} onKeyDown={nudge}
         aria-valuenow={measured.now} aria-valuemin={minWidth} aria-valuemax={Math.max(minWidth, measured.max)} />}
-      {superAgent ? drawsHeader && <PaneHeader title={pane.title} />
+      {superAgent ? drawsHeader && <PaneHeader title={pane.title} crumb={crumb} />
         : <header className="workspace-pane__bar">
           {/* A thread (the room's column, a task) carries its own titled header: the bar keeps only its controls. */}
           <span className="workspace-pane__title">{ownsHeader(pane) ? null : pane.title}</span>
@@ -182,7 +203,7 @@ export function RightPane({ pane, fullScreen }: { pane: Slot; fullScreen: boolea
             title={fullScreen ? "Exit full screen" : "Full screen"} onClick={() => setPaneFullScreen(!fullScreen)}>
             {fullScreen ? <Minimize2 size={16} aria-hidden="true" /> : <Maximize2 size={16} aria-hidden="true" />}
           </button>
-          <button ref={closeRef} type="button" aria-label="Close pane" title="Close" onClick={closePane}><X size={16} aria-hidden="true" /></button>
+          <button ref={closeRef} type="button" aria-label="Close pane" title="Close panel" onClick={closePane}><X size={16} aria-hidden="true" /></button>
         </header>}
       <div className="workspace-pane__body">
         {Panel ? <Panel id={pane.panelId} params={pane.params} />

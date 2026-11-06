@@ -23,7 +23,7 @@ vi.mock("@/components/messaging/SessionChat", () => ({
   },
 }));
 
-import { TaskPane } from "../TaskPane";
+import { TaskPane, clock } from "../TaskPane";
 
 const approval = (over: Partial<QuestionView> = {}): QuestionView => ({
   id: "q-provision", taskId: "t-signup", kind: "approval", subkind: null, title: "Provision database and Stripe",
@@ -65,7 +65,7 @@ describe("TaskPane", () => {
     const { unmount } = pane();
     expect(await screen.findByRole("button", { name: "Stop" })).toBeInTheDocument();
     // Running: Stop (asked once), no Resolve under it.
-    expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Mark done" })).toBeNull();
     // Where it runs is plumbing: Details only.
     expect(screen.getByText("Lightbulb cloud").closest("details")).not.toBeNull();
     expect(within(screen.getByRole("region", { name: "Task status" })).queryByText("Lightbulb cloud")).toBeNull();
@@ -377,7 +377,7 @@ describe("steering a finished request (dev walk N-F4)", () => {
 describe("action slots (UX audit 2, P0)", () => {
   const slots = () => [...document.querySelectorAll("[data-action-slot]")].map((el) => `${el.getAttribute("data-action-slot")}:${el.textContent}`);
 
-  it("Stop, Close and Reopen each keep their own slot; the Stop confirm takes their place", async () => {
+  it("Stop, Mark done and Reopen each keep their own slot; the Stop confirm takes their place", async () => {
     const first = pane();
     await screen.findByRole("button", { name: "Stop" });
     expect(slots()).toEqual(["stop:Stop", "retry:", "close:", "reopen:"]);
@@ -387,8 +387,8 @@ describe("action slots (UX audit 2, P0)", () => {
     first.unmount();
     withDetail({ ...step8, task: { ...step8.task, status: "idle", shownGroup: "idle", watching: false }, questions: [] }, []);
     const second = pane();
-    await screen.findByRole("button", { name: "Close" });
-    expect(slots()).toEqual(["stop:", "retry:", "close:Close", "reopen:"]);
+    await screen.findByRole("button", { name: "Mark done" });
+    expect(slots()).toEqual(["stop:", "retry:", "close:Mark done", "reopen:"]);
     second.unmount();
     withDetail({ ...step8, task: { ...step8.task, status: "resolved", shownGroup: "resolved" }, questions: [] }, []);
     pane();
@@ -435,11 +435,17 @@ describe("task loop (UX slice 3)", () => {
     await waitFor(() => expect(reopen).toBeEnabled(), { timeout: 1500 });
   });
 
-  it("while it runs, the header says who and Working once; nothing under it repeats them (W12-17)", async () => {
+  it("while it runs, the header says who, Working and the clock once; nothing under it repeats them (W12-17)", async () => {
     withDetail({ ...step8, task: { ...step8.task, updatedAt: new Date(Date.now() - 14_000).toISOString() } });
     pane();
-    expect(await screen.findAllByText("Working")).not.toHaveLength(0);
+    const header = within(screen.getByRole("banner"));
+    expect(await header.findByText(/^0:1[45]$/)).toBeInTheDocument();
+    expect(header.getByText("Working").closest(".pane-header__meta")).toHaveTextContent(/^Engineering · Working · 0:1[45]$/);
     expect(screen.queryByText(/working · \d+s/)).toBeNull();
     expect(document.querySelector("[data-live]")).toBeNull();
+  });
+
+  it("clock: m:ss under an hour, h:mm:ss after", () => {
+    expect([clock(0), clock(48), clock(725), clock(3725)]).toEqual(["0:00", "0:48", "12:05", "1:02:05"]);
   });
 });

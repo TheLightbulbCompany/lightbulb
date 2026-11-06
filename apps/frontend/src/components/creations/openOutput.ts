@@ -28,11 +28,12 @@ function target(o: Openable): { panel: string; params: Record<string, string> } 
 
 const taskTarget = (taskId: string) => ({ panel: "task-detail", params: { taskId } });
 
-/** Open it. `openTask` opens the task where the caller lives (a project's pane); else the shell's task pane. */
-export function openOutput(o: Openable, openTask?: (taskId: string) => void): void {
+/** Open it. `openTask` opens the task where the caller lives (a project's pane); else the shell's task pane. `back`:
+ *  where Escape and "‹" return from the opened file (leavePane), when it was opened from inside the pane. */
+export function openOutput(o: Openable, openTask?: (taskId: string) => void, back?: string): void {
   const t = target(o);
   if (t && "url" in t) { window.open(t.url, "_blank", "noopener,noreferrer"); return; }
-  if (t) { openPanel(t.panel, t.params, { pushUrl: true }); return; }
+  if (t) { openPanel(t.panel, t.params, { pushUrl: true, ...(back ? { oneShots: { back } } : {}) }); return; }
   if (openTask) openTask(o.taskId);
   else openPanel("task-detail", { taskId: o.taskId }, { pushUrl: true });
 }

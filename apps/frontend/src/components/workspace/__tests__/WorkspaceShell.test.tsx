@@ -3,7 +3,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { WorkspaceShell } from "../WorkspaceShell";
-import { _resetControllerForTests, activateMessagesPanel, getWorkspaceSnapshot, closePane, openPanel, useThreadPane } from "../workspaceController";
+import { _resetControllerForTests, activateMessagesPanel, getWorkspaceSnapshot, closePane, openAgentDmWithDraft, openPanel, useThreadPane } from "../workspaceController";
 import { PANE_DEFAULT_WIDTH, paneWidthKey } from "../RightPane";
 
 const state = vi.hoisted(() => ({
@@ -492,4 +492,56 @@ it("UX slice 4: the specialist profile pane has the one header with ✕, and Esc
     fireEvent.keyDown(pane, { key: "Escape" });
     expect(view.container.querySelector(".workspace-pane")).toBeNull();
   } finally { state.superAgent = false; }
+});
+
+it("W12-5: one Escape stack — Escape with focus on the page (nothing focused) still closes the sheet, at every width", () => {
+  state.superAgent = true;
+  for (const narrow of [true, false]) {
+    stubMedia((q) => narrow && q === "(max-width: 999px)");
+    try {
+      const view = renderReady();
+      act(() => openPanel("agent-inspector", { agent: "agt-1" }));
+      expect(view.container.querySelector(".workspace-pane")).not.toBeNull();
+      (document.activeElement as HTMLElement | null)?.blur();
+      fireEvent.keyDown(document.body, { key: "Escape" });
+      expect(view.container.querySelector(".workspace-pane")).toBeNull();
+      view.unmount();
+    } finally { vi.unstubAllGlobals(); }
+  }
+  state.superAgent = false;
+});
+
+it("W12-5: a file opened from a task goes back to that task: '‹ Task' and Escape", () => {
+  state.superAgent = true;
+  try {
+    const view = renderReady();
+    const doc = { src: "attachment", room: "r1", id: "a1", name: "taglines.md" };
+    act(() => openPanel("artifact", doc, { pushUrl: true, oneShots: { back: "task:t-1" } }));
+    const pane = view.container.querySelector<HTMLElement>(".workspace-pane")!;
+    fireEvent.keyDown(pane, { key: "Escape" });
+    expect(getWorkspaceSnapshot().pane).toMatchObject({ component: "task", params: { taskId: "t-1" } });
+    // Opened again from elsewhere (no way back): no crumb, and Escape closes.
+    act(() => openPanel("artifact", doc, { pushUrl: true, oneShots: { back: "task:t-1" } }));
+    act(() => openPanel("artifact", { ...doc, id: "a2" }, { pushUrl: true }));
+    expect(screen.queryByRole("button", { name: "Back to task" })).toBeNull();
+    act(() => openPanel("artifact", doc, { pushUrl: true, oneShots: { back: "task:t-1" } }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to task" }));
+    expect(getWorkspaceSnapshot().pane).toMatchObject({ component: "task", params: { taskId: "t-1" } });
+  } finally { state.superAgent = false; }
+});
+
+it("W12-12/13: a draft headed for the composer closes a sheet that covers it; beside the pane, the pane stays", () => {
+  state.superAgent = true;
+  for (const narrow of [true, false]) {
+    stubMedia((q) => narrow && q === "(max-width: 999px)");
+    try {
+      const view = renderReady();
+      act(() => openPanel("agent-inspector", { agent: "agt-1" }));
+      act(() => openAgentDmWithDraft("agt-1", "Write a doc: …"));
+      expect(view.container.querySelector(".workspace-pane") === null).toBe(narrow);
+      view.unmount();
+      act(() => closePane());
+    } finally { vi.unstubAllGlobals(); }
+  }
+  state.superAgent = false;
 });

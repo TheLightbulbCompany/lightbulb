@@ -514,6 +514,11 @@
 .frame-doc__title { display: flex; align-items: center; gap: 8px; min-height: 56px; margin-bottom: 8px; }
 .frame-doc__title > h1 { margin-right: auto; min-width: 0; font-size: 24px; line-height: 30px; font-weight: 600; color: var(--foreground); }
 @media (max-width: 599px) { .frame-doc { padding-inline: 16px; max-width: calc(var(--frame-doc) + 32px); } }
+/* A one-column grid (Tailwind `grid` with no columns) sizes its track to the widest row's min-content, so a long
+   truncated row pushed every row past a narrow window (W12-2). In page columns and the pane the track is the width
+   and rows truncate; nothing there scrolls sideways. :where keeps this under any explicit column rule. */
+:where(.frame-doc, .workspace-pane) :where(.grid:not([class*="grid-cols-"])) { grid-template-columns: minmax(0, 1fr); }
+.frame-doc { overflow-x: clip; }
 
 @layer utilities {
   .bg-noise {

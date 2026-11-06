@@ -121,7 +121,7 @@ export function OverviewRow({ task, viewerId, onOpen }: { task: TaskSummary; vie
         <DropdownMenuContent align="end">
           <DropdownMenuItem onSelect={() => onOpen(task.taskId)}>Open</DropdownMenuItem>
           <DropdownMenuItem onSelect={() => void copyLink()}>Copy link</DropdownMenuItem>
-          {task.status !== "resolved" && <DropdownMenuItem onSelect={() => void press("resolve")}>Close</DropdownMenuItem>}
+          {task.status !== "resolved" && <DropdownMenuItem onSelect={() => void press("resolve")}>Mark done</DropdownMenuItem>}
         </DropdownMenuContent>
       </DropdownMenu>
     </div>

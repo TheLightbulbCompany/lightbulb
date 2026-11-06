@@ -243,12 +243,16 @@ function ComposerAttempt({
       if (requestedAgent && requestedAgent !== focusAgentId) return;
       const request = consumeFocusComposerRequest(focusAgentId);
       if (!request) return;
-      const draft = request.draft && !text.trim() ? request.draft : null;
-      if (draft) onTextChange(draft);
+      // Never lost to a draft already there (W12-13): it goes under it, unless it is already in it.
+      const current = text.trimEnd();
+      const draft = request.draft && !current.includes(request.draft.trim()) ? request.draft : null;
+      const next = draft ? (current ? `${current}\n\n${draft}` : draft) : null;
+      if (next) onTextChange(next);
       field.current?.focus();
-      // A starter ask ("Write a doc: …"): the first "…" is selected once it renders, so typing replaces it.
-      const blank = draft?.indexOf("…") ?? -1;
-      if (blank >= 0) requestAnimationFrame(() => field.current?.setSelectionRange(blank, blank + 1));
+      // A starter ask ("Write a doc: …"): its first "…" is selected once it renders, so typing replaces it.
+      const blank = next && draft ? draft.indexOf("…") : -1;
+      const at = next && draft ? next.length - draft.length + blank : -1;
+      if (blank >= 0) requestAnimationFrame(() => field.current?.setSelectionRange(at, at + 1));
     };
     applyFocusRequest();
     window.addEventListener("getstarted:focus-composer", applyFocusRequest);

@@ -312,6 +312,23 @@ describe("RoomPanel Threads view (super-agent)", () => {
     } finally { host.remove(); _resetControllerForTests(); }
   });
 
+  it("W12-5: back from a doc a task made (leavePane): the task again, in the project's pane, with ‹ Tasks", async () => {
+    localStorage.clear();
+    nothingNeedsYou();
+    client = fakeTasksClient(FIXTURES.step08.tasks, FIXTURES.step08.details); live.tasks = client;
+    _resetControllerForTests();
+    attachShell(() => undefined);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    act(() => setThreadPaneHost(host));
+    try {
+      render(<Fresh><RoomPanel {...props} /></Fresh>);
+      act(() => { window.dispatchEvent(new CustomEvent(ROOM_PANE_VIEW_EVENT, { detail: { view: "task", taskId: "t-signup" } })); });
+      const pane = await within(host).findByRole("complementary", { name: "Task" });
+      expect(within(pane).getByRole("button", { name: "Back to tasks" })).toBeInTheDocument();
+    } finally { host.remove(); _resetControllerForTests(); }
+  });
+
   it("entered by a ?pane= deep link: closing that pane leaves the pane closed, even with something needing you", async () => {
     _resetControllerForTests();
     attachShell(() => undefined);

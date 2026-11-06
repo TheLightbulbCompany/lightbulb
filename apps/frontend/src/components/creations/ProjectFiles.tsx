@@ -69,7 +69,7 @@ export function ProjectFiles({ roomId, viewerId, messages, onOpenTask }: {
       : <table className="project-files__table">
         <thead><tr><th scope="col">Name</th><th scope="col">Made by</th><th scope="col">Date</th><th scope="col"><span className="sr-only">Actions</span></th></tr></thead>
         <tbody>{rows.map((row) => {
-          const open = () => openOutput(row.output, onOpenTask);
+          const open = () => openOutput(row.output, onOpenTask, "files");
           return <tr key={row.key}>
             <td><button type="button" className="project-files__name" onClick={open}>
               {iconOf(row.output, 16)}<span>{row.output.title}</span>

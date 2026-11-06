@@ -39,10 +39,18 @@ it("consumes an agent focus request and seeds an empty draft", () => {
   expect(screen.getByRole("textbox", { name: "Message" })).toHaveFocus();
 });
 
-it("focuses without overwriting typed text", () => {
+it("W12-13: never overwrites typed text, and never loses to it: the draft goes under it", () => {
+  const onTextChange = vi.fn();
+  requestFocusComposer("agent-friday", "Write a doc: …");
+  render(<RoomComposer {...baseProps} text="@growth " focusAgentId="agent-friday" onTextChange={onTextChange} />);
+  expect(onTextChange).toHaveBeenCalledWith("@growth\n\nWrite a doc: …");
+  expect(screen.getByRole("textbox", { name: "Message" })).toHaveFocus();
+});
+
+it("a draft already in the composer is not added twice", () => {
   const onTextChange = vi.fn();
   requestFocusComposer("agent-friday", "File the inbox");
-  render(<RoomComposer {...baseProps} text="Already typing" focusAgentId="agent-friday" onTextChange={onTextChange} />);
+  render(<RoomComposer {...baseProps} text="File the inbox" focusAgentId="agent-friday" onTextChange={onTextChange} />);
   expect(onTextChange).not.toHaveBeenCalled();
   expect(screen.getByRole("textbox", { name: "Message" })).toHaveFocus();
 });

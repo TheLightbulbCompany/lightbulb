@@ -206,6 +206,8 @@
 .activity-page--home .activity-page__feed { overflow: visible; }
 .home-work {
   display: grid;
+  /* The track is the width; a long row truncates instead of widening the column (W12-2). */
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
   width: 100%;
   max-width: 1080px;

@@ -488,7 +488,8 @@ export function clearablePanelParamKeys(panelId: string): string[] {
   if (panelId === "ideas") return ["agent", "idea"];
   if (panelId === "file-viewer") return ["path", "agent"];
   // `back` is a one-shot (openOutput): a file opened from elsewhere must not keep the last one's way back.
-  if (panelId === "artifact") return [...ARTIFACT_PARAM_KEYS, "back"];
+  // `heading` is the shown doc's own (ArtifactDockPanel): the next file reads its own.
+  if (panelId === "artifact") return [...ARTIFACT_PARAM_KEYS, "back", "heading"];
   if (panelId === "task-detail") return ["taskId"];
   if (panelId === "agent-inspector" || panelId === "control:agents") {
     return ["agentId", "initialTab"];

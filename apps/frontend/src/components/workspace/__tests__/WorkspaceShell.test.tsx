@@ -3,7 +3,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { WorkspaceShell } from "../WorkspaceShell";
-import { _resetControllerForTests, activateMessagesPanel, getWorkspaceSnapshot, closePane, openAgentDmWithDraft, openPanel, useThreadPane } from "../workspaceController";
+import { _resetControllerForTests, activateMessagesPanel, getWorkspaceSnapshot, closePane, openAgentDmWithDraft, openPanel, updatePanelParams, useThreadPane } from "../workspaceController";
 import { PANE_DEFAULT_WIDTH, paneWidthKey } from "../RightPane";
 
 const state = vi.hoisted(() => ({
@@ -518,6 +518,11 @@ it("W12-5: a file opened from a task goes back to that task: '‹ Task' and Esca
     const doc = { src: "attachment", room: "r1", id: "a1", name: "taglines.md" };
     act(() => openPanel("artifact", doc, { pushUrl: true, oneShots: { back: "task:t-1" } }));
     const pane = view.container.querySelector<HTMLElement>(".workspace-pane")!;
+    // W13-7: the doc keeps the task's width, and reads by a name (then its first heading), never its file name.
+    expect(pane.style.width).toBe("clamp(520px, 50%, 60%)");
+    expect(within(pane).getByRole("heading", { name: "Taglines" })).toBeInTheDocument();
+    act(() => updatePanelParams("artifact", { heading: "Bakery taglines" }));
+    expect(within(pane).getByRole("heading", { name: "Bakery taglines" })).toBeInTheDocument();
     fireEvent.keyDown(pane, { key: "Escape" });
     expect(getWorkspaceSnapshot().pane).toMatchObject({ component: "task", params: { taskId: "t-1" } });
     // Opened again from elsewhere (no way back): no crumb, and Escape closes.

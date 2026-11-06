@@ -1,6 +1,9 @@
 // Starter schedules for a project's empty Scheduled view (UX slice 6). A tap only drafts the ask in the project's
 // composer: nothing is created until the person sends it and turns it on in the Router's confirm card. Times are said
-// as clock times, which the Router reads in the viewer's time zone.
+// as clock times, which the Router reads in the viewer's time zone. A project with a goal gets three built from it
+// (W13-13), the way its starter asks are; one without gets the roster's.
+
+import { goalLine } from "@/components/messaging/RoomIntro";
 
 export interface ScheduleTemplate {
   /** The specialist's roster name ("Growth"); "Lightbulb" for the fallback. */
@@ -20,6 +23,20 @@ export const SCHEDULE_TEMPLATES: readonly ScheduleTemplate[] = [
 export const LIGHTBULB_TEMPLATE: ScheduleTemplate = {
   specialist: "Lightbulb", name: "Weekly project summary", cadence: "Fridays 16:00", draft: "Every Friday at 16:00, post a short summary of this week's work here.",
 };
+
+/** Three cards built from a project's goal; none without one. */
+export function goalTemplates(topic: string | null | undefined): ScheduleTemplate[] {
+  const goal = goalLine(topic);
+  if (!goal) return [];
+  return [
+    { specialist: "Lightbulb", name: "Monday plan", cadence: "Mondays 9:00",
+      draft: `Every Monday at 9:00, post this week's next steps toward "${goal}" here, and anything that's in the way.` },
+    { specialist: "Lightbulb", name: "Friday wrap-up", cadence: "Fridays 16:00",
+      draft: `Every Friday at 16:00, post a short summary of this week's progress on "${goal}" here.` },
+    { specialist: "Lightbulb", name: "What others are doing", cadence: "1st of the month 10:00",
+      draft: `On the 1st of every month at 10:00, look at how others are doing this ("${goal}") and post anything worth trying here.` },
+  ];
+}
 
 /** Three cards: the first two specialists on the roster that have a template, then Lightbulb's. Before the roster
  *  loads (no names), the first two templates stand in. */

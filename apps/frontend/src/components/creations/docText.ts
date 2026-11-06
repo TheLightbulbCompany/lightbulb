@@ -1,0 +1,33 @@
+// A doc output's words for people (W13-7, W13 tiles): a readable name from its file name, and its first heading and
+// opening lines from its text. Pure, so the viewer header, Made here and Creations read a doc the same way.
+
+/** "autumn-specials-menu-blurbs.md" → "Autumn specials menu blurbs". A name that already has spaces ("Q3 plan v1.2")
+ *  keeps its words; only a letter extension comes off. */
+export function readableName(fileName: string): string {
+  let base = fileName.trim().replace(/\.[a-z][a-z0-9]{0,5}$/i, "");
+  if (!/\s/.test(base)) base = base.replace(/[-_]+/g, " ").trim();
+  return base ? base[0].toUpperCase() + base.slice(1) : fileName;
+}
+
+/** Markdown marks off one line: list and quote markers, emphasis, code ticks, links to their words. */
+const plain = (line: string): string => line
+  .replace(/^\s*(?:[-*+]|\d+[.)])\s+/, "").replace(/^\s*>\s?/, "")
+  .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/(\*\*|__|\*|_|`)(.+?)\1/g, "$2").trim();
+
+/** The first heading (any level), and the first `max` lines after it (later headings count as lines), past front
+ *  matter, rules and code fences. */
+export function docPreview(text: string, max = 3): { heading: string | null; lines: string[] } {
+  let heading: string | null = null;
+  const lines: string[] = [];
+  let fenced = false;
+  for (const raw of text.replace(/^---\n[\s\S]*?\n---\n/, "").split("\n")) {
+    if (/^\s*(```|~~~)/.test(raw)) { fenced = !fenced; continue; }
+    if (fenced || !raw.trim() || /^\s*([-*_])\s*\1\s*\1[\s\-*_]*$/.test(raw)) continue;
+    const h = /^\s*#{1,6}\s+(.+?)\s*#*\s*$/.exec(raw);
+    if (h && !heading) { heading = plain(h[1]) || null; continue; }
+    const line = plain(h ? h[1] : raw);
+    if (line && lines.length < max) lines.push(line);
+    if (heading && lines.length >= max) break;
+  }
+  return { heading, lines };
+}

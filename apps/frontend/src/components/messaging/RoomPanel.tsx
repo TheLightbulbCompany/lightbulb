@@ -1204,7 +1204,7 @@ function RoomContent({
       onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeView(); } }}>
       <PaneHeader title="Scheduled" onClose={closeView} />
       {/* A row opens the automation in this pane, with "‹ Scheduled" back here (AutomationDockPanel). */}
-      <div className="room-context-body"><ScheduledList scope={{ kind: "room", roomId }} onOpen={openTask}
+      <div className="room-context-body"><ScheduledList scope={{ kind: "room", roomId }} onOpen={openTask} goal={visibleRoom?.topic}
         onDraft={visibleRoom?.archivedAt ? undefined : (text) => {
           // Never over a draft the person started: the template goes under it. A sheet covering the composer (narrow
           // widths) closes, so the draft is seen and focused.

@@ -626,6 +626,25 @@
 .pane-header__icon:focus-visible { outline: 2px solid var(--midnight); outline-offset: 1px; }
 @media (pointer: coarse) { .pane-header__icon, .pane-header__crumb { min-width: 44px; min-height: 44px; } }
 
+/* Super-agent doc viewer (W13-7): the file's name as a quiet line under the header, then the doc set as a document, a
+   readable measure with real heading steps, not a raw file at body size against the pane edge. */
+.doc-view__file {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding-left: 4px; font-size: 13px; line-height: 18px; color: var(--midnight-muted);
+}
+.doc-view > div { max-width: 640px; margin: 0 auto; padding: 32px 28px 56px; }
+.doc-view > pre { padding: 32px 28px 56px; font-size: 13px; line-height: 20px; }
+.doc-view :is(h1, h2, h3) { color: var(--midnight); font-weight: 600; text-wrap: balance; }
+.doc-view h1 { margin: 0 0 16px; font-size: 26px; line-height: 32px; letter-spacing: -0.015em; }
+.doc-view h2 { margin: 32px 0 8px; font-size: 19px; line-height: 26px; letter-spacing: -0.01em; }
+.doc-view h3 { margin: 24px 0 6px; font-size: 16px; line-height: 24px; }
+.doc-view :is(h1, h2, h3):first-child { margin-top: 0; }
+.doc-view :is(p, ul, ol) { margin: 0 0 14px; font-size: 15px; line-height: 25px; color: var(--midnight); }
+.doc-view :is(h2, h3) + p { margin-top: 0; }
+.doc-view li { margin: 4px 0; }
+.doc-view blockquote { margin: 16px 0; }
+.doc-view hr { margin: 28px 0; border-color: var(--edge); }
+
 /* Super-agent rail: the place you are in is filled, set in 600 and marked by a 2 px rule on its left edge; hover is a
    lighter fill, so the two never read alike. A project (the Chat place) lights nothing. */
 .workspace-shell[data-super-agent="true"] .workspace-rail > button,

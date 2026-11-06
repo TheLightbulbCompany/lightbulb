@@ -29,9 +29,8 @@ export function TaskOutputs({ task, max, onOpenTask }: {
       return <li key={o.id}>
         {opensTask && !onOpenTask ? <span className="task-outputs__chip">{body}</span>
           : <button type="button" className="task-outputs__chip" aria-label={`Open ${o.title}`}
-            onClick={(e) => { e.stopPropagation(); openOutput({ ...o, taskId: task.taskId }, onOpenTask ? () => onOpenTask() : undefined,
-              // In the open task (no onOpenTask): the file's way back is this task.
-              onOpenTask ? undefined : `task:${task.taskId}`); }}>
+            // In the open task or on its card in chat, the file's way back is this task ("‹ Task", Escape).
+            onClick={(e) => { e.stopPropagation(); openOutput({ ...o, taskId: task.taskId }, onOpenTask ? () => onOpenTask() : undefined, `task:${task.taskId}`); }}>
             {body}<ChevronRight size={14} aria-hidden="true" className="task-outputs__chev" />
           </button>}
       </li>;

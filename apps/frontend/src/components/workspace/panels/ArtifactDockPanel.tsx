@@ -12,7 +12,11 @@ import { useUser } from "@clerk/nextjs";
 import { actorName } from "@/components/teams/shared/lib/actorName";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { useApi } from "@/lib/api";
-import { openPanel } from "../workspaceController";
+import { openPanel, updatePanelParams } from "../workspaceController";
+import { useSuperAgent } from "@/hooks/useLiveEvents";
+import { blobText } from "@/components/media/readBlob";
+import { formatBytes } from "@/lib/utils";
+import { docPreview } from "@/components/creations/docText";
 import type { PanelProps } from "../panelComponents";
 import { DocumentContents } from "./DocumentContents";
 import { CONTENTS_MIN_HEADINGS, outlineOf } from "./documentOutline";
@@ -82,14 +86,35 @@ function FilePane({ source }: { source: FileSource }) {
     }).catch((e) => { if (live) setState({ status: "error", message: describeError(e) }); });
     return () => { live = false; if (url) URL.revokeObjectURL(url); };
   }, [sourceKey]);
+  const superAgent = useSuperAgent();
+  const text = state.status === "ready" && (state.type === "text/markdown" || state.type === "text/plain");
+  // Super-agent: a text doc is titled by its first heading (RightPane reads `heading`; the file name is the line under).
+  const blob = state.status === "ready" ? state.blob : null;
+  useEffect(() => {
+    if (!superAgent || !text || !blob) return;
+    let live = true;
+    void blobText(blob.slice(0, 4096)).then((t) => {
+      const heading = docPreview(t, 0).heading;
+      if (live && heading) updatePanelParams("artifact", { heading });
+    }, () => undefined);
+    return () => { live = false; };
+  }, [superAgent, text, blob]);
   const download = state.status === "ready" ? <a className="inline-flex" href={state.url} download={state.name} aria-label="Download"><Download aria-hidden="true" /></a> : null;
+  const body = <>
+    {state.status === "loading" && <p className="p-4 text-ui text-muted-foreground">Loading…</p>}
+    {state.status === "error" && <p role="alert" className="p-4 text-ui">{state.message}</p>}
+    {state.status === "ready" && (isPaneViewable(state.type) || state.type.startsWith("image/") || state.type.startsWith("video/")
+      ? <FileViewerContent item={{ fileName: state.name, contentType: state.type, size: state.blob.size, url: state.url, blob: state.blob }} className="h-full" />
+      : <p className="p-4 text-ui text-muted-foreground">No preview for this file type. Use Download.</p>)}
+  </>;
+  if (!superAgent) return <PaneFrame actions={download}>{body}</PaneFrame>;
+  // Super-agent: the file name and size as a quiet line with Download at its end, then the doc set as a document.
   return (
-    <PaneFrame actions={download}>
-      {state.status === "loading" && <p className="p-4 text-ui text-muted-foreground">Loading…</p>}
-      {state.status === "error" && <p role="alert" className="p-4 text-ui">{state.message}</p>}
-      {state.status === "ready" && (isPaneViewable(state.type) || state.type.startsWith("image/") || state.type.startsWith("video/")
-        ? <FileViewerContent item={{ fileName: state.name, contentType: state.type, size: state.blob.size, url: state.url, blob: state.blob }} className="h-full" />
-        : <p className="p-4 text-ui text-muted-foreground">No preview for this file type. Use Download.</p>)}
+    <PaneFrame actions={<>
+      <span className="doc-view__file" title={source.name ?? undefined}>{source.name ?? "File"}{state.status === "ready" ? ` · ${formatBytes(state.blob.size)}` : ""}</span>
+      {download}
+    </>}>
+      {text ? <div className="doc-view">{body}</div> : body}
     </PaneFrame>
   );
 }

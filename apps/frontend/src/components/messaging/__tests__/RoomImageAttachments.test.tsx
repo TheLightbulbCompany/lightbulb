@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { RoomImageAttachments } from "../RoomImageAttachments";
+import { OutputBackContext } from "@/components/creations/openOutput";
 import type { MessageAttachment } from "@lightbulb/shared";
 
 vi.mock("@/components/workspace/workspaceController", () => ({ openPanel: vi.fn() }));
@@ -133,6 +134,15 @@ describe("RoomImageAttachments", () => {
     expect(download).not.toHaveBeenCalled();
     await userEvent.click(card);
     expect(openPanel).toHaveBeenCalledWith("artifact", { src: "attachment", room: "room-1", id: "a1", name: fileName, type: contentType }, { pushUrl: true });
+  });
+
+  it("inside an open task, the doc card opens with its way back to the task: '‹ Task' and Escape (W12-5)", async () => {
+    const { openPanel } = await import("@/components/workspace/workspaceController");
+    render(<OutputBackContext.Provider value="task:t9">
+      <RoomImageAttachments roomId="room-1" attachments={[{ id: "a1", fileName: "menu.md", contentType: "text/markdown", size: 328 }]} download={vi.fn()} />
+    </OutputBackContext.Provider>);
+    await userEvent.click(screen.getByRole("button", { name: "Open menu.md" }));
+    expect(openPanel).toHaveBeenLastCalledWith("artifact", expect.objectContaining({ id: "a1" }), { pushUrl: true, oneShots: { back: "task:t9" } });
   });
 
   it("plays a video from a presigned URL, never the byte route, with the sibling image as its poster", async () => {

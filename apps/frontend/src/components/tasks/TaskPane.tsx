@@ -17,6 +17,7 @@ import { PaneHeader } from "@/components/workspace/PaneHeader";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { capture } from "@/lib/analytics";
 import { TaskOutputs } from "@/components/creations/TaskOutputs";
+import { OutputBackContext } from "@/components/creations/openOutput";
 import { DecisionCard, endedLabel } from "./DecisionCard";
 import { TaskStatus } from "./TaskCard";
 import { sendToTask, useShowSteered } from "./taskReply";
@@ -70,7 +71,8 @@ export function TaskPane({ taskId, viewerId, onClose, onBack, headingRef }: {
       ? !error ? <p role="status" className="p-4 text-ui text-muted-foreground">Loading…</p>
         : gone ? <p role="status" className="p-4 text-ui text-muted-foreground">This task isn&apos;t available to you.</p>
         : <p role="alert" className="p-4 text-ui text-muted-foreground">This task couldn&apos;t load. <button type="button" className="underline hover:text-foreground" onClick={() => void mutate()}>Retry</button></p>
-      : <TaskPaneBody detail={data} viewerId={viewerId} actionError={actionError} />}
+      // A doc opened from this task's Progress comes back here ("‹ Task", Escape).
+      : <OutputBackContext.Provider value={`task:${taskId}`}><TaskPaneBody detail={data} viewerId={viewerId} actionError={actionError} /></OutputBackContext.Provider>}
   </aside>;
 }
 

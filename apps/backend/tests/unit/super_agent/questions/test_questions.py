@@ -224,10 +224,19 @@ def test_gate_replays_same_idem_key_done():
     assert questions.gate(effect, [done]) == questions.GateResult("replay", result_ref="ses:abc")
 
 
-def test_gate_earlier_done_send_asks_again():
-    """Sending the same mail twice is a second send: a fresh approval, not a replay."""
+def test_gate_earlier_done_send_asks_again_after_the_window():
+    """Sending the same mail again long after is a second send: a fresh approval, not a replay."""
     effect = _eff("T:3:c9", "proposed", attempt=3)
-    assert questions.gate(effect, [_eff("T:1:c1", "done")]).decision == "needs_approval"
+    old = {**_eff("T:1:c1", "done"), "updatedAt": "2026-11-06T05:00:00+00:00"}
+    assert questions.gate(effect, [old], recent_since="2026-11-06T05:50:00+00:00").decision == "needs_approval"
+
+
+def test_gate_replays_a_recent_identical_done_call():
+    """Gate run 9: two separate identical send calls 17 s apart both went. Within the window the second replays."""
+    effect = _eff("T:1:c2", "proposed")
+    done = {**_eff("T:1:c1", "done"), "updatedAt": "2026-11-06T05:56:50+00:00", "resultRef": "ses:1"}
+    res = questions.gate(effect, [done], recent_since="2026-11-06T05:47:07+00:00")
+    assert res == questions.GateResult("replay", result_ref="ses:1")
 
 
 def test_gate_deny_wins_over_later_retry_approval():

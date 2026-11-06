@@ -151,6 +151,32 @@ async def test_auto_member_mail_proceeds_and_is_logged(api, mode):
     assert row["allowedBy"] == "mode:auto"  # and why it went ahead
 
 
+async def _land(tid, call, ref="ses:1"):
+    await effects_repo.mark_effect_done(WS, f"{tid}:1:{call}", disposition="done", result_ref=ref)
+
+
+async def test_auto_duplicate_identical_send_replays_instead_of_sending_twice(api, mode):
+    """Gate run 9 (task d440eab3): under Auto the Worker called send twice, 17 s apart, with the same mail. Two tool
+    calls, two idemKeys, both went ahead: two emails. The second identical call now replays the first's result."""
+    tid = await _started()
+    ops = {"to": "sam@acme.dev", "subject": "Workshop", "body": "Moved to Friday."}
+    first = await api.post(_url(), json=await _body(tid, "c1", "mail.send", ops), headers=H)
+    assert first.json() == {"decision": "proceed"}
+    await _land(tid, "c1")
+    second = await api.post(_url(), json=await _body(tid, "c2", "mail.send", ops), headers=H)
+    assert second.json() == {"decision": "replay", "result": "ses:1"}
+    assert await effects_repo.get_effect(WS, f"{tid}:1:c2") is None  # no second row: one email
+
+
+async def test_auto_send_with_a_different_body_still_goes(api, mode):
+    tid = await _started()
+    ops = {"to": "sam@acme.dev", "subject": "Workshop", "body": "Moved to Friday."}
+    await api.post(_url(), json=await _body(tid, "c1", "mail.send", ops), headers=H)
+    await _land(tid, "c1")
+    other = await api.post(_url(), json=await _body(tid, "c2", "mail.send", {**ops, "body": "Room 4."}), headers=H)
+    assert other.json() == {"decision": "proceed"}
+
+
 async def test_auto_outsider_mail_asks(api, mode):
     tid = await _started()
     resp = await api.post(_url(), json=await _body(tid, "c1", "mail.send", {"to": "x@example.com"}), headers=H)

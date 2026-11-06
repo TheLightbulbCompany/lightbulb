@@ -111,7 +111,7 @@ async def test_same_operands_after_deny_returns_denied(api):
     assert await effects_repo.get_effect(WS, f"{tid}:1:c2") is None  # no second card, no new row
 
 
-async def test_approved_once_then_asks_again(api):
+async def test_approved_once_then_asks_again(api, monkeypatch):
     tid = await _started(api)
     await api.post(_url(WS), json=await _body(tid), headers=H)
     await effects_repo.set_effect_state(WS, f"{tid}:1:c1", to="approved", fields={"questionId": "q-a"})
@@ -132,9 +132,13 @@ async def test_approved_once_then_asks_again(api):
         headers=H,
     )
     assert done.status_code == 200 and done.json()["state"] == "done"
-    # After it landed, the same mail again is a second send: a fresh approval, the old one is spent.
+    # Right after it landed, the same mail again replays it (gate run 9: never a duplicate send) ...
     fourth = await api.post(_url(WS), json=await _body(tid, "c4"), headers=H)
-    assert fourth.json()["decision"] == "needs_approval"
+    assert fourth.json() == {"decision": "replay", "result": "mail:sent"}
+    # ... and past the window it is a second send: a fresh approval, the old one is spent.
+    monkeypatch.setattr(ri, "_recent_since", lambda: "9999")
+    fifth = await api.post(_url(WS), json=await _body(tid, "c5"), headers=H)
+    assert fifth.json()["decision"] == "needs_approval"
 
 
 async def test_replay_same_idem_key_done(api):

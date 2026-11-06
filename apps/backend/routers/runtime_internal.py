@@ -22,6 +22,7 @@ import hashlib
 import hmac
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request, Response
@@ -320,6 +321,14 @@ async def _mode_allows(ws: str, kind: str, operands: dict) -> str | None:
     return None if questions.asks(mode, kind, operands, members=members, limits=limits) else f"mode:{mode}"
 
 
+#: An identical effect that went ahead in the same task this recently is replayed, never run twice (gate run 9).
+_DUPLICATE_WINDOW = timedelta(minutes=10)
+
+
+def _recent_since() -> str:
+    return (datetime.now(timezone.utc) - _DUPLICATE_WINDOW).isoformat()
+
+
 @router.post("/{owner_id}/effects")
 async def effect_check(owner_id: str, body: EffectBody, request: Request) -> dict:
     await _gate(owner_id, request)
@@ -346,7 +355,8 @@ async def effect_check(owner_id: str, body: EffectBody, request: Request) -> dic
     # Questions a Close cancelled: their proposed calls are never reused after a Reopen (dev walk 7).
     closed = {q["qid"] for q in await questions_repo.list_for_task(owner_id, body.task_id) if q["state"] == "cancelled"}
     for _ in range(2):  # one re-read when the approval was used under us (Landing or a parallel call won)
-        res = questions.gate(effect, await effects_repo.effects_for(owner_id, body.task_id, body.operands_hash), closed)
+        prior = await effects_repo.effects_for(owner_id, body.task_id, body.operands_hash)
+        res = questions.gate(effect, prior, closed, recent_since=_recent_since())
         if res.decision != "proceed":
             break
         if res.approved_idem_key == body.idem_key:

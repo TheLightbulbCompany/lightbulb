@@ -1,5 +1,5 @@
 // Home's Ideas lane: suggested ideas as cards (title, why, who would do it) with Do it / Not now; with none yet,
-// catalog ideas as starter chips.
+// nothing at all.
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -14,7 +14,7 @@ vi.mock("@/lib/notify", () => ({ notifyApiError: vi.fn() }));
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 vi.mock("@/components/workspace/workspaceController", () => controller);
 
-import { HomeIdeas, STARTERS } from "../HomeIdeas";
+import { HomeIdeas } from "../HomeIdeas";
 
 const idea = (id: string, over: Partial<Idea> = {}): Idea => ({
   id, kind: "agency", size: "task", businessTypes: ["any"], emoji: "💡", title: `Title ${id}`, why: `Why ${id}`,
@@ -64,12 +64,12 @@ describe("HomeIdeas", () => {
     expect(screen.getByRole("button", { name: "Do it" })).toBeEnabled();
   });
 
-  it("with no suggestions, catalog ideas are starter chips that open the idea", async () => {
+  it("with no suggestions, the lane is absent: no generic starter chips (W11-6)", async () => {
     client.listIdeas.mockResolvedValue({ ideas: ["a", "b", "c", "d", "e"].map((id) => idea(id)) });
     lane();
-    const chips = within(await screen.findByRole("list", { name: "Starter ideas" })).getAllByRole("button");
-    expect(chips).toHaveLength(STARTERS);
-    await userEvent.click(chips[0]);
-    expect(controller.openPanel).toHaveBeenCalledWith("ideas", { idea: expect.any(String) }, { pushUrl: true });
+    await waitFor(() => expect(client.listIdeas).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.queryByRole("heading", { name: /Ideas/ })).toBeNull();
+    expect(screen.queryByText("Title a")).toBeNull();
   });
 });

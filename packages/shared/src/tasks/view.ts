@@ -285,19 +285,29 @@ export const ALWAYS_ALLOW_UNAVAILABLE = "Can't be remembered: this names no fixe
 
 export interface DecisionButton { id: string; label: string; style: "primary" | "secondary" | "danger"; disabledReason?: string }
 
+/** The operand an Always-allow rule binds to, per effect kind (questions.py `_TARGET_KEYS`). */
+const TARGET_KEYS: Record<string, string> = { "mail.send": "to", "text.send": "to", "app.publish": "appId", "pr.merge": "repo", "a2a.send": "to" };
+/** The preview (the effect's kind and operands) names a fixed target, so today's server would offer Always allow. */
+const namesTarget = (preview: unknown): boolean => {
+  const p = (preview ?? {}) as Record<string, unknown>;
+  const key = TARGET_KEYS[String(p.kind)];
+  return Boolean(key && typeof p[key] === "string" && p[key]);
+};
+
 /** Money and provider consent are never remembered (questions.py `NEVER_REMEMBERED`): no Always allow at all. */
 const NEVER_REMEMBERED = new Set(["purchase", "spend", "budget_override", "provider_consent"]);
 
 /** The one decision card's buttons, the same on every surface (web pane, card, Activity; phone): Deny / Request
  *  changes first, then the server's options in order. An approval the server can't remember (it offers Allow once but
  *  no Always allow) still shows Always allow, disabled with the reason, so the person knows why it is missing; a
- *  purchase or provider ask (`subkind`) shows no Always allow at all. */
-export function decisionButtons(options: readonly (OptionLike & { label: string })[], subkind?: string | null): DecisionButton[] {
+ *  purchase or provider ask (`subkind`) shows no Always allow at all, and neither does a card made before Always allow
+ *  existed (#4891) whose `preview` does name a fixed target: the reason would be wrong for it (W11-3). */
+export function decisionButtons(options: readonly (OptionLike & { label: string })[], subkind?: string | null, preview?: unknown): DecisionButton[] {
   const style = (o: OptionLike): DecisionButton["style"] => (o.style === "primary" || o.style === "danger" ? o.style : "secondary");
   const out: DecisionButton[] = [...options.filter((o) => SAFE_OPTIONS.has(o.id)), ...options.filter((o) => !SAFE_OPTIONS.has(o.id))]
     .map((o) => ({ id: o.id, label: o.label, style: style(o) }));
   if (NEVER_REMEMBERED.has(subkind ?? "")) return out.filter((b) => b.id !== "allow_always");
-  if (options.some((o) => o.id === "allow_once") && !options.some((o) => o.id === "allow_always")) {
+  if (options.some((o) => o.id === "allow_once") && !options.some((o) => o.id === "allow_always") && !namesTarget(preview)) {
     out.push({ id: "allow_always", label: "Always allow", style: "secondary", disabledReason: ALWAYS_ALLOW_UNAVAILABLE });
   }
   return out;

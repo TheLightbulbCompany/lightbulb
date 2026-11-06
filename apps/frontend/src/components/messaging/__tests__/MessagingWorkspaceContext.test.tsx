@@ -1388,3 +1388,30 @@ it("tells notifications the session chat on screen shows replies inline, and sto
   act(() => workspaceValue.setSideRoom("app-conversation:a1", null));
   expect(side()).toEqual([]);
 });
+
+describe("askLightbulb (Home's Ask box)", () => {
+  it("with no DM yet: one resolve (which creates it), one send to that room, then that room opens; no second resolve", async () => {
+    const sendMessage = vi.fn(async () => ({}));
+    Object.assign(state.resourceSource.client, { sendMessage });
+    state.selectDm.mockResolvedValue("dm-new");
+    compose();
+    await act(async () => { await workspaceValue.askLightbulb("Plan the launch"); });
+    // The front agent is the roster's CEO seat (agent-atlas), never a specialist.
+    expect(state.selectDm).toHaveBeenCalledTimes(1);
+    expect(state.selectDm).toHaveBeenCalledWith({ kind: "agent", id: "agent-atlas" }, { activate: false });
+    expect(state.createRoom).not.toHaveBeenCalled();
+    expect(state.selectAgentDm).not.toHaveBeenCalled();
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(sendMessage).toHaveBeenCalledWith("dm-new", expect.objectContaining({ text: "Plan the launch", mentions: [], threadRootMessageId: null }));
+    expect(state.selectRoom).toHaveBeenCalledWith("dm-new");
+    expect(sendMessage.mock.invocationCallOrder[0]).toBeLessThan(state.selectRoom.mock.invocationCallOrder[0]);
+  });
+
+  it("a failed send rejects and opens nothing", async () => {
+    Object.assign(state.resourceSource.client, { sendMessage: vi.fn(async () => { throw new Error("offline"); }) });
+    state.selectDm.mockResolvedValue("dm-new");
+    compose();
+    await act(async () => { await expect(workspaceValue.askLightbulb("Hi")).rejects.toThrow("offline"); });
+    expect(state.selectRoom).not.toHaveBeenCalled();
+  });
+});

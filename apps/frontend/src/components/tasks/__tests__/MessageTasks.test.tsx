@@ -1,5 +1,4 @@
 import { render, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
 import type { CanonicalRoomMessage } from "@lightbulb/shared";
 import { FIXTURES, ROOM, SAM } from "@lightbulb/shared/tasks/fixtures";
@@ -11,7 +10,7 @@ vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 
 import { MessageTasks } from "../MessageTasks";
 
-it("the Router's one-line result carries its task as a chip that opens it, not a second card (UX slice 3)", async () => {
+it("the Router's one-line result carries no second task chip and no card: the ack's chip is the task's one (dev walk 13, W13-1)", async () => {
   const task = FIXTURES.step08.tasks[0];
   live.tasks = fakeTasksClient(FIXTURES.step08.tasks, FIXTURES.step08.details);
   const line = {
@@ -19,13 +18,27 @@ it("the Router's one-line result carries its task as a chip that opens it, not a
     text: "Done: sent.", mentions: [], replyToMessageId: null, threadRootMessageId: null, createdAt: "2026-11-06T10:00:00Z", runId: null,
     kind: "task_line", taskRefs: [{ taskId: task.taskId, role: "started" }],
   } as CanonicalRoomMessage;
-  const onOpen = vi.fn();
-  render(<Fresh><MessageTasks message={line} viewerId={SAM} onOpen={onOpen} /></Fresh>);
-  const chip = await screen.findByRole("button", { name: new RegExp(task.title) });
-  expect(chip).toHaveAttribute("data-task-chip", task.taskId);
+  const outputs = [{ id: "file:1", kind: "file" as const, title: "menu-blurbs.md", ref: {}, createdAt: "2026-11-06T10:00:00Z" }];
+  live.tasks = fakeTasksClient([{ ...task, outputs }], FIXTURES.step08.details);
+  const acked = new Set([`|${task.taskId}`]);
+  const { unmount } = render(<Fresh><MessageTasks message={line} viewerId={SAM} onOpen={vi.fn()} ackedTasks={acked} /></Fresh>);
+  expect(await screen.findByRole("button", { name: "Open menu-blurbs.md" })).toBeInTheDocument();
+  expect(document.querySelector("[data-task-chip]")).toBeNull();
   expect(document.querySelector("[data-task-card]")).toBeNull();
-  await userEvent.click(chip);
-  expect(onOpen).toHaveBeenCalledWith(task.taskId);
+  unmount();
+  // The ack in a thread (or not loaded): the finish line in the main list is the way in, so it keeps the chip.
+  const { unmount: second } = render(<Fresh><MessageTasks message={line} viewerId={SAM} onOpen={vi.fn()} ackedTasks={new Set([`m1|${task.taskId}`])} /></Fresh>);
+  expect(await screen.findByRole("button", { name: new RegExp(task.title) })).toHaveAttribute("data-task-chip", task.taskId);
+  second();
+  // Nothing made: the chip is the finish line's only way into the task.
+  live.tasks = fakeTasksClient([task], FIXTURES.step08.details);
+  const { unmount: third } = render(<Fresh><MessageTasks message={line} viewerId={SAM} onOpen={vi.fn()} ackedTasks={acked} /></Fresh>);
+  expect(await screen.findByRole("button", { name: new RegExp(task.title) })).toHaveAttribute("data-task-chip", task.taskId);
+  third();
+  // A failed task always keeps its chip, so Retry is reachable from the finish line.
+  live.tasks = fakeTasksClient([{ ...task, status: "failed", shownGroup: "waiting_on_you", ownerUserId: SAM, outputs }], FIXTURES.step08.details);
+  render(<Fresh><MessageTasks message={line} viewerId={SAM} onOpen={vi.fn()} ackedTasks={acked} /></Fresh>);
+  expect(await screen.findByRole("button", { name: /Didn't finish/ })).toHaveAttribute("data-task-chip", task.taskId);
 });
 
 it("the Router's ack carries its task as a compact chip with the specialist, never a full card (dev walk 10)", async () => {
@@ -61,13 +74,12 @@ it("one task, one live chip: Working with its timer, then Done with the run's le
     activity: { ...working.activity, status: "ended" as const, endedAt: new Date(Date.parse(started) + 62_000).toISOString() },
     outputs: [{ id: "file:1", kind: "file" as const, title: "bakery-tagline-options.md", ref: {}, createdAt: started }] };
   live.tasks = fakeTasksClient([done], FIXTURES.step08.details);
-  render(<Fresh><MessageTasks message={msg()} viewerId={SAM} /><MessageTasks message={msg("task_line")} viewerId={SAM} /></Fresh>);
+  const acked = new Set([`|${base.taskId}`]);
+  render(<Fresh><MessageTasks message={msg()} viewerId={SAM} ackedTasks={acked} /><MessageTasks message={msg("task_line")} viewerId={SAM} ackedTasks={acked} /></Fresh>);
   const chips = await screen.findAllByRole("button", { name: new RegExp(`${base.title}, Done · 1:02`) });
-  expect(chips).toHaveLength(2);
-  // What it made shows once, under the finish line's chip; the ack's chip is the live state alone.
-  const doc = screen.getAllByRole("button", { name: "Open bakery-tagline-options.md" });
-  expect(doc).toHaveLength(1);
-  expect(chips[1].parentElement).toContainElement(doc[0]);
+  // One chip for the task, the ack's (W13-1); what it made shows once, on the finish line.
+  expect(chips).toHaveLength(1);
+  expect(screen.getAllByRole("button", { name: "Open bakery-tagline-options.md" })).toHaveLength(1);
 });
 
 it("a task the viewer can't view shows no chip and no output under the ack or the finish line (dev walk 12, privacy)", async () => {

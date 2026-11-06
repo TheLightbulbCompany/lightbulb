@@ -30,7 +30,7 @@ const SESSION_WORDS: ChatWords = {
  * the draft. It posts only through the room message door; a chat seat never lets anyone type into
  * the session. Threads and reactions are left out: replies render inline.
  */
-export function SessionChat({ sessionId, sessionOwnerId, openChat, onClose, onRoom, onRead, onSend, readOnly = false, hideMessage, words = SESSION_WORDS }: {
+export function SessionChat({ sessionId, sessionOwnerId, openChat, onClose, onRoom, onRead, onSend, readOnly = false, hideMessage, bare = false, words = SESSION_WORDS }: {
   /** What openChat opens: a session, or an app in Canvas. */
   sessionId: string;
   /** The session's own person: their name takes the owner colour, as in the terminal. */
@@ -49,6 +49,9 @@ export function SessionChat({ sessionId, sessionOwnerId, openChat, onClose, onRo
   readOnly?: boolean;
   /** Messages shown elsewhere on screen (a request's open question card sits above its progress). */
   hideMessage?: (message: RoomMessage) => boolean;
+  /** Read-only messages in the page's own flow (a task's result in its pane, dev walk 13): no box, title, day or
+   *  lifecycle rules, file cards (the task's output chips show them) or scroller of its own; nothing while empty. */
+  bare?: boolean;
 }) {
   const { userId } = useAuth();
   // Read-only progress sits beside a room: it never takes that room's one live channel (it would stop the room's
@@ -121,10 +124,15 @@ export function SessionChat({ sessionId, sessionOwnerId, openChat, onClose, onRo
     currentUserId={me} actionable={!archived && !readOnly} inThread={false} collapsed={collapsed} replyCount={0} highlighted={false}
     mentionsViewer={message.mentions.some((m) => m.kind === "human" && m.id === me)}
     markdown={roomMarkdown} urlTransform={roomUrlTransform} quickReactions={NO_REACTIONS} reactionPending={false} reactionError={false}
-    onDownloadAttachment={rooms.downloadAttachment} onAttachmentUrl={rooms.attachmentUrl}
+    onDownloadAttachment={bare ? undefined : rooms.downloadAttachment} onAttachmentUrl={rooms.attachmentUrl}
     personColor={message.author.kind === "human" ? personColor(message.author.id, sessionOwnerId) : undefined} />;
   };
 
+  if (bare) {
+    if (rooms.accessRemoved || error) return <p role="status" className="px-1 text-ui text-muted-foreground">{rooms.accessRemoved ? "Access removed." : error}</p>;
+    const shown = messages.filter((m) => m.kind !== "marker");
+    return shown.length ? <section aria-label={words.label} className="grid">{shown.map((m) => renderMessage(m, false))}</section> : null;
+  }
   return <aside className="session-chat" aria-label={words.label}>
     <header className="room-context-header">
       {/* On the left, and not an X: the session's own close sits at the right end of its header, where this one used to land. */}

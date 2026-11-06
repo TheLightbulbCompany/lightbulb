@@ -5,14 +5,14 @@
 
 import { useState, type ReactElement } from "react";
 import { MoreHorizontal } from "lucide-react";
-import { overviewGroups, summaryView, taskSummaryLine, useOlderTasks, useTaskList, useTaskQuestions, type TaskScope, type TaskSummary } from "@lightbulb/shared";
+import { overviewGroups, specialistLabel, summaryView, taskSummaryLine, useOlderTasks, useTaskList, useTaskQuestions, type TaskScope, type TaskSummary } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { copyText, taskPermalink } from "@/components/messaging/messageLinks";
 import { DecisionCard } from "./DecisionCard";
-import { ActorLine } from "./TaskCard";
+import { Ticking } from "./TaskPane";
 import { useTaskActions } from "./useTaskActions";
 
 const RESOLVED_OPEN_KEY = "lightbulb.overview.resolvedOpen";
@@ -39,15 +39,18 @@ export function RequestGroups({ scope, viewerId, onOpen }: { scope: TaskScope; v
   const { data, error, mutate } = useTaskList(tasks, scope);
   const { older, hasOlder, loading, loadOlder } = useOlderTasks(tasks, data, scope);
   const [resolvedOpen, setResolvedOpen] = useState(() => readResolvedOpen(viewerId));
-  // Done collapses by default too (07 §2), so the list leads with what needs you and what is moving.
-  const [doneOpen, setDoneOpen] = useState(false);
+  // Done collapses by default too (07 §2), so the list leads with what needs you and what is moving; unless it is
+  // the only group with tasks, where collapsing hides everything there is (dev walk 13, W13-11). A press wins.
+  const [doneOpen, setDoneOpen] = useState<boolean | null>(null);
   if (!data) return error
     ? <p role="alert" className="text-ui text-muted-foreground">Tasks couldn&apos;t load. <button type="button" className="underline hover:text-foreground" onClick={() => void mutate()}>Retry</button></p>
     : <p role="status" className="text-ui text-muted-foreground">Loading…</p>;
+  const groups = overviewGroups([...data.tasks, ...older]);
+  const onlyDone = groups.every((g) => g.id === "done" ? g.tasks.length > 0 : !g.tasks.length);
   return <div className="grid gap-4">
-    {overviewGroups([...data.tasks, ...older]).map((group) => {
+    {groups.map((group) => {
       const collapsible = group.collapsed || group.id === "done";
-      const open = !collapsible || (group.id === "done" ? doneOpen : resolvedOpen);
+      const open = !collapsible || (group.id === "done" ? doneOpen ?? onlyDone : resolvedOpen);
       const toggle = () => { if (group.id === "done") setDoneOpen(!open); else { setResolvedOpen(!open); writeResolvedOpen(viewerId, !open); } };
       const headingId = `overview-${group.id}`;
       return <section key={group.id} aria-labelledby={headingId}>
@@ -89,6 +92,7 @@ export function OverviewRow({ task, viewerId, onOpen, project }: {
   project?: string | null;
 }): ReactElement {
   const { act } = useTaskActions("overview");
+  const { agentNames } = useLiveEvents();
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const view = summaryView(task, viewerId);
@@ -113,11 +117,13 @@ export function OverviewRow({ task, viewerId, onOpen, project }: {
         className="min-w-0 shrink truncate text-left font-semibold after:absolute after:inset-0 after:rounded-md after:content-[''] focus-visible:outline-none focus-visible:after:outline-2 focus-visible:after:outline-ring">{task.title}</button>
       {project && <span className="max-w-[40%] flex-none truncate text-ui text-muted-foreground"><span aria-hidden="true">· </span>{project}</span>}
       {view.word === "Working"
-        ? <><span aria-hidden="true" className="text-muted-foreground">—</span><ActorLine task={task} viewerId={viewerId} inline className="min-w-0" /></>
+        ? <span className="min-w-0 truncate text-ui text-muted-foreground"><span aria-hidden="true">— </span>{[specialistLabel(task.specialist, agentNames), view.reason].filter(Boolean).join(" · ")}</span>
         : after && <span className="min-w-0 truncate text-ui text-muted-foreground"><span aria-hidden="true">— </span>{after}</span>}
     </p>
     {error && <span role="alert" className="shrink-0 text-ui text-err">{error}</span>}
     {copied && <span role="status" className="shrink-0 text-ui text-muted-foreground">Link copied</span>}
+    {/* Working: the clock in the age's place, never cut (dev walk 13: "Growth · working · …"); the group says Working. */}
+    {view.word === "Working" && <span className="shrink-0 text-caption text-muted-foreground"><Ticking since={task.updatedAt} /></span>}
     {view.word !== "Working" && task.updatedAt && <time dateTime={task.updatedAt} title={new Date(task.updatedAt).toLocaleString()}
       className="shrink-0 text-caption tabular-nums text-muted-foreground">{timeAgo(task.updatedAt)}</time>}
     <div className="relative z-10 flex items-center">
@@ -128,7 +134,7 @@ export function OverviewRow({ task, viewerId, onOpen, project }: {
         <DropdownMenuContent align="end">
           <DropdownMenuItem onSelect={() => onOpen(task.taskId)}>Open</DropdownMenuItem>
           <DropdownMenuItem onSelect={() => void copyLink()}>Copy link</DropdownMenuItem>
-          {task.status !== "resolved" && <DropdownMenuItem onSelect={() => void press("resolve")}>Mark done</DropdownMenuItem>}
+          {task.status !== "resolved" && <DropdownMenuItem onSelect={() => void press("resolve")}>Close</DropdownMenuItem>}
         </DropdownMenuContent>
       </DropdownMenu>
     </div>

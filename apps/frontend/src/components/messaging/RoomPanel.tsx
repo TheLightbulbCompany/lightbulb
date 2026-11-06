@@ -152,14 +152,19 @@ export interface RoomPanelProps {
   frontAgentId?: string;
   /** The workspace runtime is still being set up: with the switch on, the viewer's unanswered message reads "Queued". */
   runtimeStarting?: boolean;
+  /** Messages each agent has read (live `room.read.changed`): the Router's receipt on a message it handled without a
+   *  post ends "Lightbulb is reading…" (dev walk 13). */
+  agentReads?: ReadonlyMap<string, ReadonlySet<string>>;
   onDownloadAttachment?: (roomId: string, attachmentId: string) => Promise<Blob>;
   onAttachmentUrl?: (roomId: string, attachmentId: string) => Promise<{ url: string }>;
   /** A card's click: posts the person's answer in reply to the card (MessagingWorkspaceContext builds it). */
   onCardReply?: (reply: CardReply) => Promise<void>;
 }
 
-/** How long a silent ask reads "Lightbulb is on it…" (a reply took ~2 min in the 5 Nov walk). */
+/** How long a silent ask reads "Lightbulb is reading…" at most: an ask Lightbulb must answer (a reply took ~2 min in the
+ *  5 Nov walk), and one it may only read (the Router's read receipt ends it sooner; this is the fallback). */
 const ON_IT_MS = 5 * 60_000;
+const READING_MS = 60_000;
 const NO_PINNED_MESSAGES: readonly string[] = [];
 const NO_TASK_IDS: readonly string[] = [];
 /** The project pane's list views (super-agent): the header's three toggles. */
@@ -349,6 +354,7 @@ function RoomContent({
   onLinkToWork,
   frontAgentId,
   runtimeStarting = false,
+  agentReads,
   onDownloadAttachment,
   onAttachmentUrl,
   onCardReply,
@@ -525,12 +531,14 @@ function RoomContent({
     }
     return replies;
   }, [messages]);
-  // Super-agent: the viewer's last ask to Lightbulb with nothing back yet (no later message, no agent reply under it,
-  // no run on screen) reads "Lightbulb is on it…" until its reply or card lands. The Router posts no typing signal,
-  // so this is the client's, and it promises only what admission's fast path promises: a DM, an @mention of
-  // Lightbulb's seat, or "Hi Lightbulb, …", unless Lightbulb only observes. Anything else goes to Jev and the Router,
-  // which may stay quiet and say nothing, so "on it" would hang for minutes and vanish (dev walk W9-1).
-  // ponytail: gives up after ON_IT_MS of silence; a server "seen" signal would replace the timer.
+  // Super-agent: the viewer's last message with nothing back yet (no later message, no agent reply under it, no run on
+  // screen) reads "Lightbulb is reading…" from send until its ack or reply lands (dev walk 13: ~45 s of nothing). The
+  // Router posts no typing signal, so this is the client's. An ask admission's fast path answers (a DM, an @mention of
+  // Lightbulb's seat, "Hi Lightbulb, …") holds it for ON_IT_MS; anything else in a project Lightbulb listens to goes to
+  // Jev and the Router, which may stay quiet (dev walk W9-1): the Router's read receipt on a message it handled without a
+  // post ends it, and READING_MS is the fallback if that receipt is lost. "Reading" promises no
+  // answer. Never while Lightbulb only observes or listens for mentions.
+  // ponytail: timers; a server "seen" / "ignored" signal would replace them.
   const front = superAgent && !runtimeStarting ? participants.find((p) => p.kind === "agent" && p.mentionHandle === "lightbulb") : undefined;
   const lastMain = mainMessages.findLast((message) => !message.deletedAt);
   const askPending = front && lastMain && lastMain.author.kind === "human" && lastMain.author.id === currentUserId
@@ -539,16 +547,19 @@ function RoomContent({
     && !allRuns.some((run) => run.triggerMessageId === lastMain.messageId)
     && ![...(repliesByRoot.get(lastMain.messageId)?.authors.values() ?? [])].some((author) => author.kind === "agent")
     && front.listenMode !== "observe"
-    && (room?.kind === "dm" || lastMain.mentions.some((m) => m.kind === "agent" && m.id === front.id) || namesAgent(lastMain.text, front.displayName))
+    && !agentReads?.get(front.id)?.has(lastMain.messageId)
     ? lastMain : undefined;
+  const addressed = !!askPending && !!front && (room?.kind === "dm"
+    || askPending.mentions.some((m) => m.kind === "agent" && m.id === front.id) || namesAgent(askPending.text, front.displayName));
+  const readingPending = askPending && (addressed || front?.listenMode !== "mentions") ? askPending : undefined;
   const [onItExpired, setOnItExpired] = useState<string | null>(null);
   useEffect(() => {
-    if (!askPending) return;
-    const left = ON_IT_MS - (Date.now() - Date.parse(askPending.createdAt));
-    const timer = window.setTimeout(() => setOnItExpired(askPending.messageId), Math.max(0, left));
+    if (!readingPending) return;
+    const left = (addressed ? ON_IT_MS : READING_MS) - (Date.now() - Date.parse(readingPending.createdAt));
+    const timer = window.setTimeout(() => setOnItExpired(readingPending.messageId), Math.max(0, left));
     return () => window.clearTimeout(timer);
-  }, [askPending]);
-  const onIt = askPending && onItExpired !== askPending.messageId ? front : undefined;
+  }, [readingPending, addressed]);
+  const onIt = readingPending && onItExpired !== readingPending.messageId ? front : undefined;
   // Only membership changes invalidate history; streamed text/tool frames do not.
   const workingThreadKey = JSON.stringify(runs.filter(run => run.state === "running" && run.threadRootMessageId)
     .map(run => [run.threadRootMessageId, run.agentId]));
@@ -838,6 +849,10 @@ function RoomContent({
   // One pass per message list, so a keystroke (which re-renders the panel) re-scans nothing.
   const { cardsEnabled, repliesEnabled } = cardControls(room);
   const cardAnswers = useMemo(() => cardAnswersFor(messages), [messages]);
+  // The tasks whose ack chip is in this timeline, per thread ("" = the main list): a finish line beside one shows only
+  // what the task made (W13-1); anywhere else it keeps the chip, so the task stays openable.
+  const ackedTasks = useMemo(() => new Set(messages.filter((m) => !m.kind && !m.deletedAt && m.taskRefs?.length)
+    .flatMap((m) => m.taskRefs!.map((r) => `${m.threadRootMessageId ?? ""}|${r.taskId}`))), [messages]);
   const renderMessage = useCallback((message: RoomMessage, inThread = false, collapsed = false) => {
     const participant = participants.find((member) => member.kind === message.author.kind && member.id === message.author.id);
     const mentionsMe = message.mentions.some((mention) => mention.kind === "human" && mention.id === currentUserId);
@@ -857,7 +872,7 @@ function RoomContent({
       onSelectParticipant={onSelectParticipant} onUpdateMessage={onUpdateMessage} onDownloadAttachment={onDownloadAttachment} onAttachmentUrl={onAttachmentUrl}
       cardsEnabled={cardsEnabled} onCardReply={repliesEnabled && participant ? onCardReply : undefined} cardAnswer={cardAnswers.get(message.messageId) ?? null}
       sessions={visibleSessions} onOpenSession={openSessionPanel}
-      onOpenTask={superAgent ? openTask : undefined} isAgentId={superAgent ? isAgentId : undefined}
+      onOpenTask={superAgent ? openTask : undefined} isAgentId={superAgent ? isAgentId : undefined} ackedTasks={ackedTasks}
       menuExtras={!message.deletedAt && (onSetPin || (onMarkUnreadFrom && !inThread)) ? <>
         {/* disabled/aria-busy reflect messageActionPending -- shared across every message's
             menu here, same one-pending-pair-per-surface shape as useAsyncAction's doc comment.
@@ -894,7 +909,7 @@ function RoomContent({
     }
     return body(message.text);
   }, [revealStarter, general, participants, currentUserId, repliesByRoot, threadActivity, receipts, id, actionable, editTarget, searchTarget,
-    quickReactions, reactionPending, reactionError, onSetReaction, toggleReaction, openDetail, openTask, superAgent, isAgentId,
+    quickReactions, reactionPending, reactionError, onSetReaction, toggleReaction, openDetail, openTask, superAgent, isAgentId, ackedTasks,
     onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, onCardReply, cardsEnabled, repliesEnabled, cardAnswers, onSetPin, onMarkUnreadFrom,
     messageActionPending, runMessageAction, pinnedMessageIds, copied, copyError, roomId, visibleSessions]);
   // A run that ended without a saved reply (stopped, failed, no reply) stays where it happened,
@@ -1135,7 +1150,7 @@ function RoomContent({
           {superAgent && frontAgentId && visibleRoom?.kind === "dm" && counterparts.length === 1 && counterparts[0].id === frontAgentId && <FirstMoves />}
         </RoomTimeline>
       </div>
-      <p className="room-typing room-typing-live text-ui text-muted-foreground" role="status">{typingMembers.length > 0 ? `${typingMembers.slice(0, 3).map((member) => member.displayName).join(", ")}${typingMembers.length > 3 ? " and others" : ""} ${typingMembers.length === 1 ? "is" : "are"} typing…` : onIt ? `${onIt.displayName} is on it…` : ""}</p>
+      <p className="room-typing room-typing-live text-ui text-muted-foreground" role="status">{typingMembers.length > 0 ? `${typingMembers.slice(0, 3).map((member) => member.displayName).join(", ")}${typingMembers.length > 3 ? " and others" : ""} ${typingMembers.length === 1 ? "is" : "are"} typing…` : onIt ? `${onIt.displayName} is reading…` : ""}</p>
       {copied && <p role="status" aria-label="Link copied" className="sr-only">Link copied</p>}
       {messageActionError && <p role="alert" className="room-typing text-ui text-err">{messageActionError}</p>}
       {!visibleRoom?.archivedAt && <RoomLimitBar account={billing} />}

@@ -209,8 +209,10 @@ export function chipState(t: TaskSummary, viewerId: string, now: number): { mark
   if (t.status === "resolved" && (t.statusReason === "stopped" || t.statusReason === "dismissed")) {
     return { mark: "closed", word: t.statusReason === "stopped" ? "Stopped" : "Closed", time: null };
   }
-  // A person's Close after the work ended still reads as the work's outcome.
-  if (view.word === "Done" || t.status === "resolved") return { mark: "done", word: "Done", time: ran };
+  // One word on the chip, the list and the open task (dev walk 13, W13-3): a closed task reads Closed everywhere, with
+  // the ✓ of work that finished.
+  if (t.status === "resolved") return { mark: "done", word: "Closed", time: ran };
+  if (view.word === "Done") return { mark: "done", word: "Done", time: ran };
   if (view.word === "Needs you") return { mark: "waiting", word: view.reason === "Ready for review" ? "Ready for review" : "Needs you", time: null };
   return { mark: "working", word: "Working", time: !Number.isNaN(from) && Number.isNaN(to) ? clockTime(now - from) : null };
 }
@@ -536,6 +538,26 @@ const STEP_NOUNS: Partial<Record<ToolKind, [string, string]>> = {
  *  and hidden when the run has a step that did something. */
 const INTERNAL_STEPS: Record<string, string> = {
   "Read skill": "Checked how to do it", "Listed skills": "Checked how to do it", "Looked up a tool": "Prepared tools",
+};
+
+/** The run's latest step, said as it happens (dev walk 13, W13-5): "Searching the web…", "Running a command…",
+ *  "Writing a file…"; "Getting started…" before the first. Internal steps read as "Checking how to do it…".
+ *  ponytail: the last recorded tool stands for what runs now; the bridge's live tool frame would be exact. */
+export function stepNow(tools: readonly unknown[]): string {
+  const last = tools.at(-1);
+  const t = (typeof last === "string" ? { name: last } : last ?? {}) as Record<string, unknown>;
+  const name = [t.name, t.tool, t.type].find((v) => typeof v === "string") as string | undefined;
+  if (!name) return "Getting started…";
+  const display = resolveToolDisplay(name, {});
+  const gerund = display.gerund.replace(/:$/, "");
+  const internal = INTERNAL_NOW[gerund];
+  if (internal) return `${internal}…`;
+  const noun = /^\w+$/.test(gerund) ? STEP_NOUNS[display.kind] : undefined;
+  return `${noun ? `${gerund} ${noun[0]}` : gerund}…`;
+}
+
+const INTERNAL_NOW: Record<string, string> = {
+  "Reading skill": "Checking how to do it", "Listing skills": "Checking how to do it", "Looking up a tool": "Preparing tools",
 };
 
 /** One line per run of the same step: "Searched the web · 9", "Read 2 pages", "Ran a command", "… · failed".

@@ -28,6 +28,21 @@ export function useMarkTaskPaneOpen(taskId: string): void {
 
 export const useOpenTaskId = (): string | null => useSyncExternalStore(subscribe, () => openTaskId, () => null);
 
+let steerTaskId: string | null = null;
+
+/** The open pane says whether its request takes the room composer (UX audit 2, P0): Working and Needs you do; a Done
+ *  one only after the pane's Follow up; a Closed one never. Opening a request to look never captures the next message. */
+export function useMarkTaskSteerable(taskId: string, on: boolean): void {
+  useEffect(() => {
+    if (!on) return;
+    steerTaskId = taskId;
+    emit();
+    return () => { if (steerTaskId === taskId) { steerTaskId = null; emit(); } };
+  }, [taskId, on]);
+}
+
+const useSteerTaskId = (): string | null => useSyncExternalStore(subscribe, () => steerTaskId, () => null);
+
 /** A room's composer, while it is on screen (null: not shown). */
 export function useMarkRoomComposer(roomId: string | null): void {
   useEffect(() => {
@@ -66,7 +81,7 @@ export function useShowSteered(tasks: Pick<TasksClient, "cacheScope"> | undefine
 }
 
 /**
- * The room composer's "Replying to: <request>" while that request's pane is open (and it isn't a suggestion):
+ * The room composer's "Replying to: <request>" while that request's pane is open and steerable (useMarkTaskSteerable):
  * sending then posts into the request's room. Removing the chip sends to the room as normal and `onRemove`
  * hands focus back to the composer. `roomId` is null when the room's composer isn't on screen.
  */
@@ -74,7 +89,7 @@ export function useTaskReply(roomId: string | null, draft: Pick<RoomComposerProp
   chip: ReactElement; composer: Partial<RoomComposerProps>;
 } | null {
   useMarkRoomComposer(roomId);
-  const taskId = useOpenTaskId();
+  const taskId = useSteerTaskId();
   // Optional: a room rendered outside the live provider (tests, the share page) simply has no chip.
   const live = useOptionalLiveEvents();
   const { data } = useTask(live?.tasks as TasksClient, live && roomId ? taskId : null);

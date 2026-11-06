@@ -94,3 +94,43 @@ describe("one text box: the room composer replies to the open thread", () => {
     expect(screen.queryByText(/Replying to:/)).toBeNull();
   });
 });
+
+describe("only a live request takes the room composer (UX audit 2, P0)", () => {
+  const withStatus = (task: object) => {
+    const t = { ...step8.task, ...task };
+    live.tasks = fakeTasksClient([t], { "t-signup": { ...step8, task: t, questions: [] } });
+  };
+  const open = () => render(<Fresh>
+    <Composer roomId={ROOM} roomSend={vi.fn()} onTextChange={vi.fn()} />
+    <TaskPane taskId="t-signup" viewerId={SAM} onClose={vi.fn()} />
+  </Fresh>);
+
+  it("Done: no chip on open; Follow up arms it", async () => {
+    withStatus({ status: "idle", shownGroup: "idle", watching: false });
+    open();
+    await userEvent.click(await screen.findByRole("button", { name: "Follow up" }));
+    expect(await screen.findByText(/Replying to:/)).toBeInTheDocument();
+  });
+
+  it("Done before Follow up: the next room message goes to the room", async () => {
+    withStatus({ status: "idle", shownGroup: "idle", watching: false });
+    const roomSend = vi.fn();
+    render(<Fresh>
+      <Composer roomId={ROOM} roomSend={roomSend} onTextChange={vi.fn()} />
+      <TaskPane taskId="t-signup" viewerId={SAM} onClose={vi.fn()} />
+    </Fresh>);
+    await screen.findByRole("button", { name: "Follow up" });
+    expect(screen.queryByText(/Replying to:/)).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(roomSend).toHaveBeenCalledWith("Make it blue");
+    expect(live.messaging.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("Closed: never a chip", async () => {
+    withStatus({ status: "resolved", shownGroup: "resolved" });
+    open();
+    await screen.findByRole("button", { name: "Reopen" });
+    expect(screen.queryByText(/Replying to:/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Follow up" })).toBeNull();
+  });
+});

@@ -76,6 +76,8 @@ _WORKER_TURN = {
 
 PATCH_CANCEL_QUESTIONS_ON_END = "O-cancel-questions-on-end-v1"  # audit #5
 PATCH_RECONCILE_CANCEL_QUESTIONS = "O-reconcile-cancel-questions-v1"  # a watchdog-failed orphan's open Questions
+#: Reopen puts the task back to Done (idle) and runs nothing; a steer or Retry starts the next attempt (UX audit 2).
+PATCH_REOPEN_TO_IDLE = "O-reopen-to-idle-v1"
 SYSTEM_ACTOR = "__system__"  # == core.constants.SYSTEM_ACTOR_ID (the sandbox imports no core modules)
 
 # Outcome → the status `end_attempt` leaves the task in (the workflow mirrors it to pick its next wait).
@@ -321,6 +323,9 @@ class TaskWorkflow(TaskQuestionsMixin, AutomationRunMixin, WatchMixin):
 
     @workflow.update
     async def reopen(self, req: ActionRequest) -> None:
+        if workflow.patched(PATCH_REOPEN_TO_IDLE):
+            await self._transition("idle", "reopened")
+            return
         self._attempt_needed = True
         self._wakes += 1
 

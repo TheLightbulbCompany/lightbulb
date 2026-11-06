@@ -200,10 +200,15 @@ async def test_reopen_after_resolve_reuses_workflow_id(temporal_env, fakes):
             TaskWorkflow.reopen, ActionRequest("sam"), start_workflow_operation=op
         )
         h2 = await op.workflow_handle()
-        await _until(lambda: "end_attempt" in fakes.names())
         assert h2.id == wid and h2.result_run_id != h.result_run_id
+        # Reopen = Done and open for follow-up (UX audit 2, P0): it runs nothing, only a steer does.
+        assert fakes.args("transition")[-1] == (WS, TID, "idle", "reopened")
+        await asyncio.sleep(0.3)
+        assert "begin_attempt" not in fakes.names() and "worker_turn" not in fakes.names()
+        await h2.signal(TaskWorkflow.input, TaskInputRef("chat:steer", "message"))
+        await _until(lambda: "end_attempt" in fakes.names())
         await h2.terminate()
-    assert len(fakes.args("begin_attempt")) == 1
+    assert fakes.args("begin_attempt")[0][2] == ["chat:steer"]
 
 
 async def test_stop_when_turn_ends_during_mark_stop(temporal_env, fakes):

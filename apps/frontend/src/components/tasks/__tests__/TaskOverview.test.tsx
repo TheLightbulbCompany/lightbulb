@@ -92,6 +92,26 @@ describe("TaskOverview", () => {
     expect(client.act).toHaveBeenCalledWith("t-signup", "reopen", 7);
   });
 
+  it("Done opens by itself when it is the only group with tasks; a press still folds it (dev walk 13, W13-11)", async () => {
+    const fees = FIXTURES.step09.tasks.find((t) => t.taskId === "t-fees")!;
+    client = fakeTasksClient([fees]); live.tasks = client;
+    overview();
+    const toggle = await screen.findByRole("button", { name: "Done · 1" });
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: "Open Stripe fee estimate, Done" })).toBeInTheDocument();
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("a row's ⋯ says Close, not Mark done (dev walk 13, W13-3)", async () => {
+    client = fakeTasksClient(FIXTURES.step09.tasks); live.tasks = client;
+    overview();
+    await userEvent.click(await screen.findByRole("button", { name: "Done · 1" }));
+    await userEvent.click(screen.getByRole("button", { name: "More for Stripe fee estimate" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "Close" }));
+    expect(client.act).toHaveBeenCalledWith("t-fees", "resolve", expect.any(Number));
+  });
+
   it("Copy link copies the thread's permalink and says so", async () => {
     overview();
     await userEvent.click(await screen.findByRole("button", { name: "More for Workshop signup app" }));

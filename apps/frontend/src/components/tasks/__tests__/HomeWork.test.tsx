@@ -161,10 +161,12 @@ describe("HomeWork", () => {
     expect(screen.getByRole("region", { name: "Ideas slot" })).toBeInTheDocument();
   });
 
-  it("a working row shows who is doing it, live: actor · what · how long", async () => {
+  it("a working row shows who is doing it and the clock, which never truncates (dev walk 13)", async () => {
     render(<Fresh><HomeWork viewerId={SAM} onOpen={vi.fn()} /></Fresh>);
     const working = await screen.findByRole("region", { name: "Working · 3" });
     const row = within(working).getByText("Request c").closest("li")!;
-    expect(row.querySelector("[data-live]")).toHaveTextContent(/^Lightbulb · working · \d+d$/);
+    expect(row).toHaveTextContent(/— Lightbulb/);
+    expect(row.querySelector("time.tabular-nums")!.parentElement).toHaveClass("shrink-0");
+    expect(row.querySelector("time.tabular-nums")).toHaveTextContent(/^\d+:\d\d:\d\d$/);
   });
 });

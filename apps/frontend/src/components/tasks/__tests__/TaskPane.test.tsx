@@ -77,7 +77,8 @@ describe("TaskPane", () => {
     unmount();
     withDetail({ ...step8, task: { ...step8.task, status: "resolved", shownGroup: "resolved" } });
     pane();
-    expect(await screen.findByRole("button", { name: "Reopen" })).toBeInTheDocument();
+    await userEvent.click(await screen.findByRole("button", { name: "More for this task" }));
+    expect(await screen.findByRole("menuitem", { name: "Reopen" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
   });
 
@@ -173,6 +174,23 @@ describe("TaskPane", () => {
     client.trace.mockResolvedValueOnce({ attempt: 2, recentTools: ["skill_view", "tool_describe", "terminal", "terminal", "write_file"].map((name) => ({ name, ok: true })) as unknown[] });
     pane();
     expect(await screen.findByText(/^Steps · 2\b/)).toBeInTheDocument();
+  });
+
+  it("while it works, the latest step shows live under the header and Steps start open (dev walk 13, W13-5)", async () => {
+    client.trace.mockResolvedValue({ attempt: 2, recentTools: [{ name: "terminal", ok: true }, { name: "web_search", ok: true }] as unknown[] });
+    pane();
+    expect(await screen.findByText("Searching the web…")).toBeInTheDocument();
+    expect(screen.getByText(/^Steps/).closest("details")!.open).toBe(true);
+    expect(screen.getByText(/^Started /)).not.toHaveTextContent("Done");
+  });
+
+  it("a Done task: no live line, Steps folded, one quiet Started · Done line", async () => {
+    const ended = step8.attempts.map((a) => ({ ...a, status: "ended" as const, endedAt: "2026-11-04T14:05:00Z" }));
+    withDetail({ ...step8, attempts: ended, task: { ...step8.task, status: "idle", shownGroup: "idle", watching: false }, questions: [] }, []);
+    pane();
+    expect(await screen.findByText(/^Started .+ · Done /)).toBeInTheDocument();
+    expect(screen.queryByText(/…$/)).toBeNull();
+    expect(screen.getByText(/^Steps/).closest("details")!.open).toBe(false);
   });
 
   it("cost hidden when nothing spent and no budget", async () => {
@@ -404,29 +422,40 @@ describe("steering a finished request (dev walk N-F4)", () => {
 describe("action slots (UX audit 2, P0)", () => {
   const slots = () => [...document.querySelectorAll("[data-action-slot]")].map((el) => `${el.getAttribute("data-action-slot")}:${el.textContent}`);
 
-  it("Stop, Mark done and Reopen each keep their own slot; the Stop confirm takes their place", async () => {
+  it("Stop and Retry keep their own slots; Close and Reopen sit in ⋯; the Stop confirm takes their place", async () => {
     const first = pane();
     await screen.findByRole("button", { name: "Stop" });
-    expect(slots()).toEqual(["stop:Stop", "retry:", "close:", "reopen:"]);
+    expect(slots()).toEqual(["stop:Stop", "retry:"]);
+    expect(screen.queryByRole("button", { name: "More for this task" })).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "Stop" }));
     expect(within(screen.getByRole("banner")).getByRole("group", { name: "Stop this task?" })).toBeInTheDocument();
     expect(slots()).toEqual([]);
     first.unmount();
     withDetail({ ...step8, task: { ...step8.task, status: "idle", shownGroup: "idle", watching: false }, questions: [] }, []);
     const second = pane();
-    await screen.findByRole("button", { name: "Mark done" });
-    expect(slots()).toEqual(["stop:", "retry:", "close:Mark done", "reopen:"]);
+    await userEvent.click(await screen.findByRole("button", { name: "More for this task" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "Close" }));
+    await waitFor(() => expect(client.act).toHaveBeenCalledWith("t-signup", "resolve", step8.task.version));
     second.unmount();
     withDetail({ ...step8, task: { ...step8.task, status: "resolved", shownGroup: "resolved" }, questions: [] }, []);
     pane();
-    await screen.findByRole("button", { name: "Reopen" });
-    expect(slots()).toEqual(["stop:", "retry:", "close:", "reopen:Reopen"]);
+    await userEvent.click(await screen.findByRole("button", { name: "More for this task" }));
+    expect(await screen.findByRole("menuitem", { name: "Reopen" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Close" })).toBeNull();
+  });
+
+  it("a Done task says Done once, with no Mark done beside it (dev walk 13, W13-3)", async () => {
+    withDetail({ ...step8, task: { ...step8.task, status: "idle", shownGroup: "idle", watching: false }, questions: [] }, []);
+    pane();
+    const header = within(await screen.findByRole("banner"));
+    expect(await header.findByText("Done")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Mark done|^Close$/ })).toBeNull();
   });
 
   it("a Closed request offers no steering and no Follow up", async () => {
     withDetail({ ...step8, task: { ...step8.task, status: "resolved", shownGroup: "resolved" }, questions: [] }, []);
     pane();
-    await screen.findByRole("button", { name: "Reopen" });
+    await screen.findByRole("button", { name: "More for this task" });
     expect(screen.queryByRole("textbox", { name: "Steer this task" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Follow up" })).toBeNull();
   });
@@ -456,10 +485,10 @@ describe("task loop (UX slice 3)", () => {
     expect(retry.closest("[data-action-slot]")).toHaveAttribute("data-action-slot", "retry");
     await userEvent.click(retry);
     await waitFor(() => expect(client.act).toHaveBeenCalledWith("t-signup", "retry", step8.task.version));
-    // The fake answers Closed: the button that took Retry's row is inert for 600 ms, then live.
-    const reopen = await screen.findByRole("button", { name: "Reopen" });
-    expect(reopen).toBeDisabled();
-    await waitFor(() => expect(reopen).toBeEnabled(), { timeout: 1500 });
+    // The fake answers Closed: ⋯ (Reopen) is inert for 600 ms, then live.
+    const more = await screen.findByRole("button", { name: "More for this task" });
+    expect(more).toBeDisabled();
+    await waitFor(() => expect(more).toBeEnabled(), { timeout: 1500 });
   });
 
   it("while it runs, the header says who, Working and the clock once; nothing under it repeats them (W12-17)", async () => {

@@ -29,8 +29,8 @@ export function MessageTasks({ message, viewerId, onOpen }: {
         {refs.map((r) => <div key={r.taskId} className="mt-1.5 h-14 max-w-xl rounded-lg border border-border bg-muted/40 motion-safe:animate-pulse" />)}
       </div>;
   }
-  // One small item per event (dev walk 10, Claude Projects): the Router's ack and its one-line result carry their
-  // task as a chip with a live dot. A result post or a question keeps the full card (its text, its buttons).
+  // One chip per task (dev walk 13, W13-1/W12-1): the Router's ack carries it with a live dot, ✓ Done once finished;
+  // the one-line finish post carries only what it made. A result post or a question keeps the full card.
   const Ref = !message.kind || message.kind === "task_line" ? RefChip : RefCard;
   return <div aria-label="Tasks in this message">
     {refs.map((r) => <Ref key={r.taskId} taskId={r.taskId} listed={byId.get(r.taskId)} viewerId={viewerId} onOpen={onOpen}
@@ -43,9 +43,9 @@ const MARK_TEXT: Record<ChipMark, string> = {
 };
 
 /** One task, one chip (dev walk 12, W12-1): its title, specialist and live state, "Working · 0:38" → "Done · 1:02"
- *  or "Didn't finish", read from the room's one task list, so the ack and the finish line always agree. What it made
- *  sits under the finish line's chip only (`withOutputs`), so each thing shows once in the chat. The task comes only
- *  from reads the server filters by who may view it (the room list, else `GET /tasks/{id}`): no read, no chip. */
+ *  or "Didn't finish", read from the room's one task list. The finish line (`withOutputs`) shows only what the task
+ *  made, never the task chip again (W13-1): the ack's chip already turned Done. The task comes only from reads the
+ *  server filters by who may view it (the room list, else `GET /tasks/{id}`): no read, no chip and no outputs. */
 function RefChip({ taskId, listed, viewerId, onOpen, withOutputs }: {
   taskId: string; listed: TaskSummary | undefined; viewerId: string; onOpen?: (taskId: string) => void; withOutputs?: boolean;
 }): ReactElement | null {
@@ -61,6 +61,7 @@ function RefChip({ taskId, listed, viewerId, onOpen, withOutputs }: {
     return () => window.clearInterval(timer);
   }, [ticking]);
   if (!task || !state) return null;
+  if (withOutputs) return <TaskOutputs task={task} max={2} onOpenTask={() => onOpen?.(taskId)} />;
   const who = task.specialist ? specialistLabel(task.specialist, agentNames) : null;
   const status = state.time ? `${state.word} · ${state.time}` : state.word;
   return <div>
@@ -76,7 +77,6 @@ function RefChip({ taskId, listed, viewerId, onOpen, withOutputs }: {
       </span>
       <ChevronRight aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
     </button>
-    {withOutputs && <TaskOutputs task={task} max={2} onOpenTask={() => onOpen?.(taskId)} />}
   </div>;
 }
 

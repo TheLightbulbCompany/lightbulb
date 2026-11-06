@@ -596,7 +596,7 @@ async def _announce(ws: str, task_id: str, to: str, reason: str | None = None) -
 
 # --- Router ----------------------------------------------------------------------------------------
 
-ROUTER_POLL_S = 3.0
+ROUTER_POLL_S = 1.0  # a finished run is applied within a second (3 s added ~3 s to every ack, dev walk 13)
 ROUTER_MAX_ITERATIONS = 30
 ROUTER_BUDGET_S = 240  # under the Activity's 5 min start-to-close (workflows._ROUTER_TURN)
 _OPEN_STATUSES = ("working", "waiting", "idle", "queued")
@@ -1158,7 +1158,10 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
             triggers[tid] = await tasks_repo.get_trigger(ws, tid) or triggers[tid]
         # The run's prose answers a trigger only when the Router made no decision at all: with decisions it is a
         # summary of them ("Growth has the checklist"), which must never stand in for a decision that was dropped.
+        # Its closing "Done" (the instructions' end word) is never an answer: no decision then means the fallback.
         run_text = None if status.decisions else (status.output or "").strip() or None
+        if run_text and run_text.strip(" .!").lower() == router_prompt.END_WORD:
+            run_text = None
         decisions += router_prompt.validate_decisions(
             status.decisions,
             trigger_ids=set(to_model),

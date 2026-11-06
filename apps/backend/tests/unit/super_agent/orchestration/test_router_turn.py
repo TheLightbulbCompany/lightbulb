@@ -324,6 +324,26 @@ def test_restates_the_walk_10_double_line():
     assert 'never with "#"' in router_prompt.ROUTER_INSTRUCTIONS
 
 
+def test_restates_the_walk_13_recorded_line():
+    """Dev walk 13: the ack, then "The task was recorded for Growth." Bookkeeping about the start is never posted."""
+    ack = "Growth is writing three autumn specials menu blurbs and saving them as a doc."
+    assert router_prompt.restates("The task was recorded for Growth.", {ack})
+    assert router_prompt.restates("I created a task for Growth.", {ack})
+    assert not router_prompt.restates("Pumpkin season starts in September here.", {ack})
+    assert "never add a reply that" in " ".join(router_prompt.ROUTER_INSTRUCTIONS.split()).lower()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("end", ["Done", "done.", " Done! "])
+async def test_the_end_word_alone_is_never_posted(world, end):
+    """The Router ends its turn with "Done" (dev walk 13: a 7.5 s summary after its decisions). With no decision, that
+    word is not an answer: the fallback line goes out instead."""
+    t1 = await _trig("chat:m1")
+    world["output"] = end
+    await _run([t1])
+    assert [p["text"] for p in world["posts"]] == [router_prompt.FALLBACK]
+
+
 @pytest.mark.asyncio
 async def test_router_turn_retry_applies_once(world):
     t1 = await _trig("chat:m1")

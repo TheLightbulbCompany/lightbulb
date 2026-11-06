@@ -10,6 +10,7 @@ import {
   STATUS_WORDS,
   TASK_STATUSES,
   stepLines,
+  stepNow,
   chipState,
   clockTime,
   taskView,
@@ -301,6 +302,11 @@ describe("chipState (dev walk 12, W12-1)", () => {
     expect(chipState(summary({ status: "failed", ownerUserId: SAM }), SAM, now).word).toBe("Didn't finish");
     expect(chipState(summary({ status: "queued" }), SAM, now)).toEqual({ mark: "working", word: "Working", time: null });
   });
+  it("a closed task says Closed, as its list group and its header do (dev walk 13, W13-3)", () => {
+    const ended = { n: 1, status: "ended" as const, startedAt: at(0), endedAt: at(57) };
+    expect(chipState(summary({ status: "resolved", shownGroup: "resolved", activity: ended }), SAM, now))
+      .toEqual({ mark: "done", word: "Closed", time: "0:57" });
+  });
   it("formats hours", () => expect(clockTime(3_725_000)).toBe("1:02:05"));
 });
 
@@ -314,5 +320,16 @@ describe("stepLines (dev walk 10, W10-3)", () => {
     ];
     expect(stepLines(run)).toEqual(["Searched the web · 9", "Read 2 pages", "Ran a command", "Ran a command · failed"]);
     expect(stepLines(["mcp__lightbulb__web_search", {}])).toEqual(["Searched the web", "A step"]);
+  });
+});
+
+describe("stepNow (dev walk 13, W13-5)", () => {
+  it("says the latest step as it happens, in the steps' own words", () => {
+    expect(stepNow([])).toBe("Getting started…");
+    expect(stepNow([{ name: "terminal" }, { name: "web_search" }])).toBe("Searching the web…");
+    expect(stepNow([{ name: "terminal", ok: true }])).toBe("Running a command…");
+    expect(stepNow(["write_file"])).toBe("Writing a file…");
+    expect(stepNow(["skill_view"])).toBe("Checking how to do it…");
+    expect(stepNow(["tool_describe"])).toBe("Preparing tools…");
   });
 });

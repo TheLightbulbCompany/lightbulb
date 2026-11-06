@@ -158,8 +158,10 @@ export interface RoomPanelProps {
   onCardReply?: (reply: CardReply) => Promise<void>;
 }
 
-/** How long a silent ask reads "Lightbulb is on it…" (a reply took ~2 min in the 5 Nov walk). */
+/** How long a silent ask reads "Lightbulb is reading…": an ask Lightbulb must answer (a reply took ~2 min in the 5 Nov
+ *  walk), and one it may only read (Jev and the Router can stay quiet; the 6 Nov ack took ~50 s). */
 const ON_IT_MS = 5 * 60_000;
+const READING_MS = 2 * 60_000;
 const NO_PINNED_MESSAGES: readonly string[] = [];
 const NO_TASK_IDS: readonly string[] = [];
 /** The project pane's list views (super-agent): the header's three toggles. */
@@ -525,12 +527,13 @@ function RoomContent({
     }
     return replies;
   }, [messages]);
-  // Super-agent: the viewer's last ask to Lightbulb with nothing back yet (no later message, no agent reply under it,
-  // no run on screen) reads "Lightbulb is on it…" until its reply or card lands. The Router posts no typing signal,
-  // so this is the client's, and it promises only what admission's fast path promises: a DM, an @mention of
-  // Lightbulb's seat, or "Hi Lightbulb, …", unless Lightbulb only observes. Anything else goes to Jev and the Router,
-  // which may stay quiet and say nothing, so "on it" would hang for minutes and vanish (dev walk W9-1).
-  // ponytail: gives up after ON_IT_MS of silence; a server "seen" signal would replace the timer.
+  // Super-agent: the viewer's last message with nothing back yet (no later message, no agent reply under it, no run on
+  // screen) reads "Lightbulb is reading…" from send until its ack or reply lands (dev walk 13: ~45 s of nothing). The
+  // Router posts no typing signal, so this is the client's. An ask admission's fast path answers (a DM, an @mention of
+  // Lightbulb's seat, "Hi Lightbulb, …") holds it for ON_IT_MS; anything else in a project Lightbulb listens to goes to
+  // Jev and the Router, which may stay quiet (dev walk W9-1), so it lets go after READING_MS. "Reading" promises no
+  // answer. Never while Lightbulb only observes or listens for mentions.
+  // ponytail: timers; a server "seen" / "ignored" signal would replace them.
   const front = superAgent && !runtimeStarting ? participants.find((p) => p.kind === "agent" && p.mentionHandle === "lightbulb") : undefined;
   const lastMain = mainMessages.findLast((message) => !message.deletedAt);
   const askPending = front && lastMain && lastMain.author.kind === "human" && lastMain.author.id === currentUserId
@@ -539,16 +542,18 @@ function RoomContent({
     && !allRuns.some((run) => run.triggerMessageId === lastMain.messageId)
     && ![...(repliesByRoot.get(lastMain.messageId)?.authors.values() ?? [])].some((author) => author.kind === "agent")
     && front.listenMode !== "observe"
-    && (room?.kind === "dm" || lastMain.mentions.some((m) => m.kind === "agent" && m.id === front.id) || namesAgent(lastMain.text, front.displayName))
     ? lastMain : undefined;
+  const addressed = !!askPending && !!front && (room?.kind === "dm"
+    || askPending.mentions.some((m) => m.kind === "agent" && m.id === front.id) || namesAgent(askPending.text, front.displayName));
+  const readingPending = askPending && (addressed || front?.listenMode !== "mentions") ? askPending : undefined;
   const [onItExpired, setOnItExpired] = useState<string | null>(null);
   useEffect(() => {
-    if (!askPending) return;
-    const left = ON_IT_MS - (Date.now() - Date.parse(askPending.createdAt));
-    const timer = window.setTimeout(() => setOnItExpired(askPending.messageId), Math.max(0, left));
+    if (!readingPending) return;
+    const left = (addressed ? ON_IT_MS : READING_MS) - (Date.now() - Date.parse(readingPending.createdAt));
+    const timer = window.setTimeout(() => setOnItExpired(readingPending.messageId), Math.max(0, left));
     return () => window.clearTimeout(timer);
-  }, [askPending]);
-  const onIt = askPending && onItExpired !== askPending.messageId ? front : undefined;
+  }, [readingPending, addressed]);
+  const onIt = readingPending && onItExpired !== readingPending.messageId ? front : undefined;
   // Only membership changes invalidate history; streamed text/tool frames do not.
   const workingThreadKey = JSON.stringify(runs.filter(run => run.state === "running" && run.threadRootMessageId)
     .map(run => [run.threadRootMessageId, run.agentId]));
@@ -1135,7 +1140,7 @@ function RoomContent({
           {superAgent && frontAgentId && visibleRoom?.kind === "dm" && counterparts.length === 1 && counterparts[0].id === frontAgentId && <FirstMoves />}
         </RoomTimeline>
       </div>
-      <p className="room-typing room-typing-live text-ui text-muted-foreground" role="status">{typingMembers.length > 0 ? `${typingMembers.slice(0, 3).map((member) => member.displayName).join(", ")}${typingMembers.length > 3 ? " and others" : ""} ${typingMembers.length === 1 ? "is" : "are"} typing…` : onIt ? `${onIt.displayName} is on it…` : ""}</p>
+      <p className="room-typing room-typing-live text-ui text-muted-foreground" role="status">{typingMembers.length > 0 ? `${typingMembers.slice(0, 3).map((member) => member.displayName).join(", ")}${typingMembers.length > 3 ? " and others" : ""} ${typingMembers.length === 1 ? "is" : "are"} typing…` : onIt ? `${onIt.displayName} is reading…` : ""}</p>
       {copied && <p role="status" aria-label="Link copied" className="sr-only">Link copied</p>}
       {messageActionError && <p role="alert" className="room-typing text-ui text-err">{messageActionError}</p>}
       {!visibleRoom?.archivedAt && <RoomLimitBar account={billing} />}

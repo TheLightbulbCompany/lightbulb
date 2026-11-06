@@ -6,12 +6,14 @@
 // Steering lives here, in the pane's own box (UX slice 3): the room's composer stays the room's.
 
 import { useEffect, useRef, useState, type ReactElement, type RefObject } from "react";
+import { MoreHorizontal } from "lucide-react";
 import {
-  ApiError, answerVerb, askLine, effectLine, effectName, specialistLabel, stepLines, summaryView, useTask, useTaskQuestions,
+  ApiError, answerVerb, askLine, effectLine, effectName, specialistLabel, stepLines, stepNow, summaryView, useTask, useTaskQuestions,
   type QuestionView, type TaskDetail, type TaskEffect, type TaskSummary, type TaskTrace,
 } from "@lightbulb/shared";
 import { SessionChat, type ChatWords } from "@/components/messaging/SessionChat";
 import { Button } from "@/components/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { PaneHeader } from "@/components/workspace/PaneHeader";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
@@ -24,7 +26,7 @@ import { sendToTask, useShowSteered } from "./taskReply";
 import { useTaskActions } from "./useTaskActions";
 
 const TRANSCRIPT_WORDS: ChatWords = {
-  label: "Task progress", title: "Progress",
+  label: "Task result", title: "Result",
   empty: "Each step of this task shows here as it happens.",
   unavailable: "This task's progress isn't available.", full: "This task's progress is full.", ended: "This task is closed.",
 };
@@ -97,22 +99,21 @@ function TaskPaneBody({ detail, viewerId, actionError }: { detail: TaskDetail; v
   const [followUp, setFollowUp] = useState(false);
   const steerable = view.word === "Working" || view.word === "Needs you" || (view.word === "Done" && followUp);
   const effectRows = effectFooter(effects, closed);
+  const live = view.word === "Working";
+  const trace = useLatestTrace(detail, live);
+  const tools = trace && !("error" in trace) ? trace.recentTools : null;
+  // Top to bottom (dev walk 13, W13-5/W13-9): while it runs, its latest step; then what it said and made, once each
+  // (the result's file cards are the output chips); one quiet times line; Steps, Follow up and Details right under it.
   return <div className="room-context-body flex min-h-0 flex-col gap-3">
     <TaskHeader task={task} viewerId={viewerId} error={actionError} />
+    {live && <p role="status" aria-live="polite" className="flex items-center gap-2 px-1 text-ui text-muted-foreground">
+      <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-info motion-safe:animate-pulse" />{tools ? stepNow(tools) : "Getting started…"}</p>}
     {open && <DecisionCard key={open.id} task={task} question={open} ended={closed} />}
     {decided.length > 0 && <ul aria-label="Decisions" className="grid gap-1 px-1 text-ui text-muted-foreground">
       {decided.map((d) => <li key={d.id}>{d.line}</li>)}
     </ul>}
-    <div className="flex min-h-64 flex-1 flex-col">
-      <SessionChat sessionId={detail.taskRoomId} sessionOwnerId={task.ownerUserId ?? ""} words={TRANSCRIPT_WORDS}
-        openChat={async (roomId) => ({ roomId })} readOnly hideMessage={hideCard} />
-    </div>
-    <TaskSteps detail={detail} live={view.word === "Working"} />
-    {/* The pane's own steer box; never beside a typed answer. */}
-    {view.word === "Done" && !followUp && <div className="px-1">
-      <Button type="button" size="sm" variant="outline" onClick={() => setFollowUp(true)}>Follow up</Button>
-    </div>}
-    {steerable && !(open?.canAnswer && !open.options.length) && <AddNote task={task} autoFocus={followUp} />}
+    <SessionChat sessionId={detail.taskRoomId} sessionOwnerId={task.ownerUserId ?? ""} words={TRANSCRIPT_WORDS}
+      openChat={async (roomId) => ({ roomId })} readOnly bare hideMessage={hideCard} />
     {/* What it made, one chip each (a draft waiting on review shows in its card above). */}
     {!!task.outputs?.length && <section aria-label="Outputs" className="px-1"><TaskOutputs task={task} /></section>}
     {effectRows.length > 0 && <ul aria-label="Effects" className="grid gap-1 px-1 text-ui">
@@ -121,8 +122,41 @@ function TaskPaneBody({ detail, viewerId, actionError }: { detail: TaskDetail; v
         <span className={warn ? "text-warn" : "text-muted-foreground"}>{line}</span>
       </li>)}
     </ul>}
+    <TimesLine detail={detail} word={view.word} />
+    <TaskSteps detail={detail} live={live} trace={trace} />
+    {/* The pane's own steer box; never beside a typed answer. */}
+    {view.word === "Done" && !followUp && <div className="px-1">
+      <Button type="button" size="sm" variant="outline" onClick={() => setFollowUp(true)}>Follow up</Button>
+    </div>}
+    {steerable && !(open?.canAnswer && !open.options.length) && <AddNote task={task} autoFocus={followUp} />}
     <TaskDetails detail={detail} />
   </div>;
+}
+
+/** "Started 3:19 · Done 3:21": one quiet line in place of the transcript's day and lifecycle rules (W12-17). */
+function TimesLine({ detail, word }: { detail: TaskDetail; word: string }): ReactElement | null {
+  const first = detail.attempts.reduce<TaskDetail["attempts"][number] | null>((a, b) => (!a || b.n < a.n ? b : a), null);
+  const last = detail.attempts.reduce<TaskDetail["attempts"][number] | null>((a, b) => (!a || b.n > a.n ? b : a), null);
+  if (!first) return null;
+  const ended = (word === "Done" || word === "Closed") && last?.endedAt ? ` · ${word} ${time(last.endedAt)}` : "";
+  return <p className="px-1 text-caption text-muted-foreground">Started {time(first.startedAt)}{ended}</p>;
+}
+
+/** The latest run's step records: read once, then every few seconds while it runs (the live line and Steps share it). */
+function useLatestTrace(detail: TaskDetail, live: boolean): TaskTrace | { error: true } | null {
+  const { tasks } = useLiveEvents();
+  const latest = detail.attempts.reduce((n, a) => Math.max(n, a.n), 0);
+  const [trace, setTrace] = useState<TaskTrace | { error: true } | null>(null);
+  const taskId = detail.task.taskId;
+  useEffect(() => {
+    if (!latest) return;
+    let alive = true;
+    const read = () => void tasks.trace(taskId, latest).then((t) => { if (alive) setTrace(t); }, () => { if (alive) setTrace({ error: true }); });
+    read();
+    const timer = live ? window.setInterval(read, 5000) : undefined;
+    return () => { alive = false; window.clearInterval(timer); };
+  }, [live, latest, taskId, tasks]);
+  return trace;
 }
 
 /** One line per decision, in order: a closed ask is dropped once a new ask of its kind is live (Reopen asked again),
@@ -213,8 +247,8 @@ function TaskActions({ task, viewerId, onError }: { task: TaskSummary; viewerId:
     <Button type="button" size="sm" variant="outline" disabled={pending} onClick={() => void press("stop")}>Stop it</Button>
     <Button type="button" size="sm" variant="ghost" onClick={() => setConfirmStop(false)}>Keep going</Button>
   </span>;
-  // Stop, Retry, Close and Reopen each keep their own slot (UX audit 2, P0); an empty slot takes no room. Reopen
-  // undoes a Stop or a Close and runs nothing.
+  // Stop and Retry each keep their own slot (UX audit 2, P0); an empty slot takes no room. Reopen undoes a Stop or a
+  // Close and runs nothing.
   return <span className="flex items-center gap-1">
     <span data-action-slot="stop" className="empty:hidden">
       {live && <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => setConfirmStop(true)}>Stop</Button>}
@@ -223,12 +257,17 @@ function TaskActions({ task, viewerId, onError }: { task: TaskSummary; viewerId:
     <span data-action-slot="retry" className="empty:hidden">
       {view.action === "retry" && <Button type="button" size="sm" disabled={busy} onClick={() => void press("retry")}>Retry</Button>}
     </span>
-    <span data-action-slot="close" className="empty:hidden">
-      {!live && task.status !== "resolved" && <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => void press("resolve")}>Mark done</Button>}
-    </span>
-    <span data-action-slot="reopen" className="empty:hidden">
-      {task.status === "resolved" && <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => void press("reopen")}>Reopen</Button>}
-    </span>
+    {/* Close and Reopen live in ⋯ (dev walk 13, W13-3): the header says one status word, "Done", never beside a
+        "Mark done". A Done task closes itself after a quiet week anyway. */}
+    {(!live || task.status === "resolved") && <DropdownMenu>
+      <DropdownMenuTrigger asChild><Button type="button" size="icon-sm" variant="ghost" aria-label="More for this task" disabled={busy}>
+        <MoreHorizontal aria-hidden="true" /></Button></DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        {task.status === "resolved"
+          ? <DropdownMenuItem onSelect={() => void press("reopen")}>Reopen</DropdownMenuItem>
+          : <DropdownMenuItem onSelect={() => void press("resolve")}>Close</DropdownMenuItem>}
+      </DropdownMenuContent>
+    </DropdownMenu>}
   </span>;
 }
 
@@ -266,25 +305,13 @@ export function TaskDetails({ detail }: { detail: TaskDetail }): ReactElement {
   </details>;
 }
 
-/** The latest run's steps, under Progress, counted in the heading ("Steps · 2"), in plain words (W12-7). */
-function TaskSteps({ detail, live }: { detail: TaskDetail; live: boolean }): ReactElement | null {
-  const { tasks } = useLiveEvents();
+/** The latest run's steps, under the result, counted in the heading ("Steps · 2"), in plain words (W12-7). Open while
+ *  it runs (W13-5); a person's toggle wins after that. */
+function TaskSteps({ detail, live, trace }: { detail: TaskDetail; live: boolean; trace: TaskTrace | { error: true } | null }): ReactElement | null {
   const latest = detail.attempts.reduce((n, a) => Math.max(n, a.n), 0);
-  const [open, setOpen] = useState(false);
-  const [trace, setTrace] = useState<TaskTrace | { error: true } | null>(null);
-  const taskId = detail.task.taskId;
-  // Read once up front, so the heading can count the steps; again every few seconds while it runs and is open.
-  useEffect(() => {
-    if (!latest) return;
-    let alive = true;
-    const read = () => void tasks.trace(taskId, latest).then((t) => { if (alive) setTrace(t); }, () => { if (alive) setTrace({ error: true }); });
-    read();
-    const timer = live && open ? window.setInterval(read, 5000) : undefined;
-    return () => { alive = false; window.clearInterval(timer); };
-  }, [open, live, latest, taskId, tasks]);
   if (!latest) return null;
   const lines = trace && !("error" in trace) ? stepLines(trace.recentTools) : null;
-  return <details className="px-1 text-ui" onToggle={(event) => setOpen((event.currentTarget as HTMLDetailsElement).open)}>
+  return <details className="px-1 text-ui" open={live || undefined}>
     <summary className="cursor-pointer text-muted-foreground">
       Steps{lines?.length ? ` · ${lines.length}` : ""}{detail.attempts.length > 1 ? ` · run ${latest}` : ""}
     </summary>

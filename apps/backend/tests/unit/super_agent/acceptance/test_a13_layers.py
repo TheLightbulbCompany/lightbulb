@@ -147,5 +147,53 @@ async def test_legacy_rows_skips_an_older_run_row_from_another_room(monkeypatch)
 
     table = Table()
     monkeypatch.setattr(dynamodb, "get_table", lambda name: table)
+    monkeypatch.setattr(a13_layers, "is_app_room", _no_app_room)
     out = await a13_layers.legacy_rows("org_on", ["r1"], "2026-11-05T18:30:00")
-    assert out == {"runs": ["RUN#ours", "RUN#new"], "followUps": []}
+    assert out == {"runs": ["RUN#ours", "RUN#new"], "appRuns": [], "followUps": []}
+
+
+async def _no_app_room(room_id):
+    return False
+
+
+async def test_legacy_rows_spares_app_conversation_rooms_only(monkeypatch):
+    """#4876: an app is built in its own conversation room on the legacy room-run path; every other room stays strict."""
+    from core import dynamodb
+
+    items = [
+        {"sk": "RUN#builder", "roomId": "app-room", "updatedAt": "2026-11-05T18:40:00Z"},
+        {"sk": "RUN#leak", "roomId": "r1", "updatedAt": "2026-11-05T18:41:00Z"},
+    ]
+
+    class Table:
+        calls = 0
+
+        def query(self, KeyConditionExpression):
+            self.calls += 1
+            return {"Items": items if self.calls == 1 else []}
+
+    table = Table()
+    seen = []
+
+    async def app_room(room_id):
+        seen.append(room_id)
+        return room_id == "app-room"
+
+    monkeypatch.setattr(dynamodb, "get_table", lambda name: table)
+    monkeypatch.setattr(a13_layers, "is_app_room", app_room)
+    out = await a13_layers.legacy_rows("org_on", ["r1"], "2026-11-05T18:30:00")
+    assert out == {"runs": ["RUN#leak"], "appRuns": ["RUN#builder"], "followUps": []}
+    assert sorted(seen) == ["app-room", "r1"]
+
+
+async def test_is_app_room_reads_room_meta(monkeypatch):
+    from core.repositories import messaging_repo
+
+    metas = {"app-room": {"app": {"app_id": "a1"}}, "r1": {"name": "acc"}}
+
+    async def get_room(room_id):
+        return metas.get(room_id)
+
+    monkeypatch.setattr(messaging_repo, "get_room", get_room)
+    assert await a13_layers.is_app_room("app-room")
+    assert not await a13_layers.is_app_room("r1") and not await a13_layers.is_app_room("gone")

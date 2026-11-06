@@ -41,8 +41,9 @@ const DESTINATIONS: readonly Destination[] = [
 const SUPER_AGENT_DESTINATIONS: readonly Destination[] = [
   { place: "home", panel: "home", label: "Home", Icon: Home },
   { place: "activity", panel: "activity", label: "Activity", Icon: Bell },
-  // Creations replaces Library and Canvas (UX slice 5): what tasks made. Its panel key stays "canvas", so ?app= links work.
-  { place: "canvas", panel: "canvas", label: "Creations", Icon: LayoutGrid },
+  // Creations replaces Library and Canvas (UX slice 5): what tasks made. The URL says `panel=creations`; the panel id
+  // stays "canvas" (an alias), so old `panel=canvas` and ?app= links work.
+  { place: "canvas", panel: "creations", label: "Creations", Icon: LayoutGrid },
   DESTINATIONS.find((d) => d.place === "team")!,
 ];
 const SETTINGS: Destination = { place: "settings", panel: "settings", label: "Settings", Icon: Settings };

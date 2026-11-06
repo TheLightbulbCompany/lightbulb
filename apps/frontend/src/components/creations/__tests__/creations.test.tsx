@@ -78,7 +78,7 @@ describe("Creations", () => {
     render(<Fresh><CreationsGrid /></Fresh>);
     const grid = await screen.findByRole("list", { name: "Creations" });
     expect(within(grid).getAllByRole("listitem")).toHaveLength(3);
-    expect(within(grid).getByText("Doc · walk-7 · 1h")).toBeInTheDocument();
+    expect(within(grid).getByText("Doc · walk-7 · 1h ago")).toBeInTheDocument();
     expect(screen.queryByRole("textbox")).toBeNull(); // no second input
     await userEvent.click(screen.getByRole("button", { name: "Mail" }));
     await waitFor(() => expect(client.outputs).toHaveBeenLastCalledWith(expect.objectContaining({ kind: ["mail"] })));

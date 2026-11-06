@@ -10,6 +10,10 @@ const live = vi.hoisted(() => ({ superAgent: true, tasks: null as unknown, messa
 const capture = vi.hoisted(() => vi.fn());
 vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useSuperAgent: () => live.superAgent }));
 vi.mock("@/lib/analytics", () => ({ capture }));
+const ws = vi.hoisted(() => ({ value: null as unknown }));
+vi.mock("@/components/messaging/MessagingWorkspaceContext", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/components/messaging/MessagingWorkspaceContext")>(), useMessagingWorkspaceOptional: () => ws.value,
+}));
 // The transcript is the task room in the ordinary room column; a stand-in records which room it opens and whether it is read-only.
 vi.mock("@/components/messaging/SessionChat", () => ({
   SessionChat: ({ sessionId, openChat, readOnly, hideMessage }: { sessionId: string; openChat: (id: string) => Promise<{ roomId: string }>; readOnly?: boolean; hideMessage?: (m: { kind?: string; taskRefs?: { qid?: string; taskId?: string }[] }) => boolean }) => {
@@ -24,6 +28,7 @@ vi.mock("@/components/messaging/SessionChat", () => ({
 }));
 
 import { TaskPane, clock } from "../TaskPane";
+import { DecisionCard } from "../DecisionCard";
 
 const approval = (over: Partial<QuestionView> = {}): QuestionView => ({
   id: "q-provision", taskId: "t-signup", kind: "approval", subkind: null, title: "Provision database and Stripe",
@@ -277,8 +282,30 @@ describe("NeedsYouCard", () => {
     const card = await screen.findByRole("group", { name: "Allow Engineering to send 'Join us Nov 20' to team@acme.com" });
     expect(within(card).getByLabelText("What this does")).toBeInTheDocument();
     expect(card).toHaveTextContent("Toteam@acme.com");
-    expect(card).toHaveTextContent("MessageHi all, signups open today.");
+    expect(card).toHaveTextContent("Message: Hi all, signups open today.");
     expect(card).not.toHaveTextContent("idemKey");
+  });
+
+  it("a Worker's labelled email ask reads as To and Subject rows, the body boxed behind Show all, and names the project (W13-4)", async () => {
+    const body = `Hi, The Austin workshop has a new date: March 1, 2027, from 9:00 a.m. to noon local time. ${"We look forward to seeing you there. ".repeat(5)}Best, The team <b>`;
+    const ask = approval({ title: "Approve the Austin workshop date email", text: `Recipient: sa-test-2@acme.com Subject: New Austin workshop date Body: ${body}`, preview: null });
+    const task = { ...FIXTURES.step05.tasks[0], audience: { kind: "room" as const, roomId: "room-cafe" } };
+    ws.value = { directoryProps: { currentRoomId: "room-other", rooms: [{ roomId: "room-cafe", kind: "channel", name: "walk-13 cafe menu", participants: [] }] } };
+    try {
+      render(<Fresh><DecisionCard task={task} question={ask} compact onOpen={vi.fn()} /></Fresh>);
+      const card = screen.getByRole("group", { name: "Approve the Austin workshop date email" });
+      expect(card).toHaveTextContent(/· walk-13 cafe menu · /);
+      const rows = within(card).getByLabelText("What this does");
+      expect(rows).toHaveTextContent("Tosa-test-2@acme.comSubjectNew Austin workshop date");
+      expect(card).not.toHaveTextContent("Recipient:");
+      // The body is text, never HTML, and clamps until Show all.
+      const box = within(card).getByText(/The Austin workshop has a new date/);
+      expect(box).toHaveClass("line-clamp-3");
+      expect(box.querySelector("b")).toBeNull();
+      await userEvent.click(within(card).getByRole("button", { name: "Show all" }));
+      expect(box).not.toHaveClass("line-clamp-3");
+      expect(within(card).getByRole("button", { name: "Show less" })).toHaveAttribute("aria-expanded", "true");
+    } finally { ws.value = null; }
   });
 
   it("a free-text question (no options) takes a typed answer, posted as optionId answer", async () => {

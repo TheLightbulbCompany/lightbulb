@@ -344,9 +344,10 @@ export function decisionButtons(options: readonly (OptionLike & { label: string 
 }
 
 /** The card's muted first line: who asks and how long ago ("Growth · 7h ago"). */
-export function decisionMeta(q: { createdAt: string }, specialist: string | null | undefined, names: AgentNames | undefined, now: number): string {
+/** "Growth · Spring sale · 5m ago": who asks, the project when the card is read outside it (W13-4), and when. */
+export function decisionMeta(q: { createdAt: string }, specialist: string | null | undefined, names: AgentNames | undefined, now: number, project?: string | null): string {
   const age = elapsedShort(q.createdAt, now);
-  return age ? `${specialistLabel(specialist, names)} · ${age} ago` : specialistLabel(specialist, names);
+  return [specialistLabel(specialist, names), project, age && `${age} ago`].filter(Boolean).join(" · ");
 }
 
 const PREVIEW_LABELS: Record<string, string> = {
@@ -369,6 +370,29 @@ export function previewRows(preview: unknown, max = PREVIEW_MAX): { label: strin
       const value = k === "number" ? `#${raw}` : k === "amount" && MONEY_KINDS.has(String(p.kind)) ? moneyText(raw, p.currency) : raw.length > max ? `${raw.slice(0, max - 1)}…` : raw;
       return { label: PREVIEW_LABELS[k], value };
     });
+}
+
+/** A Worker's own email ask has no preview, only text: "Recipient: a@b.co Subject: Hello Body: Hi, …" (W13-4). Its
+ *  fields as a preview-shaped object for previewRows, and the words before them. Null unless both a recipient and a
+ *  subject are labelled, so ordinary prose with a stray "To:" is left alone. The body runs to the end of the text, so
+ *  a "To:" inside it stays in it. Plain strings only: the card renders them as text, never as HTML. */
+export function askFields(text: string | null | undefined): { intro: string; preview: { to: string; subject: string; body?: string } } | null {
+  if (!text) return null;
+  const label = /(^|\s)(Recipient|To|Subject|Body|Message):[ \t]*/g;
+  const marks: { key: "to" | "subject" | "body"; at: number; from: number }[] = [];
+  for (let m = label.exec(text); m; m = label.exec(text)) {
+    const key = m[2] === "Subject" ? "subject" : m[2] === "Body" || m[2] === "Message" ? "body" : "to";
+    if (marks.some((k) => k.key === key)) continue;
+    marks.push({ key, at: m.index + m[1].length, from: m.index + m[0].length });
+    if (key === "body") break;
+  }
+  const field = (key: string) => {
+    const i = marks.findIndex((k) => k.key === key);
+    return i < 0 ? "" : text.slice(marks[i].from, marks[i + 1]?.at ?? text.length).trim();
+  };
+  const to = field("to"), subject = field("subject"), body = field("body");
+  if (!to || !subject) return null;
+  return { intro: text.slice(0, marks[0].at).trim(), preview: { to, subject, ...(body ? { body } : {}) } };
 }
 
 /** Previews whose `amount` is money (questions.py `_MONEY` subkinds that carry one); any other amount is a count. */

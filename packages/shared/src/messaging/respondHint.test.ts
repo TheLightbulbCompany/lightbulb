@@ -78,6 +78,9 @@ describe("respondHint with the super-agent on (one voice)", () => {
   const seated = [agent("a1", "Growth", "growth"), agent("lb", "Lightbulb", "lightbulb"), agent("a2", "Finance", "finance")];
   it("only Lightbulb may reply in a room where specialists are still seated", () => {
     expect(respondHint("channel", seated, [], [], true)).toBe("Lightbulb may reply");
+    // The same words in the Lightbulb DM and when @mentioned (W13: "may" in a project, "will" in the DM).
+    expect(respondHint("dm", seated, [], [], true)).toBe("Lightbulb may reply");
+    expect(respondHint("channel", seated, [{ kind: "agent", id: "lb" }], [], true)).toBe("Lightbulb may reply");
     expect(respondHint("channel", seated, [], [], false)).toBe("Growth may reply · Lightbulb may reply · Finance may reply");
   });
   it("with no @lightbulb seat on the row, it is still Lightbulb, never the specialists", () => {

@@ -35,12 +35,18 @@ import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 import { SettingsNav } from "@/components/settings/SettingsNav";
 import {
   ADMIN_ONLY_PANELS,
+  DEVELOPER_PANELS,
   SETTINGS_NAV_SECTIONS,
   SUPER_AGENT_SETTINGS_NAV_SECTIONS,
   type NavItem,
 } from "@/components/settings/settings-nav-config";
 import { useAutomations } from "@lightbulb/shared";
 import { Switch } from "@/components/ui/switch";
+import { Button } from "@/components/ui/button";
+import { SettingRow } from "@/components/settings/SettingRow";
+import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingWorkspaceContext";
+import { isDesktopApp } from "@/lib/desktopNotify";
+import useSWR from "swr";
 import { MoneyPanel } from "@/components/teams/panels/MoneyPanel";
 import { useSuperAgent } from "@/hooks/useLiveEvents";
 import { replaceSearchParams } from "@/lib/shellNav";
@@ -85,7 +91,7 @@ const DANGER = "var(--err)";
 // workspace member: with others in the workspace only the caller leaves; the
 // sole member takes the workspace with them (`POST /users/me/delete`). A
 // refusal (e.g. the last admin) comes back as a readable 409 detail.
-function DeleteAccountCard() {
+function DeleteAccountCard({ rows = false }: { rows?: boolean }) {
   const { user } = useUser();
   const { signOut } = useClerk();
   const api = useApi();
@@ -123,8 +129,13 @@ function DeleteAccountCard() {
     }
   }, [api, typed, signOut]);
 
+  if (rows && !open) return (
+    <SettingRow label="Delete account" line="Removes your account for good. As the only member, the workspace goes too.">
+      <Button type="button" size="sm" variant="outline" className="text-err" onClick={() => setOpen(true)}>Delete…</Button>
+    </SettingRow>
+  );
   return (
-    <div className="settings-card" style={{ borderColor: "color-mix(in srgb, var(--err) 25%, transparent)" }}>
+    <div className="settings-card" style={{ borderColor: "color-mix(in srgb, var(--err) 25%, transparent)", ...(rows ? { marginTop: 16 } : {}) }}>
       <div className="settings-card-title" style={{ color: DANGER }}>Delete account</div>
       {!open ? (
         <>
@@ -188,7 +199,7 @@ function DeleteAccountCard() {
   );
 }
 
-function WorkspaceExportCard() {
+function WorkspaceExportCard({ rows = false }: { rows?: boolean }) {
   const isWorkspaceAdmin = useIsWorkspaceAdmin();
   const { getToken } = useAuth();
   const [busy, setBusy] = useState(false);
@@ -230,6 +241,14 @@ function WorkspaceExportCard() {
   }, [getToken]);
 
   if (!isWorkspaceAdmin) return null;
+  if (rows) return (
+    <div data-testid="workspace-export-card">
+      <SettingRow label="Export workspace" line="A ZIP of this workspace's chats and tasks. Works even when the workspace is read-only.">
+        <Button type="button" size="sm" variant="outline" onClick={handleExport} disabled={busy}>{busy ? "Preparing…" : "Download"}</Button>
+      </SettingRow>
+      {error && <p role="alert" className="settings-rows__line text-err pt-2">{error}</p>}
+    </div>
+  );
   return (
     <div className="settings-card" data-testid="workspace-export-card">
       <div className="settings-card-title">Export workspace</div>
@@ -246,6 +265,37 @@ function WorkspaceExportCard() {
 }
 
 function ProfilePanel() {
+  return useSuperAgent() ? <ProfileRows /> : <ProfileCards />;
+}
+
+/** Super-agent Profile (W13-10): who you are with Edit profile beside it, then one row per setting, no card each. */
+function ProfileRows() {
+  const { user } = useUser();
+  const { openUserProfile } = useClerk();
+  const { account } = useBilling();
+  const plan = planLabel(account?.subscription_status ?? null);
+  const initials = `${(user?.firstName ?? "")[0] ?? ""}${(user?.lastName ?? "")[0] ?? ""}`.toUpperCase();
+  return (
+    <div className="settings-panel" id="panel-profile" role="tabpanel">
+      <h1 className="settings-page-title">Profile</h1>
+      <div className="settings-rows">
+        <div className="settings-rows__row">
+          <div className="settings-profile-avatar-lg settings-profile-avatar--row" aria-hidden="true">{initials}</div>
+          <div className="settings-rows__text">
+            <p className="settings-rows__label">{user?.fullName ?? "You"}{plan && <span className="settings-rows__line"> · {plan}</span>}</p>
+            <p className="settings-rows__line">{user?.primaryEmailAddress?.emailAddress ?? ""}</p>
+          </div>
+          <Button type="button" size="sm" variant="outline" onClick={() => openUserProfile?.()}>Edit profile</Button>
+        </div>
+        <DailySummaryCard rows />
+        <WorkspaceExportCard rows />
+        <DeleteAccountCard rows />
+      </div>
+    </div>
+  );
+}
+
+function ProfileCards() {
   const { user } = useUser();
   const { account } = useBilling();
   const subscriptionStatus = account?.subscription_status ?? null;
@@ -743,7 +793,7 @@ export const PANELS: Record<Panel, () => React.ReactElement> = {
   budgets: BudgetsPanel,
   providers: ModelPanel,
   mcp: IntegrationsPanel,
-  desktop: DesktopSettings,
+  desktop: DesktopPanel,
   // Desktop-app-only: MCP servers running on the user's own Mac, driven by the
   // Tauri local_mcp_* commands. Renders a download prompt in a browser.
   "local-mcp": LocalMcpServers,
@@ -753,6 +803,27 @@ export const PANELS: Record<Panel, () => React.ReactElement> = {
   marketplace: MarketplacePanel,
   business: BusinessPanel,
 };
+
+/** Desktop, plus (super-agent) the session notifications that left Profile for the Developer group (W13-10). */
+function DesktopPanel() {
+  const superAgent = useSuperAgent();
+  return <><DesktopSettings />{superAgent && <SessionNotificationsCard rows />}</>;
+}
+
+/** Settings › Developer (Skills, MCP servers, Local MCP servers, Desktop) is for a workspace that has used them: a
+ *  coding session in the sidebar, the desktop app, or an MCP server of its own (not one Lightbulb manages) (W13-10). */
+function useShowsDeveloper(superAgent: boolean): boolean {
+  const api = useApi();
+  const directory = useMessagingWorkspaceOptional()?.directoryProps;
+  const sessions = (directory?.sessionRows?.length ?? 0) + (directory?.sessions?.length ?? 0) > 0;
+  const quick = !superAgent || sessions || isDesktopApp();
+  // A 403 (a member: the server list is admin-only) or any failure reads as none.
+  const { data: ownMcp } = useSWR(quick ? null : "/integrations/mcp/servers", async (path: string) => {
+    const resp = await api.get(path).catch(() => null) as { servers?: Record<string, unknown>; managed_keys?: string[] } | null;
+    return Object.keys(resp?.servers ?? {}).some((key) => !(resp?.managed_keys ?? []).includes(key));
+  }, { revalidateOnFocus: false });
+  return quick || ownMcp === true;
+}
 
 // =============================================================================
 // Business (super-agent): what Work › Money showed, inside Settings › Plan.
@@ -845,7 +916,9 @@ export function navKeyDown(e: React.KeyboardEvent, item: NavItem & { panel: stri
 
 export function SettingsPlace({ id, params }: PanelProps) {
   const superAgent = useSuperAgent();
-  const sections = superAgent ? SUPER_AGENT_SETTINGS_NAV_SECTIONS : SETTINGS_NAV_SECTIONS;
+  const developer = useShowsDeveloper(superAgent) || DEVELOPER_PANELS.has(params.section ?? "");
+  const sections = !superAgent ? SETTINGS_NAV_SECTIONS
+    : developer ? SUPER_AGENT_SETTINGS_NAV_SECTIONS : SUPER_AGENT_SETTINGS_NAV_SECTIONS.filter((s) => !s.items.every((i) => DEVELOPER_PANELS.has(i.panel ?? "")));
   const isAdmin = useIsWorkspaceAdmin();
   const visible = (item: NavItem): item is NavItem & { panel: Panel } =>
     item.panel !== undefined && Object.hasOwn(PANELS, item.panel) && (isAdmin || !ADMIN_ONLY_PANELS.has(item.panel));

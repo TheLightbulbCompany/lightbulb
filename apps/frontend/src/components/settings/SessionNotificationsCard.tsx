@@ -5,7 +5,9 @@ import useSWR from "swr";
 import { SESSION_NOTIFICATION_DEFAULTS, type NotifyLevel, type SessionNotifications } from "@lightbulb/shared";
 import { useApi } from "@/lib/api";
 import { notifyApiError } from "@/lib/notify";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { SettingRow } from "./SettingRow";
 
 const PREFS_KEY = "/users/me/prefs";
 
@@ -29,7 +31,8 @@ const LEVELS: { value: NotifyLevel; label: string }[] = [
 
 // Settings → Profile, beside the daily summary: how your own sessions tell you things. "Badge only"
 // counts the session on the Dock and in the tab title with no banner; the phone gets a push only for "Banner".
-export function SessionNotificationsCard() {
+// `rows` (super-agent): Settings › Developer › Desktop, in the row pattern, not a card (W13-10).
+export function SessionNotificationsCard({ rows = false }: { rows?: boolean }) {
   const api = useApi();
   const { prefs, loaded, mutate } = useSessionNotificationPrefs();
   const [busy, setBusy] = useState(false);
@@ -46,6 +49,27 @@ export function SessionNotificationsCard() {
   };
 
   if (!loaded) return null;
+  const level = (key: "waiting" | "finished", title: string) => (
+    <Select value={prefs[key]} disabled={busy} onValueChange={(value) => void save({ [key]: value as NotifyLevel })}>
+      <SelectTrigger aria-label={title} size="sm" className="min-w-32"><SelectValue /></SelectTrigger>
+      <SelectContent align="end">
+        {LEVELS.map((l) => <SelectItem key={l.value} value={l.value}>{l.label}</SelectItem>)}
+      </SelectContent>
+    </Select>
+  );
+  if (rows) return (
+    <section aria-labelledby="settings-session-notifications" className="settings-rows">
+      <h2 id="settings-session-notifications" className="settings-rows__head">Session notifications</h2>
+      <p className="settings-rows__line pt-2">For your own coding sessions, on this computer, the web and your phone.</p>
+      {KINDS.map(({ key, title, desc }) => <SettingRow key={key} label={title} line={desc}>{level(key, title)}</SettingRow>)}
+      <SettingRow label="Only when Lightbulb isn't focused" line="No banner while you are in Lightbulb on this computer." htmlFor="session-only-unfocused">
+        <Switch id="session-only-unfocused" checked={prefs.onlyUnfocused} disabled={busy} onCheckedChange={(on) => void save({ onlyUnfocused: on })} />
+      </SettingRow>
+      <SettingRow label="Sound" line="A sound with each banner." htmlFor="session-sound">
+        <Switch id="session-sound" checked={prefs.sound} disabled={busy} onCheckedChange={(on) => void save({ sound: on })} />
+      </SettingRow>
+    </section>
+  );
   return (
     <div className="settings-card">
       <div className="settings-card-title">Session notifications</div>
@@ -56,10 +80,7 @@ export function SessionNotificationsCard() {
             <div className="settings-card-title">{title}</div>
             <div className="settings-card-desc">{desc}</div>
           </div>
-          <select aria-label={title} value={prefs[key]} disabled={busy}
-            onChange={(event) => void save({ [key]: event.target.value as NotifyLevel })}>
-            {LEVELS.map((level) => <option key={level.value} value={level.value}>{level.label}</option>)}
-          </select>
+          {level(key, title)}
         </label>
       ))}
       <label className="settings-card-header" style={{ marginTop: 12, cursor: "pointer" }}>

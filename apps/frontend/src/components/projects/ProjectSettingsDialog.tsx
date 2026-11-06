@@ -172,7 +172,7 @@ function SettingsBody({ room, roomName, section, onSection, canEdit, actionable,
       {SECTIONS.map((s) => <button key={s.id} type="button" aria-current={s.id === section ? "page" : undefined} onClick={() => onSection(s.id)}>{s.label}</button>)}
     </nav>
     <label className="sr-only" htmlFor={`${id}-section`}>Section</label>
-    <select id={`${id}-section`} className="project-settings__select room-input" value={section} onChange={(e) => onSection(e.target.value as SettingsSection)}>
+    <select id={`${id}-section`} className="project-settings__select" value={section} onChange={(e) => onSection(e.target.value as SettingsSection)}>
       {SECTIONS.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
     </select>
     <div className="project-settings__body">

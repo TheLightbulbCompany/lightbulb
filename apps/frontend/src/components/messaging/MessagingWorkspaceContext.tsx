@@ -559,7 +559,8 @@ export function MessagingWorkspaceProvider({
       id: agent.id,
       displayName: agent.id === frontId ? FRONT_AGENT_NAME : agent.name,
       agentActivity: activityByAgentId.get(agent.id),
-      mentionHandle: rooms.activeRoom?.members.find((member) => member.kind === "agent" && member.id === agent.id)?.mentionHandle ?? null,
+      // Lightbulb's handle is fixed, as `decorate` sets it: its face (the mark) keys off it.
+      mentionHandle: agent.id === frontId ? "lightbulb" : rooms.activeRoom?.members.find((member) => member.kind === "agent" && member.id === agent.id)?.mentionHandle ?? null,
     }));
     return [...people, ...agents];
   }, [humanRoster, agentRoster, rooms.activeRoom, userId, online, sharing, activityByAgentId, frontId]);

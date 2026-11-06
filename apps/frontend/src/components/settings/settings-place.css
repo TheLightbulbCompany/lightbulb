@@ -48,3 +48,5 @@
 .settings-rows__text { flex: 1; min-width: 0; }
 .settings-rows__label { display: block; font-size: 15px; line-height: 22px; font-weight: 500; color: var(--midnight); }
 .settings-rows__line { font-size: 13px; line-height: 18px; color: var(--midnight-muted); }
+.settings-rows__row .settings-profile-avatar--row { width: 40px; height: 40px; font-size: 15px; flex: none; }
+.settings-panel > .settings-page-title + .settings-rows { margin-top: 16px; }

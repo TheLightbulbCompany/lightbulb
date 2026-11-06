@@ -1,17 +1,18 @@
 "use client";
 
 // A project's Files view (super-agent, UX slice 5): what its tasks made, plus the files people shared in its messages,
-// in one table (Name · Made by · Date). A type select narrows it; a row opens its thing, and ⋯ adds "Open its task"
+// in one table (Name · Made by · Date; "just now", "3m ago" as Tasks says it, W13). A type select narrows it; a row opens its thing, and ⋯ adds "Open its task"
 // and "Copy link". A project that has made nothing shows a tip pinned to the foot, dismissed once per person.
 
 import "./creations.css";
 import { useMemo, useState, type ReactElement } from "react";
 import { MoreHorizontal, X } from "lucide-react";
-import { elapsedShort, specialistLabel, type OutputKind } from "@lightbulb/shared";
+import { specialistLabel, type OutputKind } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import type { RoomMessage } from "@/components/messaging/types";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
+import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { KIND_FILTERS, openOutput, outputLink, type Openable } from "./openOutput";
 import { iconOf } from "./OutputThumb";
 import { useCreations } from "./useCreations";
@@ -47,7 +48,6 @@ export function ProjectFiles({ roomId, viewerId, messages, onOpenTask }: {
     ...outputs.map((o) => ({ key: `${o.taskId}:${o.id}`, output: o, madeBy: specialistLabel(o.specialist, agentNames), at: o.createdAt, shared: false })),
     ...(!kinds || kinds.includes("file") ? shared : []),
   ];
-  const [now] = useState(() => Date.now()); // ages as of the view's opening
   const nothingMade = !loading && !error && rows.length === 0 && type === "all";
 
   const copy = async (row: Row) => {
@@ -75,7 +75,7 @@ export function ProjectFiles({ roomId, viewerId, messages, onOpenTask }: {
               {iconOf(row.output, 16)}<span>{row.output.title}</span>
             </button></td>
             <td className="project-files__muted">{row.madeBy}</td>
-            <td className="project-files__muted"><time dateTime={row.at}>{elapsedShort(row.at, now)}</time></td>
+            <td className="project-files__muted"><time dateTime={row.at}>{timeAgo(row.at)}</time></td>
             <td className="project-files__act">
               <DropdownMenu>
                 <DropdownMenuTrigger asChild><button type="button" className="project-files__more" aria-label={`More for ${row.output.title}`}>

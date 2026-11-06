@@ -110,16 +110,52 @@ beforeEach(() => {
 });
 
 describe("Settings place (super-agent)", () => {
-  it("Frame A: titled Settings, five plain groups, 13 rows; Business under Plan; no Budgets or Marketplace", () => {
+  it("Frame A: titled Settings, four plain groups, 9 rows; Business under Plan; no Budgets or Marketplace; no Developer group yet", () => {
     place();
     expect(screen.getByRole("heading", { level: 1, name: "Settings" })).toBeInTheDocument();
     const navEl = screen.getByRole("navigation", { name: "Settings navigation" });
-    expect([...navEl.querySelectorAll(".settings-nav-section-label")].map((l) => l.textContent)).toEqual(["You", "Workspace", "Connect", "Plan", "Advanced"]);
+    expect([...navEl.querySelectorAll(".settings-nav-section-label")].map((l) => l.textContent)).toEqual(["You", "Workspace", "Connect", "Plan"]);
     const rows = within(navEl).getAllByRole("tab").map((t) => t.textContent);
-    expect(rows).toEqual(["Profile", "Workspace", "Members", "Approvals", "Connections", "Billing", "Usage", "Business", "Model & credits",
-      "Skills", "MCP servers", "Local MCP servers", "Desktop"]);
+    expect(rows).toEqual(["Profile", "Workspace", "Members", "Approvals", "Connections", "Billing", "Usage", "Business", "Model & credits"]);
     // No route chrome: no top bar, no Back to Chat.
     expect(screen.queryByRole("link", { name: /Back to Chat/ })).toBeNull();
+  });
+
+  it("the Developer group shows once the workspace has its own MCP server, or for a link to one of its rows (W13-10)", async () => {
+    const devRows = () => [...screen.getByRole("navigation", { name: "Settings navigation" }).querySelectorAll(".settings-nav-section-label")].map((l) => l.textContent);
+    const { unmount } = place({ section: "mcp" });
+    expect(devRows()).toContain("Developer");
+    expect(screen.getByRole("tab", { name: /^MCP servers/ })).toHaveAttribute("aria-selected", "true");
+    unmount();
+    // Only Lightbulb's managed server: still hidden.
+    api.get.mockImplementation(async (path: string) => {
+      if (path === "/integrations/mcp/servers") return { servers: { lightbulb: {} }, managed_keys: ["lightbulb"] };
+      throw new Error(`no route ${path}`);
+    });
+    const second = place();
+    await vi.waitFor(() => expect(api.get).toHaveBeenCalledWith("/integrations/mcp/servers"));
+    expect(devRows()).not.toContain("Developer");
+    second.unmount();
+    api.get.mockImplementation(async (path: string) => {
+      if (path === "/integrations/mcp/servers") return { servers: { lightbulb: {}, github: {} }, managed_keys: ["lightbulb"] };
+      throw new Error(`no route ${path}`);
+    });
+    place();
+    await vi.waitFor(() => expect(devRows()).toEqual(["You", "Workspace", "Connect", "Plan", "Developer"]));
+  });
+
+  it("Profile is rows, not a card per setting: Edit profile beside who you are, no session notifications (W13-10)", async () => {
+    api.get.mockImplementation(async (path: string) => {
+      if (path === "/users/me/prefs") return { timezone: "UTC", dailySummary: true, awayEmail: true };
+      throw new Error(`no route ${path}`);
+    });
+    const { container } = place();
+    expect(await screen.findByRole("switch", { name: "Daily summary" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edit profile" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Delete…" })).toBeInTheDocument();
+    expect(container.querySelector("#panel-profile .settings-card")).toBeNull();
+    expect(screen.queryByText("Session notifications")).toBeNull();
+    expect(screen.queryByText(/account menu at the bottom left/)).toBeNull();
   });
 
   it("a row opens its section in place (the URL replaced, not pushed); Business is Money without its masthead", () => {

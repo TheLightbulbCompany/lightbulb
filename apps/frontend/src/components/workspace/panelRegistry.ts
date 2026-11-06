@@ -230,6 +230,8 @@ const SUPER_AGENT_ALIASES: Readonly<Record<string, string>> = {
   "teams-money": "settings",
   // UX slice 5: Creations (the canvas panel) replaces Library.
   "teams-artifacts": "canvas",
+  // The rail writes `panel=creations` (W13); the panel id stays "canvas", so an old `panel=canvas` link still opens it.
+  creations: "canvas",
 };
 let _superAgentAliases = false;
 export function setSuperAgentAliases(on: boolean): void {

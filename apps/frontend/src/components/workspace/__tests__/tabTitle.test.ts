@@ -22,6 +22,7 @@ describe("placeTabTitle", () => {
       work: titleFor("teams-routines"),
       project: titleFor(null, "Launch plan"),
       dm: titleFor(null, "Growth"),
+      lightbulbDm: titleFor(null, "Lightbulb"),
       nothingOpen: titleFor(null),
     }).toEqual({
       home: "Home · Lightbulb",
@@ -32,6 +33,7 @@ describe("placeTabTitle", () => {
       work: "Work · Lightbulb",
       project: "Launch plan · Lightbulb",
       dm: "Growth · Lightbulb",
+      lightbulbDm: "Lightbulb",
       nothingOpen: "Lightbulb",
     });
   });

@@ -306,7 +306,7 @@ it("closes the phone drawer when the window widens past the phone breakpoint", (
 const stubMedia = (matches: (query: string) => boolean) => {
   const listeners = new Map<string, () => void>();
   vi.stubGlobal("matchMedia", (query: string) => ({
-    matches: matches(query), media: query,
+    get matches() { return matches(query); }, media: query,
     addEventListener: (_: string, cb: () => void) => { listeners.set(query, cb); },
     removeEventListener: () => {},
   }));
@@ -369,4 +369,43 @@ it("a pane that is a sheet is a modal dialog: what it covers is inert and Escape
     expect(view.container.querySelector(".workspace-pane")).toBeNull();
     covered.forEach((c) => expect(c).not.toHaveAttribute("inert"));
   } finally { state.superAgent = false; vi.unstubAllGlobals(); }
+});
+
+it("a sidebar-only drawer that narrows to a phone becomes the phone drawer: the rail is released", () => {
+  state.superAgent = true;
+  let wide = true;
+  const listeners = stubMedia((q) => q === "(min-width: 600px)" && wide);
+  try {
+    const view = renderReady();
+    fireEvent.click(screen.getByRole("button", { name: "Open menu" }));
+    expect(view.container.querySelector(".workspace-rail")).toHaveAttribute("inert");
+    wide = false;
+    act(() => listeners.get("(min-width: 600px)")?.());
+    expect(shellOf(view)).toHaveAttribute("data-nav-open", "true");
+    expect(view.container.querySelector(".workspace-rail")).not.toHaveAttribute("inert");
+    expect(screen.queryByRole("dialog", { name: "Conversations" })).toBeNull();
+  } finally { state.superAgent = false; vi.unstubAllGlobals(); }
+});
+
+it("a sheet takes focus on open, hands it back to its opener on close, and covers views that mount while it is open", async () => {
+  state.superAgent = true;
+  stubMedia((q) => q === "(max-width: 735px)");
+  const opener = document.createElement("button");
+  opener.textContent = "Open files";
+  document.body.appendChild(opener);
+  try {
+    const view = renderReady();
+    opener.focus();
+    act(() => openPanel("file-viewer"));
+    const pane = view.container.querySelector(".workspace-pane")!;
+    expect(pane.contains(document.activeElement)).toBe(true);
+    const late = document.createElement("div");
+    await act(async () => { pane.parentElement!.appendChild(late); await Promise.resolve(); });
+    expect(late).toHaveAttribute("inert");
+    fireEvent.keyDown(pane, { key: "Escape" });
+    expect(view.container.querySelector(".workspace-pane")).toBeNull();
+    expect(late).not.toHaveAttribute("inert");
+    expect(opener).toHaveFocus();
+    late.remove();
+  } finally { opener.remove(); state.superAgent = false; vi.unstubAllGlobals(); }
 });

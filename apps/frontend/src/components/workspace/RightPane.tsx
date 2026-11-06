@@ -100,13 +100,32 @@ export function RightPane({ pane, fullScreen }: { pane: Slot; fullScreen: boolea
 
   // A sheet over the main view (workspace.css): modal, so what it covers is inert, Tab stays in it and Escape closes it.
   const sheet = useMediaQuery(paneSheetQuery(useSuperAgent())) && !fullScreen;
+  // Who opened it, read while mounting (before the panel's own effects move focus): focus goes back there on close.
+  const [opener] = useState(() => typeof document === "undefined" ? null : document.activeElement as HTMLElement | null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const wasSheet = useRef(false);
   useEffect(() => {
     const el = paneRef.current;
+    wasSheet.current = sheet;
     if (!sheet || !el?.parentElement) return;
-    const covered = [...el.parentElement.children].filter((c) => c !== el && !c.hasAttribute("inert"));
-    covered.forEach((c) => c.setAttribute("inert", ""));
-    return () => covered.forEach((c) => c.removeAttribute("inert"));
+    const parent = el.parentElement;
+    // Focus starts in the sheet (its close button) unless the panel already put it there.
+    if (!el.contains(document.activeElement)) closeRef.current?.focus();
+    // What it covers is inert, including a view that mounts while it is open.
+    const covered = new Set<Element>();
+    const cover = () => {
+      for (const c of parent.children) if (c !== el && !c.hasAttribute("inert")) { c.setAttribute("inert", ""); covered.add(c); }
+    };
+    cover();
+    const observer = new MutationObserver(cover);
+    observer.observe(parent, { childList: true });
+    return () => { observer.disconnect(); covered.forEach((c) => c.removeAttribute("inert")); };
   }, [sheet]);
+  useEffect(() => () => {
+    // Closed while it was a sheet: back to whatever opened it, if it is still there and focus has nowhere better.
+    const active = document.activeElement;
+    if (wasSheet.current && opener?.isConnected && (!active || active === document.body || !active.isConnected)) opener.focus();
+  }, [opener]);
 
   const Panel = pane.component === "thread" ? null : PANEL_COMPONENTS[pane.component as PanelKind];
   return (
@@ -125,7 +144,7 @@ export function RightPane({ pane, fullScreen }: { pane: Slot; fullScreen: boolea
           title={fullScreen ? "Exit full screen" : "Full screen"} onClick={() => setPaneFullScreen(!fullScreen)}>
           {fullScreen ? <Minimize2 size={16} aria-hidden="true" /> : <Maximize2 size={16} aria-hidden="true" />}
         </button>
-        <button type="button" aria-label="Close pane" title="Close" onClick={closePane}><X size={16} aria-hidden="true" /></button>
+        <button ref={closeRef} type="button" aria-label="Close pane" title="Close" onClick={closePane}><X size={16} aria-hidden="true" /></button>
       </header>
       <div className="workspace-pane__body">
         {Panel ? <Panel id={pane.panelId} params={pane.params} />

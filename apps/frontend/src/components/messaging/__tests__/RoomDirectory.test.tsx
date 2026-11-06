@@ -32,13 +32,13 @@ const base: DirectoryRoom = { roomId: "channel", kind: "channel", name: "Launch"
 it("creates through a centered portal with member settings and closes on success", async () => {
   const onCreate = vi.fn().mockResolvedValue(true);
   const { container } = render(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[]} participants={[alice, atlas]} onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} onCreate={onCreate} />);
-  fireEvent.click(screen.getByRole("button", { name: "New chat or project" }));
-  const dialog = screen.getByRole("dialog", { name: "Create a project" });
+  fireEvent.click(screen.getByRole("button", { name: "New chat or channel" }));
+  const dialog = screen.getByRole("dialog", { name: "Create a channel" });
   expect(container.contains(dialog)).toBe(false);
-  fireEvent.change(within(dialog).getByLabelText("Project name"), { target: { value: "Launch" } });
+  fireEvent.change(within(dialog).getByLabelText("Channel name"), { target: { value: "Launch" } });
   fireEvent.click(within(dialog).getByLabelText("Select Atlas"));
   expect(within(dialog).getByLabelText("Response for Atlas")).toHaveValue("active");
-  fireEvent.click(within(dialog).getByRole("button", { name: "Create project" }));
+  fireEvent.click(within(dialog).getByRole("button", { name: "Create channel" }));
   await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   expect(onCreate).toHaveBeenCalledWith({ kind: "channel", name: "Launch", members: [{ kind: "agent", id: "atlas", role: "member", listenMode: "active" }] });
 });
@@ -46,8 +46,8 @@ it("creates through a centered portal with member settings and closes on success
 it("preserves a failed draft and disables member controls while creating", async () => {
   const props = { ownerScopeId: "org", sections: [], state: "ready" as const, rooms: [], participants: [atlas], onSelectRoom: vi.fn(), onSelectParticipant: vi.fn(), onCreate: vi.fn().mockResolvedValue(false) };
   const { rerender } = render(<RoomDirectory {...props} />);
-  fireEvent.click(screen.getByRole("button", { name: "New chat or project" }));
-  fireEvent.change(screen.getByLabelText("Project name"), { target: { value: "Launch" } });
+  fireEvent.click(screen.getByRole("button", { name: "New chat or channel" }));
+  fireEvent.change(screen.getByLabelText("Channel name"), { target: { value: "Launch" } });
   fireEvent.click(screen.getByLabelText("Select Atlas"));
   rerender(<RoomDirectory {...props} creationBusy />);
   expect(screen.getByLabelText("Response for Atlas")).toBeDisabled();
@@ -55,11 +55,11 @@ it("preserves a failed draft and disables member controls while creating", async
   expect(screen.getByRole("dialog")).toBeInTheDocument();
   rerender(<RoomDirectory {...props} creationError="Try again" />);
   expect(screen.getByRole("alert")).toHaveTextContent("Try again");
-  expect(screen.getByLabelText("Project name")).toHaveValue("Launch");
+  expect(screen.getByLabelText("Channel name")).toHaveValue("Launch");
   expect(screen.getByLabelText("Select Atlas")).toBeChecked();
   fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
   await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
-  expect(screen.getByRole("button", { name: "New chat or project" })).toHaveFocus();
+  expect(screen.getByRole("button", { name: "New chat or channel" })).toHaveFocus();
 });
 
 // Room-name matchers are anchored: every row now carries a "Conversation
@@ -73,7 +73,7 @@ it("separates channels from direct messages, keeping group DMs — with stacked 
     { ...base, roomId: "friday-dm", kind: "dm", name: null, participants: [friday], unreadCount: 3 },
     { ...base, roomId: "group", kind: "group-dm", name: "Launch crew", participants: [alice, atlas] },
   ]} />);
-  expect(within(screen.getByRole("region", { name: "Projects" })).getByRole("button", { name: /^Launch/ })).toBeInTheDocument();
+  expect(within(screen.getByRole("region", { name: "Channels" })).getByRole("button", { name: /^Launch/ })).toBeInTheDocument();
   const directMessages = within(screen.getByRole("region", { name: "People" }));
   // The facepile is decorative — the row already announces "Launch crew" — so
   // the avatars are found with `hidden`.
@@ -214,7 +214,7 @@ it("renders Starred above Channels and stars a room from its overflow menu", asy
       { ...base, roomId: "plain", name: "Plain" },
       { ...base, roomId: "fav", name: "Favourite", starred: true },
     ]} />);
-  expect(screen.getAllByRole("heading", { level: 3 }).map((node) => node.textContent)).toEqual(["Starred", "Projects"]);
+  expect(screen.getAllByRole("heading", { level: 3 }).map((node) => node.textContent)).toEqual(["Starred", "Channels"]);
   await userEvent.click(screen.getByRole("button", { name: "Actions for Plain" }));
   await userEvent.click(await screen.findByRole("menuitem", { name: "Star" }));
   expect(onSetPrefs).toHaveBeenCalledWith("plain", { starred: true });
@@ -363,11 +363,11 @@ it("collapses a group and keeps the collapse across a remount", async () => {
     rooms: [{ ...base, roomId: "plain", name: "Plain" }],
     onSelectRoom: vi.fn(), onSelectParticipant: vi.fn(), onSetPrefs: vi.fn(), onMarkUnread: vi.fn() };
   const { unmount } = render(<RoomDirectory {...props} />);
-  await userEvent.click(screen.getByRole("button", { name: "Collapse Projects" }));
+  await userEvent.click(screen.getByRole("button", { name: "Collapse Channels" }));
   expect(screen.queryByRole("button", { name: /^Plain/ })).not.toBeInTheDocument();
   unmount();
   render(<RoomDirectory {...props} />);
-  expect(screen.getByRole("button", { name: "Expand Projects" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Expand Channels" })).toBeInTheDocument();
 });
 
 it("keeps a collapsed group's unread count on its header", async () => {
@@ -377,13 +377,13 @@ it("keeps a collapsed group's unread count on its header", async () => {
       { ...base, roomId: "loud", name: "Loud", unreadCount: 4 },
       { ...base, roomId: "hushed", name: "Hushed", unreadCount: 9, muted: true },
     ]} />);
-  const toggle = screen.getByRole("button", { name: "Collapse Projects" });
+  const toggle = screen.getByRole("button", { name: "Collapse Channels" });
   expect(toggle).toHaveAttribute("aria-expanded", "true");
   await userEvent.click(toggle);
   expect(screen.queryByRole("button", { name: /^Loud/ })).not.toBeInTheDocument();
   // The muted room's 9 stay out of the count, exactly as they stay off its row.
-  expect(screen.getByLabelText("4 unread messages in Projects")).toHaveTextContent("4");
-  expect(screen.getByRole("button", { name: "Expand Projects" })).toHaveAttribute("aria-expanded", "false");
+  expect(screen.getByLabelText("4 unread messages in Channels")).toHaveTextContent("4");
+  expect(screen.getByRole("button", { name: "Expand Channels" })).toHaveAttribute("aria-expanded", "false");
 });
 
 it("keeps the open room visible inside a collapsed group", async () => {
@@ -393,7 +393,7 @@ it("keeps the open room visible inside a collapsed group", async () => {
       { ...base, roomId: "open", name: "Open" },
       { ...base, roomId: "other", name: "Other" },
     ]} />);
-  await userEvent.click(screen.getByRole("button", { name: "Collapse Projects" }));
+  await userEvent.click(screen.getByRole("button", { name: "Collapse Channels" }));
   expect(screen.queryByRole("button", { name: /^Other/ })).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: /^Open/ })).toHaveAttribute("aria-current", "page");
 });
@@ -411,7 +411,7 @@ it("creates a named group chat with a flexible mix of participants", async () =>
   const onCreate = vi.fn().mockResolvedValue(true);
   render(<RoomDirectory ownerScopeId="org" state="ready" sections={[]} rooms={[]} participants={[alice, atlas]}
     onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} onCreate={onCreate} />);
-  fireEvent.click(screen.getByRole("button", { name: "New chat or project" }));
+  fireEvent.click(screen.getByRole("button", { name: "New chat or channel" }));
   fireEvent.change(screen.getByLabelText("Type"), { target: { value: "group-dm" } });
   const dialog = screen.getByRole("dialog", { name: "New group chat" });
   fireEvent.change(within(dialog).getByLabelText("Group chat name (optional)"), { target: { value: "Launch crew" } });
@@ -431,7 +431,7 @@ it("creates a named group chat with a flexible mix of participants", async () =>
 it("renders the New group chat footer as a normal, non-overlapping DialogFooter row", () => {
   render(<RoomDirectory ownerScopeId="org" state="ready" sections={[]} rooms={[]} participants={[]}
     onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} onCreate={vi.fn()} />);
-  fireEvent.click(screen.getByRole("button", { name: "New chat or project" }));
+  fireEvent.click(screen.getByRole("button", { name: "New chat or channel" }));
   fireEvent.change(screen.getByLabelText("Type"), { target: { value: "group-dm" } });
   const dialog = screen.getByRole("dialog", { name: "New group chat" });
   const cancel = within(dialog).getByRole("button", { name: "Cancel" });
@@ -657,12 +657,12 @@ it("offers Leave on a channel only, and confirms before leaving", async () => {
     { ...base, roomId: "dm", kind: "dm", name: "Direct", participants: [alice] },
   ]} />);
   await userEvent.click(screen.getByRole("button", { name: "Actions for Direct" }));
-  expect(screen.queryByRole("menuitem", { name: "Leave project" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("menuitem", { name: "Leave channel" })).not.toBeInTheDocument();
   await userEvent.keyboard("{Escape}");
   await userEvent.click(screen.getByRole("button", { name: "Actions for Channel" }));
-  await userEvent.click(await screen.findByRole("menuitem", { name: "Leave project" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Leave channel" }));
   const confirm = await screen.findByRole("dialog", { name: "Leave Channel?" });
-  await userEvent.click(within(confirm).getByRole("button", { name: "Leave project" }));
+  await userEvent.click(within(confirm).getByRole("button", { name: "Leave channel" }));
   expect(onLeaveRoom).toHaveBeenCalledWith("chan");
 });
 
@@ -674,10 +674,10 @@ it("offers no Leave to a channel's owner who is alone in it, but does once someo
     { ...base, roomId: "pair", name: "Pair", members: [me, other] },
   ]} />);
   await userEvent.click(screen.getByRole("button", { name: "Actions for Solo" }));
-  expect(screen.queryByRole("menuitem", { name: "Leave project" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("menuitem", { name: "Leave channel" })).not.toBeInTheDocument();
   await userEvent.keyboard("{Escape}");
   await userEvent.click(screen.getByRole("button", { name: "Actions for Pair" }));
-  expect(await screen.findByRole("menuitem", { name: "Leave project" })).toBeInTheDocument();
+  expect(await screen.findByRole("menuitem", { name: "Leave channel" })).toBeInTheDocument();
 });
 
 it("offers Leave on a group chat too", async () => {
@@ -724,7 +724,7 @@ it("separates shared channels into External connections, retains their indicator
       { ...base, roomId: "own", name: "Launch" },
       { ...base, roomId: "ext", name: "lightbulb-acme", shared: true },
     ]} />);
-  const channels = screen.getByRole("region", { name: "Projects" });
+  const channels = screen.getByRole("region", { name: "Channels" });
   const external = screen.getByRole("region", { name: "External connections" });
   expect(within(channels).getByRole("button", { name: /^Launch/ })).toBeInTheDocument();
   expect(within(channels).queryByRole("button", { name: /^lightbulb-acme/ })).not.toBeInTheDocument();
@@ -759,9 +759,9 @@ it("hides empty Channels and External connections sections", () => {
     onSelectRoom: vi.fn(), onSelectParticipant: vi.fn() };
   const { rerender } = render(<RoomDirectory {...props} rooms={[{ ...base, shared: true }]} />);
   expect(screen.getByRole("region", { name: "External connections" })).toBeInTheDocument();
-  expect(screen.queryByRole("region", { name: "Projects" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("region", { name: "Channels" })).not.toBeInTheDocument();
   rerender(<RoomDirectory {...props} rooms={[base]} />);
-  expect(screen.getByRole("region", { name: "Projects" })).toBeInTheDocument();
+  expect(screen.getByRole("region", { name: "Channels" })).toBeInTheDocument();
   expect(screen.queryByRole("region", { name: "External connections" })).not.toBeInTheDocument();
 });
 
@@ -786,7 +786,7 @@ it("lists live sessions below Channels, hides the section without a session door
   const { rerender } = render(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[base]} participants={[]} onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()}
     sessionRows={toRows([{ session, ownerName: "Alice", own: false, owner: { kind: "human" as const, id: "alice", displayName: "Alice", mentionHandle: null, role: "member" as const, listenMode: null, joinedAt: "", joinedSeq: 0 } }])} onSelectSession={onSelectSession} />);
   const section = screen.getByRole("region", { name: "Sessions" });
-  expect(section.compareDocumentPosition(screen.getByRole("region", { name: "Projects" })) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+  expect(section.compareDocumentPosition(screen.getByRole("region", { name: "Channels" })) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
   // One line: badge, name, dot. Owner and folder stay in the accessible label only.
   const row = within(section).getByRole("button", { name: /Open Claude · Fix login, Alice, in web, Working/ });
   expect(row).not.toHaveTextContent("Claude ·");
@@ -1105,7 +1105,7 @@ it("orders the sidebar Starred, custom sections, Team, Channels, Sessions, Exter
       { ...base, roomId: "old", name: "Old", archivedAt: "2026-09-23T00:00:00Z" },
     ]} />);
   expect(screen.getAllByRole("region").map((region) => region.getAttribute("aria-label")))
-    .toEqual(["Starred", "Ship", "People", "Projects", "Sessions", "External connections", "Archived"]);
+    .toEqual(["Starred", "Ship", "People", "Channels", "Sessions", "External connections", "Archived"]);
 });
 
 it("puts the CEO's DM first in Team, by agent id, whether or not the DM exists yet", () => {
@@ -1141,6 +1141,6 @@ it("every conversation button carries its own accessible name: the room, its kin
       { ...base, starred: true },
       { ...base, roomId: "friday-dm", kind: "dm", name: null, participants: [friday], unreadCount: 2 },
     ]} />);
-  expect(screen.getByRole("button", { name: "Launch, Project, Starred" })).toHaveAttribute("aria-label", "Launch, Project, Starred");
+  expect(screen.getByRole("button", { name: "Launch, Channel, Starred" })).toHaveAttribute("aria-label", "Launch, Channel, Starred");
   expect(screen.getAllByRole("button", { name: "Friday, Direct message, Agent, 2 unread messages, Unsent draft" })[0]).toBeInTheDocument();
 });

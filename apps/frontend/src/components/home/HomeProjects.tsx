@@ -109,7 +109,7 @@ export function HomeProjects(): ReactElement {
         <ChevronRight size={14} aria-hidden="true" />
       </button>}
       {directory?.onCreate && <Button type="button" size="sm" className="h-7" onClick={() => setCreating(true)}>
-        <Plus aria-hidden="true" />New project</Button>}
+        <Plus aria-hidden="true" />New channel</Button>}
     </div>
     {messaging && <AskLightbulb onAsk={messaging.askLightbulb} />}
 
@@ -128,18 +128,18 @@ export function HomeProjects(): ReactElement {
 
     <section aria-labelledby="home-projects-heading" className="home-projects__section">
       <div className="home-projects__head">
-        <h2 id="home-projects-heading" className="home-projects__label">Projects</h2>
+        <h2 id="home-projects-heading" className="home-projects__label">Channels</h2>
         {projects.length > 3 && <label className="home-projects__search">
           <Search size={14} aria-hidden="true" />
-          <span className="sr-only">Find a project</span>
-          <input type="search" placeholder="Find a project" value={query} onChange={(e) => setQuery(e.target.value)} />
+          <span className="sr-only">Find a channel</span>
+          <input type="search" placeholder="Find a channel" value={query} onChange={(e) => setQuery(e.target.value)} />
         </label>}
       </div>
       {!directory || directory.state === "loading" ? <p role="status" className="text-ui text-muted-foreground">Loading…</p>
-        : directory.state === "error" ? <p role="alert" className="text-ui text-muted-foreground">Projects couldn&apos;t load.{" "}
+        : directory.state === "error" ? <p role="alert" className="text-ui text-muted-foreground">Channels couldn&apos;t load.{" "}
           {directory.onRetry && <button type="button" className="underline hover:text-foreground" onClick={directory.onRetry}>Retry</button>}</p>
         : rest.length > 0 ? <ul className="home-projects__grid">{rest.map(card)}</ul>
-        : q && !pinned.length ? <p className="text-ui text-muted-foreground">No project matches “{query.trim()}”.</p> : null}
+        : q && !pinned.length ? <p className="text-ui text-muted-foreground">No channel matches “{query.trim()}”.</p> : null}
       {fresh && <StartAProject onStart={() => setCreating(true)} firstMoves={firstMoves} />}
     </section>
     {directory?.onCreate && <NewProjectDialog open={creating} onOpenChange={setCreating} busy={!!directory.creationBusy} error={directory.creationError}
@@ -213,7 +213,7 @@ function ProjectCard({ room, counts, capped, viewerId, onSetPrefs, onOpenSetting
         {onSetPrefs && <DropdownMenuItem onSelect={() => act(() => onSetPrefs(room.roomId, { starred: !room.starred }), "The pin could not be saved.")}>
           {room.starred ? <PinOff aria-hidden="true" /> : <Pin aria-hidden="true" />}{room.starred ? "Unpin" : "Pin"}</DropdownMenuItem>}
         {onOpenSettings && room.kind === "channel" && <DropdownMenuItem onSelect={() => onOpenSettings(room.roomId, "home")}><Settings aria-hidden="true" />Settings</DropdownMenuItem>}
-        {canArchive && <DropdownMenuItem onSelect={() => act(() => onPatchRoom!(room.roomId, { archived: true }), "The project could not be archived.")}><Archive aria-hidden="true" />Archive</DropdownMenuItem>}
+        {canArchive && <DropdownMenuItem onSelect={() => act(() => onPatchRoom!(room.roomId, { archived: true }), "The channel could not be archived.")}><Archive aria-hidden="true" />Archive</DropdownMenuItem>}
       </DropdownMenuContent>
     </DropdownMenu>}
     {failed && <p role="alert" className="text-caption text-err">{failed}</p>}
@@ -225,9 +225,9 @@ function StartAProject({ onStart, firstMoves }: { onStart: () => void; firstMove
   const { ideas } = useIdeas();
   const starters = firstMoves.length ? firstMoves : orderIdeas(ideas).filter((idea) => !idea.suggested).slice(0, HOME_STARTERS);
   return <div className="home-projects__start">
-    <p className="text-ui text-muted-foreground">A project is where you and Lightbulb work on one thing.</p>
+    <p className="text-ui text-muted-foreground">A channel is where you and Lightbulb work on one thing.</p>
     <div className="flex flex-wrap gap-2">
-      <Button type="button" size="sm" onClick={onStart}><Plus aria-hidden="true" />Start a project</Button>
+      <Button type="button" size="sm" onClick={onStart}><Plus aria-hidden="true" />Start a channel</Button>
       {starters.length > 0 && <ul aria-label={firstMoves.length ? "First moves" : "Starter ideas"} className="contents">
         {starters.map((idea) => <li key={idea.id}>
           <Button type="button" size="sm" variant="outline" onClick={() => {

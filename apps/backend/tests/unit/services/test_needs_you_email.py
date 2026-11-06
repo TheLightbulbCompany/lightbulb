@@ -170,7 +170,7 @@ async def test_an_answered_approval_sends_nothing_and_a_pending_one_uses_e4b(wor
 def test_mention_copy_names_the_room():
     out = away.render({**ROW, "kind": "mention"}, author="Alice", room={"kind": "channel", "name": "gtm"}, sent=1)
     assert out["subject"] == "You were mentioned in Lightbulb"
-    assert out["lines"][0] == "Alice mentioned you in gtm."
+    assert out["lines"][0] == "Alice mentioned you in #gtm."
     group = away.render(ROW, author="Friday", room={"kind": "group-dm", "name": "Humans + Friday"}, sent=1)
     assert group["lines"][0] == "New messages are waiting for you in Humans + Friday."
 

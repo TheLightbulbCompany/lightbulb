@@ -91,13 +91,13 @@ describe("projectRooms", () => {
 });
 
 describe("HomeProjects", () => {
-  it("shows the slim needs-you line, the Lightbulb DM and project cards with their room's counts", async () => {
+  it("shows the slim needs-you line, the Lightbulb DM and channel cards with their room's counts", async () => {
     render(<Fresh><HomeProjects /></Fresh>);
     const line = await screen.findByRole("button", { name: /3 need you · Review/ });
     await userEvent.click(line);
     expect(ctl.openPanel).toHaveBeenCalledWith("activity", {}, { pushUrl: true });
 
-    const cards = screen.getByRole("region", { name: "Projects" });
+    const cards = screen.getByRole("region", { name: "Channels" });
     const items = within(cards).getAllByRole("listitem");
     expect(await within(items[0]).findByRole("button", { name: "Spring launch, Working 2, 2 need you" })).toBeInTheDocument();
     // UX slice 6: tile · name · one state line. Needs you wins over working; no topic, no message preview.
@@ -139,26 +139,26 @@ describe("HomeProjects", () => {
     expect(screen.getByLabelText("Ask Lightbulb")).toHaveValue("Hi");
   });
 
-  it("New project: a dialog with the name, its tile and a goal; it creates the project and opens it", async () => {
+  it("New channel: a dialog with the name, its tile and a goal; it creates the channel and opens it", async () => {
     const value = directory(ROOMS);
     messaging.value = value;
     render(<Fresh><HomeProjects /></Fresh>);
     // Frame A (UX slice 4): the page's one primary action sits in the title row, beside "Home".
     const title = screen.getByRole("heading", { level: 1, name: "Home" }).parentElement!;
     expect(title).toHaveClass("frame-doc__title");
-    await userEvent.click(within(title).getByRole("button", { name: "New project" }));
-    const dialog = await screen.findByRole("dialog", { name: "New project" });
-    expect(within(dialog).getByRole("button", { name: "Create project" })).toBeDisabled();
-    await userEvent.click(within(dialog).getByRole("button", { name: "Project icon and colour" }));
+    await userEvent.click(within(title).getByRole("button", { name: "New channel" }));
+    const dialog = await screen.findByRole("dialog", { name: "New channel" });
+    expect(within(dialog).getByRole("button", { name: "Create channel" })).toBeDisabled();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Channel icon and colour" }));
     await userEvent.click(await screen.findByRole("button", { name: "Rocket" }));
     await userEvent.click(screen.getByRole("button", { name: "Sand" }));
-    await userEvent.type(within(dialog).getByLabelText(/What should this project get done/), "Hire two bakers");
+    await userEvent.type(within(dialog).getByLabelText(/What should this channel get done/), "Hire two bakers");
     await userEvent.type(within(dialog).getByLabelText("Name"), "Hiring{Enter}");
     expect(value.directoryProps.onCreate).toHaveBeenCalledWith({ kind: "channel", name: "Hiring", members: [], topic: "Hire two bakers", icon: "rocket", color: "project-3" });
     expect(ctl.activateMessagesPanel).toHaveBeenCalled();
   });
 
-  it("Pinned projects sit above the rest; a card's ⋯ pins, opens Settings and archives", async () => {
+  it("Pinned channels sit above the rest; a card's ⋯ pins, opens Settings and archives", async () => {
     const onSetPrefs = vi.fn(async () => {});
     const onOpenSettings = vi.fn();
     const onPatchRoom = vi.fn(async () => {});
@@ -169,7 +169,7 @@ describe("HomeProjects", () => {
     const pinned = screen.getByRole("region", { name: "Pinned" });
     expect(within(pinned).getAllByRole("listitem")).toHaveLength(1);
     expect(within(pinned).getByRole("button", { name: /^Website/ })).toBeInTheDocument();
-    expect(within(screen.getByRole("region", { name: "Projects" })).queryByRole("button", { name: /^Website/ })).toBeNull();
+    expect(within(screen.getByRole("region", { name: "Channels" })).queryByRole("button", { name: /^Website/ })).toBeNull();
     await userEvent.click(within(pinned).getByRole("button", { name: "More for Website" }));
     await userEvent.click(await screen.findByRole("menuitem", { name: "Unpin" }));
     expect(onSetPrefs).toHaveBeenCalledWith("site", { starred: false });
@@ -181,7 +181,7 @@ describe("HomeProjects", () => {
     expect(onPatchRoom).toHaveBeenCalledWith("site", { archived: true });
   });
 
-  it("first run: the one needs-you item reads Pick a first move and opens the DM; Start a project offers the moves", async () => {
+  it("first run: the one needs-you item reads Pick a first move and opens the DM; Start a channel offers the moves", async () => {
     apiGet.mockImplementation(async () => ({ tasks: [], next: null }));
     firstRun.moves = [{ id: "s-1", title: "Launch a pre-order page", firstRun: true }];
     messaging.value = directory([room("general", { name: "general", isDefault: true }), ROOMS[2]]);
@@ -196,16 +196,16 @@ describe("HomeProjects", () => {
   it("no needs-you line when nothing needs you", async () => {
     apiGet.mockImplementation(async () => ({ tasks: [], next: null }));
     render(<Fresh><HomeProjects /></Fresh>);
-    await screen.findByRole("region", { name: "Projects" });
+    await screen.findByRole("region", { name: "Channels" });
     expect(screen.queryByRole("button", { name: /need you · Review/ })).toBeNull();
   });
 
-  it("a new workspace: the DM, Start a project and three starter ideas", async () => {
+  it("a new workspace: the DM, Start a channel and three starter ideas", async () => {
     messaging.value = directory([room("general", { name: "general", isDefault: true }), ROOMS[2]]);
     ideas.ideas = ["i1", "i2", "i3", "i4"].map((id) => ({ id, title: `Idea ${id}`, suggested: false, agentId: FRONT }));
     render(<Fresh><HomeProjects /></Fresh>);
     expect(screen.getByRole("region", { name: "Chats" })).toHaveTextContent("Lightbulb");
-    expect(screen.getByRole("button", { name: "Start a project" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start a channel" })).toBeInTheDocument();
     expect(within(screen.getByRole("list", { name: "Starter ideas" })).getAllByRole("button")).toHaveLength(3);
   });
 });

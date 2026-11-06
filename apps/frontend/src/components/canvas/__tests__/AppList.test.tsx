@@ -24,11 +24,11 @@ describe("AppList", () => {
       app({ app_id: "a3", name: "Share", open_to: "invited" }), app({ app_id: "a4", name: "Site", open_to: "public" }),
     ]} />);
     expect(screen.getAllByRole("listitem")).toHaveLength(4);
-    expect(screen.getByText("Open to people in finance.")).toBeTruthy();
+    expect(screen.getByText("Open to people in #finance.")).toBeTruthy();
     expect(screen.getByText("Open to everyone here.")).toBeTruthy();
     expect(screen.getByText("Open to invited people.")).toBeTruthy();
     expect(screen.getByText("Open to anyone with the link.")).toBeTruthy();
-    expect(screen.getAllByText("Asked by Dana in finance · $3.20 this month")).toHaveLength(4);
+    expect(screen.getAllByText("Asked by Dana in #finance · $3.20 this month")).toHaveLength(4);
     fireEvent.click(screen.getByRole("button", { name: /Invoices/ }));
     expect(props.onOpen).toHaveBeenCalledWith("a1");
   });
@@ -119,7 +119,7 @@ describe("AppList", () => {
   it("greys an app the viewer cannot open and says where to ask", () => {
     const onOpen = vi.fn();
     render(<AppList {...props} onOpen={onOpen} apps={[app({ can_open: false })]} />);
-    expect(screen.getByText("Ask in finance to open it.")).toBeTruthy();
+    expect(screen.getByText("Ask in #finance to open it.")).toBeTruthy();
     const row = screen.getByRole("group", { name: "Invoices" });
     expect(row.getAttribute("aria-disabled")).toBe("true");
     fireEvent.click(row);
@@ -153,13 +153,13 @@ describe("AppList", () => {
 
   it("a row with no known asker says where it came from, never 'someone'", () => {
     render(<AppList {...props} apps={[app({ created_by_name: undefined, requested_by: undefined, spend_month_cents: null })]} />);
-    expect(screen.getByText("From finance")).toBeTruthy();
+    expect(screen.getByText("From #finance")).toBeTruthy();
     expect(screen.queryByText(/someone/)).toBeNull();
   });
 
   it("says when it last changed", () => {
     render(<AppList {...props} apps={[app({ updated_at: new Date(Date.now() - 2 * 3600_000).toISOString(), spend_month_cents: null })]} />);
-    expect(screen.getByText("Asked by Dana in finance · 2 hours ago")).toBeTruthy();
+    expect(screen.getByText("Asked by Dana in #finance · 2 hours ago")).toBeTruthy();
   });
 
   it("loading and empty copy", () => {

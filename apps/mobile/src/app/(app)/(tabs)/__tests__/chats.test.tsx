@@ -470,7 +470,7 @@ describe("Chats", () => {
     await screen.findByTestId("chat-session-sess-1");
     await fireEvent.press(screen.getByLabelText("Sessions"));
     expect(screen.getAllByTestId(/^chat-(room|session)-/).map((n) => n.props.testID)).toEqual(["chat-session-sess-1"]);
-    await fireEvent.press(screen.getByLabelText("Projects"));
+    await fireEvent.press(screen.getByLabelText("Channels"));
     expect(screen.getAllByTestId(/^chat-(room|session)-/).map((n) => n.props.testID)).toEqual(["chat-room-r3", "chat-room-r1", "chat-room-r4"]);
     await fireEvent.press(screen.getByLabelText("Direct"));
     expect(screen.getAllByTestId(/^chat-(room|session)-/).map((n) => n.props.testID)).toEqual(["chat-room-r2", "chat-room-r5", "chat-room-r6"]);

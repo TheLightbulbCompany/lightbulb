@@ -199,7 +199,7 @@ it("in another room's header it is a compact Live in general with Return and Lea
 });
 
 it.each([
-  [{ status: 404, body: { code: "ROOM_NOT_FOUND", message: "x" } }, "This project no longer exists."],
+  [{ status: 404, body: { code: "ROOM_NOT_FOUND", message: "x" } }, "This channel no longer exists."],
   [Object.assign(new Error("none"), { name: "NotFoundError" }), "No microphone found."],
 ])("a failed join maps %j to plain words", async (error, text) => {
   lk.post.mockRejectedValueOnce(error);

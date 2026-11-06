@@ -44,7 +44,7 @@ export function groupRooms(
     { id: "starred", label: options.pinned ? "Pinned" : "Starred", rooms: [], custom: false },
     ...sections.map((section) => ({ id: section.id, label: section.name, rooms: [], custom: true })),
     { id: "direct", label: "People", rooms: [], custom: false },
-    { id: "channels", label: "Projects", rooms: [], custom: false },
+    { id: "channels", label: "Channels", rooms: [], custom: false },
     { id: "external", label: "External connections", rooms: [], custom: false },
     { id: "archived", label: "Archived", rooms: [], custom: false },
   ];

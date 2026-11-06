@@ -47,7 +47,7 @@ export function CreationsGrid(): ReactElement {
   const projects = useMemo(() => projectRooms(rooms ?? []), [rooms]);
   const projectName = (id: string | null) => {
     const room = id ? rooms?.find((r) => r.roomId === id) : undefined;
-    return room ? roomDisplayName(room, room.participants) : null;
+    return room ? `${room.kind === "channel" ? "#" : ""}${roomDisplayName(room, room.participants)}` : null;
   };
   const filtered = kind !== "all" || !!roomId;
   const [noAgent, setNoAgent] = useState(false);
@@ -83,10 +83,10 @@ export function CreationsGrid(): ReactElement {
         {KIND_FILTERS.map((f) => <button key={f.id} type="button" aria-pressed={kind === f.id} onClick={() => setKind(f.id)}>{f.label}</button>)}
       </div>
       <Select value={roomId || ALL} onValueChange={(v) => setRoomId(v === ALL ? "" : v)}>
-        <SelectTrigger size="sm" className="creations__select" aria-label="Project"><SelectValue /></SelectTrigger>
+        <SelectTrigger size="sm" className="creations__select" aria-label="Channel"><SelectValue /></SelectTrigger>
         <SelectContent position="popper" align="end">
-          <SelectItem value={ALL}>All projects</SelectItem>
-          {projects.map((r) => <SelectItem key={r.roomId} value={r.roomId}>{roomDisplayName(r, r.participants)}</SelectItem>)}
+          <SelectItem value={ALL}>All channels</SelectItem>
+          {projects.map((r) => <SelectItem key={r.roomId} value={r.roomId}>#{roomDisplayName(r, r.participants)}</SelectItem>)}
         </SelectContent>
       </Select>
     </div>

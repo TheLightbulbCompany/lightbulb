@@ -30,28 +30,31 @@ const header = (extra: Partial<Parameters<typeof RoomHeader>[0]> = {}) => <RoomH
 const openSettings = async () => {
   await userEvent.click(screen.getByRole("button", { name: /Spring sale/ }));
   await userEvent.click(await screen.findByRole("menuitem", { name: "Settings" }));
-  return screen.findByRole("dialog", { name: "Spring sale · Settings" });
+  return screen.findByRole("dialog", { name: "Spring sale · Channel settings" });
 };
 
-describe("project settings", () => {
+describe("channel settings", () => {
   it("name ▾ › Settings opens the modal; Details, Add a topic, Archive and Delete leave the menu", async () => {
     render(header({ onSetTopic: vi.fn(), onSetArchived: vi.fn(), onDeleteRoom: vi.fn() }));
     await userEvent.click(screen.getByRole("button", { name: /Spring sale/ }));
     const menu = await screen.findByRole("menu");
-    for (const gone of ["Details", "Add a topic", "Edit topic", "Archive project", "Delete project", "Star"]) {
+    for (const gone of ["Details", "Add a topic", "Edit topic", "Archive channel", "Delete channel", "Star"]) {
       expect(within(menu).queryByRole("menuitem", { name: gone })).toBeNull();
     }
     await userEvent.click(within(menu).getByRole("menuitem", { name: "Settings" }));
-    const dialog = await screen.findByRole("dialog", { name: "Spring sale · Settings" });
+    const dialog = await screen.findByRole("dialog", { name: "Spring sale · Channel settings" });
     expect(within(dialog).getByRole("button", { name: "General" })).toHaveAttribute("aria-current", "page");
-    expect(within(dialog).getByText("Delete project")).toBeInTheDocument();
+    expect(within(dialog).getByText("Delete channel")).toBeInTheDocument();
   });
 
-  it("the tile saves at once; Pause and Resume patch the project; Esc closes it", async () => {
+  it("the tile saves at once; Pause and Resume patch the channel; Esc closes it", async () => {
     const onPatchRoom = vi.fn().mockResolvedValue(undefined);
     const { rerender } = render(header({ onPatchRoom }));
     const dialog = await openSettings();
-    await userEvent.click(within(dialog).getByRole("button", { name: "Project icon and colour" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Channel icon and colour" }));
+    // No icon picked: "#" is the default glyph and the pressed choice (founder, 6 Nov 2026).
+    expect(await screen.findByRole("button", { name: "Hash (default)" })).toHaveAttribute("aria-pressed", "true");
+    expect(within(dialog).getByRole("button", { name: "Channel icon and colour" }).querySelector(".lucide-hash")).not.toBeNull();
     await userEvent.click(await screen.findByRole("button", { name: "Rocket" }));
     await waitFor(() => expect(onPatchRoom).toHaveBeenCalledWith({ icon: "rocket", color: null }));
     await userEvent.keyboard("{Escape}"); // the picker
@@ -94,7 +97,7 @@ describe("project settings", () => {
     expect(memoryClient.listRoomMemory).toHaveBeenCalledWith("room-1");
     await userEvent.click(within(dialog).getByRole("button", { name: "Forget: Classes cap at 12 kids." }));
     expect(memoryClient.forgetRoomMemory).toHaveBeenCalledWith("room-1", "m-1");
-    expect(await within(dialog).findByText(/Tell Lightbulb things about this project/)).toBeInTheDocument();
+    expect(await within(dialog).findByText(/Tell Lightbulb things about this channel/)).toBeInTheDocument();
     unmount();
 
     render(header({ memoryClient: { ...memoryClient, listRoomMemory: vi.fn().mockResolvedValue({ items: [fact] }) }, canEditRoom: false }));
@@ -134,7 +137,7 @@ describe("project settings", () => {
   it("Archive in the modal opens the header's confirm; a sidebar ⋯ › Settings opens it in one shot", async () => {
     const onSettingsOpened = vi.fn();
     render(header({ onSetArchived: vi.fn(), openSettings: "sidebar", onSettingsOpened }));
-    const dialog = await screen.findByRole("dialog", { name: "Spring sale · Settings" });
+    const dialog = await screen.findByRole("dialog", { name: "Spring sale · Channel settings" });
     expect(onSettingsOpened).toHaveBeenCalledTimes(1);
     await userEvent.click(within(dialog).getByRole("button", { name: "Archive" }));
     const confirm = await screen.findByRole("dialog", { name: "Archive Spring sale?" });
@@ -186,7 +189,7 @@ describe("Pinned (sidebar)", () => {
     expect(groupRooms(rooms, [], { sort: "recent", nameOf })[0].label).toBe("Starred");
   });
 
-  it("a project row shows its tile, offers Pin and Settings", async () => {
+  it("a channel row shows its tile, offers Pin and Settings", async () => {
     const onOpenSettings = vi.fn();
     const onToggleStar = vi.fn();
     render(<ul><RoomDirectoryRow room={dRoom({ icon: "rocket", color: "project-3" })} label="Spring sale" active={false} busy={false} sections={[]}
@@ -204,11 +207,11 @@ describe("Pinned (sidebar)", () => {
 describe("starter schedules", () => {
   it("the first two roster specialists with a template, then Lightbulb's", () => {
     expect(pickTemplates(["Lightbulb", "Engineering", "Finance", "Customer Operations"]).map((t) => t.name))
-      .toEqual(["Unanswered customer email", "Weekly cash summary", "Weekly project summary"]);
+      .toEqual(["Unanswered customer email", "Weekly cash summary", "Weekly channel summary"]);
     expect(pickTemplates([]).map((t) => t.specialist)).toEqual(["Growth", "Customer Ops", "Lightbulb"]);
   });
 
-  it("a project with a goal gets three built from it (W13-13); none without", () => {
+  it("a channel with a goal gets three built from it (W13-13); none without", () => {
     const cards = goalTemplates("Write a short autumn specials menu blurb for our cafe. Keep it warm.");
     expect(cards.map((t) => t.name)).toEqual(["Monday plan", "Friday wrap-up", "What others are doing"]);
     expect(cards.every((t) => t.draft.includes('"Write a short autumn specials menu blurb for our cafe"'))).toBe(true);

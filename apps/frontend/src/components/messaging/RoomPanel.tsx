@@ -638,7 +638,7 @@ function RoomContent({
   const ownerCannotLeave = !visibleRoom?.shared && ownerAlone;
   // A group chat has no admins: any member archives and unarchives it.
   const canUnarchive = !!onSetArchived && (visibleRoom?.kind === "group-dm" || isRoomAdmin);
-  const roomNoun = visibleRoom?.kind === "group-dm" ? "group chat" : "project";
+  const roomNoun = visibleRoom?.kind === "group-dm" ? "group chat" : "channel";
   const normalizedMemberQuery = memberQuery.trim().toLocaleLowerCase();
   const memberMatches = (name: string) => !normalizedMemberQuery || name.toLocaleLowerCase().includes(normalizedMemberQuery);
   const filteredAddMemberCandidates = addMemberCandidates.filter((candidate) => memberMatches(candidate.displayName));
@@ -662,7 +662,7 @@ function RoomContent({
       await onRemoveMember({ kind: removalTarget.kind, id: removalTarget.id });
       setManagement(null);
     } catch (error) {
-      setManagementError(error instanceof Error ? error.message : "The project could not be updated. Try again.");
+      setManagementError(error instanceof Error ? error.message : "The channel could not be updated. Try again.");
     } finally {
       setManagementPending(false);
     }
@@ -1112,7 +1112,7 @@ function RoomContent({
         </>}
         toolItems={<>
           <DropdownMenuItem disabled={!actionable} onSelect={() => setSearchToken((token) => token + 1)}>
-            <Search aria-hidden="true" />Search in project<span className="ml-auto text-caption text-muted-foreground">⌘F</span></DropdownMenuItem>
+            <Search aria-hidden="true" />Search in channel<span className="ml-auto text-caption text-muted-foreground">⌘F</span></DropdownMenuItem>
           {inShell && browserAvailable && <DropdownMenuItem onSelect={() => { capture("browser_view_opened"); openBrowserPane(); }}>
             <Chrome aria-hidden="true" />Browser</DropdownMenuItem>}
           {inShell && <DropdownMenuItem onSelect={() => { capture("ideas_opened"); openPanel("ideas", composer.focusAgentId ? { agent: composer.focusAgentId } : {}, { pushUrl: true }); }}>
@@ -1165,9 +1165,9 @@ function RoomContent({
       {!visibleRoom?.archivedAt && <RoomLimitBar account={billing} />}
       {paused && <div className="project-paused" role={pausedAsk ? "alert" : "status"}>
         {/* A Send while paused keeps the ask in the box and says so here, next to Resume (W12-11). */}
-        <span>{pausedAsk ? "This project is paused. Resume it to send." : "Paused. New tasks and schedules wait."}</span>
+        <span>{pausedAsk ? "This channel is paused. Resume it to send." : "Paused. New tasks and schedules wait."}</span>
         {onPatchRoom && canPause && <Button type="button" size="sm" variant="ghost" className="h-7" disabled={!actionable || messageActionPending}
-          onClick={() => void runMessageAction(() => onPatchRoom({ paused: false }), "The project could not be resumed.")}>Resume</Button>}
+          onClick={() => void runMessageAction(() => onPatchRoom({ paused: false }), "The channel could not be resumed.")}>Resume</Button>}
       </div>}
       {showFirstReplies && <FirstReplyChips onPick={(text) => { if (composer.text.trim() === "") composer.onTextChange(text); setFocusToken((t) => t + 1); }} />}
       {visibleRoom?.feed ? <div className="room-composer room-archived" role="status">
@@ -1271,7 +1271,7 @@ function RoomContent({
         onOpenAutoFocus={(event) => { event.preventDefault(); managementCancel.current?.focus(); }}
         onCloseAutoFocus={(event) => { event.preventDefault(); (managementTrigger.current?.isConnected ? managementTrigger.current : contextHeading.current)?.focus(); }}>
         <DialogHeader><DialogTitle>Remove member</DialogTitle>
-          <DialogDescription className="break-words">{`Remove ${removalTarget?.displayName ?? "this member"} from ${roomName}? They will lose access to this project and its messages.`}</DialogDescription>
+          <DialogDescription className="break-words">{`Remove ${removalTarget?.displayName ?? "this member"} from ${roomName}? They will lose access to this channel and its messages.`}</DialogDescription>
         </DialogHeader>
         <form className="grid gap-4" onSubmit={(event) => { event.preventDefault(); void saveManagement(); }}>
           {managementError && <p role="alert" className="text-ui text-err break-words">{managementError}</p>}

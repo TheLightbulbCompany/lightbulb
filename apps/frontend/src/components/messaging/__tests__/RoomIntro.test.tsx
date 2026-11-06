@@ -7,7 +7,7 @@ const room = { roomId: "ext", kind: "channel", name: "lightbulb-acme", shared: t
 
 it("tells a new user the shared room is their line to the Lightbulb team", () => {
   render(<RoomIntro room={room} roomName="lightbulb-acme" participants={[]} />);
-  expect(screen.getByText("This project is shared with the Lightbulb team — ask us anything here.")).toBeInTheDocument();
+  expect(screen.getByText("This channel is shared with the Lightbulb team — ask us anything here.")).toBeInTheDocument();
 });
 
 it("keeps the ordinary channel intro for unshared rooms", () => {
@@ -15,7 +15,7 @@ it("keeps the ordinary channel intro for unshared rooms", () => {
   expect(screen.getByText("Mention an agent to bring one in.")).toBeInTheDocument();
 });
 
-it("W13-6: with the super-agent on, a project opens on its goal and three short chips that each draft a full ask", () => {
+it("W13-6: with the super-agent on, a channel opens on its goal and three short chips that each draft a full ask", () => {
   const onPickAsk = vi.fn();
   const project = { ...room, shared: false, name: "walk-12", topic: "Find a sharper tagline for the bakery website. Keep it short." } as RoomSummary;
   render(<RoomIntro room={project} roomName="walk-12" participants={[]} superAgent fresh onPickAsk={onPickAsk} />);
@@ -26,7 +26,7 @@ it("W13-6: with the super-agent on, a project opens on its goal and three short 
   expect(onPickAsk).toHaveBeenCalledWith(expect.stringContaining('first draft for this goal: "Find a sharper tagline for the bakery website".'));
 });
 
-it("first asks only while nobody has asked; a project without a goal gets general ones", () => {
+it("first asks only while nobody has asked; a channel without a goal gets general ones", () => {
   const project = { ...room, shared: false, topic: "Grow signups" } as RoomSummary;
   const { rerender } = render(<RoomIntro room={project} roomName="p" participants={[]} superAgent onPickAsk={vi.fn()} />);
   expect(screen.queryByRole("button")).toBeNull();

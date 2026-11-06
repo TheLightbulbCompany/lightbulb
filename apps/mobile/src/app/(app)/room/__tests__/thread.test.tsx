@@ -268,7 +268,7 @@ describe("thread screen", () => {
 
   it("titles itself Thread and names the conversation underneath", async () => {
     await render(<Thread />);
-    await waitFor(() => expect(screen.getByText("Launch")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("#Launch")).toBeTruthy());
   });
 
   // Slack's rule: a thread is not the room. The read cursor is per room and

@@ -304,7 +304,7 @@ describe("NeedsYouCard", () => {
     expect(card).not.toHaveTextContent("idemKey");
   });
 
-  it("a Worker's labelled email ask reads as To and Subject rows, the body boxed behind Show all, and names the project (W13-4)", async () => {
+  it("a Worker's labelled email ask reads as To and Subject rows, the body boxed behind Show all, and names the channel (W13-4)", async () => {
     const body = `Hi, The Austin workshop has a new date: March 1, 2027, from 9:00 a.m. to noon local time. ${"We look forward to seeing you there. ".repeat(5)}Best, The team <b>`;
     const ask = approval({ title: "Approve the Austin workshop date email", text: `Recipient: sa-test-2@acme.com Subject: New Austin workshop date Body: ${body}`, preview: null });
     const task = { ...FIXTURES.step05.tasks[0], audience: { kind: "room" as const, roomId: "room-cafe" } };
@@ -312,7 +312,7 @@ describe("NeedsYouCard", () => {
     try {
       render(<Fresh><DecisionCard task={task} question={ask} compact onOpen={vi.fn()} /></Fresh>);
       const card = screen.getByRole("group", { name: "Approve the Austin workshop date email" });
-      expect(card).toHaveTextContent(/· walk-13 cafe menu · /);
+      expect(card).toHaveTextContent(/· #walk-13 cafe menu · /);
       const rows = within(card).getByLabelText("What this does");
       expect(rows).toHaveTextContent("Tosa-test-2@acme.comSubjectNew Austin workshop date");
       expect(card).not.toHaveTextContent("Recipient:");

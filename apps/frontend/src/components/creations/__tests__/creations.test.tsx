@@ -73,19 +73,19 @@ describe("openOutput: one opener for every surface", () => {
 });
 
 describe("Creations", () => {
-  it("lists what tasks made; Mail narrows the read; a project narrows it again", async () => {
+  it("lists what tasks made; Mail narrows the read; a channel narrows it again", async () => {
     client.outputs.mockResolvedValue({ outputs: [APP, DOC, MAIL], next: null });
     render(<Fresh><CreationsGrid /></Fresh>);
     const grid = await screen.findByRole("list", { name: "Creations" });
     expect(within(grid).getAllByRole("listitem")).toHaveLength(3);
-    expect(within(grid).getByText("Doc · walk-7 · 1h ago")).toBeInTheDocument();
+    expect(within(grid).getByText("Doc · #walk-7 · 1h ago")).toBeInTheDocument();
     expect(screen.queryByRole("textbox")).toBeNull(); // no second input
     await userEvent.click(screen.getByRole("button", { name: "Mail" }));
     await waitFor(() => expect(client.outputs).toHaveBeenLastCalledWith(expect.objectContaining({ kind: ["mail"] })));
     await userEvent.click(screen.getByRole("button", { name: "Links" }));
     await waitFor(() => expect(client.outputs).toHaveBeenLastCalledWith(expect.objectContaining({ kind: ["link", "pr"] })));
-    await userEvent.click(screen.getByRole("combobox", { name: "Project" }));
-    await userEvent.click(await screen.findByRole("option", { name: "walk-9" }));
+    await userEvent.click(screen.getByRole("combobox", { name: "Channel" }));
+    await userEvent.click(await screen.findByRole("option", { name: "#walk-9" }));
     await waitFor(() => expect(client.outputs).toHaveBeenLastCalledWith(expect.objectContaining({ roomId: "r-walk9" })));
   });
 
@@ -155,7 +155,7 @@ describe("Made here", () => {
     expect(within(strip).getByRole("list", { hidden: true }).children).toHaveLength(2);
   });
 
-  it("is hidden while the project has made nothing", async () => {
+  it("is hidden while the channel has made nothing", async () => {
     const { container } = render(<Fresh><MadeHere roomId="r-walk7" onOpenTask={vi.fn()} onAllFiles={vi.fn()} /></Fresh>);
     await waitFor(() => expect(client.outputs).toHaveBeenCalledWith(expect.objectContaining({ roomId: "r-walk7", limit: 4 })));
     expect(container).toBeEmptyDOMElement();
@@ -220,7 +220,7 @@ describe("doc faces (W13)", () => {
 });
 
 describe("Files", () => {
-  it("an empty project shows the tip at the foot; dismissed, it stays dismissed", async () => {
+  it("an empty channel shows the tip at the foot; dismissed, it stays dismissed", async () => {
     const { unmount } = render(<Fresh><ProjectFiles roomId="r-walk7" viewerId="u1" messages={[]} onOpenTask={vi.fn()} /></Fresh>);
     const tip = await screen.findByRole("complementary", { name: "Tip" });
     expect(tip).toHaveTextContent("Ask for a doc, an app or a file in any task. It lands here.");

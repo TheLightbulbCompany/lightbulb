@@ -51,7 +51,7 @@ function GoLive() {
   const live = useLive();
   return (
     <>
-      <Pressable accessibilityRole="button" onPress={() => void live.join("room-1", "launch")}><Text>Go live</Text></Pressable>
+      <Pressable accessibilityRole="button" onPress={() => void live.join("room-1", "#launch")}><Text>Go live</Text></Pressable>
       <Pressable accessibilityRole="button" onPress={() => live.setOpen(true)}><Text>Show Live</Text></Pressable>
     </>
   );
@@ -93,7 +93,7 @@ describe("Live", () => {
     await goLive();
     expect(mockPost).toHaveBeenCalledWith("/huddles/room-1/join", {});
     expect(mockRooms[0].mic).toHaveBeenCalledWith(true);
-    expect(screen.getByText("🔴 Live · launch")).toBeTruthy();
+    expect(screen.getByText("🔴 Live · #launch")).toBeTruthy();
     expect(screen.getAllByLabelText(/^Gauge, agent/).length).toBeGreaterThan(0); // the stage and the row
     expect(screen.getAllByLabelText(/^CEO, agent/)).toHaveLength(1);
     expect(screen.getAllByLabelText(/^Pulse, agent/)).toHaveLength(1); // listen modes are chat-only
@@ -229,7 +229,7 @@ describe("Live", () => {
     mockPost.mockRejectedValue({ status: 404, body: { code: "ROOM_ARCHIVED" } });
     await render(ui);
     await fireEvent.press(screen.getByText("Go live"));
-    expect(await screen.findByText("This project is archived.")).toBeTruthy();
+    expect(await screen.findByText("This channel is archived.")).toBeTruthy();
   });
   const notice = async (n: object) => { await act(async () => { mockRooms[0].handlers.data(bytes(JSON.stringify(n)), { identity: "agent-ceo" }, 0, "live.notice"); }); };
   const renamed = { kind: "renamed", agentId: "ceo", from: "CEO", to: "Nova", by: "user-a", collides: false };

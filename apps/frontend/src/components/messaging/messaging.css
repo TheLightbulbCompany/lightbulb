@@ -350,8 +350,6 @@
 .room-directory-row:hover .room-directory-actions, .room-directory-actions:focus-visible, .room-directory-actions[data-state="open"] { opacity: 1; }
 @media (hover: none) { .room-directory-actions { opacity: 1; } }
 .room-directory-group { font-size: var(--text-2xs); font-weight: 600; letter-spacing: .02em; color: var(--muted-foreground); margin: 0 4px 4px 0; }
-/* A collapsed group with unread rows (super-agent): ink, not a number. */
-.room-directory-group[data-unread] { color: var(--foreground); }
 .room-directory-entry { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 28px; padding: 2px 8px; font-size: var(--text-ui); text-align: left; border-radius: 6px; cursor: pointer; }
 .room-directory-entry:disabled { cursor: default; opacity: .6; }
 .room-directory-entry:hover { background: color-mix(in srgb, var(--midnight) 5%, transparent); }

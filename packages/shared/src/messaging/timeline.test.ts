@@ -139,7 +139,7 @@ describe("roomDisplayName", () => {
     expect(roomDisplayName({ kind: "group-dm", name: "#1 fans" }, [])).toBe("#1 fans");
     expect(roomDisplayName({ kind: "dm", name: null }, p)).toBe("Friday");
     expect(roomDisplayName({ kind: "group-dm", name: null }, p)).toBe("Friday and Aden");
-    expect(roomDisplayName({ kind: "channel", name: null }, [])).toBe("Untitled project");
+    expect(roomDisplayName({ kind: "channel", name: null }, [])).toBe("Untitled channel");
     expect(roomDisplayName(undefined, [])).toBe("Chat");
   });
 });

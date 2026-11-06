@@ -23,7 +23,7 @@ export function notificationTitle(who: string, where?: string | null): string {
 export function roomWhere(room: { kind: RoomKind; name: string | null } | null | undefined): string | null {
   if (!room) return null;
   if (room.kind === "dm") return "DM";
-  if (room.kind === "channel") return room.name || "Project";
+  if (room.kind === "channel") return room.name ? `#${room.name}` : "Channel";
   return room.name || "Group chat";
 }
 

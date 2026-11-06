@@ -98,7 +98,7 @@ describe("HomeWork", () => {
     await waitFor(() => expect(within(done).getAllByRole("listitem")).toHaveLength(8));
     expect(within(done).queryByRole("button", { name: "Show more" })).toBeNull();
     // Activity spans projects: a row names its project.
-    expect(within(done).getByText("Request n").closest("li")).toHaveTextContent("Request n· cafe menu");
+    expect(within(done).getByText("Request n").closest("li")).toHaveTextContent("Request n· #cafe menu");
     // Closed (resolved and someone else's failure) is its own group, collapsed until opened.
     const closed = screen.getByRole("region", { name: "Closed · 7" });
     expect(within(closed).queryAllByRole("listitem")).toHaveLength(0);

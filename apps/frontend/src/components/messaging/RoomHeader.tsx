@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { Archive, ArchiveRestore, Bell, BellOff, ChevronDown, Folder, Info, Link, LogOut, MessageCircle, Mic, MoreHorizontal, Pencil, Pin, PinOff, Settings, Star, Trash2, UserPlus, Users } from "lucide-react";
+import { Archive, ArchiveRestore, Bell, BellOff, ChevronDown, Hash, Info, Link, LogOut, MessageCircle, Mic, MoreHorizontal, Pencil, Pin, PinOff, Settings, Star, Trash2, UserPlus, Users } from "lucide-react";
 import { liveMarker, ROOM_TOPIC_MAX_CHARS, type MemberPrefsRequest, type PatchRoomRequest, type RoomSummary } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -127,7 +127,7 @@ export function RoomHeader({
   // offer them. A group chat has no admins, so any member may archive it.
   const canArchive = !!onSetArchived && (room?.kind === "group-dm"
     || (canEditRoom && room?.kind === "channel" && !room.shared && !room.isDefault));
-  const noun = room?.kind === "group-dm" ? "group chat" : "project";
+  const noun = room?.kind === "group-dm" ? "group chat" : "channel";
   // What the room is called in copy: a direct message is a chat, never a project.
   const what = room?.kind === "dm" ? "chat" : noun;
   const { pending, error, run, reset } = useAsyncAction();
@@ -170,7 +170,7 @@ export function RoomHeader({
     topicTrigger.current?.focus();
   }
 
-  const Icon = room?.kind === "channel" ? Folder : room?.kind === "group-dm" ? Users : MessageCircle;
+  const Icon = room?.kind === "channel" ? Hash : room?.kind === "group-dm" ? Users : MessageCircle;
   const faces = counterparts.slice(0, FACES);
   const overflow = Math.max(0, participantCount - faces.length);
 
@@ -219,7 +219,7 @@ export function RoomHeader({
         onCloseAutoFocus={(event) => { event.preventDefault(); restoreOptionsFocus(); }}>
         <DialogHeader><DialogTitle className="break-words">{ownerCannotLeave ? `Can't leave ${roomName}` : `Leave ${roomName}?`}</DialogTitle>
           <DialogDescription>
-            {ownerCannotLeave ? "You are the only person in this project. Delete it instead."
+            {ownerCannotLeave ? "You are the only person in this channel. Delete it instead."
               : ownerHandsOff
                 ? `You will lose access to this ${what} and its messages. Ownership passes to another member.`
                 : `You will lose access to this ${what} and its messages.`}
@@ -230,7 +230,7 @@ export function RoomHeader({
           <Button ref={leaveCancel} type="button" variant="outline" disabled={pending} onClick={() => { setLeaving(false); reset(); }}>Cancel</Button>
           {ownerCannotLeave
             ? (canDelete && <Button type="button" variant="destructive" disabled={pending}
-                onClick={() => { setLeaving(false); reset(); setDeleteDraft(""); setDeleting(true); }}>Delete project</Button>)
+                onClick={() => { setLeaving(false); reset(); setDeleteDraft(""); setDeleting(true); }}>Delete channel</Button>)
             : <Button type="button" variant="destructive" disabled={!actionable || pending}
                 onClick={() => void run(async () => { await onLeaveRoom!(); }, `The ${noun} could not be left.`, () => setLeaving(false))}>
                 {pending ? "Leaving…" : `Leave ${noun}`}
@@ -258,12 +258,12 @@ export function RoomHeader({
       <DialogContent className="max-w-[calc(100%-2rem)] sm:max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto"
         onCloseAutoFocus={(event) => { event.preventDefault(); restoreOptionsFocus(); }}>
         <DialogHeader><DialogTitle className="break-words">Delete {roomName}?</DialogTitle>
-          <DialogDescription>The project and its chat disappear for everyone, and Lightbulb stops working in it. This can&apos;t be undone.</DialogDescription>
+          <DialogDescription>The channel and its chat disappear for everyone, and Lightbulb stops working in it. This can&apos;t be undone.</DialogDescription>
         </DialogHeader>
         <form className="grid gap-4" onSubmit={(event) => {
           event.preventDefault();
           if (deleteDraft !== roomName) return;
-          void run(async () => { await onDeleteRoom!(); }, "The project could not be deleted.", () => setDeleting(false));
+          void run(async () => { await onDeleteRoom!(); }, "The channel could not be deleted.", () => setDeleting(false));
         }}>
           <div className="grid gap-2">
             <label htmlFor={`${id}-delete`} className="text-ui font-medium">Type <strong className="break-words">{roomName}</strong> to confirm</label>
@@ -274,7 +274,7 @@ export function RoomHeader({
           <DialogFooter className="gap-2">
             <Button type="button" variant="outline" disabled={pending} onClick={() => { setDeleting(false); reset(); }}>Cancel</Button>
             <Button type="submit" variant="destructive" disabled={!actionable || pending || deleteDraft !== roomName}>
-              {pending ? "Deleting…" : "Delete project"}
+              {pending ? "Deleting…" : "Delete channel"}
             </Button>
           </DialogFooter>
         </form>
@@ -317,7 +317,7 @@ export function RoomHeader({
           {((onLeaveRoom && canLeave) || ownerCannotLeave) && <><DropdownMenuSeparator />
             <DropdownMenuItem variant="destructive" onSelect={() => { reset(); setLeaving(true); }}><LogOut aria-hidden="true" />Leave</DropdownMenuItem></>}
           {canDelete && !projectSettings && <><DropdownMenuSeparator />
-            <DropdownMenuItem variant="destructive" onSelect={() => { reset(); setDeleteDraft(""); setDeleting(true); }}><Trash2 aria-hidden="true" />Delete project</DropdownMenuItem></>}
+            <DropdownMenuItem variant="destructive" onSelect={() => { reset(); setDeleteDraft(""); setDeleting(true); }}><Trash2 aria-hidden="true" />Delete channel</DropdownMenuItem></>}
         </DropdownMenuContent>
       </DropdownMenu>
       {live}
@@ -334,7 +334,7 @@ export function RoomHeader({
         <DropdownMenuTrigger asChild><Button ref={optionsTrigger} type="button" variant="ghost" size="icon-sm" className="room-view-toggle" aria-label="More tools" title="More"><MoreHorizontal aria-hidden="true" /></Button></DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           {toolItems}
-          {goLive && <DropdownMenuItem disabled={Boolean(huddle.joining)} onSelect={() => void huddle.join(room.roomId, roomName)}>
+          {goLive && <DropdownMenuItem disabled={Boolean(huddle.joining)} onSelect={() => void huddle.join(room.roomId, room.kind === "channel" ? `#${roomName}` : roomName)}>
             <Mic aria-hidden="true" />{huddle.joining === room.roomId ? "Joining…" : "Go live"}</DropdownMenuItem>}
         </DropdownMenuContent>
       </DropdownMenu>
@@ -382,7 +382,7 @@ export function RoomHeader({
       {/* Every room kind; a room with no listening agent is a people-only voice room (no Lightbulb). */}
       {!huddle.room && room && huddlesOn && !room.guest && (
         <Button type="button" variant="ghost" size="sm" disabled={Boolean(huddle.joining)}
-          onClick={() => void huddle.join(room.roomId, roomName)}>
+          onClick={() => void huddle.join(room.roomId, room.kind === "channel" ? `#${roomName}` : roomName)}>
           <Mic className="h-4 w-4" aria-hidden="true" /> {huddle.joining === room.roomId ? "Joining…" : "Go live"}
         </Button>
       )}
@@ -418,7 +418,7 @@ export function RoomHeader({
           {((onLeaveRoom && canLeave) || ownerCannotLeave) && <><DropdownMenuSeparator />
             <DropdownMenuItem variant="destructive" onSelect={() => { reset(); setLeaving(true); }}><LogOut aria-hidden="true" />Leave</DropdownMenuItem></>}
           {canDelete && <><DropdownMenuSeparator />
-            <DropdownMenuItem variant="destructive" onSelect={() => { reset(); setDeleteDraft(""); setDeleting(true); }}><Trash2 aria-hidden="true" />Delete project</DropdownMenuItem></>}
+            <DropdownMenuItem variant="destructive" onSelect={() => { reset(); setDeleteDraft(""); setDeleting(true); }}><Trash2 aria-hidden="true" />Delete channel</DropdownMenuItem></>}
         </DropdownMenuContent>
       </DropdownMenu>
     </div>

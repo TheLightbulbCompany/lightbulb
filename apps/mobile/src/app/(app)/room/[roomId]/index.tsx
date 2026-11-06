@@ -1,5 +1,4 @@
 import { useAuth } from "@clerk/expo";
-import { SymbolView } from "../../../../components/ui/SymbolView";
 import {
   buildTimeline,
   cardAnswersFor,
@@ -269,12 +268,14 @@ function Conversation() {
   // already runs its own, and only a human DM's status line reads this one.
   const presence = usePresence(focused && isHumanDm);
   const roomName = roomDisplayName(room, others);
-  // A project reads by its name alone: no `#` (founder, 6 Nov 2026).
-  const title = roomName;
+  // A channel reads as #name (founder, 6 Nov 2026: Lightbulb stays a communications platform).
+  const title = `${isChannel ? "#" : ""}${roomName}`;
   const otherAgentWorking = others[0]?.kind === "agent" && runs.some((run) => run.state === "running" && run.agentId === others[0]?.id);
   const headerAvatar = isChannel ? (
     <View style={[styles.channelTile, { backgroundColor: palette.selected }]}>
-      <SymbolView accessibilityElementsHidden name="folder" size={14} tintColor={palette.fgSoft} />
+      <Text style={[styles.channelHash, { color: palette.fgSoft }]} maxFontSizeMultiplier={1}>
+        #
+      </Text>
     </View>
   ) : (
     <Avatar
@@ -715,7 +716,7 @@ function Conversation() {
       {room?.archivedAt ? (
         // An archived room takes no posts (the server refuses them): say so instead of a composer.
         <Text accessibilityRole="text" style={[styles.archived, { color: palette.fgSoft }]}>
-          {room.session ? "This session ended. Its chat is read-only." : "This project is archived."}
+          {room.session ? "This session ended. Its chat is read-only." : "This channel is archived."}
         </Text>
       ) : (
         <>
@@ -761,8 +762,9 @@ const styles = StyleSheet.create({
   list: { paddingHorizontal: spacing.md, paddingTop: spacing.lg, paddingBottom: spacing.sm },
   listEmpty: { flexGrow: 1 },
   emptyUpright: { flexGrow: 1, transform: [{ scaleY: -1 }] },
-  // The project avatar's folder tile — 28pt, radius 8 (Global Constraints).
+  // The channel avatar's "#" tile — 28pt, radius 8 (Global Constraints).
   channelTile: { width: 28, height: 28, borderRadius: 8, alignItems: "center", justifyContent: "center" },
+  channelHash: { fontFamily: fonts.sansSemiBold, fontSize: 14, lineHeight: 18 },
   // Indented level with a run's avatar column (AVATAR_GUTTER), last child of
   // the inverted list's header so it draws under the newest content (F13).
   typingWrap: { marginLeft: AVATAR_GUTTER, marginTop: spacing.sm },

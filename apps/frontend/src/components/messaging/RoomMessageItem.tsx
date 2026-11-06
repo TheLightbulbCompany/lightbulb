@@ -155,7 +155,7 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
         : <MessageTaskCard text={message.text} prose={message.author.kind === "agent"} />)}
       {superAgent && message.forwardedFrom && <button type="button" className="block text-ui text-muted-foreground hover:text-foreground hover:underline"
         onClick={() => openMessagePanel(message.forwardedFrom!.roomId, message.forwardedFrom!.messageId)}>
-        Forwarded from {message.forwardedFrom.roomName ?? "another chat"} ›</button>}
+        Forwarded from {message.forwardedFrom.roomName ? `#${message.forwardedFrom.roomName}` : "another chat"} ›</button>}
       {!message.deletedAt && superAgent && message.kind === "automation_confirm" && message.automationId && <AutomationConfirmCard automationId={message.automationId} />}
       {!message.deletedAt && superAgent && message.routedTo && <MessageRoutedTo message={message} onOpen={onOpenTask}
         // The reply that carries the cards (the first thread's card), wherever it landed; else the next message.

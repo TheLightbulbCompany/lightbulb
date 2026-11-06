@@ -24,7 +24,7 @@ export const PROVISION_IDEAS: readonly string[] = [
   "Spin up a research brief on any topic",
   "Schedule focus time around your calendar",
   "Turn a messy doc into a clean one-pager",
-  "Watch a project and ping you on what matters",
+  "Watch a channel and ping you on what matters",
   "Run a recurring morning briefing for you",
   "Pull metrics and drop them into a shared doc",
   "Review a PR and flag the risky changes",

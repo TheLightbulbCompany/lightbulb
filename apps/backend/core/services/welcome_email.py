@@ -75,9 +75,9 @@ Reply to this email if anything is unclear.
 
 I'm Lightbulb. Your workspace is set up. I hand work to the specialists (Engineering, Finance, Growth, Analytics and Customer Operations) and show you each task.
 
-Tell me what the business is (a website is enough). I'll write a short plan, post it in the general project, and ask you for one decision. While I work, invite the person who should see it with you. They can approve it too.
+Tell me what the business is (a website is enough). I'll write a short plan, post it in #general, and ask you for one decision. While I work, invite the person who should see it with you. They can approve it too.
 
-Open general: {url}
+Open #general: {url}
 
 We run in your workspace's own cloud, so routines and email keep going when your laptop is closed. Spend, sends and deploys wait for a person. Your 30 days are free.
 
@@ -95,11 +95,11 @@ def teammate_welcome(*, first_name: str | None, inviter: str | None, workspace: 
         f"You're in {workspace} on Lightbulb",
         f"""{_greeting(first_name)}
 
-{added} Lightbulb hands work to the specialists, and their results and approvals show up in the projects for everyone.
+{added} Lightbulb hands work to the specialists, and their results and approvals show up in the channels for everyone.
 
-Start in general: you'll see what's been asked and what's waiting on a decision. Mention an agent by name to hand it something.
+Start in #general: you'll see what's been asked and what's waiting on a decision. Mention an agent by name to hand it something.
 
-Open general: {url}
+Open #general: {url}
 
 — Lightbulb, {workspace}
 """,

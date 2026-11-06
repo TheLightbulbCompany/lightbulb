@@ -318,7 +318,7 @@ describe("RoomPanel Threads view (super-agent)", () => {
     } finally { host.remove(); _resetControllerForTests(); }
   });
 
-  it("W12-5: back from a doc a task made (leavePane): the task again, in the project's pane, with ‹ Tasks", async () => {
+  it("W12-5: back from a doc a task made (leavePane): the task again, in the channel's pane, with ‹ Tasks", async () => {
     localStorage.clear();
     nothingNeedsYou();
     client = fakeTasksClient(FIXTURES.step08.tasks, FIXTURES.step08.details); live.tasks = client;
@@ -354,13 +354,13 @@ describe("RoomPanel Threads view (super-agent)", () => {
     } finally { host.remove(); _resetControllerForTests(); }
   });
 
-  it("⋯ holds the tools: Search in project (⌘F), Pinned messages, Links", async () => {
+  it("⋯ holds the tools: Search in channel (⌘F), Pinned messages, Links", async () => {
     nothingNeedsYou();
     Object.assign(live, { messaging: { warmSearch: vi.fn(async () => undefined), searchMessages: vi.fn(async () => ({ hits: [] })) } });
     render(<Fresh><RoomPanel {...props} /></Fresh>);
     await userEvent.click(await screen.findByRole("button", { name: "More tools" }));
-    for (const name of [/Search in project/, /Pinned messages/, "Links"]) expect(await screen.findByRole("menuitem", { name })).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("menuitem", { name: /Search in project/ }));
+    for (const name of [/Search in channel/, /Pinned messages/, "Links"]) expect(await screen.findByRole("menuitem", { name })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("menuitem", { name: /Search in channel/ }));
     expect(await screen.findByRole("dialog", { name: "Search this chat" })).toBeInTheDocument();
     await userEvent.keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Search this chat" })).toBeNull());
@@ -460,7 +460,7 @@ describe("RoomPanel Threads view (super-agent)", () => {
     expect(screen.queryByText("Lightbulb is reading…")).toBeNull();
   });
 
-  it("a paused project says so above the composer; only someone who may resume gets Resume (UX slice 6)", async () => {
+  it("a paused channel says so above the composer; only someone who may resume gets Resume (UX slice 6)", async () => {
     const onPatchRoom = vi.fn().mockResolvedValue(undefined);
     const paused = { ...props.room!, pausedAt: "2026-11-06T10:00:00Z" };
     const { rerender } = render(<Fresh><RoomPanel {...props} room={paused} onPatchRoom={onPatchRoom} /></Fresh>);
@@ -471,13 +471,13 @@ describe("RoomPanel Threads view (super-agent)", () => {
     expect(onPatchRoom).toHaveBeenCalledWith({ paused: false });
   });
 
-  it("W12-11: Send in a paused project keeps the ask in the composer and says how to send it", async () => {
+  it("W12-11: Send in a paused channel keeps the ask in the composer and says how to send it", async () => {
     const onSubmit = vi.fn();
     const paused = { ...props.room!, pausedAt: "2026-11-06T10:00:00Z" };
     render(<Fresh><RoomPanel {...props} room={paused} canPause onPatchRoom={vi.fn()} composer={{ ...props.composer, text: "Write the tagline", onSubmit }} /></Fresh>);
     await userEvent.click(await screen.findByRole("button", { name: /^Send/ }));
     expect(onSubmit).not.toHaveBeenCalled();
-    expect(await screen.findByRole("alert")).toHaveTextContent("This project is paused. Resume it to send.");
+    expect(await screen.findByRole("alert")).toHaveTextContent("This channel is paused. Resume it to send.");
     expect(screen.getByRole("textbox", { name: /Message/ })).toHaveValue("Write the tagline");
   });
 
@@ -487,7 +487,7 @@ describe("RoomPanel Threads view (super-agent)", () => {
     render(<Fresh><RoomPanel {...props} participants={[sam, front, finance]} onRemoveMember={vi.fn()} onListenModeChange={vi.fn()} /></Fresh>);
     // A project's People open in its settings modal (UX slice 6), with the same Members content.
     await nameMenu("People");
-    const settings = await screen.findByRole("dialog", { name: /Settings/ });
+    const settings = await screen.findByRole("dialog", { name: /Channel settings/ });
     const list = within(settings).getByRole("heading", { name: "Members" }).closest("section")!;
     expect(within(list).getByText("Lightbulb")).toBeInTheDocument();
     expect(within(list).queryByText("Finance")).toBeNull();

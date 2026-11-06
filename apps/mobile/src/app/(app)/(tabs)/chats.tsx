@@ -100,7 +100,7 @@ function HeaderActions({ onMessage, onSession }: { onMessage: () => void; onSess
 type ChatFilter = "all" | "sessions" | "channels" | "direct";
 const filters: readonly { id: ChatFilter; label: string }[] = [
   { id: "all", label: "All" }, { id: "sessions", label: "Sessions" },
-  { id: "channels", label: "Projects" }, { id: "direct", label: "Direct" },
+  { id: "channels", label: "Channels" }, { id: "direct", label: "Direct" },
 ];
 
 /**
@@ -348,7 +348,7 @@ export default function Chats() {
             <View style={styles.empty}>
               <LogoMark size={48} />
               <Text style={[styles.dim, { color: palette.fgMute }]}>
-                {query.trim() ? "No chats match that." : filter === "sessions" ? "No sessions yet." : filter === "channels" ? "No projects yet." : filter === "direct" ? "No direct messages yet." : "No chats yet."}
+                {query.trim() ? "No chats match that." : filter === "sessions" ? "No sessions yet." : filter === "channels" ? "No channels yet." : filter === "direct" ? "No direct messages yet." : "No chats yet."}
               </Text>
             </View>
           )

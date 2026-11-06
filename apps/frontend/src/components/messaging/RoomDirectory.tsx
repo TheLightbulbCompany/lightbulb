@@ -192,7 +192,7 @@ function DirectoryContent({
   const [newSection, setNewSection] = useState("");
   const [deleting, setDeleting] = useState<RoomSection | null>(null);
   const [leaving, setLeaving] = useState<DirectoryRoom | null>(null);
-  const leavingNoun = leaving?.kind === "group-dm" ? "group chat" : "project";
+  const leavingNoun = leaving?.kind === "group-dm" ? "group chat" : "channel";
   // The order shown while a drag is being saved; cleared either way, so a
   // failed save falls back to the server's order and a successful one lands
   // on the list the save returned.
@@ -354,8 +354,8 @@ function DirectoryContent({
 
   // Shared by the Sessions group and every room group below: collapse
   // button, aria wiring, chevron, label, and an optional trailing badge.
-  function groupHeader({ id: groupId, label, listId, collapsed, grip, badge, unread = false }: {
-    id: string; label: string; listId: string; collapsed: boolean; grip?: ReactNode; badge?: ReactNode; unread?: boolean;
+  function groupHeader({ id: groupId, label, listId, collapsed, grip, badge }: {
+    id: string; label: string; listId: string; collapsed: boolean; grip?: ReactNode; badge?: ReactNode;
   }) {
     return <div className="room-directory-group-header">
       {grip}
@@ -364,7 +364,7 @@ function DirectoryContent({
         onClick={() => toggleCollapsed(groupId)}>
         {collapsed ? <ChevronRight aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}
       </Button>
-      <h3 className="room-directory-group" data-unread={unread || undefined}>{label}</h3>
+      <h3 className="room-directory-group">{label}</h3>
       {badge}
     </div>;
   }
@@ -561,10 +561,7 @@ function DirectoryContent({
       return <>
       {groupHeader({
         id: group.id, label: group.label, listId, collapsed, grip,
-        badge: collapsed && unread > 0 && (superAgent
-          ? <span className="sr-only">Unread messages in {group.label}</span>
-          : <span className="room-count" aria-label={`${unread} unread messages in ${group.label}`}>{unread}</span>),
-        unread: superAgent && collapsed && unread > 0,
+        badge: collapsed && unread > 0 && <span className="room-count" aria-label={`${unread} unread messages in ${group.label}`}>{unread}</span>,
       })}
       <ul id={listId}>{rows.map(({ key, label, room, participant }) => {
         // A roster row is someone with no DM yet. It carries no overflow menu
@@ -582,7 +579,7 @@ function DirectoryContent({
           </button>
         </li>;
         return <RoomDirectoryRow key={room.roomId} room={room} label={label} sections={sections}
-          needsYou={needsYouTasks.filter((t) => t.audience?.roomId === room.roomId).length} noCounts={superAgent} project={superAgent}
+          needsYou={needsYouTasks.filter((t) => t.audience?.roomId === room.roomId).length} project={superAgent}
           onOpenSettings={onOpenSettings && room.kind === "channel" && !room.shared && !room.feed ? () => onOpenSettings(room.roomId) : undefined}
           active={room.roomId === currentRoomId} draft={draftRoomIds.includes(room.roomId)}
           busy={markingUnread === room.roomId || (savePrefs.pending && actingRoomId === room.roomId)}
@@ -625,13 +622,13 @@ function DirectoryContent({
         </DropdownMenu>
         {headerActions}
         {onCreate && (superAgent ? <DropdownMenu>
-          <DropdownMenuTrigger asChild><Button variant="ghost" size="icon-sm" aria-label="New project or chat" disabled={creationBusy}><Plus aria-hidden="true" /></Button></DropdownMenuTrigger>
+          <DropdownMenuTrigger asChild><Button variant="ghost" size="icon-sm" aria-label="New channel or chat" disabled={creationBusy}><Plus aria-hidden="true" /></Button></DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            <DropdownMenuItem onSelect={() => setNewProject(true)}>New project</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => setNewProject(true)}>New channel</DropdownMenuItem>
             <DropdownMenuItem onSelect={() => { setKind("dm"); setCreating(true); }}>New chat</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
-          : <DialogTrigger asChild><Button variant="ghost" size="icon-sm" aria-label="New chat or project" disabled={creationBusy}><Plus aria-hidden="true" /></Button></DialogTrigger>)}
+          : <DialogTrigger asChild><Button variant="ghost" size="icon-sm" aria-label="New chat or channel" disabled={creationBusy}><Plus aria-hidden="true" /></Button></DialogTrigger>)}
       </div>
     </div>
     {creationError && !creating && <p role="alert" className="px-2 text-ui text-err">{creationError}</p>}
@@ -640,18 +637,18 @@ function DirectoryContent({
     {partialError && <div role="alert" className="px-2 text-ui text-err">Some conversation details could not be loaded. {onRetry && <Button variant="outline" onClick={onRetry}>Try again</Button>}</div>}
     {savePrefs.error && <p role="alert" className="px-2 text-ui text-err">{savePrefs.error}</p>}
     {saveSections.error && !managing && <p role="alert" className="px-2 text-ui text-err">{saveSections.error}</p>}
-    {groups.length === 0 && <p className="text-ui text-muted-foreground px-2">Create a project, or message a person or agent.</p>}
+    {groups.length === 0 && <p className="text-ui text-muted-foreground px-2">Create a channel, or message a person or agent.</p>}
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={reorderSections} accessibility={{ announcements }}>
     <SortableContext items={sections.map((section) => section.id)} strategy={verticalListSortingStrategy}>
     {groups.filter((group) => !TAIL_GROUPS.has(group.id)).map(renderGroup)}
     {/* Sessions and External connections fold under More (closed by default); it opens itself while the
         session or shared channel on screen is inside, or while anything in it is unread or waiting. */}
     {(sessionsSection || external) && <details className="room-directory-more" open={moreHoldsCurrent || moreCount > 0 || undefined}>
-      <summary className="room-directory-group" data-unread={(superAgent && moreCount > 0) || undefined}
+      <summary className="room-directory-group"
         aria-label={moreCount > 0 ? `More, ${moreCount} unread or waiting` : moreItems > 0 ? `More, ${moreItems} inside` : "More"}>
         <ChevronRight aria-hidden="true" className="room-directory-more-chevron" />More
         {moreCount > 0
-          ? !superAgent && <span className="room-count" aria-hidden="true">{moreCount}</span>
+          ? <span className="room-count" aria-hidden="true">{moreCount}</span>
           : moreItems > 0 && <span className="text-muted-foreground" aria-hidden="true">{moreItems}</span>}</summary>
       {sessionsSection}
       {external && renderGroup(external)}
@@ -676,7 +673,7 @@ function DirectoryContent({
     <button type="button" className="room-directory-entry" onClick={() => { openInviteDialog(); onNavigate?.(); }}><Plus size={16} aria-hidden="true" />Invite someone</button>
     {superAgent && onCreate && <NewProjectDialog open={newProject} onOpenChange={setNewProject} onCreate={onCreate} busy={creationBusy} error={creationError} />}
     <DialogContent className="room-creation-dialog" showCloseButton={!creationBusy}>
-    <form aria-label="Create a chat or project" className="room-creation" aria-busy={creationBusy}
+    <form aria-label="Create a chat or channel" className="room-creation" aria-busy={creationBusy}
       onSubmit={async (event) => {
         event.preventDefault();
         if (!canCreate || creationBusy) return;
@@ -684,18 +681,18 @@ function DirectoryContent({
         if (created) { setCreating(false); setName(""); setSelected(new Map()); setQuery(""); setKind(superAgent ? "dm" : "channel"); }
       }}>
       <div className="room-creation-header">
-        <DialogTitle>{kind === "channel" ? "Create a project" : kind === "group-dm" ? "New group chat" : "New direct message"}</DialogTitle>
+        <DialogTitle>{kind === "channel" ? "Create a channel" : kind === "group-dm" ? "New group chat" : "New direct message"}</DialogTitle>
         <DialogDescription>Choose the people and agents you want to talk with.</DialogDescription>
       </div>
       <div className="room-creation-body">
       <label htmlFor={`${id}-kind`}>Type</label>
       <select id={`${id}-kind`} className="room-input" value={kind} disabled={creationBusy}
         onChange={(event) => { setKind(event.target.value as RoomKind); setSelected(new Map()); }}>
-        {!superAgent && <option value="channel">Project</option>}
+        {!superAgent && <option value="channel">Channel</option>}
         <option value="dm">Direct message</option>
         <option value="group-dm">Group chat</option>
       </select>
-      {kind !== "dm" && <><label htmlFor={`${id}-name`}>{kind === "channel" ? "Project name" : "Group chat name (optional)"}</label>
+      {kind !== "dm" && <><label htmlFor={`${id}-name`}>{kind === "channel" ? "Channel name" : "Group chat name (optional)"}</label>
         <input id={`${id}-name`} className="room-input" value={name} maxLength={80} disabled={creationBusy} onChange={(event) => setName(event.target.value)} /></>}
       <p className="text-ui text-muted-foreground">Only selected workspace members can read this chat.</p>
       <div className="room-picker">
@@ -727,7 +724,7 @@ function DirectoryContent({
             full-width text buttons. DialogFooter is the pattern every other dialog
             footer here already uses (Manage sections, Leave, Rename). */}
         <DialogFooter className="gap-2"><Button type="button" variant="ghost" disabled={creationBusy} onClick={() => setCreating(false)}>Cancel</Button>
-          <Button type="submit" disabled={!canCreate || creationBusy}>{creationBusy ? "Creating…" : kind === "channel" ? "Create project" : kind === "group-dm" ? "Start group chat" : "Start direct message"}</Button></DialogFooter>
+          <Button type="submit" disabled={!canCreate || creationBusy}>{creationBusy ? "Creating…" : kind === "channel" ? "Create channel" : kind === "group-dm" ? "Start group chat" : "Start direct message"}</Button></DialogFooter>
       </div>
     </form>
     </DialogContent>
@@ -735,7 +732,7 @@ function DirectoryContent({
       <DialogContent className="room-section-dialog max-w-[calc(100%-2rem)] sm:max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto"
         onCloseAutoFocus={(event) => { if (manageTrigger.current?.isConnected) { event.preventDefault(); manageTrigger.current.focus(); } }}>
         <DialogHeader><DialogTitle>Manage sections</DialogTitle>
-          <DialogDescription>Group chats however you work. Deleting a section returns its chats to People, Projects, or External connections.</DialogDescription>
+          <DialogDescription>Group chats however you work. Deleting a section returns its chats to People, Channels, or External connections.</DialogDescription>
         </DialogHeader>
         {sections.length > 0 && <ul className="grid gap-2">{sections.map((section) => <li key={section.id} className="room-section-edit">
           {/* Both accessible names stay on the SAVED name: a control whose name
@@ -766,7 +763,7 @@ function DirectoryContent({
         {blankName && <p id={blankHintId} className="text-ui text-muted-foreground">Every section needs a name.</p>}
         {saveSections.error && <p role="alert" className="text-ui text-err break-words">{saveSections.error}</p>}
         {deleting && <div role="alert" className="room-section-confirm">
-          <p className="text-ui">Delete {deleting.name}? Its chats move back to People, Projects, or External connections.</p>
+          <p className="text-ui">Delete {deleting.name}? Its chats move back to People, Channels, or External connections.</p>
           <DialogFooter className="gap-2">
             <Button ref={deleteCancel} type="button" variant="outline" disabled={saveSections.pending} onClick={() => { setDeleting(null); saveSections.reset(); }}>Cancel</Button>
             <Button type="button" variant="destructive" disabled={saveSections.pending || blankName}

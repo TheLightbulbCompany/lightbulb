@@ -151,10 +151,8 @@ export function RightPane({ pane, fullScreen }: { pane: Slot; fullScreen: boolea
   const closeRef = useRef<HTMLButtonElement>(null);
   // The drawn header's action slot: the panel portals its own (a doc's Copy, Download) beside Expand and ✕.
   const [actionsHost, setActionsHost] = useState<HTMLElement | null>(null);
-  const wasSheet = useRef(false);
   useEffect(() => {
     const el = paneRef.current;
-    wasSheet.current = sheet;
     if (!sheet || !el?.parentElement) return;
     const parent = el.parentElement;
     // Focus starts in the sheet (its close button) unless the panel already put it there.
@@ -170,9 +168,10 @@ export function RightPane({ pane, fullScreen }: { pane: Slot; fullScreen: boolea
     return () => { observer.disconnect(); covered.forEach((c) => c.removeAttribute("inert")); };
   }, [sheet]);
   useEffect(() => () => {
-    // Closed while it was a sheet: back to whatever opened it, if it is still there and focus has nowhere better.
+    // Closed: back to whatever opened it (a sheet, or a docked pane closed by Escape from its tile, W17-1), if it is
+    // still there and focus has nowhere better.
     const active = document.activeElement;
-    if (wasSheet.current && opener?.isConnected && (!active || active === document.body || !active.isConnected)) opener.focus();
+    if (opener?.isConnected && (!active || active === document.body || !active.isConnected)) opener.focus();
   }, [opener]);
 
   const Panel = pane.component === "thread" ? null : PANEL_COMPONENTS[pane.component as PanelKind];
@@ -186,13 +185,15 @@ export function RightPane({ pane, fullScreen }: { pane: Slot; fullScreen: boolea
   // A file opened from inside the pane (a task's output, Made here, Files) goes back there: "‹ Task", and Escape.
   const back = pane.params.back || null;
   const crumb = back ? { label: back.startsWith("task:") ? "Task" : back[0].toUpperCase() + back.slice(1), onBack: () => leavePane(back) } : undefined;
-  // One Escape stack (doc → task → list → closed) at every width: Escape with focus nowhere (on the page body, e.g.
-  // after the control that opened the sheet went inert under it) is Escape in the pane's innermost column, so it pops
-  // one level there instead of doing nothing.
+  // One Escape stack (doc → task → list → closed) at every width: Escape with focus outside the pane (on the page body,
+  // or still on the tile / chip that opened it, W17-1) is Escape in the pane's innermost column, so it pops one level
+  // there instead of doing nothing. Text fields, menus and dialogs keep their own Escape.
   useEffect(() => {
     if (!superAgent) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || event.defaultPrevented || (event.target !== document.body && event.target !== document.documentElement)) return;
+      const target = event.target instanceof Element ? event.target : null;
+      if (event.key !== "Escape" || event.defaultPrevented || !paneRef.current || (target && paneRef.current.contains(target))) return;
+      if (target?.closest("input, textarea, select, [contenteditable]:not([contenteditable='false']), [role='menu'], [role='listbox'], [data-radix-popper-content-wrapper]")) return;
       if (document.querySelector("[role='alertdialog'], [role='dialog']:not(.workspace-pane)")) return;
       const titles = paneRef.current?.querySelectorAll<HTMLElement>(".pane-header__title");
       const inner = titles?.[titles.length - 1] ?? paneRef.current;

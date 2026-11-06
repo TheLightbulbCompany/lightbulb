@@ -202,6 +202,7 @@ async def list_outputs(
         return await tasks_access.can_view(t, auth.user_id)
 
     found, next_cursor = await _search(ws, limit, keep) if q else await _walk(ws, cursor, limit, keep)
+    found = await tasks_access.with_output_text(ws, found)
     outputs = [
         {
             **o,

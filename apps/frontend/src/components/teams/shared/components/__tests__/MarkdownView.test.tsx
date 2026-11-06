@@ -184,6 +184,13 @@ describe("MarkdownView unfilled links (W15-6)", () => {
     expect(container.querySelector("a")).toBeNull();
   });
 
+  it("W17-3: the walk-17 email button (bold label, bracketed placeholder URL) renders as a button-styled label", () => {
+    const { container } = render(<MarkdownView>{"Tickets are $65 per person.\n\n[**BOOK YOUR SPOT**]([BOOKING LINK])"}</MarkdownView>);
+    expect(container.textContent).not.toMatch(/[[\]*]/);
+    expect(container.querySelector(".md-cta")?.textContent).toBe("BOOK YOUR SPOT");
+    expect(container.querySelector("a")).toBeNull();
+  });
+
   it("keeps real links and code untouched", () => {
     const { container } = render(<MarkdownView>{"[Site](https://example.com/a) `[x](y z)`"}</MarkdownView>);
     expect(container.querySelector("a")?.getAttribute("href")).toBe("https://example.com/a");

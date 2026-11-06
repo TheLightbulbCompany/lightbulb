@@ -541,7 +541,8 @@
   .workspace-shell[data-super-agent="true"] .workspace-body:not([data-full]) > .workspace-pane:not([data-sheet]) {
     transition: width 200ms var(--ease-drawer);
   }
-  .workspace-shell[data-super-agent="true"] .workspace-pane[data-item]:not([data-sheet]) { min-width: 520px; }
+  /* No item floor here: a list and an item share the one width (RightPane), the dragged one included, so the header
+     never shifts going Files → doc (W17: a 503 px list beside a 520 px doc moved it 17 px). */
   .workspace-shell[data-super-agent="true"] .workspace-pane[data-sheet] {
     position: absolute;
     inset: 0 0 0 auto;

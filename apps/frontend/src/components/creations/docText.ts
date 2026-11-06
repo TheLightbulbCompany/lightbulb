@@ -41,8 +41,8 @@ export function textName(text: string): string {
   return name.length > 80 ? `${name.slice(0, 79).replace(/\s+\S*$/, "")}…` : name;
 }
 
-/** A call-to-action line ("[Sign up for story-time]", shown as a button) as its words, for Copy (W16-5). */
-export const plainCta = (text: string): string => text.replace(/^([ \t]*)\[([^\]\n]{2,60})\]([ \t]*)$/gm, "$1$2$3");
+/** A call-to-action line ("[**Book**]([BOOKING LINK])", shown as a button) as its words, for Copy (W16-5, W17-3). */
+export { plainCta } from "@/lib/ctaLinks";
 
 /** The deliverable in a short result: what follows its first paragraph ("Drafted the post." + the post), else null.
  *  The backend's `result_piece` cuts the same way. */

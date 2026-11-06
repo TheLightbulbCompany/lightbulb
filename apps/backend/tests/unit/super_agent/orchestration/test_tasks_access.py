@@ -138,6 +138,7 @@ def test_summarize_derived_fields():
             attemptCount=2,
             budgetUsd=5.0,
             usage={"inputTokens": 10, "outputTokens": 5, "costUsd": 0.4},
+            createdAt="2026-11-04T10:00:00Z",
         ),
         "attempts": [
             {"n": 1, "status": "ended", "outcome": "completed", "sessionId": "lb-org_1-t-abc", "inputTriggerIds": []},
@@ -173,6 +174,8 @@ def test_summarize_derived_fields():
     assert s["activity"]["n"] == 2
     # The chip's timer: the latest run's start and end (dev walk 12, W12-1).
     assert (s["activity"]["startedAt"], s["activity"]["endedAt"]) == ("2026-11-04T10:04:00Z", "2026-11-04T10:05:02Z")
+    # W17: and before any run starts, when it was asked ("Working · 0:00").
+    assert s["createdAt"] == "2026-11-04T10:00:00Z"
     assert s["costUsd"] == 0.4 and s["budgetUsd"] == 5.0 and s["audienceKind"] == "room"
     assert s["output"] == {"idemKey": "e1", "kind": "mail", "title": "Reply to Acme", "nextStep": "send"}
 
@@ -194,6 +197,46 @@ def test_summarize_carries_outputs_for_a_finished_task():
     s = ta.summarize(tree, "sam")
     assert s["outputs"] == made and s["output"] is None  # `output` stays the draft waiting on a review
     assert ta.summarize({"task": _task({"kind": "person", "userIds": ["sam"]})}, "sam")["outputs"] == []  # older row
+
+
+_LEGACY = {
+    "id": "text:1",
+    "kind": "document",
+    "title": "Draft parent email",
+    "ref": {"roomId": "tr", "messageId": "m1"},
+}
+_ANSWER = "Drafted the parent email.\n\nSubject: Story-time\n\nHi parents,"
+
+
+def test_summarize_fills_text_for_a_walk_16_output():
+    """Walk 16 outputs predate `ref.text`: blank tiles, named by the task. The attempt's answer fills it on read."""
+    tree = {
+        "task": _task({"kind": "room", "roomId": "r1"}, status="idle", outputs=[_LEGACY]),
+        "attempts": [{"n": 1, "status": "ended", "outcome": "completed", "output": _ANSWER}],
+    }
+    out = ta.summarize(tree, "sam")["outputs"][0]
+    assert out["kind"] == "mail"  # an email draft, as new ones are filed
+    assert out["ref"] == {"roomId": "tr", "messageId": "m1", "text": "Subject: Story-time\n\nHi parents,"}
+    # A new output keeps its own text; no answer leaves it as stored.
+    new = _LEGACY | {"ref": {"text": "mine"}}
+    assert ta.summarize({**tree, "task": tree["task"] | {"outputs": [new]}}, "sam")["outputs"] == [new]
+    assert ta.summarize({**tree, "attempts": []}, "sam")["outputs"] == [_LEGACY]
+
+
+async def test_with_output_text_reads_the_attempts_in_one_batch(monkeypatch):
+    calls = []
+
+    async def batch_get(ws, sks):
+        calls.append(sks)
+        return [{"sk": ts.attempt_sk(TID, 1), "output": _ANSWER}]
+
+    monkeypatch.setattr(ta.tasks_repo, "batch_get", batch_get)
+    app = {"id": "app:a1", "kind": "app", "title": "Booking", "ref": {"appId": "a1"}}
+    [t] = await ta.with_output_text(WS, [_task({"kind": "room", "roomId": "r1"}, outputs=[_LEGACY, app])])
+    assert t["outputs"][0]["ref"]["text"] == "Subject: Story-time\n\nHi parents," and t["outputs"][1] == app
+    assert calls == [[ts.attempt_sk(TID, 1)]]
+    calls.clear()
+    assert await ta.with_output_text(WS, [_task({"kind": "room"}, outputs=[app])]) and calls == []  # nothing to read
 
 
 def _effect(**over):

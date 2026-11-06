@@ -125,7 +125,7 @@ it("super-agent: a short text result opens as the doc itself, its button line co
   try {
     const writeText = vi.fn(async () => undefined);
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
-    tasksGet.mockResolvedValue({ attempts: [{ n: 1, output: "Drafted the parent email.\n\nSubject: Story-time\n\nHi parents,\n\n[Sign up for story-time]" }] });
+    tasksGet.mockResolvedValue({ attempts: [{ n: 1, output: "Drafted the parent email.\n\nSubject: Story-time\n\nHi parents,\n\n[**Sign up for story-time**]([SIGNUP LINK])" }] });
     const host = document.createElement("span");
     document.body.appendChild(host);
     render(<PaneActionsHost.Provider value={host}>

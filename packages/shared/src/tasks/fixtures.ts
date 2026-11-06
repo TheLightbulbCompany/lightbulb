@@ -36,6 +36,7 @@ export function fixtureTask(over: Partial<TaskSummary> & Pick<TaskSummary, "task
     usage: null,
     costUsd: 0,
     budgetUsd: null,
+    createdAt: AT,
     updatedAt: AT,
     version: 1,
     ...over,

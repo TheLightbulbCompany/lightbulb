@@ -1306,6 +1306,8 @@ def test_workers_deliver_only_what_was_asked():
     assert "Never invent a number, target, goal or success measure" in text and "not even as a suggestion" in text
     assert "Suggestion:" not in text and '"Assumed: "' in text
     assert "Open your answer with one sentence saying what you made" in text
+    # Walk 17 (W17-3): "[**BOOK YOUR SPOT**]([BOOKING LINK])" reached chat, the viewer and Copy as raw markdown.
+    assert "Never write a placeholder link" in text and '"Book your spot: (link to add)"' in text
     assert "success number" not in STARTER_CAPABILITIES["growth"]
     assert "never invents targets or numbers" in STARTER_CAPABILITIES["growth"]
 

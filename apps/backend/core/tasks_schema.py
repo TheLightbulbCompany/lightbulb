@@ -948,6 +948,7 @@ class TaskSummary(_Model):
     usage: Usage | None = None
     cost_usd: float = 0.0
     budget_usd: float | None = None
+    created_at: str | None = None  # the chip's clock before the first run starts ("Working · 0:00", W17)
     updated_at: str
     version: int
 

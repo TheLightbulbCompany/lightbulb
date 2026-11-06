@@ -130,28 +130,6 @@ jobs:
           echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
           docker pull "$IMAGE"
 
-      # Only bridge/ is bind-mounted -- tools.* (terminal_tool, env_passthrough,
-      # terminal_scope) ships inside the base image itself, so a smoke exercises
-      # Hermes's real tool code, not a stand-in for it. --network none: no model
-      # call, no egress. The default `bash -eo pipefail` shell already fails the
-      # step on any smoke's non-zero exit.
-      - name: Run bridge smokes in the pinned image
-        run: |
-          shopt -s nullglob
-          smokes=(apps/infra/hermes/tests/smoke/*.py)
-          if [ ${#smokes[@]} -eq 0 ]; then
-            echo "no smokes"
-            exit 0
-          fi
-          for smoke in "${smokes[@]}"; do
-            echo "::group::$smoke"
-            docker run --rm --network none \
-              -v "$PWD/apps/infra/hermes/bridge:/opt/bridge/bridge:ro" \
-              -v "$PWD/$smoke:/opt/bridge/smoke.py:ro" \
-              --entrypoint python "$IMAGE" /opt/bridge/smoke.py
-            echo "::endgroup::"
-          done
-
       # The Lightbulb patch series (apps/infra/hermes/hermes-patches/) is applied by the image
       # Dockerfile, but that image only builds on main. Prove it here on every PR, against the
       # same pinned base: copy the base's /opt/hermes out, apply the series in SERIES order with
@@ -172,6 +150,30 @@ jobs:
             -v "$GITHUB_WORKSPACE/apps/infra/hermes/tests/image_smoke/patched_hermes_smoke.py:/tmp/smoke.py:ro" \
             -e HERMES_HOME=/tmp/patched-smoke \
             --entrypoint python "$IMAGE" /tmp/smoke.py
+
+      # Every bridge smoke runs on the PATCHED tree from the step above -- the Hermes the
+      # runtime image actually ships. Some smokes (codex_broker_smoke.py: F6's _REFRESH_DELEGATE)
+      # need a patch; the rest are unaffected because every patch is inert until the bridge opts
+      # in. Only bridge/ is bind-mounted besides that -- tools.* (terminal_tool, env_passthrough,
+      # terminal_scope) is Hermes's real code, not a stand-in. --network none: no model call, no
+      # egress. The default `bash -eo pipefail` shell fails the step on any smoke's non-zero exit.
+      - name: Run bridge smokes in the patched pinned image
+        run: |
+          shopt -s nullglob
+          smokes=(apps/infra/hermes/tests/smoke/*.py)
+          if [ ${#smokes[@]} -eq 0 ]; then
+            echo "no smokes"
+            exit 0
+          fi
+          for smoke in "${smokes[@]}"; do
+            echo "::group::$smoke"
+            docker run --rm --network none \
+              -v "$RUNNER_TEMP/hermes:/opt/hermes" \
+              -v "$PWD/apps/infra/hermes/bridge:/opt/bridge/bridge:ro" \
+              -v "$PWD/$smoke:/opt/bridge/smoke.py:ro" \
+              --entrypoint python "$IMAGE" /opt/bridge/smoke.py
+            echo "::endgroup::"
+          done
 
   test:
     name: Synth & Test

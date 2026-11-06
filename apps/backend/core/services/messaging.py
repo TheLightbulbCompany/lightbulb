@@ -3180,6 +3180,8 @@ async def upsert_member(auth: AuthContext, room_id: str, request: UpsertRoomMemb
     )
     if actor.get("role") not in {"owner", "admin"} and not mode_change and not chat_addition:
         raise ApiProblem("ROOM_FORBIDDEN", "Room owner or admin access required.")
+    if meta.get("kind") == "dm" and existing is None:
+        return await _group_from_dm(auth, meta, request)
     if existing and existing.get("role") == "owner":
         raise ApiProblem("INVALID_REQUEST", "The room owner role cannot be changed.")
     roster = await load_agent_roster(owner_id) if request.kind == "agent" else []
@@ -3199,7 +3201,6 @@ async def upsert_member(auth: AuthContext, room_id: str, request: UpsertRoomMemb
             owner_id=owner_id,
             member=member,
             handle_updates=handle_updates,
-            room_kind="group-dm" if meta.get("kind") == "dm" and existing is None else None,
         )
     except messaging_repo.MemberLimitExceeded as exc:
         raise ApiProblem("MEMBER_LIMIT", str(exc)) from exc
@@ -3227,6 +3228,25 @@ async def upsert_member(auth: AuthContext, room_id: str, request: UpsertRoomMemb
                 logger.warning("room.member.updated publish failed for %s in %s: %s", user_id, room_id, result)
     await _publish_room_metadata(meta)
     return await _room_detail(meta, auth.user_id)
+
+
+async def _group_from_dm(auth: AuthContext, meta: dict, request: UpsertRoomMemberRequest) -> RoomDetail:
+    """Adding someone to a DM starts a NEW group chat with everyone in the DM plus them, as Slack does (founder ruling,
+    7 Nov 2026). The DM stays as it was: its history, Instructions, noted facts and tasks are its people's only. A DM
+    between two people does the same, so "Add people" means one thing everywhere. The answer is the new chat's detail
+    (a different roomId): the client opens it. Its id derives from the DM and the member set, so a retried add, or
+    adding the same person again later, lands on the same group chat."""
+    others = [
+        CreateRoomMember(kind=m["kind"], id=m["id"], role="member", listen_mode=m.get("listenMode"))
+        for m in await messaging_repo.list_members(meta["roomId"])
+        if not (m.get("kind") == "human" and m["id"] == auth.user_id)
+    ]
+    others.append(CreateRoomMember(kind=request.kind, id=request.id, role="member", listen_mode=request.listen_mode))
+    key = ",".join(sorted(f"{m.kind}:{m.id}" for m in others))
+    client_room_id = uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb:dm-add:{meta['roomId']}:{key}")
+    return await create_room(
+        auth, CreateRoomRequest(client_room_id=client_room_id, name=None, kind="group-dm", members=others)
+    )
 
 
 async def remove_member(auth: AuthContext, room_id: str, kind: str, member_id: str) -> None:

@@ -96,6 +96,18 @@ describe("useRooms platform seams", () => {
     expect(messaging.listMessages.mock.calls.some(([, , , options]) => options?.beforeSeq !== undefined)).toBe(false);
   });
 
+  it("adding someone to a DM opens the new group chat the server started, and leaves the DM's cache alone", async () => {
+    const group: RoomDetail = { ...room, roomId: "room-group", kind: "group-dm", name: null };
+    messaging.upsertMember.mockResolvedValueOnce(group);
+    const { result } = renderHook(() => useRooms(platform()), { wrapper });
+    act(() => result.current.selectRoom(room.roomId));
+    await waitFor(() => expect(result.current.activeRoomId).toBe(room.roomId));
+    const lists = messaging.listRooms.mock.calls.length;
+    await act(async () => { await result.current.upsertMember({ kind: "human", id: "user-b", role: "member", listenMode: null }); });
+    expect(result.current.activeRoomId).toBe("room-group");
+    expect(messaging.listRooms.mock.calls.length).toBeGreaterThan(lists);
+  });
+
   it("marks read only while the platform reports itself visible", async () => {
     visible = false;
     const { result } = renderHook(() => useRooms(platform()), { wrapper });

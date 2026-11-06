@@ -7,7 +7,7 @@
   },
   "patches": "apps/infra/hermes/hermes-patches/SERIES",
   "dev": {
-    "tag": "h-2026.11.6-0382228"
+    "tag": "h-2026.11.6-f2d8484"
   },
   "prod": {
     "tag": "h-2026.11.4-51f3a89"

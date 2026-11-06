@@ -67,10 +67,10 @@
 .room-message > .participant-avatar { border-radius: 6px; }
 .room-message [role="img"] > .overflow-hidden { width: 36px; height: 36px; border-radius: 6px; font-size: var(--text-caption); }
 .room-history .room-message { margin: 0 calc(-1 * var(--room-gutter)); padding-inline: var(--room-gutter); }
-.room-message:hover, .room-message:focus-within { background: var(--plane-hover); }
+.room-message:hover, .room-message:has(:focus-visible) { background: var(--plane-hover); }
 /* top: the row's own 8 px padding, so it never rises over the row above (W16-11: it covered a task chip's right end). */
 .room-message-actions { position: absolute; top: -8px; right: var(--room-gutter, 0px); z-index: 3; display: flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 6px; background: var(--background); opacity: 0; pointer-events: none; }
-.room-message:hover .room-message-actions, .room-message:focus-within .room-message-actions, .room-message-actions:has([data-state="open"]) { opacity: 1; pointer-events: auto; }
+.room-message:hover .room-message-actions, .room-message:has(:focus-visible) .room-message-actions, .room-message-actions:has([data-state="open"]) { opacity: 1; pointer-events: auto; }
 .room-message-actions button { border-radius: 4px; }
 .room-quick-reactions { display: inline-flex; gap: 2px; }
 .room-quick-reactions button { min-width: 28px; }
@@ -496,7 +496,7 @@
 
 .room-message-collapsed { padding-top: 2px; padding-bottom: 2px; min-height: 40px; }
 .room-message-gutter { flex: none; width: 36px; padding-top: 4px; font-size: var(--text-caption); line-height: 1.5; text-align: right; color: var(--muted-foreground); font-variant-numeric: tabular-nums; opacity: 0; }
-.room-message:hover .room-message-gutter, .room-message:focus-within .room-message-gutter { opacity: 1; }
+.room-message:hover .room-message-gutter, .room-message:has(:focus-visible) .room-message-gutter { opacity: 1; }
 
 /* Positioned after the .room-message-gutter/.room-message-actions base rules above
  * (same specificity, so the touch override must come later in source order to win). */

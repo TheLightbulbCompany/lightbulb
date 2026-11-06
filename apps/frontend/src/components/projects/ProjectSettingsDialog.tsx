@@ -24,7 +24,6 @@ const SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "general", label: "General" }, { id: "memory", label: "Memory" }, { id: "people", label: "People" },
 ];
 const SAVED_MS = 2000;
-const UNDO_MS = 5000; // a forgotten fact stays in its row with Undo this long before it is really forgotten (W16-7)
 
 /** "Saved" for 2 s after `token` changes (0 = never saved). */
 function Saved({ token }: { token: number }): ReactElement | null {
@@ -60,23 +59,43 @@ export interface ProjectSettingsProps {
 }
 
 type Flush = MutableRefObject<(() => void) | null>;
+/** Facts struck through in Memory, still undoable; committed only when settings close (W18-1). */
+interface Forgets { forgotten: ReadonlySet<string>; forget: (messageId: string, commit: () => void) => void; undo: (messageId: string) => void }
 
 export function ProjectSettingsDialog(props: ProjectSettingsProps): ReactElement {
   const { section, onSection, roomName, onCloseAutoFocus } = props;
   // Esc or ✕ while a field still has focus unmounts it before its blur save runs: save what is unsaved first.
   const flush: Flush = useRef(null);
+  // W18-1: a Forget waits here, struck through and undoable, for as long as settings stay open: no timer, and switching
+  // section keeps it. Closing, moving to another room, unmounting or leaving the page commits exactly what was clicked.
+  const open = section !== null;
+  const roomId = props.room.roomId;
+  const commits = useRef(new Map<string, () => void>());
+  const [forgotten, setForgotten] = useState<ReadonlySet<string>>(new Set());
+  useEffect(() => {
+    if (!open) return;
+    const all = commits.current;
+    const commitAll = () => { for (const commit of all.values()) commit(); all.clear(); setForgotten(new Set()); };
+    window.addEventListener("pagehide", commitAll);
+    return () => { window.removeEventListener("pagehide", commitAll); commitAll(); };
+  }, [open, roomId]);
+  const forgets: Forgets = {
+    forgotten,
+    forget: (messageId, commit) => { commits.current.set(messageId, commit); setForgotten((s) => new Set(s).add(messageId)); },
+    undo: (messageId) => { commits.current.delete(messageId); setForgotten((s) => { const n = new Set(s); n.delete(messageId); return n; }); },
+  };
   return <Dialog open={section !== null} onOpenChange={(open) => { if (!open) { flush.current?.(); onSection(null); } }}>
     <DialogContent className="project-settings" onCloseAutoFocus={onCloseAutoFocus}>
       <div className="project-settings__head">
         <DialogTitle asChild><h2 className="truncate">{roomName} · {props.room.kind === "channel" ? "Channel" : "Chat"} settings</h2></DialogTitle>
         <DialogClose asChild><Button type="button" variant="ghost" size="icon-sm" aria-label="Close settings"><X aria-hidden="true" /></Button></DialogClose>
       </div>
-      {section && <SettingsBody {...props} section={section} flush={flush} />}
+      {section && <SettingsBody {...props} section={section} flush={flush} forgets={forgets} />}
     </DialogContent>
   </Dialog>;
 }
 
-function SettingsBody({ room, roomName, section, onSection, canEdit, actionable, onRename, onSetTopic, onPatch, onArchive, onDelete, people, memoryClient, flush }: ProjectSettingsProps & { section: SettingsSection; flush: Flush }): ReactElement {
+function SettingsBody({ room, roomName, section, onSection, canEdit, actionable, onRename, onSetTopic, onPatch, onArchive, onDelete, people, memoryClient, flush, forgets }: ProjectSettingsProps & { section: SettingsSection; flush: Flush; forgets: Forgets }): ReactElement {
   const id = useId();
   const { membership } = useOrganization();
   // The backend lets a channel's owner/admin pause it, and a workspace admin too (pause alone); a chat with Lightbulb is
@@ -87,13 +106,15 @@ function SettingsBody({ room, roomName, section, onSection, canEdit, actionable,
   const [topic, setTopic] = useState(room.topic ?? "");
   const [saved, setSaved] = useState<Record<string, number>>({});
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  // What is saving: fields wait for any save, but Pause only for its own, so the click that blurs the name and commits
+  // the rename still pauses (W18: the first click on Pause was swallowed when it disabled mid-click).
+  const [busy, setBusy] = useState<string | null>(null);
   const save = async (key: string, action: () => Promise<void>, fallback: string) => {
-    setBusy(true);
+    setBusy(key);
     setError(null);
     try { await action(); setSaved((s) => ({ ...s, [key]: (s[key] ?? 0) + 1 })); }
     catch (caught) { setError(caught instanceof Error && caught.message ? caught.message : fallback); }
-    finally { setBusy(false); }
+    finally { setBusy(null); }
   };
   const editable = canEdit && actionable && !busy;
   const nameDirty = !!onRename && editable && !room.shared && !!name.trim() && name.trim() !== roomName;
@@ -134,7 +155,7 @@ function SettingsBody({ room, roomName, section, onSection, canEdit, actionable,
       </div>
       <div className="project-row__control">
         <Saved token={saved.pause ?? 0} />
-        <Button type="button" size="sm" variant="outline" className="h-7" disabled={!actionable || busy}
+        <Button type="button" size="sm" variant="outline" className="h-7" disabled={!actionable || busy === "pause"}
           onClick={() => void save("pause", () => onPatch!({ paused: !paused }), paused ? `The ${noun} could not be resumed.` : `The ${noun} could not be paused.`)}>
           {paused ? "Resume" : "Pause"}</Button>
       </div>
@@ -176,7 +197,7 @@ function SettingsBody({ room, roomName, section, onSection, canEdit, actionable,
         <span className="project-count">{topic.length.toLocaleString()} / {ROOM_TOPIC_MAX_CHARS.toLocaleString()}</span>
       </div>
     </div>
-    {memoryClient && <Remembered roomId={room.roomId} noun={noun} client={memoryClient} canForget={canEdit && actionable} />}
+    {memoryClient && <Remembered roomId={room.roomId} noun={noun} client={memoryClient} canForget={canEdit && actionable} forgets={forgets} />}
   </>;
 
   return <>
@@ -196,45 +217,22 @@ function SettingsBody({ room, roomName, section, onSection, canEdit, actionable,
 }
 
 /** What Lightbulb noted from this project's messages, newest first; whoever runs it can forget one. Forget keeps the
- *  row where it is, struck through with Undo in Forget's place, for 5 s (W16-7): nothing slides under the pointer, a
- *  slip is undone, and a double click undoes rather than forgetting a second fact. Closing settings forgets for real. */
-function Remembered({ roomId, noun, client, canForget }: { roomId: string; noun: "channel" | "chat"; client: NonNullable<ProjectSettingsProps["memoryClient"]>; canForget: boolean }): ReactElement {
+ *  row where it is, at its height, struck through with Undo in Forget's place, until settings close (W16-7, W18-1):
+ *  nothing moves under the pointer, and a second click on the same spot undoes rather than forgetting the next fact. */
+function Remembered({ roomId, noun, client, canForget, forgets }: { roomId: string; noun: "channel" | "chat"; client: NonNullable<ProjectSettingsProps["memoryClient"]>; canForget: boolean; forgets: Forgets }): ReactElement {
   const headingId = useId();
   const [items, setItems] = useState<NotedFact[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [undoable, setUndoable] = useState<ReadonlySet<string>>(new Set());
-  // Each pending forget: its timer and the call that commits it (run early when settings close).
-  const pending = useRef(new Map<string, { timer: ReturnType<typeof setTimeout>; commit: () => void }>());
-  const open = useRef(true);
   useEffect(() => {
     let live = true;
     client.listRoomMemory(roomId).then((r) => { if (live) setItems(r.items); },
       () => { if (live) setError("What Lightbulb remembers couldn't be loaded. Close and open Settings to try again."); });
     return () => { live = false; };
   }, [client, roomId]);
-  useEffect(() => {
-    const all = pending.current;
-    open.current = true;
-    return () => { open.current = false; for (const { timer, commit } of all.values()) { clearTimeout(timer); commit(); } all.clear(); };
-  }, []);
-  const settle = (id: string) => { pending.current.delete(id); setUndoable((s) => { const n = new Set(s); n.delete(id); return n; }); };
-  const forget = (item: NotedFact) => {
-    setError(null);
-    const commit = () => {
-      client.forgetRoomMemory(roomId, item.messageId).then(
-        () => setItems((all) => all && all.filter((i) => i.messageId !== item.messageId)),
-        // Still open: say so beside the list. Closed meanwhile: a toast, where the person now looks.
-        (e) => { if (open.current) setError("That couldn't be forgotten. Try again."); else notifyApiError(e, "That couldn't be forgotten."); });
-    };
-    const timer = setTimeout(() => { settle(item.messageId); commit(); }, UNDO_MS);
-    pending.current.set(item.messageId, { timer, commit });
-    setUndoable((s) => new Set(s).add(item.messageId));
-  };
-  const undo = (item: NotedFact) => {
-    const p = pending.current.get(item.messageId);
-    if (p) clearTimeout(p.timer);
-    settle(item.messageId);
-  };
+  // Commits run once settings have closed, so a failure is a toast, where the person now looks.
+  const forget = (item: NotedFact) => forgets.forget(item.messageId, () => {
+    client.forgetRoomMemory(roomId, item.messageId).catch((e) => notifyApiError(e, "That couldn't be forgotten."));
+  });
   return <section className="project-row project-memory" aria-labelledby={headingId}>
     <div className="project-row__text grid gap-2">
       <p id={headingId} className="project-row__label">What Lightbulb remembers here</p>
@@ -242,14 +240,14 @@ function Remembered({ roomId, noun, client, canForget }: { roomId: string; noun:
       {items?.length === 0 && <p className="project-row__hint">Tell Lightbulb things about this {noun} and they&apos;ll show up here.</p>}
       {!!items?.length && <ul className="project-memory__list">
         {items.map((item) => {
-          const gone = undoable.has(item.messageId);
+          const gone = forgets.forgotten.has(item.messageId);
           return <li key={item.messageId} className="project-memory__item" data-forgotten={gone || undefined}>
             <span className="project-memory__fact">{item.fact}</span>
             {gone ? <span role="status" className="project-memory__when">Forgotten</span>
               : <time className="project-memory__when" dateTime={item.notedAt}>{timeAgo(item.notedAt)}</time>}
             {canForget && (gone
               ? <Button type="button" variant="ghost" size="sm" className="project-memory__forget h-6 px-2"
-                  aria-label={`Undo forget: ${item.fact}`} onClick={() => undo(item)}>Undo</Button>
+                  aria-label={`Undo forget: ${item.fact}`} onClick={() => forgets.undo(item.messageId)}>Undo</Button>
               : <Button type="button" variant="ghost" size="sm" className="project-memory__forget h-6 px-2"
                   aria-label={`Forget: ${item.fact}`} onClick={() => forget(item)}>Forget</Button>)}
           </li>;

@@ -4,7 +4,7 @@ import { useMemo, type ReactElement, type ReactNode } from "react";
 import { MessageCircle } from "lucide-react";
 import type { Components, UrlTransform } from "react-markdown";
 import { nameSpecialistIn, sessionLabel, sessionStatus, specialistLabel, type CardReply, type LocalSession } from "@lightbulb/shared";
-import { MessageRoutedTo, MessageTasks } from "@/components/tasks/MessageTasks";
+import { CopyResult, MessageRoutedTo, MessageTasks } from "@/components/tasks/MessageTasks";
 import { AutomationConfirmCard } from "@/components/tasks/AutomationConfirmCard";
 import { useOptionalLiveEvents, useSuperAgent } from "@/hooks/useLiveEvents";
 import { openMessagePanel } from "@/components/workspace/workspaceController";
@@ -76,6 +76,8 @@ interface RoomMessageItemProps {
   isAgentId?: (id: string) => boolean;
   /** Super-agent: "thread|taskId" for each task whose ack chip is in the timeline (MessageTasks' finish line). */
   ackedTasks?: ReadonlySet<string>;
+  /** Super-agent: Lightbulb's own text answer in a DM or group chat offers Copy, as a task's text result does (W18). */
+  copyable?: boolean;
 }
 
 /** A session chip is a reference, like a document link: it never messaged the session. */
@@ -92,7 +94,7 @@ function SessionCard({ sessionId, label, session, onOpen }: {
   </span>;
 }
 
-export function RoomMessageItem({ id, message, text, participant, currentUserId, actionable, inThread, collapsed, startEditing, onEditingClosed, replyCount, lastReplyAt, threadParticipants = [], workingNames = [], receipt, highlighted, mentionsViewer, markdown, urlTransform, quickReactions, reactionPending, reactionError, onToggleReaction, onOpenThread, onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, onCardReply, cardAnswer = null, cardsEnabled = true, sessions = [], onOpenSession, toolbarExtras, menuExtras, personColor, onOpenTask, isAgentId, ackedTasks }: RoomMessageItemProps): ReactElement {
+export function RoomMessageItem({ id, message, text, participant, currentUserId, actionable, inThread, collapsed, startEditing, onEditingClosed, replyCount, lastReplyAt, threadParticipants = [], workingNames = [], receipt, highlighted, mentionsViewer, markdown, urlTransform, quickReactions, reactionPending, reactionError, onToggleReaction, onOpenThread, onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, onCardReply, cardAnswer = null, cardsEnabled = true, sessions = [], onOpenSession, toolbarExtras, menuExtras, personColor, onOpenTask, isAgentId, ackedTasks, copyable }: RoomMessageItemProps): ReactElement {
   const superAgent = useSuperAgent();
   const agentNames = useOptionalLiveEvents()?.agentNames;
   // A line posted for a specialist can carry its id; it reads as the specialist's name, like the byline.
@@ -153,6 +155,8 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
       {!message.deletedAt && (superAgent && message.taskRefs?.length
         ? <MessageTasks message={message} viewerId={currentUserId} onOpen={onOpenTask} ackedTasks={ackedTasks} />
         : <MessageTaskCard text={message.text} prose={message.author.kind === "agent"} />)}
+      {!message.deletedAt && superAgent && copyable && !message.taskRefs?.length && !message.kind && message.author.kind === "agent"
+        && !!message.text.trim() && <CopyResult text={message.text} />}
       {superAgent && message.forwardedFrom && <button type="button" className="block text-ui text-muted-foreground hover:text-foreground hover:underline"
         onClick={() => openMessagePanel(message.forwardedFrom!.roomId, message.forwardedFrom!.messageId)}>
         Forwarded from {message.forwardedFrom.roomName ? `#${message.forwardedFrom.roomName}` : "another chat"} ›</button>}

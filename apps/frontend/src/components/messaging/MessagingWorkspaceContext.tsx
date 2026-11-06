@@ -869,12 +869,16 @@ export function MessagingWorkspaceProvider({
     const dm = rooms.activeRoom?.kind === "dm" ? rooms.activeRoom : null;
     if (!dm) { for (const member of members) await addMember(member); return; }
     const others = dm.members.filter((m) => !(m.kind === "human" && m.id === userId));
+    // A pick, like any create (W18-6): the URL moves to the new group chat, so refresh, Back and Copy link land there.
+    markExplicitScope();
+    const startToken = pickToken();
     await rooms.createRoom({
       clientRoomId: crypto.randomUUID(),
       kind: "group-dm",
       name: null,
       members: [...others, ...members].map((m) => ({ kind: m.kind, id: m.id, role: "member" as const, listenMode: m.kind === "agent" ? "active" as const : null })),
     });
+    bumpPickIfCurrent(startToken);
   }
 
   // Permalink target: opened via openMessage (a room permalink), cleared 3s

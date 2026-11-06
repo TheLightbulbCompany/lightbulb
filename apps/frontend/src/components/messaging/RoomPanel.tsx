@@ -885,6 +885,7 @@ function RoomContent({
       cardsEnabled={cardsEnabled} onCardReply={repliesEnabled && participant ? onCardReply : undefined} cardAnswer={cardAnswers.get(message.messageId) ?? null}
       sessions={visibleSessions} onOpenSession={openSessionPanel}
       onOpenTask={superAgent ? openTask : undefined} isAgentId={superAgent ? isAgentId : undefined} ackedTasks={ackedTasks}
+      copyable={room?.kind === "dm" || room?.kind === "group-dm"}
       menuExtras={!message.deletedAt && (onSetPin || (onMarkUnreadFrom && !inThread)) ? <>
         {/* disabled/aria-busy reflect messageActionPending -- shared across every message's
             menu here, same one-pending-pair-per-surface shape as useAsyncAction's doc comment.
@@ -923,7 +924,7 @@ function RoomContent({
   }, [revealStarter, general, participants, currentUserId, repliesByRoot, threadActivity, receipts, id, actionable, editTarget, searchTarget,
     quickReactions, reactionPending, reactionError, onSetReaction, toggleReaction, openDetail, openTask, superAgent, isAgentId, ackedTasks,
     onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, onCardReply, cardsEnabled, repliesEnabled, cardAnswers, onSetPin, onMarkUnreadFrom,
-    messageActionPending, runMessageAction, pinnedMessageIds, copied, copyError, roomId, visibleSessions]);
+    messageActionPending, runMessageAction, pinnedMessageIds, copied, copyError, roomId, visibleSessions, room?.kind]);
   // A run that ended without a saved reply (stopped, failed, no reply) stays where it happened,
   // after the message it followed; only live runs ride the tail below the newest message.
   // Keyed by value, like receiptKey: streamed frames of a live run must not re-render history.

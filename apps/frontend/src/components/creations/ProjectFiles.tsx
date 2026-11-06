@@ -77,10 +77,10 @@ export function ProjectFiles({ roomId, viewerId, messages, onOpenTask }: {
           // The readable name the tiles use ("Tuesday pizza class family invite"), not the slug cut mid-word (W15-11).
           const name = outputName(row.output);
           return <tr key={row.key}>
-            <td><button type="button" className="project-files__name" title={row.output.title} onClick={open}>
+            <td><button type="button" className="project-files__name" title={name} onClick={open}>
               {iconOf(row.output, 16)}<span>{name}</span>
             </button></td>
-            <td className="project-files__muted">{row.madeBy}</td>
+            <td className="project-files__muted" title={row.madeBy}>{row.madeBy}</td>
             <td className="project-files__muted"><time dateTime={row.at}>{timeAgo(row.at)}</time></td>
             <td className="project-files__act">
               <DropdownMenu>

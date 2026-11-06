@@ -13,6 +13,7 @@ import {
   type ActivityItem,
 } from "@lightbulb/shared";
 import { useApi } from "@/lib/api";
+import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { useAgents, agentDisplayName, type Agent } from "@/hooks/useAgents";
 import { useActivity } from "@/hooks/useActivity";
 import { openPanel, useWorkspaceState } from "@/components/workspace/workspaceController";
@@ -157,19 +158,19 @@ async function needsYouCopy(
 
 export interface ExecuteContext {
   refreshActivity: () => Promise<ActivityItem[]>;
-  /** A GET on the backend API (`useApi().get`), for a team run's agent + task names. */
+  /** A GET on the backend API (`useApi().get`), for a team run's task name. */
   apiGet: (path: string) => Promise<unknown>;
+  /** The workspace's `/teams/agents` list from the shared SWR read (never a fetch of its own). */
+  teamAgents?: readonly { id: string; name?: string }[];
 }
 
 type RunAction = Extract<RunToastAction, { kind: "working" | "success" | "failure" }>;
 
 /** "Pulse · ISOA-400" / "Finished: Draft launch posts" for a team (Paperclip) run. */
-async function teamRunCopy(action: RunAction, agents: Agent[], apiGet: ExecuteContext["apiGet"]): Promise<{ title: string; body: string }> {
-  const [issue, teamAgents] = await Promise.all([
-    action.issueId ? apiGet(`/teams/issues/${action.issueId}`).catch(() => null) : null,
-    apiGet("/teams/agents").catch(() => null),
-  ]) as [{ identifier?: string | null; title?: string | null } | null, { agents?: { id: string; name?: string }[] } | null];
-  const name = teamAgents?.agents?.find((agent) => agent.id === action.agentId)?.name
+async function teamRunCopy(action: RunAction, agents: Agent[], ctx: ExecuteContext): Promise<{ title: string; body: string }> {
+  const issue = (action.issueId ? await ctx.apiGet(`/teams/issues/${action.issueId}`).catch(() => null) : null) as
+    { identifier?: string | null; title?: string | null } | null;
+  const name = ctx.teamAgents?.find((agent) => agent.id === action.agentId)?.name
     ?? agents.find((agent) => agent.id === action.agentId)?.name ?? "An agent";
   const title = notificationTitle(name, issue?.identifier || null);
   if (action.kind === "failure") return { title, body: runFailureLine(action.errorCode, action.error) };
@@ -219,7 +220,7 @@ function executeAction(action: RunToastAction, agents: Agent[], ctx: ExecuteCont
   if (action.kind === "working") return;
   if (action.source === "teams") {
     const view = viewRunAction(action.key.replace(/^teams:/, ""));
-    void teamRunCopy(action, agents, ctx.apiGet).then(({ title, body }) =>
+    void teamRunCopy(action, agents, ctx).then(({ title, body }) =>
       nativeNotify(title, body, { onClick: view.onClick, tag: action.key }).then((shown) => {
         if (shown) dismissNotification(action.key);
         else if (action.kind === "success") notifySuccess(title, { dedupeKey: action.key, description: body, action: view });
@@ -265,6 +266,7 @@ export function RunNotifications() {
   const agentsRef = useRef<Agent[]>([]);
   const { refresh: refreshActivity } = useActivity();
   const api = useApi();
+  const { data: teamAgents } = useTeamsApi().read<{ agents?: { id: string; name?: string }[] }>("/agents");
   const execRef = useRef<ExecuteContext>({ refreshActivity, apiGet: api.get });
   const roomView = useSyncExternalStore(subscribeRoomView, getRoomView, getRoomView);
 
@@ -285,7 +287,7 @@ export function RunNotifications() {
       sideRoomIds: roomView.sideRoomIds,
     };
     agentsRef.current = agents;
-    execRef.current = { refreshActivity, apiGet: api.get };
+    execRef.current = { refreshActivity, apiGet: api.get, teamAgents: teamAgents?.agents };
   });
 
   useEffect(() => {

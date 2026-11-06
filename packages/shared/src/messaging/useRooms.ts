@@ -273,6 +273,9 @@ const contiguousSequence = (messages: readonly CanonicalRoomMessage[]) => {
   return end;
 };
 
+/** The room list's SWR key. Exported so the web provider can start the read before the workspace mounts. */
+export const roomsListKey = (userId: string, orgId: string | null | undefined) => ["messaging-rooms", `${userId}:${orgId ?? userId}`] as const;
+
 export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {}) {
   const { initialAgentId = null, subscribeToRoom = true, autoSelect = true, boundedHistory = false, persistence, subagents: watchSubagents = false } = options;
   const { userId, orgId, live, isVisible, onVisibilityChange, uuid } = platform;
@@ -284,11 +287,12 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     liveConnected,
     httpReady,
   } = live;
-  const scope = userId ? `${userId}:${orgId ?? userId}` : null;
+  const roomsKey = userId ? roomsListKey(userId, orgId) : null;
+  const scope = roomsKey?.[1] ?? null;
   const { cache } = useSWRConfig();
   const store = useMemo(() => storeFor(cache, scope, persistence), [cache, scope, persistence]);
   const roomsResponse = useSWR(
-    scope ? ["messaging-rooms", scope] : null,
+    roomsKey,
     () => messaging.listRooms(),
     { revalidateOnFocus: false, fallbackData: store.fallback },
   );

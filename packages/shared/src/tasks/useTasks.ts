@@ -151,17 +151,20 @@ export function useTaskChangedRefresh(client: TasksClient): (payload: TaskChange
   return useCallback((payload: TaskChanged) => void refreshTask({ cache, mutate, client }, payload), [cache, mutate, client]);
 }
 
-type DirectoryAgent = { id: string; name?: string | null; role?: string | null; reportsTo?: string | null; origin?: string | null };
+export type DirectoryAgent = { id: string; name?: string | null; role?: string | null; reportsTo?: string | null; origin?: string | null };
 
-/** The workspace's agents, one SWR read shared by every caller with the same `key` (each app passes its own loader:
- *  `/teams/agents`): names by id (task specialists are agent ids) and the front agent's id (`resolveCeoAgentId`),
- *  which displays as "Lightbulb" with the switch on. `null` key = no request. */
+/** Names by agent id (task specialists are agent ids) and the front agent's id (`resolveCeoAgentId`), which displays
+ *  as "Lightbulb" with the switch on. Pure, so the web app can derive it from its existing `/teams/agents` read. */
+export function agentDirectory(agents: readonly DirectoryAgent[]): { names: ReadonlyMap<string, string>; frontAgentId: string | undefined } {
+  const frontAgentId = resolveCeoAgentId(agents);
+  // The front agent's roster name ("CEO") never shows: it is Lightbulb everywhere.
+  const names = new Map(agents.filter((a) => a.name).map((a) => [a.id, a.id === frontAgentId ? "Lightbulb" : a.name!]));
+  return { names, frontAgentId };
+}
+
+/** `agentDirectory` over one SWR read shared by every caller with the same `key` (the app passes its own loader:
+ *  `/teams/agents`). `null` key = no request. */
 export function useAgentDirectory(key: string | null, load: () => Promise<readonly DirectoryAgent[]>): { names: ReadonlyMap<string, string>; frontAgentId: string | undefined } {
   const { data } = useSWR(key ? ["agent-names", key] : null, load, { shouldRetryOnError: false, dedupingInterval: 60_000 });
-  return useMemo(() => {
-    const frontAgentId = resolveCeoAgentId(data ?? []);
-    // The front agent's roster name ("CEO") never shows: it is Lightbulb everywhere.
-    const names = new Map((data ?? []).filter((a) => a.name).map((a) => [a.id, a.id === frontAgentId ? "Lightbulb" : a.name!]));
-    return { names, frontAgentId };
-  }, [data]);
+  return useMemo(() => agentDirectory(data ?? []), [data]);
 }

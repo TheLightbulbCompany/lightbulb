@@ -138,7 +138,7 @@ export {
   useDocumentPreview,
 } from "./messaging/documentLinks";
 export type { DocumentLink, DocumentPreview } from "./messaging/documentLinks";
-export { ROOMS_SNAPSHOT_VERSION, useRooms } from "./messaging/useRooms";
+export { ROOMS_SNAPSHOT_VERSION, roomsListKey, useRooms } from "./messaging/useRooms";
 export type {
   MessageDelegations,
   OptimisticRoomMessage,
@@ -379,7 +379,8 @@ export type {
 } from "./tasks/types";
 export { createTasksClient, scopeParam } from "./tasks/client";
 export type { TasksClient } from "./tasks/client";
-export { NEEDS_YOU_KEY_SUFFIX, putTaskSummary, questionsKey, refreshTask, taskKey, taskListKey, useAgentDirectory, useTask, useOlderTasks, useTaskCache, useTaskChangedRefresh, useTaskList, useTaskQuestions } from "./tasks/useTasks";
+export type { DirectoryAgent } from "./tasks/useTasks";
+export { NEEDS_YOU_KEY_SUFFIX, putTaskSummary, questionsKey, refreshTask, taskKey, taskListKey, agentDirectory, useAgentDirectory, useTask, useOlderTasks, useTaskCache, useTaskChangedRefresh, useTaskList, useTaskQuestions } from "./tasks/useTasks";
 export {
   automationRowLine, automationStatusLine, budgetLine, canDecide, canEdit, deliveryRoomId, deliveryWords, money, nextRunWords, runNow, runNowReason, runsPerMonth, scheduleWords, viewerTimeZone, waitingWords,
 } from "./tasks/automations";

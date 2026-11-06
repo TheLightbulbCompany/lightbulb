@@ -304,8 +304,11 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
   }, [mutate]);
 
   // AppSync is ephemeral. Reconcile current scoped reads on provider entry and
-  // after each private-user subscription reconnect.
+  // after each private-user subscription reconnect. Not before the first ack (revision 0):
+  // that is a cold load, every read is already on its first fetch, and `mutate(predicate)`
+  // bypasses SWR's dedupe, so it only doubled each /teams read. The first ack reconciles.
   useEffect(() => {
+    if (connectionRevision === 0) return;
     if (reconciledRevisionRef.current === connectionRevision) return;
     reconciledRevisionRef.current = connectionRevision;
     for (const key of ALL_KEYS) mutateKeyPrefix(key);

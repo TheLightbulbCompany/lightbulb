@@ -15,8 +15,9 @@ repeat those in the body.
 - **Numbers and plans as cards.** A card fence (`references/ui.md`) works in a document:
   `Metric` for a number, `Table` for a comparison, `Steps` for a plan, a chart only when the
   shape of the data is the point. A `mermaid` fence draws a diagram.
-- **Only what was asked, no invented facts.** Never put a number, target or claim the person did not give
-  into a document; ask, or say it in your reply as a suggestion.
+- **Only what was asked, no invented facts.** Never put a number, target, goal, success measure or claim the
+  person did not give into a document or your reply, not even as a suggestion; ask, or say what you assumed in
+  one line starting "Assumed: ".
 - **No approvals inside a document.** A sign-off is the `request_approval` tool, linked to the
   document's task.
 

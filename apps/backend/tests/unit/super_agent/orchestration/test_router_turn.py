@@ -703,10 +703,18 @@ async def test_router_turn_waits_while_the_runtime_is_still_starting(world):
     assert world["runs"] == [] and world["posts"] == []
 
 
-async def test_apply_fallback_posts_once_per_respond(world):
+async def test_apply_fallback_posts_once_per_respond(world, monkeypatch):
+    read = []
+
+    async def receipt(ws, ref):
+        read.append(ref["messageId"])
+
+    monkeypatch.setattr(acts.task_conversation, "read_quietly", receipt)
     t1 = await _trig("chat:m1")
     t2 = await _trig("chat:m2", admission="candidate")
     await acts.apply_fallback(WS, [t1, t2])
+    # Walk 15: the candidate gets no line, but its "reading…" ends now.
+    assert read == [(await repo.get_trigger(WS, t2))["ref"]["messageId"]]
     await acts.apply_fallback(WS, [t1, t2])
     assert [(p["event_id"], p["text"]) for p in world["posts"]] == [(f"router-fallback:{t1}", router_prompt.FALLBACK)]
     assert world["posts"][0]["remember"] is False
@@ -1292,7 +1300,10 @@ def test_workers_deliver_only_what_was_asked():
 
     text = " ".join(WORKER_INSTRUCTIONS.split())
     assert "only what the person asked for" in text and "no audience, test, goal or rationale notes" in text
-    assert "Never invent a number, target or claim" in text and "Suggestion:" in text
+    # Walk 15 (W15-4): "Suggestion: … 8 child registrations within 48 hours as the success mark" came back as a
+    # suggestion: none at all now, in a file or the answer; an assumption is said as one.
+    assert "Never invent a number, target, goal or success measure" in text and "not even as a suggestion" in text
+    assert "Suggestion:" not in text and '"Assumed: "' in text
     assert "Open your answer with one sentence saying what you made" in text
     assert "success number" not in STARTER_CAPABILITIES["growth"]
     assert "never invents targets or numbers" in STARTER_CAPABILITIES["growth"]
@@ -1426,11 +1437,34 @@ async def test_a_note_addressed_to_lightbulb_gets_one_line(world, no_memory_writ
     world["decisions"] = [_note(t1)]
     await _run([t1])
     await _run([t1])  # a retried turn
-    assert [p["text"] for p in world["posts"]] == [router_prompt.NOTED]
+    assert [p["text"] for p in world["posts"]] == [router_prompt.NOTED]  # the fact isn't in the message
     assert world["posts"][0]["remember"] is False and reactions == []
     mid = (await repo.get_trigger(WS, t1))["ref"]["messageId"]
     # W15-5: listed in the project's Memory (the repo keeps one row per message)
     assert set(noted_rows) == {(ROOM, mid, "The levain starter dates from 2009.")}
+
+
+@pytest.mark.asyncio
+async def test_a_note_says_the_fact_back(world, no_memory_writes, reactions, noted_rows):
+    """Walk 15 (W15-9): three identical "Noted — …" lines. The line says the fact back, so a misread shows."""
+    t1 = await _trig(
+        "chat:m1",
+        ref={"roomId": ROOM, "messageId": str(uuid.uuid4()), "text": "Lightbulb, FYI the oven is closed on Mondays"},
+    )
+    world["decisions"] = [{"kind": "note", "triggerIds": [t1], "fact": "The oven is closed on Mondays."}]
+    await _run([t1])
+    assert [p["text"] for p in world["posts"]] == ["Noted: the oven is closed on Mondays."]
+
+
+def test_a_noted_line_carries_only_what_the_message_said():
+    """A name or number the Router read in memory never goes into the room: the plain line instead."""
+    said = "FYI: we cap each class at 12 kids, $35 each"
+    assert router_prompt.noted("Classes are capped at 12 kids at $35 each.", said) == (
+        "Noted: classes are capped at 12 kids at $35 each."
+    )
+    assert router_prompt.noted("Classes are capped at 12 kids; Priya Shah runs them.", said) == router_prompt.NOTED
+    assert router_prompt.noted("Each class costs $40.", said) == router_prompt.NOTED
+    assert router_prompt.noted("x" * 200, said) == router_prompt.NOTED
 
 
 @pytest.mark.asyncio

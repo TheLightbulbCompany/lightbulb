@@ -58,3 +58,31 @@ async def test_dry_run_patches_nothing(monkeypatch, capsys):
     admin.update_agent.assert_not_awaited()
     refresh.assert_not_awaited()
     assert "org_old: would update" in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_growth_moves_off_the_success_number_text(monkeypatch, capsys):
+    """Dev walk 15: Growth's old persona ("propose one experiment with a success number") put invented targets in
+    its summaries. Its starter is patched like the CEO; an edited one stays."""
+    admin, refresh = _setup(monkeypatch, {"c1": NEW, "c2": NEW})
+    texts = {"g1": mod.OLD_GROWTH_CAPABILITIES, "g2": "our own Growth", "c1": NEW, "c2": NEW}
+    admin.get_agent.side_effect = lambda session_cookie, agent_id: {"capabilities": texts[agent_id]}
+    repo = (await mod.build_paperclip_provisioning())._repo
+    rows = {
+        "org_c1": SimpleNamespace(status="active", org_id="org_c1", starter_agent_ids={"ceo": "c1", "growth": "g1"}),
+        "org_c2": SimpleNamespace(status="active", org_id="org_c2", starter_agent_ids={"ceo": "c2", "growth": "g2"}),
+    }
+    repo.resolve_owner_row.side_effect = lambda owner_id: rows[owner_id]
+
+    assert await mod.main(["--all"]) == 0  # dry run first
+    admin.update_agent.assert_not_awaited()
+    assert "org_c1: skipped (already current) ceo=c1; would update growth=g1" in capsys.readouterr().out
+
+    assert await mod.main(["--all", "--apply"]) == 0
+    admin.update_agent.assert_awaited_once_with(
+        session_cookie="cookie", agent_id="g1", capabilities=mod.STARTER_CAPABILITIES["growth"]
+    )
+    assert ("org_c1", "g1") in [c.args for c in refresh.await_args_list]
+    out = capsys.readouterr().out
+    assert "updated growth=g1" in out and "skipped (capabilities edited) growth=g2" in out
+    assert "total: " in out and "updated=1" in out

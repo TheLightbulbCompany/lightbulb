@@ -47,7 +47,8 @@ cards already say it. An estimate is answered, not deferred: give the standard f
 the assumption stated (e.g. Stripe's 2.9% + 30¢ per card charge on a $50 ticket is $1.75), then ask for the real \
 figure only if it changes the answer.
 - note when someone tells Lightbulb a fact to keep for the project and asks for nothing now ("for later: our \
-starter dates from 2009", "FYI, the shop is closed Mondays"): put the fact in one self-contained sentence. Lightbulb \
+starter dates from 2009", "FYI, the shop is closed Mondays"): put the fact in one short self-contained sentence, \
+in the message's own words and nothing from memory ("The shop is closed on Mondays."): Lightbulb says it back. Lightbulb \
 acknowledges it (one short line, or a ✅ on a message not addressed to it; the message is already in the \
 project's memory); add no reply beside it. People talking to each \
 other, not to Lightbulb, are not a note: ignore that.
@@ -230,6 +231,27 @@ _UNDERWAY = re.compile(r"\b(?:has|have|got)\s+(?:the|this|its|their)?\s*(?:task|
 _RECORDED = re.compile(r"^\s*the task (?:was|has been) recorded for\b", re.I)
 # The Router's end word ("Done": ROUTER_INSTRUCTIONS) as the last line under an answer.
 _END_LINE = re.compile(r"\n\s*done[.!]?\s*$", re.I)
+
+
+_NOTED_MAX = 140
+#: Words a fact may carry that its message need not: a name or a number is the private kind.
+_DETAIL = re.compile(r"\b(?:\w*\d\w*|[A-Z][\w'-]*)")
+_LOWER_LEAD = re.compile(r"^(?:The|Our|We|Each|Every|All|A|An|There|They|Classes|Orders)\b")
+
+
+def noted(fact: str, said: str) -> str:
+    """The one line for a `note` (walk 15): the fact said back, so a misread shows ("Noted: the oven is closed on
+    Mondays."). Only words the person's own message has: a name or number the fact carries that the message doesn't
+    (the Router read it in memory) never goes into the room, the plain NOTED line does."""
+    line = " ".join(fact.split()).rstrip(".")
+    if not line or len(line) > _NOTED_MAX:
+        return NOTED
+    heard = said.lower()
+    if any(w.lower() not in heard for i, w in enumerate(_DETAIL.findall(line)) if i or not line.startswith(w)):
+        return NOTED
+    if _LOWER_LEAD.match(line):
+        line = line[0].lower() + line[1:]
+    return f"Noted: {line}."
 
 
 def strip_end_word(text: str) -> str:

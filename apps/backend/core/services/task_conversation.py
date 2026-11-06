@@ -8,6 +8,7 @@ Every task gets a hidden room (`ts.task_room_id`), the same pattern as an app's 
 
 from __future__ import annotations
 
+import logging
 import uuid
 
 from core import tasks_schema as ts
@@ -17,6 +18,7 @@ from core.services import agent_registry, messaging, room_memory, session_chat
 from core.services.super_agent_flags import flags_for
 
 _RESULT_SCAN = 50
+logger = logging.getLogger(__name__)
 
 
 class NoFrontAgent(RuntimeError):
@@ -49,6 +51,26 @@ async def _front_agent(ws: str) -> dict:
 async def front_agent_id(ws: str) -> str:
     """The CEO agent id: the identity every Lightbulb post uses (displayed "Lightbulb" / `@lightbulb`)."""
     return (await _front_agent(ws))["id"]
+
+
+async def read_quietly(ws: str, ref: dict) -> None:
+    """Lightbulb's read receipt on a chat message it handled without posting (admission or the Router let it pass,
+    or a task took it with no ack), so the person's "Lightbulb is reading…" line ends now instead of on its timer
+    (dev walks 13, 15). Best-effort: a lost receipt leaves the client's timeout."""
+    if not ref.get("roomId") or not ref.get("messageId"):
+        return
+    try:
+        agent_id = await front_agent_id(ws)
+        await messaging._publish_room_event(
+            ref["roomId"],
+            messaging.make_live_event(
+                "room.read.changed",
+                {"roomId": ref["roomId"], "reader": {"kind": "agent", "id": agent_id}, "messageId": ref["messageId"]},
+                room_id=ref["roomId"],
+            ),
+        )
+    except Exception:  # noqa: BLE001 -- a receipt never fails its caller
+        logger.warning("read receipt failed for message %s", ref.get("messageId"), exc_info=True)
 
 
 async def ensure_task_room(ws: str, task: dict, *, seat_viewer: str | None = None) -> str:

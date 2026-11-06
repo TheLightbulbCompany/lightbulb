@@ -62,9 +62,11 @@ WORKER_INSTRUCTIONS = (
     "schedule: no Paperclip routine, cron job or timer. When the task asks for something recurring, do not set it "
     'up; answer that it is an automation the person asks Lightbulb for ("every Monday at 9, …") and confirms '
     "on its card. A file you make holds only what the person asked for, ready to use: no audience, test, goal or "
-    "rationale notes in it; say those in your answer if they matter. Never invent a number, target or claim the "
-    'person did not give: ask, or offer it in your answer as "Suggestion: …". Open your answer with one sentence '
-    'saying what you made ("Drafted the welcome email."), not a figure from it.'
+    "rationale notes in it. Never invent a number, target, goal or "
+    "success measure the person did not give, in a file or in your answer, not even as a suggestion; if you had "
+    'to assume something, say it in one line starting "Assumed: ". Open your answer with one sentence saying what '
+    'you made ("Drafted the welcome email."), nothing more in it; when the piece is short (a post, a reply, a '
+    "few lines) and you made no file, put the piece itself after that sentence, ready to paste."
 )
 
 _STATUS_AFTER = {
@@ -514,7 +516,7 @@ async def end_attempt(ws: str, task_id: str, n: int, outcome: str, error: str | 
             text=text, event_id=f"task-result-room:{task_id}:{n}", specialist=task.get("specialist"), kind="result"
         )
         try:
-            await task_conversation.post_as_lightbulb(
+            result_id = await task_conversation.post_as_lightbulb(
                 ws, ts.task_room_id(task_id), **result_room, uploaded_attachments=files
             )
         except messaging.ApiProblem:
@@ -522,9 +524,11 @@ async def end_attempt(ws: str, task_id: str, n: int, outcome: str, error: str | 
                 raise
             logger.warning("task result files not attached task=%s attempt=%s", task_id, n)
             files = []
-            await task_conversation.post_as_lightbulb(ws, ts.task_room_id(task_id), **result_room)
+            result_id = await task_conversation.post_as_lightbulb(ws, ts.task_room_id(task_id), **result_room)
         for f in files:  # what it made stays on the task for every status (UX slice 5)
             await tasks_access.record_output(ws, task_id, tasks_access.file_output(task_id, f))  # best effort
+        if tasks_access.short_result(att | {"outcome": outcome}):  # a short text result is what it made (walk 15)
+            await tasks_access.record_output(ws, task_id, tasks_access.text_output(task, n, result_id))
         # A Router conversation gets one line in its main chat (`_announce`), never the whole result in a reply
         # thread (UX slice 3): the result lives in the task. With no Router thread (an automation's room) the
         # result itself is the post.
@@ -607,8 +611,8 @@ async def _announce(ws: str, task_id: str, to: str, reason: str | None = None) -
         # A person-only task's line would tell the room it exists: only its own people see it (in the task).
         person_only = (task.get("audience") or {}).get("kind") == "person"
         if to in ("idle", "failed") and root and room and _is_uuid(room) and not person_only:
-            # Plain, sentence-bounded, <= 120 chars; bare when someone in the room can't open the task.
-            line = tasks_access.result_line(tree, room) or ("Done." if to == "idle" else "Didn't finish.")
+            # A short result whole, else one plain line; bare when someone in the room can't open the task.
+            line = tasks_access.result_text(tree, room) or ("Done." if to == "idle" else "Didn't finish.")
             await task_conversation.post_as_lightbulb(
                 ws,
                 room,
@@ -1079,7 +1083,7 @@ async def _apply(
             # stored the person's message. Which message was noted is room metadata (W15-5: Settings › Memory).
             await _record_noted(trig, dec.fact)
             if trig["admission"] == "respond":
-                ack(sl, router_prompt.NOTED)
+                ack(sl, router_prompt.noted(dec.fact, await _input_text(ws, primary)))
             else:
                 sl["react"] = True
         elif isinstance(dec, ts.Ask):
@@ -1159,24 +1163,8 @@ async def _apply(
 
 
 async def _read_quietly(ws: str, trig: dict) -> None:
-    """A chat message the Router handled without posting (ignored, or passed to a task with no ack): Lightbulb's read
-    receipt on it, so the person's "Lightbulb is reading…" line ends now instead of on its timer (dev walk 13).
-    Best-effort: a lost receipt leaves the client's timeout."""
-    ref = trig.get("ref") or {}
-    if not ref.get("roomId") or not ref.get("messageId"):
-        return
-    try:
-        agent_id = await task_conversation.front_agent_id(ws)
-        await messaging._publish_room_event(
-            ref["roomId"],
-            messaging.make_live_event(
-                "room.read.changed",
-                {"roomId": ref["roomId"], "reader": {"kind": "agent", "id": agent_id}, "messageId": ref["messageId"]},
-                room_id=ref["roomId"],
-            ),
-        )
-    except Exception:  # noqa: BLE001 -- a receipt never fails a Router turn
-        logger.warning("router read receipt failed for trigger %s", trig.get("triggerId"), exc_info=True)
+    """A chat message the Router handled without posting (ignored, or passed to a task with no ack): its read receipt."""
+    await task_conversation.read_quietly(ws, trig.get("ref") or {})
 
 
 #: The line under a person's message while the Router works on it (walk 15: 10-17 s of one unchanging "reading…").
@@ -1424,13 +1412,16 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
 
 @activity.defn
 async def apply_fallback(ws: str, trigger_ids: list[str]) -> None:
-    """`router_turn` failed past its retries: one plain fallback reply per `respond` trigger (spec 01 §3.5)."""
+    """`router_turn` failed past its retries: one plain fallback reply per `respond` trigger (spec 01 §3.5), a read
+    receipt on any other."""
     for tid in trigger_ids:
         trig = await tasks_repo.get_trigger(ws, tid)
         if trig and trig["admission"] == "respond":
             # Work already started for it (its ack and cards are posted): say only that the rest did not start.
             line = router_prompt.PARTIAL if (trig.get("routedTo") or {}).get("taskId") else router_prompt.FALLBACK
             await _deliver(ws, trig, line, event_id=f"router-fallback:{tid}", refs=None, remember=False)
+        elif trig:  # a candidate gets no line: its "reading…" ends now, not on the client's timer (walk 15)
+            await _read_quietly(ws, trig)
 
 
 ACTIVITIES = [

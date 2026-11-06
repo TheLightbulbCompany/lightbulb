@@ -30,10 +30,11 @@ it("the Router's one-line result carries no second task chip and no card: the ac
   const { unmount: second } = render(<Fresh><MessageTasks message={line} viewerId={SAM} onOpen={vi.fn()} ackedTasks={new Set([`m1|${task.taskId}`])} /></Fresh>);
   expect(await screen.findByRole("button", { name: new RegExp(task.title) })).toHaveAttribute("data-task-chip", task.taskId);
   second();
-  // Nothing made: the chip is the finish line's only way into the task.
+  // Nothing made (walk 15: the same chip twice under an Instagram post): beside its ack the chip is never repeated.
   live.tasks = fakeTasksClient([task], FIXTURES.step08.details);
   const { unmount: third } = render(<Fresh><MessageTasks message={line} viewerId={SAM} onOpen={vi.fn()} ackedTasks={acked} /></Fresh>);
-  expect(await screen.findByRole("button", { name: new RegExp(task.title) })).toHaveAttribute("data-task-chip", task.taskId);
+  await waitFor(() => expect(screen.queryByLabelText("Loading tasks")).toBeNull());
+  expect(document.querySelector("[data-task-chip]")).toBeNull();
   third();
   // A failed task always keeps its chip, so Retry is reachable from the finish line.
   live.tasks = fakeTasksClient([{ ...task, status: "failed", shownGroup: "waiting_on_you", ownerUserId: SAM, outputs }], FIXTURES.step08.details);
@@ -98,4 +99,24 @@ it("a task the viewer can't view shows no chip and no output under the ack or th
   expect(document.querySelector("[data-task-chip]")).toBeNull();
   expect(screen.queryByRole("list", { name: "Made by this task" })).toBeNull();
   expect(screen.queryByText(base.title)).toBeNull();
+});
+
+it("a short result shows whole in its finish message with Copy, and no chip for the text it is (dev walk 15, W15-1)", async () => {
+  const task = FIXTURES.step08.tasks[0];
+  const outputs = [{ id: "text:1", kind: "document" as const, title: task.title, ref: { roomId: "t", messageId: "r1" }, createdAt: "2026-11-06T10:00:00Z" }];
+  live.tasks = fakeTasksClient([{ ...task, outputs }], FIXTURES.step08.details);
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+  const line = {
+    messageId: "m9", roomId: ROOM, messageSeq: 9, roomRevision: 1, author: { kind: "agent", id: "ceo", displayName: "Lightbulb" },
+    text: "Drafted the Instagram post.\n\nTuesday is pizza night!\n\nSave your spot: [BOOKING LINK]", mentions: [], replyToMessageId: null,
+    threadRootMessageId: null, createdAt: "2026-11-06T10:00:00Z", runId: null, kind: "task_line", taskRefs: [{ taskId: task.taskId, role: "started" }],
+  } as CanonicalRoomMessage;
+  render(<Fresh><MessageTasks message={line} viewerId={SAM} onOpen={vi.fn()} ackedTasks={new Set([`|${task.taskId}`])} /></Fresh>);
+  await waitFor(() => expect(screen.queryByLabelText("Loading tasks")).toBeNull());
+  expect(document.querySelector("[data-task-chip]")).toBeNull();
+  expect(screen.queryByRole("button", { name: `Open ${task.title}` })).toBeNull();
+  screen.getByRole("button", { name: "Copy" }).click();
+  await waitFor(() => expect(writeText).toHaveBeenCalledWith("Tuesday is pizza night!\n\nSave your spot: [BOOKING LINK]"));
+  expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument();
 });

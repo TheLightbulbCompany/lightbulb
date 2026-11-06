@@ -783,12 +783,15 @@ async def route(
 ROUTER_CRITERION = (
     "Lightbulb, the workspace's coordinator: anything someone in the room wants done, answered, checked "
     "or remembered, when no specialist below clearly owns it; a message that speaks to Lightbulb or the "
-    "team's agents, or asks the team for help."
+    "team's agents, or asks the team for help; a fact shared for the work even when nothing is asked "
+    "(an FYI: a price, a date, a limit, a rule, a preference), which Lightbulb notes."
 )
 ROUTER_WHO_INSTRUCTIONS = (
     "No agent was @mentioned in this message. Pick who should handle it: a specialist whose criterion "
     "clearly fits, Lightbulb for any other request of the agents or the team, or none when "
-    "people are talking among themselves (to each other by name, chatting, thanks, small talk)."
+    "people are talking among themselves (to each other by name, chatting, thanks, small talk). A fact "
+    'about the work shared with the room ("FYI: we cap each class at 12 kids") is Lightbulb\'s to note, '
+    "not chatter."
 )
 
 

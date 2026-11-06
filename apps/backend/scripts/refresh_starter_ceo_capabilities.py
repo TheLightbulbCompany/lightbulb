@@ -1,10 +1,11 @@
-"""Move existing workspaces' starter CEO onto the current ``STARTER_CAPABILITIES["ceo"]`` text.
+"""Move existing workspaces' starter agents onto the current ``STARTER_CAPABILITIES`` text.
 
 Capabilities are written to the Paperclip agent row only at provisioning, and
-``hermes_profiles.build_soul_md`` renders them into the agent's SOUL.md, so a change to the starter
-CEO's text reaches new workspaces only. This patches each existing starter CEO whose capabilities
-are still exactly the OLD seeded text, then refreshes its SOUL (``refresh_agent_soul``, the same
-step ``PATCH /teams/agents/{id}`` runs). Text the owner edited is left alone.
+``hermes_profiles.build_soul_md`` renders them into the agent's SOUL.md, so a change to a starter's
+text reaches new workspaces only. This patches each existing starter (``OLD_CAPABILITIES``: the CEO,
+Growth) whose capabilities are still exactly its OLD seeded text, then refreshes its SOUL
+(``refresh_agent_soul``, the same step ``PATCH /teams/agents/{id}`` runs; the agent registry row
+follows the Paperclip write). Text the owner edited is left alone.
 
 Runs INSIDE the backend task (ECS exec), like ``refresh_owner_facts``:
 
@@ -20,6 +21,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import re
 import sys
 
 from core.repositories import container_repo
@@ -45,6 +47,19 @@ OLD_CEO_CAPABILITIES = (
     "work lands. Tools when connected: Google Workspace or Microsoft 365 (calendar, mail, docs), "
     "Notion, Linear."
 )
+#: Growth before PR #4926 (origin/main 21aa6aee6^): it proposed "one experiment with a success number", so its
+#: summaries invented targets (dev walk 15).
+OLD_GROWTH_CAPABILITIES = (
+    "Finds and wins customers; owns marketing, content, outreach and campaigns."
+    "\n\n"
+    "Owns getting attention and turning it into customers. First step: ask who the customer is and "
+    "where they already are, then propose one experiment with a success number before producing "
+    "anything. Writes posts, landing copy, emails and outreach lists; runs campaigns only with the "
+    "owner's approval. Tools when connected: X, Instagram, Meta Ads, Apollo, Attio, Google "
+    "Workspace. Hands results to Analytics to measure, site changes to Engineering."
+)
+#: Starter key -> the text it was seeded with before its last change. A starter not here never changed.
+OLD_CAPABILITIES = {"ceo": OLD_CEO_CAPABILITIES, "growth": OLD_GROWTH_CAPABILITIES}
 
 
 async def _targets(args: argparse.Namespace) -> list[str]:
@@ -55,32 +70,37 @@ async def _targets(args: argparse.Namespace) -> list[str]:
 
 
 async def _refresh_one(provisioning, cookie: str, owner_id: str, apply: bool) -> str:
-    new = STARTER_CAPABILITIES["ceo"]
-    if new == OLD_CEO_CAPABILITIES:
-        return "skipped (STARTER_CAPABILITIES['ceo'] is still the old text; deploy #4475 first)"
     row = await provisioning._repo.resolve_owner_row(owner_id)
     # Same guard as arm_nightly_ceo: only a committed company that belongs to this workspace.
     if row is None or row.status != "active" or row.org_id != owner_id:
         return "skipped (no active company)"
-    ceo_id = ceo_agent_id(row)
-    if not ceo_id:
-        return "skipped (no starter CEO)"
+    results = [await _refresh_starter(provisioning, cookie, owner_id, row, key, apply) for key in OLD_CAPABILITIES]
+    return "; ".join(results)
+
+
+async def _refresh_starter(provisioning, cookie: str, owner_id: str, row, key: str, apply: bool) -> str:
+    old, new = OLD_CAPABILITIES[key], STARTER_CAPABILITIES[key]
+    if new == old:
+        return f"skipped (STARTER_CAPABILITIES[{key!r}] is still the old text)"
+    agent_id = ceo_agent_id(row) if key == "ceo" else (row.starter_agent_ids or {}).get(key)
+    if not agent_id:
+        return f"skipped (no starter {key})"
     admin = provisioning._admin
-    agent = await admin.get_agent(session_cookie=cookie, agent_id=ceo_id)
+    agent = await admin.get_agent(session_cookie=cookie, agent_id=agent_id)
     current = (agent or {}).get("capabilities")
     if current == new:
         if not apply:
-            return f"skipped (already current) ceo={ceo_id}"
+            return f"skipped (already current) {key}={agent_id}"
         # Repairs a SOUL whose refresh failed after an earlier run's patch landed.
-        await refresh_agent_soul(owner_id, ceo_id)
-        return f"skipped (already current, SOUL refreshed) ceo={ceo_id}"
-    if current != OLD_CEO_CAPABILITIES:
-        return f"skipped (capabilities edited) ceo={ceo_id}"
+        await refresh_agent_soul(owner_id, agent_id)
+        return f"skipped (already current, SOUL refreshed) {key}={agent_id}"
+    if current != old:
+        return f"skipped (capabilities edited) {key}={agent_id}"
     if not apply:
-        return f"would update ceo={ceo_id}"
-    await admin.update_agent(session_cookie=cookie, agent_id=ceo_id, capabilities=new)
-    await refresh_agent_soul(owner_id, ceo_id)
-    return f"updated ceo={ceo_id}"
+        return f"would update {key}={agent_id}"
+    await admin.update_agent(session_cookie=cookie, agent_id=agent_id, capabilities=new)
+    await refresh_agent_soul(owner_id, agent_id)
+    return f"updated {key}={agent_id}"
 
 
 async def main(argv: list[str] | None = None) -> int:
@@ -101,8 +121,9 @@ async def main(argv: list[str] | None = None) -> int:
             except Exception as exc:  # noqa: BLE001 -- one workspace's failure must not stop the run
                 result = f"failed ({type(exc).__name__}: {exc})"
             print(f"{owner_id}: {result}")
-            key = result.split(" (")[0].split(" ceo=")[0]
-            counts[key] = counts.get(key, 0) + 1
+            for part in result.split("; "):  # one per starter: "updated growth=…", "skipped (…) ceo=…"
+                key = re.sub(r" \w+=\S+$", "", part.split(" (")[0])
+                counts[key] = counts.get(key, 0) + 1
     finally:
         await close_paperclip_provisioning(provisioning)
     print("total: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))

@@ -254,6 +254,15 @@ export function closePane(): void {
   dropPane();
 }
 
+/** A pane item belongs to where it was opened (W17-9). Chat on another room (or Chat from another place) closes it,
+ *  unless it is that room's: a file from it, or a doc from its tasks (`room` / `from`). The thread pane is its room's
+ *  own, and the browser follows you. */
+export function leavePaneFor(roomId: string | null): void {
+  if (!_pane || _pane.panelId === THREAD_PANE_ID || _pane.panelId === BROWSER_PANEL_ID) return;
+  if (roomId && (_pane.params.room === roomId || _pane.params.from === roomId)) return;
+  closePane();
+}
+
 export function setPaneFullScreen(full: boolean): void {
   if (_fullScreen === full || (full && !_pane)) return;
   _fullScreen = full;

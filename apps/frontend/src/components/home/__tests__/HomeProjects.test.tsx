@@ -24,7 +24,7 @@ vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({
   useMessagingWorkspaceOptional: () => messaging.value,
 }));
 
-import { HomeProjects, cardLabel, projectRooms, roomCounts, workingCapped } from "../HomeProjects";
+import { HomeProjects, cardLabel, chatRooms, projectRooms, roomCounts, workingCapped } from "../HomeProjects";
 
 const task = (taskId: string, roomId: string, shownGroup: TaskSummary["shownGroup"]): TaskSummary => ({
   taskId, identifier: taskId, title: `Request ${taskId}`, status: shownGroup === "resolved" ? "resolved" : "working",
@@ -84,9 +84,20 @@ describe("Working's page cap", () => {
   });
 });
 
+const priya = { kind: "human", id: "u-priya", displayName: "Priya" } as DirectoryRoom["participants"][number];
+const lb = { kind: "agent", id: FRONT, displayName: "Lightbulb" } as DirectoryRoom["participants"][number];
+const CHATS = [
+  room("group", { kind: "group-dm", name: "walk group", participants: [lb, priya], lastMessageAt: "2026-11-06T00:00:00Z" }),
+  room("dm-priya", { kind: "dm", name: null, participants: [priya] }),
+  room("dm-growth", { kind: "dm", name: null, participants: [{ ...lb, id: "agent-growth", displayName: "Growth" }] }),
+];
+
 describe("projectRooms", () => {
-  it("keeps channels and group chats, newest first; drops DMs, archived, the feed and the shared channel", () => {
-    expect(projectRooms(ROOMS).map((r) => r.roomId)).toEqual(["launch", "site"]);
+  it("keeps channels only, newest first; drops DMs, group chats, archived, the feed and the shared channel", () => {
+    expect(projectRooms([...ROOMS, ...CHATS]).map((r) => r.roomId)).toEqual(["launch", "site"]);
+  });
+  it("W17-4: group chats and DMs with people are chats, newest first; the Lightbulb and specialist DMs are not", () => {
+    expect(chatRooms([...ROOMS, ...CHATS], FRONT).map((r) => r.roomId)).toEqual(["group", "dm-priya"]);
   });
 });
 
@@ -111,6 +122,18 @@ describe("HomeProjects", () => {
 
     const chats = screen.getByRole("region", { name: "Chats" });
     expect(within(chats).getByText("1 needs you")).toBeInTheDocument();
+  });
+
+  it("W17-4: a group chat is listed under Chats with faces, never as a # channel card", async () => {
+    messaging.value = directory([...ROOMS, ...CHATS]);
+    const { container } = render(<Fresh><HomeProjects /></Fresh>);
+    const chats = screen.getByRole("region", { name: "Chats" });
+    const group = within(chats).getByRole("button", { name: /walk group/ });
+    expect(group.querySelector(".room-directory-faces")).not.toBeNull();
+    expect(group.querySelector(".lucide-hash")).toBeNull();
+    expect(within(chats).getByRole("button", { name: /Priya/ })).toBeInTheDocument();
+    expect(within(screen.getByRole("region", { name: "Channels" })).queryByText("walk group")).toBeNull();
+    expect(container.querySelector(".home-projects__dm .lucide-hash")).toBeNull();
   });
 
   it("a card opens its room; the DM row opens the Lightbulb DM; Ask sends into it", async () => {

@@ -36,13 +36,24 @@ interface RoomDirectoryRowProps {
 
 const SHARED_ROOM_HINT = "Your direct line to the Lightbulb team";
 
+/** A room's glyph, as the sidebar and Home show it. A project's tile: every channel's, and a chat's once someone picks
+ *  an icon for it (else its avatar or faces). */
+export function RoomGlyph({ room, label, project }: { room: DirectoryRoom; label: string; project: boolean }) {
+  const Icon = room.kind === "channel" ? Hash : room.kind === "group-dm" ? Users : MessageCircle;
+  const faces = room.participants.slice(0, 2);
+  return project && (room.kind === "channel" || (room.icon && isProjectRoom(room))) ? <ProjectTile icon={room.icon} color={room.color} name={label} size={16} chat={room.kind !== "channel"} />
+    : room.kind === "dm" && room.participants.length === 1
+    ? <ParticipantAvatar participant={room.participants[0]} size="xs" />
+    : room.kind === "group-dm" && faces.length > 0
+      ? <span className="room-directory-faces" aria-hidden="true">{faces.map((participant) => <ParticipantAvatar key={`${participant.kind}:${participant.id}`} participant={participant} size="xs" showPresence={false} />)}</span>
+      : <Icon size={16} aria-hidden="true" />;
+}
+
 export function RoomDirectoryRow({ room, label, active, busy, draft, onSelect, onToggleStar, onToggleMute, onMarkUnread, onCopyLink, onAddPeople, onMoveToSection, sections, onLeave, needsYou = 0, project = false, onOpenSettings }: RoomDirectoryRowProps) {
   const actionsTrigger = useRef<HTMLButtonElement>(null);
-  const Icon = room.kind === "channel" ? Hash : room.kind === "group-dm" ? Users : MessageCircle;
   // A muted room never carries a badge (spec: muted rows are muted-coloured,
   // with the word "Muted" so colour is never the only signal).
   const badge = !room.muted && room.unreadCount > 0;
-  const faces = room.participants.slice(0, 2);
   const agentDm = room.kind === "dm" && room.participants.length === 1 && room.participants[0].kind === "agent";
   // Its own name, said once (dev walk W8: the text sat in child spans and read as an unnamed button): the room, what it
   // is, then the marks the row shows.
@@ -51,13 +62,7 @@ export function RoomDirectoryRow({ room, label, active, busy, draft, onSelect, o
   return <li className="room-directory-row">
     <button type="button" className={`room-directory-entry ${badge ? "font-semibold" : ""} ${room.muted ? "room-directory-muted" : ""}`}
       aria-current={active ? "page" : undefined} aria-label={name} onClick={onSelect}>
-      {/* A project's tile: every channel's, and a chat's once someone picks an icon for it (else its avatar or faces). */}
-      {project && (room.kind === "channel" || (room.icon && isProjectRoom(room))) ? <ProjectTile icon={room.icon} color={room.color} name={label} size={16} />
-        : room.kind === "dm" && room.participants.length === 1
-        ? <ParticipantAvatar participant={room.participants[0]} size="xs" />
-        : room.kind === "group-dm" && faces.length > 0
-          ? <span className="room-directory-faces" aria-hidden="true">{faces.map((participant) => <ParticipantAvatar key={`${participant.kind}:${participant.id}`} participant={participant} size="xs" showPresence={false} />)}</span>
-          : <Icon size={16} aria-hidden="true" />}
+      <RoomGlyph room={room} label={label} project={project} />
       <span className="min-w-0 flex-1">
         <span className="block truncate" title={label}>{label}</span>
         {room.shared && <span className="block truncate text-caption text-muted-foreground">{SHARED_ROOM_HINT}</span>}

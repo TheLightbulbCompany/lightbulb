@@ -118,7 +118,7 @@ function SettingsBody({ room, roomName, section, onSection, canEdit, actionable,
       <div className="project-row__control">
         <Saved token={saved.name ?? 0} />
         <div className="project-field">
-          <ProjectIconPicker icon={room.icon} color={room.color} name={name} disabled={!editable || !onPatch}
+          <ProjectIconPicker icon={room.icon} color={room.color} name={name} chat={room.kind !== "channel"} disabled={!editable || !onPatch}
             onChange={(next) => void save("name", () => onPatch!({ icon: next.icon ?? null, color: next.color ?? null }), "The icon could not be saved.")} />
           <input id={`${id}-name`} value={name} maxLength={200} disabled={!editable || !onRename || room.shared}
             onChange={(e) => setName(e.target.value)}

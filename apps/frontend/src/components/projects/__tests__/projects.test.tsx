@@ -177,6 +177,11 @@ describe("channel settings", () => {
     const dialog = await screen.findByRole("dialog", { name: "Spring sale · Chat settings" });
     expect(within(dialog).getByText("Pause Lightbulb")).toBeInTheDocument();
     expect(within(dialog).getByText(/How this chat shows/)).toBeInTheDocument();
+    // W17-4: "#" means a channel; a chat's picker neither offers it nor defaults to it.
+    await userEvent.click(within(dialog).getByRole("button", { name: "Chat icon and colour" }));
+    expect(await screen.findByRole("button", { name: "People (default)" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.queryByRole("button", { name: "Hash (default)" })).toBeNull();
+    expect(document.querySelector(".project-picker .lucide-hash")).toBeNull();
   });
 
   it("a people-only group chat has no project settings", async () => {

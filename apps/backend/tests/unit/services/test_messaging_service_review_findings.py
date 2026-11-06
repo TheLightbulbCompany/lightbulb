@@ -1227,3 +1227,19 @@ async def test_create_project_stores_topic_icon_and_color(monkeypatch):
         ),
     )
     assert create.await_args.kwargs["extra"] == {"topic": "Sell 200 loaves", "icon": "rocket", "color": "project-3"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["group-dm", "dm"])
+@pytest.mark.parametrize("field", [{"topic": "x"}, {"icon": "rocket"}, {"color": "project-1"}])
+async def test_create_refuses_project_fields_off_a_channel(monkeypatch, kind, field):
+    create = AsyncMock()
+    monkeypatch.setattr(messaging.messaging_repo, "create_room", create)
+    member = messaging.CreateRoomMember(kind="human", id="u2", role="member", listen_mode=None)
+    with pytest.raises(ApiProblem) as exc:
+        await messaging.create_room(
+            AuthContext(user_id="u1", org_id="org_1"),
+            messaging.CreateRoomRequest(client_room_id=uuid.uuid4(), name=None, kind=kind, members=[member], **field),
+        )
+    assert exc.value.error.code == "INVALID_REQUEST"
+    create.assert_not_awaited()

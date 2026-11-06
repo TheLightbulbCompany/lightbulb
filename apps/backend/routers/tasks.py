@@ -19,7 +19,15 @@ from temporalio.service import RPCError
 from core import tasks_schema as ts
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.repositories import effects_repo, messaging_repo, questions_repo, tasks_repo
-from core.services import chat_gate, runtime_runs, super_agent_flags, task_conversation, tasks_access
+from core.services import (
+    admission,
+    chat_gate,
+    messaging,
+    runtime_runs,
+    super_agent_flags,
+    task_conversation,
+    tasks_access,
+)
 from core.services.messaging import human_display_name
 from core.temporal import client as temporal_client
 from core.temporal.types import ActionRequest, StopRequest
@@ -209,6 +217,10 @@ async def _act(ws: str, task_id: str, action: str, user_id: str, version: int | 
     task = tree["task"]
     if version is not None and task["version"] != version:
         raise _err(409, "version_conflict", version=task["version"])
+    if action in {"retry", "reopen"}:
+        trig = await tasks_repo.get_trigger(ws, task["triggerId"]) if task.get("triggerId") else None
+        if await admission.paused_room(ts.trigger_room(trig or {}) or (task.get("audience") or {}).get("roomId")):
+            raise _err(409, "project_paused", message=messaging.PAUSED_ROOM_TEXT)
     if action in _GATED:
         gate = await chat_gate.gate_chat(user_id=user_id, owner_id=ws, session_key=f"task:{task_id}")
         if gate.get("blocked"):

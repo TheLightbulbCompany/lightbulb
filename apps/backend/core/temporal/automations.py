@@ -334,8 +334,8 @@ async def fire_automation(inp: FireInput, at_ms: int) -> str:
     if deliver_to.startswith("room:"):  # a paused project (UX slice 6): every fire skips, Run now included
         target = await messaging_repo.get_room(deliver_to.removeprefix("room:"))
         if target and target.get("pausedAt"):
+            # A one-off keeps its run: it shows "Skipped: project paused" and can run after Resume.
             await repo.note_skip(ws, row["scheduleId"], reason="room_paused")
-            await _turn_off_if_spent(ws, row, inp)
             return "skipped:room_paused"
     trigger_id = _fire_trigger_id(inp, row, at_ms)
     task_id = ts.router_task_id(trigger_id, 0, 0)

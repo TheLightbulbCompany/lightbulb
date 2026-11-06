@@ -323,3 +323,18 @@ async def test_close_and_reopen_leave_a_marker_by_name(world, monkeypatch):
     (call,) = post.await_args_list
     assert call.kwargs["text"] == f"Closed by {SAM}" and call.kwargs["kind"] == "marker" and call.kwargs["progress"]
     assert call.kwargs["event_id"] == f"task-mark:{task}:resolve:1"
+
+
+@pytest.mark.parametrize("action", ["retry", "reopen"])
+async def test_retry_and_reopen_are_refused_in_a_paused_project(world, monkeypatch, action):
+    """UX slice 6: no new work starts in a paused project, Retry and Reopen included."""
+    rooms = {ROOM: {"roomId": ROOM, "pausedAt": "2026-11-06T10:00:00Z"}}
+    monkeypatch.setattr(messaging_repo, "get_room", AsyncMock(side_effect=lambda r: rooms.get(r)))
+    world["member"].return_value = {"id": SAM, "kind": "human"}  # SAM sits in the project
+    task = await _task("failed", audience={"kind": "room", "roomId": ROOM}, lane="shared")
+    resp = await world["client"].post(f"/api/v1/tasks/{task}/{action}", json={"version": 1})
+    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "project_paused"
+    world["update"].assert_not_awaited()
+    rooms[ROOM] = {"roomId": ROOM}  # resumed
+    resp = await world["client"].post(f"/api/v1/tasks/{task}/{action}", json={"version": 1})
+    assert resp.status_code == 200

@@ -2808,6 +2808,11 @@ async def _live_dm(room_id: str, user_id: str, counterpart: CreateRoomMember) ->
 
 async def create_room(auth: AuthContext, request: CreateRoomRequest) -> RoomDetail:
     owner_id = resolve_owner_id(auth)
+    project_fields = {
+        k: v for k, v in (("topic", request.topic), ("icon", request.icon), ("color", request.color)) if v
+    }
+    if project_fields and request.kind != "channel":  # as PATCH: only a project has Instructions and a tile
+        raise ApiProblem("INVALID_REQUEST", "Only a project has instructions, an icon and a colour.")
     if await _front_agent_id(owner_id):  # the switch is on: a new room is a Router room
         request = request.model_copy(update={"members": await _lightbulb_only(owner_id, request.members, request.kind)})
     keys = [(member.kind, member.id) for member in request.members]
@@ -2861,11 +2866,7 @@ async def create_room(auth: AuthContext, request: CreateRoomRequest) -> RoomDeta
                 kind=request.kind,
                 members=members,
                 req_hash=req_hash,
-                extra=(
-                    {k: v for k, v in (("topic", request.topic), ("icon", request.icon), ("color", request.color)) if v}
-                    if request.kind != "dm"
-                    else None
-                ),
+                extra=project_fields,
                 dm_pair=dm_pair,
                 dm_pair_replaces=stale_room,
             )

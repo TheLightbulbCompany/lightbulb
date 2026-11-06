@@ -287,9 +287,37 @@ async def test_paused_project_gets_one_line_per_pause_and_no_router_turn(world, 
     world["meta"] = {**world["meta"], "pausedAt": "2026-11-06T10:00:00Z"}
     await _admit(world, _msg(1, targets=[{"agentId": CEO, "eventKind": "user_request"}]))
     await _admit(world, _msg(2))
+    root = str(uuid.uuid4())
+    await _admit(world, _msg(3, root=root))
     assert world["router"] == [] and world["jev"] == []
     assert {p[1] for p in world["posts"]} == {messaging.PAUSED_ROOM_TEXT}
-    assert set(keys) == {f"paused:{ROOM}:2026-11-06T10:00:00Z"}  # post_as_lightbulb dedupes on it: one line
+    # post_as_lightbulb dedupes on the key: one line per pause in the main chat, one in the thread, said there
+    assert keys[:2] == [f"paused:{ROOM}:top:2026-11-06T10:00:00Z"] * 2
+    assert keys[2] == f"paused:{ROOM}:{root}:2026-11-06T10:00:00Z" and world["posts"][2][2] == root
+
+
+@pytest.mark.parametrize("source", ["voice", "a2a", "idea", "schedule"])
+async def test_no_trigger_starts_work_in_a_paused_project(world, source):
+    """UX slice 6: one guard in _admit_trigger covers voice starts, A2A, proactive ideas and schedules."""
+    trig = ts.Trigger(
+        ws=WS,
+        trigger_id=f"{source}:1",
+        source=source,
+        admission="respond",
+        lane="shared",
+        actor_user_id="sam",
+        received_at="2026-11-06T10:00:00Z",
+        created_at="2026-11-06T10:00:00Z",
+        updated_at="2026-11-06T10:00:00Z",
+        ref={},
+    )
+    await repo.put_trigger(WS, {**trig.model_dump(by_alias=True), "ref": {"deliverRoomId": ROOM}})
+    world["meta"] = {**world["meta"], "pausedAt": "2026-11-06T10:00:00Z"}
+    await admission.admit_pointer({"kind": "admit_trigger", "ownerId": WS, "triggerId": f"{source}:1"})
+    assert world["router"] == []
+    world["meta"] = {k: v for k, v in world["meta"].items() if k != "pausedAt"}  # resumed
+    await admission.admit_pointer({"kind": "admit_trigger", "ownerId": WS, "triggerId": f"{source}:1"})
+    assert len(world["router"]) == 1
 
 
 async def test_paused_project_still_passes_replies_to_running_tasks(world):

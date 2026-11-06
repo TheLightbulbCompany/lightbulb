@@ -178,6 +178,21 @@ async def test_fire_into_a_paused_project_skips_and_is_recorded(env):
     assert (await fire_automation(_sched_input(), at)).startswith("sched:")
 
 
+async def test_a_one_off_skipped_while_paused_stays_on_for_after_resume(env):
+    from core.repositories import messaging_repo
+
+    rooms = {"r1": {"roomId": "r1", "pausedAt": "2027-01-04T13:00:00+00:00"}}
+    messaging_repo.get_room.side_effect = lambda room_id: rooms.get(room_id)
+    await _active(remainingRuns=1)
+    at = _ms("2027-01-04T14:00:00+00:00")
+    assert await fire_automation(_sched_input(), at) == "skipped:room_paused"
+    row = await repo.get_schedule(WS, "s1")
+    assert row["status"] == "active" and row["lastSkip"]["reason"] == "room_paused"  # not used up, still visible
+    rooms["r1"] = {"roomId": "r1"}
+    manual = FireInput(ws=WS, schedule_id="s1", source="manual", dedupe_key="01HZZ", actor_user_id="user_sam")
+    assert await fire_automation(manual, at) == "manual:s1:01HZZ"  # runnable after Resume
+
+
 async def test_previous_result_in_second_run_brief(env):
     await _active()
     first = await fire_automation(_sched_input(), _ms("2027-01-04T14:00:00+00:00"))

@@ -595,7 +595,7 @@ async def test_propose_rejects_bad_cron(internal):
     assert r.status_code == 400 and "10 minutes" in r.json()["detail"]["message"]
 
 
-async def test_typed_yes_never_activates(internal, monkeypatch):
+async def test_typed_yes_never_activates(internal):
     """Under the confirm card people type "yes" / "turn it on" / "go ahead": the row stays a draft and the
     Schedule is never unpaused; only `POST /activate` activates (UX §2, C20)."""
     from tests.unit.super_agent.orchestration import test_admission as adm
@@ -606,19 +606,22 @@ async def test_typed_yes_never_activates(internal, monkeypatch):
         f"/api/v1/internal/automations/{WS}/propose", json=body, headers={"Authorization": "Bearer t"}
     )
     sid = r.json()["automationId"]
-    unpause = AsyncMock()
-    monkeypatch.setattr(automation_schedule, "unpause", unpause)
-    # Drive admission the way O's harness does, with the same fakes.
-    w = _admission_world(monkeypatch, adm)
-    for seq, text in enumerate(["yes", "turn it on", "go ahead"], start=1):
-        msg = adm._msg(seq, targets=[{"agentId": adm.CEO, "eventKind": "user_request"}])
-        msg["text"] = text
-        w["msgs"][seq] = msg
-        await adm.admission.admit_pointer({"kind": "admit", "roomId": adm.ROOM, "throughSeq": seq})
-    assert len(w["router"]) == 3  # the Router was asked, as for any message
-    assert (await repo.get_schedule(WS, sid))["status"] == "draft"
-    assert not unpause.called
-    assert [c for c in internal.api.calls if c[2] == "active"] == []
+    # Own MonkeyPatch, undone before `api` exits: the function-scoped `monkeypatch` tears down after `api`'s
+    # patch() block and would restore the mocked messaging_repo.get_member for every later test.
+    with pytest.MonkeyPatch.context() as mp:
+        unpause = AsyncMock()
+        mp.setattr(automation_schedule, "unpause", unpause)
+        # Drive admission the way O's harness does, with the same fakes.
+        w = _admission_world(mp, adm)
+        for seq, text in enumerate(["yes", "turn it on", "go ahead"], start=1):
+            msg = adm._msg(seq, targets=[{"agentId": adm.CEO, "eventKind": "user_request"}])
+            msg["text"] = text
+            w["msgs"][seq] = msg
+            await adm.admission.admit_pointer({"kind": "admit", "roomId": adm.ROOM, "throughSeq": seq})
+        assert len(w["router"]) == 3  # the Router was asked, as for any message
+        assert (await repo.get_schedule(WS, sid))["status"] == "draft"
+        assert not unpause.called
+        assert [c for c in internal.api.calls if c[2] == "active"] == []
 
 
 def _admission_world(monkeypatch, adm):

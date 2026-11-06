@@ -191,6 +191,19 @@ async def test_worker_turn_stores_token_and_goes_async(world):
     assert identity.run_id == ref.run_id and "Pay Acme $40" in request.input
 
 
+async def test_worker_brief_carries_the_requesters_local_time(world, monkeypatch):
+    async def tz(user_id):
+        assert user_id == "sam"  # the task's requester, not the runtime's UTC clock
+        return "America/New_York"
+
+    monkeypatch.setattr("core.repositories.user_repo.get_timezone", tz)
+    tid = await _task()
+    ref = await _attempt(tid)
+    with pytest.raises(activity._CompleteAsyncError):
+        await ActivityEnvironment().run(acts.worker_turn, WorkerTurnIn(WS, tid, 1, ref.run_id))
+    assert "New York time (America/New_York) (the requester's own time" in world["runs"][0][1].input
+
+
 async def test_worker_turn_refused_maps_outcome(world):
     tid = await _task()
     ref = await _attempt(tid)

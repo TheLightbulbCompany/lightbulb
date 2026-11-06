@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 from pydantic import TypeAdapter, ValidationError
 
@@ -69,6 +71,15 @@ def _one_line(text: str, limit: int = _TEXT_MAX) -> str:
     return flat if len(flat) <= limit else flat[: limit - 1] + "…"
 
 
+def local_now(tz: str, now: datetime | None = None) -> str:
+    """The clock in the person's zone, said plainly: "Thursday 5 Nov 2026, 9:59 PM New York time
+    (America/New_York)". A model reading only the runtime's UTC date answers a late-evening "what day is it"
+    with tomorrow (walk 8)."""
+    t = (now or datetime.now(UTC)).astimezone(ZoneInfo(tz))
+    place = "UTC" if tz == "UTC" else tz.rsplit("/", 1)[-1].replace("_", " ") + " time"
+    return f"{t:%A} {t.day} {t:%b %Y}, {t.hour % 12 or 12}:{t:%M %p} {place} ({tz})"
+
+
 def render_batch(
     triggers: list[dict],
     roster: list[dict],
@@ -78,14 +89,23 @@ def render_batch(
     recent: list[dict] | tuple | None = (),
     closed: list[dict] | tuple = (),
     asker: str | None = None,
+    now: str | None = None,
 ) -> str:
     """`triggers`: views from `activities._trigger_view` (triggerId, source, admission, text, who, where, threaded,
     pinnedSpecialist, routedTo); `roster`: registry rows (id, name, title, status); `open_tasks`: task rows;
     `recent`: the room's (or thread's) lines before the batch (`activities._recent_lines`: who, text, lightbulb,
     cards, each with its task's `state` when the task exists); None: the batch has no room message, so no earlier
-    lines are known. `asker`: the person the batch answers (first trigger's actor); "Needs you" is theirs only."""
+    lines are known. `asker`: the person the batch answers (first trigger's actor); "Needs you" is theirs only.
+    `now`: `local_now` in the asker's zone."""
     names = {a["id"]: a.get("name") or a["id"] for a in roster}
-    lines = [f"# Batch ({'private lane' if lane != 'shared' else 'shared lane'})", "", "## Triggers"]
+    lines = [f"# Batch ({'private lane' if lane != 'shared' else 'shared lane'})", ""]
+    if now:
+        lines += [
+            f"Now: {now}. This is the asker's own time: use it, never UTC, for today, tomorrow and any date or "
+            "time you say, and name the zone when you give the time.",
+            "",
+        ]
+    lines.append("## Triggers")
     for t in triggers:
         head = f"- [{t['triggerId']}] {t['admission']} · {t['source']}"
         if t.get("where"):

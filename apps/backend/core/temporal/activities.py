@@ -254,11 +254,26 @@ async def begin_attempt(ws: str, task_id: str, input_trigger_ids: list[str], sta
     return AttemptRef(n, att["runId"])
 
 
+async def _local_now(ws: str, user_id: str | None) -> str:
+    """`router_prompt.local_now` in the person's zone (`users.timezone`), else the workspace creator's, else UTC."""
+    from core.repositories import user_repo
+    from core.services import owner_facts
+
+    try:
+        tz = await user_repo.get_timezone(user_id) if user_id else await owner_facts._lookup_owner_timezone(ws)
+    except Exception:  # noqa: BLE001 -- a zone is a nicety, never a reason to fail the turn
+        logger.warning("no time zone for %s; using UTC", user_id or ws)
+        tz = "UTC"
+    return router_prompt.local_now(tz)
+
+
 async def _request(ws: str, task: dict, att: dict, tree: dict) -> runtime_runs.RunRequest:
     # The request's room id: a Worker hands an app over from it (`lightbulb app start --room`, skill references/apps.md).
     parts = [
         f"# Task: {task['title']}",
         f"Request room: {ts.task_room_id(task['taskId'])}",
+        f"Now: {await _local_now(ws, task.get('ownerUserId'))} (the requester's own time: use it, never UTC, "
+        "for today and any date or time)",
         task.get("description") or "",
     ]
     for tid in att.get("inputTriggerIds") or []:
@@ -1034,7 +1049,14 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
         recent = await _recent_lines(ws, chat, set(to_model), inp.lane, user_id) if chat else None
         closed = await _closed_tasks(ws, inp.lane, user_id, rooms)
         prompt = router_prompt.render_batch(
-            views, roster, open_tasks, lane=inp.lane, recent=recent, closed=closed, asker=user_id
+            views,
+            roster,
+            open_tasks,
+            lane=inp.lane,
+            recent=recent,
+            closed=closed,
+            asker=user_id,
+            now=await _local_now(ws, user_id),
         )
         memory = memory_tags.block_for_router(
             "private" if private and user_id else "shared", user_id if private else None, room_id

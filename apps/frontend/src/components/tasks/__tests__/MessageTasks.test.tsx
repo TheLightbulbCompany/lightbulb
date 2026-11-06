@@ -42,6 +42,22 @@ it("the Router's one-line result carries no second task chip and no card: the ac
   expect(await screen.findByRole("button", { name: /Didn't finish/ })).toHaveAttribute("data-task-chip", task.taskId);
 });
 
+it("an automation run's result post is its finish line: no full card under it, and no second chip beside its ack (6 Nov walk)", async () => {
+  const task = FIXTURES.step08.tasks[0];
+  const outputs = [{ id: "file:1", kind: "file" as const, title: "menu-blurbs.md", ref: {}, createdAt: "2026-11-06T10:00:00Z" }];
+  live.tasks = fakeTasksClient([{ ...task, outputs }], FIXTURES.step08.details);
+  // activities.end_attempt posts the run's result in the automation's room as kind "result" (no Router thread).
+  const result = {
+    messageId: "m13", roomId: ROOM, messageSeq: 13, roomRevision: 1, author: { kind: "agent", id: "ceo", displayName: "Lightbulb" },
+    text: "Posted the blocker: no signup source is connected.", mentions: [], replyToMessageId: null, threadRootMessageId: null,
+    createdAt: "2026-11-06T10:00:00Z", runId: null, kind: "result", taskRefs: [{ taskId: task.taskId, role: "started" }],
+  } as CanonicalRoomMessage;
+  render(<Fresh><MessageTasks message={result} viewerId={SAM} onOpen={vi.fn()} ackedTasks={new Set([`|${task.taskId}`])} /></Fresh>);
+  expect(await screen.findByRole("button", { name: "Open Menu blurbs · MD" })).toBeInTheDocument();
+  expect(document.querySelector("[data-task-card]")).toBeNull();
+  expect(document.querySelector("[data-task-chip]")).toBeNull();
+});
+
 it("the Router's ack carries its task as a compact chip with the specialist, never a full card (dev walk 10)", async () => {
   const task = FIXTURES.step08.tasks[0];
   live.tasks = fakeTasksClient(FIXTURES.step08.tasks, FIXTURES.step08.details);

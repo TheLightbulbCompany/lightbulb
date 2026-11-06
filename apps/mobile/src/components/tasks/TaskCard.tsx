@@ -123,9 +123,9 @@ export function MessageTasks({ message, viewerId, palette, onOpen }: {
     <View style={styles.list} accessibilityLabel="Tasks in this message">
       {refs.map((r) => {
         const props = { taskId: r.taskId, listed: byId.get(r.taskId), viewerId, palette, onOpen };
-        // One small item per event (dev walk 10): the Router's ack and its one-line result carry a chip; a result post
-        // or a question keeps the full card.
-        return !message.kind || message.kind === "task_line" ? <RefChip key={r.taskId} {...props} /> : <RefCard key={r.taskId} {...props} />;
+        // One small item per event (dev walk 10): the ack and the finish line (the Router's `task_line`, or an
+        // automation run's `result` post) carry a chip; a question keeps the full card.
+        return !message.kind || message.kind === "task_line" || message.kind === "result" ? <RefChip key={r.taskId} {...props} /> : <RefCard key={r.taskId} {...props} />;
       })}
     </View>
   );

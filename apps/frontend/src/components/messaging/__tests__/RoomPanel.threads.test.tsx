@@ -401,10 +401,14 @@ describe("RoomPanel Threads view (super-agent)", () => {
     expect(shows()).toBe(false);
   });
 
-  it("an unaddressed message reads reading… for two minutes at most: the Router may stay quiet", async () => {
+  it("reading… ends on Lightbulb's read receipt (the Router handled it without a post), else after 60 s", async () => {
     const front = { ...lightbulb, mentionHandle: "lightbulb", listenMode: "active" as const };
-    const plain = { ...message, text: "thanks", createdAt: new Date(Date.now() - 3 * 60_000).toISOString() };
-    render(<Fresh><RoomPanel {...props} participants={[sam, front]} messages={[plain]} /></Fresh>);
+    const plain = { ...message, text: "thanks", createdAt: new Date().toISOString() };
+    const { rerender } = render(<Fresh><RoomPanel {...props} participants={[sam, front]} messages={[plain]} /></Fresh>);
+    expect(await screen.findByText("Lightbulb is reading…")).toBeInTheDocument();
+    rerender(<Fresh><RoomPanel {...props} participants={[sam, front]} messages={[plain]} agentReads={new Map([[front.id, new Set([plain.messageId])]])} /></Fresh>);
+    expect(screen.queryByText("Lightbulb is reading…")).toBeNull();
+    rerender(<Fresh><RoomPanel {...props} participants={[sam, front]} messages={[{ ...plain, createdAt: new Date(Date.now() - 61_000).toISOString() }]} /></Fresh>);
     await waitFor(() => expect(screen.queryByText("Lightbulb is reading…")).toBeNull());
   });
 

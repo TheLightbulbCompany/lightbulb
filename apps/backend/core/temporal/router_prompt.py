@@ -219,14 +219,19 @@ _STATUS_LINE = re.compile(
 # "Growth has the task and is working on it." (dev walk 10): the ack again, in lower case. Checked after the number
 # guard, so "The task is working out to about $1,200 a month" stays an answer (review #4905).
 _UNDERWAY = re.compile(r"\b(?:has|have|got)\s+(?:the|this|its|their)?\s*(?:task|tasks)\b[^.?!]*\bworking\b", re.I)
-# "The task was recorded for Growth." (dev walk 13): bookkeeping about the start, never an answer.
-_RECORDED = re.compile(
-    r"\b(?:task|tasks)\b[^.?!]*\b(?:recorded|created|logged|assigned|started|handed|queued)\b|"
-    r"\b(?:recorded|created|logged|assigned|started|queued)\s+(?:a|the|this|your|it as a)\s+task\b",
-    re.I,
-)
-#: The Router's last word after its decisions ("Done": ROUTER_INSTRUCTIONS); never posted as an answer.
-END_WORD = "done"
+# "The task was recorded for Growth." (dev walk 13): bookkeeping about the start, never an answer. Only that form,
+# from the start of the reply: "The tagline task was handed to Growth and is waiting on review" is a status answer.
+_RECORDED = re.compile(r"^\s*the task (?:was|has been) recorded for\b", re.I)
+# The Router's end word ("Done": ROUTER_INSTRUCTIONS) as the last line under an answer.
+_END_LINE = re.compile(r"\n\s*done[.!]?\s*$", re.I)
+
+
+def strip_end_word(text: str) -> str:
+    """An answer without the end word the Router closes on: "Paris.\n\nDone" → "Paris.". An answer that is only
+    "Done." stays: it is what the Router said."""
+    return _END_LINE.sub("", text.strip()).strip()
+
+
 _WORD = re.compile(r"[a-z]+")
 _NAMES = re.compile(r"[#@][\w-]+")
 _STOP = frozenset(

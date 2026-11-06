@@ -325,23 +325,83 @@ def test_restates_the_walk_10_double_line():
 
 
 def test_restates_the_walk_13_recorded_line():
-    """Dev walk 13: the ack, then "The task was recorded for Growth." Bookkeeping about the start is never posted."""
+    """Dev walk 13: the ack, then "The task was recorded for Growth." Only that form is dropped: real status answers
+    that mention a task being started, assigned or handed over stay (review of #4923)."""
     ack = "Growth is writing three autumn specials menu blurbs and saving them as a doc."
     assert router_prompt.restates("The task was recorded for Growth.", {ack})
-    assert router_prompt.restates("I created a task for Growth.", {ack})
-    assert not router_prompt.restates("Pumpkin season starts in September here.", {ack})
+    for answer in (
+        "The task Ops started yesterday is still waiting on your approval.",
+        "Growth has two tasks assigned: the tagline and the flyer.",
+        "The tagline task was handed to Growth and is waiting on review.",
+        "Pumpkin season starts in September here.",
+    ):
+        assert not router_prompt.restates(answer, {ack}), answer
     assert "never add a reply that" in " ".join(router_prompt.ROUTER_INSTRUCTIONS.split()).lower()
 
 
+@pytest.mark.parametrize(
+    ("text", "kept"),
+    [("Paris.\n\nDone", "Paris."), ("Paris.\nDone.", "Paris."), ("Done.", "Done."), ("Done is done.", "Done is done.")],
+)
+def test_strip_end_word(text, kept):
+    assert router_prompt.strip_end_word(text) == kept
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("end", ["Done", "done.", " Done! "])
-async def test_the_end_word_alone_is_never_posted(world, end):
-    """The Router ends its turn with "Done" (dev walk 13: a 7.5 s summary after its decisions). With no decision, that
-    word is not an answer: the fallback line goes out instead."""
+async def test_the_end_word_never_rides_an_answer(world):
+    """The Router ends its turn with "Done" (dev walk 13: a 7.5 s summary after its decisions). Under prose or a reply
+    it is dropped; a reply that is only "Done." is what the Router said, and posts."""
     t1 = await _trig("chat:m1")
-    world["output"] = end
+    world["output"] = "Paris.\n\nDone"
     await _run([t1])
-    assert [p["text"] for p in world["posts"]] == [router_prompt.FALLBACK]
+    assert [p["text"] for p in world["posts"]] == ["Paris."]
+    t2 = await _trig("chat:m2")
+    world["output"] = ""
+    world["decisions"] = [{"kind": "reply", "triggerIds": [t2], "text": "Done."}]
+    await _run([t2], batch="b-2")
+    assert world["posts"][-1]["text"] == "Done."
+
+
+@pytest.mark.asyncio
+async def test_a_message_handled_without_a_post_gets_lightbulbs_read_receipt(world, monkeypatch):
+    """Dev walk 13: "Lightbulb is reading…" ends when the Router is done with the message. Posted triggers end it with
+    their post; an ignored one gets Lightbulb's read receipt instead."""
+    events = []
+
+    async def publish(room_id, event):
+        events.append((room_id, event["type"], event["payload"]))
+
+    monkeypatch.setattr(acts.messaging, "_publish_room_event", publish)
+    t1 = await _trig("chat:m1")
+    t2 = await _trig("chat:m2", admission="candidate")
+    world["decisions"] = [_start([t1]), {"kind": "ignore", "triggerIds": [t2]}]
+    await _run([t1, t2])
+    trig2 = await repo.get_trigger(WS, t2)
+    assert events == [
+        (
+            ROOM,
+            "room.read.changed",
+            {"roomId": ROOM, "reader": {"kind": "agent", "id": CEO}, "messageId": trig2["ref"]["messageId"]},
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_one_failed_poll_is_retried(world, monkeypatch):
+    t1 = await _trig("chat:m1")
+    world["first_status"] = "running"
+    world["output"] = "Hi."
+    real, calls = acts.runtime_runs.get_run, []
+
+    async def flaky(ws, identity):
+        calls.append(1)
+        if len(calls) == 1:
+            raise ConnectionError("blip")
+        return await real(ws, identity)
+
+    monkeypatch.setattr(acts.runtime_runs, "get_run", flaky)
+    await _run([t1])
+    assert len(calls) == 2 and [p["text"] for p in world["posts"]] == ["Hi."]
 
 
 @pytest.mark.asyncio

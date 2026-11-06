@@ -152,16 +152,19 @@ export interface RoomPanelProps {
   frontAgentId?: string;
   /** The workspace runtime is still being set up: with the switch on, the viewer's unanswered message reads "Queued". */
   runtimeStarting?: boolean;
+  /** Messages each agent has read (live `room.read.changed`): the Router's receipt on a message it handled without a
+   *  post ends "Lightbulb is reading…" (dev walk 13). */
+  agentReads?: ReadonlyMap<string, ReadonlySet<string>>;
   onDownloadAttachment?: (roomId: string, attachmentId: string) => Promise<Blob>;
   onAttachmentUrl?: (roomId: string, attachmentId: string) => Promise<{ url: string }>;
   /** A card's click: posts the person's answer in reply to the card (MessagingWorkspaceContext builds it). */
   onCardReply?: (reply: CardReply) => Promise<void>;
 }
 
-/** How long a silent ask reads "Lightbulb is reading…": an ask Lightbulb must answer (a reply took ~2 min in the 5 Nov
- *  walk), and one it may only read (Jev and the Router can stay quiet; the 6 Nov ack took ~50 s). */
+/** How long a silent ask reads "Lightbulb is reading…" at most: an ask Lightbulb must answer (a reply took ~2 min in the
+ *  5 Nov walk), and one it may only read (the Router's read receipt ends it sooner; this is the fallback). */
 const ON_IT_MS = 5 * 60_000;
-const READING_MS = 2 * 60_000;
+const READING_MS = 60_000;
 const NO_PINNED_MESSAGES: readonly string[] = [];
 const NO_TASK_IDS: readonly string[] = [];
 /** The project pane's list views (super-agent): the header's three toggles. */
@@ -351,6 +354,7 @@ function RoomContent({
   onLinkToWork,
   frontAgentId,
   runtimeStarting = false,
+  agentReads,
   onDownloadAttachment,
   onAttachmentUrl,
   onCardReply,
@@ -531,7 +535,8 @@ function RoomContent({
   // screen) reads "Lightbulb is reading…" from send until its ack or reply lands (dev walk 13: ~45 s of nothing). The
   // Router posts no typing signal, so this is the client's. An ask admission's fast path answers (a DM, an @mention of
   // Lightbulb's seat, "Hi Lightbulb, …") holds it for ON_IT_MS; anything else in a project Lightbulb listens to goes to
-  // Jev and the Router, which may stay quiet (dev walk W9-1), so it lets go after READING_MS. "Reading" promises no
+  // Jev and the Router, which may stay quiet (dev walk W9-1): the Router's read receipt on a message it handled without a
+  // post ends it, and READING_MS is the fallback if that receipt is lost. "Reading" promises no
   // answer. Never while Lightbulb only observes or listens for mentions.
   // ponytail: timers; a server "seen" / "ignored" signal would replace them.
   const front = superAgent && !runtimeStarting ? participants.find((p) => p.kind === "agent" && p.mentionHandle === "lightbulb") : undefined;
@@ -542,6 +547,7 @@ function RoomContent({
     && !allRuns.some((run) => run.triggerMessageId === lastMain.messageId)
     && ![...(repliesByRoot.get(lastMain.messageId)?.authors.values() ?? [])].some((author) => author.kind === "agent")
     && front.listenMode !== "observe"
+    && !agentReads?.get(front.id)?.has(lastMain.messageId)
     ? lastMain : undefined;
   const addressed = !!askPending && !!front && (room?.kind === "dm"
     || askPending.mentions.some((m) => m.kind === "agent" && m.id === front.id) || namesAgent(askPending.text, front.displayName));
@@ -843,6 +849,10 @@ function RoomContent({
   // One pass per message list, so a keystroke (which re-renders the panel) re-scans nothing.
   const { cardsEnabled, repliesEnabled } = cardControls(room);
   const cardAnswers = useMemo(() => cardAnswersFor(messages), [messages]);
+  // The tasks whose ack chip is in this timeline, per thread ("" = the main list): a finish line beside one shows only
+  // what the task made (W13-1); anywhere else it keeps the chip, so the task stays openable.
+  const ackedTasks = useMemo(() => new Set(messages.filter((m) => !m.kind && !m.deletedAt && m.taskRefs?.length)
+    .flatMap((m) => m.taskRefs!.map((r) => `${m.threadRootMessageId ?? ""}|${r.taskId}`))), [messages]);
   const renderMessage = useCallback((message: RoomMessage, inThread = false, collapsed = false) => {
     const participant = participants.find((member) => member.kind === message.author.kind && member.id === message.author.id);
     const mentionsMe = message.mentions.some((mention) => mention.kind === "human" && mention.id === currentUserId);
@@ -862,7 +872,7 @@ function RoomContent({
       onSelectParticipant={onSelectParticipant} onUpdateMessage={onUpdateMessage} onDownloadAttachment={onDownloadAttachment} onAttachmentUrl={onAttachmentUrl}
       cardsEnabled={cardsEnabled} onCardReply={repliesEnabled && participant ? onCardReply : undefined} cardAnswer={cardAnswers.get(message.messageId) ?? null}
       sessions={visibleSessions} onOpenSession={openSessionPanel}
-      onOpenTask={superAgent ? openTask : undefined} isAgentId={superAgent ? isAgentId : undefined}
+      onOpenTask={superAgent ? openTask : undefined} isAgentId={superAgent ? isAgentId : undefined} ackedTasks={ackedTasks}
       menuExtras={!message.deletedAt && (onSetPin || (onMarkUnreadFrom && !inThread)) ? <>
         {/* disabled/aria-busy reflect messageActionPending -- shared across every message's
             menu here, same one-pending-pair-per-surface shape as useAsyncAction's doc comment.
@@ -899,7 +909,7 @@ function RoomContent({
     }
     return body(message.text);
   }, [revealStarter, general, participants, currentUserId, repliesByRoot, threadActivity, receipts, id, actionable, editTarget, searchTarget,
-    quickReactions, reactionPending, reactionError, onSetReaction, toggleReaction, openDetail, openTask, superAgent, isAgentId,
+    quickReactions, reactionPending, reactionError, onSetReaction, toggleReaction, openDetail, openTask, superAgent, isAgentId, ackedTasks,
     onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, onCardReply, cardsEnabled, repliesEnabled, cardAnswers, onSetPin, onMarkUnreadFrom,
     messageActionPending, runMessageAction, pinnedMessageIds, copied, copyError, roomId, visibleSessions]);
   // A run that ended without a saved reply (stopped, failed, no reply) stays where it happened,

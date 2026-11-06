@@ -772,7 +772,7 @@ async def _router_run(
                 raise TimeoutError("router run did not finish in time")
             activity.heartbeat("router")
             await asyncio.sleep(ROUTER_POLL_S)
-            status = await runtime_runs.get_run(ws, identity)
+            status = await _poll_run(ws, identity)
     except Exception:
         # A timed-out run, or a create that failed after the run started, still spent tokens: one last read
         # meters what the run reports. ponytail: a partial count claims the receipt, so tokens a later retry
@@ -784,6 +784,22 @@ async def _router_run(
         raise
     await _meter_router(ws, user_id, status)
     return status
+
+
+#: Tries per poll: polled every second, one failed read (a blip on the runtime) must not fail the whole turn.
+ROUTER_POLL_TRIES = 3
+
+
+async def _poll_run(ws: str, identity: runtime_runs.RunIdentity) -> runtime_runs.RunStatus:
+    for attempt in range(1, ROUTER_POLL_TRIES + 1):
+        try:
+            return await runtime_runs.get_run(ws, identity)
+        except Exception:
+            if attempt == ROUTER_POLL_TRIES:
+                raise
+            logger.warning("router run poll failed (try %d), retrying run=%s", attempt, identity.run_id)
+            await asyncio.sleep(ROUTER_POLL_S)
+    raise AssertionError("unreachable")
 
 
 def _scripted(trig: dict) -> ts.StartTask | None:
@@ -977,7 +993,9 @@ async def _apply(
             sl["lines"].append(dec.text + (f" ({' / '.join(dec.options)})" if dec.options else ""))
         elif isinstance(dec, ts.Reply):
             if primary not in carded:
-                replies.append((sl, dec.text))  # after every ack is known: a later start's ack counts too
+                replies.append(
+                    (sl, router_prompt.strip_end_word(dec.text))
+                )  # after every ack is known: a later start's ack counts too
         activity.heartbeat("apply")
     for sl, text in replies:
         if not router_prompt.restates(text, sl["acks"]):
@@ -991,7 +1009,10 @@ async def _apply(
     failed: list[str] = []
     for idx, tid in enumerate(inp.trigger_ids):
         sl, trig = slots.get(tid), triggers.get(tid)
-        if not sl or not trig:
+        if not trig:
+            continue
+        if not sl:
+            await _read_quietly(ws, trig)
             continue
         message_id = None
         if sl["lines"] or sl["refs"]:  # a pass_through without an ack posts nothing (routed below)
@@ -1009,6 +1030,8 @@ async def _apply(
             )
         if message_id:
             posted.append(message_id)
+        else:
+            await _read_quietly(ws, trig)
         ref = trig.get("ref") or {}
         ack_thread = (
             f"room:{ref['roomId']}:{ref.get('threadRoot') or message_id}" if ref.get("roomId") and message_id else None
@@ -1038,6 +1061,27 @@ async def _apply(
         # already running (USE_EXISTING), so the failed ones get another go instead of sitting queued.
         raise RuntimeError(f"start_task_workflow failed for {failed}")
     return RouterTurnOut(inp.batch_id, started, posted)
+
+
+async def _read_quietly(ws: str, trig: dict) -> None:
+    """A chat message the Router handled without posting (ignored, or passed to a task with no ack): Lightbulb's read
+    receipt on it, so the person's "Lightbulb is reading…" line ends now instead of on its timer (dev walk 13).
+    Best-effort: a lost receipt leaves the client's timeout."""
+    ref = trig.get("ref") or {}
+    if not ref.get("roomId") or not ref.get("messageId"):
+        return
+    try:
+        agent_id = await task_conversation.front_agent_id(ws)
+        await messaging._publish_room_event(
+            ref["roomId"],
+            messaging.make_live_event(
+                "room.read.changed",
+                {"roomId": ref["roomId"], "reader": {"kind": "agent", "id": agent_id}, "messageId": ref["messageId"]},
+                room_id=ref["roomId"],
+            ),
+        )
+    except Exception:  # noqa: BLE001 -- a receipt never fails a Router turn
+        logger.warning("router read receipt failed for trigger %s", trig.get("triggerId"), exc_info=True)
 
 
 #: `router_turn`'s error type while the workspace's runtime is still starting: the Router waits, it never falls back.
@@ -1158,10 +1202,7 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
             triggers[tid] = await tasks_repo.get_trigger(ws, tid) or triggers[tid]
         # The run's prose answers a trigger only when the Router made no decision at all: with decisions it is a
         # summary of them ("Growth has the checklist"), which must never stand in for a decision that was dropped.
-        # Its closing "Done" (the instructions' end word) is never an answer: no decision then means the fallback.
-        run_text = None if status.decisions else (status.output or "").strip() or None
-        if run_text and run_text.strip(" .!").lower() == router_prompt.END_WORD:
-            run_text = None
+        run_text = None if status.decisions else router_prompt.strip_end_word(status.output or "") or None
         decisions += router_prompt.validate_decisions(
             status.decisions,
             trigger_ids=set(to_model),

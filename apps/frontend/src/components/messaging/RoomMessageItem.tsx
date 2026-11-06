@@ -74,6 +74,8 @@ interface RoomMessageItemProps {
   onOpenTask?: (taskId: string) => void;
   /** Super-agent: reactions by agents (Lightbulb's 👀 "saw this") are a receipt, not a toggle. */
   isAgentId?: (id: string) => boolean;
+  /** Super-agent: "thread|taskId" for each task whose ack chip is in the timeline (MessageTasks' finish line). */
+  ackedTasks?: ReadonlySet<string>;
 }
 
 /** A session chip is a reference, like a document link: it never messaged the session. */
@@ -90,7 +92,7 @@ function SessionCard({ sessionId, label, session, onOpen }: {
   </span>;
 }
 
-export function RoomMessageItem({ id, message, text, participant, currentUserId, actionable, inThread, collapsed, startEditing, onEditingClosed, replyCount, lastReplyAt, threadParticipants = [], workingNames = [], receipt, highlighted, mentionsViewer, markdown, urlTransform, quickReactions, reactionPending, reactionError, onToggleReaction, onOpenThread, onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, onCardReply, cardAnswer = null, cardsEnabled = true, sessions = [], onOpenSession, toolbarExtras, menuExtras, personColor, onOpenTask, isAgentId }: RoomMessageItemProps): ReactElement {
+export function RoomMessageItem({ id, message, text, participant, currentUserId, actionable, inThread, collapsed, startEditing, onEditingClosed, replyCount, lastReplyAt, threadParticipants = [], workingNames = [], receipt, highlighted, mentionsViewer, markdown, urlTransform, quickReactions, reactionPending, reactionError, onToggleReaction, onOpenThread, onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, onCardReply, cardAnswer = null, cardsEnabled = true, sessions = [], onOpenSession, toolbarExtras, menuExtras, personColor, onOpenTask, isAgentId, ackedTasks }: RoomMessageItemProps): ReactElement {
   const superAgent = useSuperAgent();
   const agentNames = useOptionalLiveEvents()?.agentNames;
   // A line posted for a specialist can carry its id; it reads as the specialist's name, like the byline.
@@ -149,7 +151,7 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
           session={sessions.find((item) => item.sessionId === sessionId)} onOpen={onOpenSession} />)}
       </div>}
       {!message.deletedAt && (superAgent && message.taskRefs?.length
-        ? <MessageTasks message={message} viewerId={currentUserId} onOpen={onOpenTask} />
+        ? <MessageTasks message={message} viewerId={currentUserId} onOpen={onOpenTask} ackedTasks={ackedTasks} />
         : <MessageTaskCard text={message.text} prose={message.author.kind === "agent"} />)}
       {superAgent && message.forwardedFrom && <button type="button" className="block text-ui text-muted-foreground hover:text-foreground hover:underline"
         onClick={() => openMessagePanel(message.forwardedFrom!.roomId, message.forwardedFrom!.messageId)}>

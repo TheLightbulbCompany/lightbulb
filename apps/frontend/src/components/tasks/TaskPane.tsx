@@ -264,8 +264,8 @@ function TaskActions({ task, viewerId, onError }: { task: TaskSummary; viewerId:
         <MoreHorizontal aria-hidden="true" /></Button></DropdownMenuTrigger>
       <DropdownMenuContent align="end">
         {task.status === "resolved"
-          ? <DropdownMenuItem onSelect={() => void press("reopen")}>Reopen</DropdownMenuItem>
-          : <DropdownMenuItem onSelect={() => void press("resolve")}>Close</DropdownMenuItem>}
+          ? <DropdownMenuItem disabled={busy} onSelect={() => void press("reopen")}>Reopen</DropdownMenuItem>
+          : <DropdownMenuItem disabled={busy} onSelect={() => void press("resolve")}>Close</DropdownMenuItem>}
       </DropdownMenuContent>
     </DropdownMenu>}
   </span>;

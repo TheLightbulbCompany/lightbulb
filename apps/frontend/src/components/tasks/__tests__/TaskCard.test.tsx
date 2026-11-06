@@ -36,13 +36,6 @@ describe("TaskCard", () => {
     expect(screen.queryByRole("button", { name: "Reopen" })).toBeNull();
   });
 
-  it("a finished card says what came of it in place: one item per task (dev walk 10, W10-2)", () => {
-    const done = { ...byId("step02", "t-signup"), status: "idle" as const, shownGroup: "idle" as const, resultLine: "Three taglines found." };
-    render(<Fresh><TaskCard task={done} taskId="t-signup" viewerId={SAM} /></Fresh>);
-    expect(screen.getByText("Done")).toBeInTheDocument();
-    expect(screen.getByText("Three taglines found.")).toBeInTheDocument();
-  });
-
   it("names a specialist that is an agent id from the agents list", () => {
     const id = "5b36216c-196c-48af-ad2a-6817c42a1de3";
     (live as { agentNames?: Map<string, string> }).agentNames = new Map([[id, "Finance"]]);

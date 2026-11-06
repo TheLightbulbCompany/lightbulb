@@ -245,11 +245,14 @@ async def test_end_attempt_posts_result_as_lightbulb(world):
     await _attempt(tid)
     await acts.acquire_slot(WS, tid)
     await _ended(tid, "completed")
-    (room,) = world["posts"]  # dev walk 10: the main chat's card shows the result in place, no second message
+    room, origin = world["posts"]  # the task room first: it adopts any files
+    # UX slice 3 / walk 10: the main chat gets one new plain line with the task as its chip (an unread).
+    assert origin["room"] == ROOM and "thread_root" not in origin and origin["text"] == "Paid Acme."
+    assert origin["kind"] == "task_line" and origin["task_refs"] == [{"taskId": tid, "role": "started"}]
     assert room["room"] == ts.task_room_id(tid) and room["text"] == "Paid Acme." and room["kind"] == "result"
     assert [m[1] for m in world["marks"]] == ["Started", "Done"]
     await acts.end_attempt(WS, tid, 1, "completed", None)  # a retried end_attempt posts nothing new
-    assert len({p["event_id"] for p in world["posts"]}) == 1 and len({m[2] for m in world["marks"]}) == 2
+    assert len({p["event_id"] for p in world["posts"]}) == 2 and len({m[2] for m in world["marks"]}) == 2
     assert (await repo.get_task(WS, tid))["status"] == "idle"
     assert tid not in (await repo.get_slots(WS))["leases"]
     assert world["client"].signals == []  # no Router turn per result
@@ -308,8 +311,9 @@ async def test_end_attempt_result_files_go_to_the_task_room_post(world):
     files = [{"attachmentId": str(uuid.uuid4()), "fileName": "agenda.docx", "contentType": "application/pdf"}]
     await repo.update_attempt(WS, tid, 1, {"attachments": files}, allowed_status=frozenset({"dispatched"}))
     await _ended(tid, "completed", output="The agenda is ready.")
-    (room,) = world["posts"]  # the files live in the task; the main chat's card says what came of it
+    room, origin = world["posts"]  # task room first: the files live in the task, the main chat gets one line
     assert room["room"] == ts.task_room_id(tid) and room["uploaded_attachments"] == files
+    assert origin.get("uploaded_attachments") is None and origin["text"] == "The agenda is ready."
     # UX slice 5: the file stays on the task as what it made, openable from the task room
     (out,) = (await repo.get_task(WS, tid))["outputs"]
     assert (out["id"], out["kind"], out["ref"]["roomId"]) == (
@@ -335,8 +339,9 @@ async def test_a_refused_adoption_posts_the_result_without_files_or_note(world, 
 
     monkeypatch.setattr(acts.task_conversation, "post_as_lightbulb", refuse_files)
     await _ended(tid, "completed", output="The agenda is ready.")
-    (room,) = world["posts"]
+    room, origin = world["posts"]
     assert room["room"] == ts.task_room_id(tid) and not room.get("uploaded_attachments")
+    assert origin["text"] == "The agenda is ready."
     assert not (await repo.get_task(WS, tid)).get("outputs")
 
 
@@ -344,8 +349,8 @@ async def test_end_attempt_failure_pushes_requester_only(world):
     tid = await _task()
     await _attempt(tid)
     await _ended(tid, "failed")
-    # The main chat's card says it didn't finish (and offers Retry) in place: no message
-    assert world["pushes"] == ["sam"] and world["posts"] == []
+    (line,) = world["posts"]  # the main chat says it didn't finish, with the task (and its Retry) as the chip
+    assert world["pushes"] == ["sam"] and line["kind"] == "task_line" and line["text"].startswith("Didn't finish:")
     assert world["marks"][-1][1] == "Didn't finish"
     assert (await repo.get_task(WS, tid))["status"] == "failed"
 
@@ -669,11 +674,15 @@ async def test_a_person_only_task_says_nothing_in_the_shared_room(world):
     assert not any("90k" in p["text"] for p in world["posts"] if p["room"] == ROOM)
 
 
-async def test_a_router_task_posts_nothing_in_the_main_chat(world):
-    """Dev walk 10 (W10-2): one task is one item in the chat. Its card shows the result; no "Done: …" line beside it."""
-    for audience in ({"kind": "workspace"}, {"kind": "room", "roomId": ROOM}):
-        world["posts"].clear()
-        tid = await _task(audience=audience)
-        await _attempt(tid)
-        await _ended(tid, "completed")
-        assert [p["room"] for p in world["posts"]] == [ts.task_room_id(tid)]
+async def test_a_workspace_task_carries_its_result_line(world):
+    tid = await _task(audience={"kind": "workspace"})
+    await _attempt(tid)
+    await _ended(tid, "completed", output='**"Fast," says Linear.** More below.\n\n- detail')
+    assert world["posts"][-1]["room"] == ROOM and world["posts"][-1]["text"] == '"Fast," says Linear. More below.'
+
+
+async def test_a_task_of_another_room_says_only_done(world):
+    tid = await _task(audience={"kind": "room", "roomId": str(uuid.uuid4())})
+    await _attempt(tid)
+    await _ended(tid, "completed")
+    assert world["posts"][-1]["room"] == ROOM and world["posts"][-1]["text"] == "Done."

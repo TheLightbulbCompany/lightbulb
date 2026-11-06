@@ -27,3 +27,18 @@ it("the Router's one-line result carries its task as a chip that opens it, not a
   await userEvent.click(chip);
   expect(onOpen).toHaveBeenCalledWith(task.taskId);
 });
+
+it("the Router's ack carries its task as a compact chip with the specialist, never a full card (dev walk 10)", async () => {
+  const task = FIXTURES.step08.tasks[0];
+  live.tasks = fakeTasksClient(FIXTURES.step08.tasks, FIXTURES.step08.details);
+  const ack = {
+    messageId: "m8", roomId: ROOM, messageSeq: 8, roomRevision: 1, author: { kind: "agent", id: "ceo", displayName: "Lightbulb" },
+    text: "Growth is researching three taglines.", mentions: [], replyToMessageId: null, threadRootMessageId: null,
+    createdAt: "2026-11-06T10:00:00Z", runId: null, taskRefs: [{ taskId: task.taskId, role: "started" }],
+  } as CanonicalRoomMessage;
+  render(<Fresh><MessageTasks message={ack} viewerId={SAM} /></Fresh>);
+  const chip = await screen.findByRole("button", { name: new RegExp(task.title) });
+  expect(chip).toHaveAttribute("data-task-chip", task.taskId);
+  if (task.specialist) expect(chip.textContent).toContain("·");
+  expect(document.querySelector("[data-task-card]")).toBeNull();
+});

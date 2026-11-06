@@ -49,7 +49,7 @@ export function TaskCard({ task, taskId, viewerId, palette, onOpen = openTaskScr
   // Reopen lives on the request screen and the Work list, not on every resolved card in the history (audit #30).
   const inline = view.action && view.action !== "answer" && view.action !== "review" && view.action !== "reopen" ? view.action : null;
   // The specialist is the actor, by its own name ("Growth"), on its own line (founder, 5 Nov).
-  const line = task.resultLine || taskSummaryLine(task, viewerId); // a finished card says what came of it, in place (dev walk 10)
+  const line = taskSummaryLine(task, viewerId);
   const detail = line === view.word ? null : line;
   // The open target and the action are siblings, never nested: a screen reader reaches each on its own (audit #23).
   return (
@@ -121,8 +121,35 @@ export function MessageTasks({ message, viewerId, palette, onOpen }: {
   const byId = new Map(data.tasks.map((t) => [t.taskId, t]));
   return (
     <View style={styles.list} accessibilityLabel="Tasks in this message">
-      {refs.map((r) => <RefCard key={r.taskId} taskId={r.taskId} listed={byId.get(r.taskId)} viewerId={viewerId} palette={palette} onOpen={onOpen} />)}
+      {refs.map((r) => {
+        const props = { taskId: r.taskId, listed: byId.get(r.taskId), viewerId, palette, onOpen };
+        // One small item per event (dev walk 10): the Router's ack and its one-line result carry a chip; a result post
+        // or a question keeps the full card.
+        return !message.kind || message.kind === "task_line" ? <RefChip key={r.taskId} {...props} /> : <RefCard key={r.taskId} {...props} />;
+      })}
     </View>
+  );
+}
+
+/** One line: the task's live status dot, title and specialist; it opens the task. */
+function RefChip({ taskId, listed, viewerId, palette, onOpen = openTaskScreen }: {
+  taskId: string; listed: TaskSummary | undefined; viewerId: string; palette: ChatPalette; onOpen?: (taskId: string) => void;
+}) {
+  const { tasks, agentNames } = useLiveEvents();
+  const { data } = useTask(tasks, listed ? null : taskId);
+  const task = listed ?? data?.task;
+  if (!task) return null;
+  const view = summaryView(task, viewerId);
+  const who = task.specialist ? ` · ${specialistLabel(task.specialist, agentNames)}` : "";
+  return (
+    <Pressable accessibilityRole="button" accessibilityLabel={`${task.title}${who}, ${view.word}`} testID={`task-chip-${taskId}`}
+      onPress={() => onOpen(taskId)} style={[styles.chip, { borderColor: palette.edge }]}>
+      <View style={[styles.dot, { backgroundColor: toneColor(view.tone, palette) }]} />
+      <Text style={[styles.meta, { color: palette.fg, flexShrink: 1 }]} numberOfLines={1}>
+        <Text style={{ fontFamily: fonts.sansSemiBold }}>{task.title}</Text>
+        <Text style={{ color: palette.fgMute }}>{who}</Text>
+      </Text>
+    </Pressable>
   );
 }
 
@@ -168,6 +195,7 @@ const styles = StyleSheet.create({
   label: { fontFamily: fonts.sansSemiBold, fontSize: 10, letterSpacing: 1.2, lineHeight: 14 },
   status: { flexDirection: "row", alignItems: "center", gap: 6, paddingTop: 2 },
   dot: { width: 6, height: 6, borderRadius: 3 },
+  chip: { flexDirection: "row", alignItems: "center", gap: 6, alignSelf: "flex-start", maxWidth: 520, minHeight: 44, borderWidth: 1, borderRadius: radii.sm, paddingHorizontal: spacing.sm },
   statusWord: { fontFamily: fonts.sansSemiBold, fontSize: 12, lineHeight: 16 },
   actions: { flexDirection: "row", gap: spacing.xs, alignItems: "center" },
   button: { minHeight: 44, minWidth: 44, paddingHorizontal: spacing.md, borderRadius: 999, borderWidth: 1, alignItems: "center", justifyContent: "center", alignSelf: "flex-start" },

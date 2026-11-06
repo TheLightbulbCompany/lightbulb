@@ -86,10 +86,9 @@ export function TaskCard({ task, taskId, viewerId, onOpen }: TaskCardProps): Rea
     capture("task_card_opened", { taskId, source: "card", status: task.status });
     onOpen?.(taskId);
   };
-  // The summary line only when it says more than the status word (an ask, a reason, what is landing). A finished
-  // task's line is what came of it, in place (dev walk 10: one item per task, no second "Done: …" message).
+  // The summary line only when it says more than the status word (an ask, a reason, what is landing).
   // The specialist is the actor, by its own name ("Growth"), on its own line (founder, 5 Nov).
-  const line = task.resultLine || taskSummaryLine(task, viewerId);
+  const line = taskSummaryLine(task, viewerId);
   // With the decision card open below, its question says it: no "Needs approval: …" line above it.
   const detail = line === view.word || question ? null : line;
   return <div className="editorial-card editorial-card-hover relative mt-1.5 max-w-xl px-3 py-2" data-task-card={taskId}>

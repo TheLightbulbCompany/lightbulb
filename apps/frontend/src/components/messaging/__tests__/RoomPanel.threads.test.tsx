@@ -103,11 +103,11 @@ describe("RoomPanel Threads view (super-agent)", () => {
     expect(screen.queryByRole("complementary", { name: "Tasks" })).toBeNull();
   });
 
-  it("a request card in the conversation opens in the column, not a separate pane", async () => {
+  it("a task chip in the conversation opens in the column, not a separate pane", async () => {
     localStorage.clear();
     const reply: RoomMessage = { ...message, messageId: "m2", messageSeq: 2, author: { kind: "agent", id: lightbulb.id, displayName: "Lightbulb" }, text: "On it.", taskRefs: [{ taskId: "t-signup" }] } as RoomMessage;
     render(<Fresh><RoomPanel {...props} messages={[message, reply]} /></Fresh>);
-    const card = (await screen.findAllByRole("button", { name: "Open Workshop signup app, Needs you" })).find((b) => b.closest("[data-task-card]"))!;
+    const card = (await screen.findAllByRole("button", { name: /Workshop signup app/ })).find((b) => b.closest("[data-task-chip]"))!;
     await userEvent.click(card);
     expect(await screen.findByRole("complementary", { name: "Task" })).toHaveAttribute("data-task-pane", "t-signup");
     expect(screen.getByRole("button", { name: "Back to tasks" })).toBeInTheDocument();
@@ -257,7 +257,7 @@ describe("RoomPanel Threads view (super-agent)", () => {
       render(<Fresh><RoomPanel {...props} messages={[message, reply]} /></Fresh>);
       // A sheet would cover the conversation: closed until asked for.
       expect(screen.queryByRole("complementary", { name: "Tasks" })).toBeNull();
-      const card = (await screen.findAllByRole("button", { name: /^Open Workshop signup app/ })).find((b) => b.closest("[data-task-card]"))!;
+      const card = (await screen.findAllByRole("button", { name: /Workshop signup app/ })).find((b) => b.closest("[data-task-chip]"))!;
       await userEvent.click(card);
       const pane = await within(host).findByRole("complementary", { name: "Task" });
       expect(await within(pane).findByRole("textbox", { name: "Steer this task" })).toBeInTheDocument();

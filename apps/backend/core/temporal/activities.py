@@ -497,9 +497,9 @@ async def end_attempt(ws: str, task_id: str, n: int, outcome: str, error: str | 
             await task_conversation.post_as_lightbulb(ws, ts.task_room_id(task_id), **result_room)
         for f in files:  # what it made stays on the task for every status (UX slice 5)
             await tasks_access.record_output(ws, task_id, tasks_access.file_output(task_id, f))  # best effort
-        # A Router conversation's card shows the one-line result in place (`tasks_access.result_line`), never the
-        # whole result in a reply thread (UX slice 3): the result lives in the task. With no Router thread (an
-        # automation's room) the result itself is the post.
+        # A Router conversation gets one line in its main chat (`_announce`), never the whole result in a reply
+        # thread (UX slice 3): the result lives in the task. With no Router thread (an automation's room) the
+        # result itself is the post.
         if room and not root:
             names = ", ".join(f["fileName"] for f in files)
             try:
@@ -553,10 +553,10 @@ _PERSON_REASONS = frozenset({"resolved", "stopped", "dismissed", "reopened"})
 
 
 async def _announce(ws: str, task_id: str, to: str, reason: str | None = None) -> None:
-    """One marker line in the task room per status change ("Started", "Needs you", "Done", "Closed"). Keyed on the
-    attempt and status, so a retried Activity posts once. The chat the task came from gets no second message: its
-    card there shows the one-line result in place (`tasks_access.result_line`, dev walk 10). Cosmetic: a failure is
-    logged, never raised."""
+    """One marker line in the task room per status change ("Started", "Needs you", "Done", "Closed"), and at Done or
+    Didn't finish one new line in the main chat of the Router conversation it came from (an unread, like a Claude
+    Projects update): `tasks_access.result_line` with the task as a chip. Keyed on the attempt and status, so a
+    retried Activity posts once. Cosmetic: a failure is logged, never raised."""
     try:
         tree = await tasks_repo.get_task_tree(ws, task_id)
         task = tree["task"]
@@ -575,6 +575,21 @@ async def _announce(ws: str, task_id: str, to: str, reason: str | None = None) -
             progress=True,  # never a notification, never room memory
             remember=False,
         )
+        room, root = _origin(tree)
+        # A person-only task's line would tell the room it exists: only its own people see it (in the task).
+        person_only = (task.get("audience") or {}).get("kind") == "person"
+        if to in ("idle", "failed") and root and room and _is_uuid(room) and not person_only:
+            # Plain, sentence-bounded, <= 120 chars; bare when someone in the room can't open the task.
+            line = tasks_access.result_line(tree, room) or ("Done." if to == "idle" else "Didn't finish.")
+            await task_conversation.post_as_lightbulb(
+                ws,
+                room,
+                text=line,
+                event_id=f"task-line:{task_id}:{n}:{to}",
+                specialist=task.get("specialist"),  # the specialist is the actor ("Lightbulb · Growth")
+                task_refs=[{"taskId": task_id, "role": "started"}],
+                kind="task_line",
+            )
     except Exception:  # noqa: BLE001 -- a status change never fails over its line
         logger.warning("lifecycle line not posted task=%s to=%s", task_id, to, exc_info=True)
 

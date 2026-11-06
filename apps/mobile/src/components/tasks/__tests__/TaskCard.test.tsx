@@ -3,7 +3,7 @@ import { FIXTURES, PRIYA, SAM, viewAs } from "@lightbulb/shared/tasks/fixtures";
 
 import { chatPalette } from "../../../config/theme";
 
-const live = { superAgent: true, tasks: null as unknown };
+const live = { superAgent: true, tasks: null as unknown, agentNames: new Map<string, string>() };
 jest.mock("../../../providers/live-events", () => ({ useLiveEvents: () => live, useSuperAgent: () => live.superAgent }));
 jest.mock("expo-router", () => ({ router: { push: jest.fn() } }));
 jest.mock("expo-crypto", () => ({ randomUUID: () => "00000000-0000-4000-8000-000000000000" }));
@@ -77,4 +77,17 @@ it("a card for a request older than the room's first page reads it by id", async
   expect(screen.queryByText("This task isn't available")).toBeNull();
   await act(async () => {});
   await view.unmount();
+});
+
+it("the Router's ack and its result line carry a compact chip, never a full card (dev walk 10)", async () => {
+  const onOpen = jest.fn();
+  for (const kind of [undefined, "task_line"]) {
+    const message = { roomId: "r1", kind, taskRefs: [{ taskId: "t-signup", role: "started" }] } as never;
+    const view = await render(<Fresh><MessageTasks message={message} viewerId={SAM} palette={p} onOpen={onOpen} /></Fresh>);
+    fireEvent.press(await screen.findByTestId("task-chip-t-signup"));
+    expect(onOpen).toHaveBeenLastCalledWith("t-signup");
+    expect(screen.queryByLabelText("Approve")).toBeNull();
+    await act(async () => {});
+    await view.unmount();
+  }
 });

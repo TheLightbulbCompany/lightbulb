@@ -2838,14 +2838,21 @@ def default_room_id(owner_id: str) -> str:
 
 
 def _first_run(body: dict) -> bool:
-    """A person's first message in the canonical #general (by id) whose WHOLE history (it starts at seq 1, so nothing was
-    trimmed) is only agents': a fresh workspace's #general, where seq 1 is the seeded welcome, when
-    its owner first answers. A busy room's window never starts at seq 1."""
+    """A person's first answer in the first-run room. Either the canonical #general (by id) whose WHOLE history (it
+    starts at seq 1, so nothing was trimmed) is only agents': seq 1 is the seeded welcome. A busy room's window never
+    starts at seq 1. Or, with the super-agent switch, the owner's Lightbulb DM: the first person's message after the
+    welcome (kind "first_run"), which follows anything the owner sent before setup finished. #general then opens with
+    a "team_welcome" line, which is no welcome."""
     history = body.get("recentHistory") or []
-    return ((body.get("sender") or {}).get("kind") == "human"
-            and (body.get("room") or {}).get("id") == default_room_id(OWNER)
-            and any(m.get("messageSeq") == 1 for m in history)
-            and all((m.get("author") or {}).get("kind") == "agent" for m in history))
+    if (body.get("sender") or {}).get("kind") != "human":
+        return False
+    agents_only = lambda rows: all((m.get("author") or {}).get("kind") == "agent" for m in rows)  # noqa: E731
+    welcome = next((i for i, m in enumerate(history) if m.get("kind") == "first_run"), None)
+    if welcome is not None:
+        return agents_only(history[welcome + 1:])
+    first = next((m for m in history if m.get("messageSeq") == 1), None)
+    return ((body.get("room") or {}).get("id") == default_room_id(OWNER)
+            and first is not None and first.get("kind") != "team_welcome" and agents_only(history))
 
 
 def _is_own(m: dict, agent_id: str) -> bool:

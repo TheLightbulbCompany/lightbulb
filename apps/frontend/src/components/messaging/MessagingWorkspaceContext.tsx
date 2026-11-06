@@ -87,7 +87,7 @@ export interface MessagingWorkspaceValue {
 }
 
 /** Super-agent workspaces land on Home (founder, 6 Nov 2026), except a brand-new one, whose onboarding runs in
- *  #general. Only a bare landing moves: not a URL that names a place, a pane already open, or a pick already made. */
+ *  its first-run room (the Lightbulb DM, else #general). Only a bare landing moves: not a URL that names a place, a pane already open, or a pick already made. */
 export function landsOnHome({ superAgent, fresh, search, snapshot, picked }: {
   superAgent: boolean; fresh: boolean | null; search: string; snapshot: Pick<WorkspaceSnapshot, "ready" | "place" | "pane">; picked: boolean;
 }): boolean {
@@ -113,10 +113,14 @@ function ownerFace(id: string, displayName: string): RoomParticipant {
   return { kind: "human", id, displayName, mentionHandle: null, role: "member", listenMode: null, joinedAt: "", joinedSeq: 0 };
 }
 
-/** Nothing but #general and the vendor shared room: a new workspace, whose home is #general. */
+/** Nothing but #general, the vendor shared room and (super-agent) the first-run Lightbulb DM: a new workspace, whose
+ *  home is that DM when it exists, else #general. */
 export function isFreshWorkspace(rooms: readonly RoomSummary[]): boolean {
-  return rooms.every((room) => room.isDefault || room.shared);
+  return rooms.every((room) => room.isDefault || room.shared || room.firstRun);
 }
+
+/** Where a fresh workspace opens: the first-run Lightbulb DM (super-agent), else #general. */
+export const freshHome = (rooms: readonly RoomSummary[]) => rooms.find((room) => room.firstRun) ?? rooms.find((room) => room.isDefault);
 
 /**
  * Where a default-agent request lands, only once it is certain: any other room
@@ -125,7 +129,7 @@ export function isFreshWorkspace(rooms: readonly RoomSummary[]): boolean {
  */
 function landingFor(rooms: readonly RoomSummary[]): boolean | null {
   if (!isFreshWorkspace(rooms)) return false;
-  return rooms.some((room) => room.isDefault) ? true : null;
+  return freshHome(rooms) ? true : null;
 }
 
 // ponytail: fixed wait — provisioning seeds #general in ~15–50 s; a workspace
@@ -412,10 +416,10 @@ export function MessagingWorkspaceProvider({
   }, [markExplicitChoice, hookSelectRoom]);
   useEffect(() => {
     if (autoOpenedScope.current === scope || explicitChoiceScope.current === scope) return;
-    const general = autoOpenRooms.find((room) => room.isDefault);
-    if (!general || !isFreshWorkspace(autoOpenRooms)) return;
+    const home = freshHome(autoOpenRooms);
+    if (!home || !isFreshWorkspace(autoOpenRooms)) return;
     autoOpenedScope.current = scope;
-    if (autoOpenActive !== general.roomId) hookSelectRoom(general.roomId);
+    if (autoOpenActive !== home.roomId) hookSelectRoom(home.roomId);
   }, [scope, autoOpenActive, autoOpenRooms, hookSelectRoom]);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const toggleShortcuts = useCallback(() => setShortcutsOpen((open) => !open), []);

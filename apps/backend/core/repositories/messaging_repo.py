@@ -1882,9 +1882,11 @@ async def delete_room(*, meta: dict, deleted_by: str, new_delivery_key: str, liv
     }
 
 
-_ROOM_META_FIELDS = ("name", "topic", "archivedAt", "archivedBy", "meeting", "icon", "color", "pausedAt", "pausedBy")
+_ROOM_META_FIELDS = (
+    "name", "topic", "archivedAt", "archivedBy", "meeting", "icon", "color", "pausedAt", "pausedBy", "firstRun",
+)  # fmt: skip
 # Cleared by REMOVE, not SET null: create_message's fence is attribute_not_exists(archivedAt).
-_ROOM_META_REMOVABLE = ("archivedAt", "archivedBy", "icon", "color", "pausedAt", "pausedBy")
+_ROOM_META_REMOVABLE = ("archivedAt", "archivedBy", "icon", "color", "pausedAt", "pausedBy", "firstRun")
 
 
 async def patch_room_meta(room_id: str, updates: dict[str, Any], *, expected_revision: int | None = None) -> dict:

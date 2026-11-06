@@ -1566,3 +1566,86 @@ async def test_away_checks_ride_the_deadline_index_and_leave_it(table):
     assert await repo.list_due_away_checks(now) == []
     await repo.finish_away_check("AWAY#user_b", "M#r#due")
     assert await repo.get_away_check("AWAY#user_b", "M#r#due") is None
+
+
+def _switch_on(monkeypatch, org_name="Acme"):
+    from core.repositories.paperclip_repo import PaperclipRepo
+    from core.services import messaging, task_conversation
+
+    starter_ids = {key: f"10000000-0000-4000-8000-00000000000{i}" for i, key in enumerate(messaging._STARTER_KEYS, 1)}
+    ceo = starter_ids["ceo"]
+
+    async def owner_row(*_args, **_kwargs):
+        return SimpleNamespace(status="active", starter_agent_ids=starter_ids)
+
+    monkeypatch.setattr(PaperclipRepo, "resolve_owner_row", owner_row)
+    roster = [{"id": agent_id, "name": key} for key, agent_id in starter_ids.items()]
+    monkeypatch.setattr(messaging, "load_agent_roster", lambda _owner: asyncio.sleep(0, result=roster))
+    monkeypatch.setattr(messaging, "human_display_name", lambda _user: asyncio.sleep(0, result="Workspace Owner"))
+    monkeypatch.setattr(messaging, "_front_agent_id", lambda _owner: asyncio.sleep(0, result=ceo))
+    monkeypatch.setattr(task_conversation, "front_agent_id", lambda _owner: asyncio.sleep(0, result=ceo))
+    org = AsyncMock(return_value={"name": org_name})
+    monkeypatch.setattr(messaging.clerk_admin, "get_organization", org)
+    return messaging, ceo, org
+
+
+@pytest.mark.asyncio
+async def test_with_the_switch_the_welcome_and_chips_go_to_the_owners_lightbulb_dm(table, monkeypatch):
+    """UX slice 6: the welcome is the owner's Lightbulb DM's seq 1 (kind first_run), the DM is created with firstRun
+    in the same write, and #general keeps one team line. A replay after an org rename changes nothing."""
+    messaging, ceo, org = _switch_on(monkeypatch)
+    created = []
+    real_create_room = repo.create_room
+
+    async def create_room(**kwargs):
+        created.append(kwargs)
+        return await real_create_room(**kwargs)
+
+    monkeypatch.setattr(repo, "create_room", create_room)
+    general = await messaging.ensure_default_room(OWNER, USER_A)
+    dm = await messaging._agent_dm_room_id(OWNER, USER_A, ceo)
+    assert next(c for c in created if c["kind"] == "dm")["extra"] == {"firstRun": True}  # no gap without the flag
+    org.return_value = {"name": "Acme Renamed"}
+    for _ in range(2):
+        (welcome,), _ = await repo.list_messages(dm, 0, 100)
+        assert (welcome["text"], welcome["kind"], welcome["author"]["displayName"]) == (
+            messaging.default_room_welcome("Acme"),
+            messaging.FIRST_RUN_KIND,
+            messaging.FRONT_AGENT_NAME,
+        )
+        assert (await repo.get_room(dm))["firstRun"] is True
+        (line,), _ = await repo.list_messages(general, 0, 100)
+        assert (line["text"], line["kind"]) == (messaging.team_welcome("Acme"), messaging.TEAM_WELCOME_KIND)
+        assert await messaging.ensure_default_room(OWNER, USER_A) == general
+        # #general's welcome is the done signal; a second seed of the DM alone (a retry) replays under the new name.
+        await messaging._post_first_run_welcome(OWNER, USER_A, ceo, messaging.default_room_welcome("Acme Renamed"))
+    summaries = {s.room_id: s for s in await messaging._room_summaries(OWNER, USER_A)}
+    assert summaries[uuid.UUID(dm)].first_run and not summaries[uuid.UUID(general)].first_run
+
+    # The owner's first answer closes the first run; a later replay of the seed never reopens it.
+    await messaging.close_first_run(dm)
+    assert "firstRun" not in await repo.get_room(dm)
+    await messaging._post_first_run_welcome(OWNER, USER_A, ceo, messaging.default_room_welcome("Acme"))
+    assert "firstRun" not in await repo.get_room(dm)
+
+
+@pytest.mark.asyncio
+async def test_an_owner_who_wrote_before_setup_finished_still_gets_the_welcome_after_their_message(table, monkeypatch):
+    from core.auth import AuthContext
+
+    messaging, ceo, _ = _switch_on(monkeypatch)
+    dm = await messaging._agent_dm_room_id(OWNER, USER_A, ceo)  # opened before provisioning seeded the welcome
+    await messaging.create_human_message(
+        AuthContext(user_id=USER_A, org_id=OWNER),
+        dm,
+        messaging.CreateMessageRequest(
+            client_message_id=uuid.uuid4(), text="hello?", reply_to_message_id=None, thread_root_message_id=None
+        ),
+    )
+    await messaging.ensure_default_room(OWNER, USER_A)
+    rows, _ = await repo.list_messages(dm, 0, 100)
+    assert [(r["author"]["kind"], r.get("kind")) for r in rows] == [
+        ("human", None),
+        ("agent", messaging.FIRST_RUN_KIND),
+    ]
+    assert (await repo.get_room(dm))["firstRun"] is True

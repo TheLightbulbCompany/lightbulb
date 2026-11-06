@@ -72,6 +72,12 @@ import type {
 } from "./types";
 import "./messaging.css";
 
+/** A starter room's seeded welcome: the super-agent first-run welcome (kind "first_run", in the owner's Lightbulb DM;
+ *  after their own messages when they wrote before setup finished), or #general's seq 1 unless it is the super-agent
+ *  team line. */
+const isWelcome = (message: RoomMessage, general: boolean) => message.kind === "first_run"
+  || (general && message.messageSeq === 1 && message.author.kind === "agent" && message.kind !== "team_welcome");
+
 export interface RoomPanelProps {
   ownerScopeId: string;
   currentUserId: string;
@@ -486,10 +492,16 @@ function RoomContent({
   const browserAvailable = useStatusLoaded();
   const visibleRoom = room?.roomId === roomId ? room : undefined;
   const actionable = httpReady && !!visibleRoom;
-  // The welcome (seq 1) must be loaded: useRooms keeps only the newest 100, so a long agent-only run hides it.
-  const showFirstReplies = Boolean(room?.isDefault) && !room?.archivedAt
-    && messages[0]?.messageSeq === 1
-    && !messages.some((m) => m.author.kind === "human")
+  // The welcome must be loaded: useRooms keeps only the newest 100, so a long agent-only run hides it. The starter
+  // room is #general, or (super-agent) the owner's Lightbulb DM: `firstRun` while its first run is open, and its
+  // welcome message after that (the band and invite line stay where the owner works).
+  const general = Boolean(room?.isDefault);
+  const welcomeAt = messages.findIndex((m) => isWelcome(m, general));
+  const firstRunDm = Boolean(room?.firstRun) || (!general && welcomeAt >= 0);
+  const starterRoom = general || firstRunDm;
+  // Unanswered: no person has written since the welcome (an owner's message from before setup finished is earlier).
+  const unanswered = welcomeAt >= 0 && !messages.slice(welcomeAt + 1).some((m) => m.author.kind === "human");
+  const showFirstReplies = starterRoom && unanswered && !room?.archivedAt
     && pendingMessages.length === 0
     && actionable && !composer.disabled;
   const mainMessages = useMemo(() => messages.filter((message) => message.threadRootMessageId === null), [messages]);
@@ -815,8 +827,8 @@ function RoomContent({
     }
   }, [onSetReaction, actionable, reactionPending, currentUserId]);
 
-  const welcomeRoom = Boolean(room?.isDefault) && inShell;
-  const revealStarter = Boolean(room?.isDefault) && !messages.some((m) => m.author.kind === "human");
+  const welcomeRoom = starterRoom && inShell;
+  const revealStarter = starterRoom && unanswered;
   // One pass per message list, so a keystroke (which re-renders the panel) re-scans nothing.
   const { cardsEnabled, repliesEnabled } = cardControls(room);
   const cardAnswers = useMemo(() => cardAnswersFor(messages), [messages]);
@@ -871,11 +883,11 @@ function RoomContent({
         {copyError === message.messageId && <p role="alert" className="text-ui text-err">Could not copy the link.</p>}
       </> : undefined} />;
     // The seeded CEO welcome streams in until a human has written (client-side, cosmetic).
-    if (revealStarter && !inThread && message.messageSeq === 1 && message.author.kind === "agent") {
+    if (revealStarter && !inThread && isWelcome(message, general)) {
       return <TypingReveal key={message.messageId} text={message.text} playKey={message.roomId}>{body}</TypingReveal>;
     }
     return body(message.text);
-  }, [revealStarter, participants, currentUserId, repliesByRoot, threadActivity, receipts, id, actionable, editTarget, searchTarget,
+  }, [revealStarter, general, participants, currentUserId, repliesByRoot, threadActivity, receipts, id, actionable, editTarget, searchTarget,
     quickReactions, reactionPending, reactionError, onSetReaction, toggleReaction, openDetail, openTask, superAgent, isAgentId,
     onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, onCardReply, cardsEnabled, repliesEnabled, cardAnswers, onSetPin, onMarkUnreadFrom,
     messageActionPending, runMessageAction, pinnedMessageIds, copied, copyError, roomId, visibleSessions]);
@@ -893,13 +905,13 @@ function RoomContent({
   const renderMainMessage = useCallback((message: RoomMessage, collapsed: boolean) => <>
     {renderMessage(message, false, collapsed)}
     {/* The CEO's welcome carries the top idea as a proposal and points at the 💡 (spec 2026-10-14 §4.4). */}
-    {welcomeRoom && message.messageSeq === 1 && message.author.kind === "agent" && <WelcomeIdea />}
+    {welcomeRoom && isWelcome(message, general) && <WelcomeIdea />}
     {savedDelegations(delegationState, delegationsByMessage?.get(message.messageId))}
     {settledRuns.get(message.messageId)?.map(renderRun)}
   </>,
   // An ended run's card reads nothing renderRun closes over that settledRuns does not carry.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  [renderMessage, settledRuns, delegationState, delegationsByMessage, welcomeRoom]);
+  [renderMessage, settledRuns, delegationState, delegationsByMessage, welcomeRoom, general]);
 
   function renderRun(run: RoomRunView) {
     const agent = participants.find((participant) => participant.kind === "agent" && participant.id === run.agentId);
@@ -953,7 +965,7 @@ function RoomContent({
               setMemberPickerOpen(!memberPickerOpen);
             }}>Add members</Button>}
           </div>
-          {visibleRoom?.isDefault && participants.filter((p) => p.kind === "human").length === 1 && (() => {
+          {(visibleRoom?.isDefault || firstRunDm) && participants.filter((p) => p.kind === "human").length === 1 && (() => {
             const agents = participants.filter((p) => p.kind === "agent").length;
             return <p className="text-ui text-muted-foreground">1 person · {superAgent ? "" : `${agents} AI ${agents === 1 ? "employee" : "employees"} · `}
               <button type="button" className="underline" onClick={openInviteDialog}>Invite people</button></p>;
@@ -1101,9 +1113,9 @@ function RoomContent({
           renderMessage={renderMainMessage}
           leading={historyComplete ? <>
             <RoomIntro room={visibleRoom} roomName={roomName} participants={participants} />
-            {/* Starter channel only, identified by the backend's `isDefault` —
-                the room is renameable, so "general" is not the test. */}
-            {visibleRoom?.isDefault && <OnboardingBand participants={participants}
+            {/* The starter room only: #general by the backend's `isDefault` (the room is renameable, so "general" is not
+                the test), or the super-agent owner's first-run Lightbulb DM, where they land. */}
+            {(visibleRoom?.isDefault || firstRunDm) && <OnboardingBand participants={participants}
               humanSpoke={pendingMessages.length > 0 || mainMessages.some((message) => message.author.kind === "human")} />}
           </> : null}
           empty={!historyComplete ? <p className="room-empty">Load older messages to see the start of this chat.</p> : null}>

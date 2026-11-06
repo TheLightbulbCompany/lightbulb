@@ -85,6 +85,23 @@ def test_the_first_run_line_reaches_only_the_owners_first_message():
     assert turn.FIRST_RUN_LINE not in turn._observe_prompt("ceo", {**first, "recentHistory": trimmed})
 
 
+def test_with_the_switch_the_first_run_line_follows_the_welcome_into_the_lightbulb_dm():
+    welcome = [{"author": {"kind": "agent", "id": "ceo"}, "text": "Welcome", "messageSeq": 1, "kind": "first_run"}]
+    dm = {"eventKind": "user_request", "sender": {"kind": "human"}, "room": {"kind": "dm", "id": "dm-1"}, "recentHistory": welcome}
+    assert turn.FIRST_RUN_LINE in turn._observe_prompt("ceo", dm)
+    plain = [{**welcome[0], "kind": None}]
+    assert turn.FIRST_RUN_LINE not in turn._observe_prompt("ceo", {**dm, "recentHistory": plain})
+    # #general then holds only the team line: a teammate's first message there is no first run.
+    # The owner wrote before setup finished: the welcome follows their message, and their next one is the answer.
+    early = [{"author": {"kind": "human"}, "text": "hi", "messageSeq": 1}, {**welcome[0], "messageSeq": 2}]
+    assert turn.FIRST_RUN_LINE in turn._observe_prompt("ceo", {**dm, "recentHistory": early})
+    answered = [*early, {"author": {"kind": "human"}, "text": "acme.com", "messageSeq": 3}]
+    assert turn.FIRST_RUN_LINE not in turn._observe_prompt("ceo", {**dm, "recentHistory": answered})
+    team = [{**welcome[0], "kind": "team_welcome"}]
+    general = {"kind": "channel", "id": turn.default_room_id(turn.OWNER)}
+    assert turn.FIRST_RUN_LINE not in turn._observe_prompt("ceo", {**dm, "room": general, "recentHistory": team})
+
+
 def test_group_manners_reach_every_turn_and_the_room_question_rule_only_ambient_ones():
     ambient, addressed = (turn._observe_prompt("a", {"eventKind": k}) for k in ("room_event", "user_request"))
     for line in ("correct it once and cite your source", "phrased as \"we\"", "yes or thanks answers"):

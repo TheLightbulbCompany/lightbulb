@@ -75,6 +75,8 @@ export interface RoomSummary {
    * and nowhere else.
    */
   isDefault?: boolean;
+  /** Super-agent: the owner's Lightbulb DM holding the first-run welcome (seq 1, kind "first_run"); a fresh workspace lands here. */
+  firstRun?: boolean;
   /** Set while the channel is archived: history stays readable, nothing new posts. */
   archivedAt?: string | null;
   archivedBy?: string | null;

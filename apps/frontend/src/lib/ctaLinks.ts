@@ -38,7 +38,12 @@ export function normalizeCtaLinks(markdown: string): string {
   }).join("\n");
 }
 
-/** Copy's text: placeholder links as their words, and a call-to-action line as its words without brackets. */
+/** An email draft's meta lines ("Preview text: …", "Preheader: …", W18): notes for an email tool, not the email. */
+export function stripMetaLines(text: string): string {
+  return text.replace(/^[ \t]*(?:[-*+][ \t]+)?(?:\*\*|__)?(?:preview[ \t]+text|preheader(?:[ \t]+text)?)(?:\*\*|__)?[ \t]*:.*(?:\n|$)/gim, "");
+}
+
+/** Copy's text: placeholder links as their words, a call-to-action line as its words without brackets, no meta lines. */
 export function plainCta(text: string): string {
-  return normalizeCtaLinks(text).replace(/^([ \t]*(?:[-*+][ \t]+)?)\[([^\]\n]{2,60})\][ \t]*$/gm, "$1$2");
+  return normalizeCtaLinks(stripMetaLines(text)).replace(/^([ \t]*(?:[-*+][ \t]+)?)\[([^\]\n]{2,60})\][ \t]*$/gm, "$1$2");
 }

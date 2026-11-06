@@ -69,7 +69,8 @@ WORKER_INSTRUCTIONS = (
     'you made ("Drafted the welcome email."), nothing more in it; when the piece is short (a post, a reply, a '
     "few lines) and you made no file, put the piece itself after that sentence, ready to paste. Never write a "
     "placeholder link such as [Book]([BOOKING LINK]): when you don't have the URL, write the call to action as "
-    'plain text, e.g. "Book your spot: (link to add)".'
+    'plain text, e.g. "Book your spot: (link to add)". An email is its subject line and its body only: no '
+    '"Preview text:", "Preheader:" or other meta lines in it.'
 )
 
 _STATUS_AFTER = {
@@ -1291,18 +1292,13 @@ async def _runtime_ready(ws: str) -> bool:
 
 
 async def _drop_paused(ws: str, triggers: dict[str, dict]) -> None:
-    """A turn queued before its project was paused starts nothing (UX slice 6). A chat trigger gets the paused
-    line in the thread it was said in; the rest are dropped quietly, as admission drops them."""
+    """A turn queued before its project was paused starts nothing (UX slice 6), and says nothing in the room: the
+    paused bar tells the sender (W18-8). Dropped quietly, as admission drops them."""
     from core.services import admission  # lazy: admission imports the temporal client
 
     for tid, trig in list(triggers.items()):
-        meta = await admission.paused_room(ts.trigger_room(trig))
-        if meta is None:
-            continue
-        del triggers[tid]
-        ref = trig.get("ref") or {}
-        if trig.get("source") == "chat":
-            await admission.post_paused_notice(ws, meta, ref.get("threadRoot"))
+        if await admission.paused_room(ts.trigger_room(trig)):
+            del triggers[tid]
 
 
 async def _project_instructions(room_id: str | None) -> str | None:

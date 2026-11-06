@@ -1,3 +1,5 @@
+import { stripMetaLines } from "@/lib/ctaLinks";
+
 // A doc output's words for people (W13-7, W13 tiles): a readable name from its file name, and its first heading and
 // opening lines from its text. Pure, so the viewer header, Made here and Creations read a doc the same way.
 
@@ -7,6 +9,20 @@ export function readableName(fileName: string): string {
   let base = fileName.trim().replace(/\.[a-z][a-z0-9]{0,5}$/i, "");
   if (!/\s/.test(base)) base = base.replace(/[-_]+/g, " ").trim();
   return base ? base[0].toUpperCase() + base.slice(1) : fileName;
+}
+
+const TYPE_WORDS: Record<string, string> = { DOC: "Word", DOCX: "Word", XLS: "Excel", XLSX: "Excel", PPT: "PowerPoint", PPTX: "PowerPoint" };
+
+/** A file's type as people say it: "PDF", "Word", "PNG"; "" for a text doc (.md, .txt) or no extension. */
+export function fileTypeWord(fileName: string): string {
+  const ext = /\.([a-z][a-z0-9]{0,5})$/i.exec(fileName.trim())?.[1].toUpperCase() ?? "";
+  return ext === "MD" || ext === "TXT" ? "" : TYPE_WORDS[ext] ?? ext;
+}
+
+/** The readable name plus its type (W18-10: a sign-up sheet as a PDF and a .docx read the same): "Sign up sheet · PDF". */
+export function fileLabel(fileName: string): string {
+  const type = fileTypeWord(fileName);
+  return type ? `${readableName(fileName)} · ${type}` : readableName(fileName);
 }
 
 /** Markdown marks off one line: list and quote markers, emphasis, code ticks, links to their words. */
@@ -49,5 +65,5 @@ export { plainCta } from "@/lib/ctaLinks";
 export function resultPiece(text: string): string | null {
   const body = text.trim();
   const cut = body.indexOf("\n\n");
-  return cut < 0 ? null : body.slice(cut).trim() || null;
+  return cut < 0 ? null : stripMetaLines(body.slice(cut)).trim() || null;
 }

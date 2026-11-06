@@ -250,21 +250,37 @@ def _tokens(text: str) -> list[str]:
     return [t for t in (w.strip(_EDGE).lower() for w in text.split()) if t]
 
 
-def noted(fact: str, said: str) -> str:
-    """The one line for a `note` (walk 15): the fact said back, so a misread shows ("Noted: the oven is closed on
-    Mondays."). Echoed only when every word of it is a whole word of the person's own message, or a function word:
-    anything the Router took from memory (a name, an email, a number, a private detail) never reaches the room, the
-    plain NOTED line does."""
-    line = " ".join(fact.split()).rstrip(".")
+# "Lightbulb, FYI …", "@lightbulb for the record: …": the address and the FYI word, not the fact.
+_NOTE_LEAD = re.compile(
+    r"^\W*(?:(?:hey|hi|hello|ok|okay)\s+)?(?:@?lightbulb\b\W*)?"
+    r"(?:(?:fyi|for the record|heads up|note that|just so you know|note for the team)\b\W*)?",
+    re.I,
+)
+
+
+def _echo(line: str) -> str:
     words = _tokens(line)
-    if not words or len(line) > _NOTED_MAX:
-        return NOTED
-    heard = set(_tokens(said))
-    if any(w not in heard and w not in _FUNCTION_WORDS for w in words):
-        return NOTED
-    if words[0] in _FUNCTION_WORDS:
+    if words and words[0] in _FUNCTION_WORDS:
         line = line[0].lower() + line[1:]
     return f"Noted: {line}."
+
+
+def noted(fact: str, said: str) -> str:
+    """The one line for a `note` (walk 15): the fact said back, so a misread shows ("Noted: the oven is closed on
+    Mondays."). The fact is echoed when every word of it is a whole word of the person's own message, or a function
+    word: anything the Router took from memory (a name, an email, a number, a private detail) never reaches the room.
+    Otherwise the person's own words are said back (W18-5: "Lightbulb, FYI we close on Mondays." stored as "The shop
+    closes on Mondays" got the plain NOTED line: "shop" is not a word the person said); NOTED only when those are
+    too long or empty."""
+    line = " ".join(fact.split()).rstrip(".")
+    words = _tokens(line)
+    heard = set(_tokens(said))
+    if words and len(line) <= _NOTED_MAX and all(w in heard or w in _FUNCTION_WORDS for w in words):
+        return _echo(line)
+    own = " ".join(_NOTE_LEAD.sub("", said, count=1).split()).rstrip(".!")
+    if own and len(own) <= _NOTED_MAX and _tokens(own):
+        return _echo(own)
+    return NOTED
 
 
 def strip_end_word(text: str) -> str:

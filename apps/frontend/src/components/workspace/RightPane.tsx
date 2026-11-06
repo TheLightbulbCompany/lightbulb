@@ -17,7 +17,7 @@ import { trapTab } from "@/lib/focusTrap";
 import { paneSheetQuery } from "./paneSheet";
 import { PaneActionsHost, PaneHeader } from "./PaneHeader";
 import { leavePane } from "./panels/AutomationDockPanel";
-import { readableName } from "@/components/creations/docText";
+import { fileLabel } from "@/components/creations/docText";
 
 /** The narrowest a list pane is dragged to (super-agent; 320 without it). */
 export const PANE_MIN_WIDTH = 360;
@@ -51,7 +51,7 @@ export const isPaneItem = (pane: Pick<Slot, "component" | "params">): boolean =>
 /** A doc reads by its own first heading (ArtifactDockPanel sets `heading` for the doc `headingOf`), else a readable name, never its file name. */
 const paneTitle = (pane: Slot): string =>
   pane.component !== "artifact" ? pane.title
-    : (pane.params.headingOf === pane.params.id && pane.params.heading) || (pane.params.name ? readableName(pane.params.name) : pane.title);
+    : (pane.params.headingOf === pane.params.id && pane.params.heading) || (pane.params.name ? fileLabel(pane.params.name) : pane.title);
 
 export function readPaneWidth(key: string, min = LEGACY_PANE_MIN_WIDTH): number {
   return storedPaneWidth(key, min) ?? PANE_DEFAULT_WIDTH;

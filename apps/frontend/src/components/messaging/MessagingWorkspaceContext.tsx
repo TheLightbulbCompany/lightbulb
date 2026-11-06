@@ -1026,6 +1026,7 @@ export function MessagingWorkspaceProvider({
   // Any member may change an agent's response, on every plan (owner ruling 2026-09-24).
   const canManageResponses = canChangeListenMode(viewerRole);
 
+  const workspaceState = useWorkspaceState();
   const directoryProps: RoomDirectoryProps = {
     ownerScopeId: scope,
     rooms: directoryRooms,
@@ -1033,7 +1034,8 @@ export function MessagingWorkspaceProvider({
     participants: directoryParticipants,
     ceoAgentId: resolveCeoAgentId(agentRoster?.agents ?? []) ?? (rosterLoading ? frontId : undefined),
     state: directoryState,
-    currentRoomId: rooms.activeRoomId ?? undefined,
+    // Only while Chat is on screen: on Home or Creations no chat row stays lit (W18).
+    currentRoomId: workspaceState.place === "chat" ? rooms.activeRoomId ?? undefined : undefined,
     // Picking any conversation leaves focus placement — the session goes back
     // to being something you open, not the thing you are looking at.
     onSelectRoom: (roomId: string) => { closeSession(); chooseRoom(roomId); },
@@ -1266,7 +1268,6 @@ export function MessagingWorkspaceProvider({
   const { prefs: notifyPrefs } = useSessionNotificationPrefs();
   const needingYou = useMemo(() => (notifyPrefs.waiting === "off" ? 0 : ownWaitingCount(sessionRows)), [sessionRows, notifyPrefs]);
 
-  const workspaceState = useWorkspaceState();
   const activeDirectoryRoom = directoryRooms.find((room) => room.roomId === rooms.activeRoomId);
   const tabTitle = placeTabTitle(workspaceState, sessionFocus ? "Session"
     : activeDirectoryRoom ? roomDisplayName(activeDirectoryRoom, activeDirectoryRoom.participants) : null);

@@ -108,16 +108,16 @@ async def paused_room(room_id: str | None) -> dict | None:
     return meta if meta and meta.get("pausedAt") else None
 
 
-async def post_paused_notice(ws: str, meta: dict, thread_root: str | None = None) -> None:
-    """One line per pause and thread, in the thread the person wrote in (keyed on pausedAt: a resume re-arms it)."""
-    await task_conversation.post_as_lightbulb(
-        ws,
-        meta["roomId"],
-        text=messaging.PAUSED_ROOM_TEXT,
-        event_id=f"paused:{meta['roomId']}:{thread_root or 'top'}:{meta['pausedAt']}",
-        thread_root=thread_root,
-        remember=False,
-    )
+async def answer_paused_ask(room_id: str) -> None:
+    """Resume (W18-8): the latest message that spoke to Lightbulb while paused gets its Router turn now. Its
+    trigger was never written, so this is its first admission. Best effort: a lost answer never fails Resume."""
+    seq = await messaging_repo.pop_paused_ask(room_id)
+    if seq is None:
+        return
+    try:
+        await _admit_message(room_id, seq)
+    except Exception:  # noqa: BLE001 -- Temporal down (WorkRetry) or a deleted message: the person asks again
+        logger.warning("paused ask not answered room=%s seq=%s", room_id, seq, exc_info=True)
 
 
 async def _admit_trigger(ws: str, trigger_id: str) -> None:
@@ -189,11 +189,12 @@ async def _admit_message(room_id: str, seq: int) -> None:
     # "Hi Lightbulb, ..." without the @: speaking to Lightbulb by name addresses it, like an @mention of its seat.
     named = bool(_LIGHTBULB_NAME.search(msg.get("text") or ""))
 
-    # Paused (W17-2): Lightbulb stops, people keep talking. No Router turn; one line per pause and thread, and only
-    # when the person spoke to Lightbulb. Running tasks were passed through above.
+    # Paused (W17-2): Lightbulb stops, people keep talking. No Router turn and no line in the room (W18-8: the
+    # paused bar tells the sender, nobody else); the latest message that spoke to Lightbulb is answered on Resume.
+    # Running tasks were passed through above.
     if meta.get("pausedAt"):
         if addressed or named or meta.get("kind") == "dm":
-            await post_paused_notice(ws, meta, ref.get("threadRoot"))
+            await messaging_repo.put_paused_ask(room_id, int(msg["messageSeq"]))
         put_metric("admission.outcome", dimensions={"outcome": "paused", "source": "chat"})
         return
     pinned = next((a for a in addressed if not front or a != front["id"]), None)

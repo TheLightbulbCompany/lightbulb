@@ -1643,3 +1643,15 @@ async def test_an_owner_who_wrote_before_setup_finished_still_gets_the_welcome_a
         ("agent", messaging.FIRST_RUN_KIND),
     ]
     assert (await repo.get_room(dm))["firstRun"] is True
+
+
+@pytest.mark.asyncio
+async def test_paused_ask_keeps_the_latest_and_pops_once(table):
+    """W18-8: the latest message that spoke to Lightbulb while paused; an older redelivery never replaces it."""
+    room = str(uuid.uuid4())
+    assert await repo.pop_paused_ask(room) is None
+    await repo.put_paused_ask(room, 5)
+    await repo.put_paused_ask(room, 3)
+    await repo.put_paused_ask(room, 7)
+    assert await repo.pop_paused_ask(room) == 7
+    assert await repo.pop_paused_ask(room) is None

@@ -3108,6 +3108,12 @@ async def patch_room(auth: AuthContext, room_id: str, request: PatchRoomRequest)
     if updates.get("archivedAt"):
         await livekit_huddles.close_room(room_id)  # an archived channel holds no huddle; never raises
     await _publish_room_metadata(meta)
+    if paused is False:  # W18-8: the question asked while paused is answered now
+        from core.services import admission  # lazy: admission imports this module
+
+        await admission.answer_paused_ask(room_id)
+    elif paused:  # a new pause window starts empty
+        await messaging_repo.pop_paused_ask(room_id)
     return await _room_detail(meta, auth.user_id)
 
 

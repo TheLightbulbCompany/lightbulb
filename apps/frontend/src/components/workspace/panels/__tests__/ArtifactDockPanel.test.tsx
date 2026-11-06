@@ -82,7 +82,7 @@ it("the viewer type is the served type, never the URL's: html bytes behind type=
 it("an untyped response previews nothing and offers Download", async () => {
   downloadBlob.mockResolvedValue(new Blob(["%PDF-1.4"]));
   const { container } = render(<ArtifactDockPanel id="artifact" params={{ src: "attachment", room: "r1", id: "u1", name: "x.pdf", type: "application/pdf" }} />);
-  expect(await screen.findByText(/no preview/i)).toBeInTheDocument();
+  expect(await screen.findByText("PDF file. It doesn't preview here.")).toBeInTheDocument();  // W18-10: says what it is
   expect(screen.getByRole("link", { name: "Download" })).toBeInTheDocument();
   expect(container.querySelector("iframe")).toBeNull();
 });

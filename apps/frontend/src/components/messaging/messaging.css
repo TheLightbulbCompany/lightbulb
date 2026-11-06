@@ -441,6 +441,16 @@
 .room-directory :is(button, input, select):focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 .room-panel ::selection, .room-context-host ::selection, .room-directory ::selection { color: var(--primary-foreground); background: var(--primary); }
 
+.room-kind-seg { display: inline-flex; align-self: flex-start; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 8px; }
+.room-kind-seg > button { min-height: 32px; padding: 0 12px; border-radius: 6px; font-size: var(--text-ui); color: var(--muted-foreground); }
+.room-kind-seg > button:hover { color: var(--foreground); }
+.room-kind-seg > button[aria-pressed="true"] { background: var(--muted); color: var(--foreground); font-weight: 600; }
+@media (pointer: coarse) { .room-kind-seg > button { min-height: 44px; } }
+.room-picked { display: flex; flex-wrap: wrap; gap: 6px; }
+.room-picked > li { display: inline-flex; align-items: center; gap: 2px; max-width: 100%; min-height: 28px; padding: 0 2px 0 8px; border: 1px solid var(--border); border-radius: 6px; font-size: var(--text-ui); }
+.room-picked button { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 4px; color: var(--muted-foreground); }
+.room-picked button:hover { background: var(--muted); color: var(--foreground); }
+.room-listen-field { flex-shrink: 0; font-size: var(--text-ui); color: var(--muted-foreground); }
 .room-listen-mode { border: 1px solid var(--input); border-radius: 4px; padding: 4px 6px; background: var(--background); color: var(--foreground); font: inherit; font-size: var(--text-ui); }
 .room-live-run { border-left: 2px solid var(--info); padding-left: 10px; }
 /* left padding aligns with the avatar column (36px .room-message-gutter + 12px .room-message gap = 48px) */

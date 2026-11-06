@@ -1684,6 +1684,30 @@ async def release_room_marker(room_id: str, name: str) -> None:
     await run_in_thread(_table().delete_item, Key={"pk": room_pk(room_id), "sk": f"MARKER#{name}"})
 
 
+async def put_paused_ask(room_id: str, seq: int) -> None:
+    """``PAUSEDASK``: the latest message that spoke to Lightbulb while the room was paused (W18-8), answered on
+    Resume. A later seq replaces an earlier one; an older redelivery never wins."""
+    try:
+        await run_in_thread(
+            _table().put_item,
+            Item={"pk": room_pk(room_id), "sk": "PAUSEDASK", "seq": int(seq), "createdAt": utc_now_iso()},
+            ConditionExpression="attribute_not_exists(sk) OR seq < :s",
+            ExpressionAttributeValues={":s": int(seq)},
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+
+
+async def pop_paused_ask(room_id: str) -> int | None:
+    """The paused ask's seq, removed in the same call: two Resumes answer it once."""
+    resp = await run_in_thread(
+        _table().delete_item, Key={"pk": room_pk(room_id), "sk": "PAUSEDASK"}, ReturnValues="ALL_OLD"
+    )
+    old = resp.get("Attributes")
+    return int(old["seq"]) if old else None
+
+
 async def put_noted(room_id: str, message_id: str, fact: str, *, actor_user_id: str | None = None) -> None:
     """``NOTED#<messageId>``: a message the Router's `note` decision acknowledged, with the fact it read (W15-5:
     what project Settings › Memory lists). Room metadata, not memory; a retried turn keeps the first row."""

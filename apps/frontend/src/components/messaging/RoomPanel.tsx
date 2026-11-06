@@ -544,18 +544,25 @@ function RoomContent({
   // post ends it, and READING_MS is the fallback if that receipt is lost. "Reading" promises no
   // answer. Never while Lightbulb only observes or listens for mentions.
   // ponytail: timers; a server "seen" / "ignored" signal would replace them.
-  const front = superAgent && !runtimeStarting ? participants.find((p) => p.kind === "agent" && p.mentionHandle === "lightbulb") : undefined;
+  const lightbulbSeat = superAgent ? participants.find((p) => p.kind === "agent" && p.mentionHandle === "lightbulb") : undefined;
+  const front = !runtimeStarting ? lightbulbSeat : undefined;
   const lastMain = mainMessages.findLast((message) => !message.deletedAt);
-  const askPending = front && lastMain && lastMain.author.kind === "human" && lastMain.author.id === currentUserId
+  const lastMine = lastMain && lastMain.author.kind === "human" && lastMain.author.id === currentUserId ? lastMain : undefined;
+  const speaksToLightbulb = (message: RoomMessage) => !!lightbulbSeat && (room?.kind === "dm"
+    || message.mentions.some((m) => m.kind === "agent" && m.id === lightbulbSeat.id) || namesAgent(message.text, lightbulbSeat.displayName));
+  // W18-7: no "reading…" where Lightbulb takes no turn: a paused room, or a message for people only ("@Priya thanks").
+  const forPeopleOnly = !!lastMine && lastMine.mentions.length > 0 && lastMine.mentions.every((m) => m.kind === "human") && !speaksToLightbulb(lastMine);
+  // W18-8: the paused note is the sender's alone (the bar under their message), and Resume answers it.
+  const pausedAsk = paused && !!lastMine && speaksToLightbulb(lastMine);
+  const askPending = front && lastMine && !paused && !forPeopleOnly
     && !runs.some((run) => run.state === "running")
     // A run for this ask that already ended (failed, stopped) shows its own outcome.
-    && !allRuns.some((run) => run.triggerMessageId === lastMain.messageId)
-    && ![...(repliesByRoot.get(lastMain.messageId)?.authors.values() ?? [])].some((author) => author.kind === "agent")
+    && !allRuns.some((run) => run.triggerMessageId === lastMine.messageId)
+    && ![...(repliesByRoot.get(lastMine.messageId)?.authors.values() ?? [])].some((author) => author.kind === "agent")
     && front.listenMode !== "observe"
-    && !agentReads?.get(front.id)?.has(lastMain.messageId)
-    ? lastMain : undefined;
-  const addressed = !!askPending && !!front && (room?.kind === "dm"
-    || askPending.mentions.some((m) => m.kind === "agent" && m.id === front.id) || namesAgent(askPending.text, front.displayName));
+    && !agentReads?.get(front.id)?.has(lastMine.messageId)
+    ? lastMine : undefined;
+  const addressed = !!askPending && speaksToLightbulb(askPending);
   const readingPending = askPending && (addressed || front?.listenMode !== "mentions") ? askPending : undefined;
   const [onItExpired, setOnItExpired] = useState<string | null>(null);
   useEffect(() => {
@@ -1154,9 +1161,9 @@ function RoomContent({
       {messageActionError && <p role="alert" className="room-typing text-ui text-err">{messageActionError}</p>}
       {!visibleRoom?.archivedAt && <RoomLimitBar account={billing} />}
       {paused && <div className="project-paused" role="status">
-        <span>Lightbulb is paused here.</span>
+        <span>{pausedAsk ? "Lightbulb is paused here, so it hasn't answered you. Only you see this." : "Lightbulb is paused here."}</span>
         {onPatchRoom && canPause && <Button type="button" size="sm" variant="ghost" className="h-7" disabled={!actionable || messageActionPending}
-          onClick={() => void runMessageAction(() => onPatchRoom({ paused: false }), `The ${projectNoun(visibleRoom?.kind)} could not be resumed.`)}>Resume</Button>}
+          onClick={() => void runMessageAction(() => onPatchRoom({ paused: false }), `The ${projectNoun(visibleRoom?.kind)} could not be resumed.`)}>{pausedAsk ? "Resume and answer" : "Resume"}</Button>}
       </div>}
       {showFirstReplies && <FirstReplyChips onPick={(text) => { if (composer.text.trim() === "") composer.onTextChange(text); setFocusToken((t) => t + 1); }} />}
       {visibleRoom?.feed ? <div className="room-composer room-archived" role="status">

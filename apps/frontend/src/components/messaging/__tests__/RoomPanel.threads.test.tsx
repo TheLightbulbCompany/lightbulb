@@ -471,6 +471,38 @@ describe("RoomPanel Threads view (super-agent)", () => {
     expect(onPatchRoom).toHaveBeenCalledWith({ paused: false });
   });
 
+  it("W18-7: no reading… in a paused room, or on a message for a person only", async () => {
+    const front = { ...lightbulb, mentionHandle: "lightbulb", listenMode: "active" as const };
+    const now = new Date().toISOString();
+    const ask = { ...message, text: "Hi Lightbulb, can you help?", createdAt: now };
+    const toPriya = { ...message, text: "@priya thanks for running the table!", mentions: [{ kind: "human" as const, id: "u-priya" }], createdAt: now };
+    const shows = () => screen.queryByText("Lightbulb is reading…") !== null;
+    const { rerender } = render(<Fresh><RoomPanel {...props} participants={[sam, front]} messages={[ask]} /></Fresh>);
+    expect(await screen.findByText("Lightbulb is reading…")).toBeInTheDocument();
+    rerender(<Fresh><RoomPanel {...props} room={{ ...props.room!, pausedAt: "2026-11-06T10:00:00Z" }} participants={[sam, front]} messages={[ask]} /></Fresh>);
+    expect(shows()).toBe(false);
+    rerender(<Fresh><RoomPanel {...props} participants={[sam, front]} messages={[toPriya]} /></Fresh>);
+    expect(shows()).toBe(false);
+    // A person and Lightbulb both mentioned: Lightbulb reads it.
+    rerender(<Fresh><RoomPanel {...props} participants={[sam, front]} messages={[{ ...toPriya, mentions: [...toPriya.mentions, { kind: "agent" as const, id: front.id }] }]} /></Fresh>);
+    expect(shows()).toBe(true);
+  });
+
+  it("W18-8: the paused note is the sender's, under their ask, and Resume answers it", async () => {
+    const front = { ...lightbulb, mentionHandle: "lightbulb", listenMode: "active" as const };
+    const onPatchRoom = vi.fn().mockResolvedValue(undefined);
+    const paused = { ...props.room!, pausedAt: "2026-11-06T10:00:00Z" };
+    const ask = { ...message, text: "Lightbulb, what should the tasting cost?", createdAt: new Date().toISOString() };
+    const { rerender } = render(<Fresh><RoomPanel {...props} room={paused} participants={[sam, front]} messages={[ask]} onPatchRoom={onPatchRoom} canPause /></Fresh>);
+    expect(await screen.findByText("Lightbulb is paused here, so it hasn't answered you. Only you see this.")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Resume and answer" }));
+    expect(onPatchRoom).toHaveBeenCalledWith({ paused: false });
+    // Someone else's ask, or the viewer's message to people: the plain bar.
+    const theirs = { ...ask, author: { kind: "human" as const, id: "u-priya", displayName: "Priya" } };
+    rerender(<Fresh><RoomPanel {...props} room={paused} participants={[sam, front]} messages={[theirs]} onPatchRoom={onPatchRoom} canPause /></Fresh>);
+    expect(await screen.findByText("Lightbulb is paused here.")).toBeInTheDocument();
+  });
+
   it("W17-10: a DM between two people says Message <name>, not Ask Lightbulb", async () => {
     const priya: RoomParticipant = { ...sam, id: "u-priya", displayName: "Priya Test", role: "member" };
     const { rerender } = render(<Fresh><RoomPanel {...props} room={{ ...props.room!, kind: "dm", name: null }} participants={[sam, priya]} /></Fresh>);

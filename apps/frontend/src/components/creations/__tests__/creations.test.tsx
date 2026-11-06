@@ -24,7 +24,7 @@ import { ProjectFiles } from "../ProjectFiles";
 import { TaskOutputs } from "../TaskOutputs";
 import { OutputThumb } from "../OutputThumb";
 import { OutputBackContext, openOutput, outputLink, outputName } from "../openOutput";
-import { docPreview, readableName } from "../docText";
+import { docPreview, fileLabel, readableName, resultPiece } from "../docText";
 
 const out = (over: Partial<CreationOutput>): CreationOutput => ({
   id: "o", kind: "document", title: "Welcome note.md", ref: {}, createdAt: new Date(Date.now() - 3_600_000).toISOString(),
@@ -213,6 +213,16 @@ describe("doc faces (W13)", () => {
     expect(docPreview("---\nx: 1\n---\n# Autumn **Specials**\n\n### Pumpkin Latte\nVelvety [espresso](https://x.y).\n```\ncode\n```\n- Apple\n- Pear"))
       .toEqual({ heading: "Autumn Specials", lines: ["Pumpkin Latte", "Velvety espresso.", "Apple"] });
     expect(docPreview("Just text.")).toEqual({ heading: null, lines: ["Just text."] });
+  });
+
+  it("a PDF and a Word file of one sheet read apart, never as one slug (W18-10)", () => {
+    expect(fileLabel("tea-tasting-table-sign-up-sheet.pdf")).toBe("Tea tasting table sign up sheet · PDF");
+    expect(fileLabel("tea-tasting-table-sign-up-sheet.docx")).toBe("Tea tasting table sign up sheet · Word");
+    expect(fileLabel("menu-blurbs.md")).toBe("Menu blurbs");
+  });
+
+  it("a short result's deliverable drops an email's preview-text line (W18)", () => {
+    expect(resultPiece("Drafted the invite.\n\nSubject: Tea\n\nPreview text: Join us\n\nHi all")).toBe("Subject: Tea\n\n\nHi all");
   });
 
   it("a tile that goes away cancels its preview read", async () => {

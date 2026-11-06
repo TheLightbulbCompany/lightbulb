@@ -19,7 +19,7 @@ import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingW
 import { roomDisplayName } from "@lightbulb/shared";
 import { blobText } from "@/components/media/readBlob";
 import { formatBytes } from "@/lib/utils";
-import { docPreview, plainCta, resultPiece } from "@/components/creations/docText";
+import { docPreview, fileTypeWord, plainCta, resultPiece } from "@/components/creations/docText";
 import type { PanelProps } from "../panelComponents";
 import { DocumentContents } from "./DocumentContents";
 import { CONTENTS_MIN_HEADINGS, outlineOf } from "./documentOutline";
@@ -124,7 +124,11 @@ function FilePane({ source, task, from }: { source: FileSource; task: string | n
     {state.status === "error" && <p role="alert" className="p-4 text-ui">{state.message}</p>}
     {state.status === "ready" && (isPaneViewable(state.type) || state.type.startsWith("image/") || state.type.startsWith("video/")
       ? <FileViewerContent item={{ fileName: state.name, contentType: state.type, size: state.blob.size, url: state.url, blob: state.blob }} className="h-full" />
-      : <p className="p-4 text-ui text-muted-foreground">No preview for this file type. Use Download.</p>)}
+      // W18-10: say what it is ("Word file") and make Download the way in, not a dead end.
+      : <div className="grid justify-items-start gap-3 p-4 text-ui">
+        <p className="text-muted-foreground">{fileTypeWord(state.name) ? `${fileTypeWord(state.name)} file. ` : ""}It doesn&apos;t preview here.</p>
+        {superAgent && <Button asChild size="sm"><a href={state.url} download={state.name}><Download aria-hidden="true" />Download</a></Button>}
+      </div>)}
   </>;
   if (!superAgent) return <PaneFrame actions={download}>{body}</PaneFrame>;
   // Super-agent: Copy (a text doc) and Download sit in the pane's header beside Expand and ✕, no row of their own

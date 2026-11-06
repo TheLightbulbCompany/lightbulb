@@ -33,7 +33,8 @@ export function MessageTasks({ message, viewerId, onOpen }: {
   // task as a chip with a live dot. A result post or a question keeps the full card (its text, its buttons).
   const Ref = !message.kind || message.kind === "task_line" ? RefChip : RefCard;
   return <div aria-label="Tasks in this message">
-    {refs.map((r) => <Ref key={r.taskId} taskId={r.taskId} listed={byId.get(r.taskId)} viewerId={viewerId} onOpen={onOpen} />)}
+    {refs.map((r) => <Ref key={r.taskId} taskId={r.taskId} listed={byId.get(r.taskId)} viewerId={viewerId} onOpen={onOpen}
+      withOutputs={message.kind === "task_line"} />)}
   </div>;
 }
 
@@ -43,9 +44,10 @@ const MARK_TEXT: Record<ChipMark, string> = {
 
 /** One task, one chip (dev walk 12, W12-1): its title, specialist and live state, "Working · 0:38" → "Done · 1:02"
  *  or "Didn't finish", read from the room's one task list, so the ack and the finish line always agree. What it made
- *  sits under it, each thing openable. */
-function RefChip({ taskId, listed, viewerId, onOpen }: {
-  taskId: string; listed: TaskSummary | undefined; viewerId: string; onOpen?: (taskId: string) => void;
+ *  sits under the finish line's chip only (`withOutputs`), so each thing shows once in the chat. The task comes only
+ *  from reads the server filters by who may view it (the room list, else `GET /tasks/{id}`): no read, no chip. */
+function RefChip({ taskId, listed, viewerId, onOpen, withOutputs }: {
+  taskId: string; listed: TaskSummary | undefined; viewerId: string; onOpen?: (taskId: string) => void; withOutputs?: boolean;
 }): ReactElement | null {
   const { tasks, agentNames } = useLiveEvents();
   const { data } = useTask(tasks, listed ? null : taskId);
@@ -74,13 +76,13 @@ function RefChip({ taskId, listed, viewerId, onOpen }: {
       </span>
       <ChevronRight aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
     </button>
-    <TaskOutputs task={task} max={2} onOpenTask={() => onOpen?.(taskId)} />
+    {withOutputs && <TaskOutputs task={task} max={2} onOpenTask={() => onOpen?.(taskId)} />}
   </div>;
 }
 
 /** A card whose task the room list doesn't hold (older than its pages, or another scope) reads it by id. */
 function RefCard({ taskId, listed, viewerId, onOpen }: {
-  taskId: string; listed: TaskSummary | undefined; viewerId: string; onOpen?: (taskId: string) => void;
+  taskId: string; listed: TaskSummary | undefined; viewerId: string; onOpen?: (taskId: string) => void; withOutputs?: boolean;
 }): ReactElement | null {
   const { tasks } = useLiveEvents();
   const { data, error } = useTask(tasks, listed ? null : taskId);

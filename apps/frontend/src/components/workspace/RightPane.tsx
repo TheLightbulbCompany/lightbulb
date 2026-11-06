@@ -47,9 +47,10 @@ export const isPaneItem = (pane: Pick<Slot, "component" | "params">): boolean =>
   pane.component === "task" || pane.component === "automation" || pane.component === "artifact"
   || (pane.component === "thread" && pane.params.item === "1");
 
-/** A doc reads by its first heading (ArtifactDockPanel sets `heading`), else a readable name, never its file name. */
+/** A doc reads by its own first heading (ArtifactDockPanel sets `heading` for the doc `headingOf`), else a readable name, never its file name. */
 const paneTitle = (pane: Slot): string =>
-  pane.component === "artifact" ? pane.params.heading || (pane.params.name ? readableName(pane.params.name) : pane.title) : pane.title;
+  pane.component !== "artifact" ? pane.title
+    : (pane.params.headingOf === pane.params.id && pane.params.heading) || (pane.params.name ? readableName(pane.params.name) : pane.title);
 
 export function readPaneWidth(key: string, min = LEGACY_PANE_MIN_WIDTH): number {
   try {

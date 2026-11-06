@@ -40,7 +40,8 @@ export function isTextDoc(o: Pick<TaskOutput, "kind" | "title" | "ref">): boolea
   return type === "text/markdown" || type === "text/plain" || (!type && (extensionOf(o) === "MD" || extensionOf(o) === "TXT"));
 }
 
-/** A doc's heading and first lines: its first 4 KB through the room-checked attachment route, once it is on screen. */
+/** A doc's heading and first lines: its first 4 KB (`?head=`, a ranged read) through the room-checked attachment route,
+ *  once the tile is on screen. A tile that goes away cancels its read. */
 function useDocPreview(ref: Record<string, string>, on: boolean) {
   const { messaging } = useLiveEvents();
   const face = useRef<HTMLSpanElement>(null);
@@ -53,10 +54,17 @@ function useDocPreview(ref: Record<string, string>, on: boolean) {
     io.observe(el);
     return () => io.disconnect();
   }, [on, seen]);
-  const { data } = useSWR(on && seen && ref.roomId && ref.attachmentId ? ["attachment-preview", ref.roomId, ref.attachmentId] : null,
-    async ([, room, id]: [string, string, string]) => docPreview(await blobText((await messaging.downloadAttachment(room, id)).slice(0, 4096))),
-    { shouldRetryOnError: false, revalidateOnFocus: false });
-  return { face, preview: data };
+  const [preview, setPreview] = useState<{ key: string; value: ReturnType<typeof docPreview> } | null>(null);
+  const { roomId, attachmentId } = ref;
+  const key = `${roomId}:${attachmentId}`;
+  useEffect(() => {
+    if (!on || !seen || !roomId || !attachmentId) return;
+    const abort = new AbortController();
+    messaging.downloadAttachment(roomId, attachmentId, { head: 4096, signal: abort.signal })
+      .then(blobText).then((text) => { if (!abort.signal.aborted) setPreview({ key: `${roomId}:${attachmentId}`, value: docPreview(text) }); }, () => undefined);
+    return () => abort.abort();
+  }, [on, seen, roomId, attachmentId, messaging]);
+  return { face, preview: preview?.key === key ? preview.value : undefined };
 }
 
 export function OutputThumb({ output, app, size = "tile", frame = true }: {

@@ -89,16 +89,18 @@ function FilePane({ source }: { source: FileSource }) {
   const superAgent = useSuperAgent();
   const text = state.status === "ready" && (state.type === "text/markdown" || state.type === "text/plain");
   // Super-agent: a text doc is titled by its first heading (RightPane reads `heading`; the file name is the line under).
+  // The heading names the doc it came from (`headingOf`): a slow read of one doc never titles the next.
   const blob = state.status === "ready" ? state.blob : null;
+  const docId = source.id;
   useEffect(() => {
     if (!superAgent || !text || !blob) return;
     let live = true;
     void blobText(blob.slice(0, 4096)).then((t) => {
       const heading = docPreview(t, 0).heading;
-      if (live && heading) updatePanelParams("artifact", { heading });
+      if (live && heading) updatePanelParams("artifact", { heading, headingOf: docId });
     }, () => undefined);
     return () => { live = false; };
-  }, [superAgent, text, blob]);
+  }, [superAgent, text, blob, docId]);
   const download = state.status === "ready" ? <a className="inline-flex" href={state.url} download={state.name} aria-label="Download"><Download aria-hidden="true" /></a> : null;
   const body = <>
     {state.status === "loading" && <p className="p-4 text-ui text-muted-foreground">Loading…</p>}

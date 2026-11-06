@@ -1654,17 +1654,41 @@ def attachment_url(owner_id: str, room_id: str, attachment_id: str) -> str:
     )
 
 
+def _attachment_metadata(owner_id: str, room_id: str, normalized: str) -> tuple[MessageAttachment, str]:
+    """One attachment's metadata and the key of its bytes; raises ValueError/KeyError/OSError when absent."""
+    raw = hermes_profiles.get_owner_object(attachment_key(owner_id, room_id, f"{normalized}.json"))
+    if raw is None:
+        raise ValueError("attachment metadata not found")
+    metadata = MessageAttachment.model_validate_json(raw)
+    if str(metadata.id) != normalized:
+        raise ValueError("attachment metadata mismatch")
+    suffix = _ATTACHMENT_SIGNATURES[metadata.content_type][1]
+    return metadata, attachment_key(owner_id, room_id, f"{normalized}{suffix}")
+
+
+ATTACHMENT_HEAD_MAX = 16 * 1024
+
+
+def load_attachment_head(
+    owner_id: str, room_id: str, attachment_id: str, length: int
+) -> tuple[MessageAttachment, bytes]:
+    """The first ``length`` bytes (at most 16 KB) of one attachment, by a ranged read: a tile's preview never pulls the
+    whole file. The caller has checked room membership, as for ``load_attachment``."""
+    normalized = str(uuid.UUID(attachment_id))
+    length = max(1, min(length, ATTACHMENT_HEAD_MAX))
+    try:
+        metadata, key = _attachment_metadata(owner_id, room_id, normalized)
+        data = hermes_profiles.get_owner_object_head(key, min(length, metadata.size)) if metadata.size else b""
+    except (OSError, ValueError, KeyError, ClientError) as exc:
+        raise ApiProblem("MESSAGE_NOT_FOUND", "Attachment not found.") from exc
+    return metadata, data
+
+
 def load_attachment(owner_id: str, room_id: str, attachment_id: str) -> tuple[MessageAttachment, bytes]:
     normalized = str(uuid.UUID(attachment_id))
     try:
-        raw = hermes_profiles.get_owner_object(attachment_key(owner_id, room_id, f"{normalized}.json"))
-        if raw is None:
-            raise ValueError("attachment metadata not found")
-        metadata = MessageAttachment.model_validate_json(raw)
-        if str(metadata.id) != normalized:
-            raise ValueError("attachment metadata mismatch")
-        suffix = _ATTACHMENT_SIGNATURES[metadata.content_type][1]
-        data = hermes_profiles.get_owner_object(attachment_key(owner_id, room_id, f"{normalized}{suffix}"))
+        metadata, key = _attachment_metadata(owner_id, room_id, normalized)
+        data = hermes_profiles.get_owner_object(key)
         if data is None:
             raise ValueError("attachment bytes not found")
     except (OSError, ValueError, KeyError) as exc:

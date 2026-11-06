@@ -1078,12 +1078,18 @@ async def get_room_attachment(
     room_id: str,
     attachment_id: str,
     auth: AuthContext = Depends(get_current_user),
+    head: Annotated[int | None, Query(ge=1, le=service.ATTACHMENT_HEAD_MAX)] = None,
 ):
     # Files live with the ROOM's owner, so a foreign member's upload lands where the
     # room's own members can read it (and vice versa).
     meta, _ = await service.require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
     owner_id = meta["ownerId"]
-    attachment, data = await run_in_thread(service.load_attachment, owner_id, room_id, attachment_id)
+    # `?head=N`: only the first N bytes (a doc tile's preview), by a ranged read from storage.
+    attachment, data = await (
+        run_in_thread(service.load_attachment_head, owner_id, room_id, attachment_id, head)
+        if head
+        else run_in_thread(service.load_attachment, owner_id, room_id, attachment_id)
+    )
     # ZIPs are opaque downloads; HTML must never render on this origin (a page an agent
     # wrote, or was tricked into writing, would run as the API). Both download; the
     # viewer renders HTML in a sandboxed frame from the fetched text instead.

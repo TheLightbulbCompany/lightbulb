@@ -521,7 +521,10 @@ it("W12-5: a file opened from a task goes back to that task: '‹ Task' and Esca
     // W13-7: the doc keeps the task's width, and reads by a name (then its first heading), never its file name.
     expect(pane.style.width).toBe("clamp(520px, 50%, 60%)");
     expect(within(pane).getByRole("heading", { name: "Taglines" })).toBeInTheDocument();
-    act(() => updatePanelParams("artifact", { heading: "Bakery taglines" }));
+    // A heading read from another doc (a slow first open) never titles this one.
+    act(() => updatePanelParams("artifact", { heading: "Someone else's", headingOf: "a0" }));
+    expect(within(pane).getByRole("heading", { name: "Taglines" })).toBeInTheDocument();
+    act(() => updatePanelParams("artifact", { heading: "Bakery taglines", headingOf: "a1" }));
     expect(within(pane).getByRole("heading", { name: "Bakery taglines" })).toBeInTheDocument();
     fireEvent.keyDown(pane, { key: "Escape" });
     expect(getWorkspaceSnapshot().pane).toMatchObject({ component: "task", params: { taskId: "t-1" } });

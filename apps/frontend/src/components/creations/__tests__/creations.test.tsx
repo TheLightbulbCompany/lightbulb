@@ -186,6 +186,16 @@ describe("doc faces (W13)", () => {
     expect(docPreview("Just text.")).toEqual({ heading: null, lines: ["Just text."] });
   });
 
+  it("a tile that goes away cancels its preview read", async () => {
+    client.outputs.mockResolvedValue({ outputs: [DOC], next: null });
+    live.messaging.downloadAttachment.mockReturnValue(new Promise(() => undefined));
+    const { unmount } = render(<Fresh><MadeHere roomId="r-walk7" onOpenTask={vi.fn()} onAllFiles={vi.fn()} /></Fresh>);
+    await waitFor(() => expect(live.messaging.downloadAttachment).toHaveBeenCalled());
+    const signal = (live.messaging.downloadAttachment.mock.calls[0] as unknown[])[2] as { signal: AbortSignal };
+    unmount();
+    expect(signal.signal.aborted).toBe(true);
+  });
+
   it("Made here shows a doc as its title and first lines, read through the room's attachment route", async () => {
     client.outputs.mockResolvedValue({ outputs: [DOC], next: null });
     live.messaging.downloadAttachment.mockResolvedValue(new Blob(["# Welcome, Priya\n\nGlad you're here.\nStart with the menu."], { type: "text/markdown" }));
@@ -194,7 +204,8 @@ describe("doc faces (W13)", () => {
     expect(await within(strip).findByText("Welcome, Priya")).toBeInTheDocument();
     expect(within(strip).getByText("Start with the menu.")).toBeInTheDocument();
     expect(within(strip).getByText("Welcome note")).toBeInTheDocument();
-    expect(live.messaging.downloadAttachment).toHaveBeenCalledWith("r-walk7", "att1");
+    // Only the head, by a cancellable read.
+    expect(live.messaging.downloadAttachment).toHaveBeenCalledWith("r-walk7", "att1", { head: 4096, signal: expect.any(AbortSignal) });
   });
 });
 

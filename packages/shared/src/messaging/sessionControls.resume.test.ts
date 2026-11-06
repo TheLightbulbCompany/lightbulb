@@ -38,6 +38,8 @@ describe("resumeStatus", () => {
       .toBe("Not resumed: it continues as a newer session on your Mac. Open that session instead.");
     expect(resumeStatus(ended({ cwdName: "lightbulb", resume: { state: "failed", byUserId: "bob", requestedAt: "", reason: "FOLDER_NOT_APPROVED" } }), false, "Alice", nameOf, "bob"))
       .toBe("Not resumed: lightbulb is no longer an approved folder on Alice’s Mac.");
+    expect(resumeStatus(ended({ cwdName: "worktree", resume: { state: "failed", byUserId: "bob", requestedAt: "", reason: "FOLDER_NOT_TRUSTED" } }), false, "Alice", nameOf, "bob"))
+      .toBe("Not resumed: Claude Code does not trust worktree on Alice’s Mac yet. Open it there once to trust the folder, then resume.");
     expect(resumeStatus(ended(), false, "Alice", nameOf, "bob")).toBeNull();
   });
 });

@@ -366,8 +366,8 @@ class ResumeStatus(ContractModel):
     state: Literal["pending", "failed"]
     by_user_id: str
     requested_at: str
-    # Why the Mac refused: ALREADY_RUNNING, CONTINUED, FOLDER_MISSING, FOLDER_NOT_APPROVED, TOOL_UNAVAILABLE, SHARING_OFF,
-    # LAUNCH_FAILED.
+    # Why the Mac refused: ALREADY_RUNNING, CONTINUED, FOLDER_MISSING, FOLDER_NOT_APPROVED, FOLDER_NOT_TRUSTED,
+    # TOOL_UNAVAILABLE, SHARING_OFF, LAUNCH_FAILED.
     reason: str | None = None
 
     @model_serializer(mode="wrap")

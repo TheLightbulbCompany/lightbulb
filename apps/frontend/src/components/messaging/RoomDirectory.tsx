@@ -229,7 +229,7 @@ function DirectoryContent({
   // stale value after the action settles is inert.
   const [actingRoomId, setActingRoomId] = useState<string | null>(null);
   // Same rule as the room panel: a shared room is never added to; a channel takes its owner or an admin; a
-  // direct message or group chat, anyone (adding to a DM turns it into a group chat in place).
+  // direct message or group chat, anyone (adding to a DM starts a new group chat; the DM stays as it was).
   const canAddPeople = (room: DirectoryRoom) => !room.shared && (room.kind === "dm" || room.kind === "group-dm" || (room.kind === "channel"
     && room.members.some((member) => member.kind === "human" && member.id === currentUserId && (member.role === "owner" || member.role === "admin"))));
   const validName = kind === "channel"

@@ -64,7 +64,11 @@ export default function RoomDetailsScreen() {
       room={room}
       currentUserId={userId ?? ""}
       candidates={candidates}
-      upsertMember={rooms.upsertMember}
+      // Adding someone to a DM starts a new group chat (the DM stays as it was): go there.
+      upsertMember={async (request) => {
+        const updated = await rooms.upsertMember(request);
+        if (updated.roomId !== room.roomId) router.replace(`/(app)/room/${updated.roomId}`);
+      }}
       removeMember={rooms.removeMember}
       initialAddPeopleOpen={addPeople === "1"}
       // Past the conversation too: it is gone for this reader.

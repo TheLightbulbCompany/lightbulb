@@ -1016,6 +1016,7 @@ function RoomContent({
             {participant.kind === "agent" && !superAgent && <AgentResponse participant={participant} selectId={`${id}-context-${participant.id}-mode`} onChange={onListenModeChange} />}
           </li>)}</ul>
           {canAddMembers && memberPickerOpen && <div className="room-member-picker">
+            {visibleRoom?.kind === "dm" && <p className="text-ui text-muted-foreground">Adding someone starts a new group chat with them. This chat stays private.</p>}
             <label className="sr-only" htmlFor={`${id}-member-search`}>Search people</label>
             <input id={`${id}-member-search`} type="search" className="room-input" placeholder="Search people" value={memberQuery}
               onChange={(event) => setMemberQuery(event.target.value)} />

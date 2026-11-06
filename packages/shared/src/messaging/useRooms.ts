@@ -1348,9 +1348,16 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
   const upsertMember = useCallback(async (request: UpsertRoomMemberRequest) => {
     if (!activeRoomId) throw new Error("No room selected.");
     const updated = await messaging.upsertMember(activeRoomId, request);
+    if (updated.roomId !== activeRoomId) {
+      // Adding someone to a DM starts a new group chat (the DM stays as it was): list it and open it.
+      await mutateRooms();
+      selectionRequest.current += 1;
+      setActiveRoomId(updated.roomId);
+      return updated;
+    }
     await mutateRoom(updated, false);
     return updated;
-  }, [activeRoomId, messaging, mutateRoom]);
+  }, [activeRoomId, messaging, mutateRoom, mutateRooms]);
 
   const removeMember = useCallback(async (member: Pick<RoomMember, "kind" | "id">) => {
     if (!activeRoomId) throw new Error("No room selected.");

@@ -232,3 +232,41 @@ def test_search_page_dates_a_claim_by_its_valid_from(mod, backend):
          "validFrom": None, "status": "current"}]}
     out = json.loads(provider(mod, FakeClient()).handle_tool_call("workspace_memory_search", {"query": "city"}))
     assert out["page"] == "Current:\nAnn: city: Oslo (2024-03-15)\nBo: team: infra (2026-10-29)"
+
+
+@pytest.fixture
+def router(mod, monkeypatch):  # noqa: F811
+    token = turn._ROUTER_TURN.set(True)
+    mod._RECALL.clear()
+    monkeypatch.setattr(mod, "_ROUTER_RECALL_WAIT_S", 0.2)
+    yield
+    turn._ROUTER_TURN.reset(token)
+
+
+def test_router_recall_skips_the_board_and_waits_briefly(mod, backend, router, monkeypatch):
+    import threading
+
+    p = provider(mod, FakeClient())
+    assert p.prefetch(said("launch?")).splitlines() == ["Remembered:", "- Launch is Nov 3 (contested)", "- Weekly reports"]
+    assert [c for c in backend.calls if "/board/" in c[0]] == []  # the Router prompt has the tasks
+    # Walk 15: a slow recall no longer holds the reply. The scope's page from a moment ago stands in for it.
+    gate = threading.Event()
+    monkeypatch.setattr(mod.urllib.request, "urlopen", lambda req, timeout=None: (gate.wait(2), backend(req, timeout))[1])
+    assert "- Weekly reports" in provider(mod, FakeClient()).prefetch(said("and the budget?"))
+    mod._RECALL.clear()
+    assert provider(mod, FakeClient()).prefetch(said("and the budget?")) == ""  # nothing recent: no memory
+    gate.set()
+
+
+def test_router_recall_cache_never_crosses_scopes(mod, backend, router, monkeypatch):
+    from bridge.memory_ctx import MEMORY_CTX
+
+    shared = {"lane": "shared", "member": None, "audience": {"kind": "room", "roomId": "r1"}, "tags": {}, "sync": "none"}
+    private = {"lane": "private", "member": "user_2abc", "audience": {"kind": "person", "userId": "user_2abc"},
+               "tags": {}, "sync": "none"}
+    MEMORY_CTX.set(private)
+    provider(mod, FakeClient()).prefetch(said("my salary?"))
+    monkeypatch.setattr(mod.urllib.request, "urlopen", lambda req, timeout=None: (_ for _ in ()).throw(TimeoutError()))
+    MEMORY_CTX.set(shared)
+    assert provider(mod, FakeClient()).prefetch(said("my salary?")) == ""  # the private page stays private
+    MEMORY_CTX.set(None)

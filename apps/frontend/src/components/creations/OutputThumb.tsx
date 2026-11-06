@@ -1,14 +1,16 @@
 "use client";
 
-// The face of an output: an app's own page (live, scaled into the tile), an image itself, else its glyph with the
-// extension or host. Glyphs are lucide, one stroke.
+// The face of an output: an app's own page (live, scaled into the tile), an image itself, a doc's title and first
+// lines, else its glyph with the extension or host. Glyphs are lucide, one stroke.
 
-import type { ReactElement } from "react";
+import { useEffect, useRef, useState, type ReactElement } from "react";
 import useSWR from "swr";
 import { AppWindow, ArrowUpRight, FileText, File as FileIcon, Mail, Sparkles, type LucideIcon } from "lucide-react";
 import type { OutputKind, TaskOutput } from "@lightbulb/shared";
 import type { AppRow } from "@/hooks/useApps";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
+import { blobText } from "@/components/media/readBlob";
+import { docPreview, readableName } from "./docText";
 import { extensionOf, hostOf } from "./openOutput";
 
 const KIND_ICON: Record<OutputKind, LucideIcon> = {
@@ -31,17 +33,52 @@ function useAttachmentImage(ref: Record<string, string>, on: boolean): string | 
   return data?.url;
 }
 
+/** A doc a task wrote as text (markdown or plain), which its tile previews. */
+export function isTextDoc(o: Pick<TaskOutput, "kind" | "title" | "ref">): boolean {
+  if (o.kind !== "document" && o.kind !== "file") return false;
+  const type = (o.ref?.contentType ?? "").split(";")[0].trim().toLowerCase();
+  return type === "text/markdown" || type === "text/plain" || (!type && (extensionOf(o) === "MD" || extensionOf(o) === "TXT"));
+}
+
+/** A doc's heading and first lines: its first 4 KB (`?head=`, a ranged read) through the room-checked attachment route,
+ *  once the tile is on screen. A tile that goes away cancels its read. */
+function useDocPreview(ref: Record<string, string>, on: boolean) {
+  const { messaging } = useLiveEvents();
+  const face = useRef<HTMLSpanElement>(null);
+  // No IntersectionObserver (an old browser, a test): read at once; the cap still holds.
+  const [seen, setSeen] = useState(() => typeof IntersectionObserver === "undefined");
+  useEffect(() => {
+    const el = face.current;
+    if (!on || seen || !el) return;
+    const io = new IntersectionObserver((entries) => { if (entries.some((e) => e.isIntersecting)) { setSeen(true); io.disconnect(); } }, { rootMargin: "200px" });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [on, seen]);
+  const [preview, setPreview] = useState<{ key: string; value: ReturnType<typeof docPreview> } | null>(null);
+  const { roomId, attachmentId } = ref;
+  const key = `${roomId}:${attachmentId}`;
+  useEffect(() => {
+    if (!on || !seen || !roomId || !attachmentId) return;
+    const abort = new AbortController();
+    messaging.downloadAttachment(roomId, attachmentId, { head: 4096, signal: abort.signal })
+      .then(blobText).then((text) => { if (!abort.signal.aborted) setPreview({ key: `${roomId}:${attachmentId}`, value: docPreview(text) }); }, () => undefined);
+    return () => abort.abort();
+  }, [on, seen, roomId, attachmentId, messaging]);
+  return { face, preview: preview?.key === key ? preview.value : undefined };
+}
+
 export function OutputThumb({ output, app, size = "tile", frame = true }: {
   output: Pick<TaskOutput, "kind" | "title" | "ref">;
   /** The app's row, for its page; without one an app shows its glyph. */
   app?: AppRow;
   /** "tile": Creations' 16:10 tile, with the extension or host under the glyph. "mini": Made here's 88×56. */
   size?: "tile" | "mini";
-  /** false: never frame the app's page (the grid frames only its first few). */
+  /** false: never frame the app's page or preview the doc (the grid shows only its first few). */
   frame?: boolean;
 }): ReactElement {
   const image = (output.kind === "file" || output.kind === "document") && output.ref?.contentType?.startsWith("image/");
   const src = useAttachmentImage(output.ref ?? {}, !!image);
+  const { face, preview } = useDocPreview(output.ref ?? {}, frame && isTextDoc(output));
   // Only a public app frames as itself: any other shows its sign-in door, so it gets the glyph.
   const page = frame && output.kind === "app" && app?.open_to === "public" && app.can_open !== false ? app.live_url ?? app.preview_url : null;
   if (page && /^https?:\/\//.test(page)) {
@@ -56,8 +93,15 @@ export function OutputThumb({ output, app, size = "tile", frame = true }: {
       <img src={src} alt="" loading="lazy" />
     </span>;
   }
+  if (preview && (preview.heading || preview.lines.length)) {
+    // A small page: the doc's title and its opening lines, read-only, so the tile says what it is.
+    return <span ref={face} className="output-thumb output-thumb--doc" data-size={size}>
+      <span className="output-thumb__doc-title">{preview.heading ?? readableName(output.ref?.fileName || output.title)}</span>
+      {preview.lines.map((line, i) => <span key={i} className="output-thumb__doc-line">{line}</span>)}
+    </span>;
+  }
   const note = output.kind === "link" || output.kind === "pr" ? hostOf(output) : output.kind === "document" || output.kind === "file" ? extensionOf(output) : "";
-  return <span className="output-thumb output-thumb--glyph" data-size={size}>
+  return <span ref={face} className="output-thumb output-thumb--glyph" data-size={size}>
     {iconOf(output, size === "mini" ? 18 : 24, 1.5)}
     {size === "tile" && note && <span className="output-thumb__note">{note}</span>}
   </span>;

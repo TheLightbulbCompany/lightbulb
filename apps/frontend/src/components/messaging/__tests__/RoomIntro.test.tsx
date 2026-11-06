@@ -15,23 +15,25 @@ it("keeps the ordinary channel intro for unshared rooms", () => {
   expect(screen.getByText("Mention an agent to bring one in.")).toBeInTheDocument();
 });
 
-it("W12-10: with the super-agent on, a project opens on its goal, what to ask, and first asks that draft", () => {
+it("W13-6: with the super-agent on, a project opens on its goal and three short chips that each draft a full ask", () => {
   const onPickAsk = vi.fn();
   const project = { ...room, shared: false, name: "walk-12", topic: "Find a sharper tagline for the bakery website. Keep it short." } as RoomSummary;
   render(<RoomIntro room={project} roomName="walk-12" participants={[]} superAgent fresh onPickAsk={onPickAsk} />);
   expect(screen.getByText(/^Find a sharper tagline for the bakery website/)).toBeInTheDocument();
   expect(screen.queryByText(/This is the beginning|Mention/)).toBeNull();
-  const asks = screen.getAllByRole("button");
-  expect(asks).toHaveLength(3);
-  fireEvent.click(asks[0]);
-  expect(onPickAsk).toHaveBeenCalledWith("Make a plan for: Find a sharper tagline for the bakery website");
+  expect(screen.getAllByRole("button").map((b) => b.textContent)).toEqual(["Plan it", "First draft", "See how others do it"]);
+  fireEvent.click(screen.getByRole("button", { name: "First draft" }));
+  expect(onPickAsk).toHaveBeenCalledWith(expect.stringContaining('first draft for this goal: "Find a sharper tagline for the bakery website".'));
 });
 
-it("first asks only while nobody has asked, and none without a goal", () => {
+it("first asks only while nobody has asked; a project without a goal gets general ones", () => {
   const project = { ...room, shared: false, topic: "Grow signups" } as RoomSummary;
   const { rerender } = render(<RoomIntro room={project} roomName="p" participants={[]} superAgent onPickAsk={vi.fn()} />);
   expect(screen.queryByRole("button")).toBeNull();
   rerender(<RoomIntro room={{ ...project, topic: null }} roomName="p" participants={[]} superAgent fresh onPickAsk={vi.fn()} />);
-  expect(screen.queryByRole("button")).toBeNull();
-  expect(starterAsks("x".repeat(200))[0].length).toBeLessThan(100);
+  expect(screen.getAllByRole("button")).toHaveLength(3);
+  expect(starterAsks(null).every((a) => !a.ask.includes('"'))).toBe(true);
+  const long = starterAsks("x".repeat(400));
+  expect(new Set(long.map((a) => a.label)).size).toBe(3);
+  expect(long[0].ask.length).toBeLessThan(300);
 });

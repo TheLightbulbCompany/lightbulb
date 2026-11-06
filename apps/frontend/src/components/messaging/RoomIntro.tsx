@@ -5,16 +5,28 @@ import type { RoomParticipant } from "./types";
 
 const names = new Intl.ListFormat("en", { style: "long", type: "conjunction" });
 
-/** The goal's first line, for the starter asks: short enough to read on a chip. */
-const goalLine = (topic: string): string => {
-  const line = topic.trim().split(/\n|(?<=[.!?])\s/)[0].replace(/[.!?]+$/, "");
-  return line.length > 80 ? `${line.slice(0, 79).replace(/\s+\S*$/, "")}…` : line;
+/** The goal's first line, for asks built from it: one sentence, without its end mark. */
+export const goalLine = (topic: string | null | undefined): string => {
+  const line = (topic ?? "").trim().split(/\n|(?<=[.!?])\s/)[0].replace(/[.!?]+$/, "").trim();
+  return line.length > 160 ? `${line.slice(0, 159).replace(/\s+\S*$/, "")}…` : line;
 };
 
-/** Super-agent (dev walk W12-10): 2–3 first asks built from a project's goal; a tap drafts one into the composer. */
-export function starterAsks(topic: string | null | undefined): string[] {
-  const goal = topic ? goalLine(topic) : "";
-  return goal ? [`Make a plan for: ${goal}`, `Start on the first step of: ${goal}`, `Find out how others do it: ${goal}`] : [];
+export interface StarterAsk { label: string; ask: string }
+
+/** Super-agent (W12-10, W13-6): three short, distinct chips; a tap drafts a full ask built from the project's goal into
+ *  the composer, or a general one when the project has no goal. */
+export function starterAsks(topic: string | null | undefined): StarterAsk[] {
+  const goal = goalLine(topic);
+  if (!goal) return [
+    { label: "Plan it", ask: "Make a short step-by-step plan for this project. Ask me what you need to know first." },
+    { label: "First draft", ask: "Write a first draft of what this project needs most, and tell me what you assumed." },
+    { label: "See how others do it", ask: "Find 3 to 5 examples of how others run projects like this one, and say what we should borrow." },
+  ];
+  return [
+    { label: "Plan it", ask: `Make a short step-by-step plan for this goal: "${goal}". Say who should do each step and what you need from me.` },
+    { label: "First draft", ask: `Make a first draft for this goal: "${goal}". Keep it short so I can react to it, and tell me what you assumed.` },
+    { label: "See how others do it", ask: `Find 3 to 5 examples of how others have done this: "${goal}". Say what each does well and what we should borrow.` },
+  ];
 }
 
 /**
@@ -37,8 +49,8 @@ export function RoomIntro({ room, roomName, participants, superAgent = false, fr
       {room?.topic?.trim() && <p className="room-intro-goal">{room.topic.trim()}</p>}
       <p>Ask for anything this project needs; Lightbulb hands it to the right specialist.</p>
       {asks.length > 0 && <div className="room-intro-asks" role="group" aria-label="Suggested asks">
-        {asks.map((ask) => <Button key={ask} type="button" variant="outline" size="sm" onClick={() => onPickAsk!(ask)}>
-          <span className="truncate">{ask}</span></Button>)}
+        {asks.map(({ label, ask }) => <Button key={label} type="button" variant="outline" size="sm" title={ask} onClick={() => onPickAsk!(ask)}>
+          {label}</Button>)}
       </div>}
     </div>;
   }

@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CreationOutput, TaskSummary } from "@lightbulb/shared";
 import { Fresh, fakeTasksClient, type FakeTasksClient } from "@/components/tasks/__tests__/fakeTasks";
 
-const live = vi.hoisted(() => ({ superAgent: true, tasks: null as unknown, agentNames: new Map(), messaging: { attachmentUrl: vi.fn() } }));
+const live = vi.hoisted(() => ({ superAgent: true, tasks: null as unknown, agentNames: new Map(), messaging: { attachmentUrl: vi.fn(), downloadAttachment: vi.fn() } }));
 const apps = vi.hoisted(() => ({ apps: [] as unknown[] }));
 const ctl = vi.hoisted(() => ({ openPanel: vi.fn(), openChatPanelWithDraft: vi.fn(() => true) }));
 vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useSuperAgent: () => live.superAgent }));
@@ -23,6 +23,7 @@ import { MadeHere } from "../MadeHere";
 import { ProjectFiles } from "../ProjectFiles";
 import { TaskOutputs } from "../TaskOutputs";
 import { openOutput, outputLink } from "../openOutput";
+import { docPreview, readableName } from "../docText";
 
 const out = (over: Partial<CreationOutput>): CreationOutput => ({
   id: "o", kind: "document", title: "Welcome note.md", ref: {}, createdAt: new Date(Date.now() - 3_600_000).toISOString(),
@@ -39,6 +40,7 @@ beforeEach(() => {
   apps.apps = [];
   ctl.openPanel.mockReset();
   ctl.openChatPanelWithDraft.mockClear();
+  live.messaging.downloadAttachment.mockReset().mockRejectedValue(new Error("no preview in this test"));
   localStorage.clear();
 });
 
@@ -158,7 +160,7 @@ describe("Made here", () => {
     rerender(<Fresh>{strip}</Fresh>);
     await waitFor(() => expect(client.outputs).toHaveBeenCalledTimes(2));
     const region = await screen.findByRole("region", { name: "Made here" });
-    expect(within(region).getByText("Welcome note.md")).toBeInTheDocument();
+    expect(within(region).getByText("Welcome note")).toBeInTheDocument();
   });
 
   it("shows up to four tiles named by title; a mail tile opens its task here; All files switches the view", async () => {
@@ -172,6 +174,38 @@ describe("Made here", () => {
     expect(onOpenTask).toHaveBeenCalledWith("t-mail");
     await userEvent.click(within(strip).getByRole("button", { name: /All files/ }));
     expect(onAllFiles).toHaveBeenCalled();
+  });
+});
+
+describe("doc faces (W13)", () => {
+  it("a readable name, never the file name; the first heading and opening lines", () => {
+    expect(readableName("autumn-specials-menu-blurbs.md")).toBe("Autumn specials menu blurbs");
+    expect(readableName("Q3 plan v1.2")).toBe("Q3 plan v1.2");
+    expect(docPreview("---\nx: 1\n---\n# Autumn **Specials**\n\n### Pumpkin Latte\nVelvety [espresso](https://x.y).\n```\ncode\n```\n- Apple\n- Pear"))
+      .toEqual({ heading: "Autumn Specials", lines: ["Pumpkin Latte", "Velvety espresso.", "Apple"] });
+    expect(docPreview("Just text.")).toEqual({ heading: null, lines: ["Just text."] });
+  });
+
+  it("a tile that goes away cancels its preview read", async () => {
+    client.outputs.mockResolvedValue({ outputs: [DOC], next: null });
+    live.messaging.downloadAttachment.mockReturnValue(new Promise(() => undefined));
+    const { unmount } = render(<Fresh><MadeHere roomId="r-walk7" onOpenTask={vi.fn()} onAllFiles={vi.fn()} /></Fresh>);
+    await waitFor(() => expect(live.messaging.downloadAttachment).toHaveBeenCalled());
+    const signal = (live.messaging.downloadAttachment.mock.calls[0] as unknown[])[2] as { signal: AbortSignal };
+    unmount();
+    expect(signal.signal.aborted).toBe(true);
+  });
+
+  it("Made here shows a doc as its title and first lines, read through the room's attachment route", async () => {
+    client.outputs.mockResolvedValue({ outputs: [DOC], next: null });
+    live.messaging.downloadAttachment.mockResolvedValue(new Blob(["# Welcome, Priya\n\nGlad you're here.\nStart with the menu."], { type: "text/markdown" }));
+    render(<Fresh><MadeHere roomId="r-walk7" onOpenTask={vi.fn()} onAllFiles={vi.fn()} /></Fresh>);
+    const strip = await screen.findByRole("region", { name: "Made here" });
+    expect(await within(strip).findByText("Welcome, Priya")).toBeInTheDocument();
+    expect(within(strip).getByText("Start with the menu.")).toBeInTheDocument();
+    expect(within(strip).getByText("Welcome note")).toBeInTheDocument();
+    // Only the head, by a cancellable read.
+    expect(live.messaging.downloadAttachment).toHaveBeenCalledWith("r-walk7", "att1", { head: 4096, signal: expect.any(AbortSignal) });
   });
 });
 
@@ -212,6 +246,12 @@ describe("TaskOutputs", () => {
     expect(onOpenTask).toHaveBeenCalled();
     await userEvent.click(screen.getByRole("button", { name: "Open Walk7 Signup" }));
     expect(ctl.openPanel).toHaveBeenCalledWith("canvas", { app: "a1" }, { pushUrl: true });
+  });
+
+  it("a doc chip on the task's card in chat opens with its way back to the task (W13-7)", async () => {
+    render(<TaskOutputs task={task} onOpenTask={vi.fn()} />);
+    await userEvent.click(screen.getByRole("button", { name: "Open Welcome note.md" }));
+    expect(ctl.openPanel).toHaveBeenCalledWith("artifact", expect.objectContaining({ id: "att1" }), { pushUrl: true, oneShots: { back: "task:t1" } });
   });
 
   it("in the open task, a mail chip is a label (its record is this task)", () => {

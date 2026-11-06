@@ -154,7 +154,8 @@ export interface MessagingClient {
   listMessages(roomId: string, afterSeq: number, limit?: number, options?: ApiCallOptions & { beforeSeq?: number }): Promise<MessagePage>;
   sendMessage(roomId: string, request: CreateMessageRequest): Promise<CanonicalRoomMessage>;
   uploadAttachment(roomId: string, image: RoomAttachmentInput): Promise<MessageAttachment>;
-  downloadAttachment(roomId: string, attachmentId: string): Promise<Blob>;
+  /** `head`: only the first N bytes (≤ 16 KB, a ranged read server-side), for a preview; `signal` cancels it. */
+  downloadAttachment(roomId: string, attachmentId: string, opts?: { head?: number; signal?: AbortSignal }): Promise<Blob>;
   /** A short-lived presigned URL -- how a video plays (a `<video src>` carries no bearer). */
   attachmentUrl(roomId: string, attachmentId: string): Promise<{ url: string; expiresIn: number }>;
   markRead(roomId: string, request: ReadCursorRequest): Promise<ReadCursorResponse>;
@@ -296,7 +297,9 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
       body.append("image", image as Blob);
       return api.upload(`${roomPath(roomId)}/attachments`, body) as Promise<MessageAttachment>;
     },
-    downloadAttachment: (roomId, attachmentId) => api.downloadBlob(`${roomPath(roomId)}/attachments/${encodeURIComponent(attachmentId)}`),
+    downloadAttachment: (roomId, attachmentId, opts) => api.downloadBlob(
+      `${roomPath(roomId)}/attachments/${encodeURIComponent(attachmentId)}${opts?.head ? `?head=${opts.head}` : ""}`,
+      opts?.signal ? { signal: opts.signal } : undefined),
     attachmentUrl: (roomId, attachmentId) => api.get(`${roomPath(roomId)}/attachments/${encodeURIComponent(attachmentId)}/url`) as Promise<{ url: string; expiresIn: number }>,
     markRead: (roomId, request) => api.put(`${roomPath(roomId)}/read`, request) as Promise<ReadCursorResponse>,
     markUnread: (roomId, fromSeq) => api.post(

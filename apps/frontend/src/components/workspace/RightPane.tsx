@@ -17,6 +17,7 @@ import { trapTab } from "@/lib/focusTrap";
 import { paneSheetQuery } from "./paneSheet";
 import { PaneHeader } from "./PaneHeader";
 import { leavePane } from "./panels/AutomationDockPanel";
+import { readableName } from "@/components/creations/docText";
 
 /** The narrowest a list pane is dragged to (super-agent; 320 without it). */
 export const PANE_MIN_WIDTH = 360;
@@ -40,9 +41,16 @@ const ownsHeader = (pane: Slot) => OWN_HEADER.has(pane.component) || pane.panelI
 
 export const paneWidthKey = (userId: string | null | undefined) => `lightbulb.pane.width.${userId ?? "signed-out"}`;
 
-/** A single item, not a list: it opens at the item width (super-agent). */
+/** A single item, not a list: it opens at the item width (super-agent). A doc is one too, so opening a task's doc
+ *  keeps the task's width (W13-7). */
 export const isPaneItem = (pane: Pick<Slot, "component" | "params">): boolean =>
-  pane.component === "task" || pane.component === "automation" || (pane.component === "thread" && pane.params.item === "1");
+  pane.component === "task" || pane.component === "automation" || pane.component === "artifact"
+  || (pane.component === "thread" && pane.params.item === "1");
+
+/** A doc reads by its own first heading (ArtifactDockPanel sets `heading` for the doc `headingOf`), else a readable name, never its file name. */
+const paneTitle = (pane: Slot): string =>
+  pane.component !== "artifact" ? pane.title
+    : (pane.params.headingOf === pane.params.id && pane.params.heading) || (pane.params.name ? readableName(pane.params.name) : pane.title);
 
 export function readPaneWidth(key: string, min = LEGACY_PANE_MIN_WIDTH): number {
   try {
@@ -195,7 +203,7 @@ export function RightPane({ pane, fullScreen }: { pane: Slot; fullScreen: boolea
       {resizable && <div className="workspace-pane__resize" role="separator" aria-orientation="vertical"
         aria-label="Resize the pane" tabIndex={0} onPointerDown={startResize} onKeyDown={nudge}
         aria-valuenow={measured.now} aria-valuemin={minWidth} aria-valuemax={Math.max(minWidth, measured.max)} />}
-      {superAgent ? drawsHeader && <PaneHeader title={pane.title} crumb={crumb} />
+      {superAgent ? drawsHeader && <PaneHeader title={paneTitle(pane)} crumb={crumb} />
         : <header className="workspace-pane__bar">
           {/* A thread (the room's column, a task) carries its own titled header: the bar keeps only its controls. */}
           <span className="workspace-pane__title">{ownsHeader(pane) ? null : pane.title}</span>

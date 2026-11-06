@@ -14,11 +14,12 @@ import { openChatPanelWithDraft } from "@/components/workspace/workspaceControll
 import { creationState } from "@/components/canvas/appText";
 import { useApps, type AppRow } from "@/hooks/useApps";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
-import { KIND_FILTERS, KIND_WORD, openOutput } from "./openOutput";
-import { OutputThumb } from "./OutputThumb";
+import { KIND_FILTERS, KIND_WORD, openOutput, outputName } from "./openOutput";
+import { isTextDoc, OutputThumb } from "./OutputThumb";
 import { useCreations } from "./useCreations";
 
-/** Live app pages framed on the grid; every app after these (Load more included) shows its glyph. */
+/** Live app pages framed on the grid, and docs previewed (each kind its own count); every one after these (Load more
+ *  included) shows its glyph. */
 const MAX_FRAMES = 6;
 
 /** The cursor lands on the first "…", selected, so typing replaces it. */
@@ -45,11 +46,14 @@ export function CreationsGrid(): ReactElement {
   };
   const filtered = kind !== "all" || !!roomId;
   const [noAgent, setNoAgent] = useState(false);
-  // The first MAX_FRAMES apps that would frame (public, openable) get a live page; the rest their glyph.
+  // The first MAX_FRAMES apps that would frame (public, openable) get a live page, the first MAX_FRAMES text docs their
+  // title and first lines; the rest their glyph.
   const framed = new Set<number>();
+  let pages = 0, docs = 0;
   outputs.forEach((o, i) => {
     const app = o.kind === "app" ? apps.find((a) => a.app_id === o.ref?.appId) : undefined;
-    if (framed.size < MAX_FRAMES && app?.open_to === "public" && app.can_open !== false) framed.add(i);
+    if (pages < MAX_FRAMES && app?.open_to === "public" && app.can_open !== false) { framed.add(i); pages++; }
+    else if (docs < MAX_FRAMES && isTextDoc(o)) { framed.add(i); docs++; }
   });
   const [now] = useState(() => Date.now()); // ages as of the page's opening
 
@@ -102,10 +106,10 @@ function CreationCard({ output: o, app, project, who, now, frame }: {
   const state = app ? creationState(app, who === "Lightbulb" ? "Engineering" : who, now) : null;
   const meta = [KIND_WORD[o.kind], project, elapsedShort(o.createdAt, now)].filter(Boolean).join(" · ");
   return <li className="creations__card">
-    <button type="button" className="creations__open" aria-label={`Open ${o.title}`} onClick={() => openOutput(o)}>
+    <button type="button" className="creations__open" aria-label={`Open ${outputName(o)}`} onClick={() => openOutput(o)}>
       <OutputThumb output={o} app={app} frame={frame} />
     </button>
-    <p className="creations__title" title={o.title}>{o.title}</p>
+    <p className="creations__title" title={o.title}>{outputName(o)}</p>
     <p className="creations__meta">{meta}</p>
     {state && <p className="creations__state">{state}</p>}
   </li>;

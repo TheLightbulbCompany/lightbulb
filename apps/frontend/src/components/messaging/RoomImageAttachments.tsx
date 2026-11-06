@@ -1,12 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import { Download, FileArchive, FileSpreadsheet, FileText, Presentation, RotateCcw } from "lucide-react";
 import { isVideoAttachmentType, type MessageAttachment, type MessageAttachmentContentType } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { FileViewerDialog } from "@/components/media/FileViewerDialog";
 import { isPaneViewable } from "@/components/media/FileViewerContent";
 import { openPanel } from "@/components/workspace/workspaceController";
+import { OutputBackContext } from "@/components/creations/openOutput";
 import { formatBytes } from "@/lib/utils";
 
 const isImage = (attachment: MessageAttachment) => attachment.contentType.startsWith("image/");
@@ -44,6 +45,8 @@ export function RoomImageAttachments({ roomId, attachments, download, attachment
   download: (roomId: string, attachmentId: string) => Promise<Blob>;
   attachmentUrl?: (roomId: string, attachmentId: string) => Promise<{ url: string }>;
 }) {
+  // Inside an open task (TaskPane), a doc opens with its way back to that task.
+  const back = useContext(OutputBackContext);
   const [urls, setUrls] = useState<Record<string, string>>({});
   const [failed, setFailed] = useState<Set<string>>(new Set());
   const [downloading, setDownloading] = useState<Set<string>>(new Set());
@@ -168,7 +171,7 @@ export function RoomImageAttachments({ roomId, attachments, download, attachment
         </button>;
       }
       return <button key={attachment.id} type="button" className="room-link-card room-doc-card" aria-label={`Open ${attachment.fileName}`}
-        onClick={() => openPanel("artifact", { src: "attachment", room: roomId, id: attachment.id, name: attachment.fileName, type: attachment.contentType }, { pushUrl: true })}>
+        onClick={() => openPanel("artifact", { src: "attachment", room: roomId, id: attachment.id, name: attachment.fileName, type: attachment.contentType }, { pushUrl: true, ...(back ? { oneShots: { back } } : {}) })}>
         <span className="room-link-card-body">
           <span className="room-doc-card-head">{SPREADSHEET.has(attachment.contentType) ? <FileSpreadsheet size={16} aria-hidden="true" /> : <FileText size={16} aria-hidden="true" />}<span className="room-link-card-title">{attachment.fileName}</span></span>
           <span className="room-link-card-meta">{PANE_LABEL[attachment.contentType]} · {formatBytes(attachment.size)}</span>

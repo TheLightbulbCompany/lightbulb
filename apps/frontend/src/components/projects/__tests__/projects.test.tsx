@@ -15,7 +15,7 @@ import { RoomHeader } from "@/components/messaging/RoomHeader";
 import { RoomDirectoryRow } from "@/components/messaging/RoomDirectoryRow";
 import { groupRooms } from "@/components/messaging/roomSections";
 import type { DirectoryRoom } from "@/components/messaging/types";
-import { pickTemplates } from "@/components/tasks/scheduleTemplates";
+import { goalTemplates, pickTemplates } from "@/components/tasks/scheduleTemplates";
 
 const room: RoomSummary = {
   roomId: "room-1", name: "Spring sale", kind: "channel", roomRevision: 3, lastMessageSeq: 9,
@@ -156,5 +156,12 @@ describe("starter schedules", () => {
     expect(pickTemplates(["Lightbulb", "Engineering", "Finance", "Customer Operations"]).map((t) => t.name))
       .toEqual(["Unanswered customer email", "Weekly cash summary", "Weekly project summary"]);
     expect(pickTemplates([]).map((t) => t.specialist)).toEqual(["Growth", "Customer Ops", "Lightbulb"]);
+  });
+
+  it("a project with a goal gets three built from it (W13-13); none without", () => {
+    const cards = goalTemplates("Write a short autumn specials menu blurb for our cafe. Keep it warm.");
+    expect(cards.map((t) => t.name)).toEqual(["Monday plan", "Friday wrap-up", "What others are doing"]);
+    expect(cards.every((t) => t.draft.includes('"Write a short autumn specials menu blurb for our cafe"'))).toBe(true);
+    expect(goalTemplates(null)).toEqual([]);
   });
 });

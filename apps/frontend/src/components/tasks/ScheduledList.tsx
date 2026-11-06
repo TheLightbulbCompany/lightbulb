@@ -8,10 +8,12 @@ import { automationRowLine, useAutomations, viewerTimeZone, type AutomationView,
 import { useAutomationSource } from "./automations";
 import { openPanel } from "@/components/workspace/workspaceController";
 import { useOptionalLiveEvents } from "@/hooks/useLiveEvents";
-import { pickTemplates } from "./scheduleTemplates";
+import { goalTemplates, pickTemplates } from "./scheduleTemplates";
 
-export function ScheduledList({ scope, onOpen, onOpenAutomation, onDraft, viewerTz = viewerTimeZone() }: {
+export function ScheduledList({ scope, onOpen, onOpenAutomation, onDraft, goal, viewerTz = viewerTimeZone() }: {
   scope: TaskScope; onOpen: (taskId: string) => void; onOpenAutomation?: (id: string) => void; viewerTz?: string;
+  /** The project's goal: its starter cards are built from it. */
+  goal?: string | null;
   /** A project's empty view: a starter card drafts its ask in the project's composer (UX slice 6). */
   onDraft?: (text: string) => void;
 }): ReactElement {
@@ -36,6 +38,7 @@ export function ScheduledList({ scope, onOpen, onOpenAutomation, onDraft, viewer
     else openPanel("teams-routines", {}, { pushUrl: true });
   };
   if (!rows.length && onDraft) {
+    const fromGoal = goalTemplates(goal);
     return <div className="grid gap-2 pt-4">
       <Clock size={20} aria-hidden="true" className="justify-self-center text-muted-foreground" />
       <div className="text-center">
@@ -43,7 +46,7 @@ export function ScheduledList({ scope, onOpen, onOpenAutomation, onDraft, viewer
         <p className="text-caption text-muted-foreground">Start from one of these, or ask in the chat.</p>
       </div>
       <ul className="mt-2 grid gap-2" aria-label="Starter schedules">
-        {pickTemplates(roster?.values() ?? []).map((t) => <li key={t.name}>
+        {(fromGoal.length ? fromGoal : pickTemplates(roster?.values() ?? [])).map((t) => <li key={t.name}>
           <button type="button" className="flex min-h-16 w-full items-start gap-2 rounded-lg border border-border px-3 py-2.5 text-left transition-colors duration-(--dur-fast) hover:bg-accent"
             onClick={() => onDraft(t.draft)}>
             <Clock size={14} aria-hidden="true" className="mt-1 flex-none text-muted-foreground" />

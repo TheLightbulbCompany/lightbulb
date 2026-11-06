@@ -107,21 +107,21 @@ describe("effectLine (lanes/Q.md ruling, 5 Nov)", () => {
 describe("formatSchedule", () => {
   const NOV = Date.UTC(2026, 10, 5, 12); // a Thursday; New York on standard time, London on GMT
   it("reads the row's wall clock in the viewer's zone", () => {
-    expect(formatSchedule(["0 9 * * 1"], "America/New_York", "America/New_York", NOV)).toBe("Mondays 9:00");
-    expect(formatSchedule(["0 9 * * 1"], "America/New_York", "Europe/London", NOV)).toBe("Mondays 14:00");
-    expect(formatSchedule(["30 18 * * 1-5"], "Europe/London", "Europe/London", NOV)).toBe("Weekdays 18:30");
-    expect(formatSchedule(["0 7 * * *"], "Asia/Tokyo", "Asia/Tokyo", NOV)).toBe("Every day 7:00");
+    expect(formatSchedule(["0 9 * * 1"], "America/New_York", "America/New_York", NOV)).toBe("Mondays 9:00 AM");
+    expect(formatSchedule(["0 9 * * 1"], "America/New_York", "Europe/London", NOV)).toBe("Mondays 2:00 PM");
+    expect(formatSchedule(["30 18 * * 1-5"], "Europe/London", "Europe/London", NOV)).toBe("Weekdays 6:30 PM");
+    expect(formatSchedule(["0 7 * * *"], "Asia/Tokyo", "Asia/Tokyo", NOV)).toBe("Every day 7:00 AM");
   });
   it("shifts the day when the viewer's zone crosses midnight; odd entries never show raw cron", () => {
-    expect(formatSchedule(["0 22 * * 1"], "America/Los_Angeles", "Europe/Berlin", NOV)).toBe("Tuesdays 7:00");
-    expect(formatSchedule(["0 18 * * 1-5"], "America/Los_Angeles", "Europe/Berlin", NOV)).toBe("Tuesdays to Saturdays 3:00");
-    expect(formatSchedule(["0 1 * * 6,0"], "Europe/Berlin", "America/Los_Angeles", NOV)).toBe("Fridays and Saturdays 16:00");
+    expect(formatSchedule(["0 22 * * 1"], "America/Los_Angeles", "Europe/Berlin", NOV)).toBe("Tuesdays 7:00 AM");
+    expect(formatSchedule(["0 18 * * 1-5"], "America/Los_Angeles", "Europe/Berlin", NOV)).toBe("Tuesdays to Saturdays 3:00 AM");
+    expect(formatSchedule(["0 1 * * 6,0"], "Europe/Berlin", "America/Los_Angeles", NOV)).toBe("Fridays and Saturdays 4:00 PM");
     expect(formatSchedule(["0 9 1 * *"], "UTC", "UTC", NOV)).toBe("Custom schedule");
     expect(formatSchedule(["*/15 * * * *"], "UTC", "UTC", NOV)).toBe("Custom schedule");
     // One odd entry among plain ones: the whole schedule is custom, never "Mondays 9:00 and 0 9 1 * *".
     expect(formatSchedule(["0 9 * * 1", "0 9 1 * *"], "UTC", "UTC", NOV)).toBe("Custom schedule");
-    expect(formatSchedule(["27 10 5 11 *"], "America/New_York", "Europe/London", NOV)).toBe("Once, 5 Nov, 15:27");
-    expect(formatSchedule(["0 9 * * 1", "0 9 * * 4"], "UTC", "UTC", NOV)).toBe("Mondays 9:00 and Thursdays 9:00");
+    expect(formatSchedule(["27 10 5 11 *"], "America/New_York", "Europe/London", NOV)).toBe("Once, 5 Nov, 3:27 PM");
+    expect(formatSchedule(["0 9 * * 1", "0 9 * * 4"], "UTC", "UTC", NOV)).toBe("Mondays 9:00 AM and Thursdays 9:00 AM");
   });
 });
 

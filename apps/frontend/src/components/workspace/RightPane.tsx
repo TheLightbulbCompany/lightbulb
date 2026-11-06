@@ -15,7 +15,7 @@ import { useSuperAgent } from "@/hooks/useLiveEvents";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { trapTab } from "@/lib/focusTrap";
 import { paneSheetQuery } from "./paneSheet";
-import { PaneHeader } from "./PaneHeader";
+import { PaneActionsHost, PaneHeader } from "./PaneHeader";
 import { leavePane } from "./panels/AutomationDockPanel";
 import { readableName } from "@/components/creations/docText";
 
@@ -137,6 +137,8 @@ export function RightPane({ pane, fullScreen }: { pane: Slot; fullScreen: boolea
   // Who opened it, read while mounting (before the panel's own effects move focus): focus goes back there on close.
   const [opener] = useState(() => typeof document === "undefined" ? null : document.activeElement as HTMLElement | null);
   const closeRef = useRef<HTMLButtonElement>(null);
+  // The drawn header's action slot: the panel portals its own (a doc's Copy, Download) beside Expand and ✕.
+  const [actionsHost, setActionsHost] = useState<HTMLElement | null>(null);
   const wasSheet = useRef(false);
   useEffect(() => {
     const el = paneRef.current;
@@ -203,7 +205,7 @@ export function RightPane({ pane, fullScreen }: { pane: Slot; fullScreen: boolea
       {resizable && <div className="workspace-pane__resize" role="separator" aria-orientation="vertical"
         aria-label="Resize the pane" tabIndex={0} onPointerDown={startResize} onKeyDown={nudge}
         aria-valuenow={measured.now} aria-valuemin={minWidth} aria-valuemax={Math.max(minWidth, measured.max)} />}
-      {superAgent ? drawsHeader && <PaneHeader title={paneTitle(pane)} crumb={crumb} />
+      {superAgent ? drawsHeader && <PaneHeader title={paneTitle(pane)} crumb={crumb} actions={<span ref={setActionsHost} className="contents" />} />
         : <header className="workspace-pane__bar">
           {/* A thread (the room's column, a task) carries its own titled header: the bar keeps only its controls. */}
           <span className="workspace-pane__title">{ownsHeader(pane) ? null : pane.title}</span>
@@ -214,7 +216,7 @@ export function RightPane({ pane, fullScreen }: { pane: Slot; fullScreen: boolea
           <button ref={closeRef} type="button" aria-label="Close pane" title="Close panel" onClick={closePane}><X size={16} aria-hidden="true" /></button>
         </header>}
       <div className="workspace-pane__body">
-        {Panel ? <Panel id={pane.panelId} params={pane.params} />
+        {Panel ? <PaneActionsHost.Provider value={actionsHost}><Panel id={pane.panelId} params={pane.params} /></PaneActionsHost.Provider>
           // The room portals its side column (thread, tasks, details) here (useThreadPane).
           : <div ref={setThreadPaneHost} className="room-context-host workspace-pane__thread" />}
       </div>

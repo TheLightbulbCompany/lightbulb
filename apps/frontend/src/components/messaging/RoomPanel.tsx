@@ -85,6 +85,8 @@ export interface RoomPanelProps {
   room?: RoomSummary;
   readSeqAtOpen?: number | null;
   targetMessageId?: string | null;
+  /** A new one for every jump to `targetMessageId`, so the same message jumped to again flashes again. */
+  targetToken?: number;
   state: RoomState;
   httpReady: boolean;
   liveConnected: boolean;
@@ -300,6 +302,7 @@ function RoomContent({
   room,
   readSeqAtOpen,
   targetMessageId,
+  targetToken,
   state,
   httpReady,
   liveConnected,
@@ -1130,7 +1133,8 @@ function RoomContent({
         <RoomTimeline roomId={roomId} messages={mainMessages} readSeq={sentSinceOpen ? null : newLineSeq} ownLastSentSeq={ownLastSentSeq} sendToken={sendToken}
           historyComplete={historyComplete} historyLoading={historyLoading} historyError={historyErrorMessage} onLoadOlder={onLoadOlder}
           targetMessageId={targetMessageId ?? (activeSearchTarget ? activeSearchTarget.messageId : null)}
-          targetToken={activeSearchTarget && activeSearchTarget.messageId === (targetMessageId ?? activeSearchTarget.messageId) ? activeSearchTarget.token : undefined}
+          targetToken={targetMessageId && targetToken !== undefined ? targetToken
+            : activeSearchTarget && activeSearchTarget.messageId === (targetMessageId ?? activeSearchTarget.messageId) ? activeSearchTarget.token : undefined}
           renderMessage={renderMainMessage}
           leading={historyComplete ? <>
             <RoomIntro room={visibleRoom} roomName={roomName} participants={participants} superAgent={superAgent}

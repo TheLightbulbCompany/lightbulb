@@ -3,9 +3,12 @@
 // The pane's one header (super-agent, UX slice 4): an optional crumb back to the list, the title (the label of the
 // toggle that opened it, or the item's own title), muted meta, the item's actions, then Expand and Close. RightPane
 // draws no bar of its own, so every pane item carries exactly one of these and exactly one ✕.
-import type { ReactNode, Ref } from "react";
+import { createContext, type ReactNode, type Ref } from "react";
 import { ChevronLeft, Maximize2, Minimize2, X } from "lucide-react";
 import { closePane, setPaneFullScreen, useWorkspaceState } from "./workspaceController";
+
+/** Where a panel's own header actions go (RightPane draws the header; a doc's Copy and Download portal into it). */
+export const PaneActionsHost = createContext<HTMLElement | null>(null);
 
 export function PaneHeader({ crumb, title, meta, actions, onClose, headingRef }: {
   /** "‹ Tasks": back to the list this item was opened from. */

@@ -171,7 +171,7 @@ export function RoomImageAttachments({ roomId, attachments, download, attachment
         </button>;
       }
       return <button key={attachment.id} type="button" className="room-link-card room-doc-card" aria-label={`Open ${attachment.fileName}`}
-        onClick={() => openPanel("artifact", { src: "attachment", room: roomId, id: attachment.id, name: attachment.fileName, type: attachment.contentType }, { pushUrl: true, ...(back ? { oneShots: { back } } : {}) })}>
+        onClick={() => openPanel("artifact", { src: "attachment", room: roomId, id: attachment.id, name: attachment.fileName, type: attachment.contentType, ...(back ? { back } : {}) }, { pushUrl: true })}>
         <span className="room-link-card-body">
           <span className="room-doc-card-head">{SPREADSHEET.has(attachment.contentType) ? <FileSpreadsheet size={16} aria-hidden="true" /> : <FileText size={16} aria-hidden="true" />}<span className="room-link-card-title">{attachment.fileName}</span></span>
           <span className="room-link-card-meta">{PANE_LABEL[attachment.contentType]} · {formatBytes(attachment.size)}</span>

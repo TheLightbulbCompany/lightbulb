@@ -35,15 +35,17 @@
 .creations__seg > button[aria-pressed="true"] { background: var(--muted); color: var(--foreground); }
 .creations__seg > button:focus-visible, .creations__select:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
 .creations__select {
-  min-height: 28px; max-width: 100%; padding: 0 28px 0 10px; border: 1px solid var(--edge); border-radius: 6px;
+  height: 28px; max-width: 100%; padding: 0 8px 0 10px; border: 1px solid var(--edge); border-radius: 6px; box-shadow: none;
   background: var(--background); color: var(--foreground); font: inherit; font-size: 13px; line-height: 18px;
 }
-@media (pointer: coarse) { .creations__seg > button { min-height: 40px; } .creations__select { min-height: 44px; } }
+.creations__select:hover { background: var(--muted); }
+@media (pointer: coarse) { .creations__seg > button { min-height: 40px; } .creations__select { height: 44px; } }
 
 /* The grid: tiles at least 240 wide, a 16:10 face with a hairline, one-line title and meta under it. */
 .creations__grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(240px, 100%), 1fr)); gap: 24px 16px; }
-.creations__card { display: grid; align-content: start; gap: 2px; min-width: 0; }
-.creations__open { display: block; margin-bottom: 6px; border-radius: 8px; }
+.creations__card { display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 2px; min-width: 0; }
+/* minmax(0,1fr) above: an implicit auto track sizes to the doc preview's nowrap lines and spills past the column (W14-1). */
+.creations__open { display: block; min-width: 0; margin-bottom: 6px; border-radius: 8px; }
 .creations__open:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 .creations__open:hover .output-thumb { border-color: var(--muted-foreground); }
 .creations__title { font-size: 15px; line-height: 22px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -57,7 +59,7 @@
 /* An output's face. A page is the app itself at four times the tile's width, scaled down, so it reads as a screenshot. */
 .output-thumb {
   position: relative; display: grid; place-items: center; align-content: center; gap: 6px; overflow: hidden;
-  width: 100%; aspect-ratio: 16 / 10; border: 1px solid var(--edge); border-radius: 8px; background: var(--muted);
+  width: 100%; min-width: 0; aspect-ratio: 16 / 10; border: 1px solid var(--edge); border-radius: 8px; background: var(--muted);
   color: var(--muted-foreground); transition: border-color 120ms ease;
 }
 .output-thumb[data-size="mini"] { width: 100%; aspect-ratio: 4 / 3; border-radius: 6px; }
@@ -121,7 +123,7 @@ button.task-outputs__chip:focus-visible, .task-outputs__more:focus-visible { out
   font-size: 13px; line-height: 18px; font-weight: 500; color: var(--muted-foreground);
 }
 .project-files__table th:nth-child(2) { width: 34%; }
-.project-files__table th:nth-child(3) { width: 48px; }
+.project-files__table th:nth-child(3) { width: 84px; } /* "11mo ago" at 13px plus padding; 48 cut it to "1m…" (W14) */
 .project-files__table th:nth-child(4) { width: 32px; }
 .project-files__table td { height: 36px; padding: 0 8px; border-bottom: 1px solid var(--edge); font-size: 15px; line-height: 22px; }
 .project-files__table tr:hover > td { background: var(--muted); }

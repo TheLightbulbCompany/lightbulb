@@ -515,7 +515,12 @@
 
 /* Frame A: a list page's column (max --frame-doc, centred) and its 56-tall title row, the title 24/30/600 with the
    one primary action on the same line to its right. CSS only; the pages keep their own markup. */
-.frame-doc { width: 100%; max-width: calc(var(--frame-doc) + 2 * max(24px, 4vw)); margin-inline: auto; padding-inline: max(24px, 4vw); }
+/* A project colour's picker swatch (projects.css): the tile's own hue, lifted and more saturated so six quiet tile
+   colours read apart at 18px on the dark popover (W14). Set on the swatch, where its data-color sets --tile-bg. */
+.project-picker__swatch { --tile-swatch: oklch(from var(--tile-bg) max(l, 0.62) calc(c * 2.2) h); }
+
+/* padding-top here, not per page: Team and Settings had none, so their titles sat 8px above the others' (W14). */
+.frame-doc { width: 100%; max-width: calc(var(--frame-doc) + 2 * max(24px, 4vw)); margin-inline: auto; padding-inline: max(24px, 4vw); padding-top: 8px; }
 .frame-doc__title { display: flex; align-items: center; gap: 8px; min-height: 56px; margin-bottom: 8px; }
 .frame-doc__title > h1 { margin-right: auto; min-width: 0; font-size: 24px; line-height: 30px; font-weight: 600; color: var(--foreground); }
 @media (max-width: 599px) { .frame-doc { padding-inline: 16px; max-width: calc(var(--frame-doc) + 32px); } }

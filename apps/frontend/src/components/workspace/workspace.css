@@ -626,12 +626,8 @@
 .pane-header__icon:focus-visible { outline: 2px solid var(--midnight); outline-offset: 1px; }
 @media (pointer: coarse) { .pane-header__icon, .pane-header__crumb { min-width: 44px; min-height: 44px; } }
 
-/* Super-agent doc viewer (W13-7): the file's name as a quiet line under the header, then the doc set as a document, a
-   readable measure with real heading steps, not a raw file at body size against the pane edge. */
-.doc-view__file {
-  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  padding-left: 4px; font-size: 13px; line-height: 18px; color: var(--midnight-muted);
-}
+/* Super-agent doc viewer (W13-7): Copy and Download in the header (W14), then the doc set as a document, a readable
+   measure with real heading steps, not a raw file at body size against the pane edge. */
 .doc-view > div { max-width: 640px; margin: 0 auto; padding: 32px 28px 56px; }
 .doc-view > pre { padding: 32px 28px 56px; font-size: 13px; line-height: 20px; }
 .doc-view :is(h1, h2, h3) { color: var(--midnight); font-weight: 600; text-wrap: balance; }

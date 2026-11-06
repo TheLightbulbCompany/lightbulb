@@ -36,7 +36,8 @@ export function openOutput(o: Openable, openTask?: (taskId: string) => void, bac
   const t = target(o);
   if (t && "url" in t) { window.open(t.url, "_blank", "noopener,noreferrer"); return; }
   // Only a file in the pane has a way back; an app opens as the place.
-  if (t) { openPanel(t.panel, t.params, { pushUrl: true, ...(back && t.panel === "artifact" ? { oneShots: { back } } : {}) }); return; }
+  // `back` rides in the pane's URL params: a one-shot was dropped when the pushed URL was reconciled (W14-5).
+  if (t) { openPanel(t.panel, back && t.panel === "artifact" ? { ...t.params, back } : t.params, { pushUrl: true }); return; }
   if (openTask) openTask(o.taskId);
   else openPanel("task-detail", { taskId: o.taskId }, { pushUrl: true });
 }

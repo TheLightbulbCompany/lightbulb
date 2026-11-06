@@ -203,7 +203,7 @@ it("scrolls to and highlights a target message", () => {
   const article = screen.getAllByText("x")[0].closest("[data-message-id]")!;
   expect(scrollIntoView).toHaveBeenCalledWith({ block: "center" });
   expect(article).toHaveAttribute("data-highlight", "true");
-  act(() => { vi.advanceTimersByTime(2000); });
+  act(() => { vi.advanceTimersByTime(2600); });
   expect(article).not.toHaveAttribute("data-highlight");
   vi.useRealTimers();
 });
@@ -235,7 +235,7 @@ it("keeps message bodies stable across highlights while honoring content and act
   const target = container.querySelector('[data-message-id="m2"]')!;
   expect(target).toHaveAttribute("data-highlight", "true");
   expect(draw).not.toHaveBeenCalled();
-  act(() => { vi.advanceTimersByTime(2000); });
+  act(() => { vi.advanceTimersByTime(2600); });
   expect(target).not.toHaveAttribute("data-highlight");
   expect(draw).not.toHaveBeenCalled();
 

@@ -84,7 +84,8 @@ describe("Creations", () => {
     await waitFor(() => expect(client.outputs).toHaveBeenLastCalledWith(expect.objectContaining({ kind: ["mail"] })));
     await userEvent.click(screen.getByRole("button", { name: "Links" }));
     await waitFor(() => expect(client.outputs).toHaveBeenLastCalledWith(expect.objectContaining({ kind: ["link", "pr"] })));
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Project" }), "r-walk9");
+    await userEvent.click(screen.getByRole("combobox", { name: "Project" }));
+    await userEvent.click(await screen.findByRole("option", { name: "walk-9" }));
     await waitFor(() => expect(client.outputs).toHaveBeenLastCalledWith(expect.objectContaining({ roomId: "r-walk9" })));
   });
 
@@ -230,7 +231,8 @@ describe("Files", () => {
     expect(within(table).getByRole("row", { name: /Welcome note/ })).toHaveTextContent("Growth");
     expect(within(table).getByRole("row", { name: /logo\.png/ })).toHaveTextContent("Priya (shared)");
     expect(screen.queryByRole("complementary", { name: "Tip" })).toBeNull();
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Type" }), "apps");
+    await userEvent.click(screen.getByRole("combobox", { name: "Type" }));
+    await userEvent.click(await screen.findByRole("option", { name: "Apps" }));
     await waitFor(() => expect(client.outputs).toHaveBeenLastCalledWith(expect.objectContaining({ kind: ["app"] })));
   });
 });
@@ -251,7 +253,7 @@ describe("TaskOutputs", () => {
   it("a doc chip on the task's card in chat opens with its way back to the task (W13-7)", async () => {
     render(<TaskOutputs task={task} onOpenTask={vi.fn()} />);
     await userEvent.click(screen.getByRole("button", { name: "Open Welcome note.md" }));
-    expect(ctl.openPanel).toHaveBeenCalledWith("artifact", expect.objectContaining({ id: "att1" }), { pushUrl: true, oneShots: { back: "task:t1" } });
+    expect(ctl.openPanel).toHaveBeenCalledWith("artifact", expect.objectContaining({ id: "att1", back: "task:t1" }), { pushUrl: true });
   });
 
   it("in the open task, a mail chip is a label (its record is this task)", () => {

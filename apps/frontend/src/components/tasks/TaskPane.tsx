@@ -5,15 +5,14 @@
 // room as read-only progress (with its lifecycle lines), its steps, the outputs, and folded Details.
 // Steering lives here, in the pane's own box (UX slice 3): the room's composer stays the room's.
 
-import { useEffect, useRef, useState, type ReactElement, type RefObject } from "react";
-import { MoreHorizontal } from "lucide-react";
+import { useEffect, useRef, useState, type ReactElement, type ReactNode, type RefObject } from "react";
+import { ChevronRight } from "lucide-react";
 import {
-  ApiError, answerVerb, askLine, effectLine, effectName, specialistLabel, stepLines, stepNow, summaryView, useTask, useTaskQuestions,
+  ApiError, answerVerb, askLine, effectLine, effectName, specialistLabel, stepLines, stepNow, summaryView, timeOfDay, useTask, useTaskQuestions,
   type QuestionView, type TaskDetail, type TaskEffect, type TaskSummary, type TaskTrace,
 } from "@lightbulb/shared";
 import { SessionChat, type ChatWords } from "@/components/messaging/SessionChat";
 import { Button } from "@/components/ui/button";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { PaneHeader } from "@/components/workspace/PaneHeader";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
@@ -32,7 +31,8 @@ const TRANSCRIPT_WORDS: ChatWords = {
 };
 
 
-const time = (iso: string | null) => (iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "");
+/** "7:20 AM", as chat and Scheduled say it (W14; "07:20 AM" before). */
+const time = (iso: string | null) => (iso && !Number.isNaN(Date.parse(iso)) ? timeOfDay(Date.parse(iso)) : "");
 const money = (n: number) => `$${n.toFixed(2).replace(/\.00$/, "")}`;
 
 export function TaskPane({ taskId, viewerId, onClose, onBack, headingRef }: {
@@ -95,15 +95,15 @@ function TaskPaneBody({ detail, viewerId, actionError }: { detail: TaskDetail; v
   const view = summaryView(task, viewerId);
   const effects = open ? detail.effects.filter((e) => e.state !== "proposed") : detail.effects;
   const closed = view.word === "Closed";
-  // Steering is offered while it runs or needs the viewer; a Done task only after Follow up; a Closed one never.
-  const [followUp, setFollowUp] = useState(false);
-  const steerable = view.word === "Working" || view.word === "Needs you" || (view.word === "Done" && followUp);
+  // One box (W14): it steers while it runs or needs the viewer, and asks a follow-up once Done; a Closed task has none.
+  const done = view.word === "Done";
+  const steerable = view.word === "Working" || view.word === "Needs you" || done;
   const effectRows = effectFooter(effects, closed);
   const live = view.word === "Working";
   const trace = useLatestTrace(detail, live);
   const tools = trace && !("error" in trace) ? trace.recentTools : null;
   // Top to bottom (dev walk 13, W13-5/W13-9): while it runs, its latest step; then what it said and made, once each
-  // (the result's file cards are the output chips); one quiet times line; Steps, Follow up and Details right under it.
+  // (the result's file cards are the output chips); one quiet times line; Steps, the one box and Details right under it.
   return <div className="room-context-body flex min-h-0 flex-col gap-3">
     <TaskHeader task={task} viewerId={viewerId} error={actionError} />
     {live && <p role="status" aria-live="polite" className="flex items-center gap-2 px-1 text-ui text-muted-foreground">
@@ -124,11 +124,8 @@ function TaskPaneBody({ detail, viewerId, actionError }: { detail: TaskDetail; v
     </ul>}
     <TimesLine detail={detail} word={view.word} />
     <TaskSteps detail={detail} live={live} trace={trace} />
-    {/* The pane's own steer box; never beside a typed answer. */}
-    {view.word === "Done" && !followUp && <div className="px-1">
-      <Button type="button" size="sm" variant="outline" onClick={() => setFollowUp(true)}>Follow up</Button>
-    </div>}
-    {steerable && !(open?.canAnswer && !open.options.length) && <AddNote task={task} autoFocus={followUp} />}
+    {/* The pane's own box; never beside a typed answer. */}
+    {steerable && !(open?.canAnswer && !open.options.length) && <AddNote task={task} followUp={done} />}
     <TaskDetails detail={detail} />
   </div>;
 }
@@ -257,22 +254,18 @@ function TaskActions({ task, viewerId, onError }: { task: TaskSummary; viewerId:
     <span data-action-slot="retry" className="empty:hidden">
       {view.action === "retry" && <Button type="button" size="sm" disabled={busy} onClick={() => void press("retry")}>Retry</Button>}
     </span>
-    {/* Close and Reopen live in ⋯ (dev walk 13, W13-3): the header says one status word, "Done", never beside a
-        "Mark done". A Done task closes itself after a quiet week anyway. */}
-    {(!live || task.status === "resolved") && <DropdownMenu>
-      <DropdownMenuTrigger asChild><Button type="button" size="icon-sm" variant="ghost" aria-label="More for this task" disabled={busy}>
-        <MoreHorizontal aria-hidden="true" /></Button></DropdownMenuTrigger>
-      <DropdownMenuContent align="end">
-        {task.status === "resolved"
-          ? <DropdownMenuItem disabled={busy} onSelect={() => void press("reopen")}>Reopen</DropdownMenuItem>
-          : <DropdownMenuItem disabled={busy} onSelect={() => void press("resolve")}>Close</DropdownMenuItem>}
-      </DropdownMenuContent>
-    </DropdownMenu>}
+    {/* Close or Reopen: the only lifecycle choice left, so a quiet text action, not a ⋯ menu of one item beside ✕
+        (W14). Never "Mark done" beside the "Done" word (W13-3); a Done task closes itself after a quiet week anyway. */}
+    <span data-action-slot="close" className="empty:hidden">
+      {(!live || task.status === "resolved") && <Button type="button" size="sm" variant="ghost" className="text-muted-foreground" disabled={busy}
+        
+        onClick={() => void press(task.status === "resolved" ? "reopen" : "resolve")}>{task.status === "resolved" ? "Reopen" : "Close task"}</Button>}
+    </span>
   </span>;
 }
 
 /** Steering when the room's composer isn't on screen: one line, Enter sends it into the task's room. */
-function AddNote({ task, autoFocus = false }: { task: TaskSummary; autoFocus?: boolean }): ReactElement {
+function AddNote({ task, followUp }: { task: TaskSummary; followUp: boolean }): ReactElement {
   const { messaging, tasks } = useLiveEvents();
   const [text, setText] = useState("");
   const [pending, setPending] = useState(false);
@@ -285,18 +278,26 @@ function AddNote({ task, autoFocus = false }: { task: TaskSummary; autoFocus?: b
     setPending(true);
     sendToTask(messaging, task, note, "note").then(() => { setText(""); setError(null); showSteered(task); }, () => setError("That didn't go through. Try again.")).finally(() => setPending(false));
   }}>
-    <Input aria-label="Steer this task" placeholder="Steer this task…" autoFocus={autoFocus} value={text} maxLength={4000} disabled={pending}
+    <Input aria-label={followUp ? "Follow up on this task" : "Steer this task"} placeholder={followUp ? "Ask a follow-up…" : "Steer this task…"}
+      value={text} maxLength={4000} disabled={pending}
       onChange={(event) => setText(event.target.value)} />
     {error && <p role="alert" className="text-ui text-err">{error}</p>}
   </form>;
+}
+
+/** A fold's toggle with our chevron (turns when open), not the browser's triangle (W14). Its parent is `group`. */
+function Summary({ children }: { children: ReactNode }): ReactElement {
+  return <summary className="inline-flex cursor-pointer list-none items-center gap-1 rounded-sm text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring [&::-webkit-details-marker]:hidden">
+    <ChevronRight aria-hidden="true" className="size-3.5 shrink-0 transition-transform duration-(--dur-fast) group-open:rotate-90 motion-reduce:transition-none" />{children}
+  </summary>;
 }
 
 export function TaskDetails({ detail }: { detail: TaskDetail }): ReactElement {
   const { task, attempts } = detail;
   const cost = task.budgetUsd != null || task.costUsd
     ? `${money(task.costUsd ?? 0)}${task.budgetUsd != null ? ` of ${money(task.budgetUsd)} budget` : ""}` : null;
-  return <details className="px-1 text-ui">
-    <summary className="cursor-pointer text-muted-foreground">Details</summary>
+  return <details className="group px-1 text-ui">
+    <Summary>Details</Summary>
     <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
       <dt className="text-muted-foreground">Runs</dt><dd>{attempts.length}</dd>
       {task.runsOn && <><dt className="text-muted-foreground">Runs on</dt><dd>Lightbulb cloud</dd></>}
@@ -311,10 +312,8 @@ function TaskSteps({ detail, live, trace }: { detail: TaskDetail; live: boolean;
   const latest = detail.attempts.reduce((n, a) => Math.max(n, a.n), 0);
   if (!latest) return null;
   const lines = trace && !("error" in trace) ? stepLines(trace.recentTools) : null;
-  return <details className="px-1 text-ui" open={live || undefined}>
-    <summary className="cursor-pointer text-muted-foreground">
-      Steps{lines?.length ? ` · ${lines.length}` : ""}{detail.attempts.length > 1 ? ` · run ${latest}` : ""}
-    </summary>
+  return <details className="group px-1 text-ui" open={live || undefined}>
+    <Summary>Steps{lines?.length ? ` · ${lines.length}` : ""}{detail.attempts.length > 1 ? ` · run ${latest}` : ""}</Summary>
     {trace == null ? <p className="text-muted-foreground">Loading…</p>
       : !lines ? <p className="text-muted-foreground">The steps aren&apos;t available.</p>
       : !lines.length ? <p className="text-muted-foreground">No steps yet.</p>

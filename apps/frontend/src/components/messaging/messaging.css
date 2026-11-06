@@ -43,8 +43,9 @@
 .room-skip-link { position: absolute; top: 8px; left: 8px; z-index: 5; padding: 4px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--background); font-size: var(--text-ui); transform: translateY(-200%); }
 .room-skip-link:focus { transform: none; outline: 2px solid var(--ring); outline-offset: 2px; }
 /* Jump/deep-link target: a warm flash that fades on its own (Slack-style). */
-.room-timeline-item[data-highlight="true"], .room-message-highlight { animation: room-highlight-fade 2s var(--ease-out, ease-out); }
-@keyframes room-highlight-fade { from { background: color-mix(in srgb, var(--bulb) 28%, transparent); } to { background: transparent; } }
+/* It holds before it fades (W14: a 2 s ease-out was gone before the eye landed after a ⌘K jump). */
+.room-timeline-item[data-highlight="true"], .room-message-highlight { animation: room-highlight-fade 2.6s var(--ease-out, ease-out); }
+@keyframes room-highlight-fade { 0%, 40% { background: color-mix(in srgb, var(--bulb) 28%, transparent); } 100% { background: transparent; } }
 @media (prefers-reduced-motion: reduce) { .room-timeline-item[data-highlight="true"], .room-message-highlight { animation-duration: 1ms; } }
 /* Slack-style day marker. Each day is its own .room-day box (RoomTimeline), so the
    sticky pill is confined to its day and the next day pushes it away rather than

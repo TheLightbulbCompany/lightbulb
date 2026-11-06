@@ -14,14 +14,14 @@ export interface ScheduleTemplate {
 }
 
 export const SCHEDULE_TEMPLATES: readonly ScheduleTemplate[] = [
-  { specialist: "Growth", name: "Weekly signups", cadence: "Mondays 9:00", draft: "Every Monday at 9:00, have Growth post last week's signups here." },
-  { specialist: "Customer Ops", name: "Unanswered customer email", cadence: "Weekdays 9:00", draft: "Every weekday at 9:00, have Customer Ops post any customer email still waiting on a reply here." },
-  { specialist: "Finance", name: "Weekly cash summary", cadence: "Mondays 8:00", draft: "Every Monday at 8:00, have Finance post last week's money in and out here." },
-  { specialist: "Analytics", name: "Weekly traffic", cadence: "Mondays 10:00", draft: "Every Monday at 10:00, have Analytics post last week's site traffic and top pages here." },
-  { specialist: "Engineering", name: "Site health check", cadence: "Daily 8:00", draft: "Every day at 8:00, have Engineering check the site is up and post here only if something is wrong." },
+  { specialist: "Growth", name: "Weekly signups", cadence: "Mondays 9:00 AM", draft: "Every Monday at 9:00 AM, have Growth post last week's signups here." },
+  { specialist: "Customer Ops", name: "Unanswered customer email", cadence: "Weekdays 9:00 AM", draft: "Every weekday at 9:00 AM, have Customer Ops post any customer email still waiting on a reply here." },
+  { specialist: "Finance", name: "Weekly cash summary", cadence: "Mondays 8:00 AM", draft: "Every Monday at 8:00 AM, have Finance post last week's money in and out here." },
+  { specialist: "Analytics", name: "Weekly traffic", cadence: "Mondays 10:00 AM", draft: "Every Monday at 10:00 AM, have Analytics post last week's site traffic and top pages here." },
+  { specialist: "Engineering", name: "Site health check", cadence: "Daily 8:00 AM", draft: "Every day at 8:00 AM, have Engineering check the site is up and post here only if something is wrong." },
 ];
 export const LIGHTBULB_TEMPLATE: ScheduleTemplate = {
-  specialist: "Lightbulb", name: "Weekly project summary", cadence: "Fridays 16:00", draft: "Every Friday at 16:00, post a short summary of this week's work here.",
+  specialist: "Lightbulb", name: "Weekly project summary", cadence: "Fridays 4:00 PM", draft: "Every Friday at 4:00 PM, post a short summary of this week's work here.",
 };
 
 /** Three cards built from a project's goal; none without one. */
@@ -29,12 +29,12 @@ export function goalTemplates(topic: string | null | undefined): ScheduleTemplat
   const goal = goalLine(topic);
   if (!goal) return [];
   return [
-    { specialist: "Lightbulb", name: "Monday plan", cadence: "Mondays 9:00",
-      draft: `Every Monday at 9:00, post this week's next steps toward "${goal}" here, and anything that's in the way.` },
-    { specialist: "Lightbulb", name: "Friday wrap-up", cadence: "Fridays 16:00",
-      draft: `Every Friday at 16:00, post a short summary of this week's progress on "${goal}" here.` },
-    { specialist: "Lightbulb", name: "What others are doing", cadence: "1st of the month 10:00",
-      draft: `On the 1st of every month at 10:00, look at how others are doing this ("${goal}") and post anything worth trying here.` },
+    { specialist: "Lightbulb", name: "Monday plan", cadence: "Mondays 9:00 AM",
+      draft: `Every Monday at 9:00 AM, post this week's next steps toward "${goal}" here, and anything that's in the way.` },
+    { specialist: "Lightbulb", name: "Friday wrap-up", cadence: "Fridays 4:00 PM",
+      draft: `Every Friday at 4:00 PM, post a short summary of this week's progress on "${goal}" here.` },
+    { specialist: "Lightbulb", name: "What others are doing", cadence: "1st of the month 10:00 AM",
+      draft: `On the 1st of every month at 10:00 AM, look at how others are doing this ("${goal}") and post anything worth trying here.` },
   ];
 }
 

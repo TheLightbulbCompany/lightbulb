@@ -241,7 +241,6 @@ describe("RoomPanel Threads view (super-agent)", () => {
       await userEvent.click(card);
       const pane = await within(host).findByRole("complementary", { name: "Task" });
       expect(await within(pane).findByRole("textbox", { name: "Steer this task" })).toBeInTheDocument();
-      expect(screen.queryByText(/Replying to:/)).toBeNull();
     } finally { window.matchMedia = wide; host.remove(); _resetControllerForTests(); localStorage.clear(); }
   });
 

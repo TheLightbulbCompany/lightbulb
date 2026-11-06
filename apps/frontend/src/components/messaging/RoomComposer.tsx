@@ -88,9 +88,9 @@ type DraftAttachment = { key: number; file: File; preview?: string; attachment?:
 const NO_ATTACHMENTS: DraftAttachment[] = [];
 
 export function RoomComposer(props: RoomComposerProps) {
-  // A focusToken change focuses the field even when it lands with a remount (the "Replying to" chip's X).
+  // A focusToken change focuses the field even when it lands with a remount.
   const seenFocusToken = useRef(props.focusToken);
-  // Attachments outlive a remount that was not a send (toggling the "Replying to" chip swaps clientMessageId):
+  // Attachments outlive a remount that was not a send (a new clientMessageId):
   // the attempt mirrors them here and the next attempt starts with them unless the last one sent them.
   const carried = useRef<{ items: DraftAttachment[]; sent: boolean }>({ items: [], sent: false });
   useEffect(() => () => { for (const item of carried.current.items) if (item.preview) URL.revokeObjectURL(item.preview); }, []);

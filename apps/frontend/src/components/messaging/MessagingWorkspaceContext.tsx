@@ -728,7 +728,7 @@ export function MessagingWorkspaceProvider({
   // owner has already left (hence `recoveredDrafts`). Recomputing when one of
   // those moves is enough, and keeps the walk off the keystroke path for every
   // other room's row.
-  // Emptying the box (a "Replying to" steer, a select-all delete) drops the stored draft now, before the render that
+  // Emptying the box (a send, a select-all delete) drops the stored draft now, before the render that
   // lists draft rooms: the persist effect runs after it, so the sidebar kept "Drafts › room" until something else
   // re-rendered (dev walk R10).
   const activeRoomId = rooms.activeRoomId;

@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AutomationView } from "@lightbulb/shared";
@@ -110,7 +110,15 @@ describe("AutomationsPanel", () => {
     // A paused row with a leftover run never reads Running, and offers its one action, Resume, not a dead Run now.
     routes({ activeRunTaskId: "t-live", status: "paused" });
     const paused = render(<Fresh><AutomationsPanel viewerTz="America/New_York" /></Fresh>);
-    expect(await screen.findByRole("button", { name: "Resume" })).toBeEnabled();
+    const resume = await screen.findByRole("button", { name: "Resume" });
+    expect(resume).toBeEnabled();
+    let release!: () => void;
+    api.post.mockImplementationOnce(() => new Promise((r) => { release = () => r({}); }));
+    await userEvent.dblClick(resume);
+    expect(api.post).toHaveBeenCalledTimes(1);  // a double click resumes once
+    release();
+    await waitFor(() => expect(resume).toBeEnabled());
+    api.post.mockClear();
     expect(screen.queryByRole("button", { name: "Run now" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Running ›" })).toBeNull();
     paused.unmount();

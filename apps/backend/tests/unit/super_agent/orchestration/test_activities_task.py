@@ -663,3 +663,26 @@ async def test_reopen_and_person_closes_post_no_workflow_marker(world):
     assert len(world["marks"]) == marks
     await acts.transition(WS, tid, "resolved", "quiet")  # nobody closed it: the workflow says Closed
     assert world["marks"][-1][1] == "Closed"
+
+
+async def test_a_person_only_task_says_nothing_in_the_shared_room(world):
+    """Review #4901: a person-only task from a shared room never puts its result (or itself) in that room's chat."""
+    tid = await _task(audience={"kind": "person", "userIds": ["sam"]})
+    await _attempt(tid)
+    await _ended(tid, "completed", output="Sam's salary is 90k.")
+    assert [p["room"] for p in world["posts"]] == [ts.task_room_id(tid)]
+    assert not any("90k" in p["text"] for p in world["posts"] if p["room"] == ROOM)
+
+
+async def test_a_workspace_task_carries_its_result_line(world):
+    tid = await _task(audience={"kind": "workspace"})
+    await _attempt(tid)
+    await _ended(tid, "completed")
+    assert world["posts"][-1]["room"] == ROOM and world["posts"][-1]["text"] == "Done: Paid Acme."
+
+
+async def test_a_task_of_another_room_says_only_done(world):
+    tid = await _task(audience={"kind": "room", "roomId": str(uuid.uuid4())})
+    await _attempt(tid)
+    await _ended(tid, "completed")
+    assert world["posts"][-1]["room"] == ROOM and world["posts"][-1]["text"] == "Done."

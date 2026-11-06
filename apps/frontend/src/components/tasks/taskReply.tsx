@@ -1,7 +1,7 @@
 "use client";
 
-// Steering a task: the pane's own box posts into the task's room (UX slice 3). The room's composer is never taken
-// over by an open task ("Replying to: …" was removed): it always talks to the room.
+// Steering a task: the pane's own box posts into the task's room (UX slice 3). The room's composer always talks to
+// the room.
 
 import { useCallback } from "react";
 import { putTaskSummary, useTaskCache, type TaskSummary, type TasksClient } from "@lightbulb/shared";

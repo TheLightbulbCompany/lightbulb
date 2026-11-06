@@ -38,14 +38,19 @@ function RunNowButton({ a, onOpenTask, onNote }: { a: AutomationView; onOpenTask
   const { act } = useAutomationActions();
   const canEdit = useCanEdit();
   const canDecide = useCanDecide();
+  const [resuming, setResuming] = useState(false);  // one press: a double click resumes once
   if (a.match) return null;
   if (a.activeRunTaskId && a.status === "active") {
     return <Button type="button" size="sm" variant="ghost" className="relative z-10" onClick={() => onOpenTask(a.activeRunTaskId!)}>Running ›</Button>;
   }
   const paused = a.status === "paused" || a.status === "paused_system";
   if (paused && canDecide(a)) {
-    return <Button type="button" size="sm" variant="outline" className="relative z-10"
-      onClick={() => act(a.id, "resume").then(() => onNote(null), () => onNote("That didn't go through. Try again."))}>Resume</Button>;
+    return <Button type="button" size="sm" variant="outline" className="relative z-10" disabled={resuming}
+      onClick={() => {
+        if (resuming) return;
+        setResuming(true);
+        act(a.id, "resume").then(() => onNote(null), () => onNote("That didn't go through. Try again.")).finally(() => setResuming(false));
+      }}>Resume</Button>;
   }
   const reason = runNowReason(a, canEdit(a));
   if (reason) return <span className="relative z-10 text-caption text-muted-foreground">{paused ? `${waitingWords(a)} to resume it` : reason}</span>;

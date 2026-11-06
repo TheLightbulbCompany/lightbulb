@@ -565,11 +565,24 @@ def _first_line(text: str) -> str:
     return line if len(line) <= _LINE_MAX else line[: _LINE_MAX - 1].rstrip() + "…"
 
 
-def _result_line(tree: dict, to: str, reason: str | None) -> str:
-    """The main chat's one line: "Done: <what came of it>." / "Didn't finish: <why>. Retry from the task." No model."""
-    if to == "failed":
-        return f"Didn't finish: {_FAILED_WHY.get(reason or '', 'something went wrong')}. Retry from the task."
+def _seen_by_whole_room(task: dict, room: str) -> bool:
+    """Everyone in `room` can open the task (`tasks_access.can_view`'s audience rules): a workspace task, or this
+    room's own. Only then may the main chat's line carry what the task said."""
+    audience = task.get("audience") or {}
+    return audience.get("kind") == "workspace" or (audience.get("kind") == "room" and audience.get("roomId") == room)
+
+
+def _result_line(tree: dict, to: str, reason: str | None, room: str) -> str:
+    """The main chat's one line: "Done: <what came of it>." / "Didn't finish: <why>. Retry from the task." No model.
+    Bare "Done." / "Didn't finish." when someone in the room can't open the task: its words never leak there."""
     task = tree["task"]
+    shared = _seen_by_whole_room(task, room)
+    if to == "failed":
+        if not shared:
+            return "Didn't finish."
+        return f"Didn't finish: {_FAILED_WHY.get(reason or '', 'something went wrong')}. Retry from the task."
+    if not shared:
+        return "Done."
     att = max(tree.get("attempts") or [], key=lambda a: a["n"], default=None)
     said = _first_line(att.get("output") or "") if att and att.get("outcome") == "completed" else ""
     outputs = task.get("outputs") or []
@@ -600,11 +613,13 @@ async def _announce(ws: str, task_id: str, to: str, reason: str | None = None) -
             remember=False,
         )
         room, root = _origin(tree)
-        if to in ("idle", "failed") and root and room and _is_uuid(room):
+        # A person-only task's line would tell the room it exists: only its own people see it (in the task).
+        person_only = (task.get("audience") or {}).get("kind") == "person"
+        if to in ("idle", "failed") and root and room and _is_uuid(room) and not person_only:
             await task_conversation.post_as_lightbulb(
                 ws,
                 room,
-                text=_result_line(tree, to, reason),
+                text=_result_line(tree, to, reason, room),
                 event_id=f"task-line:{task_id}:{n}:{to}",
                 specialist=task.get("specialist"),  # the specialist is the actor ("Lightbulb · Growth")
                 task_refs=[{"taskId": task_id, "role": "started"}],

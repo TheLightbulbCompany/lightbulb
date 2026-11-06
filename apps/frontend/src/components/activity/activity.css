@@ -223,6 +223,9 @@
 .home-mentions button { text-align: left; }
 .team-feed--compact { display: grid; gap: 8px; }
 .team-feed--compact .team-feed__brief { padding-bottom: 8px; }
+/* Activity (super-agent): a sentence-case label (no caps labels, DESIGN.md) and Edit right after the brief, not at the far edge (W11-5). */
+.team-feed--compact .team-feed__brief-label { font-size: var(--text-ui); letter-spacing: normal; text-transform: none; }
+.team-feed--compact .team-feed__brief-text { flex: 0 1 auto; }
 .team-feed--compact .team-feed__list { gap: 0; }
 .team-feed--compact .feed-post { padding: 8px 0; }
 .team-feed--compact .team-feed__empty { padding: 8px 0; }

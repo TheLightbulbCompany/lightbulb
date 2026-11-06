@@ -45,6 +45,8 @@ export function TaskPane({ taskId, viewerId, onClose, onBack, headingRef }: {
   const gone = error instanceof ApiError && (error.status === 403 || error.status === 404);
   const ownHeading = useRef<HTMLHeadingElement>(null);
   const heading = headingRef ?? ownHeading;
+  // A refused Stop / Close / Reopen / Retry: the buttons sit in the header row, the reason under it.
+  const [actionError, setActionError] = useState<string | null>(null);
 
   // One read mark per open.
   useEffect(() => {
@@ -53,22 +55,24 @@ export function TaskPane({ taskId, viewerId, onClose, onBack, headingRef }: {
   }, [tasks, taskId]);
   useEffect(() => { heading.current?.focus({ preventScroll: true }); }, [heading, taskId]);
 
-  // One header row (UX slice 4): "‹ Tasks", the task's title, then who and its one status word as muted meta. The
-  // body never repeats them; while it runs, the live line under the header ticks the seconds.
+  // One header row (UX slice 4): "‹ Tasks", the task's title, who and its one status word as muted meta (never cut),
+  // then its lifecycle buttons at the right (W11-2). The body never repeats them; while it runs, the live line under
+  // the header ticks the seconds.
   const who = data ? specialistLabel(data.task.specialist, agentNames) : null;
   return <aside className="room-context" aria-label="Task" data-task-pane={taskId}
     onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); (onBack ?? onClose)(); } }}>
     <PaneHeader crumb={onBack ? { label: "Tasks", onBack } : undefined} title={data?.task.title ?? "Task"} headingRef={heading} onClose={onClose}
-      meta={data && <span className="inline-flex items-center gap-1.5">{who} · <TaskStatus task={data.task} viewerId={viewerId} /></span>} />
+      meta={data && <span className="inline-flex items-center gap-1.5">{who} · <TaskStatus task={data.task} viewerId={viewerId} /></span>}
+      actions={data && <TaskActions task={data.task} viewerId={viewerId} onError={setActionError} />} />
     {!data
       ? !error ? <p role="status" className="p-4 text-ui text-muted-foreground">Loading…</p>
         : gone ? <p role="status" className="p-4 text-ui text-muted-foreground">This task isn&apos;t available to you.</p>
         : <p role="alert" className="p-4 text-ui text-muted-foreground">This task couldn&apos;t load. <button type="button" className="underline hover:text-foreground" onClick={() => void mutate()}>Retry</button></p>
-      : <TaskPaneBody detail={data} viewerId={viewerId} />}
+      : <TaskPaneBody detail={data} viewerId={viewerId} actionError={actionError} />}
   </aside>;
 }
 
-function TaskPaneBody({ detail, viewerId }: { detail: TaskDetail; viewerId: string }): ReactElement {
+function TaskPaneBody({ detail, viewerId, actionError }: { detail: TaskDetail; viewerId: string; actionError: string | null }): ReactElement {
   const { tasks, agentNames } = useLiveEvents();
   const { task } = detail;
   // Who may answer, by name, is the viewer's view (Q's route); the detail holds the bare rows.
@@ -90,7 +94,7 @@ function TaskPaneBody({ detail, viewerId }: { detail: TaskDetail; viewerId: stri
   const steerable = view.word === "Working" || view.word === "Needs you" || (view.word === "Done" && followUp);
   const effectRows = effectFooter(effects, closed);
   return <div className="room-context-body flex min-h-0 flex-col gap-3">
-    <TaskHeader task={task} viewerId={viewerId} />
+    <TaskHeader task={task} viewerId={viewerId} error={actionError} />
     {open && <DecisionCard key={open.id} task={task} question={open} ended={closed} />}
     {decided.length > 0 && <ul aria-label="Decisions" className="grid gap-1 px-1 text-ui text-muted-foreground">
       {decided.map((d) => <li key={d.id}>{d.line}</li>)}
@@ -147,11 +151,19 @@ function answerLine(q: QuestionView): string {
   return `${verb} by ${q.answeredBy!.name} · ${time(q.answeredAt)}`;
 }
 
-/** The task's lifecycle controls, with the reason under the header only when it adds one; the header already carries
- *  the title, who and the word, so nothing here repeats them ("Done by X · Done", audit 02 P2). */
-export function TaskHeader({ task, viewerId }: { task: TaskSummary; viewerId: string }): ReactElement {
+/** Under the header: the live line while it runs, else the reason only when it adds one (the header already carries
+ *  the title, who and the word, so nothing here repeats them, "Done by X · Done", audit 02 P2), and a refused action. */
+export function TaskHeader({ task, viewerId, error }: { task: TaskSummary; viewerId: string; error: string | null }): ReactElement {
+  const view = summaryView(task, viewerId);
+  return <section aria-label="Task status" className="grid gap-1 px-1 empty:hidden">
+    {view.word === "Working" ? <ActorLine task={task} viewerId={viewerId} className="tabular-nums" /> : view.reason && <p className="text-ui text-muted-foreground">{view.reason}</p>}
+    {error && <p role="alert" className="text-ui text-err">{error}</p>}
+  </section>;
+}
+
+/** The task's lifecycle buttons, in the pane header's row at the right (W11-2). */
+function TaskActions({ task, viewerId, onError }: { task: TaskSummary; viewerId: string; onError: (message: string | null) => void }): ReactElement {
   const { act } = useTaskActions("pane");
-  const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [confirmStop, setConfirmStop] = useState(false);
   const view = summaryView(task, viewerId);
@@ -173,37 +185,31 @@ export function TaskHeader({ task, viewerId }: { task: TaskSummary; viewerId: st
     setPending(true);
     const res = await act(task, verb);
     setPending(false);
-    setError(res.ok ? null : res.message);
+    onError(res.ok ? null : res.message);
   };
-  return <section aria-label="Task status" className="grid gap-1 px-1">
-    {/* While it runs, the live line ("Growth · working · 14s", the seconds tick), else the reason once. */}
-    {live ? <ActorLine task={task} viewerId={viewerId} className="tabular-nums" /> : view.reason && <p className="text-ui text-muted-foreground">{view.reason}</p>}
-    {/* Fixed slots (UX audit 2, P0): Stop, Close and Reopen never take each other's place, so a press can't land on
-        a button that changed under the cursor. A running task is stopped (asked once, on its own row), never
-        resolved under it; Reopen undoes either and runs nothing. */}
-    <div className="flex gap-2">
-      <span data-action-slot="stop" className="w-[4.5rem]">
-        {live && <Button type="button" size="sm" variant="outline" disabled={busy || confirmStop} aria-expanded={confirmStop}
-          onClick={() => setConfirmStop(true)}>Stop</Button>}
-      </span>
-      {/* A failed task runs again from here, on its own slot (the owner's; the server's view offers it). */}
-      <span data-action-slot="retry" className="w-[4.5rem]">
-        {view.action === "retry" && <Button type="button" size="sm" disabled={busy} onClick={() => void press("retry")}>Retry</Button>}
-      </span>
-      <span data-action-slot="close" className="w-[4.5rem]">
-        {!live && task.status !== "resolved" && <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => void press("resolve")}>Close</Button>}
-      </span>
-      <span data-action-slot="reopen" className="w-[5rem]">
-        {task.status === "resolved" && <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => void press("reopen")}>Reopen</Button>}
-      </span>
-    </div>
-    {live && confirmStop && <span role="group" aria-label="Stop this task?" className="inline-flex items-center gap-2 text-ui">
-      <span>Stop this task?</span>
-      <Button type="button" size="sm" variant="outline" disabled={pending} onClick={() => void press("stop")}>Stop it</Button>
-      <Button type="button" size="sm" variant="ghost" onClick={() => setConfirmStop(false)}>Keep going</Button>
-    </span>}
-    {error && <p role="alert" className="text-ui text-err">{error}</p>}
-  </section>;
+  // Stop is asked once, in place of the buttons; a running task is stopped, never resolved under it.
+  if (live && confirmStop) return <span role="group" aria-label="Stop this task?" className="inline-flex items-center gap-2 text-ui">
+    <span className="whitespace-nowrap">Stop this task?</span>
+    <Button type="button" size="sm" variant="outline" disabled={pending} onClick={() => void press("stop")}>Stop it</Button>
+    <Button type="button" size="sm" variant="ghost" onClick={() => setConfirmStop(false)}>Keep going</Button>
+  </span>;
+  // Stop, Retry, Close and Reopen each keep their own slot (UX audit 2, P0); an empty slot takes no room. Reopen
+  // undoes a Stop or a Close and runs nothing.
+  return <span className="flex items-center gap-1">
+    <span data-action-slot="stop" className="empty:hidden">
+      {live && <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => setConfirmStop(true)}>Stop</Button>}
+    </span>
+    {/* A failed task runs again from here (the owner's; the server's view offers it). */}
+    <span data-action-slot="retry" className="empty:hidden">
+      {view.action === "retry" && <Button type="button" size="sm" disabled={busy} onClick={() => void press("retry")}>Retry</Button>}
+    </span>
+    <span data-action-slot="close" className="empty:hidden">
+      {!live && task.status !== "resolved" && <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => void press("resolve")}>Close</Button>}
+    </span>
+    <span data-action-slot="reopen" className="empty:hidden">
+      {task.status === "resolved" && <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => void press("reopen")}>Reopen</Button>}
+    </span>
+  </span>;
 }
 
 /** Steering when the room's composer isn't on screen: one line, Enter sends it into the task's room. */

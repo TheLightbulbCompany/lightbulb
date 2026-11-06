@@ -306,9 +306,9 @@ describe("NeedsYouCard", () => {
     // The whole line: the task's title and the reason once; the status word sits once, in the header row.
     expect(status.firstElementChild).toHaveTextContent(/Ready for review$/);
     expect(status.firstElementChild).not.toHaveTextContent(/Needs you|Done by|ready for your review/);
-    expect(screen.getByRole("banner")).toHaveTextContent(/Needs you$/);
+    expect(screen.getByRole("banner").querySelector(".pane-header__meta")).toHaveTextContent(/Needs you$/);
     expect(status).not.toHaveTextContent("is working on this");
-    expect(within(status).queryByRole("button", { name: "Stop" })).toBeNull();
+    expect(within(screen.getByRole("banner")).queryByRole("button", { name: "Stop" })).toBeNull();
     await userEvent.click(await screen.findByRole("button", { name: "Send" }));
     expect(client.answer).toHaveBeenCalledWith("t-email", "q-email", expect.objectContaining({ optionId: "send" }));
     const calls = Object.values(client).filter((v) => typeof v === "function").flatMap((fn) => (fn as unknown as { mock: { calls: unknown[][] } }).mock.calls.flat());
@@ -364,18 +364,22 @@ describe("steering a finished request (dev walk N-F4)", () => {
     await userEvent.click(screen.getByRole("button", { name: "Follow up" }));
     await userEvent.type(screen.getByRole("textbox", { name: "Steer this task" }), "Make it one line{Enter}");
     await waitFor(() => expect(within(header).getByText("Working")).toBeInTheDocument());
-    expect(within(status).getByRole("button", { name: "Stop" })).toBeInTheDocument();
+    // The lifecycle buttons sit in the header row (W11-2), not on a line of their own under it.
+    expect(within(header).getByRole("button", { name: "Stop" })).toBeInTheDocument();
+    expect(within(status).queryByRole("button")).toBeNull();
   });
 });
 
 describe("action slots (UX audit 2, P0)", () => {
   const slots = () => [...document.querySelectorAll("[data-action-slot]")].map((el) => `${el.getAttribute("data-action-slot")}:${el.textContent}`);
 
-  it("Stop, Close and Reopen each keep their own slot; the Stop confirm is on its own row", async () => {
+  it("Stop, Close and Reopen each keep their own slot; the Stop confirm takes their place", async () => {
     const first = pane();
-    await userEvent.click(await screen.findByRole("button", { name: "Stop" }));
+    await screen.findByRole("button", { name: "Stop" });
     expect(slots()).toEqual(["stop:Stop", "retry:", "close:", "reopen:"]);
-    expect(screen.getByRole("group", { name: "Stop this task?" }).closest("[data-action-slot]")).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Stop" }));
+    expect(within(screen.getByRole("banner")).getByRole("group", { name: "Stop this task?" })).toBeInTheDocument();
+    expect(slots()).toEqual([]);
     first.unmount();
     withDetail({ ...step8, task: { ...step8.task, status: "idle", shownGroup: "idle", watching: false }, questions: [] }, []);
     const second = pane();

@@ -2,16 +2,14 @@
 
 // Home's Ideas lane (product shape, 5 Nov 2026): what the team suggests doing next, because it is hard to know what
 // to ask for. Each idea says what, why and which specialist would do it; Do it starts a Request and opens it,
-// Not now puts it away (the server remembers, so it doesn't come straight back). With no suggestions yet, a few
-// catalog ideas sit underneath as starter chips that open the idea in the Ideas pane.
+// Not now puts it away (the server remembers, so it doesn't come straight back). With no suggestions the lane is
+// absent; the starter chips remain only in a room's Ideas pane.
 
 import { useState, type ReactElement } from "react";
 import { orderIdeas, type Idea } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { useIdeas } from "@/hooks/useIdeas";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
-import { capture } from "@/lib/analytics";
-import { openPanel } from "@/components/workspace/workspaceController";
 
 /** Starter chips under an empty lane. */
 export const STARTERS = 4;
@@ -32,17 +30,17 @@ export function IdeaStarters({ ideas, onOpen }: { ideas: readonly Idea[]; onOpen
   </div>;
 }
 
-export function HomeIdeas(): ReactElement {
-  const { ideas, loading, error, refresh, startAndOpen, dismiss } = useIdeas();
+/** Activity's Ideas: only real suggestions (the paid workspace's daily look-around). Nothing at all without them: no
+ *  generic starter chips, no loading or error line (founder, 5–6 Nov: look-around is paid only; W11-6). */
+export function HomeIdeas(): ReactElement | null {
+  const { ideas, startAndOpen, dismiss } = useIdeas();
   const suggested = ideas.filter((idea) => idea.suggested);
+  if (!suggested.length) return null;
   return <section aria-labelledby="home-ideas" className="home-ideas">
-    <h2 id="home-ideas" className="text-ui font-semibold">Ideas{suggested.length > 0 && ` · ${suggested.length}`}</h2>
-    {error ? <p role="alert" className="mt-1 text-ui text-muted-foreground">Ideas couldn&apos;t load. <button type="button" className="underline hover:text-foreground" onClick={() => void refresh()}>Retry</button></p>
-      : suggested.length > 0 ? <ul className="home-ideas__list">
-        {suggested.map((idea) => <IdeaItem key={idea.id} idea={idea} onStart={startAndOpen} onDismiss={dismiss} />)}
-      </ul>
-      : loading ? <p role="status" className="mt-1 text-ui text-muted-foreground">Loading…</p>
-      : <IdeaStarters ideas={ideas} onOpen={(id) => { capture("ideas_opened", { source: "home_starter" }); openPanel("ideas", { idea: id }, { pushUrl: true }); }} />}
+    <h2 id="home-ideas" className="text-ui font-semibold">Ideas · {suggested.length}</h2>
+    <ul className="home-ideas__list">
+      {suggested.map((idea) => <IdeaItem key={idea.id} idea={idea} onStart={startAndOpen} onDismiss={dismiss} />)}
+    </ul>
   </section>;
 }
 

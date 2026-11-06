@@ -5,7 +5,7 @@
 // complete server read the rail badge counts (useNeedsYouTasks); the rest come from the paged workspace list.
 
 import { useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
-import { Clock } from "lucide-react";
+import { ChevronRight, Clock } from "lucide-react";
 import { deliveryRoomId, overviewGroups, roomDisplayName, useAutomations, useOlderTasks, useTaskList, type AutomationView, type TaskScope, type TaskSummary } from "@lightbulb/shared";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingWorkspaceContext";
@@ -65,7 +65,7 @@ export function HomeWork({ viewerId, onOpen, between, asks, askCount = 0, schedu
       {/* Done collapses by default, like Closed (07 §2): Activity leads with what needs you and what is moving. */}
       {done.length > 0 && <section aria-labelledby="home-done">
         <h2 id="home-done" className="text-ui font-semibold">
-          <button type="button" aria-expanded={doneOpen} className="hover:underline" onClick={() => setDoneOpen(!doneOpen)}>Done · {done.length}</button>
+          <GroupToggle open={doneOpen} onToggle={() => setDoneOpen(!doneOpen)}>Done · {done.length}</GroupToggle>
         </h2>
         {doneOpen && rows(doneAll ? done : done.slice(0, DONE_FOLD))}
         {doneOpen && done.length > DONE_FOLD && <button type="button" aria-expanded={doneAll} className="mt-1 text-ui text-muted-foreground underline hover:text-foreground"
@@ -74,11 +74,13 @@ export function HomeWork({ viewerId, onOpen, between, asks, askCount = 0, schedu
       {/* Resolved, stopped, dismissed and someone else's failed requests: collapsed until asked for. */}
       {closed.length > 0 && <section aria-labelledby="home-closed">
         <h2 id="home-closed" className="text-ui font-semibold">
-          <button type="button" aria-expanded={closedOpen} className="hover:underline" onClick={() => setClosedOpen(!closedOpen)}>Closed · {closed.length}</button>
+          <GroupToggle open={closedOpen} onToggle={() => setClosedOpen(!closedOpen)}>Closed · {closed.length}</GroupToggle>
         </h2>
         {closedOpen && rows(closed)}
       </section>}
-      {hasOlder && <button type="button" className="justify-self-start text-ui text-muted-foreground underline hover:text-foreground"
+      {/* Older pages mostly add Done and Closed rows: while either group is there but collapsed, the link waits until one
+          is open, so a bare count never sits over a load link (W11-4). */}
+      {hasOlder && (doneOpen || closedOpen || (!done.length && !closed.length)) && <button type="button" className="justify-self-start text-ui text-muted-foreground underline hover:text-foreground"
         disabled={loading} onClick={() => void loadOlder()}>{loading ? "Loading…" : "Load older tasks"}</button>}
     </>}
     {/* Work dissolved (UX slice 4): what was scheduled is a group here, and the old task board is one link away. */}
@@ -86,6 +88,13 @@ export function HomeWork({ viewerId, onOpen, between, asks, askCount = 0, schedu
     <button type="button" className="justify-self-start text-ui text-muted-foreground hover:text-foreground hover:underline"
       onClick={() => openPanel("teams-issues", {}, { pushUrl: true })}>Older tasks (before 5 Nov) ›</button>
   </div>;
+}
+
+/** A collapsed group's heading: a chevron that turns when open, so a count with no rows reads as closed, not empty (W11-4). */
+function GroupToggle({ open, onToggle, children }: { open: boolean; onToggle: () => void; children: ReactNode }): ReactElement {
+  return <button type="button" aria-expanded={open} className="inline-flex items-center gap-1 hover:underline" onClick={onToggle}>
+    <ChevronRight size={14} aria-hidden="true" className={`flex-none text-muted-foreground transition-transform ${open ? "rotate-90" : ""}`} />{children}
+  </button>;
 }
 
 /** Activity's Scheduled group: collapsed by default, one line per automation, and a row opens it in its project's pane
@@ -117,7 +126,7 @@ function ScheduledGroup({ automations, initiallyOpen }: { automations: readonly 
   };
   return <section ref={ref} aria-labelledby="home-scheduled">
     <h2 id="home-scheduled" className="text-ui font-semibold">
-      <button type="button" aria-expanded={open} className="hover:underline" onClick={() => setOpen(!open)}>Scheduled · {automations.length}</button>
+      <GroupToggle open={open} onToggle={() => setOpen(!open)}>Scheduled · {automations.length}</GroupToggle>
     </h2>
     {open && (automations.length
       ? <ul className="mt-1 grid">{automations.map((a) => {

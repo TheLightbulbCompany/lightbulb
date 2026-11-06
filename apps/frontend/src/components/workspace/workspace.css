@@ -597,7 +597,8 @@
   outline: none;
 }
 .pane-header__meta {
-  flex: 0 1 auto;
+  /* The status word never truncates ("Don", W11-2): the title gives way first. */
+  flex: none;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

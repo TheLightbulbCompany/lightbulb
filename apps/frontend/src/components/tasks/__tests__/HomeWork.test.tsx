@@ -72,13 +72,19 @@ describe("Home's groups are the shared four (overviewGroups)", () => {
 describe("HomeWork", () => {
   it("renders Needs you, Working, Done (collapsed, folded after five) and Closed (collapsed) with the same count the badges read", async () => {
     const onOpen = vi.fn();
+    client.list.mockResolvedValue({ tasks: TASKS, next: "page-2" as never });
     render(<Fresh><HomeWork viewerId={SAM} onOpen={onOpen} /></Fresh>);
     const needs = await screen.findByRole("region", { name: "Needs you · 3" });
+    // A collapsed count is not an empty list (W11-4): no "Load older tasks" until Done or Closed is open.
+    await screen.findByRole("region", { name: "Done · 6" });
+    expect(screen.queryByRole("button", { name: "Load older tasks" })).toBeNull();
     expect(screen.getByRole("region", { name: "Working · 3" })).toBeInTheDocument();
     // Done collapses by default, like Closed (07 §2).
     const done = screen.getByRole("region", { name: "Done · 6" });
     expect(within(done).queryAllByRole("listitem")).toHaveLength(0);
     await userEvent.click(within(done).getByRole("button", { name: "Done · 6" }));
+    expect(within(done).getByRole("button", { name: "Done · 6" })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: "Load older tasks" })).toBeInTheDocument();
     expect(within(done).getAllByRole("listitem")).toHaveLength(5);
     await userEvent.click(within(done).getByRole("button", { name: "Show all 6" }));
     expect(within(done).getAllByRole("listitem")).toHaveLength(6);
@@ -127,6 +133,8 @@ describe("HomeWork", () => {
     render(<Fresh><HomeWork viewerId={SAM} onOpen={vi.fn()} /></Fresh>);
     const needs = await screen.findByRole("region", { name: "Needs you · 4" });
     expect(within(needs).getByText("Request z")).toBeInTheDocument();
+    // No Done or Closed group on this page: the older pages are one link away.
+    expect(screen.getByRole("button", { name: "Load older tasks" })).toBeInTheDocument();
     const { result: badge } = renderHook(() => useNeedsYouCount(), { wrapper: Fresh });
     await waitFor(() => expect(badge.current).toBe(4));
   });

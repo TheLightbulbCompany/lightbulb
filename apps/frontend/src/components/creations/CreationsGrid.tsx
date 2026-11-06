@@ -7,13 +7,14 @@
 import "./creations.css";
 import { useMemo, useState, type ReactElement } from "react";
 import { AppWindow, FileText, Mail, PanelsTopLeft } from "lucide-react";
-import { elapsedShort, roomDisplayName, specialistLabel, type CreationOutput } from "@lightbulb/shared";
+import { roomDisplayName, specialistLabel, type CreationOutput } from "@lightbulb/shared";
 import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingWorkspaceContext";
 import { projectRooms } from "@/components/home/HomeProjects";
 import { openChatPanelWithDraft } from "@/components/workspace/workspaceController";
 import { creationState } from "@/components/canvas/appText";
 import { useApps, type AppRow } from "@/hooks/useApps";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
+import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { KIND_FILTERS, KIND_WORD, openOutput, outputName } from "./openOutput";
 import { isTextDoc, OutputThumb } from "./OutputThumb";
 import { useCreations } from "./useCreations";
@@ -104,7 +105,8 @@ function CreationCard({ output: o, app, project, who, now, frame }: {
   output: CreationOutput; app?: AppRow; project: string | null; who: string; now: number; frame: boolean;
 }): ReactElement {
   const state = app ? creationState(app, who === "Lightbulb" ? "Engineering" : who, now) : null;
-  const meta = [KIND_WORD[o.kind], project, elapsedShort(o.createdAt, now)].filter(Boolean).join(" · ");
+  // The age reads "just now", "3m ago", as Tasks and Files say it (W13).
+  const meta = [KIND_WORD[o.kind], project, timeAgo(o.createdAt)].filter(Boolean).join(" · ");
   return <li className="creations__card">
     <button type="button" className="creations__open" aria-label={`Open ${outputName(o)}`} onClick={() => openOutput(o)}>
       <OutputThumb output={o} app={app} frame={frame} />

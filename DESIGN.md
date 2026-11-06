@@ -18,32 +18,32 @@ colors:
   err: "#96382B"
 typography:
   title:
-    fontFamily: "Source Sans 3, ui-sans-serif, system-ui, sans-serif"
+    fontFamily: "Satoshi, Avenir Next, Segoe UI, sans-serif"
     fontSize: "1.125rem"
     fontWeight: 600
     lineHeight: 1.4
   body:
-    fontFamily: "Source Sans 3, ui-sans-serif, system-ui, sans-serif"
+    fontFamily: "Satoshi, Avenir Next, Segoe UI, sans-serif"
     fontSize: "1rem"
     fontWeight: 400
     lineHeight: 1.5
   meta:
-    fontFamily: "Source Sans 3, ui-sans-serif, system-ui, sans-serif"
+    fontFamily: "Satoshi, Avenir Next, Segoe UI, sans-serif"
     fontSize: "0.875rem"
     fontWeight: 400
     lineHeight: 1.4
   ui:
-    fontFamily: "Source Sans 3, ui-sans-serif, system-ui, sans-serif"
+    fontFamily: "Satoshi, Avenir Next, Segoe UI, sans-serif"
     fontSize: "0.8125rem"
     fontWeight: 400
     lineHeight: 1.4
   caption:
-    fontFamily: "Source Sans 3, ui-sans-serif, system-ui, sans-serif"
+    fontFamily: "Satoshi, Avenir Next, Segoe UI, sans-serif"
     fontSize: "0.75rem"
     fontWeight: 400
     lineHeight: 1.4
   label-caps:
-    fontFamily: "Source Sans 3, ui-sans-serif, system-ui, sans-serif"
+    fontFamily: "Satoshi, Avenir Next, Segoe UI, sans-serif"
     fontSize: "0.625rem"
     fontWeight: 600
     lineHeight: 1.4
@@ -190,7 +190,7 @@ This surface runs the **white ground**: inside `.workspace-shell` the brand's cr
 - One neutral ground with two darker steps (`ground-deep`, `ground-deeper`) that carry hover, selection and the sidebar; no coloured fills.
 - Borders only. Depth is a 1px `edge` rule; the three exceptions (hover toolbar, Radix popover/dialog, the 860–1179px details overlay) are catalogued, not general.
 - State colour marks text, an icon, a 2px rule or a 2px ring, never a fill, and never without its word or icon.
-- One typeface (Source Sans 3) at 400/600; message prose is deliberately sans, not Lora.
+- One typeface (Satoshi) at 400/600 for chrome, rows and message prose alike; no second sans, no serif.
 - Brass appears exactly once: the animated halo on a running agent's avatar.
 - Focus is one recipe everywhere: `2px solid var(--ring)` outset 2px, keyboard-only.
 
@@ -231,14 +231,13 @@ A single achromatic ramp (white to graphite) with one warm accent held in reserv
 
 ## Typography
 
-**Display Font:** Lora (with Georgia, serif); present in the product for prose headings and the wordmark, **not used on the messaging surface**.
-**Body Font:** Source Sans 3 (with ui-sans-serif, system-ui, sans-serif)
-**Label/Mono Font:** Geist Mono (with ui-monospace, SFMono-Regular, monospace); code and run output only.
+**Font:** Satoshi (self-hosted variable woff2, `--font-satoshi`; falls back to Avenir Next, Segoe UI, sans-serif). It is `--font-sans` and `--font-body` both, so display, chrome, rows and message prose are one face. The legacy `--font-serif`, `--font-source-sans` and `--font-lora-serif` tokens all alias it. The phone loads the same family (`Satoshi-Regular/Medium/Bold`).
+**Mono Font:** Geist Mono (with ui-monospace, SFMono-Regular, monospace); code and run output only.
 
-**Character:** One humanist sans at two weights. Emphasis is 600, never 700 and never lighter than 400; hierarchy comes from size and `ink`/`ink-muted` contrast, not from a second face. Message bodies force `.prose` back to Source Sans at 16px/1.5, so a chat transcript never switches into the serif.
+**Character:** One geometric sans at two weights. Emphasis is 600, never 700 and never lighter than 400 (the phone's semibold is Satoshi Bold, the only static cut the licence allows); hierarchy comes from size and `ink`/`ink-muted` contrast, not from a second face. The second sans (message prose) was retired on 6 Nov 2026: one face is how the product stays calm.
 
 ### Hierarchy
-- **Title** (600, 18px, 1.4): the room name in the header; the empty-state heading. Also `font-semibold` at 16px for section headings ("Conversations", "Room members", "Channel name").
+- **Title** (600, 18px, 1.4): the room name in the header; the empty-state heading. Also `font-semibold` at 16px for section headings ("Chats", "Room members", "Project name").
 - **Body** (400, 16px, 1.5): message prose, directory entries, composer text. Paragraphs inside a message carry 2px top / 4px bottom margins.
 - **Meta** (400, 14px, 1.4): timestamps, helper and error lines, group headings (600, `ink-muted`), the unread count (tabular numerals), listen-mode selects, run details.
 - **UI** (400, 13px, 1.4): sidebar "More" nav rows, dock tab strip.
@@ -249,7 +248,7 @@ A single achromatic ramp (white to graphite) with one warm accent held in reserv
 ### Named Rules
 **The Two-Weight Rule.** Text is 400 or 600. Bold marks "unread" (directory row), "current" (active tab), and headings; nothing else.
 
-**The Sans-Transcript Rule.** Message prose is Source Sans 3 at 16px/1.5, overriding the site-wide serif prose. Lora is for editorial pages, not conversation.
+**The One-Face Rule.** Message prose is Satoshi at 16px/1.5, the same face as the chrome around it. No surface switches into a second sans or a serif.
 
 ## Layout
 
@@ -301,7 +300,7 @@ Lines are 1px `edge`; the active tab and the live-run rule are 2px in `currentCo
 ### Buttons
 Pill, semibold, quiet. All variants share `rounded-full`, `text-sm font-semibold`, a 120ms colour transition and `active:scale-[0.97]`.
 - **Shape:** pill (`999px`).
-- **Primary:** `ink` fill, `ground` text; `h-9 px-4` (36px). Used for "Create channel", "Save changes", the send button (`room-send`, 36×36 at 8px radius, the one non-pill).
+- **Primary:** `ink` fill, `ground` text; `h-9 px-4` (36px). Used for "Create project", "Save changes", the send button (`room-send`, 36×36 at 8px radius, the one non-pill).
 - **Outline:** `ground` fill, `edge` border, `ink` text. "Try again", "Cancel", "Check message status", work-link buttons (`room-work-link`, wrapping, `min-height 36px`).
 - **Ghost:** transparent, `ink` text; hover `ground-deep`. Directory actions, composer icon buttons, "Back", the reply-count button (`room-reply`, `info` text, 14px, 28px tall).
 - **Destructive:** `err` fill, `ground` text. "Delete message" only.
@@ -331,7 +330,7 @@ Pill, semibold, quiet. All variants share `rounded-full`, `text-sm font-semibold
 
 ### Navigation
 - **Rail** (56px, `ground-deep`, `edge` right rule): 44×40 stacked icon+9px-label buttons, `ink-muted` at rest, `ink` on `ground-deeper` for hover and `aria-current`, 7px radius (observed; the step is 8px), focus outline offset 1px.
-- **Directory** (`ground-deep`): 14px 600 `ink-muted` group headings ("Channels", "Direct messages"); entries are 36px rows, `5px 10px`, 6px radius, icon or `sm` avatar + truncated name + optional count; hover and `aria-current` fill `ground-deeper`; the row's overflow menu is `opacity: 0` until hover/focus/open (always visible on `hover: none`).
+- **Directory** (`ground-deep`): 14px 600 `ink-muted` group headings ("Projects", "People"); entries are 36px rows, `5px 10px`, 6px radius, icon or `sm` avatar + truncated name + optional count; hover and `aria-current` fill `ground-deeper`; the row's overflow menu is `opacity: 0` until hover/focus/open (always visible on `hover: none`).
 - **Sidebar "More" nav:** 36px rows, 13px `ink-soft`, 4px radius, same `ground-deeper` hover/current treatment, focus outline in `ink`.
 - **Room tabs:** a 24px-gap strip with an `edge` bottom rule; each tab is 42px tall, `ink-muted`, with a transparent 2px bottom border that becomes `ink` (and the text 600) under `aria-current="page"`. This is the same underline grammar as the dock tab strip and `PanelTabs`.
 - **Header search trigger:** 32px, `ground-deep`, `edge` border, 6px radius, 12px `ink-muted`, a `kbd` hint behind an `edge` left rule; hover to `ground-deeper`/`ink`.
@@ -363,7 +362,7 @@ The creation dialog: `min(520px, 100vw - 32px)`, `ground`, 8px radius, header `2
 - **Do** read every colour through a token (`var(--foreground)`, `text-muted-foreground`, `text-err`); the scanner must print 0.
 - **Do** separate surfaces with a 1px `edge` rule or one ground step (`ground-deep`, `ground-deeper`); never with a shadow at rest.
 - **Do** mark state with text, an icon, a 2px rule or a 2px ring, and always pair the colour with its word or icon.
-- **Do** keep emphasis at 600 and hierarchy at 18 / 16 / 14 / 13 / 12px on the 1.4–1.5 line-height band; message prose stays Source Sans 3 at 16px/1.5.
+- **Do** keep emphasis at 600 and hierarchy at 18 / 16 / 14 / 13 / 12px on the 1.4–1.5 line-height band; message prose stays Satoshi at 16px/1.5.
 - **Do** use the one focus recipe: `outline: 2px solid var(--ring); outline-offset: 2px` on `:focus-visible` only.
 - **Do** give every control a 44px hit area at ≤859px and on coarse pointers, pin inputs to 16px there, and make hover-revealed toolbars always visible on touch.
 - **Do** animate only under real state (the running halo) with `--dur-fast/base/slow` and `--ease-out`, and hold a static ring under reduced motion.
@@ -373,7 +372,7 @@ The creation dialog: `min(520px, 100vw - 32px)`, `ground`, 8px radius, header `2
 - **Don't** fill anything with a state colour or with brass; brass is the halo ring only and is never type on the light ground.
 - **Don't** use the `bulb` yellow on this surface: it is 1.45:1 on the ground and cannot be a ring, type or fill.
 - **Don't** add a resting shadow to a card, panel, input or the composer; the toolbar, popover/dialog and the 860–1179px overlay are the complete list.
-- **Don't** switch message bodies or headings into Lora, or drop below 400 / above 600 weight.
+- **Don't** switch message bodies or headings into a second face, or drop below 400 / above 600 weight.
 - **Don't** hand-type radii off the 4 / 8 / 12 / 16 / full scale; the 6, 7 and 10px values on this surface are observed drift, not a second scale.
 - **Don't** add a second tab strip inside a panel; views inside a page are a `select`.
 - **Don't** trigger the activity halo from anything but a live agent run, and don't render a status without its label.

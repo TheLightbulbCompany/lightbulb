@@ -194,7 +194,7 @@ export function OnboardingBand({ participants, humanSpoke = false }: OnboardingB
       <header className="onboarding-band-head">
         <div>
           <h3>Get started · {done} of {total} done</h3>
-          <p>Bring in the person you work with most, then give your CEO one thing to do.</p>
+          <p>Bring in the person you work with most, then give Lightbulb one thing to do.</p>
         </div>
         <Button
           type="button"
@@ -481,8 +481,8 @@ function ContextDialog({ open, onClose }: { open: boolean; onClose: (saved: bool
           <DialogTitle>Share your context</DialogTitle>
           <DialogDescription>
             {state === "saved"
-              ? "Your CEO has it — it’ll use this from now on."
-              : "Paste what you’ve already told Claude or ChatGPT about your business. It goes to your CEO’s memory, which you can edit later in Files."}
+              ? "Lightbulb has it and will use it from now on."
+              : "Paste what you’ve already told Claude or ChatGPT about your business. It goes to Lightbulb’s memory, which you can edit later in Files."}
           </DialogDescription>
         </DialogHeader>
         {state !== "saved" && (

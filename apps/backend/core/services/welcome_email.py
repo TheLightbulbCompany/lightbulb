@@ -40,17 +40,17 @@ def owner_welcome(*, first_name: str | None, workspace: str, url: str) -> tuple[
         f"Your team at {workspace} is ready",
         f"""{_greeting(first_name)}
 
-I'm your CEO. Your workspace is set up, and the rest of the team is in #general with me: Engineering, Finance, Growth, Analytics and Customer Operations.
+I'm Lightbulb. Your workspace is set up. I hand work to the specialists (Engineering, Finance, Growth, Analytics and Customer Operations) and show you each task.
 
-Tell me what the business is (a website is enough). I'll write a short plan, post it in the channel, and ask you for one decision. While I work, invite the person who should see it with you. They can approve it too.
+Tell me what the business is (a website is enough). I'll write a short plan, post it in the general project, and ask you for one decision. While I work, invite the person who should see it with you. They can approve it too.
 
-Open #general: {url}
+Open general: {url}
 
 We run in your workspace's own cloud, so routines and email keep going when your laptop is closed. Spend, sends and deploys wait for a person. Your 30 days are free.
 
 Reply to this email if anything is unclear.
 
-— CEO, {workspace}
+— Lightbulb, {workspace}
 """,
     )
 
@@ -62,13 +62,13 @@ def teammate_welcome(*, first_name: str | None, inviter: str | None, workspace: 
         f"You're in {workspace} on Lightbulb",
         f"""{_greeting(first_name)}
 
-{added} The team's AI employees work in the channels, and their results and approvals show up there for everyone.
+{added} Lightbulb hands work to the specialists, and their results and approvals show up in the projects for everyone.
 
-Start in #general: you'll see what's been asked and what's waiting on a decision. Mention an agent by name to hand it something.
+Start in general: you'll see what's been asked and what's waiting on a decision. Mention an agent by name to hand it something.
 
-Open #general: {url}
+Open general: {url}
 
-— CEO, {workspace}
+— Lightbulb, {workspace}
 """,
     )
 
@@ -79,7 +79,7 @@ async def _workspace_name(owner_id: str) -> str:
 
 
 async def send_owner_welcome(owner_id: str, owner_user_id: str) -> str:
-    """The owner version, as the CEO's first contact. Returns ``send_to_owner``'s result."""
+    """The owner version, as Lightbulb's first contact. Returns ``send_to_owner``'s result."""
     from core.services.agent_mail_owner_send import send_to_owner
 
     user = await clerk_admin.get_user(owner_user_id) or {}

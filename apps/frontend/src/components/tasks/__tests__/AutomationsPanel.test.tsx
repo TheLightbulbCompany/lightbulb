@@ -93,9 +93,9 @@ describe("AutomationsPanel", () => {
     messaging.value = { directoryProps: { rooms: [{ roomId: "room-workshop-launch", kind: "channel", name: "walk-8", participants: [] }] } };
     try {
       render(<Fresh><AutomationsPanel viewerTz="America/New_York" /></Fresh>);
-      expect(await screen.findByText(/Mondays 9:00 New York time · .*posts to #walk-8/)).toBeInTheDocument();
+      expect(await screen.findByText(/Mondays 9:00 New York time · .*posts to walk-8/)).toBeInTheDocument();
       await userEvent.click(screen.getByRole("button", { name: "Post signups every Monday" }));
-      expect(await screen.findByText(/^Mondays 9:00 New York time · posts to #walk-8 · /)).toBeInTheDocument();
+      expect(await screen.findByText(/^Mondays 9:00 New York time · posts to walk-8 · /)).toBeInTheDocument();
     } finally { messaging.value = null; }
   });
 

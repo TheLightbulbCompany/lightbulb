@@ -83,7 +83,7 @@ export default function AutomationScreen() {
         <Text style={[styles.label, { color: palette.fgMute }]}>HISTORY</Text>
         {runs?.skipped && <Text style={[styles.meta, { color: palette.fgMute }]}>{runs.skipped.text}</Text>}
         {!runs ? <LoadState what="History" error={!!runsError} onRetry={() => void retryRuns()} palette={palette} />
-          : !runs.runs.length ? <Text style={[styles.meta, { color: palette.fgMute }]}>No runs yet. Each run opens as its own request.</Text>
+          : !runs.runs.length ? <Text style={[styles.meta, { color: palette.fgMute }]}>No runs yet. Each run opens as its own task.</Text>
           : <View style={[styles.list, { borderColor: palette.edge, backgroundColor: palette.surface }]}>{runs.runs.map((t, i) => (
             <Pressable key={t.taskId} accessibilityRole="button" accessibilityLabel={`Open ${t.title}`} onPress={() => openTaskScreen(t.taskId)}
               style={({ pressed }) => [styles.row, { backgroundColor: pressed ? palette.hover : "transparent", borderColor: palette.edge, borderTopWidth: i === 0 ? 0 : StyleSheet.hairlineWidth }]}>

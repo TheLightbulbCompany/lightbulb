@@ -13,9 +13,8 @@ export function RoomIntro({ room, roomName, participants }: { room?: RoomSummary
   const agents = participants.filter((participant) => participant.kind === "agent");
   const kind = room?.kind;
   const title = kind === "dm" ? `This is the beginning of your direct messages with ${roomName}.`
-    : kind === "channel" ? `This is the beginning of #${roomName}.`
-      : `This is the beginning of ${roomName}.`;
-  const detail = room?.shared ? "This channel is shared with the Lightbulb team — ask us anything here."
+    : `This is the beginning of ${roomName}.`;
+  const detail = room?.shared ? "This project is shared with the Lightbulb team — ask us anything here."
     : kind === "dm"
     ? (agents.length > 0 ? `${roomName} replies to everything you send here.` : "Messages here are private to the two of you.")
     : agents.length === 0 ? "Mention an agent to bring one in."

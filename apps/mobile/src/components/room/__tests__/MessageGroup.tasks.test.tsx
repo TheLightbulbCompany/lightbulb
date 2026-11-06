@@ -42,7 +42,7 @@ it("one card per ref under the reply, no Suggested block", async () => {
 it("the person's message says where it went; the agent's 👀 is a receipt, not a toggle", async () => {
   const onToggleReaction = jest.fn();
   await group({ ...ask, reactions: { "👀": [LIGHTBULB] } }, { onToggleReaction });
-  expect(screen.getByText("3 requests started ›")).toBeTruthy();
+  expect(screen.getByText("3 tasks started ›")).toBeTruthy();
   const chip = screen.getByLabelText("Lightbulb saw this");
   fireEvent.press(chip);
   expect(onToggleReaction).not.toHaveBeenCalled();

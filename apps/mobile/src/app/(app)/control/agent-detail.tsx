@@ -542,7 +542,7 @@ export default function AgentDetail() {
         </View>
       )}
       <Text style={styles.footnote}>
-        Tool and channel editing lives in the web control panel on thelightbulb.company.
+        Tool editing lives in the web control panel on thelightbulb.company.
       </Text>
 
       {/* Danger zone */}

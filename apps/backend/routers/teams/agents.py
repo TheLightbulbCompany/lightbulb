@@ -825,7 +825,7 @@ async def set_agent_heartbeat(
     owner_id = _resolve_owner_id(ctx)
     row = await _repo().resolve_owner_row(owner_id)
     if row is None or ceo_agent_id(row) != agent_id:
-        raise HTTPException(status_code=400, detail="Only the CEO's heartbeat can be switched here")
+        raise HTTPException(status_code=400, detail="Only Lightbulb's heartbeat can be switched here")
     await billing_repo.set_nightly_ceo_opted_out(owner_id, not body.enabled)
     status = await arm_nightly_ceo(owner_id)
     return {"status": status}

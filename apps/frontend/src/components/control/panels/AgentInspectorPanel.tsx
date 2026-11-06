@@ -145,7 +145,7 @@ export function AgentInspectorPanel({
       <div
         className="flex items-center gap-1 border-b border-[var(--edge)] px-4 py-2"
         role="tablist"
-        aria-label="Agent inspector sections"
+        aria-label={`${displayName} sections`}
       >
         {TABS.map((tab) => (
           <button

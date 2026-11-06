@@ -178,7 +178,7 @@ async def test_final_root_ceo_cannot_be_demoted(monkeypatch):
     admin.patch_agent = AsyncMock(return_value={})
     _wire_admin(monkeypatch, admin)
 
-    with pytest.raises(RuntimeError, match="final root CEO"):
+    with pytest.raises(RuntimeError, match="coordinator cannot be deleted"):
         await runtime_rpc._mirror_agent_update(
             "org_1",
             {"agentId": "a1", "params": {"paperclip": {"role": "general"}}},

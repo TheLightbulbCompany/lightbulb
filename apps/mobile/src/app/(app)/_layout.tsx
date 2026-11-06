@@ -171,7 +171,7 @@ export default function AppLayout() {
                   <Stack.Screen name="room/[roomId]/thread/[messageId]" options={{ title: "Thread" }} />
                   <Stack.Screen name="room/[roomId]/details" options={{ title: "Details" }} />
                   {/* A super-agent request (opened from a card, Activity, a push or a link). */}
-                  <Stack.Screen name="task/[taskId]" options={{ title: "Request" }} />
+                  <Stack.Screen name="task/[taskId]" options={{ title: "Task" }} />
                   {/* A super-agent automation and its run history. */}
                   <Stack.Screen name="automation/[id]" options={{ title: "Automation" }} />
                   {/* A shared Claude / Codex session's transcript: workspace-scoped, not

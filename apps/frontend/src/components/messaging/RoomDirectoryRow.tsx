@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef } from "react";
-import { Bell, BellOff, Hash, Link, LogOut, MailOpen, MessageCircle, MoreHorizontal, Pencil, Star, UserPlus, Users } from "lucide-react";
+import { Bell, BellOff, Folder, Link, LogOut, MailOpen, MessageCircle, MoreHorizontal, Pencil, Star, UserPlus, Users } from "lucide-react";
 import type { RoomSection } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -32,7 +32,7 @@ const SHARED_ROOM_HINT = "Your direct line to the Lightbulb team";
 
 export function RoomDirectoryRow({ room, label, active, busy, draft, onSelect, onToggleStar, onToggleMute, onMarkUnread, onCopyLink, onAddPeople, onMoveToSection, sections, onLeave }: RoomDirectoryRowProps) {
   const actionsTrigger = useRef<HTMLButtonElement>(null);
-  const Icon = room.kind === "channel" ? Hash : room.kind === "group-dm" ? Users : MessageCircle;
+  const Icon = room.kind === "channel" ? Folder : room.kind === "group-dm" ? Users : MessageCircle;
   // A muted room never carries a badge (spec: muted rows are muted-coloured,
   // with the word "Muted" so colour is never the only signal).
   const badge = !room.muted && room.unreadCount > 0;
@@ -65,14 +65,14 @@ export function RoomDirectoryRow({ room, label, active, busy, draft, onSelect, o
     </button>
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button ref={actionsTrigger} variant="ghost" size="icon" className="room-directory-actions" aria-label={`Conversation actions for ${label}`} aria-busy={busy} data-room-id={room.roomId}><MoreHorizontal aria-hidden="true" /></Button>
+        <Button ref={actionsTrigger} variant="ghost" size="icon" className="room-directory-actions" aria-label={`Actions for ${label}`} aria-busy={busy} data-room-id={room.roomId}><MoreHorizontal aria-hidden="true" /></Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
         {/* The trigger itself stays enabled (see aria-busy above) so Radix has
             somewhere to return focus to -- these items are what actually gate
             re-entry while this room's own save is in flight. */}
-        {onToggleStar && <DropdownMenuItem disabled={busy} onSelect={onToggleStar}><Star aria-hidden="true" />{room.starred ? "Unstar conversation" : "Star conversation"}</DropdownMenuItem>}
-        {onToggleMute && <DropdownMenuItem disabled={busy} onSelect={onToggleMute}>{room.muted ? <Bell aria-hidden="true" /> : <BellOff aria-hidden="true" />}{room.muted ? "Unmute conversation" : "Mute conversation"}</DropdownMenuItem>}
+        {onToggleStar && <DropdownMenuItem disabled={busy} onSelect={onToggleStar}><Star aria-hidden="true" />{room.starred ? "Unstar" : "Star"}</DropdownMenuItem>}
+        {onToggleMute && <DropdownMenuItem disabled={busy} onSelect={onToggleMute}>{room.muted ? <Bell aria-hidden="true" /> : <BellOff aria-hidden="true" />}{room.muted ? "Unmute" : "Mute"}</DropdownMenuItem>}
         {onMarkUnread && <DropdownMenuItem disabled={busy} onSelect={onMarkUnread}><MailOpen aria-hidden="true" />Mark unread</DropdownMenuItem>}
         <DropdownMenuItem onSelect={onCopyLink}><Link aria-hidden="true" />Copy link</DropdownMenuItem>
         {onAddPeople && <DropdownMenuItem onSelect={onAddPeople}><UserPlus aria-hidden="true" />Add people</DropdownMenuItem>}
@@ -83,7 +83,7 @@ export function RoomDirectoryRow({ room, label, active, busy, draft, onSelect, o
         </>}
         {onLeave && <>
           <DropdownMenuSeparator />
-          <DropdownMenuItem variant="destructive" onSelect={() => onLeave(actionsTrigger.current)}><LogOut aria-hidden="true" />{room.kind === "group-dm" ? "Leave group chat" : "Leave channel"}</DropdownMenuItem>
+          <DropdownMenuItem variant="destructive" onSelect={() => onLeave(actionsTrigger.current)}><LogOut aria-hidden="true" />{room.kind === "group-dm" ? "Leave group chat" : "Leave project"}</DropdownMenuItem>
         </>}
       </DropdownMenuContent>
     </DropdownMenu>

@@ -52,7 +52,7 @@ const DATA_SENT = [
   "Messages you send to your agents, and their replies",
   "Files and images you attach to a message",
   "Content your agents read or produce while working on your tasks",
-  "When Listening is on in a channel: recent channel messages (with sender names) and short descriptions of your agents, so the right agent picks up the conversation. Attachments, email addresses and account details are never sent for this.",
+  "When Listening is on in a project: its recent messages (with sender names) and short descriptions of your agents, so the right agent picks up the conversation. Attachments, email addresses and account details are never sent for this.",
 ];
 
 const RECIPIENTS = [
@@ -61,7 +61,7 @@ const RECIPIENTS = [
   "Amazon Web Services — hosts our infrastructure and stores and processes workspace memory using AWS-managed AI models",
   "Anthropic — only if you connect your own Anthropic key",
   "OpenAI — only if you connect a ChatGPT account or your own OpenAI key",
-  "Vercel and TypeSafe AI — decide which agent answers in channels with Listening on; zero data retention on every request",
+  "Vercel and TypeSafe AI — decide which agent answers in projects with Listening on; zero data retention on every request",
 ];
 
 export function AiConsentGate({ children }: { children: ReactNode }) {

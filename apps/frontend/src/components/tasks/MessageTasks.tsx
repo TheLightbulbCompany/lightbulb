@@ -20,13 +20,13 @@ export function MessageTasks({ message, viewerId, onOpen }: {
   if (!data) {
     return error
       ? <p role="alert" className="mt-1.5 max-w-xl text-ui text-muted-foreground">
-        Requests couldn&apos;t load. <button type="button" className="underline hover:text-foreground" onClick={() => void mutate()}>Retry</button>
+        Tasks couldn&apos;t load. <button type="button" className="underline hover:text-foreground" onClick={() => void mutate()}>Retry</button>
       </p>
-      : <div aria-busy="true" aria-label="Loading requests">
+      : <div aria-busy="true" aria-label="Loading tasks">
         {refs.map((r) => <div key={r.taskId} className="mt-1.5 h-14 max-w-xl rounded-lg border border-border bg-muted/40 motion-safe:animate-pulse" />)}
       </div>;
   }
-  return <div aria-label="Requests in this message">
+  return <div aria-label="Tasks in this message">
     {refs.map((r) => <RefCard key={r.taskId} taskId={r.taskId} listed={byId.get(r.taskId)} viewerId={viewerId} onOpen={onOpen} />)}
   </div>;
 }
@@ -52,8 +52,8 @@ export function RoutedToLink({ routedTo, taskTitle, onOpen, onShowReply }: {
   if (!taskIds.length) return null;
   const single = passThrough || taskIds.length === 1;
   const label = single
-    ? `Sent to ${taskTitle?.(taskIds[0]) ?? "a request"}`
-    : `${started} ${started === 1 ? "request" : "requests"} started`;
+    ? `Sent to ${taskTitle?.(taskIds[0]) ?? "a task"}`
+    : `${started} ${started === 1 ? "task" : "tasks"} started`;
   return <button type="button" className="mt-0.5 text-ui text-muted-foreground hover:text-foreground hover:underline"
     onClick={() => (single ? onOpen?.(taskIds[0]) : onShowReply?.(taskIds[0]))}>{label} ›</button>;
 }

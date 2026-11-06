@@ -53,7 +53,7 @@ describe("CanvasDockPanel deep link", () => {
     hook = { ...base, apps: [row({ state: "building" })] };
     panel("a1");
     expect(screen.getByText("Invoices")).toBeTruthy();
-    expect(screen.getByText(/(making the preview|Building the new version)\. It'll (post|show here and) in #finance/)).toBeTruthy();
+    expect(screen.getByText(/(making the preview|Building the new version)\. It'll (post|show here and) in finance/)).toBeTruthy();
     expect(screen.queryByText("app view")).toBeNull();
     expect(screen.getByRole("button", { name: "All apps" })).toBeTruthy();
     // The builder talks while it builds: its conversation is beside the status.
@@ -69,7 +69,7 @@ describe("CanvasDockPanel deep link", () => {
   it.each([
     ["awaiting_approval", /Waiting for an owner to approve: the cards are in Activity, under Needs you/],
     ["provisioning", /Setting up its hosting and data/],
-    ["failed", /Something went wrong\. Ask the agent in #finance/],
+    ["failed", /Something went wrong\. Ask the agent in finance/],
   ] as const)("%s shows its status line in the open view", (state, re) => {
     hook = { ...base, apps: [row({ state, live_version: null })] };
     panel("a1");

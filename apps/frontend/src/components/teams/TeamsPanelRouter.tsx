@@ -9,6 +9,7 @@ import {
   TASKS_GROUP_BY,
   type InboxSectionId,
 } from "@/components/workspace/panelRegistry";
+import { openPanel } from "@/components/workspace/workspaceController";
 import type { AgentsViewMode } from "./agents/agentsViewMode";
 import type { MoneySectionId } from "./panels/MoneyPanel";
 import type { TasksGroupBy } from "./issues/TasksList";
@@ -20,6 +21,16 @@ function PanelSkeleton() {
   return (
     <div className="p-8" aria-busy="true">
       <PageSkeleton />
+    </div>
+  );
+}
+
+// A key nothing renders any more (a retired or malformed link): say so and offer Home, never a dead end.
+function PageGone() {
+  return (
+    <div className="p-8 grid gap-3 justify-items-start">
+      <p className="text-ui text-muted-foreground">This page is no longer here.</p>
+      <button type="button" className="underline underline-offset-4 text-ui" onClick={() => openPanel("home", {}, { pushUrl: true })}>Go to Home</button>
     </div>
   );
 }
@@ -150,7 +161,7 @@ export function TeamsPanelRouter({
   onUpdateDurableParam,
 }: TeamsPanelRouterProps) {
   // Detail branch — must precede the list map. A detail key without a
-  // detailId falls through to "Unknown panel" below (no id to render).
+  // detailId falls through to PageGone below (no id to render).
   if (detailId) {
     if (panel === "issue-detail")
       return <IssueDetailPanel issueId={detailId} />;
@@ -206,9 +217,9 @@ export function TeamsPanelRouter({
 
   // Own-property only (Object.hasOwn) — `in` and bracket access both walk the
   // prototype chain, so a `panel` of "constructor"/"valueOf" would resolve to
-  // an inherited Object.prototype value instead of rejecting to "Unknown
-  // panel". Same hazard panelRegistry.ts guards against for its own key-maps.
+  // an inherited Object.prototype value instead of rejecting to
+  // PageGone. Same hazard panelRegistry.ts guards against for its own key-maps.
   const Cmp = Object.hasOwn(PANELS, panel) ? PANELS[panel] : undefined;
-  if (!Cmp) return <div className="p-8">Unknown panel: {panel}</div>;
+  if (!Cmp) return <PageGone />;
   return <Cmp />;
 }

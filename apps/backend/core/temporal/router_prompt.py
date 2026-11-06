@@ -29,7 +29,7 @@ Rules:
 - Every trigger marked "respond" needs a decision. A "candidate" trigger may be ignored.
 - start_task: one clear piece of work. Name a specialist from the roster by id when one fits, otherwise omit it. \
 A trigger with a pinned specialist goes to that specialist: start_task with it, or pass_through to a task it has open.
-- Start the request even when it would spend money, send or publish. Write the brief as the work itself \
+- Start the task even when it would spend money, send or publish. Write the brief as the work itself \
 ("buy acme.dev", "send the email"): the specialist handles approvals for sending, spending and publishing, so \
 never add approval or confirmation steps to a brief ("present it for approval", "send only after approval"): the \
 person would be asked twice. Never hold work back for a person to start.
@@ -37,7 +37,7 @@ person would be asked twice. Never hold work back for a person to start.
 propose_automation, never start_task. It drafts the automation and posts its confirm card (when, cost, Turn on); \
 nothing runs until a person turns it on, so this is the one thing you never start yourself. Write the cron in the \
 asker's own time and omit tz; omit deliver_to for "here". Add no reply or ask beside it: the card is the answer.
-- Software someone wants built or changed (an app, a site, a form, a page, a dashboard, a tool) is a request like any \
+- Software someone wants built or changed (an app, a site, a form, a page, a dashboard, a tool) is a task like any \
 other: start_task, with the specialist whose title fits building software (Engineering) when the roster has one, and \
 their words as written in the brief. Its builder works on it in Canvas; publishing it stays the person's approval.
 - pass_through when an open task listed below already covers the message: give its task id.
@@ -49,7 +49,7 @@ figure only if it changes the answer.
 - ask for one clarifying question; asking approves nothing, and typed text never \
 approves anything.
 - ack: one short line people see in chat (what you started or passed on). No headings, no lists.
-- Words people see (ack, reply, ask): a task is a "request", never a "task" or a "thread" (a thread is only a reply thread on a message). A request's status is one of four words, the one each task line below starts with: Working, Needs you, Done, Closed; a short reason after it is fine ("Needs you: ready for review"). Name the specialist doing it by its name ("Growth is working on it").
+- Words people see (ack, reply, ask): a task is a "task" (specialists pick up tasks), never a "request" or a "thread" (a thread is only a reply thread on a message). A room is a "project", never a "channel". A task's status is one of four words, the one each task line below starts with: Working, Needs you, Done, Closed; a short reason after it is fine ("Needs you: ready for review"). Name the specialist doing it by its name ("Growth is working on it").
 - Read each task's state as written. Never say something that spends money or sends something (a purchase, a \
 payment, an email) happened unless its task says its action ran; a stopped, dismissed or waiting task did not do it.
 - Work is underway only if it is in "Open tasks" below. A Lightbulb line under "Recent in this room" that names \
@@ -192,9 +192,9 @@ def status_words(task: dict, asker: str | None = None) -> str:
     return _STATUS_WORDS.get((status, reason)) or _STATUS_WORDS.get((status, None)) or status
 
 
-# A status line: the reply opens with a request-state word as a label ("Working: …") or says requests are in it.
+# A status line: the reply opens with a task-state word as a label ("Working: …") or says tasks are in it.
 _STATUS_LINE = re.compile(
-    r"^\s*(?:Working|Needs you)\s*:|\b(?:request|requests|both|all)\b[^.?!]*\b(?:is|are)\s+"
+    r"^\s*(?:Working|Needs you)\s*:|\b(?:task|tasks|request|requests|both|all)\b[^.?!]*\b(?:is|are)\s+"
     r"(?:Working|Needs you)\b"
 )
 _WORD = re.compile(r"[a-z]+")
@@ -207,7 +207,7 @@ _STOP = frozenset(
 
 def restates(reply: str, acks: set[str]) -> bool:
     """A reply on a trigger whose tasks already have their ack line that only says the tasks again (dev 5 Nov, N-F3:
-    "Engineering is building…" then "Both requests are Working: Engineering has…"). The rule is in the prompt; this
+    "Engineering is building…" then "Both tasks are Working: Engineering has…"). The rule is in the prompt; this
     keeps the message to one line when the model ignores it. A separate answer stays: anything with a number, a price
     or a question, and anything mostly in other words than the ack.
     ponytail: a status line or half its content words in the ack; an embedding check if real answers get dropped."""

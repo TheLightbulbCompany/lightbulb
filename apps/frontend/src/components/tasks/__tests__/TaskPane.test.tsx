@@ -51,7 +51,7 @@ describe("TaskPane", () => {
     const waiting = { ...FIXTURES.step05.tasks[0], output: { idemKey: "e", kind: "app" as const, title: "Signup app preview" } };
     withDetail({ ...step8, task: waiting, questions: [openRow] }, [approval()]);
     pane();
-    const status = await screen.findByRole("region", { name: "Request status" });
+    const status = await screen.findByRole("region", { name: "Task status" });
     const needs = screen.getByRole("group", { name: /provision a database/ });
     const transcript = screen.getByRole("region", { name: "Transcript" });
     expect(screen.queryByRole("region", { name: "Outputs" })).toBeNull();
@@ -68,7 +68,7 @@ describe("TaskPane", () => {
     expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
     // Where it runs is plumbing: Details only.
     expect(screen.getByText("Lightbulb cloud").closest("details")).not.toBeNull();
-    expect(within(screen.getByRole("region", { name: "Request status" })).queryByText("Lightbulb cloud")).toBeNull();
+    expect(within(screen.getByRole("region", { name: "Task status" })).queryByText("Lightbulb cloud")).toBeNull();
     unmount();
     withDetail({ ...step8, task: { ...step8.task, status: "resolved", shownGroup: "resolved" } });
     pane();
@@ -138,8 +138,8 @@ describe("TaskPane", () => {
     // The question card shows once, at the top: its copy in the task room is left out of Progress.
     expect(transcript).toHaveAttribute("data-hides", "question");
     // One line, already there: no button that opens a second box.
-    expect(screen.queryByRole("button", { name: "Steer this request" })).toBeNull();
-    await userEvent.type(screen.getByRole("textbox", { name: "Steer this request" }), "Use the blue theme{Enter}");
+    expect(screen.queryByRole("button", { name: "Steer this task" })).toBeNull();
+    await userEvent.type(screen.getByRole("textbox", { name: "Steer this task" }), "Use the blue theme{Enter}");
     expect(live.messaging.sendMessage).toHaveBeenCalledWith(step8.taskRoomId, expect.objectContaining({ text: "Use the blue theme", mentions: [] }));
     expect(capture).toHaveBeenCalledWith("task_steer_sent", expect.objectContaining({ taskId: "t-signup", source: "note" }));
   });
@@ -170,7 +170,7 @@ describe("TaskPane", () => {
 
   it("marks read once on open", async () => {
     pane();
-    await screen.findByRole("region", { name: "Request status" });
+    await screen.findByRole("region", { name: "Task status" });
     expect(client.markRead.mock.calls).toEqual([["t-signup"]]);
   });
 
@@ -207,22 +207,22 @@ describe("TaskPane", () => {
   it("a failed load (not 403/404) offers Retry", async () => {
     client.get.mockRejectedValueOnce(new Error("503"));
     pane();
-    expect(await screen.findByRole("alert")).toHaveTextContent("This request couldn't load.");
+    expect(await screen.findByRole("alert")).toHaveTextContent("This task couldn't load.");
     await userEvent.click(screen.getByRole("button", { name: "Retry" }));
-    expect(await screen.findByRole("region", { name: "Request status" })).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "Task status" })).toBeInTheDocument();
   });
 
   it("names no runtime until the task has one", async () => {
     withDetail({ ...step8, task: { ...step8.task, runsOn: null } });
     pane();
-    await screen.findByRole("region", { name: "Request status" });
+    await screen.findByRole("region", { name: "Task status" });
     expect(screen.queryByText("Lightbulb cloud")).toBeNull();
   });
 
   it("forbidden task reads as unavailable", async () => {
     client.get.mockRejectedValue(new ApiError(404, null));
     pane();
-    expect(await screen.findByText("This request isn't available to you.")).toBeInTheDocument();
+    expect(await screen.findByText("This task isn't available to you.")).toBeInTheDocument();
   });
 });
 
@@ -295,10 +295,10 @@ describe("NeedsYouCard", () => {
     // The pending send is the card itself: no second row repeating it below.
     expect(screen.queryByRole("list", { name: "Effects" })).toBeNull();
     // The header follows the same state: ready for review, nothing running, so no Stop.
-    const status = screen.getByRole("region", { name: "Request status" });
-    // The whole line: actor, the status word once, no repeated "Ready for review".
-    // Nothing finished yet (no completed attempt, no landed effect): it has the draft ready, not "Done by".
-    expect(status.firstElementChild).toHaveTextContent(/^\w+ has this ready for your reviewNeeds you$/);
+    const status = screen.getByRole("region", { name: "Task status" });
+    // The whole line: the task's title, the status word once, the reason once; never "Done by" (the title names who).
+    expect(status.firstElementChild).toHaveTextContent(/Needs youReady for review$/);
+    expect(status).not.toHaveTextContent(/Done by|ready for your review/);
     expect(status).not.toHaveTextContent("is working on this");
     expect(within(status).queryByRole("button", { name: "Stop" })).toBeNull();
     await userEvent.click(await screen.findByRole("button", { name: "Send" }));
@@ -314,7 +314,7 @@ describe("NeedsYouCard", () => {
     const card = await screen.findByRole("group", { name: /provision a database/ });
     expect(within(card).getByText("Closed — not approved")).toBeInTheDocument();
     expect(within(card).queryByRole("button")).toBeNull();
-    expect(screen.getByRole("region", { name: "Request status" })).not.toHaveTextContent("Done by");
+    expect(screen.getByRole("region", { name: "Task status" })).not.toHaveTextContent("Done by");
   });
 
   it("Request changes asks what should change first, then sends it with the answer (dev walk N-F2)", async () => {
@@ -348,12 +348,12 @@ describe("steering a finished request (dev walk N-F4)", () => {
     const done = { ...step8.task, status: "idle" as const, shownGroup: "idle" as const, watching: false };
     withDetail({ ...step8, task: done, questions: [] }, []);
     pane();
-    const status = await screen.findByRole("region", { name: "Request status" });
+    const status = await screen.findByRole("region", { name: "Task status" });
     expect(within(status).getByText("Done")).toBeInTheDocument();
     // Done: no steer box until Follow up (UX audit 2, P0).
-    expect(screen.queryByRole("textbox", { name: "Steer this request" })).toBeNull();
+    expect(screen.queryByRole("textbox", { name: "Steer this task" })).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "Follow up" }));
-    await userEvent.type(screen.getByRole("textbox", { name: "Steer this request" }), "Make it one line{Enter}");
+    await userEvent.type(screen.getByRole("textbox", { name: "Steer this task" }), "Make it one line{Enter}");
     await waitFor(() => expect(within(status).getByText("Working")).toBeInTheDocument());
     expect(within(status).getByRole("button", { name: "Stop" })).toBeInTheDocument();
   });
@@ -366,7 +366,7 @@ describe("action slots (UX audit 2, P0)", () => {
     const first = pane();
     await userEvent.click(await screen.findByRole("button", { name: "Stop" }));
     expect(slots()).toEqual(["stop:Stop", "close:", "reopen:"]);
-    expect(screen.getByRole("group", { name: "Stop this request?" }).closest("[data-action-slot]")).toBeNull();
+    expect(screen.getByRole("group", { name: "Stop this task?" }).closest("[data-action-slot]")).toBeNull();
     first.unmount();
     withDetail({ ...step8, task: { ...step8.task, status: "idle", shownGroup: "idle", watching: false }, questions: [] }, []);
     const second = pane();
@@ -383,22 +383,20 @@ describe("action slots (UX audit 2, P0)", () => {
     withDetail({ ...step8, task: { ...step8.task, status: "resolved", shownGroup: "resolved" }, questions: [] }, []);
     pane();
     await screen.findByRole("button", { name: "Reopen" });
-    expect(screen.queryByRole("textbox", { name: "Steer this request" })).toBeNull();
+    expect(screen.queryByRole("textbox", { name: "Steer this task" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Follow up" })).toBeNull();
   });
 });
 
-describe("Done by only when the run really finished", () => {
-  it("a completed attempt reads Done by; a Done request whose attempt didn't complete names the specialist alone", async () => {
+describe("one status word, the specialist as the title (audit 02 P2)", () => {
+  it("names the pane after the specialist and says Done once, never \"Done by X · Done\"", async () => {
     const base = { ...step8.task, status: "idle" as const, shownGroup: "idle" as const, watching: false, specialist: "finance" };
     withDetail({ ...step8, task: { ...base, activity: { n: 1, status: "ended" as const, outcome: "completed" } }, questions: [] }, []);
-    const first = pane();
-    expect(await screen.findByText("Done by Finance")).toBeInTheDocument();
-    first.unmount();
-    withDetail({ ...step8, task: { ...base, activity: { n: 1, status: "ended" as const, outcome: "cancelled" } }, questions: [] }, []);
     pane();
-    const status = await screen.findByRole("region", { name: "Request status" });
+    expect(await screen.findByRole("heading", { level: 3, name: "Finance" })).toBeInTheDocument();
+    const status = await screen.findByRole("region", { name: "Task status" });
     expect(status).not.toHaveTextContent("Done by");
-    expect(within(status).getByText("Finance")).toBeInTheDocument();
+    expect(status.textContent?.match(/Done/g)).toHaveLength(1);
   });
 });
+

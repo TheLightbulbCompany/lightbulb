@@ -70,8 +70,8 @@ export function PlanChooser({
         )}
         <ul className="mt-3 space-y-1.5 text-xs text-[var(--midnight-muted)]">
           <li>
-            Includes: your six AI employees, their memory and email, the shared browser, the task board, the
-            always-on runtime.
+            Includes: Lightbulb and its specialists, their memory and email, the shared browser, the always-on
+            runtime.
           </li>
           <li>
             AI usage: bring your ChatGPT account or API key at no charge, or use Lightbulb credits

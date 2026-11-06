@@ -144,9 +144,9 @@ FEED_WELCOME_SUPER_AGENT = (
     "Home shows your company today: Needs you for what is waiting on you, Ideas for what we could do next "
     "(Do it starts it, Not now puts it away), and this feed."
 )
-# Seeded ONCE per workspace as a CEO-authored message (``ensure_default_room``
+# Seeded ONCE per workspace as a message from the front agent (``ensure_default_room``
 # returns early on any room that already has messages): the first thing a new
-# user reads. Refers to the CEO by ROLE, never a name: agent names are user-editable.
+# user reads. It speaks as Lightbulb, the coordinator; specialists do the tasks (founder, 6 Nov 2026).
 #: The three pre-typed replies. The frontend's FirstReplyChips.tsx carries the same strings;
 #: the third's prefix is what onboarding_brief.first_message_intake recognises as "you pick".
 FIRST_REPLIES: tuple[str, str, str] = (
@@ -156,13 +156,13 @@ FIRST_REPLIES: tuple[str, str, str] = (
 )
 
 _FIRST_MESSAGE = (
-    "Welcome to {workspace}. I'm your CEO. Growth, Engineering, Finance, Analytics and "
-    "Customer Ops are in this room with me.\n\n"
+    "Welcome to {workspace}. I'm Lightbulb. I hand work to Growth, Engineering, Finance, Analytics and "
+    "Customer Ops, and show you each task.\n\n"
     "One thing gets us started: what's the business? A website or a sentence is plenty.\n\n"
     "→ Here's our website: …\n"
     "→ I'm starting …\n"
     "→ Not sure yet. Pick something useful and show me how you work.\n\n"
-    "I'll turn your answer into a plan and hand the first pieces to the team. "
+    "I'll turn your answer into a plan and hand the first tasks to the specialists. "
     "You'll watch them work here."
 )
 
@@ -182,13 +182,13 @@ def invite_ask_text() -> str:
 
 
 def default_room_welcome(workspace_name: str | None) -> str:
-    """The CEO's first message. Only the workspace name is interpolated; a leading @ or #
-    is stripped so the name cannot render as a mention or a channel link."""
+    """The front agent's first message. Only the workspace name is interpolated; a leading @ or #
+    is stripped so the name cannot render as a mention or a room link."""
     name = " ".join((workspace_name or "").lstrip("@#").split()) or "your workspace"
     return _FIRST_MESSAGE.format(workspace=name)
 
 
-ROOM_ARCHIVED_MESSAGE = "This channel is archived. Unarchive it to post."
+ROOM_ARCHIVED_MESSAGE = "This project is archived. Unarchive it to post."
 API_ERROR_STATUS = {
     "LOCAL_SESSION_FORBIDDEN": 403,
     "LOCAL_SESSION_NOT_FOUND": 404,
@@ -2169,7 +2169,7 @@ def _deny_vendor_human_change(meta: dict, kind: str) -> None:
     # The feed's people are the workspace's: only a workspace join/removal changes them.
     # The feed's membership (people only; agents are its authors) is Lightbulb's alone, every kind.
     if is_feed_room(meta) or (kind == "human" and (is_vendor_room(meta) or is_session_room(meta))):
-        raise ApiProblem("ROOM_FORBIDDEN", "Membership of this channel is managed by Lightbulb.")
+        raise ApiProblem("ROOM_FORBIDDEN", "Membership of this project is managed by Lightbulb.")
 
 
 def _emit_room_created(owner_id: str, actor_user_id: str, kind: str, added: list[dict], *, by: str) -> None:
@@ -2875,7 +2875,7 @@ async def patch_room(auth: AuthContext, room_id: str, request: PatchRoomRequest)
     if "name" in updates and meta.get("kind") == "dm":
         raise ApiProblem("ROOM_FORBIDDEN", "Direct messages cannot be renamed.")
     if "name" in updates and is_vendor_room(meta):
-        raise ApiProblem("ROOM_FORBIDDEN", "This channel's name is managed by Lightbulb.")
+        raise ApiProblem("ROOM_FORBIDDEN", "This project's name is managed by Lightbulb.")
     if "name" in updates and is_session_room(meta):
         raise ApiProblem("ROOM_FORBIDDEN", "This chat is named after its session.")
     if "name" in updates and is_feed_room(meta):
@@ -3047,7 +3047,7 @@ async def leave_room(auth: AuthContext, room_id: str) -> None:
         and meta.get("kind") == "channel"
         and _channel_heir(meta, await messaging_repo.list_members(room_id), auth.user_id) is None
     ):
-        raise ApiProblem("INVALID_REQUEST", "You are the only person in this channel. Delete it instead of leaving.")
+        raise ApiProblem("INVALID_REQUEST", "You are the only person in this project. Delete it instead of leaving.")
     await _remove_member_with_notices(meta, "human", auth.user_id)
 
 
@@ -3169,7 +3169,7 @@ async def delete_room(auth: AuthContext, room_id: str) -> None:
     for attempt in range(3):
         meta, member = await require_room_member(owner_id, auth.user_id, room_id)
         if member.get("role") != "owner":
-            raise ApiProblem("ROOM_FORBIDDEN", "Only the channel's owner can delete it.")
+            raise ApiProblem("ROOM_FORBIDDEN", "Only the project's owner can delete it.")
         if (
             meta.get("kind") != "channel"
             or is_default_room(meta)
@@ -5134,7 +5134,7 @@ async def ask_who_should_see(owner_id: str, row: dict, outcome: str) -> None:
     ceo_id = (getattr(company, "starter_agent_ids", None) or {}).get("ceo") if company else None
     if not ceo_id or await messaging_repo.get_member(room_id, "agent", ceo_id) is None:
         return  # a legacy roster or a CEO removed from #general: nobody to ask in its voice
-    name = next((a["name"] for a in await load_agent_roster(owner_id) if a["id"] == ceo_id), "CEO")
+    name = next((a["name"] for a in await load_agent_roster(owner_id) if a["id"] == ceo_id), "Lightbulb")
     text = invite_ask_text()
     await messaging_repo.create_message(
         room_id=room_id,
@@ -5848,7 +5848,7 @@ async def resolve_agent_post_room(owner_id: str, request: AgentPostRequest) -> s
         if len(matches) != 1:
             raise ApiProblem(
                 "ACTION_UNAVAILABLE",
-                f"You are in {len(matches)} channels named #{wanted}; pass --room <roomId> instead.",
+                f"You are in {len(matches)} projects named {wanted}; pass --room <roomId> instead.",
             )
         return matches[0]
     user_id = request.user_id

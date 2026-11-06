@@ -152,7 +152,7 @@ export function AgentGuardrails() {
                 </label>
               ))}
               <p className="text-caption" style={{ color: "var(--midnight-muted)" }}>
-                Anyone who answers a request can choose Always allow for that recipient, app or repo.
+                Anyone who answers an approval can choose Always allow for that recipient, app or repo.
               </p>
             </fieldset>
           )}
@@ -169,7 +169,7 @@ export function AgentGuardrails() {
                 Revoke everything
               </p>
               <p className="text-caption" style={{ color: "var(--midnight-muted)" }}>
-                Cancels open requests, deletes our copies of your credentials, and disconnects
+                Cancels open provider setups, deletes our copies of your credentials, and disconnects
                 your connected apps and Stripe. It does not cancel or delete anything you already own at those providers.
               </p>
               <div>
@@ -196,7 +196,7 @@ export function AgentGuardrails() {
           }
         }}
         title="Revoke everything?"
-        description="This cancels open requests, deletes our copies of your credentials, and disconnects your connected apps and Stripe. It does not cancel or delete anything you already own at those providers."
+        description="This cancels open provider setups, deletes our copies of your credentials, and disconnects your connected apps and Stripe. It does not cancel or delete anything you already own at those providers."
         footer={
           <>
             <EditorialButton

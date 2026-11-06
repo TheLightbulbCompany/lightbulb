@@ -29,7 +29,7 @@ export function HomeWork({ viewerId, onOpen, between }: { viewerId: string; onOp
   const rows = (list: TaskSummary[]) => <ul className="mt-1 grid">{list.map((t) => <OverviewRow key={t.taskId} task={t} viewerId={viewerId} onOpen={onOpen} />)}</ul>;
   const failed = error || needs.error;
   const status = failed
-    ? <p role="alert" className="text-ui text-muted-foreground">Requests couldn&apos;t load. <button type="button" className="underline hover:text-foreground" onClick={() => { void mutate(); needs.retry(); }}>Retry</button></p>
+    ? <p role="alert" className="text-ui text-muted-foreground">Tasks couldn&apos;t load. <button type="button" className="underline hover:text-foreground" onClick={() => { void mutate(); needs.retry(); }}>Retry</button></p>
     : <p role="status" className="text-ui text-muted-foreground">Loading…</p>;
   const needsYou = needs.tasks;
   const groups = overviewGroups([...(data?.tasks ?? []), ...older]);
@@ -63,7 +63,7 @@ export function HomeWork({ viewerId, onOpen, between }: { viewerId: string; onOp
         {closedOpen && rows(closed)}
       </section>}
       {hasOlder && <button type="button" className="justify-self-start text-ui text-muted-foreground underline hover:text-foreground"
-        disabled={loading} onClick={() => void loadOlder()}>{loading ? "Loading…" : "Load older requests"}</button>}
+        disabled={loading} onClick={() => void loadOlder()}>{loading ? "Loading…" : "Load older tasks"}</button>}
     </>}
     <p className="text-ui text-muted-foreground">
       {scheduled ? `${automations} scheduled ${automations === 1 ? "automation" : "automations"}` : "Scheduled work"} ·{" "}

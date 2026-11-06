@@ -85,7 +85,7 @@ describe("NewMessageSheet", () => {
     await render(<NewMessageSheet visible onClose={() => {}} onOpenRoom={onOpenRoom} />);
     await waitFor(() => expect(screen.getByText("Friday")).toBeTruthy());
     await fireEvent.press(screen.getByText("Friday"));
-    await fireEvent.press(screen.getByLabelText("Start conversation"));
+    await fireEvent.press(screen.getByLabelText("Start chat"));
     // `activate: false` is load-bearing, not decoration: this sheet stays
     // mounted behind the room screen it navigates to, and a hook instance left
     // holding that room polls `GET /rooms/{id}` every 60s and reconciles its
@@ -106,7 +106,7 @@ describe("NewMessageSheet", () => {
     await waitFor(() => expect(screen.getByText("Bob")).toBeTruthy());
     await fireEvent.press(screen.getByText("Bob"));
     await fireEvent.press(screen.getByText("Friday"));
-    await fireEvent.press(screen.getByLabelText("Start conversation"));
+    await fireEvent.press(screen.getByLabelText("Start chat"));
     await waitFor(() =>
       expect(mockCreateRoom).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -127,12 +127,12 @@ describe("NewMessageSheet", () => {
   it("disables the action until at least one candidate is picked", async () => {
     await render(<NewMessageSheet visible onClose={() => {}} onOpenRoom={() => {}} />);
     await waitFor(() => expect(screen.getByText("Bob")).toBeTruthy());
-    expect(screen.getByLabelText("Start conversation").props.accessibilityState.disabled).toBe(true);
+    expect(screen.getByLabelText("Start chat").props.accessibilityState.disabled).toBe(true);
     // Picking then un-picking puts it back — the row is a toggle, not a latch.
     await fireEvent.press(screen.getByText("Bob"));
-    expect(screen.getByLabelText("Start conversation").props.accessibilityState.disabled).toBe(false);
+    expect(screen.getByLabelText("Start chat").props.accessibilityState.disabled).toBe(false);
     await fireEvent.press(screen.getByText("Bob"));
-    expect(screen.getByLabelText("Start conversation").props.accessibilityState.disabled).toBe(true);
+    expect(screen.getByLabelText("Start chat").props.accessibilityState.disabled).toBe(true);
   });
 
   it("filters candidates by the search field", async () => {
@@ -163,14 +163,14 @@ describe("NewMessageSheet", () => {
       for (let index = 0; index < 31; index += 1) {
         await fireEvent.press(screen.getByText(`Person ${index}`));
       }
-      expect(screen.getByLabelText("Start conversation").props.accessibilityState.disabled).toBe(
+      expect(screen.getByLabelText("Start chat").props.accessibilityState.disabled).toBe(
         false,
       );
 
       // Person 31 would be the 32nd pick — the row is disabled past the cap,
       // so this press is a no-op.
       await fireEvent.press(screen.getByText("Person 31"));
-      await fireEvent.press(screen.getByLabelText("Start conversation"));
+      await fireEvent.press(screen.getByLabelText("Start chat"));
       await waitFor(() => expect(mockCreateRoom).toHaveBeenCalled());
       const members = mockCreateRoom.mock.calls[0][0].members as { id: string }[];
       expect(members).toHaveLength(31);
@@ -192,7 +192,7 @@ describe("NewMessageSheet", () => {
     await render(<NewMessageSheet visible onClose={() => {}} onOpenRoom={onOpenRoom} />);
     await waitFor(() => expect(screen.getByText("Friday")).toBeTruthy());
     await fireEvent.press(screen.getByText("Friday"));
-    await fireEvent.press(screen.getByLabelText("Start conversation"));
+    await fireEvent.press(screen.getByLabelText("Start chat"));
     await waitFor(() => expect(screen.getByText("offline")).toBeTruthy());
     expect(onOpenRoom).not.toHaveBeenCalled();
   });
@@ -202,10 +202,10 @@ describe("NewMessageSheet", () => {
       const onOpenRoom = jest.fn();
       await render(<NewMessageSheet visible onClose={() => {}} onOpenRoom={onOpenRoom} />);
       await waitFor(() => expect(screen.getByText("Bob")).toBeTruthy());
-      await fireEvent.press(screen.getByText("Channel"));
-      await fireEvent.changeText(screen.getByLabelText("Channel name"), "  launch-room  ");
+      await fireEvent.press(screen.getByText("Project"));
+      await fireEvent.changeText(screen.getByLabelText("Project name"), "  launch-room  ");
       await fireEvent.press(screen.getByText("Bob"));
-      await fireEvent.press(screen.getByLabelText("Start conversation"));
+      await fireEvent.press(screen.getByLabelText("Start chat"));
       await waitFor(() =>
         expect(mockCreateRoom).toHaveBeenCalledWith(
           expect.objectContaining({
@@ -224,10 +224,10 @@ describe("NewMessageSheet", () => {
       const listenMode = "active";
       await render(<NewMessageSheet visible onClose={() => {}} onOpenRoom={() => {}} />);
       await waitFor(() => expect(screen.getByText("Bob")).toBeTruthy());
-      await fireEvent.press(screen.getByText("Channel"));
-      await fireEvent.changeText(screen.getByLabelText("Channel name"), "launch");
+      await fireEvent.press(screen.getByText("Project"));
+      await fireEvent.changeText(screen.getByLabelText("Project name"), "launch");
       await fireEvent.press(screen.getByText("Friday"));
-      await fireEvent.press(screen.getByLabelText("Start conversation"));
+      await fireEvent.press(screen.getByLabelText("Start chat"));
       await waitFor(() =>
         expect(mockCreateRoom).toHaveBeenCalledWith(
           expect.objectContaining({ members: [{ kind: "agent", id: "agent-1", role: "member", listenMode }] }),
@@ -239,12 +239,12 @@ describe("NewMessageSheet", () => {
     it("allows creating a channel with nobody picked yet", async () => {
       await render(<NewMessageSheet visible onClose={() => {}} onOpenRoom={() => {}} />);
       await waitFor(() => expect(screen.getByText("Bob")).toBeTruthy());
-      await fireEvent.press(screen.getByText("Channel"));
-      expect(screen.getByLabelText("Start conversation").props.accessibilityState.disabled).toBe(
+      await fireEvent.press(screen.getByText("Project"));
+      expect(screen.getByLabelText("Start chat").props.accessibilityState.disabled).toBe(
         true,
       );
-      await fireEvent.changeText(screen.getByLabelText("Channel name"), "general-2");
-      expect(screen.getByLabelText("Start conversation").props.accessibilityState.disabled).toBe(
+      await fireEvent.changeText(screen.getByLabelText("Project name"), "general-2");
+      expect(screen.getByLabelText("Start chat").props.accessibilityState.disabled).toBe(
         false,
       );
     });
@@ -253,9 +253,9 @@ describe("NewMessageSheet", () => {
     it("rejects a blank or over-limit channel name", async () => {
       await render(<NewMessageSheet visible onClose={() => {}} onOpenRoom={() => {}} />);
       await waitFor(() => expect(screen.getByText("Bob")).toBeTruthy());
-      await fireEvent.press(screen.getByText("Channel"));
-      const nameField = screen.getByLabelText("Channel name");
-      const submit = () => screen.getByLabelText("Start conversation");
+      await fireEvent.press(screen.getByText("Project"));
+      const nameField = screen.getByLabelText("Project name");
+      const submit = () => screen.getByLabelText("Start chat");
 
       await fireEvent.changeText(nameField, "   ");
       expect(submit().props.accessibilityState.disabled).toBe(true);
@@ -271,14 +271,14 @@ describe("NewMessageSheet", () => {
       await render(<NewMessageSheet visible onClose={() => {}} onOpenRoom={() => {}} />);
       await waitFor(() => expect(screen.getByText("Bob")).toBeTruthy());
       await fireEvent.press(screen.getByText("Bob"));
-      expect(screen.getByLabelText("Start conversation").props.accessibilityState.disabled).toBe(
+      expect(screen.getByLabelText("Start chat").props.accessibilityState.disabled).toBe(
         false,
       );
-      await fireEvent.press(screen.getByText("Channel"));
+      await fireEvent.press(screen.getByText("Project"));
       await fireEvent.press(screen.getByText("Direct message"));
       // Bob's pick did not survive the round trip through channel mode, the
       // same way the web dialog clears `selected` on its kind-select onChange.
-      expect(screen.getByLabelText("Start conversation").props.accessibilityState.disabled).toBe(
+      expect(screen.getByLabelText("Start chat").props.accessibilityState.disabled).toBe(
         true,
       );
     });

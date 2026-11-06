@@ -85,7 +85,7 @@ export function WorkspaceSidebar({ onRecoveryReprovision, onNavigate, id, dialog
   }, [drawerState.freshlyInstalledAgentId, setFreshlyInstalled]);
 
   return (
-    <div id={id} className="cream-sidebar" {...(dialog ? { role: "dialog", "aria-modal": true, "aria-label": "Conversations" } : {})}>
+    <div id={id} className="cream-sidebar" {...(dialog ? { role: "dialog", "aria-modal": true, "aria-label": "Chats" } : {})}>
       <div className="sidebar-header">
         <h1 className="workspace-name" title={workspaceName}>
           {memberships.length > 1 ? (

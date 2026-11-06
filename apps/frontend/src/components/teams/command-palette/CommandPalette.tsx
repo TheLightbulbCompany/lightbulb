@@ -168,7 +168,7 @@ function CommandPaletteContent({ open, onOpenChange }: CommandPaletteProps) {
           ) : (
             <>
               {conversations.length > 0 && (
-                <Group label="Conversations">
+                <Group label="Chats">
                   {conversations.map((c) => {
                     const idx = flatItems.findIndex((it) => it.kind === "conversation" && it.id === c.id);
                     return (

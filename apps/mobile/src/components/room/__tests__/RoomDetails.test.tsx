@@ -61,8 +61,8 @@ describe("RoomDetails", () => {
 
   it("shows the room's name, kind and member count", async () => {
     await setup(room());
-    expect(screen.getByText("#Launch")).toBeTruthy();
-    expect(screen.getByText("Channel · 3 members")).toBeTruthy();
+    expect(screen.getByText("Launch")).toBeTruthy();
+    expect(screen.getByText("Project · 3 members")).toBeTruthy();
   });
 
   it("lets any member change an agent's mode, calling upsertMember", async () => {
@@ -83,7 +83,7 @@ describe("RoomDetails", () => {
     const carol = { kind: "human" as const, id: "user-c", displayName: "Carol" };
     await setup(room({ session: { sessionId: "s1" } }, "owner"), { candidates: [{ kind: "agent" as const, id: "agent-2", displayName: "Atlas" }, carol] });
     expect(screen.queryByText("Archive channel")).toBeNull();
-    expect(screen.queryByText("Leave channel")).toBeNull();
+    expect(screen.queryByText("Leave project")).toBeNull();
     await fireEvent.press(screen.getByText("Add members"));
     expect(screen.getByLabelText("Atlas")).toBeTruthy();
     expect(screen.queryByLabelText("Carol")).toBeNull();
@@ -101,20 +101,20 @@ describe("RoomDetails", () => {
 
   it("lets a member leave a channel they do not own", async () => {
     const props = await setup(room());
-    await fireEvent.press(screen.getByText("Leave channel"));
+    await fireEvent.press(screen.getByText("Leave project"));
     await act(async () => confirmAlert(alert));
     await waitFor(() => expect(props.leaveRoom).toHaveBeenCalled());
   });
 
   it("offers leave to a channel owner only when someone else can take the channel, and never in the shared room", async () => {
     await setup(room({}, "owner"));
-    expect(screen.getByText("Leave channel")).toBeTruthy();
+    expect(screen.getByText("Leave project")).toBeTruthy();
     await screen.unmount();
     await setup(room({ members: [member({ role: "owner" }), friday] }, "owner"));
-    expect(screen.queryByText("Leave channel")).toBeNull();
+    expect(screen.queryByText("Leave project")).toBeNull();
     await screen.unmount();
     await setup(room({ shared: true }));
-    expect(screen.queryByText("Leave channel")).toBeNull();
+    expect(screen.queryByText("Leave project")).toBeNull();
   });
 
   it("lets any member archive a group DM", async () => {
@@ -159,12 +159,12 @@ describe("RoomDetails", () => {
     const renameRoom = jest.fn(async () => {});
     await setup(room({}, "admin"), { renameRoom });
 
-    await fireEvent.press(screen.getByText("Rename channel"));
-    const nameInput = await screen.findByLabelText("Channel name");
+    await fireEvent.press(screen.getByText("Rename project"));
+    const nameInput = await screen.findByLabelText("Project name");
     await waitFor(() => expect(nameInput.props.value).toBe("Launch"));
     fireEvent.changeText(nameInput, "  Roadmap  ");
     await waitFor(() => {
-      expect(screen.getByLabelText("Channel name").props.value).toBe("  Roadmap  ");
+      expect(screen.getByLabelText("Project name").props.value).toBe("  Roadmap  ");
       expect(screen.getByLabelText("Save")).toBeEnabled();
     });
     fireEvent.press(screen.getByLabelText("Save"));
@@ -174,7 +174,7 @@ describe("RoomDetails", () => {
 
   it("does not offer channel rename to a member without permission", async () => {
     await setup(room({}, "member"), { renameRoom: jest.fn(async () => {}) });
-    expect(screen.queryByText("Rename channel")).toBeNull();
+    expect(screen.queryByText("Rename project")).toBeNull();
   });
 
   it("lets any group chat member search for and add an eligible workspace person", async () => {

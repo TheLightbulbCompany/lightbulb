@@ -25,7 +25,7 @@ export const RECENT_SHOWN = 3;
 interface Skill { name: string; description?: string; disabled?: boolean; eligible?: boolean; source?: string }
 
 /** Lightbulb's one line on its card. */
-export const FRONT_LINE = "Coordinates your requests";
+export const FRONT_LINE = "Hands your tasks to specialists";
 
 /** Every profile has these (the runtime's own tooling, Lightbulb's plumbing), so they say nothing about a specialist
  *  (dev walk W7-7). ponytail: a name list; a `userFacing` flag from the bridge if the image's skills churn. */
@@ -129,12 +129,12 @@ function TeamCard({ agent, name, front, recent, loaded, viewerId, onAsk, menu }:
         {skills.map((s) => <li key={s.name} title={s.description} className="rounded-xs border border-border px-1.5 text-caption text-muted-foreground">{s.name}</li>)}
       </ul>
     </div>}
-    <section aria-label={`${name}'s recent requests`} className="grid grid-cols-[minmax(0,1fr)] gap-0.5 border-t border-border pt-2">
+    <section aria-label={`${name}'s recent tasks`} className="grid grid-cols-[minmax(0,1fr)] gap-0.5 border-t border-border pt-2">
       {recent.length ? recent.map((t) => <button key={t.taskId} type="button" onClick={() => openTaskPane(t.taskId)}
         aria-label={`Open ${t.title}, ${summaryView(t, viewerId).word}`}
         className="-mx-1 flex items-center gap-2 rounded-xs px-1 py-0.5 text-left text-ui hover:bg-accent">
         <span className="min-w-0 flex-1 truncate">{t.title}</span><TaskStatus task={t} viewerId={viewerId} />
-      </button>) : <p className="text-ui text-muted-foreground">{loaded ? "No requests yet." : "Loading…"}</p>}
+      </button>) : <p className="text-ui text-muted-foreground">{loaded ? "No tasks yet." : "Loading…"}</p>}
     </section>
     <div className="mt-auto pt-1">
       <Button type="button" size="sm" variant="outline" onClick={onAsk}

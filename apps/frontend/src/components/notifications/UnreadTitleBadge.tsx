@@ -3,11 +3,11 @@
 import { useEffect, useRef } from "react";
 
 /**
- * Prefixes the browser tab title with the count while it's > 0: unread
- * conversations plus your own waiting sessions (`ownWaitingCount`).
- * No UI — the badge is text in `document.title`.
+ * Owns the browser tab title: the place (`title`), prefixed with the count while
+ * it's > 0: unread conversations plus your own waiting sessions (`ownWaitingCount`).
+ * No UI — the badge is text in `document.title`. Without a `title` it keeps the page's own.
  */
-export function UnreadTitleBadge({ unread }: { unread: number }): null {
+export function UnreadTitleBadge({ unread, title }: { unread: number; title?: string }): null {
   const base = useRef("");
 
   useEffect(() => {
@@ -16,13 +16,14 @@ export function UnreadTitleBadge({ unread }: { unread: number }): null {
   }, []);
 
   useEffect(() => {
-    document.title = unread > 0 ? `(${unread}) ${base.current}` : base.current;
+    const where = title ?? base.current;
+    document.title = unread > 0 ? `(${unread}) ${where}` : where;
     // The desktop app's dock icon carries the same count; an older build without
     // the permission just rejects, and the title still has it.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const dock = (window as any).__TAURI__?.window?.getCurrentWindow?.();
     dock?.setBadgeCount?.(unread > 0 ? unread : undefined)?.catch?.(() => {});
-  }, [unread]);
+  }, [unread, title]);
 
   return null;
 }

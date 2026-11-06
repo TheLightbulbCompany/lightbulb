@@ -32,18 +32,18 @@ FIRST_RUN_TEXT = (
     "First look at this company. Find out what it does and what it needs now: what the team told Lightbulb "
     "when they joined and in #general, the company's website if they gave one, and the brief below. Then file "
     "exactly 3 ideas with the suggest_idea tool: concrete jobs for this company the team could start today, each "
-    "with a real reason from what you found. Do not post in chat."
+    "with a real reason from what you found."
 )
 LOOK_AROUND_TEXT = (
     "Daily look around. Read the brief and the recent activity below, then look at what is going on in this "
-    "company: its rooms, recent requests, connected tools and, when it helps, the web. File at most 3 ideas with "
+    "company: its projects, recent tasks, connected tools and, when it helps, the web. File at most 3 ideas with "
     "the suggest_idea tool: concrete jobs for this company the team could start today, each with a real reason "
     "from what you saw. Never repeat an idea listed below or one the team said Not now to. If nothing is worth "
     "suggesting, file nothing. Do not post in chat."
 )
 FEED_TEXT = (
     "Scheduled feed post. Read the brief and the recent activity below, then look at what happened since the "
-    "last scheduled feed post: rooms, requests and connected tools. Read the feed's recent posts first and never "
+    "last scheduled feed post: projects, tasks and connected tools. Read the feed's recent posts first and never "
     "repeat one (the lightbulb skill's references/feed.md). For each thing worth the team's time, post ONE feed "
     "post about it, at most 3 this run:\n\n"
     "/app/skills/lightbulb/scripts/lightbulb-post.sh --feed --why \"<why it matters>\" <<'EOF'\n<post>\nEOF\n\n"
@@ -279,8 +279,8 @@ async def context(ws: str) -> str:
     listed = [i["title"] for i in ideas if i["ideaId"] not in dismissed]
     turned_down = [i["title"] for i in ideas if dismissed.get(i["ideaId"], "") >= cutoff]
     for heading, titles in (
-        ("Requests in progress", open_titles),
-        ("Recently finished requests", [t.get("title") for t in done]),
+        ("Tasks in progress", open_titles),
+        ("Recently finished tasks", [t.get("title") for t in done]),
         ("Ideas already listed", listed),
         ("Ideas the team said Not now to (do not suggest again)", turned_down),
     ):

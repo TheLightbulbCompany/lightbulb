@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useAuth, useUser } from "@clerk/nextjs";
-import { canChangeListenMode, cardReplyRequest, markSessionRead, markSessionsSeen, markSessionUnread, resolveTypedMentions, runView, sessionArchived, sessionMentionCandidates, sessionUnread, useWorkspaceSessions, workspaceSections, type CardReply, type CreateMessageRequest, type ListenMode, type MemberRef, type RoomMember, type SessionSource, type RoomSummary } from "@lightbulb/shared";
+import { canChangeListenMode, cardReplyRequest, markSessionRead, markSessionsSeen, markSessionUnread, resolveTypedMentions, roomDisplayName, runView, sessionArchived, sessionMentionCandidates, sessionUnread, useWorkspaceSessions, workspaceSections, type CardReply, type CreateMessageRequest, type ListenMode, type MemberRef, type RoomMember, type SessionSource, type RoomSummary } from "@lightbulb/shared";
 import { useRooms } from "@/hooks/useRooms";
 import { useCopyJoinLink } from "@/hooks/useCopyJoinLink";
 import { useBilling } from "@/hooks/useBilling";
@@ -13,7 +13,8 @@ import { useChatReady } from "@/components/chat/shell/useChatReady";
 import type { CompanyAgent, CompanyMember } from "@/components/teams/shared/types";
 import { resolveCeoAgentId } from "@/components/getstarted/getStartedFirstTask";
 import { useSuperAgent } from "@/hooks/useLiveEvents";
-import { activateMessagesPanel, getWorkspaceSnapshot, openPanel, type WorkspaceSnapshot } from "@/components/workspace/workspaceController";
+import { activateMessagesPanel, getWorkspaceSnapshot, openPanel, useWorkspaceState, type WorkspaceSnapshot } from "@/components/workspace/workspaceController";
+import { placeTabTitle } from "@/components/workspace/tabTitle";
 import { parseCommand } from "@/components/workspace/urlChannel";
 import { MessageNotifications } from "@/components/notifications/MessageNotifications";
 import { UnreadTitleBadge } from "@/components/notifications/UnreadTitleBadge";
@@ -807,7 +808,7 @@ export function MessagingWorkspaceProvider({
       bumpPickIfCurrent(startToken);
       return true;
     } catch (error) {
-      setCreationError(error instanceof Error ? error.message : "Conversation could not be created.");
+      setCreationError(error instanceof Error ? error.message : "The chat could not be created.");
       return false;
     } finally {
       setCreationBusy(false);
@@ -825,7 +826,7 @@ export function MessagingWorkspaceProvider({
       const startToken = pickToken();
       if (await rooms.selectDm(participant)) bumpPickIfCurrent(startToken);
     } catch (error) {
-      setCreationError(error instanceof Error ? error.message : "Conversation could not be opened.");
+      setCreationError(error instanceof Error ? error.message : "The chat could not be opened.");
     } finally {
       setOpeningParticipant(null);
     }
@@ -1128,7 +1129,7 @@ export function MessagingWorkspaceProvider({
     // One resolve (it creates the DM when there is none), one send, then open that same room: nothing after the
     // send can fail, so a sent message is never reported as unsent. Sent first, so the DM's history load holds it.
     const roomId = await resolveDmRoom({ kind: "agent", id: askFrontId }, { activate: false });
-    if (!roomId) throw new Error("Couldn't open your conversation with Lightbulb.");
+    if (!roomId) throw new Error("Couldn't open your chat with Lightbulb.");
     await messagingClient.sendMessage(roomId, { clientMessageId: crypto.randomUUID(), text, mentions: [], replyToMessageId: null, threadRootMessageId: null });
     openRoomTarget(roomId, null);
   }, [askFrontId, resolveDmRoom, messagingClient, openRoomTarget]);
@@ -1160,6 +1161,11 @@ export function MessagingWorkspaceProvider({
   const { prefs: notifyPrefs } = useSessionNotificationPrefs();
   const needingYou = useMemo(() => (notifyPrefs.waiting === "off" ? 0 : ownWaitingCount(sessionRows)), [sessionRows, notifyPrefs]);
 
+  const workspaceState = useWorkspaceState();
+  const activeDirectoryRoom = directoryRooms.find((room) => room.roomId === rooms.activeRoomId);
+  const tabTitle = placeTabTitle(workspaceState, sessionFocus ? "Session"
+    : activeDirectoryRoom ? roomDisplayName(activeDirectoryRoom, activeDirectoryRoom.participants) : null);
+
   return <MessagingWorkspaceContext.Provider value={{
     activeRoomId: rooms.activeRoomId,
     directoryProps,
@@ -1183,7 +1189,7 @@ export function MessagingWorkspaceProvider({
     askLightbulb,
   }}><MessageNotifications activeRoomId={rooms.activeRoomId} threadId={threadId} roomVisible={roomVisible} sideRoomIds={sideRoomIds} rooms={rooms.rooms}
     onOpen={openNotificationTarget} activeSessionId={sessionFocus?.sessionId ?? null}
-    onOpenSession={(sessionId) => { openSession(sessionId); activateMessagesPanel(); }} /><ShortcutSheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} /><UnreadTitleBadge unread={unreadTotal + needingYou} />{children}
+    onOpenSession={(sessionId) => { openSession(sessionId); activateMessagesPanel(); }} /><ShortcutSheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} /><UnreadTitleBadge unread={unreadTotal + needingYou} title={tabTitle} />{children}
     {selectRoomError && <div role="alert" className="px-4 py-2 text-ui text-err">{selectRoomError}{" "}
       <button type="button" className="underline underline-offset-4" onClick={() => setSelectErrorDismissed(rooms.selectRoomError)}>Dismiss</button>
     </div>}</MessagingWorkspaceContext.Provider>;

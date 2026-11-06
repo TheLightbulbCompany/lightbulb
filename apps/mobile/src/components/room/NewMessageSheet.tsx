@@ -42,7 +42,7 @@ const CHANNEL_NAME_MAX_CHARS = 80;
 const MAX_ROOM_MEMBERS = 31;
 
 const SEGMENTS: readonly { key: SheetMode; label: string }[] = [
-  { key: "channel", label: "Channel" },
+  { key: "channel", label: "Project" },
   { key: "direct", label: "Direct message" },
 ];
 
@@ -188,7 +188,7 @@ export function NewMessageSheet({
     mode === "channel"
       ? busy
         ? "Creating…"
-        : "Create channel"
+        : "Create project"
       : picked.length > 1
         ? "Create group"
         : "Message";
@@ -229,7 +229,7 @@ export function NewMessageSheet({
       }
       if (roomId) onOpenRoom(roomId);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Conversation could not be opened.");
+      setError(cause instanceof Error ? cause.message : "The chat could not be opened.");
     } finally {
       setBusy(false);
     }
@@ -244,7 +244,7 @@ export function NewMessageSheet({
       <View style={[styles.card, { backgroundColor: palette.surface }]}>
         <Text style={[styles.overline, { color: palette.fgMute }]}>NEW MESSAGE</Text>
         <SegmentedControl
-          label="Conversation type"
+          label="Type"
           segments={SEGMENTS}
           value={mode}
           onChange={changeMode}
@@ -252,18 +252,18 @@ export function NewMessageSheet({
         />
         {mode === "channel" ? (
           <>
-            <Text style={[styles.fieldLabel, { color: palette.fgMute }]}>Channel name</Text>
+            <Text style={[styles.fieldLabel, { color: palette.fgMute }]}>Project name</Text>
             <TextInput
               style={[styles.nameInput, { backgroundColor: palette.raised, color: palette.fg }]}
               value={channelName}
               onChangeText={setChannelName}
               maxLength={CHANNEL_NAME_MAX_CHARS}
-              accessibilityLabel="Channel name"
+              accessibilityLabel="Project name"
               autoCorrect={false}
               autoCapitalize="none"
             />
             <Text style={[styles.helper, { color: palette.fgMute }]}>
-              Only selected workspace members can read this conversation.
+              Only selected workspace members can read this chat.
             </Text>
           </>
         ) : null}
@@ -326,7 +326,7 @@ export function NewMessageSheet({
           onPress={() => void start()}
           disabled={!canStart}
           accessibilityRole="button"
-          accessibilityLabel="Start conversation"
+          accessibilityLabel="Start chat"
           accessibilityState={{ disabled: !canStart }}
           style={({ pressed }) => [
             styles.action,

@@ -85,7 +85,7 @@ export function useSessionJoinRequest(client: SessionControlClient, session: Loc
       // The session moved while this was in flight: whatever it says now is newer than the reply.
       setOverride(latest.current === started ? { state: reply[field] ?? null, base: started } : undefined);
     }
-    catch { setOverride(undefined); setSentAt(0); setError("Could not send your request. Try again."); } // not sent: Ask again stays offered
+    catch { setOverride(undefined); setSentAt(0); setError("Could not send that. Try again."); } // not sent: Ask again stays offered
     finally { setSaving(false); }
   }, [send, field, session.sessionId]);
   return { state, saving, error, ask, supported: !!send, again, lapsed };

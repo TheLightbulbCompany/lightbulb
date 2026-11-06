@@ -8,7 +8,7 @@ const lk = vi.hoisted(() => ({
   tracks: [] as unknown[],
   huddle: {
     agentNotice: null as null | { kind: string; agentId: string; at: number }, talkStart: vi.fn(),
-    clearAgentNotice: vi.fn((at: number) => { if (lk.huddle.agentNotice?.at === at) lk.huddle.agentNotice = null; }), lightbulb: true, error: null, dismissError: vi.fn(), join: vi.fn(), leave: vi.fn(), roomId: "r1", roomName: "#general", room: {} },
+    clearAgentNotice: vi.fn((at: number) => { if (lk.huddle.agentNotice?.at === at) lk.huddle.agentNotice = null; }), lightbulb: true, error: null, dismissError: vi.fn(), join: vi.fn(), leave: vi.fn(), roomId: "r1", roomName: "general", room: {} },
 }));
 vi.mock("livekit-client", () => ({ Track: { Source: { Microphone: "microphone" } } }));
 vi.mock("@livekit/components-react", () => ({
@@ -302,7 +302,7 @@ it("45 s without the worker shows agents-absent with Retry, which re-joins", () 
     act(() => { vi.advanceTimersByTime(45_000); });
     expect(screen.queryByText("Agents are joining…")).toBeNull();
     fireEvent.click(within(screen.getByRole("alert")).getByText("Retry"));
-    expect(lk.huddle.join).toHaveBeenCalledWith("r1", "#general");
+    expect(lk.huddle.join).toHaveBeenCalledWith("r1", "general");
   } finally { vi.useRealTimers(); }
 });
 

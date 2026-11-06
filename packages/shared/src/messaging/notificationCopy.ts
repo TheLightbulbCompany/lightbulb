@@ -14,16 +14,16 @@ import type { RoomKind } from "./types";
 /** Line 2's budget: one glance, no wrap on a phone banner. */
 export const NOTIFICATION_LINE_CHARS = 80;
 
-/** Line 1: "Pulse · #GTM Strategy", or just the name when there is no place. */
+/** Line 1: "Pulse · GTM Strategy", or just the name when there is no place. */
 export function notificationTitle(who: string, where?: string | null): string {
   return where ? `${who} · ${where}` : who;
 }
 
-/** A room as line 1 names it: "#gtm-strategy", "DM", a group's name. */
+/** A room as line 1 names it: "gtm-strategy", "DM", a group's name. */
 export function roomWhere(room: { kind: RoomKind; name: string | null } | null | undefined): string | null {
   if (!room) return null;
   if (room.kind === "dm") return "DM";
-  if (room.kind === "channel") return room.name ? `#${room.name}` : "Channel";
+  if (room.kind === "channel") return room.name || "Project";
   return room.name || "Group chat";
 }
 

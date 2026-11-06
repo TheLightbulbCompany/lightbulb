@@ -113,14 +113,14 @@ function CreateWorkspaceForm() {
           <p id="slug-status" className="-mt-2 text-sm text-muted-foreground" aria-live="polite">
             {!slug ? "Your agents' email address comes from this."
               : current?.reason ? <span className="text-destructive">{SLUG_PROBLEM[current.reason]}</span>
-              : current ? <>Your CEO will email as <span className="font-mono text-foreground">ceo@{slug}.{current.domain}</span></>
+              : current ? <>Lightbulb will email as <span className="font-mono text-foreground">ceo@{slug}.{current.domain}</span></>
               : "Checking…"}
           </p>
         </>
       ) : (
         <p id="slug-status" className="-mt-2 flex items-center gap-2 text-sm text-muted-foreground" aria-live="polite">
           {!slug ? "Your agents' email address comes from the name."
-            : current ? <span>Your CEO will email as <span className="font-mono text-foreground">ceo@{slug}.{current.domain}</span></span>
+            : current ? <span>Lightbulb will email as <span className="font-mono text-foreground">ceo@{slug}.{current.domain}</span></span>
             : "Checking…"}
           {slug && (
             <button type="button" className="text-foreground underline underline-offset-2" onClick={() => setEditingSlug(true)}>

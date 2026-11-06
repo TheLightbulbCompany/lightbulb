@@ -72,7 +72,7 @@ describe("?panel=teams-spend resolves and mounts through the reconciler seam", (
     const { params } = deriveReconcilerAction("?panel=teams-spend", null)!.command!.descriptor;
     render(<TeamsPanelRouter panel={params.teamsKey} panelParams={{ section: params.section }} />);
     expect(await screen.findByTestId("money-panel")).toHaveAttribute("data-section", "spend");
-    expect(screen.queryByText(/Unknown panel/)).toBeNull();
+    expect(screen.queryByText(/This page is no longer here/)).toBeNull();
   });
 
   it("the bare `money` key renders Money with no section", async () => {
@@ -87,7 +87,7 @@ describe("?panel=teams-spend resolves and mounts through the reconciler seam", (
 
   it("a prototype-chain key falls through to Unknown panel, not Money", () => {
     render(<TeamsPanelRouter panel="constructor" />);
-    expect(screen.getByText(/Unknown panel/)).toBeInTheDocument();
+    expect(screen.getByText(/This page is no longer here/)).toBeInTheDocument();
     expect(screen.queryByTestId("money-panel")).toBeNull();
   });
 

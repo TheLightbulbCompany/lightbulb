@@ -83,7 +83,7 @@ it("opens a thread-reply hit in its thread and jumps to a main-list hit", async 
   const reply = { ...message, messageId: "reply", messageSeq: 2, text: "Searchable reply", threadRootMessageId: message.messageId };
   searchHits.byQuery = { searchable: [hitFor(reply)], hello: [hitFor(message)] };
   const view = render(<RoomPanel {...props} messages={[message, reply]} selectedThreadId={null} onSelectThread={onSelectThread} onJumpToMessage={onJumpToMessage} />);
-  await userEvent.click(screen.getByRole("button", { name: "Search this conversation" }));
+  await userEvent.click(screen.getByRole("button", { name: "Search this chat" }));
   await userEvent.type(screen.getByRole("searchbox"), "searchable");
   await userEvent.click(within(screen.getByRole("list", { name: "Search results" })).getByRole("button"));
   await waitFor(() => expect(onSelectThread).toHaveBeenLastCalledWith(message.messageId));
@@ -91,7 +91,7 @@ it("opens a thread-reply hit in its thread and jumps to a main-list hit", async 
   view.rerender(<RoomPanel {...props} messages={[message, reply]} selectedThreadId={message.messageId} onSelectThread={onSelectThread} onJumpToMessage={onJumpToMessage} />);
   const thread = screen.getByRole("complementary", { name: "Thread" });
   expect(within(thread).getByText("Searchable reply").closest("article")).toHaveFocus();
-  await userEvent.click(screen.getByRole("button", { name: "Search this conversation" }));
+  await userEvent.click(screen.getByRole("button", { name: "Search this chat" }));
   await userEvent.type(screen.getByRole("searchbox"), "hello");
   await userEvent.click(within(screen.getByRole("list", { name: "Search results" })).getByRole("button"));
   await waitFor(() => expect(onSelectThread).toHaveBeenLastCalledWith(null));
@@ -117,7 +117,7 @@ it("does not leave focus on a stale thread trigger when a search result jumps to
   const replyTrigger = screen.getByRole("button", { name: "Reply in thread" });
   await userEvent.click(replyTrigger);
   expect(screen.getByRole("complementary", { name: "Thread" })).toBeInTheDocument();
-  await userEvent.click(screen.getByRole("button", { name: "Search this conversation" }));
+  await userEvent.click(screen.getByRole("button", { name: "Search this chat" }));
   await userEvent.type(screen.getByRole("searchbox"), "hello");
   await userEvent.click(within(screen.getByRole("list", { name: "Search results" })).getByRole("button"));
   await waitFor(() => expect(screen.queryByRole("complementary", { name: "Thread" })).not.toBeInTheDocument());
@@ -131,7 +131,7 @@ it("scrolls to a main-list hit again when the same hit is picked twice", async (
   searchHits.byQuery = { hello: [hitFor(message)] };
   render(<RoomPanel {...props} onJumpToMessage={vi.fn()} />);
   for (const n of [1, 2]) {
-    await userEvent.click(screen.getByRole("button", { name: "Search this conversation" }));
+    await userEvent.click(screen.getByRole("button", { name: "Search this chat" }));
     await userEvent.type(screen.getByRole("searchbox"), "hello");
     await userEvent.click(within(screen.getByRole("list", { name: "Search results" })).getByRole("button"));
     await waitFor(() => expect(scroll).toHaveBeenCalledTimes(n));
@@ -145,7 +145,7 @@ it("names a DM for its counterpart and uses canonical author and member activity
   const article = screen.getByRole("article", { name: "Message from Friday" });
   expect(within(article).getByRole("img", { name: "Friday" }).parentElement).toHaveAttribute("data-agent-state", "running");
   expect(within(article).getByText("Agent")).toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", { name: "People, 2 in this conversation" }));
+  fireEvent.click(screen.getByRole("button", { name: "People, 2 here" }));
   const members = screen.getByRole("complementary", { name: "About" });
   expect(within(members).getByRole("img", { name: "Friday" }).parentElement).toHaveAttribute("data-agent-state", "running");
   expect(within(members).queryByRole("status", { name: "Work status" })).not.toBeInTheDocument();
@@ -267,7 +267,7 @@ it("opens and closes the real room context on a narrow viewport", async () => {
   expect(history).not.toBeVisible();
   expect(screen.getByRole("complementary", { name: "About" })).toBeVisible();
   expect(screen.getByRole("heading", { name: "About" })).toHaveFocus();
-  await userEvent.click(screen.getByRole("button", { name: "Back to conversation" }));
+  await userEvent.click(screen.getByRole("button", { name: "Back to chat" }));
   expect(history).toBeVisible();
   expect(screen.getByRole("button", { name: /^About/ })).toHaveFocus();
 });
@@ -685,7 +685,7 @@ it.each(["dm", "group-dm"] as const)("opens a searchable Add people picker from 
     ]}
     onAddMember={onAddMember} />);
 
-  await user.click(screen.getByRole("button", { name: "Conversation options" }));
+  await user.click(screen.getByRole("button", { name: "Options" }));
   await user.click(screen.getByRole("menuitem", { name: "Add people" }));
   const search = screen.getByRole("searchbox", { name: "Search people" });
   await user.type(search, "atl");
@@ -703,18 +703,18 @@ it("replaces the narrow conversation only while a selected thread is open", asyn
   render(<RoomPanel {...props} onLinkToWork={onLinkToWork} />);
   const history = screen.getByRole("region", { name: "Messages" });
   expect(history).toBeVisible();
-  await user.click(screen.getByRole("button", { name: "Conversation options" }));
+  await user.click(screen.getByRole("button", { name: "Options" }));
   await user.click(await screen.findByRole("menuitem", { name: "Tasks" }));
   expect(history).not.toBeVisible();
   await user.click(screen.getByRole("button", { name: /All tasks in Tasks/ }));
   expect(onLinkToWork).toHaveBeenCalledOnce();
-  await user.click(screen.getByRole("button", { name: "Back to conversation" }));
+  await user.click(screen.getByRole("button", { name: "Back to chat" }));
   expect(history).toBeVisible();
   const trigger = screen.getByRole("button", { name: "Reply in thread" });
   await user.click(trigger);
   expect(history).not.toBeVisible();
   expect(screen.getByRole("heading", { name: "Thread" })).toHaveFocus();
-  await user.click(screen.getByRole("button", { name: "Back to conversation" }));
+  await user.click(screen.getByRole("button", { name: "Back to chat" }));
   expect(history).toBeVisible();
   expect(trigger).toHaveFocus();
 });
@@ -963,11 +963,11 @@ it("pins and unpins a message from its menu", async () => {
   const onSetPin = vi.fn().mockResolvedValue(undefined);
   const { rerender } = render(<RoomPanel {...props} onSetPin={onSetPin} messages={[message]} pinnedMessageIds={[]} />);
   await userEvent.click(screen.getByRole("button", { name: "Message actions" }));
-  await userEvent.click(await screen.findByRole("menuitem", { name: "Pin to conversation" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Pin" }));
   expect(onSetPin).toHaveBeenCalledWith(message.messageId, true);
   rerender(<RoomPanel {...props} onSetPin={onSetPin} messages={[message]} pinnedMessageIds={[message.messageId]} />);
   await userEvent.click(screen.getByRole("button", { name: "Message actions" }));
-  expect(await screen.findByRole("menuitem", { name: "Unpin from conversation" })).toBeInTheDocument();
+  expect(await screen.findByRole("menuitem", { name: "Unpin" })).toBeInTheDocument();
 });
 
 it("disables the pin and mark-unread menu items while a pin request is in flight", async () => {
@@ -976,7 +976,7 @@ it("disables the pin and mark-unread menu items while a pin request is in flight
   const onMarkUnreadFrom = vi.fn().mockResolvedValue(undefined);
   render(<RoomPanel {...props} onSetPin={onSetPin} onMarkUnreadFrom={onMarkUnreadFrom} messages={[message]} pinnedMessageIds={[]} />);
   await userEvent.click(screen.getByRole("button", { name: "Message actions" }));
-  await userEvent.click(await screen.findByRole("menuitem", { name: "Pin to conversation" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Pin" }));
   // The menu closes on select (Radix default); reopen it while the request is still
   // unresolved to observe the disabled/pending state.
   await userEvent.click(screen.getByRole("button", { name: "Message actions" }));
@@ -984,7 +984,7 @@ it("disables the pin and mark-unread menu items while a pin request is in flight
   expect(pinItem).toHaveAttribute("aria-disabled", "true");
   expect(screen.getByRole("menuitem", { name: "Marking unread…" })).toHaveAttribute("aria-disabled", "true");
   await act(async () => resolvePin());
-  expect(await screen.findByRole("menuitem", { name: "Pin to conversation" })).not.toHaveAttribute("aria-disabled");
+  expect(await screen.findByRole("menuitem", { name: "Pin" })).not.toHaveAttribute("aria-disabled");
   expect(screen.getByRole("menuitem", { name: "Mark unread from here" })).not.toHaveAttribute("aria-disabled");
 });
 
@@ -1000,7 +1000,7 @@ it("reports a failed pin without losing the message", async () => {
   const onSetPin = vi.fn().mockRejectedValue(new Error("A room can pin at most 50 messages."));
   render(<RoomPanel {...props} onSetPin={onSetPin} messages={[message]} />);
   await userEvent.click(screen.getByRole("button", { name: "Message actions" }));
-  await userEvent.click(await screen.findByRole("menuitem", { name: "Pin to conversation" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Pin" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("A room can pin at most 50 messages.");
   expect(screen.getByText(message.text)).toBeInTheDocument();
 });
@@ -1013,7 +1013,7 @@ it("omits mark-unread-from-here for the thread pane's root message", async () =>
   // The trigger button lives inside the thread pane, but DropdownMenuContent is portalled
   // to the document body, so the opened menu's items are queried unscoped.
   await userEvent.click(thread.getByRole("button", { name: "Message actions" }));
-  expect(await screen.findByRole("menuitem", { name: "Pin to conversation" })).toBeInTheDocument();
+  expect(await screen.findByRole("menuitem", { name: "Pin" })).toBeInTheDocument();
   expect(screen.queryByRole("menuitem", { name: "Mark unread from here" })).not.toBeInTheDocument();
 });
 
@@ -1026,7 +1026,7 @@ it("omits mark-unread-from-here for a thread reply", async () => {
   const thread = within(screen.getByRole("complementary", { name: "Thread" }));
   const [, replyTrigger] = thread.getAllByRole("button", { name: "Message actions" });
   await userEvent.click(replyTrigger);
-  expect(await screen.findByRole("menuitem", { name: "Pin to conversation" })).toBeInTheDocument();
+  expect(await screen.findByRole("menuitem", { name: "Pin" })).toBeInTheDocument();
   expect(screen.queryByRole("menuitem", { name: "Mark unread from here" })).not.toBeInTheDocument();
 });
 
@@ -1086,14 +1086,14 @@ it("replaces the composer in an archived channel with an Unarchive action for ad
   const archived = { ...props.room!, kind: "channel" as const, name: "Launch", archivedAt: "2026-09-23T00:00:00Z" };
   const onSetArchived = vi.fn().mockResolvedValue(undefined);
   const { rerender } = render(<RoomPanel {...props} room={archived} onSetArchived={onSetArchived} />);
-  expect(screen.getByText("This channel is archived. Unarchive it to post.")).toBeInTheDocument();
+  expect(screen.getByText("This project is archived. Unarchive it to post.")).toBeInTheDocument();
   expect(screen.queryByRole("textbox", { name: "Message" })).not.toBeInTheDocument();
-  await userEvent.click(screen.getByRole("button", { name: "Unarchive channel" }));
+  await userEvent.click(screen.getByRole("button", { name: "Unarchive project" }));
   await waitFor(() => expect(onSetArchived).toHaveBeenCalledWith(false));
 
   rerender(<RoomPanel {...props} room={archived} participants={[{ ...owner, role: "member" }, friday]} onSetArchived={onSetArchived} />);
-  expect(screen.getByText("This channel is archived.")).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Unarchive channel" })).not.toBeInTheDocument();
+  expect(screen.getByText("This project is archived.")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Unarchive project" })).not.toBeInTheDocument();
 });
 
 it("offers no top-level composer in the workspace feed: people reply in a post's thread", () => {

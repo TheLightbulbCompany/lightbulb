@@ -131,7 +131,7 @@ export function SessionChat({ sessionId, sessionOwnerId, openChat, onClose, onRo
     </header>
     {rooms.accessRemoved
       // Sharing paused (or the reader left the workspace) while the column was open: the room panel's words.
-      ? <p role="status" className="p-4 text-ui text-muted-foreground">Access removed. You can no longer view this conversation.</p>
+      ? <p role="status" className="p-4 text-ui text-muted-foreground">Access removed. You can no longer view this chat.</p>
       : error ? <p role="status" className="p-4 text-ui text-muted-foreground">{error}</p> : <>
       <RoomTimeline roomId={roomId ?? "opening"} messages={messages} readSeq={null} ownLastSentSeq={null}
         renderMessage={renderMessage} historyComplete={rooms.historyComplete} historyLoading={rooms.historyLoading}

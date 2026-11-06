@@ -469,7 +469,7 @@ function CreateAgentDialog({
             className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded-sm px-3 py-2 mt-1 text-[var(--midnight)]"
           >
             <option value="engineer">Engineer</option>
-            <option value="ceo">CEO</option>
+            <option value="ceo">Coordinator</option>
             <option value="manager">Manager</option>
           </select>
         </label>

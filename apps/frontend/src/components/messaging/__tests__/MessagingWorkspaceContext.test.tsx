@@ -31,13 +31,13 @@ vi.mock("@/hooks/useTeamsApi", () => ({ useTeamsApi: () => ({
     ? (teams.agentsLoading ? undefined : { agents: [{ id: "agent-friday", name: "Friday" }, { id: "agent-atlas", name: "Atlas", role: "ceo", origin: "Starter" }] })
     : { members: [{ userId: "owner", name: "Owner" }, { userId: "colleague", name: "Colleague" }] } }),
 }) }));
-vi.mock("@/components/workspace/workspaceController", () => ({ openPanel: vi.fn(), activateMessagesPanel: vi.fn(), openInviteDialog: vi.fn(), getWorkspaceSnapshot: () => ({ activePanelId: null }) }));
+vi.mock("@/components/workspace/workspaceController", () => ({ openPanel: vi.fn(), activateMessagesPanel: vi.fn(), openInviteDialog: vi.fn(), getWorkspaceSnapshot: () => ({ activePanelId: null }), useWorkspaceState: () => ({ place: "chat", main: null }) }));
 let directory: RoomDirectoryProps;
 let panel: RoomPanelProps;
 let renderComposer = false;
 vi.mock("../RoomDirectory", () => ({ RoomDirectory: (props: RoomDirectoryProps) => {
   directory = props;
-  return <nav aria-label="Conversations" />;
+  return <nav aria-label="Chats" />;
 } }));
 const editLast = vi.fn();
 vi.mock("../RoomPanel", () => ({ RoomPanel: (props: RoomPanelProps) => {
@@ -139,7 +139,7 @@ it("feeds the directory and conversation from one selected-room owner", () => {
   expect(mocks.rooms.mock.calls).toEqual(mocks.rooms.mock.calls.map(() => ["agent-friday", true, true, true, true]));
   expect(state.selectAgentDm).not.toHaveBeenCalled();
   expect(directory.currentRoomId).toBe(panel.roomId);
-  expect(screen.getByRole("navigation", { name: "Conversations" })).toBeInTheDocument();
+  expect(screen.getByRole("navigation", { name: "Chats" })).toBeInTheDocument();
   expect(screen.getByRole("region", { name: "Messages" })).toBeInTheDocument();
   view.unmount();
 });
@@ -529,7 +529,7 @@ it("loads older history for a message link before expiring its target", () => {
 it("renders the empty conversation when no room is selected", () => {
   state.activeRoomId = null;
   compose();
-  expect(screen.getByRole("region", { name: "No conversation selected" })).toBeInTheDocument();
+  expect(screen.getByRole("region", { name: "No chat selected" })).toBeInTheDocument();
 });
 
 it.each([

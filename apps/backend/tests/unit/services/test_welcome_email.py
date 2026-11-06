@@ -1,4 +1,4 @@
-"""The CEO's welcome: true copy (08 §5), no emoji, sent through the agent-mail doors."""
+"""Lightbulb's welcome: true copy (08 §5), no emoji, sent through the agent-mail doors."""
 
 from unittest.mock import AsyncMock, patch
 
@@ -9,12 +9,13 @@ from core.services import welcome_email
 URL = "https://app.example.com/chat?panel=chat&room=r1"
 
 
-def test_owner_version_is_the_ceo_speaking_and_promises_nothing_false():
+def test_owner_version_is_lightbulb_speaking_and_promises_nothing_false():
     subject, text = welcome_email.owner_welcome(first_name="Ada", workspace="Acme", url=URL)
     assert subject == "Your team at Acme is ready"
-    assert text.startswith("Hi Ada,\n\nI'm your CEO.")
-    assert f"Open #general: {URL}" in text
-    assert text.rstrip().endswith("— CEO, Acme")
+    assert text.startswith("Hi Ada,\n\nI'm Lightbulb.")
+    assert f"Open general: {URL}" in text
+    assert text.rstrip().endswith("— Lightbulb, Acme")
+    assert "CEO" not in text and "#" not in text
     for false_claim in ("container", "Nothing is\nshared", "marketplace", "overnight"):
         assert false_claim not in text
     assert all(ord(ch) < 0x2000 or ch in "—" for ch in subject + text)  # no emoji
@@ -29,7 +30,7 @@ def test_teammate_version_names_the_inviter_when_known():
 
 
 @pytest.mark.asyncio
-async def test_owner_welcome_is_the_ceos_first_contact():
+async def test_owner_welcome_is_lightbulbs_first_contact():
     with (
         patch.object(welcome_email.clerk_admin, "get_user", new=AsyncMock(return_value={"first_name": "Ada"})),
         patch.object(welcome_email.clerk_admin, "get_organization", new=AsyncMock(return_value={"name": "Acme"})),

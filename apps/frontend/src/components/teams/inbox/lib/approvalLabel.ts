@@ -12,7 +12,7 @@
 /** Friendly names for the known upstream approval types. */
 const TYPE_LABEL: Record<string, string> = {
   hire_agent: "Hire Agent",
-  approve_ceo_strategy: "CEO Strategy",
+  approve_ceo_strategy: "Strategy",
   budget_override_required: "Budget Override",
   request_board_approval: "Board Approval",
 };

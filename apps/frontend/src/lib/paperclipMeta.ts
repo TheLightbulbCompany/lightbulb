@@ -27,7 +27,7 @@ export const PAPERCLIP_AGENT_ROLES = [
 export type PaperclipRole = (typeof PAPERCLIP_AGENT_ROLES)[number];
 
 export const PAPERCLIP_ROLE_LABELS: Record<PaperclipRole, string> = {
-  ceo: "CEO",
+  ceo: "Coordinator",
   cto: "CTO",
   cmo: "CMO",
   cfo: "CFO",

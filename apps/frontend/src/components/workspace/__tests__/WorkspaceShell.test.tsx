@@ -40,7 +40,7 @@ vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({
 }));
 vi.mock("../WorkspaceSidebar", () => ({
   WorkspaceSidebar: ({ onRecoveryReprovision, chatReady, onNavigate, id, dialog }: { onRecoveryReprovision: () => void; chatReady: boolean; onNavigate: () => void; id?: string; dialog?: boolean }) => (
-    <nav className="cream-sidebar" id={id} {...(dialog ? { role: "dialog", "aria-modal": true, "aria-label": "Conversations" } : { "aria-label": "Workspace" })}>
+    <nav className="cream-sidebar" id={id} {...(dialog ? { role: "dialog", "aria-modal": true, "aria-label": "Chats" } : { "aria-label": "Workspace" })}>
       <button onClick={onRecoveryReprovision} data-ready={chatReady}>Recover</button>
       <button onClick={onNavigate}>Open a room</button>
     </nav>
@@ -323,7 +323,7 @@ it("super-agent, narrow window (600-999 px): the drawer is a modal sidebar; focu
     const menu = screen.getByRole("button", { name: "Open menu" });
     expect(menu).toHaveAttribute("aria-controls", "workspace-sidebar");
     fireEvent.click(menu);
-    const dialog = screen.getByRole("dialog", { name: "Conversations" });
+    const dialog = screen.getByRole("dialog", { name: "Chats" });
     expect(dialog).toHaveAttribute("aria-modal", "true");
     expect(dialog).toHaveAttribute("id", "workspace-sidebar");
     expect(screen.getByRole("button", { name: "Recover" })).toHaveFocus();
@@ -346,7 +346,7 @@ it("without the super-agent the drawer is the phone one: no modal sidebar, rail 
     const view = renderReady();
     expect(shellOf(view)).not.toHaveAttribute("data-super-agent");
     fireEvent.click(screen.getByRole("button", { name: "Open menu" }));
-    expect(screen.queryByRole("dialog", { name: "Conversations" })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Chats" })).toBeNull();
     expect(view.container.querySelector(".workspace-rail")).not.toHaveAttribute("inert");
     act(() => listeners.get("(min-width: 600px)")?.());
     expect(shellOf(view)).toHaveAttribute("data-nav-open", "false");
@@ -383,7 +383,7 @@ it("a sidebar-only drawer that narrows to a phone becomes the phone drawer: the 
     act(() => listeners.get("(min-width: 600px)")?.());
     expect(shellOf(view)).toHaveAttribute("data-nav-open", "true");
     expect(view.container.querySelector(".workspace-rail")).not.toHaveAttribute("inert");
-    expect(screen.queryByRole("dialog", { name: "Conversations" })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Chats" })).toBeNull();
   } finally { state.superAgent = false; vi.unstubAllGlobals(); }
 });
 

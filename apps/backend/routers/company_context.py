@@ -40,7 +40,7 @@ async def _ceo_agent_id(owner_id: str) -> str:
     ceo = company and ((company.starter_agent_ids or {}).get("ceo") or (company.seeded_agent_ids or [None])[0])
     if not ceo:
         raise HTTPException(
-            status_code=409, detail="This workspace has no CEO agent yet. Try again once setup finishes."
+            status_code=409, detail="Lightbulb isn't set up in this workspace yet. Try again once setup finishes."
         )
     return ceo
 

@@ -33,7 +33,7 @@ describe("sidebar with the super-agent on", () => {
 
   it("rosters people and only Lightbulb, pinned first; specialists and their DMs live on the Team page, not here", () => {
     render(<RoomDirectory {...props} />);
-    expect(rowsOf("Team")).toEqual(["Lightbulb", "Alice"]);
+    expect(rowsOf("People")).toEqual(["Lightbulb", "Alice"]);
     expect(screen.queryByRole("region", { name: "Specialists" })).toBeNull();
     expect(screen.queryByRole("button", { name: /Specialists/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /^(Finance|Engineering)/ })).toBeNull();
@@ -42,11 +42,11 @@ describe("sidebar with the super-agent on", () => {
 
   it("a specialist DM stays findable under Team while it has unread messages or is open, and hides once read", () => {
     const { rerender } = render(<RoomDirectory {...props} rooms={[{ ...base, unreadCount: 2 }]} />);
-    expect(rowsOf("Team")).toContain("Finance");
+    expect(rowsOf("People")).toContain("Finance");
     rerender(<RoomDirectory {...props} rooms={[base]} currentRoomId="dm-finance" />);
-    expect(rowsOf("Team")).toContain("Finance");
+    expect(rowsOf("People")).toContain("Finance");
     rerender(<RoomDirectory {...props} rooms={[base]} currentRoomId={undefined} />);
-    expect(rowsOf("Team")).not.toContain("Finance");
+    expect(rowsOf("People")).not.toContain("Finance");
   });
 
   it("More carries what it hides: a shared channel's unreads are counted on its heading and open it", () => {
@@ -63,14 +63,14 @@ describe("sidebar with the super-agent on", () => {
   it("an unknown front agent (roster not resolved, or no ceo role) keeps today's roster", () => {
     render(<RoomDirectory {...props} ceoAgentId={undefined} />);
     // Today's roster: every agent, alphabetical (nothing to pin without a known CEO).
-    expect(rowsOf("Team")).toEqual(["Alice", "Engineering", "Finance", "Lightbulb"]);
+    expect(rowsOf("People")).toEqual(["Alice", "Engineering", "Finance", "Lightbulb"]);
     expect(screen.queryByRole("region", { name: "Specialists" })).toBeNull();
   });
 
   it("off: every agent is a roster row under Team and there is no Specialists group", () => {
     live.superAgent = false;
     render(<RoomDirectory {...props} />);
-    expect(rowsOf("Team")).toEqual(["Lightbulb", "Alice", "Engineering", "Finance"]);
+    expect(rowsOf("People")).toEqual(["Lightbulb", "Alice", "Engineering", "Finance"]);
     expect(screen.queryByRole("region", { name: "Specialists" })).toBeNull();
   });
 });

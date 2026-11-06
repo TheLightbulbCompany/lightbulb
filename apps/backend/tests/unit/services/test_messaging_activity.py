@@ -183,7 +183,7 @@ async def test_mention_is_self_explaining_and_read_follows_the_room_cursor(world
     assert item["id"] == f"mention:{message['messageId']}:{room_id}:1"
     assert item["kind"] == "mention" and item["roomId"] == room_id and item["messageId"] == message["messageId"]
     assert item["actor"] == {"kind": "human", "id": USER_A, "name": "Ann"}
-    assert item["summary"]["title"] == "Ann mentioned you in #general"
+    assert item["summary"]["title"] == "Ann mentioned you in general"
     assert item["summary"]["requester"] == item["actor"]
     assert item["summary"]["preview"]["text"] == "Ship it @bob"
     assert item["state"] == "open" and item["read"] is False
@@ -228,7 +228,7 @@ async def test_thread_reply_reaches_the_starter_repliers_and_the_mentioned(world
     assert ann == ["thread_reply"]  # replied in it (not her own reply)
     item = (await feed(USER_B))["items"][0]
     assert item["threadRootMessageId"] == root["messageId"]
-    assert item["summary"]["title"] == "Friday replied in a thread in #general"
+    assert item["summary"]["title"] == "Friday replied in a thread in general"
 
 
 @pytest.mark.asyncio

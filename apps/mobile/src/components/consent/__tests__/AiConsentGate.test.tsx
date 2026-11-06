@@ -63,7 +63,7 @@ describe("AiConsentGate", () => {
     expect(screen.getByText(/OpenRouter — routes your requests/)).toBeTruthy();
     expect(screen.getByText(/DeepInfra that run open models like DeepSeek/)).toBeTruthy();
     expect(screen.getByText(/Vercel and TypeSafe AI/)).toBeTruthy();
-    expect(screen.getByText(/When Listening is on in a channel: recent channel messages/)).toBeTruthy();
+    expect(screen.getByText(/When Listening is on in a project: its recent messages/)).toBeTruthy();
     // The disclosure describes data flows, not plans (the app sells none).
     expect(screen.queryByText(/paid plan/i)).toBeNull();
     expect(screen.getByText(/don't store your content or use it for training/)).toBeTruthy();

@@ -268,7 +268,7 @@ describe("thread screen", () => {
 
   it("titles itself Thread and names the conversation underneath", async () => {
     await render(<Thread />);
-    await waitFor(() => expect(screen.getByText("#Launch")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Launch")).toBeTruthy());
   });
 
   // Slack's rule: a thread is not the room. The read cursor is per room and
@@ -345,7 +345,7 @@ describe("thread screen", () => {
       mockRoomId = "room-loading";
       mockLive.messaging.getRoom.mockImplementationOnce(() => new Promise(() => {}));
       await render(<Thread />);
-      expect(screen.getByText("Loading conversation…")).toBeTruthy();
+      expect(screen.getByText("Loading chat…")).toBeTruthy();
       expect(screen.queryByTestId("thread-timeline")).toBeNull();
       expect(screen.queryByPlaceholderText("Reply…")).toBeNull();
     });
@@ -356,7 +356,7 @@ describe("thread screen", () => {
       await render(<Thread />);
       await waitFor(() =>
         expect(
-          screen.getByText("Access removed. You can no longer view this conversation."),
+          screen.getByText("Access removed. You can no longer view this chat."),
         ).toBeTruthy(),
       );
       expect(screen.queryByTestId("thread-timeline")).toBeNull();
@@ -369,7 +369,7 @@ describe("thread screen", () => {
       mockLive.messaging.getRoom.mockRejectedValueOnce(new Error("boom"));
       await render(<Thread />);
       await waitFor(() =>
-        expect(screen.getByText("This conversation is unavailable.")).toBeTruthy(),
+        expect(screen.getByText("This chat is unavailable.")).toBeTruthy(),
       );
       expect(screen.queryByTestId("thread-timeline")).toBeNull();
       expect(screen.queryByPlaceholderText("Reply…")).toBeNull();

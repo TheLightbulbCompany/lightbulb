@@ -114,7 +114,7 @@ describe("RunNotifications live chat run", () => {
     const identity = { payload: { runId: "run-1", agentId: "agent-1", roomId: "room-gtm" } };
     act(() => live.chatHandler?.({ type: "chunk", content: "## Drafted 5 launch posts\nmore", runId: "run-1" }, identity));
     await act(async () => live.chatHandler?.({ type: "run_ended", runId: "run-1", outcome: "done" }, identity));
-    expect(live.nativeNotify).toHaveBeenCalledWith("Agent · #GTM Strategy", "Drafted 5 launch posts",
+    expect(live.nativeNotify).toHaveBeenCalledWith("Agent · GTM Strategy", "Drafted 5 launch posts",
       expect.objectContaining({ tag: "run-1" }));
     act(() => setRoomView({ visibleRoomId: null, rooms: new Map() }));
   });

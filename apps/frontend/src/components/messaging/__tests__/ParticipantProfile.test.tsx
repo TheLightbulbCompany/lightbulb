@@ -12,8 +12,8 @@ it.each([person, { ...person, kind: "agent" as const, displayName: "Friday", men
   const trigger = screen.getByRole("button", { name: participant.displayName });
   await userEvent.click(trigger);
   const profile = screen.getByRole("dialog", { name: participant.displayName });
-  expect(profile).toHaveTextContent("Role in this conversationMember");
-  expect(profile).toHaveTextContent("Joined this conversation");
+  expect(profile).toHaveTextContent("Role hereMember");
+  expect(profile).toHaveTextContent("Joined");
   expect(profile.querySelector("time")).toHaveAttribute("datetime", participant.joinedAt);
   if (participant.mentionHandle) expect(profile).toHaveTextContent("@friday");
   expect(profile).not.toHaveTextContent(/Online|Offline|Email/);
@@ -30,11 +30,11 @@ it("keeps failed DM requests visible for retry without repeating a pending reque
   render(<ParticipantProfile participant={person} currentUserId="viewer" onMessage={onMessage} />);
   await userEvent.click(screen.getByRole("button", { name: "Alice" }));
   await userEvent.click(screen.getByRole("button", { name: "Message" }));
-  expect(screen.getByRole("button", { name: "Opening conversation…" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Opening chat…" })).toBeDisabled();
   await userEvent.keyboard("{Escape}");
   expect(screen.getByRole("dialog")).toBeInTheDocument();
   await act(async () => reject(new Error("Unavailable")));
-  expect(screen.getByRole("alert")).toHaveTextContent("Could not open this conversation. Try again.");
+  expect(screen.getByRole("alert")).toHaveTextContent("Could not open this chat. Try again.");
   onMessage.mockResolvedValue(undefined);
   await userEvent.click(screen.getByRole("button", { name: "Message" }));
   expect(onMessage).toHaveBeenCalledTimes(2);

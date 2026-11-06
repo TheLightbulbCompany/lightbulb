@@ -666,7 +666,7 @@ describe("conversation screen", () => {
       mockLive.claimActiveRoomSubscription.mockClear();
       await render(<Conversation />);
       await waitFor(() => expect(screen.getByText("second")).toBeTruthy());
-      expect(screen.queryByText("Loading conversation…")).toBeNull();
+      expect(screen.queryByText("Loading chat…")).toBeNull();
       expect(screen.getByPlaceholderText(/^Message/)).toBeTruthy();
       // The list carries no deliveryKey: nothing may subscribe on a guess.
       expect(mockLive.claimActiveRoomSubscription).not.toHaveBeenCalled();
@@ -683,7 +683,7 @@ describe("conversation screen", () => {
       mockRoomId = "room-loading";
       mockLive.messaging.getRoom.mockImplementationOnce(() => new Promise(() => {}));
       await render(<Conversation />);
-      expect(screen.getByText("Loading conversation…")).toBeTruthy();
+      expect(screen.getByText("Loading chat…")).toBeTruthy();
       expect(screen.queryByTestId("room-timeline")).toBeNull();
       expect(screen.queryByPlaceholderText(/^Message/)).toBeNull();
     });
@@ -694,7 +694,7 @@ describe("conversation screen", () => {
       await render(<Conversation />);
       await waitFor(() =>
         expect(
-          screen.getByText("Access removed. You can no longer view this conversation."),
+          screen.getByText("Access removed. You can no longer view this chat."),
         ).toBeTruthy(),
       );
       expect(screen.queryByTestId("room-timeline")).toBeNull();
@@ -707,7 +707,7 @@ describe("conversation screen", () => {
       mockLive.messaging.getRoom.mockRejectedValueOnce(new Error("boom"));
       await render(<Conversation />);
       await waitFor(() =>
-        expect(screen.getByText("This conversation is unavailable.")).toBeTruthy(),
+        expect(screen.getByText("This chat is unavailable.")).toBeTruthy(),
       );
       expect(screen.queryByTestId("room-timeline")).toBeNull();
       expect(screen.queryByPlaceholderText(/^Message/)).toBeNull();
@@ -749,18 +749,18 @@ describe("conversation screen", () => {
 
   it("stars and mutes the room from the header, inverting the room's current state", async () => {
     await render(<Conversation />);
-    await waitFor(() => expect(screen.getByLabelText("Star this conversation")).toBeTruthy());
-    await fireEvent.press(screen.getByLabelText("Star this conversation"));
+    await waitFor(() => expect(screen.getByLabelText("Star")).toBeTruthy());
+    await fireEvent.press(screen.getByLabelText("Star"));
     await waitFor(() => expect(mockSetMemberPrefs).toHaveBeenCalledWith("room-1", { starred: true }));
-    await fireEvent.press(screen.getByLabelText("Mute this conversation"));
+    await fireEvent.press(screen.getByLabelText("Mute"));
     await waitFor(() => expect(mockSetMemberPrefs).toHaveBeenCalledWith("room-1", { muted: true }));
   });
 
   it("shows the web's copy when the header's star save fails", async () => {
     mockSetMemberPrefs.mockRejectedValueOnce(new Error("offline"));
     await render(<Conversation />);
-    await waitFor(() => expect(screen.getByLabelText("Star this conversation")).toBeTruthy());
-    await fireEvent.press(screen.getByLabelText("Star this conversation"));
+    await waitFor(() => expect(screen.getByLabelText("Star")).toBeTruthy());
+    await fireEvent.press(screen.getByLabelText("Star"));
     await waitFor(() => expect(screen.getByText("The star could not be saved.")).toBeTruthy());
   });
 
@@ -905,14 +905,14 @@ describe("conversation screen", () => {
   it("offers Go live in a channel only when Live is on, and names who is Live", async () => {
     mockRoomLive = { userIds: [], available: false };
     const first = await render(<Conversation />);
-    await waitFor(() => expect(screen.getByLabelText("Star this conversation")).toBeTruthy());
+    await waitFor(() => expect(screen.getByLabelText("Star")).toBeTruthy());
     expect(screen.queryByLabelText("Go live")).toBeNull();
     await first.unmount();
 
     mockRoomLive = { userIds: ["user-a"], available: true };
     await render(<Conversation />);
     await fireEvent.press(await screen.findByLabelText("Go live"));
-    expect(mockJoinLive).toHaveBeenCalledWith("room-1", "#Launch");
+    expect(mockJoinLive).toHaveBeenCalledWith("room-1", "Launch");
     expect(screen.getByText("Live — Alice")).toBeTruthy();
     mockRoomLive = { userIds: [], available: false };
   });

@@ -162,13 +162,13 @@ describe("AppView", () => {
     expect(alert).toContain("The last publish didn't land. Press Publish to try again, or ask the agent in the conversation.");
     expect(alert).toContain('Command "npx drizzle-kit migrate && next build" exited with 1');
     expect(screen.getByRole("button", { name: "Publish" })).toBeTruthy();
-    expect(screen.queryByText("Something went wrong. Ask the agent in #finance.")).toBeNull();
+    expect(screen.queryByText("Something went wrong. Ask the agent in finance.")).toBeNull();
   });
 
   it("a 403 says who can open it and where to ask; raw text only under Details", async () => {
     open.mockRejectedValue(Object.assign(new Error("Forbidden"), { status: 403 }));
     render(<AppView app={app({ name: "workshop-signup" })} onBack={vi.fn()} />);
-    expect((await screen.findByRole("alert")).textContent).toContain("Only #finance can open Workshop Signup. Ask in #finance.");
+    expect((await screen.findByRole("alert")).textContent).toContain("Only finance can open Workshop Signup. Ask in finance.");
     expect(screen.getByText("Details").closest("details")!.textContent).toContain("Forbidden");
     expect(screen.getByRole("heading", { name: "Workshop Signup" })).toBeTruthy();
     expect(screen.queryByText("workshop-signup")).toBeNull();
@@ -184,7 +184,7 @@ describe("AppView", () => {
   });
 
   it("shows refusal and greys the row when open is forbidden", async () => {
-    open.mockRejectedValue(new Error("Ask in #finance for access"));
+    open.mockRejectedValue(new Error("Ask in finance for access"));
     render(<AppView app={app()} onBack={vi.fn()} />);
     expect((await screen.findByRole("alert")).textContent).toContain("Invoices didn't open");
     expect(document.querySelector("iframe")).toBeNull();
@@ -209,7 +209,7 @@ describe("AppView", () => {
     unmount();
     render(<AppView app={app({ created_by_name: "Dana" })} onBack={vi.fn()} />);
     expect(screen.queryByRole("button", { name: "Settings" })).toBeNull();
-    expect(screen.getByText("Open to #finance. Only Dana or a workspace admin can change who can open it.")).toBeTruthy();
+    expect(screen.getByText("Open to finance. Only Dana or a workspace admin can change who can open it.")).toBeTruthy();
   });
 
   it("the muted line falls back when the creator is unknown", () => {
@@ -358,7 +358,7 @@ describe("AppView", () => {
     });
 
     it.each([
-      ["room", "Live — people in #finance can open it"],
+      ["room", "Live — people in finance can open it"],
       ["workspace", "Live — everyone in the workspace"],
       ["invited", "Live — people you invited"],
     ] as const)("Live line for %s names who can open it and shows no address", async (open_to, line) => {

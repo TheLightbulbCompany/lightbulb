@@ -2,7 +2,7 @@ from core.services import notification_copy as copy
 
 
 def test_title_is_who_and_where():
-    assert copy.title("Pulse", copy.room_where("channel", "GTM Strategy")) == "Pulse · #GTM Strategy"
+    assert copy.title("Pulse", copy.room_where("channel", "GTM Strategy")) == "Pulse · GTM Strategy"
     assert copy.title("Friday", copy.room_where("dm", None)) == "Friday · DM"
     assert copy.title("Pulse", "ISOA-400") == "Pulse · ISOA-400"
     assert copy.title("Pulse") == "Pulse"

@@ -66,7 +66,7 @@ export function AutomationGoogleAccount({
   // conflict flagged, because the backend still creates the automation for it.
   const ceo = resolveAutomationRunner(agents);
   const ceoId = ceo?.id;
-  const ceoName = ceo?.name ?? "Your CEO";
+  const ceoName = ceo?.name ?? "Lightbulb";
   const assigned = ceoId ? (assignments[ceoId] ?? null) : null;
 
   // Default the picker to the account the runner already acts as. Reflects

@@ -50,6 +50,6 @@ it("surfaces the failure with a retry instead of silently leaving", async () => 
   screen.rerender(<AgentRedirect />);
   expect(await screen.findByText("Conversation unavailable")).toBeTruthy();
   expect(mockReplace).not.toHaveBeenCalled();
-  fireEvent.press(screen.getByLabelText("Retry opening conversation"));
+  fireEvent.press(screen.getByLabelText("Retry opening chat"));
   await waitFor(() => expect(mockSelectAgentDm).toHaveBeenCalledTimes(2));
 });

@@ -43,7 +43,7 @@ import { RunStatusIcon, SourceBadge, runSummaryText, sortRunsNewestFirst } from 
 
 // Upstream AGENT_ROLE_LABELS (packages/shared/src/constants.ts).
 const roleLabels: Record<string, string> = {
-  ceo: "CEO",
+  ceo: "Coordinator",
   cto: "CTO",
   cmo: "CMO",
   cfo: "CFO",

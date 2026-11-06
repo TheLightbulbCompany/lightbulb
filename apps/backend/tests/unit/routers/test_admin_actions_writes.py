@@ -750,11 +750,11 @@ class TestAgentDelete:
 
         with patch(
             "core.services.paperclip_agent_lifecycle.delete_agent_everywhere",
-            new=AsyncMock(side_effect=AgentLifecycleConflict("The final root CEO cannot be deleted or demoted.")),
+            new=AsyncMock(side_effect=AgentLifecycleConflict("Lightbulb's coordinator cannot be deleted or demoted.")),
         ):
             res = await async_client.post("/api/v1/admin/users/u_target/agents/root/delete")
         assert res.status_code == 409
-        assert res.json()["detail"] == "The final root CEO cannot be deleted or demoted."
+        assert res.json()["detail"] == "Lightbulb's coordinator cannot be deleted or demoted."
 
     @pytest.mark.asyncio
     async def test_403_for_non_admin(self, async_client, non_admin_env):

@@ -61,7 +61,7 @@ it("shows Files, Browser and Ideas in the header only inside the shell, each ope
   attachShell(() => undefined);
   render(<RoomPanel {...props} />);
   // Not in the ··· menu any more.
-  await userEvent.click(screen.getByRole("button", { name: "Conversation options" }));
+  await userEvent.click(screen.getByRole("button", { name: "Options" }));
   const items = (await screen.findAllByRole("menuitem")).map((item) => item.textContent ?? "");
   expect(items.some((t) => /Agent files|Browser|Ideas/.test(t))).toBe(false);
   await userEvent.keyboard("{Escape}");

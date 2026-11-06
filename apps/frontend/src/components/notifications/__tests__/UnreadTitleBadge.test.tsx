@@ -31,6 +31,13 @@ describe("UnreadTitleBadge", () => {
     }
   });
 
+  it("names the place and keeps the count in front of it", () => {
+    const { rerender } = render(<UnreadTitleBadge unread={0} title="Home · Lightbulb" />);
+    expect(document.title).toBe("Home · Lightbulb");
+    rerender(<UnreadTitleBadge unread={2} title="Launch plan · Lightbulb" />);
+    expect(document.title).toBe("(2) Launch plan · Lightbulb");
+  });
+
   it("restores the base title on unmount", () => {
     const { unmount } = render(<UnreadTitleBadge unread={5} />);
     expect(document.title).toBe("(5) Lightbulb");

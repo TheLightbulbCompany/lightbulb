@@ -59,15 +59,15 @@ export function RoomMessageSearch({ roomId, onSelect }: { roomId: string; onSele
     setOpen(next);
     if (next) { setQuery(""); selected.current = null; countRef.current = 0; }
   }}>
-    <DialogTrigger asChild><Button type="button" variant="ghost" aria-label="Search this conversation"><Search size={18} aria-hidden="true" /><span className="hidden sm:inline">Search</span></Button></DialogTrigger>
+    <DialogTrigger asChild><Button type="button" variant="ghost" aria-label="Search this chat"><Search size={18} aria-hidden="true" /><span className="hidden sm:inline">Search</span></Button></DialogTrigger>
     <DialogContent showCloseButton className="w-[calc(100%_-_2rem)] max-w-xl shadow-none" onEscapeKeyDown={(event) => event.stopPropagation()} onCloseAutoFocus={(event) => {
       if (!selected.current) return;
       event.preventDefault();
       onSelect(selected.current);
       selected.current = null;
     }}>
-      <DialogTitle className="pr-8">Search this conversation</DialogTitle>
-      <DialogDescription>Find messages and replies in this conversation.</DialogDescription>
+      <DialogTitle className="pr-8">Search this chat</DialogTitle>
+      <DialogDescription>Find messages and replies in this chat.</DialogDescription>
       <Input type="search" aria-label="Search messages" placeholder="Search messages…" value={query} onChange={(event) => setQuery(event.target.value)} />
       <SearchResults roomId={roomId} query={query} countRef={countRef} onPick={(hit) => { reportSearchCompletion(); selected.current = hit; setOpen(false); }} />
     </DialogContent>

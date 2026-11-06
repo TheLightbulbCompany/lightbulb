@@ -37,7 +37,7 @@ def room_where(kind: str | None, name: str | None) -> str | None:
     if kind == "dm":
         return "DM"
     if kind == "channel":
-        return f"#{name}" if name else "Channel"
+        return name or "Project"
     if kind == "group-dm":
         return name or "Group chat"
     return None

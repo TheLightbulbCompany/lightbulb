@@ -35,7 +35,7 @@ import { LiveProvider, useLive } from "../live";
 let live: ReturnType<typeof useLive>;
 function Probe() {
   live = useLive();
-  return <Pressable accessibilityRole="button" onPress={() => void live.join("room-1", "#launch")}><Text>Go live</Text></Pressable>;
+  return <Pressable accessibilityRole="button" onPress={() => void live.join("room-1", "launch")}><Text>Go live</Text></Pressable>;
 }
 const bytes = (s: string) => new TextEncoder().encode(s);
 const members = [{ kind: "agent", id: "gauge", displayName: "Gauge", listenMode: "active" }];

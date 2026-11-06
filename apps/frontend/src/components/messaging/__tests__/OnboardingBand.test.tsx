@@ -375,7 +375,7 @@ describe("08 §3 order", () => {
 
   it("marks the CEO step done once a person has written in the channel", () => {
     render(<OnboardingBand participants={FRESH} humanSpoke />);
-    expect(screen.getByRole("button", { name: /Tell your CEO about the business/ })).toHaveTextContent(/Your CEO has it/);
+    expect(screen.getByRole("button", { name: /Tell Lightbulb about the business/ })).toHaveTextContent(/Lightbulb has it/);
     expect(screen.getByRole("heading", { name: "Get started · 3 of 6 done" })).toBeInTheDocument();
   });
 
@@ -440,7 +440,7 @@ describe("share your context", () => {
     await userEvent.type(screen.getByRole("textbox", { name: "Your context" }), "We sell bread in Lyon");
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(h.post).toHaveBeenCalledWith("/company/context", { text: "We sell bread in Lyon" });
-    expect(await screen.findByText("Your CEO has it — it’ll use this from now on.")).toBeInTheDocument();
+    expect(await screen.findByText("Lightbulb has it and will use it from now on.")).toBeInTheDocument();
     // The card flips only once the dialog closes, so the band cannot retire under it.
     expect(h.setContext).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole("button", { name: "Done" }));
@@ -479,7 +479,7 @@ describe("share your context", () => {
     h.contextImported = true;
     render(<OnboardingBand participants={FRESH} />);
     const card = screen.getByRole("button", { name: /Share your context/ });
-    expect(card).toHaveTextContent(/Your CEO has it/);
+    expect(card).toHaveTextContent(/Lightbulb has it/);
     expect(card).toBeEnabled();
   });
 

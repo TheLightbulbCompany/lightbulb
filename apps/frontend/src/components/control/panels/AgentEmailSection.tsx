@@ -133,7 +133,7 @@ export function AgentEmailSection() {
               {copied ? <><Check size={14} className="mr-1" /> Copied</> : <Copy size={14} />}
             </Button>
           </div>
-          <p className="mt-1 text-xs text-[var(--midnight-muted)]">Add this address to a calendar event to bring the team into the meeting. Mail to it goes to your CEO agent; replies go back to whichever agent wrote first.</p>
+          <p className="mt-1 text-xs text-[var(--midnight-muted)]">Add this address to a calendar event to bring the team into the meeting. Mail to it goes to Lightbulb; replies go back to whichever agent wrote first.</p>
         </div>
         {/* Mail and meetings live in their own panel (the rail's Mail). */}
         <Button type="button" variant="outline" size="sm" onClick={() => navigateShell("/chat?panel=mail")}>

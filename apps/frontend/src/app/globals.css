@@ -11,10 +11,10 @@
      light ground is cream and never pure white. Need paper-white? Write it. */
   --color-white: var(--cream);
 
-  /* Satoshi carries product chrome and display type. Inter is reserved for
-     reading surfaces so controls and message copy remain visually distinct. */
+  /* Satoshi is the one face: chrome, display and reading text alike (one face is
+     how the product stays calm). `--font-body` stays as the reading-surface hook. */
   --font-sans: var(--font-satoshi), "Avenir Next", "Segoe UI", sans-serif;
-  --font-body: var(--font-inter), "SF Pro Text", "Segoe UI", sans-serif;
+  --font-body: var(--font-sans);
   --font-serif: var(--font-sans);
   /* Compatibility aliases keep legacy surfaces on the shared UI family
      without loading the fonts they previously named. */
@@ -498,8 +498,7 @@
   font-family: var(--font-sans);
 }
 
-/* Opt long-form reading surfaces into Inter while headings and controls keep
-   inheriting the Satoshi UI face. */
+/* Long-form reading surfaces read through the body token (Satoshi, like the rest). */
 :where(.prose, .long-form, .blog-prose) {
   font-family: var(--font-body);
 }

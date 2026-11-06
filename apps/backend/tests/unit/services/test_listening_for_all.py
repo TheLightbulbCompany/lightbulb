@@ -202,7 +202,7 @@ async def test_a_trial_workspace_gets_the_first_message_with_its_name(monkeypatc
 
     text = _welcome_text(monkeypatch)
     assert text == messaging.default_room_welcome("Anna's Frozen Treats")
-    assert text.startswith("Welcome to Anna's Frozen Treats. I'm your CEO.")
+    assert text.startswith("Welcome to Anna's Frozen Treats. I'm Lightbulb.")
     for reply in messaging.FIRST_REPLIES:
         assert reply.rstrip(" ") in text
 
@@ -215,7 +215,7 @@ async def test_the_first_message_falls_back_when_clerk_has_no_name(monkeypatch):
 
     await messaging.ensure_default_room(OWNER, USER)
 
-    assert _welcome_text(monkeypatch).startswith("Welcome to your workspace. I'm your CEO.")
+    assert _welcome_text(monkeypatch).startswith("Welcome to your workspace. I'm Lightbulb.")
 
 
 @pytest.mark.asyncio

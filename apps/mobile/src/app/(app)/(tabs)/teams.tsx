@@ -885,7 +885,7 @@ function ApprovalsView() {
         <CenteredState
           glyph={<SymbolView accessibilityElementsHidden name="shield" size={28} tintColor={palette.fgMute} />}
           title="No pending approvals."
-          detail="Approval requests from your agents will show up here."
+          detail="Approvals from your agents will show up here."
         />
       }
       renderItem={({ item }) => (

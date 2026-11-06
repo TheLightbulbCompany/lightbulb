@@ -460,7 +460,7 @@ describe("Team › Message", () => {
       const cards = screen.getAllByRole("listitem").filter((li) => li.closest("[aria-label='Specialists']") && li.querySelector("h3"));
       // Lightbulb leads, with one line: never "Coordinator" or its roster "CEO" (W7-7).
       expect(within(cards[0]).getByRole("heading", { name: "Lightbulb" })).toBeInTheDocument();
-      expect(within(cards[0]).getByText("Coordinates your requests")).toBeInTheDocument();
+      expect(within(cards[0]).getByText("Hands your tasks to specialists")).toBeInTheDocument();
       expect(within(cards[0]).queryByText(/Coordinator|CEO/)).toBeNull();
       const fin = cards.find((c) => within(c).queryByRole("heading", { name: "Finance" }))!;
       // No title or persona: the line comes from its skills; disabled skills don't show.
@@ -470,7 +470,7 @@ describe("Team › Message", () => {
       expect(await within(cards[0]).findByRole("button", { name: "Open Plan the week, Working" })).toBeInTheDocument();
       const growth = cards.find((c) => within(c).queryByRole("heading", { name: "Growth" }))!;
       expect(within(growth).getByText("Finds you customers")).toBeInTheDocument();
-      expect(within(growth).getByText("No requests yet.")).toBeInTheDocument();
+      expect(within(growth).getByText("No tasks yet.")).toBeInTheDocument();
       fireEvent.click(within(fin).getByRole("button", { name: "Ask Finance through Lightbulb" }));
       expect(nav.openAgentDmWithDraft).toHaveBeenCalledWith("ceo", "@finance ");
       expect(screen.queryByRole("button", { name: "Org chart view" })).toBeNull();

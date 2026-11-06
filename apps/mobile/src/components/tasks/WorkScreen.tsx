@@ -54,7 +54,7 @@ export function OverviewList({ scope, palette, onOpen = openTaskScreen }: { scop
   const { data, error, mutate } = useTaskList(tasks, scope);
   const { older, hasOlder, loading, loadOlder } = useOlderTasks(tasks, data, scope);
   const [resolvedOpen, setResolvedOpen] = useState(false);
-  if (!data) return <LoadState what="Requests" error={!!error} onRetry={() => void mutate()} palette={palette} />;
+  if (!data) return <LoadState what="Tasks" error={!!error} onRetry={() => void mutate()} palette={palette} />;
   return (
     <View style={styles.groups}>
       {overviewGroups([...data.tasks, ...older]).map((group) => {
@@ -85,9 +85,9 @@ export function OverviewList({ scope, palette, onOpen = openTaskScreen }: { scop
         );
       })}
       {hasOlder ? (
-        <Pressable accessibilityRole="button" accessibilityLabel="Load older requests" accessibilityState={{ busy: loading }} disabled={loading}
+        <Pressable accessibilityRole="button" accessibilityLabel="Load older tasks" accessibilityState={{ busy: loading }} disabled={loading}
           onPress={() => void loadOlder()} style={styles.oldLink} hitSlop={8}>
-          <Text style={[styles.link, { color: palette.link }]}>{loading ? "Loading…" : "Load older requests"}</Text>
+          <Text style={[styles.link, { color: palette.link }]}>{loading ? "Loading…" : "Load older tasks"}</Text>
         </Pressable>
       ) : null}
     </View>
@@ -103,7 +103,7 @@ function OverviewRow({ task, viewerId, palette, onOpen, first }: {
       style={({ pressed }) => [styles.row, { backgroundColor: pressed ? palette.hover : "transparent", borderColor: palette.edge, borderTopWidth: first ? 0 : StyleSheet.hairlineWidth }]}>
       <View style={styles.rowMain}>
         <Text style={[styles.title, { color: palette.fg }]} numberOfLines={1}>{task.title}</Text>
-        <Text style={[styles.meta, { color: palette.fgMute }]} numberOfLines={1}>{taskSummaryLine(task, viewerId)}</Text>
+        {taskSummaryLine(task, viewerId) ? <Text style={[styles.meta, { color: palette.fgMute }]} numberOfLines={1}>{taskSummaryLine(task, viewerId)}</Text> : null}
       </View>
       <TaskStatus task={task} viewerId={viewerId} palette={palette} />
     </Pressable>

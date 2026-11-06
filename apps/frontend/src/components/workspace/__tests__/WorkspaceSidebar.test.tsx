@@ -13,7 +13,7 @@ vi.mock("../workspaceController", () => ({
 }));
 vi.mock("@/components/messaging/MessagingWorkspace", () => ({
   MessagingDirectory: ({ onOpenRoom, onNavigate }: { onOpenRoom: (room?: DirectoryRoom) => void; onNavigate?: () => void }) => (
-    <nav aria-label="Conversations">
+    <nav aria-label="Chats">
       <button onClick={onNavigate}>Invite someone</button>
       {(["dm", "channel", "group-dm", "human"] as const).map((kind) => (
         <button key={kind} onClick={() => onOpenRoom({
@@ -24,7 +24,7 @@ vi.mock("@/components/messaging/MessagingWorkspace", () => ({
           participants: [{ kind: kind === "human" ? "human" : "agent", id: "agent-1", displayName: "Counterpart", mentionHandle: null }],
         })}>{kind}</button>
       ))}
-      <button onClick={() => onOpenRoom()}>New conversation</button>
+      <button onClick={() => onOpenRoom()}>New chat or project</button>
     </nav>
   ),
 }));
@@ -102,7 +102,7 @@ describe("WorkspaceSidebar", () => {
 
   it("renders message-first navigation with the account row and no Workspace tools block", () => {
     render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
-    expect(screen.getAllByRole("navigation", { name: "Conversations" })).toHaveLength(1);
+    expect(screen.getAllByRole("navigation", { name: "Chats" })).toHaveLength(1);
     expect(screen.queryByText("New session")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "New agent" })).not.toBeInTheDocument();
     expect(screen.getByText("Ada Lovelace")).toBeInTheDocument();
@@ -126,7 +126,7 @@ describe("WorkspaceSidebar", () => {
       delete (window as unknown as { __TAURI__?: unknown }).__TAURI__;
     }
   });
-  it.each(["dm", "channel", "group-dm", "human", "New conversation"])("opens %s without issuing another agent selection", (label) => {
+  it.each(["dm", "channel", "group-dm", "human", "New chat or project"])("opens %s without issuing another agent selection", (label) => {
     render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: label }));
     expect(activateMessagesPanel).toHaveBeenCalledWith();
@@ -147,7 +147,7 @@ describe("WorkspaceSidebar", () => {
   it("keeps conversations while agents start", () => {
     render(<WorkspaceSidebar chatReady={false} onRecoveryReprovision={vi.fn()} />);
     // Messaging never needs the container.
-    expect(screen.getByRole("navigation", { name: "Conversations" })).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Chats" })).toBeInTheDocument();
     expect(screen.queryByText(/Conversations are available when/)).not.toBeInTheDocument();
   });
   it("keeps health recovery available to free-tier owners", () => {

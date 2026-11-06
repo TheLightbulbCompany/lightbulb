@@ -50,7 +50,7 @@ export default function AgentRedirect() {
         <Pressable
           onPress={() => setAttempt((count) => count + 1)}
           accessibilityRole="button"
-          accessibilityLabel="Retry opening conversation"
+          accessibilityLabel="Retry opening chat"
         >
           <Text style={styles.retryText}>Retry</Text>
         </Pressable>

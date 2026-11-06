@@ -1,5 +1,5 @@
 // Task row → the one status word, overview group and primary action every client shows
-// (contracts-v2 §4). A task is a "request" to people, and it reads as one of four words:
+// (contracts-v2 §4). People see it as a task, and it reads as one of four words:
 // Working, Needs you, Done, Closed (founder ruling, 5 Nov 2026); `reason` is the short line under it. Pure; types mirror `fixtures/super-agent/tasks-schema.json` and
 // `view.test.ts` fails if the schema's enums drift.
 
@@ -166,25 +166,7 @@ export function summaryView(t: TaskSummary, viewerId: string): SummaryView {
   return v("Working", LIVE_REASONS[t.status] ?? null);
 }
 
-/** The request pane's actor line, from the same view as the status word: "Finance is working on this" while it
- *  runs, "Done by Finance, ready for your review" / "Finance needs you" when it waits on the viewer, "Done by
- *  Finance" once it is done. Null once Closed (closing says nothing about finishing). With no specialist Lightbulb
- *  is the actor. `finished`: the run really finished (its attempt completed, or a waiting approval's effect landed);
- *  without it nothing reads "Done by" (a request can stop, be dismissed or be closed half done). */
-export function doneByLine(specialist: string | null | undefined, view: Pick<TaskView, "word" | "reason">, names?: AgentNames, finished = true): string | null {
-  // Closed says nothing about finishing: a person may have closed it half done or before an approval (dev walk N-F1),
-  // so it never reads "Done by"; the pane shows the specialist's name alone.
-  if (view.word === "Closed") return null;
-  const who = specialistLabel(specialist, names);
-  if (view.word === "Needs you") {
-    if (view.reason !== "Ready for review") return `${who} needs you`;
-    return finished ? `Done by ${who}, ready for your review` : `${who} has this ready for your review`;
-  }
-  if (view.word === "Done") return finished ? `Done by ${who}` : null;
-  return `${who} is working on this`;
-}
-
-/** "12s", "4m", "2h", "3d": how long a Working request has been in its current state. */
+/** "12s", "4m", "2h", "3d": how long a Working task has been in its current state. */
 export function elapsedShort(fromIso: string, now: number): string {
   const s = Math.max(0, Math.floor((now - Date.parse(fromIso)) / 1000));
   if (Number.isNaN(s)) return "";
@@ -203,13 +185,6 @@ export function activityLine(t: TaskSummary, viewerId: string, names: AgentNames
   const verb = (view.reason ?? "working").replace(/^./, (c) => c.toLowerCase());
   const rest = [verb, elapsedShort(t.updatedAt, now)].filter(Boolean).join(" · ");
   return { actor, rest, text: `${actor} · ${rest}` };
-}
-
-/** The run really finished: an attempt completed, or a waiting approval's effect landed. Only then does a request
- *  read "Done by" (doneByLine's `finished`); web and mobile share the rule. */
-export function taskFinished({ task, effects }: { task: Pick<TaskSummary, "activity">; effects: readonly Pick<TaskEffect, "state">[] }): boolean {
-  const outcome = task.activity?.outcome;
-  return outcome === "completed" || (outcome === "waiting_approval" && effects.some((e) => e.state === "done"));
 }
 
 function joinNames([first, ...rest]: string[]): string {
@@ -259,7 +234,8 @@ export function taskSummaryLine(t: TaskSummary, viewerId: string): string {
     return `Needs an answer: ${q.title}`;
   }
   if (view.group === "landing") return `Applying: ${t.output?.title ?? "changes"}`;
-  return view.reason ?? view.word;
+  // Empty without a reason: the row's badge already says the word, so the line never repeats it ("Done · Done").
+  return view.reason ?? "";
 }
 
 const EFFECT_NAMES: Record<string, string> = {

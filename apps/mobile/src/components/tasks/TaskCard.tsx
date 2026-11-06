@@ -41,7 +41,7 @@ export function TaskCard({ task, taskId, viewerId, palette, onOpen = openTaskScr
   if (!task) {
     return (
       <View style={[styles.card, styles.unavailable, { borderColor: palette.edge }]} testID={`task-card-${taskId}`}>
-        <Text style={[styles.meta, { color: palette.fgMute }]}>{"This request isn't available"}</Text>
+        <Text style={[styles.meta, { color: palette.fgMute }]}>{"This task isn't available"}</Text>
       </View>
     );
   }
@@ -120,7 +120,7 @@ export function MessageTasks({ message, viewerId, palette, onOpen }: {
   if (!refs.length || !data) return null;
   const byId = new Map(data.tasks.map((t) => [t.taskId, t]));
   return (
-    <View style={styles.list} accessibilityLabel="Requests in this message">
+    <View style={styles.list} accessibilityLabel="Tasks in this message">
       {refs.map((r) => <RefCard key={r.taskId} taskId={r.taskId} listed={byId.get(r.taskId)} viewerId={viewerId} palette={palette} onOpen={onOpen} />)}
     </View>
   );
@@ -147,8 +147,8 @@ export function RoutedToLine({ message, palette, onOpen = openTaskScreen }: {
   if (!routedTo || !routedTo.taskIds.length) return null;
   const { taskIds, started } = routedTo;
   const label = single
-    ? `Sent to ${data?.tasks.find((t) => t.taskId === taskIds[0])?.title ?? "a request"}`
-    : `${started} ${started === 1 ? "request" : "requests"} started`;
+    ? `Sent to ${data?.tasks.find((t) => t.taskId === taskIds[0])?.title ?? "a task"}`
+    : `${started} ${started === 1 ? "task" : "tasks"} started`;
   return (
     <Pressable accessibilityRole="button" accessibilityLabel={`${label} ›`} hitSlop={8} disabled={!single} onPress={() => onOpen(taskIds[0])}>
       <Text style={[styles.meta, { color: palette.fgMute }]}>{label} ›</Text>

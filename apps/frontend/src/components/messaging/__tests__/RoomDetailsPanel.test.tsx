@@ -47,9 +47,9 @@ it("shows an empty state per tab, scoping files/links to loaded history rather t
   const { rerender } = render(<RoomDetailsPanel {...props} />);
   expect(screen.getByText("No pinned messages yet.")).toBeInTheDocument();
   rerender(<RoomDetailsPanel {...props} tab="files" />);
-  expect(screen.getByText("No files in the messages loaded so far. Scroll back in the conversation to load more.")).toBeInTheDocument();
+  expect(screen.getByText("No files in the messages loaded so far. Scroll back in the chat to load more.")).toBeInTheDocument();
   rerender(<RoomDetailsPanel {...props} tab="links" />);
-  expect(screen.getByText("No links in the messages loaded so far. Scroll back in the conversation to load more.")).toBeInTheDocument();
+  expect(screen.getByText("No links in the messages loaded so far. Scroll back in the chat to load more.")).toBeInTheDocument();
 });
 
 it("lists messages carrying attachments under Files", () => {
@@ -168,8 +168,8 @@ it("reports a failed unpin and leaves the row usable", async () => {
 it("leads with a Requests tab when the room's requests are given, and shows them", () => {
   render(<RoomDetailsPanel {...props} tab="threads" threads={<p>Room requests</p>} />);
   const tabs = screen.getByRole("tablist", { name: "Room details" });
-  expect(within(tabs).getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["Requests", "Members", "Pins", "Files", "Links", "Details"]);
-  expect(screen.getByRole("tabpanel", { name: "Requests" })).toHaveTextContent("Room requests");
+  expect(within(tabs).getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["Tasks", "Members", "Pins", "Files", "Links", "Details"]);
+  expect(screen.getByRole("tabpanel", { name: "Tasks" })).toHaveTextContent("Room requests");
 });
 
 it("Files lists what requests made, opens one, and offers Show older when the room has more requests", async () => {
@@ -178,7 +178,7 @@ it("Files lists what requests made, opens one, and offers Show older when the ro
   const load = vi.fn();
   render(<RoomDetailsPanel {...props} tab="files" outputs={[{ taskId: "t1", title: "Q3 plan", request: "Draft the Q3 plan" }]}
     onOpenOutput={onOpenOutput} olderOutputs={{ loading: false, load }} />);
-  const made = screen.getByRole("list", { name: "Made by requests" });
+  const made = screen.getByRole("list", { name: "Made by tasks" });
   expect(within(made).getByText("Q3 plan")).toBeInTheDocument();
   await userEvent.click(within(made).getByRole("button", { name: "Open Draft the Q3 plan" }));
   expect(onOpenOutput).toHaveBeenCalledWith("t1");

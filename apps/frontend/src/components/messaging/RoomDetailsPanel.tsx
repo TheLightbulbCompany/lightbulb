@@ -15,7 +15,7 @@ const ROOM_TABS: Array<{ id: DetailsTab; label: string }> = [
   { id: "members", label: "Members" }, { id: "pins", label: "Pins" },
   { id: "files", label: "Files" }, { id: "links", label: "Links" }, { id: "about", label: "Details" },
 ];
-const THREAD_TABS: Array<{ id: DetailsTab; label: string }> = [{ id: "threads", label: "Requests" }, ...ROOM_TABS];
+const THREAD_TABS: Array<{ id: DetailsTab; label: string }> = [{ id: "threads", label: "Tasks" }, ...ROOM_TABS];
 const URL_PATTERN = /https?:\/\/[^\s<>()]+/g;
 
 interface RoomDetailsPanelProps {
@@ -194,7 +194,7 @@ export function RoomDetailsPanel({
           </li>;
         })}</ul>)}
 
-      {tab === "files" && !!outputs?.length && <ul aria-label="Made by requests">{outputs.map((output) => <li key={output.taskId} className="room-details-row">
+      {tab === "files" && !!outputs?.length && <ul aria-label="Made by tasks">{outputs.map((output) => <li key={output.taskId} className="room-details-row">
         <Paperclip size={14} aria-hidden="true" className="mt-1" />
         <div className="flex-1 min-w-0">
           <p className="room-wrap">{output.title}</p>
@@ -205,7 +205,7 @@ export function RoomDetailsPanel({
       {tab === "files" && olderOutputs && <Button type="button" variant="ghost" size="sm" className="justify-self-start" disabled={olderOutputs.loading}
         onClick={olderOutputs.load}>{olderOutputs.loading ? "Loading…" : "Show older"}</Button>}
       {tab === "files" && (files.length === 0
-        ? outputs?.length ? null : <p className="text-ui text-muted-foreground">{outputs ? "No files yet. Files shared here and what requests make show up here." : "No files in the messages loaded so far. Scroll back in the conversation to load more."}</p>
+        ? outputs?.length ? null : <p className="text-ui text-muted-foreground">{outputs ? "No files yet. Files shared here and what tasks make show up here." : "No files in the messages loaded so far. Scroll back in the chat to load more."}</p>
         : <ul aria-label="Shared files">{files.map((message) => <li key={message.messageId} className="room-details-row">
           <Paperclip size={14} aria-hidden="true" className="mt-1" />
           <div className="flex-1 min-w-0">
@@ -216,7 +216,7 @@ export function RoomDetailsPanel({
         </li>)}</ul>)}
 
       {tab === "links" && (links.length === 0
-        ? <p className="text-ui text-muted-foreground">No links in the messages loaded so far. Scroll back in the conversation to load more.</p>
+        ? <p className="text-ui text-muted-foreground">No links in the messages loaded so far. Scroll back in the chat to load more.</p>
         : <ul aria-label="Shared links">{links.map((link) => <li key={link.href} className="room-details-row">
           <p className="room-wrap flex-1"><a href={link.href} target="_blank" rel="noopener noreferrer"
             className="text-info underline underline-offset-4">{link.label}</a></p>

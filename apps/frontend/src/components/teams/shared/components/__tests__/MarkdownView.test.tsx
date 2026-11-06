@@ -176,3 +176,17 @@ describe("MarkdownView extension points", () => {
     expect(screen.getByTestId("custom-a")).toHaveTextContent("x");
   });
 });
+
+describe("MarkdownView unfilled links (W15-6)", () => {
+  it("shows a link whose URL is a placeholder as its words, no brackets", () => {
+    const { container } = render(<MarkdownView>{"[RESERVE A SPOT →]([REGISTRATION URL]) and [Book](REGISTRATION_URL) or [Go]({{link}})"}</MarkdownView>);
+    expect(container.textContent).toBe("RESERVE A SPOT → and Book or Go");
+    expect(container.querySelector("a")).toBeNull();
+  });
+
+  it("keeps real links and code untouched", () => {
+    const { container } = render(<MarkdownView>{"[Site](https://example.com/a) `[x](y z)`"}</MarkdownView>);
+    expect(container.querySelector("a")?.getAttribute("href")).toBe("https://example.com/a");
+    expect(container.querySelector("code")?.textContent).toBe("[x](y z)");
+  });
+});

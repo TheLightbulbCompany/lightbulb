@@ -80,6 +80,19 @@ function AttachmentImage({ src, alt }: { src: string; alt: string }) {
   return url ? <img src={url} alt={alt} className="max-w-full rounded-sm" /> : <span data-attachment-inert>{alt}</span>;
 }
 
+// "[Reserve a spot]([REGISTRATION URL])" is not a link to the parser (a destination can't hold spaces), so it reached
+// the page as literal brackets. Any such pair left in a text node is a broken link: keep its words. Code is not text,
+// so code spans and blocks keep theirs.
+type MdNode = { type?: string; value?: string; children?: MdNode[] };
+const BROKEN_LINK = /\[([^\]\n]+)\]\(([^)\n]*)\)/g;
+function remarkBrokenLinks() {
+  const walk = (node: MdNode) => {
+    if (node.type === "text" && node.value) node.value = node.value.replace(BROKEN_LINK, "$1");
+    node.children?.forEach(walk);
+  };
+  return walk;
+}
+
 // react-markdown does NOT render raw HTML (no rehype-raw), so the body is
 // inert apart from link hrefs, which we guard. Themed with the teams CSS vars.
 export const markdownComponents: Components = {
@@ -179,7 +192,7 @@ export interface MarkdownViewProps {
 // Module scope, so react-markdown sees the same array every render. As an
 // inline literal it was a fresh array each time, which defeats memoisation
 // inside the renderer as well as outside it.
-const REMARK_PLUGINS = [remarkGfm, remarkSoftBreaks];
+const REMARK_PLUGINS = [remarkGfm, remarkSoftBreaks, remarkBrokenLinks];
 
 /**
  * Memoised on purpose.

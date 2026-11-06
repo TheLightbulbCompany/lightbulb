@@ -471,6 +471,7 @@ describe("Team › Message", () => {
       { name: "off", description: "finance", disabled: true }, { name: "canva", description: "Design posters" }] } };
     teamTasks.list = [
       { taskId: "t1", identifier: "t1", title: "Reconcile October", status: "idle", shownGroup: "idle", specialist: "fin", audience: { kind: "room" }, audienceKind: "room", taskRoomId: "tr", watching: false, updatedAt: "2026-11-05T10:00:00Z", version: 1 },
+      { taskId: "t0", identifier: "t0", title: "Reconcile October", status: "idle", shownGroup: "idle", specialist: "fin", audience: { kind: "room" }, audienceKind: "room", taskRoomId: "tr", watching: false, updatedAt: "2026-11-04T10:00:00Z", version: 1 },
       { taskId: "t2", identifier: "t2", title: "Plan the week", status: "working", shownGroup: "working", specialist: null, audience: { kind: "room" }, audienceKind: "room", taskRoomId: "tr", watching: false, updatedAt: "2026-11-05T10:00:00Z", version: 1 },
     ];
     try {
@@ -485,6 +486,8 @@ describe("Team › Message", () => {
       expect(within(fin).queryByText(/stripe|quickbooks/)).toBeNull();
       expect(within(fin).queryByRole("list", { name: "Finance's skills" })).toBeNull();
       expect(await within(fin).findByRole("button", { name: "Open Reconcile October, Done" })).toBeInTheDocument();
+      // The latest of each title, once (W15-11).
+      expect(within(fin).getAllByRole("button", { name: /^Open Reconcile October/ })).toHaveLength(1);
       expect(await within(cards[0]).findByRole("button", { name: "Open Plan the week, Working" })).toBeInTheDocument();
       const growth = cards.find((c) => within(c).queryByRole("heading", { name: "Growth" }))!;
       expect(within(growth).getByText("Finds you customers")).toBeInTheDocument();

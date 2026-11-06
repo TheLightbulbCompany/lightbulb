@@ -177,9 +177,6 @@ function RotatingIdeas({ eyebrow }: { eyebrow: string }) {
 // bare spinner where the structured provisioning UI was supposed to be, and no
 // text anywhere said what was being waited on. One label, one live region, one
 // place to change it. (Motion is unchanged — same Loader2, same spin.)
-/** How long a last-known-ready workspace may draw the app before the first status answer (W12-18). */
-const HOLD_SKIP_MS = 3_000;
-
 function StepperHold() {
   return (
     <div
@@ -726,20 +723,15 @@ export function ProvisioningStepper({
   // W12-18: a workspace this browser last saw ready skips the hold below while /billing/account and the first
   // /container/status answer (1-3.5 s on a dev cold load): the app draws at once and this gate still decides when
   // they do. Any settled answer that is not ready forgets it, so the next load waits again. Never past an error (a
-  // token that won't verify, a failed read), and never past HOLD_SKIP_MS: after that the hold shows as before.
+  // token that won't verify, a failed read). No time limit: once the app is drawn, swapping it for the hold when a slow
+  // answer passed 3 s blanked Home until the answer landed, then remounted it (W15-7: 5.2 s → 9.4 s on dev).
   const passedScope = `${clerkUserId ?? "anon"}:${organization?.id ?? "personal"}`;
   const settled = !billingLoading && gatePhase !== "loading";
   useEffect(() => {
     if (phase === "ready") writeLastKnown("gatePassed", passedScope, true);
     else if (settled) writeLastKnown("gatePassed", passedScope, false);
   }, [phase, settled, passedScope]);
-  const [skipExpired, setSkipExpired] = useState(false);
-  useEffect(() => {
-    if (settled) return;
-    const timer = setTimeout(() => setSkipExpired(true), HOLD_SKIP_MS);
-    return () => clearTimeout(timer);
-  }, [settled]);
-  const skipHold = !skipExpired && !statusError && !billingError && readLastKnown("gatePassed", passedScope) === true;
+  const skipHold = !statusError && !billingError && readLastKnown("gatePassed", passedScope) === true;
 
   // Chat-first onboarding begins after this provisioning gate. The backend
   // captures the first canonical-room human message only when normal per-room

@@ -1297,7 +1297,7 @@ describe("a returning workspace skips the hold (W12-18)", () => {
     expect(screen.queryByText("Getting your workspace ready…")).toBeNull();
   });
 
-  it("never past an error, and only for about 3 s", () => {
+  it("never past an error, and once drawn the app stays however slow the answer (W15-7)", () => {
     seenReady();
     loading({ error: new Error("401: token did not verify") });
     mount().unmount();
@@ -1306,9 +1306,9 @@ describe("a returning workspace skips the hold (W12-18)", () => {
     loading();
     mount();
     expect(screen.getByText("children")).toBeInTheDocument();
-    act(() => { vi.advanceTimersByTime(3_000); });
-    expect(screen.queryByText("children")).toBeNull();
-    expect(screen.getByText("Getting your workspace ready…")).toBeInTheDocument();
+    act(() => { vi.advanceTimersByTime(10_000); });
+    expect(screen.getByText("children")).toBeInTheDocument();
+    expect(screen.queryByText("Getting your workspace ready…")).toBeNull();
   });
 
   it.each([

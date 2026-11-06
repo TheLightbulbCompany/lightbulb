@@ -98,18 +98,19 @@ export function HomeProjects(): ReactElement {
     viewerId={directory?.currentUserId} onSetPrefs={directory?.onSetPrefs} onOpenSettings={directory?.onOpenSettings} onPatchRoom={directory?.onPatchRoom} /></li>;
 
   return <div className="home-projects"><div className="frame-doc home-projects__col">
-    {/* Frame A: the title and the page's one primary action on the same line. */}
+    {/* Frame A: the title and the page's one primary action on the same line. The needs-you pill shares that line:
+        its count lands seconds after the page draws, and a row of its own pushed everything down (W15-7). */}
     <div className="frame-doc__title">
       <h1>Home</h1>
+      {needsYouCount > 0 && <button type="button" className="home-projects__needs"
+        onClick={() => { if (onlyFirstMove) { openFirstMoves(); return; } closePane(); openPanel("activity", {}, { pushUrl: true }); }}>
+        <span className="home-projects__dot" aria-hidden="true" />
+        <span><span className="font-semibold text-foreground">{needWord(needsYouCount)}</span> · {onlyFirstMove ? FIRST_MOVE_LABEL : "Review"}</span>
+        <ChevronRight size={14} aria-hidden="true" />
+      </button>}
       {directory?.onCreate && <Button type="button" size="sm" className="h-7" onClick={() => setCreating(true)}>
         <Plus aria-hidden="true" />New project</Button>}
     </div>
-    {needsYouCount > 0 && <button type="button" className="home-projects__needs"
-      onClick={() => { if (onlyFirstMove) { openFirstMoves(); return; } closePane(); openPanel("activity", {}, { pushUrl: true }); }}>
-      <span className="home-projects__dot" aria-hidden="true" />
-      <span><span className="font-semibold text-foreground">{needWord(needsYouCount)}</span> · {onlyFirstMove ? FIRST_MOVE_LABEL : "Review"}</span>
-      <ChevronRight size={14} aria-hidden="true" />
-    </button>}
     {messaging && <AskLightbulb onAsk={messaging.askLightbulb} />}
 
     <section aria-labelledby="home-chats-heading" className="home-projects__section">

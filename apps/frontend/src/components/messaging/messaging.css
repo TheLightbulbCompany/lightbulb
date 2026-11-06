@@ -49,13 +49,11 @@
 @media (prefers-reduced-motion: reduce) { .room-timeline-item[data-highlight="true"], .room-message-highlight { animation-duration: 1ms; } }
 /* Slack-style day marker. Each day is its own .room-day box (RoomTimeline), so the
    sticky pill is confined to its day and the next day pushes it away rather than
-   stacking on it. The rule is the day box's own line at the pill's centre: it
-   scrolls away with the day's top, so a pinned pill never draws a line through
-   the text under it. Inline, pill and rule coincide -- the usual divider. The
-   strip is transparent and click-through; only the pill is solid and hit. */
+   stacking on it. The strip is an opaque band carrying its own rule, so a pinned
+   pill masks the text scrolling under it instead of floating over it (W15-11);
+   inline, band and rule read as the usual divider. Only the pill is hit. */
 .room-day { position: relative; }
-.room-day:has(> .room-date-divider)::before { content: ""; position: absolute; top: 16px; left: 0; right: 0; border-top: 1px solid var(--border); }
-.room-date-divider { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: center; height: 32px; margin: 0; pointer-events: none; font-size: var(--text-caption); font-weight: 500; color: var(--muted-foreground); }
+.room-date-divider { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: center; height: 32px; margin: 0; pointer-events: none; font-size: var(--text-caption); font-weight: 500; color: var(--muted-foreground); background: linear-gradient(var(--border), var(--border)) center / 100% 1px no-repeat, var(--background); }
 .room-date-divider span { pointer-events: auto; padding: 2px 8px; border: 1px solid var(--border); border-radius: 999px; background: var(--background); box-shadow: var(--shadow-sm); }
 .room-new-line { display: flex; align-items: center; gap: 8px; margin: 8px 0 4px; font-size: var(--text-caption); font-weight: 600; color: var(--info); }
 .room-new-line::after { content: ""; flex: 1; border-top: 1px solid var(--info); }

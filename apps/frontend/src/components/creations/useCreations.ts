@@ -53,6 +53,8 @@ export function useCreations(filter: CreationsFilter | null) {
   return {
     outputs,
     loading: isLoading,
+    /** How many outputs the room's task list already shows, before this read lands (0 without a room). */
+    expected: made ?? 0,
     error: !!error && !data,
     retry: () => void mutate(),
     hasMore: !!last?.next,

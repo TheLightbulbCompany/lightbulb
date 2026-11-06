@@ -14,7 +14,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import type { RoomMessage } from "@/components/messaging/types";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
-import { KIND_FILTERS, openOutput, outputLink, type Openable } from "./openOutput";
+import { KIND_FILTERS, openOutput, outputLink, outputName, type Openable } from "./openOutput";
 import { iconOf } from "./OutputThumb";
 import { useCreations } from "./useCreations";
 
@@ -74,15 +74,17 @@ export function ProjectFiles({ roomId, viewerId, messages, onOpenTask }: {
         <thead><tr><th scope="col">Name</th><th scope="col">Made by</th><th scope="col">Date</th><th scope="col"><span className="sr-only">Actions</span></th></tr></thead>
         <tbody>{rows.map((row) => {
           const open = () => openOutput(row.output, onOpenTask, "files");
+          // The readable name the tiles use ("Tuesday pizza class family invite"), not the slug cut mid-word (W15-11).
+          const name = outputName(row.output);
           return <tr key={row.key}>
-            <td><button type="button" className="project-files__name" onClick={open}>
-              {iconOf(row.output, 16)}<span>{row.output.title}</span>
+            <td><button type="button" className="project-files__name" title={row.output.title} onClick={open}>
+              {iconOf(row.output, 16)}<span>{name}</span>
             </button></td>
             <td className="project-files__muted">{row.madeBy}</td>
             <td className="project-files__muted"><time dateTime={row.at}>{timeAgo(row.at)}</time></td>
             <td className="project-files__act">
               <DropdownMenu>
-                <DropdownMenuTrigger asChild><button type="button" className="project-files__more" aria-label={`More for ${row.output.title}`}>
+                <DropdownMenuTrigger asChild><button type="button" className="project-files__more" aria-label={`More for ${name}`}>
                   <MoreHorizontal size={16} aria-hidden="true" /></button></DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
                   <DropdownMenuItem onSelect={open}>Open</DropdownMenuItem>

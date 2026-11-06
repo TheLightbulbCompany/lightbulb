@@ -60,7 +60,10 @@ export function TeamCards({ agents, frontAgentId, nameOf, handleOf, onAsk, actio
       const front = agent.id === frontAgentId;
       const recent = (data?.tasks ?? [])
         .filter((t) => isAgentsRequest(t, { id: agent.id, handle: handleOf(agent), name: agent.name }, front))
-        .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt)).slice(0, RECENT_SHOWN);
+        .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
+        // The latest of each title: a weekly task asked again read as the same line twice (W15-11).
+        .filter((t, i, all) => all.findIndex((u) => u.title.trim().toLowerCase() === t.title.trim().toLowerCase()) === i)
+        .slice(0, RECENT_SHOWN);
       return <TeamCard key={agent.id} agent={agent} name={nameOf(agent)} front={front} recent={recent} loaded={!!data} viewerId={userId ?? ""}
         onAsk={() => onAsk(agent)} menu={actions(agent)} />;
     })}

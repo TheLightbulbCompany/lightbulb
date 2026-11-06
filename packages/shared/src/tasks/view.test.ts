@@ -283,8 +283,10 @@ describe("stepLines (dev walk 12, W12-7)", () => {
       "terminal", "terminal", "terminal", "terminal", "write_file"].map((name) => ({ name, ok: true }));
     expect(stepLines(run)).toEqual(["Wrote a file"]);
   });
-  it("names overhead plainly when it is all there is", () => {
-    expect(stepLines(["skill_view", "skills_list", "tool_describe"])).toEqual(["Checked how to do it", "Prepared tools"]);
+  it("names overhead plainly when it is all there is: its latest line, so real work never lowers the count (W15-11)", () => {
+    expect(stepLines(["skill_view", "skills_list", "tool_describe"])).toEqual(["Prepared tools"]);
+    expect(stepLines(["skill_view", "terminal"])).toEqual(["Worked on it"]);
+    expect(stepLines(["skill_view", "terminal", "web_search"])).toEqual(["Searched the web"]);
   });
 });
 

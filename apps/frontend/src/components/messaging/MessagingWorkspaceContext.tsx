@@ -857,6 +857,19 @@ export function MessagingWorkspaceProvider({
     });
   }
 
+  /** Several at once. A DM stays private (#4943): one new group chat with everyone in it plus them, opened. */
+  async function addMembers(members: MemberRef[]) {
+    const dm = rooms.activeRoom?.kind === "dm" ? rooms.activeRoom : null;
+    if (!dm) { for (const member of members) await addMember(member); return; }
+    const others = dm.members.filter((m) => !(m.kind === "human" && m.id === userId));
+    await rooms.createRoom({
+      clientRoomId: crypto.randomUUID(),
+      kind: "group-dm",
+      name: null,
+      members: [...others, ...members].map((m) => ({ kind: m.kind, id: m.id, role: "member" as const, listenMode: m.kind === "agent" ? "active" as const : null })),
+    });
+  }
+
   // Permalink target: opened via openMessage (a room permalink), cleared 3s
   // after opening rather than persisting indefinitely once the highlight has
   // had time to land.
@@ -1105,10 +1118,11 @@ export function MessagingWorkspaceProvider({
       } : {}),
     ...(!activeFeed && rooms.activeRoom && !rooms.activeRoom.shared
       && (rooms.activeRoom.kind !== "channel" || ["owner", "admin"].includes(viewerRole)) ? {
-      // Super-agent: people only; a specialist is reached through Lightbulb (Team › Ask), and Members can't remove one.
-      addMemberCandidates: directoryParticipants.filter((candidate) => !(superAgent && candidate.kind === "agent")
-        && !rooms.activeRoom!.members.some((member) => member.kind === candidate.kind && member.id === candidate.id)),
+      // People and agents, Lightbulb first (W17-6: "bring Lightbulb into my chat with Priya").
+      addMemberCandidates: directoryParticipants.filter((candidate) => !rooms.activeRoom!.members.some((member) => member.kind === candidate.kind && member.id === candidate.id))
+        .sort((a, b) => Number(b.kind === "agent" && b.mentionHandle === "lightbulb") - Number(a.kind === "agent" && a.mentionHandle === "lightbulb")),
       onAddMember: addMember,
+      onAddMembers: addMembers,
     } : {}),
     ...(!activeFeed && rooms.activeRoom?.kind === "channel" && ["owner", "admin"].includes(viewerRole)
       ? { onRemoveMember: rooms.removeMember } : {}),

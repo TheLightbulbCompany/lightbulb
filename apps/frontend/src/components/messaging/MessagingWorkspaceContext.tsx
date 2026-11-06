@@ -593,8 +593,15 @@ export function MessagingWorkspaceProvider({
   // Persist as the owner types — recomputed structured mentions come from
   // the same resolveTypedMentions the send path uses, so a restored draft's
   // mentions are exactly what would be dispatched if sent as-is.
+  // Only when this tab's text changes. A re-run for new participants (someone posted, presence moved) wrote the text
+  // this tab still held over a draft a send or another tab had cleared: "@growth" came back after Growth posted (W17-7).
+  // Text read from storage on a room switch is not written back either.
+  const persisted = useRef<{ roomId: string; text: string } | null>(null);
   useEffect(() => {
     if (!rooms.activeRoomId) return;
+    const prev = persisted.current;
+    persisted.current = { roomId: rooms.activeRoomId, text: draft };
+    if (!prev || prev.roomId !== rooms.activeRoomId || prev.text === draft) return;
     writeDraft(draftKey(scope, rooms.activeRoomId, null), { text: draft, mentions: resolveTypedMentions(draft, participants) });
   }, [scope, rooms.activeRoomId, draft, participants]);
 

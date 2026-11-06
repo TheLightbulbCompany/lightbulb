@@ -39,9 +39,10 @@ keep the summary short and take the back-and-forth into the thread.
 ## How
 
 **In a chat turn**, write the document yourself as a file in this
-conversation's folder (`.md`, or `.docx`/`.pdf`) and put `MEDIA:<absolute
-path>` on its own line in your reply; the room shows it as an attachment
-(limits: `references/platform-primitives.md` "Send a file in chat").
+conversation's folder and put `MEDIA:<absolute path>` on its own line in your
+reply; the room shows it as an attachment (limits:
+`references/platform-primitives.md` "Send a file in chat"). The format is in
+`references/documents.md` "Format": `.md` unless the person asked for another.
 
 **When the work is a task** (the stock issue-documents API), all writes go
 through the paperclip helper. The room turn files the task; the task's own run

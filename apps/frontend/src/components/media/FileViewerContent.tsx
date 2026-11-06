@@ -1,13 +1,14 @@
 "use client";
 
 import { cn, formatBytes } from "@/lib/utils";
+import { DOCX, DocxPreview } from "./DocxPreview";
 import { HtmlPreview } from "./HtmlPreview";
 import { SheetGrid } from "./SheetGrid";
 import { TextPreview } from "./TextPreview";
 
 const XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-const PANE_VIEWABLE = new Set(["application/pdf", XLSX, "text/csv", "text/html", "text/markdown", "text/plain"]);
-/** Kinds that open in the right pane (documents). Images and video keep the lightbox; zip/docx/pptx have no viewer. */
+const PANE_VIEWABLE = new Set(["application/pdf", XLSX, DOCX, "text/csv", "text/html", "text/markdown", "text/plain"]);
+/** Kinds that open in the right pane (documents). Images and video keep the lightbox; zip/pptx have no viewer. */
 export function isPaneViewable(contentType: string): boolean { return PANE_VIEWABLE.has(normalizeContentType(contentType)); }
 /** "Text/Markdown; charset=utf-8" -> "text/markdown"; the viewer matches types exactly. */
 export function normalizeContentType(contentType: string | null | undefined): string {
@@ -68,6 +69,7 @@ export function FileViewerContent({ item, className }: { item: FileViewerItem; c
   }
 
   if (item.blob && (item.contentType === XLSX || item.contentType === "text/csv")) return <SheetGrid blob={item.blob} fileName={item.fileName} csv={item.contentType === "text/csv"} />;
+  if (item.blob && item.contentType === DOCX) return <DocxPreview blob={item.blob} fileName={item.fileName} />;
   if (item.blob && item.contentType === "text/html") return <HtmlPreview blob={item.blob} fileName={item.fileName} />;
   if (item.blob && (item.contentType === "text/markdown" || item.contentType === "text/plain")) return <TextPreview blob={item.blob} fileName={item.fileName} markdown={item.contentType === "text/markdown"} />;
 

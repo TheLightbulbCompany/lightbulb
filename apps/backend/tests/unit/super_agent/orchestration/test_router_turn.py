@@ -1309,6 +1309,11 @@ def test_workers_deliver_only_what_was_asked():
     # Walk 17 (W17-3): "[**BOOK YOUR SPOT**]([BOOKING LINK])" reached chat, the viewer and Copy as raw markdown.
     assert "Never write a placeholder link" in text and '"Book your spot: (link to add)"' in text
     assert 'no "Preview text:", "Preheader:" or other meta lines' in text  # W18: an email is subject + body
+    # Walk 18/19 (6 Nov): a sign-up sheet came back as a .pdf and a .docx, and the .docx did not preview. A document
+    # is markdown by default; Word or PDF only when asked, and then once.
+    assert "A document you make is a Markdown (.md) file" in text
+    assert "make a .docx or .pdf only when the person asks for that format" in text
+    assert "never the same piece twice in two formats" in text
     assert "success number" not in STARTER_CAPABILITIES["growth"]
     assert "never invents targets or numbers" in STARTER_CAPABILITIES["growth"]
 

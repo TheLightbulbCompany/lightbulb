@@ -9,7 +9,8 @@ import { AppWindow, ArrowUpRight, FileText, File as FileIcon, Mail, Sparkles, ty
 import type { OutputKind, TaskOutput } from "@lightbulb/shared";
 import type { AppRow } from "@/hooks/useApps";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
-import { blobText } from "@/components/media/readBlob";
+import { blobBytes, blobText } from "@/components/media/readBlob";
+import { DOCX, DOCX_MAX_BYTES, docxFace } from "@/components/media/DocxPreview";
 import { docPreview, readableName, textName } from "./docText";
 import { extensionOf, hostOf } from "./openOutput";
 
@@ -40,9 +41,17 @@ export function isTextDoc(o: Pick<TaskOutput, "kind" | "title" | "ref">): boolea
   return type === "text/markdown" || type === "text/plain" || (!type && (extensionOf(o) === "MD" || extensionOf(o) === "TXT"));
 }
 
+/** A Word file a task made: its tile reads its words (W19). */
+export function isDocx(o: Pick<TaskOutput, "kind" | "title" | "ref">): boolean {
+  if (o.kind !== "document" && o.kind !== "file") return false;
+  const type = (o.ref?.contentType ?? "").split(";")[0].trim().toLowerCase();
+  return type === DOCX || (!type && extensionOf(o) === "DOCX");
+}
+
 /** A doc's heading and first lines: its first 4 KB (`?head=`, a ranged read) through the room-checked attachment route,
- *  once the tile is on screen. A tile that goes away cancels its read. */
-function useDocPreview(ref: Record<string, string>, on: boolean) {
+ *  once the tile is on screen; a .docx (a zip, its directory at the end) whole, up to the viewer's cap. A tile that goes
+ *  away cancels its read. */
+function useDocPreview(ref: Record<string, string>, on: boolean, docx: boolean) {
   const { messaging } = useLiveEvents();
   const face = useRef<HTMLSpanElement>(null);
   // No IntersectionObserver (an old browser, a test): read at once; the cap still holds.
@@ -60,10 +69,14 @@ function useDocPreview(ref: Record<string, string>, on: boolean) {
   useEffect(() => {
     if (!on || !seen || !roomId || !attachmentId) return;
     const abort = new AbortController();
-    messaging.downloadAttachment(roomId, attachmentId, { head: 4096, signal: abort.signal })
-      .then(blobText).then((text) => { if (!abort.signal.aborted) setPreview({ key: `${roomId}:${attachmentId}`, value: docPreview(text) }); }, () => undefined);
+    // ponytail: a .docx downloads whole before the size check (the ref has no size); an outputs `size` would skip it.
+    const read = docx
+      ? messaging.downloadAttachment(roomId, attachmentId, { signal: abort.signal })
+        .then((blob) => { if (blob.size > DOCX_MAX_BYTES) throw new Error("too large"); return blobBytes(blob); }).then((b) => docxFace(b))
+      : messaging.downloadAttachment(roomId, attachmentId, { head: 4096, signal: abort.signal }).then(blobText).then((t) => docPreview(t));
+    read.then((value) => { if (!abort.signal.aborted) setPreview({ key: `${roomId}:${attachmentId}`, value }); }, () => undefined);
     return () => abort.abort();
-  }, [on, seen, roomId, attachmentId, messaging]);
+  }, [on, seen, roomId, attachmentId, messaging, docx]);
   return { face, preview: preview?.key === key ? preview.value : undefined };
 }
 
@@ -85,7 +98,8 @@ export function OutputThumb({ output, app, size = "tile", frame = true }: {
 }): ReactElement {
   const image = (output.kind === "file" || output.kind === "document") && output.ref?.contentType?.startsWith("image/");
   const src = useAttachmentImage(output.ref ?? {}, !!image);
-  const { face, preview: read } = useDocPreview(output.ref ?? {}, frame && isTextDoc(output));
+  const docx = isDocx(output);
+  const { face, preview: read } = useDocPreview(output.ref ?? {}, frame && (docx || isTextDoc(output)), docx);
   // A short text result carries its words (`ref.text`): its face is them, no read (W16-3).
   const preview = output.ref?.text ? textFace(output.ref.text) : read;
   // Only a public app frames as itself: any other shows its sign-in door, so it gets the glyph.

@@ -8,8 +8,8 @@ const blob = (text: string, type: string) => new Blob([text], { type });
 
 it("isPaneViewable names the document-like kinds only", () => {
   expect(isPaneViewable("Text/Markdown; charset=utf-8")).toBe(true);
-  expect(["application/pdf", XLSX_TYPE, "text/csv", "text/html", "text/markdown", "text/plain"].every(isPaneViewable)).toBe(true);
-  expect(["image/png", "video/mp4", "application/zip", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"].some(isPaneViewable)).toBe(false);
+  expect(["application/pdf", XLSX_TYPE, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "text/csv", "text/html", "text/markdown", "text/plain"].every(isPaneViewable)).toBe(true);
+  expect(["image/png", "video/mp4", "application/zip"].some(isPaneViewable)).toBe(false);
 });
 
 it("renders a CSV as a grid with a header row", async () => {

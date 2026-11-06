@@ -4,6 +4,13 @@ A document is read by a person who did not watch you work. It is a memo from a c
 a status report. The pane shows the title, who wrote it and when, and the version: never
 repeat those in the body.
 
+## Format
+
+**Markdown (`.md`) unless the person asks for another format.** Lightbulb opens a `.md` as a
+set document, with Copy. A `.docx` or `.pdf` only when they ask for that format ("a Word
+file", "a PDF to print"), and then only that one: never the same piece twice in two
+formats.
+
 ## Shape
 
 - **Open with the answer or the decision**, in one paragraph. Not a timestamp, not the title

@@ -16,7 +16,7 @@ import { useApps, type AppRow } from "@/hooks/useApps";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { KIND_FILTERS, KIND_WORD, openOutput, outputName } from "./openOutput";
-import { isTextDoc, OutputThumb } from "./OutputThumb";
+import { isDocx, isTextDoc, OutputThumb } from "./OutputThumb";
 import { useCreations } from "./useCreations";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
@@ -58,7 +58,7 @@ export function CreationsGrid(): ReactElement {
   outputs.forEach((o, i) => {
     const app = o.kind === "app" ? apps.find((a) => a.app_id === o.ref?.appId) : undefined;
     if (pages < MAX_FRAMES && app?.open_to === "public" && app.can_open !== false) { framed.add(i); pages++; }
-    else if (docs < MAX_FRAMES && isTextDoc(o)) { framed.add(i); docs++; }
+    else if (docs < MAX_FRAMES && (isTextDoc(o) || isDocx(o))) { framed.add(i); docs++; }
   });
   const [now] = useState(() => Date.now()); // ages as of the page's opening
 

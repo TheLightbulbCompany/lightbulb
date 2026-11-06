@@ -85,10 +85,21 @@ function AttachmentImage({ src, alt }: { src: string; alt: string }) {
 // so code spans and blocks keep theirs.
 type MdNode = { type?: string; value?: string; children?: MdNode[] };
 const BROKEN_LINK = /\[([^\]\n]+)\]\(([^)\n]*)\)/g;
+// A line that is only "[Sign up for story-time]" is a button a draft asks for (an email's call to action, W16-5): it
+// shows as a button-styled label, no brackets. Copy gives the words alone (docText `plainCta`).
+const CTA_LINE = /^\s*\[([^\]\n]{2,60})\]\s*$/;
+const ctaNode = (words: string): MdNode & { data: object } => ({
+  type: "emphasis", children: [{ type: "text", value: words }],
+  data: { hName: "span", hProperties: { className: "md-cta inline-block rounded-md border border-border bg-muted px-3 py-0.5 font-medium not-italic text-foreground" } },
+});
 function remarkBrokenLinks() {
   const walk = (node: MdNode) => {
     if (node.type === "text" && node.value) node.value = node.value.replace(BROKEN_LINK, "$1");
     node.children?.forEach(walk);
+    if (node.children) node.children = node.children.map((child) => {
+      const cta = child.type === "text" && child.value ? CTA_LINE.exec(child.value) : null;
+      return cta ? ctaNode(cta[1].trim()) : child;
+    });
   };
   return walk;
 }

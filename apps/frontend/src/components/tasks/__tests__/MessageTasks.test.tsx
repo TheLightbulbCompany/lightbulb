@@ -83,6 +83,24 @@ it("one task, one live chip: Working with its timer, then Done with the run's le
   expect(screen.getAllByRole("button", { name: "Open bakery-tagline-options.md" })).toHaveLength(1);
 });
 
+it("one clock: a run that just ended keeps the time the chip counted, not a second less (W16-11: 0:17 → Done · 0:16)", async () => {
+  const base = FIXTURES.step08.tasks[0];
+  const start = Date.now() - 17_600;
+  const done = { ...base, status: "idle" as const, shownGroup: "idle" as const,
+    activity: { n: 1, status: "ended" as const, startedAt: new Date(start).toISOString(), endedAt: new Date(start + 16_600).toISOString() } };
+  live.tasks = fakeTasksClient([done], FIXTURES.step08.details);
+  const ack = { messageId: "m8", roomId: ROOM, messageSeq: 8, roomRevision: 1, author: { kind: "agent", id: "ceo", displayName: "Lightbulb" },
+    text: "x", mentions: [], replyToMessageId: null, threadRootMessageId: null, createdAt: done.activity.startedAt, runId: null,
+    taskRefs: [{ taskId: base.taskId, role: "started" }] } as CanonicalRoomMessage;
+  const { unmount } = render(<Fresh><MessageTasks message={ack} viewerId={SAM} /></Fresh>);
+  expect(await screen.findByRole("button", { name: /Done · 0:17/ })).toBeInTheDocument();
+  unmount();
+  // Long after, the run's own length.
+  live.tasks = fakeTasksClient([{ ...done, activity: { ...done.activity, startedAt: new Date(start - 60_000).toISOString(), endedAt: new Date(start - 43_400).toISOString() } }], FIXTURES.step08.details);
+  render(<Fresh><MessageTasks message={ack} viewerId={SAM} /></Fresh>);
+  expect(await screen.findByRole("button", { name: /Done · 0:16/ })).toBeInTheDocument();
+});
+
 it("a task the viewer can't view shows no chip and no output under the ack or the finish line (dev walk 12, privacy)", async () => {
   const base = FIXTURES.step08.tasks[0];
   // The server leaves it out of the room list and answers its read with 404 (hidden reads as missing).

@@ -113,6 +113,8 @@ export interface TaskAttempt {
   startedAt: string;
   endedAt?: string | null;
   usage?: { costUsd?: number } | null;
+  /** The worker's result text (a short one is also the task's `text:{n}` output). */
+  output?: string | null;
 }
 
 /** An Effect row (`GET /tasks/{id}`). `resultRef` starting `refused:` on a `done` row means it did NOT happen (lanes/Q.md). */

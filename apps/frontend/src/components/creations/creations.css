@@ -3,7 +3,7 @@
 
 /* Frame A (.frame-doc, 880): the page scrolls as one. */
 .creations { height: 100%; overflow-y: auto; }
-.creations__col { display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 24px; padding-block: 8px 40px; }
+.creations__col { display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 24px; padding-block: 8px 40px; container-type: inline-size; }
 .creations__col > .frame-doc__title { margin-bottom: -8px; }
 .creations__label { font-size: 13px; line-height: 18px; font-weight: 500; color: var(--muted-foreground); }
 .creations__note { font-size: 15px; line-height: 22px; color: var(--muted-foreground); }
@@ -22,7 +22,8 @@
 .creations__tile:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 .creations__tile-name { font-size: 15px; line-height: 22px; font-weight: 500; }
 .creations__tile-hint { font-size: 13px; line-height: 18px; color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-@media (max-width: 599px) { .creations__tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+/* By the column, not the window: with a doc open beside it the column is ~470 and four tiles cut "A small…" (W16-4). */
+@container (max-width: 639px) { .creations__tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 
 /* The filter bar: a segmented control and the project select, 28 tall. */
 .creations__bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
@@ -43,6 +44,9 @@
 
 /* The grid: tiles at least 240 wide, a 16:10 face with a hairline, one-line title and meta under it. */
 .creations__grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(240px, 100%), 1fr)); gap: 24px 16px; }
+/* A narrow column (a doc open beside it) keeps two smaller tiles, never one 470-px tile (W16-4). */
+@container (max-width: 511px) { .creations__grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@container (max-width: 299px) { .creations__grid { grid-template-columns: minmax(0, 1fr); } }
 .creations__card { display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 2px; min-width: 0; }
 /* minmax(0,1fr) above: an implicit auto track sizes to the doc preview's nowrap lines and spills past the column (W14-1). */
 .creations__open { display: block; min-width: 0; margin-bottom: 6px; border-radius: 8px; }

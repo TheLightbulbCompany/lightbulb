@@ -115,10 +115,10 @@ function CreationCard({ output: o, app, project, who, now, frame }: {
   // The age reads "just now", "3m ago", as Tasks and Files say it (W13).
   const meta = [KIND_WORD[o.kind], project, timeAgo(o.createdAt)].filter(Boolean).join(" · ");
   return <li className="creations__card">
-    <button type="button" className="creations__open" aria-label={`Open ${outputName(o)}`} onClick={() => openOutput(o)}>
+    <button type="button" className="creations__open" aria-label={`Open ${outputName(o)}`} onClick={() => openOutput(o, undefined, "creations")}>
       <OutputThumb output={o} app={app} frame={frame} />
     </button>
-    <p className="creations__title" title={o.title}>{outputName(o)}</p>
+    <p className="creations__title" title={outputName(o)}>{outputName(o)}</p>
     <p className="creations__meta">{meta}</p>
     {state && <p className="creations__state">{state}</p>}
   </li>;

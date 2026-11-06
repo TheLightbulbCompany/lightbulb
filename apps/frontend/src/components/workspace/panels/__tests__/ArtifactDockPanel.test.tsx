@@ -7,9 +7,19 @@ const teamsRead = vi.fn();
 const teamsDownload = vi.fn();
 vi.mock("@/lib/api", () => ({ useApi: () => ({ get: vi.fn(), downloadBlob }) }));
 vi.mock("@/hooks/useTeamsApi", () => ({ useTeamsApi: () => ({ read: teamsRead, download: teamsDownload }) }));
-vi.mock("@/components/workspace/workspaceController", () => ({ closePane: vi.fn(), openPanel: vi.fn(), updatePanelParams: vi.fn() }));
+const openTaskPane = vi.fn();
+const place = { roomId: "here" };
+vi.mock("@/components/workspace/workspaceController", () => ({
+  closePane: vi.fn(), openPanel: vi.fn(), updatePanelParams: vi.fn(), openTaskPane: (id: string) => openTaskPane(id),
+  useWorkspaceState: () => ({ place: "chat", chatParams: { roomId: place.roomId } }),
+}));
 const superAgent = { on: false };
-vi.mock("@/hooks/useLiveEvents", () => ({ useSuperAgent: () => superAgent.on }));
+const tasksGet = vi.fn();
+const tasks = { get: tasksGet };
+vi.mock("@/hooks/useLiveEvents", () => ({ useSuperAgent: () => superAgent.on, useLiveEvents: () => ({ tasks }) }));
+vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({
+  useMessagingWorkspaceOptional: () => ({ directoryProps: { rooms: [{ roomId: "shop", kind: "channel", name: "walk-16 bookshop", participants: [] }] } }),
+}));
 import { ArtifactDockPanel } from "../ArtifactDockPanel";
 import { PaneActionsHost } from "../../PaneHeader";
 
@@ -106,6 +116,32 @@ it("super-agent: a text doc's Copy and Download sit in the pane header, not on a
     await userEvent.click(header.getByRole("button", { name: "Copy text" }));
     await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith("# Menu\n\nRye on Thursday."));
     expect(await header.findByRole("button", { name: "Copied" })).toBeInTheDocument();
+    host.remove();
+  } finally { superAgent.on = false; }
+});
+
+it("super-agent: a short text result opens as the doc itself, its button line copies as words, and it names its channel and task (W16-2, W16-5)", async () => {
+  superAgent.on = true;
+  try {
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    tasksGet.mockResolvedValue({ attempts: [{ n: 1, output: "Drafted the parent email.\n\nSubject: Story-time\n\nHi parents,\n\n[Sign up for story-time]" }] });
+    const host = document.createElement("span");
+    document.body.appendChild(host);
+    render(<PaneActionsHost.Provider value={host}>
+      <ArtifactDockPanel id="artifact" params={{ src: "text", task: "t1", n: "1", name: "Story-time", from: "shop" }} />
+    </PaneActionsHost.Provider>);
+    const header = within(host);
+    expect(await header.findByRole("link", { name: /^Download Story-time\.md/ })).toHaveAttribute("download", "Story-time.md");
+    expect(tasksGet).toHaveBeenCalledWith("t1");
+    // The button line reads as a button, no brackets.
+    expect(await screen.findByText("Sign up for story-time")).toHaveClass("md-cta");
+    expect(screen.queryByText(/\[Sign up/)).toBeNull();
+    await userEvent.click(header.getByRole("button", { name: "Copy text" }));
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith("Subject: Story-time\n\nHi parents,\n\nSign up for story-time"));
+    expect(screen.getByText("From #walk-16 bookshop")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Open task" }));
+    expect(openTaskPane).toHaveBeenCalledWith("t1");
     host.remove();
   } finally { superAgent.on = false; }
 });

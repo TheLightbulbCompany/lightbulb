@@ -31,3 +31,23 @@ export function docPreview(text: string, max = 3): { heading: string | null; lin
   }
   return { heading, lines };
 }
+
+/** A short result's name (W16-3): an email's subject, else its first heading or line, at most 80 characters, with the
+ *  markdown marks off. */
+export function textName(text: string): string {
+  const subject = /^\s*\**subject\**\s*:\s*(.+)$/im.exec(text);
+  const { heading, lines } = docPreview(text, 1);
+  const name = plain(subject?.[1] ?? heading ?? lines[0] ?? "");
+  return name.length > 80 ? `${name.slice(0, 79).replace(/\s+\S*$/, "")}…` : name;
+}
+
+/** A call-to-action line ("[Sign up for story-time]", shown as a button) as its words, for Copy (W16-5). */
+export const plainCta = (text: string): string => text.replace(/^([ \t]*)\[([^\]\n]{2,60})\]([ \t]*)$/gm, "$1$2$3");
+
+/** The deliverable in a short result: what follows its first paragraph ("Drafted the post." + the post), else null.
+ *  The backend's `result_piece` cuts the same way. */
+export function resultPiece(text: string): string | null {
+  const body = text.trim();
+  const cut = body.indexOf("\n\n");
+  return cut < 0 ? null : body.slice(cut).trim() || null;
+}

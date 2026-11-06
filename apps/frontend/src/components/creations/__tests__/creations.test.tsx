@@ -22,7 +22,8 @@ import { CreationsGrid } from "../CreationsGrid";
 import { MadeHere } from "../MadeHere";
 import { ProjectFiles } from "../ProjectFiles";
 import { TaskOutputs } from "../TaskOutputs";
-import { openOutput, outputLink } from "../openOutput";
+import { OutputThumb } from "../OutputThumb";
+import { OutputBackContext, openOutput, outputLink, outputName } from "../openOutput";
 import { docPreview, readableName } from "../docText";
 
 const out = (over: Partial<CreationOutput>): CreationOutput => ({
@@ -55,7 +56,7 @@ describe("openOutput: one opener for every surface", () => {
     openOutput(MAIL);
     expect(ctl.openPanel.mock.calls).toEqual([
       ["canvas", { app: "a1" }, { pushUrl: true }],
-      ["artifact", { src: "attachment", room: "r-walk7", id: "att1", name: "Welcome note.md", type: "text/markdown" }, { pushUrl: true }],
+      ["artifact", { src: "attachment", room: "r-walk7", id: "att1", name: "Welcome note.md", type: "text/markdown", task: DOC.taskId, ...(DOC.roomId ? { from: DOC.roomId } : {}) }, { pushUrl: true }],
       ["task-detail", { taskId: "t-mail" }, { pushUrl: true }],
     ]);
     expect(open).toHaveBeenCalledWith("https://github.com/acme/web/pull/7", "_blank", "noopener,noreferrer");
@@ -69,6 +70,24 @@ describe("openOutput: one opener for every surface", () => {
     openOutput(out({ kind: "link", ref: { url: "javascript:alert(1)" } }));
     expect(open).not.toHaveBeenCalled();
     open.mockRestore();
+  });
+});
+
+describe("a short text result (W16-2, W16-3)", () => {
+  const TEXT = out({ id: "text:1", kind: "mail", title: "Draft parent email for Saturday story-time", taskId: "t-text", roomId: "r-shop",
+    ref: { roomId: "task-room", messageId: "m1", text: "Subject: Saturday story-time with Maya\n\nHi parents,\n\n[Sign up for story-time]" } });
+  it("opens itself in the doc viewer, named by its words, with its way back", () => {
+    openOutput(TEXT, vi.fn(), "files");
+    expect(ctl.openPanel).toHaveBeenLastCalledWith("artifact",
+      { src: "text", task: "t-text", n: "1", name: "Saturday story-time with Maya", from: "r-shop", back: "files" }, { pushUrl: true });
+    expect(outputName(TEXT)).toBe("Saturday story-time with Maya");
+    expect(outputName(out({ id: "text:2", kind: "document", title: "Write caption", ref: { text: "Saturday story-time is back!\nJoin us." } })))
+      .toBe("Saturday story-time is back!");
+  });
+  it("its tile previews its words, never a blank glyph", () => {
+    render(<OutputThumb output={TEXT} size="mini" />);
+    expect(screen.getByText("Saturday story-time with Maya")).toBeInTheDocument();
+    expect(screen.getByText("Hi parents,")).toBeInTheDocument();
   });
 });
 
@@ -259,10 +278,14 @@ describe("TaskOutputs", () => {
     expect(ctl.openPanel).toHaveBeenCalledWith("canvas", { app: "a1" }, { pushUrl: true });
   });
 
-  it("a doc chip on the task's card in chat opens with its way back to the task (W13-7)", async () => {
-    render(<TaskOutputs task={task} onOpenTask={vi.fn()} />);
+  it("a doc chip on the task's card in chat goes back to the chat; in the open task, back to the task (W16-2, W13-7)", async () => {
+    const { unmount } = render(<TaskOutputs task={task} onOpenTask={vi.fn()} />);
     await userEvent.click(screen.getByRole("button", { name: "Open Welcome note.md" }));
-    expect(ctl.openPanel).toHaveBeenCalledWith("artifact", expect.objectContaining({ id: "att1", back: "task:t1" }), { pushUrl: true });
+    expect(ctl.openPanel).toHaveBeenLastCalledWith("artifact", expect.objectContaining({ id: "att1", back: "chat", task: "t1" }), { pushUrl: true });
+    unmount();
+    render(<OutputBackContext.Provider value="task:t1"><TaskOutputs task={task} onOpenTask={vi.fn()} /></OutputBackContext.Provider>);
+    await userEvent.click(screen.getByRole("button", { name: "Open Welcome note.md" }));
+    expect(ctl.openPanel).toHaveBeenLastCalledWith("artifact", expect.objectContaining({ id: "att1", back: "task:t1" }), { pushUrl: true });
   });
 
   it("in the open task, a mail chip is a label (its record is this task)", () => {

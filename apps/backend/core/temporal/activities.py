@@ -528,7 +528,7 @@ async def end_attempt(ws: str, task_id: str, n: int, outcome: str, error: str | 
         for f in files:  # what it made stays on the task for every status (UX slice 5)
             await tasks_access.record_output(ws, task_id, tasks_access.file_output(task_id, f))  # best effort
         if tasks_access.short_result(att | {"outcome": outcome}):  # a short text result is what it made (walk 15)
-            await tasks_access.record_output(ws, task_id, tasks_access.text_output(task, n, result_id))
+            await tasks_access.record_output(ws, task_id, tasks_access.text_output(task, n, result_id, text))
         # A Router conversation gets one line in its main chat (`_announce`), never the whole result in a reply
         # thread (UX slice 3): the result lives in the task. With no Router thread (an automation's room) the
         # result itself is the post.

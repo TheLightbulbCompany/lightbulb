@@ -48,7 +48,7 @@ export function NewProjectDialog({ open, onOpenChange, onCreate, busy = false, e
         <div className="grid gap-1.5">
           <label htmlFor={`${id}-goal`} className="text-ui font-medium">What should this channel get done? <span className="text-muted-foreground font-normal">(optional)</span></label>
           <textarea id={`${id}-goal`} className="project-textarea" value={goal} maxLength={ROOM_TOPIC_MAX_CHARS} disabled={busy}
-            placeholder="Sell 200 loaves through the new site by 1 Dec." onChange={(event) => setGoal(event.target.value)} />
+            placeholder="Run weekend story-time for local families" onChange={(event) => setGoal(event.target.value)} />
         </div>
         {error && <p role="alert" className="text-ui text-err">{error}</p>}
         <DialogFooter className="gap-2">

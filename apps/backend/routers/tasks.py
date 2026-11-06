@@ -188,7 +188,9 @@ async def list_outputs(
     ws = await _workspace(auth)
 
     def wanted(o: dict) -> bool:
-        return (not kind or o.get("kind") in kind) and _matches(q, o.get("title"), (o.get("ref") or {}).get("fileName"))
+        return (not kind or o.get("kind") in kind) and _matches(
+            q, o.get("title"), (o.get("ref") or {}).get("fileName"), (o.get("ref") or {}).get("text")
+        )
 
     async def keep(t: dict) -> bool:
         if not any(wanted(o) for o in t.get("outputs") or []):

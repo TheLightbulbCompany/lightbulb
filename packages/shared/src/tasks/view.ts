@@ -554,18 +554,40 @@ const INTERNAL_STEPS: Record<string, string> = {
 /** The run's latest step, said as it happens (dev walk 13, W13-5): "Searching the web…", "Working on it…" (a command),
  *  "Writing a file…"; "Getting started…" before the first. Internal steps read as "Checking how to do it…".
  *  ponytail: the last recorded tool stands for what runs now; the bridge's live tool frame would be exact. */
-export function stepNow(tools: readonly unknown[]): string {
+export function stepNow(tools: readonly unknown[], title?: string): string {
   const last = tools.at(-1);
   const t = (typeof last === "string" ? { name: last } : last ?? {}) as Record<string, unknown>;
   const name = [t.name, t.tool, t.type].find((v) => typeof v === "string") as string | undefined;
   if (!name) return "Getting started…";
+  // A command is how the work gets done: say the work, from the task's own verb ("Drafting parent email…", W16-11).
+  const doing = title?.trim() ? taskDoing(title) : null;
   const display = resolveToolDisplay(name, {});
   const gerund = display.gerund.replace(/:$/, "");
   const internal = INTERNAL_NOW[gerund];
   if (internal) return `${internal}…`;
-  if (display.kind === "command") return "Working on it…";
+  if (display.kind === "command") return `${doing ?? "Working on it"}…`;
   const noun = /^\w+$/.test(gerund) ? STEP_NOUNS[display.kind] : undefined;
   return `${noun ? `${gerund} ${noun[0]}` : gerund}…`;
+}
+
+/** Verbs a task title starts with ("Draft parent email …"), and their -ing ("Drafting"). A title that starts with any
+ *  other word reads "Working on <title>". */
+const TITLE_VERBS = new Set(("write rewrite draft plan create make build research find summarize summarise prepare design update fix " +
+  "review check send set compare list analyze analyse translate schedule edit outline collect gather book order organize " +
+  "organise post publish reply respond answer look search read explain calculate estimate add remove clean test improve " +
+  "generate compose brainstorm suggest recommend propose price map run track sketch pick choose name describe turn convert " +
+  "format polish proofread shorten tighten draw pull get put shop scan cut ship").split(" "));
+const DOUBLES = new Set(["plan", "run", "set", "get", "put", "map", "shop", "scan", "cut", "ship"]);
+
+/** What a task is doing, said from its title: "Draft parent email" → "Drafting parent email", "Set up the menu" →
+ *  "Setting up the menu", "Instagram caption for Saturday" → "Working on Instagram caption for Saturday". */
+export function taskDoing(title: string): string {
+  const line = title.split("\n")[0].trim();
+  const m = /^([A-Za-z]+)\b(.*)$/s.exec(line);
+  const verb = m?.[1].toLowerCase();
+  if (!m || !verb || !TITLE_VERBS.has(verb)) return `Working on ${line}`;
+  const ing = DOUBLES.has(verb) ? `${verb}${verb.at(-1)}ing` : /[^aeiou]e$/.test(verb) ? `${verb.slice(0, -1)}ing` : `${verb}ing`;
+  return `${ing[0].toUpperCase()}${ing.slice(1)}${m[2]}`;
 }
 
 const INTERNAL_NOW: Record<string, string> = {

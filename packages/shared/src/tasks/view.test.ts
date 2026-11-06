@@ -11,6 +11,7 @@ import {
   TASK_STATUSES,
   stepLines,
   stepNow,
+  taskDoing,
   chipState,
   clockTime,
   taskView,
@@ -328,6 +329,17 @@ describe("stepLines (dev walk 10, W10-3)", () => {
     // Commands alone: one line, never "Ran 5 commands" for writing an email (W14).
     expect(stepLines(["terminal", "terminal", "execute_code"])).toEqual(["Worked on it"]);
     expect(stepLines(["mcp__lightbulb__web_search", {}])).toEqual(["Searched the web", "A step"]);
+  });
+});
+
+describe("taskDoing (W16-11: 'Worked on it' while still working)", () => {
+  it("says the work from the task's own verb, else what it works on", () => {
+    expect(taskDoing("Draft parent email for Saturday story-time")).toBe("Drafting parent email for Saturday story-time");
+    expect(taskDoing("Write Instagram caption")).toBe("Writing Instagram caption");
+    expect(taskDoing("Plan the menu")).toBe("Planning the menu");
+    expect(taskDoing("Set up the shop page")).toBe("Setting up the shop page");
+    expect(taskDoing("Instagram caption for Saturday")).toBe("Working on Instagram caption for Saturday");
+    expect(stepNow([{ name: "terminal" }], "Draft parent email")).toBe("Drafting parent email…");
   });
 });
 

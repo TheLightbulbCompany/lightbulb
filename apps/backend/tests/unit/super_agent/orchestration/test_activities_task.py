@@ -695,6 +695,8 @@ async def test_a_short_text_result_shows_whole_and_is_kept(world):
     (out,) = (await repo.get_task(WS, tid))["outputs"]
     assert (out["id"], out["kind"], out["title"]) == ("text:1", "document", (await repo.get_task(WS, tid))["title"])
     assert out["ref"]["roomId"] == ts.task_room_id(tid) and out["ref"]["messageId"]
+    # Walk 16: it carries the deliverable's words, so the library opens and previews it without the task.
+    assert out["ref"]["text"] == "Tuesday is pizza night! 🍕\n\nSave your spot: [BOOKING LINK]"
     await acts.end_attempt(WS, tid, 1, "completed", None)  # a retry keeps one output
     assert len((await repo.get_task(WS, tid))["outputs"]) == 1
 

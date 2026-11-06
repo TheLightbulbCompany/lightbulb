@@ -20,7 +20,9 @@ export const MIN_TERM = 3;
 const DOC_TASKS = 24;
 const DOC_HEAD = 8192;
 
-type Found = { tasks: TaskSummary[]; files: CreationOutput[] };
+/** A file hit with the words around the match, when they are known (a doc's head, a short result's text). */
+export type FoundFile = CreationOutput & { snippet?: string };
+type Found = { tasks: TaskSummary[]; files: FoundFile[] };
 type Messaging = ReturnType<typeof useLiveEvents>["messaging"];
 const NONE: Found = { tasks: [], files: [] };
 
@@ -33,10 +35,21 @@ function docHead(messaging: Messaging, o: CreationOutput): Promise<string> {
   let head = heads.get(key);
   if (!head) {
     head = messaging.downloadAttachment(roomId, attachmentId, { head: DOC_HEAD }).then(blobText)
-      .then((text) => text.toLowerCase(), () => { heads.delete(key); return ""; });
+      .then((text) => text, () => { heads.delete(key); return ""; });
     heads.set(key, head);
   }
   return head;
+}
+
+/** The words around `needle` in a doc (W16-11: a doc row showed only its slug): one line, markdown marks off, about
+ *  90 characters, "…" where it was cut. `lower` is the text lowercased (what was matched); `text` the original, when
+ *  there is one. No match: its opening words. */
+export function snippetOf(lower: string, needle: string, text = lower): string {
+  const at = Math.max(0, lower.indexOf(needle));
+  const start = Math.max(0, at - 30);
+  const flat = (t: string) => t.replace(/[#*_`>[\]()]+/g, "").replace(/\s+/g, " ").trim();
+  const cut = flat(text.slice(start, start + 120)).replace(start > 0 ? /^\S*\s/ : /^/, "");  // never half a word
+  return `${start > 0 ? "…" : ""}${cut.length > 90 ? `${cut.slice(0, 90).replace(/\s+\S*$/, "")}…` : cut}`;
 }
 
 export function useTaskSearch(query: string, enabled: boolean): Found {
@@ -63,10 +76,13 @@ export function useTaskSearch(query: string, enabled: boolean): Found {
       void Promise.all([
         tasks.searchTasks(term, MAX, abort.signal).then((r) => r.tasks, () => []),
         tasks.outputs({ q: term, limit: MAX }, abort.signal).then((r): CreationOutput[] => r.outputs, () => []),
-        Promise.all(messaging ? docs.map((o) => docHead(messaging, o).then((text) => (text.includes(needle) ? o : null))) : []),
+        Promise.all(messaging ? docs.map((o) => docHead(messaging, o).then((text): FoundFile | null => (text.toLowerCase().includes(needle) ? { ...o, snippet: snippetOf(text.toLowerCase(), needle, text) } : null))) : []),
       ]).then(([found, named, inText]) => {
         const seen = new Set(named.map((o) => `${o.taskId}:${o.id}`));
-        const files = [...named, ...inText.filter((o): o is CreationOutput => !!o && !seen.has(`${o.taskId}:${o.id}`))];
+        const files: FoundFile[] = [
+          ...named.map((o): FoundFile => (o.ref?.text ? { ...o, snippet: snippetOf(o.ref.text.toLowerCase(), needle, o.ref.text) } : o)),
+          ...inText.filter((o): o is FoundFile => !!o && !seen.has(`${o.taskId}:${o.id}`)),
+        ];
         if (!abort.signal.aborted) setResult({ term, found: { tasks: found, files: files.slice(0, MAX) } });
       });
     }, DEBOUNCE_MS);

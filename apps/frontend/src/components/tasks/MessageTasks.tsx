@@ -5,11 +5,14 @@
 
 import { useEffect, useState, type ReactElement } from "react";
 import { Check, ChevronRight, Copy } from "lucide-react";
-import { chipState, specialistLabel, useTask, useTaskList, type CanonicalRoomMessage, type ChipMark, type TaskSummary } from "@lightbulb/shared";
+import { chipState, clockTime, specialistLabel, useTask, useTaskList, type CanonicalRoomMessage, type ChipMark, type TaskSummary } from "@lightbulb/shared";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { cn } from "@/lib/utils";
 import { TaskOutputs } from "@/components/creations/TaskOutputs";
 import { copyText } from "@/components/messaging/messageLinks";
+import { plainCta, resultPiece } from "@/components/creations/docText";
+
+export { resultPiece };
 import { TaskCard } from "./TaskCard";
 
 export function MessageTasks({ message, viewerId, onOpen, ackedTasks }: {
@@ -65,17 +68,24 @@ function RefChip({ taskId, listed, viewerId, onOpen, withOutputs, acked = false 
   const [now, setNow] = useState(() => Date.now());
   const state = task ? chipState(task, viewerId, now) : null;
   const ticking = state?.mark === "working" && !!state.time;
+  // One clock (W16-11): the moment it starts counting it reads the time now, never the mount's (0:00 → 0:03).
   useEffect(() => {
     if (!ticking) return;
+    const first = window.setTimeout(() => setNow(Date.now()), 0);
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
+    return () => { window.clearTimeout(first); window.clearInterval(timer); };
   }, [ticking]);
   if (!task || !state) return null;
+  // A chip that counted the run to its end keeps the time it counted ("Done · 0:16" after 0:17 read as a step back):
+  // its last tick lands within the finish event's few seconds of delay. A chip that didn't watch shows the run's own.
+  const run = task.activity;
+  const ranTo = run?.startedAt && run.endedAt ? [Date.parse(run.startedAt), Date.parse(run.endedAt)] : null;
+  const time = state.mark === "done" && ranTo && now > ranTo[1] && now - ranTo[1] < 5000 ? clockTime(now - ranTo[0]) : state.time;
   const outputs = !withOutputs ? null : <TaskOutputs task={task} max={2} onOpenTask={() => onOpen?.(taskId)} />;
   // Beside its ack the chip is never repeated (walk 15: a task that made no file showed the same chip twice).
   if (withOutputs && acked && task.status !== "failed") return outputs;
   const who = task.specialist ? specialistLabel(task.specialist, agentNames) : null;
-  const status = state.time ? `${state.word} · ${state.time}` : state.word;
+  const status = time ? `${state.word} · ${time}` : state.word;
   return <div>
     <button type="button" data-task-chip={taskId} data-mark={state.mark} onClick={() => onOpen?.(taskId)}
       aria-label={`Open ${task.title}, ${status}`}
@@ -93,13 +103,6 @@ function RefChip({ taskId, listed, viewerId, onOpen, withOutputs, acked = false 
   </div>;
 }
 
-/** The piece a short result carries: what follows its first line ("Drafted the post." + the post), else all of it. */
-export function resultPiece(text: string): string | null {
-  const body = text.trim();
-  const cut = body.indexOf("\n\n");
-  return cut < 0 ? null : body.slice(cut).trim() || null;
-}
-
 /** Copy, with ✓ for 2 s. The label never changes, so the button never shifts. */
 function CopyResult({ text }: { text: string }): ReactElement {
   const [copied, setCopied] = useState(false);
@@ -108,7 +111,7 @@ function CopyResult({ text }: { text: string }): ReactElement {
     const timer = window.setTimeout(() => setCopied(false), 2000);
     return () => window.clearTimeout(timer);
   }, [copied]);
-  return <button type="button" onClick={() => void copyText(text).then(setCopied)} aria-label={copied ? "Copied" : "Copy"}
+  return <button type="button" onClick={() => void copyText(plainCta(text)).then(setCopied)} aria-label={copied ? "Copied" : "Copy"}
     className="mt-1 inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-ui text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring">
     {copied ? <Check aria-hidden="true" className="size-3.5 text-ok" strokeWidth={2} /> : <Copy aria-hidden="true" className="size-3.5" />}
     Copy

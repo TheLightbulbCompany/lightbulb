@@ -26,8 +26,8 @@ vi.mock("@/components/messaging/roomCommands", () => ({ useRoomCommandResults: (
 vi.mock("@/components/messaging/useMessageSearch", () => ({ useMessageSearch: () => ({ hits: [], state: "idle" }) }));
 vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({ useMessagingWorkspaceOptional: () => null }));
 vi.mock("@/components/workspace/workspaceController", () => ({ openTaskPane: (id: string) => openTaskPane(id) }));
-vi.mock("@/components/creations/openOutput", () => ({
-  KIND_WORD: { document: "Doc" },
+vi.mock("@/components/creations/openOutput", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/components/creations/openOutput")>()),
   openOutput: (o: unknown) => openOutput(o),
 }));
 
@@ -59,7 +59,7 @@ describe("command palette search (super-agent)", () => {
   test("a file opens in its viewer", async () => {
     render(<CommandPalette open onOpenChange={() => {}} />);
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "bakery" } });
-    fireEvent.click(await screen.findByText("bakery.md"));
+    fireEvent.click(await screen.findByText("Bakery"));
     expect(openOutput).toHaveBeenCalledWith(doc);
   });
 
@@ -91,7 +91,9 @@ describe("command palette search (super-agent)", () => {
     downloadAttachment.mockResolvedValue(new Blob(["# Pizza night\nThe kids help in the Kitchen."]));
     render(<CommandPalette open onOpenChange={() => {}} />);
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "kitchen" } });
-    expect(await screen.findByText("tuesday-pizza-class.md")).toBeInTheDocument();
+    // Its readable name and the words around the hit, not the slug alone (W16-11).
+    expect(await screen.findByText("Tuesday pizza class")).toBeInTheDocument();
+    expect(screen.getByText(/^….*The kids help in the Kitchen\.$/)).toBeInTheDocument();
     expect(downloadAttachment).toHaveBeenCalledWith("r1", "a1", { head: 8192 });
   });
 

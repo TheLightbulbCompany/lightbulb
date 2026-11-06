@@ -23,7 +23,7 @@ import { plainSnippet, SearchSnippet } from "@/components/messaging/searchSnippe
 import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingWorkspaceContext";
 import { roomDisplayName } from "@lightbulb/shared";
 import { openTaskPane } from "@/components/workspace/workspaceController";
-import { KIND_WORD, openOutput } from "@/components/creations/openOutput";
+import { KIND_WORD, openOutput, outputName } from "@/components/creations/openOutput";
 import { MIN_TERM, useTaskSearch } from "./useTaskSearch";
 
 type FlatItem = {
@@ -129,7 +129,7 @@ function CommandPaletteContent({ open, onOpenChange, onRun }: CommandPaletteProp
     const items: FlatItem[] = [];
     conversations.forEach((c) => items.push({ kind: "conversation", id: c.id, label: c.label, path: "", run: c.run }));
     found.tasks.forEach((t) => items.push({ kind: "task", id: t.taskId, label: t.title, path: "", run: () => openTaskPane(t.taskId) }));
-    found.files.forEach((o) => items.push({ kind: "file", id: `${o.taskId}:${o.id}`, label: o.title, path: "", run: () => openOutput(o) }));
+    found.files.forEach((o) => items.push({ kind: "file", id: `${o.taskId}:${o.id}`, label: outputName(o), path: "", run: () => openOutput(o) }));
     messageHits.forEach((m) => items.push({ kind: "message", id: m.id, label: m.label, path: "", run: m.run }));
     navResults.forEach((a) => items.push({ kind: "nav", id: a.id, label: a.label, path: a.path }));
     agents.forEach((a) => items.push({ kind: "agent", id: a.id, label: a.name, path: agentInspectorUrl(a.id) }));
@@ -235,7 +235,10 @@ function CommandPaletteContent({ open, onOpenChange, onRun }: CommandPaletteProp
                     const id = `${o.taskId}:${o.id}`;
                     const idx = flatItems.findIndex((it) => it.kind === "file" && it.id === id);
                     return (
-                      <Row key={id} label={o.title} sublabel={KIND_WORD[o.kind]} selected={selectedIndex === idx}
+                      // Its readable name and the words it matched in, never its slug alone (W16-11).
+                      <Row key={id} label={o.snippet ? <span className="grid min-w-0"><span className="truncate">{outputName(o)}</span>
+                        <span className="truncate text-caption text-[var(--midnight-muted)]">{o.snippet}</span></span> : outputName(o)}
+                        sublabel={KIND_WORD[o.kind]} selected={selectedIndex === idx}
                         onMouseEnter={() => setSelectedIndex(idx)} onClick={() => select(flatItems[idx])} />
                     );
                   })}

@@ -67,7 +67,7 @@ export function TaskPane({ taskId, viewerId, onClose, onBack, headingRef }: {
     onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); (onBack ?? onClose)(); } }}>
     <PaneHeader crumb={onBack ? { label: "Tasks", onBack } : undefined} title={data?.task.title ?? "Task"} headingRef={heading} onClose={onClose}
       meta={data && <span className="inline-flex items-center gap-1.5">{who} · <TaskStatus task={data.task} viewerId={viewerId} />
-        {summaryView(data.task, viewerId).word === "Working" && <> · <Ticking since={data.task.updatedAt} /></>}</span>}
+        {summaryView(data.task, viewerId).word === "Working" && <> · <Ticking since={data.task.activity?.startedAt ?? data.task.updatedAt} /></>}</span>}
       actions={data && <TaskActions task={data.task} viewerId={viewerId} onError={setActionError} />} />
     {!data
       ? !error ? <p role="status" className="p-4 text-ui text-muted-foreground">Loading…</p>
@@ -107,7 +107,7 @@ function TaskPaneBody({ detail, viewerId, actionError }: { detail: TaskDetail; v
   return <div className="room-context-body flex min-h-0 flex-col gap-3">
     <TaskHeader task={task} viewerId={viewerId} error={actionError} />
     {live && <p role="status" aria-live="polite" className="flex items-center gap-2 px-1 text-ui text-muted-foreground">
-      <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-info motion-safe:animate-pulse" />{tools ? stepNow(tools) : "Getting started…"}</p>}
+      <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-info motion-safe:animate-pulse" />{tools ? stepNow(tools, task.title) : "Getting started…"}</p>}
     {open && <DecisionCard key={open.id} task={task} question={open} ended={closed} />}
     {decided.length > 0 && <ul aria-label="Decisions" className="grid gap-1 px-1 text-ui text-muted-foreground">
       {decided.map((d) => <li key={d.id}>{d.line}</li>)}
@@ -311,7 +311,10 @@ export function TaskDetails({ detail }: { detail: TaskDetail }): ReactElement {
 function TaskSteps({ detail, live, trace }: { detail: TaskDetail; live: boolean; trace: TaskTrace | { error: true } | null }): ReactElement | null {
   const latest = detail.attempts.reduce((n, a) => Math.max(n, a.n), 0);
   if (!latest) return null;
-  const lines = trace && !("error" in trace) ? stepLines(trace.recentTools) : null;
+  const done = trace && !("error" in trace) ? stepLines(trace.recentTools) : null;
+  // Still running, its work step says what it is doing now, not "Worked on it" (W16-11).
+  const lines = done && live && trace && !("error" in trace) && done.at(-1) === "Worked on it"
+    ? [...done.slice(0, -1), stepNow(trace.recentTools, detail.task.title)] : done;
   return <details className="group px-1 text-ui" open={live || undefined}>
     <Summary>Steps{lines ? ` · ${lines.length}` : ""}{detail.attempts.length > 1 ? ` · run ${latest}` : ""}</Summary>
     {trace == null ? <p className="text-muted-foreground">Loading…</p>

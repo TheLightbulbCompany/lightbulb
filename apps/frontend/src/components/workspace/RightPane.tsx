@@ -24,8 +24,9 @@ export const PANE_MIN_WIDTH = 360;
 const LEGACY_PANE_MIN_WIDTH = 320;
 /** The list width (Tasks, Files, Scheduled): stored per person when dragged. */
 export const PANE_DEFAULT_WIDTH = 440;
-/** One item open (a task, an automation): about half the main area, at least 520, never more than 60%. Computed,
- *  never stored, so the list keeps its own width. */
+/** Super-agent: one width for a list and an item (a task, a doc), about half the main area, at least 520, never more
+ *  than 60%, until the person drags it; then their width for both. The header's toggles stay put going ‹ Tasks
+ *  (W16-10: a 590 task and a 500 list moved them ~90 px under the pointer). */
 export const PANE_ITEM_MIN_WIDTH = 520;
 const ITEM_WIDTH = `clamp(${PANE_ITEM_MIN_WIDTH}px, 50%, 60%)`;
 /** The main view (or the full-screen chat column) keeps at least this much. */
@@ -53,11 +54,16 @@ const paneTitle = (pane: Slot): string =>
     : (pane.params.headingOf === pane.params.id && pane.params.heading) || (pane.params.name ? readableName(pane.params.name) : pane.title);
 
 export function readPaneWidth(key: string, min = LEGACY_PANE_MIN_WIDTH): number {
+  return storedPaneWidth(key, min) ?? PANE_DEFAULT_WIDTH;
+}
+
+/** The width the person dragged to, if any. */
+function storedPaneWidth(key: string, min: number): number | null {
   try {
     const stored = Number(window.localStorage.getItem(key));
-    return stored >= min ? stored : PANE_DEFAULT_WIDTH;
+    return stored >= min ? stored : null;
   } catch {
-    return PANE_DEFAULT_WIDTH;
+    return null;
   }
 }
 
@@ -77,8 +83,13 @@ export function RightPane({ pane, fullScreen }: { pane: Slot; fullScreen: boolea
   const key = paneWidthKey(userId);
   // The browser always opens at about half the width; its drags are not remembered.
   const remembers = pane.component !== "browser";
-  const [width, setWidth] = useState<string>(() => remembers ? `${readPaneWidth(key, minWidth)}px` : "50%");
-  // Super-agent: an open item takes the item width; going back to the list returns to the list width.
+  const [width, setWidth] = useState<string>(() => {
+    if (!remembers) return "50%";
+    if (!superAgent) return `${readPaneWidth(key, minWidth)}px`;
+    const stored = storedPaneWidth(key, minWidth);
+    return stored ? `${stored}px` : ITEM_WIDTH;
+  });
+  // Super-agent: an item is one thing (it may open as a sheet sooner); list and item share the pane's one width.
   const item = superAgent && isPaneItem(pane);
   // The separator's value in px: measured, since the Browser's opening width is a percentage.
   const paneRef = useRef<HTMLElement>(null);
@@ -132,7 +143,8 @@ export function RightPane({ pane, fullScreen }: { pane: Slot; fullScreen: boolea
   // A sheet over the main view (workspace.css): modal, so what it covers is inert, Tab stays in it and Escape closes it.
   // Super-agent: also wherever the main column would drop under 360 beside the pane (an item needs 520).
   const narrow = useMediaQuery(paneSheetQuery(superAgent));
-  const crowded = useMediaQuery(`(max-width: ${superAgent ? (item ? CROWDED_ITEM : CROWDED_LIST) : 0}px)`) && superAgent;
+  // At the shared item width a list crowds where an item does: going ‹ Tasks never swaps a docked pane for a sheet.
+  const crowded = useMediaQuery(`(max-width: ${superAgent ? (item || width === ITEM_WIDTH ? CROWDED_ITEM : CROWDED_LIST) : 0}px)`) && superAgent;
   const sheet = (narrow || crowded) && !fullScreen;
   // Who opened it, read while mounting (before the panel's own effects move focus): focus goes back there on close.
   const [opener] = useState(() => typeof document === "undefined" ? null : document.activeElement as HTMLElement | null);
@@ -166,7 +178,7 @@ export function RightPane({ pane, fullScreen }: { pane: Slot; fullScreen: boolea
   const Panel = pane.component === "thread" ? null : PANEL_COMPONENTS[pane.component as PanelKind];
   // Super-agent: no shell bar. An item that carries its own header (the room's column, a task, an automation) draws
   // the one PaneHeader; every other kind gets one here, titled by what opened it.
-  const resizable = !fullScreen && !item && !(superAgent && sheet);
+  const resizable = !fullScreen && !(superAgent && sheet);
   // Super-agent: RightPane draws the header for every kind without its own (the specialist profile included: its
   // name heads the body, so the bar used to carry no ✕ at all), and Escape closes those at every width.
   const drawsHeader = superAgent && !OWN_HEADER.has(pane.component);
@@ -201,7 +213,7 @@ export function RightPane({ pane, fullScreen }: { pane: Slot; fullScreen: boolea
         if (event.key === "Escape" && !event.defaultPrevented) { if (back) leavePane(back); else closePane(); }
         else if (sheet) trapTab(event, [paneRef.current]);
       } : undefined}
-      style={fullScreen || (superAgent && sheet) ? undefined : { width: item ? ITEM_WIDTH : width }}>
+      style={fullScreen || (superAgent && sheet) ? undefined : { width }}>
       {resizable && <div className="workspace-pane__resize" role="separator" aria-orientation="vertical"
         aria-label="Resize the pane" tabIndex={0} onPointerDown={startResize} onKeyDown={nudge}
         aria-valuenow={measured.now} aria-valuemin={minWidth} aria-valuemax={Math.max(minWidth, measured.max)} />}

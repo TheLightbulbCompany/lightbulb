@@ -66,7 +66,7 @@ export function ProjectSettingsDialog(props: ProjectSettingsProps): ReactElement
   return <Dialog open={section !== null} onOpenChange={(open) => { if (!open) { flush.current?.(); onSection(null); } }}>
     <DialogContent className="project-settings" onCloseAutoFocus={onCloseAutoFocus}>
       <div className="project-settings__head">
-        <DialogTitle asChild><h2 className="truncate">{roomName} · Settings</h2></DialogTitle>
+        <DialogTitle asChild><h2 className="truncate">{roomName} · Channel settings</h2></DialogTitle>
         <DialogClose asChild><Button type="button" variant="ghost" size="icon-sm" aria-label="Close settings"><X aria-hidden="true" /></Button></DialogClose>
       </div>
       {section && <SettingsBody {...props} section={section} flush={flush} />}
@@ -110,7 +110,7 @@ function SettingsBody({ room, roomName, section, onSection, canEdit, actionable,
     <div className="project-row">
       <div className="project-row__text">
         <p className="project-row__label"><label htmlFor={`${id}-name`}>Name and icon</label></p>
-        <p className="project-row__hint">How this project shows in the sidebar and on Home.</p>
+        <p className="project-row__hint">How this channel shows in the sidebar and on Home.</p>
       </div>
       <div className="project-row__control">
         <Saved token={saved.name ?? 0} />
@@ -126,26 +126,26 @@ function SettingsBody({ room, roomName, section, onSection, canEdit, actionable,
     </div>
     {canPause && <div className="project-row">
       <div className="project-row__text">
-        <p className="project-row__label">{paused ? "Paused" : "Pause project"}</p>
+        <p className="project-row__label">{paused ? "Paused" : "Pause channel"}</p>
         <p className="project-row__hint">Stops new tasks and schedules here. Running tasks finish. Undo any time.</p>
       </div>
       <div className="project-row__control">
         <Saved token={saved.pause ?? 0} />
         <Button type="button" size="sm" variant="outline" className="h-7" disabled={!actionable || busy}
-          onClick={() => void save("pause", () => onPatch!({ paused: !paused }), paused ? "The project could not be resumed." : "The project could not be paused.")}>
+          onClick={() => void save("pause", () => onPatch!({ paused: !paused }), paused ? "The channel could not be resumed." : "The channel could not be paused.")}>
           {paused ? "Resume" : "Pause"}</Button>
       </div>
     </div>}
     {onArchive && <div className="project-row">
       <div className="project-row__text">
-        <p className="project-row__label">Archive project</p>
+        <p className="project-row__label">Archive channel</p>
         <p className="project-row__hint">Hides it from the sidebar. Undo any time.</p>
       </div>
       <div className="project-row__control"><Button type="button" size="sm" variant="outline" className="h-7" disabled={!actionable} onClick={onArchive}>Archive</Button></div>
     </div>}
     {onDelete && <div className="project-row">
       <div className="project-row__text">
-        <p className="project-row__label">Delete project</p>
+        <p className="project-row__label">Delete channel</p>
         <p className="project-row__hint">Removes it and its chat for everyone. Can&apos;t be undone.</p>
       </div>
       <div className="project-row__control"><Button type="button" size="sm" variant="destructive" className="h-7" disabled={!actionable} onClick={onDelete}>Delete</Button></div>
@@ -160,7 +160,7 @@ function SettingsBody({ room, roomName, section, onSection, canEdit, actionable,
           <p className="project-row__label mr-auto"><label htmlFor={`${id}-topic`}>Instructions</label></p>
           <Saved token={saved.topic ?? 0} />
         </div>
-        <p id={`${id}-topic-hint`} className="project-row__hint">Lightbulb and the specialists read this before every task in this project.</p>
+        <p id={`${id}-topic-hint`} className="project-row__hint">Lightbulb and the specialists read this before every task in this channel.</p>
         <textarea id={`${id}-topic`} className="project-textarea" style={{ minHeight: 120 }} aria-describedby={`${id}-topic-hint`}
           value={topic} maxLength={ROOM_TOPIC_MAX_CHARS} disabled={!editable || !onSetTopic}
           placeholder="Sell 200 loaves through the new site by 1 Dec. Always cc sam@acme.com on customer email."
@@ -181,7 +181,7 @@ function SettingsBody({ room, roomName, section, onSection, canEdit, actionable,
       {SECTIONS.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
     </select>
     <div className="project-settings__body">
-      <DialogDescription className="sr-only">Settings for the {roomName} project.</DialogDescription>
+      <DialogDescription className="sr-only">Settings for the #{roomName} channel.</DialogDescription>
       {section === "general" ? general : section === "memory" ? memory : <><h3>People</h3><div className="pt-3">{people}</div></>}
       {error && <p role="alert" className="mt-3 text-ui text-err break-words">{error}</p>}
     </div>
@@ -211,7 +211,7 @@ function Remembered({ roomId, client, canForget }: { roomId: string; client: Non
     <div className="project-row__text grid gap-2">
       <p id={headingId} className="project-row__label">What Lightbulb remembers here</p>
       {items === null && !error && <p className="project-row__hint">Loading…</p>}
-      {items?.length === 0 && <p className="project-row__hint">Tell Lightbulb things about this project and they&apos;ll show up here.</p>}
+      {items?.length === 0 && <p className="project-row__hint">Tell Lightbulb things about this channel and they&apos;ll show up here.</p>}
       {!!items?.length && <ul className="project-memory__list">
         {items.map((item) => <li key={item.messageId} className="project-memory__item">
           <span className="project-memory__fact">{item.fact}</span>

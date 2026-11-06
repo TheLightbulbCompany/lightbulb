@@ -19,7 +19,7 @@ export type LiveNoticeAt = LiveNotice & { at: number };
 /** A room's Live on LiveKit (internally a "huddle"; never say that word to people). Any room kind. */
 export interface Live {
   roomId: string | null;
-  /** How the sheet names the room: "general" for a project, the person's or group's name otherwise. */
+  /** How the sheet names the room: "#general" for a channel, the person's or group's name otherwise. */
   roomName: string | null;
   /** Lightbulb joins this room (it has a listening agent). False: a people-only Live, no Lightbulb tile. */
   lightbulb: boolean;

@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, type MouseEvent, type ReactNode } from "react";
-import { Folder, MessageSquareQuote, SquareTerminal } from "lucide-react";
+import { Hash, MessageSquareQuote, SquareTerminal } from "lucide-react";
 import { roomDisplayName, sessionLabel } from "@lightbulb/shared";
 import { ApprovalRow } from "@/components/teams/inbox/ApprovalRow";
 import type { Approval } from "@/components/teams/shared/types";
@@ -71,7 +71,7 @@ function AppLinkCard({ link, ws }: { link: AppLink; ws: MessagingWorkspaceValue 
   const room = rooms.find((r) => r.roomId === link.roomId);
   if (!room) return null;
   const roomName = roomDisplayName(room, room.participants);
-  if (link.kind === "room") return chip(<Folder size={14} aria-hidden="true" />, roomName);
+  if (link.kind === "room") return chip(<Hash size={14} aria-hidden="true" />, roomName);
   const quoted = ws.roomProps?.room?.roomId === link.roomId ? ws.roomProps.messages.find((m) => m.messageId === link.messageId) : undefined;
   if (!quoted || quoted.deletedAt) return chip(<MessageSquareQuote size={14} aria-hidden="true" />, `Message in ${roomName}`);
   return <a className="room-link-card room-quote-card" href={link.href} onClick={(e) => openAppLink(e, link, ws)}>

@@ -144,7 +144,7 @@ export default function ThreadScreen() {
   const others = (members ?? []).filter(
     (member) => !(member.kind === "human" && member.id === userId),
   );
-  const subtitle = roomDisplayName(rooms.activeRoom, others);
+  const subtitle = `${rooms.activeRoom?.kind === "channel" ? "#" : ""}${roomDisplayName(rooms.activeRoom, others)}`;
 
   const { canSend, send, retry, rows } = useSendDrafts(rooms, {
     authorId: userId ?? "",

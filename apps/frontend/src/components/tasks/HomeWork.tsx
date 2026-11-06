@@ -42,7 +42,7 @@ export function HomeWork({ viewerId, onOpen, between, asks, askCount = 0, schedu
   const projectOf = (t: TaskSummary) => {
     const id = t.audience?.roomId ?? t.originRoomId;
     const room = id ? rooms?.find((r) => r.roomId === id) : undefined;
-    return room ? roomDisplayName(room, room.participants) : null;
+    return room ? `${room.kind === "channel" ? "#" : ""}${roomDisplayName(room, room.participants)}` : null;
   };
   const rows = (list: TaskSummary[]) => <ul className="mt-1 grid">{list.map((t) => <OverviewRow key={t.taskId} task={t} viewerId={viewerId} onOpen={onOpen} project={projectOf(t)} />)}</ul>;
   // One "Show more" per group: one click shows the next rows, fetching the next page too when the loaded ones run
@@ -164,6 +164,6 @@ function ScheduledGroup({ automations, initiallyOpen }: { automations: readonly 
         </li>;
       })}</ul>
       {shown < automations.length && <ShowMore onMore={() => setShown(shown + DONE_FOLD)} />}</>
-      : <p className="mt-1 text-ui text-muted-foreground">Ask Lightbulb in a project to put recurring work on a schedule, like a weekly summary.</p>)}
+      : <p className="mt-1 text-ui text-muted-foreground">Ask Lightbulb in a channel to put recurring work on a schedule, like a weekly summary.</p>)}
   </section>;
 }

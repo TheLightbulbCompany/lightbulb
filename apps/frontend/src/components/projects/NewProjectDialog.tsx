@@ -33,8 +33,8 @@ export function NewProjectDialog({ open, onOpenChange, onCreate, busy = false, e
     <DialogContent className="project-new" showCloseButton={!busy}
       onOpenAutoFocus={(event) => { event.preventDefault(); nameRef.current?.focus(); }}>
       <DialogHeader>
-        <DialogTitle>New project</DialogTitle>
-        <DialogDescription className="sr-only">A project is where you and Lightbulb work on one thing.</DialogDescription>
+        <DialogTitle>New channel</DialogTitle>
+        <DialogDescription className="sr-only">A channel is where you and Lightbulb work on one thing.</DialogDescription>
       </DialogHeader>
       <form className="grid gap-4" aria-busy={busy} onSubmit={(event) => { event.preventDefault(); void submit(); }}>
         <div className="grid gap-1.5">
@@ -46,14 +46,14 @@ export function NewProjectDialog({ open, onOpenChange, onCreate, busy = false, e
           </div>
         </div>
         <div className="grid gap-1.5">
-          <label htmlFor={`${id}-goal`} className="text-ui font-medium">What should this project get done? <span className="text-muted-foreground font-normal">(optional)</span></label>
+          <label htmlFor={`${id}-goal`} className="text-ui font-medium">What should this channel get done? <span className="text-muted-foreground font-normal">(optional)</span></label>
           <textarea id={`${id}-goal`} className="project-textarea" value={goal} maxLength={ROOM_TOPIC_MAX_CHARS} disabled={busy}
             placeholder="Sell 200 loaves through the new site by 1 Dec." onChange={(event) => setGoal(event.target.value)} />
         </div>
         {error && <p role="alert" className="text-ui text-err">{error}</p>}
         <DialogFooter className="gap-2">
           <Button type="button" variant="ghost" disabled={busy} onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button type="submit" disabled={!name.trim() || busy}>{busy ? "Creating…" : "Create project"}</Button>
+          <Button type="submit" disabled={!name.trim() || busy}>{busy ? "Creating…" : "Create channel"}</Button>
         </DialogFooter>
       </form>
     </DialogContent>

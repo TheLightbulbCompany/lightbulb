@@ -26,18 +26,18 @@ const props: RoomDirectoryProps = {
 beforeEach(() => { live.superAgent = true; openAgentDmWithDraft.mockClear(); });
 
 describe("sidebar with the super-agent on", () => {
-  it("+ › New project opens the New project dialog; + › New chat keeps DM and group chat, not Project (UX slice 6)", async () => {
+  it("+ › New channel opens the New channel dialog; + › New chat keeps DM and group chat, not Channel (UX slice 6)", async () => {
     const onCreate = vi.fn().mockResolvedValue(true);
     render(<RoomDirectory {...props} onCreate={onCreate} />);
-    await userEvent.click(screen.getByRole("button", { name: "New project or chat" }));
-    await userEvent.click(await screen.findByRole("menuitem", { name: "New project" }));
-    const dialog = await screen.findByRole("dialog", { name: "New project" });
+    await userEvent.click(screen.getByRole("button", { name: "New channel or chat" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "New channel" }));
+    const dialog = await screen.findByRole("dialog", { name: "New channel" });
     await userEvent.type(within(dialog).getByLabelText("Name"), "Spring sale{Enter}");
     expect(onCreate).toHaveBeenCalledWith({ kind: "channel", name: "Spring sale", members: [], topic: null, icon: null, color: null });
-    await userEvent.click(screen.getByRole("button", { name: "New project or chat" }));
+    await userEvent.click(screen.getByRole("button", { name: "New channel or chat" }));
     await userEvent.click(await screen.findByRole("menuitem", { name: "New chat" }));
     const chat = await screen.findByRole("dialog", { name: "New direct message" });
-    expect(within(chat).queryByRole("option", { name: "Project" })).toBeNull();
+    expect(within(chat).queryByRole("option", { name: "Channel" })).toBeNull();
   });
 
   const NAMES = ["Lightbulb", "Alice", "Engineering", "Finance"];
@@ -69,11 +69,10 @@ describe("sidebar with the super-agent on", () => {
     const more = container.querySelector("details.room-directory-more")!;
     expect(more).toHaveAttribute("open");
     expect(more.querySelector("summary")).toHaveAttribute("aria-label", "More, 3 unread or waiting");
-    // No number (07 §1): needsYouCount is the only number; unread is ink on the heading.
-    expect(more.querySelector("summary .room-count")).toBeNull();
-    expect(more.querySelector("summary")).toHaveAttribute("data-unread");
+    // The count is back (founder, 6 Nov 2026: Lightbulb stays a communications platform).
+    expect(more.querySelector("summary .room-count")).toHaveTextContent("3");
     rerender(<RoomDirectory {...props} rooms={[{ ...shared, unreadCount: 0 }]} />);
-    expect(container.querySelector("details.room-directory-more summary")).not.toHaveAttribute("data-unread");
+    expect(container.querySelector("details.room-directory-more summary .room-count")).toBeNull();
   });
 
   it("an unknown front agent (roster not resolved, or no ceo role) keeps today's roster", () => {
@@ -106,17 +105,16 @@ describe("SpecialistDmBanner", () => {
   });
 });
 
-describe("one number on screen (UX slice 2)", () => {
-  it("a project row's unread is weight, not a pill; needs-you is a warn dot", async () => {
+describe("unread counts are back (founder, 6 Nov 2026)", () => {
+  it("a channel row shows its unread count pill and, beside it, the needs-you warn dot", async () => {
     const { RoomDirectoryRow } = await import("../RoomDirectoryRow");
     const room: DirectoryRoom = { ...base, roomId: "p1", kind: "channel", name: "spring-sale", participants: [alice], unreadCount: 4 };
     const { container } = render(<ul><RoomDirectoryRow room={room} label="spring-sale" active={false} busy={false} sections={[]}
-      onSelect={vi.fn()} onCopyLink={vi.fn()} needsYou={2} noCounts /></ul>);
+      onSelect={vi.fn()} onCopyLink={vi.fn()} needsYou={2} /></ul>);
     const row = screen.getByRole("button", { name: /^spring-sale/ });
     expect(row).toHaveAccessibleName(expect.stringContaining("2 need you"));
-    expect(row).toHaveAccessibleName(expect.stringContaining("Unread"));
-    expect(row).not.toHaveAccessibleName(expect.stringContaining("4"));
-    expect(container.querySelector(".room-count")).toBeNull();
+    expect(row).toHaveAccessibleName(expect.stringContaining("4 unread messages"));
+    expect(container.querySelector(".room-count")).toHaveTextContent("4");
     expect(container.querySelector("[data-needs-you]")).not.toBeNull();
     expect(row).toHaveClass("font-semibold");
   });

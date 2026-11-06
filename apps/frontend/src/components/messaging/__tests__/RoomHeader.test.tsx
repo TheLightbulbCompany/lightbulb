@@ -123,7 +123,7 @@ it("renames from the overflow menu and never offers it on a DM", async () => {
   const { rerender } = render(<RoomHeader {...props} onRenameRoom={onRenameRoom} />);
   await userEvent.click(screen.getByRole("button", { name: "Options" }));
   await userEvent.click(await screen.findByRole("menuitem", { name: "Rename" }));
-  const dialog = await screen.findByRole("dialog", { name: "Rename project" });
+  const dialog = await screen.findByRole("dialog", { name: "Rename channel" });
   await userEvent.clear(within(dialog).getByLabelText("Name"));
   await userEvent.type(within(dialog).getByLabelText("Name"), "Roadmap 2");
   await userEvent.click(within(dialog).getByRole("button", { name: "Save name" }));
@@ -156,7 +156,7 @@ it("does not leak a failed star's error into a freshly opened rename dialog", as
   expect(await screen.findByRole("alert")).toHaveTextContent("Could not star.");
   await userEvent.click(screen.getByRole("button", { name: "Options" }));
   await userEvent.click(await screen.findByRole("menuitem", { name: "Rename" }));
-  const dialog = await screen.findByRole("dialog", { name: "Rename project" });
+  const dialog = await screen.findByRole("dialog", { name: "Rename channel" });
   expect(within(dialog).queryByRole("alert")).not.toBeInTheDocument();
 });
 
@@ -205,15 +205,15 @@ it("archives a channel only after confirming, and unarchives an archived one dir
   const onSetArchived = vi.fn().mockResolvedValue(undefined);
   const { rerender } = render(<RoomHeader {...props} onSetArchived={onSetArchived} />);
   await userEvent.click(screen.getByRole("button", { name: "Options" }));
-  await userEvent.click(screen.getByRole("menuitem", { name: "Archive project" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Archive channel" }));
   const dialog = screen.getByRole("dialog", { name: "Archive Roadmap?" });
   expect(onSetArchived).not.toHaveBeenCalled();
-  await userEvent.click(within(dialog).getByRole("button", { name: "Archive project" }));
+  await userEvent.click(within(dialog).getByRole("button", { name: "Archive channel" }));
   await waitFor(() => expect(onSetArchived).toHaveBeenCalledWith(true));
 
   rerender(<RoomHeader {...props} room={{ ...room, archivedAt: "2026-09-23T00:00:00Z" }} onSetArchived={onSetArchived} />);
   await userEvent.click(screen.getByRole("button", { name: "Options" }));
-  await userEvent.click(screen.getByRole("menuitem", { name: "Unarchive project" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Unarchive channel" }));
   await waitFor(() => expect(onSetArchived).toHaveBeenCalledWith(false));
 });
 
@@ -243,9 +243,9 @@ it("deletes a channel only once its name is typed exactly", async () => {
   const onDeleteRoom = vi.fn().mockResolvedValue(undefined);
   render(<RoomHeader {...props} onDeleteRoom={onDeleteRoom} />);
   await userEvent.click(screen.getByRole("button", { name: "Options" }));
-  await userEvent.click(screen.getByRole("menuitem", { name: "Delete project" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Delete channel" }));
   const dialog = screen.getByRole("dialog", { name: "Delete Roadmap?" });
-  const confirm = within(dialog).getByRole("button", { name: "Delete project" });
+  const confirm = within(dialog).getByRole("button", { name: "Delete channel" });
   const field = within(dialog).getByLabelText(/to confirm/);
   expect(confirm).toBeDisabled();
   await userEvent.type(field, "roadmap{Enter}");
@@ -263,7 +263,7 @@ it.each([{}, { isDefault: true }, { shared: true }, { kind: "group-dm" as const 
   const onDeleteRoom = Object.keys(extra).length ? vi.fn() : undefined;
   render(<RoomHeader {...props} room={{ ...room, ...extra }} onDeleteRoom={onDeleteRoom} />);
   await userEvent.click(screen.getByRole("button", { name: "Options" }));
-  expect(screen.queryByRole("menuitem", { name: "Delete project" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("menuitem", { name: "Delete channel" })).not.toBeInTheDocument();
 });
 
 it("explains ownership instead of offering a Leave that would fail, and offers Delete in its place", async () => {
@@ -274,12 +274,12 @@ it("explains ownership instead of offering a Leave that would fail, and offers D
   await userEvent.click(screen.getByRole("button", { name: "Options" }));
   await userEvent.click(screen.getByRole("menuitem", { name: "Leave" }));
   const dialog = screen.getByRole("dialog", { name: "Can't leave Roadmap" });
-  expect(within(dialog).getByText("You are the only person in this project. Delete it instead.")).toBeInTheDocument();
+  expect(within(dialog).getByText("You are the only person in this channel. Delete it instead.")).toBeInTheDocument();
   expect(within(dialog).queryByRole("button", { name: /^Leave/ })).not.toBeInTheDocument();
-  await userEvent.click(within(dialog).getByRole("button", { name: "Delete project" }));
+  await userEvent.click(within(dialog).getByRole("button", { name: "Delete channel" }));
   const deleteDialog = screen.getByRole("dialog", { name: "Delete Roadmap?" });
   await userEvent.type(within(deleteDialog).getByLabelText(/to confirm/), "Roadmap");
-  await userEvent.click(within(deleteDialog).getByRole("button", { name: "Delete project" }));
+  await userEvent.click(within(deleteDialog).getByRole("button", { name: "Delete channel" }));
   await waitFor(() => expect(onDeleteRoom).toHaveBeenCalledTimes(1));
 });
 
@@ -288,7 +288,7 @@ it("explains ownership with no Delete offer when the owner may not delete the ro
   await userEvent.click(screen.getByRole("button", { name: "Options" }));
   await userEvent.click(screen.getByRole("menuitem", { name: "Leave" }));
   const dialog = screen.getByRole("dialog", { name: "Can't leave Roadmap" });
-  expect(within(dialog).getByText("You are the only person in this project. Delete it instead.")).toBeInTheDocument();
-  expect(within(dialog).queryByRole("button", { name: "Delete project" })).not.toBeInTheDocument();
+  expect(within(dialog).getByText("You are the only person in this channel. Delete it instead.")).toBeInTheDocument();
+  expect(within(dialog).queryByRole("button", { name: "Delete channel" })).not.toBeInTheDocument();
   expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeInTheDocument();
 });

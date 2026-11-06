@@ -55,11 +55,11 @@ export interface RoomComposerProps {
   onHeld?: () => void;
 }
 
-/** Super-agent (UX slice 4): the composer rests as one line; Aa shows the formatting bar and the choice is kept per
- *  person on this browser. ponytail: localStorage; a server preference if it should follow them across devices. */
+/** Super-agent: the composer is one line with the formatting bar shown above it by default (founder, 6 Nov 2026); Aa
+ *  hides it and the choice is kept per person on this browser. ponytail: localStorage; a server preference if it should follow them across devices. */
 const formatKey = (viewerId: string) => `lightbulb.composer.format:${viewerId}`;
 function readFormatOpen(viewerId: string): boolean {
-  try { return localStorage.getItem(formatKey(viewerId)) === "1"; } catch { return false; }
+  try { return localStorage.getItem(formatKey(viewerId)) !== "0"; } catch { return true; }
 }
 function writeFormatOpen(viewerId: string, open: boolean): void {
   try { localStorage.setItem(formatKey(viewerId), open ? "1" : "0"); } catch { /* private mode: this session only */ }

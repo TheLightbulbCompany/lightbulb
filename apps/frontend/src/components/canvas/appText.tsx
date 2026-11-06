@@ -11,7 +11,7 @@ export function displayName(app: Pick<AppRow, "name" | "display_name">): string 
 }
 
 /** The room it was asked in, or a DM's plain name (a DM has none). */
-export const roomOf = (app: Pick<AppRow, "room_name">) => (app.room_name ?? "the chat it was asked in");
+export const roomOf = (app: Pick<AppRow, "room_name">) => (app.room_name ? `#${app.room_name}` : "the chat it was asked in");
 
 /** Where the builder posts: the app's own conversation, else (an older app not opened since) its room. */
 export const postsIn = (app: AppRow) => (app.conversation_id || !app.room_id ? "its conversation" : roomOf(app));

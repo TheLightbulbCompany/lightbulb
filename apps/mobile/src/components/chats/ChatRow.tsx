@@ -30,7 +30,7 @@ import { ListRow } from "../ui/ListRow";
 export type ChatRowAction = "markRead" | "markUnread" | "mute" | "star" | "copyLink" | "archive" | "rename";
 
 /**
- * A project's leading tile: a folder glyph (never a `#`). Fixed-size tile: the glyph
+ * The channel leading tile: the `#` glyph column. Fixed-size tile: the `#`
  * never scales with the reader's text size, or it spills out of it.
  */
 export function ChannelTile({ size = 52, palette }: { size?: number; palette: ChatPalette }) {
@@ -41,7 +41,9 @@ export function ChannelTile({ size = 52, palette }: { size?: number; palette: Ch
         { width: size, height: size, borderRadius: size > 32 ? radii.lg : radii.md, backgroundColor: palette.selected },
       ]}
     >
-      <SymbolView accessibilityElementsHidden name="folder" size={Math.round(size * 0.42)} tintColor={palette.fgSoft} />
+      <Text style={[styles.channelHash, { color: palette.fgSoft, fontSize: Math.round(size * 0.42) }]} maxFontSizeMultiplier={1}>
+        #
+      </Text>
     </View>
   );
 }
@@ -394,6 +396,7 @@ const styles = StyleSheet.create({
   groupLead: { width: 52, height: 52 },
   groupSecond: { position: "absolute", left: 16, top: 16 },
   accessory: { fontFamily: fonts.sans, fontSize: 13 },
+  channelHash: { fontFamily: fonts.sansSemiBold },
   swipeAction: { width: 80, alignItems: "center", justifyContent: "center", gap: spacing.xs },
   swipePressed: { opacity: 0.8 },
   swipeLabel: { fontFamily: fonts.sansMedium, fontSize: 13, lineHeight: 16 },

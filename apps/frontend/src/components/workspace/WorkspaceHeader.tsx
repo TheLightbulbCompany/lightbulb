@@ -35,12 +35,13 @@ const DESTINATIONS: readonly Destination[] = [
 
 // Super-agent (founder, 6 Nov 2026): Home is the chats and the project spaces; what Home showed (Needs you, mentions,
 // Ideas, the feed, Working/Done/Closed) is Activity, which keeps the panel key "activity" and every link to it.
-// UX slice 4: no Chat (a project or a DM is opened from the sidebar, which every place shows) and no Work (its tasks
-// are in Activity, its schedules in each project's Scheduled view and Activity's Scheduled group, Money in Settings ›
-// Business). Settings is a place at the foot, inside the shell.
+// Chat is back on the rail (founder, 6 Nov 2026: Lightbulb stays a communications platform): it opens the channels and
+// DMs. No Work (its tasks are in Activity, its schedules in each channel's Scheduled view and Activity's Scheduled
+// group, Money in Settings › Business). Settings is a place at the foot, inside the shell.
 const SUPER_AGENT_DESTINATIONS: readonly Destination[] = [
   { place: "home", panel: "home", label: "Home", Icon: Home },
   { place: "activity", panel: "activity", label: "Activity", Icon: Bell },
+  DESTINATIONS.find((d) => d.place === "chat")!,
   // Creations replaces Library and Canvas (UX slice 5): what tasks made. The URL says `panel=creations`; the panel id
   // stays "canvas" (an alias), so old `panel=canvas` and ?app= links work.
   { place: "canvas", panel: "creations", label: "Creations", Icon: LayoutGrid },
@@ -68,7 +69,7 @@ export function WorkspaceHeader({ chatReady = true, onNavigate }: {
   return (
     <nav className="workspace-rail" aria-label="Workspace">
       <HistoryButtons />
-      <button type="button" className="workspace-rail__search" aria-label={superAgent ? "Search projects, tasks, files and messages" : "Search messages, agents, issues, and projects"} title="Search (⌘/Ctrl K)" onClick={() => { setOpen(true); onNavigate?.(); }}>
+      <button type="button" className="workspace-rail__search" aria-label={superAgent ? "Search channels, tasks, files and messages" : "Search messages, agents, issues, and projects"} title="Search (⌘/Ctrl K)" onClick={() => { setOpen(true); onNavigate?.(); }}>
         <Search size={20} aria-hidden="true" />
       </button>
       {(superAgent ? SUPER_AGENT_DESTINATIONS : DESTINATIONS).map(({ place, panel, label, Icon }) => {

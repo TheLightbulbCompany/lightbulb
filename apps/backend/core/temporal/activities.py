@@ -658,7 +658,7 @@ async def _trigger_view(ws: str, trig: dict) -> dict:
         msg = await messaging_repo.get_message_by_id(ref["roomId"], ref["messageId"]) or {}
         meta = await messaging_repo.get_room(ref["roomId"]) or {}
         view["who"] = (msg.get("author") or {}).get("displayName")
-        view["where"] = "a direct message" if meta.get("kind") == "dm" else f"the project {meta.get('name') or 'here'}"
+        view["where"] = "a direct message" if meta.get("kind") == "dm" else f"the channel #{meta.get('name') or 'here'}"
     else:
         view["who"] = str(ref.get("from") or trig["source"])
     return view

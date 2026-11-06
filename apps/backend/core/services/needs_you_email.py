@@ -157,7 +157,7 @@ def _where(room: dict, author: str = "") -> str:
         return f"your DM with {author}" if author else "your DM"
     if kind == "group-dm":
         return name or "your group chat"
-    return name or "a project"
+    return f"#{name}" if name else "a channel"
 
 
 def render(row: dict, *, author: str = "", room: dict | None = None, sent: int) -> dict:

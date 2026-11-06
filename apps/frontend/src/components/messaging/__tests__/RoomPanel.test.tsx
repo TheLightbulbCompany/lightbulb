@@ -1086,14 +1086,14 @@ it("replaces the composer in an archived channel with an Unarchive action for ad
   const archived = { ...props.room!, kind: "channel" as const, name: "Launch", archivedAt: "2026-09-23T00:00:00Z" };
   const onSetArchived = vi.fn().mockResolvedValue(undefined);
   const { rerender } = render(<RoomPanel {...props} room={archived} onSetArchived={onSetArchived} />);
-  expect(screen.getByText("This project is archived. Unarchive it to post.")).toBeInTheDocument();
+  expect(screen.getByText("This channel is archived. Unarchive it to post.")).toBeInTheDocument();
   expect(screen.queryByRole("textbox", { name: "Message" })).not.toBeInTheDocument();
-  await userEvent.click(screen.getByRole("button", { name: "Unarchive project" }));
+  await userEvent.click(screen.getByRole("button", { name: "Unarchive channel" }));
   await waitFor(() => expect(onSetArchived).toHaveBeenCalledWith(false));
 
   rerender(<RoomPanel {...props} room={archived} participants={[{ ...owner, role: "member" }, friday]} onSetArchived={onSetArchived} />);
-  expect(screen.getByText("This project is archived.")).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Unarchive project" })).not.toBeInTheDocument();
+  expect(screen.getByText("This channel is archived.")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Unarchive channel" })).not.toBeInTheDocument();
 });
 
 it("offers no top-level composer in the workspace feed: people reply in a post's thread", () => {

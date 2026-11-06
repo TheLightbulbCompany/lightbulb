@@ -117,7 +117,7 @@ ProjectIcon = Literal[
     "chart-line", "users", "calendar", "package", "leaf", "briefcase",
 ]  # fmt: skip
 ProjectColor = Literal["project-1", "project-2", "project-3", "project-4", "project-5", "project-6"]
-PAUSED_ROOM_TEXT = "This project is paused. Resume it to send."
+PAUSED_ROOM_TEXT = "This channel is paused. Resume it to send."
 MAX_PINNED_MESSAGES = messaging_repo.MAX_PINNED_MESSAGES
 MAX_SECTIONS = 20
 SECTION_NAME_MAX_CHARS = 40
@@ -225,7 +225,7 @@ async def close_first_run(room_id: str) -> None:
         logger.warning("first run not closed for room %s", room_id, exc_info=True)
 
 
-ROOM_ARCHIVED_MESSAGE = "This project is archived. Unarchive it to post."
+ROOM_ARCHIVED_MESSAGE = "This channel is archived. Unarchive it to post."
 API_ERROR_STATUS = {
     "LOCAL_SESSION_FORBIDDEN": 403,
     "LOCAL_SESSION_NOT_FOUND": 404,
@@ -2293,7 +2293,7 @@ def _deny_vendor_human_change(meta: dict, kind: str) -> None:
     # The feed's people are the workspace's: only a workspace join/removal changes them.
     # The feed's membership (people only; agents are its authors) is Lightbulb's alone, every kind.
     if is_feed_room(meta) or (kind == "human" and (is_vendor_room(meta) or is_session_room(meta))):
-        raise ApiProblem("ROOM_FORBIDDEN", "Membership of this project is managed by Lightbulb.")
+        raise ApiProblem("ROOM_FORBIDDEN", "Membership of this channel is managed by Lightbulb.")
 
 
 def _emit_room_created(owner_id: str, actor_user_id: str, kind: str, added: list[dict], *, by: str) -> None:
@@ -2947,7 +2947,7 @@ async def create_room(auth: AuthContext, request: CreateRoomRequest, *, meta_ext
         k: v for k, v in (("topic", request.topic), ("icon", request.icon), ("color", request.color)) if v
     }
     if project_fields and request.kind != "channel":  # as PATCH: only a project has Instructions and a tile
-        raise ApiProblem("INVALID_REQUEST", "Only a project has instructions, an icon and a colour.")
+        raise ApiProblem("INVALID_REQUEST", "Only a channel has instructions, an icon and a colour.")
     if await _front_agent_id(owner_id):  # the switch is on: a new room is a Router room
         request = request.model_copy(update={"members": await _lightbulb_only(owner_id, request.members, request.kind)})
     keys = [(member.kind, member.id) for member in request.members]
@@ -3055,7 +3055,7 @@ async def patch_room(auth: AuthContext, room_id: str, request: PatchRoomRequest)
     if "name" in updates and meta.get("kind") == "dm":
         raise ApiProblem("ROOM_FORBIDDEN", "Direct messages cannot be renamed.")
     if "name" in updates and is_vendor_room(meta):
-        raise ApiProblem("ROOM_FORBIDDEN", "This project's name is managed by Lightbulb.")
+        raise ApiProblem("ROOM_FORBIDDEN", "This channel's name is managed by Lightbulb.")
     if "name" in updates and is_session_room(meta):
         raise ApiProblem("ROOM_FORBIDDEN", "This chat is named after its session.")
     if "name" in updates and is_feed_room(meta):
@@ -3069,11 +3069,11 @@ async def patch_room(auth: AuthContext, room_id: str, request: PatchRoomRequest)
         else:
             updates |= {"archivedAt": None, "archivedBy": None}
     if (request.icon or request.color) and meta.get("kind") != "channel":
-        raise ApiProblem("ROOM_FORBIDDEN", "Only a project has an icon and colour.")
+        raise ApiProblem("ROOM_FORBIDDEN", "Only a channel has an icon and colour.")
     paused = None
     if request.paused is not None and request.paused != bool(meta.get("pausedAt")):
         if meta.get("kind") != "channel" or is_feed_room(meta) or is_vendor_room(meta) or is_session_room(meta):
-            raise ApiProblem("ROOM_NOT_PAUSABLE", "Only a project can be paused.")
+            raise ApiProblem("ROOM_NOT_PAUSABLE", "Only a channel can be paused.")
         paused = request.paused
         updates |= (
             {"pausedAt": utc_now().isoformat(), "pausedBy": auth.user_id}
@@ -3245,7 +3245,7 @@ async def leave_room(auth: AuthContext, room_id: str) -> None:
         and meta.get("kind") == "channel"
         and _channel_heir(meta, await messaging_repo.list_members(room_id), auth.user_id) is None
     ):
-        raise ApiProblem("INVALID_REQUEST", "You are the only person in this project. Delete it instead of leaving.")
+        raise ApiProblem("INVALID_REQUEST", "You are the only person in this channel. Delete it instead of leaving.")
     await _remove_member_with_notices(meta, "human", auth.user_id)
 
 
@@ -3367,7 +3367,7 @@ async def delete_room(auth: AuthContext, room_id: str) -> None:
     for attempt in range(3):
         meta, member = await require_room_member(owner_id, auth.user_id, room_id)
         if member.get("role") != "owner":
-            raise ApiProblem("ROOM_FORBIDDEN", "Only the project's owner can delete it.")
+            raise ApiProblem("ROOM_FORBIDDEN", "Only the channel's owner can delete it.")
         if (
             meta.get("kind") != "channel"
             or is_default_room(meta)
@@ -6074,7 +6074,7 @@ async def resolve_agent_post_room(owner_id: str, request: AgentPostRequest) -> s
         if len(matches) != 1:
             raise ApiProblem(
                 "ACTION_UNAVAILABLE",
-                f"You are in {len(matches)} projects named {wanted}; pass --room <roomId> instead.",
+                f"You are in {len(matches)} channels named #{wanted}; pass --room <roomId> instead.",
             )
         return matches[0]
     user_id = request.user_id

@@ -24,7 +24,7 @@ beforeEach(() => { huddle.join.mockClear(); huddle.roomId = null; huddle.joining
 it("Go live joins this room", () => {
   render(<RoomHeader {...base} room={room()} />);
   fireEvent.click(screen.getByRole("button", { name: "Go live" }));
-  expect(huddle.join).toHaveBeenCalledWith("room-1", "general");
+  expect(huddle.join).toHaveBeenCalledWith("room-1", "#general");
 });
 
 it.each(["dm", "group-dm"] as const)("Go live is in a %s header too, named without a #", (kind) => {

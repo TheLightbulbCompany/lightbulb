@@ -101,7 +101,7 @@ describe("AutomationDetail (the automation pane)", () => {
     messaging.value = { directoryProps: { rooms: [{ roomId: "room-workshop-launch", kind: "channel", name: "walk-8", participants: [] }] } };
     try {
       render(<Detail />);
-      expect(await screen.findByText(/^Mondays 9:00 AM New York time · posts to walk-8 · /)).toBeInTheDocument();
+      expect(await screen.findByText(/^Mondays 9:00 AM New York time · posts to #walk-8 · /)).toBeInTheDocument();
     } finally { messaging.value = null; }
   });
 

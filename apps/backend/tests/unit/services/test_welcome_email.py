@@ -13,9 +13,9 @@ def test_owner_version_is_lightbulb_speaking_and_promises_nothing_false():
     subject, text = welcome_email.owner_welcome(first_name="Ada", workspace="Acme", url=URL)
     assert subject == "Your team at Acme is ready"
     assert text.startswith("Hi Ada,\n\nI'm Lightbulb.")
-    assert f"Open general: {URL}" in text
+    assert f"Open #general: {URL}" in text
     assert text.rstrip().endswith("— Lightbulb, Acme")
-    assert "CEO" not in text and "#" not in text
+    assert "CEO" not in text
     for false_claim in ("container", "Nothing is\nshared", "marketplace", "overnight"):
         assert false_claim not in text
     assert all(ord(ch) < 0x2000 or ch in "—" for ch in subject + text)  # no emoji

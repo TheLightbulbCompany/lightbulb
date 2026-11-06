@@ -912,7 +912,7 @@ describe("conversation screen", () => {
     mockRoomLive = { userIds: ["user-a"], available: true };
     await render(<Conversation />);
     await fireEvent.press(await screen.findByLabelText("Go live"));
-    expect(mockJoinLive).toHaveBeenCalledWith("room-1", "Launch");
+    expect(mockJoinLive).toHaveBeenCalledWith("room-1", "#Launch");
     expect(screen.getByText("Live — Alice")).toBeTruthy();
     mockRoomLive = { userIds: [], available: false };
   });

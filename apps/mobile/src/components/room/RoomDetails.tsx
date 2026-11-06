@@ -23,7 +23,7 @@ import { RoomRenameSheet } from "./RoomRenameSheet";
 
 const MENU = [pickerStyle("menu")];
 
-const KIND_LABEL = { channel: "Project", "group-dm": "Group chat", dm: "Direct message" } as const;
+const KIND_LABEL = { channel: "Channel", "group-dm": "Group chat", dm: "Direct message" } as const;
 
 export interface RoomDetailsProps {
   room: RoomDetail;
@@ -68,7 +68,7 @@ export function RoomDetails({
   const others = room.members.filter((m) => !(m.kind === "human" && m.id === currentUserId));
   const isAdmin = viewer?.role === "owner" || viewer?.role === "admin";
   const isChannel = room.kind === "channel";
-  const noun = room.kind === "group-dm" ? "group chat" : "project";
+  const noun = room.kind === "group-dm" ? "group chat" : "channel";
   const canChangeMode = canChangeListenMode(viewer?.role, room);
   const canManageMembers = isChannel && isAdmin;
   // A session's chat: its people follow who can read the session and it opens and closes with the
@@ -104,7 +104,7 @@ export function RoomDetails({
       { text: action, style: "destructive", onPress: onConfirm },
     ]);
 
-  const title = roomDisplayName(room, others);
+  const title = `${isChannel ? "#" : ""}${roomDisplayName(room, others)}`;
   const count = room.members.length;
 
   return (

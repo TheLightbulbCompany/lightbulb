@@ -237,7 +237,7 @@ A single achromatic ramp (white to graphite) with one warm accent held in reserv
 **Character:** One geometric sans at two weights. Emphasis is 600, never 700 and never lighter than 400 (the phone's semibold is Satoshi Bold, the only static cut the licence allows); hierarchy comes from size and `ink`/`ink-muted` contrast, not from a second face. The second sans (message prose) was retired on 6 Nov 2026: one face is how the product stays calm.
 
 ### Hierarchy
-- **Title** (600, 18px, 1.4): the room name in the header; the empty-state heading. Also `font-semibold` at 16px for section headings ("Chats", "Room members", "Project name").
+- **Title** (600, 18px, 1.4): the room name in the header; the empty-state heading. Also `font-semibold` at 16px for section headings ("Chats", "Room members", "Channel name").
 - **Body** (400, 16px, 1.5): message prose, directory entries, composer text. Paragraphs inside a message carry 2px top / 4px bottom margins.
 - **Meta** (400, 14px, 1.4): timestamps, helper and error lines, group headings (600, `ink-muted`), the unread count (tabular numerals), listen-mode selects, run details.
 - **UI** (400, 13px, 1.4): sidebar "More" nav rows, dock tab strip.
@@ -300,7 +300,7 @@ Lines are 1px `edge`; the active tab and the live-run rule are 2px in `currentCo
 ### Buttons
 Pill, semibold, quiet. All variants share `rounded-full`, `text-sm font-semibold`, a 120ms colour transition and `active:scale-[0.97]`.
 - **Shape:** pill (`999px`).
-- **Primary:** `ink` fill, `ground` text; `h-9 px-4` (36px). Used for "Create project", "Save changes", the send button (`room-send`, 36×36 at 8px radius, the one non-pill).
+- **Primary:** `ink` fill, `ground` text; `h-9 px-4` (36px). Used for "Create channel", "Save changes", the send button (`room-send`, 36×36 at 8px radius, the one non-pill).
 - **Outline:** `ground` fill, `edge` border, `ink` text. "Try again", "Cancel", "Check message status", work-link buttons (`room-work-link`, wrapping, `min-height 36px`).
 - **Ghost:** transparent, `ink` text; hover `ground-deep`. Directory actions, composer icon buttons, "Back", the reply-count button (`room-reply`, `info` text, 14px, 28px tall).
 - **Destructive:** `err` fill, `ground` text. "Delete message" only.
@@ -330,7 +330,7 @@ Pill, semibold, quiet. All variants share `rounded-full`, `text-sm font-semibold
 
 ### Navigation
 - **Rail** (56px, `ground-deep`, `edge` right rule): 44×40 stacked icon+9px-label buttons, `ink-muted` at rest, `ink` on `ground-deeper` for hover and `aria-current`, 7px radius (observed; the step is 8px), focus outline offset 1px.
-- **Directory** (`ground-deep`): 14px 600 `ink-muted` group headings ("Projects", "People"); entries are 36px rows, `5px 10px`, 6px radius, icon or `sm` avatar + truncated name + optional count; hover and `aria-current` fill `ground-deeper`; the row's overflow menu is `opacity: 0` until hover/focus/open (always visible on `hover: none`).
+- **Directory** (`ground-deep`): 14px 600 `ink-muted` group headings ("Channels", "People"); entries are 36px rows, `5px 10px`, 6px radius, icon or `sm` avatar + truncated name + optional count; hover and `aria-current` fill `ground-deeper`; the row's overflow menu is `opacity: 0` until hover/focus/open (always visible on `hover: none`).
 - **Sidebar "More" nav:** 36px rows, 13px `ink-soft`, 4px radius, same `ground-deeper` hover/current treatment, focus outline in `ink`.
 - **Room tabs:** a 24px-gap strip with an `edge` bottom rule; each tab is 42px tall, `ink-muted`, with a transparent 2px bottom border that becomes `ink` (and the text 600) under `aria-current="page"`. This is the same underline grammar as the dock tab strip and `PanelTabs`.
 - **Header search trigger:** 32px, `ground-deep`, `edge` border, 6px radius, 12px `ink-muted`, a `kbd` hint behind an `edge` left rule; hover to `ground-deeper`/`ink`.

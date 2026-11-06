@@ -42,7 +42,7 @@ const CHANNEL_NAME_MAX_CHARS = 80;
 const MAX_ROOM_MEMBERS = 31;
 
 const SEGMENTS: readonly { key: SheetMode; label: string }[] = [
-  { key: "channel", label: "Project" },
+  { key: "channel", label: "Channel" },
   { key: "direct", label: "Direct message" },
 ];
 
@@ -188,7 +188,7 @@ export function NewMessageSheet({
     mode === "channel"
       ? busy
         ? "Creating…"
-        : "Create project"
+        : "Create channel"
       : picked.length > 1
         ? "Create group"
         : "Message";
@@ -252,13 +252,13 @@ export function NewMessageSheet({
         />
         {mode === "channel" ? (
           <>
-            <Text style={[styles.fieldLabel, { color: palette.fgMute }]}>Project name</Text>
+            <Text style={[styles.fieldLabel, { color: palette.fgMute }]}>Channel name</Text>
             <TextInput
               style={[styles.nameInput, { backgroundColor: palette.raised, color: palette.fg }]}
               value={channelName}
               onChangeText={setChannelName}
               maxLength={CHANNEL_NAME_MAX_CHARS}
-              accessibilityLabel="Project name"
+              accessibilityLabel="Channel name"
               autoCorrect={false}
               autoCapitalize="none"
             />

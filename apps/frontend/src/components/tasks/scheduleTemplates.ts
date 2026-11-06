@@ -21,7 +21,7 @@ export const SCHEDULE_TEMPLATES: readonly ScheduleTemplate[] = [
   { specialist: "Engineering", name: "Site health check", cadence: "Daily 8:00 AM", draft: "Every day at 8:00 AM, have Engineering check the site is up and post here only if something is wrong." },
 ];
 export const LIGHTBULB_TEMPLATE: ScheduleTemplate = {
-  specialist: "Lightbulb", name: "Weekly project summary", cadence: "Fridays 4:00 PM", draft: "Every Friday at 4:00 PM, post a short summary of this week's work here.",
+  specialist: "Lightbulb", name: "Weekly channel summary", cadence: "Fridays 4:00 PM", draft: "Every Friday at 4:00 PM, post a short summary of this week's work here.",
 };
 
 /** Three cards built from a project's goal; none without one. */

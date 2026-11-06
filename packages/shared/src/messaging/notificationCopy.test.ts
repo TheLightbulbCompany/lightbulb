@@ -3,7 +3,7 @@ import { notificationLine, notificationTitle, roomWhere, runFailureLine, sentenc
 
 describe("notification copy", () => {
   it("line 1 is who · where", () => {
-    expect(notificationTitle("Pulse", roomWhere({ kind: "channel", name: "GTM Strategy" }))).toBe("Pulse · GTM Strategy");
+    expect(notificationTitle("Pulse", roomWhere({ kind: "channel", name: "GTM Strategy" }))).toBe("Pulse · #GTM Strategy");
     expect(notificationTitle("Friday", roomWhere({ kind: "dm", name: null }))).toBe("Friday · DM");
     expect(notificationTitle("Pulse", "ISOA-400")).toBe("Pulse · ISOA-400");
     expect(notificationTitle("Pulse", null)).toBe("Pulse");
@@ -12,7 +12,7 @@ describe("notification copy", () => {
   it("names every room kind", () => {
     expect(roomWhere({ kind: "group-dm", name: "Launch crew" })).toBe("Launch crew");
     expect(roomWhere({ kind: "group-dm", name: null })).toBe("Group chat");
-    expect(roomWhere({ kind: "channel", name: null })).toBe("Project");
+    expect(roomWhere({ kind: "channel", name: null })).toBe("Channel");
     expect(roomWhere(undefined)).toBeNull();
   });
 

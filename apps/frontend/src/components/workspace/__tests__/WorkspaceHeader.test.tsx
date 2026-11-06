@@ -110,31 +110,32 @@ describe("WorkspaceHeader", () => {
     fireEvent.click(screen.getByRole("button", { name: "Work" }));
     expect(closePane).toHaveBeenCalledOnce();
   });
-  it("with the switch on, reads Home, Activity, Creations, Team, Settings: no Chat, no Work, no Library or Canvas; a project lights nothing", () => {
+  it("with the switch on, reads Home, Activity, Chat, Creations, Team, Settings: no Work, no Library or Canvas", () => {
     live.superAgent = true;
     place = "home";
     try {
       render(<WorkspaceHeader />);
       const rail = screen.getByRole("navigation", { name: "Workspace" });
       const labels = [...rail.querySelectorAll("button")].map((b) => b.getAttribute("aria-label"));
-      expect(labels.slice(labels.indexOf("Home"), labels.indexOf("Team") + 1)).toEqual(["Home", "Activity", "Creations", "Team"]);
+      expect(labels.slice(labels.indexOf("Home"), labels.indexOf("Team") + 1)).toEqual(["Home", "Activity", "Chat", "Creations", "Team"]);
       expect(labels).toContain("Settings");
-      expect(labels).not.toContain("Chat");
       expect(labels).not.toContain("Work");
       expect(screen.getByRole("button", { name: "Home" })).toHaveAttribute("aria-current", "page");
       fireEvent.click(screen.getByRole("button", { name: "Activity" }));
       expect(openPanel).toHaveBeenCalledWith("activity", {}, { pushUrl: true });
       fireEvent.click(screen.getByRole("button", { name: "Home" }));
       expect(openPanel).toHaveBeenCalledWith("home", {}, { pushUrl: true });
+      fireEvent.click(screen.getByRole("button", { name: "Chat" }));
+      expect(activateMessagesPanel).toHaveBeenCalled();
     } finally { live.superAgent = false; place = "activity"; }
   });
-  it("with the switch on, a project (the Chat place) lights no rail place", () => {
+  it("with the switch on, a channel or DM (the Chat place) lights Chat on the rail (founder, 6 Nov 2026)", () => {
     live.superAgent = true;
     place = "chat";
     try {
       render(<WorkspaceHeader />);
       const rail = screen.getByRole("navigation", { name: "Workspace" });
-      expect(rail.querySelector('[aria-current="page"]')).toBeNull();
+      expect(rail.querySelector('[aria-current="page"]')).toHaveAttribute("aria-label", "Chat");
     } finally { live.superAgent = false; place = "activity"; }
   });
   it("with the switch on, Activity badges exactly its Needs you count: not the legacy badge, not team runs", async () => {

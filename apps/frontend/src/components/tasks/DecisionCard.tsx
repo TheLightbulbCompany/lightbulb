@@ -59,7 +59,7 @@ export function DecisionCard({ task, question, ended = false, compact = false, f
   const roomId = task.audience?.roomId ?? null;
   const projectRoom = roomId && (place !== "chat" || directory?.currentRoomId !== roomId)
     ? directory?.rooms.find((r) => r.roomId === roomId && r.kind === "channel") : undefined;
-  const project = projectRoom ? roomDisplayName(projectRoom, projectRoom.participants) : null;
+  const project = projectRoom ? `#${roomDisplayName(projectRoom, projectRoom.participants)}` : null;
   const buttons = decisionButtons(question.options, question.subkind, question.preview);
   const unavailable = buttons.find((b) => b.disabledReason)?.disabledReason;
   const send = async (optionId: string, typed?: string) => {

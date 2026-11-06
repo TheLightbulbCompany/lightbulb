@@ -36,15 +36,15 @@ export function RoomRenameSheet({ visible, roomName, onRename, onClose }: RoomRe
 
   const save = async () => {
     if (!trimmed) {
-      setError("Enter a project name.");
+      setError("Enter a channel name.");
       return;
     }
     if (trimmed.length > MAX_NAME_LENGTH) {
-      setError(`Project names must be ${MAX_NAME_LENGTH} characters or fewer.`);
+      setError(`Channel names must be ${MAX_NAME_LENGTH} characters or fewer.`);
       return;
     }
     if (/\p{C}/u.test(trimmed)) {
-      setError("Project names cannot contain control characters.");
+      setError("Channel names cannot contain control characters.");
       return;
     }
 
@@ -54,7 +54,7 @@ export function RoomRenameSheet({ visible, roomName, onRename, onClose }: RoomRe
       await onRename(trimmed);
       onClose();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not rename this project. Try again.");
+      setError(cause instanceof Error ? cause.message : "Could not rename this channel. Try again.");
     } finally {
       setSaving(false);
     }
@@ -63,9 +63,9 @@ export function RoomRenameSheet({ visible, roomName, onRename, onClose }: RoomRe
   return (
     <BottomSheet visible={visible} onClose={close} dismissible={!saving}>
       <View style={[styles.card, { backgroundColor: palette.surface }]}>
-        <Text style={[styles.title, { color: palette.fg }]}>Rename project</Text>
+        <Text style={[styles.title, { color: palette.fg }]}>Rename channel</Text>
         <TextInput
-          accessibilityLabel="Project name"
+          accessibilityLabel="Channel name"
           autoCapitalize="words"
           autoCorrect={false}
           autoFocus
@@ -76,7 +76,7 @@ export function RoomRenameSheet({ visible, roomName, onRename, onClose }: RoomRe
             setError(null);
           }}
           onSubmitEditing={() => void save()}
-          placeholder="Project name"
+          placeholder="Channel name"
           placeholderTextColor={palette.fgMute}
           returnKeyType="done"
           selectTextOnFocus

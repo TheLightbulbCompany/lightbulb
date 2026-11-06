@@ -69,6 +69,6 @@ export function MessagingConversation() {
         <p role="status">{directoryProps.state === "ready" && directoryProps.rooms.length === 0
           // No rooms at all only happens before setup seeds #general.
           ? "Your team is getting ready — #general will open here."
-          : "Choose a chat or create a project."}</p>
+          : "Choose a chat or create a channel."}</p>
       </section>;
 }

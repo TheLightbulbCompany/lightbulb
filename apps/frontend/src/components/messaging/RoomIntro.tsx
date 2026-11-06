@@ -18,8 +18,8 @@ export interface StarterAsk { label: string; ask: string }
 export function starterAsks(topic: string | null | undefined): StarterAsk[] {
   const goal = goalLine(topic);
   if (!goal) return [
-    { label: "Plan it", ask: "Make a short step-by-step plan for this project. Ask me what you need to know first." },
-    { label: "First draft", ask: "Write a first draft of what this project needs most, and tell me what you assumed." },
+    { label: "Plan it", ask: "Make a short step-by-step plan for this channel. Ask me what you need to know first." },
+    { label: "First draft", ask: "Write a first draft of what this channel needs most, and tell me what you assumed." },
     { label: "See how others do it", ask: "Find 3 to 5 examples of how others run projects like this one, and say what we should borrow." },
   ];
   return [
@@ -47,7 +47,7 @@ export function RoomIntro({ room, roomName, participants, superAgent = false, fr
     return <div className="room-intro room-intro--project">
       <h3>{roomName}</h3>
       {room?.topic?.trim() && <p className="room-intro-goal">{room.topic.trim()}</p>}
-      <p>Ask for anything this project needs; Lightbulb hands it to the right specialist.</p>
+      <p>Ask for anything this channel needs; Lightbulb hands it to the right specialist.</p>
       {asks.length > 0 && <div className="room-intro-asks" role="group" aria-label="Suggested asks">
         {asks.map(({ label, ask }) => <Button key={label} type="button" variant="outline" size="sm" title={ask} onClick={() => onPickAsk!(ask)}>
           {label}</Button>)}
@@ -55,8 +55,9 @@ export function RoomIntro({ room, roomName, participants, superAgent = false, fr
     </div>;
   }
   const title = kind === "dm" ? `This is the beginning of your direct messages with ${roomName}.`
-    : `This is the beginning of ${roomName}.`;
-  const detail = room?.shared ? "This project is shared with the Lightbulb team — ask us anything here."
+    : kind === "channel" ? `This is the beginning of #${roomName}.`
+      : `This is the beginning of ${roomName}.`;
+  const detail = room?.shared ? "This channel is shared with the Lightbulb team — ask us anything here."
     : kind === "dm"
     ? (agents.length > 0 ? `${roomName} replies to everything you send here.` : "Messages here are private to the two of you.")
     : agents.length === 0 ? "Mention an agent to bring one in."

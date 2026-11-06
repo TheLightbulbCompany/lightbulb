@@ -43,6 +43,18 @@ function item(message: RoomMessage, over: Partial<Parameters<typeof RoomMessageI
 const [ask, reply, result] = FIXTURES.step07.messages as RoomMessage[];
 
 describe("RoomMessageItem with the super-agent switch", () => {
+  it("Lightbulb's own text answer in a DM offers Copy; a person's message and a channel answer don't (W18)", () => {
+    const answer = { ...reply, text: "Sip, steep, and discover your new favorite brew.", taskRefs: [], kind: null, specialist: null } as RoomMessage;
+    const { unmount } = render(item(answer, { copyable: true }));
+    expect(screen.getByRole("button", { name: "Copy" })).toBeInTheDocument();
+    unmount();
+    const r2 = render(item(answer));
+    expect(screen.queryByRole("button", { name: "Copy" })).toBeNull();
+    r2.unmount();
+    render(item({ ...answer, author: { kind: "human", id: SAM, displayName: "Sam" } } as RoomMessage, { copyable: true }));
+    expect(screen.queryByRole("button", { name: "Copy" })).toBeNull();
+  });
+
   it("specialist byline", () => {
     render(item(result));
     expect(screen.getByText("Finance")).toBeInTheDocument();

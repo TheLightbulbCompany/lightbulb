@@ -291,7 +291,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
   } = live;
   const roomsKey = userId ? roomsListKey(userId, orgId) : null;
   const scope = roomsKey?.[1] ?? null;
-  const { cache } = useSWRConfig();
+  const { cache, mutate: mutateCache } = useSWRConfig();
   const store = useMemo(() => storeFor(cache, scope, persistence), [cache, scope, persistence]);
   const roomsResponse = useSWR(
     roomsKey,
@@ -1205,10 +1205,13 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
   ) => {
     const created = await messaging.createRoom(request);
     setSelectRoomError(null);
+    // The create answers with the room's detail: seed it, so the new room opens at once instead of on a blank
+    // "Loading chat…" while the same detail is read again (W18).
+    if (scope) void mutateCache(["messaging-room", scope, created.roomId], created, { revalidate: false });
     await mutateRooms();
     if (activate && requestId === selectionRequest.current) setActiveRoomId(created.roomId);
     return created;
-  }, [messaging, mutateRooms]);
+  }, [messaging, mutateRooms, mutateCache, scope]);
 
   const resolveDm = useCallback(async (
     participant: MemberRef,
@@ -1499,7 +1502,8 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     activeRoomId,
     activeRoom,
     roomError: detailResponse.error as Error | undefined,
-    roomLoading: detailResponse.isLoading,
+    // A room whose detail is in hand is not loading (SWR keeps isLoading while it revalidates a seeded entry).
+    roomLoading: detailResponse.isLoading && !detailResponse.data,
     accessRemoved,
     selectRoomError,
     messages,

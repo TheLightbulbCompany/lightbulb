@@ -199,13 +199,18 @@ export type ChipMark = "working" | "waiting" | "done" | "failed" | "closed";
 
 /** A task chip's live state (dev walk 12, W12-1): "Working · 0:38" → "Done · 1:02", or "Didn't finish". The time is
  *  the latest run's: ticking while it works, its stored length (endedAt − startedAt) once it ended, so every read says
- *  the same (W17: 0:22, then 0:21). Before the first run starts it ticks from when the task was asked: "Working · 0:00"
- *  at once, never a bare "Working". */
+ *  the same (W17: 0:22, then 0:21). The first run counts from when the task was asked: "Working · 0:00" at once, never a
+ *  bare "Working", and never a step back when the run starts. */
 export function chipState(t: TaskSummary, viewerId: string, now: number): { mark: ChipMark; word: string; time: string | null } {
   const view = summaryView(t, viewerId);
   const run = t.activity;
-  const from = run?.startedAt ? Date.parse(run.startedAt) : NaN;
+  const started = run?.startedAt ? Date.parse(run.startedAt) : NaN;
   const to = run?.endedAt ? Date.parse(run.endedAt) : NaN;
+  // The first run counts from the ask, so the clock never steps back when the run starts (W18: 0:02 → 0:01 → 0:02);
+  // the run's own start is the base only for a retry, or when the ask's stamp is missing or later. A retry waiting to
+  // start never counts from the original ask.
+  const asked = (!run || run.n <= 1) && t.createdAt ? Date.parse(t.createdAt) : NaN;
+  const from = !Number.isNaN(asked) && !(asked > started) ? asked : started;
   const ran = !Number.isNaN(from) && !Number.isNaN(to) ? clockTime(to - from) : null;
   if (t.status === "failed") return { mark: "failed", word: "Didn't finish", time: null };
   if (t.status === "resolved" && (t.statusReason === "stopped" || t.statusReason === "dismissed")) {
@@ -216,10 +221,7 @@ export function chipState(t: TaskSummary, viewerId: string, now: number): { mark
   if (t.status === "resolved") return { mark: "done", word: "Closed", time: ran };
   if (view.word === "Done") return { mark: "done", word: "Done", time: ran };
   if (view.word === "Needs you") return { mark: "waiting", word: view.reason === "Ready for review" ? "Ready for review" : "Needs you", time: null };
-  // Only the first run's wait: a retry waiting to start never counts from the original ask.
-  const asked = (!run || (run.n <= 1 && !run.startedAt)) && t.createdAt ? Date.parse(t.createdAt) : NaN;
-  const since = !Number.isNaN(from) && Number.isNaN(to) ? from : asked;
-  return { mark: "working", word: "Working", time: Number.isNaN(since) ? null : clockTime(now - since) };
+  return { mark: "working", word: "Working", time: Number.isNaN(from) || !Number.isNaN(to) ? null : clockTime(now - from) };
 }
 
 function joinNames([first, ...rest]: string[]): string {

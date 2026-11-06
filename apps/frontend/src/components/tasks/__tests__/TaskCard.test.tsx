@@ -35,7 +35,7 @@ describe("TaskCard", () => {
     const outputs = ["Brief.md", "Plan.md", "Notes.md"].map((title, i) => ({ id: `f${i}`, kind: "document" as const, title, ref: {}, createdAt: "2026-11-06T10:00:00Z" }));
     render(<Fresh><TaskCard task={{ ...byId("step02", "t-signup"), status: "resolved", shownGroup: "resolved", outputs }} taskId="t-signup" viewerId={SAM} onOpen={onOpen} /></Fresh>);
     const chips = screen.getByRole("list", { name: "Made by this task" });
-    expect(within(chips).getByRole("button", { name: "Open Brief.md" })).toBeInTheDocument();
+    expect(within(chips).getByRole("button", { name: "Open Brief · MD" })).toBeInTheDocument();
     expect(within(chips).queryByText("Notes.md")).toBeNull();
     await userEvent.click(within(chips).getByRole("button", { name: "+1 more" }));
     expect(onOpen).toHaveBeenCalledWith("t-signup");

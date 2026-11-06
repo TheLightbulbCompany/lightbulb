@@ -22,7 +22,7 @@ it("the Router's one-line result carries no second task chip and no card: the ac
   live.tasks = fakeTasksClient([{ ...task, outputs }], FIXTURES.step08.details);
   const acked = new Set([`|${task.taskId}`]);
   const { unmount } = render(<Fresh><MessageTasks message={line} viewerId={SAM} onOpen={vi.fn()} ackedTasks={acked} /></Fresh>);
-  expect(await screen.findByRole("button", { name: "Open menu-blurbs.md" })).toBeInTheDocument();
+  expect(await screen.findByRole("button", { name: "Open Menu blurbs · MD" })).toBeInTheDocument();
   expect(document.querySelector("[data-task-chip]")).toBeNull();
   expect(document.querySelector("[data-task-card]")).toBeNull();
   unmount();
@@ -60,7 +60,7 @@ it("the Router's ack carries its task as a compact chip with the specialist, nev
 it("one task, one live chip: Working with its timer, then Done with the run's length and what it made (dev walk 12, W12-1)", async () => {
   const base = FIXTURES.step08.tasks[0];
   const started = new Date(Date.now() - 38_000).toISOString();
-  const working = { ...base, status: "working" as const, shownGroup: "working" as const, activity: { n: 1, status: "running" as const, startedAt: started } };
+  const working = { ...base, createdAt: started, status: "working" as const, shownGroup: "working" as const, activity: { n: 1, status: "running" as const, startedAt: started } };
   live.tasks = fakeTasksClient([working], FIXTURES.step08.details);
   const msg = (kind?: "task_line") => ({
     messageId: kind ? "m9" : "m8", roomId: ROOM, messageSeq: 8, roomRevision: 1, author: { kind: "agent", id: "ceo", displayName: "Lightbulb" },
@@ -80,13 +80,13 @@ it("one task, one live chip: Working with its timer, then Done with the run's le
   const chips = await screen.findAllByRole("button", { name: new RegExp(`${base.title}, Done · 1:02`) });
   // One chip for the task, the ack's (W13-1); what it made shows once, on the finish line.
   expect(chips).toHaveLength(1);
-  expect(screen.getAllByRole("button", { name: "Open bakery-tagline-options.md" })).toHaveLength(1);
+  expect(screen.getAllByRole("button", { name: "Open Bakery tagline options · MD" })).toHaveLength(1);
 });
 
 it("one clock (W17): Done is the run's stored length on every read, just after it ended and long after (0:22 then 0:21 was two)", async () => {
   const base = FIXTURES.step08.tasks[0];
   const start = Date.now() - 17_600;
-  const done = { ...base, status: "idle" as const, shownGroup: "idle" as const,
+  const done = { ...base, createdAt: new Date(start).toISOString(), status: "idle" as const, shownGroup: "idle" as const,
     activity: { n: 1, status: "ended" as const, startedAt: new Date(start).toISOString(), endedAt: new Date(start + 16_600).toISOString() } };
   live.tasks = fakeTasksClient([done], FIXTURES.step08.details);
   const ack = { messageId: "m8", roomId: ROOM, messageSeq: 8, roomRevision: 1, author: { kind: "agent", id: "ceo", displayName: "Lightbulb" },
@@ -95,7 +95,7 @@ it("one clock (W17): Done is the run's stored length on every read, just after i
   const { unmount } = render(<Fresh><MessageTasks message={ack} viewerId={SAM} /></Fresh>);
   expect(await screen.findByRole("button", { name: /Done · 0:16/ })).toBeInTheDocument();
   unmount();
-  live.tasks = fakeTasksClient([{ ...done, activity: { ...done.activity, startedAt: new Date(start - 60_000).toISOString(), endedAt: new Date(start - 43_400).toISOString() } }], FIXTURES.step08.details);
+  live.tasks = fakeTasksClient([{ ...done, createdAt: new Date(start - 60_000).toISOString(), activity: { ...done.activity, startedAt: new Date(start - 60_000).toISOString(), endedAt: new Date(start - 43_400).toISOString() } }], FIXTURES.step08.details);
   render(<Fresh><MessageTasks message={ack} viewerId={SAM} /></Fresh>);
   expect(await screen.findByRole("button", { name: /Done · 0:16/ })).toBeInTheDocument();
 });

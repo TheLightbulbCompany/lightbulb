@@ -278,13 +278,20 @@ describe("TaskOutputs", () => {
     expect(ctl.openPanel).toHaveBeenCalledWith("canvas", { app: "a1" }, { pushUrl: true });
   });
 
+  it("a file chip reads its name and type, never the slug: a PDF and a Word copy differ (W18)", () => {
+    const sheet = (id: string, title: string) => ({ id, kind: "file" as const, title, ref: {}, createdAt: "2026-11-06T10:00:00Z" });
+    render(<TaskOutputs task={{ taskId: "t9", outputs: [sheet("p", "tea-tasting-table-sign-up-sheet.pdf"), sheet("d", "tea-tasting-table-sign-up-sheet.docx")] }} onOpenTask={vi.fn()} />);
+    expect(screen.getByRole("button", { name: "Open Tea tasting table sign up sheet · PDF" })).toHaveAttribute("title", "Tea tasting table sign up sheet · PDF");
+    expect(screen.getByRole("button", { name: "Open Tea tasting table sign up sheet · DOCX" })).toBeInTheDocument();
+  });
+
   it("a doc chip on the task's card in chat goes back to the chat; in the open task, back to the task (W16-2, W13-7)", async () => {
     const { unmount } = render(<TaskOutputs task={task} onOpenTask={vi.fn()} />);
-    await userEvent.click(screen.getByRole("button", { name: "Open Welcome note.md" }));
+    await userEvent.click(screen.getByRole("button", { name: "Open Welcome note · MD" }));
     expect(ctl.openPanel).toHaveBeenLastCalledWith("artifact", expect.objectContaining({ id: "att1", back: "chat", task: "t1" }), { pushUrl: true });
     unmount();
     render(<OutputBackContext.Provider value="task:t1"><TaskOutputs task={task} onOpenTask={vi.fn()} /></OutputBackContext.Provider>);
-    await userEvent.click(screen.getByRole("button", { name: "Open Welcome note.md" }));
+    await userEvent.click(screen.getByRole("button", { name: "Open Welcome note · MD" }));
     expect(ctl.openPanel).toHaveBeenLastCalledWith("artifact", expect.objectContaining({ id: "att1", back: "task:t1" }), { pushUrl: true });
   });
 

@@ -69,6 +69,21 @@ describe("channel settings", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
+  it("the first click on Pause right after editing the name both renames and pauses (W18)", async () => {
+    let finishRename: () => void = () => {};
+    const onRenameRoom = vi.fn(() => new Promise<void>((r) => { finishRename = r; }));
+    const onPatchRoom = vi.fn().mockResolvedValue(undefined);
+    render(header({ onPatchRoom, onRenameRoom }));
+    const dialog = await openSettings();
+    const name = within(dialog).getByLabelText("Name and icon");
+    await userEvent.clear(name);
+    await userEvent.type(name, "Summer sale");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Pause" }));
+    expect(onRenameRoom).toHaveBeenCalledWith("Summer sale");
+    expect(onPatchRoom).toHaveBeenCalledWith({ paused: true });
+    await act(async () => finishRename());
+  });
+
   it("Memory › Instructions saves on blur and counts to 2,000; People shows the Members content", async () => {
     const onSetTopic = vi.fn().mockResolvedValue(undefined);
     render(header({ onSetTopic }));
@@ -96,21 +111,18 @@ describe("channel settings", () => {
     expect(within(dialog).getByText("What Lightbulb remembers here")).toBeInTheDocument();
     expect(await within(dialog).findByText("Classes cap at 12 kids.")).toBeInTheDocument();
     expect(memoryClient.listRoomMemory).toHaveBeenCalledWith("room-1");
-    // W16-7: Forget keeps the row in place with Undo for 5 s; Undo keeps the fact; only then is it forgotten.
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    try {
-      await userEvent.click(within(dialog).getByRole("button", { name: "Forget: Classes cap at 12 kids." }));
-      expect(within(dialog).getByRole("status")).toHaveTextContent("Forgotten");
-      expect(within(dialog).getByText("Classes cap at 12 kids.")).toBeInTheDocument();
-      await userEvent.click(within(dialog).getByRole("button", { name: "Undo forget: Classes cap at 12 kids." }));
-      await act(() => vi.advanceTimersByTimeAsync(6000));
-      expect(memoryClient.forgetRoomMemory).not.toHaveBeenCalled();
-      await userEvent.click(within(dialog).getByRole("button", { name: "Forget: Classes cap at 12 kids." }));
-      await act(() => vi.advanceTimersByTimeAsync(4000));
-      expect(memoryClient.forgetRoomMemory).not.toHaveBeenCalled();
-      await act(() => vi.advanceTimersByTimeAsync(1100));
-      expect(memoryClient.forgetRoomMemory).toHaveBeenCalledWith("room-1", "m-1");
-    } finally { vi.useRealTimers(); }
+    // W16-7: Forget keeps the row in place with Undo; Undo keeps the fact; closing settings forgets it.
+    await userEvent.click(within(dialog).getByRole("button", { name: "Forget: Classes cap at 12 kids." }));
+    expect(within(dialog).getByRole("status")).toHaveTextContent("Forgotten");
+    expect(within(dialog).getByText("Classes cap at 12 kids.")).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Undo forget: Classes cap at 12 kids." }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Forget: Classes cap at 12 kids." }));
+    expect(memoryClient.forgetRoomMemory).not.toHaveBeenCalled();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Close settings" }));
+    expect(memoryClient.forgetRoomMemory).toHaveBeenCalledWith("room-1", "m-1");
+    memoryClient.listRoomMemory.mockResolvedValue({ items: [] });
+    dialog = await openSettings();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Memory" }));
     expect(await within(dialog).findByText(/Tell Lightbulb things about this channel/)).toBeInTheDocument();
     unmount();
 
@@ -133,18 +145,42 @@ describe("channel settings", () => {
     expect(memoryClient.forgetRoomMemory).toHaveBeenCalledWith("room-1", "m-2");
   });
 
-  it("a failed Forget keeps the fact and says so", async () => {
+  it("a failed Forget says so in a toast once settings close", async () => {
     const fact = { messageId: "m-1", fact: "We only use Caputo flour.", notedAt: new Date().toISOString() };
     render(header({ memoryClient: { listRoomMemory: vi.fn().mockResolvedValue({ items: [fact] }), forgetRoomMemory: vi.fn().mockRejectedValue(new Error("no")) } }));
     const dialog = await openSettings();
     await userEvent.click(within(dialog).getByRole("button", { name: "Memory" }));
+    await userEvent.click(await within(dialog).findByRole("button", { name: "Forget: We only use Caputo flour." }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Close settings" }));
+    await waitFor(() => expect(toast.notifyApiError).toHaveBeenCalledWith(expect.any(Error), "That couldn't be forgotten."));
+  });
+
+  it("Undo stays on the forgotten row with no timer and through a section switch; it never lands on the next fact (W18-1)", async () => {
+    const facts = [
+      { messageId: "m-1", fact: "The agenda is three oolongs.", notedAt: new Date().toISOString() },
+      { messageId: "m-2", fact: "The shop is closed on Mondays.", notedAt: new Date().toISOString() },
+    ];
+    const memoryClient = { listRoomMemory: vi.fn().mockResolvedValue({ items: facts }), forgetRoomMemory: vi.fn().mockResolvedValue(undefined) };
+    render(header({ memoryClient }));
+    const dialog = await openSettings();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Memory" }));
+    await within(dialog).findByText("The shop is closed on Mondays.");
+    const firstRowButton = () => within(dialog).getAllByRole("listitem")[0].querySelector("button")!;
+    await userEvent.click(firstRowButton()); // Forget on row 1
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    try {
-      await userEvent.click(await within(dialog).findByRole("button", { name: "Forget: We only use Caputo flour." }));
-      await act(() => vi.advanceTimersByTimeAsync(5100));
-    } finally { vi.useRealTimers(); }
-    expect(await within(dialog).findByRole("alert")).toHaveTextContent("That couldn't be forgotten.");
-    expect(within(dialog).getByText("We only use Caputo flour.")).toBeInTheDocument();
+    try { await act(() => vi.advanceTimersByTimeAsync(60_000)); } finally { vi.useRealTimers(); }
+    // A minute later the struck row is still first, and the same spot is its Undo — not the next row's Forget.
+    expect(within(dialog).getAllByRole("listitem")).toHaveLength(2);
+    expect(firstRowButton()).toHaveAccessibleName("Undo forget: The agenda is three oolongs.");
+    await userEvent.click(within(dialog).getByRole("button", { name: "People" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Memory" }));
+    await within(dialog).findByText("The shop is closed on Mondays.");
+    expect(firstRowButton()).toHaveAccessibleName("Undo forget: The agenda is three oolongs.");
+    await userEvent.click(firstRowButton()); // Undo, where the next Forget would have slid to
+    expect(within(dialog).getByRole("button", { name: "Forget: The shop is closed on Mondays." })).toBeInTheDocument();
+    expect(memoryClient.forgetRoomMemory).not.toHaveBeenCalled();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Close settings" }));
+    expect(memoryClient.forgetRoomMemory).not.toHaveBeenCalled();
   });
 
   it("Memory is one pick from name ▾ (W16-8)", async () => {

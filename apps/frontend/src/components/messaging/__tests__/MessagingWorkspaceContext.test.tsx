@@ -398,6 +398,16 @@ it("exposes only adding people for a direct message so the server can convert it
   expect(panel.onRemoveMember).toBeUndefined();
 });
 
+it("Add people in a DM opens the new group chat as a pick, so the URL follows it (W18-6)", async () => {
+  state.activeRoom = { ...room, kind: "dm" };
+  state.createRoom = vi.fn().mockResolvedValue({ ...room, roomId: "group-1", kind: "group-dm" });
+  compose();
+  const before = workspaceValue.explicitPickCount;
+  await act(async () => panel.onAddMembers?.([{ kind: "agent", id: "agent-atlas" }]));
+  expect(state.createRoom).toHaveBeenCalledWith(expect.objectContaining({ kind: "group-dm" }));
+  expect(workspaceValue.explicitPickCount).toBe(before + 1);
+});
+
 it("lets a group chat member add people while preserving its existing editing rules", async () => {
   state.activeRoom = { ...room, kind: "group-dm" };
   compose();

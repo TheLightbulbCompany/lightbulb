@@ -105,12 +105,13 @@
 /* Chips on a task: one per output, 28 tall, r6, hairline, 13/18. Above the card's stretched open button. */
 .task-outputs { position: relative; z-index: 10; display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .task-outputs__chip {
-  display: inline-flex; align-items: center; gap: 6px; max-width: 240px; min-height: 28px; padding: 0 8px;
+  display: inline-flex; align-items: center; gap: 6px; max-width: min(100%, 320px); min-height: 28px; padding: 0 8px;
   border: 1px solid var(--edge); border-radius: 6px; background: var(--background); font-size: 13px; line-height: 18px; color: var(--foreground);
   transition: background-color 120ms ease;
 }
 .task-outputs__chip > svg { flex: none; color: var(--muted-foreground); }
 .task-outputs__title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-outputs__ext { flex: none; font-size: 11px; line-height: 16px; color: var(--muted-foreground); }
 button.task-outputs__chip:hover { background: var(--muted); }
 button.task-outputs__chip:focus-visible, .task-outputs__more:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
 .task-outputs__more { min-height: 28px; padding: 0 6px; font-size: 13px; line-height: 18px; color: var(--muted-foreground); }
@@ -126,7 +127,7 @@ button.task-outputs__chip:focus-visible, .task-outputs__more:focus-visible { out
   height: 28px; padding: 0 8px; border-bottom: 1px solid var(--edge); text-align: left;
   font-size: 13px; line-height: 18px; font-weight: 500; color: var(--muted-foreground);
 }
-.project-files__table th:nth-child(2) { width: 34%; }
+.project-files__table th:nth-child(2) { width: 25%; } /* the name gets the rest (W18) */
 .project-files__table th:nth-child(3) { width: 84px; } /* "11mo ago" at 13px plus padding; 48 cut it to "1m…" (W14) */
 .project-files__table th:nth-child(4) { width: 32px; }
 .project-files__table td { height: 36px; padding: 0 8px; border-bottom: 1px solid var(--edge); font-size: 15px; line-height: 22px; }
@@ -134,7 +135,8 @@ button.task-outputs__chip:focus-visible, .task-outputs__more:focus-visible { out
 .project-files__muted { color: var(--muted-foreground); font-size: 13px !important; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .project-files__name { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; min-height: 36px; text-align: left; color: var(--foreground); }
 .project-files__name > svg { flex: none; color: var(--muted-foreground); }
-.project-files__name > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Up to two lines before an ellipsis, the full name in its tooltip (W18: "Tea tasting with Mei ..." at 190 px). */
+.project-files__name > span { min-width: 0; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow-wrap: anywhere; padding: 6px 0; }
 .project-files__name:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; border-radius: 4px; }
 .project-files__act { text-align: right; padding: 0 !important; }
 .project-files__more { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 6px; color: var(--muted-foreground); opacity: 0; }

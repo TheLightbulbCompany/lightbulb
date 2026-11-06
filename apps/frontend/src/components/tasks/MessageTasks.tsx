@@ -101,7 +101,7 @@ function RefChip({ taskId, listed, viewerId, onOpen, withOutputs, acked = false 
 }
 
 /** Copy, with ✓ for 2 s. The label never changes, so the button never shifts. */
-function CopyResult({ text }: { text: string }): ReactElement {
+export function CopyResult({ text }: { text: string }): ReactElement {
   const [copied, setCopied] = useState(false);
   useEffect(() => {
     if (!copied) return;

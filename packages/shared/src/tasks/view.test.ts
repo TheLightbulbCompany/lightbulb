@@ -313,11 +313,21 @@ describe("chipState (dev walk 12, W12-1)", () => {
     expect(chipState(summary({ status: "queued", createdAt: at(38) }), SAM, now)).toEqual({ mark: "working", word: "Working", time: "0:00" });
     expect(chipState(summary({ status: "queued", createdAt: at(36), activity: { n: 1, status: "dispatched" } }), SAM, now).time).toBe("0:02");
     expect(chipState(summary({ status: "queued", createdAt: at(0), activity: { n: 2, status: "dispatched" } }), SAM, now).time).toBeNull();
-    // Once it runs, the run's start; once it ends, the stored length, whenever it is read.
-    expect(chipState(summary({ createdAt: at(0), activity: { n: 1, status: "running", startedAt: at(2) } }), SAM, now).time).toBe("0:36");
+    // Once it ends, the stored length, whenever it is read.
     const done = summary({ status: "idle", shownGroup: "idle", createdAt: at(0), activity: { n: 1, status: "ended", startedAt: at(1), endedAt: at(22.9) } });
-    expect(chipState(done, SAM, Date.parse(at(23))).time).toBe("0:21");
-    expect(chipState(done, SAM, now + 600_000).time).toBe("0:21");
+    expect(chipState(done, SAM, Date.parse(at(23))).time).toBe("0:22");
+    expect(chipState(done, SAM, now + 600_000).time).toBe("0:22");
+  });
+  it("W18: the first run keeps counting from the ask, so the clock never steps back when the run starts", () => {
+    const asked = summary({ status: "queued", createdAt: at(0), activity: { n: 1, status: "dispatched" } });
+    const running = summary({ createdAt: at(0), activity: { n: 1, status: "running", startedAt: at(1.5) } });
+    const ended = summary({ status: "idle", shownGroup: "idle", createdAt: at(0), activity: { n: 1, status: "ended", startedAt: at(1.5), endedAt: at(3.2) } });
+    const reads = [chipState(asked, SAM, Date.parse(at(2.1))), chipState(running, SAM, Date.parse(at(2.4))),
+      chipState(running, SAM, Date.parse(at(3.1))), chipState(ended, SAM, Date.parse(at(3.3)))].map((r) => r.time);
+    expect(reads).toEqual(["0:02", "0:02", "0:03", "0:03"]);
+    // A run stamped before the ask (clock skew) counts from its own start; a retry counts from its own start.
+    expect(chipState(summary({ createdAt: at(5), activity: { n: 1, status: "running", startedAt: at(2) } }), SAM, now).time).toBe("0:36");
+    expect(chipState(summary({ createdAt: at(0), activity: { n: 2, status: "running", startedAt: at(30) } }), SAM, now).time).toBe("0:08");
   });
   it("a closed task says Closed, as its list group and its header do (dev walk 13, W13-3)", () => {
     const ended = { n: 1, status: "ended" as const, startedAt: at(0), endedAt: at(57) };

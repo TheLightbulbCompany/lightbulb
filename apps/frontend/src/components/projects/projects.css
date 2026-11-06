@@ -68,14 +68,16 @@
 .project-memory__item { display: flex; align-items: center; gap: 12px; min-height: 40px; padding: 6px 0; border-top: 1px solid var(--edge-soft); }
 .project-memory__item:first-child { border-top: 0; }
 .project-memory__fact { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-.project-memory__when { flex: none; font-size: var(--text-caption); color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.project-memory__when { flex: none; min-width: 4.5rem; text-align: right; font-size: var(--text-caption); color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
 @media (hover: hover) {
   .project-memory__forget { opacity: 0; }
   .project-memory__item:hover .project-memory__forget, .project-memory__forget:focus-visible { opacity: 1; }
 }
-/* Forgotten, for the 5 s Undo window: the row keeps its place and height; Undo stays shown where Forget was. */
+/* Forgotten, until settings close: the row keeps its place and height; Undo stays shown where Forget was. */
 .project-memory__item[data-forgotten] .project-memory__fact { color: var(--muted-foreground); text-decoration: line-through; }
 .project-memory__item[data-forgotten] .project-memory__forget { opacity: 1; }
+/* W18-1: Forget and Undo, "2h ago" and "Forgotten" take the same width, so the fact never rewraps and the row keeps its height. */
+.project-memory__forget { min-width: 4rem; }
 /* Danger zone: apart at the bottom of General; an outline button with red text, never a filled red block (W16-9). */
 .project-danger { margin-top: 32px; }
 .project-danger__button { color: var(--err); }

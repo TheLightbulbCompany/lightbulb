@@ -7,7 +7,7 @@ import "./creations.css";
 import { useContext, type ReactElement } from "react";
 import { ChevronRight } from "lucide-react";
 import type { TaskSummary } from "@lightbulb/shared";
-import { OutputBackContext, openOutput } from "./openOutput";
+import { OutputBackContext, extensionOf, openOutput, outputName } from "./openOutput";
 import { iconOf } from "./OutputThumb";
 
 export function TaskOutputs({ task, max, onOpenTask }: {
@@ -28,10 +28,15 @@ export function TaskOutputs({ task, max, onOpenTask }: {
   return <ul className="task-outputs" aria-label="Made by this task">
     {shown.map((o) => {
       const opensTask = o.kind === "mail" || o.kind === "capability";
-      const body = <>{iconOf(o)}<span className="task-outputs__title">{o.title}</span></>;
+      // Its readable name, not the file's slug, and its type, so a PDF and a Word copy of one sheet differ (W18).
+      const name = outputName(o);
+      const ext = o.kind === "file" || o.kind === "document" ? extensionOf(o) : "";
+      const full = ext ? `${name} · ${ext}` : name;
+      const body = <>{iconOf(o)}<span className="task-outputs__title">{name}</span>
+        {ext && <span className="task-outputs__ext">{ext}</span>}</>;
       return <li key={o.id}>
-        {opensTask && !onOpenTask ? <span className="task-outputs__chip">{body}</span>
-          : <button type="button" className="task-outputs__chip" aria-label={`Open ${o.title}`}
+        {opensTask && !onOpenTask ? <span className="task-outputs__chip" title={full}>{body}</span>
+          : <button type="button" className="task-outputs__chip" title={full} aria-label={`Open ${full}`}
             onClick={(e) => { e.stopPropagation(); openOutput({ ...o, taskId: task.taskId }, onOpenTask ? () => onOpenTask() : undefined, back); }}>
             {body}<ChevronRight size={14} aria-hidden="true" className="task-outputs__chev" />
           </button>}

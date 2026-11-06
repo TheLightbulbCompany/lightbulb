@@ -293,6 +293,19 @@ describe("useRooms platform seams", () => {
     expect(messaging.listMessages).not.toHaveBeenCalled();
   });
 
+  it("opens a room it just created from the create's own detail, never a blank loading read (W18)", async () => {
+    messaging.listRooms.mockResolvedValue({ rooms: [], sections: [] });
+    messaging.createRoom.mockResolvedValue({ ...room, roomId: "room-4", kind: "channel", name: "Tea shop" });
+    messaging.getRoom.mockImplementation(() => new Promise(() => {})); // the detail read never lands
+    const { result } = renderHook(() => useRooms(platform(), { autoSelect: false }), { wrapper });
+    await waitFor(() => expect(result.current.roomsLoading).toBe(false));
+    await act(async () => {
+      await result.current.createRoom({ clientRoomId: "c4", kind: "channel", name: "Tea shop", members: [] });
+    });
+    expect(result.current.activeRoom?.roomId).toBe("room-4");
+    expect(result.current.roomLoading).toBe(false);
+  });
+
   it("creates a room without activating it when activate is false", async () => {
     messaging.listRooms.mockResolvedValue({ rooms: [], sections: [] });
     messaging.createRoom.mockResolvedValue({ ...room, roomId: "room-3", kind: "group-dm" });

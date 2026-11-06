@@ -4,11 +4,12 @@
 // One shared room list read (SWR dedupes it across every message in the room).
 
 import { useEffect, useState, type ReactElement } from "react";
-import { Check, ChevronRight } from "lucide-react";
+import { Check, ChevronRight, Copy } from "lucide-react";
 import { chipState, specialistLabel, useTask, useTaskList, type CanonicalRoomMessage, type ChipMark, type TaskSummary } from "@lightbulb/shared";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { cn } from "@/lib/utils";
 import { TaskOutputs } from "@/components/creations/TaskOutputs";
+import { copyText } from "@/components/messaging/messageLinks";
 import { TaskCard } from "./TaskCard";
 
 export function MessageTasks({ message, viewerId, onOpen, ackedTasks }: {
@@ -20,6 +21,9 @@ export function MessageTasks({ message, viewerId, onOpen, ackedTasks }: {
   const refs = message.taskRefs ?? [];
   const { data, error, mutate } = useTaskList(tasks, refs.length ? { kind: "room", roomId: message.roomId } : null);
   if (!refs.length) return null;
+  // A finish message that carries a short result whole (walk 15: an Instagram post) offers it to paste.
+  const piece = message.kind === "task_line" ? resultPiece(message.text) : null;
+  const copy = piece ? <CopyResult text={piece} /> : null;
   const byId = new Map((data?.tasks ?? []).map((t) => [t.taskId, t]));
   // Before the list loads, quiet placeholders (never a row of "isn't available"); a failed read offers Retry.
   if (!data) {
@@ -31,10 +35,12 @@ export function MessageTasks({ message, viewerId, onOpen, ackedTasks }: {
         {refs.map((r) => <div key={r.taskId} className="mt-1.5 h-14 max-w-xl rounded-lg border border-border bg-muted/40 motion-safe:animate-pulse" />)}
       </div>;
   }
+  if (copy && !data) return copy;
   // One chip per task (dev walk 13, W13-1/W12-1): the Router's ack carries it with a live dot, ✓ Done once finished;
   // the one-line finish post carries only what it made. A result post or a question keeps the full card.
   const Ref = !message.kind || message.kind === "task_line" ? RefChip : RefCard;
   return <div aria-label="Tasks in this message">
+    {copy}
     {refs.map((r) => <Ref key={r.taskId} taskId={r.taskId} listed={byId.get(r.taskId)} viewerId={viewerId} onOpen={onOpen}
       withOutputs={message.kind === "task_line"} acked={ackedTasks?.has(`${message.threadRootMessageId ?? ""}|${r.taskId}`) ?? false} />)}
   </div>;
@@ -66,7 +72,8 @@ function RefChip({ taskId, listed, viewerId, onOpen, withOutputs, acked = false 
   }, [ticking]);
   if (!task || !state) return null;
   const outputs = !withOutputs ? null : <TaskOutputs task={task} max={2} onOpenTask={() => onOpen?.(taskId)} />;
-  if (outputs && acked && task.outputs?.length && task.status !== "failed") return outputs;
+  // Beside its ack the chip is never repeated (walk 15: a task that made no file showed the same chip twice).
+  if (withOutputs && acked && task.status !== "failed") return outputs;
   const who = task.specialist ? specialistLabel(task.specialist, agentNames) : null;
   const status = state.time ? `${state.word} · ${state.time}` : state.word;
   return <div>
@@ -84,6 +91,28 @@ function RefChip({ taskId, listed, viewerId, onOpen, withOutputs, acked = false 
     </button>
     {outputs}
   </div>;
+}
+
+/** The piece a short result carries: what follows its first line ("Drafted the post." + the post), else all of it. */
+export function resultPiece(text: string): string | null {
+  const body = text.trim();
+  const cut = body.indexOf("\n\n");
+  return cut < 0 ? null : body.slice(cut).trim() || null;
+}
+
+/** Copy, with ✓ for 2 s. The label never changes, so the button never shifts. */
+function CopyResult({ text }: { text: string }): ReactElement {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const timer = window.setTimeout(() => setCopied(false), 2000);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
+  return <button type="button" onClick={() => void copyText(text).then(setCopied)} aria-label={copied ? "Copied" : "Copy"}
+    className="mt-1 inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-ui text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring">
+    {copied ? <Check aria-hidden="true" className="size-3.5 text-ok" strokeWidth={2} /> : <Copy aria-hidden="true" className="size-3.5" />}
+    Copy
+  </button>;
 }
 
 /** A card whose task the room list doesn't hold (older than its pages, or another scope) reads it by id. */

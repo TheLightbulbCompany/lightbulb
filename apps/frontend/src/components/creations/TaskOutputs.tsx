@@ -18,7 +18,8 @@ export function TaskOutputs({ task, max, onOpenTask }: {
    *  open) those chips are labels. */
   onOpenTask?: () => void;
 }): ReactElement | null {
-  const outputs = task.outputs ?? [];
+  // A short text result (`text:` id) is shown whole where these chips sit (the finish message, the task): no chip.
+  const outputs = (task.outputs ?? []).filter((o) => !o.id.startsWith("text:"));
   if (!outputs.length) return null;
   const shown = max === undefined ? outputs : outputs.slice(0, max);
   const rest = outputs.length - shown.length;

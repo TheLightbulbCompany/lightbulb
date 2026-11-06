@@ -208,6 +208,8 @@ async def _admit_message(room_id: str, seq: int) -> None:
         # 4. slow path: one Jev call for an unaddressed message
         admission, routed = await _ask_jev(meta, msg, ws)
     if admission is None:
+        if listen == "active":  # the person's "Lightbulb is reading…" ends now, not after 60 s of nothing (walk 15)
+            await task_conversation.read_quietly(ws, ref)
         put_metric("admission.outcome", dimensions={"outcome": "ignored", "source": "chat"})
         return
     trig = {**base, "ref": ref, "admission": admission}

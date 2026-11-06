@@ -202,6 +202,40 @@ def result_line(tree: dict, room: str | None) -> str | None:
     return said or made or plain_line(task.get("title") or "") or None
 
 
+#: A result this short with no file is the deliverable itself (a post, a reply): it shows whole in the chat's finish
+#: message and is kept as the task's output (dev walk 15: an Instagram post lived only inside the task).
+SHORT_RESULT_MAX = 1500
+
+
+def short_result(att: dict | None) -> str | None:
+    """A completed attempt's answer when it is short text and attached no file; else None."""
+    if not att or att.get("outcome") != "completed" or att.get("attachments"):
+        return None
+    text = (att.get("output") or "").strip()
+    return text if 0 < len(text) <= SHORT_RESULT_MAX else None
+
+
+def text_output(task: dict, n: int, message_id: str) -> dict:
+    """A short result kept as what the task made (Made here, Files, Creations): it opens its task, where the result
+    post holds the text."""
+    return {
+        "id": f"text:{n}",
+        "kind": "document",
+        "title": plain_line(task.get("title") or "Result", 200),
+        "ref": {"roomId": ts.task_room_id(task["taskId"]), "messageId": message_id},
+    }
+
+
+def result_text(tree: dict, room: str | None) -> str | None:
+    """The finish message for `room`: a short result whole (walk 15), else `result_line`. Same privacy as
+    `result_line`: None wherever someone in the room can't open the task, so its words never reach them."""
+    line = result_line(tree, room)
+    if line is None or tree["task"].get("status") != "idle":
+        return line
+    att = max(tree.get("attempts") or [], key=lambda a: a.get("n", 0), default=None)
+    return short_result(att) or line
+
+
 def summarize(tree: dict, viewer_id: str) -> dict[str, Any]:
     """The C15 `TaskSummary` for one viewer. Callers check `can_view(task, viewer_id)` first: this does not. `tree` is `tasks_repo.get_task_tree` plus optional `effects`
     (Effect rows of the task) and `userNames` ({userId: display name}) added by the caller."""

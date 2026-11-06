@@ -251,6 +251,48 @@ def text_output(task: dict, n: int, message_id: str, text: str = "") -> dict:
     }
 
 
+def _text_n(output: dict) -> int | None:
+    """Attempt n of a text output stored before `ref.text` (walk 16), else None."""
+    oid = output.get("id") or ""
+    if not oid.startswith("text:") or (output.get("ref") or {}).get("text") or not oid[5:].isdigit():
+        return None
+    return int(oid[5:])
+
+
+def _with_text(output: dict, att: dict | None) -> dict:
+    """`output` with `ref.text` read from its attempt's answer, when it predates `ref.text` and the answer is there;
+    typed as `text_output` types it (an email draft is Mail)."""
+    piece = result_piece(att.get("output") or "") if att and _text_n(output) is not None else ""
+    if not piece:
+        return output
+    kind = "mail" if _SUBJECT.search(piece) else output.get("kind")
+    return {**output, "kind": kind, "ref": {**(output.get("ref") or {}), "text": piece}}
+
+
+async def with_output_text(ws: str, tasks: list[dict]) -> list[dict]:
+    """Walk 16's text outputs carry no `ref.text`, so their tiles were blank and they were named by the task: fill it on
+    read from the attempt that made it, one batch read for all of them (new outputs carry it; this is a no-op then).
+    ponytail: read-time backfill for a fixed legacy set; a one-off write if it ever shows in latency."""
+    sks = {
+        (t["taskId"], n): ts.attempt_sk(t["taskId"], n)
+        for t in tasks
+        for o in t.get("outputs") or []
+        if (n := _text_n(o))
+    }
+    if not sks:
+        return tasks
+    by_sk = {r["sk"]: r for r in await tasks_repo.batch_get(ws, list(sks.values()))}
+    return [
+        {
+            **t,
+            "outputs": [
+                _with_text(o, by_sk.get(sks.get((t["taskId"], _text_n(o)), ""))) for o in t.get("outputs") or []
+            ],
+        }
+        for t in tasks
+    ]
+
+
 def result_text(tree: dict, room: str | None, humans: Collection[str] = ()) -> str | None:
     """The finish message for `room`: a short result whole (walk 15), else `result_line`. Same privacy as
     `result_line`: None wherever someone in the room can't open the task, so its words never reach them."""
@@ -328,7 +370,10 @@ def summarize(tree: dict, viewer_id: str) -> dict[str, Any]:
         "openQuestion": question,
         "landing": task.get("landingEffect"),
         "output": output,
-        "outputs": task.get("outputs") or [],
+        "outputs": [
+            _with_text(o, next((a for a in attempts if a.get("n") == _text_n(o)), None))
+            for o in task.get("outputs") or []
+        ],
         "watchUntil": task.get("watchUntil"),
         "watching": task["status"] == "idle" and bool(task.get("watchUntil")),
         "runsOn": None if not last else ("task" if "-t-" in (last.get("sessionId") or "") else "workspace"),
@@ -347,6 +392,7 @@ def summarize(tree: dict, viewer_id: str) -> dict[str, Any]:
         "usage": usage,
         "costUsd": float((usage or {}).get("costUsd", 0.0)),
         "budgetUsd": task.get("budgetUsd"),
+        "createdAt": task.get("createdAt"),
         "updatedAt": task["updatedAt"],
         "version": task["version"],
     }

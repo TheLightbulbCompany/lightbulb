@@ -81,6 +81,8 @@ export interface TaskSummary {
   usage?: { inputTokens?: number; outputTokens?: number; costUsd?: number } | null;
   costUsd?: number;
   budgetUsd?: number | null;
+  /** When it was asked: the chip counts from here until the first run starts ("Working · 0:00"). */
+  createdAt?: string | null;
   updatedAt: string;
   version: number;
 }

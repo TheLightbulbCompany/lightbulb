@@ -7,6 +7,7 @@ import type { Components, Options, UrlTransform } from "react-markdown";
 import { remarkSoftBreaks } from "@/components/teams/shared/lib/remark-soft-breaks";
 import { safeHref } from "@/components/teams/shared/lib/safeHref";
 import { handleShellLinkClick, shellUrlFromPaperclipPath } from "@/lib/shellNav";
+import { normalizeCtaLinks } from "@/lib/ctaLinks";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import {
   attachmentIdFromHref,
@@ -86,7 +87,8 @@ function AttachmentImage({ src, alt }: { src: string; alt: string }) {
 type MdNode = { type?: string; value?: string; children?: MdNode[] };
 const BROKEN_LINK = /\[([^\]\n]+)\]\(([^)\n]*)\)/g;
 // A line that is only "[Sign up for story-time]" is a button a draft asks for (an email's call to action, W16-5): it
-// shows as a button-styled label, no brackets. Copy gives the words alone (docText `plainCta`).
+// shows as a button-styled label, no brackets. Copy gives the words alone (docText `plainCta`). A placeholder link
+// ("[**BOOK YOUR SPOT**]([BOOKING LINK])", W17-3) reaches here already in that shape (`normalizeCtaLinks`).
 const CTA_LINE = /^\s*\[([^\]\n]{2,60})\]\s*$/;
 const ctaNode = (words: string): MdNode & { data: object } => ({
   type: "emphasis", children: [{ type: "text", value: words }],
@@ -228,7 +230,7 @@ export const MarkdownView = memo(function MarkdownView({ children, components, s
   return (
     <div className="min-w-0 [overflow-wrap:anywhere]">
       <ReactMarkdown remarkPlugins={plugins} components={merged} skipHtml={skipHtml} urlTransform={urlTransform}>
-        {children}
+        {normalizeCtaLinks(children)}
       </ReactMarkdown>
     </div>
   );

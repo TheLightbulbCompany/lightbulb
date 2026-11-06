@@ -5,7 +5,7 @@
 
 import { useEffect, useState, type ReactElement } from "react";
 import { Check, ChevronRight, Copy } from "lucide-react";
-import { chipState, clockTime, specialistLabel, useTask, useTaskList, type CanonicalRoomMessage, type ChipMark, type TaskSummary } from "@lightbulb/shared";
+import { chipState, specialistLabel, useTask, useTaskList, type CanonicalRoomMessage, type ChipMark, type TaskSummary } from "@lightbulb/shared";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { cn } from "@/lib/utils";
 import { TaskOutputs } from "@/components/creations/TaskOutputs";
@@ -76,11 +76,8 @@ function RefChip({ taskId, listed, viewerId, onOpen, withOutputs, acked = false 
     return () => { window.clearTimeout(first); window.clearInterval(timer); };
   }, [ticking]);
   if (!task || !state) return null;
-  // A chip that counted the run to its end keeps the time it counted ("Done · 0:16" after 0:17 read as a step back):
-  // its last tick lands within the finish event's few seconds of delay. A chip that didn't watch shows the run's own.
-  const run = task.activity;
-  const ranTo = run?.startedAt && run.endedAt ? [Date.parse(run.startedAt), Date.parse(run.endedAt)] : null;
-  const time = state.mark === "done" && ranTo && now > ranTo[1] && now - ranTo[1] < 5000 ? clockTime(now - ranTo[0]) : state.time;
+  // Done shows the run's stored length (endedAt − startedAt) on every read: one chip never says 0:22 and then 0:21 (W17).
+  const time = state.time;
   const outputs = !withOutputs ? null : <TaskOutputs task={task} max={2} onOpenTask={() => onOpen?.(taskId)} />;
   // Beside its ack the chip is never repeated (walk 15: a task that made no file showed the same chip twice).
   if (withOutputs && acked && task.status !== "failed") return outputs;

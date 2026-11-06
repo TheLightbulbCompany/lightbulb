@@ -3516,6 +3516,18 @@
           "default": null,
           "title": "Budgetusd"
         },
+        "createdAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Createdat"
+        },
         "updatedAt": {
           "title": "Updatedat",
           "type": "string"

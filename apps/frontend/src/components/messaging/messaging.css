@@ -32,7 +32,7 @@
 .room-live-dot { width: 8px; height: 8px; border-radius: 9999px; background: var(--live); flex: none; }
 /* The gutter is the content's padding, not the scroller's: rows bleed into it (full-width hover), and on the scroller
    Chrome adds its inline-end padding past that bleed, a sideways scroll that focus then used (dev walk W7, clipped text). */
-.room-history { --room-gutter: 20px; --room-pad: 16px; position: relative; display: flex; flex-direction: column; min-height: 0; flex: 1; overflow: hidden auto; overscroll-behavior: contain; padding: var(--room-pad) 0; }
+.room-history { --room-gutter: 20px; --room-pad: 16px; position: relative; display: flex; flex-direction: column; min-height: 0; flex: 1; overflow: hidden auto; overscroll-behavior: contain; padding: var(--room-pad) 0; scroll-padding-top: 32px; }
 .room-history > :first-child { margin-top: auto; }
 .room-timeline { position: relative; display: flex; flex-direction: column; min-height: 0; flex: 1; }
 .room-timeline-item { outline: none; border-radius: 6px; }
@@ -53,6 +53,8 @@
    pill masks the text scrolling under it instead of floating over it (W15-11);
    inline, band and rule read as the usual divider. Only the pill is hit. */
 .room-day { position: relative; }
+/* The pinned band covers the scroller's top 32 px: .room-history's scroll-padding-top keeps a jump, a scrolled-to
+   message and Page Up landing below it (W17: the Today pill clipped the top line). */
 /* top: the scroller's own padding, negated: sticky holds inside that padding, so at 0 a 16 px strip of text showed above
    the pinned band (W16-11). */
 .room-date-divider { position: sticky; top: calc(-1 * var(--room-pad, 0px)); z-index: 2; display: flex; align-items: center; justify-content: center; height: 32px; margin: 0; pointer-events: none; font-size: var(--text-caption); font-weight: 500; color: var(--muted-foreground); background: linear-gradient(var(--border), var(--border)) center / 100% 1px no-repeat, var(--background); }

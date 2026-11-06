@@ -67,7 +67,9 @@ WORKER_INSTRUCTIONS = (
     "success measure the person did not give, in a file or in your answer, not even as a suggestion; if you had "
     'to assume something, say it in one line starting "Assumed: ". Open your answer with one sentence saying what '
     'you made ("Drafted the welcome email."), nothing more in it; when the piece is short (a post, a reply, a '
-    "few lines) and you made no file, put the piece itself after that sentence, ready to paste."
+    "few lines) and you made no file, put the piece itself after that sentence, ready to paste. Never write a "
+    "placeholder link such as [Book]([BOOKING LINK]): when you don't have the URL, write the call to action as "
+    'plain text, e.g. "Book your spot: (link to add)".'
 )
 
 _STATUS_AFTER = {

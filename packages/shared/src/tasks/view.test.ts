@@ -309,6 +309,16 @@ describe("chipState (dev walk 12, W12-1)", () => {
     expect(chipState(summary({ status: "failed", ownerUserId: SAM }), SAM, now).word).toBe("Didn't finish");
     expect(chipState(summary({ status: "queued" }), SAM, now)).toEqual({ mark: "working", word: "Working", time: null });
   });
+  it("W17: ticks from the ask before the first run starts (never a bare Working), not for a retry's wait", () => {
+    expect(chipState(summary({ status: "queued", createdAt: at(38) }), SAM, now)).toEqual({ mark: "working", word: "Working", time: "0:00" });
+    expect(chipState(summary({ status: "queued", createdAt: at(36), activity: { n: 1, status: "dispatched" } }), SAM, now).time).toBe("0:02");
+    expect(chipState(summary({ status: "queued", createdAt: at(0), activity: { n: 2, status: "dispatched" } }), SAM, now).time).toBeNull();
+    // Once it runs, the run's start; once it ends, the stored length, whenever it is read.
+    expect(chipState(summary({ createdAt: at(0), activity: { n: 1, status: "running", startedAt: at(2) } }), SAM, now).time).toBe("0:36");
+    const done = summary({ status: "idle", shownGroup: "idle", createdAt: at(0), activity: { n: 1, status: "ended", startedAt: at(1), endedAt: at(22.9) } });
+    expect(chipState(done, SAM, Date.parse(at(23))).time).toBe("0:21");
+    expect(chipState(done, SAM, now + 600_000).time).toBe("0:21");
+  });
   it("a closed task says Closed, as its list group and its header do (dev walk 13, W13-3)", () => {
     const ended = { n: 1, status: "ended" as const, startedAt: at(0), endedAt: at(57) };
     expect(chipState(summary({ status: "resolved", shownGroup: "resolved", activity: ended }), SAM, now))

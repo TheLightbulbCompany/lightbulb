@@ -198,7 +198,9 @@ export function clockTime(ms: number): string {
 export type ChipMark = "working" | "waiting" | "done" | "failed" | "closed";
 
 /** A task chip's live state (dev walk 12, W12-1): "Working · 0:38" → "Done · 1:02", or "Didn't finish". The time is
- *  the latest run's: ticking while it works, its length once it ended; none before a run starts. */
+ *  the latest run's: ticking while it works, its stored length (endedAt − startedAt) once it ended, so every read says
+ *  the same (W17: 0:22, then 0:21). Before the first run starts it ticks from when the task was asked: "Working · 0:00"
+ *  at once, never a bare "Working". */
 export function chipState(t: TaskSummary, viewerId: string, now: number): { mark: ChipMark; word: string; time: string | null } {
   const view = summaryView(t, viewerId);
   const run = t.activity;
@@ -214,7 +216,10 @@ export function chipState(t: TaskSummary, viewerId: string, now: number): { mark
   if (t.status === "resolved") return { mark: "done", word: "Closed", time: ran };
   if (view.word === "Done") return { mark: "done", word: "Done", time: ran };
   if (view.word === "Needs you") return { mark: "waiting", word: view.reason === "Ready for review" ? "Ready for review" : "Needs you", time: null };
-  return { mark: "working", word: "Working", time: !Number.isNaN(from) && Number.isNaN(to) ? clockTime(now - from) : null };
+  // Only the first run's wait: a retry waiting to start never counts from the original ask.
+  const asked = (!run || (run.n <= 1 && !run.startedAt)) && t.createdAt ? Date.parse(t.createdAt) : NaN;
+  const since = !Number.isNaN(from) && Number.isNaN(to) ? from : asked;
+  return { mark: "working", word: "Working", time: Number.isNaN(since) ? null : clockTime(now - since) };
 }
 
 function joinNames([first, ...rest]: string[]): string {

@@ -523,6 +523,43 @@ it("W12-5: one Escape stack — Escape with focus on the page (nothing focused) 
   state.superAgent = false;
 });
 
+it("W17-1: Escape with focus still on the tile that opened a doc closes it and returns focus there; a text field keeps its Escape", () => {
+  state.superAgent = true;
+  try {
+    const view = renderReady();
+    // The opener (a Creations tile) lives outside the pane and keeps focus: nothing clicks into the pane.
+    const tile = document.createElement("button");
+    tile.textContent = "Open Spend Saturday";
+    document.body.appendChild(tile);
+    tile.focus();
+    act(() => openPanel("artifact", { src: "text", task: "t-1", n: "1", name: "Spend Saturday", back: "creations" }));
+    expect(view.container.querySelector(".workspace-pane")).not.toBeNull();
+    expect(document.activeElement).toBe(tile);
+    // Escape in the composer (a text field) stays the composer's.
+    const message = document.createElement("textarea");
+    document.body.appendChild(message);
+    message.focus();
+    fireEvent.keyDown(message, { key: "Escape" });
+    message.remove();
+    expect(view.container.querySelector(".workspace-pane")).not.toBeNull();
+    // An open menu owns Escape too.
+    const menu = document.createElement("div");
+    menu.setAttribute("role", "menu");
+    const item = document.createElement("button");
+    menu.appendChild(item);
+    document.body.appendChild(menu);
+    item.focus();
+    fireEvent.keyDown(item, { key: "Escape" });
+    expect(view.container.querySelector(".workspace-pane")).not.toBeNull();
+    menu.remove();
+    tile.focus();
+    fireEvent.keyDown(tile, { key: "Escape" });
+    expect(view.container.querySelector(".workspace-pane")).toBeNull();
+    expect(document.activeElement).toBe(tile);
+    tile.remove();
+  } finally { state.superAgent = false; }
+});
+
 it("W12-5: a file opened from a task goes back to that task: '‹ Task' and Escape", () => {
   state.superAgent = true;
   try {

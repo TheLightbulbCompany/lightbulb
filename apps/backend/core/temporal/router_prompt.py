@@ -46,12 +46,14 @@ separate answer the person asked for (a quick fact or estimate); never one that 
 cards already say it. An estimate is answered, not deferred: give the standard formula and one worked example with \
 the assumption stated (e.g. Stripe's 2.9% + 30¢ per card charge on a $50 ticket is $1.75), then ask for the real \
 figure only if it changes the answer.
-- note when someone tells Lightbulb a fact to keep for the project and asks for nothing now ("for later: our \
-starter dates from 2009", "FYI, the shop is closed Mondays"): put the fact in one short self-contained sentence, \
-in the message's own words and nothing from memory ("The shop is closed on Mondays."): Lightbulb says it back. Lightbulb \
-acknowledges it (one short line, or a ✅ on a message not addressed to it; the message is already in the \
-project's memory); add no reply beside it. People talking to each \
-other, not to Lightbulb, are not a note: ignore that.
+- note when someone tells Lightbulb, or the whole team, a fact to keep for the project and asks for nothing now \
+("FYI, the shop is closed Mondays", "for the record: our starter dates from 2009", "note that", "heads up", or a \
+standing fact about the business said to no one in particular: a price, a limit, hours, a rule, a preference): put \
+the fact in one short self-contained sentence, in the message's own words and nothing from memory ("the shop is \
+closed on Mondays"): Lightbulb says it back. Lightbulb acknowledges it (one short line, or a ✅ on a message not \
+addressed to it; the message is already in the project's memory); add no reply beside it. People talking to each \
+other are not a note, even about the work ("Priya, the meeting moved to 3pm", "I'll call the supplier", "running \
+late"): ignore that.
 - ask for one clarifying question; asking approves nothing, and typed text never \
 approves anything.
 - ack: exactly one sentence people see in chat: who does what ("Growth is researching three competitor \
@@ -234,22 +236,32 @@ _END_LINE = re.compile(r"\n\s*done[.!]?\s*$", re.I)
 
 
 _NOTED_MAX = 140
-#: Words a fact may carry that its message need not: a name or a number is the private kind.
-_DETAIL = re.compile(r"\b(?:\w*\d\w*|[A-Z][\w'-]*)")
-_LOWER_LEAD = re.compile(r"^(?:The|Our|We|Each|Every|All|A|An|There|They|Classes|Orders)\b")
+#: The only words a fact may carry that its message need not: grammar, never content.
+_FUNCTION_WORDS = frozenset(
+    "a an the is are was were be been on in at of for to by with from and or but not no we our us it its they "
+    "their them this that these those there has have had do does each every all".split()
+)
+_EDGE = "\"'“”‘’.,;:!?()[]{}…"
+
+
+def _tokens(text: str) -> list[str]:
+    """Whitespace words, lowercase, punctuation trimmed from their ends: "sam@acme.com," and "$35" stay one token."""
+    return [t for t in (w.strip(_EDGE).lower() for w in text.split()) if t]
 
 
 def noted(fact: str, said: str) -> str:
     """The one line for a `note` (walk 15): the fact said back, so a misread shows ("Noted: the oven is closed on
-    Mondays."). Only words the person's own message has: a name or number the fact carries that the message doesn't
-    (the Router read it in memory) never goes into the room, the plain NOTED line does."""
+    Mondays."). Echoed only when every word of it is a whole word of the person's own message, or a function word:
+    anything the Router took from memory (a name, an email, a number, a private detail) never reaches the room, the
+    plain NOTED line does."""
     line = " ".join(fact.split()).rstrip(".")
-    if not line or len(line) > _NOTED_MAX:
+    words = _tokens(line)
+    if not words or len(line) > _NOTED_MAX:
         return NOTED
-    heard = said.lower()
-    if any(w.lower() not in heard for i, w in enumerate(_DETAIL.findall(line)) if i or not line.startswith(w)):
+    heard = set(_tokens(said))
+    if any(w not in heard and w not in _FUNCTION_WORDS for w in words):
         return NOTED
-    if _LOWER_LEAD.match(line):
+    if words[0] in _FUNCTION_WORDS:
         line = line[0].lower() + line[1:]
     return f"Noted: {line}."
 

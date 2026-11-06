@@ -1457,14 +1457,29 @@ async def test_a_note_says_the_fact_back(world, no_memory_writes, reactions, not
 
 
 def test_a_noted_line_carries_only_what_the_message_said():
-    """A name or number the Router read in memory never goes into the room: the plain line instead."""
+    """Every word of the echo is a whole word of the person's message, or grammar: anything the Router read in memory
+    (a name, an email, a number, a private detail) gets the plain line instead."""
     said = "FYI: we cap each class at 12 kids, $35 each"
-    assert router_prompt.noted("Classes are capped at 12 kids at $35 each.", said) == (
-        "Noted: classes are capped at 12 kids at $35 each."
+    assert router_prompt.noted("We cap each class at 12 kids, $35 each.", said) == (
+        "Noted: we cap each class at 12 kids, $35 each."
     )
-    assert router_prompt.noted("Classes are capped at 12 kids; Priya Shah runs them.", said) == router_prompt.NOTED
-    assert router_prompt.noted("Each class costs $40.", said) == router_prompt.NOTED
-    assert router_prompt.noted("x" * 200, said) == router_prompt.NOTED
+    assert router_prompt.noted("The oven is closed on Mondays.", "fyi the oven is closed on Mondays") == (
+        "Noted: the oven is closed on Mondays."
+    )
+    # The review's bypasses (#4933): each falls back to the plain line.
+    for fact in (
+        "Priya caps each class at 12 kids.",  # a leading name
+        "We cap each class at 12 kids; mail sam@acme.test.",  # a lowercase email
+        "We cap each class at 12 kids because of the divorce.",  # a lowercase private fact
+        "We cap each class at 2 kids.",  # "2" inside "12"
+        "Ed caps each class at 12 kids.",  # "Ed" inside "need"
+        "We cap each class at twelve kids.",  # a spelled-out number
+        "Each class costs $40.",
+        "x" * 200,
+        "",
+    ):
+        heard = said + " if we need to"
+        assert router_prompt.noted(fact, heard) == router_prompt.NOTED, fact
 
 
 @pytest.mark.asyncio

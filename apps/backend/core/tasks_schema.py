@@ -467,8 +467,9 @@ class Output(_Model):
 
 class TaskOutput(Output):
     """What a task made, kept on its row for every status (UX slice 5): a landed effect (mail, PR, published app),
-    a file its result attached, an app it handed to Apps. `id` dedupes a retried write: `effect:{idemKey}`,
-    `file:{attachmentId}`, `app:{appId}`."""
+    a file its result attached, an app it handed to Apps, a short text result (walk 15). `id` dedupes a retried write:
+    `effect:{idemKey}`, `file:{attachmentId}`, `app:{appId}`, `text:{attempt n}` (kind document, ref {roomId,
+    messageId}: the result post in the task room)."""
 
     id: str
     created_at: str

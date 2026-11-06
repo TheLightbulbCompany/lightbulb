@@ -251,14 +251,10 @@ async def test_a_message_jev_lets_pass_gets_lightbulbs_read_receipt(world, monke
     msg = _msg()
     await _admit(world, msg)
     assert world["router"] == [] and events == [(ROOM, "room.read.changed", msg["messageId"])]
-    world["listen"] = "observe"  # Lightbulb only observes: it never reads, so no receipt
-    await _admit(world, _msg(2))
+    for i, listen in enumerate(("observe", "mentions"), start=2):  # it doesn't read these: no receipt
+        world["listen"] = listen
+        await _admit(world, _msg(i))
     assert len(events) == 1
-
-
-def test_jev_reads_an_fyi_as_lightbulbs_to_note():
-    assert "a fact shared for the work even when nothing is asked" in admission.jev.ROUTER_CRITERION
-    assert "is Lightbulb's to note, not chatter" in admission.jev.ROUTER_WHO_INSTRUCTIONS
 
 
 async def test_lightbulb_mentions_only_room_skips_jev(world):

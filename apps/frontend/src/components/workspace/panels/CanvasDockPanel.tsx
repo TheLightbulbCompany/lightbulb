@@ -1,11 +1,15 @@
 "use client";
 
-// Canvas in the right pane: the workspace's apps. params.app selects one (deep link ?app=).
+// Canvas in the right pane: the workspace's apps. params.app selects one (deep link ?app=). Super-agent (UX slice 5):
+// the place is Creations, and without an app it shows everything tasks made (CreationsGrid).
 import { AppList } from "@/components/canvas/AppList";
 import { AppView, AskAgent } from "@/components/canvas/AppView";
 import { AppConversation } from "@/components/canvas/AppConversation";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
-import { displayName, statusLine } from "@/components/canvas/appText";
+import { creationState, displayName, statusLine } from "@/components/canvas/appText";
+import { CreationsGrid } from "@/components/creations/CreationsGrid";
+import { useSuperAgent } from "@/hooks/useLiveEvents";
+import { useState } from "react";
 import { useApps } from "@/hooks/useApps";
 import { updatePanelParams } from "../workspaceController";
 import type { PanelProps } from "../panelComponents";
@@ -13,6 +17,8 @@ import type { PanelProps } from "../panelComponents";
 export function CanvasDockPanel({ id, params }: PanelProps) {
   const { apps, loading, error, refresh, start } = useApps();
   const canManage = useIsWorkspaceAdmin();
+  const superAgent = useSuperAgent();
+  const [now] = useState(() => Date.now());
   const close = () => updatePanelParams(id, { app: undefined });
   const open = params.app ? apps.find((a) => a.app_id === params.app) : undefined;
   if (params.app) {
@@ -23,9 +29,9 @@ export function CanvasDockPanel({ id, params }: PanelProps) {
       // Its builder talks while it is being set up, so its conversation is here too.
       return <div className="canvas canvas--pending">
         <h2 className="canvas__heading">{displayName(open)}</h2>
-        <p className="canvas__notice">{statusLine(open)}</p>
+        <p className="canvas__notice">{superAgent && open.stuck ? creationState(open, "Engineering", now) : statusLine(open)}</p>
         {open.stuck && (open.can_publish === true || canManage) && <AskAgent app={open} />}
-        <button type="button" className="app-view__btn" onClick={close}>All apps</button>
+        <button type="button" className="app-view__btn" onClick={close}>{superAgent ? "All creations" : "All apps"}</button>
         {open.can_open && <AppConversation app={open} />}
       </div>;
     }
@@ -36,6 +42,7 @@ export function CanvasDockPanel({ id, params }: PanelProps) {
       {!loading && <button type="button" className="app-view__btn" onClick={close}>All apps</button>}
     </div>;
   }
+  if (superAgent) return <CreationsGrid />;
   return <AppList apps={apps} loading={loading} error={error} onRetry={refresh} canManage={canManage} onStart={start}
     onOpen={(appId) => updatePanelParams(id, { app: appId })} />;
 }

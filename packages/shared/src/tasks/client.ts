@@ -2,7 +2,16 @@
 // `optionId ∈ {publish, send, merge, approve}` is the apply.
 
 import type { ApiMethods } from "../api/client";
-import type { AnswerBody, QuestionView, TaskDetail, TaskScope, TaskSummary, TaskTrace, TaskVerb } from "./types";
+import type { AnswerBody, CreationOutput, OutputKind, QuestionView, TaskDetail, TaskScope, TaskSummary, TaskTrace, TaskVerb } from "./types";
+
+/** `GET /tasks/outputs` filters. `kind` repeats (Links = link + pr); `limit` counts tasks, not outputs. */
+export interface OutputsFilter {
+  kind?: OutputKind | readonly OutputKind[];
+  roomId?: string;
+  specialist?: string;
+  cursor?: string | null;
+  limit?: number;
+}
 
 export const scopeParam = (scope: TaskScope): string =>
   scope.kind === "room" ? `room:${scope.roomId}` : scope.kind;
@@ -19,6 +28,8 @@ export interface TasksClient {
   needsYou(): Promise<{ items: QuestionView[]; next: string | null }>;
   /** A task's questions, answered and cancelled included (`routers/questions.py`). */
   questions(taskId: string): Promise<{ items: QuestionView[] }>;
+  /** What tasks made (Creations), newest first within a page. */
+  outputs(filter?: OutputsFilter): Promise<{ outputs: CreationOutput[]; next: string | null }>;
 }
 
 export function createTasksClient(api: ApiMethods, cacheScope = ""): TasksClient {
@@ -36,5 +47,15 @@ export function createTasksClient(api: ApiMethods, cacheScope = ""): TasksClient
     markRead: (taskId) => api.post(`${path(taskId)}/read`, {}),
     needsYou: () => api.get("/needs-you") as ReturnType<TasksClient["needsYou"]>,
     questions: (taskId) => api.get(`${path(taskId)}/questions`) as ReturnType<TasksClient["questions"]>,
+    outputs: ({ kind, roomId, specialist, cursor, limit } = {}) => {
+      const q = new URLSearchParams();
+      for (const k of kind === undefined ? [] : typeof kind === "string" ? [kind] : kind) q.append("kind", k);
+      if (roomId) q.set("roomId", roomId);
+      if (specialist) q.set("specialist", specialist);
+      if (cursor) q.set("cursor", cursor);
+      if (limit) q.set("limit", String(limit));
+      const qs = q.toString();
+      return api.get(`/tasks/outputs${qs ? `?${qs}` : ""}`) as ReturnType<TasksClient["outputs"]>;
+    },
   };
 }

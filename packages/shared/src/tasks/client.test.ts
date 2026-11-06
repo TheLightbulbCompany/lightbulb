@@ -25,6 +25,17 @@ describe("tasks client: routes and bodies (wave2-README C15)", () => {
     ]);
   });
 
+  it("outputs: kind repeats (Links = link + pr), the rest are plain params", async () => {
+    const { api, get } = fakeApi();
+    const c = createTasksClient(api);
+    await c.outputs();
+    await c.outputs({ kind: ["link", "pr"], roomId: "r 1", cursor: "n", limit: 4 });
+    await c.outputs({ kind: "app", specialist: "growth" });
+    expect(get.mock.calls.map((x) => (x as unknown[])[0])).toEqual([
+      "/tasks/outputs", "/tasks/outputs?kind=link&kind=pr&roomId=r+1&cursor=n&limit=4", "/tasks/outputs?kind=app&specialist=growth",
+    ]);
+  });
+
   it("actions, answer, trace, read, needs-you", async () => {
     const { api, get, post } = fakeApi();
     const c = createTasksClient(api);

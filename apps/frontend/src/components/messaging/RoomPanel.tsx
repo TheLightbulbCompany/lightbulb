@@ -45,7 +45,8 @@ import { RequestGroups } from "@/components/tasks/TaskOverview";
 import { ScheduledList } from "@/components/tasks/ScheduledList";
 import { PaneHeader } from "@/components/workspace/PaneHeader";
 import { ROOM_PANE_VIEW_EVENT } from "@/components/workspace/panels/AutomationDockPanel";
-import { useRoomOutputs } from "@/components/tasks/useRoomOutputs";
+import { MadeHere } from "@/components/creations/MadeHere";
+import { ProjectFiles } from "@/components/creations/ProjectFiles";
 import { SpecialistDmBanner } from "./SpecialistDmBanner";
 import { useRoomThreads } from "@/components/tasks/useRoomThreads";
 import { useSuperAgent } from "@/hooks/useLiveEvents";
@@ -570,7 +571,6 @@ function RoomContent({
     setPaneState((current) => current.visit === visit ? { ...current, auto: true } : { visit, view: null, closed: false, auto: true });
   }
   const showContext = showDetail || !contextCollapsed || requestsShown || filesViewShown || scheduledShown;
-  const roomOutputs = useRoomOutputs(superAgent ? roomId : null);
   const activeRuns = runs.filter((run) => run.state === "running");
   // Any author: a human naming ISO-14 references it as much as an agent does.
   // ponytail: loaded pages only; a task named only in unloaded history is missing until scrolled in.
@@ -1079,8 +1079,6 @@ function RoomContent({
       {superAgent ? <PaneHeader title="Details" headingRef={contextHeading} onClose={() => setContextCollapsed(true)} />
         : <header className="room-context-header"><Button variant="ghost" aria-label="Back to chat" onClick={() => setContextCollapsed(true)}><ArrowLeft aria-hidden="true" /></Button><h3 ref={contextHeading} tabIndex={-1} className="font-semibold">About</h3></header>}
       <RoomDetailsPanel room={visibleRoom} roomName={roomName} tab={detailsTab} onSelectTab={setDetailsTab}
-        outputs={superAgent ? roomOutputs.outputs : undefined} onOpenOutput={openTask}
-        olderOutputs={superAgent && roomOutputs.hasOlder ? { loading: roomOutputs.loading, load: () => void roomOutputs.loadOlder() } : undefined}
         participants={participants} actionable={actionable}
         messages={messages} pinnedMessageIds={pinnedMessageIds} activeRuns={activeRuns} hideActiveWork={superAgent}
         onUnpin={onSetPin ? (messageId) => onSetPin(messageId, false) : undefined}
@@ -1148,17 +1146,13 @@ function RoomContent({
     {requestsShown && !showDetail && <aside className="room-context" aria-label="Tasks"
       onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeView(); } }}>
       <PaneHeader title="Tasks" headingRef={requestsHeading} onClose={closeView} />
-      <div className="room-context-body"><RequestGroups scope={{ kind: "room", roomId }} viewerId={currentUserId} onOpen={openTask} /></div>
+      <div className="room-context-body"><MadeHere roomId={roomId} onOpenTask={openTask} onAllFiles={() => showView("files")} />
+        <RequestGroups scope={{ kind: "room", roomId }} viewerId={currentUserId} onOpen={openTask} /></div>
     </aside>}
     {filesViewShown && !showDetail && <aside className="room-context" aria-label="Files"
       onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeView(); } }}>
       <PaneHeader title="Files" onClose={closeView} />
-      <RoomDetailsPanel room={visibleRoom} roomName={roomName} tab="files" onSelectTab={setDetailsTab} hideTabs
-        outputs={roomOutputs.outputs} onOpenOutput={openTask}
-        olderOutputs={roomOutputs.hasOlder ? { loading: roomOutputs.loading, load: () => void roomOutputs.loadOlder() } : undefined}
-        participants={participants} actionable={actionable} members={null}
-        messages={messages} pinnedMessageIds={pinnedMessageIds} activeRuns={activeRuns} hideActiveWork
-        onOpenMessage={(messageId) => setSearchTarget({ messageId, threadRootMessageId: null, token: ++searchTargetToken.current })} />
+      <div className="room-context-body"><ProjectFiles roomId={roomId} viewerId={currentUserId} messages={messages} onOpenTask={openTask} /></div>
     </aside>}
     {scheduledShown && !showDetail && <aside className="room-context" aria-label="Scheduled"
       onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeView(); } }}>

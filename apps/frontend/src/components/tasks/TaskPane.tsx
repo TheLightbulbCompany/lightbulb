@@ -16,6 +16,7 @@ import { Input } from "@/components/ui/input";
 import { PaneHeader } from "@/components/workspace/PaneHeader";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { capture } from "@/lib/analytics";
+import { TaskOutputs } from "@/components/creations/TaskOutputs";
 import { DecisionCard, endedLabel } from "./DecisionCard";
 import { ActorLine, TaskStatus } from "./TaskCard";
 import { sendToTask, useShowSteered } from "./taskReply";
@@ -109,10 +110,8 @@ function TaskPaneBody({ detail, viewerId, actionError }: { detail: TaskDetail; v
       <Button type="button" size="sm" variant="outline" onClick={() => setFollowUp(true)}>Follow up</Button>
     </div>}
     {steerable && !(open?.canAnswer && !open.options.length) && <AddNote task={task} autoFocus={followUp} />}
-    {/* With a question open, its card above already shows the output and the pending effect. */}
-    {task.output && !open && <section aria-label="Outputs" className="editorial-card px-3 py-2 text-ui">
-      <span aria-hidden="true">📎 </span>{task.output.title}
-    </section>}
+    {/* What it made, one chip each (a draft waiting on review shows in its card above). */}
+    {!!task.outputs?.length && <section aria-label="Outputs" className="px-1"><TaskOutputs task={task} /></section>}
     {effectRows.length > 0 && <ul aria-label="Effects" className="grid gap-1 px-1 text-ui">
       {effectRows.map(({ key, name, line, warn }) => <li key={key} className="flex flex-wrap items-baseline gap-x-2">
         <span className="font-semibold">{name}</span>

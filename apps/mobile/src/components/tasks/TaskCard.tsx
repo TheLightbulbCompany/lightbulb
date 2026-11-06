@@ -65,8 +65,8 @@ export function TaskCard({ task, taskId, viewerId, palette, onOpen = openTaskScr
           <Text style={[styles.title, { color: palette.fg }]} numberOfLines={1}>{task.title}</Text>
           <Text style={[styles.meta, { color: palette.fgMute }]} numberOfLines={1}>{specialistLabel(task.specialist, agentNames)}</Text>
           {detail ? <Text style={[styles.meta, { color: palette.fg }]} numberOfLines={2}>{detail}</Text> : null}
-          {task.output && !detail?.includes(task.output.title) ? (
-            <Text style={[styles.meta, { color: palette.fgMute }]} numberOfLines={1}>📎 {task.output.title}</Text>
+          {task.outputs?.length ? (
+            <Text style={[styles.meta, { color: palette.fgMute }]} numberOfLines={1}>{task.outputs.length} made</Text>
           ) : null}
         </View>
         <TaskStatus task={task} viewerId={viewerId} palette={palette} />

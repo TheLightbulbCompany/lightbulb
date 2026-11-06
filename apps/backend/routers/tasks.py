@@ -135,20 +135,21 @@ async def _walk(ws: str, cursor: str | None, limit: int, keep) -> tuple[list[dic
 @router.get("/tasks/outputs")
 async def list_outputs(
     auth: Auth,
-    kind: ts.OutputKind | None = None,
+    kind: Annotated[list[ts.OutputKind] | None, Query()] = None,
     room_id: Annotated[str | None, Query(alias="roomId", max_length=128)] = None,
     specialist: Annotated[str | None, Query(max_length=128)] = None,
     cursor: Annotated[str | None, Query(max_length=2048)] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
 ):
     """What tasks made (Creations, UX slice 5): every output of every task the viewer can see, any status, newest
-    first within a page. `limit` counts tasks; `next` pages on like `GET /tasks`. Declared before `/tasks/{id}`.
+    first within a page. `kind` repeats (`kind=link&kind=pr`: the Links filter in one read). `limit` counts tasks;
+    `next` pages on like `GET /tasks`. Declared before `/tasks/{id}`.
 
     ponytail: walks the workspace's tasks by status and keeps those with outputs; an outputs index if it gets slow."""
     ws = await _workspace(auth)
 
     async def keep(t: dict) -> bool:
-        if not any(not kind or o.get("kind") == kind for o in t.get("outputs") or []):
+        if not any(not kind or o.get("kind") in kind for o in t.get("outputs") or []):
             return False
         if room_id is not None and (t.get("audience") or {}).get("roomId") != room_id:
             return False
@@ -169,7 +170,7 @@ async def list_outputs(
         }
         for t in found
         for o in t["outputs"]
-        if not kind or o.get("kind") == kind
+        if not kind or o.get("kind") in kind
     ]
     return {"outputs": sorted(outputs, key=lambda o: o.get("createdAt") or "", reverse=True), "next": next_cursor}
 

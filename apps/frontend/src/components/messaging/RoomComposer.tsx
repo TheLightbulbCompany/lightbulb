@@ -240,8 +240,12 @@ function ComposerAttempt({
       if (requestedAgent && requestedAgent !== focusAgentId) return;
       const request = consumeFocusComposerRequest(focusAgentId);
       if (!request) return;
-      if (request.draft && !text.trim()) onTextChange(request.draft);
+      const draft = request.draft && !text.trim() ? request.draft : null;
+      if (draft) onTextChange(draft);
       field.current?.focus();
+      // A starter ask ("Write a doc: …"): the first "…" is selected once it renders, so typing replaces it.
+      const blank = draft?.indexOf("…") ?? -1;
+      if (blank >= 0) requestAnimationFrame(() => field.current?.setSelectionRange(blank, blank + 1));
     };
     applyFocusRequest();
     window.addEventListener("getstarted:focus-composer", applyFocusRequest);

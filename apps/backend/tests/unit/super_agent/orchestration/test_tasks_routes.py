@@ -287,6 +287,7 @@ async def test_outputs_lists_what_visible_tasks_made_with_filters(world):
 
     assert await ids() == ["effect:e1", "file:f1", "app:a1"]
     assert await ids(kind="app") == ["app:a1"]
+    assert await ids(kind=["app", "mail"]) == ["effect:e1", "app:a1"]  # repeated: one read for several kinds
     assert await ids(roomId=ROOM) == ["effect:e1", "file:f1"]
     assert await ids(specialist="engineering") == ["app:a1"]
     (app,) = (await world["client"].get("/api/v1/tasks/outputs", params={"kind": "app"})).json()["outputs"]

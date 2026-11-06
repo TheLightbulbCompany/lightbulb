@@ -1,8 +1,9 @@
 import { useAuth } from "@clerk/expo";
-import { specialistLabel, summaryView, useTask, useTaskQuestions } from "@lightbulb/shared";
+import { specialistLabel, summaryView, useTask, useTaskQuestions, type TaskOutput } from "@lightbulb/shared";
+import * as WebBrowser from "expo-web-browser";
 import { Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
-import { StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 
 import { ConversationHeader } from "../../../components/conversation/ConversationHeader";
@@ -24,7 +25,7 @@ export default function TaskScreen() {
   const { taskId } = useLocalSearchParams<{ taskId: string }>();
   const { userId } = useAuth();
   const palette = useChatPalette();
-  const { tasks, agentNames } = useLiveEvents();
+  const { tasks, agentNames, messaging, api } = useLiveEvents();
   // Behind the switch: with it off (or still loading) a pasted task link fetches and marks nothing.
   const on = useSuperAgent();
   const id = on ? taskId ?? null : null;
@@ -88,9 +89,18 @@ export default function TaskScreen() {
         </View>
         {note ? <Text accessibilityRole="alert" style={[styles.meta, { color: palette.alert }]}>{note}</Text> : null}
         {open ? <NeedsYouCard key={open.id} task={task} question={open} palette={palette} onAnsweredElsewhere={setNote} ended={view?.word === "Closed"} /> : null}
-        {task.output ? (
+        {task.outputs?.length ? (
           <View style={[styles.output, { borderColor: palette.edge, backgroundColor: palette.surface }]} accessibilityLabel="Outputs">
-            <Text style={[styles.meta, { color: palette.fg }]} numberOfLines={1}>📎 {task.output.title}</Text>
+            {task.outputs.map((o) => {
+              const opens = canOpen(o);
+              const row = <><Text style={[styles.meta, { color: palette.fg, flex: 1 }]} numberOfLines={1}>{o.title}</Text>
+                <Text style={[styles.meta, { color: palette.fgMute }]}>{KIND_WORD[o.kind]}</Text></>;
+              return opens ? (
+                <Pressable key={o.id} accessibilityRole="button" accessibilityLabel={`Open ${o.title}`} style={styles.outputRow}
+                  onPress={() => void openOutput(o, { attachmentUrl: messaging.attachmentUrl, appUrl: (id) => api.post(`/apps/${encodeURIComponent(id)}/open`, {}) as Promise<{ url: string }> })
+                    .catch(() => setNote("That couldn\u2019t open. Try again."))}>{row}</Pressable>
+              ) : <View key={o.id} style={styles.outputRow}>{row}</View>;
+            })}
           </View>
         ) : null}
       </View>
@@ -100,6 +110,25 @@ export default function TaskScreen() {
   );
 }
 
+const KIND_WORD: Record<TaskOutput["kind"], string> = {
+  app: "App", document: "Doc", file: "File", mail: "Mail", link: "Link", pr: "Link", capability: "Skill",
+};
+
+/** Mail and a capability have nothing to open beyond this task (its transcript shows them). */
+const canOpen = (o: TaskOutput) => (o.kind === "app" && !!o.ref.appId) || ((o.kind === "document" || o.kind === "file") && !!o.ref.roomId && !!o.ref.attachmentId)
+  || ((o.kind === "link" || o.kind === "pr") && /^https?:\/\//.test(o.ref.url ?? ""));
+
+/** An output in the in-app browser: a link as is, an app through its open pass, a doc or file by its short-lived URL. */
+async function openOutput(o: TaskOutput, deps: {
+  attachmentUrl: (roomId: string, attachmentId: string) => Promise<{ url: string }>;
+  appUrl: (appId: string) => Promise<{ url: string }>;
+}): Promise<void> {
+  const url = o.kind === "app" ? (await deps.appUrl(o.ref.appId)).url
+    : o.kind === "link" || o.kind === "pr" ? o.ref.url
+      : (await deps.attachmentUrl(o.ref.roomId, o.ref.attachmentId)).url;
+  await WebBrowser.openBrowserAsync(url);
+}
+
 const styles = StyleSheet.create({
   container: { flex: 1 },
   top: { paddingHorizontal: spacing.lg, paddingTop: spacing.md, gap: spacing.sm },
@@ -107,5 +136,6 @@ const styles = StyleSheet.create({
   meta: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18 },
   title: { fontFamily: fonts.sansSemiBold, fontSize: 15, lineHeight: 20 },
   note: { fontFamily: fonts.sans, fontSize: 14, lineHeight: 20, padding: spacing.lg },
-  output: { borderWidth: 1, borderRadius: radii.md, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
+  output: { borderWidth: 1, borderRadius: radii.md, paddingHorizontal: spacing.md, paddingVertical: spacing.xs },
+  outputRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm, minHeight: 44 },
 });

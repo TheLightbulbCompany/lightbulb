@@ -56,6 +56,12 @@ def _err(http_status: int, code: str, **extra) -> HTTPException:
     return HTTPException(status_code=http_status, detail={"code": code, **extra})
 
 
+def _matches(q: str | None, *fields: str | None) -> bool:
+    """`q` (the command palette's search): a case-blind substring of any field; no `q` matches everything."""
+    q = (q or "").strip().casefold()
+    return not q or any(q in (f or "").casefold() for f in fields)
+
+
 async def _workspace(auth: AuthContext) -> str:
     ws = resolve_owner_id(auth)
     if not await super_agent_flags.flags_for(ws):
@@ -87,7 +93,10 @@ async def list_tasks(
     cursor: Annotated[str | None, Query(max_length=2048)] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     needs_you: Annotated[bool, Query(alias="needsYou")] = False,
+    q: Annotated[str | None, Query(max_length=200)] = None,
 ):
+    """`q` keeps tasks whose title or identifier holds it (⌘K). ponytail: with `q` the walk reads every task in the
+    scope until `limit` match; a title index if workspaces outgrow that."""
     ws = await _workspace(auth)
     me = auth.user_id
     room = scope.removeprefix("room:") if scope.startswith("room:") else None
@@ -102,6 +111,8 @@ async def list_tasks(
         if room is not None and audience.get("roomId") != room:
             return False
         if scope == "mine" and t.get("ownerUserId") != me and me not in (audience.get("userIds") or []):
+            return False
+        if not _matches(q, t.get("title"), t.get("identifier")):
             return False
         return await tasks_access.can_view(t, me)
 
@@ -140,16 +151,21 @@ async def list_outputs(
     specialist: Annotated[str | None, Query(max_length=128)] = None,
     cursor: Annotated[str | None, Query(max_length=2048)] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    q: Annotated[str | None, Query(max_length=200)] = None,
 ):
     """What tasks made (Creations, UX slice 5): every output of every task the viewer can see, any status, newest
-    first within a page. `kind` repeats (`kind=link&kind=pr`: the Links filter in one read). `limit` counts tasks;
-    `next` pages on like `GET /tasks`. Declared before `/tasks/{id}`.
+    first within a page. `kind` repeats (`kind=link&kind=pr`: the Links filter in one read). `q` keeps outputs whose
+    title or file name holds it (⌘K). `limit` counts tasks; `next` pages on like `GET /tasks`. Declared before
+    `/tasks/{id}`.
 
     ponytail: walks the workspace's tasks by status and keeps those with outputs; an outputs index if it gets slow."""
     ws = await _workspace(auth)
 
+    def wanted(o: dict) -> bool:
+        return (not kind or o.get("kind") in kind) and _matches(q, o.get("title"), (o.get("ref") or {}).get("fileName"))
+
     async def keep(t: dict) -> bool:
-        if not any(not kind or o.get("kind") in kind for o in t.get("outputs") or []):
+        if not any(wanted(o) for o in t.get("outputs") or []):
             return False
         if room_id is not None and (t.get("audience") or {}).get("roomId") != room_id:
             return False
@@ -170,7 +186,7 @@ async def list_outputs(
         }
         for t in found
         for o in t["outputs"]
-        if not kind or o.get("kind") in kind
+        if wanted(o)
     ]
     return {"outputs": sorted(outputs, key=lambda o: o.get("createdAt") or "", reverse=True), "next": next_cursor}
 

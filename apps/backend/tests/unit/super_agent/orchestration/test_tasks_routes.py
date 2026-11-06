@@ -339,3 +339,24 @@ async def test_retry_and_reopen_are_refused_in_a_paused_project(world, monkeypat
     rooms[ROOM] = {"roomId": ROOM}  # resumed
     resp = await world["client"].post(f"/api/v1/tasks/{task}/{action}", json={"version": 1})
     assert resp.status_code == 200
+
+
+async def test_q_finds_visible_tasks_and_outputs_by_name(world):
+    """W12-3 (⌘K): `q` keeps tasks by title or identifier and outputs by title or file name; hidden tasks stay out."""
+    bakery = await _task("resolved", title="Bakery taglines")
+    await _task(title="Something else")
+    await _task("resolved", title="Bakery secret", audience={"kind": "person", "userIds": [PRIYA]}, ownerUserId=PRIYA)
+    await tasks_repo.add_task_output(
+        WS,
+        bakery,
+        {"id": "file:f1", "kind": "document", "title": "Taglines", "ref": {"fileName": "bakery.md"}, "createdAt": "1"},
+    )
+    await tasks_repo.add_task_output(WS, bakery, {"id": "app:a1", "kind": "app", "title": "Menu", "createdAt": "2"})
+
+    tasks = (await world["client"].get("/api/v1/tasks", params={"scope": "workspace", "q": "BAKERY"})).json()["tasks"]
+    assert [t["taskId"] for t in tasks] == [bakery]
+    outputs = (await world["client"].get("/api/v1/tasks/outputs", params={"q": "bakery"})).json()["outputs"]
+    assert [o["id"] for o in outputs] == ["file:f1"]
+    assert (await world["client"].get("/api/v1/tasks/outputs", params={"q": "menu"})).json()["outputs"][0][
+        "id"
+    ] == "app:a1"

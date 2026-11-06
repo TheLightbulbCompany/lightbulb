@@ -40,6 +40,12 @@ def _on(monkeypatch):
     monkeypatch.setattr(message_search, "resolve_owner_id", lambda auth: "org_me")
 
 
+def _rooms(rooms: dict, **meta):
+    """Patch the caller's readable rooms: {room: owner}, each META carrying ``meta``."""
+    metas = [{"roomId": r, "ownerId": o, **meta} for r, o in rooms.items()]
+    return patch.object(message_search.messaging, "searchable_room_metas", AsyncMock(return_value=metas))
+
+
 def _bool(query):
     return query["query"]["function_score"]["query"]["bool"]
 
@@ -85,7 +91,7 @@ async def test_search_queries_only_the_callers_rooms_in_their_owners_indexes():
     }
     request = AsyncMock(return_value=_response(200, {"hits": {"hits": [hit]}}))
     with (
-        patch.object(message_search.messaging, "searchable_rooms", AsyncMock(return_value=rooms)),
+        _rooms(rooms),
         patch.object(message_search, "_request", request),
     ):
         result = await message_search.search(_auth(), _req())
@@ -104,7 +110,7 @@ async def test_a_hit_from_a_room_outside_the_callers_set_is_dropped():
 
     body = {"hits": {"hits": [src(ROOM_B), src(ROOM_A)]}}
     with (
-        patch.object(message_search.messaging, "searchable_rooms", AsyncMock(return_value={ROOM_A: "org_me"})),
+        _rooms({ROOM_A: "org_me"}),
         patch.object(message_search, "_request", AsyncMock(return_value=_response(200, body))),
     ):
         result = await message_search.search(_auth(), _req())
@@ -120,7 +126,7 @@ async def test_a_hit_whose_canonical_row_is_gone_or_changed_is_dropped(monkeypat
     _rows(monkeypatch, {} if row is None else {(ROOM_A, 1): row})
     src = {"_source": {"messageId": "m", "roomId": ROOM_A, "messageSeq": 1, "createdAt": "t", "text": "x"}}
     with (
-        patch.object(message_search.messaging, "searchable_rooms", AsyncMock(return_value={ROOM_A: "org_me"})),
+        _rooms({ROOM_A: "org_me"}),
         patch.object(message_search, "_request", AsyncMock(return_value=_response(200, {"hits": {"hits": [src]}}))),
     ):
         assert (await message_search.search(_auth(), _req())).hits == []
@@ -130,7 +136,7 @@ async def test_a_hit_matching_an_edited_row_is_returned(monkeypatch):
     _rows(monkeypatch, {(ROOM_A, 1): {"text": "old", "editedText": "x"}})
     src = {"_source": {"messageId": "m", "roomId": ROOM_A, "messageSeq": 1, "createdAt": "t", "text": "x"}}
     with (
-        patch.object(message_search.messaging, "searchable_rooms", AsyncMock(return_value={ROOM_A: "org_me"})),
+        _rooms({ROOM_A: "org_me"}),
         patch.object(message_search, "_request", AsyncMock(return_value=_response(200, {"hits": {"hits": [src]}}))),
     ):
         assert len((await message_search.search(_auth(), _req())).hits) == 1
@@ -138,7 +144,7 @@ async def test_a_hit_matching_an_edited_row_is_returned(monkeypatch):
 
 async def test_a_room_the_caller_cannot_read_is_not_searchable():
     with (
-        patch.object(message_search.messaging, "searchable_rooms", AsyncMock(return_value={ROOM_A: "org_me"})),
+        _rooms({ROOM_A: "org_me"}),
         patch.object(message_search, "_request", AsyncMock()) as request,
     ):
         with pytest.raises(ApiProblem) as error:
@@ -149,7 +155,7 @@ async def test_a_room_the_caller_cannot_read_is_not_searchable():
 
 async def test_no_rooms_means_no_request():
     with (
-        patch.object(message_search.messaging, "searchable_rooms", AsyncMock(return_value={})),
+        _rooms({}),
         patch.object(message_search, "_request", AsyncMock()) as request,
     ):
         assert (await message_search.search(_auth(), _req())).hits == []
@@ -160,7 +166,7 @@ async def test_no_rooms_means_no_request():
 async def test_cold_start_is_a_retryable_503(failure):
     request = AsyncMock(side_effect=failure) if isinstance(failure, Exception) else AsyncMock(return_value=failure)
     with (
-        patch.object(message_search.messaging, "searchable_rooms", AsyncMock(return_value={ROOM_A: "org_me"})),
+        _rooms({ROOM_A: "org_me"}),
         patch.object(message_search, "_request", request),
     ):
         with pytest.raises(ApiProblem) as error:
@@ -171,7 +177,7 @@ async def test_cold_start_is_a_retryable_503(failure):
 
 async def test_a_policy_mistake_is_not_reported_as_warm_up():
     with (
-        patch.object(message_search.messaging, "searchable_rooms", AsyncMock(return_value={ROOM_A: "org_me"})),
+        _rooms({ROOM_A: "org_me"}),
         patch.object(message_search, "_request", AsyncMock(return_value=_response(403, {}))),
     ):
         with pytest.raises(ApiProblem) as error:
@@ -231,7 +237,7 @@ async def test_membership_revoked_during_the_search_drops_only_that_rooms_hits(m
     rooms = {ROOM_A: "org_me", ROOM_B: "org_me"}
     body = {"hits": {"hits": [src(ROOM_A), src(ROOM_B)]}}
     with (
-        patch.object(message_search.messaging, "searchable_rooms", AsyncMock(return_value=rooms)),
+        _rooms(rooms),
         patch.object(message_search, "_request", AsyncMock(return_value=_response(200, body))),
     ):
         result = await message_search.search(_auth(), _req())
@@ -244,8 +250,81 @@ async def test_the_recheck_only_queries_rooms_that_have_hits(monkeypatch):
     monkeypatch.setattr(message_search.messaging, "still_reads_room", recheck)
     rooms = {ROOM_A: "org_me", ROOM_B: "org_me"}
     with (
-        patch.object(message_search.messaging, "searchable_rooms", AsyncMock(return_value=rooms)),
+        _rooms(rooms),
         patch.object(message_search, "_request", AsyncMock(return_value=_response(200, {"hits": {"hits": [src]}}))),
     ):
         await message_search.search(_auth(), _req())
     assert [c.args[2] for c in recheck.await_args_list] == [ROOM_A]
+
+
+async def test_a_message_newer_than_the_index_is_found_live(monkeypatch):
+    """W12-3: new messages reach the index in a 39-minute batch; the last hour is read from DynamoDB."""
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    fresh, old = now.isoformat(), (now - timedelta(hours=3)).isoformat()
+
+    def row(seq, text, created=fresh, **extra):
+        author = {"displayName": "Sam", "kind": "human"}
+        return {
+            "roomId": ROOM_A,
+            "messageId": f"m{seq}",
+            "messageSeq": seq,
+            "createdAt": created,
+            "text": text,
+            "author": author,
+            **extra,
+        }
+
+    tail = AsyncMock(
+        return_value=[
+            row(5, "old bakery note", created=old),  # older than the window: the index's job
+            row(6, "The Bakery tagline is in"),
+            row(7, "bakery gone", deletedAt="t"),
+            row(8, "nothing here"),
+            row(9, "draft", editedText="bakery, edited"),
+        ]
+    )
+    monkeypatch.setattr(message_search.messaging_repo, "list_messages_before", tail)
+    indexed = {"_source": {"messageId": "m6", "roomId": ROOM_A, "messageSeq": 6, "createdAt": fresh, "text": "x"}}
+    _rows(monkeypatch, {(ROOM_A, 6): {"text": "x"}})
+    with (
+        # ROOM_B was quiet for hours: its tail is never read.
+        patch.object(
+            message_search.messaging,
+            "searchable_room_metas",
+            AsyncMock(
+                return_value=[
+                    {"roomId": ROOM_A, "ownerId": "org_me", "lastMessageAt": fresh, "lastSeq": 9},
+                    {"roomId": ROOM_B, "ownerId": "org_me", "lastMessageAt": old, "lastSeq": 3},
+                ]
+            ),
+        ),
+        patch.object(message_search, "_request", AsyncMock(return_value=_response(200, {"hits": {"hits": [indexed]}}))),
+    ):
+        result = await message_search.search(_auth(), _req(q="bakery"))
+    assert [h.message_id for h in result.hits] == ["m9", "m6"]  # newest first, m6 once
+    assert result.hits[1].snippet == "The \u0001Bakery\u0002 tagline is in"
+    assert result.hits[0].author_name == "Sam"
+    assert [c.args[:2] for c in tail.await_args_list] == [(ROOM_A, 10)]
+
+
+async def test_a_live_hit_is_dropped_when_membership_is_revoked(monkeypatch):
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).isoformat()
+    monkeypatch.setattr(message_search.messaging, "still_reads_room", AsyncMock(return_value=False))
+    monkeypatch.setattr(
+        message_search.messaging_repo,
+        "list_messages_before",
+        AsyncMock(
+            return_value=[
+                {"roomId": ROOM_A, "messageId": "m1", "messageSeq": 1, "createdAt": now, "text": "bakery"},
+            ]
+        ),
+    )
+    with (
+        _rooms({ROOM_A: "org_me"}, lastMessageAt=now, lastSeq=1),
+        patch.object(message_search, "_request", AsyncMock(return_value=_response(200, {"hits": {"hits": []}}))),
+    ):
+        assert (await message_search.search(_auth(), _req(q="bakery"))).hits == []

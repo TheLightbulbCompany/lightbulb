@@ -9,6 +9,8 @@ export interface OutputsFilter {
   kind?: OutputKind | readonly OutputKind[];
   roomId?: string;
   specialist?: string;
+  /** Outputs whose title or file name holds it (⌘K). */
+  q?: string;
   cursor?: string | null;
   limit?: number;
 }
@@ -19,7 +21,8 @@ export const scopeParam = (scope: TaskScope): string =>
 export interface TasksClient {
   /** The signed-in workspace (org, else user); part of every list cache key so a workspace switch never shows another tenant's threads. */
   cacheScope: string;
-  list(scope: TaskScope, cursor?: string | null): Promise<{ tasks: TaskSummary[]; next: string | null }>;
+  /** `q`: tasks whose title or identifier holds it (⌘K). */
+  list(scope: TaskScope, cursor?: string | null, q?: string): Promise<{ tasks: TaskSummary[]; next: string | null }>;
   get(taskId: string): Promise<TaskDetail>;
   act(taskId: string, verb: TaskVerb, version: number): Promise<TaskSummary>;
   answer(taskId: string, qid: string, body: AnswerBody): Promise<{ question: QuestionView; next: TaskSummary | null }>;
@@ -36,8 +39,8 @@ export function createTasksClient(api: ApiMethods, cacheScope = ""): TasksClient
   const path = (taskId: string) => `/tasks/${encodeURIComponent(taskId)}`;
   return {
     cacheScope,
-    list: (scope, cursor) => api.get(
-      `/tasks?scope=${encodeURIComponent(scopeParam(scope))}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+    list: (scope, cursor, q) => api.get(
+      `/tasks?scope=${encodeURIComponent(scopeParam(scope))}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}${q ? `&q=${encodeURIComponent(q)}` : ""}`,
     ) as ReturnType<TasksClient["list"]>,
     get: (taskId) => api.get(path(taskId)) as Promise<TaskDetail>,
     act: (taskId, verb, version) => api.post(`${path(taskId)}/${verb}`, { version }) as Promise<TaskSummary>,
@@ -47,11 +50,12 @@ export function createTasksClient(api: ApiMethods, cacheScope = ""): TasksClient
     markRead: (taskId) => api.post(`${path(taskId)}/read`, {}),
     needsYou: () => api.get("/needs-you") as ReturnType<TasksClient["needsYou"]>,
     questions: (taskId) => api.get(`${path(taskId)}/questions`) as ReturnType<TasksClient["questions"]>,
-    outputs: ({ kind, roomId, specialist, cursor, limit } = {}) => {
+    outputs: ({ kind, roomId, specialist, q: text, cursor, limit } = {}) => {
       const q = new URLSearchParams();
       for (const k of kind === undefined ? [] : typeof kind === "string" ? [kind] : kind) q.append("kind", k);
       if (roomId) q.set("roomId", roomId);
       if (specialist) q.set("specialist", specialist);
+      if (text) q.set("q", text);
       if (cursor) q.set("cursor", cursor);
       if (limit) q.set("limit", String(limit));
       const qs = q.toString();

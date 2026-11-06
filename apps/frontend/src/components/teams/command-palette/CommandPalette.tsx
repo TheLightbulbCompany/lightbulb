@@ -22,9 +22,12 @@ import { useMessageSearch } from "@/components/messaging/useMessageSearch";
 import { plainSnippet } from "@/components/messaging/searchSnippet";
 import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingWorkspaceContext";
 import { roomDisplayName } from "@lightbulb/shared";
+import { openTaskPane } from "@/components/workspace/workspaceController";
+import { KIND_WORD, openOutput } from "@/components/creations/openOutput";
+import { useTaskSearch } from "./useTaskSearch";
 
 type FlatItem = {
-  kind: "conversation" | "message" | "nav" | "agent" | "issue" | "project";
+  kind: "conversation" | "task" | "file" | "message" | "nav" | "agent" | "issue" | "project";
   id: string;
   label: string;
   path: string;
@@ -84,7 +87,10 @@ function CommandPaletteContent({ open, onOpenChange }: CommandPaletteProps) {
     () => filterNavActions(query, superAgent, admin),
     [query, superAgent, admin],
   );
-  const { agents, issues, projects } = useFilteredCommandResults(query, open);
+  const { agents, issues: paperclipIssues, projects } = useFilteredCommandResults(query, open);
+  // Super-agent workspaces have Tasks, not issues: the Tasks and Files groups take the Issues group's place.
+  const issues = useMemo(() => (superAgent ? [] : paperclipIssues), [superAgent, paperclipIssues]);
+  const found = useTaskSearch(query, open && superAgent);
   const conversations = useRoomCommandResults(query, open);
   const workspace = useMessagingWorkspaceOptional();
   const messageSearch = useMessageSearch(query, { enabled: open && !!workspace, limit: 8, minLength: 2 });
@@ -102,13 +108,15 @@ function CommandPaletteContent({ open, onOpenChange }: CommandPaletteProps) {
   const flatItems = useMemo<FlatItem[]>(() => {
     const items: FlatItem[] = [];
     conversations.forEach((c) => items.push({ kind: "conversation", id: c.id, label: c.label, path: "", run: c.run }));
+    found.tasks.forEach((t) => items.push({ kind: "task", id: t.taskId, label: t.title, path: "", run: () => openTaskPane(t.taskId) }));
+    found.files.forEach((o) => items.push({ kind: "file", id: `${o.taskId}:${o.id}`, label: o.title, path: "", run: () => openOutput(o) }));
     messageHits.forEach((m) => items.push({ kind: "message", id: m.id, label: m.label, path: "", run: m.run }));
     navResults.forEach((a) => items.push({ kind: "nav", id: a.id, label: a.label, path: a.path }));
     agents.forEach((a) => items.push({ kind: "agent", id: a.id, label: a.name, path: agentInspectorUrl(a.id) }));
     issues.forEach((i) => items.push({ kind: "issue", id: i.id, label: i.title, path: teamsDetailUrl("issue", i.id) }));
     projects.forEach((p) => items.push({ kind: "project", id: p.id, label: p.name, path: teamsDetailUrl("project", p.id) }));
     return items;
-  }, [conversations, messageHits, navResults, agents, issues, projects]);
+  }, [conversations, found, messageHits, navResults, agents, issues, projects]);
 
   // Derive a clamped index from raw state — no setState-in-effect needed.
   const selectedIndex = Math.min(rawSelectedIndex, Math.max(0, flatItems.length - 1));
@@ -150,7 +158,7 @@ function CommandPaletteContent({ open, onOpenChange }: CommandPaletteProps) {
         />
         <input
           autoFocus
-          placeholder="Search messages, agents, issues, projects, or jump to..."
+          placeholder={superAgent ? "Search projects, tasks, files and messages" : "Search messages, agents, issues, projects, or jump to..."}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={handleKeyDown}
@@ -184,6 +192,29 @@ function CommandPaletteContent({ open, onOpenChange }: CommandPaletteProps) {
                         onMouseEnter={() => setSelectedIndex(idx)}
                         onClick={() => select(flatItems[idx])}
                       />
+                    );
+                  })}
+                </Group>
+              )}
+              {found.tasks.length > 0 && (
+                <Group label="Tasks">
+                  {found.tasks.map((t) => {
+                    const idx = flatItems.findIndex((it) => it.kind === "task" && it.id === t.taskId);
+                    return (
+                      <Row key={t.taskId} label={t.title} sublabel="Task" selected={selectedIndex === idx}
+                        onMouseEnter={() => setSelectedIndex(idx)} onClick={() => select(flatItems[idx])} />
+                    );
+                  })}
+                </Group>
+              )}
+              {found.files.length > 0 && (
+                <Group label="Files">
+                  {found.files.map((o) => {
+                    const id = `${o.taskId}:${o.id}`;
+                    const idx = flatItems.findIndex((it) => it.kind === "file" && it.id === id);
+                    return (
+                      <Row key={id} label={o.title} sublabel={KIND_WORD[o.kind]} selected={selectedIndex === idx}
+                        onMouseEnter={() => setSelectedIndex(idx)} onClick={() => select(flatItems[idx])} />
                     );
                   })}
                 </Group>

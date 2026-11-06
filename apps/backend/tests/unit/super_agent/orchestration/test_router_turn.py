@@ -1191,3 +1191,33 @@ def test_briefs_carry_no_approval_steps():
     assert "the specialist handles approvals" in text
     assert "by themselves" not in text  # most send/spend tools do not gate themselves (gog, browser, QuickBooks)
     assert "stops at an approval question" not in text
+
+
+def test_local_now_names_the_asker_day_and_zone():
+    from datetime import UTC, datetime
+
+    friday_utc = datetime(2026, 11, 6, 2, 59, tzinfo=UTC)  # walk 8: 9:59 PM Thursday in New York
+    assert router_prompt.local_now("America/New_York", friday_utc) == (
+        "Thursday 5 Nov 2026, 9:59 PM New York time (America/New_York)"
+    )
+    assert router_prompt.local_now("UTC", friday_utc) == "Friday 6 Nov 2026, 2:59 AM UTC (UTC)"
+
+
+@pytest.mark.asyncio
+async def test_router_prompt_carries_the_askers_local_time(world, monkeypatch):
+    zones = []
+
+    async def tz(user_id):
+        zones.append(user_id)
+        return "America/Los_Angeles"
+
+    monkeypatch.setattr("core.repositories.user_repo.get_timezone", tz)
+    t1 = await _trig("chat:m1")
+    world["decisions"] = [_start([t1])]
+    await _run([t1])
+    prompt = world["runs"][0][1].input
+    assert zones == ["user_sam"]
+    assert re.search(
+        r"^Now: \w+day \d+ \w+ \d{4}, \d+:\d\d [AP]M Los Angeles time \(America/Los_Angeles\)\.", prompt, re.M
+    )
+    assert prompt.index("Now:") < prompt.index("## Triggers")

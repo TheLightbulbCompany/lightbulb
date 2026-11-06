@@ -34,6 +34,7 @@ import { useApi } from "@/lib/api";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { readDesktopPermissionGrant } from "@/lib/desktopPermissions";
 import { subscribeDesktopPermissions } from "@/lib/desktopPermissionsSubscribe";
+import { readLastKnown, writeLastKnown } from "@/lib/lastKnown";
 
 export interface ActiveRoomSubscription {
   roomId: string;
@@ -106,8 +107,15 @@ export function LiveEventsProvider({ children, preloadRooms = false }: { childre
   // No longer a member (403): SWR would keep the last config, and with it the socket and every
   // subscription. Dropping it closes them all.
   const config = configError instanceof ApiError && configError.status === 403 ? undefined : liveConfig;
-  const superAgent = config?.features?.superAgent === true;
   const featuresLoaded = config !== undefined || configError !== undefined;
+  // Until the live config answers (1-3 s on a cold load), the switch reads what this browser last saw for this person
+  // and workspace, so a super-agent reload draws its own shell at once instead of the old one first (W12-18).
+  const switchScope = `${userId}:${ownerScope}`;
+  // (Read once Clerk has loaded: never during hydration, so the server's render and the first client render agree.)
+  const superAgent = featuresLoaded ? config?.features?.superAgent === true : httpReady && readLastKnown("superAgent", switchScope) === true;
+  useEffect(() => {
+    if (config && userId) writeLastKnown("superAgent", switchScope, config.features?.superAgent === true);
+  }, [config, userId, switchScope]);
   // Specialist names for task cards ("Finance", never the agent id): one read of the agents list while
   // the switch is on, shared by every card through this context.
   // The same `/teams/agents` SWR key the roster and the panels read, so a cold load makes one request, not two.
@@ -346,7 +354,8 @@ export function useLiveEvents(): LiveEventsContextValue {
   return value;
 }
 
-/** Super-agent UI switch: false until live config says `features.superAgent: true`, and outside a provider. */
+/** Super-agent UI switch: the live config's `features.superAgent` (until it answers, what this browser last saw for this
+ *  person and workspace); false outside a provider. */
 export function useSuperAgent(): boolean {
   return useContext(LiveEventsContext)?.superAgent ?? false;
 }

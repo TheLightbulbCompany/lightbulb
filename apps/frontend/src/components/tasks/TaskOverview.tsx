@@ -71,17 +71,23 @@ export function RequestGroups({ scope, viewerId, onOpen }: { scope: TaskScope; v
 
 /** A Needs you row: the one decision card, compact, answerable right here (UX audit slice 2); the plain row while the
  *  question loads, when it can't, or when the task needs you without a question (a draft ready for review). */
-export function NeedsYouItem({ task, viewerId, onOpen }: { task: TaskSummary; viewerId: string; onOpen: (taskId: string) => void }): ReactElement {
+export function NeedsYouItem({ task, viewerId, onOpen, project }: {
+  task: TaskSummary; viewerId: string; onOpen: (taskId: string) => void; project?: string | null;
+}): ReactElement {
   const { tasks } = useLiveEvents();
   const qid = task.openQuestion?.qid ?? null;
   const { data } = useTaskQuestions(tasks, qid ? task.taskId : null);
   const question = data?.items.find((q) => q.id === qid && q.state === "open");
   return question
     ? <li><DecisionCard task={task} question={question} compact onOpen={() => onOpen(task.taskId)} /></li>
-    : <OverviewRow task={task} viewerId={viewerId} onOpen={onOpen} />;
+    : <OverviewRow task={task} viewerId={viewerId} onOpen={onOpen} project={project} />;
 }
 
-export function OverviewRow({ task, viewerId, onOpen }: { task: TaskSummary; viewerId: string; onOpen: (taskId: string) => void }): ReactElement {
+export function OverviewRow({ task, viewerId, onOpen, project }: {
+  task: TaskSummary; viewerId: string; onOpen: (taskId: string) => void;
+  /** The project's name, muted after the title, where the list spans projects (Activity). */
+  project?: string | null;
+}): ReactElement {
   const { act } = useTaskActions("overview");
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -105,6 +111,7 @@ export function OverviewRow({ task, viewerId, onOpen }: { task: TaskSummary; vie
     <p className="flex min-w-0 flex-1 items-baseline gap-1.5">
       <button type="button" onClick={() => onOpen(task.taskId)} aria-label={`Open ${task.title}, ${view.word}`}
         className="min-w-0 shrink truncate text-left font-semibold after:absolute after:inset-0 after:rounded-md after:content-[''] focus-visible:outline-none focus-visible:after:outline-2 focus-visible:after:outline-ring">{task.title}</button>
+      {project && <span className="max-w-[40%] flex-none truncate text-ui text-muted-foreground"><span aria-hidden="true">· </span>{project}</span>}
       {view.word === "Working"
         ? <><span aria-hidden="true" className="text-muted-foreground">—</span><ActorLine task={task} viewerId={viewerId} inline className="min-w-0" /></>
         : after && <span className="min-w-0 truncate text-ui text-muted-foreground"><span aria-hidden="true">— </span>{after}</span>}

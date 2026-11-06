@@ -1267,3 +1267,39 @@ describe("agents banner progress", () => {
     });
   });
 });
+
+describe("a returning workspace skips the hold (W12-18)", () => {
+  const baseProv = { phase: "normal", blocked: null, refreshInterval: 3000, refresh: vi.fn() };
+  const mount = () => render(<ProvisioningStepper><div>children</div></ProvisioningStepper>);
+
+  beforeEach(() => {
+    localStorage.clear();
+    useProvMock.mockReset();
+    clerkMockUser = null;
+    clerkMockOrganization = null;
+    billingMockIsSubscribed = true;
+    billingMockAccount = { provider_choice: "bedrock_claude" };
+  });
+
+  it("draws the app while the first status read is out once this browser saw it ready, and forgets on a block", () => {
+    useProvMock.mockReturnValue({ ...baseProv, phase: "loading", container: null });
+    const first = mount();
+    expect(screen.getByRole("status")).toHaveTextContent("Getting your workspace ready…");
+    first.unmount();
+
+    useProvMock.mockReturnValue({ ...baseProv, container: { container_status: "running", runtime_phase: "ready" } });
+    mount().unmount();
+
+    useProvMock.mockReturnValue({ ...baseProv, phase: "loading", container: null });
+    const again = mount();
+    expect(screen.getByText("children")).toBeInTheDocument();
+    expect(screen.queryByText("Getting your workspace ready…")).toBeNull();
+    again.unmount();
+
+    useProvMock.mockReturnValue({ ...baseProv, phase: "needs-signup", container: null });
+    mount().unmount();
+    useProvMock.mockReturnValue({ ...baseProv, phase: "loading", container: null });
+    mount();
+    expect(screen.getByText("Getting your workspace ready…")).toBeInTheDocument();
+  });
+});

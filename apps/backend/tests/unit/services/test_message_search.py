@@ -330,6 +330,28 @@ async def test_a_live_hit_is_dropped_when_membership_is_revoked(monkeypatch):
     assert [c.args[2] for c in recheck.await_args_list] == [ROOM_A]
 
 
+@pytest.mark.parametrize("index", ["asleep", "503"])
+async def test_live_hits_do_not_wait_for_a_cold_index(monkeypatch, index):
+    """W13: "pumpkin" waited 8 s behind a waking index and the palette read the wait as No results."""
+    import asyncio
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).isoformat()
+    monkeypatch.setattr(message_search, "_FRESH_ALONE_AFTER_S", 0.01)
+    tail = AsyncMock(
+        return_value=[{"roomId": ROOM_A, "messageId": "m1", "messageSeq": 1, "createdAt": now, "text": "pumpkin latte"}]
+    )
+    monkeypatch.setattr(message_search.messaging_repo, "list_messages_before", tail)
+
+    async def asleep(*args, **kwargs):
+        await asyncio.sleep(5)
+
+    request = asleep if index == "asleep" else AsyncMock(return_value=_response(503, {}))
+    with _rooms({ROOM_A: "org_me"}, lastMessageAt=now, lastSeq=1), patch.object(message_search, "_request", request):
+        result = await asyncio.wait_for(message_search.search(_auth(), _req(q="pumpkin")), 1)
+    assert [h.message_id for h in result.hits] == ["m1"]
+
+
 def _closed_room(monkeypatch, kind):
     """ROOM_A, where the caller is still a member but the session/app/task behind the room shuts them out."""
     from core.repositories import local_sessions_repo, tasks_repo

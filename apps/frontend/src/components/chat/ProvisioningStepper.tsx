@@ -63,6 +63,7 @@ export function resolvePostAgentPhase(): "ready" {
 }
 
 import type { ProviderChoiceId as ProviderChoice } from "@/lib/providerCards";
+import { readLastKnown, writeLastKnown } from "@/lib/lastKnown";
 
 function isProviderChoice(v: string | null): v is ProviderChoice {
   return v === "chatgpt_oauth" || v === "byo_key";
@@ -717,6 +718,15 @@ export function ProvisioningStepper({
     return () => clearInterval(interval);
   }, [phase]);
 
+  // W12-18: a workspace this browser last saw ready skips the hold below while /billing/account and the first
+  // /container/status answer (1-3.5 s on a dev cold load): the app draws at once and this gate still decides when
+  // they do. A gate that stops someone (blocked, sign-up, team pending) forgets it, so the next load waits again.
+  const passedScope = `${clerkUserId ?? "anon"}:${organization?.id ?? "personal"}`;
+  useEffect(() => {
+    if (phase === "ready") writeLastKnown("gatePassed", passedScope, true);
+    else if (gatePhase === "blocked" || gatePhase === "needs-signup" || gatePhase === "team-pending") writeLastKnown("gatePassed", passedScope, false);
+  }, [phase, gatePhase, passedScope]);
+
   // Chat-first onboarding begins after this provisioning gate. The backend
   // captures the first canonical-room human message only when normal per-room
   // dispatch selected an eligible agent; this component owns no brief form,
@@ -1184,7 +1194,8 @@ export function ProvisioningStepper({
   // out means the next thing a new trial user sees is workspace provisioning,
   // not a payment step they don't need.
   if (billingLoading || gatePhase === "loading") {
-    return <StepperHold />;
+    // The same shape as the ready branch above, so the app is not remounted when the answers land.
+    return readLastKnown("gatePassed", passedScope) ? <>{children}{null}</> : <StepperHold />;
   }
 
   // Pre-signup user — render the three signup paths inline. Each card links

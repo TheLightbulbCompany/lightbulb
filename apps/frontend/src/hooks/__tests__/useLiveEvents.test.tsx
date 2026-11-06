@@ -116,6 +116,7 @@ beforeEach(() => {
   releaseSecondRoom = null;
   releaseFrames = [];
   shared.framesChannel = null;
+  localStorage.clear();
   localStorage.setItem("lightbulb.desktop.permissions.v1", JSON.stringify({ permissions: ["screen"] }));
 });
 
@@ -220,6 +221,20 @@ describe("LiveEventsProvider", () => {
     act(() => shared.onEvent?.({ type: "task.changed", payload: { taskId: "t1", part: "task", version: 2 } } as never));
     await act(async () => {});
     expect(get.mock.calls.map(([path]) => path)).toEqual(on ? ["/messaging/live-config", "/teams/agents"] : ["/messaging/live-config"]);
+  });
+
+  it("until the live config answers, the switch is what this browser last saw for this person and workspace (W12-18)", async () => {
+    let answer: (value: unknown) => void = () => {};
+    get.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
+    localStorage.setItem("lightbulb.lastKnown.superAgent:user-a:org-a", "1");
+    localStorage.setItem("lightbulb.lastKnown.superAgent:user-a:org-b", "0");
+    function SwitchProbe() { return <div>switch:{useSuperAgent() ? "on" : "off"}</div>; }
+    render(<LiveEventsProvider><SwitchProbe /></LiveEventsProvider>);
+    expect(screen.getByText("switch:on")).toBeTruthy();
+    // The answer wins and is remembered for the next load.
+    await act(async () => answer({ ...LIVE_CONFIG, features: { superAgent: false } }));
+    await waitFor(() => expect(screen.getByText("switch:off")).toBeTruthy());
+    expect(localStorage.getItem("lightbulb.lastKnown.superAgent:user-a:org-a")).toBe("0");
   });
 
   it("useSuperAgent is off outside a provider (a component rendered on its own)", () => {

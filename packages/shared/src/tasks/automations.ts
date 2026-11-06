@@ -2,7 +2,7 @@
 
 import { ApiError } from "../api/error";
 import type { AutomationView } from "./types";
-import { CUSTOM_SCHEDULE, formatSchedule } from "./view";
+import { CUSTOM_SCHEDULE, formatSchedule, oneOffInstant } from "./view";
 
 export const money = (n: number): string => `$${n.toFixed(2).replace(/\.00$/, "")}`;
 
@@ -18,6 +18,15 @@ export function scheduleWords(a: Pick<AutomationView, "schedule">, viewerTz: str
   const zone = zoneName(a.schedule.tz);
   if (a.schedule.tz === viewerTz) return `${words} ${zone}`;
   return `${words} (${zone}: ${formatSchedule(a.schedule.cron, a.schedule.tz, a.schedule.tz, now)})`;
+}
+
+/** False once an automation can't fire again: its limited runs are used up, or every entry is a one-off already past.
+ *  Activity's Scheduled lists only what will run again (W13); a paused weekly one still counts, it runs on resume. */
+export function runsAgain(a: Pick<AutomationView, "schedule" | "runCount">, now = Date.now()): boolean {
+  const s = a.schedule;
+  if (!s) return true;
+  if (s.remainingRuns != null && a.runCount >= s.remainingRuns) return false;
+  return !s.cron.length || s.cron.some((entry) => (oneOffInstant(entry, s.tz, now) ?? Infinity) > now);
 }
 
 /** Where a run posts, in words (never the raw target id): "posts to #walk-8" when the room's label is known. */

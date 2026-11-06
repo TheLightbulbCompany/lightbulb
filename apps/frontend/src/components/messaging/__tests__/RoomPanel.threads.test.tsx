@@ -107,10 +107,11 @@ describe("RoomPanel Threads view (super-agent)", () => {
     } finally { host.remove(); _resetControllerForTests(); localStorage.clear(); }
   });
 
-  it("namesAgent: the name as a whole word, any case", () => {
+  it("namesAgent: the name spoken to Lightbulb at the start, any case", () => {
     expect(namesAgent("hi lightbulb, help", "Lightbulb")).toBe(true);
     expect(namesAgent("Lightbulb?", "Lightbulb")).toBe(true);
     expect(namesAgent("lightbulbs", "Lightbulb")).toBe(false);
+    expect(namesAgent("the Lightbulb app is down", "Lightbulb")).toBe(false);
   });
 
   it("Escape puts the column away in this room only; the X closes it everywhere; focus returns to the toggle", async () => {
@@ -284,18 +285,34 @@ describe("RoomPanel Threads view (super-agent)", () => {
     expect(within(article).queryByText("Agent")).toBeNull();
   });
 
-  it("naming Lightbulb in plain words shows on it… in a DM or where it listens to everything (dev walk R8)", async () => {
-    const mentionsOnly = { ...lightbulb, mentionHandle: "lightbulb", listenMode: "mentions" as const };
-    const ask = { ...message, text: "Hi Lightbulb, can you find a venue?", createdAt: new Date().toISOString() };
+  it("on it… only for what admission answers: a DM, an @mention, or Hi Lightbulb, … (dev walk R8, W9-1)", async () => {
+    const front = { ...lightbulb, mentionHandle: "lightbulb", listenMode: "active" as const };
+    const now = new Date().toISOString();
+    const named = { ...message, text: "Hi Lightbulb, can you find a venue?", createdAt: now };
+    const plain = { ...message, text: "email sam@example.com a one-line hello", createdAt: now };
     const dm = { ...props.room!, kind: "dm" as const, name: null };
-    const { rerender } = render(<Fresh><RoomPanel {...props} room={dm} participants={[sam, mentionsOnly]} messages={[ask]} /></Fresh>);
+    const shows = () => screen.queryByText("Lightbulb is on it…") !== null;
+    const { rerender } = render(<Fresh><RoomPanel {...props} participants={[sam, front]} messages={[named]} /></Fresh>);
     expect(await screen.findByText("Lightbulb is on it…")).toBeInTheDocument();
-    // A channel where Lightbulb only answers mentions: a plain name dispatches nothing, so no promise.
-    rerender(<Fresh><RoomPanel {...props} participants={[sam, mentionsOnly, { ...sam, id: "priya", displayName: "Priya" }]} messages={[ask]} /></Fresh>);
-    expect(screen.queryByText("Lightbulb is on it…")).toBeNull();
-    // A word that only contains the name is not the name.
-    rerender(<Fresh><RoomPanel {...props} room={dm} participants={[sam, mentionsOnly]} messages={[{ ...ask, text: "the lightbulbs are out" }]} /></Fresh>);
-    expect(screen.queryByText("Lightbulb is on it…")).toBeNull();
+    // W9-1: an unaddressed message in a shared room goes to Jev, and the Router may stay quiet. Even with Lightbulb
+    // listening to everything and nobody else here, nothing promises a reply, so nothing says "on it".
+    rerender(<Fresh><RoomPanel {...props} participants={[sam, front]} messages={[plain]} /></Fresh>);
+    expect(shows()).toBe(false);
+    // The name mid-sentence is not spoken to Lightbulb (admission's vocative rule).
+    rerender(<Fresh><RoomPanel {...props} participants={[sam, front]} messages={[{ ...plain, text: "the Lightbulb app is down" }]} /></Fresh>);
+    expect(shows()).toBe(false);
+    // An @mention of its seat is an ask in any room.
+    rerender(<Fresh><RoomPanel {...props} participants={[sam, front]} messages={[{ ...plain, mentions: [{ kind: "agent", id: front.id }] }]} /></Fresh>);
+    expect(shows()).toBe(true);
+    // Listening for mentions only still answers a name-address.
+    rerender(<Fresh><RoomPanel {...props} participants={[sam, { ...front, listenMode: "mentions" }]} messages={[named]} /></Fresh>);
+    expect(shows()).toBe(true);
+    // A DM is always an ask.
+    rerender(<Fresh><RoomPanel {...props} room={dm} participants={[sam, front]} messages={[plain]} /></Fresh>);
+    expect(shows()).toBe(true);
+    // Observe answers nothing.
+    rerender(<Fresh><RoomPanel {...props} room={dm} participants={[sam, { ...front, listenMode: "observe" }]} messages={[named]} /></Fresh>);
+    expect(shows()).toBe(false);
   });
 
   it("a message sent while the workspace is still being set up reads Queued until Lightbulb answers", async () => {
@@ -307,7 +324,7 @@ describe("RoomPanel Threads view (super-agent)", () => {
 
   it("after an ask, Lightbulb is on it… until its reply lands; never for an old ask", async () => {
     const front = { ...lightbulb, mentionHandle: "lightbulb", listenMode: "active" as const };
-    const ask = { ...message, createdAt: new Date().toISOString() };
+    const ask = { ...message, text: "Hi Lightbulb, can you help?", createdAt: new Date().toISOString() };
     const { rerender } = render(<Fresh><RoomPanel {...props} participants={[sam, front]} messages={[ask]} /></Fresh>);
     expect(await screen.findByText("Lightbulb is on it…")).toBeInTheDocument();
     const reply: RoomMessage = { ...ask, messageId: "m2", messageSeq: 2, author: { kind: "agent", id: front.id, displayName: "Lightbulb" }, text: "Done." };
@@ -317,15 +334,15 @@ describe("RoomPanel Threads view (super-agent)", () => {
     await waitFor(() => expect(screen.queryByText("Lightbulb is on it…")).toBeNull());
   });
 
-  it("no on it… once the ask's run ended (failed or stopped), or when Lightbulb only listens for mentions", async () => {
+  it("no on it… once the ask's run ended (failed or stopped), or when Lightbulb only observes", async () => {
     const front = { ...lightbulb, mentionHandle: "lightbulb", listenMode: "active" as const };
-    const ask = { ...message, messageId: "m-ask", createdAt: new Date().toISOString() };
+    const ask = { ...message, messageId: "m-ask", text: "Hi Lightbulb, can you help?", createdAt: new Date().toISOString() };
     const { rerender } = render(<Fresh><RoomPanel {...props} participants={[sam, front]} messages={[ask]} /></Fresh>);
     expect(await screen.findByText("Lightbulb is on it…")).toBeInTheDocument();
     const failed = { roomId: "r1", agentId: front.id, runId: "run-1", text: "", thinking: "", state: "aborted", tools: [], triggerMessageId: "m-ask" } as NonNullable<RoomPanelProps["runs"]>[number];
     rerender(<Fresh><RoomPanel {...props} participants={[sam, front]} messages={[ask]} runs={[failed]} /></Fresh>);
     expect(screen.queryByText("Lightbulb is on it…")).toBeNull();
-    rerender(<Fresh><RoomPanel {...props} participants={[sam, { ...front, listenMode: "mentions" }]} messages={[ask]} /></Fresh>);
+    rerender(<Fresh><RoomPanel {...props} participants={[sam, { ...front, listenMode: "observe" }]} messages={[ask]} /></Fresh>);
     expect(screen.queryByText("Lightbulb is on it…")).toBeNull();
   });
 

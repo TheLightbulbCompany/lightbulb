@@ -739,10 +739,14 @@ export function MessagingWorkspaceProvider({
   // runs later). Computed during render it saw the previous write, so a drafted "@growth " that was then cleared, or a
   // first keystroke, left the sidebar one change behind (dev walk W8-11).
   const [draftRoomIds, setDraftRoomIds] = useState<string[]>(() => listDraftRoomIds(scope));
+  // Compared HERE, not in a setState updater: an updater that returns the same list still schedules a render (the
+  // keystroke's fiber is not idle yet), so every keystroke left one default-lane update behind. Chrome runs queued key
+  // events before that work, each one counted as a nested update, and past 50 the next keystroke's setDraft threw
+  // React #185 and its character was lost (dev walk W9-2).
   useEffect(() => {
     const next = listDraftRoomIds(scope);
-    setDraftRoomIds((current) => current.length === next.length && current.every((id, i) => id === next[i]) ? current : next);
-  }, [scope, draft, threadDraft, rooms.activeRoomId, recoveredDrafts]);
+    if (next.length !== draftRoomIds.length || next.some((id, i) => id !== draftRoomIds[i])) setDraftRoomIds(next);
+  }, [scope, draft, threadDraft, rooms.activeRoomId, recoveredDrafts, draftRoomIds]);
 
   const agentCounterparts = participants.filter((member) => member.kind === "agent");
   const runningAgentIds = rooms.runs.filter((run) => run.state === "running").map((run) => run.agentId);

@@ -1425,3 +1425,36 @@ it("a drafted handle shows the draft mark at once, and clearing it removes the m
   expect(localStorage.getItem(draftKey("org", "room-1", null))).toBeNull();
   view.unmount();
 });
+
+// Dev walk W9-2: Chrome runs queued key events before React's scheduled (default-lane) work, so every keystroke
+// that left a default-lane update behind counted as one more nested update; past 50 the next keystroke's setState
+// threw React #185 and that character was lost.
+it("keeps every character when keys land faster than React's scheduled work (W9-2)", async () => {
+  renderComposer = true;
+  compose();
+  const field = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+  const typed = "Hi Lightbulb, email walk9-outsider+clerk_test@thelightbulb.company a one-line hello";
+  const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+  const errors: unknown[] = [];
+  const onError = (event: ErrorEvent) => { errors.push(event.error); event.preventDefault(); };
+  window.addEventListener("error", onError);
+  const actEnv = (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
+  // Outside act(), like a browser: each input is a discrete (sync) render; anything else waits for the scheduler.
+  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = false;
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    for (const char of typed) {
+      setValue.call(field, field.value + char);
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  } finally {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = actEnv;
+    window.removeEventListener("error", onError);
+  }
+  const depth = [...errors, ...consoleError.mock.calls.flat()].filter((e) => String((e as Error)?.message ?? e).includes("Maximum update depth"));
+  consoleError.mockRestore();
+  expect(depth).toEqual([]);
+  expect(field.value).toBe(typed);
+  expect(panel.composer.text).toBe(typed);
+});

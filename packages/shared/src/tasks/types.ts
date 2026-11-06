@@ -16,6 +16,8 @@ export interface SummaryQuestion {
   kind: QuestionKind;
   subkind?: string | null;
   title: string;
+  /** A money ask's currency, when the summary carries one; absent, an amount is shown without a symbol. */
+  currency?: string | null;
   answerers: string[];
   answererNames: string[];
   canAnswer: boolean;

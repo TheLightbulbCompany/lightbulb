@@ -254,7 +254,7 @@ export function taskSummaryLine(t: TaskSummary, viewerId: string): string {
   const q = t.openQuestion;
   const view = summaryView(t, viewerId);
   if (q && q.canAnswer) {
-    if (q.kind === "approval") return `Needs approval: ${q.subkind === "purchase" ? withCurrency(q.title) : q.title}`;
+    if (q.kind === "approval") return `Needs approval: ${MONEY_KINDS.has(q.subkind ?? "") ? withCurrency(q.title, q.currency) : q.title}`;
     if (q.kind === "review") return `Ready for review: ${t.output?.title ?? q.title}`;
     return `Needs an answer: ${q.title}`;
   }
@@ -294,7 +294,7 @@ export function askLine(q: { kind: string; title: string; text?: string | null; 
   // reads as "Allow …"; a worker's own ask keeps its words.
   if (q.kind !== "approval" || !q.preview) return q.text || q.title;
   const p = q.preview as Record<string, unknown>;
-  const raw = p.kind === "purchase" ? withCurrency(q.title, p.currency) : q.title;
+  const raw = MONEY_KINDS.has(String(p.kind)) ? withCurrency(q.title, p.currency) : q.title;
   const title = raw.charAt(0).toLowerCase() + raw.slice(1);
   return `Allow ${specialistLabel(specialist, names)} to ${title}`;
 }
@@ -316,20 +316,24 @@ export function previewRows(preview: unknown, max = PREVIEW_MAX): { label: strin
     .filter((k, _i, keys) => !(k === "target" && keys.includes("to")) && !(k === "text" && keys.includes("body")))
     .map((k) => {
       const raw = Array.isArray(p[k]) ? (p[k] as unknown[]).join(", ") : String(p[k]);
-      const value = k === "number" ? `#${raw}` : k === "amount" ? moneyText(raw, p.currency) : raw.length > max ? `${raw.slice(0, max - 1)}…` : raw;
+      const value = k === "number" ? `#${raw}` : k === "amount" && MONEY_KINDS.has(String(p.kind)) ? moneyText(raw, p.currency) : raw.length > max ? `${raw.slice(0, max - 1)}…` : raw;
       return { label: PREVIEW_LABELS[k], value };
     });
 }
 
-/** An amount as money ("11.81" → "$11.81"): the preview's currency, else USD. A non-number is shown as written. */
+/** Previews whose `amount` is money (questions.py `_MONEY` subkinds that carry one); any other amount is a count. */
+const MONEY_KINDS = new Set(["purchase", "spend"]);
+
+/** An amount as money ("11.81", "usd" → "$11.81"). No currency, or a non-number: shown as written, never a guessed "$". */
 export function moneyText(amount: unknown, currency?: unknown): string {
   const n = typeof amount === "number" ? amount : typeof amount === "string" && /^\d+(\.\d+)?$/.test(amount.trim()) ? Number(amount) : NaN;
-  if (!Number.isFinite(n)) return String(amount);
-  const code = typeof currency === "string" && /^[A-Za-z]{3}$/.test(currency) ? currency.toUpperCase() : "USD";
+  if (!Number.isFinite(n) || typeof currency !== "string" || !/^[A-Za-z]{3}$/.test(currency)) return String(amount);
+  const code = currency.toUpperCase();
   return new Intl.NumberFormat("en-US", { style: "currency", currency: code }).format(n);
 }
 
-/** A purchase title's bare amount ("buy x for 11.81", questions.py `title_for`) with its currency. */
+/** A purchase title's bare amount ("buy x for 11.81", questions.py `title_for`) with its currency, when known.
+ *  Once title_for writes "$11.81" itself (#4885) the pattern no longer matches and the title reads as written. */
 function withCurrency(title: string, currency?: unknown): string {
   return title.replace(/ for (\d+(?:\.\d+)?)$/, (_m, n: string) => ` for ${moneyText(n, currency)}`);
 }

@@ -1197,6 +1197,8 @@ export interface CompanyAgent {
    *  `/<prefix>/agents/<urlKey>` links; AgentInspectorPanel resolves a
    *  non-uuid agent id against this field before using it for anything else. */
   urlKey?: string | null;
+  /** The @handle rooms seat this agent under (GET /teams/agents, super-agent on; absent on older servers). */
+  mentionHandle?: string | null;
   /** Paperclip agent role e.g. "ceo" | "engineer" | "general". */
   role?: string | null;
   /** Short one-liner shown in the roster. */

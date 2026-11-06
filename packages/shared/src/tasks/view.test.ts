@@ -187,15 +187,29 @@ describe("taskView: Landing (apply_effect running)", () => {
 });
 
 describe("money in approvals (dev walk W7-9)", () => {
-  it("an amount reads with its currency, USD by default, everywhere the purchase is shown", async () => {
+  it("an amount reads with its currency when known, and never a guessed symbol", async () => {
     const { askLine, moneyText, previewRows, taskSummaryLine } = await import("./view");
-    expect(moneyText("11.81")).toBe("$11.81");
+    expect(moneyText("11.81", "USD")).toBe("$11.81");
     expect(moneyText(11.81, "eur")).toBe("€11.81");
-    expect(moneyText("about 12")).toBe("about 12");
-    const q = { kind: "approval", title: "buy austinworkshop2027.com for 11.81", preview: { kind: "purchase", item: "austinworkshop2027.com", amount: "11.81" } };
+    expect(moneyText("11.81")).toBe("11.81");
+    expect(moneyText("about 12", "USD")).toBe("about 12");
+    const q = { kind: "approval", title: "buy austinworkshop2027.com for 11.81", preview: { kind: "purchase", item: "austinworkshop2027.com", amount: "11.81", currency: "USD" } };
     expect(askLine(q, "Engineering")).toBe("Allow Engineering to buy austinworkshop2027.com for $11.81");
     expect(previewRows(q.preview)).toContainEqual({ label: "Amount", value: "$11.81" });
-    const task = { status: "waiting", shownGroup: "waiting_on_you", openQuestion: { qid: "q", kind: "approval", subkind: "purchase", title: q.title, answerers: ["u"], answererNames: ["U"], canAnswer: true } };
-    expect(taskSummaryLine(task as never, "u")).toBe("Needs approval: buy austinworkshop2027.com for $11.81");
+    // An older preview without its currency: the amount as written.
+    const bare = { ...q, preview: { ...q.preview, currency: undefined } };
+    expect(askLine(bare, "Engineering")).toBe("Allow Engineering to buy austinworkshop2027.com for 11.81");
+    expect(previewRows(bare.preview)).toContainEqual({ label: "Amount", value: "11.81" });
+    // #4885's title already says "$11.81": left alone.
+    expect(askLine({ ...q, title: "buy austinworkshop2027.com for $11.81" }, "Engineering")).toBe("Allow Engineering to buy austinworkshop2027.com for $11.81");
+    const open = { qid: "q", kind: "approval", subkind: "purchase", title: q.title, answerers: ["u"], answererNames: ["U"], canAnswer: true };
+    const task = (openQuestion: object) => ({ status: "waiting", shownGroup: "waiting_on_you", openQuestion }) as never;
+    expect(taskSummaryLine(task(open), "u")).toBe("Needs approval: buy austinworkshop2027.com for 11.81");
+    expect(taskSummaryLine(task({ ...open, currency: "USD" }), "u")).toBe("Needs approval: buy austinworkshop2027.com for $11.81");
+  });
+  it("only a purchase or spend preview formats its amount as money", async () => {
+    const { previewRows } = await import("./view");
+    expect(previewRows({ kind: "spend", amount: 5, currency: "USD" })).toContainEqual({ label: "Amount", value: "$5.00" });
+    expect(previewRows({ kind: "provision", amount: 3, currency: "USD" })).toContainEqual({ label: "Amount", value: "3" });
   });
 });

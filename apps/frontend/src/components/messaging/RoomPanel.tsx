@@ -1008,7 +1008,8 @@ function RoomContent({
       onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setContextCollapsed(true); } }}>
       <header className="room-context-header"><Button variant="ghost" aria-label="Back to conversation" onClick={() => setContextCollapsed(true)}><ArrowLeft aria-hidden="true" /></Button><h3 ref={contextHeading} tabIndex={-1} className="font-semibold">About</h3></header>
       <RoomDetailsPanel room={visibleRoom} roomName={roomName} tab={detailsTab} onSelectTab={setDetailsTab}
-        outputs={superAgent ? roomOutputs : undefined} onOpenOutput={openTask}
+        outputs={superAgent ? roomOutputs.outputs : undefined} onOpenOutput={openTask}
+        olderOutputs={superAgent && roomOutputs.hasOlder ? { loading: roomOutputs.loading, load: () => void roomOutputs.loadOlder() } : undefined}
         participants={participants} actionable={actionable}
         messages={messages} pinnedMessageIds={pinnedMessageIds} activeRuns={activeRuns} hideActiveWork={superAgent}
         onUnpin={onSetPin ? (messageId) => onSetPin(messageId, false) : undefined}

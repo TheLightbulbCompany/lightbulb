@@ -291,6 +291,7 @@ export type {
   ListenMode,
   LiveConfig,
   MemberPrefsRequest,
+  PatchRoomRequest,
   MemberRef,
   MessagePage,
   MessageSearchHit,

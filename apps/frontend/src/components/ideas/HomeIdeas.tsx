@@ -31,10 +31,11 @@ export function IdeaStarters({ ideas, onOpen }: { ideas: readonly Idea[]; onOpen
 }
 
 /** Activity's Ideas: only real suggestions (the paid workspace's daily look-around). Nothing at all without them: no
- *  generic starter chips, no loading or error line (founder, 5–6 Nov: look-around is paid only; W11-6). */
+ *  generic starter chips, no loading or error line (founder, 5–6 Nov: look-around is paid only; W11-6). The first run's
+ *  ideas are "Pick a first move" (Needs you, the Lightbulb DM), not listed twice. */
 export function HomeIdeas(): ReactElement | null {
   const { ideas, startAndOpen, dismiss } = useIdeas();
-  const suggested = ideas.filter((idea) => idea.suggested);
+  const suggested = ideas.filter((idea) => idea.suggested && !idea.firstRun);
   if (!suggested.length) return null;
   return <section aria-labelledby="home-ideas" className="home-ideas">
     <h2 id="home-ideas" className="text-ui font-semibold">Ideas · {suggested.length}</h2>

@@ -7,6 +7,7 @@ import { newestActivityAt, type CanonicalRoomMessage } from "@lightbulb/shared";
 import { ForYou, ForYouAsks, rowTarget, type ActivityTarget } from "@/components/activity/ForYou";
 import { homeExtras, isForYouFilter } from "@/components/activity/activityPage";
 import { HomeIdeas } from "@/components/ideas/HomeIdeas";
+import { FIRST_MOVE_LABEL, openFirstMoves, useFirstMoves } from "@/components/ideas/FirstMoves";
 import { TeamFeed } from "@/components/activity/TeamFeed";
 import { draftKey, readDraft, writeDraft } from "@/components/messaging/drafts";
 import { useAcknowledgedRuns } from "@/components/teams/inbox/hooks/useAcknowledgedRuns";
@@ -100,11 +101,20 @@ function TodayHome({ scheduledOpen }: { scheduledOpen: boolean }) {
     if (newest && pageVisible()) void markSeen(newest).catch(() => {});
   }, [newest, markSeen]);
   const { asks } = homeExtras(activity.items);
+  // First run: one row while its ideas wait in the Lightbulb DM (it is in the one count too).
+  const firstMoves = useFirstMoves();
   // Frame A: the 880 column, titled.
   return <div className="activity-page activity-page--home activity-page--today"><div className="frame-doc">
     <div className="frame-doc__title"><h1>Activity</h1></div>
-    <HomeWork viewerId={userId ?? ""} onOpen={openTaskPane} askCount={asks.length} scheduledOpen={scheduledOpen}
-      asks={<ForYouAsks items={asks} onRunAction={activity.runAction} onNavigate={openActivityTarget} />} between={<>
+    <HomeWork viewerId={userId ?? ""} onOpen={openTaskPane} askCount={asks.length + (firstMoves.length ? 1 : 0)} scheduledOpen={scheduledOpen}
+      asks={<>
+        {firstMoves.length > 0 && <button type="button" className="mt-1 flex min-h-[42px] w-full items-center gap-2 rounded-md px-2 text-left hover:bg-accent" onClick={openFirstMoves}>
+          <span aria-hidden="true" className="size-2 flex-none rounded-full bg-warn" />
+          <span className="min-w-0 flex-1 truncate"><span className="font-medium">{FIRST_MOVE_LABEL}</span>
+            <span className="text-muted-foreground"> — {firstMoves.length} {firstMoves.length === 1 ? "idea" : "ideas"} from Lightbulb</span></span>
+        </button>}
+        <ForYouAsks items={asks} onRunAction={activity.runAction} onNavigate={openActivityTarget} />
+      </>} between={<>
       <HomeForYou items={activity.items} />
       <HomeIdeas />
       <TeamFeed client={live.messaging} scope={scope} currentUserId={userId ?? ""} limit={HOME_FEED_POSTS}

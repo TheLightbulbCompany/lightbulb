@@ -1,8 +1,8 @@
 "use client";
 
-import { useId, useRef, useState, type ReactNode } from "react";
-import { Archive, ArchiveRestore, Bell, BellOff, ChevronDown, Folder, Info, Link, LogOut, MessageCircle, Mic, MoreHorizontal, Pencil, Pin, Star, Trash2, UserPlus, Users } from "lucide-react";
-import { liveMarker, ROOM_TOPIC_MAX_CHARS, type MemberPrefsRequest, type RoomSummary } from "@lightbulb/shared";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { Archive, ArchiveRestore, Bell, BellOff, ChevronDown, Folder, Info, Link, LogOut, MessageCircle, Mic, MoreHorizontal, Pencil, Pin, PinOff, Settings, Star, Trash2, UserPlus, Users } from "lucide-react";
+import { liveMarker, ROOM_TOPIC_MAX_CHARS, type MemberPrefsRequest, type PatchRoomRequest, type RoomSummary } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -13,6 +13,8 @@ import { useHuddle } from "@/components/huddle/HuddleProvider";
 import { LiveStrip } from "@/components/huddle/LiveStrip";
 import { useAsyncAction } from "./useAsyncAction";
 import type { RoomParticipant } from "./types";
+import { ProjectSettingsDialog, type SettingsSection } from "@/components/projects/ProjectSettingsDialog";
+import { ProjectTile } from "@/components/projects/ProjectTile";
 
 const FACES = 4;
 
@@ -48,6 +50,12 @@ interface RoomHeaderProps {
    *  archive, leave, delete); on the right only `views` (Tasks · Files · Scheduled) and ⋯ with `toolItems`. */
   compact?: boolean;
   toolItems?: ReactNode;
+  /** Super-agent projects (UX slice 6): name ▾ › Settings opens a modal over the project with these. */
+  onPatchRoom?: (request: PatchRoomRequest) => Promise<void>;
+  settingsPeople?: ReactNode;
+  /** Open Settings now (a sidebar row's or Home card's ⋯ › Settings), then `onSettingsOpened`. */
+  openSettings?: boolean;
+  onSettingsOpened?: () => void;
 }
 
 function liveNames(userIds: readonly string[], participants: readonly RoomParticipant[]) {
@@ -80,6 +88,10 @@ export function RoomHeader({
   onDeleteRoom,
   compact = false,
   toolItems,
+  onPatchRoom,
+  settingsPeople,
+  openSettings = false,
+  onSettingsOpened,
 }: RoomHeaderProps) {
   const id = useId();
   const huddle = useHuddle();
@@ -92,6 +104,15 @@ export function RoomHeader({
   const [archiving, setArchiving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteDraft, setDeleteDraft] = useState("");
+  // A project's settings (super-agent channels): the modal replaces Details, People, Add a topic and the menu's
+  // Archive and Delete rows (it opens their confirms below).
+  const projectSettings = compact && room?.kind === "channel" && !room.feed;
+  const [settings, setSettings] = useState<SettingsSection | null>(null);
+  // One-shot, like RoomPanel's openAddPeople: open (own state, adjusted during render), then tell the caller it was
+  // handled (its state, so after render).
+  const askedToOpen = openSettings && projectSettings;
+  if (askedToOpen && settings === null) setSettings("general");
+  useEffect(() => { if (askedToOpen) onSettingsOpened?.(); }, [askedToOpen, onSettingsOpened]);
   // The backend refuses #general, the shared channel and DMs (ROOM_NOT_DELETABLE); don't offer them.
   const canDelete = !!onDeleteRoom && room?.kind === "channel" && !room.shared && !room.isDefault;
   // The backend refuses #general, the shared channel and 1:1 DMs (ROOM_NOT_ARCHIVABLE); don't
@@ -211,7 +232,7 @@ export function RoomHeader({
       <DialogContent className="max-w-[calc(100%-2rem)] sm:max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto"
         onCloseAutoFocus={(event) => { event.preventDefault(); restoreOptionsFocus(); }}>
         <DialogHeader><DialogTitle className="break-words">Delete {roomName}?</DialogTitle>
-          <DialogDescription>The project disappears for every member and agents stop responding in it. This can&apos;t be undone.</DialogDescription>
+          <DialogDescription>The project and its chat disappear for everyone, and Lightbulb stops working in it. This can&apos;t be undone.</DialogDescription>
         </DialogHeader>
         <form className="grid gap-4" onSubmit={(event) => {
           event.preventDefault();
@@ -239,34 +260,41 @@ export function RoomHeader({
     <div className="room-title">
       {room?.kind === "dm" && counterparts.length === 1
         ? <ParticipantAvatar participant={counterparts[0]} size="sm" />
+        : projectSettings ? <ProjectTile icon={room.icon} color={room.color} name={roomName} size={24} />
         : <Icon size={20} aria-hidden="true" />}
       <DropdownMenu>
         <h2 className="room-name-menu"><DropdownMenuTrigger asChild>
           <button ref={topicTrigger} type="button" title={roomName}><span className="truncate">{roomName}</span><ChevronDown size={14} aria-hidden="true" /></button>
         </DropdownMenuTrigger></h2>
         <DropdownMenuContent align="start">
-          <DropdownMenuItem onSelect={() => onOpenDetails("about")}><Info aria-hidden="true" />Details</DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => onOpenDetails("members")}><Users aria-hidden="true" />People</DropdownMenuItem>
+          {projectSettings ? <>
+            <DropdownMenuItem onSelect={() => setSettings("general")}><Settings aria-hidden="true" />Settings</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => setSettings("people")}><Users aria-hidden="true" />People</DropdownMenuItem>
+          </> : <>
+            <DropdownMenuItem onSelect={() => onOpenDetails("about")}><Info aria-hidden="true" />Details</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => onOpenDetails("members")}><Users aria-hidden="true" />People</DropdownMenuItem>
+          </>}
           {onAddPeople && <DropdownMenuItem onSelect={onAddPeople}><UserPlus aria-hidden="true" />Add people</DropdownMenuItem>}
-          {onRenameRoom && canEditRoom && !room?.shared && <DropdownMenuItem onSelect={() => { reset(); setNameDraft(room?.name ?? ""); setRenaming(true); }}><Pencil aria-hidden="true" />Rename</DropdownMenuItem>}
-          {onSetTopic && canEditRoom && <DropdownMenuItem disabled={!actionable} onSelect={() => { reset(); setEditingTopic(true); }}><Pencil aria-hidden="true" />{room?.topic ? "Edit topic" : "Add a topic"}</DropdownMenuItem>}
+          {!projectSettings && onRenameRoom && canEditRoom && !room?.shared && <DropdownMenuItem onSelect={() => { reset(); setNameDraft(room?.name ?? ""); setRenaming(true); }}><Pencil aria-hidden="true" />Rename</DropdownMenuItem>}
+          {!projectSettings && onSetTopic && canEditRoom && <DropdownMenuItem disabled={!actionable} onSelect={() => { reset(); setEditingTopic(true); }}><Pencil aria-hidden="true" />{room?.topic ? "Edit topic" : "Add a topic"}</DropdownMenuItem>}
           {onSetPrefs && <DropdownMenuItem disabled={!actionable || pending}
-            onSelect={() => void run(async () => { await onSetPrefs({ starred: !room?.starred }); }, "The star could not be saved.")}>
-            <Star aria-hidden="true" fill={room?.starred ? "currentColor" : "none"} />{room?.starred ? "Unstar" : "Star"}</DropdownMenuItem>}
+            onSelect={() => void run(async () => { await onSetPrefs({ starred: !room?.starred }); }, "The pin could not be saved.")}>
+            {room?.starred ? <PinOff aria-hidden="true" /> : <Pin aria-hidden="true" />}{room?.starred ? "Unpin" : "Pin"}</DropdownMenuItem>}
           {onSetPrefs && <DropdownMenuItem disabled={!actionable || pending}
             onSelect={() => void run(async () => { await onSetPrefs({ muted: !room?.muted }); }, "The notification setting could not be saved.")}>
             {room?.muted ? <Bell aria-hidden="true" /> : <BellOff aria-hidden="true" />}{room?.muted ? "Unmute" : "Mute"}</DropdownMenuItem>}
           <DropdownMenuItem onSelect={() => void copyText(roomPermalink(room?.roomId ?? ""))}><Link aria-hidden="true" />Copy link</DropdownMenuItem>
           {canArchive && (room?.archivedAt
             ? <DropdownMenuItem onSelect={() => void run(async () => { await onSetArchived!(false); }, `The ${noun} could not be unarchived.`)}><ArchiveRestore aria-hidden="true" />Unarchive {noun}</DropdownMenuItem>
-            : <DropdownMenuItem onSelect={() => { reset(); setArchiving(true); }}><Archive aria-hidden="true" />Archive {noun}</DropdownMenuItem>)}
+            : !projectSettings && <DropdownMenuItem onSelect={() => { reset(); setArchiving(true); }}><Archive aria-hidden="true" />Archive {noun}</DropdownMenuItem>)}
           {((onLeaveRoom && canLeave) || ownerCannotLeave) && <><DropdownMenuSeparator />
             <DropdownMenuItem variant="destructive" onSelect={() => { reset(); setLeaving(true); }}><LogOut aria-hidden="true" />Leave</DropdownMenuItem></>}
-          {canDelete && <><DropdownMenuSeparator />
+          {canDelete && !projectSettings && <><DropdownMenuSeparator />
             <DropdownMenuItem variant="destructive" onSelect={() => { reset(); setDeleteDraft(""); setDeleting(true); }}><Trash2 aria-hidden="true" />Delete project</DropdownMenuItem></>}
         </DropdownMenuContent>
       </DropdownMenu>
       {live}
+      {projectSettings && room?.pausedAt && <span className="room-directory-tag">Paused</span>}
       {room?.shared && <span className="room-directory-tag" title="Shared between this workspace and Lightbulb">Shared</span>}
       {topicForm}
     </div>
@@ -286,6 +314,10 @@ export function RoomHeader({
     </div>
     {error && !renaming && !leaving && !archiving && !deleting && <p role="alert" className="room-header-error text-ui text-err">{error}</p>}
     {dialogs}
+    {projectSettings && room && <ProjectSettingsDialog room={room} roomName={roomName} section={settings} onSection={setSettings}
+      canEdit={canEditRoom} actionable={actionable} onRename={onRenameRoom} onSetTopic={onSetTopic} onPatch={onPatchRoom} people={settingsPeople}
+      onArchive={canArchive && !room.archivedAt ? () => { setSettings(null); reset(); setArchiving(true); } : undefined}
+      onDelete={canDelete ? () => { setSettings(null); reset(); setDeleteDraft(""); setDeleting(true); } : undefined} />}
   </header>;
 
   return <header className="room-header">

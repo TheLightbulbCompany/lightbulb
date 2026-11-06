@@ -29,6 +29,8 @@ export interface Idea {
   yourPart?: string;
   /** An agent added it for this company ("For you"). */
   suggested?: boolean;
+  /** Filed by the workspace's first run: one of the owner's "Pick a first move" ideas (UX slice 6). */
+  firstRun?: boolean;
   agentId: string;
   agentName: string;
 }
@@ -39,6 +41,8 @@ export interface IdeasResponse {
   anyStarted?: boolean;
   /** The workspace has hidden at least one idea. */
   anyDismissed?: boolean;
+  /** The first run's task: its ideas arrive as it finishes, so a change to it re-reads this list. */
+  firstRunTaskId?: string;
 }
 
 export interface IdeaStart {
@@ -119,6 +123,7 @@ export function useIdeas(client: IdeasClient, scope: string | null) {
     ideas: data?.ideas ?? EMPTY.ideas,
     anyStarted: !!data?.anyStarted,
     anyDismissed: !!data?.anyDismissed,
+    firstRunTaskId: data?.firstRunTaskId,
     loading: isLoading,
     error: error as unknown,
     refresh: () => mutate(),

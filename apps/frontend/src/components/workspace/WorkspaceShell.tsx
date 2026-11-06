@@ -287,8 +287,9 @@ function AuthenticatedWorkspace({ workspaceName }: { workspaceName: string }): R
     if (agentsSettled) runReconciler(window.location.search);
   }, [agentsSettled, runReconciler]);
 
-  // After the reconciler: a URL that names a pane keeps it, and Ideas does not replace it.
-  useIdeasFirstOpen(chatReady, viewerId, orgId ?? viewerId);
+  // After the reconciler: a URL that names a pane keeps it, and Ideas does not replace it. Super-agent: the first run's
+  // ideas wait in the Lightbulb DM instead (UX slice 6), so the pane never opens by itself.
+  useIdeasFirstOpen(chatReady && !superAgent, viewerId, orgId ?? viewerId);
 
   // [selectAgent listener] — the shell only LISTENS, never dispatches
   // (loop-free by construction; accepts MarketplaceToast's sourceless events

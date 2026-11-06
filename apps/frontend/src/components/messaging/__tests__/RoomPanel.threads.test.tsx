@@ -42,6 +42,11 @@ const nameMenu = async (item: string) => {
   await userEvent.click(await screen.findByRole("button", { name: /workshop-launch/ }));
   await userEvent.click(await screen.findByRole("menuitem", { name: item }));
 };
+// A project's People and Details moved to its settings modal (UX slice 6); Pins and Links stay ⋯ views of the pane.
+const toolsMenu = async (item: string) => {
+  await userEvent.click(await screen.findByRole("button", { name: "More tools" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: item }));
+};
 // Default SWR dedupe here: the button and the overview share one room read, as in the app.
 const Fresh = ({ children }: { children: React.ReactNode }) => <SWRConfig value={{ provider: () => new Map() }}>{children}</SWRConfig>;
 let client: FakeTasksClient;
@@ -153,7 +158,7 @@ describe("RoomPanel Threads view (super-agent)", () => {
   it("closing Details returns focus to the Tasks toggle", async () => {
     localStorage.clear();
     render(<Fresh><RoomPanel {...props} /></Fresh>);
-    await nameMenu("People");
+    await toolsMenu("Links");
     const about = await screen.findByRole("complementary", { name: "About" });
     expect(within(about).getByRole("heading", { level: 3, name: "Details" })).toBeInTheDocument();
     await userEvent.click(within(about).getByRole("button", { name: "Close pane" }));
@@ -165,7 +170,7 @@ describe("RoomPanel Threads view (super-agent)", () => {
     render(<Fresh><RoomPanel {...props} /></Fresh>);
     await screen.findByRole("complementary", { name: "Tasks" });
     expect(screen.queryByRole("complementary", { name: "About" })).toBeNull();
-    await nameMenu("People");
+    await toolsMenu("Links");
     const about = await screen.findByRole("complementary", { name: "About" });
     expect(screen.queryByRole("complementary", { name: "Tasks" })).toBeNull();
     await userEvent.click(within(about).getByRole("button", { name: "Close pane" }));
@@ -415,10 +420,10 @@ describe("RoomPanel Threads view (super-agent)", () => {
     const front = { ...lightbulb, mentionHandle: "lightbulb" };
     const finance: RoomParticipant = { ...lightbulb, id: "agent_fin", displayName: "Finance", mentionHandle: "finance", listenMode: "mentions" };
     render(<Fresh><RoomPanel {...props} participants={[sam, front, finance]} onRemoveMember={vi.fn()} onListenModeChange={vi.fn()} /></Fresh>);
-    // Details opens from the name ▾ menu (People, Details); with the super-agent it has no Tasks tab.
+    // A project's People open in its settings modal (UX slice 6), with the same Members content.
     await nameMenu("People");
-    expect(within(screen.getByRole("complementary", { name: "About" })).queryByRole("tab", { name: "Tasks" })).toBeNull();
-    const list = within(screen.getByRole("complementary", { name: "About" })).getByRole("heading", { name: "Members" }).closest("section")!;
+    const settings = await screen.findByRole("dialog", { name: /Settings/ });
+    const list = within(settings).getByRole("heading", { name: "Members" }).closest("section")!;
     expect(within(list).getByText("Lightbulb")).toBeInTheDocument();
     expect(within(list).queryByText("Finance")).toBeNull();
     expect(within(list).queryByText("Agent")).toBeNull();

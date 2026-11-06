@@ -226,6 +226,14 @@
 
   --plane-selected: #E4E4E6;
   --plane-hover:    #F2F2F3;
+
+  /* Project tiles (UX slice 6): six quiet tints, low chroma, none of them a state hue; the glyph is --fg on top. */
+  --project-1: #E3DFF3;
+  --project-2: #D6EBE8;
+  --project-3: #EFE6CF;
+  --project-4: #F1DDE5;
+  --project-5: #E2E8CF;
+  --project-6: #DCE3EC;
 }
 
 :root[data-chat-theme="dark"] {
@@ -258,6 +266,13 @@
 
   --plane-selected: #2E2E33;
   --plane-hover:    #26262A;
+
+  --project-1: #3B3552;
+  --project-2: #234240;
+  --project-3: #4A4129;
+  --project-4: #4C3140;
+  --project-5: #39432A;
+  --project-6: #2D3A4A;
 }
 
 /*

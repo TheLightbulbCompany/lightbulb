@@ -17,12 +17,14 @@ const ctl = vi.hoisted(() => ({ openPanel: vi.fn(), closePane: vi.fn(), openAgen
 vi.mock("@/components/workspace/workspaceController", () => ctl);
 const ideas = vi.hoisted(() => ({ ideas: [] as unknown[] }));
 vi.mock("@/hooks/useIdeas", () => ({ useIdeas: () => ideas }));
+const firstRun = vi.hoisted(() => ({ moves: [] as unknown[], open: vi.fn() }));
+vi.mock("@/components/ideas/FirstMoves", () => ({ FIRST_MOVE_LABEL: "Pick a first move", useFirstMoves: () => firstRun.moves, openFirstMoves: firstRun.open }));
 const messaging = vi.hoisted(() => ({ value: null as unknown }));
 vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({
   useMessagingWorkspaceOptional: () => messaging.value,
 }));
 
-import { HomeProjects, cardLabel, previewLine, projectRooms, roomCounts, workingCapped } from "../HomeProjects";
+import { HomeProjects, cardLabel, projectRooms, roomCounts, workingCapped } from "../HomeProjects";
 
 const task = (taskId: string, roomId: string, shownGroup: TaskSummary["shownGroup"]): TaskSummary => ({
   taskId, identifier: taskId, title: `Request ${taskId}`, status: shownGroup === "resolved" ? "resolved" : "working",
@@ -57,6 +59,8 @@ beforeEach(() => {
   apiGet.mockImplementation(async () => ({ tasks: needsRead, next: null }));
   messaging.value = directory(ROOMS);
   ideas.ideas = [];
+  firstRun.moves = [];
+  firstRun.open.mockClear();
   Object.values(ctl).forEach((f) => f.mockClear());
 });
 
@@ -81,18 +85,6 @@ describe("Working's page cap", () => {
 });
 
 describe("projectRooms", () => {
-  it("W8-9: a preview reads the request's status once it settled after the latest message, else the message", () => {
-    const said = (createdAt: string) => room("walk", { lastMessage: { messageId: "m", seq: 1, authorId: "g", authorKind: "agent", authorName: "Growth",
-      textPreview: "Growth is writing the welcome note.", hasAttachments: false, createdAt, threadRootMessageId: null } });
-    const done = { ...task("w", "walk", "idle"), status: "idle" as const, title: "Welcome note", updatedAt: "2026-11-05T22:02:00Z" };
-    const stopped = { ...task("s", "walk", "resolved"), title: "Hiring pipeline", statusReason: "stopped", updatedAt: "2026-11-05T22:03:00Z" };
-    expect(previewLine(said("2026-11-05T22:01:00Z"), [done])).toBe("Welcome note · Done");
-    expect(previewLine(said("2026-11-05T22:01:00Z"), [done, stopped])).toBe("Hiring pipeline · Stopped");
-    // Still working, or the message is newer: the message.
-    expect(previewLine(said("2026-11-05T22:01:00Z"), [{ ...done, status: "working", shownGroup: "working" }])).toBe("Growth: Growth is writing the welcome note.");
-    expect(previewLine(said("2026-11-05T22:05:00Z"), [done])).toBe("Growth: Growth is writing the welcome note.");
-  });
-
   it("keeps channels and group chats, newest first; drops DMs, archived, the feed and the shared channel", () => {
     expect(projectRooms(ROOMS).map((r) => r.roomId)).toEqual(["launch", "site"]);
   });
@@ -107,13 +99,14 @@ describe("HomeProjects", () => {
 
     const cards = screen.getByRole("region", { name: "Projects" });
     const items = within(cards).getAllByRole("listitem");
-    expect(items.map((li) => within(li).getAllByText(/./)[0].textContent)).toEqual(["Spring launch", "Website"]);
+    expect(await within(items[0]).findByRole("button", { name: "Spring launch, Working 2, 2 need you" })).toBeInTheDocument();
+    // UX slice 6: tile · name · one state line. Needs you wins over working; no topic, no message preview.
     const launch = items[0];
-    expect(launch).toHaveTextContent("Ship the sale page");
-    expect(launch).toHaveTextContent("Lightbulb: Draft is ready");
-    expect(await within(launch).findByText("Working 2")).toBeInTheDocument();
+    expect(launch).not.toHaveTextContent("Ship the sale page");
+    expect(launch).not.toHaveTextContent("Draft is ready");
     expect(within(launch).getByText("2 need you")).toBeInTheDocument();
-    expect(within(items[1]).getByText("Working 1")).toBeInTheDocument();
+    expect(within(launch).queryByText(/working/)).toBeNull();
+    expect(within(items[1]).getByText("1 working")).toBeInTheDocument();
     expect(within(items[1]).queryByText(/need/)).toBeNull();
 
     const chats = screen.getByRole("region", { name: "Chats" });
@@ -127,10 +120,9 @@ describe("HomeProjects", () => {
     window.addEventListener("openRoom", (e) => opened((e as CustomEvent).detail), { once: true });
     render(<Fresh><HomeProjects /></Fresh>);
     const card = await screen.findByRole("button", { name: "Spring launch, Working 2, 2 need you" });
-    expect(card).toHaveAccessibleDescription(/Ship the sale page/);
     await userEvent.click(card);
     expect(opened).toHaveBeenCalledWith({ roomId: "launch", threadId: null });
-    await userEvent.click(within(screen.getByRole("region", { name: "Chats" })).getByRole("button"));
+    await userEvent.click(within(screen.getByRole("region", { name: "Chats" })).getByRole("button", { name: /Lightbulb/ }));
     expect(ctl.openAgentDmWithDraft).toHaveBeenLastCalledWith(FRONT, "");
     await userEvent.type(screen.getByLabelText("Ask Lightbulb"), "Plan the launch{Enter}");
     expect(value.askLightbulb).toHaveBeenCalledWith("Plan the launch");
@@ -147,7 +139,7 @@ describe("HomeProjects", () => {
     expect(screen.getByLabelText("Ask Lightbulb")).toHaveValue("Hi");
   });
 
-  it("New project creates a channel and opens it", async () => {
+  it("New project: a dialog with the name, its tile and a goal; it creates the project and opens it", async () => {
     const value = directory(ROOMS);
     messaging.value = value;
     render(<Fresh><HomeProjects /></Fresh>);
@@ -155,9 +147,50 @@ describe("HomeProjects", () => {
     const title = screen.getByRole("heading", { level: 1, name: "Home" }).parentElement!;
     expect(title).toHaveClass("frame-doc__title");
     await userEvent.click(within(title).getByRole("button", { name: "New project" }));
-    await userEvent.type(screen.getByLabelText("Project name"), "Hiring{Enter}");
-    expect(value.directoryProps.onCreate).toHaveBeenCalledWith({ kind: "channel", name: "Hiring", members: [] });
+    const dialog = await screen.findByRole("dialog", { name: "New project" });
+    expect(within(dialog).getByRole("button", { name: "Create project" })).toBeDisabled();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Project icon and colour" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Rocket" }));
+    await userEvent.click(screen.getByRole("button", { name: "Sand" }));
+    await userEvent.type(within(dialog).getByLabelText(/What should this project get done/), "Hire two bakers");
+    await userEvent.type(within(dialog).getByLabelText("Name"), "Hiring{Enter}");
+    expect(value.directoryProps.onCreate).toHaveBeenCalledWith({ kind: "channel", name: "Hiring", members: [], topic: "Hire two bakers", icon: "rocket", color: "project-3" });
     expect(ctl.activateMessagesPanel).toHaveBeenCalled();
+  });
+
+  it("Pinned projects sit above the rest; a card's ⋯ pins, opens Settings and archives", async () => {
+    const onSetPrefs = vi.fn(async () => {});
+    const onOpenSettings = vi.fn();
+    const onPatchRoom = vi.fn(async () => {});
+    const mine = [{ kind: "human", id: "me", role: "owner" }] as DirectoryRoom["members"];
+    messaging.value = directory([{ ...ROOMS[0], starred: true, members: mine }, { ...ROOMS[1], members: mine }, ...ROOMS.slice(2)],
+      { onSetPrefs, onOpenSettings, onPatchRoom, currentUserId: "me" });
+    render(<Fresh><HomeProjects /></Fresh>);
+    const pinned = screen.getByRole("region", { name: "Pinned" });
+    expect(within(pinned).getAllByRole("listitem")).toHaveLength(1);
+    expect(within(pinned).getByRole("button", { name: /^Website/ })).toBeInTheDocument();
+    expect(within(screen.getByRole("region", { name: "Projects" })).queryByRole("button", { name: /^Website/ })).toBeNull();
+    await userEvent.click(within(pinned).getByRole("button", { name: "More for Website" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "Unpin" }));
+    expect(onSetPrefs).toHaveBeenCalledWith("site", { starred: false });
+    await userEvent.click(within(pinned).getByRole("button", { name: "More for Website" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "Settings" }));
+    expect(onOpenSettings).toHaveBeenCalledWith("site");
+    await userEvent.click(within(pinned).getByRole("button", { name: "More for Website" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "Archive" }));
+    expect(onPatchRoom).toHaveBeenCalledWith("site", { archived: true });
+  });
+
+  it("first run: the one needs-you item reads Pick a first move and opens the DM; Start a project offers the moves", async () => {
+    apiGet.mockImplementation(async () => ({ tasks: [], next: null }));
+    firstRun.moves = [{ id: "s-1", title: "Launch a pre-order page", firstRun: true }];
+    messaging.value = directory([room("general", { name: "general", isDefault: true }), ROOMS[2]]);
+    render(<Fresh><HomeProjects /></Fresh>);
+    await userEvent.click(await screen.findByRole("button", { name: /1 needs you · Pick a first move/ }));
+    expect(firstRun.open).toHaveBeenCalledTimes(1);
+    expect(ctl.openPanel).not.toHaveBeenCalled();
+    await userEvent.click(within(screen.getByRole("list", { name: "First moves" })).getByRole("button", { name: "Launch a pre-order page" }));
+    expect(firstRun.open).toHaveBeenCalledTimes(2);
   });
 
   it("no needs-you line when nothing needs you", async () => {

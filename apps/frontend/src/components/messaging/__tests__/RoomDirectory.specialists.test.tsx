@@ -26,6 +26,20 @@ const props: RoomDirectoryProps = {
 beforeEach(() => { live.superAgent = true; openAgentDmWithDraft.mockClear(); });
 
 describe("sidebar with the super-agent on", () => {
+  it("+ › New project opens the New project dialog; + › New chat keeps DM and group chat, not Project (UX slice 6)", async () => {
+    const onCreate = vi.fn().mockResolvedValue(true);
+    render(<RoomDirectory {...props} onCreate={onCreate} />);
+    await userEvent.click(screen.getByRole("button", { name: "New project or chat" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "New project" }));
+    const dialog = await screen.findByRole("dialog", { name: "New project" });
+    await userEvent.type(within(dialog).getByLabelText("Name"), "Spring sale{Enter}");
+    expect(onCreate).toHaveBeenCalledWith({ kind: "channel", name: "Spring sale", members: [], topic: null, icon: null, color: null });
+    await userEvent.click(screen.getByRole("button", { name: "New project or chat" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "New chat" }));
+    const chat = await screen.findByRole("dialog", { name: "New direct message" });
+    expect(within(chat).queryByRole("option", { name: "Project" })).toBeNull();
+  });
+
   const NAMES = ["Lightbulb", "Alice", "Engineering", "Finance"];
   /** Row names in order (a row's text also carries the avatar initials and the Agent tag). */
   const rowsOf = (region: string) => within(screen.getByRole("region", { name: region })).getAllByRole("button", { name: /^(Lightbulb|Alice|Engineering|Finance)/ })

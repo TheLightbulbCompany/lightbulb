@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useAuth, useUser } from "@clerk/nextjs";
-import { canChangeListenMode, cardReplyRequest, markSessionRead, markSessionsSeen, markSessionUnread, resolveTypedMentions, roomDisplayName, runView, sessionArchived, sessionMentionCandidates, sessionUnread, useWorkspaceSessions, workspaceSections, type CardReply, type CreateMessageRequest, type ListenMode, type MemberRef, type RoomMember, type SessionSource, type RoomSummary } from "@lightbulb/shared";
+import { canChangeListenMode, cardReplyRequest, markSessionRead, markSessionsSeen, markSessionUnread, resolveTypedMentions, roomDisplayName, runView, sessionArchived, sessionMentionCandidates, sessionUnread, useWorkspaceSessions, workspaceSections, type CardReply, type CreateMessageRequest, type ListenMode, type MemberRef, type PatchRoomRequest, type RoomMember, type SessionSource, type RoomSummary } from "@lightbulb/shared";
 import { useRooms } from "@/hooks/useRooms";
 import { useCopyJoinLink } from "@/hooks/useCopyJoinLink";
 import { useBilling } from "@/hooks/useBilling";
@@ -232,6 +232,8 @@ export function MessagingWorkspaceProvider({
   const copyJoinLink = useCallback(() => copyJoinLinkFor("room_members"), [copyJoinLinkFor]);
   // ⋯ → Add people on a sidebar row: open that room, then its member picker (one-shot).
   const [addPeopleRoomId, setAddPeopleRoomId] = useState<string | null>(null);
+  // ⋯ › Settings on a sidebar row or a Home card (super-agent): open that project, then its settings (one-shot).
+  const [settingsRoomId, setSettingsRoomId] = useState<string | null>(null);
   // Focus placement: a session opened from the sidebar or a link takes the
   // middle of the panel; sessions live in the workspace, not in a room.
   const [sessionFocus, setSessionFocus] = useState<SessionFocusTarget | null>(null);
@@ -804,8 +806,10 @@ export function MessagingWorkspaceProvider({
     try {
       markExplicitScope();
       const startToken = pickToken();
-      await rooms.createRoom({ clientRoomId: crypto.randomUUID(), ...creation });
+      const created = await rooms.createRoom({ clientRoomId: crypto.randomUUID(), ...creation });
       bumpPickIfCurrent(startToken);
+      // Super-agent: a new project is pinned (UX slice 6). A failed pin never fails the create.
+      if (superAgent && creation.kind === "channel") await rooms.setRoomPrefs(created.roomId, { starred: true }).catch(() => {});
       return true;
     } catch (error) {
       setCreationError(error instanceof Error ? error.message : "The chat could not be created.");
@@ -958,6 +962,13 @@ export function MessagingWorkspaceProvider({
     onSelectRoom: (roomId: string) => { closeSession(); chooseRoom(roomId); },
     currentUserId: userId ?? undefined,
     onAddPeople: (roomId: string) => { closeSession(); chooseRoom(roomId); setAddPeopleRoomId(roomId); },
+    ...(superAgent ? {
+      onOpenSettings: (roomId: string) => { closeSession(); chooseRoom(roomId); activateMessagesPanel(); setSettingsRoomId(roomId); },
+      onPatchRoom: async (roomId: string, request: PatchRoomRequest) => {
+        await rooms.resourceSource.client.updateRoom(roomId, request);
+        await (roomId === rooms.activeRoomId ? Promise.all([rooms.refreshRoom(), rooms.refreshRooms()]) : rooms.refreshRooms());
+      },
+    } : {}),
     onSelectParticipant: async (participant: DirectoryParticipant) => { closeSession(); await selectParticipant(participant); },
     openingParticipant,
     onMarkUnread: rooms.markUnread,
@@ -1087,6 +1098,13 @@ export function MessagingWorkspaceProvider({
       ? { onRemoveMember: rooms.removeMember } : {}),
     ...(!activeFeed && rooms.activeRoom && rooms.activeRoom.kind !== "dm" ? { onCopyJoinLink: copyJoinLink } : {}),
     openAddPeople: addPeopleRoomId !== null && addPeopleRoomId === rooms.activeRoomId,
+    openSettings: settingsRoomId !== null && settingsRoomId === rooms.activeRoomId,
+    // Super-agent projects: icon, colour and pause. The server decides who may (room owner/admin, or a workspace
+    // admin pausing); a refusal surfaces where it was asked.
+    ...(superAgent && rooms.activeRoom?.kind === "channel" && !activeFeed ? {
+      onPatchRoom: async (request: PatchRoomRequest) => { await rooms.updateRoom(request); },
+    } : {}),
+    onSettingsOpened: () => setSettingsRoomId(null),
     onAddPeopleOpened: () => setAddPeopleRoomId(null),
     onAbortRun: (runId) => rooms.abortRun(runId),
     subagents: rooms.subagents,

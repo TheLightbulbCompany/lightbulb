@@ -1,0 +1,32 @@
+// Starter schedules for a project's empty Scheduled view (UX slice 6). A tap only drafts the ask in the project's
+// composer: nothing is created until the person sends it and turns it on in the Router's confirm card. Times are said
+// as clock times, which the Router reads in the viewer's time zone.
+
+export interface ScheduleTemplate {
+  /** The specialist's roster name ("Growth"); "Lightbulb" for the fallback. */
+  specialist: string;
+  name: string;
+  cadence: string;
+  draft: string;
+}
+
+export const SCHEDULE_TEMPLATES: readonly ScheduleTemplate[] = [
+  { specialist: "Growth", name: "Weekly signups", cadence: "Mondays 9:00", draft: "Every Monday at 9:00, have Growth post last week's signups here." },
+  { specialist: "Customer Ops", name: "Unanswered customer email", cadence: "Weekdays 9:00", draft: "Every weekday at 9:00, have Customer Ops post any customer email still waiting on a reply here." },
+  { specialist: "Finance", name: "Weekly cash summary", cadence: "Mondays 8:00", draft: "Every Monday at 8:00, have Finance post last week's money in and out here." },
+  { specialist: "Analytics", name: "Weekly traffic", cadence: "Mondays 10:00", draft: "Every Monday at 10:00, have Analytics post last week's site traffic and top pages here." },
+  { specialist: "Engineering", name: "Site health check", cadence: "Daily 8:00", draft: "Every day at 8:00, have Engineering check the site is up and post here only if something is wrong." },
+];
+export const LIGHTBULB_TEMPLATE: ScheduleTemplate = {
+  specialist: "Lightbulb", name: "Weekly project summary", cadence: "Fridays 16:00", draft: "Every Friday at 16:00, post a short summary of this week's work in this project here.",
+};
+
+/** Three cards: the first two specialists on the roster that have a template, then Lightbulb's. Before the roster
+ *  loads (no names), the first two templates stand in. */
+export function pickTemplates(rosterNames: Iterable<string>): ScheduleTemplate[] {
+  // By first word, so "Customer Ops" and "Customer Operations" both match.
+  const word = (n: string) => n.trim().split(/[\s_]+/)[0].toLowerCase();
+  const names = new Set([...rosterNames].map(word));
+  const own = names.size ? SCHEDULE_TEMPLATES.filter((t) => names.has(word(t.specialist))) : SCHEDULE_TEMPLATES;
+  return [...own.slice(0, 2), LIGHTBULB_TEMPLATE];
+}

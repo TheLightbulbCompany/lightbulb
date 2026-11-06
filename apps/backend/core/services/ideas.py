@@ -326,8 +326,18 @@ async def list_ideas(auth: AuthContext) -> dict:
     shown = [i for i in catalog().values() if i.id not in hidden and i.owner_role in agents]
     shown.sort(key=lambda i: (i.kind != "agency", i.title))
     suggested = [r for r in await _suggestions(owner_id, names) if r["ideaId"] not in hidden]
+    from core.services import proactive
+
+    # UX slice 6: the first run's ideas are the owner's "Pick a first move" (cards in the Lightbulb DM, one Needs you).
+    first_run = proactive.first_run_task_id()
     return {
-        "ideas": [_suggestion_card(r, names) for r in suggested] + [_card(i, agents[i.owner_role]) for i in shown],
+        "ideas": [
+            {**_suggestion_card(r, names), **({"firstRun": True} if r.get("taskId") == first_run else {})}
+            for r in suggested
+        ]
+        + [_card(i, agents[i.owner_role]) for i in shown],
+        # The client re-reads the list when this task changes (its ideas arrive as it finishes).
+        "firstRunTaskId": first_run,
         # The CEO welcome's proposal shows only until the workspace has started (a start stays
         # recorded until it is started again) or hidden an idea.
         "anyStarted": bool(rows),

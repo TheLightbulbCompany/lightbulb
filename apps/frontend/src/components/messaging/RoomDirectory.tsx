@@ -5,7 +5,7 @@ import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, us
 import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { ChevronDown, ChevronRight, GripVertical, History, MoreHorizontal, Pencil, Plus, SlidersHorizontal, Trash2 } from "lucide-react";
-import { listenModeOptions, roomDisplayName, soleChannelOwner, type ListenMode, type SessionMarks, type SessionRow, type MemberPrefsRequest, type RoomKind, type RoomSection } from "@lightbulb/shared";
+import { listenModeOptions, roomDisplayName, soleChannelOwner, type ListenMode, type SessionMarks, type SessionRow, type MemberPrefsRequest, type PatchRoomRequest, type ProjectColor, type ProjectIcon, type RoomKind, type RoomSection } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -14,6 +14,7 @@ import { Identity } from "@/components/teams/shared/components/Identity";
 import { copyText, roomPermalink } from "./messageLinks";
 import { isUnreadTarget, nextUnreadRoomId } from "./roomNavigation";
 import { RoomDirectoryRow } from "./RoomDirectoryRow";
+import { NewProjectDialog } from "@/components/projects/NewProjectDialog";
 import { groupRooms, type RoomGroup, type SidebarRow, type SidebarSession, type SidebarSort } from "./roomSections";
 import { useSuperAgent } from "@/hooks/useLiveEvents";
 import { useNeedsYouTasks } from "@/components/tasks/useRoomThreads";
@@ -31,6 +32,10 @@ export interface ConversationCreation {
   kind: RoomKind;
   name: string | null;
   members: ParticipantSelection[];
+  /** A project's Instructions and tile (UX slice 6, channels only). */
+  topic?: string | null;
+  icon?: ProjectIcon | null;
+  color?: ProjectColor | null;
 }
 
 export interface RoomDirectoryProps {
@@ -76,6 +81,10 @@ export interface RoomDirectoryProps {
   currentUserId?: string;
   /** Opens the room with its member picker open. */
   onAddPeople?: (roomId: string) => void;
+  /** Super-agent: opens the project with its settings over it. */
+  onOpenSettings?: (roomId: string) => void;
+  /** Super-agent: patch any room the viewer can see (Home's archive, the tile). */
+  onPatchRoom?: (roomId: string, request: PatchRoomRequest) => Promise<void>;
   /** Extra header buttons (e.g. "New session"), rendered before "New conversation". */
   headerActions?: ReactNode;
   /** The starter roster's CEO agent (by role, from the agent roster): its DM leads Team. */
@@ -145,6 +154,7 @@ function DirectoryContent({
   headerActions,
   currentUserId,
   onAddPeople,
+  onOpenSettings,
   ceoAgentId,
   onNavigate,
 }: RoomDirectoryProps) {
@@ -153,7 +163,9 @@ function DirectoryContent({
   const needsYouTasks = useNeedsYouTasks(superAgent ? { kind: "workspace" } : null).tasks;
   const id = useId();
   const [creating, setCreating] = useState(false);
-  const [kind, setKind] = useState<RoomKind>("channel");
+  // Super-agent: + › New project opens its own dialog (UX slice 6); the chat dialog keeps DM and group chat.
+  const [newProject, setNewProject] = useState(false);
+  const [kind, setKind] = useState<RoomKind>(superAgent ? "dm" : "channel");
   const [name, setName] = useState("");
   const [query, setQuery] = useState("");
   const [sessionFilter, setSessionFilter] = useState("");
@@ -250,7 +262,7 @@ function DirectoryContent({
     && (!oneVoice || participant.kind !== "agent" || participant.id === ceoAgentId));
   const groups = groupRooms(rooms, sections, { sort: prefs.sort, nameOf: (room) => roomDisplayName(room, room.participants),
     alwaysShow: roster.length > 0 ? ["direct"] : [], currentRoomId,
-    ...(oneVoice ? { frontAgentId: ceoAgentId } : {}) });
+    ...(oneVoice ? { frontAgentId: ceoAgentId } : {}), pinned: superAgent });
   // `focusRoomTrigger` can run long after the render that captured it (it's
   // attached to a promise settling), so it must read the CURRENT groups, not
   // whatever `groups` was closed over at click time -- a plain ref, kept in
@@ -569,11 +581,13 @@ function DirectoryContent({
           </button>
         </li>;
         return <RoomDirectoryRow key={room.roomId} room={room} label={label} sections={sections}
-          needsYou={needsYouTasks.filter((t) => t.audience?.roomId === room.roomId).length} noCounts={superAgent}
+          needsYou={needsYouTasks.filter((t) => t.audience?.roomId === room.roomId).length} noCounts={superAgent} project={superAgent}
+          onOpenSettings={onOpenSettings && room.kind === "channel" && !room.shared && !room.feed ? () => onOpenSettings(room.roomId) : undefined}
           active={room.roomId === currentRoomId} draft={draftRoomIds.includes(room.roomId)}
           busy={markingUnread === room.roomId || (savePrefs.pending && actingRoomId === room.roomId)}
           onSelect={() => onSelectRoom(room.roomId)}
-          onToggleStar={onSetPrefs && (() => setRoomPrefs(room.roomId, { starred: !room.starred }, `Could not ${room.starred ? "unstar" : "star"} ${label}.`))}
+          onToggleStar={onSetPrefs && (() => setRoomPrefs(room.roomId, { starred: !room.starred },
+            superAgent ? `Could not ${room.starred ? "unpin" : "pin"} ${label}.` : `Could not ${room.starred ? "unstar" : "star"} ${label}.`))}
           onToggleMute={onSetPrefs && (() => setRoomPrefs(room.roomId, { muted: !room.muted }, `Could not ${room.muted ? "unmute" : "mute"} ${label}.`))}
           onMarkUnread={onMarkUnread && (() => void markRoomUnread(room.roomId, label))}
           onMoveToSection={onSetPrefs && sections.length > 0
@@ -609,7 +623,14 @@ function DirectoryContent({
           </DropdownMenuContent>
         </DropdownMenu>
         {headerActions}
-        {onCreate && <DialogTrigger asChild><Button variant="ghost" size="icon-sm" aria-label="New chat or project" disabled={creationBusy}><Plus aria-hidden="true" /></Button></DialogTrigger>}
+        {onCreate && (superAgent ? <DropdownMenu>
+          <DropdownMenuTrigger asChild><Button variant="ghost" size="icon-sm" aria-label="New project or chat" disabled={creationBusy}><Plus aria-hidden="true" /></Button></DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onSelect={() => setNewProject(true)}>New project</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => { setKind("dm"); setCreating(true); }}>New chat</DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+          : <DialogTrigger asChild><Button variant="ghost" size="icon-sm" aria-label="New chat or project" disabled={creationBusy}><Plus aria-hidden="true" /></Button></DialogTrigger>)}
       </div>
     </div>
     {creationError && !creating && <p role="alert" className="px-2 text-ui text-err">{creationError}</p>}
@@ -652,13 +673,14 @@ function DirectoryContent({
       })}</ul>
     </section>}
     <button type="button" className="room-directory-entry" onClick={() => { openInviteDialog(); onNavigate?.(); }}><Plus size={16} aria-hidden="true" />Invite someone</button>
+    {superAgent && onCreate && <NewProjectDialog open={newProject} onOpenChange={setNewProject} onCreate={onCreate} busy={creationBusy} error={creationError} />}
     <DialogContent className="room-creation-dialog" showCloseButton={!creationBusy}>
     <form aria-label="Create a chat or project" className="room-creation" aria-busy={creationBusy}
       onSubmit={async (event) => {
         event.preventDefault();
         if (!canCreate || creationBusy) return;
         const created = await onCreate?.({ kind, name: kind === "dm" ? null : name.trim() || null, members: [...selected.values()] });
-        if (created) { setCreating(false); setName(""); setSelected(new Map()); setQuery(""); setKind("channel"); }
+        if (created) { setCreating(false); setName(""); setSelected(new Map()); setQuery(""); setKind(superAgent ? "dm" : "channel"); }
       }}>
       <div className="room-creation-header">
         <DialogTitle>{kind === "channel" ? "Create a project" : kind === "group-dm" ? "New group chat" : "New direct message"}</DialogTitle>
@@ -668,7 +690,7 @@ function DirectoryContent({
       <label htmlFor={`${id}-kind`}>Type</label>
       <select id={`${id}-kind`} className="room-input" value={kind} disabled={creationBusy}
         onChange={(event) => { setKind(event.target.value as RoomKind); setSelected(new Map()); }}>
-        <option value="channel">Project</option>
+        {!superAgent && <option value="channel">Project</option>}
         <option value="dm">Direct message</option>
         <option value="group-dm">Group chat</option>
       </select>

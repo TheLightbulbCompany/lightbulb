@@ -87,7 +87,7 @@ export function TeamCards({ agents, frontAgentId, nameOf, handleOf, onAsk, actio
   const ordered = useMemo(() => [...agents].sort((a, b) => Number(b.id === frontAgentId) - Number(a.id === frontAgentId)), [agents, frontAgentId]);
   // Columns follow the panel's own width, not the viewport's (the rail, a drawer or the pane take part of it), and
   // every track is minmax(0, …) so a long request title truncates instead of widening the page (dev walk W8-2).
-  return <ul className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,18rem),1fr))] gap-3" aria-label="Specialists">
+  return <ul className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,260px),1fr))] gap-3" aria-label="Specialists">
     {ordered.map((agent) => {
       const front = agent.id === frontAgentId;
       const recent = (data?.tasks ?? [])
@@ -115,7 +115,7 @@ function TeamCard({ agent, name, front, recent, loaded, viewerId, onAsk, menu }:
     <div className="flex items-start gap-2">
       <div className="min-w-0 flex-1">
         <h3 id={headingId} className="truncate font-semibold">{name}</h3>
-        <p className="text-ui text-muted-foreground">{front ? FRONT_LINE : "Specialist"}{paused && <> · <span className="text-warn">Paused</span></>}</p>
+        {(front || paused) && <p className="text-ui text-muted-foreground">{front && FRONT_LINE}{front && paused && " · "}{paused && <span className="text-warn">Paused</span>}</p>}
       </div>
       <DropdownMenu>
         <DropdownMenuTrigger asChild><Button type="button" size="icon-sm" variant="ghost" aria-label={`More for ${name}`}><MoreHorizontal aria-hidden="true" /></Button></DropdownMenuTrigger>

@@ -20,6 +20,10 @@ import { AgentCreateChooser } from "@/components/agents/AgentCreateChooser";
 import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
 import { OrgChart } from "@/components/teams/org-chart/OrgChart";
 import { TeamCards } from "./TeamCards";
+import { Button } from "@/components/ui/button";
+
+/** Team's search shows from this many agents (UX slice 6): below it, every card is already on screen. */
+export const TEAM_SEARCH_FROM = 10;
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import {
   setAgentsViewMode,
@@ -219,6 +223,55 @@ export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
   const columns = superAgent ? allColumns.filter((c) => c.key !== "role" && c.key !== "origin") : allColumns;
   const createLabel = superAgent ? "Hire a specialist" : "New agent";
 
+  const createDialog = creating && (
+    <CreateAgentDialog
+      title={createLabel}
+      agents={agents ?? []}
+      onClose={() => setCreating(false)}
+      onCreated={() => {
+        setCreating(false);
+        mutate();
+      }}
+    />
+  );
+
+  // Super-agent (UX slice 6): Team sits in the 880 Frame A column like every list page: the title and Hire on one
+  // line, cards 3-up, and search only once the team is big enough to need it.
+  if (superAgent) {
+    const count = agents?.length ?? 0;
+    return (
+      <div className="h-full overflow-y-auto">
+        <div className="frame-doc flex flex-col gap-3 pb-8">
+          <div className="frame-doc__title">
+            <h1>Team</h1>
+            <Button type="button" size="sm" className="h-7" onClick={() => setCreating(true)}>{createLabel}</Button>
+          </div>
+          {count >= TEAM_SEARCH_FROM && (
+            <PanelToolbar searchValue={search} onSearchChange={setSearch} searchPlaceholder="Find a specialist..." searchAriaLabel="Search agents" />
+          )}
+          {isLoading ? (
+            <p role="status" className="text-ui text-muted-foreground">Loading…</p>
+          ) : filtered.length === 0 ? (
+            <PanelEmptyState
+              icon={Bot}
+              headline={search ? "No specialists match your search." : "No specialists yet."}
+              supporting={search ? undefined : "Hire one to take on a kind of work, like Growth or Finance."}
+              action={search ? undefined : { label: createLabel, onClick: () => setCreating(true) }}
+            />
+          ) : (
+            <TeamCards agents={filtered} frontAgentId={frontAgentId} nameOf={nameOf} handleOf={handleOf} onAsk={message}
+              actions={(a) => <>
+                <DropdownMenuItem onSelect={() => void togglePause(a)}>{a.status === "paused" ? "Resume" : "Pause"}</DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => navigateShell(agentInspectorUrl(a.id))}>Settings</DropdownMenuItem>
+                {a.id !== frontAgentId && <DropdownMenuItem variant="destructive" onSelect={() => void deleteAgent(a)}>Delete</DropdownMenuItem>}
+              </>} />
+          )}
+          {createDialog}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="editorial-page flex flex-col gap-4 p-4 sm:p-5 lg:p-6 max-w-[1600px] mx-auto w-full">
       <PanelMasthead
@@ -296,17 +349,7 @@ export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
         />
       )}
 
-      {creating && (
-        <CreateAgentDialog
-          title={createLabel}
-          agents={agents ?? []}
-          onClose={() => setCreating(false)}
-          onCreated={() => {
-            setCreating(false);
-            mutate();
-          }}
-        />
-      )}
+      {createDialog}
     </div>
   );
 }

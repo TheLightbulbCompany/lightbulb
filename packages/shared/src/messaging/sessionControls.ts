@@ -538,6 +538,8 @@ const RESUME_REFUSED: Record<string, (mac: string, folder: string) => string> = 
   ALREADY_RUNNING: mac => `it is still running on ${mac}, where Lightbulb cannot show it. End it there, then resume`,
   FOLDER_NOT_APPROVED: (mac, folder) => `${folder} is no longer an approved folder on ${mac}`,
   FOLDER_MISSING: mac => `its folder is no longer on ${mac}`,
+  // Claude Code would stop on its trust dialog there with nobody to answer it; only the owner trusts a folder.
+  FOLDER_NOT_TRUSTED: (mac, folder) => `Claude Code does not trust ${folder} on ${mac} yet. Open it there once to trust the folder, then resume`,
   TOOL_UNAVAILABLE: mac => `its CLI is no longer installed on ${mac}`,
   SHARING_OFF: mac => `session sharing is off on ${mac}`,
   // Claude continued it under a new id (←, /background): resuming this one would branch it.

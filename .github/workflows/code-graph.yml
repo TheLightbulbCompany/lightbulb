@@ -55,7 +55,7 @@ jobs:
           ls -la graph.json.gz code-graph.json.gz graph-meta.json
 
       - name: Publish to the code-graph release
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');

@@ -52,7 +52,7 @@
     "livekit-client": "^2.22.3",
     "lucide-react": "^0.562.0",
     "mammoth": "1.13.0",
-    "mermaid": "^11",
+    "mermaid": "^12",
     "next": "16.3.8",
     "posthog-js": "^1.368.0",
     "prop-types": "^15.8.1",

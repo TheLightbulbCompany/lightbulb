@@ -48,12 +48,20 @@ async def a04(ctx: Ctx) -> Result:
     card, steer_task = await _started_card(ctx, room_id, ask)
     if not card:
         return Result(False, {"reason": "the Router started no task for the steer ask", "askId": ask["messageId"]})
-    if not await ctx.wait_for(_working(steer_task), ROUTER_REPLY_S):
+    try:  # whatever raises below, the research task does not stay running (`_stop` itself never raises)
+        result = await _steer(ctx, room_id, card["messageId"], steer_task)
+    finally:
         stopped = await _stop(ctx, steer_task)
-        return Result(False, {"reason": "steer task never reached working", "taskId": steer_task, "stopped": stopped})
+    result.evidence["stopped"] = stopped
+    return result
+
+
+async def _steer(ctx: Ctx, room_id: str, card_id: str, steer_task: str) -> Result:
+    if not await ctx.wait_for(_working(steer_task), ROUTER_REPLY_S):
+        return Result(False, {"reason": "steer task never reached working", "taskId": steer_task})
     before = len(rows_of(await ctx.tasks_rows(ctx.ws), "task"))
     reply = await post(
-        ctx, "priya", room_id, "Only venues within 10 minutes of a subway stop, please.", thread_root=card["messageId"]
+        ctx, "priya", room_id, "Only venues within 10 minutes of a subway stop, please.", thread_root=card_id
     )
     trigger_id = ts.trigger_id("chat", reply["messageId"])
     eyes = None
@@ -80,14 +88,10 @@ async def a04(ctx: Ctx) -> Result:
         a for a in rows_of(rows, "attempt") if a["taskId"] == task_id and trigger_id in (a.get("inputTriggerIds") or [])
     ]
     checks = {
-        "posted_as_thread_reply": reply.get("threadRootMessageId") == card["messageId"],
+        "posted_as_thread_reply": reply.get("threadRootMessageId") == card_id,
         # A steered input (live run) gets the 👀 and is never recorded on an attempt; a held one is (`begin_attempt`).
         "input_reached_task": task_id == steer_task and (bool(eyes) or bool(attempts)),
         "eyes_ack_within_5s": bool(eyes),
         "no_new_router_decision": len(rows_of(rows, "task")) == before,
     }
-    stopped = await _stop(ctx, steer_task)
-    return Result(
-        all(checks.values()),
-        {"replyMessageId": reply["messageId"], "taskId": task_id, "stopped": stopped, **checks},
-    )
+    return Result(all(checks.values()), {"replyMessageId": reply["messageId"], "taskId": task_id, **checks})

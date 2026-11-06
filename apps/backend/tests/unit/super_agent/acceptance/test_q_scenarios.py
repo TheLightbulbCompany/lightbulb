@@ -469,6 +469,25 @@ async def test_a04_never_replies_to_a_task_that_is_not_working():
     assert calls[-1] == ("POST", f"/api/v1/tasks/{steer}/stop", "sam")
 
 
+async def test_a04_stops_the_task_when_the_steer_raises():
+    import pytest
+
+    from scripts.super_agent.acceptance.a04_steer import a04
+
+    ctx, steer, calls = _a04_ctx("working")
+    inner = ctx.handler
+
+    def handler(request, user):
+        if user == "priya" and request.method == "POST":
+            raise httpx.ConnectError("api down")  # the reply post fails after the task is working
+        return inner(request, user)
+
+    ctx.handler = handler
+    with pytest.raises(httpx.ConnectError):
+        await a04(ctx)
+    assert calls[-1] == ("POST", f"/api/v1/tasks/{steer}/stop", "sam")
+
+
 async def test_a04_needs_the_a1_room():
     from scripts.super_agent.acceptance.a04_steer import a04
 

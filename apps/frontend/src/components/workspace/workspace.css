@@ -84,6 +84,8 @@
   background: var(--cream);
   color: var(--midnight-label);
 }
+/* Super-agent: plan badges in sentence case, no caps (dev walk W12-14). */
+.workspace-shell[data-super-agent="true"] :is(.plan-badge, .settings-profile-badge) { text-transform: none; letter-spacing: normal; }
 /* The free-tier countdown, on its own line under the user row so it gets the
    full footer width. The .plan-badge above shares a narrow row with a name that
    already ellipsizes, so a longer label there would squeeze the name away. */

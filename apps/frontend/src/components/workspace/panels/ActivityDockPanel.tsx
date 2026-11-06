@@ -109,7 +109,7 @@ function TodayHome({ scheduledOpen }: { scheduledOpen: boolean }) {
     <HomeWork viewerId={userId ?? ""} onOpen={openTaskPane} askCount={asks.length + (firstMoves.length ? 1 : 0)} scheduledOpen={scheduledOpen}
       asks={<>
         {firstMoves.length > 0 && <button type="button" className="mt-1 flex min-h-[42px] w-full items-center gap-2 rounded-md px-2 text-left hover:bg-accent" onClick={openFirstMoves}>
-          <span aria-hidden="true" className="size-2 flex-none rounded-full bg-warn" />
+          <span aria-hidden="true" className="size-2 flex-none rounded-full bg-warn-hue" />
           <span className="min-w-0 flex-1 truncate"><span className="font-medium">{FIRST_MOVE_LABEL}</span>
             <span className="text-muted-foreground"> — {firstMoves.length} {firstMoves.length === 1 ? "idea" : "ideas"} from Lightbulb</span></span>
         </button>}

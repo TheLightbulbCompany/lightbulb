@@ -280,34 +280,37 @@ export function askLine(q: { kind: string; title: string; text?: string | null; 
 /** Answers that leave things as they were: the decision card puts them first (safe first). */
 const SAFE_OPTIONS = new Set(["deny", "request_changes"]);
 /** Why Always allow is offered but can't be pressed: the server only makes a rule that names a fixed target
- *  (questions.py `_target`), so an ask without one gets no `allow_always` option. */
+ *  (questions.py `_target`), so an outside action without one gets no `allow_always` option. */
 export const ALWAYS_ALLOW_UNAVAILABLE = "Can't be remembered: this names no fixed recipient, app or repo";
 
 export interface DecisionButton { id: string; label: string; style: "primary" | "secondary" | "danger"; disabledReason?: string }
 
 /** The operand an Always-allow rule binds to, per effect kind (questions.py `_TARGET_KEYS`). */
 const TARGET_KEYS: Record<string, string> = { "mail.send": "to", "text.send": "to", "app.publish": "appId", "pr.merge": "repo", "a2a.send": "to" };
-/** The preview (the effect's kind and operands) names a fixed target, so today's server would offer Always allow. */
-const namesTarget = (preview: unknown): boolean => {
+/** The reason is true only for an outside action (the card's `preview` is the effect's kind and operands) whose
+ *  operands name no fixed target. A Worker's own ask has no preview: no rule can ever cover it, so it gets no Always
+ *  allow and no reason (W12-9: dev's "one-recipient" email asks were Worker asks, `preview: null`). A card made
+ *  before Always allow existed (#4891) whose preview names a target would have been offered it: no reason either. */
+const unbindableEffect = (preview: unknown): boolean => {
   const p = (preview ?? {}) as Record<string, unknown>;
+  if (!(String(p.kind) in TARGET_KEYS)) return false;
   const key = TARGET_KEYS[String(p.kind)];
-  return Boolean(key && typeof p[key] === "string" && p[key]);
+  return !(typeof p[key] === "string" && p[key]);
 };
 
 /** Money and provider consent are never remembered (questions.py `NEVER_REMEMBERED`): no Always allow at all. */
 const NEVER_REMEMBERED = new Set(["purchase", "spend", "budget_override", "provider_consent"]);
 
 /** The one decision card's buttons, the same on every surface (web pane, card, Activity; phone): Deny / Request
- *  changes first, then the server's options in order. An approval the server can't remember (it offers Allow once but
- *  no Always allow) still shows Always allow, disabled with the reason, so the person knows why it is missing; a
- *  purchase or provider ask (`subkind`) shows no Always allow at all, and neither does a card made before Always allow
- *  existed (#4891) whose `preview` does name a fixed target: the reason would be wrong for it (W11-3). */
+ *  changes first, then the server's options in order. An outside action the server can't remember because it names
+ *  no fixed target still shows Always allow, disabled with that reason; anything else without the server's
+ *  `allow_always` shows none (a purchase or provider ask, a Worker's own ask, a pre-#4891 card: W11-3, W12-9). */
 export function decisionButtons(options: readonly (OptionLike & { label: string })[], subkind?: string | null, preview?: unknown): DecisionButton[] {
   const style = (o: OptionLike): DecisionButton["style"] => (o.style === "primary" || o.style === "danger" ? o.style : "secondary");
   const out: DecisionButton[] = [...options.filter((o) => SAFE_OPTIONS.has(o.id)), ...options.filter((o) => !SAFE_OPTIONS.has(o.id))]
     .map((o) => ({ id: o.id, label: o.label, style: style(o) }));
   if (NEVER_REMEMBERED.has(subkind ?? "")) return out.filter((b) => b.id !== "allow_always");
-  if (options.some((o) => o.id === "allow_once") && !options.some((o) => o.id === "allow_always") && !namesTarget(preview)) {
+  if (options.some((o) => o.id === "allow_once") && !options.some((o) => o.id === "allow_always") && unbindableEffect(preview)) {
     out.push({ id: "allow_always", label: "Always allow", style: "secondary", disabledReason: ALWAYS_ALLOW_UNAVAILABLE });
   }
   return out;

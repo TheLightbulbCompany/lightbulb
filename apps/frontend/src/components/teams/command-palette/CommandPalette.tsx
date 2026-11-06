@@ -275,11 +275,13 @@ function CommandPaletteContent({ open, onOpenChange }: CommandPaletteProps) {
 }
 
 function Group({ label, children }: { label: string; children: React.ReactNode }) {
+  // Super-agent: sentence-case heads and badges in Satoshi, no mono caps (dev walk W12-14).
+  const superAgent = useSuperAgent();
   return (
     <div className="py-1">
       <div
-        className="px-3 py-1 text-2xs uppercase"
-        style={{
+        className={superAgent ? "px-3 py-1 text-ui font-medium" : "px-3 py-1 text-2xs uppercase"}
+        style={superAgent ? { color: "var(--midnight-muted)" } : {
           color: "var(--midnight-muted)",
           fontFamily: "var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace",
           letterSpacing: "0.14em",
@@ -309,6 +311,7 @@ function Row({
   onMouseEnter: () => void;
   onClick: () => void;
 }) {
+  const superAgent = useSuperAgent();
   return (
     <li
       role="option"
@@ -337,8 +340,9 @@ function Row({
         />
       )}
       <span className="flex-1 truncate">{label}</span>
-      {sublabel && (
-        <span
+      {sublabel && (superAgent
+        ? <span className="shrink-0 text-ui text-[var(--midnight-muted)]">{sublabel}</span>
+        : <span
           className="agent-pill shrink-0"
           style={{ background: "var(--cream-deep)" }}
         >

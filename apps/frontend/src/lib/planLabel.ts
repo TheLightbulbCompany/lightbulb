@@ -27,6 +27,8 @@ export function planLabel(
     // instead — see FreeTierNote, which is the ONE place that copy exists.
     return opts?.expired ? "Free tier ended" : "Free tier";
   }
+  // Stripe's "trialing" is not a word people use (dev walk W12-14).
+  if (status === "trialing") return "Free trial";
   const spaced = status.replace(/_/g, " ");
   return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }

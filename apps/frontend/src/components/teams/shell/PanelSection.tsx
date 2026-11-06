@@ -7,6 +7,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { useSuperAgent } from "@/hooks/useLiveEvents";
 import { cn } from "@/lib/utils";
 
 export interface PanelSectionProps {
@@ -26,6 +27,8 @@ export function PanelSection({
   children,
   className,
 }: PanelSectionProps) {
+  // Super-agent: a sentence-case head, no caps (dev walk W12-14).
+  const superAgent = useSuperAgent();
   return (
     <Collapsible open={open} onOpenChange={onOpenChange} className={className}>
       <CollapsibleTrigger
@@ -38,7 +41,7 @@ export function PanelSection({
           aria-hidden="true"
           className="shrink-0 transition-transform [[data-state=open]>&]:rotate-90 text-[var(--midnight-muted)]"
         />
-        <span className="label-caps text-[var(--midnight)]">
+        <span className={superAgent ? "text-ui font-medium text-[var(--midnight)]" : "label-caps text-[var(--midnight)]"}>
           {label}
         </span>
         {typeof count === "number" && (

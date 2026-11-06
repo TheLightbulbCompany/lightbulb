@@ -289,6 +289,10 @@
 .room-intro { padding: 24px 0 12px; }
 .room-intro h3 { font-size: 1.125rem; font-weight: 700; }
 .room-intro p { margin-top: 4px; max-width: 64ch; color: var(--muted-foreground); }
+/* Super-agent project (W12-10): the goal reads in ink, clamped; the hint muted; first asks wrap, each truncating. */
+.room-intro--project .room-intro-goal { color: var(--foreground); white-space: pre-line; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.room-intro-asks { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; max-width: 100%; }
+.room-intro-asks > button { max-width: 100%; min-width: 0; }
 .room-empty, .room-blocked { padding: 32px 20px; }
 .room-empty p { margin-top: 8px; max-width: 48ch; }
 .room-blocked { align-content: center; justify-items: center; gap: 16px; text-align: center; }

@@ -179,7 +179,7 @@ export function AgentGuardrails() {
                     value={m.value}
                     checked={policyMap.approval_mode === m.value}
                     onChange={() => void setMode(m.value)}
-                    className="mt-1"
+                    className="mt-1 accent-[var(--foreground)]"
                   />
                   <span className="min-w-0">
                     <span className="block text-ui" style={{ color: "var(--midnight)" }}>

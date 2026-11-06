@@ -14,7 +14,7 @@ describe("planLabel", () => {
 
   it("capitalizes single-word statuses for the caller's own treatment on top", () => {
     expect(planLabel("active")).toBe("Active");
-    expect(planLabel("trialing")).toBe("Trialing");
+    expect(planLabel("trialing")).toBe("Free trial");
   });
 
   it("humanizes underscored multi-word statuses instead of leaking the raw enum", () => {

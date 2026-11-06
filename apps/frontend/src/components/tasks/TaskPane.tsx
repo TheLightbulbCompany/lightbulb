@@ -18,7 +18,7 @@ import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { capture } from "@/lib/analytics";
 import { TaskOutputs } from "@/components/creations/TaskOutputs";
 import { DecisionCard, endedLabel } from "./DecisionCard";
-import { ActorLine, TaskStatus } from "./TaskCard";
+import { TaskStatus } from "./TaskCard";
 import { sendToTask, useShowSteered } from "./taskReply";
 import { useTaskActions } from "./useTaskActions";
 
@@ -150,12 +150,12 @@ function answerLine(q: QuestionView): string {
   return `${verb} by ${q.answeredBy!.name} · ${time(q.answeredAt)}`;
 }
 
-/** Under the header: the live line while it runs, else the reason only when it adds one (the header already carries
- *  the title, who and the word, so nothing here repeats them, "Done by X · Done", audit 02 P2), and a refused action. */
+/** Under the header: the reason only when it adds one, and a refused action. The header already carries the title,
+ *  who and the word, so nothing here repeats them ("Done by X · Done", audit 02 P2; "Growth · working", W12-17). */
 export function TaskHeader({ task, viewerId, error }: { task: TaskSummary; viewerId: string; error: string | null }): ReactElement {
   const view = summaryView(task, viewerId);
   return <section aria-label="Task status" className="grid gap-1 px-1 empty:hidden">
-    {view.word === "Working" ? <ActorLine task={task} viewerId={viewerId} className="tabular-nums" /> : view.reason && <p className="text-ui text-muted-foreground">{view.reason}</p>}
+    {view.reason && <p className="text-ui text-muted-foreground">{view.reason}</p>}
     {error && <p role="alert" className="text-ui text-err">{error}</p>}
   </section>;
 }

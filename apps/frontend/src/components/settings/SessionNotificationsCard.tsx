@@ -5,6 +5,7 @@ import useSWR from "swr";
 import { SESSION_NOTIFICATION_DEFAULTS, type NotifyLevel, type SessionNotifications } from "@lightbulb/shared";
 import { useApi } from "@/lib/api";
 import { notifyApiError } from "@/lib/notify";
+import { Switch } from "@/components/ui/switch";
 
 const PREFS_KEY = "/users/me/prefs";
 
@@ -66,13 +67,13 @@ export function SessionNotificationsCard() {
           <div className="settings-card-title">Only when Lightbulb isn&apos;t focused</div>
           <div className="settings-card-desc">No banner while you are in Lightbulb on this computer.</div>
         </div>
-        <input type="checkbox" aria-label="Only when Lightbulb isn't focused" checked={prefs.onlyUnfocused} disabled={busy}
-          onChange={(event) => void save({ onlyUnfocused: event.target.checked })} />
+        <Switch aria-label="Only when Lightbulb isn't focused" checked={prefs.onlyUnfocused} disabled={busy}
+          onCheckedChange={(on) => void save({ onlyUnfocused: on })} />
       </label>
       <label className="settings-card-header" style={{ marginTop: 12, cursor: "pointer" }}>
         <div className="settings-card-title">Sound</div>
-        <input type="checkbox" aria-label="Sound" checked={prefs.sound} disabled={busy}
-          onChange={(event) => void save({ sound: event.target.checked })} />
+        <Switch aria-label="Sound" checked={prefs.sound} disabled={busy}
+          onCheckedChange={(on) => void save({ sound: on })} />
       </label>
     </div>
   );

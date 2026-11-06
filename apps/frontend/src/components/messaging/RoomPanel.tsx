@@ -504,6 +504,10 @@ function RoomContent({
   const showFirstReplies = starterRoom && unanswered && !room?.archivedAt
     && pendingMessages.length === 0
     && actionable && !composer.disabled;
+  const paused = superAgent && !!visibleRoom?.pausedAt && !visibleRoom.archivedAt;
+  // A Send while paused: the ask stays in the composer and the paused bar says why (W12-11).
+  const [pausedAsk, setPausedAsk] = useState(false);
+  if (pausedAsk && !paused) setPausedAsk(false);
   const mainMessages = useMemo(() => messages.filter((message) => message.threadRootMessageId === null), [messages]);
   // One pass, as in the mobile timeline, instead of a full history scan per row.
   const repliesByRoot = useMemo(() => {
@@ -1054,7 +1058,7 @@ function RoomContent({
             aria-label={waitingOnMe > 0 ? `Tasks, ${waitingOnMe} need${waitingOnMe === 1 ? "s" : ""} you` : "Tasks"} title="Tasks"
             onClick={() => { if (!requestsShown) capture("overview_opened", { source: "room", count: waitingOnMe }); toggleView("tasks"); }}>
             <ListChecks aria-hidden="true" /><span>Tasks</span>
-            {waitingOnMe > 0 && !requestsShown && <span aria-hidden="true" className="absolute right-1 top-1 size-1.5 rounded-full bg-warn" />}
+            {waitingOnMe > 0 && !requestsShown && <span aria-hidden="true" className="absolute right-1 top-1 size-1.5 rounded-full bg-warn-hue" />}
           </Button>}
           {/* This room's files (attachments and what its tasks made), never the runtime's disk (W7-8). */}
           <Button type="button" variant="ghost" size="sm" className="room-view-toggle" aria-pressed={filesViewShown} aria-label="Files" title="Files"
@@ -1112,7 +1116,9 @@ function RoomContent({
           targetToken={activeSearchTarget && activeSearchTarget.messageId === (targetMessageId ?? activeSearchTarget.messageId) ? activeSearchTarget.token : undefined}
           renderMessage={renderMainMessage}
           leading={historyComplete ? <>
-            <RoomIntro room={visibleRoom} roomName={roomName} participants={participants} />
+            <RoomIntro room={visibleRoom} roomName={roomName} participants={participants} superAgent={superAgent}
+              fresh={actionable && !composer.disabled && pendingMessages.length === 0 && !mainMessages.some((message) => message.author.kind === "human")}
+              onPickAsk={(text) => { composer.onTextChange(composer.text.trim() ? `${composer.text.trimEnd()}\n${text}` : text); setFocusToken((t) => t + 1); }} />
             {/* The starter room only: #general by the backend's `isDefault` (the room is renameable, so "general" is not
                 the test), or the super-agent owner's first-run Lightbulb DM, where they land. */}
             {(visibleRoom?.isDefault || firstRunDm) && <OnboardingBand participants={participants}
@@ -1131,8 +1137,9 @@ function RoomContent({
       {copied && <p role="status" aria-label="Link copied" className="sr-only">Link copied</p>}
       {messageActionError && <p role="alert" className="room-typing text-ui text-err">{messageActionError}</p>}
       {!visibleRoom?.archivedAt && <RoomLimitBar account={billing} />}
-      {superAgent && visibleRoom?.pausedAt && !visibleRoom.archivedAt && <div className="project-paused" role="status">
-        <span>Paused. New tasks and schedules wait.</span>
+      {paused && <div className="project-paused" role={pausedAsk ? "alert" : "status"}>
+        {/* A Send while paused keeps the ask in the box and says so here, next to Resume (W12-11). */}
+        <span>{pausedAsk ? "This project is paused. Resume it to send." : "Paused. New tasks and schedules wait."}</span>
         {onPatchRoom && canPause && <Button type="button" size="sm" variant="ghost" className="h-7" disabled={!actionable || messageActionPending}
           onClick={() => void runMessageAction(() => onPatchRoom({ paused: false }), "The project could not be resumed.")}>Resume</Button>}
       </div>}
@@ -1156,6 +1163,7 @@ function RoomContent({
           setEditTarget(own.length ? own[own.length - 1].messageId : null);
         } : undefined}
         disabled={!actionable || composer.disabled}
+        onHeld={paused ? () => setPausedAsk(true) : undefined}
         dropTargetRef={historyRef} /></>}
     </div>
     {dockSide(<>{!contextCollapsed && !showDetail && <aside className="room-context" aria-label="About"

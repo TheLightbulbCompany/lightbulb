@@ -425,7 +425,7 @@ describe("Team › Message", () => {
     render(<AgentsListPanel />);
     fireEvent.click(screen.getByRole("button", { name: "Ask Finance through Lightbulb" }));
     expect(nav.openAgentDmWithDraft).toHaveBeenCalledWith("ceo", "@finance ");
-    fireEvent.click(screen.getByRole("button", { name: "Message Lightbulb" }));
+    fireEvent.click(screen.getByRole("button", { name: "Ask Lightbulb" }));
     expect(nav.openChatPanel).toHaveBeenCalledWith("ceo");
   });
 
@@ -434,7 +434,7 @@ describe("Team › Message", () => {
     mockRead.mockReturnValue({ ...agents, data: { agents: [{ id: "ceo", name: "CEO", role: "ceo" }, { id: "fin", name: "Finance", role: "cfo" }] } });
     render(<AgentsListPanel />);
     expect(screen.queryByText("CEO")).toBeNull();
-    expect(screen.getByRole("button", { name: "Message Lightbulb" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Ask Lightbulb" })).toBeInTheDocument();
     expect(screen.queryByText("cfo")).toBeNull();
     expect(screen.queryByRole("button", { name: "Add an AI employee" })).toBeNull();
     expect(screen.queryByRole("button", { name: "New agent" })).toBeNull();
@@ -460,7 +460,7 @@ describe("Team › Message", () => {
     expect(screen.getByLabelText("Search agents")).toBeInTheDocument();
   });
 
-  it("switch on: a card per specialist says what it's for, its skills and recent requests, with Ask; no org chart", async () => {
+  it("switch on: a card per specialist says what it's for and its recent requests, with Ask; no skill slugs, no org chart", async () => {
     live.superAgent = true;
     mockRead.mockReturnValue({ ...agents, data: { agents: [
       { id: "fin", name: "Finance", role: "cfo" },
@@ -481,14 +481,16 @@ describe("Team › Message", () => {
       expect(within(cards[0]).getByText("Hands your tasks to specialists")).toBeInTheDocument();
       expect(within(cards[0]).queryByText(/Coordinator|CEO/)).toBeNull();
       const fin = cards.find((c) => within(c).queryByRole("heading", { name: "Finance" }))!;
-      // No title or persona: the line comes from its skills; disabled skills don't show.
-      expect(within(fin).getByText("Works with stripe and quickbooks.")).toBeInTheDocument();
-      expect(within(fin).getByRole("list", { name: "Finance's skills" })).toHaveTextContent("stripequickbooks");
+      // No title or persona: no line at all, never its skill slugs (W12-8).
+      expect(within(fin).queryByText(/stripe|quickbooks/)).toBeNull();
+      expect(within(fin).queryByRole("list", { name: "Finance's skills" })).toBeNull();
       expect(await within(fin).findByRole("button", { name: "Open Reconcile October, Done" })).toBeInTheDocument();
       expect(await within(cards[0]).findByRole("button", { name: "Open Plan the week, Working" })).toBeInTheDocument();
       const growth = cards.find((c) => within(c).queryByRole("heading", { name: "Growth" }))!;
       expect(within(growth).getByText("Finds you customers")).toBeInTheDocument();
       expect(within(growth).getByText("No tasks yet.")).toBeInTheDocument();
+      // One verb on every card, Lightbulb's too (W12-8).
+      expect(within(cards[0]).getByRole("button", { name: "Ask Lightbulb" })).toHaveTextContent("Ask");
       fireEvent.click(within(fin).getByRole("button", { name: "Ask Finance through Lightbulb" }));
       expect(nav.openAgentDmWithDraft).toHaveBeenCalledWith("ceo", "@finance ");
       expect(screen.queryByRole("button", { name: "Org chart view" })).toBeNull();
@@ -496,7 +498,7 @@ describe("Team › Message", () => {
     } finally { skills.byAgent = {}; teamTasks.list = []; }
   });
 
-  it("W7-7: Ask drafts the @handle when the open room has no specialists; cards hide plumbing skills and never repeat the name", () => {
+  it("W7-7: Ask drafts the @handle when the open room has no specialists; cards never repeat the name", () => {
     live.superAgent = true;
     directory.props = { ceoAgentId: "ceo", participants: [{ kind: "agent", id: "fin", mentionHandle: null }],
       rooms: [{ participants: [{ kind: "agent", id: "fin", mentionHandle: "finance-2" }] }] };
@@ -514,33 +516,8 @@ describe("Team › Message", () => {
       fireEvent.click(screen.getByRole("button", { name: "Ask Engineering through Lightbulb" }));
       expect(nav.openAgentDmWithDraft).toHaveBeenCalledWith("ceo", "@engineering ");
       const eng = screen.getAllByRole("listitem").find((li) => within(li).queryByRole("heading", { name: "Engineering" }))!;
-      expect(within(eng).getByRole("list", { name: "Engineering's skills" })).toHaveTextContent(/^github$/);
-      expect(within(eng).getByText("Works with github.")).toBeInTheDocument();
       expect(within(eng).getAllByText("Engineering")).toHaveLength(1);
     } finally { skills.byAgent = {}; directory.props = null; }
-  });
-
-  it("W8-7: each card shows its own top skills from the same enabled set, never the same tags and +N more", () => {
-    live.superAgent = true;
-    mockRead.mockReturnValue({ ...agents, data: { agents: [
-      { id: "ceo", name: "CEO", role: "ceo" },
-      { id: "growth", name: "Growth", role: "cmo", capabilities: "Finds and wins customers; owns marketing and outreach." } as AgentRow,
-      { id: "fin", name: "Finance", role: "cfo", capabilities: "Keeps the books and pays invoices." } as AgentRow,
-    ] } });
-    const same = { skills: [
-      { name: "ascii-video", description: "Render ASCII video" }, { name: "seo-audit", description: "Marketing site audit" },
-      { name: "cold-email", description: "Outreach to customers" }, { name: "invoice-pay", description: "Pay invoices" },
-      { name: "bookkeeping", description: "Keep the books" },
-    ] };
-    skills.byAgent = { ceo: same, growth: same, fin: same };
-    try {
-      render(<SWRConfig value={{ provider: () => new Map() }}><AgentsListPanel /></SWRConfig>);
-      const card = (name: string) => screen.getAllByRole("listitem").find((li) => within(li).queryByRole("heading", { name }))!;
-      expect(within(card("Growth")).getByRole("list", { name: "Growth's skills" })).toHaveTextContent(/^(seo-audit|cold-email){2}$/);
-      expect(within(card("Finance")).getByRole("list", { name: "Finance's skills" })).toHaveTextContent(/^(invoice-pay|bookkeeping){2}$/);
-      expect(within(card("Lightbulb")).queryByRole("list", { name: "Lightbulb's skills" })).toBeNull();
-      expect(screen.queryByText(/more$/)).toBeNull();
-    } finally { skills.byAgent = {}; }
   });
 
   it("the server's mentionHandle wins over a room's and the derived one (GET /teams/agents, #4885)", () => {

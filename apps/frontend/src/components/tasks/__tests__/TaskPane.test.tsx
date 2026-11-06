@@ -88,10 +88,10 @@ describe("TaskPane", () => {
     withDetail({ ...step8, task: waiting, questions: [openRow] }, [approval()]);
     pane(SAM);
     const mine = await screen.findByRole("group", { name: "Provision database and Stripe" });
-    // The one card's verbs, safe first; this ask names no fixed target, so Always allow shows disabled with why.
-    expect(within(mine).getAllByRole("button").map((b) => b.textContent)).toEqual(["Deny", "Allow once", "Always allow"]);
-    expect(within(mine).getByRole("button", { name: "Always allow" })).toBeDisabled();
-    expect(within(mine).getByRole("button", { name: "Always allow" })).toHaveAccessibleDescription(/Can't be remembered/);
+    // The one card's verbs, safe first; a Worker's own ask (no preview) can't be remembered, so no Always allow and
+    // no reason (W12-9).
+    expect(within(mine).getAllByRole("button").map((b) => b.textContent)).toEqual(["Deny", "Allow once"]);
+    expect(mine).not.toHaveTextContent(/Can't be remembered/);
     expect(mine).toHaveTextContent(/^Engineering · \d+[smhd] ago/);
   });
 
@@ -431,10 +431,11 @@ describe("task loop (UX slice 3)", () => {
     await waitFor(() => expect(reopen).toBeEnabled(), { timeout: 1500 });
   });
 
-  it("while it runs, one live line names the specialist and the seconds", async () => {
+  it("while it runs, the header says who and Working once; nothing under it repeats them (W12-17)", async () => {
     withDetail({ ...step8, task: { ...step8.task, updatedAt: new Date(Date.now() - 14_000).toISOString() } });
     pane();
-    const status = await screen.findByRole("region", { name: "Task status" });
-    expect(status.querySelector("[data-live]")).toHaveTextContent(/^Engineering · working · 1[45]s$/);
+    expect(await screen.findAllByText("Working")).not.toHaveLength(0);
+    expect(screen.queryByText(/working · \d+s/)).toBeNull();
+    expect(document.querySelector("[data-live]")).toBeNull();
   });
 });

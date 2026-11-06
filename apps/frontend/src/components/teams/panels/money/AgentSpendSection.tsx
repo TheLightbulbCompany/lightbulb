@@ -40,6 +40,7 @@
 import Link from "next/link";
 import useSWR from "swr";
 import { useBilling, type UsageSummary } from "@/hooks/useBilling";
+import { useSuperAgent } from "@/hooks/useLiveEvents";
 import { MoneySection, MoneyEmptyLine } from "./MoneySection";
 
 interface Headline {
@@ -115,6 +116,9 @@ function periodMonthName(period: string | undefined): string | null {
 
 export function AgentSpendSection() {
   const { account, fetchUsage, isLoading: accountLoading } = useBilling();
+  // Super-agent: one type voice (Satoshi, sentence case; no caps, italic or mono), dev walk W12-14.
+  const superAgent = useSuperAgent();
+  const label = superAgent ? "text-ui text-[var(--midnight-muted)]" : "label-caps";
   // Same SWR key UsagePanel uses, so this reads the shared cache entry rather
   // than issuing a second /billing/usage request.
   const { data: usage, isLoading: usageLoading } = useSWR<UsageSummary | null>("/billing/usage", () => fetchUsage(), { dedupingInterval: 30000 });
@@ -152,16 +156,17 @@ export function AgentSpendSection() {
             <div data-testid="spend-headline" className="flex flex-wrap items-end justify-between gap-x-6 gap-y-2">
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
-                  <p className="label-caps">This period</p>
-                  {headline.partial && <span className="label-caps rounded-sm border border-[var(--edge)] px-1.5 py-0.5 text-[var(--midnight-muted)]">Partial</span>}
+                  <p className={label}>This period</p>
+                  {headline.partial && <span className={`${superAgent ? "text-caption" : "label-caps"} rounded-sm border border-[var(--edge)] px-1.5 py-0.5 text-[var(--midnight-muted)]`}>Partial</span>}
                 </div>
-                <p className={headline.money ? "font-editorial-serif text-3xl leading-none tabular-nums text-[var(--midnight)]" : "font-editorial-serif text-xl italic leading-tight text-[var(--midnight)]"}>{headline.figure}</p>
+                <p className={superAgent ? `font-semibold text-[var(--midnight)] ${headline.money ? "text-3xl leading-none tabular-nums" : "text-xl leading-tight"}`
+                  : headline.money ? "font-editorial-serif text-3xl leading-none tabular-nums text-[var(--midnight)]" : "font-editorial-serif text-xl italic leading-tight text-[var(--midnight)]"}>{headline.figure}</p>
                 <p className="mt-1 max-w-[52ch] text-caption text-[var(--midnight-muted)]">{headline.caption}</p>
               </div>
               {usage && (
                 <div className="text-right">
-                  <p className="label-caps">Agent runs</p>
-                  <p className="font-mono text-title tabular-nums text-[var(--midnight)]">{usage.request_count.toLocaleString()}</p>
+                  <p className={label}>Agent runs</p>
+                  <p className={`${superAgent ? "" : "font-mono "}text-title tabular-nums text-[var(--midnight)]`}>{usage.request_count.toLocaleString()}</p>
                 </div>
               )}
             </div>

@@ -86,7 +86,7 @@ describe("RoomPanel Threads view (super-agent)", () => {
     expect(screen.queryByRole("complementary", { name: "Tasks" })).toBeNull();
     // Closed while something needs you: the toggle carries the warn dot, and the pane stays closed this visit.
     expect(toggle).toHaveAttribute("aria-pressed", "false");
-    expect(toggle.querySelector(".bg-warn")).not.toBeNull();
+    expect(toggle.querySelector(".bg-warn-hue")).not.toBeNull();
     // Nothing is persisted: the next visit opens on Tasks again.
     expect(Object.keys(localStorage).filter((k) => k.includes("requestsOpen"))).toEqual([]);
     unmount();
@@ -425,6 +425,16 @@ describe("RoomPanel Threads view (super-agent)", () => {
     rerender(<Fresh><RoomPanel {...props} room={paused} onPatchRoom={onPatchRoom} canPause /></Fresh>);
     await userEvent.click(within(bar.parentElement!).getByRole("button", { name: "Resume" }));
     expect(onPatchRoom).toHaveBeenCalledWith({ paused: false });
+  });
+
+  it("W12-11: Send in a paused project keeps the ask in the composer and says how to send it", async () => {
+    const onSubmit = vi.fn();
+    const paused = { ...props.room!, pausedAt: "2026-11-06T10:00:00Z" };
+    render(<Fresh><RoomPanel {...props} room={paused} canPause onPatchRoom={vi.fn()} composer={{ ...props.composer, text: "Write the tagline", onSubmit }} /></Fresh>);
+    await userEvent.click(await screen.findByRole("button", { name: /^Send/ }));
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(await screen.findByRole("alert")).toHaveTextContent("This project is paused. Resume it to send.");
+    expect(screen.getByRole("textbox", { name: /Message/ })).toHaveValue("Write the tagline");
   });
 
   it("About › Members lists people and Lightbulb only: no specialists, no Agent tag, no listen mode", async () => {

@@ -38,6 +38,7 @@
   --color-midnight-faint: var(--midnight-faint);
   --color-ok: var(--ok);
   --color-warn: var(--warn);
+  --color-warn-hue: var(--warn-hue);
   --color-err: var(--err);
   --color-info: var(--info);
 
@@ -208,6 +209,9 @@
   --on-link:#FFFFFF;
   --alert:  #A83C29;
   --live:   #186D48;
+  /* --warn is the quiet brand grey here; the needs-you dot is the one coloured thing (dev walk W12-16), so it takes
+     the warning hue (DESIGN.md warn). A dot, not text: 3:1 non-text on every plane. */
+  --warn-hue: #96501A;
 
   --brand: #52525A;
   --agent-tint-1: #6E6E78;
@@ -251,6 +255,7 @@
   --on-link:#0C121A;
   --alert:  #E7806F;
   --live:   #4BC08A;
+  --warn-hue: #E09A55;
 
   --brand: #B4B4B8;
   --agent-tint-1: #9B9BA2;
@@ -389,6 +394,7 @@
   /* §06 state pairs — the second value is for the reversed ground. */
   --ok: #3A6B45;    --ok-reversed: #7FB58D;
   --warn: #96501A;  --warn-reversed: #E09A55;
+  --warn-hue: var(--warn);
   --err: #96382B;   --err-reversed: #DB8C7C;
   --info: #35566F;  --info-reversed: #93B4C9;
 

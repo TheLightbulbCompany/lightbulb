@@ -22,8 +22,8 @@ describe("SessionNotificationsCard", () => {
     card();
     expect(((await screen.findByLabelText("Waiting on you")) as HTMLSelectElement).value).toBe("banner");
     expect(screen.queryByLabelText("Needs attention")).toBeNull(); // hand-off notes are not a setting any more
-    expect((screen.getByLabelText("Sound") as HTMLInputElement).checked).toBe(true);
-    expect((screen.getByLabelText("Only when Lightbulb isn't focused") as HTMLInputElement).checked).toBe(false);
+    expect(screen.getByLabelText("Sound")).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByLabelText("Only when Lightbulb isn't focused")).toHaveAttribute("aria-checked", "false");
   });
 
   it("saves the whole object with the one change", async () => {

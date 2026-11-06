@@ -69,7 +69,7 @@ export function RoomDirectoryRow({ room, label, active, busy, draft, onSelect, o
       {room.starred && !project && <Star size={12} role="img" aria-label="Starred" className="room-directory-star" />}
       {room.muted && <span className="room-directory-tag">Muted</span>}
       {room.shared && <span className="room-directory-tag" title={SHARED_ROOM_HINT}>Shared</span>}
-      {needsYou > 0 && <span aria-hidden="true" data-needs-you className="size-2 shrink-0 rounded-full bg-warn" />}
+      {needsYou > 0 && <span aria-hidden="true" data-needs-you className="size-2 shrink-0 rounded-full bg-warn-hue" />}
       {badge && !noCounts && <span className="room-count" aria-label={`${room.unreadCount} unread messages`}>{room.unreadCount}</span>}
       {draft && <Pencil size={14} role="img" aria-label="Unsent draft" className="text-muted-foreground" />}
     </button>

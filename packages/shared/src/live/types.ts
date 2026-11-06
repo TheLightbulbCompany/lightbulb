@@ -259,7 +259,8 @@ export type SessionScreen = {
 export type SessionBrowserFrame = { sessionId: string; kind: "image"; data: string; w: number; h: number; seq: number };
 /** An admitted person started (or is still) typing into this owner's live session terminal. */
 export type SessionTyping = { sessionId: string; userId: string };
-export type RoomTypingChanged = { roomId: string; userId: string; displayName: string; expiresAt: string };
+/** `label`: Lightbulb's Router stage as a whole line ("Lightbulb is thinking…"); a client without it reads "is typing…". */
+export type RoomTypingChanged = { roomId: string; userId: string; displayName: string; expiresAt: string; label?: string };
 /** A member's typing/working/idle hint on this room, delivered on the member's own user
  *  channel. `expiresAt` is authoritative for BOTH "typing" and "working" (a "working" hint
  *  is refreshed by every run heartbeat, so a lost/reordered "idle" self-heals); "idle" carries
@@ -478,7 +479,8 @@ function payloadValid(type: LiveEventType, payload: unknown): boolean {
       return str(payload.roomId) && str(payload.messageId) && num(payload.messageSeq) && payload.messageSeq > 0 &&
         nullableString(payload.threadRootMessageId) && typeof payload.notify === "boolean";
     case "room.typing.changed":
-      return str(payload.roomId) && str(payload.userId) && text(payload.displayName) && str(payload.expiresAt);
+      return str(payload.roomId) && str(payload.userId) && text(payload.displayName) && str(payload.expiresAt)
+        && (payload.label === undefined || str(payload.label));
     case "room.activity.changed":
       return str(payload.roomId) && isObj(payload.actor) && (payload.actor.kind === "human" || payload.actor.kind === "agent")
         && str(payload.actor.id) && text(payload.actor.displayName)

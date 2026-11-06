@@ -99,7 +99,7 @@ export interface RoomPanelProps {
   onLoadHistory?: () => void;
   onLoadOlder?: () => void;
   pendingMessages?: readonly PendingRoomMessage[];
-  typingMembers?: readonly { userId: string; displayName: string }[];
+  typingMembers?: readonly { userId: string; displayName: string; label?: string }[];
   runs?: readonly RoomRunView[];
   composer: RoomComposerProps;
   threadComposer?: { parentMessageId: string; composer: RoomComposerProps };
@@ -563,6 +563,9 @@ function RoomContent({
     return () => window.clearTimeout(timer);
   }, [readingPending, addressed]);
   const onIt = readingPending && onItExpired !== readingPending.messageId ? front : undefined;
+  // Lightbulb's Router stage ("Lightbulb is writing a reply…", walk 15) replaces its reading line; people typing come first.
+  const typers = typingMembers.filter((member) => !member.label);
+  const stageLine = typingMembers.find((member) => member.label)?.label;
   // Only membership changes invalidate history; streamed text/tool frames do not.
   const workingThreadKey = JSON.stringify(runs.filter(run => run.state === "running" && run.threadRootMessageId)
     .map(run => [run.threadRootMessageId, run.agentId]));
@@ -1154,7 +1157,7 @@ function RoomContent({
           {superAgent && frontAgentId && visibleRoom?.kind === "dm" && counterparts.length === 1 && counterparts[0].id === frontAgentId && <FirstMoves />}
         </RoomTimeline>
       </div>
-      <p className="room-typing room-typing-live text-ui text-muted-foreground" role="status">{typingMembers.length > 0 ? `${typingMembers.slice(0, 3).map((member) => member.displayName).join(", ")}${typingMembers.length > 3 ? " and others" : ""} ${typingMembers.length === 1 ? "is" : "are"} typing…` : onIt ? `${onIt.displayName} is reading…` : ""}</p>
+      <p className="room-typing room-typing-live text-ui text-muted-foreground" role="status">{typers.length > 0 ? `${typers.slice(0, 3).map((member) => member.displayName).join(", ")}${typers.length > 3 ? " and others" : ""} ${typers.length === 1 ? "is" : "are"} typing…` : stageLine ?? (onIt ? `${onIt.displayName} is reading…` : "")}</p>
       {copied && <p role="status" aria-label="Link copied" className="sr-only">Link copied</p>}
       {messageActionError && <p role="alert" className="room-typing text-ui text-err">{messageActionError}</p>}
       {!visibleRoom?.archivedAt && <RoomLimitBar account={billing} />}

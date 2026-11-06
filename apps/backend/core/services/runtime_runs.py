@@ -152,6 +152,7 @@ class RunStatus:
     usage: dict | None
     recent_tools: list[dict]
     decisions: list[dict] = field(default_factory=list)  # a Router run's decisions, in order
+    stage: str | None = None  # a running Router run: the tool it is writing ("reply", "start_task"), its name only
 
 
 async def _container(owner_id: str) -> dict:
@@ -208,6 +209,7 @@ def _status(data: dict) -> RunStatus:
         usage=data.get("usage"),
         recent_tools=list(data.get("recentTools") or []),
         decisions=list(data.get("decisions") or []),
+        stage=data.get("stage"),
     )
 
 

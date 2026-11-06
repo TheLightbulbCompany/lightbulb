@@ -52,3 +52,15 @@ export function caretOffset(box: HTMLElement = composerBox()): number | null {
     return null;
   });
 }
+
+/** Type `value` one character at a time at the caret, each as its own edit, so typing shortcuts run as they do live. */
+export function typeKeys(value: string, box: HTMLElement = composerBox()): void {
+  for (const char of value) {
+    act(() => {
+      editorOf(box).update(() => {
+        const selection = lexical.$getSelection();
+        (lexical.$isRangeSelection(selection) ? selection : lexical.$getRoot().selectEnd()).insertText(char);
+      }, { discrete: true });
+    });
+  }
+}

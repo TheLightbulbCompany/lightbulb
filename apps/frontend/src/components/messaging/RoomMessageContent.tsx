@@ -83,6 +83,8 @@ export function RoomMessageContent({ message, currentUserId, actionable, onUpdat
     {message.deletedAt ? <p className="text-ui text-muted-foreground italic">Message deleted</p> : editing ? <form className="grid gap-2" onSubmit={(event) => { event.preventDefault(); void save(); }}>
       <label htmlFor={id} className="sr-only">Edit message</label>
       <textarea id={id} className="room-input min-h-24 w-full" autoFocus value={request!.text!} disabled={pending}
+        // ↑ to edit lands with the caret after the text, ready to add to it.
+        onFocus={(event) => { const end = event.currentTarget.value.length; event.currentTarget.setSelectionRange(end, end); }}
         onChange={(event) => setRequest({ ...request!, operationId: crypto.randomUUID(), text: event.target.value })}
         onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); if (!pending) { setRequest(null); restoreFocus(); onEditingClosed?.(); } } }} />
       <p className="text-ui text-muted-foreground">Edits do not change tasks already sent to specialists or undo their work.</p>

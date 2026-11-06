@@ -12,11 +12,14 @@ import {
 } from "./lexical";
 import { activeTrigger, type CompletionTrigger, type MarkdownStyle } from "@lightbulb/shared";
 
-/** What a chat message can carry. No headings: "# 1" in a chat is text. */
-export const COMPOSER_TRANSFORMERS: Transformer[] = ([
-  "UNORDERED_LIST", "ORDERED_LIST", "QUOTE", "CODE", "INLINE_CODE", "BOLD_ITALIC_STAR", "BOLD_ITALIC_UNDERSCORE", "BOLD_STAR", "BOLD_UNDERSCORE",
-  "ITALIC_STAR", "ITALIC_UNDERSCORE", "STRIKETHROUGH", "LINK",
-] as const).map((name) => markdown[name]);
+/** Blocks and code: the only markdown the box reads, as you type or from a stored draft. Emphasis comes from the
+ *  toolbar and ⌘B/⌘I alone, so `__init__`, `run __main__`, `~tilde~` and `3*4 then 5*6` stay exactly as typed. */
+export const COMPOSER_TRANSFORMERS: Transformer[] = (["UNORDERED_LIST", "ORDERED_LIST", "QUOTE", "CODE", "INLINE_CODE"] as const)
+  .map((name) => markdown[name]);
+/** Writing out, the toolbar's bold, italic, strike and links become markdown too. A draft read back shows those as
+ *  their markdown characters (the box never guesses emphasis from text), and sends the same text. */
+const EXPORT_TRANSFORMERS: Transformer[] = [...COMPOSER_TRANSFORMERS,
+  ...(["BOLD_ITALIC_STAR", "BOLD_STAR", "ITALIC_STAR", "STRIKETHROUGH", "LINK"] as const).map((name) => markdown[name])];
 
 const { $createParagraphNode, $getNodeByKey, $getRoot, $getSelection, $isRangeSelection, $isTextNode, BLUR_COMMAND, COMMAND_PRIORITY_CRITICAL,
   FORMAT_TEXT_COMMAND, INSERT_PARAGRAPH_COMMAND, KEY_DOWN_COMMAND, PASTE_COMMAND } = lexical;
@@ -37,7 +40,7 @@ export function unescapeComposerMarkdown(markdown: string): string {
 }
 
 /** The message the box holds, as markdown (one "\n" per line, as typed). */
-export const $composerMarkdown = () => unescapeComposerMarkdown($convertToMarkdownString(COMPOSER_TRANSFORMERS, undefined, true));
+export const $composerMarkdown = () => unescapeComposerMarkdown($convertToMarkdownString(EXPORT_TRANSFORMERS, undefined, true));
 
 export interface ComposerEditorHandle {
   /** Focus with the caret at the end. */

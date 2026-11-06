@@ -948,7 +948,11 @@ it("opens the edit form for your last message when ArrowUp lands in an empty com
   const own = { ...message, messageId: "own", messageSeq: 2, author: { kind: "human" as const, id: props.currentUserId, displayName: "Owner" } };
   render(<RoomPanel {...props} messages={[message, own]} onUpdateMessage={vi.fn()} />);
   fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "ArrowUp" });
-  expect(screen.getByRole("textbox", { name: "Edit message" })).toBeInTheDocument();
+  const edit = screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Edit message" });
+  // The caret lands after the text (W18 walk: it opened at the start).
+  expect(edit).toHaveFocus();
+  expect(edit.selectionStart).toBe(edit.value.length);
+  expect(edit.value.length).toBeGreaterThan(0);
 });
 
 it("lets a second ArrowUp reopen the edit form for the same message after Cancel", async () => {

@@ -2,7 +2,7 @@ import { useState } from "react";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { RoomComposer } from "../RoomComposer";
-import { composerBox, composerValue, selectInComposer, typeInComposer } from "@/test-utils/composer";
+import { composerBox, composerValue, selectInComposer, typeInComposer, typeKeys } from "@/test-utils/composer";
 import { editorOf } from "../ComposerEditor";
 import { lexical } from "../lexical";
 import type { RoomParticipant } from "../types";
@@ -153,4 +153,35 @@ it("review: an empty bullet, quote or code block is nothing to send", () => {
     typeInComposer(blank);
     expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
   }
+});
+
+it("W18 prod block: typed text is stored exactly as typed — no emphasis from _ * ~, nothing inside code", () => {
+  function Typed({ onText }: { onText: (text: string) => void }) {
+    const [text, setText] = useState("");
+    return <RoomComposer text={text} onTextChange={(next) => { setText(next); onText(next); }} members={[]}
+      clientMessageId="11111111-1111-4111-8111-111111111111" sendState="idle" onSubmit={vi.fn()} />;
+  }
+  let stored = "";
+  const { unmount } = render(<Typed onText={(text) => { stored = text; }} />);
+  for (const value of ["__init__", "run __main__ now", "~tilde~", "3*4 then 5*6", "**not bold** _nor this_"]) {
+    typeInComposer("");
+    typeKeys(value);
+    expect(field().querySelector("strong, em, s, .font-semibold, .italic, .line-through")).toBeNull();
+    expect(composerValue()).toBe(value);
+    expect(stored).toBe(value);
+  }
+  // Inside a code block nothing is transformed.
+  typeInComposer("```\n```");
+  selectInComposer(0, 0);
+  typeKeys("def __init__(self):");
+  expect(composerValue()).toBe("```\ndef __init__(self):\n```");
+  unmount();
+
+  // A stored draft with all of them reads back and sends unchanged.
+  const draft = "__init__ and run __main__, ~tilde~, 3*4 then 5*6\n```\ndef __init__(self):\n    return **kwargs\n```";
+  const onSubmit = vi.fn();
+  render(<RoomComposer text={draft} onTextChange={vi.fn()} members={[]}
+    clientMessageId="11111111-1111-4111-8111-111111111111" sendState="idle" onSubmit={onSubmit} />);
+  expect(field().querySelector("strong, em, s, .font-semibold, .italic, .line-through")).toBeNull();
+  expect(composerValue()).toBe(draft);
 });

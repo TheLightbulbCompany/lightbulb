@@ -37,6 +37,28 @@ async def put_rules(org: str, rules: dict) -> None:
     await run_in_thread(_table().put_item, Item={**rules, "pk": f"A2A#{org}", "sk": "RULES"})
 
 
+async def put_rules_if(org: str, rules: dict, read: dict | None) -> bool:
+    """Store the document only if the stored one is still `read` (the document the caller read; None = none was
+    stored), compared by its server revision. False when another write landed in between: the caller re-reads."""
+    if read is None:
+        cond: dict = {"ConditionExpression": "attribute_not_exists(sk)"}
+    elif read.get("revision") is None:
+        cond = {"ConditionExpression": "attribute_not_exists(#r)", "ExpressionAttributeNames": {"#r": "revision"}}
+    else:
+        cond = {
+            "ConditionExpression": "#r = :r",
+            "ExpressionAttributeNames": {"#r": "revision"},
+            "ExpressionAttributeValues": {":r": read["revision"]},
+        }
+    try:
+        await run_in_thread(_table().put_item, Item={**rules, "pk": f"A2A#{org}", "sk": "RULES"}, **cond)
+    except ClientError as exc:
+        if _is_conflict(exc):
+            return False
+        raise
+    return True
+
+
 async def put_exception(
     org: str,
     resource: str,

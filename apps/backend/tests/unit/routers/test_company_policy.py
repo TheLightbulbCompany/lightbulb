@@ -127,10 +127,13 @@ def _patch_mode(c, body):
         return c.patch("/api/v1/company/policy", json=body), run
 
 
-def test_approval_mode_ask_and_auto_are_stored(client):
+def test_approval_mode_ask_and_auto_are_stored_and_audited(client, monkeypatch):
+    audit = AsyncMock()
+    monkeypatch.setattr(mod.questions, "audit", audit)
     resp, run = _patch_mode(client, {"approval_mode": "ask"})
     assert resp.status_code == 200 and resp.json()["approval_mode"] == "ask"
     assert run.await_args.kwargs["ExpressionAttributeValues"] == {":p": {"approval_mode": "ask"}}
+    audit.assert_awaited_once_with("user_admin", "org_a", "approval.mode", {"mode": "ask"})
 
 
 def test_never_ask_needs_the_typed_confirmation(client):

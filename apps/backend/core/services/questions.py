@@ -11,9 +11,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import math
 import re
 from collections.abc import Collection
 from dataclasses import dataclass
+from email.utils import getaddresses
 
 from core import tasks_schema as ts
 from core.repositories import billing_repo
@@ -60,6 +63,9 @@ _MONEY = {"purchase", "spend", "budget_override"}
 MONEY_SUBKINDS = frozenset(_MONEY)  # public: the acceptance harness refuses to answer these
 
 
+_log = logging.getLogger(__name__)
+
+
 class NoAnswerer(Exception):
     """Nobody can answer this question: the ask fails (`no_answerer`), it never waits silently."""
 
@@ -87,13 +93,26 @@ def kind_and_options(effect_kind: str, operands: dict | None = None) -> tuple[ts
 
 APPROVAL_MODES = billing_repo.APPROVAL_MODES
 _RECIPIENT_KINDS = frozenset({"mail.send", "text.send", "invite.send"})
-_EMAIL = re.compile(r"[^\s,;<>\"']+@[^\s,;<>\"']+")
+_COPY_KEYS = ("cc", "bcc")
+_ADDRESS = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")  # agent_email.EMAIL_ADDRESS_RE, the sender's own check
+
+
+def _recipients(operands: dict) -> list[str] | None:
+    """Every address the call sends to, parsed the way the sender parses `to` (`email.utils.getaddresses`,
+    agent_mail_send._single_address), lower-case; None when any part does not parse to a plain address."""
+    raw = [str(operands.get(k) or "") for k in ("to", *_COPY_KEYS)]
+    pairs = getaddresses([r for r in raw if r])
+    addrs = [a.lower() for _, a in pairs]
+    if not addrs or any(not _ADDRESS.match(a) for a in addrs):
+        return None
+    return addrs
 
 
 def asks(mode: str, kind: str, operands: dict, *, members: Collection[str] = (), limits: dict | None = None) -> bool:
     """Whether this outside action stops for a person's yes (pure). Auto stops only for money over the per-purchase
     cap, a recipient who is not a workspace member (`members`: their emails, lower-case), and deletes of outside
-    data; publish, merge, provision and agent messages go ahead. Unknown mode or unreadable operands: ask."""
+    data; publish, merge, provision and agent messages go ahead. Unknown mode or unreadable operands: ask.
+    (`delete` and `invite.send` are not classified yet: the classify slice brings them here.)"""
     if mode == "never_ask":
         return False
     if mode != "auto":
@@ -101,15 +120,17 @@ def asks(mode: str, kind: str, operands: dict, *, members: Collection[str] = (),
     if kind == "delete":
         return True
     if kind in _RECIPIENT_KINDS:
-        to = _EMAIL.findall(str(operands.get("to") or "").lower())
-        return not to or any(r not in members for r in to)  # a reply or a phone number names no member: ask
+        to = _recipients(operands)
+        return to is None or any(r not in members for r in to)  # a reply or a phone number names no member: ask
     if kind == "purchase":
         cap = int((limits or {}).get("perPurchaseCents") or 0)
         try:
-            cents = round(float(str(operands["amount"]).lstrip("$").replace(",", "")) * 100)
+            dollars_ = float(str(operands["amount"]).lstrip("$").replace(",", ""))
         except (KeyError, ValueError):
             return True
-        return cap <= 0 or cents > cap
+        if not math.isfinite(dollars_) or dollars_ < 0:
+            return True
+        return cap <= 0 or round(dollars_ * 100) > cap
     return False
 
 
@@ -139,12 +160,15 @@ def _target(kind: str, operands: dict) -> tuple[str, str] | None:
     return (key, value) if isinstance(value, str) and value else None
 
 
-async def rule_effect(ws: str, specialist: str | None, kind: str, operands: dict) -> str | None:
-    """ "allow" | "deny" when a stored rule names this action (`a2a_rules.decide` over the workspace's Rules
-    document), else None. The A2A defaults and holders never decide an effect: only a rule for this skill does."""
+async def rule_effect(ws: str, specialist: str | None, kind: str, operands: dict) -> tuple[str, str] | None:
+    """`("allow" | "deny", rule id)` when a stored rule names this action (`a2a_rules.decide` over the workspace's
+    Rules document), else None. The A2A defaults and holders never decide an effect: only a rule for this skill
+    does. A mail with cc/bcc is never covered: a rule binds `to` alone."""
     from core.repositories import a2a_repo
     from core.services import a2a_rules
 
+    if kind in _RECIPIENT_KINDS and any(operands.get(k) for k in _COPY_KEYS):
+        return None
     doc = await a2a_repo.get_rules(ws)
     if not doc:
         return None
@@ -161,15 +185,22 @@ async def rule_effect(ws: str, specialist: str | None, kind: str, operands: dict
         origin_is_person=False,
         operands=operands,
     )
-    return d.effect if d.effect != "hold" and d.rule not in ("default", "holder") else None
+    return (d.effect, d.rule) if d.effect != "hold" and d.rule not in ("default", "holder") else None
 
 
-async def add_always_allow(ws: str, kind: str, operands: dict) -> None:
+class RulesBusy(Exception):
+    """The Rules document kept changing under an Always-allow write (retryable: the Activity tries again)."""
+
+
+_RULE_WRITE_TRIES = 3
+
+
+async def add_always_allow(ws: str, kind: str, operands: dict, *, by: str) -> None:
     """The card's Always allow: one workspace-wide `allow` rule for this action kind and target in the workspace's
     Rules document (any answerer may make it: ruling 6 Nov 2026). Idempotent: the id comes from kind and target.
-
-    ponytail: read-modify-write of one document, no condition; a rules PUT racing it can drop this rule (the next
-    Always allow writes it again). A conditional put on `revision` when that race shows up."""
+    The write is conditional on the revision it read, so an admin's rules PUT in between is never overwritten; it
+    re-reads and tries again, then raises `RulesBusy`. (The admin PUT, a2a_tasks.put_rules, is still unconditional:
+    it can drop an always-* rule written after its own read. Follow-up: send a base revision there too.)"""
     from core.repositories import a2a_repo
     from core.services import a2a_rules, a2a_tasks
 
@@ -178,21 +209,49 @@ async def add_always_allow(ws: str, kind: str, operands: dict) -> None:
         return
     key, value = target
     rid = "always-" + hashlib.sha256(f"{kind}\0{key}\0{value}".encode()).hexdigest()[:16]
-    doc = await a2a_repo.get_rules(ws)
-    rules = a2a_rules.Rules.model_validate(doc) if doc else a2a_rules.default_rules(ws, await _admins(ws))
-    if any(r.id == rid for r in rules.rules):
-        return
-    rules.rules.append(
-        a2a_rules.Rule(
-            id=rid,
-            resource="agent:*",
-            skill=kind,
-            requesters=[f"org:{ws}"],
-            effect="allow",
-            when=a2a_rules.When(operands_equal={key: value}),
+    for _ in range(_RULE_WRITE_TRIES):
+        doc = await a2a_repo.get_rules(ws)
+        rules = a2a_rules.Rules.model_validate(doc) if doc else a2a_rules.default_rules(ws, await _admins(ws))
+        if any(r.id == rid for r in rules.rules):
+            return
+        rules.rules.append(
+            a2a_rules.Rule(
+                id=rid,
+                resource="agent:*",
+                skill=kind,
+                requesters=[f"org:{ws}"],
+                effect="allow",
+                when=a2a_rules.When(operands_equal={key: value}),
+            )
         )
-    )
-    await a2a_repo.put_rules(ws, {**rules.model_dump(exclude_none=True), "revision": a2a_tasks.revision(rules)})
+        new = {**rules.model_dump(exclude_none=True), "revision": a2a_tasks.revision(rules)}
+        if await a2a_repo.put_rules_if(ws, new, doc):
+            await audit(by, ws, "approval.always_allow", {"ruleId": rid, "kind": kind, key: value})
+            return
+    raise RulesBusy(ws)
+
+
+async def audit(actor: str, ws: str, action: str, payload: dict) -> None:
+    """One row in the admin-actions audit table (who changed how agents ask, and when). A failed write is logged
+    CRITICAL and never undoes the change (the routers/users.py self-wipe posture)."""
+    from core.repositories import admin_actions_repo
+
+    try:
+        await admin_actions_repo.create(
+            admin_user_id=actor,
+            target_user_id=ws,
+            action=action,
+            payload=payload,
+            result="success",
+            audit_status="written",
+            http_status=200,
+            elapsed_ms=0,
+            error_message=None,
+            user_agent="lightbulb",
+            ip="",
+        )
+    except Exception:  # noqa: BLE001
+        _log.critical("APPROVAL_AUDIT_PANIC action=%s ws=%s actor=%s", action, ws, actor, exc_info=True)
 
 
 def operands_hash(kind: str, operands: dict) -> str:

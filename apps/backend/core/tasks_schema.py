@@ -651,6 +651,7 @@ class Effect(_Row):
     door_used_at: str | None = None  # the one backend door call this intent let through (Lane Q door gating)
     state: EffectState
     question_id: str | None = None
+    allowed_by: str | None = None  # why it went ahead with no card: `mode:auto`, `mode:never_ask` or `rule:<id>`
     output: Output | None = None  # the draft payload while proposed
     result_ref: str | None = None
 

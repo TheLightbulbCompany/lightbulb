@@ -24,7 +24,7 @@ from pydantic import BaseModel
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.repositories import billing_repo, container_repo, integrations_repo, slack_installs_repo
-from core.services import account_wipe, company_stripe, link_wallet, slack_install_service, website_logins
+from core.services import account_wipe, company_stripe, link_wallet, questions, slack_install_service, website_logins
 from core.services.credentials import integration_secret_store
 from core.services.owner_facts import write_owner_facts
 from routers import connections
@@ -61,6 +61,8 @@ async def patch_policy(body: dict[str, bool | str], auth: Annotated[AuthContext,
         raise HTTPException(status_code=422, detail=str(e)) from e
     if updated is None:
         raise HTTPException(status_code=404, detail="No billing account")
+    if billing_repo.APPROVAL_MODE_KEY in body:
+        await questions.audit(auth.user_id, owner_id, "approval.mode", {"mode": body[billing_repo.APPROVAL_MODE_KEY]})
     return updated
 
 

@@ -201,3 +201,18 @@ def test_org_star_is_this_workspace_only():
 def test_ask_session_matches_no_member_rule_and_stays_held():
     d = r.decide(R, requester_person="user_x", resource="session:abc", skill="ask_session", **K)
     assert (d.effect, d.rule) == ("hold", "default")
+
+
+def test_put_rules_if_writes_only_over_the_document_read(repos):
+    """The Always-allow write (questions.add_always_allow) never overwrites a document stored after its read."""
+    import asyncio
+
+    from core.repositories import a2a_repo
+
+    first = {"revision": "r1", "holders": {}, "rules": [], "default": "hold"}
+    assert asyncio.run(a2a_repo.put_rules_if("org_1", first, None)) is True
+    assert asyncio.run(a2a_repo.put_rules_if("org_1", {**first, "revision": "x"}, None)) is False  # one exists now
+    second = {**first, "revision": "r2"}
+    assert asyncio.run(a2a_repo.put_rules_if("org_1", second, first)) is True
+    assert asyncio.run(a2a_repo.put_rules_if("org_1", {**first, "revision": "r3"}, first)) is False  # r2 landed
+    assert asyncio.run(a2a_repo.get_rules("org_1"))["revision"] == "r2"

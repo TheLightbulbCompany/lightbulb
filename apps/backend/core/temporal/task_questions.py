@@ -545,10 +545,22 @@ async def record_answer(ws: str, task_id: str, ref: AnswerRef) -> AnswerOut:
         effect = await effects_repo.get_effect(ws, q["effectIdemKey"]) or {}
         if option == "allow_always" and effect:
             # Allow this one and make it a standing rule (idempotent: a retried Activity writes the same rule).
-            await questions.add_always_allow(ws, effect["kind"], effect.get("operands") or {})
+            await questions.add_always_allow(ws, effect["kind"], effect.get("operands") or {}, by=ref.by_user_id)
+        # A stale card: the same action already went ahead without it (the mode changed or a rule matched after
+        # the card opened). Its approval is used up at once, so it can never let a second identical send through.
+        stale = to == "approved" and any(
+            p["idemKey"] != effect.get("idemKey")
+            and p.get("state") in ("intent", "done", "unknown")
+            and p.get("createdAt", "") > effect.get("createdAt", "")
+            for p in await effects_repo.effects_for(ws, task_id, effect.get("operandsHash") or "")
+            if p.get("type") == "effect"
+        )
+        if stale:
+            await effects_repo.retire_approvals(ws, task_id, only=q["effectIdemKey"], used_by="superseded")
         # A reviewed draft the backend can land itself; everything else resumes the Worker (contracts-v2 §8).
         if (
-            to == "approved"
+            not stale
+            and to == "approved"
             and effect.get("executorOk")
             and option in (questions.REVIEW_KINDS.get(effect.get("kind")), "allow_always")
             and effect.get("kind") in EXECUTOR_KINDS

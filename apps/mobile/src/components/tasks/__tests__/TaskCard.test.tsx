@@ -79,9 +79,9 @@ it("a card for a request older than the room's first page reads it by id", async
   await view.unmount();
 });
 
-it("the Router's ack and its result line carry a compact chip, never a full card (dev walk 10)", async () => {
+it("the ack and the finish line carry a compact chip, never a full card (dev walk 10; an automation run's result, 6 Nov)", async () => {
   const onOpen = jest.fn();
-  for (const kind of [undefined, "task_line"]) {
+  for (const kind of [undefined, "task_line", "result"]) {
     const message = { roomId: "r1", kind, taskRefs: [{ taskId: "t-signup", role: "started" }] } as never;
     const view = await render(<Fresh><MessageTasks message={message} viewerId={SAM} palette={p} onOpen={onOpen} /></Fresh>);
     await fireEvent.press(await screen.findByTestId("task-chip-t-signup"));

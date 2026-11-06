@@ -24,8 +24,11 @@ export function MessageTasks({ message, viewerId, onOpen, ackedTasks }: {
   const refs = message.taskRefs ?? [];
   const { data, error, mutate } = useTaskList(tasks, refs.length ? { kind: "room", roomId: message.roomId } : null);
   if (!refs.length) return null;
+  // The finish message: the Router's one-line result (`task_line`), or an automation run's result post in its room
+  // (`result`, activities.end_attempt: no Router thread). Both are finish lines, never a second full card (6 Nov walk).
+  const finish = message.kind === "task_line" || message.kind === "result";
   // A finish message that carries a short result whole (walk 15: an Instagram post) offers it to paste.
-  const piece = message.kind === "task_line" ? resultPiece(message.text) : null;
+  const piece = finish ? resultPiece(message.text) : null;
   const copy = piece ? <CopyResult text={piece} /> : null;
   const byId = new Map((data?.tasks ?? []).map((t) => [t.taskId, t]));
   // Before the list loads, quiet placeholders (never a row of "isn't available"); a failed read offers Retry.
@@ -40,12 +43,12 @@ export function MessageTasks({ message, viewerId, onOpen, ackedTasks }: {
   }
   if (copy && !data) return copy;
   // One chip per task (dev walk 13, W13-1/W12-1): the Router's ack carries it with a live dot, ✓ Done once finished;
-  // the one-line finish post carries only what it made. A result post or a question keeps the full card.
-  const Ref = !message.kind || message.kind === "task_line" ? RefChip : RefCard;
+  // the finish post carries only what it made. A question keeps the full card.
+  const Ref = !message.kind || finish ? RefChip : RefCard;
   return <div aria-label="Tasks in this message">
     {copy}
     {refs.map((r) => <Ref key={r.taskId} taskId={r.taskId} listed={byId.get(r.taskId)} viewerId={viewerId} onOpen={onOpen}
-      withOutputs={message.kind === "task_line"} acked={ackedTasks?.has(`${message.threadRootMessageId ?? ""}|${r.taskId}`) ?? false} />)}
+      withOutputs={finish} acked={ackedTasks?.has(`${message.threadRootMessageId ?? ""}|${r.taskId}`) ?? false} />)}
   </div>;
 }
 

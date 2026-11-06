@@ -306,6 +306,13 @@ async def test_end_attempt_result_files_go_to_the_task_room_post(world):
     room, origin = world["posts"]  # task room first, the note only once the files are attached
     assert room["room"] == ts.task_room_id(tid) and room["uploaded_attachments"] == files
     assert origin.get("uploaded_attachments") is None and "agenda.docx" in origin["text"]
+    # UX slice 5: the file stays on the task as what it made, openable from the task room
+    (out,) = (await repo.get_task(WS, tid))["outputs"]
+    assert (out["id"], out["kind"], out["ref"]["roomId"]) == (
+        f"file:{files[0]['attachmentId']}",
+        "document",
+        ts.task_room_id(tid),
+    )
 
 
 async def test_a_refused_adoption_posts_the_result_without_files_or_note(world, monkeypatch):
@@ -327,6 +334,7 @@ async def test_a_refused_adoption_posts_the_result_without_files_or_note(world, 
     room, origin = world["posts"]
     assert room["room"] == ts.task_room_id(tid) and not room.get("uploaded_attachments")
     assert origin["text"] == "The agenda is ready."  # no "(Attached in the task: …)" for a file that never landed
+    assert not (await repo.get_task(WS, tid)).get("outputs")
 
 
 async def test_end_attempt_failure_pushes_requester_only(world):

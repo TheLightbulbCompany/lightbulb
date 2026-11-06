@@ -260,3 +260,54 @@ async def test_list_needs_you_scan_is_capped_and_logged(world, monkeypatch, capl
     assert endless.await_count == router_mod._NEEDS_YOU_PAGES
     assert endless.await_args.kwargs["owner_user_id"] == SAM  # filtered by owner in the query
     assert "failed capped" in caplog.text
+
+
+async def test_outputs_lists_what_visible_tasks_made_with_filters(world):
+    """UX slice 5 (Creations): every output of every task the viewer can see, any status, newest first; filters by
+    kind, room and specialist; another person's task stays hidden."""
+    done = await _task("resolved", specialist="engineering")
+    in_room = await _task("idle", audience={"kind": "room", "roomId": ROOM}, specialist="growth")
+    hidden = await _task("resolved", audience={"kind": "person", "userIds": [PRIYA]}, ownerUserId=PRIYA)
+    await _task("resolved")  # made nothing
+    await tasks_repo.add_task_output(WS, done, {"id": "app:a1", "kind": "app", "title": "Booking", "createdAt": "1"})
+    await tasks_repo.add_task_output(
+        WS, in_room, {"id": "file:f1", "kind": "document", "title": "n.md", "createdAt": "2"}
+    )
+    await tasks_repo.add_task_output(
+        WS, in_room, {"id": "effect:e1", "kind": "mail", "title": "Send", "createdAt": "3"}
+    )
+    await tasks_repo.add_task_output(WS, hidden, {"id": "app:a2", "kind": "app", "title": "Secret", "createdAt": "4"})
+    world["member"].return_value = {"memberId": SAM}  # Sam is in the room
+
+    async def ids(**params):
+        resp = await world["client"].get("/api/v1/tasks/outputs", params=params)
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["next"] is None
+        return [o["id"] for o in resp.json()["outputs"]]
+
+    assert await ids() == ["effect:e1", "file:f1", "app:a1"]
+    assert await ids(kind="app") == ["app:a1"]
+    assert await ids(roomId=ROOM) == ["effect:e1", "file:f1"]
+    assert await ids(specialist="engineering") == ["app:a1"]
+    (app,) = (await world["client"].get("/api/v1/tasks/outputs", params={"kind": "app"})).json()["outputs"]
+    assert app == {
+        "id": "app:a1",
+        "kind": "app",
+        "title": "Booking",
+        "ref": {},
+        "createdAt": "1",
+        "taskId": done,
+        "identifier": "LB-1",
+        "taskTitle": "Draft the memo",
+        "taskStatus": "resolved",
+        "specialist": "engineering",
+        "roomId": None,
+    }
+    assert (await world["client"].get("/api/v1/tasks/outputs", params={"kind": "nope"})).status_code == 422
+    # and a Done task's summary carries them too
+    (row,) = [
+        t
+        for t in (await world["client"].get("/api/v1/tasks", params={"scope": "mine"})).json()["tasks"]
+        if t["taskId"] == done
+    ]
+    assert [o["id"] for o in row["outputs"]] == ["app:a1"]

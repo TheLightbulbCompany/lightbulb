@@ -768,6 +768,14 @@ async def test_a_request_hands_its_app_over_and_canvas_names_the_request(chat, r
     assert res["next"] == f'answer with this line as your result, then end: "{line}"'
     (made,) = await tasks_repo.list_creations(OWNER)
     assert (made["capId"], made["kind"], made["taskId"]) == (res["app_id"], "app", request_room.task_id)
+    # UX slice 5: the app stays on the request as what it made, for every status
+    (out,) = (await tasks_repo.get_task(OWNER, request_room.task_id))["outputs"]
+    assert (out["id"], out["kind"], out["title"], out["ref"]) == (
+        f"app:{res['app_id']}",
+        "app",
+        "Booking",
+        {"appId": res["app_id"]},
+    )
     (row,) = await svc.list_apps(OWNER, ADA)
     assert row["request"] == {"task_id": request_room.task_id, "identifier": "LB-7"}
     # A second hand-over of the same app says it was already started and writes no second Creation.
@@ -884,6 +892,7 @@ async def test_a_request_never_hands_over_an_app_its_workspace_cannot_host(chat,
         ({"state": "ready"}, None, "met:ready"),
         ({"state": "live"}, None, "met:ready"),
         ({"state": "failed"}, None, "met:failed"),
+        ({"state": "building", "stuck": {"at": "2026-01-01T00:00:00Z", "step": "building"}}, None, "met:stuck"),
         ({"state": "destroyed"}, None, "met:removed"),
     ],
 )
@@ -895,3 +904,40 @@ async def test_app_progress_is_what_the_request_shows(chat, armed, fields, block
     assert await conv.app_progress("org_other", res["app_id"]) == "met:removed"  # never another workspace's app
     text = await conv.app_progress_text(OWNER, res["app_id"], result)
     assert "Booking" in text or result == "not_met"
+
+
+async def test_a_stalled_or_failed_app_puts_its_request_in_needs_you(chat, armed):
+    """UX slice 5 (audit 04 #9): a request whose app stopped or failed never reads Done. Its Worker is woken to ask the
+    person who asked (ask_person: Needs you), and passes "try again" on to the builder."""
+    res = await _start()
+    for fields, result in (
+        ({"stuck": {"at": "2026-01-01T00:00:00Z", "step": "building"}}, "met:stuck"),
+        ({"state": "failed", "stuck": None, "error": {"message": "npm install failed"}}, "met:failed"),
+    ):
+        await svc.apps_repo.patch(res["app_id"], fields)
+        text = await conv.app_progress_text(OWNER, res["app_id"], result)
+        assert "ask_person" in text and "try again" in text and f"lightbulb app ask {res['app_id']}" in text
+        assert "Answer with one line" not in text  # never a closing line: the request stays open
+    assert "npm install failed" in text
+
+
+async def test_asking_a_stalled_app_again_from_its_request_watches_it_again(chat, request_room, armed):
+    from core.repositories import tasks_repo
+
+    res = await _hand_over(request_room.room)
+    armed.clear()
+    await conv.ask(WORKER, res["app_id"], "make it blue", origin={"room_id": request_room.room})
+    assert armed == []  # a change to a healthy app: no new watch (the request answers "Passed to …")
+    await svc.apps_repo.patch(res["app_id"], {"stuck": {"at": "2026-01-01T00:00:00Z", "step": "building"}})
+    await conv.ask(WORKER, res["app_id"], "try again", origin={"room_id": request_room.room})
+    ((_, task_id, name, spec),) = armed
+    assert (task_id, name, spec.kind, spec.target["appId"]) == (request_room.task_id, "add_watch", "app", res["app_id"])
+    since = spec.target["since"]
+    # The stall it asked about is not news; a new one, or a failure after the ask, is.
+    assert await conv.app_progress(OWNER, res["app_id"], since) == "not_met"
+    await svc.apps_repo.patch(res["app_id"], {"stuck": {"at": "9999-01-01T00:00:00Z", "step": "building"}})
+    assert await conv.app_progress(OWNER, res["app_id"], since) == "met:stuck"
+    await svc.apps_repo.patch(res["app_id"], {"stuck": None, "state": "failed"})
+    assert await conv.app_progress(OWNER, res["app_id"], "9999-01-01T00:00:00Z") == "not_met"
+    assert await conv.app_progress(OWNER, res["app_id"], since) == "met:failed"
+    assert len((await tasks_repo.get_task(OWNER, request_room.task_id))["outputs"]) == 1  # one app, one output

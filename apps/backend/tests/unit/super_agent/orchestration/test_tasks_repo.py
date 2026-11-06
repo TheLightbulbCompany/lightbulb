@@ -307,3 +307,20 @@ async def test_creations_first_request_wins_and_the_watchdog_caps_are_not_creati
     again, made_again = await repo.put_creation(WS, {"capId": "app_1", "kind": "app", "taskId": "t2"})
     assert (made, made_again, again["taskId"]) == (True, False, "t1")
     assert [(c["capId"], c["kind"], c["taskId"]) for c in await repo.list_creations(WS)] == [("app_1", "app", "t1")]
+
+
+async def test_add_task_output_appends_once_and_keeps_the_newest(table, monkeypatch):
+    """UX slice 5: what a task made stays on its row for every status; a retried write is a no-op."""
+    row, _ = await repo.create_task(WS, _task())
+    tid = row["taskId"]
+    out = {"id": "effect:e1", "kind": "mail", "title": "Send 'Q3' to a@b.c", "ref": {"to": "a@b.c"}}
+    assert await repo.add_task_output(WS, tid, out) is True
+    assert await repo.add_task_output(WS, tid, out) is False  # same id: already there
+    task = await repo.get_task(WS, tid)
+    ((stored,),) = [task["outputs"]]
+    assert stored["id"] == "effect:e1" and stored["createdAt"] and task["version"] == row["version"] + 1
+    monkeypatch.setattr(repo, "MAX_OUTPUTS", 2)
+    for i in range(3):
+        await repo.add_task_output(WS, tid, {"id": f"file:{i}", "kind": "file", "title": f"f{i}.txt"})
+    assert [o["id"] for o in (await repo.get_task(WS, tid))["outputs"]] == ["file:1", "file:2"]
+    assert await repo.add_task_output(WS, "no-such-task", out) is False

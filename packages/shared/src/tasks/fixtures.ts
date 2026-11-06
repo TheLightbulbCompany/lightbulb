@@ -26,6 +26,7 @@ export function fixtureTask(over: Partial<TaskSummary> & Pick<TaskSummary, "task
     openQuestion: null,
     landing: null,
     output: null,
+    outputs: [],
     watchUntil: null,
     watching: false,
     runsOn: "workspace",

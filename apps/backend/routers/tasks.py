@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from temporalio.client import WorkflowUpdateFailedError
 from temporalio.service import RPCError
 
+from core import tasks_schema as ts
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.repositories import effects_repo, messaging_repo, questions_repo, tasks_repo
 from core.services import chat_gate, runtime_runs, super_agent_flags, task_conversation, tasks_access
@@ -99,6 +100,14 @@ async def list_tasks(
     if needs_you:
         return {"tasks": await _needs_you(ws, me, keep), "next": None}
 
+    found, next_cursor = await _walk(ws, cursor, limit, keep)
+    # ponytail: one tree query per listed task (≤100); a summary index if lists get hot.
+    trees = await asyncio.gather(*(tasks_repo.get_task_tree(ws, t["taskId"]) for t in found))
+    return {"tasks": [await _summary(tree, me) for tree in trees if tree["task"]], "next": next_cursor}
+
+
+async def _walk(ws: str, cursor: str | None, limit: int, keep) -> tuple[list[dict], str | None]:
+    """Task rows `keep` takes, walking `_STATUSES` in order (newest first in each), up to `limit`, and the cursor on."""
     try:
         i, _, inner = (cursor or "0~").partition("~")
         i, inner = int(i), inner or None
@@ -108,16 +117,53 @@ async def list_tasks(
             found += [t for t in rows if await keep(t)]
             i, inner = (i, nxt) if nxt else (i + 1, None)
             if i >= len(_STATUSES):
-                next_cursor = None
-                break
+                return found, None
             if len(found) >= limit:
-                next_cursor = f"{i}~{inner or ''}"
-                break
+                return found, f"{i}~{inner or ''}"
     except (ValueError, IndexError) as exc:
         raise _err(400, "invalid_cursor") from exc
-    # ponytail: one tree query per listed task (≤100); a summary index if lists get hot.
-    trees = await asyncio.gather(*(tasks_repo.get_task_tree(ws, t["taskId"]) for t in found))
-    return {"tasks": [await _summary(tree, me) for tree in trees if tree["task"]], "next": next_cursor}
+
+
+@router.get("/tasks/outputs")
+async def list_outputs(
+    auth: Auth,
+    kind: ts.OutputKind | None = None,
+    room_id: Annotated[str | None, Query(alias="roomId", max_length=128)] = None,
+    specialist: Annotated[str | None, Query(max_length=128)] = None,
+    cursor: Annotated[str | None, Query(max_length=2048)] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+):
+    """What tasks made (Creations, UX slice 5): every output of every task the viewer can see, any status, newest
+    first within a page. `limit` counts tasks; `next` pages on like `GET /tasks`. Declared before `/tasks/{id}`.
+
+    ponytail: walks the workspace's tasks by status and keeps those with outputs; an outputs index if it gets slow."""
+    ws = await _workspace(auth)
+
+    async def keep(t: dict) -> bool:
+        if not any(not kind or o.get("kind") == kind for o in t.get("outputs") or []):
+            return False
+        if room_id is not None and (t.get("audience") or {}).get("roomId") != room_id:
+            return False
+        if specialist is not None and t.get("specialist") != specialist:
+            return False
+        return await tasks_access.can_view(t, auth.user_id)
+
+    found, next_cursor = await _walk(ws, cursor, limit, keep)
+    outputs = [
+        {
+            **o,
+            "taskId": t["taskId"],
+            "identifier": t["identifier"],
+            "taskTitle": t["title"],
+            "taskStatus": "resolved" if t["status"] == "proposed" else t["status"],
+            "specialist": t.get("specialist"),
+            "roomId": (t.get("audience") or {}).get("roomId"),
+        }
+        for t in found
+        for o in t["outputs"]
+        if not kind or o.get("kind") == kind
+    ]
+    return {"outputs": sorted(outputs, key=lambda o: o.get("createdAt") or "", reverse=True), "next": next_cursor}
 
 
 async def _needs_you(ws: str, me: str, keep) -> list[dict]:

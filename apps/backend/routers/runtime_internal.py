@@ -32,7 +32,7 @@ from temporalio.service import RPCError, RPCStatusCode
 from core import tasks_schema as ts
 from core.dynamodb import utc_now_iso
 from core.repositories import billing_repo, effects_repo, questions_repo, tasks_repo
-from core.services import questions, task_asks, task_conversation
+from core.services import questions, task_asks, task_conversation, tasks_access
 from core.services.messaging import ATTACHMENT_MAX_COUNT, UploadedAttachment, human_display_name
 from core.services.container_auth import _require_hook_token
 from core.services.super_agent_flags import flags_for
@@ -400,6 +400,7 @@ async def effect_done(owner_id: str, idem_key: str, body: EffectDoneBody, reques
         )
     except tasks_repo.IllegalTransition as exc:
         raise HTTPException(status_code=409, detail={"code": "not_intent", "state": exc.current}) from exc
+    await tasks_access.record_effect_output(owner_id, row)  # also on a retried done: the write is idempotent
     return {"state": row["state"]}
 
 

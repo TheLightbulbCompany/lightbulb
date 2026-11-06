@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 
 from core.auth import AuthContext, resolve_owner_id
 from core.constants import SYSTEM_ACTOR_ID
-from core.dynamodb import plain
+from core.dynamodb import plain, utc_now_iso
 from core.repositories import apps_repo, messaging_repo, tasks_repo
 from core.services import apps_room, clerk_admin, messaging, session_chat, tasks_access
 from core.services import apps_service as svc
@@ -368,6 +368,7 @@ async def start(
     # Watched from the request, not the first upload: a builder that never uploads still ends in "stopped".
     svc.watch(owner_id, app["app_id"])
     if request:
+        await _made_by_request(owner_id, request[0]["taskId"], app)
         await _watch_from_request(owner_id, request[0]["taskId"], app["app_id"])
     display, canvas_url = svc._display(app), svc._canvas_url(app["app_id"])
     line = f"Started {display}. It's being built in its own conversation in Canvas: {canvas_url}"
@@ -431,13 +432,26 @@ def _hosting_refusal(display: str) -> AppsRefused:
     )
 
 
-async def _watch_from_request(owner_id: str, task_id: str, app_id: str) -> None:
-    """The request waits on its app (idle with `watchUntil`: Working). Best effort: a failed arm leaves today's
+async def _made_by_request(owner_id: str, task_id: str, app: dict) -> None:
+    """The app stays on the request as what it made, for every status (UX slice 5). Best effort, like the watch."""
+    try:
+        await tasks_repo.add_task_output(
+            owner_id,
+            task_id,
+            {"id": f"app:{app['app_id']}", "kind": "app", "title": svc._display(app), "ref": {"appId": app["app_id"]}},
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("apps: request %s does not list app %s", task_id, app["app_id"], exc_info=True)
+
+
+async def _watch_from_request(owner_id: str, task_id: str, app_id: str, *, since: str | None = None) -> None:
+    """The request waits on its app (idle with `watchUntil`: Working). `since`: a "try again" passed on after a stall
+    or a failure; only a stall or failure after it wakes the Worker. Best effort: a failed arm leaves today's
     behaviour (the request reads Done once the Worker answers)."""
     from core.temporal import client as temporal
     from core.temporal.watches import WatchSpec, watch_id_for
 
-    target = {"appId": app_id}
+    target = {"appId": app_id} | ({"since": since} if since else {})
     spec = WatchSpec(
         watch_id=watch_id_for(task_id, "app", target),
         kind="app",
@@ -452,9 +466,10 @@ async def _watch_from_request(owner_id: str, task_id: str, app_id: str) -> None:
         logger.warning("apps: request %s does not watch app %s", task_id, app_id, exc_info=True)
 
 
-async def app_progress(owner_id: str, app_id: str) -> str:
-    """`check_watch` for an app: `met:ready` (a preview people can open: Done), `met:failed`, `met:removed`,
-    `met:blocked` (never built: the workspace cannot host it), else `not_met`."""
+async def app_progress(owner_id: str, app_id: str, since: str = "") -> str:
+    """`check_watch` for an app: `met:ready` (a preview people can open: Done), `met:failed`, `met:stuck` (it stopped
+    moving), `met:removed`, `met:blocked` (never built: the workspace cannot host it), else `not_met`. `since`: a
+    failure or stall from before it (the one a "try again" was about) is not news."""
     app = await apps_repo.get(app_id)
     if not app or app.get("owner_id") != owner_id or app.get("state") == "destroyed":
         return "met:removed"
@@ -462,9 +477,11 @@ async def app_progress(owner_id: str, app_id: str) -> str:
     if state in ("ready", "live"):
         return "met:ready"
     if state == "failed":
-        return "met:failed"
+        return "met:failed" if (app.get("updated_at") or "") > since else "not_met"
     if state == "requested" and not app.get("sources") and await hosting_blocker(owner_id):
         return "met:blocked"
+    if (app.get("stuck") or {}).get("at", "") > since:
+        return "met:stuck"
     return "not_met"
 
 
@@ -476,9 +493,19 @@ async def app_progress_text(owner_id: str, app_id: str, result: str) -> str:
     what = result.partition(":")[2]
     if what == "ready":
         return f"{display}'s first version is ready in Canvas: {url}. Answer with one short line saying so, then end."
-    if what == "failed":
-        err = (app.get("error") or app.get("publish_error") or {}).get("message") or "the build failed"
-        return f"{display} did not build ({err}). Answer with one line saying so and that its builder is on it in Canvas: {url}."
+    if what in ("failed", "stuck"):  # never Done: the person who asked decides (Needs you), audit 04 #9
+        if what == "failed":
+            err = (app.get("error") or app.get("publish_error") or {}).get("message") or "the build failed"
+            said = f"{display} did not build ({err})"
+        else:
+            said = f"{display} stopped at {(app.get('stuck') or {}).get('step') or 'building'}"
+        return (
+            f'{said}. Call ask_person with blocked set, asking the person who asked: "{said}. Ask its builder to try '
+            f'again, or stop?" with the options "Try again" and "Stop". On try again, run lightbulb app ask {app_id} '
+            f'"Please try again and post here when it is ready." --room <your Request room>, then end your turn: the '
+            f"request keeps watching the app. On stop, answer with one line saying the app is left as it is in "
+            f"Canvas: {url}."
+        )
     if what == "blocked":
         return f"{display} cannot be built yet. {_hosting_next(display)}"
     if what == "removed":
@@ -568,6 +595,10 @@ async def ask(
     meta = await _ensure(app)  # nobody is seated: the line says who asked, and opening decides who may read it
     said = await _attributed(caller, text, person, room_id)
     message = await _relay(app, meta, f"apps-ask:{app_id}:{client_message_id or uuid.uuid4()}", said)
+    if request:
+        await _made_by_request(owner_id, request[0]["taskId"], app)
+        if app.get("state") == "failed" or app.get("stuck"):  # "try again" after a stall: the request waits again
+            await _watch_from_request(owner_id, request[0]["taskId"], app_id, since=utc_now_iso())
     return {"conversation_id": meta["roomId"], "message_id": message["messageId"]}
 
 

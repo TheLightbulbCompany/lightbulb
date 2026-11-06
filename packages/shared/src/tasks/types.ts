@@ -24,6 +24,27 @@ export interface SummaryQuestion {
   options?: QuestionOption[];
 }
 
+/** What a task made (`tasks_schema.TaskOutput`). `ref` by kind: app `{appId}`; document/file `{roomId, attachmentId,
+ * fileName, contentType}` (open with `GET /messaging/rooms/{roomId}/attachments/{attachmentId}/url`); mail
+ * `{idemKey, to, subject, resultRef}`; pr `{idemKey, repo, number, url, resultRef}`. */
+export interface TaskOutput {
+  id: string;
+  kind: OutputKind;
+  title: string;
+  ref: Record<string, string>;
+  createdAt: string;
+}
+
+/** `GET /tasks/outputs` (Creations): one output with the task that made it. */
+export interface CreationOutput extends TaskOutput {
+  taskId: string;
+  identifier: string;
+  taskTitle: string;
+  taskStatus: TaskStatus;
+  specialist: string | null;
+  roomId: string | null;
+}
+
 export interface TaskSummary {
   taskId: string;
   identifier: string;
@@ -43,7 +64,10 @@ export interface TaskSummary {
   openQuestion?: SummaryQuestion | null;
   /** The effect being applied (Landing), else null. */
   landing?: string | null;
+  /** The draft waiting on a review, else null. */
   output?: { idemKey: string; kind: OutputKind; title: string; nextStep?: string | null } | null;
+  /** What the task made, for every status, oldest first. */
+  outputs?: TaskOutput[];
   watchUntil?: string | null;
   watching: boolean;
   runsOn?: "task" | "workspace" | null;

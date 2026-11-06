@@ -210,6 +210,25 @@ async def test_done_route(api):
     assert again.status_code == 200  # the bridge's retry
     missing = await api.post(f"{_url(WS)}/{tid}:1:zz/done", json=done, headers=H)
     assert missing.status_code == 404
+    assert not (await tasks_repo.get_task(WS, tid)).get("outputs")  # unknown: maybe sent, never shown as made
+
+
+async def test_a_mail_the_bridge_sent_stays_on_the_task(api):
+    """UX slice 5: an Auto-mode send (intent, no draft) that the bridge reports done is a task output; a retried
+    done adds it once."""
+    tid = await _started(api)
+    body = await _body(tid)
+    await effects_repo.put_effect(WS, _row(body, state="intent", allowedBy="mode:auto"))
+    done = {"disposition": "done", "resultRef": "ses:1", "runSecret": body["runSecret"], "runId": body["runId"]}
+    for _ in range(2):
+        assert (await api.post(f"{_url(WS)}/{tid}:1:c1/done", json=done, headers=H)).status_code == 200
+    (out,) = (await tasks_repo.get_task(WS, tid))["outputs"]
+    assert (out["id"], out["kind"], out["title"]) == (
+        f"effect:{tid}:1:c1",
+        "mail",
+        "Send 'Q3 invoice' to acme@example.com",
+    )
+    assert out["ref"]["resultRef"] == "ses:1"
 
 
 async def test_run_event_waiting_approval_terminal(api):

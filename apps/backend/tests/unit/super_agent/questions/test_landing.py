@@ -101,6 +101,9 @@ async def test_intent_written_before_executor_then_done(world):
     assert world["sends"] == [("intent", SAM)]
     effect = await effects_repo.get_effect(WS, IDEM)
     assert (effect["state"], effect["resultRef"]) == ("done", "mail:sent")
+    # UX slice 5: the sent mail stays on the task for every status
+    (out,) = (await tasks_repo.get_task(WS, TASK))["outputs"]
+    assert (out["id"], out["kind"], out["ref"]["to"]) == (f"effect:{IDEM}", "mail", "acme@example.com")
 
 
 async def test_apply_effect_retry_sends_once(world, monkeypatch):
@@ -136,6 +139,7 @@ async def test_refusal_goes_back_to_the_worker(world, monkeypatch):
     assert (await tasks_repo.get_trigger(WS, res.trigger_id))["ref"]["refused"] == "rate_limited"
     effect = await effects_repo.get_effect(WS, IDEM)
     assert (effect["state"], effect["resultRef"]) == ("done", "refused:rate_limited")
+    assert not (await tasks_repo.get_task(WS, TASK)).get("outputs")  # it did not happen: nothing made
     # Not unknown: the same draft can be asked again (gate sees done → a fresh approval).
     assert questions.gate({**effect, "idemKey": f"{TASK}:2:c9"}, [effect]).decision == "needs_approval"
 

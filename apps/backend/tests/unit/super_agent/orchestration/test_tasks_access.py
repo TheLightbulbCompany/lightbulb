@@ -175,3 +175,76 @@ def test_summarize_fields_match_schema_export():
     exported = ts.export_schema()["views"]["TaskSummary"]["properties"]
     assert set(s) == set(exported)
     ts.TaskSummary.model_validate(s)
+
+
+# --- UX slice 5: what a task made stays on it for every status ----------------------------------------------------
+
+
+def test_summarize_carries_outputs_for_a_finished_task():
+    made = [{"id": "app:a1", "kind": "app", "title": "Booking", "ref": {"appId": "a1"}, "createdAt": "t1"}]
+    tree = {"task": _task({"kind": "person", "userIds": ["sam"]}, status="resolved", outputs=made), "attempts": []}
+    s = ta.summarize(tree, "sam")
+    assert s["outputs"] == made and s["output"] is None  # `output` stays the draft waiting on a review
+    assert ta.summarize({"task": _task({"kind": "person", "userIds": ["sam"]})}, "sam")["outputs"] == []  # older row
+
+
+def _effect(**over):
+    return {
+        "idemKey": "t:1:c1",
+        "taskId": TID,
+        "kind": "mail.send",
+        "state": "done",
+        "operands": {"to": "a@b.c", "subject": "Q3"},
+        "resultRef": "msg_1",
+    } | over
+
+
+@pytest.mark.parametrize(
+    "effect,expected",
+    [
+        (
+            _effect(),
+            {
+                "id": "effect:t:1:c1",
+                "kind": "mail",
+                "title": "Send 'Q3' to a@b.c",
+                "ref": {"idemKey": "t:1:c1", "to": "a@b.c", "subject": "Q3", "resultRef": "msg_1"},
+            },
+        ),
+        (
+            _effect(kind="pr.merge", operands={"repo": "o/r", "number": 7}, resultRef="pr:o/r#7:abc"),
+            {
+                "id": "effect:t:1:c1",
+                "kind": "pr",
+                "title": "Merge PR #7 in o/r",
+                "ref": {
+                    "idemKey": "t:1:c1",
+                    "repo": "o/r",
+                    "number": "7",
+                    "url": "https://github.com/o/r/pull/7",
+                    "resultRef": "pr:o/r#7:abc",
+                },
+            },
+        ),
+        (_effect(resultRef="refused:rate_limited"), None),  # didn't happen
+        (_effect(state="unknown"), None),
+        (_effect(state="intent"), None),
+        (_effect(kind="purchase", operands={"merchant": "Porkbun"}), None),  # an approval kind: nothing made
+    ],
+)
+def test_landed_effect_output(effect, expected):
+    assert ta.effect_output(effect) == expected
+
+
+def test_file_output_is_a_document_or_a_file_in_the_task_room():
+    room = ts.task_room_id(TID)
+    doc = ta.file_output(TID, {"attachmentId": "f1", "fileName": "agenda.docx", "contentType": ta.DOC_TYPES[0]})
+    assert doc == {
+        "id": "file:f1",
+        "kind": "document",
+        "title": "agenda.docx",
+        "ref": {"roomId": room, "attachmentId": "f1", "fileName": "agenda.docx", "contentType": ta.DOC_TYPES[0]},
+    }
+    assert (
+        ta.file_output(TID, {"attachmentId": "f2", "fileName": "a.png", "contentType": "image/png"})["kind"] == "file"
+    )

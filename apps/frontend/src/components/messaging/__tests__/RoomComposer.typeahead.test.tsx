@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { RoomComposer, type RoomComposerProps } from "../RoomComposer";
 import type { RoomParticipant } from "../types";
+import { composerBox, composerValue, selectInComposer, typeInComposer } from "@/test-utils/composer";
 
 const members: RoomParticipant[] = [
   { kind: "human", id: "user-aden", displayName: "Aden Kim", mentionHandle: null, role: "member", listenMode: null, joinedAt: "2026-09-10T00:00:00.000Z", joinedSeq: 1 },
@@ -16,8 +17,8 @@ function Harness({ onSubmit = vi.fn(), focusAgentId }: { onSubmit?: RoomComposer
     clientMessageId="11111111-1111-4111-8111-111111111111" sendState="idle" onSubmit={onSubmit} focusAgentId={focusAgentId} />;
 }
 
-const field = () => screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Message" });
-const type = (value: string) => fireEvent.change(field(), { target: { value, selectionStart: value.length } });
+const field = () => composerBox();
+const type = (value: string) => typeInComposer(value);
 
 beforeEach(() => vi.stubGlobal("URL", { ...URL, createObjectURL: vi.fn(() => "blob:proof"), revokeObjectURL: vi.fn() }));
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
@@ -48,7 +49,7 @@ it("inserts an agent handle with Enter instead of sending", () => {
   render(<Harness onSubmit={onSubmit} />);
   type("Ask @fri");
   fireEvent.keyDown(field(), { key: "Enter" });
-  expect(field()).toHaveValue("Ask @friday ");
+  expect(composerValue()).toBe("Ask @friday ");
   expect(onSubmit).not.toHaveBeenCalled();
 });
 
@@ -57,7 +58,7 @@ it("inserts a human as @Display Name and sends the structured mention", () => {
   render(<Harness onSubmit={onSubmit} />);
   type("Hi @Ade");
   fireEvent.click(screen.getByRole("option", { name: /Aden Kim/ }));
-  expect(field()).toHaveValue("Hi @Aden Kim ");
+  expect(composerValue()).toBe("Hi @Aden Kim ");
   fireEvent.keyDown(field(), { key: "Enter" });
   expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
     text: "Hi @Aden Kim ",
@@ -70,7 +71,7 @@ it("stops shipping a picked mention once its typed token is removed from the tex
   render(<Harness onSubmit={onSubmit} />);
   type("@ad");
   fireEvent.click(screen.getByRole("option", { name: /Aden Kim/ }));
-  expect(field()).toHaveValue("@Aden Kim ");
+  expect(composerValue()).toBe("@Aden Kim ");
   // Select-all and retype, wiping the inserted @Aden Kim token.
   type("Never mind");
   fireEvent.keyDown(field(), { key: "Enter" });
@@ -124,7 +125,7 @@ it("inserts with Tab as well as Enter", () => {
   render(<Harness />);
   type("Ask @atl");
   fireEvent.keyDown(field(), { key: "Tab" });
-  expect(field()).toHaveValue("Ask @atlas ");
+  expect(composerValue()).toBe("Ask @atlas ");
 });
 
 it("closes with Escape without changing the draft", () => {
@@ -132,14 +133,14 @@ it("closes with Escape without changing the draft", () => {
   type("Ask @");
   fireEvent.keyDown(field(), { key: "Escape" });
   expect(screen.queryByRole("listbox", { name: "Mention a room member" })).not.toBeInTheDocument();
-  expect(field()).toHaveValue("Ask @");
+  expect(composerValue()).toBe("Ask @");
 });
 
 it("opens the same list from the @ button", () => {
   render(<Harness />);
   fireEvent.click(screen.getByRole("button", { name: "Mention someone" }));
   expect(screen.getByRole("listbox", { name: "Mention a room member" })).toBeInTheDocument();
-  expect(field()).toHaveValue("@");
+  expect(composerValue()).toBe("@");
 });
 
 it("still sends on Enter when no list is open", () => {
@@ -159,7 +160,7 @@ it("opens the emoji list after two characters and inserts the character", () => 
   type("nice :tad");
   expect(screen.getByRole("listbox", { name: "Insert an emoji" })).toBeInTheDocument();
   fireEvent.keyDown(field(), { key: "Enter" });
-  expect(field().value.startsWith("nice 🎉")).toBe(true);
+  expect(composerValue().startsWith("nice 🎉")).toBe(true);
 });
 
 it("does not open the emoji list after one character", () => {
@@ -176,10 +177,10 @@ it("inserts a picked emoji at the caret, not at the end", () => {
   // setNativeValue resets the selection to the end of the value before
   // applying target overrides), which would make this a [1,2) replace
   // instead of the caret placement the test name describes.
-  fireEvent.change(field(), { target: { value: "ab", selectionStart: 1, selectionEnd: 1 } });
+  selectInComposer(1, 1);
   fireEvent.click(screen.getByRole("button", { name: "Insert emoji" }));
   fireEvent.click(screen.getByRole("button", { name: "party popper" }));
-  expect(field()).toHaveValue("a🎉b");
+  expect(composerValue()).toBe("a🎉b");
 });
 
 it("clears a stale completion trigger when a non-typing edit (the emoji picker) rewrites the text", () => {
@@ -191,12 +192,12 @@ it("clears a stale completion trigger when a non-typing edit (the emoji picker) 
   // must clear the still-open `:tad` trigger.
   fireEvent.click(screen.getByRole("button", { name: "Insert emoji" }));
   fireEvent.click(screen.getByRole("button", { name: "party popper" }));
-  expect(field()).toHaveValue("nice :tad🎉");
+  expect(composerValue()).toBe("nice :tad🎉");
   expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
   fireEvent.keyDown(field(), { key: "Enter" });
   // Without the fix, Enter re-applies the stale `:tad` trigger's byte
   // offsets and eats the "tad" text; with the fix, no list is open so
   // Enter just submits and the text is untouched.
-  expect(field()).toHaveValue("nice :tad🎉");
+  expect(composerValue()).toBe("nice :tad🎉");
   expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
 });

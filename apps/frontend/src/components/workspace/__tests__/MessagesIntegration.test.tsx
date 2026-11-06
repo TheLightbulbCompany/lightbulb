@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { composerValue } from "@/test-utils/composer";
 import { SWRConfig } from "swr";
 import type { RoomDetail, LocalSession, MessagePage } from "@lightbulb/shared";
 import { MessagingWorkspaceProvider, useMessagingWorkspace } from "@/components/messaging/MessagingWorkspaceContext";
@@ -182,7 +183,7 @@ describe("Messages room/controller boundary", () => {
     act(() => expect(openChatPanelWithDraft("file the inbox")).toBe(true));
 
     await waitFor(() => expect(screen.getByLabelText("Selected room")).toHaveTextContent("a-first"));
-    await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("file the inbox"));
+    await waitFor(() => expect(composerValue()).toBe("file the inbox"));
   });
 
   it("synchronizes a newly created DM after late detail hydration for workspace consumers", async () => {

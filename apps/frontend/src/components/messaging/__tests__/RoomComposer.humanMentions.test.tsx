@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { RoomComposer, type RoomComposerProps } from "../RoomComposer";
 import type { RoomParticipant } from "../types";
+import { composerBox, composerValue, selectInComposer, typeInComposer } from "@/test-utils/composer";
 
 // A human with a server-derived handle: the only difference from the
 // typeahead suite's fixture, which still covers the legacy null-handle rows.
@@ -17,8 +18,8 @@ function Harness({ onSubmit = vi.fn() }: { onSubmit?: RoomComposerProps["onSubmi
     clientMessageId="11111111-1111-4111-8111-111111111111" sendState="idle" onSubmit={onSubmit} />;
 }
 
-const field = () => screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Message" });
-const type = (value: string) => fireEvent.change(field(), { target: { value, selectionStart: value.length } });
+const field = () => composerBox();
+const type = (value: string) => typeInComposer(value);
 
 beforeEach(() => vi.stubGlobal("URL", { ...URL, createObjectURL: vi.fn(() => "blob:proof"), revokeObjectURL: vi.fn() }));
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
@@ -35,7 +36,7 @@ it("W18-2: inserts the person's name and sends their id as the structured mentio
   render(<Harness onSubmit={onSubmit} />);
   type("Hi @ade");
   fireEvent.click(screen.getByRole("option", { name: /Aden Kim/ }));
-  expect(field()).toHaveValue("Hi @Aden Kim ");
+  expect(composerValue()).toBe("Hi @Aden Kim ");
   fireEvent.keyDown(field(), { key: "Enter" });
   expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
     text: "Hi @Aden Kim ",

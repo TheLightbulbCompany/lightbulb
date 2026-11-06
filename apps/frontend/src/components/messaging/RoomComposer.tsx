@@ -3,10 +3,10 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { AtSign, Bold, CaseSensitive, Code, FileText, Italic, Link2, List, ListOrdered, Paperclip, Plus, RotateCcw, Send, SmilePlus, SquareCode, Strikethrough, X } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { ApiError, MESSAGE_ATTACHMENT_ACCEPT, MESSAGE_ATTACHMENT_MAX_BYTES, MESSAGE_ATTACHMENT_MAX_COUNT, activeTrigger, applyCompletion, resolveMessageAttachmentContentType, resolveTypedMentions, resolveTypedSessionMentions, respondHint, searchEmoji, sessionMatches, sessionTitle, wrapSelection, type CompletionTrigger, type CreateMessageRequest, type MarkdownStyle, type MessageAttachment, type MessageAttachmentContentType, type MemberRef, type RoomKind, type SessionMentionCandidate, type MentionTarget, sessionAgentName } from "@lightbulb/shared";
+import { ApiError, MESSAGE_ATTACHMENT_ACCEPT, MESSAGE_ATTACHMENT_MAX_BYTES, MESSAGE_ATTACHMENT_MAX_COUNT, resolveMessageAttachmentContentType, resolveTypedMentions, resolveTypedSessionMentions, respondHint, searchEmoji, sessionMatches, sessionTitle, type CompletionTrigger, type CreateMessageRequest, type MarkdownStyle, type MessageAttachment, type MessageAttachmentContentType, type MemberRef, type RoomKind, type SessionMentionCandidate, type MentionTarget, sessionAgentName } from "@lightbulb/shared";
 import { useSuperAgent } from "@/hooks/useLiveEvents";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
+import { ComposerEditor, type ComposerEditorHandle } from "./ComposerEditor";
 import { consumeFocusComposerRequest } from "@/lib/focusComposerRequest";
 import { formatBytes } from "@/lib/utils";
 import { EmojiPicker, recordRecentEmoji } from "./EmojiPicker";
@@ -167,14 +167,11 @@ function ComposerAttempt({
 }) {
   const superAgent = useSuperAgent();
   const fieldId = useId();
-  const field = useRef<HTMLTextAreaElement>(null);
+  const field = useRef<ComposerEditorHandle>(null);
   useEffect(() => {
     if (focusToken === undefined || focusToken === seenFocusToken.current) return;
     seenFocusToken.current = focusToken;
-    const node = field.current;
-    if (!node) return;
-    node.focus();
-    node.setSelectionRange(node.value.length, node.value.length);
+    field.current?.focus();
   }, [focusToken]);
   const [trigger, setTrigger] = useState<CompletionTrigger | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -184,7 +181,6 @@ function ComposerAttempt({
   const [retryPending, setRetryPending] = useState(false);
   const [previousState, setPreviousState] = useState(sendState);
   const [lastEvidence, setLastEvidence] = useState(sendState);
-  const composing = useRef(false);
   const locked = useRef(sendState !== "idle");
   const retryLocked = useRef(false);
   const attachmentInput = useRef<HTMLInputElement>(null);
@@ -220,13 +216,6 @@ function ComposerAttempt({
   useLayoutEffect(() => {
     if (consumeFocusAfterSend()) field.current?.focus();
   }, [consumeFocusAfterSend]);
-  // One line that grows with the draft, instead of a fixed three-row box.
-  useLayoutEffect(() => {
-    const node = field.current;
-    if (!node) return;
-    node.style.height = "auto";
-    node.style.height = `${Math.min(node.scrollHeight, 200)}px`;
-  }, [text]);
   const toolbarButtons = useRef<(HTMLButtonElement | null)[]>([]);
 
   useEffect(() => {
@@ -256,8 +245,8 @@ function ComposerAttempt({
       field.current?.focus();
       // A starter ask ("Write a doc: …"): its first "…" is selected once it renders, so typing replaces it.
       const blank = next && draft ? draft.indexOf("…") : -1;
-      const at = next && draft ? next.length - draft.length + blank : -1;
-      if (blank >= 0) requestAnimationFrame(() => field.current?.setSelectionRange(at, at + 1));
+      const before = blank >= 0 ? (current.match(/…/g) ?? []).length : 0;
+      if (blank >= 0) requestAnimationFrame(() => field.current?.selectText("…", before));
     };
     applyFocusRequest();
     window.addEventListener("getstarted:focus-composer", applyFocusRequest);
@@ -503,27 +492,11 @@ function ComposerAttempt({
     // addAttachments is read through a ref so the listeners bind once and never see stale state
   }, [dropTargetRef]);
 
-  function syncTrigger(value: string, caret: number | null) {
-    if (composing.current) return;
-    setTrigger(activeTrigger(value, caret));
+  // The box reports the `@que`/`:emo` at the caret as it changes.
+  const syncTrigger = useCallback((next: CompletionTrigger | null) => {
+    setTrigger(next);
     setActiveIndex(0);
-  }
-
-  function focusRange(start: number, end: number) {
-    requestAnimationFrame(() => {
-      field.current?.focus();
-      field.current?.setSelectionRange(start, end);
-    });
-  }
-
-  // The one place that both commits a text rewrite and clears a completion
-  // trigger, so a caller can never rewrite the text and forget the trigger is
-  // now pointing at stale byte offsets.
-  function replaceText(next: string, start: number, end: number) {
-    setTrigger(null);
-    onTextChange(next);
-    focusRange(start, end);
-  }
+  }, []);
 
   function choose(option: MentionOption) {
     if (!trigger) return;
@@ -531,22 +504,20 @@ function ComposerAttempt({
     const token = option.kind === "session" ? `@${option.option.candidate.handle}`
       : option.member.kind === "agent" && option.member.mentionHandle ? `@${option.member.mentionHandle}` : `@${option.member.displayName}`;
     if (option.kind === "session") setSelectedSessions((current) => ({ ...current, [option.option.candidate.handle.toLowerCase()]: option.option.candidate.session.sessionId }));
-    const next = applyCompletion(text, trigger, token);
-    replaceText(next.text, next.caret, next.caret);
+    setTrigger(null);
+    field.current?.replaceTrigger(token);
   }
 
   function insertAtCaret(value: string) {
-    const start = field.current?.selectionStart ?? text.length;
-    const end = field.current?.selectionEnd ?? start;
-    const next = `${text.slice(0, start)}${value}${text.slice(end)}`;
-    replaceText(next, start + value.length, start + value.length);
+    setTrigger(null);
+    field.current?.insertText(value);
   }
 
   function chooseEmoji(emoji: string) {
     if (!trigger) return;
-    const next = applyCompletion(text, trigger, emoji);
     recordRecentEmoji(emoji);
-    replaceText(next.text, next.caret, next.caret);
+    setTrigger(null);
+    field.current?.replaceTrigger(emoji);
   }
 
   function submit(retry = false, restoreFocus = false, sendStale = false, added: MemberRef[] | "skip" | null = null) {
@@ -601,11 +572,19 @@ function ComposerAttempt({
     submit(false, true, true, invite.people);
   }
 
+  // Formatting applies in the box as you work, like Slack (W18-4); the message still goes out as markdown.
+  const [linkDraft, setLinkDraft] = useState<string | null>(null);
   function format(style: MarkdownStyle) {
-    const start = field.current?.selectionStart ?? text.length;
-    const end = field.current?.selectionEnd ?? start;
-    const next = wrapSelection(text, start, end, style);
-    replaceText(next.text, next.selectionStart, next.selectionEnd);
+    if (style !== "link") { field.current?.format(style); return; }
+    if (field.current?.selectedLink()) { field.current.link(null); return; }
+    setLinkDraft("");
+  }
+  function applyLink() {
+    const url = linkDraft?.trim();
+    setLinkDraft(null);
+    if (!url) { field.current?.focus(); return; }
+    // Nothing selected: the address goes in as its own link text.
+    if (!field.current?.link(url)) field.current?.insertText(url);
   }
 
   const hint = showRespondHint ? respondHint(roomKind, members, mentions, runningAgentIds, superAgent) : null;
@@ -613,81 +592,64 @@ function ComposerAttempt({
   const showHint = !!hint && hasContent;
 
   // The box's parts, laid out as one line (super-agent) or as the classic two rows.
-  const textarea = <>
-    <Textarea ref={field} id={fieldId} value={text} disabled={!editable} rows={1} aria-invalid={!!error}
-      aria-describedby={`${fieldId}-help ${fieldId}-status${showHint ? ` ${fieldId}-respond` : ""}`} placeholder={placeholder ?? (label === "Reply to thread" ? "Reply to thread…" : superAgent ? "Ask Lightbulb…" : "Message the conversation · @ to mention")}
-      aria-autocomplete="list" aria-expanded={listOpen} aria-controls={listOpen ? `${fieldId}-targets` : undefined}
-      aria-activedescendant={listOpen ? `${fieldId}-option-${activeIndex}` : undefined}
-      onChange={(event) => { onTextChange(event.target.value); onTypingChange?.(!!event.target.value.trim()); syncTrigger(event.target.value, event.target.selectionStart); }}
-      onClick={(event) => syncTrigger(event.currentTarget.value, event.currentTarget.selectionStart)}
-      onKeyUp={(event) => { if (event.key.startsWith("Arrow") || event.key === "Home" || event.key === "End") syncTrigger(event.currentTarget.value, event.currentTarget.selectionStart); }}
-      onPaste={(event) => {
-        const files = [...event.clipboardData.files];
-        if (files.length) { event.preventDefault(); addAttachments(files); }
-      }}
-      onBlur={() => onTypingChange?.(false)} onCompositionStart={() => { composing.current = true; }}
-      onCompositionEnd={(event) => { composing.current = false; syncTrigger(event.currentTarget.value, event.currentTarget.selectionStart); }}
-      onKeyDown={(event) => {
-        if (listOpen) {
-          if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-            if (event.nativeEvent.isComposing || event.keyCode === 229) return;
-            event.preventDefault();
-            const count = mentionOpen ? options.length : emojiOptions.length;
-            setActiveIndex((index) => (index + (event.key === "ArrowDown" ? 1 : count - 1)) % count);
-            return;
-          }
-          if (event.key === "Enter" || event.key === "Tab") {
-            if (event.nativeEvent.isComposing || event.keyCode === 229) return;
-            event.preventDefault();
-            if (mentionOpen) choose(options[activeIndex] ?? options[0]);
-            else chooseEmoji((emojiOptions[activeIndex] ?? emojiOptions[0]).emoji);
-            return;
-          }
-          if (event.key === "Escape") {
-            // Esc closes the typeahead FIRST; the thread/overlay listener on
-            // window must not also fire. stopPropagation on the synthetic
-            // event is not enough — React listens at the root, below window.
-            event.preventDefault();
-            event.nativeEvent.stopImmediatePropagation();
-            setTrigger(null);
-            return;
-          }
-        }
-        // Plain ArrowUp only — ⌥↑ is the window-level previous-room shortcut,
-        // and swallowing it here would make it dead from the composer.
-        if (event.key === "ArrowUp" && !event.altKey && !text && onEditLast) {
-          event.preventDefault();
-          onEditLast();
-          return;
-        }
-        if (!listOpen && (event.metaKey || event.ctrlKey)) {
-          const key = event.key.toLowerCase();
-          const style: MarkdownStyle | null = event.shiftKey
-            ? key === "x" ? "strike" : key === "c" ? "codeblock" : null
-            : key === "b" ? "bold" : key === "i" ? "italic" : null;
-          if (style) { event.preventDefault(); format(style); return; }
-        }
-        if (event.key === "Enter" && !event.shiftKey && !composing.current && !event.nativeEvent.isComposing && event.keyCode !== 229) {
-          event.preventDefault();
-          submit(false, true);
-        }
-      }} />
-  </>;
+  function handleKey(event: KeyboardEvent): boolean {
+    const composingKey = event.isComposing || event.keyCode === 229;
+    if (listOpen) {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        if (composingKey) return false;
+        const count = mentionOpen ? options.length : emojiOptions.length;
+        setActiveIndex((index) => (index + (event.key === "ArrowDown" ? 1 : count - 1)) % count);
+        return true;
+      }
+      if (event.key === "Enter" || event.key === "Tab") {
+        if (composingKey) return false;
+        if (mentionOpen) choose(options[activeIndex] ?? options[0]);
+        else chooseEmoji((emojiOptions[activeIndex] ?? emojiOptions[0]).emoji);
+        return true;
+      }
+      if (event.key === "Escape") {
+        // Esc closes the typeahead FIRST; the thread/overlay listener on window must not also fire.
+        event.stopImmediatePropagation();
+        setTrigger(null);
+        return true;
+      }
+    }
+    // Plain ArrowUp only — ⌥↑ is the window-level previous-room shortcut,
+    // and swallowing it here would make it dead from the composer.
+    if (event.key === "ArrowUp" && !event.altKey && !text && onEditLast) {
+      onEditLast();
+      return true;
+    }
+    if (!listOpen && (event.metaKey || event.ctrlKey)) {
+      const key = event.key.toLowerCase();
+      const style: MarkdownStyle | null = event.shiftKey
+        ? key === "x" ? "strike" : key === "c" ? "codeblock" : null
+        : key === "b" ? "bold" : key === "i" ? "italic" : null;
+      if (style) { format(style); return true; }
+    }
+    if (event.key === "Enter" && !event.shiftKey && !composingKey) {
+      submit(false, true);
+      return true;
+    }
+    return false;
+  }
+
+  const textarea = <ComposerEditor handleRef={field} id={fieldId} value={text} editable={editable} label={label}
+    placeholder={placeholder ?? (label === "Reply to thread" ? "Reply to thread…" : superAgent ? "Ask Lightbulb…" : "Message the conversation · @ to mention")}
+    ariaProps={{
+      "aria-invalid": !!error,
+      "aria-describedby": `${fieldId}-help ${fieldId}-status${showHint ? ` ${fieldId}-respond` : ""}`,
+      "aria-autocomplete": "list", "aria-expanded": listOpen, "aria-controls": listOpen ? `${fieldId}-targets` : undefined,
+      "aria-activedescendant": listOpen ? `${fieldId}-option-${activeIndex}` : undefined,
+    }}
+    onChange={(markdown) => { onTextChange(markdown); onTypingChange?.(!!markdown.trim()); }}
+    onTrigger={syncTrigger} onKeyDown={handleKey} onPasteFiles={addAttachments} onBlur={() => onTypingChange?.(false)} />;
   const fileInput = onUploadAttachment && <input ref={attachmentInput} className="sr-only" type="file" accept={MESSAGE_ATTACHMENT_ACCEPT} multiple
     onChange={(event) => { addAttachments([...event.target.files ?? []]); event.target.value = ""; }} />;
   const formatButton = <Button type="button" variant="ghost" size="icon-sm" aria-label={formatOpen ? "Hide formatting" : "Show formatting"} aria-pressed={formatOpen}
     aria-controls={formatOpen ? `${fieldId}-format` : undefined} onClick={() => setFormatOpen(!formatOpen)}><CaseSensitive aria-hidden="true" /></Button>;
   const mentionButton = <Button type="button" variant="ghost" size="icon-sm" aria-label="Mention someone" aria-expanded={mentionOpen}
-    disabled={!editable} onClick={() => {
-      const caret = field.current?.selectionStart ?? text.length;
-      const needsSpace = caret > 0 && !/\s$/.test(text.slice(0, caret));
-      const next = `${text.slice(0, caret)}${needsSpace ? " " : ""}@${text.slice(caret)}`;
-      const sigil = caret + (needsSpace ? 1 : 0);
-      onTextChange(next);
-      setTrigger({ kind: "mention", start: sigil, end: sigil + 1, query: "" });
-      setActiveIndex(0);
-      requestAnimationFrame(() => { field.current?.focus(); field.current?.setSelectionRange(sigil + 1, sigil + 1); });
-    }}><AtSign aria-hidden="true" /><span className="sr-only">Mention</span></Button>;
+    disabled={!editable} onClick={() => field.current?.insertText(text && !/\s$/.test(text) ? " @" : "@")}><AtSign aria-hidden="true" /><span className="sr-only">Mention</span></Button>;
   const sendButton = <Button type="submit" size="icon-sm" className="room-send" disabled={!canSend} aria-label="Send message"><Send aria-hidden="true" /><span className="sr-only">Send</span></Button>;
 
   return <form className="room-composer" data-compact={compact || undefined} aria-label={`${label} composer`} aria-busy={pending || retryPending}
@@ -713,7 +675,15 @@ function ComposerAttempt({
       {FORMAT_CONTROLS.map(({ style, label: controlLabel, Icon, keys }, index) => <Button key={style} type="button" variant="ghost" size="icon-sm"
         ref={(node) => { toolbarButtons.current[index] = node; }} tabIndex={index === toolbarIndex ? 0 : -1}
         aria-label={controlLabel} aria-keyshortcuts={keys} title={controlLabel} disabled={!editable}
+        // The box keeps focus and its selection while the bar is clicked.
+        onMouseDown={(event) => event.preventDefault()}
         onFocus={() => setToolbarIndex(index)} onClick={() => format(style)}><Icon aria-hidden="true" /></Button>)}
+      {linkDraft !== null && <input autoFocus type="url" className="room-format-link" aria-label="Link address" placeholder="Paste a link, then Enter"
+        value={linkDraft} onChange={(event) => setLinkDraft(event.target.value)} onBlur={() => setLinkDraft(null)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") { event.preventDefault(); applyLink(); }
+          if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setLinkDraft(null); field.current?.focus(); }
+        }} />}
     </div>}
     {dropping && <p className="room-drop-hint text-ui text-muted-foreground" role="status">Drop files to attach</p>}
     <label className="sr-only" htmlFor={fieldId}>{label}</label>

@@ -69,6 +69,11 @@ if (typeof Element !== 'undefined') {
     Element.prototype.scrollIntoView = vi.fn() as unknown as typeof Element.prototype.scrollIntoView;
   }
 }
+// Lexical (the room composer) measures the selection to keep the caret in view; jsdom's Range has no layout.
+if (typeof Range !== "undefined" && !Range.prototype.getBoundingClientRect) {
+  Range.prototype.getBoundingClientRect = () => new DOMRect();
+  Range.prototype.getClientRects = () => [] as unknown as DOMRectList;
+}
 
 // JSDOM has no PointerEvent constructor at all (unlike the capture methods
 // above, which exist but throw), so `fireEvent.pointerDown/Move/Up` fall back

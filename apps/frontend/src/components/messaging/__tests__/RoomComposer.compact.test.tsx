@@ -20,7 +20,7 @@ it("one line with the formatting bar shown by default (founder, 6 Nov 2026); Aa 
   expect(form).toHaveAttribute("data-compact", "true");
   // One row: + · the text · Aa @ ↑.
   const row = form.querySelector(".room-composer-row")!;
-  expect(row.querySelector("textarea")).not.toBeNull();
+  expect(row.querySelector("[contenteditable]")).not.toBeNull();
   expect(screen.getByRole("toolbar", { name: "Formatting" })).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "Hide formatting" }));
   expect(screen.queryByRole("toolbar", { name: "Formatting" })).toBeNull();

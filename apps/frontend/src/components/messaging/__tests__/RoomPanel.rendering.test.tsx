@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import { applySubagentEvent, EMPTY_ROOM_SUBAGENTS, type RoomRunView } from "@lightbulb/shared";
 import { RoomPanel, type RoomPanelProps } from "../RoomPanel";
+import { composerValue } from "@/test-utils/composer";
 import type { RoomMessage, RoomParticipant } from "../types";
 
 vi.mock("@/components/huddle/useRoomHuddle", () => ({ useRoomHuddle: () => ({ userIds: [], available: false }) }));
@@ -38,7 +39,7 @@ it("keeps canonical history out of draft and live-run renders", () => {
   const view = render(<RoomPanel {...props} runs={[run]} />);
   renders.mockClear();
   view.rerender(<RoomPanel {...props} runs={[run]} composer={{ ...props.composer, text: "my draft" }} />);
-  expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("my draft");
+  expect(composerValue()).toBe("my draft");
   expect(renders).not.toHaveBeenCalled();
 
   view.rerender(<RoomPanel {...props} runs={[{ ...run, text: "Work progressed" }]} composer={{ ...props.composer, text: "my draft" }} />);

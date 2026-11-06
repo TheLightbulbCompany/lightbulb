@@ -51,8 +51,8 @@ it("ignores a drag that carries no files", () => {
 it("does not flicker when dragging into child elements", () => {
   render(<Harness onUploadAttachment={vi.fn(async () => attachment)} />);
   const form = screen.getByRole("form", { name: "Message composer" });
-  const textarea = form.querySelector("textarea");
-  if (!textarea) throw new Error("textarea not found");
+  const textarea = form.querySelector("[contenteditable]");
+  if (!textarea) throw new Error("text box not found");
 
   fireEvent.dragEnter(form, { dataTransfer: { types: ["Files"] } });
   expect(form).toHaveAttribute("data-dropping", "true");

@@ -3,8 +3,8 @@ import { FIXTURES, PRIYA, SAM, viewAs } from "@lightbulb/shared/tasks/fixtures";
 
 import { chatPalette } from "../../../config/theme";
 
-const live = { superAgent: true, tasks: null as unknown, agentNames: new Map<string, string>() };
-jest.mock("../../../providers/live-events", () => ({ useLiveEvents: () => live, useSuperAgent: () => live.superAgent }));
+const mockLive = { superAgent: true, tasks: null as unknown, agentNames: new Map<string, string>() };
+jest.mock("../../../providers/live-events", () => ({ useLiveEvents: () => mockLive, useSuperAgent: () => mockLive.superAgent }));
 jest.mock("expo-router", () => ({ router: { push: jest.fn() } }));
 jest.mock("expo-crypto", () => ({ randomUUID: () => "00000000-0000-4000-8000-000000000000" }));
 
@@ -28,7 +28,7 @@ function fakeClient() {
   };
 }
 let client: ReturnType<typeof fakeClient>;
-beforeEach(() => { client = fakeClient(); live.tasks = client; });
+beforeEach(() => { client = fakeClient(); mockLive.tasks = client; });
 
 it("a missing task reads as unavailable", async () => {
   // First in the file: RNTL's async render after a test whose action is still settling can hand back
@@ -57,10 +57,10 @@ it("the card is one button with an accessible name; Approve opens the request sc
   const view = await render(<Fresh><TaskCard task={byId("step05", "t-signup")} taskId="t-signup" viewerId={SAM} palette={p} onOpen={onOpen} /></Fresh>);
   const card = screen.getByLabelText("Open Workshop signup app, Needs you");
   expect(card.props.accessibilityRole).toBe("button");
-  fireEvent.press(card);
+  await fireEvent.press(card);
   expect(onOpen).toHaveBeenCalledWith("t-signup");
   onOpen.mockClear();
-  fireEvent.press(screen.getByLabelText("Approve"));
+  await fireEvent.press(screen.getByLabelText("Approve"));
   expect(onOpen).toHaveBeenCalledWith("t-signup");
   expect(client.answer).not.toHaveBeenCalled();
   await act(async () => {});
@@ -84,7 +84,7 @@ it("the Router's ack and its result line carry a compact chip, never a full card
   for (const kind of [undefined, "task_line"]) {
     const message = { roomId: "r1", kind, taskRefs: [{ taskId: "t-signup", role: "started" }] } as never;
     const view = await render(<Fresh><MessageTasks message={message} viewerId={SAM} palette={p} onOpen={onOpen} /></Fresh>);
-    fireEvent.press(await screen.findByTestId("task-chip-t-signup"));
+    await fireEvent.press(await screen.findByTestId("task-chip-t-signup"));
     expect(onOpen).toHaveBeenLastCalledWith("t-signup");
     expect(screen.queryByLabelText("Approve")).toBeNull();
     await act(async () => {});

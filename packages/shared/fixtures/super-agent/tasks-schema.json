@@ -143,6 +143,7 @@
       "pass_through",
       "reply",
       "ask",
+      "note",
       "ignore"
     ],
     "WatchdogCheck": [
@@ -3629,6 +3630,50 @@
         "title": "Ignore",
         "type": "object"
       },
+      "Note": {
+        "additionalProperties": false,
+        "description": "A fact someone told Lightbulb to keep, with nothing to do now: one short reply. Room ingestion remembers it.",
+        "properties": {
+          "triggerIds": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Triggerids",
+            "type": "array"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          },
+          "kind": {
+            "const": "note",
+            "title": "Kind",
+            "type": "string"
+          },
+          "fact": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Fact",
+            "type": "string"
+          }
+        },
+        "required": [
+          "triggerIds",
+          "kind",
+          "fact"
+        ],
+        "title": "Note",
+        "type": "object"
+      },
       "PassThrough": {
         "additionalProperties": false,
         "properties": {
@@ -3876,6 +3921,7 @@
             "mapping": {
               "ask": "#/$defs/Ask",
               "ignore": "#/$defs/Ignore",
+              "note": "#/$defs/Note",
               "pass_through": "#/$defs/PassThrough",
               "reply": "#/$defs/Reply",
               "start_task": "#/$defs/StartTask"
@@ -3894,6 +3940,9 @@
             },
             {
               "$ref": "#/$defs/Ask"
+            },
+            {
+              "$ref": "#/$defs/Note"
             },
             {
               "$ref": "#/$defs/Ignore"

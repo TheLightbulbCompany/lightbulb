@@ -21,5 +21,6 @@ provides_tools:
   - pass_through
   - reply
   - ask
+  - note
   - ignore
   - propose_automation

@@ -45,3 +45,21 @@ async def test_unexpected_batch_or_missing_fifo_group_fails_closed(records):
     with pytest.raises(ValueError):
         await work_lambda.process_batch(worker, records)
     assert worker.messages == []
+
+
+def test_a_provisioned_environment_sets_up_at_init(monkeypatch):
+    """Walk 14: a pre-warmed consumer pays the env rebuild and backend import before the first message."""
+    import importlib
+
+    from scripts import provision_lambda
+
+    calls = []
+    monkeypatch.setattr(
+        provision_lambda, "load_environment", lambda: calls.append(1) or (_ for _ in ()).throw(KeyError)
+    )
+    monkeypatch.setenv("AWS_LAMBDA_INITIALIZATION_TYPE", "provisioned-concurrency")
+    with pytest.raises(KeyError):
+        importlib.reload(work_lambda)
+    monkeypatch.setenv("AWS_LAMBDA_INITIALIZATION_TYPE", "on-demand")
+    importlib.reload(work_lambda)  # on-demand stays lazy
+    assert calls == [1]

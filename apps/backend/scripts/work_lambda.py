@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 
 from scripts.provision_lambda import load_environment
@@ -51,6 +52,13 @@ async def process_batch(worker, records: list[dict]) -> dict:
     }
     completed = await worker._process_message(message)
     return {"batchItemFailures": [] if completed else [{"itemIdentifier": record["messageId"]}]}
+
+
+# A provisioned (pre-warmed) environment does the first-invoke setup now, at init: Lambda gives it far more
+# than 10 s there, and the first message then skips 6-10 s of it (Walk 14). On-demand stays lazy: its init is
+# capped at 10 s, and a timed-out init is paid again inside the invoke (scripts/provision_lambda.py).
+if os.environ.get("AWS_LAMBDA_INITIALIZATION_TYPE") == "provisioned-concurrency":
+    _get_worker()
 
 
 def handler(event, context):

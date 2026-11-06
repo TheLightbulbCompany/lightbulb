@@ -2248,7 +2248,20 @@ export class ServiceStack extends cdk.Stack {
         LAMBDA_SECRET_ENV_MAP: secretEnvMap,
       },
     });
-    const workMapping = workConsumer.addEventSourceMapping("OpenClawWorkQueue", {
+    // Dev keeps one consumer warm (Walk 14, 6 Nov 2026): every "queue wait" over 3 s on dev was a cold
+    // start, 6.3-10.2 s of the handler's first-invoke setup (env rebuild, backend import, Temporal
+    // connect), while a warm one waits ~35 ms. FIFO queues have no batching window to tune. A
+    // provisioned environment runs that setup at init (scripts/work_lambda.py), where Lambda allows it
+    // well past 10 s. ponytail: one warm instance; a second concurrent room still cold-starts.
+    const workTarget: lambda.IFunction =
+      env === "dev"
+        ? new lambda.Alias(this, "WorkConsumerLive", {
+            aliasName: "live",
+            version: workConsumer.currentVersion,
+            provisionedConcurrentExecutions: 1,
+          })
+        : workConsumer;
+    const workMapping = workTarget.addEventSourceMapping("OpenClawWorkQueue", {
       eventSourceArn: props.openClawWorkQueueArn,
       // One message per invoke: a FIFO batch holds one group, run in order, so a
       // bigger batch would multiply the worst case past the timeout and keep the

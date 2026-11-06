@@ -17,6 +17,7 @@ import secrets
 import logging
 import time
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
 from temporalio import activity
@@ -427,22 +428,35 @@ async def deliver_input(ws: str, task_id: str, n: int, trigger_id: str) -> bool:
 
 
 async def _react_eyes(ws: str, ref: dict) -> None:
+    await _react(ws, ref, "👀")  # cosmetic: never fails the steer
+
+
+async def _react(ws: str, ref: dict, emoji: str) -> None:
+    """Lightbulb's reaction on the trigger's message, shown live. Best effort: a reaction never fails a turn."""
     if not (ref.get("roomId") and ref.get("messageId")):
         return
     try:
         msg = await messaging_repo.get_message_by_id(ref["roomId"], ref["messageId"])
         if msg:
-            await messaging_repo.set_reaction(
+            updated = await messaging_repo.set_reaction(
                 ws,
                 ref["roomId"],
                 msg["messageSeq"],
                 await task_conversation.front_agent_id(ws),
-                "👀",
+                emoji,
                 True,
                 member_kind="agent",
             )
+            await messaging._publish_room_event(
+                ref["roomId"],
+                messaging.make_live_event(
+                    "room.message.reactions.changed",
+                    messaging.canonical_message(updated).model_dump(mode="json", by_alias=True),
+                    room_id=ref["roomId"],
+                ),
+            )
     except Exception:
-        logger.warning("👀 reaction failed", exc_info=True)  # cosmetic: never fails the steer
+        logger.warning("%s reaction failed", emoji, exc_info=True)
 
 
 @activity.defn
@@ -740,11 +754,8 @@ async def _meter_router(ws: str, user_id: str | None, status: runtime_runs.RunSt
         await _meter(ws, user_id, status.usage, "router")
 
 
-async def _router_run(
-    ws: str, inp: RouterTurnIn, prompt: str, memory: dict, scope: str, user_id: str | None
-) -> runtime_runs.RunStatus:
-    """One Router run in the lane's session, polled to its end (Router runs post no events), its usage metered."""
-    identity = runtime_runs.RunIdentity(
+async def _router_identity(ws: str, inp: RouterTurnIn, scope: str) -> runtime_runs.RunIdentity:
+    return runtime_runs.RunIdentity(
         ts.router_run_id(ws, inp.batch_id),
         ws,
         inp.batch_id,
@@ -755,6 +766,21 @@ async def _router_run(
         room=ts.router_room_key(scope),  # the batch's conversation: a batch is one (lane, trigger_scope)
         model=await _cheap_model(ws),
     )
+
+
+async def _router_run(
+    ws: str,
+    inp: RouterTurnIn,
+    prompt: str,
+    memory: dict,
+    scope: str,
+    user_id: str | None,
+    settled: Callable[[runtime_runs.RunStatus], bool] = lambda _status: False,
+) -> runtime_runs.RunStatus:
+    """One Router run in the lane's session, polled to its end (Router runs post no events), its usage metered.
+    Returned still running, unmetered, once `settled(status)` holds: the decisions are in and the rest of the run
+    is the Router's closing word, so the ack need not wait for it (`_finish_router_run` meters it)."""
+    identity = await _router_identity(ws, inp, scope)
     request = runtime_runs.RunRequest(
         input=prompt,
         instructions=router_prompt.ROUTER_INSTRUCTIONS,
@@ -771,6 +797,8 @@ async def _router_run(
             status = await runtime_runs.get_run(ws, identity)
         started = time.monotonic()
         while status.status in _RUNNING:
+            if settled(status):
+                return status
             if time.monotonic() - started > ROUTER_BUDGET_S:
                 raise TimeoutError("router run did not finish in time")
             activity.heartbeat("router")
@@ -787,6 +815,26 @@ async def _router_run(
         raise
     await _meter_router(ws, user_id, status)
     return status
+
+
+async def _finish_router_run(
+    ws: str, inp: RouterTurnIn, scope: str, user_id: str | None, deadline: float
+) -> runtime_runs.RunStatus | None:
+    """A run applied before it ended (`settled`): wait for its end, until `deadline` (monotonic: the turn's own
+    budget, under the Activity's 5 min), and meter it. None when it never ended cleanly; its decisions are already
+    applied, so that is only logged."""
+    identity = await _router_identity(ws, inp, scope)
+    try:
+        status = await _poll_run(ws, identity)
+        while status.status in _RUNNING and time.monotonic() < deadline:
+            activity.heartbeat("router")
+            await asyncio.sleep(ROUTER_POLL_S)
+            status = await _poll_run(ws, identity)
+        await _meter_router(ws, user_id, status)
+    except Exception:  # noqa: BLE001 -- the ack is posted; a lost tail costs only its metering
+        logger.warning("router run tail unread after an early apply batch=%s", inp.batch_id, exc_info=True)
+        return None
+    return status if status.status == "completed" else None
 
 
 #: Tries per poll: polled every second, one failed read (a blip on the runtime) must not fail the whole turn.
@@ -911,11 +959,28 @@ async def _subscribe(ws: str, task_id: str, thread_key: str | None) -> None:
         logger.info("thread %s already belongs to another task; %s not subscribed", thread_key, task_id)
 
 
+def _silent(dec, triggers: dict[str, dict]) -> bool:
+    """`ignore`, and a `note` on mail or text: those channels get no "Noted" line and store nothing."""
+    return isinstance(dec, ts.Ignore) or (
+        isinstance(dec, ts.Note) and triggers[dec.trigger_ids[0]]["source"] in ("mail", "text")
+    )
+
+
 async def _apply(
-    ws: str, inp: RouterTurnIn, triggers: dict[str, dict], decisions: list, run_text: str | None
+    ws: str,
+    inp: RouterTurnIn,
+    triggers: dict[str, dict],
+    decisions: list,
+    run_text: str | None,
+    *,
+    first: int = 0,
+    event_prefix: str | None = None,
 ) -> RouterTurnOut:
     """Apply validated decisions idempotently: one Router message per trigger (G2), tasks keyed by
-    `router_task_id(batch, i, k)`, event ids `router:{batch}:{i}`; returns ids only."""
+    `router_task_id(batch, i, k)`, event ids `router:{batch}:{i}`; returns ids only. `first` and `event_prefix` apply
+    decisions that came after an early apply: their task ids keep their place in the run's list, their message its
+    own event id."""
+    event_prefix = event_prefix or f"router:{inp.batch_id}"
     slots: dict[str, dict] = {}
     covered: set[str] = set()
     routed_to: dict[str, list[str]] = {}  # every trigger a start or pass_through covers → its tasks, in order
@@ -938,8 +1003,10 @@ async def _apply(
     carded = {tid for tid, t in triggers.items() if (t.get("routedTo") or {}).get("automationId")}
     replies: list[tuple[dict, str]] = []
     covered.update(carded)
-    for i, dec in enumerate(decisions):
+    for i, dec in enumerate(decisions, start=first):
         primary = dec.trigger_ids[0]
+        if _silent(dec, triggers):  # nothing is posted for it: a respond trigger it leaves gets the fallback line
+            dec = ts.Ignore(kind="ignore", trigger_ids=dec.trigger_ids)
         if not isinstance(dec, ts.Ignore):  # `ignore` on a respond trigger is silence: the fallback line covers it
             covered.update(dec.trigger_ids)
         trig, sl = triggers[primary], slot(primary)
@@ -992,6 +1059,14 @@ async def _apply(
             for tid in dec.trigger_ids:
                 routed_to.setdefault(tid, []).append(dec.task_id)
             ack(sl, dec.ack)
+        elif isinstance(dec, ts.Note):
+            # Walk 14: an FYI is visibly received. Addressed to Lightbulb: one line. A room message nobody addressed
+            # to it: a ✅ on the message, no line. The Router writes no memory (spec 07 §3.1): room ingestion already
+            # stored the person's message.
+            if trig["admission"] == "respond":
+                ack(sl, router_prompt.NOTED)
+            else:
+                sl["react"] = True
         elif isinstance(dec, ts.Ask):
             sl["lines"].append(dec.text + (f" ({' / '.join(dec.options)})" if dec.options else ""))
         elif isinstance(dec, ts.Reply):
@@ -1024,7 +1099,7 @@ async def _apply(
                 ws,
                 trig,
                 text,
-                event_id=f"router:{inp.batch_id}:{idx}",
+                event_id=f"{event_prefix}:{idx}",
                 refs=sl["refs"] or None,
                 # Acks and the fallback line are boilerplate: a post of only those stays out of room memory.
                 remember=any(
@@ -1035,6 +1110,8 @@ async def _apply(
             posted.append(message_id)
         else:
             await _read_quietly(ws, trig)
+            if sl.get("react"):
+                await _react(ws, trig.get("ref") or {}, "✅")
         ref = trig.get("ref") or {}
         ack_thread = (
             f"room:{ref['roomId']}:{ref.get('threadRoot') or message_id}" if ref.get("roomId") and message_id else None
@@ -1125,6 +1202,7 @@ async def _project_instructions(room_id: str | None) -> str | None:
 async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
     """Render the batch, run the Router (cheap model, read-only memory), apply its decisions. Retry-safe: the
     bridge replays the run (same run id), tasks and posts are keyed deterministically."""
+    turn_started = time.monotonic()  # the tail of an early-applied run waits only within this turn's budget
     ws = inp.ws
     triggers: dict[str, dict] = {}
     for tid in inp.trigger_ids:
@@ -1198,26 +1276,65 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
             "private" if private and user_id else "shared", user_id if private else None, room_id
         )
         scope = ts.trigger_scope(next(iter(to_model.values())))
-        status = await _router_run(ws, inp, prompt, memory, scope, user_id)
-        if status.status != "completed":
+
+        def validated(raw: list[dict]) -> list:
+            return router_prompt.validate_decisions(
+                raw,
+                trigger_ids=set(to_model),
+                roster_ids={a["id"] for a in roster},
+                open_tasks={t["taskId"]: t for t in open_tasks},
+                scope=lambda tid: (
+                    inp.lane,
+                    to_model[tid].get("actorUserId"),
+                    ts.trigger_room(to_model[tid]),
+                ),
+                in_scope=_task_in_scope,
+            )
+
+        def settled(status: runtime_runs.RunStatus) -> bool:
+            # Every trigger has a decision (walk 14: the ack waited ~2 s more for the Router's closing "Done").
+            # A propose_automation answers outside the list, so its trigger waits for the run's end as before.
+            named = {tid for dec in validated(status.decisions or []) for tid in dec.trigger_ids}
+            return bool(named) and set(to_model) <= named
+
+        status = await _router_run(ws, inp, prompt, memory, scope, user_id, settled)
+        early = status.status in _RUNNING
+        if not early and status.status != "completed":
             raise RuntimeError(f"router run {status.status}: {status.error or ''}")
         for tid in to_model:  # propose_automation marks its trigger during the run (routedTo.automationId)
             triggers[tid] = await tasks_repo.get_trigger(ws, tid) or triggers[tid]
         # The run's prose answers a trigger only when the Router made no decision at all: with decisions it is a
         # summary of them ("Growth has the checklist"), which must never stand in for a decision that was dropped.
         run_text = None if status.decisions else router_prompt.strip_end_word(status.output or "") or None
-        decisions += router_prompt.validate_decisions(
-            status.decisions,
-            trigger_ids=set(to_model),
-            roster_ids={a["id"] for a in roster},
-            open_tasks={t["taskId"]: t for t in open_tasks},
-            scope=lambda tid: (
-                inp.lane,
-                to_model[tid].get("actorUserId"),
-                ts.trigger_room(to_model[tid]),
-            ),
-            in_scope=_task_in_scope,
-        )
+        if early:
+            applied = decisions + validated(status.decisions)
+            out = await _apply(ws, inp, triggers, applied, run_text)
+            final = await _finish_router_run(ws, inp, scope, user_id, turn_started + ROUTER_BUDGET_S)
+            # Validation keeps order and drops item by item, so the applied decisions are a prefix of the final ones.
+            tail = validated(final.decisions or [])[len(applied) - len(decisions) :] if final else []
+            late = [d for d in tail if not _silent(d, triggers)]
+            if not late:
+                return out
+            # A decision recorded after the poll that applied the rest (one tool round, a ms window) is never lost:
+            # it posts as its own message, keyed by its place in the run's list, and its tasks keep theirs.
+            for tid in to_model:
+                triggers[tid] = await tasks_repo.get_trigger(ws, tid) or triggers[tid]
+            named = {tid for d in late for tid in d.trigger_ids}
+            more = await _apply(
+                ws,
+                inp,
+                {tid: t for tid, t in triggers.items() if tid in named},
+                late,
+                None,
+                first=len(applied),
+                event_prefix=f"router:{inp.batch_id}:late{len(applied)}",
+            )
+            return RouterTurnOut(
+                inp.batch_id,
+                [*out.started_task_ids, *more.started_task_ids],
+                [*out.posted_message_ids, *more.posted_message_ids],
+            )
+        decisions += validated(status.decisions)
     return await _apply(ws, inp, triggers, decisions, run_text)
 
 

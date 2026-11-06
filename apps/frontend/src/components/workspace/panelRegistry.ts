@@ -5,7 +5,7 @@
 
 import { ARTIFACT_PARAM_KEYS, parseArtifactSource } from "./panels/artifactSource";
 
-export type PanelKind = "chat" | "teams" | "control" | "file-viewer" | "browser" | "activity" | "home" | "canvas" | "mail" | "ideas" | "artifact" | "task";
+export type PanelKind = "chat" | "teams" | "control" | "file-viewer" | "browser" | "activity" | "home" | "canvas" | "mail" | "ideas" | "artifact" | "task" | "settings" | "automation";
 
 export interface PanelDescriptor {
   panelId: string;
@@ -211,8 +211,21 @@ export function settingsHrefFor(search: string): string | null {
 // and render inherited functions as titles/components instead of rejecting to
 // null.
 
+// Super-agent (UX slice 4): Work dissolved. Its Automations open Activity's Scheduled group, and Money is
+// Settings › Business. The switch is per workspace, so the shell sets it (setSuperAgentAliases) and a
+// switch-off workspace keeps every key exactly as before.
+const SUPER_AGENT_ALIASES: Readonly<Record<string, string>> = {
+  "teams-routines": "activity",
+  "teams-money": "settings",
+};
+let _superAgentAliases = false;
+export function setSuperAgentAliases(on: boolean): void {
+  _superAgentAliases = on;
+}
+
 export function resolvePanelAlias(panelKey: string): string {
-  return Object.hasOwn(RETIRED_PANEL_ALIASES, panelKey) ? RETIRED_PANEL_ALIASES[panelKey] : panelKey;
+  const key = Object.hasOwn(RETIRED_PANEL_ALIASES, panelKey) ? RETIRED_PANEL_ALIASES[panelKey] : panelKey;
+  return _superAgentAliases && Object.hasOwn(SUPER_AGENT_ALIASES, key) ? SUPER_AGENT_ALIASES[key] : key;
 }
 
 export function chatPanelId(agentId: string): string {
@@ -295,11 +308,27 @@ export function describePanel(
     const p: Record<string, string> = {};
     if (params.filter) p.filter = params.filter;
     if (params.focus) p.focus = params.focus;
+    // `section=scheduled` opens the Scheduled group (super-agent; an old Automations link lands there).
+    if (panelKey === "teams-routines" || params.section === "scheduled") p.section = "scheduled";
     return { panelId: "activity", component: "activity", title: "Activity", params: p };
   }
 
   // Home (super-agent, 6 Nov 2026): the chats and the project spaces. Singleton, no params.
   if (key === "home") return { panelId: "home", component: "home", title: "Home", params: {} };
+
+  // Settings inside the shell (super-agent, UX slice 4): `section` is the nav row. An old Money link (any of
+  // its five keys) opens Business.
+  if (key === "settings") {
+    const raw = panelKey.startsWith("teams-") ? panelKey.slice("teams-".length) : "";
+    const section = raw === "money" || MONEY_SECTIONS.has(raw) ? "business" : params.section;
+    return { panelId: "settings", component: "settings", title: "Settings", params: section ? { section } : {} };
+  }
+
+  // One scheduled automation in the pane (super-agent). `id` is the automation's id.
+  if (key === "automation") {
+    if (!params.id) return null;
+    return { panelId: "automation", component: "automation", title: "Scheduled", params: { id: params.id } };
+  }
 
   // Apps the agents built; `app` opens one inside the pane.
   if (key === "canvas") {
@@ -415,7 +444,9 @@ export function durableParamsFor(panelId: string): string[] {
   if (panelId === "control:agents") return ["panel", "agent"];
   if (panelId === WORK_PANEL_ID) return ["panel", "agent", "groupBy", "view", "day", "section"];
   if (panelId === "teams-agents") return ["panel", "view"];
-  if (panelId === "activity") return ["panel", "filter", "focus"];
+  if (panelId === "activity") return ["panel", "filter", "focus", "section"];
+  if (panelId === "settings") return ["panel", "section"];
+  if (panelId === "automation") return ["panel", "id"];
   if (panelId === "canvas") return ["panel", "app"];
   if (panelId === "mail") return ["panel", "item"];
   if (panelId === "ideas") return ["panel", "agent", "idea"];
@@ -436,7 +467,9 @@ export function clearablePanelParamKeys(panelId: string): string[] {
   if (panelId === MESSAGES_PANEL_ID) return ["agentId", "agentSelection", "roomId", "messageId", "sessionId", "seq", "sessionIntent"];
   if (panelId === WORK_PANEL_ID) return ["agent", "groupBy", "view", "day", "section"];
   if (panelId === "teams-agents") return ["view"];
-  if (panelId === "activity") return ["filter", "focus"];
+  if (panelId === "activity") return ["filter", "focus", "section"];
+  if (panelId === "settings") return ["section"];
+  if (panelId === "automation") return ["id"];
   if (panelId === "canvas") return ["app"];
   if (panelId === "mail") return ["item"];
   if (panelId === "ideas") return ["agent", "idea"];
@@ -454,5 +487,5 @@ export function opensInPane(descriptor: PanelDescriptor): boolean {
   if (descriptor.component === "teams") return !!descriptor.params.detailId;
   return descriptor.component === "file-viewer" || descriptor.component === "browser"
     || descriptor.component === "mail" || descriptor.component === "control" || descriptor.component === "ideas"
-    || descriptor.component === "artifact" || descriptor.component === "task";
+    || descriptor.component === "artifact" || descriptor.component === "task" || descriptor.component === "automation";
 }

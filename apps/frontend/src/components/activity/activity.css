@@ -216,7 +216,8 @@
 
 /* --- Home, super-agent: one column, your company today ------------------------ */
 
-.activity-page--today .home-work { max-width: 760px; gap: 24px; padding: 24px 16px 32px; border-bottom: 0; }
+.activity-page--today .home-work { max-width: none; gap: 24px; padding: 0 0 32px; border-bottom: 0; }
+.activity-page--today > .frame-doc { padding-top: 8px; }
 .home-ideas__list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); gap: 8px; margin-top: 4px; }
 .home-mentions { display: grid; gap: 4px; font-size: var(--text-ui); color: var(--fg-mute); }
 .home-mentions button { text-align: left; }

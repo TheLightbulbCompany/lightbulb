@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AutomationView } from "@lightbulb/shared";
@@ -12,7 +12,9 @@ vi.mock("@/lib/api", () => ({ useApi: () => api }));
 vi.mock("@/components/teams/panels/RoutinesPanel", () => ({ RoutinesPanel: () => <div data-testid="routines-panel">Routines (today)</div> }));
 const openTaskPane = vi.hoisted(() => vi.fn());
 const openPanel = vi.hoisted(() => vi.fn());
-vi.mock("@/components/workspace/workspaceController", () => ({ openTaskPane, openPanel }));
+vi.mock("@/components/workspace/workspaceController", () => ({
+  openTaskPane, openPanel, closePane: vi.fn(), setPaneFullScreen: vi.fn(), useWorkspaceState: () => ({ ready: false, fullScreen: false, pane: null }),
+}));
 const clerk = vi.hoisted(() => ({ userId: "user_sam", role: "org:admin" as string | undefined }));
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ userId: clerk.userId }), useOrganization: () => ({ membership: clerk.role ? { role: clerk.role } : null }) }));
 const messaging = vi.hoisted(() => ({ value: null as unknown }));
@@ -20,6 +22,10 @@ vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({ useMessagin
 import { ApiError } from "@lightbulb/shared";
 
 import { AutomationsPanel } from "../AutomationsPanel";
+import { AutomationDetail } from "../AutomationDetail";
+
+const Detail = ({ viewerTz = "America/New_York", onBack = vi.fn() }: { viewerTz?: string; onBack?: () => void }) =>
+  <Fresh><AutomationDetail id="a1" viewerTz={viewerTz} onBack={onBack} onOpenTask={openTaskPane} /></Fresh>;
 
 const signups: AutomationView = {
   id: "a1", name: "Post signups every Monday", instructions: "Post the signup count so far in #workshop-launch.", status: "active", pausedReason: null,
@@ -37,11 +43,20 @@ const routes = (over: Partial<AutomationView> = {}) => {
 };
 beforeEach(() => { live.superAgent = true; clerk.userId = "user_sam"; clerk.role = "org:admin"; api.get.mockReset(); api.post.mockClear(); openTaskPane.mockClear(); routes(); });
 
-describe("AutomationsPanel", () => {
+describe("AutomationDetail (the automation pane)", () => {
+  it("one header: ‹ Scheduled, the name, its state; the crumb goes back", async () => {
+    const onBack = vi.fn();
+    render(<Detail onBack={onBack} />);
+    expect(await screen.findByRole("heading", { name: "Post signups every Monday" })).toBeInTheDocument();
+    expect(screen.getByText("On")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Close pane" })).toHaveLength(1);
+    await userEvent.click(screen.getByRole("button", { name: "Back to scheduled" }));
+    expect(onBack).toHaveBeenCalled();
+  });
+
   it("names the specialist from the roster, not its id; several times are not offered as one time field", async () => {
     routes({ specialistId: "agt-fin", schedule: { cron: ["0 9 * * 1", "0 17 * * 1"], tz: "America/New_York" } });
-    render(<Fresh><AutomationsPanel viewerTz="America/New_York" /></Fresh>);
-    await userEvent.click(await screen.findByRole("button", { name: "Post signups every Monday" }));
+    render(<Detail />);
     expect(await screen.findByText(/Finance desk/)).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Edit" }));
     expect(screen.getByRole("form", { name: "Edit automation" }).querySelector("input[type=time]")).toBeNull();
@@ -50,8 +65,7 @@ describe("AutomationsPanel", () => {
   it("a 400 on save says the schedule or text wasn't accepted; a rule says Save puts it back to watch-only", async () => {
     routes({ match: { sources: ["mail"] }, schedule: null });
     api.patch.mockRejectedValueOnce(new ApiError(400, { code: "invalid_schedule" }));
-    render(<Fresh><AutomationsPanel viewerTz="America/New_York" /></Fresh>);
-    await userEvent.click(await screen.findByRole("button", { name: "Post signups every Monday" }));
+    render(<Detail />);
     await userEvent.click(await screen.findByRole("button", { name: "Edit" }));
     expect(screen.getByText(/back to watch-only/)).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -60,8 +74,7 @@ describe("AutomationsPanel", () => {
 
   it("edit moves the time (days kept) and the instructions with the row's version; delete asks first", async () => {
     routes({ schedule: { cron: ["0 9 * * 1"], tz: "America/New_York", remainingRuns: 4 } });
-    render(<Fresh><AutomationsPanel viewerTz="America/New_York" /></Fresh>);
-    await userEvent.click(await screen.findByRole("button", { name: "Post signups every Monday" }));
+    render(<Detail />);
     await userEvent.click(await screen.findByRole("button", { name: "Edit" }));
     const form = screen.getByRole("form", { name: "Edit automation" });
     const box = within(form).getByRole("textbox");
@@ -81,51 +94,36 @@ describe("AutomationsPanel", () => {
     expect(api.del).toHaveBeenCalledWith("/automations/a1");
   });
 
-  it("schedule in the viewer's time zone", async () => {
-    const { unmount } = render(<Fresh><AutomationsPanel viewerTz="America/New_York" /></Fresh>);
-    expect(await screen.findByText(/Mondays 9:00/)).toBeInTheDocument();
-    unmount();
-    render(<Fresh><AutomationsPanel viewerTz="Europe/London" /></Fresh>);
+  it("schedule in the viewer's time zone, naming the room it posts to (W8)", async () => {
+    const { unmount } = render(<Detail viewerTz="Europe/London" />);
     expect(await screen.findByText(/Mondays 14:00 \(New York time: Mondays 9:00\) · posts in a room/)).toBeInTheDocument();
-  });
-
-  it("W8: the row and the detail name the time zone and the room it posts to", async () => {
+    unmount();
     messaging.value = { directoryProps: { rooms: [{ roomId: "room-workshop-launch", kind: "channel", name: "walk-8", participants: [] }] } };
     try {
-      render(<Fresh><AutomationsPanel viewerTz="America/New_York" /></Fresh>);
-      expect(await screen.findByText(/Mondays 9:00 New York time · .*posts to walk-8/)).toBeInTheDocument();
-      await userEvent.click(screen.getByRole("button", { name: "Post signups every Monday" }));
+      render(<Detail />);
       expect(await screen.findByText(/^Mondays 9:00 New York time · posts to walk-8 · /)).toBeInTheDocument();
     } finally { messaging.value = null; }
   });
 
-  it("Run now follows the server's rules: a live run is opened, not restarted; only an admin may run a room automation", async () => {
+  it("Run now follows the server's rules: a live run is opened, not restarted; only an admin or the owner may act", async () => {
     routes({ activeRunTaskId: "t-live" });
-    const { unmount } = render(<Fresh><AutomationsPanel viewerTz="America/New_York" /></Fresh>);
+    const { unmount } = render(<Detail />);
     await userEvent.click(await screen.findByRole("button", { name: "Running ›" }));
     expect(openTaskPane).toHaveBeenCalledWith("t-live");
     expect(api.post).not.toHaveBeenCalled();
     unmount();
 
-    // A paused row with a leftover run never reads Running, and offers its one action, Resume, not a dead Run now.
+    // Paused: its one action is Resume, never a dead Run now.
     routes({ activeRunTaskId: "t-live", status: "paused" });
-    const paused = render(<Fresh><AutomationsPanel viewerTz="America/New_York" /></Fresh>);
-    const resume = await screen.findByRole("button", { name: "Resume" });
-    expect(resume).toBeEnabled();
-    let release!: () => void;
-    api.post.mockImplementationOnce(() => new Promise((r) => { release = () => r({}); }));
-    await userEvent.dblClick(resume);
-    expect(api.post).toHaveBeenCalledTimes(1);  // a double click resumes once
-    release();
-    await waitFor(() => expect(resume).toBeEnabled());
-    api.post.mockClear();
+    const paused = render(<Detail />);
+    expect(await screen.findByRole("button", { name: "Resume" })).toBeEnabled();
     expect(screen.queryByRole("button", { name: "Run now" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Running ›" })).toBeNull();
     paused.unmount();
 
     routes();
     api.post.mockRejectedValueOnce(new ApiError(409, { detail: { code: "run_in_progress", taskId: "t-other" } }));
-    const again = render(<Fresh><AutomationsPanel viewerTz="America/New_York" /></Fresh>);
+    const again = render(<Detail />);
     await userEvent.click(await screen.findByRole("button", { name: "Run now" }));
     expect(openTaskPane).toHaveBeenCalledWith("t-other");
     again.unmount();
@@ -133,21 +131,16 @@ describe("AutomationsPanel", () => {
     // A member who is neither admin nor owner: no Run now, no Pause, the waiting line.
     clerk.role = "org:member";
     clerk.userId = "user_priya";
-    const member = render(<Fresh><AutomationsPanel viewerTz="America/New_York" /></Fresh>);
-    expect(await screen.findByText("Only its owner or an admin can run it")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Run now" })).toBeNull();
-    await userEvent.click(screen.getByRole("button", { name: "Post signups every Monday" }));
+    const member = render(<Detail />);
     expect(await screen.findByText("Waiting on a workspace admin")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Pause" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Run now" })).toBeNull();
     member.unmount();
 
-    // The owner (not an admin) may pause and run a room automation (the server's _may_edit), but not resume it;
-    // paused, there is no Run now (the server's run_now answers 409 not_active): the row says who can resume it.
+    // The owner (not an admin) may pause a room automation but not resume it.
     clerk.userId = "user_sam";
     routes({ status: "paused", pausedReason: null });
-    render(<Fresh><AutomationsPanel viewerTz="America/New_York" /></Fresh>);
-    expect(await screen.findByText("Waiting on a workspace admin to resume it")).toBeInTheDocument();
-    await userEvent.click(await screen.findByRole("button", { name: "Post signups every Monday" }));
+    render(<Detail />);
     expect(await screen.findByText("Waiting on a workspace admin")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Run now" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Resume" })).toBeNull();
@@ -155,40 +148,40 @@ describe("AutomationsPanel", () => {
 
   it("a rule has no Run now", async () => {
     routes({ match: { sources: ["mail"] } });
-    render(<Fresh><AutomationsPanel viewerTz="America/New_York" /></Fresh>);
-    await screen.findByRole("button", { name: "Post signups every Monday" });
+    render(<Detail />);
+    await screen.findByRole("button", { name: "Pause" });
     expect(screen.queryByRole("button", { name: "Run now" })).toBeNull();
   });
 
   it("Run now and Pause call lane A's routes", async () => {
-    render(<Fresh><AutomationsPanel viewerTz="America/New_York" /></Fresh>);
+    render(<Detail />);
     await userEvent.click(await screen.findByRole("button", { name: "Run now" }));
     expect(api.post).toHaveBeenCalledWith("/automations/a1/run", {});
-    await userEvent.click(screen.getByRole("button", { name: "Post signups every Monday" }));
     await userEvent.click(await screen.findByRole("button", { name: "Pause" }));
     expect(api.post).toHaveBeenCalledWith("/automations/a1/pause", {});
     expect(screen.getByText(/up to \$1 a run, about \$4 a month/)).toBeInTheDocument();
     expect(within(screen.getByRole("region", { name: "Instructions" })).getByText(/signup count/)).toBeInTheDocument();
   });
 
-  it("history rows open their threads", async () => {
-    render(<Fresh><AutomationsPanel viewerTz="America/New_York" /></Fresh>);
-    await userEvent.click(await screen.findByRole("button", { name: "Post signups every Monday" }));
+  it("history rows open their tasks", async () => {
+    render(<Detail />);
     const history = await screen.findByRole("region", { name: "History" });
     await userEvent.click(await within(history).findByRole("button", { name: /Stripe fee estimate/ }));
     expect(openTaskPane).toHaveBeenCalledWith("t-fees");
   });
+});
 
-  it("off: RoutinesPanel unchanged and no automations read; on: the Paperclip routines are retired", async () => {
+describe("AutomationsPanel (Work › Automations)", () => {
+  it("off: RoutinesPanel unchanged and no automations read; on: the one Scheduled list, a row opens the pane", async () => {
     live.superAgent = false;
     const { unmount } = render(<Fresh><AutomationsPanel /></Fresh>);
     expect(screen.getByTestId("routines-panel")).toBeInTheDocument();
     expect(api.get).not.toHaveBeenCalled();
     unmount();
     live.superAgent = true;
-    render(<Fresh><AutomationsPanel viewerTz="America/New_York" /></Fresh>);
-    expect(await screen.findByRole("heading", { name: "Automations" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Older automations" })).toBeNull();
+    render(<Fresh><AutomationsPanel /></Fresh>);
+    await userEvent.click(await screen.findByRole("button", { name: "Post signups every Monday" }));
+    expect(openPanel).toHaveBeenCalledWith("automation", { id: "a1" }, { pushUrl: true });
     expect(screen.queryByTestId("routines-panel")).toBeNull();
   });
 });

@@ -42,7 +42,12 @@ let client: FakeTasksClient;
 beforeEach(() => {
   client = fakeTasksClient(TASKS); live.tasks = client; openPanel.mockClear();
   apiGet.mockImplementation(async (path: string) => {
-    if (path === "/automations") return { automations: [{ id: "a1" }, { id: "a2" }] };
+    if (path === "/automations") return { automations: [
+      { id: "a1", name: "Weekly signups", status: "active", deliverTo: "room:r1", schedule: { cron: ["0 9 * * 1"], tz: "America/New_York" } },
+      { id: "a2", name: "Morning digest", status: "paused", deliverTo: "dm", schedule: null },
+      // A builtin job is Settings' (Proactive), never counted here.
+      { id: "builtin:feed", name: "Feed posts", status: "active", deliverTo: "none", schedule: null },
+    ] };
     const scope = decodeURIComponent(/scope=([^&]+)/.exec(path)![1]);
     const rows = scope.startsWith("room:") ? roomOf(scope.slice(5)) : TASKS;
     return { tasks: rows.filter((t) => t.shownGroup === "waiting_on_you" || t.shownGroup === "ready_for_review"), next: null };
@@ -85,10 +90,21 @@ describe("HomeWork", () => {
     // A row opens the request in the pane.
     await userEvent.click(within(needs).getByRole("button", { name: /^Open Request a,/ }));
     expect(onOpen).toHaveBeenCalledWith("a");
-    // The scheduled line links to the full Automations list.
-    expect(await screen.findByText(/2 scheduled automations/)).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Automations" }));
-    expect(openPanel).toHaveBeenCalledWith("teams-routines", {}, { pushUrl: true });
+    // Work dissolved (UX slice 4): Scheduled · N is a group here (collapsed, builtin jobs excluded), and a row opens
+    // the automation in its project's pane, by URL; one that posts to a DM opens beside Activity.
+    const scheduled = await screen.findByRole("region", { name: "Scheduled · 2" });
+    expect(within(scheduled).queryAllByRole("listitem")).toHaveLength(0);
+    await userEvent.click(within(scheduled).getByRole("button", { name: "Scheduled · 2" }));
+    expect(within(scheduled).queryByText("Feed posts")).toBeNull();
+    expect(within(scheduled).getByText("Paused")).toBeInTheDocument();
+    await userEvent.click(within(scheduled).getByRole("button", { name: /Weekly signups/ }));
+    expect(new URLSearchParams(window.location.search).get("pane.id")).toBe("a1");
+    expect(new URLSearchParams(window.location.search).get("room")).toBe("r1");
+    await userEvent.click(within(scheduled).getByRole("button", { name: /Morning digest/ }));
+    expect(openPanel).toHaveBeenCalledWith("automation", { id: "a2" }, { pushUrl: true });
+    // The old task board is one link away.
+    await userEvent.click(screen.getByRole("button", { name: /Older tasks/ }));
+    expect(openPanel).toHaveBeenCalledWith("teams-issues", {}, { pushUrl: true });
 
     // The rail badge and each room's About dot count the same rows.
     const { result: badge } = renderHook(() => useNeedsYouCount(), { wrapper: Fresh });

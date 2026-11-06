@@ -1,9 +1,9 @@
 "use client";
 
-import { useId, useMemo, useRef, useState, type KeyboardEvent, type ReactElement } from "react";
+import { useId, useMemo, useRef, useState, type KeyboardEvent, type ReactElement, type ReactNode } from "react";
 import { SmilePlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ALL_EMOJI, EMOJI_CATEGORIES, searchEmoji, type EmojiEntry } from "@lightbulb/shared";
 import "./emoji-picker.css";
 
@@ -32,13 +32,20 @@ interface EmojiPickerProps {
   onPick: (emoji: string) => void;
   disabled?: boolean;
   triggerLabel?: string;
+  /** Controlled, with `anchor` in place of the picker's own button (the composer's + menu opens it). */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  anchor?: ReactNode;
 }
 
-export function EmojiPicker({ onPick, disabled = false, triggerLabel = "Add reaction" }: EmojiPickerProps): ReactElement {
+export function EmojiPicker({ onPick, disabled = false, triggerLabel = "Add reaction", open: openProp, onOpenChange, anchor }: EmojiPickerProps): ReactElement {
   const id = useId();
-  const [open, setOpen] = useState(false);
+  const [ownOpen, setOwnOpen] = useState(false);
+  const open = openProp ?? ownOpen;
+  const setOpen = (next: boolean) => { setOwnOpen(next); onOpenChange?.(next); };
   const [query, setQuery] = useState("");
-  const [recent, setRecent] = useState<string[]>([]);
+  // Read each time it opens, however it was opened (its own button, or a controlled parent).
+  const recent = useMemo(() => open ? readRecentEmoji() : [], [open]);
   const grid = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const results = useMemo(() => searchEmoji(query), [query]);
@@ -81,15 +88,14 @@ export function EmojiPicker({ onPick, disabled = false, triggerLabel = "Add reac
       open={open}
       onOpenChange={(next) => {
         setOpen(next);
-        if (next) setRecent(readRecentEmoji());
-        else setQuery("");
+        if (!next) setQuery("");
       }}
     >
-      <PopoverTrigger asChild>
+      {anchor ? <PopoverAnchor asChild>{anchor}</PopoverAnchor> : <PopoverTrigger asChild>
         <Button type="button" variant="ghost" size="icon-sm" aria-label={triggerLabel} title={triggerLabel} disabled={disabled}>
           <SmilePlus aria-hidden="true" />
         </Button>
-      </PopoverTrigger>
+      </PopoverTrigger>}
       <PopoverContent
         align="end"
         className="room-emoji-picker"

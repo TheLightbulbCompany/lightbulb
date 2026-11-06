@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
-import { AtSign, Bold, CaseSensitive, Code, FileText, Italic, Link2, List, ListOrdered, Paperclip, RotateCcw, Send, SquareCode, Strikethrough, X } from "lucide-react";
+import { AtSign, Bold, CaseSensitive, Code, FileText, Italic, Link2, List, ListOrdered, Paperclip, Plus, RotateCcw, Send, SmilePlus, SquareCode, Strikethrough, X } from "lucide-react";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { ApiError, MESSAGE_ATTACHMENT_ACCEPT, MESSAGE_ATTACHMENT_MAX_BYTES, MESSAGE_ATTACHMENT_MAX_COUNT, activeTrigger, applyCompletion, resolveMessageAttachmentContentType, resolveTypedMentions, resolveTypedSessionMentions, respondHint, searchEmoji, sessionMatches, sessionTitle, wrapSelection, type CompletionTrigger, type CreateMessageRequest, type MarkdownStyle, type MessageAttachment, type MessageAttachmentContentType, type MemberRef, type RoomKind, type SessionMentionCandidate, sessionAgentName } from "@lightbulb/shared";
 import { useSuperAgent } from "@/hooks/useLiveEvents";
 import { Button } from "@/components/ui/button";
@@ -48,6 +49,18 @@ export interface RoomComposerProps {
   dropTargetRef?: RefObject<HTMLElement | null>;
   roomKind?: RoomKind;
   runningAgentIds?: readonly string[];
+  /** The viewer: with the super-agent on, whether the formatting bar shows is remembered per person. */
+  viewerId?: string;
+}
+
+/** Super-agent (UX slice 4): the composer rests as one line; Aa shows the formatting bar and the choice is kept per
+ *  person on this browser. ponytail: localStorage; a server preference if it should follow them across devices. */
+const formatKey = (viewerId: string) => `lightbulb.composer.format:${viewerId}`;
+function readFormatOpen(viewerId: string): boolean {
+  try { return localStorage.getItem(formatKey(viewerId)) === "1"; } catch { return false; }
+}
+function writeFormatOpen(viewerId: string, open: boolean): void {
+  try { localStorage.setItem(formatKey(viewerId), open ? "1" : "0"); } catch { /* private mode: this session only */ }
 }
 
 const sameMember = (left: MemberRef, right: MemberRef) => left.kind === right.kind && left.id === right.id;
@@ -131,6 +144,7 @@ function ComposerAttempt({
   dropTargetRef,
   roomKind,
   runningAgentIds = [],
+  viewerId,
   requestFocusAfterSend,
   cancelFocusAfterSend,
   consumeFocusAfterSend,
@@ -179,9 +193,20 @@ function ComposerAttempt({
   const externalDragDepthRef = useRef(0);
   const addAttachmentsRef = useRef<(files: File[]) => void>(() => {});
   const [toolbarIndex, setToolbarIndex] = useState(0);
-  // The formatting bar shows by default (compact, at the top of the box) and
-  // the Aa button collapses it; the keyboard shortcuts work either way.
-  const [formatOpen, setFormatOpen] = useState(true);
+  // Without the super-agent the formatting bar shows by default and Aa collapses it. With it, the box rests as one
+  // line and Aa's choice is remembered per person. The keyboard shortcuts work either way.
+  const compact = superAgent && !!viewerId;
+  const [formatPref, setFormatPref] = useState<{ key: string | null; open: boolean }>(() => ({ key: null, open: true }));
+  const prefKey = compact ? viewerId! : null;
+  if (formatPref.key !== prefKey) setFormatPref({ key: prefKey, open: prefKey ? readFormatOpen(prefKey) : true });
+  const formatOpen = formatPref.open;
+  const setFormatOpen = (open: boolean) => {
+    setFormatPref({ key: prefKey, open });
+    if (prefKey) writeFormatOpen(prefKey, open);
+  };
+  const [pickerOpen, setPickerOpen] = useState(false);
+  // The + menu hands focus to the emoji picker it opens, not back to +.
+  const emojiPending = useRef(false);
   // A successful send rotates clientMessageId and deliberately remounts this
   // attempt. Preserve keyboard focus across that reset when Enter initiated it.
   useLayoutEffect(() => {
@@ -545,47 +570,8 @@ function ComposerAttempt({
   // Who-will-reply matters at the moment of sending, not while the box is empty.
   const showHint = !!hint && hasContent;
 
-  return <form className="room-composer" aria-label={`${label} composer`} aria-busy={pending || retryPending}
-    data-dropping={dropping || undefined}
-    onSubmit={(event) => { event.preventDefault(); submit(); }}
-    onDragEnter={handleFormDragEnter}
-    onDragOver={(event) => { if (carriesFiles(event.dataTransfer)) event.preventDefault(); }}
-    onDragLeave={handleFormDragLeave}
-    onDrop={handleFormDrop}>
-    {formatOpen && <div id={`${fieldId}-format`} className="room-format" role="toolbar" aria-label="Formatting"
-      onKeyDown={(event) => {
-        const count = FORMAT_CONTROLS.length;
-        let next: number;
-        if (event.key === "ArrowRight") next = (toolbarIndex + 1) % count;
-        else if (event.key === "ArrowLeft") next = (toolbarIndex - 1 + count) % count;
-        else if (event.key === "Home") next = 0;
-        else if (event.key === "End") next = count - 1;
-        else return;
-        event.preventDefault();
-        setToolbarIndex(next);
-        toolbarButtons.current[next]?.focus();
-      }}>
-      {FORMAT_CONTROLS.map(({ style, label: controlLabel, Icon, keys }, index) => <Button key={style} type="button" variant="ghost" size="icon-sm"
-        ref={(node) => { toolbarButtons.current[index] = node; }} tabIndex={index === toolbarIndex ? 0 : -1}
-        aria-label={controlLabel} aria-keyshortcuts={keys} title={controlLabel} disabled={!editable}
-        onFocus={() => setToolbarIndex(index)} onClick={() => format(style)}><Icon aria-hidden="true" /></Button>)}
-    </div>}
-    {dropping && <p className="room-drop-hint text-ui text-muted-foreground" role="status">Drop files to attach</p>}
-    <label className="sr-only" htmlFor={fieldId}>{label}</label>
-    {mentionOpen && <TypeaheadList id={`${fieldId}-targets`} label={sessionTargets.length ? "Mention a room member or session" : "Mention a room member"} items={options} activeIndex={activeIndex}
-      optionId={(index) => `${fieldId}-option-${index}`} onHover={setActiveIndex} onPick={(index) => choose(options[index])}
-      renderRow={(entry) => entry.kind === "member" ? <>
-        <ParticipantAvatar participant={entry.member} size="sm" />
-        <span className="min-w-0 flex-1 text-left"><span className="block truncate" title={entry.member.displayName}>{entry.member.displayName}</span>
-          <span className="text-muted-foreground text-ui">{entry.member.mentionHandle ? `@${entry.member.mentionHandle}` : "Person"}</span></span>
-      </> : <>
-        <span className="flex size-8 items-center justify-center rounded-md bg-muted" aria-hidden="true"><SessionToolIcon provider={entry.option.candidate.session.provider} /></span>
-        <span className="min-w-0 flex-1 text-left"><span className="block truncate" title={sessionTitle(entry.option.candidate.session)}>{sessionAgentName(entry.option.candidate.session.provider)} · {sessionTitle(entry.option.candidate.session)}</span>
-          <span className="block truncate text-muted-foreground text-ui">{entry.option.ownerName}{entry.option.candidate.collided ? ` · ${entry.option.candidate.session.cwdName ? `${entry.option.candidate.session.cwdName} · ` : ""}${entry.option.candidate.session.sessionId.slice(0, 8)}` : ""}</span></span>
-      </>} />}
-    {emojiOpen && <TypeaheadList id={`${fieldId}-targets`} label="Insert an emoji" items={emojiOptions} activeIndex={activeIndex}
-      optionId={(index) => `${fieldId}-option-${index}`} onHover={setActiveIndex} onPick={(index) => chooseEmoji(emojiOptions[index].emoji)}
-      renderRow={(entry) => <><span aria-hidden="true" className="text-lg">{entry.emoji}</span><span className="flex-1 text-left truncate">{entry.name}</span></>} />}
+  // The box's parts, laid out as one line (super-agent) or as the classic two rows.
+  const textarea = <>
     <Textarea ref={field} id={fieldId} value={text} disabled={!editable} rows={1} aria-invalid={!!error}
       aria-describedby={`${fieldId}-help ${fieldId}-status${showHint ? ` ${fieldId}-respond` : ""}`} placeholder={placeholder ?? (label === "Reply to thread" ? "Reply to thread…" : "Message the conversation · @ to mention")}
       aria-autocomplete="list" aria-expanded={listOpen} aria-controls={listOpen ? `${fieldId}-targets` : undefined}
@@ -644,6 +630,66 @@ function ComposerAttempt({
           submit(false, true);
         }
       }} />
+  </>;
+  const fileInput = onUploadAttachment && <input ref={attachmentInput} className="sr-only" type="file" accept={MESSAGE_ATTACHMENT_ACCEPT} multiple
+    onChange={(event) => { addAttachments([...event.target.files ?? []]); event.target.value = ""; }} />;
+  const formatButton = <Button type="button" variant="ghost" size="icon-sm" aria-label={formatOpen ? "Hide formatting" : "Show formatting"} aria-pressed={formatOpen}
+    aria-controls={formatOpen ? `${fieldId}-format` : undefined} onClick={() => setFormatOpen(!formatOpen)}><CaseSensitive aria-hidden="true" /></Button>;
+  const mentionButton = <Button type="button" variant="ghost" size="icon-sm" aria-label="Mention someone" aria-expanded={mentionOpen}
+    disabled={!editable} onClick={() => {
+      const caret = field.current?.selectionStart ?? text.length;
+      const needsSpace = caret > 0 && !/\s$/.test(text.slice(0, caret));
+      const next = `${text.slice(0, caret)}${needsSpace ? " " : ""}@${text.slice(caret)}`;
+      const sigil = caret + (needsSpace ? 1 : 0);
+      onTextChange(next);
+      setTrigger({ kind: "mention", start: sigil, end: sigil + 1, query: "" });
+      setActiveIndex(0);
+      requestAnimationFrame(() => { field.current?.focus(); field.current?.setSelectionRange(sigil + 1, sigil + 1); });
+    }}><AtSign aria-hidden="true" /><span className="sr-only">Mention</span></Button>;
+  const sendButton = <Button type="submit" size="icon-sm" className="room-send" disabled={!canSend} aria-label="Send message"><Send aria-hidden="true" /><span className="sr-only">Send</span></Button>;
+
+  return <form className="room-composer" data-compact={compact || undefined} aria-label={`${label} composer`} aria-busy={pending || retryPending}
+    data-dropping={dropping || undefined}
+    onSubmit={(event) => { event.preventDefault(); submit(); }}
+    onDragEnter={handleFormDragEnter}
+    onDragOver={(event) => { if (carriesFiles(event.dataTransfer)) event.preventDefault(); }}
+    onDragLeave={handleFormDragLeave}
+    onDrop={handleFormDrop}>
+    {formatOpen && <div id={`${fieldId}-format`} className="room-format" role="toolbar" aria-label="Formatting"
+      onKeyDown={(event) => {
+        const count = FORMAT_CONTROLS.length;
+        let next: number;
+        if (event.key === "ArrowRight") next = (toolbarIndex + 1) % count;
+        else if (event.key === "ArrowLeft") next = (toolbarIndex - 1 + count) % count;
+        else if (event.key === "Home") next = 0;
+        else if (event.key === "End") next = count - 1;
+        else return;
+        event.preventDefault();
+        setToolbarIndex(next);
+        toolbarButtons.current[next]?.focus();
+      }}>
+      {FORMAT_CONTROLS.map(({ style, label: controlLabel, Icon, keys }, index) => <Button key={style} type="button" variant="ghost" size="icon-sm"
+        ref={(node) => { toolbarButtons.current[index] = node; }} tabIndex={index === toolbarIndex ? 0 : -1}
+        aria-label={controlLabel} aria-keyshortcuts={keys} title={controlLabel} disabled={!editable}
+        onFocus={() => setToolbarIndex(index)} onClick={() => format(style)}><Icon aria-hidden="true" /></Button>)}
+    </div>}
+    {dropping && <p className="room-drop-hint text-ui text-muted-foreground" role="status">Drop files to attach</p>}
+    <label className="sr-only" htmlFor={fieldId}>{label}</label>
+    {mentionOpen && <TypeaheadList id={`${fieldId}-targets`} label={sessionTargets.length ? "Mention a room member or session" : "Mention a room member"} items={options} activeIndex={activeIndex}
+      optionId={(index) => `${fieldId}-option-${index}`} onHover={setActiveIndex} onPick={(index) => choose(options[index])}
+      renderRow={(entry) => entry.kind === "member" ? <>
+        <ParticipantAvatar participant={entry.member} size="sm" />
+        <span className="min-w-0 flex-1 text-left"><span className="block truncate" title={entry.member.displayName}>{entry.member.displayName}</span>
+          <span className="text-muted-foreground text-ui">{entry.member.mentionHandle ? `@${entry.member.mentionHandle}` : "Person"}</span></span>
+      </> : <>
+        <span className="flex size-8 items-center justify-center rounded-md bg-muted" aria-hidden="true"><SessionToolIcon provider={entry.option.candidate.session.provider} /></span>
+        <span className="min-w-0 flex-1 text-left"><span className="block truncate" title={sessionTitle(entry.option.candidate.session)}>{sessionAgentName(entry.option.candidate.session.provider)} · {sessionTitle(entry.option.candidate.session)}</span>
+          <span className="block truncate text-muted-foreground text-ui">{entry.option.ownerName}{entry.option.candidate.collided ? ` · ${entry.option.candidate.session.cwdName ? `${entry.option.candidate.session.cwdName} · ` : ""}${entry.option.candidate.session.sessionId.slice(0, 8)}` : ""}</span></span>
+      </>} />}
+    {emojiOpen && <TypeaheadList id={`${fieldId}-targets`} label="Insert an emoji" items={emojiOptions} activeIndex={activeIndex}
+      optionId={(index) => `${fieldId}-option-${index}`} onHover={setActiveIndex} onPick={(index) => chooseEmoji(emojiOptions[index].emoji)}
+      renderRow={(entry) => <><span aria-hidden="true" className="text-lg">{entry.emoji}</span><span className="flex-1 text-left truncate">{entry.name}</span></>} />}
+    {!compact && textarea}
     {attachments.length > 0 && <div className="room-attachment-previews">{attachments.map((item) => item.preview
       ? <div key={item.key} className="room-image-preview">
         {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -663,26 +709,29 @@ function ComposerAttempt({
     {staleKey && staleNotice === staleKey && <p role="alert" className="text-ui text-warn">
       {staleHandles.map((handle) => `@${handle}`).join(", ")} no longer {staleHandles.length === 1 ? "matches" : "match"} a shared session. Remove it or send anyway.{" "}
       <Button type="button" variant="link" size="sm" className="h-auto p-0" onClick={() => submit(false, true, true)}>Send anyway</Button></p>}
-    <div className="room-composer-actions">
-      {onUploadAttachment && <><input ref={attachmentInput} className="sr-only" type="file" accept={MESSAGE_ATTACHMENT_ACCEPT} multiple
-        onChange={(event) => { addAttachments([...event.target.files ?? []]); event.target.value = ""; }} />
+    {compact ? <div className="room-composer-row">
+      {fileInput}
+      {/* + : attach, and the emoji picker (moved out of the row). */}
+      <EmojiPicker open={pickerOpen} onOpenChange={setPickerOpen} onPick={insertAtCaret} anchor={<span className="room-composer-plus">
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild><Button type="button" variant="ghost" size="icon-sm" aria-label="Add" title="Add" disabled={!editable}><Plus aria-hidden="true" /></Button></DropdownMenuTrigger>
+          <DropdownMenuContent align="start" side="top" onCloseAutoFocus={(event) => { if (emojiPending.current) { event.preventDefault(); emojiPending.current = false; } }}>
+            {onUploadAttachment && <DropdownMenuItem disabled={attachments.length >= MESSAGE_ATTACHMENT_MAX_COUNT} onSelect={() => attachmentInput.current?.click()}>
+              <Paperclip aria-hidden="true" />Attach files</DropdownMenuItem>}
+            <DropdownMenuItem onSelect={() => { emojiPending.current = true; setPickerOpen(true); }}><SmilePlus aria-hidden="true" />Emoji</DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </span>} />
+      {textarea}
+      <div className="room-composer-actions">{formatButton}{mentionButton}{sendButton}</div>
+    </div> : <div className="room-composer-actions">
+      {onUploadAttachment && <>{fileInput}
         <Button type="button" variant="ghost" size="icon-sm" aria-label="Attach files" disabled={!editable || attachments.length >= MESSAGE_ATTACHMENT_MAX_COUNT} onClick={() => attachmentInput.current?.click()}><Paperclip aria-hidden="true" /></Button></>}
-      <Button type="button" variant="ghost" size="icon-sm" aria-label={formatOpen ? "Hide formatting" : "Show formatting"} aria-pressed={formatOpen}
-        aria-controls={formatOpen ? `${fieldId}-format` : undefined} onClick={() => setFormatOpen(!formatOpen)}><CaseSensitive aria-hidden="true" /></Button>
+      {formatButton}
       <EmojiPicker triggerLabel="Insert emoji" disabled={!editable} onPick={insertAtCaret} />
-      <Button type="button" variant="ghost" size="icon-sm" aria-label="Mention someone" aria-expanded={mentionOpen}
-        disabled={!editable} onClick={() => {
-          const caret = field.current?.selectionStart ?? text.length;
-          const needsSpace = caret > 0 && !/\s$/.test(text.slice(0, caret));
-          const next = `${text.slice(0, caret)}${needsSpace ? " " : ""}@${text.slice(caret)}`;
-          const sigil = caret + (needsSpace ? 1 : 0);
-          onTextChange(next);
-          setTrigger({ kind: "mention", start: sigil, end: sigil + 1, query: "" });
-          setActiveIndex(0);
-          requestAnimationFrame(() => { field.current?.focus(); field.current?.setSelectionRange(sigil + 1, sigil + 1); });
-        }}><AtSign aria-hidden="true" /><span className="sr-only">Mention</span></Button>
-      <Button type="submit" size="icon-sm" className="room-send" disabled={!canSend} aria-label="Send message"><Send aria-hidden="true" /><span className="sr-only">Send</span></Button>
-    </div>
+      {mentionButton}
+      {sendButton}
+    </div>}
     {showHint && <p id={`${fieldId}-respond`} className="room-respond-hint text-ui text-muted-foreground">{hint}</p>}
     <p id={`${fieldId}-help`} className={error ? "text-ui text-err" : "sr-only"}>{error || "Enter to send · Shift+Enter for a new line."}</p>
     <p id={`${fieldId}-status`} role="status" className={uncertain ? "text-ui text-warn" : effectiveState === "rejected" ? "text-ui text-err" : "text-ui text-muted-foreground"}>{status}</p>

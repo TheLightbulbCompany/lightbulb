@@ -4,11 +4,14 @@
 // Closed) from the shared `overviewGroups`, so Home can't drift from the words on its rows. Needs you is the
 // complete server read the rail badge counts (useNeedsYouTasks); the rest come from the paged workspace list.
 
-import { useState, type ReactElement, type ReactNode } from "react";
-import { overviewGroups, useAutomations, useOlderTasks, useTaskList, type TaskScope, type TaskSummary } from "@lightbulb/shared";
+import { useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
+import { Clock } from "lucide-react";
+import { deliveryRoomId, overviewGroups, roomDisplayName, useAutomations, useOlderTasks, useTaskList, type AutomationView, type TaskScope, type TaskSummary } from "@lightbulb/shared";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
+import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingWorkspaceContext";
 import { openPanel } from "@/components/workspace/workspaceController";
-import { useAutomationSource } from "./automations";
+import { pushSearchParams } from "@/lib/shellNav";
+import { scheduleWords, useAutomationSource, viewerTimeZone } from "./automations";
 import { NeedsYouItem, OverviewRow } from "./TaskOverview";
 import { useNeedsYouTasks } from "./useRoomThreads";
 
@@ -18,10 +21,12 @@ export const DONE_FOLD = 5;
 
 /** Home, "your company today", top to bottom: Needs you, then the `between` slots (your mentions, Ideas, the feed),
  *  then Working, Done and Closed (collapsed). The slots render while the requests are still loading. */
-export function HomeWork({ viewerId, onOpen, between, asks, askCount = 0 }: {
+export function HomeWork({ viewerId, onOpen, between, asks, askCount = 0, scheduledOpen = false }: {
   viewerId: string; onOpen: (taskId: string) => void; between?: ReactNode;
   /** Open asks that are not tasks (a website sign-in, a browser extension): in Needs you and in its count. */
   asks?: ReactNode; askCount?: number;
+  /** Open the Scheduled group and bring it into view (`?panel=activity&section=scheduled`, an old Automations link). */
+  scheduledOpen?: boolean;
 }): ReactElement {
   const { tasks } = useLiveEvents();
   const { data, error, mutate } = useTaskList(tasks, WORKSPACE);
@@ -41,7 +46,8 @@ export function HomeWork({ viewerId, onOpen, between, asks, askCount = 0 }: {
   const newestFirst = (list: TaskSummary[]) => [...list].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
   const of = (id: "working" | "done" | "closed") => groups.find((g) => g.id === id)?.tasks ?? [];
   const working = of("working"), done = newestFirst(of("done")), closed = newestFirst(of("closed"));
-  const automations = scheduled?.automations.length ?? 0;
+  // Every automation the viewer can see, in every project and DM; the builtin jobs live in Settings › Workspace.
+  const automations = (scheduled?.automations ?? []).filter((a) => !a.id.startsWith("builtin:"));
   return <div className="home-work">
     {/* The one count (useNeedsYouCount): the decision cards here plus the non-task asks, as the badge and Home say. */}
     {needs.loaded ? <section aria-labelledby="home-needs-you">
@@ -75,9 +81,57 @@ export function HomeWork({ viewerId, onOpen, between, asks, askCount = 0 }: {
       {hasOlder && <button type="button" className="justify-self-start text-ui text-muted-foreground underline hover:text-foreground"
         disabled={loading} onClick={() => void loadOlder()}>{loading ? "Loading…" : "Load older tasks"}</button>}
     </>}
-    <p className="text-ui text-muted-foreground">
-      {scheduled ? `${automations} scheduled ${automations === 1 ? "automation" : "automations"}` : "Scheduled work"} ·{" "}
-      <button type="button" className="underline hover:text-foreground" onClick={() => openPanel("teams-routines", {}, { pushUrl: true })}>Automations</button>
-    </p>
+    {/* Work dissolved (UX slice 4): what was scheduled is a group here, and the old task board is one link away. */}
+    {scheduled && <ScheduledGroup automations={automations} initiallyOpen={scheduledOpen} />}
+    <button type="button" className="justify-self-start text-ui text-muted-foreground hover:text-foreground hover:underline"
+      onClick={() => openPanel("teams-issues", {}, { pushUrl: true })}>Older tasks (before 5 Nov) ›</button>
   </div>;
+}
+
+/** Activity's Scheduled group: collapsed by default, one line per automation, and a row opens it in its project's pane
+ *  (`?panel=chat&room=…&pane=automation&pane.id=…`), so a reload restores it. It counts what exists, never "none" beside
+ *  one that does. */
+function ScheduledGroup({ automations, initiallyOpen }: { automations: readonly AutomationView[]; initiallyOpen: boolean }): ReactElement {
+  const [open, setOpen] = useState(initiallyOpen);
+  // A link that asks for the group (again) opens it, adjusted during render; the effect only brings it into view.
+  const [asked, setAsked] = useState(initiallyOpen);
+  if (asked !== initiallyOpen) {
+    setAsked(initiallyOpen);
+    if (initiallyOpen) setOpen(true);
+  }
+  const ref = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (initiallyOpen) ref.current?.scrollIntoView?.({ block: "start" });
+  }, [initiallyOpen]);
+  const rooms = useMessagingWorkspaceOptional()?.directoryProps.rooms;
+  const tz = viewerTimeZone();
+  const where = (a: AutomationView) => {
+    const id = deliveryRoomId(a.deliverTo);
+    const room = id ? rooms?.find((r) => r.roomId === id) : undefined;
+    return room ? roomDisplayName(room, room.participants) : id ? null : "a DM";
+  };
+  const show = (a: AutomationView) => {
+    const roomId = deliveryRoomId(a.deliverTo);
+    if (roomId) pushSearchParams(new URLSearchParams({ panel: "chat", room: roomId, pane: "automation", "pane.id": a.id }));
+    else openPanel("automation", { id: a.id }, { pushUrl: true });
+  };
+  return <section ref={ref} aria-labelledby="home-scheduled">
+    <h2 id="home-scheduled" className="text-ui font-semibold">
+      <button type="button" aria-expanded={open} className="hover:underline" onClick={() => setOpen(!open)}>Scheduled · {automations.length}</button>
+    </h2>
+    {open && (automations.length
+      ? <ul className="mt-1 grid">{automations.map((a) => {
+        const paused = a.status === "paused" || a.status === "paused_system";
+        const line = [where(a), scheduleWords(a, tz)].filter(Boolean).join(" · ");
+        return <li key={a.id}>
+          <button type="button" className="flex min-h-[42px] w-full items-center gap-2 rounded-md px-2 text-left hover:bg-accent" onClick={() => show(a)}>
+            <Clock size={14} aria-hidden="true" className="flex-none text-muted-foreground" />
+            <span className="min-w-0 flex-1 truncate"><span className="font-medium">{a.name}</span>
+              {line && <span className="text-muted-foreground"> — {line}</span>}</span>
+            <span className={paused ? "flex-none text-ui text-warn" : "flex-none text-ui text-muted-foreground"}>{paused ? "Paused" : a.status === "draft" ? "Draft" : "On"}</span>
+          </button>
+        </li>;
+      })}</ul>
+      : <p className="mt-1 text-ui text-muted-foreground">Ask Lightbulb in a project to put recurring work on a schedule, like a weekly summary.</p>)}
+  </section>;
 }

@@ -398,11 +398,13 @@ describe("action slots (UX audit 2, P0)", () => {
 });
 
 describe("one status word, the specialist as the title (audit 02 P2)", () => {
-  it("names the pane after the specialist and says Done once, never \"Done by X · Done\"", async () => {
+  it("one header: the task's title, then the specialist and Done once, never \"Done by X · Done\" (UX slice 4)", async () => {
     const base = { ...step8.task, status: "idle" as const, shownGroup: "idle" as const, watching: false, specialist: "finance" };
     withDetail({ ...step8, task: { ...base, activity: { n: 1, status: "ended" as const, outcome: "completed" } }, questions: [] }, []);
     pane();
-    expect(await screen.findByRole("heading", { level: 3, name: "Finance" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 3, name: step8.task.title })).toBeInTheDocument();
+    expect(within(screen.getByRole("banner")).getByText(/Finance/)).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Close pane" })).toHaveLength(1);
     const status = await screen.findByRole("region", { name: "Task status" });
     expect(screen.getByRole("complementary", { name: "Task" })).not.toHaveTextContent("Done by");
     // The word once, in the header row beside the specialist (UX slice 3), not again in the body.

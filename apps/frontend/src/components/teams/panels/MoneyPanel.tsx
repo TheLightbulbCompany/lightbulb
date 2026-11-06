@@ -30,7 +30,9 @@ export type MoneySectionId = "payments" | "customers" | "products" | "spend";
 
 const MONTH_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 
-export function MoneyPanel({ section, day, onDayCleared }: { section?: MoneySectionId | null; day?: string | null; onDayCleared?: () => void }) {
+/** `embedded`: inside Settings › Business (super-agent), whose column and title it sits under: no masthead of its own,
+ *  no page width. The month's figure stays, as the first line. */
+export function MoneyPanel({ section, day, onDayCleared, embedded = false }: { section?: MoneySectionId | null; day?: string | null; onDayCleared?: () => void; embedded?: boolean }) {
   // The page-level gate reads the same envelope the Payments section reads
   // (same SWR key when unscoped), so it costs no extra request.
   const gate = useCompanyMoney<PaymentRow>("payments");
@@ -58,8 +60,10 @@ export function MoneyPanel({ section, day, onDayCleared }: { section?: MoneySect
   const showStripe = gate.view.kind === "rows" || gate.view.kind === "zero" || gate.view.kind === "loading";
 
   return (
-    <div ref={rootRef} className="editorial-page p-4 sm:p-5 lg:p-6 flex flex-col gap-6 max-w-5xl mx-auto w-full">
-      <PanelMasthead overline="Money" title="Money" meta={mtd && monthName ? `${formatMicrocents(mtd.microcents)} ${mtd.microcents < 0 ? "net" : "landed"} in ${monthName}` : undefined} />
+    <div ref={rootRef} className={embedded ? "flex flex-col gap-6 w-full" : "editorial-page p-4 sm:p-5 lg:p-6 flex flex-col gap-6 max-w-5xl mx-auto w-full"}>
+      {embedded
+        ? mtd && monthName && <p className="text-ui text-muted-foreground tabular-nums">{`${formatMicrocents(mtd.microcents)} ${mtd.microcents < 0 ? "net" : "landed"} in ${monthName}`}</p>
+        : <PanelMasthead overline="Money" title="Money" meta={mtd && monthName ? `${formatMicrocents(mtd.microcents)} ${mtd.microcents < 0 ? "net" : "landed"} in ${monthName}` : undefined} />}
 
       {showStripe ? (
         <>

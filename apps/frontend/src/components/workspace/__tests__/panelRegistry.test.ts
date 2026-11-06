@@ -8,6 +8,8 @@ import {
   DEFAULT_AGENT_SENTINEL,
   MESSAGES_PANEL_ID,
   settingsHrefFor,
+  setSuperAgentAliases,
+  opensInPane,
 } from "../panelRegistry";
 
 describe("panelRegistry", () => {
@@ -169,7 +171,7 @@ describe("panelRegistry", () => {
   });
 
   it("names the clearable PANEL params a plain re-open must reset", () => {
-    expect(clearablePanelParamKeys("activity")).toEqual(["filter", "focus"]);
+    expect(clearablePanelParamKeys("activity")).toEqual(["filter", "focus", "section"]);
     expect(clearablePanelParamKeys("file-viewer")).toEqual(["path", "agent"]);
     expect(clearablePanelParamKeys("agent-inspector")).toEqual(["agentId", "initialTab"]);
     expect(clearablePanelParamKeys("control:agents")).toEqual(["agentId", "initialTab"]);
@@ -220,8 +222,8 @@ describe("panelRegistry", () => {
       panelId: "activity", component: "activity", title: "Activity",
       params: { filter: "needs-you", focus: "paperclip:approval:ap-1" },
     });
-    expect(durableParamsFor("activity")).toEqual(["panel", "filter", "focus"]);
-    expect(clearablePanelParamKeys("activity")).toEqual(["filter", "focus"]);
+    expect(durableParamsFor("activity")).toEqual(["panel", "filter", "focus", "section"]);
+    expect(clearablePanelParamKeys("activity")).toEqual(["filter", "focus", "section"]);
   });
 
   it("describes Mail as a singleton carrying the open item", () => {
@@ -343,5 +345,27 @@ describe("Work page: one dock tab for every task-board page", () => {
     expect(durableParamsFor("teams-work")).toEqual(["panel", "agent", "groupBy", "view", "day", "section"]);
     expect(clearablePanelParamKeys("teams-work")).toEqual(["agent", "groupBy", "view", "day", "section"]);
   });
-});
 
+  it("UX slice 4: Settings is a place with a section, one automation opens in the pane", () => {
+    expect(describePanel("settings", { section: "billing" })).toEqual({ panelId: "settings", component: "settings", title: "Settings", params: { section: "billing" } });
+    expect(describePanel("automation", {})).toBeNull();
+    const automation = describePanel("automation", { id: "a1" })!;
+    expect(automation).toEqual({ panelId: "automation", component: "automation", title: "Scheduled", params: { id: "a1" } });
+    expect(opensInPane(automation)).toBe(true);
+    expect(durableParamsFor("automation")).toEqual(["panel", "id"]);
+    expect(describePanel("activity", { section: "scheduled" })?.params).toEqual({ section: "scheduled" });
+  });
+
+  it("UX slice 4: with the switch on, Work's Money and Automations open Settings › Business and Activity's Scheduled; off, unchanged", () => {
+    expect(describePanel("teams-money", {})?.panelId).toBe("teams-work");
+    expect(describePanel("teams-routines", {})?.panelId).toBe("teams-work");
+    setSuperAgentAliases(true);
+    try {
+      for (const key of ["teams-money", "teams-payments", "teams-customers", "teams-products", "teams-spend"]) {
+        expect(describePanel(key, {})).toEqual({ panelId: "settings", component: "settings", title: "Settings", params: { section: "business" } });
+      }
+      expect(describePanel("teams-routines", {})).toEqual({ panelId: "activity", component: "activity", title: "Activity", params: { section: "scheduled" } });
+      expect(describePanel("teams-issues", {})?.panelId).toBe("teams-work");
+    } finally { setSuperAgentAliases(false); }
+  });
+});

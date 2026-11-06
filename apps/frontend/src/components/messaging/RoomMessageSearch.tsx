@@ -41,12 +41,24 @@ function SearchResults({ roomId, query, countRef, onPick }: { roomId: string; qu
   </>;
 }
 
-export function RoomMessageSearch({ roomId, onSelect }: { roomId: string; onSelect: (hit: MessageSearchHit) => void }) {
+export function RoomMessageSearch({ roomId, onSelect, openToken, hideTrigger = false }: {
+  roomId: string; onSelect: (hit: MessageSearchHit) => void;
+  /** A change opens the dialog (super-agent: ⋯ › Search in project, and ⌘F); 0 or absent opens nothing. */
+  openToken?: number;
+  /** No button of its own (super-agent: the header's ⋯ menu opens it). */
+  hideTrigger?: boolean;
+}) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const selected = useRef<MessageSearchHit | null>(null);
   const countRef = useRef(0);
   const term = query.trim();
+  // Adjusted during render (not an effect): a new token opens the dialog fresh.
+  const [seenToken, setSeenToken] = useState(openToken);
+  if (seenToken !== openToken) {
+    setSeenToken(openToken);
+    if (openToken) { setOpen(true); setQuery(""); }
+  }
 
   const reportSearchCompletion = () => {
     if (!term) return;
@@ -59,7 +71,7 @@ export function RoomMessageSearch({ roomId, onSelect }: { roomId: string; onSele
     setOpen(next);
     if (next) { setQuery(""); selected.current = null; countRef.current = 0; }
   }}>
-    <DialogTrigger asChild><Button type="button" variant="ghost" aria-label="Search this chat"><Search size={18} aria-hidden="true" /><span className="hidden sm:inline">Search</span></Button></DialogTrigger>
+    {!hideTrigger && <DialogTrigger asChild><Button type="button" variant="ghost" aria-label="Search this chat"><Search size={18} aria-hidden="true" /><span className="hidden sm:inline">Search</span></Button></DialogTrigger>}
     <DialogContent showCloseButton className="w-[calc(100%_-_2rem)] max-w-xl shadow-none" onEscapeKeyDown={(event) => event.stopPropagation()} onCloseAutoFocus={(event) => {
       if (!selected.current) return;
       event.preventDefault();

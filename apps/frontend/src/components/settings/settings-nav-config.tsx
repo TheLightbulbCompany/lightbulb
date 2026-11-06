@@ -97,6 +97,22 @@ export const SETTINGS_NAV_SECTIONS: NavSection[] = [
   },
 ];
 
+// Super-agent (UX slice 4): the same Settings inside the shell, in five plain groups, 13 rows. Business (what
+// Work › Money showed) joins Plan; Model's single row folds into Plan; Budgets and Marketplace are not shown.
+const ROW = (id: string) => SETTINGS_NAV_SECTIONS.flatMap((s) => s.items).find((item) => item.id === id)!;
+export const SUPER_AGENT_SETTINGS_NAV_SECTIONS: NavSection[] = [
+  { label: "You", items: [ROW("profile")] },
+  { label: "Workspace", items: [ROW("workspace"), ROW("members"), ROW("approvals")] },
+  { label: "Connect", items: [ROW("connections")] },
+  {
+    label: "Plan",
+    items: [ROW("billing"), ROW("usage"),
+      { id: "business", name: "Business", icon: "business", panel: "business" },
+      { ...ROW("providers"), name: "Model & credits" }],
+  },
+  { label: "Advanced", items: [ROW("skills"), ROW("mcp"), ROW("local-mcp"), ROW("desktop")] },
+];
+
 // =============================================================================
 // Icons
 // =============================================================================
@@ -187,6 +203,13 @@ export function NavIcon({ icon }: { icon: string }) {
           <rect x="14" y="3" width="7" height="7" />
           <rect x="14" y="14" width="7" height="7" />
           <rect x="3" y="14" width="7" height="7" />
+        </svg>
+      );
+    case "business":
+      return (
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="m22 7-8.5 8.5-5-5L2 17" />
+          <path d="M16 7h6v6" />
         </svg>
       );
     case "skills":

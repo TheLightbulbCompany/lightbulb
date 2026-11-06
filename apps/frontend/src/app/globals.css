@@ -350,6 +350,9 @@
     0 12px 32px color-mix(in srgb, var(--midnight) 10%, transparent);
   --shadow-lift: 0 16px 40px color-mix(in srgb, var(--midnight) 10%, transparent);
 
+  /* Frame A (UX slice 4): every list page (Home, Activity, Settings) is one centred column this wide. */
+  --frame-doc: 880px;
+
   --midnight: #0F1A2B;              /* headers, dark UI, all body copy on cream */
   --cream: #F5EFE2;                 /* default light ground; never pure white */
   --bulb: #F0C34E;                  /* the light — one accent at a time */
@@ -483,6 +486,13 @@
   text-transform: uppercase;
   color: var(--midnight-label);
 }
+
+/* Frame A: a list page's column (max --frame-doc, centred) and its 56-tall title row, the title 24/30/600 with the
+   one primary action on the same line to its right. CSS only; the pages keep their own markup. */
+.frame-doc { width: 100%; max-width: calc(var(--frame-doc) + 2 * max(24px, 4vw)); margin-inline: auto; padding-inline: max(24px, 4vw); }
+.frame-doc__title { display: flex; align-items: center; gap: 8px; min-height: 56px; margin-bottom: 8px; }
+.frame-doc__title > h1 { margin-right: auto; min-width: 0; font-size: 24px; line-height: 30px; font-weight: 600; color: var(--foreground); }
+@media (max-width: 599px) { .frame-doc { padding-inline: 16px; max-width: calc(var(--frame-doc) + 32px); } }
 
 @layer utilities {
   .bg-noise {

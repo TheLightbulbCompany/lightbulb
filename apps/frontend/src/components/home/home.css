@@ -1,7 +1,10 @@
 /* Home (super-agent): Ask Lightbulb, the Lightbulb DM, then the projects. One column, scrolls as one.
    Every grid here names a minmax(0, 1fr) track: an implicit `auto` track grows to its widest one-line preview
    (truncate is nowrap), which pushed Ask, New project and the cards off to the side (dev walk W8-2). */
-.home-projects { display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 24px; width: 100%; max-width: 760px; height: 100%; margin: 0 auto; padding: 24px 16px 32px; overflow-y: auto; }
+.home-projects { height: 100%; overflow-y: auto; }
+/* Frame A (.frame-doc, 880): the page scrolls as one; the column holds the title row and the sections. */
+.home-projects__col { display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 24px; padding-block: 8px 32px; }
+.home-projects__col > .frame-doc__title { margin-bottom: -8px; }
 .home-projects__needs { display: flex; align-items: center; gap: 8px; justify-self: start; min-height: 32px; padding: 0 12px; border: 1px solid var(--edge); border-radius: 999px; font-size: var(--text-ui); color: var(--muted-foreground); }
 .home-projects__needs:hover { background: var(--muted); color: var(--foreground); }
 .home-projects__dot { display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 9999px; background: var(--warn); flex: none; vertical-align: middle; }
@@ -29,7 +32,7 @@
 .home-projects__new,
 .home-projects__start { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 12px 16px; border: 1px dashed var(--edge); border-radius: 12px; }
 @media (max-width: 859px), (pointer: coarse) {
-  .home-projects { padding: 16px 12px 24px; }
+  .home-projects__col { padding-block: 8px 24px; }
   .home-projects__needs, .home-projects__search { min-height: 44px; }
   .home-projects__ask input, .home-projects__search input { font-size: 16px; }
   .home-projects__dm { flex-wrap: wrap; }

@@ -508,23 +508,10 @@
   .workspace-shell[data-super-agent="true"] .workspace-phone-bar button:hover { background: var(--cream-deeper); color: var(--midnight); }
   .workspace-shell[data-super-agent="true"] .workspace-phone-bar button:focus-visible { outline: 2px solid var(--midnight); outline-offset: -2px; }
 }
-/* Where the main view (360) and the pane (320) cannot both keep their minimums side by side, the pane opens as a
-   sheet over the main view (a modal dialog with its close button, RightPane). Full screen still puts it beside the
-   chat column. Super-agent: rail 56 + 360 + 320 = 736 px (no sidebar column below 1000 px), and a request pane there
-   carries its own steer line. Without it: rail 56 + sidebar 220 + 360 + 320 = 956 px. Keep PANE_SHEET_QUERIES in sync. */
-@media (min-width: 600px) and (max-width: 735px) {
-  .workspace-shell[data-super-agent="true"] .workspace-body:not([data-full]) > .workspace-pane {
-    position: absolute;
-    inset: 0;
-    z-index: var(--z-chrome);
-    width: auto !important;
-    min-width: 0;
-    max-width: none;
-  }
-  .workspace-shell[data-super-agent="true"] .workspace-body:not([data-full]) > .workspace-pane > .workspace-pane__resize { display: none; }
-  .workspace-shell[data-super-agent="true"] .workspace-body[data-full] > .workspace-view--chat { flex: 0 1 360px; }
-  .workspace-shell[data-super-agent="true"] .workspace-body[data-full] > .workspace-pane { min-width: 0; }
-}
+/* Without the super-agent: where the main view (360) and the pane (320) cannot both keep their minimums side by side,
+   the pane opens as a sheet over the main view (a modal dialog with its close button, RightPane). Full screen still puts
+   it beside the chat column. Rail 56 + sidebar 220 + 360 + 320 = 956 px. Keep PANE_SHEET_QUERIES in sync.
+   Super-agent: RightPane marks the sheet itself (data-sheet), below. */
 @media (min-width: 600px) and (max-width: 955px) {
   .workspace-shell:not([data-super-agent="true"]) .workspace-body:not([data-full]) > .workspace-pane {
     position: absolute;
@@ -538,6 +525,127 @@
   .workspace-shell:not([data-super-agent="true"]) .workspace-body[data-full] > .workspace-view--chat { flex: 0 1 360px; }
   .workspace-shell:not([data-super-agent="true"]) .workspace-body[data-full] > .workspace-pane { min-width: 0; }
 }
+/* ── Super-agent pane (UX slice 4) ─────────────────────────────────────────
+   One header (PaneHeader), the list width (stored) or the item width (computed), and below 1000 px — or wherever the
+   main column would drop under 360 — an overlay sheet from the right over a scrim, so it never squeezes the transcript. */
+@media (min-width: 600px) {
+  .workspace-shell[data-super-agent="true"] .workspace-pane { min-width: 360px; }
+  .workspace-shell[data-super-agent="true"] .workspace-body:not([data-full]) > .workspace-pane:not([data-sheet]) {
+    transition: width 200ms var(--ease-drawer);
+  }
+  .workspace-shell[data-super-agent="true"] .workspace-pane[data-item]:not([data-sheet]) { min-width: 520px; }
+  .workspace-shell[data-super-agent="true"] .workspace-pane[data-sheet] {
+    position: absolute;
+    inset: 0 0 0 auto;
+    z-index: var(--z-overlay);
+    width: min(520px, 100% - 56px);
+    min-width: 0;
+    max-width: none;
+    box-shadow: var(--shadow-lift);
+    animation: pane-sheet-in 200ms var(--ease-drawer);
+  }
+  .workspace-pane-scrim {
+    position: absolute;
+    inset: 0;
+    z-index: var(--z-overlay);
+    background: color-mix(in srgb, var(--midnight) 24%, transparent);
+  }
+}
+@keyframes pane-sheet-in { from { transform: translateX(24px); opacity: 0; } }
+@media (max-width: 599px) { .workspace-pane-scrim { display: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .workspace-shell[data-super-agent="true"] .workspace-pane { transition: none !important; animation: none !important; }
+}
+.pane-header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 48px;
+  padding: 0 8px 0 16px;
+  border-bottom: 1px solid var(--edge);
+}
+.pane-header__crumb {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 28px;
+  margin-left: -8px;
+  padding: 0 6px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--midnight-muted);
+  transition: background-color 120ms var(--ease-out), color 120ms var(--ease-out);
+}
+.pane-header__title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 15px;
+  line-height: 22px;
+  font-weight: 600;
+  color: var(--midnight);
+  outline: none;
+}
+.pane-header__meta {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--midnight-muted);
+  font-variant-numeric: tabular-nums;
+}
+.pane-header__actions { display: flex; align-items: center; gap: 4px; margin-left: auto; flex: none; }
+.pane-header__icon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  color: var(--midnight-muted);
+  transition: background-color 120ms var(--ease-out), color 120ms var(--ease-out);
+}
+.pane-header__crumb:hover,
+.pane-header__icon:hover { background: var(--cream-deeper); color: var(--midnight); }
+.pane-header__crumb:focus-visible,
+.pane-header__icon:focus-visible { outline: 2px solid var(--midnight); outline-offset: 1px; }
+@media (pointer: coarse) { .pane-header__icon, .pane-header__crumb { min-width: 44px; min-height: 44px; } }
+
+/* Super-agent rail: the place you are in is filled, set in 600 and marked by a 2 px rule on its left edge; hover is a
+   lighter fill, so the two never read alike. A project (the Chat place) lights nothing. */
+.workspace-shell[data-super-agent="true"] .workspace-rail > button,
+.workspace-shell[data-super-agent="true"] .workspace-rail > a { position: relative; transition: background-color 120ms var(--ease-out), color 120ms var(--ease-out); }
+.workspace-shell[data-super-agent="true"] .workspace-rail > button:hover,
+.workspace-shell[data-super-agent="true"] .workspace-rail > a:hover { background: color-mix(in srgb, var(--midnight) 5%, transparent); }
+.workspace-shell[data-super-agent="true"] .workspace-rail > button[aria-current="page"] { background: var(--cream-deeper); color: var(--midnight); }
+.workspace-shell[data-super-agent="true"] .workspace-rail > button[aria-current="page"] span { font-weight: 600; }
+.workspace-shell[data-super-agent="true"] .workspace-rail > button[aria-current="page"]::before {
+  content: "";
+  position: absolute;
+  left: -4px;
+  top: 8px;
+  bottom: 8px;
+  width: 2px;
+  border-radius: 0 2px 2px 0;
+  background: var(--midnight);
+}
+
+/* Super-agent sidebar rows: 32 tall on a 34 pitch, the row ⋯ 24 inside the row (44 under a coarse pointer); section
+   heads 13/18/500 muted. */
+@media (pointer: fine) {
+  .workspace-shell[data-super-agent="true"] .room-directory-entry { min-height: 32px; }
+  .workspace-shell[data-super-agent="true"] .room-directory-actions { width: 24px; height: 24px; min-width: 24px; padding: 0; }
+  .workspace-shell[data-super-agent="true"] .room-directory-row--roster::after { width: 24px; }
+}
+.workspace-shell[data-super-agent="true"] .room-directory-row + .room-directory-row { margin-top: 2px; }
+.workspace-shell[data-super-agent="true"] .room-directory-group { font-size: 13px; line-height: 18px; font-weight: 500; letter-spacing: 0; }
+
 /* Phone widths: one column. The rail and the sidebar leave the grid and open
    together as a drawer from .workspace-phone-bar (WorkspaceShell's navOpen). */
 .workspace-phone-bar,

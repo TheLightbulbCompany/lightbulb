@@ -355,14 +355,16 @@ it("without the super-agent the drawer is the phone one: no modal sidebar, rail 
 
 it("a pane that is a sheet is a modal dialog: what it covers is inert and Escape closes it", () => {
   state.superAgent = true;
-  stubMedia((q) => q === "(max-width: 735px)");
+  stubMedia((q) => q === "(max-width: 999px)");
   try {
     const view = renderReady();
     act(() => openPanel("file-viewer"));
     const pane = view.container.querySelector(".workspace-pane")!;
     expect(pane).toHaveAttribute("role", "dialog");
     expect(pane).toHaveAttribute("aria-modal", "true");
-    const covered = [...pane.parentElement!.children].filter((c) => c !== pane);
+    // The scrim sits over what the sheet covers (and closes it on a click); everything else is inert.
+    expect(view.container.querySelector(".workspace-pane-scrim")).not.toBeNull();
+    const covered = [...pane.parentElement!.children].filter((c) => c !== pane && !c.classList.contains("workspace-pane-scrim"));
     expect(covered.length).toBeGreaterThan(0);
     covered.forEach((c) => expect(c).toHaveAttribute("inert"));
     fireEvent.keyDown(pane, { key: "Escape" });
@@ -389,7 +391,7 @@ it("a sidebar-only drawer that narrows to a phone becomes the phone drawer: the 
 
 it("a sheet takes focus on open, hands it back to its opener on close, and covers views that mount while it is open", async () => {
   state.superAgent = true;
-  stubMedia((q) => q === "(max-width: 735px)");
+  stubMedia((q) => q === "(max-width: 999px)");
   const opener = document.createElement("button");
   opener.textContent = "Open files";
   document.body.appendChild(opener);
@@ -408,4 +410,43 @@ it("a sheet takes focus on open, hands it back to its opener on close, and cover
     expect(opener).toHaveFocus();
     late.remove();
   } finally { opener.remove(); state.superAgent = false; vi.unstubAllGlobals(); }
+});
+
+it("UX slice 4, super-agent: /chat with nothing named lands on Home, and the sidebar shows in every place", () => {
+  state.superAgent = true;
+  try {
+    const view = renderReady();
+    expect(getWorkspaceSnapshot().place).toBe("home");
+    expect(new URLSearchParams(window.location.search).get("panel")).toBe("home");
+    expect(shellOf(view)).toHaveAttribute("data-sidebar", "true");
+    for (const key of ["activity", "teams-agents", "settings"]) {
+      act(() => openPanel(key));
+      expect(shellOf(view)).toHaveAttribute("data-sidebar", "true");
+    }
+    expect(getWorkspaceSnapshot().place).toBe("settings");
+  } finally { state.superAgent = false; }
+});
+
+it("UX slice 4, switch off: the sidebar stays Chat's alone and /chat opens the conversation", () => {
+  const view = renderReady();
+  expect(getWorkspaceSnapshot().place).toBe("chat");
+  act(() => openPanel("activity"));
+  expect(shellOf(view)).toHaveAttribute("data-sidebar", "false");
+});
+
+it("UX slice 4: a task opens at the item width (not stored); the list keeps its stored width", () => {
+  state.superAgent = true;
+  window.localStorage.setItem(paneWidthKey("user_1"), "500");
+  try {
+    const view = renderReady();
+    act(() => openPanel("task-detail", { taskId: "t1" }));
+    const pane = view.container.querySelector<HTMLElement>(".workspace-pane")!;
+    expect(pane).toHaveAttribute("data-item", "true");
+    expect(pane.style.width).toBe("clamp(520px, 50%, 60%)");
+    // No resize handle on an item, and the stored list width is untouched.
+    expect(pane.querySelector(".workspace-pane__resize")).toBeNull();
+    expect(window.localStorage.getItem(paneWidthKey("user_1"))).toBe("500");
+    act(() => openPanel("file-viewer"));
+    expect(view.container.querySelector<HTMLElement>(".workspace-pane")!.style.width).toBe("500px");
+  } finally { state.superAgent = false; }
 });

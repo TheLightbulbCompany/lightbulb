@@ -40,7 +40,8 @@ import { RightPane } from "./RightPane";
 import { WorkspaceSidebar } from "./WorkspaceSidebar";
 import { WorkspaceHeader } from "./WorkspaceHeader";
 import { InvitePeopleDialog } from "./InvitePeopleDialog";
-import { MESSAGES_PANEL_ID, resolvePanelAlias, type PanelKind } from "./panelRegistry";
+import { MESSAGES_PANEL_ID, resolvePanelAlias, setSuperAgentAliases, type PanelKind } from "./panelRegistry";
+import { parseCommand } from "./urlChannel";
 import { deriveReconcilerAction, isCommandTargetOpen } from "./workspaceShellReconciler";
 import {
   attachShell,
@@ -243,6 +244,22 @@ function AuthenticatedWorkspace({ workspaceName }: { workspaceName: string }): R
     }
   }, []);
 
+  // Super-agent (UX slice 4): Work's keys open their new homes (panelRegistry's aliases), and /chat with nothing
+  // named lands on Home, not a conversation. The switch arrives with the live config, often after the first
+  // reconcile, so the URL is reconciled again once it does.
+  useEffect(() => {
+    setSuperAgentAliases(superAgent);
+    if (!superAgent || !getWorkspaceSnapshot().ready) return;
+    lastAppliedRef.current = null;
+    runReconciler(window.location.search);
+    const { place, chatParams } = getWorkspaceSnapshot();
+    if (!parseCommand(window.location.search) && place === "chat" && !chatParams.roomId && !chatParams.sessionId) {
+      openPanel("home");
+      replaceSearchParams(new URLSearchParams({ panel: "home" }));
+    }
+    return () => setSuperAgentAliases(false);
+  }, [superAgent, runReconciler]);
+
   useEffect(() => {
     // searchParams is the re-run TRIGGER only. Reconcile against the LIVE
     // window.location.search: a strip via replaceSearchParams (History API)
@@ -324,8 +341,9 @@ function AuthenticatedWorkspace({ workspaceName }: { workspaceName: string }): R
             <ChatHistorySync />
             <InvitePeopleDialog />
             <div className="workspace-shell" ref={shellRef} data-nav-open={navOpen}
-              // Only Chat has a sidebar; full screen folds it into the chat column.
-              data-sidebar={place === "chat" && !fullScreen} data-super-agent={superAgent || undefined}
+              // Without the super-agent only Chat has a sidebar; with it, every place does (UX slice 4). Full screen folds it
+              // into the chat column.
+              data-sidebar={(superAgent || place === "chat") && !fullScreen} data-super-agent={superAgent || undefined}
               onKeyDown={navOpen ? (e) => { if (e.key === "Escape") closeNav(); else trapTab(e, drawerParts()); } : undefined}>
               {/* Before the drawer in the DOM, so the drawer paints over it. */}
               <div className="workspace-nav-backdrop" onClick={closeNav} />

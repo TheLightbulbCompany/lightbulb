@@ -16,6 +16,7 @@ const copyText = vi.hoisted(() => vi.fn(async () => true));
 vi.mock("@/components/messaging/messageLinks", async (importOriginal) => ({ ...await importOriginal<typeof import("@/components/messaging/messageLinks")>(), copyText }));
 
 import { TaskOverview } from "../TaskOverview";
+import { ScheduledList } from "../ScheduledList";
 
 let client: FakeTasksClient;
 let swr: ReturnType<typeof useSWRConfig>;
@@ -99,18 +100,22 @@ describe("TaskOverview", () => {
     expect(await screen.findByRole("status")).toHaveTextContent("Link copied");
   });
 
-  it("scheduled tab shows the empty state until automations exist", async () => {
+  it("no Scheduled tab: scheduled work is its own view (UX slice 4)", async () => {
     overview();
-    await userEvent.click(await screen.findByRole("tab", { name: "Scheduled" }));
+    await screen.findByText(/Needs you/);
+    expect(screen.queryByRole("tab", { name: "Scheduled" })).toBeNull();
+  });
+
+  it("the Scheduled view shows the empty state until automations exist", async () => {
+    render(<Fresh><ScheduledList scope={room} onOpen={vi.fn()} /></Fresh>);
     expect(await screen.findByText("Ask @lightbulb to put recurring work on a schedule.")).toBeInTheDocument();
     expect(apiGet).toHaveBeenCalledWith("/automations");
     expect(client.cacheScope).toBe("org_test"); // the SWR key carries it: ["automations", cacheScope]
   });
 
-  it("scheduled tab: a failed read says so with Retry, never the empty prompt", async () => {
+  it("the Scheduled view: a failed read says so with Retry, never the empty prompt", async () => {
     apiGet.mockRejectedValueOnce(new Error("503"));
-    overview();
-    await userEvent.click(await screen.findByRole("tab", { name: "Scheduled" }));
+    render(<Fresh><ScheduledList scope={room} onOpen={vi.fn()} /></Fresh>);
     expect(await screen.findByRole("alert")).toHaveTextContent("Schedules couldn't load.");
     expect(screen.queryByText("Ask @lightbulb to put recurring work on a schedule.")).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "Retry" }));

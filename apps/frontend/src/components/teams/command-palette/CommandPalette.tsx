@@ -12,6 +12,7 @@ import { Dialog as DialogPrimitive } from "radix-ui";
 import { Dialog, DialogPortal, DialogTitle } from "@/components/ui/dialog";
 import { Search } from "lucide-react";
 import { filterNavActions, type CommandPaletteAction } from "./commandPaletteActions";
+import { useSuperAgent } from "@/hooks/useLiveEvents";
 import { navigateShell, teamsDetailUrl } from "@/lib/shellNav";
 import { agentInspectorUrl } from "@/components/teams/shared/lib/agentInspectorUrl";
 import { useFilteredCommandResults } from "./useFilteredCommandResults";
@@ -76,9 +77,10 @@ function CommandPaletteContent({ open, onOpenChange }: CommandPaletteProps) {
   const [query, setQuery] = useState("");
   const [rawSelectedIndex, setSelectedIndex] = useState(0);
 
+  const superAgent = useSuperAgent();
   const navResults = useMemo(
-    () => filterNavActions(query),
-    [query],
+    () => filterNavActions(query, superAgent),
+    [query, superAgent],
   );
   const { agents, issues, projects } = useFilteredCommandResults(query, open);
   const conversations = useRoomCommandResults(query, open);

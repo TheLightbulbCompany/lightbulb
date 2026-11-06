@@ -1,7 +1,7 @@
 "use client";
 
 import { useId, useRef, useState, type ReactNode } from "react";
-import { Archive, ArchiveRestore, Bell, BellOff, Folder, Link, LogOut, MessageCircle, Mic, MoreHorizontal, Pencil, Pin, Star, Trash2, UserPlus, Users } from "lucide-react";
+import { Archive, ArchiveRestore, Bell, BellOff, ChevronDown, Folder, Info, Link, LogOut, MessageCircle, Mic, MoreHorizontal, Pencil, Pin, Star, Trash2, UserPlus, Users } from "lucide-react";
 import { liveMarker, ROOM_TOPIC_MAX_CHARS, type MemberPrefsRequest, type RoomSummary } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -44,6 +44,10 @@ interface RoomHeaderProps {
   onLeaveRoom?: () => Promise<void>;
   onSetArchived?: (archived: boolean) => Promise<void>;
   onDeleteRoom?: () => Promise<void>; // passed only to the channel's owner
+  /** Super-agent (UX slice 4): name ▾ on the left holds the project's own things (details, people, mute, link,
+   *  archive, leave, delete); on the right only `views` (Tasks · Files · Scheduled) and ⋯ with `toolItems`. */
+  compact?: boolean;
+  toolItems?: ReactNode;
 }
 
 function liveNames(userIds: readonly string[], participants: readonly RoomParticipant[]) {
@@ -74,6 +78,8 @@ export function RoomHeader({
   onLeaveRoom,
   onSetArchived,
   onDeleteRoom,
+  compact = false,
+  toolItems,
 }: RoomHeaderProps) {
   const id = useId();
   const huddle = useHuddle();
@@ -108,7 +114,7 @@ export function RoomHeader({
     setTopicDraft(room?.topic ?? "");
   }
 
-  function restoreOptionsFocus() { optionsTrigger.current?.focus(); }
+  function restoreOptionsFocus() { (compact ? topicTrigger : optionsTrigger).current?.focus(); }
 
   function cancelTopicEdit() {
     reset();
@@ -121,82 +127,21 @@ export function RoomHeader({
   const faces = counterparts.slice(0, FACES);
   const overflow = Math.max(0, participantCount - faces.length);
 
-  return <header className="room-header">
-    <div className="room-title">
-      {room?.kind === "dm" && counterparts.length === 1
-        ? <ParticipantAvatar participant={counterparts[0]} size="sm" />
-        : <Icon size={20} aria-hidden="true" />}
-      <h2 className="font-semibold text-lg truncate" title={roomName}>{roomName}</h2>
-      {huddlers.length > 0 && !(huddle.room && huddle.roomId === room?.roomId) && <span className="room-topic room-live" role="status"><span aria-hidden="true" className="room-live-dot" />{liveMarker(liveNames(huddlers, participants))}</span>}
-      {room?.shared && <span className="room-directory-tag" title="Shared between this workspace and Lightbulb">Shared</span>}
-      {editingTopic ? <form className="room-topic-form" onSubmit={(event) => {
-        event.preventDefault();
-        void run(async () => { await onSetTopic!(topicDraft.trim() || null); }, "The topic could not be saved.", () => setEditingTopic(false));
-      }}>
-        <label className="sr-only" htmlFor={`${id}-topic`}>Topic</label>
-        <input id={`${id}-topic`} className="room-input" autoFocus maxLength={ROOM_TOPIC_MAX_CHARS} value={topicDraft} disabled={pending}
-          onChange={(event) => setTopicDraft(event.target.value)}
-          onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); cancelTopicEdit(); } }} />
-        <Button type="submit" size="sm" disabled={pending}>{pending ? "Saving…" : "Save"}</Button>
-        <Button type="button" variant="ghost" size="sm" disabled={pending} onClick={cancelTopicEdit}>Cancel</Button>
-      </form> : ((onSetTopic && canEditRoom) || room?.topic) ? <>
-        <span aria-hidden="true" className="room-topic-dot">·</span>
-        {onSetTopic && canEditRoom
-          ? <Button ref={topicTrigger} type="button" variant="ghost" className="room-topic" disabled={!actionable}
-              aria-label={room?.topic ? "Edit topic" : "Add a topic"} onClick={() => { reset(); setEditingTopic(true); }}>
-              {room?.topic ? <span className="truncate">{room.topic}</span> : <><Pencil size={12} aria-hidden="true" />Add a topic</>}
-            </Button>
-          : <span className="room-topic truncate" title={room?.topic ?? undefined}>{room?.topic}</span>}
-      </> : null}
-    </div>
-    <div className="room-audience">
-      {search}
-      {/* While Live, the strip stands in for Go live: in full here, as "Live in #x — Return" in any other room. */}
-      <LiveStrip roomId={room?.roomId} members={participants} />
-      {/* Every room kind; a room with no listening agent is a people-only voice room (no Lightbulb). */}
-      {!huddle.room && room && huddlesOn && !room.guest && (
-        <Button type="button" variant="ghost" size="sm" disabled={Boolean(huddle.joining)}
-          onClick={() => void huddle.join(room.roomId, roomName)}>
-          <Mic className="h-4 w-4" aria-hidden="true" /> {huddle.joining === room.roomId ? "Joining…" : "Go live"}
-        </Button>
-      )}
-      {onQuickAddPeople && <Button type="button" variant="outline" size="sm" disabled={!actionable} onClick={onQuickAddPeople}>
-        <UserPlus size={14} aria-hidden="true" />Add people
-      </Button>}
-      {pinnedCount > 0 && <Button type="button" variant="ghost" size="sm"
-        aria-label={`${pinnedCount} pinned ${pinnedCount === 1 ? "message" : "messages"}`} onClick={() => onOpenDetails("pins")}>
-        <Pin size={14} aria-hidden="true" />{pinnedCount}</Button>}
-      <Button type="button" variant="ghost" className="room-facepile" aria-label={`People, ${participantCount} here`} title="People"
-        onClick={() => onOpenDetails("members")}>
-        {faces.map((participant) => <ParticipantAvatar key={`${participant.kind}:${participant.id}`} participant={participant} size="sm" showPresence={false} />)}
-        {overflow > 0 && <span className="room-facepile-more text-ui text-muted-foreground">+{overflow}</span>}
-      </Button>
-      {views}
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild><Button ref={optionsTrigger} type="button" variant="ghost" size="icon" aria-label="Options" title="More"><MoreHorizontal aria-hidden="true" /></Button></DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
-          {onSetPrefs && <DropdownMenuItem disabled={!actionable || pending}
-            onSelect={() => void run(async () => { await onSetPrefs({ starred: !room?.starred }); }, "The star could not be saved.")}>
-            <Star aria-hidden="true" fill={room?.starred ? "currentColor" : "none"} />{room?.starred ? "Unstar" : "Star"}</DropdownMenuItem>}
-          {onSetPrefs && <DropdownMenuItem disabled={!actionable || pending}
-            onSelect={() => void run(async () => { await onSetPrefs({ muted: !room?.muted }); }, "The notification setting could not be saved.")}>
-            {room?.muted ? <Bell aria-hidden="true" /> : <BellOff aria-hidden="true" />}{room?.muted ? "Unmute" : "Mute"}</DropdownMenuItem>}
-          <DropdownMenuItem onSelect={() => void copyText(roomPermalink(room?.roomId ?? ""))}><Link aria-hidden="true" />Copy link</DropdownMenuItem>
-          {onRenameRoom && canEditRoom && !room?.shared && <DropdownMenuItem onSelect={() => { reset(); setNameDraft(room?.name ?? ""); setRenaming(true); }}><Pencil aria-hidden="true" />Rename</DropdownMenuItem>}
-          {onAddPeople && <DropdownMenuItem onSelect={onAddPeople}><Users aria-hidden="true" />Add people</DropdownMenuItem>}
-          {menuItems}
-          <DropdownMenuItem onSelect={() => onOpenDetails("about")}>Details</DropdownMenuItem>
-          {canArchive && (room?.archivedAt
-            ? <DropdownMenuItem onSelect={() => void run(async () => { await onSetArchived!(false); }, `The ${noun} could not be unarchived.`)}><ArchiveRestore aria-hidden="true" />Unarchive {noun}</DropdownMenuItem>
-            : <DropdownMenuItem onSelect={() => { reset(); setArchiving(true); }}><Archive aria-hidden="true" />Archive {noun}</DropdownMenuItem>)}
-          {((onLeaveRoom && canLeave) || ownerCannotLeave) && <><DropdownMenuSeparator />
-            <DropdownMenuItem variant="destructive" onSelect={() => { reset(); setLeaving(true); }}><LogOut aria-hidden="true" />Leave</DropdownMenuItem></>}
-          {canDelete && <><DropdownMenuSeparator />
-            <DropdownMenuItem variant="destructive" onSelect={() => { reset(); setDeleteDraft(""); setDeleting(true); }}><Trash2 aria-hidden="true" />Delete project</DropdownMenuItem></>}
-        </DropdownMenuContent>
-      </DropdownMenu>
-    </div>
-    {error && !renaming && !leaving && !archiving && !deleting && <p role="alert" className="room-header-error text-ui text-err">{error}</p>}
+  const live = huddlers.length > 0 && !(huddle.room && huddle.roomId === room?.roomId)
+    ? <span className="room-topic room-live" role="status"><span aria-hidden="true" className="room-live-dot" />{liveMarker(liveNames(huddlers, participants))}</span> : null;
+  const topicForm = editingTopic && <form className="room-topic-form" onSubmit={(event) => {
+    event.preventDefault();
+    void run(async () => { await onSetTopic!(topicDraft.trim() || null); }, "The topic could not be saved.", () => setEditingTopic(false));
+  }}>
+    <label className="sr-only" htmlFor={`${id}-topic`}>Topic</label>
+    <input id={`${id}-topic`} className="room-input" autoFocus maxLength={ROOM_TOPIC_MAX_CHARS} value={topicDraft} disabled={pending}
+      onChange={(event) => setTopicDraft(event.target.value)}
+      onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); cancelTopicEdit(); } }} />
+    <Button type="submit" size="sm" disabled={pending}>{pending ? "Saving…" : "Save"}</Button>
+    <Button type="button" variant="ghost" size="sm" disabled={pending} onClick={cancelTopicEdit}>Cancel</Button>
+  </form>;
+  const goLive = !huddle.room && room && huddlesOn && !room.guest;
+  const dialogs = <>
     <Dialog open={renaming} onOpenChange={(open) => { if (!open && !pending) { setRenaming(false); reset(); } }}>
       <DialogContent className="max-w-[calc(100%-2rem)] sm:max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto"
         onOpenAutoFocus={(event) => { event.preventDefault(); renameInput.current?.focus(); }}
@@ -288,5 +233,137 @@ export function RoomHeader({
         </form>
       </DialogContent>
     </Dialog>
+  </>;
+
+  if (compact) return <header className="room-header" data-compact="">
+    <div className="room-title">
+      {room?.kind === "dm" && counterparts.length === 1
+        ? <ParticipantAvatar participant={counterparts[0]} size="sm" />
+        : <Icon size={20} aria-hidden="true" />}
+      <DropdownMenu>
+        <h2 className="room-name-menu"><DropdownMenuTrigger asChild>
+          <button ref={topicTrigger} type="button" title={roomName}><span className="truncate">{roomName}</span><ChevronDown size={14} aria-hidden="true" /></button>
+        </DropdownMenuTrigger></h2>
+        <DropdownMenuContent align="start">
+          <DropdownMenuItem onSelect={() => onOpenDetails("about")}><Info aria-hidden="true" />Details</DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => onOpenDetails("members")}><Users aria-hidden="true" />People</DropdownMenuItem>
+          {onAddPeople && <DropdownMenuItem onSelect={onAddPeople}><UserPlus aria-hidden="true" />Add people</DropdownMenuItem>}
+          {onRenameRoom && canEditRoom && !room?.shared && <DropdownMenuItem onSelect={() => { reset(); setNameDraft(room?.name ?? ""); setRenaming(true); }}><Pencil aria-hidden="true" />Rename</DropdownMenuItem>}
+          {onSetTopic && canEditRoom && <DropdownMenuItem disabled={!actionable} onSelect={() => { reset(); setEditingTopic(true); }}><Pencil aria-hidden="true" />{room?.topic ? "Edit topic" : "Add a topic"}</DropdownMenuItem>}
+          {onSetPrefs && <DropdownMenuItem disabled={!actionable || pending}
+            onSelect={() => void run(async () => { await onSetPrefs({ starred: !room?.starred }); }, "The star could not be saved.")}>
+            <Star aria-hidden="true" fill={room?.starred ? "currentColor" : "none"} />{room?.starred ? "Unstar" : "Star"}</DropdownMenuItem>}
+          {onSetPrefs && <DropdownMenuItem disabled={!actionable || pending}
+            onSelect={() => void run(async () => { await onSetPrefs({ muted: !room?.muted }); }, "The notification setting could not be saved.")}>
+            {room?.muted ? <Bell aria-hidden="true" /> : <BellOff aria-hidden="true" />}{room?.muted ? "Unmute" : "Mute"}</DropdownMenuItem>}
+          <DropdownMenuItem onSelect={() => void copyText(roomPermalink(room?.roomId ?? ""))}><Link aria-hidden="true" />Copy link</DropdownMenuItem>
+          {canArchive && (room?.archivedAt
+            ? <DropdownMenuItem onSelect={() => void run(async () => { await onSetArchived!(false); }, `The ${noun} could not be unarchived.`)}><ArchiveRestore aria-hidden="true" />Unarchive {noun}</DropdownMenuItem>
+            : <DropdownMenuItem onSelect={() => { reset(); setArchiving(true); }}><Archive aria-hidden="true" />Archive {noun}</DropdownMenuItem>)}
+          {((onLeaveRoom && canLeave) || ownerCannotLeave) && <><DropdownMenuSeparator />
+            <DropdownMenuItem variant="destructive" onSelect={() => { reset(); setLeaving(true); }}><LogOut aria-hidden="true" />Leave</DropdownMenuItem></>}
+          {canDelete && <><DropdownMenuSeparator />
+            <DropdownMenuItem variant="destructive" onSelect={() => { reset(); setDeleteDraft(""); setDeleting(true); }}><Trash2 aria-hidden="true" />Delete project</DropdownMenuItem></>}
+        </DropdownMenuContent>
+      </DropdownMenu>
+      {live}
+      {room?.shared && <span className="room-directory-tag" title="Shared between this workspace and Lightbulb">Shared</span>}
+      {topicForm}
+    </div>
+    <div className="room-audience">
+      {/* The search dialog is opened from ⋯ (and ⌘F); it renders no button of its own here. */}
+      {search}
+      <LiveStrip roomId={room?.roomId} members={participants} />
+      {views}
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild><Button ref={optionsTrigger} type="button" variant="ghost" size="icon-sm" className="room-view-toggle" aria-label="More tools" title="More"><MoreHorizontal aria-hidden="true" /></Button></DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          {toolItems}
+          {goLive && <DropdownMenuItem disabled={Boolean(huddle.joining)} onSelect={() => void huddle.join(room.roomId, roomName)}>
+            <Mic aria-hidden="true" />{huddle.joining === room.roomId ? "Joining…" : "Go live"}</DropdownMenuItem>}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
+    {error && !renaming && !leaving && !archiving && !deleting && <p role="alert" className="room-header-error text-ui text-err">{error}</p>}
+    {dialogs}
+  </header>;
+
+  return <header className="room-header">
+    <div className="room-title">
+      {room?.kind === "dm" && counterparts.length === 1
+        ? <ParticipantAvatar participant={counterparts[0]} size="sm" />
+        : <Icon size={20} aria-hidden="true" />}
+      <h2 className="font-semibold text-lg truncate" title={roomName}>{roomName}</h2>
+      {huddlers.length > 0 && !(huddle.room && huddle.roomId === room?.roomId) && <span className="room-topic room-live" role="status"><span aria-hidden="true" className="room-live-dot" />{liveMarker(liveNames(huddlers, participants))}</span>}
+      {room?.shared && <span className="room-directory-tag" title="Shared between this workspace and Lightbulb">Shared</span>}
+      {editingTopic ? <form className="room-topic-form" onSubmit={(event) => {
+        event.preventDefault();
+        void run(async () => { await onSetTopic!(topicDraft.trim() || null); }, "The topic could not be saved.", () => setEditingTopic(false));
+      }}>
+        <label className="sr-only" htmlFor={`${id}-topic`}>Topic</label>
+        <input id={`${id}-topic`} className="room-input" autoFocus maxLength={ROOM_TOPIC_MAX_CHARS} value={topicDraft} disabled={pending}
+          onChange={(event) => setTopicDraft(event.target.value)}
+          onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); cancelTopicEdit(); } }} />
+        <Button type="submit" size="sm" disabled={pending}>{pending ? "Saving…" : "Save"}</Button>
+        <Button type="button" variant="ghost" size="sm" disabled={pending} onClick={cancelTopicEdit}>Cancel</Button>
+      </form> : ((onSetTopic && canEditRoom) || room?.topic) ? <>
+        <span aria-hidden="true" className="room-topic-dot">·</span>
+        {onSetTopic && canEditRoom
+          ? <Button ref={topicTrigger} type="button" variant="ghost" className="room-topic" disabled={!actionable}
+              aria-label={room?.topic ? "Edit topic" : "Add a topic"} onClick={() => { reset(); setEditingTopic(true); }}>
+              {room?.topic ? <span className="truncate">{room.topic}</span> : <><Pencil size={12} aria-hidden="true" />Add a topic</>}
+            </Button>
+          : <span className="room-topic truncate" title={room?.topic ?? undefined}>{room?.topic}</span>}
+      </> : null}
+    </div>
+    <div className="room-audience">
+      {search}
+      {/* While Live, the strip stands in for Go live: in full here, as "Live in #x — Return" in any other room. */}
+      <LiveStrip roomId={room?.roomId} members={participants} />
+      {/* Every room kind; a room with no listening agent is a people-only voice room (no Lightbulb). */}
+      {!huddle.room && room && huddlesOn && !room.guest && (
+        <Button type="button" variant="ghost" size="sm" disabled={Boolean(huddle.joining)}
+          onClick={() => void huddle.join(room.roomId, roomName)}>
+          <Mic className="h-4 w-4" aria-hidden="true" /> {huddle.joining === room.roomId ? "Joining…" : "Go live"}
+        </Button>
+      )}
+      {onQuickAddPeople && <Button type="button" variant="outline" size="sm" disabled={!actionable} onClick={onQuickAddPeople}>
+        <UserPlus size={14} aria-hidden="true" />Add people
+      </Button>}
+      {pinnedCount > 0 && <Button type="button" variant="ghost" size="sm"
+        aria-label={`${pinnedCount} pinned ${pinnedCount === 1 ? "message" : "messages"}`} onClick={() => onOpenDetails("pins")}>
+        <Pin size={14} aria-hidden="true" />{pinnedCount}</Button>}
+      <Button type="button" variant="ghost" className="room-facepile" aria-label={`People, ${participantCount} here`} title="People"
+        onClick={() => onOpenDetails("members")}>
+        {faces.map((participant) => <ParticipantAvatar key={`${participant.kind}:${participant.id}`} participant={participant} size="sm" showPresence={false} />)}
+        {overflow > 0 && <span className="room-facepile-more text-ui text-muted-foreground">+{overflow}</span>}
+      </Button>
+      {views}
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild><Button ref={optionsTrigger} type="button" variant="ghost" size="icon" aria-label="Options" title="More"><MoreHorizontal aria-hidden="true" /></Button></DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          {onSetPrefs && <DropdownMenuItem disabled={!actionable || pending}
+            onSelect={() => void run(async () => { await onSetPrefs({ starred: !room?.starred }); }, "The star could not be saved.")}>
+            <Star aria-hidden="true" fill={room?.starred ? "currentColor" : "none"} />{room?.starred ? "Unstar" : "Star"}</DropdownMenuItem>}
+          {onSetPrefs && <DropdownMenuItem disabled={!actionable || pending}
+            onSelect={() => void run(async () => { await onSetPrefs({ muted: !room?.muted }); }, "The notification setting could not be saved.")}>
+            {room?.muted ? <Bell aria-hidden="true" /> : <BellOff aria-hidden="true" />}{room?.muted ? "Unmute" : "Mute"}</DropdownMenuItem>}
+          <DropdownMenuItem onSelect={() => void copyText(roomPermalink(room?.roomId ?? ""))}><Link aria-hidden="true" />Copy link</DropdownMenuItem>
+          {onRenameRoom && canEditRoom && !room?.shared && <DropdownMenuItem onSelect={() => { reset(); setNameDraft(room?.name ?? ""); setRenaming(true); }}><Pencil aria-hidden="true" />Rename</DropdownMenuItem>}
+          {onAddPeople && <DropdownMenuItem onSelect={onAddPeople}><Users aria-hidden="true" />Add people</DropdownMenuItem>}
+          {menuItems}
+          <DropdownMenuItem onSelect={() => onOpenDetails("about")}>Details</DropdownMenuItem>
+          {canArchive && (room?.archivedAt
+            ? <DropdownMenuItem onSelect={() => void run(async () => { await onSetArchived!(false); }, `The ${noun} could not be unarchived.`)}><ArchiveRestore aria-hidden="true" />Unarchive {noun}</DropdownMenuItem>
+            : <DropdownMenuItem onSelect={() => { reset(); setArchiving(true); }}><Archive aria-hidden="true" />Archive {noun}</DropdownMenuItem>)}
+          {((onLeaveRoom && canLeave) || ownerCannotLeave) && <><DropdownMenuSeparator />
+            <DropdownMenuItem variant="destructive" onSelect={() => { reset(); setLeaving(true); }}><LogOut aria-hidden="true" />Leave</DropdownMenuItem></>}
+          {canDelete && <><DropdownMenuSeparator />
+            <DropdownMenuItem variant="destructive" onSelect={() => { reset(); setDeleteDraft(""); setDeleting(true); }}><Trash2 aria-hidden="true" />Delete project</DropdownMenuItem></>}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
+    {error && !renaming && !leaving && !archiving && !deleting && <p role="alert" className="room-header-error text-ui text-err">{error}</p>}
+    {dialogs}
   </header>;
 }

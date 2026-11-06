@@ -2,7 +2,7 @@
 
 import { createPortal } from "react-dom";
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { ArrowLeft, Check, Chrome, Circle, CircleAlert, FolderOpen, Info, Lightbulb, Link, ListChecks, Square, X } from "lucide-react";
+import { ArrowLeft, Check, Chrome, Circle, CircleAlert, Clock, FolderOpen, Info, Lightbulb, Link, ListChecks, Pin, Search, Square } from "lucide-react";
 import type { Components } from "react-markdown";
 import { cardAnswersFor, LISTEN_MODE_LABELS, listenModeOptions, soleChannelOwner, useStatusLoaded, type CardReply, type CreateMessageRequest, type ListenMode, type MemberPrefsRequest, type MemberRef, type UpdateMessageRequest } from "@lightbulb/shared";
 import { ToolActivityTrace } from "@/components/chat/ToolActivityTrace";
@@ -43,7 +43,8 @@ import { RoomMessageItem } from "./RoomMessageItem";
 import { TaskPane } from "@/components/tasks/TaskPane";
 import { RequestGroups } from "@/components/tasks/TaskOverview";
 import { ScheduledList } from "@/components/tasks/ScheduledList";
-import { readRequestsOpen, writeRequestsOpen } from "@/components/tasks/requestsColumn";
+import { PaneHeader } from "@/components/workspace/PaneHeader";
+import { ROOM_PANE_VIEW_EVENT } from "@/components/workspace/panels/AutomationDockPanel";
 import { useRoomOutputs } from "@/components/tasks/useRoomOutputs";
 import { SpecialistDmBanner } from "./SpecialistDmBanner";
 import { useRoomThreads } from "@/components/tasks/useRoomThreads";
@@ -144,6 +145,8 @@ export interface RoomPanelProps {
 const ON_IT_MS = 5 * 60_000;
 const NO_PINNED_MESSAGES: readonly string[] = [];
 const NO_TASK_IDS: readonly string[] = [];
+/** The project pane's list views (super-agent): the header's three toggles. */
+type PaneView = "tasks" | "files" | "scheduled";
 const NO_RUNS: readonly RoomRunView[] = [];
 const NO_SESSIONS: readonly LocalSession[] = [];
 
@@ -426,7 +429,7 @@ function RoomContent({
   const [editTarget, setEditTarget] = useState<string | null>(null);
   const superAgent = useSuperAgent();
   // `from: "about"`: a thread opened from About's Threads tab goes back there, not to the conversation.
-  const [localSelection, setSelection] = useState<{ kind: "thread" | "tasks" | "task" | "scheduled"; id: string; from?: "about" } | null>(null);
+  const [localSelection, setSelection] = useState<{ kind: "thread" | "tasks" | "task"; id: string; from?: "about" } | null>(null);
   const selection = useMemo(() => selectedThreadId === undefined ? localSelection
     : selectedThreadId ? { kind: "thread" as const, id: selectedThreadId }
       : localSelection?.kind !== "thread" ? localSelection : null, [selectedThreadId, localSelection]);
@@ -454,13 +457,16 @@ function RoomContent({
   // The shell keeps the room mounted (hidden) on Home and Work: the remembered Requests column comes back only while
   // the room is on screen, or a hard load opened it over Home (dev walk W7-2).
   const roomOnScreen = !inShell || place === "chat" || fullScreen;
-  // Super-agent: the room's Requests sit in a column beside the conversation, open unless this person closed it.
-  // It folds (without forgetting the choice) while something else has the pane (Browser, Files, Ideas) and on narrow
-  // screens, where a column would cover the conversation.
-  const [requestsPref, setRequestsPref] = useState(() => readRequestsOpen(currentUserId));
-  const [requestsSheet, setRequestsSheet] = useState(false);
-  const [requestsDismissedIn, setRequestsDismissedIn] = useState<string | null>(null);
+  // Super-agent (UX slice 4): the project's pane shows one list view at a time (Tasks · Files · Scheduled), held per
+  // visit in memory only. It is closed by default and opens by itself (on Tasks) only when something here needs the
+  // viewer; closed while something does, it stays closed until they leave the project.
+  const visit = roomOnScreen ? roomId : null;
+  const [paneState, setPaneState] = useState<{ visit: string | null; view: PaneView | null; closed: boolean; auto: boolean }>(
+    () => ({ visit, view: null, closed: false, auto: false }));
+  if (paneState.visit !== visit) setPaneState({ visit, view: null, closed: false, auto: false });
+  const paneView = paneState.visit === visit ? paneState.view : null;
   const restoreRequestsFocus = useRef(false);
+  const [searchToken, setSearchToken] = useState(0);
   const paneBusy = !!pane && pane.panelId !== THREAD_PANE_ID;
   const browserAvailable = useStatusLoaded();
   const visibleRoom = room?.roomId === roomId ? room : undefined;
@@ -545,16 +551,21 @@ function RoomContent({
   const parentMessage = selection?.kind === "thread" ? messages.find((message) => message.messageId === selection.id) : undefined;
   const showTasks = selection?.kind === "tasks" && !!onLinkToWork;
   const taskSelection = superAgent && selection?.kind === "task" ? selection.id : null;
-  const showScheduled = superAgent && selection?.kind === "scheduled";
-  const showDetail = !!(parentMessage || showTasks || taskSelection || showScheduled);
-  // Wide: the remembered choice, unless Escape put it away in this room. Narrow: a sheet over the conversation, opened
-  // by the toggle each time (a column there would cover the conversation).
-  const requestsWanted = isNarrow ? requestsSheet : requestsPref && requestsDismissedIn !== roomId;
-  const requestsShown = superAgent && requestsWanted && !paneBusy && !visibleRoom?.feed && contextCollapsed && roomOnScreen;
-  // The About button's dot: anything in this room that needs the viewer (Home's Needs you cut; no request while off).
+  const showDetail = !!(parentMessage || showTasks || taskSelection);
+  // The list view on screen (or under the item opened from it): folded while something else has the pane (Browser,
+  // Ideas, an automation) or Details is open.
+  const viewShown = (view: PaneView) => superAgent && paneView === view && !paneBusy && !visibleRoom?.feed && contextCollapsed && roomOnScreen;
+  const requestsShown = viewShown("tasks");
+  const filesViewShown = viewShown("files");
+  const scheduledShown = viewShown("scheduled");
+  // The Tasks toggle's warn dot: anything in this room that needs the viewer (the one count; no task while off).
   const { waitingOnMe } = useRoomThreads(superAgent ? roomId : null);
-  const showContext = showDetail || !contextCollapsed || requestsShown;
-  const filesShown = !contextCollapsed && detailsTab === "files";
+  // Entering a project where something needs you opens Tasks, once per visit, unless they closed it or the pane is
+  // busy (a ?pane= deep link wins). Adjusted during render, like the visit reset above.
+  if (superAgent && visit && !paneState.auto && !paneState.closed && !paneState.view && waitingOnMe > 0 && !pane && !selection && !visibleRoom?.feed) {
+    setPaneState({ visit, view: "tasks", closed: false, auto: true });
+  }
+  const showContext = showDetail || !contextCollapsed || requestsShown || filesViewShown || scheduledShown;
   const roomOutputs = useRoomOutputs(superAgent ? roomId : null);
   const activeRuns = runs.filter((run) => run.state === "running");
   // Any author: a human naming ISO-14 references it as much as an agent does.
@@ -662,30 +673,62 @@ function RoomContent({
   // when something else takes the pane, the column folds.
   const counterparts = participants.filter((participant) => participant.kind !== "human" || participant.id !== currentUserId);
   const roomName = roomDisplayName(visibleRoom, counterparts);
-  const sideTitle = `${showTasks ? "Tasks" : taskSelection ? "Task" : showScheduled ? "Scheduled" : showDetail ? "Thread" : contextCollapsed ? "Tasks" : "About"} · ${roomName}`;
-  const openRequests = () => {
-    setRequestsDismissedIn(null);
-    if (isNarrow) setRequestsSheet(true);
-    else { setRequestsPref(true); writeRequestsOpen(currentUserId, true); }
-    if (paneBusy) closePane(); // the column takes the pane back from Browser, Files or Ideas
+  // Super-agent: the pane's title is the label of what opened it (the room is beside it, so no " · <room>").
+  const sideTitle = superAgent
+    ? showTasks ? "Older tasks" : taskSelection ? "Task" : showDetail ? "Thread" : !contextCollapsed ? "Details"
+      : filesViewShown ? "Files" : scheduledShown ? "Scheduled" : "Tasks"
+    : `${showTasks ? "Tasks" : taskSelection ? "Task" : showDetail ? "Thread" : contextCollapsed ? "Tasks" : "About"} · ${roomName}`;
+  /** One of the project's views in the pane (the item open over it goes; the pane is taken back from Browser or Ideas). */
+  const showView = (view: PaneView) => {
+    closeDetail(); setContextCollapsed(true);
+    setPaneState((current) => ({ ...current, visit, view }));
+    if (paneBusy) closePane();
   };
-  /** The toggle and the X close it for every room (remembered); Escape puts it away in this room only; on a narrow
-   *  screen every close just closes the sheet. Focus goes back to the Requests toggle. */
-  const closeRequests = (how: "remember" | "here") => {
+  /** ✕, Escape, or the pressed toggle again: the pane closes, and stays closed for this visit. Focus goes back to the
+   *  Tasks toggle. */
+  const closeView = () => {
     restoreRequestsFocus.current = true;
-    if (isNarrow) setRequestsSheet(false);
-    else if (how === "here") setRequestsDismissedIn(roomId);
-    else { setRequestsPref(false); writeRequestsOpen(currentUserId, false); }
+    closeDetail();
+    setPaneState((current) => ({ ...current, view: null, closed: true }));
   };
-  const sideHost = useThreadPane(showContext, () => { closeDetail(); setContextCollapsed(true); }, sideTitle);
+  const toggleView = (view: PaneView) => viewShown(view) && !showDetail ? closeView() : showView(view);
+  // Something else took the pane (Browser, Ideas, an automation): the column folds and forgets its view, so closing
+  // that leaves the pane closed. "‹ Scheduled" from an automation brings the view back (ROOM_PANE_VIEW_EVENT).
+  const sideHost = useThreadPane(showContext, () => {
+    closeDetail(); setContextCollapsed(true);
+    setPaneState((current) => ({ ...current, view: null }));
+  }, sideTitle, superAgent && !!taskSelection);
+  useEffect(() => {
+    if (!superAgent || !roomOnScreen) return;
+    const onView = (event: Event) => {
+      const view = (event as CustomEvent<{ view?: string | null }>).detail?.view;
+      if (view === null) { setPaneState((current) => ({ ...current, view: null, closed: true })); return; }
+      if (view !== "tasks" && view !== "files" && view !== "scheduled") return;
+      setSelection(null); setContextCollapsed(true);
+      setPaneState((current) => ({ ...current, view }));
+    };
+    window.addEventListener(ROOM_PANE_VIEW_EVENT, onView);
+    return () => window.removeEventListener(ROOM_PANE_VIEW_EVENT, onView);
+  }, [superAgent, roomOnScreen]);
+  // ⌘F searches this project (super-agent: Search left the header for ⋯).
+  useEffect(() => {
+    if (!superAgent || !roomOnScreen || !actionable) return;
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "f" && !hasBlockingShortcutDialog()) {
+        event.preventDefault();
+        setSearchToken((token) => token + 1);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [superAgent, roomOnScreen, actionable]);
   // Skip to requests: the room's first Tab stop whenever it has Requests (W8-6). It opens the column (or sheet) when
   // it is closed, then lands on its heading.
   const focusRequests = useRef(false);
   const skipToRequests = () => {
     if (requestsShown && !showDetail) { requestsHeading.current?.focus(); return; }
     focusRequests.current = true;
-    closeDetail(); setContextCollapsed(true);
-    if (!requestsWanted || paneBusy) openRequests();
+    showView("tasks");
   };
   useEffect(() => {
     if (!requestsShown || showDetail || !focusRequests.current) return;
@@ -885,13 +928,14 @@ function RoomContent({
 
   const dockSide = (column: React.ReactNode) => sideHost ? createPortal(column, sideHost) : column;
   return <section
-    className={cn("room-panel", showContext && !sideHost && "room-has-context", showDetail ? "room-has-detail" : "room-has-default-context")} aria-label={roomName}>
+    className={cn("room-panel", showContext && !sideHost && "room-has-context", showDetail ? "room-has-detail" : "room-has-default-context")} aria-label={roomName}
+    data-frame={superAgent || undefined}>
     <div className="room-conversation" hidden={showContext && isNarrow && !sideHost} onClickCapture={closeOverlay} onFocusCapture={closeOverlay}>
       {/* Keyboard: the column sits after every message's toolbar in tab order, so one link jumps there first. */}
       {superAgent && !visibleRoom?.feed && <button type="button" className="room-skip-link" onClick={skipToRequests}>Skip to tasks</button>}
       <RoomHeader room={visibleRoom} roomName={roomName} counterparts={counterparts} participants={participants} participantCount={participants.length}
         canEditRoom={canEditRoom} canLeave={canLeaveRoom} ownerCannotLeave={ownerCannotLeave} ownerHandsOff={canLeaveRoom && visibleRoom?.kind === "channel" && viewer?.role === "owner"} actionable={actionable} pinnedCount={pinnedMessageIds.length}
-        search={<RoomMessageSearch roomId={roomId}
+        search={<RoomMessageSearch roomId={roomId} openToken={searchToken} hideTrigger={superAgent}
           onSelect={(hit) => {
             const root = hit.threadRootMessageId;
             // Otherwise the [selection] effect's else-branch focuses this stale trigger
@@ -920,31 +964,33 @@ function RoomContent({
         onAddPeople={canAddMembers ? openMemberPicker : undefined}
         onSetPrefs={onSetPrefs} onRenameRoom={onRenameRoom} onSetTopic={onSetTopic} onLeaveRoom={onLeaveRoom}
         onSetArchived={onSetArchived} onDeleteRoom={onDeleteRoom}
-        // The room's tools as visible, labelled toggles beside the people (founder: never hidden in ···): Requests
-        // (super-agent; its dot = something here needs you), Files, Browser, Ideas. Without the super-agent, About
-        // leads instead (members, pins, files, links). The ··· menu keeps the rare things.
-        views={<>
-          {superAgent ? !visibleRoom?.feed && <Button ref={contextTrigger} type="button" variant="ghost" size="sm" className="room-view-toggle relative" aria-pressed={requestsShown}
-            aria-label={waitingOnMe > 0 ? `Tasks, ${waitingOnMe} need${waitingOnMe === 1 ? "s" : ""} you` : "Tasks"}
-            onClick={() => {
-              closeDetail(); setContextCollapsed(true);
-              if (requestsShown) closeRequests("remember");
-              else { openRequests(); capture("overview_opened", { source: "room", count: waitingOnMe }); }
-            }}>
+        compact={superAgent}
+        // Super-agent (UX slice 4): at most four controls right of the name, all views of this project: Tasks (its warn
+        // dot = something here needs you while the pane is closed), Files, Scheduled, and ⋯ for the tools. Labels show
+        // from 1280 px (messaging.css). Without it the room keeps About, Files, Browser and Ideas as before.
+        views={superAgent ? <>
+          {!visibleRoom?.feed && <Button ref={contextTrigger} type="button" variant="ghost" size="sm" className="room-view-toggle relative" aria-pressed={requestsShown}
+            aria-label={waitingOnMe > 0 ? `Tasks, ${waitingOnMe} need${waitingOnMe === 1 ? "s" : ""} you` : "Tasks"} title="Tasks"
+            onClick={() => { if (!requestsShown) capture("overview_opened", { source: "room", count: waitingOnMe }); toggleView("tasks"); }}>
             <ListChecks aria-hidden="true" /><span>Tasks</span>
-            {waitingOnMe > 0 && <span aria-hidden="true" className="absolute right-1 top-1 size-1.5 rounded-full bg-warn" />}
-          </Button> : <Button ref={contextTrigger} type="button" variant="ghost" size="sm" className="room-view-about relative"
+            {waitingOnMe > 0 && !requestsShown && <span aria-hidden="true" className="absolute right-1 top-1 size-1.5 rounded-full bg-warn" />}
+          </Button>}
+          {/* This room's files (attachments and what its tasks made), never the runtime's disk (W7-8). */}
+          <Button type="button" variant="ghost" size="sm" className="room-view-toggle" aria-pressed={filesViewShown} aria-label="Files" title="Files"
+            onClick={() => { if (!filesViewShown) capture("file_browser_opened"); toggleView("files"); }}>
+            <FolderOpen aria-hidden="true" /><span>Files</span></Button>
+          {!visibleRoom?.feed && <Button type="button" variant="ghost" size="sm" className="room-view-toggle" aria-pressed={scheduledShown} aria-label="Scheduled" title="Scheduled"
+            onClick={() => toggleView("scheduled")}>
+            <Clock aria-hidden="true" /><span>Scheduled</span></Button>}
+        </> : <>
+          <Button ref={contextTrigger} type="button" variant="ghost" size="sm" className="room-view-about relative"
             aria-expanded={!contextCollapsed} aria-label="About"
             onClick={() => { closeDetail(); setContextCollapsed(!contextCollapsed); }}>
             <Info aria-hidden="true" />About
-          </Button>}
-          {/* Super-agent: this room's files (attachments and what its requests made), never the runtime's disk (W7-8). */}
-          {inShell && (superAgent ? <Button type="button" variant="ghost" size="sm" className="room-view-toggle" aria-pressed={filesShown} aria-label="Files"
-            onClick={() => { closeDetail(); if (filesShown) setContextCollapsed(true); else { capture("file_browser_opened"); setDetailsTab("files"); setContextCollapsed(false); } }}>
-            <FolderOpen aria-hidden="true" /><span>Files</span></Button>
-            : <Button type="button" variant="ghost" size="sm" className="room-view-toggle" aria-pressed={pane?.panelId === "file-viewer"} aria-label="Files"
+          </Button>
+          {inShell && <Button type="button" variant="ghost" size="sm" className="room-view-toggle" aria-pressed={pane?.panelId === "file-viewer"} aria-label="Files"
             onClick={() => { if (pane?.panelId === "file-viewer") return closePane(); capture("file_browser_opened"); openPanel("file-viewer", composer.focusAgentId ? { agent: composer.focusAgentId } : {}, { pushUrl: true }); }}>
-            <FolderOpen aria-hidden="true" /><span>Files</span></Button>)}
+            <FolderOpen aria-hidden="true" /><span>Files</span></Button>}
           {/* The shared Browser once a status body has landed (it can only show its empty state before). */}
           {inShell && browserAvailable && <Button type="button" variant="ghost" size="sm" className="room-view-toggle" aria-pressed={pane?.panelId === "browser"} aria-label="Browser"
             onClick={() => { if (pane?.panelId === "browser") return closePane(); capture("browser_view_opened"); openBrowserPane(); }}>
@@ -954,14 +1000,23 @@ function RoomContent({
             onClick={() => { if (pane?.panelId === "ideas") return closePane(); capture("ideas_opened"); openPanel("ideas", composer.focusAgentId ? { agent: composer.focusAgentId } : {}, { pushUrl: true }); }}>
             <Lightbulb aria-hidden="true" /><span>Ideas</span></Button>}
         </>}
-        menuItems={<>
-          {/* This room's scheduled work, in the Requests column. */}
-          {superAgent && <DropdownMenuItem onSelect={() => { onSelectThread?.(null); setContextCollapsed(true); setSelection({ kind: "scheduled", id: "scheduled" }); }}>
-            <ListChecks aria-hidden="true" />Scheduled</DropdownMenuItem>}
-          {/* The Paperclip tasks this room names. With the switch on they are older work: offered only when there are any. */}
-          {onLinkToWork && (!superAgent || roomTasks.length > 0) && <DropdownMenuItem onSelect={() => { onSelectThread?.(null); setSelection({ kind: "tasks", id: "tasks" }); }}>
-            <ListChecks aria-hidden="true" />{superAgent ? `Older tasks · ${roomTasks.length}` : roomTasks.length > 0 ? `Tasks · ${roomTasks.length}` : "Tasks"}</DropdownMenuItem>}
-        </>} />
+        toolItems={<>
+          <DropdownMenuItem disabled={!actionable} onSelect={() => setSearchToken((token) => token + 1)}>
+            <Search aria-hidden="true" />Search in project<span className="ml-auto text-caption text-muted-foreground">⌘F</span></DropdownMenuItem>
+          {inShell && browserAvailable && <DropdownMenuItem onSelect={() => { capture("browser_view_opened"); openBrowserPane(); }}>
+            <Chrome aria-hidden="true" />Browser</DropdownMenuItem>}
+          {inShell && <DropdownMenuItem onSelect={() => { capture("ideas_opened"); openPanel("ideas", composer.focusAgentId ? { agent: composer.focusAgentId } : {}, { pushUrl: true }); }}>
+            <Lightbulb aria-hidden="true" />Ideas</DropdownMenuItem>}
+          <DropdownMenuItem onSelect={() => { closeDetail(); setDetailsTab("pins"); setContextCollapsed(false); }}>
+            <Pin aria-hidden="true" />Pinned messages{pinnedMessageIds.length > 0 ? ` · ${pinnedMessageIds.length}` : ""}</DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => { closeDetail(); setDetailsTab("links"); setContextCollapsed(false); }}>
+            <Link aria-hidden="true" />Links</DropdownMenuItem>
+          {/* The Paperclip tasks this room names: older work, offered only when there are any. */}
+          {onLinkToWork && roomTasks.length > 0 && <DropdownMenuItem onSelect={() => { onSelectThread?.(null); setSelection({ kind: "tasks", id: "tasks" }); }}>
+            <ListChecks aria-hidden="true" />Older tasks · {roomTasks.length}</DropdownMenuItem>}
+        </>}
+        menuItems={!superAgent && onLinkToWork ? <DropdownMenuItem onSelect={() => { onSelectThread?.(null); setSelection({ kind: "tasks", id: "tasks" }); }}>
+          <ListChecks aria-hidden="true" />{roomTasks.length > 0 ? `Tasks · ${roomTasks.length}` : "Tasks"}</DropdownMenuItem> : undefined} />
       {superAgent && frontAgentId && visibleRoom?.kind === "dm" && (() => {
         // Only once the front agent is known: an unresolved roster must not call every agent a specialist.
         const agent = counterparts.length === 1 && counterparts[0].kind === "agent" && counterparts[0].id !== frontAgentId ? counterparts[0] : null;
@@ -1005,7 +1060,7 @@ function RoomContent({
       </div> : <>{subagents && messagingClient && onSteerSubagent && onStopSubagent && onSubagentsVisible && <RoomSubagentStrip state={subagents} roomId={roomId}
           agentName={(agentId) => participants.find((m) => m.kind === "agent" && m.id === agentId)?.displayName ?? "Agent"}
           client={messagingClient} onSteer={onSteerSubagent} onStop={onStopSubagent} onVisible={onSubagentsVisible} />}
-        <RoomComposer {...composer} focusToken={focusToken} placeholderDrafts={showFirstReplies ? INCOMPLETE_FIRST_REPLIES : undefined}
+        <RoomComposer {...composer} viewerId={currentUserId} focusToken={focusToken} placeholderDrafts={showFirstReplies ? INCOMPLETE_FIRST_REPLIES : undefined}
         onSubmit={markSent(composer.onSubmit)}
         onRetry={composer.onRetry ? markSent(composer.onRetry) : undefined}
         onEditLast={onUpdateMessage ? () => {
@@ -1017,7 +1072,8 @@ function RoomContent({
     </div>
     {dockSide(<>{!contextCollapsed && !showDetail && <aside className="room-context" aria-label="About"
       onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setContextCollapsed(true); } }}>
-      <header className="room-context-header"><Button variant="ghost" aria-label="Back to chat" onClick={() => setContextCollapsed(true)}><ArrowLeft aria-hidden="true" /></Button><h3 ref={contextHeading} tabIndex={-1} className="font-semibold">About</h3></header>
+      {superAgent ? <PaneHeader title="Details" headingRef={contextHeading} onClose={() => setContextCollapsed(true)} />
+        : <header className="room-context-header"><Button variant="ghost" aria-label="Back to chat" onClick={() => setContextCollapsed(true)}><ArrowLeft aria-hidden="true" /></Button><h3 ref={contextHeading} tabIndex={-1} className="font-semibold">About</h3></header>}
       <RoomDetailsPanel room={visibleRoom} roomName={roomName} tab={detailsTab} onSelectTab={setDetailsTab}
         outputs={superAgent ? roomOutputs.outputs : undefined} onOpenOutput={openTask}
         olderOutputs={superAgent && roomOutputs.hasOlder ? { loading: roomOutputs.loading, load: () => void roomOutputs.loadOlder() } : undefined}
@@ -1084,27 +1140,42 @@ function RoomContent({
           </div>}
         </section>} />
     </aside>}
+    {/* Super-agent: the project's three list views, each titled by the toggle that opened it, with the one ✕. */}
     {requestsShown && !showDetail && <aside className="room-context" aria-label="Tasks"
-      onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeRequests("here"); } }}>
-      <header className="room-context-header"><h3 ref={requestsHeading} tabIndex={-1} className="flex-1 font-semibold">Tasks</h3>
-        <Button variant="ghost" size="icon-sm" aria-label="Close tasks" title="Close" onClick={() => closeRequests("remember")}><X aria-hidden="true" /></Button></header>
+      onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeView(); } }}>
+      <PaneHeader title="Tasks" headingRef={requestsHeading} onClose={closeView} />
       <div className="room-context-body"><RequestGroups scope={{ kind: "room", roomId }} viewerId={currentUserId} onOpen={openTask} /></div>
     </aside>}
-    {showScheduled && <aside className="room-context" aria-label="Scheduled" onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeDetail(); } }}>
-      <header className="room-context-header"><Button variant="ghost" aria-label={requestsWanted ? "Back to tasks" : "Back to chat"} onClick={closeDetail}><ArrowLeft aria-hidden="true" />Back</Button>
-        <h3 ref={detailHeading} tabIndex={-1} className="font-semibold">Scheduled</h3></header>
-      <div className="room-context-body"><ScheduledList scope={{ kind: "room", roomId }} onOpen={openTask} /></div>
+    {filesViewShown && !showDetail && <aside className="room-context" aria-label="Files"
+      onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeView(); } }}>
+      <PaneHeader title="Files" onClose={closeView} />
+      <RoomDetailsPanel room={visibleRoom} roomName={roomName} tab="files" onSelectTab={setDetailsTab} hideTabs
+        outputs={roomOutputs.outputs} onOpenOutput={openTask}
+        olderOutputs={roomOutputs.hasOlder ? { loading: roomOutputs.loading, load: () => void roomOutputs.loadOlder() } : undefined}
+        participants={participants} actionable={actionable} members={null}
+        messages={messages} pinnedMessageIds={pinnedMessageIds} activeRuns={activeRuns} hideActiveWork
+        onOpenMessage={(messageId) => setSearchTarget({ messageId, threadRootMessageId: null, token: ++searchTargetToken.current })} />
+    </aside>}
+    {scheduledShown && !showDetail && <aside className="room-context" aria-label="Scheduled"
+      onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeView(); } }}>
+      <PaneHeader title="Scheduled" onClose={closeView} />
+      {/* A row opens the automation in this pane, with "‹ Scheduled" back here (AutomationDockPanel). */}
+      <div className="room-context-body"><ScheduledList scope={{ kind: "room", roomId }} onOpen={openTask}
+        onOpenAutomation={(id) => openPanel("automation", { id }, { pushUrl: true })} /></div>
     </aside>}
     {showTasks && <aside className="room-context" aria-label="Tasks" onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeDetail(); } }}>
-      <header className="room-context-header"><Button variant="ghost" aria-label="Back to chat" onClick={closeDetail}><ArrowLeft aria-hidden="true" />Back</Button>
-        <h3 ref={detailHeading} tabIndex={-1} className="font-semibold">Tasks</h3></header>
+      {superAgent ? <PaneHeader title="Older tasks" headingRef={detailHeading} onClose={closeDetail} />
+        : <header className="room-context-header"><Button variant="ghost" aria-label="Back to chat" onClick={closeDetail}><ArrowLeft aria-hidden="true" />Back</Button>
+        <h3 ref={detailHeading} tabIndex={-1} className="font-semibold">Tasks</h3></header>}
       <div className="room-context-body"><RoomTasks tasks={roomTasks} onOpenAll={onLinkToWork!} /></div>
     </aside>}
+    {/* One task at the item width: "‹ Tasks" goes back to the project's list, ✕ closes the pane. */}
     {taskSelection && <TaskPane key={taskSelection} taskId={taskSelection} viewerId={currentUserId} headingRef={detailHeading}
-      {...(localSelection?.from === "about" || (superAgent && requestsWanted) ? { onClose: closeDetail, backLabel: "Back to tasks" } : { onClose: closeDetail })} />}
-    {showDetail && !showTasks && !taskSelection && !showScheduled && <aside className="room-context" aria-label="Thread" onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeDetail(); } }}>
-      <header className="room-context-header"><Button variant="ghost" aria-label="Back to chat" onClick={closeDetail}><ArrowLeft aria-hidden="true" />Back</Button>
-        <h3 ref={detailHeading} tabIndex={-1} className="font-semibold room-wrap">Thread</h3></header>
+      onBack={() => showView("tasks")} onClose={closeView} />}
+    {showDetail && !showTasks && !taskSelection && <aside className="room-context" aria-label="Thread" onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeDetail(); } }}>
+      {superAgent ? <PaneHeader title="Thread" headingRef={detailHeading} onClose={closeDetail} />
+        : <header className="room-context-header"><Button variant="ghost" aria-label="Back to chat" onClick={closeDetail}><ArrowLeft aria-hidden="true" />Back</Button>
+        <h3 ref={detailHeading} tabIndex={-1} className="font-semibold room-wrap">Thread</h3></header>}
       <StickToBottom className="room-context-body" pinToken={threadSendToken}>{parentMessage ? <>{renderMessage(parentMessage, true)}
         {(() => {
           const replies = messages.filter((message) => message.threadRootMessageId === parentMessage.messageId);

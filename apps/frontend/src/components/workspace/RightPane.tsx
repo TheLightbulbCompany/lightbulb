@@ -15,22 +15,38 @@ import { useSuperAgent } from "@/hooks/useLiveEvents";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { trapTab } from "@/lib/focusTrap";
 import { paneSheetQuery } from "./paneSheet";
+import { PaneHeader } from "./PaneHeader";
 
-export const PANE_MIN_WIDTH = 320;
+/** The narrowest a list pane is dragged to (super-agent; 320 without it). */
+export const PANE_MIN_WIDTH = 360;
+const LEGACY_PANE_MIN_WIDTH = 320;
+/** The list width (Tasks, Files, Scheduled): stored per person when dragged. */
 export const PANE_DEFAULT_WIDTH = 440;
+/** One item open (a task, an automation): about half the main area, at least 520, never more than 60%. Computed,
+ *  never stored, so the list keeps its own width. */
+export const PANE_ITEM_MIN_WIDTH = 520;
+const ITEM_WIDTH = `clamp(${PANE_ITEM_MIN_WIDTH}px, 50%, 60%)`;
 /** The main view (or the full-screen chat column) keeps at least this much. */
 export const MAIN_MIN_WIDTH = 360;
 const KEY_STEP = 16;
-const OWN_HEADER: ReadonlySet<Slot["component"]> = new Set(["thread", "task"]);
+// Super-agent, ≥1000 px: the sidebar takes 56 + 264, so the main area is the window less 320. Below these widths the
+// main column would fall under 360 beside a list (at least 360) or an item (520), and the pane opens as a sheet instead.
+const CROWDED_LIST = 56 + 264 + MAIN_MIN_WIDTH + PANE_MIN_WIDTH - 1;
+const CROWDED_ITEM = 56 + 264 + MAIN_MIN_WIDTH + PANE_ITEM_MIN_WIDTH - 1;
+const OWN_HEADER: ReadonlySet<Slot["component"]> = new Set(["thread", "task", "automation"]);
 // The specialist's own name heads its pane (AgentInspectorPanel), so the bar carries no second title.
 const ownsHeader = (pane: Slot) => OWN_HEADER.has(pane.component) || pane.panelId === "agent-inspector";
 
 export const paneWidthKey = (userId: string | null | undefined) => `lightbulb.pane.width.${userId ?? "signed-out"}`;
 
-export function readPaneWidth(key: string): number {
+/** A single item, not a list: it opens at the item width (super-agent). */
+export const isPaneItem = (pane: Pick<Slot, "component" | "params">): boolean =>
+  pane.component === "task" || pane.component === "automation" || (pane.component === "thread" && pane.params.item === "1");
+
+export function readPaneWidth(key: string, min = LEGACY_PANE_MIN_WIDTH): number {
   try {
     const stored = Number(window.localStorage.getItem(key));
-    return stored >= PANE_MIN_WIDTH ? stored : PANE_DEFAULT_WIDTH;
+    return stored >= min ? stored : PANE_DEFAULT_WIDTH;
   } catch {
     return PANE_DEFAULT_WIDTH;
   }
@@ -47,10 +63,14 @@ function writePaneWidth(key: string, width: number): void {
 /** Keyed by the pane's panel id at the call site, so a new kind re-reads its opening width. */
 export function RightPane({ pane, fullScreen }: { pane: Slot; fullScreen: boolean }): React.ReactElement {
   const { userId } = useAuth();
+  const superAgent = useSuperAgent();
+  const minWidth = superAgent ? PANE_MIN_WIDTH : LEGACY_PANE_MIN_WIDTH;
   const key = paneWidthKey(userId);
   // The browser always opens at about half the width; its drags are not remembered.
   const remembers = pane.component !== "browser";
-  const [width, setWidth] = useState<string>(() => remembers ? `${readPaneWidth(key)}px` : "50%");
+  const [width, setWidth] = useState<string>(() => remembers ? `${readPaneWidth(key, minWidth)}px` : "50%");
+  // Super-agent: an open item takes the item width; going back to the list returns to the list width.
+  const item = superAgent && isPaneItem(pane);
   // The separator's value in px: measured, since the Browser's opening width is a percentage.
   const paneRef = useRef<HTMLElement>(null);
   const [measured, setMeasured] = useState({ now: 0, max: 0 });
@@ -60,11 +80,11 @@ export function RightPane({ pane, fullScreen }: { pane: Slot; fullScreen: boolea
     const now = Math.round(pane.getBoundingClientRect().width);
     const max = Math.round((pane.parentElement?.getBoundingClientRect().width ?? 0) - MAIN_MIN_WIDTH);
     setMeasured((prev) => prev.now === now && prev.max === max ? prev : { now, max });
-  }, [width, fullScreen]);
+  }, [width, fullScreen, item]);
 
   const clampTo = (pane: HTMLElement, px: number) => {
     const room = (pane.parentElement?.getBoundingClientRect().width ?? Infinity) - MAIN_MIN_WIDTH;
-    return Math.max(PANE_MIN_WIDTH, Math.min(px, room));
+    return Math.max(minWidth, Math.min(px, room));
   };
   const commit = (px: number) => {
     setWidth(`${px}px`);
@@ -101,7 +121,10 @@ export function RightPane({ pane, fullScreen }: { pane: Slot; fullScreen: boolea
   };
 
   // A sheet over the main view (workspace.css): modal, so what it covers is inert, Tab stays in it and Escape closes it.
-  const sheet = useMediaQuery(paneSheetQuery(useSuperAgent())) && !fullScreen;
+  // Super-agent: also wherever the main column would drop under 360 beside the pane (an item needs 520).
+  const narrow = useMediaQuery(paneSheetQuery(superAgent));
+  const crowded = useMediaQuery(`(max-width: ${superAgent ? (item ? CROWDED_ITEM : CROWDED_LIST) : 0}px)`) && superAgent;
+  const sheet = (narrow || crowded) && !fullScreen;
   // Who opened it, read while mounting (before the panel's own effects move focus): focus goes back there on close.
   const [opener] = useState(() => typeof document === "undefined" ? null : document.activeElement as HTMLElement | null);
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -112,11 +135,11 @@ export function RightPane({ pane, fullScreen }: { pane: Slot; fullScreen: boolea
     if (!sheet || !el?.parentElement) return;
     const parent = el.parentElement;
     // Focus starts in the sheet (its close button) unless the panel already put it there.
-    if (!el.contains(document.activeElement)) closeRef.current?.focus();
+    if (!el.contains(document.activeElement)) (closeRef.current ?? el.querySelector<HTMLElement>("[data-pane-close]"))?.focus();
     // What it covers is inert, including a view that mounts while it is open.
     const covered = new Set<Element>();
     const cover = () => {
-      for (const c of parent.children) if (c !== el && !c.hasAttribute("inert")) { c.setAttribute("inert", ""); covered.add(c); }
+      for (const c of parent.children) if (c !== el && !c.hasAttribute("inert") && !c.classList.contains("workspace-pane-scrim")) { c.setAttribute("inert", ""); covered.add(c); }
     };
     cover();
     const observer = new MutationObserver(cover);
@@ -130,29 +153,35 @@ export function RightPane({ pane, fullScreen }: { pane: Slot; fullScreen: boolea
   }, [opener]);
 
   const Panel = pane.component === "thread" ? null : PANEL_COMPONENTS[pane.component as PanelKind];
-  return (
+  // Super-agent: no shell bar. An item that carries its own header (the room's column, a task, an automation) draws
+  // the one PaneHeader; every other kind gets one here, titled by what opened it.
+  const resizable = !fullScreen && !item && !(superAgent && sheet);
+  return (<>
+    {superAgent && sheet && <div className="workspace-pane-scrim" aria-hidden="true" onClick={closePane} />}
     <section ref={paneRef} className="workspace-pane" aria-label={pane.title} data-pane={pane.component}
+      data-item={item || undefined} data-sheet={(superAgent && sheet) || undefined}
       {...(sheet ? { role: "dialog", "aria-modal": true } : {})}
       // Inner columns handle their own Escape first (and stop it); what reaches here closes the sheet.
       onKeyDown={sheet ? (event) => { if (event.key === "Escape") closePane(); else trapTab(event, [paneRef.current]); } : undefined}
-      style={fullScreen ? undefined : { width }}>
-      {!fullScreen && <div className="workspace-pane__resize" role="separator" aria-orientation="vertical"
+      style={fullScreen || (superAgent && sheet) ? undefined : { width: item ? ITEM_WIDTH : width }}>
+      {resizable && <div className="workspace-pane__resize" role="separator" aria-orientation="vertical"
         aria-label="Resize the pane" tabIndex={0} onPointerDown={startResize} onKeyDown={nudge}
-        aria-valuenow={measured.now} aria-valuemin={PANE_MIN_WIDTH} aria-valuemax={Math.max(PANE_MIN_WIDTH, measured.max)} />}
-      <header className="workspace-pane__bar">
-        {/* A thread (the room's column, a task) carries its own titled header: the bar keeps only its controls. */}
-        <span className="workspace-pane__title">{ownsHeader(pane) ? null : pane.title}</span>
-        <button type="button" className="workspace-pane__full" aria-label={fullScreen ? "Exit full screen" : "Full screen"}
-          title={fullScreen ? "Exit full screen" : "Full screen"} onClick={() => setPaneFullScreen(!fullScreen)}>
-          {fullScreen ? <Minimize2 size={16} aria-hidden="true" /> : <Maximize2 size={16} aria-hidden="true" />}
-        </button>
-        <button ref={closeRef} type="button" aria-label="Close pane" title="Close" onClick={closePane}><X size={16} aria-hidden="true" /></button>
-      </header>
+        aria-valuenow={measured.now} aria-valuemin={minWidth} aria-valuemax={Math.max(minWidth, measured.max)} />}
+      {superAgent ? !ownsHeader(pane) && <PaneHeader title={pane.title} />
+        : <header className="workspace-pane__bar">
+          {/* A thread (the room's column, a task) carries its own titled header: the bar keeps only its controls. */}
+          <span className="workspace-pane__title">{ownsHeader(pane) ? null : pane.title}</span>
+          <button type="button" className="workspace-pane__full" aria-label={fullScreen ? "Exit full screen" : "Full screen"}
+            title={fullScreen ? "Exit full screen" : "Full screen"} onClick={() => setPaneFullScreen(!fullScreen)}>
+            {fullScreen ? <Minimize2 size={16} aria-hidden="true" /> : <Maximize2 size={16} aria-hidden="true" />}
+          </button>
+          <button ref={closeRef} type="button" aria-label="Close pane" title="Close" onClick={closePane}><X size={16} aria-hidden="true" /></button>
+        </header>}
       <div className="workspace-pane__body">
         {Panel ? <Panel id={pane.panelId} params={pane.params} />
           // The room portals its side column (thread, tasks, details) here (useThreadPane).
           : <div ref={setThreadPaneHost} className="room-context-host workspace-pane__thread" />}
       </div>
     </section>
-  );
+  </>);
 }

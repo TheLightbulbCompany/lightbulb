@@ -17,6 +17,7 @@ vi.mock("@/lib/api", () => ({ useApi: () => ({ get: apiGet }) }));
 import { RoomPanel, namesAgent, type RoomPanelProps } from "../RoomPanel";
 import { act } from "@testing-library/react";
 import { _resetControllerForTests, attachShell, closePane, getWorkspaceSnapshot, openBrowserPane, openPanel, setThreadPaneHost } from "@/components/workspace/workspaceController";
+import { ROOM_PANE_VIEW_EVENT } from "@/components/workspace/panels/AutomationDockPanel";
 vi.mock("@/lib/shellNav", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()), pushSearchParams: vi.fn(), replaceSearchParams: vi.fn(),
 }));
@@ -30,6 +31,16 @@ const props: RoomPanelProps = {
   participants: [sam, lightbulb], messages: [message],
   composer: { text: "", onTextChange: vi.fn(), members: [sam, lightbulb], clientMessageId: "draft", sendState: "idle", onSubmit: vi.fn() },
   onLinkToWork: vi.fn(),
+};
+// Nothing needs the viewer here: the Needs-you read answers empty.
+const nothingNeedsYou = () => apiGet.mockImplementation(async (path: string) => {
+  if (path.includes("needsYou=true")) return { tasks: [], next: null };
+  throw new Error("no route");
+});
+/** The project's name ▾ menu (UX slice 4): Details, People, Mute, Copy link, Archive, Leave, Delete. */
+const nameMenu = async (item: string) => {
+  await userEvent.click(await screen.findByRole("button", { name: /workshop-launch/ }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: item }));
 };
 // Default SWR dedupe here: the button and the overview share one room read, as in the app.
 const Fresh = ({ children }: { children: React.ReactNode }) => <SWRConfig value={{ provider: () => new Map() }}>{children}</SWRConfig>;
@@ -46,36 +57,50 @@ beforeEach(() => {
 });
 
 describe("RoomPanel Threads view (super-agent)", () => {
-  it("the Requests column is open beside the conversation; a row opens the request there, Back returns, Close is remembered", async () => {
+  it("something needs you here: the pane opens on Tasks; a row opens the task, ‹ Tasks returns; ✕ closes it for this visit", async () => {
     localStorage.clear();
     const { unmount } = render(<Fresh><RoomPanel {...props} /></Fresh>);
-    // Open by default, with the toggle pressed and carrying the needs-you dot.
     const toggle = await screen.findByRole("button", { name: "Tasks, 1 needs you" });
-    expect(toggle).toHaveAttribute("aria-pressed", "true");
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-pressed", "true"));
     const aside = await screen.findByRole("complementary", { name: "Tasks" });
+    // One header: the title is the toggle's label, and one ✕.
+    expect(within(aside).getByRole("heading", { level: 3, name: "Tasks" })).toBeInTheDocument();
+    expect(within(aside).getAllByRole("button", { name: "Close pane" })).toHaveLength(1);
     expect(await within(aside).findByRole("heading", { name: "Needs you · 1" })).toBeInTheDocument();
     expect(within(aside).getByRole("heading", { name: "Working · 2" })).toBeInTheDocument();
-    // No second tab strip in the column: Scheduled lives in the ··· menu.
+    // No tab strip: Scheduled is its own toggle.
     expect(within(aside).queryByRole("tab")).toBeNull();
     // One room read serves the button and the column.
     expect(client.list).toHaveBeenCalledTimes(1);
-    // A row opens the request in the same column; Back returns to the list.
     await userEvent.click(within(aside).getByRole("button", { name: "Open Workshop signup app, Needs you" }));
     expect(await screen.findByRole("complementary", { name: "Task" })).toHaveAttribute("data-task-pane", "t-signup");
     expect(screen.queryByRole("complementary", { name: "Tasks" })).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "Back to tasks" }));
     const back = await screen.findByRole("complementary", { name: "Tasks" });
-    // Closed, it stays closed for this person, in this room and the next.
-    await userEvent.click(within(back).getByRole("button", { name: "Close tasks" }));
+    await userEvent.click(within(back).getByRole("button", { name: "Close pane" }));
     expect(screen.queryByRole("complementary", { name: "Tasks" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Tasks, 1 needs you" })).toHaveAttribute("aria-pressed", "false");
+    // Closed while something needs you: the toggle carries the warn dot, and the pane stays closed this visit.
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    expect(toggle.querySelector(".bg-warn")).not.toBeNull();
+    // Nothing is persisted: the next visit opens on Tasks again.
+    expect(Object.keys(localStorage).filter((k) => k.includes("requestsOpen"))).toEqual([]);
     unmount();
     render(<Fresh><RoomPanel {...props} /></Fresh>);
-    await screen.findByRole("button", { name: "Tasks, 1 needs you" });
-    expect(screen.queryByRole("complementary", { name: "Tasks" })).toBeNull();
-    await userEvent.click(screen.getByRole("button", { name: "Tasks, 1 needs you" }));
     expect(await screen.findByRole("complementary", { name: "Tasks" })).toBeInTheDocument();
-    localStorage.clear();
+  });
+
+  it("nothing needs you: the pane is closed and the toggle opens and closes Tasks", async () => {
+    nothingNeedsYou();
+    render(<Fresh><RoomPanel {...props} /></Fresh>);
+    const toggle = await screen.findByRole("button", { name: "Tasks" });
+    await screen.findByRole("article", { name: /Message from Sam/ });
+    expect(screen.queryByRole("complementary", { name: "Tasks" })).toBeNull();
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    await userEvent.click(toggle);
+    expect(await screen.findByRole("complementary", { name: "Tasks" })).toBeInTheDocument();
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+    await userEvent.click(toggle);
+    expect(screen.queryByRole("complementary", { name: "Tasks" })).toBeNull();
   });
 
   it("a request card in the conversation opens in the column, not a separate pane", async () => {
@@ -114,44 +139,36 @@ describe("RoomPanel Threads view (super-agent)", () => {
     expect(namesAgent("the Lightbulb app is down", "Lightbulb")).toBe(false);
   });
 
-  it("Escape puts the column away in this room only; the X closes it everywhere; focus returns to the toggle", async () => {
+  it("Escape closes the pane for this visit; focus returns to the toggle; nothing is remembered", async () => {
     localStorage.clear();
-    const { unmount } = render(<Fresh><RoomPanel {...props} /></Fresh>);
+    render(<Fresh><RoomPanel {...props} /></Fresh>);
     const aside = await screen.findByRole("complementary", { name: "Tasks" });
-    await userEvent.click(within(aside).getByRole("button", { name: "Close tasks" }));
-    expect(screen.getByRole("button", { name: /^Tasks/ })).toHaveFocus();
-    await userEvent.click(screen.getByRole("button", { name: /^Tasks/ }));
-    const again = await screen.findByRole("complementary", { name: "Tasks" });
-    within(again).getByRole("button", { name: "Close tasks" }).focus();
+    within(aside).getByRole("button", { name: "Close pane" }).focus();
     await userEvent.keyboard("{Escape}");
     expect(screen.queryByRole("complementary", { name: "Tasks" })).toBeNull();
     expect(screen.getByRole("button", { name: /^Tasks/ })).toHaveFocus();
-    unmount();
-    // Escape remembered nothing: the next visit (this room or any other) opens with the column.
-    expect(localStorage.getItem(`lightbulb.room.requestsOpen:${SAM}`)).toBe("1");
-    render(<Fresh><RoomPanel {...props} /></Fresh>);
-    expect(await screen.findByRole("complementary", { name: "Tasks" })).toBeInTheDocument();
-    localStorage.clear();
+    expect(localStorage.length).toBe(0);
   });
 
-  it("closing About returns focus to the Requests toggle", async () => {
+  it("closing Details returns focus to the Tasks toggle", async () => {
     localStorage.clear();
     render(<Fresh><RoomPanel {...props} /></Fresh>);
-    await userEvent.click(await screen.findByRole("button", { name: /^People/ }));
+    await nameMenu("People");
     const about = await screen.findByRole("complementary", { name: "About" });
-    await userEvent.click(within(about).getByRole("button", { name: "Back to chat" }));
+    expect(within(about).getByRole("heading", { level: 3, name: "Details" })).toBeInTheDocument();
+    await userEvent.click(within(about).getByRole("button", { name: "Close pane" }));
     expect(screen.getByRole("button", { name: /^Tasks/ })).toHaveFocus();
   });
 
-  it("W7-2: About never rides on the Requests column; its Back closes it and the column comes back", async () => {
+  it("W7-2: Details never rides on the Tasks list; its ✕ closes it and the list comes back", async () => {
     localStorage.clear();
     render(<Fresh><RoomPanel {...props} /></Fresh>);
     await screen.findByRole("complementary", { name: "Tasks" });
     expect(screen.queryByRole("complementary", { name: "About" })).toBeNull();
-    await userEvent.click(screen.getByRole("button", { name: /^People/ }));
+    await nameMenu("People");
     const about = await screen.findByRole("complementary", { name: "About" });
     expect(screen.queryByRole("complementary", { name: "Tasks" })).toBeNull();
-    await userEvent.click(within(about).getByRole("button", { name: "Back to chat" }));
+    await userEvent.click(within(about).getByRole("button", { name: "Close pane" }));
     expect(screen.queryByRole("complementary", { name: "About" })).toBeNull();
     expect(await screen.findByRole("complementary", { name: "Tasks" })).toBeInTheDocument();
   });
@@ -187,8 +204,11 @@ describe("RoomPanel Threads view (super-agent)", () => {
       await userEvent.click(files);
       expect(getWorkspaceSnapshot().pane?.panelId).not.toBe("file-viewer");
       expect(files).toHaveAttribute("aria-pressed", "true");
-      const about = await within(host).findByRole("complementary", { name: "About" });
-      expect(within(about).getByRole("tab", { name: "Files" })).toHaveAttribute("aria-selected", "true");
+      // Its own view, titled "Files" (not "About"), with no tab strip; the pane carries the same title.
+      const about = await within(host).findByRole("complementary", { name: "Files" });
+      expect(within(about).getByRole("heading", { level: 3, name: "Files" })).toBeInTheDocument();
+      expect(within(about).queryByRole("tab")).toBeNull();
+      expect(getWorkspaceSnapshot().pane?.title).toBe("Files");
       const list = await within(about).findByRole("list", { name: "Made by tasks" });
       expect(within(list).getAllByRole("listitem")).toHaveLength(1);
       expect(list).toHaveTextContent("Welcome noteWrite the welcome");
@@ -205,9 +225,9 @@ describe("RoomPanel Threads view (super-agent)", () => {
     expect(screen.getByRole("heading", { name: "Tasks" })).toHaveFocus();
   });
 
-  it("W8-6: Skip to requests is the room's first Tab stop even with the column closed; it opens the column and lands there", async () => {
+  it("W8-6: Skip to tasks is the room's first Tab stop even with the pane closed; it opens Tasks and lands there", async () => {
     localStorage.clear();
-    localStorage.setItem(`lightbulb.room.requestsOpen:${SAM}`, "0");
+    nothingNeedsYou();
     try {
       render(<Fresh><RoomPanel {...props} /></Fresh>);
       await screen.findByRole("button", { name: /^Tasks/ });
@@ -244,35 +264,56 @@ describe("RoomPanel Threads view (super-agent)", () => {
     } finally { window.matchMedia = wide; host.remove(); _resetControllerForTests(); localStorage.clear(); }
   });
 
-  it("on a narrow screen the toggle opens the Requests as a sheet over the conversation, and closes it", async () => {
+  it("Scheduled is the third toggle: its list opens in the pane, a row opens the automation there, ‹ Scheduled comes back", async () => {
     localStorage.clear();
-    const wide = window.matchMedia;
-    window.matchMedia = ((query: string) => ({ matches: query === "(max-width: 859px)", media: query, onchange: null,
-      addListener: vi.fn(), removeListener: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn() })) as unknown as typeof window.matchMedia;
+    nothingNeedsYou();
+    const automation = { id: "a1", name: "Weekly signups", status: "active", deliverTo: "room:r1", schedule: { cron: ["0 9 * * 1"], tz: "America/New_York" }, nextRuns: [] };
+    apiGet.mockImplementation(async (path: string) => {
+      if (path.includes("needsYou=true")) return { tasks: [], next: null };
+      if (path === "/automations") return { automations: [automation] };
+      throw new Error("no route");
+    });
+    _resetControllerForTests();
+    attachShell(() => undefined);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    act(() => setThreadPaneHost(host));
     try {
       render(<Fresh><RoomPanel {...props} /></Fresh>);
-      const toggle = await screen.findByRole("button", { name: /^Tasks/ });
-      // Closed by default here, whatever the wide-screen choice: it would cover the conversation.
-      expect(screen.queryByRole("complementary", { name: "Tasks" })).toBeNull();
-      expect(toggle).toHaveAttribute("aria-pressed", "false");
-      await userEvent.click(toggle);
-      const sheet = await screen.findByRole("complementary", { name: "Tasks" });
-      expect(screen.getByRole("button", { name: /^Tasks/, hidden: true })).toHaveAttribute("aria-pressed", "true");
-      await userEvent.click(within(sheet).getByRole("button", { name: "Close tasks" }));
-      expect(screen.queryByRole("complementary", { name: "Tasks" })).toBeNull();
-      // The sheet never touched the wide-screen choice.
-      expect(localStorage.getItem(`lightbulb.room.requestsOpen:${SAM}`)).toBeNull();
-    } finally { window.matchMedia = wide; localStorage.clear(); }
+      // The header: Tasks, Files, Scheduled and ⋯ right of the name, nothing else.
+      const header = document.querySelector<HTMLElement>(".room-header")!;
+      const controls = [...header.querySelectorAll(".room-audience button")].map((b) => b.getAttribute("aria-label"));
+      expect(controls).toEqual(["Tasks", "Files", "Scheduled", "More tools"]);
+      await userEvent.click(screen.getByRole("button", { name: "Scheduled" }));
+      const list = await within(host).findByRole("complementary", { name: "Scheduled" });
+      expect(getWorkspaceSnapshot().pane?.title).toBe("Scheduled");
+      await userEvent.click(await within(list).findByRole("button", { name: "Weekly signups" }));
+      expect(getWorkspaceSnapshot().pane).toMatchObject({ panelId: "automation", params: { id: "a1" } });
+      expect(screen.queryByRole("complementary", { name: "Scheduled" })).toBeNull();
+      // "‹ Scheduled" (AutomationDockPanel): the pane closes and the project's list comes back.
+      act(() => { closePane(); window.dispatchEvent(new CustomEvent(ROOM_PANE_VIEW_EVENT, { detail: { view: "scheduled" } })); });
+      expect(await within(host).findByRole("complementary", { name: "Scheduled" })).toBeInTheDocument();
+      // Its ✕ closes the project's pane as well: one ✕ leaves nothing behind.
+      act(() => { openPanel("automation", { id: "a1" }); });
+      act(() => { closePane(); window.dispatchEvent(new CustomEvent(ROOM_PANE_VIEW_EVENT, { detail: { view: null } })); });
+      expect(getWorkspaceSnapshot().pane).toBeNull();
+      expect(screen.queryByRole("complementary", { name: "Scheduled" })).toBeNull();
+    } finally { host.remove(); _resetControllerForTests(); }
   });
 
-  it("Scheduled is in the ··· menu and opens in the column with Back", async () => {
-    localStorage.clear();
+  it("⋯ holds the tools: Search in project (⌘F), Pinned messages, Links", async () => {
+    nothingNeedsYou();
+    Object.assign(live, { messaging: { warmSearch: vi.fn(async () => undefined), searchMessages: vi.fn(async () => ({ hits: [] })) } });
     render(<Fresh><RoomPanel {...props} /></Fresh>);
-    await userEvent.click(screen.getByRole("button", { name: "Options" }));
-    await userEvent.click(await screen.findByRole("menuitem", { name: "Scheduled" }));
-    expect(await screen.findByRole("complementary", { name: "Scheduled" })).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Back to tasks" }));
-    expect(await screen.findByRole("complementary", { name: "Tasks" })).toBeInTheDocument();
+    await userEvent.click(await screen.findByRole("button", { name: "More tools" }));
+    for (const name of [/Search in project/, /Pinned messages/, "Links"]) expect(await screen.findByRole("menuitem", { name })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("menuitem", { name: /Search in project/ }));
+    expect(await screen.findByRole("dialog", { name: "Search this chat" })).toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Search this chat" })).toBeNull());
+    // ⌘F opens it too.
+    await userEvent.keyboard("{Meta>}f{/Meta}");
+    expect(await screen.findByRole("dialog", { name: "Search this chat" })).toBeInTheDocument();
   });
 
   it("Lightbulb's messages read as Lightbulb, with no Coordinator or Agent tag (W8-7)", async () => {
@@ -349,8 +390,8 @@ describe("RoomPanel Threads view (super-agent)", () => {
     const front = { ...lightbulb, mentionHandle: "lightbulb" };
     const finance: RoomParticipant = { ...lightbulb, id: "agent_fin", displayName: "Finance", mentionHandle: "finance", listenMode: "mentions" };
     render(<Fresh><RoomPanel {...props} participants={[sam, front, finance]} onRemoveMember={vi.fn()} onListenModeChange={vi.fn()} /></Fresh>);
-    // About opens from the people in the header (and ··· › Details); with the super-agent it has no Requests tab.
-    await userEvent.click(await screen.findByRole("button", { name: /^People/ }));
+    // Details opens from the name ▾ menu (People, Details); with the super-agent it has no Tasks tab.
+    await nameMenu("People");
     expect(within(screen.getByRole("complementary", { name: "About" })).queryByRole("tab", { name: "Tasks" })).toBeNull();
     const list = within(screen.getByRole("complementary", { name: "About" })).getByRole("heading", { name: "Members" }).closest("section")!;
     expect(within(list).getByText("Lightbulb")).toBeInTheDocument();

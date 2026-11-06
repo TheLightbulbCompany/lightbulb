@@ -5036,9 +5036,9 @@ async def _record_run_usage(
 
 
 def _is_task_session(session_key: str | None) -> bool:
-    """A super-agent Worker run (`ts.worker_session_key`): its usage has one writer, `end_attempt`. Router runs
-    keep this path (no task, no requester)."""
-    return bool(session_key) and ":lightbulb:task:" in session_key
+    """A super-agent Worker or Router run (`ts.worker_session_key`, `ts.router_session_key`): its usage has one
+    writer, the activity (`end_attempt`, `router_turn`), which bills the person who asked."""
+    return bool(session_key) and (":lightbulb:task:" in session_key or ":lightbulb:router:" in session_key)
 
 
 async def handle_usage_report(owner_id: str, body: UsageReportRequest) -> UsageReportResponse:
@@ -5050,7 +5050,7 @@ async def handle_usage_report(owner_id: str, body: UsageReportRequest) -> UsageR
         put_metric("messaging.usage.callback", dimensions={"outcome": "replayed"})
         return UsageReportResponse(run_id=body.run_id, status="replayed")
     usage = body.usage
-    if not _is_task_session(body.session_key):  # a task's usage is recorded by end_attempt, for its requester
+    if not _is_task_session(body.session_key):  # recorded by the task/Router activity, for its requester
         await _record_run_usage(owner_id, owner_id, usage, room_turn=False, event_kind=None)
     data = usage.model_dump(by_alias=True)
     if body.duration_ms is not None:

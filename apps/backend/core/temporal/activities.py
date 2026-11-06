@@ -23,6 +23,7 @@ from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
 from core import tasks_schema as ts
+from core.auth import is_org_owner_id
 from core.dynamodb import utc_now_iso
 from core.repositories import container_repo, effects_repo, messaging_repo, tasks_repo
 from core.services import (
@@ -329,6 +330,26 @@ def _usage(raw: dict) -> dict:
     }
 
 
+async def _meter(ws: str, user_id: str | None, raw: dict, kind: str) -> None:
+    """The one usage writer for super-agent runs (the bridge's usage callback skips them): billed to the person
+    who asked, else the workspace (`owner_id`, the same subject the non-room usage path bills)."""
+    usage = _usage(raw)
+    await messaging._record_run_usage(
+        ws,
+        user_id or ws,
+        messaging.RunUsage(
+            model=kind,
+            input_tokens=usage["inputTokens"],
+            output_tokens=usage["outputTokens"],
+            cache_read_tokens=0,
+            cache_write_tokens=0,
+            estimated_cost_usd=usage["costUsd"],
+        ),
+        room_turn=False,
+        event_kind=kind,
+    )
+
+
 @activity.defn
 async def reconcile_attempt(ws: str, task_id: str, n: int) -> str:
     """After a lost `worker_turn`: `running` (re-issue the same run id), `terminal:<outcome>` or `lost`."""
@@ -476,22 +497,8 @@ async def end_attempt(ws: str, task_id: str, n: int, outcome: str, error: str | 
         await push_service.send_push_to_user(
             requester, "Lightbulb", f"{task['title']} didn't finish.", {"taskId": task_id}
         )
-    usage = att.get("usage")
-    if usage and requester:
-        await messaging._record_run_usage(
-            ws,
-            requester,
-            messaging.RunUsage(
-                model="task",
-                input_tokens=int(usage.get("inputTokens") or 0),
-                output_tokens=int(usage.get("outputTokens") or 0),
-                cache_read_tokens=0,
-                cache_write_tokens=0,
-                estimated_cost_usd=usage.get("costUsd"),
-            ),
-            room_turn=False,
-            event_kind="task",
-        )
+    if att.get("usage"):
+        await _meter(ws, requester, att["usage"], "task")
 
 
 @activity.defn
@@ -641,8 +648,17 @@ async def _cheap_model(ws: str) -> str | None:
     return hermes_profiles._strip_provider_prefix(hermes_profiles.cheap_model_ref(choice, byo))
 
 
-async def _router_run(ws: str, inp: RouterTurnIn, prompt: str, memory: dict, scope: str) -> runtime_runs.RunStatus:
-    """One Router run in the lane's session, polled to its end (Router runs post no events)."""
+async def _meter_router(ws: str, user_id: str | None, status: runtime_runs.RunStatus) -> None:
+    """A Router run's usage, once per run id (failed runs too: their tokens were spent). ponytail: the receipt is
+    claimed before the write (`_record_run_usage` swallows its errors), so a crash between them loses the run."""
+    if status.usage and await messaging_repo.claim_usage_receipt(ws, f"router:{status.run_id}"):
+        await _meter(ws, user_id, status.usage, "router")
+
+
+async def _router_run(
+    ws: str, inp: RouterTurnIn, prompt: str, memory: dict, scope: str, user_id: str | None
+) -> runtime_runs.RunStatus:
+    """One Router run in the lane's session, polled to its end (Router runs post no events), its usage metered."""
     identity = runtime_runs.RunIdentity(
         ts.router_run_id(ws, inp.batch_id),
         ws,
@@ -662,18 +678,29 @@ async def _router_run(ws: str, inp: RouterTurnIn, prompt: str, memory: dict, sco
         memory=memory,
     )
     try:
-        status = await runtime_runs.create_run(ws, identity, request)
-    except runtime_runs.RunRefused:
-        # A retry after a partial apply renders a different prompt (open tasks changed) and the bridge
-        # fingerprints the whole request: the stored run (same run id) already holds the decisions.
-        status = await runtime_runs.get_run(ws, identity)
-    started = time.monotonic()
-    while status.status in _RUNNING:
-        if time.monotonic() - started > ROUTER_BUDGET_S:
-            raise TimeoutError("router run did not finish in time")
-        activity.heartbeat("router")
-        await asyncio.sleep(ROUTER_POLL_S)
-        status = await runtime_runs.get_run(ws, identity)
+        try:
+            status = await runtime_runs.create_run(ws, identity, request)
+        except runtime_runs.RunRefused:
+            # A retry after a partial apply renders a different prompt (open tasks changed) and the bridge
+            # fingerprints the whole request: the stored run (same run id) already holds the decisions.
+            status = await runtime_runs.get_run(ws, identity)
+        started = time.monotonic()
+        while status.status in _RUNNING:
+            if time.monotonic() - started > ROUTER_BUDGET_S:
+                raise TimeoutError("router run did not finish in time")
+            activity.heartbeat("router")
+            await asyncio.sleep(ROUTER_POLL_S)
+            status = await runtime_runs.get_run(ws, identity)
+    except Exception:
+        # A timed-out run, or a create that failed after the run started, still spent tokens: one last read
+        # meters what the run reports. ponytail: a partial count claims the receipt, so tokens a later retry
+        # sees go unmetered; key the receipt on the final status if that matters.
+        try:
+            await _meter_router(ws, user_id, await runtime_runs.get_run(ws, identity))
+        except Exception:  # noqa: BLE001 -- no run, or the read failed: the original error is what matters
+            logger.warning("router run usage unread after a failed turn batch=%s", inp.batch_id)
+        raise
+    await _meter_router(ws, user_id, status)
     return status
 
 
@@ -743,6 +770,9 @@ async def _ensure_task(ws: str, task_id: str, trig: dict, lane: str, status: str
         kind = "person" if asked == "person" else "room"
     else:
         kind = "person" if asked == "person" else "workspace"
+    if kind == "person" and actor == ws and is_org_owner_id(ws):
+        # No person behind it (mail, text: the org itself is the actor): no member's id to show it to.
+        kind = "room" if room else "workspace"
     if kind == "person" and not actor:
         # ponytail: refuse rather than widen (lead ruling). Lane A's fires pass the schedule owner as the actor.
         raise ValueError(f"trigger {trig['triggerId']} names no actor for a person-visible task")
@@ -1006,7 +1036,8 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
         memory = memory_tags.block_for_router(
             "private" if private and user_id else "shared", user_id if private else None, room_id
         )
-        status = await _router_run(ws, inp, prompt, memory, ts.trigger_scope(next(iter(to_model.values()))))
+        scope = ts.trigger_scope(next(iter(to_model.values())))
+        status = await _router_run(ws, inp, prompt, memory, scope, user_id)
         if status.status != "completed":
             raise RuntimeError(f"router run {status.status}: {status.error or ''}")
         for tid in to_model:  # propose_automation marks its trigger during the run (routedTo.automationId)

@@ -42,6 +42,9 @@ def world(table, monkeypatch):  # noqa: F811
         "indexed": [],
         "noted": [],
         "rooms": [],
+        "usage": None,
+        "metered": [],
+        "receipts": set(),
     }
 
     async def post(ws, room_id, **kw):
@@ -62,7 +65,7 @@ def world(table, monkeypatch):  # noqa: F811
         return ROSTER
 
     def status(identity, state):
-        return runtime_runs.RunStatus(identity.run_id, state, w["output"], None, None, [], list(w["decisions"]))
+        return runtime_runs.RunStatus(identity.run_id, state, w["output"], None, w["usage"], [], list(w["decisions"]))
 
     async def create_run(ws, identity, request):
         # The bridge: a second POST of the same run id with another request is an idempotency conflict (409).
@@ -74,7 +77,7 @@ def world(table, monkeypatch):  # noqa: F811
 
     async def get_run(ws, identity):
         w["polls"].append(identity.run_id)
-        return status(identity, "completed")
+        return status(identity, w.get("poll_status", "completed"))
 
     async def start_wf(ws, task_id, reason):
         w["starts"].append((task_id, reason))
@@ -100,6 +103,16 @@ def world(table, monkeypatch):  # noqa: F811
     async def provider(ws):
         return ("byo_key", "anthropic")
 
+    async def meter(ws, user, u, **kw):
+        w["metered"].append((user, u.input_tokens, u.output_tokens, kw))
+
+    async def claim(ws, key):
+        fresh = (ws, key) not in w["receipts"]
+        w["receipts"].add((ws, key))
+        return fresh
+
+    monkeypatch.setattr(acts.messaging, "_record_run_usage", meter)
+    monkeypatch.setattr(acts.messaging_repo, "claim_usage_receipt", claim)
     monkeypatch.setattr(acts.task_conversation, "post_as_lightbulb", post)
     monkeypatch.setattr(acts.task_conversation, "ensure_task_room", ensure_room)
     monkeypatch.setattr(acts.task_conversation, "front_agent_id", front)
@@ -306,6 +319,67 @@ async def test_router_turn_retry_applies_once(world):
     assert world["runs"][0][1] != world["runs"][1][1] and world["polls"] == [ts.router_run_id(WS, BATCH)]
     queued, _ = await repo.list_tasks_by_status(WS, "queued")
     assert sorted(r["identifier"] for r in queued) == ["LB-1", "LB-2"]  # the replay mints nothing
+
+
+@pytest.mark.asyncio
+async def test_router_run_usage_is_metered_once_for_the_asker(world):
+    t1 = await _trig("chat:m1")
+    world["decisions"] = [_start([t1])]
+    world["usage"] = {"input_tokens": 900, "output_tokens": 40}
+    await _run([t1])
+    await _run([t1])  # a retried router_turn reads the same run back: metered once
+    assert world["metered"] == [(SAM, 900, 40, {"room_turn": False, "event_kind": "router"})]
+
+
+@pytest.mark.asyncio
+async def test_router_run_with_no_actor_is_metered_to_the_workspace(world):
+    t1 = await _trig("mail:m1", actor=None, source="mail", ref={"text": "hi", "reply": None})
+    world["output"] = "Hi."
+    world["usage"] = {"input_tokens": 50, "output_tokens": 5}
+    world["first_status"] = "failed"  # a failed Router run still spent its tokens
+
+    with pytest.raises(RuntimeError):
+        await _run([t1])
+    assert world["metered"] == [(WS, 50, 5, {"room_turn": False, "event_kind": "router"})]
+
+
+@pytest.mark.asyncio
+async def test_a_timed_out_router_run_is_still_metered(world, monkeypatch):
+    t1 = await _trig("chat:m1")
+    world["first_status"] = world["poll_status"] = "running"
+    world["usage"] = {"input_tokens": 300, "output_tokens": 0}
+    monkeypatch.setattr(acts, "ROUTER_BUDGET_S", -1)
+    with pytest.raises(TimeoutError):
+        await _run([t1])
+    assert world["metered"] == [(SAM, 300, 0, {"room_turn": False, "event_kind": "router"})]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_create_meters_the_run_it_left_behind(world, monkeypatch):
+    t1 = await _trig("chat:m1")
+    world["usage"] = {"input_tokens": 80, "output_tokens": 2}
+
+    async def busy(ws, identity, request):
+        raise runtime_runs.RuntimeBusy("503")
+
+    monkeypatch.setattr(acts.runtime_runs, "create_run", busy)
+    with pytest.raises(runtime_runs.RuntimeBusy):
+        await _run([t1])
+    assert world["metered"] == [(SAM, 80, 2, {"room_turn": False, "event_kind": "router"})]
+
+
+@pytest.mark.asyncio
+async def test_workspace_actor_person_task_is_clamped_in_an_org_only(world):
+    mail = {"triggerId": "mail:m1", "source": "mail", "ref": {"text": "hi"}}
+    org = await acts._ensure_task(
+        WS, ts.new_task_id(), {**mail, "actorUserId": WS}, "shared", "queued", title="x", visibility="person"
+    )
+    assert org["audience"]["kind"] == "workspace"  # nobody's user id is an org id
+    me = "user_solo"
+    personal = await acts._ensure_task(
+        me, ts.new_task_id(), {**mail, "actorUserId": me}, "shared", "queued", title="x", visibility="person"
+    )
+    assert (personal["audience"]["kind"], personal["audience"]["userIds"]) == ("person", [me])
 
 
 @pytest.mark.asyncio

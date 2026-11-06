@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { useRooms as useSharedRooms, type RoomsPlatform, type UseRoomsResult } from "@lightbulb/shared";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
+import { roomsCache } from "@/lib/roomsCache";
 
 // The browser's half of RoomsPlatform.isVisible: document visible, window focused.
 export const pageVisible = () => document.visibilityState === "visible" && document.hasFocus();
@@ -49,6 +50,6 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true,
   // contract (bounded history + older-page loading) that the runtime implements.
   return useSharedRooms(
     platform,
-    { initialAgentId, subscribeToRoom, autoSelect, boundedHistory: true, subagents } as Parameters<typeof useSharedRooms>[1],
+    { initialAgentId, subscribeToRoom, autoSelect, boundedHistory: true, subagents, persistence: roomsCache } as Parameters<typeof useSharedRooms>[1],
   ) as UseRoomsResult & { loadOlder: () => Promise<void> };
 }

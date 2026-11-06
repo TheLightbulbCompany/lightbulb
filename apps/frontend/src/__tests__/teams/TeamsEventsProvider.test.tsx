@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, act } from "@testing-library/react";
+import { SWRConfig } from "swr";
 import type { LiveEvent } from "@lightbulb/shared";
 
 // Module-level handler captured from the live-events provider so tests can
@@ -447,6 +448,21 @@ describe("TeamsEventsProvider", () => {
     rerender(<TeamsEventsProvider><div /></TeamsEventsProvider>);
     const keys = invalidatedKeys();
     expect(keys).toEqual(expect.arrayContaining(["/teams/dashboard", "/teams/inbox"]));
+  });
+
+  it("waits for a /teams read in flight before reconciling over it (W14-4)", () => {
+    vi.useFakeTimers();
+    try {
+      const cache = new Map<string, unknown>([["k", { isValidating: true, _k: ["/teams/agents", "user", "org"] }]]);
+      liveState.connectionRevision = 1;
+      render(<SWRConfig value={{ provider: () => cache as never }}><TeamsEventsProvider><div /></TeamsEventsProvider></SWRConfig>);
+      expect(mutateMock).not.toHaveBeenCalled();
+      cache.set("k", { isValidating: false, data: {}, _k: ["/teams/agents", "user", "org"] });
+      act(() => { vi.advanceTimersByTime(300); });
+      expect(invalidatedKeys()).toEqual(expect.arrayContaining(["/teams/agents", "/teams/inbox"]));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("ignores non-teams events (e.g. an OpenClaw event leaking through)", () => {

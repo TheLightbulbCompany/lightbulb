@@ -1,8 +1,10 @@
 "use client";
 
+import { useEffect } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { SWRConfig } from "swr";
 import { useResetSwrOnUserChange } from "@lightbulb/shared";
+import { clearRoomsCache } from "@/lib/roomsCache";
 
 /**
  * App-wide SWR defaults.
@@ -27,7 +29,10 @@ import { useResetSwrOnUserChange } from "@lightbulb/shared";
  */
 export function SwrProvider({ children }: { children: React.ReactNode }) {
   // Cached reads are one viewer's: a sign-out or another account drops them all.
-  useResetSwrOnUserChange(useAuth().userId);
+  const { isLoaded, userId } = useAuth();
+  useResetSwrOnUserChange(userId);
+  // Signed out: the room lists kept for a fast reload go too.
+  useEffect(() => { if (isLoaded && !userId) clearRoomsCache(); }, [isLoaded, userId]);
   return (
     <SWRConfig value={{ revalidateOnFocus: false, revalidateOnReconnect: true }}>
       {children}

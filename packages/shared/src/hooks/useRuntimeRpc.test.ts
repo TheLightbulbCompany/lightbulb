@@ -69,6 +69,22 @@ describe("useRuntimeRpc", () => {
     await waitFor(() => expect(source.rpc).toHaveBeenCalledTimes(3));
   });
 
+  it("keeps a read in flight when the live ack lands, then refetches (W14-4)", async () => {
+    const source = makeSource();
+    let first!: (value: unknown) => void;
+    source.rpc = vi.fn()
+      .mockImplementationOnce(() => new Promise((resolve) => { first = resolve; }))
+      .mockResolvedValue({ kind: "result", value: { n: 2 } }) as unknown as RuntimeRpcSource["rpc"];
+    const { result, rerender } = renderHook(() => useRuntimeRpc(source, "commands.list", { case: "w14-ack" }));
+    await waitFor(() => expect(source.rpc).toHaveBeenCalledTimes(1));
+    source.connectionRevision = 2;
+    rerender();
+    expect(source.rpc).toHaveBeenCalledTimes(1);
+    await act(async () => first({ kind: "result", value: { n: 1 } }));
+    await waitFor(() => expect(source.rpc).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(result.current.data).toEqual({ n: 2 }));
+  });
+
   it("keeps No container as an empty success and rejects operation handles from read methods", async () => {
     const source = makeSource();
     source.rpc = vi.fn()

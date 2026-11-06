@@ -654,6 +654,26 @@ describe("useRooms platform seams", () => {
         live.connectionRevision = 1;
       }
     });
+
+    it("keeps a list in flight when the live ack lands, and refetches after it (W14-4)", async () => {
+      let first!: (value: { rooms: RoomDetail[]; sections: RoomSection[] }) => void;
+      messaging.listRooms.mockImplementationOnce(() => new Promise((resolve) => { first = resolve; }));
+      const { result, rerender } = renderHook(() => useRooms(platform()), { wrapper });
+      await waitFor(() => expect(messaging.listRooms).toHaveBeenCalledTimes(1));
+      live.liveConnected = true;
+      live.connectionRevision = 2;
+      try {
+        rerender();
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(messaging.listRooms).toHaveBeenCalledTimes(1);
+        await act(async () => first({ rooms: [room], sections: [] }));
+        expect(result.current.roomsLoading).toBe(false);
+        await waitFor(() => expect(messaging.listRooms).toHaveBeenCalledTimes(2));
+      } finally {
+        live.liveConnected = false;
+        live.connectionRevision = 1;
+      }
+    });
   });
 
   describe("optimistic send reconciled by a live event", () => {

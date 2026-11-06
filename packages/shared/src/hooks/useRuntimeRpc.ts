@@ -84,7 +84,7 @@ export function useRuntimeRpc<T = unknown>(
   }, [rpc]);
 
   const key = method ? runtimeRpcKey(method, params) : null;
-  const { data, error, isLoading, mutate } = useSWR<T | undefined>(key, fetcher, {
+  const { data, error, isLoading, isValidating, mutate } = useSWR<T | undefined>(key, fetcher, {
     revalidateOnFocus: false,
     dedupingInterval: 10_000,
     errorRetryInterval: 3_000,
@@ -114,13 +114,18 @@ export function useRuntimeRpc<T = unknown>(
     });
   }, [method, key, onEvent, mutate]);
 
+  // A reconnect refetches the read, after any read in flight lands: `mutate` would start a newer request and SWR
+  // drops the older one's answer, so a cold load's first ack made every read wait for a second round trip (W14-4).
   const previousRevision = useRef(connectionRevision);
+  const reconcileDue = useRef(false);
   useEffect(() => {
-    const previous = previousRevision.current;
+    if (connectionRevision > previousRevision.current) reconcileDue.current = true;
     previousRevision.current = connectionRevision;
-    if (!key || connectionRevision <= previous) return;
+    if (!key) { reconcileDue.current = false; return; }
+    if (!reconcileDue.current || isValidating) return;
+    reconcileDue.current = false;
     void mutate();
-  }, [connectionRevision, key, mutate]);
+  }, [connectionRevision, key, isValidating, mutate]);
 
   return {
     data,

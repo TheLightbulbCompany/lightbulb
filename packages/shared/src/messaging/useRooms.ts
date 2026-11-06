@@ -298,13 +298,16 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
   );
   const roomsData = roomsResponse.data;
   const mutateRooms = roomsResponse.mutate;
-  // Once per reconnect across every mounted copy, not once per copy.
+  const listing = roomsResponse.isValidating;
+  // Once per reconnect across every mounted copy, not once per copy. After the list in flight lands, never over it:
+  // SWR keeps only the newest request, so a cold load's first ack used to throw the first list away and every
+  // project card waited for a second one (W14-4).
   useEffect(() => {
     if (!liveConnected) { store.refreshedRevision = null; return; }
-    if (store.refreshedRevision === connectionRevision) return;
+    if (store.refreshedRevision === connectionRevision || listing) return;
     store.refreshedRevision = connectionRevision;
     void mutateRooms();
-  }, [connectionRevision, liveConnected, mutateRooms, store]);
+  }, [connectionRevision, liveConnected, listing, mutateRooms, store]);
   // The workspace feed is read on Activity, never as a conversation: it is in no list, no
   // unread count and no auto-pick. Recipient-less DMs are malformed and must not expose a
   // row or composer. An explicit feed select (Discuss) still opens it by id.

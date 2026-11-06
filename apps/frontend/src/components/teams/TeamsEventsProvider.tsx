@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useSWRConfig, type Cache } from "swr";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 
@@ -193,10 +194,23 @@ export function activityTargets(data: unknown): {
   };
 }
 
+/** A `/teams` read still on its way. `_k` is the original key SWR keeps beside each entry (its own `mutate(filter)`
+ *  matches on it). */
+function teamsReadInFlight(cache: Cache): boolean {
+  for (const serialized of cache.keys()) {
+    const state = cache.get(serialized) as { isValidating?: boolean; _k?: unknown } | undefined;
+    const key = state?._k;
+    if (state?.isValidating && Array.isArray(key) && typeof key[0] === "string" && key[0].startsWith("/teams")) return true;
+  }
+  return false;
+}
+
 export function TeamsEventsProvider({ children }: { children: React.ReactNode }) {
   const { connectionRevision, onEvent } = useLiveEvents();
   const { mutate } = useTeamsApi();
+  const { cache } = useSWRConfig();
   const reconciledRevisionRef = useRef<number | null>(null);
+  const [settleCheck, setSettleCheck] = useState(0);
 
   // Invalidate every SWR key that matches `prefix` exactly OR starts with
   // `${prefix}?`. SWR's `mutate` accepts a predicate; this is the documented
@@ -307,14 +321,20 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
   // after each private-user subscription reconnect. Not before the first ack (revision 0):
   // that is a cold load, every read is already on its first fetch, and `mutate(predicate)`
   // bypasses SWR's dedupe, so it only doubled each /teams read. The first ack reconciles.
+  // Never over a read in flight: `mutate` starts a newer request and SWR drops the older one's answer, so the first
+  // ack used to throw away every cold /teams read and make it wait for a second round trip (W14-4). Look again shortly.
   useEffect(() => {
     if (connectionRevision === 0) return;
     if (reconciledRevisionRef.current === connectionRevision) return;
+    if (teamsReadInFlight(cache)) {
+      const timer = setTimeout(() => setSettleCheck((n) => n + 1), 250);
+      return () => clearTimeout(timer);
+    }
     reconciledRevisionRef.current = connectionRevision;
     for (const key of ALL_KEYS) mutateKeyPrefix(key);
     mutateIssueRunLists();
     mutateExternalObjects();
-  }, [connectionRevision, mutateKeyPrefix, mutateIssueRunLists, mutateExternalObjects]);
+  }, [connectionRevision, cache, settleCheck, mutateKeyPrefix, mutateIssueRunLists, mutateExternalObjects]);
 
   // Wire event listener.
   useEffect(() => {

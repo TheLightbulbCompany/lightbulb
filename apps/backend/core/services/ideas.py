@@ -330,9 +330,14 @@ async def list_ideas(auth: AuthContext) -> dict:
 
     # UX slice 6: the first run's ideas are the owner's "Pick a first move" (cards in the Lightbulb DM, one Needs you).
     first_run = proactive.first_run_task_id()
+    # Started is decided: a started idea whose task has finished comes back to the list, but not as a first move.
+    decided = {r["ideaId"] for r in rows}
     return {
         "ideas": [
-            {**_suggestion_card(r, names), **({"firstRun": True} if r.get("taskId") == first_run else {})}
+            {
+                **_suggestion_card(r, names),
+                **({"firstRun": True} if r.get("taskId") == first_run and r["ideaId"] not in decided else {}),
+            }
             for r in suggested
         ]
         + [_card(i, agents[i.owner_role]) for i in shown],

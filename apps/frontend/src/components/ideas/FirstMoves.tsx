@@ -23,8 +23,10 @@ export const FIRST_MOVE_LABEL = "Pick a first move";
 export function useFirstMoves(): Idea[] {
   const on = useSuperAgent();
   const live = useOptionalLiveEvents();
-  const { isLoaded, userId, orgId } = useAuth();
-  const key = on && live?.messaging && isLoaded && userId ? `${userId}:${orgId ?? userId}` : null;
+  const { isLoaded, userId, orgId, orgRole } = useAuth();
+  // The owner's decision only: a workspace admin (a personal workspace is its own). Nobody else sees the cards or the +1.
+  const owner = !orgId || orgRole === "org:admin";
+  const key = on && owner && live?.messaging && isLoaded && userId ? `${userId}:${orgId ?? userId}` : null;
   // Without the live provider the key is null, so the client is never called.
   const ideas = useSharedIdeas(live?.messaging as IdeasClient, key);
   const { firstRunTaskId, refresh } = ideas;

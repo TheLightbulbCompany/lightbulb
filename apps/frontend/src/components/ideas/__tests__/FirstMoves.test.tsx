@@ -12,7 +12,8 @@ const live = vi.hoisted(() => ({
   superAgent: true, agentNames: new Map([["ceo", "Lightbulb"]]), messaging: null as unknown,
   onEvent: (h: (event: unknown) => void) => { handlers.add(h); return () => handlers.delete(h); },
 }));
-vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ isLoaded: true, userId: "u1", orgId: "o1" }) }));
+const auth = vi.hoisted(() => ({ isLoaded: true, userId: "u1", orgId: "o1", orgRole: "org:admin" }));
+vi.mock("@clerk/nextjs", () => ({ useAuth: () => auth }));
 vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useOptionalLiveEvents: () => live, useSuperAgent: () => live.superAgent }));
 vi.mock("@/lib/notify", () => ({ notifyApiError: vi.fn() }));
 vi.mock("@/components/workspace/workspaceController", () => ({ openMessagePanel: vi.fn(), openTaskPane: vi.fn(), openPanel: vi.fn(), openChatPanelWithDraft: vi.fn() }));
@@ -30,6 +31,7 @@ beforeEach(() => {
   handlers.clear();
   live.superAgent = true;
   live.messaging = client;
+  auth.orgRole = "org:admin";
   client.dismissIdea.mockResolvedValue(undefined);
 });
 
@@ -58,6 +60,12 @@ describe("FirstMoves", () => {
     expect(client.listIdeas).toHaveBeenCalledTimes(1);
     fire("t-first");
     expect(await screen.findByRole("region", { name: "First moves" })).toHaveTextContent("One first move left");
+  });
+
+  it("only the owner (a workspace admin) gets the first moves: a member reads nothing", () => {
+    auth.orgRole = "org:member";
+    dm();
+    expect(client.listIdeas).not.toHaveBeenCalled();
   });
 
   it("switch off: no read at all", () => {

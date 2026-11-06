@@ -5,15 +5,18 @@
 // (the Members content, handed in). Each field saves on change or blur and says "Saved" beside itself for 2 s.
 // ponytail: "What Lightbulb remembers here" stays hidden: memory-engine facts carry no project tag yet (08 §6c spike).
 
-import { useEffect, useId, useState, type ReactElement, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type MutableRefObject, type ReactElement, type ReactNode } from "react";
 import { useOrganization } from "@clerk/nextjs";
 import { X } from "lucide-react";
 import { ROOM_TOPIC_MAX_CHARS, type PatchRoomRequest, type RoomSummary } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
+import { notifyApiError } from "@/lib/notify";
 import { ProjectIconPicker } from "./ProjectTile";
 
 export type SettingsSection = "general" | "memory" | "people";
+/** Where ⋯ › Settings was chosen outside the project (focus goes back there on close). */
+export type SettingsFrom = "sidebar" | "home";
 const SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "general", label: "General" }, { id: "memory", label: "Memory" }, { id: "people", label: "People" },
 ];
@@ -46,26 +49,33 @@ export interface ProjectSettingsProps {
   onArchive?: () => void;
   onDelete?: () => void;
   people: ReactNode;
+  /** Where focus goes once it closes (the trigger it was opened from). */
+  onCloseAutoFocus?: (event: Event) => void;
 }
 
+type Flush = MutableRefObject<(() => void) | null>;
+
 export function ProjectSettingsDialog(props: ProjectSettingsProps): ReactElement {
-  const { section, onSection, roomName } = props;
-  return <Dialog open={section !== null} onOpenChange={(open) => { if (!open) onSection(null); }}>
-    <DialogContent className="project-settings">
+  const { section, onSection, roomName, onCloseAutoFocus } = props;
+  // Esc or ✕ while a field still has focus unmounts it before its blur save runs: save what is unsaved first.
+  const flush: Flush = useRef(null);
+  return <Dialog open={section !== null} onOpenChange={(open) => { if (!open) { flush.current?.(); onSection(null); } }}>
+    <DialogContent className="project-settings" onCloseAutoFocus={onCloseAutoFocus}>
       <div className="project-settings__head">
         <DialogTitle asChild><h2 className="truncate">{roomName} · Settings</h2></DialogTitle>
         <DialogClose asChild><Button type="button" variant="ghost" size="icon-sm" aria-label="Close settings"><X aria-hidden="true" /></Button></DialogClose>
       </div>
-      {section && <SettingsBody {...props} section={section} />}
+      {section && <SettingsBody {...props} section={section} flush={flush} />}
     </DialogContent>
   </Dialog>;
 }
 
-function SettingsBody({ room, roomName, section, onSection, canEdit, actionable, onRename, onSetTopic, onPatch, onArchive, onDelete, people }: ProjectSettingsProps & { section: SettingsSection }): ReactElement {
+function SettingsBody({ room, roomName, section, onSection, canEdit, actionable, onRename, onSetTopic, onPatch, onArchive, onDelete, people, flush }: ProjectSettingsProps & { section: SettingsSection; flush: Flush }): ReactElement {
   const id = useId();
   const { membership } = useOrganization();
   // The backend lets a room owner/admin pause, and a workspace admin too (pause alone).
-  const canPause = !!onPatch && (canEdit || membership?.role === "org:admin") && !room.isDefault;
+  // Never #general or the channel shared with the Lightbulb team.
+  const canPause = !!onPatch && (canEdit || membership?.role === "org:admin") && !room.isDefault && !room.shared;
   const [name, setName] = useState(roomName);
   const [topic, setTopic] = useState(room.topic ?? "");
   const [saved, setSaved] = useState<Record<string, number>>({});
@@ -79,6 +89,16 @@ function SettingsBody({ room, roomName, section, onSection, canEdit, actionable,
     finally { setBusy(false); }
   };
   const editable = canEdit && actionable && !busy;
+  const nameDirty = !!onRename && editable && !room.shared && !!name.trim() && name.trim() !== roomName;
+  const topicDirty = !!onSetTopic && editable && topic.trim() !== (room.topic ?? "");
+  // Closing with an unsaved field: save it after this unmounts; a failure is a toast, where the person still looks.
+  useEffect(() => {
+    flush.current = () => {
+      if (nameDirty) onRename!(name.trim()).catch((e) => notifyApiError(e, "The name could not be saved."));
+      if (topicDirty) onSetTopic!(topic.trim() || null).catch((e) => notifyApiError(e, "The instructions could not be saved."));
+    };
+    return () => { flush.current = null; };
+  }, [flush, nameDirty, topicDirty, name, topic, onRename, onSetTopic]);
   const paused = !!room.pausedAt;
 
   const general = <>
@@ -95,7 +115,7 @@ function SettingsBody({ room, roomName, section, onSection, canEdit, actionable,
             onChange={(next) => void save("name", () => onPatch!({ icon: next.icon ?? null, color: next.color ?? null }), "The icon could not be saved.")} />
           <input id={`${id}-name`} value={name} maxLength={200} disabled={!editable || !onRename || room.shared}
             onChange={(e) => setName(e.target.value)}
-            onBlur={() => { if (name.trim() && name.trim() !== roomName) void save("name", () => onRename!(name.trim()), "The name could not be saved."); }}
+            onBlur={() => { if (nameDirty) void save("name", () => onRename!(name.trim()), "The name could not be saved."); }}
             onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }} />
         </div>
       </div>
@@ -141,7 +161,7 @@ function SettingsBody({ room, roomName, section, onSection, canEdit, actionable,
           value={topic} maxLength={ROOM_TOPIC_MAX_CHARS} disabled={!editable || !onSetTopic}
           placeholder="Sell 200 loaves through the new site by 1 Dec. Always cc sam@acme.com on customer email."
           onChange={(e) => setTopic(e.target.value)}
-          onBlur={() => { if (topic.trim() !== (room.topic ?? "")) void save("topic", () => onSetTopic!(topic.trim() || null), "The instructions could not be saved."); }} />
+          onBlur={() => { if (topicDirty) void save("topic", () => onSetTopic!(topic.trim() || null), "The instructions could not be saved."); }} />
         <span className="project-count">{topic.length.toLocaleString()} / {ROOM_TOPIC_MAX_CHARS.toLocaleString()}</span>
       </div>
     </div>

@@ -15,6 +15,7 @@ import { copyText, roomPermalink } from "./messageLinks";
 import { isUnreadTarget, nextUnreadRoomId } from "./roomNavigation";
 import { RoomDirectoryRow } from "./RoomDirectoryRow";
 import { NewProjectDialog } from "@/components/projects/NewProjectDialog";
+import type { SettingsFrom } from "@/components/projects/ProjectSettingsDialog";
 import { groupRooms, type RoomGroup, type SidebarRow, type SidebarSession, type SidebarSort } from "./roomSections";
 import { useSuperAgent } from "@/hooks/useLiveEvents";
 import { useNeedsYouTasks } from "@/components/tasks/useRoomThreads";
@@ -82,7 +83,7 @@ export interface RoomDirectoryProps {
   /** Opens the room with its member picker open. */
   onAddPeople?: (roomId: string) => void;
   /** Super-agent: opens the project with its settings over it. */
-  onOpenSettings?: (roomId: string) => void;
+  onOpenSettings?: (roomId: string, from?: SettingsFrom) => void;
   /** Super-agent: patch any room the viewer can see (Home's archive, the tile). */
   onPatchRoom?: (roomId: string, request: PatchRoomRequest) => Promise<void>;
   /** Extra header buttons (e.g. "New session"), rendered before "New conversation". */

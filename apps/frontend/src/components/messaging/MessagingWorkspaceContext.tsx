@@ -28,6 +28,7 @@ import { readSessionSeen, writeSessionSeen } from "./sidebarPrefs";
 import { ShortcutSheet } from "./ShortcutSheet";
 import type { RoomComposerProps } from "./RoomComposer";
 import type { RoomDirectoryProps, ConversationCreation } from "./RoomDirectory";
+import type { SettingsFrom } from "@/components/projects/ProjectSettingsDialog";
 import type { RoomPanelProps } from "./RoomPanel";
 import type { SessionFocusTarget } from "./SessionFocus";
 import { bridge } from "./localTerminal";
@@ -224,7 +225,7 @@ export function MessagingWorkspaceProvider({
   subscribeToRoom?: boolean;
   observeRuns?: boolean;
 }) {
-  const { userId, orgId } = useAuth();
+  const { userId, orgId, orgRole } = useAuth();
   const scope = orgId ?? userId ?? "signed-out";
   // A room's Add people lists workspace members only, which is where people looked for "invite my
   // cofounder" and found nothing (Second Catch, 2026-10-08); the room panel offers the join link too.
@@ -233,7 +234,7 @@ export function MessagingWorkspaceProvider({
   // ⋯ → Add people on a sidebar row: open that room, then its member picker (one-shot).
   const [addPeopleRoomId, setAddPeopleRoomId] = useState<string | null>(null);
   // ⋯ › Settings on a sidebar row or a Home card (super-agent): open that project, then its settings (one-shot).
-  const [settingsRoomId, setSettingsRoomId] = useState<string | null>(null);
+  const [settingsTarget, setSettingsTarget] = useState<{ roomId: string; from: SettingsFrom } | null>(null);
   // Focus placement: a session opened from the sidebar or a link takes the
   // middle of the panel; sessions live in the workspace, not in a room.
   const [sessionFocus, setSessionFocus] = useState<SessionFocusTarget | null>(null);
@@ -963,7 +964,7 @@ export function MessagingWorkspaceProvider({
     currentUserId: userId ?? undefined,
     onAddPeople: (roomId: string) => { closeSession(); chooseRoom(roomId); setAddPeopleRoomId(roomId); },
     ...(superAgent ? {
-      onOpenSettings: (roomId: string) => { closeSession(); chooseRoom(roomId); activateMessagesPanel(); setSettingsRoomId(roomId); },
+      onOpenSettings: (roomId: string, from: SettingsFrom = "sidebar") => { closeSession(); chooseRoom(roomId); activateMessagesPanel(); setSettingsTarget({ roomId, from }); },
       onPatchRoom: async (roomId: string, request: PatchRoomRequest) => {
         await rooms.resourceSource.client.updateRoom(roomId, request);
         await (roomId === rooms.activeRoomId ? Promise.all([rooms.refreshRoom(), rooms.refreshRooms()]) : rooms.refreshRooms());
@@ -1098,13 +1099,16 @@ export function MessagingWorkspaceProvider({
       ? { onRemoveMember: rooms.removeMember } : {}),
     ...(!activeFeed && rooms.activeRoom && rooms.activeRoom.kind !== "dm" ? { onCopyJoinLink: copyJoinLink } : {}),
     openAddPeople: addPeopleRoomId !== null && addPeopleRoomId === rooms.activeRoomId,
-    openSettings: settingsRoomId !== null && settingsRoomId === rooms.activeRoomId,
+    openSettings: settingsTarget && settingsTarget.roomId === rooms.activeRoomId ? settingsTarget.from : null,
     // Super-agent projects: icon, colour and pause. The server decides who may (room owner/admin, or a workspace
     // admin pausing); a refusal surfaces where it was asked.
     ...(superAgent && rooms.activeRoom?.kind === "channel" && !activeFeed ? {
       onPatchRoom: async (request: PatchRoomRequest) => { await rooms.updateRoom(request); },
+      // The server's pause rule: the room's owner/admin, or a workspace admin; never #general or the shared channel.
+      canPause: !rooms.activeRoom.isDefault && !rooms.activeRoom.shared
+        && (["owner", "admin"].includes(viewerRole) || orgRole === "org:admin"),
     } : {}),
-    onSettingsOpened: () => setSettingsRoomId(null),
+    onSettingsOpened: () => setSettingsTarget(null),
     onAddPeopleOpened: () => setAddPeopleRoomId(null),
     onAbortRun: (runId) => rooms.abortRun(runId),
     subagents: rooms.subagents,

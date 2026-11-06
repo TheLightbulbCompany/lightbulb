@@ -4,6 +4,12 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 vi.mock("@/components/huddle/useRoomHuddle", () => ({ useRoomHuddle: () => ({ userIds: [], available: false }) }));
+const ctl = vi.hoisted(() => ({ openPanel: vi.fn() }));
+vi.mock("@/components/workspace/workspaceController", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/components/workspace/workspaceController")>(), openPanel: ctl.openPanel,
+}));
+const toast = vi.hoisted(() => ({ notifyApiError: vi.fn() }));
+vi.mock("@/lib/notify", async (importOriginal) => ({ ...await importOriginal<typeof import("@/lib/notify")>(), notifyApiError: toast.notifyApiError }));
 import type { RoomSummary } from "@lightbulb/shared";
 import { RoomHeader } from "@/components/messaging/RoomHeader";
 import { RoomDirectoryRow } from "@/components/messaging/RoomDirectoryRow";
@@ -77,11 +83,46 @@ describe("project settings", () => {
 
   it("Archive in the modal opens the header's confirm; a sidebar ⋯ › Settings opens it in one shot", async () => {
     const onSettingsOpened = vi.fn();
-    render(header({ onSetArchived: vi.fn(), openSettings: true, onSettingsOpened }));
+    render(header({ onSetArchived: vi.fn(), openSettings: "sidebar", onSettingsOpened }));
     const dialog = await screen.findByRole("dialog", { name: "Spring sale · Settings" });
     expect(onSettingsOpened).toHaveBeenCalledTimes(1);
     await userEvent.click(within(dialog).getByRole("button", { name: "Archive" }));
-    expect(await screen.findByRole("dialog", { name: "Archive Spring sale?" })).toBeInTheDocument();
+    const confirm = await screen.findByRole("dialog", { name: "Archive Spring sale?" });
+    // Focus stays in the confirm it was handed to.
+    await waitFor(() => expect(confirm).toContainElement(document.activeElement as HTMLElement));
+  });
+
+  it("Esc while typing still saves the Instructions; a failure is a toast", async () => {
+    const onSetTopic = vi.fn().mockRejectedValue(new Error("Too long"));
+    render(header({ onSetTopic }));
+    const dialog = await openSettings();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Memory" }));
+    const field = within(dialog).getByLabelText("Instructions");
+    await userEvent.clear(field);
+    await userEvent.type(field, "Ship by Friday");
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(onSetTopic).toHaveBeenCalledTimes(1);
+    expect(onSetTopic).toHaveBeenCalledWith("Ship by Friday");
+    await waitFor(() => expect(toast.notifyApiError).toHaveBeenCalledWith(expect.any(Error), "The instructions could not be saved."));
+  });
+
+  it("focus goes back where Settings was opened: name ▾, the sidebar row's ⋯, or Home's card ⋯", async () => {
+    const { rerender } = render(<>{header()}<button type="button" className="room-directory-actions" data-room-id="room-1">row ⋯</button></>);
+    await openSettings();
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.getByRole("button", { name: /Spring sale/ })).toHaveFocus());
+
+    rerender(<>{header({ openSettings: "sidebar", onSettingsOpened: () => rerender(<>{header()}<button type="button" className="room-directory-actions" data-room-id="room-1">row ⋯</button></>) })}<button type="button" className="room-directory-actions" data-room-id="room-1">row ⋯</button></>);
+    await screen.findByRole("dialog");
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.getByRole("button", { name: "row ⋯" })).toHaveFocus());
+
+    rerender(<>{header({ openSettings: "home", onSettingsOpened: () => rerender(<>{header()}<button type="button" className="home-projects__more" data-room-id="room-1">card ⋯</button></>) })}<button type="button" className="home-projects__more" data-room-id="room-1">card ⋯</button></>);
+    await screen.findByRole("dialog");
+    await userEvent.keyboard("{Escape}");
+    expect(ctl.openPanel).toHaveBeenCalledWith("home");
+    await waitFor(() => expect(screen.getByRole("button", { name: "card ⋯" })).toHaveFocus());
   });
 });
 

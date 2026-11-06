@@ -175,7 +175,7 @@ describe("HomeProjects", () => {
     expect(onSetPrefs).toHaveBeenCalledWith("site", { starred: false });
     await userEvent.click(within(pinned).getByRole("button", { name: "More for Website" }));
     await userEvent.click(await screen.findByRole("menuitem", { name: "Settings" }));
-    expect(onOpenSettings).toHaveBeenCalledWith("site");
+    expect(onOpenSettings).toHaveBeenCalledWith("site", "home");
     await userEvent.click(within(pinned).getByRole("button", { name: "More for Website" }));
     await userEvent.click(await screen.findByRole("menuitem", { name: "Archive" }));
     expect(onPatchRoom).toHaveBeenCalledWith("site", { archived: true });

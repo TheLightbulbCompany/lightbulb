@@ -189,7 +189,7 @@ function RoomState({ room, counts, capped = false }: { room?: DirectoryRoom; cou
 function ProjectCard({ room, counts, capped, viewerId, onSetPrefs, onOpenSettings, onPatchRoom }: {
   room: DirectoryRoom; counts?: RoomCounts; capped: boolean; viewerId?: string;
   onSetPrefs?: (roomId: string, prefs: MemberPrefsRequest) => Promise<void>;
-  onOpenSettings?: (roomId: string) => void;
+  onOpenSettings?: (roomId: string, from?: "home") => void;
   onPatchRoom?: (roomId: string, request: PatchRoomRequest) => Promise<void>;
 }): ReactElement {
   const name = roomDisplayName(room, room.participants);
@@ -207,11 +207,11 @@ function ProjectCard({ room, counts, capped, viewerId, onSetPrefs, onOpenSetting
       </span>
     </button>
     {(onSetPrefs || onOpenSettings || canArchive) && <DropdownMenu>
-      <DropdownMenuTrigger asChild><Button type="button" variant="ghost" size="icon-sm" className="home-projects__more" aria-label={`More for ${name}`}><MoreHorizontal aria-hidden="true" /></Button></DropdownMenuTrigger>
+      <DropdownMenuTrigger asChild><Button type="button" variant="ghost" size="icon-sm" className="home-projects__more" data-room-id={room.roomId} aria-label={`More for ${name}`}><MoreHorizontal aria-hidden="true" /></Button></DropdownMenuTrigger>
       <DropdownMenuContent align="end">
         {onSetPrefs && <DropdownMenuItem onSelect={() => act(() => onSetPrefs(room.roomId, { starred: !room.starred }), "The pin could not be saved.")}>
           {room.starred ? <PinOff aria-hidden="true" /> : <Pin aria-hidden="true" />}{room.starred ? "Unpin" : "Pin"}</DropdownMenuItem>}
-        {onOpenSettings && room.kind === "channel" && <DropdownMenuItem onSelect={() => onOpenSettings(room.roomId)}><Settings aria-hidden="true" />Settings</DropdownMenuItem>}
+        {onOpenSettings && room.kind === "channel" && <DropdownMenuItem onSelect={() => onOpenSettings(room.roomId, "home")}><Settings aria-hidden="true" />Settings</DropdownMenuItem>}
         {canArchive && <DropdownMenuItem onSelect={() => act(() => onPatchRoom!(room.roomId, { archived: true }), "The project could not be archived.")}><Archive aria-hidden="true" />Archive</DropdownMenuItem>}
       </DropdownMenuContent>
     </DropdownMenu>}

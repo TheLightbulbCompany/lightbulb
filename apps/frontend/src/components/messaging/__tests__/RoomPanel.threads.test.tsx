@@ -416,6 +416,17 @@ describe("RoomPanel Threads view (super-agent)", () => {
     expect(screen.queryByText("Lightbulb is on it…")).toBeNull();
   });
 
+  it("a paused project says so above the composer; only someone who may resume gets Resume (UX slice 6)", async () => {
+    const onPatchRoom = vi.fn().mockResolvedValue(undefined);
+    const paused = { ...props.room!, pausedAt: "2026-11-06T10:00:00Z" };
+    const { rerender } = render(<Fresh><RoomPanel {...props} room={paused} onPatchRoom={onPatchRoom} /></Fresh>);
+    const bar = await screen.findByText("Paused. New tasks and schedules wait.");
+    expect(within(bar.parentElement!).queryByRole("button", { name: "Resume" })).toBeNull();
+    rerender(<Fresh><RoomPanel {...props} room={paused} onPatchRoom={onPatchRoom} canPause /></Fresh>);
+    await userEvent.click(within(bar.parentElement!).getByRole("button", { name: "Resume" }));
+    expect(onPatchRoom).toHaveBeenCalledWith({ paused: false });
+  });
+
   it("About › Members lists people and Lightbulb only: no specialists, no Agent tag, no listen mode", async () => {
     const front = { ...lightbulb, mentionHandle: "lightbulb" };
     const finance: RoomParticipant = { ...lightbulb, id: "agent_fin", displayName: "Finance", mentionHandle: "finance", listenMode: "mentions" };

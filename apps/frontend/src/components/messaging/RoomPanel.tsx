@@ -44,6 +44,7 @@ import { TaskPane } from "@/components/tasks/TaskPane";
 import { RequestGroups } from "@/components/tasks/TaskOverview";
 import { ScheduledList } from "@/components/tasks/ScheduledList";
 import { FirstMoves } from "@/components/ideas/FirstMoves";
+import type { SettingsFrom } from "@/components/projects/ProjectSettingsDialog";
 import "@/components/projects/projects.css";
 import { PaneHeader } from "@/components/workspace/PaneHeader";
 import { ROOM_PANE_VIEW_EVENT } from "@/components/workspace/panels/AutomationDockPanel";
@@ -116,10 +117,12 @@ export interface RoomPanelProps {
   openAddPeople?: boolean;
   onAddPeopleOpened?: () => void;
   /** One-shot: open the project's settings (a sidebar row's or Home card's ⋯ › Settings). Super-agent projects. */
-  openSettings?: boolean;
+  openSettings?: SettingsFrom | null;
   onSettingsOpened?: () => void;
   /** Super-agent projects: icon, colour and pause (UX slice 6). */
   onPatchRoom?: (request: PatchRoomRequest) => Promise<void>;
+  /** The viewer may pause and resume this project (the paused bar's Resume). */
+  canPause?: boolean;
   onRenameRoom?: (name: string) => Promise<void>;
   onRemoveMember?: (member: MemberRef) => Promise<void>;
   pinnedMessageIds?: readonly string[];
@@ -316,9 +319,10 @@ function RoomContent({
   onCopyJoinLink,
   openAddPeople = false,
   onAddPeopleOpened,
-  openSettings = false,
+  openSettings = null,
   onSettingsOpened,
   onPatchRoom,
+  canPause = false,
   onRenameRoom,
   onRemoveMember,
   pinnedMessageIds = NO_PINNED_MESSAGES,
@@ -1117,7 +1121,7 @@ function RoomContent({
       {!visibleRoom?.archivedAt && <RoomLimitBar account={billing} />}
       {superAgent && visibleRoom?.pausedAt && !visibleRoom.archivedAt && <div className="project-paused" role="status">
         <span>Paused. New tasks and schedules wait.</span>
-        {onPatchRoom && <Button type="button" size="sm" variant="ghost" className="h-7" disabled={!actionable || messageActionPending}
+        {onPatchRoom && canPause && <Button type="button" size="sm" variant="ghost" className="h-7" disabled={!actionable || messageActionPending}
           onClick={() => void runMessageAction(() => onPatchRoom({ paused: false }), "The project could not be resumed.")}>Resume</Button>}
       </div>}
       {showFirstReplies && <FirstReplyChips onPick={(text) => { if (composer.text.trim() === "") composer.onTextChange(text); setFocusToken((t) => t + 1); }} />}

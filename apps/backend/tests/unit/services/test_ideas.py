@@ -458,6 +458,17 @@ async def test_the_first_runs_ideas_are_marked_first_run(workspace):
 
 
 @pytest.mark.asyncio
+async def test_a_started_first_move_whose_task_finished_is_not_a_first_move_again(workspace, monkeypatch):
+    """Started is decided: once its task ends the idea is listed again, never as "Pick a first move"."""
+    added = await ideas.suggest(OWNER, _suggestion(task_id=proactive.first_run_task_id()))
+    await repo.claim_idea_start(OWNER, added["id"], "user_A")
+    await repo.update_idea_start(OWNER, added["id"], "user_A", {"state": "open", "taskId": "t-done"})
+    monkeypatch.setattr(proactive, "request_open", AsyncMock(return_value=False))  # the task finished
+    card = next(c for c in (await ideas.list_ideas(AUTH))["ideas"] if c["id"] == added["id"])
+    assert "firstRun" not in card
+
+
+@pytest.mark.asyncio
 async def test_suggestions_are_newest_first_deduped_by_title_and_capped(workspace):
     await ideas.suggest(OWNER, _suggestion("Old one"))
     await ideas.suggest(OWNER, _suggestion("New one"))

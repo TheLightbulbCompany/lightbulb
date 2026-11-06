@@ -13,7 +13,8 @@ import { useHuddle } from "@/components/huddle/HuddleProvider";
 import { LiveStrip } from "@/components/huddle/LiveStrip";
 import { useAsyncAction } from "./useAsyncAction";
 import type { RoomParticipant } from "./types";
-import { ProjectSettingsDialog, type SettingsSection } from "@/components/projects/ProjectSettingsDialog";
+import { ProjectSettingsDialog, type SettingsFrom, type SettingsSection } from "@/components/projects/ProjectSettingsDialog";
+import { openPanel } from "@/components/workspace/workspaceController";
 import { ProjectTile } from "@/components/projects/ProjectTile";
 
 const FACES = 4;
@@ -54,7 +55,7 @@ interface RoomHeaderProps {
   onPatchRoom?: (request: PatchRoomRequest) => Promise<void>;
   settingsPeople?: ReactNode;
   /** Open Settings now (a sidebar row's or Home card's ⋯ › Settings), then `onSettingsOpened`. */
-  openSettings?: boolean;
+  openSettings?: SettingsFrom | null;
   onSettingsOpened?: () => void;
 }
 
@@ -90,7 +91,7 @@ export function RoomHeader({
   toolItems,
   onPatchRoom,
   settingsPeople,
-  openSettings = false,
+  openSettings = null,
   onSettingsOpened,
 }: RoomHeaderProps) {
   const id = useId();
@@ -110,8 +111,12 @@ export function RoomHeader({
   const [settings, setSettings] = useState<SettingsSection | null>(null);
   // One-shot, like RoomPanel's openAddPeople: open (own state, adjusted during render), then tell the caller it was
   // handled (its state, so after render).
-  const askedToOpen = openSettings && projectSettings;
-  if (askedToOpen && settings === null) setSettings("general");
+  const askedToOpen = !!openSettings && projectSettings;
+  // Where focus goes back on close: the ⋯ it was chosen from (a sidebar row, a Home card), else name ▾.
+  const [settingsFrom, setSettingsFrom] = useState<SettingsFrom | null>(null);
+  if (askedToOpen && settings === null) { setSettings("general"); setSettingsFrom(openSettings); }
+  // Archive or Delete hand focus to their confirm: closing settings then must not move it.
+  const handedOff = useRef(false);
   useEffect(() => { if (askedToOpen) onSettingsOpened?.(); }, [askedToOpen, onSettingsOpened]);
   // The backend refuses #general, the shared channel and DMs (ROOM_NOT_DELETABLE); don't offer them.
   const canDelete = !!onDeleteRoom && room?.kind === "channel" && !room.shared && !room.isDefault;
@@ -136,6 +141,24 @@ export function RoomHeader({
   }
 
   function restoreOptionsFocus() { (compact ? topicTrigger : optionsTrigger).current?.focus(); }
+  function restoreSettingsFocus(event: Event) {
+    event.preventDefault();
+    if (handedOff.current) { handedOff.current = false; return; }
+    const from = settingsFrom;
+    setSettingsFrom(null);
+    const id = CSS.escape(room?.roomId ?? "");
+    if (from === "sidebar") {
+      const row = document.querySelector<HTMLElement>(`.room-directory-actions[data-room-id="${id}"]`);
+      if (row) { row.focus(); return; }
+    }
+    if (from === "home") {
+      // Back to Home, onto the card's ⋯ once Home has rendered it.
+      openPanel("home");
+      focusWhenShown(`.home-projects__more[data-room-id="${id}"]`, restoreOptionsFocus);
+      return;
+    }
+    restoreOptionsFocus();
+  }
 
   function cancelTopicEdit() {
     reset();
@@ -314,10 +337,10 @@ export function RoomHeader({
     </div>
     {error && !renaming && !leaving && !archiving && !deleting && <p role="alert" className="room-header-error text-ui text-err">{error}</p>}
     {dialogs}
-    {projectSettings && room && <ProjectSettingsDialog room={room} roomName={roomName} section={settings} onSection={setSettings}
+    {projectSettings && room && <ProjectSettingsDialog room={room} roomName={roomName} section={settings} onSection={setSettings} onCloseAutoFocus={restoreSettingsFocus}
       canEdit={canEditRoom} actionable={actionable} onRename={onRenameRoom} onSetTopic={onSetTopic} onPatch={onPatchRoom} people={settingsPeople}
-      onArchive={canArchive && !room.archivedAt ? () => { setSettings(null); reset(); setArchiving(true); } : undefined}
-      onDelete={canDelete ? () => { setSettings(null); reset(); setDeleteDraft(""); setDeleting(true); } : undefined} />}
+      onArchive={canArchive && !room.archivedAt ? () => { handedOff.current = true; setSettings(null); reset(); setArchiving(true); } : undefined}
+      onDelete={canDelete ? () => { handedOff.current = true; setSettings(null); reset(); setDeleteDraft(""); setDeleting(true); } : undefined} />}
   </header>;
 
   return <header className="room-header">
@@ -398,4 +421,12 @@ export function RoomHeader({
     {error && !renaming && !leaving && !archiving && !deleting && <p role="alert" className="room-header-error text-ui text-err">{error}</p>}
     {dialogs}
   </header>;
+}
+
+/** Focus `selector` once it is in the page (a place that is still rendering), else `fallback` after ~20 frames. */
+function focusWhenShown(selector: string, fallback: () => void, frames = 20): void {
+  const el = document.querySelector<HTMLElement>(selector);
+  if (el) el.focus();
+  else if (frames > 0) requestAnimationFrame(() => focusWhenShown(selector, fallback, frames - 1));
+  else fallback();
 }

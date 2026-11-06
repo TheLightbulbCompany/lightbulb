@@ -21,9 +21,6 @@ import { useMarketplaceDrawer } from "@/components/marketplace/drawer/Marketplac
 import { OrgChart } from "@/components/teams/org-chart/OrgChart";
 import { TeamCards } from "./TeamCards";
 import { Button } from "@/components/ui/button";
-
-/** Team's search shows from this many agents (UX slice 6): below it, every card is already on screen. */
-export const TEAM_SEARCH_FROM = 10;
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import {
   setAgentsViewMode,
@@ -41,6 +38,9 @@ import { useSuperAgent } from "@/hooks/useLiveEvents";
 import { agentInspectorUrl } from "@/components/teams/shared/lib/agentInspectorUrl";
 import { useAgentMutations } from "@/components/teams/agents/hooks/useAgentMutations";
 import type { CompanyAgent } from "@/components/teams/shared/types";
+
+/** Team's search shows from this many agents (UX slice 6): below it, every card is already on screen. */
+export const TEAM_SEARCH_FROM = 10;
 
 export interface AgentsListPanelProps {
   /** `?view=` (or the retired `teams-org-chart` key), already validated by the
@@ -279,11 +279,10 @@ export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
         title="Team"
         actions={
           <>
-            {/* Hiring moved here from the workspace rail: the same marketplace drawer. Super-agent: one action,
-                the chooser (hire from the marketplace, or build one). */}
-            {!superAgent && <EditorialButton variant="secondary" onClick={() => openMarketplace({ view: "browse" })}>
+            {/* Hiring moved here from the workspace rail: the same marketplace drawer. */}
+            <EditorialButton variant="secondary" onClick={() => openMarketplace({ view: "browse" })}>
               Add an AI employee
-            </EditorialButton>}
+            </EditorialButton>
             <EditorialButton variant="primary" onClick={() => setCreating(true)}>
               {createLabel}
             </EditorialButton>
@@ -299,7 +298,7 @@ export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
         searchPlaceholder={chartShown ? "" : "Find agent..."}
         searchAriaLabel="Search agents"
         hideSearch={chartShown}
-        actions={superAgent ? undefined : (
+        actions={(
           <ViewModeToggle
             view={view}
             onChange={(mode) => {
@@ -325,15 +324,6 @@ export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
           }
           action={{ label: createLabel, onClick: () => setCreating(true) }}
         />
-      ) : superAgent ? (
-        // Super-agent: a card per specialist (what it's for, its skills, its recent requests, Ask). The org chart
-        // was Paperclip's reporting lines; nothing reports to anyone here.
-        <TeamCards agents={filtered} frontAgentId={frontAgentId} nameOf={nameOf} handleOf={handleOf} onAsk={message}
-          actions={(a) => <>
-            <DropdownMenuItem onSelect={() => void togglePause(a)}>{a.status === "paused" ? "Resume" : "Pause"}</DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => navigateShell(agentInspectorUrl(a.id))}>Settings</DropdownMenuItem>
-            {a.id !== frontAgentId && <DropdownMenuItem variant="destructive" onSelect={() => void deleteAgent(a)}>Delete</DropdownMenuItem>}
-          </>} />
       ) : view === "chart" ? (
         // The chart draws the WHOLE roster, never the search-filtered slice.
         // An org chart is a structure, and filtering a structure is not a

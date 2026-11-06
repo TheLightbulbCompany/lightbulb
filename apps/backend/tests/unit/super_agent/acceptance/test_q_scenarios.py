@@ -205,6 +205,20 @@ async def test_a09b_fails_when_the_member_email_asks():
     assert result.evidence["no_card"] is False and result.evidence["allowed_by_mode_auto"] is False
 
 
+async def test_a09b_fails_when_the_member_email_went_twice():
+    """Gate run 9: task d440eab3 sent Priya the same mail from two calls 17 s apart; A9b passed on the first one."""
+    twice = _member_mail(idemKey="new2", state="done")
+    result = await a09b(_a09b_ctx(_member_mail(state="done"), twice))
+    assert not result.passed and result.evidence["one_member_email"] is False
+
+
+async def test_ask_names_the_new_date():
+    """Gate run 9: "about the new date" named no date, so the Worker asked for it instead of drafting (A9 timed out)."""
+    from scripts.super_agent.acceptance.o_lib import ASKS
+
+    assert "next Friday" in ASKS
+
+
 async def test_a09b_without_a_new_member_email_fails_with_reason():
     result = await a09b(_a09b_ctx(_member_mail(operands={"to": OUTSIDER_EMAIL})))
     assert not result.passed and "no new mail.send" in result.evidence["reason"]

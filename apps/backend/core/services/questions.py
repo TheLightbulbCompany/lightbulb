@@ -357,10 +357,12 @@ class GateResult:
     result_ref: str | None = None  # a `replay`'s stored result
 
 
-def gate(effect: dict, prior: list[dict], closed: Collection[str] = ()) -> GateResult:
+def gate(effect: dict, prior: list[dict], closed: Collection[str] = (), recent_since: str | None = None) -> GateResult:
     """Decide one external effect from the task's earlier rows with the same `operandsHash` (pure).
 
-    Same call already done → replay. Any matching call with an unknown outcome → refuse (never a second send).
+    Same call already done → replay. Another identical call done at or after `recent_since` (ISO) → replay too (gate
+    run 9: a Worker sent the same mail twice in 17 s from two tool calls), whatever the mode or rules; a `refused:` row
+    never happened and is skipped. Any matching call with an unknown outcome → refuse (never a second send).
     Denied before → denied, no new card. An approved, unused answer → proceed (single use). An open ask → reuse it;
     one whose Question is `closed` (cancelled by a Close; dev walk 7: a Reopen then waited for good) is never reused.
     Otherwise a new approval with a deterministic qid.
@@ -371,6 +373,12 @@ def gate(effect: dict, prior: list[dict], closed: Collection[str] = ()) -> GateR
     for p in effects:
         if p["idemKey"] == idem and p["state"] == "done":
             return GateResult("replay", result_ref=p.get("resultRef"))
+    for p in effects:
+        at = p.get("updatedAt") or p.get("createdAt") or ""
+        refused = (p.get("resultRef") or "").startswith("refused:")  # it never happened: asking again is allowed
+        if recent_since and p["state"] == "done" and not refused and at >= recent_since:
+            msg = f"Already done in this task at {at}; not sent again."  # the Worker's tool result, never ""
+            return GateResult("replay", result_ref=p.get("resultRef"), message=msg)
     for p in effects:
         if p["state"] in ("intent", "unknown"):
             return GateResult(

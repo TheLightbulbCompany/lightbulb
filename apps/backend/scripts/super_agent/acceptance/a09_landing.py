@@ -27,6 +27,8 @@ TEST_ADDRESS = re.compile(r"^[^@\s]+\+clerk_test@thelightbulb\.company$", re.I)
 REVIEW_S = 300
 LAND_S = 120
 AUTO_S = 300
+#: How long A9b keeps watching after the first member email, to catch a second send (run 9's came 17 s later).
+SETTLE_S = 45
 MEMBER_ASK = (
     f"Email Priya ({SECOND_USER_EMAIL}, a workspace member; only her, this is a test) one line: "
     "the workshop date moved to next Friday."
@@ -133,13 +135,22 @@ async def a09b(ctx: Ctx) -> Result:
     if effect is None:
         return Result(False, {"reason": f"no new mail.send effect to {member}"})
     task_id = effect["taskId"]
+    await ctx.sleep(SETTLE_S)
     rows = await ctx.tasks_rows(ctx.ws)
+    to_member = [e for e in _effects(rows, task_id) if e.get("kind") == "mail.send" and _to(e) == [member]]
     checks = {
         "went_ahead_as_intent": effect.get("state") in ("intent", "done", "unknown") and not effect.get("questionId"),
         "allowed_by_mode_auto": effect.get("allowedBy") == "mode:auto",
         "no_card": question_row(rows, task_id, ("review", "approval")) is None,
+        "one_member_email": len(to_member) == 1,
     }
     return Result(
         all(checks.values()),
-        {"taskId": task_id, "idemKey": effect["idemKey"], "state": effect.get("state"), **checks},
+        {
+            "taskId": task_id,
+            "idemKey": effect["idemKey"],
+            "state": effect.get("state"),
+            "memberEmails": [e["idemKey"] for e in to_member],
+            **checks,
+        },
     )

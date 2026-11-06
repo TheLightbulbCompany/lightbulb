@@ -22,7 +22,7 @@ EVENT_S = 3
 ACK_S = 5
 ASKS = (
     "Four things: 1) build a signup page for the workshop with our purple theme, 2) email last week's attendees "
-    f"(only {OUTSIDER_EMAIL}, this is a test) about the new date, 3) estimate what Stripe "
+    f"(only {OUTSIDER_EMAIL}, this is a test) that the workshop moved to next Friday, 3) estimate what Stripe "
     "fees we'd pay on 200 tickets, 4) and buy a domain for the workshop signup page (around $15)."
 )
 

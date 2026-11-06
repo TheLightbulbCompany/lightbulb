@@ -14,6 +14,7 @@ vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({ useMessagin
 beforeAll(() => import("@/components/messaging/openui/OpenUICard"));
 
 import { AppConversation } from "../AppConversation";
+import { typeInComposer } from "@/test-utils/composer";
 
 const app = { app_id: "a1", name: "Invoices", room_id: null, state: "building", open_to: "workspace", budget_usd: 20, preview_url: null,
   live_url: null, live_version: null, last_opened_at: null, spend_month_cents: 0, can_open: true } as AppRow;
@@ -57,8 +58,8 @@ it("a hidden conversation (narrow panel showing the app) is not on screen, so it
 it("sends into the conversation room like any room message", async () => {
   render(<AppConversation app={app} />);
   const box = await screen.findByLabelText("Tell the agent what to change");
-  await waitFor(() => expect(box).toBeEnabled());
-  fireEvent.change(box, { target: { value: "make the header blue" } });
+  await waitFor(() => expect(box).toHaveAttribute("contenteditable", "true"));
+  typeInComposer("make the header blue", box);
   fireEvent.keyDown(box, { key: "Enter" });
   await waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(1));
   expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({ text: "make the header blue" }));

@@ -42,7 +42,7 @@ it("opens the session's own room in a second slot and colours people as the term
   expect(screen.getByRole("complementary", { name: "Session chat" })).toBeInTheDocument();
   expect(document.querySelector('[data-person="green"]')).toHaveTextContent("is it the relay?");
   expect(screen.getByLabelText("Message the people here")).toBeInTheDocument();
-  expect(screen.getByPlaceholderText("Message the people here")).toBeInTheDocument(); // prod showed the room's generic one
+  expect(screen.getByText("Message the people here", { selector: ".room-editor-placeholder" })).toBeInTheDocument(); // prod showed the room's generic one
   view.unmount();
   expect(onRoom).toHaveBeenLastCalledWith(null);
 });
@@ -102,7 +102,7 @@ it("shows its frame at once, and selects nothing until the door answers with the
   render(<SessionChat sessionId="s1" sessionOwnerId="user_alice" openChat={openChat} onClose={vi.fn()} onRoom={onRoom} />);
   expect(screen.getByRole("heading", { name: "Chat" })).toBeInTheDocument();
   expect(screen.getByText("Opening chat…")).toBeInTheDocument();
-  expect(screen.getByLabelText("Message the people here")).toBeDisabled(); // the door must open before anyone posts
+  expect(screen.getByLabelText("Message the people here")).toHaveAttribute("contenteditable", "false"); // the door must open before anyone posts
   expect(selectRoom).not.toHaveBeenCalled(); // no room, so no subscription and no read
   expect(onRoom).not.toHaveBeenCalled();
   expect(screen.queryByText("is it the relay?")).not.toBeInTheDocument();

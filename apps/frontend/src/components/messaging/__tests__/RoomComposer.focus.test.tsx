@@ -5,6 +5,7 @@ import { ApiError, MESSAGE_ATTACHMENT_ACCEPT } from "@lightbulb/shared";
 import { requestFocusComposer, consumeFocusComposerRequest, _resetFocusComposerRequestForTests } from "@/lib/focusComposerRequest";
 import { INCOMPLETE_FIRST_REPLIES } from "../FirstReplyChips";
 import { RoomComposer, type RoomComposerProps } from "../RoomComposer";
+import { caretOffset, composerBox, composerValue } from "@/test-utils/composer";
 
 const baseProps: RoomComposerProps = {
   text: "", onTextChange: vi.fn(), members: [], clientMessageId: "11111111-1111-4111-8111-111111111111",
@@ -83,7 +84,7 @@ it("keeps the composer focused when Enter sends and clears the draft", () => {
   fireEvent.keyDown(field, { key: "Enter" });
 
   expect(field).not.toBeInTheDocument();
-  expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("");
+  expect(composerValue()).toBe("");
   expect(screen.getByRole("textbox", { name: "Message" })).toHaveFocus();
 });
 
@@ -178,11 +179,11 @@ it("replaces an API 400 upload failure with an actionable reason", async () => {
 
 it("focuses the field with the cursor at the end when focusToken changes", () => {
   const { rerender } = render(<RoomComposer {...baseProps} text="Here's our website: " focusToken={0} />);
-  const field = screen.getByRole("textbox") as HTMLTextAreaElement;
+  const field = composerBox();
   expect(document.activeElement).not.toBe(field);
   rerender(<RoomComposer {...baseProps} text="Here's our website: " focusToken={1} />);
   expect(document.activeElement).toBe(field);
-  expect(field.selectionStart).toBe("Here's our website: ".length);
+  expect(caretOffset()).toBe("Here's our website: ".length);
 });
 
 it("does not let an incomplete chip prefix be sent, but sends once it is completed", () => {

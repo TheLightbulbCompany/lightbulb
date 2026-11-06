@@ -474,9 +474,14 @@ describe("RoomPanel Threads view (super-agent)", () => {
   it("W17-10: a DM between two people says Message <name>, not Ask Lightbulb", async () => {
     const priya: RoomParticipant = { ...sam, id: "u-priya", displayName: "Priya Test", role: "member" };
     const { rerender } = render(<Fresh><RoomPanel {...props} room={{ ...props.room!, kind: "dm", name: null }} participants={[sam, priya]} /></Fresh>);
-    expect(await screen.findByPlaceholderText("Message Priya Test")).toBeInTheDocument();
+    expect(await screen.findByText("Message Priya Test", { selector: ".room-editor-placeholder" })).toBeInTheDocument();
     rerender(<Fresh><RoomPanel {...props} /></Fresh>);
-    expect(await screen.findByPlaceholderText("Ask Lightbulb…")).toBeInTheDocument();
+    expect(await screen.findByText("Message #workshop-launch", { selector: ".room-editor-placeholder" })).toBeInTheDocument();
+    const front = { ...lightbulb, mentionHandle: "lightbulb" };
+    rerender(<Fresh><RoomPanel {...props} room={{ ...props.room!, kind: "dm", name: null }} participants={[sam, front]} /></Fresh>);
+    expect(await screen.findByText("Ask Lightbulb…", { selector: ".room-editor-placeholder" })).toBeInTheDocument();
+    rerender(<Fresh><RoomPanel {...props} room={{ ...props.room!, kind: "group-dm", name: "walk-18 group" }} participants={[sam, front, priya]} /></Fresh>);
+    expect(await screen.findByText("Message walk-18 group", { selector: ".room-editor-placeholder" })).toBeInTheDocument();
   });
 
   it("W17-2: pause stops Lightbulb, not people: Send in a paused chat sends", async () => {

@@ -111,9 +111,11 @@
 /* The box's border is the composer's focus ring; the panel-wide focus outline below (same specificity, later) drew a
    second ring around the textarea inside it (W13). The ancestor classes out-rank it. */
 .room-composer textarea:focus-visible,
-:is(.room-panel, .room-context-host) .room-composer textarea:focus-visible { outline: none; box-shadow: none; }
+:is(.room-panel, .room-context-host) .room-composer :is(textarea, .room-editor-input):focus-visible { outline: none; box-shadow: none; }
 .room-composer-help { font-size: var(--text-caption); padding: 0 4px; }
 .room-respond-hint { padding: 0 4px; font-size: var(--text-caption); }
+.room-respond-hint[data-held] { visibility: hidden; }
+.room-invite-prompt { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 2px 4px; }
 .room-composer-actions { display: flex; align-items: center; justify-content: flex-start; gap: 2px; }
 .room-composer-actions > button { width: 28px; height: 28px; border-radius: 6px; }
 .room-send { margin-left: auto; }
@@ -489,7 +491,7 @@
      touch floor stated again. */
   .room-section-dialog :is(button, input) { min-height: 44px; }
   .room-section-edit button { min-width: 44px; }
-  .room-composer textarea, .room-input { font-size: 1rem; }
+  .room-composer textarea, .room-editor-input, .room-editor-placeholder, .room-input { font-size: 1rem; }
   .room-message { gap: 8px; }
   .room-message-byline { flex-wrap: wrap; gap: 4px 8px; }
 }
@@ -879,7 +881,23 @@ button.session-group-header:focus-visible, .session-group-more:focus-visible, .s
 .room-panel[data-frame] .room-conversation > :is(.room-composer, .room-typing, .room-limit-bar, .project-paused) { width: calc(100% - 40px); max-width: 680px; margin-inline: auto; }
 .room-composer[data-compact] { padding: 9px 10px 9px 6px; border-radius: var(--radius-lg); box-shadow: var(--shadow-pop); }
 .room-composer-row { display: flex; align-items: flex-end; gap: 4px; min-height: 28px; }
-.room-composer-row > textarea { flex: 1; min-width: 0; align-self: center; }
+.room-composer-row > .room-editor { flex: 1; min-width: 0; align-self: center; }
+/* The WYSIWYG box (W18-4): formatting shows as it will be sent. */
+.room-editor { position: relative; max-height: 200px; overflow-y: auto; }
+.room-editor-plain { display: block; width: 100%; min-height: 24px; resize: none; border: 0; padding: 2px 4px; background: transparent; outline: none; font: inherit; font-size: var(--text-ui); line-height: var(--text-ui--line-height); color: inherit; }
+.room-editor-input { min-height: 24px; padding: 2px 4px; outline: none; font-size: var(--text-ui); line-height: var(--text-ui--line-height); caret-color: var(--foreground); white-space: pre-wrap; overflow-wrap: anywhere; }
+.room-editor-input[contenteditable="false"] { color: var(--muted-foreground); }
+.room-editor-placeholder { position: absolute; inset: 2px 4px auto; color: var(--muted-foreground); font-size: var(--text-ui); line-height: var(--text-ui--line-height); pointer-events: none; user-select: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.room-editor-p { margin: 0; }
+.room-editor-ul, .room-editor-ol { margin: 0; padding-left: 1.25rem; }
+.room-editor-ul { list-style: disc; }
+.room-editor-ol { list-style: decimal; }
+.room-editor-nested { list-style: none; }
+.room-editor-quote { margin: 0; padding-left: 8px; border-left: 3px solid var(--border); color: var(--muted-foreground); }
+.room-editor-code { padding: 0 3px; border-radius: 3px; background: var(--muted); font-family: var(--font-mono, ui-monospace, monospace); font-size: 0.9em; }
+.room-editor-codeblock { display: block; margin: 2px 0; padding: 6px 8px; border-radius: 4px; background: var(--muted); font-family: var(--font-mono, ui-monospace, monospace); font-size: 0.9em; white-space: pre; overflow-x: auto; }
+.room-editor-link { color: var(--link); text-decoration: underline; }
+.room-format-link { flex: 1 1 160px; min-width: 120px; height: 24px; padding: 0 6px; border: 1px solid var(--input); border-radius: 4px; background: var(--background); font-size: var(--text-caption); }
 .room-composer-row .room-composer-actions { flex: none; }
 .room-composer-row .room-send { margin-left: 0; }
 .room-composer-plus { display: inline-flex; }

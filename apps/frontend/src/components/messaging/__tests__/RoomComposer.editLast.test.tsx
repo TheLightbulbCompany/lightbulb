@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { RoomComposer, type RoomComposerProps } from "../RoomComposer";
+import "@/test-utils/composer"; // the lazy editor, loaded
 
 const base: RoomComposerProps = {
   text: "", onTextChange: vi.fn(), members: [],

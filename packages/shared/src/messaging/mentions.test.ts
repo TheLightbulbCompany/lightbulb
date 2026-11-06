@@ -11,7 +11,7 @@ const participants = [
 describe("linkifyMentions", () => {
   it("links agent handles and human display names, longest first", () => {
     expect(linkifyMentions("hey @friday and @Aden Kim, also @aden", [], participants))
-      .toBe("hey [@friday](mention:agent:a1) and [@Aden Kim](mention:human:u1), also [@aden](mention:human:u2)");
+      .toBe("hey [@friday](mention:agent:a1) and [@Aden Kim](mention:human:u1), also [@Aden](mention:human:u2)");
   });
   it("leaves code spans and fenced blocks alone", () => {
     expect(linkifyMentions("`@friday` stays\n```\n@friday\n```\n@friday goes", [], participants))
@@ -20,21 +20,34 @@ describe("linkifyMentions", () => {
   it("does not link partial words or unknown handles", () => {
     expect(linkifyMentions("email@friday.ai @nobody @fridays", [], participants)).toBe("email@friday.ai @nobody @fridays");
   });
-  it("links a human by their handle and still by their display name", () => {
+  it("links a human by their handle and still by their display name, and labels both with the name (W18-2)", () => {
     const withHandle = [{ kind: "human" as const, id: "u1", displayName: "Aden Kim", mentionHandle: "aden-kim" }];
     expect(linkifyMentions("@aden-kim and @Aden Kim", [], withHandle))
-      .toBe("[@aden-kim](mention:human:u1) and [@Aden Kim](mention:human:u1)");
+      .toBe("[@Aden Kim](mention:human:u1) and [@Aden Kim](mention:human:u1)");
     expect(resolveTypedMentions("@aden-kim", withHandle)).toEqual([{ kind: "human", id: "u1" }]);
   });
-  it("prefers the handle owner when another member's display name is the same token", () => {
-    // The display-name holder is listed first, so only a handle-wins tie-break
-    // keeps @aden pointing at the person whose handle it actually is.
+  it("W18-2: a person's name wins over another person's handle that is the same token", () => {
+    // The composer types people by name; their email-derived handle is never shown.
     const ambiguous = [
-      { kind: "human" as const, id: "u-name", displayName: "Aden", mentionHandle: "zed" },
       { kind: "human" as const, id: "u-handle", displayName: "Aden Kim", mentionHandle: "aden" },
+      { kind: "human" as const, id: "u-name", displayName: "Aden", mentionHandle: "zed" },
     ];
-    expect(linkifyMentions("@aden", [], ambiguous)).toBe("[@aden](mention:human:u-handle)");
-    expect(resolveTypedMentions("@aden", ambiguous)).toEqual([{ kind: "human", id: "u-handle" }]);
+    expect(linkifyMentions("@Aden", [], ambiguous)).toBe("[@Aden](mention:human:u-name)");
+    expect(resolveTypedMentions("@Aden", ambiguous)).toEqual([{ kind: "human", id: "u-name" }]);
+  });
+  it("an agent's handle still wins over a person named the same", () => {
+    const both = [
+      { kind: "human" as const, id: "u1", displayName: "growth", mentionHandle: "g" },
+      { kind: "agent" as const, id: "a1", displayName: "Growth", mentionHandle: "growth" },
+    ];
+    expect(resolveTypedMentions("@growth", both)).toEqual([{ kind: "agent", id: "a1" }]);
+  });
+  it("W18-2: two people with one name: the chip goes to the one the message mentioned", () => {
+    const twins = [
+      { kind: "human" as const, id: "alex-1", displayName: "Alex Kim", mentionHandle: "alex" },
+      { kind: "human" as const, id: "alex-2", displayName: "Alex Kim", mentionHandle: "alex-kim" },
+    ];
+    expect(linkifyMentions("hi @Alex Kim", [{ kind: "human", id: "alex-2" }], twins)).toBe("hi [@Alex Kim](mention:human:alex-2)");
   });
   it("links a structured mention even when the text token differs in case", () => {
     expect(linkifyMentions("@FRIDAY?", [{ kind: "agent", id: "a1" }], participants)).toBe("[@FRIDAY](mention:agent:a1)?");

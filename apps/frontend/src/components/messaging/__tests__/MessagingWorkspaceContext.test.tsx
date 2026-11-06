@@ -5,7 +5,10 @@ import { ApiError, EMPTY_ROOM_SUBAGENTS, resolveTypedMentions, type CanonicalRoo
 import type { RoomDirectoryProps } from "../RoomDirectory";
 import type { RoomPanelProps } from "../RoomPanel";
 import { RoomComposer } from "../RoomComposer";
-import { draftKey } from "../drafts";
+import { clearDraft, draftKey, readDraft } from "../drafts";
+import { editorOf } from "../ComposerEditor";
+import { lexical } from "../lexical";
+import { composerValue, typeInComposer } from "@/test-utils/composer";
 import { requestFocusComposer, _resetFocusComposerRequestForTests } from "@/lib/focusComposerRequest";
 import type { LiveRoomRun } from "@lightbulb/shared";
 
@@ -561,7 +564,7 @@ it("preserves a pending draft and focus when a conversation first mounts", () =>
   requestFocusComposer("agent-friday", "File the inbox");
   compose();
   const field = screen.getByRole("textbox", { name: "Message" });
-  expect(field).toHaveValue("File the inbox");
+  expect(composerValue(field)).toBe("File the inbox");
   expect(field).toHaveFocus();
 });
 
@@ -805,7 +808,7 @@ it("clears the sending room's stored draft when the owner switches rooms mid-sen
     await sending;
   });
 
-  expect(localStorage.getItem(draftKey("org", "room-1", null))).toBeNull();
+  expect(readDraft(draftKey("org", "room-1", null)).text).toBe("");
 });
 
 it("emptying the box drops the room from Drafts in the same render (dev walk R10)", () => {
@@ -816,7 +819,7 @@ it("emptying the box drops the room from Drafts in the same render (dev walk R10
   expect(directory.draftRoomIds).toContain("room-1");
   act(() => { panel.composer.onTextChange(""); });
   expect(directory.draftRoomIds).not.toContain("room-1");
-  expect(localStorage.getItem(draftKey("org", "room-1", null))).toBeNull();
+  expect(readDraft(draftKey("org", "room-1", null)).text).toBe("");
   view.unmount();
 });
 
@@ -1143,7 +1146,7 @@ it("keeps history action inputs stable while the provider draft or live run chan
     pins: panel.pinnedMessageIds,
     participants: panel.participants,
   };
-  fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "typing a draft" } });
+  typeInComposer("typing a draft");
   expect(panel.composer.text).toBe("typing a draft");
   expect(panel.onSelectParticipant).toBe(before.select);
   expect(panel.onMarkUnreadFrom).toBe(before.unread);
@@ -1442,7 +1445,7 @@ it("a drafted handle shows the draft mark at once, and clearing it removes the m
   expect(directory.draftRoomIds).toContain("room-1");
   act(() => { panel.composer.onTextChange(""); });
   expect(directory.draftRoomIds).not.toContain("room-1");
-  expect(localStorage.getItem(draftKey("org", "room-1", null))).toBeNull();
+  expect(readDraft(draftKey("org", "room-1", null)).text).toBe("");
   view.unmount();
 });
 
@@ -1456,7 +1459,23 @@ it("W17-7: someone posting never writes back a draft that a send or another tab 
   view.rerender(<MessagingWorkspaceProvider initialAgentId="agent-friday" subscribeToRoom>
     <MessagingDirectory /><MessagingConversation />
   </MessagingWorkspaceProvider>);
-  expect(localStorage.getItem(draftKey("org", "room-1", null))).toBeNull();
+  expect(readDraft(draftKey("org", "room-1", null)).text).toBe("");
+  view.unmount();
+});
+
+it("W17-7: a send in another tab empties this tab's box, so it can never save the old text again", () => {
+  const view = compose();
+  act(() => { panel.composer.onTextChange("@growth "); });
+  const key = draftKey("org", "room-1", null);
+  act(() => {
+    clearDraft(key); // the other tab sent it, a moment later
+    window.dispatchEvent(new StorageEvent("storage", { key }));
+  });
+  expect(panel.composer.text).toBe("");
+  act(() => { view.rerender(<MessagingWorkspaceProvider initialAgentId="agent-friday" subscribeToRoom>
+    <MessagingDirectory /><MessagingConversation />
+  </MessagingWorkspaceProvider>); });
+  expect(readDraft(key).text).toBe("");
   view.unmount();
 });
 
@@ -1466,9 +1485,8 @@ it("W17-7: someone posting never writes back a draft that a send or another tab 
 it("keeps every character when keys land faster than React's scheduled work (W9-2)", async () => {
   renderComposer = true;
   compose();
-  const field = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+  const field = screen.getByRole("textbox", { name: "Message" });
   const typed = "Hi Lightbulb, email walk9-outsider+clerk_test@thelightbulb.company a one-line hello";
-  const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
   const errors: unknown[] = [];
   const onError = (event: ErrorEvent) => { errors.push(event.error); event.preventDefault(); };
   window.addEventListener("error", onError);
@@ -1477,10 +1495,8 @@ it("keeps every character when keys land faster than React's scheduled work (W9-
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = false;
   const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
   try {
-    for (const char of typed) {
-      setValue.call(field, field.value + char);
-      field.dispatchEvent(new Event("input", { bubbles: true }));
-    }
+    // One edit per key, each left to Lexical's own scheduling, as typing does.
+    for (const char of typed) editorOf(field).update(() => { lexical.$getRoot().selectEnd().insertText(char); });
     await new Promise((resolve) => setTimeout(resolve, 50));
   } finally {
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = actEnv;
@@ -1489,6 +1505,6 @@ it("keeps every character when keys land faster than React's scheduled work (W9-
   const depth = [...errors, ...consoleError.mock.calls.flat()].filter((e) => String((e as Error)?.message ?? e).includes("Maximum update depth"));
   consoleError.mockRestore();
   expect(depth).toEqual([]);
-  expect(field.value).toBe(typed);
+  expect(composerValue(field)).toBe(typed);
   expect(panel.composer.text).toBe(typed);
 });

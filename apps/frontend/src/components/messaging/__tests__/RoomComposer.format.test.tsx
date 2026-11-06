@@ -1,7 +1,10 @@
 import { useState } from "react";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { RoomComposer } from "../RoomComposer";
+import { composerBox, composerValue, selectInComposer, typeInComposer } from "@/test-utils/composer";
+import { editorOf } from "../ComposerEditor";
+import { lexical } from "../lexical";
 import type { RoomParticipant } from "../types";
 
 function Harness({ members = [] }: { members?: readonly RoomParticipant[] }) {
@@ -10,8 +13,8 @@ function Harness({ members = [] }: { members?: readonly RoomParticipant[] }) {
     clientMessageId="11111111-1111-4111-8111-111111111111" sendState="idle" onSubmit={vi.fn()} />;
 }
 
-const field = () => screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
-const select = (start: number, end: number) => { field().setSelectionRange(start, end); };
+const field = () => composerBox();
+const select = selectInComposer;
 
 beforeEach(() => vi.stubGlobal("URL", { ...URL, createObjectURL: vi.fn(() => "blob:proof"), revokeObjectURL: vi.fn() }));
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
@@ -49,39 +52,43 @@ it("uses a single roving tab stop across the toolbar and moves focus with ArrowR
   expect(buttons[1]).toHaveFocus();
 });
 
-it("wraps the selection from the toolbar and unwraps on a second press", () => {
+it("W18-4: Bold applies in the box (no ** typed) and a second press removes it", () => {
   render(<Harness />);
   select(0, 4);
   fireEvent.click(screen.getByRole("button", { name: "Bold" }));
-  expect(field()).toHaveValue("**ship** it");
-  select(2, 6);
+  expect(field().querySelector("strong, .font-semibold")).toHaveTextContent("ship");
+  expect(field()).not.toHaveTextContent("**");
+  expect(composerValue()).toBe("**ship** it");
+  select(0, 4);
   fireEvent.click(screen.getByRole("button", { name: "Bold" }));
-  expect(field()).toHaveValue("ship it");
+  expect(composerValue()).toBe("ship it");
 });
 
 it("wraps from the keyboard shortcuts", () => {
   render(<Harness />);
   select(0, 4);
   fireEvent.keyDown(field(), { key: "b", metaKey: true });
-  expect(field()).toHaveValue("**ship** it");
-});
-
-it("uses shift+X for strikethrough and shift+C for a code block", () => {
-  render(<Harness />);
-  select(0, 4);
+  expect(composerValue()).toBe("**ship** it");
+  select(5, 7);
   fireEvent.keyDown(field(), { key: "X", metaKey: true, shiftKey: true });
-  expect(field()).toHaveValue("~~ship~~ it");
-  select(2, 6);
-  fireEvent.keyDown(field(), { key: "C", metaKey: true, shiftKey: true });
-  expect(field()).toHaveValue("~~```\nship\n```~~ it");
+  expect(composerValue()).toBe("**ship** ~~it~~");
 });
 
-it("builds a list from the touched lines", () => {
+it("W18-4: the bullet button starts a list on an empty line", () => {
   render(<Harness />);
-  fireEvent.change(field(), { target: { value: "one\ntwo", selectionStart: 7 } });
-  select(0, 7);
+  typeInComposer("");
   fireEvent.click(screen.getByRole("button", { name: "Bulleted list" }));
-  expect(field()).toHaveValue("- one\n- two");
+  expect(field().querySelector("ul li")).not.toBeNull();
+  typeInComposer("- one\n- two");
+  expect(field().querySelectorAll("ul li")).toHaveLength(2);
+  expect(composerValue()).toBe("- one\n- two");
+});
+
+it("a code block from Shift+⌘C", () => {
+  render(<Harness />);
+  select(0, 0);
+  fireEvent.keyDown(field(), { key: "C", metaKey: true, shiftKey: true });
+  expect(composerValue()).toBe("```\nship it\n```");
 });
 
 it("suppresses the shortcut while the mention typeahead is open", () => {
@@ -89,8 +96,61 @@ it("suppresses the shortcut while the mention typeahead is open", () => {
     { kind: "agent", id: "agent-friday", displayName: "Friday", mentionHandle: "friday", role: "member", listenMode: "mentions", joinedAt: "2026-09-10T00:00:00.000Z", joinedSeq: 1 },
   ];
   render(<Harness members={members} />);
-  fireEvent.change(field(), { target: { value: "ship it @fri", selectionStart: 13 } });
+  typeInComposer("ship it @fri");
   expect(screen.getByRole("listbox", { name: "Mention a room member" })).toBeInTheDocument();
   fireEvent.keyDown(field(), { key: "b", metaKey: true });
-  expect(field()).toHaveValue("ship it @fri");
+  expect(composerValue()).toBe("ship it @fri");
+});
+
+it("review: what was typed goes out as typed — no backslashes outside code", () => {
+  const onSubmit = vi.fn();
+  function Send() {
+    const [text, setText] = useState("");
+    return <RoomComposer text={text} onTextChange={setText} members={[]}
+      clientMessageId="11111111-1111-4111-8111-111111111111" sendState="idle" onSubmit={onSubmit} />;
+  }
+  render(<Send />);
+  // Plain text runs, as typing or pasting leaves them (no markdown read in).
+  const plain = (value: string) => act(() => {
+    editorOf(field()).update(() => {
+      const root = lexical.$getRoot();
+      root.clear();
+      const paragraph = lexical.$createParagraphNode() as unknown as { append(node: unknown): void };
+      paragraph.append(lexical.$createTextNode(value));
+      (root as unknown as { append(node: unknown): void }).append(paragraph);
+      root.selectEnd();
+    }, { discrete: true });
+  });
+  for (const value of ["3*4", "x_", "**bold**", "__init__ and **kwargs", "~approx~", "```js\nconst a = 1;\n```"]) {
+    plain(value);
+    expect(composerValue()).toBe(value);
+  }
+  // Inside a real code block nothing is escaped either.
+  typeInComposer("```\na*b_c\n```");
+  expect(field().querySelector("code")).not.toBeNull();
+  expect(composerValue()).toBe("```\na*b_c\n```");
+  fireEvent.keyDown(field(), { key: "Enter" });
+  expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ text: "```\na*b_c\n```" }));
+});
+
+it("review: an empty bullet, quote or code block is nothing to send", () => {
+  const onSubmit = vi.fn();
+  const onEditLast = vi.fn();
+  function Send() {
+    const [text, setText] = useState("");
+    return <RoomComposer text={text} onTextChange={setText} members={[]} onEditLast={onEditLast}
+      clientMessageId="11111111-1111-4111-8111-111111111111" sendState="idle" onSubmit={onSubmit} />;
+  }
+  render(<Send />);
+  fireEvent.click(screen.getByRole("button", { name: "Bulleted list" }));
+  expect(field().querySelector("ul li")).not.toBeNull();
+  expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+  fireEvent.keyDown(field(), { key: "Enter" });
+  expect(onSubmit).not.toHaveBeenCalled();
+  fireEvent.keyDown(field(), { key: "ArrowUp" });
+  expect(onEditLast).toHaveBeenCalledOnce();
+  for (const blank of ["> ", "```\n```", "1. "]) {
+    typeInComposer(blank);
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+  }
 });

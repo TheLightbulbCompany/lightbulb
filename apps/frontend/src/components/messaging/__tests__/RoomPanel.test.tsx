@@ -5,6 +5,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 import { RoomPanel, type RoomPanelProps } from "../RoomPanel";
+import { typeInComposer } from "@/test-utils/composer";
 import type { RoomRunView } from "@lightbulb/shared";
 import type { RoomMessage, RoomParticipant } from "../types";
 
@@ -901,19 +902,19 @@ it("keeps the New line when a send fails and clears it after a successful send",
   render(<Harness />);
   expect(screen.getByRole("separator", { name: "New messages" })).toBeInTheDocument();
 
-  await userEvent.type(screen.getByRole("textbox", { name: "Message" }), "First try");
+  typeInComposer("First try");
   // Synchronous dispatch (no await before the assertion): the send is still in flight,
   // so a fix that waits for it to resolve must not have flipped sentSinceOpen yet.
   fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "Enter" });
   expect(screen.getByRole("separator", { name: "New messages" })).toBeInTheDocument();
 
-  await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" })).not.toBeDisabled());
+  await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" })).toHaveAttribute("contenteditable", "true"));
   expect(onSubmit).toHaveBeenCalledTimes(1);
   // The failed send has now fully settled (composer re-enabled): the New line must
   // still be here, not just synchronously right after the keydown.
   expect(screen.getByRole("separator", { name: "New messages" })).toBeInTheDocument();
 
-  await userEvent.type(screen.getByRole("textbox", { name: "Message" }), "Second try");
+  typeInComposer("Second try");
   fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "Enter" });
   await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(2));
   await waitFor(() => expect(screen.queryByRole("separator", { name: "New messages" })).not.toBeInTheDocument());

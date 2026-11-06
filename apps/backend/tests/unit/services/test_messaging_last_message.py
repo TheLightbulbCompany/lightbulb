@@ -144,9 +144,15 @@ def test_backend_preview_matches_the_projector_copy():
         "messageId": "m",
         "messageSeq": 7,
         "author": {"kind": "agent", "id": "a", "displayName": "Friday"},
-        "text": "```py\nx\n```\n> **quoted** `code` ~~gone~~ " + "y" * 200,
+        "text": "```py\nx\n```\n> **quoted** `code` ~~gone~~ \\_\\_init\\_\\_ 3\\*4 " + "y" * 200,
         "attachments": [{"id": "f"}],
         "createdAt": "2026-09-24T00:00:00Z",
         "threadRootMessageId": None,
     }
     assert projector._last_message(message) == repo.last_message_preview(message)
+
+
+def test_preview_shows_the_composers_escaped_characters_as_typed(table):
+    assert repo._plain_preview("\\_\\_init\\_\\_ and 3\\*4 then 5\\*6, \\*\\*not bold\\*\\*") == (
+        "__init__ and 3*4 then 5*6, **not bold**"
+    )

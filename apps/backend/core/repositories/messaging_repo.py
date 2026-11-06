@@ -962,10 +962,26 @@ _PLAIN_RULES = (
     (re.compile(r"^\s*([-*_])(\s*\1){2,}\s*$", re.M), ""),
     (re.compile(r"^\s{0,3}(#{1,6}\s+|>\s?|[-*+]\s+|\d+[.)]\s+)", re.M), ""),
     (re.compile(r"\*\*|__|~~|`"), ""),
+    (re.compile(r"\\([!-/:-@\[-`{-~])"), r"\1"),
     (re.compile(r"\s+"), " "),
 )
 PREVIEW_CHARS = 140
 _PREVIEW_SCAN_ROWS = 50
+
+
+_ESCAPE = re.compile(r"\\([!-/:-@\[-`{-~])")
+_CODE = re.compile(r"(?<!\\)(```[\s\S]*?```|`[^`\n]*`)")
+
+
+def agent_text(text: str) -> str:
+    """A message's text as an agent reads it: the web composer escapes what a person typed
+    (``3\\*4``, ``\\_\\_init\\_\\_``) so it shows literally; agents get it back clean. Code is left
+    as is. ponytail: CommonMark-escapable punctuation only, so a literal ``\\*`` from another
+    client also loses its backslash; mark composer rows if that ever matters."""
+    if "\\" not in text:
+        return text
+    parts = _CODE.split(text)
+    return "".join(part if i % 2 else _ESCAPE.sub(r"\1", part) for i, part in enumerate(parts))
 
 
 def _plain_preview(text: str) -> str:

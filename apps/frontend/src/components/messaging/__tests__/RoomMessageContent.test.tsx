@@ -4,6 +4,7 @@ import { expect, it, vi } from "vitest";
 import type { CanonicalRoomMessage } from "@lightbulb/shared";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { RoomMessageContent } from "../RoomMessageContent";
+import { composerValue, typeInComposer } from "@/test-utils/composer";
 
 const message: CanonicalRoomMessage = { messageId: "one", roomId: "room", messageSeq: 1, roomRevision: 1,
   author: { kind: "human", id: "me", displayName: "Me" }, text: "Original", mentions: [], replyToMessageId: null,
@@ -18,8 +19,8 @@ it("edits only an own human message and reuses the operation on an uncertain ret
   await user.click(screen.getByRole("menuitem", { name: "Edit message" }));
   const input = screen.getByRole("textbox", { name: "Edit message" });
   expect(input).toHaveFocus();
-  await user.clear(input);
-  await user.type(input, "Corrected");
+  typeInComposer("Corrected", input);
+  expect(composerValue(input)).toBe("Corrected");
   await user.click(screen.getByRole("button", { name: "Save changes" }));
   expect(screen.getByRole("button", { name: "Saving…" })).toBeDisabled();
   await act(async () => reject(new Error("Connection lost. Try again.")));
@@ -96,4 +97,16 @@ it("is one tab stop: Message actions starts in the tab order, the arrows wrap, H
   // Tab leaves the toolbar after one stop, rather than walking every button.
   await user.tab();
   expect(bar).not.toContainElement(document.activeElement as HTMLElement);
+});
+
+it("founder 6 Nov: edit opens as formatted text, not markdown source", async () => {
+  const user = userEvent.setup();
+  const formatted = { ...message, text: "**ship** it, \\_\\_init\\_\\_" };
+  render(<RoomMessageContent message={formatted} currentUserId="me" actionable onUpdate={vi.fn()}>x</RoomMessageContent>);
+  await user.click(screen.getByRole("button", { name: "Message actions" }));
+  await user.click(screen.getByRole("menuitem", { name: "Edit message" }));
+  const input = screen.getByRole("textbox", { name: "Edit message" });
+  expect(input.querySelector(".font-semibold")).toHaveTextContent("ship");
+  expect(input).toHaveTextContent("ship it, __init__");
+  expect(input).not.toHaveTextContent("*");
 });

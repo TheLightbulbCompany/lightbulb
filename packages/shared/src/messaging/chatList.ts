@@ -72,6 +72,7 @@ export const plainPreview = (text: string): string =>
   text
     .replace(/(\*\*|`)/g, "")
     .replace(/^\s{0,3}(#{1,6}|>|[-*+]|\d+\.)\s+/gm, "")
+    .replace(/\\([!-/:-@[-`{-~])/g, "$1") // the composer's escapes (3\*4): what was typed
     .replace(/\s+/g, " ")
     .trim();
 

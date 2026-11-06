@@ -6,6 +6,7 @@ import type { CanonicalRoomMessage, UpdateMessageRequest } from "@lightbulb/shar
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { composerEditorReady, loadedComposerEditor } from "./RoomComposer";
 
 export function RoomMessageContent({ message, currentUserId, actionable, onUpdate, startEditing = false, onEditingClosed, actions, menuExtras, children }: {
   message: CanonicalRoomMessage;
@@ -26,6 +27,9 @@ export function RoomMessageContent({ message, currentUserId, actionable, onUpdat
   menuExtras?: ReactNode;
 }) {
   const id = useId();
+  // The edit box is the composer's WYSIWYG box: bold shows bold, typed characters stay as typed (no markdown source).
+  const [Editor, setEditor] = useState(() => loadedComposerEditor());
+  useEffect(() => { if (!Editor) void composerEditorReady.then(() => setEditor(() => loadedComposerEditor())); }, [Editor]);
   const [request, setRequest] = useState<UpdateMessageRequest | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
@@ -60,6 +64,7 @@ export function RoomMessageContent({ message, currentUserId, actionable, onUpdat
   const editing = ownMessage && request !== null && request.text !== null;
   const deleting = ownMessage && request?.text === null;
   function restoreFocus() { (trigger.current ?? root.current)?.focus(); }
+  function cancelEdit() { if (!pending) { setRequest(null); restoreFocus(); onEditingClosed?.(); } }
   function begin(text: string | null) {
     setError(undefined);
     setRequest({ operationId: crypto.randomUUID(), expectedRevision: message.messageRevision ?? 0, text });
@@ -81,12 +86,16 @@ export function RoomMessageContent({ message, currentUserId, actionable, onUpdat
   }
   return <div ref={root} tabIndex={-1}>
     {message.deletedAt ? <p className="text-ui text-muted-foreground italic">Message deleted</p> : editing ? <form className="grid gap-2" onSubmit={(event) => { event.preventDefault(); void save(); }}>
-      <label htmlFor={id} className="sr-only">Edit message</label>
+      {Editor ? <div className="room-input min-h-24 w-full"><Editor id={id} value={request!.text!} editable={!pending} label="Edit message" placeholder="" autoFocus
+        onChange={(text) => setRequest((current) => current && { ...current, operationId: crypto.randomUUID(), text })}
+        onKeyDown={(event) => { if (event.key !== "Escape") return false; event.stopPropagation(); cancelEdit(); return true; }}
+        onTrigger={() => {}} onPasteFiles={() => {}} onBlur={() => {}} ariaProps={{}} handleRef={null} /></div>
+      : <><label htmlFor={id} className="sr-only">Edit message</label>
       <textarea id={id} className="room-input min-h-24 w-full" autoFocus value={request!.text!} disabled={pending}
         // ↑ to edit lands with the caret after the text, ready to add to it.
         onFocus={(event) => { const end = event.currentTarget.value.length; event.currentTarget.setSelectionRange(end, end); }}
         onChange={(event) => setRequest({ ...request!, operationId: crypto.randomUUID(), text: event.target.value })}
-        onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); if (!pending) { setRequest(null); restoreFocus(); onEditingClosed?.(); } } }} />
+        onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); cancelEdit(); } }} /></>}
       <p className="text-ui text-muted-foreground">Edits do not change tasks already sent to specialists or undo their work.</p>
       {error && <p role="alert" className="text-ui text-err break-words">{error}</p>}
       <div className="flex flex-wrap gap-2"><Button type="button" variant="outline" disabled={pending} onClick={() => { setRequest(null); restoreFocus(); onEditingClosed?.(); }}>Cancel edit</Button>

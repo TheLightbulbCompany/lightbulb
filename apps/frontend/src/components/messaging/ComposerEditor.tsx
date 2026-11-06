@@ -12,16 +12,15 @@ import {
 } from "./lexical";
 import { activeTrigger, type CompletionTrigger, type MarkdownStyle } from "@lightbulb/shared";
 
-/** Blocks and code: the only markdown the box reads, as you type or from a stored draft. Emphasis comes from the
- *  toolbar and ⌘B/⌘I alone, so `__init__`, `run __main__`, `~tilde~` and `3*4 then 5*6` stay exactly as typed. */
+/** Blocks and code: the only markdown typing turns into formatting. Emphasis comes from the toolbar and ⌘B/⌘I alone,
+ *  so `__init__`, `run __main__`, `~tilde~` and `3*4 then 5*6` stay exactly as typed. */
 export const COMPOSER_TRANSFORMERS: Transformer[] = (["UNORDERED_LIST", "ORDERED_LIST", "QUOTE", "CODE", "INLINE_CODE"] as const)
   .map((name) => markdown[name]);
-/** Writing out, the toolbar's bold, italic, strike and links become markdown too. A draft read back shows those as
- *  their markdown characters (the box never guesses emphasis from text), and sends the same text. */
-const EXPORT_TRANSFORMERS: Transformer[] = [...COMPOSER_TRANSFORMERS,
+/** The toolbar's bold, italic, strike and links too: what the box writes out and reads back (a draft, an edit). Typed
+ *  characters go out escaped (below), so reading them back can't turn them into formatting. */
+const FORMAT_TRANSFORMERS: Transformer[] = [...COMPOSER_TRANSFORMERS,
   ...(["BOLD_ITALIC_STAR", "BOLD_STAR", "ITALIC_STAR", "STRIKETHROUGH", "LINK"] as const).map((name) => markdown[name])];
-
-const { $createParagraphNode, $getNodeByKey, $getRoot, $getSelection, $isRangeSelection, $isTextNode, BLUR_COMMAND, COMMAND_PRIORITY_CRITICAL,
+const { $createParagraphNode, $getNodeByKey, $getRoot, $getSelection, $isLineBreakNode, $isRangeSelection, $isTextNode, BLUR_COMMAND, COMMAND_PRIORITY_CRITICAL,
   FORMAT_TEXT_COMMAND, INSERT_PARAGRAPH_COMMAND, KEY_DOWN_COMMAND, PASTE_COMMAND } = lexical;
 const { $convertFromMarkdownString, $convertToMarkdownString } = markdown;
 const { $isListNode, INSERT_ORDERED_LIST_COMMAND, INSERT_UNORDERED_LIST_COMMAND, REMOVE_LIST_COMMAND } = list;
@@ -29,18 +28,32 @@ const { $isLinkNode, TOGGLE_LINK_COMMAND } = linkApi;
 const { $createCodeNode, $isCodeNode } = code;
 const { $setBlocksType } = selectionApi;
 
-/** Lexical escapes every `*`, `_`, `` ` `` and `~` in plain text ("3\*4", "\_\_init\_\_", "\*\*bold\*\*"). A chat sends what was
- *  typed: agents read the raw text and copy it, and a pasted **bold** should render bold. So those escapes come off
- *  everywhere outside code, where Lexical never adds them. */
-export function unescapeComposerMarkdown(markdown: string): string {
+/** A line that opens with `#`, `>`, `-`, `+`, `=` or `1.` is text, not a heading, quote, list or rule: escaped before
+ *  Lexical adds its own `\*` `\_` `` \` `` `\~` (it skips code). A typed `[a](url)` stays a link. */
+const LITERAL_TEXT: Transformer = {
+  type: "text-match", dependencies: [], regExp: /(?!)/,
+  export: (node: LexicalNode, _children: unknown, exportFormat: (node: LexicalNode, text: string) => string) => {
+    if (!$isTextNode(node) || node.hasFormat("code")) return null;
+    const previous = node.getPreviousSibling();
+    let text = node.getTextContent();
+    if (!previous || $isLineBreakNode(previous)) text = text.replace(/^(\s*)([#>+=-])/, "$1\\$2").replace(/^(\s*\d+)([.)])/, "$1\\$2");
+    return exportFormat(node, text);
+  },
+};
+
+/** Lexical's escapes are kept so the message shows what was typed, minus the ones that change nothing and would break
+ *  a link or a name: inside a URL, and `_` between letters (`a_b_c`, `@growth_lead`, never emphasis). Outside code. */
+export function trimComposerEscapes(markdown: string): string {
   // Odd segments are code: a fence or an inline span opened by an unescaped backtick.
   return markdown.split(/(?<!\\)(```[\s\S]*?```|`[^`\n]*`)/)
-    .map((segment, index) => (index % 2 ? segment : segment.replace(/\\([*_`~])/g, "$1")))
+    .map((segment, index) => (index % 2 ? segment : segment
+      .replace(/(?:https?:\/\/|www\.)[^\s<]+/g, (url) => url.replace(/\\([!-/:-@[-`{-~])/g, "$1"))
+      .replace(/(?<=[\p{L}\p{N}])((?:\\_)+)(?=[\p{L}\p{N}])/gu, (run) => run.replace(/\\/g, ""))))
     .join("");
 }
 
-/** The message the box holds, as markdown (one "\n" per line, as typed). */
-export const $composerMarkdown = () => unescapeComposerMarkdown($convertToMarkdownString(EXPORT_TRANSFORMERS, undefined, true));
+/** The message the box holds, as markdown (one "\n" per line, as typed; typed `*_~` and line-start `#` escaped). */
+export const $composerMarkdown = () => trimComposerEscapes($convertToMarkdownString([LITERAL_TEXT, ...FORMAT_TRANSFORMERS], undefined, true));
 
 export interface ComposerEditorHandle {
   /** Focus with the caret at the end. */
@@ -93,7 +106,7 @@ function Bridge({ value, onChange, onTrigger, editable, onKeyDown, onPasteFiles,
     if (value === known.current) return;
     known.current = value;
     editor.update(() => {
-      $convertFromMarkdownString(value, COMPOSER_TRANSFORMERS, undefined, true);
+      $convertFromMarkdownString(value, FORMAT_TRANSFORMERS, undefined, true);
       // A box that has focus keeps typing at the end of what arrived (a starter, a restored draft).
       if (editor.getRootElement()?.contains(document.activeElement)) $getRoot().selectEnd();
     }, { discrete: true, tag: "composer-external" });

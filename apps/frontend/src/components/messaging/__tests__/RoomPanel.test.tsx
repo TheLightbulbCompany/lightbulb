@@ -5,7 +5,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 import { RoomPanel, type RoomPanelProps } from "../RoomPanel";
-import { typeInComposer } from "@/test-utils/composer";
+import { caretOffset, typeInComposer } from "@/test-utils/composer";
 import type { RoomRunView } from "@lightbulb/shared";
 import type { RoomMessage, RoomParticipant } from "../types";
 
@@ -948,11 +948,11 @@ it("opens the edit form for your last message when ArrowUp lands in an empty com
   const own = { ...message, messageId: "own", messageSeq: 2, author: { kind: "human" as const, id: props.currentUserId, displayName: "Owner" } };
   render(<RoomPanel {...props} messages={[message, own]} onUpdateMessage={vi.fn()} />);
   fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "ArrowUp" });
-  const edit = screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Edit message" });
+  const edit = screen.getByRole("textbox", { name: "Edit message" });
   // The caret lands after the text (W18 walk: it opened at the start).
   expect(edit).toHaveFocus();
-  expect(edit.selectionStart).toBe(edit.value.length);
-  expect(edit.value.length).toBeGreaterThan(0);
+  expect(edit.textContent!.length).toBeGreaterThan(0);
+  expect(caretOffset(edit)).toBe(edit.textContent!.length);
 });
 
 it("lets a second ArrowUp reopen the edit form for the same message after Cancel", async () => {

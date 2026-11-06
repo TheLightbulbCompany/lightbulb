@@ -29,8 +29,10 @@ export interface LexicalNode {
   getTextContent(): string;
   getParent(): LexicalNode | null;
   getTopLevelElement(): LexicalNode | null;
+  getPreviousSibling(): LexicalNode | null;
 }
 export interface TextNode extends LexicalNode {
+  hasFormat(format: "code"): boolean;
   select(anchorOffset?: number, focusOffset?: number): RangeSelection;
 }
 export interface ListNode extends LexicalNode { getListType(): "bullet" | "number" | "check" }
@@ -67,6 +69,7 @@ type Core = {
   $getSelection(): RangeSelection | object | null;
   $isRangeSelection(value: unknown): value is RangeSelection;
   $isTextNode(value: unknown): value is TextNode;
+  $isLineBreakNode(value: unknown): boolean;
   BLUR_COMMAND: LexicalCommand<FocusEvent>;
   COMMAND_PRIORITY_CRITICAL: number;
   FORMAT_TEXT_COMMAND: LexicalCommand<"bold" | "italic" | "strikethrough" | "code">;

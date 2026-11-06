@@ -205,7 +205,7 @@ async def _sa_read(ws: str, user_id: str, task: str, comments: int) -> dict:
                         if author.get("kind") == "agent"
                         else author.get("displayName") or "a person",
                         "createdAt": m.get("createdAt"),
-                        "body": m.get("editedText") or m.get("text"),
+                        "body": messaging_repo.agent_text(m.get("editedText") or m.get("text") or ""),
                     }
                 )
     return {

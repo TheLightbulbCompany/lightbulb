@@ -160,6 +160,10 @@ class World:
         mp.setattr(hp, "_runtime_description", _describe)
         mp.setattr(hp, "_update_runtime_image", _update)
         mp.setattr(hp, "_runtime_status", lambda arn: "READY")
+        # Edges added to the roll/provision path after this suite was written: without these stubs they hit
+        # moto's empty DynamoDB/S3 (ResourceNotFound/NoSuchBucket) and every roll reads as "failed".
+        mp.setattr(hp, "_session_warm", AsyncMock(return_value=False))
+        mp.setattr(hp, "_ensure_network_member", AsyncMock())
         mp.setattr(hp, "_stop_runtime_session", lambda arn, sid: self.calls.append(("stop", arn)))
 
         async def _health(owner_id, method, params=None, **kwargs):

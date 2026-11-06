@@ -38,6 +38,7 @@ vi.mock("@/components/workspace/workspaceController", () => ({
 }));
 vi.mock("@/hooks/useActivity", () => ({ useActivity: () => ({ refresh: live.refreshActivity }) }));
 vi.mock("@/lib/api", () => ({ useApi: () => ({ get: live.apiGet }) }));
+vi.mock("@/hooks/useTeamsApi", () => ({ useTeamsApi: () => ({ read: () => ({ data: undefined }) }) }));
 vi.mock("@/lib/shellNav", () => ({ pushSearchParams: (params: URLSearchParams) => live.pushSearchParams(params) }));
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 vi.mock("@/lib/desktopNotify", () => ({ nativeNotify: (...args: unknown[]) => live.nativeNotify(...args) }));

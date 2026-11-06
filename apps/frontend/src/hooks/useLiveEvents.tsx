@@ -11,13 +11,15 @@ import {
   type ReactNode,
 } from "react";
 import { useAuth, useUser } from "@clerk/nextjs";
-import useSWR, { mutate } from "swr";
+import useSWR, { mutate, preload } from "swr";
 import {
   ApiError,
   createMessagingClient,
   createRuntimeClient,
+  agentDirectory,
   createTasksClient,
-  useAgentDirectory,
+  roomsListKey,
+  type DirectoryAgent,
   type AgentNames,
   framesChannelFor,
   useTaskChangedRefresh,
@@ -29,6 +31,7 @@ import {
   type TasksClient,
 } from "@lightbulb/shared";
 import { useApi } from "@/lib/api";
+import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { readDesktopPermissionGrant } from "@/lib/desktopPermissions";
 import { subscribeDesktopPermissions } from "@/lib/desktopPermissionsSubscribe";
 
@@ -72,7 +75,8 @@ export interface LiveEventsContextValue extends RuntimeRpcSource {
 
 const LiveEventsContext = createContext<LiveEventsContextValue | null>(null);
 
-export function LiveEventsProvider({ children }: { children: ReactNode }) {
+/** `preloadRooms`: start the room list here (the chat surface only; Settings has no room list). */
+export function LiveEventsProvider({ children, preloadRooms = false }: { children: ReactNode; preloadRooms?: boolean }) {
   const { getToken, isLoaded, userId, orgId } = useAuth();
   const { user } = useUser();
   const api = useApi();
@@ -83,6 +87,11 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
   const tasks = useMemo(() => createTasksClient(api, ownerScope ?? ""), [api, ownerScope]);
   const refreshTask = useTaskChangedRefresh(tasks);
   const httpReady = !!isLoaded && !!userId;
+  // The room list gates "Loading chats…". Start it with this provider's first reads instead of
+  // when the workspace mounts; useRooms picks up the in-flight request under the same key.
+  useEffect(() => {
+    if (preloadRooms && httpReady && userId) void preload(roomsListKey(userId, orgId), () => messaging.listRooms()).catch(() => undefined);
+  }, [preloadRooms, httpReady, userId, orgId, messaging]);
   const { data: liveConfig, error: configError, mutate: refreshConfig } = useSWR(
     httpReady ? ["messaging-live-config", userId, ownerScope] : null,
     () => messaging.getLiveConfig(),
@@ -99,8 +108,9 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
   const featuresLoaded = config !== undefined || configError !== undefined;
   // Specialist names for task cards ("Finance", never the agent id): one read of the agents list while
   // the switch is on, shared by every card through this context.
-  const { names: agentNames, frontAgentId } = useAgentDirectory(superAgent && httpReady ? tasks.cacheScope : null,
-    async () => ((await api.get("/teams/agents")) as { agents?: { id: string; name?: string | null; role?: string | null; reportsTo?: string | null; origin?: string | null }[] } | null)?.agents ?? []);
+  // The same `/teams/agents` SWR key the roster and the panels read, so a cold load makes one request, not two.
+  const { data: teamAgents } = useTeamsApi().read<{ agents?: DirectoryAgent[] }>(superAgent && httpReady ? "/agents" : null);
+  const { names: agentNames, frontAgentId } = useMemo(() => agentDirectory(teamAgents?.agents ?? []), [teamAgents]);
   const [activeRoomState, setActiveRoomState] = useState<{
     ownerScope: string | null;
     room: ActiveRoomSubscription | null;

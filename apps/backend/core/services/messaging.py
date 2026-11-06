@@ -1318,9 +1318,14 @@ async def human_emails(members: list[dict[str, Any]]) -> dict[str, str]:
     if not human_ids:
         return {}
 
+    # Bounded like the room summaries (see _SUMMARY_CONCURRENCY): the room list now
+    # passes every room's members at once, so this can be many people.
+    limit = asyncio.Semaphore(_SUMMARY_CONCURRENCY)
+
     async def _lookup(user_id: str) -> dict | None:
         try:
-            return await user_repo.get(user_id)
+            async with limit:
+                return await user_repo.get(user_id)
         except Exception:
             logger.warning("human_emails lookup failed", extra={"user_id": user_id}, exc_info=True)
             return None
@@ -2060,9 +2065,9 @@ async def _user_sections(owner_id: str, user_id: str) -> list[RoomSection]:
 # workspace would flood it and leave every other request on the process queued
 # behind a single room list.
 #
-# Note this bounds ROOMS, and each one issues three calls concurrently (plus one
+# Note this bounds ROOMS, and each one issues two calls concurrently (plus one
 # small mention COUNT query for a room with unread) — so the
-# real ceiling on submitted work is three times this number. That is deliberate:
+# real ceiling on submitted work is twice this number. That is deliberate:
 # the calls are IO-bound and mostly sit waiting on DynamoDB, so a modest queue
 # behind the pool costs nothing, whereas the serial version this replaced cost
 # two full round trips per room in sequence.
@@ -2108,30 +2113,39 @@ async def _room_summaries(owner_id: str, user_id: str) -> list[RoomSummary]:
     awaited round trips per room, so a 20-room workspace was a 40-deep serial
     chain before the response could start. The membership recheck stays: the
     GSI backing ``list_rooms_for_member`` is eventually consistent, so a member
-    removed a moment ago can still be discovered by it, and ``get_member`` is
-    the strongly-consistent read that keeps them out of the response.
+    removed a moment ago can still be discovered by it, and the strongly
+    consistent ``list_members`` read (which carries the caller's own row) keeps
+    them out of the response.
     """
     discovered = await _visible_room_metas(owner_id, user_id)
     limit = asyncio.Semaphore(_SUMMARY_CONCURRENCY)
 
-    async def summarise(meta: dict) -> RoomSummary | None:
+    async def load(meta: dict) -> tuple | None:
         room_id = meta["roomId"]
         async with limit:
-            member, read, members = await asyncio.gather(
-                messaging_repo.get_member(room_id, "human", user_id),
+            # list_members is a strongly consistent read of every MEMBER# row, so the
+            # caller's own row comes out of it: no separate get_member per room.
+            read, members = await asyncio.gather(
                 messaging_repo.get_read_row(room_id, user_id),
                 messaging_repo.list_members(room_id),
             )
+            member = next(
+                (row for row in members if row.get("kind") == "human" and str(row.get("id")) == user_id), None
+            )
             if member is None:
                 return None
-            emails, mentions = await asyncio.gather(human_emails(members), _mention_count(meta, member, read, user_id))
-        return RoomSummary(
+            return meta, member, read, members, await _mention_count(meta, member, read, user_id)
+
+    loaded = [row for row in await asyncio.gather(*(load(meta) for meta in discovered)) if row is not None]
+    # One users-table read per distinct person, not one per person per room.
+    emails = await human_emails([m for _, _, _, members, _ in loaded for m in members])
+    summaries = [
+        RoomSummary(
             **_room_summary_fields(meta, member, read, mentions),
             members=[_room_member(item) for item in with_human_handles(members, emails)],
         )
-
-    settled = await asyncio.gather(*(summarise(meta) for meta in discovered))
-    summaries = [summary for summary in settled if summary is not None]
+        for meta, member, read, members, mentions in loaded
+    ]
     summaries.sort(key=lambda room: str(room.room_id))
     summaries.sort(key=lambda room: room.last_message_at or room.updated_at, reverse=True)
     return summaries

@@ -8,6 +8,7 @@ derive it only from persisted seed IDs or the marketplace deployment sidecar.
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 from datetime import datetime, timezone
@@ -63,15 +64,24 @@ def marketplace_provenance(sidecar: dict[str, Any] | None) -> MarketplaceProvena
     }
 
 
+@functools.cache
+def _s3():
+    """One S3 client for the process. Building a client costs ~20x the GetObject
+    itself in CPU (it loads the service model), and /teams/agents read one sidecar
+    per agent with a fresh client each, holding the GIL during cold load."""
+    import boto3
+
+    return boto3.client("s3")
+
+
 def _read_sidecar(owner_id: str, agent_id: str) -> dict[str, Any] | None:
     import botocore.exceptions
-    import boto3
 
     if not settings.OWNER_STATE_BUCKET:
         return None
     try:
         body = (
-            boto3.client("s3")
+            _s3()
             .get_object(
                 Bucket=settings.OWNER_STATE_BUCKET,
                 Key=marketplace_provenance_key(owner_id, agent_id),

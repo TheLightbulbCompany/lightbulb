@@ -8,14 +8,13 @@ import asyncio
 import logging
 import re
 import time
-import weakref
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime
 from functools import partial
 
 from botocore.exceptions import BotoCoreError, ClientError, ParamValidationError
 
-from core.dynamodb import run_in_thread
 from core.services import memory_models, workspace_memory
 from core.services.memory_stages import (
     _CURRENT_KINDS,
@@ -38,8 +37,11 @@ ENTITY_TTL_S = 60.0
 MAX_PAGES = 10
 MAX_CALLS = 16
 TASK_TOP_K = 10
-_gates: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()  # one semaphore per event loop
+# Recall's own threads: on the default executor (6 threads on a dev task) its arms queued behind
+# the background sync and every other DynamoDB call, so one recall took two or three rounds.
+_POOL = ThreadPoolExecutor(MAX_CALLS, thread_name_prefix="memory-recall")
 _entity_cache: dict[tuple[str, str], tuple[float, set[str]]] = {}
+_entity_refresh: dict[tuple[str, str], asyncio.Task] = {}
 
 
 def _flt(key: str, op: str, value: str | float | None = None) -> dict:
@@ -71,12 +73,10 @@ def _as_of_variants(as_of: datetime | None) -> list[list[dict]]:
 
 
 async def _call(label: str, fn, **kwargs) -> list[dict] | None:
-    """One AgentCore read in a thread, at most MAX_CALLS at once. None when it failed: that loses
+    """One AgentCore read on recall's pool, at most MAX_CALLS at once. None when it failed: that loses
     one arm only. A malformed request is a bug and propagates."""
-    gate = _gates.setdefault(asyncio.get_running_loop(), asyncio.Semaphore(MAX_CALLS))
     try:
-        async with gate:
-            return await run_in_thread(fn, **kwargs)
+        return await asyncio.get_running_loop().run_in_executor(_POOL, partial(fn, **kwargs))
     except ParamValidationError:
         raise
     except (ClientError, BotoCoreError) as exc:
@@ -109,10 +109,22 @@ def _list(client, memory_id: str, namespace: str, filters: list[dict], cap: int)
 
 
 async def _entities(client, memory_id: str, facts_ns: str) -> set[str]:
+    """The workspace's entity names. Only the first read per process waits; a stale list answers
+    while a background read refreshes it: the listing is up to MAX_PAGES serial pages (1-2 s on dev,
+    6 Nov 2026), and with a 60 s TTL it landed on most turns of a quiet room."""
     key = (memory_id, facts_ns)
     hit = _entity_cache.get(key)
-    if hit and time.monotonic() - hit[0] < ENTITY_TTL_S:
-        return hit[1]
+    if hit is None:
+        return await _load_entities(client, memory_id, facts_ns)
+    if time.monotonic() - hit[0] >= ENTITY_TTL_S and key not in _entity_refresh:
+        task = asyncio.create_task(_load_entities(client, memory_id, facts_ns))
+        _entity_refresh[key] = task
+        task.add_done_callback(lambda t: (_entity_refresh.pop(key, None), t.cancelled() or t.exception()))
+    return hit[1]
+
+
+async def _load_entities(client, memory_id: str, facts_ns: str) -> set[str]:
+    key = (memory_id, facts_ns)
     rows = await _call("entities", partial(_list, client, memory_id, facts_ns, [], MAX_PAGES * 100))
     if rows is None:  # a failed listing is not an empty one: do not cache it
         return set()

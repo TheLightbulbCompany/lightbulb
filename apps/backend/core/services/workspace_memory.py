@@ -28,6 +28,7 @@ The owner wipe finds member scopes two ways, because neither alone is complete: 
 """
 
 import asyncio
+import functools
 import hashlib
 import logging
 import re
@@ -88,11 +89,14 @@ def _member_scopes(actor: str) -> list[str]:
     return [f"{family}{actor}/" for family in _MEMBER_FAMILIES]
 
 
+@functools.cache
 def _client():
+    """One client per process (boto3 clients are thread-safe): a fresh one per call paid client
+    construction and a TLS handshake per recall arm. The pool covers recall's MAX_CALLS at once."""
     return boto3.client(
         "bedrock-agentcore",
         region_name=settings.AWS_REGION,
-        config=Config(retries={"mode": "adaptive", "max_attempts": 8}),
+        config=Config(retries={"mode": "adaptive", "max_attempts": 8}, max_pool_connections=32),
     )
 
 

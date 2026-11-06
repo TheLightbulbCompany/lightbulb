@@ -5,6 +5,7 @@ question, so recall falls back to its un-reranked / un-expanded path. Neither lo
 document text.
 """
 
+import functools
 import logging
 
 import boto3
@@ -24,6 +25,7 @@ EXPANSION_PROMPT = (
 _CONFIG = Config(connect_timeout=3, read_timeout=10, retries={"max_attempts": 1})
 
 
+@functools.cache  # one per process: a fresh client per call paid construction + TLS on the turn
 def _client(service: str):
     return boto3.client(service, region_name=settings.AWS_REGION, config=_CONFIG)
 

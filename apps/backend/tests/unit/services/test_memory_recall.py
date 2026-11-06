@@ -353,6 +353,26 @@ async def test_entity_cache_skips_failed_listing(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_stale_entities_answer_while_a_background_read_refreshes(monkeypatch):
+    names = {"now": "Ann"}
+
+    def handler(op, kw):
+        if op == "list" and not kw.get("metadataFilters"):
+            return [_rec("x", "n: a: 1", entity=names["now"])]
+        return []
+
+    c = _use(monkeypatch, FakeClient(handler))
+    key = (MEM, NS["facts"])
+    await _run()  # cold: waits for the listing
+    assert memory_recall._entity_cache[key][1] == {"Ann"}
+    names["now"] = "Bob"
+    memory_recall._entity_cache[key] = (0.0, {"Ann"})  # stale
+    assert await memory_recall._entities(c, MEM, NS["facts"]) == {"Ann"}  # the stale list, no wait
+    await memory_recall._entity_refresh[key]
+    assert memory_recall._entity_cache[key][1] == {"Bob"} and key not in memory_recall._entity_refresh
+
+
+@pytest.mark.asyncio
 async def test_param_validation_error_is_not_swallowed(monkeypatch):
     c = _use(monkeypatch, FakeClient())
     with pytest.raises(Exception, match="memoryId"):

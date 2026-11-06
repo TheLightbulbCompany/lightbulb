@@ -39,6 +39,12 @@ it("edits the topic and saves it", async () => {
   await waitFor(() => expect(onSetTopic).toHaveBeenCalledWith("Ship v3"));
 });
 
+it("caps the topic at the shared 2,000-character Instructions limit", async () => {
+  render(<RoomHeader {...props} onSetTopic={vi.fn()} />);
+  await userEvent.click(screen.getByRole("button", { name: "Edit topic" }));
+  expect(screen.getByLabelText("Topic")).toHaveAttribute("maxLength", "2000");
+});
+
 it("clears the topic when the field is emptied and cancels on Escape", async () => {
   const onSetTopic = vi.fn().mockResolvedValue(undefined);
   render(<RoomHeader {...props} onSetTopic={onSetTopic} />);

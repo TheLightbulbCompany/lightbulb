@@ -57,6 +57,7 @@ def env(table, monkeypatch):
         patch("core.services.admission.enqueue_trigger", side_effect=enqueue) as enq,
         patch("core.services.task_conversation.last_result_text", side_effect=last_result),
         patch("core.repositories.container_repo.get_by_owner_id", side_effect=get_container),
+        patch("core.repositories.messaging_repo.get_room", AsyncMock(return_value=None)),  # no project is paused
     ):
         yield type(
             "Env", (), {"s3": s3, "enqueued": enqueued, "enqueue": enq, "results": results, "container": container}
@@ -156,6 +157,40 @@ async def test_paused_schedule_fire_is_noop(env):
     assert await fire_automation(_sched_input(), _ms("2027-01-04T14:00:00+00:00")) == "skipped:paused"
     assert await fire_automation(_sched_input("missing"), 0) == "skipped:paused"
     assert env.enqueued == [] and (await repo.get_schedule(WS, "s1")).get("activeRunTaskId") is None
+
+
+async def test_fire_into_a_paused_project_skips_and_is_recorded(env):
+    """UX slice 6: every fire into a paused project skips (Run now too); History reads "Skipped: project paused"."""
+    from core.repositories import messaging_repo
+    from core.temporal.automations import SKIP_TEXTS
+
+    rooms = {"r1": {"roomId": "r1", "pausedAt": "2027-01-04T13:00:00+00:00"}}
+    messaging_repo.get_room.side_effect = lambda room_id: rooms.get(room_id)  # env's mock: undone with env
+    await _active()
+    at = _ms("2027-01-04T14:00:00+00:00")
+    assert await fire_automation(_sched_input(), at) == "skipped:room_paused"
+    manual = FireInput(ws=WS, schedule_id="s1", source="manual", dedupe_key="01HZZ", actor_user_id="user_sam")
+    assert await fire_automation(manual, at) == "skipped:room_paused"
+    row = await repo.get_schedule(WS, "s1")
+    assert env.enqueued == [] and row.get("activeRunTaskId") is None and row["lastSkip"]["reason"] == "room_paused"
+    assert SKIP_TEXTS["room_paused"] == "Skipped: project paused"
+    rooms["r1"] = {"roomId": "r1"}  # resumed
+    assert (await fire_automation(_sched_input(), at)).startswith("sched:")
+
+
+async def test_a_one_off_skipped_while_paused_stays_on_for_after_resume(env):
+    from core.repositories import messaging_repo
+
+    rooms = {"r1": {"roomId": "r1", "pausedAt": "2027-01-04T13:00:00+00:00"}}
+    messaging_repo.get_room.side_effect = lambda room_id: rooms.get(room_id)
+    await _active(remainingRuns=1)
+    at = _ms("2027-01-04T14:00:00+00:00")
+    assert await fire_automation(_sched_input(), at) == "skipped:room_paused"
+    row = await repo.get_schedule(WS, "s1")
+    assert row["status"] == "active" and row["lastSkip"]["reason"] == "room_paused"  # not used up, still visible
+    rooms["r1"] = {"roomId": "r1"}
+    manual = FireInput(ws=WS, schedule_id="s1", source="manual", dedupe_key="01HZZ", actor_user_id="user_sam")
+    assert await fire_automation(manual, at) == "manual:s1:01HZZ"  # runnable after Resume
 
 
 async def test_previous_result_in_second_run_brief(env):

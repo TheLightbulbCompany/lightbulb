@@ -318,8 +318,13 @@ export type {
   ActivitySubtype,
   ActivitySummary,
   FeedResponse,
+  ProjectColor,
+  ProjectIcon,
 } from "./messaging/types";
 export {
+  PROJECT_COLORS,
+  PROJECT_ICONS,
+  ROOM_TOPIC_MAX_CHARS,
   MESSAGE_ATTACHMENT_ACCEPT,
   MESSAGE_ATTACHMENT_CONTENT_TYPES,
   MESSAGE_ATTACHMENT_MAX_BYTES,

@@ -1097,3 +1097,149 @@ async def test_follow_up_into_an_archived_room_is_a_409(monkeypatch):
         await messaging.create_follow_up("org_1", request)
     assert exc.value.error.code == "ROOM_ARCHIVED"
     create.assert_not_awaited()
+
+
+# --- UX slice 6: project pause, icon and colour, Instructions --------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pause_and_resume_a_project_are_audited(monkeypatch):
+    from core.services import questions
+
+    auth = AuthContext(user_id="admin", org_id="org_1")
+    meta = {"roomId": "chan", "ownerId": "org_1", "kind": "channel", "revision": 2}
+    patch_meta, publish = _archive_fixture(monkeypatch, meta)
+    audit = AsyncMock()
+    monkeypatch.setattr(questions, "audit", audit)
+
+    await messaging.patch_room(auth, "chan", messaging.PatchRoomRequest(paused=True))
+    updates = patch_meta.await_args.args[1]
+    assert updates["pausedBy"] == "admin" and updates["pausedAt"]
+    audit.assert_awaited_once_with("admin", "org_1", "project.paused", {"roomId": "chan"})
+    publish.assert_awaited_once()
+
+    meta["pausedAt"] = updates["pausedAt"]
+    await messaging.patch_room(auth, "chan", messaging.PatchRoomRequest(paused=True))  # already paused: no-op
+    assert patch_meta.await_count == 1 and audit.await_count == 1
+
+    await messaging.patch_room(auth, "chan", messaging.PatchRoomRequest(paused=False))
+    assert patch_meta.await_args.args[1] == {"pausedAt": None, "pausedBy": None}
+    assert audit.await_args.args[2] == "project.resumed"
+
+
+@pytest.mark.asyncio
+async def test_a_workspace_admin_may_pause_but_a_plain_member_may_not(monkeypatch):
+    from core.services import questions
+
+    meta = {"roomId": "chan", "ownerId": "org_1", "kind": "channel", "revision": 2}
+    patch_meta, _ = _archive_fixture(monkeypatch, meta, role="member")
+    monkeypatch.setattr(questions, "audit", AsyncMock())
+    member = AuthContext(user_id="m", org_id="org_1", org_role="org:member")
+    with pytest.raises(ApiProblem) as exc:
+        await messaging.patch_room(member, "chan", messaging.PatchRoomRequest(paused=True))
+    assert exc.value.error.code == "ROOM_FORBIDDEN"
+    ws_admin = AuthContext(user_id="wa", org_id="org_1", org_role="org:admin")
+    with pytest.raises(ApiProblem):  # the workspace-admin pass covers pause alone, not other fields
+        await messaging.patch_room(ws_admin, "chan", messaging.PatchRoomRequest(paused=True, icon="rocket"))
+    patch_meta.assert_not_awaited()
+    await messaging.patch_room(ws_admin, "chan", messaging.PatchRoomRequest(paused=True))
+    assert patch_meta.await_args.args[1]["pausedBy"] == "wa"
+
+
+@pytest.mark.asyncio
+async def test_only_a_project_pauses_or_takes_an_icon(monkeypatch):
+    auth = AuthContext(user_id="admin", org_id="org_1")
+    patch_meta, _ = _archive_fixture(monkeypatch, {"roomId": "d", "ownerId": "org_1", "kind": "dm", "revision": 1})
+    with pytest.raises(ApiProblem) as exc:
+        await messaging.patch_room(auth, "d", messaging.PatchRoomRequest(paused=True))
+    assert exc.value.error.code == "ROOM_NOT_PAUSABLE"
+    with pytest.raises(ApiProblem):
+        await messaging.patch_room(auth, "d", messaging.PatchRoomRequest(color="project-2"))
+    patch_meta.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_icon_and_color_set_and_clear(monkeypatch):
+    auth = AuthContext(user_id="admin", org_id="org_1")
+    meta = {"roomId": "chan", "ownerId": "org_1", "kind": "channel", "revision": 2}
+    patch_meta, _ = _archive_fixture(monkeypatch, meta)
+    await messaging.patch_room(auth, "chan", messaging.PatchRoomRequest(icon="rocket", color="project-3"))
+    assert patch_meta.await_args.args[1] == {"icon": "rocket", "color": "project-3"}
+    await messaging.patch_room(auth, "chan", messaging.PatchRoomRequest(icon=None))
+    assert patch_meta.await_args.args[1] == {"icon": None}
+
+
+def test_icon_color_and_topic_are_validated():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        messaging.PatchRoomRequest(icon="skull")
+    with pytest.raises(ValidationError):
+        messaging.PatchRoomRequest(color="#ff0000")
+    assert messaging.PatchRoomRequest(topic="x" * 2000).topic == "x" * 2000
+    with pytest.raises(ValidationError):
+        messaging.CreateRoomRequest(client_room_id=uuid.uuid4(), name="p", kind="channel", members=[], topic="x" * 2001)
+    req = messaging.CreateRoomRequest(
+        client_room_id=uuid.uuid4(), name="p", kind="channel", members=[], icon="leaf", color="project-6"
+    )
+    assert (req.icon, req.color) == ("leaf", "project-6")
+
+
+def test_room_summary_carries_project_fields():
+    meta = {
+        "roomId": str(uuid.uuid4()),
+        "ownerId": "org_1",
+        "kind": "channel",
+        "revision": 3,
+        "lastSeq": 0,
+        "updatedAt": "2026-11-06T00:00:00+00:00",
+        "icon": "rocket",
+        "color": "project-3",
+        "pausedAt": "2026-11-06T00:00:00+00:00",
+        "pausedBy": "admin",
+    }
+    summary = messaging.RoomSummary(**messaging._room_summary_fields(meta, {"joinedSeq": 0}, 0)).model_dump(
+        mode="json", by_alias=True
+    )
+    assert summary["icon"] == "rocket" and summary["color"] == "project-3"
+    assert summary["pausedAt"].startswith("2026-11-06") and summary["pausedBy"] == "admin"
+
+
+@pytest.mark.asyncio
+async def test_create_project_stores_topic_icon_and_color(monkeypatch):
+    monkeypatch.setattr(messaging, "_front_agent_id", AsyncMock(return_value=None))
+    monkeypatch.setattr(messaging, "human_display_name", AsyncMock(return_value="Owner"))
+    monkeypatch.setattr(messaging.messaging_repo, "ensure_user_stream", AsyncMock())
+    create = AsyncMock(return_value={"kind": "channel"})
+    monkeypatch.setattr(messaging.messaging_repo, "create_room", create)
+    monkeypatch.setattr(messaging, "_room_detail", AsyncMock())
+    monkeypatch.setattr(messaging, "_emit_room_created", lambda *a, **k: None)
+    await messaging.create_room(
+        AuthContext(user_id="u1", org_id="org_1"),
+        messaging.CreateRoomRequest(
+            client_room_id=uuid.uuid4(),
+            name="Spring sale",
+            kind="channel",
+            members=[],
+            topic="  Sell 200 loaves  ",
+            icon="rocket",
+            color="project-3",
+        ),
+    )
+    assert create.await_args.kwargs["extra"] == {"topic": "Sell 200 loaves", "icon": "rocket", "color": "project-3"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["group-dm", "dm"])
+@pytest.mark.parametrize("field", [{"topic": "x"}, {"icon": "rocket"}, {"color": "project-1"}])
+async def test_create_refuses_project_fields_off_a_channel(monkeypatch, kind, field):
+    create = AsyncMock()
+    monkeypatch.setattr(messaging.messaging_repo, "create_room", create)
+    member = messaging.CreateRoomMember(kind="human", id="u2", role="member", listen_mode=None)
+    with pytest.raises(ApiProblem) as exc:
+        await messaging.create_room(
+            AuthContext(user_id="u1", org_id="org_1"),
+            messaging.CreateRoomRequest(client_room_id=uuid.uuid4(), name=None, kind=kind, members=[member], **field),
+        )
+    assert exc.value.error.code == "INVALID_REQUEST"
+    create.assert_not_awaited()

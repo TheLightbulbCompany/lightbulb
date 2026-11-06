@@ -102,10 +102,32 @@ async def _to_task(ws: str, task_id: str, trigger_id: str) -> None:
         raise WorkRetry(type(exc).__name__) from exc
 
 
+async def paused_room(room_id: str | None) -> dict | None:
+    """The room's META when it is a paused project (UX slice 6: no new work starts there by any path), else None."""
+    meta = await messaging_repo.get_room(room_id) if room_id else None
+    return meta if meta and meta.get("pausedAt") else None
+
+
+async def post_paused_notice(ws: str, meta: dict, thread_root: str | None = None) -> None:
+    """One line per pause and thread, in the thread the person wrote in (keyed on pausedAt: a resume re-arms it)."""
+    await task_conversation.post_as_lightbulb(
+        ws,
+        meta["roomId"],
+        text=messaging.PAUSED_ROOM_TEXT,
+        event_id=f"paused:{meta['roomId']}:{thread_root or 'top'}:{meta['pausedAt']}",
+        thread_root=thread_root,
+        remember=False,
+    )
+
+
 async def _admit_trigger(ws: str, trigger_id: str) -> None:
     trig = await tasks_repo.get_trigger(ws, trigger_id)
     if trig is None or not await flags_for(ws):
         put_metric("admission.outcome", dimensions={"outcome": "dropped", "source": "trigger"})
+        return
+    # Voice starts, A2A, proactive ideas, schedules: nothing new starts in a paused project.
+    if await paused_room(ts.trigger_room(trig)):
+        put_metric("admission.outcome", dimensions={"outcome": "paused", "source": trig["source"]})
         return
     await _signal(TriggerRef(ws, trigger_id, trig["lane"], trig["admission"], ts.trigger_scope(trig)))
     put_metric("admission.outcome", dimensions={"outcome": trig["admission"], "source": trig["source"]})
@@ -158,6 +180,12 @@ async def _admit_message(room_id: str, seq: int) -> None:
             return
         await _to_task(ws, task_id, trigger_id)
         put_metric("admission.outcome", dimensions={"outcome": "pass_through", "source": "chat"})
+        return
+
+    # A paused project (UX slice 6): no Router turn, one line per pause. Running tasks were passed through above.
+    if meta.get("pausedAt"):
+        await post_paused_notice(ws, meta, ref.get("threadRoot"))
+        put_metric("admission.outcome", dimensions={"outcome": "paused", "source": "chat"})
         return
 
     # 3. fast path

@@ -2,7 +2,7 @@
 
 import { useId, useRef, useState, type ReactNode } from "react";
 import { Archive, ArchiveRestore, Bell, BellOff, Folder, Link, LogOut, MessageCircle, Mic, MoreHorizontal, Pencil, Pin, Star, Trash2, UserPlus, Users } from "lucide-react";
-import { liveMarker, type MemberPrefsRequest, type RoomSummary } from "@lightbulb/shared";
+import { liveMarker, ROOM_TOPIC_MAX_CHARS, type MemberPrefsRequest, type RoomSummary } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -134,7 +134,7 @@ export function RoomHeader({
         void run(async () => { await onSetTopic!(topicDraft.trim() || null); }, "The topic could not be saved.", () => setEditingTopic(false));
       }}>
         <label className="sr-only" htmlFor={`${id}-topic`}>Topic</label>
-        <input id={`${id}-topic`} className="room-input" autoFocus maxLength={250} value={topicDraft} disabled={pending}
+        <input id={`${id}-topic`} className="room-input" autoFocus maxLength={ROOM_TOPIC_MAX_CHARS} value={topicDraft} disabled={pending}
           onChange={(event) => setTopicDraft(event.target.value)}
           onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); cancelTopicEdit(); } }} />
         <Button type="submit" size="sm" disabled={pending}>{pending ? "Saving…" : "Save"}</Button>

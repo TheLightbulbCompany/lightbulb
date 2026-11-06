@@ -1086,6 +1086,29 @@ async def _runtime_ready(ws: str) -> bool:
     return resolve_runtime_phase(await container_repo.get_by_owner_id(ws)) == "ready"
 
 
+async def _drop_paused(ws: str, triggers: dict[str, dict]) -> None:
+    """A turn queued before its project was paused starts nothing (UX slice 6). A chat trigger gets the paused
+    line in the thread it was said in; the rest are dropped quietly, as admission drops them."""
+    from core.services import admission  # lazy: admission imports the temporal client
+
+    for tid, trig in list(triggers.items()):
+        meta = await admission.paused_room(ts.trigger_room(trig))
+        if meta is None:
+            continue
+        del triggers[tid]
+        ref = trig.get("ref") or {}
+        if trig.get("source") == "chat":
+            await admission.post_paused_notice(ws, meta, ref.get("threadRoot"))
+
+
+async def _project_instructions(room_id: str | None) -> str | None:
+    """The project's Instructions (its room topic). The feed's topic is the team's brief, not a project's."""
+    meta = await messaging_repo.get_room(room_id) if room_id else None
+    if not meta or messaging.is_feed_room(meta):
+        return None
+    return meta.get("topic")
+
+
 @activity.defn
 async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
     """Render the batch, run the Router (cheap model, read-only memory), apply its decisions. Retry-safe: the
@@ -1096,6 +1119,7 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
         trig = await tasks_repo.get_trigger(ws, tid)
         if trig:
             triggers[tid] = trig
+    await _drop_paused(ws, triggers)
     if not triggers:
         return RouterTurnOut(inp.batch_id)
     decisions: list = []
@@ -1156,6 +1180,7 @@ async def router_turn(inp: RouterTurnIn) -> RouterTurnOut:
             closed=closed,
             asker=user_id,
             now=await _local_now(ws, user_id),
+            instructions=await _project_instructions(room_id),
         )
         memory = memory_tags.block_for_router(
             "private" if private and user_id else "shared", user_id if private else None, room_id

@@ -272,6 +272,62 @@ async def test_the_company_name_mid_sentence_is_not_addressing(world, text):
     assert len(world["jev"]) == 1
 
 
+async def test_paused_project_gets_one_line_per_pause_and_no_router_turn(world, monkeypatch):
+    """UX slice 6: a paused project takes no Router turn; Lightbulb says so once per pause (keyed on pausedAt)."""
+    from core.services import messaging
+
+    keys = []
+
+    async def post(ws, room_id, **kw):
+        keys.append(kw["event_id"])
+        world["posts"].append((room_id, kw["text"], kw.get("thread_root")))
+        return "m1"
+
+    monkeypatch.setattr("core.services.task_conversation.post_as_lightbulb", post)
+    world["meta"] = {**world["meta"], "pausedAt": "2026-11-06T10:00:00Z"}
+    await _admit(world, _msg(1, targets=[{"agentId": CEO, "eventKind": "user_request"}]))
+    await _admit(world, _msg(2))
+    root = str(uuid.uuid4())
+    await _admit(world, _msg(3, root=root))
+    assert world["router"] == [] and world["jev"] == []
+    assert {p[1] for p in world["posts"]} == {messaging.PAUSED_ROOM_TEXT}
+    # post_as_lightbulb dedupes on the key: one line per pause in the main chat, one in the thread, said there
+    assert keys[:2] == [f"paused:{ROOM}:top:2026-11-06T10:00:00Z"] * 2
+    assert keys[2] == f"paused:{ROOM}:{root}:2026-11-06T10:00:00Z" and world["posts"][2][2] == root
+
+
+@pytest.mark.parametrize("source", ["voice", "a2a", "idea", "schedule"])
+async def test_no_trigger_starts_work_in_a_paused_project(world, source):
+    """UX slice 6: one guard in _admit_trigger covers voice starts, A2A, proactive ideas and schedules."""
+    trig = ts.Trigger(
+        ws=WS,
+        trigger_id=f"{source}:1",
+        source=source,
+        admission="respond",
+        lane="shared",
+        actor_user_id="sam",
+        received_at="2026-11-06T10:00:00Z",
+        created_at="2026-11-06T10:00:00Z",
+        updated_at="2026-11-06T10:00:00Z",
+        ref={},
+    )
+    await repo.put_trigger(WS, {**trig.model_dump(by_alias=True), "ref": {"deliverRoomId": ROOM}})
+    world["meta"] = {**world["meta"], "pausedAt": "2026-11-06T10:00:00Z"}
+    await admission.admit_pointer({"kind": "admit_trigger", "ownerId": WS, "triggerId": f"{source}:1"})
+    assert world["router"] == []
+    world["meta"] = {k: v for k, v in world["meta"].items() if k != "pausedAt"}  # resumed
+    await admission.admit_pointer({"kind": "admit_trigger", "ownerId": WS, "triggerId": f"{source}:1"})
+    assert len(world["router"]) == 1
+
+
+async def test_paused_project_still_passes_replies_to_running_tasks(world):
+    """Running tasks finish: a reply in a running task's thread still reaches it."""
+    task_id, root = await _subscribed_task()
+    world["meta"] = {**world["meta"], "pausedAt": "2026-11-06T10:00:00Z"}
+    await _admit(world, _msg(2, root=root))
+    assert [t for t, _ in world["inputs"]] == [task_id] and world["posts"] == []
+
+
 async def test_admit_redelivery_is_idempotent(world):
     msg = _msg(targets=[{"agentId": CEO, "eventKind": "user_request"}])
     tid = await _admit(world, msg)

@@ -407,6 +407,21 @@ async def test_retry_and_reopen_take_their_threads_back(world):
     assert await repo.task_for_thread(WS, key) == other  # never stolen back
 
 
+async def test_reopen_to_idle_takes_its_thread_back(world):
+    """Reopen moves a closed task straight to idle (Done, no attempt) and a reply in its thread steers it again."""
+    root = str(uuid.uuid4())
+    key = f"room:{ROOM}:{root}"
+    tid = await _task(root=root)
+    await _attempt(tid)
+    await _ended(tid, "completed")
+    await acts.transition(WS, tid, "resolved", "resolved")  # Close
+    assert await repo.task_for_thread(WS, key) is None
+    await acts.transition(WS, tid, "idle", "reopened")
+    task = await repo.get_task(WS, tid)
+    assert (task["status"], task["statusReason"]) == ("idle", "reopened")
+    assert await repo.task_for_thread(WS, key) == tid
+
+
 async def test_check_budget_between_attempts(world):
     tid = await _task(budgetUsd=0.05)
     assert await acts.check_budget(WS, tid) is True

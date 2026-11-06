@@ -41,7 +41,8 @@ TRANSITIONS: dict[str, frozenset[str | None]] = {
     "working": frozenset({"queued", "waiting"}),
     # queued/idle → waiting: the per-run budget is checked before an attempt starts (§14.8).
     "waiting": frozenset({"working", "queued", "idle"}),
-    "idle": frozenset({"working", "waiting"}),
+    # resolved/failed → idle: Reopen (Done, open for follow-up; nothing runs until a steer).
+    "idle": frozenset({"working", "waiting", "resolved", "failed"}),
     "failed": frozenset({"working"}),
     # `proposed`: rows from before 5 Nov 2026 (proposals removed) can still close (quiet, dismissed).
     "resolved": frozenset({"proposed", "queued", "working", "waiting", "idle", "failed"}),

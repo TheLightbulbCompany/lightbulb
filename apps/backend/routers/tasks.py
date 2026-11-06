@@ -34,7 +34,7 @@ _NEEDS_YOU_GROUPS = frozenset({"waiting_on_you", "ready_for_review"})
 # Its bounds: index pages read per source (100 rows each), and task trees read at once.
 _NEEDS_YOU_PAGES = 10
 _NEEDS_YOU_FETCHES = 10
-_GATED = frozenset({"retry", "reopen"})  # a new attempt: today's chat gate first (§14.10)
+_GATED = frozenset({"retry"})  # a new attempt: today's chat gate first (§14.10). Reopen runs nothing.
 
 Auth = Annotated[AuthContext, Depends(get_current_user)]
 

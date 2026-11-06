@@ -18,7 +18,7 @@ import { Input } from "@/components/ui/input";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { capture } from "@/lib/analytics";
 import { TaskStatus } from "./TaskCard";
-import { sendToTask, useMarkTaskPaneOpen, useRoomComposerShown, useShowSteered } from "./taskReply";
+import { sendToTask, useMarkTaskPaneOpen, useMarkTaskSteerable, useRoomComposerShown, useShowSteered } from "./taskReply";
 import { useTaskActions } from "./useTaskActions";
 
 const TRANSCRIPT_WORDS: ChatWords = {
@@ -84,6 +84,10 @@ function TaskPaneBody({ detail, viewerId }: { detail: TaskDetail; viewerId: stri
   const composerShown = useRoomComposerShown(task.originRoomId);
   const effects = open ? detail.effects.filter((e) => e.state !== "proposed") : detail.effects;
   const closed = view.word === "Closed";
+  // Steering is offered while it runs or needs the viewer; a Done request only after Follow up; a Closed one never.
+  const [followUp, setFollowUp] = useState(false);
+  const steerable = view.word === "Working" || view.word === "Needs you" || (view.word === "Done" && followUp);
+  useMarkTaskSteerable(task.taskId, steerable);
   const effectRows = effectFooter(effects, closed);
   return <div className="room-context-body flex min-h-0 flex-col gap-3">
     <TaskHeader task={task} viewerId={viewerId} finished={taskFinished(detail)} />
@@ -96,7 +100,10 @@ function TaskPaneBody({ detail, viewerId }: { detail: TaskDetail; viewerId: stri
         openChat={async (roomId) => ({ roomId })} readOnly hideMessage={hideCard} />
     </div>
     {/* One text box: the room's composer when it is on screen, else this line; never beside a typed answer. */}
-    {!composerShown && !(open?.canAnswer && !open.options.length) && <AddNote task={task} />}
+    {view.word === "Done" && !followUp && <div className="px-1">
+      <Button type="button" size="sm" variant="outline" onClick={() => setFollowUp(true)}>Follow up</Button>
+    </div>}
+    {steerable && !composerShown && !(open?.canAnswer && !open.options.length) && <AddNote task={task} autoFocus={followUp} />}
     {/* With a question open, its card above already shows the output and the pending effect. */}
     {task.output && !open && <section aria-label="Outputs" className="editorial-card px-3 py-2 text-ui">
       <span aria-hidden="true">📎 </span>{task.output.title}
@@ -167,24 +174,32 @@ export function TaskHeader({ task, viewerId, finished = false }: { task: TaskSum
       {/* "Done by X, ready for your review" already says Ready for review. */}
       {view.reason && !(view.reason === "Ready for review" && view.word === "Needs you" && actor.endsWith("ready for your review")) && <span>{view.reason}</span>}
     </div>
-    <div className="flex flex-wrap gap-2">
-      {/* A running request is stopped (asked once), never resolved under it; Reopen undoes either. */}
-      {live && (confirmStop
-        ? <span role="group" aria-label="Stop this request?" className="inline-flex items-center gap-2 text-ui">
-          <span>Stop this request?</span>
-          <Button type="button" size="sm" variant="outline" disabled={pending} onClick={() => void press("stop")}>Stop it</Button>
-          <Button type="button" size="sm" variant="ghost" onClick={() => setConfirmStop(false)}>Keep going</Button>
-        </span>
-        : <Button type="button" size="sm" variant="outline" disabled={pending} onClick={() => setConfirmStop(true)}>Stop</Button>)}
-      {!live && task.status !== "resolved" && <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={() => void press("resolve")}>Close</Button>}
-      {task.status === "resolved" && <Button type="button" size="sm" variant="outline" disabled={pending} onClick={() => void press("reopen")}>Reopen</Button>}
+    {/* Fixed slots (UX audit 2, P0): Stop, Close and Reopen never take each other's place, so a press can't land on
+        a button that changed under the cursor. A running request is stopped (asked once, on its own row), never
+        resolved under it; Reopen undoes either and runs nothing. */}
+    <div className="flex gap-2">
+      <span data-action-slot="stop" className="w-[4.5rem]">
+        {live && <Button type="button" size="sm" variant="outline" disabled={pending || confirmStop} aria-expanded={confirmStop}
+          onClick={() => setConfirmStop(true)}>Stop</Button>}
+      </span>
+      <span data-action-slot="close" className="w-[4.5rem]">
+        {!live && task.status !== "resolved" && <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={() => void press("resolve")}>Close</Button>}
+      </span>
+      <span data-action-slot="reopen" className="w-[5rem]">
+        {task.status === "resolved" && <Button type="button" size="sm" variant="outline" disabled={pending} onClick={() => void press("reopen")}>Reopen</Button>}
+      </span>
     </div>
+    {live && confirmStop && <span role="group" aria-label="Stop this request?" className="inline-flex items-center gap-2 text-ui">
+      <span>Stop this request?</span>
+      <Button type="button" size="sm" variant="outline" disabled={pending} onClick={() => void press("stop")}>Stop it</Button>
+      <Button type="button" size="sm" variant="ghost" onClick={() => setConfirmStop(false)}>Keep going</Button>
+    </span>}
     {error && <p role="alert" className="text-ui text-err">{error}</p>}
   </section>;
 }
 
 /** Steering when the room's composer isn't on screen: one line, Enter sends it into the request's room. */
-function AddNote({ task }: { task: TaskSummary }): ReactElement {
+function AddNote({ task, autoFocus = false }: { task: TaskSummary; autoFocus?: boolean }): ReactElement {
   const { messaging, tasks } = useLiveEvents();
   const [text, setText] = useState("");
   const [pending, setPending] = useState(false);
@@ -197,7 +212,7 @@ function AddNote({ task }: { task: TaskSummary }): ReactElement {
     setPending(true);
     sendToTask(messaging, task, note, "note").then(() => { setText(""); setError(null); showSteered(task); }, () => setError("That didn't go through. Try again.")).finally(() => setPending(false));
   }}>
-    <Input aria-label="Steer this request" placeholder="Steer this request…" value={text} maxLength={4000} disabled={pending}
+    <Input aria-label="Steer this request" placeholder="Steer this request…" autoFocus={autoFocus} value={text} maxLength={4000} disabled={pending}
       onChange={(event) => setText(event.target.value)} />
     {error && <p role="alert" className="text-ui text-err">{error}</p>}
   </form>;

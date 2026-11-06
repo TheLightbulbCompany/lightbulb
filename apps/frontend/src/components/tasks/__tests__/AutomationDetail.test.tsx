@@ -185,3 +185,17 @@ describe("AutomationsPanel (Work › Automations)", () => {
     expect(screen.queryByTestId("routines-panel")).toBeNull();
   });
 });
+
+describe("AutomationConfirmCard (dev walk 10, W10-6)", () => {
+  it("a removed draft (404) is a plain 'Not set up.' line, never a dead box; another failure offers Retry", async () => {
+    const { AutomationConfirmCard } = await import("../AutomationConfirmCard");
+    api.get.mockImplementation(async () => { throw new ApiError(404, { detail: "not_found" }); });
+    const { unmount } = render(<Fresh><AutomationConfirmCard automationId="gone1" /></Fresh>);
+    expect(await screen.findByText("Not set up.")).toBeInTheDocument();
+    expect(screen.queryByText(/isn't available/)).toBeNull();
+    unmount();
+    api.get.mockImplementation(async () => { throw new ApiError(503, {}); });
+    render(<Fresh><AutomationConfirmCard automationId="down1" /></Fresh>);
+    expect(await screen.findByRole("button", { name: "Retry" })).toBeInTheDocument();
+  });
+});

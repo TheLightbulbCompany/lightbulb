@@ -312,6 +312,18 @@ def test_restates_the_walk_7_double_line():
     assert not router_prompt.restates("It's 3 lines, about 40 words, for #walk-7.", {ack})
 
 
+def test_restates_the_walk_10_double_line():
+    """Dev walk 10 (W10-4): "Growth is researching… Growth has the task and is working on it." The second line says
+    only that the task is underway, in lower case."""
+    ack = "Growth is researching three competitor taglines."
+    assert router_prompt.restates("Growth has the task and is working on it.", {ack})
+    # Review #4905: a status word beside a number, a price or a question is still an answer.
+    assert not router_prompt.restates("Both tasks are working; the Stripe fee on a $50 ticket is $1.75.", {ack})
+    assert not router_prompt.restates("The task is working out to about $1,200 a month, is that ok?", {ack})
+    assert "exactly one sentence" in router_prompt.ROUTER_INSTRUCTIONS
+    assert 'never with "#"' in router_prompt.ROUTER_INSTRUCTIONS
+
+
 @pytest.mark.asyncio
 async def test_router_turn_retry_applies_once(world):
     t1 = await _trig("chat:m1")
@@ -442,7 +454,8 @@ async def test_pinned_specialist_in_prompt(world):
     await _run([t1])
     identity, request = world["runs"][0]
     assert f"pinned specialist: Finance ({FIN})" in request.input
-    assert "Sam: pay acme and book the flights" in request.input and "#general" in request.input
+    assert "Sam: pay acme and book the flights" in request.input and "the project general" in request.input
+    assert "#general" not in request.input  # dev walk 10: a project is named without "#", so the Router copies none
     assert (
         f"- {FIN} · Finance · Books and invoices" in request.input
         and CEO not in request.input.split("## Specialists")[1]

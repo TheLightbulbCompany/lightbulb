@@ -550,50 +550,13 @@ async def transition(ws: str, task_id: str, to: str, reason: str | None) -> None
 _MARKS = {"working": "Started", "waiting": "Needs you", "idle": "Done", "failed": "Didn't finish", "resolved": "Closed"}
 #: A person's Close, Stop or Reopen: the route marks it with their name (routers/tasks.py `_act`).
 _PERSON_REASONS = frozenset({"resolved", "stopped", "dismissed", "reopened"})
-_FAILED_WHY = {
-    "refused": "the computer it runs on refused it",
-    "unavailable": "the computer it runs on wasn't available",
-    "runtime_lost": "the run was lost",
-    "lost_run": "the run was lost",
-    "checkpoint_failed": "its work couldn't be saved",
-}
-_LINE_MAX = 200
-
-
-def _first_line(text: str) -> str:
-    line = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
-    return line if len(line) <= _LINE_MAX else line[: _LINE_MAX - 1].rstrip() + "…"
-
-
-def _seen_by_whole_room(task: dict, room: str) -> bool:
-    """Everyone in `room` can open the task (`tasks_access.can_view`'s audience rules): a workspace task, or this
-    room's own. Only then may the main chat's line carry what the task said."""
-    audience = task.get("audience") or {}
-    return audience.get("kind") == "workspace" or (audience.get("kind") == "room" and audience.get("roomId") == room)
-
-
-def _result_line(tree: dict, to: str, reason: str | None, room: str) -> str:
-    """The main chat's one line: "Done: <what came of it>." / "Didn't finish: <why>. Retry from the task." No model.
-    Bare "Done." / "Didn't finish." when someone in the room can't open the task: its words never leak there."""
-    task = tree["task"]
-    shared = _seen_by_whole_room(task, room)
-    if to == "failed":
-        if not shared:
-            return "Didn't finish."
-        return f"Didn't finish: {_FAILED_WHY.get(reason or '', 'something went wrong')}. Retry from the task."
-    if not shared:
-        return "Done."
-    att = max(tree.get("attempts") or [], key=lambda a: a["n"], default=None)
-    said = _first_line(att.get("output") or "") if att and att.get("outcome") == "completed" else ""
-    outputs = task.get("outputs") or []
-    what = said or (outputs[-1].get("title") if outputs else "")
-    return f"Done: {what}" if what else "Done."
 
 
 async def _announce(ws: str, task_id: str, to: str, reason: str | None = None) -> None:
     """One marker line in the task room per status change ("Started", "Needs you", "Done", "Closed"), and at Done or
-    Didn't finish one line in the main chat of the Router conversation it came from, with the task as a chip. Keyed
-    on the attempt and status, so a retried Activity posts once. Cosmetic: a failure is logged, never raised."""
+    Didn't finish one new line in the main chat of the Router conversation it came from (an unread, like a Claude
+    Projects update): `tasks_access.result_line` with the task as a chip. Keyed on the attempt and status, so a
+    retried Activity posts once. Cosmetic: a failure is logged, never raised."""
     try:
         tree = await tasks_repo.get_task_tree(ws, task_id)
         task = tree["task"]
@@ -616,10 +579,12 @@ async def _announce(ws: str, task_id: str, to: str, reason: str | None = None) -
         # A person-only task's line would tell the room it exists: only its own people see it (in the task).
         person_only = (task.get("audience") or {}).get("kind") == "person"
         if to in ("idle", "failed") and root and room and _is_uuid(room) and not person_only:
+            # Plain, sentence-bounded, <= 120 chars; bare when someone in the room can't open the task.
+            line = tasks_access.result_line(tree, room) or ("Done." if to == "idle" else "Didn't finish.")
             await task_conversation.post_as_lightbulb(
                 ws,
                 room,
-                text=_result_line(tree, to, reason, room),
+                text=line,
                 event_id=f"task-line:{task_id}:{n}:{to}",
                 specialist=task.get("specialist"),  # the specialist is the actor ("Lightbulb · Growth")
                 task_refs=[{"taskId": task_id, "role": "started"}],
@@ -661,7 +626,7 @@ async def _trigger_view(ws: str, trig: dict) -> dict:
         msg = await messaging_repo.get_message_by_id(ref["roomId"], ref["messageId"]) or {}
         meta = await messaging_repo.get_room(ref["roomId"]) or {}
         view["who"] = (msg.get("author") or {}).get("displayName")
-        view["where"] = "a direct message" if meta.get("kind") == "dm" else f"#{meta.get('name') or 'room'}"
+        view["where"] = "a direct message" if meta.get("kind") == "dm" else f"the project {meta.get('name') or 'here'}"
     else:
         view["who"] = str(ref.get("from") or trig["source"])
     return view

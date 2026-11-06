@@ -8,6 +8,7 @@ refetch path asks it. `summarize` is pure over a task tree and returns the `Task
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Any
 
@@ -80,6 +81,121 @@ def _origin_room(subscriptions: list[dict], audience: dict) -> str | None:
         if sub.get("createdBy") == "router" and key.startswith("room:"):
             return key.split(":")[1]
     return audience.get("roomId")
+
+
+# --- The task's one-line result (UX slice 3, dev walk 10) ------------------------------------------------------------
+# `activities._announce` posts it as a new line in the main chat the task came from, with the task as a chip.
+
+_FAILED_WHY = {
+    "refused": "the computer it runs on refused it",
+    "unavailable": "the computer it runs on wasn't available",
+    "runtime_lost": "the run was lost",
+    "lost_run": "the run was lost",
+    "checkpoint_failed": "its work couldn't be saved",
+}
+LINE_MAX = 120
+_FENCE = re.compile(r"^\s*(```|~~~)")
+_REF_DEF = re.compile(r"^\s*\[[^\]]+\]:\s")  # [1]: https://…
+_HEADING = re.compile(r"^\s*#{1,6}\s+")
+_RULE = re.compile(r"^\s*([-*_=]\s*){3,}$")  # --- / *** / ===
+_TABLE_EDGE = re.compile(r"^\s*\|?[\s:|-]*-[\s:|-]*\|?\s*$")  # a table's |---|---|
+_INLINE = [
+    (re.compile(r"!\[[^\]]*\]\((?:[^()]|\([^()]*\))*\)"), ""),  # an image says nothing in one line
+    (re.compile(r"\[([^\]]*)\]\((?:[^()]|\([^()]*\))*\)"), r"\1"),  # [text](url (nested))
+    (re.compile(r"\[([^\]]+)\]\[[^\]]*\]"), r"\1"),  # [text][ref]
+    (re.compile(r"<(https?://[^>\s]+)>"), r"\1"),  # <https://…> autolink
+    (re.compile(r"</?[A-Za-z][^>]*>"), ""),  # raw HTML tags
+    (re.compile(r"(`+)(.+?)\1"), r"\2"),  # `code`
+    (re.compile(r"(\*\*|__)(?=\S)(.+?)(?<=\S)\1"), r"\2"),  # **bold**, __bold__
+    (re.compile(r"(?<![\w*])\*(?=\S)(.+?)(?<=\S)\*(?![\w*])"), r"\1"),  # *italic*, never "5 * 3"
+    (re.compile(r"(?<!\w)_(?=\S)(.+?)(?<=\S)_(?!\w)"), r"\1"),  # _italic_, never snake_case
+    (re.compile(r"~~(?=\S)(.+?)(?<=\S)~~"), r"\1"),  # ~~strike~~
+]
+_LEAD = re.compile(r"^(?:>\s*|[-*+]\s+|\d+[.)]\s+)+")  # quote, list marker
+_CJK_END = "。！？"
+_SENTENCE_END = re.compile(r"[.!?…][\"'”’)\]]*(?=\s|$)|[。！？][」』”’）)]*")
+
+
+def _inline(line: str) -> str:
+    if line.lstrip().startswith("|"):  # a table row: its cells, never its pipes
+        line = " · ".join(c.strip() for c in line.strip().strip("|").split("|") if c.strip())
+    for pattern, repl in _INLINE:
+        line = pattern.sub(repl, line)
+    return " ".join(_LEAD.sub("", line.strip()).split())
+
+
+def _blocks(text: str) -> list[tuple[str, bool]]:
+    """Paragraphs of `text` as (plain text, is a heading). Code blocks, rules and reference definitions say nothing."""
+    out: list[tuple[str, bool]] = []
+    para: list[str] = []
+    fenced = False
+
+    def end() -> None:
+        if para:
+            out.append((" ".join(para), False))
+            para.clear()
+
+    for raw in (text or "").splitlines():
+        if _FENCE.match(raw):
+            fenced = not fenced
+            end()
+            continue
+        if fenced or _REF_DEF.match(raw) or ("|" in raw and _TABLE_EDGE.match(raw)):
+            continue
+        if not raw.strip() or _RULE.match(raw):
+            end()
+            continue
+        if _HEADING.match(raw):
+            end()
+            if line := _inline(_HEADING.sub("", raw)).rstrip("#").strip():
+                out.append((line, True))
+            continue
+        if line := _inline(raw):
+            para.append(line)
+    end()
+    return out
+
+
+def plain_line(text: str, limit: int = LINE_MAX) -> str:
+    """`text`'s first paragraph (a leading heading only when nothing follows it) as one plain line of at most `limit`
+    chars: markdown, HTML and code blocks stripped, whole sentences while they fit, else cut with "…"."""
+    blocks = _blocks(text)
+    flat = next((t for t, heading in blocks if not heading), blocks[0][0] if blocks else "")
+    if len(flat) <= limit:
+        return flat
+    ends = [m.end() for m in _SENTENCE_END.finditer(flat) if m.end() <= limit]
+    if ends:
+        return flat[: ends[-1]].rstrip()
+    cut = flat[: limit - 1]
+    if " " in cut and cut[-1] not in _CJK_END:  # a word boundary when the text has words; CJK cuts anywhere
+        cut = cut.rsplit(" ", 1)[0]
+    return cut.rstrip(" ,;:-、，") + "…"
+
+
+def seen_by_whole_room(task: dict, room: str | None) -> bool:
+    """Everyone in `room` can open the task (`can_view`'s audience rules): a workspace task, or this room's own. Only
+    then may the line in that room carry what the task said."""
+    audience = task.get("audience") or {}
+    return audience.get("kind") == "workspace" or (audience.get("kind") == "room" and audience.get("roomId") == room)
+
+
+def result_line(tree: dict, room: str | None) -> str | None:
+    """What came of a finished task, for the line in `room`: the result's first sentence(s), else the newest output's
+    title, else the task's title; why a failed one didn't finish. None while it works (or watches), and when someone
+    in the room can't open the task (its words never leak there; a person-only task never shows any)."""
+    task = tree["task"]
+    status = task.get("status")
+    if status not in ("idle", "failed") or not seen_by_whole_room(task, room):
+        return None
+    if status == "failed":  # a watch armed before it failed changes nothing: it failed
+        return f"Didn't finish: {_FAILED_WHY.get(task.get('statusReason') or '', 'something went wrong')}."
+    if task.get("watchUntil"):
+        return None
+    att = max(tree.get("attempts") or [], key=lambda a: a.get("n", 0), default=None)
+    said = plain_line(att.get("output") or "") if att and att.get("outcome") == "completed" else ""
+    outputs = task.get("outputs") or []
+    made = plain_line(outputs[-1].get("title") or "") if outputs else ""
+    return said or made or plain_line(task.get("title") or "") or None
 
 
 def summarize(tree: dict, viewer_id: str) -> dict[str, Any]:

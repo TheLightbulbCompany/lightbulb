@@ -3,6 +3,7 @@
 // Working, Needs you, Done, Closed (founder ruling, 5 Nov 2026); `reason` is the short line under it. Pure; types mirror `fixtures/super-agent/tasks-schema.json` and
 // `view.test.ts` fails if the schema's enums drift.
 
+import { collapseRepeats, resolveToolDisplay, type ToolKind } from "../messaging/toolDisplay";
 import type { TaskEffect, TaskSummary } from "./types";
 
 export const TASK_STATUSES = ["queued", "working", "waiting", "idle", "resolved", "failed"] as const;
@@ -447,3 +448,28 @@ export function formatSchedule(cron: readonly string[], tz: string, viewerTz: st
 }
 
 export const CUSTOM_SCHEDULE = "Custom schedule";
+
+// ---------------------------------------------------------------------------------------------
+// Steps: a run's tool records (`routers/runtime_internal.py` `_tool_line`: name, ok) in words people use.
+
+const STEP_NOUNS: Partial<Record<ToolKind, [string, string]>> = {
+  read: ["a file", "files"], write: ["a file", "files"], edit: ["a file", "files"], command: ["a command", "commands"],
+  fetch: ["a page", "pages"], browse: ["a page", "pages"], message: ["a message", "messages"], delegate: ["a task", "tasks"],
+};
+
+/** One line per run of the same tool: "Searched the web · 9", "Read 2 pages", "Ran a command", "… · failed". */
+export function stepLines(tools: readonly unknown[]): string[] {
+  const steps = tools.map((tool) => {
+    const t = (typeof tool === "string" ? { name: tool } : tool ?? {}) as Record<string, unknown>;
+    const name = [t.name, t.tool, t.type].find((v) => typeof v === "string") as string | undefined;
+    return { name: name ?? "", failed: t.ok === false || t.status === "failed" };
+  });
+  return collapseRepeats(steps, (s) => `${s.name}|${s.failed}`).map(({ item, count }) => {
+    if (!item.name) return count > 1 ? `${count} steps` : "A step";
+    const display = resolveToolDisplay(item.name, {});
+    const past = display.past.replace(/:$/, "");
+    const noun = /^\w+$/.test(past) ? STEP_NOUNS[display.kind] : undefined;  // "Ran" takes a noun; "Searched the web" has one
+    const line = noun ? `${past} ${count > 1 ? `${count} ${noun[1]}` : noun[0]}` : count > 1 ? `${past} · ${count}` : past;
+    return item.failed ? `${line} · failed` : line;
+  });
+}

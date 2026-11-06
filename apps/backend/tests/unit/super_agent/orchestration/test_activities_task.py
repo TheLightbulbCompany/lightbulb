@@ -246,8 +246,8 @@ async def test_end_attempt_posts_result_as_lightbulb(world):
     await acts.acquire_slot(WS, tid)
     await _ended(tid, "completed")
     room, origin = world["posts"]  # the task room first: it adopts any files
-    # UX slice 3: the main chat gets one line with the task as its chip, never the result in a reply thread.
-    assert origin["room"] == ROOM and "thread_root" not in origin and origin["text"] == "Done: Paid Acme."
+    # UX slice 3 / walk 10: the main chat gets one new plain line with the task as its chip (an unread).
+    assert origin["room"] == ROOM and "thread_root" not in origin and origin["text"] == "Paid Acme."
     assert origin["kind"] == "task_line" and origin["task_refs"] == [{"taskId": tid, "role": "started"}]
     assert room["room"] == ts.task_room_id(tid) and room["text"] == "Paid Acme." and room["kind"] == "result"
     assert [m[1] for m in world["marks"]] == ["Started", "Done"]
@@ -313,7 +313,7 @@ async def test_end_attempt_result_files_go_to_the_task_room_post(world):
     await _ended(tid, "completed", output="The agenda is ready.")
     room, origin = world["posts"]  # task room first: the files live in the task, the main chat gets one line
     assert room["room"] == ts.task_room_id(tid) and room["uploaded_attachments"] == files
-    assert origin.get("uploaded_attachments") is None and origin["text"] == "Done: The agenda is ready."
+    assert origin.get("uploaded_attachments") is None and origin["text"] == "The agenda is ready."
     # UX slice 5: the file stays on the task as what it made, openable from the task room
     (out,) = (await repo.get_task(WS, tid))["outputs"]
     assert (out["id"], out["kind"], out["ref"]["roomId"]) == (
@@ -341,7 +341,7 @@ async def test_a_refused_adoption_posts_the_result_without_files_or_note(world, 
     await _ended(tid, "completed", output="The agenda is ready.")
     room, origin = world["posts"]
     assert room["room"] == ts.task_room_id(tid) and not room.get("uploaded_attachments")
-    assert origin["text"] == "Done: The agenda is ready."
+    assert origin["text"] == "The agenda is ready."
     assert not (await repo.get_task(WS, tid)).get("outputs")
 
 
@@ -677,8 +677,8 @@ async def test_a_person_only_task_says_nothing_in_the_shared_room(world):
 async def test_a_workspace_task_carries_its_result_line(world):
     tid = await _task(audience={"kind": "workspace"})
     await _attempt(tid)
-    await _ended(tid, "completed")
-    assert world["posts"][-1]["room"] == ROOM and world["posts"][-1]["text"] == "Done: Paid Acme."
+    await _ended(tid, "completed", output='**"Fast," says Linear.** More below.\n\n- detail')
+    assert world["posts"][-1]["room"] == ROOM and world["posts"][-1]["text"] == '"Fast," says Linear. More below.'
 
 
 async def test_a_task_of_another_room_says_only_done(world):

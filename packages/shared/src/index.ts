@@ -367,7 +367,7 @@ export type { CardReply } from "./ui/reply";
 export { answerIsFormOf, answerIsFrom, answerIsTableOf, cardAnswerFor, cardAnswersFor } from "./ui/answer";
 export {
   TASK_STATUSES, SHOWN_GROUPS, STATUS_WORDS, GROUP_LABELS, GROUP_ORDER, resolveCeoAgentId, taskView, summaryView, specialistLabel, nameSpecialistIn, activityLine, elapsedShort, overviewGroups, taskSummaryLine, effectLine, effectName, formatSchedule,
-  FREE_TEXT_OPTION, ALWAYS_ALLOW_UNAVAILABLE, answerVerb, askLine, decisionButtons, decisionMeta, moneyText, previewRows, primaryOptionId,
+  FREE_TEXT_OPTION, ALWAYS_ALLOW_UNAVAILABLE, answerVerb, askLine, decisionButtons, decisionMeta, moneyText, previewRows, primaryOptionId, stepLines,
 } from "./tasks/view";
 export type {
   AgentNames, DecisionButton, EffectRow, OverviewGroup, OverviewGroupId, QuestionRow, ShownGroup, StatusWord, SummaryView, TaskAction, TaskRow, TaskStatus, TaskTone, TaskView, TaskViewInput,

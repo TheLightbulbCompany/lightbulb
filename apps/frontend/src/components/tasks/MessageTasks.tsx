@@ -5,7 +5,7 @@
 
 import type { ReactElement } from "react";
 import { ChevronRight } from "lucide-react";
-import { useTask, useTaskList, type CanonicalRoomMessage, type TaskSummary } from "@lightbulb/shared";
+import { specialistLabel, useTask, useTaskList, type CanonicalRoomMessage, type TaskSummary } from "@lightbulb/shared";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { TaskCard, TaskDot } from "./TaskCard";
 
@@ -27,25 +27,28 @@ export function MessageTasks({ message, viewerId, onOpen }: {
         {refs.map((r) => <div key={r.taskId} className="mt-1.5 h-14 max-w-xl rounded-lg border border-border bg-muted/40 motion-safe:animate-pulse" />)}
       </div>;
   }
-  // The Router's one-line result ("Done: …") carries its task as a chip, not a second card (UX slice 3).
-  const Ref = message.kind === "task_line" ? RefChip : RefCard;
+  // One small item per event (dev walk 10, Claude Projects): the Router's ack and its one-line result carry their
+  // task as a chip with a live dot. A result post or a question keeps the full card (its text, its buttons).
+  const Ref = !message.kind || message.kind === "task_line" ? RefChip : RefCard;
   return <div aria-label="Tasks in this message">
     {refs.map((r) => <Ref key={r.taskId} taskId={r.taskId} listed={byId.get(r.taskId)} viewerId={viewerId} onOpen={onOpen} />)}
   </div>;
 }
 
-/** One line: the task's live dot and title; it opens the task. */
+/** One line: the task's live dot, title and specialist; it opens the task. */
 function RefChip({ taskId, listed, viewerId, onOpen }: {
   taskId: string; listed: TaskSummary | undefined; viewerId: string; onOpen?: (taskId: string) => void;
 }): ReactElement | null {
-  const { tasks } = useLiveEvents();
+  const { tasks, agentNames } = useLiveEvents();
   const { data } = useTask(tasks, listed ? null : taskId);
   const task = listed ?? data?.task;
   if (!task) return null;
+  const who = task.specialist ? specialistLabel(task.specialist, agentNames) : null;
   return <button type="button" data-task-chip={taskId} onClick={() => onOpen?.(taskId)}
     className="mt-1 inline-flex max-w-full items-center gap-1.5 rounded-md border border-border px-2 py-0.5 text-ui hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring">
     <TaskDot task={task} viewerId={viewerId} />
     <span className="min-w-0 truncate font-semibold">{task.title}</span>
+    {who && <span className="shrink-0 text-muted-foreground">· {who}</span>}
     <ChevronRight aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
   </button>;
 }

@@ -2946,10 +2946,13 @@ async def create_room(auth: AuthContext, request: CreateRoomRequest, *, meta_ext
     project_fields = {
         k: v for k, v in (("topic", request.topic), ("icon", request.icon), ("color", request.color)) if v
     }
-    if project_fields and request.kind != "channel":  # as PATCH: only a project has Instructions and a tile
-        raise ApiProblem("INVALID_REQUEST", "Only a channel has instructions, an icon and a colour.")
-    if await _front_agent_id(owner_id):  # the switch is on: a new room is a Router room
+    front = await _front_agent_id(owner_id)
+    if front:  # the switch is on: a new room is a Router room
         request = request.model_copy(update={"members": await _lightbulb_only(owner_id, request.members, request.kind)})
+    # As PATCH: only a project has Instructions and a tile -- a channel, or a DM or group chat Lightbulb is in.
+    seated = bool(front) and any(m.kind == "agent" and m.id == front for m in request.members)
+    if project_fields and request.kind != "channel" and not seated:
+        raise ApiProblem("INVALID_REQUEST", "Only a channel or a chat with Lightbulb has instructions and an icon.")
     keys = [(member.kind, member.id) for member in request.members]
     if len(keys) != len(set(keys)) or ("human", auth.user_id) in keys:
         raise ApiProblem("INVALID_REQUEST", "Room members must be unique and omit the creator.")
@@ -3040,14 +3043,19 @@ async def patch_room(auth: AuthContext, room_id: str, request: PatchRoomRequest)
         is_feed_room(meta) and set(updates) == {"topic"} and request.archived is None and request.paused is None
     )
     room_admin = member.get("role") in {"owner", "admin"}
-    # Pause/resume alone: a workspace admin may do it too (UX slice 6); a group DM's members may not.
+    kind = meta.get("kind")
+    # A DM or group chat Lightbulb is in is a project too (founder ruling, 6 Nov 2026), run by its people: any member
+    # of a group chat, and a DM's one person, may pause it and set its Instructions, icon and colour. Renaming stays
+    # the owner's/admin's.
+    chat_project = kind in ("dm", "group-dm") and await _router_room(meta, owner_id)
+    member_may = (
+        set(updates) <= {"topic", "icon", "color"}
+        if chat_project
+        else kind == "group-dm" and not updates and request.paused is None  # archive/unarchive a group chat
+    )
+    # Pause/resume alone: a workspace admin may do it too (UX slice 6), but never someone's private DM.
     pause_only = request.paused is not None and not updates and request.archived is None
-    if (
-        not room_admin
-        and (updates or meta.get("kind") != "group-dm" or request.paused is not None)
-        and not feed_brief
-        and not (pause_only and auth.is_org_admin)
-    ):
+    if not room_admin and not member_may and not feed_brief and not (pause_only and auth.is_org_admin and kind != "dm"):
         raise ApiProblem("ROOM_FORBIDDEN", "Room owner or admin access required.")
     # A DM's display name is derived from its counterpart; a stored name would
     # shadow it with nothing in the UI able to clear it. (Finding from #2483,
@@ -3068,12 +3076,17 @@ async def patch_room(auth: AuthContext, room_id: str, request: PatchRoomRequest)
             updates |= {"archivedAt": utc_now().isoformat(), "archivedBy": auth.user_id}
         else:
             updates |= {"archivedAt": None, "archivedBy": None}
-    if (request.icon or request.color) and meta.get("kind") != "channel":
-        raise ApiProblem("ROOM_FORBIDDEN", "Only a channel has an icon and colour.")
+    if (request.icon or request.color) and kind != "channel" and not chat_project:
+        raise ApiProblem("ROOM_FORBIDDEN", "Only a channel or a chat with Lightbulb has an icon and colour.")
     paused = None
     if request.paused is not None and request.paused != bool(meta.get("pausedAt")):
-        if meta.get("kind") != "channel" or is_feed_room(meta) or is_vendor_room(meta) or is_session_room(meta):
-            raise ApiProblem("ROOM_NOT_PAUSABLE", "Only a channel can be paused.")
+        if (
+            (kind != "channel" and not chat_project)
+            or is_feed_room(meta)
+            or is_vendor_room(meta)
+            or is_session_room(meta)
+        ):
+            raise ApiProblem("ROOM_NOT_PAUSABLE", "Only a channel or a chat with Lightbulb can be paused.")
         paused = request.paused
         updates |= (
             {"pausedAt": utc_now().isoformat(), "pausedBy": auth.user_id}
@@ -3558,21 +3571,41 @@ async def set_pin(auth: AuthContext, room_id: str, message_id: str, pinned: bool
     return await _room_detail(meta, auth.user_id, member)
 
 
+def _noted_shown(meta: dict, member: dict, rows: list[dict]) -> list[dict]:
+    """The noted rows this member may read. A channel's are everyone's. In a DM or group chat only what was noted since
+    they joined: a DM someone was added to keeps its private notes from them (founder ruling, 6 Nov 2026)."""
+    joined = member.get("joinedAt")
+    if meta.get("kind") == "channel" or not joined:
+        return rows
+    since = datetime.fromisoformat(joined)
+    return [r for r in rows if datetime.fromisoformat(r["notedAt"]) >= since]
+
+
 async def list_room_memory(auth: AuthContext, room_id: str) -> RoomMemoryResponse:
     """What Lightbulb noted in this room (the Router's `note` decisions): any member reads it (W15-5)."""
-    await require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
-    rows = await messaging_repo.list_noted(room_id)
+    meta, member = await require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
+    rows = _noted_shown(meta, member, await messaging_repo.list_noted(room_id))
     return RoomMemoryResponse(
         items=[NotedFact(message_id=r["messageId"], fact=r["fact"], noted_at=r["notedAt"]) for r in rows]
     )
 
 
 async def forget_room_memory(auth: AuthContext, room_id: str, message_id: str) -> None:
-    """Drop a noted fact from the list: the room's owner or admin, like Instructions. Idempotent."""
-    _meta, member = await require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
-    if member.get("role") not in {"owner", "admin"}:
+    """Drop a noted fact from the list: a channel's owner or admin, like Instructions; any member of a DM or group chat
+    (founder ruling, 6 Nov 2026), and only a fact they can see. Idempotent."""
+    owner_id = resolve_owner_id(auth)
+    meta, member = await require_room_member(owner_id, auth.user_id, room_id)
+    message_id = validate_uuid(message_id, label="message ID")
+    room_admin = member.get("role") in {"owner", "admin"}
+    # A chat's members forget only while it is a chat with Lightbulb (as Pause and Instructions): once Lightbulb is
+    # removed it is a people-only chat again, back to its owner's say.
+    if not room_admin and (meta.get("kind") == "channel" or not await _router_room(meta, owner_id)):
         raise ApiProblem("ROOM_FORBIDDEN", "Room owner or admin access required.")
-    await messaging_repo.delete_noted(room_id, validate_uuid(message_id, label="message ID"))
+    if meta.get("kind") != "channel":
+        shown = _noted_shown(meta, member, await messaging_repo.list_noted(room_id))
+        if not any(r["messageId"] == message_id for r in shown):
+            return  # gone, or noted before they joined: nothing of theirs to forget
+    await messaging_repo.delete_noted(room_id, message_id)
 
 
 async def _validate_message_links(

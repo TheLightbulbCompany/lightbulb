@@ -1,6 +1,6 @@
 // UX slice 6: a project's settings as a modal over it (name ▾ › Settings), its tile, Pause, Instructions; the sidebar's
 // Pinned group and row; the empty Scheduled view's starter templates.
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 vi.mock("@/components/huddle/useRoomHuddle", () => ({ useRoomHuddle: () => ({ userIds: [], available: false }) }));
@@ -95,8 +95,21 @@ describe("channel settings", () => {
     expect(within(dialog).getByText("What Lightbulb remembers here")).toBeInTheDocument();
     expect(await within(dialog).findByText("Classes cap at 12 kids.")).toBeInTheDocument();
     expect(memoryClient.listRoomMemory).toHaveBeenCalledWith("room-1");
-    await userEvent.click(within(dialog).getByRole("button", { name: "Forget: Classes cap at 12 kids." }));
-    expect(memoryClient.forgetRoomMemory).toHaveBeenCalledWith("room-1", "m-1");
+    // W16-7: Forget keeps the row in place with Undo for 5 s; Undo keeps the fact; only then is it forgotten.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      await userEvent.click(within(dialog).getByRole("button", { name: "Forget: Classes cap at 12 kids." }));
+      expect(within(dialog).getByRole("status")).toHaveTextContent("Forgotten");
+      expect(within(dialog).getByText("Classes cap at 12 kids.")).toBeInTheDocument();
+      await userEvent.click(within(dialog).getByRole("button", { name: "Undo forget: Classes cap at 12 kids." }));
+      await act(() => vi.advanceTimersByTimeAsync(6000));
+      expect(memoryClient.forgetRoomMemory).not.toHaveBeenCalled();
+      await userEvent.click(within(dialog).getByRole("button", { name: "Forget: Classes cap at 12 kids." }));
+      await act(() => vi.advanceTimersByTimeAsync(4000));
+      expect(memoryClient.forgetRoomMemory).not.toHaveBeenCalled();
+      await act(() => vi.advanceTimersByTimeAsync(1100));
+      expect(memoryClient.forgetRoomMemory).toHaveBeenCalledWith("room-1", "m-1");
+    } finally { vi.useRealTimers(); }
     expect(await within(dialog).findByText(/Tell Lightbulb things about this channel/)).toBeInTheDocument();
     unmount();
 
@@ -107,14 +120,69 @@ describe("channel settings", () => {
     expect(within(dialog).queryByRole("button", { name: /^Forget/ })).toBeNull();
   });
 
-  it("a failed Forget puts the fact back and says so", async () => {
+  it("closing settings inside the Undo window forgets the fact for real (W16-7)", async () => {
+    const fact = { messageId: "m-2", fact: "Pickup is at 5.", notedAt: new Date().toISOString() };
+    const memoryClient = { listRoomMemory: vi.fn().mockResolvedValue({ items: [fact] }), forgetRoomMemory: vi.fn().mockResolvedValue(undefined) };
+    render(header({ memoryClient }));
+    const dialog = await openSettings();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Memory" }));
+    await userEvent.click(await within(dialog).findByRole("button", { name: "Forget: Pickup is at 5." }));
+    expect(memoryClient.forgetRoomMemory).not.toHaveBeenCalled();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Close settings" }));
+    expect(memoryClient.forgetRoomMemory).toHaveBeenCalledWith("room-1", "m-2");
+  });
+
+  it("a failed Forget keeps the fact and says so", async () => {
     const fact = { messageId: "m-1", fact: "We only use Caputo flour.", notedAt: new Date().toISOString() };
     render(header({ memoryClient: { listRoomMemory: vi.fn().mockResolvedValue({ items: [fact] }), forgetRoomMemory: vi.fn().mockRejectedValue(new Error("no")) } }));
     const dialog = await openSettings();
     await userEvent.click(within(dialog).getByRole("button", { name: "Memory" }));
-    await userEvent.click(await within(dialog).findByRole("button", { name: "Forget: We only use Caputo flour." }));
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      await userEvent.click(await within(dialog).findByRole("button", { name: "Forget: We only use Caputo flour." }));
+      await act(() => vi.advanceTimersByTimeAsync(5100));
+    } finally { vi.useRealTimers(); }
     expect(await within(dialog).findByRole("alert")).toHaveTextContent("That couldn't be forgotten.");
     expect(within(dialog).getByText("We only use Caputo flour.")).toBeInTheDocument();
+  });
+
+  it("Memory is one pick from name ▾ (W16-8)", async () => {
+    const memoryClient = { listRoomMemory: vi.fn().mockResolvedValue({ items: [] }), forgetRoomMemory: vi.fn() };
+    render(header({ memoryClient }));
+    await userEvent.click(screen.getByRole("button", { name: /Spring sale/ }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "Memory" }));
+    const dialog = await screen.findByRole("dialog", { name: "Spring sale · Channel settings" });
+    expect(within(dialog).getByText("What Lightbulb remembers here")).toBeInTheDocument();
+  });
+
+  it("Delete sits in a Danger zone at the bottom of General, an outline button (W16-9)", async () => {
+    render(header({ onDeleteRoom: vi.fn(), onSetArchived: vi.fn() }));
+    const dialog = await openSettings();
+    const zone = within(dialog).getByRole("region", { name: "Danger zone" });
+    const del = within(zone).getByRole("button", { name: "Delete" });
+    expect(del.className).toMatch(/project-danger__button/);
+    expect(del.className).not.toMatch(/(^| )bg-destructive/); // not the filled red block
+    // Last in General: nothing follows the zone.
+    expect(zone.nextElementSibling === null || zone.nextElementSibling.getAttribute("role") === "alert").toBe(true);
+  });
+
+  it("a DM or group chat with Lightbulb has Chat settings, a member edits it, and its copy says chat", async () => {
+    const lightbulb = { kind: "agent" as const, id: "lb", displayName: "Lightbulb", mentionHandle: "lightbulb", role: "member" as const, listenMode: "active" as const, joinedAt: "", joinedSeq: 0 };
+    const chat = { ...room, kind: "group-dm" as const, members: [lightbulb] };
+    render(<RoomHeader room={chat} roomName="Spring sale" counterparts={[]} participantCount={3} canEditRoom canLeave actionable pinnedCount={0}
+      search={<span />} onOpenDetails={vi.fn()} compact onPatchRoom={vi.fn()} settingsPeople={<section />} />);
+    await userEvent.click(screen.getByRole("button", { name: /Spring sale/ }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "Settings" }));
+    const dialog = await screen.findByRole("dialog", { name: "Spring sale · Chat settings" });
+    expect(within(dialog).getByText("Pause chat")).toBeInTheDocument();
+    expect(within(dialog).getByText(/How this chat shows/)).toBeInTheDocument();
+  });
+
+  it("a people-only group chat has no project settings", async () => {
+    render(<RoomHeader room={{ ...room, kind: "group-dm" }} roomName="Spring sale" counterparts={[]} participantCount={3} canEditRoom canLeave actionable
+      pinnedCount={0} search={<span />} onOpenDetails={vi.fn()} compact />);
+    await userEvent.click(screen.getByRole("button", { name: /Spring sale/ }));
+    expect(screen.queryByRole("menuitem", { name: "Settings" })).toBeNull();
   });
 
   it("at desktop width the phone-only section select stays hidden and the body sits in the content column (W13-1)", async () => {
@@ -201,6 +269,15 @@ describe("Pinned (sidebar)", () => {
     await userEvent.click(screen.getByRole("button", { name: "Actions for Spring sale" }));
     await userEvent.click(await screen.findByRole("menuitem", { name: "Settings" }));
     expect(onOpenSettings).toHaveBeenCalled();
+  });
+
+  it("a DM or group chat with Lightbulb shows its tile once it has an icon, else its avatar", () => {
+    const lightbulb = { kind: "agent" as const, id: "lb", displayName: "Lightbulb", mentionHandle: "lightbulb", role: "member" as const, listenMode: "active" as const, joinedAt: "", joinedSeq: 0 };
+    const chat = (icon?: string) => dRoom({ kind: "dm", icon, color: "project-2", members: [lightbulb], participants: [lightbulb] } as Partial<DirectoryRoom>);
+    const { rerender } = render(<ul><RoomDirectoryRow room={chat()} label="Lightbulb" active={false} busy={false} sections={[]} onSelect={vi.fn()} onCopyLink={vi.fn()} project /></ul>);
+    expect(document.querySelector(".project-tile")).toBeNull();
+    rerender(<ul><RoomDirectoryRow room={chat("rocket")} label="Lightbulb" active={false} busy={false} sections={[]} onSelect={vi.fn()} onCopyLink={vi.fn()} project /></ul>);
+    expect(document.querySelector('.project-tile[data-color="project-2"] svg')).not.toBeNull();
   });
 });
 

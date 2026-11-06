@@ -36,7 +36,7 @@ import type { SidebarRow, SidebarSession } from "./roomSections";
 import { ownWaitingCount } from "./sessionGroups";
 import { useSessionRows } from "./useSessionRows";
 import type { SessionRow } from "@lightbulb/shared";
-import type { DirectoryRoom, DirectoryParticipant, RoomParticipant } from "./types";
+import { isProjectRoom, type DirectoryRoom, type DirectoryParticipant, type RoomParticipant } from "./types";
 
 
 /** What the front agent is called while the super-agent switch is on (contracts-v2 §9). */
@@ -955,6 +955,9 @@ export function MessagingWorkspaceProvider({
   // them on a room change, and RoomPanel splits main-timeline from thread.
   const pending = rooms.optimisticMessages;
   const viewerRole = rooms.activeRoom?.members.find((member) => member.kind === "human" && member.id === userId)?.role ?? "";
+  // A DM or group chat with Lightbulb: a project its people run (founder ruling, 6 Nov 2026).
+  const chatProject = superAgent && !!rooms.activeRoom && rooms.activeRoom.kind !== "channel" && !activeFeed
+    && !rooms.activeRoom.shared && isProjectRoom(rooms.activeRoom);
   // Any member may change an agent's response, on every plan (owner ruling 2026-09-24).
   const canManageResponses = canChangeListenMode(viewerRole);
 
@@ -1096,6 +1099,9 @@ export function MessagingWorkspaceProvider({
       : rooms.activeRoom && rooms.activeRoom.kind !== "dm" && ["owner", "admin"].includes(viewerRole) ? {
         onRenameRoom: async (name: string) => { await rooms.updateRoom({ name }); },
         onSetTopic: async (topic: string | null) => { await rooms.updateRoom({ topic }); },
+      } : chatProject ? {
+        // A DM or group chat with Lightbulb: its people set its Instructions (founder ruling, 6 Nov 2026).
+        onSetTopic: async (topic: string | null) => { await rooms.updateRoom({ topic }); },
       } : {}),
     ...(!activeFeed && rooms.activeRoom && !rooms.activeRoom.shared
       && (rooms.activeRoom.kind !== "channel" || ["owner", "admin"].includes(viewerRole)) ? {
@@ -1109,13 +1115,14 @@ export function MessagingWorkspaceProvider({
     ...(!activeFeed && rooms.activeRoom && rooms.activeRoom.kind !== "dm" ? { onCopyJoinLink: copyJoinLink } : {}),
     openAddPeople: addPeopleRoomId !== null && addPeopleRoomId === rooms.activeRoomId,
     openSettings: settingsTarget && settingsTarget.roomId === rooms.activeRoomId ? settingsTarget.from : null,
-    // Super-agent projects: icon, colour and pause. The server decides who may (room owner/admin, or a workspace
-    // admin pausing); a refusal surfaces where it was asked.
-    ...(superAgent && rooms.activeRoom?.kind === "channel" && !activeFeed ? {
+    // Super-agent projects: icon, colour and pause. The server decides who may (a channel's owner/admin, or a workspace
+    // admin pausing; any member of a chat with Lightbulb); a refusal surfaces where it was asked.
+    ...(superAgent && (rooms.activeRoom?.kind === "channel" || chatProject) && rooms.activeRoom && !activeFeed ? {
       onPatchRoom: async (request: PatchRoomRequest) => { await rooms.updateRoom(request); },
-      // The server's pause rule: the room's owner/admin, or a workspace admin; never #general or the shared channel.
+      // The server's pause rule: never #general or the shared channel; in a channel its owner/admin or a workspace
+      // admin; in a group chat any member; in a DM its one person (never an admin).
       canPause: !rooms.activeRoom.isDefault && !rooms.activeRoom.shared
-        && (["owner", "admin"].includes(viewerRole) || orgRole === "org:admin"),
+        && (chatProject || ["owner", "admin"].includes(viewerRole) || orgRole === "org:admin"),
     } : {}),
     onSettingsOpened: () => setSettingsTarget(null),
     onAddPeopleOpened: () => setAddPeopleRoomId(null),

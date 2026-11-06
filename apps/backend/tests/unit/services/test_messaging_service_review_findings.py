@@ -923,6 +923,7 @@ def _archive_fixture(monkeypatch, meta, role="admin"):
     monkeypatch.setattr(messaging.messaging_repo, "patch_room_meta", patch_meta)
     monkeypatch.setattr(messaging, "_room_detail", AsyncMock(return_value="detail"))
     monkeypatch.setattr(messaging, "_publish_room_metadata", publish)
+    monkeypatch.setattr(messaging, "_router_room", AsyncMock(return_value=False))  # no Lightbulb seated
     return patch_meta, publish
 
 
@@ -1233,6 +1234,7 @@ async def test_create_project_stores_topic_icon_and_color(monkeypatch):
 @pytest.mark.parametrize("kind", ["group-dm", "dm"])
 @pytest.mark.parametrize("field", [{"topic": "x"}, {"icon": "rocket"}, {"color": "project-1"}])
 async def test_create_refuses_project_fields_off_a_channel(monkeypatch, kind, field):
+    monkeypatch.setattr(messaging, "_front_agent_id", AsyncMock(return_value=None))  # no Lightbulb seated
     create = AsyncMock()
     monkeypatch.setattr(messaging.messaging_repo, "create_room", create)
     member = messaging.CreateRoomMember(kind="human", id="u2", role="member", listen_mode=None)
@@ -1251,7 +1253,7 @@ async def test_room_memory_lists_for_members_and_only_owners_or_admins_forget(mo
     auth = AuthContext(user_id="member", org_id="org_1")
     room_id, mid = str(uuid.uuid4()), str(uuid.uuid4())
     rows = [{"messageId": mid, "fact": "Classes cap at 12 kids.", "notedAt": "2026-11-06T13:40:00+00:00"}]
-    member = AsyncMock(return_value=({"ownerId": "org_1"}, {"role": "member"}))
+    member = AsyncMock(return_value=({"ownerId": "org_1", "kind": "channel"}, {"role": "member"}))
     monkeypatch.setattr(messaging, "require_room_member", member)
     monkeypatch.setattr(messaging.messaging_repo, "list_noted", AsyncMock(return_value=rows))
     delete = AsyncMock()
@@ -1265,7 +1267,7 @@ async def test_room_memory_lists_for_members_and_only_owners_or_admins_forget(mo
         await messaging.forget_room_memory(auth, room_id, mid)
     assert exc.value.error.code == "ROOM_FORBIDDEN" and delete.await_count == 0
 
-    member.return_value = ({"ownerId": "org_1"}, {"role": "admin"})
+    member.return_value = ({"ownerId": "org_1", "kind": "channel"}, {"role": "admin"})
     await messaging.forget_room_memory(auth, room_id, mid)
     delete.assert_awaited_once_with(room_id, mid)
 
@@ -1281,3 +1283,162 @@ async def test_room_memory_is_closed_to_non_members(monkeypatch):
         await messaging.list_room_memory(auth, str(uuid.uuid4()))
     with pytest.raises(ApiProblem):
         await messaging.forget_room_memory(auth, str(uuid.uuid4()), str(uuid.uuid4()))
+
+
+# --- Lightbulb everywhere (founder ruling, 6 Nov 2026): a DM or group chat with Lightbulb is a project --------------
+
+
+def _chat_project(monkeypatch, kind, role="member", seated=True):
+    meta = {"roomId": "c", "ownerId": "org_1", "kind": kind, "revision": 1}
+    patch_meta, _ = _archive_fixture(monkeypatch, meta, role=role)
+    monkeypatch.setattr(messaging, "_router_room", AsyncMock(return_value=seated))
+    from core.services import questions
+
+    monkeypatch.setattr(questions, "audit", AsyncMock())
+    return patch_meta
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "request_fields", [{"paused": True}, {"topic": "Ship the site"}, {"icon": "rocket", "color": "project-2"}]
+)
+async def test_any_group_chat_member_pauses_and_edits_its_instructions_and_icon(monkeypatch, request_fields):
+    patch_meta = _chat_project(monkeypatch, "group-dm")
+    await messaging.patch_room(
+        AuthContext(user_id="m", org_id="org_1"), "c", messaging.PatchRoomRequest(**request_fields)
+    )
+    patch_meta.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_group_chat_member_still_cannot_rename_it(monkeypatch):
+    patch_meta = _chat_project(monkeypatch, "group-dm")
+    with pytest.raises(ApiProblem) as exc:
+        await messaging.patch_room(AuthContext(user_id="m", org_id="org_1"), "c", messaging.PatchRoomRequest(name="x"))
+    assert exc.value.error.code == "ROOM_FORBIDDEN"
+    patch_meta.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_dm_person_pauses_their_lightbulb_dm(monkeypatch):
+    patch_meta = _chat_project(monkeypatch, "dm")
+    await messaging.patch_room(AuthContext(user_id="me", org_id="org_1"), "c", messaging.PatchRoomRequest(paused=True))
+    assert patch_meta.await_args.args[1]["pausedBy"] == "me"
+
+
+@pytest.mark.asyncio
+async def test_a_workspace_admin_never_pauses_someones_dm(monkeypatch):
+    """Membership already keeps a non-member admin out; this is the rule itself, for a member without the DM role."""
+    meta = {"roomId": "c", "ownerId": "org_1", "kind": "dm", "revision": 1}
+    patch_meta, _ = _archive_fixture(monkeypatch, meta, role="member")
+    ws_admin = AuthContext(user_id="wa", org_id="org_1", org_role="org:admin")
+    with pytest.raises(ApiProblem) as exc:  # no Lightbulb seated: not a project, and the admin pass skips DMs
+        await messaging.patch_room(ws_admin, "c", messaging.PatchRoomRequest(paused=True))
+    assert exc.value.error.code == "ROOM_FORBIDDEN"
+    patch_meta.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_chat_without_lightbulb_is_not_a_project(monkeypatch):
+    patch_meta = _chat_project(monkeypatch, "group-dm", role="owner", seated=False)
+    with pytest.raises(ApiProblem) as exc:
+        await messaging.patch_room(
+            AuthContext(user_id="o", org_id="org_1"), "c", messaging.PatchRoomRequest(paused=True)
+        )
+    assert exc.value.error.code == "ROOM_NOT_PAUSABLE"
+    patch_meta.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_channel_keeps_the_owner_admin_rule(monkeypatch):
+    meta = {"roomId": "chan", "ownerId": "org_1", "kind": "channel", "revision": 1}
+    patch_meta, _ = _archive_fixture(monkeypatch, meta, role="member")
+    with pytest.raises(ApiProblem) as exc:
+        await messaging.patch_room(
+            AuthContext(user_id="m", org_id="org_1"), "chan", messaging.PatchRoomRequest(topic="x")
+        )
+    assert exc.value.error.code == "ROOM_FORBIDDEN"
+    patch_meta.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["group-dm", "dm"])
+async def test_create_a_chat_with_lightbulb_takes_project_fields(monkeypatch, kind):
+    monkeypatch.setattr(messaging, "_front_agent_id", AsyncMock(return_value="lb"))
+    seated = [messaging.CreateRoomMember(kind="agent", id="lb", role="member", listen_mode="active")]
+    if kind == "group-dm":
+        seated.append(messaging.CreateRoomMember(kind="human", id="u2", role="member", listen_mode=None))
+    monkeypatch.setattr(messaging, "_lightbulb_only", AsyncMock(return_value=seated))
+    monkeypatch.setattr(messaging, "_find_existing_dm", AsyncMock(return_value=None))
+    monkeypatch.setattr(messaging, "load_agent_roster", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        messaging, "_resolved_member", AsyncMock(side_effect=lambda _o, m, _r: {"kind": m.kind, "id": m.id})
+    )
+    monkeypatch.setattr(messaging, "human_display_name", AsyncMock(return_value="Owner"))
+    monkeypatch.setattr(messaging.messaging_repo, "ensure_user_stream", AsyncMock())
+    create = AsyncMock(return_value={"kind": kind})
+    monkeypatch.setattr(messaging.messaging_repo, "create_room", create)
+    monkeypatch.setattr(messaging, "_room_detail", AsyncMock())
+    monkeypatch.setattr(messaging, "_emit_room_created", lambda *a, **k: None)
+    await messaging.create_room(
+        AuthContext(user_id="u1", org_id="org_1"),
+        messaging.CreateRoomRequest(
+            client_room_id=uuid.uuid4(), name=None, kind=kind, members=seated, icon="rocket", topic="Plan the trip"
+        ),
+    )
+    assert create.await_args.kwargs["extra"] == {"topic": "Plan the trip", "icon": "rocket"}
+
+
+def _noted_fixture(monkeypatch, kind, joined, role="member"):
+    meta = {"ownerId": "org_1", "kind": kind}
+    monkeypatch.setattr(
+        messaging, "require_room_member", AsyncMock(return_value=(meta, {"role": role, "joinedAt": joined}))
+    )
+    old, new = str(uuid.uuid4()), str(uuid.uuid4())
+    rows = [
+        {"messageId": new, "fact": "Group plan: Lisbon.", "notedAt": "2026-11-06T12:00:00+00:00"},
+        {"messageId": old, "fact": "My salary is 90k.", "notedAt": "2026-11-01T09:00:00+00:00"},
+    ]
+    monkeypatch.setattr(messaging.messaging_repo, "list_noted", AsyncMock(return_value=rows))
+    delete = AsyncMock()
+    monkeypatch.setattr(messaging.messaging_repo, "delete_noted", delete)
+    monkeypatch.setattr(messaging, "_router_room", AsyncMock(return_value=True))  # Lightbulb seated
+    return old, new, delete
+
+
+@pytest.mark.asyncio
+async def test_a_dm_turned_group_chat_hides_its_dm_era_notes_from_the_new_member(monkeypatch):
+    """Privacy: Bob joins Ann's Lightbulb DM on 5 Nov. He never reads (or forgets) what she told it on 1 Nov."""
+    old, new, delete = _noted_fixture(monkeypatch, "group-dm", "2026-11-05T00:00:00+00:00")
+    bob = AuthContext(user_id="bob", org_id="org_1")
+    listed = await messaging.list_room_memory(bob, str(uuid.uuid4()))
+    assert [i.message_id for i in listed.items] == [new]
+    room = str(uuid.uuid4())
+    await messaging.forget_room_memory(bob, room, old)
+    delete.assert_not_awaited()
+    await messaging.forget_room_memory(bob, room, new)  # any group-chat member may forget what they can see
+    delete.assert_awaited_once_with(room, new)
+
+
+@pytest.mark.asyncio
+async def test_the_original_dm_person_still_sees_every_note(monkeypatch):
+    old, new, _ = _noted_fixture(monkeypatch, "group-dm", "2026-10-01T00:00:00+00:00")
+    listed = await messaging.list_room_memory(AuthContext(user_id="ann", org_id="org_1"), str(uuid.uuid4()))
+    assert [i.message_id for i in listed.items] == [new, old]
+
+
+@pytest.mark.asyncio
+async def test_a_channel_lists_every_note_to_a_late_joiner(monkeypatch):
+    _, _, _ = _noted_fixture(monkeypatch, "channel", "2026-11-05T00:00:00+00:00")
+    listed = await messaging.list_room_memory(AuthContext(user_id="late", org_id="org_1"), str(uuid.uuid4()))
+    assert len(listed.items) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_member_cannot_forget_once_lightbulb_left_the_group_chat(monkeypatch):
+    _, new, delete = _noted_fixture(monkeypatch, "group-dm", "2026-10-01T00:00:00+00:00")
+    monkeypatch.setattr(messaging, "_router_room", AsyncMock(return_value=False))
+    with pytest.raises(ApiProblem) as exc:
+        await messaging.forget_room_memory(AuthContext(user_id="m", org_id="org_1"), str(uuid.uuid4()), new)
+    assert exc.value.error.code == "ROOM_FORBIDDEN"
+    delete.assert_not_awaited()

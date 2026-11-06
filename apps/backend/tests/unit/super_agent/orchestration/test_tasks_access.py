@@ -51,6 +51,10 @@ def world(monkeypatch):
         ({"kind": "person", "userIds": ["sam"]}, "sam", True),
         ({"kind": "person", "userIds": ["sam"]}, "priya", False),
         ({"kind": "person", "userIds": ["sam", "ann"]}, "ann", True),  # answerer added by Q when a question opens
+        # A DM task carries the DM's id (Tasks pane); priya, now a member of r1 (the DM became a group chat), still
+        # never sees sam's DM task.
+        ({"kind": "person", "userIds": ["sam"], "roomId": "r1"}, "sam", True),
+        ({"kind": "person", "userIds": ["sam"], "roomId": "r1"}, "priya", False),
         ({"kind": "room", "roomId": "r1", "userIds": []}, "priya", True),
         ({"kind": "room", "roomId": "r1", "userIds": []}, "ex", False),
         ({"kind": "workspace", "userIds": []}, "priya", True),
@@ -327,6 +331,12 @@ def test_result_line_follows_the_privacy_rule():
     # Someone in the room can't open it: no words there; a person-only task never shows any.
     assert ta.result_line({**tree, "task": _task({"kind": "room", "roomId": "r2"}, status="idle")}, "r1") is None
     assert ta.result_line({**tree, "task": _task({"kind": "person", "userIds": ["sam"]}, status="idle")}, "r1") is None
+    # A person task in its own DM: the line is whole while that person is everyone there, bare once someone joins.
+    dm_task = {**tree, "task": _task({"kind": "person", "userIds": ["sam"], "roomId": "r1"}, status="idle")}
+    assert ta.result_line(dm_task, "r1", ["sam"]) == "Paid Acme."
+    assert ta.result_line(dm_task, "r1", ["sam", "priya"]) is None
+    assert ta.result_line(dm_task, "r1") is None  # membership unknown: never
+    assert ta.result_line(dm_task, "r2", ["sam"]) is None  # another room
     failed = _task({"kind": "workspace"}, status="failed", statusReason="refused", watchUntil="2026-11-10")
     assert ta.result_line({**tree, "task": failed}, "r1") == "Didn't finish: the computer it runs on refused it."
     image = [{**att[0], "output": "![chart](https://x.dev/c.png)"}]

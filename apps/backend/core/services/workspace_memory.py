@@ -81,6 +81,24 @@ def namespaces_for(owner_id: str, user_id: str | None) -> dict[str, str]:
     return out
 
 
+_ROOM_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE)
+
+
+def room_actor(owner_id: str, room_id: str) -> str:
+    """A group chat's own memory scope ``<owner>:room_<roomId>`` (founder ruling, 6 Nov 2026): recalled only in that
+    chat, so only its members ever see it. An owner wipe covers it (``<owner>:`` prefix); a member wipe does not."""
+    owner_namespace(owner_id)  # the same owner-id guard
+    if not _ROOM_ID.fullmatch(room_id):
+        raise ValueError(f"refusing unsafe room id for a memory namespace: {room_id!r}")
+    return f"{owner_id}:room_{room_id}"
+
+
+def room_namespaces(owner_id: str, room_id: str) -> dict[str, str]:
+    """The group chat's facts and turns, added to recall only when the audience is that chat."""
+    actor = room_actor(owner_id, room_id)
+    return {"room": f"/owners/{actor}/", "room_turns": f"/turns/{actor}/"}
+
+
 # The families that hold an ``<owner>:<user>`` member scope; a wipe covers each.
 _MEMBER_FAMILIES = ("/owners/", "/turns/", "/tasks/")
 

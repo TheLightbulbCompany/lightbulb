@@ -2,6 +2,7 @@
 whose every call is validated against the real bedrock-agentcore request shape."""
 
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock
 
 import boto3
 import pytest
@@ -536,3 +537,44 @@ async def test_without_tasks_no_task_or_private_turn_arm(monkeypatch):
     read = {kw["namespace"] for _, kw in client.calls}
     assert not read & {NS["tasks"], NS["private_tasks"], NS["private_turns"]}
     assert "taskHits" not in page
+
+
+ROOM = "3f1c2a8e-1111-4c1e-9d55-7f3a2b1c0e99"
+
+
+async def test_a_group_chats_scope_is_read_only_when_passed(monkeypatch):
+    """Founder ruling (6 Nov 2026): a group chat's memory is recalled in that chat, never workspace-wide."""
+    scope = workspace_memory.room_namespaces("own1", ROOM)
+    assert scope == {"room": f"/owners/own1:room_{ROOM}/", "room_turns": f"/turns/own1:room_{ROOM}/"}
+    client = _use(monkeypatch, FakeClient())
+    await _run(namespaces=TEAM_ONLY, tasks=True)
+    assert not {kw["namespace"] for _, kw in client.calls} & set(scope.values())
+    client = _use(monkeypatch, FakeClient())
+    await _run(namespaces={**TEAM_ONLY, **scope}, tasks=True)
+    assert set(scope.values()) <= {kw["namespace"] for _, kw in client.calls}
+
+
+async def test_recall_page_adds_the_scope_only_for_a_group_chat_audience(monkeypatch):
+    from core.services import memory_api, room_memory
+
+    monkeypatch.setattr(memory_api.settings, "AGENTCORE_MEMORY_ID", MEM, raising=False)
+    monkeypatch.setattr(memory_api, "_sync_in_background", lambda *a: None)
+    monkeypatch.setattr(memory_api, "flags_for", AsyncMock(return_value=True))
+    monkeypatch.setattr(memory_api.memory_links, "resolve_links", AsyncMock(return_value=[]))
+    recall = AsyncMock(return_value={"results": [], "taskHits": []})
+    monkeypatch.setattr(memory_api.memory_recall, "recall", recall)
+    group = AsyncMock(return_value=ROOM)
+    monkeypatch.setattr(room_memory, "group_room_by_id", group)
+
+    await memory_api.recall_page("own1", None, "q?", audience={"kind": "room", "roomId": ROOM})
+    assert recall.await_args.kwargs["namespaces"]["room"] == f"/owners/own1:room_{ROOM}/"
+    group.return_value = None  # a channel
+    await memory_api.recall_page("own1", None, "q?", audience={"kind": "room", "roomId": ROOM})
+    assert "room" not in recall.await_args.kwargs["namespaces"]
+    await memory_api.recall_page("own1", None, "q?", audience={"kind": "workspace"})
+    assert "room" not in recall.await_args.kwargs["namespaces"]
+
+
+def test_room_actor_refuses_an_unsafe_room_id():
+    with pytest.raises(ValueError):
+        workspace_memory.room_actor("own1", "../own2")

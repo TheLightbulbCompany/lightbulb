@@ -35,6 +35,7 @@ from core.services import (
     memory_tasks_index,
     messaging,
     push_service,
+    room_memory,
     runtime_runs,
     runtime_transport,
     source_replies,
@@ -295,10 +296,15 @@ async def _request(ws: str, task: dict, att: dict, tree: dict) -> runtime_runs.R
         parts.append(f"## Previous attempt\nAttempt {p['n']} ended: {p.get('outcome') or 'unknown'}.")
     # Lane Q (contracts §8): every Worker run carries the effect checkpoint; the bridge refuses `required`
     # until its image has F1, so this lands after that dev roll.
+    memory = memory_tags.block_for_worker(task)  # memory (M2): the Worker writes in the task's lane
+    if await room_memory.group_room_by_id(ws, (task.get("audience") or {}).get("roomId")):
+        # A group chat's task (any audience kind): the Worker's own events would land in team memory (workspace-wide). Its posts reach the
+        # chat's own scope through room ingestion; recall still reads that scope (founder ruling, 6 Nov 2026).
+        memory["sync"] = "none"
     return runtime_runs.RunRequest(
         input="\n\n".join(x for x in parts if x),
         instructions=WORKER_INSTRUCTIONS,
-        memory=memory_tags.block_for_worker(task),  # memory (M2): the Worker writes in the task's lane
+        memory=memory,
         effects="required",
     )
 
@@ -608,11 +614,17 @@ async def _announce(ws: str, task_id: str, to: str, reason: str | None = None) -
             remember=False,
         )
         room, root = _origin(tree)
-        # A person-only task's line would tell the room it exists: only its own people see it (in the task).
-        person_only = (task.get("audience") or {}).get("kind") == "person"
+        # A person-only task's line would tell the room it exists: only its own people see it (in the task). In its own
+        # DM, where that person is everyone (read now: a DM someone joined no longer is), it gets the full line.
+        humans: list[str] = []
+        if (task.get("audience") or {}).get("kind") == "person" and room and _is_uuid(room):
+            humans = [m["id"] for m in await messaging_repo.list_members(room) if m.get("kind") == "human"]
+        person_only = (task.get("audience") or {}).get("kind") == "person" and not tasks_access.seen_by_whole_room(
+            task, room, humans
+        )
         if to in ("idle", "failed") and root and room and _is_uuid(room) and not person_only:
             # A short result whole, else one plain line; bare when someone in the room can't open the task.
-            line = tasks_access.result_text(tree, room) or ("Done." if to == "idle" else "Didn't finish.")
+            line = tasks_access.result_text(tree, room, humans) or ("Done." if to == "idle" else "Didn't finish.")
             await task_conversation.post_as_lightbulb(
                 ws,
                 room,
@@ -946,6 +958,11 @@ async def _ensure_task(ws: str, task_id: str, trig: dict, lane: str, status: str
     audience = {"kind": kind}
     if kind == "person":
         audience["userIds"] = [actor]
+        if room:
+            # Where it came from (a DM, group chat or channel): its Tasks pane, Made here and Files list it
+            # (`routers/tasks.py` filters on roomId), and memory keys on it. `can_view` still reads `userIds` only, so
+            # nobody else in that room, now or later, sees it.
+            audience["roomId"] = room
     elif kind == "room":
         audience["roomId"] = room
     row = {

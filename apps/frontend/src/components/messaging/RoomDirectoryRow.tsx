@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { ParticipantAvatar } from "./ParticipantAvatar";
 import { ProjectTile } from "@/components/projects/ProjectTile";
-import { roomKindLabel, type DirectoryRoom } from "./types";
+import { isProjectRoom, roomKindLabel, type DirectoryRoom } from "./types";
 
 interface RoomDirectoryRowProps {
   room: DirectoryRoom;
@@ -51,11 +51,12 @@ export function RoomDirectoryRow({ room, label, active, busy, draft, onSelect, o
   return <li className="room-directory-row">
     <button type="button" className={`room-directory-entry ${badge ? "font-semibold" : ""} ${room.muted ? "room-directory-muted" : ""}`}
       aria-current={active ? "page" : undefined} aria-label={name} onClick={onSelect}>
-      {room.kind === "dm" && room.participants.length === 1
+      {/* A project's tile: every channel's, and a chat's once someone picks an icon for it (else its avatar or faces). */}
+      {project && (room.kind === "channel" || (room.icon && isProjectRoom(room))) ? <ProjectTile icon={room.icon} color={room.color} name={label} size={16} />
+        : room.kind === "dm" && room.participants.length === 1
         ? <ParticipantAvatar participant={room.participants[0]} size="xs" />
         : room.kind === "group-dm" && faces.length > 0
           ? <span className="room-directory-faces" aria-hidden="true">{faces.map((participant) => <ParticipantAvatar key={`${participant.kind}:${participant.id}`} participant={participant} size="xs" showPresence={false} />)}</span>
-          : project && room.kind === "channel" ? <ProjectTile icon={room.icon} color={room.color} name={label} size={16} />
           : <Icon size={16} aria-hidden="true" />}
       <span className="min-w-0 flex-1">
         <span className="block truncate" title={label}>{label}</span>

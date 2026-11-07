@@ -287,3 +287,21 @@ async def test_call_stats_sends_a_date_range():
     a._post = post
     await a.call_stats(from_date="2026-10-01", to_date="2026-10-31")
     assert sent == [{"kind": "calls", "days": 7, "from": "2026-10-01", "to": "2026-10-31"}]
+
+
+def test_an_ask_right_after_a_dropped_reply_is_answered():
+    """#5025 review: a reply asked for and then dropped or cut must not hold up the next ask."""
+    agent = _agent()
+    assert not agent.asking()
+
+    class Handle:
+        def __init__(self, done):
+            self._done = done
+
+        def done(self):
+            return self._done
+
+    agent.asked = Handle(done=False)  # asked for, still under way: the next ask waits
+    assert agent.asking()
+    agent.asked = Handle(done=True)  # it was dropped unheard (or cut): the next ask goes ahead
+    assert not agent.asking()

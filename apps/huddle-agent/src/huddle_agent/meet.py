@@ -233,7 +233,7 @@ class MeetAgent(Agent):
         self.reply_turn: dict | None = None  # the turn the reply now playing answers
         self.replying = False  # a reply for reply_turn is under way (its tools are that turn's)
         self.reply_end = time.monotonic()  # when the last reply ended: the start of the next ask window
-        self.nudged_at = -1.0  # when the last reply was asked for (OpenAI): one at a time
+        self.asked = None  # the SpeechHandle of the last reply asked for: one at a time
         self.tool_at = -1.0  # when a tool last ran: Gemini's answer after it belongs to the turn it ran for
         self.ends_at = time.monotonic() + MEETING_MAX_S  # from here tools are refused and replies dropped...
         self.goodbye_id = ""  # ...except the time limit's goodbye: the SpeechHandle id end_after made
@@ -308,6 +308,11 @@ class MeetAgent(Agent):
         ):
             return True, "tool follow-on"
         return None, "no transcript yet"
+
+    def asking(self) -> bool:
+        """A reply asked for is still under way. It ends when it played, was dropped or was cut: a dropped reply
+        must not hold up the next ask (#5025 review)."""
+        return self.asked is not None and not self.asked.done()
 
     async def on_user_turn_completed(self, turn_ctx, new_message) -> None:
         """OpenAI with create_response off hands turn-taking to LiveKit, which would answer every line of side talk
@@ -513,7 +518,9 @@ async def run(ctx: JobContext, meta: dict) -> None:
             voice=VOICE,
             # replies only when the gate asks (nudge); the gate hears through the per-person transcriber
             turn_detection=TurnDetection(type="server_vad", threshold=0.5, prefix_padding_ms=600,
-                                         silence_duration_ms=400, create_response=False, interrupt_response=True),
+                                         silence_duration_ms=400, create_response=False, interrupt_response=False),
+            # interrupt_response off too: a voice in the room cancelled the reply asked for, and nothing re-asks
+            # (#5025 review); the gate's stop still cuts it (session.interrupt())
             input_audio_transcription=None,
         ) if OPENAI else google.realtime.RealtimeModel(
             model=MODEL,
@@ -541,8 +548,9 @@ async def run(ctx: JobContext, meta: dict) -> None:
         logger.info("meet: turn %d kind=%s final=%s", t["seq"], t["kind"] or "-", final)
         if t["kind"] == "stop":
             session.interrupt()
-        # the nudge: strict wake only on Gemini, which answers by itself; OpenAI answers only when asked to, at once
-        if final and t["kind"] in ADDRESSED and (OPENAI or wakes(name, text, gate.people)):
+        # the nudge, on the strict wake only (no billed reply to "Thanks, Nova."); on OpenAI at once: it answers
+        # only when asked to
+        if final and t["kind"] in ADDRESSED and wakes(name, text, gate.people):
             asyncio.create_task(nudge(t, text))
         if final:
             lines.append({"mark": len(lines), "kind": "person", "name": label(t["who"])[:200],
@@ -556,13 +564,12 @@ async def run(ctx: JobContext, meta: dict) -> None:
         busy = session.current_speech is not None or agent.tool_at >= (t["final_at"] or 0)
         # a reply asked for and not yet over: a second ask while it (or its tool) runs gave "the tool is still
         # running" answers, said twice (self-test 8 Nov)
-        busy = busy or (agent.nudged_at > agent.reply_end and time.monotonic() - agent.nudged_at < STALE_S)
+        busy = busy or agent.asking() or agent.replying
         if busy or agent.consumed >= t["seq"] or agent.turns[-1] is not t or time.monotonic() >= agent.ends_at:
             return
         logger.info("meet: turn %d nudged", t["seq"])
-        agent.nudged_at = time.monotonic()
         try:
-            session.generate_reply(user_input=f'{label(t["who"])}: {text}')
+            agent.asked = session.generate_reply(user_input=f'{label(t["who"])}: {text}')
         except RuntimeError:  # the session is closed (Gemini refused it): nothing to nudge
             logger.warning("meet: nudge refused, the session is not running")
 

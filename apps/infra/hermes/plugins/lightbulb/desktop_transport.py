@@ -199,6 +199,9 @@ def _http(ctx, method, path, body=None, admission=""):
         "X-Desktop-Run-Family": ctx.get("family", "room"),
         "Content-Type": "application/json",
     }
+    if ctx.get("family") == "task":  # a Worker run proves its attempt, as effect_check does
+        headers["X-Desktop-Task"] = ctx.get("taskId") or ""
+        headers["X-Desktop-Run-Secret"] = ctx.get("runSecret") or ""
     if admission:
         headers["X-Desktop-Admission"] = admission
     request = urllib.request.Request(

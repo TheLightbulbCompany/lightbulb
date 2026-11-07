@@ -1,11 +1,8 @@
-"""Teams BFF — Agents and Runs.
+"""Teams BFF — Agents and Members.
 
-Spec §5: every mutating call synthesizes the adapter config server-side, picked by the
-owner's runtime_host via ``paperclip_agent_lifecycle.resolve_agent_adapter`` (openclaw_gateway
-on ECS, the fork's http adapter on AgentCore/Hermes). The body schemas (``CreateAgentBody`` /
-``PatchAgentBody``) forbid extra keys, so client-supplied
-``adapterType`` / ``adapterConfig`` / ``url`` / ``headers`` return 422
-at the FastAPI boundary.
+Every ``/agents`` route reads and writes ``agent_registry``; none calls Paperclip. The body schemas
+(``CreateAgentBody`` / ``PatchAgentBody``) forbid extra keys, so client-supplied
+``adapterType`` / ``adapterConfig`` / ``url`` / ``headers`` return 422 at the FastAPI boundary.
 
 This module also defines the shared ``_ctx`` Depends helper (and the
 indirection helpers it leans on — ``_admin``, ``_repo``) that the rest
@@ -24,7 +21,6 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
-from core.repositories import container_repo
 from core.dynamodb import run_in_thread
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import agent_registry, hermes_profiles, voice_calls
@@ -33,21 +29,16 @@ from core.services.paperclip_admin_client import (
     PaperclipAdminClient,
     shared_admin_client,
 )
-from core.services.paperclip_agent_idempotency import (
-    build_agent_create_idempotency_key,
-    paperclip_agent_intent,
-)
 from core.services.agent_provenance import _load_agent_sidecars, stamp_agent_provenance
 from core.services.agent_redaction import strip_agent_secrets
 from core.services.paperclip_openclaw_pairing import (
     get_seeded_agent_ids,
     get_starter_agent_ids,
 )
-from core.services.paperclip_agent_lifecycle import (
+from core.services.agent_lifecycle import (
     AgentLifecycleConflict,
     delete_agent_everywhere,
     ensure_root_ceo_survives,
-    resolve_agent_adapter,
 )
 from core.services.paperclip_user_session import get_user_session_cookie
 from core.services.person_label import NEW_MEMBER, is_relay_email
@@ -58,7 +49,7 @@ from core.services.user_provision import (
 )
 
 from . import deps as deps_mod
-from .deps import TeamsContext, envelope_list
+from .deps import TeamsContext
 from .schemas import (
     CreateAgentBody,
     PatchAgentBody,
@@ -207,70 +198,6 @@ async def _user_session(ctx) -> str:
     helper just reads it back off the ``TeamsContext``.
     """
     return ctx.session_cookie
-
-
-async def _container_is_reachable(owner_id: str) -> tuple[bool, str | None, str | None]:
-    """Return ``(reachable, address, gateway_token)`` for the owner's workspace.
-
-    Reachable means the containers row exists and carries a minted runtime ARN plus a gateway
-    token. Nothing is pinged and nothing is discovered: any ``InvokeAgentRuntime`` wakes the
-    microVM, so there is no task IP and no "is the task serving yet" question to answer.
-    """
-    from core.repositories import container_repo
-
-    try:
-        container = await container_repo.get_by_owner_id(owner_id)
-    except Exception:  # noqa: BLE001 — defensive: a DDB blip reads as not reachable.
-        return False, None, None
-    token = (container or {}).get("gateway_token")
-    if not container or not container.get("agentcore_runtime_arn") or not token:
-        return False, None, None
-    return True, "agentcore", token
-
-
-async def _write_hermes_profile_or_rollback(ctx, owner_id: str, paperclip_agent: dict, container: dict) -> None:
-    """The AgentCore half of ``create_agent``: this agent's Hermes profile, or no agent at all.
-
-    An AgentCore workspace has no container for ``pair_with_openclaw`` to reach — the S3 profile
-    IS this transport's pairing (config.yaml + .env + SOUL.md + the agent's own Paperclip key),
-    and without one the roster row can never run a turn. Writes it through the SAME seam
-    ``runtime_rpc``'s ``agents.create`` door uses (``hermes_provisioning.write_profile_for_agent``,
-    M6-R23), so there stays exactly one profile writer.
-
-    Unlike the ECS branch, a failure here is FATAL and is rolled back (M6-R59): deferring to "the
-    next provision" is an ECS-only escape hatch — nothing re-walks the roster on AgentCore, so a
-    swallowed failure leaves a permanently dead agent in the roster, which is the bug this fixes.
-    The Paperclip row is deleted and the request answers 502, which also frees the create's
-    idempotency key (Paperclip drops the mapping with the agent), so the client's retry is a real
-    retry rather than a replay of the dead id. A rollback that itself fails is logged and still
-    surfaces as 502 — an agent the client can see and delete beats a silent success.
-    """
-    from core.services.hermes_provisioning import write_profile_for_agent
-
-    agent_id = paperclip_agent.get("id")
-    try:
-        await write_profile_for_agent(owner_id, paperclip_agent)
-    except Exception as exc:  # noqa: BLE001 — every failure mode rolls back the same way.
-        logger.warning(
-            "teams.create_agent: hermes profile write failed for owner=%s agent=%s — rolling back",
-            owner_id,
-            agent_id,
-            exc_info=True,
-        )
-        try:
-            if agent_id:
-                await _admin().delete_agent(session_cookie=await _user_session(ctx), agent_id=agent_id)
-        except Exception:  # noqa: BLE001 — best effort; the 502 below is the contract.
-            logger.warning(
-                "teams.create_agent: rollback delete failed for owner=%s agent=%s",
-                owner_id,
-                agent_id,
-                exc_info=True,
-            )
-        raise HTTPException(
-            status_code=502,
-            detail="The agent's runtime profile could not be created, so the agent was not kept. Try again.",
-        ) from exc
 
 
 async def _resolve_user_email(user_id: str) -> str:
@@ -431,14 +358,10 @@ async def _provision_after_gate(auth: AuthContext, owner_id: str) -> None:
 async def list_agents(auth: AuthContext = Depends(get_current_user)):
     """The workspace's agents from the registry (``agent_registry.roster``); nothing here calls Paperclip.
 
-    Registry ``active`` goes out as ``idle``: the web roster reads ``active`` as a live run.
+    Registry ``active`` goes out as ``idle`` (``_web``).
     """
     owner_id = resolve_owner_id(auth)
-    try:
-        rows = await agent_registry.roster(owner_id)
-    except agent_registry.RegistryUnavailable as exc:
-        raise HTTPException(status_code=503, detail="The agent roster is temporarily unavailable.") from exc
-    agents = [{**a, "status": "paused" if a["status"] == "paused" else "idle"} for a in rows]
+    agents = [_web(a) for a in await _roster(owner_id)]
     repo = _repo()
     seeded_ids, starter_ids, sidecars = await asyncio.gather(
         get_seeded_agent_ids(owner_id=owner_id, repo=repo),
@@ -515,166 +438,118 @@ def _primary_email(user: dict) -> str | None:
     return None
 
 
+def _web(agent: dict) -> dict:
+    """Registry ``active`` goes out as ``idle``: the web roster reads ``active`` as a live run."""
+    return {**agent, "status": "paused" if agent.get("status") == "paused" else "idle"}
+
+
+async def _roster(owner_id: str) -> list[dict]:
+    try:
+        return await agent_registry.roster(owner_id)
+    except agent_registry.RegistryUnavailable as exc:
+        raise HTTPException(status_code=503, detail="The agent roster is temporarily unavailable.") from exc
+
+
 @router.post("/agents")
-async def create_agent(body: CreateAgentBody, ctx: TeamsContext = Depends(_ctx)):
-    """Create an agent in Paperclip and write its Hermes profile.
+async def create_agent(body: CreateAgentBody, auth: AuthContext = Depends(get_current_user)):
+    """Create an agent in the registry and write its Hermes profile.
 
-    Spec §5 security invariant: the ``adapter_type`` + ``adapter_config`` fields passed to the
-    admin client are resolved HERE, server-side, through ``resolve_agent_adapter``. The client
-    body never carries them — ``CreateAgentBody`` rejects extra keys with 422.
-
-    The agent's S3 Hermes profile is what makes it runnable, so a failure to
-    write one is fatal + rolled back (see ``_write_hermes_profile_or_rollback``).
+    The S3 profile is what makes the agent runnable, so a failed profile write deletes the row
+    again and answers 502: an agent with no profile could never run a turn.
     """
-    owner_id = _resolve_owner_id(ctx)
-    # The adapter is keyed by OWNER, never by the creating member: the workspace's runtime and
-    # its hook token are the org's, so a member-keyed credential would authenticate the wrong
-    # workspace's facade. One shared resolver, so every Paperclip agent-creation door agrees.
-    adapter_type, adapter_config = await resolve_agent_adapter(owner_id)
-    idempotency_key = build_agent_create_idempotency_key(
-        operation="teams",
-        owner_id=owner_id,
-        intent=paperclip_agent_intent(
+    from core.services.hermes_provisioning import write_profile_for_agent
+
+    owner_id = resolve_owner_id(auth)
+    try:
+        agent = await agent_registry.create(
+            owner_id,
             name=body.name,
             role=body.role,
-            adapter_type=adapter_type,
             title=body.title,
-            capabilities=body.capabilities,
+            persona=body.capabilities,
             reports_to=body.reports_to,
             budget_monthly_cents=body.budget_monthly_cents,
-        ),
-    )
-    paperclip_agent = await _admin().create_agent(
-        session_cookie=await _user_session(ctx),
-        company_id=ctx.company_id,
-        name=body.name,
-        role=body.role,
-        adapter_type=adapter_type,
-        adapter_config=adapter_config,
-        title=body.title,
-        capabilities=body.capabilities,
-        reports_to=body.reports_to,
-        budget_monthly_cents=body.budget_monthly_cents,
-        idempotency_key=idempotency_key,
-    )
-
-    container = await container_repo.get_by_owner_id(owner_id) or {}
-    await _write_hermes_profile_or_rollback(ctx, owner_id, paperclip_agent, container)
-
-    # Redact adapterConfig/adapterType before returning, exactly like the read
-    # paths and the /chat websocket create path. Paperclip echoes the full
-    # adapterConfig on create — including the freshly-minted devicePrivateKeyPem
-    # (the operator device's SIGNING key) and authToken — and those must never
-    # reach the browser/DOM, or anyone with the response could impersonate the
-    # agent's operator device.
-    return _mark_seeded(_redact_agent(paperclip_agent), set())
+        )
+    except agent_registry.RegistryUnavailable as exc:
+        raise HTTPException(status_code=503, detail="The agent roster is temporarily unavailable.") from exc
+    try:
+        await write_profile_for_agent(owner_id, agent)
+    except Exception as exc:  # noqa: BLE001 — every failure mode rolls back the same way.
+        logger.warning(
+            "teams.create_agent: profile write failed owner=%s agent=%s", owner_id, agent["id"], exc_info=True
+        )
+        await agent_registry.delete(owner_id, agent["id"])
+        raise HTTPException(
+            status_code=502,
+            detail="The agent's runtime profile could not be created, so the agent was not kept. Try again.",
+        ) from exc
+    return _mark_seeded(_web(agent), set())
 
 
 SafeId = Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]+$")]
 
 
-async def _company_agent(agent_id: SafeId, ctx: TeamsContext = Depends(_ctx)) -> str:
-    """404 unless ``agent_id`` belongs to the caller's workspace company.
-
-    Paperclip authorizes by the member's session, and a Paperclip user can hold
-    memberships in more than one company, so the session alone does not pin an
-    agent to THIS workspace (a wake would pass this workspace's trial gate for
-    another's agent). Same fence as issues' ``_require_company_issue``.
-    """
-    agent = await _admin().get_agent(agent_id=agent_id, session_cookie=ctx.session_cookie)
-    if not isinstance(agent, dict) or agent.get("companyId") != ctx.company_id:
+async def _workspace_agent(agent_id: SafeId, auth: AuthContext = Depends(get_current_user)) -> dict:
+    """The agent's roster row; 404 unless it is a live agent of the caller's workspace."""
+    agent = next((a for a in await _roster(resolve_owner_id(auth)) if a["id"] == agent_id), None)
+    if agent is None:
         raise HTTPException(status_code=404, detail="Agent not found")
-    return agent_id
+    return agent
 
 
-CompanyAgentId = Annotated[str, Depends(_company_agent)]
+WorkspaceAgent = Annotated[dict, Depends(_workspace_agent)]
+
+
+async def _update(auth: AuthContext, agent_id: str, fields: dict) -> dict:
+    try:
+        return _web(await agent_registry.update(resolve_owner_id(auth), agent_id, fields))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Agent not found") from exc
 
 
 @router.get("/agents/{agent_id}")
-async def get_agent(agent_id: SafeId, ctx: TeamsContext = Depends(_ctx)):
-    """Fetch a single agent by id (404 outside the caller's workspace company).
-
-    Redacts ``adapterConfig`` + ``adapterType`` before returning — see
-    ``_redact_agent``.
-    """
-    upstream = await _admin().get_agent(
-        agent_id=agent_id,
-        session_cookie=ctx.session_cookie,
-    )
-    if not isinstance(upstream, dict) or upstream.get("companyId") != ctx.company_id:
-        raise HTTPException(status_code=404, detail="Agent not found")
-    owner_id = _resolve_owner_id(ctx)
+async def get_agent(agent: WorkspaceAgent, auth: AuthContext = Depends(get_current_user)):
+    """One agent, shaped like a ``GET /agents`` row."""
+    owner_id = resolve_owner_id(auth)
     repo = _repo()
-    seeded_ids, starter_ids = await asyncio.gather(
+    seeded_ids, starter_ids, sidecars = await asyncio.gather(
         get_seeded_agent_ids(owner_id=owner_id, repo=repo),
         get_starter_agent_ids(owner_id=owner_id, repo=repo),
+        _load_agent_sidecars(owner_id, [agent["id"]]),
     )
-    sidecars = await _load_agent_sidecars(owner_id, [agent_id])
-    (named,) = await _front_named(owner_id, [upstream])
-    return _mark_seeded(_redact_agent(named), seeded_ids, sidecars.get(agent_id), starter_ids)
+    (named,) = await _front_named(owner_id, [_web(agent)])
+    return _mark_seeded(named, seeded_ids, sidecars.get(agent["id"]), starter_ids)
 
 
 @router.patch("/agents/{agent_id}")
-async def patch_agent(
-    agent_id: CompanyAgentId,
-    body: PatchAgentBody,
-    ctx: TeamsContext = Depends(_ctx),
-):
-    """Patch an agent.
-
-    Adapter fields are deliberately not in ``PatchAgentBody``; rotating
-    a service token is an admin-side operation handled by the
-    provisioning path, not user-facing PATCH.
-    """
-    # Drop unset/null fields by default. ``reportsTo`` is the one field that is
-    # nullable upstream (`uuid().nullable()`) — an explicit null clears the
-    # manager (root). exclude_none would drop that null, so re-insert it only
-    # when the client explicitly sent reportsTo=null. The other optional fields
-    # (title/capabilities/budget) are NOT nullable upstream, so keep dropping
-    # their nulls to avoid Paperclip validation errors.
+async def patch_agent(agent: WorkspaceAgent, body: PatchAgentBody, auth: AuthContext = Depends(get_current_user)):
+    """Patch an agent's name, title, persona, manager or budget. Unset and null fields are left alone,
+    except an explicit ``reportsTo: null``, which makes the agent a root."""
     payload = body.model_dump(exclude_none=True, by_alias=True)
     if "reports_to" in body.model_fields_set and body.reports_to is None:
         payload["reportsTo"] = None
-    admin = _admin()
+    owner_id = resolve_owner_id(auth)
     if payload.get("reportsTo"):
-        target = await admin.get_agent(
-            agent_id=agent_id,
-            session_cookie=ctx.session_cookie,
-        )
-        listed = await admin.list_agents(
-            company_id=ctx.company_id,
-            session_cookie=ctx.session_cookie,
-        )
         try:
-            ensure_root_ceo_survives(target=target, agents=envelope_list(listed, "agents")["agents"])
+            ensure_root_ceo_survives(target=agent, agents=await _roster(owner_id))
         except AgentLifecycleConflict as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-    upstream = await admin.patch_agent(
-        agent_id=agent_id,
-        body=payload,
-        session_cookie=ctx.session_cookie,
-    )
-    if _SOUL_FIELDS.intersection(payload):
-        # M6-R59: on AgentCore an agent's identity reaches it ONLY through its S3 ``SOUL.md``
-        # (there is no openclaw.json), so a rename/retitle that stops at the Paperclip row
-        # leaves the agent introducing itself by its old name forever. Same shared helper —
-        # and the same generated-marker rule — as ``runtime_rpc``'s ``agents.update`` door.
-        # Non-fatal, unlike create: the Paperclip row (what the UI reads) is already correct.
-        owner_id = _resolve_owner_id(ctx)
+    soul_changed = bool(_SOUL_FIELDS.intersection(payload))
+    if "capabilities" in payload:
+        payload["persona"] = payload.pop("capabilities")
+    updated = await _update(auth, agent["id"], payload)
+    if soul_changed:
+        # M6-R59: an agent's identity reaches it ONLY through its S3 ``SOUL.md``. Same helper and
+        # generated-marker rule as ``runtime_rpc``'s ``agents.update`` door. Non-fatal: the row landed.
         from core.services.hermes_provisioning import refresh_agent_soul
 
         try:
-            await refresh_agent_soul(owner_id, agent_id, by=ctx.user_id)
+            await refresh_agent_soul(owner_id, agent["id"], by=auth.user_id)
         except Exception:  # noqa: BLE001 — the roster row landed; SOUL is best effort.
             logger.warning(
-                "teams.patch_agent: SOUL refresh failed for owner=%s agent=%s",
-                owner_id,
-                agent_id,
-                exc_info=True,
+                "teams.patch_agent: SOUL refresh failed owner=%s agent=%s", owner_id, agent["id"], exc_info=True
             )
-    # Paperclip may echo the full agent record (including adapterConfig)
-    # in PATCH responses; redact for the same reason as the GETs.
-    return _redact_agent(upstream)
+    return updated
 
 
 class VoiceNotesBody(BaseModel):
@@ -682,13 +557,10 @@ class VoiceNotesBody(BaseModel):
     notes: str = Field(max_length=hermes_profiles.VOICE_NOTES_MAX)
 
 
-async def _voice_notes_reply(agent_id: str, ctx: TeamsContext, body: VoiceNotesBody | None) -> dict:
-    """C9. The name is always the Paperclip row's; a PUT rewrites the file's name line from it."""
-    agent = await _admin().get_agent(agent_id=agent_id, session_cookie=ctx.session_cookie)
-    if not isinstance(agent, dict) or agent.get("companyId") != ctx.company_id:
-        raise HTTPException(status_code=404, detail="Agent not found")
-    owner_id = _resolve_owner_id(ctx)
-    name = agent.get("name")
+async def _voice_notes_reply(agent: dict, auth: AuthContext, body: VoiceNotesBody | None) -> dict:
+    """C9. The name is always the registry row's; a PUT rewrites the file's name line from it."""
+    owner_id = resolve_owner_id(auth)
+    agent_id, name = agent["id"], agent.get("name")
     if body is None:
         _, notes = hermes_profiles.parse_voice_notes_md(
             await run_in_thread(hermes_profiles.read_voice_notes, owner_id, agent_id)
@@ -697,7 +569,7 @@ async def _voice_notes_reply(agent_id: str, ctx: TeamsContext, body: VoiceNotesB
         notes = body.notes.strip()
         text = hermes_profiles.build_voice_notes_md(name, notes)
         await run_in_thread(hermes_profiles.upload_voice_notes, owner_id, agent_id, text)
-        await voice_calls.send_note_saved(owner_id, agent_id, name, notes, ctx.user_id)
+        await voice_calls.send_note_saved(owner_id, agent_id, name, notes, auth.user_id)
     row = await _repo().resolve_owner_row(owner_id)
     return {
         "name": name,
@@ -709,94 +581,45 @@ async def _voice_notes_reply(agent_id: str, ctx: TeamsContext, body: VoiceNotesB
 
 
 @router.get("/agents/{agent_id}/voice-notes")
-async def get_voice_notes(agent_id: CompanyAgentId, ctx: TeamsContext = Depends(_ctx)):
-    return await _voice_notes_reply(agent_id, ctx, None)
+async def get_voice_notes(agent: WorkspaceAgent, auth: AuthContext = Depends(get_current_user)):
+    return await _voice_notes_reply(agent, auth, None)
 
 
 @router.put("/agents/{agent_id}/voice-notes")
-async def put_voice_notes(agent_id: CompanyAgentId, body: VoiceNotesBody, ctx: TeamsContext = Depends(_ctx)):
-    return await _voice_notes_reply(agent_id, ctx, body)
+async def put_voice_notes(agent: WorkspaceAgent, body: VoiceNotesBody, auth: AuthContext = Depends(get_current_user)):
+    return await _voice_notes_reply(agent, auth, body)
 
 
 @router.delete("/agents/{agent_id}")
-async def delete_agent(agent_id: CompanyAgentId, ctx: TeamsContext = Depends(_ctx)):
-    """Delete an agent. Idempotent — 404 from upstream is swallowed.
-
-    The shared lifecycle preserves a final root CEO while allowing any other
-    agent, including starter specialists, to be removed.
-    """
-    owner_id = _resolve_owner_id(ctx)
+async def delete_agent(agent: WorkspaceAgent, auth: AuthContext = Depends(get_current_user)):
+    """Delete an agent; the last root CEO answers 409."""
     try:
-        return await delete_agent_everywhere(owner_id=owner_id, agent_id=agent_id)
+        return await delete_agent_everywhere(owner_id=resolve_owner_id(auth), agent_id=agent["id"])
     except AgentLifecycleConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post("/agents/{agent_id}/pause")
-async def pause_agent(agent_id: CompanyAgentId, ctx: TeamsContext = Depends(_ctx)):
-    """Pause an agent (stops it running on events)."""
-    # Paperclip echoes the updated agent record, which can include
-    # adapterConfig/adapterType (the OpenClaw service token). Redact for the
-    # same reason as the GET/PATCH handlers — never leak it to the browser.
-    return _redact_agent(
-        await _admin().pause_agent(
-            agent_id=agent_id,
-            session_cookie=ctx.session_cookie,
-        )
-    )
+async def pause_agent(agent: WorkspaceAgent, auth: AuthContext = Depends(get_current_user)):
+    """Display state only: nothing at runtime reads an agent's status (rooms pause, agents don't)."""
+    return await _update(auth, agent["id"], {"status": "paused"})
 
 
 @router.post("/agents/{agent_id}/resume")
-async def resume_agent(agent_id: CompanyAgentId, ctx: TeamsContext = Depends(_ctx)):
-    """Resume a paused agent."""
-    return _redact_agent(
-        await _admin().resume_agent(
-            agent_id=agent_id,
-            session_cookie=ctx.session_cookie,
-        )
-    )
+async def resume_agent(agent: WorkspaceAgent, auth: AuthContext = Depends(get_current_user)):
+    return await _update(auth, agent["id"], {"status": "active"})
 
 
 @router.post("/agents/{agent_id}/reset-session")
-async def reset_agent_session(
-    agent_id: CompanyAgentId,
-    body: ResetAgentSessionBody,
-    ctx: TeamsContext = Depends(_ctx),
-):
-    """Reset a wedged agent's runtime session state — recovery lever.
-
-    Maps to upstream ``POST /api/agents/{id}/runtime-state/reset-session``. An
-    empty body resets all of the agent's sessions; an optional ``taskKey``
-    scopes it to one task. Unlike ``wakeup`` this does NOT dispatch an
-    inference run, so there's no trial-runway gate. Redact defensively — a
-    future upstream change that echoes adapterConfig must never leak the
-    service token to the browser.
-    """
-    return _redact_agent(
-        await _admin().reset_agent_session(
-            agent_id=agent_id,
-            body=body.model_dump(exclude_none=True, by_alias=True),
-            session_cookie=ctx.session_cookie,
-        )
-    )
+async def reset_agent_session(agent: WorkspaceAgent, body: ResetAgentSessionBody):
+    """No runtime session to reset since Paperclip runs went away; answers the agent row for old clients."""
+    return _web(agent)
 
 
 @router.post("/agents/{agent_id}/clear-error")
-async def clear_agent_error(agent_id: CompanyAgentId, ctx: TeamsContext = Depends(_ctx)):
-    """Clear an agent's error status — recovery lever.
-
-    Maps to upstream ``POST /api/agents/{id}/clear-error``. Upstream flips an
-    ``error``-status agent back to ``idle`` (409 if it isn't in error). No run
-    is dispatched, so no trial-runway gate. Paperclip echoes the updated agent
-    record, which can include adapterConfig/adapterType (the OpenClaw service
-    token) — redact like the pause/resume handlers before returning.
-    """
-    return _redact_agent(
-        await _admin().clear_agent_error(
-            agent_id=agent_id,
-            session_cookie=ctx.session_cookie,
-        )
-    )
+async def clear_agent_error(agent: WorkspaceAgent):
+    """No agent error state since Paperclip runs went away; answers the agent row for old clients."""
+    return _web(agent)
 
 
 @router.post("/agents/{agent_id}/heartbeat", status_code=410)

@@ -44,12 +44,22 @@ async def _auth(request: Request, *, active: bool) -> dict:
         or not hmac.compare_digest(presented.encode(), expected.encode())
     ):
         raise HTTPException(401, detail="invalid hook token")
+    family = request.headers.get("x-desktop-run-family", "room")
+    task = (
+        {
+            "task_id": request.headers.get("x-desktop-task", ""),
+            "run_secret": request.headers.get("x-desktop-run-secret", ""),
+        }
+        if family == "task"
+        else {}
+    )
     return await service.authorize_run(
         owner,
         request.headers.get("x-desktop-run", ""),
         request.headers.get("x-desktop-agent", ""),
-        request.headers.get("x-desktop-run-family", "room"),
+        family,
         active=active,
+        **task,
     )
 
 
@@ -170,6 +180,7 @@ async def internal(request: Request):
             auth["family"],
             active=action in {"admit"} | _MAC_ACTIONS,
             allow_session=action in _MAC_ACTIONS,
+            **({"task_id": auth["roomId"]} if auth["family"] == "task" else {}),
         )
         if current != auth:
             raise service.DesktopError("run_forbidden", 403)

@@ -15,7 +15,7 @@ META = {"ownerId": "org_1", "kind": "dm"}
 _TRIGGERS: set[str] = set()
 
 
-async def _start(owner_id, body):
+async def _start(owner_id, body, origin=None):
     """admission.enqueue_trigger's created flag: one trigger per run id."""
     created = body.run_id not in _TRIGGERS
     _TRIGGERS.add(body.run_id)
@@ -49,6 +49,7 @@ async def test_a_member_ask_starts_a_router_task_in_the_dm(m):
     body = m["sw"].await_args.args[1]
     assert (body.room_id, body.call_id, body.title) == (ROOM, ROOM, "Draft a post about holiday hours")
     assert "Asked aloud" in body.brief
+    assert m["sw"].await_args.kwargs == {"origin": "owner_voice"}  # its task may reach the member's own Mac
 
 
 async def test_the_same_ask_again_is_already_on_it(m):
@@ -121,7 +122,7 @@ async def test_integration_read_goes_through_the_shared_reader(m):
             ),
         )
     assert out == {"text": "Dentist at 2026-11-09T10:00"}
-    r.assert_awaited_once_with("org_1", "calendar", "")
+    r.assert_awaited_once_with("org_1", "calendar", "", instructions=True)  # owner mode: the private instructions
 
 
 async def test_owner_end_creates_yours_item(m):

@@ -2,7 +2,7 @@
 
 import os
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from botocore.exceptions import ClientError
@@ -13,7 +13,7 @@ os.environ.setdefault("WS_MANAGEMENT_API_URL", "https://test.execute-api.us-east
 
 from core.repositories import container_repo, messaging_repo  # noqa: E402
 from core.services import hermes_profiles, livekit_huddles, messaging  # noqa: E402
-from core.services.paperclip_admin_client import PaperclipApiError  # noqa: E402
+from core.services.agent_registry import RegistryUnavailable  # noqa: E402
 from routers import messaging as messaging_router  # noqa: E402
 
 OWNER = "org_1"
@@ -79,22 +79,21 @@ def world(monkeypatch):
     send_frames = AsyncMock()
     monkeypatch.setattr(livekit_huddles, "send_frames", send_frames)
     monkeypatch.setattr("core.services.clerk_admin.list_organization_members", AsyncMock(return_value=[]))
-    admin = MagicMock()
 
-    async def patch_agent(*, session_cookie, agent_id, body):
-        next(r for r in roster if r["id"] == agent_id)["name"] = body["name"]
-        return {}
+    async def _update(ws, agent_id, fields):
+        row = next(r for r in roster if r["id"] == agent_id)
+        row.update(fields)
+        return dict(row)
 
-    admin.patch_agent = AsyncMock(side_effect=patch_agent)
-    monkeypatch.setattr("core.services.paperclip_admin_client.shared_admin_client", lambda: admin)
-    monkeypatch.setattr("core.services.paperclip_admin_session.get_admin_session_cookie", AsyncMock(return_value="c"))
+    update = AsyncMock(side_effect=_update)
+    monkeypatch.setattr("core.services.agent_registry.update", update)
     app = FastAPI()
     app.include_router(messaging_router.router)
     return SimpleNamespace(
         client=TestClient(app, raise_server_exceptions=False),
         files=files,
         labels=labels,
-        admin=admin,
+        update=update,
         send_frames=send_frames,
         runs=runs,
     )
@@ -113,7 +112,7 @@ def test_a_member_renames_by_voice(world):
     r = _post(world, action="rename", name="Nova")
     assert r.status_code == 200
     assert r.json() == {"ok": True, "agentId": AGENT, "name": "Nova", "notes": "Aden asked: be blunt"}
-    assert world.admin.patch_agent.await_args.kwargs["body"] == {"name": "Nova"}
+    assert world.update.await_args.args[2] == {"name": "Nova"}
     assert world.files[NOTES_KEY].startswith("Your name is Nova.")
     assert world.labels == {R_LIVE: "Nova", R_QUIET: "Nova"}
     assert _notices(world.send_frames) == [
@@ -144,7 +143,7 @@ def test_a_guests_steer_makes_them_the_requester_c8_checks(world, monkeypatch):
     assert steered["steered"] is True
     r = _post(world, action="rename", name="X")
     assert r.status_code == 403 and r.json()["detail"]["code"] == "not_a_member"
-    world.admin.patch_agent.assert_not_awaited()
+    world.update.assert_not_awaited()
 
 
 def test_a_relabel_failure_after_the_rename_still_answers_ok(world, monkeypatch):
@@ -153,9 +152,9 @@ def test_a_relabel_failure_after_the_rename_still_answers_ok(world, monkeypatch)
     assert r.status_code == 200 and r.json()["ok"] is True
 
 
-def test_a_paperclip_failure_errors_with_no_notice_and_no_file_write(world):
+def test_a_registry_failure_errors_with_no_notice_and_no_file_write(world):
     world.files[NOTES_KEY] = "Your name is Ada.\n\n"
-    world.admin.patch_agent.side_effect = PaperclipApiError("PATCH /api/agents -> 500", 500, {})
+    world.update.side_effect = RegistryUnavailable("store down")
     r = _post(world, action="rename", name="Nova")
     assert r.status_code == 500
     assert world.files[NOTES_KEY] == "Your name is Ada.\n\n"
@@ -176,7 +175,7 @@ def test_refusals(world, run_id, body, status, code):
     r = world.client.post(URL, headers=AUTH, json={"agentId": AGENT, "runId": run_id, **body})
     assert r.status_code == status
     assert r.json()["detail"]["code"] == code
-    world.admin.patch_agent.assert_not_awaited()
+    world.update.assert_not_awaited()
     assert NOTES_KEY not in world.files
 
 

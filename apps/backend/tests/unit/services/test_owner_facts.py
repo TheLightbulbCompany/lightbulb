@@ -459,12 +459,17 @@ async def test_write_owner_facts_writes_the_manifest_to_every_profile():
 
 @pytest.mark.asyncio
 async def test_delete_agent_everywhere_refreshes_facts_for_every_caller():
-    from core.services import paperclip_agent_lifecycle as lc
+    from core.services import agent_lifecycle as lc, agent_registry
 
     with (
-        patch.object(lc, "prepare_paperclip_agent_delete", AsyncMock(return_value={})),
+        patch.object(agent_registry, "roster", AsyncMock(return_value=[])),
+        patch.object(agent_registry, "delete", AsyncMock()),
+        patch(
+            "core.repositories.paperclip_repo.PaperclipRepo",
+            MagicMock(return_value=MagicMock(remove_starter_agent_id=AsyncMock())),
+        ),
+        patch("core.services.network_member.publish_sessions", AsyncMock()),
         patch("core.services.hermes_profiles.delete_profile"),
-        patch.object(lc, "delete_paperclip_for_chat", AsyncMock()),
         patch("core.services.owner_facts.write_owner_facts", AsyncMock()) as facts,
     ):
         await lc.delete_agent_everywhere(owner_id="org_1", agent_id="a1")

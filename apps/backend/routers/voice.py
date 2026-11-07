@@ -117,8 +117,8 @@ async def forget_caller(e164: str, auth: AuthContext = Depends(get_current_user)
     if not number or not await messaging_repo._get(**key):
         raise HTTPException(status_code=404, detail={"code": "not_found"})
     await run_in_thread(
-        messaging_repo._table().update_item, Key=key, UpdateExpression="SET facts = :f REMOVE #n",
-        ExpressionAttributeNames={"#n": "name"}, ExpressionAttributeValues={":f": []},
+        messaging_repo._table().update_item, Key=key, UpdateExpression="SET facts = :f, forgottenAt = :t REMOVE #n",
+        ExpressionAttributeNames={"#n": "name"}, ExpressionAttributeValues={":f": [], ":t": utc_now_iso()},
     )  # fmt: skip
     return {"ok": True}
 

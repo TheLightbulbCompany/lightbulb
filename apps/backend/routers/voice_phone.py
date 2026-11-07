@@ -285,10 +285,16 @@ async def end_call(call_id: str, body: EndIn) -> dict:
         seen = await _seen(meta["ownerId"], out["caller"]) or {}
         item = {**_caller_key(meta["ownerId"], out["caller"]), "lastCallAt": out["endedAt"], "lastCallId": call_id,
                 "visits": int(seen.get("visits", 0)) + 1}  # fmt: skip
-        new = out.get("remembered", [])
-        item["facts"] = list(dict.fromkeys([*new[::-1], *seen.get("facts", [])]))[:MAX_FACTS]
-        if out.get("callerName") or seen.get("name"):
-            item["name"] = out.get("callerName") or seen["name"]
+        if seen.get("forgottenAt"):
+            item["forgottenAt"] = seen["forgottenAt"]
+        if seen.get("forgottenAt") and datetime.fromisoformat(seen["forgottenAt"]) >= datetime.fromisoformat(
+            out["startedAt"]
+        ):
+            item["facts"] = seen.get("facts", [])  # Forgotten during this call: write neither name nor facts
+        else:
+            item["facts"] = list(dict.fromkeys([*out.get("remembered", [])[::-1], *seen.get("facts", [])]))[:MAX_FACTS]
+            if out.get("callerName") or seen.get("name"):
+                item["name"] = out.get("callerName") or seen["name"]
         await run_in_thread(messaging_repo._table().put_item, Item=item)
     return out
 
@@ -307,15 +313,15 @@ async def remember(call_id: str, body: RememberIn) -> dict:
     meta, call = await _call(call_id)
     if _line_state(await agent_config(meta["ownerId"]), call.get("caller", "")) != "live":
         raise _err(403, "not_allowed")
-    if re.search(r"\d{12,}", re.sub(r"[ -]", "", body.fact)):  # card-like: never stored
+    if re.search(r"\d{12,}", re.sub(r"\D", "", body.fact)):  # card-like: never stored
         raise _err(400, "looks_like_a_card")
     if body.kind == "business":
         cfg = await messaging_repo.get_voice_agent(meta["ownerId"]) or {}
         await messaging_repo.put_voice_agent(
-            meta["ownerId"], {**cfg, "toAdd": list(dict.fromkeys([*cfg.get("toAdd", []), body.fact]))}, "voice"
+            meta["ownerId"], {**cfg, "toAdd": list(dict.fromkeys([*cfg.get("toAdd", []), body.fact]))[-20:]}, "voice"
         )
     else:
-        await _patch_call(call_id, lambda c: {"remembered": [*c.get("remembered", []), body.fact]})
+        await _patch_call(call_id, lambda c: {"remembered": [*c.get("remembered", []), body.fact][-MAX_FACTS:]})
     return {"remembered": True}
 
 

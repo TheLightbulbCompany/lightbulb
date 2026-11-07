@@ -267,6 +267,7 @@ async def test_returning_caller_memory(client):
 async def test_remember_limits_and_business_facts(client):
     call = await _start(client)
     assert (await _remember(client, call, "Card 4111 1111 1111 1111")).status_code == 400
+    assert (await _remember(client, call, "Card 4111.1111.1111.1111")).status_code == 400
     assert (await _remember(client, call, "x" * 121)).status_code == 400
     for fact in ("Parking is behind the building", "Parking is behind the building"):
         assert (await _remember(client, call, fact, kind="business")).status_code == 200
@@ -281,3 +282,26 @@ async def test_remember_limits_and_business_facts(client):
 async def test_remember_refused_on_a_message_only_line(client):
     paused = await _start(client, room="phone-dev-_p", paused=True)
     assert (await _remember(client, paused, "Prefers Saturdays")).status_code == 403
+
+
+async def test_forget_during_call_survives_end(client):
+    call = await _start(client)
+    await _remember(client, call, "Prefers Saturdays")
+    from core.dynamodb import run_in_thread, utc_now_iso
+
+    await run_in_thread(
+        messaging_repo._table().put_item,
+        Item={**voice_phone._caller_key("org_1", "+14155550133"), "facts": [], "forgottenAt": utc_now_iso()},
+    )
+    client.post(f"/api/v1/internal/voice/calls/{call['callId']}/end", json={"durationSec": 5}, headers=W)
+    row = await voice_phone._seen("org_1", "+14155550133")
+    assert row["facts"] == [] and "name" not in row
+
+
+async def test_caller_writable_lists_are_capped(client):
+    call = await _start(client)
+    for i in range(25):
+        await _remember(client, call, f"Parking {i}", kind="business")
+        await _remember(client, call, f"Likes {i}")
+    assert (await messaging_repo.get_voice_agent("org_1"))["toAdd"][0] == "Parking 5"
+    assert len((await voice_phone._call(call["callId"]))[1]["remembered"]) == 10

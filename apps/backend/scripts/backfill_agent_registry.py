@@ -3,7 +3,7 @@
 DRY RUN BY DEFAULT: prints the planned created/updated counts. `--apply` writes (idempotent) and soft-deletes
 registry rows whose agent is terminated or gone in Paperclip. `--verify`
 compares registry and Paperclip and exits 1 on any difference, printing agent ids and field names only (no
-names, no personas). Refuses prod and refuses when the super-agent env master is off (there is no table).
+names, no personas). Refuses prod (unless --allow-prod) and refuses when the super-agent env master is off (there is no table).
 Runs inside the dev backend task (Paperclip is VPC-internal):
 
     uv run python -m scripts.backfill_agent_registry --all
@@ -31,9 +31,10 @@ async def main(argv: list[str] | None = None) -> int:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--apply", action="store_true", help="write; without it this is a dry run")
     mode.add_argument("--verify", action="store_true", help="compare only; exit 1 on any difference")
+    parser.add_argument("--allow-prod", action="store_true", help="lift the prod refusal (phase-1 task 3 data move)")
     args = parser.parse_args(argv)
-    if settings.ENVIRONMENT == "prod":
-        print("refusing: backfill_agent_registry is dev-only")
+    if settings.ENVIRONMENT == "prod" and not args.allow_prod:
+        print("refusing: backfill_agent_registry is dev-only unless --allow-prod")
         return 2
     if not env_enabled():
         print("refusing: the super-agent env master is off (no registry table)")

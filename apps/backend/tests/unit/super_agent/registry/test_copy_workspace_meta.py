@@ -221,3 +221,11 @@ def test_meta_store_follows_env_master():
     with patch.object(cwm.settings, "SUPER_AGENT_ENV_ENABLED", False):
         assert repo._meta_on_tasks() is False
         assert repo._ws_key("org_a") == {"user_id": "org_a"}
+
+
+async def test_allow_prod_lifts_only_the_prod_refusal(tables):
+    with patch.object(cwm.settings, "ENVIRONMENT", "prod"):
+        assert await cwm.main(["--all", "--apply", "--allow-prod"]) == 0
+        assert await cwm.main(["--all", "--verify", "--allow-prod"]) == 0
+        with patch.object(cwm.settings, "SUPER_AGENT_ENV_ENABLED", False):
+            assert await cwm.main(["--all", "--verify", "--allow-prod"]) == 2

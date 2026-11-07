@@ -187,10 +187,9 @@ const mockLive = {
 // One hoisted object, never a fresh literal per call: RoomsPlatform requires a
 // referentially stable `live`, and a new one per render re-fires the history
 // reconcile into "Maximum update depth exceeded".
-let mockSuperAgent = false;
 let mockContainer: { kind: string } | null = null;
 jest.mock("../../../../lib/containerStatusContext", () => ({ useContainerStatusContext: () => mockContainer }));
-jest.mock("../../../../providers/live-events", () => ({ useSuperAgent: () => mockSuperAgent, useLiveEvents: () => mockLive, useOptionalLiveEvents: () => mockLive }));
+jest.mock("../../../../providers/live-events", () => ({ useLiveEvents: () => mockLive, useOptionalLiveEvents: () => mockLive }));
 // The front agent (`@lightbulb`) once the roster answers; only asked for while the switch is on.
 // The band has its own suite; here only WHERE it mounts is under test.
 jest.mock("../../../../components/room/OnboardingBand", () => ({
@@ -245,7 +244,6 @@ describe("conversation screen", () => {
     mockOpenLive.mockClear();
     mockMessages = [...mockBase];
     mockRoomId = "room-1";
-    mockSuperAgent = false;
     mockContainer = null;
     mockIsPreview = false;
     mockFocused = true;
@@ -764,19 +762,13 @@ describe("conversation screen", () => {
     await waitFor(() => expect(screen.getByText("The star could not be saved.")).toBeTruthy());
   });
 
-  it("super-agent on: a specialist's DM says it now works through Lightbulb; off, no banner", async () => {
+  it("a specialist's DM says it now works through Lightbulb", async () => {
     mockRoomId = "dm-friday";
-    const off = await render(<Conversation />);
-    await screen.findByLabelText("Friday, idle");
-    expect(screen.queryByTestId("specialist-dm-banner")).toBeNull();
-    await off.unmount();
-    mockSuperAgent = true;
     await render(<Conversation />);
     expect(await screen.findByText("To ask Friday for something, mention them in Lightbulb\u2019s chat.")).toBeTruthy();
   });
 
-  it("super-agent on: the front agent reads Lightbulb in the header and on its older posts, whatever its seat says", async () => {
-    mockSuperAgent = true;
+  it("the front agent reads Lightbulb in the header and on its older posts, whatever its seat says", async () => {
     mockLive.frontAgentId = "agent-1"; // Friday stands in for the front agent here
     try {
       mockRoomId = "dm-friday";
@@ -790,7 +782,6 @@ describe("conversation screen", () => {
   });
 
   it("super-agent, setup still running: my unanswered message reads Queued; once ready it reads as before", async () => {
-    mockSuperAgent = true;
     mockContainer = { kind: "starting" };
     const view = await render(<Conversation />);
     expect(await screen.findByText("Queued · Lightbulb answers as soon as setup finishes")).toBeTruthy();

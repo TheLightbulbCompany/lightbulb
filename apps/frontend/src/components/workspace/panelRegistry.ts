@@ -222,9 +222,8 @@ export function shellSettingsHref(settingsHref: string): string {
 // and render inherited functions as titles/components instead of rejecting to
 // null.
 
-// Super-agent (UX slice 4): Work dissolved. Its Automations open Activity's Scheduled group, and Money is
-// Settings › Business. Library opens Creations (slice 5). The switch is per workspace, so the shell sets it (setSuperAgentAliases) and a
-// switch-off workspace keeps every key exactly as before.
+// UX slice 4: Work dissolved. Its Automations open Activity's Scheduled group, and Money is
+// Settings › Business. Library opens Creations (slice 5). Old links keep resolving through these.
 const SUPER_AGENT_ALIASES: Readonly<Record<string, string>> = {
   "teams-routines": "activity",
   "teams-money": "settings",
@@ -233,14 +232,10 @@ const SUPER_AGENT_ALIASES: Readonly<Record<string, string>> = {
   // The rail writes `panel=creations` (W13); the panel id stays "canvas", so an old `panel=canvas` link still opens it.
   creations: "canvas",
 };
-let _superAgentAliases = false;
-export function setSuperAgentAliases(on: boolean): void {
-  _superAgentAliases = on;
-}
 
 export function resolvePanelAlias(panelKey: string): string {
   const key = Object.hasOwn(RETIRED_PANEL_ALIASES, panelKey) ? RETIRED_PANEL_ALIASES[panelKey] : panelKey;
-  return _superAgentAliases && Object.hasOwn(SUPER_AGENT_ALIASES, key) ? SUPER_AGENT_ALIASES[key] : key;
+  return Object.hasOwn(SUPER_AGENT_ALIASES, key) ? SUPER_AGENT_ALIASES[key] : key;
 }
 
 export function chatPanelId(agentId: string): string {
@@ -352,7 +347,7 @@ export function describePanel(
   if (key === "canvas") {
     const p: Record<string, string> = {};
     if (params.app) p.app = params.app;
-    return { panelId: "canvas", component: "canvas", title: _superAgentAliases ? "Creations" : "Canvas", params: p };
+    return { panelId: "canvas", component: "canvas", title: "Creations", params: p };
   }
 
   // The workspace's shared agent mailbox: mail in and out, meetings and their

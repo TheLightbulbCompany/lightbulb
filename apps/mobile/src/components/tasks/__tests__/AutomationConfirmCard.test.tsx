@@ -2,8 +2,8 @@ import { act, fireEvent, render, screen } from "@testing-library/react-native";
 
 import { chatPalette } from "../../../config/theme";
 
-const mockLive = { superAgent: true, tasks: { cacheScope: "org_confirm" }, agentNames: new Map([["agt-fin", "Finance"]]), api: { get: jest.fn(), post: jest.fn(async () => ({})), del: jest.fn(async () => undefined) } };
-jest.mock("../../../providers/live-events", () => ({ useLiveEvents: () => mockLive, useSuperAgent: () => true }));
+const mockLive = { tasks: { cacheScope: "org_confirm" }, agentNames: new Map([["agt-fin", "Finance"]]), api: { get: jest.fn(), post: jest.fn(async () => ({})), del: jest.fn(async () => undefined) } };
+jest.mock("../../../providers/live-events", () => ({ useLiveEvents: () => mockLive }));
 let mockRole = "org:admin";
 jest.mock("@clerk/expo", () => ({ useAuth: () => ({ userId: "user_sam" }), useOrganization: () => ({ membership: { role: mockRole } }) }));
 jest.mock("expo-router", () => ({ router: { push: jest.fn() } }));

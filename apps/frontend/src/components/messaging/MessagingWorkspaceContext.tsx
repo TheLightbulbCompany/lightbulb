@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useAuth, useUser } from "@clerk/nextjs";
-import { canChangeListenMode, cardReplyRequest, markSessionRead, markSessionsSeen, markSessionUnread, resolveTypedMentions, roomDisplayName, runView, sessionArchived, sessionMentionCandidates, sessionUnread, useWorkspaceSessions, workspaceSections, type CardReply, type CreateMessageRequest, type ListenMode, type MemberRef, type PatchRoomRequest, type RoomMember, type SessionSource, type RoomSummary } from "@lightbulb/shared";
+import { cardReplyRequest, markSessionRead, markSessionsSeen, markSessionUnread, resolveTypedMentions, roomDisplayName, runView, sessionArchived, sessionMentionCandidates, sessionUnread, useWorkspaceSessions, workspaceSections, type CardReply, type CreateMessageRequest, type MemberRef, type PatchRoomRequest, type RoomMember, type SessionSource, type RoomSummary } from "@lightbulb/shared";
 import { useRooms } from "@/hooks/useRooms";
 import { useCopyJoinLink } from "@/hooks/useCopyJoinLink";
 import { useBilling } from "@/hooks/useBilling";
@@ -12,13 +12,11 @@ import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { useChatReady } from "@/components/chat/shell/useChatReady";
 import type { CompanyAgent, CompanyMember } from "@/components/teams/shared/types";
 import { resolveCeoAgentId } from "@/components/getstarted/getStartedFirstTask";
-import { useSuperAgent } from "@/hooks/useLiveEvents";
 import { activateMessagesPanel, getWorkspaceSnapshot, openPanel, useWorkspaceState, type WorkspaceSnapshot } from "@/components/workspace/workspaceController";
 import { placeTabTitle } from "@/components/workspace/tabTitle";
 import { parseCommand } from "@/components/workspace/urlChannel";
 import { MessageNotifications } from "@/components/notifications/MessageNotifications";
-import { NeedsYouTitleBadge, UnreadTitleBadge } from "@/components/notifications/UnreadTitleBadge";
-import { useSessionNotificationPrefs } from "@/components/settings/SessionNotificationsCard";
+import { NeedsYouTitleBadge } from "@/components/notifications/UnreadTitleBadge";
 import { hasBlockingShortcutDialog } from "@/components/teams/shared/lib/keyboardShortcuts";
 import { capture } from "@/lib/analytics";
 import { clearDraft, draftKey, isDraftKey, listDraftRoomIds, readDraft, writeDraft } from "./drafts";
@@ -33,7 +31,6 @@ import type { RoomPanelProps } from "./RoomPanel";
 import type { SessionFocusTarget } from "./SessionFocus";
 import { bridge } from "./localTerminal";
 import type { SidebarRow, SidebarSession } from "./roomSections";
-import { ownWaitingCount } from "./sessionGroups";
 import { useSessionRows } from "./useSessionRows";
 import type { SessionRow } from "@lightbulb/shared";
 import { isProjectRoom, type DirectoryRoom, type DirectoryParticipant, type RoomParticipant } from "./types";
@@ -86,12 +83,12 @@ export interface MessagingWorkspaceValue {
   askLightbulb: (text: string) => Promise<void>;
 }
 
-/** Super-agent workspaces land on Home (founder, 6 Nov 2026), except a brand-new one, whose onboarding runs in
+/** Workspaces land on Home (founder, 6 Nov 2026), except a brand-new one, whose onboarding runs in
  *  its first-run room (the Lightbulb DM, else #general). Only a bare landing moves: not a URL that names a place, a pane already open, or a pick already made. */
-export function landsOnHome({ superAgent, fresh, search, snapshot, picked }: {
-  superAgent: boolean; fresh: boolean | null; search: string; snapshot: Pick<WorkspaceSnapshot, "ready" | "place" | "pane">; picked: boolean;
+export function landsOnHome({ fresh, search, snapshot, picked }: {
+  fresh: boolean | null; search: string; snapshot: Pick<WorkspaceSnapshot, "ready" | "place" | "pane">; picked: boolean;
 }): boolean {
-  return superAgent && fresh === false && snapshot.ready && snapshot.place === "chat" && !snapshot.pane && !picked
+  return fresh === false && snapshot.ready && snapshot.place === "chat" && !snapshot.pane && !picked
     && parseCommand(search) === null;
 }
 
@@ -484,14 +481,13 @@ export function MessagingWorkspaceProvider({
   }, [seen, workspaceSessions.sessions, openSessionId, seenScope, sessionSeen.scope]);
   // A room member's online/sharing (human) or agentActivity (agent) decoration --
   // the same ternary every member list below applies to its own room-member array.
-  // Super-agent: the front agent is "Lightbulb" (@lightbulb) everywhere, whatever its roster name ("CEO").
+  // The front agent is "Lightbulb" (@lightbulb) everywhere, whatever its roster name ("CEO").
   // Stored member rows and the Paperclip roster keep the old name, so the one rename happens here.
-  const superAgent = useSuperAgent();
   // Until the roster answers, the front agent is the one this browser last saw (else, on a first load, an agent still
   // named for its seat): a hard load never flashes "CEO" before "Lightbulb" (dev walk R6).
-  const rosterFrontId = superAgent ? resolveCeoAgentId(agentRoster?.agents ?? []) : undefined;
+  const rosterFrontId = resolveCeoAgentId(agentRoster?.agents ?? []);
   useEffect(() => { if (rosterFrontId) writeFrontAgentId(scope, rosterFrontId); }, [scope, rosterFrontId]);
-  const rosterLoading = superAgent && !agentRoster;
+  const rosterLoading = !agentRoster;
   const frontId = rosterFrontId ?? (rosterLoading ? readFrontAgentId(scope) : undefined);
   const isFront = useCallback((member: Pick<RoomMember, "id" | "displayName">) => member.id === frontId
     || (rosterLoading && !frontId && member.displayName === SEAT_NAME), [frontId, rosterLoading]);
@@ -862,8 +858,8 @@ export function MessagingWorkspaceProvider({
       const startToken = pickToken();
       const created = await rooms.createRoom({ clientRoomId: crypto.randomUUID(), ...creation });
       bumpPickIfCurrent(startToken);
-      // Super-agent: a new project is pinned (UX slice 6). A failed pin never fails the create.
-      if (superAgent && creation.kind === "channel") await rooms.setRoomPrefs(created.roomId, { starred: true }).catch(() => {});
+      // A new project is pinned (UX slice 6). A failed pin never fails the create.
+      if (creation.kind === "channel") await rooms.setRoomPrefs(created.roomId, { starred: true }).catch(() => {});
       return true;
     } catch (error) {
       setCreationError(error instanceof Error ? error.message : "The chat could not be created.");
@@ -888,12 +884,6 @@ export function MessagingWorkspaceProvider({
     } finally {
       setOpeningParticipant(null);
     }
-  }
-
-  async function changeListenMode(agentId: string, listenMode: ListenMode) {
-    const member = participants.find((candidate) => candidate.kind === "agent" && candidate.id === agentId);
-    if (!member) return;
-    await rooms.upsertMember({ kind: "agent", id: agentId, role: "member", listenMode });
   }
 
   async function addMember(member: MemberRef) {
@@ -1021,10 +1011,8 @@ export function MessagingWorkspaceProvider({
   const pending = rooms.optimisticMessages;
   const viewerRole = rooms.activeRoom?.members.find((member) => member.kind === "human" && member.id === userId)?.role ?? "";
   // A DM or group chat with Lightbulb: a project its people run (founder ruling, 6 Nov 2026).
-  const chatProject = superAgent && !!rooms.activeRoom && rooms.activeRoom.kind !== "channel" && !activeFeed
+  const chatProject = !!rooms.activeRoom && rooms.activeRoom.kind !== "channel" && !activeFeed
     && !rooms.activeRoom.shared && isProjectRoom(rooms.activeRoom);
-  // Any member may change an agent's response, on every plan (owner ruling 2026-09-24).
-  const canManageResponses = canChangeListenMode(viewerRole);
 
   const workspaceState = useWorkspaceState();
   const directoryProps: RoomDirectoryProps = {
@@ -1041,13 +1029,11 @@ export function MessagingWorkspaceProvider({
     onSelectRoom: (roomId: string) => { closeSession(); chooseRoom(roomId); },
     currentUserId: userId ?? undefined,
     onAddPeople: (roomId: string) => { closeSession(); chooseRoom(roomId); setAddPeopleRoomId(roomId); },
-    ...(superAgent ? {
-      onOpenSettings: (roomId: string, from: SettingsFrom = "sidebar") => { closeSession(); chooseRoom(roomId); activateMessagesPanel(); setSettingsTarget({ roomId, from }); },
-      onPatchRoom: async (roomId: string, request: PatchRoomRequest) => {
-        await rooms.resourceSource.client.updateRoom(roomId, request);
-        await (roomId === rooms.activeRoomId ? Promise.all([rooms.refreshRoom(), rooms.refreshRooms()]) : rooms.refreshRooms());
-      },
-    } : {}),
+    onOpenSettings: (roomId: string, from: SettingsFrom = "sidebar") => { closeSession(); chooseRoom(roomId); activateMessagesPanel(); setSettingsTarget({ roomId, from }); },
+    onPatchRoom: async (roomId: string, request: PatchRoomRequest) => {
+      await rooms.resourceSource.client.updateRoom(roomId, request);
+      await (roomId === rooms.activeRoomId ? Promise.all([rooms.refreshRoom(), rooms.refreshRooms()]) : rooms.refreshRooms());
+    },
     onSelectParticipant: async (participant: DirectoryParticipant) => { closeSession(); await selectParticipant(participant); },
     openingParticipant,
     onMarkUnread: rooms.markUnread,
@@ -1143,7 +1129,6 @@ export function MessagingWorkspaceProvider({
     onSelectParticipant: selectMessageParticipant,
     onRetry: () => void rooms.refreshRoom(),
     // Feed authors are not seated, so the feed has no listen modes to change (the service refuses membership edits).
-    ...(canManageResponses && !activeFeed ? { onListenModeChange: (agentId: string, mode: ListenMode) => void changeListenMode(agentId, mode) } : {}),
     billing: billingAccount,
     onSetReaction: rooms.setReaction,
     onUpdateMessage: rooms.updateMessage,
@@ -1183,9 +1168,9 @@ export function MessagingWorkspaceProvider({
     ...(!activeFeed && rooms.activeRoom && rooms.activeRoom.kind !== "dm" ? { onCopyJoinLink: copyJoinLink } : {}),
     openAddPeople: addPeopleRoomId !== null && addPeopleRoomId === rooms.activeRoomId,
     openSettings: settingsTarget && settingsTarget.roomId === rooms.activeRoomId ? settingsTarget.from : null,
-    // Super-agent projects: icon, colour and pause. The server decides who may (a channel's owner/admin, or a workspace
+    // Projects: icon, colour and pause. The server decides who may (a channel's owner/admin, or a workspace
     // admin pausing; any member of a chat with Lightbulb); a refusal surfaces where it was asked.
-    ...(superAgent && (rooms.activeRoom?.kind === "channel" || chatProject) && rooms.activeRoom && !activeFeed ? {
+    ...((rooms.activeRoom?.kind === "channel" || chatProject) && rooms.activeRoom && !activeFeed ? {
       onPatchRoom: async (request: PatchRoomRequest) => { await rooms.updateRoom(request); },
       // The server's pause rule: never #general or the shared channel; in a channel its owner/admin or a workspace
       // admin; in a group chat any member; in a DM its one person (never an admin).
@@ -1212,12 +1197,12 @@ export function MessagingWorkspaceProvider({
   // Decided once per mount, when fresh-or-returning is known (see landsOnHome).
   const landingDecided = useRef(false);
   useEffect(() => {
-    if (landingDecided.current || !superAgent || freshLanding === null) return;
+    if (landingDecided.current || freshLanding === null) return;
     landingDecided.current = true;
-    if (landsOnHome({ superAgent, fresh: freshLanding, search: window.location.search, snapshot: getWorkspaceSnapshot(), picked: explicitPickCount > 0 })) {
+    if (landsOnHome({ fresh: freshLanding, search: window.location.search, snapshot: getWorkspaceSnapshot(), picked: explicitPickCount > 0 })) {
       openPanel("home");
     }
-  }, [superAgent, freshLanding, explicitPickCount]);
+  }, [freshLanding, explicitPickCount]);
 
   // Muted rooms never badge anywhere: not the sidebar, not the browser-tab title.
   const openRoomTarget = useCallback((roomId: string, targetThreadId: string | null, messageId?: string) => {
@@ -1263,10 +1248,6 @@ export function MessagingWorkspaceProvider({
     return () => window.removeEventListener("openRoom", onOpenRoom);
   }, [openNotificationTarget, openSession]);
 
-  const unreadTotal = useMemo(() => rooms.rooms.reduce((sum, room) => sum + (room.muted ? 0 : room.unreadCount), 0), [rooms.rooms]);
-  // The Dock and tab count also carry your own sessions waiting on you (gap 8).
-  const { prefs: notifyPrefs } = useSessionNotificationPrefs();
-  const needingYou = useMemo(() => (notifyPrefs.waiting === "off" ? 0 : ownWaitingCount(sessionRows)), [sessionRows, notifyPrefs]);
 
   const activeDirectoryRoom = directoryRooms.find((room) => room.roomId === rooms.activeRoomId);
   const tabTitle = placeTabTitle(workspaceState, sessionFocus ? "Session"
@@ -1295,7 +1276,7 @@ export function MessagingWorkspaceProvider({
     askLightbulb,
   }}><MessageNotifications activeRoomId={rooms.activeRoomId} threadId={threadId} roomVisible={roomVisible} sideRoomIds={sideRoomIds} rooms={rooms.rooms}
     onOpen={openNotificationTarget} activeSessionId={sessionFocus?.sessionId ?? null}
-    onOpenSession={(sessionId) => { openSession(sessionId); activateMessagesPanel(); }} /><ShortcutSheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} />{superAgent ? <NeedsYouTitleBadge title={tabTitle} /> : <UnreadTitleBadge unread={unreadTotal + needingYou} title={tabTitle} />}{children}
+    onOpenSession={(sessionId) => { openSession(sessionId); activateMessagesPanel(); }} /><ShortcutSheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} /><NeedsYouTitleBadge title={tabTitle} />{children}
     {selectRoomError && <div role="alert" className="px-4 py-2 text-ui text-err">{selectRoomError}{" "}
       <button type="button" className="underline underline-offset-4" onClick={() => setSelectErrorDismissed(rooms.selectRoomError)}>Dismiss</button>
     </div>}</MessagingWorkspaceContext.Provider>;

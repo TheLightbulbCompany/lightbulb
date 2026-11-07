@@ -25,7 +25,7 @@ const room: RoomSummary = {
   topic: "Sell 200 loaves", starred: false, muted: false, sectionId: null, members: [], lastReadSeq: 0,
 };
 const header = (extra: Partial<Parameters<typeof RoomHeader>[0]> = {}) => <RoomHeader room={room} roomName="Spring sale" counterparts={[]} participantCount={1}
-  canEditRoom canLeave actionable pinnedCount={0} search={<span />} onOpenDetails={vi.fn()} compact
+  canEditRoom canLeave actionable pinnedCount={0} search={<span />} onOpenDetails={vi.fn()}
   settingsPeople={<section><h4>Members</h4></section>} {...extra} />;
 const openSettings = async () => {
   await userEvent.click(screen.getByRole("button", { name: /Spring sale/ }));
@@ -207,7 +207,7 @@ describe("channel settings", () => {
     const lightbulb = { kind: "agent" as const, id: "lb", displayName: "Lightbulb", mentionHandle: "lightbulb", role: "member" as const, listenMode: "active" as const, joinedAt: "", joinedSeq: 0 };
     const chat = { ...room, kind: "group-dm" as const, members: [lightbulb] };
     render(<RoomHeader room={chat} roomName="Spring sale" counterparts={[]} participantCount={3} canEditRoom canLeave actionable pinnedCount={0}
-      search={<span />} onOpenDetails={vi.fn()} compact onPatchRoom={vi.fn()} settingsPeople={<section />} />);
+      search={<span />} onOpenDetails={vi.fn()} onPatchRoom={vi.fn()} settingsPeople={<section />} />);
     await userEvent.click(screen.getByRole("button", { name: /Spring sale/ }));
     await userEvent.click(await screen.findByRole("menuitem", { name: "Settings" }));
     const dialog = await screen.findByRole("dialog", { name: "Spring sale · Chat settings" });
@@ -222,7 +222,7 @@ describe("channel settings", () => {
 
   it("a people-only group chat has no project settings", async () => {
     render(<RoomHeader room={{ ...room, kind: "group-dm" }} roomName="Spring sale" counterparts={[]} participantCount={3} canEditRoom canLeave actionable
-      pinnedCount={0} search={<span />} onOpenDetails={vi.fn()} compact />);
+      pinnedCount={0} search={<span />} onOpenDetails={vi.fn()} />);
     await userEvent.click(screen.getByRole("button", { name: /Spring sale/ }));
     expect(screen.queryByRole("menuitem", { name: "Settings" })).toBeNull();
   });
@@ -292,11 +292,10 @@ describe("channel settings", () => {
 describe("Pinned (sidebar)", () => {
   const dRoom = (extra: Partial<DirectoryRoom>): DirectoryRoom => ({ ...room, participants: [], ...extra } as DirectoryRoom);
 
-  it("the starred group reads Pinned with the switch on, Starred without", () => {
+  it("the starred group reads Pinned", () => {
     const rooms = [dRoom({ starred: true })];
     const nameOf = (r: DirectoryRoom) => r.name ?? "";
-    expect(groupRooms(rooms, [], { sort: "recent", nameOf, pinned: true })[0].label).toBe("Pinned");
-    expect(groupRooms(rooms, [], { sort: "recent", nameOf })[0].label).toBe("Starred");
+    expect(groupRooms(rooms, [], { sort: "recent", nameOf })[0].label).toBe("Pinned");
   });
 
   it("a channel row shows its tile, offers Pin and Settings", async () => {

@@ -58,7 +58,9 @@ vi.mock("@/hooks/useBilling", () => ({
   }),
 }));
 
-import SettingsPage from "../page";
+import { PANELS } from "@/components/settings/SettingsPlace";
+
+const SettingsPage = PANELS.profile;
 
 describe("ProfilePanel — subscription badge", () => {
   beforeEach(() => {
@@ -74,7 +76,7 @@ describe("ProfilePanel — subscription badge", () => {
   it("maps trial_local to Free tier, never the raw enum", () => {
     billing.account = { subscription_status: "trial_local", trial_end: null };
     render(<SettingsPage />);
-    expect(screen.getByText("Free tier")).toBeInTheDocument();
+    expect(screen.getByText(/· Free tier/)).toBeInTheDocument();
     expect(screen.queryByText(/trial_local/i)).not.toBeInTheDocument();
   });
 
@@ -83,15 +85,9 @@ describe("ProfilePanel — subscription badge", () => {
     render(<SettingsPage />);
     // planLabel capitalizes the raw enum ("active" -> "Active"); settings.css's
     // text-transform: uppercase then renders it visually as ACTIVE on top.
-    expect(screen.getByText("Active")).toBeInTheDocument();
+    expect(screen.getByText(/· Active/)).toBeInTheDocument();
   });
 
-  it("does not shout FREE TIER — the uppercase transform is dropped for trial_local", () => {
-    billing.account = { subscription_status: "trial_local", trial_end: null };
-    render(<SettingsPage />);
-    const badge = screen.getByText("Free tier");
-    expect(badge).toHaveStyle({ textTransform: "none" });
-  });
 });
 
 // Covers the self-serve DeleteAccountCard: typed-email confirm gating the
@@ -119,7 +115,7 @@ describe("ProfilePanel — delete account", () => {
 
   it("requires the account email typed back before the delete button arms", async () => {
     render(<SettingsPage />);
-    fireEvent.click(screen.getByRole("button", { name: /delete account/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^delete…$/i }));
 
     const deleteBtn = screen.getByRole("button", { name: /delete forever/i });
     expect(deleteBtn).toBeDisabled();
@@ -155,7 +151,7 @@ describe("ProfilePanel — delete account", () => {
       }),
     );
     render(<SettingsPage />);
-    fireEvent.click(screen.getByRole("button", { name: /delete account/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^delete…$/i }));
     fireEvent.change(screen.getByLabelText("Confirm account email"), {
       target: { value: "test@isol8.co" },
     });
@@ -170,7 +166,7 @@ describe("ProfilePanel — delete account", () => {
   it("offers deletion in a workspace context too (the backend supports it)", () => {
     clerk.organization = { id: "org_1" };
     render(<SettingsPage />);
-    expect(screen.getByRole("button", { name: /delete account/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^delete…$/i })).toBeInTheDocument();
   });
 });
 
@@ -204,7 +200,7 @@ describe("ProfilePanel — workspace export", () => {
         : new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } }),
     );
     render(<SettingsPage />);
-    fireEvent.click(screen.getByRole("button", { name: /download tasks/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^download$/i }));
 
     await waitFor(() => expect(screen.getByText(/couldn't prepare your export/i)).toBeInTheDocument());
     expect(analytics.capture).not.toHaveBeenCalledWith("workspace_export_downloaded");

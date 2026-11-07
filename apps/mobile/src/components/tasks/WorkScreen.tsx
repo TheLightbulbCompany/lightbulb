@@ -24,8 +24,8 @@ const SEGMENTS: readonly { key: Segment; label: string }[] = [
 ];
 const PLACEHOLDERS: Partial<Record<string, string>> = { needs_you: "Nothing needs you", closed: "Nothing closed yet" };
 
-export function WorkScreen({ scope = { kind: "workspace" }, onOpenOldBoard, viewerTz = viewerTimeZone() }: {
-  scope?: TaskScope; onOpenOldBoard?: () => void; viewerTz?: string;
+export function WorkScreen({ scope = { kind: "workspace" }, viewerTz = viewerTimeZone() }: {
+  scope?: TaskScope; viewerTz?: string;
 }) {
   const scheme = useColorScheme() === "dark" ? "dark" : "light";
   const palette = chatPalette[scheme];
@@ -38,11 +38,6 @@ export function WorkScreen({ scope = { kind: "workspace" }, onOpenOldBoard, view
       </View>
       <ScrollView contentContainerStyle={styles.body} contentInsetAdjustmentBehavior="automatic">
         {segment === "overview" ? <OverviewList scope={scope} palette={palette} /> : <ScheduledList palette={palette} viewerTz={viewerTz} />}
-        {onOpenOldBoard ? (
-          <Pressable accessibilityRole="button" accessibilityLabel="Task board (old)" onPress={onOpenOldBoard} style={styles.oldLink} hitSlop={8}>
-            <Text style={[styles.link, { color: palette.fgMute }]}>Task board (old) ›</Text>
-          </Pressable>
-        ) : null}
       </ScrollView>
     </View>
   );

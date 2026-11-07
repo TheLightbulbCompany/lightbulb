@@ -22,7 +22,6 @@ vi.mock("@clerk/nextjs", () => ({
 }));
 
 vi.mock("@/hooks/useLiveEvents", () => ({
-  useSuperAgent: () => false,
   useLiveEvents: () => ({ isConnected: true, onEvent: () => () => {} }),
 }));
 
@@ -162,7 +161,7 @@ describe("ProvisioningStepper readiness (issue #1878)", () => {
     // Messaging never needs the container: the workspace renders mid-boot,
     // with the agents banner instead of the setup card.
     expect(screen.getByText("workspace")).toBeInTheDocument();
-    expect(screen.getByText(/ready in about a minute/i)).toBeInTheDocument();
+    expect(screen.getByText(/You can write to Lightbulb now/)).toBeInTheDocument();
     // The banner now names the live step too, so "is the card gone?" has to be
     // asked of something only the card renders — its rotating-ideas eyebrow.
     expect(screen.queryByText(/try asking your agent to/i)).not.toBeInTheDocument();
@@ -173,7 +172,7 @@ describe("ProvisioningStepper readiness (issue #1878)", () => {
     // The container finishes booting. Time alone changes nothing: there is no poll.
     body = READY;
     await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
-    expect(screen.getByText(/ready in about a minute/i)).toBeInTheDocument();
+    expect(screen.getByText(/You can write to Lightbulb now/)).toBeInTheDocument();
 
     // The provision execution's status event arrives: LiveEventsProvider mutates the key.
     await act(async () => {
@@ -181,7 +180,7 @@ describe("ProvisioningStepper readiness (issue #1878)", () => {
       await vi.advanceTimersByTimeAsync(100);
     });
 
-    await vi.waitFor(() => expect(screen.queryByText(/ready in about a minute/i)).not.toBeInTheDocument());
+    await vi.waitFor(() => expect(screen.queryByText(/You can write to Lightbulb now/)).not.toBeInTheDocument());
     expect(screen.getByText("workspace")).toBeInTheDocument();
   });
 
@@ -192,7 +191,7 @@ describe("ProvisioningStepper readiness (issue #1878)", () => {
     body = { ...STARTING, runtime_phase: "provisioning", container_substatus: null };
     renderStepper();
     await waitFor(() => expect(screen.getByText("workspace")).toBeInTheDocument());
-    expect(screen.getByRole("status")).toHaveTextContent(/ready in about a minute/i);
+    expect(screen.getByRole("status")).toHaveTextContent(/You can write to Lightbulb now/);
     expect(document.querySelector(".provision-card")).toBeNull();
   });
 });

@@ -28,7 +28,7 @@ describe("CanvasDockPanel deep link", () => {
   it("a stuck building app says where it stopped, like the list and the view", () => {
     hook = { ...base, apps: [row({ state: "building", stuck: { at: "2026-11-03T00:00:00Z", step: "building" } })] };
     panel("a1");
-    expect(screen.getByText("Stopped at building. Nothing has moved for 5 minutes.")).toBeTruthy();
+    expect(screen.getByText(/^Waiting on Engineering · /)).toBeTruthy();
     expect(screen.queryByText(/making the preview|Building the new version/)).toBeNull();
   });
 
@@ -55,7 +55,7 @@ describe("CanvasDockPanel deep link", () => {
     expect(screen.getByText("Invoices")).toBeTruthy();
     expect(screen.getByText(/(making the preview|Building the new version)\. It'll (post|show here and) in #finance/)).toBeTruthy();
     expect(screen.queryByText("app view")).toBeNull();
-    expect(screen.getByRole("button", { name: "All apps" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "All creations" })).toBeTruthy();
     // The builder talks while it builds: its conversation is beside the status.
     expect(screen.getByRole("complementary", { name: "Conversation" }).textContent).toBe("a1");
   });

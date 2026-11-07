@@ -17,21 +17,6 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
-it("describes the message field with the respond hint once there is a draft to send", () => {
-  const friday = {
-    kind: "agent" as const, id: "agent-friday", displayName: "Friday", mentionHandle: "friday",
-    role: "member" as const, listenMode: "mentions" as const, joinedAt: "2026-09-10T00:00:00Z", joinedSeq: 0,
-  };
-  const { rerender } = render(<RoomComposer {...baseProps} roomKind="dm" members={[friday]} />);
-  // An empty box says nothing about who will reply — the hint belongs to the moment of sending.
-  expect(screen.queryByText("Friday will reply")).not.toBeInTheDocument();
-  rerender(<RoomComposer {...baseProps} text="hi" roomKind="dm" members={[friday]} />);
-  const hint = screen.getByText("Friday will reply");
-
-  expect(hint.id).toBeTruthy();
-  expect(screen.getByRole("textbox", { name: "Message" }).getAttribute("aria-describedby")).toContain(hint.id);
-});
-
 it("consumes an agent focus request and seeds an empty draft", () => {
   const onTextChange = vi.fn();
   requestFocusComposer("agent-friday", "File the inbox");

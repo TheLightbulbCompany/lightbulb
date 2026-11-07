@@ -13,10 +13,9 @@ vi.mock("@/components/workspace/workspaceController", () => ({
   closePane: vi.fn(), openPanel: vi.fn(), updatePanelParams: vi.fn(), openTaskPane: (id: string) => openTaskPane(id),
   useWorkspaceState: () => ({ place: "chat", chatParams: { roomId: place.roomId } }),
 }));
-const superAgent = { on: false };
 const tasksGet = vi.fn();
 const tasks = { get: tasksGet };
-vi.mock("@/hooks/useLiveEvents", () => ({ useSuperAgent: () => superAgent.on, useLiveEvents: () => ({ tasks }) }));
+vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => ({ tasks }) }));
 vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({
   useMessagingWorkspaceOptional: () => ({ directoryProps: { rooms: [{ roomId: "shop", kind: "channel", name: "walk-16 bookshop", participants: [] }] } }),
 }));
@@ -34,7 +33,6 @@ it("opens a room CSV attachment in the grid", async () => {
   expect(await screen.findByRole("table")).toBeInTheDocument();
   // The title lives in RightPane's bar (describePanel); the pane draws no second header.
   expect(screen.queryByRole("heading", { name: "out.csv" })).toBeNull();
-  expect(screen.getByRole("link", { name: "Download" })).toHaveAttribute("download", "out.csv");
   expect(downloadBlob).toHaveBeenCalledWith("/messaging/rooms/r1/attachments/att1");
 });
 
@@ -90,8 +88,7 @@ it("an untyped response previews nothing and offers Download", async () => {
 it("encodes every path segment taken from the URL", async () => {
   downloadBlob.mockResolvedValue(new Blob(["a"], { type: "text/plain" }));
   render(<ArtifactDockPanel id="artifact" params={{ src: "attachment", room: "../../x?", id: "a/b", name: "n.txt" }} />);
-  await screen.findByRole("link", { name: "Download" });
-  expect(downloadBlob).toHaveBeenLastCalledWith("/messaging/rooms/..%2F..%2Fx%3F/attachments/a%2Fb");
+  await vi.waitFor(() => expect(downloadBlob).toHaveBeenLastCalledWith("/messaging/rooms/..%2F..%2Fx%3F/attachments/a%2Fb"));
   teamsDownload.mockResolvedValue(new Blob(["a"], { type: "text/plain" }));
   render(<ArtifactDockPanel id="artifact" params={{ src: "paperclip", kind: "attachment", issue: "../i", id: "a?b" }} />);
   await vi.waitFor(() => expect(teamsDownload).toHaveBeenCalledWith("/issues/..%2Fi/attachments/a%3Fb/content"));
@@ -101,7 +98,6 @@ it("encodes every path segment taken from the URL", async () => {
 });
 
 it("super-agent: a text doc's Copy and Download sit in the pane header, not on a row of their own (W14)", async () => {
-  superAgent.on = true;
   try {
     const writeText = vi.fn(async () => undefined);
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
@@ -117,11 +113,10 @@ it("super-agent: a text doc's Copy and Download sit in the pane header, not on a
     await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith("# Menu\n\nRye on Thursday."));
     expect(await header.findByRole("button", { name: "Copied" })).toBeInTheDocument();
     host.remove();
-  } finally { superAgent.on = false; }
+  } finally { /* nothing to reset */ }
 });
 
 it("super-agent: a short text result opens as the doc itself, its button line copies as words, and it names its channel and task (W16-2, W16-5)", async () => {
-  superAgent.on = true;
   try {
     const writeText = vi.fn(async () => undefined);
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
@@ -143,11 +138,10 @@ it("super-agent: a short text result opens as the doc itself, its button line co
     await userEvent.click(screen.getByRole("button", { name: "Open task" }));
     expect(openTaskPane).toHaveBeenCalledWith("t1");
     host.remove();
-  } finally { superAgent.on = false; }
+  } finally { /* nothing to reset */ }
 });
 
 it("a task's email file drops its Preview text line; a file someone uploaded is copied as it is (W18)", async () => {
-  superAgent.on = true;
   try {
     const writeText = vi.fn(async () => undefined);
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
@@ -164,5 +158,5 @@ it("a task's email file drops its Preview text line; a file someone uploaded is 
       unmount();
       host.remove();
     }
-  } finally { superAgent.on = false; }
+  } finally { /* nothing to reset */ }
 });

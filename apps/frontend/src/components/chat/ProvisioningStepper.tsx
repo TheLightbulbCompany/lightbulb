@@ -11,7 +11,6 @@ import { Loader2 } from "lucide-react";
 import { useOrganization, useAuth } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
 import { useBilling } from "@/hooks/useBilling";
-import { useSuperAgent } from "@/hooks/useLiveEvents";
 import { useProvisioningState, type BlockedPayload } from "@/hooks/useProvisioningState";
 import { useRuntimeRpc } from "@/hooks/useRuntimeRpc";
 import { useSystemHealth } from "@/hooks/useSystemHealth";
@@ -27,11 +26,8 @@ import { providerComparisonCards } from "@/lib/providerCards";
 // steppers stay in lockstep. Aliased to this file's historical local names so
 // every usage site below is unchanged.
 import {
-  PROVISION_IDEAS,
-  PROVISION_IDEA_ROTATION_MS as IDEA_ROTATION_MS,
   PROVISION_TIMEOUT_MS as TIMEOUT_MS,
   PROVISION_STUCK_MS as STUCK_MS,
-  formatProvisionElapsed as formatElapsed,
   deriveUIPhase,
   type UIPhase,
 } from "@lightbulb/shared";
@@ -138,40 +134,6 @@ const ONBOARDING_PHASE_ORDER: Phase[] = [
 // alone can't distinguish a first activation from a replay.
 const ONBOARDING_READY_STORAGE_KEY = "isol8_onboarding_ready_v1";
 
-function RotatingIdeas({ eyebrow }: { eyebrow: string }) {
-  const [idx, setIdx] = useState(0);
-  const [visible, setVisible] = useState(true);
-
-  useEffect(() => {
-    if (typeof window !== "undefined" &&
-        window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      return;
-    }
-    const tick = setInterval(() => {
-      setVisible(false);
-      const swap = setTimeout(() => {
-        setIdx((i) => (i + 1) % PROVISION_IDEAS.length);
-        setVisible(true);
-      }, 180);
-      return () => clearTimeout(swap);
-    }, IDEA_ROTATION_MS);
-    return () => clearInterval(tick);
-  }, []);
-
-  return (
-    <>
-      <span className="provision-idea-eyebrow">{eyebrow}</span>
-      <span
-        className={`provision-idea${visible ? "" : " provision-idea-fading"}`}
-        aria-live="polite"
-        aria-atomic="true"
-      >
-        {PROVISION_IDEAS[idx]}
-      </span>
-    </>
-  );
-}
-
 // The stepper's short-lived loading holds replace the entire chat surface with
 // an unlabelled centred spinner. On dev one of them sat there for 35s+ while
 // /container/status reported `lifecycle: "provisioning"`, so the owner saw a
@@ -206,7 +168,6 @@ export function ProvisioningStepper({
   const { organization } = useOrganization();
   const isOrg = !!organization;
   const { userId: clerkUserId, orgId: clerkOrgId } = useAuth();
-  const superAgent = useSuperAgent();
   // Per-OWNER activation-marker key so a shared/QA browser doesn't let the first
   // account's activation suppress onboarding_ready for a later account's real
   // first cold start. The event is a person-level denominator (PostHog is
@@ -1258,432 +1219,27 @@ export function ProvisioningStepper({
   // `elapsedMs` to zero, which is how 21 hours kept looking like 5 minutes.
   const stuck = elapsedMs > STUCK_MS;
 
-  // Super-agent: #general opens at once and takes a message; the setup's real progress is the banner over it (the
-  // first message waits, admitted, until the runtime answers). Never a card in front of the chat.
-  if (superAgent) {
-    return (
-      // The app first, the banner after (drawn on top by `order-first`): every branch keeps children at the same
-      // place, so a box that stops or starts never remounts the app (composer text and scroll survive).
-      <>
-        {children}
-        <AgentsBanner state={isTerminalError ? "failed" : stuck ? "stuck" : timedOut ? "slow" : "welcome"} phase={phase}
-          onCheck={handleAgentsBannerCheck}
-          onSupport={() => capture("support_contact_clicked", { source: "agents_banner", phase, stuck })}
-          isChecking={needsRecover && isRetryingProvision} checkFailed={needsRecover && retryFailed} />
-      </>
-    );
-  }
-
-  // Every workspace/plan/provider gate above has passed. Messaging never needs
-  // the container (HTTP + DynamoDB + AppSync), so a starting, stuck or failed
-  // one is a banner over the working app, not a card in front of it. Only the
-  // window before the first /container/status answer keeps the card below.
-  if (container) {
-    return (
-      <>
-        {children}
-        <AgentsBanner
-          state={
-            isTerminalError
-              ? "failed"
-              : stuck
-                ? "stuck"
-                : timedOut
-                  ? "slow"
-                  : container.container_status == null
-                    ? "not_started"
-                    : "starting"
-          }
-          phase={phase}
-          onCheck={handleAgentsBannerCheck}
-          onSupport={() => capture("support_contact_clicked", { source: "agents_banner", phase, stuck })}
-          isChecking={needsRecover && isRetryingProvision}
-          checkFailed={needsRecover && retryFailed}
-        />
-      </>
-    );
-  }
-
-  // Provisioning stepper — animated 4-step flow
-  const steps = STEPS_PAID;
-  const currentIdx = steps.findIndex((s) => s.phase === phase);
-  const currentStep = steps[currentIdx] || steps[0];
-  // While the failure is known, the pod animation would keep steaming as if
-  // work were still happening.
-  const podAnimating =
-    (phase === "gateway" || phase === "channels-sidecars" || phase === "agent");
-
+  // #general opens at once and takes a message; the setup's real progress is the banner over it (the first message
+  // waits, admitted, until the runtime answers). Never a card in front of the chat.
   return (
+    // The app first, the banner after (drawn on top by `order-first`): every branch keeps children at the same
+    // place, so a box that stops or starts never remounts the app (composer text and scroll survive).
     <>
-      <style>{`
-        .provision-wrapper {
-          flex: 1;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          background: var(--cream);
-        }
-        .provision-card {
-          text-align: center;
-          max-width: 400px;
-          width: 100%;
-          padding: 48px 32px;
-        }
-        .provision-logo {
-          margin-bottom: 32px;
-        }
-        .provision-stage {
-          width: 80px;
-          height: 80px;
-          margin: 0 auto 32px;
-          position: relative;
-        }
-        .provision-anim {
-          position: absolute;
-          inset: 0;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          opacity: 0;
-          transition: opacity 400ms ease-out;
-        }
-        .provision-anim.active { opacity: 1; }
-
-        /* Key spinner */
-        .anim-key-circle {
-          width: 56px; height: 56px;
-          border: 2px solid var(--edge);
-          border-top-color: var(--midnight);
-          border-radius: 50%;
-          animation: key-spin 1.2s linear infinite;
-        }
-        .anim-key-icon {
-          position: absolute;
-          inset: 0;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-        }
-        @keyframes key-spin { to { transform: rotate(360deg); } }
-
-        /* Pod opening */
-        .anim-pod { position: relative; width: 56px; height: 56px; }
-        .pod-body {
-          position: absolute; bottom: 0; left: 4px; right: 4px; height: 32px;
-          background: var(--midnight); border-radius: 0 0 8px 8px;
-        }
-        /* --ok-reversed, not --ok: the pod body is its own midnight ground,
-           so the window is a state mark on midnight even on the cream card. */
-        .pod-window {
-          width: 20px; height: 10px; background: var(--ok-reversed); border-radius: 4px;
-          margin: 8px auto 0;
-          /* Default flat glow; pulse only switches on once the lid opens, so
-             the window doesn't visibly breathe during the brief pod-closed
-             provisioning phase. */
-          box-shadow: 0 0 0 0 transparent;
-        }
-        .pod-open .pod-window {
-          /* Slow ambient pulse — visible during the 3+ min stretch where
-             the user is in gateway / channels-sidecars / agent sub-phases.
-             The steam already loops above; this gives the green glow a
-             gentle heartbeat so the eye registers continuous motion even
-             after the open animation has settled. */
-          animation: pod-window-pulse 2.6s ease-in-out infinite;
-        }
-        @keyframes pod-window-pulse {
-          0%, 100% {
-            box-shadow: 0 0 0 0 transparent;
-          }
-          50% {
-            box-shadow: 0 0 14px 2px color-mix(in srgb, var(--ok-reversed) 55%, transparent);
-          }
-        }
-        .pod-lid-l, .pod-lid-r {
-          position: absolute; top: 16px; width: 50%; height: 12px;
-          background: var(--midnight); transition: transform 600ms ease-out;
-        }
-        .pod-lid-l { left: 4px; border-radius: 8px 0 0 0; transform-origin: left center; }
-        .pod-lid-r { right: 4px; border-radius: 0 8px 0 0; transform-origin: right center; }
-        .pod-open .pod-lid-l { transform: rotate(-35deg); }
-        .pod-open .pod-lid-r { transform: rotate(35deg); }
-        .pod-steam-line {
-          position: absolute; width: 2px; background: var(--midnight-faint); border-radius: 1px;
-          opacity: 0; transition: opacity 400ms ease-out 300ms;
-        }
-        .pod-open .pod-steam-line { opacity: 1; animation: steam 1.5s ease-out infinite; }
-        .pod-steam-line:nth-child(1) { left: 14px; height: 16px; top: -4px; animation-delay: 0s; }
-        .pod-steam-line:nth-child(2) { left: 26px; height: 12px; top: -2px; animation-delay: 0.3s; }
-        .pod-steam-line:nth-child(3) { left: 38px; height: 14px; top: -6px; animation-delay: 0.6s; }
-        @keyframes steam {
-          0% { transform: translateY(0); opacity: 0.7; }
-          100% { transform: translateY(-18px); opacity: 0; }
-        }
-
-        /* Done check */
-        .anim-done { display: flex; align-items: center; justify-content: center; }
-        .check-path {
-          stroke-dasharray: 30; stroke-dashoffset: 30;
-          animation: draw-check 600ms ease-out forwards;
-        }
-        @keyframes draw-check { to { stroke-dashoffset: 0; } }
-
-        /* Title fade */
-        .provision-title {
-          font-family: var(--font-serif), serif;
-          font-size: 22px; font-weight: 400; color: var(--midnight);
-          margin-bottom: 8px; transition: opacity 150ms ease-out;
-        }
-        .provision-desc {
-          font-family: var(--font-sans), sans-serif;
-          font-size: 14px; color: var(--midnight-muted);
-          margin-bottom: 32px; transition: opacity 150ms ease-out;
-        }
-        .provision-fading { opacity: 0; }
-
-        /* Rotating idea suggestions — stacked eyebrow + phrase, space reserved
-           so the layout never shifts during crossfade. */
-        .provision-desc-ideas {
-          display: flex; flex-direction: column; align-items: center;
-          gap: 6px; min-height: 56px;
-        }
-        .provision-idea-eyebrow {
-          font-family: var(--font-sans), sans-serif;
-          font-size: 12px; font-weight: 500;
-          color: var(--midnight-label); letter-spacing: 0.3px;
-          text-transform: uppercase;
-        }
-        .provision-idea {
-          font-family: var(--font-serif), serif;
-          font-size: 15px; font-style: italic;
-          color: var(--midnight-soft); line-height: 1.4;
-          max-width: 42ch; text-align: center;
-          transition: opacity 180ms ease-out, transform 180ms ease-out;
-          will-change: opacity, transform;
-        }
-        .provision-idea-fading { opacity: 0; transform: translateY(4px); }
-
-        /* Progress dots */
-        .provision-dots {
-          display: flex; align-items: center; justify-content: center; gap: 0;
-        }
-        .provision-dot {
-          width: 10px; height: 10px; border-radius: 50%;
-          background: var(--edge); transition: background 300ms ease-out, transform 300ms ease-out;
-        }
-        .provision-dot.active { background: var(--midnight); transform: scale(1.2); }
-        .provision-dot.done { background: var(--ok); }
-        .provision-connector {
-          width: 32px; height: 2px; background: var(--edge);
-          transition: background 300ms ease-out;
-        }
-        .provision-connector.done { background: var(--ok); }
-
-        .provision-free-banner {
-          margin-top: 24px;
-          padding: 12px 16px;
-          background: var(--cream);
-          border: 1px solid var(--ok);
-          border-radius: 12px;
-          font-size: 13px;
-          color: var(--ok);
-        }
-        .provision-free-sub {
-          font-size: 12px; color: var(--midnight-muted); margin-top: 8px;
-        }
-        /* Live elapsed counter — sits below the dots so the user always
-           sees the clock moving even before the soft-timeout copy appears. */
-        .provision-elapsed {
-          margin-top: 18px;
-          font-family: var(--font-sans), sans-serif;
-          font-size: 12px;
-          color: var(--midnight-muted);
-          letter-spacing: 0.2px;
-          font-variant-numeric: tabular-nums;
-        }
-        /* Soft-timeout block — calm, not alarming. The provision is still
-           progressing; we're just inviting the user to re-check. */
-        .provision-timeout {
-          margin-top: 28px;
-          padding-top: 20px;
-          border-top: 1px solid var(--edge);
-          display: flex; flex-direction: column;
-          align-items: center; gap: 14px;
-          max-width: 360px;
-          margin-left: auto; margin-right: auto;
-        }
-        .provision-timeout-msg {
-          font-family: var(--font-sans), sans-serif;
-          font-size: 13px;
-          color: var(--midnight-muted);
-          line-height: 1.5;
-          margin: 0;
-          text-align: center;
-        }
-        .provision-timeout-actions {
-          display: flex; gap: 8px; align-items: center;
-        }
-
-        @media (prefers-reduced-motion: reduce) {
-          .anim-key-circle { animation: none; }
-          .pod-steam-line { animation: none; }
-          .pod-open .pod-window { animation: none; }
-          .check-path { animation: none; stroke-dashoffset: 0; }
-          .provision-title, .provision-desc { transition: none; }
-        }
-      `}</style>
-      <div className="provision-wrapper">
-        <div className="provision-card">
-          <div className="provision-logo">
-            <Logo size="lg" href={null} />
-          </div>
-
-          {/* Animation stage */}
-          <div className="provision-stage" aria-hidden="true">
-            {/* Step: payment/container — key spinner */}
-            <div
-              className={`provision-anim ${
-                phase === "payment" || phase === "container" ? "active" : ""
-              }`}
-            >
-              <div className="anim-key-circle" />
-              <div className="anim-key-icon">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--midnight)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.78 7.78 5.5 5.5 0 0 1 7.78-7.78zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
-                </svg>
-              </div>
-            </div>
-
-            {/* Step: gateway / channels-sidecars / agent — all reuse the
-                pod-opening animation (the long cold-start window) so users
-                see continuous motion as the stepper text advances through
-                "Booting gateway..." -> "Starting channels..." -> "Starting
-                agent...". One animation, three labels. */}
-            <div className={`provision-anim ${podAnimating ? "active" : ""}`}>
-              <div className={`anim-pod ${podAnimating ? "pod-open" : ""}`}>
-                <div className="pod-steam-line" /><div className="pod-steam-line" /><div className="pod-steam-line" />
-                <div className="pod-lid-l" /><div className="pod-lid-r" />
-                <div className="pod-body"><div className="pod-window" /></div>
-              </div>
-            </div>
-
-            {/* Step: ready — checkmark */}
-            <div className={`provision-anim ${(phase as string) === "ready" ? "active" : ""}`}>
-              <div className="anim-done">
-                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--midnight)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="20 6 9 17 4 12" className="check-path" />
-                </svg>
-              </div>
-            </div>
-          </div>
-
-          <h2
-            className="provision-title"
-            role="status"
-            aria-live="polite"
-            aria-atomic="true"
-          >
-            {currentStep?.activeLabel || "Setting up..."}
-          </h2>
-          {/* Rotating "while you wait, try asking your agent to…" prompts are
-              an invitation to keep waiting. Once the failure is known there is
-              nothing to wait for, so they go. */}
-          <div className="provision-desc provision-desc-ideas">
-            <RotatingIdeas
-              eyebrow={
-                isOrg
-                  ? `Preparing workspace for ${organization?.name} — try asking your agent to…`
-                  : "While you wait, try asking your agent to…"
-              }
-            />
-          </div>
-
-          {/* Progress dots */}
-          <div className="provision-dots">
-            {steps.map((step, i) => (
-              <span key={step.phase}>
-                {i > 0 && <span className={`provision-connector ${i <= currentIdx ? "done" : ""}`} />}
-                <span className={`provision-dot ${i === currentIdx ? "active" : i < currentIdx ? "done" : ""}`} />
-              </span>
-            ))}
-          </div>
-
-          {/* Quiet elapsed counter — present from the start so the user can
-              see the clock advancing, not a wall of unchanging spinner. The
-              "cold starts can take a few minutes" caption is a claim about the
-              future, so it only survives while that is still plausibly true:
-              not once the failure is known, and not past the stuck tier. */}
-          {(phase === "container" ||
-              phase === "gateway" ||
-              phase === "channels-sidecars" ||
-              phase === "agent") &&
-            elapsedMs > 0 && (
-              /* aria-live="off" is deliberate: this value ticks once per
-                 second and provisioning routinely runs minutes, so a live
-                 region here reads the elapsed time to a screen reader once per
-                 second for the whole of onboarding and buries the step
-                 transitions announced from the same region by the
-                 `provision-title` heading above. This is the number, not the
-                 news. */
-              <div className="provision-elapsed" aria-live="off">
-                {formatElapsed(elapsedMs)}
-                {!stuck && " · cold starts can take a few minutes"}
-              </div>
-            )}
-
-          {/* The known-failure card. Inline, in the flow of this card — the
-              ready branch's `fixed` corner stack is the only one, and there is
-              no app behind this screen to layer a toast over. */}
-          {timedOut && (
-            <div className="provision-timeout">
-              {/* Two tiers. The first is honest for a slow-but-live cold start.
-                  The second stops claiming it is "still going" — past 15 min
-                  nothing here is normal, and saying so is the only useful
-                  thing this screen can do. */}
-              <p className="provision-timeout-msg">
-                {stuck
-                  ? "This is taking longer than it should — something is stuck on our side. Setup normally finishes in a few minutes. Your progress is saved; contact us and we'll get it moving."
-                  : "Still going. Re-check below — your progress is preserved."}
-              </p>
-              <div className="provision-timeout-actions">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="rounded-full border-[var(--edge)]"
-                  // Re-poll ONLY. This used to also clear `timedOut` and reset
-                  // the clock to 0:00, so the one button an escalated owner
-                  // presses erased their own escalation and started the 5-min
-                  // budget over — 21 hours of stall read as five minutes,
-                  // repeatedly.
-                  onClick={checkAgain}
-                >
-                  Check again
-                </Button>
-                <Button variant="ghost" size="sm" asChild>
-                  <a
-                    href={SUPPORT_MAILTO}
-                    onClick={() => capture("support_contact_clicked", { source: "onboarding_stepper", phase, stuck })}
-                  >Contact support</a>
-                </Button>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
+      {children}
+      <AgentsBanner state={isTerminalError ? "failed" : stuck ? "stuck" : timedOut ? "slow" : "welcome"} phase={phase}
+        onCheck={handleAgentsBannerCheck}
+        onSupport={() => capture("support_contact_clicked", { source: "agents_banner", phase, stuck })}
+        isChecking={needsRecover && isRetryingProvision} checkFailed={needsRecover && retryFailed} />
     </>
   );
 }
 
 
 const AGENTS_BANNER_COPY = {
-  starting: "Your team is getting ready — it'll be ready in about a minute.",
-  // No container row: nothing is provisioning (the org.created webhook is the only automatic
-  // trigger since the status poll retired). Offer "Check again" at once rather than after the
-  // 5-minute slow threshold; it starts the workspace through /container/recover.
-  not_started: "Your team hasn't started setting up yet.",
   slow: "Still going — your agents are taking a little longer than usual. You can keep messaging in the meantime.",
   stuck: "Starting your agents is taking longer than it should — something is stuck on our side. Messaging still works; contact us and we'll get it moving.",
   failed: "Setup failed — your agents couldn't start. Messaging still works; retry, or contact support if it keeps failing.",
-  // Super-agent, first minutes: the chat is open and takes a message now; Lightbulb answers it once setup finishes.
+  // First minutes: the chat is open and takes a message now; Lightbulb answers it once setup finishes.
   welcome: "You can write to Lightbulb now — it answers as soon as setup finishes.",
 } as const;
 
@@ -1718,7 +1274,6 @@ export function agentsBannerProgress(
 // claiming any. Those two keep the flat AGENTS_BANNER_COPY sentence and their
 // actions, unchanged — and so does any phase we can't place on the ladder.
 const ADVANCING_BANNER_COPY: Partial<Record<keyof typeof AGENTS_BANNER_COPY, string>> = {
-  starting: "Your team will be ready in about a minute.",
   slow: AGENTS_BANNER_COPY.slow,
   welcome: AGENTS_BANNER_COPY.welcome,
 };
@@ -1771,7 +1326,7 @@ function AgentsBanner({
             <span className="text-err">Retry failed — try again or contact support.</span>
           )}
         </span>
-        {state !== "starting" && state !== "welcome" && (
+        {state !== "welcome" && (
           <span className="flex gap-4">
             <button type="button" className="underline disabled:opacity-60" onClick={onCheck} disabled={isChecking}>
               {isChecking ? "Retrying…" : state === "failed" ? "Retry" : "Check again"}

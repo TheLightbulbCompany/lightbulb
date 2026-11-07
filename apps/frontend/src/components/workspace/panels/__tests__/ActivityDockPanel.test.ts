@@ -6,7 +6,7 @@ vi.mock("../../workspaceController", () => ({ openPanel: (...args: unknown[]) =>
 vi.mock("@/hooks/useActivity", () => ({ useActivity: vi.fn() }));
 vi.mock("@/hooks/useTeamsApi", () => ({ useTeamsApi: vi.fn() }));
 
-import { feedShown, openActivityTarget, openDiscussion } from "../ActivityDockPanel";
+import { openActivityTarget, openDiscussion } from "../ActivityDockPanel";
 import { draftKey, readDraft, writeDraft } from "@/components/messaging/drafts";
 
 describe("openActivityTarget", () => {
@@ -89,12 +89,3 @@ describe("openDiscussion", () => {
   });
 });
 
-describe("feedShown", () => {
-  it("counts the feed as on screen only once the layout is measured, and on a narrow panel only on its tab", () => {
-    expect(feedShown(null, "feed")).toBe(false);
-    expect(feedShown(null, "for-you")).toBe(false);
-    expect(feedShown(false, "for-you")).toBe(true);
-    expect(feedShown(true, "for-you")).toBe(false);
-    expect(feedShown(true, "feed")).toBe(true);
-  });
-});

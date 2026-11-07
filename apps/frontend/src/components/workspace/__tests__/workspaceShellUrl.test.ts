@@ -7,7 +7,6 @@
 //   4. INVARIANT: the panel open/focus path performs ZERO history writes —
 //      only pushUrl:true calls may write (spec §6: focus never touches the URL)
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import type React from "react";
 
 vi.mock("@/lib/shellNav", () => ({
   pushSearchParams: vi.fn(),
@@ -24,7 +23,6 @@ import {
   _resetControllerForTests,
 } from "../workspaceController";
 import { MESSAGES_PANEL_ID, RETIRED_PANEL_ALIASES, describePanel } from "../panelRegistry";
-import { TeamsPanelRouter } from "@/components/teams/TeamsPanelRouter";
 
 /** Run a URL the way the shell does: reconcile, then open (no pushUrl: the URL carries it). */
 function navigate(search: string) {
@@ -42,11 +40,11 @@ beforeEach(() => {
 
 describe("deriveReconcilerAction — lastApplied latch", () => {
   it("executes a command once, then latches: same signature twice → no-op", () => {
-    const first = deriveReconcilerAction("?panel=teams-artifacts", null);
+    const first = deriveReconcilerAction("?panel=teams-agents", null);
     expect(first).not.toBeNull();
-    expect(first!.command?.descriptor.panelId).toBe("teams-artifacts");
-    expect(first!.panelKey).toBe("teams-artifacts");
-    const second = deriveReconcilerAction("?panel=teams-artifacts", first!.nextSignature);
+    expect(first!.command?.descriptor.panelId).toBe("teams-agents");
+    expect(first!.panelKey).toBe("teams-agents");
+    const second = deriveReconcilerAction("?panel=teams-agents", first!.nextSignature);
     expect(second).toBeNull();
   });
 
@@ -92,8 +90,8 @@ describe("deriveReconcilerAction — chat commands defer until the roster settle
   });
 
   it("non-chat commands execute regardless of roster settlement", () => {
-    const d = deriveReconcilerAction("?panel=teams-artifacts", null, false);
-    expect(d?.command?.descriptor.panelId).toBe("teams-artifacts");
+    const d = deriveReconcilerAction("?panel=teams-agents", null, false);
+    expect(d?.command?.descriptor.panelId).toBe("teams-agents");
   });
 
   it("non-command URLs still latch while unsettled", () => {
@@ -117,9 +115,9 @@ describe("deriveReconcilerAction — one-shot strip ordering", () => {
   });
 
   it("leaves the latch at the plain signature when there is nothing to strip", () => {
-    const d = deriveReconcilerAction("?panel=teams-artifacts", null);
+    const d = deriveReconcilerAction("?panel=teams-agents", null);
     expect(d!.strippedSearch).toBeNull();
-    expect(d!.nextSignature).toBe(commandSignature("?panel=teams-artifacts"));
+    expect(d!.nextSignature).toBe(commandSignature("?panel=teams-agents"));
   });
 });
 
@@ -172,17 +170,17 @@ describe("deriveReconcilerAction — billing returns are not commands", () => {
   });
 
   it("billing params riding along a command don't change its signature", () => {
-    const d = deriveReconcilerAction("?panel=teams-artifacts&checkout=success", null);
-    expect(d!.command?.descriptor.panelId).toBe("teams-artifacts");
+    const d = deriveReconcilerAction("?panel=teams-agents&checkout=success", null);
+    expect(d!.command?.descriptor.panelId).toBe("teams-agents");
     // after useCheckoutReturn strips the billing param the signature is unchanged:
-    expect(deriveReconcilerAction("?panel=teams-artifacts", d!.nextSignature)).toBeNull();
+    expect(deriveReconcilerAction("?panel=teams-agents", d!.nextSignature)).toBeNull();
   });
 });
 
 describe("isCommandTargetOpen (analytics newness check)", () => {
   it("detects an already-open panel by id", () => {
-    const cmd = deriveReconcilerAction("?panel=teams-artifacts", null)!.command!;
-    expect(isCommandTargetOpen(cmd, ["teams-artifacts"])).toBe(true);
+    const cmd = deriveReconcilerAction("?panel=teams-agents", null)!.command!;
+    expect(isCommandTargetOpen(cmd, ["teams-agents"])).toBe(true);
     expect(isCommandTargetOpen(cmd, ["teams-issues"])).toBe(false);
   });
 
@@ -199,23 +197,6 @@ describe("isCommandTargetOpen (analytics newness check)", () => {
 // alias, so describePanel never saw the raw key and the successor opened on
 // its default view. These walk the WHOLE chain the shell actually executes.
 describe("retired-alias deep links keep their meaning end to end", () => {
-  it("?panel=teams-org-chart opens ONE Agents panel with the chart view selected", () => {
-    // 1. reconciler → 2. openPanel → 3. the params Work's main view mounts with
-    navigate("?panel=teams-org-chart");
-    const { main } = getWorkspaceSnapshot();
-    expect(main?.panelId).toBe("teams-agents");
-    const mounted = main!.params;
-    expect(mounted).toEqual({ teamsKey: "agents", view: "chart" });
-
-    // 4. the router turns those params into the panel's seed view. Invoked
-    // directly (this branch is hookless) so the assertion is on the real
-    // router, not a re-statement of its contract.
-    const element = TeamsPanelRouter({
-      panel: mounted.teamsKey,
-      panelParams: mounted,
-    }) as React.ReactElement<{ initialView: string | null }>;
-    expect(element.props.initialView).toBe("chart");
-  });
 
   it("a stale ?panel=teams-dashboard (Home) opens the Activity place, not a dead view", () => {
     navigate("?panel=teams-dashboard");
@@ -243,10 +224,10 @@ describe("URL params map onto place + pane", () => {
   it.each([
     ["?panel=activity&focus=paperclip:approval:a1", "activity", "activity"],
     ["?panel=teams-issues&groupBy=status", "work", "teams-work"],
-    ["?panel=teams-money&section=spend", "work", "teams-work"],
+    ["?panel=teams-money&section=spend", "settings", "settings"],
     ["?panel=teams-agents&view=chart", "team", "teams-agents"],
     ["?panel=teams-search", "work", "teams-search"],
-    ["?panel=teams-artifacts", "library", "teams-artifacts"],
+    ["?panel=teams-artifacts", "canvas", "canvas"],
   ])("%s → the %s place", (search, place, mainId) => {
     navigate(search);
     expect(getWorkspaceSnapshot()).toMatchObject({ place, activePanelId: mainId, pane: null });
@@ -309,7 +290,6 @@ describe("URL params map onto place + pane", () => {
     expect(getWorkspaceSnapshot().chatParams).toMatchObject({ roomId: "r1" });
   });
 });
-
 
 describe("INVARIANT: panel open/focus writes zero history entries", () => {
   it("open, focus-existing, and reconciler-style executes never touch shellNav", () => {

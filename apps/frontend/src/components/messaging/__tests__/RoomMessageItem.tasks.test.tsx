@@ -1,11 +1,11 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FIXTURES, LIGHTBULB, SAM } from "@lightbulb/shared/tasks/fixtures";
 import { Fresh, fakeTasksClient, type FakeTasksClient } from "@/components/tasks/__tests__/fakeTasks";
 
-const live = vi.hoisted(() => ({ superAgent: true, tasks: null as unknown }));
-vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useSuperAgent: () => live.superAgent, useOptionalLiveEvents: () => live }));
+const live = vi.hoisted(() => ({ tasks: null as unknown }));
+vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useOptionalLiveEvents: () => live }));
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 vi.mock("../MessageTaskCard", () => ({ MessageTaskCard: () => <div data-testid="legacy-task-card" /> }));
 vi.mock("@/components/canvas/RequestApp", () => ({ RequestApp: () => null })); // its own test in canvas/
@@ -30,7 +30,6 @@ import type { RoomMessage } from "../types";
 
 let client: FakeTasksClient;
 beforeEach(() => {
-  live.superAgent = true;
   client = fakeTasksClient(FIXTURES.step07.tasks);
   live.tasks = client;
 });
@@ -42,7 +41,7 @@ function item(message: RoomMessage, over: Partial<Parameters<typeof RoomMessageI
 }
 const [ask, reply, result] = FIXTURES.step07.messages as RoomMessage[];
 
-describe("RoomMessageItem with the super-agent switch", () => {
+describe("RoomMessageItem tasks", () => {
   it("Lightbulb's own text answer in a DM offers Copy; a person's message and a channel answer don't (W18)", () => {
     const answer = { ...reply, text: "Sip, steep, and discover your new favorite brew.", taskRefs: [], kind: null, specialist: null } as RoomMessage;
     const { unmount } = render(item(answer, { copyable: true }));
@@ -145,17 +144,4 @@ describe("RoomMessageItem with the super-agent switch", () => {
     expect(await within(region).findByText("On")).toHaveClass("text-ok");
   });
 
-  it("flag off is identical to today", async () => {
-    live.superAgent = false;
-    const withAttrs = { ...reply, specialist: "finance", reactions: { "👀": [LIGHTBULB] } };
-    const props = { onToggleReaction: vi.fn(), isAgentId: (id: string) => id === LIGHTBULB, onOpenTask: vi.fn() };
-    const off = render(item(withAttrs, props));
-    const norm = (h: string) => h.replace(/radix-[^"]+/g, "radix");
-    const html = norm(off.container.innerHTML);
-    expect(screen.getByTestId("legacy-task-card")).toBeInTheDocument();
-    off.unmount();
-    const today = render(item({ ...withAttrs, taskRefs: undefined, specialist: undefined, routedTo: undefined }, props));
-    expect(norm(today.container.innerHTML)).toBe(html);
-    expect(client.list).not.toHaveBeenCalled();
-  });
 });

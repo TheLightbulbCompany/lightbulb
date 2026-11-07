@@ -1,16 +1,15 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useState } from "react";
 import type { ActivityAction, ActivityItem, ActivityLinkKind } from "@lightbulb/shared";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { DecisionResolver } from "@/components/teams/inbox/DecisionResolver";
-import { AttentionDesk } from "@/components/teams/inbox/AttentionDesk";
 import { useRunRetry } from "@/components/teams/inbox/FailedRunRow";
 import type { FailedRunGroup } from "@/components/teams/inbox/lib/groupFailedRuns";
 import type { AttentionItem, CompanyAgent } from "@/components/teams/shared/types";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { agentTint } from "@/lib/agentTint";
-import { FOR_YOU_FILTERS, filterForYou, forYouEntries, type ForYouFilter, type ForYouEntry } from "./activityPage";
+import { forYouEntries, type ForYouFilter, type ForYouEntry } from "./activityPage";
 
 export interface ActivityTarget { kind: ActivityLinkKind; id: string; roomId: string | null }
 export interface ActivityPerson { value: string; label: string }
@@ -62,80 +61,7 @@ export interface ForYouProps {
   currentUserId?: string | null;
 }
 
-/**
- * What is for this person, the way Slack's Activity tab shows it: filter chips and an
- * Unread toggle, then one row per item, newest first (who, where, the message, when,
- * an unread dot). A row opens its item in context and counts as read from then on;
- * needs-you rows keep their one action. Older items load as the end scrolls into view.
- */
-export function ForYou(props: ForYouProps) {
-  const { activityItems, attentionItems, failedRuns, loading, incomplete, focusId, agents, hasMore, loadingMore, onLoadMore } = props;
-  const filter = props.filter ?? "all";
-  const [unreadOnly, setUnreadOnly] = useState(false);
-  // Opened here: read from now on, before the server's next read says so.
-  const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set());
-  const all = useMemo(() => forYouEntries(activityItems, attentionItems, failedRuns,
-    (id) => agents.find((agent) => agent.id === id)?.name ?? "An agent")
-    .map((entry) => (entry.unread && opened.has(entry.id) ? { ...entry, unread: false } : entry)),
-  [activityItems, attentionItems, failedRuns, agents, opened]);
-  const entries = useMemo(() => filterForYou(all, filter, unreadOnly), [all, filter, unreadOnly]);
-  const agentMap = useMemo(() => new Map(agents.map((agent) => [agent.id, agent])), [agents]);
-  const listRef = useRef<HTMLUListElement>(null);
-  const focusShown = Boolean(focusId && entries.some((entry) => entry.id === focusId));
-  useEffect(() => {
-    if (!focusShown || !focusId) return;
-    listRef.current?.querySelector<HTMLElement>(`[data-for-you-id="${CSS.escape(focusId)}"]`)?.scrollIntoView?.({ block: "center" });
-  }, [focusShown, focusId]);
-
-  // Infinite scroll: the sentinel past the last row asks for the next page. A fresh observer
-  // per page, and per filter / Unread change, reports a sentinel still in view, so a filter
-  // that leaves no matching rows on the loaded pages keeps going.
-  const sentinelRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const sentinel = sentinelRef.current;
-    if (!sentinel || !hasMore || loadingMore || !onLoadMore || typeof IntersectionObserver === "undefined") return;
-    const observer = new IntersectionObserver((records) => {
-      if (records.some((record) => record.isIntersecting)) onLoadMore();
-    }, { rootMargin: "200px" });
-    observer.observe(sentinel);
-    return () => observer.disconnect();
-  }, [hasMore, loadingMore, onLoadMore, activityItems, filter, unreadOnly, entries.length]);
-
-  const open = (id: string, target: ActivityTarget) => {
-    setOpened((current) => (current.has(id) ? current : new Set(current).add(id)));
-    props.onNavigate(target);
-  };
-
-  return <section className="for-you" aria-labelledby="for-you-title">
-    <h2 id="for-you-title" className="for-you__title">For you</h2>
-    <div className="for-you__chips" role="group" aria-label="Show">
-      {FOR_YOU_FILTERS.map(({ id, label }) => <button key={id} type="button" className="for-you__chip" aria-pressed={filter === id}
-        onClick={() => { if (id !== filter) props.onFilterChange?.(id); }}>{label}</button>)}
-      <button type="button" className="for-you__chip for-you__unread" aria-pressed={unreadOnly}
-        onClick={() => setUnreadOnly(!unreadOnly)}>Unread</button>
-    </div>
-    {incomplete && <p role="alert" className="for-you__notice">
-      Couldn&apos;t load some items{props.onRetry && <> · <button type="button" className="for-you__more" onClick={props.onRetry}>Retry</button></>}
-    </p>}
-    {/* Needs you: decisions lead; the desk carries its own loading, and claims the
-        all-clear only when no other row is listed and every source answered. */}
-    {filter === "needs-you" && <AttentionDesk agents={agents} currentUserId={props.currentUserId ?? null} hideFailedRuns
-      othersShown={entries.length > 0 || Boolean(incomplete)} />}
-    {entries.length > 0 && <ul ref={listRef} className="for-you__list">
-      {entries.map((entry) => <EntryRow key={entry.id} entry={entry} highlighted={entry.id === focusId} agentMap={agentMap}
-        onRunAction={props.onRunAction} people={props.people} onDismissRuns={props.onDismissRuns}
-        onNavigate={(target) => open(entry.id, target)} />)}
-    </ul>}
-    {entries.length === 0 && filter !== "needs-you" && (loading
-      ? <p role="status" className="for-you__empty">Loading…</p>
-      // The all-clear only when every source answered and nothing older is left to load.
-      : !incomplete && !hasMore && <p className="for-you__empty">{unreadOnly ? "Nothing unread." : "You're all caught up."}</p>)}
-    {hasMore && <div ref={sentinelRef} className="for-you__sentinel" aria-hidden="true" />}
-    {loadingMore && <p role="status" className="for-you__loading">Loading older items…</p>}
-  </section>;
-}
-
-/** Home (super-agent): For you's own rows for asks that are not requests (a website login, an extension, a reconnect),
+/** Home: For you's own rows for asks that are not requests (a website login, an extension, a reconnect),
  *  each with its one action in place (Add login opens its form here). */
 export function ForYouAsks({ items, onRunAction, onNavigate }: {
   items: readonly ActivityItem[]; onRunAction: ForYouProps["onRunAction"]; onNavigate: ForYouProps["onNavigate"];

@@ -4,7 +4,6 @@ import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type 
 import { AtSign, Bold, CaseSensitive, Code, FileText, Italic, Link2, List, ListOrdered, Paperclip, Plus, RotateCcw, Send, SmilePlus, SquareCode, Strikethrough, X } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { ApiError, MESSAGE_ATTACHMENT_ACCEPT, MESSAGE_ATTACHMENT_MAX_BYTES, MESSAGE_ATTACHMENT_MAX_COUNT, resolveMessageAttachmentContentType, resolveTypedMentions, resolveTypedSessionMentions, respondHint, searchEmoji, sessionMatches, sessionTitle, type CompletionTrigger, type CreateMessageRequest, type MarkdownStyle, type MessageAttachment, type MessageAttachmentContentType, type MemberRef, type RoomKind, type SessionMentionCandidate, type MentionTarget, sessionAgentName } from "@lightbulb/shared";
-import { useSuperAgent } from "@/hooks/useLiveEvents";
 import { Button } from "@/components/ui/button";
 import type { ComposerEditorHandle, ComposerEditorProps } from "./ComposerEditor";
 import { consumeFocusComposerRequest } from "@/lib/focusComposerRequest";
@@ -191,7 +190,6 @@ function ComposerAttempt({
   seenFocusToken: RefObject<number | undefined>;
   carried: RefObject<{ items: DraftAttachment[]; sent: boolean }>;
 }) {
-  const superAgent = useSuperAgent();
   const fieldId = useId();
   const field = useRef<ComposerEditorHandle>(null);
   useEffect(() => {
@@ -227,9 +225,8 @@ function ComposerAttempt({
   const externalDragDepthRef = useRef(0);
   const addAttachmentsRef = useRef<(files: File[]) => void>(() => {});
   const [toolbarIndex, setToolbarIndex] = useState(0);
-  // Without the super-agent the formatting bar shows by default and Aa collapses it. With it, the box rests as one
-  // line and Aa's choice is remembered per person. The keyboard shortcuts work either way.
-  const compact = superAgent && !!viewerId;
+  // The box rests as one line and Aa's choice is remembered per person (signed in). The keyboard shortcuts work either way.
+  const compact = !!viewerId;
   const [formatPref, setFormatPref] = useState<{ key: string | null; open: boolean }>(() => ({ key: null, open: true }));
   const prefKey = compact ? viewerId! : null;
   if (formatPref.key !== prefKey) setFormatPref({ key: prefKey, open: prefKey ? readFormatOpen(prefKey) : true });
@@ -624,7 +621,7 @@ function ComposerAttempt({
     if (!field.current?.link(url)) field.current?.insertText(url);
   }
 
-  const hint = showRespondHint ? respondHint(roomKind, members, mentions, runningAgentIds, superAgent) : null;
+  const hint = showRespondHint ? respondHint(roomKind, members, mentions, runningAgentIds, true) : null;
   // Who-will-reply matters at the moment of sending, not while the box is empty.
   const showHint = !!hint && hasContent;
 
@@ -671,7 +668,7 @@ function ComposerAttempt({
     return false;
   }
 
-  const boxPlaceholder = placeholder ?? (label === "Reply to thread" ? "Reply to thread…" : superAgent ? "Ask Lightbulb…" : "Message the conversation · @ to mention");
+  const boxPlaceholder = placeholder ?? (label === "Reply to thread" ? "Reply to thread…" : "Ask Lightbulb…");
   const Editor = editorLoaded ? LoadedEditor : null;
   const textarea = !Editor ? <textarea id={fieldId} className="room-editor room-editor-plain" rows={1} aria-label={label} placeholder={boxPlaceholder}
     value={text} disabled={!editable} aria-describedby={`${fieldId}-help ${fieldId}-status`}

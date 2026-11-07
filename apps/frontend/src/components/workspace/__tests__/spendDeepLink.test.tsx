@@ -33,46 +33,33 @@ beforeEach(() => {
 });
 
 describe("?panel=teams-spend resolves and mounts through the reconciler seam", () => {
-  it("the reconciler derives a teams command for Money, at its Spend section", () => {
+  it("the reconciler sends Money's Spend link to Settings › Business", () => {
     const decision = deriveReconcilerAction("?panel=teams-spend", null);
     expect(decision).not.toBeNull();
     expect(decision!.panelKey).toBe("teams-spend");
     expect(decision!.command?.descriptor).toEqual({
-      panelId: "teams-work",
-      component: "teams",
-      title: "Work",
-      params: { teamsKey: "money", section: "spend" },
+      panelId: "settings",
+      component: "settings",
+      title: "Settings",
+      params: { section: "business" },
     });
   });
 
-  it("executing that decision shows ONE Work view at Money's Spend section", () => {
+  it("executing that decision shows ONE Settings view at Business", () => {
     attachShell(() => undefined);
 
     const decision = deriveReconcilerAction("?panel=teams-spend", null)!;
     openPanel(decision.panelKey!, decision.durableParams);
 
-    expect(getWorkspaceSnapshot().main).toMatchObject({
-      panelId: "teams-work",
-      component: "teams",
-      params: { teamsKey: "money", section: "spend" },
-    });
-    expect(getWorkspaceSnapshot().place).toBe("work");
-    // Re-opening, or a DIFFERENT absorbed key, re-targets the same view (one page).
+    expect(getWorkspaceSnapshot().main).toMatchObject({ panelId: "settings", params: { section: "business" } });
+    expect(getWorkspaceSnapshot().place).toBe("settings");
     openPanel("teams-payments", {});
-    expect(getWorkspaceSnapshot().openPanelIds.filter((id) => id === "teams-work")).toHaveLength(1);
-    expect(getWorkspaceSnapshot().main?.params).toMatchObject({ teamsKey: "money", section: "payments" });
+    expect(getWorkspaceSnapshot().openPanelIds.filter((id) => id === "settings")).toHaveLength(1);
   });
 
   it("the latch fires: a second reconcile of the same URL is a no-op", () => {
     const first = deriveReconcilerAction("?panel=teams-spend", null)!;
     expect(deriveReconcilerAction("?panel=teams-spend", first.nextSignature)).toBeNull();
-  });
-
-  it("TeamsPanelRouter mounts Money at the section the descriptor carries — not the Unknown fallback", async () => {
-    const { params } = deriveReconcilerAction("?panel=teams-spend", null)!.command!.descriptor;
-    render(<TeamsPanelRouter panel={params.teamsKey} panelParams={{ section: params.section }} />);
-    expect(await screen.findByTestId("money-panel")).toHaveAttribute("data-section", "spend");
-    expect(screen.queryByText(/This page is no longer here/)).toBeNull();
   });
 
   it("the bare `money` key renders Money with no section", async () => {

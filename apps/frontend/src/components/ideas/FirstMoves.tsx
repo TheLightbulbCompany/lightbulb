@@ -11,22 +11,21 @@ import { useAuth } from "@clerk/nextjs";
 import { useIdeas as useSharedIdeas, type Idea, type IdeasClient } from "@lightbulb/shared";
 import { IdeaItem } from "@/components/ideas/HomeIdeas";
 import { useIdeas } from "@/hooks/useIdeas";
-import { useOptionalLiveEvents, useSuperAgent } from "@/hooks/useLiveEvents";
+import { useOptionalLiveEvents } from "@/hooks/useLiveEvents";
 import { openChatPanelWithDraft } from "@/components/workspace/workspaceController";
 import "@/components/projects/projects.css";
 
 const NONE: Idea[] = [];
 export const FIRST_MOVE_LABEL = "Pick a first move";
 
-/** The first run's ideas still open (super-agent only; no request otherwise). The list is re-read when the first run's
+/** The first run's ideas still open. The list is re-read when the first run's
  *  task changes, since its ideas arrive as it finishes. Shares the ideas cache with `useIdeas`. */
 export function useFirstMoves(): Idea[] {
-  const on = useSuperAgent();
   const live = useOptionalLiveEvents();
   const { isLoaded, userId, orgId, orgRole } = useAuth();
   // The owner's decision only: a workspace admin (a personal workspace is its own). Nobody else sees the cards or the +1.
   const owner = !orgId || orgRole === "org:admin";
-  const key = on && owner && live?.messaging && isLoaded && userId ? `${userId}:${orgId ?? userId}` : null;
+  const key = owner && live?.messaging && isLoaded && userId ? `${userId}:${orgId ?? userId}` : null;
   // Without the live provider the key is null, so the client is never called.
   const ideas = useSharedIdeas(live?.messaging as IdeasClient, key);
   const { firstRunTaskId, refresh } = ideas;

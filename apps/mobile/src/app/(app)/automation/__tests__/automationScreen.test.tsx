@@ -1,8 +1,8 @@
 import { fireEvent, render } from "@testing-library/react-native";
 import type { AutomationView } from "@lightbulb/shared";
 
-const mockLive = { superAgent: true, tasks: { cacheScope: "org_a" }, api: { get: jest.fn(), post: jest.fn() } };
-jest.mock("../../../../providers/live-events", () => ({ useLiveEvents: () => mockLive, useSuperAgent: () => mockLive.superAgent }));
+const mockLive = { tasks: { cacheScope: "org_a" }, api: { get: jest.fn(), post: jest.fn() } };
+jest.mock("../../../../providers/live-events", () => ({ useLiveEvents: () => mockLive }));
 jest.mock("@clerk/expo", () => ({ useAuth: () => ({ userId: "user_sam" }), useOrganization: () => ({ membership: { role: "org:member" } }) }));
 jest.mock("expo-router", () => ({ Stack: { Screen: () => null }, useLocalSearchParams: () => ({ id: "auto-1" }), router: { push: jest.fn() } }));
 jest.mock("expo-crypto", () => ({ randomUUID: () => "u" }));
@@ -18,16 +18,7 @@ function routes(a: AutomationView) {
   mockLive.tasks = { cacheScope: `org_${Math.random()}` };
   mockLive.api.get.mockReset().mockImplementation(async (path: string) => (path.endsWith("/runs") ? { runs: [], next: null } : a));
 }
-beforeEach(() => { mockLive.superAgent = true; });
-
-it("switch off: a pasted automation link renders nothing and fetches nothing", async () => {
-  mockLive.superAgent = false;
-  routes(row());
-  const view = await render(<AutomationScreen />);
-  expect(view.toJSON()).toBeNull();
-  expect(mockLive.api.get).not.toHaveBeenCalled();
-  await view.unmount();
-});
+beforeEach(() => { });
 
 it("paused: Run now is off with its reason; a member waits on an admin to resume a room automation", async () => {
   routes(row({ status: "paused" }));

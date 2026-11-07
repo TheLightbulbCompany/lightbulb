@@ -7,7 +7,7 @@
 
 import useSWR from "swr";
 import { NEEDS_YOU_KEY_SUFFIX, overviewGroups, scopeParam, taskListKey, type TaskScope, type TaskSummary, type TasksClient } from "@lightbulb/shared";
-import { useOptionalLiveEvents, useSuperAgent } from "@/hooks/useLiveEvents";
+import { useOptionalLiveEvents } from "@/hooks/useLiveEvents";
 import { homeExtras } from "@/components/activity/activityPage";
 import { useActivity } from "@/hooks/useActivity";
 import { useFirstMoves } from "@/components/ideas/FirstMoves";
@@ -24,10 +24,9 @@ const NONE: TaskSummary[] = [];
  *  `task.changed` re-reads it (refreshTask): a new ask arrives and an answered one leaves while you sit in a room. */
 export function useNeedsYouTasks(scope: TaskScope | null): { tasks: TaskSummary[]; loaded: boolean; error: unknown; retry: () => void } {
   const live = useOptionalLiveEvents();
-  const on = useSuperAgent();
   const api = useApi();
   const client: Pick<TasksClient, "cacheScope"> | undefined = live?.tasks;
-  const key = on && client && scope ? `${taskListKey(client, scope)}${NEEDS_YOU_KEY_SUFFIX}` : null;
+  const key = client && scope ? `${taskListKey(client, scope)}${NEEDS_YOU_KEY_SUFFIX}` : null;
   const { data, error, mutate } = useSWR<{ tasks: TaskSummary[]; next: string | null }>(key,
     () => api.get(`/tasks?scope=${encodeURIComponent(scopeParam(scope!))}&needsYou=true`) as Promise<{ tasks: TaskSummary[]; next: string | null }>,
     { shouldRetryOnError: false });

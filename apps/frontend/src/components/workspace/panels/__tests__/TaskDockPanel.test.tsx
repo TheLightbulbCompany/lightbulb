@@ -3,8 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FIXTURES, SAM } from "@lightbulb/shared/tasks/fixtures";
 import { Fresh, fakeTasksClient, type FakeTasksClient } from "@/components/tasks/__tests__/fakeTasks";
 
-const live = vi.hoisted(() => ({ superAgent: false, tasks: null as unknown }));
-vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useSuperAgent: () => live.superAgent }));
+const live = vi.hoisted(() => ({ tasks: null as unknown }));
+vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live }));
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ userId: SAM }) }));
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 vi.mock("../../workspaceController", () => ({ closePane: vi.fn(), setPaneFullScreen: vi.fn(), useWorkspaceState: () => ({ ready: true, fullScreen: false, pane: { panelId: "task-detail" } }) }));
@@ -20,16 +20,8 @@ beforeEach(() => {
 });
 
 describe("TaskDockPanel", () => {
-  it("renders nothing and reads nothing while the switch is off (a pasted link)", () => {
-    live.superAgent = false;
-    const { container } = render(<Fresh><TaskDockPanel id="task-detail" params={{ taskId: "t-signup" }} /></Fresh>);
-    expect(container).toBeEmptyDOMElement();
-    expect(client.get).not.toHaveBeenCalled();
-    expect(client.markRead).not.toHaveBeenCalled();
-  });
 
-  it("mounts the thread pane when on", async () => {
-    live.superAgent = true;
+  it("mounts the thread pane", async () => {
     render(<Fresh><TaskDockPanel id="task-detail" params={{ taskId: "t-signup" }} /></Fresh>);
     expect(await screen.findByText("Workshop signup app")).toBeInTheDocument();
     expect(client.get).toHaveBeenCalledWith("t-signup");

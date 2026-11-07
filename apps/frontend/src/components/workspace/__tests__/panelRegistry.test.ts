@@ -8,7 +8,6 @@ import {
   DEFAULT_AGENT_SENTINEL,
   MESSAGES_PANEL_ID,
   settingsHrefFor,
-  setSuperAgentAliases,
   opensInPane,
 } from "../panelRegistry";
 
@@ -38,14 +37,14 @@ describe("panelRegistry", () => {
     expect(resolvePanelAlias("teams-dashboard")).toBe("activity");
     expect(resolvePanelAlias("teams-skills")).toBe("activity");
     expect(resolvePanelAlias("teams-costs")).toBe("activity");
-    expect(describePanel("canvas", { app: "app_1" })).toEqual({ panelId: "canvas", component: "canvas", title: "Canvas", params: { app: "app_1" } });
+    expect(describePanel("canvas", { app: "app_1" })).toEqual({ panelId: "canvas", component: "canvas", title: "Creations", params: { app: "app_1" } });
     expect(describePanel("teams-dashboard", {})).toMatchObject({ panelId: "activity", component: "activity", title: "Activity" });
-    expect(resolvePanelAlias("teams-artifacts")).toBe("teams-artifacts");
+    expect(resolvePanelAlias("teams-artifacts")).toBe("canvas");
     // Money is ONE page: its four absorbed keys alias to its panel id, or the
     // dock (which dedupes by panel id) opens four sibling tabs all called
     // "Money" — Home links three of them.
     for (const k of ["payments", "products", "customers", "spend"]) {
-      expect(resolvePanelAlias(`teams-${k}`)).toBe("teams-money");
+      expect(resolvePanelAlias(`teams-${k}`)).toBe("settings");
     }
     // The org chart is a VIEW of the roster, so its key aliases onto Agents.
     expect(resolvePanelAlias("teams-org-chart")).toBe("teams-agents");
@@ -64,16 +63,6 @@ describe("panelRegistry", () => {
     expect(describePanel("chat", { agent: "agent-a" })?.panelId).toBe(MESSAGES_PANEL_ID);
     expect(describePanel("chat", { agent: "agent-b" })?.panelId).toBe(MESSAGES_PANEL_ID);
     expect(describePanel("chat", { agentId: "agent-b" })?.params).toEqual({ agentId: "agent-b" });
-  });
-
-  it("describes teams list panels as singletons", () => {
-    const d = describePanel("teams-artifacts", {});
-    expect(d).toEqual({
-      panelId: "teams-artifacts",
-      component: "teams",
-      title: "Library",
-      params: { teamsKey: "artifacts" },
-    });
   });
 
   it("describes teams detail panels keyed per detailId", () => {
@@ -141,11 +130,6 @@ describe("panelRegistry", () => {
       expect(settingsHrefFor(search)).toBeNull();
     },
   );
-
-  it("one label per panel — dock titles match the sidebar's IA labels", () => {
-    // Clicking "Library" in the sidebar must not open a tab titled "Artifacts";
-    expect(describePanel("teams-artifacts", {})?.title).toBe("Library");
-  });
 
   it("describes chat panels", () => {
     const d = describePanel("chat", { agent: "a-9" });
@@ -243,34 +227,6 @@ describe("panelRegistry", () => {
     expect(clearablePanelParamKeys("ideas")).toEqual(["agent", "idea"]);
   });
 
-  it("describes the money panel with a durable ?day deep link", () => {
-    expect(describePanel("teams-money", { day: "2026-09-05" })).toEqual({
-      panelId: "teams-work", component: "teams", title: "Work", params: { teamsKey: "money", day: "2026-09-05" },
-    });
-    expect(describePanel("teams-money", {})!.params).toEqual({ teamsKey: "money" });
-  });
-
-  it("describes an absorbed Money key as ONE Money panel carrying its section", () => {
-    // The whole point of the alias: same panelId for all five keys, so the
-    // dock opens one tab — with the section synthesized off the RAW key, the
-    // way ?panel=teams-org-chart carries the Agents chart view.
-    expect(describePanel("teams-spend", {})).toEqual({
-      panelId: "teams-work", component: "teams", title: "Work",
-      params: { teamsKey: "money", section: "spend" },
-    });
-    for (const k of ["payments", "products", "customers"]) {
-      expect(describePanel(`teams-${k}`, {})!.params).toEqual({ teamsKey: "money", section: k });
-    }
-    // A ?section= URL param is honoured on the canonical key, and only for a
-    // real section — MoneyPanel feeds it into a `#money-${section}` selector.
-    expect(describePanel("teams-money", { section: "customers" })!.params).toEqual({
-      teamsKey: "money", section: "customers",
-    });
-    expect(describePanel("teams-money", { section: "constructor" })!.params).toEqual({ teamsKey: "money" });
-    // The raw key wins: it is what the owner actually clicked.
-    expect(describePanel("teams-spend", { section: "products" })!.params.section).toBe("spend");
-  });
-
   it("aliases teams-org-chart onto ONE Agents panel, on the chart view", () => {
     // Same reason as Money's four keys: the dock dedupes by panel id, so a
     // router-level mapping would open a second tab also titled "Agents".
@@ -330,16 +286,11 @@ describe("panelRegistry", () => {
 });
 
 describe("Work page: one dock tab for every task-board page", () => {
-  it.each(["issues", "projects", "goals", "routines", "cases", "money"])("teams-%s opens in the Work tab", (key) => {
+  it.each(["issues", "projects", "goals", "cases"])("teams-%s opens in the Work tab", (key) => {
     const d = describePanel(`teams-${key}`, {})!;
     expect(d.panelId).toBe("teams-work");
     expect(d.title).toBe("Work");
     expect(d.params.teamsKey).toBe(key);
-  });
-  it("other Teams pages keep their own tab", () => {
-    expect(describePanel("teams-artifacts", {})!.panelId).toBe("teams-artifacts");
-    // Agents is its own place, Team.
-    expect(describePanel("teams-agents", {})).toMatchObject({ panelId: "teams-agents", title: "Team" });
   });
   it("Work owns the union of its pages' durable params", () => {
     expect(durableParamsFor("teams-work")).toEqual(["panel", "agent", "groupBy", "view", "day", "section"]);
@@ -356,28 +307,18 @@ describe("Work page: one dock tab for every task-board page", () => {
     expect(describePanel("activity", { section: "scheduled" })?.params).toEqual({ section: "scheduled" });
   });
 
-  it("UX slice 4: with the switch on, Work's Money and Automations open Settings › Business and Activity's Scheduled; off, unchanged", () => {
-    expect(describePanel("teams-money", {})?.panelId).toBe("teams-work");
-    expect(describePanel("teams-routines", {})?.panelId).toBe("teams-work");
-    setSuperAgentAliases(true);
-    try {
-      for (const key of ["teams-money", "teams-payments", "teams-customers", "teams-products", "teams-spend"]) {
-        expect(describePanel(key, {})).toEqual({ panelId: "settings", component: "settings", title: "Settings", params: { section: "business" } });
-      }
-      expect(describePanel("teams-routines", {})).toEqual({ panelId: "activity", component: "activity", title: "Activity", params: { section: "scheduled" } });
-      expect(describePanel("teams-issues", {})?.panelId).toBe("teams-work");
-    } finally { setSuperAgentAliases(false); }
+  it("UX slice 4: Work's Money and Automations open Settings › Business and Activity's Scheduled", () => {
+    for (const key of ["teams-money", "teams-payments", "teams-customers", "teams-products", "teams-spend"]) {
+      expect(describePanel(key, {})).toEqual({ panelId: "settings", component: "settings", title: "Settings", params: { section: "business" } });
+    }
+    expect(describePanel("teams-routines", {})).toEqual({ panelId: "activity", component: "activity", title: "Activity", params: { section: "scheduled" } });
+    expect(describePanel("teams-issues", {})?.panelId).toBe("teams-work");
   });
 
-  it("UX slice 5: with the switch on, Library opens Creations (the canvas panel) and ?app= still opens one app; off, unchanged", () => {
-    expect(describePanel("teams-artifacts", {})?.panelId).not.toBe("canvas");
-    expect(describePanel("canvas", {})?.title).toBe("Canvas");
-    setSuperAgentAliases(true);
-    try {
-      expect(describePanel("teams-artifacts", {})).toEqual({ panelId: "canvas", component: "canvas", title: "Creations", params: {} });
-      expect(describePanel("canvas", { app: "a1" })?.params).toEqual({ app: "a1" });
-      // The rail's `panel=creations` (W13) is the same panel; an old `panel=canvas` link keeps working.
-      expect(describePanel("creations", {})).toEqual({ panelId: "canvas", component: "canvas", title: "Creations", params: {} });
-    } finally { setSuperAgentAliases(false); }
+  it("UX slice 5: Library opens Creations (the canvas panel) and ?app= still opens one app", () => {
+    expect(describePanel("teams-artifacts", {})).toEqual({ panelId: "canvas", component: "canvas", title: "Creations", params: {} });
+    expect(describePanel("canvas", { app: "a1" })?.params).toEqual({ app: "a1" });
+    // The rail's `panel=creations` (W13) is the same panel; an old `panel=canvas` link keeps working.
+    expect(describePanel("creations", {})).toEqual({ panelId: "canvas", component: "canvas", title: "Creations", params: {} });
   });
 });

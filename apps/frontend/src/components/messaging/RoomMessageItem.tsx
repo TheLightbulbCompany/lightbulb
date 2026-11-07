@@ -1,7 +1,6 @@
 "use client";
 
 import { useMemo, type ReactElement, type ReactNode } from "react";
-import { MessageCircle } from "lucide-react";
 import type { Components, UrlTransform } from "react-markdown";
 import { nameSpecialistIn, sessionLabel, sessionStatus, specialistLabel, type CardReply, type LocalSession } from "@lightbulb/shared";
 import { CopyResult, MessageRoutedTo, MessageTasks } from "@/components/tasks/MessageTasks";
@@ -11,9 +10,7 @@ import { openMessagePanel } from "@/components/workspace/workspaceController";
 import { Button } from "@/components/ui/button";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
-import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { cn } from "@/lib/utils";
-import { EmojiPicker } from "./EmojiPicker";
 import { ParticipantAvatar } from "./ParticipantAvatar";
 import { ParticipantProfile } from "./ParticipantProfile";
 import { RoomDocumentCards } from "./RoomDocumentCards";
@@ -22,7 +19,7 @@ import { CardContext, type CardContextValue, useCardPressState } from "./openui/
 import { RoomAppLinks } from "./RoomAppLinks";
 import { RoomLinkPreviews } from "./RoomLinkPreviews";
 import { RoomMessageContent } from "./RoomMessageContent";
-import type { DirectoryParticipant, RoomMessage, RoomParticipant } from "./types";
+import type { RoomMessage, RoomParticipant } from "./types";
 import type { RoomPanelProps } from "./RoomPanel";
 
 interface RoomMessageItemProps {
@@ -32,26 +29,14 @@ interface RoomMessageItemProps {
   participant?: RoomParticipant;
   currentUserId: string;
   actionable: boolean;
-  inThread: boolean;
   collapsed: boolean;
   startEditing?: boolean;
   onEditingClosed?: () => void;
-  replyCount: number;
-  /** The newest reply's `createdAt`, for "N replies · last reply {relative}". */
-  lastReplyAt?: string;
-  threadParticipants?: readonly DirectoryParticipant[];
-  workingNames?: readonly string[];
   /** A quiet delivery note under a follow-up: "Friday saw this" / "…will read this after the current reply". */
   receipt?: string;
-  highlighted: boolean;
   mentionsViewer: boolean;
   markdown: Partial<Components>;
   urlTransform: UrlTransform;
-  quickReactions: readonly string[];
-  reactionPending: boolean;
-  reactionError: boolean;
-  onToggleReaction?: (emoji: string) => void;
-  onOpenThread?: (button: HTMLButtonElement) => void;
   onSelectParticipant?: RoomPanelProps["onSelectParticipant"];
   onUpdateMessage?: RoomPanelProps["onUpdateMessage"];
   onDownloadAttachment?: RoomPanelProps["onDownloadAttachment"];
@@ -71,8 +56,6 @@ interface RoomMessageItemProps {
   personColor?: string;
   /** Super-agent: open a thread pane (task cards, "Sent to …"). */
   onOpenTask?: (taskId: string) => void;
-  /** Super-agent: reactions by agents (Lightbulb's 👀 "saw this") are a receipt, not a toggle. */
-  isAgentId?: (id: string) => boolean;
   /** Super-agent: "thread|taskId" for each task whose ack chip is in the timeline (MessageTasks' finish line). */
   ackedTasks?: ReadonlySet<string>;
   /** Super-agent: Lightbulb's own text answer in a DM or group chat offers Copy, as a task's text result does (W18). */
@@ -93,7 +76,7 @@ function SessionCard({ sessionId, label, session, onOpen }: {
   </span>;
 }
 
-export function RoomMessageItem({ id, message, text, participant, currentUserId, actionable, inThread, collapsed, startEditing, onEditingClosed, replyCount, lastReplyAt, threadParticipants = [], workingNames = [], receipt, highlighted, mentionsViewer, markdown, urlTransform, quickReactions, reactionPending, reactionError, onToggleReaction, onOpenThread, onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, onCardReply, cardAnswer = null, cardsEnabled = true, sessions = [], onOpenSession, toolbarExtras, menuExtras, personColor, onOpenTask, isAgentId, ackedTasks, copyable }: RoomMessageItemProps): ReactElement {
+export function RoomMessageItem({ id, message, text, participant, currentUserId, actionable, collapsed, startEditing, onEditingClosed, receipt, mentionsViewer, markdown, urlTransform, onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, onCardReply, cardAnswer = null, cardsEnabled = true, sessions = [], onOpenSession, toolbarExtras, menuExtras, personColor, onOpenTask, ackedTasks, copyable }: RoomMessageItemProps): ReactElement {
   const agentNames = useOptionalLiveEvents()?.agentNames;
   // A line posted for a specialist can carry its id; it reads as the specialist's name, like the byline.
   const shownText = nameSpecialistIn(text, message.specialist, agentNames);
@@ -110,21 +93,8 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
   const name = participant?.displayName || message.author.displayName || "Unknown author";
   const timestamp = !Number.isNaN(Date.parse(message.createdAt)) ? message.createdAt : undefined;
   const time = timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "";
-  const working = workingNames.length ? `${workingNames.join(", ")} ${workingNames.length === 1 ? "is" : "are"} working…` : "";
-  const replyLabel = replyCount > 0 ? `${replyCount} ${replyCount === 1 ? "reply" : "replies"}` : "";
-  const threadLabel = [replyLabel, working || (lastReplyAt ? `last reply ${timeAgo(lastReplyAt)}` : "")].filter(Boolean).join(" · ");
-  const appliedReactions = Object.entries(message.reactions ?? {}).filter(([, users]) => users.length > 0);
-  const actions = ((!message.deletedAt && onToggleReaction) || !inThread || toolbarExtras) ? <>
-    {!message.deletedAt && onToggleReaction && <>
-      <span className="room-quick-reactions" aria-label="Quick reactions">{quickReactions.map((emoji) => <Button key={emoji} type="button" variant="ghost" size="icon-sm"
-        aria-label={`React ${emoji}`} title={`React ${emoji}`} disabled={!actionable || reactionPending} onClick={() => onToggleReaction(emoji)}>{emoji}</Button>)}</span>
-      <EmojiPicker onPick={onToggleReaction} disabled={!actionable || reactionPending} />
-    </>}
-    {!inThread && onOpenThread && <Button type="button" variant="ghost" size="icon-sm" aria-label="Reply in thread" title="Reply in thread" disabled={!actionable}
-      onClick={(event) => onOpenThread(event.currentTarget)}><MessageCircle aria-hidden="true" /></Button>}
-    {toolbarExtras}
-  </> : undefined;
-  return <article id={id} tabIndex={-1} className={cn("room-message", collapsed && "room-message-collapsed", highlighted && "room-message-highlight", mentionsViewer && "room-message-mentions-me")} aria-label={`Message from ${name}`} data-person={personColor}>
+  const actions = toolbarExtras;
+  return <article id={id} tabIndex={-1} className={cn("room-message", collapsed && "room-message-collapsed", mentionsViewer && "room-message-mentions-me")} aria-label={`Message from ${name}`} data-person={personColor}>
     {collapsed
       ? <span className="room-message-gutter" aria-hidden="true">{time}</span>
       : participant ? <ParticipantAvatar participant={participant} showPresence={false} /> : <Identity name={name} avatarOnly size="default" />}
@@ -164,29 +134,8 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
       {!message.deletedAt && <RoomDocumentCards text={message.text} />}
       {!message.deletedAt && <RoomAppLinks text={message.text} />}
       {!message.deletedAt && <RoomLinkPreviews text={message.text} />}
-      {!message.deletedAt && onToggleReaction && appliedReactions.length > 0 && <div className="flex flex-wrap gap-1 mt-1" aria-label="Message reactions">
-        {appliedReactions.map(([emoji, users]) => {
-          if (isAgentId && users.every(isAgentId)) {
-            return <span key={emoji} role="img" className="inline-flex h-8 items-center gap-1 px-3 text-ui text-muted-foreground" aria-label={emoji === "👀" ? "Lightbulb saw this" : `Lightbulb reacted ${emoji}`}>{emoji}</span>;
-          }
-          const selected = users.includes(currentUserId);
-          return <Button key={emoji} type="button" size="sm" variant={selected ? "secondary" : "ghost"}
-            aria-label={`${selected ? "Remove" : "Add"} ${emoji} reaction${users.length ? `, ${users.length}` : ""}`} aria-pressed={selected}
-            disabled={!actionable || reactionPending} onClick={() => onToggleReaction(emoji)}>{emoji}<span>{users.length}</span></Button>;
-        })}
-      </div>}
       {receipt && <p role="status" className="text-caption text-muted-foreground">{receipt}</p>}
-      {reactionError && <p role="alert" className="text-ui text-err">Could not update reaction. Try again.</p>}
       {!message.deletedAt && !!message.attachments?.length && onDownloadAttachment && <RoomImageAttachments roomId={message.roomId} attachments={message.attachments} download={onDownloadAttachment} attachmentUrl={onAttachmentUrl} />}
-      {!inThread && (replyCount > 0 || working) && onOpenThread && <Button type="button" variant="ghost" className="room-reply" disabled={!actionable}
-        aria-label={`Reply in thread, ${threadLabel}`}
-        onClick={(event) => onOpenThread(event.currentTarget)}>
-        <span className="room-reply-avatars">{threadParticipants.slice(0, 4).map(member =>
-          <ParticipantAvatar key={`${member.kind}:${member.id}`} participant={{ ...member, agentActivity: undefined }} size="xs" showPresence={false} />)}
-          {threadParticipants.length > 4 && <span className="text-caption text-muted-foreground">+{threadParticipants.length - 4}</span>}
-        </span>
-        <span role={working ? "status" : undefined}>{threadLabel}</span>
-      </Button>}
     </div>
   </article>;
 }

@@ -22,22 +22,11 @@ vi.mock("next/navigation", () => ({
 vi.mock("@/components/control/panels/UsagePanel", () => ({
   UsagePanel: () => <div data-testid="usage-panel" />,
 }));
-vi.mock("@/components/control/panels/LLMPanel", () => ({
-  LLMPanel: ({ initialAction }: { initialAction?: string | null }) => (
-    <div data-testid="llm-panel" data-action={initialAction ?? ""} />
-  ),
-}));
 vi.mock("@/components/control/panels/ConnectionsPanel", () => ({
   ConnectionsPanel: () => <div id="panel-connections" data-testid="connections-panel" />,
 }));
 vi.mock("@/components/teams/panels/SettingsPanel", () => ({
   SettingsPanel: () => <div data-testid="company-settings" />,
-}));
-vi.mock("@/components/control/panels/IntegrationsPanel", () => ({
-  IntegrationsPanel: () => <div data-testid="integrations-panel" />,
-}));
-vi.mock("@/components/control/panels/SkillsTab", () => ({
-  SkillsTab: () => <div data-testid="skills-tab" />,
 }));
 
 // Mutable membership holder so individual tests can flip admin ↔ non-admin.
@@ -101,47 +90,21 @@ beforeEach(() => {
   shell.openPanel.mockReset(); shell.replaceSearchParams.mockReset(); shell.updatePanelParams.mockReset();
   api.get.mockReset(); api.post.mockClear();
   api.get.mockImplementation(async (path: string) => {
-    if (path === "/automations") return { automations: [job("builtin:look_around", "active"), job("builtin:feed", "paused"), job("a1", "active")] };
+    if (path === "/automations") return { automations: [job("a1", "active")] };
     throw new Error(`no route ${path}`);
   });
 });
 
 describe("Settings place (super-agent)", () => {
-  it("Frame A: titled Settings, four plain groups, 9 rows; Business under Plan; no Budgets or Marketplace; no Developer group yet", () => {
+  it("Frame A: titled Settings, four plain groups, 8 rows; Business under Plan; no Model, Developer, Budgets or Marketplace", () => {
     place();
     expect(screen.getByRole("heading", { level: 1, name: "Settings" })).toBeInTheDocument();
     const navEl = screen.getByRole("navigation", { name: "Settings navigation" });
     expect([...navEl.querySelectorAll(".settings-nav-section-label")].map((l) => l.textContent)).toEqual(["You", "Workspace", "Connect", "Plan"]);
     const rows = within(navEl).getAllByRole("tab").map((t) => t.textContent);
-    expect(rows).toEqual(["Profile", "Workspace", "Members", "Approvals", "Connections", "Billing", "Usage", "Business", "Model & credits"]);
+    expect(rows).toEqual(["Profile", "Workspace", "Members", "Approvals", "Connections", "Billing", "Usage", "Business"]);
     // No route chrome: no top bar, no Back to Chat.
     expect(screen.queryByRole("link", { name: /Back to Chat/ })).toBeNull();
-  });
-
-  it("the Developer group shows once the workspace has its own MCP server, or for a link to one of its rows (W13-10)", async () => {
-    const devRows = () => [...screen.getByRole("navigation", { name: "Settings navigation" }).querySelectorAll(".settings-nav-section-label")].map((l) => l.textContent);
-    const { unmount } = place({ section: "mcp" });
-    expect(devRows()).toContain("Developer");
-    expect(screen.getByRole("tab", { name: /^MCP servers/ })).toHaveAttribute("aria-selected", "true");
-    // A browser (no desktop app) has no local MCP servers: neither a tab nor a select option.
-    expect(screen.queryByRole("tab", { name: /Local MCP servers/ })).toBeNull();
-    expect(screen.queryByRole("option", { name: "Local MCP servers" })).toBeNull();
-    unmount();
-    // Only Lightbulb's managed server: still hidden.
-    api.get.mockImplementation(async (path: string) => {
-      if (path === "/integrations/mcp/servers") return { servers: { lightbulb: {} }, managed_keys: ["lightbulb"] };
-      throw new Error(`no route ${path}`);
-    });
-    const second = place();
-    await vi.waitFor(() => expect(api.get).toHaveBeenCalledWith("/integrations/mcp/servers"));
-    expect(devRows()).not.toContain("Developer");
-    second.unmount();
-    api.get.mockImplementation(async (path: string) => {
-      if (path === "/integrations/mcp/servers") return { servers: { lightbulb: {}, github: {} }, managed_keys: ["lightbulb"] };
-      throw new Error(`no route ${path}`);
-    });
-    place();
-    await vi.waitFor(() => expect(devRows()).toEqual(["You", "Workspace", "Connect", "Plan", "Developer"]));
   });
 
   it("Profile is rows, not a card per setting: Edit profile beside who you are, no session notifications (W13-10)", async () => {
@@ -167,29 +130,12 @@ describe("Settings place (super-agent)", () => {
     expect(shell.replaceSearchParams).toHaveBeenCalledWith(new URLSearchParams({ panel: "settings", section: "billing" }));
   });
 
-  it("the shell's one-shot action reaches Model & credits", () => {
-    place({ section: "providers", action: "change-provider" });
-    expect(screen.getByTestId("llm-panel")).toHaveAttribute("data-action", "change-provider");
-  });
-
-  it("Workspace: Daily look around and Feed posts switches pause and resume the builtin jobs (an org admin)", async () => {
+  it("Workspace has no Daily look around or Feed posts switches (voice pivot)", async () => {
     clerk.membership = { role: "org:admin" };
     place({ section: "workspace" });
-    const look = await screen.findByRole("switch", { name: "Daily look around" });
-    const feed = screen.getByRole("switch", { name: "Feed posts" });
-    expect(look).toHaveAttribute("aria-checked", "true");
-    expect(feed).toHaveAttribute("aria-checked", "false");
-    fireEvent.click(look);
-    await vi.waitFor(() => expect(api.post).toHaveBeenCalledWith("/automations/builtin%3Alook_around/pause", {}));
-    fireEvent.click(feed);
-    await vi.waitFor(() => expect(api.post).toHaveBeenCalledWith("/automations/builtin%3Afeed/resume", {}));
-  });
-
-  it("a member can't resume a workspace's builtin job (the server's _may_activate)", async () => {
-    clerk.membership = { role: "org:member" };
-    place({ section: "workspace" });
-    // Workspace is admin-free; the switch is there but off-limits to resume.
-    expect(await screen.findByRole("switch", { name: "Feed posts" })).toBeDisabled();
+    expect(await screen.findByTestId("company-settings")).toBeInTheDocument();
+    expect(screen.queryByRole("switch", { name: "Daily look around" })).toBeNull();
+    expect(screen.queryByRole("switch", { name: "Feed posts" })).toBeNull();
   });
 
   it("a link to a row this person can't open says why, in one line, rather than silently opening Profile", () => {

@@ -13,8 +13,7 @@ describe("SETTINGS_NAV_SECTIONS", () => {
       ["You", ["profile"]],
       ["Workspace", ["workspace", "members", "approvals"]],
       ["Connect", ["connections"]],
-      ["Plan", ["billing", "usage", "business", "providers"]],
-      ["Developer", ["skills", "mcp", "local-mcp", "desktop"]],
+      ["Plan", ["billing", "usage", "business"]],
     ]);
   });
 

@@ -23,65 +23,7 @@ const type = (value: string) => typeInComposer(value);
 beforeEach(() => vi.stubGlobal("URL", { ...URL, createObjectURL: vi.fn(() => "blob:proof"), revokeObjectURL: vi.fn() }));
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
-it("opens and filters the mention list from a typed @", () => {
-  render(<Harness />);
-  type("Ask @fri");
-  expect(screen.getByRole("listbox", { name: "Mention a room member" })).toBeInTheDocument();
-  expect(screen.getByRole("option", { name: /Friday/ })).toBeInTheDocument();
-  expect(screen.queryByRole("option", { name: /Atlas/ })).not.toBeInTheDocument();
-});
-
-it("puts the DM's agent first in a DM with one agent, ahead of members.list order", () => {
-  render(<Harness focusAgentId="agent-atlas" />);
-  type("Ask @");
-  const options = screen.getAllByRole("option");
-  expect(options[0]).toHaveAccessibleName(/Atlas/);
-});
-
-it("closes the list when nothing matches so prose after an @ is left alone", () => {
-  render(<Harness />);
-  type("Email me @ the office");
-  expect(screen.queryByRole("listbox", { name: "Mention a room member" })).not.toBeInTheDocument();
-});
-
-it("inserts an agent handle with Enter instead of sending", () => {
-  const onSubmit = vi.fn();
-  render(<Harness onSubmit={onSubmit} />);
-  type("Ask @fri");
-  fireEvent.keyDown(field(), { key: "Enter" });
-  expect(composerValue()).toBe("Ask @friday ");
-  expect(onSubmit).not.toHaveBeenCalled();
-});
-
-it("inserts a human as @Display Name and sends the structured mention", () => {
-  const onSubmit = vi.fn();
-  render(<Harness onSubmit={onSubmit} />);
-  type("Hi @Ade");
-  fireEvent.click(screen.getByRole("option", { name: /Aden Kim/ }));
-  expect(composerValue()).toBe("Hi @Aden Kim ");
-  fireEvent.keyDown(field(), { key: "Enter" });
-  expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
-    text: "Hi @Aden Kim ",
-    mentions: [{ kind: "human", id: "user-aden" }],
-  }));
-});
-
-it("stops shipping a picked mention once its typed token is removed from the text", () => {
-  const onSubmit = vi.fn();
-  render(<Harness onSubmit={onSubmit} />);
-  type("@ad");
-  fireEvent.click(screen.getByRole("option", { name: /Aden Kim/ }));
-  expect(composerValue()).toBe("@Aden Kim ");
-  // Select-all and retype, wiping the inserted @Aden Kim token.
-  type("Never mind");
-  fireEvent.keyDown(field(), { key: "Enter" });
-  expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
-    text: "Never mind",
-    mentions: [],
-  }));
-});
-
-it("resolves a fully typed handle on send without ever opening the list", () => {
+it("resolves a typed handle to a mention on send (no picker)", () => {
   const onSubmit = vi.fn();
   render(<Harness onSubmit={onSubmit} />);
   type("@friday ship it");
@@ -99,48 +41,6 @@ it("leaves an unmatched token plain and mentions nobody", () => {
   type("@nobody ship it");
   fireEvent.keyDown(field(), { key: "Enter" });
   expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ mentions: [] }));
-});
-
-it("ignores ArrowDown during IME composition so the typeahead selection does not move", () => {
-  render(<Harness />);
-  type("Ask @");
-  const activedescendant = () => field().getAttribute("aria-activedescendant");
-  const before = activedescendant();
-  fireEvent.keyDown(field(), { key: "ArrowDown", isComposing: true });
-  expect(activedescendant()).toBe(before);
-});
-
-it("moves the active option with the arrow keys and wraps", () => {
-  render(<Harness />);
-  type("Ask @");
-  const id = () => field().getAttribute("aria-activedescendant");
-  const first = id();
-  fireEvent.keyDown(field(), { key: "ArrowDown" });
-  expect(id()).not.toBe(first);
-  fireEvent.keyDown(field(), { key: "ArrowUp" });
-  expect(id()).toBe(first);
-});
-
-it("inserts with Tab as well as Enter", () => {
-  render(<Harness />);
-  type("Ask @atl");
-  fireEvent.keyDown(field(), { key: "Tab" });
-  expect(composerValue()).toBe("Ask @atlas ");
-});
-
-it("closes with Escape without changing the draft", () => {
-  render(<Harness />);
-  type("Ask @");
-  fireEvent.keyDown(field(), { key: "Escape" });
-  expect(screen.queryByRole("listbox", { name: "Mention a room member" })).not.toBeInTheDocument();
-  expect(composerValue()).toBe("Ask @");
-});
-
-it("opens the same list from the @ button", () => {
-  render(<Harness />);
-  fireEvent.click(screen.getByRole("button", { name: "Mention someone" }));
-  expect(screen.getByRole("listbox", { name: "Mention a room member" })).toBeInTheDocument();
-  expect(composerValue()).toBe("@");
 });
 
 it("still sends on Enter when no list is open", () => {

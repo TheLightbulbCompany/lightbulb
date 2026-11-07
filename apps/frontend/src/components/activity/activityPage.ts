@@ -3,7 +3,7 @@
  * (one row per item, newest first, Slack's Activity tab) and the team feed's
  * dividers (new since you looked, then days).
  */
-import { activityRowParts, isNeedsYou, type ActivityItem, type CanonicalRoomMessage } from "@lightbulb/shared";
+import { activityRowParts, isNeedsYou, type ActivityItem } from "@lightbulb/shared";
 
 /** `reply`: a message (mention, DM, thread reply). `decide` / `do`: needs you. */
 export type ForYouVerb = "decide" | "reply" | "do";
@@ -97,63 +97,15 @@ export function forYouEntries(activity: readonly ActivityItem[]): ForYouEntry[] 
   return entries.sort((a, b) => when(b.at) - when(a.at));
 }
 
-// --- The team feed ---------------------------------------------------------
-
-export type FeedTimelineEntry =
-  | { type: "divider"; key: string; label: string }
-  | { type: "post"; post: CanonicalRoomMessage };
-
-function dayStart(date: Date): number {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
-}
-
-export function dayLabel(iso: string, now: Date = new Date()): string {
-  const date = new Date(iso);
-  const days = Math.round((dayStart(now) - dayStart(date)) / 86_400_000);
-  if (days === 0) return "Today";
-  if (days === 1) return "Yesterday";
-  return date.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
-}
-
-/**
- * Top-level posts newest first. The ones after the reader's last look sit under
- * "New since you looked"; the rest under their day. A reader who never opened the
- * feed (`readSeq` 0) has nothing to compare against, so every post sits under its day.
- */
-export function feedTimeline(messages: readonly CanonicalRoomMessage[], readSeq: number, now: Date = new Date()): FeedTimelineEntry[] {
-  const posts = messages
-    .filter((message) => message.threadRootMessageId === null && !message.deletedAt)
-    .sort((a, b) => b.messageSeq - a.messageSeq);
-  const out: FeedTimelineEntry[] = [];
-  let previous: string | null = null;
-  for (const post of posts) {
-    const isNew = readSeq > 0 && post.messageSeq > readSeq;
-    const label = isNew ? "New since you looked" : dayLabel(post.createdAt, now);
-    const key = isNew ? "new" : `day:${label}`;
-    if (key !== previous) out.push({ type: "divider", key, label });
-    previous = key;
-    out.push({ type: "post", post });
-  }
-  return out;
-}
-
-/** A post's first line as its title (markdown emphasis and heading marks dropped), and the rest. */
-export function splitPost(text: string): { title: string; body: string } {
-  const [first, ...rest] = text.trim().split("\n");
-  const title = first.replace(/^#+\s*/, "").replace(/^(\*\*|__)(.*)\1$/, "$2").trim();
-  return { title, body: rest.join("\n").trim() };
-}
-
 // --- Home (super-agent) ------------------------------------------------------
 
 /**
- * What For you carried that Home shows nowhere else: unread mentions and replies to you (one compact line), and open
- * asks that are not requests (a website login, a browser extension, a reconnect, a session waiting on you). Request
- * questions are Needs you rows; DMs show as unread in the sidebar; Paperclip items are retired here.
+ * What For you carried that Home shows nowhere else: open asks that are not requests (a website login, a browser
+ * extension, a reconnect, a session waiting on you). Request questions are Needs you rows; DMs show as unread in the
+ * sidebar; Paperclip items are retired here. Mentions are gone (voice pivot).
  */
-export function homeExtras(items: readonly ActivityItem[]): { mentions: ActivityItem[]; asks: ActivityItem[] } {
-  const mentions = items.filter((item) => item.state === "open" && !item.read && (item.kind === "mention" || item.kind === "thread_reply"));
+export function homeExtras(items: readonly ActivityItem[]): { asks: ActivityItem[] } {
   const asks = items.filter((item) => item.kind !== "task_question" && item.kind !== "paperclip"
     && (activityVerb(item) === "do" || activityVerb(item) === "decide"));
-  return { mentions, asks };
+  return { asks };
 }

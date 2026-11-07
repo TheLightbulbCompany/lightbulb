@@ -9,7 +9,6 @@ import {
   openMessagePanel,
   openSessionPanel,
   openTaskPane,
-  openBrowserPane,
   closePane,
   activateMessagesPanel,
   syncMessagesPanelAgent,
@@ -49,7 +48,7 @@ beforeEach(() => {
 });
 
 describe("a pane item belongs to where it was opened (W17-9)", () => {
-  it("stays for its own room, closes for another; the browser stays", () => {
+  it("stays for its own room, closes for another", () => {
     openPanel("artifact", { src: "text", task: "t1", n: "1", from: "room-florist" }, { pushUrl: true });
     leavePaneFor("room-florist");
     expect(snap().pane?.panelId).toBe("artifact");
@@ -58,9 +57,6 @@ describe("a pane item belongs to where it was opened (W17-9)", () => {
     openTaskPane("t1");
     leavePaneFor("room-dm");
     expect(snap().pane).toBeNull();
-    openBrowserPane();
-    leavePaneFor("room-dm");
-    expect(snap().pane?.panelId).toBe("browser");
   });
 });
 
@@ -76,8 +72,8 @@ describe("places", () => {
     ["teams-issues", "activity"],
     ["teams-routines", "activity"],
     ["teams-agents", "team"],
-    ["teams-artifacts", "canvas"],
-    ["canvas", "canvas"],
+    ["teams-artifacts", "activity"],
+    ["canvas", "activity"],
   ])("%s opens the %s place's main view", (key, place) => {
     openPanel(key);
     expect(snap().place).toBe(place);
@@ -197,7 +193,6 @@ describe("the conversation", () => {
 describe("the right pane", () => {
   it.each([
     ["file-viewer", { path: "/a.md" }, "file-viewer"],
-    ["browser", {}, "browser"],
     ["mail", { item: "mail:1" }, "mail"],
     ["agents", { agent: "a-1" }, "control:agents"],
     ["task-detail", { taskId: "t-1" }, "task-detail"],
@@ -211,24 +206,24 @@ describe("the right pane", () => {
     openPanel("file-viewer", { path: "/a.md" });
     openPanel("file-viewer", { path: "/b.md" });
     expect(snap().pane?.params).toEqual({ path: "/b.md" });
-    expect(openBrowserPane()).toBe(true);
-    expect(snap().pane?.panelId).toBe("browser");
-    expect(snap().openPanelIds).toEqual([MESSAGES_PANEL_ID, "browser"]);
+    openPanel("mail");
+    expect(snap().pane?.panelId).toBe("mail");
+    expect(snap().openPanelIds).toEqual([MESSAGES_PANEL_ID, "mail"]);
   });
 
-  it("replacing a URL-named item clears it, and the Browser writes its own URL", () => {
+  it("replacing a URL-named item clears it, and Mail writes its own URL", () => {
     window.history.replaceState(null, "", "/chat?panel=file-viewer&path=/a.md");
     openPanel("file-viewer", { path: "/a.md" });
     openPanel("task-detail", { taskId: "t-1" });
     expect(String(vi.mocked(replaceSearchParams).mock.calls[0][0])).toBe("");
-    expect(openBrowserPane()).toBe(true);
-    expect(String(vi.mocked(pushSearchParams).mock.calls.at(-1)?.[0])).toBe("panel=browser");
+    openPanel("mail", {}, { pushUrl: true });
+    expect(String(vi.mocked(pushSearchParams).mock.calls.at(-1)?.[0])).toBe("panel=mail");
   });
 
   it("with Chat as the place, a pushed pane URL keeps the room or session on screen", () => {
     recordChatView({ roomId: "r-launch", sessionId: null }, false);
-    openPanel("browser", {}, { pushUrl: true });
-    expect(String(vi.mocked(pushSearchParams).mock.calls.at(-1)?.[0])).toBe("panel=chat&room=r-launch&pane=browser");
+    openPanel("mail", {}, { pushUrl: true });
+    expect(String(vi.mocked(pushSearchParams).mock.calls.at(-1)?.[0])).toBe("panel=chat&room=r-launch&pane=mail");
     recordChatView({ roomId: "r-launch", sessionId: "s-1" }, false);
     openPanel("file-viewer", { path: "/a.md" }, { pushUrl: true });
     expect(String(vi.mocked(pushSearchParams).mock.calls.at(-1)?.[0])).toBe("panel=chat&session=s-1&pane=file-viewer&pane.path=%2Fa.md");
@@ -241,13 +236,13 @@ describe("the right pane", () => {
     openPanel("activity", { filter: "mentions" }, { pushUrl: true });
     expect(String(vi.mocked(pushSearchParams).mock.calls.at(-1)?.[0]))
       .toBe("panel=activity&filter=mentions&pane=file-viewer&pane.path=%2Fa.md");
-    openPanel("browser", {}, { pushUrl: true });
-    expect(String(vi.mocked(pushSearchParams).mock.calls.at(-1)?.[0])).toBe("panel=activity&filter=mentions&pane=browser");
+    openPanel("mail", {}, { pushUrl: true });
+    expect(String(vi.mocked(pushSearchParams).mock.calls.at(-1)?.[0])).toBe("panel=activity&filter=mentions&pane=mail");
     // A dismissed filter does not come back with the next push.
     updatePanelParams("activity", { filter: undefined });
     openPanel("teams-agents", {}, { pushUrl: true });
     openPanel("activity", {}, { pushUrl: true });
-    expect(String(vi.mocked(pushSearchParams).mock.calls.at(-1)?.[0])).toBe("panel=activity&pane=browser");
+    expect(String(vi.mocked(pushSearchParams).mock.calls.at(-1)?.[0])).toBe("panel=activity&pane=mail");
   });
 
   it("close clears a URL that named it (in place) and nothing else", () => {
@@ -256,7 +251,7 @@ describe("the right pane", () => {
     closePane();
     expect(snap().pane).toBeNull();
     expect(String(vi.mocked(replaceSearchParams).mock.calls[0][0])).toBe("utm=x");
-    openPanel("browser");
+    openPanel("mail");
     closePane();
     expect(replaceSearchParams).toHaveBeenCalledTimes(1);
   });
@@ -264,7 +259,7 @@ describe("the right pane", () => {
   it("full screen: needs a pane, folds back when a place is picked or the pane closes", () => {
     setPaneFullScreen(true);
     expect(snap().fullScreen).toBe(false);
-    openPanel("browser");
+    openPanel("mail");
     setPaneFullScreen(true);
     expect(snap()).toMatchObject({ fullScreen: true, messagesVisible: true });
     openPanel("file-viewer"); // another pane keeps the screen
@@ -280,7 +275,7 @@ describe("the right pane", () => {
     _resetControllerForTests();
     const detach = attachShell(() => undefined);
     openPanel("activity");
-    openPanel("browser");
+    openPanel("mail");
     detach();
     expect(snap()).toMatchObject({ ready: false, pane: null, main: null, openPanelIds: [] });
   });
@@ -297,11 +292,11 @@ describe("useThreadPane (the room's side column)", () => {
     expect(snap().pane).toMatchObject({ component: "thread", title: "Thread · Launch" });
     act(() => setThreadPaneHost(host));
     expect(result.current).toBe(host);
-    act(() => openPanel("browser"));
+    act(() => openPanel("mail"));
     expect(close).toHaveBeenCalledTimes(1);
     expect(result.current).toBeNull();
     rerender({ open: false });
-    expect(snap().pane?.panelId).toBe("browser");
+    expect(snap().pane?.panelId).toBe("mail");
   });
 
   it("releases the pane when the column closes, and the pane's close folds the column", () => {
@@ -322,9 +317,9 @@ describe("useThreadPane (the room's side column)", () => {
     expect(String(vi.mocked(replaceSearchParams).mock.calls.at(-1)?.[0])).toBe("");
     rerender({ title: "Details · Launch" });
     expect(snap().pane).toMatchObject({ component: "thread", title: "Details · Launch" });
-    act(() => openPanel("browser"));
+    act(() => openPanel("mail"));
     rerender({ title: "Thread · Other" }); // still folding: a retitle must not take the pane back
-    expect(snap().pane?.panelId).toBe("browser");
+    expect(snap().pane?.panelId).toBe("mail");
   });
 
   it("stays inline with no shell mounted", () => {

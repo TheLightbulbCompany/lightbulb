@@ -35,8 +35,8 @@ vi.mock("../panelComponents", () => ({
   }),
 }));
 vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({
-  MessagingWorkspaceProvider: ({ children, subscribeToRoom, observeRuns }: { children: ReactNode; subscribeToRoom: boolean; observeRuns?: boolean }) => (
-    <section aria-label="Messaging owner" data-subscribed={subscribeToRoom} data-observe-runs={observeRuns}>{children}</section>
+  MessagingWorkspaceProvider: ({ children, subscribeToRoom }: { children: ReactNode; subscribeToRoom: boolean }) => (
+    <section aria-label="Messaging owner" data-subscribed={subscribeToRoom}>{children}</section>
   ),
 }));
 vi.mock("../WorkspaceSidebar", () => ({
@@ -129,17 +129,6 @@ it("preserves checkout confirmation, readiness and the recovery stepper", () => 
   expect(screen.getByTestId("stepper")).toHaveAttribute("data-trigger", "recovery");
 });
 
-it("observes room runs while the Browser is in the pane, whatever the place", () => {
-  renderReady();
-  const owner = screen.getByRole("region", { name: "Messaging owner" });
-  expect(owner).toHaveAttribute("data-observe-runs", "false");
-  act(() => openPanel("browser"));
-  expect(owner).toHaveAttribute("data-observe-runs", "true");
-  act(() => openPanel("activity"));
-  expect(owner).toHaveAttribute("data-observe-runs", "true");
-  expect(owner).toHaveAttribute("data-subscribed", "false");
-});
-
 it("the resize separator reports its value, and a cancelled drag still keeps its width", () => {
   renderReady();
   act(() => openPanel("file-viewer"));
@@ -153,18 +142,10 @@ it("the resize separator reports its value, and a cancelled drag still keeps its
   expect(Number(window.localStorage.getItem(paneWidthKey("user_1")))).toBeGreaterThanOrEqual(360);
 });
 
-it("opens the Browser at half the width, and still opens when storage throws", () => {
-  vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw new Error("denied"); });
-  renderReady();
-  act(() => openPanel("browser"));
-  expect(screen.getByRole("region", { name: "Browser" })).toHaveStyle({ width: "50%" });
-  vi.restoreAllMocks();
-});
-
 it("full screen: the pane takes the screen beside a chat column with its composer; collapse restores", () => {
   const view = renderReady();
   act(() => openPanel("activity"));
-  act(() => openPanel("browser"));
+  act(() => openPanel("mail"));
   fireEvent.click(screen.getByRole("button", { name: "Full screen" }));
   const body = view.container.querySelector(".workspace-body")!;
   expect(body).toHaveAttribute("data-full");
@@ -174,7 +155,7 @@ it("full screen: the pane takes the screen beside a chat column with its compose
   expect(within(column).getByRole("textbox", { name: "Message" })).toBeInTheDocument();
   expect(screen.getByTestId("panel-activity").closest(".workspace-view")).toHaveAttribute("hidden");
   expect(shellOf(view)).toHaveAttribute("data-sidebar", "false");
-  expect(screen.getByRole("region", { name: "Browser" }).style.width).toBe("");
+  expect(screen.getByRole("region", { name: "Mail" }).style.width).toBe("");
   fireEvent.click(screen.getByRole("button", { name: "Exit full screen" }));
   expect(body).not.toHaveAttribute("data-full");
   expect(screen.getByTestId("panel-activity").closest(".workspace-view")).not.toHaveAttribute("hidden");
@@ -193,26 +174,26 @@ it("applies the URL's command on mount: a retired alias opens Activity, a detail
   expect(screen.getByRole("region", { name: "Task" })).toBeInTheDocument();
 });
 
-it("restores the room and the Browser beside it from ?panel=chat&room=…&pane=browser on reload", () => {
-  window.history.replaceState(null, "", "/chat?panel=chat&room=r-launch&pane=browser");
+it("restores the room and Mail beside it from ?panel=chat&room=…&pane=mail on reload", () => {
+  window.history.replaceState(null, "", "/chat?panel=chat&room=r-launch&pane=mail");
   renderReady();
   expect(screen.getByRole("region", { name: "Conversation" })).toHaveAttribute("data-room", "r-launch");
-  expect(screen.getByRole("region", { name: "Browser" })).toBeInTheDocument();
+  expect(screen.getByRole("region", { name: "Mail" })).toBeInTheDocument();
 });
 
-it("opens Canvas on app_1 from ?panel=canvas&app=app_1", () => {
+it("an old Canvas link (?panel=canvas&app=app_1) opens Activity, not a dead view", () => {
   window.history.replaceState(null, "", "/chat?panel=canvas&app=app_1");
   renderReady();
   const { main } = getWorkspaceSnapshot();
-  expect(main).toMatchObject({ component: "canvas", params: { app: "app_1" } });
-  expect(screen.getByTestId("panel-canvas").closest(".workspace-view")).not.toHaveAttribute("hidden");
+  expect(main).toMatchObject({ component: "activity", params: {} });
+  expect(screen.getByTestId("panel-activity").closest(".workspace-view")).not.toHaveAttribute("hidden");
 });
 
 it("restores both the place and the pane from a two-slot URL on reload", () => {
-  window.history.replaceState(null, "", "/chat?panel=teams-agents&pane=browser");
+  window.history.replaceState(null, "", "/chat?panel=teams-agents&pane=mail");
   renderReady();
   expect(screen.getByTestId("panel-teams")).toHaveTextContent("teams-agents");
-  expect(screen.getByRole("region", { name: "Browser" })).toBeInTheDocument();
+  expect(screen.getByRole("region", { name: "Mail" })).toBeInTheDocument();
 });
 
 it("opens the rail and sidebar as the phone drawer, and closes it on a pick, the backdrop or Escape", () => {

@@ -33,9 +33,8 @@ beforeEach(() => {
 });
 
 function item(message: RoomMessage, over: Partial<Parameters<typeof RoomMessageItem>[0]> = {}) {
-  return <Fresh><RoomMessageItem id="m" message={message} text={message.text} currentUserId={SAM} actionable inThread={false} collapsed={false}
-    replyCount={0} highlighted={false} mentionsViewer={false} markdown={{}} urlTransform={(u) => u} quickReactions={[]}
-    reactionPending={false} reactionError={false} {...over} /></Fresh>;
+  return <Fresh><RoomMessageItem id="m" message={message} text={message.text} currentUserId={SAM} actionable collapsed={false}
+    mentionsViewer={false} markdown={{}} urlTransform={(u) => u} {...over} /></Fresh>;
 }
 const [ask, reply, result] = FIXTURES.step07.messages as RoomMessage[];
 
@@ -86,15 +85,6 @@ describe("RoomMessageItem tasks", () => {
     unmount();
     render(item(ask));
     expect(screen.getByRole("button", { name: "3 tasks started ›" })).toBeInTheDocument();
-  });
-
-  it("agent 👀 chip is not toggleable", async () => {
-    const onToggleReaction = vi.fn();
-    render(item({ ...ask, routedTo: null, reactions: { "👀": [LIGHTBULB] } }, { onToggleReaction, isAgentId: (id) => id === LIGHTBULB }));
-    const chip = screen.getByRole("img", { name: "Lightbulb saw this" });
-    expect(chip).not.toHaveAttribute("aria-pressed");
-    await userEvent.click(chip);
-    expect(onToggleReaction).not.toHaveBeenCalled();
   });
 
   it("an automation_confirm card turns the automation on only through its button", async () => {

@@ -19,10 +19,9 @@ const WORKSPACE: TaskScope = { kind: "workspace" };
 /** A long group (Done, Closed, Scheduled) shows this many, then "Show more" adds this many again. */
 export const DONE_FOLD = 5;
 
-/** Home, "your company today", top to bottom: Needs you, then the `between` slots (your mentions, Ideas, the feed),
- *  then Working, Done and Closed (collapsed). The slots render while the requests are still loading. */
-export function HomeWork({ viewerId, onOpen, between, asks, askCount = 0, scheduledOpen = false }: {
-  viewerId: string; onOpen: (taskId: string) => void; between?: ReactNode;
+/** Home, "your company today", top to bottom: Needs you, then Working, Done and Closed (collapsed). */
+export function HomeWork({ viewerId, onOpen, asks, askCount = 0, scheduledOpen = false }: {
+  viewerId: string; onOpen: (taskId: string) => void;
   /** Open asks that are not tasks (a website sign-in, a browser extension): in Needs you and in its count. */
   asks?: ReactNode; askCount?: number;
   /** Open the Scheduled group and bring it into view (`?panel=activity&section=scheduled`, an old Automations link). */
@@ -71,7 +70,6 @@ export function HomeWork({ viewerId, onOpen, between, asks, askCount = 0, schedu
       {askCount > 0 && asks}
       {!needsYou.length && !askCount && <p className="mt-1 rounded-lg border border-dashed border-border px-3 py-2 text-ui text-muted-foreground">Approvals and questions for you land here.</p>}
     </section> : status}
-    {between}
     {!data ? (needs.loaded ? status : null) : <>
       {working.length > 0 && <section aria-labelledby="home-working">
         <h2 id="home-working" className="text-ui font-semibold">Working · {working.length}</h2>

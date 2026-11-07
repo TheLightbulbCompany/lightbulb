@@ -25,7 +25,7 @@ const room: RoomSummary = {
   topic: "Sell 200 loaves", starred: false, muted: false, sectionId: null, members: [], lastReadSeq: 0,
 };
 const header = (extra: Partial<Parameters<typeof RoomHeader>[0]> = {}) => <RoomHeader room={room} roomName="Spring sale" counterparts={[]} participantCount={1}
-  canEditRoom canLeave actionable pinnedCount={0} search={<span />} onOpenDetails={vi.fn()}
+  canEditRoom canLeave actionable search={<span />} onOpenDetails={vi.fn()}
   settingsPeople={<section><h4>Members</h4></section>} {...extra} />;
 const openSettings = async () => {
   await userEvent.click(screen.getByRole("button", { name: /Spring sale/ }));
@@ -206,7 +206,7 @@ describe("channel settings", () => {
   it("a DM or group chat with Lightbulb has Chat settings, a member edits it, and its copy says chat", async () => {
     const lightbulb = { kind: "agent" as const, id: "lb", displayName: "Lightbulb", mentionHandle: "lightbulb", role: "member" as const, listenMode: "active" as const, joinedAt: "", joinedSeq: 0 };
     const chat = { ...room, kind: "group-dm" as const, members: [lightbulb] };
-    render(<RoomHeader room={chat} roomName="Spring sale" counterparts={[]} participantCount={3} canEditRoom canLeave actionable pinnedCount={0}
+    render(<RoomHeader room={chat} roomName="Spring sale" counterparts={[]} participantCount={3} canEditRoom canLeave actionable
       search={<span />} onOpenDetails={vi.fn()} onPatchRoom={vi.fn()} settingsPeople={<section />} />);
     await userEvent.click(screen.getByRole("button", { name: /Spring sale/ }));
     await userEvent.click(await screen.findByRole("menuitem", { name: "Settings" }));
@@ -222,7 +222,7 @@ describe("channel settings", () => {
 
   it("a people-only group chat has no project settings", async () => {
     render(<RoomHeader room={{ ...room, kind: "group-dm" }} roomName="Spring sale" counterparts={[]} participantCount={3} canEditRoom canLeave actionable
-      pinnedCount={0} search={<span />} onOpenDetails={vi.fn()} />);
+      search={<span />} onOpenDetails={vi.fn()} />);
     await userEvent.click(screen.getByRole("button", { name: /Spring sale/ }));
     expect(screen.queryByRole("menuitem", { name: "Settings" })).toBeNull();
   });

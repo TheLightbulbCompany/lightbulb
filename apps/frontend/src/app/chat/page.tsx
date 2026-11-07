@@ -4,7 +4,6 @@ import { Suspense } from "react";
 import dynamic from "next/dynamic";
 import { LogoMark } from "@/components/Logo";
 import { LiveEventsProvider } from "@/hooks/useLiveEvents";
-import { SharedLiveViewHost } from "@/components/workspace/panels/sharedLiveView";
 import { HuddleProvider } from "@/components/huddle/HuddleProvider";
 import { RunNotifications } from "@/components/notifications/RunNotifications";
 import { SettingsRedirect } from "@/components/workspace/SettingsRedirect";
@@ -44,7 +43,6 @@ export default function ChatPage() {
           </HuddleProvider>
           <RunNotifications />
           {/* The page's one browser live-view connection, shared by the panel and previews. */}
-          <SharedLiveViewHost />
           </SettingsRedirect>
         </LiveEventsProvider>
     </Suspense>

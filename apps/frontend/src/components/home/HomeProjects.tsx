@@ -8,12 +8,10 @@
 
 import "./home.css";
 import { useState, type FormEvent, type ReactElement } from "react";
-import { Archive, ChevronRight, CircleDashed, MoreHorizontal, Pin, PinOff, Plus, Search, Settings } from "lucide-react";
-import { orderIdeas, overviewGroups, roomDisplayName, useTaskList, type Idea, type MemberPrefsRequest, type PatchRoomRequest, type TaskScope, type TaskSummary } from "@lightbulb/shared";
+import { Archive, ChevronRight, CircleDashed, MoreHorizontal, Pin, PinOff, Search, Settings } from "lucide-react";
+import { overviewGroups, roomDisplayName, useTaskList, type MemberPrefsRequest, type PatchRoomRequest, type TaskScope, type TaskSummary } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { FIRST_MOVE_LABEL, openFirstMoves, useFirstMoves } from "@/components/ideas/FirstMoves";
-import { NewProjectDialog } from "@/components/projects/NewProjectDialog";
 import { ProjectTile } from "@/components/projects/ProjectTile";
 import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingWorkspaceContext";
 import { RoomGlyph } from "@/components/messaging/RoomDirectoryRow";
@@ -21,13 +19,9 @@ import { isProjectRoom, type DirectoryRoom } from "@/components/messaging/types"
 import { useNeedsYouCount, useNeedsYouTasks } from "@/components/tasks/useRoomThreads";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { activateMessagesPanel, closePane, openAgentDmWithDraft, openPanel } from "@/components/workspace/workspaceController";
-import { useIdeas } from "@/hooks/useIdeas";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
-import { capture } from "@/lib/analytics";
 
 const WORKSPACE: TaskScope = { kind: "workspace" };
-/** Starter idea chips on a new workspace's Home. */
-export const HOME_STARTERS = 3;
 
 export interface RoomCounts { working: number; needsYou: number }
 
@@ -82,7 +76,6 @@ export function HomeProjects(): ReactElement {
   const { data } = useTaskList(tasks, WORKSPACE);
   const needs = useNeedsYouTasks(WORKSPACE);
   const needsYouCount = useNeedsYouCount();
-  const firstMoves = useFirstMoves();
   const counts = roomCounts(needs.tasks, data?.tasks ?? []);
   // The list leads with live requests (waiting, working, queued), so Working is complete unless the first page is
   // all live and more pages follow: then each Working count is a floor.
@@ -99,12 +92,7 @@ export function HomeProjects(): ReactElement {
   // Pinned first (the sidebar's Pinned group: the same `starred` setting), then the rest.
   const pinned = shown.filter((r) => r.starred);
   const rest = shown.filter((r) => !r.starred);
-  const [creating, setCreating] = useState(false);
-  // A new workspace: nothing but the seeded #general (and DMs) yet.
-  const fresh = directory?.state === "ready" && projects.every((r) => r.isDefault);
   const openDm = () => { if (frontId) openAgentDmWithDraft(frontId, ""); else activateMessagesPanel(); };
-  // The one needs-you item is the first move: say so, and go straight to it.
-  const onlyFirstMove = needsYouCount === 1 && firstMoves.length > 0;
   const card = (room: DirectoryRoom) => <li key={room.roomId}><ProjectCard room={room} counts={counts.get(room.roomId)} capped={capped}
     viewerId={directory?.currentUserId} onSetPrefs={directory?.onSetPrefs} onOpenSettings={directory?.onOpenSettings} onPatchRoom={directory?.onPatchRoom} /></li>;
 
@@ -114,13 +102,11 @@ export function HomeProjects(): ReactElement {
     <div className="frame-doc__title">
       <h1>Home</h1>
       {needsYouCount > 0 && <button type="button" className="home-projects__needs"
-        onClick={() => { if (onlyFirstMove) { openFirstMoves(); return; } closePane(); openPanel("activity", {}, { pushUrl: true }); }}>
+        onClick={() => { closePane(); openPanel("activity", {}, { pushUrl: true }); }}>
         <span className="home-projects__dot" aria-hidden="true" />
-        <span><span className="font-semibold text-foreground">{needWord(needsYouCount)}</span> · {onlyFirstMove ? FIRST_MOVE_LABEL : "Review"}</span>
+        <span><span className="font-semibold text-foreground">{needWord(needsYouCount)}</span> · Review</span>
         <ChevronRight size={14} aria-hidden="true" />
       </button>}
-      {directory?.onCreate && <Button type="button" size="sm" className="h-7" onClick={() => setCreating(true)}>
-        <Plus aria-hidden="true" />New channel</Button>}
     </div>
     {messaging && <AskLightbulb onAsk={messaging.askLightbulb} />}
 
@@ -160,14 +146,7 @@ export function HomeProjects(): ReactElement {
           {directory.onRetry && <button type="button" className="underline hover:text-foreground" onClick={directory.onRetry}>Retry</button>}</p>
         : rest.length > 0 ? <ul className="home-projects__grid">{rest.map(card)}</ul>
         : q && !pinned.length ? <p className="text-ui text-muted-foreground">No channel matches “{query.trim()}”.</p> : null}
-      {fresh && <StartAProject onStart={() => setCreating(true)} firstMoves={firstMoves} />}
     </section>
-    {directory?.onCreate && <NewProjectDialog open={creating} onOpenChange={setCreating} busy={!!directory.creationBusy} error={directory.creationError}
-      onCreate={async (creation) => {
-        const created = await directory.onCreate!(creation);
-        if (created !== false) activateMessagesPanel();
-        return created !== false;
-      }} />}
   </div></div>;
 }
 
@@ -240,24 +219,3 @@ function ProjectCard({ room, counts, capped, viewerId, onSetPrefs, onOpenSetting
   </div>;
 }
 
-/** A new workspace: start a project, or begin from the first run's ideas (else the catalog's). */
-function StartAProject({ onStart, firstMoves }: { onStart: () => void; firstMoves: readonly Idea[] }): ReactElement {
-  const { ideas } = useIdeas();
-  const starters = firstMoves.length ? firstMoves : orderIdeas(ideas).filter((idea) => !idea.suggested).slice(0, HOME_STARTERS);
-  return <div className="home-projects__start">
-    <p className="text-ui text-muted-foreground">A channel is where you and Lightbulb work on one thing.</p>
-    <div className="flex flex-wrap gap-2">
-      <Button type="button" size="sm" onClick={onStart}><Plus aria-hidden="true" />Start a channel</Button>
-      {starters.length > 0 && <ul aria-label={firstMoves.length ? "First moves" : "Starter ideas"} className="contents">
-        {starters.map((idea) => <li key={idea.id}>
-          <Button type="button" size="sm" variant="outline" onClick={() => {
-            if (firstMoves.length) { openFirstMoves(); return; }
-            capture("ideas_opened", { source: "home_starter" }); openPanel("ideas", { idea: idea.id }, { pushUrl: true });
-          }}>
-            {idea.title}
-          </Button>
-        </li>)}
-      </ul>}
-    </div>
-  </div>;
-}

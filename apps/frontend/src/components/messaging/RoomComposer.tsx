@@ -1,16 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ComponentType, type ReactNode, type RefObject } from "react";
-import { AtSign, Bold, CaseSensitive, Code, FileText, Italic, Link2, List, ListOrdered, Paperclip, Plus, RotateCcw, Send, SmilePlus, SquareCode, Strikethrough, X } from "lucide-react";
+import { FileText, Paperclip, Plus, RotateCcw, Send, SmilePlus, X } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { ApiError, MESSAGE_ATTACHMENT_ACCEPT, MESSAGE_ATTACHMENT_MAX_BYTES, MESSAGE_ATTACHMENT_MAX_COUNT, resolveMessageAttachmentContentType, resolveTypedMentions, resolveTypedSessionMentions, respondHint, searchEmoji, sessionMatches, sessionTitle, type CompletionTrigger, type CreateMessageRequest, type MarkdownStyle, type MessageAttachment, type MessageAttachmentContentType, type MemberRef, type RoomKind, type SessionMentionCandidate, type MentionTarget, sessionAgentName } from "@lightbulb/shared";
+import { ApiError, MESSAGE_ATTACHMENT_ACCEPT, MESSAGE_ATTACHMENT_MAX_BYTES, MESSAGE_ATTACHMENT_MAX_COUNT, resolveMessageAttachmentContentType, resolveTypedMentions, resolveTypedSessionMentions, respondHint, searchEmoji, type CompletionTrigger, type CreateMessageRequest, type MessageAttachment, type MessageAttachmentContentType, type RoomKind, type SessionMentionCandidate } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import type { ComposerEditorHandle, ComposerEditorProps } from "./ComposerEditor";
 import { consumeFocusComposerRequest } from "@/lib/focusComposerRequest";
 import { formatBytes } from "@/lib/utils";
 import { EmojiPicker, recordRecentEmoji } from "./EmojiPicker";
-import { ParticipantAvatar } from "./ParticipantAvatar";
-import { SessionToolIcon } from "./SessionToolIcon";
 import type { RoomParticipant } from "./types";
 import "./messaging.css";
 
@@ -48,23 +46,8 @@ export interface RoomComposerProps {
   dropTargetRef?: RefObject<HTMLElement | null>;
   roomKind?: RoomKind;
   runningAgentIds?: readonly string[];
-  /** The viewer: with the super-agent on, whether the formatting bar shows is remembered per person. */
+  /** The signed-in viewer: the composer rests as one line. */
   viewerId?: string;
-  /** Workspace people who aren't here: the @ list offers them marked "Not in channel", and sending asks to add them (W18-3). */
-  outsiders?: readonly MentionTarget[];
-  onAddPeople?: (people: MemberRef[]) => Promise<void>;
-  /** "#tea shop" or "this group chat", for "Priya isn't in #tea shop". */
-  roomLabel?: string;
-}
-
-/** Super-agent: the composer is one line with the formatting bar shown above it by default (founder, 6 Nov 2026); Aa
- *  hides it and the choice is kept per person on this browser. ponytail: localStorage; a server preference if it should follow them across devices. */
-const formatKey = (viewerId: string) => `lightbulb.composer.format:${viewerId}`;
-function readFormatOpen(viewerId: string): boolean {
-  try { return localStorage.getItem(formatKey(viewerId)) !== "0"; } catch { return true; }
-}
-function writeFormatOpen(viewerId: string, open: boolean): void {
-  try { localStorage.setItem(formatKey(viewerId), open ? "1" : "0"); } catch { /* private mode: this session only */ }
 }
 
 // The WYSIWYG box (Lexical, ~125 KB gzip) is its own chunk, fetched as soon as this module loads; until it lands the
@@ -75,39 +58,11 @@ export const composerEditorReady: Promise<void> = typeof window === "undefined" 
 /** The WYSIWYG box once its chunk has landed (the edit form uses it too). */
 export const loadedComposerEditor = () => LoadedEditor;
 
-const sameMember = (left: MemberRef, right: MemberRef) => left.kind === right.kind && left.id === right.id;
-const uniqueRefs = (refs: MemberRef[]) => refs.filter((ref, index) => refs.findIndex((other) => sameMember(other, ref)) === index);
-const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-/** The picks whose `@token` is still in the text: as many picks per token as the token still appears. */
-function keptPicks(text: string, picks: readonly { token: string; ref: MemberRef }[]): MemberRef[] {
-  const used = new Map<string, number>();
-  return picks.flatMap((pick) => {
-    const key = pick.token.toLowerCase();
-    const seen = used.get(key) ?? 0;
-    const count = text.match(new RegExp(`(^|[\\s(])@${escapeRegExp(pick.token)}(?![\\w.-])`, "gi"))?.length ?? 0;
-    if (count <= seen) return [];
-    used.set(key, seen + 1);
-    return [pick.ref];
-  });
-}
-
 /** Markdown with nothing to send: empty, or only an empty bullet, number, quote or code fence. */
 export const isBlankMarkdown = (text: string) => text.split("\n").every((line) => /^\s*(?:[-*+]|\d+\.|>|```[\w-]*)?\s*$/.test(line));
 
-const FORMAT_CONTROLS: { style: MarkdownStyle; label: string; Icon: typeof Bold; keys?: string }[] = [
-  { style: "bold", label: "Bold", Icon: Bold, keys: "Meta+B Control+B" },
-  { style: "italic", label: "Italic", Icon: Italic, keys: "Meta+I Control+I" },
-  { style: "strike", label: "Strikethrough", Icon: Strikethrough, keys: "Meta+Shift+X Control+Shift+X" },
-  { style: "ul", label: "Bulleted list", Icon: List },
-  { style: "ol", label: "Numbered list", Icon: ListOrdered },
-  { style: "code", label: "Inline code", Icon: Code },
-  { style: "codeblock", label: "Code block", Icon: SquareCode, keys: "Meta+Shift+C Control+Shift+C" },
-  { style: "link", label: "Link", Icon: Link2 },
-];
-
-// The mention list and the emoji list are identical chrome around a
-// different row body — one listbox, ARIA wiring, and pick/hover behaviour.
+// The emoji list: one listbox, ARIA wiring, and pick/hover behaviour. Plain text: no formatting bar and no @ picker
+// (voice pivot); a typed @handle still resolves to a mention.
 function TypeaheadList<T>({ id, label, items, activeIndex, optionId, renderRow, onHover, onPick }: {
   id: string;
   label: string;
@@ -175,9 +130,6 @@ function ComposerAttempt({
   roomKind,
   runningAgentIds = [],
   viewerId,
-  outsiders = [],
-  onAddPeople,
-  roomLabel = "this chat",
   requestFocusAfterSend,
   cancelFocusAfterSend,
   consumeFocusAfterSend,
@@ -199,8 +151,6 @@ function ComposerAttempt({
   }, [focusToken]);
   const [trigger, setTrigger] = useState<CompletionTrigger | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
-  const [selectedSessions, setSelectedSessions] = useState<Record<string, string>>({});
-  const [picked, setPicked] = useState<{ token: string; ref: MemberRef }[]>([]);
   const [editorLoaded, setEditorLoaded] = useState(() => !!LoadedEditor);
   useEffect(() => { if (!editorLoaded) void composerEditorReady.then(() => setEditorLoaded(true)); }, [editorLoaded]);
   const plainFocused = useRef(false);
@@ -224,17 +174,8 @@ function ComposerAttempt({
   const dragDepthRef = useRef(0);
   const externalDragDepthRef = useRef(0);
   const addAttachmentsRef = useRef<(files: File[]) => void>(() => {});
-  const [toolbarIndex, setToolbarIndex] = useState(0);
-  // The box rests as one line and Aa's choice is remembered per person (signed in). The keyboard shortcuts work either way.
+  // The box rests as one line for a signed-in viewer.
   const compact = !!viewerId;
-  const [formatPref, setFormatPref] = useState<{ key: string | null; open: boolean }>(() => ({ key: null, open: true }));
-  const prefKey = compact ? viewerId! : null;
-  if (formatPref.key !== prefKey) setFormatPref({ key: prefKey, open: prefKey ? readFormatOpen(prefKey) : true });
-  const formatOpen = formatPref.open;
-  const setFormatOpen = (open: boolean) => {
-    setFormatPref({ key: prefKey, open });
-    if (prefKey) writeFormatOpen(prefKey, open);
-  };
   const [pickerOpen, setPickerOpen] = useState(false);
   // The + menu hands focus to the emoji picker it opens, not back to +.
   const emojiPending = useRef(false);
@@ -243,7 +184,6 @@ function ComposerAttempt({
   useLayoutEffect(() => {
     if (consumeFocusAfterSend()) field.current?.focus();
   }, [consumeFocusAfterSend]);
-  const toolbarButtons = useRef<(HTMLButtonElement | null)[]>([]);
 
   useEffect(() => {
     carried.current.sent = false;
@@ -295,54 +235,13 @@ function ComposerAttempt({
     if (sendState === "rejected" || sendState === "persisted") setCallbackUncertain(false);
   }
 
-  // A DM with exactly one agent puts that agent first — the same signal the
-  // context already uses for focusAgentId.
-  const mentionable = focusAgentId
-    ? [...members.filter((member) => member.id === focusAgentId), ...members.filter((member) => member.id !== focusAgentId)]
-    : members;
-  type MentionOption = { kind: "member"; member: MentionTarget; outside?: boolean } | { kind: "session"; option: RoomComposerSessionOption };
-  const matchesQuery = (member: MentionTarget) => {
-    const needle = trigger?.query.toLocaleLowerCase() ?? "";
-    return !needle
-      || member.displayName.toLocaleLowerCase().includes(needle)
-      || (member.kind === "agent" && (member.mentionHandle ?? "").toLocaleLowerCase().includes(needle));
-  };
-  // People here first; then, once something is typed, workspace people who aren't (Slack's "Not in channel").
-  const canInvite = !!onAddPeople && outsiders.length > 0;
-  const memberOptions: MentionOption[] = trigger?.kind === "mention"
-    ? [...mentionable.filter(matchesQuery).map((member) => ({ kind: "member" as const, member })),
-      ...(canInvite && trigger.query ? outsiders.filter(matchesQuery).slice(0, 5).map((member) => ({ kind: "member" as const, member, outside: true })) : [])]
-    : [];
-  const sessionOptions: MentionOption[] = trigger?.kind === "mention"
-    ? sessionTargets.filter(({ candidate, ownerName }) => {
-        const needle = trigger.query.toLocaleLowerCase();
-        return candidate.handle.toLocaleLowerCase().includes(needle)
-          || sessionAgentName(candidate.session.provider).toLowerCase().includes(needle)
-          || sessionMatches(candidate.session, needle, ownerName);
-      }).map((option) => ({ kind: "session" as const, option }))
-    : [];
-  const options = [...memberOptions, ...sessionOptions];
-  const mentionOpen = options.length > 0;
   const emojiOptions = trigger?.kind === "emoji" ? searchEmoji(trigger.query).slice(0, 8) : [];
   const emojiOpen = emojiOptions.length > 0;
-  const listOpen = mentionOpen || emojiOpen;
-  // Mentions come from the text, except where the sender picked someone from the list: that pick is kept by id while
-  // its token is still in the text, so two people named "Alex Kim" each get the one picked (W18-2).
-  const pickedRefs = keptPicks(text, picked);
-  const pickedTokens = new Set(picked.map((pick) => pick.token.toLowerCase()));
-  const everyone = [...members, ...outsiders];
-  const wasPicked = (ref: MemberRef) => pickedRefs.some((pick) => sameMember(pick, ref));
-  // A token someone was picked for resolves to the pick, never to another person who shares it.
-  const fromText = (people: readonly MentionTarget[]) => resolveTypedMentions(text, people).filter((ref) => wasPicked(ref)
-    || !everyone.some((person) => sameMember(person, ref) && [person.displayName, person.mentionHandle].some((token) => !!token && pickedTokens.has(token.toLowerCase()))));
-  const isMember = (ref: MemberRef) => members.some((member) => sameMember(member, ref));
-  const mentions = uniqueRefs([...pickedRefs.filter(isMember), ...fromText(members)]);
-  // Named with @ but not here: asked about on send (W18-3).
-  const outsideMentions = canInvite ? uniqueRefs([...pickedRefs, ...fromText(outsiders)].filter((ref) => !isMember(ref))) : [];
-  const [invite, setInvite] = useState<{ people: MemberRef[]; error?: string; adding?: boolean } | null>(null);
-  const { ids: sessionMentions, unresolved: staleHandles } = resolveTypedSessionMentions(text, sessionTargets.map(({ candidate }) => candidate), selectedSessions);
+  const listOpen = emojiOpen;
+  // Mentions come from the typed text: an @handle of someone here.
+  const mentions = resolveTypedMentions(text, members);
+  const { ids: sessionMentions, unresolved: staleHandles } = resolveTypedSessionMentions(text, sessionTargets.map(({ candidate }) => candidate), {});
   const staleKey = staleHandles.join(" ");
-  const authorized = mentions.every((mention) => members.some((member) => sameMember(member, mention)));
   const bytes = new TextEncoder().encode(text).length;
   const error = bytes > 100_000
     ? "Keep your message within 100,000 UTF-8 bytes."
@@ -350,9 +249,7 @@ function ComposerAttempt({
       ? "Choose at most 32 room members."
       : sessionMentions.length > 4
         ? "Choose at most four sessions."
-        : !authorized
-          ? "A selected mention is no longer in this room."
-          : "";
+        : "";
   const effectiveState = sendState === "idle" ? lastEvidence : sendState;
   const uncertain = effectiveState === "uncertain" || callbackUncertain;
   const pending = effectiveState === "sending" || (effectiveState === "idle" && submitted && !uncertain);
@@ -375,8 +272,8 @@ function ComposerAttempt({
           ? "Message saved"
           : "";
 
-  function request(extra: MemberRef[] = []): CreateMessageRequest {
-    return { clientMessageId, text, mentions: [...mentions, ...extra], ...(sessionMentions.length ? { sessionMentions } : {}), replyToMessageId, threadRootMessageId, attachmentIds: attachments.flatMap((item) => item.attachment ? [item.attachment.id] : []) };
+  function request(): CreateMessageRequest {
+    return { clientMessageId, text, mentions, ...(sessionMentions.length ? { sessionMentions } : {}), replyToMessageId, threadRootMessageId, attachmentIds: attachments.flatMap((item) => item.attachment ? [item.attachment.id] : []) };
   }
 
   function supportedType(file: File): MessageAttachmentContentType | undefined {
@@ -531,17 +428,6 @@ function ComposerAttempt({
     setActiveIndex(0);
   }, []);
 
-  function choose(option: MentionOption) {
-    if (!trigger) return;
-    // A person by name (their handle comes from their email, W18-2); an agent by its handle.
-    const token = option.kind === "session" ? `@${option.option.candidate.handle}`
-      : option.member.kind === "agent" && option.member.mentionHandle ? `@${option.member.mentionHandle}` : `@${option.member.displayName}`;
-    if (option.kind === "session") setSelectedSessions((current) => ({ ...current, [option.option.candidate.handle.toLowerCase()]: option.option.candidate.session.sessionId }));
-    else setPicked((current) => [...current, { token: token.slice(1), ref: { kind: option.member.kind, id: option.member.id } }]);
-    setTrigger(null);
-    field.current?.replaceTrigger(token);
-  }
-
   function insertAtCaret(value: string) {
     setTrigger(null);
     field.current?.insertText(value);
@@ -554,7 +440,7 @@ function ComposerAttempt({
     field.current?.replaceTrigger(emoji);
   }
 
-  function submit(retry = false, restoreFocus = false, sendStale = false, added: MemberRef[] | "skip" | null = null) {
+  function submit(retry = false, restoreFocus = false, sendStale = false) {
     if (retry
       ? disabled || !!error || uploading || uploadFailed || !hasContent || !clientMessageId || effectiveState !== "rejected" || !onRetry || retryLocked.current
       : !canSend || locked.current) return;
@@ -563,12 +449,6 @@ function ComposerAttempt({
       setStaleNotice(staleKey);
       return;
     }
-    // Slack: "Priya isn't in #x — Add them / Do nothing".
-    if (!retry && outsideMentions.length > 0 && added === null) {
-      setInvite({ people: outsideMentions });
-      return;
-    }
-    setInvite(null);
     setStaleNotice("");
     locked.current = true;
     if (restoreFocus) requestFocusAfterSend();
@@ -588,37 +468,10 @@ function ComposerAttempt({
       setRetryPending(false);
     };
     try {
-      void Promise.resolve((retry ? onRetry! : onSubmit)(request(Array.isArray(added) ? added : []))).catch(markUncertain);
+      void Promise.resolve((retry ? onRetry! : onSubmit)(request())).catch(markUncertain);
     } catch {
       markUncertain();
     }
-  }
-
-  async function addAndSend() {
-    if (!invite || !onAddPeople || invite.adding) return;
-    setInvite({ ...invite, adding: true, error: undefined });
-    try {
-      await onAddPeople(invite.people);
-    } catch (reason) {
-      setInvite({ people: invite.people, error: reason instanceof Error && reason.message ? reason.message : "They could not be added. Try again." });
-      return;
-    }
-    submit(false, true, true, invite.people);
-  }
-
-  // Formatting applies in the box as you work, like Slack (W18-4); the message still goes out as markdown.
-  const [linkDraft, setLinkDraft] = useState<string | null>(null);
-  function format(style: MarkdownStyle) {
-    if (style !== "link") { field.current?.format(style); return; }
-    if (field.current?.selectedLink()) { field.current.link(null); return; }
-    setLinkDraft("");
-  }
-  function applyLink() {
-    const url = linkDraft?.trim();
-    setLinkDraft(null);
-    if (!url) { field.current?.focus(); return; }
-    // Nothing selected: the address goes in as its own link text.
-    if (!field.current?.link(url)) field.current?.insertText(url);
   }
 
   const hint = showRespondHint ? respondHint(roomKind, members, mentions, runningAgentIds, true) : null;
@@ -631,14 +484,13 @@ function ComposerAttempt({
     if (listOpen) {
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         if (composingKey) return false;
-        const count = mentionOpen ? options.length : emojiOptions.length;
+        const count = emojiOptions.length;
         setActiveIndex((index) => (index + (event.key === "ArrowDown" ? 1 : count - 1)) % count);
         return true;
       }
       if (event.key === "Enter" || event.key === "Tab") {
         if (composingKey) return false;
-        if (mentionOpen) choose(options[activeIndex] ?? options[0]);
-        else chooseEmoji((emojiOptions[activeIndex] ?? emojiOptions[0]).emoji);
+        chooseEmoji((emojiOptions[activeIndex] ?? emojiOptions[0]).emoji);
         return true;
       }
       if (event.key === "Escape") {
@@ -653,13 +505,6 @@ function ComposerAttempt({
     if (event.key === "ArrowUp" && !event.altKey && isBlankMarkdown(text) && onEditLast) {
       onEditLast();
       return true;
-    }
-    if (!listOpen && (event.metaKey || event.ctrlKey)) {
-      const key = event.key.toLowerCase();
-      const style: MarkdownStyle | null = event.shiftKey
-        ? key === "x" ? "strike" : key === "c" ? "codeblock" : null
-        : key === "b" ? "bold" : key === "i" ? "italic" : null;
-      if (style) { format(style); return true; }
     }
     if (event.key === "Enter" && !event.shiftKey && !composingKey) {
       submit(false, true);
@@ -689,10 +534,6 @@ function ComposerAttempt({
     onTrigger={syncTrigger} onKeyDown={handleKey} onPasteFiles={addAttachments} onBlur={() => onTypingChange?.(false)} />;
   const fileInput = onUploadAttachment && <input ref={attachmentInput} className="sr-only" type="file" accept={MESSAGE_ATTACHMENT_ACCEPT} multiple
     onChange={(event) => { addAttachments([...event.target.files ?? []]); event.target.value = ""; }} />;
-  const formatButton = <Button type="button" variant="ghost" size="icon-sm" aria-label={formatOpen ? "Hide formatting" : "Show formatting"} aria-pressed={formatOpen}
-    aria-controls={formatOpen ? `${fieldId}-format` : undefined} onClick={() => setFormatOpen(!formatOpen)}><CaseSensitive aria-hidden="true" /></Button>;
-  const mentionButton = <Button type="button" variant="ghost" size="icon-sm" aria-label="Mention someone" aria-expanded={mentionOpen}
-    disabled={!editable} onClick={() => field.current?.insertText(text && !/\s$/.test(text) ? " @" : "@")}><AtSign aria-hidden="true" /><span className="sr-only">Mention</span></Button>;
   const sendButton = <Button type="submit" size="icon-sm" className="room-send" disabled={!canSend} aria-label="Send message"><Send aria-hidden="true" /><span className="sr-only">Send</span></Button>;
 
   return <form className="room-composer" data-compact={compact || undefined} aria-label={`${label} composer`} aria-busy={pending || retryPending}
@@ -702,45 +543,8 @@ function ComposerAttempt({
     onDragOver={(event) => { if (carriesFiles(event.dataTransfer)) event.preventDefault(); }}
     onDragLeave={handleFormDragLeave}
     onDrop={handleFormDrop}>
-    {formatOpen && <div id={`${fieldId}-format`} className="room-format" role="toolbar" aria-label="Formatting"
-      onKeyDown={(event) => {
-        const count = FORMAT_CONTROLS.length;
-        let next: number;
-        if (event.key === "ArrowRight") next = (toolbarIndex + 1) % count;
-        else if (event.key === "ArrowLeft") next = (toolbarIndex - 1 + count) % count;
-        else if (event.key === "Home") next = 0;
-        else if (event.key === "End") next = count - 1;
-        else return;
-        event.preventDefault();
-        setToolbarIndex(next);
-        toolbarButtons.current[next]?.focus();
-      }}>
-      {FORMAT_CONTROLS.map(({ style, label: controlLabel, Icon, keys }, index) => <Button key={style} type="button" variant="ghost" size="icon-sm"
-        ref={(node) => { toolbarButtons.current[index] = node; }} tabIndex={index === toolbarIndex ? 0 : -1}
-        aria-label={controlLabel} aria-keyshortcuts={keys} title={controlLabel} disabled={!editable}
-        // The box keeps focus and its selection while the bar is clicked.
-        onMouseDown={(event) => event.preventDefault()}
-        onFocus={() => setToolbarIndex(index)} onClick={() => format(style)}><Icon aria-hidden="true" /></Button>)}
-      {linkDraft !== null && <input autoFocus type="url" className="room-format-link" aria-label="Link address" placeholder="Paste a link, then Enter"
-        value={linkDraft} onChange={(event) => setLinkDraft(event.target.value)} onBlur={() => setLinkDraft(null)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") { event.preventDefault(); applyLink(); }
-          if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setLinkDraft(null); field.current?.focus(); }
-        }} />}
-    </div>}
     {dropping && <p className="room-drop-hint text-ui text-muted-foreground" role="status">Drop files to attach</p>}
     <label className="sr-only" htmlFor={fieldId}>{label}</label>
-    {mentionOpen && <TypeaheadList id={`${fieldId}-targets`} label={sessionTargets.length ? "Mention a room member or session" : "Mention a room member"} items={options} activeIndex={activeIndex}
-      optionId={(index) => `${fieldId}-option-${index}`} onHover={setActiveIndex} onPick={(index) => choose(options[index])}
-      renderRow={(entry) => entry.kind === "member" ? <>
-        <ParticipantAvatar participant={entry.member} size="sm" />
-        <span className="min-w-0 flex-1 text-left"><span className="block truncate" title={entry.member.displayName}>{entry.member.displayName}</span>
-          <span className="text-muted-foreground text-ui">{entry.outside ? `Not in ${roomLabel.startsWith("#") ? "channel" : "this chat"}` : entry.member.kind === "agent" && entry.member.mentionHandle ? `@${entry.member.mentionHandle}` : "Person"}</span></span>
-      </> : <>
-        <span className="flex size-8 items-center justify-center rounded-md bg-muted" aria-hidden="true"><SessionToolIcon provider={entry.option.candidate.session.provider} /></span>
-        <span className="min-w-0 flex-1 text-left"><span className="block truncate" title={sessionTitle(entry.option.candidate.session)}>{sessionAgentName(entry.option.candidate.session.provider)} · {sessionTitle(entry.option.candidate.session)}</span>
-          <span className="block truncate text-muted-foreground text-ui">{entry.option.ownerName}{entry.option.candidate.collided ? ` · ${entry.option.candidate.session.cwdName ? `${entry.option.candidate.session.cwdName} · ` : ""}${entry.option.candidate.session.sessionId.slice(0, 8)}` : ""}</span></span>
-      </>} />}
     {emojiOpen && <TypeaheadList id={`${fieldId}-targets`} label="Insert an emoji" items={emojiOptions} activeIndex={activeIndex}
       optionId={(index) => `${fieldId}-option-${index}`} onHover={setActiveIndex} onPick={(index) => chooseEmoji(emojiOptions[index].emoji)}
       renderRow={(entry) => <><span aria-hidden="true" className="text-lg">{entry.emoji}</span><span className="flex-1 text-left truncate">{entry.name}</span></>} />}
@@ -761,12 +565,6 @@ function ComposerAttempt({
         <Button type="button" variant="ghost" size="icon-sm" aria-label={`Remove ${item.file.name}`} disabled={!editable} onClick={() => removeAttachment(item.key)}><X aria-hidden="true" /></Button>
       </div>)}</div>}
     {attachmentError && <p role="alert" className="text-ui text-err">{attachmentError}</p>}
-    {invite && <div role="alert" className="room-invite-prompt text-ui">
-      <span>{invite.people.map((ref) => outsiders.find((person) => sameMember(person, ref))?.displayName ?? "Someone").join(", ")} {invite.people.length === 1 ? "isn't" : "aren't"} in {roomLabel}.</span>
-      <Button type="button" size="sm" disabled={invite.adding} onClick={() => void addAndSend()}>{invite.adding ? "Adding…" : invite.people.length === 1 ? "Add them" : "Add them all"}</Button>
-      <Button type="button" size="sm" variant="ghost" disabled={invite.adding} onClick={() => submit(false, true, true, "skip")}>Do nothing</Button>
-      {invite.error && <span className="text-err">{invite.error}</span>}
-    </div>}
     {staleKey && staleNotice === staleKey && <p role="alert" className="text-ui text-warn">
       {staleHandles.map((handle) => `@${handle}`).join(", ")} no longer {staleHandles.length === 1 ? "matches" : "match"} a shared session. Remove it or send anyway.{" "}
       <Button type="button" variant="link" size="sm" className="h-auto p-0" onClick={() => submit(false, true, true)}>Send anyway</Button></p>}
@@ -784,13 +582,11 @@ function ComposerAttempt({
         </DropdownMenu>
       </span>} />
       {textarea}
-      <div className="room-composer-actions">{formatButton}{mentionButton}{sendButton}</div>
+      <div className="room-composer-actions">{sendButton}</div>
     </div> : <div className="room-composer-actions">
       {onUploadAttachment && <>{fileInput}
         <Button type="button" variant="ghost" size="icon-sm" aria-label="Attach files" disabled={!editable || attachments.length >= MESSAGE_ATTACHMENT_MAX_COUNT} onClick={() => attachmentInput.current?.click()}><Paperclip aria-hidden="true" /></Button></>}
-      {formatButton}
       <EmojiPicker triggerLabel="Insert emoji" disabled={!editable} onPick={insertAtCaret} />
-      {mentionButton}
       {sendButton}
     </div>}
     {/* The line is held while the box is empty, so the bar above never moves when the hint appears (W18-4). */}

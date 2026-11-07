@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { RoomTimeline, StickToBottom } from "../RoomTimeline";
+import { RoomTimeline } from "../RoomTimeline";
 import type { RoomMessage } from "../types";
 
 // Pin "now" to a local calendar day (via local-time Date constructors, not UTC ISO
@@ -121,26 +121,6 @@ it("takes the sender to the bottom (smoothly) on send, even when scrolled up", (
   rerender(<RoomTimeline {...props} messages={[msg(1, 0), msg(2, 1)]} sendToken={1} />);
   expect(region.scrollTop).toBe(region.scrollHeight);
   expect(screen.queryByRole("button", { name: /new message/ })).not.toBeInTheDocument();
-});
-
-it("follows a thread's replies and takes a thread sender to the bottom", () => {
-  const observer = captureResizeObserver();
-  try {
-    const scrollTo = vi.fn(function (this: HTMLElement, options: ScrollToOptions) { this.scrollTop = options.top!; });
-    Element.prototype.scrollTo = scrollTo as unknown as typeof Element.prototype.scrollTo;
-    const { container, rerender } = render(<StickToBottom className="box" pinToken={0}><p>replies</p></StickToBottom>);
-    const box = container.querySelector<HTMLElement>(".box")!;
-    scrollable(box, { top: 0 });
-    scrollUp(box);
-    observer.resizeTo(box, 1500);
-    expect(box.scrollTop).toBe(0);
-    rerender(<StickToBottom className="box" pinToken={1}><p>replies</p></StickToBottom>);
-    expect(box.scrollTop).toBe(1500);
-    observer.resizeTo(box, 1800);
-    expect(box.scrollTop).toBe(1800);
-  } finally {
-    observer.restore();
-  }
 });
 
 it("renders separators for dates and the New line, and collapsed flags", () => {

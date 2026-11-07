@@ -28,7 +28,7 @@ const event: LiveEvent = {
   payload: { roomId: "room", messageId: "message", messageSeq: 2, threadRootMessageId: null, notify: true, push },
 };
 const emit = (e: LiveEvent = event) => act(() => { for (const handler of mocks.handlers) handler(e); });
-const renderAway = () => render(<MessageNotifications activeRoomId={null} threadId={null} roomVisible={false} onOpen={vi.fn()} />);
+const renderAway = () => render(<MessageNotifications activeRoomId={null} roomVisible={false} onOpen={vi.fn()} />);
 beforeEach(() => {
   mocks.handlers.clear();
   vi.clearAllMocks();
@@ -41,7 +41,7 @@ beforeEach(() => {
 
 it("shows the projector's banner verbatim, once, with a conversation action", async () => {
   const onOpen = vi.fn();
-  render(<MessageNotifications activeRoomId="different" threadId={null} roomVisible onOpen={onOpen} />);
+  render(<MessageNotifications activeRoomId="different" roomVisible onOpen={onOpen} />);
   emit(); emit();
   await waitFor(() => expect(mocks.notifySuccess).toHaveBeenCalledTimes(1));
   expect(mocks.nativeNotify).toHaveBeenCalledTimes(1);
@@ -98,18 +98,18 @@ it("stays quiet for an agent reply whose run already notified", async () => {
 
 it("suppresses a focused conversation but not an unopened thread in it", async () => {
   vi.mocked(document.hasFocus).mockReturnValue(true);
-  const view = render(<MessageNotifications activeRoomId="room" threadId={null} roomVisible onOpen={vi.fn()} />);
+  const view = render(<MessageNotifications activeRoomId="room" roomVisible onOpen={vi.fn()} />);
   await act(async () => { emit(); });
   expect(mocks.nativeNotify).not.toHaveBeenCalled();
   view.unmount();
-  render(<MessageNotifications activeRoomId="room" threadId={null} roomVisible onOpen={vi.fn()} />);
+  render(<MessageNotifications activeRoomId="room" roomVisible onOpen={vi.fn()} />);
   emit({ ...event, payload: { ...event.payload, threadRootMessageId: "root" } } as LiveEvent);
   await waitFor(() => expect(mocks.notifySuccess).toHaveBeenCalledTimes(1));
 });
 
 it("suppresses thread replies too in a side room, which shows replies inline (a session's chat)", async () => {
   vi.mocked(document.hasFocus).mockReturnValue(true);
-  render(<MessageNotifications activeRoomId="main" threadId={null} roomVisible sideRoomIds={["room"]} onOpen={vi.fn()} />);
+  render(<MessageNotifications activeRoomId="main" roomVisible sideRoomIds={["room"]} onOpen={vi.fn()} />);
   await act(async () => { emit({ ...event, payload: { ...event.payload, threadRootMessageId: "root" } } as LiveEvent); });
   expect(mocks.nativeNotify).not.toHaveBeenCalled();
   expect(mocks.notifySuccess).not.toHaveBeenCalled();
@@ -118,11 +118,11 @@ it("suppresses thread replies too in a side room, which shows replies inline (a 
 it("keeps the main room and every side room quiet at once, and toasts a room no longer on screen", async () => {
   vi.mocked(document.hasFocus).mockReturnValue(true);
   const at = (roomId: string, messageId: string) => ({ ...event, payload: { ...event.payload, roomId, messageId } } as LiveEvent);
-  const view = render(<MessageNotifications activeRoomId="main" threadId={null} roomVisible sideRoomIds={["chat", "conv"]} onOpen={vi.fn()} />);
+  const view = render(<MessageNotifications activeRoomId="main" roomVisible sideRoomIds={["chat", "conv"]} onOpen={vi.fn()} />);
   await act(async () => { emit(at("main", "m1")); emit(at("chat", "m2")); emit(at("conv", "m3")); });
   expect(mocks.nativeNotify).not.toHaveBeenCalled();
   // The app's conversation is hidden (its pane is not shown): it unregisters, and its messages notify again.
-  view.rerender(<MessageNotifications activeRoomId="main" threadId={null} roomVisible sideRoomIds={["chat"]} onOpen={vi.fn()} />);
+  view.rerender(<MessageNotifications activeRoomId="main" roomVisible sideRoomIds={["chat"]} onOpen={vi.fn()} />);
   await act(async () => { emit(at("conv", "m4")); });
   await waitFor(() => expect(mocks.nativeNotify).toHaveBeenCalledTimes(1));
 });
@@ -198,7 +198,7 @@ describe("shared session attention", () => {
 
   it("notifies once with the server's copy and opens the session on click", async () => {
     const onOpenSession = vi.fn();
-    render(<MessageNotifications activeRoomId={null} threadId={null} roomVisible={false} onOpen={vi.fn()} onOpenSession={onOpenSession} />);
+    render(<MessageNotifications activeRoomId={null} roomVisible={false} onOpen={vi.fn()} onOpenSession={onOpenSession} />);
     await act(async () => { emit(attention); emit(attention); });
     expect(mocks.nativeNotify).toHaveBeenCalledTimes(1);
     const [title, body, opts] = mocks.nativeNotify.mock.calls[0];
@@ -210,7 +210,7 @@ describe("shared session attention", () => {
 
   it("stays quiet while that session is on screen and focused", async () => {
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
-    render(<MessageNotifications activeRoomId={null} threadId={null} roomVisible={false} onOpen={vi.fn()} activeSessionId="s1" />);
+    render(<MessageNotifications activeRoomId={null} roomVisible={false} onOpen={vi.fn()} activeSessionId="s1" />);
     await act(async () => { emit(attention); });
     expect(mocks.nativeNotify).not.toHaveBeenCalled();
   });
@@ -219,7 +219,7 @@ describe("shared session attention", () => {
     const at = (eventId: string, extra: object) =>
       ({ ...attention, eventId, payload: { ...attention.payload, ...extra } }) as LiveEvent;
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
-    render(<MessageNotifications activeRoomId={null} threadId={null} roomVisible={false} onOpen={vi.fn()} />);
+    render(<MessageNotifications activeRoomId={null} roomVisible={false} onOpen={vi.fn()} />);
     await act(async () => {
       emit(at("a", { level: "badge" }));
       emit(at("b", { level: "off" }));
@@ -234,7 +234,7 @@ describe("shared session attention", () => {
 
 it("a click on a Mac request notification opens the session it is about", () => {
   const onOpenSession = vi.fn();
-  render(<MessageNotifications activeRoomId={null} threadId={null} roomVisible={false} onOpen={vi.fn()} onOpenSession={onOpenSession} />);
+  render(<MessageNotifications activeRoomId={null} roomVisible={false} onOpen={vi.fn()} onOpenSession={onOpenSession} />);
   mocks.sessionClick?.("s-1");
   expect(onOpenSession).toHaveBeenCalledWith("s-1");
 });

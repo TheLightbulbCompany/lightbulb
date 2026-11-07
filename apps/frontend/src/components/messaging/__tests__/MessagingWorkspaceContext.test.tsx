@@ -12,9 +12,7 @@ import { composerValue, typeInComposer } from "@/test-utils/composer";
 import { requestFocusComposer, _resetFocusComposerRequestForTests } from "@/lib/focusComposerRequest";
 import type { LiveRoomRun } from "@lightbulb/shared";
 
-const mocks = vi.hoisted(() => ({ rooms: vi.fn(), agents: vi.fn(), roster: vi.fn(), orgId: "org", capture: vi.fn(), waitingPref: "banner" }));
-vi.mock("@/components/settings/SessionNotificationsCard", async (importOriginal) => ({ ...(await importOriginal<object>()),
-  useSessionNotificationPrefs: () => ({ prefs: { waiting: mocks.waitingPref, finished: "banner" }, loaded: true, mutate: vi.fn() }) }));
+const mocks = vi.hoisted(() => ({ rooms: vi.fn(), agents: vi.fn(), roster: vi.fn(), orgId: "org", capture: vi.fn() }));
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ userId: "owner", orgId: mocks.orgId }), useUser: () => ({ user: { fullName: "Olive Owner" } }) }));
 vi.mock("@/lib/analytics", async (importOriginal) => ({ ...(await importOriginal<object>()), capture: mocks.capture }));
 vi.mock("@/hooks/useRooms", () => ({ useRooms: mocks.rooms }));
@@ -259,11 +257,12 @@ it("opens the room a failed-run toast names", async () => {
   view.unmount();
 });
 
-it("opens a thread on its root when the openRoom event names one (Activity's Open thread)", () => {
+it("lands an old thread link on its root message when the openRoom event names one (threads are gone)", () => {
+  state.historyComplete = true;
   const view = compose();
   act(() => { window.dispatchEvent(new CustomEvent("openRoom", { detail: { roomId: room.roomId, threadId: "root-1" } })); });
   expect(state.selectRoom).toHaveBeenCalledWith(room.roomId);
-  expect(panel.selectedThreadId).toBe("root-1");
+  expect(panel.targetMessageId).toBe("root-1");
   view.unmount();
 });
 
@@ -364,14 +363,14 @@ it("asks for ended sessions, keeps them out of sharing, baselines unread and mar
   const at = (seq: number, status = "busy") => ({ ...(liveSession("s1", "colleague") as object), status, latestEventSeq: seq } as never);
   state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [at(3), { ...(liveSession("old", "owner") as object), status: "ended", latestEventSeq: 1 } as never] });
   mocks.rooms.mockReturnValue(state);
-  render(<MessagingWorkspaceProvider><MessagingDirectory /><MessagingConversation /></MessagingWorkspaceProvider>);
+  render(<MessagingWorkspaceProvider><CaptureContext /><MessagingDirectory /><MessagingConversation /></MessagingWorkspaceProvider>);
   await waitFor(() => expect(directory.sessions).toHaveLength(2));
   expect(state.resourceSource.client.listWorkspaceSessions).toHaveBeenCalledWith({ includeEnded: true });
   expect(directory.participants.find((p) => p.id === "owner")?.sharing).toBeFalsy();
   // First sight is the baseline: nothing unread yet.
   expect(directory.sessions?.find((row) => row.session.sessionId === "s1")?.unread).toBeNull();
-  await act(async () => { await directory.onSelectSession?.("s1"); });
-  await waitFor(() => expect(directory.currentSessionId).toBe("s1"));
+  act(() => workspaceValue.openSession("s1"));
+  await waitFor(() => expect(workspaceValue.sessionFocus?.sessionId).toBe("s1"));
   await waitFor(() => expect(directory.sessions?.find((row) => row.session.sessionId === "s1")?.unread ?? null).toBeNull());
 });
 
@@ -482,13 +481,6 @@ it("opens Messages when a person or agent is selected from the directory", async
   expect(onOpenRoom).toHaveBeenCalledWith();
 });
 
-it("opens Messages when a session is selected from the sidebar, so its focus placement is visible", () => {
-  const onOpenRoom = vi.fn();
-  compose(onOpenRoom);
-  act(() => directory.onSelectSession!("s1"));
-  expect(onOpenRoom).toHaveBeenCalledWith();
-});
-
 it("surfaces DM selection failures through the directory action error", async () => {
   state.selectDm.mockRejectedValueOnce(new Error("Conversation could not be opened."));
   compose();
@@ -557,13 +549,8 @@ it("clears the old room's draft and attempt IDs on room change", () => {
   const view = compose();
   act(() => {
     panel.composer.onTextChange("Old draft");
-    panel.onSelectThread?.("message-1");
-  });
-  act(() => {
-    panel.threadComposer!.composer.onTextChange("Old reply");
   });
   const oldMessageId = panel.composer.clientMessageId;
-  const oldThreadId = panel.threadComposer!.composer.clientMessageId;
   state.activeRoomId = "room-2";
   state.activeRoom = { ...room, roomId: "room-2" };
   view.rerender(<MessagingWorkspaceProvider initialAgentId="agent-friday" subscribeToRoom>
@@ -571,10 +558,6 @@ it("clears the old room's draft and attempt IDs on room change", () => {
   </MessagingWorkspaceProvider>);
   expect(panel.composer.text).toBe("");
   expect(panel.composer.clientMessageId).not.toBe(oldMessageId);
-  expect(panel.threadComposer).toBeUndefined();
-  act(() => panel.onSelectThread?.("message-2"));
-  expect(panel.threadComposer!.composer.text).toBe("");
-  expect(panel.threadComposer!.composer.clientMessageId).not.toBe(oldThreadId);
 });
 
 it("does not clear the new room's draft when the old room's send finishes", async () => {
@@ -921,12 +904,12 @@ it("closes the shortcut sheet on a second Cmd+/, even though it is itself an ope
   expect(screen.queryByRole("dialog", { name: "Keyboard shortcuts" })).not.toBeInTheDocument();
 });
 
-it("opens someone else's session from the sidebar in focus on its own, and clears it when a conversation is picked", async () => {
+it("opens someone else's session in focus on its own, and clears it when a conversation is picked", async () => {
   state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [{ sessionId: "s1", humanUserId: "colleague", status: "idle" } as never] });
   mocks.rooms.mockReturnValue(state);
   render(<MessagingWorkspaceProvider><CaptureContext /><MessagingDirectory /></MessagingWorkspaceProvider>);
   await waitFor(() => expect(directory.sessions).toHaveLength(1));
-  act(() => directory.onSelectSession!("s1"));
+  act(() => workspaceValue.openSession("s1"));
   // Sessions are workspace-scoped: no DM is opened and no room is chosen for them.
   expect(state.selectDm).not.toHaveBeenCalled();
   expect(state.selectRoom).not.toHaveBeenCalled();
@@ -1038,7 +1021,7 @@ it("treats the room as hidden while a session covers it", async () => {
   render(<MessagingWorkspaceProvider><CaptureContext /><MessagingDirectory /></MessagingWorkspaceProvider>);
   await waitFor(() => expect(directory.sessions).toHaveLength(1));
   expect(notifications.roomVisible).toBe(true);
-  act(() => directory.onSelectSession!("s1"));
+  act(() => workspaceValue.openSession("s1"));
   // Neither auto-read nor notification suppression: nothing of the room is on screen.
   expect(notifications.roomVisible).toBe(false);
   expect(mocks.rooms).toHaveBeenLastCalledWith(undefined, true, false, true, true);
@@ -1046,7 +1029,7 @@ it("treats the room as hidden while a session covers it", async () => {
   expect(notifications.roomVisible).toBe(true);
   expect(mocks.rooms).toHaveBeenLastCalledWith(undefined, true, true, true, true);
   // A notification for the covered room, clicked: "View" has to show the room.
-  act(() => directory.onSelectSession!("s1"));
+  act(() => workspaceValue.openSession("s1"));
   act(() => notifications.onOpen("room-1", null));
   expect(workspaceValue.sessionFocus).toBeNull();
   expect(notifications.roomVisible).toBe(true);
@@ -1060,7 +1043,7 @@ it("keeps the focused session mounted while Messages is not the active dock pane
   </MessagingWorkspaceProvider>;
   const view = render(tree(true));
   await waitFor(() => expect(directory.sessions).toHaveLength(1));
-  act(() => directory.onSelectSession!("mine"));
+  act(() => workspaceValue.openSession("mine"));
   const focused = screen.getByRole("region", { name: "Shared session" });
   // A split dock: Messages is on screen but another panel is active.
   view.rerender(tree(false));
@@ -1102,14 +1085,12 @@ it("keeps history action inputs stable while the provider draft or live run chan
   const before = {
     select: panel.onSelectParticipant,
     unread: panel.onMarkUnreadFrom,
-    pins: panel.pinnedMessageIds,
     participants: panel.participants,
   };
   typeInComposer("typing a draft");
   expect(panel.composer.text).toBe("typing a draft");
   expect(panel.onSelectParticipant).toBe(before.select);
   expect(panel.onMarkUnreadFrom).toBe(before.unread);
-  expect(panel.pinnedMessageIds).toBe(before.pins);
   expect(panel.participants).toBe(before.participants);
   state.runs = [{ roomId: room.roomId, agentId: "agent-friday", runId: "stream", text: "Streaming text", thinking: "", state: "running", frames: [] }];
   view.rerender(<MessagingWorkspaceProvider initialAgentId="agent-friday" subscribeToRoom>
@@ -1118,7 +1099,6 @@ it("keeps history action inputs stable while the provider draft or live run chan
   expect(panel.runs?.[0].text).toBe("Streaming text");
   expect(panel.onSelectParticipant).toBe(before.select);
   expect(panel.onMarkUnreadFrom).toBe(before.unread);
-  expect(panel.pinnedMessageIds).toBe(before.pins);
   expect(panel.participants).toBe(before.participants);
 });
 

@@ -14,7 +14,6 @@ import { RoomTimeline } from "./RoomTimeline";
 import type { RoomMessage, RoomParticipant } from "./types";
 import "./messaging.css";
 
-const NO_REACTIONS: readonly string[] = [];
 const NO_MESSAGES: readonly RoomMessage[] = [];
 
 /** The column's words; Canvas's app conversation (AppConversation) says them about an app. */
@@ -121,9 +120,9 @@ export function SessionChat({ sessionId, sessionOwnerId, openChat, onClose, onRo
     return <RoomMessageItem key={message.messageId}
     id={`session-chat-${message.messageId}`} message={message} text={message.text} participant={participant}
     onCardReply={participant && !readOnly ? onCardReply : undefined} cardAnswer={cardAnswers.get(message.messageId) ?? null}
-    currentUserId={me} actionable={!archived && !readOnly} inThread={false} collapsed={collapsed} replyCount={0} highlighted={false}
+    currentUserId={me} actionable={!archived && !readOnly} collapsed={collapsed}
     mentionsViewer={message.mentions.some((m) => m.kind === "human" && m.id === me)}
-    markdown={roomMarkdown} urlTransform={roomUrlTransform} quickReactions={NO_REACTIONS} reactionPending={false} reactionError={false}
+    markdown={roomMarkdown} urlTransform={roomUrlTransform}
     onDownloadAttachment={bare ? undefined : rooms.downloadAttachment} onAttachmentUrl={rooms.attachmentUrl}
     personColor={message.author.kind === "human" ? personColor(message.author.id, sessionOwnerId) : undefined} />;
   };

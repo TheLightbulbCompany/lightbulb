@@ -84,13 +84,6 @@ export function useStickToBottom() {
   return { region, content, atBottom, pin, onScroll };
 }
 
-/** A scroll box that follows its bottom (thread replies); bump `pinToken` to bring the reader down. */
-export function StickToBottom({ className, pinToken = 0, children }: { className?: string; pinToken?: number; children: ReactNode }): ReactElement {
-  const { region, content, pin, onScroll } = useStickToBottom();
-  useLayoutEffect(() => { if (pinToken) pin(true); }, [pinToken, pin]);
-  return <div ref={region} className={className} onScroll={onScroll}><div ref={content}>{children}</div></div>;
-}
-
 export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, targetMessageId, targetToken, renderMessage, children, empty, leading, historyComplete = true, historyLoading = false, historyError, onLoadOlder, sendToken = 0 }: RoomTimelineProps): ReactElement {
   const { region, content, atBottom, pin, onScroll: follow } = useStickToBottom();
   const lastSeq = useRef<number>(messages.at(-1)?.messageSeq ?? 0);

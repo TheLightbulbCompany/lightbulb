@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { dayLabel, feedTimeline, forYouEntries, homeExtras, splitPost } from "../activityPage";
-import { approval, ask, assigned, failedRun, loginAsk, maya, message, post } from "./fixtures";
+import { forYouEntries, homeExtras } from "../activityPage";
+import { approval, ask, assigned, failedRun, loginAsk, maya, message } from "./fixtures";
 
 describe("For you", () => {
   it("lists every kind once, newest first, and leaves out what is not for you", () => {
@@ -45,44 +45,12 @@ describe("For you", () => {
   });
 });
 
-describe("feed timeline", () => {
-  const now = new Date("2026-10-15T12:00:00");
-  it("lists top-level posts newest first, new ones under one divider, the rest under their day", () => {
-    const messages = [
-      post(1, { createdAt: "2026-10-13T09:00:00" }),
-      post(2, { createdAt: "2026-10-14T09:00:00" }),
-      post(3, { createdAt: "2026-10-15T08:00:00" }),
-      post(4, { createdAt: "2026-10-15T09:00:00", threadRootMessageId: "post-3" }),
-      post(5, { createdAt: "2026-10-15T10:00:00" }),
-      post(6, { createdAt: "2026-10-15T11:00:00", deletedAt: "2026-10-15T11:30:00" }),
-    ];
-    const timeline = feedTimeline(messages, 3, now);
-    expect(timeline.map((entry) => entry.type === "divider" ? entry.label : entry.post.messageId)).toEqual([
-      "New since you looked", "post-5",
-      "Today", "post-3",
-      "Yesterday", "post-2",
-      dayLabel("2026-10-13T09:00:00", now), "post-1",
-    ]);
-  });
-
-  it("shows no new divider for a reader who never opened the feed", () => {
-    const timeline = feedTimeline([post(1, { createdAt: "2026-10-15T08:00:00" })], 0, now);
-    expect(timeline.map((entry) => entry.type === "divider" ? entry.label : entry.post.messageId)).toEqual(["Today", "post-1"]);
-  });
-
-  it("takes the first line as the title without its emphasis marks", () => {
-    expect(splitPost("**Acme paid: $1,200**\nStripe confirmed it.\nFirst revenue.")).toEqual({ title: "Acme paid: $1,200", body: "Stripe confirmed it.\nFirst revenue." });
-    expect(splitPost("# Heading only")).toEqual({ title: "Heading only", body: "" });
-  });
-});
-
 describe("Home (super-agent): what For you carried that Home shows nowhere else", () => {
-  it("unread mentions and replies as one line; open non-request asks as rows; DMs, requests and Paperclip left out", () => {
+  it("open non-request asks as rows; mentions, DMs, requests and Paperclip left out", () => {
     const read = message("m-read", maya, true);
     const dm = message("d1", maya, false, "dm");
     const taskQ = { ...loginAsk, id: "task_question:q1", kind: "task_question" as const, subtype: null };
-    const { mentions, asks } = homeExtras([message("m1"), read, dm, message("r1", maya, false, "thread_reply"), loginAsk, approval, ask, taskQ]);
-    expect(mentions.map((i) => i.id)).toEqual(["mention:m1", "thread_reply:r1"]);
+    const { asks } = homeExtras([message("m1"), read, dm, message("r1", maya, false, "thread_reply"), loginAsk, approval, ask, taskQ]);
     expect(asks.map((i) => i.id)).toEqual(["login:abc"]);
   });
 });

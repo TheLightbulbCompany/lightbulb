@@ -17,23 +17,12 @@ const people: RoomParticipant[] = ["Aden", "Bo", "Cy", "Dee", "Eve"].map((name, 
 }));
 const props = {
   room, roomName: "Roadmap", counterparts: people, participantCount: 6, canEditRoom: true,
-  canLeave: true, actionable: true, pinnedCount: 2, search: <span />,
+  canLeave: true, actionable: true, search: <span />,
   onOpenDetails: vi.fn(),
 };
 
-it("opens the pins tab of the details panel from the pinned count", async () => {
-  const onOpenDetails = vi.fn();
-  render(<RoomHeader {...props} onOpenDetails={onOpenDetails} />);
-  const pins = screen.getByRole("button", { name: "2 pinned messages" });
-  // No aria-expanded: this only ever opens the panel (and may open it on a
-  // different tab than the one already showing), so it is not a disclosure toggle.
-  expect(pins).not.toHaveAttribute("aria-expanded");
-  await userEvent.click(pins);
-  expect(onOpenDetails).toHaveBeenCalledWith("pins");
-});
-
-it("hides the pinned count when nothing is pinned", () => {
-  render(<RoomHeader {...props} pinnedCount={0} />);
+it("has no pinned-messages control (pins are gone)", () => {
+  render(<RoomHeader {...props} />);
   expect(screen.queryByRole("button", { name: /pinned/ })).not.toBeInTheDocument();
 });
 
@@ -47,14 +36,12 @@ it("marks a shared channel", () => {
   expect(screen.getByText("Shared")).toHaveAttribute("title", "Shared between this workspace and Lightbulb");
 });
 
-it("people, pins and Go live sit in the header; ⋯ holds mute, copy link, archive, leave, delete", async () => {
+it("people and Go live sit in the header; ⋯ holds mute, copy link, archive, leave, delete", async () => {
   const onOpenDetails = vi.fn();
   render(<RoomHeader {...props} onOpenDetails={onOpenDetails} room={{ ...room, kind: "group-dm" }}
     onSetPrefs={vi.fn()} onLeaveRoom={vi.fn()} onSetArchived={vi.fn()} />);
   await userEvent.click(screen.getByRole("button", { name: "People, 6 here" }));
   expect(onOpenDetails).toHaveBeenCalledWith("members");
-  await userEvent.click(screen.getByRole("button", { name: "2 pinned messages" }));
-  expect(onOpenDetails).toHaveBeenCalledWith("pins");
   await userEvent.click(screen.getByRole("button", { name: "More" }));
   for (const name of ["Mute", "Copy link", "Archive group chat", "Leave"]) expect(await screen.findByRole("menuitem", { name })).toBeInTheDocument();
   await userEvent.keyboard("{Escape}");

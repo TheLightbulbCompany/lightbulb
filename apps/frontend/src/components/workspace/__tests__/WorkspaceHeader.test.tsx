@@ -80,13 +80,13 @@ describe("WorkspaceHeader", () => {
       expect(openPanel).toHaveBeenCalledWith("settings", {}, { pushUrl: true });
     } finally { place = "activity"; }
   });
-  it("reads Home, Activity, Chat, Creations, Team, Settings: no Work, no Library or Canvas", () => {
+  it("reads Home, Activity, Chat, Team, Settings: no Work, no Creations, Library or Canvas", () => {
     place = "home";
     try {
       render(<WorkspaceHeader />);
       const rail = screen.getByRole("navigation", { name: "Workspace" });
       const labels = [...rail.querySelectorAll("button")].map((b) => b.getAttribute("aria-label"));
-      expect(labels.slice(labels.indexOf("Home"), labels.indexOf("Team") + 1)).toEqual(["Home", "Activity", "Chat", "Creations", "Team"]);
+      expect(labels.slice(labels.indexOf("Home"), labels.indexOf("Team") + 1)).toEqual(["Home", "Activity", "Chat", "Team"]);
       expect(labels).toContain("Settings");
       expect(labels).not.toContain("Work");
       expect(screen.getByRole("button", { name: "Home" })).toHaveAttribute("aria-current", "page");

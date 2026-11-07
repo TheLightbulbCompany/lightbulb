@@ -13,8 +13,8 @@ import { SessionRemoveButton } from "./SessionRemoveButton";
 import type { Person } from "./NativeSessionTranscript";
 import type { SidebarSession } from "./roomSections";
 
-/** `sessionId: null` is a new, not-yet-started session (NewSessionView), or with `all` the All sessions list. */
-export interface SessionFocusTarget { sessionId: string | null; all?: boolean; chat?: boolean; seq?: number }
+/** The session on screen; `seq` opens its conversation at that turn. */
+export interface SessionFocusTarget { sessionId: string; chat?: boolean; seq?: number }
 
 export type SessionChatLayout = "push" | "overlay" | "screen";
 const CHAT_WIDTH = 344;

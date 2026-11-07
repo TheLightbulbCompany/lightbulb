@@ -37,9 +37,8 @@ describe("panelRegistry", () => {
     expect(resolvePanelAlias("teams-dashboard")).toBe("activity");
     expect(resolvePanelAlias("teams-skills")).toBe("activity");
     expect(resolvePanelAlias("teams-costs")).toBe("activity");
-    expect(describePanel("canvas", { app: "app_1" })).toEqual({ panelId: "canvas", component: "canvas", title: "Creations", params: { app: "app_1" } });
     expect(describePanel("teams-dashboard", {})).toMatchObject({ panelId: "activity", component: "activity", title: "Activity" });
-    expect(resolvePanelAlias("teams-artifacts")).toBe("canvas");
+    expect(resolvePanelAlias("teams-artifacts")).toBe("activity");
     // Money is ONE page: its four absorbed keys alias to its panel id, or the
     // dock (which dedupes by panel id) opens four sibling tabs all called
     // "Money" — Home links three of them.
@@ -101,12 +100,12 @@ describe("panelRegistry", () => {
   it.each([
     ["?panel=overview", "/settings"],
     ["?panel=usage", "/settings?panel=usage"],
-    ["?panel=skills", "/settings?panel=skills"],
+    ["?panel=skills", "/settings"],
     ["?panel=integrations&from=app", "/settings?panel=connections&from=app"],
     ["?panel=connections&provider=notion", "/settings?panel=connections&provider=notion"],
     ["?panel=connections&connected=Notion", "/settings?panel=connections&connected=Notion"],
-    ["?panel=llm&action=change-provider", "/settings?panel=providers&action=change-provider"],
-    ["?panel=credits", "/settings?panel=providers"],
+    ["?panel=llm&action=change-provider", "/settings?panel=billing&action=change-provider"],
+    ["?panel=credits", "/settings?panel=billing"],
     ["?panel=teams-settings", "/settings?panel=workspace"],
     ["?panel=teams-members", "/settings?panel=members"],
     ["?panel=teams-accounts", "/settings?panel=connections"],
@@ -148,7 +147,6 @@ describe("panelRegistry", () => {
     expect(clearablePanelParamKeys("file-viewer")).toEqual(["path", "agent"]);
     expect(clearablePanelParamKeys("agent-inspector")).toEqual(["agentId", "initialTab"]);
     expect(clearablePanelParamKeys("control:agents")).toEqual(["agentId", "initialTab"]);
-    expect(clearablePanelParamKeys("browser")).toEqual([]);
     expect(clearablePanelParamKeys("chat:a-1")).toEqual([]);
     // roomId/messageId (permalinks) are clearable alongside agentId/
     // agentSelection: an agent open must clear a stale room target, and a
@@ -174,19 +172,6 @@ describe("panelRegistry", () => {
     expect(describePanel("file-viewer", {})?.params).toEqual({});
   });
 
-  it("describes the browser panel as a paramless singleton", () => {
-    // An owner has ONE AgentCore Browser profile, so a second open focuses the
-    // existing panel instead of double-viewing the same live stream.
-    expect(describePanel("browser", {})).toEqual({
-      panelId: "browser",
-      component: "browser",
-      title: "Browser",
-      params: {},
-    });
-    expect(describePanel("browser", { path: "/ignored" })?.params).toEqual({});
-    expect(durableParamsFor("browser")).toEqual(["panel"]);
-  });
-
   it("describes the activity feed as a singleton carrying a filter and a focused item", () => {
     expect(describePanel("activity", {})).toEqual({
       panelId: "activity", component: "activity", title: "Activity", params: {},
@@ -206,14 +191,6 @@ describe("panelRegistry", () => {
     });
     expect(durableParamsFor("mail")).toEqual(["panel", "item"]);
     expect(clearablePanelParamKeys("mail")).toEqual(["item"]);
-  });
-
-  it("describes Ideas as a singleton that can put one agent first", () => {
-    expect(describePanel("ideas", {})).toEqual({ panelId: "ideas", component: "ideas", title: "Ideas", params: {} });
-    expect(describePanel("ideas", { agent: "a1" })?.params).toEqual({ agent: "a1" });
-    expect(describePanel("ideas", { idea: "crm-setup" })?.params).toEqual({ idea: "crm-setup" });
-    expect(durableParamsFor("ideas")).toEqual(["panel", "agent", "idea"]);
-    expect(clearablePanelParamKeys("ideas")).toEqual(["agent", "idea"]);
   });
 
   it("aliases teams-org-chart onto the one Team panel", () => {
@@ -263,10 +240,9 @@ describe("Work dissolved: where its pages live now", () => {
     expect(describePanel("teams-routines", {})).toEqual({ panelId: "activity", component: "activity", title: "Activity", params: { section: "scheduled" } });
   });
 
-  it("UX slice 5: Library opens Creations (the canvas panel) and ?app= still opens one app", () => {
-    expect(describePanel("teams-artifacts", {})).toEqual({ panelId: "canvas", component: "canvas", title: "Creations", params: {} });
-    expect(describePanel("canvas", { app: "a1" })?.params).toEqual({ app: "a1" });
-    // The rail's `panel=creations` (W13) is the same panel; an old `panel=canvas` link keeps working.
-    expect(describePanel("creations", {})).toEqual({ panelId: "canvas", component: "canvas", title: "Creations", params: {} });
+  it("voice pivot: Creations, Canvas, Library, Ideas and the Browser pane are gone; their old links open Activity", () => {
+    for (const key of ["teams-artifacts", "canvas", "creations", "ideas", "browser"]) {
+      expect(describePanel(key, { app: "a1", agent: "x" })).toEqual({ panelId: "activity", component: "activity", title: "Activity", params: {} });
+    }
   });
 });

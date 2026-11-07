@@ -2,9 +2,9 @@
 
 import { createPortal } from "react-dom";
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { Check, Chrome, Circle, CircleAlert, Clock, FolderOpen, Lightbulb, Link, ListChecks, Search, Square } from "lucide-react";
+import { Check, Circle, CircleAlert, Clock, FolderOpen, Link, ListChecks, Search, Square } from "lucide-react";
 import type { Components } from "react-markdown";
-import { cardAnswersFor, soleChannelOwner, useStatusLoaded, type CardReply, type CreateMessageRequest, type MemberPrefsRequest, type MemberRef, type PatchRoomRequest, type UpdateMessageRequest } from "@lightbulb/shared";
+import { cardAnswersFor, soleChannelOwner, type CardReply, type CreateMessageRequest, type MemberPrefsRequest, type MemberRef, type PatchRoomRequest, type UpdateMessageRequest } from "@lightbulb/shared";
 import { ToolActivityTrace } from "@/components/chat/ToolActivityTrace";
 import { DelegateCard } from "./DelegateCard";
 import { RoomSubagentStrip } from "./RoomSubagentStrip";
@@ -13,7 +13,6 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { Identity } from "@/components/teams/shared/components/Identity";
-import { WelcomeIdea } from "@/components/ideas/IdeaCard";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
 import { roomMarkdown as publicMarkdown } from "./roomMarkdown";
 import { attachmentIdFromHref } from "@/components/teams/shared/lib/attachments";
@@ -24,14 +23,12 @@ import { cn } from "@/lib/utils";
 import { roomUrlTransform } from "./markdown";
 import { JOIN_LINK_COPIED, joinLinkNote } from "@/hooks/useCopyJoinLink";
 import { copyText, messagePermalink, parseSessionPermalink } from "./messageLinks";
-import { THREAD_PANE_ID, closePane, openBrowserPane, openInviteDialog, openPanel, openSessionPanel, uncoverComposer, useThreadPane, useWorkspaceState } from "@/components/workspace/workspaceController";
+import { THREAD_PANE_ID, closePane, openInviteDialog, openPanel, openSessionPanel, uncoverComposer, useThreadPane, useWorkspaceState } from "@/components/workspace/workspaceController";
 import { capture } from "@/lib/analytics";
-import { RunBrowserPreview } from "./BrowserRunPreview";
 import { cardControls } from "./cardControls";
 import { RoomComposer, type RoomComposerProps } from "./RoomComposer";
 import { RoomDetailsPanel, type DetailsTab } from "./RoomDetailsPanel";
 import { RoomHeader } from "./RoomHeader";
-import { readRecentEmoji } from "./EmojiPicker";
 import { ParticipantAvatar } from "./ParticipantAvatar";
 import { ParticipantProfile } from "./ParticipantProfile";
 import { FirstReplyChips, INCOMPLETE_FIRST_REPLIES } from "./FirstReplyChips";
@@ -43,7 +40,6 @@ import { RoomMessageItem } from "./RoomMessageItem";
 import { TaskPane } from "@/components/tasks/TaskPane";
 import { RequestGroups } from "@/components/tasks/TaskOverview";
 import { ScheduledList } from "@/components/tasks/ScheduledList";
-import { FirstMoves } from "@/components/ideas/FirstMoves";
 import type { SettingsFrom } from "@/components/projects/ProjectSettingsDialog";
 import "@/components/projects/projects.css";
 import { PaneHeader } from "@/components/workspace/PaneHeader";
@@ -55,8 +51,8 @@ import { useRoomThreads } from "@/components/tasks/useRoomThreads";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { PANE_SHEET_QUERY } from "@/components/workspace/paneSheet";
 import { RoomMessageSearch } from "./RoomMessageSearch";
-import { RoomTimeline, StickToBottom } from "./RoomTimeline";
-import { buildTimeline, collapseRuns, delegationIdOf, linkifyMentions, linkifySessionMentions, placeRuns, parseMentionHref, roomDisplayName, type LocalSession, type MessageDelegations, type MessagingClient, type RoomRunView, type RoomSubagents, type RoomSummary } from "@lightbulb/shared";
+import { RoomTimeline } from "./RoomTimeline";
+import { collapseRuns, delegationIdOf, linkifyMentions, linkifySessionMentions, placeRuns, parseMentionHref, roomDisplayName, type LocalSession, type MessageDelegations, type MessagingClient, type RoomRunView, type RoomSubagents, type RoomSummary } from "@lightbulb/shared";
 import { TypingReveal } from "./TypingReveal";
 import { useAsyncAction } from "./useAsyncAction";
 import { isProjectRoom, roomNoun as projectNoun } from "./types";
@@ -94,24 +90,19 @@ export interface RoomPanelProps {
   historyComplete?: boolean;
   historyError?: boolean;
   historyErrorMessage?: string | null;
-  onLoadHistory?: () => void;
   onLoadOlder?: () => void;
   pendingMessages?: readonly PendingRoomMessage[];
   typingMembers?: readonly { userId: string; displayName: string; label?: string }[];
   runs?: readonly RoomRunView[];
   composer: RoomComposerProps;
-  threadComposer?: { parentMessageId: string; composer: RoomComposerProps };
   /** Every session the viewer can open (the workspace drawer, offline and ended included). A
    *  referenced session resolves here, never from the composer's sendable targets. */
   sessions?: readonly LocalSession[];
-  onSelectThread?: (parentMessageId: string | null) => void;
   onJumpToMessage?: (roomId: string, messageId: string) => void;
-  selectedThreadId?: string | null;
   onSelectParticipant?: (participant: RoomParticipant) => void | Promise<void>;
   onRetry?: () => void;
   /** `/billing/account`; its `block_reason` pins the limit bar above the composer. */
   billing?: BillingAccount | null;
-  onSetReaction?: (messageId: string, emoji: string, active: boolean) => Promise<void>;
   onUpdateMessage?: (messageId: string, request: UpdateMessageRequest) => Promise<void>;
   addMemberCandidates?: readonly DirectoryParticipant[];
   onAddMember?: (member: MemberRef) => Promise<void>;
@@ -132,8 +123,6 @@ export interface RoomPanelProps {
   canPause?: boolean;
   onRenameRoom?: (name: string) => Promise<void>;
   onRemoveMember?: (member: MemberRef) => Promise<void>;
-  pinnedMessageIds?: readonly string[];
-  onSetPin?: (messageId: string, pinned: boolean) => Promise<void>;
   onMarkUnreadFrom?: (fromSeq: number) => Promise<void>;
   onSetPrefs?: (prefs: MemberPrefsRequest) => Promise<void>;
   onSetTopic?: (topic: string | null) => Promise<void>;
@@ -165,13 +154,10 @@ export interface RoomPanelProps {
  *  5 Nov walk), and one it may only read (the Router's read receipt ends it sooner; this is the fallback). */
 const ON_IT_MS = 5 * 60_000;
 const READING_MS = 60_000;
-const NO_PINNED_MESSAGES: readonly string[] = [];
 /** The project pane's list views (super-agent): the header's three toggles. */
 type PaneView = "tasks" | "files" | "scheduled";
 const NO_RUNS: readonly RoomRunView[] = [];
 const NO_SESSIONS: readonly LocalSession[] = [];
-
-const DEFAULT_QUICK_REACTIONS = ["👍", "✅", "🎉", "👀"];
 
 const workLabel: Record<WorkState, string> = {
   ready: "Ready", queued: "Queued", working: "Working", paused: "Paused", stopped: "Stopped",
@@ -277,7 +263,6 @@ function RoomBoundary(props: RoomPanelProps) {
     };
   }
   const composer = retainAttempt(props.composer);
-  const threadComposer = props.threadComposer && { ...props.threadComposer, composer: retainAttempt(props.threadComposer.composer) };
   if (props.state === "loading") return <section className="room-panel room-blocked" aria-label="Loading chat">
     <p role="status" aria-label="Room status">Loading chat…</p><div className="room-skeleton" aria-hidden="true"><span /><span /><span /></div>
   </section>;
@@ -288,7 +273,7 @@ function RoomBoundary(props: RoomPanelProps) {
     <p role="status" aria-label="Room status">{props.state === "access-removed" ? "Access removed. You can no longer view this chat." : "This chat is unavailable."}</p>
     {matchingIdentity && props.state === "unavailable" && props.onRetry && <Button variant="outline" onClick={props.onRetry}>Try again</Button>}
   </section>;
-  return <RoomContent {...props} composer={composer} threadComposer={threadComposer} />;
+  return <RoomContent {...props} composer={composer} />;
 }
 
 function RoomContent({
@@ -306,21 +291,16 @@ function RoomContent({
   historyLoading,
   historyComplete,
   historyErrorMessage,
-  onLoadHistory,
   onLoadOlder,
   pendingMessages = [],
   typingMembers = [],
   runs: allRuns = NO_RUNS,
   composer,
-  threadComposer,
   sessions: visibleSessions = NO_SESSIONS,
-  onSelectThread,
   onJumpToMessage,
-  selectedThreadId,
   onSelectParticipant,
   onRetry,
   billing,
-  onSetReaction,
   onUpdateMessage,
   addMemberCandidates = [],
   onAddMember,
@@ -334,8 +314,6 @@ function RoomContent({
   canPause = false,
   onRenameRoom,
   onRemoveMember,
-  pinnedMessageIds = NO_PINNED_MESSAGES,
-  onSetPin,
   onMarkUnreadFrom,
   onSetPrefs,
   onSetTopic,
@@ -394,13 +372,12 @@ function RoomContent({
       return next;
     }));
   };
-  const [searchTarget, setSearchTarget] = useState<(Pick<RoomMessage, "messageId" | "threadRootMessageId"> & { token: number }) | null>(null);
+  const [searchTarget, setSearchTarget] = useState<{ messageId: string; token: number } | null>(null);
   // RoomContent remounts per room (RoomBoundary is keyed by roomId), so this resets naturally on room change.
   const [sentSinceOpen, setSentSinceOpen] = useState(false);
   // Only suppress the "New" line once a send actually succeeds -- a rejected send must leave sentSinceOpen false.
   // Bumped when a send starts: the timeline takes the sender to the bottom before the pending row lands.
   const [sendToken, setSendToken] = useState(0);
-  const [threadSendToken, setThreadSendToken] = useState(0);
   const markSent = (callback: RoomComposerProps["onSubmit"]) => async (request: CreateMessageRequest) => {
     setSendToken((token) => token + 1);
     await callback(request);
@@ -411,17 +388,9 @@ function RoomContent({
   // The "Copied" label resets itself after 2 s; the timer must not outlive the component.
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => { if (copiedTimer.current) clearTimeout(copiedTimer.current); }, []);
-  const [reactionPending, setReactionPending] = useState<string | null>(null);
-  const [reactionError, setReactionError] = useState<string | null>(null);
-  // Shared pending/error pair for the per-message menu actions (pin, mark unread) --
+  // Shared pending/error pair for the per-message menu actions (mark unread) --
   // only one such action is ever in flight from a given message's menu at a time.
   const { pending: messageActionPending, error: messageActionError, run: runMessageAction } = useAsyncAction();
-  // Computed once per mount/reaction-change (not per message render) -- reading
-  // localStorage in every RoomMessageItem render was wasted work on a long list.
-  const [quickReactions, setQuickReactions] = useState<readonly string[]>(() => {
-    const recent = readRecentEmoji();
-    return recent.length ? recent.slice(0, 4) : DEFAULT_QUICK_REACTIONS;
-  });
   const [focusToken, setFocusToken] = useState(0);
   const [memberPickerOpen, setMemberPickerOpen] = useState(false);
   const [inviteNote, setInviteNote] = useState<string | null>(null);
@@ -451,18 +420,8 @@ function RoomContent({
   const [contextCollapsed, setContextCollapsed] = useState(true);
   const [detailsTab, setDetailsTab] = useState<DetailsTab>("members");
   const [editTarget, setEditTarget] = useState<string | null>(null);
-  // `from: "about"`: a thread opened from About's Threads tab goes back there, not to the conversation.
-  const [localSelection, setSelection] = useState<{ kind: "thread" | "task"; id: string; from?: "about" } | null>(null);
-  const selection = useMemo(() => selectedThreadId === undefined ? localSelection
-    : selectedThreadId ? { kind: "thread" as const, id: selectedThreadId }
-      : localSelection?.kind !== "thread" ? localSelection : null, [selectedThreadId, localSelection]);
-  const loadedThreadHistory = useRef<string | null>(null);
-  useEffect(() => {
-    if (selection?.kind !== "thread" || historyComplete || historyLoading || !onLoadHistory) return;
-    if (loadedThreadHistory.current === selection.id) return;
-    loadedThreadHistory.current = selection.id;
-    onLoadHistory();
-  }, [selection, historyComplete, historyLoading, onLoadHistory]);
+  // A task opened in the room's column. `from: "about"`: opened from Details, which stays the way back.
+  const [selection, setSelection] = useState<{ kind: "task"; id: string; from?: "about" } | null>(null);
   const trigger = useRef<HTMLButtonElement | null>(null);
   const detailHeading = useRef<HTMLHeadingElement>(null);
   const contextHeading = useRef<HTMLHeadingElement>(null);
@@ -491,7 +450,6 @@ function RoomContent({
   const restoreRequestsFocus = useRef(false);
   const [searchToken, setSearchToken] = useState(0);
   const paneBusy = !!pane && pane.panelId !== THREAD_PANE_ID;
-  const browserAvailable = useStatusLoaded();
   const visibleRoom = room?.roomId === roomId ? room : undefined;
   const actionable = httpReady && !!visibleRoom;
   // The welcome must be loaded: useRooms keeps only the newest 100, so a long agent-only run hides it. The starter
@@ -570,41 +528,15 @@ function RoomContent({
   // Lightbulb's Router stage ("Lightbulb is writing a reply…", walk 15) replaces its reading line; people typing come first.
   const typers = typingMembers.filter((member) => !member.label);
   const stageLine = typingMembers.find((member) => member.label)?.label;
-  // Only membership changes invalidate history; streamed text/tool frames do not.
-  const workingThreadKey = JSON.stringify(runs.filter(run => run.state === "running" && run.threadRootMessageId)
-    .map(run => [run.threadRootMessageId, run.agentId]));
-  const threadActivity = useMemo(() => {
-    const result = new Map<string, { participants: Map<string, DirectoryParticipant>; working: Set<string> }>();
-    const entry = (root: string) => {
-      if (!result.has(root)) result.set(root, { participants: new Map(), working: new Set() });
-      return result.get(root)!;
-    };
-    const identity = (kind: "human" | "agent", id: string, name?: string) =>
-      participants.find(member => member.kind === kind && member.id === id)
-        ?? { kind, id, displayName: name || "Unknown author", mentionHandle: null };
-    for (const [root, replies] of repliesByRoot) {
-      for (const [key, author] of replies.authors) {
-        if (author.kind !== "system") entry(root).participants.set(key, identity(author.kind, author.id, author.displayName));
-      }
-    }
-    for (const [root, agentId] of JSON.parse(workingThreadKey) as [string, string][]) {
-      const agent = identity("agent", agentId, "Agent");
-      entry(root).participants.set(`agent:${agentId}`, agent);
-      entry(root).working.add(agent.displayName);
-    }
-    return result;
-  }, [repliesByRoot, participants, workingThreadKey]);
   const newLineSeq = readSeqAtOpen ?? null;
   const ownSeqs = mainMessages.filter((message) => message.author.kind === "human" && message.author.id === currentUserId).map((message) => message.messageSeq);
   const ownLastSentSeq = ownSeqs.length ? Math.max(...ownSeqs) : null;
-  // Only a main-list (non-thread) search result with no thread open is a target
-  // for RoomTimeline -- a thread-scoped result is handled by the effect below.
-  const activeSearchTarget = searchTarget && !searchTarget.threadRootMessageId && !selection ? searchTarget : null;
-  const parentMessage = selection?.kind === "thread" ? messages.find((message) => message.messageId === selection.id) : undefined;
-  const taskSelection = selection?.kind === "task" ? selection.id : null;
-  const showDetail = !!(parentMessage || taskSelection);
-  // The list view on screen (or under the item opened from it): folded while something else has the pane (Browser,
-  // Ideas, an automation) or Details is open.
+  // A search result is a target for RoomTimeline while no task is open.
+  const activeSearchTarget = searchTarget && !selection ? searchTarget : null;
+  const taskSelection = selection?.id ?? null;
+  const showDetail = !!taskSelection;
+  // The list view on screen (or under the item opened from it): folded while something else has the pane (an
+  // automation) or Details is open.
   const viewShown = (view: PaneView) => paneView === view && !paneBusy && !visibleRoom?.feed && contextCollapsed && roomOnScreen;
   const requestsShown = viewShown("tasks");
   const filesViewShown = viewShown("files");
@@ -640,12 +572,6 @@ function RoomContent({
   // A group chat has no admins: any member archives and unarchives it.
   const canUnarchive = !!onSetArchived && (visibleRoom?.kind === "group-dm" || isRoomAdmin);
   const roomNoun = visibleRoom?.kind === "group-dm" ? "group chat" : "channel";
-  // @ someone who isn't here, then "Add them" on send (W18-3). A DM's add starts a new chat, so not there.
-  const composerPeople = canAddMembers && (visibleRoom?.kind === "channel" || visibleRoom?.kind === "group-dm") ? {
-    outsiders: addMemberCandidates.filter((candidate) => candidate.kind === "human"),
-    onAddPeople: async (people: MemberRef[]) => { for (const person of people) await onAddMember!(person); },
-    roomLabel: visibleRoom.kind === "channel" ? `#${roomDisplayName(visibleRoom, [])}` : "this group chat",
-  } : {};
   const normalizedMemberQuery = memberQuery.trim().toLocaleLowerCase();
   const memberMatches = (name: string) => !normalizedMemberQuery || name.toLocaleLowerCase().includes(normalizedMemberQuery);
   const filteredAddMemberCandidates = addMemberCandidates.filter((candidate) => memberMatches(candidate.displayName));
@@ -701,14 +627,6 @@ function RoomContent({
   }, [selection]);
 
   useEffect(() => {
-    if (!searchTarget?.threadRootMessageId) return;
-    if (selection?.kind !== "thread" || selection.id !== searchTarget.threadRootMessageId) return;
-    const target = document.getElementById(`${id}-thread-${searchTarget.messageId}`);
-    target?.scrollIntoView({ block: "center" });
-    target?.focus({ preventScroll: true });
-  }, [id, searchTarget, selection]);
-
-  useEffect(() => {
     // Opening only steals focus into the panel on narrow layouts (it docks
     // beside the conversation at wider widths, so nothing forces focus off
     // whatever the viewer was already doing). Closing always has to put
@@ -726,10 +644,7 @@ function RoomContent({
     contextTrigger.current?.focus({ preventScroll: true });
   }, [requestsShown]);
 
-  const closeDetail = useCallback(() => {
-    if (selection?.kind === "thread") onSelectThread?.(null);
-    setSelection(null);
-  }, [onSelectThread, selection?.kind]);
+  const closeDetail = useCallback(() => setSelection(null), []);
   // In the shell, the side column (thread, tasks, room details) is the right pane's content;
   // when something else takes the pane, the column folds.
   const counterparts = participants.filter((participant) => participant.kind !== "human" || participant.id !== currentUserId);
@@ -740,9 +655,9 @@ function RoomContent({
   const composerPlaceholder = lightbulbDm ? "Ask Lightbulb…"
     : `Message ${visibleRoom?.kind === "channel" ? `#${roomName}` : roomName}`;
   // The pane's title is the label of what opened it (the room is beside it, so no " · <room>").
-  const sideTitle = taskSelection ? "Task" : showDetail ? "Thread" : !contextCollapsed ? "Details"
+  const sideTitle = taskSelection ? "Task" : !contextCollapsed ? "Details"
     : filesViewShown ? "Files" : scheduledShown ? "Scheduled" : "Tasks";
-  /** One of the project's views in the pane (the item open over it goes; the pane is taken back from Browser or Ideas). */
+  /** One of the project's views in the pane (the item open over it goes; the pane is taken back from an automation). */
   const showView = (view: PaneView) => {
     closeDetail(); setContextCollapsed(true);
     setPaneState((current) => ({ ...current, visit, view }));
@@ -756,7 +671,7 @@ function RoomContent({
     setPaneState((current) => ({ ...current, view: null, closed: true }));
   };
   const toggleView = (view: PaneView) => viewShown(view) && !showDetail ? closeView() : showView(view);
-  // Something else took the pane (Browser, Ideas, an automation): the column folds and forgets its view, so closing
+  // Something else took the pane (an automation): the column folds and forgets its view, so closing
   // that leaves the pane closed. "‹ Scheduled" from an automation brings the view back (ROOM_PANE_VIEW_EVENT).
   const sideHost = useThreadPane(showContext, () => {
     closeDetail(); setContextCollapsed(true);
@@ -832,36 +747,14 @@ function RoomContent({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [closeOverlay, showDetail]);
 
-  const openDetail = useCallback((kind: "thread" | "task", targetId: string, button: HTMLButtonElement, fromThread = false) => {
-    if (!fromThread) trigger.current = button;
-    onSelectThread?.(kind === "thread" ? targetId : null);
-    setSelection({ kind, id: targetId });
-  }, [onSelectThread]);
-
   const openTask = useCallback((taskId: string) => {
     // A request opens in the room's column (from its card, its "Sent to" link or the Requests list); Back returns to
     // the list. From About, its button stays the way back: the row that was pressed leaves the DOM with the tab.
     const fromAbout = !contextCollapsed;
     if (document.activeElement instanceof HTMLButtonElement && !fromAbout) trigger.current = document.activeElement;
-    onSelectThread?.(null);
     setSelection({ kind: "task", id: taskId, ...(fromAbout ? { from: "about" as const } : {}) });
-  }, [onSelectThread, contextCollapsed]);
-  const isAgentId = useCallback((memberId: string) => participants.some((p) => p.kind === "agent" && p.id === memberId), [participants]);
+  }, [contextCollapsed]);
 
-  const toggleReaction = useCallback(async (message: RoomMessage, emoji: string) => {
-    if (!onSetReaction || !actionable || reactionPending !== null) return;
-    setReactionPending(message.messageId);
-    setReactionError(null);
-    try { await onSetReaction(message.messageId, emoji, !message.reactions?.[emoji]?.includes(currentUserId)); }
-    catch { setReactionError(message.messageId); }
-    finally {
-      setReactionPending(null);
-      const recent = readRecentEmoji();
-      setQuickReactions(recent.length ? recent.slice(0, 4) : DEFAULT_QUICK_REACTIONS);
-    }
-  }, [onSetReaction, actionable, reactionPending, currentUserId]);
-
-  const welcomeRoom = starterRoom && inShell;
   const revealStarter = starterRoom && unanswered;
   // One pass per message list, so a keystroke (which re-renders the panel) re-scans nothing.
   const { cardsEnabled, repliesEnabled } = cardControls(room);
@@ -870,42 +763,27 @@ function RoomContent({
   // what the task made (W13-1); anywhere else it keeps the chip, so the task stays openable.
   const ackedTasks = useMemo(() => new Set(messages.filter((m) => !m.kind && !m.deletedAt && m.taskRefs?.length)
     .flatMap((m) => m.taskRefs!.map((r) => `${m.threadRootMessageId ?? ""}|${r.taskId}`))), [messages]);
-  const renderMessage = useCallback((message: RoomMessage, inThread = false, collapsed = false) => {
+  const renderMessage = useCallback((message: RoomMessage, collapsed = false) => {
     const participant = participants.find((member) => member.kind === message.author.kind && member.id === message.author.id);
     const mentionsMe = message.mentions.some((mention) => mention.kind === "human" && mention.id === currentUserId);
-    const replies = inThread ? undefined : repliesByRoot.get(message.messageId);
-    const body = (text: string) => <RoomMessageItem key={message.messageId} id={`${id}-${inThread ? "thread" : "main"}-${message.messageId}`}
-      message={message} text={linkifySessionMentions(linkifyMentions(text, message.mentions, participants), message, visibleSessions)} participant={participant} currentUserId={currentUserId} actionable={actionable} inThread={inThread} collapsed={collapsed}
-      startEditing={!inThread && editTarget === message.messageId}
+    const body = (text: string) => <RoomMessageItem key={message.messageId} id={`${id}-main-${message.messageId}`}
+      message={message} text={linkifySessionMentions(linkifyMentions(text, message.mentions, participants), message, visibleSessions)} participant={participant} currentUserId={currentUserId} actionable={actionable} collapsed={collapsed}
+      startEditing={editTarget === message.messageId}
       onEditingClosed={() => setEditTarget((current) => current === message.messageId ? null : current)}
-      replyCount={replies?.count ?? 0} lastReplyAt={replies?.latest.createdAt}
-      threadParticipants={[...(threadActivity.get(message.messageId)?.participants.values() ?? [])]}
-      workingNames={[...(threadActivity.get(message.messageId)?.working ?? [])]}
       receipt={receipts.get(message.messageId)}
-      highlighted={inThread && searchTarget?.messageId === message.messageId} mentionsViewer={mentionsMe} markdown={roomMarkdown} urlTransform={roomUrlTransform}
-      quickReactions={quickReactions} reactionPending={reactionPending !== null} reactionError={reactionError === message.messageId}
-      onToggleReaction={onSetReaction && !message.deletedAt ? (emoji) => void toggleReaction(message, emoji) : undefined}
-      onOpenThread={(button) => openDetail("thread", message.messageId, button)}
+      mentionsViewer={mentionsMe} markdown={roomMarkdown} urlTransform={roomUrlTransform}
       onSelectParticipant={onSelectParticipant} onUpdateMessage={onUpdateMessage} onDownloadAttachment={onDownloadAttachment} onAttachmentUrl={onAttachmentUrl}
       cardsEnabled={cardsEnabled} onCardReply={repliesEnabled && participant ? onCardReply : undefined} cardAnswer={cardAnswers.get(message.messageId) ?? null}
       sessions={visibleSessions} onOpenSession={openSessionPanel}
-      onOpenTask={openTask} isAgentId={isAgentId} ackedTasks={ackedTasks}
+      onOpenTask={openTask} ackedTasks={ackedTasks}
       copyable={room?.kind === "dm" || room?.kind === "group-dm"}
-      menuExtras={!message.deletedAt && (onSetPin || (onMarkUnreadFrom && !inThread)) ? <>
-        {/* disabled/aria-busy reflect messageActionPending -- shared across every message's
-            menu here, same one-pending-pair-per-surface shape as useAsyncAction's doc comment.
-            The menu itself still closes on select (Radix default); reopening it while a
-            request is in flight is what surfaces the disabled/pending state, so the request's
-            eventual error stays visible (never trapped behind an aria-hidden open menu). */}
-        {onSetPin && <DropdownMenuItem disabled={messageActionPending} aria-busy={messageActionPending} onSelect={() => void runMessageAction(
-          () => onSetPin(message.messageId, !pinnedMessageIds.includes(message.messageId)),
-          "The pin could not be saved.",
-        )}>{messageActionPending ? (pinnedMessageIds.includes(message.messageId) ? "Unpinning…" : "Pinning…")
-          : (pinnedMessageIds.includes(message.messageId) ? "Unpin" : "Pin")}</DropdownMenuItem>}
-        {onMarkUnreadFrom && !inThread && <DropdownMenuItem disabled={messageActionPending} aria-busy={messageActionPending} onSelect={() => void runMessageAction(
+      menuExtras={!message.deletedAt && onMarkUnreadFrom ? <>
+        {/* disabled/aria-busy reflect messageActionPending -- shared across every message's menu here. The menu
+            closes on select (Radix default); reopening it while a request is in flight shows the pending state. */}
+        <DropdownMenuItem disabled={messageActionPending} aria-busy={messageActionPending} onSelect={() => void runMessageAction(
           () => onMarkUnreadFrom(message.messageSeq),
           "The chat could not be marked unread.",
-        )}>{messageActionPending ? "Marking unread…" : "Mark unread from here"}</DropdownMenuItem>}
+        )}>{messageActionPending ? "Marking unread…" : "Mark unread from here"}</DropdownMenuItem>
       </> : undefined}
       toolbarExtras={!message.deletedAt ? <>
         <Button type="button" variant="ghost" size="icon-sm" aria-label="Copy link"
@@ -922,14 +800,13 @@ function RoomContent({
         {copyError === message.messageId && <p role="alert" className="text-ui text-err">Could not copy the link.</p>}
       </> : undefined} />;
     // The seeded CEO welcome streams in until a human has written (client-side, cosmetic).
-    if (revealStarter && !inThread && isWelcome(message, general)) {
+    if (revealStarter && isWelcome(message, general)) {
       return <TypingReveal key={message.messageId} text={message.text} playKey={message.roomId}>{body}</TypingReveal>;
     }
     return body(message.text);
-  }, [revealStarter, general, participants, currentUserId, repliesByRoot, threadActivity, receipts, id, actionable, editTarget, searchTarget,
-    quickReactions, reactionPending, reactionError, onSetReaction, toggleReaction, openDetail, openTask, isAgentId, ackedTasks,
-    onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, onCardReply, cardsEnabled, repliesEnabled, cardAnswers, onSetPin, onMarkUnreadFrom,
-    messageActionPending, runMessageAction, pinnedMessageIds, copied, copyError, roomId, visibleSessions, room?.kind]);
+  }, [revealStarter, general, participants, currentUserId, receipts, id, actionable, editTarget, openTask, ackedTasks,
+    onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, onCardReply, cardsEnabled, repliesEnabled, cardAnswers, onMarkUnreadFrom,
+    messageActionPending, runMessageAction, copied, copyError, roomId, visibleSessions, room?.kind]);
   // A run that ended without a saved reply (stopped, failed, no reply) stays where it happened,
   // after the message it followed; only live runs ride the tail below the newest message.
   // Keyed by value, like receiptKey: streamed frames of a live run must not re-render history.
@@ -942,15 +819,13 @@ function RoomContent({
   // Subagent events re-render history only while some saved reply carries cards that read them.
   const delegationState = delegationsByMessage?.size ? subagents : undefined;
   const renderMainMessage = useCallback((message: RoomMessage, collapsed: boolean) => <>
-    {renderMessage(message, false, collapsed)}
-    {/* The CEO's welcome carries the top idea as a proposal and points at the 💡 (spec 2026-10-14 §4.4). */}
-    {welcomeRoom && isWelcome(message, general) && <WelcomeIdea />}
+    {renderMessage(message, collapsed)}
     {savedDelegations(delegationState, delegationsByMessage?.get(message.messageId))}
     {settledRuns.get(message.messageId)?.map(renderRun)}
   </>,
   // An ended run's card reads nothing renderRun closes over that settledRuns does not carry.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  [renderMessage, settledRuns, delegationState, delegationsByMessage, welcomeRoom, general]);
+  [renderMessage, settledRuns, delegationState, delegationsByMessage]);
 
   function renderRun(run: RoomRunView) {
     const agent = participants.find((participant) => participant.kind === "agent" && participant.id === run.agentId);
@@ -989,7 +864,6 @@ function RoomContent({
           const delegationId = delegationIdOf(t.result);
           return delegationId ? <DelegateCard key={t.id} state={subagents} agentId={run.agentId} delegationId={delegationId} agentLive={run.state === "running"} /> : null;
         })}
-        {run.state === "running" && <RunBrowserPreview agentName={agentName} run={run} />}
         {run.forcedStop && <p className="text-ui text-muted-foreground" role="status">Stopped (the agent may finish its current step)</p>}
       </div>
     </article>;
@@ -1023,30 +897,22 @@ function RoomContent({
       {/* Keyboard: the column sits after every message's toolbar in tab order, so one link jumps there first. */}
       {!visibleRoom?.feed && <button type="button" className="room-skip-link" onClick={skipToRequests}>Skip to tasks</button>}
       <RoomHeader room={visibleRoom} roomName={roomName} counterparts={counterparts} participants={participants} participantCount={participants.length}
-        canEditRoom={canEditRoom} canLeave={canLeaveRoom} ownerCannotLeave={ownerCannotLeave} ownerHandsOff={canLeaveRoom && visibleRoom?.kind === "channel" && viewer?.role === "owner"} actionable={actionable} pinnedCount={pinnedMessageIds.length}
+        canEditRoom={canEditRoom} canLeave={canLeaveRoom} ownerCannotLeave={ownerCannotLeave} ownerHandsOff={canLeaveRoom && visibleRoom?.kind === "channel" && viewer?.role === "owner"} actionable={actionable}
         search={<RoomMessageSearch roomId={roomId} openToken={searchToken} hideTrigger
           onSelect={(hit) => {
-            const root = hit.threadRootMessageId;
-            // Otherwise the [selection] effect's else-branch focuses this stale trigger
-            // (e.g. a "Reply in thread" button) once selection clears below, racing
-            // RoomTimeline's own focus of the newly targeted main message.
+            // Otherwise the [selection] effect's else-branch focuses a stale trigger once selection clears below,
+            // racing RoomTimeline's own focus of the newly targeted message.
             trigger.current = null;
-            // Same race against the [contextCollapsed] effect below: if the room
-            // details panel happens to be open, closing it here must not steal
-            // focus back to the Details tab once RoomTimeline focuses this result.
+            // Same race against the [contextCollapsed] effect below: closing an open Details panel here must not
+            // steal focus back to it once RoomTimeline focuses this result.
             contextWasOpen.current = false;
-            onSelectThread?.(root);
             setContextCollapsed(true);
-            if (root) {
-              setSelection({ kind: "thread", id: root });
-              setSearchTarget({ messageId: hit.messageId, threadRootMessageId: root, token: ++searchTargetToken.current });
-            } else {
-              setSelection(null);
-              // Server hits may not be loaded yet: the permalink target pages history until it is.
-              // A fresh token makes picking an already-targeted message scroll again.
-              setSearchTarget({ messageId: hit.messageId, threadRootMessageId: null, token: ++searchTargetToken.current });
-              onJumpToMessage?.(roomId, hit.messageId);
-            }
+            setSelection(null);
+            // A reply in an old thread lands on its root (threads are gone). Server hits may not be loaded yet: the
+            // permalink target pages history until it is. A fresh token makes picking it again scroll again.
+            const messageId = hit.threadRootMessageId ?? hit.messageId;
+            setSearchTarget({ messageId, token: ++searchTargetToken.current });
+            onJumpToMessage?.(roomId, messageId);
           }} />}
         onOpenDetails={(tab) => { closeDetail(); if (tab) setDetailsTab(tab); setContextCollapsed(false); }}
         onAddPeople={canAddMembers ? openMemberPicker : undefined}
@@ -1054,8 +920,7 @@ function RoomContent({
         onSetArchived={onSetArchived} onDeleteRoom={onDeleteRoom}
         onPatchRoom={onPatchRoom} settingsPeople={membersSection} memoryClient={messagingClient} openSettings={openSettings} onSettingsOpened={onSettingsOpened}
         // Search, then this project's views: Tasks (its warn dot = something here needs you while the pane
-        // is closed), Files, Scheduled, and Browser while there is one, as in prod. View labels show from 1280 px
-        // (messaging.css). Without it the room keeps About, Files, Browser and Ideas as before.
+        // is closed), Files and Scheduled. View labels show from 1280 px (messaging.css).
         views={<>
           <Button type="button" variant="ghost" size="icon-sm" className="room-view-toggle" disabled={!actionable}
             aria-label="Search in channel" title="Search (⌘F)" onClick={() => setSearchToken((token) => token + 1)}>
@@ -1073,17 +938,7 @@ function RoomContent({
           {!visibleRoom?.feed && <Button type="button" variant="ghost" size="sm" className="room-view-toggle" aria-pressed={scheduledShown} aria-label="Scheduled" title="Scheduled"
             onClick={() => toggleView("scheduled")}>
             <Clock aria-hidden="true" /><span>Scheduled</span></Button>}
-          {inShell && browserAvailable && <Button type="button" variant="ghost" size="icon-sm" className="room-view-toggle" aria-pressed={pane?.panelId === "browser"} aria-label="Browser" title="Browser"
-            onClick={() => { if (pane?.panelId === "browser") return closePane(); capture("browser_view_opened"); openBrowserPane(); }}>
-            <Chrome aria-hidden="true" /></Button>}
-        </>}
-        toolItems={<>
-          {inShell && <DropdownMenuItem onSelect={() => { capture("ideas_opened"); openPanel("ideas", composer.focusAgentId ? { agent: composer.focusAgentId } : {}, { pushUrl: true }); }}>
-            <Lightbulb aria-hidden="true" />Ideas</DropdownMenuItem>}
-          <DropdownMenuItem onSelect={() => { closeDetail(); setDetailsTab("links"); setContextCollapsed(false); }}>
-            <Link aria-hidden="true" />Links</DropdownMenuItem>
-        </>}
- />
+        </>} />
       {frontAgentId && visibleRoom?.kind === "dm" && (() => {
         // Only once the front agent is known: an unresolved roster must not call every agent a specialist.
         const agent = counterparts.length === 1 && counterparts[0].kind === "agent" && counterparts[0].id !== frontAgentId ? counterparts[0] : null;
@@ -1112,8 +967,6 @@ function RoomContent({
             <Identity name={viewer?.displayName ?? "You"} avatarOnly size="default" /><div className="room-message-content"><div className="room-message-byline"><span className="font-semibold">{viewer?.displayName ?? "You"}</span><span className="text-ui text-muted-foreground">Sending…</span></div><MarkdownView skipHtml components={roomMarkdown} urlTransform={roomUrlTransform}>{linkifyMentions(message.text, message.mentions, participants)}</MarkdownView></div>
           </article>)}
           {placeRuns(mainRuns, mainMessages).tail.map(renderRun)}
-          {/* First run (UX slice 6): the first run's ideas wait here, in the Lightbulb DM, until each is decided. */}
-          {frontAgentId && visibleRoom?.kind === "dm" && counterparts.length === 1 && counterparts[0].id === frontAgentId && <FirstMoves />}
         </RoomTimeline>
       </div>
       <p className="room-typing room-typing-live text-ui text-muted-foreground" role="status">{typers.length > 0 ? `${typers.slice(0, 3).map((member) => member.displayName).join(", ")}${typers.length > 3 ? " and others" : ""} ${typers.length === 1 ? "is" : "are"} typing…` : stageLine ?? (onIt ? `${onIt.displayName} is reading…` : "")}</p>
@@ -1127,7 +980,7 @@ function RoomContent({
       </div>}
       {showFirstReplies && <FirstReplyChips onPick={(text) => { if (composer.text.trim() === "") composer.onTextChange(text); setFocusToken((t) => t + 1); }} />}
       {visibleRoom?.feed ? <div className="room-composer room-archived" role="status">
-        <p className="text-ui text-muted-foreground">Only agents post to the feed. Reply to a post in its thread.</p>
+        <p className="text-ui text-muted-foreground">Only agents post to the feed.</p>
       </div> : visibleRoom?.archivedAt ? <div className="room-composer room-archived" role="status">
         <p className="text-ui text-muted-foreground">
           {canUnarchive ? `This ${roomNoun} is archived. Unarchive it to post.` : `This ${roomNoun} is archived.`}
@@ -1137,7 +990,7 @@ function RoomContent({
       </div> : <>{subagents && messagingClient && onSteerSubagent && onStopSubagent && onSubagentsVisible && <RoomSubagentStrip state={subagents} roomId={roomId}
           agentName={(agentId) => participants.find((m) => m.kind === "agent" && m.id === agentId)?.displayName ?? "Agent"}
           client={messagingClient} onSteer={onSteerSubagent} onStop={onStopSubagent} onVisible={onSubagentsVisible} />}
-        <RoomComposer {...composer} {...composerPeople} viewerId={currentUserId} focusToken={focusToken} placeholderDrafts={showFirstReplies ? INCOMPLETE_FIRST_REPLIES : undefined}
+        <RoomComposer {...composer} viewerId={currentUserId} focusToken={focusToken} placeholderDrafts={showFirstReplies ? INCOMPLETE_FIRST_REPLIES : undefined}
         placeholder={composer.placeholder ?? composerPlaceholder}
         onSubmit={markSent(composer.onSubmit)}
         onRetry={composer.onRetry ? markSent(composer.onRetry) : undefined}
@@ -1153,8 +1006,7 @@ function RoomContent({
       <PaneHeader title="Details" headingRef={contextHeading} onClose={() => setContextCollapsed(true)} />
       <RoomDetailsPanel room={visibleRoom} roomName={roomName} tab={detailsTab} onSelectTab={setDetailsTab}
         participants={participants} actionable={actionable}
-        messages={messages} pinnedMessageIds={pinnedMessageIds} activeRuns={activeRuns} hideActiveWork
-        onUnpin={onSetPin ? (messageId) => onSetPin(messageId, false) : undefined}
+        messages={messages} activeRuns={activeRuns} hideActiveWork
         onLeaveRoom={onLeaveRoom && canLeaveRoom ? onLeaveRoom : undefined} ownerCannotLeave={ownerCannotLeave}
         // Reuses the shipped search scroll/highlight path rather than adding a second one.
         onOpenMessage={(messageId) => {
@@ -1163,7 +1015,7 @@ function RoomContent({
           // RoomTimeline's own focus of the message just jumped to.
           contextWasOpen.current = false;
           setContextCollapsed(true);
-          setSearchTarget({ messageId, threadRootMessageId: null, token: ++searchTargetToken.current });
+          setSearchTarget({ messageId, token: ++searchTargetToken.current });
         }}
         members={membersSection} />
     </aside>}
@@ -1196,24 +1048,7 @@ function RoomContent({
     {/* One task at the item width: "‹ Tasks" goes back to the project's list, ✕ closes the pane. */}
     {taskSelection && <TaskPane key={taskSelection} taskId={taskSelection} viewerId={currentUserId} headingRef={detailHeading}
       onBack={() => showView("tasks")} onClose={closeView} />}
-    {showDetail && !taskSelection && <aside className="room-context" aria-label="Thread" onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeDetail(); } }}>
-      <PaneHeader title="Thread" headingRef={detailHeading} onClose={closeDetail} />
-      <StickToBottom className="room-context-body" pinToken={threadSendToken}>{parentMessage ? <>{renderMessage(parentMessage, true)}
-        {(() => {
-          const replies = messages.filter((message) => message.threadRootMessageId === parentMessage.messageId);
-          const placed = placeRuns(runs.filter((run) => run.threadRootMessageId === parentMessage.messageId), replies);
-          return <div className="room-thread-replies" aria-label="Thread replies">{buildTimeline(replies, { readSeq: null }).map((item) => item.kind === "message"
-            ? <Fragment key={item.key}>{renderMessage(item.message, true, item.collapsed)}
-              {savedDelegations(delegationState, delegationsByMessage?.get(item.message.messageId))}
-              {placed.after.get(item.message.messageId)?.map(renderRun)}</Fragment> : null)}
-          {placed.tail.map(renderRun)}
-          </div>;
-        })()}
-      </> : null}</StickToBottom>
-      {/* The same controls as the main box (W18-11): one component, one layout. */}
-      {parentMessage && threadComposer?.parentMessageId === parentMessage.messageId && <RoomComposer {...threadComposer.composer} {...composerPeople} viewerId={currentUserId} label="Reply to thread"
-        onSubmit={(request) => { setThreadSendToken((token) => token + 1); return threadComposer.composer.onSubmit(request); }} disabled={!actionable || !!visibleRoom?.archivedAt || threadComposer.composer.disabled} />}
-    </aside>}</>)}
+</>)}
     {/* One Add people flow (W17-6): the header, the sidebar's ⋯ and Members all open this; a DM's add starts a new group chat. */}
     <Dialog open={canAddMembers && memberPickerOpen} onOpenChange={(open) => { if (!addingMembers) setMemberPickerOpen(open); }}>
       <DialogContent className="max-w-[calc(100%-2rem)] sm:max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto top-[12dvh] translate-y-0">

@@ -37,6 +37,9 @@ from livekit.plugins import google, noise_cancellation, openai
 from huddle_agent import end_after
 from huddle_agent.backend import Backend, BackendError
 from huddle_agent.transcript import (
+    _LEADS,
+    _LIGHTBULB,
+    _tokens,
     address,
     clause_openers,
     stop_request,
@@ -74,6 +77,32 @@ anything that sends, spends or publishes: call start_work and say you're on it -
 it yourself. Only an answer you already have that is longer than a sentence (a list from a read) goes to the
 meeting chat with send_to_chat; say "I've put it in the chat". If start_work says it needs a member, say you'll need the member's OK. "{name}, stop"
 means stop talking. If a tool returns an error, say plainly that you couldn't do it; never say it is done."""
+
+
+ASK_WORDS = {
+    "how", "what", "what's", "when", "where", "who", "why", "which", "is", "are", "was", "were", "do", "does",
+    "did", "can", "could", "would", "will", "should", "please", "tell", "give", "show", "read", "draft", "write",
+    "add", "start", "make", "put", "send", "check", "find", "look", "pull", "book", "move", "cancel", "remind",
+}  # fmt: skip
+
+
+def wakes(name: str, text: str) -> bool:
+    """The strict wake (the nudge's): a sentence OPENS with the name (after an optional "hey"/"ok"), and an ask
+    follows it -- a comma and two words or more, or straight into a question or request word. Never a mention,
+    a short line or a near name: "I asked Nova.", "Nova's great.", "Lightbulb moment!", "Novak, can you...",
+    "No, Nova." do not wake it."""
+    names = [tuple(_tokens(name)), *_LIGHTBULB]
+    for sentence in re.split(r"(?<=[.?!])\s+", text.strip()):
+        tok = _tokens(sentence)
+        i = 1 if len(tok) > 1 and tok[0] in _LEADS else 0
+        i += 1 if i and tok[i] == "," else 0
+        for n in names:
+            if n and tuple(tok[i : i + len(n)]) == n:
+                rest = tok[i + len(n) :]
+                said = [w for w in rest if w[0].isalnum()]
+                if rest and ((rest[0] == "," and len(said) >= 2) or rest[0] in ASK_WORDS):
+                    return True
+    return False
 
 
 @dataclass
@@ -182,6 +211,7 @@ class MeetAgent(Agent):
         self._by_item: dict[str, dict] = {}
         self.consumed = 0  # turns up to this seq have had their reply (or were refused one)
         self.reply_turn: dict | None = None  # the turn the reply now playing answers
+        self.replying = False  # a reply for reply_turn is under way (its tools are that turn's)
         self.reply_end = time.monotonic()  # when the last reply ended: the start of the next ask window
         self.tool_at = -1.0  # when a tool last ran: Gemini's answer after it belongs to the turn it ran for
         self.ends_at = time.monotonic() + MEETING_MAX_S  # from here tools are refused and replies dropped...
@@ -212,10 +242,22 @@ class MeetAgent(Agent):
         return t
 
     def asker(self) -> str:
-        """The Meet participant id whose ask this is: who said the latest line ("" for nobody: the backend
-        then treats it as a guest's, needs_member)."""
-        who = self.turns[-1]["who"] if self.turns else ""
-        return who.rsplit(":", 1)[-1] if who else ""
+        """The Meet participant id of the asking line a tool call answers -- never whoever is talking now. The
+        line is the reply's turn while a reply is under way, else the open asks (final asks since the last
+        answered turn, younger than STALE_S). Every final line from that line on must be one person's: another
+        person's line after it, or two askers, and the call cannot be tied to one line, so it is "" (the backend
+        treats it as a guest's, needs_member). A partial (someone starting to talk) changes nothing."""
+        now = time.monotonic()
+        if self.replying and self.reply_turn is not None:
+            start = self.reply_turn["seq"]
+        else:
+            open_asks = [t for t in self.turns if t["seq"] > self.consumed and t["final"] and t["kind"] in ADDRESSED
+                         and now - (t["final_at"] or 0) < STALE_S]  # fmt: skip
+            if not open_asks:
+                return ""
+            start = open_asks[0]["seq"]
+        who = {t["who"] for t in self.turns if t["seq"] >= start and t["final"]}
+        return next(iter(who)).rsplit(":", 1)[-1] if len(who) == 1 and "" not in who else ""
 
     def _authorize(self, now: float, speech_id: str | None = None) -> tuple[bool | None, str]:
         """(True play | False drop | None wait, why) for the reply now held. Only a FINAL transcript decides:
@@ -276,6 +318,9 @@ class MeetAgent(Agent):
             return
         if why == "ask":
             self.reply_turn, self.consumed = self.turns[-1], self.turns[-1]["seq"]
+        if why != "goodbye":
+            self.replying = True  # until the speech is done: a tool call inside it outlives its audio
+            speech.add_done_callback(lambda _h: setattr(self, "replying", False))
         logger.info("meet: reply played (%s) for turn %s, held %.1fs", why, (self.reply_turn or {}).get("seq"), held)
         if why != "goodbye":
             speech.add_done_callback(lambda h, turn=self.reply_turn: self.on_reply(turn, h.chat_items))
@@ -455,23 +500,23 @@ async def run(ctx: JobContext, meta: dict) -> None:
         logger.info("meet: turn %d kind=%s final=%s", t["seq"], t["kind"] or "-", final)
         if t["kind"] == "stop":
             session.interrupt()
-        if final and t["kind"] in ADDRESSED:
+        if final and t["kind"] in ADDRESSED and wakes(name, text):  # the nudge: strict wake only
             asyncio.create_task(nudge(t, text))
         if final:
             lines.append({"mark": len(lines), "kind": "person", "name": label(t["who"])[:200],
                           "text": text[:4000], "at": time.time()})  # fmt: skip
 
     async def nudge(t: dict, text: str) -> None:
-        """Our transcript says the assistant was asked; Gemini's own hearing may have missed the name and
+        """The line opens with the name and asks (`wakes`); Gemini's own hearing may have missed the name and
         stayed silent (self-test 7 Nov: a guest's two asks, unanswered). If nothing is under way for this
-        line by NUDGE_S, Gemini is given the line to answer."""
+        line by NUDGE_S, Gemini is given the line, as said, to answer."""
         await asyncio.sleep(NUDGE_S)
         busy = session.current_speech is not None or agent.tool_at >= (t["final_at"] or 0)
         if busy or agent.consumed >= t["seq"] or agent.turns[-1] is not t or time.monotonic() >= agent.ends_at:
             return
         logger.info("meet: turn %d nudged", t["seq"])
         try:
-            session.generate_reply(user_input=f'{label(t["who"])} said to you: "{text}"')
+            session.generate_reply(user_input=f'{label(t["who"])}: {text}')
         except RuntimeError:  # the session is closed (Gemini refused it): nothing to nudge
             logger.warning("meet: nudge refused, the session is not running")
 

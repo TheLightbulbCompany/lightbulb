@@ -471,11 +471,10 @@ async def suggest(owner_id: str, suggestion: Suggestion) -> dict:
     blocking = [r for r in stored if r["ideaId"] not in dismissed or dismissed[r["ideaId"]] >= remembered]
     if any(_norm(i.title) == title for i in catalog().values()) or any(_norm(r["title"]) == title for r in blocking):
         return {"status": "duplicate"}
-    if await _super_agent(owner_id):
-        from core.services import proactive
+    from core.services import proactive
 
-        if any(_norm(t.get("title") or "") == title for t in await proactive.open_requests(owner_id)):
-            return {"status": "duplicate"}
+    if any(_norm(t.get("title") or "") == title for t in await proactive.open_requests(owner_id)):
+        return {"status": "duplicate"}
     if suggestion.task_id and sum(r.get("taskId") == suggestion.task_id for r in stored) >= RUN_IDEA_CAP:
         return {"status": "run_cap"}
     if sum(r["ideaId"] not in dismissed for r in stored) >= SUGGESTION_CAP:
@@ -499,46 +498,8 @@ async def suggest(owner_id: str, suggestion: Suggestion) -> dict:
     return {"status": "added", "id": idea_id}
 
 
-async def _closed(admin, session_cookie: str, start: dict) -> bool:
-    """True when the start's Work item is finished or gone, or it had none (quick: done in one
-    go). A Paperclip error reads as "still open": the caller answers with the stored ids."""
-    from core.services.paperclip_admin_client import PaperclipApiError
-
-    try:
-        if start.get("projectId"):
-            project = await admin.get_project(session_cookie=session_cookie, project_id=start["projectId"])
-            return project.get("status") in CLOSED_PROJECT_STATUSES or bool(project.get("archivedAt"))
-        if start.get("issueId"):
-            issue = await admin.get_issue(session_cookie=session_cookie, issue_id=start["issueId"])
-            return issue.get("status") in CLOSED_ISSUE_STATUSES
-    except PaperclipApiError as exc:
-        return exc.status_code == 404
-    except httpx.HTTPError:
-        return False
-    return True
-
-
-def work_link(kind: str, work_id: str) -> str:
-    """The Work item's page, in the app."""
-    panel = "teams-project-detail" if kind == "project" else "teams-issue-detail"
-    return f"{settings.FRONTEND_URL.rstrip('/')}/chat?panel={panel}&detailId={work_id}"
-
-
-_MARKDOWN_SPECIAL = re.compile(r"([\\`*_\[\]()<>#!|~])")
-
-
-def _md_text(value: str) -> str:
-    """Plain text inside markdown: an agent-written title or description cannot add a link,
-    emphasis or anything else to the person's own message, or break the Work link."""
-    return _MARKDOWN_SPECIAL.sub(r"\\\1", " ".join(value.split()))
-
-
-def work_description(job: Job, *, origin: dict | None = None) -> str:
-    """The Work item's text: the why, what's included, and (catalog ideas) what it needs and what
-    done means. The agent reads these here; the DM message stays the plain prompt. ``origin``
-    (``name``, ``roomId``, ``paperclipUserId``) adds a **From** section: the idea's run is a Work
-    run, not bound to the DM, so this is how it reaches the person (``lightbulb-post.sh --room``)
-    and assigns them a step."""
+def work_description(job: Job) -> str:
+    """The request's brief: the why, what's included, and (catalog ideas) what it needs and what done means."""
     text = job.why + "\n\nWhat's included:\n" + "\n".join(f"- {d}" for d in job.deliverables)
     # Connector keys can be linked; built-in services (mailbox, browser, meet) never are.
     needs = [f"- {n.service} ({n.access})" for n in job.needs if n.service not in PLATFORM_SERVICES]
@@ -549,34 +510,7 @@ def work_description(job: Job, *, origin: dict | None = None) -> str:
         text += "\n\n## Needs\n" + "\n".join(needs)
     if job.done_means:
         text += "\n\n## Done means\n" + job.done_means
-    if origin:
-        text += (
-            f"\n\n## From\nStarted from Ideas by {' '.join(origin['name'].split())}. "
-            f"Their DM with you: room `{origin['roomId']}`. "
-            f"Their Paperclip user id: `{origin['paperclipUserId']}`."
-        )
     return text
-
-
-def start_text(job: Job, tracked: tuple[str, str] | None) -> str:
-    """The person's own message when they press Let's do it: the idea quoted, the ask, and, for a
-    project or a task, the Work item tracking it. The link is how the agent learns where this
-    start's work goes. Nothing hidden."""
-    title = _md_text(job.title)
-    text = f"> **{title}**\n> {_md_text(job.why)}\n\nLet's do it!"
-    if tracked:
-        text += f"\nTracked in Work: [{title}]({work_link(*tracked)})"
-    if job.app_kind:  # no agent-only channel on this path: one plain sentence; the skill has the commands
-        text += f"\nBuild this as an app ({job.app_kind.replace('_', ' ')}), origin suggested:{job.id}"
-        text += f", kind {job.app_kind}."
-    return text
-
-
-def work_idempotency_key(owner_id: str, idea_id: str, user_id: str, start_token: str) -> str:
-    """Stable per claim: a retry after a crash replays the same Paperclip project or task (the
-    fork's ``idempotencyKey`` on create) instead of making a second one."""
-    digest = hashlib.sha256(f"{owner_id}|{idea_id}|{user_id}|{start_token}".encode()).hexdigest()
-    return f"lightbulb-idea-project:v1:{digest}"
 
 
 async def start(auth: AuthContext, idea_id: str) -> dict:
@@ -595,14 +529,8 @@ def _ids(start: dict) -> dict:
     return {"roomId": start["roomId"], **{k: start[k] for k in ("projectId", "issueId", "taskId") if start.get(k)}}
 
 
-async def _super_agent(owner_id: str) -> bool:
-    from core.services import super_agent_flags
-
-    return await super_agent_flags.flags_for(owner_id)
-
-
 async def _start_request(auth: AuthContext, owner_id: str, idea_id: str, job: Job) -> dict:
-    """Super-agent Let's do it: a Router request in the person's DM with Lightbulb, done by the idea's
+    """Let's do it: a Router request in the person's DM with Lightbulb, done by the idea's
     specialist (Lightbulb itself for the top agent's ideas). No Paperclip. Idempotent per (idea, person) while
     the request is open; once it ends the idea can be started again."""
     from core.services import proactive, task_conversation
@@ -649,128 +577,10 @@ async def _start_request(auth: AuthContext, owner_id: str, idea_id: str, job: Jo
 
 
 async def _start(auth: AuthContext, idea_id: str) -> dict:
-    from core.services import messaging, task_board
-    from core.services.paperclip_admin_client import shared_admin_client
-
-    row, agents, names = await _workspace(resolve_owner_id(auth))
-    job = await _job(resolve_owner_id(auth), idea_id, agents, names)  # an unknown idea is a 404 first
-    if await _super_agent(resolve_owner_id(auth)):
-        return await _start_request(auth, resolve_owner_id(auth), idea_id, job)
-    ctx = await task_board._context(auth)  # a joined member of this workspace, with a Paperclip session
-    owner_id, user_id = ctx.owner_id, auth.user_id
-    agent = job.agent
-    admin = shared_admin_client()
-
-    for _ in range(2):  # a second pass only after a finished start was closed
-        won, claim = await messaging_repo.claim_idea_start(owner_id, idea_id, user_id)
-        if won:
-            break
-        if claim.get("state") != "open":
-            raise HTTPException(status_code=409, detail="This idea is already starting.")
-        if not await _closed(admin, ctx.session_cookie, claim):
-            return _ids(claim)
-        await messaging_repo.close_idea_start(owner_id, idea_id, user_id, claim["startToken"])
-    else:
-        raise HTTPException(status_code=409, detail="This idea is already starting.")
-
-    try:
-        room_id = await _usable_dm(owner_id, user_id, agent["id"])
-        key = work_idempotency_key(owner_id, idea_id, user_id, claim["startToken"])
-        tracked: tuple[str, str] | None = None
-        try:
-            name = await messaging.human_display_name(user_id)
-        except Exception:  # noqa: BLE001 - a missing name never blocks the start
-            name = ""
-        origin = {
-            "name": name if name and name != user_id else "the person",
-            "roomId": room_id,
-            "paperclipUserId": ctx.paperclip_user_id,
-        }
-        if job.size == "project":
-            project_id = claim.get("projectId")
-            if not project_id:
-                # Only a project: an idea never makes a company-level goal, so it can never become
-                # the company's default goal. It joins the onboarding goal when the workspace has one.
-                goal_id = getattr(row, "onboarding_goal_id", None)
-                body = {
-                    "name": job.title,
-                    "description": work_description(job, origin=origin),
-                    "status": "in_progress",
-                    "leadAgentId": agent["id"],
-                    "idempotencyKey": key,
-                    **({"goalIds": [goal_id]} if goal_id else {}),
-                }
-                project = await admin.create_project(
-                    session_cookie=ctx.session_cookie, company_id=ctx.company_id, body=body
-                )
-                project_id = project["id"]
-                await messaging_repo.update_idea_start(owner_id, idea_id, user_id, {"projectId": project_id})
-            if not claim.get("firstIssueId"):  # the project's one task, carrying the idea
-                first = await admin.create_issue(
-                    session_cookie=ctx.session_cookie,
-                    company_id=ctx.company_id,
-                    body={
-                        "title": job.title,
-                        "description": work_description(job, origin=origin),
-                        "status": "todo",
-                        "assigneeAgentId": agent["id"],
-                        "projectId": project_id,
-                        "idempotencyKey": f"{key}:task",
-                        "allowDuplicate": True,
-                    },
-                )
-                await messaging_repo.update_idea_start(owner_id, idea_id, user_id, {"firstIssueId": first["id"]})
-            tracked = ("project", project_id)
-        elif job.size == "task":
-            issue_id = claim.get("issueId")
-            if not issue_id:
-                body = {
-                    "title": job.title,
-                    "description": work_description(job, origin=origin),
-                    # todo: Paperclip starts the run at once, like any assigned task (owner,
-                    # 2026-10-16). The DM message below is the person's record and does not wake.
-                    "status": "todo",
-                    "assigneeAgentId": agent["id"],
-                    "idempotencyKey": key,
-                    # The same title may be started again after a finished task; the key still
-                    # replays a retry's issue instead of making a second one.
-                    "allowDuplicate": True,
-                }
-                issue = await admin.create_issue(
-                    session_cookie=ctx.session_cookie, company_id=ctx.company_id, body=body
-                )
-                issue_id = issue["id"]
-                await messaging_repo.update_idea_start(owner_id, idea_id, user_id, {"issueId": issue_id})
-            tracked = ("task", issue_id)
-        # The person's own message (via Ideas), shown live. Work tracked in Paperclip already woke
-        # the agent, so it is a record; a quick idea has no task, so this message is the wake.
-        # One per start: a retry replays it.
-        client_id = uuid.uuid5(
-            uuid.NAMESPACE_URL, f"lightbulb-idea-start|{owner_id}|{idea_id}|{user_id}|{claim['startToken']}"
-        )
-        await messaging.create_human_message(
-            AuthContext(user_id=user_id, org_id=owner_id),
-            room_id,
-            messaging.CreateMessageRequest(
-                client_message_id=client_id,
-                text=start_text(job, tracked),
-                reply_to_message_id=None,
-                thread_root_message_id=None,
-            ),
-            via="ideas",
-            wake=tracked is None,
-        )
-        fields = {"state": "open", "roomId": room_id, "createdAt": utc_now_iso(), "agentId": agent["id"],
-                  "title": job.title, "size": job.size}  # fmt: skip
-        await messaging_repo.update_idea_start(owner_id, idea_id, user_id, fields)
-    except BaseException:
-        try:  # free the claim at once; the next Start reuses whatever already landed
-            await messaging_repo.update_idea_start(owner_id, idea_id, user_id, {"claimedAt": 0})
-        except Exception:
-            logger.warning("ideas: could not release the start claim %s/%s", owner_id, idea_id, exc_info=True)
-        raise
-    return _ids({"roomId": room_id, "projectId": tracked[1] if tracked and tracked[0] == "project" else None,
-                 "issueId": tracked[1] if tracked and tracked[0] == "task" else None})  # fmt: skip
+    owner_id = resolve_owner_id(auth)
+    _row, agents, names = await _workspace(owner_id)
+    job = await _job(owner_id, idea_id, agents, names)  # an unknown idea is a 404 first
+    return await _start_request(auth, owner_id, idea_id, job)
 
 
 async def _usable_dm(owner_id: str, user_id: str, agent_id: str) -> str:

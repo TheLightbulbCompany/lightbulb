@@ -2,7 +2,7 @@
 
 Auth: the owner's hook token (owner-scoped: every runtime of the workspace holds it) AND the attempt's own
 `runSecret` (minted by `begin_attempt`, sent to the bridge in the run identity), so a runtime can only report
-for the attempt it runs. 404 while the workspace's switch is off.
+for the attempt it runs.
 
 - `POST /api/v1/internal/runtime/{owner}/runs/{runId}/events`: the bridge's heartbeat (every 2 min) and
   terminal status for a v1 run. Heartbeats heartbeat the async `worker_turn` and record `recentTools`;
@@ -36,7 +36,6 @@ from core.repositories import billing_repo, effects_repo, questions_repo, tasks_
 from core.services import questions, task_asks, task_conversation, tasks_access
 from core.services.messaging import ATTACHMENT_MAX_COUNT, UploadedAttachment, human_display_name
 from core.services.container_auth import _require_hook_token
-from core.services.super_agent_flags import flags_for
 from core.temporal import activities as acts
 from core.temporal import client as temporal
 from core.temporal.types import RunEvent, RunStatusName, RunUsage, TaskInputRef, WorkerTurnOut
@@ -97,10 +96,8 @@ def _not_found(exc: RPCError) -> bool:
 
 
 async def _gate(owner_id: str, request: Request) -> None:
-    """Owner-scoped hook token, then the workspace's switch (off ⇒ 404: the routes do not exist)."""
+    """Owner-scoped hook token."""
     await _require_hook_token(owner_id, request)
-    if not await flags_for(owner_id):
-        raise HTTPException(status_code=404, detail="not_found")
 
 
 @router.post("/{owner_id}/runs/{run_id}/events")

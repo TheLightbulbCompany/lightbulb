@@ -116,7 +116,6 @@ async def _cli(*argv):
     pc_repo = MagicMock()
     pc_repo.list_active_workspace_members = AsyncMock(return_value={WS: set()})
     with (
-        patch.object(settings, "SUPER_AGENT_ENV_ENABLED", True),
         patch.object(script, "PaperclipRepo", return_value=pc_repo),
     ):
         return await script.main(list(argv))
@@ -142,22 +141,17 @@ async def test_cli_verify_exit_code(tasks_table, paperclip):
     assert await _cli("--all", "--verify") == 0
 
 
-@pytest.mark.asyncio
-async def test_cli_refuses_prod_and_master_off():
+async def test_cli_refuses_prod():
     from scripts import backfill_agent_registry as script
 
     with patch.object(settings, "ENVIRONMENT", "prod"):
         assert await script.main(["--all", "--apply"]) == 2
-    with patch.object(settings, "SUPER_AGENT_ENV_ENABLED", False):
-        assert await script.main(["--all", "--verify"]) == 2
 
 
 @pytest.mark.asyncio
 async def test_cli_allow_prod_lifts_only_the_prod_refusal(tasks_table, paperclip):
     from scripts import backfill_agent_registry as script
 
-    with patch.object(settings, "ENVIRONMENT", "prod"), patch.object(settings, "SUPER_AGENT_ENV_ENABLED", True):
+    with patch.object(settings, "ENVIRONMENT", "prod"):
         assert await script.main(["--all", "--apply", "--allow-prod"]) == 0
         assert await script.main(["--all", "--verify", "--allow-prod"]) == 0
-        with patch.object(settings, "SUPER_AGENT_ENV_ENABLED", False):
-            assert await script.main(["--all", "--verify", "--allow-prod"]) == 2  # still no table without the master

@@ -99,22 +99,16 @@ async def test_ensure_feed_room_twice_makes_one_room_with_one_welcome(workspace)
     assert messages[0]["author"]["id"] == CEO
     assert messages[0]["text"] == messaging.FEED_WELCOME
     assert messages[0]["kind"] == "welcome"  # clients find the welcome by kind, never by its text
-    for place in ("four places", "Chat", "Activity", "Work", "Library", "Discuss", "💡"):
-        assert place in messaging.FEED_WELCOME
-    assert "five places" not in messaging.FEED_WELCOME and "Ideas for" not in messaging.FEED_WELCOME
     # The general room is untouched.
     assert await repo.get_room(messaging.default_room_id(OWNER)) is None
 
 
 @pytest.mark.asyncio
 async def test_a_super_agent_feed_welcome_promises_only_what_runs(workspace, monkeypatch):
-    from core.services import super_agent_flags
-
-    monkeypatch.setattr(super_agent_flags, "flags_for", AsyncMock(return_value=True))
     await messaging.ensure_feed_room(OWNER, "user_A")
     messages, _ = await repo.list_messages(FEED, 0, 100)
     text = messages[0]["text"]
-    assert text == messaging.FEED_WELCOME_SUPER_AGENT
+    assert text == messaging.FEED_WELCOME
     assert "three" not in text and "💡" not in text and "Work for tasks" not in text
     for place in ("Home", "Needs you", "Ideas", "feed", "Discuss", "brief"):
         assert place in text

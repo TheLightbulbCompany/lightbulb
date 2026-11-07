@@ -113,13 +113,6 @@ async def test_deliver_room_must_be_a_room_the_saver_sits_in(api):
     assert r.status_code == 400 and r.json()["detail"]["code"] == "room_not_found"
 
 
-async def test_routes_404_when_switch_off(api):
-    api.flags.return_value = False
-    assert _as(api).get(BASE).status_code == 404
-    assert _as(api).post(BASE, json=_IN).status_code == 404
-    assert _as(api).post(f"{BASE}/x/run").status_code == 404
-
-
 async def test_create_is_draft_and_schedule_paused(api):
     view = await _draft(api)
     assert view["status"] == "draft" and view["createdBy"] == "user" and view["ownerUserId"] == SAM
@@ -691,12 +684,8 @@ def _admission_world(monkeypatch, adm):
         "jev": [],
         "jev_answer": {"to": "router", "specialist": adm.FIN, "confidence": 0.9},
         "listen": "active",
-        "on": True,
         "temporal_up": True,
     }
-
-    async def flags(ws):
-        return w["on"]
 
     async def get_room(room_id):
         return w["meta"]
@@ -731,7 +720,6 @@ def _admission_world(monkeypatch, adm):
     async def ingest(ws, meta, msg, *, task=None):
         return True
 
-    monkeypatch.setattr(adm.admission, "flags_for", flags)
     monkeypatch.setattr(adm.messaging_repo, "get_room", get_room)
     monkeypatch.setattr(adm.messaging_repo, "get_message", get_message)
     monkeypatch.setattr(adm.messaging_repo, "get_member", get_member)

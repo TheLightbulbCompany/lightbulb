@@ -56,7 +56,6 @@ from core.services import (
 from core.services import local_session_grants
 from core.services import container_rpc, message_search, runtime_transport, voice_calls
 from core.services.live_events import get_live_event_publisher, publish_room_activity
-from core.services.super_agent_flags import flags_for
 from core.services.paperclip_admin_client import PaperclipApiError, shared_admin_client
 from core.services.paperclip_admin_session import get_admin_session_cookie
 from core.services.messaging import (
@@ -827,7 +826,7 @@ async def live_config(auth: AuthContext = Depends(get_current_user)):
         region=settings.APPSYNC_EVENTS_REGION or settings.AWS_REGION,
         user_channel_key=key,
         workspace_id=workspace_id,
-        features=LiveFeatures(super_agent=True) if await flags_for(owner_id) else None,
+        features=LiveFeatures(super_agent=True),  # a constant since the switch retired: old app builds read it
     )
 
 

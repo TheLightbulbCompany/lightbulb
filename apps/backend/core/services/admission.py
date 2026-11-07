@@ -13,7 +13,7 @@ transaction; other sources through `enqueue_trigger`). The FIFO consumer (`openc
    Jev down ⇒ addressed only (§14.7);
 5. records the TRIG row (deterministic id: a redelivery is a replay) and signal-with-starts the Router.
 
-Temporal down ⇒ `WorkRetry` (the FIFO redelivers). Nothing here runs while the workspace's switch is off.
+Temporal down ⇒ `WorkRetry` (the FIFO redelivers).
 """
 
 from __future__ import annotations
@@ -29,7 +29,6 @@ from core.observability.metrics import put_metric
 from core.repositories import automations_repo, messaging_repo, tasks_repo
 from core.services import jev, messaging, room_memory, rules, task_conversation, tasks_access
 from core.services.openclaw_work import WorkRetry
-from core.services.super_agent_flags import flags_for
 from core.temporal import client as temporal
 from core.temporal.types import TaskInputRef, TriggerRef
 
@@ -42,24 +41,25 @@ _LIGHTBULB_NAME = re.compile(r"^\W*(?:(?:hey|hi|hello|yo|ok|okay)\s+)?lightbulb\
 
 
 async def router_room(meta: dict, owner_id: str) -> bool:
-    """A room people chat with Lightbulb in: switch on, Lightbulb (the front agent) seated, and not an
+    """A room people chat with Lightbulb in: Lightbulb (the front agent) seated, and not an
     app/feed/vendor/session/meeting room or one shared with another organization. A task's own room is a Router
     room. A room without Lightbulb's seat (a specialist's DM) keeps today's path: Lightbulb could not answer there."""
-    if not meta or not await flags_for(owner_id):
+    if not meta:
         return False
     if meta.get("task"):
         return True
     if (
-        meta.get("app")
+        not meta.get("roomId")
+        or meta.get("app")
         or meta.get("meeting")
         or messaging.is_session_room(meta)
         or messaging.is_feed_room(meta)
         or messaging.is_vendor_room(meta)
     ):
         return False
-    if await messaging_repo.has_foreign_members(meta["roomId"], owner_id):
+    if await _front_member(meta["roomId"], owner_id) is None:
         return False
-    return await _front_member(meta["roomId"], owner_id) is not None
+    return not await messaging_repo.has_foreign_members(meta["roomId"], owner_id)
 
 
 def lane_for(meta: dict, author: dict) -> str:
@@ -136,7 +136,7 @@ async def _to_people(meta: dict, msg: dict) -> bool:
 
 async def _admit_trigger(ws: str, trigger_id: str) -> None:
     trig = await tasks_repo.get_trigger(ws, trigger_id)
-    if trig is None or not await flags_for(ws):
+    if trig is None:
         put_metric("admission.outcome", dimensions={"outcome": "dropped", "source": "trigger"})
         return
     # Voice starts, A2A, proactive ideas, schedules: nothing new starts in a paused project.

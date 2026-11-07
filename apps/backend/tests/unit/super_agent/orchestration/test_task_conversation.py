@@ -1,5 +1,6 @@
 """The hidden task room and the one voice that posts results (wave-2 O Task 5; contracts §6)."""
 
+from unittest.mock import AsyncMock
 import uuid
 
 import pytest
@@ -62,10 +63,8 @@ def chat(monkeypatch):
 
     monkeypatch.setattr(tc.session_chat, "_default_agents", default_agents)
 
-    async def switch_off(ws):
-        return False
+    monkeypatch.setattr(tc.agent_registry, "roster", AsyncMock(return_value=[]))  # no registry CEO: Paperclip's default
 
-    monkeypatch.setattr(tc, "flags_for", switch_off)
     monkeypatch.setattr(tc.session_chat, "_seat", seat)
 
     async def display_name(uid):
@@ -218,7 +217,6 @@ async def test_front_agent_reads_registry_when_on(chat, monkeypatch):
     async def no_paperclip(ws):
         raise AssertionError("Paperclip read with the switch on")
 
-    monkeypatch.setattr(tc, "flags_for", switch_on)
     monkeypatch.setattr(tc.agent_registry, "roster", roster)
     monkeypatch.setattr(tc.session_chat, "_default_agents", no_paperclip)
     assert await tc.front_agent_id(WS) == CEO
@@ -240,7 +238,6 @@ async def test_post_as_lightbulb_goes_into_room_memory(chat, monkeypatch):
 
     chat["rooms"][ORIGIN] = {"roomId": ORIGIN, "ownerId": WS, "kind": "channel"}
     monkeypatch.setattr(room_memory.settings, "AGENTCORE_MEMORY_ID", "mem-1")
-    monkeypatch.setattr(room_memory, "flags_for", switch_on)
     monkeypatch.setattr(room_memory, "ingest_message", ingest)
     mid = await tc.post_as_lightbulb(WS, ORIGIN, text="Paid the invoice.", event_id="task:x:1", kind="result")
     await tc.post_as_lightbulb(WS, ORIGIN, text="Working: browser", event_id="task:x:p", progress=True)

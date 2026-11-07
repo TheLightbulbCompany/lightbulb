@@ -115,10 +115,10 @@ def test_paperclip_run_never_gets_the_task_toolset(monkeypatch):
     assert built.get("called") and "enabled_toolsets" not in built  # _construct_agent's own strip applies
 
 
-def test_super_agent_call_never_gets_the_task_toolset(env, home, monkeypatch):  # noqa: F811
+def test_a_call_never_gets_the_task_toolset(env, home, monkeypatch):  # noqa: F811
     from tests.test_voice_call_run import IDENTITY as CALL, REQUEST as CALL_REQUEST, _frames
 
     monkeypatch.setattr(turn, "profile_toolsets", lambda: (["lightbulb", "lightbulb_task", "memory"], None))
     turn.register_call_run(CALL)
-    assert turn._run_call(CALL, {**CALL_REQUEST, "superAgent": True}, _frames())[0] == "completed"
+    assert turn._run_call(CALL, CALL_REQUEST, _frames())[0] == "completed"
     assert env["limits"]["enabled_toolsets"] == ["lightbulb", "memory", "lightbulb_voice_work"]

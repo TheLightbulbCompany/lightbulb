@@ -26,12 +26,10 @@ def _get_worker():
 
         from core.config import settings  # imports core.config: env first
         from core.services.openclaw_work import OpenClawWorkWorker
-        from core.services.super_agent_flags import env_enabled
+        from core.temporal.client import connect_and_set
 
-        if env_enabled():  # admission signals the Router (bounded; a failed connect makes admits retry)
-            from core.temporal.client import connect_and_set
-
-            _loop.run_until_complete(connect_and_set())
+        # admission signals the Router (bounded; a failed connect makes admits retry)
+        _loop.run_until_complete(connect_and_set())
 
         _worker = OpenClawWorkWorker(sqs_client=boto3.client("sqs", region_name=settings.AWS_REGION))
     return _worker

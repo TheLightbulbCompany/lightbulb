@@ -19,7 +19,6 @@ from botocore.exceptions import BotoCoreError, ClientError
 from core.observability.metrics import put_metric
 from core.repositories import agent_registry_repo as repo
 from core.repositories.agent_registry_repo import AgentConflict
-from core.services.super_agent_flags import env_enabled
 
 __all__ = [
     "AgentConflict",
@@ -117,7 +116,7 @@ async def owner_of(agent_id: str) -> str | None:
 # --- Mirror of Paperclip agent writes (wave1-R Task 3) ----------------------------------------------
 #
 # Called by `PaperclipAdminClient` after every successful agent create/patch/update/delete: the one place all
-# agent write doors pass through. No-op unless the env master is on (the table does not exist in prod). Never
+# agent write doors pass through. Never
 # raises: the user's Paperclip write already succeeded; a gap shows in the metric and in the backfill's
 # `--verify` (`missing_in_registry`), and a backfill `--apply` heals it.
 
@@ -138,8 +137,6 @@ async def _workspace_of(agent: dict) -> str | None:
 
 async def mirror_from_paperclip(agent: dict) -> None:
     """Upsert the registry row for a Paperclip agent dict (`terminated` → soft delete)."""
-    if not env_enabled():
-        return
     try:
         ws = await _workspace_of(agent)
         if ws is None:
@@ -164,8 +161,6 @@ async def mirror_from_paperclip(agent: dict) -> None:
 
 async def mirror_delete(agent_id: str) -> None:
     """Soft-delete the registry row of a deleted Paperclip agent."""
-    if not env_enabled():
-        return
     try:
         ws = await repo.owner_of(agent_id)
         if ws is None or await repo.get(ws, agent_id) is None:

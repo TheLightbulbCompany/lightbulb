@@ -20,11 +20,10 @@ MAIL_REF = {"address": "ada@example.com", "messageId": "<m1@example.com>", "refe
 def env(table, monkeypatch):
     outbox = AsyncMock()
     with (
-        patch("core.services.agent_mail_delivery.flags_for", AsyncMock(return_value=True)) as flags,
         patch("core.repositories.messaging_repo.put_admit_trigger", outbox),
         patch("core.services.runtime_transport.request", AsyncMock()) as runtime,
     ):
-        yield type("Env", (), {"flags": flags, "outbox": outbox, "runtime": runtime})()
+        yield type("Env", (), {"outbox": outbox, "runtime": runtime})()
 
 
 async def _mail(**over):
@@ -77,25 +76,6 @@ async def test_outbox_failure_returns_error_and_the_retry_admits(env):
     assert await _mail() == "error"  # the caller rolls back its dedup row and asks the provider to retry
     assert await _mail() == "delivered"
     assert await tasks_repo.get_trigger(WS, "mail:<m1@example.com>") is not None
-
-
-async def test_switch_off_posts_to_runtime_unchanged(env, monkeypatch):
-    env.flags.return_value = False
-    env.runtime.return_value = type("R", (), {"status_code": 202})()
-    with (
-        patch(
-            "core.services.agent_mail_delivery.container_repo.get_by_owner_id",
-            AsyncMock(return_value={"agentcore_runtime_arn": "arn", "gateway_token": "g"}),
-        ),
-        patch("core.services.agent_mail_delivery.trial_block_reason", AsyncMock(return_value=None)),
-    ):
-        assert await _mail() == "delivered"
-    body = env.runtime.await_args.kwargs["json_body"]
-    assert body["eventKind"] == "agent_mail" and body["eventId"] == "<m1@example.com>"
-    assert body["message"] == {"text": "From: ada@example.com\nSubject: Invoice 12\n\nPlease pay invoice 12."}
-    assert "source" not in body and "reply" not in body  # today's body, byte for byte
-    assert await tasks_repo.get_trigger(WS, "mail:<m1@example.com>") is None
-    assert not env.outbox.called
 
 
 @pytest.mark.parametrize("router", ["ses_inbound", "sendblue_inbound", "photon_inbound"])

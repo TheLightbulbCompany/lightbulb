@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi.testclient import TestClient
 
-from core.config import settings
 from core.temporal import client as tc
 
 
@@ -20,21 +19,7 @@ def _quiet_startup(monkeypatch):
     tc.set_client(None)
 
 
-def test_lifespan_skips_temporal_when_env_master_off(app, monkeypatch):
-    monkeypatch.setattr(settings, "SUPER_AGENT_ENV_ENABLED", False)
-
-    async def must_not_connect():
-        pytest.fail("connect called with the env master off")
-
-    monkeypatch.setattr(tc, "connect", must_not_connect)
-    with TestClient(app) as client:
-        assert client.get("/health").status_code == 200
-        with pytest.raises(tc.TemporalUnavailable):
-            tc.get_client()
-
-
 def test_lifespan_connect_failure_does_not_block_startup(app, monkeypatch):
-    monkeypatch.setattr(settings, "SUPER_AGENT_ENV_ENABLED", True)
     monkeypatch.setattr(tc, "connect", AsyncMock(side_effect=RuntimeError("cloud down")))
     with TestClient(app) as client:
         assert client.get("/health").status_code == 200
@@ -43,7 +28,6 @@ def test_lifespan_connect_failure_does_not_block_startup(app, monkeypatch):
 
 
 def test_lifespan_sets_and_closes_client(app, monkeypatch):
-    monkeypatch.setattr(settings, "SUPER_AGENT_ENV_ENABLED", True)
     fake = object()
     monkeypatch.setattr(tc, "connect", AsyncMock(return_value=fake))
     with TestClient(app):
@@ -56,7 +40,6 @@ def test_lifespan_sets_and_closes_client(app, monkeypatch):
 
 
 def test_lifespan_does_not_wait_for_a_hanging_connect(app, monkeypatch):
-    monkeypatch.setattr(settings, "SUPER_AGENT_ENV_ENABLED", True)
 
     async def hang():
         await asyncio.sleep(3600)

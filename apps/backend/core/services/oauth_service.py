@@ -40,7 +40,6 @@ from botocore.exceptions import ClientError
 from core.config import settings
 from core.encryption import get_fernet
 from core.repositories import billing_repo
-from core.services.super_agent_flags import flags_for
 
 
 logger = logging.getLogger(__name__)
@@ -327,12 +326,9 @@ async def poll_device_code(*, user_id: str) -> DevicePollResult | object:
     expires_in = body.get("expires_in")
     if expires_in:
         token_fields["expires_at"] = int(time.time() * 1000) + int(expires_in) * 1000
-    # Super-agent (spec 13 T1): a new connect in a workspace with the switch on is backend-custodied
-    # from the start -- the backend alone refreshes it (``version`` is the CAS counter). Switch off:
-    # the row is exactly today's (no custody attribute = the VM rotates it).
-    backend = await flags_for(bound_owner_id)
-    if backend:
-        token_fields["expires_at"] = _expires_at_ms(access_token) or token_fields.get("expires_at") or 0
+    # Super-agent (spec 13 T1): a new connect is backend-custodied from the start -- the backend alone
+    # refreshes it (``version`` is the CAS counter).
+    token_fields["expires_at"] = _expires_at_ms(access_token) or token_fields.get("expires_at") or 0
     tokens_plain = json.dumps(token_fields).encode()
     encrypted = get_fernet().encrypt(tokens_plain)
     values: dict[str, Any] = {
@@ -343,15 +339,16 @@ async def poll_device_code(*, user_id: str) -> DevicePollResult | object:
         # that passes a different ``bound_to`` is rejected (see
         # get_decrypted_tokens) — one ChatGPT account ↔ one container.
         ":bound": bound_owner_id,
+        ":backend": "backend",
+        ":one": 1,
+        ":exp": token_fields["expires_at"],
     }
-    if backend:
-        values.update({":backend": "backend", ":one": 1, ":exp": token_fields["expires_at"]})
 
     _table().update_item(
         Key={"user_id": user_id},
         UpdateExpression=(
-            ("SET custody = :backend, version = :one, expires_at = :exp, " if backend else "SET ")
-            + "#s = :ok, encrypted_tokens = :tok, account_id = :acc, bound_owner_id = :bound "
+            "SET custody = :backend, version = :one, expires_at = :exp, "
+            "#s = :ok, encrypted_tokens = :tok, account_id = :acc, bound_owner_id = :bound "
             "REMOVE device_auth_id, user_code, #i"
         ),
         ExpressionAttributeNames={"#s": "state", "#i": "interval"},

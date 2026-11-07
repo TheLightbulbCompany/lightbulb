@@ -27,16 +27,18 @@ def repo():
         )
         with patch("core.dynamodb._table_prefix", ""), patch("core.dynamodb._dynamodb_resource", res):
             r = PaperclipRepo(table_name=TABLE)
-            res.Table(TABLE).put_item(
-                Item={
-                    "user_id": OWNER,
-                    "org_id": OWNER,
-                    "company_id": "co1",
-                    "status": "active",
-                    "created_at": "2026-10-01T00:00:00+00:00",
-                    "updated_at": "2026-10-01T00:00:00+00:00",
-                }
-            )
+            row = {
+                "user_id": OWNER,
+                "org_id": OWNER,
+                "company_id": "co1",
+                "status": "active",
+                "created_at": "2026-10-01T00:00:00+00:00",
+                "updated_at": "2026-10-01T00:00:00+00:00",
+            }
+            res.Table(TABLE).put_item(Item=row)  # company_id and the cost remainder stay on the old row
+            from core import tasks_schema as ts
+
+            r._ws_table().put_item(Item=r._ws_item(row, OWNER, ts.META_SK))  # META moved to tasks (copy_workspace_meta)
             yield r
 
 

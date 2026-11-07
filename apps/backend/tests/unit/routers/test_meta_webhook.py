@@ -333,3 +333,13 @@ def test_signature_accepts_the_instagram_app_secret(client):
 
     assert resp.status_code == 200
     assert [c["headers"]["authorization"] for c in sink] == ["Bearer trigsec_ig"]
+
+
+@pytest.fixture(autouse=True)
+def _no_hook_row(monkeypatch):
+    """These pin the Paperclip fallback: a binding whose trigger has no `HOOK#` row."""
+    from unittest.mock import AsyncMock as _AsyncMock
+
+    from core.repositories import automations_repo
+
+    monkeypatch.setattr(automations_repo, "get_hook", _AsyncMock(return_value=None))

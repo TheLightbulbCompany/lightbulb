@@ -15,7 +15,6 @@ from botocore.exceptions import ClientError
 from core.config import settings
 from core.dynamodb import run_in_thread
 from core.services import memory_sync, secret_shaped, workspace_memory
-from core.services.super_agent_flags import flags_for
 
 logger = logging.getLogger(__name__)
 
@@ -107,8 +106,6 @@ async def _run(ws: str, task: dict) -> None:
     if not memory_id:
         return
     try:
-        if not await flags_for(ws):
-            return
         await run_in_thread(_index, ws, task, memory_id)
     except Exception as exc:  # noqa: BLE001 -- recall falls back to turns; the next change re-indexes
         logger.warning("task card index failed ws=%s task=%s error=%s", ws, task.get("taskId"), type(exc).__name__)

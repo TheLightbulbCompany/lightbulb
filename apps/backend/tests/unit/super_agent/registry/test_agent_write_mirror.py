@@ -9,7 +9,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from core.config import settings
 from core.repositories import agent_registry_repo as repo
 from core.services import agent_registry
 from core.services.paperclip_admin_client import PaperclipAdminClient
@@ -84,30 +83,18 @@ async def _write(client, op):
 async def test_each_admin_write_mirrors(tasks_table, company_lookup, op, expect):
     state = _agent()
     client = _client(state)
-    with patch.object(settings, "SUPER_AGENT_ENV_ENABLED", True):
-        if op != "create":
-            await repo.put_new("org_a", agent_registry.row_from_paperclip(state))
-        await _write(client, op)
+    if op != "create":
+        await repo.put_new("org_a", agent_registry.row_from_paperclip(state))
+    await _write(client, op)
     row = await repo.get("org_a", AID)
     assert {k: row[k] for k in expect} == expect
     assert await repo.owner_of(AID) == "org_a"
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("op", ["create", "patch", "update", "pause", "delete"])
-async def test_env_master_off_writes_nothing(ddb, company_lookup, op):
-    """Prod: no table, no registry call, the Paperclip write is untouched."""
-    with patch.object(settings, "SUPER_AGENT_ENV_ENABLED", False), patch.object(agent_registry, "repo") as r:
-        result = await _write(_client(_agent()), op)
-    assert result
-    assert r.mock_calls == []
-    company_lookup.find_workspace_by_company.assert_not_called()
-
-
-@pytest.mark.asyncio
 async def test_mirror_failure_never_fails_the_paperclip_write(ddb, company_lookup):
     """Env master on but the table is missing: the admin call still returns Paperclip's agent."""
-    with patch.object(settings, "SUPER_AGENT_ENV_ENABLED", True), patch.object(agent_registry, "put_metric") as metric:
+    with patch.object(agent_registry, "put_metric") as metric:
         agent = await _write(_client(_agent()), "create")
     assert agent["id"] == AID
     metric.assert_called_with("agent_registry.mirror", dimensions={"result": "error"})
@@ -115,8 +102,7 @@ async def test_mirror_failure_never_fails_the_paperclip_write(ddb, company_looku
 
 @pytest.mark.asyncio
 async def test_mirror_unknown_company_logs_and_skips(tasks_table, company_lookup, caplog):
-    with patch.object(settings, "SUPER_AGENT_ENV_ENABLED", True):
-        await agent_registry.mirror_from_paperclip(_agent(companyId="co-unknown"))
+    await agent_registry.mirror_from_paperclip(_agent(companyId="co-unknown"))
     assert await repo.owner_of(AID) is None
     assert "agent_registry.mirror_skipped" in caplog.text
     assert "Research" not in caplog.text  # ids only
@@ -127,12 +113,11 @@ async def test_proxied_agent_write_mirrors(tasks_table, company_lookup):
     """The Paperclip UI's edits reach Paperclip through routers/paperclip_proxy, not the admin client."""
     from routers import paperclip_proxy
 
-    with patch.object(settings, "SUPER_AGENT_ENV_ENABLED", True):
-        await paperclip_proxy._mirror_agent_write(
-            "PATCH", f"api/agents/{AID}", 200, json.dumps(_agent(name="Via UI")).encode()
-        )
-        assert (await repo.get("org_a", AID))["name"] == "Via UI"
-        await paperclip_proxy._mirror_agent_write("DELETE", f"api/agents/{AID}", 200, b"")
+    await paperclip_proxy._mirror_agent_write(
+        "PATCH", f"api/agents/{AID}", 200, json.dumps(_agent(name="Via UI")).encode()
+    )
+    assert (await repo.get("org_a", AID))["name"] == "Via UI"
+    await paperclip_proxy._mirror_agent_write("DELETE", f"api/agents/{AID}", 200, b"")
     assert (await repo.get("org_a", AID))["status"] == "deleted"
 
 
@@ -150,9 +135,8 @@ async def test_rejected_hire_mirrors_the_termination(tasks_table, company_lookup
     client = PaperclipAdminClient(
         http_client=httpx.AsyncClient(base_url="http://pc", transport=httpx.MockTransport(handler))
     )
-    with patch.object(settings, "SUPER_AGENT_ENV_ENABLED", True):
-        await repo.put_new("org_a", agent_registry.row_from_paperclip(state))
-        await client.reject_approval(session_cookie="c", approval_id="ap1", reason="no")
+    await repo.put_new("org_a", agent_registry.row_from_paperclip(state))
+    await client.reject_approval(session_cookie="c", approval_id="ap1", reason="no")
     assert (await repo.get("org_a", AID))["status"] == "deleted"
 
 

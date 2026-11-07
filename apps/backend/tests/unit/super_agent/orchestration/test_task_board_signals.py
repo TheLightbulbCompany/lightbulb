@@ -24,9 +24,6 @@ AUTH = AuthContext(user_id=SAM, org_id=WS)
 def world(table, monkeypatch):  # noqa: F811
     w = {"on": True, "updates": [], "notes": [], "legacy": 0}
 
-    async def flags(ws):
-        return w["on"]
-
     async def legacy_context(auth):
         w["legacy"] += 1
         raise RuntimeError("legacy path")
@@ -41,7 +38,6 @@ def world(table, monkeypatch):  # noqa: F811
     async def ensure_room(ws, task, **kw):
         return ts.task_room_id(task["taskId"])
 
-    monkeypatch.setattr(task_board, "flags_for", flags)
     monkeypatch.setattr(task_board, "_context", legacy_context)
     monkeypatch.setattr(
         "core.services.messaging.load_agent_roster", AsyncMock(return_value=[{"id": FIN, "name": "Finance"}])
@@ -124,19 +120,6 @@ async def test_task_board_update_sends_update_not_write(world):
     assert exc.value.status_code == 404 and len(world["updates"]) == 2
 
 
-@pytest.mark.asyncio
-async def test_task_board_legacy_when_off(world):
-    world["on"] = False
-    for call in (
-        task_board.find_tasks(AUTH),
-        task_board.read_task(AUTH, "ISOA-1"),
-        task_board.update_task(AUTH, "ISOA-1", status="done"),
-    ):
-        with pytest.raises(RuntimeError, match="legacy path"):
-            await call
-    assert world["legacy"] == 3 and world["updates"] == []
-
-
 SKILL_DIR = Path(__file__).resolve().parents[5] / "infra" / "hermes" / "skills-src" / "lightbulb"
 
 
@@ -157,3 +140,37 @@ def test_task_wording_is_super_agent_only():
         in (SKILL_DIR / "references" / "platform-primitives.md").read_text()
     )
     assert "--assignee-user <userId>" in (SKILL_DIR / "references" / "ideas.md").read_text()
+
+
+@pytest.mark.asyncio
+async def test_a_task_the_caller_cannot_see_is_not_found(world):
+    """Isolation (ported from the Paperclip-era test_task_board.py): a private task of another person, and another
+    workspace's task id, read as 404 and never show in a list."""
+    theirs = await _task(user=PRIYA)
+    for task in (theirs, "LB-9999"):
+        with pytest.raises(HTTPException) as exc:
+            await task_board.read_task(AUTH, task)
+        assert exc.value.status_code == 404
+    other_ws = AuthContext(user_id=SAM, org_id="org_other")
+    mine = await _task()
+    with pytest.raises(HTTPException) as exc:
+        await task_board.read_task(other_ws, mine)
+    assert exc.value.status_code == 404
+    assert theirs not in {t["id"] for t in (await task_board.find_tasks(AUTH))["tasks"]}
+    with pytest.raises(HTTPException) as exc:
+        await task_board.update_task(AUTH, theirs, status="done")
+    assert exc.value.status_code == 404 and world["updates"] == []
+
+
+@pytest.mark.asyncio
+async def test_hosted_update_needs_the_write_scope(world, monkeypatch):
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    from core.services import hosted_mcp
+
+    scopes = []
+    monkeypatch.setattr(hosted_mcp, "_caller", lambda scope=hosted_mcp.READ_SCOPE: scopes.append(scope) or AUTH)
+    monkeypatch.setattr(hosted_mcp, "_net_caller", lambda scope=hosted_mcp.READ_SCOPE: scopes.append(scope) or AUTH)
+    with pytest.raises(ToolError, match="404"):
+        await hosted_mcp.update_task("LB-9999", status="done")
+    assert scopes == [hosted_mcp.WRITE_SCOPE]

@@ -15,3 +15,17 @@ def _ws_channel_stub(monkeypatch):
         return str(uuid.uuid5(uuid.NAMESPACE_URL, f"test-ws-channel|{owner_id}"))
 
     monkeypatch.setattr(messaging_repo, "ensure_workspace_id", ensure_workspace_id)
+
+
+@pytest.fixture(autouse=True)
+def _workspace_session_by_default(request, monkeypatch):
+    """Every attempt asks `token_custody.task_vm_allowed` now that the switch is gone. Unless a test says otherwise,
+    the workspace's credentials are VM-rotated, so its tasks run in the workspace session (what these suites
+    assumed). tests/unit/super_agent/runtime/ tests the gate itself and keeps the real one."""
+    if "/super_agent/runtime/" in str(request.node.fspath):
+        return
+    from unittest.mock import AsyncMock as _AsyncMock
+
+    from core.services import token_custody
+
+    monkeypatch.setattr(token_custody, "task_vm_allowed", _AsyncMock(return_value=False))

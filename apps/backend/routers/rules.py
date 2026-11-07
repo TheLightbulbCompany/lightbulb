@@ -1,7 +1,7 @@
 """Proactive rule routes (contracts §18, spec 12 §3.4; wave2-S Task 5): a rule's mode and its observe record.
 
-`POST /api/v1/automations/{id}/mode` and `GET /api/v1/automations/{id}/matches`. Both 404 unless the workspace's
-switch is on, and for rows without a `match` scope (ordinary automations). Who may change a mode (founder, 4 Nov;
+`POST /api/v1/automations/{id}/mode` and `GET /api/v1/automations/{id}/matches`. Both 404 for rows without a
+`match` scope (ordinary automations). Who may change a mode (founder, 4 Nov;
 lead, 5 Nov): only its owner turns a personal (calendar) rule on, and only the owner reads its record; an org admin
 may still turn it off. Room rules need an org admin to turn on; any audience member may drop an auto rule back to
 observe ("Quiet this"); auto needs an admin, 5 matches on this version and billing, and is refused in wave 2
@@ -21,7 +21,7 @@ from core import tasks_schema as ts
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.repositories import automations_repo, messaging_repo
 from core.repositories.tasks_repo import VersionConflict
-from core.services import chat_gate, rules, super_agent_flags
+from core.services import chat_gate, rules
 
 router = APIRouter()
 
@@ -83,8 +83,6 @@ def _err(status: int, code: str) -> HTTPException:
 
 async def _rule(auth: AuthContext, sid: str) -> tuple[str, dict]:
     ws = resolve_owner_id(auth)
-    if not await super_agent_flags.flags_for(ws):
-        raise _err(404, "not_found")
     row = await automations_repo.get_schedule(ws, sid)
     if not row or not row.get("match"):
         raise _err(404, "not_found")

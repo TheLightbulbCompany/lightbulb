@@ -22,7 +22,6 @@ from core.repositories import automations_repo, tasks_repo
 from core.repositories.tasks_repo import VersionConflict, _put_new, _row
 from core.services import automation_hooks, google_watch, rules
 from core.services.rules import DID_IT_YOURSELF_WINDOW_H
-from core.services.super_agent_flags import flags_for
 
 logger = logging.getLogger(__name__)
 
@@ -155,8 +154,6 @@ async def calendar_rule_fire(ws: str, hook: dict) -> bool:
     rule = await automations_repo.get_schedule(ws, hook["scheduleId"])
     if not rule or (rule.get("match") or {}).get("sources") != ["calendar"]:
         return False
-    if not await flags_for(ws):  # the switch off: a rule's hook does nothing, and never a workflow either
-        return True
     invites, new_token = await _sync(ws, hook)
     if rule.get("status") == "active" and rule.get("mode") in ("observe", "auto"):
         account = hook["account"]

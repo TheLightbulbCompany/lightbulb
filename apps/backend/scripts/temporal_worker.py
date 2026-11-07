@@ -1,13 +1,12 @@
 """Temporal worker entrypoint: the `temporal-worker` ECS service runs the backend image with
 `python -m scripts.temporal_worker`; the `temporal-watchdog` service runs it with `--queue lightbulb-watchdog`
-(spec 11: its own queue and service, so the watchdog ticks when the main pool is stuck). Exits 1 when the
-super-agent env master is off, or when `--queue` names neither configured queue.
+(spec 11: its own queue and service, so the watchdog ticks when the main pool is stuck). Exits 1 when
+`--queue` names neither configured queue.
 
-Local recipe (the env master is the super-agent setting in core/config.py; only `flags_for`'s module
-names it in code, `test_no_other_reader`):
+Local recipe:
     brew install temporal
     temporal server start-dev --db-filename "$SCRATCH/temporal.db"
-    <env master>=true uv run python -m scripts.temporal_worker
+    uv run python -m scripts.temporal_worker
 """
 
 import argparse
@@ -18,7 +17,6 @@ import sys
 from datetime import timedelta
 
 from core.config import settings
-from core.services.super_agent_flags import env_enabled
 
 logger = logging.getLogger("temporal_worker")
 
@@ -38,9 +36,6 @@ async def _ensure_platform_schedules(client) -> None:
 
 
 async def run(queue: str | None = None) -> int:
-    if not env_enabled():
-        logger.error("super-agent env master is off; not starting the Temporal worker")
-        return 1
     queue = queue or settings.TEMPORAL_TASK_QUEUE
     watchdog = queue == settings.TEMPORAL_WATCHDOG_TASK_QUEUE
     if not watchdog and queue != settings.TEMPORAL_TASK_QUEUE:

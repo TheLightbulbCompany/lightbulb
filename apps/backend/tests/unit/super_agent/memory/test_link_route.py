@@ -58,7 +58,6 @@ def test_shared_room_audience_and_legacy_body(client, recall_page):
 def test_link_route_404_when_not_visible(client):
     body = {"id": "t01", "audience": {"kind": "room", "roomId": "r1"}}
     with (
-        patch.object(memory_api, "flags_for", AsyncMock(return_value=True)),
         patch.object(memory_links, "read_link", AsyncMock(return_value=None)) as read,
     ):
         assert client.post("/api/v1/internal/memory/link/org_1", json=body).status_code == 404
@@ -66,13 +65,3 @@ def test_link_route_404_when_not_visible(client):
         read.return_value = {"task": {"taskId": "t01"}, "threads": [], "lastResult": None}
         r = client.post("/api/v1/internal/memory/link/org_1", json=body)
         assert r.status_code == 200 and r.json()["task"]["taskId"] == "t01"
-
-
-def test_link_route_off_without_the_switch(client):
-    body = {"id": "t01", "audience": {"kind": "workspace"}}
-    with (
-        patch.object(memory_api, "flags_for", AsyncMock(return_value=False)),
-        patch.object(memory_links, "read_link", AsyncMock()) as read,
-    ):
-        assert client.post("/api/v1/internal/memory/link/org_1", json=body).status_code == 404
-    read.assert_not_awaited()

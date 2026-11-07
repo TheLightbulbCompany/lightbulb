@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from core.repositories import automations_repo, google_accounts_repo
-from core.services import clerk_admin, rules, rules_builtins, super_agent_flags
+from core.services import clerk_admin, rules, rules_builtins
 from scripts import rules_backfill_invite_prep as backfill
 from tests.unit.super_agent.automations.test_seed_hooks import _channel, env  # noqa: F401
 
@@ -75,17 +75,6 @@ async def test_ensure_invite_prep_rewatches_a_broken_watch(world):
     assert [s[1][1] for s in world.env.temporal.started] == [old_pid, new_pid]
 
 
-async def test_on_google_connect_is_behind_the_switch_and_best_effort(monkeypatch):
-    ensure = AsyncMock(side_effect=RuntimeError("clerk down"))
-    monkeypatch.setattr(rules_builtins, "ensure_invite_prep", ensure)
-    monkeypatch.setattr(super_agent_flags, "flags_for", AsyncMock(return_value=False))
-    await rules_builtins.on_google_connect(WS)
-    ensure.assert_not_awaited()
-    monkeypatch.setattr(super_agent_flags, "flags_for", AsyncMock(return_value=True))
-    await rules_builtins.on_google_connect(WS)  # raises inside: logged, never fails the connect
-    ensure.assert_awaited_once()
-
-
 def _event(**over):
     base = {
         "id": "e1",
@@ -116,24 +105,22 @@ def test_calendar_invite_match(event, expected):
 
 
 async def test_backfill_refuses_prod(world, monkeypatch):
-    monkeypatch.setattr(super_agent_flags, "flags_for", AsyncMock(return_value=True))
     monkeypatch.setattr(backfill.settings, "ENVIRONMENT", "prod")
     assert await backfill.run(WS, apply=True) == 2
     assert await _rows() == []
 
 
-async def test_backfill_refuses_switch_off(world, monkeypatch):
-    monkeypatch.setattr(super_agent_flags, "flags_for", AsyncMock(return_value=False))
-    monkeypatch.setattr(backfill.settings, "ENVIRONMENT", "dev")
-    assert await backfill.run(WS, apply=True) == 2
-    assert await _rows() == []
-
-
 async def test_backfill_default_is_dry_run(world, monkeypatch, capsys):
-    monkeypatch.setattr(super_agent_flags, "flags_for", AsyncMock(return_value=True))
     monkeypatch.setattr(backfill.settings, "ENVIRONMENT", "dev")
     assert await backfill.run(WS) == 0
     assert await _rows() == []
     assert rules.invite_prep_id(ME) in capsys.readouterr().out
     assert await backfill.run(WS, apply=True) == 0
     assert len(await _rows()) == 1
+
+
+async def test_on_google_connect_is_best_effort(monkeypatch):
+    ensure = AsyncMock(side_effect=RuntimeError("clerk down"))
+    monkeypatch.setattr(rules_builtins, "ensure_invite_prep", ensure)
+    await rules_builtins.on_google_connect(WS)  # raises inside: logged, never fails the connect
+    ensure.assert_awaited_once()

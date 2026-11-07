@@ -1,13 +1,11 @@
 """Backend door gating (wave2-Q Task 12): a task run's door call passes only against an `intent` row of its own
 attempt; legacy agents and switched-off workspaces are untouched."""
 
-from unittest.mock import AsyncMock
-
 import pytest
 
 from core import tasks_schema as ts
 from core.repositories import effects_repo, tasks_repo
-from core.services import effect_doors, questions, super_agent_flags
+from core.services import effect_doors, questions
 
 from .conftest import TASK, WS
 
@@ -17,10 +15,7 @@ OPS = {"agentId": AGENT, "to": "acme@example.com", "subject": "Q3", "body": "hi"
 
 @pytest.fixture
 def switch(monkeypatch):
-    flag = AsyncMock(return_value=True)
-    monkeypatch.setattr(super_agent_flags, "flags_for", flag)
     monkeypatch.setattr(effect_doors, "put_metric", lambda *a, **k: None)
-    return flag
 
 
 async def _working(n=1, agent=AGENT, status="running"):
@@ -52,13 +47,6 @@ async def _effect(n=1, state="intent", kind="mail.send", operands=OPS, call="c1"
             "state": state,
         },
     )
-
-
-async def test_switch_off_passes_without_reading(table, switch, monkeypatch):
-    switch.return_value = False
-    spy = AsyncMock(side_effect=AssertionError("tasks read with the switch off"))
-    monkeypatch.setattr(tasks_repo, "list_tasks_by_status", spy)
-    await effect_doors.require_intent(WS, "mail.send", OPS)
 
 
 async def test_switch_on_without_any_live_attempt_is_refused(table, switch):

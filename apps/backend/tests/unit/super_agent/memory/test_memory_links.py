@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from core.services import memory_api, memory_links, memory_stages
+from core.services import memory_links, memory_stages
 
 WS = "org_1"
 FIXTURE = Path(__file__).parents[3] / "fixtures" / "page_text_cases.json"
@@ -172,23 +172,3 @@ def test_from_record_keeps_task_and_thread_ids():
     r = memory_stages._result(c)
     assert r["taskId"] == "t01" and r["threadId"] == "room:r1:m1"
     assert "taskId" not in memory_stages._result(memory_stages.from_record({"memoryRecordId": "r2"}, "turn"))
-
-
-async def test_switch_off_page_has_no_links_key(monkeypatch):
-    page = {"asOf": "x", "usedEvidenceTokens": 0, "results": []}
-    rec = AsyncMock(return_value=dict(page))
-    monkeypatch.setattr(memory_api.settings, "AGENTCORE_MEMORY_ID", "mem-1", raising=False)
-    monkeypatch.setattr(memory_api, "_sync_in_background", lambda *a: None)
-    monkeypatch.setattr(memory_api.memory_recall, "recall", rec)
-    monkeypatch.setattr(memory_api, "flags_for", AsyncMock(return_value=False))
-    assert await memory_api.recall_page(WS, None, "q") == page
-    assert "tasks" not in rec.await_args.kwargs
-
-    rec.return_value = {**page, "taskHits": ["t01"]}
-    resolve = AsyncMock(return_value=[{"id": "t01"}])
-    monkeypatch.setattr(memory_api, "flags_for", AsyncMock(return_value=True))
-    monkeypatch.setattr(memory_api.memory_links, "resolve_links", resolve)
-    out = await memory_api.recall_page(WS, "user_sam", "q")
-    assert out["links"] == [{"id": "t01"}] and "taskHits" not in out
-    assert rec.await_args.kwargs["tasks"] is True
-    assert resolve.await_args.args == (WS, [], ["t01"], {"kind": "person", "userId": "user_sam"})

@@ -65,8 +65,6 @@ def env(table, monkeypatch):
     with (
         patch("routers.hooks.integration_secret_store.get", get_secret),
         patch("routers.hooks.billing_repo.get_by_owner_id", AsyncMock(return_value={"subscription_status": "active"})),
-        patch("routers.paperclip_trigger_proxy.flags_for", AsyncMock(return_value=True)),
-        patch("routers.meta_webhook.flags_for", AsyncMock(return_value=True)),
     ):
         yield MagicMock(s3=s3, temporal=fake, secrets=secrets, get_secret=get_secret)
     _public_ingress._RATE.clear()
@@ -261,19 +259,6 @@ async def test_meta_backend_fire_unavailable_still_200_but_logged(env, client, m
         r = client.post("/api/v1/hooks/meta", content=body, headers={"X-Hub-Signature-256": "sha256=x"})
     assert r.status_code == 200
     assert any(r.name == "routers.meta_webhook" and PID in r.getMessage() for r in caplog.records)
-
-
-async def test_switch_off_forwards_to_paperclip_unchanged(env, client):
-    await _hook()
-    with (
-        patch("routers.paperclip_trigger_proxy.flags_for", AsyncMock(return_value=False)),
-        patch("routers.paperclip_trigger_proxy.hooks.fire", AsyncMock()) as fire,
-        patch("routers.paperclip_trigger_proxy.billing_repo.get_by_owner_id", AsyncMock(return_value=None)),
-    ):
-        r = _post(client, _stripe_body(), _stripe_headers(_stripe_body()))
-    assert not fire.called
-    assert r.status_code == 402  # today's gate on today's path, no backend fire
-    assert env.temporal.started == []
 
 
 async def test_no_hook_row_forwards_to_paperclip(env, client):

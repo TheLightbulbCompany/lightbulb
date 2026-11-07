@@ -18,7 +18,7 @@ from ulid import ULID
 from core import tasks_schema as ts
 from core.dynamodb import utc_now_iso
 from core.repositories import automations_repo, messaging_repo, tasks_repo, user_repo
-from core.services import admission, automation_schedule, super_agent_flags, task_conversation
+from core.services import admission, automation_schedule, task_conversation
 from core.temporal import client as temporal
 from core.temporal.watches import (
     MAX_EVERY_MIN,
@@ -118,8 +118,6 @@ async def _deliver_room_id(ws: str, requester: str, key: str, here: str) -> str:
 @router.post("/internal/automations/{owner_id}/propose")
 async def propose(owner_id: str, body: ProposeIn, request: Request) -> dict:
     await _require_hook_token(owner_id, request)
-    if not await super_agent_flags.flags_for(owner_id):
-        raise _err(404, "not_found")
     room_id, requester, thread_root = body.room_id, body.requester_user_id, body.thread_root
     triggers = [t for t in [await _trigger(owner_id, tid) for tid in body.trigger_ids] if t]
     for trig in triggers:
@@ -223,8 +221,6 @@ async def voice_start(owner_id: str, body: VoiceStartIn, request: Request) -> di
 async def start_voice_work(owner_id: str, body: VoiceStartIn, origin: str | None = None) -> dict:
     """The task behind voice-start, for callers already authorized another way (the phone worker). `origin`
     (`"phone_contact"`) lands on the trigger's ref; effect_check asks the owner for every outside action of such a task."""
-    if not await super_agent_flags.flags_for(owner_id):
-        raise _err(404, "not_found")
     run = await messaging_repo.get_voice_run(owner_id, body.run_id)
     if run is None or run.get("roomId") != body.room_id:
         raise _err(404, "unknown_run")
@@ -316,8 +312,6 @@ async def _this_tasks_runtime(owner_id: str, task_id: str, attempt: int, run_id:
 @router.post("/internal/tasks/{owner_id}/{task_id}/watches", status_code=202)
 async def add_watch(owner_id: str, task_id: str, body: WatchIn, request: Request) -> dict:
     await _require_hook_token(owner_id, request)
-    if not await super_agent_flags.flags_for(owner_id):
-        raise _err(404, "not_found")
     await _this_tasks_runtime(owner_id, task_id, body.attempt, body.run_id, body.run_secret)
     if not _target_ok(body.kind, body.target):
         raise _err(400, "invalid_target")
@@ -349,8 +343,6 @@ async def add_watch(owner_id: str, task_id: str, body: WatchIn, request: Request
 @router.post("/internal/tasks/{owner_id}/{task_id}/watches/remove", status_code=204)
 async def remove_watch(owner_id: str, task_id: str, body: UnwatchIn, request: Request) -> Response:
     await _require_hook_token(owner_id, request)
-    if not await super_agent_flags.flags_for(owner_id):
-        raise _err(404, "not_found")
     await _this_tasks_runtime(owner_id, task_id, body.attempt, body.run_id, body.run_secret)
     try:
         await temporal.task_handle(owner_id, task_id).signal("unwatch", body.watch_id)

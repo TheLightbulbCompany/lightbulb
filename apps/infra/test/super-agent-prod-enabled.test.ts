@@ -19,10 +19,10 @@ describe("super-agent gate (prod enabled)", () => {
     expect(superAgentEnabled("prod")).toBe(true);
   });
 
-  it("prod synth has the env master, Temporal namespace and an on-demand worker", () => {
+  it("prod synth has the Temporal namespace and an on-demand worker, and no env master (the switch is retired)", () => {
     const templates = synthProd();
     const json = templates.map((t) => JSON.stringify(t.toJSON())).join("\n");
-    expect(json).toMatch(/"Name":"SUPER_AGENT_ENV_ENABLED","Value":"true"/);
+    expect(json).not.toMatch(/SUPER_AGENT_ENV_ENABLED/);
     expect(json).toMatch(/"Name":"TEMPORAL_NAMESPACE","Value":"lightbulb-prod\.nv5xx"/);
 
     const services = templates.flatMap((t) =>

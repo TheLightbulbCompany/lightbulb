@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 class TemporalUnavailable(RuntimeError):
-    """No connected Temporal client in this process (env master off, or the startup connect failed)."""
+    """No connected Temporal client in this process (the startup connect failed or has not landed)."""
 
 
 _client: Client | None = None

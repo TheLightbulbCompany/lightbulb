@@ -10,7 +10,7 @@ newer than its META. Paperclip-only attributes
 (``company_id``, ``agent_keys``, ``agent_cost_remainder``, ``automation_pause*``) never move:
 they stay on the old row. Identity rows are never copied.
 
-Refuses prod (unless --allow-prod) and an env with the super-agent master off. DRY RUN BY DEFAULT. Runs inside the
+Refuses prod (unless --allow-prod). DRY RUN BY DEFAULT. Runs inside the
 backend task:
 
     uv run python -m scripts.copy_workspace_meta --all
@@ -31,7 +31,6 @@ from botocore.exceptions import ClientError
 
 from core import tasks_schema as ts
 from core.config import settings
-from core.services.super_agent_flags import env_enabled
 from core.dynamodb import get_table, run_in_thread
 from core.repositories.paperclip_repo import (
     _PENDING_BRIEF_PREFIX,
@@ -218,9 +217,6 @@ async def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if settings.ENVIRONMENT == "prod" and not args.allow_prod:
         print("refusing: copy_workspace_meta is dev-only unless --allow-prod")
-        return 2
-    if not env_enabled():
-        print("refusing: the super-agent env master is off (no tasks table here)")
         return 2
     if args.reverse and args.verify:
         parser.error("--reverse takes --apply or nothing")

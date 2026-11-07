@@ -30,7 +30,6 @@ EVENT = {
 
 @pytest.fixture(autouse=True)
 def _switch_on(monkeypatch):
-    monkeypatch.setattr(rules_activities, "flags_for", AsyncMock(return_value=True))
     monkeypatch.setattr(rules_activities, "put_metric", lambda *a, **k: None)
 
 

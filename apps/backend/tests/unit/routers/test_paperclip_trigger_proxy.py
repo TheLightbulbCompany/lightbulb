@@ -983,3 +983,13 @@ def test_github_issues_event_still_forwarded(client):
         )
     assert r.status_code == 202
     assert "url" in captured
+
+
+@pytest.fixture(autouse=True)
+def _no_hook_row(monkeypatch):
+    """These pin the Paperclip fallback: a trigger with no `HOOK#` row (every workspace is on the super-agent path)."""
+    from unittest.mock import AsyncMock as _AsyncMock
+
+    from core.repositories import automations_repo
+
+    monkeypatch.setattr(automations_repo, "get_hook", _AsyncMock(return_value=None))

@@ -355,28 +355,6 @@ async def test_provision_org_seeds_specialists_without_a_timer_heartbeat(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_provision_org_seeds_paused_starter_routines_for_specialists_only(monkeypatch):
-    """Owner ruling: each specialist ships routines, all PAUSED, output to chat only when named."""
-    from core.services.paperclip_provisioning import STARTER_ROUTINES, PaperclipProvisioning
-
-    admin, repo = _build_provision_org_doubles(monkeypatch)
-    admin.create_agent = AsyncMock(side_effect=lambda **kw: {"id": f"id-{kw['role']}"})
-
-    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
-    await svc.provision_org(owner_id="org_x", owner_user_id="user_owner", owner_email="o@example.com")
-
-    bodies = [c.kwargs["body"] for c in admin.create_routine.call_args_list]
-    assert len(bodies) == sum(len(v) for v in STARTER_ROUTINES.values()) >= 5
-    assert "ceo" not in STARTER_ROUTINES and "id-ceo" not in {b["assigneeAgentId"] for b in bodies}
-    assert {b["assigneeAgentId"] for b in bodies} == {"id-engineer", "id-cfo", "id-cmo", "id-researcher", "id-general"}
-    assert all(b["status"] == "paused" for b in bodies)
-    assert all(b["description"].endswith("Post results to: none") for b in bodies)
-    triggers = [c.kwargs["body"] for c in admin.create_routine_trigger.call_args_list]
-    assert len(triggers) == len(bodies) and all(t["enabled"] is True for t in triggers)
-    assert repo.put_workspace.await_args.args[0].status == "active"
-
-
-@pytest.mark.asyncio
 async def test_provision_org_a_failed_routine_seed_does_not_fail_the_workspace(monkeypatch):
     from core.services.paperclip_provisioning import PaperclipProvisioning
 

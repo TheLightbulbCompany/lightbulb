@@ -3,7 +3,7 @@
 Write rules (contracts-v2 §7): a new agent is one `TransactWriteItems` of the `AGENT#` row and the reverse row,
 both `attribute_not_exists(pk)`, so an agent id belongs to exactly one workspace; a field update is conditional on
 the row existing and bumps `version` and `updatedAt`. Reads are strongly consistent. Keys come from
-`core.tasks_schema`. Only written while the super-agent env master is on (callers check; prod has no table).
+`core.tasks_schema`.
 """
 
 from __future__ import annotations

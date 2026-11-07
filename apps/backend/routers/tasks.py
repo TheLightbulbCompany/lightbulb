@@ -1,8 +1,7 @@
 """Super-agent task API (wave2-O Task 8; C15; contracts-v2 §4–§7).
 
 Lists, detail, actions, trace and read for tasks. `tasks_access.can_view` is the only visibility rule; every action goes
-through `TaskWorkflow` (`core.temporal.client`), never a direct row write. Every route is 404 while the workspace's
-switch is off. Mounted after `routers/questions.py` so `/tasks/{id}/questions` stays Q's.
+through `TaskWorkflow` (`core.temporal.client`), never a direct row write. Mounted after `routers/questions.py` so `/tasks/{id}/questions` stays Q's.
 """
 
 from __future__ import annotations
@@ -26,7 +25,6 @@ from core.services import (
     chat_gate,
     messaging,
     runtime_runs,
-    super_agent_flags,
     task_conversation,
     tasks_access,
 )
@@ -66,8 +64,6 @@ def _matches(q: str | None, *fields: str | None) -> bool:
 
 async def _workspace(auth: AuthContext) -> str:
     ws = resolve_owner_id(auth)
-    if not await super_agent_flags.flags_for(ws):
-        raise _err(404, "not_found")
     return ws
 
 

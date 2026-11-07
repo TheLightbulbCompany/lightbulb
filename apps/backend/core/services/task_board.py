@@ -1,32 +1,26 @@
 """The workspace task board for the Lightbulb MCP tools.
 
 Both MCP surfaces call these with an AuthContext: the hosted MCP (OAuth person) and the
-paired-Mac device routes (routers/messaging.py, /local-sessions/device/*). Today they go through
-the Teams BFF's own context, company fence and PATCH handler (Paperclip issues), so a tool can do
-exactly what the person's Teams panel can, in the workspace the caller is signed in to, and nothing else.
+paired-Mac device routes (routers/messaging.py, /local-sessions/device/*). The board is the tasks table
+(contracts-v2 §14.9): reads go through `tasks_access.can_view`, and a change is a signal to `TaskWorkflow`
+(`client.update_task`) or a note in the task's room — never a row write.
 
-Under the workspace's super-agent switch (contracts-v2 §14.9) the board is the tasks table: reads go through
-`tasks_access.can_view`, and a change is a signal to `TaskWorkflow` (`client.update_task`) or a note in the task's
-room — never a row write.
+`_context` (the Teams context) stays for `ideas`.
 """
 
 from __future__ import annotations
 
 import re
 import uuid
-from datetime import datetime, timezone
 
 from fastapi import HTTPException
 
 from core.auth import AuthContext, resolve_owner_id
-from core.services.paperclip_admin_client import ISSUE_ID_PATTERN
-from core.services.super_agent_flags import flags_for
 
 OPEN_STATUSES = ("backlog", "todo", "in_progress", "in_review", "blocked")
 STATUSES = (*OPEN_STATUSES, "done", "cancelled")
 PRIORITIES = ("critical", "high", "medium", "low")
 NOTE_MAX = 4000
-APPEND_ATTEMPTS = 3
 
 
 class _NoCookieJar:
@@ -50,38 +44,6 @@ async def _context(auth: AuthContext):
         response=_NoCookieJar(),
     )
 
-
-async def _agent_names(ctx) -> dict[str, str]:
-    from routers.teams import agents as teams_agents
-    from routers.teams.deps import envelope_list
-
-    listed = await teams_agents._admin().list_agents(company_id=ctx.company_id, session_cookie=ctx.session_cookie)
-    return {a["id"]: a.get("name") or "" for a in envelope_list(listed, "agents")["agents"] if isinstance(a, dict)}
-
-
-async def _issue(task: str, ctx) -> dict:
-    """The task by identifier (ISOA-123) or id, only if it is in this workspace's company."""
-    from routers.teams import issues as teams_issues
-
-    if not isinstance(task, str) or not re.match(ISSUE_ID_PATTERN, task) or len(task) > 64:
-        raise HTTPException(status_code=404, detail="Task not found")
-    return await teams_issues._require_company_issue(task, ctx)
-
-
-def _summary(issue: dict, names: dict[str, str]) -> dict:
-    agent = issue.get("assigneeAgentId")
-    return {
-        "identifier": issue.get("identifier"),
-        "id": issue.get("id"),
-        "title": issue.get("title"),
-        "status": issue.get("status"),
-        "priority": issue.get("priority"),
-        "assignee": names.get(agent, "an agent") if agent else ("a person" if issue.get("assigneeUserId") else None),
-        "updatedAt": issue.get("updatedAt"),
-    }
-
-
-# --- super-agent branch (contracts-v2 §14.9) --------------------------------------------------------------------
 
 #: Board status words → task statuses (contracts §4). `blocked` ≈ waiting on a person; `in_review` ≈ idle with output.
 _SA_STATUS = {
@@ -146,7 +108,7 @@ async def _sa_names(ws: str) -> dict[str, str]:
 
 
 def _sa_summary(row: dict, names: dict[str, str]) -> dict:
-    """The same shape as the Paperclip summary, from a tasks-table row (`priority` has no equivalent)."""
+    """One task as the MCP tools show it (`priority` has no equivalent)."""
     board = next((word for word, kinds in _SA_STATUS.items() if row.get("status") in kinds), row.get("status"))
     specialist = row.get("specialist")
     return {
@@ -259,88 +221,17 @@ async def _sa_update(ws: str, user_id: str, task: str, status: str | None, prior
 
 
 async def find_tasks(auth: AuthContext, query: str = "", status: str = "", assignee: str = "", limit: int = 25) -> dict:
-    from routers.teams import issues as teams_issues
-
-    owner_id = resolve_owner_id(auth)
-    if await flags_for(owner_id):
-        return await _sa_find(owner_id, auth.user_id, query, status, assignee, limit)
-    ctx = await _context(auth)
-    names = await _agent_names(ctx)
-    wanted = [s.strip() for s in status.split(",") if s.strip()] if status else list(OPEN_STATUSES)
-    if any(s not in STATUSES for s in wanted):
-        raise HTTPException(status_code=422, detail=f"status must be one or more of {', '.join(STATUSES)}")
-    agent_id = None
-    if assignee.strip():
-        needle = assignee.casefold().strip()
-        exact = [i for i, n in names.items() if n.casefold() == needle]
-        matches = exact or [i for i, n in names.items() if needle in n.casefold()]
-        if len(matches) != 1:
-            return {"tasks": [], "note": f"{len(matches)} agents match assignee {assignee!r}; use an exact agent name."}
-        agent_id = matches[0]
-    listed = await teams_issues.list_issues(
-        ctx=ctx,
-        q=query.strip()[:200] or None,
-        status=",".join(wanted),
-        project=None,
-        assignee=agent_id,
-        participant_agent_id=None,
-        sort_field="updated",
-        sort_dir="desc",
-        limit=max(1, min(limit, 100)),
-        exclude_routine_executions=True,
-        # Called as a function, so every Query() default must be passed: an
-        # omitted one arrives as a truthy Query object and is sent upstream.
-        attention=None,
-        include_blocked_inbox_attention=False,
-        include_blocked_by=False,
-        include_live_descendant_summary=False,
-    )
-    return {"tasks": [_summary(i, names) for i in listed["issues"] if isinstance(i, dict)]}
+    return await _sa_find(resolve_owner_id(auth), auth.user_id, query, status, assignee, limit)
 
 
 async def read_task(auth: AuthContext, task: str, comments: int = 10) -> dict:
-    from routers.teams import issues as teams_issues
-
-    owner_id = resolve_owner_id(auth)
-    if await flags_for(owner_id):
-        return await _sa_read(owner_id, auth.user_id, task, comments)
-    ctx = await _context(auth)
-    issue = await _issue(task, ctx)
-    names = await _agent_names(ctx)
-    thread = await teams_issues.list_issue_comments(issue["id"], ctx)
-    rows = [c for c in (thread if isinstance(thread, list) else thread.get("comments") or []) if isinstance(c, dict)]
-    rows.sort(key=lambda c: c.get("createdAt") or "")
-    return {
-        **_summary(issue, names),
-        "description": issue.get("description") or "",
-        "blockedBy": [
-            {"identifier": b.get("identifier"), "title": b.get("title"), "status": b.get("status")}
-            for b in issue.get("blockedBy") or []
-            if isinstance(b, dict)
-        ],
-        "comments": [
-            {
-                "author": names.get(c.get("authorAgentId"), "an agent")
-                if c.get("authorAgentId")
-                else c.get("authorName") or "a person",
-                "createdAt": c.get("createdAt"),
-                "body": c.get("body"),
-            }
-            for c in rows[-max(0, min(comments, 50)) :]
-        ]
-        if comments > 0
-        else [],
-    }
+    return await _sa_read(resolve_owner_id(auth), auth.user_id, task, comments)
 
 
 async def update_task(
     auth: AuthContext, task: str, status: str | None = None, priority: str | None = None, append_note: str | None = None
 ) -> dict:
-    """Status/priority change and a note appended to the description, through the Teams PATCH.
-    Never a comment: a Paperclip comment wakes the assigned agent and spends."""
-    from routers.teams import issues as teams_issues
-    from routers.teams.schemas import PatchIssueBody
-
+    """A status change or a note on the task (see `_sa_update`)."""
     if status is not None and status not in STATUSES:
         raise HTTPException(status_code=422, detail=f"status must be one of {', '.join(STATUSES)}")
     if priority is not None and priority not in PRIORITIES:
@@ -350,34 +241,4 @@ async def update_task(
         raise HTTPException(status_code=422, detail=f"append_note is longer than {NOTE_MAX} characters")
     if status is None and priority is None and not note:
         raise HTTPException(status_code=422, detail="Nothing to change: give status, priority or append_note.")
-    owner_id = resolve_owner_id(auth)
-    if await flags_for(owner_id):
-        return await _sa_update(owner_id, auth.user_id, task, status, priority, note)
-    ctx = await _context(auth)
-    names = await _agent_names(ctx)
-    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    # Paperclip's PATCH has no precondition (no If-Match), so an appended note re-reads the
-    # description just before writing and rebuilds on a change, rather than overwriting an edit.
-    # ponytail: a write landing between the re-read and the PATCH is still lost; a precondition
-    # upstream would close it.
-    for _ in range(APPEND_ATTEMPTS):
-        issue = await _issue(task, ctx)
-        changes: dict = {}
-        if status is not None:
-            changes["status"] = status
-        if priority is not None:
-            changes["priority"] = priority
-        if note:
-            current = (issue.get("description") or "").rstrip()
-            changes["description"] = f"{current}\n\n---\n**Note {stamp}:** {note}".lstrip()
-        try:
-            body = PatchIssueBody(**changes)
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail="The description would be too long to save.") from exc
-        if note and (await _issue(task, ctx)).get("description") != issue.get("description"):
-            continue
-        updated = await teams_issues.patch_issue(issue["id"], body, ctx)
-        return _summary(updated if isinstance(updated, dict) and updated.get("id") else {**issue, **changes}, names)
-    raise HTTPException(
-        status_code=409, detail="The task's description kept changing while the note was added. Nothing was saved."
-    )
+    return await _sa_update(resolve_owner_id(auth), auth.user_id, task, status, priority, note)

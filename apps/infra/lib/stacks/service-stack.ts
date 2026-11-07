@@ -1913,11 +1913,9 @@ export class ServiceStack extends cdk.Stack {
       // Accounts v2 API version pin for the company account/account-link
       // calls. Empty ⇒ the provisioning preview.
       STRIPE_ACCOUNTS_V2_VERSION: props.stripeAccountsV2Version ?? "",
-      // Super-agent env master: set where the gate is on (dev) and absent elsewhere, so prod's
-      // task definition is unchanged and the backend default (false) holds.
+      // Temporal where the super-agent gate is on.
       ...(superAgentEnabled(env)
         ? {
-            SUPER_AGENT_ENV_ENABLED: "true",
             // Temporal Cloud (contracts-v2 §16); the API key is TEMPORAL_API_KEY in backendContainerSecrets.
             TEMPORAL_ADDRESS: `lightbulb-${env}.nv5xx.tmprl.cloud:7233`,
             TEMPORAL_NAMESPACE: `lightbulb-${env}.nv5xx`,

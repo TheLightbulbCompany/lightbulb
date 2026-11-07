@@ -12,16 +12,7 @@ from core.temporal import client as tc
 from scripts import temporal_worker
 
 
-async def test_worker_refuses_when_env_master_off(monkeypatch):
-    monkeypatch.setattr(settings, "SUPER_AGENT_ENV_ENABLED", False)
-    connect = AsyncMock()
-    monkeypatch.setattr(tc, "connect", connect)
-    assert await temporal_worker.run() != 0
-    connect.assert_not_awaited()
-
-
 async def test_worker_sigterm_shuts_down_gracefully(monkeypatch, temporal_env):
-    monkeypatch.setattr(settings, "SUPER_AGENT_ENV_ENABLED", True)
     monkeypatch.setattr(settings, "TEMPORAL_TASK_QUEUE", "test-sigterm")
     monkeypatch.setattr(tc, "connect", AsyncMock(return_value=temporal_env.client))
     started = asyncio.Event()

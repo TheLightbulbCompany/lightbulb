@@ -9,7 +9,7 @@ from fastapi import FastAPI
 
 from core.auth import AuthContext, get_current_user
 from core.repositories import agent_registry_repo
-from core.services import paperclip_admin_client, super_agent_flags
+from core.services import paperclip_admin_client
 from routers.teams import agents as agents_mod
 
 WS = "org_1"
@@ -30,8 +30,6 @@ def client(monkeypatch):
     monkeypatch.setattr(agents_mod, "_admin", paperclip_down)
     monkeypatch.setattr(agents_mod, "_ctx", paperclip_down)
     monkeypatch.setattr(agent_registry_repo, "list_agents", AsyncMock(return_value=ROWS))
-    monkeypatch.setattr(super_agent_flags, "flags_for", AsyncMock(return_value=True))
-    monkeypatch.setattr("core.services.task_conversation.flags_for", AsyncMock(return_value=True))
     repo = MagicMock()
     repo.get_workspace = AsyncMock(return_value=SimpleNamespace(seeded_agent_ids=[CEO], member_user_ids={"user_sam"}))
     repo.resolve_owner_row = AsyncMock(return_value=None)

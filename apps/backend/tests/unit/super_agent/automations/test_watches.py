@@ -477,7 +477,6 @@ def api(monkeypatch):
     handle.signal = AsyncMock(side_effect=lambda name, arg: signals.append((name, arg)))
     with (
         patch("routers.internal_automations._require_hook_token", AsyncMock(return_value={})),
-        patch("core.services.super_agent_flags.flags_for", AsyncMock(return_value=True)),
         patch("routers.runtime_internal._attempt_of", AsyncMock(return_value={"n": 1})) as att,
         patch("routers.runtime_internal._current_task", AsyncMock(return_value={"taskId": TID})) as current,
         patch("core.temporal.client.update_task", AsyncMock(side_effect=lambda *a: updates.append(a))),

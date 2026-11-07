@@ -7,7 +7,7 @@ import pytest
 
 from core import tasks_schema as ts
 from core.repositories import tasks_repo
-from core.services import a2a_admission, admission, hosted_mcp, super_agent_flags
+from core.services import a2a_admission, admission, hosted_mcp
 
 from .conftest import TASK, WS
 
@@ -21,7 +21,6 @@ ROW = {
 
 @pytest.fixture
 def world(table, monkeypatch):
-    monkeypatch.setattr(super_agent_flags, "flags_for", AsyncMock(return_value=True))
     monkeypatch.setattr(hosted_mcp, "person_dm", AsyncMock(return_value="room-dm-1"))
     admits = []
 
@@ -76,13 +75,6 @@ async def test_stopped_task_not_restarted_on_late_allow(world):
     )
     assert await a2a_admission.admit_inbound_a2a(WS, ROW) is None
     assert len(world["admits"]) == 1
-
-
-async def test_switch_off_writes_nothing(world):
-    super_agent_flags.flags_for.return_value = False
-    assert await a2a_admission.admit_inbound_a2a(WS, ROW) is None
-    assert await tasks_repo.get_trigger(WS, "a2a:a2a-task-1") is None and world["admits"] == []
-    hosted_mcp.person_dm.assert_not_awaited()
 
 
 async def test_report_a2a_is_pending_until_governance_lands(world, monkeypatch):

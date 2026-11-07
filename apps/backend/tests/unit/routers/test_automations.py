@@ -649,3 +649,13 @@ class TestMultiEventBody:
         )
         assert response.status_code == 400
         assert "separate triggers" in response.json()["detail"]
+
+
+@pytest.fixture(autouse=True)
+def _no_hook_row(monkeypatch):
+    """set_webhook_secret's Paperclip fallback: a trigger with no `HOOK#` row."""
+    from unittest.mock import AsyncMock as _AsyncMock
+
+    from core.services import automation_hooks
+
+    monkeypatch.setattr(automation_hooks, "arm", _AsyncMock(return_value=False))

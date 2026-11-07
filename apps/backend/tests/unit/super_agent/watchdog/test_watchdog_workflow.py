@@ -110,7 +110,6 @@ class FakeClient:
 
 
 async def test_watchdog_schedule_skip_and_4_min_timeout(monkeypatch):
-    monkeypatch.setattr(settings, "SUPER_AGENT_ENV_ENABLED", True)
     client = FakeClient()
     assert await wd.ensure_watchdog_schedule(client) is True
     sid, sched = client.created[0]
@@ -126,13 +125,6 @@ async def test_watchdog_schedule_skip_and_4_min_timeout(monkeypatch):
     assert len(client.created) == 1
 
 
-async def test_ensure_schedule_noop_when_env_master_off(monkeypatch):
-    monkeypatch.setattr(settings, "SUPER_AGENT_ENV_ENABLED", False)
-    client = FakeClient()
-    assert await wd.ensure_watchdog_schedule(client) is False
-    assert client.created == []
-
-
 # --- worker queue ------------------------------------------------------------------------------------
 
 
@@ -143,7 +135,6 @@ async def test_worker_watchdog_queue_registers_only_watchdog_lists(monkeypatch, 
     from core.temporal.watchdog_workflow import WATCHDOG_WORKFLOWS
     from scripts import temporal_worker
 
-    monkeypatch.setattr(settings, "SUPER_AGENT_ENV_ENABLED", True)
     monkeypatch.setattr(tc, "connect", AsyncMock(return_value=object()))
     monkeypatch.setattr(tc, "set_client", lambda c: None)
     ensure = AsyncMock()
@@ -173,7 +164,6 @@ async def test_worker_refuses_an_unknown_queue(monkeypatch):
     from core.temporal import client as tc
     from scripts import temporal_worker
 
-    monkeypatch.setattr(settings, "SUPER_AGENT_ENV_ENABLED", True)
     monkeypatch.setattr(settings, "TEMPORAL_WATCHDOG_TASK_QUEUE", "lightbulb-watchdog-renamed")
     connect = AsyncMock()
     monkeypatch.setattr(tc, "connect", connect)

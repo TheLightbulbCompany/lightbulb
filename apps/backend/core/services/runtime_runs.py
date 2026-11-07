@@ -16,7 +16,6 @@ from core.config import settings
 from core.repositories import container_repo
 from core.services import local_session_grants, runtime_transport
 from core.services.messaging import ApiProblem
-from core.services.super_agent_flags import flags_for
 from core.tasks_schema import router_session_key, worker_session_key
 
 logger = logging.getLogger(__name__)
@@ -222,11 +221,9 @@ def _task_session(identity: RunIdentity) -> dict:
 
 
 async def session_kind_for(owner_id: str) -> SessionKind:
-    """Where this attempt runs: its own task session iff the switch is on for the workspace AND no
+    """Where this attempt runs: its own task session iff no
     rotating credential is still the VM's to refresh (`token_custody.task_vm_allowed`, spec 13 §5.4).
     Called by O's `begin_attempt` at every attempt start; the answer is never cached on the task."""
-    if not await flags_for(owner_id):
-        return "workspace"
     from core.services import token_custody
 
     return "task" if await token_custody.task_vm_allowed(owner_id) else "workspace"

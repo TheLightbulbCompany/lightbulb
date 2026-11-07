@@ -111,12 +111,10 @@ async def ensure(ws: str, *, backfill: bool = False) -> None:
     An owner's own pause is theirs to keep. Switch off: nothing. `backfill` (the daily reconcile): no first run
     for a dormant workspace; provisioning and billing changes (`reconcile_runtime`, the provision runner) skip that check."""
     from core.repositories import automations_repo as repo
-    from core.services import automation_schedule, super_agent_flags
+    from core.services import automation_schedule
 
     from core.repositories import tasks_repo
 
-    if not await super_agent_flags.flags_for(ws):
-        return
     # Once, ever; never for a dormant workspace (a deploy's first reconcile reaches every switched-on one).
     first_run_due = await tasks_repo.get_trigger(ws, ts.trigger_id("idea", FIRST_RUN_KEY)) is None
     if first_run_due and not (backfill and await _dormant(ws)):

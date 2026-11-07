@@ -493,6 +493,9 @@ class Task(_Row):
     trigger_id: str
     policy_ref: str | None = None  # SCHED#{id} or CAP#{id}
     budget_usd: float | None = None  # §13: per-run automation budget
+    budget_s: int | None = None  # a voice task's per-run time budget (the bridge's run_budget_seconds)
+    # Who the work is for: `phone_contact` (a caller) is copied onto every sub-task at creation (_ensure_task)
+    origin: Literal["phone_contact", "meeting", "owner"] | None = None
     previous_run_task_id: str | None = None  # an automation run's previous run (lane A chaining)
     hidden: bool = False  # §18 speculative work
     watch_until: str | None = None  # "Watching" when set

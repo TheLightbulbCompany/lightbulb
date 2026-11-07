@@ -1,5 +1,9 @@
+from unittest.mock import AsyncMock
+
+import pytest
 import yaml
 
+import core.repositories.paperclip_repo as paperclip_repo_module
 import core.services.credentials.integration_secret_store as secret_store_module
 import core.services.credentials.mcp_server as mcp_server_module
 from core.services import hermes_profiles
@@ -37,6 +41,12 @@ def _setup(monkeypatch, *, stored_config, connected, dotenv_by_agent=None, exist
     monkeypatch.setattr(hermes_profiles, "_s3_put", lambda bucket, key, body: puts.append((key, body)))
     monkeypatch.setattr(hermes_profiles, "_s3_delete", lambda bucket, key: deletes.append(key))
     return puts, deletes
+
+
+@pytest.fixture(autouse=True)
+def _front_desk(monkeypatch):
+    """The workspace's Front desk agent (refresh_integrations reads it once per refresh)."""
+    monkeypatch.setattr(paperclip_repo_module, "customer_ops_agent_id", AsyncMock(return_value="fd"))
 
 
 def _config_writes(puts, agent_id):
@@ -286,3 +296,18 @@ def test_put_token_file_writes_under_mcp_tokens(monkeypatch):
     assert bucket == "b"
     assert key == "org_a/hermes/a1/mcp-tokens/stripe.json"
     assert '"access_token": "at"' in body
+
+
+async def test_a_connect_never_reaches_the_front_desk_profile(monkeypatch):
+    """End-state Task 4: every connect re-asserts the owner's servers into each profile; Front desk's gets only the
+    contact-safe ones (none today), and a server it already held is removed with its secret."""
+    puts, _ = _setup(
+        monkeypatch,
+        stored_config={"mcp_servers": {"stripe": {"url": "https://old"}}},
+        connected={"stripe": {"url": "https://mcp.stripe.com", "env": {"KEY": "sk_live"}}},
+        dotenv_by_agent={"fd": "MCP_STRIPE_KEY=sk_old\n", "office": ""},
+    )
+    await hermes_profiles.refresh_integrations("org_a", ["fd", "office"])
+    assert yaml.safe_load(_config_writes(puts, "fd")[0])["mcp_servers"] == {}
+    assert "sk_" not in next(body for key, body in puts if key == "org_a/hermes/fd/.env")
+    assert set(yaml.safe_load(_config_writes(puts, "office")[0])["mcp_servers"]) == {"stripe"}

@@ -187,6 +187,7 @@ def _profile_write_stubs(monkeypatch):
         byo_provider=None,
         byo_api_key=None,
         front_desk_number_for=lambda agent_id: None,
+        contact_only=lambda agent_id: False,
     )
     monkeypatch.setattr(hp, "resolve_profile_inputs", AsyncMock(return_value=inputs))
     monkeypatch.setattr(hp, "_stage_owner_facts", AsyncMock())
@@ -231,6 +232,7 @@ async def test_write_profiles_publishes_once_after_the_fan_out(monkeypatch, publ
 
 @pytest.fixture(autouse=True)
 def _roster(monkeypatch):
+    monkeypatch.setattr("core.repositories.paperclip_repo.customer_ops_agent_id", AsyncMock(return_value=None))
     monkeypatch.setattr(
         "core.services.messaging.load_agent_roster",
         AsyncMock(return_value=[{"id": A1, "name": "Friday"}, {"id": A2, "name": "Ops Lead"}]),

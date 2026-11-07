@@ -433,7 +433,7 @@ async def test_provision_org_purge_leaves_undeletable_builtins_removes_strays(mo
     expected no-op, not a purge error; a genuine stray is deleted; starters
     are never touched."""
     admin, repo = _build_provision_org_doubles(monkeypatch)
-    starter_ids = ["ceo", "eng", "fin", "growth", "analytics", "support"]
+    starter_ids = ["ceo", "eng", "fin", "growth", "analytics", "support", "office"]
     admin.create_agent = AsyncMock(side_effect=[{"id": agent_id} for agent_id in starter_ids])
     admin.list_agents = AsyncMock(
         return_value=[
@@ -475,7 +475,7 @@ async def test_provision_org_purge_leaves_undeletable_builtins_removes_strays(mo
 @pytest.mark.asyncio
 async def test_provision_org_builtin_purge_failure_never_fails_provision(monkeypatch):
     admin, repo = _build_provision_org_doubles(monkeypatch)
-    starter_ids = ["ceo", "eng", "fin", "growth", "analytics", "support"]
+    starter_ids = ["ceo", "eng", "fin", "growth", "analytics", "support", "office"]
     admin.create_agent = AsyncMock(side_effect=[{"id": agent_id} for agent_id in starter_ids])
     admin.list_agents = AsyncMock(
         return_value=[
@@ -519,7 +519,7 @@ async def test_provision_org_skips_approve_when_accept_auto_approved(monkeypatch
     admin.approve_join_request.assert_not_awaited()
     assert isinstance(row, PaperclipWorkspace)
     assert row.status == "active"
-    assert admin.create_agent.await_count == 6
+    assert admin.create_agent.await_count == 7
     # The ADMIN invites the provisioner as an owner; the provisioner accepts.
     invite = admin.create_invite.await_args.kwargs
     assert invite["session_cookie"] == "admin_cookie"

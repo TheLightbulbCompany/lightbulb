@@ -528,6 +528,35 @@
           "default": null,
           "title": "Budgetusd"
         },
+        "budgetS": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Budgets"
+        },
+        "origin": {
+          "anyOf": [
+            {
+              "enum": [
+                "phone_contact",
+                "meeting",
+                "owner"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Origin"
+        },
         "previousRunTaskId": {
           "anyOf": [
             {

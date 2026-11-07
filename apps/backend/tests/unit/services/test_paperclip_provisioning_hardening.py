@@ -23,7 +23,8 @@ EXPECTED_ROSTER = (
     ("finance", "Finance", "cfo", "Finance", "ceo"),
     ("growth", "Growth", "cmo", "Growth", "ceo"),
     ("analytics", "Analytics", "researcher", "Analytics", "ceo"),
-    ("customer_operations", "Customer Operations", "general", "Customer Operations", "ceo"),
+    ("customer_operations", "Front desk", "general", "Front desk", "ceo"),
+    ("office", "Office", "general", "Office", "ceo"),
 )
 ORG = "org_xyz"
 OWNER = "user_owner"
@@ -101,11 +102,11 @@ async def test_fresh_workspace_creates_the_complete_starter_roster(monkeypatch):
     assert row.starter_agent_ids == dict(zip((item[0] for item in EXPECTED_ROSTER), agent_ids, strict=True))
 
     calls = admin.create_agent.await_args_list
-    assert len(calls) == 6
+    assert len(calls) == 7
     assert [call.kwargs["name"] for call in calls] == [item[1] for item in EXPECTED_ROSTER]
     assert [call.kwargs["role"] for call in calls] == [item[2] for item in EXPECTED_ROSTER]
     assert [call.kwargs["title"] for call in calls] == [item[3] for item in EXPECTED_ROSTER]
-    assert [call.kwargs.get("reports_to") for call in calls] == [None] + ["agent-ceo"] * 5
+    assert [call.kwargs.get("reports_to") for call in calls] == [None] + ["agent-ceo"] * 6
     assert [call.kwargs["idempotency_key"] for call in calls] == [
         f"seed:starter:{item[0]}:v1" for item in EXPECTED_ROSTER
     ]

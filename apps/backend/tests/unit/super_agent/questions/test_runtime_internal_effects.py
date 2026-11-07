@@ -304,6 +304,9 @@ async def test_a_phone_callers_task_cannot_write_workspace_memory(api, monkeypat
         return {"ref": {"origin": "phone_contact"}} if tid == "voice:call" else None
 
     monkeypatch.setattr(tasks_repo, "get_trigger", trigger)
+    from core.repositories import paperclip_repo
+
+    monkeypatch.setattr(paperclip_repo, "customer_ops_agent_id", AsyncMock(return_value="front-desk-agent"))
     stored = AsyncMock(return_value={"queued": False, "neighbours": []})
     monkeypatch.setattr(memory_api, "remember", stored)
     app = FastAPI()
@@ -345,6 +348,9 @@ async def test_remember_without_a_run_is_refused_while_a_phone_callers_task_runs
         return {"ref": {"origin": "phone_contact"}} if tid == "voice:call" else None
 
     monkeypatch.setattr(tasks_repo, "get_trigger", trigger)
+    from core.repositories import paperclip_repo
+
+    monkeypatch.setattr(paperclip_repo, "customer_ops_agent_id", AsyncMock(return_value="front-desk-agent"))
     monkeypatch.setattr(memory_api, "remember", AsyncMock(return_value={"queued": False, "neighbours": []}))
     app = FastAPI()
     app.include_router(memory.internal_router, prefix="/api/v1/internal/memory")

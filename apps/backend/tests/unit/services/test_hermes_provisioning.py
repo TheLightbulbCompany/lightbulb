@@ -10,6 +10,8 @@ from core.services import hermes_provisioning
 @pytest.fixture(autouse=True)
 def _no_text_line(monkeypatch):
     monkeypatch.setattr("core.repositories.agent_email_repo.text_line_for_owner", AsyncMock(return_value=None))
+    # No Front desk recorded: no profile is contact-only (end-state Task 4 has its own tests)
+    monkeypatch.setattr("core.repositories.paperclip_repo.customer_ops_agent_id", AsyncMock(return_value=None))
 
 
 @pytest.fixture(autouse=True)

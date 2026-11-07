@@ -1,6 +1,7 @@
 """The phone receptionist's backend: the call record the owner's Home reads, the Agent page's settings gating the tools,
 the assistant's calendar, messages, hand-off and start_work."""
 
+import asyncio
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
@@ -197,6 +198,28 @@ async def test_start_work_runs_as_the_owner_and_is_marked_a_contacts(client):
     run = await messaging_repo.get_voice_run("org_1", args[1].run_id)
     assert run["requesterUserId"] == "user_owner"  # from the line row, never the model
     assert client.post(f"{base}/end", json={"durationSec": 9}, headers=W).json()["outcome"] == "needs_you"
+
+
+async def test_phone_work_is_contact_origin(client):
+    """End-state Task 4: a caller's work is the contact's, on Front desk, with the default budget."""
+    call = await _start(client)
+    client.post(
+        f"/api/v1/internal/voice/calls/{call['callId']}/start-work", json={"title": "Q", "brief": "B"}, headers=W
+    )
+    kwargs = client.start_work.await_args.kwargs
+    assert kwargs["origin"] == "phone_contact" and kwargs["specialist"] == "front-desk"
+    assert "budget_s" not in kwargs  # start_voice_work's default (600 s)
+
+
+async def test_a_call_warms_only_the_front_desk(client):
+    with (
+        patch("core.repositories.paperclip_repo.customer_ops_agent_id", AsyncMock(return_value="fd-1")),
+        patch.object(voice_phone.voice_calls, "prewake_owner") as wake,
+    ):
+        await _start(client)
+        await asyncio.sleep(0)  # the warm is fired, never awaited by the call
+        await asyncio.sleep(0)
+    wake.assert_called_once_with("org_1", [{"id": "fd-1"}])
 
 
 async def test_a_caller_cannot_touch_another_callers_booking(client):

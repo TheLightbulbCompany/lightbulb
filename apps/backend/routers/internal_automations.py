@@ -215,12 +215,20 @@ class VoiceStartIn(BaseModel):
 @router.post("/internal/automations/{owner_id}/voice-start", status_code=202)
 async def voice_start(owner_id: str, body: VoiceStartIn, request: Request) -> dict:
     await _require_hook_token(owner_id, request)
-    return await start_voice_work(owner_id, body)
+    return await start_voice_work(owner_id, body, origin="owner")
 
 
-async def start_voice_work(owner_id: str, body: VoiceStartIn, origin: str | None = None) -> dict:
-    """The task behind voice-start, for callers already authorized another way (the phone worker). `origin`
-    (`"phone_contact"`) lands on the trigger's ref; effect_check asks the owner for every outside action of such a task."""
+async def start_voice_work(
+    owner_id: str,
+    body: VoiceStartIn,
+    origin: Literal["phone_contact", "meeting", "owner"],
+    specialist: str | None = None,
+    budget_s: int = 600,
+) -> dict:
+    """The task behind voice-start, for callers already authorized another way (the phone worker). `origin` and
+    `budget_s` (the Worker run's time budget) land on the trigger's ref and from there on the task (and `origin` on
+    every sub-task): a `phone_contact` task runs as Front desk, and effect_check asks the owner for its every outside
+    action."""
     run = await messaging_repo.get_voice_run(owner_id, body.run_id)
     if run is None or run.get("roomId") != body.room_id:
         raise _err(404, "unknown_run")
@@ -236,7 +244,7 @@ async def start_voice_work(owner_id: str, body: VoiceStartIn, origin: str | None
         trigger_ids=[trigger_id],
         title=body.title.strip(),
         brief=body.brief.strip(),
-        specialist=body.specialist,
+        specialist=specialist or body.specialist,
         ack=f"On it: {body.title.strip()}",
         visibility="room",
     )
@@ -258,7 +266,8 @@ async def start_voice_work(owner_id: str, body: VoiceStartIn, origin: str | None
             "agentId": run.get("agentId"),
             "taskId": task_id,
             "start": start.model_dump(by_alias=True),
-            **({"origin": origin} if origin else {}),
+            "origin": origin,
+            "budgetS": budget_s,
         },
     )
     created = await admission.enqueue_trigger(owner_id, trigger, room_id=body.room_id)

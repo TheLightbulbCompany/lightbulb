@@ -77,6 +77,7 @@ async def start_work(room_id: str, body: WorkIn) -> dict:
             title=body.title,
             brief=f"Asked aloud in the app.\n\n{body.brief}",
         ),
+        origin="owner",
     )
     created = out.pop("created", True)
     return {"started": created, **({} if created else {"already": True}), **out}

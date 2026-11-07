@@ -119,7 +119,9 @@ async def start_work(room_id: str, body: WorkIn) -> dict:
     )
     brief = f'Asked aloud in the meeting "{meeting.get("title") or "Meeting"}" by {body.speakerName or "a member"}.\n\n{body.brief}'
     out = await start_voice_work(
-        body.ownerId, VoiceStartIn(run_id=run_id, call_id=room_id, room_id=room_id, title=body.title, brief=brief)
+        body.ownerId,
+        VoiceStartIn(run_id=run_id, call_id=room_id, room_id=room_id, title=body.title, brief=brief),
+        origin="meeting",
     )
     entry = {"text": body.title, "status": "working", "taskId": out["taskId"], "runId": run_id, "at": utc_now_iso()}
     await meeting_invites._patch_meeting(room_id, lambda m: {"followUps": [*(m.get("followUps") or []), entry]})

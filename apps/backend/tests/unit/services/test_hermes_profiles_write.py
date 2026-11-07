@@ -249,3 +249,36 @@ async def test_upload_profile_files_refuses_writer_owned_names(monkeypatch, name
         await upload_profile_files("org_a", "a1", {"AGENTS.md": b"x", name: b"clobber"})
 
     assert puts == []
+
+
+def test_front_desk_profile_has_no_workspace_connectors():
+    """End-state Task 4 (audit H): Front desk faces callers, so its Hermes profile gets none of the owner's
+    connectors or their secrets, and none of the toolsets that reach the machine (shell, files, browser) or the
+    owner's rooms and sessions; Office, the owner's specialist, keeps them all."""
+    from core.services.hermes_provisioning import ProfileInputs
+
+    connected = {
+        "google_workspace": {"url": "https://mcp.google.example", "headers": {"Authorization": "Bearer g-tok"}},
+        "stripe": {"url": "https://mcp.stripe.com", "headers": {"Authorization": "Bearer sk-tok"}},
+    }
+    inputs = ProfileInputs("byo_key", "anthropic", "sk-ant", connected, {}, contact_agent_id="fd-1")
+
+    def build(agent_id):
+        files = write_agent_profile(
+            "org_a", {"id": agent_id, "role": "general"}, provider_choice="byo_key", byo_provider="anthropic",
+            paperclip_api_key="pcp",
+            integrations=connected, env_vars={}, contact_only=inputs.contact_only(agent_id),
+        )  # fmt: skip
+        return files, yaml.safe_load(files.config_yaml)
+
+    front_desk, fd_config = build("fd-1")
+    office, office_config = build("office-1")
+    assert set(office_config["mcp_servers"]) == {"google_workspace", "stripe"}
+    assert "g-tok" in office.dotenv and "sk-tok" in office.dotenv
+    assert fd_config["mcp_servers"] == {}
+    assert "g-tok" not in front_desk.dotenv and "sk-tok" not in front_desk.dotenv
+    off = set(fd_config["agent"]["disabled_toolsets"])
+    assert {"browser", "terminal", "file", "code_execution", "delegation", "lightbulb"} <= off
+    assert not off & {"memory", "skills"}  # Knowledge stays
+    assert "browser" not in office_config["agent"]["disabled_toolsets"]
+    assert hermes_profiles.CONTACT_SAFE_CONNECTORS == frozenset()  # Task 8 adds its one scoped browser here

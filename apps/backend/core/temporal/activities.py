@@ -158,8 +158,20 @@ def _identity(ws: str, task_id: str, att: dict) -> runtime_runs.RunIdentity:
     return runtime_runs.RunIdentity.for_attempt(ws, task_id, att)
 
 
+async def _front_desk(ws: str) -> str | None:
+    from core.repositories import paperclip_repo
+
+    return await paperclip_repo.customer_ops_agent_id(ws)
+
+
 async def _agent_for(ws: str, task: dict) -> str:
-    """The specialist's agent id when it is one of this workspace's agents, else Lightbulb's (the CEO)."""
+    """The specialist's agent id when it is one of this workspace's agents, else Lightbulb's (the CEO). A contact's
+    task always runs as Front desk, whose profile holds none of the owner's connectors (hermes_profiles), and never
+    on another agent when there is none."""
+    if await tasks_repo.from_contact(ws, task):
+        if agent := await _front_desk(ws):
+            return agent
+        raise ApplicationError("no front desk agent for a contact's task", non_retryable=True)
     spec = task.get("specialist")
     if spec and spec in {a["id"] for a in await messaging.load_agent_roster(ws)}:
         return spec
@@ -313,6 +325,7 @@ async def _request(ws: str, task: dict, att: dict, tree: dict) -> runtime_runs.R
         instructions=WORKER_INSTRUCTIONS,
         memory=memory,
         effects="required",
+        run_budget_seconds=task.get("budgetS"),
     )
 
 
@@ -938,6 +951,21 @@ async def _deliver(
     )
 
 
+async def _work_origin(ws: str, task_id: str, trig: dict, parent_id: str | None) -> str | None:
+    """Who a new task's work is for: its trigger's `ref.origin`, else the task it came from (the parent a `start_task`
+    names, the task a job result or input belongs to, the task whose room the trigger was in). A caller's origin wins
+    over any other, so a sub-task of a caller's task, at any depth, is the caller's too (audit H, OWASP ASI03)."""
+    ref = trig.get("ref") or {}
+    room = ts.trigger_room(trig)
+    room_task = ((await messaging_repo.get_room(room) or {}).get("task") or {}).get("taskId") if room else None
+    origins = [ref.get("origin")]
+    for pid in dict.fromkeys(p for p in (parent_id, ref.get("taskId"), room_task) if p and p != task_id):
+        parent = await tasks_repo.get_task(ws, pid)
+        if parent:
+            origins.append("phone_contact" if await tasks_repo.from_contact(ws, parent) else parent.get("origin"))
+    return "phone_contact" if "phone_contact" in origins else next((o for o in origins if o), None)
+
+
 async def _ensure_task(ws: str, task_id: str, trig: dict, lane: str, status: str, **fields) -> dict:
     """The task a decision names, created once (deterministic id) with its room and memory card."""
     existing = await tasks_repo.get_task(ws, task_id)
@@ -972,9 +1000,14 @@ async def _ensure_task(ws: str, task_id: str, trig: dict, lane: str, status: str
             audience["roomId"] = room
     elif kind == "room":
         audience["roomId"] = room
+    origin = await _work_origin(ws, task_id, trig, fields.get("parentTaskId"))
+    if origin == "phone_contact":  # its byline and its runtime are Front desk's (_agent_for), whoever was named
+        fields["specialist"] = await _front_desk(ws) or fields.get("specialist")
     row = {
         "taskId": task_id,
         "identifier": await tasks_repo.next_identifier(ws),
+        "origin": origin,
+        "budgetS": ref.get("budgetS"),
         "status": status,
         "audience": audience,
         "lane": "private" if private else "shared",

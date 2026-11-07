@@ -27,7 +27,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
-from core.dynamodb import utc_now_iso
+from core.dynamodb import run_in_thread, utc_now_iso
 from core.repositories import messaging_repo
 from core.services import voice_onboarding
 
@@ -108,6 +108,20 @@ async def call_done(room_id: str, auth: AuthContext = Depends(get_current_user))
         raise HTTPException(status_code=404, detail={"code": "not_found"})
     call = {**(meta.get("call") or {}), "resolvedAt": utc_now_iso(), "resolvedBy": auth.user_id}
     await messaging_repo.patch_room_meta(room_id, {"call": call}, expected_revision=int(meta["revision"]))
+    return {"ok": True}
+
+
+@router.delete("/voice/callers/{e164}/memory")
+async def forget_caller(e164: str, auth: AuthContext = Depends(get_current_user)) -> dict:
+    """Forget: clear what the assistant remembers of one caller (facts and name)."""
+    number, ws = _e164(e164), resolve_owner_id(auth)
+    key = {"pk": messaging_repo.owner_pk(ws), "sk": f"VOICECALLER#{number}"}
+    if not number or not await messaging_repo._get(**key):
+        raise HTTPException(status_code=404, detail={"code": "not_found"})
+    await run_in_thread(
+        messaging_repo._table().update_item, Key=key, UpdateExpression="SET facts = :f, forgottenAt = :t REMOVE #n",
+        ExpressionAttributeNames={"#n": "name"}, ExpressionAttributeValues={":f": [], ":t": utc_now_iso()},
+    )  # fmt: skip
     return {"ok": True}
 
 

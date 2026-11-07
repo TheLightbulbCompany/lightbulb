@@ -126,3 +126,21 @@ it("keeps asking after the first half minute, more slowly, while the session run
     expect(screen.getByRole("region", { name: "Session terminal" })).toBeInTheDocument();
   } finally { vi.useRealTimers(); }
 });
+
+// The joined-session fit lives in the desktop app's own terminal page (a plain script, no module):
+// read it from there so the one place it is defined is the one place it is checked.
+it("a joined session keeps one text size: fit the width, keep the last rows", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { resolve } = await import("node:path");
+  const source = readFileSync(resolve(process.cwd(), "../desktop/src-tauri/terminal/terminal.js"), "utf8");
+  const body = source.slice(source.indexOf("function fitScale"), source.indexOf("function scale()"));
+  const fitScale = new Function(`${body}; return fitScale;`)() as (w: number, h: number, sw: number, sh: number) => { k: number; dy: number };
+  expect(fitScale(1000, 700, 800, 600)).toEqual({ k: 1, dy: 0 });
+  // Wider than the panel: shrink to the width.
+  expect(fitScale(1000, 700, 2000, 600)).toEqual({ k: 0.5, dy: 0 });
+  // A little too tall: shrink to fit, nothing cut.
+  expect(fitScale(1000, 700, 800, 770).k).toBeCloseTo(700 / 770);
+  // Much too tall: same text size as every other session, the top rows give way to the prompt.
+  expect(fitScale(1000, 700, 800, 1400)).toEqual({ k: 1, dy: -700 });
+  expect(fitScale(0, 700, 800, 600)).toEqual({ k: 1, dy: 0 });
+});

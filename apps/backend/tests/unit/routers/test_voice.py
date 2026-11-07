@@ -113,6 +113,31 @@ async def test_handoff_number_must_be_e164(repos, async_client_org_admin):  # no
     assert (await put("")).status_code == 200  # no handoff
 
 
+async def _caller(owner: str):
+    await messaging_repo.run_in_thread(
+        messaging_repo._table().put_item,
+        Item={
+            "pk": messaging_repo.owner_pk(owner),
+            "sk": "VOICECALLER#+14155550133",
+            "name": "Priya",
+            "facts": ["Prefers Saturdays"],
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_forget_caller(repos, async_client_org_admin):  # noqa: F811
+    await _caller(WS)
+    await _caller("org_other")
+    url = "/api/v1/voice/callers/+14155550133/memory"
+    assert (await async_client_org_admin.delete(url)).json() == {"ok": True}
+    row = await messaging_repo._get(messaging_repo.owner_pk(WS), "VOICECALLER#+14155550133")
+    assert row["facts"] == [] and "name" not in row
+    other = await messaging_repo._get(messaging_repo.owner_pk("org_other"), "VOICECALLER#+14155550133")
+    assert other["facts"] == ["Prefers Saturdays"]
+    assert (await async_client_org_admin.delete("/api/v1/voice/callers/+14155550999/memory")).status_code == 404
+
+
 async def test_invalid_timezone_rejected_on_save(repos, async_client_org_admin):  # noqa: F811
     put = lambda tz: async_client_org_admin.put("/api/v1/voice/agent", json={"config": {"timezone": tz}})  # noqa: E731
     r = await put("Mars/Olympus")

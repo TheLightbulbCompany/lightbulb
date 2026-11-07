@@ -19,6 +19,7 @@ import {
 const OUTCOME: Record<Outcome, [string, "ok" | "warn" | "info" | undefined]> = {
   booked: ["Booked", "ok"], moved: ["Moved", "ok"], cancelled: ["Cancelled", undefined], message: ["Message", "info"],
   answered: ["Answered", undefined], needs_you: ["Needs you", "warn"], handoff_missed: ["Wanted you", "warn"], spam: ["Spam", undefined],
+  silent: ["Silent", undefined],
 };
 
 export function Tag({ outcome }: { outcome?: Outcome }) {

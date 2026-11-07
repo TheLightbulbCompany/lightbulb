@@ -36,7 +36,9 @@ MODEL = os.environ.get("PHONE_MODEL", "gemini-3.8-live")  # 10-voice-models.md Â
 VOICE = os.environ.get(
     "PHONE_VOICE", "Kore"
 )  # one of Gemini's prebuilt voices; the greeting's TTS uses the same
-AWAY_S = float(os.environ.get("PHONE_AWAY_S", "15"))  # silence before "are you still there?", and again before hanging up
+AWAY_S = float(
+    os.environ.get("PHONE_AWAY_S", "15")
+)  # silence before "are you still there?", and again before hanging up
 STILL_THERE = 'The line has gone quiet. Ask once, briefly: "Are you still there?"'
 SILENT_BYE = "Nobody is answering. In one short sentence, say you'll hang up now and goodbye; don't ask anything."
 CALL_MAX_S = float(
@@ -307,7 +309,9 @@ async def entrypoint(ctx: JobContext) -> None:
     try:
         caller = await asyncio.wait_for(ctx.wait_for_participant(), AWAY_S * 2)
     except TimeoutError:  # 8 Nov sims: a job that started after the caller left sat in the room for 12 minutes
-        logger.info("phone: nobody joined %s; leaving", ctx.room.name)
+        logger.info(
+            "phone: nobody joined job %s; leaving", ctx.job.id
+        )  # the room name holds the caller's number
         ctx.shutdown("no caller")
         return
     meta = json.loads(
@@ -386,6 +390,7 @@ async def entrypoint(ctx: JobContext) -> None:
         ctx.shutdown(reason)
 
     silent: list[asyncio.Task] = []
+    silent_end: list[bool] = []
 
     async def hang_up_silent() -> None:
         """Still nobody after "are you still there?": a goodbye, then the line is closed (8 Nov sims: a silent line
@@ -394,7 +399,10 @@ async def entrypoint(ctx: JobContext) -> None:
         try:
             await asyncio.wait_for(session.generate_reply(instructions=SILENT_BYE), 10)
         except Exception:  # noqa: BLE001 -- a lost goodbye must not keep the line open
-            logger.warning("phone %s: silent goodbye failed", backend.call_id, exc_info=True)
+            logger.warning(
+                "phone %s: silent goodbye failed", backend.call_id, exc_info=True
+            )
+        silent_end.append(True)
         await hang_up("caller silent")
 
     @session.on("user_state_changed")
@@ -402,7 +410,7 @@ async def entrypoint(ctx: JobContext) -> None:
         if ev.new_state == "away" and not silent:
             session.generate_reply(instructions=STILL_THERE)
             silent.append(asyncio.create_task(hang_up_silent()))
-        elif ev.new_state == "speaking" and silent:
+        elif ev.new_state != "away" and silent:
             silent.pop().cancel()
 
     limit = asyncio.create_task(end_after(CALL_MAX_S, session, hang_up))
@@ -421,6 +429,7 @@ async def entrypoint(ctx: JobContext) -> None:
                     items, info["greeting"], info["assistantName"]
                 ),
                 "disclosureRepeated": guard.corrected,
+                "silent": bool(silent_end),
             },
         )
         logger.info(

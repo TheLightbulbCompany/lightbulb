@@ -179,6 +179,12 @@ async def test_handoff_and_needs_you_outcomes(client):
     rec = client.post(f"{ubase}/end", json={"durationSec": 30}, headers=W).json()
     assert rec["outcome"] == "needs_you" and rec["steps"][-1]["text"].startswith("Didn't know")
 
+    quiet = await _start(client, room="phone-dev-_s")  # the worker hung up a line nobody spoke on
+    qend = client.post(
+        f"/api/v1/internal/voice/calls/{quiet['callId']}/end", json={"durationSec": 45, "silent": True}, headers=W
+    )
+    assert qend.json()["outcome"] == "silent"
+
 
 async def test_start_work_runs_as_the_owner_and_is_marked_a_contacts(client):
     call = await _start(client)

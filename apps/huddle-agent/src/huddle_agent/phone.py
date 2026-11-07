@@ -36,7 +36,12 @@ MODEL = os.environ.get("PHONE_MODEL", "gemini-3.8-live")  # 10-voice-models.md Â
 VOICE = os.environ.get(
     "PHONE_VOICE", "Kore"
 )  # one of Gemini's prebuilt voices; the greeting's TTS uses the same
-server = AgentServer()
+# One warm process is plenty for a line; a busy host gets a longer start and its own load ceiling.
+server = AgentServer(
+    num_idle_processes=1,
+    initialize_process_timeout=60,
+    load_threshold=float(os.environ.get("PHONE_LOAD_THRESHOLD", "0.7")),
+)
 
 INSTRUCTIONS = """You are {assistant}, the AI receptionist on the phone for {business}. You already greeted the
 caller. Speak briefly and warmly, one or two sentences at a time, like a good front desk. Today is {today}.
@@ -201,7 +206,9 @@ async def entrypoint(ctx: JobContext) -> None:
     agent = Receptionist(backend, info, transfer)
     key = os.environ["GOOGLE_API_KEY"]
     session = AgentSession(
-        llm=google.realtime.RealtimeModel(model=MODEL, voice=VOICE, api_key=key),
+        llm=google.realtime.RealtimeModel(
+            model=MODEL, voice=VOICE, api_key=key, api_version="v1beta"
+        ),
         tts=GeminiTTS(
             voice_name=VOICE, api_key=key
         ),  # the compliance greeting, word for word
@@ -237,7 +244,7 @@ async def entrypoint(ctx: JobContext) -> None:
         ),
         record=True,  # the greeting says the call is recorded
     )
-    await session.say(info["greeting"], allow_interruptions=False)
+    await session.say(info["greeting"])
 
 
 if __name__ == "__main__":

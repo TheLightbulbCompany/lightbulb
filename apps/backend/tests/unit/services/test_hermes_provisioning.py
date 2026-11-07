@@ -86,7 +86,7 @@ def test_the_request_has_no_efs_leg_and_points_at_the_hermes_image():
     assert req["agentRuntimeArtifact"]["containerConfiguration"]["containerUri"].endswith("hermes-agent-arm64:h-v1")
     assert req["networkConfiguration"]["networkMode"] == "VPC"
     assert req["protocolConfiguration"]["serverProtocol"] == "HTTP"
-    assert req["lifecycleConfiguration"]["idleRuntimeSessionTimeout"] == 15 * 60
+    assert req["lifecycleConfiguration"]["idleRuntimeSessionTimeout"] == 5 * 60
     assert req["tags"]["ManagedBy"] == "lightbulb-backend"
 
 
@@ -1064,7 +1064,7 @@ async def test_provision_updates_the_reused_runtime_when_the_image_drifted(monke
     assert request["networkConfiguration"]["networkMode"] == "VPC"
     assert request["environmentVariables"]
     assert request["protocolConfiguration"] == {"serverProtocol": "HTTP"}
-    assert request["lifecycleConfiguration"]["idleRuntimeSessionTimeout"] == 15 * 60
+    assert request["lifecycleConfiguration"]["idleRuntimeSessionTimeout"] == 5 * 60
 
 
 # --- N1/M4-R39: provision_hermes_runtime gets the same freshness guard as prepare -----------

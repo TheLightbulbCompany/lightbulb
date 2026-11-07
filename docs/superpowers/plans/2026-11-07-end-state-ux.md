@@ -220,6 +220,11 @@ The rule for implementers:
 - Unchanged: "speaks only when named", the time cap, and the contact boundary for **phone callers**.
 - Dropped as a result: the Meet guest/member acceptance lines ("a guest's yes does nothing", "I'll need <owner>'s OK" for a guest) and any guest/member task.
 
+**Before `VOICE_BUY_NUMBERS` is ever turned on** (deferred; buying is off; from the #5032 review), fix these three:
+1. Go live does check-then-act, so two concurrent Go-live clicks can buy two numbers. Claim the Go live with a conditional write before buying.
+2. A workspace that holds the line row but sends a config without `number` buys a new one. Look up its line row first.
+3. If the buy succeeds and the row write fails, the number is orphaned and still billed. Release it or retry the write.
+
 **Later (do not start):**
 - 5: recording, one-sentence summary, spam.
 - 8: Square/Calendly/Zenoti and browser write-back.

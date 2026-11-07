@@ -88,8 +88,17 @@ def test_mixer_sums_tracks_and_knows_who_spoke():
     m.push("meet:r:1", _frame(32000))
     m.push("meet:r:2", _frame(32000))
     assert int(m.mix()[0]) == 32767  # clipped, not wrapped
-    m.reset()
-    assert m.speaker() == ""
+    assert m.speaker(within_s=0) == ""  # nobody voiced in the window, two people on tracks
+    m.remove("meet:r:2")
+    assert m.speaker(within_s=0) == "meet:r:1"  # one person on a track: theirs
+
+
+def test_the_name_may_open_any_sentence_of_a_joined_turn():
+    gate = g()
+    text = "Okay, everyone. Let's get started with the check-in. light bulb How many calls did we get?"
+    assert meet.Gate(name="Lightbulb", people=PEOPLE).heard("p1", text, 0, new_turn=True) == "ask"
+    assert gate.heard("p1", "Leo, did you push it? Nova, what's on tomorrow?", 0, new_turn=True) == "ask"
+    assert gate.heard("p2", "We should ask Nova about it later.", 9, new_turn=True) == ""
 
 
 def test_replay_scenarios_against_the_gate():

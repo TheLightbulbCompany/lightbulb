@@ -76,7 +76,7 @@ def test_helper_refuses_an_owner_only_teams_route_without_sending(fake_curl, tmp
 
     assert result.returncode != 0
     assert "owner-only route" in result.stderr
-    assert "Paperclip API" in result.stderr
+    assert "Paperclip" not in result.stderr  # no profile has a Paperclip key (task 8b.2)
     assert not fake_curl.exists(), "the request must never reach curl"
 
 

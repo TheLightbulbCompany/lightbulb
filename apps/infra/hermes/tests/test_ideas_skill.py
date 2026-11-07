@@ -54,8 +54,6 @@ def test_the_skill_routes_ideas_to_a_short_reference(tmp_path):
     # The backend's message carries the phrases the reference keys on.
     service = (BACKEND / "core/services/ideas.py").read_text()
     assert "Let's do it!" in service and "Tracked in Work: [" in service
-    # Idea work is filed as todo, like all assigned work someone asked for.
-    assert "idea work (lightbulb references/ideas.md)" in (out / "paperclip/SKILL.md").read_text()
     plugin = (HERMES / "plugins/lightbulb/plugin.yaml").read_text()
     assert "- suggest_idea" in plugin
 

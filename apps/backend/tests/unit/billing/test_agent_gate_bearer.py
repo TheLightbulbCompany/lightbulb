@@ -90,8 +90,6 @@ async def test_write_profile_for_agent_mints_and_writes_that_agents_bearer(monke
     )
     monkeypatch.setattr(hp, "resolve_profile_inputs", AsyncMock(return_value=inputs))
     monkeypatch.setattr(hp, "_stage_owner_facts", AsyncMock())
-    monkeypatch.setattr("core.services.paperclip_api_key.ensure_paperclip_api_key", AsyncMock(return_value="pcp"))
-    monkeypatch.setattr("core.services.paperclip_admin_client.shared_admin_client", lambda: object())
     monkeypatch.setattr("core.services.hermes_profiles.upload_profile", AsyncMock())
     monkeypatch.setattr("core.services.network_member.publish_sessions", AsyncMock())
     monkeypatch.setattr(
@@ -116,6 +114,6 @@ async def test_write_profile_for_agent_mints_and_writes_that_agents_bearer(monke
 def test_profile_env_carries_the_agents_own_bearer():
     from core.services.hermes_profiles import build_profile_env
 
-    env = build_profile_env(paperclip_api_key="pcp", env_vars={}, gate_bearer="agent-bearer")
+    env = build_profile_env(env_vars={}, gate_bearer="agent-bearer")
     assert env["LIGHTBULB_AGENT_GATE_BEARER"] == "agent-bearer"
-    assert "LIGHTBULB_AGENT_GATE_BEARER" not in build_profile_env(paperclip_api_key="pcp", env_vars={})
+    assert "LIGHTBULB_AGENT_GATE_BEARER" not in build_profile_env(env_vars={})

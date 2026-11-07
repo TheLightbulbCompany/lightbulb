@@ -86,8 +86,8 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               <- core/services/owner_facts.py (`app_url` = settings.FRONTEND_URL)
   - Workspace memory ........ references/platform-primitives.md ("Queryable company state" row)
                               <- apps/infra/hermes/plugins/memory/agentcore/__init__.py (one /owners/<owner>/
-                                 namespace for every agent; workspace_memory_search tool; board_snapshot =
-                                 the live board in each turn's recall and in on_pre_compress); bridge/sync.py normalize_profile_backends
+                                 namespace for every agent; workspace_memory_search tool; tasks_board =
+                                 the backend board in a turn with an audience, recall and on_pre_compress); bridge/sync.py normalize_profile_backends
                                  (on only while AGENTCORE_MEMORY_ID is set); ~2 min = the memory
                                  strategy's async extraction lag, not a code constant.
                               Scopes + review: DM = private to that person (phase 1), other rooms = team;

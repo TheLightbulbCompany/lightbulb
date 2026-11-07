@@ -26,6 +26,7 @@ DELETED = (
     "routers.paperclip_proxy",
     "routers.paperclip_cost",
     "routers.company_board",
+    "core.services.paperclip_api_key",
 )
 
 KEPT = {
@@ -35,7 +36,6 @@ KEPT = {
     "core/services/paperclip_admin_session.py": "admin cookie for the client above and for the prod scripts",
     "core/services/paperclip_agent_idempotency.py": "agent create idempotency key",
     "core/services/paperclip_agent_lifecycle.py": "delete_agent_everywhere and agent create for /teams/agents, runtime_rpc and admin",
-    "core/services/paperclip_api_key.py": "each Hermes profile carries its agent's Paperclip API key",
     "core/services/paperclip_credential_rule.py": "catalog agent materializer",
     "core/services/paperclip_meta.py": "agent create fields",
     "core/services/paperclip_openclaw_pairing.py": "resolve_company_id_for_owner, read by the client callers",
@@ -123,6 +123,7 @@ MENTIONS = {
     "core/services/needs_you_email.py",
     "core/services/node_broker.py",
     "core/services/notification_copy.py",
+    "core/services/owner_secret_sweep.py",
     "core/services/service_token.py",
     "core/services/session_keys.py",
     "core/services/stripe_webhook_handlers.py",

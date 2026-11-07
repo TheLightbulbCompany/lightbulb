@@ -101,3 +101,23 @@ async def test_listing_is_read_only():
 
     assert names == ["lightbulb/dev/user-keys/user_1/anthropic"]
     sm.delete_secret.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_old_agent_key_sweep_takes_only_this_owners_keys():
+    """The old per-agent Paperclip key secrets: this owner's only, never another owner's or namespace."""
+    names = [
+        "lightbulb/dev/paperclip-agent-keys/user_x/a1",
+        "lightbulb/dev/paperclip-agent-keys/user_x/a2",
+        "lightbulb/dev/paperclip-agent-keys/user_x0/a1",
+        "lightbulb/dev/user-keys/user_x/openai",
+    ]
+    sm = _sm_with(names)
+    with (
+        patch.object(owner_secret_sweep.settings, "ENVIRONMENT", "dev"),
+        patch.object(owner_secret_sweep.boto3, "client", return_value=sm),
+    ):
+        assert sorted(await owner_secret_sweep.list_owner_agent_key_secret_names("user_x")) == names[:2]
+        assert await owner_secret_sweep.delete_owner_agent_key_secrets("user_x") == 2
+        assert await owner_secret_sweep.delete_owner_agent_key_secrets("user_none") == 0
+    assert sorted(c.kwargs["SecretId"] for c in sm.delete_secret.call_args_list) == names[:2]

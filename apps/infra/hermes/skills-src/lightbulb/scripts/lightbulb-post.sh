@@ -18,7 +18,7 @@ Target, first that applies:
 Options:
   --why "<reason>"  "Why I created this post": one or two plain sentences, <= 280 characters.
                     Required with --feed: a feed post without it is refused.
-  --as <agent_id>   post as this agent (default: $PAPERCLIP_AGENT_ID, else your workspace-<id> cwd)
+  --as <agent_id>   post as this agent (default: $LIGHTBULB_AGENT_ID, else your workspace-<id> cwd)
   --event-id <id>   idempotency key; a retry with the same key replays instead of doubling.
                     Default: a hash of agent + target + body.
 Output: "Posted to room <id>." for a new message; "Already posted: ..." (exit 0, nothing
@@ -35,7 +35,7 @@ command -v jq >/dev/null || die 'Missing jq'; command -v curl >/dev/null || die 
 
 need_val() { [[ $# -ge 2 && -n "${2:-}" ]] || die "Option $1 needs a value."; }
 
-agent_id="${PAPERCLIP_AGENT_ID:-}"
+agent_id="${LIGHTBULB_AGENT_ID:-${PAPERCLIP_AGENT_ID:-}}"
 case "$PWD" in */workspace-*) [[ -n "$agent_id" ]] || agent_id="${PWD##*/workspace-}" ;; esac
 room=""; user=""; handle=""; issue=""; event_id=""; feed=""; why=""
 while [[ $# -gt 0 ]]; do

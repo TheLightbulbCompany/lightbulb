@@ -188,33 +188,24 @@ def test_plugins_enabled_is_a_flat_list_never_entries():
     assert c["plugins"] == {"enabled": ["lightbulb"]}
 
 
-def test_dotenv_carries_the_resolved_paperclip_key_value_and_the_provisioned_env():
-    """C2: PAPERCLIP_API_KEY carries the real resolved VALUE — not a Secrets Manager reference
-    name (M4-R4/R5 cancelled that resolver; nothing in bridge/ ever read the old *_SECRET names)."""
-    env = hermes_profiles.build_profile_env(
-        paperclip_api_key="pcp_live_abc123",
-        env_vars={"STRIPE_SECRET_KEY": "sk_live_x"},
-    )
-    assert env["PAPERCLIP_API_KEY"] == "pcp_live_abc123"
-    assert env["STRIPE_SECRET_KEY"] == "sk_live_x"
+def test_profile_env_has_no_paperclip_key():
+    """Paperclip exit (task 8b.2): a profile carries no Paperclip credential, only the provisioned env."""
+    env = hermes_profiles.build_profile_env(env_vars={"STRIPE_SECRET_KEY": "sk_live_x"})
+    assert env == {"STRIPE_SECRET_KEY": "sk_live_x"}
 
 
 def test_dotenv_carries_the_byo_key_under_the_right_provider_env_name():
-    anthropic_env = hermes_profiles.build_profile_env(
-        paperclip_api_key="pcp_x", env_vars={}, byo_provider="anthropic", byo_api_key="sk-ant-x"
-    )
+    anthropic_env = hermes_profiles.build_profile_env(env_vars={}, byo_provider="anthropic", byo_api_key="sk-ant-x")
     assert anthropic_env["ANTHROPIC_API_KEY"] == "sk-ant-x"
     assert "OPENAI_API_KEY" not in anthropic_env
 
-    openai_env = hermes_profiles.build_profile_env(
-        paperclip_api_key="pcp_x", env_vars={}, byo_provider="openai", byo_api_key="sk-oai-x"
-    )
+    openai_env = hermes_profiles.build_profile_env(env_vars={}, byo_provider="openai", byo_api_key="sk-oai-x")
     assert openai_env["OPENAI_API_KEY"] == "sk-oai-x"
     assert "ANTHROPIC_API_KEY" not in openai_env
 
 
 def test_dotenv_omits_a_byo_key_slot_when_no_byo_key_is_given():
-    env = hermes_profiles.build_profile_env(paperclip_api_key="pcp_x", env_vars={})
+    env = hermes_profiles.build_profile_env(env_vars={})
     assert "ANTHROPIC_API_KEY" not in env and "OPENAI_API_KEY" not in env
 
 
@@ -227,7 +218,7 @@ def test_dotenv_never_carries_the_process_wide_gate_endpoint_region_bearer_or_a_
     same way, via the boot secret — never through this function at all.
     C2: no ``LIGHTBULB_*_SECRET`` reference name either — that resolver was cancelled (M4-R4/R5)
     and nothing in ``bridge/`` ever read those names; every profile secret is now a resolved value."""
-    env = hermes_profiles.build_profile_env(paperclip_api_key="pcp_x", env_vars={})
+    env = hermes_profiles.build_profile_env(env_vars={})
     assert "AWS_ENDPOINT_URL_BEDROCK_RUNTIME" not in env
     assert "AWS_REGION" not in env
     assert "AWS_BEDROCK_FORCE_HTTP1" not in env
@@ -367,38 +358,19 @@ def test_build_profile_config_takes_no_listening_paid_parameter_and_emits_no_gua
     assert "guard_agent_created" not in cfg()["skills"]
 
 
-def test_dotenv_carries_the_paperclip_identity_a_chat_turn_needs(monkeypatch):
-    """A chat turn's shell env is the profile's .env alone (bridge/turn.py ``_secret_scope``); only a
-    Paperclip-woken run adds the identity on top. Without URL/agent/company here, every
-    ``paperclip-api.sh`` call from a room/DM turn dies with "Missing PAPERCLIP_API_URL"."""
-    monkeypatch.setattr(hermes_profiles.settings, "PAPERCLIP_INTERNAL_URL", "http://paperclip.internal:3100/")
+def test_dotenv_carries_the_agent_id_and_no_paperclip_identity():
+    """LIGHTBULB_AGENT_ID is the agent's id for the lightbulb-*.sh scripts; PAPERCLIP_AGENT_ID (same
+    value) stays until every runtime runs an image that reads the new name (task 8b.9)."""
     files = hermes_profiles.write_agent_profile(
         "org_1",
         {"id": "agent-1", "name": "Friday", "role": "ceo", "companyId": "company-1"},
         provider_choice="chatgpt_oauth",
-        paperclip_api_key="pcp_x",
         integrations={},
         env_vars={},
     )
-    assert 'PAPERCLIP_API_KEY="pcp_x"' in files.dotenv or "PAPERCLIP_API_KEY=pcp_x" in files.dotenv
-    for line in ("PAPERCLIP_API_URL", "http://paperclip.internal:3100\n", "PAPERCLIP_AGENT_ID", "agent-1"):
-        assert line.strip() in files.dotenv
-    assert "PAPERCLIP_COMPANY_ID" in files.dotenv and "company-1" in files.dotenv
-    assert "3100/" not in files.dotenv
-
-
-def test_dotenv_omits_an_unknown_company_rather_than_writing_it_empty(monkeypatch):
-    monkeypatch.setattr(hermes_profiles.settings, "PAPERCLIP_INTERNAL_URL", "http://paperclip.internal:3100")
-    files = hermes_profiles.write_agent_profile(
-        "org_1",
-        {"id": "agent-1", "name": "Friday", "role": "ceo"},
-        provider_choice="chatgpt_oauth",
-        paperclip_api_key="pcp_x",
-        integrations={},
-        env_vars={},
-    )
-    assert "PAPERCLIP_AGENT_ID" in files.dotenv
-    assert "PAPERCLIP_COMPANY_ID" not in files.dotenv
+    assert "LIGHTBULB_AGENT_ID=agent-1" in files.dotenv and "PAPERCLIP_AGENT_ID=agent-1" in files.dotenv
+    for gone in ("PAPERCLIP_API_KEY", "PAPERCLIP_API_URL", "PAPERCLIP_COMPANY_ID", "company-1"):
+        assert gone not in files.dotenv
 
 
 def test_stdio_mcp_servers_get_the_agents_profile_home():

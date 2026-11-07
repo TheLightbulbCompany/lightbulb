@@ -21,7 +21,7 @@
 - **The voice engine is OpenAI by default for phone, Meet and the in-app orb** (founder, 7 Nov, late; the audit supports it, and we already hold the key and credits). Gemini Live is a fallback flag only.
   - The models are `gpt-realtime-2.1-mini` / `gpt-realtime-2.1` and the transcriber `gpt-live-transcribe`. `gpt-realtime` and `gpt-realtime-mini` retire on 20 Jan 2027, and `gpt-4o-mini-transcribe` on 26 Feb 2027.
   - The one-vendor lane (`feat/voice-openai-engine`) makes the phone and Meet switch. Task 33 covers what that PR leaves.
-  - Tasks that relied on Gemini specifics (proactive audio / decide-not-to-respond, the Gemini-TTS greeting, Gemini session resumption) follow the OpenAI engine: the gate owns `response.create`, the greeting is pre-rendered TTS, and sessions renew before the 60-minute maximum.
+  - Tasks that relied on Gemini specifics (proactive audio / decide-not-to-respond, the Gemini-TTS greeting, Gemini session resumption) follow the OpenAI engine: the gate owns `response.create`, the verbatim opening uses LiveKit's and OpenAI realtime's own documented mechanism (the one-vendor lane implements it, measured over ≥20 runs; never a pre-rendered or recorded greeting, founder ruling), and sessions renew before the 60-minute maximum.
 - Numbers: an onboarding choice (founder, 7 Nov, late): **keep my number** (forward it: missed and busy by default, or all calls) or **get a new number**. Both get a dedicated number, bought at Go live ($1.15/mo). Purchasing is gated on Twilio KYC; until then the configured prod number serves the founder's test. Porting is a later opt-in (Tasks 11, 30).
 
 **Independent audit folded in:** `~/Lightbulb/super-agent-design/evidence/voice/07-decisions-vs-practice-nov2026.md`. It covers:
@@ -44,6 +44,7 @@
 - Bookings, moves, cancels and message callback numbers are read back and confirmed by the caller, and the tool enforces it, not the prompt (audit, experts item 1; Task 34).
 - Latency target, phone: mouth-to-ear p95 ≤ 1,400 ms on non-tool turns, aiming for 1,115 ms (Twilio, cited in the audit G). Meet keeps its 3 s quiet rule and states its own target in Task 37.
 - Eval bar: every scenario passes 3 of 3, and the aggregate is ≥ 90%, including noisy, phone-line and accented runs. "Sellable" also needs 20+ real dial-ins by people other than the builder (Task 39).
+- **Golden path, never a hack** (founder, 7 Nov, late): where a vendor documents a way to do something, use it. Every implementer checks vendor docs, official examples and established open source first, and cites them in the PR.
 - Ponytail: shortest diff, reuse existing code (`integration_reads`, `questions`, `start_voice_work`, `SettingsPlace`, `HuddleProvider`). Every task is one PR with its test, `/simplify` on the diff, a fresh reviewer PASS posted on the PR, then merge.
 - UI tasks (marked **[UI]**) load the `impeccable:impeccable` skill, match the named mockup file, work at 375 px width and in dark mode, and get a Chrome walk on dev plus one in the Mac app, with screenshots in `~/Lightbulb/super-agent-design/evidence/end-state/`.
 - Spend: only what the founder goal allows (Twilio ≤ $5/day, voice model (OpenAI or Gemini) ≤ $5/day, Recall ≤ 3 h/day). Anything else is in Founder-only items and waits for a go.

@@ -53,6 +53,8 @@ export interface AgentConfig {
   handoff: { number: string; onlyOpenHours: boolean };
   meetings: { followUps: boolean; emailNotes: boolean };
   reminders: { dayBefore: boolean; missedCallers: boolean; waitlist: boolean };
+  /** Past the included minutes: keep answering at the overage rate, or send calls to the owner's phone. */
+  runOut?: "keep" | "phone";
   /** Onboarding: what the owner typed in step 1, and the step to resume at (absent once it went live). */
   business?: string; city?: string; website?: string; onboardingStep?: number;
 }
@@ -116,3 +118,25 @@ export const callNeedsYou = (i: TimelineItem): i is CallItem =>
 
 export const mmss = (sec?: number) => sec == null ? "" : `${Math.floor(sec / 60)}:${String(Math.round(sec % 60)).padStart(2, "0")}`;
 export const who = (c: CallItem) => c.callerName || c.caller || "Unknown caller";
+
+/** Whole minutes of calls this month (the Home foot and the Billing card's fallback). */
+export function monthMinutes(items: TimelineItem[], now = new Date()): number {
+  const start = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+  return Math.round(items.filter((i): i is CallItem => i.type === "call" && i.at >= start)
+    .reduce((s, c) => s + (c.durationSec ?? 0), 0) / 60);
+}
+
+export interface Usage { minutes: number; included: number; overageRate: number; runOut: "keep" | "phone" }
+
+/** GET /voice/usage (Task 13). Until it ships (404) this month's minutes come from the timeline: $250 plan, 1,500 included, $0.35/min after. */
+export function useUsage() {
+  const api = useApi();
+  const { data: items } = useTimeline();
+  const swr = useSWR("/voice/usage", async () => {
+    try { return (await api.get("/voice/usage")) as Usage; }
+    catch (e) { if ((e as { status?: number }).status === 404) return null; throw e; }
+  });
+  if (swr.data) return { data: swr.data, isLoading: false };
+  if (swr.data === null && items) return { data: { minutes: monthMinutes(items), included: 1500, overageRate: 0.35, runOut: "keep" } as Usage, isLoading: false };
+  return { data: undefined, isLoading: true };
+}

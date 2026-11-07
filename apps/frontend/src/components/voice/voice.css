@@ -176,3 +176,14 @@ textarea.vx-field { resize: vertical; }
   .vx-foot-actions { justify-content: space-between; }
   .vx-foot-actions > :last-child { flex-basis: 100%; }
 }
+
+/* Settings */
+.vx-settings { display: grid; gap: 28px; max-width: 880px; }
+.vx-settings .settings-panel { max-width: none; }
+.vx-billing { display: grid; gap: 10px; }
+.vx-minutes { color: var(--fg-soft); font-size: var(--text-ui); }
+.vx-minutes .vx-number { color: var(--fg); }
+.vx-meter { height: 6px; border-radius: 999px; background: var(--plane-edge); overflow: hidden; }
+.vx-meter > span { display: block; height: 100%; border-radius: inherit; background: var(--fg); }
+.vx-runout { border: 0; padding: 0; margin: 6px 0 0; min-width: 0; }
+.vx-runout legend { margin-bottom: 8px; }

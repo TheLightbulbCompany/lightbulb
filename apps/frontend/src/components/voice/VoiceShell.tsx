@@ -1,7 +1,7 @@
 "use client";
 
 // The four places on web (rail) and phone (bottom tabs): Home · Needs you · Agent · Settings (spec 2026-11-07 §5).
-// Settings is the existing Settings place, opened inside the workspace shell.
+// Settings is /voice/settings: the existing Settings panels, rendered here beside the rail.
 import "./voice.css";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -20,7 +20,7 @@ const PLACES = [
   { href: "/voice", label: "Home", Icon: Home },
   { href: "/voice/needs-you", label: "Needs you", Icon: CircleAlert },
   { href: "/voice/agent", label: "Agent", Icon: PhoneCall },
-  { href: "/chat?panel=settings", label: "Settings", Icon: Settings },
+  { href: "/voice/settings", label: "Settings", Icon: Settings },
 ] as const;
 
 export function VoiceShell({ children }: { children: React.ReactNode }) {

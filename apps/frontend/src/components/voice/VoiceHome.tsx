@@ -11,7 +11,7 @@ import { useAssistantDm } from "@/components/huddle/TalkButton";
 import { Onboarding } from "./Onboarding";
 import { useNeedsYouTotal } from "./VoiceShell";
 import {
-  callNeedsYou, mmss, nameOf, needsOnboarding, useAgentConfig, useTimeline, who,
+  callNeedsYou, mmss, monthMinutes, nameOf, needsOnboarding, useAgentConfig, useTimeline, who,
   type CallItem, type MeetingItem, type Outcome, type TimelineItem,
 } from "./data";
 
@@ -60,9 +60,7 @@ export function VoiceHome() {
     return g;
   }, [shown]);
   const today = all.filter((i) => dayLabel(i.at) === "Today" && i.type === "call");
-  const month = new Date(); month.setDate(1); month.setHours(0, 0, 0, 0);
-  const minutes = Math.round(all.filter((i): i is CallItem => i.type === "call" && i.at >= month.getTime())
-    .reduce((s, c) => s + (c.durationSec ?? 0), 0) / 60);
+  const minutes = monthMinutes(all);
 
   if (config && needsOnboarding(config, isNew)) return <Onboarding config={config} save={save} />;
   return <div className="vx-home" data-pane={!!open}>

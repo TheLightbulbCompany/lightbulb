@@ -155,9 +155,11 @@ async def _admit_message(room_id: str, seq: int) -> None:
     ws = meta["ownerId"]
     await room_memory.ingest_message(ws, meta, msg)  # memory (M4): idempotent, never raises
     author = msg.get("author") or {}
+    if author.get("kind") == "system" and msg.get("actorUserId"):
+        # A computer's (CLI), the hosted MCP's or A2A's send for a signed-in person is that person's, as the
+        # legacy WORK#MESSAGE path woke it. Agent posts and system notices (no accountable person) stay dropped.
+        author = {"kind": "human", "id": msg["actorUserId"]}
     if author.get("kind") != "human" or not await router_room(meta, ws):
-        # ponytail: a switch turned off between write and admit drops this one message's wake;
-        # re-dispatching legacy WORK#MESSAGE rows here is not worth it for a dev-only flip.
         put_metric("admission.outcome", dimensions={"outcome": "dropped", "source": "chat"})
         return
     trigger_id = ts.trigger_id("chat", msg["messageId"])

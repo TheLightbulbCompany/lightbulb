@@ -10,10 +10,12 @@ as when they type in the DM; anyone else is refused.
 
 import asyncio
 import hashlib
+import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 
 from fastapi import APIRouter
-from pydantic import AfterValidator, Field
+from pydantic import AfterValidator, BaseModel, Field
 
 from core.dynamodb import utc_now_iso
 from core.repositories import messaging_repo
@@ -22,7 +24,7 @@ from core.services.voice_calls import _voice_requester
 from routers.huddles import RoomBody, _Id, _problem, _require_room_token, _room_id, _Worker
 from routers.internal_automations import VoiceStartIn, start_voice_work
 from routers.voice_meet import _calls, assistant_name
-from routers.voice_phone import _bookings
+from routers.voice_phone import _bookings, transcript_lines
 
 router = APIRouter(dependencies=[_Worker])
 
@@ -126,3 +128,56 @@ async def integration_read(room_id: str, body: IntegrationIn) -> dict:
     await _owner(room_id, body)
     out = await integration_reads.read(body.ownerId, body.provider, body.query, instructions=True)
     return out if isinstance(out, dict) else {"text": out}
+
+
+class WorkRef(BaseModel):
+    title: Annotated[str, Field(min_length=1, max_length=200)]
+    taskId: Annotated[str, Field(min_length=1, max_length=200)]
+
+
+class EndIn(OwnerIn):
+    sessionId: Annotated[str, Field(min_length=1, max_length=200)]  # the worker's job id: one talk, one row
+    durationSec: int = Field(ge=0, le=86400)
+    transcript: list[dict] = Field(default=[], max_length=2000)
+    work: list[WorkRef] = Field(default=[], max_length=50)  # start_work's tasks, in the order asked
+
+
+@router.post("/internal/voice/owner/{room_id}/end")
+async def end(room_id: str, body: EndIn) -> dict:
+    """The talk is kept as a hidden call room with `ownerMode`, a "Yours" row on Home: the transcript as phone
+    calls keep it, a one-line summary and the started tasks as follow-ups. A talk with nothing said is not kept."""
+    room_id, member, _agent = await _owner(room_id, body)
+    lines = transcript_lines(body.transcript)
+    if not lines:
+        return {"kept": False}
+    first = next((line["text"] for line in lines if line["who"] == "caller"), "")
+    did = "; ".join(w.title for w in body.work)
+    summary = " → ".join(x for x in (first and f"“{first[:120]}”", did) if x)
+    call = {
+        "startedAt": (datetime.now(UTC) - timedelta(seconds=body.durationSec)).isoformat(),
+        "endedAt": utc_now_iso(),
+        "durationSec": body.durationSec,
+        "status": "ended",
+        "outcome": "answered",
+        "summary": summary,
+        "transcript": lines,
+        "followUps": [{"text": w.title, "status": "working", "taskId": w.taskId} for w in body.work],
+        "ownerMode": True,
+        "resolvedAt": None,
+        "dmRoomId": room_id,
+    }
+    talk_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-owner-talk:{room_id}:{body.sessionId}"))
+    name = "You and the assistant"
+    members = [{"kind": "human", "id": member, "displayName": None, "mentionHandle": None, "role": "owner",
+                "listenMode": None}]  # fmt: skip
+    try:
+        await messaging_repo.create_room(
+            owner_id=body.ownerId, room_id=talk_id, client_room_id=f"owner-talk:{room_id}:{body.sessionId}",
+            creator_user_id=member, name=name, kind="call", members=members,
+            req_hash=messaging_repo.request_hash(name, "call", talk_id),
+            extra={"call": call, "hidden": True, "ownerUserId": member},
+        )  # fmt: skip
+    except messaging_repo.MessagingRepoError:
+        if await messaging_repo.get_room(talk_id) is None:  # a retry keeps the row it made
+            raise
+    return {"kept": True, "roomId": talk_id}

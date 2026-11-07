@@ -7,3 +7,6 @@
 97e077a7d63d10518f5f5f6664e32da8d4a1598f:apps/desktop/src-tauri/src/local_sessions.rs:jwt:3401
 97e077a7d63d10518f5f5f6664e32da8d4a1598f:apps/desktop/src-tauri/src/local_sessions.rs:generic-api-key:3409
 4e16669160b2a64e351f07c96d0a25f3a522b222:apps/desktop/src-tauri/src/local_sessions.rs:jwt:3508
+# Restored Mac app (#5002): public Apple API issuer id in the workflow, and a redaction-test fixture ("...MIIE...MIIF") in the Rust tests.
+e7f42a500f28163825ce557547981d47436368c5:.github/workflows/desktop-build.yml:generic-api-key:67
+e7f42a500f28163825ce557547981d47436368c5:apps/desktop/src-tauri/src/local_sessions.rs:private-key:4084

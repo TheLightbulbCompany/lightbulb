@@ -12,12 +12,13 @@ Rows in the messaging table:
     OWNER#<owner>   VOICEBOOK#<local>     one booking in the assistant's own calendar (local start "YYYY-MM-DDTHH:MM");
                                           with bookingsGo "google" it is the hold, eventId its Google event
                                           (core/services/voice_booking)
-    OWNER#<owner>   VOICECALLER#<e164>    a caller seen before: name, last call
+    OWNER#<owner>   VOICECALLER#<e164>    a caller seen before: name, last call, facts (<= 10, newest first), visits
 """
 
 import asyncio
 import functools
 import hashlib
+import re
 import logging
 import uuid
 from datetime import datetime, timedelta
@@ -193,7 +194,7 @@ async def start_call(body: StartIn) -> dict:
         "booking": "",
         "steps": [],
         "transcript": [],
-        "callerMemory": [],
+        "callerMemory": list((seen or {}).get("facts", [])) if cfg["allow"]["greetByName"] else [],
         "ownerMode": False,
         "resolvedAt": None,
         "calledNumber": body.calledNumber,
@@ -233,6 +234,7 @@ async def start_call(body: StartIn) -> dict:
         "facts": _facts(cfg) if allow["answer"] and not paused else "",
         "instructions": cfg["instructions"][:4000],
         "callerName": call["callerName"] if allow["greetByName"] else "",
+        "callerMemory": call["callerMemory"],
         "can": {k: bool(allow[k]) and not paused for k in ("book", "move", "answer")},
         "transfer": bool(cfg["handoff"]["number"]),
         "today": datetime.now(_tz(cfg)).strftime("%A %Y-%m-%d %H:%M"),
@@ -269,17 +271,23 @@ def outcome_of(call: dict) -> str:
     return "message" if call.get("messages") else "answered"
 
 
-@router.post("/internal/voice/calls/{call_id}/end")
-async def end_call(call_id: str, body: EndIn) -> dict:
+def transcript_lines(transcript: list[dict]) -> list[dict]:
+    """The worker's lines as the record keeps them: `{who: caller|assistant, text, t}`; anyone else is dropped."""
     who = {"user": "caller", "caller": "caller", "assistant": "assistant"}
     lines = []
-    for t in body.transcript:
+    for t in transcript:
         if str(t.get("role") or t.get("who")) not in who:
             continue
         line = {"who": who[str(t.get("role") or t.get("who"))], "text": str(t.get("text", ""))[:2000]}
         if isinstance(t.get("t"), (int, float)) and not isinstance(t["t"], bool):
             line["t"] = round(min(max(float(t["t"]), 0.0), 86400.0), 1)  # seconds since the call started
         lines.append(line)
+    return lines
+
+
+@router.post("/internal/voice/calls/{call_id}/end")
+async def end_call(call_id: str, body: EndIn) -> dict:
+    lines = transcript_lines(body.transcript)
 
     def change(call: dict) -> dict:
         return {"status": "ended", "endedAt": utc_now_iso(), "durationSec": body.durationSec,
@@ -291,11 +299,47 @@ async def end_call(call_id: str, body: EndIn) -> dict:
     meta, _ = await _call(call_id)
     out = await _patch_call(call_id, change)
     if out.get("caller"):
-        item = {**_caller_key(meta["ownerId"], out["caller"]), "lastCallAt": out["endedAt"], "lastCallId": call_id}
-        if out.get("callerName"):
-            item["name"] = out["callerName"]
+        seen = await _seen(meta["ownerId"], out["caller"]) or {}
+        item = {**_caller_key(meta["ownerId"], out["caller"]), "lastCallAt": out["endedAt"], "lastCallId": call_id,
+                "visits": int(seen.get("visits", 0)) + 1}  # fmt: skip
+        if seen.get("forgottenAt"):
+            item["forgottenAt"] = seen["forgottenAt"]
+        if seen.get("forgottenAt") and datetime.fromisoformat(seen["forgottenAt"]) >= datetime.fromisoformat(
+            out["startedAt"]
+        ):
+            item["facts"] = seen.get("facts", [])  # Forgotten during this call: write neither name nor facts
+        else:
+            item["facts"] = list(dict.fromkeys([*out.get("remembered", [])[::-1], *seen.get("facts", [])]))[:MAX_FACTS]
+            if out.get("callerName") or seen.get("name"):
+                item["name"] = out.get("callerName") or seen["name"]
         await run_in_thread(messaging_repo._table().put_item, Item=item)
     return out
+
+
+MAX_FACTS = 10
+
+
+class RememberIn(BaseModel):
+    fact: Annotated[str, Field(min_length=1, max_length=120)]
+    kind: Literal["caller", "business"] = "caller"
+
+
+@router.post("/internal/voice/calls/{call_id}/remember")
+async def remember(call_id: str, body: RememberIn) -> dict:
+    """A caller's own preference (kept on their row at the end of the call) or a fact about the business (cfg toAdd)."""
+    meta, call = await _call(call_id)
+    if _line_state(await agent_config(meta["ownerId"]), call.get("caller", "")) != "live":
+        raise _err(403, "not_allowed")
+    if re.search(r"\d{12,}", re.sub(r"\D", "", body.fact)):  # card-like: never stored
+        raise _err(400, "looks_like_a_card")
+    if body.kind == "business":
+        cfg = await messaging_repo.get_voice_agent(meta["ownerId"]) or {}
+        await messaging_repo.put_voice_agent(
+            meta["ownerId"], {**cfg, "toAdd": list(dict.fromkeys([*cfg.get("toAdd", []), body.fact]))[-20:]}, "voice"
+        )
+    else:
+        await _patch_call(call_id, lambda c: {"remembered": [*c.get("remembered", []), body.fact][-MAX_FACTS:]})
+    return {"remembered": True}
 
 
 # --- the assistant's own calendar (spec §4.1b: a hold in its calendar when the business has no API) --------

@@ -224,6 +224,8 @@ export interface ServiceStackProps extends cdk.StackProps {
   livekitAgentName?: string;
   /** E.164 phone line this env gives out; empty = onboarding answers not_available. */
   voiceLineNumber?: string;
+  /** Recall Google Login Group id the Meet bot signs in with; empty = anonymous bot. */
+  recallGoogleLoginGroupId?: string;
   /**
    * The Accounts v2 API version pinned on the company account/account-link
    * calls (`Stripe-Version` header). Empty ⇒ the provisioning preview.
@@ -1831,6 +1833,7 @@ export class ServiceStack extends cdk.Stack {
         : (process.env.STRIPE_PUBLISHABLE_KEY_PROD ?? ""),
       LIVEKIT_URL: props.livekitUrl ?? "",
       VOICE_LINE_NUMBER: props.voiceLineNumber ?? "",
+      RECALL_GOOGLE_LOGIN_GROUP_ID: props.recallGoogleLoginGroupId ?? "",
       ...(props.livekitAgentName ? { LIVEKIT_AGENT_NAME: props.livekitAgentName } : {}),
       // Accounts v2 API version pin for the company account/account-link
       // calls. Empty ⇒ the provisioning preview.

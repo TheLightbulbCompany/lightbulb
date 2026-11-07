@@ -21,6 +21,7 @@ from livekit.plugins import google, openai
 
 from huddle_agent import end_after
 from huddle_agent.backend import Backend, BackendError
+from huddle_agent.phone import clean_transcript
 
 logger = logging.getLogger("owner")
 OWNER_MAX_S = float(os.environ.get("OWNER_MAX_S", 20 * 60))  # cost cap, like a phone call
@@ -60,6 +61,7 @@ class OwnerAgent(Agent):
     def __init__(self, backend: Backend, speaker: str, info: dict) -> None:
         super().__init__(instructions=INSTRUCTIONS.format(**info))
         self._b, self._speaker = backend, speaker
+        self.work: list[dict] = []  # the tasks this talk started: its follow-ups on Home
 
     async def _post(self, op: str, body: dict) -> dict:
         try:
@@ -109,7 +111,16 @@ class OwnerAgent(Agent):
         out = await self._post("start-work", {"title": title, "brief": brief})
         if out.get("already"):
             out["say"] = "already on it"
+        ref = {"title": title, "taskId": out.get("taskId")}
+        if ref["taskId"] and ref not in self.work:
+            self.work.append(ref)
         return out
+
+
+def talk_record(agent: OwnerAgent, items: list[dict], session_id: str, seconds: float) -> dict:
+    """What `/owner/{room}/end` keeps as the "Yours" row: the transcript as phone calls keep it, and the tasks."""
+    return {"speakerUserId": agent._speaker, "sessionId": session_id, "durationSec": int(seconds),
+            "transcript": clean_transcript(items), "work": agent.work}  # fmt: skip
 
 
 async def run(ctx: JobContext, meta: dict) -> None:
@@ -127,6 +138,14 @@ async def run(ctx: JobContext, meta: dict) -> None:
         "name": name, "who": member.name or "the owner", "today": time.strftime("%A %Y-%m-%d"),
     })  # fmt: skip
     session = AgentSession(llm=realtime_model(), user_away_timeout=AWAY_S)
+    items: list[dict] = []
+    t0 = time.time()
+
+    @session.on("conversation_item_added")  # LiveKit's documented per-turn event: each final user/agent line
+    def _item(ev) -> None:
+        if text := getattr(ev.item, "text_content", None):
+            at = (ev.item.metrics or {}).get("started_speaking_at") or ev.item.created_at
+            items.append({"role": ev.item.role, "text": text, "t": at - t0, "interrupted": ev.item.interrupted})
     attrs = ctx.room.local_participant.set_attributes
 
     @session.on("agent_state_changed")
@@ -149,7 +168,8 @@ async def run(ctx: JobContext, meta: dict) -> None:
 
     session.on("close", lambda _ev: ctx.shutdown("session closed"))
     limit = asyncio.create_task(end_after(OWNER_MAX_S, session, lambda: leave("owner max length")))
-    ctx.add_shutdown_callback(lambda _reason="": _close(limit, backend))
+    record = lambda: talk_record(agent, items, ctx.job.id, time.time() - t0)  # noqa: E731
+    ctx.add_shutdown_callback(lambda _reason="": _close(limit, backend, record))
     # the web's Talk RPC (HuddleProvider.talkStart): nothing to summon here, the session already listens
     ctx.room.local_participant.register_rpc_method("talk_start", lambda _data: "ok")
     await session.start(
@@ -166,6 +186,11 @@ async def run(ctx: JobContext, meta: dict) -> None:
     logger.info("owner: listening in room %s as %s", meta["roomId"], name)
 
 
-async def _close(limit: asyncio.Task, backend: Backend) -> None:
+async def _close(limit: asyncio.Task, backend: Backend, record) -> None:
     limit.cancel()
-    await backend.aclose()
+    try:
+        await backend.owner("end", record())  # the talk becomes a "Yours" row on Home
+    except BackendError as e:
+        logger.warning("owner: talk not kept (%s)", e.code)
+    finally:
+        await backend.aclose()

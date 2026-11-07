@@ -123,3 +123,59 @@ async def test_integration_read_goes_through_the_shared_reader(m):
         )
     assert out == {"text": "Dentist at 2026-11-09T10:00"}
     r.assert_awaited_once_with("org_1", "calendar", "", instructions=True)  # owner mode: the private instructions
+
+
+async def test_owner_end_creates_yours_item(m):
+    """A talk on the orb is kept as a hidden call room: the transcript, a one-line summary and its follow-ups."""
+    from routers import voice
+
+    body = voice_owner.EndIn(
+        ownerId="org_1", roomToken="t", speakerUserId="user_maya", sessionId="job_1", durationSec=42,
+        transcript=[{"who": "caller", "text": "Anything I need to handle?", "t": 0.4},
+                    {"who": "assistant", "text": "Priya moved to 11:30. I'm drafting the post.", "t": 2.1},
+                    {"who": "nobody", "text": "dropped"}],
+        work=[{"title": "Draft the holiday-hours post", "taskId": "k-1"}],
+    )  # fmt: skip
+    with patch.object(voice_owner.messaging_repo, "create_room", AsyncMock()) as create:
+        out = await voice_owner.end(ROOM, body)
+    kw = create.await_args.kwargs
+    assert (kw["owner_id"], kw["kind"], kw["room_id"]) == ("org_1", "call", out["roomId"])
+    assert kw["extra"]["hidden"] is True and kw["members"][0]["id"] == "user_maya"
+    call = kw["extra"]["call"]
+    assert call["ownerMode"] is True and call["durationSec"] == 42 and call["status"] == "ended"
+    assert call["transcript"] == [{"who": "caller", "text": "Anything I need to handle?", "t": 0.4},
+                                  {"who": "assistant", "text": "Priya moved to 11:30. I'm drafting the post.", "t": 2.1}]  # fmt: skip
+    assert call["summary"] == "“Anything I need to handle?” → Draft the holiday-hours post"
+    assert call["followUps"] == [{"text": "Draft the holiday-hours post", "status": "working", "taskId": "k-1"}]
+    item = voice._item({"roomId": out["roomId"], "kind": "call", "createdAt": "2026-11-07T08:02:00Z", "call": call})
+    assert item["type"] == "call" and item["ownerMode"] is True  # the "Yours" chip's test
+
+
+async def test_a_talk_with_nothing_said_is_not_kept(m):
+    body = voice_owner.EndIn(
+        ownerId="org_1", roomToken="t", speakerUserId="user_maya", sessionId="job_2", durationSec=3
+    )
+    with patch.object(voice_owner.messaging_repo, "create_room", AsyncMock()) as create:
+        assert await voice_owner.end(ROOM, body) == {"kept": False}
+    create.assert_not_awaited()
+
+
+async def test_only_the_seated_member_can_keep_a_talk(m):
+    body = voice_owner.EndIn(ownerId="org_1", roomToken="t", speakerUserId="user_other", sessionId="j", durationSec=1)
+    with pytest.raises(HTTPException) as e:
+        await voice_owner.end(ROOM, body)
+    assert e.value.status_code == 403
+
+
+async def test_a_retried_end_keeps_the_row_it_made(m):
+    body = voice_owner.EndIn(
+        ownerId="org_1", roomToken="t", speakerUserId="user_maya", sessionId="job_1", durationSec=5,
+        transcript=[{"who": "caller", "text": "Hi", "t": 0.1}],
+    )  # fmt: skip
+    conflict = AsyncMock(side_effect=voice_owner.messaging_repo.MessagingRepoError("exists"))
+    with patch.object(voice_owner.messaging_repo, "create_room", conflict):
+        first = await voice_owner.end(ROOM, body)  # get_room (the fixture) finds the row: a replay
+        assert first["kept"] is True
+        with patch.object(voice_owner.messaging_repo, "get_room", AsyncMock(side_effect=[META, None])):
+            with pytest.raises(voice_owner.messaging_repo.MessagingRepoError):
+                await voice_owner.end(ROOM, body)  # no row behind the error: it is raised

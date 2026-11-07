@@ -295,29 +295,6 @@ async def test_set_stripe_customer_id_is_a_first_writer_wins_claim(dynamodb_tabl
 
 
 @pytest.mark.asyncio
-async def test_set_nightly_ceo_opted_out_sets_and_clears(dynamodb_table):
-    from core.repositories import billing_repo
-
-    await billing_repo.create_if_not_exists("opt_owner", "cus_opt")
-
-    await billing_repo.set_nightly_ceo_opted_out("opt_owner", True)
-    assert (await billing_repo.get_by_owner_id("opt_owner"))["nightly_ceo_opted_out"] is True
-
-    await billing_repo.set_nightly_ceo_opted_out("opt_owner", False)
-    assert (await billing_repo.get_by_owner_id("opt_owner"))["nightly_ceo_opted_out"] is False
-
-
-@pytest.mark.asyncio
-async def test_set_nightly_ceo_opted_out_no_row_is_silent_noop(dynamodb_table):
-    """A missing row (never a paid owner, so never armed) is a silent no-op —
-    no raise, no phantom row."""
-    from core.repositories import billing_repo
-
-    await billing_repo.set_nightly_ceo_opted_out("opt_ghost", True)
-    assert await billing_repo.get_by_owner_id("opt_ghost") is None
-
-
-@pytest.mark.asyncio
 async def test_try_claim_checkout_slot_first_claim_wins(dynamodb_table):
     from core.repositories import billing_repo
 

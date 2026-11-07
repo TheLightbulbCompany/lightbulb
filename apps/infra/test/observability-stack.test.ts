@@ -849,7 +849,7 @@ describe("ObservabilityStack", () => {
   // backend-liveness.
 });
 
-describe("ObservabilityStack — watchdog alarms P48-P51 (dev only, spec 11)", () => {
+describe("ObservabilityStack — watchdog alarms P48-P51 (dev + prod, spec 11)", () => {
   const dev = buildTemplate("dev");
   const alarm = (id: string) =>
     (Object.values(dev.findResources("AWS::CloudWatch::Alarm")) as any[])
@@ -882,8 +882,8 @@ describe("ObservabilityStack — watchdog alarms P48-P51 (dev only, spec 11)", (
     }
   });
 
-  test("prod synth has no watchdog alarms", () => {
-    expect(JSON.stringify(PROD_TEMPLATE.findResources("AWS::CloudWatch::Alarm"))).not.toMatch(/watchdog/i);
+  test("prod synth has the watchdog alarms", () => {
+    expect(JSON.stringify(PROD_TEMPLATE.findResources("AWS::CloudWatch::Alarm"))).toMatch(/watchdog/i);
   });
 });
 

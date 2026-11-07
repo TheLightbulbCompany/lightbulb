@@ -115,33 +115,6 @@ async def test_dry_run_writes_nothing():
 
 
 @pytest.mark.asyncio
-async def test_arm_nightly_ceo_flag_off_after_resume():
-    """Re-entitlement resumes what our pause took; with the dev switch off nothing stays on a timer."""
-    fake, repo = FakePaperclip(), _repo()
-    fake.agents["ceo1"]["runtimeConfig"]["heartbeat"] = {"enabled": False}
-
-    async def resume(owner_id):
-        fake.agents["ceo1"]["runtimeConfig"]["heartbeat"] = {"enabled": True}
-        return {"heartbeats_resumed": 1, "routines_resumed": 0}
-
-    p = _lifecycle_patches(fake, repo)
-    with (
-        p[0],
-        p[1],
-        p[2],
-        p[3],
-        p[4],
-        patch.object(user_provision.settings, "NIGHTLY_CEO_HEARTBEATS_ENABLED", False),
-        patch.object(
-            user_provision.billing_repo, "get_by_owner_id", AsyncMock(return_value={"subscription_status": "active"})
-        ),
-        patch.object(user_provision, "resume_owner_automation", AsyncMock(side_effect=resume)),
-    ):
-        assert await user_provision.arm_nightly_ceo("org_p") == "heartbeats_disabled"
-    assert fake.enabled() == []
-
-
-@pytest.mark.asyncio
 async def test_script_refuses_prod():
     from scripts import disable_paperclip_timers as script
 

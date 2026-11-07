@@ -1117,7 +1117,7 @@ describe("ApiStack — message search (OpenSearch Serverless)", () => {
   });
 });
 
-describe("ApiStack — super-agent tasks table (contracts-v2 §3, dev only)", () => {
+describe("ApiStack — super-agent tasks table (contracts-v2 §3, dev + prod)", () => {
   const SCHEMA = JSON.parse(
     fs.readFileSync(
       path.join(__dirname, "../../../packages/shared/fixtures/super-agent/tasks-schema.json"),
@@ -1158,8 +1158,8 @@ describe("ApiStack — super-agent tasks table (contracts-v2 §3, dev only)", ()
     expect(SCHEMA.gsis.map((g) => g.name)).toEqual(["by-status", "ws-meta"]);
   });
 
-  test("prod synth has no tasks table", () => {
-    expect(tasksTable(synthApiStack("prod"))).toHaveLength(0);
+  test("prod synth has the tasks table", () => {
+    expect(tasksTable(synthApiStack("prod"))).toHaveLength(1);
   });
 
   const projectorSources = (template: Template) =>
@@ -1194,8 +1194,8 @@ describe("ApiStack — super-agent tasks table (contracts-v2 §3, dev only)", ()
     expect(() => parsePath({ info: { channel: { path: `/ws/${WS}/tasks/x` } } })).toThrow();
   });
 
-  test("prod synth unchanged", () => {
-    expect(wsHandlerCode("t", "prod")).not.toMatch(/tasks/);
-    expect(projectorSources(synthApiStack("prod"))).toHaveLength(1);
+  test("prod synth carries the tasks channel and projector source", () => {
+    expect(wsHandlerCode("t", "prod")).toMatch(/tasks/);
+    expect(projectorSources(synthApiStack("prod"))).toHaveLength(2);
   });
 });

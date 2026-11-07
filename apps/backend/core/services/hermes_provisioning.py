@@ -747,22 +747,9 @@ async def delete_workspace_runtime(
     ``routers/debug.py``'s ``DELETE /debug/user-data`` (the e2e
     empty-slate reset; debug is 403 in prod). Do not re-broaden it.
 
-    Before any of that, pause the owner's Paperclip routines and timer heartbeats
-    (``pause_owner_automation``): with no runtime, every scheduled wake files a task that
-    can only block. Best-effort -- a Paperclip failure never blocks the teardown. A
-    reprovision resumes them (the executor's ``arm_nightly_ceo``).
-
     Returns the containers row as it was at the instant it was deleted, or None when
     there was none.
     """
-    try:
-        from core.services.paperclip_agent_lifecycle import pause_owner_automation
-
-        await pause_owner_automation(owner_id)
-    except Exception:  # noqa: BLE001 -- never block a teardown on Paperclip
-        logger.exception("teardown: pausing Paperclip automation failed for owner=%s", owner_id)
-        put_metric("paperclip.automation.pause", dimensions={"outcome": "error"})
-
     container = await container_repo.get_by_owner_id(owner_id)
     if container:
         owed = None
@@ -1315,18 +1302,17 @@ async def _reconcile_runtime_to_billing(owner_id: str) -> str:
 
 async def _reconcile_entitlements(owner_id: str) -> bool:
     """Idempotent, never raises -- each failure is logged + metered. Returns whether the Metronome
-    ensure succeeded (``reconcile_runtime`` fails on False so the machine retries); the nightly
-    CEO arm's failure is not reported.
+    ensure succeeded (``reconcile_runtime`` fails on False so the machine retries); the proactive
+    ensure's failure is not reported.
 
     * Metronome customer: ``ensure_metronome_customer`` owns eligibility (a ``trial_local`` or
       canceled owner gets nothing). Skipped only on a POSITIVE ChatGPT/BYO choice -- inference
       we never bill -- never on absence: under-provisioning reopens uncredited managed spend.
-    * Nightly CEO: ``arm_nightly_ceo`` (paid or unexpired trial) re-derives the CEO's timer
-      heartbeat interval from today's billing, so a plan or provider switch moves it and a
-      re-subscribe whose runtime survived teardown is re-armed by this reconcile."""
+    * Proactive: ``proactive.ensure`` follows today's billing, so a plan change or a re-subscribe
+      turns the paying-only automations on or off."""
     from core.billing.metronome_provisioning import ensure_metronome_customer
     from core.repositories import billing_repo
-    from core.services.user_provision import arm_nightly_ceo
+    from core.services import proactive
 
     try:
         account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True) or {}
@@ -1338,9 +1324,9 @@ async def _reconcile_entitlements(owner_id: str) -> bool:
         logger.exception("reconcile: Metronome customer ensure failed for owner=%s", owner_id)
         metronome_ok = False
     try:
-        await arm_nightly_ceo(owner_id)
-    except Exception:  # noqa: BLE001 -- arm_nightly_ceo already emitted nightly_ceo.arm{status=error}
-        logger.exception("reconcile: nightly CEO arm failed for owner=%s", owner_id)
+        await proactive.ensure(owner_id)
+    except Exception:  # noqa: BLE001 -- the daily schedule reconcile ensures it again
+        logger.exception("reconcile: proactive ensure failed for owner=%s", owner_id)
     return metronome_ok
 
 

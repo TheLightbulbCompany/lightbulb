@@ -182,7 +182,7 @@ class World:
         self.metronome = AsyncMock(return_value="cust")
         self.arm = AsyncMock(return_value="armed")
         mp.setattr("core.billing.metronome_provisioning.ensure_metronome_customer", self.metronome)
-        mp.setattr("core.services.user_provision.arm_nightly_ceo", self.arm)
+        mp.setattr("core.services.proactive.ensure", self.arm)
 
     def provider_of_profiles(self) -> set[str]:
         return {yaml.safe_load(cfg)["model"]["provider"] for cfg in self.profiles.values()}
@@ -484,7 +484,7 @@ async def test_a_failed_row_read_is_a_counted_reconcile_failure(monkeypatch, boo
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("row", [{}, {"status": "provisioning"}])
-async def test_reconcile_ensures_the_metronome_customer_and_arms_the_nightly_ceo(monkeypatch, boot_secrets, row):
+async def test_reconcile_ensures_the_metronome_customer_and_the_proactive_layer(monkeypatch, boot_secrets, row):
     """A Stripe re-entitlement (trial->paid, re-subscribe) reaches both through its reconcile --
     whether the runtime is live or the reconcile hands off to the provision funnel."""
     world = World(monkeypatch, billing=BILLING["openrouter_managed"], row=row)
@@ -520,7 +520,7 @@ async def test_a_metronome_failure_fails_the_reconcile_after_the_runtime_work(mo
 
 
 @pytest.mark.asyncio
-async def test_a_nightly_arm_failure_does_not_fail_the_reconcile(monkeypatch, boot_secrets):
+async def test_a_proactive_failure_does_not_fail_the_reconcile(monkeypatch, boot_secrets):
     world = World(monkeypatch, billing=BILLING["openrouter_managed"])
     world.arm.side_effect = RuntimeError("paperclip down")
 

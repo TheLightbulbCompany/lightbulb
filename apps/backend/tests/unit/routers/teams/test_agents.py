@@ -45,40 +45,29 @@ def client(teams_ctx, monkeypatch):
 
     monkeypatch.setattr(agents_mod, "_load_agent_sidecars", AsyncMock(return_value={}))
     monkeypatch.setattr(agents_mod, "get_starter_agent_ids", AsyncMock(return_value=set()))
+    from core.auth import AuthContext, get_current_user
+
     app.dependency_overrides[agents_mod._ctx] = fake_ctx
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="u1", org_id="o1")
     try:
         yield TestClient(app)
     finally:
         app.dependency_overrides.pop(agents_mod._ctx, None)
+        app.dependency_overrides.pop(get_current_user, None)
 
 
-def test_list_agents_calls_upstream_with_user_session(client, monkeypatch):
-    admin = MagicMock()
-    admin.list_agents = AsyncMock(return_value={"agents": [{"id": "a1"}]})
-    from routers.teams import agents as agents_mod
+def _roster(monkeypatch, *agents):
+    """``GET /teams/agents`` reads the registry: seed its roster (status active unless given)."""
+    from core.services import agent_registry
 
-    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
-    monkeypatch.setattr(agents_mod, "get_seeded_agent_ids", AsyncMock(return_value=set()))
-
-    r = client.get(
-        "/api/v1/teams/agents",
-        headers={"Authorization": "Bearer test"},
-    )
-    assert r.status_code == 200
-    # Every item is stamped with a ``seeded`` flag (False here — no seeded ids).
-    assert r.json() == {"agents": [{"id": "a1", "seeded": False, "origin": "Custom"}]}
-    admin.list_agents.assert_awaited_once_with(
-        company_id="co_abc",
-        session_cookie="cookie-value",
-    )
+    rows = [{"status": "active", **a} for a in agents]
+    monkeypatch.setattr(agent_registry, "roster", AsyncMock(return_value=rows))
 
 
 def test_list_agents_stamps_seeded_flag(client, monkeypatch):
-    admin = MagicMock()
-    admin.list_agents = AsyncMock(return_value={"agents": [{"id": "friday_id"}, {"id": "user_id"}]})
     from routers.teams import agents as agents_mod
 
-    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    _roster(monkeypatch, {"id": "friday_id"}, {"id": "user_id"})
     monkeypatch.setattr(agents_mod, "get_seeded_agent_ids", AsyncMock(return_value={"friday_id"}))
 
     r = client.get("/api/v1/teams/agents", headers={"Authorization": "Bearer test"})
@@ -91,25 +80,21 @@ def test_list_agents_stamps_seeded_flag(client, monkeypatch):
 
 
 def test_list_agents_stamps_starter_without_seed_protection(client, monkeypatch):
-    admin = MagicMock()
-    admin.list_agents = AsyncMock(return_value={"agents": [{"id": "agent-ceo"}]})
     from routers.teams import agents as agents_mod
 
-    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    _roster(monkeypatch, {"id": "agent-ceo"})
     monkeypatch.setattr(agents_mod, "get_seeded_agent_ids", AsyncMock(return_value=set()))
     monkeypatch.setattr(agents_mod, "get_starter_agent_ids", AsyncMock(return_value={"agent-ceo"}))
 
     r = client.get("/api/v1/teams/agents", headers={"Authorization": "Bearer test"})
 
-    assert r.json() == {"agents": [{"id": "agent-ceo", "seeded": False, "origin": "Starter"}]}
+    assert r.json() == {"agents": [{"id": "agent-ceo", "status": "idle", "seeded": False, "origin": "Starter"}]}
 
 
 def test_list_agents_stamps_complete_marketplace_provenance(client, monkeypatch):
-    admin = MagicMock()
-    admin.list_agents = AsyncMock(return_value={"agents": [{"id": "agent_market"}]})
     from routers.teams import agents as agents_mod
 
-    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    _roster(monkeypatch, {"id": "agent_market"})
     monkeypatch.setattr(agents_mod, "get_seeded_agent_ids", AsyncMock(return_value=set()))
     monkeypatch.setattr(
         agents_mod,
@@ -131,6 +116,7 @@ def test_list_agents_stamps_complete_marketplace_provenance(client, monkeypatch)
     assert r.status_code == 200
     assert r.json()["agents"][0] == {
         "id": "agent_market",
+        "status": "idle",
         "seeded": False,
         "origin": "Marketplace",
         "marketplace": {
@@ -349,28 +335,6 @@ def test_create_agent_returns_upstream_status_on_paperclip_error(client, monkeyp
     assert body["detail"] == "Missing permission: agents:create"
 
 
-def test_list_agents_strips_adapter_config_per_item(client, monkeypatch):
-    admin = MagicMock()
-    admin.list_agents = AsyncMock(
-        return_value={
-            "agents": [
-                {"id": "a1", "name": "X", "adapterType": "openclaw_gateway", "adapterConfig": {"authToken": "SECRET"}},
-                {"id": "a2", "name": "Y", "adapterConfig": {"authToken": "SECRET2"}},
-            ],
-        }
-    )
-    from routers.teams import agents as agents_mod
-
-    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
-    monkeypatch.setattr(agents_mod, "get_seeded_agent_ids", AsyncMock(return_value=set()))
-
-    r = client.get("/api/v1/teams/agents", headers={"Authorization": "Bearer x"})
-    assert r.status_code == 200
-    for agent in r.json()["agents"]:
-        assert "adapterConfig" not in agent
-        assert "adapterType" not in agent
-
-
 def test_patch_agent_forwards_explicit_null_reports_to(client, monkeypatch):
     """Clearing a manager sends {"reportsTo": null}; the BFF must forward the
     null (exclude_unset, not exclude_none) so Paperclip makes the agent a root.
@@ -536,59 +500,13 @@ def test_legacy_runs_alias_proxies_heartbeat_run(client, monkeypatch):
     )
 
 
-def _heartbeat_toggle(client, monkeypatch, *, org_role="org:admin", agent_id="agent-ceo", enabled=False):
-    from core.auth import AuthContext, get_current_user
-    from routers.teams import agents as agents_mod
-
-    admin = MagicMock()
-    admin.get_agent = AsyncMock(return_value={"id": agent_id, "companyId": "co_abc"})
-    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
-    repo = MagicMock()
-    repo.resolve_owner_row = AsyncMock(
-        return_value=MagicMock(starter_agent_ids={"ceo": "agent-ceo"}, seeded_agent_ids=[])
-    )
-    monkeypatch.setattr(agents_mod, "_repo", lambda: repo)
-    set_opt = AsyncMock()
-    arm = AsyncMock(return_value="opted_out")
-    monkeypatch.setattr(agents_mod.billing_repo, "set_nightly_ceo_opted_out", set_opt)
-    monkeypatch.setattr(agents_mod, "arm_nightly_ceo", arm)
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="u1", org_id="o1", org_role=org_role)
-    try:
-        r = client.post(
-            f"/api/v1/teams/agents/{agent_id}/heartbeat",
-            json={"enabled": enabled},
-            headers={"Authorization": "Bearer test"},
-        )
-    finally:
-        app.dependency_overrides.pop(get_current_user, None)
-    return r, set_opt, arm
-
-
-def test_ceo_heartbeat_toggle_writes_the_opt_out_and_rearms(client, monkeypatch):
-    r, set_opt, arm = _heartbeat_toggle(client, monkeypatch, enabled=False)
-    assert r.status_code == 200, r.text
-    assert r.json() == {"status": "opted_out"}
-    set_opt.assert_awaited_once_with("o1", True)
-    arm.assert_awaited_once_with("o1")
-
-
-def test_heartbeat_toggle_is_admin_only_and_ceo_only(client, monkeypatch):
-    r, set_opt, _ = _heartbeat_toggle(client, monkeypatch, org_role="org:member")
-    assert r.status_code == 403
-    r, set_opt, _ = _heartbeat_toggle(client, monkeypatch, agent_id="agent-eng")
-    assert r.status_code == 400
-    set_opt.assert_not_awaited()
-
-
 def test_list_and_get_agent_name_the_front_agent_lightbulb(client, monkeypatch):
     """Dev walk R6: Paperclip calls the front agent "CEO"; under the switch the Team API says "Lightbulb"."""
     from routers.teams import agents as agents_mod
     from core.services import messaging
 
+    _roster(monkeypatch, {"id": "ceo", "name": "CEO"}, {"id": "g", "name": "Growth"})
     admin = MagicMock()
-    admin.list_agents = AsyncMock(
-        return_value={"agents": [{"id": "ceo", "name": "CEO"}, {"id": "g", "name": "Growth"}]}
-    )
     admin.get_agent = AsyncMock(return_value={"id": "ceo", "name": "CEO", "companyId": "co_abc"})
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
     monkeypatch.setattr(agents_mod, "get_seeded_agent_ids", AsyncMock(return_value=set()))
@@ -609,11 +527,7 @@ def test_list_agents_carries_each_agents_handle_under_the_switch(client, monkeyp
     from core.services import messaging
 
     ceo, growth = "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"
-    admin = MagicMock()
-    admin.list_agents = AsyncMock(
-        return_value={"agents": [{"id": ceo, "name": "CEO"}, {"id": growth, "name": "Growth"}]}
-    )
-    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    _roster(monkeypatch, {"id": ceo, "name": "CEO"}, {"id": growth, "name": "Growth"})
     monkeypatch.setattr(agents_mod, "get_seeded_agent_ids", AsyncMock(return_value=set()))
     monkeypatch.setattr(messaging, "_front_agent_id", AsyncMock(return_value=ceo))
     monkeypatch.setattr(

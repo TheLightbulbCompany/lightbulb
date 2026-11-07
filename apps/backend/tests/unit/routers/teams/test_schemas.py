@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from routers.teams.schemas import CreateAgentBody, PatchAgentBody, WakeAgentBody
+from routers.teams.schemas import CreateAgentBody, PatchAgentBody
 
 
 def test_create_agent_accepts_minimal_payload():
@@ -82,77 +82,6 @@ def test_patch_issue_accepts_hidden_at_for_hide_and_restore():
 
     restored = PatchIssueBody.model_validate({"hiddenAt": None})
     assert restored.model_dump(exclude_unset=True, by_alias=True) == {"hiddenAt": None}
-
-
-def test_wake_agent_emits_camel_case_and_drops_unset():
-    """The failed-run Retry wakes the agent on demand. by_alias emits the
-    camelCase wire shape; exclude_none drops the unset reason."""
-    body = WakeAgentBody(source="on_demand", reason="retry")
-    assert body.model_dump(exclude_none=True, by_alias=True) == {
-        "source": "on_demand",
-        "reason": "retry",
-    }
-    bare = WakeAgentBody()
-    assert bare.model_dump(exclude_none=True, by_alias=True) == {}
-
-
-def test_wake_agent_rejects_unknown_source_and_extra_fields():
-    with pytest.raises(ValidationError):
-        WakeAgentBody(source="turbo")
-    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
-        WakeAgentBody(adapterType="evil")
-
-
-def test_wake_agent_body_accepts_payload():
-    from routers.teams.schemas import WakeAgentBody
-
-    body = WakeAgentBody(
-        source="on_demand",
-        reason="retry_failed_run",
-        payload={"issueId": "iss_1", "taskKey": "ADM-42"},
-    )
-    dumped = body.model_dump(exclude_none=True, by_alias=True)
-    assert dumped["payload"] == {"issueId": "iss_1", "taskKey": "ADM-42"}
-
-
-def test_wake_agent_body_still_rejects_unknown_fields():
-    import pytest as _pytest
-    from pydantic import ValidationError
-    from routers.teams.schemas import WakeAgentBody
-
-    with _pytest.raises(ValidationError):
-        WakeAgentBody(source="on_demand", adapterConfig={"url": "x"})
-
-
-def test_wake_agent_body_accepts_exact_failed_run_retry():
-    """The ported ExecutionBlockerNotice's Retry (upstream retryFailedRun) sends
-    triggerDetail + failedRunId; both forward camelCase."""
-    body = WakeAgentBody(
-        source="on_demand",
-        trigger_detail="manual",
-        reason="retry_failed_run",
-        failed_run_id="3f2b0c1e-9d4a-4c1b-8e2f-0a1b2c3d4e5f",
-    )
-    assert body.model_dump(exclude_none=True, by_alias=True) == {
-        "source": "on_demand",
-        "triggerDetail": "manual",
-        "reason": "retry_failed_run",
-        "failedRunId": "3f2b0c1e-9d4a-4c1b-8e2f-0a1b2c3d4e5f",
-    }
-
-
-@pytest.mark.parametrize("failed_run_id", ["a/b", "run?x=1", "../run", ""])
-def test_wake_agent_body_rejects_junk_failed_run_id(failed_run_id):
-    with pytest.raises(ValidationError):
-        WakeAgentBody(failedRunId=failed_run_id)
-
-
-def test_wake_agent_body_rejects_unknown_trigger_detail_and_debug():
-    with pytest.raises(ValidationError):
-        WakeAgentBody(triggerDetail="turbo")
-    # providerTrace is never exposed through the BFF.
-    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
-        WakeAgentBody(debug={"providerTrace": "raw"})
 
 
 def test_create_issue_accepts_work_mode_and_status():

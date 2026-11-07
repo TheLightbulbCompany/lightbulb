@@ -50,7 +50,7 @@ async def test_get_agent_404s_foreign_agent():
 
 
 def test_every_per_agent_route_is_fenced():
-    """Each ``/agents/{agent_id}...`` route either depends on the fence or is get_agent (inline)."""
+    """Each ``/agents/{agent_id}...`` route either depends on the fence, is get_agent (inline) or is gone (410)."""
     fenced = {
         r.endpoint.__name__
         for r in agents_mod.router.routes
@@ -58,4 +58,4 @@ def test_every_per_agent_route_is_fenced():
         and any(d.call is agents_mod._company_agent for d in r.dependant.dependencies)
     }
     per_agent = {r.endpoint.__name__ for r in agents_mod.router.routes if "{agent_id}" in getattr(r, "path", "")}
-    assert per_agent - fenced == {"get_agent"}
+    assert per_agent - fenced == {"get_agent", "agent_heartbeat_gone"}

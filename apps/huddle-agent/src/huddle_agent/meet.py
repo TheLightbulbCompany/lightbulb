@@ -188,8 +188,8 @@ class MeetAgent(Agent):
         self.reply_turn: dict | None = None  # the turn the reply now playing answers
         self.reply_end = time.monotonic()  # when the last reply ended: the start of the next ask window
         self.tool_at = -1.0  # when a tool last ran: Gemini's answer after it belongs to the turn it ran for
-        self.ends_at = time.monotonic() + MEETING_MAX_S  # from here tools are refused
-        self.goodbye = False  # one-shot: the time limit's goodbye plays without an ask, nothing else does
+        self.ends_at = time.monotonic() + MEETING_MAX_S  # from here tools are refused and replies dropped...
+        self.goodbye_id = ""  # ...except the time limit's goodbye: the SpeechHandle id end_after made
 
     def heard(self, item_id: str | None, text: str, final: bool, now: float) -> dict:
         """One input-transcript event: the turn it belongs to, created or updated. Whether it asked is decided
@@ -221,12 +221,13 @@ class MeetAgent(Agent):
         who = self._mixer.sole(max(self.reply_end, time.monotonic() - ASK_WINDOW_S))
         return who.rsplit(":", 1)[-1] if who else ""
 
-    def _authorize(self, now: float) -> tuple[bool | None, str]:
+    def _authorize(self, now: float, speech_id: str | None = None) -> tuple[bool | None, str]:
         """(True play | False drop | None wait, why) for the reply now held. Only a FINAL transcript decides:
         Gemini's partials grow while the person talks on, and a reply held for an early part is not the answer."""
-        if self.goodbye:
-            self.goodbye = False
+        if self.goodbye_id and speech_id == self.goodbye_id:
             return True, "goodbye"
+        if now >= self.ends_at:
+            return False, "time up"
         t = self.turns[-1] if self.turns else None
         if t is not None and t["seq"] > self.consumed:
             if not t["final"]:
@@ -251,7 +252,7 @@ class MeetAgent(Agent):
         started = time.monotonic()
         while True:
             now = time.monotonic()
-            ok, why = self._authorize(now)
+            ok, why = self._authorize(now, getattr(self.session.current_speech, "id", None))
             waiting_for_words = why in ("no transcript yet", "turn still coming")
             if ok is None and waiting_for_words and now - started > TRANSCRIPT_WAIT_S:
                 ok, why = False, "no transcript in time"  # a turn transcribed later is not this reply's
@@ -471,7 +472,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
         await backend.leave_meeting()
         ctx.shutdown("meeting max length")
 
-    limit = asyncio.create_task(end_after(MEETING_MAX_S, session, time_up, before=lambda: setattr(agent, "goodbye", True)))
+    limit = asyncio.create_task(end_after(MEETING_MAX_S, session, time_up, on_speech=lambda h: setattr(agent, "goodbye_id", h.id)))
 
     async def on_end(_reason: str = "") -> None:
         limit.cancel()

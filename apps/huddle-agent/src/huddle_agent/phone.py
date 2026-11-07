@@ -45,7 +45,9 @@ AWAY_S = float(
     os.environ.get("PHONE_AWAY_S", "15")
 )  # silence before "are you still there?", and again before hanging up
 # The voice model is gone mid-call (7 Nov: Gemini's 402 left callers in silence). LiveKit's documented fallback for an
-# unrecoverable error: say() with pre-recorded audio, which needs no model (docs.livekit.io/agents/build/events).
+# unrecoverable error is pre-recorded audio, which needs no model (docs.livekit.io/agents/build/events). Not through
+# session.say(): the session is already closing by then ("AgentSession is closing, cannot use say()", 7 Nov test),
+# so the file plays on a track of its own.
 SORRY = "I'm sorry, I'm having trouble on this line right now. I've let the team know, and someone will call you back."
 SORRY_WAV = os.path.join(os.path.dirname(__file__), "sorry.wav")  # SORRY, spoken
 STILL_THERE = 'The line has gone quiet. Ask once, briefly: "Are you still there?"'
@@ -180,6 +182,18 @@ def greet(session) -> None:
     """The opening turn: the model speaks first, from the prompt (docs.livekit.io/agents/build/audio, "generate_reply"
     greeting). No per-response instructions: on Gemini they land in the history as a turn and re-greet (7 Nov)."""
     session.generate_reply()
+
+
+async def play_file(room: rtc.Room, path: str) -> None:
+    """A WAV on its own track in the room, whatever state the session is in."""
+    src = rtc.AudioSource(24000, 1)
+    track = rtc.LocalAudioTrack.create_audio_track("sorry", src)
+    await room.local_participant.publish_track(
+        track, rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_MICROPHONE)
+    )
+    async for frame in utils.audio.audio_frames_from_file(path, 24000):
+        await src.capture_frame(frame)
+    await src.wait_for_playout()
 
 
 class Backend:
@@ -427,9 +441,7 @@ async def entrypoint(ctx: JobContext) -> None:
         await backend.post("unknown", {"question": "The assistant's voice failed during this call: call them back."})
         agent.did.append("Voice failed; callback needed")
         try:
-            handle = session.say(SORRY, audio=utils.audio.audio_frames_from_file(SORRY_WAV, 24000),
-                                 allow_interruptions=False, add_to_chat_ctx=False)  # fmt: skip
-            await asyncio.wait_for(handle, 15)
+            await asyncio.wait_for(play_file(ctx.room, SORRY_WAV), 15)
         except Exception:  # noqa: BLE001 -- the card and the hang-up must happen anyway
             logger.warning("phone %s: apology not played", backend.call_id, exc_info=True)
         await hang_up("voice failed")

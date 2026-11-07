@@ -138,7 +138,7 @@ def test_room_run_never_takes_the_task_path(task_run, monkeypatch):
     room = {k: v for k, v in CTX.items() if k not in ("taskId", "attempt", "runSecret")} | {"family": "room", "roomId": "r1"}
     monkeypatch.setattr(turn_context, "read", lambda sid: room)
     assert lightbulb._ask_person({"question": "x"}, session_id="s1") == lightbulb.ASK_IN_REPLY
-    assert lightbulb._request_approval({"title": "t", "summary": "s"}, session_id="s1") == lightbulb.APPROVAL_NO_KEY
+    assert lightbulb._request_approval({"title": "t", "summary": "s"}, session_id="s1") == lightbulb.APPROVAL_TASK_ONLY
     monkeypatch.setattr(turn_context, "read", lambda sid: None)
     assert lightbulb._ask_person({"question": "x"}) == lightbulb.ASK_IN_REPLY
     assert task_run["posts"] == []
@@ -163,3 +163,11 @@ def test_marker_path_is_the_bridges(tmp_path):
 def test_publish_is_not_a_subkind_the_schema_offers():
     enum = lightbulb.APPROVAL_SCHEMA["parameters"]["properties"]["subkind"]["enum"]
     assert "publish" not in enum and set(enum) == set(lightbulb.TASK_SUBKINDS)
+
+
+def test_request_approval_off_a_task_run_refuses_without_paperclip(monkeypatch):
+    """§3 2a: the Paperclip approval branch is gone; off a task run the agent is told to ask in its reply."""
+    monkeypatch.setattr(lightbulb, "_paperclip_call", lambda *a, **k: pytest.fail("no Paperclip call"))
+    monkeypatch.setattr(turn_context, "read", lambda sid: {"family": "room", "roomId": "r1"})
+    assert lightbulb._request_approval({"title": "t", "summary": "s"}, session_id="s1") == lightbulb.APPROVAL_TASK_ONLY
+    assert "Any OTHER" not in lightbulb.APPROVAL_SCHEMA["description"]

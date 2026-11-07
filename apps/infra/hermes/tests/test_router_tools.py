@@ -156,17 +156,14 @@ def test_start_task_tells_the_router_not_to_write_approval_steps():
     assert "never add approval or confirmation steps to the brief" in text and "ask for approval" not in text
 
 
-def test_request_approval_names_the_self_gating_tools_and_keeps_the_rest_gated():
-    """Review #4878: only bridge/effects.py's classified calls gate themselves; every other send, spend or publish
-    still needs request_approval first."""
+def test_request_approval_names_the_self_gating_tools():
+    """Review #4878: bridge/effects.py's classified calls gate themselves. The "Any OTHER send…" list went with
+    the Paperclip approval branch (legacy-deletion inventory §3 1a)."""
     from plugins.lightbulb import APPROVAL_SCHEMA
 
     text = APPROVAL_SCHEMA["description"]
     for gated in ("lightbulb-mail.sh", "lightbulb app publish", "gh pr merge", "request_purchase", "lightbulb_network"):
         assert gated in text
-    assert "OTHER send, spend or publish still needs request_approval first" in text
-    for ungated in ("gog gmail send", "send_invoice", "checkout", "git push", "vercel deploy", "npm publish"):
-        assert ungated in text
     assert "the specialist handles approvals" in rt.SCHEMAS["start_task"]["description"]
 
 

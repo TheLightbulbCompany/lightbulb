@@ -158,20 +158,8 @@ def _identity(ws: str, task_id: str, att: dict) -> runtime_runs.RunIdentity:
     return runtime_runs.RunIdentity.for_attempt(ws, task_id, att)
 
 
-async def _front_desk(ws: str) -> str | None:
-    from core.repositories import paperclip_repo
-
-    return await paperclip_repo.customer_ops_agent_id(ws)
-
-
 async def _agent_for(ws: str, task: dict) -> str:
-    """The specialist's agent id when it is one of this workspace's agents, else Lightbulb's (the CEO). A contact's
-    task always runs as Front desk, whose profile holds none of the owner's connectors (hermes_profiles), and never
-    on another agent when there is none."""
-    if await tasks_repo.from_contact(ws, task):
-        if agent := await _front_desk(ws):
-            return agent
-        raise ApplicationError("no front desk agent for a contact's task", non_retryable=True)
+    """The specialist's agent id when it is one of this workspace's agents, else Lightbulb's (the CEO)."""
     spec = task.get("specialist")
     if spec and spec in {a["id"] for a in await messaging.load_agent_roster(ws)}:
         return spec
@@ -294,6 +282,10 @@ async def _local_now(ws: str, user_id: str | None) -> str:
     return router_prompt.local_now(tz)
 
 
+#: A phone caller's task (and every sub-task of it) gets this much Worker time per attempt (end-state Task 4).
+CONTACT_RUN_BUDGET_S = 600
+
+
 async def _request(ws: str, task: dict, att: dict, tree: dict) -> runtime_runs.RunRequest:
     # The request's room id: a Worker hands an app over from it (`lightbulb app start --room`, skill references/apps.md).
     parts = [
@@ -318,14 +310,15 @@ async def _request(ws: str, task: dict, att: dict, tree: dict) -> runtime_runs.R
         # A group chat's task (any audience kind): the Worker's own events would land in team memory (workspace-wide). Its posts reach the
         # chat's own scope through room ingestion; recall still reads that scope (founder ruling, 6 Nov 2026).
         memory["sync"] = "none"
-    if await tasks_repo.from_contact(ws, task):  # a phone caller's words (the brief) never sync into team memory
+    contact = await tasks_repo.from_contact(ws, task)
+    if contact:  # a phone caller's words (the brief) never sync into team memory
         memory["sync"] = "none"
     return runtime_runs.RunRequest(
         input="\n\n".join(x for x in parts if x),
         instructions=WORKER_INSTRUCTIONS,
         memory=memory,
         effects="required",
-        run_budget_seconds=task.get("budgetS"),
+        run_budget_seconds=CONTACT_RUN_BUDGET_S if contact else None,  # the bridge's own hard stop
     )
 
 
@@ -1000,14 +993,10 @@ async def _ensure_task(ws: str, task_id: str, trig: dict, lane: str, status: str
             audience["roomId"] = room
     elif kind == "room":
         audience["roomId"] = room
-    origin = await _work_origin(ws, task_id, trig, fields.get("parentTaskId"))
-    if origin == "phone_contact":  # its byline and its runtime are Front desk's (_agent_for), whoever was named
-        fields["specialist"] = await _front_desk(ws) or fields.get("specialist")
     row = {
         "taskId": task_id,
         "identifier": await tasks_repo.next_identifier(ws),
-        "origin": origin,
-        "budgetS": ref.get("budgetS"),
+        "origin": await _work_origin(ws, task_id, trig, fields.get("parentTaskId")),
         "status": status,
         "audience": audience,
         "lane": "private" if private else "shared",

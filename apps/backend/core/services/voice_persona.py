@@ -65,10 +65,7 @@ STARTER_MEET_VOICES = {
     "customer_operations": "shimmer",
 }
 _MEET_HASH_POOL = tuple(v for v in MEET_VOICE_POOL if v not in STARTER_MEET_VOICES.values())
-# Front desk was "Customer Operations" until 7 Nov 2026: an agent still called that is still unnamed.
-_DEFAULT_NAMES = {key: {label.casefold()} for key, label, *_ in STARTER_ROSTER} | {
-    "customer_operations": {"front desk", "customer operations"}
-}
+_DEFAULT_NAMES = {key: label for key, label, *_ in STARTER_ROSTER}
 SOUL_EXCERPT_MAX = 1500
 
 
@@ -117,7 +114,8 @@ def agent_meet_voice(agent_id: str, starter_ids: dict | None, title: str | None 
 
 def is_default_name(agent_id: str, name: str | None, starter_ids: dict | None) -> bool:
     """A starter agent still called by its role name ("Growth"): it gets asked for a name once."""
-    return (name or "").strip().casefold() in _DEFAULT_NAMES.get(_starter_role(agent_id, starter_ids) or "", ())
+    default = _DEFAULT_NAMES.get(_starter_role(agent_id, starter_ids) or "")
+    return bool(default) and (name or "").strip().casefold() == default.casefold()
 
 
 # Conversation understanding §4.6: the voice is the mouth. A listener (the worker) hears every line, makes

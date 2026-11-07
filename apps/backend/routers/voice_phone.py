@@ -29,7 +29,7 @@ from pydantic import BaseModel, Field
 
 from core.dynamodb import run_in_thread, utc_now_iso
 from core.repositories import messaging_repo
-from core.services import clerk_admin, voice_calls
+from core.services import clerk_admin
 from routers.huddles import _Worker
 from routers.voice import _e164
 from routers.internal_automations import VoiceStartIn, start_voice_work
@@ -215,7 +215,6 @@ async def start_call(body: StartIn) -> dict:
     except messaging_repo.MessagingRepoError:
         if await messaging_repo.get_room(call_id) is None:  # a replay keeps the room it made
             raise
-    voice_calls._fire(_warm_front_desk(owner_id))  # the call's start_work finds Front desk warm; no new timer
     allow, mode = cfg["allow"], _line_state(cfg, body.callerNumber)
     paused = mode != "live"
     return {
@@ -233,18 +232,6 @@ async def start_call(body: StartIn) -> dict:
         "transfer": bool(cfg["handoff"]["number"]),
         "today": datetime.now(_tz(cfg)).strftime("%A %Y-%m-%d %H:%M"),
     }
-
-
-async def _warm_front_desk(owner_id: str) -> None:
-    """Fire-and-forget: the runtime and Front desk's profile (only Front desk: a caller's work runs nowhere else)."""
-    from core.repositories.paperclip_repo import customer_ops_agent_id
-
-    try:
-        agent = await customer_ops_agent_id(owner_id)
-    except Exception:  # noqa: BLE001 -- a warm is a nicety; the task wakes it otherwise
-        return
-    if agent:
-        voice_calls.prewake_owner(owner_id, [{"id": agent}])
 
 
 def greeting(custom: str, business: str, assistant: str) -> str:
@@ -637,7 +624,6 @@ async def start_work(call_id: str, body: WorkIn) -> dict:
         meta["ownerId"],
         VoiceStartIn(run_id=run_id, call_id=call_id, room_id=call_id, title=body.title, brief=brief),
         origin="phone_contact",
-        specialist="front-desk",
     )
     await _patch_call(call_id, lambda c: {"work": [*c.get("work", []), {"title": body.title, **out}],
                                           "steps": _step(c, f"Handed to the team: {body.title}")})  # fmt: skip

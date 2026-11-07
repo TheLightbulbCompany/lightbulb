@@ -57,9 +57,7 @@ STARTER_ROSTER = (
     ("finance", "Finance", "cfo", "Finance", "ceo"),
     ("growth", "Growth", "cmo", "Growth", "ceo"),
     ("analytics", "Analytics", "researcher", "Analytics", "ceo"),
-    # Front desk keeps the customer_operations key (text lines, voice and the starter ids key on it).
-    ("customer_operations", "Front desk", "general", "Front desk", "ceo"),
-    ("office", "Office", "general", "Office", "ceo"),
+    ("customer_operations", "Customer Operations", "general", "Customer Operations", "ceo"),
 )
 
 #: Starters are seeded without a timer heartbeat (Paperclip timers are gone); assignment and
@@ -122,20 +120,13 @@ STARTER_CAPABILITIES = {
         "findings that change the plan to the CEO."
     ),
     "customer_operations": (
-        "Looks after the business's callers and customers; does only their work."
+        "Looks after customers; owns support, onboarding, feedback and retention."
         "\n\n"
-        "Owns everything customer-facing after a call or a text: bookings, callbacks, messages, and the "
-        "questions Knowledge did not answer. Works only from the business's Knowledge and its booking tools, "
-        "never the owner's mail, files or accounts; anything for the owner goes to Office. Every outside "
-        "action waits for the owner's yes."
-    ),
-    "office": (
-        "Does the owner's work; drafts, research, orders and posts that come out of meetings and asks."
-        "\n\n"
-        "Owns what the owner and the team ask for aloud or in chat: a draft, an email, an order, a post, "
-        "a comparison. First step: say what done means, then do it with the owner's connected tools under "
-        "the workspace's approval mode, and report back with the result. Tools when connected: Google "
-        "Workspace or Microsoft 365, Notion, Stripe, and the rest of the owner's integrations."
+        "Owns every customer conversation after the sale. First step on a ticket: read the customer's "
+        "history, answer or fix what can be done now, and escalate what can't with the context attached."
+        " Turns repeated questions into help docs, collects feedback into themes for the CEO, and flags "
+        "churn risks early. Tools when connected: Intercom, Google Workspace or Microsoft 365 mail, "
+        "Attio, Linear (bug reports). Hands bugs to Engineering, refunds to Finance."
     ),
 }
 

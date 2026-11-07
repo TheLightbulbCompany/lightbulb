@@ -25,8 +25,7 @@ def test_agent_voice_role_voices_and_a_stable_hash_for_the_rest():
 
 def test_is_default_name():
     assert vp.is_default_name("g-1", "Growth", STARTERS)
-    assert vp.is_default_name("o-1", "customer operations", STARTERS)  # its name before it was Front desk
-    assert vp.is_default_name("o-1", "Front desk", STARTERS)
+    assert vp.is_default_name("o-1", "customer operations", STARTERS)
     assert not vp.is_default_name("g-1", "Nova", STARTERS)
     assert not vp.is_default_name("hired", "Growth", STARTERS)
 

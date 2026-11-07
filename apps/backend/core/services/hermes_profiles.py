@@ -167,26 +167,6 @@ APPROVALS_DENY = ("rm -rf /", "mkfs*", "dd if=* of=/dev/*", ":(){:|:&};:")
 #: available" and burns a step; the agent asks in its reply instead.
 _DISABLED_TOOLSETS = ("cronjob", "tts", "video_gen", "clarify")
 
-#: Front desk faces callers (strangers): of the owner's connected integrations its profile gets only these (end-state
-#: Task 4, audit H / OWASP ASI03). Empty today; Task 8 adds its one booking-site browser session.
-CONTACT_SAFE_CONNECTORS: frozenset[str] = frozenset()
-#: ...and none of the Hermes toolsets (upstream ``toolsets.py`` names) that reach past Knowledge: the shell, files and
-#: code (the machine holds the owner's CLI credentials, ``credentials/hermes_cli``), the browser, sub-agents,
-#: connection management, the agent's own past sessions (other callers), and the ``lightbulb`` plugin's owner-side
-#: reads (rooms, local sessions, the desktop, the network). Applied the way every profile's toolsets are:
-#: ``agent.disabled_toolsets``, which the bridge resolves for each run (``bridge/turn.py`` ``profile_toolsets``).
-CONTACT_DISABLED_TOOLSETS = (
-    "browser",
-    "terminal",
-    "file",
-    "code_execution",
-    "delegation",
-    "computer_use",
-    "connections",
-    "session_search",
-    "lightbulb",
-)
-
 #: M4-R3: the opt-in is a flat allow-list (``plugins.enabled``), never ``plugins.entries`` —
 #: Hermes's ``hermes_cli/plugins_discovery.py::gate_manifest`` reads only ``plugins.enabled``.
 _LIGHTBULB_PLUGINS = ("lightbulb",)
@@ -362,7 +342,6 @@ def build_profile_config(
     byo_provider: str | None = None,
     mcp_servers: dict | None = None,
     is_ceo: bool = False,
-    contact_only: bool = False,
 ) -> dict:
     model, aux_model, aux_provider = model_block(provider_choice, byo_provider, is_ceo)
     aux: dict = {
@@ -380,7 +359,7 @@ def build_profile_config(
         "toolsets": ["hermes-cli"],
         "max_concurrent_sessions": 3,
         "agent": {
-            "disabled_toolsets": [*_DISABLED_TOOLSETS, *(CONTACT_DISABLED_TOOLSETS if contact_only else ())],
+            "disabled_toolsets": list(_DISABLED_TOOLSETS),
             "run_budget_seconds": 1800,
             "stall_guards": True,
         },
@@ -788,7 +767,6 @@ def write_agent_profile(
     soul_md_override: str | None = None,
     front_desk_number: str | None = None,
     gate_bearer: str | None = None,
-    contact_only: bool = False,
 ) -> ProfileFiles:
     """The three files that ARE one agent's Hermes profile (fix round 1, I5 dropped the fourth,
     ``managed_overlay`` — the baked ``/etc/hermes/config.yaml`` is the sole enforcement point and
@@ -811,8 +789,6 @@ def write_agent_profile(
     identity outright — the one hook the ECS-to-Hermes workspace migration job needs to carry
     an agent's existing EFS ``SOUL.md`` verbatim instead of a freshly generated identity.
     """
-    if contact_only:  # Front desk (callers): none of the owner's connectors, so none of their secrets either
-        integrations = {k: v for k, v in (integrations or {}).items() if k in CONTACT_SAFE_CONNECTORS}
     mcp_config, mcp_secrets = translate_mcp_servers(integrations)
     config = build_profile_config(
         agent_role=agent.get("role") or "general",
@@ -820,7 +796,6 @@ def write_agent_profile(
         byo_provider=byo_provider,
         mcp_servers=with_profile_home(mcp_config, agent["id"]),
         is_ceo=(agent.get("role") == "ceo"),
-        contact_only=contact_only,
     )
     # mcp_secrets first, env_vars second: an owner-provisioned value should win a name collision
     # over a generated MCP_<SERVER>_<VAR> one (unlikely given the prefix, but never the reverse).
@@ -1623,17 +1598,8 @@ async def refresh_integrations(owner_id: str, agent_ids: list[str], *, pending: 
         for name, block in connected.items()
         if block.get("auth") == "oauth"
     }
-    from core.repositories.paperclip_repo import customer_ops_agent_id
-
-    contact = await customer_ops_agent_id(owner_id)  # Front desk: only the contact-safe ones (write_agent_profile)
-    safe = {k: v for k, v in connected.items() if k in CONTACT_SAFE_CONNECTORS}
     for agent_id in agent_ids:
-        if agent_id == contact:
-            await run_in_thread(
-                _refresh_one_profile, owner_id, agent_id, safe, *translate_mcp_servers(safe), credentials
-            )
-        else:
-            await run_in_thread(_refresh_one_profile, owner_id, agent_id, connected, servers, secrets, credentials)
+        await run_in_thread(_refresh_one_profile, owner_id, agent_id, connected, servers, secrets, credentials)
 
 
 def _refresh_one_profile(

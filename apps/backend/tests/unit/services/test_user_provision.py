@@ -271,8 +271,7 @@ async def test_ensure_paperclip_for_owner_calls_provision_org():
     """Org owner → provision_org with the creator as owner-of-record, then the
     default room for the fresh workspace."""
     starter_ids = {
-        key: f"agent-{key}"
-        for key in ("ceo", "engineering", "finance", "growth", "analytics", "customer_operations", "office")
+        key: f"agent-{key}" for key in ("ceo", "engineering", "finance", "growth", "analytics", "customer_operations")
     }
     fake_provisioning = MagicMock()
     fake_provisioning.get_workspace = AsyncMock(return_value=None)
@@ -314,8 +313,7 @@ async def test_ensure_paperclip_for_owner_calls_provision_org():
 async def test_existing_active_starter_workspace_does_not_gain_default_room():
     """A healthy pre-existing workspace is not fresh onboarding evidence."""
     starter_ids = {
-        key: f"agent-{key}"
-        for key in ("ceo", "engineering", "finance", "growth", "analytics", "customer_operations", "office")
+        key: f"agent-{key}" for key in ("ceo", "engineering", "finance", "growth", "analytics", "customer_operations")
     }
     existing = MagicMock(status="active", org_id="org_p", starter_agent_ids=starter_ids)
     fake_provisioning = MagicMock()
@@ -341,8 +339,7 @@ async def test_fresh_workspace_default_room_seeded_once_across_polls():
     """The freshness read is the org's own workspace row: absent on the first
     poll (room seeded), active + complete on the next (no second seed)."""
     starter_ids = {
-        key: f"agent-{key}"
-        for key in ("ceo", "engineering", "finance", "growth", "analytics", "customer_operations", "office")
+        key: f"agent-{key}" for key in ("ceo", "engineering", "finance", "growth", "analytics", "customer_operations")
     }
     new_org = MagicMock(status="active", org_id="org_new", starter_agent_ids=starter_ids)
     fake_provisioning = MagicMock()
@@ -370,8 +367,7 @@ async def test_fresh_workspace_default_room_seeded_once_across_polls():
 async def test_partial_starter_workspace_gets_default_room_after_completion():
     """A partial starter retry becomes eligible only after its map completes."""
     complete = {
-        key: f"agent-{key}"
-        for key in ("ceo", "engineering", "finance", "growth", "analytics", "customer_operations", "office")
+        key: f"agent-{key}" for key in ("ceo", "engineering", "finance", "growth", "analytics", "customer_operations")
     }
     partial = MagicMock(status="failed", starter_agent_ids={**complete, "analytics": None})
     fake_provisioning = MagicMock()
@@ -398,8 +394,7 @@ async def test_retry_after_a_failed_seed_with_no_starters_gets_default_room():
     """A first seed that failed before any starter existed leaves status "failed" and no starter map
     at all; the retry that completes it is still the first provision, so #general is seeded."""
     complete = {
-        key: f"agent-{key}"
-        for key in ("ceo", "engineering", "finance", "growth", "analytics", "customer_operations", "office")
+        key: f"agent-{key}" for key in ("ceo", "engineering", "finance", "growth", "analytics", "customer_operations")
     }
     failed = MagicMock(status="failed", starter_agent_ids=None)
     fake_provisioning = MagicMock()

@@ -15,9 +15,8 @@ META = {"ownerId": "org_1", "kind": "dm"}
 _TRIGGERS: set[str] = set()
 
 
-async def _start(owner_id, body, origin):
-    """admission.enqueue_trigger's created flag: one trigger per run id. A member's ask is the owner's work."""
-    assert origin == "owner_voice"
+async def _start(owner_id, body, origin=None):
+    """admission.enqueue_trigger's created flag: one trigger per run id."""
     created = body.run_id not in _TRIGGERS
     _TRIGGERS.add(body.run_id)
     return {"triggerId": f"t-{body.run_id}", "taskId": f"k-{body.run_id}", "created": created}

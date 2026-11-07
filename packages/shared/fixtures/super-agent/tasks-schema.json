@@ -528,27 +528,9 @@
           "default": null,
           "title": "Budgetusd"
         },
-        "budgetS": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Budgets"
-        },
         "origin": {
           "anyOf": [
             {
-              "enum": [
-                "phone_contact",
-                "meeting",
-                "owner",
-                "owner_voice"
-              ],
               "type": "string"
             },
             {

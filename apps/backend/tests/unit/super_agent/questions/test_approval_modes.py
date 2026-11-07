@@ -202,9 +202,6 @@ async def test_a_phone_callers_task_asks_even_where_the_mode_would_go_ahead(api,
         return {"ref": {"origin": "phone_contact"}} if tid == "voice:call" else None
 
     monkeypatch.setattr(tasks_repo, "get_trigger", trigger)
-    from core.repositories import paperclip_repo
-
-    monkeypatch.setattr(paperclip_repo, "customer_ops_agent_id", AsyncMock(return_value="front-desk-agent"))
     plain, contact = await _started(), await _task(triggerId="voice:call")
     await _running(contact)
     member = {"to": "sam@acme.dev"}
@@ -227,9 +224,6 @@ async def test_a_phone_callers_task_asks_even_where_the_mode_would_go_ahead(api,
 async def test_contact_task_cannot_purchase(api, mode, monkeypatch):
     """End-state Task 4: a sub-task of a caller's task carries `origin` on its own row (its trigger is a plain chat
     line), and even on Never ask its purchase waits for the owner's card."""
-    from core.repositories import paperclip_repo
-
-    monkeypatch.setattr(paperclip_repo, "customer_ops_agent_id", AsyncMock(return_value="front-desk-agent"))
     mode["approval_mode"] = "never_ask"
     sub = await _task(origin="phone_contact")
     await _running(sub)

@@ -109,78 +109,66 @@ async def test_the_turn_offers_start_work_and_keeps_the_flag(run_env):  # noqa: 
     assert "start_work" in vc.TURN_NOTE and "paperclip" not in vc.TURN_NOTE.lower()
 
 
-# --- a caller's work runs as the contact, on Front desk, with a budget (end-state Task 4; audit H) -----------------
+# --- a caller's work stays the caller's, at any depth, with a budget (end-state Task 4; audit H) --------------------
 
-FRONT_DESK = "fd000000-0000-4000-8000-000000000000"
 GROWTH = "99999999-9999-4999-8999-999999999999"
 
 
 @pytest.fixture
 def made(api, monkeypatch):
-    """`_ensure_task` (the one place a task row is created) with its room, memory card and the front desk stubbed."""
-    from core.repositories import paperclip_repo
+    """`_ensure_task` (the one place a task row is created) with its room and memory card stubbed."""
     from core.temporal import activities as acts
 
     monkeypatch.setattr(acts.task_conversation, "ensure_task_room", AsyncMock())
     monkeypatch.setattr(acts.memory_tasks_index, "index_task", AsyncMock())
-    monkeypatch.setattr(paperclip_repo, "customer_ops_agent_id", AsyncMock(return_value=FRONT_DESK))
 
-    async def make(trigger_id: str, **fields) -> dict:
-        """What the Router does with a trigger's scripted start (`ref.start`), or with a model `start_task`."""
+    async def make(trigger_id: str) -> dict:
+        """What the Router does with a trigger's scripted start (`ref.start`)."""
         trig = await tasks_repo.get_trigger(WS, trigger_id)
         start = acts._scripted(trig)
-        task_id = ts.router_task_id(trigger_id, 0, 0)
         return await acts._ensure_task(
-            WS, task_id, trig, "shared", "queued", title=start.title, specialist=start.specialist, **fields
+            WS, ts.router_task_id(trigger_id, 0, 0), trig, "shared", "queued", title=start.title
         )
 
     return make
 
 
-async def _phone_work(api, run=RUN) -> str:
+async def _voice_work(api, origin: str, run=RUN) -> str:
     from routers.internal_automations import VoiceStartIn, start_voice_work
 
     api.rows[run] = {"runId": run, "roomId": "call-1", "requesterUserId": "user_owner"}
     out = await start_voice_work(
         WS,
         VoiceStartIn(run_id=run, call_id="call-1", room_id="call-1", title="Find a Tuesday slot", brief="Caller asks."),
-        origin="phone_contact",
-        specialist="front-desk",
+        origin=origin,
     )
     return out["triggerId"]
 
 
-async def _router_child(made, parent: dict, trigger_id: str) -> dict:
-    """A model `start_task` naming the parent, on a trigger that is not the caller's (a job result, a chat line)."""
+async def _router_child(parent: dict, trigger_id: str) -> dict:
+    """A model `start_task` naming the parent, on a trigger that is not the caller's (a chat line)."""
+    from core.temporal import activities as acts
+
     await tasks_repo.put_trigger(
         WS, {"triggerId": trigger_id, "source": "chat", "ref": {"text": "go"}, "admission": "respond",
              "lane": "shared", "actorUserId": "user_owner", "receivedAt": "2026-11-07T00:00:00Z"},
     )  # fmt: skip
-    from core.temporal import activities as acts
-
     return await acts._ensure_task(
         WS, ts.new_task_id(), await tasks_repo.get_trigger(WS, trigger_id), "shared", "queued", title="child",
         specialist=GROWTH, parentTaskId=parent["taskId"],
     )  # fmt: skip
 
 
-async def test_phone_work_has_budget(api, made):
-    task = await made(await _phone_work(api))
-    assert task["origin"] == "phone_contact" and task["budgetS"] == 600
-    assert task["specialist"] == FRONT_DESK  # "front-desk" is the workspace's Front desk agent
-
-
 async def test_subtask_inherits_contact_origin(api, made):
-    task = await made(await _phone_work(api))
-    child = await _router_child(made, task, "chat:c1")
-    assert child["origin"] == "phone_contact" and child["specialist"] == FRONT_DESK
+    child = await _router_child(await made(await _voice_work(api, "phone_contact")), "chat:c1")
+    assert child["origin"] == "phone_contact"
     assert await tasks_repo.from_contact(WS, child)  # the child's own field, not its (chat) trigger
 
 
 async def test_grandchild_inherits_contact_origin(api, made):
     """Two levels: a Router sub-task, then work started from that sub-task's room through the Hermes start_work tool
     (POST /voice-start, which reaches start_voice_work with no origin of its own)."""
-    child = await _router_child(made, await made(await _phone_work(api)), "chat:c1")
+    child = await _router_child(await made(await _voice_work(api, "phone_contact")), "chat:c1")
     room = ts.task_room_id(child["taskId"])
     api.rows[RUN] = {"runId": RUN, "roomId": room, "agentId": "ceo-1", "requesterUserId": "user_owner"}
     api.meta.update({"roomId": room, "task": {"taskId": child["taskId"]}})
@@ -190,47 +178,27 @@ async def test_grandchild_inherits_contact_origin(api, made):
     assert grandchild["origin"] == "phone_contact" and await tasks_repo.from_contact(WS, grandchild)
 
 
+async def test_meeting_work_is_never_a_contacts(api, made):
+    """Founder ruling: everyone in a Google meeting has the inviting member's powers, so meeting work (and its
+    sub-tasks) is never a contact's; only `phone_contact` is."""
+    task = await made(await _voice_work(api, "meeting", run="m1"))
+    child = await _router_child(task, "chat:m-child")
+    for row in (task, child):
+        assert row["origin"] == "meeting" and not await tasks_repo.from_contact(WS, row)
+
+
 async def test_owner_work_is_not_contact(api, made):
     task = await made(_post(api).json()["triggerId"])
-    assert task.get("origin") == "owner" and not await tasks_repo.from_contact(WS, task)
+    assert not await tasks_repo.from_contact(WS, task)
 
 
-async def test_contact_origin_routes_to_front_desk(monkeypatch):
-    from core.repositories import paperclip_repo
-    from core.temporal import activities as acts
-
-    monkeypatch.setattr(acts.messaging, "load_agent_roster", AsyncMock(return_value=[{"id": GROWTH}]))
-    monkeypatch.setattr(paperclip_repo, "customer_ops_agent_id", AsyncMock(return_value=FRONT_DESK))
-    contact = {"taskId": "t", "origin": "phone_contact", "specialist": GROWTH}
-    assert await acts._agent_for(WS, contact) == FRONT_DESK  # whatever specialist the path asked for
-    assert await acts._agent_for(WS, {"taskId": "t", "specialist": GROWTH}) == GROWTH
-    monkeypatch.setattr(paperclip_repo, "customer_ops_agent_id", AsyncMock(return_value=None))
-    with pytest.raises(Exception, match="front desk"):  # never the CEO with the owner's connectors
-        await acts._agent_for(WS, contact)
-
-
-async def test_contact_run_carries_its_budget(monkeypatch):
+async def test_contact_run_has_a_budget(monkeypatch):
     from core.temporal import activities as acts
 
     monkeypatch.setattr(acts, "_local_now", AsyncMock(return_value="now"))
     monkeypatch.setattr(acts.room_memory, "group_room_by_id", AsyncMock(return_value=None))
-    task = {"taskId": ts.new_task_id(), "title": "x", "origin": "phone_contact", "budgetS": 600,
-            "audience": {"kind": "room", "roomId": "r"}, "lane": "shared"}  # fmt: skip
-    req = await acts._request(WS, task, {"n": 1}, {"attempts": []})
-    assert req.run_budget_seconds == 600 and req.memory["sync"] == "none"
-
-
-async def test_meeting_work_is_never_a_contacts(api, made):
-    """Founder ruling: everyone in a Google meeting has the inviting member's powers, so meeting work (and its
-    sub-tasks) is never a contact's; only `phone_contact` is."""
-    from routers.internal_automations import VoiceStartIn, start_voice_work
-
-    api.rows["m1"] = {"runId": "m1", "roomId": ROOM, "requesterUserId": "user_sam"}
-    out = await start_voice_work(
-        WS, VoiceStartIn(run_id="m1", call_id=ROOM, room_id=ROOM, title="Draft the notes", brief="b"), origin="meeting"
-    )
-    task = await made(out["triggerId"])
-    child = await _router_child(made, task, "chat:m-child")
-    for row in (task, child):
-        assert row["origin"] == "meeting" and not await tasks_repo.from_contact(WS, row)
-    assert child["specialist"] == GROWTH  # the specialist the Router named, not Front desk
+    task = {"taskId": ts.new_task_id(), "title": "x", "audience": {"kind": "room", "roomId": "r"}, "lane": "shared"}
+    contact = await acts._request(WS, task | {"origin": "phone_contact"}, {"n": 1}, {"attempts": []})
+    assert contact.run_budget_seconds == 600 and contact.memory["sync"] == "none"
+    owner = await acts._request(WS, task | {"origin": "owner_voice"}, {"n": 1}, {"attempts": []})
+    assert owner.run_budget_seconds is None  # the owner's work keeps today's limits

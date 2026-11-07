@@ -1349,13 +1349,6 @@ class ProfileInputs:
     def front_desk_number_for(self, agent_id: str) -> str | None:
         return self.front_desk_number if agent_id == self.front_desk_agent_id else None
 
-    #: The customer_operations starter (Front desk): callers' work runs on it (activities._agent_for), so its profile
-    #: is contact-only (hermes_profiles.CONTACT_SAFE_CONNECTORS).
-    contact_agent_id: str | None = None
-
-    def contact_only(self, agent_id: str) -> bool:
-        return agent_id == self.contact_agent_id
-
 
 async def resolve_profile_inputs(owner_id: str) -> ProfileInputs:
     """The five owner-level Hermes profile writer inputs (fix round 3, M6-R10)
@@ -1378,8 +1371,6 @@ async def resolve_profile_inputs(owner_id: str) -> ProfileInputs:
         raise HermesProfileError(f"hermes profile for owner={owner_id}: byo api key read failed")
     integrations = await build_connected_integration_servers(owner_id)
     line = await agent_email_repo.text_line_for_owner(owner_id)
-    from core.repositories.paperclip_repo import customer_ops_agent_id
-
     return ProfileInputs(
         provider_choice=provider_choice,
         byo_provider=byo_provider,
@@ -1388,7 +1379,6 @@ async def resolve_profile_inputs(owner_id: str) -> ProfileInputs:
         env_vars={},  # the Stripe Projects rail that landed these is deleted
         front_desk_agent_id=line.get("agent_id") if line else None,
         front_desk_number=line["address"] if line else None,
-        contact_agent_id=await customer_ops_agent_id(owner_id),
     )
 
 
@@ -1473,7 +1463,6 @@ async def write_profile_for_agent(
             byo_provider=inputs.byo_provider,
             byo_api_key=inputs.byo_api_key,
             front_desk_number=inputs.front_desk_number_for(agent_id),
-            contact_only=inputs.contact_only(agent_id),
         )
     except ValueError as exc:
         raise RuntimeError(

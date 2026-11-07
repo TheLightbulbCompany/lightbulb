@@ -38,7 +38,7 @@ from core.services.paperclip_admin_client import PaperclipApiError
 
 TABLE_NAME = "test-paperclip-companies-prov"
 
-STARTER_KEYS = {"ceo", "engineering", "finance", "growth", "analytics", "customer_operations", "office"}
+STARTER_KEYS = {"ceo", "engineering", "finance", "growth", "analytics", "customer_operations"}
 
 
 @pytest.fixture(autouse=True)
@@ -235,9 +235,9 @@ async def test_provision_org_happy_path(repo, monkeypatch):
     assert admin.approve_join_request.call_args.kwargs["session_cookie"] == "admin-cookie-test"
 
     # The complete generic starter roster.
-    assert admin.create_agent.await_count == 7
+    assert admin.create_agent.await_count == 6
     by_name = {call.kwargs["name"]: call.kwargs for call in admin.create_agent.await_args_list}
-    assert set(by_name) == {"CEO", "Engineering", "Finance", "Growth", "Analytics", "Front desk", "Office"}
+    assert set(by_name) == {"CEO", "Engineering", "Finance", "Growth", "Analytics", "Customer Operations"}
     for key, name, *_ in STARTER_ROSTER:
         assert by_name[name]["capabilities"] == STARTER_CAPABILITIES[key]
 
@@ -406,7 +406,6 @@ async def test_provision_org_seed_agent_failure_is_not_fatal(repo):
             {"id": "agent_growth"},
             {"id": "agent_analytics"},
             {"id": "agent_customer_operations"},
-            {"id": "agent_office"},
         ]
     )
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
@@ -684,27 +683,6 @@ async def test_provision_org_reconciles_failed_company_without_reminting(repo):
     assert fetched.status == "failed"
 
 
-async def test_seed_front_desk_and_office(repo):
-    """End-state Task 4: a workspace seeded before Office existed gets Office (and only Office) on its next
-    provision; its six starters, Front desk (the customer_operations id) among them, stay as they are."""
-    six = {k: f"agent_{k}" for k in STARTER_KEYS - {"office"}}
-    await _seed_owner(repo, starter_agent_ids=six)
-    admin = _make_admin_mock()
-    admin.create_agent = AsyncMock(return_value={"id": "agent_office"})
-    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
-
-    row = await prov.provision_org(owner_id="org_acme", owner_user_id="user_owner", owner_email="owner@acme.test")
-
-    admin.create_agent.assert_awaited_once()
-    assert admin.create_agent.call_args.kwargs["name"] == "Office"
-    assert row.starter_agent_ids == {**six, "office": "agent_office"} and row.status == "active"
-    admin.delete_agent.assert_not_awaited()  # nothing gets removed
-    names = {key: name for key, name, *_ in STARTER_ROSTER}
-    assert (names["customer_operations"], names["office"]) == ("Front desk", "Office")
-    again = await prov.provision_org(owner_id="org_acme", owner_user_id="user_owner", owner_email="owner@acme.test")
-    assert admin.create_agent.await_count == 1 and again.starter_agent_ids == row.starter_agent_ids
-
-
 async def test_provision_org_for_second_workspace_adopts_identity_but_mints_new_company(repo):
     """A human who already provisioned (or joined) workspace org_prev provisions
     a NEW workspace org_new: their ONE identity is adopted via sign-in, but the
@@ -788,7 +766,6 @@ async def test_provision_org_reconcile_adopt_does_not_clobber_onboarding_fields(
             {"id": "agent_growth"},
             {"id": "agent_analytics"},
             {"id": "agent_customer_operations"},
-            {"id": "agent_office"},
         ]
     )
     second = await prov.provision_org(owner_id="org_acme", owner_user_id="user_owner", owner_email="owner@acme.test")

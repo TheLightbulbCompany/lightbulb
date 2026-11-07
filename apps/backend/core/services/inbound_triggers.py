@@ -905,70 +905,20 @@ async def seed_trigger_routine(
     description: str | None = None,
     actor_user_id: str | None = None,
 ) -> dict[str, Any]:
-    """Create a routine + trigger pre-filled from ``provider_key``'s registry
-    ``inbound`` declaration, armed for every event in ``event_ids``, and record
-    the funnel event on success.
+    """Arm ``event_ids`` from ``provider_key``'s registry ``inbound`` declaration as a ``HOOK#`` row (secret in
+    Secrets Manager) via ``automation_hooks.seed``, then record the ``automation_armed`` funnel event. No
+    Paperclip routine is created.
 
-    ONE trigger carries the whole list: a Paperclip webhook trigger has no
-    event filter, and every provider that fans out (Stripe, GitHub, Vercel,
-    Meta, PostHog) lets one endpoint subscribe to many events — so the owner
-    pastes ONE URL / registers ONE hook and the routine branches on the
-    payload. The events must share a registration shape, and the three
-    one-watch shapes (``auto_google_watch`` / ``poll`` / ``owner_setup``) take
-    exactly one event; anything else is a ValueError naming the conflict.
-    A multi-event title is not invertible by ``automation_from_title`` — the
-    same cost a custom title already carries.
+    One hook carries the whole list (one URL / one provider registration); the events must share a
+    registration shape, and the one-watch shapes (``auto_google_watch`` / ``poll`` / ``owner_setup``) take
+    exactly one event. ``resource`` is what the auto shapes register against: ``owner/repo`` (auto_github), a
+    Vercel project id (auto_vercel), a numeric Meta asset id on the owner's connected account (auto_meta), or a
+    connected Google account email (google shapes). ``routine_id`` attaches to an existing automation;
+    ``assignee_agent_id`` is its specialist; ``title`` / ``description`` override the registry template.
 
-    Thin wrapper so ``automation_armed`` fires from ONE place instead of once
-    per registration shape's return — every shape below is a success path.
-
-    Returns ``{routine_id, trigger_public_id, proxy_url, guided, instructions,
-    secret_hint}``; bearer-guided providers add ``webhook_secret`` (the
-    trigger's own one-time secret, which the owner sets as the provider-side
-    Authorization header — see the module docstring); the auto shapes add
-    ``resource`` and need one — the
-    "owner/repo" to hook for auto_github, the project id for auto_vercel,
-    a connected Google account email for the google shapes (guided providers
-    ignore it). The poll shape adds ``poll: True`` (and has no
-    trigger_public_id/proxy_url — there is no webhook); owner_setup
-    additionally needs ``topic``, the owner's own Pub/Sub topic.
-
-    ``assignee_agent_id`` is who the routine lands on. Omitted, it resolves to
-    the owner's Friday as before; supplied, it must be an agent on the
-    CALLER's own Paperclip company roster (a Gmail automation for the support
-    agent should not arrive Friday-owned and need reassigning by hand).
-
-    ``routine_id`` ATTACHES the trigger to a routine the owner already wrote
-    instead of seeding a new one — the "arm this event on my Revenue recovery
-    routine" path. The routine must be in the CALLER's own company (same
-    tenancy fence as ``assignee_agent_id``), and nothing the owner wrote is
-    overwritten: no assignee, reviewers, variables or schedule, and the
-    registry's boilerplate starter prompt is skipped entirely — a hand-authored
-    routine already says what to do. The three shapes whose setup writes the
-    routine's own body (auto_google_watch / owner_setup / poll) APPEND their
-    maintenance clause as a delimited block at the end of the existing
-    description instead of composing it (see ``_append_platform_block``); the
-    frontend discloses that before the owner confirms. The provider side runs
-    exactly as it does for a fresh seed (auto-register or guided paste).
-    Rollback unwinds only the triggers this call created, never the routine.
-
-    ``title`` / ``description`` OVERRIDE the registry template — what the
-    owner typed over the pre-filled draft in the create dialog. Omitted (the
-    untouched-draft path, which is what the 1-click flow sends), the template
-    renders exactly as it always did. Note a custom title is no longer
-    invertible by ``automation_from_title``, so a published agent carrying
-    that automation declares no provider requirement — the cost of letting
-    owners name their own automations.
-
-    Raises ``ValueError`` for any caller-facing input problem (an empty or
-    unknown event list, events whose registration shapes can't share one
-    trigger, provider not wired as a trigger source, missing/invalid
-    resource or topic, GitHub/Vercel/Google refusing the registration, no
-    active Paperclip company, no resolvable suggested agent, an assignee or
-    target routine outside the caller's company, a registration shape that
-    can't attach) — the router maps these to a 4xx. Raises ``RuntimeError``
-    on a malformed upstream response (Paperclip is expected to always return
-    an id / publicId / secretMaterial).
+    Raises ``ValueError`` for any caller-facing input problem (unknown or conflicting events, a resource that
+    fails its format or ownership check, a provider that isn't connected, a provider refusing the
+    registration); the router maps these to a 4xx.
     """
     # Deduped HERE so the funnel counts what was actually armed — the seed
     # dedupes too, and recording the raw list would report event_count=2 for

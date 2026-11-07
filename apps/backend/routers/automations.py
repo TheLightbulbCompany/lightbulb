@@ -146,23 +146,8 @@ async def from_integration(
     body: FromIntegrationBody,
     auth: AuthContext = Depends(get_current_user),
 ) -> dict:
-    """Seed a webhook-triggered routine from a connected integration's events
-    — or, with ``routine_id``, arm them on a routine the owner already wrote
-    (same gating, same provider-side registration, nothing the owner wrote
-    overwritten).
-
-    ``event_ids`` is a multi-select: ONE trigger, one URL, every event
-    registered on it. ``event_id`` is the deprecated one-event alias.
-
-    ``title``/``description`` are the owner's edits to the pre-filled draft;
-    omitted, the registry template renders exactly as it always has.
-
-    Returns ``seed_trigger_routine``'s dict verbatim — ``{routine_id,
-    trigger_public_id, proxy_url, guided, instructions}``. Bad input
-    (unknown provider/event, provider not wired as a trigger source, no
-    active Paperclip company, an assignee or target routine outside the
-    caller's company) surfaces as 400 rather than an opaque 500.
-    """
+    """Arm a webhook-triggered automation from a connected integration's events (a ``HOOK#`` row) —
+    or, with ``routine_id``, add them to an automation the owner already has."""
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
     await require_always_on_entitlement(owner_id, message=WEBHOOK_AUTOMATIONS_MESSAGE)

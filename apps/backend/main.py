@@ -464,7 +464,7 @@ async def lifespan(app: FastAPI):
     mcp_context = hosted_mcp.running()
     await mcp_context.__aenter__()
 
-    # Temporal client (super-agent, dev only), connected in the background so startup never waits on it:
+    # Temporal client, connected in the background so startup never waits on it:
     # until it lands, or if it fails (bad key, Cloud outage), get_client() raises TemporalUnavailable and
     # every existing route still serves. temporalio is imported only in this branch.
     from core.temporal.client import connect_and_set

@@ -396,3 +396,68 @@ async def test_webhook_secret_put_super_agent_branch(env, api, monkeypatch):
 def test_hook_row_fields_in_schema():
     fields = ts.Hook.model_fields
     assert {"resource", "topic", "page_token"} <= set(fields)
+
+
+# --- refused before anything exists (ported from the Paperclip-era test_inbound_triggers.py) ------------------
+# Each goes through automation_hooks.seed -> inbound_triggers._resolve_registration: the ownership and injection
+# fences on the resource the owner names. Nothing may be written or registered.
+
+
+async def _refused(provider, events, match, **kw):
+    with pytest.raises(ValueError, match=match):
+        await _seed(provider, events, **kw)
+    assert await repo.list_schedules(WS) == []
+
+
+async def test_meta_asset_not_on_the_owners_account_is_refused(env):
+    mine = {"id": "1112223334", "label": "Acme Page", "object_type": "page", "graph_base": "g", "token": "t"}
+    with (
+        patch.dict(inbound_triggers._META_ASSET_LISTERS, {"meta_ads": AsyncMock(return_value=[mine])}),
+        patch("core.services.inbound_triggers._subscribe_meta_asset", AsyncMock()) as subscribe,
+    ):
+        await _refused("meta_ads", ["leadgen"], "isn't on your connected account", resource="9998887776")
+    subscribe.assert_not_awaited()
+
+
+@pytest.mark.parametrize("resource", [None, "", "12ab", "123/../../me", "1 OR 1"])
+async def test_non_numeric_meta_id_is_refused(env, resource):
+    lister = AsyncMock(return_value=[])
+    with patch.dict(inbound_triggers._META_ASSET_LISTERS, {"meta_ads": lister}):
+        await _refused("meta_ads", ["leadgen"], "numeric Meta asset id", resource=resource)
+    lister.assert_not_awaited()
+
+
+async def test_instagram_not_connected_is_refused(env):
+    lister = AsyncMock(side_effect=LookupError("no instagram"))
+    with patch.dict(inbound_triggers._META_ASSET_LISTERS, {"instagram": lister}):
+        await _refused("instagram", ["comments"], "not connected", resource="1112223334")
+
+
+@pytest.mark.parametrize("resource", [None, "bob@example.com", "ada@example.com; rm -rf /"])
+async def test_google_account_not_connected_is_refused(env, resource):
+    await _refused("google", ["calendar.changed"], "Google account", resource=resource)
+    assert env.temporal.started == []
+
+
+@pytest.mark.parametrize("resource", [None, "not-a-repo", "acme/site; curl evil", "../etc/passwd"])
+async def test_github_needs_an_owner_repo(env, resource):
+    await _refused("github", ["pull_request"], "owner/repo", resource=resource)
+    env.http.post.assert_not_awaited()
+
+
+async def test_github_needs_a_connected_token(env):
+    env.secrets.pop((WS, "github"))
+    await _refused("github", ["pull_request"], "GitHub is not connected", resource="acme/site")
+    env.http.post.assert_not_awaited()
+
+
+@pytest.mark.parametrize("resource", [None, "prj 1; curl evil", "prj_1/../x"])
+async def test_vercel_needs_a_project_id(env, resource):
+    await _refused("vercel_cli", ["deployment.error"], "Vercel project id", resource=resource)
+    env.http.post.assert_not_awaited()
+
+
+async def test_vercel_needs_a_connected_token(env):
+    env.secrets.pop((WS, "vercel_cli"))
+    await _refused("vercel_cli", ["deployment.error"], "Vercel is not connected", resource="prj_1")
+    env.http.post.assert_not_awaited()

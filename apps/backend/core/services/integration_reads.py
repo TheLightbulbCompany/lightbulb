@@ -25,6 +25,7 @@ from core.services.credentials import access_token, integration_secret_store, re
 logger = logging.getLogger(__name__)
 
 READ_S = 2.0  # the provider's HTTP calls; the token fetch has its own budget
+MCP_READ_S = 6.0  # a hosted MCP read is four round trips (initialize, initialized, tools/list, tools/call)
 TOKEN_S = 20.0  # a cold Google grant (S3 read + gog export + token POST) takes seconds; it is then cached
 GOOGLE_RETRY = "Google didn't answer in time; ask again."
 GOOGLE_OFF = "Google isn't connected."
@@ -201,16 +202,23 @@ async def _slack(c, ws, query):
 # --- Knowledge (the Agent page), the web (the workspace's Parallel key) --------------------------------------
 
 
-async def _knowledge(c, ws, query):
+async def _knowledge(ws: str, instructions: bool) -> str:
+    """The Agent page at the phone's sizes (all of _facts, instructions up to 4,000), outside ANSWER_CHARS. The
+    instructions are the owner's private steering: owner mode only, never a meeting the guests hear."""
     from routers import voice_phone  # lazy: routers import this module
 
+    if not await voice_phone.messaging_repo.get_voice_agent(ws):  # no page: not the default hours as fact
+        return "Hours aren't set yet."
     cfg = await voice_phone.agent_config(ws)
-    return [voice_phone._facts(cfg), f"Instructions: {cfg['instructions'][:1000]}" if cfg["instructions"] else ""]
+    steer = cfg["instructions"][:4000] if instructions else ""
+    return voice_phone._facts(cfg) + (f"\nInstructions: {steer}" if steer else "")
 
 
 async def _web(c, ws, query):
     """Parallel's Search API (docs.parallel.ai/api-reference/search-beta/search), at the url and auth header
     providers.yaml validates the pasted key with. "fast" mode answers in about 700 ms."""
+    if not query:  # never a paid search for nothing
+        return ["What should I look up?"]
     key = (await integration_secret_store.get(ws, "parallel") or {}).get("token")
     if not key:
         raise NotReadable("The web search key needs reconnecting in Settings.")
@@ -234,10 +242,9 @@ def _hosted(key: str):
     return lambda c, ws, query: _mcp(c, ws, key, (), {"query": query})
 
 
-# name -> (integrations row it needs, "" for none, reader). A connected row with no reader here: _hosted, else a
-# Worker (START_WORK).
+# name -> (integrations row it needs, reader). A connected row with no reader here: _hosted, else a Worker
+# (START_WORK). `knowledge` is always there and read apart (read()).
 READERS = {
-    "knowledge": ("", _knowledge),
     "web": ("parallel", _web),
     "gmail": ("google", _gmail),
     "calendar": ("google", _calendar),
@@ -249,6 +256,9 @@ READERS = {
     "linear": ("linear", _linear),
     "slack": ("slack", _slack),
 }
+
+
+_MCP = {"notion", "linear", "stripe"}  # read over a hosted MCP (stripe without the business key), like _hosted
 
 
 async def warm_google(ws: str) -> None:
@@ -265,15 +275,22 @@ async def connected(ws: str) -> list[str]:
     rows = {
         r["provider"] for r in await integrations_repo.list_for_owner(ws) if r.get("status", "connected") == "connected"
     }
-    names = [n for n, (key, _) in READERS.items() if not key or key in rows]
+    names = ["knowledge", *(n for n, (key, _) in READERS.items() if key in rows)]
     if "stripe" not in names and await integration_secret_store.get(ws, API_KEY_SECRET_PROVIDER):
         names.append("stripe")
     return names + sorted(rows - {key for key, _ in READERS.values()})
 
 
-async def read(ws: str, provider: str, query: str) -> str | dict:
-    """Plain text for the voice to say or summarise, or START_WORK; never raises."""
+async def read(ws: str, provider: str, query: str, *, instructions: bool = False) -> str | dict:
+    """Plain text for the voice to say or summarise, or START_WORK; never raises. `instructions`: the Agent page's
+    private instructions ride along with `knowledge` (owner mode only)."""
     name = provider.strip().lower()
+    if name == "knowledge":
+        try:
+            return await _knowledge(ws, instructions)
+        except Exception:  # noqa: BLE001 -- a sentence, not a failed meeting
+            logger.warning("knowledge read failed ws=%s", ws, exc_info=True)
+            return "I couldn't read knowledge just now."
     if name not in await connected(ws):
         return f"{provider} is not connected."
     key, reader = READERS.get(name) or (name, _hosted(name))
@@ -286,7 +303,8 @@ async def read(ws: str, provider: str, query: str) -> str | dict:
             except TimeoutError:
                 return GOOGLE_RETRY
         async with httpx.AsyncClient(timeout=READ_S) as c:
-            lines = await asyncio.wait_for(reader(c, ws, query.strip()[:300]), READ_S)
+            bound = MCP_READ_S if name in _MCP or name not in READERS else READ_S
+            lines = await asyncio.wait_for(reader(c, ws, query.strip()[:300]), bound)
     except NotReadable as e:
         return str(e)
     except (TimeoutError, httpx.TimeoutException):

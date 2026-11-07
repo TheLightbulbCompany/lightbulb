@@ -261,10 +261,57 @@ async def test_knowledge_read(env):
         "instructions": "Mention the loyalty card.",
     }
     with patch.object(voice_phone.messaging_repo, "get_voice_agent", AsyncMock(return_value=page)):
-        out = await ir.read(WS, "knowledge", "parking")
-    assert "Gel manicure $45 (60 min)" in out
-    assert "Q: Parking? A: Free out back" in out
-    assert out.endswith("Instructions: Mention the loyalty card.")
+        owner = await ir.read(WS, "knowledge", "parking", instructions=True)
+        meet = await ir.read(WS, "knowledge", "parking")
+    assert "Gel manicure $45 (60 min)" in owner and "Q: Parking? A: Free out back" in owner
+    assert owner.endswith("Instructions: Mention the loyalty card.")
+    assert "Q: Parking? A: Free out back" in meet and "Instructions" not in meet  # guests hear a Meet
+
+
+async def test_knowledge_keeps_a_long_page_whole(env):
+    """Its own budget, the phone's: a late Q&A answer and the instructions survive a page over ANSWER_CHARS."""
+    from routers import voice_phone
+
+    page = {
+        "knowledge": [{"q": f"Question {i}?", "a": "x" * 80} for i in range(30)] + [{"q": "Wifi?", "a": "salon2026"}],
+        "instructions": "Mention the loyalty card. " + "y" * 3000,
+    }
+    with patch.object(voice_phone.messaging_repo, "get_voice_agent", AsyncMock(return_value=page)):
+        out = await ir.read(WS, "knowledge", "", instructions=True)
+    assert len(out) > ir.ANSWER_CHARS + 3000
+    assert "Q: Wifi? A: salon2026" in out and "Instructions: Mention the loyalty card." in out
+
+
+async def test_knowledge_without_an_agent_page_states_no_default_hours(env):
+    from routers import voice_phone
+
+    with patch.object(voice_phone.messaging_repo, "get_voice_agent", AsyncMock(return_value=None)):
+        assert await ir.read(WS, "knowledge", "hours") == "Hours aren't set yet."
+
+
+async def test_an_empty_web_query_makes_no_paid_call(env):
+    env["rows"].append({"provider": "parallel", "status": "connected"})
+    env["secrets"]["parallel"] = {"token": "pk"}
+    assert await ir.read(WS, "web", "   ") == "What should I look up?"  # _Http raises on any unmocked request
+
+
+async def test_mcp_reads_get_the_longer_bound(env):
+    """Four round trips to a hosted MCP: MCP_READ_S, not READ_S; a non-MCP read keeps READ_S."""
+    env["rows"].append({"provider": "attio", "status": "connected"})
+    env["secrets"]["attio"] = {"access_token": "at"}
+    hosted = _hosted(["search-records"], "search-records", "Acme Corp")
+
+    async def slow(request):
+        await asyncio.sleep(0.2)
+        return hosted(request)
+
+    env["http"].post(url__startswith="https://mcp.attio.com/mcp").mock(side_effect=slow)
+    env["http"].get(url__startswith="https://api.github.com/search/issues").mock(side_effect=slow)
+    with patch.object(ir, "READ_S", 0.1), patch.object(ir, "MCP_READ_S", 5):
+        assert await ir.read(WS, "attio", "Acme") == "Acme Corp"
+        assert "didn't answer in time" in await ir.read(WS, "github", "Acme")
+    with patch.object(ir, "MCP_READ_S", 0.1):
+        assert "didn't answer in time" in await ir.read(WS, "attio", "Acme")
 
 
 async def test_web_read_uses_parallel(env):

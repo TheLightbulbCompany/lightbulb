@@ -98,7 +98,8 @@ class OwnerAgent(Agent):
     async def read_integration(self, provider: str, query: str) -> dict:
         """One quick read: provider is a name from list_integrations ("knowledge" is the business's own facts,
         "web" the public web); query is what to search for (mail search words, an event name, an issue keyword;
-        "" for the next events). Bigger, or when it returns start_work: start_work with the question."""
+        "" for the next events). Say "one moment" first: a connected app's read can take up to six seconds.
+        Bigger, or when it returns start_work: start_work with the question."""
         return await self._post("integration-read", {"provider": provider, "query": query})
 
     @function_tool

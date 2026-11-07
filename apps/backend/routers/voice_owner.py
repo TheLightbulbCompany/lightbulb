@@ -123,5 +123,5 @@ class IntegrationIn(OwnerIn):
 async def integration_read(room_id: str, body: IntegrationIn) -> dict:
     """One bounded read of a connected integration (integration_reads, the meeting's reader)."""
     await _owner(room_id, body)
-    out = await integration_reads.read(body.ownerId, body.provider, body.query)
+    out = await integration_reads.read(body.ownerId, body.provider, body.query, instructions=True)
     return out if isinstance(out, dict) else {"text": out}

@@ -335,7 +335,8 @@ class MeetAgent(Agent):
     async def read_integration(self, provider: str, query: str) -> dict:
         """One quick read: provider is a name from list_integrations ("knowledge" is the business's own facts,
         "web" the public web); query is what to search for (mail search words, an event name, an issue keyword).
-        For anything bigger, or when it returns start_work, call start_work with the question."""
+        Say "one moment" first: a connected app's read can take up to six seconds. For anything bigger, or when it
+        returns start_work, call start_work with the question."""
         return await self._post(
             "integration-read",
             {"provider": provider, "query": query, "participantId": self.asker()},

@@ -13,3 +13,11 @@ def test_the_prompt_reads_back_before_booking_and_offers_three_slots():
         in text
     )
     assert "offer up to three open slots" in text
+
+
+def test_dialed_numbers_become_e164():
+    assert (
+        phone.e164("14842079294") == "+14842079294"
+    )  # sip.trunkPhoneNumber, live call 7 Nov
+    assert phone.e164("+16105550100") == "+16105550100"
+    assert phone.e164("") == ""

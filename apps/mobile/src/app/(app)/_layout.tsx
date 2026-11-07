@@ -181,8 +181,6 @@ export default function AppLayout() {
                       whichever tab is showing. Teams itself is a tab now (see
                       (tabs)/teams.tsx), so no bare "teams/index" screen lives
                       here any more. */}
-                  <Stack.Screen name="teams/issue/[id]" options={{ title: "Issue" }} />
-                  <Stack.Screen name="teams/run/[runId]" options={{ title: "Run" }} />
                   <Stack.Screen name="control/index" options={{ title: "Control" }} />
                   <Stack.Screen name="control/overview" options={{ title: "Overview" }} />
                   <Stack.Screen name="control/agents" options={{ title: "Agents" }} />

@@ -512,6 +512,23 @@ def test_an_adopted_bot_records_how_it_sends_audio(env, mode, stored):
     assert env["meta"]["meeting"].get("audio") == stored
 
 
+def test_another_environments_bot_is_ignored_not_ejected(env):
+    """Recall's status webhook is account-wide: dev's bots report to prod too. Prod must leave them be."""
+    payload = _status("in_call_recording", bot_id="bot-dev")
+    payload["data"]["bot"]["metadata"]["env"] = "some-other-env"
+    assert _post(env["client"], payload).status_code == 200
+    env["bot_leave"].assert_not_awaited()
+    env["dispatch"].assert_not_awaited()
+
+
+def test_a_bot_for_a_room_this_environment_lacks_is_ignored_not_ejected(env):
+    """An untagged bot (booked before the env tag) whose room is not here belongs to another environment."""
+    with patch.object(mod.messaging_repo, "get_room", AsyncMock(return_value=None)):
+        assert _post(env["client"], _status("in_call_recording", bot_id="bot-dev")).status_code == 200
+    env["bot_leave"].assert_not_awaited()
+    env["dispatch"].assert_not_awaited()
+
+
 def test_an_extra_bot_is_told_to_leave(env):
     env["bot_leave"].side_effect = RuntimeError("already gone")
     assert _post(env["client"], _status("in_call_recording", bot_id="bot-2")).status_code == 200

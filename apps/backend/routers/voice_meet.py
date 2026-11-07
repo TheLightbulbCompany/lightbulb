@@ -13,11 +13,12 @@ nothing that spends or sends -- the card waits for the member.
 
 import asyncio
 import hashlib
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 
 from fastapi import APIRouter
-from pydantic import Field
+from pydantic import AfterValidator, Field
 
 from core.config import settings
 from core.dynamodb import utc_now_iso
@@ -28,6 +29,7 @@ from routers.internal_automations import VoiceStartIn, start_voice_work
 from routers.voice_phone import _bookings
 
 router = APIRouter(dependencies=[_Worker])
+logger = logging.getLogger(__name__)
 
 CHAT_CHARS = 500  # Meet's chat limit (meeting_bots.say)
 ANNOUNCE = (
@@ -71,7 +73,10 @@ async def start(room_id: str, body: StartIn) -> dict:
             room_id, {"announced": True}, when=lambda m: m.get("recallBotId") == bot and not m.get("announced")
         )
         if mine is not None:
-            await meeting_bots.say(bot, ANNOUNCE.format(name=name, company=body.company or "the team"))
+            try:  # best-effort: a refused chat line must not keep the worker from starting
+                await meeting_bots.say(bot, ANNOUNCE.format(name=name, company=body.company or "the team"))
+            except Exception as e:  # noqa: BLE001 -- RecallError or a transport error alike
+                logger.warning("meet room %s: announce failed %s", room_id, getattr(e, "code", type(e).__name__))
     return {"assistantName": name, "title": meeting.get("title") or "Meeting"}
 
 
@@ -124,7 +129,7 @@ async def start_work(room_id: str, body: WorkIn) -> dict:
 class ReadIn(RoomBody):
     kind: Literal["memory", "calls", "calendar"]
     question: str = Field(default="", max_length=1000)
-    days: int = Field(default=7, ge=1, le=90)
+    days: Annotated[int, Field(le=90), AfterValidator(lambda d: max(d, 1))] = 7  # 0 or less: today
     date: str = Field(default="", pattern=r"^(\d{4}-\d{2}-\d{2})?$")
     participantId: str = Field(default="", max_length=128)
 

@@ -9,7 +9,6 @@ import { WEB_ORIGIN } from "../../../config/domain";
 import { fonts, spacing, type ChatPalette } from "../../../config/theme";
 import { attachmentFile } from "../../../lib/attachmentFile";
 import { activityMobileHref } from "../../../lib/activityLink";
-import { paperclipMobileHref } from "../../../lib/paperclipLink";
 import { sessionMobileHref } from "../../../lib/sessionLink";
 import { useCardReply } from "./CardReplyContext";
 
@@ -114,7 +113,7 @@ const R = {
   Sources: ({ props }: RP<{ sources: { title: string; url: string }[] }>) => (
     <View style={{ gap: spacing.xs }}>{props.sources.map((s, i) => {
       // Same order as MessageMarkdown's link rule: a native screen first, then the web, else inert text.
-      const native = sessionMobileHref(s.url) ?? activityMobileHref(s.url) ?? paperclipMobileHref(s.url);
+      const native = sessionMobileHref(s.url) ?? activityMobileHref(s.url);
       const web = native ? null : /^https?:\/\//.test(s.url) ? s.url : s.url.startsWith("/") ? `${WEB_ORIGIN}${s.url}` : null;
       return native || web
         ? <Text key={i} accessibilityRole="link" style={{ color: palette.link, textDecorationLine: "underline" }}

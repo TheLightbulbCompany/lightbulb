@@ -136,18 +136,16 @@ it("owns both room screens as pushed Stack screens, not tabs", async () => {
 // Teams and Settings used to be pushed screens too (reached only through
 // More); they are real tabs now, owned by the (tabs) group's own layout, and
 // must not come back here as a bare "teams/index" or "settings" screen.
-it("owns Teams' detail screens, Control and the legacy agent route; Teams and Settings are tabs now", async () => {
+it("owns Control and the legacy agent route; Teams and Settings are tabs now", async () => {
   await render(<AppLayout />);
   expect(names()).toEqual(
     expect.arrayContaining([
-      "teams/issue/[id]",
-      "teams/run/[runId]",
       "control/index",
       "agent/[agentId]",
       "session/[sessionId]",
     ]),
   );
-  for (const gone of ["teams/index", "settings", "sessions", "session/new", "control/marketplace", "control/listing/[id]"]) {
+  for (const gone of ["teams/issue/[id]", "teams/run/[runId]", "teams/index", "settings", "sessions", "session/new", "control/marketplace", "control/listing/[id]"]) {
     expect(names()).not.toContain(gone);
   }
 });

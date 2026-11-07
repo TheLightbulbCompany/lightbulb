@@ -27,8 +27,8 @@ describe("checkout return links", () => {
   });
 
   it("leaves every other deep link alone", () => {
-    expect(redirectSystemPath({ path: "/(app)/teams/issue/42", initial: false })).toBe(
-      "/(app)/teams/issue/42",
+    expect(redirectSystemPath({ path: "/(app)/task/42", initial: false })).toBe(
+      "/(app)/task/42",
     );
     // Guards the regex boundary: a route that merely starts with the same
     // letters is a real destination and must still resolve.

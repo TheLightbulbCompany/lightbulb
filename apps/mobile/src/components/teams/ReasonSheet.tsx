@@ -15,7 +15,7 @@ const MAX_LENGTH = 2000;
 
 /**
  * Cross-platform single-text-input sheet. Two jobs:
- *  - "give a reason" (ApprovalCard / InteractionCard reject) — replaces the
+ *  - "give a reason" — replaces the
  *    iOS-only `Alert.prompt` that dead-ended Android; `tone:"danger"`.
  *  - inline field edit (issue title / description) — pass `initialValue` and
  *    `tone:"primary"`.

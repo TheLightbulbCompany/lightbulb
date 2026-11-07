@@ -10,4 +10,5 @@ Rules:
 - Spend caps: one Twilio number ($1.15/mo), ≤ $5/day Twilio test minutes, ≤ $5/day Gemini, ≤ 3 Recall hours/day. Nothing else that costs money.
 - Commit trailer: `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. PR body ends with `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
 - When your PR is merged or abandoned, remove your worktree: `git -C /Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync worktree remove .claude/worktrees/<lane>` (no --force). Reviewers remove theirs right after reviewing. Keep test runs light (`pytest -n 2` at most); disk and memory are shared with other lanes.
+- Reuse before new (founder, 7 Nov): before adding any vendor, service, AWS resource or new flow, check whether an existing integration, prod resource or product piece already does it (integrations catalogue, token custody/broker, rooms, tasks, Temporal, Hermes, LiveKit, Recall) and use it unless it can't serve the need; never make users reconnect something they already connected. Say in the PR which existing piece you reused.
 - Report back: PR URL(s), what you verified and how, what is unverified, anything the lead must do.

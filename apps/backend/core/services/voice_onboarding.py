@@ -94,37 +94,47 @@ async def read_site(website: str) -> str:
     return "\n\n".join(pages)
 
 
-def _clean(raw: dict) -> dict:
-    """Only the fields and shapes the Agent page takes; anything else is dropped."""
-    hours = {}
-    for d in _DAYS:
-        h = (raw.get("hours") or {}).get(d)
-        if isinstance(h, dict):
-            hours[d] = {"open": str(h.get("open") or "09:00")[:5], "close": str(h.get("close") or "18:00")[:5],
-                        "closed": bool(h.get("closed"))}  # fmt: skip
-    services = [
-        {
-            "name": str(s.get("name"))[:80],
-            "minutes": int(s.get("minutes") or 45),
-            "price": str(s.get("price") or "")[:20],
-            "staff": str(s.get("staff") or "")[:80],
-            "minutesGuessed": bool(s.get("minutesGuessed")),
+def _list(v, n: int) -> list:
+    """A model field as a list: a bare string is one item, anything else not a list is none."""
+    return [v] if isinstance(v, str) else (v[:n] if isinstance(v, list) else [])
+
+
+def _service(s) -> dict | None:
+    if not isinstance(s, dict) or not s.get("name"):
+        return None
+    try:
+        minutes = max(5, min(int(s.get("minutes") or 45), 600))
+    except (TypeError, ValueError):
+        minutes, s = 45, {**s, "minutesGuessed": True}
+    return {"name": str(s["name"])[:80], "minutes": minutes, "price": str(s.get("price") or "")[:20],
+            "staff": str(s.get("staff") or "")[:80], "minutesGuessed": bool(s.get("minutesGuessed"))}  # fmt: skip
+
+
+def _clean(raw) -> dict:
+    """Only the fields and shapes the Agent page takes. A bad field or item is skipped, never the whole draft."""
+    raw = raw if isinstance(raw, dict) else {}
+    got = raw.get("hours") if isinstance(raw.get("hours"), dict) else {}
+    hours = {
+        d: {
+            "open": str(h.get("open") or "09:00")[:5],
+            "close": str(h.get("close") or "18:00")[:5],
+            "closed": bool(h.get("closed")),
         }  # fmt: skip
-        for s in (raw.get("services") or [])[:30]
-        if isinstance(s, dict) and s.get("name")
-    ]
+        for d in _DAYS
+        if isinstance(h := got.get(d), dict)
+    }
     knowledge = [
         {"q": str(k["q"])[:200], "a": str(k.get("a") or "")[:600], "source": "from site"}
-        for k in (raw.get("knowledge") or [])[:12]
+        for k in _list(raw.get("knowledge"), 12)
         if isinstance(k, dict) and k.get("q")
     ]
     return {
         "hours": hours if len(hours) == 7 else {},
-        "services": services,
-        "staff": [str(s)[:40] for s in (raw.get("staff") or [])[:20] if s],
+        "services": [x for s in _list(raw.get("services"), 30) if (x := _service(s))],
+        "staff": [str(s)[:40] for s in _list(raw.get("staff"), 20) if s and isinstance(s, (str, int))],
         "knowledge": knowledge,
-        "toAdd": [str(q)[:200] for q in (raw.get("toAdd") or [])[:5] if q],
-        "phone": str(raw.get("phone") or "")[:30],
+        "toAdd": [str(q)[:200] for q in _list(raw.get("toAdd"), 5) if q and isinstance(q, str)],
+        "phone": str(raw.get("phone") or "")[:30] if isinstance(raw.get("phone"), (str, int)) else "",
     }
 
 
@@ -159,9 +169,9 @@ class NoNumber(Exception):
 
 async def assign_number(ws: str, user_id: str) -> str:
     """The workspace's assistant number, assigning one if it has none. Idempotent per workspace."""
-    if settings.ENVIRONMENT == "prod":
-        # ponytail: prod numbers are bought per business (LiveKit phone-number API, Twilio later) behind a flag
-        # that is off; until it is built, prod onboarding skips the number step.
+    if settings.ENVIRONMENT != "dev":
+        # ponytail: only dev has a number to give (its one LiveKit number). Prod buys one per business (LiveKit
+        # phone-number API, Twilio later) once that is built; until then onboarding skips the number step.
         raise NoNumber("not_available")
     number = DEV_NUMBER
     line = await messaging_repo._get(f"PHONE#{number}", "LINE")

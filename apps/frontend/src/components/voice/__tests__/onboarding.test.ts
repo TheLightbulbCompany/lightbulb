@@ -35,3 +35,23 @@ describe("voice onboarding", () => {
     expect(usPhone("+442071234567")).toBe("+442071234567");
   });
 });
+
+describe("a second read of the site", () => {
+  it("fills only what is still empty and never overwrites the owner's edits", () => {
+    const owner = {
+      ...DEFAULT_CONFIG, hours: { ...DEFAULT_CONFIG.hours, Mon: { open: "08:00", close: "12:00" } },
+      services: [{ name: "Mine", minutes: 30, price: "$1", staff: "" }],
+      knowledge: [{ q: "Do you take walk-ins?", a: "No" }], forwardFrom: "(512) 555-0100",
+    };
+    const c = applyDraft(owner, {
+      read: true, hours: week, staff: [], phone: "(415) 555-0199", toAdd: ["Do you take walk-ins?", "Parking?"],
+      services: [{ name: "Gel", minutes: 45, price: "$55", staff: "" }],
+      knowledge: [{ q: "do you take walk-ins?", a: "Yes", source: "from site" }, { q: "Gift cards?", a: "Yes", source: "from site" }],
+    });
+    expect(c.hours.Mon.open).toBe("08:00");
+    expect(c.services.map((s) => s.name)).toEqual(["Mine"]);
+    expect(c.knowledge.map((k) => [k.q, k.a])).toEqual([["Do you take walk-ins?", "No"], ["Gift cards?", "Yes"]]);
+    expect(c.toAdd).toEqual(["Parking?"]);
+    expect(c.forwardFrom).toBe("(512) 555-0100");
+  });
+});

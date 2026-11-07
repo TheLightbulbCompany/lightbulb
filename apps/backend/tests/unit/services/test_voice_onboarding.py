@@ -68,9 +68,10 @@ async def test_assign_number_gives_dev_its_one_number_once(repos, monkeypatch): 
     assert line["ownerId"] == WS and line["ownerUserId"] == "user_a"
     with pytest.raises(vo.NoNumber, match="taken"):
         await vo.assign_number("org_other", "user_c")
-    monkeypatch.setattr(vo.settings, "ENVIRONMENT", "prod")
-    with pytest.raises(vo.NoNumber, match="not_available"):
-        await vo.assign_number(WS, "user_a")
+    for env in ("prod", "staging", ""):
+        monkeypatch.setattr(vo.settings, "ENVIRONMENT", env)
+        with pytest.raises(vo.NoNumber, match="not_available"):
+            await vo.assign_number(WS, "user_a")
 
 
 @pytest.mark.asyncio
@@ -79,3 +80,31 @@ async def test_number_route_says_why_there_is_none(repos, async_client_org_admin
     messaging_repo._table().put_item(Item={"pk": f"PHONE#{vo.DEV_NUMBER}", "sk": "LINE", "ownerId": "org_other"})
     r = await async_client_org_admin.post("/api/v1/voice/number")
     assert r.status_code == 409 and r.json()["detail"]["code"] == "taken"
+
+
+def test_bad_model_shapes_skip_the_field_or_item_not_the_draft():
+    d = vo._clean(
+        {
+            "hours": ["Mon 9-5"],
+            "services": [{"name": "Gel", "minutes": "about an hour"}, "Pedicure", {"name": "Wax", "minutes": 30}],
+            "staff": "Ana",
+            "knowledge": {"q": "not a list"},
+            "toAdd": "Parking?",
+            "phone": {"n": 1},
+        }
+    )
+    assert d["hours"] == {} and d["phone"] == "" and d["knowledge"] == []
+    assert [(s["name"], s["minutes"], s["minutesGuessed"]) for s in d["services"]] == [
+        ("Gel", 45, True),
+        ("Wax", 30, False),
+    ]
+    assert d["staff"] == ["Ana"] and d["toAdd"] == ["Parking?"]
+    assert vo._clean(["not", "an", "object"])["services"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_member_cannot_draft_or_take_a_number(repos, async_client_org_member):  # noqa: F811
+    r = await async_client_org_member.post("/api/v1/voice/onboarding/draft", json={"website": "nails.com"})
+    assert r.status_code == 403
+    assert (await async_client_org_member.post("/api/v1/voice/number")).status_code == 403
+    assert await messaging_repo._get(f"PHONE#{vo.DEV_NUMBER}", "LINE") is None

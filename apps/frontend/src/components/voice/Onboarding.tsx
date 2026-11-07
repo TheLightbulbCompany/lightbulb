@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
 import { useConnections } from "@/hooks/useConnections";
 import { Check, HoursEditor, KnowledgeList, Sec, ServicesEditor, ToAdd, defaultGreeting, isLawful } from "./AgentPage";
-import { DAYS, nameOf, usPhone, type AgentConfig } from "./data";
+import { DAYS, DEFAULT_CONFIG, nameOf, usPhone, type AgentConfig } from "./data";
 
 const NAMES = ["Nova", "Sol", "Remy", "Juno"];
 
@@ -21,15 +21,18 @@ interface Draft {
   knowledge: AgentConfig["knowledge"]; toAdd: string[]; phone: string;
 }
 
-/** Fold the website draft into the document: what the site said wins over the defaults, nothing over the owner. */
+/** Fold the website draft into the document, filling only what is still empty: a second read of the site (Back to
+ * step 1, read again) never overwrites what the owner already set. Hours count as empty while they are the defaults. */
 export function applyDraft(c: AgentConfig, d: Draft): AgentConfig {
   const staff = d.staff.length ? [{ q: "Who works here?", a: d.staff.join(", "), source: "from site" }] : [];
+  const asked = new Set(c.knowledge.map((k) => k.q.trim().toLowerCase()));
+  const defaultHours = JSON.stringify(c.hours) === JSON.stringify(DEFAULT_CONFIG.hours);
   return {
     ...c,
-    hours: Object.keys(d.hours).length === DAYS.length ? d.hours : c.hours,
-    services: d.services.length ? d.services : c.services,
-    knowledge: [...d.knowledge, ...staff],
-    toAdd: d.toAdd,
+    hours: defaultHours && Object.keys(d.hours).length === DAYS.length ? d.hours : c.hours,
+    services: c.services.length ? c.services : d.services,
+    knowledge: [...c.knowledge, ...[...d.knowledge, ...staff].filter((k) => !asked.has(k.q.trim().toLowerCase()))],
+    toAdd: c.toAdd.length ? c.toAdd : d.toAdd.filter((q) => !asked.has(q.trim().toLowerCase())),
     forwardFrom: c.forwardFrom || d.phone,
   };
 }
@@ -51,7 +54,9 @@ export function Onboarding({ config, save }: { config: AgentConfig; save: (c: Ag
       setC(doc); setStep(Math.min(to, 5));
       window.scrollTo?.({ top: 0 });
     } catch (e) {
-      setErr((e as { status?: number }).status === 403 ? "Only an admin of this workspace can set up the assistant." : "Couldn't save. Try again.");
+      const status = (e as { status?: number }).status;
+      setErr(status === 403 ? "Only an admin of this workspace can set up the assistant."
+        : status === 422 ? "Keep “AI assistant” and “this call is recorded” in the greeting." : "Couldn't save. Try again.");
     } finally { setBusy(false); }
   };
 

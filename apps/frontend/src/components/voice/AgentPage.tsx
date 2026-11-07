@@ -9,7 +9,7 @@ import { Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { DAYS, nameOf, useAgentConfig, type AgentConfig } from "./data";
 
-type Save = "idle" | "saving" | "saved" | "error" | "forbidden";
+type Save = "idle" | "saving" | "saved" | "error" | "forbidden" | "greeting";
 
 export function AgentPage() {
   const { data: config, error, save } = useAgentConfig();
@@ -29,7 +29,8 @@ export function AgentPage() {
     setDraft(next); setSaveState("saving");
     clearTimeout(timer.current);
     timer.current = setTimeout(() => {
-      save(next).then(() => setSaveState("saved"), (e: { status?: number }) => setSaveState(e?.status === 403 ? "forbidden" : "error"));
+      save(next).then(() => setSaveState("saved"),
+        (e: { status?: number }) => setSaveState(e?.status === 403 ? "forbidden" : e?.status === 422 ? "greeting" : "error"));
     }, 600);
   };
   const name = nameOf(c);
@@ -43,9 +44,10 @@ export function AgentPage() {
         <h1 className="vx-title">{name} <span className="vx-muted">· {business}</span></h1>
         <p className="vx-sub"><span className="vx-tag" data-tone={c.live && !c.paused ? "ok" : c.paused ? "warn" : undefined}>{status}</span>
           {c.number ? <> · answering {c.number}</> : <> · no number yet</>}</p>
-        <p className="vx-save" role="status" data-err={saveState === "error" || saveState === "forbidden"} style={{ marginTop: 6 }}>
+        <p className="vx-save" role="status" data-err={saveState === "error" || saveState === "forbidden" || saveState === "greeting"} style={{ marginTop: 6 }}>
           {saveState === "saving" ? "Saving…" : saveState === "saved" ? "Saved" : saveState === "error" ? "Couldn't save the last change. Change it again to retry."
-            : saveState === "forbidden" ? "Only an admin can change the assistant." : "Changes save as you make them."}</p>
+            : saveState === "forbidden" ? "Only an admin can change the assistant."
+            : saveState === "greeting" ? "Not saved: a live assistant's greeting keeps “AI assistant” and “this call is recorded”." : "Changes save as you make them."}</p>
       </div>
       <div className="vx-actions" style={{ marginTop: 0 }}>
         {c.number && <Button asChild variant="outline" size="sm"><a href={`tel:${c.number}`}>Test call</a></Button>}

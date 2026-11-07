@@ -23,7 +23,6 @@ from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import container_repo
 from core.repositories.paperclip_repo import PaperclipRepo
-from core.services.agent_routine_provisioning import NIGHTLY_CEO_ROUTINE_TITLE
 from core.services.paperclip_admin_client import PaperclipAdminClient, PaperclipApiError
 from core.services.paperclip_agent_idempotency import (
     build_agent_create_idempotency_key,
@@ -39,6 +38,9 @@ from core.services.paperclip_meta import PaperclipMeta, resolve_create_agent_fie
 from core.services.paperclip_openclaw_pairing import resolve_company_id_for_owner
 
 logger = logging.getLogger(__name__)
+
+# The nightly routine provisioning once created on the CEO; disable_timer_automation still pauses it.
+NIGHTLY_CEO_ROUTINE_TITLE = "Nightly CEO progress"
 
 _TERMINAL_ISSUE_STATUSES = {"done", "cancelled"}
 

@@ -812,14 +812,6 @@ async def live_config(auth: AuthContext = Depends(get_current_user)):
     workspace_id = await messaging_repo.enroll_sessions_member(owner_id, auth.user_id, key)
     if workspace_id is None:  # removed while this request ran
         raise ApiProblem("WORKSPACE_MEMBERSHIP_REQUIRED", "You are no longer a member of this workspace.")
-    try:
-        from core.services.teams_event_broker import get_broker
-
-        broker = get_broker()
-        if broker is not None:
-            asyncio.create_task(broker.ensure_user(owner_id, auth.user_id))
-    except Exception:
-        pass
     return LiveConfig(
         http_endpoint=settings.APPSYNC_EVENTS_HTTP_ENDPOINT,
         realtime_endpoint=settings.APPSYNC_EVENTS_REALTIME_ENDPOINT,
@@ -837,17 +829,12 @@ async def list_rooms(auth: AuthContext = Depends(get_current_user)):
 
 @router.get("/messaging/activity", response_model=activity.ActivityPage)
 async def list_activity(
-    request: Request,
-    response: Response,
     cursor: Annotated[str | None, Query(max_length=512)] = None,
     limit: Annotated[int, Query(ge=1, le=activity.MAX_LIMIT)] = activity.DEFAULT_LIMIT,
     auth: AuthContext = Depends(get_current_user),
 ):
-    """The viewer's Activity feed: mentions, DMs, thread replies, and (page 1 only)
-    the Paperclip decisions and issues waiting on them."""
-    return await activity.list_activity(
-        auth, cursor=cursor, limit=limit, teams_ctx=lambda: activity.teams_context(auth, request, response)
-    )
+    """The viewer's Activity feed: mentions, DMs, thread replies, and (page 1 only) the open Questions."""
+    return await activity.list_activity(auth, cursor=cursor, limit=limit)
 
 
 @router.post("/messaging/activity/seen", response_model=activity.ActivitySeenResponse)
@@ -861,19 +848,11 @@ async def run_activity_action(
     # The session stays in it because an agent's request id is unique per session, not per workspace.
     item_id: Annotated[str, Path(max_length=320)],
     action_id: Annotated[str, Path(pattern=r"^[a-z_]{1,40}$")],
-    request: Request,
-    response: Response,
     body: activity.ActivityActionRequest | None = None,
     auth: AuthContext = Depends(get_current_user),
 ):
     """One door for every Activity action; the backend maps it to the real call."""
-    return await activity.run_action(
-        auth,
-        item_id,
-        action_id,
-        body or activity.ActivityActionRequest(),
-        teams_ctx=lambda: activity.teams_context(auth, request, response),
-    )
+    return await activity.run_action(auth, item_id, action_id, body or activity.ActivityActionRequest())
 
 
 @router.put("/messaging/me/sections", response_model=RoomListResponse)

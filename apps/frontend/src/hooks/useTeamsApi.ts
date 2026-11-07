@@ -210,8 +210,8 @@ export type TeamsWorkspaceStatus =
  * detection. Drives an SWR auto-poll while in the provisioning state so
  * the layout flips to ``ready`` as soon as the BFF returns 200.
  *
- * Implementation: hits ``/teams/dashboard`` (cheapest existing endpoint)
- * and inspects the response/error.
+ * Implementation: hits ``/teams/agents`` (the roster; ``/teams/dashboard`` was
+ * deleted with the Paperclip Teams routers) and inspects the response/error.
  */
 export function useTeamsWorkspaceStatus(): TeamsWorkspaceStatus {
   const { read } = useTeamsApi();
@@ -220,7 +220,7 @@ export function useTeamsWorkspaceStatus(): TeamsWorkspaceStatus {
   // can render its terminal state. ``errorRetryCount`` caps the
   // polling at ~90s before giving up — provision_org realistically
   // completes in 10-30s, so 30 retries × 3s is generous headroom.
-  const { data, error, isLoading } = read<unknown>("/dashboard", {
+  const { data, error, isLoading } = read<unknown>("/agents", {
     errorRetryInterval: 3000,
     errorRetryCount: 30,
     shouldRetryOnError: (err: unknown) =>

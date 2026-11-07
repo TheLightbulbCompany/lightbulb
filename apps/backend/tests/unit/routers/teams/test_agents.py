@@ -479,27 +479,6 @@ def test_delete_agent_allows_non_seeded(client, monkeypatch):
     delete_everywhere.assert_awaited_once_with(owner_id="o1", agent_id="a_user")
 
 
-def test_legacy_runs_alias_proxies_heartbeat_run(client, monkeypatch):
-    """/runs/{id} is a legacy alias — it must proxy /api/heartbeat-runs/{id}.
-
-    Upstream never had GET /api/runs/{id}; the frontend RunDetailPanel still
-    reads this path as a fallback, so it must resolve, not 404.
-    """
-    admin = MagicMock()
-    admin.get_heartbeat_run = AsyncMock(return_value={"id": "r1", "companyId": "co_abc", "status": "failed"})
-    from routers.teams import agents as agents_mod
-
-    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
-
-    r = client.get("/api/v1/teams/runs/r1", headers={"Authorization": "Bearer x"})
-    assert r.status_code == 200
-    assert r.json()["id"] == "r1"
-    admin.get_heartbeat_run.assert_awaited_once_with(
-        run_id="r1",
-        session_cookie="cookie-value",
-    )
-
-
 def test_list_and_get_agent_name_the_front_agent_lightbulb(client, monkeypatch):
     """Dev walk R6: Paperclip calls the front agent "CEO"; under the switch the Team API says "Lightbulb"."""
     from routers.teams import agents as agents_mod

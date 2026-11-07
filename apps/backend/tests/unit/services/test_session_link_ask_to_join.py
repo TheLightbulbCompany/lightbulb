@@ -137,8 +137,7 @@ async def test_activity_says_allow_grants_workspace_membership(transport):
 
     sid, token = await public_session(transport)
     await session_links.ask_to_join(PRIYA, token)
-    teams = lambda: (_ for _ in ()).throw(RuntimeError("no paperclip"))  # noqa: E731
-    items = await activity.list_activity(ALICE, cursor=None, limit=30, teams_ctx=teams)
+    items = await activity.list_activity(ALICE, cursor=None, limit=30)
     [item] = [i for i in items.items if i.subtype == "join_request"]
     assert item.summary.reason == OUTSIDER_ALLOW_COPY
     assert "Priya Shah (priya@acme.com)" in item.summary.title

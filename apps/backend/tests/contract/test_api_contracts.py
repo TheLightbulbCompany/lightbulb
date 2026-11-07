@@ -97,9 +97,9 @@ schema = (
     .exclude(
         path_regex="^/api/v1/teams/",
     )
-    # Public ingress under /hooks/ (Paperclip triggers, Meta) reads DDB on every
+    # Public ingress under /hooks/ (webhook automations, Meta) reads DDB on every
     # request, so it 5xxes without a real DDB. Coverage lives in
-    # test_paperclip_trigger_proxy.py + test_meta_webhook.py.
+    # super_agent/automations/test_hooks.py + test_meta_webhook.py.
     .exclude(
         path_regex="^/api/v1/hooks/",
     )

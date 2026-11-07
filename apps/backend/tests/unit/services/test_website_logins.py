@@ -127,9 +127,7 @@ async def test_login_ask_round_trip_through_activity(env):
     viewer = await activity._render_rows(OWNER, USER_A, rows, None, admin=False)
     assert next(i for i in viewer if i.kind == "login").actions == []
     with pytest.raises(ApiProblem):
-        await activity.run_action(
-            member(), item.id, "provide", ActivityActionRequest(value="{}"), teams_ctx=AsyncMock()
-        )
+        await activity.run_action(member(), item.id, "provide", ActivityActionRequest(value="{}"))
 
     assert (await store.poll_request(OWNER, rid))["status"] == "pending"
     done = await activity.run_action(
@@ -137,7 +135,6 @@ async def test_login_ask_round_trip_through_activity(env):
         item.id,
         "provide",
         ActivityActionRequest(value=json.dumps({"username": "me@example.com", "password": PASSWORD})),
-        teams_ctx=AsyncMock(),
     )
     assert done.state == "resolved" and done.actions == []
     polled = await store.poll_request(OWNER, rid)

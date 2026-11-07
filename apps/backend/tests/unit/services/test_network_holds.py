@@ -84,13 +84,11 @@ async def test_an_app_session_hold_goes_to_that_person_only(env):
 )
 async def test_a_tap_answers_the_hold_with_decided_by_the_tapper(env, action, verdict):
     await network_member.hold_notice(OWNER, notice())
-    item = await activity.run_action(
-        viewer(USER_B), "nethold:h1", action, ActivityActionRequest(), teams_ctx=AsyncMock()
-    )
+    item = await activity.run_action(viewer(USER_B), "nethold:h1", action, ActivityActionRequest())
     env.assert_awaited_once_with(OWNER, "network.hold", {"hold": "h1", **verdict, "decided_by": USER_B})
     assert item.state == "resolved" and item.actions == []
     # A second tap is the current state, not a second answer.
-    await activity.run_action(viewer(USER_A), "nethold:h1", action, ActivityActionRequest(), teams_ctx=AsyncMock())
+    await activity.run_action(viewer(USER_A), "nethold:h1", action, ActivityActionRequest())
     assert env.await_count == 1
 
 
@@ -106,7 +104,7 @@ async def test_another_viewer_cannot_answer(env):
     await network_member.hold_notice(OWNER, notice(target=f"github-{network_member.app_person(USER_B)}"))
     for item_id in ("nethold:h1", "nethold:nope", "nethold:a:b"):
         with pytest.raises(ApiProblem) as exc:
-            await activity.run_action(viewer(USER_A), item_id, "send", ActivityActionRequest(), teams_ctx=AsyncMock())
+            await activity.run_action(viewer(USER_A), item_id, "send", ActivityActionRequest())
         assert exc.value.error.code == "ACTIVITY_NOT_FOUND"
     env.assert_not_awaited()
 
@@ -164,7 +162,7 @@ async def test_a_gone_hold_answers_hold_gone_and_resolves(env, error):
 
         env.side_effect = first_tap_won
     with pytest.raises(ApiProblem) as exc:
-        await activity.run_action(viewer(), "nethold:h1", "send", ActivityActionRequest(), teams_ctx=AsyncMock())
+        await activity.run_action(viewer(), "nethold:h1", "send", ActivityActionRequest())
     assert exc.value.error.code == "HOLD_GONE" and exc.value.status_code == 409
     [item] = await _items(USER_A)
     assert item.state == "resolved"
@@ -174,6 +172,6 @@ async def test_another_engine_error_keeps_the_hold_open(env):
     await network_member.hold_notice(OWNER, notice())
     env.side_effect = RuntimeError('{"code": "UNAVAILABLE"}')
     with pytest.raises(RuntimeError):
-        await activity.run_action(viewer(), "nethold:h1", "send", ActivityActionRequest(), teams_ctx=AsyncMock())
+        await activity.run_action(viewer(), "nethold:h1", "send", ActivityActionRequest())
     [item] = await _items(USER_A)
     assert item.state == "open"

@@ -1,7 +1,6 @@
 """Tests for the Automations Phase 2 trigger-seed service.
 
-Mirrors the ``_resolver_env`` fake-collaborator idiom from
-``test_paperclip_trigger_proxy.py``: patch ``PaperclipRepo`` (company
+Patches ``PaperclipRepo`` (company
 resolution), ``get_admin_session_cookie``, and ``PaperclipAdminClient`` so
 nothing here touches a real Paperclip deployment.
 """

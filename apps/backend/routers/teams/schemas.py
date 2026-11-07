@@ -698,7 +698,7 @@ class PatchWorkProductBody(_Strict):
 
 # Upstream ISSUE_TREE_CONTROL_MODES also includes ``restore``, which — with
 # ``metadata.wakeAgents === true`` — spawns ``heartbeat.wakeup`` agent runs
-# (inference spend) that the BFF forwards ungated (no ``require_trial_runway``).
+# (inference spend) that the BFF would forward with no trial guard.
 # The UI defers restore, so the BFF whitelist deliberately omits it: pause /
 # resume / cancel only. (ISSUE_TREE_HOLD_RELEASE_POLICY_STRATEGIES also upstream.)
 _TREE_CONTROL_MODE = r"^(pause|resume|cancel)$"

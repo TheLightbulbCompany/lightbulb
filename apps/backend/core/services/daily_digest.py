@@ -29,7 +29,6 @@ from zoneinfo import ZoneInfo
 
 import jwt as pyjwt
 
-from core.auth import AuthContext
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import container_repo, messaging_repo, user_repo
@@ -169,44 +168,10 @@ def due_local_date(row: dict, now: datetime) -> str | None:
     return local.date().isoformat() if local.hour == SEND_HOUR else None
 
 
-class _NoCookieJar:
-    """A background caller has no browser: the minted session stays in the
-    in-process backstop (``paperclip_session_cookie``) instead."""
-
-    def set_cookie(self, *args, **kwargs) -> None:
-        return None
-
-
-async def _teams_ctx(owner_id: str, user_id: str):
-    from routers.teams import agents as teams_agents
-    from routers.teams import deps as teams_deps
-
-    return await teams_deps.resolve_teams_context(
-        auth=AuthContext(user_id=user_id, org_id=owner_id),
-        repo=teams_agents._repo(),
-        session_factory=teams_agents.get_user_session_cookie_for,
-        cookies={},
-        response=_NoCookieJar(),
-    )
-
-
 async def digest_one(owner_id: str, row: dict, local_date: str) -> bool:
     """Decide and send one (human, workspace) digest. ``True`` when sent."""
     user_id = row["user_id"]
-    try:
-        ctx = await _teams_ctx(owner_id, user_id)
-    except Exception:  # noqa: BLE001 -- no Paperclip session: retry next tick rather than under-report
-        ctx = None
-
-    async def teams_ctx():
-        if ctx is None:
-            raise RuntimeError("no teams context")
-        return ctx
-
-    counts = await activity.unseen_counts(owner_id, user_id, teams_ctx)
-    if counts is None:
-        put_metric("digest.skipped", dimensions={"reason": "paperclip_unavailable"})
-        return False
+    counts = await activity.unseen_counts(owner_id, user_id)
     counts = {k: counts.get(k, 0) for k in KINDS}
     # Claimed even at zero: the day's digest is decided at the first 08:00 tick.
     if not await messaging_repo.claim_digest(user_id, owner_id, local_date):

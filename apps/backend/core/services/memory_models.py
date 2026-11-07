@@ -75,3 +75,26 @@ async def expand(question: str) -> list[str]:
         return [question]
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     return lines[:MAX_EXPANSIONS] if len(lines) > 1 else [question]
+
+
+DECISIONS_PROMPT = (
+    "List the decisions made in this meeting transcript, one short plain sentence per line, at most 10. "
+    "Only things the people agreed or decided. No bullets or numbering. If there are none, write nothing."
+)
+
+
+async def decisions(transcript: str) -> list[str]:
+    """The decisions in a meeting transcript (one cheap Haiku pass), or [] when there are none or Bedrock fails."""
+    try:
+        resp = await run_in_thread(
+            _client("bedrock-runtime").converse,
+            modelId=settings.MEMORY_EXPAND_MODEL,
+            system=[{"text": DECISIONS_PROMPT}],
+            messages=[{"role": "user", "content": [{"text": transcript}]}],
+            inferenceConfig={"maxTokens": 600},
+        )
+        text = "".join(b.get("text", "") for b in resp["output"]["message"]["content"])
+    except (ClientError, BotoCoreError, KeyError) as exc:
+        logger.warning("meeting decisions failed: %s", type(exc).__name__)
+        return []
+    return [ln.strip(" -*\t")[:300] for ln in text.splitlines() if ln.strip(" -*\t")][:10]

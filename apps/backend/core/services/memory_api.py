@@ -214,6 +214,7 @@ async def remember(
     scope: str = "me",
     replaces: list[str] | None = None,
     on_behalf_of: str | None = None,
+    source: str | None = None,
 ) -> dict:
     """``{"queued": bool, "neighbours": [...]}``; the write is ``memory.remember`` on the member.
     Raises ``Refused`` for a credential-shaped value before any call or queue (``secret:<name>``,
@@ -227,6 +228,8 @@ async def remember(
         params["replaces"] = replaces
     if on_behalf_of:
         params["on_behalf_of"] = on_behalf_of
+    if source:  # where it was learned, e.g. ``meeting:<roomId>``
+        params["source"] = source
     near = await neighbours(owner_id, subject)
     answer = await network_member.call_op(owner_id, "memory.remember", params)
     if answer is None:

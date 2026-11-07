@@ -23,7 +23,7 @@ from pydantic import AfterValidator, Field
 from core.config import settings
 from core.dynamodb import utc_now_iso
 from core.repositories import messaging_repo
-from core.services import integration_reads, meeting_bots, meeting_invites, memory_api
+from core.services import integration_reads, meeting_bots, meeting_invites, meeting_notes, memory_api, memory_models
 from routers.huddles import RoomBody, _problem, _require_room_token, _room_id, _Worker
 from routers.internal_automations import VoiceStartIn, start_voice_work
 from routers.voice_phone import _bookings
@@ -236,11 +236,30 @@ class EndIn(RoomBody):
 @router.post("/internal/voice/meet/{room_id}/end")
 async def end(room_id: str, body: EndIn) -> dict:
     """What the assistant was asked and answered, kept for the owner's timeline."""
-    room_id, _meta, _meeting_map = await _meeting(room_id, body)
+    room_id, _meta, meeting = await _meeting(room_id, body)
     asked = [
         {"t": int(a.get("t") or 0), "who": str(a.get("who") or "")[:120], "q": str(a.get("q") or "")[:1000],
          "a": str(a.get("a") or "")[:2000]}
         for a in body.asked
     ]  # fmt: skip
     await meeting_invites._patch_meeting(room_id, {"asked": asked, "summary": body.summary})
+    await _keep_decisions(body.ownerId, room_id, meeting)
     return {"ok": True}
+
+
+async def _keep_decisions(owner_id: str, room_id: str, meeting: dict) -> None:
+    """One cheap-model pass over the transcript: the decisions go on the record and into workspace memory
+    (``source="meeting:<roomId>"``), so ``recall_memory`` finds them later. No transcript: nothing, no model call."""
+    try:
+        transcript = await meeting_notes._transcript_text(owner_id, room_id, meeting)
+        found = await memory_models.decisions(transcript) if transcript and transcript.strip() else []
+        if not found:
+            return
+        await meeting_invites._patch_meeting(room_id, {"decisions": found})
+        for d in found:
+            await memory_api.remember(
+                owner_id, subject=f"Decision: {meeting.get('title') or 'Meeting'}", fact=d, kind="decision",
+                scope="team", source=f"meeting:{room_id}",
+            )  # fmt: skip
+    except Exception:  # the record above is kept; a failed pass must not fail the meeting's end
+        logger.warning("meeting %s: decisions not kept", room_id, exc_info=True)

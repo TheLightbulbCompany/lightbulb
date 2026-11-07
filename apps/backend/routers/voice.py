@@ -51,7 +51,18 @@ def _e164(raw: str) -> str | None:
 
 
 #: Meeting fields the page shows. Never the ticket nonce or the Recall bot id.
-_MEETING_FIELDS = ("title", "startAt", "endAt", "status", "summary", "asked", "followUps", "notesSentAt")
+_MEETING_FIELDS = (
+    "title",
+    "startAt",
+    "endAt",
+    "status",
+    "summary",
+    "asked",
+    "followUps",
+    "notesSentAt",
+    "notes",
+    "decisions",
+)
 
 
 def _epoch_ms(v: Any) -> int:

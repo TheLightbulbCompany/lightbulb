@@ -196,11 +196,7 @@ async def _notes(room_id: str, meta: dict, occurrence) -> None:
                 return
     if meeting.get("notesRunId"):
         return  # its notes run was dispatched: the mail goes with its reply
-    mailed = await _mail_organizer(owner_id, room_id, target, meeting, title, occurrence)
-    if mailed is None:
-        return  # already attempted (here or by another end path), or the occurrence moved on
-    if not mailed:
-        raise RuntimeError("the organizer mail was not sent")
+    # Notes live in the app only (founder, 7 Nov): _mail_organizer stays but is no longer called.
     await meeting_invites._patch_meeting(room_id, {"notesMailedAt": int(time.time())}, when=this_occurrence)
 
 
@@ -337,7 +333,7 @@ async def on_agent_reply(owner_id: str, agent_id: str, reply_to: str | None, tex
     try:
         request = await messaging_repo.get_meeting_notes_request(owner_id, reply_to)
         if request is not None and request.get("agentId") == agent_id:
-            await _mail_notes(owner_id, reply_to, request, notes=text)
+            await _keep_notes(owner_id, reply_to, request, notes=text)
     except Exception:  # noqa: BLE001
         put_metric("meeting.notes.mail_failed")
         logger.warning("meeting notes mail failed for reply to %s", reply_to, exc_info=True)
@@ -355,7 +351,7 @@ async def on_notes_run_ended(owner_id: str, row: dict) -> None:
         if request is None or request.get("mailAttemptedAt"):
             return
         notes = await _posted_notes(request, trigger) if row.get("outcome") == "completed" else None
-        await _mail_notes(owner_id, trigger, request, notes=notes)
+        await _keep_notes(owner_id, trigger, request, notes=notes)
     except Exception:  # noqa: BLE001
         put_metric("meeting.notes.mail_failed")
         logger.warning("meeting notes end-of-run mail failed for %s", trigger, exc_info=True)
@@ -375,19 +371,10 @@ async def _posted_notes(request: dict, trigger: str) -> str | None:
     return next((t for t in reversed(replies) if t.strip()), None)
 
 
-async def _mail_notes(owner_id: str, message_id: str, request: dict, notes: str | None) -> None:
+async def _keep_notes(owner_id: str, message_id: str, request: dict, notes: str | None) -> None:
+    """The notes agent's reply is kept on the meeting record (the app's timeline); nothing is mailed."""
     room_id, occurrence = request["roomId"], request.get("occurrence")
-    meeting = request.get("meeting") or {}
-    target = request.get("targetRoomId") or await meeting_invites.output_room(owner_id, room_id)
-
-    async def claim() -> bool:
-        return await messaging_repo.claim_meeting_notes_mail(owner_id, message_id)
-
-    mailed = await _mail_organizer(
-        owner_id, room_id, target, meeting, meeting.get("title") or "Meeting", occurrence,
-        notes=notes, notes_failed=notes is None, claim=claim,
-    )  # fmt: skip
-    if mailed:  # the live record too, while it is still this occurrence
-        await meeting_invites._patch_meeting(
-            room_id, {"notesMailedAt": int(time.time())}, when=lambda m: m.get("startAt") == occurrence
-        )
+    if not await messaging_repo.claim_meeting_notes_mail(owner_id, message_id):
+        return  # kept already
+    fields = {"notesMailedAt": int(time.time()), **({"notes": notes.strip()} if notes else {})}
+    await meeting_invites._patch_meeting(room_id, fields, when=lambda m: m.get("startAt") == occurrence)

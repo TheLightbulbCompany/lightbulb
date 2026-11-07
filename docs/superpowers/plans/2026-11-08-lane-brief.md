@@ -1,0 +1,12 @@
+# Lane brief (shared by every build subagent, 8 Nov 2026)
+
+You are one lane of the Lightbulb voice-agents build. Read first: `docs/superpowers/plans/2026-11-08-founder-goal.md`, the spec `docs/superpowers/specs/2026-11-07-voice-agents-design.md`, the master plan, and the Phase 1 plan (all on branch `docs/voice-pivot`, readable with `git show origin/docs/voice-pivot:<path>`). Deadline 12:00 pm ET today; work fast, finish your slice completely.
+
+Rules:
+- Repo: `/Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync`. Never touch its main working tree (another branch is checked out there). Create your own worktree: `git -C /Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync worktree add .claude/worktrees/<lane> -b <branch> origin/main`. Never `git stash`. Verify `git rev-parse --show-toplevel` before committing.
+- Ponytail: shortest diff that works, reuse what exists, delete over add, no unrequested abstractions. Test first for logic; run the relevant local suites (`cd apps/backend && uv run pytest <paths> -q`, `pnpm --filter <pkg> test`, `cd apps/infra && npx jest <file>`). CI is being stripped — your local run is the proof; paste its result line in the PR.
+- Open a PR with `gh pr create` (body ends with the attribution line below). Do NOT merge — the lead merges after an independent review.
+- AWS: `--profile isol8-admin --region us-east-1` as flags. Read-only on prod unless your brief says otherwise. Never print secrets; read them into env via `$(aws secretsmanager get-secret-value --secret-id <name> --profile isol8-admin --region us-east-1 --query SecretString --output text)`.
+- Spend caps: one Twilio number ($1.15/mo), ≤ $5/day Twilio test minutes, ≤ $5/day Gemini, ≤ 3 Recall hours/day. Nothing else that costs money.
+- Commit trailer: `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. PR body ends with `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
+- Report back: PR URL(s), what you verified and how, what is unverified, anything the lead must do.

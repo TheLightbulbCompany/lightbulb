@@ -10,7 +10,7 @@ newer than its META. Paperclip-only attributes
 (``company_id``, ``agent_keys``, ``agent_cost_remainder``, ``automation_pause*``) never move:
 they stay on the old row. Identity rows are never copied.
 
-Refuses prod and an env with the super-agent master off. DRY RUN BY DEFAULT. Runs inside the
+Refuses prod (unless --allow-prod) and an env with the super-agent master off. DRY RUN BY DEFAULT. Runs inside the
 backend task:
 
     uv run python -m scripts.copy_workspace_meta --all
@@ -214,9 +214,10 @@ async def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--apply", action="store_true", help="write; without it this is a dry run")
     mode.add_argument("--verify", action="store_true")
     parser.add_argument("--reverse", action="store_true", help="copy META back to the old table")
+    parser.add_argument("--allow-prod", action="store_true", help="lift the prod refusal (phase-1 task 3 data move)")
     args = parser.parse_args(argv)
-    if settings.ENVIRONMENT == "prod":
-        print("refusing: copy_workspace_meta is dev-only (prod runs through spec 09)")
+    if settings.ENVIRONMENT == "prod" and not args.allow_prod:
+        print("refusing: copy_workspace_meta is dev-only unless --allow-prod")
         return 2
     if not env_enabled():
         print("refusing: the super-agent env master is off (no tasks table here)")

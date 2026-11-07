@@ -34,3 +34,8 @@ async def list_on() -> list[str]:
         return []
     # ponytail: full scan of containers, cached 1 h by the caller; add a sparse GSI when workspaces > ~1k.
     return [row["owner_id"] for row in await container_repo.scan_all() if row.get("super_agent") is not False]
+
+
+async def list_off() -> list[str]:
+    """Every owner whose row opted out (`super_agent` exactly False): the phase-1 audit before the switch retires."""
+    return [row["owner_id"] for row in await container_repo.scan_all() if row.get("super_agent") is False]

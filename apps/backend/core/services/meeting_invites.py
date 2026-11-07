@@ -766,6 +766,10 @@ _CALL_KEYS = (
     "notesSkipped",
     "unsaid",
     "limitSaid",
+    "announced",
+    "asked",
+    "followUps",
+    "summary",
 )
 _OCCURRENCE_KEYS = (*_BOT_KEYS, *_CALL_KEYS)
 _HISTORY_MAX = 30

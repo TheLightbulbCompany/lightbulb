@@ -427,6 +427,9 @@
   background: var(--cream-deeper);
 }
 .workspace-rail > button:disabled { opacity: 0.5; cursor: not-allowed; }
+/* Talk: live is a state, so it reads in the state hue on the icon and label, never as a fill. */
+.workspace-rail > .workspace-rail__talk[data-state="live"] { color: var(--ok); background: var(--cream-deeper); }
+.workspace-rail > .workspace-rail__talk[data-state="connecting"] { opacity: 0.7; cursor: progress; }
 .workspace-rail > button:focus-visible,
 .workspace-rail > a:focus-visible { outline: 2px solid var(--midnight); outline-offset: 1px; }
 .workspace-rail__spacer { flex: 1; min-height: 16px; }

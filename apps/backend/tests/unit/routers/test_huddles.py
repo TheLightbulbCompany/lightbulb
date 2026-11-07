@@ -219,7 +219,8 @@ def test_join_works_in_a_dm_and_group_dm(client, kind):
         resp, _, dispatch = _join(client, room_team=AsyncMock(wraps=vc._room_team))
     assert resp.status_code == 200 and resp.json()["lightbulb"] is True
     dispatch.assert_awaited_once()
-    _join.wake.assert_called_once_with("org_a", [{"id": "agent-eng", "name": "Engineering"}], ROOM)
+    if kind == "group-dm":  # a DM is owner mode: nothing to wake (test_join_of_a_dm_dispatches_the_owner_router...)
+        _join.wake.assert_called_once_with("org_a", [{"id": "agent-eng", "name": "Engineering"}], ROOM)
 
 
 def test_people_only_room_joins_without_dispatch_or_wake(client):
@@ -913,3 +914,14 @@ def test_turn_passes_the_turns_other_requests_to_a_new_run_only(client):
     assert _turn(client, {**INTERNAL[1][1], "requests": ["x"] * 9})[0].status_code == 400
     assert _turn(client, {**INTERNAL[1][1], "requests": ["x" * 201]})[0].status_code == 400
     assert _turn(client, {**INTERNAL[1][1], "requests": [""]})[0].status_code == 400
+
+
+def test_join_of_a_dm_dispatches_the_owner_router_and_wakes_nothing(client):
+    """Owner mode (voice spec §4.5, §5 Home): Live in a DM with the assistant is the Router session, whose reads and
+    start_work go through the backend, so no workspace runtime is woken and no routing cards are warmed."""
+    meta = {"ownerId": "org_a", "kind": "dm"}
+    resp, _, dispatch = _join(client, room_team=AsyncMock(return_value=(meta, TEAM[:1])))
+    assert resp.status_code == 200
+    assert dispatch.await_args.args[1] == {"roomId": ROOM, "ownerId": "org_a", "roomToken": RT, "mode": "owner"}
+    _join.wake.assert_not_called()
+    _join.warm.assert_not_called()

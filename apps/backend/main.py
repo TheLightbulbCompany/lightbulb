@@ -39,6 +39,7 @@ from routers import (
     automations,
     internal_automations,
     voice_meet,
+    voice_owner,
     voice_phone,
     billing,
     config,
@@ -726,6 +727,7 @@ app.include_router(automations.router, prefix="/api/v1", tags=["automations"])
 app.include_router(internal_automations.router, prefix="/api/v1", tags=["super-agent"])  # lane A: Router proposals
 app.include_router(voice_phone.router, prefix="/api/v1", tags=["voice"])  # the phone receptionist worker
 app.include_router(voice_meet.router, prefix="/api/v1", tags=["voice"])  # the meeting agent worker
+app.include_router(voice_owner.router, prefix="/api/v1", tags=["voice"])  # owner mode: Live in the DM is the Router
 
 from routers import runtime_internal  # noqa: E402
 

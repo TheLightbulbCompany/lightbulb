@@ -186,21 +186,24 @@ async def join(room_id: str, auth: Annotated[AuthContext, Depends(get_current_us
                 meta = await messaging_repo.get_room(room_id) or meta
             if (meta.get("meeting") or {}).get("status") == "in_call":
                 raise in_call
-            return await _join(room_id, owner_id, auth.user_id, team)
+            return await _join(room_id, owner_id, auth.user_id, team, owner_mode=meta.get("kind") == "dm")
     except meeting_invites.MeetingBusy:
         raise in_call from None
 
 
-async def _join(room_id: str, owner_id: str, user_id: str, team: list[dict]) -> dict:
+async def _join(room_id: str, owner_id: str, user_id: str, team: list[dict], *, owner_mode: bool = False) -> dict:
     name = await messaging.human_display_name(user_id)
     token = livekit_huddles.mint_token(room_id=room_id, user_id=user_id, name=name)
     out = {"serverUrl": settings.LIVEKIT_URL, "roomName": livekit_huddles.room_name(room_id), "token": token}
     if not team:
         return {**out, "lightbulb": False}
-    # Going Live is the earliest sign a voice turn is coming: start the workspace's cold start now,
-    # and warm Jev's agent cards so the first /route fits its 3 s budget (F4).
-    voice_calls.prewake_owner(owner_id, team, room_id)
-    voice_calls.prewarm_cards(owner_id, team)
+    # A DM with the assistant is owner mode (routers/voice_owner.py): the worker runs the Router session, whose
+    # reads and start_work go through the backend, so nothing below is needed. Elsewhere going Live is the
+    # earliest sign a voice turn is coming: start the workspace's cold start now, and warm Jev's agent cards so
+    # the first /route fits its 3 s budget (F4).
+    if not owner_mode:
+        voice_calls.prewake_owner(owner_id, team, room_id)
+        voice_calls.prewarm_cards(owner_id, team)
     try:
         # The worker takes ~20 s to join: a second click (or person) in that window must not dispatch
         # another, which would evict the first. The window is shorter than the web's 45 s give-up, so
@@ -210,7 +213,12 @@ async def _join(room_id: str, owner_id: str, user_id: str, team: list[dict]) -> 
         ):
             await livekit_huddles.dispatch_ceo(
                 room_id,
-                {"roomId": room_id, "ownerId": owner_id, "roomToken": livekit_huddles.room_token(room_id, owner_id)},
+                {
+                    "roomId": room_id,
+                    "ownerId": owner_id,
+                    "roomToken": livekit_huddles.room_token(room_id, owner_id),
+                    **({"mode": "owner"} if owner_mode else {}),
+                },
             )
     except Exception:  # noqa: BLE001 -- Twirp, aiohttp and timeouts alike: LiveKit is the upstream
         put_metric("huddle.livekit.error")

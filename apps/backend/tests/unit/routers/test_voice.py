@@ -88,7 +88,8 @@ async def test_agent_config_member_cannot_write(repos, async_client_org_member):
 
 
 @pytest.mark.asyncio
-async def test_a_live_greeting_must_disclose_ai_and_recording(repos, async_client_org_admin):  # noqa: F811
+async def test_a_live_greeting_must_disclose_ai_and_recording(repos, async_client_org_admin, monkeypatch):  # noqa: F811
+    monkeypatch.setattr("core.config.settings.VOICE_LINE_NUMBER", "+14842079294")  # Go live needs a number
     put = lambda cfg: async_client_org_admin.put("/api/v1/voice/agent", json={"config": cfg})  # noqa: E731
     r = await put({"live": True, "greeting": "Hi, this is Nova. How can I help?"})
     assert r.status_code == 422 and r.json()["detail"]["code"] == "greeting_needs_disclosure"

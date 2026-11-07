@@ -8,8 +8,12 @@ questions callers usually ask that the site does not answer come back as `toAdd`
 the owner fills the cards by hand.
 
 `assign_number(ws, user_id)`: the line row `PHONE#<e164> / LINE -> {ownerId, ownerUserId}` the phone worker
-resolves a call with (routers/voice_phone.py on feat/voice-phone-dev). The number is `settings.VOICE_LINE_NUMBER`
-(per environment; empty = `not_available`).
+resolves a call with (routers/voice_phone.py). The number is `settings.VOICE_LINE_NUMBER` (per environment; empty =
+`not_available`).
+
+Numbers at onboarding: `reserve` stores the owner's choice (keep their number and forward it, or a new one); nothing
+is bought until Go live, when `provision_at_go_live` gives the number (bought from Twilio once VOICE_BUY_NUMBERS is
+on). `release_number` gives it back.
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ import functools
 import json
 import logging
 import re
+from typing import Literal
 from urllib.parse import urljoin, urlsplit
 
 import boto3
@@ -163,24 +168,38 @@ async def draft(website: str, business: str, city: str) -> dict:
         return {**EMPTY, "read": True}
 
 
-async def release_number(ws: str) -> int:
-    """Wipe: delete the workspace's `PHONE#` line row, so its number answers nobody and can be given again.
-    ponytail: the one VOICE_LINE_NUMBER is the only one assign_number gives; an owner -> numbers row once we buy more."""
-    number = settings.VOICE_LINE_NUMBER
-    if not number:
-        return 0
-    try:
-        await run_in_thread(
-            messaging_repo._table().delete_item,
-            Key={"pk": f"PHONE#{number}", "sk": "LINE"},
-            ConditionExpression="ownerId = :ws",
-            ExpressionAttributeValues={":ws": ws},
-        )
-    except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-            return 0  # no line, or another workspace's
-        raise
-    return 1
+TWILIO_API = "https://api.twilio.com/2010-04-01/Accounts"
+
+
+async def _twilio(method: str, path: str, **params: str) -> dict:
+    """One Twilio REST call under the account (GET params as the query, POST as the form); {} for a 204."""
+    url = f"{TWILIO_API}/{settings.TWILIO_ACCOUNT_SID}/{path}"
+    async with httpx.AsyncClient(auth=(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN), timeout=10) as client:
+        kw = {"params": params} if method == "GET" else {"data": params}
+        resp = await client.request(method, url, **kw)
+    resp.raise_for_status()
+    return resp.json() if resp.content else {}
+
+
+async def release_number(ws: str) -> str:
+    """Delete the workspace's `PHONE#` line row, so its number answers nobody, and give a bought number back to
+    Twilio. The number released, or "" when the workspace had none. Wipes call it before the owner partition goes
+    (the Agent page's `number` is how a bought number is found).
+    ponytail: the 30-day paused/unused release has no caller yet: nothing is bought while VOICE_BUY_NUMBERS is off.
+    Call it from the watchdog's daily tick (core/temporal/watchdog_workflow.py) once buying is on."""
+    cfg = await messaging_repo.get_voice_agent(ws) or {}
+    number = str(cfg.get("number") or "") or settings.VOICE_LINE_NUMBER
+    line = await messaging_repo._get(f"PHONE#{number}", "LINE") if number else None
+    if not line or line.get("ownerId") != ws:
+        return ""  # no line, or another workspace's
+    if line.get("sid"):  # bought by provision_at_go_live: back to Twilio first, so a retried wipe still finds it
+        try:
+            await _twilio("DELETE", f"IncomingPhoneNumbers/{line['sid']}.json")
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 404:  # 404: already released
+                raise
+    await run_in_thread(messaging_repo._table().delete_item, Key={"pk": f"PHONE#{number}", "sk": "LINE"})
+    return number
 
 
 class NoNumber(Exception):
@@ -212,4 +231,57 @@ async def assign_number(ws: str, user_id: str) -> str:
         if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
             raise NoNumber("taken") from None
         raise
+    return number
+
+
+async def reserve(ws: str, path: Literal["keep", "new"], area_code: str | None, carrier: str | None,
+                  mode: Literal["missed", "all"] | None, *, user_id: str) -> dict:  # fmt: skip
+    """Onboarding step 4: keep the business's number and forward it, or get a new one. Stored on the Agent page as
+    `numberChoice` (`number` stays the E.164 string the page shows). Nothing is bought here."""
+    choice = {"path": path, "areaCode": area_code, "carrier": carrier, "mode": mode}
+    cfg = await messaging_repo.get_voice_agent(ws) or {}
+    await messaging_repo.put_voice_agent(ws, {**cfg, "numberChoice": choice}, user_id)
+    return choice
+
+
+def _area_code(raw) -> str | None:
+    """The area code of a US number as the page stores it ("(484) 555-0100", "+14845550100")."""
+    digits = re.sub(r"\D", "", raw) if isinstance(raw, str) else ""
+    digits = digits[1:] if len(digits) == 11 and digits[0] == "1" else digits
+    return digits[:3] if len(digits) == 10 else None
+
+
+async def provision_at_go_live(ws: str, cfg: dict, user_id: str) -> str:
+    """The number the workspace answers on, given when its Agent page flips `live: true`. Idempotent: a number the
+    workspace's line row already has is kept. While VOICE_BUY_NUMBERS is off (until Twilio KYC clears) it is the one
+    configured VOICE_LINE_NUMBER (`assign_number`); on, one local number is bought in the chosen area code (new) or
+    the business line's (keep), attached to the SIP trunk in the same call, and its line row written."""
+    have = cfg.get("number")
+    if (
+        isinstance(have, str)
+        and have
+        and ((await messaging_repo._get(f"PHONE#{have}", "LINE")) or {}).get("ownerId") == ws
+    ):
+        return have
+    if not settings.VOICE_BUY_NUMBERS:
+        return await assign_number(ws, user_id)
+    if not (settings.TWILIO_ACCOUNT_SID and settings.TWILIO_AUTH_TOKEN and settings.TWILIO_TRUNK_SID):
+        raise NoNumber("not_available")
+    choice = cfg.get("numberChoice") if isinstance(cfg.get("numberChoice"), dict) else {}
+    area = choice.get("areaCode") if choice.get("path") == "new" else _area_code(cfg.get("forwardFrom"))
+    try:
+        found = await _twilio("GET", "AvailablePhoneNumbers/US/Local.json",
+                              **({"AreaCode": area} if area else {}), VoiceEnabled="true", SmsEnabled="true")  # fmt: skip
+        if not found.get("available_phone_numbers"):
+            raise NoNumber("none_in_area_code")
+        pick = found["available_phone_numbers"][0]["phone_number"]
+        bought = await _twilio(
+            "POST", "IncomingPhoneNumbers.json", PhoneNumber=pick, TrunkSid=settings.TWILIO_TRUNK_SID
+        )
+    except httpx.HTTPError as exc:
+        logger.warning("number buy failed: %s", type(exc).__name__)
+        raise NoNumber("buy_failed") from None
+    number = bought["phone_number"]
+    item = {"pk": f"PHONE#{number}", "sk": "LINE", "ownerId": ws, "ownerUserId": user_id, "sid": bought["sid"]}
+    await run_in_thread(messaging_repo._table().put_item, Item=item)
     return number

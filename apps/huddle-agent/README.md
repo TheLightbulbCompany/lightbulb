@@ -114,7 +114,8 @@ The project has one number, `+14842079294`, on the dev rule `lightbulb-phone-dev
 `lightbulb-phone-dev`, a Mac worker), and its `PHONE#` line row is in `lightbulb-dev-messaging` only.
 
 1. A number for prod: buy a second LiveKit number, or move `+14842079294` to prod (dev then has no line).
-2. The rule, targeting the deployed agent:
+2. The rule, targeting the deployed agent: set `trunk_ids` in `scripts/phone_dispatch_rule.prod.json`, then run
+   `scripts/phone_dispatch_rule.sh prod` (creates it, or replaces the rule of that name). By hand, it is:
 
        echo '{"dispatch_rule": {"name": "lightbulb-phone-prod", "trunk_ids": ["<the number's PN_... id>"],
          "rule": {"dispatchRuleIndividual": {"roomPrefix": "phone-prod-"}},

@@ -62,7 +62,6 @@ beforeEach(() => {
   live.refreshActivity.mockResolvedValue([]);
   live.apiGet.mockImplementation(async (path: string) => {
     if (path === "/teams/agents") return { agents: [{ id: "agent-1", name: "Pulse" }] };
-    if (path === "/teams/issues/iss-400") return { identifier: "ISOA-400", title: "Draft the launch posts" };
     throw new Error("not found");
   });
 });
@@ -92,7 +91,7 @@ describe("RunNotifications team run completion", () => {
     await act(async () => emit("teams.heartbeat.run.status", { runId: "run-7", agentId: "agent-1", status: "succeeded", issueId: "iss-400" }));
 
     // Line 1 who · which task, line 2 what happened; the click opens the run.
-    expect(live.nativeNotify).toHaveBeenCalledWith("Pulse · ISOA-400", "Finished: Draft the launch posts", {
+    expect(live.nativeNotify).toHaveBeenCalledWith("Pulse", "Finished a run", {
       onClick: expect.any(Function), tag: "teams:run-7",
     });
     expect(live.notifySuccess).not.toHaveBeenCalled();
@@ -167,7 +166,7 @@ describe("RunNotifications failed team run", () => {
       runId: "run-5", agentId: "agent-1", status: "failed", issueId: "iss-400", errorCode: "process_lost", error: "Process lost",
     }));
     const [title, opts] = live.notifyFailure.mock.calls[0] as [string, { description: string; action: { onClick: () => void } }];
-    expect(title).toBe("Pulse · ISOA-400");
+    expect(title).toBe("Pulse");
     expect(opts.description).toBe("Couldn't finish: the workspace restarted mid-run");
     opts.action.onClick();
     const params = live.pushSearchParams.mock.calls[0][0] as URLSearchParams;

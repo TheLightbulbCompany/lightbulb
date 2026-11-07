@@ -27,7 +27,6 @@ const h = vi.hoisted(() => ({
   contextImported: true as boolean,
   contextError: undefined as unknown,
   setContext: vi.fn(),
-  approvals: [] as { id: string; status: string }[],
   openInviteDialog: vi.fn(),
   routerPush: vi.fn(),
 }));
@@ -76,9 +75,7 @@ vi.mock("@/components/workspace/workspaceController", () => ({
 
 vi.mock("@/hooks/useTeamsApi", () => ({
   useTeamsApi: () => ({
-    read: (path: string) => path === "/approvals"
-      ? { data: { approvals: h.approvals }, isLoading: false, mutate: vi.fn() }
-      : { data: h.rosterLoading ? undefined : { agents: h.agents }, isLoading: h.rosterLoading, mutate: vi.fn() },
+    read: () => ({ data: h.rosterLoading ? undefined : { agents: h.agents }, isLoading: h.rosterLoading, mutate: vi.fn() }),
   }),
 }));
 
@@ -122,7 +119,6 @@ beforeEach(() => {
   h.contextImported = true;
   h.contextError = undefined;
   h.setContext.mockReset();
-  h.approvals = [];
   h.openInviteDialog.mockReset();
   window.localStorage.clear();
 });
@@ -155,7 +151,6 @@ describe("OnboardingBand", () => {
   it("says All set for one session once every counted step is done, then renders nothing", () => {
     h.connections = ["stripe", "github", "notion"].map(connected);
     h.membersCount = 2;
-    h.approvals = [{ id: "ap_1", status: "approved" }];
     const { unmount } = render(<OnboardingBand participants={FRESH} humanSpoke />);
     expect(screen.getByText("All set. Your team can see everything your AI employees do.")).toBeInTheDocument();
     unmount();
@@ -174,7 +169,6 @@ describe("OnboardingBand", () => {
     // band must still retire; counting it would keep the band up forever.
     h.connections = ["stripe", "github", "notion"].map(connected);
     h.membersCount = 2;
-    h.approvals = [{ id: "ap_1", status: "rejected" }];
     render(<OnboardingBand participants={FRESH} humanSpoke />);
     expect(screen.getByText(/All set/)).toBeInTheDocument();
   });
@@ -364,7 +358,7 @@ describe("connector cards", () => {
 describe("08 §3 order", () => {
   it("counts the workspace and its AI employees as done and puts the invite form first", () => {
     render(<OnboardingBand participants={FRESH} />);
-    expect(screen.getByRole("heading", { name: "Get started · 2 of 6 done" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Get started · 2 of 5 done" })).toBeInTheDocument();
     expect(screen.getByText("Your workspace")).toBeInTheDocument();
     expect(screen.getByText("Six of them, in #general")).toBeInTheDocument();
     expect(screen.getByText("Invite your team")).toBeInTheDocument();
@@ -376,13 +370,7 @@ describe("08 §3 order", () => {
   it("marks the CEO step done once a person has written in the channel", () => {
     render(<OnboardingBand participants={FRESH} humanSpoke />);
     expect(screen.getByRole("button", { name: /Tell Lightbulb about the business/ })).toHaveTextContent(/Lightbulb has it/);
-    expect(screen.getByRole("heading", { name: "Get started · 3 of 6 done" })).toBeInTheDocument();
-  });
-
-  it("marks the approval step done once any approval was answered, and opens Needs you on click", async () => {
-    render(<OnboardingBand participants={FRESH} />);
-    await userEvent.click(screen.getByRole("button", { name: /Answer your first approval/ }));
-    expect(h.openPanel).toHaveBeenCalledWith("activity", {}, { pushUrl: true });
+    expect(screen.getByRole("heading", { name: "Get started · 3 of 5 done" })).toBeInTheDocument();
   });
 
   it("opens the Invite people dialog from a done invite card", async () => {

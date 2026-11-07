@@ -14,7 +14,7 @@ describe("truncate", () => {
 
   it("bounds the text before the ellipsis, not the whole string", () => {
     // Callers that need the ellipsis inside a hard budget pass max - 1;
-    // DocumentAnnotationPanel relies on this (it passes 119 for a 120 budget).
+    // callers rely on this (it passes 119 for a 120 budget).
     expect(truncate("abcdefghijk", 5)).toHaveLength(6);
     expect(truncate("abcdefghijk", 4)).toHaveLength(5);
   });

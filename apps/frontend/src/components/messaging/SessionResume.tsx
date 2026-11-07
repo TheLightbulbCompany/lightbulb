@@ -1,7 +1,6 @@
 "use client";
 
 import { useId, useState } from "react";
-import Link from "next/link";
 import type { SessionResumeFlow } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { ReceiptChip } from "./NativeSessionTranscript";
@@ -32,7 +31,7 @@ export function SessionResume({ flow, own, ownerName }: { flow: SessionResumeFlo
       </form>}
       {flow.error && <p role="alert" className="text-ui text-warn">{flow.error}</p>}
       {flow.error && !flow.available && flow.check && <Button type="button" size="sm" onClick={() => void flow.check?.()}>Check again</Button>}
-      {flow.recovery && <Link href="/settings?panel=desktop" className="text-ui underline underline-offset-4">{flow.recovery === "folder-access" ? "Review folder access" : "Open session sharing settings"}</Link>}
+      {flow.recovery && <p className="text-ui text-muted-foreground">{flow.recovery === "folder-access" ? "Allow folder access for Lightbulb in your Mac settings, then try again." : "Turn on session sharing in the Lightbulb Mac app, then try again."}</p>}
     </div>
   </div>;
 }

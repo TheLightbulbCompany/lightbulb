@@ -5,12 +5,15 @@
 The Gemini session cannot run here, so this judges only what the worker decides: when a reply may be heard.
 It assumes the worst case for false answers: the model wants to reply after EVERY line (proactive audio
 declining is a bonus on top). Every agent name in a scenario is the one assistant ("Nova"). A reply plays for
-REPLY_S unless a person speaks into it (Gemini's barge-in). Judged: `ack_within` (a reply starts within its
+REPLY_S unless a person speaks into it (Gemini's barge-in). The order is the live one (7 Nov): the reply's
+audio is ready MODEL_S after a line ends, but the line's transcript reaches the gate only TRANSCRIPT_LAG_S
+after that, and the reply is held until then (meet.MeetAgent). Judged: `ack_within` (a reply starts within its
 seconds of the line, with MODEL_S of model latency on top of the gate) and `silent_between` (no reply in the
 window, except one owed to an ask made before it when the scenario allows one). Runs, words and answer text
 need the model and are not judged.
 """
 
+import os
 import re
 import sys
 
@@ -22,7 +25,8 @@ from .sim import ROSTER
 NAME = "Nova"
 WPS = 2.7  # spoken words a second
 REPLY_S = 4.0
-MODEL_S = 0.8  # ponytail: assumed Gemini first-audio latency after the gate opens; measure live
+MODEL_S = 0.8  # ponytail: assumed Gemini first-audio latency after a line ends
+TRANSCRIPT_LAG_S = float(os.environ.get("MEET_TRANSCRIPT_LAG_S", "1.9"))  # measured live 7 Nov: replies held 1.4-1.9 s
 STEP = 0.1
 _ROSTER = re.compile(r"\b(" + "|".join(ROSTER) + r")\b")
 
@@ -34,10 +38,16 @@ def timeline(scenario: dict) -> tuple[list[dict], list[dict]]:
     )
     lines, bursts = [], []
     playing = None  # the burst being said
+    heard: list[tuple[float, str, str, int]] = []  # transcripts in flight: (arrives, who, text, line index)
+    asked_line = -1  # the line whose transcript opened the gate: what a reply answers
     t, i, quiet_since = 0.0, 0, 0.0
     todo = list(scenario["lines"])
     end_at = max((ln.get("at") or 0) for ln in todo) + scenario.get("tail", 20)
     while t < end_at:
+        for h in [h for h in heard if t >= h[0]]:
+            heard.remove(h)
+            if gate.heard(h[1], h[2], t, new_turn=True) in meet.ADDRESSED:
+                asked_line = h[3]
         if playing and t >= playing["end"]:
             gate.answered(playing["end"])
             playing = None
@@ -58,21 +68,19 @@ def timeline(scenario: dict) -> tuple[list[dict], list[dict]]:
                 playing["end"] = start
                 gate.answered(start)
                 playing = None
-            gate.heard(line["who"], text, start, new_turn=True)
+            heard.append((end + MODEL_S + TRANSCRIPT_LAG_S, line["who"], text, len(lines) - 1))
             quiet_since, t, i = end, end, i + 1
             continue
         if playing is None and (not lines or t >= lines[-1]["end"]):
             if gate.verdict(t, t - quiet_since) is True:
-                begin = t + MODEL_S
+                begin = max(t, lines[asked_line]["end"] + MODEL_S)  # the held audio plays at once
                 playing = {
                     "start": begin,
                     "end": begin + REPLY_S,
-                    "line": len(lines) - 1,
+                    "line": asked_line,
                 }
                 bursts.append(playing)
-                gate.ask_at = gate.question_at = (
-                    None  # this reply is the answer; no second one for it
-                )
+                gate.ask_at = None  # this reply is the answer; no second one for it
         t = round(t + STEP, 3)
     return lines, bursts
 

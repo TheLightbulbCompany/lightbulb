@@ -259,8 +259,9 @@ describe("Files", () => {
     expect(within(table).getByRole("row", { name: /Logo/ })).toHaveTextContent("Priya (shared)");
     expect(screen.queryByRole("complementary", { name: "Tip" })).toBeNull();
     await userEvent.click(screen.getByRole("combobox", { name: "Type" }));
-    await userEvent.click(await screen.findByRole("option", { name: "Apps" }));
-    await waitFor(() => expect(client.outputs).toHaveBeenLastCalledWith(expect.objectContaining({ kind: ["app"] })));
+    await userEvent.click(await screen.findByRole("option", { name: "Docs" }));
+    await waitFor(() => expect(client.outputs).toHaveBeenLastCalledWith(expect.objectContaining({ kind: ["document"] })));
+    expect(screen.queryByRole("option", { name: "Apps" })).toBeNull();
   });
 });
 

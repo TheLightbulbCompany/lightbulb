@@ -632,7 +632,7 @@ export const PANELS: Record<Panel, () => React.ReactElement> = {
   mcp: IntegrationsPanel,
   desktop: DesktopPanel,
   // Desktop-app-only: MCP servers running on the user's own Mac, driven by the
-  // Tauri local_mcp_* commands. Renders a download prompt in a browser.
+  // Tauri local_mcp_* commands. Not listed in a browser.
   "local-mcp": LocalMcpServers,
   // SkillsTab takes an optional `agentId`; mounting it prop-less yields the
   // owner-level (global) skills surface — the engine-room home.
@@ -750,7 +750,8 @@ export function SettingsPlace({ id, params }: PanelProps) {
   const sections = developer ? SETTINGS_NAV_SECTIONS : SETTINGS_NAV_SECTIONS.filter((s) => !s.items.every((i) => DEVELOPER_PANELS.has(i.panel ?? "")));
   const isAdmin = useIsWorkspaceAdmin();
   const visible = (item: NavItem): item is NavItem & { panel: Panel } =>
-    item.panel !== undefined && Object.hasOwn(PANELS, item.panel) && (isAdmin || !ADMIN_ONLY_PANELS.has(item.panel));
+    item.panel !== undefined && Object.hasOwn(PANELS, item.panel) && (isAdmin || !ADMIN_ONLY_PANELS.has(item.panel))
+    && (item.panel !== "local-mcp" || isDesktopApp()); // a browser has no local MCP servers to show
   const rows = sections.flatMap((s) => s.items).filter(visible);
   // Derived, not latched: isAdmin reads false until Clerk knows the membership, so a deep-linked admin row
   // re-resolves once it does.

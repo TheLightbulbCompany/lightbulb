@@ -1,55 +1,32 @@
 "use client";
 
-// The roster AND the org chart: same `/agents` read, two views. The retired
-// `teams-org-chart` key aliases onto this panel (panelRegistry's
-// RETIRED_PANEL_ALIASES) and arrives as `view: "chart"`, so an old link opens
-// ONE Agents tab on the chart rather than a second tab drawing the same rows.
+// Team: the specialists as cards (UX slice 6). The retired `teams-org-chart` key aliases onto this panel
+// (panelRegistry's RETIRED_PANEL_ALIASES), so an old link opens Team.
 
 import { useMemo, useState } from "react";
-import { Bot, List, Network } from "lucide-react";
+import { Bot } from "lucide-react";
 import {
   EditorialButton,
   EditorialDialog,
-  PanelDataTable,
   PanelEmptyState,
-  PanelMasthead,
   PanelToolbar,
-  type PanelDataColumn,
 } from "@/components/teams/shell";
 import { AgentCreateChooser } from "@/components/agents/AgentCreateChooser";
 import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
-import { OrgChart } from "@/components/teams/org-chart/OrgChart";
 import { TeamCards } from "./TeamCards";
 import { Button } from "@/components/ui/button";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
-import {
-  setAgentsViewMode,
-  useAgentsViewMode,
-  type AgentsViewMode,
-} from "@/components/teams/agents/agentsViewMode";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { cn } from "@/lib/utils";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { notifyApiError } from "@/lib/notify";
-import { handleShellLinkClick, navigateShell } from "@/lib/shellNav";
+import { navigateShell } from "@/lib/shellNav";
 import { openAgentDmWithDraft, openChatPanel } from "@/components/workspace/workspaceController";
 import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingWorkspaceContext";
-import { useSuperAgent } from "@/hooks/useLiveEvents";
 import { agentInspectorUrl } from "@/components/teams/shared/lib/agentInspectorUrl";
 import { useAgentMutations } from "@/components/teams/agents/hooks/useAgentMutations";
 import type { CompanyAgent } from "@/components/teams/shared/types";
 
 /** Team's search shows from this many agents (UX slice 6): below it, every card is already on screen. */
 export const TEAM_SEARCH_FROM = 10;
-
-export interface AgentsListPanelProps {
-  /** `?view=` (or the retired `teams-org-chart` key), already validated by the
-   *  router. Honoured on this mount without touching the stored preference —
-   *  the toggle takes the view back, and the preference is what it always was.
-   *  Re-delivered rather than remounted when an already-open panel is
-   *  re-opened, so it is compared against its previous value below. */
-  initialView?: AgentsViewMode | null;
-}
 
 /** `messaging.py` `_handle_candidate`: the name in ASCII, lowercased, runs of anything else as "-", 32 at most.
  *  ponytail: no collision suffix (two agents with one name); the room members' handle wins when there is one. */
@@ -58,19 +35,17 @@ export function derivedHandle(name: string): string | null {
   return handle && handle !== "lightbulb" ? handle : null;
 }
 
-export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
+export function AgentsListPanel() {
   const { read } = useTeamsApi();
   const { pause, resume, remove } = useAgentMutations();
   const { data, isLoading, error, mutate } = read<{ agents: CompanyAgent[] }>(
     "/agents",
   );
-  const { open: openMarketplace } = useMarketplaceDrawer();
-  // With the super-agent on, only Lightbulb's DM is a Router room: a specialist's own DM keeps the legacy path
+  // Only Lightbulb's DM is a Router room: a specialist's own DM keeps the legacy path
   // (admission.router_room), so no Request, no private lane. A specialist is asked through Lightbulb instead,
   // its @handle drafted there (admission pins it on the trigger for the Router).
-  const superAgent = useSuperAgent();
   const directory = useMessagingWorkspaceOptional()?.directoryProps;
-  const frontAgentId = superAgent ? directory?.ceoAgentId : undefined;
+  const frontAgentId = directory?.ceoAgentId;
   // The front agent reads as the sidebar names it ("Lightbulb"), never its roster name ("CEO").
   const nameOf = (agent: CompanyAgent) => agent.id === frontAgentId
     ? directory?.participants.find((p) => p.kind === "agent" && p.id === agent.id)?.displayName || "Lightbulb"
@@ -103,19 +78,6 @@ export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
   };
   const [creating, setCreating] = useState(false);
   const [search, setSearch] = useState("");
-  const storedView = useAgentsViewMode();
-  const [viewDeepLink, setViewDeepLink] = useState<AgentsViewMode | null>(initialView ?? null);
-  const view = viewDeepLink ?? storedView;
-  // The org chart only exists without the super-agent; a saved or linked chart view never hides Team's search.
-  const chartShown = !superAgent && view === "chart";
-  // Adjust-state-during-render, not an effect — the same pattern TasksList
-  // uses for its `?groupBy` re-delivery: the workspace merges parameters into an
-  // open panel instead of remounting it, and a plain sidebar nav clears them.
-  const [prevInitialView, setPrevInitialView] = useState(initialView);
-  if (initialView !== prevInitialView) {
-    setPrevInitialView(initialView);
-    setViewDeepLink(initialView ?? null);
-  }
 
   const agents = data?.agents;
   const filtered = useMemo(() => {
@@ -140,88 +102,7 @@ export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
     );
   }
 
-  const allColumns: PanelDataColumn<CompanyAgent>[] = [
-    {
-      key: "name",
-      header: "Name",
-      sortable: true,
-      cell: (a) => (
-        <div className="font-medium text-[var(--midnight)]">{nameOf(a)}</div>
-      ),
-    },
-    {
-      key: "role",
-      header: "Role",
-      cell: (a) => (
-        <span className="label-caps text-[var(--midnight-muted)]">
-          {a.role}
-        </span>
-      ),
-    },
-    {
-      key: "origin",
-      header: "Origin",
-      cell: (a) => (
-        <span className="text-caption text-[var(--midnight-soft)]">
-          {a.origin ?? "Custom"}
-          {a.origin === "Marketplace" && a.marketplace
-            ? ` · ${a.marketplace.slug} v${a.marketplace.version}`
-            : ""}
-        </span>
-      ),
-    },
-    {
-      key: "actions",
-      header: "",
-      align: "right",
-      cell: (a) => {
-        const paused = a.status === "paused";
-        return (
-          <span className="flex items-center justify-end gap-2">
-            {/* Lightbulb (or any agent with the switch off): its DM. A specialist: asked in Lightbulb's DM. */}
-            <button
-              type="button"
-              className="text-ui hover:underline text-[var(--midnight)]"
-              aria-label={frontAgentId && a.id !== frontAgentId ? `Ask ${a.name} through Lightbulb` : `Message ${nameOf(a)}`}
-              onClick={() => message(a)}
-            >
-              {frontAgentId && a.id !== frontAgentId ? "Ask" : "Message"}
-            </button>
-            <button
-              className="text-ui hover:underline text-[var(--midnight-soft)]"
-              onClick={() => void togglePause(a)}
-            >
-              {paused ? "Resume" : "Pause"}
-            </button>
-            <button
-              className="text-ui hover:underline text-[var(--err)]"
-              onClick={() => void deleteAgent(a)}
-            >
-              Delete
-            </button>
-          </span>
-        );
-      },
-    },
-    {
-      key: "open",
-      header: "",
-      align: "right",
-      cell: (a) => (
-        <a
-          href={agentInspectorUrl(a.id)}
-          onClick={(e) => handleShellLinkClick(e, agentInspectorUrl(a.id))}
-          className="text-ui hover:underline"
-          style={{ color: "var(--midnight)" }}
-        >
-          Open →
-        </a>
-      ),
-    },
-  ];
-  // Super-agent: specialists by name only; Paperclip's roles (CMO, ENGINEER) and origins are plumbing.
-  const columns = superAgent ? allColumns.filter((c) => c.key !== "role" && c.key !== "origin") : allColumns;
-  const createLabel = superAgent ? "Hire a specialist" : "New agent";
+  const createLabel = "Hire a specialist";
 
   const createDialog = creating && (
     <CreateAgentDialog
@@ -235,161 +116,38 @@ export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
     />
   );
 
-  // Super-agent (UX slice 6): Team sits in the 880 Frame A column like every list page: the title and Hire on one
+  // UX slice 6: Team sits in the 880 Frame A column like every list page: the title and Hire on one
   // line, cards 3-up, and search only once the team is big enough to need it.
-  if (superAgent) {
-    const count = agents?.length ?? 0;
-    return (
-      <div className="h-full overflow-y-auto">
-        <div className="frame-doc flex flex-col gap-3 pb-8">
-          <div className="frame-doc__title">
-            <h1>Team</h1>
-            <Button type="button" size="sm" className="h-7" onClick={() => setCreating(true)}>{createLabel}</Button>
-          </div>
-          {count >= TEAM_SEARCH_FROM && (
-            <PanelToolbar searchValue={search} onSearchChange={setSearch} searchPlaceholder="Find a specialist..." searchAriaLabel="Search agents" />
-          )}
-          {isLoading ? (
-            <p role="status" className="text-ui text-muted-foreground">Loading…</p>
-          ) : filtered.length === 0 ? (
-            <PanelEmptyState
-              icon={Bot}
-              headline={search ? "No specialists match your search." : "No specialists yet."}
-              supporting={search ? undefined : "Hire one to take on a kind of work, like Growth or Finance."}
-              action={search ? undefined : { label: createLabel, onClick: () => setCreating(true) }}
-            />
-          ) : (
-            <TeamCards agents={filtered} frontAgentId={frontAgentId} nameOf={nameOf} handleOf={handleOf} onAsk={message}
-              actions={(a) => <>
-                <DropdownMenuItem onSelect={() => void togglePause(a)}>{a.status === "paused" ? "Resume" : "Pause"}</DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => navigateShell(agentInspectorUrl(a.id))}>Settings</DropdownMenuItem>
-                {a.id !== frontAgentId && <DropdownMenuItem variant="destructive" onSelect={() => void deleteAgent(a)}>Delete</DropdownMenuItem>}
-              </>} />
-          )}
-          {createDialog}
-        </div>
-      </div>
-    );
-  }
-
+  const count = agents?.length ?? 0;
   return (
-    <div className="editorial-page flex flex-col gap-4 p-4 sm:p-5 lg:p-6 max-w-[1600px] mx-auto w-full">
-      <PanelMasthead
-        overline="Team"
-        title="Team"
-        actions={
-          <>
-            {/* Hiring moved here from the workspace rail: the same marketplace drawer. */}
-            <EditorialButton variant="secondary" onClick={() => openMarketplace({ view: "browse" })}>
-              Add an AI employee
-            </EditorialButton>
-            <EditorialButton variant="primary" onClick={() => setCreating(true)}>
-              {createLabel}
-            </EditorialButton>
-          </>
-        }
-      />
-      <PanelToolbar
-        // Chart view keeps the value (so returning to the list restores the
-        // search) but does not offer the box: a control that visibly changes
-        // nothing is worse than no control.
-        searchValue={chartShown ? "" : search}
-        onSearchChange={setSearch}
-        searchPlaceholder={chartShown ? "" : "Find agent..."}
-        searchAriaLabel="Search agents"
-        hideSearch={chartShown}
-        actions={(
-          <ViewModeToggle
-            view={view}
-            onChange={(mode) => {
-              // An explicit pick beats the deep link and becomes the preference.
-              setViewDeepLink(null);
-              setAgentsViewMode(mode);
-            }}
-          />
+    <div className="h-full overflow-y-auto">
+      <div className="frame-doc flex flex-col gap-3 pb-8">
+        <div className="frame-doc__title">
+          <h1>Team</h1>
+          <Button type="button" size="sm" className="h-7" onClick={() => setCreating(true)}>{createLabel}</Button>
+        </div>
+        {count >= TEAM_SEARCH_FROM && (
+          <PanelToolbar searchValue={search} onSearchChange={setSearch} searchPlaceholder="Find a specialist..." searchAriaLabel="Search agents" />
         )}
-      />
-      {isLoading ? (
-        <div role="status" className="font-editorial-serif text-xl italic text-[var(--midnight-muted)]">
-          Loading…
-        </div>
-      ) : filtered.length === 0 ? (
-        <PanelEmptyState
-          icon={Bot}
-          headline={search ? "No agents match your search." : "No agents yet."}
-          supporting={
-            search
-              ? undefined
-              : "Spin up your first agent — assign a role + start delegating work."
-          }
-          action={{ label: createLabel, onClick: () => setCreating(true) }}
-        />
-      ) : view === "chart" ? (
-        // The chart draws the WHOLE roster, never the search-filtered slice.
-        // An org chart is a structure, and filtering a structure is not a
-        // smaller structure — it is several orphaned roots that misdescribe who
-        // reports to whom. Search stays a list affordance, the way grouping and
-        // sort are list-only on Tasks.
-        <OrgChart agents={agents ?? []} />
-      ) : (
-        <PanelDataTable<CompanyAgent>
-          rows={filtered}
-          columns={columns}
-          rowKey={(a) => a.id}
-        />
-      )}
-
-      {createDialog}
-    </div>
-  );
-}
-
-/** Roster or org chart. Modelled on TasksList's list/board toggle — same
- *  control shape, same per-browser persistence idiom. */
-function ViewModeToggle({
-  view,
-  onChange,
-}: {
-  view: AgentsViewMode;
-  onChange: (mode: AgentsViewMode) => void;
-}) {
-  const buttonClass = (active: boolean) =>
-    cn(
-      "inline-flex h-7 w-7 items-center justify-center transition-colors",
-      active
-        ? "bg-[var(--midnight)] text-[var(--cream)]"
-        : "text-[var(--midnight-muted)] hover:text-[var(--midnight)]",
-    );
-  return (
-    <div className="flex items-center overflow-hidden rounded-md border border-[var(--edge)]">
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            type="button"
-            className={buttonClass(view === "list")}
-            onClick={() => onChange("list")}
-            aria-pressed={view === "list"}
-            aria-label="List view"
-          >
-            <List size={16} />
-          </button>
-        </TooltipTrigger>
-        <TooltipContent>List view</TooltipContent>
-      </Tooltip>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            type="button"
-            className={buttonClass(view === "chart")}
-            onClick={() => onChange("chart")}
-            aria-pressed={view === "chart"}
-            aria-label="Org chart view"
-          >
-            <Network size={16} />
-          </button>
-        </TooltipTrigger>
-        <TooltipContent>Org chart</TooltipContent>
-      </Tooltip>
+        {isLoading ? (
+          <p role="status" className="text-ui text-muted-foreground">Loading…</p>
+        ) : filtered.length === 0 ? (
+          <PanelEmptyState
+            icon={Bot}
+            headline={search ? "No specialists match your search." : "No specialists yet."}
+            supporting={search ? undefined : "Hire one to take on a kind of work, like Growth or Finance."}
+            action={search ? undefined : { label: createLabel, onClick: () => setCreating(true) }}
+          />
+        ) : (
+          <TeamCards agents={filtered} frontAgentId={frontAgentId} nameOf={nameOf} handleOf={handleOf} onAsk={message}
+            actions={(a) => <>
+              <DropdownMenuItem onSelect={() => void togglePause(a)}>{a.status === "paused" ? "Resume" : "Pause"}</DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => navigateShell(agentInspectorUrl(a.id))}>Settings</DropdownMenuItem>
+              {a.id !== frontAgentId && <DropdownMenuItem variant="destructive" onSelect={() => void deleteAgent(a)}>Delete</DropdownMenuItem>}
+            </>} />
+        )}
+        {createDialog}
+      </div>
     </div>
   );
 }

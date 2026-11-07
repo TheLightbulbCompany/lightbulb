@@ -53,7 +53,6 @@ import { AttachmentChips } from "../chat/AttachmentChips";
 import { usePulse } from "../chat/usePulse";
 import { Avatar } from "./Avatar";
 import { EmojiPickerSheet } from "./EmojiPickerSheet";
-import { useSuperAgent } from "../../providers/live-events";
 
 // The photo as it is on the phone. What the endpoint will not take is
 // re-encoded once, by `stagePhoto`, not compressed here and again there.
@@ -199,7 +198,6 @@ export function RoomComposer({
   /** Agents mid-run right now — they answer whether or not they are addressed. */
   runningAgentIds?: readonly string[];
 }) {
-  const superAgent = useSuperAgent();
   const insets = useSafeAreaInsets();
   const palette = useChatPalette();
   const inputMaxHeight = useScaledHeight(22 * INPUT_MAX_LINES);
@@ -518,7 +516,7 @@ export function RoomComposer({
         : null;
   // Who this message will actually reach, by the same rule the backend
   // dispatches on — so the answer is not a guess the two could disagree about.
-  const hint = respondHint(roomKind, members, mentions, runningAgentIds ?? [], superAgent);
+  const hint = respondHint(roomKind, members, mentions, runningAgentIds ?? [], true);
   const hasContent = !!body || draft.attachments.length > 0;
   // Photos upload as they are picked, so sending waits only on the ones still
   // in flight — and a failed one has to be retried or removed first, rather

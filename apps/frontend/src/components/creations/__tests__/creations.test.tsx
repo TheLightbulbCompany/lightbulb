@@ -4,10 +4,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CreationOutput, TaskSummary } from "@lightbulb/shared";
 import { Fresh, fakeTasksClient, type FakeTasksClient } from "@/components/tasks/__tests__/fakeTasks";
 
-const live = vi.hoisted(() => ({ superAgent: true, tasks: null as unknown, agentNames: new Map(), messaging: { attachmentUrl: vi.fn(), downloadAttachment: vi.fn() } }));
+const live = vi.hoisted(() => ({ tasks: null as unknown, agentNames: new Map(), messaging: { attachmentUrl: vi.fn(), downloadAttachment: vi.fn() } }));
 const apps = vi.hoisted(() => ({ apps: [] as unknown[] }));
 const ctl = vi.hoisted(() => ({ openPanel: vi.fn(), openChatPanelWithDraft: vi.fn(() => true) }));
-vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useSuperAgent: () => live.superAgent }));
+vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live }));
 vi.mock("@/hooks/useApps", () => ({ useApps: () => apps }));
 vi.mock("@/components/workspace/workspaceController", () => ctl);
 vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({

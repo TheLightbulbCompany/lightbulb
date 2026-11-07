@@ -5,8 +5,7 @@
 // number of messages costs zero extra requests, and freshness is that key's
 // SWR refresh. Unknown ids, no Paperclip company, or a failed read → nothing.
 
-import { useMemo, type MouseEvent } from "react";
-import Link from "next/link";
+import { useMemo } from "react";
 import { DOCUMENT_LINK_RE } from "@lightbulb/shared";
 import { linkedIssueIdentifiers } from "./appLinks";
 import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
@@ -16,14 +15,13 @@ import { buildLiveIssueState } from "@/components/teams/shared/lib/liveRuns";
 import type { CompanyAgent, Issue } from "@/components/teams/shared/types";
 import { EditorialButton } from "@/components/teams/shell";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
-import { handleShellLinkClick, navigateShell, teamsDetailUrl, teamsPanelUrl } from "@/lib/shellNav";
+import { navigateShell, teamsDetailUrl } from "@/lib/shellNav";
 
 // Paperclip's identifier is `${company.issuePrefix}-${number}`
 // (packages/shared/src/issue-references.ts ISSUE_REFERENCE_IDENTIFIER_RE).
 // Uppercase-only here, unlike upstream: in chat prose `utf-8` is not a task.
 const CODE = /```[\s\S]*?```|`[^`\n]*`/g;
 const TOKEN = /https?:\/\/\S+|\b[A-Z][A-Z0-9]*-\d+\b/g;
-const MAX_ROWS = 3;
 // Same key as IssuesPanel, so the cache is shared with the Tasks panel.
 // ponytail: the list is limit-capped upstream, so a very old task can miss; add
 // an id lookup read if that bites.
@@ -58,30 +56,6 @@ export function useReferencedTasks(ids: readonly string[]): Issue[] {
     const byIdentifier = new Map((data?.issues ?? []).map((i) => [i.identifier, i]));
     return ids.map((id) => byIdentifier.get(id)).filter((i): i is Issue => !!i);
   }, [data, ids]);
-}
-
-export function MessageTaskCard({ text, prose = true }: { text: string; prose?: boolean }) {
-  const ids = useMemo(() => taskIdentifiers(text, prose), [text, prose]);
-  return ids.length ? <TaskRows ids={ids} /> : null;
-}
-
-function TaskRows({ ids }: { ids: string[] }) {
-  const matched = useReferencedTasks(ids);
-  if (!matched.length) return null;
-  const rest = matched.length - MAX_ROWS;
-  const tasksUrl = teamsPanelUrl("issues");
-
-  return (
-    <section aria-label="Tasks in this message" className="editorial-card mt-1.5 max-w-xl px-1 py-0.5">
-      <TaskRowList issues={matched.slice(0, MAX_ROWS)} />
-      {rest > 0 && (
-        <Link href={tasksUrl} prefetch={false} className="block px-2 py-1.5 text-caption text-[var(--midnight-muted)] hover:underline"
-          onClick={(e: MouseEvent<HTMLAnchorElement>) => handleShellLinkClick(e, tasksUrl)}>
-          +{rest} more
-        </Link>
-      )}
-    </section>
-  );
 }
 
 // IssueRow + live dot + assignee + the one needs-you action, per task.

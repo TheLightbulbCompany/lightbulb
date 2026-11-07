@@ -4,7 +4,7 @@
 
 import "@/app/settings/settings.css";
 import "./settings-place.css";
-import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
+import React, { createContext, useContext, useState, useCallback } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 
@@ -20,11 +20,8 @@ import { DailySummaryCard } from "@/components/settings/DailySummaryCard";
 import { SessionNotificationsCard } from "@/components/settings/SessionNotificationsCard";
 import { DesktopSettings } from "@/components/desktop/DesktopSettings";
 import { LocalMcpServers } from "@/components/desktop/LocalMcpServers";
-import { HandlePicker } from "@/components/marketplace/HandlePicker";
-import { getMySellerProfile, type SellerProfile } from "@/lib/marketplace/api";
 import { PlanChooser } from "@/components/settings/PlanChooser";
 import { UsagePanel } from "@/components/control/panels/UsagePanel";
-import { BudgetsPanel } from "@/components/control/panels/BudgetsPanel";
 import { LLMPanel } from "@/components/control/panels/LLMPanel";
 import { IntegrationsPanel } from "@/components/control/panels/IntegrationsPanel";
 import { SkillsTab } from "@/components/control/panels/SkillsTab";
@@ -37,7 +34,6 @@ import {
   ADMIN_ONLY_PANELS,
   DEVELOPER_PANELS,
   SETTINGS_NAV_SECTIONS,
-  SUPER_AGENT_SETTINGS_NAV_SECTIONS,
   type NavItem,
 } from "@/components/settings/settings-nav-config";
 import { useAutomations } from "@lightbulb/shared";
@@ -48,7 +44,6 @@ import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingW
 import { isDesktopApp } from "@/lib/desktopNotify";
 import useSWR from "swr";
 import { MoneyPanel } from "@/components/teams/panels/MoneyPanel";
-import { useSuperAgent } from "@/hooks/useLiveEvents";
 import { replaceSearchParams } from "@/lib/shellNav";
 import { openPanel, updatePanelParams } from "@/components/workspace/workspaceController";
 import type { PanelProps } from "@/components/workspace/panelComponents";
@@ -70,13 +65,11 @@ export type Panel =
   | "connections"
   | "billing"
   | "usage"
-  | "budgets"
   | "providers"
   | "mcp"
   | "desktop"
   | "local-mcp"
   | "skills"
-  | "marketplace"
   | "business";
 
 // =============================================================================
@@ -91,7 +84,7 @@ const DANGER = "var(--err)";
 // workspace member: with others in the workspace only the caller leaves; the
 // sole member takes the workspace with them (`POST /users/me/delete`). A
 // refusal (e.g. the last admin) comes back as a readable 409 detail.
-function DeleteAccountCard({ rows = false }: { rows?: boolean }) {
+function DeleteAccountCard() {
   const { user } = useUser();
   const { signOut } = useClerk();
   const api = useApi();
@@ -129,77 +122,58 @@ function DeleteAccountCard({ rows = false }: { rows?: boolean }) {
     }
   }, [api, typed, signOut]);
 
-  if (rows && !open) return (
+  if (!open) return (
     <SettingRow label="Delete account" line="Removes your account for good. As the only member, the workspace goes too.">
       <Button type="button" size="sm" variant="outline" className="text-err" onClick={() => setOpen(true)}>Delete…</Button>
     </SettingRow>
   );
   return (
-    <div className="settings-card" style={{ borderColor: "color-mix(in srgb, var(--err) 25%, transparent)", ...(rows ? { marginTop: 16 } : {}) }}>
+    <div className="settings-card" style={{ borderColor: "color-mix(in srgb, var(--err) 25%, transparent)", marginTop: 16 }}>
       <div className="settings-card-title" style={{ color: DANGER }}>Delete account</div>
-      {!open ? (
-        <>
-          <div className="settings-card-desc">
-            Permanently delete your account. If you&apos;re the only member of this workspace, its agents and data
-            are deleted too; otherwise only you leave and the workspace keeps running. This cannot be undone.
-          </div>
+        <div className="settings-card-desc">
+          Type your account email ({email}) to confirm. This permanently deletes your account — it
+          cannot be undone.
+        </div>
+        <input
+          type="email"
+          className="settings-overage-input"
+          style={{ width: "100%", maxWidth: 360, marginBottom: 10 }}
+          placeholder={email}
+          value={typed}
+          onChange={(e) => setTyped(e.target.value)}
+          disabled={busy}
+          aria-label="Confirm account email"
+        />
+        <div style={{ display: "flex", gap: 8 }}>
           <button
             type="button"
             className="settings-btn-outline"
-            style={{ color: DANGER, borderColor: "color-mix(in srgb, var(--err) 40%, transparent)" }}
-            onClick={() => setOpen(true)}
+            style={{ color: "var(--cream)", background: DANGER, borderColor: DANGER }}
+            onClick={handleDelete}
+            disabled={busy || typed.trim().toLowerCase() !== email.trim().toLowerCase()}
           >
-            Delete account…
+            {busy && <span className="settings-spinner" style={{ width: 14, height: 14, borderWidth: 2, marginRight: 6, display: "inline-block", verticalAlign: "middle" }} />}
+            Delete forever
           </button>
-        </>
-      ) : (
-        <>
-          <div className="settings-card-desc">
-            Type your account email ({email}) to confirm. This permanently deletes your account — it
-            cannot be undone.
-          </div>
-          <input
-            type="email"
-            className="settings-overage-input"
-            style={{ width: "100%", maxWidth: 360, marginBottom: 10 }}
-            placeholder={email}
-            value={typed}
-            onChange={(e) => setTyped(e.target.value)}
+          <button
+            type="button"
+            className="settings-btn-outline"
+            onClick={() => { setOpen(false); setTyped(""); setError(null); }}
             disabled={busy}
-            aria-label="Confirm account email"
-          />
-          <div style={{ display: "flex", gap: 8 }}>
-            <button
-              type="button"
-              className="settings-btn-outline"
-              style={{ color: "var(--cream)", background: DANGER, borderColor: DANGER }}
-              onClick={handleDelete}
-              disabled={busy || typed.trim().toLowerCase() !== email.trim().toLowerCase()}
-            >
-              {busy && <span className="settings-spinner" style={{ width: 14, height: 14, borderWidth: 2, marginRight: 6, display: "inline-block", verticalAlign: "middle" }} />}
-              Delete forever
-            </button>
-            <button
-              type="button"
-              className="settings-btn-outline"
-              onClick={() => { setOpen(false); setTyped(""); setError(null); }}
-              disabled={busy}
-            >
-              Cancel
-            </button>
+          >
+            Cancel
+          </button>
+        </div>
+        {error && (
+          <div className="settings-alert settings-alert-error" style={{ marginTop: 10 }}>
+            {error}
           </div>
-          {error && (
-            <div className="settings-alert settings-alert-error" style={{ marginTop: 10 }}>
-              {error}
-            </div>
-          )}
-        </>
-      )}
+        )}
     </div>
   );
 }
 
-function WorkspaceExportCard({ rows = false }: { rows?: boolean }) {
+function WorkspaceExportCard() {
   const isWorkspaceAdmin = useIsWorkspaceAdmin();
   const { getToken } = useAuth();
   const [busy, setBusy] = useState(false);
@@ -210,22 +184,17 @@ function WorkspaceExportCard({ rows = false }: { rows?: boolean }) {
     setError(null);
     try {
       const token = await getToken();
-      const response = await fetch(`${BACKEND_URL}/teams/workspace/export`, {
+      const response = await fetch(`${BACKEND_URL}/tasks/export`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
-      // 202 means the workspace is still provisioning and the body is JSON, not
-      // a ZIP; only a 200 carrying a ZIP is a finished export.
-      if (response.status === 202) {
-        setError("Your workspace is still setting up. Try again in a minute.");
-        return;
-      }
+      // Only a 200 carrying NDJSON is a finished export; an error body is JSON.
       const contentType = response.headers.get("content-type") ?? "";
-      if (response.status !== 200 || !contentType.includes("application/zip")) {
+      if (response.status !== 200 || !contentType.includes("application/x-ndjson")) {
         throw new Error(`Export failed (${response.status})`);
       }
       const blob = await response.blob();
       const disposition = response.headers.get("content-disposition") ?? "";
-      const filename = disposition.match(/filename="([^"]+)"/)?.[1] ?? "lightbulb-workspace.zip";
+      const filename = disposition.match(/filename="([^"]+)"/)?.[1] ?? "lightbulb-tasks.ndjson";
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
@@ -241,35 +210,18 @@ function WorkspaceExportCard({ rows = false }: { rows?: boolean }) {
   }, [getToken]);
 
   if (!isWorkspaceAdmin) return null;
-  if (rows) return (
+  return (
     <div data-testid="workspace-export-card">
-      <SettingRow label="Export workspace" line="A ZIP of this workspace's chats and tasks. Works even when the workspace is read-only.">
+      <SettingRow label="Export workspace" line="A file of every task in this workspace and what it made. Works even when the workspace is read-only.">
         <Button type="button" size="sm" variant="outline" onClick={handleExport} disabled={busy}>{busy ? "Preparing…" : "Download"}</Button>
       </SettingRow>
       {error && <p role="alert" className="settings-rows__line text-err pt-2">{error}</p>}
     </div>
   );
-  return (
-    <div className="settings-card" data-testid="workspace-export-card">
-      <div className="settings-card-title">Export workspace</div>
-      <div className="settings-card-desc">
-        Download a ZIP containing this workspace&apos;s room transcripts and board tasks. This stays available
-        here when the workspace is read-only, so you can keep your team&apos;s record.
-      </div>
-      <button type="button" className="settings-btn-outline" onClick={handleExport} disabled={busy}>
-        {busy ? "Preparing export…" : "Download workspace ZIP"}
-      </button>
-      {error && <div className="settings-alert settings-alert-error" style={{ marginTop: 10 }}>{error}</div>}
-    </div>
-  );
 }
 
+/** Profile (W13-10): who you are with Edit profile beside it, then one row per setting, no card each. */
 function ProfilePanel() {
-  return useSuperAgent() ? <ProfileRows /> : <ProfileCards />;
-}
-
-/** Super-agent Profile (W13-10): who you are with Edit profile beside it, then one row per setting, no card each. */
-function ProfileRows() {
   const { user } = useUser();
   const { openUserProfile } = useClerk();
   const { account } = useBilling();
@@ -288,61 +240,9 @@ function ProfileRows() {
           <Button type="button" size="sm" variant="outline" onClick={() => openUserProfile?.()}>Edit profile</Button>
         </div>
         <DailySummaryCard rows />
-        <WorkspaceExportCard rows />
-        <DeleteAccountCard rows />
+        <WorkspaceExportCard />
+        <DeleteAccountCard />
       </div>
-    </div>
-  );
-}
-
-function ProfileCards() {
-  const { user } = useUser();
-  const { account } = useBilling();
-  const subscriptionStatus = account?.subscription_status ?? null;
-  const isTrialLocal = subscriptionStatus === "trial_local";
-
-  const email = user?.primaryEmailAddress?.emailAddress ?? "";
-  const initials = `${(user?.firstName ?? "")[0] ?? ""}${(user?.lastName ?? "")[0] ?? ""}`.toUpperCase();
-
-  return (
-    <div className="settings-panel" id="panel-profile" role="tabpanel">
-      <h1 className="settings-page-title">Profile</h1>
-      <p className="settings-page-desc">Your account information, managed by your authentication provider.</p>
-
-      <div className="settings-card">
-        <div className="settings-profile-row">
-          <div className="settings-profile-avatar-lg" aria-hidden="true">{initials}</div>
-          <div>
-            <div className="settings-profile-name">
-              {user?.fullName ?? "User"}
-              {planLabel(subscriptionStatus) && (
-                // .settings-profile-badge is text-transform: uppercase
-                // (settings.css) — fine for "ACTIVE" but would shout "FREE
-                // TIER". Override just the transform for the mapped label,
-                // same technique as the billing chip below.
-                <span
-                  className="settings-profile-badge"
-                  style={{ textTransform: isTrialLocal ? "none" : undefined }}
-                >
-                  {planLabel(subscriptionStatus)}
-                </span>
-              )}
-            </div>
-            <div className="settings-profile-email">{email}</div>
-          </div>
-        </div>
-        <div className="settings-card-desc" style={{ marginTop: 0 }}>
-          To update your name, email, or password, use the account menu at the bottom left of the app.
-        </div>
-      </div>
-
-      <DailySummaryCard />
-
-      <SessionNotificationsCard />
-
-      <WorkspaceExportCard />
-
-      <DeleteAccountCard />
     </div>
   );
 }
@@ -717,68 +617,6 @@ function BillingPanel() {
 }
 
 // =============================================================================
-// Marketplace Panel (seller handle + display name)
-// =============================================================================
-
-function MarketplacePanel() {
-  return (
-    <div className="settings-panel" id="panel-marketplace" role="tabpanel">
-      <h1 className="settings-page-title">Marketplace</h1>
-      <p className="settings-page-desc">
-        Your public identity on the marketplace. The handle appears as
-        <span className="font-mono">{" "}@you{" "}</span>
-        on every listing byline and on (future) star / credibility surfaces.
-      </p>
-      <MarketplaceProfileEditor />
-    </div>
-  );
-}
-
-function MarketplaceProfileEditor() {
-  const { getToken, isLoaded } = useAuth();
-  const [profile, setProfile] = useState<SellerProfile | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [savedAt, setSavedAt] = useState<number | null>(null);
-
-  useEffect(() => {
-    if (!isLoaded) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const jwt = await getToken();
-        if (!jwt) return;
-        const fetched = await getMySellerProfile({ jwt });
-        if (!cancelled) setProfile(fetched);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [isLoaded, getToken]);
-
-  if (loading) {
-    return <div className="text-ui text-muted-foreground">Loading your profile…</div>;
-  }
-
-  return (
-    <HandlePicker
-      initialProfile={profile}
-      saveLabel={profile ? "Update profile" : "Save profile"}
-      onSaved={(next) => {
-        setProfile(next);
-        setSavedAt(Date.now());
-      }}
-    />
-  );
-  // savedAt isn't rendered to keep the section minimal — the input border /
-  // availability indicator is feedback enough, and the persisted profile is
-  // visible in the form fields the moment the request resolves.
-  void savedAt;
-}
-
-// =============================================================================
 // Panel Registry
 // =============================================================================
 
@@ -790,7 +628,6 @@ export const PANELS: Record<Panel, () => React.ReactElement> = {
   connections: ConnectionsPanel,
   billing: BillingPanel,
   usage: UsagePanel,
-  budgets: BudgetsPanel,
   providers: ModelPanel,
   mcp: IntegrationsPanel,
   desktop: DesktopPanel,
@@ -800,23 +637,21 @@ export const PANELS: Record<Panel, () => React.ReactElement> = {
   // SkillsTab takes an optional `agentId`; mounting it prop-less yields the
   // owner-level (global) skills surface — the engine-room home.
   skills: () => <SkillsTab />,
-  marketplace: MarketplacePanel,
   business: BusinessPanel,
 };
 
-/** Desktop, plus (super-agent) the session notifications that left Profile for the Developer group (W13-10). */
+/** Desktop, plus the session notifications that left Profile for the Developer group (W13-10). */
 function DesktopPanel() {
-  const superAgent = useSuperAgent();
-  return <><DesktopSettings />{superAgent && <SessionNotificationsCard rows />}</>;
+  return <><DesktopSettings /><SessionNotificationsCard rows /></>;
 }
 
 /** Settings › Developer (Skills, MCP servers, Local MCP servers, Desktop) is for a workspace that has used them: a
  *  coding session in the sidebar, the desktop app, or an MCP server of its own (not one Lightbulb manages) (W13-10). */
-function useShowsDeveloper(superAgent: boolean): boolean {
+function useShowsDeveloper(): boolean {
   const api = useApi();
   const directory = useMessagingWorkspaceOptional()?.directoryProps;
   const sessions = (directory?.sessionRows?.length ?? 0) + (directory?.sessions?.length ?? 0) > 0;
-  const quick = !superAgent || sessions || isDesktopApp();
+  const quick = sessions || isDesktopApp();
   // A 403 (a member: the server list is admin-only) or any failure reads as none.
   const { data: ownMcp } = useSWR(quick ? null : "/integrations/mcp/servers", async (path: string) => {
     const resp = await api.get(path).catch(() => null) as { servers?: Record<string, unknown>; managed_keys?: string[] } | null;
@@ -850,10 +685,6 @@ const PROACTIVE = [
 ] as const;
 
 function ProactiveRows() {
-  return useSuperAgent() ? <ProactiveSwitches /> : null;
-}
-
-function ProactiveSwitches() {
   const { data } = useAutomations(useAutomationSource());
   const { act } = useAutomationActions();
   const canEdit = useCanEdit();
@@ -915,10 +746,8 @@ export function navKeyDown(e: React.KeyboardEvent, item: NavItem & { panel: stri
 }
 
 export function SettingsPlace({ id, params }: PanelProps) {
-  const superAgent = useSuperAgent();
-  const developer = useShowsDeveloper(superAgent) || DEVELOPER_PANELS.has(params.section ?? "");
-  const sections = !superAgent ? SETTINGS_NAV_SECTIONS
-    : developer ? SUPER_AGENT_SETTINGS_NAV_SECTIONS : SUPER_AGENT_SETTINGS_NAV_SECTIONS.filter((s) => !s.items.every((i) => DEVELOPER_PANELS.has(i.panel ?? "")));
+  const developer = useShowsDeveloper() || DEVELOPER_PANELS.has(params.section ?? "");
+  const sections = developer ? SETTINGS_NAV_SECTIONS : SETTINGS_NAV_SECTIONS.filter((s) => !s.items.every((i) => DEVELOPER_PANELS.has(i.panel ?? "")));
   const isAdmin = useIsWorkspaceAdmin();
   const visible = (item: NavItem): item is NavItem & { panel: Panel } =>
     item.panel !== undefined && Object.hasOwn(PANELS, item.panel) && (isAdmin || !ADMIN_ONLY_PANELS.has(item.panel));

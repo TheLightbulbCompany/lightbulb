@@ -99,11 +99,20 @@ async def test_stop_task_session_targets_task_session(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_curate_goes_to_workspace_session(transport):
+async def test_curate_goes_to_workspace_session(transport, monkeypatch):
+    monkeypatch.setattr(hermes_provisioning, "_session_warm", AsyncMock(return_value=True))
     assert await rr.curate(OWNER, "a1") == {"ran": True, "changed": False}
     [call] = transport
     assert call["path"] == "/internal/v1/curate" and call["json_body"] == {"agentId": "a1"}
     assert "task_id" not in call
+
+
+@pytest.mark.asyncio
+async def test_curate_never_wakes_a_parked_workspace(transport, monkeypatch):
+    """Phase 2: the learning workflow curated after every task, waking the workspace VM each time."""
+    monkeypatch.setattr(hermes_provisioning, "_session_warm", AsyncMock(return_value=False))
+    assert await rr.curate(OWNER, "a1") == {"ran": False, "changed": False}
+    assert transport == []
 
 
 def test_task_vm_cap():

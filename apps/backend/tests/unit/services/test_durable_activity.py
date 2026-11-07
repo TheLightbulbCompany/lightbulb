@@ -125,37 +125,3 @@ async def test_decimal_last_interactive_at_is_read_over_a_fresh_updated_at(secon
         metric.assert_called_once_with("gateway.trial_scale_to_zero", dimensions={"trigger": "durable_activity"})
     else:
         metric.assert_not_called()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "paused_at,complete_at,expect_pause",
-    [
-        (None, None, True),
-        # A partial pause (marker written, a PATCH failed): no billing event re-runs it, so retry.
-        ("2026-10-09T00:00:00Z", None, True),
-        ("2026-10-09T00:00:00Z", "2026-10-09T00:00:01Z", False),
-    ],
-)
-async def test_an_expired_trial_pause_is_retried_until_it_completes(paused_at, complete_at, expect_pause):
-    """A trial expiring has no billing event; this sweep is the edge that stops its routines."""
-    metric, patches = _patches(has_open_runs=False)
-    repo = MagicMock()
-    repo.resolve_owner_row = AsyncMock(
-        return_value=MagicMock(automation_paused_at=paused_at, automation_pause_complete_at=complete_at)
-    )
-    pause = AsyncMock()
-    expired = {"subscription_status": "trial_local", "trial_end": 1}
-    patches += [
-        patch.object(durable_activity.billing_repo, "get_by_owner_id", AsyncMock(return_value=expired)),
-        patch.object(durable_activity, "PaperclipRepo", MagicMock(return_value=repo)),
-        patch.object(durable_activity, "pause_owner_automation", pause),
-    ]
-    for p in patches:
-        p.start()
-    try:
-        await durable_activity.sweep_trial_idle_once(now=10_000)
-    finally:
-        for p in reversed(patches):
-            p.stop()
-    assert pause.await_count == (1 if expect_pause else 0)

@@ -1655,7 +1655,7 @@ describe("ServiceStack — workspace memory recall", () => {
   });
 });
 
-describe("ServiceStack — super-agent temporal-worker (dev only, contracts-v2 §16)", () => {
+describe("ServiceStack — super-agent temporal-worker (dev + prod, contracts-v2 §16)", () => {
   const PROD = buildServiceStack("prod");
 
   const containers = (template: Template) =>
@@ -1736,18 +1736,14 @@ describe("ServiceStack — super-agent temporal-worker (dev only, contracts-v2 �
     expect(wd.Image).toEqual(worker.Image);
   });
 
-  test("prod synth has no temporal-watchdog service", () => {
-    expect(JSON.stringify(PROD.toJSON())).not.toMatch(/watchdog|WATCHDOG_/i);
-  });
-
-  test("prod synth has no temporal-worker and no TEMPORAL env", () => {
-    expect(
-      Object.values(PROD.findResources("AWS::ECS::Service")).filter((s: any) =>
-        String(s.Properties.ServiceName).includes("temporal"),
-      ),
-    ).toHaveLength(0);
-    const json = JSON.stringify(PROD.toJSON());
-    expect(json).not.toMatch(/TEMPORAL_|temporal_api_key|temporal-worker/);
+  test("prod synth has the temporal-watchdog and temporal-worker services, on-demand", () => {
+    const services = Object.values(PROD.findResources("AWS::ECS::Service")) as any[];
+    for (const name of ["lightbulb-prod-temporal-worker", "lightbulb-prod-temporal-watchdog"]) {
+      const svc = services.find((s) => s.Properties.ServiceName === name);
+      expect(svc).toBeDefined();
+      expect(JSON.stringify(svc.Properties.CapacityProviderStrategy ?? [])).not.toMatch(/FARGATE_SPOT/);
+    }
+    expect(JSON.stringify(PROD.toJSON())).toMatch(/TEMPORAL_NAMESPACE/);
   });
 
   test("every Lambda's env stays under the 4 KB limit with the Temporal secret added", () => {

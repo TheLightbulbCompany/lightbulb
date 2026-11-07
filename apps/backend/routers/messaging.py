@@ -721,12 +721,6 @@ async def list_local_session_outbox(session_id: str, auth: AuthContext = Depends
 
 _typing_last: dict[tuple[str, str], float] = {}
 
-#: A person typing in a room is about to send, so the room's runtime is woken while they type and
-#: the cold start (54-57 s) overlaps the typing instead of the wait for a reply. At most once per
-#: room per window, per backend task; the single-flight wake (runtime_transport) dedupes the rest.
-TYPING_PREWAKE_EVERY_S = 120.0
-_typing_prewaked: dict[str, float] = {}
-
 # Presence: who has a tab open and in use in this workspace. Clients heartbeat
 # while the tab is visible and recently used; readers poll the snapshot. Kept
 # in-process on purpose -- the backend runs one task, and there is no room-wide
@@ -892,15 +886,7 @@ async def create_room(request: CreateRoomRequest, caller=Depends(person_or_compu
     auth, label = caller
     if label is not None and request.kind != "dm":
         raise ApiProblem("ROOM_FORBIDDEN", "A computer opens direct messages only.")
-    detail = await service.create_room(auth, request)
-    # A new project's first message is next: start a cold runtime now, as typing does (dev walk 16: 54 s to the first
-    # answer, 39 s of it the wake). Fire and forget; the single-flight wake dedupes.
-    team = [
-        {"id": m.id, "name": m.display_name} for m in detail.members if m.kind == "agent" and m.listen_mode != "observe"
-    ]
-    if team:
-        voice_calls.prewake_owner(resolve_owner_id(auth), team, str(detail.room_id))
-    return detail
+    return await service.create_room(auth, request)
 
 
 @router.get("/messaging/rooms/{room_id}", response_model=RoomDetail)
@@ -1163,7 +1149,7 @@ async def mark_room_unread(
 async def typing(request: TypingRequest, auth: AuthContext = Depends(get_current_user)):
     owner_id = resolve_owner_id(auth)
     room_id = str(request.room_id)
-    membership = await service.require_room_member(owner_id, auth.user_id, room_id)
+    await service.require_room_member(owner_id, auth.user_id, room_id)
     key = (auth.user_id, room_id)
     # No await below until the map is updated, so the event loop cannot
     # interleave two requests for the same key -- no lock needed.
@@ -1181,14 +1167,6 @@ async def typing(request: TypingRequest, auth: AuthContext = Depends(get_current
     for stale_key in [k for k, ts in _typing_last.items() if now - ts > 1.0]:
         del _typing_last[stale_key]
     _typing_last[key] = now
-    # Claimed before any await, like the rate limit; the wake itself runs after the typing event.
-    prewake = (
-        request.is_typing and now - _typing_prewaked.get(room_id, -TYPING_PREWAKE_EVERY_S) >= TYPING_PREWAKE_EVERY_S
-    )
-    if prewake:
-        for stale_room in [r for r, ts in _typing_prewaked.items() if now - ts >= TYPING_PREWAKE_EVERY_S]:
-            del _typing_prewaked[stale_room]
-        _typing_prewaked[room_id] = now
     expires = service.utc_now() + timedelta(seconds=3 if request.is_typing else 0)
     event = make_live_event(
         "room.typing.changed",
@@ -1219,28 +1197,7 @@ async def typing(request: TypingRequest, auth: AuthContext = Depends(get_current
         )
     except Exception:
         logger.warning("room activity hint failed", exc_info=True)  # the list hint is best-effort
-    if prewake:
-        await _prewake_for_typing(membership[0], room_id)
     return Response(status_code=204)
-
-
-async def _prewake_for_typing(meta: dict, room_id: str) -> None:
-    """Wake the room OWNER's runtime (a shared-channel guest types toward the host's agents) and
-    restore the profile of every agent that could answer; ``observe`` agents never run. With the
-    roomId the bridge also compacts that room's session if it is near the threshold, while the
-    person is still typing; the typed turn stops it when it arrives (bridge _turn_arriving). Best
-    effort: a failure costs only the cold start the wake would have hidden."""
-    try:
-        team = [
-            {"id": m["id"], "name": m.get("displayName") or "Agent"}
-            for m in await messaging_repo.list_members(room_id)
-            if m.get("kind") == "agent" and m.get("listenMode") != "observe"
-        ]
-    except Exception:  # noqa: BLE001
-        logger.info("typing prewake: member read failed", exc_info=True)
-        return
-    if team and not meta.get("archivedAt"):
-        voice_calls.prewake_owner(meta.get("ownerId") or "", team, room_id)
 
 
 async def _resolved_run(auth: AuthContext, run_id: str) -> tuple[str, dict]:

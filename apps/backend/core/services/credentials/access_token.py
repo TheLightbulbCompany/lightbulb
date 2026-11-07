@@ -137,6 +137,14 @@ async def get_with_expiry(owner_id: str, provider_key: str) -> tuple[str, int]:
     lease: N task VMs vending at once take the lease only when a refresh is actually due."""
     provider = registry.get_provider(provider_key)
     row = await integrations_repo.get(owner_id, provider_key)
+    if provider_key == "google" and registry.refresh_owner_for(provider, row) == "actor":
+        # gog keeps custody; the backend reads beside it from the same grant (google_grant).
+        from core.services.credentials import google_grant
+
+        if not row or row.get("status", "connected") != "connected":
+            google_grant._grants.pop(owner_id, None)  # a disconnect ends the backend's copy too
+            raise ValueError("google is not connected")
+        return await google_grant.access_token(owner_id)
     if not provider.oauth or registry.refresh_owner_for(provider, row) != "backend":
         raise ValueError(f"{provider_key} is not a backend-refreshed OAuth provider")
     window = provider.refresh_window_s

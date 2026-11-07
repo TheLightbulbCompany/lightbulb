@@ -10,7 +10,6 @@ from core.services.user_provision import (
     _ensure_paperclip_for_member,
     _ensure_paperclip_for_org,
     _ensure_paperclip_for_owner,
-    arm_nightly_ceo,
     ensure_user_ready,
 )
 
@@ -1122,37 +1121,6 @@ async def test_org_created_webhook_keys_the_trial_on_the_creator(
 
 
 # ---------------------------------------------------------------------------
-# CEO timer-heartbeat arming (replaced the "Nightly CEO progress" routine)
-# ---------------------------------------------------------------------------
-#
-# Gated on should_arm_nightly_ceo (paid OR an unexpired trial) and the durable
-# opt-out; the interval follows billing on every call. These call the REAL
-# arm_nightly_ceo and patch its collaborators on the user_provision module.
-
-
-@pytest.mark.asyncio
-async def test_arm_pauses_paperclip_and_arms_nothing():
-    pause = AsyncMock()
-    with (
-        patch("core.services.user_provision.pause_owner_automation", pause),
-        patch("core.services.proactive.ensure", AsyncMock()),
-    ):
-        assert await arm_nightly_ceo("org_p") == "super_agent"
-    pause.assert_awaited_once_with("org_p")
-
-
-@pytest.mark.asyncio
-async def test_arm_ensures_the_proactive_layer_and_never_fails_on_it():
-    ensure = AsyncMock(side_effect=RuntimeError("temporal down"))
-    with (
-        patch("core.services.user_provision.pause_owner_automation", AsyncMock()),
-        patch("core.services.proactive.ensure", ensure),
-    ):
-        assert await arm_nightly_ceo("org_p") == "super_agent"
-    ensure.assert_awaited_once_with("org_p")
-
-
-# ---------------------------------------------------------------------------
 # Owner seed placement. The OWNER company-create normally runs in the
 # executor's runner (scripts.provision_runner step 0) — that is the #1442 fix.
 # The ONE case that stays here is a workspace that is already running, so no
@@ -1328,8 +1296,3 @@ async def test_provision_new_workspace_ignores_a_non_org_id(monkeypatch):
     await user_provision.provision_new_workspace("user_alone")
     trial.assert_not_awaited()
     dispatch.assert_not_awaited()
-
-
-# ---------------------------------------------------------------------------
-# Feed schedule (task 8a): three CEO routines at 08:00, 13:00, 18:00, armed by the same path
-# ---------------------------------------------------------------------------

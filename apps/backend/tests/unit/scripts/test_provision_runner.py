@@ -252,12 +252,12 @@ async def test_seed_step_0_error_record_failure_still_returns_exit_code(monkeypa
 
 
 @pytest.fixture(autouse=True)
-def _stub_arm_nightly_ceo(monkeypatch):
-    """Step 0 arms the nightly CEO routine right after the seed; stub it so the
+def _stub_proactive(monkeypatch):
+    """Step 0 ensures the proactive layer right after the seed; stub it so the
     seed tests exercise only seed + classification."""
-    arm = AsyncMock(return_value="armed")
-    monkeypatch.setattr("core.services.user_provision.arm_nightly_ceo", arm)
-    return arm
+    ensure = AsyncMock()
+    monkeypatch.setattr("core.services.proactive.ensure", ensure)
+    return ensure
 
 
 def _stub_org_seed(monkeypatch, seed=None):
@@ -276,7 +276,7 @@ def _stub_org_seed(monkeypatch, seed=None):
     return seed
 
 
-async def test_seed_helper_refuses_non_org_owner(monkeypatch, _stub_arm_nightly_ceo):
+async def test_seed_helper_refuses_non_org_owner(monkeypatch, _stub_proactive):
     """Personal workspaces no longer exist: a user_ owner is refused with
     EXIT_DETERMINISTIC before Clerk, the seed or the arm is touched — the
     runner then flips the row to error(retryable=False) instead of seeding a
@@ -287,35 +287,23 @@ async def test_seed_helper_refuses_non_org_owner(monkeypatch, _stub_arm_nightly_
     assert await provision_runner._seed_owner_paperclip("user_p") == provision_runner.EXIT_DETERMINISTIC
     get_org.assert_not_awaited()
     seed.assert_not_awaited()
-    _stub_arm_nightly_ceo.assert_not_awaited()
+    _stub_proactive.assert_not_awaited()
 
 
-async def test_seed_helper_arms_nightly_ceo_after_org_seed(monkeypatch, _stub_arm_nightly_ceo):
-    """The nightly CEO arm runs AFTER _ensure_paperclip_for_org, with the org_id."""
+async def test_seed_helper_ensures_proactive_after_org_seed(monkeypatch, _stub_proactive):
+    """The proactive ensure runs AFTER _ensure_paperclip_for_org, with the org_id."""
     order = MagicMock()
     order.attach_mock(_stub_org_seed(monkeypatch), "seed")
-    order.attach_mock(_stub_arm_nightly_ceo, "arm")
+    order.attach_mock(_stub_proactive, "ensure")
     assert await provision_runner._seed_owner_paperclip("org_x") == provision_runner.EXIT_OK
-    assert [c[0] for c in order.mock_calls] == ["seed", "arm"]
-    _stub_arm_nightly_ceo.assert_awaited_once_with("org_x")
+    assert [c[0] for c in order.mock_calls] == ["seed", "ensure"]
+    _stub_proactive.assert_awaited_once_with("org_x")
 
 
-async def test_seed_helper_arm_5xx_exits_11(monkeypatch, _stub_arm_nightly_ceo):
-    """An arm failure classifies like a seed failure: 5xx → EXIT_TRANSIENT."""
-    from core.services.paperclip_admin_client import PaperclipApiError
-
+async def test_seed_helper_proactive_failure_never_fails_the_seed(monkeypatch, _stub_proactive):
     _stub_org_seed(monkeypatch)
-    _stub_arm_nightly_ceo.side_effect = PaperclipApiError("boom", status_code=503, body={})
-    assert await provision_runner._seed_owner_paperclip("org_p") == provision_runner.EXIT_TRANSIENT
-
-
-async def test_seed_helper_arm_4xx_exits_10(monkeypatch, _stub_arm_nightly_ceo):
-    """4xx → EXIT_DETERMINISTIC."""
-    from core.services.paperclip_admin_client import PaperclipApiError
-
-    _stub_org_seed(monkeypatch)
-    _stub_arm_nightly_ceo.side_effect = PaperclipApiError("bad", status_code=400, body={})
-    assert await provision_runner._seed_owner_paperclip("org_p") == provision_runner.EXIT_DETERMINISTIC
+    _stub_proactive.side_effect = RuntimeError("boom")
+    assert await provision_runner._seed_owner_paperclip("org_p") == provision_runner.EXIT_OK
 
 
 async def test_seed_helper_org_resolves_creator_then_calls_ensure_paperclip_for_org(monkeypatch):

@@ -12,34 +12,17 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
+from core.auth import AuthContext, get_current_user
 from main import app
-from routers.teams.deps import TeamsContext
 
 
 @pytest.fixture
-def teams_ctx():
-    return TeamsContext(
-        user_id="clerk_a",
-        org_id="o1",
-        owner_id="o1",
-        company_id="co_abc",
-        paperclip_user_id="pcu_a",
-        session_cookie="cookie",
-    )
-
-
-@pytest.fixture
-def client(teams_ctx):
-    from routers.teams import agents as agents_mod
-
-    async def fake_ctx():
-        return teams_ctx
-
-    app.dependency_overrides[agents_mod._ctx] = fake_ctx
+def client():
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="clerk_a", org_id="o1")
     try:
         yield TestClient(app)
     finally:
-        app.dependency_overrides.pop(agents_mod._ctx, None)
+        app.dependency_overrides.pop(get_current_user, None)
 
 
 @pytest.fixture(autouse=True)
@@ -126,20 +109,7 @@ def test_list_members_empty_when_clerk_unavailable(client, monkeypatch):
 def test_list_members_personal_context_is_just_the_caller(monkeypatch):
     """A personal owner (org_id None) has no org to list — the roster is
     themselves, resolved from Clerk, and the org endpoint is never called."""
-    personal_ctx = TeamsContext(
-        user_id="clerk_solo",
-        org_id=None,
-        owner_id="clerk_solo",
-        company_id="co_solo",
-        paperclip_user_id="pcu_solo",
-        session_cookie="cookie",
-    )
-
-    from routers.teams import agents as agents_mod
     import core.services.clerk_admin as clerk_admin
-
-    async def fake_ctx():
-        return personal_ctx
 
     async def fake_get_user(user_id: str):
         assert user_id == "clerk_solo"
@@ -153,7 +123,7 @@ def test_list_members_personal_context_is_just_the_caller(monkeypatch):
         }
 
     org_members = AsyncMock(return_value=[])
-    app.dependency_overrides[agents_mod._ctx] = fake_ctx
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="clerk_solo", org_id=None)
     try:
         monkeypatch.setattr(clerk_admin, "get_user", fake_get_user)
         monkeypatch.setattr(clerk_admin, "list_organization_members", org_members)
@@ -166,9 +136,9 @@ def test_list_members_personal_context_is_just_the_caller(monkeypatch):
                 "name": "Grace Hopper",
                 "email": "grace@x.co",
                 "imageUrl": "https://img/clerk_solo",
-                "paperclipUserId": "pcu_solo",
+                "paperclipUserId": None,
             }
         ]
         org_members.assert_not_called()
     finally:
-        app.dependency_overrides.pop(agents_mod._ctx, None)
+        app.dependency_overrides.pop(get_current_user, None)

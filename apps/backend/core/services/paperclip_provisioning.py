@@ -60,23 +60,9 @@ STARTER_ROSTER = (
     ("customer_operations", "Customer Operations", "general", "Customer Operations", "ceo"),
 )
 
-#: The specialists' Paperclip timer heartbeat: one wake a day, skipped when the agent
-#: has no assigned todo/in_progress work (fork ``heartbeat.ts`` timer tick), so an idle
-#: specialist costs nothing. Assignment/on-demand wakes stay on. The CEO's heartbeat is
-#: armed by ``user_provision.arm_nightly_ceo``, not seeded here.
-SPECIALIST_HEARTBEAT = {
-    "enabled": True,
-    "intervalSec": 86400,
-    "wakeOnDemand": True,
-    "skipTimerWhenNoActionableWork": True,
-}
-
-
-def _specialist_heartbeat() -> dict:
-    """``SPECIALIST_HEARTBEAT``, or no timer while ``NIGHTLY_CEO_HEARTBEATS_ENABLED`` is off (dev)."""
-    if settings.NIGHTLY_CEO_HEARTBEATS_ENABLED:
-        return SPECIALIST_HEARTBEAT
-    return {"enabled": False, "wakeOnDemand": True}
+#: Starters are seeded without a timer heartbeat (Paperclip timers are gone); assignment and
+#: on-demand wakes stay on while Paperclip still runs them.
+SPECIALIST_HEARTBEAT = {"enabled": False, "wakeOnDemand": True}
 
 
 #: The starter roles, in seed order. ``messaging``/``user_provision`` check a company's
@@ -522,7 +508,7 @@ class PaperclipProvisioning:
                         # The CEO keeps the hire authority Paperclip 813 gave role=ceo by
                         # default; every other agent gets the funnel's False.
                         can_create_agents=starter_key == "ceo",
-                        runtime_config=None if starter_key == "ceo" else {"heartbeat": _specialist_heartbeat()},
+                        runtime_config=None if starter_key == "ceo" else {"heartbeat": SPECIALIST_HEARTBEAT},
                     )
                     if isinstance(agent, dict) and agent.get("id"):
                         starter_agent_ids[starter_key] = agent["id"]

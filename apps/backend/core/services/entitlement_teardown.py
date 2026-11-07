@@ -133,30 +133,6 @@ async def teardown_if_unentitled(owner_id: str, *, trigger: str) -> bool:
     except Exception:
         logger.exception("entitlement.teardown OpenRouter key retirement failed for owner %s", owner_id)
 
-    # Pause the company's routines + timer heartbeats (pause_owner_automation; delete_workspace_runtime
-    # above already ran it, so this is normally a no-op) and cancel the looping in-progress issues.
-    # This MUST run BEFORE ``disable`` below: ``disable`` flips this owner's
-    # Paperclip row to status="disabled", and org company-resolution
-    # (``resolve_company_id_for_owner``) only returns an ACTIVE row — so
-    # disarming after disable would silently no-op for every Team/org
-    # cancellation (personal owners resolve regardless of status). The scheduler
-    # fires an enabled timer heartbeat on any active Paperclip company, so an agent
-    # left armed keeps waking (and its heartbeat runner keeps
-    # retry-looping in-progress issues) against the container we just deleted —
-    # the runaway-storm class. Independently guarded like every other teardown
-    # step; MUST live here and never inside ``disable``, which also runs
-    # per-member on organizationMembership.deleted and would then wrongly disarm
-    # a still-paying org's heartbeats.
-    try:
-        from core.services.paperclip_agent_lifecycle import disarm_owner_nightly_automation
-
-        summary = await disarm_owner_nightly_automation(owner_id)
-        put_metric("nightly_ceo.disarm", dimensions={"trigger": trigger, "outcome": "ran"})
-        logger.info("entitlement.teardown nightly disarm owner=%s trigger=%s %s", owner_id, trigger, summary)
-    except Exception:
-        logger.exception("entitlement.teardown nightly disarm failed for owner %s", owner_id)
-        put_metric("nightly_ceo.disarm", dimensions={"trigger": trigger, "outcome": "error"})
-
     # No Paperclip disable here: the company belongs to the workspace, and a
     # lapsed entitlement is not a deleted workspace (``organization.deleted``
     # disables the workspace row). The old per-user ``disable(owner_id)`` found

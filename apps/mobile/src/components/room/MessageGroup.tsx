@@ -25,7 +25,7 @@ import { attachmentFile } from "../../lib/attachmentFile";
 import type { LocalMessageRow } from "../../lib/rooms";
 import { Bubble, BubbleMeta, Chip, MetaText, AVATAR_GUTTER } from "../conversation/bubbles";
 import { specialistLabel } from "@lightbulb/shared";
-import { useOptionalLiveEvents, useSuperAgent } from "../../providers/live-events";
+import { useOptionalLiveEvents } from "../../providers/live-events";
 import { AutomationConfirmCard } from "../tasks/AutomationConfirmCard";
 import { MessageTasks, RoutedToLine } from "../tasks/TaskCard";
 import { MessageMarkdown } from "../chat/MessageMarkdown";
@@ -236,12 +236,10 @@ export function MessageGroup({
   cardsEnabled?: boolean;
 }) {
   const palette = useChatPalette();
-  const superAgent = useSuperAgent();
   const live = useOptionalLiveEvents();
-  // One author name for the avatar and the byline. Super-agent: a specialist's post reads by its own name, and
+  // One author name for the avatar and the byline. A specialist's post reads by its own name, and
   // the front agent reads "Lightbulb" on its older posts too (stored as its seat name, "CEO").
-  const authorName = !superAgent ? message.author.displayName
-    : message.specialist ? specialistLabel(message.specialist, live?.agentNames)
+  const authorName = message.specialist ? specialistLabel(message.specialist, live?.agentNames)
     : message.author.kind === "agent" && message.author.id === live?.frontAgentId ? "Lightbulb"
     : message.author.displayName;
   const [timeShown, setTimeShown] = useState(false);
@@ -345,10 +343,10 @@ export function MessageGroup({
                     ))
                   : null}
               </Bubble>
-              {!deleted && superAgent && message.taskRefs?.length ? (
+              {!deleted && message.taskRefs?.length ? (
                 <MessageTasks message={message} viewerId={currentUserId} palette={palette} />
               ) : null}
-              {!deleted && superAgent && message.kind === "automation_confirm" && message.automationId ? (
+              {!deleted && message.kind === "automation_confirm" && message.automationId ? (
                 <AutomationConfirmCard automationId={message.automationId} palette={palette} />
               ) : null}
             </View>
@@ -390,14 +388,14 @@ export function MessageGroup({
           </View>
         )}
         <BubbleMeta align={mine ? "end" : "start"} palette={palette} indent={mine ? 0 : AVATAR_GUTTER}>
-          {!deleted && superAgent && message.routedTo ? <RoutedToLine message={message} palette={palette} /> : null}
+          {!deleted && message.routedTo ? <RoutedToLine message={message} palette={palette} /> : null}
           {!deleted && onToggleReaction && appliedReactions.length > 0 ? (
             <ReactionChips
               reactions={appliedReactions}
               currentUserId={currentUserId}
               palette={palette}
               onToggle={onToggleReaction}
-              isAgentId={superAgent ? (id) => members.some((m) => m.kind === "agent" && m.id === id) : undefined}
+              isAgentId={(id) => members.some((m) => m.kind === "agent" && m.id === id)}
             />
           ) : null}
           {!deleted && reactionError ? (

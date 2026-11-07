@@ -2,7 +2,6 @@
 
 import { AutomationDetail } from "@/components/tasks/AutomationDetail";
 import { viewerTimeZone } from "@/components/tasks/automations";
-import { useSuperAgent } from "@/hooks/useLiveEvents";
 import { closePane, getWorkspaceSnapshot, openTaskPane } from "../workspaceController";
 import type { PanelProps } from "../panelComponents";
 
@@ -22,11 +21,8 @@ export function leavePane(back: string | null): void {
 }
 
 /** One automation in the pane (`?pane=automation&pane.id=`). "‹ Scheduled" returns to the project's Scheduled view
- *  when a project is the place; elsewhere (Activity's Scheduled group) it closes the pane, the list being beside it.
- *  Off the switch it renders nothing, like the task pane. */
+ *  when a project is the place; elsewhere (Activity's Scheduled group) it closes the pane, the list being beside it. */
 export function AutomationDockPanel({ params }: PanelProps) {
-  const on = useSuperAgent();
-  if (!on) return null;
   return <AutomationDetail key={params.id} id={params.id} viewerTz={viewerTimeZone()} onBack={() => leavePane("scheduled")}
     onClose={() => leavePane(null)} onOpenTask={openTaskPane} />;
 }

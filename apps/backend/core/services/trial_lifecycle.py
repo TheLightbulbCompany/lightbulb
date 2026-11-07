@@ -86,13 +86,12 @@ async def notices(owner_id: str, account: dict, now: int | None = None) -> None:
 
 
 async def _rearm_automation(owner_id: str) -> None:
-    """An expired trial's sweep paused its routines and heartbeats; the extension turns them
-    back on through the same seam that converges them (``arm_nightly_ceo`` resumes what the
-    pause took, then re-applies the heartbeats). If that fails, a durable reconcile retries it."""
-    from core.services.user_provision import arm_nightly_ceo
+    """An extended trial may use the platform again: ``proactive.ensure`` resumes the automations its
+    expiry paused. If that fails, a durable reconcile retries it."""
+    from core.services import proactive
 
     try:
-        await arm_nightly_ceo(owner_id)
+        await proactive.ensure(owner_id)
     except Exception:
         logger.exception("pause: re-arming automation failed for %s; dispatching a reconcile", owner_id)
         from core.services.provision_dispatch import dispatch_reconcile

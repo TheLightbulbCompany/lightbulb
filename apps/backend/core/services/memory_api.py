@@ -36,6 +36,7 @@ MAX_QUESTION = 2000  # the Hermes plugin truncates to this (_QUERY_MAX in plugin
 NEIGHBOURS = 5
 SWEEP_INTERVAL_S = 300  # spec section 5: every workspace synced at least every five minutes
 SWEEP_TICK_S = 60
+RETENTION_INTERVAL_S = 86400  # workspace_memory.expire_old_turns, once a day
 _syncs: set[asyncio.Task] = set()  # background syncs, held so they are not collected mid-run
 
 
@@ -164,6 +165,16 @@ async def run_memory_sweeper(stop_event: asyncio.Event) -> None:
         try:
             if await container_repo.try_claim_pass("memory_sweep", interval_s=SWEEP_INTERVAL_S):
                 await sweep_once()
+            if settings.AGENTCORE_MEMORY_ID and await container_repo.try_claim_pass(
+                "memory_retention", interval_s=RETENTION_INTERVAL_S
+            ):
+                gone = await run_in_thread(
+                    workspace_memory.expire_old_turns,
+                    workspace_memory._client(),
+                    settings.AGENTCORE_MEMORY_ID,
+                    datetime.now(UTC),
+                )
+                logger.info("memory retention expired %d turn records", gone)
         except Exception as exc:  # noqa: BLE001
             logger.warning("memory sweep failed: %s", type(exc).__name__)
         try:

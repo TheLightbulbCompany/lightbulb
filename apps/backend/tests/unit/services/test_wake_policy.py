@@ -49,7 +49,7 @@ class TestIsParkedTrial:
     @pytest.mark.asyncio
     async def test_a_recently_used_trial_row_is_not_parked(self, trial_account):
         assert (
-            await wake_policy.is_parked_trial("org_a", _row(last_interactive_at=_iso(5)), account=trial_account)
+            await wake_policy.is_parked_trial("org_a", _row(last_interactive_at=_iso(1)), account=trial_account)
             is False
         )
 

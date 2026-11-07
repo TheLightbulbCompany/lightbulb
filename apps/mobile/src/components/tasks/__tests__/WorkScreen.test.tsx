@@ -1,9 +1,9 @@
 import { act, fireEvent, render } from "@testing-library/react-native";
 import { FIXTURES } from "@lightbulb/shared/tasks/fixtures";
 
-const mockLive = { superAgent: true, tasks: null as unknown, api: { get: jest.fn(async (): Promise<unknown> => ({ automations: [] })), post: jest.fn() } };
+const mockLive = { tasks: null as unknown, api: { get: jest.fn(async (): Promise<unknown> => ({ automations: [] })), post: jest.fn() } };
 const mockPush = jest.fn();
-jest.mock("../../../providers/live-events", () => ({ useLiveEvents: () => mockLive, useSuperAgent: () => mockLive.superAgent }));
+jest.mock("../../../providers/live-events", () => ({ useLiveEvents: () => mockLive }));
 jest.mock("@clerk/expo", () => ({ useAuth: () => ({ userId: "user_sam" }), useOrganization: () => ({ membership: { role: "org:admin" } }) }));
 jest.mock("expo-router", () => ({ router: { push: (...args: unknown[]) => mockPush(...args) } }));
 jest.mock("expo-router/react-navigation", () => ({ HeaderHeightContext: require("react").createContext(0) }));
@@ -17,17 +17,6 @@ function client(tasks = FIXTURES.step03.tasks) {
   return c;
 }
 beforeEach(() => { mockPush.mockClear(); mockLive.api.get.mockClear(); });
-
-// First, before any press: RNTL's async render after a test whose press is still settling can hand back an empty tree.
-it("Task board (old) reaches today's board", async () => {
-  client();
-  const onOpenOldBoard = jest.fn();
-  const view = await render(<WorkScreen onOpenOldBoard={onOpenOldBoard} />);
-  await fireEvent.press(await view.findByLabelText("Task board (old)"));
-  expect(onOpenOldBoard).toHaveBeenCalled();
-  await act(async () => {});
-  await view.unmount();
-});
 
 it("group order and placeholders: Needs you · Working · Closed (collapsed)", async () => {
   client();

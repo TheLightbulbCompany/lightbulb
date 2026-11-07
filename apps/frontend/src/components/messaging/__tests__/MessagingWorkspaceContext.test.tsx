@@ -27,8 +27,8 @@ vi.mock("@/components/notifications/MessageNotifications", () => ({ MessageNotif
 vi.mock("@/hooks/useAgents", () => ({ useAgents: mocks.agents }));
 vi.mock("@/components/agents/useRosterEntries", () => ({ useRosterEntries: mocks.roster }));
 vi.mock("@/components/chat/shell/useChatReady", () => ({ useChatReady: () => ({ chatReady: true, setupStarting: false }) }));
-const teams = vi.hoisted(() => ({ agentsLoading: false, superAgent: false }));
-vi.mock("@/hooks/useLiveEvents", async (importOriginal) => ({ ...(await importOriginal<object>()), useSuperAgent: () => teams.superAgent }));
+const teams = vi.hoisted(() => ({ agentsLoading: false }));
+vi.mock("@/hooks/useLiveEvents", async (importOriginal) => ({ ...(await importOriginal<object>()) }));
 // The tab title reads needsYouCount under the super-agent (its own tests: HomeWork, WorkspaceHeader).
 vi.mock("@/components/tasks/useRoomThreads", async (importOriginal) => ({ ...(await importOriginal<object>()), useNeedsYouCount: () => 0 }));
 vi.mock("@/hooks/useTeamsApi", () => ({ useTeamsApi: () => ({
@@ -379,7 +379,7 @@ it("offers channel admins only non-members and projects explicit member wire fie
   state.activeRoom = { ...room, kind: "channel" };
   state.upsertMember.mockResolvedValue({ ...state.activeRoom, members: [...state.activeRoom.members] });
   compose();
-  expect(panel.addMemberCandidates?.map((member) => member.id)).toEqual(["colleague", "agent-atlas"]);
+  expect(panel.addMemberCandidates?.map((member) => member.id)).toEqual(["agent-atlas", "colleague"]);
 
   await act(async () => panel.onAddMember?.({ kind: "agent", id: "agent-atlas" }));
 
@@ -396,7 +396,7 @@ it("exposes only adding people for a direct message so the server can convert it
   state.activeRoom = { ...room, kind: "dm" };
   compose();
   expect(panel.onAddMember).toBeTypeOf("function");
-  expect(panel.addMemberCandidates?.map((member) => member.id)).toEqual(["colleague", "agent-atlas"]);
+  expect(panel.addMemberCandidates?.map((member) => member.id)).toEqual(["agent-atlas", "colleague"]);
   expect(panel.onRenameRoom).toBeUndefined();
   expect(panel.onRemoveMember).toBeUndefined();
 });
@@ -418,21 +418,6 @@ it("lets a group chat member add people while preserving its existing editing ru
   expect(panel.onRemoveMember).toBeUndefined();
   await act(async () => panel.onRenameRoom?.("Project room"));
   expect(state.updateRoom).toHaveBeenCalledWith({ name: "Project room" });
-});
-
-it("gives a channel member without admin permission agent responses, and no other management", () => {
-  state.activeRoom = { ...room, kind: "channel", members: room.members.map((member) => member.id === "owner" ? { ...member, role: "member" } : member) };
-  compose();
-  expect(panel.onAddMember).toBeUndefined();
-  expect(panel.onRenameRoom).toBeUndefined();
-  expect(panel.onRemoveMember).toBeUndefined();
-  expect(panel.onListenModeChange).toBeDefined();
-});
-
-it.each(["channel", "dm", "group-dm"] as const)("lets room admins edit response modes in a %s", (kind) => {
-  state.activeRoom = { ...room, kind, members: room.members.map((member) => member.id === "owner" ? { ...member, role: "admin" } : member) };
-  compose();
-  expect(panel.onListenModeChange).toBeTypeOf("function");
 });
 
 it.each([
@@ -824,11 +809,10 @@ it("emptying the box drops the room from Drafts in the same render (dev walk R10
 });
 
 describe("the front agent before the roster loads (dev walk R6)", () => {
-  afterEach(() => { teams.agentsLoading = false; teams.superAgent = false; });
+  afterEach(() => { teams.agentsLoading = false; });
   const atlasRoom = { ...room, members: [room.members[0], { ...room.members[1], id: "agent-atlas", displayName: "CEO", mentionHandle: "ceo" }] };
 
   it("never reads its seat name: Lightbulb from the last load, or by seat name on a first load", () => {
-    teams.superAgent = true;
     state.activeRoom = atlasRoom; state.rooms = [atlasRoom];
     // A load that knows the roster remembers who the front agent is.
     const first = compose();
@@ -910,32 +894,6 @@ it("moves rooms on Alt+ArrowUp from inside the composer instead of editing the l
 
   expect(state.selectRoom).toHaveBeenCalledWith("room-3");
   expect(editLast).not.toHaveBeenCalled();
-});
-
-it("keeps a muted room's unread out of the browser-tab title", () => {
-  state.rooms = [{ ...room, unreadCount: 3, muted: true }];
-  const view = compose();
-  expect(document.title).not.toMatch(/^\(\d+\)/);
-  view.unmount();
-
-  state.rooms = [{ ...room, unreadCount: 3, muted: false }];
-  compose();
-  expect(document.title).toMatch(/^\(3\)/);
-});
-
-it("counts only the viewer's own waiting sessions in the tab title, and none when waiting is off", async () => {
-  const waiting = (sessionId: string, humanUserId: string) => ({ sessionId, humanUserId, status: "waiting-approval", provider: "claude", title: sessionId } as never);
-  state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [waiting("mine", "owner"), waiting("theirs", "colleague")] });
-  mocks.waitingPref = "badge";
-  const view = compose();
-  await waitFor(() => expect(document.title).toMatch(/^\(1\)/));
-  view.unmount();
-
-  mocks.waitingPref = "off";
-  compose();
-  await act(async () => {});
-  expect(document.title).not.toMatch(/^\(\d+\)/);
-  mocks.waitingPref = "banner";
 });
 
 it("opens the shortcut sheet on Cmd+/", () => {
@@ -1119,15 +1077,16 @@ it("lets a feed Discuss reply @mention any roster agent, though agents are not s
   const feed: RoomDetail = { ...room, roomId: "feed-1", kind: "channel", name: "feed", feed: true, members: [room.members[0]] };
   mocks.rooms.mockReturnValue({ ...state, rooms: [], activeRoomId: feed.roomId, activeRoom: feed });
   compose();
-  expect(panel.participants.map((member) => [member.id, member.mentionHandle])).toEqual([["owner", null], ["agent-friday", null], ["agent-atlas", null]]);
-  expect(resolveTypedMentions("@Atlas can you check this?", panel.participants)).toEqual([{ kind: "agent", id: "agent-atlas" }]);
+  expect(panel.participants.map((member) => [member.id, member.mentionHandle])).toEqual([["owner", null], ["agent-friday", null], ["agent-atlas", "lightbulb"]]);
+  // The front agent (Atlas, the CEO seat) is Lightbulb everywhere.
+  expect(resolveTypedMentions("@lightbulb can you check this?", panel.participants)).toEqual([{ kind: "agent", id: "agent-atlas" }]);
 });
 
 it("offers the feed none of a channel's managed actions, only its topic (the brief)", () => {
   const feed: RoomDetail = { ...room, roomId: "feed-1", kind: "channel", name: "feed", feed: true, members: [room.members[0]] };
   mocks.rooms.mockReturnValue({ ...state, rooms: [], activeRoomId: feed.roomId, activeRoom: feed });
   compose();
-  for (const action of ["onRenameRoom", "onLeaveRoom", "onSetArchived", "onDeleteRoom", "onAddMember", "onRemoveMember", "onCopyJoinLink", "onListenModeChange"] as const) {
+  for (const action of ["onRenameRoom", "onLeaveRoom", "onSetArchived", "onDeleteRoom", "onAddMember", "onRemoveMember", "onCopyJoinLink"] as const) {
     expect(panel[action], action).toBeUndefined();
   }
   expect(panel.onSetTopic).toEqual(expect.any(Function));

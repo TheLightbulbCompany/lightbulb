@@ -31,9 +31,6 @@ from core.services.paperclip_provisioning import (
     build_paperclip_provisioning,
     close_paperclip_provisioning,
 )
-from core.services.paperclip_agent_lifecycle import (
-    pause_owner_automation,
-)
 from core.services.provision_gate import evaluate_provision_gate
 from core.services.trial_cap import utc_today
 
@@ -216,11 +213,6 @@ async def _reconcile_owner_seed(auth: AuthContext, owner_id: str) -> None:
     )
 
 
-def _arm_status(status: str) -> str:
-    put_metric("nightly_ceo.arm", dimensions={"status": status})
-    return status
-
-
 def ceo_agent_id(row) -> str | None:
     """The workspace's CEO: the starter CEO, else a legacy roster's first seeded agent."""
     return (row.starter_agent_ids or {}).get("ceo") or (row.seeded_agent_ids or [None])[0]
@@ -256,22 +248,6 @@ PLANNING_ROUTINE_DESCRIPTION = (
 CEO_ROUTINES = [("feed", feed_routine_title(h), FEED_ROUTINE_DESCRIPTION, h) for h in FEED_ROUTINE_HOURS] + [
     ("planning", PLANNING_ROUTINE_TITLE, PLANNING_ROUTINE_DESCRIPTION, PLANNING_ROUTINE_HOUR)
 ]
-
-
-async def arm_nightly_ceo(owner_id: str) -> str:
-    """Workspaces never run Paperclip routines or heartbeats (Paperclip is being removed): pause whatever an
-    earlier arm left on (idempotent), arm nothing, and ensure the proactive layer instead (first ideas; look
-    around + feed posts while paying). Every billing change comes through here (the provision executor's
-    step 0 and ``reconcile_runtime``), so the paying-only automations follow the plan. Never fails on the
-    proactive ensure."""
-    await pause_owner_automation(owner_id)
-    from core.services import proactive
-
-    try:
-        await proactive.ensure(owner_id)
-    except Exception:  # noqa: BLE001 -- the daily schedule reconcile ensures it again
-        logger.exception("proactive ensure failed for owner=%s", owner_id)
-    return _arm_status("super_agent")
 
 
 async def _ensure_paperclip_for_org(

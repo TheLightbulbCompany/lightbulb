@@ -109,7 +109,7 @@ async def ensure(ws: str, *, backfill: bool = False) -> None:
     """Idempotent, both ways: the first run once per workspace; feed posts on while the workspace may use the
     platform (paid, or a live free trial), the look around while it pays; otherwise `paused_system: not_paying`.
     An owner's own pause is theirs to keep. Switch off: nothing. `backfill` (the daily reconcile): no first run
-    for a dormant workspace; provisioning and billing changes (`arm_nightly_ceo`) skip that check."""
+    for a dormant workspace; provisioning and billing changes (`reconcile_runtime`, the provision runner) skip that check."""
     from core.repositories import automations_repo as repo
     from core.services import automation_schedule
 

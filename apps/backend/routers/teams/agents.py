@@ -16,17 +16,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from types import SimpleNamespace
 
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
-from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
-from core.repositories import billing_repo, container_repo
+from core.auth import AuthContext, get_current_user, resolve_owner_id
+from core.repositories import container_repo
 from core.dynamodb import run_in_thread
 from core.repositories.paperclip_repo import PaperclipRepo
-from core.services import hermes_profiles, voice_calls
+from core.services import agent_registry, hermes_profiles, voice_calls
 from core.services.voice_persona import agent_voice
 from core.services.paperclip_admin_client import (
     PaperclipAdminClient,
@@ -52,21 +53,16 @@ from core.services.paperclip_user_session import get_user_session_cookie
 from core.services.person_label import NEW_MEMBER, is_relay_email
 from core.services.provision_gate import evaluate_provision_gate
 from core.services.user_provision import (
-    arm_nightly_ceo,
-    ceo_agent_id,
     ensure_user_ready,
     ensure_workspace_trial_default,
 )
 
 from . import deps as deps_mod
-from ._guards import require_trial_runway
 from .deps import TeamsContext, envelope_list
 from .schemas import (
     CreateAgentBody,
     PatchAgentBody,
     ResetAgentSessionBody,
-    SetAgentHeartbeatBody,
-    WakeAgentBody,
 )
 
 logger = logging.getLogger(__name__)
@@ -432,61 +428,57 @@ async def _provision_after_gate(auth: AuthContext, owner_id: str) -> None:
 
 
 @router.get("/agents")
-async def list_agents(ctx: TeamsContext = Depends(_ctx)):
-    """List agents in the caller's company.
+async def list_agents(auth: AuthContext = Depends(get_current_user)):
+    """The workspace's agents from the registry (``agent_registry.roster``); nothing here calls Paperclip.
 
-    Redacts ``adapterConfig`` + ``adapterType`` per-item before returning
-    — see ``_redact_agent`` for rationale.
+    Registry ``active`` goes out as ``idle``: the web roster reads ``active`` as a live run.
     """
-    upstream = await _admin().list_agents(
-        company_id=ctx.company_id,
-        session_cookie=ctx.session_cookie,
-    )
-    envelope = envelope_list(upstream, "agents")
-    owner_id = _resolve_owner_id(ctx)
+    owner_id = resolve_owner_id(auth)
+    try:
+        rows = await agent_registry.roster(owner_id)
+    except agent_registry.RegistryUnavailable as exc:
+        raise HTTPException(status_code=503, detail="The agent roster is temporarily unavailable.") from exc
+    agents = [{**a, "status": "paused" if a["status"] == "paused" else "idle"} for a in rows]
     repo = _repo()
-    seeded_ids, starter_ids = await asyncio.gather(
+    seeded_ids, starter_ids, sidecars = await asyncio.gather(
         get_seeded_agent_ids(owner_id=owner_id, repo=repo),
         get_starter_agent_ids(owner_id=owner_id, repo=repo),
+        _load_agent_sidecars(owner_id, [a["id"] for a in agents]),
     )
-    agent_ids = [a["id"] for a in envelope["agents"] if isinstance(a.get("id"), str)]
-    sidecars = await _load_agent_sidecars(owner_id, agent_ids)
     return {
         "agents": [
-            _mark_seeded(_redact_agent(a), seeded_ids, sidecars.get(a.get("id")), starter_ids)
-            for a in await _front_named(owner_id, envelope["agents"])
+            _mark_seeded(a, seeded_ids, sidecars.get(a["id"]), starter_ids)
+            for a in await _front_named(owner_id, agents)
         ]
     }
 
 
 @router.get("/members")
-async def list_members(ctx: TeamsContext = Depends(_ctx)):
+async def list_members(auth: AuthContext = Depends(get_current_user)):
     """List the humans in the caller's workspace.
 
     The source is Clerk org membership, NOT Paperclip's company members —
     the same set ``messaging._validate_human_in_owner`` accepts as room
     members, so the new-conversation picker never hides someone the backend
-    would let you add. (It used to join Paperclip's member rows back to
-    Clerk, which dropped any teammate whose Paperclip membership-add had not
-    landed — a cofounder who chats in rooms every day was invisible.) A
-    personal workspace has exactly one human: the caller.
+    would let you add. A personal workspace has exactly one human: the caller.
 
     Returns the ``{members: [...]}`` envelope shape every Teams panel reads.
     Each row matches the frontend ``CompanyMember`` type
     (``userId``/``name``/``email``/``imageUrl``/``paperclipUserId``).
-    ``paperclipUserId`` is the id Paperclip's ``assigneeUserId`` holds, null for
-    a member with no Paperclip identity yet (who therefore cannot own a task).
+    ``paperclipUserId`` comes from the stored identity rows (no Paperclip call),
+    null for a member with no Paperclip identity.
     """
-    if ctx.org_id is None:
-        members = [m for m in [await _resolve_member_identity(ctx.user_id)] if m]
+    if auth.org_id is None:
+        members = [m for m in [await _resolve_member_identity(auth.user_id)] if m]
     else:
         from core.services.clerk_admin import list_organization_members
 
         members = [
             _member_row(m["user_id"], m["first_name"], m["last_name"], m["email"], m["image_url"])
-            for m in await list_organization_members(ctx.org_id)
+            for m in await list_organization_members(auth.org_id)
         ]
-    clerk_to_principal = {clerk: pc for pc, clerk in (await build_principal_to_clerk(ctx)).items()}
+    who = SimpleNamespace(user_id=auth.user_id, org_id=auth.org_id, paperclip_user_id=None)
+    clerk_to_principal = {clerk: pc for pc, clerk in (await build_principal_to_clerk(who)).items()}
     return {"members": [{**m, "paperclipUserId": clerk_to_principal.get(m["userId"])} for m in members]}
 
 
@@ -807,54 +799,11 @@ async def clear_agent_error(agent_id: CompanyAgentId, ctx: TeamsContext = Depend
     )
 
 
-@router.post("/agents/{agent_id}/heartbeat")
-async def set_agent_heartbeat(
-    agent_id: CompanyAgentId,
-    body: SetAgentHeartbeatBody,
-    ctx: TeamsContext = Depends(_ctx),
-    auth: AuthContext = Depends(get_current_user),
-):
-    """Turn the CEO's timer heartbeat on or off (org admins only).
-
-    The ONE writer of ``nightly_ceo_opted_out``: the flag lives on the billing row so the
-    choice survives a company wipe, and ``arm_nightly_ceo`` converges the Paperclip heartbeat
-    to it (and to entitlement). Only the CEO has a toggle: the arm re-applies the
-    specialists' daily heartbeat on every reconcile.
-    """
-    require_org_admin(auth)
-    owner_id = _resolve_owner_id(ctx)
-    row = await _repo().resolve_owner_row(owner_id)
-    if row is None or ceo_agent_id(row) != agent_id:
-        raise HTTPException(status_code=400, detail="Only Lightbulb's heartbeat can be switched here")
-    await billing_repo.set_nightly_ceo_opted_out(owner_id, not body.enabled)
-    status = await arm_nightly_ceo(owner_id)
-    return {"status": status}
-
-
-@router.post("/agents/{agent_id}/wakeup")
-async def wake_agent(
-    agent_id: CompanyAgentId,
-    body: WakeAgentBody,
-    ctx: TeamsContext = Depends(_ctx),
-):
-    """Wake an agent to (re)attempt work — drives the failed-run Retry action.
-
-    Maps to upstream ``POST /api/agents/{id}/wakeup``. The wakeup response is
-    a run/ack envelope (no agent record), but redact defensively so a future
-    upstream change that echoes adapterConfig can never leak the service token.
-
-    Waking an agent dispatches a run immediately server-side inside
-    Paperclip, so this is a spend front door. The free-tier $3/day
-    cap is checked here, BEFORE the proxy call reaches Paperclip.
-    """
-    await require_trial_runway(ctx.owner_id)
-    return _redact_agent(
-        await _admin().wake_agent(
-            agent_id=agent_id,
-            body=body.model_dump(exclude_none=True, by_alias=True),
-            session_cookie=ctx.session_cookie,
-        )
-    )
+@router.post("/agents/{agent_id}/heartbeat", status_code=410)
+@router.post("/agents/{agent_id}/wakeup", status_code=410)
+async def agent_heartbeat_gone(agent_id: str):
+    """Paperclip heartbeats and wakes are gone (super-agent roster, Phase 1 task 6)."""
+    raise HTTPException(status_code=410, detail="Agent heartbeats and wakes were removed")
 
 
 @router.get("/runs/{run_id}")

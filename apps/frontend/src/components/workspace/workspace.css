@@ -286,35 +286,6 @@
 }
 .workspace-pane__resize:hover,
 .workspace-pane__resize:focus-visible { background: var(--edge); outline: none; }
-.workspace-pane__bar {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  height: 36px;
-  padding: 0 8px 0 12px;
-  border-bottom: 1px solid var(--edge);
-}
-.workspace-pane__title {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: var(--text-ui);
-  font-weight: 600;
-  color: var(--midnight);
-}
-.workspace-pane__bar > button {
-  display: grid;
-  place-items: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 6px;
-  color: var(--midnight-muted);
-}
-.workspace-pane__bar > button:hover { background: var(--cream-deeper); color: var(--midnight); }
-.workspace-pane__bar > button:focus-visible { outline: 2px solid var(--midnight); outline-offset: 1px; }
 .workspace-pane__body {
   flex: 1;
   display: flex;
@@ -424,7 +395,7 @@
   text-decoration: none;
   cursor: pointer;
 }
-.workspace-rail > button span { font-size: var(--text-2xs); font-weight: 500; }
+.workspace-rail > button span, .workspace-rail > a > span { font-size: var(--text-2xs); font-weight: 500; }
 .workspace-rail .workspace-rail__icon { position: relative; display: inline-flex; }
 .workspace-rail .workspace-rail__activity-badge {
   position: absolute;
@@ -464,10 +435,6 @@
 .workspace-shell .workspace-switcher { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; padding: 0; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; }
 .workspace-shell .workspace-switcher:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; border-radius: 4px; }
 .workspace-shell .sidebar-footer { padding: 12px 16px; }
-/* Without the super-agent, narrow windows keep a slimmer sidebar column. */
-@media (max-width: 1000px) {
-  .workspace-shell:not([data-super-agent="true"]) { grid-template-columns: 56px 220px minmax(0, 1fr); }
-}
 /* Only Chat has a sidebar (and full screen folds it into the chat column). The
    phone drawer below keeps it in every place. */
 @media (min-width: 600px) {
@@ -515,23 +482,6 @@
   }
   .workspace-shell[data-super-agent="true"] .workspace-phone-bar button:hover { background: var(--cream-deeper); color: var(--midnight); }
   .workspace-shell[data-super-agent="true"] .workspace-phone-bar button:focus-visible { outline: 2px solid var(--midnight); outline-offset: -2px; }
-}
-/* Without the super-agent: where the main view (360) and the pane (320) cannot both keep their minimums side by side,
-   the pane opens as a sheet over the main view (a modal dialog with its close button, RightPane). Full screen still puts
-   it beside the chat column. Rail 56 + sidebar 220 + 360 + 320 = 956 px. Keep PANE_SHEET_QUERIES in sync.
-   Super-agent: RightPane marks the sheet itself (data-sheet), below. */
-@media (min-width: 600px) and (max-width: 955px) {
-  .workspace-shell:not([data-super-agent="true"]) .workspace-body:not([data-full]) > .workspace-pane {
-    position: absolute;
-    inset: 0;
-    z-index: var(--z-chrome);
-    width: auto !important;
-    min-width: 0;
-    max-width: none;
-  }
-  .workspace-shell:not([data-super-agent="true"]) .workspace-body:not([data-full]) > .workspace-pane > .workspace-pane__resize { display: none; }
-  .workspace-shell:not([data-super-agent="true"]) .workspace-body[data-full] > .workspace-view--chat { flex: 0 1 360px; }
-  .workspace-shell:not([data-super-agent="true"]) .workspace-body[data-full] > .workspace-pane { min-width: 0; }
 }
 /* ── Super-agent pane (UX slice 4) ─────────────────────────────────────────
    One header (PaneHeader), the list width (stored) or the item width (computed), and below 1000 px — or wherever the

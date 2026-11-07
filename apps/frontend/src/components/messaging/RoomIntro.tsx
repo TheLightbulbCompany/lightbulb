@@ -36,15 +36,15 @@ export function starterAsks(topic: string | null | undefined, noun: "channel" | 
  * on, a project instead opens on its goal, what to ask, and a few first asks
  * (until someone has asked something).
  */
-export function RoomIntro({ room, roomName, participants, superAgent = false, fresh = false, onPickAsk }: {
+export function RoomIntro({ room, roomName, participants, fresh = false, onPickAsk }: {
   room?: RoomSummary; roomName: string; participants: readonly RoomParticipant[];
-  superAgent?: boolean; fresh?: boolean; onPickAsk?: (text: string) => void;
+  fresh?: boolean; onPickAsk?: (text: string) => void;
 }): ReactElement {
   const agents = participants.filter((participant) => participant.kind === "agent");
   const kind = room?.kind;
   // Every channel, and a DM or group chat with Lightbulb (founder ruling, 6 Nov 2026). The first-run DM already opens on
   // its onboarding band and first moves, so it takes no starter asks on top.
-  if (superAgent && !room?.shared && !room?.feed && (kind !== "dm" || (room ? isProjectRoom(room) : agents.length > 0))) {
+  if (!room?.shared && !room?.feed && (kind !== "dm" || (room ? isProjectRoom(room) : agents.length > 0))) {
     const noun = roomNoun(kind);
     const asks = fresh && onPickAsk && !room?.firstRun ? starterAsks(room?.topic, noun) : [];
     return <div className="room-intro room-intro--project">

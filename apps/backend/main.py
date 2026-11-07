@@ -38,6 +38,7 @@ from routers import (
     apple_iap,
     automations,
     internal_automations,
+    voice_phone,
     billing,
     config,
     connections,
@@ -640,6 +641,7 @@ async def messaging_validation_error_handler(request, exc: RequestValidationErro
             "/api/v1/website-logins",
             # huddles too: a rejected turn would echo a live transcript.
             "/api/v1/internal/huddles",
+            "/api/v1/internal/voice",
             # session links: a rejected body carries a link token or a PKCE verifier.
             "/api/v1/public",
             "/api/v1/session-links",
@@ -983,6 +985,7 @@ app.include_router(google_accounts.router, prefix="/api/v1", tags=["google-accou
 # write. See routers/automations.py.
 app.include_router(automations.router, prefix="/api/v1", tags=["automations"])
 app.include_router(internal_automations.router, prefix="/api/v1", tags=["super-agent"])  # lane A: Router proposals
+app.include_router(voice_phone.router, prefix="/api/v1", tags=["voice"])  # the phone receptionist worker
 
 from routers import runtime_internal  # noqa: E402
 
@@ -1130,6 +1133,11 @@ app.include_router(ideas_router.router, prefix="/api/v1", tags=["ideas"])
 from routers import questions as questions_router  # noqa: E402
 
 app.include_router(questions_router.router, prefix="/api/v1", tags=["questions"])
+
+# The owner's voice surfaces (spec 2026-11-07 §5): /voice/timeline, /voice/agent.
+from routers import voice as voice_router  # noqa: E402
+
+app.include_router(voice_router.router, prefix="/api/v1", tags=["voice"])
 
 # Proactive rules (wave2-S): /automations/{id}/mode, /automations/{id}/matches.
 from routers import rules as rules_router  # noqa: E402

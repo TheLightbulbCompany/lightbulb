@@ -45,8 +45,6 @@ jest.mock("expo-router/unstable-native-tabs", () => {
   NativeTabs.Trigger = Trigger;
   return { NativeTabs };
 });
-let mockSuperAgent = false;
-jest.mock("../../../../providers/live-events", () => ({ useSuperAgent: () => mockSuperAgent }));
 jest.mock("../../../../lib/rooms", () => ({ useMobileRooms: () => ({ rooms: [] }) }));
 let mockUnseen = 0;
 jest.mock("../../../../lib/activity", () => ({ useMobileActivity: () => ({ attentionCount: mockUnseen }) }));
@@ -61,7 +59,6 @@ jest.mock("expo-notifications", () => ({
 import TabsLayout from "../_layout";
 
 beforeEach(() => {
-  mockSuperAgent = false;
   mockUnread = 0;
   mockUnseen = 0;
   mockOrgId = "org-a";
@@ -83,12 +80,8 @@ it("registers exactly Chats · Activity · Teams · Settings", async () => {
   ]);
 });
 
-// The switch only renames the third tab; off (the default, and while loading) it is today's Teams.
-it("labels the third tab Teams with the switch off and Work with it on", async () => {
-  const view = await render(<TabsLayout />);
-  expect(within(screen.getByTestId("tab-teams")).getByText("Teams")).toBeTruthy();
-  mockSuperAgent = true;
-  await view.rerender(<TabsLayout />);
+it("labels the third tab Work", async () => {
+  await render(<TabsLayout />);
   expect(within(screen.getByTestId("tab-teams")).getByText("Work")).toBeTruthy();
 });
 

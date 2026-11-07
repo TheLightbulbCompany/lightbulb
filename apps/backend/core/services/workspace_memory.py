@@ -33,6 +33,7 @@ import hashlib
 import logging
 import re
 from collections.abc import Awaitable, Callable
+from datetime import datetime, timedelta
 
 import boto3
 from botocore.config import Config
@@ -148,6 +149,31 @@ def _delete_records(client, label: str, memory_id: str, namespaces: list[str]) -
     if failed:
         raise RuntimeError(f"memory wipe: {failed} of {len(record_ids)} records failed to delete for {label}")
     return len(record_ids)
+
+
+#: Retention (Phase 2): a mirrored room turn is rent forever once its 7-day event is gone. Older
+#: than this, it goes. Facts and log entries are not swept: memory_sync links them to the log.
+TURN_RETENTION_DAYS = 90
+
+
+def expire_old_turns(client, memory_id: str, now: datetime) -> int:
+    """Delete every mirrored turn record (team and private, every owner) created more than
+    ``TURN_RETENTION_DAYS`` ago; returns how many. One env-wide ``/turns/`` listing.
+    ponytail: by age, not by last recall -- AgentCore keeps no recall time and runtimes search
+    Memory directly; stamp recall hits in the runtime plugin if a recall-based rule is wanted."""
+    cutoff = now - timedelta(days=TURN_RETENTION_DAYS)
+    old = [
+        r["memoryRecordId"]
+        for r in _pages(
+            client.list_memory_records, "memoryRecordSummaries", memoryId=memory_id, namespacePath="/turns/"
+        )
+        if r["createdAt"] < cutoff
+    ]
+    for i in range(0, len(old), _BATCH):
+        client.batch_delete_memory_records(
+            memoryId=memory_id, records=[{"memoryRecordId": r} for r in old[i : i + _BATCH]]
+        )
+    return len(old)
 
 
 def _delete_events(client, actor_id: str, memory_id: str) -> int:

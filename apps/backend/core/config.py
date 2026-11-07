@@ -306,12 +306,6 @@ class Settings(BaseSettings):
     WATCHDOG_OWNER_ID: str = ""
     WATCHDOG_ROOM_ID: str = ""
 
-    NIGHTLY_CEO_HEARTBEATS_ENABLED: bool = True
-    """Off = no Paperclip timer wakes (super-agent step 0, dev, to stop spend): starters are
-    seeded without a timer, and ``arm_nightly_ceo`` arms nothing and runs
-    ``disable_timer_automation`` (every timer off, our CEO routines paused; the owner's own
-    routines untouched). Set false for dev only in ``service-stack.ts``."""
-
     TRIAL_WAKE_GATE_ENABLED: bool = True
     """Kill switch for reporting an idle trial workspace as parked. Off = every
     wake_policy entry point answers "not parked", so no surface renders "Agents

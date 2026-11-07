@@ -42,6 +42,8 @@ every protected operation rechecks the base ``MEMBER#`` row strongly):
     ACTIVITY#<home>#<user>  <createdAt>#<messageId>    Activity feed pointer (no text), written by the
                                                        messaging projector after the message commits; 90-day TTL
     ACTIVITY#<home>#<user>  SEEN                       the reader's Activity ``seenUpTo`` (monotonic)
+    OWNER#<owner>   VOICEAGENT                         the voice assistant's settings (Agent page), one JSON
+                                                       document in ``config``; no TTL
 
 ``WORK#``, ``LIVE#``, ``RUN#``, ``USAGE#``, ``FOLLOWUP#`` and ``DECISION#`` rows carry ``expiresAt`` (7 days). Every read
 here is ``ConsistentRead=True``; the GSIs are queried by ``list_rooms_for_member``
@@ -1975,7 +1977,7 @@ async def delete_room(*, meta: dict, deleted_by: str, new_delivery_key: str, liv
 
 
 _ROOM_META_FIELDS = (
-    "name", "topic", "archivedAt", "archivedBy", "meeting", "icon", "color", "pausedAt", "pausedBy", "firstRun",
+    "name", "topic", "archivedAt", "archivedBy", "meeting", "icon", "color", "pausedAt", "pausedBy", "firstRun", "call",
 )  # fmt: skip
 # Cleared by REMOVE, not SET null: create_message's fence is attribute_not_exists(archivedAt).
 _ROOM_META_REMOVABLE = ("archivedAt", "archivedBy", "icon", "color", "pausedAt", "pausedBy", "firstRun")
@@ -3460,6 +3462,22 @@ async def defer_away_check(pk: str, sk: str, deadline_epoch: int) -> None:
 # ---------------------------------------------------------------------------
 # wipe
 # ---------------------------------------------------------------------------
+
+
+async def list_owner_rooms(owner_id: str) -> list[dict]:
+    """The owner catalog rows (roomId, name, kind, createdAt): no META read."""
+    return await _query(owner_pk(owner_id), begins_with="ROOM#")
+
+
+async def get_voice_agent(owner_id: str) -> dict | None:
+    row = await _get(owner_pk(owner_id), "VOICEAGENT")
+    return json.loads(row["config"]) if row else None
+
+
+async def put_voice_agent(owner_id: str, config: dict, updated_by: str) -> None:
+    item = {"pk": owner_pk(owner_id), "sk": "VOICEAGENT", "config": json.dumps(config),
+            "updatedAt": utc_now_iso(), "updatedBy": updated_by}  # fmt: skip
+    await run_in_thread(_table().put_item, Item=item)
 
 
 async def list_owner_room_ids(owner_id: str) -> list[str]:

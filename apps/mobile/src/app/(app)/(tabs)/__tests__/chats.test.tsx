@@ -161,8 +161,7 @@ jest.mock("expo-clipboard", () => ({ setStringAsync: (text: string) => mockSetSt
 // marks the room it has open. One hoisted object, never a fresh literal.
 const mockMarkRead = jest.fn(async (_roomId: string, _cursor: { lastReadSeq: number }) => ({}));
 const mockLive = { messaging: { markRead: mockMarkRead } };
-let mockSuperAgent = false;
-jest.mock("../../../../providers/live-events", () => ({ useSuperAgent: () => mockSuperAgent, useLiveEvents: () => mockLive }));
+jest.mock("../../../../providers/live-events", () => ({ useLiveEvents: () => mockLive }));
 
 const mockSummary = (over: Partial<RoomSummary>): RoomSummary => ({
   roomId: "r1",
@@ -332,7 +331,6 @@ describe("Chats", () => {
     mockOrgId = `org-${++mockOrgSeq}`;
     mockFocused = true;
     mockRoomsState = {};
-    mockSuperAgent = false;
     mockSessions = [];
     mockLiveLines = {};
     mockAgents = [
@@ -347,8 +345,7 @@ describe("Chats", () => {
   });
 
   // The grouping itself is lib/chats `fileSpecialists` (unit-tested there); this checks the screen wires it.
-  it("super-agent on: the Specialists row opens to the specialist DM", async () => {
-    mockSuperAgent = true;
+  it("the Specialists row opens to the specialist DM", async () => {
     mockAgents = [{ id: "agent-lb", name: "Lightbulb", role: "ceo", origin: "Starter" }, ...mockAgents];
     await render(<ChatsTab />);
     await fireEvent.press(await screen.findByLabelText("Specialists · 1"));

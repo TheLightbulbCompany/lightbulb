@@ -71,7 +71,7 @@ async def _targets(args: argparse.Namespace) -> list[str]:
 
 async def _refresh_one(provisioning, cookie: str, owner_id: str, apply: bool) -> str:
     row = await provisioning._repo.resolve_owner_row(owner_id)
-    # Same guard as arm_nightly_ceo: only a committed company that belongs to this workspace.
+    # Only a committed company that belongs to this workspace.
     if row is None or row.status != "active" or row.org_id != owner_id:
         return "skipped (no active company)"
     results = [await _refresh_starter(provisioning, cookie, owner_id, row, key, apply) for key in OLD_CAPABILITIES]

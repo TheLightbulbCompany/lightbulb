@@ -7,7 +7,7 @@ import { loadFeedPosts, TeamFeed, type FeedClient, type TeamFeedProps } from "..
 import { post } from "./fixtures";
 
 vi.mock("@/components/messaging/RoomDocumentCards", () => ({ RoomDocumentCards: () => null }));
-const live = vi.hoisted(() => ({ value: null as null | { superAgent: boolean; frontAgentId?: string } }));
+const live = vi.hoisted(() => ({ value: null as null | { frontAgentId?: string } }));
 vi.mock("@/hooks/useLiveEvents", () => ({ useOptionalLiveEvents: () => live.value }));
 
 const room = {
@@ -58,7 +58,7 @@ describe("TeamFeed", () => {
   });
 
   it("super-agent on: the front agent's older posts (seat name 'Finance' here) read Lightbulb", async () => {
-    live.value = { superAgent: true, frontAgentId: "agent-fin" };
+    live.value = { frontAgentId: "agent-fin" };
     try {
       setup();
       await waitFor(() => expect(posts().length).toBeGreaterThan(0));

@@ -10,10 +10,7 @@ from datetime import datetime
 from core.dynamodb import plain
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo, container_repo, messaging_repo
-from core.repositories.paperclip_repo import PaperclipRepo
 from core.services.connection_service import ConnectionService
-from core.services.paperclip_agent_lifecycle import pause_owner_automation
-from core.services.trial_cap import is_trial_expired
 
 logger = logging.getLogger(__name__)
 
@@ -52,18 +49,6 @@ def _activity_epoch(row: dict) -> int:
     return int(time.time())
 
 
-async def _pause_expired_trial(owner_id: str) -> None:
-    try:
-        ws = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id, include_inactive=True)
-        # Skip only a pause that FINISHED: a partial one (marker + ids written, a PATCH
-        # failed) has no billing event to re-run it, so the sweep retries until complete.
-        if ws is None or ws.automation_pause_complete_at:
-            return
-        await pause_owner_automation(owner_id)
-    except Exception:  # noqa: BLE001 -- the next sweep retries; never stop the sweep
-        put_metric("paperclip.automation.pause", dimensions={"outcome": "error"})
-
-
 async def sweep_trial_idle_once(*, now: int | None = None) -> None:
     now = int(now if now is not None else time.time())
     rows = await container_repo.get_by_status("running")
@@ -75,11 +60,6 @@ async def sweep_trial_idle_once(*, now: int | None = None) -> None:
         account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
         if not account or account.get("subscription_status") != "trial_local":
             continue
-        if is_trial_expired(account):
-            # An expiring trial has no billing event, so this sweep is the edge that stops
-            # its Paperclip routines and heartbeats. Retried until a pause completes; a
-            # subscribe resumes them through arm_nightly_ceo.
-            await _pause_expired_trial(owner_id)
         try:
             from core.services.trial_lifecycle import notices
 

@@ -1,5 +1,4 @@
 import { useAuth } from "@clerk/expo";
-import { useSuperAgent } from "../../../providers/live-events";
 import * as Notifications from "expo-notifications";
 import { NativeTabs } from "expo-router/unstable-native-tabs";
 import { useEffect, useState } from "react";
@@ -62,7 +61,6 @@ export default function TabsLayout() {
   // screen — and everything they hold — on a switch, instead of showing the
   // old workspace's rows/dashboard until each screen's own refetch lands.
   const { orgId } = useAuth();
-  const superAgent = useSuperAgent();
   // The selected tab reads in both schemes (forest green vanished on dark).
   const tint = chatPalette[useColorScheme() === "dark" ? "dark" : "light"].fg;
   return (
@@ -89,12 +87,10 @@ export default function TabsLayout() {
             <NativeTabs.Trigger.Badge>{String(unseen)}</NativeTabs.Trigger.Badge>
           )}
         </NativeTabs.Trigger>
-        {/* With the super-agent on, the tab is Work (threads and schedules); off, today's Teams. */}
+        {/* Work: threads and schedules. */}
         <NativeTabs.Trigger name="teams">
-          {superAgent
-            ? <NativeTabs.Trigger.Icon sf={{ default: "checklist", selected: "checklist" }} md="checklist" />
-            : <NativeTabs.Trigger.Icon sf={{ default: "person.2", selected: "person.2.fill" }} md="group" />}
-          <NativeTabs.Trigger.Label>{superAgent ? "Work" : "Teams"}</NativeTabs.Trigger.Label>
+          <NativeTabs.Trigger.Icon sf={{ default: "checklist", selected: "checklist" }} md="checklist" />
+          <NativeTabs.Trigger.Label>Work</NativeTabs.Trigger.Label>
         </NativeTabs.Trigger>
         <NativeTabs.Trigger name="settings">
           <NativeTabs.Trigger.Icon sf={{ default: "gearshape", selected: "gearshape.fill" }} md="settings" />

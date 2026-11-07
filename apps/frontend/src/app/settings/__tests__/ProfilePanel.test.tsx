@@ -58,7 +58,9 @@ vi.mock("@/hooks/useBilling", () => ({
   }),
 }));
 
-import SettingsPage from "../page";
+import { PANELS } from "@/components/settings/SettingsPlace";
+
+const SettingsPage = PANELS.profile;
 
 describe("ProfilePanel — subscription badge", () => {
   beforeEach(() => {
@@ -74,7 +76,7 @@ describe("ProfilePanel — subscription badge", () => {
   it("maps trial_local to Free tier, never the raw enum", () => {
     billing.account = { subscription_status: "trial_local", trial_end: null };
     render(<SettingsPage />);
-    expect(screen.getByText("Free tier")).toBeInTheDocument();
+    expect(screen.getByText(/· Free tier/)).toBeInTheDocument();
     expect(screen.queryByText(/trial_local/i)).not.toBeInTheDocument();
   });
 
@@ -83,15 +85,9 @@ describe("ProfilePanel — subscription badge", () => {
     render(<SettingsPage />);
     // planLabel capitalizes the raw enum ("active" -> "Active"); settings.css's
     // text-transform: uppercase then renders it visually as ACTIVE on top.
-    expect(screen.getByText("Active")).toBeInTheDocument();
+    expect(screen.getByText(/· Active/)).toBeInTheDocument();
   });
 
-  it("does not shout FREE TIER — the uppercase transform is dropped for trial_local", () => {
-    billing.account = { subscription_status: "trial_local", trial_end: null };
-    render(<SettingsPage />);
-    const badge = screen.getByText("Free tier");
-    expect(badge).toHaveStyle({ textTransform: "none" });
-  });
 });
 
 // Covers the self-serve DeleteAccountCard: typed-email confirm gating the
@@ -119,7 +115,7 @@ describe("ProfilePanel — delete account", () => {
 
   it("requires the account email typed back before the delete button arms", async () => {
     render(<SettingsPage />);
-    fireEvent.click(screen.getByRole("button", { name: /delete account/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^delete…$/i }));
 
     const deleteBtn = screen.getByRole("button", { name: /delete forever/i });
     expect(deleteBtn).toBeDisabled();
@@ -155,7 +151,7 @@ describe("ProfilePanel — delete account", () => {
       }),
     );
     render(<SettingsPage />);
-    fireEvent.click(screen.getByRole("button", { name: /delete account/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^delete…$/i }));
     fireEvent.change(screen.getByLabelText("Confirm account email"), {
       target: { value: "test@isol8.co" },
     });
@@ -170,12 +166,12 @@ describe("ProfilePanel — delete account", () => {
   it("offers deletion in a workspace context too (the backend supports it)", () => {
     clerk.organization = { id: "org_1" };
     render(<SettingsPage />);
-    expect(screen.getByRole("button", { name: /delete account/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^delete…$/i })).toBeInTheDocument();
   });
 });
 
-// Covers WorkspaceExportCard: only a 200 ZIP is saved; a 202 (workspace still
-// provisioning, JSON body) shows a retry message and records no export.
+// Covers WorkspaceExportCard: only a 200 NDJSON body is saved; an error shows
+// the retry message and records no export.
 const analytics = vi.hoisted(() => ({ capture: vi.fn() }));
 vi.mock("@/lib/analytics", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/analytics")>()),
@@ -194,23 +190,19 @@ describe("ProfilePanel — workspace export", () => {
     vi.stubGlobal("fetch", fetchMock);
   });
 
-  it("does not save a 202 provisioning response as the ZIP", async () => {
+  it("does not save an error response as the export", async () => {
     fetchMock.mockImplementation(async (url: string) =>
-      String(url).includes("/teams/workspace/export")
-        ? new Response(JSON.stringify({ status: "provisioning" }), {
-            status: 202,
+      String(url).includes("/tasks/export")
+        ? new Response(JSON.stringify({ detail: { code: "not_found" } }), {
+            status: 404,
             headers: { "Content-Type": "application/json" },
           })
         : new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } }),
     );
     render(<SettingsPage />);
-    fireEvent.click(screen.getByRole("button", { name: /download workspace zip/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^download$/i }));
 
-    await waitFor(() =>
-      expect(
-        screen.getByText("Your workspace is still setting up. Try again in a minute."),
-      ).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText(/couldn't prepare your export/i)).toBeInTheDocument());
     expect(analytics.capture).not.toHaveBeenCalledWith("workspace_export_downloaded");
   });
 });

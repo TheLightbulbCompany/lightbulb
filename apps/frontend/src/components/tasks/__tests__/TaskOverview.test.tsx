@@ -7,8 +7,8 @@ import { taskListKey, type TaskScope } from "@lightbulb/shared";
 import { FIXTURES, SAM } from "@lightbulb/shared/tasks/fixtures";
 import { Fresh, fakeTasksClient, type FakeTasksClient } from "./fakeTasks";
 
-const live = vi.hoisted(() => ({ superAgent: true, tasks: null as unknown }));
-vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useSuperAgent: () => live.superAgent, useOptionalLiveEvents: () => live }));
+const live = vi.hoisted(() => ({ tasks: null as unknown }));
+vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useOptionalLiveEvents: () => live }));
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 const apiGet = vi.hoisted(() => vi.fn(async (): Promise<unknown> => ({ automations: [] })));
 vi.mock("@/lib/api", () => ({ useApi: () => ({ get: apiGet }) }));

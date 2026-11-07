@@ -7,7 +7,7 @@ from __future__ import annotations
 # gate_chat's pre-send refusal is the sole reader (the gateway's own mid-run
 # reclassification is gone). The web card renders from `code` alone (see
 # ChatErrorCard); these strings are what non-web surfaces — room notes,
-# Paperclip run rows, logs, the wake refusal frame — show. The iPhone app shows
+# logs, the wake refusal frame — show. The iPhone app shows
 # them as-is, so they state the fact and never ask for a purchase (App Store
 # 3.1.1); the web's own cards and bars carry the upgrade button.
 BUDGET_BLOCK_MESSAGES = {

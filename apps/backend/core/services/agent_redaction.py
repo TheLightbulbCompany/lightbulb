@@ -3,8 +3,7 @@
 An ``openclaw_gateway`` agent's ``adapterConfig`` carries the operator device's
 signing private key (``devicePrivateKeyPem``) and the container gateway token
 (``authToken``). EVERY surface that echoes an agent record to a client — the
-``/teams`` BFF read/create paths and the per-tenant Paperclip proxy's agent
-routes — MUST strip these before they reach the browser/DOM, or anyone with the
+``/teams`` BFF read/create paths — MUST strip these before they reach the browser/DOM, or anyone with the
 response can impersonate the agent's operator device.
 
 Keeping the field set + stripper here (not duplicated per surface) means a

@@ -1,7 +1,7 @@
 """Webhook fires verified in the backend (spec 06 §3.5, contracts-v2 §11).
 
 The public URL is `POST /api/v1/hooks/t/{owner}/{public_id}`; `meta_webhook` hands its deliveries here too.
-A trigger with no `HOOK#` row is a 404 (the Paperclip trigger proxy is gone, Phase 1 task 7).
+A trigger with no `HOOK#` row is a 404 (the old trigger proxy is gone, Phase 1 task 7).
 
 Order: entitlement 402 → `HOOK#` (the key binds the public id to this owner) 404 → rate 429 → Google `sync` /
 GitHub `ping` 204 → signature 401 → event filter 200 `ignored` → dedupe key → raw body to S3 →

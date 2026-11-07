@@ -5,7 +5,6 @@ paired-Mac device routes (routers/messaging.py, /local-sessions/device/*). The b
 (contracts-v2 §14.9): reads go through `tasks_access.can_view`, and a change is a signal to `TaskWorkflow`
 (`client.update_task`) or a note in the task's room — never a row write.
 
-`_context` (the Teams context) stays for `ideas`.
 """
 
 from __future__ import annotations
@@ -21,28 +20,6 @@ OPEN_STATUSES = ("backlog", "todo", "in_progress", "in_review", "blocked")
 STATUSES = (*OPEN_STATUSES, "done", "cancelled")
 PRIORITIES = ("critical", "high", "medium", "low")
 NOTE_MAX = 4000
-
-
-class _NoCookieJar:
-    """No browser here: a minted Paperclip session stays in the in-process backstop."""
-
-    def set_cookie(self, *args, **kwargs) -> None:
-        return None
-
-
-async def _context(auth: AuthContext):
-    """The caller's Teams context: workspace company, membership and Paperclip session.
-    No self-heal: a person not yet joined gets the Teams 409/202, not a provision."""
-    from routers.teams import agents as teams_agents
-    from routers.teams import deps as teams_deps
-
-    return await teams_deps.resolve_teams_context(
-        auth=auth,
-        repo=teams_agents._repo(),
-        session_factory=teams_agents.get_user_session_cookie_for,
-        cookies={},
-        response=_NoCookieJar(),
-    )
 
 
 #: Board status words → task statuses (contracts §4). `blocked` ≈ waiting on a person; `in_review` ≈ idle with output.

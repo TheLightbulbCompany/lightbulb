@@ -1,3 +1,4 @@
+# ponytail: delete after the prod data move (task 3)
 """Backfill the super-agent `AGENT#` registry from Paperclip, keeping Paperclip's agent ids (spec 03 §6.1).
 
 DRY RUN BY DEFAULT: prints the planned created/updated counts. `--apply` writes (idempotent) and soft-deletes

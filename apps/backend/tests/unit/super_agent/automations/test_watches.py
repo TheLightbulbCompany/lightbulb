@@ -392,7 +392,7 @@ def test_at_reads_a_naive_time_as_utc():
 
 async def test_check_watch_pr_checks():
     pulls = _resp(200, {"head": {"sha": "abc"}})
-    with patch("core.services.inbound_triggers._github_token", AsyncMock(return_value="gh")):
+    with patch("core.services.credentials.integration_secret_store.github_token", AsyncMock(return_value="gh")):
         with _http(
             {"pulls": pulls, "/status": _resp(200, {"state": "pending"}), "check-runs": _resp(200, {"check_runs": []})}
         ):
@@ -406,7 +406,7 @@ async def test_check_watch_pr_checks():
         failed = {"check_runs": [{"name": "ci", "status": "completed", "conclusion": "failure"}]}
         with _http({"pulls": pulls, "/status": _resp(200, {"state": "failure"}), "check-runs": _resp(200, failed)}):
             assert await check_watch(WS, TID, _spec()) == "met:failed:ci"
-    with patch("core.services.inbound_triggers._github_token", AsyncMock(return_value=None)):
+    with patch("core.services.credentials.integration_secret_store.github_token", AsyncMock(return_value=None)):
         assert await check_watch(WS, TID, _spec()) == "error"
 
 

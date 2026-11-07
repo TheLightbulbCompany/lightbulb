@@ -16,7 +16,8 @@ from collections.abc import Awaitable, Callable
 
 import httpx
 
-from core.services import agent_mail_send, paperclip_github_token
+from core.services import agent_mail_send
+from core.services.credentials import integration_secret_store
 
 GITHUB_API = "https://api.github.com"
 _TIMEOUT_S = 20.0
@@ -58,7 +59,7 @@ async def mail_send(owner_id: str, operands: dict, answered_by: str) -> str:
 
 async def pr_merge(owner_id: str, operands: dict, answered_by: str) -> str:
     """Merge with the owner's GitHub token. An already merged PR is a success (a retry after a lost response)."""
-    token = await paperclip_github_token.github_token(owner_id)
+    token = await integration_secret_store.github_token(owner_id)
     if not token:
         raise ExecutorRefused("github_not_connected", "connect GitHub in Settings")
     repo, number = operands["repo"], int(operands["number"])

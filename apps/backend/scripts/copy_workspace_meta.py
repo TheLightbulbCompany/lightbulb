@@ -1,3 +1,4 @@
+# ponytail: delete after the prod data move (task 3)
 """Super-agent step 2 (spec 03 §6.2, wave1-R Task 6): copy workspace rows and pending-brief
 sentinels from ``paperclip-companies`` to ``tasks`` (``WS#{org}/META``, ``WS#{org}/PENDING_BRIEF``).
 

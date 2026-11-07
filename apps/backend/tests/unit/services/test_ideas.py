@@ -9,7 +9,7 @@ from fastapi import HTTPException
 
 from core.auth import AuthContext
 from core.repositories import messaging_repo as repo
-from core.services import hermes_profiles, ideas, messaging, proactive, task_board
+from core.services import hermes_profiles, ideas, messaging, proactive
 from tests.unit.repositories.test_messaging_repo import table  # noqa: F401  (the moto messaging table)
 
 OWNER = "org_1"
@@ -153,7 +153,7 @@ def paperclip(workspace, monkeypatch):
     ctx = SimpleNamespace(
         owner_id=OWNER, company_id="company-1", session_cookie="cookie", paperclip_user_id="pc-user-1"
     )
-    monkeypatch.setattr(task_board, "_context", AsyncMock(return_value=ctx))
+    monkeypatch.setattr(ideas, "_teams_context", AsyncMock(return_value=ctx))
     monkeypatch.setattr(paperclip_admin_client, "shared_admin_client", lambda: admin)
     monkeypatch.setattr(hermes_profiles, "write_profile_file", AsyncMock())
     return admin
@@ -399,7 +399,7 @@ def super_agent(workspace, monkeypatch):
     monkeypatch.setattr(proactive, "_row_now", row_now)
     monkeypatch.setattr(tasks_repo, "get_task", AsyncMock(side_effect=lambda ws, tid: tasks.get(tid)))
     monkeypatch.setattr(tasks_repo, "list_tasks_by_status", by_status)
-    monkeypatch.setattr(task_board, "_context", AsyncMock(side_effect=AssertionError("no Paperclip")))
+    monkeypatch.setattr(ideas, "_teams_context", AsyncMock(side_effect=AssertionError("no Paperclip")))
     return SimpleNamespace(tasks=tasks, enqueued=enqueued, rows=rows)
 
 

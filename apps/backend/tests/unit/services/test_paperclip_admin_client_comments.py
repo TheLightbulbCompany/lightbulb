@@ -40,40 +40,6 @@ def admin_client_with_fake_http():
 
 
 @pytest.mark.asyncio
-async def test_list_issue_comments_hits_correct_url(admin_client_with_fake_http):
-    """GET /api/issues/{id}/comments — URL + session cookie forwarded."""
-    client, http = admin_client_with_fake_http
-    await client.list_issue_comments(issue_id="iss_42", session_cookie="pc=abc")
-    http.get.assert_awaited_once()
-    call = http.get.call_args
-    assert call.args[0] == "/api/issues/iss_42/comments"
-    # Session cookie is threaded through headers by the _get helper.
-    headers = call.kwargs.get("headers", {})
-    assert headers.get("Cookie") == "pc=abc"
-
-
-@pytest.mark.asyncio
-async def test_list_issue_comments_returns_parsed_response(
-    admin_client_with_fake_http,
-):
-    """Parsed JSON response from upstream is returned verbatim."""
-    client, http = admin_client_with_fake_http
-    fake_payload = {
-        "comments": [
-            {
-                "id": "c1",
-                "body": "Hello",
-                "createdAt": "2026-05-05T00:00:00Z",
-            }
-        ]
-    }
-    http.get.return_value.json.return_value = fake_payload
-    http.get.return_value.content = b'{"comments":[]}'  # non-empty
-    result = await client.list_issue_comments(issue_id="iss_1", session_cookie="pc=cookie")
-    assert result == fake_payload
-
-
-@pytest.mark.asyncio
 async def test_add_issue_comment_posts_body(admin_client_with_fake_http):
     """POST /api/issues/{id}/comments — URL, body, and cookie forwarded."""
     client, http = admin_client_with_fake_http

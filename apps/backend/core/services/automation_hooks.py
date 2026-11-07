@@ -299,7 +299,7 @@ async def _unregister(owner_id: str, hook: dict) -> None:
     provider, hook_id, resource = hook["provider"], hook.get("providerHookId"), hook.get("resource")
     try:
         if provider == "github" and hook_id and resource:
-            token = await it._github_token(owner_id)
+            token = await it.integration_secret_store.github_token(owner_id)
             if token:
                 await it._delete_github_hook(token=token, resource=resource, hook_id=hook_id)
         elif provider == "vercel_cli" and hook_id:

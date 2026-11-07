@@ -335,7 +335,6 @@ def test_revoke_all_disconnects_every_connected_app_and_reports_the_one_that_fai
             raise RuntimeError("s3 down")
 
     torn = AsyncMock(side_effect=teardown)
-    github = AsyncMock()
     order = MagicMock()
     mark = AsyncMock(return_value=200)
     listing = AsyncMock(return_value=rows)
@@ -351,7 +350,6 @@ def test_revoke_all_disconnects_every_connected_app_and_reports_the_one_that_fai
         patch.object(mod.connections, "owner_lifecycle_guard", lambda owner_id: _Guard()),
         patch.object(mod.connections, "_get_provider_for_teardown", lambda provider: provider),
         patch.object(mod.connections, "_disconnect_teardown", torn),
-        patch.object(mod.connections.paperclip_github_token, "sync_after_disconnect", github),
     ):
         resp = client.post("/api/v1/company/revoke-all", json={"confirm": "revoke"})
     assert resp.status_code == 200
@@ -368,7 +366,6 @@ def test_revoke_all_disconnects_every_connected_app_and_reports_the_one_that_fai
     # The Projects rail's row is not an OAuth connection: its blob is deleted above and it
     # never reaches the OAuth teardown (which is keyed by the bare provider).
     assert [c.args[:2] for c in torn.await_args_list] == [("org_a", "google"), ("org_a", "slack"), ("org_a", "github")]
-    github.assert_awaited_once_with("org_a")
     # The mark is down before the rows are read, so a callback that lands after this snapshot
     # finds it and refuses (oauth_callback); one that was mid-write is waited out by the guard.
     mark.assert_awaited_once_with("org_a")

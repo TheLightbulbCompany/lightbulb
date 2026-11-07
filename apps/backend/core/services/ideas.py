@@ -384,16 +384,37 @@ def _parse_time(value: object) -> datetime | None:
     return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
 
+class _NoCookieJar:
+    """No browser here: a minted Paperclip session stays in the in-process backstop."""
+
+    def set_cookie(self, *args, **kwargs) -> None:
+        return None
+
+
+async def _teams_context(auth: AuthContext):
+    """The caller's Teams context: workspace company, membership and Paperclip session.
+    No self-heal: a person not yet joined gets the Teams 409/202, not a provision."""
+    from routers.teams import agents as teams_agents
+    from routers.teams import deps as teams_deps
+
+    return await teams_deps.resolve_teams_context(
+        auth=auth,
+        repo=teams_agents._repo(),
+        session_factory=teams_agents.get_user_session_cookie_for,
+        cookies={},
+        response=_NoCookieJar(),
+    )
+
+
 async def _issue_statuses(auth: AuthContext, issue_ids: list[str]) -> dict[str, str]:
     """{issue: status} from Paperclip; a deleted one (404) is GONE, one that could not be read is
     left out (never failing the read)."""
     if not issue_ids:
         return {}
-    from core.services import task_board
     from core.services.paperclip_admin_client import shared_admin_client
 
     try:
-        ctx = await task_board._context(auth)
+        ctx = await _teams_context(auth)
         admin = shared_admin_client()
         found = await asyncio.gather(
             *(admin.get_issue(session_cookie=ctx.session_cookie, issue_id=i) for i in issue_ids), return_exceptions=True
@@ -418,11 +439,10 @@ async def _project_statuses(auth: AuthContext, project_ids: list[str]) -> dict[s
     404 is GONE; anything else leaves it unknown, which counts as open."""
     if not project_ids:
         return {}
-    from core.services import task_board
     from core.services.paperclip_admin_client import PaperclipApiError, shared_admin_client
 
     try:
-        ctx = await task_board._context(auth)
+        ctx = await _teams_context(auth)
         admin = shared_admin_client()
         projects = await admin.list_projects(session_cookie=ctx.session_cookie, company_id=ctx.company_id)
         rows = projects if isinstance(projects, list) else (projects or {}).get("projects") or []

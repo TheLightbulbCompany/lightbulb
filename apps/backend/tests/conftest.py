@@ -136,17 +136,6 @@ def _no_real_jev_key(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _no_real_paperclip_github_token_sync(monkeypatch):
-    """A GitHub connect, a GitHub disconnect and every runtime reconcile sync the workspace's
-    GitHub token into Paperclip (best-effort), which would reach for DynamoDB and Paperclip from
-    any test that drives one of those. Default it to "no company yet"; the call-site tests patch
-    it again, and test_paperclip_github_token binds the real function at import."""
-    from core.services import paperclip_github_token
-
-    monkeypatch.setattr(paperclip_github_token, "sync_github_token", AsyncMock(return_value="no_company"))
-
-
-@pytest.fixture(autouse=True)
 def _launch_settings_read_defaults():
     """Default every test to a launch-settings row that reads cleanly as
     "nothing saved yet" (feature off).

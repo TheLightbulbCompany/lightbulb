@@ -24,10 +24,6 @@ AUTH = AuthContext(user_id=SAM, org_id=WS)
 def world(table, monkeypatch):  # noqa: F811
     w = {"on": True, "updates": [], "notes": [], "legacy": 0}
 
-    async def legacy_context(auth):
-        w["legacy"] += 1
-        raise RuntimeError("legacy path")
-
     async def update(ws, task_id, name, arg):
         w["updates"].append((task_id, name, arg))
 
@@ -38,7 +34,6 @@ def world(table, monkeypatch):  # noqa: F811
     async def ensure_room(ws, task, **kw):
         return ts.task_room_id(task["taskId"])
 
-    monkeypatch.setattr(task_board, "_context", legacy_context)
     monkeypatch.setattr(
         "core.services.messaging.load_agent_roster", AsyncMock(return_value=[{"id": FIN, "name": "Finance"}])
     )

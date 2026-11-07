@@ -109,19 +109,6 @@ async def test_mirror_unknown_company_logs_and_skips(tasks_table, company_lookup
 
 
 @pytest.mark.asyncio
-async def test_proxied_agent_write_mirrors(tasks_table, company_lookup):
-    """The Paperclip UI's edits reach Paperclip through routers/paperclip_proxy, not the admin client."""
-    from routers import paperclip_proxy
-
-    await paperclip_proxy._mirror_agent_write(
-        "PATCH", f"api/agents/{AID}", 200, json.dumps(_agent(name="Via UI")).encode()
-    )
-    assert (await repo.get("org_a", AID))["name"] == "Via UI"
-    await paperclip_proxy._mirror_agent_write("DELETE", f"api/agents/{AID}", 200, b"")
-    assert (await repo.get("org_a", AID))["status"] == "deleted"
-
-
-@pytest.mark.asyncio
 async def test_rejected_hire_mirrors_the_termination(tasks_table, company_lookup):
     """Paperclip terminates a rejected hire on its own side; the reject re-reads and mirrors it."""
     state = _agent(status="pending_approval")
@@ -145,11 +132,11 @@ _AGENT_WRITE = re.compile(r"/api/(?:companies/[^/\"']+/agents|agents/[^/\"']+(?:
 
 
 def test_all_write_doors_use_the_admin_client():
-    """No module outside the admin client (and the mirrored proxy) calls Paperclip's agent write routes."""
+    """No module outside the admin client calls Paperclip's agent write routes."""
     offenders = []
     for root in ("core", "routers", "scripts"):
         for path in (BACKEND / root).rglob("*.py"):
-            if path.name in {"paperclip_admin_client.py", "paperclip_proxy.py"}:
+            if path.name == "paperclip_admin_client.py":
                 continue
             for node in ast.walk(ast.parse(path.read_text())):
                 if isinstance(node, ast.Call) and getattr(node.func, "attr", "") in {

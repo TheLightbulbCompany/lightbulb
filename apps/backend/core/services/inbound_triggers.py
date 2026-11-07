@@ -149,7 +149,6 @@ from core.repositories import google_accounts_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services.credentials import integration_secret_store, registry
 from core.services.paperclip_admin_client import PaperclipAdminClient
-from core.services.paperclip_github_token import github_token as _github_token
 
 logger = logging.getLogger(__name__)
 
@@ -331,7 +330,7 @@ async def list_github_repos(owner_id: str) -> list[dict[str, str]]:
     Raises ``LookupError`` when GitHub isn't connected (the router maps it to
     404); httpx errors bubble up for the router's 502.
     """
-    token = await _github_token(owner_id)
+    token = await integration_secret_store.github_token(owner_id)
     if not token:
         raise LookupError("GitHub is not connected")
     async with httpx.AsyncClient(timeout=15.0) as http:
@@ -830,7 +829,7 @@ async def _resolve_registration(
     if registration == "auto_github":
         if not resource or not _GITHUB_REPO_RE.match(resource):
             raise ValueError("auto_github needs a repository in the form owner/repo")
-        gh_token = await _github_token(owner_id)
+        gh_token = await integration_secret_store.github_token(owner_id)
         if not gh_token:
             raise ValueError("GitHub is not connected — connect it in the Integrations tab first")
 

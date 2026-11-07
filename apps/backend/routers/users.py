@@ -281,7 +281,7 @@ async def delete_my_account(
     auth: AuthContext = Depends(get_current_user),
 ):
     # Lazy import: the wipe orchestrators pull the whole teardown surface
-    # (runtime/Paperclip/Stripe clients) — keep it off users.py import time.
+    # (runtime/Stripe clients) — keep it off users.py import time.
     from core.services import clerk_admin
     from core.services.account_wipe import (
         BootstrapAccountProtectedError,

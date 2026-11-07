@@ -28,10 +28,6 @@ def _runtime():
         patch("core.services.hermes_provisioning.delete_workspace_runtime", AsyncMock()) as runtime,
         patch("core.billing.bedrock_aip.delete_owner_aips", AsyncMock()) as aips,
         patch("core.billing.bedrock_aip.delete_owner_bedrock_role", AsyncMock()) as role,
-        patch(
-            "core.services.paperclip_agent_lifecycle.disarm_owner_nightly_automation",
-            AsyncMock(return_value={"heartbeats_checked": 1, "issues_cancelled": 2}),
-        ) as disarm,
     ):
         # Returns the containers row's ALL_OLD image — the only handle on the
         # AIP arns once the row is gone.
@@ -40,7 +36,7 @@ def _runtime():
             "bedrock_aip_arns": {"sonnet": "arn:aws:bedrock:us-east-1:1:application-inference-profile/abc"},
             "bedrock_role_arn": "arn:aws:iam::1:role/isol8-prod-owner-bedrock-user_1",
         }
-        yield MagicMock(facts=facts, runtime=runtime, aips=aips, role=role, disarm=disarm)
+        yield MagicMock(facts=facts, runtime=runtime, aips=aips, role=role)
 
 
 @pytest.mark.parametrize("status", ["active", "trialing", "trial_local", "past_due"])
@@ -197,27 +193,6 @@ def _emitted(metric, name, outcome):
         c.args and c.args[0] == name and c.kwargs.get("dimensions", {}).get("outcome") == outcome
         for c in metric.call_args_list
     )
-
-
-@pytest.mark.asyncio
-async def test_teardown_makes_no_paperclip_call(_runtime):
-    """The Paperclip company belongs to the workspace, and a lapsed
-    entitlement is not a deleted workspace: teardown never disarms Paperclip
-    timers (they are gone) and never builds a provisioning client to disable anything
-    (``organization.deleted`` owns the workspace disable)."""
-    build = AsyncMock()
-    with (
-        patch("core.services.paperclip_provisioning.build_paperclip_provisioning", build),
-        patch.object(
-            entitlement_teardown.billing_repo,
-            "get_by_owner_id",
-            AsyncMock(return_value={"owner_id": "org_1", "subscription_status": "canceled"}),
-        ),
-    ):
-        assert await entitlement_teardown.teardown_if_unentitled("org_1", trigger="subscription_deleted") is True
-
-    _runtime.disarm.assert_not_awaited()
-    build.assert_not_awaited()
 
 
 @pytest.mark.asyncio

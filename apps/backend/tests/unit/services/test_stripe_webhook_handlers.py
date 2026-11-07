@@ -103,17 +103,6 @@ def front_desk_sync(monkeypatch):
     return sync
 
 
-@pytest.fixture(autouse=True)
-def company_stripe_request(monkeypatch):
-    """Entering a live paid status also ASKS the owner to connect the company's
-    Stripe account. Stub the DISPATCHER (not the coroutine) for every test here
-    so no handler path reaches Paperclip — same shape, and same reason, as
-    ``reconcile_dispatch`` above."""
-    dispatch = MagicMock()
-    monkeypatch.setattr(handlers, "dispatch_company_stripe_request", dispatch)
-    return dispatch
-
-
 @pytest.mark.asyncio
 async def test_sets_customer_default_pm_when_empty(mock_repo):
     """Sub carries a PM + customer default is empty → promote it."""
@@ -915,82 +904,6 @@ class TestSubscriptionActivationDelegatesToLaunchReferral:
         """async_payment_succeeded lands back on this same handler, with the
         status flipped — that is when the coupon is genuinely consumed."""
         assert await self._stamped_for("paid", "checkout.session.async_payment_succeeded") is True
-
-
-# --- Company Stripe: the platform ASKS on entering_live ---------------------
-#
-# ``company_stripe_approval.request_company_stripe`` had exactly ONE caller —
-# the container hook route — so the "set up / connect your company's Stripe
-# account" card appeared only if Friday spontaneously decided to file it.
-# Almost no owner has a ``company_stripe_account_id``, and that id is the spine
-# of the whole Money data plane (Payments / Customers / Products / Home rollups
-# all read through it).
-#
-# We ASK on the first paid transition; we never auto-CREATE. Creating would
-# foreclose "connect my existing Stripe" (``connect/start`` 409s once bound and
-# the UI hides the button), permanently stamp a raw owner_id as the Stripe
-# display name (nothing ever calls accounts.update), and flip owner facts to
-# ``pending`` — which the fleet skill reads as "do not file the request again".
-
-
-class TestCompanyStripeRequestOnEnteringLive:
-    async def test_entering_live_asks_exactly_once(self, mock_repo, company_stripe_request):
-        """The whole point: a first paid transition puts the card in front of
-        the owner without anyone having to ask Friday to file it."""
-        await _run_state(mock_repo, "trial_local", "active")
-
-        company_stripe_request.assert_called_once_with("org_x")
-
-    @pytest.mark.parametrize("provider", ["chatgpt_oauth", "byo_key"])
-    async def test_a_non_bedrock_owner_is_asked_too(self, mock_repo, company_stripe_request, provider):
-        """The ask is UNCONDITIONAL on the LLM provider — it is the owner's own
-        revenue rail, not ours (the reconcile's Metronome ensure IS provider-gated)."""
-        await _run_state(
-            mock_repo, "trial_local", "active", metadata={"owner_id": "org_x", "provider_choice": provider}
-        )
-
-        company_stripe_request.assert_called_once_with("org_x")
-
-    async def test_a_renewal_does_not_ask(self, mock_repo, company_stripe_request):
-        """An ordinary renewal is not an entry into paid. The card dedupes on a
-        pending marker so a repeat would be inert, but each attempt is three
-        live Paperclip round trips inside a webhook."""
-        await _run_state(mock_repo, "active", "active")
-
-        company_stripe_request.assert_not_called()
-
-    async def test_an_owner_already_bound_to_stripe_gets_no_card(self):
-        """The idempotence this leans on: ``request_company_stripe`` reads the
-        billing row FIRST and returns None when an account is bound, so it never
-        reaches the board at all."""
-        from core.services import board_cards, company_stripe_approval
-
-        with (
-            patch.object(
-                company_stripe_approval.billing_repo,
-                "get_by_owner_id",
-                AsyncMock(return_value={"owner_id": "org_x", "company_stripe_account_id": "acct_x"}),
-            ),
-            patch.object(board_cards, "resolve_company_id_for_owner", AsyncMock()) as company,
-        ):
-            await handlers._request_company_stripe("org_x")
-
-        company.assert_not_awaited()
-
-    async def test_a_failure_never_escapes_into_the_webhook(self, caplog):
-        """Best-effort, like every other dispatch here. A raise would 500 the
-        webhook, and Stripe's retry re-enters with the status already persisted
-        off trial_local — which silently skips the transition branches for good."""
-        from core.services import company_stripe_approval
-
-        with patch.object(
-            company_stripe_approval,
-            "request_company_stripe",
-            AsyncMock(side_effect=RuntimeError("paperclip down")),
-        ):
-            await handlers._request_company_stripe("org_x")
-
-        assert "company Stripe" in caplog.text
 
 
 # ---------------------------------------------------------------------------

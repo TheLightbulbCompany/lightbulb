@@ -302,39 +302,6 @@ async def test_create_agent_replay_only_requires_the_operation_key(client_factor
         )
 
 
-async def test_create_child_issue_posts_to_issue_scoped_path(client_factory):
-    """``create_child_issue`` POSTs to the ISSUE-scoped
-    ``/api/issues/{issueId}/children`` — NOT a company-scoped path.
-
-    Upstream's child-create route is mounted issue-scoped
-    (``router.post("/issues/:id/children")``); company is derived
-    server-side from the parent. A company-scoped path 404s. The
-    router test mocks this admin method, so this is the only place the
-    exact wire path is exercised — pinning it here prevents a silent
-    regression back to ``/api/companies/{id}/issues/{id}/children``.
-    """
-    captured: dict = {}
-
-    def handler(req: httpx.Request) -> httpx.Response:
-        captured["method"] = req.method
-        captured["url"] = str(req.url)
-        captured["body"] = req.read().decode()
-        return httpx.Response(201, json={"id": "child1", "title": "x"})
-
-    client = client_factory(handler)
-    out = await client.create_child_issue(
-        session_cookie="sess_owner",
-        issue_id="iss1",
-        body={"title": "x"},
-    )
-    assert captured["method"] == "POST"
-    assert "/api/issues/iss1/children" in captured["url"]
-    assert "/companies/" not in captured["url"]
-    body = _json.loads(captured["body"])
-    assert body == {"title": "x"}
-    assert out["id"] == "child1"
-
-
 async def test_delete_company_swallows_404(client_factory):
     """404 on DELETE means already gone — must not raise so cleanup
     cron retries are idempotent.
@@ -611,35 +578,6 @@ async def test_archive_member_targets_company_and_member(client_factory):
     assert out["member"]["status"] == "archived"
 
 
-async def test_approve_approval_remaps_note_to_decision_note(client_factory):
-    """Upstream ``resolveApprovalSchema`` accepts only ``decisionNote``, so
-    the BFF's ``note`` input must land on the wire as ``decisionNote`` —
-    otherwise the reviewer note is silently stripped (data loss)."""
-    captured: dict = {}
-
-    def handler(req: httpx.Request) -> httpx.Response:
-        captured["url"] = str(req.url)
-        captured["body"] = _json.loads(req.read().decode())
-        return httpx.Response(200, json={"ok": True})
-
-    client = client_factory(handler)
-    await client.approve_approval(session_cookie="sess", approval_id="ap_1", note="looks good")
-    assert "/api/approvals/ap_1/approve" in captured["url"]
-    assert captured["body"] == {"decisionNote": "looks good"}
-
-
-async def test_approve_approval_empty_note_sends_empty_body(client_factory):
-    captured: dict = {}
-
-    def handler(req: httpx.Request) -> httpx.Response:
-        captured["body"] = req.read().decode()
-        return httpx.Response(200, json={"ok": True})
-
-    client = client_factory(handler)
-    await client.approve_approval(session_cookie="sess", approval_id="ap_1", note=None)
-    assert captured["body"] == "{}"
-
-
 async def test_reject_approval_remaps_reason_to_decision_note(client_factory):
     """``reject_approval``'s ``reason`` maps to upstream ``decisionNote``."""
     captured: dict = {}
@@ -655,155 +593,9 @@ async def test_reject_approval_remaps_reason_to_decision_note(client_factory):
     assert captured["body"] == {"decisionNote": "not safe"}
 
 
-async def test_create_routine_trigger_posts_to_triggers_endpoint(client_factory):
-    """Cron schedule lives on a trigger (POST /routines/{id}/triggers), not
-    the routine row."""
-    captured: dict = {}
-
-    def handler(req: httpx.Request) -> httpx.Response:
-        captured["url"] = str(req.url)
-        captured["body"] = _json.loads(req.read().decode())
-        return httpx.Response(201, json={"trigger": {"id": "tr_1"}, "secretMaterial": None})
-
-    client = client_factory(handler)
-    out = await client.create_routine_trigger(
-        session_cookie="sess",
-        routine_id="r1",
-        body={"kind": "schedule", "cronExpression": "0 9 * * *", "timezone": "UTC"},
-    )
-    assert "/api/routines/r1/triggers" in captured["url"]
-    assert captured["body"]["kind"] == "schedule"
-    assert captured["body"]["cronExpression"] == "0 9 * * *"
-    assert out["trigger"]["id"] == "tr_1"
-
-
 # ---------------------------------------------------------------------------
 # A2 — editable routines: trigger patch/delete/rotate + revisions list/restore
 # ---------------------------------------------------------------------------
-
-
-async def test_patch_routine_trigger_maps_to_routine_triggers_endpoint(client_factory):
-    """Trigger edit is keyed by the global trigger id upstream, NOT nested."""
-    captured: dict = {}
-
-    def handler(req: httpx.Request) -> httpx.Response:
-        captured["url"] = str(req.url)
-        captured["method"] = req.method
-        captured["body"] = _json.loads(req.read().decode())
-        return httpx.Response(200, json={"id": "tr_1", "cronExpression": "0 6 * * *"})
-
-    client = client_factory(handler)
-    out = await client.patch_routine_trigger(
-        session_cookie="sess",
-        trigger_id="tr_1",
-        body={"cronExpression": "0 6 * * *", "enabled": True},
-    )
-    assert captured["method"] == "PATCH"
-    assert "/api/routine-triggers/tr_1" in captured["url"]
-    assert captured["body"] == {"cronExpression": "0 6 * * *", "enabled": True}
-    assert out["cronExpression"] == "0 6 * * *"
-
-
-async def test_delete_routine_trigger_swallows_404(client_factory):
-    """A double-delete of a trigger is a no-op, not an error (idempotent)."""
-
-    def handler(req: httpx.Request) -> httpx.Response:
-        assert req.method == "DELETE"
-        assert "/api/routine-triggers/tr_1" in str(req.url)
-        return httpx.Response(404, json={"error": "Routine trigger not found"})
-
-    client = client_factory(handler)
-    out = await client.delete_routine_trigger(session_cookie="sess", trigger_id="tr_1")
-    assert out == {}
-
-
-async def test_delete_routine_archives_via_patch(client_factory):
-    """delete_routine must PATCH status=archived — upstream has no DELETE
-    /api/routines/{id} route, and the old DELETE 404ed silently (the routine
-    survived and kept firing)."""
-    captured: dict = {}
-
-    def handler(req: httpx.Request) -> httpx.Response:
-        captured["method"] = req.method
-        captured["url"] = str(req.url)
-        captured["body"] = _json.loads(req.content)
-        return httpx.Response(200, json={"id": "rt_1", "status": "archived"})
-
-    client = client_factory(handler)
-    out = await client.delete_routine(session_cookie="sess", routine_id="rt_1")
-    assert captured["method"] == "PATCH"
-    assert "/api/routines/rt_1" in captured["url"]
-    assert captured["body"] == {"status": "archived"}
-    assert out["status"] == "archived"
-
-
-async def test_delete_routine_swallows_404(client_factory):
-    """Deleting an already-gone routine stays an idempotent no-op — the
-    PATCH-based archive must preserve the old DELETE contract for retries
-    and double-deletes."""
-
-    def handler(req: httpx.Request) -> httpx.Response:
-        return httpx.Response(404, json={"error": "Routine not found"})
-
-    client = client_factory(handler)
-    out = await client.delete_routine(session_cookie="sess", routine_id="rt_gone")
-    assert out == {}
-
-
-async def test_rotate_routine_trigger_secret_posts_empty_body(client_factory):
-    """Rotate posts an empty object and returns the fresh secret material."""
-    captured: dict = {}
-
-    def handler(req: httpx.Request) -> httpx.Response:
-        captured["url"] = str(req.url)
-        captured["method"] = req.method
-        captured["body"] = req.read().decode()
-        return httpx.Response(200, json={"trigger": {"id": "tr_1"}, "secretMaterial": "whsec_new"})
-
-    client = client_factory(handler)
-    out = await client.rotate_routine_trigger_secret(session_cookie="sess", trigger_id="tr_1")
-    assert captured["method"] == "POST"
-    assert "/api/routine-triggers/tr_1/rotate-secret" in captured["url"]
-    assert captured["body"] == "{}"
-    assert out["secretMaterial"] == "whsec_new"
-
-
-async def test_list_routine_revisions_returns_list(client_factory):
-    """Revisions come back as a bare upstream array."""
-
-    def handler(req: httpx.Request) -> httpx.Response:
-        assert "/api/routines/r1/revisions" in str(req.url)
-        return httpx.Response(200, json=[{"id": "rev_2"}, {"id": "rev_1"}])
-
-    client = client_factory(handler)
-    out = await client.list_routine_revisions(session_cookie="sess", routine_id="r1")
-    assert [r["id"] for r in out] == ["rev_2", "rev_1"]
-
-
-async def test_list_routine_revisions_tolerates_non_list(client_factory):
-    """A non-list upstream body degrades to [] instead of raising."""
-
-    def handler(req: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"unexpected": True})
-
-    client = client_factory(handler)
-    out = await client.list_routine_revisions(session_cookie="sess", routine_id="r1")
-    assert out == []
-
-
-async def test_restore_routine_revision_posts_to_restore_endpoint(client_factory):
-    captured: dict = {}
-
-    def handler(req: httpx.Request) -> httpx.Response:
-        captured["url"] = str(req.url)
-        captured["method"] = req.method
-        return httpx.Response(200, json={"revision": {"id": "rev_1", "revisionNumber": 1}})
-
-    client = client_factory(handler)
-    out = await client.restore_routine_revision(session_cookie="sess", routine_id="r1", revision_id="rev_1")
-    assert captured["method"] == "POST"
-    assert "/api/routines/r1/revisions/rev_1/restore" in captured["url"]
-    assert out["revision"]["id"] == "rev_1"
 
 
 # ---------------------------------------------------------------------------

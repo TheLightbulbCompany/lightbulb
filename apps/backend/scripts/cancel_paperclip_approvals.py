@@ -1,3 +1,4 @@
+# ponytail: delete after the prod data move (task 3)
 """List the open Paperclip approvals (``pending`` / ``revision_requested``) and, with ``--apply``, close them.
 
 Phase-1 task 7 deleted every surface that could decide one (the web inbox, ``/teams/approvals``, the

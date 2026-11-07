@@ -13,7 +13,6 @@ def wired(monkeypatch):
     monkeypatch.setattr(script.container_repo, "update_fields", update)
     monkeypatch.setattr(script, "prepare_hermes_workspace", AsyncMock(return_value=False))
     monkeypatch.setattr(script, "roll_runtime_image", AsyncMock(return_value="updated"))
-    monkeypatch.setattr(script, "sync_paperclip_adapter_config", AsyncMock())
     return update
 
 

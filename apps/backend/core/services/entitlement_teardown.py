@@ -14,13 +14,12 @@ Keying on the event rather than the answer breaks in both directions:
   lost the service it entitles them to — with nothing to trigger a rebuild,
   because no further notification was coming.
 - **Apple revokes and there is no Stripe.** The notification path wrote
-  "canceled" and stopped there. Nothing deleted the ECS service or disabled
-  Paperclip, so an owner whose last entitlement ended kept a container running
+  "canceled" and stopped there. Nothing deleted the runtime, so an owner whose last entitlement ended kept a container running
   — and running agents keep spending on inference.
 
 Every step is best-effort and independently guarded. These run from webhook
 handlers where a raised exception means a 5xx and a provider retry, and a retry
-of teardown is not free: it re-enters ECS and Paperclip calls that have already
+of teardown is not free: it re-enters runtime calls that have already
 half-succeeded. Losing a teardown is recoverable (the next status change, or
 the idle reaper, or the cleanup cron); 5xx-looping a provider is not.
 """
@@ -132,10 +131,5 @@ async def teardown_if_unentitled(owner_id: str, *, trigger: str) -> bool:
         await mark_retiring(owner_id)
     except Exception:
         logger.exception("entitlement.teardown OpenRouter key retirement failed for owner %s", owner_id)
-
-    # No Paperclip disable here: the company belongs to the workspace, and a
-    # lapsed entitlement is not a deleted workspace (``organization.deleted``
-    # disables the workspace row). The old per-user ``disable(owner_id)`` found
-    # no row under an org id and was a no-op for every workspace.
 
     return True

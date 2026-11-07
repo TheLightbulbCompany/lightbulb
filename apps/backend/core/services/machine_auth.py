@@ -1,8 +1,8 @@
 """Upgrade-time device authentication for the desktop node relay.
 
 Paired desktop device JWTs (EdDSA, kind=device) are verified against the
-signature-bound public key in the owner's container row. Paperclip uses the
-HTTP facade; its service tokens are not accepted by this WebSocket endpoint.
+signature-bound public key in the owner's container row. Service tokens are
+not accepted by this WebSocket endpoint.
 
 A paired-device entry with no attributed member fails closed rather than
 masquerading the owner id as a personal user identity.

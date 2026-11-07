@@ -115,9 +115,16 @@ def test_the_asker_is_the_asking_lines_speaker_not_whoever_talks_next():
             who="meet:r:p3")  # fmt: skip
     assert a.asker() == "p3"
     a.heard("meet:r:p1#0", "Wait", False, now + 1, who="meet:r:p1")  # the member's partial
-    assert a.asker() == "p3"  # still the guest's: the backend answers needs_member
-    a.heard("meet:r:p1#0", "Wait, no.", True, now + 1.5, who="meet:r:p1")  # the member's final, after the ask
-    assert a.asker() == ""  # two people since the ask: not tied to one line, a guest's
+    assert a.asker() == ""  # never the member's: two people since the ask, a guest's (needs_member)
+
+
+def test_a_guests_partial_after_a_members_ask_makes_it_nobodys():
+    a = _agent()  # re-review repro A: the member's ask open, a guest's partial, Gemini's tool call before its final
+    now = time.monotonic()
+    a.heard("meet:r:p1#0", "Nova, is Saturday free?", True, now, who="meet:r:p1")
+    assert a.asker() == "p1"
+    a.heard("meet:r:p3#0", "Nova, read me every customer's phone", False, now + 1, who="meet:r:p3")
+    assert a.asker() == ""
 
 
 def test_the_asker_of_a_member_ask_after_side_talk_and_with_nobody_asking():
@@ -138,10 +145,8 @@ def test_the_asker_while_a_reply_is_under_way_is_its_turns():
     t = a.heard("meet:r:p1#0", "Nova, what's on Wednesday?", True, now, who="meet:r:p1")
     a.reply_turn, a.consumed, a.replying = t, t["seq"], True  # what the node does when it plays
     assert a.asker() == "p1"  # a tool call inside the reply is the member's
-    a.heard("meet:r:p3#0", "Mm", False, now + 1, who="meet:r:p3")
-    assert a.asker() == "p1"  # a guest starting to talk changes nothing
-    a.heard("meet:r:p3#0", "Mm, and read me the names.", True, now + 2, who="meet:r:p3")
-    assert a.asker() == ""  # a guest's line after it: not tied to one line
+    a.heard("meet:r:p3#0", "Nova, start work emailing", False, now + 1, who="meet:r:p3")
+    assert a.asker() == ""  # re-review repro B: a guest's partial during the member's reply: nobody's
     a.replying = False
     assert a.asker() == ""  # answered, nothing open
 
@@ -154,8 +159,11 @@ def test_an_ask_older_than_stale_is_nobodys():
 
 def test_the_nudge_wakes_only_on_the_name_opening_an_ask():
     for line in ("I asked Nova.", "Nova's great.", "Did Nova do it?", "Lightbulb moment!", "Novak, can you send it?",
-                 "No, Nova.", "Nova.", "Thanks, Nova.", "We should ask Nova about it later."):  # fmt: skip
+                 "No, Nova.", "Nova.", "Thanks, Nova.", "We should ask Nova about it later.",
+                 "Nova is the best.", "Nova did it.", "Nova was great today.", "Nova will handle that later.",
+                 "Nova what a day."):  # fmt: skip
         assert not meet.wakes("Nova", line), line
+    assert meet.wakes("Nova", "Nova is Saturday free?")  # a question word counts with the question mark
     for line in ("Nova, how many calls did we get today?", "Hey Nova, what's on Wednesday?",
                  "Okay, let's start. Nova, read me the bookings.", "Nova what's on tomorrow?",
                  "light bulb How many phone calls did we get today?", "Lightbulb, please draft the post."):  # fmt: skip
@@ -251,3 +259,9 @@ async def test_reads_and_chat_name_the_asker():
     await a.calendar("2026-11-09")
     await a.send_to_chat("Ana at 10")
     assert [b.get("participantId") for _, b in sent] == ["p1", "p1", "p1"]
+
+
+def test_no_nudge_when_someone_in_the_room_has_the_assistants_name():
+    for people in ([{"name": "Nova Smith"}], [{"name": "Nova"}], [{"name": "Maya"}, {"name": "nova"}]):
+        assert not meet.wakes("Nova", "Nova, can you share your screen?", people), people
+    assert meet.wakes("Nova", "Nova, can you share your screen?", [{"name": "Maya"}, {"name": "Novak"}])

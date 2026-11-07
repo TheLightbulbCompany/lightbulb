@@ -79,29 +79,38 @@ meeting chat with send_to_chat; say "I've put it in the chat". If start_work say
 means stop talking. If a tool returns an error, say plainly that you couldn't do it; never say it is done."""
 
 
-ASK_WORDS = {
+REQUEST_WORDS = {
+    "please", "tell", "give", "show", "read", "draft", "write", "add", "start", "make", "put", "send", "check",
+    "find", "look", "pull", "book", "move", "cancel", "remind", "help", "list", "summarize", "schedule",
+}  # fmt: skip
+QUESTION_WORDS = {
     "how", "what", "what's", "when", "where", "who", "why", "which", "is", "are", "was", "were", "do", "does",
-    "did", "can", "could", "would", "will", "should", "please", "tell", "give", "show", "read", "draft", "write",
-    "add", "start", "make", "put", "send", "check", "find", "look", "pull", "book", "move", "cancel", "remind",
+    "did", "can", "could", "would", "will", "should",
 }  # fmt: skip
 
 
-def wakes(name: str, text: str) -> bool:
-    """The strict wake (the nudge's): a sentence OPENS with the name (after an optional "hey"/"ok"), and an ask
-    follows it -- a comma and two words or more, or straight into a question or request word. Never a mention,
-    a short line or a near name: "I asked Nova.", "Nova's great.", "Lightbulb moment!", "Novak, can you...",
-    "No, Nova." do not wake it."""
-    names = [tuple(_tokens(name)), *_LIGHTBULB]
+def wakes(name: str, text: str, people: list[dict] | None = None) -> bool:
+    """The strict wake (the nudge's): a sentence OPENS with the name (after an optional "hey"/"ok") and asks --
+    a comma and two words or more; straight into a request word ("Nova read me..."); or straight into a question
+    word in a sentence ending "?" ("Nova is the best." is a statement). Never a mention, a short line or a near
+    name ("I asked Nova.", "Nova's great.", "Novak, can you..."), and never when someone in the room is called
+    that (a participant "Nova Smith": "Nova, can you share your screen?" is to them)."""
+    mine = tuple(_tokens(name))
+    if any(tuple(_tokens(p.get("name") or ""))[: len(mine)] == mine for p in people or []):
+        return False
     for sentence in re.split(r"(?<=[.?!])\s+", text.strip()):
         tok = _tokens(sentence)
         i = 1 if len(tok) > 1 and tok[0] in _LEADS else 0
         i += 1 if i and tok[i] == "," else 0
-        for n in names:
-            if n and tuple(tok[i : i + len(n)]) == n:
-                rest = tok[i + len(n) :]
-                said = [w for w in rest if w[0].isalnum()]
-                if rest and ((rest[0] == "," and len(said) >= 2) or rest[0] in ASK_WORDS):
-                    return True
+        for n in (mine, *_LIGHTBULB):
+            if not n or tuple(tok[i : i + len(n)]) != n or len(tok) <= i + len(n):
+                continue
+            rest = tok[i + len(n) :]
+            said = [w for w in rest if w[0].isalnum()]
+            if rest[0] == "," and len(said) >= 2:
+                return True
+            if rest[0] in REQUEST_WORDS or (rest[0] in QUESTION_WORDS and sentence.rstrip().endswith("?")):
+                return True
     return False
 
 
@@ -246,7 +255,8 @@ class MeetAgent(Agent):
         line is the reply's turn while a reply is under way, else the open asks (final asks since the last
         answered turn, younger than STALE_S). Every final line from that line on must be one person's: another
         person's line after it, or two askers, and the call cannot be tied to one line, so it is "" (the backend
-        treats it as a guest's, needs_member). A partial (someone starting to talk) changes nothing."""
+        treats it as a guest's, needs_member). A partial counts too: Gemini hears the audio and may call the tool
+        before the line's final, so anyone else starting to talk makes it "" (fails closed)."""
         now = time.monotonic()
         if self.replying and self.reply_turn is not None:
             start = self.reply_turn["seq"]
@@ -256,7 +266,7 @@ class MeetAgent(Agent):
             if not open_asks:
                 return ""
             start = open_asks[0]["seq"]
-        who = {t["who"] for t in self.turns if t["seq"] >= start and t["final"]}
+        who = {t["who"] for t in self.turns if t["seq"] >= start}
         return next(iter(who)).rsplit(":", 1)[-1] if len(who) == 1 and "" not in who else ""
 
     def _authorize(self, now: float, speech_id: str | None = None) -> tuple[bool | None, str]:
@@ -500,7 +510,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
         logger.info("meet: turn %d kind=%s final=%s", t["seq"], t["kind"] or "-", final)
         if t["kind"] == "stop":
             session.interrupt()
-        if final and t["kind"] in ADDRESSED and wakes(name, text):  # the nudge: strict wake only
+        if final and t["kind"] in ADDRESSED and wakes(name, text, gate.people):  # the nudge: strict wake only
             asyncio.create_task(nudge(t, text))
         if final:
             lines.append({"mark": len(lines), "kind": "person", "name": label(t["who"])[:200],

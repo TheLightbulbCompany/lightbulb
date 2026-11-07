@@ -206,3 +206,19 @@ def test_the_scripted_run_flag_fails_the_greeting_once_it_has_played(monkeypatch
     guard.state("speaking", "listening")
     guard.seen([])
     assert said == [guard.line] and guard.corrected
+
+
+def test_the_disclosure_matches_whole_words_and_not_a_denial():
+    """#4996 review: "Ava" must not match inside "available", and "not recorded" is no disclosure."""
+    assert phone.discloses(
+        "This is Ava, an AI assistant. This call is recorded.", "x", "Ava"
+    )
+    assert not phone.discloses(
+        "Nobody is available; I'm an AI assistant and this is recorded.", "x", "Ava"
+    )
+    assert not phone.discloses(
+        "This is Ava, an AI assistant. This call is not recorded.", "x", "Ava"
+    )
+    assert not phone.discloses(
+        "This is Ava, an AI assistant, and this call isn't being recorded.", "x", "Ava"
+    )

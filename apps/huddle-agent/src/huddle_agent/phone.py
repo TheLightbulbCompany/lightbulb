@@ -88,10 +88,13 @@ def _norm(text: str) -> str:
 
 def discloses(text: str, greeting: str, assistant: str) -> bool:
     """The greeting as said: the greeting itself (case, punctuation, spacing aside), or a line that still names the
-    assistant and says "AI assistant" and "recorded"."""
-    t = _norm(text)
-    return t == _norm(greeting) or all(
-        _norm(w) in t for w in (assistant, "AI assistant", "recorded")
+    assistant and says "AI assistant" and "recorded", as whole words ("Ava" isn't in "available"), never denied
+    ("not recorded", "isn't being recorded")."""
+    t = f" {_norm(text)} "
+    if re.search(r" (not|never|t) (be |being )?recorded ", t):  # "isn't" normalizes to "isn t"
+        return False
+    return t.strip() == _norm(greeting) or all(
+        f" {_norm(w)} " in t for w in (assistant, "AI assistant", "recorded")
     )
 
 

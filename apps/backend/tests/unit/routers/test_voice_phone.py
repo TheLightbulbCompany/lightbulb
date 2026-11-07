@@ -1,7 +1,7 @@
 """The phone receptionist's backend: the call record the owner's Home reads, the Agent page's settings gating the tools,
 the assistant's calendar, messages, hand-off and start_work."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 import boto3
@@ -19,6 +19,7 @@ LINE = {"ownerId": "org_1", "ownerUserId": "user_owner"}  # number -> workspace 
 DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 CONFIG = {  # the Agent page document
     "name": "Nova",
+    "live": True,
     "hours": {d: {"open": "10:00", "close": "19:00"} for d in DAYS},
     "services": [{"name": "Gel manicure", "minutes": 60, "price": "$45", "staff": ""}],
     "bufferMin": 0,
@@ -85,8 +86,8 @@ async def test_a_call_books_moves_and_leaves_the_record_home_reads(client):
 
     body = {"start": f"{day}T14:00", "service": "gel manicure", "name": "Priya"}
     assert client.post(f"{base}/book", json=body, headers=W).status_code == 200
-    assert client.post(f"{base}/book", json=body, headers=W).status_code == 400  # taken
-    assert client.post(f"{base}/book", json=body | {"start": f"{day}T14:30"}, headers=W).status_code == 400  # overlaps
+    assert client.post(f"{base}/book", json=body, headers=W).status_code == 409  # taken
+    assert client.post(f"{base}/book", json=body | {"start": f"{day}T14:30"}, headers=W).status_code == 409  # overlaps
     assert (
         client.post(f"{base}/book", json=body | {"start": f"{day}T18:30"}, headers=W).status_code == 400
     )  # past close
@@ -213,3 +214,101 @@ async def test_worker_secret_required_and_unknown_number_404(client):
     body = {"calledNumber": NUMBER, "callerNumber": "", "livekitRoom": "r"}
     assert client.post("/api/v1/internal/voice/calls", json=body).status_code == 401
     assert client.post("/api/v1/internal/voice/calls", json=body, headers=W).status_code == 404
+
+
+async def test_paused_line_takes_messages_only(client):
+    call = await _start(client, paused=True)
+    assert call["mode"] == "message_only" and call["facts"] == ""
+    base = f"/api/v1/internal/voice/calls/{call['callId']}"
+    body = {"start": f"{_tomorrow()}T14:00", "service": "gel", "name": "Priya"}
+    r = client.post(f"{base}/book", json=body, headers=W)
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "not_allowed"
+    assert client.post(f"{base}/message", json={"text": "call me"}, headers=W).status_code == 200
+    assert client.post(f"{base}/transfer", headers=W).status_code == 403
+
+
+async def test_not_live_line_answers_owner_test_call(client):
+    body = {"start": f"{_tomorrow()}T14:00", "service": "gel", "name": "Priya"}
+    stranger = await _start(client, live=False)
+    assert stranger["mode"] == "message_only"
+    r = client.post(f"/api/v1/internal/voice/calls/{stranger['callId']}/book", json=body, headers=W)
+    assert r.status_code == 403
+    owner = await _start(client, caller="+14155550199", room="phone-dev-_o", live=False)  # the handoff number
+    assert owner["mode"] == "live"
+    assert client.post(f"/api/v1/internal/voice/calls/{owner['callId']}/book", json=body, headers=W).status_code == 200
+    fwd = await _start(client, caller="+14155550177", room="phone-dev-_f", live=False, forwardFrom="(415) 555-0177")
+    assert fwd["mode"] == "live"
+
+
+def test_next_time_note_reaches_facts():
+    cfg = {**voice_phone.DEFAULTS, "knowledge": [{"q": "", "a": "Parking is behind the building"}]}
+    assert "Note: Parking is behind the building" in voice_phone._facts(cfg)
+
+
+async def test_hours_in_business_timezone(client):
+    class Frozen(datetime):  # 17:30 UTC on 10 Nov = 09:30 in Los Angeles, 12:30 in New York
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 11, 10, 17, 30, tzinfo=timezone.utc).astimezone(tz)
+
+    call = await _start(client, timezone="America/Los_Angeles")
+    with patch.object(voice_phone, "datetime", Frozen):
+        r = client.post(
+            f"/api/v1/internal/voice/calls/{call['callId']}/availability",
+            json={"date": "2026-11-10", "service": "gel"},
+            headers=W,
+        )
+    slots = r.json()["slots"]
+    assert "2026-11-10T09:30" not in slots and "2026-11-10T10:00" in slots and "2026-11-10T18:00" in slots
+
+
+async def test_overlapping_start_conflicts(client):
+    call = await _start(client)
+    base = f"/api/v1/internal/voice/calls/{call['callId']}"
+    day = _tomorrow()
+    body = {"start": f"{day}T11:00", "service": "gel manicure", "name": "Priya"}
+    assert client.post(f"{base}/book", json=body, headers=W).status_code == 200  # 60 min: 11:00-12:00
+    r = client.post(f"{base}/book", json=body | {"start": f"{day}T11:30"}, headers=W)
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "slot_taken"
+    assert client.post(f"{base}/book", json=body | {"start": f"{day}T12:00"}, headers=W).status_code == 200
+    # cancelling frees the cells in the same transaction
+    assert client.post(f"{base}/change", json={"start": f"{day}T11:00"}, headers=W).status_code == 200
+    assert (
+        client.post(f"{base}/book", json=body | {"start": f"{day}T11:30"}, headers=W).status_code == 409
+    )  # 12:00 held
+    assert client.post(f"{base}/book", json=body | {"start": f"{day}T10:30"}, headers=W).status_code == 200
+
+
+async def test_a_booking_over_eight_hours_is_refused(client):
+    call = await _start(
+        client,
+        services=[{"name": "Bridal", "minutes": 500, "price": "", "staff": ""}],
+        hours={d: {"open": "00:00", "close": "23:59"} for d in DAYS},
+    )
+    body = {"start": f"{_tomorrow()}T01:00", "service": "bridal", "name": "Priya"}
+    r = client.post(f"/api/v1/internal/voice/calls/{call['callId']}/book", json=body, headers=W)
+    assert r.status_code == 400 and r.json()["detail"]["code"] == "booking_too_long"
+
+
+async def test_bad_stored_timezone_falls_back(client):
+    call = await _start(client, timezone="Mars/Olympus")
+    base = f"/api/v1/internal/voice/calls/{call['callId']}"
+    day = _tomorrow()
+    r = client.post(f"{base}/availability", json={"date": day, "service": "gel"}, headers=W)
+    assert r.status_code == 200 and f"{day}T10:00" in r.json()["slots"]
+    body = {"start": f"{day}T11:00", "service": "gel manicure", "name": "Priya"}
+    assert client.post(f"{base}/book", json=body, headers=W).status_code == 200
+    cell = await messaging_repo._get(messaging_repo.owner_pk("org_1"), "VOICECELL#" + _utc(day, "11:00"))
+    assert (
+        cell["expiresAt"]
+        == int(datetime.strptime(_utc(day, "11:00"), "%Y-%m-%dT%H:%M").replace(tzinfo=timezone.utc).timestamp())
+        + 300
+        + 86400
+    )
+
+
+def _utc(day: str, hm: str) -> str:  # New York wall time -> the UTC cell key
+    from zoneinfo import ZoneInfo
+
+    t = datetime.strptime(f"{day}T{hm}", "%Y-%m-%dT%H:%M").replace(tzinfo=ZoneInfo("America/New_York"))
+    return t.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M")

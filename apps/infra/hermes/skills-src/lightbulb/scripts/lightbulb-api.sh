@@ -54,7 +54,7 @@ command -v curl >/dev/null || die 'Missing curl'
 # browsing the Teams UI).
 case "$path" in
   */u/*|/api/v1/platform-info*) ;;
-  *) die "owner-only route: $path takes the owner's browser session, not a container token. Hook-token routes look like /api/v1/<area>/u/\$ISOL8_OWNER_ID/...; Teams objects (routines, tasks, agents, projects) are managed through the Paperclip API (\$PAPERCLIP_API_URL). Room, member and search actions go through the lightbulb_workspace tool. Nothing to retry." ;;
+  *) die "owner-only route: $path takes the owner's browser session, not a container token. Hook-token routes look like /api/v1/<area>/u/\$ISOL8_OWNER_ID/... Room, member and search actions go through the lightbulb_workspace tool. Nothing to retry." ;;
 esac
 # A bodiless POST/PUT/PATCH 422s on FastAPI ("body: Field required"); send {}.
 case "$method" in POST|PUT|PATCH) [[ -n "$body" ]] || body='{}' ;; esac

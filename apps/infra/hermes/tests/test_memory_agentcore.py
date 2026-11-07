@@ -1,13 +1,10 @@
 """PR 3 (AgentCore workspace memory): the bundled provider, its enablement, and health."""
 import importlib
-import io
 import json
 import pathlib
 import re
 import sys
 import types
-import urllib.parse
-from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -174,81 +171,17 @@ def test_search_tool_answers_an_error_not_an_exception_when_memory_is_off(mod, m
     assert "error" in json.loads(p.handle_tool_call("workspace_memory_search", {"query": "demos"}))
 
 
-# ---- the live task board -----------------------------------------------------------------
-# A done item three days ago, relative to now: a hardcoded date aged out of the 14-day window at
-# 2026-10-17 00:00Z and failed every branch's bridge tests (the window is day-granular).
-RECENT_DONE_AT = (datetime.now(timezone.utc) - timedelta(days=3)).replace(hour=10, minute=0, second=0, microsecond=0)
+# ---- the task board: only the backend's (tasks_board, test_memory_ctx.py); no Paperclip read ----------
+def test_a_turn_without_an_audience_reads_no_board(mod, monkeypatch):
+    monkeypatch.setenv("PAPERCLIP_API_KEY", "pk-old")  # an old profile .env still carries it
+    monkeypatch.setattr(mod.urllib.request, "urlopen", lambda *a, **k: pytest.fail("no Paperclip board read"))
+    p = provider(mod, FakeClient())
+    assert p.on_pre_compress([{"role": "user", "content": "hi"}]) == mod.KEEP_NOTE
 
 
-class FakeBoard:
-    """urlopen stand-in for Paperclip's GET /api/companies/{id}/issues."""
-
-    def __init__(self, doing=(), done=(), fail=False):
-        self.rows, self.fail, self.urls = {"in_progress": list(doing), "done": list(done)}, fail, []
-
-    def __call__(self, req, timeout=None):
-        self.urls.append((req.full_url, req.get_header("Authorization"), timeout))
-        if self.fail:
-            raise TimeoutError("timed out")
-        status = urllib.parse.parse_qs(urllib.parse.urlparse(req.full_url).query)["status"][0]
-        return io.BytesIO(json.dumps(self.rows[status]).encode())
-
-
-@pytest.fixture
-def board(mod, monkeypatch):
-    for k, v in {"PAPERCLIP_API_URL": "http://pc.local/", "PAPERCLIP_API_KEY": "pk-agent",
-                 "PAPERCLIP_COMPANY_ID": "co-1"}.items():
-        monkeypatch.setenv(k, v)
-    mod._BOARD.clear()
-    fake = FakeBoard(doing=[{"identifier": "ISOA-837", "title": "Daily Gauge brief"}],
-                     done=[{"identifier": "ISOA-591", "title": "40-second\nproduct demo video",
-                            "updatedAt": RECENT_DONE_AT.strftime("%Y-%m-%dT%H:%M:%SZ")}])
-    monkeypatch.setattr(mod.urllib.request, "urlopen", fake)
-    return fake
-
-
-def test_board_lists_in_progress_and_recently_done_with_the_agents_key(mod, board):
-    text = mod.board_snapshot()
-    assert "In progress: ISOA-837 Daily Gauge brief" in text
-    assert f"Done in the last 14 days: ISOA-591 40-second product demo video ({RECENT_DONE_AT:%Y-%m-%d})" in text
-    (doing, done) = board.urls
-    assert doing[0].startswith("http://pc.local/api/companies/co-1/issues?") and doing[1] == "Bearer pk-agent"
-    query = urllib.parse.parse_qs(urllib.parse.urlparse(done[0]).query)
-    assert query["status"] == ["done"] and query["sortField"] == ["updated"] and "updatedSince" in query
-    assert doing[2] <= 2.0
-
-
-def test_an_old_completion_edited_lately_is_not_recently_done(mod, board):
-    board.rows["done"].append({"identifier": "ISOA-12", "title": "Old work", "completedAt": "2026-01-02T00:00:00Z",
-                               "updatedAt": "2099-01-01T00:00:00Z"})
-    assert "ISOA-12" not in mod.board_snapshot()
-
-
-def test_board_is_read_once_per_window(mod, board):
-    assert mod.board_snapshot() == mod.board_snapshot()
-    assert len(board.urls) == 2
-
-
-def test_a_failed_board_read_is_empty_and_retried_next_turn(mod, board):
-    board.fail = True
-    assert mod.board_snapshot() == ""
-    board.fail = False
-    assert "ISOA-837" in mod.board_snapshot()
-
-
-def test_no_paperclip_identity_means_no_board_and_no_request(mod, board, monkeypatch):
-    monkeypatch.delenv("PAPERCLIP_COMPANY_ID")
-    assert mod.board_snapshot() == "" and board.urls == []
-
-
-def test_a_trivial_prompt_reads_neither_memory_nor_board(mod, board):
+def test_a_trivial_prompt_reads_no_memory(mod):
     client = FakeClient()
-    assert provider(mod, client).prefetch("thanks") == "" and client.calls == [] and board.urls == []
-
-
-def test_pre_compress_asks_the_summary_to_keep_finished_work_and_gives_it_the_board(mod, board):
-    out = provider(mod, FakeClient()).on_pre_compress([{"role": "user", "content": "hi"}])
-    assert out.startswith(mod.KEEP_NOTE) and "ISOA-591" in out
+    assert provider(mod, client).prefetch("thanks") == "" and client.calls == []
 
 
 # ---- scopes: a 1:1 DM with a person is private to them; everything else is team -------------
@@ -333,13 +266,3 @@ def test_health_advertises_the_three_way_browser_state_merge(home):
     # The backend writes a paired Mac's sign-ins back only to a runtime that says this.
     _, obj = server.handle_plugin("/plugins/lightbulb-channel/rpc", "POST", AUTH, {"method": "health"})
     assert obj["payload"]["browserStateMerge"] == 1
-
-
-def test_board_says_it_is_partial_and_never_a_count(mod, board):
-    """G1 #24 (28 Oct): asked what was open, Friday said "only 3 open cards" with 55 open. This
-    hint shows only in-progress and recently done work, up to 10 rows each; it was headed "Task
-    board right now", which reads as the whole board."""
-    text = mod.board_snapshot()
-    head = text.splitlines()[0]
-    assert "not the whole board" in head and "read the board" in head
-    assert "Task board right now" not in text

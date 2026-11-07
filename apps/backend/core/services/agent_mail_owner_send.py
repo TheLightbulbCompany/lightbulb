@@ -20,9 +20,8 @@ path to undo that). ``ensure_team_address`` is idempotent, so this costs one
 call on a path that runs anyway. The mail goes out under the sending agent's
 own name (``agent_email.from_header``).
 
-The company name is read LIVE from Paperclip rather than from our own row.
-It has to be: the whole point of deferring the mint is that the agent renames
-the company first, and that rename lands in Paperclip, not in DynamoDB.
+The workspace name is read live (``workspace_name``: META ``name``, then the
+Clerk org name, then the owner id), so a rename before the first send shapes the slug.
 """
 
 import logging
@@ -33,7 +32,7 @@ from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import agent_email_repo, agent_mail_inbox_repo, container_repo
 from core.repositories.paperclip_repo import PaperclipRepo
-from core.services import ses_email
+from core.services import agent_registry, ses_email
 from core.services.agent_email import (
     append_agent_mail_footer,
     ensure_team_address,
@@ -49,28 +48,15 @@ logger = logging.getLogger(__name__)
 
 
 async def resolve_apex_ceo_agent_id(*, owner_id: str) -> str | None:
-    """The owner's apex CEO (Friday) Paperclip agent id, or ``None`` on any failure.
-
-    A nice-to-have default, so a Paperclip outage degrades to ``None`` (the caller
-    falls back to the onboarding row) rather than failing the send.
-    """
-    import httpx
-
-    from core.services.company_deploy_service import _find_friday_id
-    from core.services.paperclip_admin_client import PaperclipAdminClient
-    from core.services.paperclip_openclaw_pairing import fetch_paperclip_agents_for_owner
-
-    async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0) as http:
-        try:
-            agents = await fetch_paperclip_agents_for_owner(
-                owner_id=owner_id,
-                repo=PaperclipRepo(table_name="paperclip-companies"),
-                admin_client=PaperclipAdminClient(http_client=http),
-            )
-        except Exception as exc:  # noqa: BLE001 -- degrade, never fail the send
-            logger.warning("agent_mail_owner_send: apex CEO lookup failed for owner=%s: %s", owner_id, exc)
-            return None
-    return _find_friday_id(agents)
+    """The owner's apex CEO (Friday): the rootless ``ceo`` in the registry roster (the first
+    ``ceo`` if none is rootless), or ``None`` on any failure (the caller falls back to the
+    onboarding row) rather than failing the send."""
+    try:
+        ceos = [a for a in await agent_registry.roster(owner_id) if a.get("role") == "ceo"]
+    except Exception as exc:  # noqa: BLE001 -- degrade, never fail the send
+        logger.warning("agent_mail_owner_send: apex CEO lookup failed for owner=%s: %s", owner_id, exc)
+        return None
+    return next((a["id"] for a in ceos if not a.get("reportsTo")), ceos[0]["id"] if ceos else None)
 
 
 # Runaway fence. With the one-shot latch gone (it was wrong — see module
@@ -134,7 +120,7 @@ async def send_to_owner(
         repo = PaperclipRepo(table_name="paperclip-companies")
         onboarding = await repo.get_onboarding_state(owner_id) or {}
         generation = onboarding.get("onboarding_generation") or ""
-        company_id = onboarding.get("company_id")
+        provisioned = onboarding.get("teams_state") == "active"
         fallback_ceo_agent_id = onboarding.get("friday_agent_id")
         state = onboarding.get("first_contact_state") or "not_started"
 
@@ -193,7 +179,7 @@ async def send_to_owner(
         if not owner_email:
             return await _fail("no_owner_email", "error")
 
-        if not company_id:
+        if not provisioned:
             return await _fail("incomplete_provisioning", "error")
 
         resolved_agent_id = agent_id
@@ -217,7 +203,7 @@ async def send_to_owner(
             logger.warning("owner_send: facts rewrite failed for %s", owner_id)
 
         sent_subject = _env_subject(subject)
-        agent_name = await resolve_agent_name(agent_id=resolved_agent_id, company_id=company_id)
+        agent_name = await resolve_agent_name(owner_id=owner_id, agent_id=resolved_agent_id)
         if not system_notice:
             body_text, body_html = await append_agent_mail_footer(
                 owner_id=owner_id,
@@ -285,9 +271,8 @@ async def send_to_member(*, owner_id: str, user_id: str, email: str, subject: st
             return result
         email = (email or "").strip().lower()
         onboarding = await PaperclipRepo(table_name="paperclip-companies").get_onboarding_state(owner_id) or {}
-        company_id = onboarding.get("company_id")
         agent_id = await resolve_apex_ceo_agent_id(owner_id=owner_id) or onboarding.get("friday_agent_id")
-        if not email or not company_id or not agent_id:
+        if not email or onboarding.get("teams_state") != "active" or not agent_id:
             return result
         day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         if not await container_repo.try_consume_daily_email_send(owner_id, day=day, cap=DAILY_SEND_CAP):
@@ -311,7 +296,7 @@ async def send_to_member(*, owner_id: str, user_id: str, email: str, subject: st
             # ponytail: read-modify-write; a concurrent owner edit of the list can lose one entry.
             await agent_email_repo.update_settings(address, verified_senders=[*senders, email])
         sent_subject = _env_subject(subject)
-        agent_name = await resolve_agent_name(agent_id=agent_id, company_id=company_id)
+        agent_name = await resolve_agent_name(owner_id=owner_id, agent_id=agent_id)
         message_id = await ses_email.send_ses_reply(
             from_addr=await from_header(owner_id, agent_id, address, agent_name=agent_name),
             to=email,

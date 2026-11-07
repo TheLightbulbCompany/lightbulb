@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 vi.mock("@clerk/nextjs", () => ({ useOrganization: () => ({}) }));
-import { applyDraft } from "../Onboarding";
+import { applyDraft, withTimezone } from "../Onboarding";
 import { DAYS, DEFAULT_CONFIG, needsOnboarding, usPhone } from "../data";
 
 const week = Object.fromEntries(DAYS.map((d) => [d, { open: "10:00", close: "19:00", closed: false }]));
@@ -29,6 +29,10 @@ describe("voice onboarding", () => {
     const c = applyDraft(DEFAULT_CONFIG, { read: false, hours: {}, services: [], staff: [], knowledge: [], toAdd: [], phone: "" });
     expect(c.hours).toEqual(DEFAULT_CONFIG.hours);
     expect(c.knowledge).toEqual([]);
+  });
+  it("saves the browser's time zone unless one is already set", () => {
+    expect(withTimezone(DEFAULT_CONFIG).timezone).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone);
+    expect(withTimezone({ ...DEFAULT_CONFIG, timezone: "America/Los_Angeles" }).timezone).toBe("America/Los_Angeles");
   });
   it("formats a US number", () => {
     expect(usPhone("+14842079294")).toBe("(484) 207-9294");

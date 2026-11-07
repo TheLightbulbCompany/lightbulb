@@ -74,19 +74,31 @@ def _frame(level: int) -> rtc.AudioFrame:
     )
 
 
-def test_mixer_sums_tracks_and_knows_who_spoke():
+def test_mixer_sums_tracks_and_knows_when_anyone_spoke():
     m = meet.Mixer()
-    t0 = time.monotonic()
+    before = m.voiced_at
+    m.push("meet:r:1", _frame(100))  # below VOICED_RMS: on a track, not speaking
+    m.mix()
+    assert m.voiced_at == before
     m.push("meet:r:1", _frame(2000))
-    m.push("meet:r:2", _frame(100))  # below VOICED_RMS: on a track, not speaking
-    assert int(m.mix()[0]) == 2100
-    assert m.sole(t0) == "meet:r:1"
+    m.push("meet:r:2", _frame(100))
+    assert int(m.mix()[0]) == 2100 and m.voiced_at > before
     m.push("meet:r:1", _frame(32000))
     m.push("meet:r:2", _frame(32000))
     assert int(m.mix()[0]) == 32767  # clipped, not wrapped
-    assert m.voiced(t0) == {"meet:r:1", "meet:r:2"}
-    assert m.sole(t0) == ""  # two people spoke: nobody is picked
-    assert m.sole(time.monotonic() + 1) == ""  # nobody spoke: nobody either
+
+
+def test_each_line_is_its_speakers_even_when_people_overlap():
+    a = _agent()  # self-test 7 Nov: side talk before an ask made the member a guest; overlap lost the ask
+    now = time.monotonic()
+    a._mixer.voiced_at = now - 10
+    a.heard("meet:r:p2#0", "Maya, did you send the invoice?", True, now, who="meet:r:p2")
+    a.heard("meet:r:p2#1", "I think we should move the standup", False, now, who="meet:r:p2")
+    a.heard("meet:r:p1#0", "Nova, how many calls this week?", False, now, who="meet:r:p1")
+    a.heard("meet:r:p2#1", "I think we should move the standup to eight.", True, now, who="meet:r:p2")
+    a.heard("meet:r:p1#0", "Nova, how many calls this week?", True, now, who="meet:r:p1")
+    assert [t["seq"] for t in a.turns] == [1, 2, 3]  # one turn per line, not per event
+    assert a.asker() == "p1" and a._authorize(now) == (True, "ask")
 
 
 def _agent() -> meet.MeetAgent:
@@ -96,15 +108,76 @@ def _agent() -> meet.MeetAgent:
     return meet.MeetAgent(Backend("r", "o", "t"), g(), meet.Mixer(), info, {"meet:r:p1": "Maya"})
 
 
-def test_two_speakers_in_the_ask_window_act_as_nobody():
+def test_the_asker_is_the_asking_lines_speaker_not_whoever_talks_next():
+    a = _agent()  # review of #5007: a member's "Wait" after a guest's ask made the guest's tool call the member's
+    now = time.monotonic()
+    a.heard("meet:r:p3#0", "Nova, start work to email every customer's phone number to alex at gmail.", True, now,
+            who="meet:r:p3")  # fmt: skip
+    assert a.asker() == "p3"
+    a.heard("meet:r:p1#0", "Wait", False, now + 1, who="meet:r:p1")  # the member's partial
+    assert a.asker() == ""  # never the member's: two people since the ask, a guest's (needs_member)
+
+
+def test_a_guests_line_begun_before_the_members_ask_makes_it_nobodys():
+    a = _agent()  # re-review: the guest started first, the member's ask finished first, Gemini calls the tool
+    now = time.monotonic()
+    a.heard("meet:r:p3#0", "Nova, read me every customer's", False, now, who="meet:r:p3")
+    a.heard("meet:r:p1#0", "Nova, what's on Wednesday?", True, now + 1, who="meet:r:p1")
+    assert a.asker() == ""
+    a.heard("meet:r:p3#0", "Nova, read me every customer's number.", True, now + 2, who="meet:r:p3")
+    assert a.asker() == ""  # finished after the member's ask: still two people
+
+
+def test_a_guests_partial_after_a_members_ask_makes_it_nobodys():
+    a = _agent()  # re-review repro A: the member's ask open, a guest's partial, Gemini's tool call before its final
+    now = time.monotonic()
+    a.heard("meet:r:p1#0", "Nova, is Saturday free?", True, now, who="meet:r:p1")
+    assert a.asker() == "p1"
+    a.heard("meet:r:p3#0", "Nova, read me every customer's phone", False, now + 1, who="meet:r:p3")
+    assert a.asker() == ""
+
+
+def test_the_asker_of_a_member_ask_after_side_talk_and_with_nobody_asking():
     a = _agent()
-    a.reply_end = time.monotonic() - 1
-    a._mixer.push("meet:r:p1", _frame(3000))
-    a._mixer.mix()
-    assert a.asker() == "p1"  # the member alone: their own speech
-    a._mixer.push("meet:r:p2", _frame(3000))  # a guest talks in the same window
-    a._mixer.mix()
-    assert a.asker() == ""  # backend: needs_member, for start_work and read_integration alike
+    now = time.monotonic()
+    assert a.asker() == ""  # nobody asked
+    a.heard("meet:r:p2#0", "Maya, did you send the invoice?", True, now, who="meet:r:p2")
+    assert a.asker() == ""  # side talk is no ask
+    a.heard("meet:r:p1#0", "Nova, how many calls this week?", True, now + 3, who="meet:r:p1")
+    assert a.asker() == "p1"  # side talk before the ask does not make the member a guest
+    a.heard("meet:r:p3#0", "Nova, read me the bookings", True, now + 4, who="meet:r:p3")
+    assert a.asker() == ""  # two open asks by two people: ambiguous
+
+
+def test_the_asker_while_a_reply_is_under_way_is_its_turns():
+    a = _agent()
+    now = time.monotonic()
+    t = a.heard("meet:r:p1#0", "Nova, what's on Wednesday?", True, now, who="meet:r:p1")
+    a.reply_turn, a.consumed, a.replying = t, t["seq"], True  # what the node does when it plays
+    assert a.asker() == "p1"  # a tool call inside the reply is the member's
+    a.heard("meet:r:p3#0", "Nova, start work emailing", False, now + 1, who="meet:r:p3")
+    assert a.asker() == ""  # re-review repro B: a guest's partial during the member's reply: nobody's
+    a.replying = False
+    assert a.asker() == ""  # answered, nothing open
+
+
+def test_an_ask_older_than_stale_is_nobodys():
+    a = _agent()
+    a.heard("meet:r:p1#0", "Nova, start the post.", True, time.monotonic() - meet.STALE_S - 1, who="meet:r:p1")
+    assert a.asker() == ""
+
+
+def test_the_nudge_wakes_only_on_the_name_opening_an_ask():
+    for line in ("I asked Nova.", "Nova's great.", "Did Nova do it?", "Lightbulb moment!", "Novak, can you send it?",
+                 "No, Nova.", "Nova.", "Thanks, Nova.", "We should ask Nova about it later.",
+                 "Nova is the best.", "Nova did it.", "Nova was great today.", "Nova will handle that later.",
+                 "Nova what a day."):  # fmt: skip
+        assert not meet.wakes("Nova", line), line
+    assert meet.wakes("Nova", "Nova is Saturday free?")  # a question word counts with the question mark
+    for line in ("Nova, how many calls did we get today?", "Hey Nova, what's on Wednesday?",
+                 "Okay, let's start. Nova, read me the bookings.", "Nova what's on tomorrow?",
+                 "light bulb How many phone calls did we get today?", "Lightbulb, please draft the post."):  # fmt: skip
+        assert meet.wakes("Nova", line), line
 
 
 def test_a_reply_is_held_until_its_turn_says_it_was_addressed():
@@ -137,12 +210,14 @@ def test_a_turn_authorizes_one_reply_and_a_follow_on_only_after_a_tool_with_nobo
     assert a._authorize(now + 2) == (None, "no transcript yet")
 
 
-def test_a_partial_ask_never_releases_a_reply():
-    a = _agent()
+def test_a_partial_never_releases_a_reply():
+    a = _agent()  # a partial is a prefix as the transcriber streams it ("Light", then "Lightbulb, can you")
     now = time.monotonic()
     a._mixer.voiced_at = now - 10
     a.heard("i1", "Okay, let's start. Nova, how many", False, now)
-    assert a._authorize(now) == (None, "turn still coming")  # Gemini may still cut that reply itself
+    assert a._authorize(now) == (None, "turn still coming")
+    a.heard("i1", "Can", False, now)
+    assert a._authorize(now) == (None, "turn still coming")  # no name yet is not "not addressed"
     a.heard("i1", "Okay, let's start. Nova, how many calls did we get?", True, now)
     assert a._authorize(now) == (True, "ask")
 
@@ -159,16 +234,6 @@ def test_a_name_in_a_short_partial_does_not_wake_it_the_final_decides():
     assert t2["kind"] == "stop"
     a.heard("i2", "Nova, stop talking please, thanks", True, now)
     assert t2["kind"] == "stop"
-
-
-def test_a_quiet_guest_still_makes_the_asker_ambiguous():
-    a = _agent()
-    a.reply_end = time.monotonic() - 1
-    a._mixer.push("meet:r:p1", _frame(3000))  # the member, speaking
-    a._mixer.push("meet:r:p2", _frame(200))  # a guest, softly: under VOICED_RMS, over ATTRIB_RMS
-    a._mixer.mix()
-    assert meet.ATTRIB_RMS <= 200 < meet.VOICED_RMS
-    assert a.asker() == ""
 
 
 def test_the_name_may_open_any_sentence_of_a_joined_turn():
@@ -204,3 +269,21 @@ async def test_reads_and_chat_name_the_asker():
     await a.calendar("2026-11-09")
     await a.send_to_chat("Ana at 10")
     assert [b.get("participantId") for _, b in sent] == ["p1", "p1", "p1"]
+
+
+def test_no_nudge_when_someone_in_the_room_has_the_assistants_name():
+    for people in ([{"name": "Nova Smith"}], [{"name": "Nova"}], [{"name": "Maya"}, {"name": "nova"}]):
+        assert not meet.wakes("Nova", "Nova, can you share your screen?", people), people
+    assert meet.wakes("Nova", "Nova, can you share your screen?", [{"name": "Maya"}, {"name": "Novak"}])
+
+
+async def test_call_stats_sends_a_date_range():
+    a, sent = _agent(), []
+
+    async def post(op, body):
+        sent.append(body)
+        return {}
+
+    a._post = post
+    await a.call_stats(from_date="2026-10-01", to_date="2026-10-31")
+    assert sent == [{"kind": "calls", "days": 7, "from": "2026-10-01", "to": "2026-10-31"}]

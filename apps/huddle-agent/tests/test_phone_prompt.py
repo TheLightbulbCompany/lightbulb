@@ -215,3 +215,13 @@ def test_the_disclosure_matches_whole_words_and_not_a_denial():
         "Don't worry, this call is recorded.",
     ):
         assert phone.discloses(f"This is Ava, an AI assistant. {ok}", "Ava"), ok
+
+
+def test_message_only_mode_says_to_take_a_message():
+    def prompt(**extra):
+        r = phone.Receptionist(None, {**INFO, **extra}, None)
+        return " ".join(r.instructions.split())
+
+    text = prompt(mode="message_only", can={"book": False, "move": False})
+    assert "can only take a message" in text and "owner will call back" in text
+    assert "can only take a message" not in prompt(mode="live")

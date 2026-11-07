@@ -22,11 +22,11 @@ it("sells the team, not a solo tool", () => {
   expect(screen.queryByText(/No shared data/)).toBeNull();
 });
 
-it("opens on the create door: the Clerk form, sent through the chat workspace gate", () => {
+it("opens on the create door: the Clerk form, landing on the voice home", () => {
   render(<Page />);
   expect(screen.getByRole("tab", { name: /Create a workspace/ })).toHaveAttribute("aria-selected", "true");
   expect(signUpProps).toHaveBeenCalledWith(expect.objectContaining({
-    fallbackRedirectUrl: "/chat", signInFallbackRedirectUrl: "/chat",
+    fallbackRedirectUrl: "/voice", signInFallbackRedirectUrl: "/voice",
   }));
   expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute("href", "/sign-in");
 });

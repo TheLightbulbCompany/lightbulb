@@ -57,7 +57,9 @@ async def _seed(org: str = "org_a", **over) -> PaperclipRepo:
     )
     await repo.put_workspace(ws)
     await repo.claim_first_contact(org, onboarding_generation="01G")
-    await repo.put_agent_key(org, "a-ceo", "pcp_live")
+    repo._table().update_item(  # an old agent key (no longer written)
+        Key={"user_id": org}, UpdateExpression="SET agent_keys = :m", ExpressionAttributeValues={":m": {"a-ceo": "x"}}
+    )
     await repo.add_agent_cost_remainder(org, "a-ceo", 7)
     await repo.record_paused_automation(org, agent_ids=["a-ceo"], routine_ids=["r1"], token="t")
     await repo.put_pending_brief(org, path="new", user_input="idea", detail=None, brief_text="b", submitted_by="m")
@@ -107,7 +109,7 @@ async def test_skipped_attrs_never_copied(tables):
 
 
 async def test_tasks_store_keeps_paperclip_attrs_on_the_old_row(tables):
-    """The readers of the skipped attrs (every Paperclip call's company_id, the pause fence, agent keys)
+    """The readers of the skipped attrs (every Paperclip call's company_id, the pause fence)
     keep working on tasks: those attrs stay on the old row and get_workspace reads them back."""
     old, tasks = tables
     repo = _repo(True)
@@ -117,7 +119,6 @@ async def test_tasks_store_keeps_paperclip_attrs_on_the_old_row(tables):
     )
     assert await repo.update_status("org_n", status="active")
     assert await repo.record_paused_automation("org_n", agent_ids=["a"], routine_ids=[], token="t")
-    assert await repo.put_agent_key("org_n", "a", "k") == "k"
     ws = await repo.get_workspace("org_n")
     assert (ws.company_id, ws.status, ws.automation_pause_token) == ("co_n", "active", "t")
     assert await repo.pause_token_current("org_n", "t")
@@ -126,7 +127,7 @@ async def test_tasks_store_keeps_paperclip_attrs_on_the_old_row(tables):
     meta = _meta(tasks, "org_n")
     assert not [k for k in meta if pr.old_row_only(pr._snake(k))]
     assert set(old.get_item(Key={"user_id": "org_n"})["Item"]) == {
-        "user_id", "org_id", "status", "company_id", "agent_keys", "automation_paused_at",
+        "user_id", "org_id", "status", "company_id", "automation_paused_at",
         "automation_pause_token", "automation_paused_agent_ids", "automation_paused_routine_versions",
     }  # fmt: skip
 

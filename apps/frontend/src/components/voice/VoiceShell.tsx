@@ -1,11 +1,11 @@
 "use client";
 
 // The four places on web (rail) and phone (bottom tabs): Home · Needs you · Agent · Settings (spec 2026-11-07 §5).
-// Settings is the existing Settings place, opened inside the workspace shell.
+// Settings is /voice/settings: the existing Settings panels, rendered here beside the rail.
 import "./voice.css";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { UserButton, useOrganization } from "@clerk/nextjs";
+import { OrganizationList, UserButton, useOrganization } from "@clerk/nextjs";
 import { CircleAlert, Home, PhoneCall, Settings } from "lucide-react";
 import { HuddleProvider } from "@/components/huddle/HuddleProvider";
 import { callNeedsYou, useQuestions, useTimeline } from "./data";
@@ -20,7 +20,7 @@ const PLACES = [
   { href: "/voice", label: "Home", Icon: Home },
   { href: "/voice/needs-you", label: "Needs you", Icon: CircleAlert },
   { href: "/voice/agent", label: "Agent", Icon: PhoneCall },
-  { href: "/chat?panel=settings", label: "Settings", Icon: Settings },
+  { href: "/voice/settings", label: "Settings", Icon: Settings },
 ] as const;
 
 export function VoiceShell({ children }: { children: React.ReactNode }) {
@@ -28,8 +28,9 @@ export function VoiceShell({ children }: { children: React.ReactNode }) {
   const { organization, isLoaded } = useOrganization();
   const needs = useNeedsYouTotal();
   if (isLoaded && !organization) {
-    return <main className="vx-page"><h1 className="vx-title">Choose a workspace first</h1>
-      <p className="vx-sub"><Link className="vx-link" href="/chat">Open Lightbulb</Link> and pick your business.</p></main>;
+    // Clerk <OrganizationList> props: https://clerk.com/docs/components/organization/organization-list
+    return <main className="vx-page"><h1 className="vx-title">Choose your workspace</h1>
+      <div className="vx-orgs"><OrganizationList hidePersonal afterSelectOrganizationUrl="/voice" afterCreateOrganizationUrl="/onboarding" skipInvitationScreen /></div></main>;
   }
   return (
     <HuddleProvider>

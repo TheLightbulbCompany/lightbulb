@@ -31,8 +31,9 @@ app. Today is {today}. Answer in one or two short spoken sentences. For anything
 calendar, mail, documents, payments, issues, calls, bookings, what the team decided -- call a read tool first and
 say only what it returns; if it has nothing, say you don't know. The workspace's connected calendar, mail and Drive
 (the account the workspace connected, which may not be {who}'s own): read_integration with provider calendar,
-gmail or drive (say "one moment" first). Other connected apps: list_integrations, then
-read_integration. Writing anything (a draft, a post, an email), anything open-ended, anything that sends, spends
+gmail or drive (say "one moment" first). The business's own services, prices, hours and Q&A: read_integration
+with provider knowledge; the public web: provider web. Every other connected app: list_integrations, then
+read_integration; if it returns start_work, call start_work with the question and say "I'll get that". Writing anything (a draft, a post, an email), anything open-ended, anything that sends, spends
 or publishes, and anything a read says needs more: call start_work with a short title and a self-contained brief,
 then say you're on it and that the result will be in your chat with them. Never wait for it, never do it yourself,
 never say it is done. If a tool returns an error, say plainly that you couldn't do it."""
@@ -78,9 +79,10 @@ class OwnerAgent(Agent):
         return out
 
     @function_tool
-    async def call_stats(self, days: int = 7) -> dict:
-        """How many phone calls the assistant answered in the last `days` (1 = today), by outcome."""
-        return await self._post("read", {"kind": "calls", "days": days})
+    async def call_stats(self, days: int = 7, from_date: str = "", to_date: str = "") -> dict:
+        """How many phone calls the assistant answered in the last `days` (1 = today), by outcome. For a range
+        ("this month versus last"), from_date and to_date as "YYYY-MM-DD" (inclusive), once per range."""
+        return await self._post("read", {"kind": "calls", "days": days, "from": from_date, "to": to_date})
 
     @function_tool
     async def calendar(self, date: str = "") -> dict:
@@ -90,13 +92,15 @@ class OwnerAgent(Agent):
 
     @function_tool
     async def list_integrations(self) -> dict:
-        """The connected apps you can read (gmail, calendar, drive, stripe, notion, linear, github, ...)."""
+        """What you can read: knowledge, web, and the connected apps (gmail, calendar, drive, stripe, ...)."""
         return await self._post("integrations", {})
 
     @function_tool
     async def read_integration(self, provider: str, query: str) -> dict:
-        """One quick read of a connected app: provider is a name from list_integrations; query is what to search
-        for (mail search words, an event name, an issue keyword; "" for the next events). Bigger: start_work."""
+        """One quick read: provider is a name from list_integrations ("knowledge" is the business's own facts,
+        "web" the public web); query is what to search for (mail search words, an event name, an issue keyword;
+        "" for the next events). Say "one moment" first: a connected app's read can take up to six seconds.
+        Bigger, or when it returns start_work: start_work with the question."""
         return await self._post("integration-read", {"provider": provider, "query": query})
 
     @function_tool

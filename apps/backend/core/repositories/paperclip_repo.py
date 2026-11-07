@@ -51,7 +51,6 @@ from botocore.exceptions import ClientError
 
 from core import tasks_schema as ts
 from core.dynamodb import get_table, run_in_thread, utc_now_iso
-from core.encryption import decrypt, encrypt
 from core.services.status_events import publish_status_changed
 
 logger = logging.getLogger(__name__)
@@ -287,6 +286,11 @@ class PaperclipWorkspace:
     """Bounds the nudge loop, and is the ONLY thing that does."""
 
     first_contact_reason: Optional[str] = None
+
+    name: Optional[str] = None
+    description: Optional[str] = None
+    """The workspace's display name and description (``/teams/settings``). Written only by
+    ``set_profile``; ``put_workspace`` never sets or removes them."""
 
     automation_paused_at: Optional[str] = None
     """Set by ``paperclip_agent_lifecycle.pause_owner_automation`` when the owner stopped
@@ -581,6 +585,8 @@ class PaperclipRepo:
                 int(item["first_contact_attempts"]) if item.get("first_contact_attempts") is not None else None
             ),
             first_contact_reason=item.get("first_contact_reason"),
+            name=item.get("name"),
+            description=item.get("description"),
             automation_paused_at=item.get("automation_paused_at"),
             automation_pause_complete_at=item.get("automation_pause_complete_at"),
             # Keep an EMPTY map as {}: a carried-forward put must not drop it, or the
@@ -624,6 +630,21 @@ class PaperclipRepo:
             ExpressionAttributeValues={":u": {user_id}, ":t": utc_now_iso()},
         )
         publish_status_changed(org_id)
+
+    async def set_profile(self, org_id: str, *, name: str | None, description: str | None) -> None:
+        """Set the workspace ``name`` and/or ``description`` (None leaves one as it is).
+        Conditional on the row existing (never resurrects a partial)."""
+        fields = {k: v for k, v in (("name", name), ("description", description)) if v is not None}
+        if not fields:
+            return
+        await self._ws_call(
+            "update_item",
+            self._ws_key(org_id),
+            UpdateExpression="SET " + ", ".join(f"#{k} = :{k}" for k in fields) + ", updated_at = :t",
+            ConditionExpression="attribute_exists(user_id)",
+            ExpressionAttributeNames={f"#{k}": k for k in fields},  # `name` is a reserved word
+            ExpressionAttributeValues={**{f":{k}": v for k, v in fields.items()}, ":t": utc_now_iso()},
+        )
 
     async def remove_member(self, org_id: str, user_id: str) -> None:
         """Drop ``user_id`` from the workspace's members. A no-op when the
@@ -1227,72 +1248,8 @@ class PaperclipRepo:
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             return
 
-    async def get_agent_key(self, org_id: str, agent_id: str) -> str | None:
-        """The plaintext Paperclip API key stored for ``agent_id``, or None when
-        absent or undecryptable (an ``ENCRYPTION_KEY`` change; the key is re-mintable)."""
-        resp = await run_in_thread(
-            self._table().get_item,
-            Key={"user_id": org_id},
-            ProjectionExpression="agent_keys.#a",
-            ExpressionAttributeNames={"#a": agent_id},
-            ConsistentRead=True,
-        )
-        token = ((resp.get("Item") or {}).get("agent_keys") or {}).get(agent_id)
-        if not token:
-            return None
-        try:
-            return decrypt(token)
-        except ValueError:
-            logger.warning("paperclip_repo.get_agent_key: undecryptable key org=%s agent=%s", org_id, agent_id)
-            return None
-
-    async def put_agent_key(self, org_id: str, agent_id: str, plaintext: str) -> str | None:
-        """Store ``agent_id``'s key, create-only, and return the key that is stored.
-
-        A concurrent writer who stored first wins and its key is returned (the
-        caller revokes its own duplicate). An undecryptable stored key is
-        overwritten. None when ``org_id`` has no workspace row: a key with no
-        row to live on is never written anywhere else.
-        """
-        table = self._table()
-        exc = table.meta.client.exceptions.ConditionalCheckFailedException
-        try:
-            await run_in_thread(
-                table.update_item,
-                Key={"user_id": org_id},
-                UpdateExpression="SET agent_keys = :empty",
-                ConditionExpression="attribute_exists(#s) AND attribute_not_exists(agent_keys)",
-                ExpressionAttributeNames={"#s": "status"},
-                ExpressionAttributeValues={":empty": {}},
-            )
-        except exc:
-            pass
-        kwargs = {
-            "Key": {"user_id": org_id},
-            "UpdateExpression": "SET agent_keys.#a = :v",
-            "ExpressionAttributeNames": {"#s": "status", "#a": agent_id},
-            "ExpressionAttributeValues": {":v": encrypt(plaintext)},
-        }
-        try:
-            await run_in_thread(
-                table.update_item,
-                ConditionExpression="attribute_exists(#s) AND attribute_not_exists(agent_keys.#a)",
-                **kwargs,
-            )
-            return plaintext
-        except exc:
-            winner = await self.get_agent_key(org_id, agent_id)
-            if winner is not None:
-                return winner
-        # The stored key is undecryptable (overwrite it) or there is no row (this fails too).
-        try:
-            await run_in_thread(table.update_item, ConditionExpression="attribute_exists(#s)", **kwargs)
-            return plaintext
-        except exc:
-            return None
-
     async def delete_agent_key(self, org_id: str, agent_id: str) -> None:
-        """Drop ``agent_id``'s stored key (agent delete). Idempotent."""
+        """Drop ``agent_id``'s old Paperclip key (agent delete; no key is written any more). Idempotent."""
         table = self._table()
         try:
             await run_in_thread(

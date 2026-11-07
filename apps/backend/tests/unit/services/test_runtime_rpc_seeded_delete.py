@@ -10,7 +10,7 @@ import pytest
 
 from core.services import runtime_rpc as rpc
 from core.services.messaging import ApiProblem
-from core.services.paperclip_agent_lifecycle import AgentLifecycleConflict
+from core.services.agent_lifecycle import AgentLifecycleConflict
 
 
 @pytest.mark.asyncio

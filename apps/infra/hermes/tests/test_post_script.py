@@ -27,7 +27,7 @@ def _run(tmp_path, *args, body="Morning brief", receipt="404"):
     )
     fake.chmod(0o755)
     env = {**os.environ, "PATH": f"{fake.parent}:{os.environ['PATH']}", "LOG": str(log),
-           "PAPERCLIP_AGENT_ID": "agent-1", "RECEIPT": receipt, "OPENCLAW_HOOK_TOKEN": "t", "ISOL8_API_URL": "https://api.x/",
+           "LIGHTBULB_AGENT_ID": "agent-1", "RECEIPT": receipt, "OPENCLAW_HOOK_TOKEN": "t", "ISOL8_API_URL": "https://api.x/",
            "ISOL8_OWNER_ID": "org_1"}
     proc = subprocess.run(["bash", str(SCRIPT), *args], input=body, env=env, capture_output=True, text=True)
     sent = json.loads(log.read_text()) if log.exists() else None

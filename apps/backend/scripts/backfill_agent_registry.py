@@ -2,7 +2,9 @@
 """Backfill the super-agent `AGENT#` registry from Paperclip, keeping Paperclip's agent ids (spec 03 §6.1).
 
 DRY RUN BY DEFAULT: prints the planned created/updated counts. `--apply` writes (idempotent) and soft-deletes
-registry rows whose agent is terminated or gone in Paperclip. `--verify`
+registry rows whose agent is terminated or gone in Paperclip. Since #5020 the registry is the native store for
+agent writes, so `--apply` would undo native renames and deletes: it refuses unless
+`--i-know-this-reverts-native-writes` is passed. `--verify`
 compares registry and Paperclip and exits 1 on any difference, printing agent ids and field names only (no
 names, no personas). Refuses prod (unless --allow-prod).
 Runs inside the dev backend task (Paperclip is VPC-internal):
@@ -32,7 +34,18 @@ async def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--apply", action="store_true", help="write; without it this is a dry run")
     mode.add_argument("--verify", action="store_true", help="compare only; exit 1 on any difference")
     parser.add_argument("--allow-prod", action="store_true", help="lift the prod refusal (phase-1 task 3 data move)")
+    parser.add_argument(
+        "--i-know-this-reverts-native-writes",
+        action="store_true",
+        help="lift the --apply refusal: the registry is native since #5020, so --apply undoes renames/deletes",
+    )
     args = parser.parse_args(argv)
+    if args.apply and not args.i_know_this_reverts_native_writes:
+        print(
+            "refusing: registry is native since #5020; this would undo renames/deletes "
+            "(pass --i-know-this-reverts-native-writes to apply anyway)"
+        )
+        return 2
     if settings.ENVIRONMENT == "prod" and not args.allow_prod:
         print("refusing: backfill_agent_registry is dev-only unless --allow-prod")
         return 2

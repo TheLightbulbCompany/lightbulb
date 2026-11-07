@@ -141,6 +141,16 @@ async def test_dispatch_meet_ignores_the_default_dispatch_of_an_existing_room(mo
     assert [c[0] for c in f.calls] == ["dispatch"] and f.calls[0][1].agent_name == "lightbulb-huddle"
 
 
+async def test_dispatch_uses_the_configured_agent_name(monkeypatch):
+    """Dev sets LIVEKIT_AGENT_NAME=lightbulb-meet-dev so it never takes a job from prod's lightbulb-huddle."""
+    monkeypatch.setattr(lh.settings, "LIVEKIT_AGENT_NAME", "lightbulb-meet-dev")
+    f = fake(monkeypatch)
+    await lh.dispatch_ceo("r1", {})
+    f.dispatched = [SimpleNamespace(agent_name="lightbulb-huddle")]  # prod's worker does not count as ours
+    await lh.dispatch_meet("r1", {})
+    assert [req.agent_name for _, req in f.calls if _ == "dispatch"] == ["lightbulb-meet-dev", "lightbulb-meet-dev"]
+
+
 async def test_send_frames(monkeypatch):
     f = fake(monkeypatch)
     await lh.send_frames("r1", [{"t": 1}])

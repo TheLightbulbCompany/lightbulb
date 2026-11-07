@@ -233,6 +233,8 @@ export interface ServiceStackProps extends cdk.StackProps {
   appsHostedZoneId?: string;
   /** LiveKit server URL for huddles. Empty (default) keeps huddle routes 503 — ships dark. */
   livekitUrl?: string;
+  /** Agent name huddle/meeting dispatches target. Unset keeps the backend default (prod's lightbulb-huddle). */
+  livekitAgentName?: string;
   /**
    * The Accounts v2 API version pinned on the company account/account-link
    * calls (`Stripe-Version` header). Empty ⇒ the provisioning preview.
@@ -1907,6 +1909,7 @@ export class ServiceStack extends cdk.Stack {
       APPS_DOMAIN: props.appsDomain ?? "apps.thelightbulb.company",
       APPS_HOSTED_ZONE_ID: props.appsHostedZoneId ?? "",
       LIVEKIT_URL: props.livekitUrl ?? "",
+      ...(props.livekitAgentName ? { LIVEKIT_AGENT_NAME: props.livekitAgentName } : {}),
       // Accounts v2 API version pin for the company account/account-link
       // calls. Empty ⇒ the provisioning preview.
       STRIPE_ACCOUNTS_V2_VERSION: props.stripeAccountsV2Version ?? "",

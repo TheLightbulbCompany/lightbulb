@@ -19,7 +19,6 @@ from core.repositories import messaging_repo
 
 logger = logging.getLogger(__name__)
 AGENT_IDENTITY = "agent-ceo"
-AGENT_NAME = "lightbulb-huddle"
 FRAME_TOPIC = "call.frame"
 MEET_SPEAKER_TOPIC = "meet.speaker"
 MAX_PACKET_BYTES = 14_000  # LiveKit drops data packets over ~15 KB
@@ -158,7 +157,9 @@ async def participants(room_id: str) -> list[str]:
 async def _dispatch(room: str, metadata: dict) -> None:
     async with _api() as lk:
         await lk.agent_dispatch.create_dispatch(
-            api.CreateAgentDispatchRequest(agent_name=AGENT_NAME, room=room, metadata=json.dumps(metadata))
+            api.CreateAgentDispatchRequest(
+                agent_name=settings.LIVEKIT_AGENT_NAME, room=room, metadata=json.dumps(metadata)
+            )
         )
 
 
@@ -173,7 +174,7 @@ async def dispatch_meet(room_id: str, metadata: dict) -> None:
     room = meet_room_name(room_id)
     async with _api() as lk:
         try:
-            if any(d.agent_name == AGENT_NAME for d in await lk.agent_dispatch.list_dispatch(room)):
+            if any(d.agent_name == settings.LIVEKIT_AGENT_NAME for d in await lk.agent_dispatch.list_dispatch(room)):
                 return
         except api.TwirpError as e:
             if e.code != api.TwirpErrorCode.NOT_FOUND:  # no room yet: nothing dispatched

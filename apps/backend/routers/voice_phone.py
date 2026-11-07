@@ -28,6 +28,7 @@ from core.dynamodb import run_in_thread, utc_now_iso
 from core.repositories import messaging_repo
 from core.services import clerk_admin
 from routers.huddles import _Worker
+from routers.voice import _e164
 from routers.internal_automations import VoiceStartIn, start_voice_work
 
 router = APIRouter(dependencies=[_Worker])
@@ -45,6 +46,7 @@ _DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 DEFAULTS: dict = {
     "name": "",
     "greeting": "",
+    "live": False,
     "paused": False,
     "instructions": "",
     "allow": {"book": True, "move": True, "waitlist": True, "greetByName": True, "answer": True},
@@ -53,6 +55,7 @@ DEFAULTS: dict = {
     "services": [],
     "bufferMin": 10,
     "handoff": {"number": "", "onlyOpenHours": True},
+    "forwardFrom": "",
 }
 _TZ = ZoneInfo("America/New_York")  # ponytail: one zone until the Agent page asks for the business's own
 _GRID = timedelta(minutes=30)  # slot starts every half hour
@@ -77,9 +80,15 @@ async def agent_config(owner_id: str) -> dict:
     return cfg
 
 
-def _allowed(cfg: dict, *caps: str) -> None:
-    """Refuse (403) a capability the owner turned off, or everything but a message while paused."""
-    if cfg.get("paused") or not any(cfg["allow"].get(c) for c in caps):
+def _line_state(cfg: dict, caller: str) -> Literal["live", "message_only"]:
+    """Live after Go live and not paused; the owner's own number always gets the live line (the test call)."""
+    owner = {_e164(str(n or "")) for n in (cfg["handoff"]["number"], cfg.get("forwardFrom"))} - {None}
+    return "live" if (cfg.get("live") and not cfg.get("paused")) or _e164(caller) in owner else "message_only"
+
+
+def _allowed(cfg: dict, call: dict, *caps: str) -> None:
+    """Refuse (403) a capability the owner turned off, or everything but a message while the line is message-only."""
+    if _line_state(cfg, call.get("caller", "")) != "live" or not any(cfg["allow"].get(c) for c in caps):
         raise _err(403, "not_allowed")
 
 
@@ -145,7 +154,9 @@ def _facts(cfg: dict) -> str:
     hours = ", ".join(
         f"{d} {h['open']}–{h['close']}" if not h.get("closed") else f"{d} closed" for d, h in cfg["hours"].items()
     )
-    qa = " ".join(f"Q: {k.get('q')} A: {k.get('a')}" for k in cfg["knowledge"] if k.get("q") and k.get("a"))
+    qa = " ".join(
+        f"Q: {k['q']} A: {k['a']}" if k.get("q") else f"Note: {k['a']}" for k in cfg["knowledge"] if k.get("a")
+    )
     return f"Services: {services or 'not listed'}. Opening hours: {hours}. {qa}".strip()
 
 
@@ -199,8 +210,10 @@ async def start_call(body: StartIn) -> dict:
     except messaging_repo.MessagingRepoError:
         if await messaging_repo.get_room(call_id) is None:  # a replay keeps the room it made
             raise
-    allow, paused = cfg["allow"], bool(cfg.get("paused"))
+    allow, mode = cfg["allow"], _line_state(cfg, body.callerNumber)
+    paused = mode != "live"
     return {
+        "mode": mode,
         "callId": call_id,
         "ownerId": owner_id,
         "businessName": business,
@@ -340,9 +353,9 @@ class DateIn(BaseModel):
 
 @router.post("/internal/voice/calls/{call_id}/availability")
 async def availability(call_id: str, body: DateIn) -> dict:
-    meta, _call_ = await _call(call_id)
+    meta, call = await _call(call_id)
     cfg = await agent_config(meta["ownerId"])
-    _allowed(cfg, "book", "move")
+    _allowed(cfg, call, "book", "move")
     taken = await _taken(meta["ownerId"], body.date)
     return {"date": body.date, "slots": free_slots(cfg, body.date, taken, _now(), _minutes(cfg, body.service))}
 
@@ -384,7 +397,7 @@ async def _book(owner_id: str, call_id: str, call: dict, cfg: dict, start: str, 
 async def book(call_id: str, body: BookIn) -> dict:
     meta, call = await _call(call_id)
     cfg = await agent_config(meta["ownerId"])
-    _allowed(cfg, "book")
+    _allowed(cfg, call, "book")
     await _book(meta["ownerId"], call_id, call, cfg, body.start, body.service, body.name)
     entry = {"start": body.start, "service": body.service, "name": body.name}
     line = f"{body.service} · {_pretty(body.start)} for {body.name}"
@@ -404,7 +417,7 @@ async def change_booking(call_id: str, body: ChangeIn) -> dict:
     """Move or cancel a booking -- only one made from this caller's number (a contact never touches another's)."""
     meta, call = await _call(call_id)
     cfg = await agent_config(meta["ownerId"])
-    _allowed(cfg, "move")
+    _allowed(cfg, call, "move")
     owner_pk, sk = messaging_repo.owner_pk(meta["ownerId"]), f"VOICEBOOK#{body.start}"
     row = await messaging_repo._get(owner_pk, sk)
     if not row or not call.get("caller") or row.get("phone") != call["caller"]:
@@ -426,7 +439,7 @@ async def change_booking(call_id: str, body: ChangeIn) -> dict:
 @router.post("/internal/voice/calls/{call_id}/my-bookings")
 async def my_bookings(call_id: str) -> dict:
     meta, call = await _call(call_id)
-    _allowed(await agent_config(meta["ownerId"]), "move")
+    _allowed(await agent_config(meta["ownerId"]), call, "move")
     caller = call.get("caller")
     rows = [b for b in await _bookings(meta["ownerId"], "") if caller and b.get("phone") == caller]
     return {"bookings": [{"start": b["sk"].removeprefix("VOICEBOOK#"), "service": b["service"]} for b in rows]}
@@ -473,8 +486,10 @@ class TransferIn(BaseModel):
 async def transfer(call_id: str, body: TransferIn | None = None) -> dict:
     """The number to hand the caller to (Agent page `handoff`), or none: after hours, unset, or a failed transfer
     is `handoff_missed`. The worker does the SIP transfer."""
-    meta, _c = await _call(call_id)
+    meta, call = await _call(call_id)
     cfg = await agent_config(meta["ownerId"])
+    if _line_state(cfg, call.get("caller", "")) != "live":
+        raise _err(403, "not_allowed")
     h, now = cfg["handoff"], _now()
     window = _open_window(cfg, now.strftime("%Y-%m-%d"))
     is_open = bool(window) and window[0] <= now < window[1]
@@ -497,7 +512,7 @@ async def start_work(call_id: str, body: WorkIn) -> dict:
     effect_check asks the owner before any outside action. The requester is the line's owner user, written by the
     backend; the same title in one call is the same task (a retried tool call)."""
     meta, call = await _call(call_id)
-    if (await agent_config(meta["ownerId"])).get("paused"):
+    if _line_state(await agent_config(meta["ownerId"]), call.get("caller", "")) != "live":
         raise _err(403, "not_allowed")
     requester = meta.get("ownerUserId")  # written by start_call from the line; never the dialed number again
     if not requester:

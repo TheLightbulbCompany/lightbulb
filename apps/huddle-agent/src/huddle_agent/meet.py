@@ -1,5 +1,8 @@
-"""The meeting agent (voice-agents spec §4.4, §4.4b, §5 "The meeting agent"): ONE listening Gemini Live
-session per Google Meet, in the huddle worker (agent.py hands it every `source: "meet"` dispatch).
+"""The meeting agent (voice-agents spec §4.4, §4.4b, §5 "The meeting agent"): ONE listening realtime session per
+Google Meet, in the huddle worker (agent.py hands it every `source: "meet"` dispatch). OpenAI's realtime model by
+default; MEET_ENGINE=gemini is Gemini Live, the flag-only fallback. OpenAI answers only when the gate asks it to (create_response
+off): Gemini decides itself and the gate drops what it should not say; OpenAI has no decide-not-to-respond and
+would reply to every line of side talk, each reply billed.
 
 It hears the room (every Meet person's track, mixed here: a realtime session takes one input stream) and
 speaks only when addressed by the assistant's name. Two gates: Gemini's own decide-not-to-respond, and
@@ -28,9 +31,11 @@ from google.genai import types
 from livekit import rtc
 from livekit.agents import Agent, AgentSession, JobContext, function_tool, room_io
 from livekit.agents.voice import io
-from livekit.plugins import google, noise_cancellation
+from livekit.plugins import google, noise_cancellation, openai
+from openai.types.beta.realtime.session import TurnDetection
+from openai.types.realtime import AudioTranscription
 
-from huddle_agent import end_after
+from huddle_agent import end_after, usage_log
 from huddle_agent.backend import Backend, BackendError
 from huddle_agent.transcript import (
     address,
@@ -39,8 +44,11 @@ from huddle_agent.transcript import (
 )
 
 logger = logging.getLogger("meet")
-MODEL = os.environ.get("MEET_MODEL", "gemini-3.8-live")
-VOICE = os.environ.get("MEET_VOICE", "Kore")
+OPENAI = os.environ.get("MEET_ENGINE", "openai") == "openai"  # one voice vendor (founder, 7 Nov 2026)
+MODEL = os.environ.get("MEET_MODEL", "gpt-realtime-2.1-mini" if OPENAI else "gemini-3.8-live")
+VOICE = os.environ.get("MEET_VOICE", "marin" if OPENAI else "Kore")
+# each committed turn's words; gpt-4o-mini-transcribe shuts down 26 Feb 2027 (developers.openai.com/api/docs/deprecations)
+TRANSCRIBE = os.environ.get("MEET_TRANSCRIBE_MODEL", "gpt-transcribe")
 ASSISTANT_ID = "assistant"  # the tile's agent id (lightbulb.agent.<id>.*)
 TRACK = f"agent-{ASSISTANT_ID}"  # the meet-bot page plays only `agent-*` tracks into the Meet
 MEET_QUIET_S = 3.0  # huddle.py: a reply waits for a real pause in the room
@@ -408,12 +416,17 @@ async def run(ctx: JobContext, meta: dict) -> None:
             if pub.track is not None:
                 on_track(pub.track, pub, p)
 
-    key = os.environ["GOOGLE_API_KEY"]
     session = AgentSession(
-        llm=google.realtime.RealtimeModel(
+        llm=openai.realtime.RealtimeModel(
             model=MODEL,
             voice=VOICE,
-            api_key=key,
+            # agent.py's MEET_VAD; on_heard asks for the reply. The name in the prompt: an accented "Lightbulb"
+            turn_detection=TurnDetection(type="server_vad", threshold=0.5, prefix_padding_ms=600,
+                                         silence_duration_ms=400, create_response=False, interrupt_response=True),
+            input_audio_transcription=AudioTranscription(model=TRANSCRIBE, prompt=name),
+        ) if OPENAI else google.realtime.RealtimeModel(
+            model=MODEL,
+            voice=VOICE,
             api_version="v1beta",
             # a meeting outlives Gemini's 10-minute connection and 15-minute audio session
             session_resumption=types.SessionResumptionConfig(),
@@ -423,6 +436,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
             ),
         )  # fmt: skip
     )
+    usage_log(session, f"meet {room_id}")
     lines: list[dict] = []
     asked: list[dict] = []  # {turn, a}: built into the record at the end, when the turn's text is whole
 
@@ -434,6 +448,8 @@ async def run(ctx: JobContext, meta: dict) -> None:
         logger.info("meet: turn %d kind=%s final=%s", t["seq"], t["kind"] or "-", ev.is_final)
         if t["kind"] == "stop":
             session.interrupt()
+        elif OPENAI and ev.is_final and t["kind"] == "ask":
+            session.generate_reply()  # the held-reply gate still decides when it plays
         if ev.is_final:
             lines.append({"mark": len(lines), "kind": "person", "name": label(t["who"])[:200],
                           "text": ev.transcript[:4000], "at": time.time()})  # fmt: skip

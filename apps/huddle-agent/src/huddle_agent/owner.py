@@ -39,7 +39,8 @@ never say it is done. If a tool returns an error, say plainly that you couldn't 
 
 
 def realtime_model():
-    """OWNER_ENGINE=gemini runs the spec's Gemini Live; by default gpt-realtime (the key the prod worker has)."""
+    """OWNER_ENGINE=gemini runs the spec's Gemini Live; by default gpt-realtime-2.1 (the key the prod worker
+    has; gpt-realtime shuts down 20 Jan 2027, developers.openai.com/api/docs/deprecations)."""
     if os.environ.get("OWNER_ENGINE", "openai") == "gemini":
         from google.genai import types
 
@@ -51,7 +52,7 @@ def realtime_model():
             session_resumption=types.SessionResumptionConfig(),  # outlives Gemini's 10-minute connection
         )
     return openai.realtime.RealtimeModel(
-        model=os.environ.get("OWNER_MODEL", "gpt-realtime"), voice=os.environ.get("OWNER_VOICE", "marin")
+        model=os.environ.get("OWNER_MODEL", "gpt-realtime-2.1"), voice=os.environ.get("OWNER_VOICE", "marin")
     )
 
 

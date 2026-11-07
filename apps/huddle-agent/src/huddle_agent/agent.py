@@ -652,9 +652,9 @@ async def entrypoint(ctx: JobContext) -> None:
     if ctx.job.room.name.startswith("phone-"):
         return await phone.entrypoint(ctx)
     meta = json.loads(ctx.job.metadata)
-    # A Google Meet: one listening Gemini Live session (meet.py). MEET_ENGINE=huddle is the old mouths, until
-    # the new one has a live meeting behind it.
-    if meta.get("source") == "meet" and os.environ.get("MEET_ENGINE", "gemini") == "gemini":
+    # A Google Meet: one listening realtime session (meet.py; MEET_ENGINE openai, or gemini). MEET_ENGINE=huddle
+    # is the old mouths, until the new one has a live meeting behind it.
+    if meta.get("source") == "meet" and os.environ.get("MEET_ENGINE", "openai") != "huddle":
         return await meet.run(ctx, meta)
     # Live in a member's DM with the assistant: the Router session (owner.py), not the mouths below.
     if meta.get("mode") == "owner":

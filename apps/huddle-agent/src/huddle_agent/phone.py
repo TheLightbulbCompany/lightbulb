@@ -1,4 +1,5 @@
-"""The phone receptionist (voice-agents spec §4.1b, §4.3): one Gemini Live session per inbound call.
+"""The phone receptionist (voice-agents spec §4.1b, §4.3): one OpenAI realtime session per inbound call
+(PHONE_ENGINE=gemini: Gemini Live, the flag-only fallback).
 
 Dispatched by a LiveKit SIP dispatch rule: in prod to the one deployed agent, `lightbulb-huddle` (agent.py
 routes `phone-` rooms here); on a dev Mac to its own name (`lightbulb-phone-dev`). It greets with the
@@ -22,6 +23,7 @@ from google.genai import types
 from livekit import api, rtc
 from livekit.agents import (
     Agent,
+    inference,
     AgentServer,
     AgentSession,
     JobContext,
@@ -29,18 +31,18 @@ from livekit.agents import (
     function_tool,
     room_io,
 )
-from livekit.plugins import google
+from livekit.plugins import google, noise_cancellation, openai
+from openai import AsyncOpenAI
 
-from huddle_agent import end_after
+from huddle_agent import end_after, usage_log
 
 logger = logging.getLogger("phone")
-MODEL = os.environ.get("PHONE_MODEL", "gemini-3.8-live")  # 10-voice-models.md §5
-VOICE = os.environ.get(
-    "PHONE_VOICE", "Kore"
-)  # one of Gemini's prebuilt voices; the greeting's TTS uses the same
-TTS_MODEL = os.environ.get(
-    "PHONE_TTS_MODEL", "gemini-3.1-flash-tts-preview"
-)  # streams: first audio in ~0.8 s
+# One voice vendor (founder, 7 Nov 2026): OpenAI. "gemini" stays a flag-only fallback until it is deleted.
+OPENAI = os.environ.get("PHONE_ENGINE", "openai") != "gemini"
+# gpt-realtime-mini is deprecated; 2.1-mini is its price ($10/$20 per M audio tokens) with tools and 128k context
+MODEL = os.environ.get("PHONE_MODEL", "gpt-realtime-2.1-mini" if OPENAI else "gemini-3.8-live")
+VOICE = os.environ.get("PHONE_VOICE", "marin" if OPENAI else "Kore")  # the greeting's TTS uses the same voice
+TTS_MODEL = os.environ.get("PHONE_TTS_MODEL", "gpt-4o-mini-tts" if OPENAI else "gemini-3.1-flash-tts-preview")
 AWAY_S = float(
     os.environ.get("PHONE_AWAY_S", "15")
 )  # silence before "are you still there?", and again before hanging up
@@ -173,10 +175,29 @@ def say_disclosure(session, line: str) -> None:
     )
 
 
-async def greeting_audio(text: str, key: str):
-    """The greeting as Gemini TTS audio, streamed: the caller hears exactly this text, never a model's reply to it."""
+async def greeting_audio(text: str):
+    """The greeting as TTS audio, streamed: the caller hears exactly this text, never a model's reply to it.
+    24 kHz 16-bit mono PCM from either vendor; a chunk's odd byte waits for the next."""
+    rest = b""
+    async for data in _openai_pcm(text) if OPENAI else _gemini_pcm(text):
+        pcm, rest = rest + data, b""
+        if len(pcm) % 2:
+            pcm, rest = pcm[:-1], pcm[-1:]
+        if pcm:
+            yield rtc.AudioFrame(pcm, 24000, 1, len(pcm) // 2)
+
+
+async def _openai_pcm(text: str):
+    async with AsyncOpenAI().audio.speech.with_streaming_response.create(
+        model=TTS_MODEL, voice=VOICE, input=text, response_format="pcm"
+    ) as r:
+        async for data in r.iter_bytes(4800):  # 100 ms
+            yield data
+
+
+async def _gemini_pcm(text: str):
     client = genai.Client(
-        api_key=key, http_options={"api_version": "v1beta"}
+        api_key=os.environ["GOOGLE_API_KEY"], http_options={"api_version": "v1beta"}
     )  # v1 refuses speechConfig (7 Nov)
     voice = types.VoiceConfig(
         prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=VOICE)
@@ -185,7 +206,6 @@ async def greeting_audio(text: str, key: str):
         response_modalities=["AUDIO"],
         speech_config=types.SpeechConfig(voice_config=voice),
     )
-    rest = b""
     async for chunk in await client.aio.models.generate_content_stream(
         model=TTS_MODEL, contents=text, config=config
     ):
@@ -196,12 +216,7 @@ async def greeting_audio(text: str, key: str):
             for p in c.content.parts or []
         ]:
             if part.inline_data and part.inline_data.data:
-                pcm, rest = rest + part.inline_data.data, b""
-                if len(pcm) % 2:
-                    pcm, rest = pcm[:-1], pcm[-1:]
-                yield rtc.AudioFrame(
-                    pcm, 24000, 1, len(pcm) // 2
-                )  # 16-bit mono PCM at 24 kHz
+                yield part.inline_data.data
 
 
 async def greet(session, greeting: str, stream, first: asyncio.Task) -> None:
@@ -423,14 +438,23 @@ async def entrypoint(ctx: JobContext) -> None:
         )
 
     agent = Receptionist(backend, info, transfer)
-    key = os.environ["GOOGLE_API_KEY"]
     session = AgentSession(
-        llm=google.realtime.RealtimeModel(
-            model=MODEL, voice=VOICE, api_key=key, api_version="v1beta"
-        ),
         user_away_timeout=AWAY_S,
+        **(
+            # Client-side turns (docs.livekit.io/agents/logic/turns): LiveKit's VAD and audio end-of-turn model
+            # decide when the caller is done, and adaptive interruption ignores "mm-hm". The plugin's default
+            # semantic_vad took 5-7 s to answer (book eval, 7 Nov). Gemini keeps its own turn-taking.
+            dict(
+                llm=openai.realtime.RealtimeModel(model=MODEL, voice=VOICE, turn_detection=None),
+                vad=inference.VAD(),
+                turn_handling={"turn_detection": inference.TurnDetector(), "interruption": {"mode": "adaptive"}},
+            )
+            if OPENAI
+            else dict(llm=google.realtime.RealtimeModel(model=MODEL, voice=VOICE, api_version="v1beta"))
+        ),
     )
-    stream = greeting_audio(info["greeting"], key)
+    usage_log(session, f"phone {backend.call_id}")
+    stream = greeting_audio(info["greeting"])
     first = asyncio.ensure_future(
         anext(stream)
     )  # the first audio overlaps the Live connect
@@ -520,7 +544,11 @@ async def entrypoint(ctx: JobContext) -> None:
         agent=agent,
         room=ctx.room,
         room_options=room_io.RoomOptions(
-            participant_identity=caller.identity, close_on_disconnect=True
+            participant_identity=caller.identity,
+            close_on_disconnect=True,
+            # noise cancellation tuned for SIP audio, in the agent and nowhere else on the call (one denoiser:
+            # docs.livekit.io/transport/media/enhanced-noise-cancellation)
+            audio_input=room_io.AudioInputOptions(noise_cancellation=noise_cancellation.BVCTelephony()),
         ),
         record=True,  # the greeting says the call is recorded
     )

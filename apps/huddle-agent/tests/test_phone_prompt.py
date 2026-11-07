@@ -290,3 +290,18 @@ def test_the_disclosure_matches_whole_words_and_not_a_denial():
         "Don't worry, this call is recorded.",
     ):
         assert phone.discloses(f"This is Ava, an AI assistant. {ok}", "x", "Ava"), ok
+
+
+async def test_greeting_audio_frames_whole_samples(monkeypatch):
+    """TTS chunks split anywhere; each frame is whole 16-bit samples at 24 kHz, no byte lost."""
+    from huddle_agent import phone
+
+    async def pcm(_text):
+        for chunk in (b"\x01\x02\x03", b"\x04", b"\x05\x06\x07"):
+            yield chunk
+
+    monkeypatch.setattr(phone, "_openai_pcm", pcm)
+    monkeypatch.setattr(phone, "OPENAI", True)
+    frames = [f async for f in phone.greeting_audio("hi")]
+    assert b"".join(bytes(f.data) for f in frames) == b"\x01\x02\x03\x04\x05\x06"
+    assert all(f.sample_rate == 24000 and f.num_channels == 1 for f in frames)

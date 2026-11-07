@@ -389,7 +389,7 @@ async def effect_check(owner_id: str, body: EffectBody, request: Request) -> dic
     rule = await questions.rule_effect(owner_id, task.get("specialist"), body.kind, body.operands)
     if rule and rule[0] == "deny":
         return {"decision": "denied", "questionId": None}
-    if body.kind != "a2a.send" and await _from_contact(owner_id, task):
+    if await _from_contact(owner_id, task):
         allowed_by = None  # a phone caller's request: no rule or mode spends, mails or changes things for them
     else:
         allowed_by = f"rule:{rule[1]}" if rule else await _mode_allows(owner_id, body.kind, body.operands)

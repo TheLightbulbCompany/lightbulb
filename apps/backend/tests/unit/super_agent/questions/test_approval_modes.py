@@ -210,7 +210,12 @@ async def test_a_phone_callers_task_asks_even_where_the_mode_would_go_ahead(api,
     }
     mode["approval_mode"] = "never_ask"
     for n, (kind, ops) in enumerate(
-        [("mail.send", member), ("purchase", {"amount": "$1"}), ("app.publish", {"appId": "a"})]
+        [
+            ("mail.send", member),
+            ("purchase", {"amount": "$1"}),
+            ("app.publish", {"appId": "a"}),
+            ("a2a.send", {"to": "agent:x"}),
+        ]
     ):
         resp = await api.post(_url(), json=await _body(contact, f"c{n}", kind, ops), headers=H)
         assert resp.json()["decision"] == "needs_approval", kind

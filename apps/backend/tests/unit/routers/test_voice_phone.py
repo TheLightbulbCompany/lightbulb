@@ -115,6 +115,14 @@ async def test_a_call_books_moves_and_leaves_the_record_home_reads(client):
     assert (await messaging_repo.get_room(again["callId"]))["call"]["returning"] is True
 
 
+async def test_a_custom_greeting_missing_the_disclosures_falls_back_to_ours(client):
+    ok = "Hi, Nova here, the AI assistant at Maya's. This call is recorded. What can I do?"
+    assert (await _start(client, greeting=ok))["greeting"] == ok
+    for bad in ("Hi, Nova here at Maya's. How can I help?", "Hi, the AI assistant here. This call is recorded."):
+        got = (await _start(client, room=f"phone-dev-_g{len(bad)}", greeting=bad))["greeting"]
+        assert got.startswith("Thanks for calling Maya's Nail Studio. This is Nova") and "recorded" in got
+
+
 async def test_the_agent_pages_checkboxes_gate_the_tools(client):
     call = await _start(client, allow={"book": False, "move": True, "answer": False, "greetByName": False})
     assert call["facts"] == "" and call["can"] == {"book": False, "move": True, "answer": False}

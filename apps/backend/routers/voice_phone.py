@@ -194,7 +194,7 @@ async def start_call(body: StartIn) -> dict:
             kind="call",
             members=members,
             req_hash=messaging_repo.request_hash(name, "call", body.livekitRoom),
-            extra={"call": call, "hidden": True},
+            extra={"call": call, "hidden": True, "ownerUserId": line["ownerUserId"]},
         )
     except messaging_repo.MessagingRepoError:
         if await messaging_repo.get_room(call_id) is None:  # a replay keeps the room it made
@@ -205,9 +205,7 @@ async def start_call(body: StartIn) -> dict:
         "ownerId": owner_id,
         "businessName": business,
         "assistantName": assistant,
-        "greeting": cfg["greeting"].strip()
-        or f"Thanks for calling {business}. This is {assistant}, {business}'s AI assistant. "
-        "This call is recorded. How can I help?",
+        "greeting": greeting(cfg["greeting"], business, assistant),
         "facts": _facts(cfg) if allow["answer"] and not paused else "",
         "instructions": cfg["instructions"][:4000],
         "callerName": call["callerName"] if allow["greetByName"] else "",
@@ -215,6 +213,14 @@ async def start_call(body: StartIn) -> dict:
         "transfer": bool(cfg["handoff"]["number"]),
         "today": datetime.now(_TZ).strftime("%A %Y-%m-%d %H:%M"),
     }
+
+
+def greeting(custom: str, business: str, assistant: str) -> str:
+    """The owner's greeting only when it still discloses the AI, the recording and the assistant's name; else ours."""
+    g = custom.strip()
+    if all(w.lower() in g.lower() for w in ("AI assistant", "recorded", assistant)):
+        return g
+    return f"Thanks for calling {business}. This is {assistant}, {business}'s AI assistant. This call is recorded. How can I help?"
 
 
 class EndIn(BaseModel):
@@ -483,12 +489,12 @@ async def start_work(call_id: str, body: WorkIn) -> dict:
     meta, call = await _call(call_id)
     if (await agent_config(meta["ownerId"])).get("paused"):
         raise _err(403, "not_allowed")
-    line = await get_line(call["calledNumber"])
-    if not line:
-        raise _err(404, "line_not_found")
+    requester = meta.get("ownerUserId")  # written by start_call from the line; never the dialed number again
+    if not requester:
+        raise _err(403, "no_requester")
     run_id = hashlib.sha256(f"{call_id}:{body.title.strip().lower()}".encode()).hexdigest()[:32]
     await messaging_repo.put_voice_run(
-        meta["ownerId"], run_id, {"roomId": call_id, "requesterUserId": line["ownerUserId"], "agentId": None}
+        meta["ownerId"], run_id, {"roomId": call_id, "requesterUserId": requester, "agentId": None}
     )
     brief = f"{CONTACT_NOTE}\nCaller: {call.get('caller') or 'unknown'}\n\n{body.brief}"
     out = await start_voice_work(

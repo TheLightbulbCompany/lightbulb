@@ -32,34 +32,64 @@ INFO = {
 }
 
 
-def test_the_greeting_comes_from_the_system_prompt_not_an_injected_turn():
-    """Live call 7 Nov: generate_reply(instructions="say exactly ...") became a user turn on gemini-3.8 and the agent
-    re-greeted on the caller's first turn. The rule lives in the instructions; the first reply gets none."""
+def test_the_greeting_is_tts_of_the_exact_text_not_a_model_turn():
+    """8 Nov sims: an empty generate_reply() let gemini-3.8 invent its first turn (3/15). The greeting is TTS audio of
+    the exact text via say(); the prompt tells the Live model it was already played. No TTS -> the Live model is told
+    the exact words."""
+    import asyncio
+
     agent = phone.Receptionist(phone.Backend(), INFO, None)
     text = " ".join(agent.instructions.split())
     assert (
-        f'Your first words on this call are exactly, word for word: "{GREETING}"'
+        f'greeting, already played to the caller: "{GREETING}" Don\'t greet again'
         in text
-    )
-    assert (
-        "Say the greeting once, at the start, and don't repeat it." in text
-        and "You already greeted" not in text
     )
     assert (
         "If you are told the disclosure was missed, say the one disclosure sentence exactly as given"
         in text
     )
 
-    calls = []
-
     class Session:
+        def __init__(self):
+            self.said, self.replies = [], []
+
+        def say(self, text, audio):
+            self.said.append((text, audio))
+
         def generate_reply(self, **kwargs):
-            calls.append(kwargs)
+            self.replies.append(kwargs)
 
-    import asyncio
+    async def frames():
+        yield "f1"
+        yield "f2"
 
-    asyncio.run(phone.greet(Session()))
-    assert calls == [{}]  # no instructions: nothing lands in the Live history as a turn
+    async def played(session):
+        stream = frames()
+        await phone.greet(
+            session, GREETING, stream, asyncio.ensure_future(anext(stream))
+        )
+        return [f async for f in session.said[0][1]]
+
+    s = Session()
+    assert (
+        asyncio.run(played(s)) == ["f1", "f2"]
+        and s.said[0][0] == GREETING
+        and not s.replies
+    )
+
+    async def broken():
+        raise RuntimeError("tts down")
+        yield
+
+    async def fallback(session):
+        stream = broken()
+        await phone.greet(
+            session, GREETING, stream, asyncio.ensure_future(anext(stream))
+        )
+
+    s = Session()
+    asyncio.run(fallback(s))
+    assert not s.said and GREETING in s.replies[0]["instructions"]
 
 
 def test_the_transcript_keeps_final_lines_in_spoken_order_once():

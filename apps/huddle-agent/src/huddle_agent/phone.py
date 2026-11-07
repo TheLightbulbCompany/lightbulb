@@ -17,7 +17,9 @@ import re
 import time
 
 import httpx
-from livekit import api
+from google import genai
+from google.genai import types
+from livekit import api, rtc
 from livekit.agents import (
     Agent,
     AgentServer,
@@ -36,6 +38,9 @@ MODEL = os.environ.get("PHONE_MODEL", "gemini-3.8-live")  # 10-voice-models.md Â
 VOICE = os.environ.get(
     "PHONE_VOICE", "Kore"
 )  # one of Gemini's prebuilt voices; the greeting's TTS uses the same
+TTS_MODEL = os.environ.get(
+    "PHONE_TTS_MODEL", "gemini-3.1-flash-tts-preview"
+)  # streams: first audio in ~0.8 s
 CALL_MAX_S = float(
     os.environ.get("PHONE_MAX_S", 20 * 60)
 )  # cost cap: a call ends after 20 minutes
@@ -46,8 +51,8 @@ server = AgentServer(
     load_threshold=float(os.environ.get("PHONE_LOAD_THRESHOLD", "0.7")),
 )
 
-INSTRUCTIONS = """You are {assistant}, the AI receptionist on the phone for {business}. Your first words on this call
-are exactly, word for word: "{greeting}" Say the greeting once, at the start, and don't repeat it. If you are told
+INSTRUCTIONS = """You are {assistant}, the AI receptionist on the phone for {business}. The call opened with your
+greeting, already played to the caller: "{greeting}" Don't greet again; answer what the caller says. If you are told
 the disclosure was missed, say the one disclosure sentence exactly as given, then continue with the caller. Speak briefly and warmly, one or two sentences at a time, like a good front desk. Today is {today}.
 {caller}What you may tell callers about the business: {facts}
 {can}
@@ -153,11 +158,62 @@ def say_disclosure(session, line: str) -> None:
     )
 
 
-async def greet(session) -> None:
-    """The first reply, from the system instructions alone. generate_reply(instructions=...) on gemini-3.8 puts the
-    text in the Live history as a user turn, which the model answered again on the caller's first turn (live call
-    7 Nov: it re-greeted instead of answering)."""
-    session.generate_reply()
+async def greeting_audio(text: str, key: str):
+    """The greeting as Gemini TTS audio, streamed: the caller hears exactly this text, never a model's reply to it."""
+    client = genai.Client(
+        api_key=key, http_options={"api_version": "v1beta"}
+    )  # v1 refuses speechConfig (7 Nov)
+    voice = types.VoiceConfig(
+        prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=VOICE)
+    )
+    config = types.GenerateContentConfig(
+        response_modalities=["AUDIO"],
+        speech_config=types.SpeechConfig(voice_config=voice),
+    )
+    rest = b""
+    async for chunk in await client.aio.models.generate_content_stream(
+        model=TTS_MODEL, contents=text, config=config
+    ):
+        for part in [
+            p
+            for c in chunk.candidates or []
+            if c.content
+            for p in c.content.parts or []
+        ]:
+            if part.inline_data and part.inline_data.data:
+                pcm, rest = rest + part.inline_data.data, b""
+                if len(pcm) % 2:
+                    pcm, rest = pcm[:-1], pcm[-1:]
+                yield rtc.AudioFrame(
+                    pcm, 24000, 1, len(pcm) // 2
+                )  # 16-bit mono PCM at 24 kHz
+
+
+async def greet(session, greeting: str, stream, first: asyncio.Task) -> None:
+    """The compliance greeting, word for word, every call. An empty generate_reply() let gemini-3.8 make up its own
+    first turn in 3 of 15 simulated calls (8 Nov: "Due to your audio input not being detectedâ€¦", slots offered
+    unasked, a transfer nobody asked for). So the greeting is TTS audio of the exact text, played by say(); the Live
+    model only answers the caller. If TTS fails, the Live model is told the exact words, and the guard checks them."""
+    try:
+        head = await first
+    except Exception:  # noqa: BLE001 -- no TTS: fall back to the Live model, checked by DisclosureGuard
+        logger.warning(
+            "phone: greeting TTS failed; the Live model says it", exc_info=True
+        )
+        session.generate_reply(
+            instructions=f'Say exactly this, word for word, and nothing else: "{greeting}"'
+        )
+        return
+
+    async def audio():
+        yield head
+        try:
+            async for frame in stream:
+                yield frame
+        except Exception:  # noqa: BLE001 -- a cut-off greeting is judged by DisclosureGuard as interrupted
+            logger.warning("phone: greeting TTS stream broke", exc_info=True)
+
+    session.say(greeting, audio=audio())
 
 
 class Backend:
@@ -342,6 +398,10 @@ async def entrypoint(ctx: JobContext) -> None:
             model=MODEL, voice=VOICE, api_key=key, api_version="v1beta"
         ),
     )
+    stream = greeting_audio(info["greeting"], key)
+    first = asyncio.ensure_future(
+        anext(stream)
+    )  # the first audio overlaps the Live connect
     items: list[dict] = []
     t0 = time.time()
     guard = DisclosureGuard(
@@ -405,9 +465,7 @@ async def entrypoint(ctx: JobContext) -> None:
         ),
         record=True,  # the greeting says the call is recorded
     )
-    # The Live model speaks the compliance greeting. Dev test 7 Nov: a TTS say() and caller audio switched off while it
-    # played both stalled the Gemini Live session (the reply never finished), so the caller can talk over it.
-    await greet(session)
+    await greet(session, info["greeting"], stream, first)
 
 
 if __name__ == "__main__":

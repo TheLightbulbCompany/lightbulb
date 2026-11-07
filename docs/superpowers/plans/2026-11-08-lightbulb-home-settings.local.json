@@ -1,0 +1,35 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(aws ecs execute-command:*)",
+      "Bash(aws ecs update-service:*)",
+      "Bash(aws ecs describe-services:*)",
+      "Bash(aws ecs describe-tasks:*)",
+      "Bash(aws ecs describe-task-definition:*)",
+      "Bash(aws ecs list-services:*)",
+      "Bash(aws ecs list-tasks:*)",
+      "Bash(aws secretsmanager create-secret:*)",
+      "Bash(aws secretsmanager put-secret-value:*)",
+      "Bash(aws secretsmanager delete-secret:*)",
+      "Bash(aws secretsmanager describe-secret:*)",
+      "Bash(aws secretsmanager list-secrets:*)",
+      "Bash(aws bedrock-agentcore-control:*)",
+      "Bash(aws bedrock-agentcore:*)",
+      "Bash(aws rds describe-db-clusters:*)",
+      "Bash(aws ce get-cost-and-usage:*)",
+      "Bash(aws cloudwatch get-metric-statistics:*)",
+      "Bash(aws cloudwatch list-metrics:*)",
+      "Bash(aws logs filter-log-events:*)",
+      "Bash(aws logs describe-log-groups:*)",
+      "Bash(aws sts get-caller-identity:*)",
+      "Bash(gh pr merge:*)",
+      "Bash(gh pr:*)",
+      "Bash(gh workflow run deploy.yml:*)",
+      "Bash(gh run:*)",
+      "Bash(lk:*)",
+      "Bash(tcld:*)",
+      "Bash(pbpaste:*)",
+      "Bash(pbcopy:*)"
+    ]
+  }
+}

@@ -38,14 +38,7 @@ class Transcript:
         self._next = 0
 
     def _add(
-        self,
-        kind: str,
-        who: str,
-        name: str,
-        text: str,
-        at: float,
-        to: str = "",
-        ready: float = 0.0,
+        self, kind: str, who: str, name: str, text: str, at: float, to: str = "", ready: float = 0.0
     ) -> int:
         mark, self._next = self._next, self._next + 1
         self._lines.append(
@@ -63,13 +56,7 @@ class Transcript:
         return self._add("person", identity, name, text, at)
 
     def add_agent(
-        self,
-        agent_id: str,
-        name: str,
-        text: str,
-        at: float = 0.0,
-        to: str = "",
-        ready: float = 0.0,
+        self, agent_id: str, name: str, text: str, at: float = 0.0, to: str = "", ready: float = 0.0
     ) -> int:
         return self._add("agent", agent_id, name, text, at, to, ready)
 
@@ -87,8 +74,7 @@ class Transcript:
         return "\n".join(
             f"{x.name}{f' → {x.to}' if x.to else ''}: {x.text}"
             for x in (self._lines if lines is None else lines)
-            if x.kind
-            != "note"  # /route and /turns read this: a row change is not speech
+            if x.kind != "note"  # /route and /turns read this: a row change is not speech
         )
 
     def after(self, mark: int) -> list[Line]:
@@ -386,11 +372,7 @@ def opens_with_person(text: str, people: list[dict]) -> bool:
     tokens = _tokens(text)
     i = 1 if tokens and tokens[0] in _LEADS else 0
     i += 1 if len(tokens) > i and tokens[i] == "," else 0
-    names = {
-        " ".join(_tokens(n))
-        for p in people
-        for n in (p.get("name") or "", (p.get("name") or "").split(" ")[0])
-    }
+    names = {" ".join(_tokens(n)) for p in people for n in (p.get("name") or "", (p.get("name") or "").split(" ")[0])}
     names.discard("")
     for n in (2, 1):
         if len(tokens) > i + n and " ".join(tokens[i : i + n]) in names:
@@ -401,18 +383,12 @@ def opens_with_person(text: str, people: list[dict]) -> bool:
             # open?"). A bare imperative ("Dan fix the deployment") is left to the voice's own meeting rule.
             rest = tokens[i + n : i + n + 3]
             return rest[0] in (",", "please", "you", "your", "yours") or (
-                rest[0] in _ASK
-                and (
-                    any(t in ("you", "your") for t in rest[1:])
-                    or text.rstrip().endswith("?")
-                )
+                rest[0] in _ASK and (any(t in ("you", "your") for t in rest[1:]) or text.rstrip().endswith("?"))
             )
     return False
 
 
-_ASK = frozenset(
-    "can could would will did do does are were is was have has what how why when where".split()
-)
+_ASK = frozenset("can could would will did do does are were is was have has what how why when where".split())
 
 
 def trails_off(text: str) -> bool:
@@ -420,20 +396,14 @@ def trails_off(text: str) -> bool:
     and"). Its rest is on the way."""
     t = text.strip()
     words = re.findall(r"[a-z']+", t.lower())
-    return t.endswith(("...", "…")) or (
-        bool(words) and all(w in _TRAIL_WORDS for w in words)
-    )
+    return t.endswith(("...", "…")) or (bool(words) and all(w in _TRAIL_WORDS for w in words))
 
 
 def only_name(text: str, agents: list[dict]) -> str | None:
     """The line is an agent's name and nothing else ("Friday.", "Um, Friday...", "Friday?"): that agent. The
     speaker has called on it and not yet said what for. The transcriber's mark at its end decides nothing:
     what the speaker does next does (more words, or silence)."""
-    words = [
-        w
-        for w in re.findall(r"[a-z0-9']+", text.lower())
-        if w not in _TRAIL_WORDS and w not in _LEADS
-    ]
+    words = [w for w in re.findall(r"[a-z0-9']+", text.lower()) if w not in _TRAIL_WORDS and w not in _LEADS]
     return _agent_named(" ".join(words), agents)
 
 
@@ -474,9 +444,7 @@ def _stop_match(text: str) -> re.Match | None:
 
 
 def _agent_named(said: str | None, agents: list[dict]) -> str | None:
-    return next(
-        (a["id"] for a in agents if said and " ".join(_tokens(a["name"])) == said), None
-    )
+    return next((a["id"] for a in agents if said and " ".join(_tokens(a["name"])) == said), None)
 
 
 def stop_request(text: str, agents: list[dict] | None = None) -> bool:
@@ -487,10 +455,7 @@ def stop_request(text: str, agents: list[dict] | None = None) -> bool:
     if m is None:
         return False
     said = m.group(1) or m.group(2)
-    return (
-        not (m.group("dismiss") and said)
-        or _agent_named(said, agents or []) is not None
-    )
+    return not (m.group("dismiss") and said) or _agent_named(said, agents or []) is not None
 
 
 def stop_bare(text: str) -> bool:
@@ -556,11 +521,7 @@ def ghost_line(text: str, prompt: str | None) -> bool:
         return False
     full = _letters(prompt or "")
     opening = said == GHOST_PREFIX or said.startswith(GHOST_PREFIX + " names")
-    return (
-        opening
-        or said == full
-        or (len(said) >= 12 and len(said.split()) >= 4 and said in full)
-    )
+    return opening or said == full or (len(said) >= 12 and len(said.split()) >= 4 and said in full)
 
 
 def stt_prompt(agent_names: list[str], people_names: list[str]) -> str:

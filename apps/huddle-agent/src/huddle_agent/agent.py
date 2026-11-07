@@ -59,28 +59,11 @@ WRITE_TIMEOUT_S = 3.0
 # The Realtime model's voices. An agent's voice may be one it lacks (one picked for GPT-Live, which had more:
 # "stone", 10-07 rig, a refused session and a second open). That maps to one it has, the same one every time
 # for that name, so two agents still sound different.
-REALTIME_VOICES = (
-    "alloy",
-    "ash",
-    "ballad",
-    "coral",
-    "echo",
-    "sage",
-    "shimmer",
-    "verse",
-    "marin",
-    "cedar",
-)
+REALTIME_VOICES = ("alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "marin", "cedar")
 
 
 def realtime_voice(voice: str) -> str:
-    return (
-        voice
-        if voice in REALTIME_VOICES
-        else REALTIME_VOICES[sum(voice.encode()) % len(REALTIME_VOICES)]
-    )
-
-
+    return voice if voice in REALTIME_VOICES else REALTIME_VOICES[sum(voice.encode()) % len(REALTIME_VOICES)]
 SERVER_VAD = {
     "type": "server_vad",
     "threshold": 0.5,
@@ -125,9 +108,7 @@ WRITER = (
 )
 
 
-_writer: AsyncOpenAI | None = (
-    None  # one client for the whole call, made at the first line: a test has no key
-)
+_writer: AsyncOpenAI | None = None  # one client for the whole call, made at the first line: a test has no key
 
 
 async def write_line(persona: str, event: str) -> str:
@@ -150,9 +131,7 @@ async def write_line(persona: str, event: str) -> str:
             WRITE_TIMEOUT_S,
         )
         line = (r.choices[0].message.content or "").strip()
-        return (
-            "" if line.strip(" .\"'").upper() == "NONE" else line
-        )  # nothing worth saying: silence
+        return "" if line.strip(" .\"'").upper() == "NONE" else line  # nothing worth saying: silence
     except Exception:  # noqa: BLE001 -- no line is better than a late or a made-up one
         logger.warning("huddle driven voice: no line written", exc_info=True)
         return ""
@@ -176,23 +155,15 @@ class _DrivenSession(openai.realtime.RealtimeSession):
     What it said is deleted from the conversation when its response is done: nothing reads it, and a long
     call does not pile it up. An order sent while a cut response is still ending is held until it has ended."""
 
-    _cancelling: asyncio.TimerHandle | None = (
-        None  # a cancel is out and its `response.done` is not in
-    )
+    _cancelling: asyncio.TimerHandle | None = None  # a cancel is out and its `response.done` is not in
     _held: tuple = ()  # the orders waiting for it
     #: Told as each `response.create` is sent (`_create`): the unit's first-sound time counts from then.
     sent: Callable[[], None] | None = None
 
     # ponytail: private API (the plugin builds response.create itself), re-check on livekit-agents upgrades
     def send_event(self, event) -> None:
-        if (
-            isinstance(event, ResponseCancelEvent)
-            and self._cancelling is None
-            and self._current_generation is not None
-        ):
-            self._cancelling = asyncio.get_running_loop().call_later(
-                CANCEL_WAIT_S, self._release
-            )
+        if isinstance(event, ResponseCancelEvent) and self._cancelling is None and self._current_generation is not None:
+            self._cancelling = asyncio.get_running_loop().call_later(CANCEL_WAIT_S, self._release)
         elif isinstance(event, ResponseCreateEvent):
             # every order carries all it needs: the voice never reads the conversation
             _, say, line = (event.response.instructions or "").rpartition(SAY)
@@ -224,11 +195,7 @@ class _DrivenSession(openai.realtime.RealtimeSession):
         said = list(getattr(self._current_generation, "messages", ()))
         super()._handle_response_done(event)
         for item_id in said:
-            super().send_event(
-                ConversationItemDeleteEvent(
-                    type="conversation.item.delete", item_id=item_id
-                )
-            )
+            super().send_event(ConversationItemDeleteEvent(type="conversation.item.delete", item_id=item_id))
         self._release()
 
     def truncate(self, **_kw) -> None:
@@ -299,12 +266,8 @@ class _Unit:
 
     order: int | None
     index: int
-    allowed: Callable[
-        [], bool
-    ]  # the controller's permission, asked again as its first audio, and its first audible audio, is about to go out
-    audible: Callable[[], None] = (
-        lambda: None
-    )  # told once, as its first frame with sound in it goes out
+    allowed: Callable[[], bool]  # the controller's permission, asked again as its first audio, and its first audible audio, is about to go out
+    audible: Callable[[], None] = lambda: None  # told once, as its first frame with sound in it goes out
     frames: int = 0
     seconds: float = 0.0
     loud: float = 0.0  # seconds of frames with sound in them
@@ -312,9 +275,7 @@ class _Unit:
     sounded: float = 0.0  # when the first frame with sound passed (monotonic)
     revoked: bool = False
     limit: float = float("inf")  # seconds of sound it may have (`sound_limit`)
-    stop: Callable[[str], None] = (
-        lambda why: None
-    )  # ends it as failed: "unsent", "no_sound" or "long"
+    stop: Callable[[str], None] = lambda why: None  # ends it as failed: "unsent", "no_sound" or "long"
     why: str = ""  # why it was stopped, if it was
 
 
@@ -331,9 +292,7 @@ class _Mouth(Agent):
                 sound = max(max(data), -min(data)) >= LOUD
                 # Asked at its first frame, and again before its first frame with sound in it: the model may
                 # lead with quiet frames, and a person may begin in that time. The quiet ones between are let by.
-                if m.revoked or (
-                    (not m.frames or sound) and not m.loud and not m.allowed()
-                ):
+                if m.revoked or ((not m.frames or sound) and not m.loud and not m.allowed()):
                     m.revoked = True
                     return
                 m.frames += 1
@@ -371,24 +330,17 @@ class _DrivenLive:
         room: rtc.Room,
         # huddle.on_unit for this agent: (order, index, text, outcome, evidence), one per unit it began
         said=lambda order, index, text, outcome, evidence: None,
-        ended=lambda order,
-        failed: None,  # huddle.on_playback_ended: one `say` is over, by its order id
-        may=lambda order,
-        index: True,  # huddle.may_say: the worker's permission for one unit
-        audible=lambda order,
-        index: None,  # huddle.on_unit_audible: a unit's first sound went to the track
+        ended=lambda order, failed: None,  # huddle.on_playback_ended: one `say` is over, by its order id
+        may=lambda order, index: True,  # huddle.may_say: the worker's permission for one unit
+        audible=lambda order, index: None,  # huddle.on_unit_audible: a unit's first sound went to the track
     ) -> None:
         self.agent_id, self.track_name = agent_id, f"agent-{agent_id}"
         self._session, self._agent, self._room = session, agent, room
         self._said, self._ended, self._may, self._audible = said, ended, may, audible
         self._tail: asyncio.Task | None = None
         self._epoch = 0  # raised by interrupt: a speech order queued under an older one is dropped
-        self._cut_at: float | None = (
-            None  # when the last interrupt was sent, until its audio is known stopped
-        )
-        self._long: str | None = (
-            None  # the unit last stopped as `long`, until it is said or another unit is
-        )
+        self._cut_at: float | None = None  # when the last interrupt was sent, until its audio is known stopped
+        self._long: str | None = None  # the unit last stopped as `long`, until it is said or another unit is
         # The Realtime plugin reports tokens, not session seconds (`session_duration` is 0): wall clock, open to
         # close, is what is counted against the call's budget.
         self._opened, self._closed = time.monotonic(), None
@@ -430,9 +382,7 @@ class _DrivenLive:
                 m.why = why
                 handle.interrupt(force=True)
 
-        def sent() -> (
-            None
-        ):  # its response.create went to the model: the one moment its first sound is timed from
+        def sent() -> None:  # its response.create went to the model: the one moment its first sound is timed from
             nonlocal watch
             watch.cancel()
             watch = loop.call_later(FIRST_SOUND_S, lambda: m.loud or stop("no_sound"))
@@ -440,9 +390,7 @@ class _DrivenLive:
         m.stop = stop
         watch = loop.call_later(SEND_WAIT_S, lambda: stop("unsent"))
         realtime = None
-        with contextlib.suppress(
-            RuntimeError
-        ):  # (no realtime session: SEND_WAIT_S bounds it)
+        with contextlib.suppress(RuntimeError):  # (no realtime session: SEND_WAIT_S bounds it)
             realtime = self._agent.realtime_llm_session
             realtime.sent = sent
         handle = self._session.generate_reply(instructions=SAY + unit)
@@ -459,9 +407,7 @@ class _DrivenLive:
             outcome = "long"
         elif m.why or (not handle.interrupted and m.loud < AUDIBLE_S):
             outcome = "silent"
-            m.why = m.why or (
-                "quiet" if m.frames else "no_frames"
-            )  # it ended uncut: frames with no sound, or none
+            m.why = m.why or ("quiet" if m.frames else "no_frames")  # it ended uncut: frames with no sound, or none
         else:
             outcome = "cut" if handle.interrupted else "said"
         evidence = {
@@ -469,30 +415,21 @@ class _DrivenLive:
             "audioMs": round(m.seconds * 1000),
             "loudMs": round(m.loud * 1000),
             # what the room can have heard: frames may pass here ahead of their playout, and a cut drops those
-            "heardMs": round(min(m.loud, time.monotonic() - m.sounded) * 1000)
-            if m.loud
-            else 0,
+            "heardMs": round(min(m.loud, time.monotonic() - m.sounded) * 1000) if m.loud else 0,
             "leadMs": round(m.lead * 1000),
             "tookMs": round((time.monotonic() - began) * 1000),
         }
         if m.why:
             evidence["why"] = m.why
         if free and m.loud > limit:
-            evidence["overMs"] = round(
-                (m.loud - limit) * 1000
-            )  # past the limit its last try was stopped at
-            logger.warning(
-                "huddle driven voice: a unit ran %d ms over its sound limit on its second try",
-                evidence["overMs"],
-            )
+            evidence["overMs"] = round((m.loud - limit) * 1000)  # past the limit its last try was stopped at
+            logger.warning("huddle driven voice: a unit ran %d ms over its sound limit on its second try", evidence["overMs"])
         if outcome == "long":
             self._long = unit
         elif outcome == "said" or not free:
             self._long = None
         if self._cut_at is not None and outcome != "said":
-            evidence["stopMs"] = round(
-                (time.monotonic() - self._cut_at) * 1000
-            )  # interrupt sent -> audio stopped
+            evidence["stopMs"] = round((time.monotonic() - self._cut_at) * 1000)  # interrupt sent -> audio stopped
         self._cut_at = None
         self._said(order, index, unit, outcome, evidence)
         return outcome
@@ -523,12 +460,7 @@ class _DrivenLive:
 
     def append_instructions(self, text: str) -> None:
         # Part of the session's instructions, so a reconnect, which sends them again, keeps the rule.
-        self._order(
-            lambda: self._agent.update_instructions(
-                f"{self._agent.instructions}\n\n{text}"
-            ),
-            keep=True,
-        )
+        self._order(lambda: self._agent.update_instructions(f"{self._agent.instructions}\n\n{text}"), keep=True)
 
     def interrupt(self):
         self._epoch += 1
@@ -536,9 +468,7 @@ class _DrivenLive:
         return self._session.interrupt(force=True)
 
     def usage_seconds(self) -> float:
-        return (
-            self._closed if self._closed is not None else time.monotonic()
-        ) - self._opened
+        return (self._closed if self._closed is not None else time.monotonic()) - self._opened
 
     def _stop(self) -> None:
         if self._closed is None:
@@ -555,9 +485,7 @@ class _DrivenLive:
         self._stop()
         if self.kept is None or self.kept.get(self.agent_id) is not self:
             return await self.close()
-        with contextlib.suppress(
-            RuntimeError
-        ):  # (a session that is not running has nothing to stop)
+        with contextlib.suppress(RuntimeError):  # (a session that is not running has nothing to stop)
             self.interrupt()
 
     def reopen(self) -> _DrivenLive:
@@ -593,9 +521,7 @@ def room_options(agent_id: str, speaker: str) -> room_io.RoomOptions:
     )
 
 
-async def _open(
-    session: AgentSession, agent: Agent, room, huddle: Huddle, agent_id, speaker
-) -> None:
+async def _open(session: AgentSession, agent: Agent, room, huddle: Huddle, agent_id, speaker) -> None:
     """Start `session` in the room, reporting its state to the huddle. What it said it reports itself, unit by
     unit (`_DrivenLive._speak`)."""
     session.on(
@@ -616,15 +542,11 @@ async def _open(
         raise
 
 
-async def _start_driven(
-    room, huddle: Huddle, agent_id, persona, voice, speaker, seed
-) -> _DrivenLive:
+async def _start_driven(room, huddle: Huddle, agent_id, persona, voice, speaker, seed) -> _DrivenLive:
     agent = _Mouth(instructions=f"{persona}\n\n{DRIVEN}", chat_ctx=_seeded(seed))
     # turn_detection=None and no audio input: nothing but an order makes it speak. No vad: nothing to detect.
     session = AgentSession(
-        llm=_DrivenModel(
-            model="gpt-realtime", voice=realtime_voice(voice), turn_detection=None
-        )
+        llm=_DrivenModel(model="gpt-realtime", voice=realtime_voice(voice), turn_detection=None)
     )
     await _open(session, agent, room, huddle, agent_id, speaker)
     live = _DrivenLive(
@@ -644,9 +566,7 @@ async def _start_driven(
     def closed(_ev) -> None:
         live._stop()  # billed to here, whoever closed it
         if live.kept is not None and live.kept.get(agent_id) is live:
-            del live.kept[
-                agent_id
-            ]  # a kept mouth that died: the next one is opened new
+            del live.kept[agent_id]  # a kept mouth that died: the next one is opened new
         huddle.on_live_closed(live)
 
     session.on("close", closed)
@@ -654,15 +574,7 @@ async def _start_driven(
 
 
 async def start_live(
-    room,
-    huddle: Huddle,
-    *,
-    agent_id,
-    persona,
-    voice,
-    speaker,
-    seed,
-    mouths: dict | None = None,
+    room, huddle: Huddle, *, agent_id, persona, voice, speaker, seed, mouths: dict | None = None
 ) -> _DrivenLive:
     """Every voice is a mouth: the worker listens, /route and the agent decide, the voice says it. `mouths`: the
     call's mouths by agent. An agent's mouth opens once in a call and is kept until the call ends
@@ -674,20 +586,12 @@ async def start_live(
         if (live := mouths.get(agent_id)) is not None and live._closed is not None:
             return live.reopen()
         live = mouths[agent_id] = await start_live(
-            room,
-            huddle,
-            agent_id=agent_id,
-            persona=persona,
-            voice=voice,
-            speaker=speaker,
-            seed=seed,
+            room, huddle, agent_id=agent_id, persona=persona, voice=voice, speaker=speaker, seed=seed
         )
         live.kept = mouths
         return live
     try:
-        return await _start_driven(
-            room, huddle, agent_id, persona, voice, speaker, seed
-        )
+        return await _start_driven(room, huddle, agent_id, persona, voice, speaker, seed)
     except Exception:
         if voice == FALLBACK_VOICE:
             raise
@@ -699,9 +603,7 @@ async def start_live(
             exc_info=True,
         )
         emit_metric("live.voice.fallback", 1, "Count")
-        return await _start_driven(
-            room, huddle, agent_id, persona, FALLBACK_VOICE, speaker, seed
-        )
+        return await _start_driven(room, huddle, agent_id, persona, FALLBACK_VOICE, speaker, seed)
 
 
 def person(p: rtc.Participant) -> bool:
@@ -709,10 +611,7 @@ def person(p: rtc.Participant) -> bool:
     older Recall bot) counts; the bot's own page (`meetbot:<roomId>`) publishes no audio and is nobody."""
     if p.identity.startswith("meetbot:"):
         return False
-    return (
-        p.kind == rtc.ParticipantKind.PARTICIPANT_KIND_STANDARD
-        or p.identity.startswith("meet:")
-    )
+    return p.kind == rtc.ParticipantKind.PARTICIPANT_KIND_STANDARD or p.identity.startswith("meet:")
 
 
 class _Room:
@@ -746,40 +645,26 @@ async def _on_request(req: JobRequest) -> None:
 # Dockerfile sets LIVEKIT_AGENT_NAME=lightbulb-huddle so both agree. Drop this kwarg once it is removed.
 # HUDDLE_RIG_AGENT_NAME: the multi-voice test rig runs this worker on a laptop under its own dispatch name, so no
 # real call reaches it. Unset everywhere else.
-@server.rtc_session(
-    agent_name=os.environ.get("HUDDLE_RIG_AGENT_NAME", "lightbulb-huddle"),
-    on_request=_on_request,
-)
+@server.rtc_session(agent_name=os.environ.get("HUDDLE_RIG_AGENT_NAME", "lightbulb-huddle"), on_request=_on_request)
 async def entrypoint(ctx: JobContext) -> None:
     meta = json.loads(ctx.job.metadata)
     # A Google Meet: one listening Gemini Live session (meet.py). MEET_ENGINE=huddle is the old mouths, until
     # the new one has a live meeting behind it.
-    if (
-        meta.get("source") == "meet"
-        and os.environ.get("MEET_ENGINE", "gemini") == "gemini"
-    ):
+    if meta.get("source") == "meet" and os.environ.get("MEET_ENGINE", "gemini") == "gemini":
         return await meet.run(ctx, meta)
     started = time.monotonic()
     usage = {"stt": 0.0}
     emitted = {"stt": 0.0, "agent": 0.0, "gptlive": 0.0}
-    recorder = record.start(
-        meta["roomId"]
-    )  # HUDDLE_RECORD_DIR: this call's inputs, for an offline replay
-    backend = recorder.backend(
-        Backend(meta["roomId"], meta["ownerId"], meta["roomToken"])
-    )
+    recorder = record.start(meta["roomId"])  # HUDDLE_RECORD_DIR: this call's inputs, for an offline replay
+    backend = recorder.backend(Backend(meta["roomId"], meta["ownerId"], meta["roomToken"]))
     # streaming: interims tell a listening sound from words as they come (huddle `_only_listening`)
-    stt_engine = openai.STT(
-        model="gpt-4o-mini-transcribe", use_realtime=True, turn_detection=MEET_VAD
-    )
+    stt_engine = openai.STT(model="gpt-4o-mini-transcribe", use_realtime=True, turn_detection=MEET_VAD)
 
     @stt_engine.on("metrics_collected")
     def _stt_metrics(m) -> None:
         usage["stt"] += m.audio_duration
 
-    mouths: dict[
-        str, _DrivenLive
-    ] = {}  # each agent's mouth, open from its first line to the end of the call
+    mouths: dict[str, _DrivenLive] = {}  # each agent's mouth, open from its first line to the end of the call
 
     async def live_factory(**kw) -> _DrivenLive:
         return await start_live(ctx.room, huddle, mouths=mouths, **kw)
@@ -837,9 +722,7 @@ async def entrypoint(ctx: JobContext) -> None:
 
     async def transcribe(track: rtc.Track, p: rtc.RemoteParticipant) -> None:
         stream = stt_engine.stream()
-        audio = rtc.AudioStream.from_track(
-            track=track, noise_cancellation=noise_filter()
-        )
+        audio = rtc.AudioStream.from_track(track=track, noise_cancellation=noise_filter())
 
         async def push() -> None:
             async for ev in audio:
@@ -859,23 +742,13 @@ async def entrypoint(ctx: JobContext) -> None:
                     if not ev.alternatives:
                         continue
                     if ev.type == stt.SpeechEventType.FINAL_TRANSCRIPT:
-                        await huddle.on_final_transcript(
-                            p.identity, p.name or p.identity, ev.alternatives[0].text
-                        )
-                    elif (
-                        ev.type == stt.SpeechEventType.INTERIM_TRANSCRIPT
-                    ):  # use_realtime: cumulative, ~0.5 s apart
-                        huddle.on_interim_transcript(
-                            p.identity, p.name or p.identity, ev.alternatives[0].text
-                        )
-                except (
-                    Exception
-                ):  # one bad event never ends this person's transcription
+                        await huddle.on_final_transcript(p.identity, p.name or p.identity, ev.alternatives[0].text)
+                    elif ev.type == stt.SpeechEventType.INTERIM_TRANSCRIPT:  # use_realtime: cumulative, ~0.5 s apart
+                        huddle.on_interim_transcript(p.identity, p.name or p.identity, ev.alternatives[0].text)
+                except Exception:  # one bad event never ends this person's transcription
                     logger.exception("huddle transcript handling failed")
         except Exception:
-            huddle.stt_stopped(
-                p.identity
-            )  # no transcriber now: nobody is held as talking
+            huddle.stt_stopped(p.identity)  # no transcriber now: nobody is held as talking
             raise
         finally:
             await utils.aio.cancel_and_wait(pusher)
@@ -923,12 +796,8 @@ async def entrypoint(ctx: JobContext) -> None:
         await (
             huddle.clear_presence()
         )  # first: a stale "Live" marker outlives everything below
-        await huddle.end_exchange(
-            force=True
-        )  # a request still open must not hold the call's window
-        for live in list(
-            mouths.values()
-        ):  # the last person left: the kept mouths close with the call
+        await huddle.end_exchange(force=True)  # a request still open must not hold the call's window
+        for live in list(mouths.values()):  # the last person left: the kept mouths close with the call
             with contextlib.suppress(Exception):
                 await live.close()
         flush_metrics()
@@ -958,12 +827,8 @@ async def entrypoint(ctx: JobContext) -> None:
     # LiveKit sends a participant's attribute changes at once only while it publishes a track; one that does
     # not is batched every 3 s (measured on the rig: a tile went to "working" 3.0 s after the worker wrote it).
     # The worker publishes only while a voice is open, so it holds one silent track for its whole job.
-    presence = rtc.LocalAudioTrack.create_audio_track(
-        "presence", rtc.AudioSource(48000, 1)
-    )
-    await ctx.room.local_participant.publish_track(
-        presence, rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_UNKNOWN)
-    )
+    presence = rtc.LocalAudioTrack.create_audio_track("presence", rtc.AudioSource(48000, 1))
+    await ctx.room.local_participant.publish_track(presence, rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_UNKNOWN))
     # (no talk_end: the clients stopped sending it, and a voice that only says what it is ordered to has no
     # use for a release)
     ctx.room.local_participant.register_rpc_method("talk_start", rpc_talk)

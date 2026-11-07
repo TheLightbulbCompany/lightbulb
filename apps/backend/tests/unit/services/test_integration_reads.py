@@ -82,13 +82,20 @@ async def test_unconnected_or_unknown_provider(env):
     assert await ir.read(WS, "salesforce", "x") == "salesforce is not connected."
 
 
-async def test_a_failed_google_grant_fetch_says_ask_again(env):
-    assert await ir.read(WS, "gmail", "invoice") == ir.GOOGLE_RETRY  # connected row, the grant fetch failed
+async def test_google_refresh_failure_says_ask_again_a_missing_grant_says_not_connected(env):
+    ir.access_token.get.side_effect = ValueError("google: refresh failed (HTTPStatusError)")
+    assert await ir.read(WS, "gmail", "invoice") == ir.GOOGLE_RETRY
+    ir.access_token.get.side_effect = ValueError("google: no exportable grant in the workspace keyring")
+    assert await ir.read(WS, "gmail", "invoice") == ir.GOOGLE_OFF
 
 
 async def test_a_slow_token_fetch_is_not_cut_by_the_read_budget(env):
-    async def cold(ws, key):
-        await asyncio.sleep(0.2)  # a cold grant, longer than READ_S below
+    warm = []
+
+    async def cold(ws, key):  # like google_grant: slow once (longer than READ_S below), then cached
+        if not warm:
+            await asyncio.sleep(0.2)
+            warm.append(1)
         return "g"
 
     ir.access_token.get.side_effect = cold
@@ -97,9 +104,9 @@ async def test_a_slow_token_fetch_is_not_cut_by_the_read_budget(env):
     )
     with patch.object(ir, "READ_S", 0.1):
         assert await ir.read(WS, "calendar", "") == "Standup at 2026-11-09T09:00"
+        warm.clear()
         with patch.object(ir, "TOKEN_S", 0.05):
             assert await ir.read(WS, "calendar", "") == ir.GOOGLE_RETRY
-    assert ir._prefetched == {}
 
 
 async def test_warm_google_never_raises(env):

@@ -27,18 +27,7 @@ INPUTS = (
     "stt_stopped", "on_data", "on_agent_state", "on_agent_said", "on_unit", "on_unit_audible",
     "on_playback_ended", "may_say", "on_live_closed", "talk_start", "tick",
 )  # fmt: skip
-CALLS = (
-    "team",
-    "route",
-    "summon",
-    "session",
-    "turn",
-    "abort",
-    "no_post",
-    "late_answer",
-    "end",
-    "leave_meeting",
-)
+CALLS = ("team", "route", "summon", "session", "turn", "abort", "no_post", "late_answer", "end", "leave_meeting")
 # The transcript is the controller's own record, sent back to the backend: an output, and most of the bytes.
 DROPPED_ARGS = ("transcript",)
 _SECRET = re.compile(r"token|secret|password|authorization|api_?key|url|uri", re.I)
@@ -70,18 +59,12 @@ def _clean(x: Any) -> Any:
 
 class Recorder:
     def __init__(self, path: str, clock=time.monotonic) -> None:
-        self._f = open(
-            path, "a", buffering=1
-        )  # line buffered: a killed worker loses nothing written
+        self._f = open(path, "a", buffering=1)  # line buffered: a killed worker loses nothing written
         self._depth, self.clock = 0, clock
-        self.write(
-            "start", wall=time.time()
-        )  # the one wall-clock time: where the rig's own clock lines up
+        self.write("start", wall=time.time())  # the one wall-clock time: where the rig's own clock lines up
 
     def write(self, k: str, **fields) -> None:
-        self._f.write(
-            json.dumps({"t": round(self.clock(), 4), "k": k, **_clean(fields)}) + "\n"
-        )
+        self._f.write(json.dumps({"t": round(self.clock(), 4), "k": k, **_clean(fields)}) + "\n")
 
     def _tap(self, name: str, fn):
         sig = inspect.signature(fn)
@@ -127,12 +110,7 @@ class Recorder:
                 r = await fn(*a, **kw)
                 return r
             finally:
-                self.write(
-                    k,
-                    ms=round((self.clock() - began) * 1000),
-                    ok=r is not None,
-                    **keep(kw, r),
-                )
+                self.write(k, ms=round((self.clock() - began) * 1000), ok=r is not None, **keep(kw, r))
 
         return call
 
@@ -141,9 +119,7 @@ class Recorder:
 
     def writer(self, fn):
         async def write(persona: str, event: str) -> str:
-            return await self.timed(
-                "write", fn, lambda kw, r: {"event": event, "reply": r}
-            )(persona, event)
+            return await self.timed("write", fn, lambda kw, r: {"event": event, "reply": r})(persona, event)
 
         return write
 
@@ -162,29 +138,16 @@ class _Backend:
 
         async def call(*a, **kw):
             began = self._rec.clock()
-            args = {
-                k: v
-                for k, v in sig.bind(*a, **kw).arguments.items()
-                if k not in DROPPED_ARGS
-            }
+            args = {k: v for k, v in sig.bind(*a, **kw).arguments.items() if k not in DROPPED_ARGS}
             out: dict = {}
             try:
                 out["reply"] = r = await fn(*a, **kw)
                 return r
             except Exception as e:
-                out["error"] = {
-                    "status": getattr(e, "status", 0),
-                    "code": getattr(e, "code", type(e).__name__),
-                }
+                out["error"] = {"status": getattr(e, "status", 0), "code": getattr(e, "code", type(e).__name__)}
                 raise
             finally:
-                self._rec.write(
-                    "call",
-                    m=name,
-                    args=args,
-                    ms=round((self._rec.clock() - began) * 1000),
-                    **out,
-                )
+                self._rec.write("call", m=name, args=args, ms=round((self._rec.clock() - began) * 1000), **out)
 
         return call
 

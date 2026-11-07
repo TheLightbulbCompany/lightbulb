@@ -91,7 +91,11 @@ def discloses(text: str, greeting: str, assistant: str) -> bool:
     assistant and says "AI assistant" and "recorded", as whole words ("Ava" isn't in "available"), never denied
     ("not recorded", "isn't being recorded")."""
     t = f" {_norm(text)} "
-    if re.search(r" (not|never|t) (be |being )?recorded ", t):  # "isn't" normalizes to "isn t"
+    # "isn't" normalizes to "isn t"; up to three words between the denial and "recorded" ("not going to be recorded")
+    if re.search(
+        r" (not|never|no|nothing|t)( \w+){0,3} recorded |\bno part of\b.*\brecorded\b",
+        t,
+    ):
         return False
     return t.strip() == _norm(greeting) or all(
         f" {_norm(w)} " in t for w in (assistant, "AI assistant", "recorded")

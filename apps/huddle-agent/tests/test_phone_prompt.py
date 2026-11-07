@@ -219,6 +219,21 @@ def test_the_disclosure_matches_whole_words_and_not_a_denial():
     assert not phone.discloses(
         "This is Ava, an AI assistant. This call is not recorded.", "x", "Ava"
     )
-    assert not phone.discloses(
-        "This is Ava, an AI assistant, and this call isn't being recorded.", "x", "Ava"
-    )
+    for denial in (
+        "this call isn't being recorded.",
+        "This call is not going to be recorded.",
+        "This call isn't currently recorded.",
+        "This call is not ever recorded.",
+        "This call is not really recorded.",
+        "Nothing is recorded.",
+        "No part of this call is recorded.",
+        "This call won’t be recorded.",
+    ):
+        assert not phone.discloses(
+            f"This is Ava, an AI assistant. {denial}", "x", "Ava"
+        ), denial
+    for ok in (
+        "Not a problem, this call is recorded.",
+        "Don't worry, this call is recorded.",
+    ):
+        assert phone.discloses(f"This is Ava, an AI assistant. {ok}", "x", "Ava"), ok

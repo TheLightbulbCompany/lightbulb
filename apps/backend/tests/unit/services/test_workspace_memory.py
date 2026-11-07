@@ -428,3 +428,21 @@ async def test_member_wipe_covers_private_turns_and_private_tasks(monkeypatch, c
         "/turns/org_x:user_a/",
         "/tasks/org_x:user_a/",
     }
+
+
+def test_expire_old_turns_deletes_only_turns_past_retention_in_batches():
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime(2026, 11, 8, tzinfo=UTC)
+    old = now - timedelta(days=workspace_memory.TURN_RETENTION_DAYS, seconds=1)
+    fresh = now - timedelta(days=workspace_memory.TURN_RETENTION_DAYS - 1)
+    records = [{"memoryRecordId": f"old{i}", "createdAt": old} for i in range(150)] + [
+        {"memoryRecordId": "fresh", "createdAt": fresh}
+    ]
+    client = MagicMock()
+    client.list_memory_records.return_value = {"memoryRecordSummaries": records}
+    assert workspace_memory.expire_old_turns(client, "mem", now) == 150
+    client.list_memory_records.assert_called_once_with(memoryId="mem", namespacePath="/turns/")
+    batches = [c.kwargs["records"] for c in client.batch_delete_memory_records.call_args_list]
+    assert [len(b) for b in batches] == [100, 50]
+    assert {"memoryRecordId": "fresh"} not in [r for b in batches for r in b]

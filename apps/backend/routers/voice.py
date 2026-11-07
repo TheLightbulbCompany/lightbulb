@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from datetime import datetime
 from typing import Any
 
@@ -127,6 +128,12 @@ async def put_agent(body: AgentConfigIn, auth: AuthContext = Depends(get_current
     if body.config.get("live") and greeting.strip() and not (_AI.search(greeting) and _RECORDED.search(greeting)):
         # The recording and AI-disclosure laws want both, and the page is not the only writer.
         raise HTTPException(status_code=422, detail={"code": "greeting_needs_disclosure"})
+    tz = body.config.get("timezone")
+    if tz:
+        try:
+            ZoneInfo(str(tz))
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail={"code": "timezone_invalid"}) from exc
     handoff = body.config.get("handoff")
     if isinstance(handoff, dict) and handoff.get("number"):
         number = _e164(handoff["number"]) if isinstance(handoff["number"], str) else None

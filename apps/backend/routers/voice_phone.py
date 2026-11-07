@@ -13,11 +13,13 @@ Rows in the messaging table:
     OWNER#<owner>   VOICECALLER#<e164>    a caller seen before: name, last call
 """
 
+import functools
 import hashlib
+import logging
 import uuid
 from datetime import datetime, timedelta
 from typing import Annotated, Literal
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
@@ -31,6 +33,7 @@ from routers.huddles import _Worker
 from routers.voice import _e164
 from routers.internal_automations import VoiceStartIn, start_voice_work
 
+logger = logging.getLogger(__name__)
 router = APIRouter(dependencies=[_Worker])
 
 _Str = Annotated[str, Field(min_length=1, max_length=500)]
@@ -58,7 +61,7 @@ DEFAULTS: dict = {
     "handoff": {"number": "", "onlyOpenHours": True},
     "forwardFrom": "",
 }
-_TZ = ZoneInfo("America/New_York")  # ponytail: one zone until the Agent page asks for the business's own
+_TZ = ZoneInfo("America/New_York")  # the call clock (startedAt, step times); bookings and hours use _tz(cfg)
 _GRID = timedelta(minutes=30)  # slot starts every half hour
 
 
@@ -341,8 +344,17 @@ async def _taken(owner_id: str, date: str) -> list[tuple[datetime, datetime]]:
     return out
 
 
+@functools.cache
+def _zone(name: str) -> ZoneInfo:
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):  # a bad stored name must not 500 every call
+        logger.warning("unknown business timezone %r; using America/New_York", name)
+        return _TZ
+
+
 def _tz(cfg: dict) -> ZoneInfo:
-    return ZoneInfo(cfg.get("timezone") or "America/New_York")
+    return _zone(cfg.get("timezone") or "America/New_York")
 
 
 def _now(cfg: dict) -> datetime:
@@ -399,7 +411,7 @@ async def _book(owner_id: str, call_id: str, call: dict, cfg: dict, start: str, 
     for c in cells:
         put = {
             "TableName": table,
-            "Item": {"pk": pk, "sk": c, "booking": sk},
+            "Item": {"pk": pk, "sk": c, "booking": sk, "expiresAt": _cell_expiry(c)},
             "ConditionExpression": "attribute_not_exists(sk)",
         }
         if c in mine:  # the booking being moved holds it now and gives it up in this same transaction
@@ -418,6 +430,11 @@ async def _book(owner_id: str, call_id: str, call: dict, cfg: dict, start: str, 
         if messaging_repo.is_cancelled(exc):
             raise _err(409, "slot_taken") from exc
         raise
+
+
+def _cell_expiry(cell: str) -> int:  # the table's TTL attribute: the cell's end + 1 day
+    t = datetime.strptime(cell.removeprefix("VOICECELL#"), "%Y-%m-%dT%H:%M").replace(tzinfo=ZoneInfo("UTC"))
+    return int(t.timestamp()) + 300 + 86400
 
 
 def _release(table: str, pk: str, row: dict, keep: set[str] = frozenset()) -> list[dict]:

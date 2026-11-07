@@ -288,3 +288,27 @@ async def test_a_booking_over_eight_hours_is_refused(client):
     body = {"start": f"{_tomorrow()}T01:00", "service": "bridal", "name": "Priya"}
     r = client.post(f"/api/v1/internal/voice/calls/{call['callId']}/book", json=body, headers=W)
     assert r.status_code == 400 and r.json()["detail"]["code"] == "booking_too_long"
+
+
+async def test_bad_stored_timezone_falls_back(client):
+    call = await _start(client, timezone="Mars/Olympus")
+    base = f"/api/v1/internal/voice/calls/{call['callId']}"
+    day = _tomorrow()
+    r = client.post(f"{base}/availability", json={"date": day, "service": "gel"}, headers=W)
+    assert r.status_code == 200 and f"{day}T10:00" in r.json()["slots"]
+    body = {"start": f"{day}T11:00", "service": "gel manicure", "name": "Priya"}
+    assert client.post(f"{base}/book", json=body, headers=W).status_code == 200
+    cell = await messaging_repo._get(messaging_repo.owner_pk("org_1"), "VOICECELL#" + _utc(day, "11:00"))
+    assert (
+        cell["expiresAt"]
+        == int(datetime.strptime(_utc(day, "11:00"), "%Y-%m-%dT%H:%M").replace(tzinfo=timezone.utc).timestamp())
+        + 300
+        + 86400
+    )
+
+
+def _utc(day: str, hm: str) -> str:  # New York wall time -> the UTC cell key
+    from zoneinfo import ZoneInfo
+
+    t = datetime.strptime(f"{day}T{hm}", "%Y-%m-%dT%H:%M").replace(tzinfo=ZoneInfo("America/New_York"))
+    return t.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M")

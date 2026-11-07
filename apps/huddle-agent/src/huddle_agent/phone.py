@@ -193,19 +193,22 @@ class Backend:
         self.call_id = ""
 
     async def post(self, path: str, body: dict | None = None) -> dict:
+        sent = time.monotonic()
         r = await self._http.post(
             path
             if path.startswith("/")
             else f"/internal/voice/calls/{self.call_id}/{path}",
             json=body or {},
         )
+        ms = int((time.monotonic() - sent) * 1000)  # a tool turn's backend share (no call content logged)
         if r.is_success:
+            logger.info("phone %s: %s -> %s in %d ms", self.call_id, path, r.status_code, ms)
             return r.json()
         try:
             detail = r.json().get("detail")
         except ValueError:
             detail = None
-        logger.info("phone %s: %s -> %s %s", self.call_id, path, r.status_code, str(detail)[:200])
+        logger.info("phone %s: %s -> %s in %d ms %s", self.call_id, path, r.status_code, ms, str(detail)[:200])
         return {
             "error": (detail or {}).get("code", f"http_{r.status_code}")
             if isinstance(detail, dict)

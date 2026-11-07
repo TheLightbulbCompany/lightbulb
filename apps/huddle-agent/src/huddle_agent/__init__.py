@@ -33,6 +33,8 @@ def usage_log(session, what: str) -> None:
         n["cached_text"] += c.text_tokens if c else 0
         n["out_audio"] += o.audio_tokens
         n["out_text"] += o.text_tokens
+        # each response's time to first token and length: a slow tool turn split into model and backend time
+        logging.getLogger("huddle_agent").info("%s response ttft %.2f s, %.2f s", what, m.ttft, m.duration)
 
     session.on("metrics_collected", add)
     session.on("close", lambda _ev: logging.getLogger("huddle_agent").info("%s usage %s", what, n))

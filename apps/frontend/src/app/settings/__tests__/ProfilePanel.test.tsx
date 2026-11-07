@@ -170,8 +170,8 @@ describe("ProfilePanel — delete account", () => {
   });
 });
 
-// Covers WorkspaceExportCard: only a 200 ZIP is saved; a 202 (workspace still
-// provisioning, JSON body) shows a retry message and records no export.
+// Covers WorkspaceExportCard: only a 200 NDJSON body is saved; an error shows
+// the retry message and records no export.
 const analytics = vi.hoisted(() => ({ capture: vi.fn() }));
 vi.mock("@/lib/analytics", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/analytics")>()),
@@ -190,11 +190,11 @@ describe("ProfilePanel — workspace export", () => {
     vi.stubGlobal("fetch", fetchMock);
   });
 
-  it("does not save a 202 provisioning response as the ZIP", async () => {
+  it("does not save an error response as the export", async () => {
     fetchMock.mockImplementation(async (url: string) =>
-      String(url).includes("/teams/workspace/export")
-        ? new Response(JSON.stringify({ status: "provisioning" }), {
-            status: 202,
+      String(url).includes("/tasks/export")
+        ? new Response(JSON.stringify({ detail: { code: "not_found" } }), {
+            status: 404,
             headers: { "Content-Type": "application/json" },
           })
         : new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } }),
@@ -202,11 +202,7 @@ describe("ProfilePanel — workspace export", () => {
     render(<SettingsPage />);
     fireEvent.click(screen.getByRole("button", { name: /^download$/i }));
 
-    await waitFor(() =>
-      expect(
-        screen.getByText("Your workspace is still setting up. Try again in a minute."),
-      ).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText(/couldn't prepare your export/i)).toBeInTheDocument());
     expect(analytics.capture).not.toHaveBeenCalledWith("workspace_export_downloaded");
   });
 });

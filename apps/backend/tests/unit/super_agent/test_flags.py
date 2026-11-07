@@ -49,8 +49,6 @@ def test_no_other_reader():
     allowed = {
         BACKEND / "core" / "services" / "super_agent_flags.py",
         BACKEND / "core" / "config.py",  # declares the setting
-        # asks flags_for in arm_nightly_ceo; "super_agent" there is only the nightly_ceo.arm metric's status label
-        BACKEND / "core" / "services" / "user_provision.py",
     }
     pattern = re.compile(r"SUPER_AGENT_ENV_ENABLED|[\"']super_agent[\"']")
     offenders = [

@@ -80,18 +80,16 @@ async def _seed_owner_paperclip(owner_id: str) -> int:
     without an email claim; passing it in avoids a redundant second lookup
     inside the helper.
 
-    After the seed, ``arm_nightly_ceo`` arms the CEO's timer heartbeat on the
-    freshly seeded company. It is gated INSIDE on ``should_arm_nightly_ceo`` — paid
-    OR an unexpired ``trial_local``; an expired trial is a no-op — and arming
-    here, not only on a UI poll, is what makes it deterministic for org
-    first-provisions and trial→paid conversions, both of which reach this
-    executor. Its failures classify exactly like the seed's.
+    After the seed, ``proactive.ensure`` starts the workspace's proactive layer
+    (first ideas, then the paying-only automations); its failure is logged, not
+    classified: the daily schedule reconcile ensures it again.
     """
     from core.auth import is_org_owner_id
     from core.repositories.container_repo import classify_provision_error
     from core.services import clerk_admin
     from core.services.paperclip_owner_email import lookup_owner_email
-    from core.services.user_provision import _ensure_paperclip_for_org, arm_nightly_ceo
+    from core.services import proactive
+    from core.services.user_provision import _ensure_paperclip_for_org
 
     if not is_org_owner_id(owner_id):
         logger.error("seed step 0: owner %s is not a workspace (org) — refusing to provision", owner_id)
@@ -118,11 +116,14 @@ async def _seed_owner_paperclip(owner_id: str) -> int:
         # falls through to the JOIN path and no-ops on the creator's already
         # -active owner row.
         await _ensure_paperclip_for_org(org_id=owner_id, user_id=creator_user_id, email=owner_email, is_admin=True)
-        await arm_nightly_ceo(owner_id)
     except Exception as exc:  # noqa: BLE001 — classified into the exit-code ABI
         logger.exception("seed step 0 (owner paperclip) failed for owner %s", owner_id)
         _, retryable = classify_provision_error(exc)
         return EXIT_TRANSIENT if retryable else EXIT_DETERMINISTIC
+    try:
+        await proactive.ensure(owner_id)
+    except Exception:  # noqa: BLE001 -- the daily schedule reconcile ensures it again
+        logger.exception("seed step 0: proactive ensure failed for owner %s", owner_id)
     return EXIT_OK
 
 

@@ -395,7 +395,7 @@
   text-decoration: none;
   cursor: pointer;
 }
-.workspace-rail > button span { font-size: var(--text-2xs); font-weight: 500; }
+.workspace-rail > button span, .workspace-rail > a > span { font-size: var(--text-2xs); font-weight: 500; }
 .workspace-rail .workspace-rail__icon { position: relative; display: inline-flex; }
 .workspace-rail .workspace-rail__activity-badge {
   position: absolute;

@@ -1228,34 +1228,6 @@ async def claim_front_desk(owner_id: str, *, stale_before: str | None = None) ->
     return int(resp["Attributes"].get("front_desk_gen") or 0)
 
 
-async def set_nightly_ceo_opted_out(owner_id: str, opted_out: bool) -> None:
-    """Set/clear the durable nightly-CEO opt-out flag.
-
-    Written from the Teams routine PATCH hook when the owner pauses/archives
-    (opt-out True) or re-activates (opt-out False) the nightly CEO routine.
-    Because billing is PRESERVED across a full reprovision (the container +
-    Paperclip company are wiped, the billing row is not), this flag is what
-    makes the owner's opt-out survive a company wipe — the arm step reads it on
-    the fresh company and declines to re-seed.
-
-    Same existing-row condition as the other billing-row setters; a missing row
-    (never a paid owner, so never armed) is a silent no-op.
-    """
-    table = _get_table()
-    try:
-        await run_in_thread(
-            table.update_item,
-            Key={"owner_id": owner_id},
-            UpdateExpression="SET nightly_ceo_opted_out = :o, updated_at = :t",
-            ExpressionAttributeValues={":o": bool(opted_out), ":t": utc_now_iso()},
-            ConditionExpression="attribute_exists(owner_id)",
-        )
-    except ClientError as e:
-        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return
-        raise
-
-
 async def clear_provider_choice(owner_id: str) -> None:
     """Remove provider_choice, byo_provider, and oauth_connector_user_id from
     a billing row.

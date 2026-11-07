@@ -2,7 +2,8 @@
 
 import "./workspace.css";
 import { UserButton } from "@clerk/nextjs";
-import { Bell, HelpCircle, Home, LayoutGrid, MessageSquare, Search, Settings, Users } from "lucide-react";
+import { Bell, HelpCircle, Home, LayoutGrid, MessageSquare, PhoneCall, Search, Settings, Users } from "lucide-react";
+import Link from "next/link";
 import { useSupport } from "@/components/support/SupportProvider";
 import { useCommandPalette } from "@/components/teams/command-palette/CommandPaletteProvider";
 import { recordMessagesNavigation } from "./chatHistory";
@@ -67,6 +68,8 @@ export function WorkspaceHeader({ chatReady = true, onNavigate }: {
           <span>{label}</span>
         </button>;
       })}
+      {/* The voice product (spec 2026-11-07 §5): its own four places at /voice. */}
+      <Link href="/voice" aria-label="Voice" title="Voice"><PhoneCall size={20} aria-hidden="true" /><span>Voice</span></Link>
       <div className="workspace-rail__spacer" />
       {/* Appearance sits above the help/settings/account group: it changes how
           the app looks, not what it does, so it reads as the least consequential

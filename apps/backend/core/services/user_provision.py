@@ -18,32 +18,20 @@ import uuid
 from fastapi import HTTPException
 
 from core.auth import AuthContext, is_org_owner_id, resolve_owner_id
-from core.config import settings
 from core.observability.metrics import put_metric
 from core.observability.product_analytics import (
     capture_once_per_owner_per_day,
     capture_product_event,
 )
-from core.repositories import billing_repo, container_repo, user_repo
+from core.repositories import billing_repo, container_repo
 from core.services.provision_dispatch import dispatch_provision
-from core.services.super_agent_flags import flags_for
 from core.services.paperclip_admin_client import PaperclipApiError
-from core.services.paperclip_admin_session import get_admin_session_cookie
 from core.services.paperclip_owner_email import lookup_owner_email
-from core.services.container_provision import provider_choice_from_row
 from core.services.paperclip_provisioning import (
-    SPECIALIST_HEARTBEAT,
     build_paperclip_provisioning,
     close_paperclip_provisioning,
 )
-from core.services.paperclip_agent_lifecycle import (
-    _heartbeat_enabled,
-    _rows,
-    disable_timer_automation,
-    pause_owner_automation,
-    resume_owner_automation,
-)
-from core.services.provision_gate import evaluate_provision_gate, should_arm_nightly_ceo
+from core.services.provision_gate import evaluate_provision_gate
 from core.services.trial_cap import utc_today
 
 logger = logging.getLogger(__name__)
@@ -225,25 +213,6 @@ async def _reconcile_owner_seed(auth: AuthContext, owner_id: str) -> None:
     )
 
 
-def _arm_status(status: str) -> str:
-    put_metric("nightly_ceo.arm", dimensions={"status": status})
-    return status
-
-
-def ceo_heartbeat_interval_sec(account: dict) -> int:
-    """The CEO's timer-heartbeat interval for this billing row.
-
-    The owner's own money or quota (BYO key, ChatGPT OAuth) wakes once a day; the
-    managed gate wakes every 8 h on a paid plan and every 12 h on the free trial
-    (``trial_local`` resolves to the managed gate whatever it stores)."""
-    provider_choice, _ = provider_choice_from_row(account)
-    if provider_choice in ("byo_key", "chatgpt_oauth"):
-        return 86400
-    if account.get("subscription_status") == "trial_local":
-        return 43200
-    return 28800
-
-
 def ceo_agent_id(row) -> str | None:
     """The workspace's CEO: the starter CEO, else a legacy roster's first seeded agent."""
     return (row.starter_agent_ids or {}).get("ceo") or (row.seeded_agent_ids or [None])[0]
@@ -251,8 +220,6 @@ def ceo_agent_id(row) -> str | None:
 
 #: The feed's schedule (spec 2026-10-14 §4.2): three CEO routines a day, in the owner's local time.
 FEED_ROUTINE_HOURS = (8, 13, 18)
-#: How long one reconcile holds the right to attach a feed routine's schedule trigger.
-FEED_TRIGGER_CLAIM_S = 120
 FEED_ROUTINE_DESCRIPTION = (
     "Scheduled feed post. Look at what happened since the last scheduled feed post: rooms, Work, "
     "runs, sessions and connected tools. Read the feed's recent posts first and never repeat one; "
@@ -281,204 +248,6 @@ PLANNING_ROUTINE_DESCRIPTION = (
 CEO_ROUTINES = [("feed", feed_routine_title(h), FEED_ROUTINE_DESCRIPTION, h) for h in FEED_ROUTINE_HOURS] + [
     ("planning", PLANNING_ROUTINE_TITLE, PLANNING_ROUTINE_DESCRIPTION, PLANNING_ROUTINE_HOUR)
 ]
-
-
-async def _feed_timezone(row) -> str:
-    """The workspace creator's own ``users.timezone`` when they set one, else UTC."""
-    user_id = getattr(row, "provisioner_user_id", "") or ""
-    tz = (await user_repo.get(user_id) or {}).get("timezone") if user_id else None
-    return tz if user_repo.valid_timezone(tz) else "UTC"
-
-
-async def _ensure_feed_routines(admin, cookie: str, owner_id: str, row, ceo_id: str) -> None:
-    """Create the CEO's routines (``CEO_ROUTINES``: three feed posts, one planning sweep) once per owner.
-
-    Matched by title + assignee (any status: an owner's pause or archive is theirs to keep);
-    created under a stable per-owner ``Idempotency-Key`` so two racing reconciles converge.
-    Trigger creates carry no key upstream, so a routine left without its schedule trigger (a
-    crash between the two calls) gets it on the next reconcile. Created only on the entitled
-    branch: a paused owner gets none until resumed, and ``pause_owner_automation`` pauses them
-    with every other active routine. Never raises: the feed must not fail a provision.
-    Super-agent workspaces get none (contracts-v2 §11)."""
-    if await flags_for(owner_id):
-        return
-    try:
-        routines = _rows(await admin.list_routines(session_cookie=cookie, company_id=row.company_id), "routines")
-        by_id = {r.get("id"): r for r in routines}
-        existing = {r.get("title"): r for r in routines if r.get("assigneeAgentId") == ceo_id}
-
-        def settled(routine: dict) -> bool:
-            return routine.get("status") == "archived" or any(
-                t.get("kind") == "schedule" for t in routine.get("triggers") or []
-            )
-
-        timezone = None
-        for kind, title, description, hour in CEO_ROUTINES:
-            routine = existing.get(title)
-            if routine is not None and settled(routine):
-                continue
-            if routine is None:
-                try:
-                    routine = await admin.create_routine(
-                        session_cookie=cookie,
-                        company_id=row.company_id,
-                        body={
-                            "title": title,
-                            "description": description,
-                            "assigneeAgentId": ceo_id,
-                            "concurrencyPolicy": "coalesce_if_active",
-                            "catchUpPolicy": "skip_missed",
-                        },
-                        idempotency_key=f"lightbulb-{kind}-routine:v1:{owner_id}:{hour:02d}",
-                    )
-                except PaperclipApiError as exc:
-                    # The key's routine was deleted by the owner: Paperclip refuses the replay.
-                    if exc.status_code == 409 and "idempotency_target_missing" in str(exc.body or ""):
-                        continue
-                    raise
-                # A replay of a routine the owner since renamed or reassigned: theirs to keep.
-                if routine.get("id") in by_id and settled(by_id[routine["id"]]):
-                    continue
-            # Trigger creates carry no idempotency key upstream: overlapping reconciles take turns
-            # under a short claim, and the holder re-reads the routine before it adds one. The claim
-            # just lapses after a success (the trigger is then in every later list).
-            claim = f"{kind}-trigger:{owner_id}:{hour:02d}"
-            if not await container_repo.try_claim_pass(claim, interval_s=FEED_TRIGGER_CLAIM_S):
-                continue  # another reconcile is attaching it; the next one checks again
-            try:
-                if settled(await admin.get_routine(session_cookie=cookie, routine_id=routine["id"])):
-                    continue
-                timezone = timezone or await _feed_timezone(row)
-                await admin.create_routine_trigger(
-                    session_cookie=cookie,
-                    routine_id=routine["id"],
-                    body={
-                        "kind": "schedule",
-                        "cronExpression": f"0 {hour} * * *",
-                        "timezone": timezone,
-                        "enabled": True,
-                    },
-                )
-            except PaperclipApiError as exc:
-                await container_repo.release_pass(claim)
-                if exc.status_code != 404:  # deleted since the list: the owner's choice
-                    raise
-            except Exception:
-                await container_repo.release_pass(claim)  # let the next reconcile retry at once
-                raise
-    except Exception:  # noqa: BLE001 -- retried by the next reconcile
-        put_metric("feed.routines", dimensions={"status": "error"})
-        logger.exception("feed routines: ensure failed for owner %s", owner_id)
-
-
-async def arm_nightly_ceo(owner_id: str) -> str:
-    """Idempotently arm the CEO's Paperclip timer heartbeat (and the specialists').
-
-    THE deterministic caller is the provision executor's step 0
-    (``scripts.provision_runner._seed_owner_paperclip``), right after the
-    owner's Paperclip seed; ``reconcile_runtime`` re-runs it on every billing
-    change, which is how the interval follows a plan or provider switch.
-    ``owner_id`` is the workspace (Clerk org) id; its company row comes from
-    the authoritative owner resolver.
-
-    Armed for paid OR an unexpired trial (``should_arm_nightly_ceo``). Sets the
-    CEO's ``runtimeConfig.heartbeat`` to a timer at ``ceo_heartbeat_interval_sec``
-    that runs even on an empty inbox, and re-applies ``SPECIALIST_HEARTBEAT`` to
-    the specialists. Not entitled: ``pause_owner_automation`` (routines + every
-    heartbeat); entitled again: ``resume_owner_automation`` first. No
-    ``maxDailyRuns``: Paperclip counts every run against it, assignment wakes
-    included, so it would silence chat-driven work. It converges both ways: a
-    not-entitled owner is paused, and an owner
-    opt-out (``nightly_ceo_opted_out``, written only by the CEO's heartbeat toggle on
-    the agent page, ``POST /teams/agents/{id}/heartbeat``) turns the CEO's off.
-
-    Idempotent without a claim: each agent is a read-modify-write that PATCHes
-    only when the heartbeat differs. Returns the outcome and emits it as the
-    ``nightly_ceo.arm`` metric's ``status``. Does NOT swallow: a failure emits
-    ``status=error`` and re-raises, and the caller decides — the executor
-    classifies it into its retry ABI exactly like a seed failure;
-    ``reconcile_runtime`` logs and moves on.
-    """
-    if await flags_for(owner_id):
-        # Super-agent workspaces never run Paperclip routines or heartbeats (Paperclip is being removed):
-        # pause whatever an earlier arm left on (idempotent), arm nothing.
-        await pause_owner_automation(owner_id)
-        # Their proactive layer instead (first ideas; look around + feed posts while paying). Every billing
-        # change comes through here, so the paying-only automations follow the plan. Never fails the arm.
-        from core.services import proactive
-
-        try:
-            await proactive.ensure(owner_id)
-        except Exception:  # noqa: BLE001 -- the daily schedule reconcile ensures it again
-            logger.exception("proactive ensure failed for owner=%s", owner_id)
-        return _arm_status("super_agent")
-    try:
-        # Consistent: a reconcile runs right after the billing write it follows.
-        account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
-        # Converge, never only enable: a de-entitled owner (expired trial, past_due,
-        # canceled) must stop waking, or every timer and routine fires into a runtime the
-        # gate refuses. The shared seam pauses routines AND every agent's heartbeat.
-        if not should_arm_nightly_ceo(account):
-            await pause_owner_automation(owner_id)
-            return _arm_status("not_entitled")
-        # Re-entitled: put back exactly what the pause took (no-op when nothing is recorded).
-        # Before the kill switch: the switch governs arming starter timers, not putting back
-        # what our own pause took.
-        await resume_owner_automation(owner_id)
-        if not settings.NIGHTLY_CEO_HEARTBEATS_ENABLED:
-            # The resume above may have re-enabled timers and routines: turn ours off again.
-            await disable_timer_automation(owner_id)
-            return _arm_status("heartbeats_disabled")
-
-        provisioning = await build_paperclip_provisioning()
-        try:
-            # Confirm a COMMITTED active company before touching it: we only ever
-            # arm a company provision_org actually finished (status="active").
-            row = await provisioning._repo.resolve_owner_row(owner_id)
-            # ``row.org_id != owner_id``: never touch a company that belongs to a
-            # different workspace under this workspace's billing account.
-            if row is None or row.status != "active" or row.org_id != owner_id:
-                return _arm_status("company_not_active")
-            ceo_id = ceo_agent_id(row)
-            if not ceo_id:
-                return _arm_status("friday_not_seeded")
-            admin = provisioning._admin
-            admin_cookie = await get_admin_session_cookie(admin._http)
-
-            await _ensure_feed_routines(admin, admin_cookie, owner_id, row, ceo_id)
-
-            async def put(agent_id: str, heartbeat: dict) -> None:
-                await admin.set_agent_heartbeat(session_cookie=admin_cookie, agent_id=agent_id, heartbeat=heartbeat)
-
-            # Every live non-CEO agent, hired ones included; one with its own enabled schedule keeps it.
-            for agent in _rows(
-                await admin.list_agents(session_cookie=admin_cookie, company_id=row.company_id), "agents"
-            ):
-                if (
-                    agent.get("id") not in (None, ceo_id)
-                    and agent.get("status") != "terminated"
-                    and not _heartbeat_enabled(agent)
-                ):
-                    await put(agent["id"], SPECIALIST_HEARTBEAT)
-            if (account or {}).get("nightly_ceo_opted_out"):
-                await put(ceo_id, {"enabled": False})
-                return _arm_status("opted_out")
-            await put(
-                ceo_id,
-                {
-                    "enabled": True,
-                    "intervalSec": ceo_heartbeat_interval_sec(account),
-                    "wakeOnDemand": True,
-                    # The CEO's sweep must run on an empty inbox too.
-                    "skipTimerWhenNoActionableWork": False,
-                },
-            )
-            return _arm_status("armed")
-        finally:
-            await close_paperclip_provisioning(provisioning)
-    except Exception:
-        put_metric("nightly_ceo.arm", dimensions={"status": "error"})
-        raise
 
 
 async def _ensure_paperclip_for_org(

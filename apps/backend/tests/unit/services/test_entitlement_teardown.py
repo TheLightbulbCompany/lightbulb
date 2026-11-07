@@ -200,45 +200,10 @@ def _emitted(metric, name, outcome):
 
 
 @pytest.mark.asyncio
-async def test_teardown_disarms_the_nightly_routine(_runtime):
-    """A de-entitled owner's nightly routine is paused and its looping issues
-    cancelled — otherwise the Paperclip scheduler keeps firing it against the
-    container teardown just deleted (the runaway-storm class)."""
-    with patch.object(entitlement_teardown, "put_metric") as metric:
-        assert await _cancel() is True
-    _runtime.disarm.assert_awaited_once_with("user_1")
-    assert _emitted(metric, "nightly_ceo.disarm", "ran")
-
-
-@pytest.mark.asyncio
-async def test_an_entitled_owner_is_never_disarmed(_runtime):
-    """Disarm hangs off teardown, which only runs when nothing still pays — so a
-    still-entitled owner's automation is left running."""
-    with patch.object(
-        entitlement_teardown.billing_repo,
-        "get_by_owner_id",
-        AsyncMock(return_value={"owner_id": "user_1", "subscription_status": "active"}),
-    ):
-        assert await entitlement_teardown.teardown_if_unentitled("user_1", trigger="test") is False
-    _runtime.disarm.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_a_failing_disarm_does_not_abort_teardown(_runtime):
-    """Best-effort like every teardown step: a Paperclip hiccup in the disarm
-    must not 5xx the webhook back to the provider."""
-    _runtime.disarm.side_effect = RuntimeError("paperclip down")
-    with patch.object(entitlement_teardown, "put_metric") as metric:
-        assert await _cancel() is True
-    _runtime.facts.assert_awaited_once()
-    assert _emitted(metric, "nightly_ceo.disarm", "error")
-
-
-@pytest.mark.asyncio
 async def test_teardown_makes_no_paperclip_call(_runtime):
     """The Paperclip company belongs to the workspace, and a lapsed
-    entitlement is not a deleted workspace: teardown disarms the nightly
-    loop but never builds a provisioning client to disable anything
+    entitlement is not a deleted workspace: teardown never disarms Paperclip
+    timers (they are gone) and never builds a provisioning client to disable anything
     (``organization.deleted`` owns the workspace disable)."""
     build = AsyncMock()
     with (
@@ -251,7 +216,7 @@ async def test_teardown_makes_no_paperclip_call(_runtime):
     ):
         assert await entitlement_teardown.teardown_if_unentitled("org_1", trigger="subscription_deleted") is True
 
-    _runtime.disarm.assert_awaited_once_with("org_1")
+    _runtime.disarm.assert_not_awaited()
     build.assert_not_awaited()
 
 

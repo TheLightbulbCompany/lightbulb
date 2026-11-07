@@ -4,7 +4,7 @@ learned back into its specialist's profile (spec 07 §3.5; contracts-v2 §15).
 Attempt ends arrive by `signal_with_start(merge, MergeRef)` from `close_task_attempt` (called by O's
 `end_attempt` for every task-session attempt), queue FIFO, and run one `merge_learning` Activity at
 a time; when the queue drains and at least one merge applied, `curate_specialist` runs the curator on
-the WORKSPACE VM (never in a Worker). Continue-As-New every `CAN_AFTER_MERGES`. A `MergeRef` seen
+the WORKSPACE VM (never in a Worker) if it is already warm (`runtime_runs.curate`: never a wake). Continue-As-New every `CAN_AFTER_MERGES`. A `MergeRef` seen
 before is dropped (a replayed signal), and `merge_learning` is idempotent on its `LEARN#` row anyway.
 
 Layout the bridge's task mode (V2) writes, read here:

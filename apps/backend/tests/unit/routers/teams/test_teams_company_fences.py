@@ -44,6 +44,8 @@ ALLOWLIST = {
     ("POST", "/teams/heartbeat-runs/{run_id}/cancel"): _INLINE,
     ("GET", "/teams/local-sessions/{session_id}/work-link"): _SESSION,
     ("PATCH", "/teams/local-sessions/{session_id}/work-link"): _SESSION,
+    ("POST", "/teams/agents/{agent_id}/heartbeat"): "410 Gone, reads nothing",
+    ("POST", "/teams/agents/{agent_id}/wakeup"): "410 Gone, reads nothing",
     ("DELETE", "/teams/inbox-dismissals/{item_key:path}"): "company-scoped via ctx.company_id; per-user upstream",
 }
 

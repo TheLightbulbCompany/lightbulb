@@ -448,7 +448,7 @@ export interface LiveConfig {
   region: string;
   userChannelKey: string;
   workspaceId: string;
-  /** Always `{ superAgent: true }` now; kept on the wire for old app builds. Clients do not read it. */
+  /** Clients do not read it. The backend sends `{ superAgent: true }` for every workspace once the switch-retirement backend PR ships; kept on the wire for old app builds. */
   features?: { superAgent: boolean } | null;
 }
 

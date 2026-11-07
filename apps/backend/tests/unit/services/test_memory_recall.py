@@ -559,7 +559,6 @@ async def test_recall_page_adds_the_scope_only_for_a_group_chat_audience(monkeyp
 
     monkeypatch.setattr(memory_api.settings, "AGENTCORE_MEMORY_ID", MEM, raising=False)
     monkeypatch.setattr(memory_api, "_sync_in_background", lambda *a: None)
-    monkeypatch.setattr(memory_api, "flags_for", AsyncMock(return_value=True))
     monkeypatch.setattr(memory_api.memory_links, "resolve_links", AsyncMock(return_value=[]))
     recall = AsyncMock(return_value={"results": [], "taskHits": []})
     monkeypatch.setattr(memory_api.memory_recall, "recall", recall)

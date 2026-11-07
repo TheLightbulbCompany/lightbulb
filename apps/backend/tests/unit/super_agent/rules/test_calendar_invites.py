@@ -16,7 +16,6 @@ WS, PID, ME = "org_1", "pid1", "sam@acme.com"
 
 @pytest.fixture(autouse=True)
 def _switch_on(monkeypatch):
-    monkeypatch.setattr(rules_activities, "flags_for", AsyncMock(return_value=True))
     monkeypatch.setattr(rules_activities, "put_metric", lambda *a, **k: None)
 
 
@@ -176,14 +175,6 @@ async def test_calendar_rule_fire_records_before_moving_the_token(gog, monkeypat
     with pytest.raises(RuntimeError):
         await rules_activities.calendar_rule_fire(WS, await automations_repo.get_hook(WS, PID))
     assert await _token() == "t1"
-
-
-async def test_calendar_rule_fire_switch_off_does_nothing(gog, monkeypatch):
-    await _hook(pageToken="t1")
-    await _rule(match={"sources": ["calendar"], "account": ME})
-    monkeypatch.setattr(rules_activities, "flags_for", AsyncMock(return_value=False))
-    assert await rules_activities.calendar_rule_fire(WS, await automations_repo.get_hook(WS, PID)) is True
-    assert not gog.called and _trig_rows(gog.table) == [] and await _token() == "t1"
 
 
 async def test_calendar_rule_fire_off_rule_only_advances_the_sync(gog):

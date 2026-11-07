@@ -1694,7 +1694,6 @@ describe("ServiceStack â€” super-agent temporal-worker (dev only, contracts-v2 Â
         TEMPORAL_ADDRESS: "lightbulb-dev.nv5xx.tmprl.cloud:7233",
         TEMPORAL_NAMESPACE: "lightbulb-dev.nv5xx",
         TEMPORAL_TASK_QUEUE: "lightbulb",
-        SUPER_AGENT_ENV_ENABLED: "true",
       });
       const key = c.Secrets.find((s: any) => s.Name === "TEMPORAL_API_KEY");
       expect(JSON.stringify(key.ValueFrom)).toContain("secret:lightbulb/dev/temporal_api_key");
@@ -1728,7 +1727,6 @@ describe("ServiceStack â€” super-agent temporal-worker (dev only, contracts-v2 Â
     expect(envOf).toMatchObject({
       TEMPORAL_WATCHDOG_TASK_QUEUE: "lightbulb-watchdog",
       TEMPORAL_ADDRESS: "lightbulb-dev.nv5xx.tmprl.cloud:7233",
-      SUPER_AGENT_ENV_ENABLED: "true",
     });
     expect(Object.keys(envOf)).toEqual(expect.arrayContaining(["WATCHDOG_OWNER_ID", "WATCHDOG_ROOM_ID"]));
     expect(wd.Secrets.find((s: any) => s.Name === "TEMPORAL_API_KEY")).toBeDefined();

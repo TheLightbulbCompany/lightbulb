@@ -372,9 +372,9 @@ async def test_reprovision_with_company_preserved_funnel_stays_complete_no_repro
     await repo.record_onboarding_ids(
         "org_acme", onboarding_generation=generation, goal_id="goal-1", project_id="proj-1"
     )
-    repo._table().update_item(
-        Key={"user_id": "org_acme"},
-        UpdateExpression="SET funnel_state = :c",
+    repo._ws_table().update_item(  # workspace META lives on the tasks table (funnelState there)
+        Key=repo._ws_key("org_acme"),
+        UpdateExpression="SET funnelState = :c",
         ExpressionAttributeValues={":c": "complete"},
     )
     assert (await repo.get_workspace("org_acme")).funnel_state == "complete"
@@ -437,8 +437,8 @@ async def test_provision_org_signup_failure_writes_durable_failed_markers(repo):
     assert marker.status == "failed"
     assert marker.company_id == ""
     assert "provision_org failed" in (marker.last_error or "")
-    raw_ws = repo._table().get_item(Key={"user_id": "org_acme"})["Item"]
-    assert "company_id" not in raw_ws  # absent, not "" (the by-company-id GSI rejects "")
+    raw_ws = repo._ws_table().get_item(Key=repo._ws_key("org_acme"))["Item"]
+    assert "company_id" not in raw_ws and "companyId" not in raw_ws  # absent, not "" (the by-company-id GSI rejects "")
 
     identity = await repo.get_identity("user_owner")
     assert identity.status == "failed"

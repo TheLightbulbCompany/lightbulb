@@ -3,7 +3,7 @@
 import asyncio
 import base64
 import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import boto3
 import httpx
@@ -44,7 +44,7 @@ def _ok(body: dict, url: str) -> httpx.Response:
     return httpx.Response(200, json=body, request=httpx.Request("POST", url))
 
 
-async def _connect(switch_on: bool, user="u_1", owner="org_1"):
+async def _connect(user="u_1", owner="org_1"):
     async def seed(self, url, **kw):
         return _ok({"device_auth_id": "d", "user_code": "C-1", "interval": 5}, str(url))
 
@@ -57,16 +57,13 @@ async def _connect(switch_on: bool, user="u_1", owner="org_1"):
         await oauth_service.request_device_code(user_id=user, bound_owner_id=owner)
     with (
         patch.object(httpx.AsyncClient, "post", new=poll),
-        patch("core.services.oauth_service.flags_for", AsyncMock(return_value=switch_on)) as flags,
     ):
         await oauth_service.poll_device_code(user_id=user)
-    return flags
 
 
 @pytest.mark.asyncio
 async def test_new_connect_with_switch_on_is_backend(oauth_table):
-    flags = await _connect(True)
-    flags.assert_awaited_once_with("org_1")
+    await _connect()
     row = oauth_table.get_item(Key={"user_id": "u_1"})["Item"]
     assert row["custody"] == "backend"
     assert row["version"] == 1
@@ -74,15 +71,8 @@ async def test_new_connect_with_switch_on_is_backend(oauth_table):
 
 
 @pytest.mark.asyncio
-async def test_new_connect_switch_off_unchanged(oauth_table):
-    await _connect(False)
-    row = oauth_table.get_item(Key={"user_id": "u_1"})["Item"]
-    assert not {"custody", "version", "expires_at", "last_refresh"} & row.keys()
-
-
-@pytest.mark.asyncio
 async def test_get_token_row_consistent_read(oauth_table):
-    await _connect(True)
+    await _connect()
     real = oauth_service._table
     seen = []
 
@@ -106,7 +96,7 @@ async def test_get_token_row_consistent_read(oauth_table):
 
 @pytest.mark.asyncio
 async def test_cas_update_wins_once(oauth_table):
-    await _connect(True)
+    await _connect()
     new = {"access_token": _jwt(EXP + 3600), "refresh_token": "rt2", "id_token": "id2", "account_id": None}
     results = await asyncio.gather(
         oauth_service.cas_update_tokens("u_1", expected_version=1, tokens=new),
@@ -123,7 +113,9 @@ async def test_cas_update_wins_once(oauth_table):
 
 @pytest.mark.asyncio
 async def test_cas_refuses_actor_row(oauth_table):
-    await _connect(False)
+    await _connect()
+    # A row connected before backend custody (no custody attribute) is the VM's to rotate.
+    oauth_table.update_item(Key={"user_id": "u_1"}, UpdateExpression="REMOVE custody, version, expires_at")
     assert not await oauth_service.cas_update_tokens(
         "u_1", expected_version=0, tokens={"access_token": _jwt(EXP), "refresh_token": "rt2"}
     )

@@ -661,9 +661,7 @@ async def watchdog_digest(cfg: WatchdogConfig, finding_ids: list[str], daily: bo
 
 async def ensure_watchdog_schedule(client) -> bool:
     """Create the `watchdog` Schedule with the default config if it is missing. Never overwrites the args a
-    maintainer set. No-op unless the env master is on (prod)."""
-    if not super_agent_flags.env_enabled():
-        return False
+    maintainer set."""
     from temporalio.client import (
         Schedule,
         ScheduleActionStartWorkflow,

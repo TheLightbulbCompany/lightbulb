@@ -307,7 +307,7 @@ async def disable_timer_automation(owner_id: str, *, dry_run: bool = False) -> d
     agent's timer heartbeat and pause the CEO routines WE create (``CEO_ROUTINES`` and the
     nightly one, assigned to the CEO). Unlike ``pause_owner_automation`` it never touches the
     owner's own routines and writes nothing to the pause fence, so no resume undoes it.
-    Callers: ``arm_nightly_ceo`` when the switch is off, ``scripts.disable_paperclip_timers``.
+    Callers: ``scripts.disable_paperclip_timers``.
     Idempotent; raises on a Paperclip failure. ``dry_run`` reports without writing."""
     from core.services.user_provision import CEO_ROUTINES, ceo_agent_id  # user_provision imports this module
 

@@ -37,13 +37,11 @@ from botocore.exceptions import ClientError
 from ulid import ULID
 
 from core.auth import is_org_owner_id
-from core.services.super_agent_flags import flags_for
 from core.config import settings
 from core.encryption import decrypt, encrypt
 from core.observability.metrics import put_metric
 from core.repositories import container_repo
 from core.repositories.paperclip_repo import PaperclipIdentity, PaperclipRepo, PaperclipWorkspace
-from core.services.agent_routine_provisioning import create_agent_routines
 from core.services.company_identity import generate_company_name
 from core.services.paperclip_adapter_config import (
     HERMES_GATEWAY_TYPE,
@@ -146,65 +144,6 @@ STARTER_CAPABILITIES = {
     ),
 }
 
-
-#: The routines a fresh workspace's specialists ship with, all created PAUSED
-#: (``agent_routine_provisioning`` ``paused=True``): nothing fires until someone switches
-#: one on in Teams -> Routines. The CEO gets none -- its timer heartbeat already writes the
-#: daily brief. Every description ends with the ``Post results to:`` line the paperclip
-#: skill's ``references/routines.md`` documents; ``none`` keeps the result on the task.
-#: Times are UTC (13:00 = morning in the Americas, afternoon in Europe).
-_ROUTINE_TAIL = (
-    " If the data source for this is not connected, say which one on the task and stop."
-    "\n\nPut the result on this task.\nPost results to: none"
-)
-STARTER_ROUTINES = {
-    "engineering": [
-        {
-            "title": "Weekly engineering summary",
-            "cron": "0 13 * * 1",
-            "description": "List what shipped in the last 7 days (merged PRs, deploys) and what is open or "
-            "blocked, with links." + _ROUTINE_TAIL,
-        },
-    ],
-    "finance": [
-        {
-            "title": "Weekly revenue summary",
-            "cron": "0 13 * * 1",
-            "description": "Summarise last week's revenue, new and churned customers, refunds and failed "
-            "payments against the week before, with the source of each figure." + _ROUTINE_TAIL,
-        },
-        {
-            "title": "Monthly cost review",
-            "cron": "0 13 1 * *",
-            "description": "List last month's largest costs and any cost that is new or up more than 20% on "
-            "the month before, with sources." + _ROUTINE_TAIL,
-        },
-    ],
-    "growth": [
-        {
-            "title": "Weekly funnel report",
-            "cron": "0 13 * * 1",
-            "description": "Report last week's traffic, signups and conversions by channel against the week "
-            "before, and name one experiment to run next." + _ROUTINE_TAIL,
-        },
-    ],
-    "analytics": [
-        {
-            "title": "Weekly metrics digest",
-            "cron": "0 13 * * 1",
-            "description": "Report the key metrics for the last 7 days against the week before; flag any that "
-            "moved more than 20% and say why if the data shows it." + _ROUTINE_TAIL,
-        },
-    ],
-    "customer_operations": [
-        {
-            "title": "Weekly support themes",
-            "cron": "0 13 * * 5",
-            "description": "Group the last 7 days of customer emails and tickets into the top themes, with a "
-            "count and one example each; flag anything urgent or repeated." + _ROUTINE_TAIL,
-        },
-    ],
-}
 
 # Every onboarding attribute on ``PaperclipWorkspace``. A reconcile's
 # whole-item ``put_workspace`` carries all of them forward: drift between
@@ -613,12 +552,6 @@ class PaperclipProvisioning:
                     company_id=company_id,
                     session_cookie=new_user_session_cookie,
                     keep_agent_ids=list(starter_agent_ids.values()),
-                )
-                await self._seed_starter_routines(
-                    company_id=company_id,
-                    session_cookie=new_user_session_cookie,
-                    starter_agent_ids=starter_agent_ids,
-                    owner_id=owner_id,
                 )
 
             # 7. Persist the workspace row.
@@ -1182,32 +1115,6 @@ class PaperclipProvisioning:
                 company_id,
                 ", ".join(undeletable_builtins),
             )
-
-    async def _seed_starter_routines(
-        self, *, company_id: str, session_cookie: str, starter_agent_ids: dict, owner_id: str
-    ) -> None:
-        """Best effort: a failed routine seed never fails the provision. Idempotent by
-        (agent, title), so a reconcile re-run creates only what is missing.
-        Super-agent workspaces get none: automations come from the confirm card (contracts-v2 §11)."""
-        if await flags_for(owner_id):
-            return
-        for starter_key, routines in STARTER_ROUTINES.items():
-            try:
-                await create_agent_routines(
-                    admin=self._admin,
-                    session_cookie=session_cookie,
-                    company_id=company_id,
-                    agent_id=starter_agent_ids[starter_key],
-                    routines=routines,
-                    paused=True,
-                )
-            except Exception as e:  # a missing routine is never worth failing the workspace
-                logger.warning(
-                    "paperclip_provisioning.provision_org: starter routines for %s failed for %s: %s",
-                    starter_key,
-                    owner_id,
-                    e,
-                )
 
     async def _mark_failed(
         self,

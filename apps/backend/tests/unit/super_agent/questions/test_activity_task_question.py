@@ -7,7 +7,7 @@ import pytest
 
 from core.auth import AuthContext
 from core.repositories import questions_repo
-from core.services import activity, super_agent_flags
+from core.services import activity
 
 WS = "org_1"
 TASK = "8f14e45f-ceea-467a-9575-8a1b2c3d4e5f"
@@ -40,9 +40,7 @@ def feed_world(table, monkeypatch):
     monkeypatch.setattr(activity, "_room_gates", AsyncMock(return_value={}))
     paperclip = AsyncMock(return_value=[])
     monkeypatch.setattr(activity, "_paperclip_within_budget", paperclip)
-    flag = AsyncMock(return_value=True)
-    monkeypatch.setattr(super_agent_flags, "flags_for", flag)
-    return {"paperclip": paperclip, "flag": flag}
+    return {"paperclip": paperclip}
 
 
 async def _feed(user="user_sam"):
@@ -90,19 +88,6 @@ async def test_paperclip_outage_never_hides_a_question(feed_world):
     page = await _feed()
     assert [i["kind"] for i in page["items"]] == ["task_question"]
     assert page["sources"] == {"paperclip": "unavailable"}
-
-
-async def test_switch_off_activity_unchanged(feed_world, monkeypatch):
-    feed_world["flag"].return_value = False
-    spy = AsyncMock(side_effect=AssertionError("tasks table read with the switch off"))
-    monkeypatch.setattr(questions_repo, "needs_for_user", spy)
-    await questions_repo.open_question(WS, _q())
-    page = await _feed()
-    assert page["items"] == [] and page["sources"] == {"paperclip": "ok"} and page["attentionCount"] == 0
-    feed_world["paperclip"].return_value = None
-    assert (await _feed())["sources"] == {"paperclip": "unavailable"}
-    assert await activity.unseen_counts(WS, "user_sam", AsyncMock()) is None
-    spy.assert_not_awaited()
 
 
 async def test_question_store_error_never_breaks_the_feed(feed_world, monkeypatch):

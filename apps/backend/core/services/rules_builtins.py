@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 
 from core.repositories import automations_repo, google_accounts_repo
-from core.services import automation_hooks, clerk_admin, rules, super_agent_flags
+from core.services import automation_hooks, clerk_admin, rules
 
 logger = logging.getLogger(__name__)
 _ANY = frozenset({"draft", "active", "paused_system"})
@@ -66,10 +66,9 @@ async def _watch(ws: str, sid: str, email: str, owner: str) -> dict:
 
 
 async def on_google_connect(ws: str) -> None:
-    """After a Google account connects: the built-in for that account, behind the switch, never failing the
+    """After a Google account connects: the built-in for that account, never failing the
     connect."""
     try:
-        if await super_agent_flags.flags_for(ws):
-            await ensure_invite_prep(ws)
+        await ensure_invite_prep(ws)
     except Exception:  # noqa: BLE001 -- best effort
         logger.warning("invite prep after Google connect failed for %s", ws, exc_info=True)

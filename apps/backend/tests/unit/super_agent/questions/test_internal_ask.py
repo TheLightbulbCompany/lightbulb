@@ -126,10 +126,8 @@ async def test_context_bound_subkinds_are_refused_before_any_write(ask_api):
     assert ask_api.updates == []
 
 
-async def test_too_many_options_and_switch_off(ask_api):
+async def test_too_many_options(ask_api):
     tid = await _task()
     await _running(tid)
     five = [{"id": f"o{i}", "label": str(i)} for i in range(5)]
     assert (await ask_api.post(_url(WS), json=await _body(tid, options=five), headers=H)).status_code == 422
-    ask_api.switch = False
-    assert (await ask_api.post(_url(WS), json=await _body(tid), headers=H)).status_code == 404

@@ -159,8 +159,8 @@ VOICE_PROFILE_SCHEMA = {
 }
 VOICE_ONLY = "lightbulb_voice_profile works only inside a Live voice request."
 
-# start_work: work asked aloud becomes a task (lane A, contracts-v2 §14.1). Offered only on a Live voice turn
-# whose request carries superAgent: true; the ids come from the turn, never from the model.
+# start_work: work asked aloud becomes a task (lane A, contracts-v2 §14.1). Offered only on a Live voice turn;
+# the ids come from the turn, never from the model.
 START_WORK_SCHEMA = {
     "name": "start_work",
     "description": "Hand off work asked for on this call so it goes on after the call: it becomes a task and "
@@ -175,13 +175,13 @@ START_WORK_SCHEMA = {
         "required": ["title", "brief"],
     },
 }
-START_WORK_ONLY = "start_work works only inside a Live voice request in a Lightbulb super-agent workspace."
-VOICE_WORK_TOOLSET = "lightbulb_voice_work"  # == bridge.turn.VOICE_WORK_TOOLSET; only a super-agent call enables it
+START_WORK_ONLY = "start_work works only inside a Live voice request."
+VOICE_WORK_TOOLSET = "lightbulb_voice_work"  # == bridge.turn.VOICE_WORK_TOOLSET; only a call enables it
 
 
 def _start_work(args: dict, *, session_id: str = "", **_kw) -> str:
     ctx = turn_context.read(session_id)
-    if not ctx or not ctx.get("voiceRoomId") or not ctx.get("superAgent"):
+    if not ctx or not ctx.get("voiceRoomId"):
         return START_WORK_ONLY
     args = args or {}
     for field in ("title", "brief"):

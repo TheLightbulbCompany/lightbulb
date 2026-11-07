@@ -781,12 +781,8 @@ class PaperclipAdminClient:
         return agent
 
     async def _mirror(self, response: Any, *, session_cookie: str, agent_id: str | None = None) -> None:
-        """Mirror an agent write into the super-agent registry (``agent_registry``; no-op unless the env
-        master is on, never raises). Re-reads the agent when the response is not the full agent dict."""
-        from core.services.super_agent_flags import env_enabled  # lazy, like _headers' settings
-
-        if not env_enabled():
-            return
+        """Mirror an agent write into the super-agent registry (``agent_registry``; never raises).
+        Re-reads the agent when the response is not the full agent dict."""
         from core.services import agent_registry
 
         agent = response if isinstance(response, dict) and response.get("id") else None
@@ -932,12 +928,9 @@ class PaperclipAdminClient:
             f"/api/agents/{agent_id}",
             session_cookie=session_cookie,
         )
-        from core.services.super_agent_flags import env_enabled  # lazy, like _headers' settings
+        from core.services import agent_registry
 
-        if env_enabled():
-            from core.services import agent_registry
-
-            await agent_registry.mirror_delete(agent_id)
+        await agent_registry.mirror_delete(agent_id)
         return result
 
     async def get_budgets_overview(self, *, session_cookie: str, company_id: str) -> dict:

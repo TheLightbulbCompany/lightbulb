@@ -719,11 +719,10 @@ async def request_room(chat, monkeypatch):
     `run_1` with secret `s_1`. The switch is on."""
     from core import tasks_schema as ts
     from core.repositories import tasks_repo
-    from core.services import provisioning_questions, super_agent_flags
+    from core.services import provisioning_questions
 
     monkeypatch.setattr(svc.messaging_repo, "ensure_workspace_id", AsyncMock(return_value="ch"))
     switch = {"on": True}
-    monkeypatch.setattr(super_agent_flags, "flags_for", AsyncMock(side_effect=lambda ws: switch["on"]))
     task_id = ts.new_task_id()
     await tasks_repo.create_task(
         OWNER,
@@ -811,16 +810,6 @@ async def test_another_workspaces_request_room_is_refused(chat, request_room):
     with pytest.raises(svc.AppsRefused) as refused:
         await _hand_over("foreign")
     assert refused.value.code == "room_not_found"
-
-
-async def test_with_the_switch_off_a_request_room_is_nobodys_and_canvas_shows_no_request(chat, request_room):
-    res = await _hand_over(request_room.room)
-    request_room.switch["on"] = False
-    (row,) = await svc.list_apps(OWNER, ADA)
-    assert row["request"] is None
-    with pytest.raises(svc.AppsRefused) as refused:  # the run proof needs the switch
-        await conv.ask(WORKER, res["app_id"], "make it blue", origin={"room_id": request_room.room})
-    assert refused.value.code == "not_your_request"
 
 
 async def test_a_failed_tasks_read_costs_canvas_its_request_links_not_its_list(chat, request_room, monkeypatch):

@@ -22,16 +22,14 @@ ROOM = "11111111-1111-4111-8111-111111111111"
 def _ctx(tmp_path, monkeypatch, **over):
     monkeypatch.setattr(turn_context, "_home", lambda: tmp_path)
     base = {"apiUrl": "https://api.invalid/", "ownerId": "org_test", "hookToken": "h", "agentId": "ceo",
-            "runId": RUN, "roomId": None, "voiceRoomId": ROOM, "callId": "win-1", "superAgent": True}
+            "runId": RUN, "roomId": None, "voiceRoomId": ROOM, "callId": "win-1"}
     base.update(over)
     turn_context.write(tmp_path, SESSION, base)
 
 
-def test_start_work_absent_without_super_agent(tmp_path, monkeypatch):
+def test_start_work_absent_off_a_call(tmp_path, monkeypatch):
     monkeypatch.setattr(lightbulb, "_post", lambda *a: pytest.fail("no HTTP call"))
-    _ctx(tmp_path, monkeypatch, superAgent=False)
-    assert lightbulb._start_work({"title": "t", "brief": "b"}, session_id=SESSION) == lightbulb.START_WORK_ONLY
-    _ctx(tmp_path, monkeypatch, voiceRoomId=None, roomId=ROOM)  # a typed room turn, even with the flag
+    _ctx(tmp_path, monkeypatch, voiceRoomId=None, roomId=ROOM)  # a typed room turn
     assert lightbulb._start_work({"title": "t", "brief": "b"}, session_id=SESSION) == lightbulb.START_WORK_ONLY
     assert lightbulb._start_work({"title": "t", "brief": "b"}, session_id="none") == lightbulb.START_WORK_ONLY
 
@@ -94,22 +92,17 @@ def test_voice_work_toolset_off_every_other_turn(monkeypatch):
     assert captured["enabled_toolsets"] == ["lightbulb", "memory"]
 
 
-def test_a_super_agent_call_enables_the_voice_work_toolset(env, home, monkeypatch):  # noqa: F811
+def test_a_call_enables_the_voice_work_toolset(env, home, monkeypatch):  # noqa: F811
     from tests.test_voice_call_run import IDENTITY, REQUEST, _frames
 
     # a profile that lists the Router's toolset: the call never gets it (only Router runs do)
     monkeypatch.setattr(turn, "profile_toolsets", lambda: (["lightbulb", "lightbulb_router", "memory"], None))
     turn.register_call_run(IDENTITY)
-    assert turn._run_call(IDENTITY, {**REQUEST, "superAgent": True}, _frames())[0] == "completed"
+    assert turn._run_call(IDENTITY, REQUEST, _frames())[0] == "completed"
     assert env["limits"]["enabled_toolsets"] == ["lightbulb", "memory", "lightbulb_voice_work"]
-    turn.register_call_run(IDENTITY)
-    assert turn._run_call(IDENTITY, REQUEST, _frames())[0] == "completed"  # an ordinary call: CALL_RUN_LIMITS only
-    assert "enabled_toolsets" not in env["limits"]
 
 
-def test_call_turn_context_carries_super_agent_and_call_id():
+def test_call_turn_context_carries_the_call_id():
     identity = {"agentId": "ceo", "runId": RUN, "roomId": ROOM, "callId": "win-1"}
-    ctx = turn.call_turn_context(identity, {"superAgent": True})
-    assert ctx["superAgent"] is True and ctx["callId"] == "win-1" and ctx["voiceRoomId"] == ROOM
-    assert turn.call_turn_context(identity, {})["superAgent"] is False
-    assert turn.call_turn_context(identity)["superAgent"] is False  # today's callers pass no request
+    ctx = turn.call_turn_context(identity)
+    assert ctx["callId"] == "win-1" and ctx["voiceRoomId"] == ROOM

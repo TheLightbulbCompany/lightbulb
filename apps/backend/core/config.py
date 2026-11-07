@@ -293,10 +293,6 @@ class Settings(BaseSettings):
     so the first gate read after this window sees the new balance and
     un-revokes a paid-up owner (see core/services/metronome_gate.py)."""
 
-    SUPER_AGENT_ENV_ENABLED: bool = False
-    """Super-agent env master (contracts-v2 §1). Off = every workspace is off whatever its
-    ``containers.super_agent`` says. Read only by ``core.services.super_agent_flags`` (``flags_for``, ``env_enabled``).
-    Set true for dev only in ``service-stack.ts``."""
     SUPER_AGENT_FAULTS: str = ""
     """Dev-only fault hooks, ``name[:param],...`` (``core.services.super_agent_faults``). Refused in prod."""
     # Temporal (contracts-v2 §16). Defaults are the local dev server; dev sets the Cloud namespace and

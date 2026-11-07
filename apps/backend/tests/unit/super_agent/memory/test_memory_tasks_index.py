@@ -67,7 +67,6 @@ def core(monkeypatch):
     fake = FakeAgentCore()
     monkeypatch.setattr(mti.settings, "AGENTCORE_MEMORY_ID", "mem-1", raising=False)
     monkeypatch.setattr(mti.workspace_memory, "_client", lambda: fake)
-    monkeypatch.setattr(mti, "flags_for", AsyncMock(return_value=True))
     return fake
 
 
@@ -161,15 +160,6 @@ async def test_index_failure_never_raises(table, core, caplog):
     assert "RuntimeError" in caplog.text
 
 
-async def test_switch_off_or_no_memory_writes_nothing(table, core, monkeypatch):
-    monkeypatch.setattr(mti, "flags_for", AsyncMock(return_value=False))
-    await mti.index_task(OWNER, _task())
-    monkeypatch.setattr(mti, "flags_for", AsyncMock(return_value=True))
-    monkeypatch.setattr(mti.settings, "AGENTCORE_MEMORY_ID", "", raising=False)
-    await mti.index_task(OWNER, _task())
-    assert core.calls == []
-
-
 async def test_private_task_without_owner_is_not_indexed_shared(table, core):
     await mti.index_task(OWNER, _task(lane="private", ownerUserId=None))
     assert core.records == {}
@@ -207,12 +197,6 @@ async def test_duplicate_event_keeps_live_card(table, core, monkeypatch):
     await mti.index_task(OWNER, _task(version=3))
     assert list(core.records) == [live] and _pointer()["recordId"] == live
     assert "delete" not in core.calls
-
-
-async def test_flag_lookup_failure_is_off(table, core, caplog):
-    mti.flags_for.side_effect = RuntimeError("flags down")
-    await mti.index_task(OWNER, _task())
-    assert core.calls == [] and "RuntimeError" in caplog.text
 
 
 def test_script_dry_run_by_default(monkeypatch):

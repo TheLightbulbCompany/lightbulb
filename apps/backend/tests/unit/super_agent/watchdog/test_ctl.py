@@ -49,7 +49,6 @@ class FakeClient:
 
 @pytest.fixture
 def env(monkeypatch):
-    monkeypatch.setattr(settings, "SUPER_AGENT_ENV_ENABLED", True)
     monkeypatch.setattr(settings, "PLATFORM_ADMIN_USER_IDS", ADMIN)
     audit = AsyncMock()
     with patch.object(ctl.admin_actions_repo, "create", audit):
@@ -108,13 +107,6 @@ async def test_ctl_label_requires_platform_admin(env, table):
     assert env.audit.await_args.kwargs["action"] == "watchdog.label"
     with pytest.raises(ctl.CtlError):
         await ctl.run(_args("--label", f["findingId"], "maybe", "--by", ADMIN))
-
-
-async def test_ctl_refuses_when_env_master_off(env, monkeypatch):
-    monkeypatch.setattr(settings, "SUPER_AGENT_ENV_ENABLED", False)
-    with pytest.raises(ctl.CtlError):
-        await ctl.run(_args("--show"), env.client)
-    env.audit.assert_not_awaited()
 
 
 async def test_ctl_show(env):

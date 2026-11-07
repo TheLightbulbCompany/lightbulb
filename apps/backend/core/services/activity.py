@@ -1527,11 +1527,6 @@ async def _live_items(owner_id: str, user_id: str, teams_ctx: TeamsCtx) -> tuple
     """Page 1's live decisions and whether Paperclip answered. A super-agent workspace adds its open Questions
     (§14.2, §14.5); Paperclip's items stay, because room runs there still ask through Paperclip (spec 05 §7),
     and a Paperclip outage never hides a Question. Every other workspace is exactly as before."""
-    from core.services.super_agent_flags import flags_for
-
-    if not await flags_for(owner_id):
-        paperclip = await _paperclip_within_budget(teams_ctx)
-        return paperclip or [], paperclip is not None
     paperclip, questions = await asyncio.gather(
         _paperclip_within_budget(teams_ctx), _task_question_items(owner_id, user_id)
     )

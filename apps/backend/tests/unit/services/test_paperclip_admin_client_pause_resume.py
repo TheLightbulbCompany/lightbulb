@@ -58,3 +58,13 @@ async def test_pause_agent_raises_on_error():
     finally:
         await http.aclose()
     assert exc.value.status_code == 500
+
+
+@pytest.fixture(autouse=True)
+def _no_registry_mirror(monkeypatch):
+    """These pin the Paperclip calls; the registry mirror (always on since the switch retired) has its own suite."""
+    from unittest.mock import AsyncMock as _AsyncMock
+
+    from core.services.paperclip_admin_client import PaperclipAdminClient as _Client
+
+    monkeypatch.setattr(_Client, "_mirror", _AsyncMock())

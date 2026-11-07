@@ -1,6 +1,6 @@
 """Inbound A2A → a pinned task (wave2-Q Task 10; spec 05 §3.8 inbound HTTP only; contracts-v2 §10).
 
-Governance (`a2a_tasks`) decides who may ask what; once a request is allowed it is dispatched. With the switch on,
+Governance (`a2a_tasks`) decides who may ask what; once a request is allowed it is dispatched.
 `admit_inbound_a2a` is that dispatch: one `TRIG#a2a:{a2aTaskId}` with a deterministic start pinned to the asked
 agent, in the requester's private lane, answered in the requester's DM with that agent. Idempotent per A2A task;
 a task a person stopped is never restarted by a late allow. The governance call site (`a2a_tasks._dispatch`) is the
@@ -18,7 +18,7 @@ from core.auth import AuthContext
 from core.dynamodb import utc_now_iso
 from core.observability.metrics import put_metric
 from core.repositories import tasks_repo
-from core.services import admission, hosted_mcp, super_agent_flags
+from core.services import admission, hosted_mcp
 
 logger = logging.getLogger(__name__)
 
@@ -31,9 +31,7 @@ def _title(text: str) -> str:
 
 
 async def admit_inbound_a2a(org: str, a2a_row: dict) -> str | None:
-    """The trigger id the request runs under, or None (switch off, or its task was stopped). Idempotent."""
-    if not await super_agent_flags.flags_for(org):
-        return None
+    """The trigger id the request runs under, or None (its task was stopped). Idempotent."""
     a2a_task_id, agent_id, requester = a2a_row["id"], a2a_row["agentId"], a2a_row["requester"]
     trigger_id = ts.trigger_id("a2a", a2a_task_id)
     existing = await tasks_repo.get_trigger(org, trigger_id)

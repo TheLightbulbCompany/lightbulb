@@ -41,8 +41,4 @@ describe("super-agent gate", () => {
     }
     expect(synthStage("dev").join("\n")).toMatch(OVERLAYS);
   });
-
-  it("dev's backend task gets the env master", () => {
-    expect(synthStage("dev").join("\n")).toMatch(/"Name":"SUPER_AGENT_ENV_ENABLED","Value":"true"/);
-  });
 });

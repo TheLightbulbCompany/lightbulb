@@ -59,7 +59,6 @@ def core(monkeypatch):
     fake = FakeAgentCore()
     monkeypatch.setattr(room_memory.settings, "AGENTCORE_MEMORY_ID", "mem-1", raising=False)
     monkeypatch.setattr(room_memory.workspace_memory, "_client", lambda: fake)
-    monkeypatch.setattr(room_memory, "flags_for", AsyncMock(return_value=True))
     return fake
 
 
@@ -194,12 +193,6 @@ async def test_ingest_failure_never_raises(table, core, caplog):
     assert "RuntimeError" in caplog.text and "Ship the Acme" not in caplog.text
     core.fail = False  # not marked done: the redelivery writes it
     assert await room_memory.ingest_message(OWNER, _room(), _msg()) is True
-
-
-async def test_switch_off_ingests_nothing(table, core, monkeypatch):
-    monkeypatch.setattr(room_memory, "flags_for", AsyncMock(return_value=False))
-    assert await room_memory.ingest_message(OWNER, _room(), _msg()) is False
-    assert core.events == []
 
 
 async def test_members_read_when_meta_has_none(table, core):

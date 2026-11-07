@@ -63,16 +63,11 @@ def api(world, monkeypatch):  # noqa: F811
 
     monkeypatch.setattr("core.services.container_auth.container_repo.get_by_owner_id", container)
 
-    async def on(ws):
-        return client.switch
-
-    monkeypatch.setattr(ri, "flags_for", on)
     app = FastAPI()
     app.include_router(ri.router, prefix="/api/v1/internal/runtime")
     client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t")
     client.fake = fake
     client.world = world
-    client.switch = True
     return client
 
 
@@ -293,17 +288,9 @@ async def test_recent_tools_are_capped(api):
     assert len(kept) == 20 and len(kept[0]["name"]) == 64 and "result" not in kept[0]
 
 
-async def test_routes_404_when_switch_off(api):
-    tid = await _task()
-    ref = await _running(tid)
-    api.switch = False
-    body = {"runSecret": await _secret(tid), "taskId": tid, "attempt": 1, "kind": "terminal", "status": "completed"}
-    assert (await api.post(_url(WS, ref.run_id), json=body, headers=H)).status_code == 404
-
-
 async def test_task_note_posts_in_its_own_task_room(api):
     """task_note (contracts-v2 §6): the current attempt posts in its task's room as Lightbulb · specialist; the same
-    text twice is one post; a wrong secret, a stale attempt or the switch off never posts."""
+    text twice is one post; a wrong secret or a stale attempt never posts."""
     tid = await _task()
     ref = await _running(tid)
     body = {"taskId": tid, "runId": ref.run_id, "attempt": 1, "runSecret": await _secret(tid), "text": "Found the PO."}
@@ -322,5 +309,3 @@ async def test_task_note_posts_in_its_own_task_room(api):
     await repo.update_attempt(WS, tid, 1, {"status": "ended"}, allowed_status=frozenset({"running"}))
     stale = await api.post(url, json=body, headers=H)
     assert stale.status_code == 409 and stale.json()["detail"] == "stale_run"
-    api.switch = False
-    assert (await api.post(url, json=body, headers=H)).status_code == 404

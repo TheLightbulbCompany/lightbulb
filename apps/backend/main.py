@@ -471,13 +471,9 @@ async def lifespan(app: FastAPI):
     # Temporal client (super-agent, dev only), connected in the background so startup never waits on it:
     # until it lands, or if it fails (bad key, Cloud outage), get_client() raises TemporalUnavailable and
     # every existing route still serves. temporalio is imported only in this branch.
-    from core.services.super_agent_flags import env_enabled
+    from core.temporal.client import connect_and_set
 
-    temporal_task = None
-    if env_enabled():
-        from core.temporal.client import connect_and_set
-
-        temporal_task = asyncio.create_task(connect_and_set())
+    temporal_task = asyncio.create_task(connect_and_set())
 
     # Startup complete — flip the liveness gate so /health returns 200.
     global _started
@@ -1135,7 +1131,7 @@ from routers import questions as questions_router  # noqa: E402
 
 app.include_router(questions_router.router, prefix="/api/v1", tags=["questions"])
 
-# Proactive rules (wave2-S): /automations/{id}/mode, /automations/{id}/matches. 404 unless the switch is on.
+# Proactive rules (wave2-S): /automations/{id}/mode, /automations/{id}/matches.
 from routers import rules as rules_router  # noqa: E402
 
 app.include_router(rules_router.router, prefix="/api/v1", tags=["rules"])

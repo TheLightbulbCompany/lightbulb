@@ -78,17 +78,12 @@ async def test_task_session_refused_is_run_refused(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_session_kind_recomputed_each_attempt(monkeypatch):
-    flags = AsyncMock(return_value=True)
     gate = AsyncMock(return_value=True)
-    monkeypatch.setattr(rr, "flags_for", flags)
     monkeypatch.setattr(token_custody, "task_vm_allowed", gate)
     assert await rr.session_kind_for(OWNER) == "task"
     gate.return_value = False  # the workspace switched to ChatGPT login mid-task
     assert await rr.session_kind_for(OWNER) == "workspace"
     assert gate.await_count == 2  # asked every time, never cached
-    flags.return_value = False
-    assert await rr.session_kind_for(OWNER) == "workspace"
-    assert gate.await_count == 2  # switch off: the gate is not even read
 
 
 @pytest.mark.asyncio

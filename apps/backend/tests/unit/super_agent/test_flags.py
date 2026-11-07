@@ -1,159 +1,43 @@
-"""contracts-v2 §1: one switch. Env master `SUPER_AGENT_ENV_ENABLED` + `containers.super_agent`, read only by
-`flags_for`; clients see it as LiveConfig `features.superAgent`; off means today's behaviour, byte for byte."""
+"""The super-agent switch, retired (Phase 1 task 4): every workspace is on, nothing reads a row for it, and
+LiveConfig still sends `features.superAgent: true` because old app builds read it."""
 
-import re
 import uuid
-from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-import pytest
+from core.config import Settings
+from core.services.super_agent_flags import flags_for, list_on
 
-from core.config import settings
-from core.services.super_agent_flags import flags_for
-
-BACKEND = Path(__file__).resolve().parents[3]
 GET_ROW = "core.repositories.container_repo.get_by_owner_id"
-
-
-def test_env_master_defaults_off():
-    from core.config import Settings
-
-    assert Settings.model_fields["SUPER_AGENT_ENV_ENABLED"].default is False
-
-
-async def test_env_master_off_ignores_an_on_row(monkeypatch):
-    monkeypatch.setattr(settings, "SUPER_AGENT_ENV_ENABLED", False)
-    with patch(GET_ROW, AsyncMock(return_value={"super_agent": True})) as get_row:
-        assert await flags_for("org_1") is False
-    get_row.assert_not_awaited()  # prod never even reads the row
-
-
-@pytest.mark.parametrize(
-    ("row", "expected"),
-    [
-        ({"super_agent": True}, True),
-        ({"super_agent": False}, False),
-        ({}, True),  # dev default: on
-        (None, True),
-        ({"super_agent": "false"}, True),  # only a real False opts out
-    ],
-)
-async def test_env_master_on_reads_the_workspace_bool(monkeypatch, row, expected):
-    monkeypatch.setattr(settings, "SUPER_AGENT_ENV_ENABLED", True)
-    with patch(GET_ROW, AsyncMock(return_value=row)):
-        assert await flags_for("org_1") is expected
-
-
-def test_no_other_reader():
-    """Every other module asks `flags_for`; none reads the env master or the row attribute itself."""
-    allowed = {
-        BACKEND / "core" / "services" / "super_agent_flags.py",
-        BACKEND / "core" / "config.py",  # declares the setting
-        # asks flags_for in arm_nightly_ceo; "super_agent" there is only the nightly_ceo.arm metric's status label
-        BACKEND / "core" / "services" / "user_provision.py",
-    }
-    pattern = re.compile(r"SUPER_AGENT_ENV_ENABLED|[\"']super_agent[\"']")
-    offenders = [
-        str(path.relative_to(BACKEND))
-        for path in BACKEND.rglob("*.py")
-        if path not in allowed
-        and not {".venv", "tests", "vendor", "node_modules"} & set(path.relative_to(BACKEND).parts)
-        and pattern.search(path.read_text(errors="ignore"))
-    ]
-    assert offenders == []
-
-
-def test_env_enabled_callers_are_allowlisted():
-    """`env_enabled()` is the env master without a workspace: only process-wide wiring may call it.
-    Anything with a workspace asks `flags_for`."""
-    allowed = {
-        BACKEND / "core" / "services" / "super_agent_flags.py",
-        BACKEND / "core" / "config.py",  # names it in the setting's docstring
-        BACKEND / "main.py",  # Temporal client in the lifespan
-        BACKEND / "scripts" / "temporal_worker.py",
-        # Lane R: the AGENT# registry mirror is env-wide (every Paperclip agent write in an env with the table).
-        BACKEND / "core" / "services" / "agent_registry.py",
-        BACKEND / "core" / "services" / "paperclip_admin_client.py",
-        BACKEND / "routers" / "paperclip_proxy.py",
-        BACKEND / "scripts" / "backfill_agent_registry.py",
-        BACKEND / "scripts" / "copy_workspace_meta.py",  # dev-only copy refuses an env without the tasks table
-        BACKEND / "core" / "repositories" / "paperclip_repo.py",  # META store is env-wide (it has fleet scans)
-        BACKEND / "core" / "services" / "watchdog.py",  # the watchdog schedule is platform-wide
-        # Lane V broker: custody=backend on the token row decides the vend `model` / `POST …/model`, not the
-        # workspace switch (#4804); the env master keeps prod off without a read.
-        BACKEND / "routers" / "runtime_rpc.py",
-        BACKEND / "scripts" / "watchdog_ctl.py",
-        BACKEND / "scripts" / "work_lambda.py",  # Temporal client for admission (wave-2 O6)
-    }
-    offenders = [
-        str(path.relative_to(BACKEND))
-        for path in BACKEND.rglob("*.py")
-        if path not in allowed
-        and not {".venv", "tests", "vendor", "node_modules"} & set(path.relative_to(BACKEND).parts)
-        and "env_enabled" in path.read_text(errors="ignore")
-    ]
-    assert offenders == []
-
-
-# --- list_on (watchdog scan scope) -----------------------------------------------------------------
-
 SCAN = "core.repositories.container_repo.scan_all"
 
 
-async def test_list_on_empty_when_env_master_off(monkeypatch):
-    from core.services.super_agent_flags import list_on
-
-    monkeypatch.setattr(settings, "SUPER_AGENT_ENV_ENABLED", False)
-    with patch(SCAN, AsyncMock(return_value=[{"owner_id": "org_1", "super_agent": True}])) as scan:
-        assert await list_on() == []
-    scan.assert_not_awaited()
+def test_the_env_master_is_gone():
+    assert "SUPER_AGENT_ENV_ENABLED" not in Settings.model_fields
 
 
-async def test_list_on_returns_every_owner_not_opted_out(monkeypatch):
-    from core.services.super_agent_flags import list_on
-
-    monkeypatch.setattr(settings, "SUPER_AGENT_ENV_ENABLED", True)
-    rows = [
-        {"owner_id": "org_on", "super_agent": True},
-        {"owner_id": "org_off", "super_agent": False},
-        {"owner_id": "org_str", "super_agent": "true"},
-        {"owner_id": "org_none"},
-    ]
-    with patch(SCAN, AsyncMock(return_value=rows)):
-        assert await list_on() == ["org_on", "org_str", "org_none"]
-
-
-# --- LiveConfig ------------------------------------------------------------------------------------
-
-LEGACY_KEYS = {"schemaVersion", "httpEndpoint", "realtimeEndpoint", "region", "userChannelKey", "workspaceId"}
-
-
-def _live_config(client, row):
-    with (
-        patch("core.repositories.messaging_repo.ensure_user_stream", AsyncMock(return_value=uuid.uuid4())),
-        patch("core.repositories.messaging_repo.enroll_sessions_member", AsyncMock(return_value=uuid.uuid4())),
-        patch(GET_ROW, AsyncMock(return_value=row)) as get_row,
-    ):
-        response = client.get("/api/v1/messaging/live-config")
-    assert response.status_code == 200
-    return response.json(), get_row
-
-
-def test_live_config_is_unchanged_when_the_master_is_off(client, monkeypatch):
-    monkeypatch.setattr(settings, "SUPER_AGENT_ENV_ENABLED", False)
-    body, get_row = _live_config(client, {"super_agent": True})
-    assert set(body) == LEGACY_KEYS  # no `features` key at all: the legacy payload
+async def test_flags_for_is_on_without_a_read():
+    with patch(GET_ROW, AsyncMock(return_value={"super_agent": False})) as get_row:
+        assert await flags_for("org_x") is True
     get_row.assert_not_awaited()
 
 
-def test_live_config_is_unchanged_for_a_workspace_that_is_off(client, monkeypatch):
-    monkeypatch.setattr(settings, "SUPER_AGENT_ENV_ENABLED", True)
-    body, _ = _live_config(client, {"super_agent": False})
-    assert set(body) == LEGACY_KEYS
+async def test_list_on_is_every_workspace():
+    rows = [
+        {"owner_id": "org_a", "super_agent": True},
+        {"owner_id": "org_b", "super_agent": False},
+        {"owner_id": "org_c"},
+    ]
+    with patch(SCAN, AsyncMock(return_value=rows)):
+        assert await list_on() == ["org_a", "org_b", "org_c"]
 
 
-def test_live_config_carries_the_switch_when_on(client, monkeypatch):
-    monkeypatch.setattr(settings, "SUPER_AGENT_ENV_ENABLED", True)
-    body, _ = _live_config(client, {"super_agent": True})
-    assert body["features"] == {"superAgent": True}
-    assert set(body) == LEGACY_KEYS | {"features"}
+def test_live_config_always_carries_super_agent(client):
+    with (
+        patch("core.repositories.messaging_repo.ensure_user_stream", AsyncMock(return_value=uuid.uuid4())),
+        patch("core.repositories.messaging_repo.enroll_sessions_member", AsyncMock(return_value=uuid.uuid4())),
+        patch(GET_ROW, AsyncMock(return_value={"super_agent": False})) as get_row,
+    ):
+        response = client.get("/api/v1/messaging/live-config")
+    assert response.status_code == 200
+    assert response.json()["features"] == {"superAgent": True}
+    get_row.assert_not_awaited()

@@ -1,4 +1,4 @@
-"""G1 runner over a fake Ctx: dev-only guards, the registry, wait_for, the report, A0 and the G2 wiring."""
+"""G1 runner over a fake Ctx: dev-only guards, the registry, wait_for, the report and the G2 wiring."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ import pytest
 from core.services.runtime_transport import session_id_for
 from scripts.super_agent.acceptance import ctx as ctxmod
 from scripts.super_agent.acceptance import report
-from scripts.super_agent.acceptance.a00_parity import a00
 from scripts.super_agent.acceptance.ctx import Ctx, Result, parse_appsync_data
 
 DEV_API = "https://api-dev.thelightbulb.company/api/v1"
@@ -41,29 +40,6 @@ class FakeCtx:
 
 def _ok(data: dict) -> httpx.Response:
     return httpx.Response(200, json=data)
-
-
-def legacy_handler(*, features: bool = False, reply: bool = True):
-    def handle(request: httpx.Request) -> httpx.Response:
-        path = request.url.path
-        if path.endswith("/live-config"):
-            cfg = {"httpEndpoint": "https://x/event", "realtimeEndpoint": "wss://x/event/realtime", "workspaceId": "w"}
-            return _ok({**cfg, "features": {"superAgent": True}} if features else cfg)
-        if path.endswith("/messaging/rooms"):
-            return _ok({"rooms": [{"roomId": "r1", "name": "general"}]})
-        if path.endswith("/messages") and request.method == "POST":
-            return _ok({"messageId": "m1", "messageSeq": 5})
-        if path.endswith("/messages"):
-            # The reply is only on the page after Sam's post: a read without afterSeq=5 gets the room's old head.
-            if request.url.params.get("afterSeq") != "5":
-                return _ok(
-                    {"messages": [{"messageId": "old", "messageSeq": 1, "author": {"kind": "agent", "id": "x"}}]}
-                )
-            agent = {"messageId": "m2", "messageSeq": 6, "author": {"kind": "agent", "id": "agent1"}}
-            return _ok({"messages": [agent] if reply else []})
-        return httpx.Response(404)
-
-    return handle
 
 
 # ---------------------------------------------------------------------- dev-only guards
@@ -97,9 +73,9 @@ def test_runner_refuses_non_dev_table(monkeypatch):
 
 # ---------------------------------------------------------------------- registry
 def test_parse_scenarios():
-    assert report.parse_scenarios("A0-A2") == ["A0", "A1", "A2"]
+    assert report.parse_scenarios("A1-A2") == ["A1", "A2"]
     assert report.parse_scenarios("A7,A1, a5") == ["A7", "A1", "A5"]
-    assert report.parse_scenarios("A12-A13,A0") == ["A12", "A13", "A0"]
+    assert report.parse_scenarios("A12-A13,A1") == ["A12", "A13", "A1"]
     with pytest.raises(SystemExit):
         report.parse_scenarios("A99")
 
@@ -111,13 +87,13 @@ async def test_missing_scenario_reports_not_implemented(monkeypatch):
     assert result.passed is False
     assert result.evidence["reason"] == "not implemented (lane Q: a99_nope:a99)"
     assert report.status("A5").startswith("not implemented (lane Q")
-    assert report.status("A0") == "implemented"
+    assert report.status("A1") == "implemented"
 
 
 async def test_missing_function_in_present_module_is_not_implemented(monkeypatch):
-    monkeypatch.setitem(report.SCENARIOS, "A1", ("O", ("a00_parity:nope",)))
+    monkeypatch.setitem(report.SCENARIOS, "A1", ("O", ("a01_one_coordinator:nope",)))
     result = await report.run_scenario("A1", FakeCtx())
-    assert result.evidence["reason"] == "not implemented (lane O: a00_parity:nope)"
+    assert result.evidence["reason"] == "not implemented (lane O: a01_one_coordinator:nope)"
 
 
 # ---------------------------------------------------------------------- wait_for
@@ -176,34 +152,15 @@ async def test_report_lists_every_check(monkeypatch):
 
 
 def test_write_report_keeps_full_evidence_json(tmp_path):
-    results = {"A0": Result(True, {"zero_tasks_rows": True, "roomId": "r1"})}
+    results = {"A1": Result(True, {"zero_tasks_rows": True, "roomId": "r1"})}
     out = tmp_path / "gates" / "wave2.md"
     report.write_report(out, results, sha="s", workspace="org", faults="")
-    assert "| A0 | PASS | zero_tasks_rows | ok |" in out.read_text()
-    assert json.loads(out.with_suffix(".md.json").read_text())["A0"]["evidence"]["roomId"] == "r1"
-
-
-# ---------------------------------------------------------------------- A0
-async def test_a00_parity_green_on_legacy_workspace():
-    result = await a00(FakeCtx(legacy_handler()))
-    assert result.passed, result.evidence
-    assert result.evidence["ws"] == "org_on" and result.evidence["replyMessageId"] == "m2"
-
-
-async def test_a00_parity_fails_when_features_or_rows_leak():
-    leaked = FakeCtx(
-        legacy_handler(features=True), rows={"org_on": [{"sk": "AGENT#a"}, {"sk": "META"}, {"sk": "TASK#t"}]}
-    )
-    result = await a00(leaked)
-    assert not result.passed
-    assert report.failed_checks(result) == ["live_config_has_no_features", "zero_tasks_rows"]
-    assert result.evidence["tasksRows"] == 1  # AGENT#/META rows are not task rows
-    silent = await a00(FakeCtx(legacy_handler(reply=False)))
-    assert report.failed_checks(silent) == ["room_agent_replied_as_today"]
+    assert "| A1 | PASS | zero_tasks_rows | ok |" in out.read_text()
+    assert json.loads(out.with_suffix(".md.json").read_text())["A1"]["evidence"]["roomId"] == "r1"
 
 
 # ---------------------------------------------------------------------- G2 wiring
-async def test_gate_wires_vm_evidence_and_skips_a0(monkeypatch):
+async def test_gate_wires_vm_evidence(monkeypatch):
     tid = "22222222-2222-4222-8222-222222222222"
     rows = {"org_on": [{"type": "attempt", "taskId": tid, "n": 1, "sessionId": session_id_for("org_on")}]}
     from core.services import token_custody
@@ -221,7 +178,7 @@ async def test_gate_wires_vm_evidence_and_skips_a0(monkeypatch):
 
     monkeypatch.setattr(report, "run_scenarios", scenarios)
     results = await report.gate(ctx, log=lambda line: None)
-    assert set(results) == {*report.ORDER[1:], "VM", "RULES"}
+    assert set(results) == {*report.ORDER, "VM", "RULES"}
     assert results["VM"].passed, results["VM"].evidence["failures"]
     assert results["RULES"].evidence["reason"].startswith("no --rules-expect")
     rows["org_on"][0]["sessionId"] = session_id_for("org_on", tid)  # ran on a task VM under actor custody: must fail

@@ -29,7 +29,6 @@ from core.services import (
     workspace_memory,
 )
 from core.services.secret_shaped import secret_pattern, secret_shaped
-from core.services.super_agent_flags import flags_for
 
 logger = logging.getLogger(__name__)
 
@@ -80,8 +79,7 @@ async def recall_page(
         return {"asOf": (as_of or datetime.now().astimezone()).isoformat(), "usedEvidenceTokens": 0, "results": []}
     ns = workspace_memory.namespaces_for(owner_id, user_id)
     _sync_in_background(owner_id, memory_id)
-    links = await flags_for(owner_id)
-    if links and audience and audience.get("kind") == "room":
+    if audience and audience.get("kind") == "room":
         from core.services import (
             room_memory,
         )  # lazy: room_memory imports memory_sync, which imports this module's peers
@@ -99,12 +97,11 @@ async def recall_page(
         include_private=user_id is not None,
         use_expand=use_expand,
         use_rerank=use_rerank,
-        **({"tasks": True} if links else {}),
+        tasks=True,
     )
-    if links:
-        if audience is None:
-            audience = {"kind": "person", "userId": user_id} if user_id else {"kind": "workspace"}
-        page["links"] = await memory_links.resolve_links(owner_id, page["results"], page.pop("taskHits", []), audience)
+    if audience is None:
+        audience = {"kind": "person", "userId": user_id} if user_id else {"kind": "workspace"}
+    page["links"] = await memory_links.resolve_links(owner_id, page["results"], page.pop("taskHits", []), audience)
     return page
 
 

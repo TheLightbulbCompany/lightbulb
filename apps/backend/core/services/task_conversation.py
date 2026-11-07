@@ -15,7 +15,6 @@ from core import tasks_schema as ts
 from core.constants import SYSTEM_ACTOR_ID
 from core.repositories import messaging_repo
 from core.services import agent_registry, messaging, room_memory, session_chat
-from core.services.super_agent_flags import flags_for
 
 _RESULT_SCAN = 50
 logger = logging.getLogger(__name__)
@@ -26,22 +25,21 @@ class NoFrontAgent(RuntimeError):
 
 
 async def _front_agent(ws: str) -> dict:
-    """The CEO as a room seat: from the `AGENT#` registry when the switch is on (no Paperclip read), else
-    today's Paperclip-backed default (`session_chat._default_agents`)."""
-    if await flags_for(ws):
-        ceo = next(
-            (a for a in await agent_registry.roster(ws) if a.get("role") == "ceo" and a.get("status") == "active"),
-            None,
-        )
-        if ceo:
-            return {
-                "kind": "agent",
-                "id": ceo["id"],
-                "displayName": messaging.FRONT_AGENT_NAME,
-                "mentionHandle": "lightbulb",
-                "role": "member",
-                "listenMode": "mentions",
-            }
+    """The CEO as a room seat from the `AGENT#` registry; Paperclip's default (`session_chat._default_agents`)
+    when the registry has no active CEO."""
+    ceo = next(
+        (a for a in await agent_registry.roster(ws) if a.get("role") == "ceo" and a.get("status") == "active"),
+        None,
+    )
+    if ceo:
+        return {
+            "kind": "agent",
+            "id": ceo["id"],
+            "displayName": messaging.FRONT_AGENT_NAME,
+            "mentionHandle": "lightbulb",
+            "role": "member",
+            "listenMode": "mentions",
+        }
     agents = await session_chat._default_agents(ws)
     if not agents:
         raise NoFrontAgent(ws)

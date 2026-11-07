@@ -105,11 +105,7 @@ async def test_answer_of(monkeypatch, q, expect):
 
 
 @pytest.mark.asyncio
-async def test_task_for_run_needs_the_switch_a_live_run_and_its_secret(monkeypatch):
-    flags = AsyncMock(return_value=False)
-    monkeypatch.setattr(pq.super_agent_flags, "flags_for", flags)
-    assert await pq.task_for_run("org_a", "run-1", "s3cret") is None
-    flags.return_value = True
+async def test_task_for_run_needs_a_live_run_and_its_secret(monkeypatch):
     att = {"taskId": "t-1", "runId": "run-1", "runSecret": "s3cret"}
     monkeypatch.setattr("core.services.effect_doors.live_attempts", AsyncMock(return_value=[att]))
     monkeypatch.setattr(pq.tasks_repo, "get_task", AsyncMock(return_value={"taskId": "t-1"}))

@@ -97,7 +97,6 @@ from core.services.paperclip_session_cookie import (
     is_trusted,
     set_session_on_response,
 )
-from core.services.super_agent_flags import env_enabled
 from core.services.user_provision import ensure_user_ready
 
 logger = logging.getLogger(__name__)
@@ -588,8 +587,8 @@ _AGENT_WRITE_RE = re.compile(r"^api/agents/(?P<id>[^/]+)(?:/(?:pause|resume|term
 
 
 async def _mirror_agent_write(method: str, path: str, status_code: int, body: bytes) -> None:
-    """Mirror a successful proxied agent write into ``agent_registry`` (env master on only; never raises)."""
-    if not env_enabled() or not 200 <= status_code < 300:
+    """Mirror a successful proxied agent write into ``agent_registry`` (never raises)."""
+    if not 200 <= status_code < 300:
         return
     match = _AGENT_WRITE_RE.match(path)
     if match is None or method.upper() not in {"PATCH", "POST", "DELETE"}:

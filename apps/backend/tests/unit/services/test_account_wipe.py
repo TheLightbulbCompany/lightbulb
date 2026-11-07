@@ -18,6 +18,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import boto3
 import pytest
+
+from core import tasks_schema as ts
 from moto import mock_aws
 
 from core.billing.bedrock_gate_tokens import delete_gate_token_rows as real_delete_gate_token_rows
@@ -1276,19 +1278,22 @@ def _gate_rows(client) -> set[str]:
 
 
 def _put_pending_brief(client, owner_id: str) -> None:
-    client.put_item(
-        TableName="test-paperclip-companies",
-        Item={
-            "user_id": {"S": f"__pending_brief__:{owner_id}"},
-            "kind": {"S": "pending_brief"},
-            "brief_state": {"S": "pending"},
-            "owner_id": {"S": owner_id},
-        },
+    """A pending brief where it lives since the switch retired: the owner's tasks-table PENDING_BRIEF row."""
+    repo = PaperclipRepo(table_name="paperclip-companies")
+    item = {"user_id": owner_id, "kind": "pending_brief", "brief_state": "pending", "owner_id": owner_id}
+    repo._ws_table().put_item(
+        Item={**repo._ws_item(item, owner_id, ts.PENDING_BRIEF_SK), **repo._pending_key(owner_id)}
     )
 
 
 def _paperclip_keys(client) -> set[str]:
-    return {i["user_id"]["S"] for i in client.scan(TableName="test-paperclip-companies")["Items"]}
+    """Old-table keys plus each surviving pending brief, named as before (``__pending_brief__:{owner}``)."""
+    old = {i["user_id"]["S"] for i in client.scan(TableName="test-paperclip-companies")["Items"]}
+    tasks = client.scan(TableName="test-tasks")["Items"] if "test-tasks" in client.list_tables()["TableNames"] else []
+    briefs = {
+        f"__pending_brief__:{i['pk']['S'].split('#', 1)[1]}" for i in tasks if i["sk"]["S"] == ts.PENDING_BRIEF_SK
+    }
+    return old | briefs
 
 
 @pytest.mark.asyncio

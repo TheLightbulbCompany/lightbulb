@@ -250,6 +250,7 @@ async def test_one_providers_unexpected_error_never_fails_the_whole_broker_call(
     )
     monkeypatch.setattr(runtime_rpc.messaging, "load_agent_roster", AsyncMock(return_value=[{"id": "ceo"}]))
     monkeypatch.setattr(runtime_rpc.access_token, "get_with_expiry", AsyncMock(side_effect=AttributeError("boom")))
+    monkeypatch.setattr(runtime_rpc.token_custody, "codex_vend", AsyncMock(return_value=None))  # no brokered grant
     r = await async_client.post(
         "/api/v1/runtime/credentials/u/org_a", json={"agent_id": "ceo"}, headers={"Authorization": "Bearer hook-a"}
     )

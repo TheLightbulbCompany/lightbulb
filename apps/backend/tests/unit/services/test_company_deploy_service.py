@@ -923,3 +923,13 @@ async def test_company_deploy_creates_every_agent_with_can_create_agents_false(m
 
     assert len(bodies) == 3
     assert all(b["permissions"] == {"canCreateAgents": False} for b in bodies)
+
+
+@pytest.fixture(autouse=True)
+def _no_registry_mirror(monkeypatch):
+    """These pin the Paperclip calls; the registry mirror (always on since the switch retired) has its own suite."""
+    from unittest.mock import AsyncMock as _AsyncMock
+
+    from core.services.paperclip_admin_client import PaperclipAdminClient as _Client
+
+    monkeypatch.setattr(_Client, "_mirror", _AsyncMock())

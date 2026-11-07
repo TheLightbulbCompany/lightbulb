@@ -24,7 +24,6 @@ from core.config import settings
 from core.dynamodb import run_in_thread
 from core.repositories import messaging_repo, tasks_repo
 from core.services import memory_sync, memory_tags, secret_shaped, workspace_memory
-from core.services.super_agent_flags import flags_for
 
 logger = logging.getLogger(__name__)
 
@@ -132,9 +131,9 @@ def _write(
 
 async def ingest_posted(owner_id: str, room_id: str, message: dict) -> bool:
     """Lightbulb's own post (`task_conversation.post_as_lightbulb`, which builds ``message`` from what it wrote),
-    stored exactly as a person's message is. Never raises; the switch is read first so switch-off costs nothing."""
+    stored exactly as a person's message is. Never raises."""
     try:
-        if not settings.AGENTCORE_MEMORY_ID or not await flags_for(owner_id):
+        if not settings.AGENTCORE_MEMORY_ID:
             return False
         room = await messaging_repo.get_room(room_id)
     except Exception as exc:  # noqa: BLE001 -- memory never blocks a post
@@ -153,8 +152,6 @@ async def ingest_message(owner_id: str, room: dict, message: dict, *, task: dict
     if not memory_id or _skip(message):
         return False
     try:
-        if not await flags_for(owner_id):
-            return False
         room_id = room["roomId"]
         if task is None and room.get("task"):
             task = await tasks_repo.get_task(owner_id, room["task"]["taskId"])

@@ -246,8 +246,6 @@ async def internal_board(owner_id: str, body: BoardBody, request: Request) -> di
     audience = body.audience.model_dump(exclude_none=True)
     if audience["kind"] == "room" and not audience.get("roomId"):
         raise HTTPException(status_code=422, detail="a room audience names its room")
-    if not await memory_api.flags_for(owner_id):
-        return {"text": ""}
     return {"text": await memory_links.board_text(owner_id, audience)}
 
 
@@ -258,8 +256,6 @@ async def internal_link(owner_id: str, body: LinkBody, request: Request) -> dict
     audience = body.audience.model_dump(exclude_none=True)
     if audience["kind"] == "room" and not audience.get("roomId"):
         raise HTTPException(status_code=422, detail="a room audience names its room")
-    if not await memory_api.flags_for(owner_id):
-        raise HTTPException(status_code=404, detail="not found")
     out = await memory_links.read_link(owner_id, body.id, audience)
     if out is None:
         raise HTTPException(status_code=404, detail="not found")

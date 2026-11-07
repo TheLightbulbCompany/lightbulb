@@ -10,14 +10,14 @@ so they stay cards; the company-Stripe card is onboarding, also a person's form.
 from __future__ import annotations
 
 from core.repositories import questions_repo, tasks_repo
-from core.services import provisioning_approvals, questions, super_agent_flags, task_asks
+from core.services import provisioning_approvals, questions, task_asks
 
 
 async def task_for_run(owner_id: str, run_id: str | None, run_secret: str | None) -> dict | None:
     """The working task whose live attempt is `run_id` (`X-Lightbulb-Run`) and whose run secret the caller presents
-    (`X-Lightbulb-Run-Secret`, checked as the runtime routes check it), or None: switch off, no or wrong secret, not a
+    (`X-Lightbulb-Run-Secret`, checked as the runtime routes check it), or None: no or wrong secret, not a
     task run. None files the board card, as before."""
-    if not run_id or not run_secret or not await super_agent_flags.flags_for(owner_id):
+    if not run_id or not run_secret:
         return None
     from core.services import effect_doors
     from routers.runtime_internal import _secret_ok

@@ -599,3 +599,14 @@ def test_a_commit_that_cannot_go_back_out_in_a_header_is_refused(client, monkeyp
     )
     assert r.status_code == 422
     put.assert_not_awaited()
+
+
+@pytest.fixture(autouse=True)
+def _intent_allowed(monkeypatch):
+    """These pin the route's delegation. The intent gate (always on since the switch retired) refuses a call with no
+    matching Effect row; its own suite is tests/unit/super_agent/questions/test_effect_doors.py."""
+    from unittest.mock import AsyncMock as _AsyncMock
+
+    from core.services import effect_doors
+
+    monkeypatch.setattr(effect_doors, "require_intent", _AsyncMock(return_value=None))

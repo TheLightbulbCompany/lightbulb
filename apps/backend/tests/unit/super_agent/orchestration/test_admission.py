@@ -43,15 +43,11 @@ def world(table, monkeypatch):  # noqa: F811
         "jev": [],
         "jev_answer": {"to": "router", "specialist": FIN, "confidence": 0.9},
         "listen": "active",
-        "on": True,
         "temporal_up": True,
         "front_seated": True,
         "gate": None,
         "posts": [],
     }
-
-    async def flags(ws):
-        return w["on"]
 
     async def get_room(room_id):
         return w["meta"]
@@ -96,7 +92,6 @@ def world(table, monkeypatch):  # noqa: F811
             {"agentId": "obs", "name": "Observer", "listenMode": "observe"},
         ]
 
-    monkeypatch.setattr(admission, "flags_for", flags)
     monkeypatch.setattr(messaging_repo, "get_room", get_room)
     monkeypatch.setattr(messaging_repo, "get_message", get_message)
     monkeypatch.setattr(messaging_repo, "get_member", get_member)
@@ -138,11 +133,6 @@ async def test_router_room_needs_lightbulb_seated(world):
     """Audit #3: a specialist's DM (no Lightbulb seat) keeps today's path; Lightbulb could not answer there."""
     world["front_seated"] = False
     assert await admission.router_room({"roomId": ROOM, "ownerId": WS, "kind": "dm"}, WS) is False
-
-
-async def test_router_room_off_when_switch_off(world):
-    world["on"] = False
-    assert await admission.router_room(world["meta"], WS) is False
 
 
 def test_lane_for_dm_is_private():

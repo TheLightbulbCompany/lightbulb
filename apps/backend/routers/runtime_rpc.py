@@ -12,7 +12,6 @@ from core.repositories import integrations_repo
 from core.services import runtime_rpc as service
 from core.services import messaging, token_custody
 from core.services.owner_lifecycle import OwnerLifecycleBusyError
-from core.services.super_agent_flags import env_enabled
 from core.services.credentials import access_token, registry
 from core.services.messaging import (
     RuntimeOperation,
@@ -110,20 +109,17 @@ async def runtime_credentials(
             )
             unavailable.append(provider.key)
     payload: dict = {"tokens": tokens, "unavailable": unavailable}
-    # The env master, not the workspace switch: custody is the data that decides (codex_vend is None
-    # unless the row is custody=backend), so a workspace whose switch went off keeps its brokered grant
-    # served until a rollback. Off in prod without any read: no backend-custodied grant exists there.
-    if env_enabled():
-        try:
-            vend = await token_custody.codex_vend(owner_id)
-        except Exception as exc:  # noqa: BLE001 -- reconnect, busy, OpenAI down: the rest still vends
-            logger.warning("runtime model unavailable owner=%s error=%s", owner_id, type(exc).__name__)
-            unavailable.append(token_custody.PROVIDER_KEY)
-        else:
-            if vend is not None:
-                payload["model"] = _model(vend)
-                if vend.expires_at:
-                    expires["model"] = vend.expires_at
+    # custody decides: codex_vend is None unless the row is custody=backend.
+    try:
+        vend = await token_custody.codex_vend(owner_id)
+    except Exception as exc:  # noqa: BLE001 -- reconnect, busy, OpenAI down: the rest still vends
+        logger.warning("runtime model unavailable owner=%s error=%s", owner_id, type(exc).__name__)
+        unavailable.append(token_custody.PROVIDER_KEY)
+    else:
+        if vend is not None:
+            payload["model"] = _model(vend)
+            if vend.expires_at:
+                expires["model"] = vend.expires_at
     if expires:
         payload["expires_at"] = expires
     response.headers["Cache-Control"] = "no-store"
@@ -134,13 +130,9 @@ async def runtime_credentials(
 async def runtime_model(owner_id: str, body: RuntimeModelRequest, request: Request, response: Response) -> dict:
     """Forced refresh for the bridge's F6 delegate: the VM got a 401 on the token it presents.
     Refreshes only if that token is still current; otherwise returns the newer one (N VMs, one
-    refresh). 409 busy (lease held), 410 the grant is dead, 404 not backend-custodied (or the
-    env master is off: no brokered grant can exist). The workspace switch is not consulted: a brokered
-    grant whose switch went off is still served, never left refreshing "transiently" forever."""
+    refresh). 409 busy (lease held), 410 the grant is dead, 404 not backend-custodied."""
     await _authorize_vend(owner_id, body.agent_id, request)
     response.headers["Cache-Control"] = "no-store"
-    if not env_enabled():
-        raise HTTPException(status_code=404, detail={"code": "not_brokered"})
     try:
         vend = await token_custody.codex_vend(owner_id, presented_sha256=body.presented_sha256, force=body.force)
     except access_token.ReconnectRequired:

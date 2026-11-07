@@ -1,6 +1,5 @@
 """Work asked aloud becomes a task (lane A, Task 10; contracts-v2 §14.1)."""
 
-import hashlib
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -98,28 +97,12 @@ async def test_unknown_or_foreign_run_404(api):
     assert _post(api, BODY | {"roomId": "other-room"}).status_code == 404  # the run's room is the truth
 
 
-async def test_switch_off_404(api):
-    api.flags.return_value = False
-    assert _post(api).status_code == 404
-
-
 # --- the spoken turn ----------------------------------------------------------------------------------------
 
 
-async def test_switch_off_turn_note_and_body_unchanged(run_env):  # noqa: F811
-    with patch("core.services.voice_calls.flags_for", AsyncMock(return_value=False)):
-        await _dispatch()
+async def test_the_turn_offers_start_work_and_keeps_the_flag(run_env):  # noqa: F811
+    await _dispatch()
     req = run_env.await_args.kwargs["json_body"]["request"]
+    assert req["superAgent"] is True  # pinned runtime images offer start_work only with it
     assert req["instructions"] == vc.TURN_NOTE
-    assert hashlib.sha256(vc.TURN_NOTE.encode()).hexdigest() == TURN_NOTE_SHA
-    assert "superAgent" not in req
-
-
-async def test_switch_on_adds_one_sentence_and_the_flag(run_env):  # noqa: F811
-    with patch("core.services.voice_calls.flags_for", AsyncMock(return_value=True)):
-        await _dispatch()
-    req = run_env.await_args.kwargs["json_body"]["request"]
-    assert req["superAgent"] is True
-    assert req["instructions"] == vc.TURN_NOTE + "\n" + vc.SUPER_AGENT_NOTE
-    assert "start_work" in vc.SUPER_AGENT_NOTE and "paperclip" not in vc.SUPER_AGENT_NOTE.lower()
-    assert vc.SUPER_AGENT_NOTE.count(". ") <= 2  # one sentence, two at most
+    assert "start_work" in vc.TURN_NOTE and "paperclip" not in vc.TURN_NOTE.lower()

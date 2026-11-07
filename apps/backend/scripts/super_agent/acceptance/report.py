@@ -1,6 +1,6 @@
 """The scenario registry, the runner and the report (G1), plus the gate that adds the evidence checks (G2).
 
-A scenario is ``A0``..``A13`` (spec 09 §8.3), one module per scenario in this package, ``async def aNN(ctx) -> Result``.
+A scenario is ``A1``..``A13`` (spec 09 §8.3), one module per scenario in this package, ``async def aNN(ctx) -> Result``.
 A scenario whose module or function is not on main yet reports ``not implemented`` with its owning lane; the runner
 never imports a body it does not need. A12 has two bodies (lane O's Router part, lane M's memory part) and passes
 only when both do.
@@ -23,7 +23,6 @@ from scripts.super_agent.acceptance.ctx import Ctx, Result, not_implemented
 PACKAGE = __name__.rsplit(".", 1)[0]
 #: scenario -> (owning lane, bodies as ``module:function``), from each lane's plan (wave2-{O,Q,A,M}.md).
 SCENARIOS: dict[str, tuple[str, tuple[str, ...]]] = {
-    "A0": ("G", ("a00_parity:a00",)),
     "A1": ("O", ("a01_one_coordinator:a01",)),
     "A2": ("O", ("a02_many_asks:a02",)),
     "A4": ("O", ("a04_steer:a04",)),
@@ -42,7 +41,7 @@ Body = Callable[[Any], Awaitable[Any]]
 
 
 def parse_scenarios(spec: str) -> list[str]:
-    """``A0-A13`` | ``A1,A2,A7`` | ``A5`` (any mix, order kept, unknown names refused)."""
+    """``A1-A13`` | ``A1,A2,A7`` | ``A5`` (any mix, order kept, unknown names refused)."""
     names: list[str] = []
     for part in re.split(r"[,\s]+", spec.strip().upper()):
         if not part:
@@ -192,14 +191,14 @@ async def _guarded(call: Awaitable[Any]) -> Any:
 async def gate(
     ctx: Ctx, *, rules_expect: Any | None = None, skip: tuple[str, ...] = (), log: Callable[[str], None] = print
 ) -> dict[str, Any]:
-    """A1–A13 on the one dev workspace (A0 needs the switch off: run it before the flip), then the evidence
+    """A1–A13 on the one dev workspace, then the evidence
     checks: ``vm_evidence`` over the task ids the scenarios left in ``ctx.state["taskIds"]`` (V17; per-task or workspace
     session by the workspace's token custody)
     and ``rules_observe`` over the lead's ``Expect`` (S9; skipped without one). UI checks and W's digest stay by hand."""
     from scripts.super_agent.acceptance.rules_observe import rules_observe
     from scripts.super_agent.acceptance.vm_evidence import vm_evidence
 
-    results: dict[str, Any] = await run_scenarios([n for n in ORDER[1:] if n not in skip], ctx, log=log)
+    results: dict[str, Any] = await run_scenarios([n for n in ORDER if n not in skip], ctx, log=log)
     results["VM"] = await _guarded(vm_evidence(ctx, ws=ctx.ws, task_ids=list(ctx.state.get("taskIds") or [])))
     results["RULES"] = (
         await _guarded(rules_observe(ctx, rules_expect))

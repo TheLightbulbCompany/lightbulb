@@ -45,7 +45,6 @@ from core.services import (
     messaging,
     network_proof,
     provisioning_workflow,
-    super_agent_flags,
 )
 from core.services import stripe_provisioning as api
 from core.services import vercel_client as vercel
@@ -1882,8 +1881,6 @@ async def _requests_by_app(owner_id: str) -> dict[str, dict]:
     """``{app_id: {task_id, identifier}}`` from the workspace's app Creation rows. Opening the request checks who may
     see it; the id and its LB-n say nothing. Only where requests exist (prod reads no tasks table); a failed read
     costs the rows their request link, never the list."""
-    if not await super_agent_flags.flags_for(owner_id):
-        return {}
     try:
         made = {c["capId"]: c["taskId"] for c in await tasks_repo.list_creations(owner_id) if c.get("kind") == "app"}
         made = {app_id: task_id for app_id, task_id in made.items() if task_id}

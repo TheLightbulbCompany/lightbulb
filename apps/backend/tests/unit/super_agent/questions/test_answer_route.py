@@ -15,7 +15,7 @@ from temporalio.testing import ActivityEnvironment
 
 from core.auth import AuthContext
 from core.repositories import effects_repo, questions_repo, tasks_repo
-from core.services import questions, super_agent_flags
+from core.services import questions
 from core.temporal import client as temporal_client
 from core.temporal import task_questions as tq
 from routers import questions as router_mod
@@ -33,7 +33,6 @@ MEMBERS = [
 
 @pytest.fixture
 def world(table, monkeypatch):
-    monkeypatch.setattr(super_agent_flags, "flags_for", AsyncMock(return_value=True))
     monkeypatch.setattr(router_mod, "human_display_name", AsyncMock(side_effect=lambda u: u.split("_")[1].title()))
     monkeypatch.setattr(questions.billing_repo, "get_capability_policy", AsyncMock(return_value=dict(POLICY)))
     roster = {"members": list(MEMBERS)}
@@ -229,13 +228,6 @@ async def test_workflow_refusal_maps_to_task_closed(world, monkeypatch):
     )
     resp = await _press(world, qid)
     assert resp.status_code == 409 and resp.json()["detail"]["code"] == "task_closed"
-
-
-async def test_switch_off_404(world, monkeypatch):
-    qid = await _question()
-    monkeypatch.setattr(super_agent_flags, "flags_for", AsyncMock(return_value=False))
-    world["who"]["user"] = ADA
-    assert (await _press(world, qid)).status_code == 404 and world["updates"] == []
 
 
 # --- who may call it at all ------------------------------------------------------------------------

@@ -37,7 +37,6 @@ from core.services import (
     runtime_transport,
     voice_persona,
 )
-from core.services.super_agent_flags import flags_for
 from core.services.live_events import get_live_event_publisher
 
 logger = logging.getLogger(__name__)
@@ -290,30 +289,15 @@ def _fire(coro) -> None:
 
 # Static on purpose: Hermes splices `instructions` into the top of the system prompt, and the
 # provider caches a byte-identical prefix. Everything per-run rides in the input.
-# The script path is the image's (build-skills.sh maps /app/skills/ -> /opt/hermes-skills/); a
-# run's shell has PAPERCLIP_COMPANY_ID / PAPERCLIP_AGENT_ID from the profile .env.
 TURN_NOTE = """[Note: you are speaking in a Live voice call; your reply is spoken by you and nothing is posted to the room. The request below is what a person asked of you, in their own words from a voice transcript (it may contain mis-hearings, hesitations and later corrections; use the latest intent). It is usually one thing; if it holds more than one, do each and give each result. The bracket before it is what was said on the call since you last spoke, for context only. Other requests from the same breath are with teammates or queued for you: answer only what is asked here. Answer it from your own knowledge and tools, in words for speaking aloud. Do not narrate who is handling what, and do not hand the question to a teammate; name a person or a teammate only when the answer itself requires it. If you cannot answer, say what is missing.
 Anything that can change (email, pull requests, deploys, payments, dates, metrics, what shipped) must be checked with a tool in this turn before you answer. Your memory and earlier messages tell you where to look, never what the answer is. Say in a few words where the answer came from ("from GitHub just now"). If you cannot check it, say so plainly; never give an old value as current.
 Then pick whatever fits the request:
 - Answer: after checking, reply in two or three short spoken sentences, starting with what it is about.
 - Ask: if you cannot tell what is wanted, ask one short clarifying question instead of guessing.
-- Hand it off: if it is work that should go on after the call (writing or building something, a job that runs for a long time), say so in one sentence and make sure it gets done by creating a Paperclip task for yourself or for the teammate who owns it:
-  /opt/hermes-skills/paperclip/scripts/paperclip-api.sh create "$PAPERCLIP_COMPANY_ID" --title "<short title>" --assignee "<your or the owner's agent id; yours is $PAPERCLIP_AGENT_ID>" --status todo <<'EOF'
-<what to do>
-EOF
-  Only promise to follow up if you actually created that task.
+- Hand it off: if it is work that should go on after the call (writing or building something, a job that runs for a long time), start it with the start_work tool (a short title and a self-contained brief), then say in one sentence that it has started and that the result will be in the room. Only promise to follow up if you actually started it.
 - Cannot: if you lack the access or the tool, say which one, in one sentence.
 Your reply is spoken: no markdown, no lists, no code, no links, no ids. Never claim an action succeeded before it did.
 Take as many steps as the request needs. Everything you write is spoken as you go, so while you work, before each lookup, say one short sentence with what you found so far or what you are checking next; give real content, never filler like "still checking".]"""
-
-# Super-agent workspaces (contracts-v2 §14.1): work asked aloud starts a task through the start_work tool;
-# the hand-off line above (a Paperclip task) does not apply there. One sentence, under the switch only.
-SUPER_AGENT_NOTE = (
-    "[In this workspace, hand work off with the start_work tool (a short title and a self-contained brief) "
-    "rather than by creating a task yourself, then say in one sentence that it has started and that the "
-    "result will be in the room.]"
-)
-
 
 # A meeting's unsaid answers ride on its META item (400 KB), for this occurrence and the newest
 # three in its history: cut by UTF-8 BYTES (a CJK answer is 3 bytes a character), 4 x 20 x 2.5 KB.
@@ -801,7 +785,6 @@ async def dispatch_voice_run(
     in the call's own transcript (identity.callId). run_id is the worker's, reused on every retry, so a
     delivered-but-timed-out invoke is replayed, never re-run."""
     owner_id, room_id = call["ownerId"], call["roomId"]
-    super_agent = await flags_for(owner_id)  # lane A: start_work is offered, the Paperclip hand-off is not
     meta, members = await asyncio.gather(messaging_repo.get_room(room_id), messaging_repo.list_members(room_id))
     if not meta or not any(m.get("kind") == "agent" and m["id"] == agent_id for m in members):
         raise _problem(409, code="agent_not_in_room")
@@ -836,7 +819,7 @@ async def dispatch_voice_run(
         "request": {
             "input": f"[Live voice in #{meta.get('name') or 'this room'}. Spoken since you last spoke, newest last:\n"
             f"{spoken}]\n\n{asked}{name} (voice): {utterance}",
-            "instructions": TURN_NOTE + ("\n" + SUPER_AGENT_NOTE if super_agent else ""),
+            "instructions": TURN_NOTE,
             "session_id": session_id,
             "frames": {
                 "sink": "backend",
@@ -853,7 +836,7 @@ async def dispatch_voice_run(
             "room": {"id": room_id, "name": meta.get("name"), "kind": meta["kind"], "revision": int(meta["revision"])},
             "sender": {"id": speaker_id, "kind": "human" if requester else "guest", "displayName": name},
             **({"sessions": sessions} if sessions else {}),
-            **({"superAgent": True} if super_agent else {}),
+            "superAgent": True,  # a pinned runtime image offers start_work only with it; drop after every runtime rolls
         },
     }
     history = body["request"]["recentHistory"]

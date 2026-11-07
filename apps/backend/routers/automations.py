@@ -282,8 +282,7 @@ async def set_webhook_secret(
 
 
 # =====================================================================================================
-# Super-agent automations (lane A, Task 6; contracts-v2 §11, spec 06 §5.1). Every route below is 404 while
-# the workspace's switch is off. An automation is one SCHED# row (+ at most one Temporal Schedule, kept in
+# Super-agent automations (lane A, Task 6; contracts-v2 §11, spec 06 §5.1). An automation is one SCHED# row (+ at most one Temporal Schedule, kept in
 # step by `automation_schedule.upsert`) and its HOOK# rows (`automation_hooks`). Activation happens only
 # here (`/activate`); typed text never activates (C20).
 # =====================================================================================================
@@ -366,8 +365,6 @@ async def check_deliver_room(deliver_to: str | None, ws: str, user_id: str) -> N
 
 async def _ws(auth: AuthContext) -> str:
     ws = resolve_owner_id(auth)
-    if not await super_agent_flags.flags_for(ws):
-        raise _err(404, "not_found")
     return ws
 
 

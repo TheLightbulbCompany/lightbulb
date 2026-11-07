@@ -25,7 +25,6 @@ def world(env, monkeypatch):  # noqa: F811
     env.container["last_interactive_at"] = AT // 1000 - 3_600  # someone wrote an hour before the fires
     upsert = AsyncMock(return_value="created")
     with (
-        patch("core.services.super_agent_flags.flags_for", AsyncMock(return_value=True)),
         patch("core.repositories.billing_repo.get_by_owner_id", AsyncMock(side_effect=lambda *a, **k: billing)),
         patch("core.services.automation_schedule.upsert", upsert),
         patch("core.services.proactive._timezone", AsyncMock(return_value="America/New_York")),
@@ -75,12 +74,6 @@ async def test_trial_gets_first_run_and_feed_and_the_look_around_follows_the_pla
     await repo.set_status(WS, proactive.FEED_ID, "paused", reason=None, allowed_from=frozenset({"active"}))
     await proactive.ensure(WS)
     assert (await _statuses())[proactive.FEED_ID] == ("paused", None)
-
-
-async def test_switch_off_does_nothing(world):
-    with patch("core.services.super_agent_flags.flags_for", AsyncMock(return_value=False)):
-        await proactive.ensure(WS)
-    assert await _statuses() == {} and world.env.enqueued == []
 
 
 async def test_look_around_fire_is_a_workspace_request_with_the_brief(world):

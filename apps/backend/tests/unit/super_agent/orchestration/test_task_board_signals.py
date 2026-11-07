@@ -24,9 +24,6 @@ AUTH = AuthContext(user_id=SAM, org_id=WS)
 def world(table, monkeypatch):  # noqa: F811
     w = {"on": True, "updates": [], "notes": [], "legacy": 0}
 
-    async def flags(ws):
-        return w["on"]
-
     async def legacy_context(auth):
         w["legacy"] += 1
         raise RuntimeError("legacy path")
@@ -41,7 +38,6 @@ def world(table, monkeypatch):  # noqa: F811
     async def ensure_room(ws, task, **kw):
         return ts.task_room_id(task["taskId"])
 
-    monkeypatch.setattr(task_board, "flags_for", flags)
     monkeypatch.setattr(task_board, "_context", legacy_context)
     monkeypatch.setattr(
         "core.services.messaging.load_agent_roster", AsyncMock(return_value=[{"id": FIN, "name": "Finance"}])
@@ -122,19 +118,6 @@ async def test_task_board_update_sends_update_not_write(world):
     with pytest.raises(HTTPException) as exc:
         await task_board.update_task(AUTH, await _task(user=PRIYA), status="done")
     assert exc.value.status_code == 404 and len(world["updates"]) == 2
-
-
-@pytest.mark.asyncio
-async def test_task_board_legacy_when_off(world):
-    world["on"] = False
-    for call in (
-        task_board.find_tasks(AUTH),
-        task_board.read_task(AUTH, "ISOA-1"),
-        task_board.update_task(AUTH, "ISOA-1", status="done"),
-    ):
-        with pytest.raises(RuntimeError, match="legacy path"):
-            await call
-    assert world["legacy"] == 3 and world["updates"] == []
 
 
 SKILL_DIR = Path(__file__).resolve().parents[5] / "infra" / "hermes" / "skills-src" / "lightbulb"

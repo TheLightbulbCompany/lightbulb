@@ -31,7 +31,6 @@ from botocore.exceptions import ClientError
 
 from core import tasks_schema as ts
 from core.config import settings
-from core.services.super_agent_flags import env_enabled
 from core.dynamodb import get_table, run_in_thread
 from core.repositories.paperclip_repo import (
     _PENDING_BRIEF_PREFIX,
@@ -217,9 +216,6 @@ async def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if settings.ENVIRONMENT == "prod":
         print("refusing: copy_workspace_meta is dev-only (prod runs through spec 09)")
-        return 2
-    if not env_enabled():
-        print("refusing: the super-agent env master is off (no tasks table here)")
         return 2
     if args.reverse and args.verify:
         parser.error("--reverse takes --apply or nothing")

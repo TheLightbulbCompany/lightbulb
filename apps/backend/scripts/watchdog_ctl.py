@@ -7,8 +7,7 @@
     uv run python -m scripts.watchdog_ctl --report
     uv run python -m scripts.watchdog_ctl --label 20261104#org_x#<task>#C1#1 tp --by user_admin [--note "..."]
 
-Every change needs a platform admin (`PLATFORM_ADMIN_USER_IDS`) and writes an admin audit row. Refuses when
-the super-agent env master is off (prod).
+Every change needs a platform admin (`PLATFORM_ADMIN_USER_IDS`) and writes an admin audit row.
 """
 
 from __future__ import annotations
@@ -23,7 +22,6 @@ import typing
 from core.config import settings
 from core.repositories import admin_actions_repo, watchdog_repo
 from core.services import watchdog
-from core.services.super_agent_flags import env_enabled
 from core.temporal.watchdog_types import WatchdogConfig
 
 OFF = {"reconcile": "off", "tier1": "off", "tier2": "off", "judge": False}
@@ -104,8 +102,6 @@ async def _update_config(client, handle, changes: dict) -> tuple[WatchdogConfig,
 
 
 async def run(args: argparse.Namespace, client=None) -> dict:
-    if not env_enabled():
-        raise CtlError("the super-agent env master is off here; the watchdog does not run")
     if args.label:
         fid, label = args.label
         if label not in ("tp", "fp", "unsure"):

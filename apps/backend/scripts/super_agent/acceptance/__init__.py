@@ -1,7 +1,7 @@
 """Wave-2 dev acceptance harness (lane G; plans/wave2-README.md G1/G2, spec 09 §5.5, §8.3).
 
     cd apps/backend
-    ENVIRONMENT=dev AWS_PROFILE=isol8-admin uv run python -m scripts.super_agent.acceptance run --scenarios A0-A13 [--workspace org_…] [--apply] [--report out.md]
+    ENVIRONMENT=dev AWS_PROFILE=isol8-admin uv run python -m scripts.super_agent.acceptance run --scenarios A1-A13 [--workspace org_…] [--apply] [--report out.md]
     ENVIRONMENT=dev AWS_PROFILE=isol8-admin uv run python -m scripts.super_agent.acceptance gate [--workspace org_…] [--apply] --report ../../super-agent-design/lanes/gates/wave2.md
 
 Dry-run without ``--apply``: prints what would run and touches nothing. Even a dry-run imports ``core.config``,

@@ -8,7 +8,7 @@ from fastapi import FastAPI
 
 from core.auth import AuthContext, get_current_user
 from core.repositories import automations_repo
-from core.services import chat_gate, super_agent_flags
+from core.services import chat_gate
 from routers import rules as router_mod
 
 pytestmark = pytest.mark.asyncio
@@ -18,7 +18,6 @@ SAM, PRIYA, EVE = "user_sam", "user_priya", "user_eve"  # Sam admin; Priya membe
 
 @pytest.fixture
 def world(table, monkeypatch):
-    monkeypatch.setattr(super_agent_flags, "flags_for", AsyncMock(return_value=True))
     gate = AsyncMock(return_value={"blocked": False})
     monkeypatch.setattr(chat_gate, "gate_chat", gate)
     members = {("dev", PRIYA), ("dev", SAM)}
@@ -149,11 +148,8 @@ async def test_matches_audience_only(world):
     assert body["stats"] == {"matchesThisVersion": 2, "doneByHuman": 0}
 
 
-async def test_switch_off_and_plain_automation_404(world, monkeypatch):
+async def test_plain_automation_404(world):
     await automations_repo.create_schedule(
         WS, {"scheduleId": "plain", "tz": "UTC", "policyText": "x", "name": "x", "ownerUserId": SAM}
     )
     assert (await world["client"].get("/api/v1/automations/plain/matches")).status_code == 404
-    await _rule()
-    monkeypatch.setattr(super_agent_flags, "flags_for", AsyncMock(return_value=False))
-    assert (await world["client"].get("/api/v1/automations/s1/matches")).status_code == 404

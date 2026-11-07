@@ -450,14 +450,12 @@ def _voice_body(identity: dict, request: dict) -> dict:
             "recentHistory": request.get("recentHistory") or []}
 
 
-def call_turn_context(identity: dict, request: dict | None = None) -> dict:
+def call_turn_context(identity: dict) -> dict:
     """A spoken turn's plugin turn context. Keyed by the call key: the plugin's tools find it (and
-    the Mac tool's active turn) by the session id Hermes hands them, which is the call's own.
-    `superAgent` (lane A): the backend set it on the request when work asked aloud may become a task."""
+    the Mac tool's active turn) by the session id Hermes hands them, which is the call's own."""
     return {"apiUrl": API, "ownerId": OWNER, "hookToken": HOOK_TOKEN, "agentId": identity["agentId"],
             "runId": identity["runId"], "sessionKey": call_session_key(identity["agentId"], identity["callId"]),
             "roomId": None, "voiceRoomId": identity["roomId"], "callId": identity["callId"],
-            "superAgent": bool((request or {}).get("superAgent")),
             "localSessionToken": identity.get("localSessionToken"), "family": "call"}
 
 
@@ -660,7 +658,7 @@ def _run_call(identity: dict, request: dict, frames: "VoiceFramePublisher") -> t
         import run_agent  # noqa: F401
     except ImportError:
         pass
-    ctx = call_turn_context(identity, request)
+    ctx = call_turn_context(identity)
     body = _voice_body(identity, request)
     # The room turns' folder path, never filled or removed here: an observed row's "saved at" note
     # names it, and the room's next turn fills it (_observed_text).
@@ -675,11 +673,10 @@ def _run_call(identity: dict, request: dict, frames: "VoiceFramePublisher") -> t
         # steer-lowered grant a call can get mid-run.
         with _room_turn_env(agent_id, session_key, call_key, run_id, body, frames, ctx, "call"), _call_grant_scope(run_id, ctx):
             limits = dict(CALL_RUN_LIMITS)
-            if request.get("superAgent"):  # lane A: work asked aloud may become a task (start_work)
-                enabled, _ = profile_toolsets()
-                if enabled is not None:  # the Router's decision tools stay off a call, as _construct_agent strips them
-                    strip = (ROUTER_TOOLSET, TASK_TOOLSET)  # task_note is a Worker run's alone
-                    limits["enabled_toolsets"] = [*(t for t in enabled if t not in strip), VOICE_WORK_TOOLSET]
+            enabled, _ = profile_toolsets()  # lane A: work asked aloud may become a task (start_work)
+            if enabled is not None:  # the Router's decision tools stay off a call, as _construct_agent strips them
+                strip = (ROUTER_TOOLSET, TASK_TOOLSET)  # task_note is a Worker run's alone
+                limits["enabled_toolsets"] = [*(t for t in enabled if t not in strip), VOICE_WORK_TOOLSET]
             agent = _construct_agent(agent_id, body, frames, call_key, **limits)
             # No compaction inside a spoken turn (67-103 s each, prod 10-07): Hermes's own
             # per-agent switch, which every automatic trigger reads (turn_context_compaction.py:239,

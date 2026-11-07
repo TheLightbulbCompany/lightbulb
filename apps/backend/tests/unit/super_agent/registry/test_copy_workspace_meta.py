@@ -27,7 +27,6 @@ def tables():
             patch("core.dynamodb._table_prefix", ""),
             patch("core.dynamodb._dynamodb_resource", resource),
             patch.object(cwm.settings, "ENVIRONMENT", "dev"),
-            patch.object(cwm.settings, "SUPER_AGENT_ENV_ENABLED", True),
         ):
             yield old, tasks
 
@@ -189,13 +188,6 @@ async def test_scans_use_ws_meta_gsi(tables):
     assert not [c for c in calls if c[0] == "scan" or c[1] == "by-status-purge-at"]
 
 
-async def test_refuses_prod_and_env_master_off(tables):
-    with patch.object(cwm.settings, "ENVIRONMENT", "prod"):
-        assert await cwm.main(["--all", "--apply"]) == 2
-    with patch.object(cwm.settings, "SUPER_AGENT_ENV_ENABLED", False):
-        assert await cwm.main(["--all", "--verify"]) == 2
-
-
 async def test_reverse_never_overwrites_an_old_row_newer_than_meta(tables):
     """Rollback after a revert: a write that landed on the old row after the copy wins."""
     old, tasks = tables
@@ -213,11 +205,6 @@ async def test_reverse_never_overwrites_an_old_row_newer_than_meta(tables):
     assert (row["updated_at"], row["funnel_state"]) == (later, "completed")
 
 
-def test_meta_store_follows_env_master():
-    repo = PaperclipRepo(table_name=cwm.OLD_TABLE)
-    with patch.object(cwm.settings, "SUPER_AGENT_ENV_ENABLED", True):
-        assert repo._meta_on_tasks() is True
-        assert repo._ws_key("org_a") == {"pk": "WS#org_a", "sk": "META"}
-    with patch.object(cwm.settings, "SUPER_AGENT_ENV_ENABLED", False):
-        assert repo._meta_on_tasks() is False
-        assert repo._ws_key("org_a") == {"user_id": "org_a"}
+async def test_refuses_prod(tables):
+    with patch.object(cwm.settings, "ENVIRONMENT", "prod"):
+        assert await cwm.main(["--all", "--apply"]) == 2

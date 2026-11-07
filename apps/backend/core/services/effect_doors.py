@@ -2,8 +2,8 @@
 
 The effect checkpoint (bridge/effects.py, F1) runs in the VM, so a Worker that was refused could still reach a door
 with `lightbulb-api.sh`, `curl` and the hook token, or a command shape the classifier does not parse. Each backend
-door an external effect goes through (mail send, text send, app publish, purchase request) asks here first. With the
-workspace's switch on, the call must match an Effect row the checkpoint left in `intent` for one of the workspace's
+door an external effect goes through (mail send, text send, app publish, purchase request) asks here first. The
+call must match an Effect row the checkpoint left in `intent` for one of the workspace's
 live task attempts (same `operandsHash`, or the door's own looser match where the classifier cannot know an id), and
 each intent row lets exactly one door call through. The hook token is owner-scoped and the body names the agent, so
 nothing about the caller is trusted: only the rows are.
@@ -20,7 +20,7 @@ from collections.abc import Callable
 
 from core.observability.metrics import put_metric
 from core.repositories import effects_repo, tasks_repo
-from core.services import questions, super_agent_flags
+from core.services import questions
 
 _LIVE = frozenset({"dispatched", "running"})
 MESSAGE = (
@@ -60,8 +60,6 @@ async def require_intent(ws: str, kind: str, operands: dict, *, match: Callable[
     """Pass for a switched-off workspace; else raise `DoorRefused` unless a live attempt has an unused `intent` row
     of this kind whose operands hash equals the door's (or `match(row.operands)` says so). The matched row is
     marked used in one conditional update, so a second call against it is refused."""
-    if not await super_agent_flags.flags_for(ws):
-        return
     wanted = questions.operands_hash(kind, operands)
     for att in await live_attempts(ws):
         for row in await effects_repo.effects_of_task(ws, att["taskId"]):

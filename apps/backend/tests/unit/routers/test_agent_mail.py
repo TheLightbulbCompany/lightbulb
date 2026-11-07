@@ -824,3 +824,14 @@ def test_each_transcript_row_reads_its_own_occurrence():
     current = {"status": "ended", "inCallAt": 1, "endedAt": 9, "transcriptId": "t"}
     assert agent_mail._meeting_view(M1, current)["transcripts"][0]["notes"] == "pending"  # still owed
     assert (view["ended_at"], view["notes"], view["unsaid"]) == (None, None, [])  # the current occurrence
+
+
+@pytest.fixture(autouse=True)
+def _intent_allowed(monkeypatch):
+    """These pin the route's delegation. The intent gate (always on since the switch retired) refuses a call with no
+    matching Effect row; its own suite is tests/unit/super_agent/questions/test_effect_doors.py."""
+    from unittest.mock import AsyncMock as _AsyncMock
+
+    from core.services import effect_doors
+
+    monkeypatch.setattr(effect_doors, "require_intent", _AsyncMock(return_value=None))

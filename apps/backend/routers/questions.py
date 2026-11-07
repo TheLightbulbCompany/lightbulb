@@ -1,8 +1,7 @@
 """Super-agent Questions for people (spec 05 §5.1; contracts-v2 §3, §5, §14.2).
 
 `GET /api/v1/needs-you` (the viewer's open Questions, from `NEEDS#{me}#`) and `GET /api/v1/tasks/{taskId}/questions`
-(a task's history, answered and cancelled included; visible through `tasks_access.can_view`). Both are 404 unless the
-workspace's switch is on. Mounted before `routers/tasks.py` so `/tasks/{id}/questions` is never read as a task route.
+(a task's history, answered and cancelled included; visible through `tasks_access.can_view`). Mounted before `routers/tasks.py` so `/tasks/{id}/questions` is never read as a task route.
 
 `POST /api/v1/tasks/{taskId}/questions/{qid}/answer` is the ONLY way a Question is answered (spec 05 §3.5 layer 1):
 a person's first-party Clerk session only (no computer, hook, hosted-MCP/OAuth or A2A caller), authority re-checked
@@ -24,7 +23,7 @@ from core.constants import SYSTEM_ACTOR_ID
 from core.auth import AuthContext, get_current_user, get_human_session, resolve_owner_id, security_optional
 from core.dynamodb import utc_now_iso
 from core.repositories import effects_repo, questions_repo, tasks_repo
-from core.services import questions, super_agent_flags, tasks_access
+from core.services import questions, tasks_access
 from core.services.messaging import human_display_name
 from core.temporal import client as temporal_client
 from core.temporal.task_questions import AnswerRef
@@ -40,8 +39,6 @@ def _not_found() -> HTTPException:
 
 async def _workspace(auth: AuthContext) -> str:
     ws = resolve_owner_id(auth)
-    if not await super_agent_flags.flags_for(ws):
-        raise _not_found()
     return ws
 
 

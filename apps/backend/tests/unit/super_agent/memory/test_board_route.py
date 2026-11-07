@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
-from core.services import container_auth, memory_api, memory_links  # noqa: E402
+from core.services import container_auth, memory_links  # noqa: E402
 from main import app  # noqa: E402
 
 NOW = datetime.now(UTC)
@@ -47,17 +47,14 @@ async def test_board_route_filters_by_audience():
         assert "T-4" not in await memory_links.board_text("org_1", {"kind": "workspace"})
 
 
-def test_board_route_needs_the_switch_and_a_room():
+def test_board_route_needs_a_room():
     client = TestClient(app)
     with (
         patch.object(container_auth, "_require_hook_token", AsyncMock()),
         patch.object(memory_links, "board_text", AsyncMock(return_value="Task board ...")) as board,
-        patch.object(memory_api, "flags_for", AsyncMock(return_value=False)),
     ):
         url = "/api/v1/internal/memory/board/org_1"
-        assert client.post(url, json={"audience": {"kind": "room", "roomId": "r1"}}).json() == {"text": ""}
         assert client.post(url, json={"audience": {"kind": "room"}}).status_code == 422
-        with patch.object(memory_api, "flags_for", AsyncMock(return_value=True)):
-            r = client.post(url, json={"audience": {"kind": "room", "roomId": "r1"}})
+        r = client.post(url, json={"audience": {"kind": "room", "roomId": "r1"}})
         assert r.json() == {"text": "Task board ..."}
         board.assert_awaited_once_with("org_1", {"kind": "room", "roomId": "r1"})

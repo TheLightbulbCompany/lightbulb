@@ -29,6 +29,7 @@ def world(monkeypatch):
     monkeypatch.setattr(hermes_profiles, "_s3_put", lambda bucket, key, body: files.__setitem__(key, body))
     roster = [{"id": AGENT, "name": "Nova", "role": "ceo"}]
     monkeypatch.setattr(messaging, "load_agent_roster", AsyncMock(side_effect=lambda owner: [dict(r) for r in roster]))
+    monkeypatch.setattr(messaging, "_front_agent_id", AsyncMock(return_value="front-agent"))  # not the renamed one
     labels = {R_LIVE: "Ada", R_QUIET: "Ada"}
 
     async def rooms(owner, kind, agent_id):

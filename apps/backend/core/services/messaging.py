@@ -133,18 +133,6 @@ FEED_POST_REASON_MAX_CHARS = 280
 #: The CEO's one welcome post in the feed (idempotent, like #general's).
 FEED_WELCOME = (
     "**This is our feed.** When something here matters to you (money in or out, a customer, "
-    "a blocker, finished work), one of us posts it here, one thing per post. I look over the "
-    "day three times and post only when something is worth your time.\n\n"
-    "The brief at the top says what you want to hear about. Edit it any time. "
-    "Press Discuss on a post to talk it through with whoever wrote it.\n\n"
-    "Lightbulb has four places: Chat to talk with us, Activity for this feed and what needs you, "
-    "Work for tasks, and Library for what we made. For ideas on what we could do next, press the 💡 "
-    "at the top of any conversation."
-)
-#: The same welcome in a super-agent workspace: no promised cadence (scheduled posts run on paid plans only) and the
-#: places it really has (Home: Needs you, Ideas, this feed).
-FEED_WELCOME_SUPER_AGENT = (
-    "**This is our feed.** When something here matters to you (money in or out, a customer, "
     "a blocker, finished work), one of us posts it here, one thing per post, and only when it is worth your time.\n\n"
     "The brief at the top says what you want to hear about. Edit it any time. "
     "Press Discuss on a post to talk it through with whoever wrote it.\n\n"
@@ -1110,7 +1098,7 @@ class LiveConfig(ContractModel):
     region: str
     user_channel_key: uuid.UUID
     workspace_id: uuid.UUID
-    # Present only while the super-agent switch is on (contracts-v2 §1); absent = off = today's payload.
+    # Always `{superAgent: true}` since the switch retired; old app builds still read it (contracts-v2 §1).
     features: LiveFeatures | None = None
 
 
@@ -1724,34 +1712,21 @@ def runtime_operation(item: dict[str, Any]) -> RuntimeOperation:
 
 
 async def load_agent_roster(owner_id: str) -> list[dict[str, Any]]:
-    """Read the workspace's agent roster: the super-agent ``AGENT#`` registry when the workspace's switch is
-    on (``super_agent_flags.flags_for``), else the canonical Paperclip roster. Same shape and errors either way."""
-    from core.repositories.paperclip_repo import PaperclipRepo
-    from core.services import agent_registry, super_agent_flags
-    from core.services.paperclip_admin_client import shared_admin_client
-    from core.services.paperclip_openclaw_pairing import fetch_paperclip_agents_for_owner
+    """Read the workspace's agent roster from the ``AGENT#`` registry."""
+    from core.services import agent_registry
 
-    front_id = None
     try:
-        if await super_agent_flags.flags_for(owner_id):
-            rows = await agent_registry.roster(owner_id)
-            # The front agent posts and is seated as "Lightbulb" (contracts-v2 §9), whatever its registry name; the
-            # same pick as task_conversation._front_agent (the first active ceo).
-            front_id = next(
-                (
-                    r.get("id")
-                    for r in rows
-                    if isinstance(r, dict) and r.get("role") == "ceo" and r.get("status") == "active"
-                ),
-                None,
-            )
-        else:
-            rows = await fetch_paperclip_agents_for_owner(
-                owner_id=owner_id,
-                repo=PaperclipRepo(table_name="paperclip-companies"),
-                admin_client=shared_admin_client(),
-                raise_on_unavailable=True,
-            )
+        rows = await agent_registry.roster(owner_id)
+        # The front agent posts and is seated as "Lightbulb" (contracts-v2 §9), whatever its registry name; the
+        # same pick as task_conversation._front_agent (the first active ceo).
+        front_id = next(
+            (
+                r.get("id")
+                for r in rows
+                if isinstance(r, dict) and r.get("role") == "ceo" and r.get("status") == "active"
+            ),
+            None,
+        )
     except Exception as exc:
         raise ApiProblem(
             "RUNTIME_UNAVAILABLE",
@@ -1896,11 +1871,9 @@ async def _resolved_member(owner_id: str, member: CreateRoomMember, roster: list
 
 
 async def _front_agent_id(owner_id: str) -> str | None:
-    """The front agent ("Lightbulb") while the workspace's super-agent switch is on; None otherwise."""
-    from core.services import super_agent_flags, task_conversation  # lazy: task_conversation imports this module
+    """The front agent ("Lightbulb"); None when the workspace has none yet."""
+    from core.services import task_conversation  # lazy: task_conversation imports this module
 
-    if not await super_agent_flags.flags_for(owner_id):
-        return None
     try:
         return await task_conversation.front_agent_id(owner_id)
     except task_conversation.NoFrontAgent:
@@ -1908,9 +1881,9 @@ async def _front_agent_id(owner_id: str) -> str | None:
 
 
 async def _handles_for(owner_id: str, roster: list[dict]) -> dict[str, str]:
-    """Every agent's handle: name-derived, except that under the switch `lightbulb` is reserved for the front
+    """Every agent's handle: name-derived, except that `lightbulb` is reserved for the front
     agent. One derivation for seating, re-seating and renames, so a re-stamp never flips lightbulb → aden."""
-    front = await _front_agent_id(owner_id)  # None while the switch is off
+    front = await _front_agent_id(owner_id)
     handles = mention_handles(roster, reserved=RESERVED_HANDLES if front else ())
     if front and front in handles:
         handles[front] = "lightbulb"
@@ -1918,7 +1891,7 @@ async def _handles_for(owner_id: str, roster: list[dict]) -> dict[str, str]:
 
 
 async def _router_room(meta: dict, owner_id: str) -> bool:
-    """A room people chat with Lightbulb in (switch on): `admission.router_room`."""
+    """A room people chat with Lightbulb in: `admission.router_room`."""
     from core.services import admission  # lazy: admission imports this module
 
     return await admission.router_room(meta, owner_id)
@@ -2605,17 +2578,14 @@ async def ensure_feed_room(owner_id: str, requester_user_id: str | None = None) 
             await join_feed_room(owner_id, row["user_id"])
         except Exception:  # noqa: BLE001 -- one teammate never blocks the feed
             logger.exception("feed seat failed owner=%s user=%s", owner_id, row.get("user_id"))
-    from core.services import super_agent_flags
-
-    welcome = FEED_WELCOME_SUPER_AGENT if await super_agent_flags.flags_for(owner_id) else FEED_WELCOME
     await messaging_repo.create_message(
         room_id=room_id,
         owner_id=owner_id,
         idemp_pk=messaging_repo.room_pk(room_id),
         idemp_sk=messaging_repo.human_idemp_sk("__system__", f"{client_room_id}:welcome"),
-        req_hash=messaging_repo.request_hash(welcome, ceo_id),
+        req_hash=messaging_repo.request_hash(FEED_WELCOME, ceo_id),
         author={"kind": "agent", "id": ceo_id, "displayName": agents[ceo_id]["name"]},
-        text=welcome,
+        text=FEED_WELCOME,
         mentions=[],
         reply_to_message_id=None,
         thread_root_message_id=None,
@@ -2947,7 +2917,7 @@ async def create_room(auth: AuthContext, request: CreateRoomRequest, *, meta_ext
         k: v for k, v in (("topic", request.topic), ("icon", request.icon), ("color", request.color)) if v
     }
     front = await _front_agent_id(owner_id)
-    if front:  # the switch is on: a new room is a Router room
+    if front:  # a new room is a Router room
         request = request.model_copy(update={"members": await _lightbulb_only(owner_id, request.members, request.kind)})
     # As PATCH: only a project has Instructions and a tile -- a channel, or a DM or group chat Lightbulb is in.
     seated = bool(front) and any(m.kind == "agent" and m.id == front for m in request.members)

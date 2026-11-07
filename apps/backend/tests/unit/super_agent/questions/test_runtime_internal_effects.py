@@ -189,16 +189,9 @@ async def test_bad_idem_key_and_big_operands(api):
     assert big.status_code == 422
 
 
-async def test_requires_hook_token_and_switch(api):
+async def test_requires_hook_token(api):
     tid = await _started(api)
     assert (await api.post(_url(WS), json=await _body(tid))).status_code in (401, 403)
-    api.switch = False
-    assert (await api.post(_url(WS), json=await _body(tid), headers=H)).status_code == 404
-    assert (
-        await api.post(
-            f"{_url(WS)}/{tid}:1:c1/done", json={"disposition": "done", "runSecret": "s", "runId": "r"}, headers=H
-        )
-    ).status_code == 404
 
 
 async def test_done_route(api):

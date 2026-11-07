@@ -87,13 +87,11 @@ def env(table, monkeypatch):
 
     paperclip = MagicMock()
     with (
-        patch("core.services.inbound_triggers.flags_for", AsyncMock(return_value=True)),
         patch("core.services.credentials.integration_secret_store.get", side_effect=get),
         patch("core.services.credentials.integration_secret_store.put", side_effect=put),
         patch("core.services.credentials.integration_secret_store.delete", side_effect=delete),
         patch("core.services.inbound_triggers.httpx.AsyncClient", new=fake_client),
         patch("core.services.inbound_triggers.PaperclipAdminClient", paperclip),
-        patch("core.services.inbound_triggers.get_admin_session_cookie", AsyncMock(return_value="s=1")),
         patch(
             "core.services.inbound_triggers.google_accounts_repo.list_accounts",
             AsyncMock(return_value=[{"email": "ada@example.com"}]),
@@ -180,10 +178,10 @@ async def test_seed_meta_records_binding_for_the_app_ingress(env):
         patch.dict(inbound_triggers._META_ASSET_LISTERS, {"meta_ads": AsyncMock(return_value=[asset])}),
         patch("core.services.inbound_triggers._subscribe_meta_asset", AsyncMock()) as subscribe,
         patch(
-            "core.services.inbound_triggers.integrations_repo.get_meta_webhook_bindings",
+            "core.services.automation_hooks.integrations_repo.get_meta_webhook_bindings",
             AsyncMock(return_value=bindings),
         ),
-        patch("core.services.inbound_triggers.integrations_repo.set_meta_webhook_bindings", AsyncMock()) as setb,
+        patch("core.services.automation_hooks.integrations_repo.set_meta_webhook_bindings", AsyncMock()) as setb,
     ):
         out = await _seed("meta_ads", ["leadgen"], resource="1112223334")
     subscribe.assert_awaited_once()
@@ -298,11 +296,11 @@ async def test_delete_meta_keeps_a_sibling_hooks_subscription(env):
         patch("core.services.inbound_triggers._subscribe_meta_asset", AsyncMock()) as subscribe,
         patch("core.services.inbound_triggers._unsubscribe_meta_asset", AsyncMock()) as unsubscribe,
         patch(
-            "core.services.inbound_triggers.integrations_repo.get_meta_webhook_bindings",
+            "core.services.automation_hooks.integrations_repo.get_meta_webhook_bindings",
             AsyncMock(side_effect=lambda *a: list(bindings)),
         ),
         patch(
-            "core.services.inbound_triggers.integrations_repo.set_meta_webhook_bindings",
+            "core.services.automation_hooks.integrations_repo.set_meta_webhook_bindings",
             AsyncMock(side_effect=lambda owner, provider, rows: bindings.__setitem__(slice(None), list(rows))),
         ),
     ):
@@ -357,17 +355,6 @@ async def test_arm_stores_secret_and_arms(env):
     assert await automation_hooks.arm(WS, "0" * 24, "x") is False
 
 
-async def test_switch_off_seed_unchanged(env):
-    with (
-        patch("core.services.inbound_triggers.flags_for", AsyncMock(return_value=False)),
-        patch("core.services.inbound_triggers._seed_trigger_routine", AsyncMock(return_value={"routine_id": "rt"})),
-        patch("core.services.automation_hooks.seed", AsyncMock()) as sa_seed,
-    ):
-        out = await seed_trigger_routine(WS, "stripe", ["invoice.payment_failed"], actor_user_id=USER)
-    assert out == {"routine_id": "rt"} and not sa_seed.called
-    assert await repo.list_schedules(WS) == []
-
-
 # --- the webhook-secret route --------------------------------------------------------------------
 
 
@@ -395,7 +382,6 @@ async def test_webhook_secret_put_super_agent_branch(env, api, monkeypatch):
     app.dependency_overrides[get_current_user] = _as_org_admin
     try:
         with (
-            patch("core.services.super_agent_flags.flags_for", AsyncMock(return_value=True)),
             patch("routers.automations._resolve_trigger_id", AsyncMock()) as resolve,
         ):
             r = api.put(f"/api/v1/automations/{pid}/webhook-secret", json={"webhook_secret": "whsec_live"})
@@ -405,25 +391,6 @@ async def test_webhook_secret_put_super_agent_branch(env, api, monkeypatch):
     assert not resolve.called
     assert env.secrets[(WS, f"hook-{pid}")]["secret"] == "whsec_live"
     assert (await repo.get_hook(WS, pid))["armed"] is True
-
-
-async def test_webhook_secret_put_switch_off_unchanged(env, api):
-    from core.auth import get_current_user
-    from main import app
-
-    out = await _seed("stripe", ["invoice.payment_failed"])
-    pid = out["trigger_public_id"]
-    app.dependency_overrides[get_current_user] = _as_org_admin
-    try:
-        with (
-            patch("core.services.super_agent_flags.flags_for", AsyncMock(return_value=False)),
-            patch("routers.automations._resolve_trigger_id", AsyncMock(return_value=None)) as resolve,
-        ):
-            r = api.put(f"/api/v1/automations/{pid}/webhook-secret", json={"webhook_secret": "whsec_live"})
-    finally:
-        app.dependency_overrides.pop(get_current_user, None)
-    assert r.status_code == 404 and resolve.called  # today's Paperclip path
-    assert (await repo.get_hook(WS, pid))["armed"] is False
 
 
 def test_hook_row_fields_in_schema():

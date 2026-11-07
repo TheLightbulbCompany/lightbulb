@@ -11,7 +11,7 @@ from temporalio.client import WorkflowUpdateFailedError
 from core import tasks_schema as ts
 from core.auth import AuthContext, get_current_user
 from core.repositories import messaging_repo, tasks_repo
-from core.services import chat_gate, runtime_runs, super_agent_flags, task_conversation
+from core.services import chat_gate, runtime_runs, task_conversation
 from core.temporal import client as temporal_client
 from core.temporal.types import ActionRequest, StopRequest, StopResult
 from routers import tasks as router_mod
@@ -25,8 +25,6 @@ ROOM = "11111111-2222-4333-8444-555555555555"
 
 @pytest.fixture
 def world(table, monkeypatch):  # noqa: F811
-    flag = AsyncMock(return_value=True)
-    monkeypatch.setattr(super_agent_flags, "flags_for", flag)
     monkeypatch.setattr(router_mod, "human_display_name", AsyncMock(side_effect=lambda u: u))
     fakes = {
         "update": AsyncMock(return_value=None),
@@ -47,7 +45,7 @@ def world(table, monkeypatch):  # noqa: F811
     app.include_router(router_mod.router, prefix="/api/v1")
     app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id=who["user"], org_id=WS)
     client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t")
-    return {"client": client, "who": who, "flag": flag, **fakes}
+    return {"client": client, "who": who, **fakes}
 
 
 async def _task(status="queued", audience=None, **over) -> str:
@@ -202,21 +200,6 @@ async def test_trace_returns_recent_tools(world, monkeypatch):
     )
     resp = await world["client"].get(f"/api/v1/tasks/{task}/trace", params={"attempt": 2})
     assert resp.status_code == 200 and get_run.await_args.args[1].session_kind == "task"
-
-
-async def test_routes_404_when_switch_off(world):
-    task = await _task()
-    world["flag"].return_value = False
-    c = world["client"]
-    for resp in (
-        await c.get("/api/v1/tasks", params={"scope": "mine"}),
-        await c.get(f"/api/v1/tasks/{task}"),
-        await c.post(f"/api/v1/tasks/{task}/stop", json={"version": 1}),
-        await c.get(f"/api/v1/tasks/{task}/trace"),
-        await c.post(f"/api/v1/tasks/{task}/read"),
-    ):
-        assert resp.status_code == 404
-    world["start"].assert_not_awaited()
 
 
 async def test_list_needs_you_is_complete_and_matches_shown_group(world):

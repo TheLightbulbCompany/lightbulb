@@ -55,6 +55,7 @@ def world(monkeypatch):
     monkeypatch.setattr(messaging_repo, "count_voice_edit", count)
     roster = [{"id": AGENT, "name": "Ada", "role": "ceo"}, {"id": OTHER, "name": "Forge", "role": "engineer"}]
     monkeypatch.setattr(messaging, "load_agent_roster", AsyncMock(side_effect=lambda owner: [dict(r) for r in roster]))
+    monkeypatch.setattr(messaging, "_front_agent_id", AsyncMock(return_value="front-agent"))  # not the renamed one
     labels = {R_LIVE: "Ada", R_QUIET: "Ada"}
 
     async def rooms(owner, kind, agent_id):

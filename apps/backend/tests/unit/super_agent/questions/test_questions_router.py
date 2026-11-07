@@ -9,7 +9,6 @@ from fastapi import FastAPI
 
 from core.auth import AuthContext, get_current_user
 from core.repositories import questions_repo, tasks_repo
-from core.services import super_agent_flags
 from routers import questions as router_mod
 
 WS = "org_1"
@@ -33,15 +32,13 @@ def _q(task_id, qid="q-1", **over):
 
 @pytest.fixture
 def world(table, monkeypatch):
-    flag = AsyncMock(return_value=True)
-    monkeypatch.setattr(super_agent_flags, "flags_for", flag)
     monkeypatch.setattr(router_mod, "human_display_name", AsyncMock(side_effect=lambda u: u.split("_")[1].title()))
     who = {"user": SAM}
     app = FastAPI()
     app.include_router(router_mod.router, prefix="/api/v1")
     app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id=who["user"], org_id=WS)
     client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t")
-    return {"client": client, "who": who, "flag": flag}
+    return {"client": client, "who": who}
 
 
 async def _task(audience):
@@ -117,12 +114,3 @@ async def test_unknown_task_404(world):
     # Not conftest's seeded TASK: that one exists (with Sam in its audience) since the audience fix.
     resp = await world["client"].get("/api/v1/tasks/0b9e2d1c-5a6f-4e3d-8c7b-112233445566/questions")
     assert resp.status_code == 404
-
-
-async def test_switch_off_404(world, monkeypatch):
-    world["flag"].return_value = False
-    spy = AsyncMock(side_effect=AssertionError("tasks table read with the switch off"))
-    monkeypatch.setattr(questions_repo, "needs_for_user", spy)
-    assert (await world["client"].get("/api/v1/needs-you")).status_code == 404
-    assert (await world["client"].get("/api/v1/tasks/x/questions")).status_code == 404
-    spy.assert_not_awaited()

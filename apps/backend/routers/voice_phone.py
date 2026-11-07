@@ -28,7 +28,7 @@ from pydantic import BaseModel, Field
 
 from core.dynamodb import run_in_thread, utc_now_iso
 from core.repositories import messaging_repo
-from core.services import clerk_admin
+from core.services import clerk_admin, questions
 from routers.huddles import _Worker
 from routers.voice import _e164
 from routers.internal_automations import VoiceStartIn, start_voice_work
@@ -288,7 +288,65 @@ async def end_call(call_id: str, body: EndIn) -> dict:
         if out.get("callerName"):
             item["name"] = out["callerName"]
         await run_in_thread(messaging_repo._table().put_item, Item=item)
+    asks = [("didnt_know", q) for q in dict.fromkeys(out.get("unknown", []))]
+    if out.get("handoffMissed"):
+        asks.append(("line_problem" if out.get("transferFailed") else "handoff", ""))
+    for kind, question in asks if meta.get("ownerUserId") else ():
+        ask = call_ask(call_id, out, kind, question)
+        await _start_task(call_id, meta, out, ask["title"], f"{ask['title']}\n{ask['text']}", ask=ask)
     return out
+
+
+# --- Needs you: what a person must decide after a call (Questions on a per-call task) ------------------------
+
+CALL_OPTIONS = {
+    "didnt_know": [("answer", "Answer"), ("call_myself", "I'll call them"), ("done", "Done")],
+    "handoff": [("call_myself", "I'll call them"), ("done", "Done")],
+    "line_problem": [("call_myself", "I'll call them"), ("done", "Done")],
+}
+KNOWLEDGE_SOURCE = "you answered this in Needs you"
+
+
+def call_ask(call_id: str, call: dict, kind: str, question: str = "") -> dict:
+    """`task_asks.open_ask`'s arguments for one call Question (a blocking `question`, subkind = the card's kind).
+    Its qid is the call, kind and question, so a retried end opens it once."""
+    who = call.get("callerName") or call.get("caller") or "a caller"
+    title = {"didnt_know": f"Answer {who}: {question}", "handoff": f"{who} wanted a person",
+             "line_problem": f"{who} wanted a person; the transfer didn't connect"}[kind]  # fmt: skip
+    return {
+        "qid": questions.qid_for(f"{call_id}:{kind}:{question}"),
+        "kind": "question",
+        "subkind": kind,
+        "title": title[:200],
+        "text": f"Caller: {call.get('caller') or 'unknown number'}",
+        "options": [{"id": i, "label": label} for i, label in CALL_OPTIONS[kind]],
+        "blocking": True,
+        "attempt": None,
+        "run_id": None,
+        "preview": {"kind": kind, "roomId": call_id, "caller": call.get("caller", ""), "question": question},
+    }
+
+
+async def remember_answer(owner_id: str, question: str, answer: str, by: str) -> None:
+    """An answered "didn't know" goes into the Agent page's Knowledge and leaves `toAdd` (any answerer, no admin
+    save). Idempotent. ponytail: read-modify-write like PUT /voice/agent; an admin's save at the same moment can
+    drop it (a revision check on the document fixes both)."""
+    cfg = await messaging_repo.get_voice_agent(owner_id)
+    if cfg is None:
+        return  # no Agent page yet: writing one would skip onboarding
+    item = {"q": question, "a": answer, "source": KNOWLEDGE_SOURCE}
+    knowledge, to_add = list(cfg.get("knowledge") or []), list(cfg.get("toAdd") or [])
+    if item in knowledge and question not in to_add:
+        return
+    await messaging_repo.put_voice_agent(
+        owner_id,
+        {
+            **cfg,
+            "knowledge": knowledge if item in knowledge else [*knowledge, item],
+            "toAdd": [t for t in to_add if t != question],
+        },
+        by,
+    )
 
 
 # --- the assistant's own calendar (spec §4.1b: a hold in its calendar when the business has no API) --------
@@ -526,9 +584,14 @@ class UnknownIn(BaseModel):
 @router.post("/internal/voice/calls/{call_id}/unknown")
 async def didnt_know(call_id: str, body: UnknownIn) -> dict:
     """A question the assistant couldn't answer: the call lands in Needs you."""
-    await _call(call_id)
+    meta, _ = await _call(call_id)
     await _patch_call(call_id, lambda c: {"unknown": [*c.get("unknown", []), body.question],
                                           "steps": _step(c, f"Didn't know: {body.question[:160]}")})  # fmt: skip
+    cfg = await messaging_repo.get_voice_agent(meta["ownerId"])
+    if cfg is not None and body.question not in (cfg.get("toAdd") or []):  # the Agent page's "questions to add"
+        await messaging_repo.put_voice_agent(
+            meta["ownerId"], {**cfg, "toAdd": [*(cfg.get("toAdd") or []), body.question]}, meta.get("ownerUserId") or ""
+        )
     return {"noted": True}
 
 
@@ -549,10 +612,31 @@ async def transfer(call_id: str, body: TransferIn | None = None) -> dict:
     is_open = bool(window) and window[0] <= now < window[1]
     if (body and body.failed) or not h["number"] or (h["onlyOpenHours"] and not is_open):
         why = "the transfer didn't connect" if body and body.failed else "nobody was available"
-        await _patch_call(call_id, lambda c: {"handoffMissed": True, "steps": _step(c, f"Asked for a person; {why}")})
+        await _patch_call(call_id, lambda c: {"handoffMissed": True, "transferFailed": bool(body and body.failed),
+                                              "steps": _step(c, f"Asked for a person; {why}")})  # fmt: skip
         return {"transferTo": None}
     await _patch_call(call_id, lambda c: {"transferredTo": h["number"], "steps": _step(c, "Transferred to a person")})
     return {"transferTo": h["number"]}
+
+
+async def _start_task(call_id: str, meta: dict, call: dict, title: str, brief: str, ask: dict | None = None) -> dict:
+    """A Worker task for this call (the existing voice-start path), `origin: phone_contact`, requested by the line's
+    owner user (written by start_call, never the model). The same title in one call is the same task. `ask`: the
+    task opens waiting on that Question instead of running first (call_ask)."""
+    requester = meta.get("ownerUserId")
+    if not requester:
+        raise _err(403, "no_requester")
+    run_id = hashlib.sha256(f"{call_id}:{title.strip().lower()}".encode()).hexdigest()[:32]
+    await messaging_repo.put_voice_run(
+        meta["ownerId"], run_id, {"roomId": call_id, "requesterUserId": requester, "agentId": None}
+    )
+    brief = f"{CONTACT_NOTE}\nCaller: {call.get('caller') or 'unknown'}\n\n{brief}"
+    return await start_voice_work(
+        meta["ownerId"],
+        VoiceStartIn(run_id=run_id, call_id=call_id, room_id=call_id, title=title, brief=brief),
+        origin="phone_contact",
+        **({"ask": ask} if ask else {}),
+    )
 
 
 class WorkIn(BaseModel):
@@ -568,19 +652,7 @@ async def start_work(call_id: str, body: WorkIn) -> dict:
     meta, call = await _call(call_id)
     if _line_state(await agent_config(meta["ownerId"]), call.get("caller", "")) != "live":
         raise _err(403, "not_allowed")
-    requester = meta.get("ownerUserId")  # written by start_call from the line; never the dialed number again
-    if not requester:
-        raise _err(403, "no_requester")
-    run_id = hashlib.sha256(f"{call_id}:{body.title.strip().lower()}".encode()).hexdigest()[:32]
-    await messaging_repo.put_voice_run(
-        meta["ownerId"], run_id, {"roomId": call_id, "requesterUserId": requester, "agentId": None}
-    )
-    brief = f"{CONTACT_NOTE}\nCaller: {call.get('caller') or 'unknown'}\n\n{body.brief}"
-    out = await start_voice_work(
-        meta["ownerId"],
-        VoiceStartIn(run_id=run_id, call_id=call_id, room_id=call_id, title=body.title, brief=brief),
-        origin="phone_contact",
-    )
+    out = await _start_task(call_id, meta, call, body.title, body.brief)
     await _patch_call(call_id, lambda c: {"work": [*c.get("work", []), {"title": body.title, **out}],
                                           "steps": _step(c, f"Handed to the team: {body.title}")})  # fmt: skip
     return out

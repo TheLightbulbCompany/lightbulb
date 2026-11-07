@@ -41,6 +41,7 @@ from core.services import (
     source_replies,
     super_agent_faults,
     task_conversation,
+    task_asks,
     tasks_access,
 )
 from core.temporal import client as temporal_client
@@ -1170,7 +1171,10 @@ async def _apply(
             await _subscribe(ws, task_id, ack_thread)
         for task_id in sl["starts"]:
             try:
-                await temporal_client.start_task_workflow(ws, task_id, "router")
+                if ref.get("ask"):  # a phone call's Question (voice_phone.call_ask): the task waits on it, no attempt
+                    await task_asks.open_ask(ws, await tasks_repo.get_task(ws, task_id), **ref["ask"])
+                else:
+                    await temporal_client.start_task_workflow(ws, task_id, "router")
             except Exception:  # noqa: BLE001 -- one bad start never skips the batch's other starts
                 logger.warning("start_task_workflow failed for task %s", task_id, exc_info=True)
                 failed.append(task_id)

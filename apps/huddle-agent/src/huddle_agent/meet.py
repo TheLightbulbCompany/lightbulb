@@ -51,6 +51,7 @@ TRANSCRIPT_WAIT_S = 10.0  # a held reply's turn must be transcribed this soon (m
 ASK_WINDOW_S = 30.0  # who asked: the tracks voiced since the last reply, at most this far back
 ADDRESSED = ("ask",)
 VOICED_RMS = 500  # int16 RMS a frame needs to count as someone speaking (after noise cancellation)
+ATTRIB_RMS = 150  # lower bar for "this track spoke" when deciding who asked: a quiet guest is not missed
 # ponytail: fixed threshold; tune from a real meeting's levels.
 
 INSTRUCTIONS = """You are {name}, the AI assistant of {company}, listening in the Google Meet "{title}". Today is
@@ -149,13 +150,14 @@ class Mixer(io.AudioInput):
             a = q.popleft()[:FRAME]
             out[: len(a)] += a
             rms = float(np.sqrt(np.mean(a.astype(np.float64) ** 2))) if len(a) else 0.0
+            if rms >= ATTRIB_RMS:  # quieter than speech counts for who-asked: a soft guest makes it ambiguous
+                self._voiced.append((time.monotonic(), who, rms))
             if rms >= VOICED_RMS:
                 self.voiced_at = time.monotonic()
-                self._voiced.append((self.voiced_at, who, rms))
         return np.clip(out, -32768, 32767).astype(np.int16)
 
     def voiced(self, since: float) -> set[str]:
-        """The tracks that carried speech since `since` (monotonic)."""
+        """The tracks that carried any voice (ATTRIB_RMS) since `since` (monotonic)."""
         return {who for at, who, _ in self._voiced if at >= since}
 
     def sole(self, since: float) -> str:
@@ -186,23 +188,27 @@ class MeetAgent(Agent):
         self.tool_at = -1.0  # when a tool last ran: Gemini's answer after it belongs to the turn it ran for
 
     def heard(self, item_id: str | None, text: str, final: bool, now: float) -> dict:
-        """One input-transcript event: the turn it belongs to, created or updated (never downgraded)."""
+        """One input-transcript event: the turn it belongs to, created or updated. Whether it asked is decided
+        on the FINAL transcript only; a partial can only make it a stop."""
         t = self.turns[-1] if self.turns else None
         if t is None or (item_id and t["item"] != item_id) or (not item_id and t["final"]):
             who = self._mixer.sole(max(self.reply_end, now - ASK_WINDOW_S))
             t = {"seq": len(self.turns) + 1, "item": item_id, "kind": "", "final": False, "final_at": None,
                  "who": who, "text": "", "at": now}  # fmt: skip
             self.turns.append(t)
-            new = True
-            self.gate.ask_at = None  # each turn is judged on its own words: an old ask never carries over
-        else:
-            new = False
-        kind = self.gate.heard(t["who"], text, now, new_turn=new)
         t["text"] = text
-        if final and not t["final"]:
+        if not final:
+            # a partial is a few words that keep growing ("We should ask Nova" -> "... about it later."): it may
+            # stop the assistant, never wake it
+            if stop_request(text, [{"id": ASSISTANT_ID, "name": self.gate.name, "defaultName": False}]):
+                t["kind"] = "stop"
+            return t
+        if not t["final"]:
             t["final"], t["final_at"] = True, now
-        if kind == "stop" or (kind in ADDRESSED and not t["kind"]):
-            t["kind"] = kind
+            self.gate.ask_at = None  # the final is judged whole, on its own words
+            kind = self.gate.heard(t["who"], text, now, new_turn=True)
+            if t["kind"] != "stop":
+                t["kind"] = kind
         return t
 
     def asker(self) -> str:

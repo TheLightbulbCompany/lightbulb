@@ -147,6 +147,30 @@ def test_a_partial_ask_never_releases_a_reply():
     assert a._authorize(now) == (True, "ask")
 
 
+def test_a_name_in_a_short_partial_does_not_wake_it_the_final_decides():
+    a = _agent()
+    now = time.monotonic()
+    a._mixer.voiced_at = now - 10
+    t = a.heard("i1", "We should ask Nova", False, now)  # 4 words: the short-line rule would wake on it
+    assert t["kind"] == ""
+    a.heard("i1", "We should ask Nova about it later.", True, now)
+    assert t["kind"] == "" and a._authorize(now) == (False, "not addressed")
+    t2 = a.heard("i2", "Nova, stop", False, now)  # a partial may still stop it
+    assert t2["kind"] == "stop"
+    a.heard("i2", "Nova, stop talking please, thanks", True, now)
+    assert t2["kind"] == "stop"
+
+
+def test_a_quiet_guest_still_makes_the_asker_ambiguous():
+    a = _agent()
+    a.reply_end = time.monotonic() - 1
+    a._mixer.push("meet:r:p1", _frame(3000))  # the member, speaking
+    a._mixer.push("meet:r:p2", _frame(200))  # a guest, softly: under VOICED_RMS, over ATTRIB_RMS
+    a._mixer.mix()
+    assert meet.ATTRIB_RMS <= 200 < meet.VOICED_RMS
+    assert a.asker() == ""
+
+
 def test_the_name_may_open_any_sentence_of_a_joined_turn():
     gate = g()
     text = "Okay, everyone. Let's get started with the check-in. light bulb How many calls did we get?"

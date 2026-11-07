@@ -34,6 +34,7 @@ ANNOUNCE = (
     '{name} is in this meeting for {company}. It listens and speaks only when someone says "{name}, ..."; '
     'say "{name}, stop" to cut it off. Guests can ask; only {company}\'s members can approve work.'
 )
+GUEST_ONLY = "Only a member can ask me for that in a meeting: everyone here would hear or see it."
 GUEST_NOTE = "A guest asked for this in a meeting; it needs a member's OK before anything is spent or sent."
 
 
@@ -83,6 +84,10 @@ def member_speaking(meeting: dict, members: list[dict], participant_id: str) -> 
     return next((m["id"] for m in members if m.get("kind") == "human" and m.get("role") == "owner"), None)
 
 
+async def _member_asked(room_id: str, meeting: dict, participant_id: str) -> bool:
+    return member_speaking(meeting, await messaging_repo.list_members(room_id), participant_id) is not None
+
+
 class WorkIn(RoomBody):
     title: Annotated[str, Field(min_length=1, max_length=200)]
     brief: Annotated[str, Field(min_length=1, max_length=8000)]
@@ -121,6 +126,7 @@ class ReadIn(RoomBody):
     question: str = Field(default="", max_length=1000)
     days: int = Field(default=7, ge=1, le=90)
     date: str = Field(default="", pattern=r"^(\d{4}-\d{2}-\d{2})?$")
+    participantId: str = Field(default="", max_length=128)
 
 
 def _started(call: dict) -> datetime:
@@ -150,8 +156,11 @@ async def _calls(owner_id: str, days: int) -> dict:
 @router.post("/internal/voice/meet/{room_id}/read")
 async def read(room_id: str, body: ReadIn) -> dict:
     """The meeting's read tools: workspace memory (never a person's private scope: everyone hears it), call
-    counts, and the assistant's own calendar."""
-    room_id, _meta, _meeting_map = await _meeting(room_id, body)
+    counts, and the assistant's own calendar. Memory and the calendar (customers' names) are the member's own speech
+    only; call counts stay open."""
+    room_id, _meta, meeting = await _meeting(room_id, body)
+    if body.kind != "calls" and not await _member_asked(room_id, meeting, body.participantId):
+        return {"reason": "needs_member", "text": GUEST_ONLY}
     if body.kind == "memory":
         page = await memory_api.recall_page(
             body.ownerId, None, body.question or "recent decisions", budget_tokens=1500,
@@ -182,20 +191,23 @@ async def integration_read(room_id: str, body: IntegrationIn) -> dict:
     """One bounded read of a connected integration (integration_reads). The member's own speech only: the
     whole meeting hears the answer, and a guest must not read the owner's mail or payments aloud."""
     room_id, _meta, meeting = await _meeting(room_id, body)
-    if member_speaking(meeting, await messaging_repo.list_members(room_id), body.participantId) is None:
+    if not await _member_asked(room_id, meeting, body.participantId):
         return {"text": "Only a member can ask me to read the team's connected apps in a meeting."}
     return {"text": await integration_reads.read(body.ownerId, body.provider, body.query)}
 
 
 class ChatIn(RoomBody):
     text: Annotated[str, Field(min_length=1, max_length=20000)]
+    participantId: str = Field(default="", max_length=128)
 
 
 @router.post("/internal/voice/meet/{room_id}/chat")
 async def chat(room_id: str, body: ChatIn) -> dict:
     """A short line goes to the Meet's chat as it is; a draft or a long answer is posted to the meeting's room
-    and the chat gets its first line and a link."""
+    and the chat gets its first line and a link. The member's own speech only: guests see the chat."""
     room_id, _meta, meeting = await _meeting(room_id, body)
+    if not await _member_asked(room_id, meeting, body.participantId):
+        return {"reason": "needs_member", "text": GUEST_ONLY}
     bot = meeting.get("recallBotId")
     if not bot:
         raise _problem(409, "no_bot")

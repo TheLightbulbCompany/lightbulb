@@ -463,6 +463,10 @@ class AgentCoreMemoryProvider(MemoryProvider):
             body["on_behalf_of"] = self._member  # a private fact belongs to the person in this DM
         if args.get("replaces"):
             body["replaces"] = [str(i) for i in args["replaces"]]
+        # A Worker run names its attempt (bridge/turn.py's run env): the backend refuses a phone caller's task.
+        run = [_secret(n) for n in ("LIGHTBULB_TASK_ID", "LIGHTBULB_TASK_ATTEMPT", "LIGHTBULB_RUN_ID", "LIGHTBULB_RUN_SECRET")]
+        if run[0] and run[1].isdigit() and run[3]:
+            body |= {"task_id": run[0], "attempt": int(run[1]), "run_id": run[2], "run_secret": run[3]}
         try:
             return json.dumps(_backend(self._owner, "remember", body), ensure_ascii=False)
         except urllib.error.HTTPError as exc:

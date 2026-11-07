@@ -243,6 +243,7 @@ def test_task_family_ctx_has_no_paperclip_env(quiet_turn, threads, monkeypatch):
     assert not any(name.startswith("PAPERCLIP_") for name in seen["overlay"])
     assert seen["overlay"]["LIGHTBULB_RUN_ID"] == RUN  # lightbulb-api.sh sends it as X-Lightbulb-Run (spec 05 P1)
     assert seen["overlay"]["LIGHTBULB_RUN_SECRET"] == "s3"  # …with X-Lightbulb-Run-Secret
+    assert (seen["overlay"]["LIGHTBULB_TASK_ID"], seen["overlay"]["LIGHTBULB_TASK_ATTEMPT"]) == (TASK, "1")  # remember's run
     ctx = seen["ctx"]
     assert ctx["family"] == "task" and ctx["roomId"] is None and ctx["sessionKey"] == KEY
     assert ctx["runId"] == RUN and ctx["localSessionToken"] == "grant-jwt"

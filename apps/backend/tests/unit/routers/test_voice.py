@@ -97,3 +97,16 @@ async def test_a_live_greeting_must_disclose_ai_and_recording(repos, async_clien
     ).status_code == 200
     assert (await put({"live": True, "greeting": ""})).status_code == 200  # the page's default says both
     assert (await put({"live": False, "greeting": "Hi"})).status_code == 200  # a draft before Go live
+
+
+@pytest.mark.asyncio
+async def test_handoff_number_must_be_e164(repos, async_client_org_admin):  # noqa: F811
+    put = lambda n: async_client_org_admin.put("/api/v1/voice/agent", json={"config": {"handoff": {"number": n}}})  # noqa: E731
+    for bad in ("555-1234", "+0123456789", "1-900-555-01", "+1555123456789012", 5125550142):
+        r = await put(bad)
+        assert r.status_code == 422 and r.json()["detail"]["code"] == "handoff_number_invalid", bad
+    for ok in ("+15125550142", "(512) 555-0142", "1 512 555 0142", "+44 20 7946 0958"):
+        r = await put(ok)
+        assert r.status_code == 200, ok
+    assert r.json()["config"]["handoff"]["number"] == "+442079460958"  # stored as the worker dials it
+    assert (await put("")).status_code == 200  # no handoff

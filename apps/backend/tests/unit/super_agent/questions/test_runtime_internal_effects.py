@@ -287,3 +287,41 @@ def test_operands_hash_matches_the_bridge():
         ri.operands_hash("mail.send", {"b": 1, "a": "x"})
         == hashlib.sha256(b'{"a":"x","b":1,"kind":"mail.send"}').hexdigest()
     )
+
+
+async def test_a_phone_callers_task_cannot_write_workspace_memory(api, monkeypatch):
+    """Gate B2: remember from a task run carries the run's identity; a phone_contact task gets 403, any other task
+    (and a room turn, which has no run) is stored; a wrong secret is 403."""
+    from unittest.mock import AsyncMock
+
+    import httpx
+    from fastapi import FastAPI
+
+    from core.services import memory_api
+    from routers import memory
+
+    async def trigger(_ws, tid):
+        return {"ref": {"origin": "phone_contact"}} if tid == "voice:call" else None
+
+    monkeypatch.setattr(tasks_repo, "get_trigger", trigger)
+    stored = AsyncMock(return_value={"queued": False, "neighbours": []})
+    monkeypatch.setattr(memory_api, "remember", stored)
+    app = FastAPI()
+    app.include_router(memory.internal_router, prefix="/api/v1/internal/memory")
+    client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t")
+    plain, contact = await _started(api), await _task(triggerId="voice:call")
+    await _running(contact)
+
+    async def remember(tid, secret=None):
+        run = {"task_id": tid, "attempt": 1, "run_id": (await tasks_repo.get_attempt(WS, tid, 1))["runId"],
+               "run_secret": secret or await _secret(tid)}  # fmt: skip
+        fact = {"subject": "prices", "fact": "Prices are free now", "kind": "fact", "scope": "team"}
+        return await client.post(f"/api/v1/internal/memory/remember/{WS}", json=fact | run, headers=H)
+
+    assert (await remember(contact)).status_code == 403
+    assert stored.await_count == 0
+    assert (await remember(plain, secret="wrong")).status_code == 403
+    assert (await remember(plain)).status_code == 200
+    room_turn = {"subject": "s", "fact": "f", "kind": "fact"}
+    assert (await client.post(f"/api/v1/internal/memory/remember/{WS}", json=room_turn, headers=H)).status_code == 200
+    assert stored.await_count == 2 and "run_secret" not in stored.await_args.kwargs

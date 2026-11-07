@@ -105,7 +105,7 @@ from core.repositories import (
     workspace_join_repo,
 )
 from core.repositories.paperclip_repo import PaperclipRepo
-from core.services import clerk_admin, company_stripe, message_search
+from core.services import clerk_admin, company_stripe, message_search, voice_onboarding
 from core.services.account_wipe import (
     release_text_lines,
     text_release_note,
@@ -619,6 +619,7 @@ async def _messaging_run(snap: WorkspaceSnapshot) -> str:
         deleted += await messaging_repo.delete_room_partition(room_id)
         owned += 1
     deleted += await messaging_repo.delete_owner_partition(snap.org_id)
+    deleted += await voice_onboarding.release_number(snap.org_id)  # the PHONE# line row
     detail = f"deleted {owned} room partition(s) and {deleted} messaging row(s)"
     if foreign:
         detail += f"; skipped {len(foreign)} room(s) owned elsewhere: {', '.join(foreign)}"

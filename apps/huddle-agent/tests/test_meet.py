@@ -188,3 +188,19 @@ def test_replay_scenarios_against_the_gate():
         replay_gate.TRANSCRIPT_LAG_S = lag
         results = [r for name in SCENARIOS for r in replay_gate.judge(name)]
         assert [r for r in results if r[0] == "FAIL" and r[1] == "silent_between"] == [], lag
+
+
+async def test_reads_and_chat_name_the_asker():
+    """Gate B1: memory, calendar and chat are the member's own speech; the backend needs the asker to tell."""
+    a, sent = _agent(), []
+
+    async def post(op, body):
+        sent.append((op, body))
+        return {}
+
+    a._post = post
+    a.asker = lambda: "p1"
+    await a.recall_memory("prices?")
+    await a.calendar("2026-11-09")
+    await a.send_to_chat("Ana at 10")
+    assert [b.get("participantId") for _, b in sent] == ["p1", "p1", "p1"]

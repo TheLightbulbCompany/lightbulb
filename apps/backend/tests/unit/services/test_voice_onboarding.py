@@ -53,6 +53,11 @@ async def test_draft_keeps_only_agent_page_shapes(monkeypatch):
 async def test_an_unreadable_site_or_a_bad_reply_is_an_empty_draft(monkeypatch):
     monkeypatch.setattr(vo, "read_site", AsyncMock(side_effect=link_preview.Refused("non-public")))
     assert (await vo.draft("10.0.0.1", "", ""))["read"] is False
+    import httpx
+
+    for exc in (httpx.ConnectError("down"), httpx.ReadTimeout("slow")):  # gate 16: not OSError/TimeoutError
+        monkeypatch.setattr(vo, "read_site", AsyncMock(side_effect=exc))
+        assert (await vo.draft("nails.com", "", ""))["read"] is False
     monkeypatch.setattr(vo, "read_site", AsyncMock(return_value="t"))
     monkeypatch.setattr(vo, "_bedrock", lambda: _bedrock("no json here"))
     d = await vo.draft("nails.com", "", "")
@@ -68,6 +73,10 @@ async def test_assign_number_gives_dev_its_one_number_once(repos, monkeypatch): 
     assert line["ownerId"] == WS and line["ownerUserId"] == "user_a"
     with pytest.raises(vo.NoNumber, match="taken"):
         await vo.assign_number("org_other", "user_c")
+    assert await vo.release_number("org_other") == 0  # never another workspace's line
+    assert await vo.release_number(WS) == 1  # the wipe frees it
+    assert await messaging_repo._get(f"PHONE#{vo.DEV_NUMBER}", "LINE") is None
+    assert await vo.assign_number("org_other", "user_c") == vo.DEV_NUMBER
     for env in ("prod", "staging", ""):
         monkeypatch.setattr(vo.settings, "ENVIRONMENT", env)
         with pytest.raises(vo.NoNumber, match="not_available"):

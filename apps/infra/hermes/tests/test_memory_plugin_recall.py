@@ -174,6 +174,18 @@ def test_remember_tool_forwards(mod, backend):
     assert "on_behalf_of" not in backend.calls[0][2]  # a room has no one to attach
 
 
+def test_remember_on_a_task_run_names_the_run(mod, backend, monkeypatch):
+    """Gate B2: the backend refuses a phone caller's task, so a Worker run's remember says which run it is."""
+    run = {"LIGHTBULB_TASK_ID": "t1", "LIGHTBULB_TASK_ATTEMPT": "2", "LIGHTBULB_RUN_ID": "r1", "LIGHTBULB_RUN_SECRET": "s"}
+    monkeypatch.setattr(mod, "_secret", lambda name: run.get(name, ""))
+    provider(mod, FakeClient()).handle_tool_call("remember", {"subject": "s", "fact": "f", "kind": "fact"})
+    body = backend.calls[-1][2]
+    assert (body["task_id"], body["attempt"], body["run_id"], body["run_secret"]) == ("t1", 2, "r1", "s")
+    run.clear()  # a room turn: no run to name
+    provider(mod, FakeClient()).handle_tool_call("remember", {"subject": "s", "fact": "f", "kind": "fact"})
+    assert "task_id" not in backend.calls[-1][2]
+
+
 def test_recall_query_is_cut_to_the_backends_limit(mod, backend):
     p = provider(mod, FakeClient())
     p.prefetch(said("launch " * 1500))  # ~10,000 characters

@@ -37,6 +37,19 @@ TIMELINE_ROOMS = 300
 MAX_CONFIG_BYTES = 64_000
 #: What a live greeting must say (the frontend's `isLawful`): an empty greeting is the page's default, which says both.
 _AI, _RECORDED = re.compile(r"AI assistant", re.I), re.compile(r"recorded", re.I)
+_E164 = re.compile(r"\+[1-9]\d{6,14}")  # routers/agent_text._valid_phone
+
+
+def _e164(raw: str) -> str | None:
+    """The handoff number as the worker dials it (tel:+…), from what the page's field takes ("(415) 555-0147").
+    ponytail: a number without + is read as US (+1); other countries type the +."""
+    digits = re.sub(r"\D", "", raw)
+    if not raw.strip().startswith("+"):
+        digits = "1" + digits if len(digits) == 10 else digits if len(digits) == 11 and digits[0] == "1" else ""
+    number = f"+{digits}"
+    return number if _E164.fullmatch(number) else None
+
+
 #: Meeting fields the page shows. Never the ticket nonce or the Recall bot id.
 _MEETING_FIELDS = ("title", "startAt", "endAt", "status", "summary", "asked", "followUps", "notesSentAt")
 
@@ -114,6 +127,12 @@ async def put_agent(body: AgentConfigIn, auth: AuthContext = Depends(get_current
     if body.config.get("live") and greeting.strip() and not (_AI.search(greeting) and _RECORDED.search(greeting)):
         # The recording and AI-disclosure laws want both, and the page is not the only writer.
         raise HTTPException(status_code=422, detail={"code": "greeting_needs_disclosure"})
+    handoff = body.config.get("handoff")
+    if isinstance(handoff, dict) and handoff.get("number"):
+        number = _e164(handoff["number"]) if isinstance(handoff["number"], str) else None
+        if number is None:  # the worker dials tel:{number} as stored
+            raise HTTPException(status_code=422, detail={"code": "handoff_number_invalid"})
+        body.config["handoff"] = {**handoff, "number": number}
     await messaging_repo.put_voice_agent(resolve_owner_id(auth), body.config, auth.user_id)
     return {"config": body.config}
 

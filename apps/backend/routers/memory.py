@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
+from core.repositories import tasks_repo
 from core.services import (
     container_auth,
     evaluator,
@@ -153,6 +154,14 @@ def _audience(member: str | None, lane: str | None, audience: AudienceBody | Non
 
 class InternalRememberBody(RememberBody):
     on_behalf_of: str | None = Field(default=None, max_length=200)
+    # A Worker run's identity (the memory plugin sends it on a task run, as effect_check gets it).
+    task_id: str | None = Field(default=None, max_length=128)
+    attempt: int = Field(default=0, ge=0)
+    run_id: str = Field(default="", max_length=128)
+    run_secret: str = Field(default="", max_length=128)
+
+
+_RUN_FIELDS = {"task_id", "attempt", "run_id", "run_secret"}
 
 
 @router.post("/recall")
@@ -264,5 +273,15 @@ async def internal_link(owner_id: str, body: LinkBody, request: Request) -> dict
 
 @internal_router.post("/remember/{owner_id}")
 async def internal_remember(owner_id: str, body: InternalRememberBody, request: Request) -> dict:
+    """A phone caller's task never writes workspace memory: what a caller says would be recalled by every agent
+    (gate B2). ponytail: the boundary holds for the plugin's remember, which sends the run; a run that omits it is
+    a room turn to this route."""
     await container_auth._require_hook_token(owner_id, request)
-    return await _guard(memory_api.remember(owner_id, **body.model_dump()))
+    if body.task_id:
+        from routers import runtime_internal  # lazy: the runtime router pulls in Temporal
+
+        await runtime_internal._attempt_of(owner_id, body.task_id, body.attempt, body.run_id, body.run_secret)
+        task = await tasks_repo.get_task(owner_id, body.task_id)
+        if task is None or await runtime_internal._from_contact(owner_id, task):
+            raise HTTPException(status_code=403, detail="A phone caller's task cannot write workspace memory.")
+    return await _guard(memory_api.remember(owner_id, **body.model_dump(exclude=_RUN_FIELDS)))

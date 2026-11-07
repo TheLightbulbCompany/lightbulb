@@ -219,6 +219,7 @@ def wipe_mocks():
     messaging_get_room = AsyncMock(return_value={"ownerId": OWNER_ID})
     messaging_delete_room = AsyncMock(return_value=2)
     messaging_delete_owner = AsyncMock(return_value=3)
+    phone_release = AsyncMock(return_value=1)
     search_delete = AsyncMock(return_value="dropped")
     person_memory_delete = AsyncMock(return_value=None)
     clerk_delete = AsyncMock(return_value=None)
@@ -282,6 +283,7 @@ def wipe_mocks():
         ("core.services.account_wipe.messaging_repo.get_room", messaging_get_room),
         ("core.services.account_wipe.messaging_repo.delete_room_partition", messaging_delete_room),
         ("core.services.account_wipe.messaging_repo.delete_owner_partition", messaging_delete_owner),
+        ("core.services.account_wipe.voice_onboarding.release_number", phone_release),
         ("core.services.account_wipe.message_search.delete_owner_index", search_delete),
         ("core.services.workspace_memory.delete_person_memory", person_memory_delete),
         ("core.services.account_wipe.clerk_admin.delete_user", clerk_delete),
@@ -340,6 +342,7 @@ def wipe_mocks():
             messaging_get_room=messaging_get_room,
             messaging_delete_room=messaging_delete_room,
             messaging_delete_owner=messaging_delete_owner,
+            phone_release=phone_release,
             search_delete=search_delete,
             person_memory_delete=person_memory_delete,
             clerk_delete=clerk_delete,
@@ -415,6 +418,7 @@ async def test_wipe_account_runs_steps_in_spec_order(wipe_mocks):
         ("room-2",),
     ]
     wipe_mocks.messaging_delete_owner.assert_awaited_once_with(OWNER_ID)
+    wipe_mocks.phone_release.assert_awaited_once_with(OWNER_ID)  # gate 13: the number's PHONE# line row
     wipe_mocks.paperclip_row_delete.assert_awaited_once_with(OWNER_ID)
     wipe_mocks.billing_delete.assert_awaited_once_with(OWNER_ID)
     wipe_mocks.user_delete.assert_awaited_once_with(OWNER_ID)

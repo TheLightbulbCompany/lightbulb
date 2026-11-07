@@ -116,7 +116,7 @@ from core.repositories import (
     user_repo,
 )
 from core.repositories.paperclip_repo import PaperclipIdentity, PaperclipRepo
-from core.services import clerk_admin, company_stripe, message_search, text_lines
+from core.services import clerk_admin, company_stripe, message_search, text_lines, voice_onboarding
 from core.services.billing_service import delete_stripe_customer
 from core.services.paperclip_api_key import (
     delete_owner_agent_key_secrets,
@@ -1059,6 +1059,7 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
                 raise RuntimeError("messaging owner catalog referenced a room owned elsewhere")
             deleted += await messaging_repo.delete_room_partition(room_id)
         deleted += await messaging_repo.delete_owner_partition(owner_id)
+        deleted += await voice_onboarding.release_number(owner_id)  # the PHONE# line row
         return f"deleted {len(room_ids)} room partition(s) and {deleted} messaging row(s)"
 
     await _step(

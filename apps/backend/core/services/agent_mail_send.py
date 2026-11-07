@@ -175,9 +175,8 @@ async def send(
         if not to_addr:
             return _done(path, "forbidden_recipient")
         # The caller names the sending agent; it must be one of this workspace's
-        # (get_agent is not company-scoped), or a reply would route to a stranger.
-        onboarding = await PaperclipRepo(table_name="paperclip-companies").get_onboarding_state(owner_id) or {}
-        agent_name = await resolve_agent_name(agent_id=agent_id, company_id=onboarding.get("company_id"))
+        # (the registry is keyed by workspace), or a reply would route to a stranger.
+        agent_name = await resolve_agent_name(owner_id=owner_id, agent_id=agent_id)
         if not agent_name:
             return _done(path, "unknown_agent")
         owner_email = await _owner_email(owner_id)

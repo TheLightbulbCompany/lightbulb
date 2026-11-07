@@ -20,7 +20,6 @@ def test_write_agent_profile_returns_the_three_files():
         {"id": "a1", "name": "Ada", "role": "ceo"},
         provider_choice="byo_key",
         byo_provider="anthropic",
-        paperclip_api_key="pcp_live_x",
         integrations={"stripe": {"url": "https://mcp.stripe.com", "auth": "oauth"}},
         env_vars={"STRIPE_SECRET_KEY": "sk_live_x"},
     )
@@ -29,7 +28,6 @@ def test_write_agent_profile_returns_the_three_files():
     assert config["model"]["default"] == "claude-opus-5"  # role ceo -> premium tier
     assert config["mcp_servers"]["stripe"]["auth"] == "oauth"
     assert "STRIPE_SECRET_KEY=sk_live_x" in files.dotenv
-    assert "PAPERCLIP_API_KEY=pcp_live_x" in files.dotenv
     # M6-R48: a GENERATED SOUL.md leads with the marker, then the heading.
     assert files.soul_md.startswith(SOUL_GENERATED_MARKER)
     assert "# Ada" in files.soul_md
@@ -41,13 +39,11 @@ def test_config_yaml_carries_no_secret_even_though_dotenv_does():
         {"id": "a1", "role": "engineering"},
         provider_choice="byo_key",
         byo_provider="anthropic",
-        paperclip_api_key="pcp_live_x",
         integrations={},
         env_vars={"STRIPE_SECRET_KEY": "sk_live_x"},
     )
     assert "sk_live_x" not in files.config_yaml
     assert "sk_live_x" in files.dotenv
-    assert "pcp_live_x" not in files.config_yaml
 
 
 def test_byo_provider_and_key_are_owner_level_kwargs_not_read_from_the_roster_row():
@@ -60,7 +56,6 @@ def test_byo_provider_and_key_are_owner_level_kwargs_not_read_from_the_roster_ro
         "org_a",
         {"id": "a1", "role": "engineering"},  # roster row: no byo_provider key at all
         provider_choice="byo_key",
-        paperclip_api_key="pcp_live_x",
         integrations={},
         env_vars={},
         byo_provider="openai",
@@ -82,7 +77,6 @@ def test_soul_md_override_replaces_the_generated_identity():
         {"id": "a1", "name": "Ada", "role": "ceo"},
         provider_choice="byo_key",
         byo_provider="anthropic",
-        paperclip_api_key="pcp_live_x",
         integrations={},
         env_vars={},
         soul_md_override="# Ada\n\nI am the CEO, carried over from ECS.\n",
@@ -96,7 +90,6 @@ def test_no_soul_md_override_falls_back_to_build_soul_md():
         {"id": "a1", "name": "Ada", "role": "ceo"},
         provider_choice="byo_key",
         byo_provider="anthropic",
-        paperclip_api_key="pcp_live_x",
         integrations={},
         env_vars={},
     )

@@ -18,3 +18,12 @@ describe("voice data helpers", () => {
     expect(nameOf({ name: "Nova" })).toBe("Nova");
   });
 });
+
+describe("monthMinutes", () => {
+  it("sums this month's call seconds to whole minutes", async () => {
+    const { monthMinutes } = await import("../data");
+    const now = new Date(2026, 10, 7, 12);
+    const c = (at: Date, durationSec: number) => ({ type: "call" as const, roomId: "r", at: at.getTime(), durationSec });
+    expect(monthMinutes([c(new Date(2026, 10, 2), 1200), c(new Date(2026, 10, 5), 1080), c(new Date(2026, 9, 30), 6000)], now)).toBe(38);
+  });
+});

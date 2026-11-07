@@ -275,3 +275,15 @@ def test_no_nudge_when_someone_in_the_room_has_the_assistants_name():
     for people in ([{"name": "Nova Smith"}], [{"name": "Nova"}], [{"name": "Maya"}, {"name": "nova"}]):
         assert not meet.wakes("Nova", "Nova, can you share your screen?", people), people
     assert meet.wakes("Nova", "Nova, can you share your screen?", [{"name": "Maya"}, {"name": "Novak"}])
+
+
+async def test_call_stats_sends_a_date_range():
+    a, sent = _agent(), []
+
+    async def post(op, body):
+        sent.append(body)
+        return {}
+
+    a._post = post
+    await a.call_stats(from_date="2026-10-01", to_date="2026-10-31")
+    assert sent == [{"kind": "calls", "days": 7, "from": "2026-10-01", "to": "2026-10-31"}]

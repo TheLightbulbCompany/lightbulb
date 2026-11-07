@@ -76,6 +76,7 @@ async def test_voice_start_is_deterministic_task_in_room(api):
 
 async def test_same_utterance_twice_one_task(api):
     first, second = _post(api).json(), _post(api).json()
+    assert (first.pop("created"), second.pop("created")) == (True, False)  # owner mode's "already on it"
     assert first == second
     assert (await tasks_repo.get_trigger(WS, first["triggerId"]))["version"] == 1
 

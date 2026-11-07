@@ -3,9 +3,8 @@
 import { useState, useEffect } from "react";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 
-// Mirrors Paperclip's company record, which GET /settings returns raw.
-// The field is `name` — Paperclip strips unknown keys silently, so a
-// mismatched key here reads blank and saves as a no-op.
+// GET /settings returns the workspace's `name` and `description` (the META row,
+// name falling back to the Clerk org name); PATCH accepts only those two keys.
 interface CompanySettings {
   name?: string;
   description?: string;

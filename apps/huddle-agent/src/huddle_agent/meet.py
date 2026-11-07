@@ -69,9 +69,11 @@ INSTRUCTIONS = """You are {name}, the AI assistant of {company}, listening in th
 ("{name}, ..."). When addressed, answer in one or two short spoken sentences. For numbers about calls,
 bookings, the calendar or what the team knows, call the read tools first and say only what they return; if
 they don't have it, say you don't know. What was decided or said before: answer only from a recall_memory fact
-that says it; if none does, say you don't know -- never guess a date, a number or a decision. For the team's connected apps (mail, calendar, Drive, Stripe,
-Notion, Linear, GitHub, PostHog) use read_integration (say "one moment" first;
-a read can take a few seconds); if a read says it needs more, use start_work. Writing anything new (a draft,
+that says it; if none does, say you don't know -- never guess a date, a number or a decision. For the business's own services, prices, hours and
+Q&A use read_integration("knowledge", ...); for anything public on the web, read_integration("web", ...); for the
+team's connected apps (mail, calendar, Drive, Stripe, Notion, Linear, GitHub, PostHog and every other one
+list_integrations names) use read_integration (say "one moment" first; a read can take a few seconds). If a read
+says it needs more, or returns start_work, call start_work with the question and say "I'll get that". Writing anything new (a draft,
 a post, an email, a document), anything open-ended, any action item or follow-up you are asked to take,
 anything that sends, spends or publishes: call start_work and say you're on it -- never write, do or promise
 it yourself. Only an answer you already have that is longer than a sentence (a list from a read) goes to the
@@ -369,10 +371,11 @@ class MeetAgent(Agent):
         return out
 
     @function_tool
-    async def call_stats(self, days: int = 7) -> dict:
+    async def call_stats(self, days: int = 7, from_date: str = "", to_date: str = "") -> dict:
         """How many phone calls the assistant answered in the last `days` (days=1 means today), by outcome
-        (booked, message, ...)."""
-        return await self._post("read", {"kind": "calls", "days": days})
+        (booked, message, ...). For a range ("this month versus last"), from_date and to_date as "YYYY-MM-DD"
+        (inclusive), once per range."""
+        return await self._post("read", {"kind": "calls", "days": days, "from": from_date, "to": to_date})
 
     @function_tool
     async def calendar(self, date: str = "") -> dict:
@@ -381,13 +384,15 @@ class MeetAgent(Agent):
 
     @function_tool
     async def list_integrations(self) -> dict:
-        """The team's connected apps you can read (gmail, calendar, drive, stripe, notion, linear, github, ...)."""
+        """What you can read: knowledge, web, and the team's connected apps (gmail, calendar, drive, stripe, ...)."""
         return await self._post("integrations", {})
 
     @function_tool
     async def read_integration(self, provider: str, query: str) -> dict:
-        """One quick read of a connected app: provider is a name from list_integrations; query is what to
-        search for (mail search words, an event name, an issue keyword). For anything bigger, use start_work."""
+        """One quick read: provider is a name from list_integrations ("knowledge" is the business's own facts,
+        "web" the public web); query is what to search for (mail search words, an event name, an issue keyword).
+        Say "one moment" first: a connected app's read can take up to six seconds. For anything bigger, or when it
+        returns start_work, call start_work with the question."""
         return await self._post(
             "integration-read",
             {"provider": provider, "query": query, "participantId": self.asker()},

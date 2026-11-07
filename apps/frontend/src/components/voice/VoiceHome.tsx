@@ -4,15 +4,14 @@
 // one timeline of every call and meeting with what the assistant did, and the pane with how it did it.
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import useSWR from "swr";
 import { ArrowLeft, Mic, Phone, UserRound, Video } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useHuddle } from "@/components/huddle/HuddleProvider";
-import { useApi } from "@/lib/api";
+import { useAssistantDm } from "@/components/huddle/TalkButton";
 import { Onboarding } from "./Onboarding";
 import { useNeedsYouTotal } from "./VoiceShell";
 import {
-  callNeedsYou, mmss, nameOf, needsOnboarding, useAgentConfig, useTimeline, who,
+  callNeedsYou, mmss, monthMinutes, nameOf, needsOnboarding, useAgentConfig, useTimeline, who,
   type CallItem, type MeetingItem, type Outcome, type TimelineItem,
 } from "./data";
 
@@ -61,9 +60,7 @@ export function VoiceHome() {
     return g;
   }, [shown]);
   const today = all.filter((i) => dayLabel(i.at) === "Today" && i.type === "call");
-  const month = new Date(); month.setDate(1); month.setHours(0, 0, 0, 0);
-  const minutes = Math.round(all.filter((i): i is CallItem => i.type === "call" && i.at >= month.getTime())
-    .reduce((s, c) => s + (c.durationSec ?? 0), 0) / 60);
+  const minutes = monthMinutes(all);
 
   if (config && needsOnboarding(config, isNew)) return <Onboarding config={config} save={save} />;
   return <div className="vx-home" data-pane={!!open}>
@@ -205,17 +202,12 @@ function MeetingPane({ meeting, name, onClose }: { meeting: MeetingItem; name: s
   </>;
 }
 
-interface RoomRow { roomId: string; kind: string; firstRun?: boolean; members?: { kind: string }[] }
-
-/** Hold to talk: the existing in-app Live session in the owner's own Lightbulb DM; release mutes the mic. */
+/** Hold to talk: Live in the owner's own Lightbulb DM, which is owner mode (the Router listens to the mic and
+ *  takes the turn when it goes quiet); release mutes the mic. */
 function TalkToAssistant({ name }: { name: string }) {
-  const api = useApi();
   const huddle = useHuddle();
   const held = useRef(false);
-  const { data: room } = useSWR("/messaging/rooms#voice-dm", async () => {
-    const { rooms } = (await api.get("/messaging/rooms")) as { rooms: RoomRow[] };
-    return rooms.find((r) => r.firstRun) ?? rooms.find((r) => r.kind === "dm" && r.members?.some((m) => m.kind === "agent")) ?? null;
-  });
+  const room = useAssistantDm();
   const live = !!room && huddle.roomId === room.roomId;
   const [talking, setTalking] = useState(false);
   const press = async () => {
@@ -223,7 +215,6 @@ function TalkToAssistant({ name }: { name: string }) {
     held.current = true; setTalking(true);
     if (!live) await huddle.join(room.roomId, name);
     else await huddle.room?.localParticipant.setMicrophoneEnabled(true);
-    if (held.current) huddle.talkStart();
   };
   const release = () => {
     if (!held.current) return;

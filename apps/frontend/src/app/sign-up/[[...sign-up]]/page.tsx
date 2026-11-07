@@ -322,7 +322,7 @@ export default function Page() {
               <Logo size="md" withMark />
             </div>
 
-            <SignUpDoors createForm={<SignUp fallbackRedirectUrl="/chat" signInFallbackRedirectUrl="/chat" />} />
+            <SignUpDoors createForm={<SignUp fallbackRedirectUrl="/voice" signInFallbackRedirectUrl="/voice" />} />
 
             <div className="auth-footer-links">
               Already have an account?{" "}

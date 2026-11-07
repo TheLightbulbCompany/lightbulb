@@ -1,6 +1,7 @@
 """Bounded integration reads for a voice seat: one provider each, HTTP mocked."""
 
 import asyncio
+import json
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -70,11 +71,12 @@ def env():
         patch.object(ir.access_token, "get", AsyncMock(side_effect=token)),
         patch.object(ir.httpx, "AsyncClient", lambda **kw: _RealClient(transport=httpx.MockTransport(http), **kw)),
     ):
-        yield {"http": http, "secrets": secrets}
+        yield {"http": http, "secrets": secrets, "rows": rows}
 
 
 async def test_connected_lists_readable_names(env):
-    assert await ir.connected(WS) == ["gmail", "calendar", "drive", "github", "posthog", "notion", "slack"]
+    names = ["knowledge", "gmail", "calendar", "drive", "github", "posthog", "notion", "slack"]
+    assert await ir.connected(WS) == names
 
 
 async def test_unconnected_or_unknown_provider(env):
@@ -212,3 +214,124 @@ async def test_slow_reconnect_long_and_failing_reads_are_sentences(env):
     ir.access_token.get.side_effect = access_token.ReconnectRequired("notion")
     assert "reconnecting" in await ir.read(WS, "notion", "x")
     assert "isn't available" in await ir.read(WS, "slack", "x")
+
+
+def _hosted(tools, want_tool, text):
+    def rpc(request):
+        body = json.loads(request.content)
+        if body["method"] == "initialize":
+            return httpx.Response(200, json={"result": {}})
+        if body["method"] == "notifications/initialized":
+            return httpx.Response(202)
+        if body["method"] == "tools/list":
+            return httpx.Response(200, json={"result": {"tools": [{"name": t} for t in tools]}})
+        assert request.headers["Authorization"] == "Bearer at"
+        assert body["params"] == {"name": want_tool, "arguments": {"query": "Acme"}}
+        return httpx.Response(200, json={"result": {"content": [{"type": "text", "text": text}]}})
+
+    return rpc
+
+
+async def test_mcp_fallback_for_unlisted_provider(env):
+    """attio has no hand-written reader: its providers.yaml mcp_remote url is read with its own search tool."""
+    env["rows"].append({"provider": "attio", "status": "connected"})
+    env["secrets"]["attio"] = {"access_token": "at"}
+    assert "attio" in await ir.connected(WS)
+    route = env["http"].post(url__startswith="https://mcp.attio.com/mcp")
+    route.mock(side_effect=_hosted(["get-record", "search-records"], "search-records", "Acme Corp, deal open"))
+    assert await ir.read(WS, "attio", "Acme") == "Acme Corp, deal open"
+    route.mock(side_effect=_hosted(["get-record", "list-records"], "list-records", "Acme Corp"))  # no search: list
+    assert await ir.read(WS, "attio", "Acme") == "Acme Corp"
+
+
+async def test_no_reader_hands_to_work(env):
+    """x is connected but has neither a reader nor a hosted MCP: the voice says "I'll get that" and starts work."""
+    env["rows"].append({"provider": "x", "status": "connected"})
+    assert "x" in await ir.connected(WS)
+    assert await ir.read(WS, "x", "mentions this week") == {"start_work": True, "say": "I'll get that"}
+
+
+async def test_knowledge_read(env):
+    """The Agent page's services, hours and Q&A (the phone's _facts) plus its instructions."""
+    from routers import voice_phone
+
+    page = {
+        "services": [{"name": "Gel manicure", "price": "$45", "minutes": 60}],
+        "knowledge": [{"q": "Parking?", "a": "Free out back"}],
+        "instructions": "Mention the loyalty card.",
+    }
+    with patch.object(voice_phone.messaging_repo, "get_voice_agent", AsyncMock(return_value=page)):
+        owner = await ir.read(WS, "knowledge", "parking", instructions=True)
+        meet = await ir.read(WS, "knowledge", "parking")
+    assert "Gel manicure $45 (60 min)" in owner and "Q: Parking? A: Free out back" in owner
+    assert owner.endswith("Instructions: Mention the loyalty card.")
+    assert "Q: Parking? A: Free out back" in meet and "Instructions" not in meet  # guests hear a Meet
+
+
+async def test_knowledge_keeps_a_long_page_whole(env):
+    """Its own budget, the phone's: a late Q&A answer and the instructions survive a page over ANSWER_CHARS."""
+    from routers import voice_phone
+
+    page = {
+        "knowledge": [{"q": f"Question {i}?", "a": "x" * 80} for i in range(30)] + [{"q": "Wifi?", "a": "salon2026"}],
+        "instructions": "Mention the loyalty card. " + "y" * 3000,
+    }
+    with patch.object(voice_phone.messaging_repo, "get_voice_agent", AsyncMock(return_value=page)):
+        out = await ir.read(WS, "knowledge", "", instructions=True)
+    assert len(out) > ir.ANSWER_CHARS + 3000
+    assert "Q: Wifi? A: salon2026" in out and "Instructions: Mention the loyalty card." in out
+
+
+async def test_knowledge_without_an_agent_page_states_no_default_hours(env):
+    from routers import voice_phone
+
+    with patch.object(voice_phone.messaging_repo, "get_voice_agent", AsyncMock(return_value=None)):
+        assert await ir.read(WS, "knowledge", "hours") == "Hours aren't set yet."
+
+
+async def test_an_empty_web_query_makes_no_paid_call(env):
+    env["rows"].append({"provider": "parallel", "status": "connected"})
+    env["secrets"]["parallel"] = {"token": "pk"}
+    assert await ir.read(WS, "web", "   ") == "What should I look up?"  # _Http raises on any unmocked request
+
+
+async def test_mcp_reads_get_the_longer_bound(env):
+    """Four round trips to a hosted MCP: MCP_READ_S, not READ_S; a non-MCP read keeps READ_S."""
+    env["rows"].append({"provider": "attio", "status": "connected"})
+    env["secrets"]["attio"] = {"access_token": "at"}
+    hosted = _hosted(["search-records"], "search-records", "Acme Corp")
+
+    async def slow(request):
+        await asyncio.sleep(0.2)
+        return hosted(request)
+
+    env["http"].post(url__startswith="https://mcp.attio.com/mcp").mock(side_effect=slow)
+    env["http"].get(url__startswith="https://api.github.com/search/issues").mock(side_effect=slow)
+    with patch.object(ir, "READ_S", 0.1), patch.object(ir, "MCP_READ_S", 5):
+        assert await ir.read(WS, "attio", "Acme") == "Acme Corp"
+        assert "didn't answer in time" in await ir.read(WS, "github", "Acme")
+    with patch.object(ir, "MCP_READ_S", 0.1):
+        assert "didn't answer in time" in await ir.read(WS, "attio", "Acme")
+
+
+async def test_web_read_uses_parallel(env):
+    """web is the workspace's own Parallel key (providers.yaml `parallel`), on Parallel's documented Search API."""
+    assert "web" not in await ir.connected(WS)
+    env["rows"].append({"provider": "parallel", "status": "connected"})
+    env["secrets"]["parallel"] = {"token": "pk"}
+    route = (
+        env["http"]
+        .post(url__startswith="https://api.parallel.ai/v1/search")
+        .respond(
+            json={
+                "search_id": "s",
+                "results": [{"url": "https://ex.com/a", "title": "Rates 2026", "excerpts": ["Rates rose."]}],
+            }
+        )
+    )
+    assert "web" in await ir.connected(WS)
+    assert await ir.read(WS, "web", "fed rate today") == "Rates 2026 (https://ex.com/a): Rates rose."
+    req = route.calls[0].request
+    assert req.headers["x-api-key"] == "pk"
+    body = json.loads(req.content)
+    assert body["search_queries"] == ["fed rate today"] and body["mode"] == "fast"

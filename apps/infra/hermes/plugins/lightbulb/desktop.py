@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import re
+import urllib.error
 import uuid
 
 from . import desktop_transport as browser, desktop_resources as resources, turn_context
@@ -308,6 +309,11 @@ def _result(receipt, request_id, root, command):
     return encoded.decode()
 
 
+NO_STAND_IN = (
+    "Say so and ask the owner; never send the job to another person's or another agent's session instead."
+)
+
+
 def handle(args: dict, *, session_id: str = "", **_kwargs) -> str:
     request_id = None
     try:
@@ -348,13 +354,15 @@ def handle(args: dict, *, session_id: str = "", **_kwargs) -> str:
             return json.dumps(result)
         if action == "devices":
             response = browser._http(ctx, "GET", "devices")
+            devices = [
+                {key: device[key] for key in ("deviceId", "generation", "commands")}
+                for device in response.get("devices", [])
+            ]
             return json.dumps(
                 {
-                    "devices": [
-                        {key: device[key] for key in ("deviceId", "generation", "commands")}
-                        for device in response.get("devices", [])
-                    ],
+                    "devices": devices,
                     "submissionsEnabled": response.get("submissionsEnabled", False),
+                    **({} if devices else {"note": "There is no paired Mac online for the person who asked. " + NO_STAND_IN}),
                 }
             )
         if action in {"status", "cancel"}:
@@ -435,6 +443,25 @@ def handle(args: dict, *, session_id: str = "", **_kwargs) -> str:
         with run_state(root, ctx["runId"]) as state:
             state["receipts"][receipt_id]["state"] = receipt.get("state", "unknown")
         return _result(receipt, request_id, root, command)
+    except urllib.error.HTTPError as exc:
+        # The backend's code only (a fixed vocabulary), so the agent can say why instead of guessing.
+        try:
+            code = json.loads(exc.read(16384)).get("detail", {}).get("code", "")
+            code = code if isinstance(code, str) and re.fullmatch(r"[a-z_]{1,80}", code) else ""
+        except (ValueError, AttributeError, OSError):
+            code = ""
+        reason = (
+            "denied: this run may not use a Mac"
+            if exc.code in (401, 403)
+            else ("no paired Mac is available" if exc.code in (404, 409) else "unavailable")
+        )
+        return json.dumps(
+            {
+                "error": f"Desktop {reason}. {NO_STAND_IN}",
+                "code": code,
+                **({"receiptId": request_id, "state": "unknown"} if request_id else {}),
+            }
+        )
     except (OSError, ValueError, KeyError, TypeError, StopIteration):
         # Never include server errors, credentials, input bytes or a fallback tool.
         return json.dumps(

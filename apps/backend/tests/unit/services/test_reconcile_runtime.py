@@ -111,8 +111,6 @@ class World:
             self.souls[agent_id] = files.soul_md
 
         mp.setattr("core.services.messaging.load_agent_roster", _roster)
-        mp.setattr("core.services.paperclip_api_key.ensure_paperclip_api_key", AsyncMock(return_value="pcp_key"))
-        mp.setattr("core.services.paperclip_admin_client.shared_admin_client", lambda: object())
         mp.setattr("core.services.hermes_profiles.upload_profile", _upload)
         self.souls: dict[str, str] = {}
         mp.setattr("core.services.hermes_profiles.read_soul_md", lambda owner_id, agent_id: self.souls.get(agent_id))

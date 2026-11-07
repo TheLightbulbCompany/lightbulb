@@ -1,23 +1,12 @@
-"""Tests for the Teams Agents BFF.
+"""Tests for the Teams Agents BFF: registry-backed routes; client-supplied adapter fields are 422."""
 
-Spec §5: every agent-mutating endpoint MUST synthesize the openclaw_gateway
-adapter config server-side and reject any client-supplied
-``adapterType``/``adapterConfig``/``url``/``headers`` with 422 at the
-FastAPI boundary.
-"""
-
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
 
-from core.config import apex_domain, settings as _settings, url_host
 from main import app
 from routers.teams.deps import TeamsContext
-
-# The adapter allowlist derives from settings.GATEWAY_RELAY_URL; derive the
-# fixture host from the same place so it cannot drift out of the allowlist.
-GW_APEX = apex_domain(url_host(_settings.GATEWAY_RELAY_URL))
 
 
 @pytest.fixture
@@ -128,125 +117,6 @@ def test_list_agents_stamps_complete_marketplace_provenance(client, monkeypatch)
     }
 
 
-def test_create_agent_on_agentcore_owner_gets_the_native_hermes_adapter(client, monkeypatch):
-    """AgentCore owners use Paperclip's native polling adapter through our backend."""
-    admin = MagicMock()
-    admin.create_agent = AsyncMock(return_value={"id": "a_new"})
-    from routers.teams import agents as agents_mod
-
-    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
-    monkeypatch.setattr(
-        "core.repositories.container_repo.get_by_owner_id",
-        AsyncMock(return_value={"runtime_host": "agentcore", "hook_token": "hook_abc"}),
-    )
-    monkeypatch.setattr(
-        "core.services.paperclip_adapter_config.settings.PUBLIC_API_BASE", "https://api-dev.thelightbulb.company"
-    )
-    # M6-R59: an agentcore create now also writes the agent's Hermes profile (and 502s if it
-    # can't). Its own behaviour is pinned in test_teams_agents_pairing.py; stub it out here.
-    write_profile = AsyncMock()
-    monkeypatch.setattr("core.services.hermes_provisioning.write_profile_for_agent", write_profile)
-    monkeypatch.setattr(
-        "core.repositories.billing_repo.get_by_owner_id",
-        AsyncMock(return_value={"plan": "standard"}),
-    )
-
-    r = client.post(
-        "/api/v1/teams/agents",
-        json={"name": "Helper", "role": "engineer"},
-        headers={"Authorization": "Bearer test"},
-    )
-    assert r.status_code == 200
-    call = admin.create_agent.await_args
-    assert call.kwargs["adapter_type"] == "hermes_gateway"
-    assert call.kwargs["adapter_config"]["apiKey"] == "hook_abc"
-    assert call.kwargs["adapter_config"]["apiBaseUrl"] == (
-        "https://api-dev.thelightbulb.company/api/v1/internal/paperclip/hermes/o1"
-    )
-    write_profile.assert_awaited_once()
-
-
-def test_create_agent_sends_can_create_agents_false(client, monkeypatch):
-    """Paperclip 916 defaults a new agent's canCreateAgents to TRUE; a Teams-created agent must
-    reach Paperclip with an explicit false (through the real admin-client funnel)."""
-    import json
-
-    import httpx
-
-    from core.services.paperclip_admin_client import PaperclipAdminClient
-    from routers.teams import agents as agents_mod
-
-    bodies: list[dict] = []
-
-    def handler(req: httpx.Request) -> httpx.Response:
-        bodies.append(json.loads(req.read().decode()))
-        return httpx.Response(201, json={"id": "a_new"})
-
-    admin = PaperclipAdminClient(
-        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://pc.test")
-    )
-    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
-    monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value={"hook_token": "h"}))
-    monkeypatch.setattr("core.services.hermes_provisioning.write_profile_for_agent", AsyncMock())
-    monkeypatch.setattr("core.repositories.billing_repo.get_by_owner_id", AsyncMock(return_value={"plan": "standard"}))
-
-    r = client.post(
-        "/api/v1/teams/agents", json={"name": "Helper", "role": "ceo"}, headers={"Authorization": "Bearer t"}
-    )
-    assert r.status_code == 200
-    assert bodies[0]["permissions"] == {"canCreateAgents": False}
-
-
-def test_create_agent_response_redacts_device_private_key(client, monkeypatch):
-    """The create response MUST NOT leak adapterConfig. Paperclip echoes the
-    full config back on create — including the freshly-minted devicePrivateKeyPem
-    (the operator device's signing key) and authToken — so anyone with the
-    response/DOM could otherwise impersonate the operator device. The create path
-    must redact like the read paths do."""
-    from routers.teams import agents as agents_mod
-
-    admin = MagicMock()
-    admin.create_agent = AsyncMock(
-        return_value={
-            "id": "a_new",
-            "name": "Helper",
-            "adapterType": "openclaw_gateway",
-            "adapterConfig": {
-                "url": f"wss://bv-dev.{GW_APEX}/api/v1/gateway/ws?token=t&clientId=paperclip-operator",
-                "authToken": "SECRET-GATEWAY-TOKEN",
-                "devicePrivateKeyPem": "-----BEGIN PRIVATE KEY-----\nLEAKME\n-----END PRIVATE KEY-----\n",
-                "sessionKeyStrategy": "issue",
-                "sessionKey": "paperclip:u1",
-            },
-        }
-    )
-    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
-    monkeypatch.setattr(
-        "core.repositories.container_repo.get_by_owner_id",
-        AsyncMock(return_value={"hook_token": "hook-tok"}),
-    )
-    # host_for is pinned to AgentCore fleet-wide (deletion PR-1) regardless of the
-    # (missing) container row above, so the post-create wiring goes through the
-    # Hermes profile write rather than container pairing. Stub it out so the
-    # request completes instead of rolling back on a real S3/Paperclip call.
-    monkeypatch.setattr("core.services.hermes_provisioning.write_profile_for_agent", AsyncMock())
-
-    r = client.post(
-        "/api/v1/teams/agents",
-        json={"name": "Helper", "role": "engineer"},
-        headers={"Authorization": "Bearer test"},
-    )
-    assert r.status_code == 200
-    body = r.json()
-    assert body["id"] == "a_new"
-    # Sensitive adapter fields stripped from the response.
-    assert "adapterConfig" not in body
-    assert "adapterType" not in body
-    # Belt-and-suspenders: the private key / token text must not appear anywhere.
-    assert "LEAKME" not in r.text
-    assert "SECRET-GATEWAY-TOKEN" not in r.text
-
-
 def test_create_agent_rejects_client_supplied_adapter_type(client):
     r = client.post(
         "/api/v1/teams/agents",
@@ -265,218 +135,73 @@ def test_create_agent_rejects_client_supplied_url(client):
     assert r.status_code == 422
 
 
-def test_get_agent_strips_adapter_config(client, monkeypatch):
-    """Defense in depth: even if Paperclip echoes adapterConfig (containing
-    the user's service token) in the GET response, our BFF must strip it
-    before sending to the browser. Three detail panels render JSON dumps."""
-    admin = MagicMock()
-    admin.get_agent = AsyncMock(
-        return_value={
-            "id": "a1",
-            "companyId": "co_abc",
-            "name": "Helper",
-            "role": "engineer",
-            "adapterType": "openclaw_gateway",
-            "adapterConfig": {
-                "url": f"wss://bv-dev.{GW_APEX}/api/v1/gateway/ws",
-                "authToken": "SENSITIVE_USER_TOKEN",
-                "sessionKeyStrategy": "issue",
-                "sessionKey": "paperclip:u1",
-            },
-        }
-    )
-    from routers.teams import agents as agents_mod
+def _update(monkeypatch):
+    from core.services import agent_registry
 
-    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
-    monkeypatch.setattr(agents_mod, "get_seeded_agent_ids", AsyncMock(return_value=set()))
+    update = AsyncMock(side_effect=lambda ws, aid, fields: {"id": aid, "status": "active", **fields})
+    monkeypatch.setattr(agent_registry, "update", update)
+    return update
 
-    r = client.get("/api/v1/teams/agents/a1", headers={"Authorization": "Bearer x"})
+
+def test_patch_agent_writes_explicit_null_reports_to(client, monkeypatch):
+    """Clearing a manager sends {"reportsTo": null}; the null is written (the agent becomes a root)."""
+    _roster(monkeypatch, {"id": "a1", "role": "engineer"})
+    update = _update(monkeypatch)
+    r = client.patch("/api/v1/teams/agents/a1", json={"reportsTo": None}, headers={"Authorization": "Bearer x"})
     assert r.status_code == 200
-    body = r.json()
-    assert "adapterConfig" not in body
-    assert "adapterType" not in body
-    assert body["name"] == "Helper"
-    assert body["seeded"] is False
-
-
-def test_create_agent_returns_upstream_status_on_paperclip_error(client, monkeypatch):
-    """When Paperclip returns a non-2xx (e.g. 403 because the membership
-    role lacks ``agents:create``), the BFF must surface the upstream
-    status to the caller instead of crashing into a generic 500. The
-    global ``PaperclipApiError`` handler in ``main.py`` is what makes
-    this work; this test guards it from regressing.
-    """
-    from core.services.paperclip_admin_client import PaperclipApiError
-    from routers.teams import agents as agents_mod
-
-    admin = MagicMock()
-    admin.create_agent = AsyncMock(
-        side_effect=PaperclipApiError(
-            "POST /api/companies/co_abc/agents -> 403",
-            status_code=403,
-            body='{"error":"Missing permission: agents:create"}',
-        )
-    )
-    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
-    monkeypatch.setattr(
-        "core.repositories.container_repo.get_by_owner_id",
-        AsyncMock(return_value={"hook_token": "hook-tok"}),
-    )
-
-    r = client.post(
-        "/api/v1/teams/agents",
-        json={"name": "Helper", "role": "engineer"},
-        headers={"Authorization": "Bearer test"},
-    )
-    assert r.status_code == 403
-    body = r.json()
-    assert body["upstream_status"] == 403
-    # Paperclip's own reason, not the call summary (audit 2026-09-24 F5).
-    assert body["detail"] == "Missing permission: agents:create"
-
-
-def test_patch_agent_forwards_explicit_null_reports_to(client, monkeypatch):
-    """Clearing a manager sends {"reportsTo": null}; the BFF must forward the
-    null (exclude_unset, not exclude_none) so Paperclip makes the agent a root.
-    Paperclip rejects "" (uuid().nullable())."""
-    admin = MagicMock()
-    admin.get_agent = AsyncMock(return_value={"id": "a1", "companyId": "co_abc"})
-    admin.patch_agent = AsyncMock(return_value={"id": "a1", "reportsTo": None})
-    from routers.teams import agents as agents_mod
-
-    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
-
-    r = client.patch(
-        "/api/v1/teams/agents/a1",
-        json={"reportsTo": None},
-        headers={"Authorization": "Bearer x"},
-    )
-    assert r.status_code == 200
-    forwarded = admin.patch_agent.await_args.kwargs["body"]
-    assert forwarded == {"reportsTo": None}
+    update.assert_awaited_once_with("o1", "a1", {"reportsTo": None})
 
 
 def test_patch_agent_drops_null_for_non_reports_to_fields(client, monkeypatch):
-    """Only reportsTo is nullable upstream. An explicit null for other optional
-    fields (title here) must still be dropped, not forwarded, while a
-    concurrent reportsTo value passes through."""
-    admin = MagicMock()
-    agent = {
-        "id": "a1",
-        "companyId": "co_abc",
-        "name": "Specialist",
-        "role": "engineer",
-        "reportsTo": None,
-    }
-    admin.get_agent = AsyncMock(return_value=agent)
-    admin.list_agents = AsyncMock(return_value={"agents": [agent]})
-    admin.patch_agent = AsyncMock(return_value={"id": "a1"})
-    from routers.teams import agents as agents_mod
-
-    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
-
+    _roster(monkeypatch, {"id": "a1", "role": "engineer"})
+    update = _update(monkeypatch)
     r = client.patch(
-        "/api/v1/teams/agents/a1",
-        json={"title": None, "reportsTo": "mgr1"},
-        headers={"Authorization": "Bearer x"},
+        "/api/v1/teams/agents/a1", json={"title": None, "reportsTo": "mgr1"}, headers={"Authorization": "Bearer x"}
     )
     assert r.status_code == 200
-    forwarded = admin.patch_agent.await_args.kwargs["body"]
-    assert forwarded == {"reportsTo": "mgr1"}
-    assert "title" not in forwarded
+    update.assert_awaited_once_with("o1", "a1", {"reportsTo": "mgr1"})
 
 
 def test_patch_agent_rejects_moving_final_root_ceo_under_a_manager(client, monkeypatch):
-    admin = MagicMock()
-    root = {
-        "id": "root",
-        "companyId": "co_abc",
-        "name": "Renamed CEO",
-        "role": "ceo",
-        "reportsTo": None,
-    }
-    admin.get_agent = AsyncMock(return_value=root)
-    admin.list_agents = AsyncMock(return_value={"agents": [root]})
-    admin.patch_agent = AsyncMock(return_value={**root, "reportsTo": "manager"})
-    from routers.teams import agents as agents_mod
-
-    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
-
-    r = client.patch(
-        "/api/v1/teams/agents/root",
-        json={"reportsTo": "manager"},
-        headers={"Authorization": "Bearer x"},
-    )
-
+    _roster(monkeypatch, {"id": "root", "name": "Renamed CEO", "role": "ceo", "reportsTo": None})
+    update = _update(monkeypatch)
+    r = client.patch("/api/v1/teams/agents/root", json={"reportsTo": "manager"}, headers={"Authorization": "Bearer x"})
     assert r.status_code == 409
     assert r.json()["detail"] == "Lightbulb's coordinator cannot be deleted or demoted."
-    admin.patch_agent.assert_not_awaited()
+    update.assert_not_awaited()
 
 
 def test_patch_agent_allows_moving_root_ceo_when_another_root_exists(client, monkeypatch):
-    admin = MagicMock()
-    retiring_root = {
-        "id": "old-root",
-        "companyId": "co_abc",
-        "name": "Ada",
-        "role": "ceo",
-        "reportsTo": None,
-    }
-    surviving_root = {
-        "id": "new-root",
-        "companyId": "co_abc",
-        "name": "Bea",
-        "role": "ceo",
-        "reportsTo": None,
-    }
-    updated = {**retiring_root, "reportsTo": "new-root"}
-    admin.get_agent = AsyncMock(return_value=retiring_root)
-    admin.list_agents = AsyncMock(return_value={"agents": [retiring_root, surviving_root]})
-    admin.patch_agent = AsyncMock(return_value=updated)
-    from routers.teams import agents as agents_mod
-
-    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
-
-    r = client.patch(
-        "/api/v1/teams/agents/old-root",
-        json={"reportsTo": "new-root"},
-        headers={"Authorization": "Bearer x"},
+    _roster(
+        monkeypatch,
+        {"id": "old-root", "role": "ceo", "reportsTo": None},
+        {"id": "new-root", "role": "ceo", "reportsTo": None},
     )
-
+    _update(monkeypatch)
+    r = client.patch(
+        "/api/v1/teams/agents/old-root", json={"reportsTo": "new-root"}, headers={"Authorization": "Bearer x"}
+    )
     assert r.status_code == 200
     assert r.json()["reportsTo"] == "new-root"
 
 
 def test_delete_agent_maps_final_root_conflict_to_409(client, monkeypatch):
     from routers.teams import agents as agents_mod
-    from core.services.paperclip_agent_lifecycle import AgentLifecycleConflict
+    from core.services.agent_lifecycle import AgentLifecycleConflict
 
+    _roster(monkeypatch, {"id": "friday_id"})
     delete_everywhere = AsyncMock(
         side_effect=AgentLifecycleConflict("Lightbulb's coordinator cannot be deleted or demoted.")
     )
     monkeypatch.setattr(agents_mod, "delete_agent_everywhere", delete_everywhere)
-    admin = MagicMock()
-    admin.get_agent = AsyncMock(return_value={"id": "x", "companyId": "co_abc"})
-    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
-
     r = client.delete("/api/v1/teams/agents/friday_id", headers={"Authorization": "Bearer x"})
     assert r.status_code == 409
-    assert r.json()["detail"] == "Lightbulb's coordinator cannot be deleted or demoted."
     delete_everywhere.assert_awaited_once_with(owner_id="o1", agent_id="friday_id")
 
 
-def test_delete_agent_allows_non_seeded(client, monkeypatch):
-    from routers.teams import agents as agents_mod
-
-    delete_everywhere = AsyncMock(return_value={"deleted": True})
-    monkeypatch.setattr(agents_mod, "delete_agent_everywhere", delete_everywhere)
-    admin = MagicMock()
-    admin.get_agent = AsyncMock(return_value={"id": "x", "companyId": "co_abc"})
-    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
-
-    r = client.delete("/api/v1/teams/agents/a_user", headers={"Authorization": "Bearer x"})
-    assert r.status_code == 200
-    delete_everywhere.assert_awaited_once_with(owner_id="o1", agent_id="a_user")
+def test_delete_unknown_agent_is_404(client, monkeypatch):
+    _roster(monkeypatch, {"id": "a1"})
+    assert client.delete("/api/v1/teams/agents/nope", headers={"Authorization": "Bearer x"}).status_code == 404
 
 
 def test_list_and_get_agent_name_the_front_agent_lightbulb(client, monkeypatch):
@@ -485,9 +210,6 @@ def test_list_and_get_agent_name_the_front_agent_lightbulb(client, monkeypatch):
     from core.services import messaging
 
     _roster(monkeypatch, {"id": "ceo", "name": "CEO"}, {"id": "g", "name": "Growth"})
-    admin = MagicMock()
-    admin.get_agent = AsyncMock(return_value={"id": "ceo", "name": "CEO", "companyId": "co_abc"})
-    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
     monkeypatch.setattr(agents_mod, "get_seeded_agent_ids", AsyncMock(return_value=set()))
     monkeypatch.setattr(messaging, "_front_agent_id", AsyncMock(return_value="ceo"))
 

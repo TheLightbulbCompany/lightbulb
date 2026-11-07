@@ -2675,8 +2675,8 @@ export class ServiceStack extends cdk.Stack {
         environment: {
           ...backendContainerEnvironment,
           TEMPORAL_WATCHDOG_TASK_QUEUE: "lightbulb-watchdog",
-          WATCHDOG_OWNER_ID: "org_3LgB9twuJbYCjGILfOL5JjgQV0p", // Super Agent Test (dev)
-          WATCHDOG_ROOM_ID: "b6619138-2379-5b3c-af96-f28b791d7d8f", // its #watchdog room
+          WATCHDOG_OWNER_ID: env === "dev" ? "org_3LgB9twuJbYCjGILfOL5JjgQV0p" : "", // Super Agent Test (dev); prod logs until a prod #watchdog room exists
+          WATCHDOG_ROOM_ID: env === "dev" ? "b6619138-2379-5b3c-af96-f28b791d7d8f" : "", // its #watchdog room
         },
         secrets: backendContainerSecrets,
         logging: ecs.LogDrivers.awsLogs({ streamPrefix: "temporal-watchdog", logGroup }),

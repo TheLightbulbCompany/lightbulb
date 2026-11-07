@@ -33,5 +33,7 @@ describe("super-agent gate (prod enabled)", () => {
       expect(svc).toBeDefined();
       expect(JSON.stringify(svc!.Properties.CapacityProviderStrategy ?? [])).not.toMatch(/FARGATE_SPOT/);
     }
+    // No dev-only workspace ids may ride into the prod synth (the watchdog digest posted to a dev room).
+    expect(JSON.stringify(templates.map((t) => t.toJSON()))).not.toMatch(/org_3LgB9twuJbYCjGILfOL5JjgQV0p/);
   });
 });

@@ -201,7 +201,7 @@ The rule for implementers:
 | 11 | Numbers: keep-and-forward or new | as written, buying behind KYC |
 | 10 | **forwarding check only** | `forward_check` purpose and route only; Ring me and call back are later (the owner can simply call the number) |
 | 30 | Onboarding | number choice, forwarding check, Go live; **no** Places listing read, **no** Square/Fresha sign-in, **no** voice preview (website read stays) |
-| 19 | Members are members; a guest's spend ask → card | as written |
+| 19b | Meeting authority = the inviting member (replaces 19, parked as #5027) | remove guest/member gating; start_work as the inviter |
 | 21 | Office results back into Meet chat; follow-up status | as written (needed for "draft the post and put the link in chat") |
 | 15 | Approvals: **voice "yes" → one-tap confirm card only** | drop the low-risk voice-only path; every seat's "yes" sets `pendingConfirm` and pushes the card |
 | 17 | Tile status | Listening · Thinking · Speaking · Drafting · Page ready; one announcement; **no** "Not transcribing" (opt-out parked) |
@@ -213,6 +213,12 @@ The rule for implementers:
 | 23 | **Replay gate fails for real** | the `gate.py` exit code + asserts only; the dev Recall webhook is later |
 | 39 | Eval bar | **pass^3 per scenario on the existing harnesses + 20 real dial-ins** before "sellable"; noise, packet-loss, accent and Spanish runs are later |
 | #5007 | Per-person hearing / asker | lane PR, merge |
+
+**Meeting authority (founder, 7 Nov, late): there is no guest/member split in a Google meeting.** Everyone in the meeting has the powers of the workspace member who invited the agent: the organizer who sent the invite, falling back to the meeting's host member.
+- New Task 19b replaces Task 19 (#5027 is parked). In `routers/voice_meet.py`, remove the `member_speaking` / `needs_member` gating on read, integration-read, chat and start-work. Authority = the inviting member, and `start_work` runs as that member. The asker's name is kept for the record only. Test: a guest's ask starts work as the inviter, and the record shows who asked.
+- Task 15 in a meeting: a voice "yes" from anyone counts as the inviter's yes, and produces the one-tap confirm card.
+- Unchanged: "speaks only when named", the time cap, and the contact boundary for **phone callers**.
+- Dropped as a result: the Meet guest/member acceptance lines ("a guest's yes does nothing", "I'll need <owner>'s OK" for a guest) and any guest/member task.
 
 **Later (do not start):**
 - 5: recording, one-sentence summary, spam.

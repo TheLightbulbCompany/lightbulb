@@ -3,9 +3,10 @@ session per Google Meet, in the huddle worker (agent.py hands it every `source: 
 
 It hears the room (every Meet person's track, mixed here: a realtime session takes one input stream) and
 speaks only when addressed by the assistant's name. Two gates: Gemini's own decide-not-to-respond, and
-`Gate` -- the wake rules of transcript.py over the session's input transcript -- which plays a reply only
-for an ask, after a real pause (MEET_QUIET_S), or for a question nobody took in UNCLAIMED_QUESTION_S. A
-reply not started within STALE_S of its ask is dropped. The worker never leaves on an empty room: Recall's
+`Gate` -- the wake rules of transcript.py over the session's input transcript. Gemini sends that transcript
+seconds AFTER its reply's audio is ready (live test 7 Nov), so a reply's audio is HELD until its turn's
+transcript arrives and shows an ask (then after a real pause, MEET_QUIET_S); anything else is dropped
+unheard. A reply not started within STALE_S is dropped. The worker never leaves on an empty room: Recall's
 call_ended closes the LiveKit room (routers/meetings.py), and an hour of silence pulls the bot.
 
 Reads, chat, work and the meeting's record go to the backend's /internal/voice/meet routes
@@ -33,8 +34,6 @@ from huddle_agent.backend import Backend, BackendError
 from huddle_agent.transcript import (
     address,
     clause_openers,
-    is_question,
-    opens_with_person,
     stop_request,
 )
 
@@ -44,17 +43,13 @@ VOICE = os.environ.get("MEET_VOICE", "Kore")
 ASSISTANT_ID = "assistant"  # the tile's agent id (lightbulb.agent.<id>.*)
 TRACK = f"agent-{ASSISTANT_ID}"  # the meet-bot page plays only `agent-*` tracks into the Meet
 MEET_QUIET_S = 3.0  # huddle.py: a reply waits for a real pause in the room
-UNCLAIMED_QUESTION_S = (
-    3.5  # huddle.py: a question naming nobody, if no person takes it first
-)
 STALE_S = 20.0  # spec §4.4b.4: a reply not started this long after its ask is dropped
-FOLLOWUP_S = (
-    60.0  # the asker's next line, with nobody else in between, continues the exchange
-)
 MEETING_IDLE_S = 60 * 60  # spec §4.4b: leave after an hour of silence
 TRANSCRIPT_FLUSH_S = 10
 RATE, FRAME = 16000, 320  # 20 ms frames at Gemini's input rate
-SPEAKER_S = 8.0  # a line's speaker: the loudest track over this window before its transcript
+TRANSCRIPT_WAIT_S = 10.0  # a held reply's turn must be transcribed this soon (measured 1.4-1.9 s, 7 Nov)
+ASK_WINDOW_S = 30.0  # who asked: the tracks voiced since the last reply, at most this far back
+ADDRESSED = ("ask",)
 VOICED_RMS = 500  # int16 RMS a frame needs to count as someone speaking (after noise cancellation)
 # ponytail: fixed threshold; tune from a real meeting's levels.
 
@@ -79,22 +74,14 @@ class Gate:
     people: list[dict] = field(default_factory=list)
     ask_at: float | None = None  # an open ask: when it was heard
     asker: str = ""  # who made it (Meet participant identity)
-    question_at: float | None = (
-        None  # a question naming nobody, not yet taken by a person
-    )
-    last_answer_to: str = ""  # who the assistant last answered
-    last_answer_at: float = -1e9
-    others_since: bool = False  # someone else spoke after that answer
 
     def heard(self, who: str, text: str, now: float, *, new_turn: bool) -> str:
-        """One (cumulative) transcript of a person's turn. Returns "stop", "ask", "followup", "question", "".
+        """One (cumulative) transcript of a person's turn. Returns "stop", "ask" or "".
         `new_turn`: the first text of a turn (a later interim of the same turn only upgrades it)."""
         agents = [{"id": ASSISTANT_ID, "name": self.name, "defaultName": False}]
         if stop_request(text, agents):  # "Nova, stop", or a bare "stop" over it
-            self.ask_at = self.question_at = None
+            self.ask_at = None
             return "stop"
-        if new_turn and who != self.last_answer_to:
-            self.others_since = True
         if self.ask_at is not None and self.asker == who:
             return ""  # the same ask, still being said
         hit = address(text, agents, self.people)
@@ -113,27 +100,13 @@ class Gate:
             or clause_openers(text, [{**agents[0], "defaultName": True}])
             or (hit.anywhere and len(text.split()) <= 5)
         ):
-            self.ask_at, self.asker, self.question_at = now, who, None
-            return "ask"
-        if (
-            new_turn
-            and who == self.last_answer_to
-            and not self.others_since
-            and now - self.last_answer_at <= FOLLOWUP_S
-            and is_question(text)
-            and not opens_with_person(
-                text, self.people
-            )  # "Leo, did you push it?" is to Leo
-        ):
             self.ask_at, self.asker = now, who
-            return "followup"
-        if new_turn:
-            # a new line from someone else takes the floor from an unclaimed question (a person answered it)
-            self.question_at = now if is_question(text) else None
-            return "question" if self.question_at is not None else ""
-        if self.question_at is None and is_question(text):
-            self.question_at = now
-            return "question"
+            return "ask"
+        # No follow-up rule either (huddle's unnamed follow-up): the 7 Nov live run answered "Leo, did you push
+        # the fix?" as one. The assistant speaks only when named (spec §5).
+        # No "question nobody took" rule (huddle's 3.5 s): with Gemini's transcript seconds behind the audio,
+        # who took a question is not known in time, and the replay showed answers to questions a person had
+        # already answered. The assistant speaks only when named (spec §5).
         return ""
 
     def verdict(self, now: float, quiet_s: float) -> bool | None:
@@ -143,25 +116,15 @@ class Gate:
                 self.ask_at = None
                 return False
             return True if quiet_s >= MEET_QUIET_S else None
-        if self.question_at is not None:
-            if now - self.question_at > STALE_S:
-                self.question_at = None
-                return False
-            return True if quiet_s >= UNCLAIMED_QUESTION_S else None
         return False
 
     def answered(self, now: float) -> None:
-        self.last_answer_to, self.last_answer_at, self.others_since = (
-            self.asker,
-            now,
-            False,
-        )
-        self.ask_at = self.question_at = None
+        self.ask_at = None
 
 
 class Mixer(io.AudioInput):
     """Every Meet person's audio, summed into the one stream the session hears, paced at 20 ms. Also who is
-    loudest since `reset` (who said a line) and when anyone last spoke (the pause rule)."""
+    which tracks carried speech when (who asked: `sole`) and when anyone last spoke (the pause rule)."""
 
     def __init__(self) -> None:
         super().__init__(label="meet-mix")
@@ -191,15 +154,14 @@ class Mixer(io.AudioInput):
                 self._voiced.append((self.voiced_at, who, rms))
         return np.clip(out, -32768, 32767).astype(np.int16)
 
-    def speaker(self, within_s: float = SPEAKER_S) -> str:
-        """Who was loudest in the last `within_s`; with nobody voiced, the one person on a track."""
-        since, energy = time.monotonic() - within_s, {}
-        for at, who, rms in self._voiced:
-            if at >= since:
-                energy[who] = energy.get(who, 0.0) + rms
-        if energy:
-            return max(energy, key=energy.get)
-        return next(iter(self._q)) if len(self._q) == 1 else ""
+    def voiced(self, since: float) -> set[str]:
+        """The tracks that carried speech since `since` (monotonic)."""
+        return {who for at, who, _ in self._voiced if at >= since}
+
+    def sole(self, since: float) -> str:
+        """The one track that spoke since `since`, else "" (nobody, or several: never a guess)."""
+        tracks = self.voiced(since)
+        return next(iter(tracks)) if len(tracks) == 1 else ""
 
     async def __anext__(self) -> rtc.AudioFrame:
         now = time.monotonic()
@@ -217,58 +179,109 @@ class MeetAgent(Agent):
     ) -> None:
         super().__init__(instructions=INSTRUCTIONS.format(**info))
         self._b, self.gate, self._mixer, self._names = b, gate, mixer, names
-        self.played = False  # the current reply passed the gate (its text goes on the record)
-        self.provisional = False  # playing with no ask known yet
-        self.vetoed = False  # its turn's transcript arrived and asked nothing: stop
+        self.turns: list[dict] = []  # each person turn Gemini transcribed: seq, kind, final, who, text
+        self.consumed = 0  # turns up to this seq have had their reply (or were refused one)
+        self.reply_turn: dict | None = None  # the turn the reply now playing answers
+        self.reply_end = time.monotonic()  # when the last reply ended: the start of the next ask window
+        self.tool_at = -1.0  # when a tool last ran: Gemini's answer after it belongs to the turn it ran for
+
+    def heard(self, item_id: str | None, text: str, final: bool, now: float) -> dict:
+        """One input-transcript event: the turn it belongs to, created or updated (never downgraded)."""
+        t = self.turns[-1] if self.turns else None
+        if t is None or (item_id and t["item"] != item_id) or (not item_id and t["final"]):
+            who = self._mixer.sole(max(self.reply_end, now - ASK_WINDOW_S))
+            t = {"seq": len(self.turns) + 1, "item": item_id, "kind": "", "final": False, "final_at": None,
+                 "who": who, "text": "", "at": now}  # fmt: skip
+            self.turns.append(t)
+            new = True
+            self.gate.ask_at = None  # each turn is judged on its own words: an old ask never carries over
+        else:
+            new = False
+        kind = self.gate.heard(t["who"], text, now, new_turn=new)
+        t["text"] = text
+        if final and not t["final"]:
+            t["final"], t["final_at"] = True, now
+        if kind == "stop" or (kind in ADDRESSED and not t["kind"]):
+            t["kind"] = kind
+        return t
+
+    def asker(self) -> str:
+        """The Meet participant id whose ask this is: the ONE track voiced since the last reply; "" when
+        nobody or several spoke (the backend then treats it as a guest's: needs_member)."""
+        who = self._mixer.sole(max(self.reply_end, time.monotonic() - ASK_WINDOW_S))
+        return who.rsplit(":", 1)[-1] if who else ""
+
+    def _authorize(self, now: float) -> tuple[bool | None, str]:
+        """(True play | False drop | None wait, why) for the reply now held. Only a FINAL transcript decides:
+        Gemini's partials grow while the person talks on, and a reply held for an early part is not the answer."""
+        t = self.turns[-1] if self.turns else None
+        if t is not None and t["seq"] > self.consumed:
+            if not t["final"]:
+                return (False, "stop") if t["kind"] == "stop" else (None, "turn still coming")
+            if t["kind"] not in ADDRESSED:
+                return False, "stop" if t["kind"] == "stop" else "not addressed"
+            quiet = now - self._mixer.voiced_at
+            return (True, "ask") if quiet >= MEET_QUIET_S else (None, "room not quiet")
+        if (
+            t is not None
+            and t is self.reply_turn
+            and self.tool_at >= (t["final_at"] or 0)  # Gemini's answer after a tool it called for this turn
+            and self._mixer.voiced_at <= (t["final_at"] or 0)  # nobody spoke since: it cannot be for later talk
+            and now - (t["final_at"] or 0) < STALE_S
+        ):
+            return True, "tool follow-on"
+        return None, "no transcript yet"
 
     async def realtime_audio_output_node(self, audio, model_settings):
-        """Gemini's input transcript lands only when its turn completes, seconds after the reply's first audio
-        (live test 7 Nov), so the wake rules cannot clear a reply before it plays. A reply plays once the room
-        is quiet; a known ask or question keeps its own rules (`Gate.verdict`); otherwise it plays on
-        Gemini's own judgement and is cut off when its turn's transcript shows nobody asked (`veto`)."""
+        """A reply's audio is held until its turn's final transcript says the assistant was addressed (see the
+        module docstring); nothing is heard before that."""
         started = time.monotonic()
         while True:
             now = time.monotonic()
-            quiet = now - self._mixer.voiced_at
-            if now - started > STALE_S:
-                v = False
-            elif self.gate.ask_at is not None or self.gate.question_at is not None:
-                v = self.gate.verdict(now, quiet)
-            else:
-                v = True if quiet >= MEET_QUIET_S else None
-            if v is not None:
+            ok, why = self._authorize(now)
+            waiting_for_words = why in ("no transcript yet", "turn still coming")
+            if ok is None and waiting_for_words and now - started > TRANSCRIPT_WAIT_S:
+                ok, why = False, "no transcript in time"  # a turn transcribed later is not this reply's
+            elif ok is None and now - started > STALE_S:
+                ok, why = False, "stale"
+            if ok is not None:
                 break
-            await asyncio.sleep(0.1)
-        if not v:
-            logger.info("meet: reply dropped (stale) ask_at=%s", self.gate.ask_at)
+            await asyncio.sleep(0.05)
+        held = time.monotonic() - started
+        speech = self.session.current_speech
+        if ok and (speech is None or speech.interrupted or speech.done()):
+            # Gemini cut this reply itself (the person talked on) while it was held: nothing to say, and the
+            # turn stays for the reply Gemini makes to the whole of it
+            logger.info("meet: held reply was interrupted (%s) after %.1fs", why, held)
+            return
+        if not ok:
+            if why in ("stop", "not addressed"):
+                self.consumed = self.turns[-1]["seq"]  # that turn had its say: no later reply claims it
+            logger.info("meet: reply dropped (%s) after %.1fs", why, held)
             self.session.interrupt()
             return
-        self.played, self.vetoed = True, False
-        self.provisional = self.gate.ask_at is None and self.gate.question_at is None
+        if why == "ask":
+            self.reply_turn, self.consumed = self.turns[-1], self.turns[-1]["seq"]
+        logger.info("meet: reply played (%s) for turn %d, held %.1fs", why, self.reply_turn["seq"], held)
+        speech.add_done_callback(lambda h, turn=self.reply_turn: self.on_reply(turn, h.chat_items))
         try:
             async for frame in Agent.default.realtime_audio_output_node(
                 self, audio, model_settings
             ):
-                if self.vetoed:
-                    logger.info("meet: reply cut off: its turn did not address the assistant")
-                    self.played = False
-                    self.session.interrupt()
-                    break
                 yield frame
-        finally:  # said in full or cut off: the ask is answered either way
-            self.provisional = False
-            self.gate.answered(time.monotonic())
+        finally:
+            self.reply_end = time.monotonic()
+            self.gate.answered(self.reply_end)
+
+    on_reply = staticmethod(lambda turn, items: None)  # run() records each played reply with its turn
 
     async def _post(self, op: str, body: dict) -> dict:
-        if self.gate.ask_at is not None:  # a tool working on the ask: its reply is not stale yet
-            self.gate.ask_at = time.monotonic()
+        self.tool_at = time.monotonic()
         try:
             out = await self._b.meet(op, body)
         except BackendError as e:
             out = {"error": e.code}
-        logger.info("meet: tool %s -> %s", op, str(out)[:300])
-        if self.gate.ask_at is not None:
-            self.gate.ask_at = time.monotonic()
+        logger.info("meet: tool %s %s", op, out.get("error") or out.get("reason") or "ok")
         return out
 
     @function_tool
@@ -295,10 +308,9 @@ class MeetAgent(Agent):
     async def read_integration(self, provider: str, query: str) -> dict:
         """One quick read of a connected app: provider is a name from list_integrations; query is what to
         search for (mail search words, an event name, an issue keyword). For anything bigger, use start_work."""
-        who = self.gate.asker.rsplit(":", 1)[-1]
         return await self._post(
             "integration-read",
-            {"provider": provider, "query": query, "participantId": who},
+            {"provider": provider, "query": query, "participantId": self.asker()},
         )
 
     @function_tool
@@ -310,12 +322,12 @@ class MeetAgent(Agent):
     async def start_work(self, title: str, brief: str) -> dict:
         """Hand open-ended work or an action item to the team: a short title and a self-contained brief.
         Don't wait for it; say you're on it."""
-        who = self.gate.asker
+        pid = self.asker()
+        who = next((i for i in self._names if pid and i.rsplit(":", 1)[-1] == pid), "")
         out = await self._post(
             "start-work",
-            {"title": title, "brief": brief, "participantId": who.rsplit(":", 1)[-1],
-             "speakerName": self._names.get(who, "")},
-        )  # fmt: skip
+            {"title": title, "brief": brief, "participantId": pid, "speakerName": self._names.get(who, "")},
+        )
         if out.get("already"):
             out["say"] = "already on it"
         return out
@@ -388,56 +400,36 @@ async def run(ctx: JobContext, meta: dict) -> None:
         )  # fmt: skip
     )
     lines: list[dict] = []
-    asked: list[dict] = []
-    pending: dict = {}
-    said: dict = {}  # a played reply whose ask has not been heard yet
-    turn = {"id": None}
+    asked: list[dict] = []  # {turn, a}: built into the record at the end, when the turn's text is whole
+
+    def label(identity: str) -> str:
+        return names.get(identity, "Someone") if identity else "Several people"
 
     def on_heard(ev) -> None:
-        new_turn = ev.item_id != turn["id"] if ev.item_id else ev.is_final
-        if new_turn:
-            turn["id"] = ev.item_id
-        who = mixer.speaker() or gate.asker
-        now = time.monotonic()
-        kind = gate.heard(who, ev.transcript, now, new_turn=new_turn)
-        if kind in ("ask", "followup", "question"):
-            agent.vetoed = False
-        elif kind == "" and ev.is_final and agent.provisional and gate.ask_at is None:
-            agent.vetoed = True
-        if kind or ev.is_final:
-            logger.info("meet: heard kind=%s who=%s final=%s %r", kind, who, ev.is_final, ev.transcript[:200])
-        if kind == "stop":
+        t = agent.heard(ev.item_id, ev.transcript, ev.is_final, time.monotonic())
+        logger.info("meet: turn %d kind=%s final=%s", t["seq"], t["kind"] or "-", ev.is_final)
+        if t["kind"] == "stop":
             session.interrupt()
-        elif kind in ("ask", "followup", "question") and said and now - said["at"] <= 30:
-            # the reply played before its turn's transcript came (Gemini's order): pair them now
-            asked.append({"t": int(now - started), "who": names.get(who, "Someone"), "q": ev.transcript,
-                          "a": said.pop("text")})  # fmt: skip
-            said.clear()
-        elif kind in ("ask", "followup", "question"):
-            pending.clear()
-            pending.update(
-                t=int(now - started), who=names.get(who, "Someone"), q=ev.transcript
-            )
-        elif pending and who == gate.asker:
-            pending["q"] = ev.transcript  # the ask, said in full
         if ev.is_final:
-            lines.append({"mark": len(lines), "kind": "person", "name": names.get(who, "Someone")[:200],
+            lines.append({"mark": len(lines), "kind": "person", "name": label(t["who"])[:200],
                           "text": ev.transcript[:4000], "at": time.time()})  # fmt: skip
 
-    def on_item(ev) -> None:
-        text = getattr(ev.item, "text_content", None)
-        if getattr(ev.item, "role", None) == "assistant" and text:
-            logger.info("meet: said played=%s %r", agent.played, text[:200])
-        if getattr(ev.item, "role", None) != "assistant" or not text or not agent.played:
+    def on_reply(turn: dict, items: list) -> None:
+        """A played reply, done: its words go on the record with the turn it answered (never another's)."""
+        text = " ".join(
+            t for i in items if getattr(i, "role", None) == "assistant" and (t := getattr(i, "text_content", None))
+        ).strip()
+        logger.info("meet: reply for turn %d done, text=%s", turn["seq"], bool(text))
+        if not text:
             return
-        agent.played = False
         lines.append({"mark": len(lines), "kind": "agent", "name": name[:200], "text": text[:4000],
-                      "at": time.time(), "to": pending.get("who", "")[:200]})  # fmt: skip
-        if pending:
-            asked.append({**pending, "a": text})
-            pending.clear()
+                      "at": time.time(), "to": label(turn["who"])[:200]})  # fmt: skip
+        if asked and asked[-1]["turn"] is turn:  # a tool follow-on: the same turn's answer, continued
+            asked[-1]["a"] += " " + text
         else:
-            said.update(text=text, at=time.monotonic())
+            asked.append({"turn": turn, "a": text})
+
+    agent.on_reply = on_reply
 
     def on_state(ev) -> None:
         status = {"speaking": "speaking", "thinking": "working"}.get(
@@ -448,7 +440,6 @@ async def run(ctx: JobContext, meta: dict) -> None:
         ))  # fmt: skip
 
     session.on("user_input_transcribed", on_heard)
-    session.on("conversation_item_added", on_item)
     session.on("agent_state_changed", on_state)
     sent = {"n": 0}
 
@@ -461,10 +452,12 @@ async def run(ctx: JobContext, meta: dict) -> None:
     async def on_end(_reason: str = "") -> None:
         for t in readers.values():
             t.cancel()
-        summary = f"Asked {len(asked)} time{'s' if len(asked) != 1 else ''}"
+        record = [{"t": int(a["turn"]["at"] - started), "who": label(a["turn"]["who"]), "q": a["turn"]["text"],
+                   "a": a["a"]} for a in asked]  # fmt: skip
+        summary = f"Asked {len(record)} time{'s' if len(record) != 1 else ''}"
         for step in (
             flush(final=True),
-            backend.meet("end", {"asked": asked, "summary": summary}),
+            backend.meet("end", {"asked": record, "summary": summary}),
         ):
             try:
                 await step

@@ -1155,7 +1155,6 @@ def _patch_write_profiles_collaborators(
     *,
     provider_choice="chatgpt_oauth",
     byo_provider=None,
-    env_vars=None,
     read_byo_key=None,
     write_agent_profile=None,
     paperclip_api_key="pcp_key",
@@ -1176,9 +1175,6 @@ def _patch_write_profiles_collaborators(
     async def _fake_build_connected_integration_servers(owner_id):
         return {}
 
-    async def _fake_build_provisioned_env(owner_id):
-        return env_vars or {}
-
     async def _fake_ensure_paperclip_api_key(*, owner_id, paperclip_agent_id, admin_client):
         return paperclip_api_key
 
@@ -1187,7 +1183,6 @@ def _patch_write_profiles_collaborators(
         "core.services.credentials.mcp_server.build_connected_integration_servers",
         _fake_build_connected_integration_servers,
     )
-    monkeypatch.setattr("core.services.provisioning_landing.build_provisioned_env", _fake_build_provisioned_env)
     monkeypatch.setattr("core.services.messaging.load_agent_roster", _fake_roster)
     monkeypatch.setattr("core.services.paperclip_api_key.ensure_paperclip_api_key", _fake_ensure_paperclip_api_key)
     monkeypatch.setattr("core.services.paperclip_admin_client.shared_admin_client", lambda: object())
@@ -1198,18 +1193,6 @@ def _patch_write_profiles_collaborators(
         monkeypatch.setattr("core.services.key_service.read_byo_key", read_byo_key)
     if write_agent_profile is not None:
         monkeypatch.setattr("core.services.hermes_profiles.write_agent_profile", write_agent_profile)
-
-
-@pytest.mark.asyncio
-async def test_a_bad_profile_value_surfaces_a_named_provisioning_error(monkeypatch):
-    _patch_write_profiles_collaborators(
-        monkeypatch,
-        env_vars={"BAD_VAR": "line1\nline2"},  # illegal per hermes_profiles.render_dotenv
-        read_byo_key=_explode,
-    )
-
-    with pytest.raises(RuntimeError, match="BAD_VAR"):
-        await hermes_provisioning.write_profiles("org_a")
 
 
 @pytest.mark.asyncio
@@ -1326,9 +1309,7 @@ async def test_two_concurrent_write_profiles_calls_produce_byte_identical_config
     roster = [
         {"id": f"1111111{i}-1111-1111-1111-111111111111", "name": f"Agent{i}", "role": "general"} for i in range(6)
     ]
-    _patch_write_profiles_collaborators(
-        monkeypatch, env_vars={"SOME_INTEGRATION_TOKEN": "tok-abc"}, paperclip_api_key="pcp_key_fixed"
-    )
+    _patch_write_profiles_collaborators(monkeypatch, paperclip_api_key="pcp_key_fixed")
     monkeypatch.setattr("core.services.messaging.load_agent_roster", AsyncMock(return_value=roster))
 
     uploaded: dict[int, dict[str, tuple[str, str]]] = {0: {}, 1: {}}
@@ -1618,7 +1599,6 @@ def _patch_resolve_profile_inputs_collaborators(
     billing_row=None,
     read_byo_key=None,
     integrations=None,
-    env_vars=None,
 ):
     """Patches the underlying collaborators resolve_profile_inputs composes
     (NOT resolve_provider_choice itself) so provider_choice_from_row's real
@@ -1631,15 +1611,11 @@ def _patch_resolve_profile_inputs_collaborators(
     async def _fake_build_connected_integration_servers(owner_id):
         return integrations or {}
 
-    async def _fake_build_provisioned_env(owner_id):
-        return env_vars or {}
-
     monkeypatch.setattr("core.repositories.billing_repo.get_by_owner_id", _fake_get_billing_row)
     monkeypatch.setattr(
         "core.services.credentials.mcp_server.build_connected_integration_servers",
         _fake_build_connected_integration_servers,
     )
-    monkeypatch.setattr("core.services.provisioning_landing.build_provisioned_env", _fake_build_provisioned_env)
     if read_byo_key is not None:
         monkeypatch.setattr("core.services.key_service.read_byo_key", read_byo_key)
 
@@ -2180,7 +2156,6 @@ async def _front_desk_profile(monkeypatch, line, override=None):
     monkeypatch.setattr(
         "core.services.credentials.mcp_server.build_connected_integration_servers", AsyncMock(return_value={})
     )
-    monkeypatch.setattr("core.services.provisioning_landing.build_provisioned_env", AsyncMock(return_value={}))
     monkeypatch.setattr("core.services.paperclip_api_key.ensure_paperclip_api_key", AsyncMock(return_value="pk"))
     monkeypatch.setattr("core.services.paperclip_admin_client.shared_admin_client", lambda: object())
     upload = AsyncMock()
@@ -2227,7 +2202,6 @@ async def test_the_roster_fan_out_reads_the_line_once(monkeypatch):
     monkeypatch.setattr(
         "core.services.credentials.mcp_server.build_connected_integration_servers", AsyncMock(return_value={})
     )
-    monkeypatch.setattr("core.services.provisioning_landing.build_provisioned_env", AsyncMock(return_value={}))
     monkeypatch.setattr(
         "core.services.messaging.load_agent_roster",
         AsyncMock(return_value=[{"id": f"a{i}", "name": f"A{i}", "role": "general"} for i in range(6)]),

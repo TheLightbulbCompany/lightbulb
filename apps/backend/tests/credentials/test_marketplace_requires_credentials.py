@@ -33,7 +33,7 @@ import os
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
-from unittest.mock import AsyncMock, MagicMock, patch  # noqa: E402
+from unittest.mock import AsyncMock  # noqa: E402
 
 import pytest  # noqa: E402
 
@@ -190,98 +190,3 @@ async def test_non_connected_status_does_not_satisfy(monkeypatch):
         await assert_credentials_satisfied("owner_1", {}, slice_=slice_)
 
     assert excinfo.value.missing == ["stripe"]
-
-
-# ---------------------------------------------------------------------------
-# Router 409 + Paperclip rollback
-# ---------------------------------------------------------------------------
-
-
-def _published_listing() -> dict:
-    return {
-        "listing_id": "lst_1",
-        "seller_id": "seller_x",
-        "version": 1,
-        "slug": "demo-agent",
-        "name": "Demo Agent",
-        "status": "published",
-        "price_cents": 0,
-        "s3_prefix": "listings/lst_1/v1/",
-        "manifest_json": {
-            "name": "Demo Agent",
-            "format": "openclaw",
-            "requires": {"credentials": [{"provider": "stripe"}]},
-        },
-    }
-
-
-def _stub_s3_with_slice(slice_: dict) -> MagicMock:
-    import json as _json
-
-    s3 = MagicMock()
-
-    def _get_object(*, Bucket: str, Key: str):
-        body = MagicMock()
-        if Key.endswith("workspace.tar.gz"):
-            body.read.return_value = b"fake-tar"
-        else:
-            body.read.return_value = _json.dumps(slice_).encode("utf-8")
-        return {"Body": body}
-
-    s3.get_object.side_effect = _get_object
-    return s3
-
-
-@patch("routers.marketplace_listings.delete_paperclip_for_marketplace", new_callable=AsyncMock)
-@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
-@patch("routers.marketplace_listings.boto3.client")
-@patch("routers.marketplace_listings.get_catalog_service")
-@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
-def test_deploy_returns_409_and_rolls_back_when_credential_missing(
-    mock_get_published,
-    mock_get_catalog,
-    mock_boto,
-    mock_create_pc,
-    mock_delete_pc,
-    client,
-    monkeypatch,
-):
-    """Missing-credential deploy -> 409 with the missing list, orphan agent rolled back.
-
-    The router must map ``MissingCredentialsError`` out of the deploy to 409
-    AND delete the pre-minted Paperclip agent (the gate runs before any
-    install side effect, so the agent is the only orphan).
-
-    ⚠️ The gate is raised here by a stubbed catalog rather than run end to end:
-    ``assert_credentials_satisfied`` sat on ``deploy_from_artifact``'s ECS/EFS branch, which
-    is deleted, and the surviving profile install does not gate. The validator's own coverage
-    is the tests above; the gate's PLACEMENT on the surviving install path is a real gap, not
-    a test one.
-    """
-    mock_get_published.return_value = _published_listing()
-    mock_create_pc.return_value = {"id": "agent_orphan_1", "name": "Demo Agent"}
-    mock_boto.return_value = _stub_s3_with_slice({"agent": {"name": "Demo Agent"}})
-    monkeypatch.setattr(
-        "core.repositories.integrations_repo.list_for_owner",
-        AsyncMock(return_value=[]),
-    )
-    # The deploy resolves the runtime row itself now (no ECS manager) -- a row with an
-    # agentcore_runtime_arn is what gets it past the 503 short-circuit to the catalog call.
-    monkeypatch.setattr(
-        "core.repositories.container_repo.get_by_owner_id",
-        AsyncMock(return_value={"owner_id": "org_1", "agentcore_runtime_arn": "arn:runtime/x"}),
-    )
-
-    catalog = MagicMock()
-    catalog.deploy_from_artifact = AsyncMock(side_effect=MissingCredentialsError(["stripe"]))
-    mock_get_catalog.return_value = catalog
-
-    resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
-
-    assert resp.status_code == 409, resp.text
-    detail = resp.json()["detail"]
-    assert detail["error"] == "missing_credentials"
-    assert "stripe" in detail["missing"]
-    # Orphan Paperclip agent rolled back.
-    mock_delete_pc.assert_awaited_once()
-    assert mock_delete_pc.await_args.kwargs["agent_id"] == "agent_orphan_1"

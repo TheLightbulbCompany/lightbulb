@@ -22,7 +22,6 @@ from tests.chaos.api.conftest import schema
 ALLOWLIST: set[str] = {
     "GET /api/v1/billing/usage",  # get_usage_summary — usage-counters only (no-org skips Clerk enrich)
     "GET /api/v1/billing/my-usage",  # usage_repo.get_period_usage — usage-counters only
-    "GET /api/v1/marketplace/listings/search",  # 60s-TTL DDB scan over marketplace-listings
 }
 
 

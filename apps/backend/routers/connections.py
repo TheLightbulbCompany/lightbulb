@@ -1124,7 +1124,7 @@ async def authorize_from_container(owner_id: str, provider: str, request: Reques
     Owner-started flows are untouched: Google's add-another-account relies on
     connecting while already connected.
     """
-    from core.services.container_auth import _require_hook_token  # local import, as in marketplace_listings
+    from core.services.container_auth import _require_hook_token  # local import
 
     await _require_hook_token(owner_id, request)
     if await _is_connected(owner_id, provider):

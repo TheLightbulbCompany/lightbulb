@@ -97,9 +97,6 @@ def _patch_resolve_profile_inputs_collaborators(monkeypatch, *, billing_row=None
     async def _fake_build_connected_integration_servers(owner_id):
         return {"paperclip": {"url": "https://paperclip.example"}}
 
-    async def _fake_build_provisioned_env(owner_id):
-        return {"SOME_KEY": "value"}
-
     async def _fake_read_byo_key(owner_id, provider):
         return byo_key
 
@@ -108,7 +105,6 @@ def _patch_resolve_profile_inputs_collaborators(monkeypatch, *, billing_row=None
         "core.services.credentials.mcp_server.build_connected_integration_servers",
         _fake_build_connected_integration_servers,
     )
-    monkeypatch.setattr("core.services.provisioning_landing.build_provisioned_env", _fake_build_provisioned_env)
     monkeypatch.setattr("core.services.key_service.read_byo_key", _fake_read_byo_key)
 
 

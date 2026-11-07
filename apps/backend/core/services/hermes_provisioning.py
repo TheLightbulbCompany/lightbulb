@@ -1395,21 +1395,19 @@ async def resolve_profile_inputs(owner_id: str) -> ProfileInputs:
     from core.services.container_provision import resolve_provider_choice
     from core.services.credentials.mcp_server import build_connected_integration_servers
     from core.services.key_service import read_byo_key
-    from core.services.provisioning_landing import build_provisioned_env
 
     provider_choice, byo_provider = await resolve_provider_choice(owner_id)
     byo_api_key = await read_byo_key(owner_id, byo_provider or "anthropic") if provider_choice == "byo_key" else None
     if provider_choice == "byo_key" and not byo_api_key:
         raise HermesProfileError(f"hermes profile for owner={owner_id}: byo api key read failed")
     integrations = await build_connected_integration_servers(owner_id)
-    env_vars = await build_provisioned_env(owner_id)
     line = await agent_email_repo.text_line_for_owner(owner_id)
     return ProfileInputs(
         provider_choice=provider_choice,
         byo_provider=byo_provider,
         byo_api_key=byo_api_key,
         integrations=integrations,
-        env_vars=env_vars,
+        env_vars={},  # the Stripe Projects rail that landed these is deleted
         front_desk_agent_id=line.get("agent_id") if line else None,
         front_desk_number=line["address"] if line else None,
     )

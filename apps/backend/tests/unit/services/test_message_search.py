@@ -373,7 +373,7 @@ async def test_live_hits_do_not_wait_for_a_cold_index(monkeypatch, index):
 def _closed_room(monkeypatch, kind):
     """ROOM_A, where the caller is still a member but the session/app/task behind the room shuts them out."""
     from core.repositories import local_sessions_repo, tasks_repo
-    from core.services import app_conversation, tasks_access
+    from core.services import tasks_access
 
     extra = {
         "session": {"session": {"ownerId": "someone_else", "sessionId": "s1"}},
@@ -386,7 +386,6 @@ def _closed_room(monkeypatch, kind):
         message_search.messaging_repo, "get_member", AsyncMock(return_value={"id": "user_a", "homeOwnerId": "org_me"})
     )
     monkeypatch.setattr(local_sessions_repo, "get_session", AsyncMock(return_value={"removedAt": 1}))
-    monkeypatch.setattr(app_conversation, "seat_still_opens", AsyncMock(return_value=False))
     monkeypatch.setattr(tasks_repo, "get_task", AsyncMock(return_value={"taskId": "t1"}))
     monkeypatch.setattr(tasks_access, "can_view", AsyncMock(return_value=False))
 

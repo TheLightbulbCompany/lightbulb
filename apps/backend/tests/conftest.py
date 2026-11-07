@@ -86,7 +86,6 @@ def _no_lifespan_background_workers(request, monkeypatch):
         return
     import main
     from core.services import (
-        apps_sweeper,
         browser_control,
         daily_digest,
         durable_activity,
@@ -109,7 +108,6 @@ def _no_lifespan_background_workers(request, monkeypatch):
         (memory_api, "run_memory_sweeper"),
         (daily_digest, "run_digest_sweeper"),
         (needs_you_email, "run_needs_you_sweeper"),
-        (apps_sweeper, "run_apps_sweeper"),
     ):
         monkeypatch.setattr(module, name, _no_background_work)
 

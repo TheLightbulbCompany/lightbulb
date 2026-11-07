@@ -7,8 +7,7 @@ Three outcomes, so `apply_effect` never sends twice:
 - `ExecutorUnknown`: it may have happened (an error after the request left) — the Effect becomes `unknown`, shown
   plainly, never retried.
 The executors reuse the existing doors and their own gates: `agent_mail_send.send` (caps, recipient rules),
-`apps_service.member_publish` (Apps' publish gate, as the person who answered), GitHub's merge API with the owner's
-stored token.
+GitHub's merge API with the owner's stored token.
 """
 
 from __future__ import annotations
@@ -17,7 +16,7 @@ from collections.abc import Awaitable, Callable
 
 import httpx
 
-from core.services import agent_mail_send, apps_service, paperclip_github_token
+from core.services import agent_mail_send, paperclip_github_token
 
 GITHUB_API = "https://api.github.com"
 _TIMEOUT_S = 20.0
@@ -57,18 +56,6 @@ async def mail_send(owner_id: str, operands: dict, answered_by: str) -> str:
     raise ExecutorRefused(result)
 
 
-async def app_publish(owner_id: str, operands: dict, answered_by: str) -> str:
-    """Publish what the ready preview shows, as the person who answered (their press is the proof; Apps' own gate
-    still runs)."""
-    try:
-        up = await apps_service.member_publish(owner_id, operands["appId"], user_id=answered_by)
-    except apps_service.AppsRefused as err:
-        raise ExecutorRefused(err.code, getattr(err, "next", None)) from err
-    except Exception as err:
-        raise ExecutorUnknown(type(err).__name__) from err
-    return f"app:{up['app_id']}:v{up.get('version', '')}"
-
-
 async def pr_merge(owner_id: str, operands: dict, answered_by: str) -> str:
     """Merge with the owner's GitHub token. An already merged PR is a success (a retry after a lost response)."""
     token = await paperclip_github_token.github_token(owner_id)
@@ -102,6 +89,5 @@ async def pr_merge(owner_id: str, operands: dict, answered_by: str) -> str:
 
 EXECUTORS: dict[str, Callable[[str, dict, str], Awaitable[str]]] = {
     "mail.send": mail_send,
-    "app.publish": app_publish,
     "pr.merge": pr_merge,
 }

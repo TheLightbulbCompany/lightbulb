@@ -20,21 +20,3 @@ def _hints_drained_inline(request, monkeypatch):
         await _asyncio.gather(*list(_relay._hint_tasks))
 
     monkeypatch.setattr(_relay, "publish_resources_changed", drained)
-
-
-@pytest.fixture(autouse=True)
-def _apps_tasks_end_with_their_test():
-    """``apps_service.drive``/``watch`` keep one background task per app in module dicts; one armed by a
-    test (through ``status()``, say) must not outlive it and hold that app's slot in the next test's loop."""
-    yield
-    import sys
-    from contextlib import suppress
-
-    svc = sys.modules.get("core.services.apps_service")
-    if svc is None:
-        return
-    for tasks in (svc._drives, svc._watches):
-        for task in list(tasks.values()):
-            with suppress(RuntimeError):  # its loop may already be closed
-                task.cancel()
-        tasks.clear()

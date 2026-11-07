@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path
 
 import logging
 
-from core.services import handoff_analytics, marketplace_hire, purchases
+from core.services import handoff_analytics, purchases
 
 from . import agents as _agents
 from .deps import TeamsContext, envelope_list
@@ -74,20 +74,7 @@ async def approve(
     body: ApproveApprovalBody,
     ctx: TeamsContext = Depends(_ctx),
 ):
-    """Approve a pending approval, optionally with a reviewer note.
-
-    For a MARKETPLACE hire this is also where the agent's workspace gets
-    installed. Paperclip's approve flips the pre-created agent from
-    ``pending_approval`` to ``idle``; the EFS workspace, the ``openclaw.json``
-    merge, and the operator-device pairing are Isol8's half and it knows
-    nothing about them. Running it here keeps the whole thing on the approving
-    user's own authenticated request — no privileged write path, no event
-    plumbing, and the user learns immediately if the install failed.
-
-    Every other approval type passes through untouched
-    (``deploy_for_approval`` no-ops unless the payload carries the marketplace
-    metadata).
-    """
+    """Approve a pending approval, optionally with a reviewer note."""
     approved = await _agents._admin().approve_approval(
         approval_id=approval_id,
         note=body.note,
@@ -96,7 +83,6 @@ async def approve(
     handoff_analytics.approval_answered(
         workspace_id=ctx.owner_id, user_id=ctx.user_id, approval_id=approval_id, decision="approved"
     )
-    await marketplace_hire.deploy_for_approval(approval=approved, owner_id=ctx.owner_id)
     return approved
 
 

@@ -436,27 +436,6 @@ async def test_watch_met_writes_the_input_trigger(table):
     assert await watch_met(WS, TID, _spec(), 3, "met:failed:ci") == tid  # a retry is the same row
 
 
-async def test_an_app_watch_asks_the_app_and_wakes_the_worker_with_what_to_say(table, monkeypatch):
-    """W7-5: a request watching the app it handed over; check and the wake text come from app_conversation."""
-    from core.services import app_conversation
-
-    await _task(table)
-    spec = WatchSpec(
-        watch_id="w-app", kind="app", target={"appId": "app_1"}, every_min=5, give_up_at=_spec().give_up_at
-    )
-    monkeypatch.setattr(app_conversation, "app_progress", AsyncMock(return_value="met:ready"))
-    monkeypatch.setattr(
-        app_conversation, "app_progress_text", AsyncMock(return_value="Booking's first version is ready.")
-    )
-    assert await check_watch(WS, TID, spec) == "met:ready"
-    app_conversation.app_progress.assert_awaited_with(WS, "app_1", "")
-    again = WatchSpec(watch_id="w-app2", kind="app", target={"appId": "app_1", "since": "t0"}, every_min=5)
-    await check_watch(WS, TID, again)  # a "try again" watch: only news after it counts
-    app_conversation.app_progress.assert_awaited_with(WS, "app_1", "t0")
-    tid = await watch_met(WS, TID, spec, 1, "met:ready")
-    assert (await tasks_repo.get_trigger(WS, tid))["ref"]["text"] == "Booking's first version is ready."
-
-
 async def test_watch_gave_up_writes_the_ask_row(table):
     await _task(table)
     ref = await watch_gave_up(WS, TID, _spec())

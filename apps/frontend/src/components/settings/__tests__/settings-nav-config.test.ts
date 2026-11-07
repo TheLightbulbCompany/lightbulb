@@ -14,6 +14,7 @@ describe("SETTINGS_NAV_SECTIONS", () => {
       ["Workspace", ["workspace", "members", "approvals"]],
       ["Connect", ["connections"]],
       ["Plan", ["billing", "usage", "business"]],
+      ["Developer", ["local-mcp", "desktop"]],
     ]);
   });
 

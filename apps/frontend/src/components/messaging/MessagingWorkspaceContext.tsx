@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useAuth, useUser } from "@clerk/nextjs";
-import { cardReplyRequest, markSessionsSeen, resolveTypedMentions, roomDisplayName, runView, sessionArchived, sessionMentionCandidates, sessionUnread, useWorkspaceSessions, workspaceSections, type CardReply, type CreateMessageRequest, type MemberRef, type PatchRoomRequest, type RoomMember, type SessionSource, type RoomSummary } from "@lightbulb/shared";
+import { cardReplyRequest, markSessionRead, markSessionsSeen, markSessionUnread, resolveTypedMentions, roomDisplayName, runView, sessionArchived, sessionMentionCandidates, sessionUnread, useWorkspaceSessions, workspaceSections, type CardReply, type CreateMessageRequest, type MemberRef, type PatchRoomRequest, type RoomMember, type SessionSource, type RoomSummary } from "@lightbulb/shared";
 import { useRooms } from "@/hooks/useRooms";
 import { useCopyJoinLink } from "@/hooks/useCopyJoinLink";
 import { useBilling } from "@/hooks/useBilling";
@@ -29,8 +29,10 @@ import type { RoomDirectoryProps, ConversationCreation } from "./RoomDirectory";
 import type { SettingsFrom } from "@/components/projects/ProjectSettingsDialog";
 import type { RoomPanelProps } from "./RoomPanel";
 import type { SessionFocusTarget } from "./SessionFocus";
-import type { SidebarSession } from "./roomSections";
+import { bridge } from "./localTerminal";
+import type { SidebarRow, SidebarSession } from "./roomSections";
 import { useSessionRows } from "./useSessionRows";
+import type { SessionRow } from "@lightbulb/shared";
 import { isProjectRoom, type DirectoryRoom, type DirectoryParticipant, type RoomParticipant } from "./types";
 
 
@@ -62,6 +64,8 @@ export interface MessagingWorkspaceValue {
   /** A side column (an app's conversation in Canvas) says which room it shows under its own key, or null when hidden.
    * Each one is suppressed from notifications on its own, beside the main room. */
   setSideRoom: (key: string, roomId: string | null) => void;
+  /** Focus an empty new session (the composer that starts one on your Mac). */
+  openNewSession: () => void;
   sessionFocus: SessionFocusTarget | null;
   closeSession: () => void;
   /** Not gated on the active dock panel: a split dock keeps the focused session on screen. */
@@ -99,6 +103,8 @@ export const pickTokenUnchanged = (a: PickToken, b: PickToken) =>
   a.href === b.href && a.activePanelId === b.activePanelId;
 
 /** A session owner as a human participant, the shape ParticipantAvatar takes. */
+/** The native Share command; only a desktop page has engine rows, so only a desktop page reaches it. */
+const shareEngineSession = (row: SessionRow): Promise<unknown> => Promise.resolve(bridge()?.("share_engine_session", { sessionId: row.id }));
 
 function ownerFace(id: string, displayName: string): RoomParticipant {
   return { kind: "human", id, displayName, mentionHandle: null, role: "member", listenMode: null, joinedAt: "", joinedSeq: 0 };
@@ -478,6 +484,11 @@ export function MessagingWorkspaceProvider({
       section.data.map((session) => ({ session, ownerName: section.title, own: section.key === userId,
         owner: ownerFace(session.humanUserId, session.humanUserId === userId && !isOnRoster(session.humanUserId) ? myName : humanName(session.humanUserId)), unread: sessionUnread(session, seen) }))),
     [sessionRows, userId, humanName, isOnRoster, myName, seen]);
+  const sidebarRows: SidebarRow[] = useMemo(() => sessionRows.map((row) => ({
+    row,
+    owner: ownerFace(row.person.userId ?? row.id, row.person.isViewer && !(row.person.userId && isOnRoster(row.person.userId)) ? myName : row.person.name),
+    unread: row.backend ? sessionUnread(row.backend, seen) : null,
+  })), [sessionRows, isOnRoster, myName, seen]);
   const members: RoomParticipant[] = useMemo(() => rooms.activeRoom?.members.map(decorate) ?? [], [rooms.activeRoom, decorate]);
   // The feed seats only people; its agents are authors on the roster. They are added here so a
   // Discuss reply can @mention one (by name: an unseated agent has no handle in the room).
@@ -839,6 +850,14 @@ export function MessagingWorkspaceProvider({
   const setSessionChat = useCallback((open: boolean) => {
     setSessionFocus((current) => current?.sessionId ? { ...current, chat: open } : current);
   }, []);
+  const openNewSession = useCallback(() => {
+    setTarget(null);
+    setSessionFocus({ sessionId: null });
+  }, []);
+  const openAllSessions = useCallback(() => {
+    setTarget(null);
+    setSessionFocus({ sessionId: null, all: true });
+  }, []);
   const openMessage = useCallback((roomId: string, messageId: string | null) => {
     closeSession();
     selectRoom(roomId);
@@ -929,6 +948,23 @@ export function MessagingWorkspaceProvider({
     onRetry: () => void rooms.refreshRooms(),
     draftRoomIds,
     sessions: sidebarSessions,
+    sessionRows: sidebarRows,
+    onShareSession: shareEngineSession,
+    onSelectSession: (sessionId: string) => void openSession(sessionId),
+    onRenameSession: rooms.resourceSource.client.setLocalSessionDisplayTitle ? async (sessionId, title) => {
+      await rooms.resourceSource.client.setLocalSessionDisplayTitle!(sessionId, title);
+      await workspaceSessions.refresh();
+    } : undefined,
+    onMarkSessionUnread: (sessionId, unread) => {
+      const session = workspaceSessions.sessions.find((candidate) => candidate.sessionId === sessionId);
+      if (!session) return;
+      const next = (unread ? markSessionUnread : markSessionRead)(seen, session);
+      setSessionSeen({ scope: seenScope, seen: next });
+      writeSessionSeen(seenScope, next);
+    },
+    currentSessionId: sessionFocus?.sessionId ?? null,
+    onOpenAllSessions: openAllSessions,
+    allSessionsOpen: !!sessionFocus?.all,
     // Nothing leaves the list until the server has removed it: a refusal (it resumed meanwhile, the network)
     // rejects here, and the button that asked says so. The panel showing the session closes itself (SessionFocus).
     // A running session is ended first and removed when its Mac has stopped it: its row stays, as running,
@@ -1115,6 +1151,7 @@ export function MessagingWorkspaceProvider({
     openMessage,
     openNotificationTarget,
     openSession,
+    openNewSession,
     sessionFocus,
     closeSession,
     setSessionChat,

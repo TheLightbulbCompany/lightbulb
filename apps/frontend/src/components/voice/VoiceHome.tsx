@@ -72,7 +72,8 @@ export function VoiceHome() {
       </Link>}
       <div className="vx-chips" role="group" aria-label="Show">
         {FILTERS.map(([id, label, test]) => {
-          const n = id === "all" ? 0 : all.filter(test).length;
+          // "Needs you" filters the calls; the line above counts everything waiting (calls and Questions), so no number here.
+          const n = id === "all" || id === "needs" ? 0 : all.filter(test).length;
           return <button key={id} type="button" className="vx-chip" aria-pressed={filter === id} onClick={() => setFilter(id)}>
             {label}{n > 0 && <span>{n}</span>}</button>;
         })}
@@ -87,8 +88,8 @@ export function VoiceHome() {
         {rows.map((i) => <Row key={i.roomId} item={i} name={name} current={i.roomId === openId} onOpen={() => setOpenId(i.roomId)} />)}
       </section>)}
       {all.length > 0 && <p className="vx-foot">
-        Today: answered {today.length} · booked {today.filter((c) => c.type === "call" && c.outcome === "booked").length} · messages {today.filter((c) => c.type === "call" && c.outcome === "message").length}
-        {" "}· {minutes} min used this month</p>}
+        Today {today.length} answered · {today.filter((c) => c.type === "call" && c.outcome === "booked").length} booked
+        {" "}&nbsp;·&nbsp; {minutes} min used this month</p>}
     </div></div>
     {open && <aside className="vx-pane" aria-label="Details">
       <Button type="button" variant="ghost" size="sm" className="vx-back" onClick={() => setOpenId(null)}><ArrowLeft /> All conversations</Button>
@@ -133,14 +134,14 @@ function CallPane({ call, name, onClose }: { call: CallItem; name: string; onClo
     <div className="vx-pane-head">
       <div><h2 className="vx-title" style={{ fontSize: "var(--text-ui)" }}>{call.ownerMode ? `You and ${name}` : who(call)}</h2>
         <p className="vx-sub">{time(call.at)} · {dayLabel(call.at)}{call.durationSec ? ` · ${mmss(call.durationSec)}` : ""}</p></div>
-      <Button type="button" size="sm" variant="ghost" onClick={onClose} aria-label="Close details">Close</Button>
+      <Button type="button" size="sm" variant="ghost" className="vx-close" onClick={onClose} aria-label="Close details">Close</Button>
     </div>
     <p style={{ marginTop: 12, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}><Tag outcome={call.outcome} />
       <span className="vx-muted" style={{ fontSize: "var(--text-caption)" }}>{call.booking || call.summary}</span></p>
     {!call.ownerMode && <div className="vx-actions"><ReachBack number={call.caller} /></div>}
     {!!call.steps?.length && <section><h3>What {name} did</h3>
-      <ol className="vx-steps">{call.steps.map((s, n) => <li key={n}><time>{mmss(s.t)}</time>{s.text}
-        {s.guessed && <> <span className="vx-tag" data-tone="warn">guessed, not in Knowledge</span></>}</li>)}</ol></section>}
+      <ol className="vx-steps">{call.steps.map((s, n) => <li key={n}><time>{mmss(s.t)}</time><span>{s.text}
+        {s.guessed && <> <span className="vx-tag" data-tone="warn">guessed, not in Knowledge</span></>}</span></li>)}</ol></section>}
     {!!call.callerMemory?.length && <section><h3>What {name} remembers about {call.callerName || "this caller"}</h3>
       <ul className="vx-tx">{call.callerMemory.map((m) => <li key={m}>{m}</li>)}</ul></section>}
     {tx.length > 0 && <section><h3>Transcript</h3>
@@ -185,13 +186,13 @@ function MeetingPane({ meeting, name, onClose }: { meeting: MeetingItem; name: s
     <div className="vx-pane-head">
       <div><h2 className="vx-title" style={{ fontSize: "var(--text-ui)" }}>{meeting.title || "Meeting"}</h2>
         <p className="vx-sub">{time(meeting.at)} · {dayLabel(meeting.at)}{meeting.people?.length ? ` · ${meeting.people.join(", ")}` : ""}</p></div>
-      <Button type="button" size="sm" variant="ghost" onClick={onClose} aria-label="Close details">Close</Button>
+      <Button type="button" size="sm" variant="ghost" className="vx-close" onClick={onClose} aria-label="Close details">Close</Button>
     </div>
     {meeting.summary && <section><h3>Notes</h3><p className="vx-tx">{meeting.summary}</p></section>}
     <section><h3>What {name} was asked and did</h3>
       {meeting.asked?.length
-        ? <ol className="vx-steps">{meeting.asked.map((a, n) => <li key={n}>{a.t != null && <time>{mmss(a.t)}</time>}
-          {a.who ? `${a.who}: ` : ""}&ldquo;{a.q}&rdquo;{a.a ? ` → ${a.a}` : ""}</li>)}</ol>
+        ? <ol className="vx-steps">{meeting.asked.map((a, n) => <li key={n}><time>{mmss(a.t)}</time>
+          <span>{a.who ? `${a.who}: ` : ""}&ldquo;{a.q}&rdquo;{a.a ? ` → ${a.a}` : ""}</span></li>)}</ol>
         : <p className="vx-tx vx-muted">Nobody asked {name} anything. It listened.</p>}
     </section>
     {!!meeting.followUps?.length && <section><h3>Follow-ups</h3>
@@ -247,7 +248,7 @@ function TalkToAssistant({ name }: { name: string }) {
       <b>{state === "connecting" ? `Connecting to ${name}…` : state === "listening" ? `${name} is listening` : `Hold to talk to ${name}`}</b>
       <p role={err || huddle.error ? "alert" : undefined}>{err || (huddle.error ? `Couldn't reach ${name}. Try again.`
         : room === null ? `${name} isn't set up in this workspace yet.`
-        : "“What happened today?” · “Move Priya’s 11 to 11:30 and text her” · “Draft the holiday-hours post”")}</p>
+        : <>“What happened today?”<span className="vx-more"> · “Move Priya’s 11 to 11:30 and text her” · “Draft the holiday-hours post”</span></>)}</p>
     </div>
     {live && <Button type="button" size="sm" variant="outline" onClick={() => { release(); huddle.leave(); }}>End</Button>}
   </div>;

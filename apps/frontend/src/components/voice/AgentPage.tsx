@@ -40,7 +40,7 @@ export function AgentPage() {
   return <div className="vx-page">
     <header className="vx-agent-head">
       <div>
-        <h1 className="vx-title">{name}, {business}&apos;s assistant</h1>
+        <h1 className="vx-title">{name} <span className="vx-muted">· {business}</span></h1>
         <p className="vx-sub"><span className="vx-tag" data-tone={c.live && !c.paused ? "ok" : c.paused ? "warn" : undefined}>{status}</span>
           {c.number ? <> · answering {c.number}</> : <> · no number yet</>}</p>
         <p className="vx-save" role="status" data-err={saveState === "error" || saveState === "forbidden"} style={{ marginTop: 6 }}>

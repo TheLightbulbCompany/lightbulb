@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
 import { callNeedsYou, nameOf, useAgentConfig, useQuestions, useTimeline, who, type CallItem } from "./data";
 
+const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
 const time = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 
 export function NeedsYou() {
@@ -30,7 +31,7 @@ export function NeedsYou() {
     </div>
     {!loading && <p className="vx-foot" style={{ padding: 0, marginTop: 20 }}>
       {total ? "Nothing else needs you. " : ""}
-      {today.filter((i) => i.type === "call").length} calls and {today.filter((i) => i.type === "meeting").length} meetings handled today.{" "}
+      {plural(today.filter((i) => i.type === "call").length, "call")} and {plural(today.filter((i) => i.type === "meeting").length, "meeting")} handled today.{" "}
       <Link className="vx-link" href="/voice">See Home</Link></p>}
   </div>;
 }
@@ -109,14 +110,14 @@ function CallCard({ call, name }: { call: CallItem; name: string }) {
         <Button type="submit" size="sm" disabled={busy || !text.trim()}>Save answer</Button>
         {call.caller && <><Button asChild size="sm" variant="outline"><a href={`tel:${call.caller}`}>I&apos;ll call</a></Button>
           <Button asChild size="sm" variant="outline"><a href={`sms:${call.caller}`}>Text back</a></Button></>}
+        <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => void finish()}>Done without an answer</Button>
       </div>
     </form>}
     {handoff && <div className="vx-actions">
-      {call.caller && <><Button asChild size="sm"><a href={`tel:${call.caller}`}>Call back</a></Button>
+      {call.caller && <><Button asChild size="sm" variant="outline"><a href={`tel:${call.caller}`}>Call back</a></Button>
         <Button asChild size="sm" variant="outline"><a href={`sms:${call.caller}`}>Text back</a></Button></>}
       <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => void finish()}>Done</Button>
     </div>}
-    {!handoff && <Button type="button" size="sm" variant="ghost" style={{ marginTop: 6 }} disabled={busy} onClick={() => void finish()}>Done without an answer</Button>}
     {err && <p role="alert" style={{ color: "var(--err)" }}>{err}</p>}
   </article>;
 }

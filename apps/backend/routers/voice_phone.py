@@ -230,6 +230,7 @@ class EndIn(BaseModel):
     #: Whether the transcribed first line carried the AI and recording disclosure (worker `disclosure_of`).
     disclosure: Literal["ok", "missing", "unknown"] | None = None
     disclosureRepeated: bool = False  # the worker said the disclosure sentence after a failed first line
+    silent: bool = False  # the worker hung up a line nobody spoke on ("are you still there?", then goodbye)
 
 
 def outcome_of(call: dict) -> str:
@@ -258,7 +259,8 @@ async def end_call(call_id: str, body: EndIn) -> dict:
 
     def change(call: dict) -> dict:
         return {"status": "ended", "endedAt": utc_now_iso(), "durationSec": body.durationSec,
-                "outcome": outcome_of(call), "summary": body.summary, "transcript": lines,
+                "outcome": "silent" if body.silent and outcome_of(call) == "answered" else outcome_of(call),
+                "summary": body.summary, "transcript": lines,
                 **({"disclosure": body.disclosure, "disclosureRepeated": body.disclosureRepeated}
                    if body.disclosure else {})}  # fmt: skip
 

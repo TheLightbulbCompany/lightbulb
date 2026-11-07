@@ -41,6 +41,11 @@ VOICE = os.environ.get(
 TTS_MODEL = os.environ.get(
     "PHONE_TTS_MODEL", "gemini-3.1-flash-tts-preview"
 )  # streams: first audio in ~0.8 s
+AWAY_S = float(
+    os.environ.get("PHONE_AWAY_S", "15")
+)  # silence before "are you still there?", and again before hanging up
+STILL_THERE = 'The line has gone quiet. Ask once, briefly: "Are you still there?"'
+SILENT_BYE = "Nobody is answering. In one short sentence, say you'll hang up now and goodbye; don't ask anything."
 CALL_MAX_S = float(
     os.environ.get("PHONE_MAX_S", 20 * 60)
 )  # cost cap: a call ends after 20 minutes
@@ -103,10 +108,17 @@ def _norm(text: str) -> str:
 
 def discloses(text: str, greeting: str, assistant: str) -> bool:
     """The greeting as said: the greeting itself (case, punctuation, spacing aside), or a line that still names the
-    assistant and says "AI assistant" and "recorded"."""
-    t = _norm(text)
-    return t == _norm(greeting) or all(
-        _norm(w) in t for w in (assistant, "AI assistant", "recorded")
+    assistant and says "AI assistant" and "recorded", as whole words ("Ava" isn't in "available"), never denied
+    ("not recorded", "isn't being recorded")."""
+    t = f" {_norm(text)} "
+    # "isn't" normalizes to "isn t"; up to three words between the denial and "recorded" ("not going to be recorded")
+    if re.search(
+        r" (not|never|no|nothing|t)( \w+){0,3} recorded |\bno part of\b.*\brecorded\b",
+        t,
+    ):
+        return False
+    return t.strip() == _norm(greeting) or all(
+        f" {_norm(w)} " in t for w in (assistant, "AI assistant", "recorded")
     )
 
 
@@ -384,7 +396,14 @@ class Receptionist(Agent):
 async def entrypoint(ctx: JobContext) -> None:
     started = time.monotonic()
     await ctx.connect()
-    caller = await ctx.wait_for_participant()
+    try:
+        caller = await asyncio.wait_for(ctx.wait_for_participant(), AWAY_S * 2)
+    except TimeoutError:  # 8 Nov sims: a job that started after the caller left sat in the room for 12 minutes
+        logger.info(
+            "phone: nobody joined job %s; leaving", ctx.job.id
+        )  # the room name holds the caller's number
+        ctx.shutdown("no caller")
+        return
     meta = json.loads(
         ctx.job.metadata or "{}"
     )  # a test dispatch (lk dispatch) names the numbers itself
@@ -424,6 +443,7 @@ async def entrypoint(ctx: JobContext) -> None:
         llm=google.realtime.RealtimeModel(
             model=MODEL, voice=VOICE, api_key=key, api_version="v1beta"
         ),
+        user_away_timeout=AWAY_S,
     )
     stream = greeting_audio(info["greeting"], key)
     first = asyncio.ensure_future(
@@ -459,14 +479,40 @@ async def entrypoint(ctx: JobContext) -> None:
         guard.state(ev.old_state, ev.new_state)
         guard.seen(items)
 
-    async def hang_up() -> None:
+    async def hang_up(reason: str = "call max length") -> None:
         await ctx.delete_room()  # disconnects the SIP caller too
-        ctx.shutdown("call max length")
+        ctx.shutdown(reason)
+
+    silent: list[asyncio.Task] = []
+    silent_end: list[bool] = []
+
+    async def hang_up_silent() -> None:
+        """Still nobody after "are you still there?": a goodbye, then the line is closed (8 Nov sims: a silent line
+        stayed open, billing Gemini, until the 20-minute cap)."""
+        await asyncio.sleep(AWAY_S)
+        try:
+            await asyncio.wait_for(session.generate_reply(instructions=SILENT_BYE), 10)
+        except Exception:  # noqa: BLE001 -- a lost goodbye must not keep the line open
+            logger.warning(
+                "phone %s: silent goodbye failed", backend.call_id, exc_info=True
+            )
+        silent_end.append(True)
+        await hang_up("caller silent")
+
+    @session.on("user_state_changed")
+    def _away(ev) -> None:
+        if ev.new_state == "away" and not silent:
+            session.generate_reply(instructions=STILL_THERE)
+            silent.append(asyncio.create_task(hang_up_silent()))
+        elif ev.new_state != "away" and silent:
+            silent.pop().cancel()
 
     limit = asyncio.create_task(end_after(CALL_MAX_S, session, hang_up))
 
     async def on_end(_reason: str = "") -> None:
         limit.cancel()
+        for task in silent:
+            task.cancel()
         out = await backend.post(
             "end",
             {
@@ -477,6 +523,7 @@ async def entrypoint(ctx: JobContext) -> None:
                     items, info["greeting"], info["assistantName"]
                 ),
                 "disclosureRepeated": guard.corrected,
+                "silent": bool(silent_end),
             },
         )
         logger.info(

@@ -193,6 +193,34 @@ async def test_ask_mode_asks_for_a_member_mail_and_never_ask_does_not(api, mode)
     assert (await effects_repo.get_effect(WS, f"{tid}:1:c2"))["state"] == "intent"
 
 
+async def test_a_phone_callers_task_asks_even_where_the_mode_would_go_ahead(api, mode, monkeypatch):
+    """A task a caller started from the phone line (trigger ref origin phone_contact) never spends, mails or publishes
+    on Auto or Never ask: the owner says yes."""
+    from core.repositories import tasks_repo
+
+    async def trigger(_ws, tid):
+        return {"ref": {"origin": "phone_contact"}} if tid == "voice:call" else None
+
+    monkeypatch.setattr(tasks_repo, "get_trigger", trigger)
+    plain, contact = await _started(), await _task(triggerId="voice:call")
+    await _running(contact)
+    member = {"to": "sam@acme.dev"}
+    assert (await api.post(_url(), json=await _body(plain, "c1", "mail.send", member), headers=H)).json() == {
+        "decision": "proceed"
+    }
+    mode["approval_mode"] = "never_ask"
+    for n, (kind, ops) in enumerate(
+        [
+            ("mail.send", member),
+            ("purchase", {"amount": "$1"}),
+            ("app.publish", {"appId": "a"}),
+            ("a2a.send", {"to": "agent:x"}),
+        ]
+    ):
+        resp = await api.post(_url(), json=await _body(contact, f"c{n}", kind, ops), headers=H)
+        assert resp.json()["decision"] == "needs_approval", kind
+
+
 async def test_always_allow_rule_lets_the_second_identical_action_through(api, mode, monkeypatch):
     monkeypatch.setattr(questions, "_admins", AsyncMock(return_value=["user_ada"]))
     tid = await _started()

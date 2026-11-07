@@ -9,4 +9,5 @@ Rules:
 - AWS: `--profile isol8-admin --region us-east-1` as flags. Read-only on prod unless your brief says otherwise. Never print secrets; read them into env via `$(aws secretsmanager get-secret-value --secret-id <name> --profile isol8-admin --region us-east-1 --query SecretString --output text)`.
 - Spend caps: one Twilio number ($1.15/mo), ≤ $5/day Twilio test minutes, ≤ $5/day Gemini, ≤ 3 Recall hours/day. Nothing else that costs money.
 - Commit trailer: `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. PR body ends with `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
+- When your PR is merged or abandoned, remove your worktree: `git -C /Users/prasiddhaparthsarthy/Desktop/lightbulb.nosync worktree remove .claude/worktrees/<lane>` (no --force). Reviewers remove theirs right after reviewing. Keep test runs light (`pytest -n 2` at most); disk and memory are shared with other lanes.
 - Report back: PR URL(s), what you verified and how, what is unverified, anything the lead must do.

@@ -747,11 +747,12 @@ export function navKeyDown(e: React.KeyboardEvent, item: NavItem & { panel: stri
 
 export function SettingsPlace({ id, params }: PanelProps) {
   const developer = useShowsDeveloper() || DEVELOPER_PANELS.has(params.section ?? "");
-  const sections = developer ? SETTINGS_NAV_SECTIONS : SETTINGS_NAV_SECTIONS.filter((s) => !s.items.every((i) => DEVELOPER_PANELS.has(i.panel ?? "")));
+  const sections = (developer ? SETTINGS_NAV_SECTIONS : SETTINGS_NAV_SECTIONS.filter((s) => !s.items.every((i) => DEVELOPER_PANELS.has(i.panel ?? ""))))
+    // A browser has no local MCP servers to show: one list for both the select and the tabs.
+    .map((s) => isDesktopApp() ? s : { ...s, items: s.items.filter((i) => i.panel !== "local-mcp") });
   const isAdmin = useIsWorkspaceAdmin();
   const visible = (item: NavItem): item is NavItem & { panel: Panel } =>
-    item.panel !== undefined && Object.hasOwn(PANELS, item.panel) && (isAdmin || !ADMIN_ONLY_PANELS.has(item.panel))
-    && (item.panel !== "local-mcp" || isDesktopApp()); // a browser has no local MCP servers to show
+    item.panel !== undefined && Object.hasOwn(PANELS, item.panel) && (isAdmin || !ADMIN_ONLY_PANELS.has(item.panel));
   const rows = sections.flatMap((s) => s.items).filter(visible);
   // Derived, not latched: isAdmin reads false until Clerk knows the membership, so a deep-linked admin row
   // re-resolves once it does.

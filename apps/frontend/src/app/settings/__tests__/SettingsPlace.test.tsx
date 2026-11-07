@@ -123,6 +123,9 @@ describe("Settings place (super-agent)", () => {
     const { unmount } = place({ section: "mcp" });
     expect(devRows()).toContain("Developer");
     expect(screen.getByRole("tab", { name: /^MCP servers/ })).toHaveAttribute("aria-selected", "true");
+    // A browser (no desktop app) has no local MCP servers: neither a tab nor a select option.
+    expect(screen.queryByRole("tab", { name: /Local MCP servers/ })).toBeNull();
+    expect(screen.queryByRole("option", { name: "Local MCP servers" })).toBeNull();
     unmount();
     // Only Lightbulb's managed server: still hidden.
     api.get.mockImplementation(async (path: string) => {

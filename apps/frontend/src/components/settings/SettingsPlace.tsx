@@ -16,6 +16,9 @@ import { useBilling } from "@/hooks/useBilling";
 import { useCheckoutReturn } from "@/components/chat/shell/useCheckoutReturn";
 import { WorkspaceMembersSection } from "@/components/settings/WorkspaceMembersSection";
 import { DailySummaryCard } from "@/components/settings/DailySummaryCard";
+import { SessionNotificationsCard } from "@/components/settings/SessionNotificationsCard";
+import { DesktopSettings } from "@/components/desktop/DesktopSettings";
+import { LocalMcpServers } from "@/components/desktop/LocalMcpServers";
 import { PlanChooser } from "@/components/settings/PlanChooser";
 import { UsagePanel } from "@/components/control/panels/UsagePanel";
 import { ConnectionsPanel } from "@/components/control/panels/ConnectionsPanel";
@@ -25,11 +28,14 @@ import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 import { SettingsNav } from "@/components/settings/SettingsNav";
 import {
   ADMIN_ONLY_PANELS,
+  DEVELOPER_PANELS,
   SETTINGS_NAV_SECTIONS,
   type NavItem,
 } from "@/components/settings/settings-nav-config";
 import { Button } from "@/components/ui/button";
 import { SettingRow } from "@/components/settings/SettingRow";
+import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingWorkspaceContext";
+import { isDesktopApp } from "@/lib/desktopNotify";
 import { MoneyPanel } from "@/components/teams/panels/MoneyPanel";
 import { replaceSearchParams } from "@/lib/shellNav";
 import { openPanel } from "@/components/workspace/workspaceController";
@@ -51,6 +57,8 @@ export type Panel =
   | "connections"
   | "billing"
   | "usage"
+  | "desktop"
+  | "local-mcp"
   | "business";
 
 // =============================================================================
@@ -578,8 +586,23 @@ export const PANELS: Record<Panel, () => React.ReactElement> = {
   connections: ConnectionsPanel,
   billing: BillingPanel,
   usage: UsagePanel,
+  desktop: DesktopPanel,
+  // Desktop-app-only: MCP servers running on the user's own Mac, driven by the
+  // Tauri local_mcp_* commands. Not listed in a browser.
+  "local-mcp": LocalMcpServers,
   business: BusinessPanel,
 };
+
+/** Desktop, plus the session notifications that left Profile for the Developer group (W13-10). */
+function DesktopPanel() {
+  return <><DesktopSettings /><SessionNotificationsCard rows /></>;
+}
+
+/** Settings › Developer (Local MCP servers, Desktop) is for the desktop app, or a workspace with a coding session. */
+function useShowsDeveloper(): boolean {
+  const directory = useMessagingWorkspaceOptional()?.directoryProps;
+  return (directory?.sessionRows?.length ?? 0) + (directory?.sessions?.length ?? 0) > 0 || isDesktopApp();
+}
 
 // =============================================================================
 // Business (super-agent): what Work › Money showed, inside Settings › Plan.
@@ -616,7 +639,10 @@ export function navKeyDown(e: React.KeyboardEvent, item: NavItem & { panel: stri
 }
 
 export function SettingsPlace({ params }: PanelProps) {
-  const sections = SETTINGS_NAV_SECTIONS;
+  const developer = useShowsDeveloper() || DEVELOPER_PANELS.has(params.section ?? "");
+  const sections = (developer ? SETTINGS_NAV_SECTIONS : SETTINGS_NAV_SECTIONS.filter((s) => !s.items.every((i) => DEVELOPER_PANELS.has(i.panel ?? ""))))
+    // A browser has no local MCP servers to show: one list for both the select and the tabs.
+    .map((s) => isDesktopApp() ? s : { ...s, items: s.items.filter((i) => i.panel !== "local-mcp") });
   const isAdmin = useIsWorkspaceAdmin();
   const visible = (item: NavItem): item is NavItem & { panel: Panel } =>
     item.panel !== undefined && Object.hasOwn(PANELS, item.panel) && (isAdmin || !ADMIN_ONLY_PANELS.has(item.panel));

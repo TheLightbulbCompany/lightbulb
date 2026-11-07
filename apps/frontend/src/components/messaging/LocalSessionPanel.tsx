@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { useAuth } from "@clerk/nextjs";
 import { isDesktopApp } from "@/lib/desktopNotify";
 import { capture } from "@/lib/analytics";
@@ -337,9 +338,11 @@ export function LocalSessionPanel({ session: supplied, ownerName, own, client, r
   // A terminal session with no terminal (an older Mac app): what a teammate can do is message the owner.
   const notice = sessionScreenNotice(session, own, ownerName);
   const reason = session.terminalReason === "plain" || session.terminalReason === "no-daemon" ? session.terminalReason : null;
+  const settings = isDesktopApp()
+    ? <Link className="underline underline-offset-4" href="/settings?panel=desktop#share-every-session-live">Settings</Link> : "Settings";
   // No terminal here yet: what gets its screen shared (spec 2026-10-07 §4 f, g). One line over the conversation.
   const hint = reason && <p role="status" className="session-live-hint text-ui text-muted-foreground">{reason === "plain"
-    ? own ? <>Press ← in its terminal to share this one live, or turn on Share every session live in the Lightbulb Mac app to make every new session live.</> : `Ask ${ownerName} to press ← in their terminal.`
+    ? own ? <>Press ← in its terminal to share this one live, or turn on Share every session live in {settings} to make every new session live.</> : `Ask ${ownerName} to press ← in their terminal.`
     : own ? <>Start it again with <code>lightbulb codex</code> to share its screen.</> : <>Ask {ownerName} to start it again with <code>lightbulb codex</code>.</>}</p>;
 
   return <>

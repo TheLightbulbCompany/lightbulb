@@ -8,8 +8,8 @@ questions callers usually ask that the site does not answer come back as `toAdd`
 the owner fills the cards by hand.
 
 `assign_number(ws, user_id)`: the line row `PHONE#<e164> / LINE -> {ownerId, ownerUserId}` the phone worker
-resolves a call with (routers/voice_phone.py on feat/voice-phone-dev). Dev has exactly one number, the LiveKit one.
-Prod answers `not_available` until buying a number per business (LiveKit's phone-number API) is built.
+resolves a call with (routers/voice_phone.py on feat/voice-phone-dev). The number is `settings.VOICE_LINE_NUMBER`
+(per environment; empty = `not_available`).
 """
 
 from __future__ import annotations
@@ -34,7 +34,6 @@ from core.services import link_preview
 
 logger = logging.getLogger(__name__)
 
-DEV_NUMBER = "+14842079294"  # the dev LiveKit project's one number
 PAGE_CHARS = 12_000
 MAX_PAGES = 4
 _USEFUL = re.compile(r"service|menu|price|pricing|hour|about|team|staff|stylist|faq|contact|book", re.I)
@@ -166,11 +165,14 @@ async def draft(website: str, business: str, city: str) -> dict:
 
 async def release_number(ws: str) -> int:
     """Wipe: delete the workspace's `PHONE#` line row, so its number answers nobody and can be given again.
-    ponytail: dev's one number is the only one assign_number gives; an owner -> numbers row once prod buys them."""
+    ponytail: the one VOICE_LINE_NUMBER is the only one assign_number gives; an owner -> numbers row once we buy more."""
+    number = settings.VOICE_LINE_NUMBER
+    if not number:
+        return 0
     try:
         await run_in_thread(
             messaging_repo._table().delete_item,
-            Key={"pk": f"PHONE#{DEV_NUMBER}", "sk": "LINE"},
+            Key={"pk": f"PHONE#{number}", "sk": "LINE"},
             ConditionExpression="ownerId = :ws",
             ExpressionAttributeValues={":ws": ws},
         )
@@ -187,14 +189,12 @@ class NoNumber(Exception):
 
 async def assign_number(ws: str, user_id: str) -> str:
     """The workspace's assistant number, assigning one if it has none. Idempotent per workspace."""
-    if settings.ENVIRONMENT != "dev":
-        # ponytail: only dev has a number to give (its one LiveKit number). Prod buys one per business (LiveKit
-        # phone-number API, Twilio later) once that is built; until then onboarding skips the number step.
-        raise NoNumber("not_available")
-    number = DEV_NUMBER
+    number = settings.VOICE_LINE_NUMBER
+    if not number:
+        raise NoNumber("not_available")  # this environment has no line
     line = await messaging_repo._get(f"PHONE#{number}", "LINE")
     if line and line.get("ownerId") != ws:
-        raise NoNumber("taken")  # dev's one number already answers another workspace
+        raise NoNumber("taken")  # the line already answers another workspace
     item = {
         "pk": f"PHONE#{number}",
         "sk": "LINE",

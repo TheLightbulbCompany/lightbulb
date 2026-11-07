@@ -19,24 +19,6 @@ from unittest.mock import patch  # noqa: E402
 from core.config import Settings, apex_domain  # noqa: E402
 
 
-@patch.dict(os.environ, {"MARKETPLACE_LISTINGS_TABLE": "isol8-dev-marketplace-listings"})
-def test_marketplace_listings_table_env_var_loaded():
-    settings = Settings()
-    assert settings.MARKETPLACE_LISTINGS_TABLE == "isol8-dev-marketplace-listings"
-
-
-@patch.dict(os.environ, {"MARKETPLACE_ARTIFACTS_BUCKET": "isol8-dev-marketplace-artifacts"})
-def test_marketplace_artifacts_bucket_env_var_loaded():
-    settings = Settings()
-    assert settings.MARKETPLACE_ARTIFACTS_BUCKET == "isol8-dev-marketplace-artifacts"
-
-
-@patch.dict(os.environ, {"STRIPE_CONNECT_REFRESH_URL": "https://example.com/refresh"})
-def test_stripe_connect_refresh_url_loaded():
-    settings = Settings()
-    assert settings.STRIPE_CONNECT_REFRESH_URL == "https://example.com/refresh"
-
-
 @patch.dict(os.environ, {"GOG_KEYRING_PASSWORD": "s3cr3t-keyring-pw"})
 def test_gog_keyring_password_env_var_loaded():
     """The gog_cli materializer reads GOG_KEYRING_PASSWORD to encrypt the

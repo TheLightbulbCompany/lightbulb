@@ -10,7 +10,7 @@ codebase: the owner's own typed-confirmation route.
 import inspect
 import os
 import re
-from unittest.mock import ANY, AsyncMock, patch
+from unittest.mock import ANY, patch
 
 import pytest
 
@@ -81,39 +81,6 @@ def test_no_teardown_module_can_reach_a_provider():
         assert not _PROJECTS_REMOVE_TOKENS.search(source), f"{module.__name__} carries a tokenized 'projects remove'"
 
 
-def test_the_only_caller_of_remove_resource_is_the_owner_route():
-    """Behavioural half of the guard above, from the other end: grep the whole
-    backend for callers of the deprovision call and assert the set is exactly
-    the owner's typed-confirmation routes (R68): company_provisioning, and
-    apps_service.remove, reachable only from the org-admin route
-    DELETE /api/v1/apps/{app_id} and refusing unless confirm_name matches (see
-    test_apps_service.py, confirm_name_mismatch). No agent route, no teardown
-    path, no sweep."""
-    import ast
-    import pathlib
-
-    root = pathlib.Path(__file__).resolve().parents[3]
-    callers = sorted(
-        str(p.relative_to(root))
-        for d in ("core", "routers", "schemas", "scripts")
-        for p in (root / d).rglob("*.py")
-        if "api.remove_resource(" in p.read_text()
-    )
-    assert callers == ["core/services/apps_service.py", "routers/company_provisioning.py"], callers
-
-    tree = ast.parse((root / "core/services/apps_service.py").read_text())
-    holders = {
-        fn.name
-        for fn in ast.walk(tree)
-        if isinstance(fn, ast.AsyncFunctionDef | ast.FunctionDef)
-        for n in ast.walk(fn)
-        if isinstance(n, ast.Call) and ast.unparse(n.func) == "api.remove_resource"
-    }
-    assert holders == {"remove"}, holders
-    remove = next(f for f in ast.walk(tree) if isinstance(f, ast.AsyncFunctionDef) and f.name == "remove")
-    assert "confirm_name_mismatch" in ast.unparse(remove), "remove must refuse unless confirm_name matches"
-
-
 def test_wipe_still_deletes_our_own_copies():
     """The complement: our Secrets Manager copies and integration rows DO go
     (steps 9f/9g)."""
@@ -178,11 +145,6 @@ async def test_wipe_deletes_our_copies_but_never_reaches_the_provider(wipe_mocks
         # the exact-calls assertion below keeps its teeth. Unset (the Settings
         # default) it is skipped by design — see `company_stripe.deauthorize`.
         patch.object(settings, "STRIPE_CONNECT_CLIENT_ID", "ca_test"),
-        patch("core.services.stripe_provisioning.request", new_callable=AsyncMock) as provisioning_request_spy,
-        patch("core.services.stripe_provisioning.remove_resource", new_callable=AsyncMock) as remove_spy,
-        patch("core.services.stripe_provisioning.unlink_resource", new_callable=AsyncMock) as unlink_spy,
-        patch("core.services.provisioning_workflow.cancel", new_callable=AsyncMock) as workflow_cancel_spy,
-        patch("core.services.provisioning_landing.revoke_credentials", new_callable=AsyncMock) as revoke_spy,
         patch("subprocess.run") as subprocess_spy,
         patch("core.services.company_stripe.stripe") as stripe_spy,
     ):
@@ -208,17 +170,10 @@ async def test_wipe_deletes_our_copies_but_never_reaches_the_provider(wipe_mocks
     wipe_mocks.workflows_transition.assert_awaited_once_with("pwf_1", from_state="provisioning", to_state="cancelled")
     assert "cancelled 1 of 1" in details["provisioning"]
 
-    # The provider is never reached: no Provisioning API call of any kind (the
-    # three deprovision verbs AND the one transport they all share), no
-    # workflow-service cancel, no landing revoke, no shell-out, and the ONLY
+    # The provider is never reached: no shell-out, and the ONLY
     # Stripe SDK call made anywhere in the wipe is the P0a Connect
     # deauthorize -- exact-calls, not just "not this one call", so a stray
     # extra call (e.g. a Projects-shaped delete) fails this too.
-    provisioning_request_spy.assert_not_awaited()
-    remove_spy.assert_not_awaited()
-    unlink_spy.assert_not_awaited()
-    workflow_cancel_spy.assert_not_awaited()
-    revoke_spy.assert_not_awaited()
     subprocess_spy.assert_not_called()
     assert len(stripe_spy.mock_calls) == 1
     [deauth_call] = stripe_spy.mock_calls

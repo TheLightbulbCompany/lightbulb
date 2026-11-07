@@ -88,16 +88,6 @@ schema = (
     .exclude(
         path_regex="^/api/v1/auth/",
     )
-    # Marketplace endpoints have the same Stripe + DDB dependency profile
-    # as /billing/ — checkout, refund, payouts/onboard reach the real
-    # stripe SDK which 401s without a real STRIPE_SECRET_KEY, and listing
-    # write/read paths chain into S3 (artifacts bucket) and the agent
-    # gateway (artifact-from-agent). Marketplace unit tests under
-    # tests/unit/services/test_payout_service.py + test_marketplace_*
-    # cover these paths with proper mocks.
-    .exclude(
-        path_regex="^/api/v1/marketplace/",
-    )
     # Teams BFF endpoints chain Clerk auth -> DDB lookup -> a Better
     # Auth sign-in to upstream Paperclip. The contract harness has none
     # of those, so every fuzzed request reaches unmocked DDB / httpx

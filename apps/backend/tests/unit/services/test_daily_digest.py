@@ -210,10 +210,6 @@ async def test_only_the_admitted_task_runs_the_pass(monkeypatch, won):
 
     week4 = AsyncMock(return_value=0)
     monkeypatch.setattr(week4_active, "run_once", week4)
-    from core.services import apps_idle
-
-    idle = AsyncMock(return_value=0)
-    monkeypatch.setattr(apps_idle, "run_once", idle)
     stop = asyncio.Event()
     task = asyncio.create_task(daily_digest.run_digest_sweeper(stop))
     await asyncio.sleep(0.05)
@@ -222,8 +218,6 @@ async def test_only_the_admitted_task_runs_the_pass(monkeypatch, won):
     assert claim.await_args_list[0].args == ("daily_digest",)
     assert claim.await_args_list[0].kwargs == {"interval_s": daily_digest.PASS_SECONDS}
     assert claim.await_args_list[1].args == ("week4_active",)  # T23 rides the same loop, its own pass
-    assert claim.await_args_list[2].args == ("apps_idle",)
-    assert idle.await_count == (1 if won else 0)
     assert run.await_count == (1 if won else 0)
     assert week4.await_count == (1 if won else 0)
 

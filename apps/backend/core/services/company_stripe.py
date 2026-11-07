@@ -26,7 +26,6 @@ import stripe
 from stripe import StripeClient
 
 from core.config import settings
-from core.services.stripe_provisioning import PROVISIONING_VERSION
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo
 from core.repositories.paperclip_repo import PaperclipRepo
@@ -67,7 +66,7 @@ def accounts_v2_options(**extra) -> dict:
     `STRIPE_ACCOUNTS_V2_VERSION`, else the provisioning preview: the
     `developer` configuration exists only there, and the SDK default rejects it
     as "configuration.developer: Unknown field" (dev sandbox, 2026-10-27)."""
-    return {**extra, "stripe_version": settings.STRIPE_ACCOUNTS_V2_VERSION or PROVISIONING_VERSION}
+    return {**extra, "stripe_version": settings.STRIPE_ACCOUNTS_V2_VERSION or "2026-09-30.preview"}
 
 
 def _client() -> StripeClient:

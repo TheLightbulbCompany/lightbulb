@@ -178,7 +178,7 @@ async def test_accounts_v2_version_pins_the_preview_unless_configured(monkeypatc
         monkeypatch.setattr(mod.settings, "STRIPE_ACCOUNTS_V2_VERSION", "")
         await mod.create_company_account(owner_id="org_a", email="f@example.com", company_name="N")
         options = client.v2.core.accounts.create.call_args.kwargs["options"]
-        assert options["stripe_version"] == mod.PROVISIONING_VERSION
+        assert options["stripe_version"] == "2026-09-30.preview"
         assert options["idempotency_key"].startswith("company_account_create:")
 
         monkeypatch.setattr(mod.settings, "STRIPE_ACCOUNTS_V2_VERSION", "2026-08-26.dahlia")

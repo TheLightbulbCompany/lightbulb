@@ -26,7 +26,7 @@ from core.temporal.types import TaskInputRef
 
 REMIND_AFTER = timedelta(hours=24)
 _NO_ANSWERER_POST_S = 10  # each no-answerer post, well inside the 30 s Activity timeout
-EXECUTOR_KINDS = frozenset({"mail.send", "app.publish", "pr.merge"})  # effect_executors.EXECUTORS (test pins it)
+EXECUTOR_KINDS = frozenset({"mail.send", "pr.merge"})  # effect_executors.EXECUTORS (test pins it)
 _LANDING = {
     "start_to_close_timeout": timedelta(minutes=15),  # an app publish builds and promotes
     "retry_policy": RetryPolicy(maximum_attempts=3),  # a retry never re-sends: apply_effect reads the Effect first
@@ -281,7 +281,7 @@ def _fail(err: Exception) -> ApplicationError:
 async def open_questions(ws: str, task_id: str) -> list[QuestionRef]:
     """One Question per proposed Effect of the task that has none yet (idempotent on the qid). Opening adds the
     answerers to the task's audience (questions_repo). Raises `NoAnswerer` (non-retryable) when nobody can answer."""
-    from core.repositories import apps_repo, effects_repo, questions_repo, tasks_repo
+    from core.repositories import effects_repo, questions_repo, tasks_repo
     from core.services import questions
 
     task = await tasks_repo.get_task(ws, task_id)
@@ -302,11 +302,8 @@ async def open_questions(ws: str, task_id: str) -> list[QuestionRef]:
             continue  # answered or cancelled: never reopened
         kind, options = questions.kind_and_options(effect["kind"], effect.get("operands"))
         subkind = questions.subkind_for(effect["kind"])
-        app = None
-        if subkind == "publish" and (effect.get("operands") or {}).get("appId"):
-            app = await apps_repo.get(effect["operands"]["appId"], consistent_read=True)
         try:
-            ids, rule, base = await questions.answerers(ws, task, kind, subkind, app=app)
+            ids, rule, base = await questions.answerers(ws, task, kind, subkind)
         except questions.NoAnswerer as err:
             await _say_no_answerer(ws, task, questions.title_for(effect))
             raise _fail(err) from err  # before any row is written: no half-opened set

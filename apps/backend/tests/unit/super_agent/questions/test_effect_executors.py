@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from core.services import agent_mail_send, apps_service, paperclip_github_token
+from core.services import agent_mail_send, paperclip_github_token
 from core.services import effect_executors as ex
 
 OWNER = "org_1"
@@ -32,30 +32,6 @@ async def test_mail_send(monkeypatch, result, outcome):
         "Attached.",
         "task",
     )
-
-
-async def test_app_publish_uses_answerer_as_actor(monkeypatch):
-    publish = AsyncMock(return_value={"app_id": "app-1", "version": 3})
-    monkeypatch.setattr(apps_service, "member_publish", publish)
-    assert await ex.app_publish(OWNER, {"appId": "app-1"}, "user_sam") == "app:app-1:v3"
-    publish.assert_awaited_once_with(OWNER, "app-1", user_id="user_sam")
-
-
-async def test_app_publish_gate_refusal_is_refused(monkeypatch):
-    monkeypatch.setattr(
-        apps_service,
-        "member_publish",
-        AsyncMock(side_effect=apps_service.AppsRefused("not_ready", "no preview", "wait for the preview")),
-    )
-    with pytest.raises(ex.ExecutorRefused) as err:
-        await ex.app_publish(OWNER, {"appId": "app-1"}, "user_sam")
-    assert err.value.code == "not_ready"
-
-
-async def test_app_publish_crash_is_unknown(monkeypatch):
-    monkeypatch.setattr(apps_service, "member_publish", AsyncMock(side_effect=RuntimeError("vercel")))
-    with pytest.raises(ex.ExecutorUnknown):
-        await ex.app_publish(OWNER, {"appId": "app-1"}, "user_sam")
 
 
 PR = {"repo": "acme/web", "number": 7, "sha": "abc123"}
@@ -122,4 +98,4 @@ async def test_pr_merge_without_github(monkeypatch):
 
 
 def test_executor_kinds():
-    assert set(ex.EXECUTORS) == {"mail.send", "app.publish", "pr.merge"}
+    assert set(ex.EXECUTORS) == {"mail.send", "pr.merge"}

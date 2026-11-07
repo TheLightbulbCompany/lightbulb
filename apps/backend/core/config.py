@@ -379,15 +379,6 @@ class Settings(BaseSettings):
     # "prod" regardless of this flag, and CDK never sets it for prod.
     APPLE_IAP_ACCEPT_XCODE: bool = False
 
-    # Marketplace (set by CDK ServiceStack — empty default lets the backend
-    # boot in non-marketplace contexts like local unit tests).
-    MARKETPLACE_LISTINGS_TABLE: str = ""
-    MARKETPLACE_PURCHASES_TABLE: str = ""
-    MARKETPLACE_PAYOUT_ACCOUNTS_TABLE: str = ""
-    MARKETPLACE_TAKEDOWNS_TABLE: str = ""
-    MARKETPLACE_SELLERS_TABLE: str = ""
-    MARKETPLACE_ARTIFACTS_BUCKET: str = ""
-
     # EVERY per-owner file the platform stores: the Hermes profiles
     # (config.yaml/.env/SOUL.md — see core.services.hermes_profiles), the SQLite replicas the
     # runtime restores at session start, marketplace install payloads, and room attachments.
@@ -427,12 +418,6 @@ class Settings(BaseSettings):
     # configuration set — fine for envs without the outbound stack.
     AGENT_MAIL_CONFIGURATION_SET: str = ""
 
-    # Stripe Connect (seller payout onboarding) — environment-specific URLs
-    # set by CDK so the marketplace UI can return the user back to the right
-    # host after Stripe-hosted onboarding.
-    STRIPE_CONNECT_REFRESH_URL: str = ""
-    STRIPE_CONNECT_RETURN_URL: str = ""
-
     # Company Stripe account (the owner's own business account on our Connect
     # platform). Hosted onboarding bounces back to these; the Standard-OAuth
     # "connect existing" flow returns to the backend callback, which must be
@@ -449,28 +434,11 @@ class Settings(BaseSettings):
 
     # The Accounts v2 API version for the account/account-link calls. The guide
     # pins them with `Stripe-Version: {{ACCOUNTS_V2_VERSION}}` and says to
-    # confirm it during preview onboarding. Empty ⇒ the provisioning preview
-    # (`company_stripe.PROVISIONING_VERSION`).
+    # confirm it during preview onboarding. Empty ⇒ the provisioning preview (2026-09-30.preview).
     STRIPE_ACCOUNTS_V2_VERSION: str = ""
 
-    # Which Provider catalog partition this environment reads and writes:
-    # "prod" | "dev" | "testing" (spec.txt 4.2 / 4.4). Configuration, never a
-    # literal — dev runs "testing", prod runs "prod", and reading one partition
-    # while writing another provisions into a catalog the owner never saw.
-    #
-    # NOTE, verbatim from the guide: "Selecting a DEV or TESTING catalog
-    # doesn't mean 'no real charges.'"
-    STRIPE_PROJECTS_CATALOG: str = "prod"
-
-    # Apps: each app is served at {name}.{APPS_DOMAIN}; records live in this Route53 zone
-    # (the root thelightbulb.company zone). Empty zone id = DNS calls fail loudly.
-    APPS_DOMAIN: str = "apps.thelightbulb.company"
-    APPS_HOSTED_ZONE_ID: str = ""
     # Hosted assistants are offered network workers' assign tools (off: hidden, as in the engine).
     HOSTED_NETWORK_WORKERS: bool = False
-    # Resume a builder agent's dead turn without a person (core/services/apps_run.py). Off: today's note.
-    # Stays off until it has had a dev run against a real room, dispatcher and Paperclip.
-    APPS_BUILD_WAKE: bool = False
 
     # Stripe Link Agent Wallet (agent purchases). Unconfigured (any of the three empty):
     # every route 404s and the UI hides. CLIENT_ID/SECRET come from Link's OAuth client
@@ -478,22 +446,6 @@ class Settings(BaseSettings):
     LINK_CLIENT_ID: str = ""
     LINK_CLIENT_SECRET: str = ""
     LINK_PUBLISHABLE_KEY: str = ""
-
-    # Marketplace webhook signing secrets. TWO Stripe endpoint registrations
-    # deliver to POST /webhooks/stripe-marketplace, each with its own secret:
-    # a platform-scoped one for checkout/refund events (they originate on the
-    # platform balance, so Stripe only delivers them to "events on your
-    # account" endpoints) and a Connect-scoped one for connected-account
-    # account.updated. Both are separate from STRIPE_WEBHOOK_SECRET (the
-    # billing webhook). The route tries MARKETPLACE first, then CONNECT.
-    STRIPE_MARKETPLACE_WEBHOOK_SECRET: str = ""
-    STRIPE_CONNECT_WEBHOOK_SECRET: str = ""
-
-    # Platform take rate on paid marketplace listings, in whole percent.
-    # Applied at fulfillment: the seller's held-balance credit (and later
-    # Transfer) is price * (100 - fee) / 100; the buyer always pays the
-    # listed price. 15 = launch decision 2026-08-13.
-    MARKETPLACE_PLATFORM_FEE_PERCENT: int = 15
 
     # --- Native multiplayer messaging (set by CDK ServiceStack; spec
     # docs/superpowers/specs/2026-09-09-native-multiplayer-messaging-architecture.md).

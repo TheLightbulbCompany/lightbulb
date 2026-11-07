@@ -41,7 +41,9 @@ from zoneinfo import ZoneInfo
 HERE = Path(__file__).parent
 OUT = HERE / "out"
 AGENT = os.environ.get("PHONE_QA_AGENT", "lightbulb-phone-qa")
-API = "https://api-dev.thelightbulb.company"
+# Dev and prod share one LiveKit project: a QA worker must never register under the prod agent name.
+assert AGENT != "lightbulb-huddle" and "qa" in AGENT, f"PHONE_QA_AGENT must be a qa agent name, got {AGENT!r}"
+API ="https://api-dev.thelightbulb.company"
 TABLE = "lightbulb-dev-messaging"
 AWS = ["--profile", "isol8-admin", "--region", "us-east-1"]
 MODEL = os.environ.get("PHONE_MODEL", "gemini-3.8-live")
@@ -208,6 +210,7 @@ def calendar(owner: str) -> list[dict]:
 def seed() -> None:
     t = table()
     for number, owner in OWNERS.items():
+        assert owner.startswith("qa_phone_"), owner  # never sweep a real workspace's rows
         for row in calendar(owner):
             if row["sk"].startswith(("VOICEBOOK#", "VOICECALLER#")):
                 t.delete_item(Key={"pk": row["pk"], "sk": row["sk"]})

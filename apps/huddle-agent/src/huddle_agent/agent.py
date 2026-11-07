@@ -34,7 +34,7 @@ from openai.types.realtime import (
     ResponseCreateEvent,
 )
 
-from huddle_agent import record
+from huddle_agent import meet, record
 from huddle_agent.backend import Backend
 from huddle_agent.huddle import Huddle, emit_metric, units
 
@@ -648,6 +648,10 @@ async def _on_request(req: JobRequest) -> None:
 @server.rtc_session(agent_name=os.environ.get("HUDDLE_RIG_AGENT_NAME", "lightbulb-huddle"), on_request=_on_request)
 async def entrypoint(ctx: JobContext) -> None:
     meta = json.loads(ctx.job.metadata)
+    # A Google Meet: one listening Gemini Live session (meet.py). MEET_ENGINE=huddle is the old mouths, until
+    # the new one has a live meeting behind it.
+    if meta.get("source") == "meet" and os.environ.get("MEET_ENGINE", "gemini") == "gemini":
+        return await meet.run(ctx, meta)
     started = time.monotonic()
     usage = {"stt": 0.0}
     emitted = {"stt": 0.0, "agent": 0.0, "gptlive": 0.0}

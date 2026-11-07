@@ -230,7 +230,7 @@ def _at(stamp: dict | None) -> float:
         return time.time()
 
 
-def _rostered(roster: dict | None, kind: str, pid: str, name: str, at: int) -> dict:
+def _rostered(roster: dict | None, kind: str, pid: str, name: str, at: int, host: bool = False) -> dict:
     """The Meet's people after one event: a join adds, a leave removes. The bot is never one.
     Each entry keeps its event time (ms): realtime events run as overlapping background tasks, so
     an older join that commits after a newer leave must not bring the person back."""
@@ -241,7 +241,8 @@ def _rostered(roster: dict | None, kind: str, pid: str, name: str, at: int) -> d
     if kind == "leave":
         roster[pid] = {**seen, "at": at, "in": False}
     elif name and not name.endswith(meeting_bots._BOT_SUFFIX):
-        roster[pid] = {"name": name[:_ROSTER_NAME_CHARS], "at": at, "in": True}
+        # host: Recall's is_host, what the meeting agent checks a member's own speech by (voice_meet)
+        roster[pid] = {"name": name[:_ROSTER_NAME_CHARS], "at": at, "in": True, **({"host": True} if host else {})}
     # Bounded: it rides on the room's META item. The oldest leavers go first (enough recent ones
     # stay to refuse a reordered event), then the oldest people present.
     by_age = sorted(roster, key=lambda k: (bool(roster[k].get("in")), roster[k].get("at", 0)))
@@ -269,12 +270,13 @@ async def _speaker(bot_id: str, room_id: str, event: dict) -> None:
         if meeting.get("recallBotId") != bot_id:
             return  # a stale or rebooked bot pushes nothing into the room
         kind, pid, name, at = event["kind"], event["participantId"], event["name"], int(event["at"] * 1000)
-        roster = _rostered(meeting.get("roster"), kind, pid, name, at)
+        host = bool(event.get("host"))
+        roster = _rostered(meeting.get("roster"), kind, pid, name, at, host)
         if kind in ("join", "leave"):
             try:
                 written = await meeting_invites._patch_meeting(
                     room_id,
-                    lambda m: {"roster": _rostered(m.get("roster"), kind, pid, name, at)},
+                    lambda m: {"roster": _rostered(m.get("roster"), kind, pid, name, at, host)},
                     # re-checked on every attempt: an old bot's late join never lands on the next occurrence
                     when=lambda m: m.get("recallBotId") == bot_id,
                 )
@@ -303,6 +305,7 @@ async def recall_realtime(request: Request, tasks: BackgroundTasks):
             "participantId": str(who.get("id") or ""),
             "name": str(who.get("name") or ""),
             "speaking": _SPEAKING[kind],  # what a worker before ``kind`` reads
+            **({"host": True} if who.get("is_host") else {}),  # Recall's is_host (voice_meet: who may act)
             "at": _at(data.get("timestamp")),
         }
         logger.info("recall realtime room=%s kind=%s participant=%s", room_id, kind, event["participantId"])

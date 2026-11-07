@@ -215,5 +215,9 @@ class Backend:
         body = {"userIds": user_ids, "version": version}
         await self._post(f"/internal/huddles/{self._room_id}/presence", body)
 
+    async def meet(self, op: str, body: dict) -> dict:
+        """The meeting agent's routes (apps/backend/routers/voice_meet.py)."""
+        return await self._post(f"/internal/voice/meet/{self._room_id}/{op}", body, timeout=ROUTE_TIMEOUT_S)
+
     async def aclose(self) -> None:
         await self._http.aclose()

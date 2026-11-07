@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 
 import httpx
@@ -48,8 +49,9 @@ server = AgentServer(
     load_threshold=float(os.environ.get("PHONE_LOAD_THRESHOLD", "0.7")),
 )
 
-INSTRUCTIONS = """You are {assistant}, the AI receptionist on the phone for {business}. You already greeted the
-caller. Speak briefly and warmly, one or two sentences at a time, like a good front desk. Today is {today}.
+INSTRUCTIONS = """You are {assistant}, the AI receptionist on the phone for {business}. Your first words on this call
+are exactly, word for word: "{greeting}" Say the greeting once, at the start, and don't repeat it. If you are told
+the disclosure was missed, say the one disclosure sentence exactly as given, then continue with the caller. Speak briefly and warmly, one or two sentences at a time, like a good front desk. Today is {today}.
 {caller}What you may tell callers about the business: {facts}
 {can}
 
@@ -66,6 +68,99 @@ def e164(number: str) -> str:
     """LiveKit Phone Numbers send the dialed number as digits ("14842079294"); line rows key on E.164."""
     n = number.strip()
     return "+" + n if n.isdigit() else n
+
+
+def clean_transcript(items: list[dict]) -> list[dict]:
+    """The call's transcript for the record: final lines only (an interrupted, cut-off reply is dropped), in spoken
+    order (`t`, seconds since the call started), consecutive repeats once. Only what was transcribed; nothing added."""
+    out: list[dict] = []
+    for i in sorted(items, key=lambda i: i["t"]):
+        who = {"user": "caller", "assistant": "assistant"}.get(i["role"])
+        if not who or i.get("interrupted") or not i["text"].strip():
+            continue
+        line = {"who": who, "text": i["text"].strip(), "t": round(max(i["t"], 0.0), 1)}
+        if out and (out[-1]["who"], out[-1]["text"]) == (who, line["text"]):
+            continue
+        out.append(line)
+    return out
+
+
+def _norm(text: str) -> str:
+    return " ".join(re.sub(r"[^\w\s]", " ", text.lower()).split())
+
+
+def discloses(text: str, greeting: str, assistant: str) -> bool:
+    """The greeting as said: the greeting itself (case, punctuation, spacing aside), or a line that still names the
+    assistant and says "AI assistant" and "recorded"."""
+    t = _norm(text)
+    return t == _norm(greeting) or all(
+        _norm(w) in t for w in (assistant, "AI assistant", "recorded")
+    )
+
+
+def disclosure_of(items: list[dict], greeting: str, assistant: str) -> str:
+    """`ok` / `missing` from the first assistant line spoken before the caller's first line (a cut-off greeting
+    counts: it wasn't all said); `unknown` when none was transcribed before the caller spoke."""
+    for i in sorted(items, key=lambda i: i["t"]):
+        if i["role"] == "user":
+            return "unknown"
+        if i["role"] == "assistant":
+            ok = not i.get("interrupted") and discloses(i["text"], greeting, assistant)
+            return "ok" if ok else "missing"
+    return "unknown"
+
+
+class DisclosureGuard:
+    """Judges the greeting once it has finished: after the agent's first speaking -> listening change, on final items
+    (the agent adds an assistant item only after its audio played, `interrupted` set when cut off). A failed first
+    line makes `say` speak the disclosure sentence once. PHONE_TEST_FAIL_DISCLOSURE=1 fails it (scripted runs)."""
+
+    def __init__(self, greeting: str, assistant: str, say) -> None:
+        self.greeting, self.assistant, self._say = greeting, assistant, say
+        self.line = f"I'm {assistant}, an AI assistant, and this call is recorded."
+        self.corrected, self._done, self._greeted, self._spoke = (
+            False,
+            False,
+            False,
+            False,
+        )
+
+    def state(self, old: str, new: str) -> None:
+        if new == "speaking":
+            self._spoke = True
+        elif self._spoke and old == "speaking":
+            self._greeted = True  # the greeting finished (or was cut off) playing
+
+    def seen(self, items: list[dict]) -> None:
+        if self._done or not self._greeted:
+            return
+        if os.environ.get("PHONE_TEST_FAIL_DISCLOSURE") == "1":
+            verdict = "missing"
+        else:
+            verdict = disclosure_of(items, self.greeting, self.assistant)
+            if verdict == "unknown" and not any(i["role"] == "user" for i in items):
+                return  # the greeting's line may still be on its way; judge when it (or the caller) lands
+        self._done = True
+        if verdict == "missing":
+            self.corrected = True
+            self._say(self.line)
+
+
+def say_disclosure(session, line: str) -> None:
+    """One-shot reply with that exact line, in the wording that made Gemini speak verbatim (the greeting tests).
+    Gemini Live can't take a turn back out of its history, so the instruction says it is one-time."""
+    logger.info("phone: first line lacked the disclosure; saying it once")
+    session.generate_reply(
+        instructions=f'The disclosure was missed. Say exactly this, word for word, and nothing else: "{line}" '
+        "This is a one-time line: do not say it again later in the call."
+    )
+
+
+async def greet(session) -> None:
+    """The first reply, from the system instructions alone. generate_reply(instructions=...) on gemini-3.8 puts the
+    text in the Live history as a user turn, which the model answered again on the caller's first turn (live call
+    7 Nov: it re-greeted instead of answering)."""
+    session.generate_reply()
 
 
 class Backend:
@@ -116,6 +211,7 @@ class Receptionist(Agent):
         ]
         super().__init__(instructions=INSTRUCTIONS.format(**{
             "assistant": info["assistantName"], "business": info["businessName"], "today": info["today"],
+            "greeting": info["greeting"],
             "facts": info.get("facts") or "nothing; take a message for any question about the business.",
             "caller": f"The caller is {info['callerName']}, a returning client.\n" if info.get("callerName") else "",
             "can": f"On this line you can't {' or '.join(off)}." if off else "",
@@ -245,13 +341,35 @@ async def entrypoint(ctx: JobContext) -> None:
             model=MODEL, voice=VOICE, api_key=key, api_version="v1beta"
         ),
     )
-    transcript: list[dict] = []
+    items: list[dict] = []
+    t0 = time.time()
+    guard = DisclosureGuard(
+        info["greeting"],
+        info["assistantName"],
+        lambda line: say_disclosure(session, line),
+    )
 
     @session.on("conversation_item_added")
     def _item(ev) -> None:
         text = getattr(ev.item, "text_content", None)
         if text:
-            transcript.append({"role": ev.item.role, "text": text})
+            at = (ev.item.metrics or {}).get(
+                "started_speaking_at"
+            ) or ev.item.created_at
+            items.append(
+                {
+                    "role": ev.item.role,
+                    "text": text,
+                    "t": at - t0,
+                    "interrupted": ev.item.interrupted,
+                }
+            )
+            guard.seen(items)
+
+    @session.on("agent_state_changed")
+    def _state(ev) -> None:
+        guard.state(ev.old_state, ev.new_state)
+        guard.seen(items)
 
     async def hang_up() -> None:
         await ctx.delete_room()  # disconnects the SIP caller too
@@ -266,7 +384,11 @@ async def entrypoint(ctx: JobContext) -> None:
             {
                 "durationSec": int(time.monotonic() - started),
                 "summary": "; ".join(agent.did),
-                "transcript": transcript,
+                "transcript": clean_transcript(items),
+                "disclosure": disclosure_of(
+                    items, info["greeting"], info["assistantName"]
+                ),
+                "disclosureRepeated": guard.corrected,
             },
         )
         logger.info(
@@ -284,11 +406,7 @@ async def entrypoint(ctx: JobContext) -> None:
     )
     # The Live model speaks the compliance greeting. Dev test 7 Nov: a TTS say() and caller audio switched off while it
     # played both stalled the Gemini Live session (the reply never finished), so the caller can talk over it.
-    # The plugin drops this reply's transcription ("no active generation"), so the record gets the line it was told.
-    transcript.append({"role": "assistant", "text": info["greeting"]})
-    session.generate_reply(
-        instructions=f'Greet the caller by saying exactly this, word for word, and nothing else: "{info["greeting"]}"'
-    )
+    await greet(session)
 
 
 if __name__ == "__main__":

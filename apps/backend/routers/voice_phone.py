@@ -16,7 +16,7 @@ Rows in the messaging table:
 import hashlib
 import uuid
 from datetime import datetime, timedelta
-from typing import Annotated
+from typing import Annotated, Literal
 from zoneinfo import ZoneInfo
 
 from boto3.dynamodb.conditions import Key
@@ -227,6 +227,9 @@ class EndIn(BaseModel):
     durationSec: int = Field(ge=0, le=86400)
     summary: str = Field(default="", max_length=4000)
     transcript: list[dict] = Field(default=[], max_length=2000)
+    #: Whether the transcribed first line carried the AI and recording disclosure (worker `disclosure_of`).
+    disclosure: Literal["ok", "missing", "unknown"] | None = None
+    disclosureRepeated: bool = False  # the worker said the disclosure sentence after a failed first line
 
 
 def outcome_of(call: dict) -> str:
@@ -244,15 +247,20 @@ def outcome_of(call: dict) -> str:
 @router.post("/internal/voice/calls/{call_id}/end")
 async def end_call(call_id: str, body: EndIn) -> dict:
     who = {"user": "caller", "caller": "caller", "assistant": "assistant"}
-    lines = [
-        {"who": who[str(t.get("role") or t.get("who"))], "text": str(t.get("text", ""))[:2000]}
-        for t in body.transcript
-        if str(t.get("role") or t.get("who")) in who
-    ]
+    lines = []
+    for t in body.transcript:
+        if str(t.get("role") or t.get("who")) not in who:
+            continue
+        line = {"who": who[str(t.get("role") or t.get("who"))], "text": str(t.get("text", ""))[:2000]}
+        if isinstance(t.get("t"), (int, float)) and not isinstance(t["t"], bool):
+            line["t"] = round(min(max(float(t["t"]), 0.0), 86400.0), 1)  # seconds since the call started
+        lines.append(line)
 
     def change(call: dict) -> dict:
         return {"status": "ended", "endedAt": utc_now_iso(), "durationSec": body.durationSec,
-                "outcome": outcome_of(call), "summary": body.summary, "transcript": lines}  # fmt: skip
+                "outcome": outcome_of(call), "summary": body.summary, "transcript": lines,
+                **({"disclosure": body.disclosure, "disclosureRepeated": body.disclosureRepeated}
+                   if body.disclosure else {})}  # fmt: skip
 
     meta, _ = await _call(call_id)
     out = await _patch_call(call_id, change)

@@ -444,6 +444,8 @@ async def run(ctx: JobContext, meta: dict) -> None:
         return names.get(identity, "Someone") if identity else "Several people"
 
     def on_heard(ev) -> None:
+        if not ev.transcript.strip():
+            return  # OpenAI transcribes a committed stretch of noise as "": not a turn (it would hide the ask before it)
         t = agent.heard(ev.item_id, ev.transcript, ev.is_final, time.monotonic())
         logger.info("meet: turn %d kind=%s final=%s", t["seq"], t["kind"] or "-", ev.is_final)
         if t["kind"] == "stop":

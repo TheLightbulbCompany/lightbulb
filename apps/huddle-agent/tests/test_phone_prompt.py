@@ -32,87 +32,20 @@ INFO = {
 }
 
 
-def test_the_greeting_is_tts_of_the_exact_text_not_a_model_turn(monkeypatch):
-    """8 Nov sims: an empty generate_reply() let gemini-3.8 invent its first turn (3/15). The greeting is TTS audio of
-    the exact text via say(); one prompt covers both paths. No first audio in time: the Live model greets via an empty
-    generate_reply() (instructions there become a user turn). A stall mid-stream interrupts the say()."""
-    import asyncio
-
-    agent = phone.Receptionist(phone.Backend(), INFO, None)
-    text = " ".join(agent.instructions.split())
-    assert (
-        f'Your greeting is exactly, word for word: "{GREETING}" If it has already been played to the caller, don\'t say it again; otherwise your first words are exactly that greeting.'
-        in text
-    )
-    assert (
-        "If you are told the disclosure was missed, say the one disclosure sentence exactly as given"
-        in text
-    )
-
-    class Handle:
-        interrupted = False
-
-        def interrupt(self, force=False):
-            self.interrupted = force
+def test_the_opening_is_the_models_own_words_with_the_three_disclosures():
+    """Founder, 8 Nov: no script. The prompt names what the opening must say; the owner's greeting is a style."""
+    text = " ".join(phone.Receptionist(phone.Backend(), INFO, None).instructions.split())
+    assert "You speak first. Your opening line, in your own words, must say all three: your name, Lightbulb; that you are an AI assistant; and that this call is recorded." in text
+    assert f'a guide, not a script: "{GREETING}"' in text
+    assert "If you are told the disclosure was missed, say the one disclosure sentence exactly as given" in text
+    replies = []
 
     class Session:
-        def __init__(self):
-            self.audio, self.replies, self.handle = None, [], Handle()
+        def generate_reply(self, **kw):
+            replies.append(kw)
 
-        def say(self, text, audio):
-            self.text, self.audio = text, audio
-            return self.handle
-
-        def generate_reply(self, **kwargs):
-            self.replies.append(kwargs)
-
-    async def run(frames):
-        session, stream = Session(), frames()
-        await phone.greet(
-            session, GREETING, stream, asyncio.ensure_future(anext(stream))
-        )
-        played = (
-            [f async for f in session.audio] if session.audio else []
-        )  # what say() would play out
-        return session, played
-
-    async def ok():
-        yield "f1"
-        yield "f2"
-
-    async def broken():
-        raise RuntimeError("tts down")
-        yield
-
-    async def slow():
-        await asyncio.sleep(60)
-        yield "f1"
-
-    async def stalls():
-        yield "f1"
-        await asyncio.sleep(60)
-        yield "f2"
-
-    monkeypatch.setattr(phone, "FIRST_AUDIO_S", 0.1)
-    monkeypatch.setattr(phone, "STALL_S", 0.1)
-    s, played = asyncio.run(run(ok))
-    assert (
-        s.text == GREETING
-        and played == ["f1", "f2"]
-        and not s.replies
-        and not s.handle.interrupted
-    )
-    for frames in (broken, slow):
-        s, played = asyncio.run(run(frames))
-        assert s.audio is None and s.replies == [{}], frames.__name__
-    s, played = asyncio.run(run(stalls))
-    assert (
-        played == ["f1"] and s.handle.interrupted and not s.replies
-    )  # cut off: the guard repeats the disclosure
-    items = [{"role": "assistant", "text": GREETING, "t": 1.0, "interrupted": True}]
-    assert (
-        phone.disclosure_of(items, GREETING, "Lightbulb") == "missing"
-    )  # what the record then says
+    phone.greet(Session())
+    assert replies == [{}]  # no per-response instructions: Gemini would keep them as a turn
 
 
 def test_the_transcript_keeps_final_lines_in_spoken_order_once():
@@ -153,12 +86,12 @@ def test_the_transcript_keeps_final_lines_in_spoken_order_once():
             "t": 33.0,
         },
     ]
-    assert phone.disclosure_of(items, GREETING, "Lightbulb") == "ok"
+    assert phone.disclosure_of(items, "Lightbulb") == "ok"
 
 
 def _guard(greeted=True):
     said = []
-    guard = phone.DisclosureGuard(GREETING, "Lightbulb", said.append)
+    guard = phone.DisclosureGuard("Lightbulb", said.append)
     if greeted:  # the greeting played: listening -> speaking -> listening
         guard.state("listening", "speaking")
         guard.state("speaking", "listening")
@@ -186,7 +119,7 @@ def test_a_paraphrased_greeting_is_missing_and_the_disclosure_is_said_once():
             "t": 1.0,
         }
     ]
-    assert phone.disclosure_of(items, GREETING, "Lightbulb") == "missing"
+    assert phone.disclosure_of(items, "Lightbulb") == "missing"
     guard, said = _guard()
     guard.seen(items)
     items.append({"role": "user", "text": "Hi", "t": 6.0})
@@ -198,15 +131,15 @@ def test_a_paraphrased_greeting_is_missing_and_the_disclosure_is_said_once():
     cut_off = [
         {"role": "assistant", "text": GREETING[:40], "t": 1.0, "interrupted": True}
     ]
-    assert phone.disclosure_of(cut_off, GREETING, "Lightbulb") == "missing"
+    assert phone.disclosure_of(cut_off, "Lightbulb") == "missing"
 
 
-def test_the_exact_greeting_or_a_disclosing_variant_is_ok_and_nothing_extra_is_said():
+def test_a_greeting_or_any_disclosing_variant_is_ok_and_nothing_extra_is_said():
     loud = GREETING.upper().replace(".", "!").replace("  ", " ")
     variant = "Hi, you've reached Lightbulb, the AI assistant here; heads up, this call is recorded."
     for text in (GREETING, loud, variant):
         items = [{"role": "assistant", "text": text, "t": 1.0}]
-        assert phone.disclosure_of(items, GREETING, "Lightbulb") == "ok", text
+        assert phone.disclosure_of(items, "Lightbulb") == "ok", text
         guard, said = _guard()
         guard.seen(items)
         assert said == [] and not guard.corrected
@@ -217,8 +150,8 @@ def test_nothing_transcribed_before_the_caller_is_unknown_and_nothing_is_inserte
         {"role": "user", "text": "Hi", "t": 6.0},
         {"role": "assistant", "text": "Hello!", "t": 8.0},
     ]
-    assert phone.disclosure_of(items, GREETING, "Lightbulb") == "unknown"
-    assert phone.disclosure_of([], GREETING, "Lightbulb") == "unknown"
+    assert phone.disclosure_of(items, "Lightbulb") == "unknown"
+    assert phone.disclosure_of([], "Lightbulb") == "unknown"
     assert phone.clean_transcript(items) == [
         {"who": "caller", "text": "Hi", "t": 6.0},
         {"who": "assistant", "text": "Hello!", "t": 8.0},
@@ -263,15 +196,9 @@ def test_the_scripted_run_flag_fails_the_greeting_once_it_has_played(monkeypatch
 
 def test_the_disclosure_matches_whole_words_and_not_a_denial():
     """#4996 review: "Ava" must not match inside "available", and "not recorded" is no disclosure."""
-    assert phone.discloses(
-        "This is Ava, an AI assistant. This call is recorded.", "x", "Ava"
-    )
-    assert not phone.discloses(
-        "Nobody is available; I'm an AI assistant and this is recorded.", "x", "Ava"
-    )
-    assert not phone.discloses(
-        "This is Ava, an AI assistant. This call is not recorded.", "x", "Ava"
-    )
+    assert phone.discloses("This is Ava, an AI assistant. This call is recorded.", "Ava")
+    assert not phone.discloses("Nobody is available; I'm an AI assistant and this is recorded.", "Ava")
+    assert not phone.discloses("This is Ava, an AI assistant. This call is not recorded.", "Ava")
     for denial in (
         "this call isn't being recorded.",
         "This call is not going to be recorded.",
@@ -282,26 +209,9 @@ def test_the_disclosure_matches_whole_words_and_not_a_denial():
         "No part of this call is recorded.",
         "This call won’t be recorded.",
     ):
-        assert not phone.discloses(
-            f"This is Ava, an AI assistant. {denial}", "x", "Ava"
-        ), denial
+        assert not phone.discloses(f"This is Ava, an AI assistant. {denial}", "Ava"), denial
     for ok in (
         "Not a problem, this call is recorded.",
         "Don't worry, this call is recorded.",
     ):
-        assert phone.discloses(f"This is Ava, an AI assistant. {ok}", "x", "Ava"), ok
-
-
-async def test_greeting_audio_frames_whole_samples(monkeypatch):
-    """TTS chunks split anywhere; each frame is whole 16-bit samples at 24 kHz, no byte lost."""
-    from huddle_agent import phone
-
-    async def pcm(_text):
-        for chunk in (b"\x01\x02\x03", b"\x04", b"\x05\x06\x07"):
-            yield chunk
-
-    monkeypatch.setattr(phone, "_openai_pcm", pcm)
-    monkeypatch.setattr(phone, "OPENAI", True)
-    frames = [f async for f in phone.greeting_audio("hi")]
-    assert b"".join(bytes(f.data) for f in frames) == b"\x01\x02\x03\x04\x05\x06"
-    assert all(f.sample_rate == 24000 and f.num_channels == 1 for f in frames)
+        assert phone.discloses(f"This is Ava, an AI assistant. {ok}", "Ava"), ok

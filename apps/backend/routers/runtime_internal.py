@@ -380,6 +380,8 @@ async def effect_check(owner_id: str, body: EffectBody, request: Request) -> dic
         return {"decision": "denied", "questionId": None}
     if await tasks_repo.from_contact(owner_id, task):
         allowed_by = None  # a phone caller's request: no rule or mode spends, mails or changes things for them
+    elif task.get("confirmAll"):
+        allowed_by = None  # started from a meeting: whoever spoke, the inviter confirms every spend, send or publish
     else:
         allowed_by = f"rule:{rule[1]}" if rule else await _mode_allows(owner_id, body.kind, body.operands)
     if allowed_by:

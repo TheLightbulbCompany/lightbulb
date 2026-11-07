@@ -1,0 +1,6 @@
+{
+  "name": "lightbulb-phone-prod",
+  "trunk_ids": ["ST_SET_ME"],
+  "rule": { "dispatchRuleIndividual": { "roomPrefix": "phone-prod-" } },
+  "room_config": { "agents": [{ "agentName": "lightbulb-huddle" }] }
+}

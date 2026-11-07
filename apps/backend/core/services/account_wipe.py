@@ -1059,8 +1059,8 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
             if meta is not None and meta.get("ownerId") != owner_id:
                 raise RuntimeError("messaging owner catalog referenced a room owned elsewhere")
             deleted += await messaging_repo.delete_room_partition(room_id)
+        deleted += bool(await voice_onboarding.release_number(owner_id))  # the PHONE# line row, before the page goes
         deleted += await messaging_repo.delete_owner_partition(owner_id)
-        deleted += await voice_onboarding.release_number(owner_id)  # the PHONE# line row
         return f"deleted {len(room_ids)} room partition(s) and {deleted} messaging row(s)"
 
     await _step(

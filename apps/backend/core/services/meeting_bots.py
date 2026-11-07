@@ -118,11 +118,18 @@ async def create(*, room_id: str, meeting: dict, company: str) -> str:
         "recording_config": _recording_config(room_id, meeting),
         "output_media": _output_media(room_id, meeting),
         "variant": {"google_meet": "web_4_core"},
-        "automatic_leave": {"waiting_room_timeout": 180, "noone_joined_timeout": 1200},
+        # everyone_left: Recall documents no maximum (min 1, default 2s); a day outlasts any meeting, so only Recall's end ends it.
+        "automatic_leave": {
+            "waiting_room_timeout": 180,
+            "noone_joined_timeout": 1200,
+            "everyone_left_timeout": {"timeout": 86400},
+        },
         "chat": {"on_bot_join": {"send_to": "everyone", "message": CONSENT_LINE.format(company=company), "pin": True}},
         # env: Recall's status webhook is account-wide; the other environment ignores this bot (routers/meetings._bot).
         "metadata": {"roomId": room_id, "nonce": meeting["ticketNonce"], "env": settings.ENVIRONMENT},
     }
+    if settings.RECALL_GOOGLE_LOGIN_GROUP_ID:  # signed in, so Google does not park the bot in the lobby
+        body["google_meet"] = {"google_login_group_id": settings.RECALL_GOOGLE_LOGIN_GROUP_ID}
     if join_at > time.time():
         body["join_at"] = _iso(join_at)  # omitted when already past: Recall joins now
     bot = await _call("POST", "/api/v1/bot/", body, idempotency_key=meeting["ticketNonce"])

@@ -220,8 +220,9 @@ async def voice_start(owner_id: str, body: VoiceStartIn, request: Request) -> di
     return await start_voice_work(owner_id, body)
 
 
-async def start_voice_work(owner_id: str, body: VoiceStartIn) -> dict:
-    """The task behind voice-start, for callers already authorized another way (the phone worker)."""
+async def start_voice_work(owner_id: str, body: VoiceStartIn, origin: str | None = None) -> dict:
+    """The task behind voice-start, for callers already authorized another way (the phone worker). `origin`
+    (`"phone_contact"`) lands on the trigger's ref; effect_check asks the owner for every outside action of such a task."""
     if not await super_agent_flags.flags_for(owner_id):
         raise _err(404, "not_found")
     run = await messaging_repo.get_voice_run(owner_id, body.run_id)
@@ -261,6 +262,7 @@ async def start_voice_work(owner_id: str, body: VoiceStartIn) -> dict:
             "agentId": run.get("agentId"),
             "taskId": task_id,
             "start": start.model_dump(by_alias=True),
+            **({"origin": origin} if origin else {}),
         },
     )
     await admission.enqueue_trigger(owner_id, trigger, room_id=body.room_id)

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { act, fireEvent, render, screen, within, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
 import { mergeSessionRows, type LocalSession } from "@lightbulb/shared";
 import { RoomDirectory, type RoomDirectoryProps } from "../RoomDirectory";
@@ -28,66 +28,6 @@ const openManageSections = async () => {
   await userEvent.click(await screen.findByRole("menuitem", { name: "Manage sections" }));
 };
 const base: DirectoryRoom = { roomId: "channel", kind: "channel", name: "Launch", roomRevision: 1, lastMessageSeq: 0, lastMessageAt: null, unreadCount: 0, updatedAt: "2026-09-10T00:00:00Z", topic: null, starred: false, muted: false, sectionId: null, members: [], lastReadSeq: 0, participants: [] };
-
-it("creates through a centered portal with member settings and closes on success", async () => {
-  const onCreate = vi.fn().mockResolvedValue(true);
-  const { container } = render(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[]} participants={[alice, atlas]} onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} onCreate={onCreate} />);
-  fireEvent.click(screen.getByRole("button", { name: "New chat or channel" }));
-  const dialog = screen.getByRole("dialog", { name: "Create a channel" });
-  expect(container.contains(dialog)).toBe(false);
-  fireEvent.change(within(dialog).getByLabelText("Channel name"), { target: { value: "Launch" } });
-  fireEvent.click(within(dialog).getByLabelText("Select Atlas"));
-  expect(within(dialog).getByLabelText("Response for Atlas")).toHaveValue("active");
-  fireEvent.click(within(dialog).getByRole("button", { name: "Create channel" }));
-  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
-  expect(onCreate).toHaveBeenCalledWith({ kind: "channel", name: "Launch", members: [{ kind: "agent", id: "atlas", role: "member", listenMode: "active" }] });
-});
-
-it("preserves a failed draft and disables member controls while creating", async () => {
-  const props = { ownerScopeId: "org", sections: [], state: "ready" as const, rooms: [], participants: [atlas], onSelectRoom: vi.fn(), onSelectParticipant: vi.fn(), onCreate: vi.fn().mockResolvedValue(false) };
-  const { rerender } = render(<RoomDirectory {...props} />);
-  fireEvent.click(screen.getByRole("button", { name: "New chat or channel" }));
-  fireEvent.change(screen.getByLabelText("Channel name"), { target: { value: "Launch" } });
-  fireEvent.click(screen.getByLabelText("Select Atlas"));
-  rerender(<RoomDirectory {...props} creationBusy />);
-  expect(screen.getByLabelText("Response for Atlas")).toBeDisabled();
-  fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
-  expect(screen.getByRole("dialog")).toBeInTheDocument();
-  rerender(<RoomDirectory {...props} creationError="Try again" />);
-  expect(screen.getByRole("alert")).toHaveTextContent("Try again");
-  expect(screen.getByLabelText("Channel name")).toHaveValue("Launch");
-  expect(screen.getByLabelText("Select Atlas")).toBeChecked();
-  fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
-  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
-  expect(screen.getByRole("button", { name: "New chat or channel" })).toHaveFocus();
-});
-
-// Room-name matchers are anchored: every row now carries a "Conversation
-// actions for <name>" overflow trigger, which an unanchored /Name/ would
-// match as well.
-it("separates channels from direct messages, keeping group DMs — with stacked avatars — inside Direct messages, while preserving selection and unread counts", () => {
-  const onSelectRoom = vi.fn();
-  render(<RoomDirectory ownerScopeId="org" state="ready" sections={[]} currentRoomId="friday-dm" participants={[]}
-    onSelectRoom={onSelectRoom} onSelectParticipant={vi.fn()} onSetPrefs={vi.fn()} onMarkUnread={vi.fn()} rooms={[
-    base,
-    { ...base, roomId: "friday-dm", kind: "dm", name: null, participants: [friday], unreadCount: 3 },
-    { ...base, roomId: "group", kind: "group-dm", name: "Launch crew", participants: [alice, atlas] },
-  ]} />);
-  expect(within(screen.getByRole("region", { name: "Channels" })).getByRole("button", { name: /^Launch/ })).toBeInTheDocument();
-  const directMessages = within(screen.getByRole("region", { name: "People" }));
-  // The facepile is decorative — the row already announces "Launch crew" — so
-  // the avatars are found with `hidden`.
-  const groupRow = directMessages.getByRole("button", { name: /^Launch crew/ });
-  expect(within(groupRow).getByRole("img", { name: "Alice", hidden: true })).toBeInTheDocument();
-  expect(within(groupRow).getByRole("img", { name: "Atlas", hidden: true })).toBeInTheDocument();
-  expect(screen.queryByRole("region", { name: "Group chats" })).not.toBeInTheDocument();
-  const row = directMessages.getByRole("button", { name: /^Friday/ });
-  expect(row).toHaveAttribute("aria-current", "page");
-  expect(within(row).getByLabelText("3 unread messages")).toHaveTextContent("3");
-  expect(within(row).getByRole("img", { name: "Friday" }).parentElement).toHaveAttribute("data-agent-state", "running");
-  fireEvent.click(row);
-  expect(onSelectRoom).toHaveBeenCalledWith("friday-dm");
-});
 
 it("marks a conversation unread and navigates to the next unread conversation", async () => {
   const user = userEvent.setup();
@@ -128,34 +68,6 @@ it("shows mark-unread progress and lets the user retry a failure", async () => {
   await user.click(screen.getByRole("button", { name: "Try again" }));
   await waitFor(() => expect(onMarkUnread).toHaveBeenCalledTimes(2));
   await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
-});
-
-it("lists every person and agent under Direct messages, once each, and opens the conversation on click", () => {
-  const onSelectParticipant = vi.fn();
-  render(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" onSelectRoom={vi.fn()} onSelectParticipant={onSelectParticipant}
-    rooms={[{ ...base, roomId: "atlas-dm", kind: "dm", name: null, participants: [atlas] }]} participants={[friday, alice, atlas]} />);
-  const directMessages = within(screen.getByRole("region", { name: "People" }));
-  // Atlas already has a DM room, so he is the room row and not a second roster row.
-  expect(directMessages.getAllByRole("button", { name: /^Atlas/ })).toHaveLength(1);
-  // Friday (roster row) and Atlas (DM room row) are agents; Alice is not.
-  expect(directMessages.getAllByText("Agent")).toHaveLength(2);
-  fireEvent.click(directMessages.getByRole("button", { name: /^Friday/ }));
-  fireEvent.click(directMessages.getByRole("button", { name: /^Alice/ }));
-  expect(onSelectParticipant).toHaveBeenNthCalledWith(1, friday);
-  expect(onSelectParticipant).toHaveBeenNthCalledWith(2, alice);
-  expect(screen.queryByRole("button", { name: "People and agents" })).not.toBeInTheDocument();
-  expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
-});
-
-it("marks people who are online with a presence dot, never agents", () => {
-  render(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[]} onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()}
-    participants={[{ ...alice, online: true }, { ...alice, id: "bob", displayName: "Bob", online: false }, friday]} />);
-  const directMessages = within(screen.getByRole("region", { name: "People" }));
-  const aliceRow = directMessages.getByRole("button", { name: /^Alice/ });
-  expect(within(aliceRow).getByText("Online")).toBeInTheDocument();
-  expect(within(aliceRow).getByRole("img", { name: "Alice" }).parentElement).toHaveAttribute("data-presence", "online");
-  expect(within(directMessages.getByRole("button", { name: /^Bob/ })).queryByText("Online")).not.toBeInTheDocument();
-  expect(within(directMessages.getByRole("button", { name: /^Friday/ })).queryByText("Online")).not.toBeInTheDocument();
 });
 
 it("shows a participant-selection error under the heading", () => {
@@ -207,19 +119,6 @@ it("renders no Drafts section when the drafted room isn't in the directory", () 
   expect(screen.queryByRole("region", { name: "Drafts" })).not.toBeInTheDocument();
 });
 
-it("renders Starred above Channels and stars a room from its overflow menu", async () => {
-  const onSetPrefs = vi.fn().mockResolvedValue(undefined);
-  render(<RoomDirectory ownerScopeId="org" state="ready" participants={[]} sections={[]}
-    onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} onSetPrefs={onSetPrefs} onMarkUnread={vi.fn()} rooms={[
-      { ...base, roomId: "plain", name: "Plain" },
-      { ...base, roomId: "fav", name: "Favourite", starred: true },
-    ]} />);
-  expect(screen.getAllByRole("heading", { level: 3 }).map((node) => node.textContent)).toEqual(["Starred", "Channels"]);
-  await userEvent.click(screen.getByRole("button", { name: "Actions for Plain" }));
-  await userEvent.click(await screen.findByRole("menuitem", { name: "Star" }));
-  expect(onSetPrefs).toHaveBeenCalledWith("plain", { starred: true });
-});
-
 it("mutes a room, drops its badge, and says so without relying on colour", async () => {
   const onSetPrefs = vi.fn().mockResolvedValue(undefined);
   render(<RoomDirectory ownerScopeId="org" state="ready" participants={[]} sections={[]}
@@ -233,90 +132,6 @@ it("mutes a room, drops its badge, and says so without relying on colour", async
   await userEvent.click(screen.getByRole("button", { name: "Actions for Quiet" }));
   await userEvent.click(await screen.findByRole("menuitem", { name: "Unmute" }));
   expect(onSetPrefs).toHaveBeenCalledWith("quiet", { muted: false });
-});
-
-it("surfaces a failed star without leaving the row looking starred", async () => {
-  const onSetPrefs = vi.fn().mockRejectedValue(new Error("offline"));
-  render(<RoomDirectory ownerScopeId="org" state="ready" participants={[]} sections={[]}
-    onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} onSetPrefs={onSetPrefs} onMarkUnread={vi.fn()}
-    rooms={[{ ...base, roomId: "plain", name: "Plain" }]} />);
-  await userEvent.click(screen.getByRole("button", { name: "Actions for Plain" }));
-  await userEvent.click(await screen.findByRole("menuitem", { name: "Star" }));
-  expect(await screen.findByRole("alert")).toHaveTextContent("offline");
-  expect(screen.queryByRole("heading", { name: "Starred" })).not.toBeInTheDocument();
-});
-
-it("returns focus to the row's own trigger after starring re-parents it into Starred", async () => {
-  let resolveSetPrefs!: () => void;
-  const onSetPrefs = vi.fn(() => new Promise<void>((done) => { resolveSetPrefs = done; }));
-  const props = { ownerScopeId: "org", state: "ready" as const, participants: [], sections: [],
-    onSelectRoom: vi.fn(), onSelectParticipant: vi.fn(), onSetPrefs, onMarkUnread: vi.fn() };
-  const { rerender } = render(<RoomDirectory {...props} rooms={[{ ...base, roomId: "plain", name: "Plain" }]} />);
-  await userEvent.click(screen.getByRole("button", { name: "Actions for Plain" }));
-  await userEvent.click(await screen.findByRole("menuitem", { name: "Star" }));
-  expect(onSetPrefs).toHaveBeenCalledWith("plain", { starred: true });
-  // Mirrors the real setRoomPrefs (useRooms.ts): the optimistic re-bucket into
-  // Starred lands on the `rooms` prop while the request is still in flight --
-  // well before this action's own promise settles -- moving the row (and its
-  // overflow trigger) into a different DOM subtree.
-  rerender(<RoomDirectory {...props} rooms={[{ ...base, roomId: "plain", name: "Plain", starred: true }]} />);
-  expect(screen.getAllByRole("heading", { level: 3 }).map((node) => node.textContent)).toEqual(["Starred"]);
-  await act(async () => resolveSetPrefs());
-  await waitFor(() => expect(screen.getByRole("button", { name: "Actions for Plain" })).toHaveFocus());
-});
-
-it("keeps a failed star's error banner across a room switch", async () => {
-  const onSetPrefs = vi.fn().mockRejectedValue(new Error("offline"));
-  const props = { ownerScopeId: "org", state: "ready" as const, participants: [], sections: [],
-    onSelectRoom: vi.fn(), onSelectParticipant: vi.fn(), onSetPrefs, onMarkUnread: vi.fn(),
-    rooms: [{ ...base, roomId: "plain", name: "Plain" }] };
-  const { rerender } = render(<RoomDirectory {...props} currentRoomId="plain" />);
-  await userEvent.click(screen.getByRole("button", { name: "Actions for Plain" }));
-  await userEvent.click(await screen.findByRole("menuitem", { name: "Star" }));
-  expect(await screen.findByRole("alert")).toHaveTextContent("offline");
-  // Only currentRoomId changes here -- the directory must not remount (and
-  // silently drop the banner) just because the viewer opened another room.
-  rerender(<RoomDirectory {...props} currentRoomId="other" />);
-  expect(screen.getByRole("alert")).toHaveTextContent("offline");
-});
-
-it("guards against a double star while the row's own save is still pending", async () => {
-  let resolveSetPrefs!: () => void;
-  const onSetPrefs = vi.fn(() => new Promise<void>((done) => { resolveSetPrefs = done; }));
-  render(<RoomDirectory ownerScopeId="org" state="ready" participants={[]} sections={[]}
-    onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} onSetPrefs={onSetPrefs} onMarkUnread={vi.fn()}
-    rooms={[{ ...base, roomId: "plain", name: "Plain" }]} />);
-  await userEvent.click(screen.getByRole("button", { name: "Actions for Plain" }));
-  await userEvent.click(await screen.findByRole("menuitem", { name: "Star" }));
-  expect(onSetPrefs).toHaveBeenCalledTimes(1);
-  // Reopen the row menu while the first save is still in flight -- the
-  // trigger stays enabled (so focus restoration keeps working), but the item
-  // itself is disabled, and setRoomPrefs' own guard must hold even if it
-  // weren't.
-  await userEvent.click(screen.getByRole("button", { name: "Actions for Plain" }));
-  const item = await screen.findByRole("menuitem", { name: "Star" });
-  expect(item).toHaveAttribute("data-disabled");
-  await userEvent.click(item);
-  expect(onSetPrefs).toHaveBeenCalledTimes(1);
-  await act(async () => resolveSetPrefs());
-});
-
-it("focuses the destination group's header when starring collapses the row out of view", async () => {
-  window.localStorage.clear();
-  window.localStorage.setItem("lightbulb.messaging.sidebar.org", JSON.stringify({ collapsed: ["starred"], sort: "alpha" }));
-  let resolveSetPrefs!: () => void;
-  const onSetPrefs = vi.fn(() => new Promise<void>((done) => { resolveSetPrefs = done; }));
-  const props = { ownerScopeId: "org", state: "ready" as const, participants: [], sections: [],
-    onSelectRoom: vi.fn(), onSelectParticipant: vi.fn(), onSetPrefs, onMarkUnread: vi.fn() };
-  const { rerender } = render(<RoomDirectory {...props} rooms={[{ ...base, roomId: "plain", name: "Plain" }]} />);
-  await userEvent.click(screen.getByRole("button", { name: "Actions for Plain" }));
-  await userEvent.click(await screen.findByRole("menuitem", { name: "Star" }));
-  // Starred is already collapsed and "plain" is not the open room, so once it
-  // re-buckets into Starred its row (and overflow trigger) never renders at all.
-  rerender(<RoomDirectory {...props} rooms={[{ ...base, roomId: "plain", name: "Plain", starred: true }]} />);
-  expect(screen.queryByRole("button", { name: "Actions for Plain" })).not.toBeInTheDocument();
-  await act(async () => resolveSetPrefs());
-  await waitFor(() => expect(screen.getByRole("button", { name: "Expand Starred" })).toHaveFocus());
 });
 
 it("sorts unread first when asked and remembers the choice per owner scope", async () => {
@@ -405,43 +220,6 @@ it("leaves out menu items the caller cannot act on", async () => {
   expect(await screen.findByRole("menuitem", { name: "Copy link" })).toBeInTheDocument();
   expect(screen.queryByRole("menuitem", { name: "Star" })).not.toBeInTheDocument();
   expect(screen.queryByRole("menuitem", { name: "Mark unread" })).not.toBeInTheDocument();
-});
-
-it("creates a named group chat with a flexible mix of participants", async () => {
-  const onCreate = vi.fn().mockResolvedValue(true);
-  render(<RoomDirectory ownerScopeId="org" state="ready" sections={[]} rooms={[]} participants={[alice, atlas]}
-    onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} onCreate={onCreate} />);
-  fireEvent.click(screen.getByRole("button", { name: "New chat or channel" }));
-  fireEvent.change(screen.getByLabelText("Type"), { target: { value: "group-dm" } });
-  const dialog = screen.getByRole("dialog", { name: "New group chat" });
-  fireEvent.change(within(dialog).getByLabelText("Group chat name (optional)"), { target: { value: "Launch crew" } });
-  fireEvent.click(within(dialog).getByLabelText("Select Alice"));
-  fireEvent.click(within(dialog).getByLabelText("Select Atlas"));
-  fireEvent.click(within(dialog).getByRole("button", { name: "Start group chat" }));
-  await waitFor(() => expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({
-    kind: "group-dm", name: "Launch crew",
-    members: expect.arrayContaining([expect.objectContaining({ kind: "human", id: "alice" }), expect.objectContaining({ kind: "agent", id: "atlas" })]),
-  })));
-});
-
-// Regression: the footer once reused `.room-composer-actions` (the message
-// composer's 28px icon-button row), which squeezed "Cancel" and the primary
-// button into overlapping tiny boxes. Both buttons must render, side by side,
-// in the same right-aligned DialogFooter every other dialog here uses.
-it("renders the New group chat footer as a normal, non-overlapping DialogFooter row", () => {
-  render(<RoomDirectory ownerScopeId="org" state="ready" sections={[]} rooms={[]} participants={[]}
-    onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} onCreate={vi.fn()} />);
-  fireEvent.click(screen.getByRole("button", { name: "New chat or channel" }));
-  fireEvent.change(screen.getByLabelText("Type"), { target: { value: "group-dm" } });
-  const dialog = screen.getByRole("dialog", { name: "New group chat" });
-  const cancel = within(dialog).getByRole("button", { name: "Cancel" });
-  const create = within(dialog).getByRole("button", { name: "Start group chat" });
-  expect(cancel).toBeVisible();
-  expect(create).toBeVisible();
-  const footer = cancel.parentElement;
-  expect(footer).toBe(create.parentElement);
-  expect(footer).toHaveClass("gap-2");
-  expect(footer).not.toHaveClass("room-composer-actions");
 });
 
 /**
@@ -1093,36 +871,6 @@ it("offers Add people in a row's menu only where the viewer may add, and asks fo
   expect(onAddPeople).toHaveBeenCalledWith("mine");
 });
 
-it("orders the sidebar Starred, custom sections, Team, Channels, Sessions, External connections, Archived", () => {
-  window.localStorage.clear();
-  render(<RoomDirectory ownerScopeId="org-order" state="ready" sections={[{ id: "s-1", name: "Ship" }]} participants={[]}
-    onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} onSelectSession={vi.fn()} sessionRows={[]} rooms={[
-      base,
-      { ...base, roomId: "fav", name: "Fav", starred: true },
-      { ...base, roomId: "shipping", name: "Shipping", sectionId: "s-1" },
-      { ...base, roomId: "atlas-dm", kind: "dm", name: null, participants: [atlas] },
-      { ...base, roomId: "ext", name: "Partner", shared: true },
-      { ...base, roomId: "old", name: "Old", archivedAt: "2026-09-23T00:00:00Z" },
-    ]} />);
-  expect(screen.getAllByRole("region").map((region) => region.getAttribute("aria-label")))
-    .toEqual(["Starred", "Ship", "People", "Channels", "Sessions", "External connections", "Archived"]);
-});
-
-it("puts the CEO's DM first in Team, by agent id, whether or not the DM exists yet", () => {
-  const ceo: DirectoryParticipant = { kind: "agent", id: "agent-ceo", displayName: "Zed", mentionHandle: null };
-  const firstRow = () => within(screen.getByRole("region", { name: "People" })).getAllByRole("button", { name: /^(Alice|Atlas|Friday|Zed)/ })[0];
-  const { rerender } = render(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[]} participants={[alice, atlas, friday, ceo]}
-    ceoAgentId="agent-ceo" onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} />);
-  expect(firstRow()).toHaveAccessibleName(/^Zed/);
-  rerender(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" participants={[alice, atlas, friday, ceo]} ceoAgentId="agent-ceo"
-    rooms={[{ ...base, roomId: "zed-dm", kind: "dm", name: null, participants: [ceo] }]} onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} />);
-  expect(firstRow()).toHaveAccessibleName(/^Zed/);
-  // Without a known CEO the group keeps its own order.
-  rerender(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[]} participants={[alice, atlas, friday, ceo]}
-    onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} />);
-  expect(firstRow()).toHaveAccessibleName(/^Alice/);
-});
-
 it("ends the list with an Invite someone row that opens the invite dialog, and no separate lone-founder nudge", async () => {
   openInviteDialog.mockClear();
   const onNavigate = vi.fn();
@@ -1135,12 +883,3 @@ it("ends the list with an Invite someone row that opens the invite dialog, and n
   expect(onNavigate).toHaveBeenCalledTimes(1);
 });
 
-it("every conversation button carries its own accessible name: the room, its kind, then its marks (dev walk W8)", () => {
-  render(<RoomDirectory ownerScopeId="org" state="ready" sections={[]} participants={[]} draftRoomIds={["friday-dm"]}
-    onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} rooms={[
-      { ...base, starred: true },
-      { ...base, roomId: "friday-dm", kind: "dm", name: null, participants: [friday], unreadCount: 2 },
-    ]} />);
-  expect(screen.getByRole("button", { name: "Launch, Channel, Starred" })).toHaveAttribute("aria-label", "Launch, Channel, Starred");
-  expect(screen.getAllByRole("button", { name: "Friday, Direct message, Agent, 2 unread messages, Unsent draft" })[0]).toBeInTheDocument();
-});

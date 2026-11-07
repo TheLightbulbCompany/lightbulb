@@ -6,7 +6,7 @@
 // smuggle attempt would 422, but we enforce defense in depth at the UI
 // boundary too.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { render, screen, fireEvent, within } from "@testing-library/react";
 import { SWRConfig } from "swr";
 
 interface AgentRow {
@@ -73,12 +73,10 @@ vi.mock("@/components/teams/org-chart/OrgChart", () => ({
   },
 }));
 
-// Team › Message: Lightbulb's DM, or (switch on) a specialist asked through Lightbulb's DM with its @handle.
-const live = vi.hoisted(() => ({ superAgent: false }));
-// Team cards (switch on) read the workspace's requests and each profile's skills.
+// Team › Message: Lightbulb's DM, or a specialist asked through Lightbulb's DM with its @handle.
+// Team cards read the workspace's requests and each profile's skills.
 const teamTasks = vi.hoisted(() => ({ list: [] as unknown[] }));
 vi.mock("@/hooks/useLiveEvents", () => ({
-  useSuperAgent: () => live.superAgent,
   useLiveEvents: () => ({ agentNames: new Map([["ceo", "Lightbulb"]]), tasks: { cacheScope: "org", list: async () => ({ tasks: teamTasks.list, next: null }) } }),
 }));
 const skills = vi.hoisted(() => ({ byAgent: {} as Record<string, unknown> }));
@@ -93,206 +91,6 @@ vi.mock("@/components/workspace/workspaceController", () => nav);
 
 import { AgentsListPanel, derivedHandle } from "@/components/teams/panels/AgentsListPanel";
 
-/** Click through the chooser step ("New agent" → "Build your own"). */
-function openBuildForm() {
-  const buttons = screen.getAllByRole("button", { name: /new agent/i });
-  fireEvent.click(buttons[0]);
-  fireEvent.click(screen.getByRole("button", { name: /build your own/i }));
-}
-
-describe("AgentsListPanel", () => {
-  it("renders empty state when no agents", () => {
-    render(<AgentsListPanel />);
-    expect(screen.getByRole("heading", { name: "Team" })).toBeInTheDocument();
-    expect(screen.getByText("No agents yet.")).toBeInTheDocument();
-  });
-
-  it("a search with no match says so once, not beside \"No agents yet.\"", () => {
-    render(<AgentsListPanel />);
-    fireEvent.change(screen.getByLabelText("Search agents"), { target: { value: "zzz" } });
-    expect(screen.getByText("No agents match your search.")).toBeInTheDocument();
-    expect(screen.queryByText("No agents yet.")).toBeNull();
-  });
-
-  it("create form posts ONLY {name, role} (no adapterType, no URL)", async () => {
-    mockPost.mockResolvedValue({ id: "a1" });
-    render(<AgentsListPanel />);
-
-    // Two New agent CTAs render when the list is empty (masthead + empty
-    // state); openBuildForm clicks the first, then picks "Build your own"
-    // on the chooser step.
-    openBuildForm();
-    fireEvent.change(screen.getByLabelText("Name"), {
-      target: { value: "Helper" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: /^create$/i }));
-
-    await waitFor(() => {
-      expect(mockPost).toHaveBeenCalledTimes(1);
-    });
-    expect(mockPost).toHaveBeenCalledWith("/agents", {
-      name: "Helper",
-      role: "engineer",
-    });
-
-    // Defense-in-depth: confirm no smuggled fields.
-    const [, body] = mockPost.mock.calls[0];
-    expect(Object.keys(body as Record<string, unknown>).sort()).toEqual([
-      "name",
-      "role",
-    ]);
-    expect(body).not.toHaveProperty("adapterType");
-    expect(body).not.toHaveProperty("adapterConfig");
-    expect(body).not.toHaveProperty("url");
-    expect(body).not.toHaveProperty("authToken");
-    expect(body).not.toHaveProperty("headers");
-  });
-
-  it("rich hire: includes title + reportsTo when the operator fills them", async () => {
-    mockPost.mockClear();
-    mockPost.mockResolvedValue({ id: "a2" });
-    // A roster so the manager picker has a candidate to select. Persistent
-    // (not `...Once`) because typing/clicking re-renders the panel, and each
-    // re-render re-reads /agents — a one-shot value would revert to empty and
-    // drop the "mgr1" <option> before we can select it.
-    const emptyResp = { data: { agents: [] }, isLoading: false, error: null, mutate: mockMutate };
-    mockRead.mockReturnValue({
-      data: { agents: [{ id: "mgr1", name: "Manager Mo", role: "manager" }] },
-      isLoading: false,
-      error: null,
-      mutate: mockMutate,
-    });
-    try {
-      render(<AgentsListPanel />);
-
-      openBuildForm();
-      fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Helper" } });
-      fireEvent.change(screen.getByLabelText("Title"), {
-        target: { value: "Senior engineer" },
-      });
-      fireEvent.change(screen.getByLabelText("Reports to"), {
-        target: { value: "mgr1" },
-      });
-      fireEvent.click(screen.getByRole("button", { name: /^create$/i }));
-
-      await waitFor(() => expect(mockPost).toHaveBeenCalledTimes(1));
-      expect(mockPost).toHaveBeenCalledWith("/agents", {
-        name: "Helper",
-        role: "engineer",
-        title: "Senior engineer",
-        reportsTo: "mgr1",
-      });
-      // Still no smuggled adapter fields.
-      const [, body] = mockPost.mock.calls[0];
-      expect(body).not.toHaveProperty("adapterType");
-      expect(body).not.toHaveProperty("adapterConfig");
-      expect(body).not.toHaveProperty("url");
-    } finally {
-      // Restore the module default so later tests' one-shot overrides + re-renders
-      // fall back to the empty roster, not this test's persistent one.
-      mockRead.mockReturnValue(emptyResp);
-    }
-  });
-
-  it("rich hire: omits an empty title and 'top level' manager (sends only {name, role})", async () => {
-    mockPost.mockClear();
-    mockPost.mockResolvedValue({ id: "a3" });
-    render(<AgentsListPanel />);
-    openBuildForm();
-    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Solo" } });
-    // Leave Title blank, leave Reports to on "No manager".
-    fireEvent.click(screen.getByRole("button", { name: /^create$/i }));
-    await waitFor(() => expect(mockPost).toHaveBeenCalledTimes(1));
-    const [, body] = mockPost.mock.calls[0];
-    expect(Object.keys(body as Record<string, unknown>).sort()).toEqual(["name", "role"]);
-  });
-
-  it("chooser hire path opens the marketplace drawer and closes the dialog", () => {
-    mockPost.mockClear();
-    mockOpenMarketplace.mockClear();
-    render(<AgentsListPanel />);
-
-    const buttons = screen.getAllByRole("button", { name: /new agent/i });
-    fireEvent.click(buttons[0]);
-    fireEvent.click(screen.getByRole("button", { name: /hire from marketplace/i }));
-
-    expect(mockOpenMarketplace).toHaveBeenCalledWith({ view: "browse" });
-    // Dialog closed: the build form never rendered, nothing was posted.
-    expect(screen.queryByLabelText("Name")).toBeNull();
-    expect(mockPost).not.toHaveBeenCalled();
-  });
-
-  // The rail's Hire button moved here: hiring is the Agents tab's verb.
-  it("the header's Add an AI employee opens the marketplace drawer", () => {
-    mockOpenMarketplace.mockClear();
-    render(<AgentsListPanel />);
-    fireEvent.click(screen.getByRole("button", { name: "Add an AI employee" }));
-    expect(mockOpenMarketplace).toHaveBeenCalledWith({ view: "browse" });
-  });
-
-  it("renders agent rows with link to /teams/agents/{id}", () => {
-    mockRead.mockReturnValueOnce({
-      data: { agents: [{ id: "a1", name: "Alice", role: "ceo" }] },
-      isLoading: false,
-      error: null,
-      mutate: mockMutate,
-    });
-    render(<AgentsListPanel />);
-    expect(screen.getByText("Alice")).toBeInTheDocument();
-    const link = screen.getByText("Open →");
-    expect(link.closest("a")).toHaveAttribute(
-      "href",
-      "/chat?panel=agent-inspector&agent=a1",
-    );
-  });
-
-  it("renders marketplace origin and canonical version", () => {
-    mockRead.mockReturnValueOnce({
-      data: {
-        agents: [
-          {
-            id: "forge",
-            name: "Forge",
-            role: "engineer",
-            origin: "Marketplace",
-            marketplace: { listingId: "listing-1", slug: "forge", version: 3, seller: "seller-1" },
-          },
-        ],
-      },
-      isLoading: false,
-      error: null,
-      mutate: mockMutate,
-    });
-    render(<AgentsListPanel />);
-    expect(screen.getByText("Marketplace · forge v3")).toBeInTheDocument();
-  });
-
-  it("row pause and delete actions remain available for starter agents", async () => {
-    mockPause.mockClear();
-    mockRead.mockReturnValueOnce({
-      data: { agents: [{ id: "f", name: "Friday", role: "ceo", status: "idle", seeded: true }] },
-      isLoading: false,
-      error: null,
-      mutate: mockMutate,
-    });
-    render(<AgentsListPanel />);
-    expect(screen.getByRole("button", { name: /delete/i })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /pause/i }));
-    await waitFor(() => expect(mockPause).toHaveBeenCalledWith("f"));
-  });
-
-  it("shows delete for a non-seeded agent even if its role is ceo", () => {
-    mockRead.mockReturnValueOnce({
-      // A user-created agent that happens to use role "ceo" is NOT seeded.
-      data: { agents: [{ id: "u", name: "Faux", role: "ceo", status: "idle" }] },
-      isLoading: false,
-      error: null,
-      mutate: mockMutate,
-    });
-    render(<AgentsListPanel />);
-    expect(screen.getByRole("button", { name: /delete/i })).toBeInTheDocument();
-  });
-});
 
 describe("AgentsListPanel — roster / chart views", () => {
   const roster = [
@@ -320,89 +118,6 @@ describe("AgentsListPanel — roster / chart views", () => {
     });
   });
 
-  it("opens on the roster and reads /agents exactly once for both views", () => {
-    render(<AgentsListPanel />);
-    expect(mockRead).toHaveBeenCalledWith("/agents");
-    expect(screen.getByText("Friday")).toBeInTheDocument();
-    expect(screen.queryByTestId("org-chart")).toBeNull();
-    expect(screen.getByRole("button", { name: "List view" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
-  });
-
-  it("switches to the chart over the roster it already has, and remembers the pick", () => {
-    const { unmount } = render(<AgentsListPanel />);
-    fireEvent.click(screen.getByRole("button", { name: "Org chart view" }));
-    expect(screen.getByTestId("org-chart")).toHaveTextContent("Friday, Forge");
-    expect(mockOrgChart).toHaveBeenCalledWith(roster);
-    // One SWR key for both views: the chart draws the roster the panel already
-    // has rather than adding a second /agents read of its own.
-    expect(new Set(mockRead.mock.calls.map((c) => c[0]))).toEqual(new Set(["/agents"]));
-    unmount();
-
-    // Persisted per browser (the tasksViewMode idiom), so a remount opens on it.
-    render(<AgentsListPanel />);
-    expect(screen.getByTestId("org-chart")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Org chart view" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
-  });
-
-  it("search narrows the LIST, and the chart offers no search box", () => {
-    // An org chart is a structure, and a filtered structure is not a smaller
-    // structure — it is several orphaned roots that misdescribe who reports to
-    // whom. So search stays a list affordance, the way grouping and sort are
-    // list-only on Tasks, and the chart draws the whole roster.
-    render(<AgentsListPanel />);
-    fireEvent.change(screen.getByLabelText("Search agents"), { target: { value: "forge" } });
-    expect(screen.getByText("Forge")).toBeInTheDocument();
-    expect(screen.queryByText("Friday")).toBeNull();
-
-    fireEvent.click(screen.getByRole("button", { name: "Org chart view" }));
-    expect(screen.queryByLabelText("Search agents")).toBeNull();
-    expect(screen.getByTestId("org-chart")).toHaveTextContent("Forge");
-    expect(screen.getByTestId("org-chart")).toHaveTextContent("Friday");
-  });
-
-  it("keeps the search term for the list when returning from the chart", () => {
-    render(<AgentsListPanel />);
-    fireEvent.change(screen.getByLabelText("Search agents"), { target: { value: "forge" } });
-    fireEvent.click(screen.getByRole("button", { name: "Org chart view" }));
-    fireEvent.click(screen.getByRole("button", { name: "List view" }));
-    expect(screen.getByLabelText("Search agents")).toHaveValue("forge");
-    expect(screen.queryByText("Friday")).toBeNull();
-  });
-
-  it("initialView='chart' (the retired ?panel=teams-org-chart link) opens the chart without changing the preference", () => {
-    const { unmount } = render(<AgentsListPanel initialView="chart" />);
-    expect(screen.getByTestId("org-chart")).toBeInTheDocument();
-    expect(localStorage.getItem("paperclip:agents:view-mode")).toBeNull();
-    unmount();
-    // A plain Agents open clears the param, so the stored default (list) wins.
-    render(<AgentsListPanel />);
-    expect(screen.queryByTestId("org-chart")).toBeNull();
-    expect(screen.getByText("Friday")).toBeInTheDocument();
-  });
-
-  it("an explicit pick beats the deep link and becomes the preference", () => {
-    render(<AgentsListPanel initialView="chart" />);
-    fireEvent.click(screen.getByRole("button", { name: "List view" }));
-    expect(screen.queryByTestId("org-chart")).toBeNull();
-    expect(localStorage.getItem("paperclip:agents:view-mode")).toBe("list");
-  });
-
-  it("re-delivering the param on an already-open panel re-applies the view", () => {
-    const { rerender } = render(<AgentsListPanel />);
-    expect(screen.queryByTestId("org-chart")).toBeNull();
-    rerender(<AgentsListPanel initialView="chart" />);
-    expect(screen.getByTestId("org-chart")).toBeInTheDocument();
-    // ...and a plain nav (param cleared) drops back to the stored view.
-    rerender(<AgentsListPanel />);
-    expect(screen.queryByTestId("org-chart")).toBeNull();
-  });
-
   it("says so once, calmly, when the roster cannot be read", () => {
     mockRead.mockReturnValue({
       data: undefined,
@@ -418,10 +133,9 @@ describe("AgentsListPanel — roster / chart views", () => {
 describe("Team › Message", () => {
   const agents = { data: { agents: [{ id: "ceo", name: "Lightbulb", role: "ceo" }, { id: "fin", name: "Finance", role: "general" }] }, isLoading: false, error: null, mutate: vi.fn() };
   beforeEach(() => { nav.openChatPanel.mockClear(); nav.openAgentDmWithDraft.mockClear(); mockRead.mockReturnValue(agents); });
-  afterEach(() => { live.superAgent = false; mockRead.mockReset(); });
+  afterEach(() => { mockRead.mockReset(); });
 
-  it("switch on: a specialist is asked in Lightbulb's DM (its DM is not a Router room); Lightbulb opens its own DM", () => {
-    live.superAgent = true;
+  it("a specialist is asked in Lightbulb's DM (its DM is not a Router room); Lightbulb opens its own DM", () => {
     render(<AgentsListPanel />);
     fireEvent.click(screen.getByRole("button", { name: "Ask Finance through Lightbulb" }));
     expect(nav.openAgentDmWithDraft).toHaveBeenCalledWith("ceo", "@finance ");
@@ -429,8 +143,7 @@ describe("Team › Message", () => {
     expect(nav.openChatPanel).toHaveBeenCalledWith("ceo");
   });
 
-  it("switch on: the front agent reads as Lightbulb, specialists by name only, one Hire a specialist", () => {
-    live.superAgent = true;
+  it("the front agent reads as Lightbulb, specialists by name only, one Hire a specialist", () => {
     mockRead.mockReturnValue({ ...agents, data: { agents: [{ id: "ceo", name: "CEO", role: "ceo" }, { id: "fin", name: "Finance", role: "cfo" }] } });
     render(<AgentsListPanel />);
     expect(screen.queryByText("CEO")).toBeNull();
@@ -442,8 +155,7 @@ describe("Team › Message", () => {
     expect(screen.getByRole("dialog", { name: "Hire a specialist" })).toBeInTheDocument();
   });
 
-  it("switch on: Team sits in the Frame A column with its title row; no Specialist subline; search only from 10 agents (UX slice 6)", () => {
-    live.superAgent = true;
+  it("Team sits in the Frame A column with its title row; no Specialist subline; search only from 10 agents (UX slice 6)", () => {
     const roster = (n: number) => [{ id: "ceo", name: "CEO", role: "ceo" }, ...Array.from({ length: n - 1 }, (_, i) => ({ id: `a${i}`, name: `Agent ${i}`, role: "engineer" }))];
     mockRead.mockReturnValue({ ...agents, data: { agents: roster(3) } });
     const { unmount } = render(<AgentsListPanel />);
@@ -460,8 +172,7 @@ describe("Team › Message", () => {
     expect(screen.getByLabelText("Search agents")).toBeInTheDocument();
   });
 
-  it("switch on: a card per specialist says what it's for and its recent requests, with Ask; no skill slugs, no org chart", async () => {
-    live.superAgent = true;
+  it("a card per specialist says what it's for and its recent requests, with Ask; no skill slugs, no org chart", async () => {
     mockRead.mockReturnValue({ ...agents, data: { agents: [
       { id: "fin", name: "Finance", role: "cfo" },
       { id: "ceo", name: "CEO", role: "ceo" },
@@ -502,7 +213,6 @@ describe("Team › Message", () => {
   });
 
   it("W7-7: Ask drafts the @handle when the open room has no specialists; cards never repeat the name", () => {
-    live.superAgent = true;
     directory.props = { ceoAgentId: "ceo", participants: [{ kind: "agent", id: "fin", mentionHandle: null }],
       rooms: [{ participants: [{ kind: "agent", id: "fin", mentionHandle: "finance-2" }] }] };
     mockRead.mockReturnValue({ ...agents, data: { agents: [
@@ -524,7 +234,6 @@ describe("Team › Message", () => {
   });
 
   it("the server's mentionHandle wins over a room's and the derived one (GET /teams/agents, #4885)", () => {
-    live.superAgent = true;
     directory.props = { ceoAgentId: "ceo", participants: [], rooms: [{ participants: [{ kind: "agent", id: "fin", mentionHandle: "finance-2" }] }] };
     mockRead.mockReturnValue({ ...agents, data: { agents: [
       { id: "ceo", name: "CEO", role: "ceo" }, { id: "fin", name: "Finance", role: "general", mentionHandle: "finance-3" } as AgentRow,
@@ -546,10 +255,4 @@ describe("Team › Message", () => {
     expect(derivedHandle("Lightbulb")).toBeNull();
   });
 
-  it("switch off: every agent's Message opens its DM", () => {
-    render(<AgentsListPanel />);
-    fireEvent.click(screen.getByRole("button", { name: "Message Finance" }));
-    expect(nav.openChatPanel).toHaveBeenCalledWith("fin");
-    expect(nav.openAgentDmWithDraft).not.toHaveBeenCalled();
-  });
 });

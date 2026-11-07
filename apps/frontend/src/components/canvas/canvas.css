@@ -40,23 +40,6 @@ button.app-item__main:focus-visible { outline: 2px solid var(--fg); outline-offs
 .app-list__empty-title { margin: 0; font-weight: 600; }
 @media (hover: none), (pointer: coarse) { .app-list__filters button, .app-item__act { min-height: 44px; } }
 
-/* "What should we build?": the composer recipe (edge border, 12px radius, ring on focus), one send button. */
-.start-box { display: grid; gap: 8px; }
-.start-box__title { font-size: 18px; line-height: 1.4; font-weight: 600; }
-.start-box[data-first] .start-box__title { font-size: 22px; }
-.start-box__field { position: relative; border: 1px solid var(--plane-edge); border-radius: 12px; background: var(--plane-pane); transition: border-color 120ms var(--ease-out, ease-out); }
-.start-box__field:focus-within { border-color: var(--fg); }
-.start-box__field textarea { display: block; width: 100%; resize: none; padding: 12px 56px 12px 14px; border: 0; background: transparent; color: var(--fg); font: inherit; font-size: 16px; line-height: 1.5; outline: none; }
-.start-box__field textarea::placeholder { color: var(--fg-mute); }
-.start-box__send { position: absolute; right: 8px; bottom: 8px; display: grid; place-items: center; width: 36px; height: 36px; border-radius: 8px; background: var(--fg); color: var(--plane-pane); transition: transform 120ms var(--ease-out, ease-out), opacity 120ms; }
-.start-box__send:disabled { opacity: 0.35; cursor: default; }
-.start-box__send:not(:disabled):active { transform: scale(0.95); }
-.start-box__send:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
-.start-box__ideas { display: flex; flex-wrap: wrap; gap: 6px; }
-.start-box__ideas button { height: 30px; padding: 0 12px; border: 1px solid var(--plane-edge); border-radius: 999px; font-size: var(--text-caption); color: var(--fg-soft); transition: background-color 120ms var(--ease-out, ease-out), color 120ms; }
-.start-box__ideas button:hover { background: var(--plane-hover); color: var(--fg); }
-.start-box__ideas button:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
-@media (hover: none), (pointer: coarse) { .start-box__ideas button { min-height: 44px; } .start-box__send { width: 44px; height: 44px; } }
 
 /* App view: header bar over the frame, with the app's conversation beside it (one at a time in a narrow panel). */
 .app-view { display: flex; flex-direction: column; height: 100%; min-height: 0; color: var(--fg); }

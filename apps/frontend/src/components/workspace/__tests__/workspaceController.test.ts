@@ -75,9 +75,9 @@ describe("places", () => {
     ["home", "home"],
     ["activity", "activity"],
     ["teams-issues", "work"],
-    ["teams-routines", "work"],
+    ["teams-routines", "activity"],
     ["teams-search", "work"],
-    ["teams-artifacts", "library"],
+    ["teams-artifacts", "canvas"],
     ["canvas", "canvas"],
   ])("%s opens the %s place's main view", (key, place) => {
     openPanel(key);

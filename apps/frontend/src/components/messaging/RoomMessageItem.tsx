@@ -6,7 +6,7 @@ import type { Components, UrlTransform } from "react-markdown";
 import { nameSpecialistIn, sessionLabel, sessionStatus, specialistLabel, type CardReply, type LocalSession } from "@lightbulb/shared";
 import { CopyResult, MessageRoutedTo, MessageTasks } from "@/components/tasks/MessageTasks";
 import { AutomationConfirmCard } from "@/components/tasks/AutomationConfirmCard";
-import { useOptionalLiveEvents, useSuperAgent } from "@/hooks/useLiveEvents";
+import { useOptionalLiveEvents } from "@/hooks/useLiveEvents";
 import { openMessagePanel } from "@/components/workspace/workspaceController";
 import { Button } from "@/components/ui/button";
 import { Identity } from "@/components/teams/shared/components/Identity";
@@ -14,7 +14,6 @@ import { MarkdownView } from "@/components/teams/shared/components/MarkdownView"
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { cn } from "@/lib/utils";
 import { EmojiPicker } from "./EmojiPicker";
-import { MessageTaskCard } from "./MessageTaskCard";
 import { ParticipantAvatar } from "./ParticipantAvatar";
 import { ParticipantProfile } from "./ParticipantProfile";
 import { RoomDocumentCards } from "./RoomDocumentCards";
@@ -95,10 +94,9 @@ function SessionCard({ sessionId, label, session, onOpen }: {
 }
 
 export function RoomMessageItem({ id, message, text, participant, currentUserId, actionable, inThread, collapsed, startEditing, onEditingClosed, replyCount, lastReplyAt, threadParticipants = [], workingNames = [], receipt, highlighted, mentionsViewer, markdown, urlTransform, quickReactions, reactionPending, reactionError, onToggleReaction, onOpenThread, onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, onCardReply, cardAnswer = null, cardsEnabled = true, sessions = [], onOpenSession, toolbarExtras, menuExtras, personColor, onOpenTask, isAgentId, ackedTasks, copyable }: RoomMessageItemProps): ReactElement {
-  const superAgent = useSuperAgent();
   const agentNames = useOptionalLiveEvents()?.agentNames;
   // A line posted for a specialist can carry its id; it reads as the specialist's name, like the byline.
-  const shownText = superAgent ? nameSpecialistIn(text, message.specialist, agentNames) : text;
+  const shownText = nameSpecialistIn(text, message.specialist, agentNames);
   const cardReply = useMemo(() => onCardReply && actionable
     ? (replyText: string, clientMessageId: string) => onCardReply({ text: replyText, agentId: message.author.id, messageId: message.messageId, threadRootMessageId: message.threadRootMessageId, clientMessageId })
     : undefined, [onCardReply, actionable, message.author.id, message.messageId, message.threadRootMessageId]);
@@ -132,15 +130,15 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
       : participant ? <ParticipantAvatar participant={participant} showPresence={false} /> : <Identity name={name} avatarOnly size="default" />}
     <div className="room-message-content">
       {collapsed && timestamp && <time className="sr-only" dateTime={timestamp}>{time}</time>}
-      {!collapsed && <div className="room-message-byline">{superAgent && message.specialist
+      {!collapsed && <div className="room-message-byline">{message.specialist
         // A result posted for a specialist reads as the one front agent with its label (contracts-v2 §9).
         ? <SpecialistByline specialist={message.specialist} participant={participant} currentUserId={currentUserId} onMessage={onSelectParticipant} disabled={!actionable} />
         : participant
         ? <ParticipantProfile participant={participant} currentUserId={currentUserId} onMessage={onSelectParticipant} disabled={!actionable} />
         : <span className="font-semibold truncate" title={name}>{name}</span>}
-        {/* Super-agent: Lightbulb is just Lightbulb (no tag, W8-7); specialists are named on their cards and their own
+        {/* Lightbulb is just Lightbulb (no tag, W8-7); specialists are named on their cards and their own
             results. No "Agent" tag beside either. */}
-        {message.author.kind === "agent" && !(superAgent && (message.specialist || participant?.mentionHandle === "lightbulb")) && <span className="room-agent-label">Agent</span>}
+        {message.author.kind === "agent" && !(message.specialist || participant?.mentionHandle === "lightbulb") && <span className="room-agent-label">Agent</span>}
         {timestamp && <time className="text-ui text-muted-foreground" dateTime={timestamp} title={new Date(timestamp).toLocaleString()}>{time}</time>}
       </div>}
       <RoomMessageContent message={message} currentUserId={currentUserId} actionable={actionable} onUpdate={onUpdateMessage} startEditing={startEditing} onEditingClosed={onEditingClosed} actions={actions} menuExtras={menuExtras}>
@@ -152,16 +150,14 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
         {message.sessionMentions.map((sessionId) => <SessionCard key={sessionId} sessionId={sessionId} label={message.sessionTargetLabels?.[sessionId]}
           session={sessions.find((item) => item.sessionId === sessionId)} onOpen={onOpenSession} />)}
       </div>}
-      {!message.deletedAt && (superAgent && message.taskRefs?.length
-        ? <MessageTasks message={message} viewerId={currentUserId} onOpen={onOpenTask} ackedTasks={ackedTasks} />
-        : <MessageTaskCard text={message.text} prose={message.author.kind === "agent"} />)}
-      {!message.deletedAt && superAgent && copyable && !message.taskRefs?.length && !message.kind && message.author.kind === "agent"
+      {!message.deletedAt && !!message.taskRefs?.length && <MessageTasks message={message} viewerId={currentUserId} onOpen={onOpenTask} ackedTasks={ackedTasks} />}
+      {!message.deletedAt && copyable && !message.taskRefs?.length && !message.kind && message.author.kind === "agent"
         && !!message.text.trim() && <CopyResult text={message.text} />}
-      {superAgent && message.forwardedFrom && <button type="button" className="block text-ui text-muted-foreground hover:text-foreground hover:underline"
+      {message.forwardedFrom && <button type="button" className="block text-ui text-muted-foreground hover:text-foreground hover:underline"
         onClick={() => openMessagePanel(message.forwardedFrom!.roomId, message.forwardedFrom!.messageId)}>
         Forwarded from {message.forwardedFrom.roomName ? `#${message.forwardedFrom.roomName}` : "another chat"} ›</button>}
-      {!message.deletedAt && superAgent && message.kind === "automation_confirm" && message.automationId && <AutomationConfirmCard automationId={message.automationId} />}
-      {!message.deletedAt && superAgent && message.routedTo && <MessageRoutedTo message={message} onOpen={onOpenTask}
+      {!message.deletedAt && message.kind === "automation_confirm" && message.automationId && <AutomationConfirmCard automationId={message.automationId} />}
+      {!message.deletedAt && message.routedTo && <MessageRoutedTo message={message} onOpen={onOpenTask}
         // The reply that carries the cards (the first thread's card), wherever it landed; else the next message.
         onShowReply={(taskId) => (document.querySelector(`[data-task-card="${CSS.escape(taskId)}"]`)?.closest("article")
           ?? document.getElementById(id)?.parentElement?.querySelector(`#${CSS.escape(id)} ~ article`))?.scrollIntoView({ block: "nearest", behavior: "smooth" })} />}
@@ -170,7 +166,7 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
       {!message.deletedAt && <RoomLinkPreviews text={message.text} />}
       {!message.deletedAt && onToggleReaction && appliedReactions.length > 0 && <div className="flex flex-wrap gap-1 mt-1" aria-label="Message reactions">
         {appliedReactions.map(([emoji, users]) => {
-          if (superAgent && isAgentId && users.every(isAgentId)) {
+          if (isAgentId && users.every(isAgentId)) {
             return <span key={emoji} role="img" className="inline-flex h-8 items-center gap-1 px-3 text-ui text-muted-foreground" aria-label={emoji === "👀" ? "Lightbulb saw this" : `Lightbulb reacted ${emoji}`}>{emoji}</span>;
           }
           const selected = users.includes(currentUserId);

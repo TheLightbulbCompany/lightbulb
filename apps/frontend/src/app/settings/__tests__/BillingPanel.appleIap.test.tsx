@@ -54,7 +54,9 @@ vi.mock("@/hooks/useBilling", () => ({
   }),
 }));
 
-import SettingsPage from "../page";
+import { PANELS } from "@/components/settings/SettingsPlace";
+
+const SettingsPage = PANELS.billing;
 
 describe("BillingPanel — Apple IAP billing", () => {
   beforeEach(() => {

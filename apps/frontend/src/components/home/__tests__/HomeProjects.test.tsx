@@ -7,8 +7,8 @@ import { overviewGroups, type TaskSummary } from "@lightbulb/shared";
 import { Fresh, fakeTasksClient } from "@/components/tasks/__tests__/fakeTasks";
 import type { DirectoryRoom } from "@/components/messaging/types";
 
-const live = vi.hoisted(() => ({ superAgent: true, tasks: null as unknown, agentNames: new Map() }));
-vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useSuperAgent: () => live.superAgent, useOptionalLiveEvents: () => live }));
+const live = vi.hoisted(() => ({ tasks: null as unknown, agentNames: new Map() }));
+vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useOptionalLiveEvents: () => live }));
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 vi.mock("@/hooks/useActivity", () => ({ useActivity: () => ({ items: [] }) }));
 const apiGet = vi.hoisted(() => vi.fn());

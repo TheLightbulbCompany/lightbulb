@@ -123,9 +123,17 @@ class ReadIn(RoomBody):
     date: str = Field(default="", pattern=r"^(\d{4}-\d{2}-\d{2})?$")
 
 
+def _started(call: dict) -> datetime:
+    try:
+        at = datetime.fromisoformat(call.get("startedAt") or "")
+    except ValueError:
+        return datetime.min.replace(tzinfo=UTC)
+    return at if at.tzinfo else at.replace(tzinfo=UTC)
+
+
 async def _calls(owner_id: str, days: int) -> dict:
     """Phone calls in the last `days`, by outcome (the call rooms' META.call records)."""
-    since = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+    since = datetime.now(UTC) - timedelta(days=days)
     # ponytail: one META read per call room, capped at the newest 200; a calls index when volume needs it.
     rows = [r for r in await messaging_repo._query(messaging_repo.owner_pk(owner_id), begins_with="ROOM#")
             if str(r.get("name", "")).startswith("Call · ")]  # fmt: skip
@@ -133,7 +141,7 @@ async def _calls(owner_id: str, days: int) -> dict:
     outcomes: dict[str, int] = {}
     for r in rows:
         call = ((await messaging_repo.get_room(r["roomId"])) or {}).get("call") or {}
-        if call.get("startedAt", "") >= since:
+        if _started(call) >= since:  # startedAt carries the business's offset: compare as times
             key = call.get("outcome") or call.get("status") or "unknown"
             outcomes[key] = outcomes.get(key, 0) + 1
     return {"days": days, "calls": sum(outcomes.values()), "byOutcome": outcomes}

@@ -1,12 +1,13 @@
-import { describe, test, expect, vi, beforeEach } from "vitest";
+import { test, expect, vi, beforeEach } from "vitest";
 import { render, fireEvent, screen, act } from "@testing-library/react";
 
 vi.mock("@/components/teams/command-palette/useFilteredCommandResults", () => ({
   useFilteredCommandResults: vi.fn(() => ({ agents: [], issues: [], projects: [] })),
 }));
+// The Tasks and Files groups read the tasks client; these suites are about navigation and messages.
+vi.mock("@/components/teams/command-palette/useTaskSearch", async (importOriginal) => ({ ...(await importOriginal<object>()), useTaskSearch: () => ({ tasks: [], files: [] }) }));
 vi.mock("@/hooks/useLiveEvents", () => ({
   useLiveEvents: () => ({ messaging: { searchMessages: vi.fn().mockResolvedValue({ hits: [] }), warmSearch: vi.fn().mockResolvedValue(undefined) } }),
-  useSuperAgent: () => false,
 }));
 vi.mock("@/components/settings/CompanyStripeSection", () => ({
   useCompanyStripeStatus: () => ({ data: null }),

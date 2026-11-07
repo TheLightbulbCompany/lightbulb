@@ -9,9 +9,10 @@ import { ArrowLeft, Mic, Phone, UserRound, Video } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useHuddle } from "@/components/huddle/HuddleProvider";
 import { useApi } from "@/lib/api";
+import { Onboarding } from "./Onboarding";
 import { useNeedsYouTotal } from "./VoiceShell";
 import {
-  callNeedsYou, mmss, nameOf, useAgentConfig, useTimeline, who,
+  callNeedsYou, mmss, nameOf, needsOnboarding, useAgentConfig, useTimeline, who,
   type CallItem, type MeetingItem, type Outcome, type TimelineItem,
 } from "./data";
 
@@ -45,7 +46,7 @@ const FILTERS: [Filter, string, (i: TimelineItem) => boolean][] = [
 
 export function VoiceHome() {
   const { data: items, error, isLoading } = useTimeline();
-  const { data: config } = useAgentConfig();
+  const { data: config, isNew, save } = useAgentConfig();
   const name = nameOf(config);
   const needs = useNeedsYouTotal();
   const [filter, setFilter] = useState<Filter>("all");
@@ -63,6 +64,7 @@ export function VoiceHome() {
   const minutes = Math.round(all.filter((i): i is CallItem => i.type === "call" && i.at >= month.getTime())
     .reduce((s, c) => s + (c.durationSec ?? 0), 0) / 60);
 
+  if (config && needsOnboarding(config, isNew)) return <Onboarding config={config} save={save} />;
   return <div className="vx-home" data-pane={!!open}>
     <div className="vx-list"><div className="vx-page">
       <TalkToAssistant name={name} />

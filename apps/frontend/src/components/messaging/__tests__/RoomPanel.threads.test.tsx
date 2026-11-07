@@ -6,8 +6,8 @@ import { SWRConfig } from "swr";
 import { fakeTasksClient, type FakeTasksClient } from "@/components/tasks/__tests__/fakeTasks";
 import type { RoomMessage, RoomParticipant } from "../types";
 
-const live = vi.hoisted(() => ({ superAgent: true, tasks: null as unknown, onEvent: () => () => undefined }));
-vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useSuperAgent: () => live.superAgent, useOptionalLiveEvents: () => live }));
+const live = vi.hoisted(() => ({ tasks: null as unknown, onEvent: () => () => undefined }));
+vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useOptionalLiveEvents: () => live }));
 vi.mock("@/components/huddle/useRoomHuddle", () => ({ useRoomHuddle: () => ({ userIds: [], available: false }) }));
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 // The About dot's complete Needs you read answers from the room's rows; automations have no route here.
@@ -51,7 +51,7 @@ const toolsMenu = async (item: string) => {
 const Fresh = ({ children }: { children: React.ReactNode }) => <SWRConfig value={{ provider: () => new Map() }}>{children}</SWRConfig>;
 let client: FakeTasksClient;
 beforeEach(() => {
-  live.superAgent = true; client = fakeTasksClient(FIXTURES.step05.tasks); live.tasks = client;
+  client = fakeTasksClient(FIXTURES.step05.tasks); live.tasks = client;
   apiGet.mockReset();
   apiGet.mockImplementation(async (path: string) => {
     if (!path.includes("needsYou=true")) throw new Error("no route");
@@ -546,7 +546,7 @@ describe("RoomPanel Threads view (super-agent)", () => {
   it("About › Members lists people and Lightbulb only: no specialists, no Agent tag, no listen mode", async () => {
     const front = { ...lightbulb, mentionHandle: "lightbulb" };
     const finance: RoomParticipant = { ...lightbulb, id: "agent_fin", displayName: "Finance", mentionHandle: "finance", listenMode: "mentions" };
-    render(<Fresh><RoomPanel {...props} participants={[sam, front, finance]} onRemoveMember={vi.fn()} onListenModeChange={vi.fn()} /></Fresh>);
+    render(<Fresh><RoomPanel {...props} participants={[sam, front, finance]} onRemoveMember={vi.fn()} /></Fresh>);
     // A project's People open in its settings modal (UX slice 6), with the same Members content.
     await nameMenu("People");
     const settings = await screen.findByRole("dialog", { name: /Channel settings/ });
@@ -561,13 +561,4 @@ describe("RoomPanel Threads view (super-agent)", () => {
     expect(screen.queryByRole("heading", { name: "Active work" })).toBeNull();
   });
 
-  it("flag off keeps Tasks in the menu, no Threads tab, and makes no /tasks request", async () => {
-    live.superAgent = false;
-    render(<Fresh><RoomPanel {...props} /></Fresh>);
-    await userEvent.click(screen.getByRole("button", { name: "About" }));
-    expect(within(screen.getByRole("complementary", { name: "About" })).queryByRole("tab", { name: "Tasks" })).toBeNull();
-    await userEvent.click(screen.getByRole("button", { name: "Options" }));
-    expect(await screen.findByRole("menuitem", { name: "Tasks" })).toBeInTheDocument();
-    expect(client.list).not.toHaveBeenCalled();
-  });
 });

@@ -69,7 +69,7 @@ vi.mock("@lightbulb/shared", async (importOriginal) => {
   };
 });
 
-import { LiveEventsProvider, useLiveEvents, useSuperAgent } from "../useLiveEvents";
+import { LiveEventsProvider, useLiveEvents } from "../useLiveEvents";
 
 function render(ui: ReactElement) {
   return renderUI(<SWRConfig value={{ provider: () => new Map() }}>{ui}</SWRConfig>);
@@ -194,53 +194,18 @@ describe("LiveEventsProvider", () => {
   });
 
   it.each([
-    ["absent", undefined, "off"],
-    ["null", null, "off"],
-    ["false", { superAgent: false }, "off"],
-    ["true", { superAgent: true }, "on"],
-  ])("reads the super-agent switch from the live config it already fetches (features %s)", async (_name, features, shown) => {
+    ["absent", undefined],
+    ["null", null],
+    ["false", { superAgent: false }],
+  ])("is on the super-agent path whatever live config's features say (%s): the tasks channel and one agents read", async (_name, features) => {
     get.mockImplementationOnce(async () => ({ ...LIVE_CONFIG, ...(features === undefined ? {} : { features }) }));
-    function SwitchProbe() { return <div>switch:{useSuperAgent() ? "on" : "off"}</div>; }
-    render(<LiveEventsProvider><SwitchProbe /></LiveEventsProvider>);
-    await waitFor(() => expect(get).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(screen.getByText(`switch:${shown}`)).toBeTruthy());
-    // Off: only the live-config fetch the provider already makes. On: plus one agents-list read (specialist names
-    // and the front agent), never a /tasks request.
-    expect(get.mock.calls.map(([path]) => path)).toEqual(shown === "on" ? ["/messaging/live-config", "/teams/agents"] : ["/messaging/live-config"]);
-  });
-
-  it.each([
-    [undefined, false],
-    [{ superAgent: true }, true],
-  ])("asks for the tasks channel only when the switch is on (features %j)", async (features, on) => {
-    get.mockImplementationOnce(async () => ({ ...LIVE_CONFIG, ...(features ? { features } : {}) }));
     render(<LiveEventsProvider><Probe /></LiveEventsProvider>);
     await waitFor(() => expect(shared.config).toBeTruthy());
-    expect(shared.tasksChannel).toBe(on);
+    expect(shared.tasksChannel).toBe(true);
     // task.changed with nothing cached fetches nothing (no /tasks request while nothing shows tasks).
     act(() => shared.onEvent?.({ type: "task.changed", payload: { taskId: "t1", part: "task", version: 2 } } as never));
     await act(async () => {});
-    expect(get.mock.calls.map(([path]) => path)).toEqual(on ? ["/messaging/live-config", "/teams/agents"] : ["/messaging/live-config"]);
-  });
-
-  it("until the live config answers, the switch is what this browser last saw for this person and workspace (W12-18)", async () => {
-    let answer: (value: Record<string, unknown>) => void = () => {};
-    get.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
-    localStorage.setItem("lightbulb.lastKnown.superAgent:user-a:org-a", "1");
-    localStorage.setItem("lightbulb.lastKnown.superAgent:user-a:org-b", "0");
-    function SwitchProbe() { return <div>switch:{useSuperAgent() ? "on" : "off"}</div>; }
-    render(<LiveEventsProvider><SwitchProbe /></LiveEventsProvider>);
-    expect(screen.getByText("switch:on")).toBeTruthy();
-    // The answer wins and is remembered for the next load.
-    await act(async () => answer({ ...LIVE_CONFIG, features: { superAgent: false } }));
-    await waitFor(() => expect(screen.getByText("switch:off")).toBeTruthy());
-    expect(localStorage.getItem("lightbulb.lastKnown.superAgent:user-a:org-a")).toBe("0");
-  });
-
-  it("useSuperAgent is off outside a provider (a component rendered on its own)", () => {
-    function SwitchProbe() { return <div>switch:{useSuperAgent() ? "on" : "off"}</div>; }
-    render(<SwitchProbe />);
-    expect(screen.getByText("switch:off")).toBeTruthy();
+    await waitFor(() => expect(get.mock.calls.map(([path]) => path)).toEqual(["/messaging/live-config", "/teams/agents"]));
   });
 
   it("pushes Tauri auth while AppSync is disconnected and again on native node status", async () => {

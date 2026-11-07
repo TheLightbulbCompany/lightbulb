@@ -140,3 +140,10 @@ async def test_assistant_name_from_the_agent_page(m):
     with patch.object(voice_meet.messaging_repo, "get_voice_agent", AsyncMock(side_effect=[{"name": " Nova "}, None])):
         assert await voice_meet.assistant_name("org_1") == "Nova"
         assert await voice_meet.assistant_name("org_1") == "Lightbulb"
+
+
+def test_call_start_times_compare_across_offsets():
+    assert voice_meet._started({"startedAt": "2026-11-07T07:00:00-05:00"}) == voice_meet._started(
+        {"startedAt": "2026-11-07T12:00:00+00:00"}
+    )
+    assert voice_meet._started({}).year == 1

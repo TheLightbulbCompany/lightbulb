@@ -69,7 +69,7 @@ export function TeamFeed({ client, scope, currentUserId, onDiscuss, isVisible = 
   const feed = useSWR(["activity-feed", scope], () => client.getFeed());
   // Super-agent: the front agent's older posts were authored with its seat name ("CEO"); it reads "Lightbulb".
   const live = useOptionalLiveEvents();
-  const frontAgentId = live?.superAgent ? live.frontAgentId : undefined;
+  const frontAgentId = live?.frontAgentId;
   const roomId = feed.data?.roomId ?? null;
   const room = useSWR(roomId ? ["activity-feed-room", roomId] : null, () => client.getRoom(roomId!), { refreshInterval: REFRESH_MS });
   const newest = room.data?.lastMessageSeq;

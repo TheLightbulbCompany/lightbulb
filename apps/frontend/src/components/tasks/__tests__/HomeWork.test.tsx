@@ -7,8 +7,8 @@ import { overviewGroups, type TaskSummary } from "@lightbulb/shared";
 import { SAM } from "@lightbulb/shared/tasks/fixtures";
 import { Fresh, fakeTasksClient, type FakeTasksClient } from "./fakeTasks";
 
-const live = vi.hoisted(() => ({ superAgent: true, tasks: null as unknown, agentNames: new Map() }));
-vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useSuperAgent: () => live.superAgent, useOptionalLiveEvents: () => live }));
+const live = vi.hoisted(() => ({ tasks: null as unknown, agentNames: new Map() }));
+vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useOptionalLiveEvents: () => live }));
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 vi.mock("@/hooks/useActivity", () => ({ useActivity: () => ({ items: [] }) }));
 // The server's complete Needs you read (`/tasks?needsYou=true`) answers from the same rows, by scope; automations too.

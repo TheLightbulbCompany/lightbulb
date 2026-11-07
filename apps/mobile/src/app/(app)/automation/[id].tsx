@@ -10,7 +10,6 @@ import { LoadState } from "../../../components/tasks/WorkScreen";
 import { errorCopy } from "../../../components/tasks/useTaskActions";
 import { runNow, useAutomationActions, useAutomationSource, useAutomationViewer } from "../../../components/tasks/automations";
 import { fonts, radii, spacing, useChatPalette } from "../../../config/theme";
-import { useSuperAgent } from "../../../providers/live-events";
 
 /**
  * One automation (mockup step 11 on the phone): its schedule in the viewer's zone, instructions,
@@ -21,17 +20,13 @@ export default function AutomationScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const palette = useChatPalette();
   const viewer = useAutomationViewer();
-  // Behind the switch: off (or loading), a pasted link fetches nothing.
-  const on = useSuperAgent();
   const source = useAutomationSource();
-  const { data: a, error, isValidating } = useAutomation(source, on ? id ?? null : null);
-  const { data: runs, error: runsError, mutate: retryRuns } = useAutomationRuns(source, on ? id ?? null : null);
+  const { data: a, error, isValidating } = useAutomation(source, id ?? null);
+  const { data: runs, error: runsError, mutate: retryRuns } = useAutomationRuns(source, id ?? null);
   const { act } = useAutomationActions();
   const [note, setNote] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const viewerTz = viewerTimeZone();
-
-  if (!on) return null;
 
   if (!a) {
     return (

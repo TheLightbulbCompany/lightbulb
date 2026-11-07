@@ -51,7 +51,9 @@ vi.mock("@/hooks/useBilling", () => ({
   }),
 }));
 
-import SettingsPage from "../page";
+import { PANELS } from "@/components/settings/SettingsPlace";
+
+const SettingsPage = PANELS.billing;
 
 const live = {
   is_subscribed: true,

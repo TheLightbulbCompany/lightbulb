@@ -51,7 +51,7 @@ import { RunBlock } from "../../../../components/room/RunBlock";
 import { fonts, radii, spacing, useChatPalette } from "../../../../config/theme";
 import { claimRoomTarget } from "../../../../lib/activeAgent";
 import { hasNativeVoice } from "../../../../lib/webrtc";
-import { useLiveEvents, useSuperAgent } from "../../../../providers/live-events";
+import { useLiveEvents } from "../../../../providers/live-events";
 import { useContainerStatusContext } from "../../../../lib/containerStatusContext";
 import { useLive, useRoomLive } from "../../../../providers/live";
 import { JumpToLatest } from "../../../../components/conversation/JumpToLatest";
@@ -241,15 +241,14 @@ function Conversation() {
     candidate, ownerName: candidate.session.humanUserId === userId ? "You" : memberName(members, candidate.session.humanUserId),
   })), [sessionCandidates, members, userId]);
   const viewer = members?.find((member) => member.kind === "human" && member.id === userId);
-  // Super-agent: the front agent reads "Lightbulb" whatever its stored seat name ("CEO").
-  const superAgentOn = useSuperAgent();
+  // The front agent reads "Lightbulb" whatever its stored seat name ("CEO").
   const others = (members ?? []).filter(
     (member) => !(member.kind === "human" && member.id === userId),
-  ).map((member) => (superAgentOn && member.kind === "agent" && member.id === frontId ? { ...member, displayName: "Lightbulb" } : member));
-  // Super-agent, a new workspace still being set up: the viewer's latest message, with nothing after it, is admitted
+  ).map((member) => (member.kind === "agent" && member.id === frontId ? { ...member, displayName: "Lightbulb" } : member));
+  // A new workspace still being set up: the viewer's latest message, with nothing after it, is admitted
   // and kept until the runtime is up (the Router waits), so it reads "Queued" rather than looking ignored.
   const containerStatus = useContainerStatusContext();
-  const queuedLabel = superAgentOn && containerStatus?.kind === "starting" && others.some((m) => m.kind === "agent")
+  const queuedLabel = containerStatus?.kind === "starting" && others.some((m) => m.kind === "agent")
     && mainMessages[mainMessages.length - 1]?.messageId === lastOwnId
     ? "Queued · Lightbulb answers as soon as setup finishes" : null;
   const isChannel = room?.kind === "channel";
@@ -260,9 +259,9 @@ function Conversation() {
     && (viewer?.role === "owner" || viewer?.role === "admin");
   const dmWithAgent = isDm && others[0]?.kind === "agent";
   const isHumanDm = isDm && others[0]?.kind === "human";
-  // Super-agent: a DM with a specialist (any agent but the front one) says the specialist now works through
+  // A DM with a specialist (any agent but the front one) says the specialist now works through
   // Lightbulb. Only once the front agent is known, so an unresolved roster never calls every agent a specialist.
-  const frontAgentId = superAgentOn ? frontId : undefined;
+  const frontAgentId = frontId;
   const specialistDm = !!frontAgentId && dmWithAgent && others.length === 1 && others[0]?.id !== frontAgentId;
   // One heartbeat/snapshot loop per screen that shows it (ponytail) — Chats
   // already runs its own, and only a human DM's status line reads this one.

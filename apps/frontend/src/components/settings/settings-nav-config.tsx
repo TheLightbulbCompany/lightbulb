@@ -37,15 +37,12 @@ export type NavSection = { label: string; items: NavItem[] };
 // admin may see or mint one (the panel and the backend both re-check).
 export const ADMIN_ONLY_PANELS = new Set(["usage", "members", "approvals"]);
 
-// The one Settings page (product simplification, 2026-10-14): Control's panels,
-// the Teams Settings tab and the Accounts tab all live here, in six groups.
+// Settings inside the shell (UX slice 4), in plain groups. Business (what Work › Money showed) joins Plan; Model's
+// single row folds into Plan.
 export const SETTINGS_NAV_SECTIONS: NavSection[] = [
+  { label: "You", items: [{ id: "profile", name: "Profile", icon: "profile", panel: "profile" }] },
   {
-    label: "YOU",
-    items: [{ id: "profile", name: "Profile", icon: "profile", panel: "profile" }],
-  },
-  {
-    label: "WORKSPACE",
+    label: "Workspace",
     items: [
       // The company's name and description (was the Teams Settings tab).
       { id: "workspace", name: "Workspace", icon: "workspace", panel: "workspace" },
@@ -56,35 +53,23 @@ export const SETTINGS_NAV_SECTIONS: NavSection[] = [
       { id: "approvals", name: "Approvals", icon: "approvals", panel: "approvals" },
     ],
   },
+  // What the team is connected to and what agents may do with it, as one list.
+  { label: "Connect", items: [{ id: "connections", name: "Connections", icon: "connections", panel: "connections" }] },
   {
-    label: "CONNECTIONS",
-    items: [
-      // What the team is connected to and what agents may do with it: the
-      // dock's Integrations, Connections and Accounts tabs, as one list.
-      { id: "connections", name: "Connections", icon: "connections", panel: "connections" },
-    ],
-  },
-  {
-    label: "PLAN AND USAGE",
+    label: "Plan",
     items: [
       { id: "billing", name: "Billing", icon: "billing", panel: "billing" },
       // Admin-gated: hidden from non-admin org members via ADMIN_ONLY_PANELS.
       { id: "usage", name: "Usage", icon: "usage", panel: "usage" },
-      // Paperclip-backed spend vs monthly budget. Readable by every member;
-      // only admins see the set-budget control, so it is NOT in ADMIN_ONLY_PANELS.
-      { id: "budgets", name: "Budgets", icon: "usage", panel: "budgets" },
+      { id: "business", name: "Business", icon: "business", panel: "business" },
+      // LLMPanel verbatim — it already embeds CreditsSection, so there is NO separate Credits row.
+      { id: "providers", name: "Model & credits", icon: "providers", panel: "providers" },
     ],
   },
+  // Shown only to a workspace that has used them (SettingsPlace's useShowsDeveloper): a coding session, the desktop
+  // app, or an MCP server of its own (W13-10). Session notifications live under Desktop here, not in Profile.
   {
-    label: "MODEL",
-    items: [
-      // LLMPanel verbatim — it already embeds CreditsSection, so there is NO
-      // separate Credits row.
-      { id: "providers", name: "Model & Credits", icon: "providers", panel: "providers" },
-    ],
-  },
-  {
-    label: "ADVANCED",
+    label: "Developer",
     items: [
       { id: "skills", name: "Skills", icon: "skills", panel: "skills" },
       // MCP servers (owner-level mcp.servers).
@@ -92,27 +77,8 @@ export const SETTINGS_NAV_SECTIONS: NavSection[] = [
       // MCP servers on the user's own Mac — desktop-app-only.
       { id: "local-mcp", name: "Local MCP servers", icon: "mcp", panel: "local-mcp" },
       { id: "desktop", name: "Desktop", icon: "desktop", panel: "desktop" },
-      { id: "marketplace", name: "Marketplace", icon: "marketplace", panel: "marketplace" },
     ],
   },
-];
-
-// Super-agent (UX slice 4): the same Settings inside the shell, in plain groups. Business (what
-// Work › Money showed) joins Plan; Model's single row folds into Plan; Budgets and Marketplace are not shown.
-const ROW = (id: string) => SETTINGS_NAV_SECTIONS.flatMap((s) => s.items).find((item) => item.id === id)!;
-export const SUPER_AGENT_SETTINGS_NAV_SECTIONS: NavSection[] = [
-  { label: "You", items: [ROW("profile")] },
-  { label: "Workspace", items: [ROW("workspace"), ROW("members"), ROW("approvals")] },
-  { label: "Connect", items: [ROW("connections")] },
-  {
-    label: "Plan",
-    items: [ROW("billing"), ROW("usage"),
-      { id: "business", name: "Business", icon: "business", panel: "business" },
-      { ...ROW("providers"), name: "Model & credits" }],
-  },
-  // Shown only to a workspace that has used them (SettingsPlace's useShowsDeveloper): a coding session, the desktop
-  // app, or an MCP server of its own (W13-10). Session notifications live under Desktop here, not in Profile.
-  { label: "Developer", items: [ROW("skills"), ROW("mcp"), ROW("local-mcp"), ROW("desktop")] },
 ];
 export const DEVELOPER_PANELS: ReadonlySet<string> = new Set(["skills", "mcp", "local-mcp", "desktop"]);
 
@@ -166,14 +132,6 @@ export function NavIcon({ icon }: { icon: string }) {
           <rect x="2" y="3" width="20" height="18" rx="2" />
           <path d="m7 8 3 3-3 3" />
           <path d="M13 15h4" />
-        </svg>
-      );
-    case "marketplace":
-      return (
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M3 9l1-5h16l1 5" />
-          <path d="M3 9v11a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1V9" />
-          <path d="M8 13h8" />
         </svg>
       );
     case "connections":

@@ -37,8 +37,7 @@ jest.mock("../../../lib/teamsData", () => ({
 }));
 // The agent roster reads through the live-events runtime, which throws outside
 // its provider.
-jest.mock("../../../providers/live-events", () => ({ useSuperAgent: () => false,
-  useLiveEvents: () => ({
+jest.mock("../../../providers/live-events", () => ({ useLiveEvents: () => ({
     httpReady: true,
     liveConnected: true,
     liveError: null,

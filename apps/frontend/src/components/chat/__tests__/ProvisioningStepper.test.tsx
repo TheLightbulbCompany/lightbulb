@@ -1,5 +1,4 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { SWRConfig } from "swr";
 import { render, screen, act, fireEvent } from "@testing-library/react";
 import React from "react";
 import { PROVISION_STUCK_MS, PROVISION_TIMEOUT_MS } from "@lightbulb/shared";
@@ -18,7 +17,6 @@ vi.mock("swr", async (importOriginal) => {
 
 const mockSuperAgent = vi.hoisted(() => ({ on: false }));
 vi.mock("@/hooks/useLiveEvents", () => ({
-  useSuperAgent: () => mockSuperAgent.on,
   useLiveEvents: () => ({
     liveConnected: true,
     onEvent: () => () => {},
@@ -194,36 +192,6 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     apiGet.mockResolvedValue({});
   });
 
-  it("keeps the workspace usable through every cold-start phase, with an agents banner instead of the setup card", () => {
-    // Messaging never needs the container, so no container state may put the
-    // full-screen setup card in front of conversations.
-    const base = { phase: "normal", blocked: null, refreshInterval: 3000, refresh: vi.fn() };
-    const coldStarts = [
-      { container_status: "provisioning", runtime_phase: "provisioning", container_substatus: "service_created" },
-      { container_status: "provisioning", runtime_phase: "provisioning", container_substatus: "task_running" },
-      { container_status: "running", runtime_phase: "starting", container_substatus: "gateway_healthy" },
-    ];
-    for (const health of [null, { ok: true }]) {
-      gatewayHealthData = health;
-      for (const container of coldStarts) {
-        useProvMock.mockReturnValue({ ...base, container });
-        const { unmount } = render(
-          <ProvisioningStepper>
-            <div>children</div>
-          </ProvisioningStepper>,
-        );
-        expect(screen.getByText("children")).toBeInTheDocument();
-        expect(screen.getByText(/ready in about a minute/i)).toBeInTheDocument();
-        // The step label now also appears in the BANNER, so "is the card
-        // gone?" can no longer be asked of a step label. Ask it of something
-        // only the full-screen card renders: its rotating-ideas eyebrow.
-        expect(screen.queryByText(/try asking your agent to/i)).not.toBeInTheDocument();
-        unmount();
-      }
-    }
-    gatewayHealthData = null;
-  });
-
   it("super-agent on, real setup in progress (a container row exists): the welcome copy, not the old 'getting ready' one", () => {
     mockSuperAgent.on = true;
     try {
@@ -234,17 +202,6 @@ describe("ProvisioningStepper blocked-state rendering", () => {
       expect(screen.getByRole("status")).toHaveTextContent("You can write to Lightbulb now — it answers as soon as setup finishes.");
       expect(screen.queryByText(/ready in about a minute/i)).toBeNull();
     } finally { mockSuperAgent.on = false; }
-  });
-
-  it("keeps the setup card only until the first status response arrives", () => {
-    useProvMock.mockReturnValue({ phase: "normal", blocked: null, refreshInterval: 3000, refresh: vi.fn(), container: null });
-    render(
-      <ProvisioningStepper>
-        <div>children</div>
-      </ProvisioningStepper>,
-    );
-    expect(screen.getByText("Setting up your workspace…")).toBeInTheDocument();
-    expect(screen.queryByText("children")).not.toBeInTheDocument();
   });
 
   it("super-agent on: no setup card at all; the chat is open with a banner saying Lightbulb answers once setup finishes", () => {
@@ -571,43 +528,6 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     expect(provisionCalls).toHaveLength(0);
   });
 
-  it("skips ProviderPicker for a trial_local workspace and proceeds into provisioning", () => {
-    // A trial_local workspace has no provider choice. The naive
-    // `isSubscribed && provider_choice` ownerOnboarded check would wrongly
-    // fall through to the ProviderPicker mid-provision — the trap this test
-    // guards against.
-    billingMockIsSubscribed = true;
-    billingMockAccount = { provider_choice: null, subscription_status: "trial_local" };
-    clerkMockOrganization = { id: "org_1", name: "Acme" };
-
-    useProvMock.mockReturnValue({
-      phase: "normal",
-      blocked: null,
-      refreshInterval: 3000,
-      refresh: vi.fn(),
-      container: {
-        container_status: "provisioning",
-        runtime_phase: "provisioning",
-        container_substatus: "service_created",
-      },
-    });
-
-    render(
-      <ProvisioningStepper>
-        <div>children</div>
-      </ProvisioningStepper>,
-    );
-
-    // Must NOT render the ProviderPicker.
-    expect(screen.queryByText(/One workspace plan/i)).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("heading", { name: /Sign in with ChatGPT/i }),
-    ).not.toBeInTheDocument();
-    // Must proceed past "payment" into the workspace while the container boots.
-    expect(screen.getByText("children")).toBeInTheDocument();
-    expect(screen.getByText(/ready in about a minute/i)).toBeInTheDocument();
-  });
-
   it("renders ChatGPTOAuthStep when ?provider=chatgpt_oauth even if gate is blocked", async () => {
     // After clicking the gate's "Sign in with ChatGPT" button, the URL
     // becomes /chat?provider=chatgpt_oauth. The gate is still firing
@@ -892,36 +812,6 @@ describe("ProvisioningStepper blocked-state rendering", () => {
       expect(screen.getByText(/taking longer than it should/i)).toBeInTheDocument();
     });
 
-    it('"Check again" on a workspace with NO container row starts it through /container/recover', async () => {
-      // Its first provision never started (organization.created gave up) and nothing
-      // re-drives it, so a plain re-read would be a dead button.
-      useProvMock.mockReturnValue({
-        phase: "normal",
-        container: { container_status: null, runtime_phase: "provisioning", lifecycle: "provisioning" },
-        blocked: null,
-        refresh: refreshSpy,
-      });
-      render(
-        <ProvisioningStepper>
-          <div>children</div>
-        </ProvisioningStepper>,
-      );
-      // Offered at once: nothing is provisioning, so waiting out the 5-minute slow threshold
-      // would leave "ready in about a minute" on screen with nothing running.
-      expect(screen.getByText(/hasn't started setting up yet/i)).toBeInTheDocument();
-
-      await act(async () => {
-        fireEvent.click(screen.getByRole("button", { name: /Check again/ }));
-      });
-      expect(apiPost).toHaveBeenCalledWith("/container/recover", {});
-    });
-
-    it("rolls the setup card's counter to h:mm:ss instead of rendering 1260:37", () => {
-      // The card (and its counter) only remains while no status has arrived.
-      renderColdStart(false);
-      act(() => void vi.advanceTimersByTime(3_600_000 + 5_000));
-      expect(screen.getByText(/^1:00:0\d$/)).toBeInTheDocument();
-    });
   });
 
   it("does not render the Teams-degraded notice on a healthy ready container", () => {
@@ -1206,7 +1096,7 @@ describe("agents banner progress", () => {
       // The banner stays the polite live region it was.
       const banner = screen.getByRole("status");
       expect(banner).toHaveAttribute("aria-live", "polite");
-      expect(banner).toHaveTextContent(/ready in about a minute/i);
+      expect(banner).toHaveTextContent(/You can write to Lightbulb now/);
     },
   );
 

@@ -6,9 +6,9 @@ import { ApiError, type QuestionView, type TaskDetail } from "@lightbulb/shared"
 import { FIXTURES, PRIYA, SAM, answeredApprovalRow, answeredApprovalView, fixtureTask, viewAs } from "@lightbulb/shared/tasks/fixtures";
 import { Fresh, fakeTasksClient, type FakeTasksClient } from "./fakeTasks";
 
-const live = vi.hoisted(() => ({ superAgent: true, tasks: null as unknown, messaging: { sendMessage: vi.fn(async () => ({})) } }));
+const live = vi.hoisted(() => ({ tasks: null as unknown, messaging: { sendMessage: vi.fn(async () => ({})) } }));
 const capture = vi.hoisted(() => vi.fn());
-vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useSuperAgent: () => live.superAgent }));
+vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live }));
 vi.mock("@/lib/analytics", () => ({ capture }));
 const ws = vi.hoisted(() => ({ value: null as unknown }));
 vi.mock("@/components/messaging/MessagingWorkspaceContext", async (importOriginal) => ({

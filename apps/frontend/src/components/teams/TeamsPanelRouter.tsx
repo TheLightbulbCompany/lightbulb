@@ -3,14 +3,12 @@
 import dynamic from "next/dynamic";
 import { PageSkeleton } from "@/components/teams/shared/components/PageSkeleton";
 import {
-  AGENTS_VIEWS,
   INBOX_SECTIONS,
   MONEY_SECTIONS,
   TASKS_GROUP_BY,
   type InboxSectionId,
 } from "@/components/workspace/panelRegistry";
 import { openPanel } from "@/components/workspace/workspaceController";
-import type { AgentsViewMode } from "./agents/agentsViewMode";
 import type { MoneySectionId } from "./panels/MoneyPanel";
 import type { TasksGroupBy } from "./issues/TasksList";
 
@@ -116,12 +114,6 @@ function asInboxSection(value: string | undefined): InboxSectionId | undefined {
   return value && INBOX_SECTIONS.has(value) ? (value as InboxSectionId) : undefined;
 }
 
-// And for Agents: an unknown ?view falls back to the panel's own stored
-// preference rather than reaching it as a bogus view.
-function asAgentsView(value: string | undefined): AgentsViewMode | null {
-  return value && AGENTS_VIEWS.has(value) ? (value as AgentsViewMode) : null;
-}
-
 // And for Tasks: an unknown ?groupBy falls back to the page's own default
 // (no grouping) rather than reaching TasksList as a bogus dimension.
 function asTasksGroupBy(value: string | undefined): TasksGroupBy | undefined {
@@ -199,7 +191,7 @@ export function TeamsPanelRouter({
     );
   }
   if (panel === "agents") {
-    return <AgentsListPanel initialView={asAgentsView(panelParams?.view)} />;
+    return <AgentsListPanel />;
   }
   if (panel === "inbox") {
     return <InboxPanel section={asInboxSection(panelParams?.section)} />;

@@ -2,8 +2,8 @@ import { fireEvent, render, screen } from "@testing-library/react-native";
 import type { CanonicalRoomMessage, RoomMember } from "@lightbulb/shared";
 import { FIXTURES, LIGHTBULB, SAM } from "@lightbulb/shared/tasks/fixtures";
 
-const live = { superAgent: true, tasks: null as unknown };
-jest.mock("../../../providers/live-events", () => ({ useLiveEvents: () => live, useOptionalLiveEvents: () => live, useSuperAgent: () => live.superAgent }));
+const live = { tasks: null as unknown };
+jest.mock("../../../providers/live-events", () => ({ useLiveEvents: () => live, useOptionalLiveEvents: () => live }));
 jest.mock("expo-router", () => ({ router: { push: jest.fn() } }));
 jest.mock("expo-crypto", () => ({ randomUUID: () => "00000000-0000-4000-8000-000000000000" }));
 jest.mock("react-native-safe-area-context", () => ({ useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));
@@ -21,7 +21,7 @@ const list = jest.fn(async () => ({ tasks: FIXTURES.step02.tasks, next: null }))
 const group = (message: CanonicalRoomMessage, over: Partial<Parameters<typeof MessageGroup>[0]> = {}) =>
   render(<Fresh><MessageGroup message={message} collapsed={false} replyCount={0} currentUserId={SAM} attachmentUrl={attachmentUrl} members={members} {...over} /></Fresh>);
 
-beforeEach(() => { live.superAgent = true; list.mockClear(); live.tasks = { cacheScope: `org_group_${Math.random()}`, list, questions: jest.fn(async () => ({ items: [] })) }; });
+beforeEach(() => { list.mockClear(); live.tasks = { cacheScope: `org_group_${Math.random()}`, list, questions: jest.fn(async () => ({ items: [] })) }; });
 
 it("Finance byline on a result line", async () => {
   await group(result);
@@ -48,11 +48,3 @@ it("the person's message says where it went; the agent's 👀 is a receipt, not 
   expect(onToggleReaction).not.toHaveBeenCalled();
 });
 
-it("flag off: no cards, no byline change, no /tasks read", async () => {
-  live.superAgent = false;
-  await group(reply);
-  await group(result);
-  expect(screen.queryByText("Workshop signup app")).toBeNull();
-  expect(screen.queryByText("Finance")).toBeNull();
-  expect(list).not.toHaveBeenCalled();
-});

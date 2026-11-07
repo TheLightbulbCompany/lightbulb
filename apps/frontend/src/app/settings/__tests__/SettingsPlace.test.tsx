@@ -73,11 +73,9 @@ vi.mock("@/hooks/useBilling", () => ({
   }),
 }));
 
-const live = vi.hoisted(() => ({ superAgent: true }));
 vi.mock("@/hooks/useLiveEvents", () => ({
-  useSuperAgent: () => live.superAgent,
   useLiveEvents: () => ({ tasks: { cacheScope: "org_test" } }),
-  useOptionalLiveEvents: () => ({ superAgent: live.superAgent, httpReady: true, featuresLoaded: true }),
+  useOptionalLiveEvents: () => ({ httpReady: true }),
 }));
 const shell = vi.hoisted(() => ({ openPanel: vi.fn(), updatePanelParams: vi.fn(), replaceSearchParams: vi.fn() }));
 vi.mock("@/components/workspace/workspaceController", () => ({ openPanel: shell.openPanel, updatePanelParams: shell.updatePanelParams }));
@@ -98,7 +96,6 @@ const place = (params: Record<string, string> = {}) => render(
   <SWRConfig value={{ provider: () => new Map() }}><SettingsPlace id="settings" params={params} /></SWRConfig>);
 
 beforeEach(() => {
-  live.superAgent = true;
   clerk.membership = null;
   nav.panel = null; nav.extra = ""; nav.replace.mockReset();
   shell.openPanel.mockReset(); shell.replaceSearchParams.mockReset(); shell.updatePanelParams.mockReset();
@@ -198,22 +195,11 @@ describe("Settings place (super-agent)", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Usage is for workspace admins. Ask one to open it.");
     expect(screen.getByRole("tab", { name: /Profile/ })).toHaveAttribute("aria-selected", "true");
     unmount();
-    clerk.membership = null;
-    place({ section: "budgets" });
-    expect(screen.getByRole("status")).toHaveTextContent("Budgets isn't part of Settings any more.");
   });
 
-  it("/settings redirects into the shell with its section and every other param; off, the page renders as before", () => {
+  it("/settings redirects into the shell with its section and every other param", () => {
     nav.panel = "connections"; nav.extra = "connected=github";
-    const { unmount } = render(<SettingsPage />);
-    expect(nav.replace).toHaveBeenCalledWith("/chat?connected=github&panel=settings&section=connections");
-    unmount();
-    live.superAgent = false;
-    nav.panel = null; nav.extra = "";
-    nav.replace.mockReset();
     render(<SettingsPage />);
-    expect(nav.replace).not.toHaveBeenCalled();
-    expect(screen.getByRole("link", { name: /Back to Chat/ })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: /Budgets/ })).toBeInTheDocument();
+    expect(nav.replace).toHaveBeenCalledWith("/chat?connected=github&panel=settings&section=connections");
   });
 });

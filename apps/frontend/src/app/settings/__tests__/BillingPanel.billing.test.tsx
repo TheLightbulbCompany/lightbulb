@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, act } from "@testing-library/react";
 import React from "react";
 
-// Covers the settings BillingPanel workspace branch (settings/page.tsx):
+// Covers the settings BillingPanel workspace branch (SettingsPlace.tsx):
 // subscribed workspaces render one plan card, while unsubscribed workspaces
 // get the workspace-billing CTA. There is no membership-priced branch.
 //
@@ -60,7 +60,9 @@ vi.mock("@/hooks/useBilling", () => ({
   }),
 }));
 
-import SettingsPage from "../page";
+import { PANELS } from "@/components/settings/SettingsPlace";
+
+const SettingsPage = PANELS.billing;
 
 describe("BillingPanel — workspace billing", () => {
   beforeEach(() => {

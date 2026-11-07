@@ -46,12 +46,15 @@ export interface AgentConfig {
   allow: { book: boolean; move: boolean; waitlist: boolean; greetByName: boolean; answer: boolean };
   knowledge: Knowledge[]; toAdd: string[]; instructions: string;
   hours: Record<string, Day>; holidays: string;
-  services: { name: string; minutes: number; price: string; staff: string }[]; bufferMin: number;
+  /** `minutesGuessed`: the onboarding draft guessed the duration; cleared when the owner sets it. */
+  services: { name: string; minutes: number; price: string; staff: string; minutesGuessed?: boolean }[]; bufferMin: number;
   bookingsGo: "google" | "square" | "other" | "own"; otherSystem: string;
   number: string; forwardFrom: string;
   handoff: { number: string; onlyOpenHours: boolean };
   meetings: { followUps: boolean; emailNotes: boolean };
   reminders: { dayBefore: boolean; missedCallers: boolean; waitlist: boolean };
+  /** Onboarding: what the owner typed in step 1, and the step to resume at (absent once it went live). */
+  business?: string; city?: string; website?: string; onboardingStep?: number;
 }
 
 export const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
@@ -73,18 +76,30 @@ export const DEFAULT_CONFIG: AgentConfig = {
 /** The name callers hear; "Lightbulb" until the owner picks one. */
 export const nameOf = (c?: Partial<AgentConfig> | null) => c?.name?.trim() || "Lightbulb";
 
+/** The Agent page document, defaults filled in. `isNew`: the workspace has no document yet (first run). */
 export function useAgentConfig() {
   const api = useApi();
   const swr = useSWR("/voice/agent", async () => {
     const { config } = (await api.get("/voice/agent")) as { config: Partial<AgentConfig> | null };
-    return { ...DEFAULT_CONFIG, ...config } as AgentConfig;
+    return { config: { ...DEFAULT_CONFIG, ...config } as AgentConfig, isNew: config == null };
   });
+  const { mutate } = swr;
   const save = useCallback(async (next: AgentConfig) => {
-    await swr.mutate(next, { revalidate: false });
+    await mutate({ config: next, isNew: false }, { revalidate: false });
     await api.put("/voice/agent", { config: next });
-  }, [api, swr]);
-  return { ...swr, save };
+  }, [api, mutate]);
+  return { data: swr.data?.config, isNew: swr.data?.isNew, error: swr.error, isLoading: swr.isLoading, save };
 }
+
+/** Onboarding shows until Go live: for a workspace with no document, or one that stopped part-way. */
+export const needsOnboarding = (c: AgentConfig | undefined, isNew: boolean | undefined) =>
+  !!c && (!!isNew || (!c.live && !!c.onboardingStep));
+
+/** "+14842079294" as "(484) 207-9294"; anything else as it is. */
+export const usPhone = (e164: string) => {
+  const m = /^\+1(\d{3})(\d{3})(\d{4})$/.exec(e164);
+  return m ? `(${m[1]}) ${m[2]}-${m[3]}` : e164;
+};
 
 /** Open Questions for the viewer. A workspace without the super-agent 404s: no Questions, not an error. */
 export function useQuestions() {

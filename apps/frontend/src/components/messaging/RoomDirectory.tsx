@@ -7,7 +7,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { ChevronDown, ChevronRight, GripVertical, History, MoreHorizontal, Pencil, Plus, SlidersHorizontal, Trash2, X } from "lucide-react";
 import { listenModeOptions, roomDisplayName, soleChannelOwner, type ListenMode, type SessionMarks, type SessionRow, type MemberPrefsRequest, type PatchRoomRequest, type ProjectColor, type ProjectIcon, type RoomKind, type RoomSection } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { ParticipantAvatar } from "./ParticipantAvatar";
 import { copyText, roomPermalink } from "./messageLinks";
@@ -16,7 +16,6 @@ import { RoomDirectoryRow } from "./RoomDirectoryRow";
 import { NewProjectDialog } from "@/components/projects/NewProjectDialog";
 import type { SettingsFrom } from "@/components/projects/ProjectSettingsDialog";
 import { groupRooms, type RoomGroup, type SidebarRow, type SidebarSession, type SidebarSort } from "./roomSections";
-import { useSuperAgent } from "@/hooks/useLiveEvents";
 import { useNeedsYouTasks } from "@/components/tasks/useRoomThreads";
 import { foldedEntries, ownWaitingCount, sessionRowGone, sessionRowGroups, sessionRowKey, NEEDS_YOU_GROUP, SESSION_GROUP_FOLD, type SessionGroupBy, type SessionShow } from "./sessionGroups";
 import { SessionListRow } from "./SessionListRow";
@@ -104,6 +103,8 @@ const TAIL_GROUPS = new Set(["external", "archived"]);
 /** The new chat dialog's words for an agent's listen mode (W18): what it does, not a stored mode's name. */
 const REPLIES: Record<ListenMode, string> = { active: "To everything", mentions: "When mentioned", observe: "Never" };
 
+const WORKSPACE_SCOPE = { kind: "workspace" } as const;
+
 export function RoomDirectory(props: RoomDirectoryProps) {
   // Keyed on the owner scope alone: every dependent read (active=, the
   // collapsed-group visible filter) already takes currentRoomId as a plain
@@ -161,14 +162,13 @@ function DirectoryContent({
   ceoAgentId,
   onNavigate,
 }: RoomDirectoryProps) {
-  const superAgent = useSuperAgent();
   // A project's warn dot: its share of the one Needs you read (needsYouCount's tasks), so the sidebar agrees with the badge.
-  const needsYouTasks = useNeedsYouTasks(superAgent ? { kind: "workspace" } : null).tasks;
+  const needsYouTasks = useNeedsYouTasks(WORKSPACE_SCOPE).tasks;
   const id = useId();
   const [creating, setCreating] = useState(false);
-  // Super-agent: + › New project opens its own dialog (UX slice 6); the chat dialog keeps DM and group chat.
+  // + › New project opens its own dialog (UX slice 6); the chat dialog keeps DM and group chat.
   const [newProject, setNewProject] = useState(false);
-  const [kind, setKind] = useState<RoomKind>(superAgent ? "dm" : "channel");
+  const [kind, setKind] = useState<RoomKind>("dm");
   const [name, setName] = useState("");
   const [query, setQuery] = useState("");
   const [sessionFilter, setSessionFilter] = useState("");
@@ -247,7 +247,7 @@ function DirectoryContent({
   }).sort((a, b) => Number(isLightbulb(b)) - Number(isLightbulb(a)));
   const chooseKind = (next: RoomKind) => {
     setKind(next);
-    const lightbulb = superAgent && next === "group-dm" ? participants.find(isLightbulb) : undefined;
+    const lightbulb = next === "group-dm" ? participants.find(isLightbulb) : undefined;
     setSelected(lightbulb ? new Map([[`agent:${lightbulb.id}`, { kind: "agent", id: lightbulb.id, role: "member", listenMode: "active" }]]) : new Map());
   };
   const partialError = state === "error" && rooms.length > 0;
@@ -264,15 +264,15 @@ function DirectoryContent({
   const dmCounterpart = (room: DirectoryRoom) => room.kind === "dm" && room.participants.length === 1
     ? `${room.participants[0].kind}:${room.participants[0].id}` : null;
   const withDm = new Set(rooms.map(dmCounterpart));
-  // Super-agent: the roster lists people and the one front agent; specialists are labels on threads, not
-  // DM partners (they, and any DM with one, live on the Team page). Off, or while the front agent is still
-  // unknown (/agents not answered yet, or no "ceo" role in the roster): every agent, as today.
-  const oneVoice = superAgent && !!ceoAgentId;
+  // The roster lists people and the one front agent; specialists are labels on threads, not DM partners (they, and
+  // any DM with one, live on the Team page). While the front agent is still unknown (/agents not answered yet, or no
+  // "ceo" role in the roster): every agent.
+  const oneVoice = !!ceoAgentId;
   const roster = participants.filter((participant) => !withDm.has(`${participant.kind}:${participant.id}`)
     && (!oneVoice || participant.kind !== "agent" || participant.id === ceoAgentId));
   const groups = groupRooms(rooms, sections, { sort: prefs.sort, nameOf: (room) => roomDisplayName(room, room.participants),
     alwaysShow: roster.length > 0 ? ["direct"] : [], currentRoomId,
-    ...(oneVoice ? { frontAgentId: ceoAgentId } : {}), pinned: superAgent });
+    ...(oneVoice ? { frontAgentId: ceoAgentId } : {}) });
   // `focusRoomTrigger` can run long after the render that captured it (it's
   // attached to a promise settling), so it must read the CURRENT groups, not
   // whatever `groups` was closed over at click time -- a plain ref, kept in
@@ -588,13 +588,13 @@ function DirectoryContent({
           </button>
         </li>;
         return <RoomDirectoryRow key={room.roomId} room={room} label={label} sections={sections}
-          needsYou={needsYouTasks.filter((t) => t.audience?.roomId === room.roomId).length} project={superAgent}
+          needsYou={needsYouTasks.filter((t) => t.audience?.roomId === room.roomId).length} project
           onOpenSettings={onOpenSettings && isProjectRoom(room) && !room.shared && !room.feed ? () => onOpenSettings(room.roomId) : undefined}
           active={room.roomId === currentRoomId} draft={draftRoomIds.includes(room.roomId)}
           busy={markingUnread === room.roomId || (savePrefs.pending && actingRoomId === room.roomId)}
           onSelect={() => onSelectRoom(room.roomId)}
           onToggleStar={onSetPrefs && (() => setRoomPrefs(room.roomId, { starred: !room.starred },
-            superAgent ? `Could not ${room.starred ? "unpin" : "pin"} ${label}.` : `Could not ${room.starred ? "unstar" : "star"} ${label}.`))}
+            `Could not ${room.starred ? "unpin" : "pin"} ${label}.`))}
           onToggleMute={onSetPrefs && (() => setRoomPrefs(room.roomId, { muted: !room.muted }, `Could not ${room.muted ? "unmute" : "mute"} ${label}.`))}
           onMarkUnread={onMarkUnread && (() => void markRoomUnread(room.roomId, label))}
           onMoveToSection={onSetPrefs && sections.length > 0
@@ -630,14 +630,13 @@ function DirectoryContent({
           </DropdownMenuContent>
         </DropdownMenu>
         {headerActions}
-        {onCreate && (superAgent ? <DropdownMenu>
+        {onCreate && <DropdownMenu>
           <DropdownMenuTrigger asChild><Button variant="ghost" size="icon-sm" aria-label="New channel or chat" disabled={creationBusy}><Plus aria-hidden="true" /></Button></DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem onSelect={() => setNewProject(true)}>New channel</DropdownMenuItem>
             <DropdownMenuItem onSelect={() => { setKind("dm"); setCreating(true); }}>New chat</DropdownMenuItem>
           </DropdownMenuContent>
-        </DropdownMenu>
-          : <DialogTrigger asChild><Button variant="ghost" size="icon-sm" aria-label="New chat or channel" disabled={creationBusy}><Plus aria-hidden="true" /></Button></DialogTrigger>)}
+        </DropdownMenu>}
       </div>
     </div>
     {creationError && !creating && <p role="alert" className="px-2 text-ui text-err">{creationError}</p>}
@@ -680,7 +679,7 @@ function DirectoryContent({
       })}</ul>
     </section>}
     <button type="button" className="room-directory-entry" onClick={() => { openInviteDialog(); onNavigate?.(); }}><Plus size={16} aria-hidden="true" />Invite someone</button>
-    {superAgent && onCreate && <NewProjectDialog open={newProject} onOpenChange={setNewProject} onCreate={onCreate} busy={creationBusy} error={creationError} />}
+    {onCreate && <NewProjectDialog open={newProject} onOpenChange={setNewProject} onCreate={onCreate} busy={creationBusy} error={creationError} />}
     {/* Anchored at the top so Type and the filter grow it downward, never re-centre it (W17-8). */}
     <DialogContent className="room-creation-dialog top-[8dvh] translate-y-0" showCloseButton={!creationBusy}>
     <form aria-label="Create a chat or channel" className="room-creation" aria-busy={creationBusy}
@@ -688,25 +687,18 @@ function DirectoryContent({
         event.preventDefault();
         if (!canCreate || creationBusy) return;
         const created = await onCreate?.({ kind, name: kind === "dm" ? null : name.trim() || null, members: [...selected.values()] });
-        if (created) { setCreating(false); setName(""); setSelected(new Map()); setQuery(""); setKind(superAgent ? "dm" : "channel"); }
+        if (created) { setCreating(false); setName(""); setSelected(new Map()); setQuery(""); setKind("dm"); }
       }}>
       <div className="room-creation-header">
         <DialogTitle>{kind === "channel" ? "Create a channel" : kind === "group-dm" ? "New group chat" : "New direct message"}</DialogTitle>
         <DialogDescription>Choose the people and agents you want to talk with.</DialogDescription>
       </div>
       <div className="room-creation-body">
-      {superAgent ? <div className="room-kind-seg" role="group" aria-label="Type">
+      <div className="room-kind-seg" role="group" aria-label="Type">
         {/* W18: two choices as one segmented control, not a dropdown. A channel is New channel's. */}
         {(["dm", "group-dm"] as const).map((value) => <button key={value} type="button" aria-pressed={kind === value} disabled={creationBusy}
           onClick={() => { if (kind !== value) chooseKind(value); }}>{value === "dm" ? "Direct message" : "Group chat"}</button>)}
-      </div> : <>
-      <label htmlFor={`${id}-kind`}>Type</label>
-      <select id={`${id}-kind`} className="room-input" value={kind} disabled={creationBusy}
-        onChange={(event) => chooseKind(event.target.value as RoomKind)}>
-        <option value="channel">Channel</option>
-        <option value="dm">Direct message</option>
-        <option value="group-dm">Group chat</option>
-      </select></>}
+      </div>
       {kind !== "dm" && <><label htmlFor={`${id}-name`}>{kind === "channel" ? "Channel name" : "Group chat name (optional)"}</label>
         <input id={`${id}-name`} className="room-input" value={name} maxLength={80} disabled={creationBusy} onChange={(event) => setName(event.target.value)} /></>}
       <p className="text-ui text-muted-foreground">Only selected workspace members can read this chat.</p>
@@ -728,11 +720,11 @@ function DirectoryContent({
             <ParticipantAvatar participant={participant} size="sm" showPresence={false} />
             <span className="min-w-0 flex-1"><span className="block truncate" title={participant.displayName}>{participant.displayName}</span>
               <span className="text-ui text-muted-foreground">{participant.kind === "agent" ? participant.mentionHandle ? `@${participant.mentionHandle}` : "Agent" : "Person"}</span></span>
-            {selection?.kind === "agent" && <label className={superAgent ? "room-listen-field" : "sr-only"} htmlFor={`${id}-${participant.id}-listen`}>
-              {superAgent ? `${participant.displayName} replies` : `Response for ${participant.displayName}`}</label>}
+            {selection?.kind === "agent" && <label className="room-listen-field" htmlFor={`${id}-${participant.id}-listen`}>
+              {`${participant.displayName} replies`}</label>}
             {selection?.kind === "agent" && <select id={`${id}-${participant.id}-listen`} className="room-listen-mode" value={selection.listenMode ?? "mentions"} disabled={creationBusy}
               onChange={(event) => setListenMode(participant, event.target.value as ListenMode)}>
-              {listenModeOptions().map((option) => <option key={option.value} value={option.value}>{superAgent ? REPLIES[option.value] : option.label}</option>)}
+              {listenModeOptions().map((option) => <option key={option.value} value={option.value}>{REPLIES[option.value]}</option>)}
             </select>}</>;
           return <div className="room-choice" key={key}>{content}</div>;
         })}</div>

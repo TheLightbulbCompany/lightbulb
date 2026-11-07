@@ -34,7 +34,6 @@ import {
   type RunToastAction,
   type RunToastContext,
 } from "./runToastReducer";
-import { trackTeamRunActivity } from "./teamRunActivity";
 import { claimRunNotice, getRoomView, subscribeRoomView } from "./roomView";
 
 /**
@@ -257,7 +256,7 @@ function executeAction(action: RunToastAction, agents: Agent[], ctx: ExecuteCont
 }
 
 export function RunNotifications() {
-  const { onEvent, onChatMessage, superAgent } = useLiveEvents();
+  const { onEvent, onChatMessage } = useLiveEvents();
   const { agents } = useAgents();
   const workspace = useWorkspaceState();
 
@@ -269,9 +268,8 @@ export function RunNotifications() {
   const agentsRef = useRef<Agent[]>([]);
   const { refresh: refreshActivity } = useActivity();
   const api = useApi();
-  // Shares the live provider's /teams/agents read: only once live config says a super-agent workspace
-  // is chosen. Otherwise nothing is read here and a team-run toast fetches the list itself, as before.
-  const { data: teamAgents } = useTeamsApi().read<{ agents?: { id: string; name?: string }[] }>(superAgent ? "/agents" : null);
+  // Shares the live provider's /teams/agents read.
+  const { data: teamAgents } = useTeamsApi().read<{ agents?: { id: string; name?: string }[] }>("/agents");
   const execRef = useRef<ExecuteContext>({ refreshActivity, apiGet: api.get });
   const roomView = useSyncExternalStore(subscribeRoomView, getRoomView, getRoomView);
 
@@ -313,7 +311,6 @@ export function RunNotifications() {
     const unsubEvent = onEvent((event) => {
       if (event.type !== "paperclip.event") return;
       try {
-        trackTeamRunActivity(event.payload.eventName, event.payload.payload);
         const actions = [
           ...reduceTeamsRunEvent(
             stateRef.current,

@@ -548,7 +548,7 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
         {status.kind === "ready" && status.teamsStatus === "failed" ? (
           <TeamsDegradedBanner onRetry={onRetry} />
         ) : null}
-        <ProvisioningStepper status={status} onRetry={onRetry}>
+        <ProvisioningStepper status={status}>
           {children}
         </ProvisioningStepper>
       </View>

@@ -37,7 +37,7 @@ import { useMobileRooms } from "../../../lib/rooms";
 import { useTabHeader } from "../../../lib/tabHeader";
 import { roomUrl } from "../../../lib/webLinks";
 import { useWorkspaceRoster } from "../../../lib/workspaceRoster";
-import { useLiveEvents, useSuperAgent } from "../../../providers/live-events";
+import { useLiveEvents } from "../../../providers/live-events";
 
 /** RoomHeader.tsx's own copy — the same two strings the room screen's header shows. */
 const STAR_FAILED = "The star could not be saved.";
@@ -220,10 +220,9 @@ export default function Chats() {
 
   const rosterById = useMemo(() => new Map(agents.map((agent) => [agent.id, agent])), [agents]);
 
-  // Super-agent: one voice. A DM with any agent but the front one (`@lightbulb`) files under a collapsed
-  // Specialists row at the end. Off, or until the front agent is known, the list is today's.
-  const superAgent = useSuperAgent();
-  const frontAgentId = superAgent ? resolveCeoAgentId(agents) : undefined;
+  // One voice. A DM with any agent but the front one (`@lightbulb`) files under a collapsed
+  // Specialists row at the end. Until the front agent is known, every DM is listed.
+  const frontAgentId = resolveCeoAgentId(agents);
   const [specialistsOpen, setSpecialistsOpen] = useState(false);
   const rows = useMemo(() => fileSpecialists(entries, frontAgentId, userId, specialistsOpen || !!needle),
     [entries, frontAgentId, specialistsOpen, needle, userId]);

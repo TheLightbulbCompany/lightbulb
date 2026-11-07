@@ -9,7 +9,7 @@ import { Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { DAYS, nameOf, useAgentConfig, type AgentConfig } from "./data";
 
-type Save = "idle" | "saving" | "saved" | "error" | "forbidden";
+type Save = "idle" | "saving" | "saved" | "error" | "forbidden" | "greeting";
 
 export function AgentPage() {
   const { data: config, error, save } = useAgentConfig();
@@ -29,12 +29,13 @@ export function AgentPage() {
     setDraft(next); setSaveState("saving");
     clearTimeout(timer.current);
     timer.current = setTimeout(() => {
-      save(next).then(() => setSaveState("saved"), (e: { status?: number }) => setSaveState(e?.status === 403 ? "forbidden" : "error"));
+      save(next).then(() => setSaveState("saved"),
+        (e: { status?: number }) => setSaveState(e?.status === 403 ? "forbidden" : e?.status === 422 ? "greeting" : "error"));
     }, 600);
   };
   const name = nameOf(c);
-  const greeting = c.greeting || `Thanks for calling ${business}. This is ${name}, ${business}'s AI assistant. This call is recorded. How can I help?`;
-  const lawful = /AI assistant/i.test(greeting) && /recorded/i.test(greeting);
+  const greeting = c.greeting || defaultGreeting(business, name);
+  const lawful = isLawful(greeting);
   const status = c.paused ? "Paused" : c.live ? "Live" : "Not live yet";
 
   return <div className="vx-page">
@@ -43,9 +44,10 @@ export function AgentPage() {
         <h1 className="vx-title">{name} <span className="vx-muted">· {business}</span></h1>
         <p className="vx-sub"><span className="vx-tag" data-tone={c.live && !c.paused ? "ok" : c.paused ? "warn" : undefined}>{status}</span>
           {c.number ? <> · answering {c.number}</> : <> · no number yet</>}</p>
-        <p className="vx-save" role="status" data-err={saveState === "error" || saveState === "forbidden"} style={{ marginTop: 6 }}>
+        <p className="vx-save" role="status" data-err={saveState === "error" || saveState === "forbidden" || saveState === "greeting"} style={{ marginTop: 6 }}>
           {saveState === "saving" ? "Saving…" : saveState === "saved" ? "Saved" : saveState === "error" ? "Couldn't save the last change. Change it again to retry."
-            : saveState === "forbidden" ? "Only an admin can change the assistant." : "Changes save as you make them."}</p>
+            : saveState === "forbidden" ? "Only an admin can change the assistant."
+            : saveState === "greeting" ? "Not saved: a live assistant's greeting keeps “AI assistant” and “this call is recorded”." : "Changes save as you make them."}</p>
       </div>
       <div className="vx-actions" style={{ marginTop: 0 }}>
         {c.number && <Button asChild variant="outline" size="sm"><a href={`tel:${c.number}`}>Test call</a></Button>}
@@ -83,44 +85,19 @@ export function AgentPage() {
 
     <Sec title={`Knowledge: what ${name} knows about ${business}`}>
       <KnowledgeList c={c} set={set} />
-      {c.toAdd.length > 0 && <div className="vx-card" style={{ marginTop: 12 }}>
-        <p className="vx-h">{c.toAdd.length} question{c.toAdd.length === 1 ? "" : "s"} to add</p>
-        <p className="vx-sub">Callers asked these and {name} didn&apos;t know.</p>
-        <ul className="vx-grid" style={{ gap: 6 }}>{c.toAdd.map((q) => <li key={q} style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
-          <span style={{ fontSize: "var(--text-ui)" }}>{q}</span>
-          <Button size="sm" variant="outline" onClick={() => set({ knowledge: [...c.knowledge, { q, a: "", source: "a caller asked" }], toAdd: c.toAdd.filter((t) => t !== q) })}>Answer</Button>
-        </li>)}</ul>
-      </div>}
+      <ToAdd c={c} set={set} name={name} />
       <label className="vx-label">Instructions (anything else {name} should know or how it should behave)
         <textarea className="vx-field" rows={3} maxLength={4000} value={c.instructions} onChange={(e) => set({ instructions: e.target.value })} /></label>
     </Sec>
 
     <Sec title="Hours" hint={`${name} answers 24/7; it only books inside these hours.`}>
-      <div className="vx-hours">{DAYS.map((d) => {
-        const h = c.hours[d] ?? { open: "09:00", close: "18:00" };
-        const put = (patch: Partial<typeof h>) => set({ hours: { ...c.hours, [d]: { ...h, ...patch } } });
-        return <div key={d} className="contents">
-          <span>{d}</span>
-          <input type="time" className="vx-field" aria-label={`${d} opens`} value={h.open} disabled={h.closed} onChange={(e) => put({ open: e.target.value })} />
-          <input type="time" className="vx-field" aria-label={`${d} closes`} value={h.close} disabled={h.closed} onChange={(e) => put({ close: e.target.value })} />
-          <Check label="Closed" on={!!h.closed} set={(closed) => put({ closed })} />
-        </div>;
-      })}</div>
+      <HoursEditor c={c} set={set} />
       <label className="vx-label">Holidays and closures
         <input className="vx-field" value={c.holidays} placeholder="Closed 26–27 Nov" onChange={(e) => set({ holidays: e.target.value })} /></label>
     </Sec>
 
     <Sec title="Services & staff">
-      {c.services.map((s, n) => {
-        const put = (patch: Partial<typeof s>) => set({ services: c.services.map((x, i) => (i === n ? { ...x, ...patch } : x)) });
-        return <div key={n} className="vx-svc">
-          <input className="vx-field" aria-label="Service" value={s.name} placeholder="Gel manicure" onChange={(e) => put({ name: e.target.value })} />
-          <input className="vx-field" aria-label="Minutes" type="number" min={5} step={5} value={s.minutes} onChange={(e) => put({ minutes: Number(e.target.value) })} />
-          <input className="vx-field" aria-label="Price" value={s.price} placeholder="$55" onChange={(e) => put({ price: e.target.value })} />
-          <input className="vx-field" aria-label="Who does it" value={s.staff} placeholder="Ana, Mei" onChange={(e) => put({ staff: e.target.value })} />
-          <Button size="icon-sm" variant="ghost" aria-label={`Remove ${s.name || "service"}`} onClick={() => set({ services: c.services.filter((_, i) => i !== n) })}><X /></Button>
-        </div>;
-      })}
+      <ServicesEditor c={c} set={set} />
       <div style={{ display: "flex", gap: 16, alignItems: "end", flexWrap: "wrap" }}>
         <Button size="sm" variant="outline" onClick={() => set({ services: [...c.services, { name: "", minutes: 45, price: "", staff: "" }] })}><Plus /> Add a service</Button>
         <label className="vx-label">Buffer between appointments (min)
@@ -171,16 +148,16 @@ export function AgentPage() {
   </div>;
 }
 
-function Sec({ title, hint, children }: { title: string; hint?: React.ReactNode; children: React.ReactNode }) {
+export function Sec({ title, hint, children }: { title: string; hint?: React.ReactNode; children: React.ReactNode }) {
   return <section className="vx-sec"><h2>{title}</h2>{hint && <p className="vx-hint">{hint}</p>}<div className="vx-grid">{children}</div></section>;
 }
 
-function Check({ label, on, set, disabled }: { label: string; on: boolean; set?: (v: boolean) => void; disabled?: boolean }) {
+export function Check({ label, on, set, disabled }: { label: string; on: boolean; set?: (v: boolean) => void; disabled?: boolean }) {
   return <label className="vx-check" data-off={disabled}>
     <input type="checkbox" checked={on} disabled={disabled} onChange={(e) => set?.(e.target.checked)} />{label}</label>;
 }
 
-function KnowledgeList({ c, set }: { c: AgentConfig; set: (p: Partial<AgentConfig>) => void }) {
+export function KnowledgeList({ c, set }: { c: AgentConfig; set: (p: Partial<AgentConfig>) => void }) {
   const put = (n: number, patch: Partial<AgentConfig["knowledge"][number]>) =>
     set({ knowledge: c.knowledge.map((k, i) => (i === n ? { ...k, ...patch } : k)) });
   return <div>
@@ -195,4 +172,55 @@ function KnowledgeList({ c, set }: { c: AgentConfig; set: (p: Partial<AgentConfi
     </div>)}
     <Button size="sm" variant="outline" style={{ marginTop: 8 }} onClick={() => set({ knowledge: [...c.knowledge, { q: "", a: "" }] })}><Plus /> Add an answer</Button>
   </div>;
+}
+
+type Edit = { c: AgentConfig; set: (p: Partial<AgentConfig>) => void };
+
+export const defaultGreeting = (business: string, name: string) =>
+  `Thanks for calling ${business}. This is ${name}, ${business}'s AI assistant. This call is recorded. How can I help?`;
+export const isLawful = (greeting: string) => /AI assistant/i.test(greeting) && /recorded/i.test(greeting);
+
+export function HoursEditor({ c, set }: Edit) {
+  return <>
+  <div className="vx-hours">{DAYS.map((d) => {
+    const h = c.hours[d] ?? { open: "09:00", close: "18:00" };
+    const put = (patch: Partial<typeof h>) => set({ hours: { ...c.hours, [d]: { ...h, ...patch } } });
+    return <div key={d} className="contents">
+      <span>{d}</span>
+      <input type="time" className="vx-field" aria-label={`${d} opens`} value={h.open} disabled={h.closed} onChange={(e) => put({ open: e.target.value })} />
+      <input type="time" className="vx-field" aria-label={`${d} closes`} value={h.close} disabled={h.closed} onChange={(e) => put({ close: e.target.value })} />
+      <Check label="Closed" on={!!h.closed} set={(closed) => put({ closed })} />
+    </div>;
+  })}</div>
+  </>;
+}
+
+export function ServicesEditor({ c, set }: Edit) {
+  return <>
+  {c.services.map((s, n) => {
+    const put = (patch: Partial<typeof s>) => set({ services: c.services.map((x, i) => (i === n ? { ...x, ...patch } : x)) });
+    return <div key={n} className="vx-svc">
+      <input className="vx-field" aria-label="Service" value={s.name} placeholder="Gel manicure" onChange={(e) => put({ name: e.target.value })} />
+      <input className="vx-field" aria-label="Minutes" type="number" min={5} step={5} value={s.minutes} data-guessed={s.minutesGuessed || undefined}
+        title={s.minutesGuessed ? "A guess: the site doesn't say how long this takes" : undefined}
+        onChange={(e) => put({ minutes: Number(e.target.value), minutesGuessed: false })} />
+      <input className="vx-field" aria-label="Price" value={s.price} placeholder="$55" onChange={(e) => put({ price: e.target.value })} />
+      <input className="vx-field" aria-label="Who does it" value={s.staff} placeholder="Ana, Mei" onChange={(e) => put({ staff: e.target.value })} />
+      <Button size="icon-sm" variant="ghost" aria-label={`Remove ${s.name || "service"}`} onClick={() => set({ services: c.services.filter((_, i) => i !== n) })}><X /></Button>
+    </div>;
+  })}
+  </>;
+}
+
+export function ToAdd({ c, set, name, why }: Edit & { name: string; why?: string }) {
+  return <>
+  {c.toAdd.length > 0 && <div className="vx-card" style={{ marginTop: 12 }}>
+    <p className="vx-h">{c.toAdd.length} question{c.toAdd.length === 1 ? "" : "s"} to add</p>
+    <p className="vx-sub">{why ?? `Callers asked these and ${name} didn't know.`}</p>
+    <ul className="vx-grid" style={{ gap: 6 }}>{c.toAdd.map((q) => <li key={q} style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
+      <span style={{ fontSize: "var(--text-ui)" }}>{q}</span>
+      <Button size="sm" variant="outline" onClick={() => set({ knowledge: [...c.knowledge, { q, a: "", source: "a caller asked" }], toAdd: c.toAdd.filter((t) => t !== q) })}>Answer</Button>
+    </li>)}</ul>
+  </div>}
+  </>;
 }

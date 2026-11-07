@@ -7,22 +7,27 @@ room with `META.meeting` (title, startAt, endAt, status, roster, plus the summar
 writes). `POST /api/v1/voice/calls/{roomId}/done` marks a call's Needs-you card handled.
 
 `GET/PUT /api/v1/voice/agent`: the Agent page, one JSON document per workspace (any member reads, an org admin
-writes). The page owns the defaults; an unset workspace reads `{"config": null}`.
+writes). The page owns the defaults; an unset workspace reads `{"config": null}` and the page opens onboarding.
+
+Onboarding (admin): `POST /voice/onboarding/draft` drafts the Agent page from the business's website;
+`POST /voice/number` gives the workspace its assistant number (core/services/voice_onboarding.py).
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import re
 from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.dynamodb import utc_now_iso
 from core.repositories import messaging_repo
+from core.services import voice_onboarding
 
 router = APIRouter()
 
@@ -30,6 +35,8 @@ router = APIRouter()
 #: (or keep a by-kind index) when a workspace outgrows it.
 TIMELINE_ROOMS = 300
 MAX_CONFIG_BYTES = 64_000
+#: What a live greeting must say (the frontend's `isLawful`): an empty greeting is the page's default, which says both.
+_AI, _RECORDED = re.compile(r"AI assistant", re.I), re.compile(r"recorded", re.I)
 #: Meeting fields the page shows. Never the ticket nonce or the Recall bot id.
 _MEETING_FIELDS = ("title", "startAt", "endAt", "status", "summary", "asked", "followUps", "notesSentAt")
 
@@ -103,5 +110,30 @@ async def put_agent(body: AgentConfigIn, auth: AuthContext = Depends(get_current
     require_org_admin(auth)
     if len(json.dumps(body.config)) > MAX_CONFIG_BYTES:
         raise HTTPException(status_code=413, detail={"code": "too_large"})
+    greeting = str(body.config.get("greeting") or "")
+    if body.config.get("live") and greeting.strip() and not (_AI.search(greeting) and _RECORDED.search(greeting)):
+        # The recording and AI-disclosure laws want both, and the page is not the only writer.
+        raise HTTPException(status_code=422, detail={"code": "greeting_needs_disclosure"})
     await messaging_repo.put_voice_agent(resolve_owner_id(auth), body.config, auth.user_id)
     return {"config": body.config}
+
+
+class DraftIn(BaseModel):
+    website: str = Field(min_length=3, max_length=300)
+    business: str = Field(default="", max_length=120)
+    city: str = Field(default="", max_length=120)
+
+
+@router.post("/voice/onboarding/draft")
+async def onboarding_draft(body: DraftIn, auth: AuthContext = Depends(get_current_user)) -> dict:
+    require_org_admin(auth)
+    return {"draft": await voice_onboarding.draft(body.website, body.business, body.city)}
+
+
+@router.post("/voice/number")
+async def assign_number(auth: AuthContext = Depends(get_current_user)) -> dict:
+    require_org_admin(auth)
+    try:
+        return {"number": await voice_onboarding.assign_number(resolve_owner_id(auth), auth.user_id)}
+    except voice_onboarding.NoNumber as exc:
+        raise HTTPException(status_code=409, detail={"code": str(exc)}) from None

@@ -4,13 +4,13 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { WorkspaceShell } from "../WorkspaceShell";
 import { _resetControllerForTests, activateMessagesPanel, getWorkspaceSnapshot, closePane, openAgentDmWithDraft, openPanel, updatePanelParams, useThreadPane } from "../workspaceController";
-import { PANE_DEFAULT_WIDTH, paneWidthKey } from "../RightPane";
+import { paneWidthKey } from "../RightPane";
 import { parseCommand } from "../urlChannel";
 
 const state = vi.hoisted(() => ({
-  phase: "selecting", selectProps: vi.fn(), organization: null as { id: string } | null, chatReady: true, superAgent: false, gated: false,
+  phase: "selecting", selectProps: vi.fn(), organization: null as { id: string } | null, chatReady: true, gated: false,
 }));
-vi.mock("@/hooks/useLiveEvents", async (importOriginal) => ({ ...await importOriginal<object>(), useSuperAgent: () => state.superAgent }));
+vi.mock("@/hooks/useLiveEvents", async (importOriginal) => ({ ...await importOriginal<object>() }));
 vi.mock("@/hooks/useOnboardingGate", () => ({ useOnboardingGate: () => state.phase }));
 vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({ isSignedIn: true, userId: "user_1", orgId: "org_1" }),
@@ -83,7 +83,6 @@ function renderReady() {
   return render(<WorkspaceShell />);
 }
 const shellOf = (view: ReturnType<typeof render>) => view.container.querySelector(".workspace-shell")!;
-const paneOf = () => screen.queryByRole("region", { name: /Files|Browser|Task/ });
 
 it("offers Clerk workspace selection instead of an endless loading shell", () => {
   render(<WorkspaceShell />);
@@ -101,6 +100,8 @@ it("shares one messaging owner across sidebar and conversation, subscribing only
   const owner = screen.getByRole("region", { name: "Messaging owner" });
   expect(screen.getAllByRole("region", { name: "Messaging owner" })).toHaveLength(1);
   expect(within(owner).getByRole("navigation", { name: "Workspace" })).toBeInTheDocument();
+  // A bare /chat lands on Home; Chat subscribes once it shows.
+  act(() => activateMessagesPanel());
   expect(owner).toHaveAttribute("data-subscribed", "true");
   act(() => openPanel("activity"));
   expect(owner).toHaveAttribute("data-subscribed", "false");
@@ -142,50 +143,17 @@ it("observes room runs while the Browser is in the pane, whatever the place", ()
   expect(owner).toHaveAttribute("data-subscribed", "false");
 });
 
-it("routes each place to one main view; only Chat has the sidebar", () => {
-  const view = renderReady();
-  const conversation = screen.getByRole("region", { name: "Conversation", hidden: true });
-  expect(conversation.closest(".workspace-view")).not.toHaveAttribute("hidden");
-  expect(shellOf(view)).toHaveAttribute("data-sidebar", "true");
-  for (const [key, testId] of [["activity", "panel-activity"], ["teams-issues", "panel-teams"], ["teams-artifacts", "panel-teams"]] as const) {
-    act(() => openPanel(key));
-    expect(screen.getByTestId(testId)).toBeInTheDocument();
-    expect(conversation.closest(".workspace-view")).toHaveAttribute("hidden");
-    expect(shellOf(view)).toHaveAttribute("data-sidebar", "false");
-  }
-  act(() => activateMessagesPanel());
-  expect(screen.queryByTestId("panel-teams")).toBeNull();
-  expect(conversation.closest(".workspace-view")).not.toHaveAttribute("hidden");
-  expect(screen.getAllByRole("region", { name: "Conversation", hidden: true })).toHaveLength(1);
-});
-
-it("opens one thing in the pane, closes it, and remembers the width per person", () => {
-  renderReady();
-  act(() => openPanel("file-viewer"));
-  expect(paneOf()).toHaveStyle({ width: `${PANE_DEFAULT_WIDTH}px` });
-  expect(screen.getByTestId("panel-file-viewer")).toBeInTheDocument();
-  // Keyboard resize from the left edge: wider, and remembered.
-  fireEvent.keyDown(screen.getByRole("separator", { name: "Resize the pane" }), { key: "ArrowLeft" });
-  const stored = window.localStorage.getItem(paneWidthKey("user_1"));
-  expect(Number(stored)).toBeGreaterThanOrEqual(320);
-  act(() => openPanel("teams-issue-detail", { detailId: "ADM-1" }));
-  expect(screen.queryByTestId("panel-file-viewer")).toBeNull(); // replaced, one at a time
-  expect(paneOf()).toHaveStyle({ width: `${stored}px` });
-  fireEvent.click(screen.getByRole("button", { name: "Close pane" }));
-  expect(paneOf()).toBeNull();
-});
-
 it("the resize separator reports its value, and a cancelled drag still keeps its width", () => {
   renderReady();
   act(() => openPanel("file-viewer"));
   const separator = screen.getByRole("separator", { name: "Resize the pane" });
   expect(separator).toHaveAttribute("aria-orientation", "vertical");
-  expect(separator).toHaveAttribute("aria-valuemin", "320");
+  expect(separator).toHaveAttribute("aria-valuemin", "360");
   expect(separator).toHaveAttribute("aria-valuenow");
   expect(separator).toHaveAttribute("aria-valuemax");
   fireEvent.pointerDown(separator, { pointerId: 1 });
   fireEvent(separator, new Event("pointercancel"));
-  expect(Number(window.localStorage.getItem(paneWidthKey("user_1")))).toBeGreaterThanOrEqual(320);
+  expect(Number(window.localStorage.getItem(paneWidthKey("user_1")))).toBeGreaterThanOrEqual(360);
 });
 
 it("opens the Browser at half the width, and still opens when storage throws", () => {
@@ -193,8 +161,6 @@ it("opens the Browser at half the width, and still opens when storage throws", (
   renderReady();
   act(() => openPanel("browser"));
   expect(screen.getByRole("region", { name: "Browser" })).toHaveStyle({ width: "50%" });
-  act(() => openPanel("file-viewer"));
-  expect(screen.getByRole("region", { name: "Files" })).toHaveStyle({ width: `${PANE_DEFAULT_WIDTH}px` });
   vi.restoreAllMocks();
 });
 
@@ -230,15 +196,6 @@ it("applies the URL's command on mount: a retired alias opens Activity, a detail
   expect(screen.getByRole("region", { name: "Task" })).toBeInTheDocument();
 });
 
-it("?panel=home opens Home in the old shell when the super-agent switch is off (W13 review)", () => {
-  window.history.replaceState(null, "", "/chat?panel=home");
-  const view = renderReady();
-  expect(getWorkspaceSnapshot().place).toBe("home");
-  expect(getWorkspaceSnapshot().main).toMatchObject({ component: "home" });
-  expect(shellOf(view)).not.toHaveAttribute("data-super-agent");
-  expect(new URLSearchParams(window.location.search).get("panel")).toBe("home");
-});
-
 it("restores the room and the Browser beside it from ?panel=chat&room=…&pane=browser on reload", () => {
   window.history.replaceState(null, "", "/chat?panel=chat&room=r-launch&pane=browser");
   renderReady();
@@ -255,9 +212,9 @@ it("opens Canvas on app_1 from ?panel=canvas&app=app_1", () => {
 });
 
 it("restores both the place and the pane from a two-slot URL on reload", () => {
-  window.history.replaceState(null, "", "/chat?panel=teams-artifacts&pane=browser");
+  window.history.replaceState(null, "", "/chat?panel=teams-agents&pane=browser");
   renderReady();
-  expect(screen.getByTestId("panel-teams")).toHaveTextContent("teams-artifacts");
+  expect(screen.getByTestId("panel-teams")).toHaveTextContent("teams-agents");
   expect(screen.getByRole("region", { name: "Browser" })).toBeInTheDocument();
 });
 
@@ -326,8 +283,7 @@ const stubMedia = (matches: (query: string) => boolean) => {
   return listeners;
 };
 
-it("super-agent, narrow window (600-999 px): the drawer is a modal sidebar; focus starts and stays in it, the rail is inert, it closes past 1000 px (W8-2)", () => {
-  state.superAgent = true;
+it("narrow window (600-999 px): the drawer is a modal sidebar; focus starts and stays in it, the rail is inert, it closes past 1000 px (W8-2)", () => {
   const listeners = stubMedia((q) => q === "(min-width: 600px)");
   try {
     const view = renderReady();
@@ -350,24 +306,10 @@ it("super-agent, narrow window (600-999 px): the drawer is a modal sidebar; focu
     act(() => listeners.get("(min-width: 1000px)")?.());
     expect(shell).toHaveAttribute("data-nav-open", "false");
     expect(view.container.querySelector(".workspace-rail")).not.toHaveAttribute("inert");
-  } finally { state.superAgent = false; vi.unstubAllGlobals(); }
-});
-
-it("without the super-agent the drawer is the phone one: no modal sidebar, rail reachable, it closes past 600 px", () => {
-  const listeners = stubMedia((q) => q === "(min-width: 600px)");
-  try {
-    const view = renderReady();
-    expect(shellOf(view)).not.toHaveAttribute("data-super-agent");
-    fireEvent.click(screen.getByRole("button", { name: "Open menu" }));
-    expect(screen.queryByRole("dialog", { name: "Chats" })).toBeNull();
-    expect(view.container.querySelector(".workspace-rail")).not.toHaveAttribute("inert");
-    act(() => listeners.get("(min-width: 600px)")?.());
-    expect(shellOf(view)).toHaveAttribute("data-nav-open", "false");
   } finally { vi.unstubAllGlobals(); }
 });
 
 it("a pane that is a sheet is a modal dialog: what it covers is inert and Escape closes it", () => {
-  state.superAgent = true;
   stubMedia((q) => q === "(max-width: 999px)");
   try {
     const view = renderReady();
@@ -383,11 +325,10 @@ it("a pane that is a sheet is a modal dialog: what it covers is inert and Escape
     fireEvent.keyDown(pane, { key: "Escape" });
     expect(view.container.querySelector(".workspace-pane")).toBeNull();
     covered.forEach((c) => expect(c).not.toHaveAttribute("inert"));
-  } finally { state.superAgent = false; vi.unstubAllGlobals(); }
+  } finally { vi.unstubAllGlobals(); }
 });
 
 it("a sidebar-only drawer that narrows to a phone becomes the phone drawer: the rail is released", () => {
-  state.superAgent = true;
   let wide = true;
   const listeners = stubMedia((q) => q === "(min-width: 600px)" && wide);
   try {
@@ -399,11 +340,10 @@ it("a sidebar-only drawer that narrows to a phone becomes the phone drawer: the 
     expect(shellOf(view)).toHaveAttribute("data-nav-open", "true");
     expect(view.container.querySelector(".workspace-rail")).not.toHaveAttribute("inert");
     expect(screen.queryByRole("dialog", { name: "Chats" })).toBeNull();
-  } finally { state.superAgent = false; vi.unstubAllGlobals(); }
+  } finally { vi.unstubAllGlobals(); }
 });
 
 it("a sheet takes focus on open, hands it back to its opener on close, and covers views that mount while it is open", async () => {
-  state.superAgent = true;
   stubMedia((q) => q === "(max-width: 999px)");
   const opener = document.createElement("button");
   opener.textContent = "Open files";
@@ -422,11 +362,10 @@ it("a sheet takes focus on open, hands it back to its opener on close, and cover
     expect(late).not.toHaveAttribute("inert");
     expect(opener).toHaveFocus();
     late.remove();
-  } finally { opener.remove(); state.superAgent = false; vi.unstubAllGlobals(); }
+  } finally { opener.remove(); vi.unstubAllGlobals(); }
 });
 
-it("UX slice 4, super-agent: /chat with nothing named lands on Home, and the sidebar shows in every place", () => {
-  state.superAgent = true;
+it("with no live config at all (features null), /chat with nothing named lands on the super-agent Home, and the sidebar shows in every place", () => {
   try {
     const view = renderReady();
     expect(getWorkspaceSnapshot().place).toBe("home");
@@ -437,18 +376,10 @@ it("UX slice 4, super-agent: /chat with nothing named lands on Home, and the sid
       expect(shellOf(view)).toHaveAttribute("data-sidebar", "true");
     }
     expect(getWorkspaceSnapshot().place).toBe("settings");
-  } finally { state.superAgent = false; }
-});
-
-it("UX slice 4, switch off: the sidebar stays Chat's alone and /chat opens the conversation", () => {
-  const view = renderReady();
-  expect(getWorkspaceSnapshot().place).toBe("chat");
-  act(() => openPanel("activity"));
-  expect(shellOf(view)).toHaveAttribute("data-sidebar", "false");
+  } finally { }
 });
 
 it("W16-10: a list and a task share one pane width, so the header's toggles never move; a dragged width is both's", () => {
-  state.superAgent = true;
   try {
     const view = renderReady();
     act(() => openPanel("task-detail", { taskId: "t1" }));
@@ -463,11 +394,10 @@ it("W16-10: a list and a task share one pane width, so the header's toggles neve
     act(() => openPanel("task-detail", { taskId: "t1" }));
     expect(again.container.querySelector<HTMLElement>(".workspace-pane")!.style.width).toBe("500px");
     expect(again.container.querySelector(".workspace-pane__resize")).not.toBeNull();
-  } finally { state.superAgent = false; window.localStorage.removeItem(paneWidthKey("user_1")); }
+  } finally { window.localStorage.removeItem(paneWidthKey("user_1")); }
 });
 
 it("UX slice 4: Settings opens while the workspace is still being provisioned (the gate's Billing and Model links)", () => {
-  state.superAgent = true;
   state.gated = true;
   try {
     renderReady();
@@ -479,11 +409,10 @@ it("UX slice 4: Settings opens while the workspace is still being provisioned (t
     act(() => openPanel("home"));
     expect(screen.queryByTestId("panel-settings")).toBeNull();
     expect(screen.getByTestId("stepper").parentElement).not.toHaveAttribute("hidden");
-  } finally { state.superAgent = false; state.gated = false; }
+  } finally { state.gated = false; }
 });
 
 it("UX slice 4: landing on Home keeps a Stripe return's params and only sets panel", () => {
-  state.superAgent = true;
   window.history.replaceState(null, "", "/chat?provider=chatgpt_oauth&checkout=success");
   try {
     renderReady();
@@ -491,11 +420,10 @@ it("UX slice 4: landing on Home keeps a Stripe return's params and only sets pan
     expect(sp.get("panel")).toBe("home");
     expect(sp.get("provider")).toBe("chatgpt_oauth");
     expect(sp.get("checkout")).toBe("success");
-  } finally { state.superAgent = false; }
+  } finally { }
 });
 
 it("UX slice 4: the specialist profile pane has the one header with ✕, and Escape closes it at any width", () => {
-  state.superAgent = true;
   try {
     const view = renderReady();
     act(() => openPanel("agent-inspector", { agent: "agt-1" }));
@@ -503,11 +431,10 @@ it("UX slice 4: the specialist profile pane has the one header with ✕, and Esc
     expect(within(pane).getAllByRole("button", { name: "Close pane" })).toHaveLength(1);
     fireEvent.keyDown(pane, { key: "Escape" });
     expect(view.container.querySelector(".workspace-pane")).toBeNull();
-  } finally { state.superAgent = false; }
+  } finally { }
 });
 
 it("W12-5: one Escape stack — Escape with focus on the page (nothing focused) still closes the sheet, at every width", () => {
-  state.superAgent = true;
   for (const narrow of [true, false]) {
     stubMedia((q) => narrow && q === "(max-width: 999px)");
     try {
@@ -520,11 +447,9 @@ it("W12-5: one Escape stack — Escape with focus on the page (nothing focused) 
       view.unmount();
     } finally { vi.unstubAllGlobals(); }
   }
-  state.superAgent = false;
 });
 
 it("W17-1: Escape with focus still on the tile that opened a doc closes it and returns focus there; a text field keeps its Escape", () => {
-  state.superAgent = true;
   try {
     const view = renderReady();
     // The opener (a Creations tile) lives outside the pane and keeps focus: nothing clicks into the pane.
@@ -557,11 +482,10 @@ it("W17-1: Escape with focus still on the tile that opened a doc closes it and r
     expect(view.container.querySelector(".workspace-pane")).toBeNull();
     expect(document.activeElement).toBe(tile);
     tile.remove();
-  } finally { state.superAgent = false; }
+  } finally { }
 });
 
 it("W12-5: a file opened from a task goes back to that task: '‹ Task' and Escape", () => {
-  state.superAgent = true;
   try {
     const view = renderReady();
     const doc = { src: "attachment", room: "r1", id: "a1", name: "taglines.md" };
@@ -590,11 +514,10 @@ it("W12-5: a file opened from a task goes back to that task: '‹ Task' and Esca
     act(() => openPanel("artifact", { ...doc, back: "task:t-1" }, { pushUrl: true }));
     fireEvent.click(screen.getByRole("button", { name: "Back to task" }));
     expect(getWorkspaceSnapshot().pane).toMatchObject({ component: "task", params: { taskId: "t-1" } });
-  } finally { state.superAgent = false; }
+  } finally { }
 });
 
 it("W12-12/13: a draft headed for the composer closes a sheet that covers it; beside the pane, the pane stays", () => {
-  state.superAgent = true;
   for (const narrow of [true, false]) {
     stubMedia((q) => narrow && q === "(max-width: 999px)");
     try {
@@ -606,5 +529,4 @@ it("W12-12/13: a draft headed for the composer closes a sheet that covers it; be
       act(() => closePane());
     } finally { vi.unstubAllGlobals(); }
   }
-  state.superAgent = false;
 });

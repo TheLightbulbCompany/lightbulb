@@ -4,8 +4,8 @@ import type { CanonicalRoomMessage } from "@lightbulb/shared";
 import { FIXTURES, ROOM, SAM } from "@lightbulb/shared/tasks/fixtures";
 import { Fresh, fakeTasksClient } from "./fakeTasks";
 
-const live = vi.hoisted(() => ({ superAgent: true, tasks: null as unknown, agentNames: new Map() }));
-vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useOptionalLiveEvents: () => live, useSuperAgent: () => true }));
+const live = vi.hoisted(() => ({ tasks: null as unknown, agentNames: new Map() }));
+vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useOptionalLiveEvents: () => live }));
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 
 import { MessageTasks } from "../MessageTasks";

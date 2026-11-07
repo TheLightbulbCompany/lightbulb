@@ -737,7 +737,7 @@ class TestAgentDelete:
     async def test_happy_path(self, async_client, admin_env):
         delete_everywhere = AsyncMock(return_value={"deleted": True, "agent_id": "agent_42"})
         with patch(
-            "core.services.paperclip_agent_lifecycle.delete_agent_everywhere",
+            "core.services.agent_lifecycle.delete_agent_everywhere",
             delete_everywhere,
         ):
             res = await async_client.post("/api/v1/admin/users/u_target/agents/agent_42/delete")
@@ -746,10 +746,10 @@ class TestAgentDelete:
 
     @pytest.mark.asyncio
     async def test_final_root_conflict_is_409(self, async_client, admin_env):
-        from core.services.paperclip_agent_lifecycle import AgentLifecycleConflict
+        from core.services.agent_lifecycle import AgentLifecycleConflict
 
         with patch(
-            "core.services.paperclip_agent_lifecycle.delete_agent_everywhere",
+            "core.services.agent_lifecycle.delete_agent_everywhere",
             new=AsyncMock(side_effect=AgentLifecycleConflict("Lightbulb's coordinator cannot be deleted or demoted.")),
         ):
             res = await async_client.post("/api/v1/admin/users/u_target/agents/root/delete")
@@ -764,7 +764,7 @@ class TestAgentDelete:
     @pytest.mark.asyncio
     async def test_audit_row_written(self, async_client, admin_env, mock_audit_repo):
         with patch(
-            "core.services.paperclip_agent_lifecycle.delete_agent_everywhere",
+            "core.services.agent_lifecycle.delete_agent_everywhere",
             new=AsyncMock(return_value={"deleted": True}),
         ):
             res = await async_client.post("/api/v1/admin/users/u_target/agents/agent_42/delete")

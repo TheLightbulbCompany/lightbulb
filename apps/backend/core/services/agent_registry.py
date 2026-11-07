@@ -12,6 +12,7 @@ Errors: `RegistryUnavailable` (any store failure; `load_agent_roster` maps it to
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Any, Literal, NamedTuple
 
 from botocore.exceptions import BotoCoreError, ClientError
@@ -25,6 +26,8 @@ __all__ = [
     "Diff",
     "RegistryUnavailable",
     "SeedReport",
+    "create",
+    "delete",
     "get",
     "mirror_delete",
     "mirror_from_paperclip",
@@ -32,6 +35,7 @@ __all__ = [
     "roster",
     "row_from_paperclip",
     "seed_from_paperclip",
+    "update",
     "verify",
 ]
 
@@ -109,6 +113,73 @@ async def get(ws: str, agent_id: str) -> dict | None:
 async def owner_of(agent_id: str) -> str | None:
     try:
         return await repo.owner_of(agent_id)
+    except (ClientError, BotoCoreError) as exc:
+        raise RegistryUnavailable(str(exc)) from exc
+
+
+# --- Native writes (Phase 1 task 8b.1) ---------------------------------------------------------------
+
+#: What `update` may set (registry attr names). `status` is display state only: nothing at runtime reads it.
+_UPDATABLE = frozenset(
+    {"name", "title", "role", "persona", "icon", "appearance", "reportsTo", "budgetMonthlyCents", "status"}
+)
+
+
+async def create(
+    ws: str,
+    *,
+    name: str,
+    role: str | None = None,
+    title: str | None = None,
+    persona: str | None = None,
+    icon: str | None = None,
+    reports_to: str | None = None,
+    budget_monthly_cents: int = 0,
+    listing: dict | None = None,
+    agent_id: str | None = None,
+) -> dict:
+    """A new specialist (uuid4 id unless given); the same id replayed in the same ws returns the existing row."""
+    row = {
+        "agentId": agent_id or str(uuid.uuid4()),
+        "name": name[:256],
+        "role": role,
+        "title": title,
+        "persona": persona,
+        "icon": icon,
+        "reportsTo": reports_to,
+        "budgetMonthlyCents": budget_monthly_cents,
+        "listing": listing,
+    }
+    try:
+        item, _ = await repo.put_new(ws, row)
+    except (ClientError, BotoCoreError) as exc:
+        raise RegistryUnavailable(str(exc)) from exc
+    return _roster_row(item)
+
+
+async def update(ws: str, agent_id: str, fields: dict) -> dict:
+    """SET `fields` on a live agent and return its roster row. Missing or deleted → `KeyError`."""
+    bad = set(fields) - _UPDATABLE
+    if bad:
+        raise ValueError(f"agent update may not set {sorted(bad)}")
+    existing = await get(ws, agent_id)
+    if existing is None or existing.get("status") == "deleted":
+        raise KeyError(agent_id)
+    if not fields:
+        return _roster_row(existing)
+    try:
+        return _roster_row(await repo.upsert_fields(ws, agent_id, fields))
+    except (ClientError, BotoCoreError) as exc:
+        raise RegistryUnavailable(str(exc)) from exc
+
+
+async def delete(ws: str, agent_id: str) -> None:
+    """Soft delete (the id stays reserved). Already gone → no-op."""
+    existing = await get(ws, agent_id)
+    if existing is None or existing.get("status") == "deleted":
+        return
+    try:
+        await repo.mark_deleted(ws, agent_id)
     except (ClientError, BotoCoreError) as exc:
         raise RegistryUnavailable(str(exc)) from exc
 

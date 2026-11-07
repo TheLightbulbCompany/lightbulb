@@ -494,14 +494,13 @@ async def decide(auth, sid, user_id, decision, pushes, live=None):
 
 
 async def feed(auth):
-    teams = lambda: (_ for _ in ()).throw(RuntimeError("no paperclip"))  # noqa: E731
     with patch("core.services.messaging.human_display_name", _name):
-        return await activity.list_activity(auth, cursor=None, limit=30, teams_ctx=teams)
+        return await activity.list_activity(auth, cursor=None, limit=30)
 
 
 async def act(auth, item_id, action):
     with patch("core.services.messaging.human_display_name", _name):
-        return await activity.run_action(auth, item_id, action, activity.ActivityActionRequest(), teams_ctx=None)
+        return await activity.run_action(auth, item_id, action, activity.ActivityActionRequest())
 
 
 def joins(page):

@@ -14,7 +14,7 @@ import pytest
 class TestFromIntegration:
     @pytest.mark.asyncio
     @patch("routers.automations.seed_trigger_routine", new_callable=AsyncMock)
-    @patch("routers.teams._guards.billing_repo")
+    @patch("core.services.entitlement_guards.billing_repo")
     async def test_success_personal_owner(self, mock_billing, mock_seed, async_client):
         mock_billing.get_by_owner_id = AsyncMock(return_value={"subscription_status": "active"})
         mock_seed.return_value = {
@@ -56,7 +56,7 @@ class TestFromIntegration:
 
     @pytest.mark.asyncio
     @patch("routers.automations.seed_trigger_routine", new_callable=AsyncMock)
-    @patch("routers.teams._guards.billing_repo")
+    @patch("core.services.entitlement_guards.billing_repo")
     async def test_trial_owner_blocked_before_seeding(self, mock_billing, mock_seed, async_client):
         """Preserves the trial-gate: no billing row means no always-on
         entitlement, and seeding must never run for a blocked owner — a
@@ -76,7 +76,7 @@ class TestFromIntegration:
 
     @pytest.mark.asyncio
     @patch("routers.automations.seed_trigger_routine", new_callable=AsyncMock)
-    @patch("routers.teams._guards.billing_repo")
+    @patch("core.services.entitlement_guards.billing_repo")
     async def test_bad_input_surfaces_as_400(self, mock_billing, mock_seed, async_client):
         mock_billing.get_by_owner_id = AsyncMock(return_value={"subscription_status": "active"})
         mock_seed.side_effect = ValueError("unknown event 'nope'")
@@ -89,7 +89,7 @@ class TestFromIntegration:
 
     @pytest.mark.asyncio
     @patch("routers.automations.seed_trigger_routine", new_callable=AsyncMock)
-    @patch("routers.teams._guards.billing_repo")
+    @patch("core.services.entitlement_guards.billing_repo")
     async def test_resource_passes_through_to_seed(self, mock_billing, mock_seed, async_client):
         """The auto_github shape rides the same route — `resource` reaches the
         seed untouched (validation lives there, next to the GitHub call)."""
@@ -125,7 +125,7 @@ class TestFromIntegration:
 
     @pytest.mark.asyncio
     @patch("routers.automations.seed_trigger_routine", new_callable=AsyncMock)
-    @patch("routers.teams._guards.billing_repo")
+    @patch("core.services.entitlement_guards.billing_repo")
     async def test_topic_passes_through_to_seed(self, mock_billing, mock_seed, async_client):
         """The owner_setup shape (gmail.message) rides the same route —
         `topic` reaches the seed untouched (validation lives there, next to
@@ -167,7 +167,7 @@ class TestFromIntegration:
 
     @pytest.mark.asyncio
     @patch("routers.automations.seed_trigger_routine", new_callable=AsyncMock)
-    @patch("routers.teams._guards.billing_repo")
+    @patch("core.services.entitlement_guards.billing_repo")
     async def test_assignee_passes_through_to_seed(self, mock_billing, mock_seed, async_client):
         """An explicit assignee reaches the seed untouched — the tenancy check
         (is this agent in the caller's own company) lives there, next to the
@@ -199,7 +199,7 @@ class TestFromIntegration:
 
     @pytest.mark.asyncio
     @patch("routers.automations.seed_trigger_routine", new_callable=AsyncMock)
-    @patch("routers.teams._guards.billing_repo")
+    @patch("core.services.entitlement_guards.billing_repo")
     async def test_routine_id_passes_through_to_seed(self, mock_billing, mock_seed, async_client):
         """The attach branch rides the same route under the same gates — the
         target routine reaches the seed untouched, where the tenancy check
@@ -233,7 +233,7 @@ class TestFromIntegration:
 
     @pytest.mark.asyncio
     @patch("routers.automations.seed_trigger_routine", new_callable=AsyncMock)
-    @patch("routers.teams._guards.billing_repo")
+    @patch("core.services.entitlement_guards.billing_repo")
     async def test_edited_draft_passes_through_as_an_override(self, mock_billing, mock_seed, async_client):
         """What the owner typed over the pre-filled title/description reaches
         the seed; the untouched-draft path (every other test here) sends
@@ -344,167 +344,43 @@ class TestVercelResources:
 
 
 class TestSetWebhookSecret:
-    """Verification is native in Paperclip now — arming a trigger means
-    resolving public_id -> Paperclip's internal trigger id
-    (``_lookup_trigger_detail``) and rotating that trigger's Paperclip
-    secret to the caller-supplied value. No Isol8-side secret store,
-    marker, or cache is touched anymore."""
-
-    @pytest.fixture(autouse=True)
-    def _paperclip_url(self, monkeypatch):
-        from core.config import settings
-
-        monkeypatch.setattr(settings, "PAPERCLIP_INTERNAL_URL", "http://paperclip.internal:3100")
+    """Arming a trigger stores the secret and arms its HOOK# row (``automation_hooks.arm``);
+    no HOOK# row is an unknown trigger. Paperclip is never called (Phase 1 task 7)."""
 
     @pytest.mark.asyncio
-    async def test_stores_secret_and_rotates_paperclip_trigger(self, async_client):
-        owner_id = "org_test_456"
-        public_id = "pubabc123456"
-
-        with (
-            patch(
-                "routers.automations.paperclip_trigger_proxy._lookup_trigger_detail",
-                AsyncMock(return_value={"id": "trig_internal_1", "publicId": public_id, "kind": "webhook"}),
-            ) as mock_lookup,
-            patch("routers.automations.get_admin_session_cookie", AsyncMock(return_value="s=1")),
-            patch("routers.automations.PaperclipAdminClient") as mock_client_cls,
-        ):
-            mock_admin = mock_client_cls.return_value
-            mock_admin.rotate_routine_trigger_secret = AsyncMock(return_value={})
+    async def test_arms_the_hook_row(self, async_client):
+        with patch("routers.automations.automation_hooks.arm", AsyncMock(return_value=True)) as arm:
             response = await async_client.put(
-                f"/api/v1/automations/{public_id}/webhook-secret",
-                json={"webhook_secret": "whsec_abc123"},
+                "/api/v1/automations/pubabc123456/webhook-secret", json={"webhook_secret": "whsec_abc123"}
             )
-
-        assert response.status_code == 200
-        assert response.json() == {"status": "stored"}
-        mock_lookup.assert_awaited_once_with(owner_id, public_id)
-        mock_admin.rotate_routine_trigger_secret.assert_awaited_once_with(
-            session_cookie="s=1", trigger_id="trig_internal_1", secret="whsec_abc123"
-        )
+        assert response.status_code == 200 and response.json() == {"status": "stored"}
+        arm.assert_awaited_once_with("org_test_456", "pubabc123456", "whsec_abc123")
 
     @pytest.mark.asyncio
-    async def test_unknown_trigger_404s(self, async_client):
-        """A public_id that doesn't resolve to a webhook trigger in the
-        caller's own company (foreign owner, typo, deleted trigger) 404s
-        instead of silently reporting success."""
-        owner_id = "org_test_456"
-        public_id = "notminepub1234"
-
-        with (
-            patch(
-                "routers.automations.paperclip_trigger_proxy._lookup_trigger_detail",
-                AsyncMock(return_value=None),
-            ) as mock_lookup,
-            patch("routers.automations.PaperclipAdminClient") as mock_client_cls,
-        ):
+    async def test_no_hook_row_404s(self, async_client):
+        with patch("routers.automations.automation_hooks.arm", AsyncMock(return_value=False)):
             response = await async_client.put(
-                f"/api/v1/automations/{public_id}/webhook-secret",
-                json={"webhook_secret": "whsec_abc123"},
+                "/api/v1/automations/notminepub1234/webhook-secret", json={"webhook_secret": "whsec_abc123"}
             )
-
         assert response.status_code == 404
-        mock_lookup.assert_awaited_once_with(owner_id, public_id)
-        mock_client_cls.return_value.rotate_routine_trigger_secret.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_lookup_failure_returns_503(self, async_client):
-        """The resolver failing (Paperclip down / admin session broken)
-        fails closed, same posture as the fire-proxy's own binding gate."""
-        public_id = "pubabc123456"
-
-        with patch(
-            "routers.automations.paperclip_trigger_proxy._lookup_trigger_detail",
-            AsyncMock(side_effect=RuntimeError("paperclip down")),
-        ):
-            response = await async_client.put(
-                f"/api/v1/automations/{public_id}/webhook-secret",
-                json={"webhook_secret": "whsec_abc123"},
-            )
-
-        assert response.status_code == 503
-
-    @pytest.mark.asyncio
-    async def test_rotate_failure_returns_503(self, async_client):
-        public_id = "pubabc123456"
-
-        with (
-            patch(
-                "routers.automations.paperclip_trigger_proxy._lookup_trigger_detail",
-                AsyncMock(return_value={"id": "trig_internal_1", "publicId": public_id, "kind": "webhook"}),
-            ),
-            patch("routers.automations.get_admin_session_cookie", AsyncMock(return_value="s=1")),
-            patch("routers.automations.PaperclipAdminClient") as mock_client_cls,
-        ):
-            mock_admin = mock_client_cls.return_value
-            mock_admin.rotate_routine_trigger_secret = AsyncMock(side_effect=RuntimeError("upstream 500"))
-            response = await async_client.put(
-                f"/api/v1/automations/{public_id}/webhook-secret",
-                json={"webhook_secret": "whsec_abc123"},
-            )
-
-        assert response.status_code == 503
-
-    @pytest.mark.asyncio
-    async def test_expired_admin_session_retried_then_succeeds(self, async_client):
-        """A 401 from the lookup (expired admin session) invalidates the cached
-        session and retries once — same posture as the fire proxy — so a
-        transient expiry doesn't surface as a 503 the owner has to retry."""
-        from core.services.paperclip_admin_client import PaperclipApiError
-
-        public_id = "pubabc123456"
-        lookup = AsyncMock(
-            side_effect=[
-                PaperclipApiError("unauthorized", 401, {}),
-                {"id": "trig_internal_1", "publicId": public_id, "kind": "webhook"},
-            ]
-        )
-        with (
-            patch("routers.automations.paperclip_trigger_proxy._lookup_trigger_detail", lookup),
-            patch("routers.automations.invalidate_admin_session") as mock_invalidate,
-            patch("routers.automations.get_admin_session_cookie", AsyncMock(return_value="s=1")),
-            patch("routers.automations.PaperclipAdminClient") as mock_client_cls,
-        ):
-            mock_admin = mock_client_cls.return_value
-            mock_admin.rotate_routine_trigger_secret = AsyncMock(return_value={})
-            response = await async_client.put(
-                f"/api/v1/automations/{public_id}/webhook-secret",
-                json={"webhook_secret": "whsec_abc123"},
-            )
-
-        assert response.status_code == 200
-        assert lookup.await_count == 2
-        mock_invalidate.assert_called_once()
-        mock_admin.rotate_routine_trigger_secret.assert_awaited_once_with(
-            session_cookie="s=1", trigger_id="trig_internal_1", secret="whsec_abc123"
-        )
 
     @pytest.mark.asyncio
     async def test_malformed_public_id_400s_before_any_lookup(self, async_client):
-        with patch(
-            "routers.automations.paperclip_trigger_proxy._lookup_trigger_detail",
-            AsyncMock(),
-        ) as mock_lookup:
+        with patch("routers.automations.automation_hooks.arm", AsyncMock()) as arm:
             response = await async_client.put(
-                "/api/v1/automations/not-alnum!/webhook-secret",
-                json={"webhook_secret": "whsec_abc123"},
+                "/api/v1/automations/not-alnum!/webhook-secret", json={"webhook_secret": "whsec_abc123"}
             )
-
         assert response.status_code == 400
-        mock_lookup.assert_not_awaited()
+        arm.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_non_admin_org_member_forbidden(self, async_client_org_member):
-        with patch(
-            "routers.automations.paperclip_trigger_proxy._lookup_trigger_detail",
-            AsyncMock(),
-        ) as mock_lookup:
+        with patch("routers.automations.automation_hooks.arm", AsyncMock()) as arm:
             response = await async_client_org_member.put(
-                "/api/v1/automations/pubabc123456/webhook-secret",
-                json={"webhook_secret": "whsec_abc123"},
+                "/api/v1/automations/pubabc123456/webhook-secret", json={"webhook_secret": "whsec_abc123"}
             )
         assert response.status_code == 403
-        mock_lookup.assert_not_awaited()
+        arm.assert_not_awaited()
 
 
 class TestGoogleResources:
@@ -584,7 +460,7 @@ class TestMultiEventBody:
 
     @pytest.mark.asyncio
     @patch("routers.automations.seed_trigger_routine", new_callable=AsyncMock)
-    @patch("routers.teams._guards.billing_repo")
+    @patch("core.services.entitlement_guards.billing_repo")
     async def test_event_ids_reaches_the_seed_as_a_list(self, mock_billing, mock_seed, async_client):
         mock_billing.get_by_owner_id = AsyncMock(return_value={"subscription_status": "active"})
         mock_seed.return_value = {"routine_id": "rt_1", "guided": True}
@@ -602,7 +478,7 @@ class TestMultiEventBody:
 
     @pytest.mark.asyncio
     @patch("routers.automations.seed_trigger_routine", new_callable=AsyncMock)
-    @patch("routers.teams._guards.billing_repo")
+    @patch("core.services.entitlement_guards.billing_repo")
     async def test_both_spellings_at_once_is_refused(self, mock_billing, mock_seed, async_client):
         mock_billing.get_by_owner_id = AsyncMock(return_value={"subscription_status": "active"})
         response = await async_client.post(
@@ -614,7 +490,7 @@ class TestMultiEventBody:
 
     @pytest.mark.asyncio
     @patch("routers.automations.seed_trigger_routine", new_callable=AsyncMock)
-    @patch("routers.teams._guards.billing_repo")
+    @patch("core.services.entitlement_guards.billing_repo")
     async def test_neither_spelling_is_refused(self, mock_billing, mock_seed, async_client):
         mock_billing.get_by_owner_id = AsyncMock(return_value={"subscription_status": "active"})
         response = await async_client.post("/api/v1/automations/from-integration", json={"provider": "stripe"})
@@ -623,7 +499,7 @@ class TestMultiEventBody:
 
     @pytest.mark.asyncio
     @patch("routers.automations.seed_trigger_routine", new_callable=AsyncMock)
-    @patch("routers.teams._guards.billing_repo")
+    @patch("core.services.entitlement_guards.billing_repo")
     async def test_empty_event_ids_is_refused(self, mock_billing, mock_seed, async_client):
         mock_billing.get_by_owner_id = AsyncMock(return_value={"subscription_status": "active"})
         response = await async_client.post(
@@ -634,7 +510,7 @@ class TestMultiEventBody:
 
     @pytest.mark.asyncio
     @patch("routers.automations.seed_trigger_routine", new_callable=AsyncMock)
-    @patch("routers.teams._guards.billing_repo")
+    @patch("core.services.entitlement_guards.billing_repo")
     async def test_conflicting_shapes_surface_as_400(self, mock_billing, mock_seed, async_client):
         """The seed's registration-shape conflict is caller-facing input, so
         it reaches the owner as a 400 naming what to split."""

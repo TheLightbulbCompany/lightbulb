@@ -35,8 +35,8 @@ async def test_agent_ask_is_accepted_once_by_any_member(env):
         patch.object(ext, "add_from_webstore", add),
         patch("core.services.browser_control.restart_soon", AsyncMock(return_value=True)) as restart,
     ):
-        done = await activity.run_action(member(), item.id, "add", ActivityActionRequest(), teams_ctx=AsyncMock())
-        again = await activity.run_action(member(), item.id, "add", ActivityActionRequest(), teams_ctx=AsyncMock())
+        done = await activity.run_action(member(), item.id, "add", ActivityActionRequest())
+        again = await activity.run_action(member(), item.id, "add", ActivityActionRequest())
     assert done.state == "resolved" and done.actions == [] and again.state == "resolved"
     add.assert_awaited_once_with(OWNER, EXT_ID, USER_A)
     restart.assert_awaited_once_with(OWNER)
@@ -56,8 +56,6 @@ async def test_decline_settles_without_installing(env, action):
     ):
         rid = (await ext.request_install(OWNER, EXT_ID, agent_id=FRIDAY))["requestId"]
     with patch.object(ext, "add_from_webstore", AsyncMock()) as add:
-        done = await activity.run_action(
-            member(), ext.activity_item_id(rid), action, ActivityActionRequest(), teams_ctx=AsyncMock()
-        )
+        done = await activity.run_action(member(), ext.activity_item_id(rid), action, ActivityActionRequest())
     assert done.state == "resolved"
     add.assert_not_called()

@@ -48,7 +48,6 @@ import httpx
 from core.config import settings
 from core.repositories import container_repo
 from core.repositories.paperclip_repo import PaperclipRepo
-from core.services.agent_routine_provisioning import create_agent_routines
 from core.services.company_agent_materializer import render_agent_identity_md
 from core.services.company_package import DeployPlan, PlannedAgent, parse_deploy_plan
 from core.services.hermes_profiles import upload_profile_files
@@ -359,51 +358,8 @@ async def _run_company_deploy(
             dict(skipped_aux),
         )
 
-        # Routine creation is OUTSIDE the rollback-triggering path. Once every
-        # agent is materialized the deploy is a success; routines are created
-        # PAUSED and are freely re-addable from Teams, so a routine hiccup must
-        # NOT tear down a healthy, fully-deployed company. Log it and move on —
-        # the user adds/enables routines from Teams.
-        try:
-            await _create_routines(admin=admin, cookie=cookie, company_id=company_id, plan=plan, slug_to_id=slug_to_id)
-        except Exception:  # noqa: BLE001 — a routine failure never rolls back a materialized company
-            logger.exception(
-                "company_deploy: owner=%s routine creation failed after all agents materialized "
-                "— leaving the deployed company intact (add routines from Teams)",
-                owner_id,
-            )
     finally:
         await http.aclose()
-
-
-async def _create_routines(
-    *, admin, cookie: str, company_id: str, plan: DeployPlan, slug_to_id: dict[str, str]
-) -> None:
-    """Create each planned routine DORMANT (paused) on its assigned agent.
-
-    ``create_agent_routines`` always attaches an ``enabled: False`` schedule
-    trigger, so nothing fires until a human flips it on from Teams. Routines are
-    grouped by assignee id; cron-less specs are dropped (a schedule trigger
-    needs a cron), and routines whose assignee never got an id (a
-    skipped/failed agent) are too.
-    """
-    by_agent: dict[str, list[dict]] = defaultdict(list)
-    for routine in plan.routines:
-        if not routine.cron:
-            continue
-        agent_id = slug_to_id.get(routine.agent_slug)
-        if not agent_id:
-            continue
-        by_agent[agent_id].append({"title": routine.title, "description": routine.description, "cron": routine.cron})
-
-    for agent_id, specs in by_agent.items():
-        await create_agent_routines(
-            admin=admin,
-            session_cookie=cookie,
-            company_id=company_id,
-            agent_id=agent_id,
-            routines=specs,
-        )
 
 
 async def _rollback(

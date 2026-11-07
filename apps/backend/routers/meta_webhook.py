@@ -23,8 +23,7 @@ app in Secrets Manager). That is verified HERE, at the edge, because it is not
 a per-trigger secret and Paperclip cannot check it. On success the trigger's
 OWN bearer secret — recorded with the binding — is injected as the
 Authorization, so Paperclip's native ``bearer`` mode still does the final
-timing-safe compare. Same verify-at-edge-then-inject shape as the Gmail push
-OIDC swap in ``paperclip_trigger_proxy``, minus the JWT.
+timing-safe compare.
 
 **Delivery contract.** Meta expects a fast 2xx and retries otherwise. Once the
 signature verifies we answer 200 regardless of what happens downstream; a

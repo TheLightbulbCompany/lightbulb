@@ -381,14 +381,10 @@ async def test_webhook_secret_put_super_agent_branch(env, api, monkeypatch):
     pid = out["trigger_public_id"]
     app.dependency_overrides[get_current_user] = _as_org_admin
     try:
-        with (
-            patch("routers.automations._resolve_trigger_id", AsyncMock()) as resolve,
-        ):
-            r = api.put(f"/api/v1/automations/{pid}/webhook-secret", json={"webhook_secret": "whsec_live"})
+        r = api.put(f"/api/v1/automations/{pid}/webhook-secret", json={"webhook_secret": "whsec_live"})
     finally:
         app.dependency_overrides.pop(get_current_user, None)
     assert r.status_code == 200 and r.json() == {"status": "stored"}
-    assert not resolve.called
     assert env.secrets[(WS, f"hook-{pid}")]["secret"] == "whsec_live"
     assert (await repo.get_hook(WS, pid))["armed"] is True
 

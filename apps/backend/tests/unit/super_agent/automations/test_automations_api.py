@@ -56,7 +56,7 @@ def api(table, monkeypatch):
         patch.object(automation_schedule, "upsert", upsert),
         patch.object(automation_schedule, "delete", delete),
         patch.object(automation_schedule, "next_runs", next_runs),
-        patch("routers.teams._guards.billing_repo") as billing,
+        patch("core.services.entitlement_guards.billing_repo") as billing,
         patch("core.services.chat_gate.gate_chat", AsyncMock(return_value={"blocked": False})) as gate,
         patch("core.repositories.user_repo.get_timezone", AsyncMock(return_value="Europe/London")),
         patch("core.repositories.messaging_repo.get_member", AsyncMock(return_value={"id": "member"})),

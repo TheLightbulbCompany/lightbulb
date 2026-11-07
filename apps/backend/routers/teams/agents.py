@@ -804,16 +804,3 @@ async def clear_agent_error(agent_id: CompanyAgentId, ctx: TeamsContext = Depend
 async def agent_heartbeat_gone(agent_id: str):
     """Paperclip heartbeats and wakes are gone (super-agent roster, Phase 1 task 6)."""
     raise HTTPException(status_code=410, detail="Agent heartbeats and wakes were removed")
-
-
-@router.get("/runs/{run_id}")
-async def get_run(run_id: SafeId, ctx: TeamsContext = Depends(_ctx)):
-    """Fetch a single run by id — legacy alias for ``/heartbeat-runs/{id}``.
-
-    The frontend's RunDetailPanel still reads this path as a fallback next to
-    ``/heartbeat-runs/{id}``; upstream never had ``GET /api/runs/{id}``, so
-    this proxies the heartbeat-run route instead of 404ing (fenced the same way).
-    """
-    from .runs import _require_company_run
-
-    return await _require_company_run(run_id, ctx)

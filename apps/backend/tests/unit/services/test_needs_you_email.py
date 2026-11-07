@@ -48,7 +48,6 @@ def world(monkeypatch):
     monkeypatch.setattr(repo, "get_message_by_id", AsyncMock(return_value=MESSAGE))
     w.room = AsyncMock(return_value={"kind": "dm"})
     monkeypatch.setattr(repo, "get_room", w.room)
-    monkeypatch.setattr(away, "_still_in_workspace", AsyncMock(return_value=True))
     w.member = AsyncMock(return_value={"id": "user_b"})
     monkeypatch.setattr(repo, "get_member", w.member)
     monkeypatch.setattr(repo, "finish_away_check", w.finish)
@@ -144,27 +143,12 @@ async def test_quiet_hours_the_setting_and_the_room_cap_each_stop_it(world):
 
 
 @pytest.mark.asyncio
-async def test_an_answered_approval_sends_nothing_and_a_pending_one_uses_e4b(world, monkeypatch):
-    row = {
-        **ROW,
-        "sk": "A#co#ap1",
-        "kind": "approval",
-        "approvalId": "ap1",
-        "title": "Growth · LB-12",
-        "body": "Needs your approval: Launch email",
-    }
-    monkeypatch.setattr(away, "_still_in_workspace", AsyncMock(return_value=False))
-    assert await away.check_one(row, NOW) is False  # left the workspace meanwhile
-    monkeypatch.setattr(away, "_still_in_workspace", AsyncMock(return_value=True))
-    monkeypatch.setattr(away, "_approval_pending", AsyncMock(return_value=False))
+async def test_a_queued_paperclip_approval_is_dropped_unsent(world):
+    """Nothing can answer a Paperclip approval since Phase 1 task 7, so its queued row never emails."""
+    row = {**ROW, "sk": "A#co#ap1", "kind": "approval", "approvalId": "ap1", "title": "Growth · LB-12"}
     assert await away.check_one(row, NOW) is False
-    monkeypatch.setattr(away, "_approval_pending", AsyncMock(return_value=True))
-    assert await away.check_one(row, NOW) is True
-    kw = world.send.await_args.kwargs
-    assert kw["subject"] == "An approval is waiting in Lightbulb"
-    assert "Growth is waiting on your answer in Lightbulb." in kw["text"]
-    assert "Launch email" not in kw["text"] and "Launch email" not in kw["html"]  # what is approved stays in the app
-    assert "panel=teams-approval-detail&detailId=ap1" in kw["text"]
+    world.send.assert_not_awaited()
+    world.finish.assert_awaited_once()
 
 
 def test_mention_copy_names_the_room():

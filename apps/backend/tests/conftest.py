@@ -97,7 +97,6 @@ def _no_lifespan_background_workers(request, monkeypatch):
     )
 
     monkeypatch.setattr(main, "run_scheduled_worker", _no_background_work)
-    monkeypatch.setattr(main, "_build_teams_event_broker", _no_background_work)
     monkeypatch.setattr(main, "_running_count_gauge_loop", _no_background_work)
     for module, name in (
         (durable_activity, "run_trial_idle_sweeper"),

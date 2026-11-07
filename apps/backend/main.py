@@ -50,6 +50,7 @@ from routers import (
     desktop_pair,
     devices,
     gateway_relay,
+    hooks,
     huddles,
     desktop_execution,
     desktop_session_pickup,
@@ -67,9 +68,7 @@ from routers import (
     oauth,
     ops,
     orgs,
-    paperclip_events,
     paperclip_proxy,
-    paperclip_trigger_proxy,
     photon_inbound,
     platform_info,
     runtime_rpc,
@@ -283,8 +282,7 @@ async def _running_count_gauge_loop():
 
     Also piggybacks the OpenRouter account-balance check here (throttled to
     every ~15 min via a monotonic timestamp) rather than adding a second
-    scheduler -- see core.services.openrouter_keys.check_account_balance --
-    and the TeamsEventBroker idle-client sweep (release_idle).
+    scheduler -- see core.services.openrouter_keys.check_account_balance.
     """
     from core.observability.metrics import gauge
     from core.services.openrouter_keys import check_account_balance
@@ -302,85 +300,7 @@ async def _running_count_gauge_loop():
         if time.monotonic() - last_balance_check >= balance_check_interval_s:
             last_balance_check = time.monotonic()
             await check_account_balance()
-        try:
-            from core.services.teams_event_broker import get_broker
-
-            broker = get_broker()
-            if broker is not None:
-                await broker.release_idle()
-        except Exception:
-            logger.warning("teams broker idle sweep failed", exc_info=True)
         await asyncio.sleep(60)
-
-
-async def _build_teams_event_broker():
-    """Construct the singleton TeamsEventBroker used by /ws/message.
-
-    Returns None when the dependencies aren't configured (e.g. local
-    dev without Paperclip running) — the broker is best-effort and
-    /teams continues to work via REST without realtime updates.
-    """
-    try:
-        from core.repositories.paperclip_repo import PaperclipRepo
-        from core.services.paperclip_event_client import PaperclipEventClient
-        from core.services.paperclip_user_session import get_user_session_cookie
-        from core.services.teams_event_broker import TeamsEventBroker
-
-        # Best-effort: if the Paperclip env isn't configured (no internal
-        # URL), don't try to start the broker — /teams REST still works,
-        # just without live updates.
-        paperclip_url = (settings.PAPERCLIP_INTERNAL_URL or "").strip()
-        if not paperclip_url:
-            logger.info("teams broker: PAPERCLIP_INTERNAL_URL unset; skipping startup")
-            return None
-
-        # Resolve ws:// / wss:// from the http(s):// internal URL.
-        if paperclip_url.startswith("https://"):
-            ws_base = "wss://" + paperclip_url[len("https://") :]
-        elif paperclip_url.startswith("http://"):
-            ws_base = "ws://" + paperclip_url[len("http://") :]
-        else:
-            ws_base = paperclip_url
-        ws_base = ws_base.rstrip("/")
-
-        repo = PaperclipRepo(table_name="paperclip-companies")
-
-        from core.services.clerk_admin import get_primary_email
-        from core.services.paperclip_admin_client import shared_admin_client
-
-        async def resolve_company_id(owner_id: str) -> str:
-            company = await repo.resolve_owner_row(owner_id)
-            if company is None:
-                raise RuntimeError(f"no active paperclip company for owner {owner_id}")
-            return company.company_id
-
-        async def resolve_session_cookie(user_id: str) -> str:
-            return await get_user_session_cookie(
-                user_id=user_id,
-                repo=repo,
-                admin_client=shared_admin_client(),
-                clerk_email_resolver=get_primary_email,
-            )
-
-        def client_factory(*, user_id: str, company_id: str, cookie: str, on_event):
-            return PaperclipEventClient(
-                url=f"{ws_base}/api/companies/{company_id}/events/ws",
-                cookie=cookie,
-                on_event=on_event,
-                user_id=user_id,
-                company_id=company_id,
-            )
-
-        broker = TeamsEventBroker(
-            client_factory=client_factory,
-            resolve_company_id=resolve_company_id,
-            resolve_session_cookie=resolve_session_cookie,
-        )
-        logger.info("teams broker: started; ws_base=%s", ws_base)
-        return broker
-    except Exception:
-        logger.exception("teams broker: startup failed; /teams will run without live updates")
-        return None
 
 
 @asynccontextmanager
@@ -420,14 +340,6 @@ async def lifespan(app: FastAPI):
     digest_task = asyncio.create_task(run_digest_sweeper(digest_stop))
     away_stop = asyncio.Event()
     away_task = asyncio.create_task(run_needs_you_sweeper(away_stop))
-
-    # Teams event broker — projects approved Paperclip events onto each user's
-    # private AppSync channel. REST remains available when it is unconfigured.
-    broker = await _build_teams_event_broker()
-    if broker is not None:
-        from core.services.teams_event_broker import set_broker
-
-        set_broker(broker)
 
     gauge_task = asyncio.create_task(_running_count_gauge_loop())
 
@@ -517,8 +429,6 @@ async def lifespan(app: FastAPI):
                 away_task,
                 gauge_task,
             ]
-            if broker is not None:
-                cleanup.append(broker.shutdown())
             await asyncio.gather(*cleanup, return_exceptions=True)
     except asyncio.TimeoutError:
         logger.error("Graceful shutdown exceeded 20s budget; cancelling process-local workers")
@@ -551,10 +461,6 @@ async def lifespan(app: FastAPI):
     finally:
         await mcp_context.__aexit__(None, None, None)
         system_health.BACKGROUND_TASKS.clear()
-        if broker is not None:
-            from core.services.teams_event_broker import set_broker
-
-            set_broker(None)
 
 
 openapi_tags = [
@@ -867,10 +773,6 @@ app.include_router(sendblue_inbound.router, prefix="/api/v1/webhooks", tags=["we
 app.include_router(photon_inbound.router, prefix="/api/v1/webhooks", tags=["webhooks"])
 app.include_router(ses_inbound.router, prefix="/api/v1/webhooks", tags=["webhooks"])
 
-# Paperclip isol8.notifications plugin events (approvals + run lifecycle →
-# push notifications). Bearer-secret auth; disabled when the secret is unset.
-app.include_router(paperclip_events.router, prefix="/api/v1/webhooks", tags=["webhooks"])
-
 # Machine-only customer lifecycle feed + idempotent send ledger. Uses the
 # Paperclip service bearer credential and never impersonates an admin user.
 from routers import lifecycle_operations  # noqa: E402
@@ -990,10 +892,9 @@ app.include_router(desktop_pair.router, prefix="/api/v1", tags=["desktop"])
 # ChatGPT OAuth (device-code flow for BYO ChatGPT-token billing)
 app.include_router(oauth.router, prefix="/api/v1")
 
-# Tier-2 ingress: signed Paperclip routine-trigger fires at
-# /api/v1/hooks/t/{owner_id}/{public_id}. No edge auth — Paperclip verifies
-# the per-trigger signature upstream. See routers/paperclip_trigger_proxy.py.
-app.include_router(paperclip_trigger_proxy.router, prefix="/api/v1/hooks", tags=["hooks"])
+# Webhook automation fires at /api/v1/hooks/t/{owner_id}/{public_id}: no edge auth, the
+# backend verifies each delivery against its HOOK# row. See routers/hooks.py.
+app.include_router(hooks.router, prefix="/api/v1/hooks", tags=["hooks"])
 # App-LEVEL Meta ingress at /api/v1/hooks/meta — deliberately ownerless, because
 # a Meta app has ONE callback URL for every user. Routed by the asset id in the
 # payload, authenticated by the app-secret signature. See routers/meta_webhook.py.

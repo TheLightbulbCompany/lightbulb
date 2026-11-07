@@ -25,7 +25,7 @@ from core.services import company_stripe, company_stripe_approval, owner_lifecyc
 from core.services.owner_facts import write_owner_facts
 from core.services.container_auth import _require_hook_token
 from routers.company_board import file_card
-from routers.teams._guards import COMPANY_STRIPE_MESSAGE, require_always_on_entitlement
+from core.services.entitlement_guards import COMPANY_STRIPE_MESSAGE, require_always_on_entitlement
 
 logger = logging.getLogger(__name__)
 router = APIRouter()

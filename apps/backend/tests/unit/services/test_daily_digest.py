@@ -15,7 +15,7 @@ from moto import mock_aws
 
 from core.config import settings
 from core.dynamodb import table_name
-from core.repositories import messaging_repo, user_repo
+from core.repositories import user_repo
 from core.services import daily_digest, ses_email
 from tests.unit.repositories.test_messaging_repo import table  # noqa: F401
 
@@ -106,7 +106,6 @@ async def test_run_once_skips_the_workspace_scan_when_nobody_is_due(monkeypatch)
 
 @pytest.fixture
 def sends(monkeypatch):
-    monkeypatch.setattr(daily_digest, "_teams_ctx", AsyncMock(return_value=object()))
     push = AsyncMock()
     email = AsyncMock(return_value="ses-1")
     publisher = MagicMock()
@@ -127,14 +126,6 @@ async def test_no_unseen_items_sends_nothing(table, sends, monkeypatch):
     assert await daily_digest.digest_one(OWNER, ROW, "2026-09-24") is False
     for mock in sends:
         mock.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_paperclip_unavailable_defers_without_claiming(table, sends, monkeypatch):
-    monkeypatch.setattr(daily_digest.activity, "unseen_counts", AsyncMock(return_value=None))
-    assert await daily_digest.digest_one(OWNER, ROW, "2026-09-24") is False
-    # Nothing claimed: a later tick in the same hour still gets its chance.
-    assert await messaging_repo.claim_digest("u_1", OWNER, "2026-09-24") is True
 
 
 @pytest.mark.asyncio

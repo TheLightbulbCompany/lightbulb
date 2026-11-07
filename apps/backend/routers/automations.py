@@ -8,26 +8,13 @@ every other trigger-creation path in the system:
 - ``require_org_admin`` — wiring an integration trigger is an admin action,
   same posture as every mutating endpoint in ``routers/connections.py``.
 - ``require_always_on_entitlement`` — a webhook trigger IS always-on
-  automation (routers/teams/work.py's ``create_routine_trigger`` gates the
-  exact same way, for the exact same reason: a trial container scales to
-  zero and never wakes to serve a scheduled/triggered dispatch).
+  automation: a trial container scales to zero and never wakes to serve a triggered dispatch.
 
 ``PUT /automations/{public_id}/webhook-secret`` is the guided-paste
-companion: once the owner has pasted the proxy URL into their Stripe
+companion: once the owner has pasted the hook URL into their Stripe
 Dashboard, Stripe hands them a signing secret and the frontend posts it here.
-It ARMS the trigger by rotating its Paperclip secret to that exact value
-(``rotate_routine_trigger_secret(secret=...)`` -> the fork's caller-supplied
-secret support), so Paperclip verifies the provider's native signature
-against it. Verification is NATIVE — there is no Isol8-side secret store,
-cache, or edge verification anymore (see ``routers/paperclip_trigger_proxy.py``).
-
-Ownership: the ``public_id`` must resolve to a webhook trigger in the
-CALLER's own Paperclip company (``_lookup_trigger_detail``); a foreign or
-typo'd id 404s rather than silently succeeding. No separate "is this a Stripe
-trigger" marker gate is needed — arming a non-Stripe webhook trigger is
-harmless (a ``none``/``bearer`` trigger simply stores a secret its mode may
-not use); the old marker existed only because verification used to be
-edge-side and a stray paste could brick an unsigned trigger.
+It stores the secret and arms the owner's ``HOOK#`` row (``automation_hooks.arm``);
+``routers/hooks.py`` verifies every delivery against it. A foreign or typo'd id 404s.
 """
 
 from __future__ import annotations
@@ -59,34 +46,14 @@ from core.services.inbound_triggers import (
     list_vercel_projects,
     seed_trigger_routine,
 )
-from core.services import automation_hooks, automation_schedule, chat_gate, super_agent_flags, tasks_access
-from core.services.paperclip_admin_client import PaperclipAdminClient, PaperclipApiError
-from core.services.paperclip_admin_session import get_admin_session_cookie, invalidate_admin_session
+from core.services import automation_hooks, automation_schedule, chat_gate, tasks_access
 from core.services.trigger_fire_url import trigger_fire_url
-from routers import paperclip_trigger_proxy
 from routers.rules import RuleBuiltin, RuleMatchIn, check_scope, rule_stats
-from routers.teams._guards import WEBHOOK_AUTOMATIONS_MESSAGE, require_always_on_entitlement
+from core.services.entitlement_guards import WEBHOOK_AUTOMATIONS_MESSAGE, require_always_on_entitlement
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/automations", tags=["automations"])
-
-
-async def _resolve_trigger_id(owner_id: str, public_id: str) -> str | None:
-    """Resolve ``public_id`` -> the internal trigger id in the caller's own
-    Paperclip company, or None if no such webhook trigger exists there.
-
-    Retries once on an expired admin session (401) — same posture as the fire
-    proxy's ``_resolve_trigger_binding``, so a transient session expiry doesn't
-    surface as a 503 the owner has to manually retry."""
-    try:
-        trigger = await paperclip_trigger_proxy._lookup_trigger_detail(owner_id, public_id)
-    except PaperclipApiError as exc:
-        if exc.status_code != 401:
-            raise
-        invalidate_admin_session()
-        trigger = await paperclip_trigger_proxy._lookup_trigger_detail(owner_id, public_id)
-    return trigger.get("id") if trigger else None
 
 
 class FromIntegrationBody(BaseModel):
@@ -218,10 +185,7 @@ async def set_webhook_secret(
     (the paste half of the guided flow — the frontend calls this once the
     owner has the ``whsec_`` Stripe showed them).
 
-    Resolves ``public_id`` to a webhook trigger in the caller's own Paperclip
-    company (404 otherwise), then rotates that trigger's Paperclip secret to
-    the supplied value so Paperclip verifies the provider's native signature
-    against it. 503 if Paperclip is unreachable.
+    Stores the secret and arms the caller's ``HOOK#`` row for ``public_id`` (404 when there is none).
     """
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
@@ -231,38 +195,9 @@ async def set_webhook_secret(
     if not public_id.isalnum() or len(public_id) > 64:
         raise HTTPException(status_code=400, detail="invalid_public_id")
 
-    # Super-agent workspaces: the secret goes to Secrets Manager and the HOOK# row is armed (lane A, Task 8).
-    # No HOOK# row = still a Paperclip trigger: today's path below.
-    if await super_agent_flags.flags_for(owner_id) and await automation_hooks.arm(
-        owner_id, public_id, body.webhook_secret
-    ):
-        return {"status": "stored"}
-
-    try:
-        trigger_id = await _resolve_trigger_id(owner_id, public_id)
-    except Exception as exc:  # noqa: BLE001 — fail CLOSED on resolver trouble, same as the proxy
-        logger.warning("automations: trigger resolve failed owner=%s err=%s", owner_id, exc)
-        raise HTTPException(status_code=503, detail="trigger_resolution_unavailable") from exc
-    if not trigger_id:
+    # The secret goes to Secrets Manager and the HOOK# row is armed; no HOOK# row is an unknown trigger.
+    if not await automation_hooks.arm(owner_id, public_id, body.webhook_secret):
         raise HTTPException(status_code=404, detail="unknown_trigger")
-
-    if not settings.PAPERCLIP_INTERNAL_URL:
-        raise HTTPException(status_code=503, detail="paperclip_unavailable")
-
-    # Arm the trigger by rotating its Paperclip secret to the provider's value
-    # (board actor via the bootstrap-admin session — agents can't set a
-    # specific secret, see the fork's rotateTriggerSecret guard).
-    try:
-        async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0) as http:
-            cookie = await get_admin_session_cookie(http)
-            client = PaperclipAdminClient(http_client=http)
-            await client.rotate_routine_trigger_secret(
-                session_cookie=cookie, trigger_id=trigger_id, secret=body.webhook_secret
-            )
-    except Exception as exc:  # noqa: BLE001 — Paperclip unreachable / rotate failed
-        logger.warning("automations: arm webhook secret failed owner=%s trigger=%s err=%s", owner_id, trigger_id, exc)
-        raise HTTPException(status_code=503, detail="arm_secret_unavailable") from exc
-
     return {"status": "stored"}
 
 

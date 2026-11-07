@@ -18,7 +18,6 @@ async def test_lifespan_shutdown_sets_flag_and_is_bounded(monkeypatch):
     monkeypatch.setattr("core.services.durable_activity.run_trial_idle_sweeper", lambda stop: asyncio.sleep(0))
     monkeypatch.setattr(main, "run_scheduled_worker", lambda: asyncio.sleep(3600))
     monkeypatch.setattr(main, "_running_count_gauge_loop", lambda: asyncio.sleep(3600))
-    monkeypatch.setattr(main, "_build_teams_event_broker", lambda: asyncio.sleep(0, result=None))
 
     # Provision dispatch holds no per-owner state (no inline runner to hand
     # off since Phase 1), so the bounded drain covers only the worker tasks.

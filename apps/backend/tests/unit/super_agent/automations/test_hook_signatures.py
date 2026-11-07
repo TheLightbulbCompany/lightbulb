@@ -167,10 +167,8 @@ def _google_jwt(**over) -> str:
 
 @pytest.fixture
 def google_jwks():
-    from routers import paperclip_trigger_proxy as mod
-
     with patch.object(
-        mod._google_jwks_client, "get_signing_key_from_jwt", return_value=MagicMock(key=_KEY.public_key())
+        hs._google_jwks_client, "get_signing_key_from_jwt", return_value=MagicMock(key=_KEY.public_key())
     ):
         yield
 

@@ -1,5 +1,5 @@
 """Shared helpers for the unauthenticated public ingress routers (meta_webhook,
-paperclip_trigger_proxy, launch): a per-key rate bucket, the upstream client
+hooks, launch): a per-key rate bucket, the upstream client
 factory, and the caller-IP read.
 
 **Rate limit.** In-process sliding-window bucket, 60/min per key. RULING D17:

@@ -6,7 +6,7 @@
 
 **Architecture:** Nothing new at the core. The Router is the realtime voice session in `apps/huddle-agent`, with three entry points: `phone.py`, `meet.py`, and `owner.py` (from #5010). Each entry point does reads and bounded writes through `/internal/voice/*` and hands open-ended work to Hermes Workers with `start_work`. Needs you is the existing Questions system (`routers/questions.py`). Knowledge is the Agent-page document (`GET/PUT /voice/agent`) plus memory. The web is `apps/frontend/src/components/voice/*` under `VoiceShell`. Every current integration stays, as a read source and as Worker tools. Nothing is removed.
 
-**Tech Stack:** FastAPI backend (Python 3.12, DynamoDB), LiveKit Agents worker (Python), Gemini Live / gpt-realtime, Twilio (SIP, SMS), Recall.ai, Next.js 15 + SWR, Tauri Mac app (#5002), Expo (last task).
+**Tech Stack:** FastAPI backend (Python 3.12, DynamoDB), LiveKit Agents worker (Python), OpenAI `gpt-realtime-2.1(-mini)` + `gpt-live-transcribe` (Gemini Live as a fallback flag), Twilio (SIP, SMS), Recall.ai, Next.js 15 + SWR, Tauri Mac app (#5002), Expo (last task).
 
 **Spec:** `docs/superpowers/specs/2026-11-07-voice-agents-design.md` §4–§5 (UX approved on the mockups in `~/Lightbulb/pivot-research-2026-11-07/.superpowers/brainstorm/69159-1794040794/content/`). Master plan phases 3–5: `docs/superpowers/plans/2026-11-07-voice-agents-master-plan.md`. Founder goal: `docs/superpowers/plans/2026-11-08-founder-goal.md`.
 
@@ -15,6 +15,21 @@
 - "Final version based on our goal and requirements first, so we can test the end-state UX." This plan targets the end state, not increments.
 - "We are going all in on only voice agents." Email features are not planned and not tested. Approval examples are voice-driven actions (a booking, an order a Worker places). Wherever the spec mails something (meeting notes to the organizer, the "Email me the notes" checkbox), it is listed under Founder decisions and left as it is in code.
 
+**Founder rulings (7 Nov, late), applied throughout:**
+- Meeting notes live in the app only. There is no email: the notes mail is not sent, and the Agent-page checkbox goes (Tasks 22, 29).
+- Missed-caller and waitlist texts stay OFF until a consent review (Tasks 9, 29).
+- **The voice engine is OpenAI by default for phone, Meet and the in-app orb** (founder, 7 Nov, late; the audit supports it, and we already hold the key and credits). Gemini Live is a fallback flag only.
+  - The models are `gpt-realtime-2.1-mini` / `gpt-realtime-2.1` and the transcriber `gpt-live-transcribe`. `gpt-realtime` and `gpt-realtime-mini` retire on 20 Jan 2027, and `gpt-4o-mini-transcribe` on 26 Feb 2027.
+  - The one-vendor lane (`feat/voice-openai-engine`) makes the phone and Meet switch. Task 33 covers what that PR leaves.
+  - Tasks that relied on Gemini specifics (proactive audio / decide-not-to-respond, the Gemini-TTS greeting, Gemini session resumption) follow the OpenAI engine: the gate owns `response.create`, the greeting is pre-rendered TTS, and sessions renew before the 60-minute maximum.
+- Numbers per sign-up: undecided. The Twilio lane is researching the onboarding paths (existing number: forward or port; no number: buy). Task 11 and onboarding step 4 wait on that research.
+
+**Independent audit folded in:** `~/Lightbulb/super-agent-design/evidence/voice/07-decisions-vs-practice-nov2026.md`. It covers:
+- the contact-boundary hole (H → Task 4);
+- verbal approval as a voice "yes" plus a one-tap confirm (I → Task 15);
+- pass^3 evals, field conditions and real dial-ins (G → Task 39);
+- the "what experts do" list (Tasks 34–38).
+
 ## Global Constraints
 
 - First utterance of every call: the business, the assistant's name, "AI assistant", and "This call is recorded." (spec §5; `voice_phone.py:218-223` already builds it; never weaken the 422 in `routers/voice.py:127`).
@@ -22,13 +37,16 @@
 - The Router never blocks on a Worker. Every tool returns in under 1 s, or under 2 s for integration reads (`integration_reads.READ_S`), or says "one moment" and moves on.
 - An answer not spoken within 20 s of its question is dropped and posted to chat (Meet) or to the timeline item (app, phone).
 - Nothing runs per business while no call or meeting is happening: no new timer, sweeper or always-on process per workspace.
-- Approvals: a member's tap, or a member's spoken "yes", resolves a card through the same `routers/questions.py` answer path, with a 10 s undo for anything sent or spent. A guest's or caller's words never approve.
+- Approvals: a tap in the member's signed-in app resolves a card (`routers/questions.py` answer path, 10 s undo for anything sent or spent). A member's spoken "yes" in a Meet or on the phone only queues a one-tap confirm pushed to that member's app. Pure voice approval is allowed only for low-risk kinds (an internal task, a reminder), and only from a signed-in Google participant whose email matches a member, or from the Clerk-authenticated in-app orb. A guest's or caller's words never approve (audit I).
 - Copy: no markdown in anything spoken or shown in the voice product. The assistant's name comes from `nameOf(config)`. "Lightbulb" is only the product.
 - Prices shown: $250/month, 1,500 minutes included, $0.35/min overage (spec §9). There is no charging in this plan; billing is Phase 6.
-- No email features. No new outbound beyond consented callbacks, booking confirmations, and opt-in day-before reminders (spec §9 Q2 is still open, see Founder decisions).
+- No email features. No outbound beyond consented callbacks, booking confirmations, and opt-in day-before reminders. Missed-caller and waitlist texts are off (founder ruling).
+- Bookings, moves, cancels and message callback numbers are read back and confirmed by the caller, and the tool enforces it, not the prompt (audit, experts item 1; Task 34).
+- Latency target, phone: mouth-to-ear p95 ≤ 1,400 ms on non-tool turns, aiming for 1,115 ms (Twilio, cited in the audit G). Meet keeps its 3 s quiet rule and states its own target in Task 37.
+- Eval bar: every scenario passes 3 of 3, and the aggregate is ≥ 90%, including noisy, phone-line and accented runs. "Sellable" also needs 20+ real dial-ins by people other than the builder (Task 39).
 - Ponytail: shortest diff, reuse existing code (`integration_reads`, `questions`, `start_voice_work`, `SettingsPlace`, `HuddleProvider`). Every task is one PR with its test, `/simplify` on the diff, a fresh reviewer PASS posted on the PR, then merge.
 - UI tasks (marked **[UI]**) load the `impeccable:impeccable` skill, match the named mockup file, work at 375 px width and in dark mode, and get a Chrome walk on dev plus one in the Mac app, with screenshots in `~/Lightbulb/super-agent-design/evidence/end-state/`.
-- Spend: only what the founder goal allows (Twilio ≤ $5/day, Gemini ≤ $5/day, Recall ≤ 3 h/day). Anything else is in Founder-only items and waits for a go.
+- Spend: only what the founder goal allows (Twilio ≤ $5/day, voice model (OpenAI or Gemini) ≤ $5/day, Recall ≤ 3 h/day). Anything else is in Founder-only items and waits for a go.
 
 ## Review Focus
 
@@ -130,7 +148,7 @@ Paths: `VP` = `apps/backend/routers/voice_phone.py`, `V` = `apps/backend/routers
 - #5002 (Mac app source).
 - The desktop run-family fix (`fix/task-desktop-run-family`, touches only `desktop_execution.py`).
 - The Paperclip exit (`docs/paperclip-exit-plan`, Task 8b). Its Task 3 (native workspace provisioning) is a prerequisite for a brand-new sign-up in Task 30's acceptance, and its Task 5 (Link purchase through the Needs-you Question) shares the approval path with Task 15. Do not edit those files in parallel.
-- `feat/voice-openai-engine` (lane-one-vendor). This plan is engine-agnostic: tools and routes do not depend on Gemini vs gpt-realtime.
+- `feat/voice-openai-engine` (lane-one-vendor) switches phone and Meet to OpenAI (founder-approved). Tools and routes here are engine-agnostic. Worker-prompt tasks (1, 3, 12, 14, 17, 18, 34, 35, 38) rebase onto it once it merges.
 
 ---
 
@@ -157,8 +175,10 @@ Paths: `VP` = `apps/backend/routers/voice_phone.py`, `V` = `apps/backend/routers
 
 ## Order and lanes
 
-- **Pre (lead, before Task 1):** review and merge #5007, then #5009, then #5010 and #5002. Every later task assumes them.
-- **Lane A, phone:** 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8; 9 and 10 after 1; 11 any time; 12 after #5010; 13 after 6; 14 after 10.
+- **Pre:** #5010 is merged. Merge #5007 (in re-review), then #5009, then #5002. Lane B and Task 31 assume them.
+- **First wave (independent, safety and correctness):** 1, 4, 33.
+- **Experts-do and eval (audit):** 34 after 3; 35 and 36 after 1; 37 any time; 38 after #5007; 39 after 34–36 (it is the gate for "sellable").
+- **Lane A, phone:** 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8; 9 and 10 after 1; 11 after the Twilio research; 12 after #5010; 13 after 6; 14 after 10.
 - **Lane B, Meet:** 16, 17, 18, 19, 20, 21, 22, 23 (19 before 15).
 - **Shared:** 15 after 6 and 19.
 - **Lane C, web:** 25 first; then 24 (after #5010), 26, 27 (after 5, 22, 24), 28 (after 6, 10, 13, 15), 29 (after 10, 14, 16), 30 (after 7, 10, 11), 31 (after 25); 32 last.
@@ -219,13 +239,15 @@ Paths: `VP` = `apps/backend/routers/voice_phone.py`, `V` = `apps/backend/routers
 **Interfaces:**
 - `start_voice_work(..., origin: Literal["phone_contact","meeting","owner"], specialist: str | None, budget_s: int = 600)`.
 - Phone uses `origin="phone_contact"` and `specialist="front-desk"`.
-- Sub-tasks inherit `origin` (fix `tasks_repo.py:477`).
+- Sub-tasks inherit `origin` **structurally** (audit H). The one function every task creation goes through (`tasks_repo.create`, or whatever `start_voice_work` and the Hermes `start_work` effect both call; grep the callers first) copies the parent's `origin` and `from_contact` onto the child. `from_contact` (`tasks_repo.py:475-480`) then reads the task's own field, never only its trigger. No per-caller patch.
+- A contact-origin run of `front-desk` gets only the Knowledge read and the booking tools (`voice_booking` free/book/move/cancel, message, `voice_sms.send` to that caller). It gets none of the owner's connectors, MCP servers or browser, except the Task 8 write-back session, which is scoped to the one booking site. This is enforced where the run's tool list is built (grep `allowed_tools` / the Hermes profile toolsets), not in the prompt.
 - The seeded specialists per workspace are exactly `front-desk` ("Front desk") and `office` ("Office"), both created if missing.
 - When a call connects, `start` calls the existing `voice_calls.prewake_owner`-style warm for `front-desk` only. It is fire-and-forget and adds no new timer.
 
 - [ ] Write the failing tests:
   - `test_phone_work_is_contact_origin`.
-  - `test_subtask_inherits_contact_origin`.
+  - `test_subtask_inherits_contact_origin` and `test_grandchild_inherits_contact_origin` (two levels deep, created through the Hermes `start_work` effect path, not only `start_voice_work`).
+  - `test_contact_run_has_only_knowledge_and_booking_tools`: the tool list has no Gmail, Drive, Stripe or browser, so a caller's "read me the owner's email" cannot even be attempted.
   - `test_contact_task_cannot_pay`: `effect_check` on a `payment` effect with origin `phone_contact` is refused, and a Question is created for the owner.
   - `test_phone_work_has_budget`.
   - `test_seed_front_desk_and_office`.
@@ -308,13 +330,14 @@ All dispatch on `cfg["bookingsGo"]`. `own` keeps today's `VOICEBOOK#` rows. `goo
 - A `reminders.dayBefore` reminder is sent by the existing scheduler as a one-shot Temporal timer per booking (no sweeper).
 - Test `apps/backend/tests/unit/services/test_voice_sms.py`.
 
-**Interfaces:** Every send writes a step on the call record ("texted confirmation to (415) 555-0133"). There is no send unless `kind` is consented: a confirmation needs the caller's yes on the call, a reply goes only to a caller who called, and a reminder needs `reminders.dayBefore` and the caller's yes.
+**Interfaces:** Every send writes a step on the call record ("texted confirmation to (415) 555-0133"). `missed_caller` and `waitlist` are not valid kinds: those texts stay off until a consent review (founder ruling), even if the stored config has `reminders.missedCallers` / `reminders.waitlist` true. There is no send unless `kind` is consented: a confirmation needs the caller's yes on the call, a reply goes only to a caller who called, and a reminder needs `reminders.dayBefore` and the caller's yes.
 
 - [ ] Write the failing tests:
   - `test_confirmation_needs_caller_yes`.
   - `test_text_back_route_writes_step`.
   - `test_status_webhook_rejects_bad_signature`.
   - `test_foreign_env_status_ignored`.
+  - `test_missed_caller_and_waitlist_texts_never_sent`.
 - [ ] Run, implement, run again, commit `feat(voice): confirmations and text back from Nova's number`.
 
 ### Task 10: Nova calls out: Ring me, call back with the answer, forwarding check
@@ -333,7 +356,10 @@ All dispatch on `cfg["bookingsGo"]`. `own` keeps today's `VOICEBOOK#` rows. `goo
   - `test_outbound_prompt_by_purpose`.
 - [ ] Run, implement, run again, commit `feat(voice): ring me, call back with the answer, forwarding check`.
 
-### Task 11: A number per business
+### Task 11: A number per business (waits on the Twilio onboarding-paths research)
+
+Do not start until the Twilio lane reports on the three paths: forward an existing number, port it, or buy one when there is none. Then shape this task to the path(s) the founder picks. What follows is the buy path, as drafted.
+
 
 **Files:**
 - Modify `apps/backend/core/services/voice_onboarding.py:166-214`. `assign_number` keeps today's env number for the first workspace. When it is taken, and `settings.VOICE_BUY_NUMBERS` is true, it buys a local Twilio number in the business's area code (`AvailablePhoneNumbers/US/Local?AreaCode=`), points its SIP trunk at LiveKit, and writes the line row. `release_number` releases it.
@@ -378,7 +404,7 @@ All dispatch on `cfg["bookingsGo"]`. `own` keeps today's `VOICEBOOK#` rows. `goo
 ### Task 14: Voice and Spanish are real; voice preview
 
 **Files:**
-- Modify `PH:38`, `MT`, `owner.py`: read `cfg["voice"]` and map Warm/Bright/Calm to the engine's voice names in one dict per engine.
+- Modify `PH:38`, `MT`, `owner.py`: read `cfg["voice"]` and map Warm/Bright/Calm to OpenAI realtime voice names (with a Gemini dict for the fallback flag).
 - `cfg["spanish"]` adds "If the caller speaks Spanish, answer in Spanish; the disclosure is said in Spanish too" to the prompt, and the Spanish disclosure words go into `DisclosureGuard`.
 - Route `GET /voice/preview?voice=Warm&lang=en` returns a short TTS clip of the greeting (cached per voice and greeting hash in S3).
 - Test `test_phone_prompt.py`, `test_voice.py`.
@@ -389,20 +415,34 @@ All dispatch on `cfg["bookingsGo"]`. `own` keeps today's `VOICEBOOK#` rows. `goo
   - `test_preview_cached`.
 - [ ] Run, implement, run again, commit `feat(voice): the chosen voice, Spanish, and a voice preview`.
 
-### Task 15: Verbal approval, the same in all three seats
+### Task 15: Approvals by voice: a "yes" queues a one-tap confirm; pure voice only for low risk
+
+This follows audit I: a voice in a meeting identifies a roster slot, not a person.
 
 **Files:**
-- Create `apps/backend/core/services/voice_approve.py`: `async def approve(ws, speaker_user_id: str | None, phrase: Literal["yes","no"], hint: str) -> dict`. It picks the open Question the speaker can answer (`questions.can_answer_now`) that best matches `hint` (the most recent when only one is open), answers it through the same function `routers/questions.py:194` calls, and returns `{"answered": qid, "undoUntil": iso}`, or `{"needs_member": true}` when `speaker_user_id` is None.
+- Create `apps/backend/core/services/voice_approve.py`: `async def approve(ws, seat: Literal["app","meet","phone_owner"], speaker: dict, phrase: Literal["yes","no","undo"], hint: str) -> dict`.
+  - `speaker` is `{user_id, email, signed_in}`. For Meet it comes from the Recall participant; for the app, from Clerk; for the phone, from owner mode.
+  - It picks the open Question the speaker can answer (`questions.can_answer_now`) that best matches `hint` (the most recent when only one is open).
+  - It **answers directly** only when one of these holds:
+    - `seat == "app"` (the Clerk-authenticated orb);
+    - the card's kind is low-risk (`internal_task`, `reminder`) and the speaker is a signed-in Google participant whose email is in `questions.member_emails(ws)`.
+  - Otherwise it writes `pendingConfirm = {by, seat, roomId, at}` on the Question and sends the existing Expo/web push to that member: "Approve in one tap: <title> (approved by voice in <meeting>)". It returns `{"confirm_sent": true}`, and Nova says "I've sent it to your phone to confirm."
+  - Anything that spends, sends outside the business, or touches customer data always needs the tap.
+  - It returns `{"needs_member": true}` for a guest or caller.
+- The card (Task 28) shows "Approved by voice in Team meeting · confirm" as the primary button when `pendingConfirm` is set.
 - Tools `approve(phrase, hint)` in `meet.py`, `owner.py`, and owner-mode `phone.py`.
-- Undo: answers with a sent or spent effect hold for 10 s (`undoUntil`). Saying "Nova, undo", or the card's Undo button (Task 28), calls `POST /tasks/{t}/questions/{q}/undo` before then.
+- Undo: answers with a sent or spent effect hold for 10 s (`undoUntil`). "Nova, undo", or the card's Undo button, calls `POST /tasks/{t}/questions/{q}/undo` before then.
 - Test `apps/backend/tests/unit/services/test_voice_approve.py`.
 
 - [ ] Write the failing tests:
-  - `test_member_yes_answers_order_card` (the card is a Worker's supply order, $212).
+  - `test_meet_member_yes_on_order_sends_confirm_not_answer` (a Worker's supply order, $212: the Question stays open with `pendingConfirm`, and a push is sent).
+  - `test_meet_low_risk_from_signed_in_member_answers`.
+  - `test_meet_low_risk_from_display_name_only_sends_confirm`.
+  - `test_app_orb_yes_answers` (Clerk seat).
   - `test_guest_yes_leaves_card_open`.
   - `test_undo_within_10s`.
   - `test_undo_after_10s_refused`.
-- [ ] Run, implement, run again, commit `feat(voice): approve a Needs-you card by saying yes`.
+- [ ] Run, implement, run again, commit `feat(voice): voice approvals queue a one-tap confirm; voice-only for low risk`.
 
 ### Task 16: Nova joins Meet as a signed-in Google account
 
@@ -474,12 +514,12 @@ All dispatch on `cfg["bookingsGo"]`. `own` keeps today's `VOICEBOOK#` rows. `goo
   - `test_ended_meeting_updates_status_only`.
 - [ ] Run, implement, run again, commit `feat(meet): Office answers back in the Meet; follow-ups track their task`.
 
-### Task 22: Decisions are kept
+### Task 22: Notes and decisions are kept, in the app only
 
-**Files:** Modify `VM:236-246`. At `end`, one cheap-model pass (the existing `cheap_model_ref`) over the transcript writes `META.meeting.decisions: list[str]` and stores each decision in workspace memory with `source="meeting:<roomId>"`, so a later "what did we decide about holiday hours?" finds it via `recall_memory`. Test `test_voice_meet.py`.
+**Files:** Modify `VM:236-246` and `apps/backend/core/services/meeting_notes.py:237-312`. Notes are written to `META.meeting.notes`, and the `Notes: <title>` mail is no longer sent (founder ruling: app only, no email). The function stays; it is not called. At `end`, one cheap-model pass (the existing `cheap_model_ref`) over the transcript writes `META.meeting.decisions: list[str]` and stores each decision in workspace memory with `source="meeting:<roomId>"`, so a later "what did we decide about holiday hours?" finds it via `recall_memory`. Test `test_voice_meet.py`.
 
-- [ ] Write the failing tests: `test_end_writes_decisions_to_meta_and_memory`, `test_recall_finds_last_week_decision`.
-- [ ] Run, implement, run again, commit `feat(meet): decisions are kept and recallable`.
+- [ ] Write the failing tests: `test_end_writes_decisions_to_meta_and_memory`, `test_recall_finds_last_week_decision`, `test_meeting_notes_not_emailed`.
+- [ ] Run, implement, run again, commit `feat(meet): notes and decisions kept in the app, recallable; no notes email`.
 
 ### Task 23: Meet dev isolation and a real replay gate
 
@@ -496,7 +536,7 @@ All dispatch on `cfg["bookingsGo"]`. `own` keeps today's `VOICEBOOK#` rows. `goo
 Mockup: `home-v2.html` (the orb and the 8:02 am "You and Lightbulb" row and pane).
 
 **Files:**
-- Modify `owner.py` (#5010): set `record=True`. At session end, POST `/internal/voice/owner/{room}/end` with the transcript, the `asked` list and the started task ids.
+- Modify `owner.py` (#5010, merged): set `record=True`. The default `OWNER_ENGINE` is `openai` with `gpt-realtime-2.1-mini` (founder ruling, Task 33); `gemini` stays as a flag. At session end, POST `/internal/voice/owner/{room}/end` with the transcript, the `asked` list and the started task ids.
 - Modify `voice_owner.py`: create a hidden room `kind="call"` with `META.call = {ownerMode: true, transcript, summary, followUps}`, so it is a "Yours" row with no frontend change.
 - Modify `FE/VoiceHome.tsx:210-257` to use #5010's `useAssistantDm`. The orb states are `connecting | listening | thinking | speaking`, read from the agent participant's `lightbulb.agent.status` attribute. The last assistant line shows as a caption under the orb.
 - Test `test_voice_owner.py`, `FE/__tests__/VoiceHome.test.tsx`.
@@ -582,7 +622,8 @@ Mockup: `agent-page-v2.html`.
   - Calendar & booking system: a Square Connect button (the existing `ConnectButton` with provider `square`); for "other", a sign-in form posting to `/voice/booking-login` (Task 8) with the copy "Nova writes each booking there after the call using your login".
   - Number & forwarding: the forwarding status from `cfg.forwardingOk` with "Check forwarding" (Task 10).
   - Meetings: **Join my next meeting**, which posts `/voice/meetings/join-next`. That new route in `V` finds the next Google Calendar event with a Meet link through `integration_reads._calendar` and calls `meeting_bots.create`.
-  - "Email me the notes after" is left exactly as it is (a founder decision).
+  - Remove the "Email me the notes after" checkbox (notes are in the app only).
+  - Reminders: "Text back missed callers" and "Text the waitlist" show as off and disabled with "Off until we finish a consent review" (founder ruling).
 - Owner PIN field (Task 12) under Number.
 - Test `FE/__tests__/AgentPage.test.tsx`, `test_voice.py::test_join_next_meeting`.
 
@@ -627,6 +668,88 @@ Mockup: `home-v2.html` and `needs-you.html` (phone frames).
 - [ ] Write the failing tests: `four tabs in order`, `needs-you push has actions`.
 - [ ] Load `impeccable:impeccable` (with `expo:expo-native-ui`). Run, implement, run again, then a TestFlight internal build (founder: see below). Commit `feat(mobile): four tabs, orb and Needs-you pushes`.
 
+### Task 33: OpenAI everywhere by default, on the successor models; Gemini a flag
+
+Coordinate with the one-vendor lane (`feat/voice-openai-engine`), which switches phone and Meet. This task covers only what that PR does not; read its diff first and drop anything it already does.
+
+**Files:**
+- `apps/huddle-agent/src/huddle_agent/owner.py`: `OWNER_ENGINE` defaults to `openai`, on `gpt-realtime-2.1-mini`.
+- `agent.py:549,665`: the legacy Live path's `gpt-realtime` becomes `gpt-realtime-2.1-mini`, and `gpt-4o-mini-transcribe` becomes `gpt-live-transcribe`.
+- `meet.py`: the per-person STT from #5007 becomes `gpt-live-transcribe`.
+- Grep `src/` for `gpt-realtime"`, `gpt-realtime-mini`, `gpt-4o-mini-transcribe`; change every runtime use.
+- Gemini paths stay behind their existing env flags (`PHONE_ENGINE` / `MEET_ENGINE` / `OWNER_ENGINE=gemini`).
+- Research first: confirm the model ids and the realtime transcription session shape on OpenAI's docs or deprecations page, and cite them in the PR.
+- Test `apps/huddle-agent/tests/test_agent.py::test_no_retiring_openai_models` (none of the three retiring ids appears in `src/`) and `test_default_engines_are_openai`.
+
+- [ ] Write the failing tests. Run them and expect them to fail. Implement. Run the worker suite with `uv run pytest -q -n 2`, expecting only the pre-existing failures. Commit `chore(voice): OpenAI by default on the 2027 successor models; Gemini a flag`.
+
+### Task 34: Read-back is enforced by the tool
+
+**Files:** Modify `voice_phone.py` (book, change, message) and `PH` tools.
+- New tool `confirm_details(kind: Literal["book","move","cancel","message"], details: dict)`. It is called after Nova reads the details back and the caller says yes. It stores a `readback` token `{kind, hash(details), at}` on the call.
+- `book`, `change` and `message` refuse with 409 `readback_required` unless a token for the same kind and the same details hash (service, start, name; or callback number for messages) is less than 120 s old.
+- Owner mode (Task 12) uses the same rule for moves it makes on a customer's booking.
+- Test `test_voice_phone.py`.
+
+- [ ] Write the failing tests: `test_book_refused_without_readback`, `test_book_refused_when_details_changed_after_readback`, `test_message_confirms_callback_number`.
+- [ ] Run, implement (the prompt names the tool order; the server enforces it), run again, commit `feat(voice): bookings and messages need a confirmed read-back`.
+
+### Task 35: Noise cancellation for phone callers; spoken progress while tools run
+
+**Files:** `PH:500-531`.
+- Room input options use `noise_cancellation.BVCTelephony()` for SIP participants. That is the only denoiser in the chain: remove any other. Research first: LiveKit's noise-cancellation docs and its plan availability on our LiveKit Cloud project; cite them.
+- While a tool takes longer than 1.2 s, Nova says one short line grounded in the tool and its arguments ("Checking Saturday afternoon for Ana…"), never a generic filler. The silence timer (`076ad3b963`, "ask once, then hang up") pauses while a tool or a hold runs.
+- Test `apps/huddle-agent/tests/test_phone_prompt.py` and `test_time_limits.py`.
+
+- [ ] Write the failing tests: `test_sip_participant_gets_bvc_telephony`, `test_progress_line_names_the_tool_args`, `test_silence_timer_paused_during_tool`.
+- [ ] Run, implement, run again. Make one scripted noisy call on dev (evidence). Commit `feat(voice): telephony noise cancellation; progress speech; timer pauses for tools`.
+
+### Task 36: Warm transfer to a person
+
+**Files:** `voice_phone.py:472-492`, `PH` transfer tool. Replace the cold SIP transfer with LiveKit's warm-transfer task (research first: LiveKit telephony docs, warm transfer). Nova dials the hand-off number, gives Maya a one-sentence summary ("Jen K., refund for the 3 Oct pedicure, charged twice"), then joins the caller. No answer within 20 s → back to the caller, take a message, and raise a `handoff` Question (Task 6). The same rules apply: opening hours only, and Pause respected (Task 1). Test `test_voice_phone.py`, `test_phone_prompt.py`.
+
+- [ ] Write the failing tests: `test_warm_transfer_summarises_then_bridges`, `test_no_answer_returns_to_caller_and_raises_handoff`.
+- [ ] Run, implement, run again. Make one real transfer to the founder's phone on dev, with his go and inside the spend cap. Commit `feat(voice): warm transfer with a summary`.
+
+### Task 37: Per-call observability and alerts
+
+**Files:**
+- `PH`, `MT`, `owner.py`: turn on LiveKit Agent observability (research the setting).
+- Write per-turn `latencyMs` (user end-of-speech to first agent audio frame, measured in the worker; the PSTN leg is not included and says so) onto the call and meeting records. Write `p50Ms`/`p95Ms` per call at `end`.
+- Backend: emit CloudWatch metrics through the existing metrics helper (grep `put_metric`):
+  - `VoiceCallOutcome{outcome}`;
+  - `VoiceTurnLatencyP95{seat}`.
+- Add two alarms on the existing alarm topic in `apps/infra`:
+  - phone p95 above 1,400 ms over 1 h;
+  - `silent` plus `handoff_missed` above 30% of calls over a day.
+- Meet target: reply start ≤ 5 s after the ask ends (the 3 s quiet rule plus 2 s).
+- Test `test_voice_phone.py::test_end_writes_latency_percentiles`, `apps/infra/test/*alarms*.test.ts`.
+
+- [ ] Write the failing tests. Run, implement, run again. Commit `feat(voice): per-call latency, outcome metrics and alarms`.
+
+### Task 38: Long meetings reconnect instead of ending
+
+**Files:** `MT:49,509-537`.
+- The 90-minute hard cap becomes a planned session renewal at 55 minutes. A new Router session starts with a summary of the meeting so far (the transcript tail plus `asked` plus open follow-ups) and the same gate state; the tile and the bot do not leave.
+- OpenAI realtime sessions max out at 60 minutes (audit B), so the renewal is mandatory on the default engine. On the Gemini flag, session resumption may serve instead.
+- The 60 min silence rule stays. Phone keeps its 20-minute call limit (`PH:49`).
+- Test `test_meet.py::test_session_renews_at_55_min_with_summary`.
+
+- [ ] Write the failing test. Run, implement, run again. Commit `feat(meet): long meetings renew the session with a summary`.
+
+### Task 39: The eval bar: pass^3 per scenario, field conditions, real dial-ins
+
+**Files:**
+- `apps/huddle-agent/tests/meet_sim/run.py` and the phone simulation (`origin/test/phone-quality` lane; reuse its harness).
+- Scoring: a scenario passes only if it passes 3 of 3 runs (pass^3), and the run also reports the aggregate (must be ≥ 90%).
+- Add audio-mode runs with background noise and packet loss (LiveKit `lk agent simulate` options, or our harness mixing a noise bed and dropping 2% of frames), an 8 kHz μ-law phone-line pass, accented English, Spanish, spelled names and phone numbers.
+- Report p50/p95 latency per scenario.
+- The simulated caller uses a different vendor from the agent where possible.
+- Add `docs/superpowers/plans/2026-11-07-end-state-ux.md#sellable` criteria in the evidence card template: pass^3 on all scenarios plus 20 or more real dial-ins on the real number by people who are not the builder, each scored with the same judge.
+- Test: `uv run python -m tests.meet_sim.run --check` exits non-zero when any scenario passes fewer than 3 of 3.
+
+- [ ] Write the failing check. Run, implement, run again. Run the full suite once (inside the spend caps) and save the card to evidence. Commit `test(voice): pass^3 bar with noise, phone line, accents; real dial-in criterion`.
+
 ---
 
 ## End-state acceptance checklist (the founder's one test)
@@ -638,17 +761,17 @@ Do it in prod after the gates, on the founder's workspace (Maya's Nail Studio da
 2. Hold the orb and say "What happened today?" → the orb goes Listening, then Thinking, then Speaking. The answer gives counts from today's calls and meetings, and the caption shows the last line.
 3. "Move Priya's 11 to 11:30 and text her." → Nova confirms. The booking moves (in Google Calendar if connected). Priya's number gets a text from Nova's number. A **Yours** row appears: "You and Nova · moved Priya, texted".
 4. "Draft the holiday-hours post." → "I'm on it." A Working follow-up appears in the Yours pane and turns Done with a link.
-5. With a Needs-your-OK card open (an order a Worker wants to place), say "Nova, yes, order them." → the card shows Approved · Undo 10 s. Say "Nova, undo" within 10 s → it reopens.
+5. With a Needs-your-OK card open (an order a Worker wants to place), say "Nova, yes, order them." into the orb (you're signed in) → the card shows Approved · Undo 10 s. Say "Nova, undo" within 10 s → it reopens.
 6. Release the orb mid-sentence → nothing is sent half-heard. Press End → the session closes, and the Yours row has the transcript.
 
 ### 2. The phone receptionist
 1. Call Nova's number from a phone that is not the owner's → you hear "Thanks for calling <business>. This is Nova, <business>'s AI assistant. This call is recorded. How can I help?"
-2. Book a gel manicure on Saturday afternoon → it offers open slots in the business's time zone, reads the time back before booking, and asks whether to text the details. Say yes → a text arrives from Nova's number.
+2. Book a gel manicure on Saturday afternoon. While it checks, you hear what it is checking ("Checking Saturday afternoon…"), not silence. It offers open slots in the business's time zone, reads back service, day, time and your name, and books only after your yes. Then it asks whether to text the details. Try it from a noisy room too. Say yes → a text arrives from Nova's number.
 3. On Home, within seconds and without reloading → a row reads "<name> · new caller · Booked · Gel manicure, Sat … with … · put in Google Calendar · texted confirmation". The pane shows the steps with timestamps, the transcript, the recording, and "What Nova remembers".
 4. Call again from the same phone → "returning". Move the booking → Moved row.
 5. Ask "Can you do a bridal party of six?" → Nova takes a message. Needs you shows **Nova didn't know** with "Answer & have Nova call back". Type the policy and press it → it goes into Knowledge and Nova calls that phone back with the answer. A third call asking the same question gets it answered.
 6. Ask "Can I pay a deposit now?" → Nova says it can't take payments and takes a message (server-side refusal).
-7. Ask for a person → it transfers to the hand-off number during hours. If unanswered → a **Caller wanted a person** card.
+7. Ask for a person → Nova rings the hand-off number, tells the person who is calling and why, then connects you (warm transfer). If unanswered → back to Nova, a message, and a **Caller wanted a person** card.
 8. Press **Pause** on the Agent page, then call → message only. Resume.
 9. Call from the owner's mobile and say the PIN → owner mode. "Move Priya's 11:30 to 12" works.
 10. Mark a test call as spam → the next call from that number is a Spam row.
@@ -664,9 +787,15 @@ Do it in prod after the gates, on the founder's workspace (Maya's Nail Studio da
    - "Nova, pull October's revenue." (Stripe or the connected books)
    - "Nova, draft the post and put the link in chat." → the tile shows Drafting… then Page ready, and the link is in chat.
 4. "Nova, stop" mid-answer → it stops at once.
-5. A guest (a second Google account) says "Nova, order the gel colours" → Nova: "I'll need <owner>'s OK for that." A Needs-your-OK card appears for the owner. The guest saying "yes" does nothing, and the owner saying "Nova, yes" approves it.
+5. A guest (a second Google account) says "Nova, order the gel colours" → Nova: "I'll need <owner>'s OK for that." A Needs-your-OK card appears for the owner. The guest saying "yes" does nothing. The owner saying "Nova, yes, order them" → "I've sent it to your phone to confirm". A push or card arrives saying "approved by voice in Team meeting · confirm", and one tap places it.
 6. A guest says "Nova, don't transcribe me" → the tile shows "Not transcribing <name>". Their lines are absent from the transcript.
-7. End the meeting → a meeting row appears with "Asked N times · K follow-ups". The pane shows Notes, Decisions, Follow-ups with live status, and the Transcript. Next week, ask about the decision.
+7. End the meeting → a meeting row appears with "Asked N times · K follow-ups". The pane shows Notes, Decisions, Follow-ups with live status, and the Transcript. No email arrives. Next week, ask about the decision.
+8. A meeting longer than an hour → Nova is still there and still answers after the hour.
+
+### Quality bar (before calling it sellable)
+- The eval card (Task 39) shows every scenario passing 3/3, including the noisy, phone-line, accented and Spanish runs, with phone p95 latency at or under 1,400 ms.
+- 20 or more real dial-ins by people who are not the builder, on the real number, scored by the same judge.
+- The dashboard/alarms from Task 37 show the outcome rates for those calls.
 
 ### 4. The owner's website (and Mac app)
 1. **Onboarding** (a new workspace, on a phone-width browser) → five steps:
@@ -699,11 +828,12 @@ Do it in prod after the gates, on the founder's workspace (Maya's Nail Studio da
 | 9 | LiveKit: plan upgrade if a separate dev agent is wanted (1/1 agents, blocker 4) and an outbound SIP trunk | outbound calls; dev worker not on the Mac | LiveKit Ship plan monthly fee | 10, dev walks |
 | 10 | Mac app release: Apple signing/notarization in `desktop-build` | a new build with the `/voice` start URL | $0 (existing account) | 31 |
 | 11 | TestFlight internal build for the phone app | Task 32 | $0 | 32 |
-| 12 | Gemini/Vertex credit top-ups as test minutes grow (≤ $5/day is pre-approved) | voice sessions | ≤ $5/day | all voice walks |
+| 13 | 20+ people who are not the builder to dial the real number (audit G) | the "sellable" bar | $0.0034/min SIP | 39 |
+| 12 | OpenAI realtime test minutes (key and credits already held; keep within the ≤ $5/day voice test cap) | voice sessions | ≤ $5/day | all voice walks |
 
-## Founder decisions (asked once, short)
+## Founder rulings (recorded 7 Nov, late)
 
-1. **Meeting notes by email.** The spec mails notes to the organizer (`meeting_notes.py:237-312` exists), and the Agent page has "Email me the notes after". Under "voice agents only": keep as it is, hide the checkbox, or drop the mail? The plan leaves the code untouched and the notes are on Home either way.
-2. **Outbound texts beyond the consented three** (spec §9 Q2): "text back missed callers" and "text the waitlist" stay off until a consent review. Agree?
-3. **Engine default** for the orb and phone: Gemini Live (spec) or gpt-realtime (#5010 default, the one-vendor lane). The tools are engine-agnostic.
-4. **Number per business** (Task 11): turn on buying numbers (`VOICE_BUY_NUMBERS`) for new sign-ups now, at $1.15/month each, or keep the one prod number for the founder's test?
+1. **Meeting notes:** in the app only, no email (Tasks 22, 29).
+2. **Missed-caller and waitlist texts:** off until a consent review (Tasks 9, 29).
+3. **Voice engine:** OpenAI by default for phone, Meet and the orb (`gpt-realtime-2.1(-mini)`, `gpt-live-transcribe`), with Gemini a fallback flag only (founder, 7 Nov, late; the one-vendor lane switches phone and Meet; Task 33 covers the rest).
+4. **Number per sign-up:** undecided. The Twilio lane is researching the forward, port and buy paths, and Task 11 plus onboarding step 4 wait on that.

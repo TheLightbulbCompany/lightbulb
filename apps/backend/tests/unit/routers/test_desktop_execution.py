@@ -351,3 +351,108 @@ async def test_only_a_forwarded_mac_lease_carries_a_session_run(app):
                 json={"action": "status", "auth": session_auth, "receiptId": "r"},
             )
             assert response.status_code == 403
+
+
+TASK_ID = "11111111-1111-4111-8111-111111111111"
+TASK_HEADERS = {
+    "Authorization": "Bearer hook",
+    "X-Desktop-Owner": "org_1",
+    "X-Desktop-Run": "run_1",
+    "X-Desktop-Agent": "agent_1",
+    "X-Desktop-Run-Family": "task",
+    "X-Desktop-Task": TASK_ID,
+    "X-Desktop-Run-Secret": "secret",
+}
+TASK_AUTH = {
+    "ownerId": "org_1",
+    "memberId": "user_1",
+    "runId": "run_1",
+    "agentId": "agent_1",
+    "family": "task",
+    "roomId": TASK_ID,  # the task family's home: its task
+}
+
+
+@pytest.fixture
+def task_rows():
+    """A Worker run: task, its current attempt and its trigger, with user_1 as the acting human."""
+    from core.repositories import tasks_repo
+    from core.services import clerk_admin
+
+    rows = {
+        "task": {"taskId": TASK_ID, "attemptCount": 1, "ownerUserId": "user_1", "triggerId": "chat:m1"},
+        "attempt": {"runId": "run_1", "agentId": "agent_1", "runSecret": "secret", "status": "running", "n": 1},
+        "trigger": {"triggerId": "chat:m1", "actorUserId": "user_1", "ref": {}},
+    }
+
+    async def get_task(ws, task_id):
+        return dict(rows["task"]) if (ws, task_id) == ("org_1", TASK_ID) else None
+
+    async def get_attempt(ws, task_id, n):
+        return dict(rows["attempt"]) if (ws, task_id, n) == ("org_1", TASK_ID, 1) else None
+
+    async def get_trigger(ws, trigger_id):
+        return dict(rows["trigger"]) if trigger_id == rows["task"].get("triggerId") else None
+
+    with (
+        patch.object(tasks_repo, "get_task", get_task),
+        patch.object(tasks_repo, "get_attempt", get_attempt),
+        patch.object(tasks_repo, "get_trigger", get_trigger),
+        patch.object(clerk_admin, "list_organization_members", AsyncMock(return_value=[{"user_id": "user_1"}])),
+    ):
+        yield rows
+
+
+async def test_a_task_run_lists_and_admits_its_requesters_paired_mac(app, task_rows):
+    selection = {"deviceId": "device_1", "expectedConnectionGeneration": "gen_1", "command": "system.run"}
+    with (
+        patch.object(routes.container_repo, "get_by_owner_id", AsyncMock(return_value={"hook_token": "hook"})),
+        patch.object(service, "discover_devices", AsyncMock(return_value={"devices": []})) as discover,
+        patch.object(service, "admit_device", AsyncMock(return_value={"admissionToken": "t"})) as admit,
+    ):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            assert (await client.get("/api/v1/desktop-execution/devices", headers=TASK_HEADERS)).status_code == 200
+            discover.assert_awaited_once_with(TASK_AUTH)
+            response = await client.post("/api/v1/desktop-execution/admission", headers=TASK_HEADERS, json=selection)
+            assert response.status_code == 200
+            admit.assert_awaited_once_with(TASK_AUTH, selection)
+            assert service.valid_auth(TASK_AUTH)
+            response = await client.get(
+                "/api/v1/desktop-execution/devices", headers=TASK_HEADERS | {"X-Desktop-Run-Secret": "wrong"}
+            )
+            assert response.status_code == 403 and response.json()["detail"]["code"] == "run_forbidden"
+
+
+async def test_the_backend_rechecks_a_task_auth_without_its_secret(task_rows):
+    assert await service.authorize_run("org_1", "run_1", "agent_1", "task", active=True, task_id=TASK_ID) == TASK_AUTH
+    await service._reauthorize(TASK_AUTH)
+
+
+@pytest.mark.parametrize(
+    "change,code",
+    [
+        ({"attempt": {"status": "ended"}}, "run_not_active"),
+        ({"attempt": {"runId": "run_2"}}, "run_forbidden"),
+        ({"attempt": {"agentId": "agent_2"}}, "run_forbidden"),
+        ({"attempt": {"runSecret": "other"}}, "run_forbidden"),
+        ({"task": {"attemptCount": 2}}, "run_forbidden"),  # a later attempt owns the task now
+        ({"trigger": {"actorUserId": None}}, "run_member_authority_unavailable"),  # no acting human
+        ({"task": {"ownerUserId": "org_1"}, "trigger": {"actorUserId": "org_1"}}, "run_member_authority_unavailable"),
+        ({"task": {"ownerUserId": "user_2"}, "trigger": {"actorUserId": "user_2"}}, "run_forbidden"),  # not a member
+        ({"trigger": {"ref": {"origin": "phone_contact"}}}, "run_member_authority_unavailable"),
+    ],
+)
+async def test_a_task_run_without_a_live_attempt_or_acting_member_gets_no_mac(task_rows, change, code):
+    for row, fields in change.items():
+        task_rows[row].update(fields)
+    with pytest.raises(service.DesktopError) as err:
+        await service.authorize_run(
+            "org_1", "run_1", "agent_1", "task", active=True, task_id=TASK_ID, run_secret="secret"
+        )
+    assert err.value.code == code
+
+
+async def test_a_task_run_with_no_task_named_is_refused(task_rows):
+    for task_id in ("", "../x"):
+        with pytest.raises(service.DesktopError, match="run_forbidden"):
+            await service.authorize_run("org_1", "run_1", "agent_1", "task", active=True, task_id=task_id)

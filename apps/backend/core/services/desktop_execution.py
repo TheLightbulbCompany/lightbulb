@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -790,12 +791,22 @@ def submissions_enabled(owner_id: str) -> bool:
 
 
 async def authorize_run(
-    owner_id: str, run_id: str, agent_id: str, family: str, *, active: bool, allow_session: bool = False
+    owner_id: str,
+    run_id: str,
+    agent_id: str,
+    family: str,
+    *,
+    active: bool,
+    allow_session: bool = False,
+    task_id: str = "",
+    run_secret: str | None = None,
 ) -> dict:
     """Derive device-member authority from canonical provenance, never caller member IDs.
 
     `session` is the backend's own family (session_browser, the mac_cdp door): it names a teammate's
     session by id, so a caller-chosen family from a hook token must never reach it.
+    `task` (a super-agent Worker run): the VM names its task and proves the attempt with its runSecret,
+    as effect_check does; `run_secret=None` only on the backend's own re-check of an auth it issued.
     """
     from core.repositories import messaging_repo
     from core.services import messaging
@@ -864,6 +875,8 @@ async def authorize_run(
             ):
                 raise DesktopError("run_forbidden", 403)
         return auth_for(owner_id, member_id, sid)
+    if family == "task":
+        return await _authorize_task(owner_id, run_id, agent_id, task_id, run_secret, active=active)
     if family == "room":
         run = await messaging_repo.get_run(owner_id, run_id)
         if not run or run.get("ownerId") != owner_id or run.get("runId") != run_id or run.get("agentId") != agent_id:
@@ -928,9 +941,65 @@ async def authorize_run(
     }
 
 
+async def _authorize_task(owner_id, run_id, agent_id, task_id, run_secret, *, active):
+    from core.repositories import tasks_repo
+
+    task = await tasks_repo.get_task(owner_id, task_id) if _ID.fullmatch(task_id) else None
+    n = (task or {}).get("attemptCount") or 0
+    att = await tasks_repo.get_attempt(owner_id, task_id, n) if n else None
+    if (
+        not att
+        or att.get("runId") != run_id
+        or att.get("agentId") != agent_id
+        or (
+            run_secret is not None
+            and not (att.get("runSecret") and hmac.compare_digest(run_secret.encode(), att["runSecret"].encode()))
+        )
+    ):
+        raise DesktopError("run_forbidden", 403)
+    if active and att.get("status") not in {"dispatched", "running"}:  # runtime_internal._LIVE
+        raise DesktopError("run_not_active", 403)
+    # A phone caller's task never reaches anyone's Mac (effect_check asks the owner for its every outside action).
+    if await tasks_repo.from_contact(owner_id, task):
+        raise DesktopError("run_member_authority_unavailable", 403)
+    # The requester is the trigger's acting human (admission: a person's own send, or a CLI/MCP/A2A send on their
+    # behalf); an automation or the org itself is nobody, so no Mac.
+    member_id = task.get("ownerUserId")
+    trigger = await tasks_repo.get_trigger(owner_id, task.get("triggerId") or "")
+    if (
+        not isinstance(member_id, str)
+        or not _ID.fullmatch(member_id)
+        or member_id.startswith("org_")
+        or (trigger or {}).get("actorUserId") != member_id
+    ):
+        raise DesktopError("run_member_authority_unavailable", 403)
+    if owner_id != member_id:
+        from core.services.clerk_admin import list_organization_members
+
+        if not owner_id.startswith("org_") or not any(
+            m.get("user_id") == member_id for m in await list_organization_members(owner_id)
+        ):
+            raise DesktopError("run_forbidden", 403)
+    # roomId carries the taskId: the run's home, so the backend's re-check finds the attempt again.
+    return {
+        "ownerId": owner_id,
+        "memberId": member_id,
+        "runId": run_id,
+        "agentId": agent_id,
+        "family": "task",
+        "roomId": task_id,
+    }
+
+
 async def _reauthorize(auth):
     current = await authorize_run(
-        auth["ownerId"], auth["runId"], auth["agentId"], auth["family"], active=True, allow_session=True
+        auth["ownerId"],
+        auth["runId"],
+        auth["agentId"],
+        auth["family"],
+        active=True,
+        allow_session=True,
+        **({"task_id": auth["roomId"]} if auth["family"] == "task" else {}),
     )
     if current != auth:
         raise DesktopError("run_forbidden", 403)

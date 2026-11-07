@@ -115,3 +115,22 @@ async def test_end_keeps_the_record(m):
     await voice_meet.end(ROOM, body)
     assert m["meeting"]["asked"] == [{"t": 5, "who": "Maya", "q": "no-shows?", "a": "Two."}]
     assert m["meeting"]["summary"] == "Asked twice"
+
+
+async def test_integration_read_is_the_members_own_speech_only(m):
+    with patch.object(voice_meet.integration_reads, "read", AsyncMock(return_value="Invoice 42")) as read:
+
+        def body(pid):
+            return voice_meet.IntegrationIn(
+                ownerId="org_1", roomToken="t", provider="gmail", query="invoice", participantId=pid
+            )
+
+        assert (await voice_meet.integration_read(ROOM, body("11")))["text"] == "Invoice 42"
+        assert "Only a member" in (await voice_meet.integration_read(ROOM, body("12")))["text"]
+    read.assert_awaited_once_with("org_1", "gmail", "invoice")
+
+
+async def test_assistant_name_from_the_agent_page(m):
+    with patch.object(voice_meet.messaging_repo, "get_voice_agent", AsyncMock(side_effect=[{"name": " Nova "}, None])):
+        assert await voice_meet.assistant_name("org_1") == "Nova"
+        assert await voice_meet.assistant_name("org_1") == "Lightbulb"

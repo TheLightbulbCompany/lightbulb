@@ -60,7 +60,8 @@ INSTRUCTIONS = """You are {name}, the AI assistant of {company}, listening in th
 {today}. Several people talk; most of it is not for you. Stay silent unless someone addresses you by name
 ("{name}, ..."). When addressed, answer in one or two short spoken sentences. For numbers about calls,
 bookings, the calendar or what the team knows, call the read tools first and say only what they return; if
-they don't have it, say you don't know. Anything longer than a sentence (a draft, a list, notes) goes to the
+they don't have it, say you don't know. For the team's connected apps (mail, calendar, Drive, Stripe,
+Notion, Linear, GitHub, PostHog) use read_integration; if a read says it needs more, use start_work. Anything longer than a sentence (a draft, a list, notes) goes to the
 meeting chat with send_to_chat; say "I've put it in the chat". Anything open-ended, any action item you are
 asked to take, anything that sends, spends or publishes: call start_work and say you're on it -- never do or
 promise it yourself. If start_work says it needs a member, say you'll need the member's OK. "{name}, stop"
@@ -250,6 +251,21 @@ class MeetAgent(Agent):
     async def calendar(self, date: str = "") -> dict:
         """Bookings in the assistant's calendar. date: "YYYY-MM-DD" (local), or "" for all upcoming."""
         return await self._post("read", {"kind": "calendar", "date": date})
+
+    @function_tool
+    async def list_integrations(self) -> dict:
+        """The team's connected apps you can read (gmail, calendar, drive, stripe, notion, linear, github, ...)."""
+        return await self._post("integrations", {})
+
+    @function_tool
+    async def read_integration(self, provider: str, query: str) -> dict:
+        """One quick read of a connected app: provider is a name from list_integrations; query is what to
+        search for (mail search words, an event name, an issue keyword). For anything bigger, use start_work."""
+        who = self.gate.asker.rsplit(":", 1)[-1]
+        return await self._post(
+            "integration-read",
+            {"provider": provider, "query": query, "participantId": who},
+        )
 
     @function_tool
     async def send_to_chat(self, text: str) -> dict:

@@ -12,7 +12,6 @@ nothing that spends or sends -- the card waits for the member.
 """
 
 import hashlib
-import json
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 
@@ -22,7 +21,7 @@ from pydantic import Field
 from core.config import settings
 from core.dynamodb import utc_now_iso
 from core.repositories import messaging_repo
-from core.services import meeting_bots, meeting_invites, memory_api
+from core.services import integration_reads, meeting_bots, meeting_invites, memory_api
 from routers.huddles import RoomBody, _problem, _require_room_token, _room_id, _Worker
 from routers.internal_automations import VoiceStartIn, start_voice_work
 from routers.voice_phone import _bookings
@@ -47,9 +46,7 @@ async def _meeting(room_id: str, body: RoomBody) -> tuple[str, dict, dict]:
 
 
 async def assistant_name(owner_id: str) -> str:
-    # ponytail: the VOICEAGENT row read inline; messaging_repo.get_voice_agent once PR #4965 lands.
-    row = await messaging_repo._get(messaging_repo.owner_pk(owner_id), "VOICEAGENT")
-    name = (json.loads(row["config"]).get("name") or "").strip() if row else ""
+    name = (((await messaging_repo.get_voice_agent(owner_id)) or {}).get("name") or "").strip()
     return name or "Lightbulb"
 
 
@@ -152,6 +149,28 @@ async def read(room_id: str, body: ReadIn) -> dict:
     rows = await _bookings(body.ownerId, body.date)
     return {"bookings": [{"start": b["sk"].removeprefix("VOICEBOOK#"), "service": b.get("service"),
                           "name": b.get("name")} for b in rows[:50]]}  # fmt: skip
+
+
+class IntegrationIn(RoomBody):
+    provider: Annotated[str, Field(min_length=1, max_length=40)]
+    query: str = Field(default="", max_length=300)
+    participantId: str = Field(default="", max_length=128)
+
+
+@router.post("/internal/voice/meet/{room_id}/integrations")
+async def integrations(room_id: str, body: RoomBody) -> dict:
+    await _meeting(room_id, body)
+    return {"connected": await integration_reads.connected(body.ownerId)}
+
+
+@router.post("/internal/voice/meet/{room_id}/integration-read")
+async def integration_read(room_id: str, body: IntegrationIn) -> dict:
+    """One bounded read of a connected integration (integration_reads). The member's own speech only: the
+    whole meeting hears the answer, and a guest must not read the owner's mail or payments aloud."""
+    room_id, _meta, meeting = await _meeting(room_id, body)
+    if member_speaking(meeting, await messaging_repo.list_members(room_id), body.participantId) is None:
+        return {"text": "Only a member can ask me to read the team's connected apps in a meeting."}
+    return {"text": await integration_reads.read(body.ownerId, body.provider, body.query)}
 
 
 class ChatIn(RoomBody):

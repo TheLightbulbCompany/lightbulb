@@ -4317,6 +4317,9 @@ def _run_task_turn(identity: dict, request: dict, *, family: str) -> tuple[str, 
     } if paperclip else {"LIGHTBULB_RUN_ID": str(run_id)}  # a task run's shell calls name it (X-Lightbulb-Run)
     if not paperclip and identity.get("runSecret"):  # …and prove it (X-Lightbulb-Run-Secret); never logged
         env["LIGHTBULB_RUN_SECRET"] = str(identity["runSecret"])
+        # the memory plugin's remember names the attempt, so the backend can refuse a phone caller's task (gate B2)
+        env["LIGHTBULB_TASK_ID"] = str(identity.get("taskId") or "")
+        env["LIGHTBULB_TASK_ATTEMPT"] = str(identity.get("attempt") or "")
     if paperclip and identity.get("issueId"):
         env["PAPERCLIP_TASK_ID"] = identity["issueId"]
     # The agent dispositions the issue by calling the Paperclip API from a terminal command,

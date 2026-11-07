@@ -22,6 +22,7 @@ import re
 from urllib.parse import urljoin, urlsplit
 
 import boto3
+import httpx
 from bs4 import BeautifulSoup
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
@@ -145,7 +146,7 @@ async def draft(website: str, business: str, city: str) -> dict:
     """The Agent page fields the site states, plus `read`: whether the site could be read at all."""
     try:
         text = await read_site(website)
-    except (link_preview.Refused, OSError, TimeoutError, ValueError) as exc:
+    except (link_preview.Refused, httpx.HTTPError, OSError, TimeoutError, ValueError) as exc:
         logger.info("onboarding site read failed: %s", type(exc).__name__)
         return {**EMPTY, "read": False}
     try:
@@ -161,6 +162,23 @@ async def draft(website: str, business: str, city: str) -> dict:
     except (ClientError, BotoCoreError, KeyError, ValueError, TypeError) as exc:
         logger.warning("onboarding draft failed: %s", type(exc).__name__)
         return {**EMPTY, "read": True}
+
+
+async def release_number(ws: str) -> int:
+    """Wipe: delete the workspace's `PHONE#` line row, so its number answers nobody and can be given again.
+    ponytail: dev's one number is the only one assign_number gives; an owner -> numbers row once prod buys them."""
+    try:
+        await run_in_thread(
+            messaging_repo._table().delete_item,
+            Key={"pk": f"PHONE#{DEV_NUMBER}", "sk": "LINE"},
+            ConditionExpression="ownerId = :ws",
+            ExpressionAttributeValues={":ws": ws},
+        )
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return 0  # no line, or another workspace's
+        raise
+    return 1
 
 
 class NoNumber(Exception):

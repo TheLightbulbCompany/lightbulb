@@ -101,11 +101,13 @@ async def test_short_text_to_chat_long_text_as_a_link(m):
         patch.object(voice_meet.meeting_invites, "_post_line", AsyncMock()) as post,
         patch.object(voice_meet.meeting_invites, "output_room", AsyncMock(return_value="room_out")),
     ):
-        assert (await voice_meet.chat(ROOM, voice_meet.ChatIn(ownerId="o", roomToken="t", text="Hours: 9-5")))[
-            "sent"
-        ] == "chat"
+        assert (
+            await voice_meet.chat(
+                ROOM, voice_meet.ChatIn(ownerId="o", roomToken="t", text="Hours: 9-5", participantId="11")
+            )
+        )["sent"] == "chat"
         long = "Holiday hours draft\n" + "x" * 900
-        out = await voice_meet.chat(ROOM, voice_meet.ChatIn(ownerId="o", roomToken="t", text=long))
+        out = await voice_meet.chat(ROOM, voice_meet.ChatIn(ownerId="o", roomToken="t", text=long, participantId="11"))
     assert out["sent"] == "link" and out["link"].endswith("/chat?room=room_out")
     assert post.await_args.args[3] == long
     assert m["say"].await_args.args[1].startswith("Holiday hours draft ... Full text: ")
@@ -134,6 +136,31 @@ async def test_integration_read_is_the_members_own_speech_only(m):
         assert (await voice_meet.integration_read(ROOM, body("11")))["text"] == "Invoice 42"
         assert "Only a member" in (await voice_meet.integration_read(ROOM, body("12")))["text"]
     read.assert_awaited_once_with("org_1", "gmail", "invoice")
+
+
+async def test_a_guest_cannot_read_memory_or_bookings_or_post_to_chat(m):
+    """Gate B1: the whole meeting hears a read and sees the chat; a guest gets needs_member, a member is answered."""
+    page = {"results": [{"content": "Prices go up in May"}]}
+    with (
+        patch.object(voice_meet.memory_api, "recall_page", AsyncMock(return_value=page)) as recall,
+        patch.object(
+            voice_meet, "_bookings", AsyncMock(return_value=[{"sk": "VOICEBOOK#2026-11-09T10:00", "name": "Ana"}])
+        ),
+    ):
+        for kind in ("memory", "calendar"):
+            guest = voice_meet.ReadIn(ownerId="o", roomToken="t", kind=kind, participantId="12")
+            assert (await voice_meet.read(ROOM, guest))["reason"] == "needs_member", kind
+            member = voice_meet.ReadIn(ownerId="o", roomToken="t", kind=kind, participantId="11")
+            assert "reason" not in await voice_meet.read(ROOM, member), kind
+        assert recall.await_count == 1
+        calls = voice_meet.ReadIn(ownerId="o", roomToken="t", kind="calls", participantId="12")
+        with patch.object(voice_meet, "_calls", AsyncMock(return_value={"calls": 3})):
+            assert (await voice_meet.read(ROOM, calls))["calls"] == 3  # counts stay open
+    out = await voice_meet.chat(
+        ROOM, voice_meet.ChatIn(ownerId="o", roomToken="t", text="Ana at 10", participantId="12")
+    )
+    assert out["reason"] == "needs_member"
+    m["say"].assert_not_awaited()
 
 
 async def test_assistant_name_from_the_agent_page(m):

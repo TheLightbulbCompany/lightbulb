@@ -306,6 +306,8 @@ async def _request(ws: str, task: dict, att: dict, tree: dict) -> runtime_runs.R
         # A group chat's task (any audience kind): the Worker's own events would land in team memory (workspace-wide). Its posts reach the
         # chat's own scope through room ingestion; recall still reads that scope (founder ruling, 6 Nov 2026).
         memory["sync"] = "none"
+    if await tasks_repo.from_contact(ws, task):  # a phone caller's words (the brief) never sync into team memory
+        memory["sync"] = "none"
     return runtime_runs.RunRequest(
         input="\n\n".join(x for x in parts if x),
         instructions=WORKER_INSTRUCTIONS,

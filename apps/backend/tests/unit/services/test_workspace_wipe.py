@@ -111,6 +111,7 @@ def ws_mocks():
     messaging_get_room = AsyncMock(return_value={"ownerId": ORG_ID})
     messaging_delete_room = AsyncMock(return_value=2)
     messaging_delete_owner = AsyncMock(return_value=3)
+    phone_release = AsyncMock(return_value=1)
     search_delete = AsyncMock(return_value="dropped")
 
     secrets_list = AsyncMock(return_value=[f"lightbulb/dev/user-keys/{ORG_ID}/anthropic"])
@@ -163,6 +164,7 @@ def ws_mocks():
         ("core.services.workspace_wipe.messaging_repo.get_room", messaging_get_room),
         ("core.services.workspace_wipe.messaging_repo.delete_room_partition", messaging_delete_room),
         ("core.services.workspace_wipe.messaging_repo.delete_owner_partition", messaging_delete_owner),
+        ("core.services.workspace_wipe.voice_onboarding.release_number", phone_release),
         ("core.services.workspace_wipe.message_search.delete_owner_index", search_delete),
         ("core.services.workspace_wipe.list_owner_secret_names", secrets_list),
         ("core.services.workspace_wipe.delete_owner_secrets", secrets_delete),
@@ -214,6 +216,7 @@ def ws_mocks():
             messaging_list_rooms=messaging_list_rooms,
             messaging_delete_room=messaging_delete_room,
             messaging_delete_owner=messaging_delete_owner,
+            phone_release=phone_release,
             search_delete=search_delete,
             secrets_delete=secrets_delete,
             agent_keys_delete=agent_keys_delete,
@@ -356,8 +359,9 @@ async def test_execute_finds_and_deletes_runtime_under_org_id(ws_mocks):
     # Paperclip company deleted (workspace delete, not refused) + members archived by identity.
     ws_mocks.paperclip_company_delete.assert_awaited_once_with("company_ws")
     assert ws_mocks.paperclip_user_delete_fn.await_count == 2
-    # Messaging under the org partition gone.
+    # Messaging under the org partition gone, and the number's PHONE# line row (gate 13).
     ws_mocks.messaging_delete_owner.assert_awaited_once_with(ORG_ID)
+    ws_mocks.phone_release.assert_awaited_once_with(ORG_ID)
     # Clerk org deleted, and LAST.
     ws_mocks.clerk_delete_org.assert_awaited_once_with(ORG_ID)
     assert report.steps[-1].system == "clerk_org"

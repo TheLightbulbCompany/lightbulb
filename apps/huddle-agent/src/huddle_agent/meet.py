@@ -305,7 +305,7 @@ class MeetAgent(Agent):
     @function_tool
     async def recall_memory(self, question: str) -> dict:
         """What the team knows: decisions, facts, past meetings. Ask a plain question."""
-        return await self._post("read", {"kind": "memory", "question": question})
+        return await self._post("read", {"kind": "memory", "question": question, "participantId": self.asker()})
 
     @function_tool
     async def call_stats(self, days: int = 7) -> dict:
@@ -315,7 +315,7 @@ class MeetAgent(Agent):
     @function_tool
     async def calendar(self, date: str = "") -> dict:
         """Bookings in the assistant's calendar. date: "YYYY-MM-DD" (local), or "" for all upcoming."""
-        return await self._post("read", {"kind": "calendar", "date": date})
+        return await self._post("read", {"kind": "calendar", "date": date, "participantId": self.asker()})
 
     @function_tool
     async def list_integrations(self) -> dict:
@@ -334,7 +334,7 @@ class MeetAgent(Agent):
     @function_tool
     async def send_to_chat(self, text: str) -> dict:
         """Put text in the meeting chat: drafts, lists, anything longer than a sentence."""
-        return await self._post("chat", {"text": text})
+        return await self._post("chat", {"text": text, "participantId": self.asker()})
 
     @function_tool
     async def start_work(self, title: str, brief: str) -> dict:

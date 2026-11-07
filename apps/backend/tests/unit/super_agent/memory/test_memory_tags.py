@@ -179,3 +179,23 @@ async def test_a_group_chat_tasks_worker_writes_nothing_whatever_its_audience(mo
     group.return_value = None  # a channel's room task keeps writing team events, as before
     req = await acts._request("org_1", _task(title="t"), att, tree)
     assert req.memory["sync"] == "events"
+
+
+async def test_a_phone_callers_task_worker_writes_nothing(monkeypatch):
+    """Review #4987 blocker 1: a phone_contact task's Worker turns (the brief carries the caller's words) never sync
+    into team memory."""
+    from unittest.mock import AsyncMock
+
+    from core.repositories import tasks_repo
+    from core.services import room_memory
+    from core.temporal import activities as acts
+
+    monkeypatch.setattr(acts, "_local_now", AsyncMock(return_value="now"))
+    monkeypatch.setattr(room_memory, "group_room_by_id", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        tasks_repo, "get_trigger", AsyncMock(side_effect=lambda ws, tid: {"ref": {"origin": "phone_contact"}})
+    )
+    att, tree = {"n": 1, "inputTriggerIds": []}, {"attempts": []}
+    assert (await acts._request("org_1", _task(title="t", triggerId="voice:c"), att, tree)).memory["sync"] == "none"
+    tasks_repo.get_trigger.side_effect = lambda ws, tid: {"ref": {}}
+    assert (await acts._request("org_1", _task(title="t", triggerId="chat:m"), att, tree)).memory["sync"] == "events"

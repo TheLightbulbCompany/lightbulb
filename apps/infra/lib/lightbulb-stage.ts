@@ -55,6 +55,10 @@ const LIVEKIT_URL_BY_ENV: Record<string, string> = {
 // backend default): dev's huddles and meetings go to the Mac worker started as lightbulb-meet-dev.
 const LIVEKIT_AGENT_NAME_BY_ENV: Record<string, string> = { dev: "lightbulb-meet-dev" };
 
+// The one phone line each env gives out (voice_onboarding.assign_number); its LiveKit dispatch rule
+// (lightbulb-phone-prod) routes it to that env's agent. Dev has none: dev phone tests use simulated callers.
+const VOICE_LINE_NUMBER_BY_ENV: Record<string, string> = { prod: "+14842079294" };
+
 // The Lightbulb workspace per environment — the org every customer's shared
 // `lightbulb-<slug>` channel is shared with. Dev is the founder's dev org.
 const VENDOR_ORG_ID_BY_ENV: Record<string, string> = {
@@ -297,6 +301,7 @@ export class LightbulbStage extends cdk.Stage {
       vendorOrgId: VENDOR_ORG_ID_BY_ENV[env],
       livekitUrl: LIVEKIT_URL_BY_ENV[env],
       livekitAgentName: LIVEKIT_AGENT_NAME_BY_ENV[env],
+      voiceLineNumber: VOICE_LINE_NUMBER_BY_ENV[env],
     });
 
     // The service ships AGENT_MAIL_CONFIGURATION_SET, and ses_email.py stamps

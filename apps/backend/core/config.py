@@ -234,6 +234,8 @@ class Settings(BaseSettings):
     LIVEKIT_API_KEY: str = ""
     LIVEKIT_API_SECRET: str = ""
     LIVEKIT_AGENT_NAME: str = "lightbulb-huddle"
+    # The one phone line (E.164) this environment gives out; its LiveKit dispatch rule routes to this env's agent.
+    VOICE_LINE_NUMBER: str = ""
     """The worker huddles and meetings dispatch to. Prod's deployed agent keeps the default; dev's Mac worker is lightbulb-meet-dev."""
     HUDDLE_WORKER_SECRET: str = ""
     # Meetings (Recall.ai bots). See meetings_available(): without LiveKit + a Recall key an invite opens the room only.

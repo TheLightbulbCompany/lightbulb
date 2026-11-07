@@ -9,6 +9,7 @@ from core.services import link_preview, voice_onboarding as vo
 from tests.unit.services.conftest import repos  # noqa: F401
 
 WS = "org_test_456"
+LINE = "+14842079294"
 HOME = """<html><body><script>x()</script><h1>Maya's Nails</h1><p>Open Mon-Fri 9-7</p>
 <a href="/services">Our services</a><a href="https://other.com/services">elsewhere</a><a href="/blog">Blog</a></body></html>"""
 
@@ -65,28 +66,29 @@ async def test_an_unreadable_site_or_a_bad_reply_is_an_empty_draft(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_assign_number_gives_dev_its_one_number_once(repos, monkeypatch):  # noqa: F811
-    monkeypatch.setattr(vo.settings, "ENVIRONMENT", "dev")
-    assert await vo.assign_number(WS, "user_a") == vo.DEV_NUMBER
-    assert await vo.assign_number(WS, "user_b") == vo.DEV_NUMBER  # idempotent, keeps the first owner user
-    line = await messaging_repo._get(f"PHONE#{vo.DEV_NUMBER}", "LINE")
+async def test_assign_number_gives_the_configured_line_once(repos, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(vo.settings, "ENVIRONMENT", "prod")
+    monkeypatch.setattr(vo.settings, "VOICE_LINE_NUMBER", LINE)
+    assert await vo.assign_number(WS, "user_a") == LINE
+    assert await vo.assign_number(WS, "user_b") == LINE  # idempotent, keeps the first owner user
+    line = await messaging_repo._get(f"PHONE#{LINE}", "LINE")
     assert line["ownerId"] == WS and line["ownerUserId"] == "user_a"
     with pytest.raises(vo.NoNumber, match="taken"):
         await vo.assign_number("org_other", "user_c")
     assert await vo.release_number("org_other") == 0  # never another workspace's line
     assert await vo.release_number(WS) == 1  # the wipe frees it
-    assert await messaging_repo._get(f"PHONE#{vo.DEV_NUMBER}", "LINE") is None
-    assert await vo.assign_number("org_other", "user_c") == vo.DEV_NUMBER
-    for env in ("prod", "staging", ""):
-        monkeypatch.setattr(vo.settings, "ENVIRONMENT", env)
-        with pytest.raises(vo.NoNumber, match="not_available"):
-            await vo.assign_number(WS, "user_a")
+    assert await messaging_repo._get(f"PHONE#{LINE}", "LINE") is None
+    assert await vo.assign_number("org_other", "user_c") == LINE
+    monkeypatch.setattr(vo.settings, "VOICE_LINE_NUMBER", "")
+    with pytest.raises(vo.NoNumber, match="not_available"):
+        await vo.assign_number(WS, "user_a")
+    assert await vo.release_number("org_other") == 0  # nothing configured, nothing to release
 
 
 @pytest.mark.asyncio
 async def test_number_route_says_why_there_is_none(repos, async_client_org_admin, monkeypatch):  # noqa: F811
-    monkeypatch.setattr(vo.settings, "ENVIRONMENT", "dev")
-    messaging_repo._table().put_item(Item={"pk": f"PHONE#{vo.DEV_NUMBER}", "sk": "LINE", "ownerId": "org_other"})
+    monkeypatch.setattr(vo.settings, "VOICE_LINE_NUMBER", LINE)
+    messaging_repo._table().put_item(Item={"pk": f"PHONE#{LINE}", "sk": "LINE", "ownerId": "org_other"})
     r = await async_client_org_admin.post("/api/v1/voice/number")
     assert r.status_code == 409 and r.json()["detail"]["code"] == "taken"
 
@@ -116,4 +118,4 @@ async def test_a_member_cannot_draft_or_take_a_number(repos, async_client_org_me
     r = await async_client_org_member.post("/api/v1/voice/onboarding/draft", json={"website": "nails.com"})
     assert r.status_code == 403
     assert (await async_client_org_member.post("/api/v1/voice/number")).status_code == 403
-    assert await messaging_repo._get(f"PHONE#{vo.DEV_NUMBER}", "LINE") is None
+    assert await messaging_repo._get(f"PHONE#{LINE}", "LINE") is None

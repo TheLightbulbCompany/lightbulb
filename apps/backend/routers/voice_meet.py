@@ -243,22 +243,25 @@ async def end(room_id: str, body: EndIn) -> dict:
         for a in body.asked
     ]  # fmt: skip
     await meeting_invites._patch_meeting(room_id, {"asked": asked, "summary": body.summary})
-    await _keep_decisions(body.ownerId, room_id, meeting)
+    _warming.add(t := asyncio.create_task(_keep_decisions(body.ownerId, room_id, meeting)))
+    t.add_done_callback(_warming.discard)  # the worker's end call has 10 s; the model pass and writes do not
     return {"ok": True}
 
 
 async def _keep_decisions(owner_id: str, room_id: str, meeting: dict) -> None:
     """One cheap-model pass over the transcript: the decisions go on the record and into workspace memory
     (``source="meeting:<roomId>"``), so ``recall_memory`` finds them later. No transcript: nothing, no model call."""
+    start = meeting.get("startAt")  # this occurrence: the series may advance while the model runs
     try:
         transcript = await meeting_notes._transcript_text(owner_id, room_id, meeting)
         found = await memory_models.decisions(transcript) if transcript and transcript.strip() else []
         if not found:
             return
-        await meeting_invites._patch_meeting(room_id, {"decisions": found})
-        for d in found:
+        await meeting_invites._patch_meeting(room_id, {"decisions": found}, when=lambda m: m.get("startAt") == start)
+        title, day = meeting.get("title") or "Meeting", datetime.now(UTC).strftime("%-d %b")
+        for d in found:  # the engine ignores ``source`` for the cloud member, so the provenance is in the fact
             await memory_api.remember(
-                owner_id, subject=f"Decision: {meeting.get('title') or 'Meeting'}", fact=d, kind="decision",
+                owner_id, subject=f"Decision: {title}", fact=f"Decided in {title}, {day}: {d}", kind="decision",
                 scope="team", source=f"meeting:{room_id}",
             )  # fmt: skip
     except Exception:  # the record above is kept; a failed pass must not fail the meeting's end

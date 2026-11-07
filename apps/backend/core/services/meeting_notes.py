@@ -372,9 +372,18 @@ async def _posted_notes(request: dict, trigger: str) -> str | None:
 
 
 async def _keep_notes(owner_id: str, message_id: str, request: dict, notes: str | None) -> None:
-    """The notes agent's reply is kept on the meeting record (the app's timeline); nothing is mailed."""
+    """The notes agent's reply is kept on the meeting record (the app's timeline); nothing is mailed. A recurring
+    series has advanced by the time the reply lands: the notes go into that occurrence's history entry. The
+    write is idempotent, so the once-only claim is spent only after it lands."""
     room_id, occurrence = request["roomId"], request.get("occurrence")
-    if not await messaging_repo.claim_meeting_notes_mail(owner_id, message_id):
-        return  # kept already
-    fields = {"notesMailedAt": int(time.time()), **({"notes": notes.strip()} if notes else {})}
-    await meeting_invites._patch_meeting(room_id, fields, when=lambda m: m.get("startAt") == occurrence)
+    text = (notes or "").strip()
+
+    def lay(m: dict) -> dict:
+        if m.get("startAt") == occurrence:
+            return {"notesMailedAt": int(time.time()), **({"notes": text} if text and not m.get("notes") else {})}
+        past = [{**h, "notes": text} if text and h.get("startAt") == occurrence and not h.get("notes") else h
+                for h in m.get("history") or []]  # fmt: skip
+        return {"history": past}
+
+    await meeting_invites._patch_meeting(room_id, lay)
+    await messaging_repo.claim_meeting_notes_mail(owner_id, message_id)

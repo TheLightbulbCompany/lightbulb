@@ -31,7 +31,7 @@ def env(monkeypatch):
     async def patch_meeting(room_id, fields, drop=(), when=None):
         if when is not None and not when(meta["meeting"]):
             return None
-        meta["meeting"] = {**meta["meeting"], **fields}
+        meta["meeting"] = {**meta["meeting"], **(fields(meta["meeting"]) if callable(fields) else fields)}
         return meta["meeting"]
 
     attachment = SimpleNamespace(id="att-1", model_dump=lambda **_: {"id": "att-1", "fileName": "transcript.txt"})
@@ -326,3 +326,100 @@ async def test_a_retry_does_not_wait_for_the_transcript_again(env):
     env.line.side_effect = [RuntimeError("ddb"), {"messageId": "msg-1"}]
     await mod.on_ended(ROOM)  # no transcript: the 60 s wait once, then one 10 s retry gap
     assert [c.args for c in env.sleep.await_args_list] == [(2,)] * 30 + [(10,)]
+
+
+UNSAID = [
+    {"runId": "r1", "agentId": "a1", "agentName": "Forge", "request": "open PRs?", "answer": "Three.", "at": 5},
+    {"runId": "r2", "agentId": "a2", "agentName": "Ledger", "request": "", "answer": "Burn is flat.", "at": 6},
+]
+_SAID = (
+    "Answers the team had ready and did not get to say:\n\nForge: open PRs?\nThree.\n\n"
+    "Ledger: (no request)\nBurn is flat."
+)
+
+
+async def test_the_reply_and_the_run_end_keep_the_notes_once(env):
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    await ended_and_noted(env)
+    await mod.on_notes_run_ended("org_1", {"triggerMessageId": "msg-1", "outcome": "completed"})
+    await mod.on_notes_run_ended("org_1", {"triggerMessageId": "msg-1", "outcome": "error"})
+    assert env.meta["meeting"]["notes"] == NOTES and env.requests["msg-1"]["mailAttemptedAt"]
+    env.send.assert_not_awaited()
+
+
+async def test_no_agent_to_write_the_notes_is_counted_and_marked(env):
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    env.members.return_value = [{"kind": "human", "id": "user_1"}]
+    await mod.on_ended(ROOM)
+    env.line.assert_not_awaited()
+    env.metric.assert_any_call("meeting.notes.skipped", dimensions={"why": "no_agent"})
+    assert env.meta["meeting"]["notesSkipped"] == "no_agent" and "notesRunId" not in env.meta["meeting"]
+    assert env.meta["meeting"]["notesMailedAt"] and "notes" not in env.meta["meeting"]
+    env.send.assert_not_awaited()
+
+
+async def test_a_failed_notes_line_is_retried_and_the_notes_are_kept_once(env):
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    env.line.side_effect = [RuntimeError("ddb"), {"messageId": "msg-1"}]
+    await mod.on_ended(ROOM)
+    assert env.line.await_count == 2 and env.meta["meeting"]["notesRunId"]
+    assert "notes" not in env.meta["meeting"]  # they wait for the agent's reply
+    await mod.on_agent_reply("org_1", CEO, "msg-1", NOTES, False)
+    assert env.meta["meeting"]["notes"] == NOTES and env.meta["meeting"]["notesMailedAt"]
+    env.sleep.assert_awaited_once_with(10)
+    env.advance.assert_awaited_once_with(ROOM)
+
+
+async def test_only_the_notes_agents_own_final_reply_is_kept(env):
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    await mod.on_ended(ROOM)
+    await mod.on_agent_reply("org_1", CEO, "msg-1", "Reading the transcript now.", True)  # progress
+    await mod.on_agent_reply("org_1", CEO, "other-msg", "Unrelated answer.", False)  # another request
+    await mod.on_agent_reply("org_1", CEO, None, "Top-level post.", False)
+    await mod.on_agent_reply("org_1", "another-agent", "msg-1", "Not the notes.", False)  # not the writer
+    assert "notes" not in env.meta["meeting"]
+    await mod.on_agent_reply("org_1", CEO, "msg-1", NOTES, False)
+    assert env.meta["meeting"]["notes"] == NOTES
+
+
+async def test_a_notes_run_that_fails_keeps_no_notes_and_is_done(env):
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    await mod.on_ended(ROOM)
+    await mod.on_notes_run_ended("org_1", {"triggerMessageId": "other-msg", "outcome": "error"})  # not a notes run
+    assert "notesMailedAt" not in env.meta["meeting"]
+    await mod.on_notes_run_ended("org_1", {"triggerMessageId": "msg-1", "outcome": "error"})
+    assert env.meta["meeting"]["notesMailedAt"] and "notes" not in env.meta["meeting"]
+
+
+async def test_a_reply_that_beat_its_request_record_is_kept_when_the_run_ends(env):
+    """The agent answered before _notes recorded the request: the run's end reads its final reply from the room."""
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    await mod.on_ended(ROOM)
+    env.posted[:] = [
+        {"author": {"id": CEO}, "replyToMessageId": "msg-1", "text": "Reading it now.", "progress": True},
+        {"author": {"id": "someone"}, "replyToMessageId": "msg-1", "text": "Not the notes."},
+        {"author": {"id": CEO}, "replyToMessageId": "msg-1", "text": NOTES},
+    ]
+    await mod.on_notes_run_ended("org_1", {"triggerMessageId": "msg-1", "outcome": "completed"})
+    assert env.meta["meeting"]["notes"] == NOTES
+
+
+async def test_unsaid_answers_reach_the_notes_run(env):
+    env.meta["meeting"].update(transcriptAttachedAt=1, unsaid=UNSAID)
+    await ended_and_noted(env)
+    assert env.line.await_args.args[3].endswith(_SAID)
+
+
+async def test_a_recurring_series_that_advanced_still_gets_its_notes_kept(env):
+    env.meta["meeting"].update(transcriptAttachedAt=1, transcriptId="att-1")
+    await mod.on_ended(ROOM)
+    # advance(): the next occurrence replaces the live keys, the finished one moves into history
+    env.meta["meeting"] = {
+        "title": "Next week", "startAt": 1791577200, "status": "scheduled",
+        "history": [{"startAt": 1790972400, "transcriptId": "att-1"}],
+    }  # fmt: skip
+    await mod.on_agent_reply("org_1", CEO, "msg-1", NOTES, False)
+    assert env.meta["meeting"]["history"][0]["notes"] == NOTES
+    assert "notes" not in env.meta["meeting"] and "notesMailedAt" not in env.meta["meeting"]
+    assert env.requests["msg-1"]["mailAttemptedAt"]
+    env.send.assert_not_awaited()

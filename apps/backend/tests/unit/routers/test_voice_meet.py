@@ -142,7 +142,15 @@ async def test_end_keeps_the_record(m):
     assert m["meeting"]["summary"] == "Asked twice"
 
 
+async def _settle():
+    here = asyncio.get_running_loop()
+    await asyncio.gather(
+        *[t for t in voice_meet._warming if t.get_loop() is here]
+    )  # end() returns at once; the decisions pass is held
+
+
 async def test_end_writes_decisions_to_meta_and_memory(m):
+    m["meeting"]["title"] = "Team meeting"
     body = voice_meet.EndIn(ownerId="o", roomToken="t")
     with (
         patch.object(voice_meet.meeting_notes, "_transcript_text", AsyncMock(return_value="Maya: closed Dec 25.")),
@@ -150,35 +158,31 @@ async def test_end_writes_decisions_to_meta_and_memory(m):
         patch.object(voice_meet.memory_api, "remember", AsyncMock(return_value={})) as rem,
     ):
         await voice_meet.end(ROOM, body)
+        await _settle()
     model.assert_awaited_once()
     assert m["meeting"]["decisions"] == ["Closed Dec 25"]
+    rem.assert_awaited_once()
+    assert rem.await_args.args == ("o",)
     kw = rem.await_args.kwargs
-    assert kw["fact"] == "Closed Dec 25" and kw["source"] == f"meeting:{ROOM}" and kw["kind"] == "decision"
+    assert kw["subject"] == "Decision: Team meeting" and kw["kind"] == "decision" and kw["scope"] == "team"
+    # the engine ignores `source` for the cloud member, so the provenance is in the fact a later recall returns
+    assert kw["fact"].startswith("Decided in Team meeting, ") and kw["fact"].endswith(": Closed Dec 25")
+    assert kw["source"] == f"meeting:{ROOM}"
 
 
-async def test_recall_finds_last_week_decision(m):
-    """What end() stores is what the read route's recall_page returns for a later question."""
-    stored = []
-
-    async def remember(owner, **kw):
-        stored.append(kw)
-
-    async def recall(owner, user, q, **kw):
-        assert kw["audience"] == {"kind": "room", "roomId": ROOM}
-        return {"results": [{"content": s["fact"]} for s in stored]}
+async def test_decisions_do_not_land_on_the_next_occurrence(m):
+    async def advance(*_a, **_k):
+        m["meeting"]["startAt"] = 999  # the series moved on while the model ran
+        return ["Closed Dec 25"]
 
     with (
         patch.object(voice_meet.meeting_notes, "_transcript_text", AsyncMock(return_value="x")),
-        patch.object(voice_meet.memory_models, "decisions", AsyncMock(return_value=["Holiday hours: closed Dec 25"])),
-        patch.object(voice_meet.memory_api, "remember", remember),
-        patch.object(voice_meet.memory_api, "recall_page", recall),
-        patch.object(voice_meet, "_member_asked", AsyncMock(return_value=True)),
+        patch.object(voice_meet.memory_models, "decisions", AsyncMock(side_effect=advance)),
+        patch.object(voice_meet.memory_api, "remember", AsyncMock(return_value={})),
     ):
         await voice_meet.end(ROOM, voice_meet.EndIn(ownerId="o", roomToken="t"))
-        out = await voice_meet.read(
-            ROOM, voice_meet.ReadIn(ownerId="o", roomToken="t", kind="memory", question="holiday hours?")
-        )
-    assert out["facts"] == ["Holiday hours: closed Dec 25"]
+        await _settle()
+    assert "decisions" not in m["meeting"]
 
 
 async def test_empty_transcript_writes_nothing_and_skips_the_model(m):
@@ -188,6 +192,7 @@ async def test_empty_transcript_writes_nothing_and_skips_the_model(m):
         patch.object(voice_meet.memory_api, "remember", AsyncMock()) as rem,
     ):
         await voice_meet.end(ROOM, voice_meet.EndIn(ownerId="o", roomToken="t"))
+        await _settle()
     model.assert_not_awaited()
     rem.assert_not_awaited()
     assert "decisions" not in m["meeting"]

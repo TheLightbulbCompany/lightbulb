@@ -38,7 +38,9 @@ MODEL = os.environ.get("PHONE_MODEL", "gemini-3.8-live")  # 10-voice-models.md Â
 VOICE = os.environ.get(
     "PHONE_VOICE", "Kore"
 )  # one of Gemini's prebuilt voices; the greeting's TTS uses the same
-CALL_MAX_S = float(os.environ.get("PHONE_MAX_S", 20 * 60))  # cost cap: a call ends after 20 minutes
+CALL_MAX_S = float(
+    os.environ.get("PHONE_MAX_S", 20 * 60)
+)  # cost cap: a call ends after 20 minutes
 # One warm process is plenty for a line; a busy host gets a longer start and its own load ceiling.
 server = AgentServer(
     num_idle_processes=1,
@@ -58,6 +60,12 @@ call didnt_know with the question, say so, and offer to take a message; never in
 answers not_allowed, don't retry it: offer to take a message. Never share anything about other customers. You
 can't take payments, change prices, or send email; for those take a message for the owner.
 {instructions}"""
+
+
+def e164(number: str) -> str:
+    """LiveKit Phone Numbers send the dialed number as digits ("14842079294"); line rows key on E.164."""
+    n = number.strip()
+    return "+" + n if n.isdigit() else n
 
 
 class Backend:
@@ -200,10 +208,10 @@ async def entrypoint(ctx: JobContext) -> None:
     meta = json.loads(
         ctx.job.metadata or "{}"
     )  # a test dispatch (lk dispatch) names the numbers itself
-    called = (
+    called = e164(
         caller.attributes.get("sip.trunkPhoneNumber") or meta.get("calledNumber") or ""
     )
-    caller_number = (
+    caller_number = e164(
         caller.attributes.get("sip.phoneNumber") or meta.get("callerNumber") or ""
     )
     backend = Backend()

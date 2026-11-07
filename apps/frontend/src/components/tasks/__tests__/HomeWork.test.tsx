@@ -152,13 +152,12 @@ describe("HomeWork", () => {
     await waitFor(() => expect(badge.current).toBe(4));
   });
 
-  it("your company today, in order: Needs you, then the slots (mentions, Ideas, Feed), then Working, Done, Closed", async () => {
-    render(<Fresh><HomeWork viewerId={SAM} onOpen={vi.fn()} between={<section aria-label="Ideas slot" />} /></Fresh>);
+  it("your company today, in order: Needs you, then Working, Done, Closed", async () => {
+    render(<Fresh><HomeWork viewerId={SAM} onOpen={vi.fn()} /></Fresh>);
     const needs = await screen.findByRole("region", { name: "Needs you · 3" });
-    const slot = screen.getByRole("region", { name: "Ideas slot" });
     const working = await screen.findByRole("region", { name: "Working · 3" });
     const closed = screen.getByRole("region", { name: "Closed · 7" });
-    const order = [needs, slot, working, closed];
+    const order = [needs, working, closed];
     for (let i = 1; i < order.length; i++) expect(order[i - 1].compareDocumentPosition(order[i]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
@@ -166,12 +165,6 @@ describe("HomeWork", () => {
     render(<Fresh><HomeWork viewerId={SAM} onOpen={vi.fn()} askCount={1} asks={<p>Sign in to porkbun.com again</p>} /></Fresh>);
     const needs = await screen.findByRole("region", { name: "Needs you · 4" });
     expect(within(needs).getByText("Sign in to porkbun.com again")).toBeInTheDocument();
-  });
-
-  it("the slots show while requests are still loading", () => {
-    client.list.mockReturnValue(new Promise(() => {}));
-    render(<Fresh><HomeWork viewerId={SAM} onOpen={vi.fn()} between={<section aria-label="Ideas slot" />} /></Fresh>);
-    expect(screen.getByRole("region", { name: "Ideas slot" })).toBeInTheDocument();
   });
 
   it("a working row shows who is doing it and the clock, which never truncates (dev walk 13)", async () => {

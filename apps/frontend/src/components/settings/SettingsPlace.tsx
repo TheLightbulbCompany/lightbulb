@@ -4,8 +4,7 @@
 
 import "@/app/settings/settings.css";
 import "./settings-place.css";
-import React, { createContext, useContext, useState, useCallback } from "react";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import React, { useState, useCallback } from "react";
 import Link from "next/link";
 
 import { capture } from "@/lib/analytics";
@@ -17,14 +16,8 @@ import { useBilling } from "@/hooks/useBilling";
 import { useCheckoutReturn } from "@/components/chat/shell/useCheckoutReturn";
 import { WorkspaceMembersSection } from "@/components/settings/WorkspaceMembersSection";
 import { DailySummaryCard } from "@/components/settings/DailySummaryCard";
-import { SessionNotificationsCard } from "@/components/settings/SessionNotificationsCard";
-import { DesktopSettings } from "@/components/desktop/DesktopSettings";
-import { LocalMcpServers } from "@/components/desktop/LocalMcpServers";
 import { PlanChooser } from "@/components/settings/PlanChooser";
 import { UsagePanel } from "@/components/control/panels/UsagePanel";
-import { LLMPanel } from "@/components/control/panels/LLMPanel";
-import { IntegrationsPanel } from "@/components/control/panels/IntegrationsPanel";
-import { SkillsTab } from "@/components/control/panels/SkillsTab";
 import { ConnectionsPanel } from "@/components/control/panels/ConnectionsPanel";
 import { ApprovalsPanel } from "@/components/settings/AgentGuardrails";
 import { SettingsPanel as CompanySettingsPanel } from "@/components/teams/panels/SettingsPanel";
@@ -32,22 +25,15 @@ import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 import { SettingsNav } from "@/components/settings/SettingsNav";
 import {
   ADMIN_ONLY_PANELS,
-  DEVELOPER_PANELS,
   SETTINGS_NAV_SECTIONS,
   type NavItem,
 } from "@/components/settings/settings-nav-config";
-import { useAutomations } from "@lightbulb/shared";
-import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import { SettingRow } from "@/components/settings/SettingRow";
-import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingWorkspaceContext";
-import { isDesktopApp } from "@/lib/desktopNotify";
-import useSWR from "swr";
 import { MoneyPanel } from "@/components/teams/panels/MoneyPanel";
 import { replaceSearchParams } from "@/lib/shellNav";
-import { openPanel, updatePanelParams } from "@/components/workspace/workspaceController";
+import { openPanel } from "@/components/workspace/workspaceController";
 import type { PanelProps } from "@/components/workspace/panelComponents";
-import { useAutomationActions, useAutomationSource, useCanDecide, useCanEdit } from "@/components/tasks/automations";
 
 // =============================================================================
 // Types & Navigation
@@ -65,11 +51,6 @@ export type Panel =
   | "connections"
   | "billing"
   | "usage"
-  | "providers"
-  | "mcp"
-  | "desktop"
-  | "local-mcp"
-  | "skills"
   | "business";
 
 // =============================================================================
@@ -276,40 +257,9 @@ function WorkspacePanel() {
       <h1 className="settings-page-title">Workspace</h1>
       <p className="settings-page-desc">The company&apos;s name and description, as your agents see it.</p>
       <CompanySettingsPanel />
-      <ProactiveRows />
     </div>
   );
 }
-
-// =============================================================================
-// Model Panel — `?action=change-provider` (the provision gate, ChatErrorCard)
-// opens the provider picker once, then leaves the URL.
-// =============================================================================
-
-function ModelPanel() {
-  const router = useRouter();
-  const pathname = usePathname();
-  const searchParams = useSearchParams();
-  // Inside the shell the URL's `action` is a one-shot the shell already stripped: the place hands it over.
-  const shell = useContext(ShellActionContext);
-  const raw = shell ? shell.action : searchParams.get("action");
-  // "connect-chatgpt": Checkout's return for a free workspace that picked ChatGPT (routers/billing.py `then`).
-  const action = raw === "change-provider" || raw === "connect-chatgpt" ? raw : null;
-  return (
-    <LLMPanel
-      initialAction={action}
-      onActionConsumed={() => {
-        if (shell) return shell.consume();
-        const rest = new URLSearchParams(searchParams.toString());
-        rest.delete("action");
-        router.replace(`${pathname}?${rest.toString()}`);
-      }}
-    />
-  );
-}
-
-/** The shell's one-shot `action` (a provision gate's "change-provider"), for ModelPanel; null on /settings. */
-const ShellActionContext = createContext<{ action: string | null; consume: () => void } | null>(null);
 
 // =============================================================================
 // Billing Panel
@@ -628,37 +578,8 @@ export const PANELS: Record<Panel, () => React.ReactElement> = {
   connections: ConnectionsPanel,
   billing: BillingPanel,
   usage: UsagePanel,
-  providers: ModelPanel,
-  mcp: IntegrationsPanel,
-  desktop: DesktopPanel,
-  // Desktop-app-only: MCP servers running on the user's own Mac, driven by the
-  // Tauri local_mcp_* commands. Not listed in a browser.
-  "local-mcp": LocalMcpServers,
-  // SkillsTab takes an optional `agentId`; mounting it prop-less yields the
-  // owner-level (global) skills surface — the engine-room home.
-  skills: () => <SkillsTab />,
   business: BusinessPanel,
 };
-
-/** Desktop, plus the session notifications that left Profile for the Developer group (W13-10). */
-function DesktopPanel() {
-  return <><DesktopSettings /><SessionNotificationsCard rows /></>;
-}
-
-/** Settings › Developer (Skills, MCP servers, Local MCP servers, Desktop) is for a workspace that has used them: a
- *  coding session in the sidebar, the desktop app, or an MCP server of its own (not one Lightbulb manages) (W13-10). */
-function useShowsDeveloper(): boolean {
-  const api = useApi();
-  const directory = useMessagingWorkspaceOptional()?.directoryProps;
-  const sessions = (directory?.sessionRows?.length ?? 0) + (directory?.sessions?.length ?? 0) > 0;
-  const quick = sessions || isDesktopApp();
-  // A 403 (a member: the server list is admin-only) or any failure reads as none.
-  const { data: ownMcp } = useSWR(quick ? null : "/integrations/mcp/servers", async (path: string) => {
-    const resp = await api.get(path).catch(() => null) as { servers?: Record<string, unknown>; managed_keys?: string[] } | null;
-    return Object.keys(resp?.servers ?? {}).some((key) => !(resp?.managed_keys ?? []).includes(key));
-  }, { revalidateOnFocus: false });
-  return quick || ownMcp === true;
-}
 
 // =============================================================================
 // Business (super-agent): what Work › Money showed, inside Settings › Plan.
@@ -671,57 +592,6 @@ function BusinessPanel() {
       <p className="settings-page-desc">Revenue, customers and what you sell, from Stripe, and what your agents spent.</p>
       <MoneyPanel embedded />
     </div>
-  );
-}
-
-// =============================================================================
-// Proactive (super-agent): the two builtin jobs, moved out of the automations list. Each switch pauses or resumes
-// its job through POST /automations/{id}/pause|resume (routers/automations.py).
-// =============================================================================
-
-const PROACTIVE = [
-  { id: "builtin:look_around", name: "Daily look around", line: "Lightbulb looks for ideas each morning (paying workspaces)." },
-  { id: "builtin:feed", name: "Feed posts", line: "Specialists post what changed, 3 times a day." },
-] as const;
-
-function ProactiveRows() {
-  const { data } = useAutomations(useAutomationSource());
-  const { act } = useAutomationActions();
-  const canEdit = useCanEdit();
-  const canDecide = useCanDecide();
-  const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const rows = PROACTIVE.flatMap((row) => {
-    const job = data?.automations.find((a) => a.id === row.id);
-    return job ? [{ ...row, job }] : [];
-  });
-  // A workspace without the builtin jobs (or before the list loads) shows no section rather than dead switches.
-  if (!rows.length) return null;
-  return (
-    <section aria-labelledby="settings-proactive" className="settings-rows">
-      <h2 id="settings-proactive" className="settings-rows__head">Proactive</h2>
-      {rows.map(({ id, name, line, job }) => {
-        const on = job.status === "active";
-        // Pausing follows the server's _may_edit; resuming is an activate (canDecide).
-        const allowed = on ? canEdit(job) : canDecide(job);
-        return (
-          <div key={id} className="settings-rows__row">
-            <div className="settings-rows__text">
-              <label htmlFor={`proactive-${id}`} className="settings-rows__label">{name}</label>
-              <p className="settings-rows__line">{line}</p>
-            </div>
-            <Switch id={`proactive-${id}`} checked={on} disabled={!allowed || busy === id}
-              onCheckedChange={(next) => {
-                setBusy(id);
-                act(id, next ? "resume" : "pause")
-                  .then(() => setError(null), () => setError("That didn't go through. Try again."))
-                  .finally(() => setBusy(null));
-              }} />
-          </div>
-        );
-      })}
-      {error && <p role="alert" className="settings-rows__line text-err">{error}</p>}
-    </section>
   );
 }
 
@@ -745,11 +615,8 @@ export function navKeyDown(e: React.KeyboardEvent, item: NavItem & { panel: stri
   }
 }
 
-export function SettingsPlace({ id, params }: PanelProps) {
-  const developer = useShowsDeveloper() || DEVELOPER_PANELS.has(params.section ?? "");
-  const sections = (developer ? SETTINGS_NAV_SECTIONS : SETTINGS_NAV_SECTIONS.filter((s) => !s.items.every((i) => DEVELOPER_PANELS.has(i.panel ?? ""))))
-    // A browser has no local MCP servers to show: one list for both the select and the tabs.
-    .map((s) => isDesktopApp() ? s : { ...s, items: s.items.filter((i) => i.panel !== "local-mcp") });
+export function SettingsPlace({ params }: PanelProps) {
+  const sections = SETTINGS_NAV_SECTIONS;
   const isAdmin = useIsWorkspaceAdmin();
   const visible = (item: NavItem): item is NavItem & { panel: Panel } =>
     item.panel !== undefined && Object.hasOwn(PANELS, item.panel) && (isAdmin || !ADMIN_ONLY_PANELS.has(item.panel));
@@ -768,8 +635,6 @@ export function SettingsPlace({ id, params }: PanelProps) {
     // Moving between rows is not a new place: Back leaves Settings rather than walking its rows.
     replaceSearchParams(new URLSearchParams({ panel: "settings", section }));
   };
-  const action = params.action ?? null;
-  const shellAction = React.useMemo(() => ({ action, consume: () => updatePanelParams(id, { action: undefined }) }), [action, id]);
   const Active = PANELS[active];
   return (
     <div className="settings-place">
@@ -788,9 +653,7 @@ export function SettingsPlace({ id, params }: PanelProps) {
             onPanelKeyDown={(e, item) => navKeyDown(e, item, rows, select)} />
           <section className="settings-place__content" aria-label={rows.find((r) => r.panel === active)?.name ?? "Settings"}>
             {why && <p role="status" className="settings-place__why">{why}</p>}
-            <ShellActionContext.Provider value={shellAction}>
-              <Active key={active} />
-            </ShellActionContext.Provider>
+            <Active key={active} />
           </section>
         </div>
       </div>

@@ -37,8 +37,8 @@ export type NavSection = { label: string; items: NavItem[] };
 // admin may see or mint one (the panel and the backend both re-check).
 export const ADMIN_ONLY_PANELS = new Set(["usage", "members", "approvals"]);
 
-// Settings inside the shell (UX slice 4), in plain groups. Business (what Work › Money showed) joins Plan; Model's
-// single row folds into Plan.
+// Settings inside the shell (UX slice 4), in plain groups. Business (what Work › Money showed) joins Plan. Model &
+// credits and the Developer group (Skills, MCP, Local MCP, Desktop) are gone (voice pivot, Phase 1 task 9).
 export const SETTINGS_NAV_SECTIONS: NavSection[] = [
   { label: "You", items: [{ id: "profile", name: "Profile", icon: "profile", panel: "profile" }] },
   {
@@ -62,25 +62,9 @@ export const SETTINGS_NAV_SECTIONS: NavSection[] = [
       // Admin-gated: hidden from non-admin org members via ADMIN_ONLY_PANELS.
       { id: "usage", name: "Usage", icon: "usage", panel: "usage" },
       { id: "business", name: "Business", icon: "business", panel: "business" },
-      // LLMPanel verbatim — it already embeds CreditsSection, so there is NO separate Credits row.
-      { id: "providers", name: "Model & credits", icon: "providers", panel: "providers" },
-    ],
-  },
-  // Shown only to a workspace that has used them (SettingsPlace's useShowsDeveloper): a coding session, the desktop
-  // app, or an MCP server of its own (W13-10). Session notifications live under Desktop here, not in Profile.
-  {
-    label: "Developer",
-    items: [
-      { id: "skills", name: "Skills", icon: "skills", panel: "skills" },
-      // MCP servers (owner-level mcp.servers).
-      { id: "mcp", name: "MCP servers", icon: "mcp", panel: "mcp" },
-      // MCP servers on the user's own Mac — desktop-app-only.
-      { id: "local-mcp", name: "Local MCP servers", icon: "mcp", panel: "local-mcp" },
-      { id: "desktop", name: "Desktop", icon: "desktop", panel: "desktop" },
     ],
   },
 ];
-export const DEVELOPER_PANELS: ReadonlySet<string> = new Set(["skills", "mcp", "local-mcp", "desktop"]);
 
 // =============================================================================
 // Icons
@@ -126,14 +110,6 @@ export function NavIcon({ icon }: { icon: string }) {
           <line x1="1" y1="10" x2="23" y2="10" />
         </svg>
       );
-    case "desktop":
-      return (
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <rect x="2" y="3" width="20" height="18" rx="2" />
-          <path d="m7 8 3 3-3 3" />
-          <path d="M13 15h4" />
-        </svg>
-      );
     case "connections":
       return (
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -151,32 +127,11 @@ export function NavIcon({ icon }: { icon: string }) {
           <line x1="6" y1="20" x2="6" y2="14" />
         </svg>
       );
-    case "providers":
-      return (
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
-        </svg>
-      );
-    case "mcp":
-      return (
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <rect x="3" y="3" width="7" height="7" />
-          <rect x="14" y="3" width="7" height="7" />
-          <rect x="14" y="14" width="7" height="7" />
-          <rect x="3" y="14" width="7" height="7" />
-        </svg>
-      );
     case "business":
       return (
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <path d="m22 7-8.5 8.5-5-5L2 17" />
           <path d="M16 7h6v6" />
-        </svg>
-      );
-    case "skills":
-      return (
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
         </svg>
       );
     default:

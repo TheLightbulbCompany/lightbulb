@@ -11,7 +11,6 @@ import { claimRunNotice, setRoomView } from "./roomView";
 
 export function MessageNotifications(props: {
   activeRoomId: string | null;
-  threadId: string | null;
   roomVisible: boolean;
   /** Rooms on screen in a side column (a session's chat, an app's conversation in Canvas), each beside
    * whatever the main view shows. They show thread replies inline: a reply there is on screen too. */
@@ -139,7 +138,7 @@ export function MessageNotifications(props: {
       seen.add(messageId);
       if (seen.size > 1000) seen.delete(seen.values().next().value!);
       const now = current.current;
-      const inMain = now.roomVisible && now.activeRoomId === roomId && (!threadRootMessageId || now.threadId === threadRootMessageId);
+      const inMain = now.roomVisible && now.activeRoomId === roomId && !threadRootMessageId;
       const watched = (inMain || !!now.sideRoomIds?.includes(roomId)) && document.visibilityState === "visible" && document.hasFocus();
       if (watched) return;
       if (data.runId && !claimRunNotice(data.runId)) return;

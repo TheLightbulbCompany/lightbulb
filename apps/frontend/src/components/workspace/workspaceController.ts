@@ -21,7 +21,7 @@ import {
 import { currentChatViewSearch } from "./chatHistory";
 import { appendPane, buildPanelUrl, clearPanelFromUrl } from "./urlChannel";
 
-export type Place = "home" | "chat" | "activity" | "work" | "team" | "library" | "canvas" | "settings";
+export type Place = "home" | "chat" | "activity" | "work" | "team" | "settings";
 
 /** What a slot shows. `thread` is the room's side column (a thread, its tasks, room details),
  *  portalled into the pane by the room itself (useThreadPane). */
@@ -53,11 +53,9 @@ export interface WorkspaceSnapshot {
   teamsPanelVisible: boolean;
   /** The room is on screen: the Chat place, the full-screen pane's chat column, or a thread in the pane. */
   messagesVisible: boolean;
-  browserVisible: boolean;
   openPanelIds: string[];
 }
 
-export const BROWSER_PANEL_ID = "browser";
 export const THREAD_PANE_ID = "thread";
 
 let _attached = false;
@@ -75,9 +73,7 @@ export function placeOf(main: Slot | null): Place {
   if (!main) return "chat";
   if (main.component === "home") return "home";
   if (main.component === "activity") return "activity";
-  if (main.component === "canvas") return "canvas";
   if (main.component === "settings") return "settings";
-  if (main.component === "teams" && main.params.teamsKey === "artifacts") return "library";
   if (main.component === "teams" && main.params.teamsKey === "agents") return "team";
   return "work";
 }
@@ -109,7 +105,6 @@ function buildSnapshot(previous: WorkspaceSnapshot | null): WorkspaceSnapshot {
     visibleChatAgentIds: messagesVisible && agent ? [agent] : [],
     teamsPanelVisible: !!(_main?.panelId.startsWith("teams-") || _pane?.panelId.startsWith("teams-")),
     messagesVisible,
-    browserVisible: _pane?.panelId === BROWSER_PANEL_ID,
     openPanelIds: _attached
       ? [MESSAGES_PANEL_ID, ...(_main ? [_main.panelId] : []), ...(_pane ? [_pane.panelId] : [])]
       : [],
@@ -256,9 +251,9 @@ export function closePane(): void {
 
 /** A pane item belongs to where it was opened (W17-9). Chat on another room (or Chat from another place) closes it,
  *  unless it is that room's: a file from it, or a doc from its tasks (`room` / `from`). The thread pane is its room's
- *  own, and the browser follows you. */
+ *  own. */
 export function leavePaneFor(roomId: string | null): void {
-  if (!_pane || _pane.panelId === THREAD_PANE_ID || _pane.panelId === BROWSER_PANEL_ID) return;
+  if (!_pane || _pane.panelId === THREAD_PANE_ID) return;
   if (roomId && (_pane.params.room === roomId || _pane.params.from === roomId)) return;
   closePane();
 }
@@ -395,38 +390,6 @@ export function useThreadPane(open: boolean, close: () => void, title: string, i
   return mine ? host : null;
 }
 
-/** Show the shared Browser in the pane. False when no shell is mounted (the caller falls back). */
-export function openBrowserPane(): boolean {
-  if (!_attached) return false;
-  // The URL names what the pane shows, so a refresh reopens the Browser.
-  openPanel(BROWSER_PANEL_ID, {}, { pushUrl: true });
-  return true;
-}
-
-// The Mac run the Browser pane shows instead of the cloud browser (null: the cloud one).
-let _macRun: string | null = null;
-const _macListeners = new Set<() => void>();
-
-export function selectBrowserMacRun(runId: string | null): void {
-  if (_macRun === runId) return;
-  _macRun = runId;
-  _macListeners.forEach((l) => l());
-}
-
-/** Show a run's Mac tab (read-only frames) in the Browser pane. False: no shell mounted. */
-export function showMacRunInBrowser(runId: string): boolean {
-  selectBrowserMacRun(runId);
-  return openBrowserPane();
-}
-
-export function useBrowserMacRun(): string | null {
-  return useSyncExternalStore(
-    (l) => { _macListeners.add(l); return () => { _macListeners.delete(l); }; },
-    () => _macRun,
-    () => null,
-  );
-}
-
 // The Invite people dialog (InvitePeopleDialog, mounted once by WorkspaceShell).
 let _inviteOpen = false;
 const _inviteListeners = new Set<() => void>();
@@ -464,8 +427,6 @@ export function _resetControllerForTests(): void {
   _listeners.clear();
   _threadHost = null;
   _hostListeners.clear();
-  _macRun = null;
-  _macListeners.clear();
   _inviteOpen = false;
   _inviteListeners.clear();
 }

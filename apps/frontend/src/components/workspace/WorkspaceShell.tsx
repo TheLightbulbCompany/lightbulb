@@ -51,9 +51,9 @@ import {
 } from "./workspaceController";
 
 function DesktopMessagingProvider({ children }: { children: React.ReactNode }) {
-  const { messagesVisible, browserVisible } = useWorkspaceState();
+  const { messagesVisible } = useWorkspaceState();
   return (
-    <MessagingWorkspaceProvider subscribeToRoom={messagesVisible} observeRuns={browserVisible}>
+    <MessagingWorkspaceProvider subscribeToRoom={messagesVisible}>
       {children}
     </MessagingWorkspaceProvider>
   );

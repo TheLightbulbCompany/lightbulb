@@ -15,10 +15,6 @@ const apiGet = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/api", () => ({ useApi: () => ({ get: apiGet }) }));
 const ctl = vi.hoisted(() => ({ openPanel: vi.fn(), closePane: vi.fn(), openAgentDmWithDraft: vi.fn(), activateMessagesPanel: vi.fn() }));
 vi.mock("@/components/workspace/workspaceController", () => ctl);
-const ideas = vi.hoisted(() => ({ ideas: [] as unknown[] }));
-vi.mock("@/hooks/useIdeas", () => ({ useIdeas: () => ideas }));
-const firstRun = vi.hoisted(() => ({ moves: [] as unknown[], open: vi.fn() }));
-vi.mock("@/components/ideas/FirstMoves", () => ({ FIRST_MOVE_LABEL: "Pick a first move", useFirstMoves: () => firstRun.moves, openFirstMoves: firstRun.open }));
 const messaging = vi.hoisted(() => ({ value: null as unknown }));
 vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({
   useMessagingWorkspaceOptional: () => messaging.value,
@@ -58,9 +54,6 @@ beforeEach(() => {
   live.tasks = fakeTasksClient(TASKS);
   apiGet.mockImplementation(async () => ({ tasks: needsRead, next: null }));
   messaging.value = directory(ROOMS);
-  ideas.ideas = [];
-  firstRun.moves = [];
-  firstRun.open.mockClear();
   Object.values(ctl).forEach((f) => f.mockClear());
 });
 
@@ -162,23 +155,11 @@ describe("HomeProjects", () => {
     expect(screen.getByLabelText("Ask Lightbulb")).toHaveValue("Hi");
   });
 
-  it("New channel: a dialog with the name, its tile and a goal; it creates the channel and opens it", async () => {
-    const value = directory(ROOMS);
-    messaging.value = value;
+  it("offers no New channel (channel creation is gone)", () => {
+    messaging.value = directory(ROOMS);
     render(<Fresh><HomeProjects /></Fresh>);
-    // Frame A (UX slice 4): the page's one primary action sits in the title row, beside "Home".
     const title = screen.getByRole("heading", { level: 1, name: "Home" }).parentElement!;
-    expect(title).toHaveClass("frame-doc__title");
-    await userEvent.click(within(title).getByRole("button", { name: "New channel" }));
-    const dialog = await screen.findByRole("dialog", { name: "New channel" });
-    expect(within(dialog).getByRole("button", { name: "Create channel" })).toBeDisabled();
-    await userEvent.click(within(dialog).getByRole("button", { name: "Channel icon and colour" }));
-    await userEvent.click(await screen.findByRole("button", { name: "Rocket" }));
-    await userEvent.click(screen.getByRole("button", { name: "Sand" }));
-    await userEvent.type(within(dialog).getByLabelText(/What should this channel get done/), "Hire two bakers");
-    await userEvent.type(within(dialog).getByLabelText("Name"), "Hiring{Enter}");
-    expect(value.directoryProps.onCreate).toHaveBeenCalledWith({ kind: "channel", name: "Hiring", members: [], topic: "Hire two bakers", icon: "rocket", color: "project-3" });
-    expect(ctl.activateMessagesPanel).toHaveBeenCalled();
+    expect(within(title).queryByRole("button", { name: "New channel" })).toBeNull();
   });
 
   it("Pinned channels sit above the rest; a card's ⋯ pins, opens Settings and archives", async () => {
@@ -204,18 +185,6 @@ describe("HomeProjects", () => {
     expect(onPatchRoom).toHaveBeenCalledWith("site", { archived: true });
   });
 
-  it("first run: the one needs-you item reads Pick a first move and opens the DM; Start a channel offers the moves", async () => {
-    apiGet.mockImplementation(async () => ({ tasks: [], next: null }));
-    firstRun.moves = [{ id: "s-1", title: "Launch a pre-order page", firstRun: true }];
-    messaging.value = directory([room("general", { name: "general", isDefault: true }), ROOMS[2]]);
-    render(<Fresh><HomeProjects /></Fresh>);
-    await userEvent.click(await screen.findByRole("button", { name: /1 needs you · Pick a first move/ }));
-    expect(firstRun.open).toHaveBeenCalledTimes(1);
-    expect(ctl.openPanel).not.toHaveBeenCalled();
-    await userEvent.click(within(screen.getByRole("list", { name: "First moves" })).getByRole("button", { name: "Launch a pre-order page" }));
-    expect(firstRun.open).toHaveBeenCalledTimes(2);
-  });
-
   it("no needs-you line when nothing needs you", async () => {
     apiGet.mockImplementation(async () => ({ tasks: [], next: null }));
     render(<Fresh><HomeProjects /></Fresh>);
@@ -223,12 +192,11 @@ describe("HomeProjects", () => {
     expect(screen.queryByRole("button", { name: /need you · Review/ })).toBeNull();
   });
 
-  it("a new workspace: the DM, Start a channel and three starter ideas", async () => {
+  it("a new workspace: the DM, and no Start a channel or starter ideas", async () => {
     messaging.value = directory([room("general", { name: "general", isDefault: true }), ROOMS[2]]);
-    ideas.ideas = ["i1", "i2", "i3", "i4"].map((id) => ({ id, title: `Idea ${id}`, suggested: false, agentId: FRONT }));
     render(<Fresh><HomeProjects /></Fresh>);
     expect(screen.getByRole("region", { name: "Chats" })).toHaveTextContent("Lightbulb");
-    expect(screen.getByRole("button", { name: "Start a channel" })).toBeInTheDocument();
-    expect(within(screen.getByRole("list", { name: "Starter ideas" })).getAllByRole("button")).toHaveLength(3);
+    expect(screen.queryByRole("button", { name: "Start a channel" })).toBeNull();
+    expect(screen.queryByRole("list", { name: "Starter ideas" })).toBeNull();
   });
 });

@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useAuth, useUser } from "@clerk/nextjs";
-import { cardReplyRequest, markSessionRead, markSessionsSeen, markSessionUnread, resolveTypedMentions, roomDisplayName, runView, sessionArchived, sessionMentionCandidates, sessionUnread, useWorkspaceSessions, workspaceSections, type CardReply, type CreateMessageRequest, type MemberRef, type PatchRoomRequest, type RoomMember, type SessionSource, type RoomSummary } from "@lightbulb/shared";
+import { cardReplyRequest, markSessionsSeen, resolveTypedMentions, roomDisplayName, runView, sessionArchived, sessionMentionCandidates, sessionUnread, useWorkspaceSessions, workspaceSections, type CardReply, type CreateMessageRequest, type MemberRef, type PatchRoomRequest, type RoomMember, type SessionSource, type RoomSummary } from "@lightbulb/shared";
 import { useRooms } from "@/hooks/useRooms";
 import { useCopyJoinLink } from "@/hooks/useCopyJoinLink";
 import { useBilling } from "@/hooks/useBilling";
@@ -29,10 +29,8 @@ import type { RoomDirectoryProps, ConversationCreation } from "./RoomDirectory";
 import type { SettingsFrom } from "@/components/projects/ProjectSettingsDialog";
 import type { RoomPanelProps } from "./RoomPanel";
 import type { SessionFocusTarget } from "./SessionFocus";
-import { bridge } from "./localTerminal";
-import type { SidebarRow, SidebarSession } from "./roomSections";
+import type { SidebarSession } from "./roomSections";
 import { useSessionRows } from "./useSessionRows";
-import type { SessionRow } from "@lightbulb/shared";
 import { isProjectRoom, type DirectoryRoom, type DirectoryParticipant, type RoomParticipant } from "./types";
 
 
@@ -64,8 +62,6 @@ export interface MessagingWorkspaceValue {
   /** A side column (an app's conversation in Canvas) says which room it shows under its own key, or null when hidden.
    * Each one is suppressed from notifications on its own, beside the main room. */
   setSideRoom: (key: string, roomId: string | null) => void;
-  /** Focus an empty new session (the composer that starts one on your Mac). */
-  openNewSession: () => void;
   sessionFocus: SessionFocusTarget | null;
   closeSession: () => void;
   /** Not gated on the active dock panel: a split dock keeps the focused session on screen. */
@@ -103,8 +99,6 @@ export const pickTokenUnchanged = (a: PickToken, b: PickToken) =>
   a.href === b.href && a.activePanelId === b.activePanelId;
 
 /** A session owner as a human participant, the shape ParticipantAvatar takes. */
-/** The native Share command; only a desktop page has engine rows, so only a desktop page reaches it. */
-const shareEngineSession = (row: SessionRow): Promise<unknown> => Promise.resolve(bridge()?.("share_engine_session", { sessionId: row.id }));
 
 function ownerFace(id: string, displayName: string): RoomParticipant {
   return { kind: "human", id, displayName, mentionHandle: null, role: "member", listenMode: null, joinedAt: "", joinedSeq: 0 };
@@ -217,14 +211,12 @@ export function MessagingWorkspaceProvider({
   initialAgentId,
   defaultAgentId,
   subscribeToRoom = true,
-  observeRuns = false,
 }: {
   children: ReactNode;
   initialAgentId?: string | null;
   /** Opened only when nothing explicit was asked for and the workspace is not fresh. */
   defaultAgentId?: string | null;
   subscribeToRoom?: boolean;
-  observeRuns?: boolean;
 }) {
   const { userId, orgId, orgRole } = useAuth();
   const scope = orgId ?? userId ?? "signed-out";
@@ -263,7 +255,7 @@ export function MessagingWorkspaceProvider({
   const freshLanding = landing?.scope === scope ? landing.fresh : null;
   const rooms = useRooms(
     defaultAgentId && freshLanding === false ? initialAgentId ?? defaultAgentId : initialAgentId,
-    (subscribeToRoom || observeRuns) && !sessionChatOpen,
+    subscribeToRoom && !sessionChatOpen,
     roomVisible,
     true,
     true, // this instance feeds RoomPanel's subagent strip
@@ -325,25 +317,12 @@ export function MessagingWorkspaceProvider({
   const { data: humanRoster } = teams.read<{ members?: CompanyMember[] }>("/members");
   const [draft, setDraft] = useState("");
   const [clientMessageId, setClientMessageId] = useState(() => crypto.randomUUID());
-  const [threadId, setThreadId] = useState<string | null>(null);
-  const [notificationTarget, setNotificationTarget] = useState<{ roomId: string; threadId: string | null } | null>(null);
-  useEffect(() => {
-    if (!notificationTarget || notificationTarget.roomId !== rooms.activeRoomId) return;
-    setThreadId(notificationTarget.threadId);
-    setNotificationTarget(null);
-  }, [notificationTarget, rooms.activeRoomId]);
-  const [threadDraft, setThreadDraft] = useState("");
-  const [threadClientMessageId, setThreadClientMessageId] = useState(() => crypto.randomUUID());
   const clientMessageIdRef = useRef(clientMessageId);
-  const threadClientMessageIdRef = useRef(threadClientMessageId);
   clientMessageIdRef.current = clientMessageId;
-  threadClientMessageIdRef.current = threadClientMessageId;
   // Read in the send failure path, which resolves long after its closure was
   // built and must know where the owner actually is now.
   const activeRoomIdRef = useRef(rooms.activeRoomId);
   activeRoomIdRef.current = rooms.activeRoomId;
-  const threadIdRef = useRef<string | null>(threadId);
-  threadIdRef.current = threadId;
   const activeRoomKind = rooms.activeRoom?.kind;
   const activeRoomKindRef = useRef(activeRoomKind);
   activeRoomKindRef.current = activeRoomKind;
@@ -362,12 +341,9 @@ export function MessagingWorkspaceProvider({
   // whether there is anything there worth protecting.
   const draftRef = useRef(draft);
   draftRef.current = draft;
-  const threadDraftRef = useRef(threadDraft);
-  threadDraftRef.current = threadDraft;
   // When this tab's text was last edited (or adopted from storage): a write carries it, so a tab holding older text
   // never overwrites a newer draft or a clear from a send (W17-7).
   const draftEditedAt = useRef(0);
-  const threadDraftEditedAt = useRef(0);
   const [creationBusy, setCreationBusy] = useState(false);
   const [openingParticipant, setOpeningParticipant] = useState<string | null>(null);
   // Bumped whenever a draft is written for a room OTHER than the active one —
@@ -426,7 +402,6 @@ export function MessagingWorkspaceProvider({
   const toggleShortcuts = useCallback(() => setShortcutsOpen((open) => !open), []);
   useMessagingShortcuts(rooms.rooms, rooms.activeRoomId, chooseRoom, toggleShortcuts, shortcutsOpen);
   const [draftRoomId, setDraftRoomId] = useState(rooms.activeRoomId);
-  const [draftThreadId, setDraftThreadId] = useState<string | null>(null);
   const typingActive = useRef(false);
   const typingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -442,16 +417,6 @@ export function MessagingWorkspaceProvider({
     draftEditedAt.current = stored?.at ?? 0;
     setDraft(stored?.text ?? "");
     setClientMessageId(crypto.randomUUID());
-    setThreadId(null);
-    setDraftThreadId(null);
-    setThreadDraft("");
-    setThreadClientMessageId(crypto.randomUUID());
-  } else if (draftThreadId !== threadId) {
-    setDraftThreadId(threadId);
-    const stored = rooms.activeRoomId && threadId ? readDraft(draftKey(scope, rooms.activeRoomId, threadId)) : null;
-    threadDraftEditedAt.current = stored?.at ?? 0;
-    setThreadDraft(stored?.text ?? "");
-    setThreadClientMessageId(crypto.randomUUID());
   }
 
   useEffect(() => () => {
@@ -513,11 +478,6 @@ export function MessagingWorkspaceProvider({
       section.data.map((session) => ({ session, ownerName: section.title, own: section.key === userId,
         owner: ownerFace(session.humanUserId, session.humanUserId === userId && !isOnRoster(session.humanUserId) ? myName : humanName(session.humanUserId)), unread: sessionUnread(session, seen) }))),
     [sessionRows, userId, humanName, isOnRoster, myName, seen]);
-  const sidebarRows: SidebarRow[] = useMemo(() => sessionRows.map((row) => ({
-    row,
-    owner: ownerFace(row.person.userId ?? row.id, row.person.isViewer && !(row.person.userId && isOnRoster(row.person.userId)) ? myName : row.person.name),
-    unread: row.backend ? sessionUnread(row.backend, seen) : null,
-  })), [sessionRows, isOnRoster, myName, seen]);
   const members: RoomParticipant[] = useMemo(() => rooms.activeRoom?.members.map(decorate) ?? [], [rooms.activeRoom, decorate]);
   // The feed seats only people; its agents are authors on the roster. They are added here so a
   // Discuss reply can @mention one (by name: an unseated agent has no handle in the room).
@@ -609,11 +569,6 @@ export function MessagingWorkspaceProvider({
     writeDraft(draftKey(scope, rooms.activeRoomId, null), { text: draft, mentions: resolveTypedMentions(draft, participants) }, draftEditedAt.current);
   }, [scope, rooms.activeRoomId, draft, participants]);
 
-  useEffect(() => {
-    if (!rooms.activeRoomId || !threadId) return;
-    writeDraft(draftKey(scope, rooms.activeRoomId, threadId), { text: threadDraft, mentions: resolveTypedMentions(threadDraft, participants) }, threadDraftEditedAt.current);
-  }, [scope, rooms.activeRoomId, threadId, threadDraft, participants]);
-
   // Another tab edited, sent or cleared a draft: a newer one replaces what this tab holds, so a stale tab stops
   // carrying (and re-saving) text the person already sent (W17-7).
   useEffect(() => {
@@ -628,12 +583,6 @@ export function MessagingWorkspaceProvider({
         persisted.current = { roomId, text: stored.text };
         draftRef.current = stored.text;
         setDraft(stored.text);
-      }
-      const thread = threadIdRef.current;
-      if (thread && event.key === draftKey(scope, roomId, thread) && stored.at >= threadDraftEditedAt.current && stored.text !== threadDraftRef.current) {
-        threadDraftEditedAt.current = stored.at;
-        threadDraftRef.current = stored.text;
-        setThreadDraft(stored.text);
       }
     };
     window.addEventListener("storage", onStorage);
@@ -661,7 +610,7 @@ export function MessagingWorkspaceProvider({
     setRecoveredDrafts((count) => count + 1);
   }, []);
 
-  const send = useCallback(async (request: CreateMessageRequest, thread = false) => {
+  const send = useCallback(async (request: CreateMessageRequest) => {
     // Read before the await: this is the room the message was sent FROM, even
     // if the owner switches rooms while it is in flight.
     const roomId = rooms.activeRoomId;
@@ -675,28 +624,15 @@ export function MessagingWorkspaceProvider({
     // failed and uncertain states, and `reconcileSend` still holds the request
     // by its client id, so nothing is lost if the send does not land.
     let rotatedTo: string | null = null;
-    if (thread) {
-      if (roomId && request.threadRootMessageId) clearDraft(draftKey(scope, roomId, request.threadRootMessageId));
-      if (threadClientMessageIdRef.current === request.clientMessageId) {
-        rotatedTo = crypto.randomUUID();
-        // The ref mirrors the composer's CURRENT id, so it has to move now
-        // rather than at the next render — a send that rejects in the same
-        // microtask would otherwise read a stale ref and conclude the composer
-        // had moved on when it had not.
-        threadClientMessageIdRef.current = rotatedTo;
-        threadDraftRef.current = "";
-        setThreadDraft("");
-        setThreadClientMessageId(rotatedTo);
-      }
-    } else {
-      if (roomId) clearDraft(draftKey(scope, roomId, null));
-      if (clientMessageIdRef.current === request.clientMessageId) {
-        rotatedTo = crypto.randomUUID();
-        clientMessageIdRef.current = rotatedTo;   // see the thread branch above
-        draftRef.current = "";
-        setDraft("");
-        setClientMessageId(rotatedTo);
-      }
+    if (roomId) clearDraft(draftKey(scope, roomId, null));
+    if (clientMessageIdRef.current === request.clientMessageId) {
+      rotatedTo = crypto.randomUUID();
+      // The ref mirrors the composer's CURRENT id, so it has to move now rather than at the next render -- a send that
+      // rejects in the same microtask would otherwise read a stale ref and conclude the composer had moved on.
+      clientMessageIdRef.current = rotatedTo;
+      draftRef.current = "";
+      setDraft("");
+      setClientMessageId(rotatedTo);
     }
     try {
       await sendRoomMessage(request);
@@ -719,19 +655,9 @@ export function MessagingWorkspaceProvider({
       // TYPING does not — it only fills the box. Restoring over either is the
       // same data loss, so the box must still be the one we rotated to AND
       // still be empty.
-      const composerHeld = !thread && rotatedTo !== null
+      const composerHeld = rotatedTo !== null
         && clientMessageIdRef.current === rotatedTo && draftRef.current.trim() === "";
-      const threadComposerHeld = thread && rotatedTo !== null
-        && threadClientMessageIdRef.current === rotatedTo && threadDraftRef.current.trim() === "";
-      if (thread) {
-        if (sameRoom && threadComposerHeld && threadIdRef.current === request.threadRootMessageId) {
-          threadDraftEditedAt.current = Date.now();
-          setThreadDraft(request.text);
-          setThreadClientMessageId(request.clientMessageId);
-        } else if (roomId && request.threadRootMessageId) {
-          recoverDraft(draftKey(scope, roomId, request.threadRootMessageId), request);
-        }
-      } else if (sameRoom && composerHeld) {
+      if (sameRoom && composerHeld) {
         draftEditedAt.current = Date.now();
         setDraft(request.text);
         setClientMessageId(request.clientMessageId);
@@ -751,15 +677,9 @@ export function MessagingWorkspaceProvider({
   // box must move on to a fresh id like a send does -- a composer still holding a
   // persisted id stays locked with the sent text in it.
   const reconcileRoomSend = rooms.reconcileSend;
-  const reconcileSend = useCallback(async (clientMessageId: string, thread = false) => {
+  const reconcileSend = useCallback(async (clientMessageId: string) => {
     if (!await reconcileRoomSend(clientMessageId)) return;
-    if (thread && threadClientMessageIdRef.current === clientMessageId) {
-      const next = crypto.randomUUID();
-      threadClientMessageIdRef.current = next;
-      threadDraftRef.current = "";
-      setThreadDraft("");
-      setThreadClientMessageId(next);
-    } else if (!thread && clientMessageIdRef.current === clientMessageId) {
+    if (clientMessageIdRef.current === clientMessageId) {
       const next = crypto.randomUUID();
       clientMessageIdRef.current = next;
       draftRef.current = "";
@@ -784,10 +704,6 @@ export function MessagingWorkspaceProvider({
     if (!text.trim() && activeRoomId) clearDraft(draftKey(scope, activeRoomId, null));
     setDraft(text);
   }, [scope, activeRoomId]);
-  const changeThreadDraft = useCallback((text: string) => {
-    threadDraftEditedAt.current = Date.now();
-    setThreadDraft(text);
-  }, []);
   // Read back from storage AFTER the persist effects above have written this render's text (an effect declared later
   // runs later). Computed during render it saw the previous write, so a drafted "@growth " that was then cleared, or a
   // first keystroke, left the sidebar one change behind (dev walk W8-11).
@@ -799,7 +715,7 @@ export function MessagingWorkspaceProvider({
   useEffect(() => {
     const next = listDraftRoomIds(scope);
     if (next.length !== draftRoomIds.length || next.some((id, i) => id !== draftRoomIds[i])) setDraftRoomIds(next);
-  }, [scope, draft, threadDraft, rooms.activeRoomId, recoveredDrafts, draftRoomIds]);
+  }, [scope, draft, rooms.activeRoomId, recoveredDrafts, draftRoomIds]);
 
   const agentCounterparts = participants.filter((member) => member.kind === "agent");
   const runningAgentIds = rooms.runs.filter((run) => run.state === "running").map((run) => run.agentId);
@@ -827,28 +743,6 @@ export function MessagingWorkspaceProvider({
     roomKind: rooms.activeRoom?.kind,
     runningAgentIds,
   };
-
-  const threadComposer: { parentMessageId: string; composer: RoomComposerProps } | undefined = threadId ? {
-    parentMessageId: threadId,
-    composer: {
-      text: threadDraft,
-      onTextChange: changeThreadDraft,
-      members: participants,
-      sessionTargets,
-      clientMessageId: threadClientMessageId,
-      sendState: rooms.sendState(threadClientMessageId),
-      onSubmit: (request: CreateMessageRequest) => send(request, true),
-      onRetry: (request: CreateMessageRequest) => send(request, true),
-      onReconcile: (id: string) => void reconcileSend(id, true).catch(() => {}),
-      replyToMessageId: threadId,
-      threadRootMessageId: threadId,
-      disabled: !rooms.httpReady,
-      onTypingChange: handleTyping,
-      onUploadAttachment: rooms.uploadAttachment,
-      roomKind: rooms.activeRoom?.kind,
-      runningAgentIds,
-    },
-  } : undefined;
 
   async function createRoom(creation: ConversationCreation) {
     setCreationBusy(true);
@@ -930,7 +824,6 @@ export function MessagingWorkspaceProvider({
    * Returns false for such an early link: it is the URL's replay, not a pick.
    */
   const applySession = useCallback((sessionId: string, chat = false, seq?: number) => {
-    setThreadId(null);
     setTarget(null);
     // Opening the URL this open just wrote (?session=, no seq) replays it: keep the turn it opened at.
     setSessionFocus((current) => {
@@ -945,16 +838,6 @@ export function MessagingWorkspaceProvider({
   }, [applySession, bumpPick]);
   const setSessionChat = useCallback((open: boolean) => {
     setSessionFocus((current) => current?.sessionId ? { ...current, chat: open } : current);
-  }, []);
-  const openNewSession = useCallback(() => {
-    setThreadId(null);
-    setTarget(null);
-    setSessionFocus({ sessionId: null });
-  }, []);
-  const openAllSessions = useCallback(() => {
-    setThreadId(null);
-    setTarget(null);
-    setSessionFocus({ sessionId: null, all: true });
   }, []);
   const openMessage = useCallback((roomId: string, messageId: string | null) => {
     closeSession();
@@ -1046,13 +929,6 @@ export function MessagingWorkspaceProvider({
     onRetry: () => void rooms.refreshRooms(),
     draftRoomIds,
     sessions: sidebarSessions,
-    sessionRows: sidebarRows,
-    onShareSession: shareEngineSession,
-    onSelectSession: (sessionId: string) => void openSession(sessionId),
-    onRenameSession: rooms.resourceSource.client.setLocalSessionDisplayTitle ? async (sessionId, title) => {
-      await rooms.resourceSource.client.setLocalSessionDisplayTitle!(sessionId, title);
-      await workspaceSessions.refresh();
-    } : undefined,
     // Nothing leaves the list until the server has removed it: a refusal (it resumed meanwhile, the network)
     // rejects here, and the button that asked says so. The panel showing the session closes itself (SessionFocus).
     // A running session is ended first and removed when its Mac has stopped it: its row stays, as running,
@@ -1061,20 +937,6 @@ export function MessagingWorkspaceProvider({
       await rooms.resourceSource.client.removeLocalSession(sessionId);
       workspaceSessions.forget((session) => session.sessionId === sessionId && session.status === "ended");
     },
-    onRemoveEndedSessions: async () => {
-      try { await rooms.resourceSource.client.removeEndedLocalSessions(); }
-      finally { await workspaceSessions.refresh(); }
-    },
-    onMarkSessionUnread: (sessionId, unread) => {
-      const session = workspaceSessions.sessions.find((candidate) => candidate.sessionId === sessionId);
-      if (!session) return;
-      const next = (unread ? markSessionUnread : markSessionRead)(seen, session);
-      setSessionSeen({ scope: seenScope, seen: next });
-      writeSessionSeen(seenScope, next);
-    },
-    currentSessionId: sessionFocus?.sessionId ?? null,
-    onOpenAllSessions: openAllSessions,
-    allSessionsOpen: !!sessionFocus?.all,
   };
   const selectMessageParticipant = useCallback(async (participant: RoomParticipant) => {
     markExplicitScope();
@@ -1115,25 +977,18 @@ export function MessagingWorkspaceProvider({
     historyComplete: rooms.historyComplete,
     historyError: rooms.historyError,
     historyErrorMessage: rooms.historyErrorMessage,
-    onLoadHistory: rooms.loadHistory,
     onLoadOlder: rooms.loadOlder,
     onJumpToMessage: (roomId: string, messageId: string) => setTarget({ roomId, messageId }),
     pendingMessages: pending,
     typingMembers: rooms.typingMembers.filter((member) => member.userId !== userId),
     runs: rooms.runs.map(runView),
     composer,
-    threadComposer,
     sessions: visibleSessions,
-    onSelectThread: setThreadId,
-    selectedThreadId: threadId,
     onSelectParticipant: selectMessageParticipant,
     onRetry: () => void rooms.refreshRoom(),
     // Feed authors are not seated, so the feed has no listen modes to change (the service refuses membership edits).
     billing: billingAccount,
-    onSetReaction: rooms.setReaction,
     onUpdateMessage: rooms.updateMessage,
-    pinnedMessageIds: rooms.activeRoom?.pinnedMessageIds,
-    onSetPin: rooms.setPin,
     onMarkUnreadFrom: markUnreadFrom,
     onSetPrefs: async (prefs) => { if (rooms.activeRoomId) await rooms.setRoomPrefs(rooms.activeRoomId, prefs); },
     // A group chat's creator holds no powers there, so anyone may leave or archive one.
@@ -1208,9 +1063,9 @@ export function MessagingWorkspaceProvider({
     // The room may be the one focus covers; opening it has to uncover it.
     closeSession();
     selectRoom(roomId);
-    setNotificationTarget({ roomId, threadId: targetThreadId });
-    // A room-level message is scrolled to, like a search hit; a thread reply is in the opened thread.
-    if (messageId && !targetThreadId) setTarget({ roomId, messageId, token: ++jumpToken.current });
+    // The message is scrolled to, like a search hit; a reply in an old thread lands on its root (threads are gone).
+    const jumpTo = targetThreadId ?? messageId;
+    if (jumpTo) setTarget({ roomId, messageId: jumpTo, token: ++jumpToken.current });
     activateMessagesPanel();
   }, [closeSession, selectRoom]);
   const askFrontId = directoryProps.ceoAgentId;
@@ -1260,7 +1115,6 @@ export function MessagingWorkspaceProvider({
     openMessage,
     openNotificationTarget,
     openSession,
-    openNewSession,
     sessionFocus,
     closeSession,
     setSessionChat,
@@ -1273,7 +1127,7 @@ export function MessagingWorkspaceProvider({
     freshLanding,
     explicitPickCount,
     askLightbulb,
-  }}><MessageNotifications activeRoomId={rooms.activeRoomId} threadId={threadId} roomVisible={roomVisible} sideRoomIds={sideRoomIds} rooms={rooms.rooms}
+  }}><MessageNotifications activeRoomId={rooms.activeRoomId} roomVisible={roomVisible} sideRoomIds={sideRoomIds} rooms={rooms.rooms}
     onOpen={openNotificationTarget} activeSessionId={sessionFocus?.sessionId ?? null}
     onOpenSession={(sessionId) => { openSession(sessionId); activateMessagesPanel(); }} /><ShortcutSheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} /><NeedsYouTitleBadge title={tabTitle} />{children}
     {selectRoomError && <div role="alert" className="px-4 py-2 text-ui text-err">{selectRoomError}{" "}

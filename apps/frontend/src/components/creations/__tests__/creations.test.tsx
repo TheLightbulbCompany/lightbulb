@@ -16,7 +16,6 @@ vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({
 }));
 vi.mock("@/components/home/HomeProjects", () => ({ projectRooms: (rooms: unknown[]) => rooms }));
 
-import { CreationsGrid } from "../CreationsGrid";
 import { MadeHere } from "../MadeHere";
 import { ProjectFiles } from "../ProjectFiles";
 import { TaskOutputs } from "../TaskOutputs";
@@ -85,54 +84,6 @@ describe("a short text result (W16-2, W16-3)", () => {
     render(<OutputThumb output={TEXT} size="mini" />);
     expect(screen.getByText("Saturday story-time with Maya")).toBeInTheDocument();
     expect(screen.getByText("Hi parents,")).toBeInTheDocument();
-  });
-});
-
-describe("Creations", () => {
-  it("lists what tasks made; Mail narrows the read; a channel narrows it again", async () => {
-    client.outputs.mockResolvedValue({ outputs: [APP, DOC, MAIL], next: null });
-    render(<Fresh><CreationsGrid /></Fresh>);
-    const grid = await screen.findByRole("list", { name: "Creations" });
-    expect(within(grid).getAllByRole("listitem")).toHaveLength(3);
-    expect(within(grid).getByText("Doc · #walk-7 · 1h ago")).toBeInTheDocument();
-    expect(screen.queryByRole("textbox")).toBeNull(); // no second input
-    await userEvent.click(screen.getByRole("button", { name: "Mail" }));
-    await waitFor(() => expect(client.outputs).toHaveBeenLastCalledWith(expect.objectContaining({ kind: ["mail"] })));
-    await userEvent.click(screen.getByRole("button", { name: "Links" }));
-    await waitFor(() => expect(client.outputs).toHaveBeenLastCalledWith(expect.objectContaining({ kind: ["link", "pr"] })));
-    await userEvent.click(screen.getByRole("combobox", { name: "Channel" }));
-    await userEvent.click(await screen.findByRole("option", { name: "#walk-9" }));
-    await waitFor(() => expect(client.outputs).toHaveBeenLastCalledWith(expect.objectContaining({ roomId: "r-walk9" })));
-  });
-
-  it("Make something new › Doc drafts the ask in the Lightbulb chat and sends nothing", async () => {
-    render(<Fresh><CreationsGrid /></Fresh>);
-    await userEvent.click(screen.getByRole("button", { name: /Make a doc/ }));
-    expect(ctl.openChatPanelWithDraft).toHaveBeenCalledWith("Write a doc: …");
-    expect(await screen.findByText("Everything Lightbulb and the specialists make lands here.")).toBeInTheDocument();
-  });
-
-  it("a Make tile says so when Lightbulb isn't ready to take the ask", async () => {
-    ctl.openChatPanelWithDraft.mockReturnValueOnce(false);
-    render(<Fresh><CreationsGrid /></Fresh>);
-    await userEvent.click(screen.getByRole("button", { name: /Make a doc/ }));
-    expect(screen.getByRole("status")).toHaveTextContent("Lightbulb isn't ready yet.");
-  });
-
-  it("Load more reads the next page", async () => {
-    client.outputs.mockResolvedValueOnce({ outputs: Array.from({ length: 12 }, (_, i) => out({ id: `o${i}`, taskId: `t${i}` })), next: "c2" })
-      .mockResolvedValueOnce({ outputs: [MAIL], next: null });
-    render(<Fresh><CreationsGrid /></Fresh>);
-    await userEvent.click(await screen.findByRole("button", { name: "Load more" }));
-    await waitFor(() => expect(within(screen.getByRole("list", { name: "Creations" })).getAllByRole("listitem")).toHaveLength(13));
-    expect(client.outputs).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: "c2" }));
-    expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
-  });
-
-  it("an error offers Retry", async () => {
-    client.outputs.mockRejectedValueOnce(new Error("down"));
-    render(<Fresh><CreationsGrid /></Fresh>);
-    expect(await screen.findByRole("alert")).toHaveTextContent("Creations couldn't load.");
   });
 });
 

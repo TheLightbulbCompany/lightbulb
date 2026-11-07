@@ -33,10 +33,9 @@ interface RoomHeaderProps {
   ownerCannotLeave?: boolean;
   ownerHandsOff?: boolean; // the viewer owns this channel and leaving hands it to someone else
   actionable: boolean;
-  pinnedCount: number; // shown beside the facepile; the affordance opens the Details panel's Pins tab
   search: ReactNode; // the shipped <RoomMessageSearch />
   views?: ReactNode; // RoomPanel's About button
-  onOpenDetails: (tab?: "threads" | "members" | "pins" | "files" | "links" | "about") => void;
+  onOpenDetails: (tab?: "members" | "files" | "about") => void;
   onAddPeople?: () => void;
   onSetPrefs?: (prefs: MemberPrefsRequest) => Promise<void>;
   onRenameRoom?: (name: string) => Promise<void>;
@@ -44,7 +43,6 @@ interface RoomHeaderProps {
   onLeaveRoom?: () => Promise<void>;
   onSetArchived?: (archived: boolean) => Promise<void>;
   onDeleteRoom?: () => Promise<void>; // passed only to the channel's owner
-  toolItems?: ReactNode;
   /** Super-agent projects (UX slice 6): name ▾ › Settings opens a modal over the project with these. */
   onPatchRoom?: (request: PatchRoomRequest) => Promise<void>;
   settingsPeople?: ReactNode;
@@ -70,7 +68,6 @@ export function RoomHeader({
   ownerCannotLeave,
   ownerHandsOff,
   actionable,
-  pinnedCount,
   search,
   views,
   onOpenDetails,
@@ -81,7 +78,6 @@ export function RoomHeader({
   onLeaveRoom,
   onSetArchived,
   onDeleteRoom,
-  toolItems,
   onPatchRoom,
   settingsPeople,
   memoryClient,
@@ -309,15 +305,12 @@ export function RoomHeader({
       {topicForm}
     </div>
     {/* Like prod and Slack: the common actions sit in the header as icons (search and the views come in `views`),
-        people as a facepile with the count, Pinned when there are pins, Go live; ⋯ keeps the rare ones. */}
+        people as a facepile with the count, Go live; ⋯ keeps the rare ones. */}
     <div className="room-audience">
       {/* The dialog only; its trigger is the search icon in `views` (and ⌘F). */}
       {search}
       <LiveStrip roomId={room?.roomId} members={participants} />
       {views}
-      {pinnedCount > 0 && <Button type="button" variant="ghost" size="sm" className="room-view-toggle" title="Pinned messages"
-        aria-label={`${pinnedCount} pinned ${pinnedCount === 1 ? "message" : "messages"}`} onClick={() => onOpenDetails("pins")}>
-        <Pin aria-hidden="true" />{pinnedCount}</Button>}
       {goLive && <Button type="button" variant="ghost" size="icon-sm" className="room-view-toggle" disabled={Boolean(huddle.joining)}
         aria-label={huddle.joining === room.roomId ? "Joining…" : "Go live"} title="Go live"
         onClick={() => void huddle.join(room.roomId, room.kind === "channel" ? `#${roomName}` : roomName)}><Mic aria-hidden="true" /></Button>}
@@ -329,8 +322,6 @@ export function RoomHeader({
       <DropdownMenu>
         <DropdownMenuTrigger asChild><Button ref={optionsTrigger} type="button" variant="ghost" size="icon-sm" className="room-view-toggle" aria-label="More" title="More"><MoreHorizontal aria-hidden="true" /></Button></DropdownMenuTrigger>
         <DropdownMenuContent align="end">
-          {toolItems}
-          {toolItems && <DropdownMenuSeparator />}
           {onSetPrefs && <DropdownMenuItem disabled={!actionable || pending}
             onSelect={() => void run(async () => { await onSetPrefs({ muted: !room?.muted }); }, "The notification setting could not be saved.")}>
             {room?.muted ? <Bell aria-hidden="true" /> : <BellOff aria-hidden="true" />}{room?.muted ? "Unmute" : "Mute"}</DropdownMenuItem>}

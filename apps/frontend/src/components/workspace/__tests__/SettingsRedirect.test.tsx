@@ -26,7 +26,7 @@ describe("SettingsRedirect", () => {
   it("sends a moved panel key to its Settings section and renders nothing", () => {
     search = "panel=llm&action=change-provider";
     render(<SettingsRedirect><div>shell</div></SettingsRedirect>);
-    expect(replace).toHaveBeenCalledWith("/chat?panel=settings&action=change-provider&section=providers");
+    expect(replace).toHaveBeenCalledWith("/chat?panel=settings&action=change-provider&section=billing");
     expect(screen.queryByText("shell")).toBeNull();
   });
 

@@ -227,7 +227,7 @@ describe("URL params map onto place + pane", () => {
     ["?panel=teams-money&section=spend", "settings", "settings"],
     ["?panel=teams-agents&view=chart", "team", "teams-agents"],
     ["?panel=teams-search", "activity", "activity"],
-    ["?panel=teams-artifacts", "canvas", "canvas"],
+    ["?panel=teams-artifacts", "activity", "activity"],
   ])("%s → the %s place", (search, place, mainId) => {
     navigate(search);
     expect(getWorkspaceSnapshot()).toMatchObject({ place, activePanelId: mainId, pane: null });
@@ -236,7 +236,6 @@ describe("URL params map onto place + pane", () => {
   it.each([
     ["?panel=task-detail&taskId=t-1", "task-detail", { taskId: "t-1" }],
     ["?panel=file-viewer&path=/notes.md&agent=a1", "file-viewer", { path: "/notes.md", agent: "a1" }],
-    ["?panel=browser", "browser", {}],
     ["?panel=mail&item=mail:k1", "mail", { item: "mail:k1" }],
     ["?panel=agents&agent=a1", "control:agents", { controlKey: "agents", agentId: "a1" }],
     ["?panel=agent-inspector&agent=a1", "agent-inspector", { controlKey: "agent-inspector", agentId: "a1" }],
@@ -261,15 +260,15 @@ describe("URL params map onto place + pane", () => {
     expect(getWorkspaceSnapshot()).toMatchObject({ place: "activity", main: { params: {} }, pane: { params: { path: "/a.md", agent: "a-2" } } });
   });
 
-  it("a room and the pane beside it restore together (a reload of ?panel=chat&room=…&pane=browser)", () => {
-    const d = navigate("?panel=chat&room=r-launch&pane=browser");
+  it("a room and the pane beside it restore together (a reload of ?panel=chat&room=…&pane=mail)", () => {
+    const d = navigate("?panel=chat&room=r-launch&pane=mail");
     expect(d.command?.descriptor.params).toEqual({ roomId: "r-launch" });
     openPanel("chat", { room: d.command!.descriptor.params.roomId }); // the shell's chat branch
-    expect(getWorkspaceSnapshot()).toMatchObject({ place: "chat", chatParams: { roomId: "r-launch" }, pane: { panelId: "browser" } });
+    expect(getWorkspaceSnapshot()).toMatchObject({ place: "chat", chatParams: { roomId: "r-launch" }, pane: { panelId: "mail" } });
   });
 
   it("closing the pane clears only the pane part of a two-slot URL", () => {
-    expect(clearPanelFromUrl("?panel=teams-issues&agent=a-1&pane=browser", "browser")).toBe("panel=teams-issues&agent=a-1");
+    expect(clearPanelFromUrl("?panel=teams-issues&agent=a-1&pane=mail", "mail")).toBe("panel=teams-issues&agent=a-1");
     expect(clearPanelFromUrl("?panel=activity&pane=file-viewer&pane.path=%2Fa.md", "file-viewer")).toBe("panel=activity");
   });
 

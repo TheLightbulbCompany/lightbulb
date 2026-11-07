@@ -27,8 +27,7 @@ beforeEach(() => { openAgentDmWithDraft.mockClear(); });
 describe("sidebar with the super-agent on", () => {
   it("W17-8: New chat lists Lightbulb first with its mark, and a group chat starts with it picked", async () => {
     render(<RoomDirectory {...props} onCreate={vi.fn().mockResolvedValue(true)} />);
-    await userEvent.click(screen.getByRole("button", { name: "New channel or chat" }));
-    await userEvent.click(await screen.findByRole("menuitem", { name: "New chat" }));
+    await userEvent.click(screen.getByRole("button", { name: "New chat" }));
     const dialog = await screen.findByRole("dialog", { name: "New direct message" });
     const boxes = within(dialog).getAllByRole("checkbox");
     expect(boxes[0]).toHaveAccessibleName("Select Lightbulb");
@@ -55,19 +54,6 @@ describe("sidebar with the super-agent on", () => {
     expect(screen.getByRole("dialog", { name: "New group chat" }).className).toMatch(/top-\[8dvh\]/);
   });
 
-  it("+ › New channel opens the New channel dialog; + › New chat keeps DM and group chat, not Channel (UX slice 6)", async () => {
-    const onCreate = vi.fn().mockResolvedValue(true);
-    render(<RoomDirectory {...props} onCreate={onCreate} />);
-    await userEvent.click(screen.getByRole("button", { name: "New channel or chat" }));
-    await userEvent.click(await screen.findByRole("menuitem", { name: "New channel" }));
-    const dialog = await screen.findByRole("dialog", { name: "New channel" });
-    await userEvent.type(within(dialog).getByLabelText("Name"), "Spring sale{Enter}");
-    expect(onCreate).toHaveBeenCalledWith({ kind: "channel", name: "Spring sale", members: [], topic: null, icon: null, color: null });
-    await userEvent.click(screen.getByRole("button", { name: "New channel or chat" }));
-    await userEvent.click(await screen.findByRole("menuitem", { name: "New chat" }));
-    const chat = await screen.findByRole("dialog", { name: "New direct message" });
-    expect(within(chat).queryByRole("option", { name: "Channel" })).toBeNull();
-  });
 
   const NAMES = ["Lightbulb", "Alice", "Engineering", "Finance"];
   /** Row names in order (a row's text also carries the avatar initials and the Agent tag). */

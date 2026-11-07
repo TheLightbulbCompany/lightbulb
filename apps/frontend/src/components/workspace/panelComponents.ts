@@ -6,13 +6,10 @@ import { ChatPanel } from "./panels/ChatPanel";
 import { TeamsDockPanel } from "./panels/TeamsDockPanel";
 import { ControlDockPanel } from "./panels/ControlDockPanel";
 import { FileViewerDockPanel } from "./panels/FileViewerDockPanel";
-import { BrowserDockPanel } from "./panels/BrowserDockPanel";
 import { ActivityDockPanel } from "./panels/ActivityDockPanel";
 import { HomeProjects } from "@/components/home/HomeProjects";
-import { CanvasDockPanel } from "./panels/CanvasDockPanel";
 import { MailDockPanel } from "./panels/MailDockPanel";
 import { ArtifactDockPanel } from "./panels/ArtifactDockPanel";
-import { IdeasDockPanel } from "./panels/IdeasDockPanel";
 import { TaskDockPanel } from "./panels/TaskDockPanel";
 import { AutomationDockPanel } from "./panels/AutomationDockPanel";
 import { SettingsPlace } from "@/components/settings/SettingsPlace";
@@ -28,12 +25,9 @@ export const PANEL_COMPONENTS: Record<PanelKind, ComponentType<PanelProps>> = {
   teams: TeamsDockPanel,
   control: ControlDockPanel,
   "file-viewer": FileViewerDockPanel,
-  browser: BrowserDockPanel,
   activity: ActivityDockPanel,
   home: HomeProjects,
-  canvas: CanvasDockPanel,
   mail: MailDockPanel,
-  ideas: IdeasDockPanel,
   artifact: ArtifactDockPanel,
   task: TaskDockPanel,
   automation: AutomationDockPanel,

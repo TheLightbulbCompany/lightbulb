@@ -5,7 +5,7 @@
 
 import { ARTIFACT_PARAM_KEYS, parseArtifactSource } from "./panels/artifactSource";
 
-export type PanelKind = "chat" | "teams" | "control" | "file-viewer" | "browser" | "activity" | "home" | "canvas" | "mail" | "ideas" | "artifact" | "task" | "settings" | "automation";
+export type PanelKind = "chat" | "teams" | "control" | "file-viewer" | "activity" | "home" | "mail" | "artifact" | "task" | "settings" | "automation";
 
 export interface PanelDescriptor {
   panelId: string;
@@ -67,9 +67,13 @@ export const RETIRED_PANEL_ALIASES: Readonly<Record<string, string>> = {
   "teams-run-detail": "activity",
   "teams-approval-detail": "activity",
   "teams-money": "settings",
-  "teams-artifacts": "canvas",
-  // The rail writes `panel=creations` (W13); the panel id stays "canvas", so an old `panel=canvas` link still opens it.
-  creations: "canvas",
+  // Creations/Canvas/Library, Ideas and the Browser pane are gone (voice pivot, Phase 1 task 9): their old links open
+  // Activity, where tasks and what they made are listed.
+  "teams-artifacts": "activity",
+  creations: "activity",
+  canvas: "activity",
+  ideas: "activity",
+  browser: "activity",
 };
 
 // The old Money page's sections: a link to any of them opens Settings › Business.
@@ -118,11 +122,12 @@ const CONTROL_KEYS: Readonly<Record<string, string>> = {
 const SETTINGS_SECTION_FOR: Readonly<Record<string, string>> = {
   overview: "",
   usage: "usage",
-  skills: "skills",
+  // Skills and Model & credits left Settings (voice pivot): their old links open the page, and Billing.
+  skills: "",
   integrations: "connections",
   connections: "connections",
-  llm: "providers",
-  credits: "providers",
+  llm: "billing",
+  credits: "billing",
   "teams-settings": "workspace",
   "teams-members": "members",
   "teams-accounts": "connections",
@@ -233,12 +238,6 @@ export function describePanel(
     return { panelId: "task-detail", component: "task", title: "Task", params: { taskId: params.taskId } };
   }
 
-  if (key === "browser") {
-    // Singleton, no params: an owner has ONE AgentCore Browser profile, and the
-    // pane watches whichever session is live on it.
-    return { panelId: "browser", component: "browser", title: "Browser", params: {} };
-  }
-
   // Activity: the viewer's requests (super-agent: Needs you, mentions, Ideas, the feed, Working/Done/Closed; it was
   // Home until 6 Nov 2026), else their Activity feed (mentions, DMs, thread replies, what Paperclip asks of them).
   // Singleton: one per viewer. The old company-wide view stays the Teams Inbox, reachable from inside the feed.
@@ -270,28 +269,11 @@ export function describePanel(
     return { panelId: "automation", component: "automation", title: "Scheduled", params: { id: params.id } };
   }
 
-  // Apps the agents built; `app` opens one inside the pane.
-  if (key === "canvas") {
-    const p: Record<string, string> = {};
-    if (params.app) p.app = params.app;
-    return { panelId: "canvas", component: "canvas", title: "Creations", params: p };
-  }
-
   // The workspace's shared agent mailbox: mail in and out, meetings and their
   // transcripts. Singleton; `item` is the open row (`mail:<key>` or
   // `meeting:<id>:<start_at>`).
   if (key === "mail") {
     return { panelId: "mail", component: "mail", title: "Mail", params: params.item ? { item: params.item } : {} };
-  }
-
-  // Ideas (spec 2026-10-14 §4.4), opened by the 💡 in a conversation header. Singleton;
-  // `agent` puts that teammate's ideas first (opened from its DM).
-  if (key === "ideas") {
-    // `idea` opens that idea's detail (the welcome's row links here).
-    const p: Record<string, string> = {};
-    if (params.agent) p.agent = params.agent;
-    if (params.idea) p.idea = params.idea;
-    return { panelId: "ideas", component: "ideas", title: "Ideas", params: p };
   }
 
   if (key === "agent-inspector") {
@@ -344,9 +326,7 @@ export function durableParamsFor(panelId: string): string[] {
   if (panelId === "activity") return ["panel", "filter", "focus", "section"];
   if (panelId === "settings") return ["panel", "section"];
   if (panelId === "automation") return ["panel", "id"];
-  if (panelId === "canvas") return ["panel", "app"];
   if (panelId === "mail") return ["panel", "item"];
-  if (panelId === "ideas") return ["panel", "agent", "idea"];
   return ["panel"];
 }
 
@@ -364,9 +344,7 @@ export function clearablePanelParamKeys(panelId: string): string[] {
   if (panelId === "activity") return ["filter", "focus", "section"];
   if (panelId === "settings") return ["section"];
   if (panelId === "automation") return ["id"];
-  if (panelId === "canvas") return ["app"];
   if (panelId === "mail") return ["item"];
-  if (panelId === "ideas") return ["agent", "idea"];
   if (panelId === "file-viewer") return ["path", "agent"];
   // `back` (openOutput): a file opened from elsewhere must not keep the last one's way back.
   // `heading` is the shown doc's own (ArtifactDockPanel): the next file reads its own.
@@ -380,7 +358,7 @@ export function clearablePanelParamKeys(panelId: string): string[] {
 
 /** Which slot a descriptor opens in: lists and feeds are places, one single thing is the right pane. */
 export function opensInPane(descriptor: PanelDescriptor): boolean {
-  return descriptor.component === "file-viewer" || descriptor.component === "browser"
-    || descriptor.component === "mail" || descriptor.component === "control" || descriptor.component === "ideas"
+  return descriptor.component === "file-viewer"
+    || descriptor.component === "mail" || descriptor.component === "control"
     || descriptor.component === "artifact" || descriptor.component === "task" || descriptor.component === "automation";
 }

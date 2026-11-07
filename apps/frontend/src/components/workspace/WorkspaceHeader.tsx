@@ -2,7 +2,7 @@
 
 import "./workspace.css";
 import { UserButton } from "@clerk/nextjs";
-import { Bell, HelpCircle, Home, LayoutGrid, MessageSquare, PhoneCall, Search, Settings, Users } from "lucide-react";
+import { Bell, HelpCircle, Home, MessageSquare, PhoneCall, Search, Settings, Users } from "lucide-react";
 import Link from "next/link";
 import { useSupport } from "@/components/support/SupportProvider";
 import { useCommandPalette } from "@/components/teams/command-palette/CommandPaletteProvider";
@@ -16,15 +16,12 @@ import { ThemeToggles } from "@/components/chat/ThemeToggles";
 // feed, Working/Done/Closed) is Activity, which keeps the panel key "activity" and every link to it. Chat is on the
 // rail (Lightbulb stays a communications platform): it opens the channels and DMs. No Work (its tasks are in Activity,
 // its schedules in each channel's Scheduled view and Activity's Scheduled group, Money in Settings › Business).
-// Settings is a place at the foot, inside the shell. Browser, Files and Mail open in the right pane.
+// Settings is a place at the foot, inside the shell. Files and Mail open in the right pane.
 type Destination = { place: Place; panel: string; label: string; Icon: typeof Home };
 const DESTINATIONS: readonly Destination[] = [
   { place: "home", panel: "home", label: "Home", Icon: Home },
   { place: "activity", panel: "activity", label: "Activity", Icon: Bell },
   { place: "chat", panel: "chat", label: "Chat", Icon: MessageSquare },
-  // Creations replaces Library and Canvas (UX slice 5): what tasks made. The URL says `panel=creations`; the panel id
-  // stays "canvas" (an alias), so old `panel=canvas` and ?app= links work.
-  { place: "canvas", panel: "creations", label: "Creations", Icon: LayoutGrid },
   // The owner's AI staff: see, hire and manage specialists, and message one (its DM lives here, not in the sidebar).
   { place: "team", panel: "teams-agents", label: "Team", Icon: Users },
 ];

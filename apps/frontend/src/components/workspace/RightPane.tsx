@@ -69,16 +69,13 @@ export function RightPane({ pane, fullScreen }: { pane: Slot; fullScreen: boolea
   const { userId } = useAuth();
   const minWidth = PANE_MIN_WIDTH;
   const key = paneWidthKey(userId);
-  // The browser always opens at about half the width; its drags are not remembered.
-  const remembers = pane.component !== "browser";
   const [width, setWidth] = useState<string>(() => {
-    if (!remembers) return "50%";
     const stored = storedPaneWidth(key, minWidth);
     return stored ? `${stored}px` : ITEM_WIDTH;
   });
   // An item is one thing (it may open as a sheet sooner); list and item share the pane's one width.
   const item = isPaneItem(pane);
-  // The separator's value in px: measured, since the Browser's opening width is a percentage.
+  // The separator's value in px: measured.
   const paneRef = useRef<HTMLElement>(null);
   const [measured, setMeasured] = useState({ now: 0, max: 0 });
   useLayoutEffect(() => {
@@ -95,7 +92,7 @@ export function RightPane({ pane, fullScreen }: { pane: Slot; fullScreen: boolea
   };
   const commit = (px: number) => {
     setWidth(`${px}px`);
-    if (remembers) writePaneWidth(key, px);
+    writePaneWidth(key, px);
   };
 
   const startResize = (event: React.PointerEvent<HTMLDivElement>) => {

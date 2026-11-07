@@ -2,7 +2,7 @@
 // canonical in-shell `/chat?panel=` URLs.
 
 import type { ComponentType, SVGProps } from "react";
-import { Bell, Bot, Briefcase, Clock, Images, Mail, Settings, ShieldCheck } from "lucide-react";
+import { Bell, Bot, Briefcase, Clock, Mail, Settings, ShieldCheck } from "lucide-react";
 
 // One icon prop type for every row (the palette renders with className/style) — lucide icons satisfy it.
 export type CompanyNavIcon = ComponentType<SVGProps<SVGSVGElement> & { size?: number }>;
@@ -15,14 +15,13 @@ export interface CommandPaletteAction {
   keywords?: string[];
 }
 
-/** Where things live inside the shell: Activity (tasks, Needs you, Scheduled), Mail, Creations, the roster and
+/** Where things live inside the shell: Activity (tasks, Needs you, Scheduled), Mail, the roster and
  *  Settings (and its Business and Approvals rows). Retired names stay as search words so muscle memory lands. */
 export function navActions(admin = true): CommandPaletteAction[] {
   return [
     // Home and the Inbox tab folded into Activity, and the Paperclip task board is gone: their old words land here.
     { id: "go-activity", label: "Activity", path: "/chat?panel=activity", Icon: Bell, keywords: ["events", "log", "home", "dashboard", "inbox", "mine", "approvals", "tasks", "issues", "tickets"] },
     { id: "go-mail", label: "Mail", path: "/chat?panel=mail", Icon: Mail, keywords: ["email", "meetings", "transcripts"] },
-    { id: "go-artifacts", label: "Creations", path: "/chat?panel=creations", Icon: Images, keywords: ["library", "artifacts"] },
     // The org chart was a view of this panel, so its search words point here.
     { id: "go-agents", label: "Agents", path: "/chat?panel=teams-agents", Icon: Bot, keywords: ["bot", "roster", "org chart", "network", "hierarchy", "team"] },
     { id: "go-scheduled", label: "Scheduled", path: "/chat?panel=activity&section=scheduled", Icon: Clock, keywords: ["cron", "schedule", "routines"] },

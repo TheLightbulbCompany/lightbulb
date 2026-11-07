@@ -10,7 +10,6 @@ import { NEEDS_YOU_KEY_SUFFIX, overviewGroups, scopeParam, taskListKey, type Tas
 import { useOptionalLiveEvents } from "@/hooks/useLiveEvents";
 import { homeExtras } from "@/components/activity/activityPage";
 import { useActivity } from "@/hooks/useActivity";
-import { useFirstMoves } from "@/components/ideas/FirstMoves";
 import { useApi } from "@/lib/api";
 
 const WORKSPACE: TaskScope = { kind: "workspace" };
@@ -42,13 +41,10 @@ export function useRoomThreads(roomId: string | null | undefined) {
 
 /** needsYouCount, the one count (UX audit slice 2): the workspace's Needs you tasks plus the open asks that are not
  *  tasks (a website sign-in, a browser extension, a held message), exactly what Activity's Needs you block lists. The
- *  rail badge, Home's "N need you" line and the tab title all read it; nothing computes its own. Plus "Pick a first
- *  move" while the first run's ideas are undecided.
+ *  rail badge, Home's "N need you" line and the tab title all read it; nothing computes its own.
  *  ponytail: the asks come from Activity's loaded pages (newest first); an ask past them counts once it loads. */
 export function useNeedsYouCount(): number {
   const tasks = useNeedsYouTasks(WORKSPACE).tasks.length;
   const { items } = useActivity();
-  // First run (UX slice 6): "Pick a first move" is one item while any of the first run's ideas is still open.
-  const firstMove = useFirstMoves().length > 0 ? 1 : 0;
-  return tasks + homeExtras(items).asks.length + firstMove;
+  return tasks + homeExtras(items).asks.length;
 }

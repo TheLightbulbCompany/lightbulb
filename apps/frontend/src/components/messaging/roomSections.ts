@@ -1,4 +1,4 @@
-import type { LocalSession, RoomSection, SessionRow } from "@lightbulb/shared";
+import type { LocalSession, RoomSection } from "@lightbulb/shared";
 import type { DirectoryRoom, RoomParticipant } from "./types";
 
 export type SidebarSort = "recent" | "name" | "unread";
@@ -69,4 +69,3 @@ export function groupRooms(
 export interface SidebarSession { session: LocalSession; ownerName: string; own: boolean; owner: RoomParticipant; unread?: "unread" | "finished" | null }
 
 /** One row of the sidebar's one session list: `SessionRow` plus its owner's participant and unread mark. */
-export interface SidebarRow { row: SessionRow; owner: RoomParticipant; unread?: "unread" | "finished" | null }

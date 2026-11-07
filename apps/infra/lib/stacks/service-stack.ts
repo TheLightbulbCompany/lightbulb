@@ -2623,7 +2623,7 @@ export class ServiceStack extends cdk.Stack {
     this.service.attachToApplicationTargetGroup(props.targetGroup);
 
     // -------------------------------------------------------------------------
-    // Temporal worker (super-agent, dev only; contracts-v2 §16, wave-1 plan T4)
+    // Temporal worker (super-agent, dev + prod; contracts-v2 §16, wave-1 plan T4)
     // -------------------------------------------------------------------------
     // The backend image run as `scripts.temporal_worker` on task queue `lightbulb`. No port and no
     // load balancer: it only dials out to Temporal Cloud (serviceSg allows all egress). SIGTERM ->
@@ -2650,7 +2650,7 @@ export class ServiceStack extends cdk.Stack {
         cluster: props.container.cluster,
         taskDefinition: workerTaskDef,
         desiredCount: 1,
-        capacityProviderStrategies: DEV_SPOT,
+        ...(env === "prod" ? {} : { capacityProviderStrategies: DEV_SPOT }),
         circuitBreaker: { rollback: true },
         vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
         securityGroups: [serviceSg],
@@ -2661,7 +2661,7 @@ export class ServiceStack extends cdk.Stack {
       // Watchdog (spec 11, wave-2 plan W7): the same image on its own task queue and service, so the
       // watchdog keeps ticking when the main worker pool is stuck. The `#watchdog` ids are Lightbulb's own
       // dev workspace and room (created by hand); empty means the digest logs instead of posting. Inside
-      // superAgentEnabled(env), so dev only.
+      // superAgentEnabled(env).
       const watchdogTaskDef = new ecs.FargateTaskDefinition(this, "TemporalWatchdogTaskDef", {
         family: `lightbulb-${env}-temporal-watchdog`,
         cpu: 256,
@@ -2675,8 +2675,8 @@ export class ServiceStack extends cdk.Stack {
         environment: {
           ...backendContainerEnvironment,
           TEMPORAL_WATCHDOG_TASK_QUEUE: "lightbulb-watchdog",
-          WATCHDOG_OWNER_ID: "org_3LgB9twuJbYCjGILfOL5JjgQV0p", // Super Agent Test (dev)
-          WATCHDOG_ROOM_ID: "b6619138-2379-5b3c-af96-f28b791d7d8f", // its #watchdog room
+          WATCHDOG_OWNER_ID: env === "dev" ? "org_3LgB9twuJbYCjGILfOL5JjgQV0p" : "", // Super Agent Test (dev); prod logs until a prod #watchdog room exists
+          WATCHDOG_ROOM_ID: env === "dev" ? "b6619138-2379-5b3c-af96-f28b791d7d8f" : "", // its #watchdog room
         },
         secrets: backendContainerSecrets,
         logging: ecs.LogDrivers.awsLogs({ streamPrefix: "temporal-watchdog", logGroup }),
@@ -2687,7 +2687,7 @@ export class ServiceStack extends cdk.Stack {
         cluster: props.container.cluster,
         taskDefinition: watchdogTaskDef,
         desiredCount: 1,
-        capacityProviderStrategies: DEV_SPOT,
+        ...(env === "prod" ? {} : { capacityProviderStrategies: DEV_SPOT }),
         circuitBreaker: { rollback: true },
         vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
         securityGroups: [serviceSg],

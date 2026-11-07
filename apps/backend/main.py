@@ -38,6 +38,7 @@ from routers import (
     apple_iap,
     automations,
     internal_automations,
+    voice_phone,
     billing,
     config,
     connections,
@@ -644,6 +645,7 @@ async def messaging_validation_error_handler(request, exc: RequestValidationErro
             "/api/v1/website-logins",
             # huddles too: a rejected turn would echo a live transcript.
             "/api/v1/internal/huddles",
+            "/api/v1/internal/voice",
             # session links: a rejected body carries a link token or a PKCE verifier.
             "/api/v1/public",
             "/api/v1/session-links",
@@ -987,6 +989,7 @@ app.include_router(google_accounts.router, prefix="/api/v1", tags=["google-accou
 # write. See routers/automations.py.
 app.include_router(automations.router, prefix="/api/v1", tags=["automations"])
 app.include_router(internal_automations.router, prefix="/api/v1", tags=["super-agent"])  # lane A: Router proposals
+app.include_router(voice_phone.router, prefix="/api/v1", tags=["voice"])  # the phone receptionist worker
 
 from routers import runtime_internal  # noqa: E402
 

@@ -217,6 +217,11 @@ class VoiceStartIn(BaseModel):
 @router.post("/internal/automations/{owner_id}/voice-start", status_code=202)
 async def voice_start(owner_id: str, body: VoiceStartIn, request: Request) -> dict:
     await _require_hook_token(owner_id, request)
+    return await start_voice_work(owner_id, body)
+
+
+async def start_voice_work(owner_id: str, body: VoiceStartIn) -> dict:
+    """The task behind voice-start, for callers already authorized another way (the phone worker)."""
     if not await super_agent_flags.flags_for(owner_id):
         raise _err(404, "not_found")
     run = await messaging_repo.get_voice_run(owner_id, body.run_id)

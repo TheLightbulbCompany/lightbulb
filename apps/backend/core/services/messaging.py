@@ -283,6 +283,7 @@ USER_LIVE_EVENT_TYPES = frozenset(
         "room.access.removed",
         "runtime.operation.changed",
         "runtime.resource.invalidated",
+        "paperclip.event",
         "room.member.updated",
         "workspace.access.removed",
         "workspace.session.attention",

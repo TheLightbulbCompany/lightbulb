@@ -96,6 +96,23 @@ async def test_announce_once(m):
     assert call.args[0] == "bot_1" and 'says "Nova, ..."' in call.args[1] and "members can approve" in call.args[1]
 
 
+async def test_a_failed_announcement_still_starts_the_meeting(m, caplog):
+    m["say"].side_effect = voice_meet.meeting_bots.RecallError("400")
+    with (
+        patch.object(voice_meet, "assistant_name", AsyncMock(return_value="Nova")),
+        patch.object(voice_meet.integration_reads, "warm_google", AsyncMock()),
+    ):
+        out = await voice_meet.start(ROOM, voice_meet.StartIn(ownerId="org_1", roomToken="t"))
+        await asyncio.sleep(0)
+    assert out["assistantName"] == "Nova"
+    assert "announce failed 400" in caplog.text
+
+
+@pytest.mark.parametrize("days", [0, -3])
+def test_today_or_less_reads_one_day(days):
+    assert voice_meet.ReadIn(ownerId="o", roomToken="t", kind="calls", days=days).days == 1
+
+
 async def test_short_text_to_chat_long_text_as_a_link(m):
     with (
         patch.object(voice_meet.meeting_invites, "_post_line", AsyncMock()) as post,

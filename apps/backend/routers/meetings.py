@@ -62,6 +62,9 @@ def _bot(payload: dict | None) -> tuple[str, str, dict] | None:
     """``(bot_id, room_id, data.data)`` from a payload, or None for a bot that is not one of ours."""
     data = (payload or {}).get("data") or {}
     bot = data.get("bot") or {}
+    env = (bot.get("metadata") or {}).get("env")
+    if env and env != settings.ENVIRONMENT:
+        return None  # Recall's webhook is account-wide: another environment's bot is not ours to touch
     try:
         room_id = messaging.validate_uuid(str((bot.get("metadata") or {}).get("roomId") or ""), label="room ID")
         return str(bot["id"]), room_id, data.get("data") or {}
@@ -116,7 +119,9 @@ async def _on_status(
     cannot interleave. A busy lease raises: the route answers 5xx and Recall redelivers."""
     target = _TARGET[code]
     async with meeting_invites.meeting_lease(room_id):
-        meta = await messaging_repo.get_room(room_id) or {}
+        meta = await messaging_repo.get_room(room_id)
+        if not meta:
+            return  # a room this environment lacks: another environment's (untagged) bot, never ejected
         meeting = meta.get("meeting") or {}
         status = meeting.get("status")
         if meeting.get("recallBotId") != bot_id:

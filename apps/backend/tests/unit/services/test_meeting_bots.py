@@ -77,7 +77,8 @@ async def test_create_body(recall, caplog):
     assert query["room"] == ["room-1"]
     assert livekit_huddles.verify_meet_ticket(query["token"][0], livekit_huddles.AUDIO_TICKET) == ("room-1", "nonce-1")
     assert livekit_huddles.verify_meet_ticket(query["token"][0]) is None  # not a page ticket
-    assert body["metadata"] == {"roomId": "room-1", "nonce": "nonce-1"}
+    # env: Recall's status webhook is account-wide, so the other environment ignores this bot.
+    assert body["metadata"] == {"roomId": "room-1", "nonce": "nonce-1", "env": meeting_bots.settings.ENVIRONMENT}
     assert body["variant"] == {"google_meet": "web_4_core"}
     assert body["automatic_leave"] == {"waiting_room_timeout": 180, "noone_joined_timeout": 1200}
     chat = body["chat"]["on_bot_join"]

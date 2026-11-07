@@ -27,6 +27,17 @@ updates:
     groups:
       minor-and-patch:
         update-types: [minor, patch]
+  - package-ecosystem: cargo
+    directory: /apps/desktop
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+    # Library majors are deliberate migrations, not bot merges.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly }

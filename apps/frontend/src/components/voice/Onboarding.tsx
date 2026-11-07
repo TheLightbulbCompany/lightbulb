@@ -11,7 +11,7 @@ import { ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
 import { useConnections } from "@/hooks/useConnections";
-import { Check, HoursEditor, KnowledgeList, Sec, ServicesEditor, ToAdd, defaultGreeting, isLawful } from "./AgentPage";
+import { HoursEditor, KnowledgeList, Sec, ServicesEditor, ToAdd } from "./AgentPage";
 import { DAYS, DEFAULT_CONFIG, nameOf, usPhone, type AgentConfig } from "./data";
 
 const NAMES = ["Nova", "Sol", "Remy", "Juno"];
@@ -59,7 +59,7 @@ export function Onboarding({ config, save }: { config: AgentConfig; save: (c: Ag
     } catch (e) {
       const status = (e as { status?: number }).status;
       setErr(status === 403 ? "Only an admin of this workspace can set up the assistant."
-        : status === 422 ? "Keep “AI assistant” and “this call is recorded” in the greeting." : "Couldn't save. Try again.");
+        : "Couldn't save. Try again.");
     } finally { setBusy(false); }
   };
 
@@ -147,9 +147,9 @@ function Bookings({ c, set, go, busy, back }: StepProps) {
     setConnecting(true);
     try { await go({ ...c, bookingsGo: "google" }, 3); await startOAuth("google"); } finally { setConnecting(false); }
   };
-  const choice = (value: AgentConfig["bookingsGo"], title: string, sub: string, extra?: React.ReactNode, disabled?: boolean) =>
+  const choice = (value: AgentConfig["bookingsGo"], title: string, sub: string, extra?: React.ReactNode) =>
     <label className="vx-choice">
-      <input type="radio" name="bookingsGo" checked={c.bookingsGo === value} disabled={disabled} onChange={() => set({ bookingsGo: value })} />
+      <input type="radio" name="bookingsGo" checked={(c.bookingsGo === "google" ? "google" : "own") === value} onChange={() => set({ bookingsGo: value })} />
       <span>{title}<small>{sub}</small></span>{extra}
     </label>;
   return <>
@@ -159,10 +159,6 @@ function Bookings({ c, set, go, busy, back }: StepProps) {
       {choice("google", "Google Calendar", google?.status === "connected" ? "Connected" : "Books straight into your calendar",
         google?.status === "connected" ? <span className="vx-tag" data-tone="ok">Connected</span>
           : <Button type="button" size="sm" variant="outline" disabled={connecting || !google} onClick={connect}>{connecting ? "Opening Google…" : "Connect"}</Button>)}
-      {choice("square", "Square Appointments", "Coming soon", undefined, true)}
-      {choice("other", "Fresha, GlossGenius, Booksy or Vagaro", "It holds the slot during the call and writes the booking there after, signed in as you")}
-      {c.bookingsGo === "other" && <label className="vx-label">Which one
-        <input className="vx-field" value={c.otherSystem} placeholder="Fresha" onChange={(e) => set({ otherSystem: e.target.value })} /></label>}
       {choice("own", "Just its own calendar for now", "You see every booking on Home; connect a calendar later")}
       <label className="vx-label">Buffer between appointments (minutes)
         <input className="vx-field" type="number" min={0} step={5} value={c.bufferMin} style={{ width: 120 }} onChange={(e) => set({ bufferMin: Number(e.target.value) })} /></label>
@@ -215,10 +211,7 @@ function NumberStep({ c, set, go, busy, back }: StepProps) {
 }
 
 function NameStep({ c, set, go, busy, back }: StepProps) {
-  const business = c.business || "your business";
   const name = c.name.trim() || "Nova";
-  const greeting = c.greeting || defaultGreeting(business, name);
-  const lawful = isLawful(greeting);
   return <>
     <h1 className="vx-title">Name it, then try it</h1>
     <p className="vx-sub">Callers hear this name. In a meeting you say &ldquo;{name}, …&rdquo;.</p>
@@ -229,21 +222,15 @@ function NameStep({ c, set, go, busy, back }: StepProps) {
         {NAMES.map((n) => <button key={n} type="button" className="vx-chip" aria-pressed={name === n} onClick={() => set({ name: n })}>{n}</button>)}
       </div>
       <p className="vx-sub" style={{ marginTop: -6 }}>Not a real staff member&apos;s name: callers should know it&apos;s an assistant.</p>
-      <label className="vx-label">Greeting
-        <textarea className="vx-field" rows={3} maxLength={400} value={greeting} onChange={(e) => set({ greeting: e.target.value })} /></label>
-      {!lawful && <p className="vx-save" data-err="true">Keep &ldquo;AI assistant&rdquo; and &ldquo;this call is recorded&rdquo; in the greeting: the recording and AI-disclosure laws want both.</p>}
-      <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "end" }}>
-        <label className="vx-label">Voice
-          <select className="vx-field" value={c.voice} onChange={(e) => set({ voice: e.target.value })}>
-            {["Warm", "Bright", "Calm"].map((v) => <option key={v}>{v}</option>)}</select></label>
-        <Check label="Also speaks Spanish" on={c.spanish} set={(spanish) => set({ spanish })} />
-      </div>
+      <label className="vx-label">Greeting style (optional)
+        <textarea className="vx-field" rows={3} maxLength={400} value={c.greeting} placeholder={`How ${name} should open: tone, what to mention`} onChange={(e) => set({ greeting: e.target.value })} /></label>
+      <p className="vx-sub" style={{ marginTop: -6 }}>{name} always says its name, that it&apos;s an AI assistant and that the call is recorded.</p>
       {c.number && <div className="vx-card">
         <p className="vx-h">Try a booking</p>
         <p>Call {usPhone(c.number)} from your mobile and book something, the way a client would. It works before you go live.</p>
         <div className="vx-actions"><Button asChild variant="outline" size="sm"><a href={`tel:${c.number}`}>Call {name} now</a></Button></div>
       </div>}
     </div>
-    <Foot back={back}><Button disabled={busy || !lawful} onClick={() => go({ ...c, name, greeting }, 6)}>Go live</Button></Foot>
+    <Foot back={back}><Button disabled={busy} onClick={() => go({ ...c, name }, 6)}>Go live</Button></Foot>
   </>;
 }

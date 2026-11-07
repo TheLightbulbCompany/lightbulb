@@ -58,4 +58,8 @@ describe("a second read of the site", () => {
     expect(c.toAdd).toEqual(["Parking?"]);
     expect(c.forwardFrom).toBe("(512) 555-0100");
   });
+  it("keeps the consent-gated texts off by default", () => {
+    expect(DEFAULT_CONFIG.reminders.missedCallers).toBe(false);
+    expect(DEFAULT_CONFIG.reminders.waitlist).toBe(false);
+  });
 });

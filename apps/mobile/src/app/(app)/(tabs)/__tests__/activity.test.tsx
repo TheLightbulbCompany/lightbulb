@@ -231,7 +231,7 @@ it("shows local neutral copy, not the server's, for a purchase-gate action failu
   expect(screen.queryByText(/pick a plan/i)).toBeNull();
 });
 
-it("navigates: an issue action, a thread row, a run", async () => {
+it("navigates: an issue action, a thread row (to its room), a run", async () => {
   mockState = {
     items: [
       item(),
@@ -248,14 +248,14 @@ it("navigates: an issue action, a thread row, a run", async () => {
 
   mockPush.mockClear();
   await fireEvent.press(screen.getByLabelText("Bob mentioned you in #general"));
-  expect(mockPush.mock.calls).toEqual([["/(app)/room/room-1"], ["/(app)/room/room-1/thread/root-1"]]);
+  expect(mockPush.mock.calls).toEqual([["/(app)/room/room-1"]]);
 
   mockPush.mockClear();
   await fireEvent.press(screen.getByLabelText("A run failed"));
   expect(mockPush).toHaveBeenCalledWith({ pathname: "/(app)/teams/run/[runId]", params: { runId: "r1" } });
 });
 
-it("opens a mention's thread from its Open thread action", async () => {
+it("opens a mention's room from its Open thread action (threads are gone)", async () => {
   mockState = {
     items: [
       item({ id: "mention:m2", kind: "mention", subtype: null, roomId: "room-1", read: true,
@@ -265,7 +265,7 @@ it("opens a mention's thread from its Open thread action", async () => {
   };
   await render(<Activity />);
   await fireEvent.press(screen.getByLabelText("Ann mentioned you in #general"));
-  expect(mockPush.mock.calls).toEqual([["/(app)/room/room-1"], ["/(app)/room/room-1/thread/m2"]]);
+  expect(mockPush.mock.calls).toEqual([["/(app)/room/room-1"]]);
 });
 
 it("pins an agent's question and confirms it inline", async () => {

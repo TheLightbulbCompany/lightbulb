@@ -38,7 +38,6 @@ import { AVATAR_GUTTER, MetaText, WorkingBubble } from "../../../../components/c
 import { Avatar } from "../../../../components/room/Avatar";
 import { CatchUpSummary } from "../../../../components/room/CatchUpSummary";
 import { SavedDelegations } from "../../../../components/room/DelegateCard";
-import { IdeasSheet } from "../../../../components/room/IdeasSheet";
 import { MessageActionsSheet } from "../../../../components/room/MessageActionsSheet";
 import { LocalMessageRows, MessageGroup } from "../../../../components/room/MessageGroup";
 import { NoticeBanner } from "../../../../components/voice/NoticeBanner";
@@ -183,15 +182,6 @@ function Conversation() {
   // bottom, so reversing here puts the same visual order on screen — dividers
   // included — with the newest message simply THERE, never scrolled to.
   const newestFirst = useMemo(() => [...items].reverse(), [items]);
-  const replyCounts = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const message of rooms.messages) {
-      if (message.threadRootMessageId) {
-        counts.set(message.threadRootMessageId, (counts.get(message.threadRootMessageId) ?? 0) + 1);
-      }
-    }
-    return counts;
-  }, [rooms.messages]);
   const runs = useMemo(
     () => rooms.runs.filter((run) => !run.threadRootMessageId).map(runView),
     [rooms.runs],
@@ -364,20 +354,6 @@ function Conversation() {
   const lastActionTarget = useRef<CanonicalRoomMessage | null>(null);
   if (actionTarget) lastActionTarget.current = actionTarget;
 
-  // The messageId of the most recent failed reaction toggle (mirrors the web's
-  // single `reactionError` string state) — cleared UNCONDITIONALLY at the start
-  // of every new attempt (matching RoomPanel.toggleReaction's timing exactly:
-  // `setReactionError(null)` before the call, not only after a success), from
-  // either the reactions row or the long-press sheet.
-  const [reactionErrorMessageId, setReactionErrorMessageId] = useState<string | null>(null);
-  const reactToMessage = useCallback(
-    (messageId: string, emoji: string, active: boolean) => {
-      setReactionErrorMessageId(null);
-      void rooms.setReaction(messageId, emoji, active).catch(() => setReactionErrorMessageId(messageId));
-    },
-    [rooms],
-  );
-
   const listRef = useRef<FlatList<TimelineItem>>(null);
   const [atBottom, setAtBottom] = useState(true);
   // The newest message there was when the reader left the bottom: what has
@@ -431,7 +407,6 @@ function Conversation() {
   // to what the actions leave, or a long name runs underneath them.
   const { width: windowWidth } = useWindowDimensions();
   const [headerActionsWidth, setHeaderActionsWidth] = useState(72);
-  const [ideasOpen, setIdeasOpen] = useState(false);
 
   // On `headerOptions` rather than inline so the blocked-state early return
   // below keeps the header too — a blocked screen with no title and no
@@ -464,7 +439,6 @@ function Conversation() {
           ? () => router.push(`/(app)/room/${roomId}/details?addPeople=1`)
           : undefined}
         voice={headerVoice}
-        onIdeas={room ? () => setIdeasOpen(true) : undefined}
         onLayout={(event) => setHeaderActionsWidth(event.nativeEvent.layout.width)}
       />
     ),
@@ -494,15 +468,6 @@ function Conversation() {
       keyboardVerticalOffset={keyboardOffset}
     >
       {!preview && <Stack.Screen options={headerOptions} />}
-      <IdeasSheet
-        visible={ideasOpen}
-        onClose={() => setIdeasOpen(false)}
-        agentId={dmWithAgent ? others[0]?.id : undefined}
-        onStarted={(startedRoomId) => {
-          setIdeasOpen(false);
-          if (startedRoomId !== roomId) router.push(`/(app)/room/${startedRoomId}`);
-        }}
-      />
       {specialistDm ? (
         <Text accessibilityRole="text" testID="specialist-dm-banner" style={[styles.specialistBanner, { color: palette.fgMute, borderColor: palette.edge }]}>
           {`To ask ${roomName} for something, mention them in Lightbulb\u2019s chat.`}
@@ -626,7 +591,6 @@ function Conversation() {
                 <MessageGroup
                   message={item.message}
                   collapsed={item.collapsed}
-                  replyCount={replyCounts.get(item.message.messageId) ?? 0}
                   currentUserId={userId ?? ""}
                   showTime={!noTimeIds.has(item.message.messageId)}
                   readLabel={
@@ -644,14 +608,7 @@ function Conversation() {
                       : null
                   }
                   agentRing={runningAgentRingIds.has(item.message.messageId) ? "running" : null}
-                  reactionError={reactionErrorMessageId === item.message.messageId}
-                  onToggleReaction={(emoji, active) =>
-                    reactToMessage(item.message.messageId, emoji, active)
-                  }
                   onLongPress={() => setActionTarget(item.message)}
-                  onOpenThread={() =>
-                    router.push(`/(app)/room/${roomId}/thread/${item.message.messageId}`)
-                  }
                   attachmentUrl={rooms.attachmentUrl}
                   members={members ?? []}
                   sessionCandidates={sessionCandidates}
@@ -700,12 +657,7 @@ function Conversation() {
             onClose={() => setActionTarget(null)}
             // ponytail: mark-unread's rejection is still swallowed, so a failed
             // mark-unread just looks like nothing happened; the upgrade is an
-            // inline error or a toast. Reaction failures now surface (see
-            // `reactionErrorMessageId` above), matching the web's `reactionError`.
-            onReact={(emoji, active) => reactToMessage(sheetMessage.messageId, emoji, active)}
-            onReplyInThread={() =>
-              router.push(`/(app)/room/${roomId}/thread/${sheetMessage.messageId}`)
-            }
+            // inline error or a toast.
             onMarkUnread={() =>
               void rooms.markUnread(roomId, sheetMessage.messageSeq).catch(() => {})
             }

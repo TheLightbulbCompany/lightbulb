@@ -1,5 +1,4 @@
 import type { ApiCallOptions, ApiMethods } from "../api/client";
-import type { IdeaStart, IdeasResponse } from "./ideas";
 import type {
   AbortRunResponse,
   ActivityActionRequest,
@@ -23,7 +22,6 @@ import type {
   RoomMemoryResponse,
   RoomDetail,
   RoomListResponse,
-  FeedResponse,
   RunStatusResponse,
   SectionsRequest,
   SteerRunRequest,
@@ -91,8 +89,6 @@ export interface MessagingClient {
    * ended on its Mac first and leaves the list when it has stopped (409 when its Mac is offline or it cannot be ended from here).
    */
   removeLocalSession(sessionId: string): Promise<void>;
-  /** Every ended session of the caller's own, the same way. The server removes 100 per call; this asks again until it is done (at most 10 calls). */
-  removeEndedLocalSessions(): Promise<{ removed: number }>;
   /** The session's chat room: created on the first open, the caller seated (people only). */
   openSessionChat(sessionId: string): Promise<RoomDetail>;
   /** Owner-only display name; null restores the provider title. */
@@ -145,8 +141,6 @@ export interface MessagingClient {
   setReaction(roomId: string, messageId: string, emoji: string, active: boolean): Promise<CanonicalRoomMessage>;
   getLiveConfig(): Promise<LiveConfig>;
   listRooms(): Promise<RoomListResponse>;
-  /** The workspace feed: ensured on first read, the caller seated; its room id and brief. */
-  getFeed(): Promise<FeedResponse>;
   createRoom(request: CreateRoomRequest): Promise<RoomDetail>;
   getRoom(roomId: string): Promise<RoomDetail>;
   updateRoom(roomId: string, request: PatchRoomRequest): Promise<RoomDetail>;
@@ -189,11 +183,6 @@ export interface MessagingClient {
   markActivitySeen(upTo: string): Promise<ActivitySeenResponse>;
   /** Run one of an item's non-navigate actions; resolves to the updated item. */
   runActivityAction(itemId: string, actionId: string, request?: ActivityActionRequest): Promise<ActivityItem>;
-  /** The catalog for this workspace (no prices) and the ideas already running. */
-  listIdeas(): Promise<IdeasResponse>;
-  /** Start an idea: its project in Work and the DM where the agent posts the plan. Idempotent while it runs. */
-  startIdea(ideaId: string): Promise<IdeaStart>;
-  dismissIdea(ideaId: string): Promise<void>;
 }
 
 export function createMessagingClient(api: ApiMethods): MessagingClient {
@@ -202,15 +191,6 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
       api.get(`/messaging/sessions${options?.includeEnded ? "?includeEnded=true" : ""}`) as Promise<WorkspaceSessions>,
     getLocalSession: (sessionId) => api.get(sessionPath(sessionId)) as Promise<LocalSession>,
     removeLocalSession: async (sessionId) => { await api.del(sessionPath(sessionId)); },
-    removeEndedLocalSessions: async () => {
-      let removed = 0;
-      for (let call = 0; call < 10; call += 1) {
-        const page = await api.del("/messaging/sessions?ended=true") as { removed: number };
-        removed += page.removed;
-        if (page.removed < 100) break; // under the server's cap (REMOVE_ENDED_CAP): nothing is left
-      }
-      return { removed };
-    },
     openSessionChat: (sessionId) => api.post(`${sessionPath(sessionId)}/chat`, {}) as Promise<RoomDetail>,
     setLocalSessionDisplayTitle: (sessionId, displayTitle) => api.patch(`${sessionPath(sessionId)}/display-title`, { displayTitle }) as Promise<LocalSession>,
     listLocalSessionEvents: (sessionId, afterSeq, limit = 50) => api.get(
@@ -248,7 +228,6 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
     setReaction: (roomId, messageId, emoji, active) => api.put(`${roomPath(roomId)}/messages/${encodeURIComponent(messageId)}/reactions`, { emoji, active }) as Promise<CanonicalRoomMessage>,
     getLiveConfig: () => api.get("/messaging/live-config") as Promise<LiveConfig>,
     listRooms: () => api.get("/messaging/rooms") as Promise<RoomListResponse>,
-    getFeed: () => api.get("/messaging/feed") as Promise<FeedResponse>,
     createRoom: (request) => api.post("/messaging/rooms", request) as Promise<RoomDetail>,
     getRoom: (roomId) => api.get(roomPath(roomId)) as Promise<RoomDetail>,
     updateRoom: (roomId, request) => api.patch(roomPath(roomId), request) as Promise<RoomDetail>,
@@ -360,8 +339,5 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
       `/messaging/activity/${encodeURIComponent(itemId)}/actions/${encodeURIComponent(actionId)}`,
       request,
     ) as Promise<ActivityItem>,
-    listIdeas: () => api.get("/ideas") as Promise<IdeasResponse>,
-    startIdea: (ideaId) => api.post(`/ideas/${encodeURIComponent(ideaId)}/start`, {}) as Promise<IdeaStart>,
-    dismissIdea: async (ideaId) => { await api.post(`/ideas/${encodeURIComponent(ideaId)}/dismiss`, {}); },
   };
 }

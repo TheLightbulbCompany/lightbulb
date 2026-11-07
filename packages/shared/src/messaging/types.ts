@@ -94,12 +94,6 @@ export interface RoomSummary {
   feed?: boolean;
 }
 
-/** `GET /messaging/feed`: the workspace feed room (ensured, the caller seated) and its brief. */
-export interface FeedResponse {
-  roomId: string;
-  topic: string | null;
-}
-
 export interface ActiveRoomRun {
   triggerMessageId?: string | null;
   /** The thread the run answers in; `null` is the main conversation. Absent from older backends. */

@@ -121,7 +121,7 @@ beforeEach(() => {
 it("owns both room screens as pushed Stack screens, not tabs", async () => {
   await render(<AppLayout />);
   expect(names()).toEqual(
-    expect.arrayContaining(["room/[roomId]/index", "room/[roomId]/thread/[messageId]"]),
+    expect.arrayContaining(["room/[roomId]/index"]),
   );
   expect(names()).toContain("(tabs)");
   // The four tabs belong to the (tabs) group's own layout. A `chats`/`activity`/

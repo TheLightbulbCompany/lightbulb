@@ -3,15 +3,6 @@ import { fireEvent, render, screen } from "@testing-library/react-native";
 import { RoomHeaderActions } from "../RoomHeaderActions";
 
 describe("RoomHeaderActions", () => {
-  it("offers Ideas only when the screen passes it", async () => {
-    const onIdeas = jest.fn();
-    await render(<RoomHeaderActions starred={false} muted={false} onToggleStar={() => {}} onToggleMute={() => {}} onIdeas={onIdeas} />);
-    await fireEvent.press(screen.getByLabelText("Ideas"));
-    expect(onIdeas).toHaveBeenCalled();
-    await render(<RoomHeaderActions starred={false} muted={false} onToggleStar={() => {}} onToggleMute={() => {}} />);
-    expect(screen.queryByLabelText("Ideas")).toBeNull();
-  });
-
   it("labels the pair Star/Mute this conversation, unselected, on a plain room", async () => {
     await render(
       <RoomHeaderActions

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react-native";
+import { render, screen } from "@testing-library/react-native";
 import type { CanonicalRoomMessage, RoomMember } from "@lightbulb/shared";
 import { FIXTURES, LIGHTBULB, SAM } from "@lightbulb/shared/tasks/fixtures";
 
@@ -19,7 +19,7 @@ const members: RoomMember[] = [
 const [ask, reply, result] = FIXTURES.step07.messages;
 const list = jest.fn(async () => ({ tasks: FIXTURES.step02.tasks, next: null }));
 const group = (message: CanonicalRoomMessage, over: Partial<Parameters<typeof MessageGroup>[0]> = {}) =>
-  render(<Fresh><MessageGroup message={message} collapsed={false} replyCount={0} currentUserId={SAM} attachmentUrl={attachmentUrl} members={members} {...over} /></Fresh>);
+  render(<Fresh><MessageGroup message={message} collapsed={false} currentUserId={SAM} attachmentUrl={attachmentUrl} members={members} {...over} /></Fresh>);
 
 beforeEach(() => { list.mockClear(); live.tasks = { cacheScope: `org_group_${Math.random()}`, list, questions: jest.fn(async () => ({ items: [] })) }; });
 
@@ -39,12 +39,8 @@ it("one card per ref under the reply, no Suggested block", async () => {
   expect(list).toHaveBeenCalledTimes(1);
 });
 
-it("the person's message says where it went; the agent's 👀 is a receipt, not a toggle", async () => {
-  const onToggleReaction = jest.fn();
-  await group({ ...ask, reactions: { "👀": [LIGHTBULB] } }, { onToggleReaction });
+it("the person's message says where it went", async () => {
+  await group(ask);
   expect(screen.getByText("3 tasks started ›")).toBeTruthy();
-  const chip = screen.getByLabelText("Lightbulb saw this");
-  fireEvent.press(chip);
-  expect(onToggleReaction).not.toHaveBeenCalled();
 });
 

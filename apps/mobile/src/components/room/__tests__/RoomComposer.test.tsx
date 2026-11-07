@@ -115,25 +115,6 @@ describe("RoomComposer", () => {
     );
   });
 
-  it("opens the mention typeahead on @ and completes the picked handle", async () => {
-    await setup();
-    await caretAt(4);
-    await fireEvent.changeText(input(), "hi @f");
-    await caretAt(5);
-    await waitFor(() => expect(screen.getByText("@friday")).toBeTruthy());
-    await fireEvent.press(screen.getByText("@friday"));
-    expect(input().props.value).toBe("hi @friday ");
-  });
-
-  it("matches a human by display name with an internal space", async () => {
-    await setup();
-    await fireEvent.changeText(input(), "@Aden K");
-    await caretAt(7);
-    await waitFor(() => expect(screen.getByText("Aden Kim")).toBeTruthy());
-    // A member with no server-side handle still says what it is.
-    expect(screen.getByText("Person")).toBeTruthy();
-  });
-
   it("sends the structured mentions the typed text resolves to", async () => {
     const onSend = jest.fn(async () => {});
     await setup(onSend);
@@ -149,14 +130,14 @@ describe("RoomComposer", () => {
     );
   });
 
-  it("offers a session after members and sends its id when picked", async () => {
+  // The @ picker is gone; a typed session handle still resolves at send.
+  it("offers no @ picker and sends a typed session handle's id", async () => {
     const onSend = jest.fn(async () => {});
     await setup(onSend, undefined, sessionTargets);
     await fireEvent.changeText(input(), "@cl");
     await caretAt(3);
-    await waitFor(() => expect(screen.getByText(/Claude Code · Launch check/)).toBeTruthy());
-    await fireEvent.press(screen.getByLabelText("Mention Claude Code session Launch check, owned by Aden Kim"));
-    expect(input().props.value).toBe("@claude-launch-check ");
+    expect(screen.queryByLabelText(/^Mention /)).toBeNull();
+    await fireEvent.changeText(input(), "@claude-launch-check ");
     await fireEvent.press(screen.getByLabelText("Send"));
     await waitFor(() => expect(onSend).toHaveBeenCalledWith(expect.objectContaining({
       sessionMentions: ["session-1"],
@@ -172,17 +153,6 @@ describe("RoomComposer", () => {
     expect(screen.getByText("@claude-gone no longer matches a shared session. Remove it or send anyway.")).toBeTruthy();
     await fireEvent.press(screen.getByText("Send anyway"));
     await waitFor(() => expect(onSend).toHaveBeenCalledWith(expect.not.objectContaining({ sessionMentions: expect.anything() })));
-  });
-
-  it("finds a shared session by its title", async () => {
-    await setup(jest.fn(async () => {}), undefined, sessionTargets);
-    await fireEvent.changeText(input(), "@Launch");
-    await caretAt(7);
-    await waitFor(() => expect(screen.getByLabelText("Mention Claude Code session Launch check, owned by Aden Kim")).toBeTruthy());
-    expect(screen.getByText("Aden Kim")).toBeTruthy();
-    await fireEvent.changeText(input(), "@code");
-    await caretAt(5);
-    await waitFor(() => expect(screen.getByLabelText("Mention Claude Code session Launch check, owned by Aden Kim")).toBeTruthy());
   });
 
   it("opens the emoji typeahead on : and inserts the glyph", async () => {

@@ -57,7 +57,7 @@ export function TaskTranscript({ taskRoomId, focused, onSteered }: {
           if (item.kind === "date") return <View style={styles.date}><MetaText palette={palette}>{item.label}</MetaText></View>;
           if (item.kind === "new") return null;
           return (
-            <MessageGroup message={item.message} collapsed={item.collapsed} replyCount={0} currentUserId={userId ?? ""}
+            <MessageGroup message={item.message} collapsed={item.collapsed} currentUserId={userId ?? ""}
               attachmentUrl={rooms.attachmentUrl} members={members} cardsEnabled={cardsEnabled}
               onCardReply={repliesEnabled && canSend ? onCardReply : undefined} cardAnswer={cardAnswers.get(item.message.messageId) ?? null} />
           );

@@ -48,7 +48,7 @@ it("renders a session mention as a reference card that opens the session", async
   } satisfies LocalSession;
   await render(<MessageGroup message={{ ...message, author: { kind: "human", id: "user-a", displayName: "You" }, text: "@claude-lightbulb-s1 look",
     sessionMentions: ["s1"], sessionTargetLabels: { s1: "Claude Code · Launch check · You" } }}
-    collapsed={false} replyCount={0} currentUserId="user-a" attachmentUrl={attachmentUrl}
+    collapsed={false} currentUserId="user-a" attachmentUrl={attachmentUrl}
     sessionCandidates={[{ session, handle: "claude-lightbulb-s1", collided: false }]} />);
   expect(screen.getByText("@Claude Code · Launch check · You")).toBeTruthy();
   expect(screen.getByText("Idle")).toBeTruthy();
@@ -63,7 +63,7 @@ it("keeps a reference openable by id when the session is not in the workspace li
   // screen, not the card, decides whether access is really gone.
   await render(<MessageGroup message={{ ...message, via: "lightbulb_mcp", text: "Please check",
     sessionMentions: ["s1"], sessionTargetLabels: { s1: "Codex · Launch check · Aden Kim" } }}
-    collapsed={false} replyCount={0} currentUserId="user-a" attachmentUrl={attachmentUrl} />);
+    collapsed={false} currentUserId="user-a" attachmentUrl={attachmentUrl} />);
   expect(screen.getByText("Codex · Launch check")).toBeTruthy();
   expect(screen.queryByText("Unavailable")).toBeNull();
   await fireEvent.press(screen.getByLabelText("Open session Codex · Launch check"));
@@ -71,14 +71,14 @@ it("keeps a reference openable by id when the session is not in the workspace li
   expect(router.push).toHaveBeenCalledWith({ pathname: "/(app)/session/[sessionId]", params: { sessionId: "s1" } });
 });
 
-describe("MessageGroup reactions", () => {
+describe("MessageGroup long press", () => {
   it("keeps the whole-message long-press action alongside selectable message text", async () => {
     const onLongPress = jest.fn();
     await render(
       <MessageGroup
         message={message}
         collapsed={false}
-        replyCount={0}
+       
         currentUserId="user-c"
         onLongPress={onLongPress}
         attachmentUrl={attachmentUrl}
@@ -92,85 +92,6 @@ describe("MessageGroup reactions", () => {
     expect(onLongPress).toHaveBeenCalledTimes(1);
     expect(Haptics.impactAsync).toHaveBeenCalledTimes(1);
     (Haptics.impactAsync as jest.Mock).mockClear();
-  });
-
-  it("renders an applied reaction chip with its count", async () => {
-    await render(
-      <MessageGroup
-        message={message}
-        collapsed={false}
-        replyCount={0}
-        currentUserId="user-c"
-        onToggleReaction={() => {}}
-        attachmentUrl={attachmentUrl}
-      />,
-    );
-    // 🎉 has zero reactors and is filtered out; only 👍 renders.
-    expect(screen.getByLabelText("Add 👍 reaction, 2")).toBeTruthy();
-    expect(screen.queryByLabelText(/🎉/)).toBeNull();
-  });
-
-  it("shows selected state for a reaction the viewer applied", async () => {
-    await render(
-      <MessageGroup
-        message={message}
-        collapsed={false}
-        replyCount={0}
-        currentUserId="user-a"
-        onToggleReaction={() => {}}
-        attachmentUrl={attachmentUrl}
-      />,
-    );
-    const chip = screen.getByLabelText("Remove 👍 reaction, 2");
-    expect(chip.props.accessibilityState).toEqual({ selected: true });
-  });
-
-  it("toggles through the onToggleReaction callback", async () => {
-    const onToggleReaction = jest.fn();
-    await render(
-      <MessageGroup
-        message={message}
-        collapsed={false}
-        replyCount={0}
-        currentUserId="user-a"
-        onToggleReaction={onToggleReaction}
-        attachmentUrl={attachmentUrl}
-      />,
-    );
-    await fireEvent.press(screen.getByLabelText("Remove 👍 reaction, 2"));
-    expect(onToggleReaction).toHaveBeenCalledWith("👍", false);
-    expect(Haptics.selectionAsync).toHaveBeenCalledTimes(1);
-  });
-
-  it("hides reactions on a deleted message even if reaction data is present", async () => {
-    await render(
-      <MessageGroup
-        message={{ ...message, deletedAt: "2026-09-11T10:05:00Z" }}
-        collapsed={false}
-        replyCount={0}
-        currentUserId="user-a"
-        onToggleReaction={() => {}}
-        attachmentUrl={attachmentUrl}
-      />,
-    );
-    expect(screen.queryByLabelText("Message reactions")).toBeNull();
-    expect(screen.queryByLabelText(/reaction/)).toBeNull();
-  });
-
-  it("shows the failure copy when a reaction toggle fails", async () => {
-    await render(
-      <MessageGroup
-        message={message}
-        collapsed={false}
-        replyCount={0}
-        currentUserId="user-a"
-        onToggleReaction={() => {}}
-        reactionError
-        attachmentUrl={attachmentUrl}
-      />,
-    );
-    const alert = screen.getByText("Could not update reaction. Try again.");
-    expect(alert.props.accessibilityRole).toBe("alert");
   });
 });
 
@@ -217,7 +138,7 @@ describe("MessageGroup mentions", () => {
       <MessageGroup
         message={baseMessage}
         collapsed={false}
-        replyCount={0}
+       
         attachmentUrl={attachmentUrl}
         members={members}
         currentUserId="user-a"
@@ -245,7 +166,7 @@ describe("MessageGroup mentions", () => {
       <MessageGroup
         message={message}
         collapsed={false}
-        replyCount={0}
+       
         attachmentUrl={attachmentUrl}
         members={members}
         currentUserId="user-a"
@@ -272,7 +193,7 @@ describe("MessageGroup mentions", () => {
       <MessageGroup
         message={message}
         collapsed={false}
-        replyCount={0}
+       
         attachmentUrl={attachmentUrl}
         members={members}
         currentUserId="user-a"
@@ -288,14 +209,14 @@ describe("MessageGroup mentions", () => {
 
 it("strokes the bubble when the message mentions the viewer", async () => {
   await render(
-    <MessageGroup message={{ ...message, mentions: [{ kind: "human", id: "user-a" }] }} collapsed={false} replyCount={0}
+    <MessageGroup message={{ ...message, mentions: [{ kind: "human", id: "user-a" }] }} collapsed={false}
       currentUserId="user-a" attachmentUrl={attachmentUrl} />,
   );
   expect(StyleSheet.flatten(screen.getByTestId("message-bubble").props.style).borderColor).toBe(p.link);
 });
 
 describe("MessageGroup bubbles", () => {
-  const base = { collapsed: false, replyCount: 0, currentUserId: "user-a", attachmentUrl };
+  const base = { collapsed: false, currentUserId: "user-a", attachmentUrl };
 
   it("draws the viewer's message as a mine bubble with its read state", async () => {
     const own = { ...message, author: { kind: "human" as const, id: "user-a", displayName: "Ann" } };
@@ -320,13 +241,6 @@ describe("MessageGroup bubbles", () => {
     await render(<MessageGroup {...base} message={message} collapsed showTime={false} />);
     expect(screen.queryByText("Friday")).toBeNull();
     expect(screen.queryByText(/\d:\d\d/)).toBeNull();
-  });
-
-  it("opens the thread from the replies chip", async () => {
-    const onOpenThread = jest.fn();
-    await render(<MessageGroup {...base} message={message} replyCount={3} onOpenThread={onOpenThread} />);
-    await fireEvent.press(screen.getByLabelText("3 replies"));
-    expect(onOpenThread).toHaveBeenCalled();
   });
 
   it("never carries a read state on a deleted message", async () => {
@@ -356,7 +270,7 @@ describe("MessageGroup attachments", () => {
       <MessageGroup
         message={{ ...message, attachments: [photoAttachment] }}
         collapsed={false}
-        replyCount={0}
+       
         currentUserId="user-a"
         attachmentUrl={attachmentUrl}
       />,
@@ -372,7 +286,7 @@ describe("MessageGroup attachments", () => {
       <MessageGroup
         message={{ ...message, attachments: [photoAttachment] }}
         collapsed={false}
-        replyCount={0}
+       
         currentUserId="user-a"
         onLongPress={onLongPress}
         attachmentUrl={attachmentUrl}
@@ -399,7 +313,7 @@ describe("MessageGroup attachments", () => {
       <MessageGroup
         message={{ ...message, attachments: [photoAttachment, second] }}
         collapsed={false}
-        replyCount={0}
+       
         currentUserId="user-a"
         attachmentUrl={attachmentUrl}
       />,
@@ -422,7 +336,7 @@ describe("MessageGroup attachments", () => {
       <MessageGroup
         message={{ ...message, attachments: [archive] }}
         collapsed={false}
-        replyCount={0}
+       
         currentUserId="user-a"
         attachmentUrl={attachmentUrl}
       />,
@@ -443,7 +357,7 @@ describe("MessageGroup attachments", () => {
       <MessageGroup
         message={{ ...message, attachments: [photo] }}
         collapsed={false}
-        replyCount={0}
+       
         currentUserId="user-a"
         attachmentUrl={attachmentUrl}
       />,
@@ -468,7 +382,7 @@ describe("MessageGroup attachments", () => {
       <MessageGroup
         message={{ ...message, attachments: [video] }}
         collapsed={false}
-        replyCount={0}
+       
         currentUserId="user-a"
         attachmentUrl={attachmentUrl}
       />,
@@ -492,7 +406,7 @@ describe("MessageGroup attachments", () => {
       <MessageGroup
         message={{ ...message, attachments: [pdf] }}
         collapsed={false}
-        replyCount={0}
+       
         currentUserId="user-a"
         attachmentUrl={attachmentUrl}
       />,
@@ -506,7 +420,7 @@ describe("MessageGroup attachments", () => {
       <MessageGroup
         message={{ ...message, attachments: [photoAttachment] }}
         collapsed={false}
-        replyCount={0}
+       
         currentUserId="user-a"
         attachmentUrl={attachmentUrl}
       />,

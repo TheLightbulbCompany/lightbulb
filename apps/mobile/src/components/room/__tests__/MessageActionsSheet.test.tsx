@@ -1,7 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import { Linking } from "react-native";
 import type { CanonicalRoomMessage } from "@lightbulb/shared";
-import * as Haptics from "expo-haptics";
 
 // `mock`-prefixed because babel-plugin-jest-hoist rejects any other out-of-scope
 // name a factory reaches for, and referenced lazily for the same reason the rest
@@ -26,33 +25,10 @@ const message: CanonicalRoomMessage = {
   reactions: { "👍": ["user-a"] },
 };
 
-import { MessageActionsSheet, QUICK_REACTIONS, reportMessageUrl } from "../MessageActionsSheet";
+import { MessageActionsSheet, reportMessageUrl } from "../MessageActionsSheet";
 
 describe("MessageActionsSheet", () => {
   beforeEach(() => mockSetStringAsync.mockClear());
-
-  it("offers the fixed reaction set and reports the toggle direction", async () => {
-    const onReact = jest.fn();
-    await render(
-      <MessageActionsSheet
-        message={message}
-        currentUserId="user-a"
-        roomId="room-1"
-        onClose={() => {}}
-        onReact={onReact}
-        onReplyInThread={() => {}}
-        onMarkUnread={() => {}}
-      />,
-    );
-    expect(QUICK_REACTIONS).toEqual(["👍", "✅", "🎉", "👀"]);
-    await fireEvent.press(screen.getByLabelText("React with 🎉"));
-    expect(onReact).toHaveBeenCalledWith("🎉", true);
-    await fireEvent.press(screen.getByLabelText("Remove 👍 reaction"));
-    expect(onReact).toHaveBeenCalledWith("👍", false);
-    // A reaction pick is a selection change, not a plain tap — Slack-style
-    // selection haptic, once per toggle.
-    expect(Haptics.selectionAsync).toHaveBeenCalledTimes(2);
-  });
 
   it("copies the message text", async () => {
     const onClose = jest.fn();
@@ -62,8 +38,6 @@ describe("MessageActionsSheet", () => {
         currentUserId="user-a"
         roomId="room-1"
         onClose={onClose}
-        onReact={() => {}}
-        onReplyInThread={() => {}}
         onMarkUnread={() => {}}
       />,
     );
@@ -79,8 +53,6 @@ describe("MessageActionsSheet", () => {
         currentUserId="user-a"
         roomId="room-1"
         onClose={() => {}}
-        onReact={() => {}}
-        onReplyInThread={() => {}}
         onMarkUnread={() => {}}
       />,
     );
@@ -101,7 +73,6 @@ describe("MessageActionsSheet", () => {
         currentUserId="user-a"
         roomId="room-1"
         onClose={() => {}}
-        onReact={() => {}}
       />,
     );
     await fireEvent.press(screen.getByText("Report"));
@@ -131,14 +102,12 @@ describe("MessageActionsSheet", () => {
         currentUserId="user-a"
         roomId="room-1"
         onClose={() => {}}
-        onReact={() => {}}
       />,
     );
     expect(screen.queryByText("Report")).toBeNull();
   });
 
-  it("raises reply-in-thread and mark-unread to the caller", async () => {
-    const onReplyInThread = jest.fn();
+  it("raises mark-unread to the caller", async () => {
     const onMarkUnread = jest.fn();
     await render(
       <MessageActionsSheet
@@ -146,54 +115,40 @@ describe("MessageActionsSheet", () => {
         currentUserId="user-a"
         roomId="room-1"
         onClose={() => {}}
-        onReact={() => {}}
-        onReplyInThread={onReplyInThread}
         onMarkUnread={onMarkUnread}
       />,
     );
-    await fireEvent.press(screen.getByText("Reply in thread"));
-    expect(onReplyInThread).toHaveBeenCalledTimes(1);
     await fireEvent.press(screen.getByText("Mark unread"));
     expect(onMarkUnread).toHaveBeenCalledTimes(1);
   });
 
   // A tombstone as the backend projects one: `canonical_message` blanks text,
-  // attachments AND reactions, so reacting to it and copying its text are both
-  // dead ends. The web hides the same two on `deletedAt`.
-  it("offers neither reactions nor Copy text on a deleted message", async () => {
+  // so copying it is a dead end. The web hides it on `deletedAt`.
+  it("offers no Copy text on a deleted message", async () => {
     await render(
       <MessageActionsSheet
         message={{ ...message, deletedAt: "2026-09-11T10:05:00Z", text: "", reactions: {} }}
         currentUserId="user-a"
         roomId="room-1"
         onClose={() => {}}
-        onReact={() => {}}
-        onReplyInThread={() => {}}
         onMarkUnread={() => {}}
       />,
     );
-    expect(screen.queryAllByLabelText(/^React with /)).toHaveLength(0);
     expect(screen.queryByText("Copy text")).toBeNull();
     // The permalink still resolves a tombstone, so this row stays.
     expect(screen.getByText("Copy link")).toBeTruthy();
     expect(screen.getByText("Mark unread")).toBeTruthy();
   });
 
-  // Both are the thread screen's shape, and both are the web's `!inThread` rule:
-  // inside a thread there is nowhere to reply-in-thread TO (the composer below
-  // already is that thread), and the read cursor is per room, so a thread cannot
-  // express its own unread at all.
-  it("omits Reply in thread and Mark unread when the caller passes no handler", async () => {
+  it("omits Mark unread when the caller passes no handler", async () => {
     await render(
       <MessageActionsSheet
         message={message}
         currentUserId="user-a"
         roomId="room-1"
         onClose={() => {}}
-        onReact={() => {}}
       />,
     );
-    expect(screen.queryByText("Reply in thread")).toBeNull();
     expect(screen.queryByText("Mark unread")).toBeNull();
     // The sheet is still open and still useful.
     expect(screen.getByText("Copy text")).toBeTruthy();
@@ -214,7 +169,6 @@ describe("MessageActionsSheet", () => {
         roomId="room-1"
         visible={false}
         onClose={onClose}
-        onReact={() => {}}
       />,
     );
     expect(screen.queryByText("Copy text")).toBeNull();
@@ -226,7 +180,6 @@ describe("MessageActionsSheet", () => {
         roomId="room-1"
         visible
         onClose={onClose}
-        onReact={() => {}}
       />,
     );
     expect(screen.getByText("Copy text")).toBeTruthy();

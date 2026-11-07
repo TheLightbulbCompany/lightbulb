@@ -143,7 +143,6 @@ const mockSetMemberPrefs = jest.fn(async (roomId: string, prefs: Partial<RoomDet
   roomId,
   ...prefs,
 }));
-const mockSetReaction = jest.fn(async () => mockMsg({ messageId: "m2", messageSeq: 2, text: "second", reactions: { "🎉": ["user-a"] } }));
 const mockSendMessage = jest.fn(async () => mockMsg({ messageId: "m4", messageSeq: 4, text: "sent" }));
 const mockSetTyping = jest.fn(async () => {});
 // Live events this suite dispatches by hand (typing changes only so far);
@@ -173,7 +172,7 @@ const mockLive = {
     downloadAttachment: jest.fn(), attachmentUrl: jest.fn(), uploadAttachment: jest.fn(), markUnread: mockMarkUnread,
     setTyping: mockSetTyping, abortRun: jest.fn(), steerRun: jest.fn(), listSubagents: mockListSubagents, subagentTail: jest.fn(), steerSubagent: jest.fn(), stopSubagent: jest.fn(), createRoom: jest.fn(),
     updateRoom: jest.fn(), upsertMember: jest.fn(), removeMember: jest.fn(),
-    updateMessage: jest.fn(), setReaction: mockSetReaction, getLiveConfig: jest.fn(),
+    updateMessage: jest.fn(), getLiveConfig: jest.fn(),
     setMemberPrefs: mockSetMemberPrefs, putSections: jest.fn(),
   },
   claimActiveRoomSubscription: jest.fn(() => () => {}),
@@ -236,7 +235,6 @@ describe("conversation screen", () => {
     mockListSubagents.mockClear();
     mockSendMessage.mockClear();
     mockMarkUnread.mockClear();
-    mockSetReaction.mockClear();
     mockSetTyping.mockClear();
     typingHandlers.clear();
     mockSetMemberPrefs.mockClear();
@@ -404,16 +402,15 @@ describe("conversation screen", () => {
     expect(mockMarkRead).not.toHaveBeenCalled();
   });
 
-  it("keeps thread replies out of the main timeline and opens the thread from the replies row", async () => {
+  it("keeps old thread replies out of the main timeline, with no replies row", async () => {
     mockMessages = [
       ...mockBase,
       mockMsg({ messageId: "m5", messageSeq: 4, text: "in the thread", threadRootMessageId: "m2" }),
     ];
     await render(<Conversation />);
-    await waitFor(() => expect(screen.getByText("1 reply")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("second")).toBeTruthy());
     expect(screen.queryByText("in the thread")).toBeNull();
-    await fireEvent.press(screen.getByText("1 reply"));
-    expect(mockPush).toHaveBeenCalledWith("/(app)/room/room-1/thread/m2");
+    expect(screen.queryByText("1 reply")).toBeNull();
   });
 
   it("shows no replies row on a message nobody replied to", async () => {
@@ -476,48 +473,10 @@ describe("conversation screen", () => {
     await render(<Conversation />);
     await waitFor(() => expect(screen.getByText("second")).toBeTruthy());
     expect(screen.queryByText("Mark unread")).toBeNull();
-    await fireEvent(screen.getByText("second"), "longPress");
-    await fireEvent.press(screen.getByLabelText("React with 🎉"));
-    await waitFor(() =>
-      expect(mockSetReaction).toHaveBeenCalledWith("room-1", "m2", "🎉", true),
-    );
-    // Acting dismisses the sheet, the way Slack's does.
-    expect(screen.queryByText("Mark unread")).toBeNull();
     // Mark unread FROM that message's sequence, not the whole room from zero.
     await fireEvent(screen.getByText("second"), "longPress");
     await fireEvent.press(screen.getByText("Mark unread"));
     await waitFor(() => expect(mockMarkUnread).toHaveBeenCalledWith("room-1", 2));
-  });
-
-  // The bug this task exists to fix: both screens used to swallow
-  // `setReaction`'s rejection with `.catch(() => {})`, so a failed reaction
-  // looked like nothing happened. This exercises the real `reactToMessage`
-  // path (not just the presentational `reactionError` prop) end to end, and
-  // covers the unconditional-clear timing: a rejection on one message must
-  // not survive a SUCCESSFUL toggle on a different one.
-  it("surfaces a failed reaction toggle and clears it on a later success elsewhere", async () => {
-    mockSetReaction.mockRejectedValueOnce(new Error("offline"));
-    await render(<Conversation />);
-    await waitFor(() => expect(screen.getByText("second")).toBeTruthy());
-    await fireEvent(screen.getByText("second"), "longPress");
-    await fireEvent.press(screen.getByLabelText("React with 🎉"));
-    await waitFor(() =>
-      expect(screen.getByText("Could not update reaction. Try again.")).toBeTruthy(),
-    );
-    // A successful toggle on a DIFFERENT message (m1, "first") still clears it.
-    await fireEvent(screen.getByText("first"), "longPress");
-    await fireEvent.press(screen.getByLabelText("React with 🎉"));
-    await waitFor(() =>
-      expect(screen.queryByText("Could not update reaction. Try again.")).toBeNull(),
-    );
-  });
-
-  it("opens the thread from the sheet's Reply in thread", async () => {
-    await render(<Conversation />);
-    await waitFor(() => expect(screen.getByText("second")).toBeTruthy());
-    await fireEvent(screen.getByText("second"), "longPress");
-    await fireEvent.press(screen.getByText("Reply in thread"));
-    expect(mockPush).toHaveBeenCalledWith("/(app)/room/room-1/thread/m2");
   });
 
   // On an inverted list offset 0 IS the newest message, so the pill is purely a

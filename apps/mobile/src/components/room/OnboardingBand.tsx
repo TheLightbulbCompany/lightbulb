@@ -245,16 +245,6 @@ export function OnboardingBand({ participants }: { participants: readonly SetupP
           connecting === step.id,
         ),
       )}
-      {/* A door, not a step: never counts toward completion, open to members. */}
-      <Pressable
-        style={({ pressed }) => [styles.card, { backgroundColor: palette.raised }, pressed && { backgroundColor: palette.hover }]}
-        accessibilityRole="button"
-        accessibilityLabel="More connections"
-        onPress={() => router.push("/(app)/control/integrations")}
-      >
-        <SymbolView accessibilityElementsHidden name="plus" size={16} tintColor={palette.fg} />
-        <Text style={[styles.label, { color: palette.fg }]}>More connections</Text>
-      </Pressable>
       {later.map((step) => card(step))}
 
       {invite === "legacy" && (

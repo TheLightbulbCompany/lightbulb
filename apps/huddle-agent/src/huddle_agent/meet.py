@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 import numpy as np
 from google.genai import types
 from livekit import rtc
-from livekit.agents import Agent, AgentSession, JobContext, function_tool, room_io, stt
+from livekit.agents import Agent, AgentSession, JobContext, StopResponse, function_tool, room_io, stt
 from livekit.agents.voice import io
 from livekit.plugins import google, noise_cancellation, openai
 from openai.types.beta.realtime.session import TurnDetection
@@ -308,6 +308,13 @@ class MeetAgent(Agent):
         ):
             return True, "tool follow-on"
         return None, "no transcript yet"
+
+    async def on_user_turn_completed(self, turn_ctx, new_message) -> None:
+        """OpenAI with create_response off hands turn-taking to LiveKit, which would answer every line of side talk
+        (8 Nov self-test: replies made for lines nobody addressed, dropped by the gate, each billed). The gate asks
+        for each reply instead (nudge). Gemini answers by itself."""
+        if OPENAI:
+            raise StopResponse()
 
     async def realtime_audio_output_node(self, audio, model_settings):
         """A reply's audio is held until its turn's final transcript says the assistant was addressed (see the

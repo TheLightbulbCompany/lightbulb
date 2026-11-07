@@ -28,31 +28,18 @@ export const RETIRED_PANEL_ALIASES: Readonly<Record<string, string>> = {
   "teams-dashboard": "activity",
   "teams-skills": "activity",
   "teams-costs": "activity",
-  // Money is ONE page, and Payments/Products/Customers/Spend are its sections.
-  // They alias to its key so Work opens ONE Money page no matter which of the
-  // five keys a link carries. describePanel synthesizes `section` from the RAW key
-  // below.
-  "teams-payments": "teams-money",
-  "teams-products": "teams-money",
-  "teams-customers": "teams-money",
-  "teams-spend": "teams-money",
+  // Money is Settings › Business; describePanel reads the RAW key to pick that section.
+  "teams-payments": "settings",
+  "teams-products": "settings",
+  "teams-customers": "settings",
+  "teams-spend": "settings",
   "teams-activity": "activity",
   // The Work › Threads overview folded into Home (2026-11-05): Home lists the same threads, grouped.
   "teams-threads": "activity",
-  // NOTE: `teams-goals` and `teams-projects` are deliberately NOT aliased —
-  // they are their own panels (GoalsPanel / ProjectsListPanel, TEAMS_LIST_KEYS
-  // below), same as stock Paperclip's Goals and Projects pages. They used to
-  // alias onto `teams-issues` pre-grouped; lifting that alias (owner ruling
-  // 2026-09-24) is what makes them reachable again.
-
-  // The org chart is the SAME roster read, drawn as a tree — a view of the
-  // Agents panel, not a page of its own. Aliased for the same reason as the
-  // four Money keys. describePanel synthesizes
-  // `view` from the RAW key below.
+  // The org chart was a view of the Team roster.
   "teams-org-chart": "teams-agents",
-  // The Support placeholder was removed (owner ruling) when Cases landed; old
-  // links and saved layouts open Cases instead of an unknown panel.
-  "teams-support": "teams-cases",
+  // The Support placeholder (later Cases).
+  "teams-support": "activity",
   // Deleted tabs (2026-10-14, stage 1 of the product simplification): an old link or a
   // mobile-built `?panel=teams-<key>` opens Home, never a dead-end page.
   "teams-publish": "home",
@@ -63,47 +50,35 @@ export const RETIRED_PANEL_ALIASES: Readonly<Record<string, string>> = {
   "teams-compliance": "home",
   "teams-contracts": "home",
   "teams-leads": "home",
+  // The Paperclip board is gone (Phase 1 task 7): its pages and their old links open Activity, where
+  // tasks live. Work dissolved earlier (UX slice 4): Automations open Activity's Scheduled group, Money is
+  // Settings › Business, Library is Creations (the canvas panel; slice 5).
+  "teams-issues": "activity",
+  "teams-goals": "activity",
+  "teams-projects": "activity",
+  "teams-cases": "activity",
+  "teams-search": "activity",
+  "teams-routines": "activity",
+  "teams-issue-detail": "activity",
+  "teams-routine-detail": "activity",
+  "teams-project-detail": "activity",
+  "teams-goal-detail": "activity",
+  "teams-case-detail": "activity",
+  "teams-run-detail": "activity",
+  "teams-approval-detail": "activity",
+  "teams-money": "settings",
+  "teams-artifacts": "canvas",
+  // The rail writes `panel=creations` (W13); the panel id stays "canvas", so an old `panel=canvas` link still opens it.
+  creations: "canvas",
 };
 
-// The sections of the Money page — the set an absorbed key or a `?section=`
-// deep link may name. Exported so TeamsPanelRouter narrows against the same
-// list instead of keeping a second copy.
-export const MONEY_SECTIONS: ReadonlySet<string> = new Set([
+// The old Money page's sections: a link to any of them opens Settings › Business.
+const MONEY_SECTIONS: ReadonlySet<string> = new Set([
   "payments",
   "customers",
   "products",
   "spend",
 ]);
-
-/** The three bands of the Inbox page, in render order. A ?section deep link
- *  scrolls to `inbox-<section>`; anything else is ignored. */
-export const INBOX_SECTIONS: ReadonlySet<string> = new Set([
-  "needs-you",
-  "happening-now",
-  "recently",
-]);
-
-/** Declared HERE, not in InboxPage, so the router and InboxPanel narrow to the
- *  same list the registry validates against. */
-export type InboxSectionId = "needs-you" | "happening-now" | "recently";
-
-/** The Tasks page's grouping dimensions — the set an absorbed key or a
- *  `?groupBy=` deep link may name. `TasksList.GROUP_OPTIONS` is the live list
- *  the menu renders; `TasksList.groupBy.test.tsx` pins the two together, so a
- *  new grouping cannot ship deep-linkable-but-unrendered (or the reverse). */
-export const TASKS_GROUP_BY: ReadonlySet<string> = new Set([
-  "none",
-  "status",
-  "assignee",
-  "priority",
-  "project",
-  "goal",
-  "parent",
-]);
-
-/** The Agents panel's two views — the set an absorbed key or a `?view=` deep
- *  link may name. The roster is the default; `chart` is the org chart. */
-export const AGENTS_VIEWS: ReadonlySet<string> = new Set(["list", "chart"]);
 
 // One-shot intents: copied to the target panel's open params, immediately
 // stripped from the URL, cleared after consumption.
@@ -127,42 +102,6 @@ export const NON_COMMAND_PARAMS = [
 
 const TEAMS_LIST_KEYS: Readonly<Record<string, string>> = {
   agents: "Team",
-  inbox: "Inbox",
-  issues: "Tasks",
-  // Reachable again as their own panels — see the note above
-  // RETIRED_PANEL_ALIASES. GoalDetailPage/ProjectsListPanel's leaveToList
-  // already targeted these keys (WorkspaceShell.DETAIL_KEY_BY_LIST_KEY).
-  goals: "Goals",
-  projects: "Projects",
-  // Ported from stock Paperclip's Cases page. Replaces the Support placeholder
-  // (`teams-support` aliases here).
-  cases: "Cases",
-  routines: "Automations",
-  artifacts: "Library",
-  search: "Search",
-  // The one ledger page. The four keys it absorbed live in
-  // RETIRED_PANEL_ALIASES, not here — one page, one panel id.
-  money: "Money",
-};
-
-// The Work place: these task-board pages share ONE main view, "Work", and a tab
-// strip inside it switches between them (panels/WorkTabs.tsx).
-export const WORK_PANEL_ID = "teams-work";
-// Agents left Work for its own place, Team (2026-11-05): the owner hires and manages specialists there.
-export const WORK_TEAMS_KEYS = ["issues", "projects", "goals", "routines", "cases", "money"] as const;
-const WORK_KEY_SET: ReadonlySet<string> = new Set(WORK_TEAMS_KEYS);
-export function isWorkTeamsKey(teamsKey: string): boolean {
-  return WORK_KEY_SET.has(teamsKey);
-}
-
-const TEAMS_DETAIL_KEYS: Readonly<Record<string, string>> = {
-  "issue-detail": "Task",
-  "routine-detail": "Automation",
-  "project-detail": "Project",
-  "goal-detail": "Goal",
-  "case-detail": "Case",
-  "run-detail": "Run",
-  "approval-detail": "Approval",
 };
 
 // The agent detail view (?panel=agents&agent=…). The other control panels
@@ -222,20 +161,8 @@ export function shellSettingsHref(settingsHref: string): string {
 // and render inherited functions as titles/components instead of rejecting to
 // null.
 
-// UX slice 4: Work dissolved. Its Automations open Activity's Scheduled group, and Money is
-// Settings › Business. Library opens Creations (slice 5). Old links keep resolving through these.
-const SUPER_AGENT_ALIASES: Readonly<Record<string, string>> = {
-  "teams-routines": "activity",
-  "teams-money": "settings",
-  // UX slice 5: Creations (the canvas panel) replaces Library.
-  "teams-artifacts": "canvas",
-  // The rail writes `panel=creations` (W13); the panel id stays "canvas", so an old `panel=canvas` link still opens it.
-  creations: "canvas",
-};
-
 export function resolvePanelAlias(panelKey: string): string {
-  const key = Object.hasOwn(RETIRED_PANEL_ALIASES, panelKey) ? RETIRED_PANEL_ALIASES[panelKey] : panelKey;
-  return Object.hasOwn(SUPER_AGENT_ALIASES, key) ? SUPER_AGENT_ALIASES[key] : key;
+  return Object.hasOwn(RETIRED_PANEL_ALIASES, panelKey) ? RETIRED_PANEL_ALIASES[panelKey] : panelKey;
 }
 
 export function chatPanelId(agentId: string): string {
@@ -384,49 +311,8 @@ export function describePanel(
 
   if (key.startsWith("teams-")) {
     const teamsKey = key.slice("teams-".length);
-    if (Object.hasOwn(TEAMS_DETAIL_KEYS, teamsKey)) {
-      const detailId = params.detailId;
-      if (!detailId) return null;
-      return {
-        panelId: `${key}:${detailId}`,
-        component: "teams",
-        title: TEAMS_DETAIL_KEYS[teamsKey],
-        params: { teamsKey, detailId },
-      };
-    }
     if (Object.hasOwn(TEAMS_LIST_KEYS, teamsKey)) {
-      const p: Record<string, string> = { teamsKey };
-      // Durable filters ride along; one-shots are handled by the reconciler
-      // at open time and never enter these params.
-      if (teamsKey === "issues") {
-        if (params.agent) p.agent = params.agent;
-        // "goal"/"project" remain valid explicit ?groupBy= values here — the
-        // Tasks page's own grouping menu (TasksList.GROUP_OPTIONS) still
-        // offers them. Only the retired-alias RAW-key synthesis is gone
-        // (teams-goals/teams-projects are their own panels now).
-        if (params.groupBy && TASKS_GROUP_BY.has(params.groupBy)) {
-          p.groupBy = params.groupBy;
-        }
-      }
-      // Agents absorbed the org chart as its second view, so the view a link
-      // meant survives only if it is read off the RAW key — same synthesis,
-      // same reason, as `money` and `inbox`.
-      if (teamsKey === "agents") {
-        if (panelKey === "teams-org-chart") p.view = "chart";
-        else if (params.view && AGENTS_VIEWS.has(params.view)) p.view = params.view;
-      }
-      // ?day scopes the Payments section to one UTC day (Money's biggest-day link).
-      if (teamsKey === "money" && params.day) p.day = params.day;
-      // The four absorbed keys (teams-payments/products/customers/spend) alias
-      // to teams-money, so the section they meant survives only if it is read
-      // off the RAW key — same synthesis, same reason, as `agents` above.
-      if (teamsKey === "money") {
-        const raw = panelKey.startsWith("teams-") ? panelKey.slice("teams-".length) : panelKey;
-        if (MONEY_SECTIONS.has(raw)) p.section = raw;
-        else if (params.section && MONEY_SECTIONS.has(params.section)) p.section = params.section;
-      }
-      if (isWorkTeamsKey(teamsKey)) return { panelId: WORK_PANEL_ID, component: "teams", title: "Work", params: p };
-      return { panelId: key, component: "teams", title: TEAMS_LIST_KEYS[teamsKey], params: p };
+      return { panelId: key, component: "teams", title: TEAMS_LIST_KEYS[teamsKey], params: { teamsKey } };
     }
     return null;
   }
@@ -455,15 +341,12 @@ export function durableParamsFor(panelId: string): string[] {
   if (panelId === "task-detail") return ["panel", "taskId"];
   if (panelId === "agent-inspector") return ["panel", "agent", "inspectorTab"];
   if (panelId === "control:agents") return ["panel", "agent"];
-  if (panelId === WORK_PANEL_ID) return ["panel", "agent", "groupBy", "view", "day", "section"];
-  if (panelId === "teams-agents") return ["panel", "view"];
   if (panelId === "activity") return ["panel", "filter", "focus", "section"];
   if (panelId === "settings") return ["panel", "section"];
   if (panelId === "automation") return ["panel", "id"];
   if (panelId === "canvas") return ["panel", "app"];
   if (panelId === "mail") return ["panel", "item"];
   if (panelId === "ideas") return ["panel", "agent", "idea"];
-  if (/^teams-(issue|routine|project|goal|case|run)-detail:/.test(panelId)) return ["panel", "detailId"];
   return ["panel"];
 }
 
@@ -478,8 +361,6 @@ export function clearablePanelParamKeys(panelId: string): string[] {
   // must clear a stale room target and vice versa, or the two grammars fight
   // (see openMessagePanel / openChatPanel in workspaceController.ts).
   if (panelId === MESSAGES_PANEL_ID) return ["agentId", "agentSelection", "roomId", "messageId", "sessionId", "seq", "sessionIntent"];
-  if (panelId === WORK_PANEL_ID) return ["agent", "groupBy", "view", "day", "section"];
-  if (panelId === "teams-agents") return ["view"];
   if (panelId === "activity") return ["filter", "focus", "section"];
   if (panelId === "settings") return ["section"];
   if (panelId === "automation") return ["id"];
@@ -499,7 +380,6 @@ export function clearablePanelParamKeys(panelId: string): string[] {
 
 /** Which slot a descriptor opens in: lists and feeds are places, one single thing is the right pane. */
 export function opensInPane(descriptor: PanelDescriptor): boolean {
-  if (descriptor.component === "teams") return !!descriptor.params.detailId;
   return descriptor.component === "file-viewer" || descriptor.component === "browser"
     || descriptor.component === "mail" || descriptor.component === "control" || descriptor.component === "ideas"
     || descriptor.component === "artifact" || descriptor.component === "task" || descriptor.component === "automation";

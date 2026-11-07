@@ -30,12 +30,12 @@ export function ScheduledList({ scope, onOpen, onOpenAutomation, onDraft, goal, 
       </p>
       : <p role="status" className="text-ui text-muted-foreground">Loading…</p>;
   }
-  // A row opens its run (live, else last); one that never ran opens Automations, where it is listed with its controls.
+  // A row opens its run (live, else last); one that never ran opens Activity's Scheduled group, where it is listed with its controls.
   const open = (a: AutomationView) => {
     const t = a.activeRunTaskId ?? a.lastTaskId;
     if (onOpenAutomation) onOpenAutomation(a.id);
     else if (t) onOpen(t);
-    else openPanel("teams-routines", {}, { pushUrl: true });
+    else openPanel("activity", { section: "scheduled" }, { pushUrl: true });
   };
   if (!rows.length && onDraft) {
     const fromGoal = goalTemplates(goal);

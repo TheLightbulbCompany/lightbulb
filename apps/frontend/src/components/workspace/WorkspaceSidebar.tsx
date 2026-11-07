@@ -3,7 +3,7 @@
 // Desktop navigation shares canonical room state with the conversation (Chat's main view).
 import "./workspace.css";
 
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { useOrganization, useOrganizationList, useUser } from "@clerk/nextjs";
 import { ChevronDown } from "lucide-react";
 import {
@@ -21,7 +21,6 @@ import { MessagingDirectory } from "@/components/messaging/MessagingWorkspace";
 import { planLabel, isFreeTierExpired } from "@/lib/planLabel";
 import { FreeTierNote } from "@/components/chat/FreeTierNote";
 import { TrialRecapCard } from "@/components/messaging/TrialRecapCard";
-import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
 import { DesktopUpdater } from "@/components/desktop/DesktopUpdater";
 import { NodeStatusPill } from "@/components/desktop/NodeStatusPill";
 import { NetworkConnect } from "@/components/desktop/NetworkConnect";
@@ -75,14 +74,6 @@ export function WorkspaceSidebar({ onRecoveryReprovision, onNavigate, id, dialog
     .join("")
     .slice(0, 2)
     .toUpperCase();
-
-  // Consume the drawer's "freshly installed" marker.
-  const { state: drawerState, setFreshlyInstalled } = useMarketplaceDrawer();
-  useEffect(() => {
-    if (!drawerState.freshlyInstalledAgentId) return;
-    const handle = setTimeout(() => setFreshlyInstalled(null), 600);
-    return () => clearTimeout(handle);
-  }, [drawerState.freshlyInstalledAgentId, setFreshlyInstalled]);
 
   return (
     <div id={id} className="cream-sidebar" {...(dialog ? { role: "dialog", "aria-modal": true, "aria-label": "Chats" } : {})}>

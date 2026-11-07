@@ -57,10 +57,7 @@ vi.mock("@/components/teams/agents/hooks/useAgentMutations", () => ({
   }),
 }));
 
-const mockOpenMarketplace = vi.fn();
-vi.mock("@/components/marketplace/drawer/MarketplaceDrawerProvider", () => ({
-  useMarketplaceDrawer: () => ({ open: mockOpenMarketplace }),
-}));
+
 
 // The chart view renders the same OrgChart the retired Org chart panel did —
 // stubbed here so these tests assert the wiring, not the pan/zoom canvas

@@ -90,36 +90,6 @@ function viewActivityAction(): {
   };
 }
 
-// Opens the blocked task directly, through the URL grammar the dock's
-// describePanel reads (`?panel=teams-<detail-key>&detailId=`).
-function viewIssueAction(issueId: string): { label: string; onClick: () => void } {
-  return {
-    label: "View",
-    onClick: () => {
-      capture("run_notification_clicked", { source: "interaction" });
-      const params = new URLSearchParams(window.location.search);
-      params.set("panel", "teams-issue-detail");
-      params.set("detailId", issueId);
-      pushSearchParams(params);
-    },
-  };
-}
-
-// A finished or failed team run opens that run: its transcript says what
-// happened (the Inbox it used to land on made you hunt for it).
-function viewRunAction(runId: string): { label: string; onClick: () => void } {
-  return {
-    label: "View",
-    onClick: () => {
-      capture("run_notification_clicked", { source: "teams" });
-      const params = new URLSearchParams(window.location.search);
-      params.set("panel", "teams-run-detail");
-      params.set("detailId", runId);
-      pushSearchParams(params);
-    },
-  };
-}
-
 // Opens Activity on the approval or the agent's question itself (pinned under
 // "Needs you", decided inline).
 function viewNeedsYouAction(
@@ -206,8 +176,8 @@ function executeAction(action: RunToastAction, agents: Agent[], ctx: ExecuteCont
     });
     // Native notifications take a title AND a body; the specific line reads
     // better as the body under a short standing title. Native replaces the toast.
-    // Land on the blocked task itself when we know it; Activity is the fallback.
-    const view = action.issueId ? viewIssueAction(action.issueId) : viewActivityAction();
+    // Activity lists what needs a decision (the Paperclip task page is gone).
+    const view = viewActivityAction();
     void nativeNotify("Waiting on you", action.message, { onClick: view.onClick, tag: action.key }).then((shown) => {
       if (shown) return;
       notifyAttention("Waiting on you", { dedupeKey: action.key, description: action.message, action: view });
@@ -221,7 +191,7 @@ function executeAction(action: RunToastAction, agents: Agent[], ctx: ExecuteCont
   // reducer still tracks the run so its completion notifies when unwatched.
   if (action.kind === "working") return;
   if (action.source === "teams") {
-    const view = viewRunAction(action.key.replace(/^teams:/, ""));
+    const view = viewActivityAction();
     void teamRunCopy(action, agents, ctx).then(({ title, body }) =>
       nativeNotify(title, body, { onClick: view.onClick, tag: action.key }).then((shown) => {
         if (shown) dismissNotification(action.key);

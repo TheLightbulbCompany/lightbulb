@@ -199,7 +199,6 @@ function DocumentPane({ source }: { source: Extract<ArtifactSource, { kind: "doc
   const canEdit = (editing || !data?.lockedAt) && !previewing;
   const actions = <>
     {canEdit && <Button type="button" variant="outline" size="sm" aria-pressed={editing} onClick={() => setEditing((v) => !v)}>Edit</Button>}
-    <Button type="button" variant="outline" size="sm" onClick={() => openPanel("teams-issue-detail", { detailId: source.issue }, { pushUrl: true })}>Open task</Button>
   </>;
   const agents = agentsData?.agents ?? [];
   const author = actorName({ agentId: data?.updatedByAgentId, userId: data?.updatedByUserId, agents, members: membersData?.members, currentUserId: user?.id });

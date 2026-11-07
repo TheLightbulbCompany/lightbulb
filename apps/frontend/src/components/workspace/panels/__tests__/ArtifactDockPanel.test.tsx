@@ -42,12 +42,12 @@ it("a refused fetch shows the error card", async () => {
   expect(await screen.findByRole("alert")).toHaveTextContent(/can't open this file/i);
 });
 
-it("renders a Paperclip document body as markdown with an Open task action", async () => {
+it("renders a Paperclip document body as markdown, with no link to the retired task page", async () => {
   teamsRead.mockReturnValue({ data: { id: "d", key: "plan", title: "Launch plan", body: "# Launch\n\nStep one.", format: "markdown" } });
   render(<ArtifactDockPanel id="artifact" params={{ src: "paperclip", kind: "document", issue: "i1", key: "plan", ident: "ISOA-9" }} />);
   expect(await screen.findByRole("heading", { name: "Launch" })).toBeInTheDocument();
   expect(screen.getByText("Step one.")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: /open task/i })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /open task/i })).toBeNull();
 });
 
 it("refetches only when the source really changes", async () => {

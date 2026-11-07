@@ -1,13 +1,11 @@
-// Ported from upstream Paperclip's CommandPalette
-// (paperclip/ui/src/components/CommandPalette.tsx) (MIT, (c) 2025 Paperclip AI).
-// "Go to" entries DERIVED from the sidebar IA (COMPANY_SECTIONS) — the
-// palette covers exactly what the sidebar shows, plus the roster and
-// settings. Paths are the canonical in-shell `/chat?panel=teams-*` URLs
-// (there is no standalone `/teams` route tree).
+// The ⌘K palette's "Go to" entries: the places in the shell. Paths are the
+// canonical in-shell `/chat?panel=` URLs.
 
-import { teamsPanelUrl } from "@/lib/shellNav";
-import { COMPANY_SECTIONS, type CompanyNavIcon } from "@/components/chat/companySections";
-import { Bot, Briefcase, Clock, Settings, ShieldCheck } from "lucide-react";
+import type { ComponentType, SVGProps } from "react";
+import { Bell, Bot, Briefcase, Clock, Images, Mail, Settings, ShieldCheck } from "lucide-react";
+
+// One icon prop type for every row (the palette renders with className/style) — lucide icons satisfy it.
+export type CompanyNavIcon = ComponentType<SVGProps<SVGSVGElement> & { size?: number }>;
 
 export interface CommandPaletteAction {
   id: string;
@@ -17,56 +15,19 @@ export interface CommandPaletteAction {
   keywords?: string[];
 }
 
-// Search aliases by teams-* list key: retired labels ("dashboard",
-// "artifacts", "issues", "approvals") so muscle memory survives the renames,
-// plus the still-applicable synonyms the palette always had.
-const KEYWORDS: Record<string, string[]> = {
-  issues: ["issues", "tickets"],
-  routines: ["cron", "schedule", "routines"],
-  artifacts: ["artifacts"],
-  // Home and the Inbox tab folded into Activity, so their old words land here.
-  activity: ["events", "log", "home", "dashboard", "inbox", "mine", "approvals"],
-  mail: ["email", "meetings", "transcripts"],
-  // Money absorbed Payments/Products/Customers/Spend as sections of one
-  // page — their old search words, plus "usage" (the label the same numbers
-  // carry under /settings, ?panel=usage), still need to find it.
-  money: ["spend", "usage", "cost", "costs", "billing", "credits", "payments", "customers", "products", "revenue"],
-};
-
-/** The company sections' pages, the agent roster and Settings. */
-function sectionActions(): CommandPaletteAction[] {
-  return [
-    ...COMPANY_SECTIONS.flatMap((section) =>
-      section.items.map(({ panel, label, Icon }) => {
-        const key = panel.replace(/^teams-/, "");
-        // Mail is its own panel, not a teams-* one.
-        const path = panel.startsWith("teams-") ? teamsPanelUrl(key) : `/chat?panel=${panel}`;
-        return { id: `go-${key}`, label, path, Icon, keywords: KEYWORDS[key] };
-      }),
-    ),
-    // The two non-sidebar surfaces: the agent roster and the Settings home.
-    // The org chart is a view of this panel now, so its search words point here.
-    {
-      id: "go-agents",
-      label: "Agents",
-      path: teamsPanelUrl("agents"),
-      Icon: Bot,
-      keywords: ["bot", "roster", "org chart", "network", "hierarchy"],
-    },
-    // Its own route, not a dock tab: the palette navigates there by router.
-    { id: "go-settings", label: "Settings", path: "/settings", Icon: Settings },
-  ];
-}
-
-/** UX slice 4: Work and Money are gone, so the palette offers where their things live now, inside the shell:
- *  Settings (and its Business and Approvals rows) and Activity's Scheduled group. */
+/** Where things live inside the shell: Activity (tasks, Needs you, Scheduled), Mail, Creations, the roster and
+ *  Settings (and its Business and Approvals rows). Retired names stay as search words so muscle memory lands. */
 export function navActions(admin = true): CommandPaletteAction[] {
-  const dropped = new Set(["teams-money", "teams-issues", "teams-projects", "teams-routines", "teams-goals", "teams-cases"]);
   return [
-    ...sectionActions().filter((action) => !dropped.has(action.path.match(/[?&]panel=([^&]+)/)?.[1] ?? "") && action.id !== "go-settings"),
-    { id: "go-scheduled", label: "Scheduled", path: "/chat?panel=activity&section=scheduled", Icon: Clock, keywords: KEYWORDS.routines },
+    // Home and the Inbox tab folded into Activity, and the Paperclip task board is gone: their old words land here.
+    { id: "go-activity", label: "Activity", path: "/chat?panel=activity", Icon: Bell, keywords: ["events", "log", "home", "dashboard", "inbox", "mine", "approvals", "tasks", "issues", "tickets"] },
+    { id: "go-mail", label: "Mail", path: "/chat?panel=mail", Icon: Mail, keywords: ["email", "meetings", "transcripts"] },
+    { id: "go-artifacts", label: "Creations", path: "/chat?panel=creations", Icon: Images, keywords: ["library", "artifacts"] },
+    // The org chart was a view of this panel, so its search words point here.
+    { id: "go-agents", label: "Agents", path: "/chat?panel=teams-agents", Icon: Bot, keywords: ["bot", "roster", "org chart", "network", "hierarchy", "team"] },
+    { id: "go-scheduled", label: "Scheduled", path: "/chat?panel=activity&section=scheduled", Icon: Clock, keywords: ["cron", "schedule", "routines"] },
     { id: "go-settings", label: "Settings", path: "/chat?panel=settings", Icon: Settings },
-    { id: "go-business", label: "Business", path: "/chat?panel=settings&section=business", Icon: Briefcase, keywords: KEYWORDS.money },
+    { id: "go-business", label: "Business", path: "/chat?panel=settings&section=business", Icon: Briefcase, keywords: ["spend", "usage", "cost", "costs", "billing", "credits", "payments", "customers", "products", "revenue", "money"] },
     // Approvals is an admin's row in Settings (ADMIN_ONLY_PANELS): never offered to anyone else.
     ...(admin ? [{ id: "go-approvals", label: "Approvals", path: "/chat?panel=settings&section=approvals", Icon: ShieldCheck, keywords: ["approve", "ask", "auto", "permissions"] }] : []),
   ];

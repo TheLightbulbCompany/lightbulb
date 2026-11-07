@@ -55,15 +55,12 @@ vi.mock("@/components/chat/ProvisioningStepper", () => ({
   ProvisioningStepper: ({ children, trigger }: { children: ReactNode; trigger?: string }) => <div data-testid="stepper" data-trigger={trigger}>
     {state.gated ? <p>Setting up your workspace</p> : children}</div>,
 }));
-vi.mock("@/components/chat/InlineTeamsNav", () => ({ InlineTeamsNavProvider: ({ children }: { children: ReactNode }) => children }));
 vi.mock("@/components/teams/TeamsEventsProvider", () => ({ TeamsEventsProvider: ({ children }: { children: ReactNode }) => children }));
 vi.mock("@/components/teams/command-palette/CommandPaletteProvider", () => ({ CommandPaletteProvider: ({ children }: { children: ReactNode }) => children }));
-vi.mock("@/components/teams/TeamsPanelRouter", () => ({ preloadTeamsPanels: vi.fn() }));
 vi.mock("@/components/desktop/DesktopPermissionsGate", () => ({ DesktopPermissionsGate: () => null }));
 vi.mock("@/components/chat/TrialBanner", () => ({ TrialBanner: () => null }));
 vi.mock("@/components/chat/OutOfCreditsBanner", () => ({ OutOfCreditsBanner: () => null }));
 vi.mock("@/components/chat/LaunchJoinBanner", () => ({ LaunchJoinBanner: () => null }));
-vi.mock("@/components/marketplace/drawer/MarketplaceDrawerProvider", () => ({ useMarketplaceDrawer: () => ({ open: vi.fn() }) }));
 vi.mock("@/components/chat/shell/useUserSyncOnce", () => ({ useUserSyncOnce: () => {} }));
 vi.mock("@/components/chat/shell/useCheckoutReturn", () => ({ useCheckoutReturn: () => ({ showSubscriptionSuccess: true }) }));
 vi.mock("@/components/chat/shell/useChatReady", () => ({ useChatReady: () => ({ chatReady: state.chatReady }) }));
@@ -190,9 +187,9 @@ it("applies the URL's command on mount: a retired alias opens Activity, a detail
   expect(screen.getByTestId("panel-activity")).toBeInTheDocument();
   view.unmount();
   _resetControllerForTests();
-  window.history.replaceState(null, "", "/chat?panel=teams-issue-detail&detailId=ADM-9");
+  window.history.replaceState(null, "", "/chat?panel=task-detail&taskId=t-9");
   renderReady();
-  expect(screen.getByTestId("panel-teams")).toHaveTextContent("teams-issue-detail:ADM-9");
+  expect(screen.getByTestId("panel-task")).toHaveTextContent("task-detail");
   expect(screen.getByRole("region", { name: "Task" })).toBeInTheDocument();
 });
 

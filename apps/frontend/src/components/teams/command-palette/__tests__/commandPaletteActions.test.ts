@@ -1,9 +1,7 @@
-// navActions derives from the sidebar IA (COMPANY_SECTIONS) minus what moved into the shell, and
-// filterNavActions matches labels and keyword aliases.
+// navActions lists the places in the shell, and filterNavActions matches labels and keyword aliases.
 
 import { describe, test, expect } from "vitest";
 import { navActions, filterNavActions } from "../commandPaletteActions";
-import { COMPANY_SECTIONS } from "@/components/chat/companySections";
 
 const byId = Object.fromEntries(navActions().map((a) => [a.id, a]));
 
@@ -15,10 +13,7 @@ describe("navActions", () => {
   });
 
   test("the deleted Growth and Company tabs, and Accounts (a Settings section), are offered nowhere", () => {
-    const declared = COMPANY_SECTIONS.flatMap((s) => s.items).map((i) => i.panel);
-    expect(COMPANY_SECTIONS.map((s) => s.label)).not.toContain("Company");
     for (const key of ["publish", "seo", "ads", "leads", "identity", "domain-site", "compliance", "contracts", "accounts"]) {
-      expect(declared).not.toContain(`teams-${key}`);
       expect(byId[`go-${key}`], `${key} should not be offered`).toBeUndefined();
     }
   });
@@ -57,10 +52,10 @@ describe("filterNavActions", () => {
     expect(filterNavActions("xyzzy")).toHaveLength(0);
   });
 
-  test("no Work or Money; Settings, Business, Scheduled and Approvals open in the shell", () => {
+  test("no Work, Money or Paperclip Search; Settings, Business, Scheduled and Approvals open in the shell", () => {
     const actions = filterNavActions("");
     const byId = Object.fromEntries(actions.map((a) => [a.id, a.path]));
-    for (const gone of ["go-money", "go-issues", "go-routines", "go-projects", "go-goals", "go-cases"]) expect(byId).not.toHaveProperty(gone);
+    for (const gone of ["go-money", "go-issues", "go-routines", "go-projects", "go-goals", "go-cases", "go-search"]) expect(byId).not.toHaveProperty(gone);
     expect(byId["go-settings"]).toBe("/chat?panel=settings");
     expect(byId["go-business"]).toBe("/chat?panel=settings&section=business");
     expect(byId["go-scheduled"]).toBe("/chat?panel=activity&section=scheduled");

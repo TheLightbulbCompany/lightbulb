@@ -3,8 +3,7 @@
 // Ported from upstream Paperclip's CommandPalette
 // (paperclip/ui/src/components/CommandPalette.tsx) (MIT, (c) 2025 Paperclip AI).
 // Vanilla shadcn Dialog + Input + result list (no cmdk dep). v1: navigate +
-// search across agents/issues/projects. Drops "create" actions until #3d
-// (NewIssueDialog) merges.
+// search across chats, tasks, files, messages and agents.
 
 import { useState, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
@@ -13,7 +12,7 @@ import { Dialog, DialogPortal, DialogTitle } from "@/components/ui/dialog";
 import { Search } from "lucide-react";
 import { filterNavActions, type CommandPaletteAction } from "./commandPaletteActions";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
-import { navigateShell, teamsDetailUrl } from "@/lib/shellNav";
+import { navigateShell } from "@/lib/shellNav";
 import { agentInspectorUrl } from "@/components/teams/shared/lib/agentInspectorUrl";
 import { useFilteredCommandResults } from "./useFilteredCommandResults";
 import { useRoomCommandResults } from "@/components/messaging/roomCommands";
@@ -26,7 +25,7 @@ import { KIND_WORD, openOutput, outputName } from "@/components/creations/openOu
 import { MIN_TERM, useTaskSearch } from "./useTaskSearch";
 
 type FlatItem = {
-  kind: "conversation" | "task" | "file" | "message" | "nav" | "agent" | "issue" | "project";
+  kind: "conversation" | "task" | "file" | "message" | "nav" | "agent";
   id: string;
   label: string;
   path: string;
@@ -98,7 +97,7 @@ function CommandPaletteContent({ open, onOpenChange, onRun }: CommandPaletteProp
   const admin = useIsWorkspaceAdmin();
   const navResults = useMemo(() => filterNavActions(query, admin), [query, admin]);
   // Tasks, not Paperclip issues: the Tasks and Files groups take the old Issues group's place.
-  const { agents, projects } = useFilteredCommandResults(query, open);
+  const { agents } = useFilteredCommandResults(query, open);
   const found = useTaskSearch(query, open);
   const conversations = useRoomCommandResults(query, open);
   const workspace = useMessagingWorkspaceOptional();
@@ -124,9 +123,8 @@ function CommandPaletteContent({ open, onOpenChange, onRun }: CommandPaletteProp
     messageHits.forEach((m) => items.push({ kind: "message", id: m.id, label: m.label, path: "", run: m.run }));
     navResults.forEach((a) => items.push({ kind: "nav", id: a.id, label: a.label, path: a.path }));
     agents.forEach((a) => items.push({ kind: "agent", id: a.id, label: a.name, path: agentInspectorUrl(a.id) }));
-    projects.forEach((p) => items.push({ kind: "project", id: p.id, label: p.name, path: teamsDetailUrl("project", p.id) }));
     return items;
-  }, [conversations, found, messageHits, navResults, agents, projects]);
+  }, [conversations, found, messageHits, navResults, agents]);
 
   // Derive a clamped index from raw state — no setState-in-effect needed.
   const selectedIndex = Math.min(rawSelectedIndex, Math.max(0, flatItems.length - 1));
@@ -271,23 +269,6 @@ function CommandPaletteContent({ open, onOpenChange, onRun }: CommandPaletteProp
                         key={a.id}
                         label={a.name}
                         sublabel="Agent"
-                        selected={selectedIndex === idx}
-                        onMouseEnter={() => setSelectedIndex(idx)}
-                        onClick={() => select(flatItems[idx])}
-                      />
-                    );
-                  })}
-                </Group>
-              )}
-              {projects.length > 0 && (
-                <Group label="Projects">
-                  {projects.map((p) => {
-                    const idx = flatItems.findIndex((it) => it.kind === "project" && it.id === p.id);
-                    return (
-                      <Row
-                        key={p.id}
-                        label={p.name}
-                        sublabel="Project"
                         selected={selectedIndex === idx}
                         onMouseEnter={() => setSelectedIndex(idx)}
                         onClick={() => select(flatItems[idx])}

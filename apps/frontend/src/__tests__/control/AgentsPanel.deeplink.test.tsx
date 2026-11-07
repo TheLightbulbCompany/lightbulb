@@ -44,10 +44,6 @@ vi.mock("@/components/control/panels/AgentCreateForm", () => ({
   AgentCreateForm: () => <div>create-form</div>,
 }));
 
-const mockOpenMarketplace = vi.fn();
-vi.mock("@/components/marketplace/drawer/MarketplaceDrawerProvider", () => ({
-  useMarketplaceDrawer: () => ({ open: mockOpenMarketplace }),
-}));
 
 import { AgentsPanel } from "@/components/control/panels/AgentsPanel";
 
@@ -82,20 +78,11 @@ describe("AgentsPanel deep link", () => {
     expect(screen.getByText("Select an agent to view details")).toBeInTheDocument();
   });
 
-  it("+ New shows the chooser; hire opens the marketplace drawer, build shows the form", () => {
-    mockOpenMarketplace.mockClear();
+  it("+ New shows the create form (no marketplace chooser)", () => {
     render(<AgentsPanel />);
-
-    fireEvent.click(screen.getByRole("button", { name: /new/i }));
-    expect(screen.getByTestId("agent-create-chooser")).toBeInTheDocument();
     expect(screen.queryByText("create-form")).toBeNull();
-
-    fireEvent.click(screen.getByRole("button", { name: /hire from marketplace/i }));
-    expect(mockOpenMarketplace).toHaveBeenCalledWith({ view: "browse" });
-    expect(screen.queryByTestId("agent-create-chooser")).toBeNull();
-
     fireEvent.click(screen.getByRole("button", { name: /new/i }));
-    fireEvent.click(screen.getByRole("button", { name: /build your own/i }));
     expect(screen.getByText("create-form")).toBeInTheDocument();
+    expect(screen.queryByText(/hire from marketplace/i)).toBeNull();
   });
 });

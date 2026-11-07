@@ -11,7 +11,6 @@ import {
   openTaskPane,
   openBrowserPane,
   closePane,
-  closeSubjectDeleted,
   activateMessagesPanel,
   syncMessagesPanelAgent,
   setPaneFullScreen,
@@ -74,9 +73,9 @@ describe("places", () => {
   it.each([
     ["home", "home"],
     ["activity", "activity"],
-    ["teams-issues", "work"],
+    ["teams-issues", "activity"],
     ["teams-routines", "activity"],
-    ["teams-search", "work"],
+    ["teams-agents", "team"],
     ["teams-artifacts", "canvas"],
     ["canvas", "canvas"],
   ])("%s opens the %s place's main view", (key, place) => {
@@ -85,19 +84,19 @@ describe("places", () => {
   });
 
   it("re-opening a place re-delivers fresh params and clears stale clearable ones", () => {
-    openPanel("teams-issues", { agent: "a-1", groupBy: "status" });
-    expect(snap().main?.params).toEqual({ teamsKey: "issues", agent: "a-1", groupBy: "status" });
-    openPanel("teams-issues", { groupBy: "status" });
-    expect(snap().main?.params).toEqual({ teamsKey: "issues", groupBy: "status" });
-    openPanel("teams-projects");
-    expect(snap().main).toMatchObject({ panelId: "teams-work", params: { teamsKey: "projects" } });
+    openPanel("activity", { filter: "mentions", focus: "f-1" });
+    expect(snap().main?.params).toEqual({ filter: "mentions", focus: "f-1" });
+    openPanel("activity", { filter: "mentions" });
+    expect(snap().main?.params).toEqual({ filter: "mentions" });
+    openPanel("teams-agents");
+    expect(snap().main).toMatchObject({ panelId: "teams-agents", params: { teamsKey: "agents" } });
   });
 
   it("one-shots ride the open and a panel consumes them with updatePanelParams", () => {
-    openPanel("teams-issues", {}, { oneShots: { new: "task" } });
+    openPanel("teams-agents", {}, { oneShots: { new: "task" } });
     expect(snap().main?.params).toMatchObject({ new: "task" });
-    updatePanelParams("teams-work", { new: undefined });
-    expect(snap().main?.params).toEqual({ teamsKey: "issues" });
+    updatePanelParams("teams-agents", { new: undefined });
+    expect(snap().main?.params).toEqual({ teamsKey: "agents" });
   });
 
   it("only pushUrl writes the URL, once", () => {
@@ -124,7 +123,7 @@ describe("places", () => {
 
 describe("the conversation", () => {
   it("retargets one conversation for every agent, room and session open, and goes to Chat", () => {
-    openPanel("teams-issues");
+    openPanel("activity");
     openChatPanel("agent-a");
     expect(snap()).toMatchObject({ place: "chat", chatParams: { agentId: "agent-a" } });
     openMessagePanel("room-1", "m-1");
@@ -172,7 +171,7 @@ describe("the conversation", () => {
 
   it("is visible only in Chat or beside a full-screen pane; the last agent stays sticky", () => {
     openChatPanel("agent-a");
-    openPanel("teams-issues");
+    openPanel("activity");
     expect(snap()).toMatchObject({ messagesVisible: false, visibleChatAgentIds: [], focusedChatAgentId: null, lastFocusedChatAgentId: "agent-a" });
     openPanel("file-viewer");
     setPaneFullScreen(true);
@@ -201,7 +200,7 @@ describe("the right pane", () => {
     ["browser", {}, "browser"],
     ["mail", { item: "mail:1" }, "mail"],
     ["agents", { agent: "a-1" }, "control:agents"],
-    ["teams-issue-detail", { detailId: "ADM-1" }, "teams-issue-detail:ADM-1"],
+    ["task-detail", { taskId: "t-1" }, "task-detail"],
   ])("%s opens in the pane beside the place", (key, params, paneId) => {
     openPanel("activity");
     openPanel(key, params);
@@ -220,7 +219,7 @@ describe("the right pane", () => {
   it("replacing a URL-named item clears it, and the Browser writes its own URL", () => {
     window.history.replaceState(null, "", "/chat?panel=file-viewer&path=/a.md");
     openPanel("file-viewer", { path: "/a.md" });
-    openPanel("teams-issue-detail", { detailId: "ADM-1" });
+    openPanel("task-detail", { taskId: "t-1" });
     expect(String(vi.mocked(replaceSearchParams).mock.calls[0][0])).toBe("");
     expect(openBrowserPane()).toBe(true);
     expect(String(vi.mocked(pushSearchParams).mock.calls.at(-1)?.[0])).toBe("panel=browser");
@@ -239,21 +238,21 @@ describe("the right pane", () => {
   it("a pushed URL names the place and the pane beside it", () => {
     openPanel("file-viewer", { path: "/a.md" }, { pushUrl: true });
     expect(String(vi.mocked(pushSearchParams).mock.calls.at(-1)?.[0])).toBe("panel=file-viewer&path=%2Fa.md");
-    openPanel("teams-issues", { groupBy: "status" }, { pushUrl: true });
+    openPanel("activity", { filter: "mentions" }, { pushUrl: true });
     expect(String(vi.mocked(pushSearchParams).mock.calls.at(-1)?.[0]))
-      .toBe("panel=teams-issues&groupBy=status&pane=file-viewer&pane.path=%2Fa.md");
+      .toBe("panel=activity&filter=mentions&pane=file-viewer&pane.path=%2Fa.md");
     openPanel("browser", {}, { pushUrl: true });
-    expect(String(vi.mocked(pushSearchParams).mock.calls.at(-1)?.[0])).toBe("panel=teams-issues&groupBy=status&pane=browser");
+    expect(String(vi.mocked(pushSearchParams).mock.calls.at(-1)?.[0])).toBe("panel=activity&filter=mentions&pane=browser");
     // A dismissed filter does not come back with the next push.
-    updatePanelParams("teams-work", { groupBy: undefined });
+    updatePanelParams("activity", { filter: undefined });
+    openPanel("teams-agents", {}, { pushUrl: true });
     openPanel("activity", {}, { pushUrl: true });
-    openPanel("teams-issues", {}, { pushUrl: true });
-    expect(String(vi.mocked(pushSearchParams).mock.calls.at(-1)?.[0])).toBe("panel=teams-issues&pane=browser");
+    expect(String(vi.mocked(pushSearchParams).mock.calls.at(-1)?.[0])).toBe("panel=activity&pane=browser");
   });
 
   it("close clears a URL that named it (in place) and nothing else", () => {
-    window.history.replaceState(null, "", "/chat?panel=teams-issue-detail&detailId=ADM-1&utm=x");
-    openPanel("teams-issue-detail", { detailId: "ADM-1" });
+    window.history.replaceState(null, "", "/chat?panel=task-detail&taskId=t-1&utm=x");
+    openPanel("task-detail", { taskId: "t-1" });
     closePane();
     expect(snap().pane).toBeNull();
     expect(String(vi.mocked(replaceSearchParams).mock.calls[0][0])).toBe("utm=x");
@@ -270,18 +269,11 @@ describe("the right pane", () => {
     expect(snap()).toMatchObject({ fullScreen: true, messagesVisible: true });
     openPanel("file-viewer"); // another pane keeps the screen
     expect(snap().fullScreen).toBe(true);
-    openPanel("teams-issues");
-    expect(snap()).toMatchObject({ fullScreen: false, place: "work", pane: { panelId: "file-viewer" } });
+    openPanel("activity");
+    expect(snap()).toMatchObject({ fullScreen: false, place: "activity", pane: { panelId: "file-viewer" } });
     setPaneFullScreen(true);
     closePane();
     expect(snap()).toMatchObject({ fullScreen: false, pane: null });
-  });
-
-  it("closeSubjectDeleted replaces the URL with the list, closes the detail, shows the list", () => {
-    openPanel("teams-issue-detail", { detailId: "ADM-1" });
-    closeSubjectDeleted("teams-issue-detail:ADM-1", "teams-issues");
-    expect(String(vi.mocked(replaceSearchParams).mock.calls[0][0])).toBe("panel=teams-issues");
-    expect(snap()).toMatchObject({ pane: null, place: "work" });
   });
 
   it("detach empties both slots", () => {

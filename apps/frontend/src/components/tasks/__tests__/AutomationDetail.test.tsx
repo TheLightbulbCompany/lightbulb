@@ -9,7 +9,6 @@ const live = vi.hoisted(() => ({ tasks: { cacheScope: "org_test" }, agentNames: 
 vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useOptionalLiveEvents: () => live }));
 const api = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(async () => ({})), del: vi.fn(async () => undefined), patch: vi.fn(async () => ({})) }));
 vi.mock("@/lib/api", () => ({ useApi: () => api }));
-vi.mock("@/components/teams/panels/RoutinesPanel", () => ({ RoutinesPanel: () => <div data-testid="routines-panel">Routines (today)</div> }));
 const openTaskPane = vi.hoisted(() => vi.fn());
 const openPanel = vi.hoisted(() => vi.fn());
 vi.mock("@/components/workspace/workspaceController", () => ({
@@ -21,7 +20,6 @@ const messaging = vi.hoisted(() => ({ value: null as unknown }));
 vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({ useMessagingWorkspaceOptional: () => messaging.value }));
 import { ApiError } from "@lightbulb/shared";
 
-import { AutomationsPanel } from "../AutomationsPanel";
 import { AutomationDetail } from "../AutomationDetail";
 
 const Detail = ({ viewerTz = "America/New_York", onBack = vi.fn() }: { viewerTz?: string; onBack?: () => void }) =>
@@ -168,15 +166,6 @@ describe("AutomationDetail (the automation pane)", () => {
     const history = await screen.findByRole("region", { name: "History" });
     await userEvent.click(await within(history).findByRole("button", { name: /Stripe fee estimate/ }));
     expect(openTaskPane).toHaveBeenCalledWith("t-fees");
-  });
-});
-
-describe("AutomationsPanel (Work › Automations)", () => {
-  it("the one Scheduled list: a row opens the pane", async () => {
-    render(<Fresh><AutomationsPanel /></Fresh>);
-    await userEvent.click(await screen.findByRole("button", { name: "Post signups every Monday" }));
-    expect(openPanel).toHaveBeenCalledWith("automation", { id: "a1" }, { pushUrl: true });
-    expect(screen.queryByTestId("routines-panel")).toBeNull();
   });
 });
 

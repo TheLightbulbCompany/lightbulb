@@ -187,7 +187,7 @@ describe('decidePaperclipLinkRedirect (agent Paperclip-link redirect)', () => {
   it('redirects a direct hit on an agent-written issue path to the in-shell panel', () => {
     expect(decidePaperclipLinkRedirect('/ISOA/issues/ISOA-317')).toEqual({
       kind: 'redirect',
-      to: '/chat?panel=teams-issue-detail&detailId=ISOA-317',
+      to: '/chat?panel=activity',
     });
   });
 
@@ -203,11 +203,11 @@ describe('decidePaperclipLinkRedirect (agent Paperclip-link redirect)', () => {
     // defensive fallback (comment-style.md still requires the prefix).
     expect(decidePaperclipLinkRedirect('/issues/ISOA-317')).toEqual({
       kind: 'redirect',
-      to: '/chat?panel=teams-issue-detail&detailId=ISOA-317',
+      to: '/chat?panel=activity',
     });
     expect(decidePaperclipLinkRedirect('/approvals/ca6ba09d-b558')).toEqual({
       kind: 'redirect',
-      to: '/chat?panel=teams-approval-detail&detailId=ca6ba09d-b558',
+      to: '/chat?panel=activity',
     });
   });
 

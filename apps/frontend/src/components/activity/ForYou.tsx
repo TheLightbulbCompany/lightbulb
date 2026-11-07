@@ -3,13 +3,9 @@
 import { useState } from "react";
 import type { ActivityAction, ActivityItem, ActivityLinkKind } from "@lightbulb/shared";
 import { Identity } from "@/components/teams/shared/components/Identity";
-import { DecisionResolver } from "@/components/teams/inbox/DecisionResolver";
-import { useRunRetry } from "@/components/teams/inbox/FailedRunRow";
-import type { FailedRunGroup } from "@/components/teams/inbox/lib/groupFailedRuns";
-import type { AttentionItem, CompanyAgent } from "@/components/teams/shared/types";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { agentTint } from "@/lib/agentTint";
-import { forYouEntries, type ForYouFilter, type ForYouEntry } from "./activityPage";
+import { forYouEntries, type ForYouEntry } from "./activityPage";
 
 export interface ActivityTarget { kind: ActivityLinkKind; id: string; roomId: string | null }
 export interface ActivityPerson { value: string; label: string }
@@ -28,37 +24,11 @@ export function rowTarget(item: ActivityItem): ActivityTarget | null {
 }
 
 export interface ForYouProps {
-  activityItems: readonly ActivityItem[];
-  attentionItems: readonly AttentionItem[];
-  /** The Inbox's failed runs, grouped and minus the dismissed ones. */
-  failedRuns?: readonly FailedRunGroup[];
-  /** A source (Activity, the attention feed, failed runs) failed or answered only partly:
-   *  For you cannot vouch that nothing is waiting, so it never shows the all-clear. */
-  incomplete?: boolean;
-  /** Re-reads every source; offered beside the "Couldn't load some items" line. */
-  onRetry?: () => void;
-  /** Older Activity pages exist: they load as the list's end scrolls into view. */
-  hasMore?: boolean;
-  loadingMore?: boolean;
-  onLoadMore?: () => void;
-  /** Dismiss: acknowledges every run in a group, as the Inbox did. */
-  onDismissRuns?: (runIds: string[]) => void;
-  /** The selected chip (the `?panel=activity&filter=` link). */
-  filter?: ForYouFilter;
-  /** A chip was picked: the page puts it in the URL and passes it back as `filter`. */
-  onFilterChange?: (filter: ForYouFilter) => void;
-  /** Any source is still loading its first answer. */
-  loading: boolean;
   onRunAction: (itemId: string, actionId: string, request: { note?: string; value?: string }) => Promise<unknown>;
   /** Opens an item in context: the conversation at the message, the thread, or the item's detail. */
   onNavigate: (target: ActivityTarget) => void;
   /** Workspace humans and agents, for a `person` input. The server validates the pick. */
   people: readonly ActivityPerson[];
-  agents: readonly CompanyAgent[];
-  /** An item a notification points at: highlighted and scrolled to. */
-  focusId?: string | null;
-  /** The viewer's Clerk id, so a question on the desk can say "You". */
-  currentUserId?: string | null;
 }
 
 /** Home: For you's own rows for asks that are not requests (a website login, an extension, a reconnect),
@@ -66,23 +36,14 @@ export interface ForYouProps {
 export function ForYouAsks({ items, onRunAction, onNavigate }: {
   items: readonly ActivityItem[]; onRunAction: ForYouProps["onRunAction"]; onNavigate: ForYouProps["onNavigate"];
 }) {
-  const entries = forYouEntries(items, [], undefined, () => "An agent");
+  const entries = forYouEntries(items);
   if (!entries.length) return null;
-  return <ul className="for-you__list">{entries.map((entry) => <EntryRow key={entry.id} entry={entry} highlighted={false} agentMap={NO_AGENTS}
+  return <ul className="for-you__list">{entries.map((entry) => <ItemEntry key={entry.id} entry={entry} highlighted={false}
     onRunAction={onRunAction} people={[]} onNavigate={onNavigate} />)}</ul>;
 }
-const NO_AGENTS = new Map<string, CompanyAgent>();
 
 function Avatar({ entry }: { entry: Pick<ForYouEntry, "sourceName" | "sourceKind" | "sourceId"> }) {
   return <Identity name={entry.sourceName} avatarOnly size="xs" tint={entry.sourceKind === "agent" ? agentTint(entry.sourceId) : null} />;
-}
-
-function entryTarget(entry: ForYouEntry): ActivityTarget | null {
-  if (entry.source.type === "activity") return rowTarget(entry.source.item);
-  if (entry.source.type === "failed_runs") return { kind: "run", id: entry.source.group.representative.id, roomId: null };
-  if (entry.source.item.sourceKind === "approval") return { kind: "approval", id: entry.source.item.approval?.id ?? entry.source.item.subject.id, roomId: null };
-  const issue = entry.source.item.relatedIssue;
-  return issue ? { kind: "issue", id: issue.id, roomId: null } : null;
 }
 
 /** The item's one action: its primary one, else its first that is not destructive. */
@@ -91,12 +52,8 @@ export function primaryAction(item: ActivityItem): ActivityAction | null {
 }
 
 type EntryProps = {
-  entry: ForYouEntry; highlighted: boolean; agentMap: Map<string, CompanyAgent>;
-} & Pick<ForYouProps, "onRunAction" | "onNavigate" | "people" | "onDismissRuns">;
-
-function EntryRow(props: EntryProps) {
-  return props.entry.source.type === "failed_runs" ? <FailedRunEntry {...props} group={props.entry.source.group} /> : <ItemEntry {...props} />;
-}
+  entry: ForYouEntry; highlighted: boolean;
+} & Pick<ForYouProps, "onRunAction" | "onNavigate" | "people">;
 
 function RowShell({ entry, highlighted, target, onNavigate, control, below, failure }: {
   entry: ForYouEntry; highlighted: boolean; target: ActivityTarget | null; onNavigate: ForYouProps["onNavigate"];
@@ -126,29 +83,17 @@ function RowShell({ entry, highlighted, target, onNavigate, control, below, fail
   </li>;
 }
 
-/** A failed run (group): Retry wakes its agent and Dismiss acks every run in it, as in the Inbox. */
-function FailedRunEntry({ entry, highlighted, onNavigate, onDismissRuns, group }: EntryProps & { group: FailedRunGroup }) {
-  const retry = useRunRetry(group.representative.agentId);
-  const control = <span className="for-you-row__controls">
-    {group.representative.agentId && <button type="button" className="editorial-btn editorial-btn--sm editorial-btn--secondary"
-      disabled={retry.phase === "retrying"} onClick={() => void retry.retry()}>{retry.label}</button>}
-    {onDismissRuns && <button type="button" className="editorial-btn editorial-btn--sm editorial-btn--ghost"
-      onClick={() => onDismissRuns(group.runs.map((run) => run.id))}>Dismiss</button>}
-  </span>;
-  return <RowShell entry={entry} highlighted={highlighted} target={entryTarget(entry)} onNavigate={onNavigate} control={control} />;
-}
-
-function ItemEntry({ entry, highlighted, onRunAction, onNavigate, people, agentMap }: EntryProps) {
+function ItemEntry({ entry, highlighted, onRunAction, onNavigate, people }: EntryProps) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
-  const target = entryTarget(entry);
+  const target = rowTarget(entry.source.item);
   const button = `editorial-btn editorial-btn--sm ${entry.verb === "decide" ? "editorial-btn--primary" : "editorial-btn--secondary"}`;
 
   let control: React.ReactNode = null;
   let below: React.ReactNode = null;
   // A message row only opens: its thread or conversation is where it is answered.
-  if (entry.source.type === "activity" && entry.verb !== "reply") {
+  if (entry.verb !== "reply") {
     const item = entry.source.item;
     const action = primaryAction(item);
     // The server's quiet second answer (a login or extension ask's "Not now", a join's "Decline").
@@ -187,18 +132,6 @@ function ItemEntry({ entry, highlighted, onRunAction, onNavigate, people, agentM
       ? <SecretForm action={action} busy={busy} onCancel={() => setOpen(false)} onSubmit={(value) => void run({ value })} />
       : <ActionForm action={action} busy={busy} people={people} onCancel={() => setOpen(false)}
         onSubmit={(value) => void run(value === undefined ? {} : { note: value, value })} />;
-  } else if (entry.source.type === "attention") {
-    const item = entry.source.item;
-    if (item.sourceKind === "decision") {
-      // The feed row carries no options: the resolver reads the decision and answers it in place.
-      control = <button type="button" className={button} aria-expanded={open} onClick={() => setOpen(!open)}>Answer</button>;
-      if (open) below = <DecisionResolver decisionId={item.subject.id} originIssue={item.relatedIssue}
-        agentMap={agentMap} originAgentName={item.originAgentName} />;
-    } else if (target) {
-      // An approval or question (shown from here when Activity could not list it) is decided on its own page.
-      const decides = item.sourceKind === "approval" || item.sourceKind === "issue_thread_interaction";
-      control = <button type="button" className={button} onClick={() => onNavigate(target)}>{decides ? "Review" : "Open"}</button>;
-    }
   }
 
   return <RowShell entry={entry} highlighted={highlighted} target={target} onNavigate={onNavigate} control={control} below={below} failure={failure} />;

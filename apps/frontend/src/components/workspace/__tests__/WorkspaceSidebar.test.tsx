@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, act } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import type { DirectoryRoom } from "@/components/messaging/types";
 
 const openPanel = vi.fn();
@@ -45,12 +45,7 @@ vi.mock("@clerk/nextjs", () => ({
 }));
 let memberships: { organization: { id: string; name: string } }[] = [];
 const setActive = vi.fn().mockResolvedValue(undefined);
-let freshlyInstalledAgentId: string | null;
-const setFreshlyInstalled = vi.fn();
-const openMarketplace = vi.fn();
-vi.mock("@/components/marketplace/drawer/MarketplaceDrawerProvider", () => ({
-  useMarketplaceDrawer: () => ({ state: { freshlyInstalledAgentId }, setFreshlyInstalled, open: openMarketplace }),
-}));
+
 vi.mock("@/components/chat/HealthIndicator", () => ({
   HealthIndicator: ({ onRecoveryReprovision }: { onRecoveryReprovision: () => void }) => (
     <button onClick={onRecoveryReprovision}>Recover workspace</button>
@@ -68,7 +63,6 @@ beforeEach(() => {
   activePanelId = null;
   billingAccount = { subscription_status: "active" };
   isSubscribed = true;
-  freshlyInstalledAgentId = null;
 });
 afterEach(() => vi.useRealTimers());
 
@@ -166,13 +160,6 @@ describe("WorkspaceSidebar", () => {
     billingAccount = { subscription_status: null };
     render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
     expect(screen.queryByRole("button", { name: "Recover workspace" })).not.toBeInTheDocument();
-  });
-  it("clears the marketplace installation marker", () => {
-    vi.useFakeTimers();
-    freshlyInstalledAgentId = "agent-new";
-    render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
-    act(() => vi.advanceTimersByTime(600));
-    expect(setFreshlyInstalled).toHaveBeenCalledWith(null);
   });
   it.each([[86_400, "Free tier"], [-86_400, "Free tier ended"]])("preserves the free-tier footer at %s seconds from expiry", (offset, label) => {
     billingAccount = { subscription_status: "trial_local", trial_end: Math.floor(Date.now() / 1000) + offset };

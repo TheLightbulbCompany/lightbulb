@@ -330,17 +330,6 @@ export function openAgentDmWithDraft(agentId: string, draft: string): void {
   window.dispatchEvent(new CustomEvent("getstarted:focus-composer", { detail: { agentId } }));
 }
 
-// Same-place delete of the URL-named detail. Order pinned: (a) replace URL to
-// the list, (b) close the detail (no clear-on-close: the URL already moved),
-// (c) open the list.
-export function closeSubjectDeleted(selfPanelId: string, listPanelKey: string): void {
-  if (!_attached) return;
-  const listUrl = buildPanelUrl(listPanelKey, {});
-  replaceSearchParams(new URLSearchParams(listUrl.split("?")[1]));
-  if (_pane?.panelId === selfPanelId) dropPane();
-  openPanel(listPanelKey);
-}
-
 function subscribe(l: () => void): () => void {
   _listeners.add(l);
   return () => _listeners.delete(l);

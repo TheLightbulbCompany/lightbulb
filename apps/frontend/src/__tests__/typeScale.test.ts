@@ -91,7 +91,7 @@ describe("type scale", () => {
   });
 
   it("Work page list rows are one 36px line", () => {
-    for (const f of ["components/teams/issues/TasksList.tsx", "components/teams/cases/CasesList.tsx", "components/teams/inbox/IssueRow.tsx", "components/teams/shell/PanelDataTable.tsx"]) {
+    for (const f of ["components/teams/shell/PanelDataTable.tsx"]) {
       expect(read(f), f).toMatch(/(?<![\w-])(?:min-)?h-9(?![\w-])/);
     }
   });

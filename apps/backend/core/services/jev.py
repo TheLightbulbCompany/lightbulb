@@ -25,7 +25,7 @@ from botocore.config import Config
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import messaging_repo
-from core.services import hermes_profiles
+from core.services import agent_registry, hermes_profiles
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +37,7 @@ _KEY_RETRY_S = 30
 _key_lock = asyncio.Lock()
 _KEY_TTL_S = 3600
 _CARD_TTL_S = 600
-#: Whole decision budget: cards (S3 + Paperclip) plus the 3 s Jev call, so it can never stall dispatch.
+#: Whole decision budget: cards (S3 + registry) plus the 3 s Jev call, so it can never stall dispatch.
 _DECIDE_BUDGET_S = 8.0
 #: A claim loser polls for the winner's row this often, for at most this long, then falls back.
 #: ponytail: a DynamoDB poll, <=32 strongly consistent reads per loser per message; a push
@@ -74,7 +74,7 @@ _key_checked_at = 0.0
 _cards: dict[tuple[str, str], tuple[str | None, float, tuple[str, str, str]]] = {}
 
 #: The starter roster seeds no capabilities, and name+role alone left Jev near-tied (0.65); a
-#: one-line description took it to 0.86-0.99. Keyed on the Paperclip ROLE code, not the name.
+#: one-line description took it to 0.86-0.99. Keyed on the agent's ROLE code, not the name.
 _ROLE_DESCRIPTIONS = {
     "ceo": "Leads the company, sets goals, delegates to the team",
     "cto": "Builds and fixes software and infrastructure",
@@ -194,7 +194,7 @@ async def decide(
 #
 # The HERMES PROFILE is the source of truth for what an agent does (owner ruling 2026-09-22):
 # SOUL.md for persona + "## What you do", config.yaml / lightbulb-facts.json for tool NAMES.
-# Paperclip supplies identity (name, role code) only. Names are user-editable, so a card that
+# The agent registry supplies identity (name, role code) only. Names are user-editable, so a card that
 # is just a name is not enough to route on.
 
 _CARD_MAX = 600  # ~150 tokens
@@ -232,13 +232,8 @@ def _soul_parts(text: str) -> tuple[str, str]:
     return persona, _plain_md(what)
 
 
-async def _paperclip_agent(agent_id: str) -> dict:
-    from core.services.paperclip_admin_client import PaperclipAdminClient
-    from core.services.paperclip_admin_session import get_admin_session_cookie
-
-    async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=_TIMEOUT_S) as client:
-        cookie = await get_admin_session_cookie(client)
-        return await PaperclipAdminClient(http_client=client).get_agent(session_cookie=cookie, agent_id=agent_id)
+async def _registry_agent(owner_id: str, agent_id: str) -> dict:
+    return await agent_registry.get(owner_id, agent_id) or {}
 
 
 def _tool_names(config: dict, facts: dict) -> list[str]:
@@ -272,7 +267,7 @@ async def _soft(label: str, awaitable, parse=lambda raw: raw) -> Any:
 async def _card_parts(owner_id: str, agent_id: str, display_name: str) -> tuple[str, str, str]:
     """``(head, soul text, tools)`` -- every source optional; a failure degrades, never raises."""
     prefix = hermes_profiles.profile_prefix(owner_id, agent_id)
-    agent = await _soft("paperclip agent", _paperclip_agent(agent_id)) or {}
+    agent = await _soft("registry agent", _registry_agent(owner_id, agent_id)) or {}
     soul = _off(_read, f"{prefix}SOUL.md")
     persona, what = await _soft("SOUL.md", soul, lambda raw: _soul_parts(raw.decode())) or ("", "")
     # config.yaml only -- read_profile_config never opens .env (the secrets file).
@@ -298,7 +293,7 @@ def _assemble(parts: tuple[str, str, str], recency: str = "") -> str:
 
 async def agent_card(owner_id: str, agent_id: str, display_name: str, recency: str = "") -> str:
     """Cached per (owner, agent), keyed on the profile's ``.revision`` (a SOUL edit, a new
-    connection or a facts write bumps it), with a 10-minute backstop for Paperclip-only edits."""
+    connection or a facts write bumps it), with a 10-minute backstop for registry-only edits (a rename)."""
     revision_key = f"{hermes_profiles.profile_prefix(owner_id, agent_id)}.revision"
     revision = await _soft(".revision", _off(_read, revision_key), bytes.decode)
     cached = _cards.get((owner_id, agent_id))

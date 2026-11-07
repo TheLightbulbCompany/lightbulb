@@ -124,7 +124,7 @@ async def test_free_path_sends_with_tenant_and_cap(wired):
     assert wired.free_kwargs["to"] == "vendor@x.y"
     assert wired.free_kwargs["from_addr"] == f'"Atlas · Acme agents" <{TEAM}>'
     mod.from_header.assert_awaited_once_with(OWNER, AGENT, TEAM, agent_name="Atlas")
-    assert mod.resolve_agent_name.await_args.kwargs == {"agent_id": AGENT, "company_id": "co_1"}
+    assert mod.resolve_agent_name.await_args.kwargs == {"owner_id": OWNER, "agent_id": AGENT}
     assert wired.free_kwargs["tenant_name"] == "owner-user_1"
     assert wired.free_kwargs["kind"] == "agent_free_send"
     assert wired.free_kwargs["headers"] == {"Auto-Submitted": "auto-generated"}

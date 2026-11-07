@@ -288,6 +288,11 @@ class PaperclipWorkspace:
 
     first_contact_reason: Optional[str] = None
 
+    name: Optional[str] = None
+    description: Optional[str] = None
+    """The workspace's display name and description (``/teams/settings``). Written only by
+    ``set_profile``; ``put_workspace`` never sets or removes them."""
+
     automation_paused_at: Optional[str] = None
     """Set by ``paperclip_agent_lifecycle.pause_owner_automation`` when the owner stopped
     being live; removed by ``resume_owner_automation``. The two sets below name exactly
@@ -581,6 +586,8 @@ class PaperclipRepo:
                 int(item["first_contact_attempts"]) if item.get("first_contact_attempts") is not None else None
             ),
             first_contact_reason=item.get("first_contact_reason"),
+            name=item.get("name"),
+            description=item.get("description"),
             automation_paused_at=item.get("automation_paused_at"),
             automation_pause_complete_at=item.get("automation_pause_complete_at"),
             # Keep an EMPTY map as {}: a carried-forward put must not drop it, or the
@@ -624,6 +631,21 @@ class PaperclipRepo:
             ExpressionAttributeValues={":u": {user_id}, ":t": utc_now_iso()},
         )
         publish_status_changed(org_id)
+
+    async def set_profile(self, org_id: str, *, name: str | None, description: str | None) -> None:
+        """Set the workspace ``name`` and/or ``description`` (None leaves one as it is).
+        Conditional on the row existing (never resurrects a partial)."""
+        fields = {k: v for k, v in (("name", name), ("description", description)) if v is not None}
+        if not fields:
+            return
+        await self._ws_call(
+            "update_item",
+            self._ws_key(org_id),
+            UpdateExpression="SET " + ", ".join(f"#{k} = :{k}" for k in fields) + ", updated_at = :t",
+            ConditionExpression="attribute_exists(user_id)",
+            ExpressionAttributeNames={f"#{k}": k for k in fields},  # `name` is a reserved word
+            ExpressionAttributeValues={**{f":{k}": v for k, v in fields.items()}, ":t": utc_now_iso()},
+        )
 
     async def remove_member(self, org_id: str, user_id: str) -> None:
         """Drop ``user_id`` from the workspace's members. A no-op when the

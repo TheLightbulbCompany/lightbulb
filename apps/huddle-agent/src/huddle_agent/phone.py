@@ -122,23 +122,29 @@ class DisclosureGuard:
     def seen(self, items: list[dict]) -> None:
         if self._done:
             return
+        if (
+            os.environ.get("PHONE_TEST_FAIL_DISCLOSURE") == "1"
+        ):  # scripted runs: fail on the first assistant line
+            if any(i["role"] == "assistant" for i in items):
+                self._done = self.corrected = True
+                self._say(self.line)
+            return
         verdict = disclosure_of(items, self.greeting, self.assistant)
         if verdict == "unknown" and not any(i["role"] == "user" for i in items):
             return  # nothing to judge yet
         self._done = True
-        if verdict == "missing" or (
-            verdict == "ok" and os.environ.get("PHONE_TEST_FAIL_DISCLOSURE") == "1"
-        ):
+        if verdict == "missing":
             self.corrected = True
             self._say(self.line)
 
 
 def say_disclosure(session, line: str) -> None:
-    """One-shot reply with that exact line. Gemini Live can't take a turn back out of its history, so the
-    instruction itself says once and never again (the greeting's leak came from an open-ended "greet" turn)."""
+    """One-shot reply with that exact line, in the wording that made Gemini speak verbatim (the greeting tests).
+    Gemini Live can't take a turn back out of its history, so the instruction says it is one-time."""
+    logger.info("phone: first line lacked the disclosure; saying it once")
     session.generate_reply(
-        instructions=f'Say exactly this sentence, once, right now: "{line}" Then carry on with the caller where you '
-        "left off. Never say it again."
+        instructions=f'Say exactly this, word for word, and nothing else: "{line}" This is a one-time line: do not '
+        "say it again later in the call."
     )
 
 

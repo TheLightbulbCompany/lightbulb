@@ -166,6 +166,20 @@ def test_the_corrective_line_is_one_reply_that_says_never_again():
         '"I\'m Lightbulb, an AI assistant, and this call is recorded."'
         in only["instructions"]
     )
-    assert (
-        "once" in only["instructions"] and "Never say it again" in only["instructions"]
+    assert "word for word, and nothing else" in only["instructions"]
+    assert "do not say it again" in only["instructions"]
+
+
+def test_the_scripted_run_flag_fails_the_first_assistant_line(monkeypatch):
+    monkeypatch.setenv("PHONE_TEST_FAIL_DISCLOSURE", "1")
+    guard, said = _guard()
+    guard.seen([{"role": "user", "text": "Hi", "t": 6.0}])
+    assert said == []
+    guard.seen(
+        [
+            {"role": "user", "text": "Hi", "t": 6.0},
+            {"role": "assistant", "text": GREETING, "t": 7.0},
+        ]
     )
+    guard.seen([{"role": "assistant", "text": "Hello again", "t": 9.0}])
+    assert said == [guard.line]

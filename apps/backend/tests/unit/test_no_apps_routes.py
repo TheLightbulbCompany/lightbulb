@@ -1,5 +1,5 @@
-"""Apps, the Stripe Projects rail, the marketplace and the Mac app's sign-in and session-start routes are deleted (Phase 1 task 10):
-nothing may route them again."""
+"""Apps, the Stripe Projects rail and the marketplace are deleted (Phase 1 task 10):
+nothing may route them again. (The Mac app's routes were restored, 7 Nov.)"""
 
 import pytest
 from starlette.routing import Match, Mount
@@ -17,8 +17,6 @@ GONE = [
     "/api/v1/marketplace/payouts/onboard",
     "/api/v1/admin/marketplace/listings",
     "/api/v1/company/provisioning/resources",
-    "/api/v1/desktop-sessions/targets",
-    "/api/v1/auth/desktop/sign-in-token",
 ]
 
 

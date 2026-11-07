@@ -38,7 +38,7 @@ export type NavSection = { label: string; items: NavItem[] };
 export const ADMIN_ONLY_PANELS = new Set(["usage", "members", "approvals"]);
 
 // Settings inside the shell (UX slice 4), in plain groups. Business (what Work › Money showed) joins Plan. Model &
-// credits and the Developer group (Skills, MCP, Local MCP, Desktop) are gone (voice pivot, Phase 1 task 9).
+// credits, Skills and MCP are gone (voice pivot, Phase 1 task 9); the Mac app's Local MCP and Desktop stay.
 export const SETTINGS_NAV_SECTIONS: NavSection[] = [
   { label: "You", items: [{ id: "profile", name: "Profile", icon: "profile", panel: "profile" }] },
   {
@@ -64,7 +64,17 @@ export const SETTINGS_NAV_SECTIONS: NavSection[] = [
       { id: "business", name: "Business", icon: "business", panel: "business" },
     ],
   },
+  // The Mac app's own settings: shown in the desktop app, or to a workspace with a coding session (SettingsPlace).
+  {
+    label: "Developer",
+    items: [
+      // MCP servers on the user's own Mac — desktop-app-only.
+      { id: "local-mcp", name: "Local MCP servers", icon: "mcp", panel: "local-mcp" },
+      { id: "desktop", name: "Desktop", icon: "desktop", panel: "desktop" },
+    ],
+  },
 ];
+export const DEVELOPER_PANELS: ReadonlySet<string> = new Set(["local-mcp", "desktop"]);
 
 // =============================================================================
 // Icons
@@ -108,6 +118,23 @@ export function NavIcon({ icon }: { icon: string }) {
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <rect x="1" y="4" width="22" height="16" rx="2" />
           <line x1="1" y1="10" x2="23" y2="10" />
+        </svg>
+      );
+    case "desktop":
+      return (
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <rect x="2" y="3" width="20" height="18" rx="2" />
+          <path d="m7 8 3 3-3 3" />
+          <path d="M13 15h4" />
+        </svg>
+      );
+    case "mcp":
+      return (
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <rect x="3" y="3" width="7" height="7" />
+          <rect x="14" y="3" width="7" height="7" />
+          <rect x="14" y="14" width="7" height="7" />
+          <rect x="3" y="14" width="7" height="7" />
         </svg>
       );
     case "connections":

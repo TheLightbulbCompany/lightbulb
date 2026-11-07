@@ -4,8 +4,8 @@ import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors, type Announcements, type DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { ChevronDown, ChevronRight, GripVertical, MoreHorizontal, Pencil, Plus, Trash2, X } from "lucide-react";
-import { listenModeOptions, roomDisplayName, soleChannelOwner, type ListenMode, type MemberPrefsRequest, type PatchRoomRequest, type ProjectColor, type ProjectIcon, type RoomKind, type RoomSection } from "@lightbulb/shared";
+import { ChevronDown, ChevronRight, GripVertical, History, MoreHorizontal, Pencil, Plus, SlidersHorizontal, Trash2, X } from "lucide-react";
+import { listenModeOptions, roomDisplayName, soleChannelOwner, type ListenMode, type SessionMarks, type SessionRow, type MemberPrefsRequest, type PatchRoomRequest, type ProjectColor, type ProjectIcon, type RoomKind, type RoomSection } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -14,9 +14,13 @@ import { copyText, roomPermalink } from "./messageLinks";
 import { isUnreadTarget, nextUnreadRoomId } from "./roomNavigation";
 import { RoomDirectoryRow } from "./RoomDirectoryRow";
 import type { SettingsFrom } from "@/components/projects/ProjectSettingsDialog";
-import { groupRooms, type RoomGroup, type SidebarSession, type SidebarSort } from "./roomSections";
+import { groupRooms, type RoomGroup, type SidebarRow, type SidebarSession, type SidebarSort } from "./roomSections";
 import { useNeedsYouTasks } from "@/components/tasks/useRoomThreads";
-import { readSidebarPrefs, writeSidebarPrefs, type SidebarPrefs } from "./sidebarPrefs";
+import { foldedEntries, ownWaitingCount, sessionRowGone, sessionRowGroups, sessionRowKey, NEEDS_YOU_GROUP, SESSION_GROUP_FOLD, type SessionGroupBy, type SessionShow } from "./sessionGroups";
+import { SessionListRow } from "./SessionListRow";
+import { SessionSearch } from "./SessionSearch";
+import { StartSessionDialog } from "./StartSessionDialog";
+import { readSessionMarks, readSidebarPrefs, writeSessionMarks, writeSidebarPrefs, type SidebarPrefs } from "./sidebarPrefs";
 import { useAsyncAction } from "./useAsyncAction";
 import { openInviteDialog } from "@/components/workspace/workspaceController";
 import { isProjectRoom, type DirectoryParticipant, type ParticipantSelection, type DirectoryRoom } from "./types";
@@ -53,10 +57,24 @@ export interface RoomDirectoryProps {
   creationError?: string;
   onRetry?: () => void;
   draftRoomIds?: readonly string[];
-  /** Carried for the session viewer (SessionFocus). */
+  /** Every row the sidebar groups (backend sessions joined to network ones); archived ones fold away, All sessions lists every one. */
+  sessionRows?: readonly SidebarRow[];
+  /** Carried for the focus pane; the sidebar and All sessions read `sessionRows` instead. */
   sessions?: readonly SidebarSession[];
-  /** The owner takes one of their ended sessions off the list (the open session). */
+  /** Share one of the viewer's own unshared terminal sessions (rows with no backend). */
+  onShareSession?: (row: SessionRow) => Promise<unknown>;
+  /** Present: the Sessions group always shows, with an empty state when nobody is sharing. */
+  onSelectSession?: (sessionId: string) => void;
+  onRenameSession?: (sessionId: string, title: string | null) => Promise<unknown>;
+  /** The owner takes one of their ended sessions, or all of them, off the list (All sessions and the open session). */
   onRemoveSession?: (sessionId: string) => Promise<unknown>;
+  onRemoveEndedSessions?: () => Promise<unknown>;
+  /** Mark unread (true) or read (false): moves this viewer's seen baseline for the row's dot. */
+  onMarkSessionUnread?: (sessionId: string, unread: boolean) => void;
+  currentSessionId?: string | null;
+  /** Opens the All sessions list in the main pane. */
+  onOpenAllSessions?: () => void;
+  allSessionsOpen?: boolean;
   /** The signed-in person: their role in a room decides whether its menu offers Add people. */
   currentUserId?: string;
   /** Opens the room with its member picker open. */
@@ -128,6 +146,14 @@ function DirectoryContent({
   creationError,
   onRetry,
   draftRoomIds = [],
+  sessionRows = [],
+  onShareSession,
+  onSelectSession,
+  onRenameSession,
+  onMarkSessionUnread,
+  currentSessionId = null,
+  onOpenAllSessions,
+  allSessionsOpen = false,
   headerActions,
   currentUserId,
   onAddPeople,
@@ -142,6 +168,14 @@ function DirectoryContent({
   const [kind, setKind] = useState<RoomKind>("dm");
   const [name, setName] = useState("");
   const [query, setQuery] = useState("");
+  const [sessionFilter, setSessionFilter] = useState("");
+  const [archivedOpen, setArchivedOpen] = useState(false);
+  // Per person AND workspace: two members on one browser profile keep their own pins and archives.
+  // The user id can arrive after the first render, so the marks carry the key they were read under.
+  const marksKey = `${currentUserId ?? ""}:${ownerScopeId}`;
+  const [storedMarks, setStoredMarks] = useState(() => ({ key: marksKey, marks: readSessionMarks(marksKey) }));
+  const sessionMarks = storedMarks.key === marksKey ? storedMarks.marks : readSessionMarks(marksKey);
+  const updateSessionMarks = (next: SessionMarks) => { setStoredMarks({ key: marksKey, marks: next }); writeSessionMarks(marksKey, next); };
   const [selected, setSelected] = useState(new Map<string, ParticipantSelection>());
   const [markingUnread, setMarkingUnread] = useState<string | null>(null);
   const [unreadError, setUnreadError] = useState<{ roomId: string; label: string } | null>(null);
@@ -322,7 +356,7 @@ function DirectoryContent({
     updatePrefs({ collapsed: prefs.collapsed.includes(groupId) ? prefs.collapsed.filter((id) => id !== groupId) : [...prefs.collapsed, groupId] });
   }
 
-  // Shared by every room group below: collapse
+  // Shared by the Sessions group and every room group below: collapse
   // button, aria wiring, chevron, label, and an optional trailing badge.
   function groupHeader({ id: groupId, label, listId, collapsed, grip, badge }: {
     id: string; label: string; listId: string; collapsed: boolean; grip?: ReactNode; badge?: ReactNode;
@@ -389,13 +423,121 @@ function DirectoryContent({
     });
   }
 
+  const sessionsSection = (onSelectSession || sessionRows.length > 0) && (() => {
+    const collapsed = prefs.collapsed.includes("sessions");
+    const listId = `${id}-group-sessions`;
+    const query = sessionFilter.trim();
+    // Ended sessions stay until archived (owner decision 2026-10-27), as on the phone and in both vendor apps.
+    const { groups, archived, hidden, listed } = sessionRowGroups(sessionRows, { groupBy: prefs.sessionGroupBy, show: prefs.sessionShow, query, marks: sessionMarks });
+    // Live rows the viewer has not archived, whatever Show or the filter hides.
+    const live = sessionRowGroups(sessionRows, { groupBy: "person", show: "all", query: "", marks: sessionMarks }).groups.flatMap((group) => group.entries).filter(({ row }) => !sessionRowGone(row)).length;
+    const waiting = ownWaitingCount(sessionRows.map((entry) => entry.row));
+    const pinned = (key: string) => sessionMarks.pinned.includes(key);
+    const row = (entry: SidebarRow, isArchived: boolean) => {
+      const key = sessionRowKey(entry.row);
+      const sessionId = entry.row.backend?.sessionId;
+      return <SessionListRow key={key} entry={entry} current={key === currentSessionId} onSelect={onSelectSession} onRename={onRenameSession} oneLine
+        onShare={onShareSession && (() => onShareSession(entry.row))}
+        marks={{
+          pinned: pinned(key), archived: isArchived,
+          onTogglePin: () => updateSessionMarks({ ...sessionMarks, pinned: pinned(key) ? sessionMarks.pinned.filter((other) => other !== key) : [...sessionMarks.pinned, key] }),
+          // Archiving unpins: a pinned row hidden in Archived would come back pinned on its next output.
+          onToggleArchive: () => {
+            updateSessionMarks(isArchived ? { ...sessionMarks, archived: Object.fromEntries(Object.entries(sessionMarks.archived).filter(([other]) => other !== key)) }
+              : { pinned: sessionMarks.pinned.filter((other) => other !== key), archived: { ...sessionMarks.archived, [key]: entry.row.backend?.latestEventSeq ?? 0 } });
+          },
+          onMarkUnread: (unread) => { if (sessionId) onMarkSessionUnread?.(sessionId, unread); },
+        }} />;
+    };
+    const toggle = (list: string[], item: string) => (list.includes(item) ? list.filter((other) => other !== item) : [...list, item]);
+    const headed = groups.length > 1 || groups[0]?.id === NEEDS_YOU_GROUP;
+    const renderSessionGroup = (group: (typeof groups)[number]) => {
+      const needs = group.id === NEEDS_YOU_GROUP;
+      const key = `sessions:${group.id}`;
+      const groupCollapsed = headed && !needs && !query && prefs.collapsed.includes(key);
+      const expanded = prefs.sessionsExpanded.includes(group.id);
+      const listKey = `${id}-sessions-${groups.indexOf(group)}`;
+      const shown = needs ? group.entries : foldedEntries(group.entries, {
+        limit: query ? Infinity : groupCollapsed ? 0 : expanded ? Infinity : SESSION_GROUP_FOLD,
+        keep: ({ row: kept }) => kept.state === "waiting" || pinned(sessionRowKey(kept)) || sessionRowKey(kept) === currentSessionId,
+      });
+      const more = group.entries.length - shown.length;
+      return <div className="session-group" key={group.id}>
+        {headed && (needs
+          ? <div className="session-group-header session-group-header--needs"><span>{group.label}</span><span className="session-group-count">{group.entries.length}</span></div>
+          : <button type="button" className="session-group-header" aria-expanded={!groupCollapsed} aria-controls={listKey}
+            onClick={() => updatePrefs({ collapsed: toggle(prefs.collapsed, key) })}>
+            {groupCollapsed ? <ChevronRight aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}
+            <span className="truncate">{group.label}</span><span className="session-group-count">{group.entries.length}</span>
+          </button>)}
+        <ul id={listKey} aria-label={group.label}>{shown.map((entry) => row(entry, false))}</ul>
+        {!needs && !groupCollapsed && !query && (more > 0
+          ? <button type="button" className="session-group-more" aria-expanded={false} aria-controls={listKey}
+            onClick={() => updatePrefs({ sessionsExpanded: toggle(prefs.sessionsExpanded, group.id) })}>… {more} more</button>
+          : expanded && group.entries.length > SESSION_GROUP_FOLD && <button type="button" className="session-group-more" aria-expanded aria-controls={listKey}
+            onClick={() => updatePrefs({ sessionsExpanded: toggle(prefs.sessionsExpanded, group.id) })}>Show fewer</button>)}
+      </div>;
+    };
+    return <section aria-label="Sessions">
+      {groupHeader({
+        id: "sessions", label: "Sessions", listId, collapsed,
+        badge: <>
+          {collapsed && waiting > 0 && <span className="room-count session-count--waiting" aria-label={`${waiting} waiting on you`}>{waiting}</span>}
+          {collapsed && live > 0 && <span className="room-count" aria-label={`${live} live session${live === 1 ? "" : "s"}`}>{live}</span>}
+          <SessionSearch />
+          {sessionRows.length > 0 && <DropdownMenu>
+            <DropdownMenuTrigger asChild><Button variant="ghost" size="icon-sm" aria-label="Session view"><SlidersHorizontal aria-hidden="true" /></Button></DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuLabel>Group by</DropdownMenuLabel>
+              <DropdownMenuRadioGroup value={prefs.sessionGroupBy} onValueChange={(value) => updatePrefs({ sessionGroupBy: value as SessionGroupBy })}>
+                <DropdownMenuRadioItem value="person">Person</DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="state">State</DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="repo">Repo or folder</DropdownMenuRadioItem>
+              </DropdownMenuRadioGroup>
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel>Show</DropdownMenuLabel>
+              <DropdownMenuRadioGroup value={prefs.sessionShow} onValueChange={(value) => updatePrefs({ sessionShow: value as SessionShow })}>
+                <DropdownMenuRadioItem value="all">All</DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="mine">Mine</DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="live">Live</DropdownMenuRadioItem>
+              </DropdownMenuRadioGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>}
+        </>,
+      })}
+      {!collapsed && <div id={listId}>
+        {groups.length === 0 && !hidden && !query
+          ? <div className="room-directory-session-empty"><p className="text-caption text-muted-foreground">No one is sharing a session.</p><StartSessionDialog /></div>
+          : <>
+            {(listed > SESSION_GROUP_FOLD || sessionFilter) && <input type="search" className="session-filter" aria-label="Filter sessions" placeholder="Filter sessions" value={sessionFilter}
+              onChange={(event) => setSessionFilter(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape" && sessionFilter) { event.stopPropagation(); setSessionFilter(""); } }} />}
+            {groups.map(renderSessionGroup)}
+            {query && groups.length === 0 && <p role="status" className="px-2 text-caption text-muted-foreground">No sessions match &quot;{query}&quot;. <button type="button" className="underline" onClick={() => setSessionFilter("")}>Clear</button></p>}
+            {hidden > 0 && <button type="button" className="room-directory-subgroup" onClick={() => updatePrefs({ sessionShow: "all" })}>
+              {hidden} {prefs.sessionShow === "live" ? "ended or offline hidden" : "others hidden"} · Show all
+            </button>}
+          </>}
+        {archived.length > 0 && <>
+          <button type="button" className="room-directory-subgroup" aria-expanded={archivedOpen} onClick={() => setArchivedOpen((open) => !open)}>
+            {archivedOpen ? <ChevronDown aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}Archived<span className="text-muted-foreground">{archived.length}</span>
+          </button>
+          {archivedOpen && <ul aria-label="Archived sessions">{archived.map((entry) => row(entry, true))}</ul>}
+        </>}
+        {onOpenAllSessions && listed > 0 && <button type="button" className="room-directory-subgroup"
+          aria-current={allSessionsOpen ? "page" : undefined} onClick={onOpenAllSessions}>
+          <History aria-hidden="true" />All sessions<span className="text-muted-foreground">{listed}</span>
+        </button>}
+      </div>}
+    </section>;
+  })();
   const external = groups.find((group) => group.id === "external");
-  const moreHoldsCurrent = Boolean(external?.rooms.some((room) => room.roomId === currentRoomId));
-  // What More hides: shared-channel unreads. Its heading carries the sum, and it opens itself while there is any, so
-  // nothing new sits out of sight.
-  const moreCount = (external?.rooms ?? []).reduce((n, room) => n + (room.muted ? 0 : room.unreadCount), 0);
+  const moreHoldsCurrent = Boolean(currentSessionId) || Boolean(external?.rooms.some((room) => room.roomId === currentRoomId));
+  // What More hides: shared-channel unreads and sessions waiting on the viewer. Its heading carries the sum, and it
+  // opens itself while there is any, so nothing new sits out of sight.
+  const moreCount = (external?.rooms ?? []).reduce((n, room) => n + (room.muted ? 0 : room.unreadCount), 0)
+    + ownWaitingCount(sessionRows.map((entry) => entry.row));
   // Closed, More still says how much is inside, so it never reads as an empty heading.
-  const moreItems = external?.rooms.length ?? 0;
+  const moreItems = sessionRows.length + (external?.rooms.length ?? 0);
   const renderGroup = (group: RoomGroup) => {
     // Archived starts collapsed, so for it alone a listed id means "expanded".
     const collapsed = prefs.collapsed.includes(group.id) !== (group.id === "archived");
@@ -497,17 +639,17 @@ function DirectoryContent({
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={reorderSections} accessibility={{ announcements }}>
     <SortableContext items={sections.map((section) => section.id)} strategy={verticalListSortingStrategy}>
     {groups.filter((group) => !TAIL_GROUPS.has(group.id)).map(renderGroup)}
-    {/* External connections fold under More (closed by default); it opens itself while the shared channel on
-        screen is inside, or while anything in it is unread. The Sessions list is gone (voice pivot); a session
-        still opens by its link. */}
-    {external && <details className="room-directory-more" open={moreHoldsCurrent || moreCount > 0 || undefined}>
+    {/* Sessions and External connections fold under More (closed by default); it opens itself while the
+        session or shared channel on screen is inside, or while anything in it is unread or waiting. */}
+    {(sessionsSection || external) && <details className="room-directory-more" open={moreHoldsCurrent || moreCount > 0 || undefined}>
       <summary className="room-directory-group"
         aria-label={moreCount > 0 ? `More, ${moreCount} unread or waiting` : moreItems > 0 ? `More, ${moreItems} inside` : "More"}>
         <ChevronRight aria-hidden="true" className="room-directory-more-chevron" />More
         {moreCount > 0
           ? <span className="room-count" aria-hidden="true">{moreCount}</span>
           : moreItems > 0 && <span className="text-muted-foreground" aria-hidden="true">{moreItems}</span>}</summary>
-      {renderGroup(external)}
+      {sessionsSection}
+      {external && renderGroup(external)}
     </details>}
     {groups.filter((group) => group.id === "archived").map(renderGroup)}
     </SortableContext>

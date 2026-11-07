@@ -107,6 +107,17 @@ describe("Settings place (super-agent)", () => {
     expect(screen.queryByRole("link", { name: /Back to Chat/ })).toBeNull();
   });
 
+  it("inside the Mac app: a Developer group with Local MCP servers and Desktop", () => {
+    (window as unknown as { __TAURI__?: unknown }).__TAURI__ = { core: { invoke: vi.fn(async () => null) } };
+    try {
+      place();
+      const navEl = screen.getByRole("navigation", { name: "Settings navigation" });
+      expect([...navEl.querySelectorAll(".settings-nav-section-label")].map((l) => l.textContent)).toContain("Developer");
+      const rows = within(navEl).getAllByRole("tab").map((t) => t.textContent);
+      expect(rows).toEqual(expect.arrayContaining(["Local MCP servers", "Desktop"]));
+    } finally { delete (window as unknown as { __TAURI__?: unknown }).__TAURI__; }
+  });
+
   it("Profile is rows, not a card per setting: Edit profile beside who you are, no session notifications (W13-10)", async () => {
     api.get.mockImplementation(async (path: string) => {
       if (path === "/users/me/prefs") return { timezone: "UTC", dailySummary: true, awayEmail: true };

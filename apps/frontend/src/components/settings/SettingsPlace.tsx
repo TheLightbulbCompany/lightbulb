@@ -210,22 +210,17 @@ function WorkspaceExportCard({ rows = false }: { rows?: boolean }) {
     setError(null);
     try {
       const token = await getToken();
-      const response = await fetch(`${BACKEND_URL}/teams/workspace/export`, {
+      const response = await fetch(`${BACKEND_URL}/tasks/export`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
-      // 202 means the workspace is still provisioning and the body is JSON, not
-      // a ZIP; only a 200 carrying a ZIP is a finished export.
-      if (response.status === 202) {
-        setError("Your workspace is still setting up. Try again in a minute.");
-        return;
-      }
+      // Only a 200 carrying NDJSON is a finished export; an error body is JSON.
       const contentType = response.headers.get("content-type") ?? "";
-      if (response.status !== 200 || !contentType.includes("application/zip")) {
+      if (response.status !== 200 || !contentType.includes("application/x-ndjson")) {
         throw new Error(`Export failed (${response.status})`);
       }
       const blob = await response.blob();
       const disposition = response.headers.get("content-disposition") ?? "";
-      const filename = disposition.match(/filename="([^"]+)"/)?.[1] ?? "lightbulb-workspace.zip";
+      const filename = disposition.match(/filename="([^"]+)"/)?.[1] ?? "lightbulb-tasks.ndjson";
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
@@ -243,7 +238,7 @@ function WorkspaceExportCard({ rows = false }: { rows?: boolean }) {
   if (!isWorkspaceAdmin) return null;
   if (rows) return (
     <div data-testid="workspace-export-card">
-      <SettingRow label="Export workspace" line="A ZIP of this workspace's chats and tasks. Works even when the workspace is read-only.">
+      <SettingRow label="Export workspace" line="A file of every task in this workspace and what it made. Works even when the workspace is read-only.">
         <Button type="button" size="sm" variant="outline" onClick={handleExport} disabled={busy}>{busy ? "Preparing…" : "Download"}</Button>
       </SettingRow>
       {error && <p role="alert" className="settings-rows__line text-err pt-2">{error}</p>}
@@ -253,11 +248,11 @@ function WorkspaceExportCard({ rows = false }: { rows?: boolean }) {
     <div className="settings-card" data-testid="workspace-export-card">
       <div className="settings-card-title">Export workspace</div>
       <div className="settings-card-desc">
-        Download a ZIP containing this workspace&apos;s room transcripts and board tasks. This stays available
+        Download every task in this workspace and what it made. This stays available
         here when the workspace is read-only, so you can keep your team&apos;s record.
       </div>
       <button type="button" className="settings-btn-outline" onClick={handleExport} disabled={busy}>
-        {busy ? "Preparing export…" : "Download workspace ZIP"}
+        {busy ? "Preparing export…" : "Download tasks"}
       </button>
       {error && <div className="settings-alert settings-alert-error" style={{ marginTop: 10 }}>{error}</div>}
     </div>

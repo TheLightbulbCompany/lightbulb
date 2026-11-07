@@ -56,29 +56,6 @@ class PatchAgentBody(_Strict):
     budget_monthly_cents: Optional[int] = Field(default=None, ge=0)
 
 
-class WakeAgentBody(_Strict):
-    # Mirrors upstream ``wakeAgentSchema``: every field is optional and
-    # defaults server-side, so a bare wake is valid. The failed-run Retry
-    # sends source="on_demand", reason="retry". ``source`` is constrained to
-    # the upstream enum so the BFF rejects junk before it reaches Paperclip.
-    # ``payload`` is upstream's free-form ``record(string, unknown)`` — the
-    # run-detail Retry/Resume actions use it to target the original issue
-    # (``{issueId, taskId, taskKey}``) or run (``{resumeFromRunId}``).
-    source: Optional[str] = Field(default=None, pattern=r"^(timer|assignment|on_demand|automation)$")
-    # The ported ExecutionBlockerNotice's exact failed-run retry sends
-    # ``triggerDetail: "manual"`` + ``failedRunId`` (upstream ``retryFailedRun``).
-    # Upstream re-derives the run's issue/agent/company and refuses a mismatch;
-    # the id pattern only keeps junk out. ``debug`` (providerTrace) stays unexposed.
-    trigger_detail: Optional[str] = Field(default=None, pattern=r"^(manual|ping|callback|system)$")
-    failed_run_id: Optional[str] = Field(default=None, max_length=200, pattern=r"^[A-Za-z0-9_-]+$")
-    reason: Optional[str] = Field(default=None, max_length=2000)
-    payload: Optional[dict] = None
-
-
-class SetAgentHeartbeatBody(_Strict):
-    enabled: bool
-
-
 class ResetAgentSessionBody(_Strict):
     # Recovery op for a wedged agent — mirrors upstream ``resetAgentSessionSchema``
     # (paperclip/packages/shared/src/validators/agent.ts): the single optional

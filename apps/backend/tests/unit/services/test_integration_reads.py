@@ -82,9 +82,29 @@ async def test_unconnected_or_unknown_provider(env):
     assert await ir.read(WS, "salesforce", "x") == "salesforce is not connected."
 
 
-async def test_google_only_on_the_workspace_computer_is_not_readable_here(env):
-    out = await ir.read(WS, "gmail", "invoice")
-    assert "workspace computer only" in out and "start work" in out
+async def test_a_failed_google_grant_fetch_says_ask_again(env):
+    assert await ir.read(WS, "gmail", "invoice") == ir.GOOGLE_RETRY  # connected row, the grant fetch failed
+
+
+async def test_a_slow_token_fetch_is_not_cut_by_the_read_budget(env):
+    async def cold(ws, key):
+        await asyncio.sleep(0.2)  # a cold grant, longer than READ_S below
+        return "g"
+
+    ir.access_token.get.side_effect = cold
+    env["http"].get(url__startswith="https://www.googleapis.com/calendar").respond(
+        json={"items": [{"summary": "Standup", "start": {"dateTime": "2026-11-09T09:00"}}]}
+    )
+    with patch.object(ir, "READ_S", 0.1):
+        assert await ir.read(WS, "calendar", "") == "Standup at 2026-11-09T09:00"
+        with patch.object(ir, "TOKEN_S", 0.05):
+            assert await ir.read(WS, "calendar", "") == ir.GOOGLE_RETRY
+    assert ir._prefetched == {}
+
+
+async def test_warm_google_never_raises(env):
+    await ir.warm_google(WS)  # the mocked fetch raises ValueError
+    ir.access_token.get.assert_awaited_with(WS, "google")
 
 
 async def test_gmail_with_a_backend_token(env):

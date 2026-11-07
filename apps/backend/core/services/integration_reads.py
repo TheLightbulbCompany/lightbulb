@@ -24,7 +24,11 @@ from core.services.credentials import access_token, integration_secret_store, re
 
 logger = logging.getLogger(__name__)
 
-READ_S = 2.0
+READ_S = 2.0  # the provider's HTTP calls; the token fetch has its own budget
+TOKEN_S = 20.0  # a cold Google grant (S3 read + gog export + token POST) takes seconds; it is then cached
+GOOGLE_RETRY = "Google didn't answer in time; ask again."
+# Tokens fetched before a read's READ_S starts, by (ws, provider key); the readers' _token takes these first.
+_prefetched: dict[tuple[str, str], str] = {}
 ANSWER_CHARS = 2000
 HEAVY = "That needs a proper look; ask me to start work on it."
 
@@ -34,11 +38,16 @@ class NotReadable(Exception):
 
 
 async def _token(ws: str, key: str) -> str:
+    if token := _prefetched.get((ws, key)):
+        return token
     try:
         return await access_token.get(ws, key)
     except access_token.ReconnectRequired as exc:
         raise NotReadable(f"{key} needs reconnecting in Settings.") from exc
-    except ValueError:  # not backend-refreshed: the retained copy, if the backend keeps one
+    except ValueError:
+        if key == "google":  # the row is connected (read() checked): the grant fetch failed this time
+            raise NotReadable(GOOGLE_RETRY) from None
+        # not backend-refreshed: the retained copy, if the backend keeps one
         cred = await integration_secret_store.get(ws, key) or {}
         if token := cred.get("access_token"):
             return token
@@ -203,6 +212,19 @@ READERS = {
 }
 
 
+# Providers whose reader needs a bearer token (Stripe may use the business key; Slack has none to use).
+TOKENED = {"google", "github", "posthog", "notion", "linear"}
+
+
+async def warm_google(ws: str) -> None:
+    """Fetch (and so cache) the workspace's Google token, so the first read in a meeting is not a cold one.
+    Fire-and-forget at the meeting's start; never raises."""
+    try:
+        await access_token.get(ws, "google")
+    except Exception:  # noqa: BLE001 -- not connected, or a failed fetch: the read will say so
+        logger.info("google warm-up skipped ws=%s", ws, exc_info=True)
+
+
 async def connected(ws: str) -> list[str]:
     """The readable names this workspace has connected."""
     rows = {
@@ -219,8 +241,13 @@ async def read(ws: str, provider: str, query: str) -> str:
     name = provider.strip().lower()
     if name not in READERS or name not in await connected(ws):
         return f"{provider} is not connected."
-    _key, reader = READERS[name]
+    key, reader = READERS[name]
     try:
+        if key in TOKENED:
+            try:
+                _prefetched[(ws, key)] = await asyncio.wait_for(_token(ws, key), TOKEN_S)
+            except TimeoutError:
+                return GOOGLE_RETRY if key == "google" else f"{name} didn't answer in time; ask again."
         async with httpx.AsyncClient(timeout=READ_S) as c:
             lines = await asyncio.wait_for(reader(c, ws, query.strip()[:300]), READ_S)
     except NotReadable as e:
@@ -230,5 +257,7 @@ async def read(ws: str, provider: str, query: str) -> str:
     except Exception:  # noqa: BLE001 -- a provider error is a sentence, not a failed meeting
         logger.warning("integration read failed ws=%s provider=%s", ws, name, exc_info=True)
         return f"I couldn't read {name} just now."
+    finally:
+        _prefetched.pop((ws, key), None)
     text = "\n".join(x for x in lines if x).strip()
     return text[:ANSWER_CHARS] if text else "Nothing found."

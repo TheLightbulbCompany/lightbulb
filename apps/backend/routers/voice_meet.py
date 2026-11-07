@@ -11,6 +11,7 @@ member who sent it (Google signs the host in as the organizer). Anyone else is a
 nothing that spends or sends -- the card waits for the member.
 """
 
+import asyncio
 import hashlib
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
@@ -50,6 +51,9 @@ async def assistant_name(owner_id: str) -> str:
     return name or "Lightbulb"
 
 
+_warming: set[asyncio.Task] = set()  # held so the warm-up is not garbage-collected mid-flight
+
+
 class StartIn(RoomBody):
     company: str = Field(default="", max_length=200)
 
@@ -58,6 +62,8 @@ class StartIn(RoomBody):
 async def start(room_id: str, body: StartIn) -> dict:
     """The assistant's name, and the join announcement in the Meet's chat, once an occurrence."""
     room_id, meta, meeting = await _meeting(room_id, body)
+    _warming.add(t := asyncio.create_task(integration_reads.warm_google(body.ownerId)))
+    t.add_done_callback(_warming.discard)
     name, bot = await assistant_name(body.ownerId), meeting.get("recallBotId")
     if bot:
         mine = await meeting_invites._patch_meeting(

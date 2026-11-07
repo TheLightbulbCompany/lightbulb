@@ -64,13 +64,17 @@ class Run:
     agent_id: str
     speaker: str | None = None
     request: str = ""
-    gen: int | None = None  # the voice that started it (`Huddle._same_session`); None: no voice did
+    gen: int | None = (
+        None  # the voice that started it (`Huddle._same_session`); None: no voice did
+    )
     bound: bool = False  # started() was called; an unbound run comes from frames alone (a restarted worker)
     queued: bool = False
     ended: bool = False
     aborted: bool = False
     failed: bool = False
-    buffered: list[dict] = field(default_factory=list)  # frames held until started() (or run_ended)
+    buffered: list[dict] = field(
+        default_factory=list
+    )  # frames held until started() (or run_ended)
     held: bool = False  # its voice is still opening: frames wait for release()
     pending: list[tuple[int, dict]] = field(default_factory=list)
     reset_seq: float = -1
@@ -89,7 +93,15 @@ class Runs:
         self._sink, self._clock = sink, clock
         self._runs: dict[str, Run] = {}
 
-    def started(self, run_id: str, agent_id: str, *, speaker: str | None, request: str, gen: int | None) -> Run:
+    def started(
+        self,
+        run_id: str,
+        agent_id: str,
+        *,
+        speaker: str | None,
+        request: str,
+        gen: int | None,
+    ) -> Run:
         """Call before the /turns POST (the worker mints runId), so no frame can beat it."""
         run = self._runs.get(run_id) or Run(run_id=run_id, agent_id=agent_id)
         run.agent_id, run.speaker, run.request = agent_id, speaker, request
@@ -161,7 +173,8 @@ class Runs:
         a queued one (run_queued, behind a chat run) waits up to QUEUED_TURN_SECONDS."""
         now = self._clock()
         return [
-            r for r in self._runs.values()
+            r
+            for r in self._runs.values()
             if not r.ended
             and not r.gave_up
             and now - r.seen < (QUEUED_TURN_SECONDS if r.queued else STALE_TURN_SECONDS)
@@ -183,7 +196,9 @@ class Runs:
             run.queued = True
             return
         if run.queued:
-            run.accepted = self._clock()  # it starts executing now: the wait on the room lock was not its time
+            run.accepted = (
+                self._clock()
+            )  # it starts executing now: the wait on the room lock was not its time
         run.queued = False
         _order(run, frame, lambda f: self._handle(run, f))
 
@@ -192,13 +207,17 @@ class Runs:
             return
         kind = frame.get("type")
         if kind == "tool_start" and isinstance(frame.get("tool"), str):
-            run.text = ""  # narration before a tool is not the answer: the next text box is
+            run.text = (
+                ""  # narration before a tool is not the answer: the next text box is
+            )
             if frame["tool"] != run.label:
                 run.label = frame["tool"]
                 self._sink.progress(run, run.label)
         elif kind == "chunk" and isinstance(frame.get("content"), str):
             before = run.text.strip()
-            run.text = run.text + frame["content"] if frame.get("append") else frame["content"]
+            run.text = (
+                run.text + frame["content"] if frame.get("append") else frame["content"]
+            )
             if run.ended and run.text.strip() != before:
                 # the closing chunk landed after run_ended (publishes can swap): the answer is this, not what ended
                 self._sink.ended(run, run.text.strip())
@@ -207,13 +226,35 @@ class Runs:
             # the bridge's own reason, for the ops log (10-07: every turn of a workspace failed in 0.4 s and the
             # worker had nothing to say about why)
             logger.warning(
-                "run %s of agent %s failed: %s", run.run_id, run.agent_id,
-                str({k: v for k, v in frame.items() if k in ("message", "error", "code", "reason", "detail")})[:300],
+                "run %s of agent %s failed: %s",
+                run.run_id,
+                run.agent_id,
+                str(
+                    {
+                        k: v
+                        for k, v in frame.items()
+                        if k in ("message", "error", "code", "reason", "detail")
+                    }
+                )[:300],
             )
             self._sink.failed(run)
         elif kind == "run_ended":
             run.ended = True
-            if frame.get("outcome") not in (None, "done"):  # the wire's success is "done" (bridge _WIRE_OUTCOME)
-                logger.warning("run %s of agent %s ended %s: %s", run.run_id, run.agent_id, frame.get("outcome"),
-                               str({k: v for k, v in frame.items() if k in ("error", "reason", "code", "message", "detail")})[:300])
+            if frame.get("outcome") not in (
+                None,
+                "done",
+            ):  # the wire's success is "done" (bridge _WIRE_OUTCOME)
+                logger.warning(
+                    "run %s of agent %s ended %s: %s",
+                    run.run_id,
+                    run.agent_id,
+                    frame.get("outcome"),
+                    str(
+                        {
+                            k: v
+                            for k, v in frame.items()
+                            if k in ("error", "reason", "code", "message", "detail")
+                        }
+                    )[:300],
+                )
             self._sink.ended(run, run.text.strip())

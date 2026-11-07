@@ -1,5 +1,6 @@
 """The meeting agent's backend: who may act, one task per ask, chat vs link, the meeting record."""
 
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -82,10 +83,15 @@ async def test_repeat_ask_is_already_on_it(m):
 
 
 async def test_announce_once(m):
-    with patch.object(voice_meet, "assistant_name", AsyncMock(return_value="Nova")):
+    with (
+        patch.object(voice_meet, "assistant_name", AsyncMock(return_value="Nova")),
+        patch.object(voice_meet.integration_reads, "warm_google", AsyncMock()) as warm,
+    ):
         body = voice_meet.StartIn(ownerId="org_1", roomToken="t", company="Maya's Studio")
         assert (await voice_meet.start(ROOM, body))["assistantName"] == "Nova"
         await voice_meet.start(ROOM, body)  # a restarted worker does not say it again
+        await asyncio.sleep(0)
+    warm.assert_awaited_with("org_1")  # the Google grant is warmed at the start, not on the first read
     [call] = m["say"].await_args_list
     assert call.args[0] == "bot_1" and 'says "Nova, ..."' in call.args[1] and "members can approve" in call.args[1]
 

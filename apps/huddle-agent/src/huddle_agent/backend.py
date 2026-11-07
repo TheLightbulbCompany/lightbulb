@@ -43,7 +43,9 @@ class Backend:
             )
         )
 
-    async def _post(self, path: str, body: dict, method: str = "POST", timeout: float | None = None) -> dict:
+    async def _post(
+        self, path: str, body: dict, method: str = "POST", timeout: float | None = None
+    ) -> dict:
         """`timeout`: this request's own, in place of the client's (sized for /turns)."""
         try:
             r = await self._http.request(
@@ -117,7 +119,9 @@ class Backend:
             **({"turn": turn} if turn is not None else {}),
         }
         # understanding §4.6: a delegation may wait on this answer; a slow one is a failure like any other
-        return await self._post(f"/internal/huddles/{self._room_id}/route", body, timeout=ROUTE_TIMEOUT_S)
+        return await self._post(
+            f"/internal/huddles/{self._room_id}/route", body, timeout=ROUTE_TIMEOUT_S
+        )
 
     @staticmethod
     def _label(speaker_name: str | None) -> dict:
@@ -132,7 +136,9 @@ class Backend:
 
     async def session(self, agent_id: str) -> dict:
         """The agent's voice and persona (the small-talk writer's)."""
-        return await self._post(f"/internal/huddles/{self._room_id}/agents/{agent_id}/session", {})
+        return await self._post(
+            f"/internal/huddles/{self._room_id}/agents/{agent_id}/session", {}
+        )
 
     async def turn(
         self,
@@ -167,8 +173,10 @@ class Backend:
         )
 
     async def no_post(self, run_id: str) -> dict:
-        """"Don't post that": the backend never posts this run's answer late (either door)."""
-        return await self._post(f"/internal/huddles/{self._room_id}/runs/{run_id}/no-post", {})
+        """ "Don't post that": the backend never posts this run's answer late (either door)."""
+        return await self._post(
+            f"/internal/huddles/{self._room_id}/runs/{run_id}/no-post", {}
+        )
 
     async def end(self, call_id: str, usage_seconds: int) -> None:
         # An unsent /end leaves the call's hold or free claim open: retry transport failures (status 0) and
@@ -217,7 +225,11 @@ class Backend:
 
     async def meet(self, op: str, body: dict) -> dict:
         """The meeting agent's routes (apps/backend/routers/voice_meet.py)."""
-        return await self._post(f"/internal/voice/meet/{self._room_id}/{op}", body, timeout=ROUTE_TIMEOUT_S)
+        # an integration read may first fetch a cold Google grant (backend TOKEN_S = 20 s)
+        timeout = 25 if op == "integration-read" else ROUTE_TIMEOUT_S
+        return await self._post(
+            f"/internal/voice/meet/{self._room_id}/{op}", body, timeout=timeout
+        )
 
     async def aclose(self) -> None:
         await self._http.aclose()

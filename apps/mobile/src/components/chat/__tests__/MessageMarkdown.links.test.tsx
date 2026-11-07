@@ -42,35 +42,11 @@ describe("MessageMarkdown selection and links", () => {
     expect(openURL).toHaveBeenCalledWith("https://example.com/run/42");
   });
 
-  it("routes an agent-written Paperclip issue link to the in-app issue screen", async () => {
-    // The bundled paperclip skill writes links like `/ISOA/issues/ISOA-317` —
-    // mobile has an in-app screen for these, so it should not round-trip
-    // through the browser and the web's middleware redirect.
+  it("sends an old Paperclip issue link to the web, not a deleted in-app screen", async () => {
     await render(<MessageMarkdown text="See [ISOA-317](/ISOA/issues/ISOA-317)" />);
     fireEvent.press(screen.getByText("ISOA-317"));
-    expect(router.push).toHaveBeenCalledWith({
-      pathname: "/(app)/teams/issue/[id]",
-      params: { id: "ISOA-317" },
-    });
-    expect(openURL).not.toHaveBeenCalled();
-  });
-
-  it("routes a dropped-prefix issue link to the in-app issue screen too", async () => {
-    await render(<MessageMarkdown text="See [ISOA-317](/issues/ISOA-317)" />);
-    fireEvent.press(screen.getByText("ISOA-317"));
-    expect(router.push).toHaveBeenCalledWith({
-      pathname: "/(app)/teams/issue/[id]",
-      params: { id: "ISOA-317" },
-    });
-  });
-
-  it("routes an agent-written run link to the in-app run screen", async () => {
-    await render(<MessageMarkdown text="See [run](/ISOA/agents/cto/runs/run-9)" />);
-    fireEvent.press(screen.getByText("run"));
-    expect(router.push).toHaveBeenCalledWith({
-      pathname: "/(app)/teams/run/[runId]",
-      params: { runId: "run-9" },
-    });
+    expect(openURL).toHaveBeenCalledWith("https://thelightbulb.company/ISOA/issues/ISOA-317");
+    expect(router.push).not.toHaveBeenCalled();
   });
 
   it("resolves an agent link (no mobile detail screen yet) against the web origin", async () => {

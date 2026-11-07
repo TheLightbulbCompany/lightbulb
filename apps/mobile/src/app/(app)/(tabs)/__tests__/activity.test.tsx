@@ -231,7 +231,7 @@ it("shows local neutral copy, not the server's, for a purchase-gate action failu
   expect(screen.queryByText(/pick a plan/i)).toBeNull();
 });
 
-it("navigates: an issue action, a thread row, a run", async () => {
+it("navigates a thread row; old issue and run targets go nowhere", async () => {
   mockState = {
     items: [
       item(),
@@ -243,7 +243,7 @@ it("navigates: an issue action, a thread row, a run", async () => {
   };
   await render(<Activity />);
   await fireEvent.press(screen.getByLabelText("Growth wants to publish a post on LinkedIn"));
-  expect(mockPush).toHaveBeenLastCalledWith({ pathname: "/(app)/teams/issue/[id]", params: { id: "iss-1" } });
+  expect(mockPush).not.toHaveBeenCalled();
   expect(mockRunAction).not.toHaveBeenCalled();
 
   mockPush.mockClear();
@@ -252,7 +252,7 @@ it("navigates: an issue action, a thread row, a run", async () => {
 
   mockPush.mockClear();
   await fireEvent.press(screen.getByLabelText("A run failed"));
-  expect(mockPush).toHaveBeenCalledWith({ pathname: "/(app)/teams/run/[runId]", params: { runId: "r1" } });
+  expect(mockPush).not.toHaveBeenCalled();
 });
 
 it("opens a mention's thread from its Open thread action", async () => {
@@ -365,10 +365,10 @@ it("offers Open on a message, with its Reply one long press away", async () => {
 });
 
 it("offers Open, not Review, when the only actions navigate", async () => {
-  mockState = { items: [item({ actions: [action({ id: "open", label: "Open issue", navigate: { kind: "issue", id: "iss-1", roomId: null } })] })] };
+  mockState = { items: [item({ actions: [action({ id: "open", label: "Open task", navigate: { kind: "task", id: "t-1", roomId: null } })] })] };
   await render(<Activity />);
   await fireEvent.press(screen.getByLabelText("Open: Growth wants to publish a post on LinkedIn"));
-  expect(mockPush).toHaveBeenCalledWith({ pathname: "/(app)/teams/issue/[id]", params: { id: "iss-1" } });
+  expect(mockPush).toHaveBeenCalledWith({ pathname: "/(app)/task/[taskId]", params: { taskId: "t-1" } });
   expect(screen.queryByText("Review")).toBeNull();
 });
 

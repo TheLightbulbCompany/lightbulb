@@ -11,7 +11,6 @@ import Markdown, {
 
 import { WEB_ORIGIN } from "../../config/domain";
 import { activityMobileHref } from "../../lib/activityLink";
-import { paperclipMobileHref } from "../../lib/paperclipLink";
 import { sessionMobileHref } from "../../lib/sessionLink";
 import { colors, fonts, radii, spacing, type ChatPalette } from "../../config/theme";
 import { useCardReply } from "./openui/CardReplyContext";
@@ -105,18 +104,6 @@ const rules: RenderRules = {
       const activityHref = activityMobileHref(href);
       if (activityHref) {
         return <Text key={node.key} style={styles.link} onPress={() => router.push(activityHref)}>{children}</Text>;
-      }
-      // An issue or run link (the bundled paperclip skill writes e.g.
-      // `/ISOA/issues/ISOA-317`) has an in-app screen — push it directly
-      // instead of round-tripping through the browser and the web's
-      // middleware redirect.
-      const inAppHref = paperclipMobileHref(href);
-      if (inAppHref) {
-        return (
-          <Text key={node.key} style={styles.link} onPress={() => router.push(inAppHref)}>
-            {children}
-          </Text>
-        );
       }
       // A relative href (e.g. an agent-written Paperclip path like
       // `/ISOA/agents/cto`, written by the bundled paperclip skill) has no

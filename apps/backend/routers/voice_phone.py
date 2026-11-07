@@ -258,17 +258,23 @@ def outcome_of(call: dict) -> str:
     return "message" if call.get("messages") else "answered"
 
 
-@router.post("/internal/voice/calls/{call_id}/end")
-async def end_call(call_id: str, body: EndIn) -> dict:
+def transcript_lines(transcript: list[dict]) -> list[dict]:
+    """The worker's lines as the record keeps them: `{who: caller|assistant, text, t}`; anyone else is dropped."""
     who = {"user": "caller", "caller": "caller", "assistant": "assistant"}
     lines = []
-    for t in body.transcript:
+    for t in transcript:
         if str(t.get("role") or t.get("who")) not in who:
             continue
         line = {"who": who[str(t.get("role") or t.get("who"))], "text": str(t.get("text", ""))[:2000]}
         if isinstance(t.get("t"), (int, float)) and not isinstance(t["t"], bool):
             line["t"] = round(min(max(float(t["t"]), 0.0), 86400.0), 1)  # seconds since the call started
         lines.append(line)
+    return lines
+
+
+@router.post("/internal/voice/calls/{call_id}/end")
+async def end_call(call_id: str, body: EndIn) -> dict:
+    lines = transcript_lines(body.transcript)
 
     def change(call: dict) -> dict:
         return {"status": "ended", "endedAt": utc_now_iso(), "durationSec": body.durationSec,

@@ -5,7 +5,7 @@ import { Mic, PhoneOff } from "lucide-react";
 import { useApi } from "@/lib/api";
 import { useHuddle } from "./HuddleProvider";
 
-interface RoomRow { roomId: string; kind: string; firstRun?: boolean; members?: { kind: string }[] }
+interface RoomRow { roomId: string; kind: string; firstRun?: boolean; members?: { kind: string; id?: string }[] }
 
 /** The member's DM with the assistant (the welcome DM first): Live there is owner mode, the Router by voice.
  *  undefined while loading, null when there is none. */

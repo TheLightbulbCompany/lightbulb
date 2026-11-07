@@ -43,11 +43,16 @@
 .vx-orb:active { transform: scale(0.96); }
 .vx-orb[data-state="listening"] { box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 72%, transparent); animation: vx-listen 1.8s var(--ease-out) infinite; }
 .vx-orb[data-state="connecting"] { opacity: 0.7; }
+/* Thinking: the orb breathes while the Router reads or hands off; speaking: a steady ring in the voice's own colour. */
+.vx-orb[data-state="thinking"] { animation: vx-think 1.4s var(--ease-out) infinite alternate; }
+.vx-orb[data-state="speaking"] { box-shadow: 0 0 0 3px color-mix(in srgb, var(--link) 70%, transparent); }
+@keyframes vx-think { to { opacity: 0.55; transform: scale(0.94); } }
 .vx-orb:disabled { cursor: not-allowed; opacity: 0.5; }
 @keyframes vx-listen { 50% { box-shadow: 0 0 0 7px color-mix(in srgb, var(--ok) 18%, transparent); } }
-@media (prefers-reduced-motion: reduce) { .vx-orb[data-state="listening"] { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .vx-orb[data-state="listening"], .vx-orb[data-state="thinking"] { animation: none; } }
 .vx-talk b { display: block; font-size: var(--text-ui); font-weight: 600; }
 .vx-talk p { margin-top: 2px; color: var(--fg-mute); font-size: var(--text-caption); }
+.vx-talk .vx-caption { color: var(--fg-soft); font-size: var(--text-ui); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 @media (max-width: 640px) {
   .vx-talk { flex-direction: column; text-align: center; padding: 24px 16px; }
   .vx-orb { width: 88px; height: 88px; }

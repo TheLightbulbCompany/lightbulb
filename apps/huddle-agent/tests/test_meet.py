@@ -204,3 +204,15 @@ async def test_reads_and_chat_name_the_asker():
     await a.calendar("2026-11-09")
     await a.send_to_chat("Ana at 10")
     assert [b.get("participantId") for _, b in sent] == ["p1", "p1", "p1"]
+
+
+async def test_call_stats_sends_a_date_range():
+    a, sent = _agent(), []
+
+    async def post(op, body):
+        sent.append(body)
+        return {}
+
+    a._post = post
+    await a.call_stats(from_date="2026-10-01", to_date="2026-10-31")
+    assert sent == [{"kind": "calls", "days": 7, "from": "2026-10-01", "to": "2026-10-31"}]

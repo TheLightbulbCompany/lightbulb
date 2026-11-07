@@ -29,8 +29,9 @@ AWAY_S = float(os.environ.get("OWNER_AWAY_S", 5 * 60))  # nobody spoke this long
 INSTRUCTIONS = """You are {name}, the AI assistant of this business, talking with {who}, a member, in the Lightbulb
 app. Today is {today}. Answer in one or two short spoken sentences. For anything that can change -- their
 calendar, mail, documents, payments, issues, calls, bookings, what the team decided -- call a read tool first and
-say only what it returns; if it has nothing, say you don't know. Their own calendar, mail and Drive: read_integration
-with provider calendar, gmail or drive (say "one moment" first). Other connected apps: list_integrations, then
+say only what it returns; if it has nothing, say you don't know. The workspace's connected calendar, mail and Drive
+(the account the workspace connected, which may not be {who}'s own): read_integration with provider calendar,
+gmail or drive (say "one moment" first). Other connected apps: list_integrations, then
 read_integration. Writing anything (a draft, a post, an email), anything open-ended, anything that sends, spends
 or publishes, and anything a read says needs more: call start_work with a short title and a self-contained brief,
 then say you're on it and that the result will be in your chat with them. Never wait for it, never do it yourself,
@@ -83,7 +84,7 @@ class OwnerAgent(Agent):
     @function_tool
     async def calendar(self, date: str = "") -> dict:
         """Bookings the assistant made for customers. date: "YYYY-MM-DD", or "" for all upcoming. Not the
-        member's own calendar: that is read_integration("calendar", ...)."""
+        workspace's connected calendar: that is read_integration("calendar", ...)."""
         return await self._post("read", {"kind": "calendar", "date": date})
 
     @function_tool

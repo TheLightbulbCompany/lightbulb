@@ -215,6 +215,7 @@ def test_join_works_in_a_dm_and_group_dm(client, kind):
     with (
         patch.object(vc.messaging, "require_room_member", AsyncMock(return_value=(meta, {}))),
         patch.object(vc, "room_agents", AsyncMock(return_value=[{"id": "agent-eng", "name": "Engineering"}])),
+        patch.object(vc, "_gate", AsyncMock(return_value=("paid", 0))),
     ):
         resp, _, dispatch = _join(client, room_team=AsyncMock(wraps=vc._room_team))
     assert resp.status_code == 200 and resp.json()["lightbulb"] is True
@@ -920,8 +921,21 @@ def test_join_of_a_dm_dispatches_the_owner_router_and_wakes_nothing(client):
     """Owner mode (voice spec §4.5, §5 Home): Live in a DM with the assistant is the Router session, whose reads and
     start_work go through the backend, so no workspace runtime is woken and no routing cards are warmed."""
     meta = {"ownerId": "org_a", "kind": "dm"}
-    resp, _, dispatch = _join(client, room_team=AsyncMock(return_value=(meta, TEAM[:1])))
+    with patch.object(vc, "_gate", AsyncMock(return_value=("paid", 0))) as gate:
+        resp, _, dispatch = _join(client, room_team=AsyncMock(return_value=(meta, TEAM[:1])))
     assert resp.status_code == 200
+    gate.assert_awaited_once_with("org_a")
     assert dispatch.await_args.args[1] == {"roomId": ROOM, "ownerId": "org_a", "roomToken": RT, "mode": "owner"}
     _join.wake.assert_not_called()
     _join.warm.assert_not_called()
+
+
+def test_owner_mode_join_is_402_without_plan_or_free_minutes(client):
+    """The /summon gate, at the DM's join: no session (and no realtime bill) without a plan or free minutes."""
+    meta = {"ownerId": "org_a", "kind": "dm"}
+    limit = vc._problem(402, code="voice_limit", reason="free_minutes_used")
+    with patch.object(vc, "_gate", AsyncMock(side_effect=limit)):
+        resp, mint, dispatch = _join(client, room_team=AsyncMock(return_value=(meta, TEAM[:1])))
+    assert resp.status_code == 402
+    assert resp.json()["detail"] == {"code": "voice_limit", "reason": "free_minutes_used"}
+    dispatch.assert_not_awaited()

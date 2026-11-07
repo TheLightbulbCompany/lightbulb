@@ -58,21 +58,28 @@ class WorkIn(OwnerIn):
 
 @router.post("/internal/voice/owner/{room_id}/start-work", status_code=202)
 async def start_work(room_id: str, body: WorkIn) -> dict:
-    """An ask becomes a Router task delivered to the DM. One title per member per day is one task: asking again
-    is "already on it" (the task id is derived from it)."""
+    """An ask becomes a Router task delivered to the DM. The same ask (title and brief, normalised) from the same
+    member on the same day is one task: the trigger id derives from it, so a retry after a failed start starts it
+    and only a trigger that already exists is "already on it"."""
     room_id, member, agent = await _owner(room_id, body)
-    day = utc_now_iso()[:10]
-    run_id = hashlib.sha256(f"{room_id}:{member}:{day}:{body.title.strip().lower()}".encode()).hexdigest()[:32]
-    if await messaging_repo.get_voice_run(body.ownerId, run_id):
-        return {"already": True}
+    ask = " ".join(f"{body.title}\n{body.brief}".lower().split())
+    run_id = hashlib.sha256(f"{room_id}:{member}:{utc_now_iso()[:10]}:{ask}".encode()).hexdigest()[:32]
+    # start_voice_work reads the requester from this row; writing it again on a retry is the same row
     await messaging_repo.put_voice_run(
         body.ownerId, run_id, {"roomId": room_id, "requesterUserId": member, "agentId": agent}
     )
-    brief = f"Asked aloud in the app.\n\n{body.brief}"
     out = await start_voice_work(
-        body.ownerId, VoiceStartIn(run_id=run_id, call_id=room_id, room_id=room_id, title=body.title, brief=brief)
+        body.ownerId,
+        VoiceStartIn(
+            run_id=run_id,
+            call_id=room_id,
+            room_id=room_id,
+            title=body.title,
+            brief=f"Asked aloud in the app.\n\n{body.brief}",
+        ),
     )
-    return {"started": True, **out}
+    created = out.pop("created", True)
+    return {"started": created, **({} if created else {"already": True}), **out}
 
 
 class ReadIn(OwnerIn):

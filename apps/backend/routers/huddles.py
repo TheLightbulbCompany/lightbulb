@@ -201,7 +201,9 @@ async def _join(room_id: str, owner_id: str, user_id: str, team: list[dict], *, 
     # reads and start_work go through the backend, so nothing below is needed. Elsewhere going Live is the
     # earliest sign a voice turn is coming: start the workspace's cold start now, and warm Jev's agent cards so
     # the first /route fits its 3 s budget (F4).
-    if not owner_mode:
+    if owner_mode:
+        await voice_calls._gate(owner_id)  # the plan and free-minutes check /summon makes: 402 voice_limit
+    else:
         voice_calls.prewake_owner(owner_id, team, room_id)
         voice_calls.prewarm_cards(owner_id, team)
     try:

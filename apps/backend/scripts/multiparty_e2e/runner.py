@@ -225,7 +225,40 @@ def hard_checks(step: dict, replies: list[dict], said: list[str]) -> dict:
         checks[f"references:{needle}"] = needle.lower() in text.lower()
     for needle in exp.get("must_not_say") or []:
         checks[f"avoids:{needle}"] = needle.lower() not in text.lower()
+    if any_of := exp.get("must_reference_any"):
+        checks["references_any"] = any(n.lower() in text.lower() for n in any_of)
+    if "max_chars" in exp:
+        checks[f"max_chars:{exp['max_chars']}"] = len(text) <= exp["max_chars"]
     return checks
+
+
+def board_checks(exp: dict, before: dict[str, str], after: dict[str, str]) -> dict:
+    """The task board after a step (title -> status): unchanged, or named tasks in named statuses."""
+    want = exp.get("board") or {}
+    checks = {"board_unchanged": before == after} if want.get("unchanged") else {}
+    for title, status in (want.get("status") or {}).items():
+        checks[f"status:{title}"] = after.get(title) == status
+    return checks
+
+
+def board(api: Api) -> dict[str, dict]:
+    """The workspace's tasks by id (the Teams list is capped at 500, more than any eval workspace holds)."""
+    rows = api("GET", "/teams/issues", params={"limit": 500})["issues"]
+    return {r["id"]: {"title": r["title"], "status": r["status"]} for r in rows}
+
+
+OPEN = frozenset({"backlog", "todo", "in_progress", "in_review", "blocked"})
+
+
+def fill_board_counts(step: dict, rows: dict[str, dict]) -> dict:
+    """``{open_tasks}`` in a step's expectations becomes the board's real open count: the dev
+    workspace may already hold open tasks, so a case cannot hard-code the number it seeded."""
+    n = str(sum(r["status"] in OPEN for r in rows.values()))
+    return json.loads(json.dumps(step).replace("{open_tasks}", n))
+
+
+def _titles(rows: dict[str, dict]) -> dict[str, str]:
+    return {r["title"]: r["status"] for r in rows.values()}
 
 
 def parse_judge(content: str) -> dict:
@@ -292,8 +325,14 @@ def play(scn: dict, apis: dict[str, Api], ids: dict[str, str], gateway_key: str 
     names = {m["displayName"].lower(): m for m in room["members"] if m["kind"] == "agent"}
     names |= {k: next(m for m in room["members"] if m["id"] == ids[k]) for k in scn["cast"]}
     role_of = {a["id"]: k for k, a in agents.items()}
+    uses_board = scn.get("seed") or any((s.get("expect") or {}).get("board") for s in scn["steps"])
+    start_board = board(apis[owner]) if uses_board else {}
+    for task in (scn.get("seed") or {}).get("tasks") or []:
+        apis[owner]("POST", "/teams/issues", json={"title": task["title"], "status": task.get("status", "todo")})
+    seen_board = board(apis[owner]) if uses_board else {}
     after_seq, posted, said, transcript, steps_out, trigger_of, to_judge = 0, [], [], [], [], {}, []
     for i, step in enumerate(scn["steps"]):
+        step = fill_board_counts(step, seen_board) if uses_board else step
         text, mentions = render(step["say"], names)
         body = {
             "clientMessageId": str(uuid.uuid4()),
@@ -335,6 +374,10 @@ def play(scn: dict, apis: dict[str, Api], ids: dict[str, str], gateway_key: str 
         out = {"step": i, "as": step["as"], "text": text, "replies": replies}
         if step.get("expect"):
             out["checks"] = hard_checks(step, replies, said)
+            if step["expect"].get("board"):
+                now = board(apis[owner])
+                out["checks"] |= board_checks(step["expect"], _titles(seen_board), _titles(now))
+                seen_board = now
             out["judge"] = None
             to_judge.append((out, step, list(transcript)))
         transcript += [f"{r['name']}: {r['text']}" for r in replies]
@@ -342,6 +385,12 @@ def play(scn: dict, apis: dict[str, Api], ids: dict[str, str], gateway_key: str 
     # Judge only after every message is posted: a judge call between steps would delay a race post.
     for out, step, seen in to_judge if gateway_key else []:
         out["judge"] = judge(seen, step, out["replies"], gateway_key)
+    # Every task the case seeded or the agent filed, so the next case counts a clean board.
+    for issue_id in set(board(apis[owner]) if uses_board else {}) - set(start_board):
+        try:
+            apis[owner]("POST", f"/teams/issues/{issue_id}/archive")
+        except RuntimeError as exc:
+            print(f"  (could not archive task {issue_id}: {exc})", file=sys.stderr)
     if not keep:
         try:
             apis[owner]("PATCH", f"/messaging/rooms/{room_id}", json={"archived": True})
@@ -432,6 +481,8 @@ def split_at(replies: list[dict], seq: int) -> tuple[list[dict], list[dict]]:
 def summarize(results: list[dict]) -> str:
     out = ["| scenario | step | expected | got | checks | judge |", "|---|---|---|---|---|---|"]
     for res in results:
+        if res.get("error"):
+            out.append(f"| {res['id']} | – | – | – | ERROR {res['error']} | – |")
         for s in res["steps"]:
             if "checks" not in s:
                 continue
@@ -486,8 +537,11 @@ def main(argv=None):
     results = []
     for scn in scns:
         print(f"== {scn['id']}", file=sys.stderr)
-        res = play(scn, apis, ids, key, args.keep)
-        results.append(annotate(res, scn))
+        try:
+            res = annotate(play(scn, apis, ids, key, args.keep), scn)
+        except (RuntimeError, httpx.HTTPError) as exc:  # one broken case is a row, not the end of the run
+            res = {"id": scn["id"], "error": str(exc)[:200], "steps": []}
+        results.append(res)
     outdir = HERE / "results"
     outdir.mkdir(exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")

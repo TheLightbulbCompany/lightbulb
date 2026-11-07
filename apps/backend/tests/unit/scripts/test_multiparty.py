@@ -239,3 +239,103 @@ def test_report_only_counts_the_selected_cases(tmp_path, monkeypatch, capsys):
     (tmp_path / "raw" / "t-multiparty.jsonl").write_text("\n".join(json.dumps(r) for r in rows))
     mp.main(["--report-only", "--tag", "t", "--only", "^C01-chat$"])
     assert "| **total** | 1 |" in capsys.readouterr().out
+
+
+# ------------------------------------------------------------------ G1: cases from 42 real failures
+def test_hard_checks_cap_reply_length_and_accept_any_of_several_references():
+    replies = [{"role": "ceo", "text": "We go with HN."}]
+    step = {"expect": {"responder": "ceo", "max_chars": 10, "must_reference_any": ["Hacker News", "HN"]}}
+    checks = runner.hard_checks(step, replies, [""])
+    assert checks["max_chars:10"] is False
+    assert checks["references_any"] is True
+    step = {"expect": {"responder": "ceo", "must_reference_any": ["Product Hunt"]}}
+    assert runner.hard_checks(step, replies, [""])["references_any"] is False
+
+
+def test_board_checks_unchanged_and_status_by_title():
+    before = {"Ship the ChatGPT plugin": "todo", "Ship the Claude plugin": "todo"}
+    after = {"Ship the ChatGPT plugin": "cancelled", "Ship the Claude plugin": "todo"}
+    exp = {
+        "board": {
+            "unchanged": True,
+            "status": {"Ship the ChatGPT plugin": "cancelled", "Ship the Claude plugin": "todo"},
+        }
+    }
+    checks = runner.board_checks(exp, before, after)
+    assert checks == {
+        "board_unchanged": False,
+        "status:Ship the ChatGPT plugin": True,
+        "status:Ship the Claude plugin": True,
+    }
+    assert runner.board_checks({"board": {"status": {"Gone": "todo"}}}, before, after) == {"status:Gone": False}
+    assert runner.board_checks({}, before, after) == {}
+
+
+def test_g1_scenarios_load_and_every_case_is_scored():
+    scns = runner.load_scenarios([str(runner.HERE / "scenarios" / "G1.yaml")], "")
+    assert len(scns) >= 14 and len({s["id"] for s in scns}) == len(scns)
+    for scn in scns:
+        assert scn["source"].startswith("G1#"), scn["id"]
+        scored = [s for s in scn["steps"] if s.get("expect")]
+        assert len(scored) == 1 and scored[0]["expect"].get("judge"), scn["id"]
+        assert set(scn.get("seed") or {}) <= {"tasks"}, scn["id"]
+
+
+def test_play_seeds_tasks_checks_the_board_and_archives_every_new_task(monkeypatch):
+    issues, archived = {"old": {"id": "old", "title": "Existing", "status": "todo"}}, []
+
+    def api(method, path, **kw):
+        if method == "POST" and path == "/messaging/rooms":
+            return {
+                "roomId": "r1",
+                "members": [
+                    {"kind": "agent", "id": "a1", "displayName": "CEO", "mentionHandle": "ceo"},
+                    {"kind": "human", "id": "u-maya", "displayName": "Maya"},
+                ],
+            }
+        if method == "GET" and path == "/teams/issues":
+            return {"issues": list(issues.values())}
+        if method == "POST" and path == "/teams/issues":
+            new = {"id": f"i{len(issues)}", **kw["json"]}
+            issues[new["id"]] = new
+            return new
+        if method == "POST" and path.endswith("/archive"):
+            archived.append(path.split("/")[3])
+            return {}
+        if method == "POST":  # the message: the agent "files a task" while answering
+            issues["agent"] = {"id": "agent", "title": "Filed by the agent", "status": "todo"}
+            return {"messageId": "m1", "messageSeq": 1}
+        return {}
+
+    monkeypatch.setattr(runner, "roster", lambda api_: [{"displayName": "CEO", "id": "a1"}])
+    monkeypatch.setattr(
+        runner, "collect", lambda *a, **kw: ([{"name": "CEO", "role": "ceo", "text": "ok", "seq": 2}], 2)
+    )
+    scn = {
+        "id": "g",
+        "cast": ["maya"],
+        "agents": {"ceo": "mentions"},
+        "seed": {"tasks": [{"title": "Seeded", "status": "todo"}]},
+        "steps": [{"as": "maya", "say": "@{ceo} hi", "expect": {"responder": "ceo", "board": {"unchanged": True}}}],
+    }
+    api.s = SimpleNamespace(token=lambda: "jwt")
+    res = runner.play(scn, {"maya": api}, {"maya": "u-maya"}, None, keep=True)
+    assert res["steps"][0]["checks"]["board_unchanged"] is False  # the agent filed a task
+    assert sorted(archived) == ["agent", "i1"]  # the seeded task and the agent's, never the existing one
+
+
+def test_open_tasks_template_is_the_boards_real_open_count():
+    rows = {
+        "a": {"title": "A", "status": "todo"},
+        "b": {"title": "B", "status": "done"},
+        "c": {"title": "C", "status": "blocked"},
+    }
+    step = {"say": "x", "expect": {"must_reference_any": ["{open_tasks}"], "judge": "states {open_tasks}"}}
+    filled = runner.fill_board_counts(step, rows)
+    assert filled["expect"] == {"must_reference_any": ["2"], "judge": "states 2"}
+    assert step["expect"]["judge"] == "states {open_tasks}"  # the scenario itself is not mutated
+
+
+def test_a_scenario_that_errors_is_a_row_in_the_summary_not_the_end_of_the_run():
+    table = runner.summarize([{"id": "G1-x", "error": "POST /teams/issues -> 422", "steps": []}])
+    assert "| G1-x | – | – | – | ERROR POST /teams/issues -> 422 | – |" in table

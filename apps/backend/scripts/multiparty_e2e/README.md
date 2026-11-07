@@ -86,7 +86,13 @@ Templates in `say`:
     message count against the race step. Each reply's `trigger` (from `activeRuns`) shows which
     message actually caused it.
 - **no_restate_stepN**: fails when a reply repeats 60% or more of that step's content words.
-- **references / avoids**: case-insensitive substring checks.
+- **references / avoids**: case-insensitive substring checks. `must_reference_any` passes on any one of
+  its substrings.
+- **max_chars:N**: the step's agent replies together are at most N characters.
+- **board_unchanged / status:<title>**: the task board after the step (`expect.board: {unchanged: true}`
+  or `{status: {<title>: <status>}}`). A scenario's `seed.tasks` are created first, `{open_tasks}` in a
+  step becomes the board's real open count, and every task the scenario seeded or an agent filed is
+  archived when it ends. `scenarios/G1.yaml` uses these: one case per real agent failure (G1, 7–28 Oct).
 - **judge**: `MP_JUDGE_MODEL` (default `google/gemini-2.5-flash`) on the same Vercel AI Gateway
   Jev uses. It sees the transcript up to the step, the agent replies, and the rubric, and answers
   `{"pass", "reason"}`. Pass `--no-judge` to skip it.

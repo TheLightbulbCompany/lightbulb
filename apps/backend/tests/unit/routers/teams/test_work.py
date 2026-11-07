@@ -689,20 +689,6 @@ def test_paid_owner_can_still_reactivate(client, admin, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_pausing_nightly_routine_never_touches_heartbeat_opt_out(client, admin, monkeypatch):
-    admin.get_routine = AsyncMock(return_value={"id": "r1", "title": "Nightly CEO progress"})
-    set_opt = AsyncMock()
-    monkeypatch.setattr("core.repositories.billing_repo.set_nightly_ceo_opted_out", set_opt)
-    assert (
-        client.patch(
-            "/api/v1/teams/routines/r1", json={"status": "paused"}, headers={"Authorization": "Bearer x"}
-        ).status_code
-        == 200
-    )
-    assert client.delete("/api/v1/teams/routines/r1", headers={"Authorization": "Bearer x"}).status_code == 200
-    set_opt.assert_not_awaited()
-
-
 # ---------------------------------------------------------------------------
 # A2 — editable routines: trigger edit/delete/rotate + revisions list/restore
 #

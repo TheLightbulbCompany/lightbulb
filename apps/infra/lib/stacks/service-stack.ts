@@ -1910,8 +1910,6 @@ export class ServiceStack extends cdk.Stack {
       // Accounts v2 API version pin for the company account/account-link
       // calls. Empty ⇒ the provisioning preview.
       STRIPE_ACCOUNTS_V2_VERSION: props.stripeAccountsV2Version ?? "",
-      // Dev keeps timer heartbeats off (spend): arm_nightly_ceo leaves them alone.
-      NIGHTLY_CEO_HEARTBEATS_ENABLED: env === "dev" ? "false" : "true",
       // Super-agent env master: set where the gate is on (dev) and absent elsewhere, so prod's
       // task definition is unchanged and the backend default (false) holds.
       ...(superAgentEnabled(env)

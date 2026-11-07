@@ -390,13 +390,12 @@ async def test_a_failed_memory_wipe_fails_the_seam(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_teardown_pauses_paperclip_automation_and_a_paperclip_failure_never_blocks_it(monkeypatch):
-    """No runtime = every scheduled routine/heartbeat files a task that can only block."""
+async def test_teardown_makes_no_paperclip_automation_call(monkeypatch):
     calls = _seam(monkeypatch, row=ROW)
-    pause = AsyncMock(side_effect=RuntimeError("paperclip down"))
+    pause = AsyncMock()
     monkeypatch.setattr("core.services.paperclip_agent_lifecycle.pause_owner_automation", pause)
     await hermes_provisioning.delete_workspace_runtime("org_a")
-    pause.assert_awaited_once_with("org_a")
+    pause.assert_not_awaited()
     assert calls == ["runtime", "reap"]
 
 

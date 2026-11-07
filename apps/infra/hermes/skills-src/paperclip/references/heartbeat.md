@@ -103,7 +103,7 @@ When work produces a user-inspectable file, upload true deliverables to the curr
 
 If an important file intentionally remains in the project or execution workspace instead of being uploaded, annotate a work product with `metadata.resourceRef.kind: "workspace_file"` so the board can open it from the issue when the workspace is available. Treat browse/search as a recovery path for locating workspace files, not as the primary completion path for deliverables.
 
-Working scratch and run evidence you keep for your own recall but do NOT intend to ship — cached API responses, intermediate dumps, per-run notes — belong under **`.run/`** in your workspace: a dot-dir, so it persists across runs but is excluded from any marketplace export of this agent. Only files that ARE part of the agent's definition belong loose in the workspace root; a messy root ships wholesale if the agent is ever published.
+Working scratch and run evidence you keep for your own recall but do NOT intend to ship — cached API responses, intermediate dumps, per-run notes — belong under **`.run/`** in your workspace: a dot-dir, so it persists across runs. Only files that ARE part of the agent's definition belong loose in the workspace root.
 
 For technical upload instructions, read `references/artifacts.md`.
 

@@ -1,6 +1,5 @@
 # Software projects: from nothing to live
 
-A new app, site, tool or dashboard someone asks for: `references/apps.md`.
 
 Read this when asked to build something new and put it online (an app, a site,
 a service). For work on an existing repo, start at **Repository** and skip the
@@ -216,9 +215,7 @@ in your home directory: it would be saved and restored on every turn.
 
 ## A database, hosting or another paid service
 
-Read the provisioning catalog first (`references/money.md`). If it offers the
-service, request it there and build against the variable names meanwhile. If
-it offers nothing that fits, tell the owner, recommend one provider
-with the reason, and ask them to create the account and connect it in
+Lightbulb cannot create the account (`references/money.md`). Tell the owner,
+recommend one provider with the reason, and ask them to create the account and connect it in
 Connections or give you the credential through the `secrets` tool. Never
 invent a credential, never sign up on the owner's behalf.

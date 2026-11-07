@@ -108,7 +108,6 @@ function buildStacks(environment: "dev" | "prod"): {
     appsyncEventsRegion: "us-east-1",
     agentMailConfigurationSet: "isol8-test-agent-mail",
     vendorOrgId: environment === "prod" ? "org_3H3viGAfq2SXc9dIdcatmGXg8Td" : undefined,
-    stripeProjectsCatalog: environment === "prod" ? "prod" : "testing",
   });
 
   return {

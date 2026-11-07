@@ -102,9 +102,6 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
     // Mirrors lightbulb-stage.ts's VENDOR_ORG_ID_BY_ENV["prod"]; left unset
     // for dev here so the untested env keeps exercising the "" default.
     vendorOrgId: environment === "prod" ? "org_3H3viGAfq2SXc9dIdcatmGXg8Td" : undefined,
-    stripeProjectsCatalog: environment === "prod" ? "prod" : "testing",
-    appsDomain: environment === "prod" ? "apps.thelightbulb.company" : "apps.dev.thelightbulb.company",
-    appsHostedZoneId: "ZAPPS123",
   });
 
   return Template.fromStack(service);
@@ -479,66 +476,6 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
         }),
       ]),
     });
-  });
-
-  test("apps DNS: env vars and a zone-scoped Route53 managed policy", () => {
-    template.hasResourceProperties("AWS::ECS::TaskDefinition", Match.objectLike({
-      ContainerDefinitions: Match.arrayWith([
-        Match.objectLike({
-          Environment: Match.arrayWith([
-            Match.objectLike({ Name: "APPS_DOMAIN", Value: "apps.dev.thelightbulb.company" }),
-            Match.objectLike({ Name: "APPS_HOSTED_ZONE_ID", Value: "ZAPPS123" }),
-          ]),
-        }),
-      ]),
-    }));
-    template.hasResourceProperties("AWS::IAM::ManagedPolicy", Match.objectLike({
-      PolicyDocument: Match.objectLike({
-        Statement: Match.arrayWith([
-          Match.objectLike({
-            Action: "route53:ChangeResourceRecordSets",
-            Resource: "arn:aws:route53:::hostedzone/ZAPPS123",
-            // R60: only this env's app names and Vercel's verification TXTs
-            Condition: {
-              "ForAllValues:StringLike": {
-                "route53:ChangeResourceRecordSetsNormalizedRecordNames": [
-                  "*.apps.dev.thelightbulb.company",
-                  "_vercel.*",
-                ],
-              },
-            },
-          }),
-          Match.objectLike({
-            Action: "route53:ListResourceRecordSets",
-            Resource: "arn:aws:route53:::hostedzone/ZAPPS123",
-          }),
-        ]),
-      }),
-    }));
-  });
-
-  test("dev reads the testing catalog partition, prod reads prod", () => {
-    // The provisioning rail reads the catalog AND writes resources into it, so
-    // a dev backend pointed at the prod partition would create real provider
-    // resources. Prod is the default when nothing threads the prop.
-    template.hasResourceProperties("AWS::ECS::TaskDefinition", Match.objectLike({
-      ContainerDefinitions: Match.arrayWith([
-        Match.objectLike({
-          Environment: Match.arrayWith([
-            Match.objectLike({ Name: "STRIPE_PROJECTS_CATALOG", Value: "testing" }),
-          ]),
-        }),
-      ]),
-    }));
-    buildServiceStack("prod").hasResourceProperties("AWS::ECS::TaskDefinition", Match.objectLike({
-      ContainerDefinitions: Match.arrayWith([
-        Match.objectLike({
-          Environment: Match.arrayWith([
-            Match.objectLike({ Name: "STRIPE_PROJECTS_CATALOG", Value: "prod" }),
-          ]),
-        }),
-      ]),
-    }));
   });
 
   test("escalation overrides route the founder org to Forge in prod only", () => {

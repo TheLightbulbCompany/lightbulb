@@ -338,8 +338,7 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
       LIGHTBULB_ROOM_SESSION_KEY / HERMES_SESSION_KEY, message link from
       LIGHTBULB_ROOM_MESSAGE_ID, both exported by bridge `_room_turn_env`;
       ideas.py work_description's From style), and the task's run posts done /
-      needs-you there. Old binding files on disk are inert; marketplace export
-      skips the dir (backend agent_export.py `_S3_PROFILE_SKIP_TOP_DIRS`).
+      needs-you there. Old binding files on disk are inert.
       Re-apply on re-vendor.
   25. A person's decision is an approval (SKILL.md Critical Rules "A person's
       decision is an approval" + the interactions.md routing row; detail in

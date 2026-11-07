@@ -500,3 +500,21 @@ async def test_member_send_honours_the_complaint_pause(member_wired):
     assert await _send_member() == "outbound_disabled"
     assert member_wired.ses_calls == 0
     member_wired.update.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resolve_apex_ceo_degrades_to_none_when_paperclip_fetch_fails(monkeypatch):
+    """Moved from agent_export: a Paperclip outage yields None, never a failed send."""
+    import core.services.paperclip_openclaw_pairing as pairing
+
+    async def _boom(**_):
+        raise RuntimeError("down")
+
+    monkeypatch.setattr(pairing, "fetch_paperclip_agents_for_owner", _boom)
+    assert await mod.resolve_apex_ceo_agent_id(owner_id="user_abc") is None
+
+    async def _agents(**_):
+        return [{"id": "div", "role": "ceo", "reportsTo": "fri"}, {"id": "fri", "role": "ceo", "reportsTo": None}]
+
+    monkeypatch.setattr(pairing, "fetch_paperclip_agents_for_owner", _agents)
+    assert await mod.resolve_apex_ceo_agent_id(owner_id="user_abc") == "fri"

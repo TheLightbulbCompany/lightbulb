@@ -4,6 +4,7 @@ import os
 import time
 
 import numpy as np
+import pytest
 from livekit import rtc
 
 from huddle_agent import meet
@@ -244,15 +245,38 @@ def test_the_name_may_open_any_sentence_of_a_joined_turn():
     assert gate.heard("p2", "We should ask Nova about it later.", 9, new_turn=True) == ""
 
 
-def test_replay_scenarios_against_the_gate():
+# ack_within fails at the live lag (1.9 s) for these; gate.main() is red until they are fixed.
+KNOWN_SLOW_ACK = {"unnamed_followup": "line 1: the unnamed follow-up gets no reply at all"}
+
+
+def test_replay_scenarios_against_the_gate(monkeypatch):
     """The live order: the reply's audio is held until its turn's transcript arrives (TRANSCRIPT_LAG_S). The
-    assistant must stay silent where it should, at any lag; how soon it answers (ack_within) depends on the lag
-    and is a measurement, reported by `python -m tests.replay.gate`, not asserted here."""
+    assistant must stay silent where it should, at any lag; it must answer in time (ack_within) at the live lag
+    (lag changes how soon, so ack_within is judged only there)."""
     assert len(set(SCENARIOS)) == 17
-    for lag in (0.0, 2.0, replay_gate.TRANSCRIPT_LAG_S, 8.0):
-        replay_gate.TRANSCRIPT_LAG_S = lag
+    live = replay_gate.TRANSCRIPT_LAG_S
+    for lag in (0.0, 2.0, live, 8.0):
+        monkeypatch.setattr(replay_gate, "TRANSCRIPT_LAG_S", lag)
         results = [r for name in SCENARIOS for r in replay_gate.judge(name)]
         assert [r for r in results if r[0] == "FAIL" and r[1] == "silent_between"] == [], lag
+    monkeypatch.setattr(replay_gate, "TRANSCRIPT_LAG_S", live)
+    late = [n for n in SCENARIOS if n not in KNOWN_SLOW_ACK for r in replay_gate.judge(n) if r[:2] == ("FAIL", "ack_within")]
+    assert late == []
+
+
+@pytest.mark.xfail(strict=True, reason="unnamed_followup: ack_within line 1 gets no reply (gate does not hear an unnamed follow-up as an ask)")
+def test_unnamed_followup_is_acked_in_time():
+    assert not [r for r in replay_gate.judge("unnamed_followup") if r[0] == "FAIL"]
+
+
+def test_replay_gate_fails_on_late_ack(monkeypatch):
+    monkeypatch.setattr(replay_gate, "TRANSCRIPT_LAG_S", 8.0)  # the transcript lands far too late: acks miss their 4 s
+    assert any(r[:2] == ("FAIL", "ack_within") for n in SCENARIOS for r in replay_gate.judge(n))
+    assert replay_gate.main() != 0
+
+
+def test_replay_gate_main_fails_on_a_known_failure():
+    assert replay_gate.main() != 0  # unnamed_followup is red at the live lag
 
 
 async def test_reads_and_chat_name_the_asker():

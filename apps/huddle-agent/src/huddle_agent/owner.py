@@ -188,4 +188,5 @@ async def _close(limit: asyncio.Task, backend: Backend, record) -> None:
         await backend.owner("end", record())  # the talk becomes a "Yours" row on Home
     except BackendError as e:
         logger.warning("owner: talk not kept (%s)", e.code)
-    await backend.aclose()
+    finally:
+        await backend.aclose()

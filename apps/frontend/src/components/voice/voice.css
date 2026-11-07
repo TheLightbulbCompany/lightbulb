@@ -44,7 +44,7 @@
 .vx-orb[data-state="listening"] { box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 72%, transparent); animation: vx-listen 1.8s var(--ease-out) infinite; }
 .vx-orb[data-state="connecting"] { opacity: 0.7; }
 /* Thinking: the orb breathes while the Router reads or hands off; speaking: a steady ring in the voice's own colour. */
-.vx-orb[data-state="thinking"] { animation: vx-think 1.4s var(--ease-out) infinite alternate; }
+.vx-orb[data-state="thinking"] { box-shadow: 0 0 0 3px color-mix(in srgb, var(--fg-mute) 50%, transparent); animation: vx-think 1.4s var(--ease-out) infinite alternate; }
 .vx-orb[data-state="speaking"] { box-shadow: 0 0 0 3px color-mix(in srgb, var(--link) 70%, transparent); }
 @keyframes vx-think { to { opacity: 0.55; transform: scale(0.94); } }
 .vx-orb:disabled { cursor: not-allowed; opacity: 0.5; }

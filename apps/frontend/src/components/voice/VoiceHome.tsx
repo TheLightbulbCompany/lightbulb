@@ -209,15 +209,20 @@ type Orb = "idle" | "connecting" | "listening" | "thinking" | "speaking";
 type Heard = { status: string; caption: string } | null;
 
 /** While Live: what the Router is doing, from the worker's `lightbulb.agent.<tile>.status` attribute (owner.py),
- *  and its last spoken line from LiveKit's transcription stream. `null` until the worker has joined. */
-function AgentHeard({ tile, children }: { tile: string; children: (h: Heard) => React.ReactNode }) {
+ *  and its last spoken line from LiveKit's transcription stream; `null` until the worker has joined. Renders
+ *  nothing: it sits beside the orb, never around it, so the held button never remounts. */
+function AgentHeard({ tile, onHeard }: { tile: string; onHeard: (h: Heard) => void }) {
   const agent = useRemoteParticipant(CEO_IDENTITY);
-  return agent ? <AgentLines agent={agent} tile={tile}>{children}</AgentLines> : <>{children(null)}</>;
+  useEffect(() => { if (!agent) onHeard(null); }, [agent, onHeard]);
+  return agent ? <AgentLines agent={agent} tile={tile} onHeard={onHeard} /> : null;
 }
-function AgentLines({ agent, tile, children }: { agent: Participant; tile: string; children: (h: Heard) => React.ReactNode }) {
+function AgentLines({ agent, tile, onHeard }: { agent: Participant; tile: string; onHeard: (h: Heard) => void }) {
   const { attributes } = useParticipantAttributes({ participant: agent });
   const lines = useTranscriptions({ participantIdentities: [CEO_IDENTITY] });
-  return <>{children({ status: agentLiveStatus(attributes, tile), caption: lines.at(-1)?.text ?? "" })}</>;
+  const status = agentLiveStatus(attributes, tile), caption = lines.at(-1)?.text ?? "";
+  useEffect(() => { onHeard({ status, caption }); }, [status, caption, onHeard]);
+  useEffect(() => () => onHeard(null), [onHeard]);
+  return null;
 }
 
 /** Hold to talk: Live in the owner's own Lightbulb DM, which is owner mode (the Router listens to the mic and
@@ -247,12 +252,14 @@ function TalkToAssistant({ name }: { name: string }) {
     mic_denied: "Allow the microphone in your browser to talk.", no_mic: "No microphone found.",
     voice_unavailable: "Talking isn't switched on for this workspace yet.", workspace_not_ready: "Your workspace is still starting. Try again in a minute.",
   } as Record<string, string>)[huddle.error.code];
-  const view = (heard: Heard) => {
-    const state: Orb = huddle.joining || (live && !heard) ? "connecting"
-      : heard?.status === "speaking" ? "speaking" : heard?.status === "working" ? "thinking"
-      : talking && live ? "listening" : "idle";
-    const caption = live && heard?.caption;
-    return <div className="vx-talk">
+  const [heard, setHeard] = useState<Heard>(null);
+  const agent = live && connected ? heard : null;
+  const state: Orb = huddle.joining || (live && !agent) ? "connecting"
+    : agent?.status === "speaking" ? "speaking" : agent?.status === "working" ? "thinking"
+    : talking && live ? "listening" : "idle";
+  const caption = agent?.caption;
+  const alert = err || (huddle.error ? `Couldn't reach ${name}. Try again.` : "");
+  return <div className="vx-talk">
     <button type="button" className="vx-orb" data-state={state} disabled={room === null}
       aria-label={`Hold to talk to ${name}`} aria-pressed={talking}
       onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); void press(); }}
@@ -264,15 +271,12 @@ function TalkToAssistant({ name }: { name: string }) {
     <div style={{ flex: 1, minWidth: 0 }}>
       <b aria-live="polite">{{ connecting: `Connecting to ${name}…`, listening: `${name} is listening`, thinking: `${name} is thinking…`,
         speaking: `${name} is speaking`, idle: `Hold to talk to ${name}` }[state]}</b>
-      {err || huddle.error ? <p role="alert">{err || `Couldn't reach ${name}. Try again.`}</p>
-        : caption ? <p className="vx-caption">{caption}</p>
-        : <p>{room === null ? `${name} isn't set up in this workspace yet.`
-          : <>“What happened today?”<span className="vx-more"> · “Move Priya’s 11 to 11:30 and text her” · “Draft the holiday-hours post”</span></>}</p>}
+      {/* one persistent line: an alert, else a polite region with the caption or the suggestions */}
+      <p role={alert ? "alert" : undefined} aria-live={alert ? undefined : "polite"} className={!alert && caption ? "vx-caption" : undefined}>
+        {alert || caption || (room === null ? `${name} isn't set up in this workspace yet.`
+          : <>“What happened today?”<span className="vx-more"> · “Move Priya’s 11 to 11:30 and text her” · “Draft the holiday-hours post”</span></>)}</p>
     </div>
     {live && <Button type="button" size="sm" variant="outline" onClick={() => { release(); huddle.leave(); }}>End</Button>}
+    {live && connected && <RoomContext.Provider value={connected}><AgentHeard tile={tile} onHeard={setHeard} /></RoomContext.Provider>}
   </div>;
-  };
-  return live && connected
-    ? <RoomContext.Provider value={connected}><AgentHeard tile={tile}>{view}</AgentHeard></RoomContext.Provider>
-    : view(null);
 }

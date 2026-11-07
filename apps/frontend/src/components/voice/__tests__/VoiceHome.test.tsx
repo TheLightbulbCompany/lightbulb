@@ -9,7 +9,9 @@ vi.mock("@livekit/components-react", () => ({
   useParticipantAttributes: () => ({ attributes: lk.attrs }),
   useTranscriptions: () => lk.lines,
 }));
-const huddle = vi.hoisted(() => ({ roomId: "dm1" as string | null, joining: null, room: { localParticipant: { setMicrophoneEnabled: vi.fn() } }, error: null, join: vi.fn(), leave: vi.fn() }));
+const mic = vi.hoisted(() => vi.fn());
+const connectedRoom = vi.hoisted(() => ({ localParticipant: { setMicrophoneEnabled: mic } }));
+const huddle = vi.hoisted(() => ({ roomId: "dm1" as string | null, joining: null, room: connectedRoom as object | null, error: null, join: vi.fn(), leave: vi.fn() }));
 vi.mock("@/components/huddle/HuddleProvider", () => ({ CEO_IDENTITY: "agent-ceo", useHuddle: () => huddle }));
 vi.mock("@/components/huddle/TalkButton", () => ({
   useAssistantDm: () => ({ roomId: "dm1", kind: "dm", members: [{ kind: "human", id: "u" }, { kind: "agent", id: "a1" }] }),
@@ -25,7 +27,28 @@ vi.mock("../data", async (orig) => ({
 
 import { VoiceHome } from "../VoiceHome";
 
-beforeEach(() => { lk.attrs = {}; lk.agent = { identity: "agent-ceo" }; lk.lines = []; items.list = []; });
+beforeEach(() => {
+  lk.attrs = {}; lk.agent = { identity: "agent-ceo" }; lk.lines = []; items.list = [];
+  huddle.roomId = "dm1"; huddle.room = connectedRoom; mic.mockClear();
+});
+
+it("a keyboard hold survives the room and the assistant connecting", () => {
+  huddle.roomId = null; huddle.room = null; lk.agent = null;
+  const { rerender } = render(<VoiceHome />);
+  const orb = screen.getByRole("button", { name: "Hold to talk to Nova" });
+  orb.focus();
+  fireEvent.keyDown(orb, { key: " " });
+  expect(huddle.join).toHaveBeenCalledWith("dm1", "Nova");
+  huddle.roomId = "dm1"; huddle.room = connectedRoom;
+  rerender(<VoiceHome />);
+  lk.agent = { identity: "agent-ceo" }; lk.attrs = { "lightbulb.agent.a1.status": "listening" };
+  rerender(<VoiceHome />);
+  expect(screen.getByRole("button", { name: "Hold to talk to Nova" })).toBe(orb); // the same element, never remounted
+  expect(document.activeElement).toBe(orb);
+  expect(mic).not.toHaveBeenCalledWith(false);
+  fireEvent.keyUp(orb, { key: " " });
+  expect(mic).toHaveBeenCalledWith(false);
+});
 
 it("orb shows thinking then speaking from the agent attribute", () => {
   lk.attrs = { "lightbulb.agent.a1.status": "working" };

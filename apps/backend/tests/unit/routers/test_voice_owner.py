@@ -164,3 +164,17 @@ async def test_only_the_seated_member_can_keep_a_talk(m):
     with pytest.raises(HTTPException) as e:
         await voice_owner.end(ROOM, body)
     assert e.value.status_code == 403
+
+
+async def test_a_retried_end_keeps_the_row_it_made(m):
+    body = voice_owner.EndIn(
+        ownerId="org_1", roomToken="t", speakerUserId="user_maya", sessionId="job_1", durationSec=5,
+        transcript=[{"who": "caller", "text": "Hi", "t": 0.1}],
+    )  # fmt: skip
+    conflict = AsyncMock(side_effect=voice_owner.messaging_repo.MessagingRepoError("exists"))
+    with patch.object(voice_owner.messaging_repo, "create_room", conflict):
+        first = await voice_owner.end(ROOM, body)  # get_room (the fixture) finds the row: a replay
+        assert first["kept"] is True
+        with patch.object(voice_owner.messaging_repo, "get_room", AsyncMock(side_effect=[META, None])):
+            with pytest.raises(voice_owner.messaging_repo.MessagingRepoError):
+                await voice_owner.end(ROOM, body)  # no row behind the error: it is raised

@@ -191,3 +191,33 @@ def test_call_start_times_compare_across_offsets():
         {"startedAt": "2026-11-07T12:00:00+00:00"}
     )
     assert voice_meet._started({}).year == 1
+
+
+async def test_call_stats_month_vs_month(m):
+    """call_stats over {from, to}: "bookings this month versus last" is two ranges, local days inclusive."""
+    starts = {"r1": "2026-10-01T09:00:00-04:00", "r2": "2026-10-31T23:30:00-04:00", "r3": "2026-11-03T10:00:00-05:00",
+              "r4": "2026-09-30T23:59:00-04:00"}  # fmt: skip
+    rows = [{"roomId": r, "name": "Call · x", "createdAt": s} for r, s in starts.items()]
+    rooms = {r: {"call": {"startedAt": s, "outcome": "booked"}} for r, s in starts.items()}
+    with (
+        patch.object(voice_meet.messaging_repo, "_query", AsyncMock(return_value=rows)),
+        patch.object(voice_meet.messaging_repo, "get_room", AsyncMock(side_effect=lambda r: rooms[r])),
+    ):
+
+        def body(frm, to):
+            return voice_meet.ReadIn.model_validate(
+                {"ownerId": "o", "roomToken": "t", "kind": "calls", "from": frm, "to": to}
+            )
+
+        october = await voice_meet.read(ROOM, body("2026-10-01", "2026-10-31"))
+        november = await voice_meet.read(ROOM, body("2026-11-01", "2026-11-30"))
+    assert october == {"from": "2026-10-01", "to": "2026-10-31", "calls": 2, "byOutcome": {"booked": 2}}
+    assert november == {"from": "2026-11-01", "to": "2026-11-30", "calls": 1, "byOutcome": {"booked": 1}}
+
+
+async def test_a_read_nothing_here_can_do_is_handed_to_work(m):
+    with patch.object(
+        voice_meet.integration_reads, "read", AsyncMock(return_value=voice_meet.integration_reads.START_WORK)
+    ):
+        body = voice_meet.IntegrationIn(ownerId="org_1", roomToken="t", provider="x", query="q", participantId="11")
+        assert await voice_meet.integration_read(ROOM, body) == {"start_work": True, "say": "I'll get that"}

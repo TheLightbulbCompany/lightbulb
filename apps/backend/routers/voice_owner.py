@@ -87,6 +87,8 @@ class ReadIn(OwnerIn):
     question: str = Field(default="", max_length=1000)
     days: Annotated[int, Field(le=90), AfterValidator(lambda d: max(d, 1))] = 7
     date: str = Field(default="", pattern=r"^(\d{4}-\d{2}-\d{2})?$")
+    from_: str = Field(default="", alias="from", pattern=r"^(\d{4}-\d{2}-\d{2})?$")
+    to: str = Field(default="", pattern=r"^(\d{4}-\d{2}-\d{2})?$")
 
 
 @router.post("/internal/voice/owner/{room_id}/read")
@@ -100,7 +102,7 @@ async def read(room_id: str, body: ReadIn) -> dict:
         )  # fmt: skip
         return {"facts": [" ".join(r["content"].split())[:400] for r in page.get("results", [])[:6]]}
     if body.kind == "calls":
-        return await _calls(body.ownerId, body.days)
+        return await _calls(body.ownerId, body.days, body.from_, body.to)
     rows = await _bookings(body.ownerId, body.date)
     return {"bookings": [{"start": b["sk"].removeprefix("VOICEBOOK#"), "service": b.get("service"),
                           "name": b.get("name")} for b in rows[:50]]}  # fmt: skip
@@ -121,4 +123,5 @@ class IntegrationIn(OwnerIn):
 async def integration_read(room_id: str, body: IntegrationIn) -> dict:
     """One bounded read of a connected integration (integration_reads, the meeting's reader)."""
     await _owner(room_id, body)
-    return {"text": await integration_reads.read(body.ownerId, body.provider, body.query)}
+    out = await integration_reads.read(body.ownerId, body.provider, body.query)
+    return out if isinstance(out, dict) else {"text": out}

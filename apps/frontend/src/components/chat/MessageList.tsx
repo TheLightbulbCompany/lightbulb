@@ -26,7 +26,6 @@ import toml from "react-syntax-highlighter/dist/esm/languages/prism/toml";
 import tsx from "react-syntax-highlighter/dist/esm/languages/prism/tsx";
 import typescript from "react-syntax-highlighter/dist/esm/languages/prism/typescript";
 import yaml from "react-syntax-highlighter/dist/esm/languages/prism/yaml";
-import { HireCard, parseHireSuggestion } from "@/components/chat/HireCard";
 import { ToolActivityTrace, type ToolCall } from "@/components/chat/ToolActivityTrace";
 import { TranscriptSelectionBar } from "@/components/chat/TranscriptSelectionBar";
 import {
@@ -643,18 +642,7 @@ function MessageBlocks({ message }: { message: HistoryMessage }) {
       if (id && renderedToolIds.has(id)) {
         const call = toolCallFromPair(b, pairs);
         if (call) {
-          // A completed recommend_agents call renders as a hire card instead
-          // of a tool pill. parseHireSuggestion returns null for every other
-          // tool result, so anything else falls through untouched.
-          const hireSuggestion =
-            call.status === "done" ? parseHireSuggestion(call.result) : null;
-          if (hireSuggestion) {
-            // A hire card is prose-weight content, not a step — it ends the run.
-            flushTrace();
-            rendered.push(<HireCard key={`hire:${id}`} suggestion={hireSuggestion} />);
-          } else {
-            pendingCalls.push(call);
-          }
+          pendingCalls.push(call);
           renderedToolIds.delete(id);
         }
       }
@@ -882,9 +870,6 @@ function toolCallsOfPureToolMessage(message: HistoryMessage): ToolCall[] | null 
     if (!isToolUseBlock(b)) return null; // prose/thinking present — not pure
     const call = toolCallFromPair(b, pairs);
     if (!call) return null;
-    // A completed recommend_agents call renders as a hire card, which is prose-
-    // weight content — leave the whole message to the normal renderer.
-    if (call.status === "done" && parseHireSuggestion(call.result)) return null;
     calls.push(call);
   }
   return calls.length > 0 ? calls : null;

@@ -38,6 +38,7 @@ from routers import (
     apple_iap,
     automations,
     internal_automations,
+    voice_meet,
     voice_phone,
     billing,
     config,
@@ -46,13 +47,11 @@ from routers import (
     container_files,
     container_recover,
     debug,
-    desktop_auth,
     desktop_pair,
     devices,
     gateway_relay,
     huddles,
     desktop_execution,
-    desktop_sessions,
     desktop_session_pickup,
     desktop_session_resume,
     google_accounts,
@@ -403,7 +402,6 @@ async def lifespan(app: FastAPI):
     from core.services.session_pickup import run_pickup_sweeper
     from core.services.memory_api import run_memory_sweeper
     from core.services.voice_calls import voice_call_sweeper
-    from core.services.apps_sweeper import run_apps_sweeper
 
     scheduled_worker_task = asyncio.create_task(run_scheduled_worker())
     idle_sweeper_stop = asyncio.Event()
@@ -422,8 +420,6 @@ async def lifespan(app: FastAPI):
     digest_task = asyncio.create_task(run_digest_sweeper(digest_stop))
     away_stop = asyncio.Event()
     away_task = asyncio.create_task(run_needs_you_sweeper(away_stop))
-    apps_sweeper_stop = asyncio.Event()
-    apps_sweeper_task = asyncio.create_task(run_apps_sweeper(apps_sweeper_stop))
 
     # Teams event broker — projects approved Paperclip events onto each user's
     # private AppSync channel. REST remains available when it is unconfigured.
@@ -449,7 +445,6 @@ async def lifespan(app: FastAPI):
             "memory_sweeper": memory_sweeper_task,
             "daily_digest": digest_task,
             "needs_you_email": away_task,
-            "apps_sweeper": apps_sweeper_task,
             "running_gauges": gauge_task,
         }
     )
@@ -502,7 +497,6 @@ async def lifespan(app: FastAPI):
     memory_sweeper_stop.set()
     digest_stop.set()
     away_stop.set()
-    apps_sweeper_stop.set()
     gauge_task.cancel()
     if flags_task is not None:
         flags_task.cancel()
@@ -521,7 +515,6 @@ async def lifespan(app: FastAPI):
                 memory_sweeper_task,
                 digest_task,
                 away_task,
-                apps_sweeper_task,
                 gauge_task,
             ]
             if broker is not None:
@@ -539,7 +532,6 @@ async def lifespan(app: FastAPI):
             memory_sweeper_task,
             digest_task,
             away_task,
-            apps_sweeper_task,
             gauge_task,
         ):
             task.cancel()
@@ -553,7 +545,6 @@ async def lifespan(app: FastAPI):
             memory_sweeper_task,
             digest_task,
             away_task,
-            apps_sweeper_task,
             gauge_task,
             return_exceptions=True,
         )
@@ -825,11 +816,6 @@ app.add_middleware(
     expose_headers=["X-Request-ID", "Mcp-Session-Id", "WWW-Authenticate"],
 )
 
-# R78/R83: app origins may call the invite swap only (no credentials); added after CORSMiddleware so it runs first.
-from routers.apps import InviteCors  # noqa: E402
-
-app.add_middleware(InviteCors)
-
 # E2E correlation middleware — binds X-E2E-Run-Id header to log context so
 # every log line emitted while handling an e2e harness request carries the
 # same e2e_run_id field. No-op for traffic that doesn't send the header.
@@ -905,7 +891,6 @@ app.include_router(gateway_relay.router, prefix="/api/v1/gateway", tags=["gatewa
 # Recall's per-person Meet audio: the same door, since it is the only raw-WS path the bv- edge forwards.
 app.include_router(meet_audio.router, prefix="/api/v1/gateway", tags=["meetings"])
 app.include_router(desktop_execution.router, prefix="/api/v1/desktop-execution", tags=["desktop"])
-app.include_router(desktop_sessions.router, prefix="/api/v1", tags=["desktop"])
 app.include_router(desktop_session_pickup.router, prefix="/api/v1", tags=["desktop"])
 app.include_router(desktop_session_resume.router, prefix="/api/v1", tags=["desktop"])
 
@@ -986,6 +971,7 @@ app.include_router(google_accounts.router, prefix="/api/v1", tags=["google-accou
 app.include_router(automations.router, prefix="/api/v1", tags=["automations"])
 app.include_router(internal_automations.router, prefix="/api/v1", tags=["super-agent"])  # lane A: Router proposals
 app.include_router(voice_phone.router, prefix="/api/v1", tags=["voice"])  # the phone receptionist worker
+app.include_router(voice_meet.router, prefix="/api/v1", tags=["voice"])  # the meeting agent worker
 
 from routers import runtime_internal  # noqa: E402
 
@@ -996,8 +982,6 @@ app.include_router(workspace_files.router, prefix="/api/v1/container", tags=["co
 
 # Debug routes (dev-only container provisioning)
 app.include_router(debug.router, prefix="/api/v1/debug", tags=["debug"])
-
-app.include_router(desktop_auth.router, prefix="/api/v1/auth", tags=["desktop"])
 
 # Desktop two-node pair / revoke (two-node architecture). Pair is idempotent;
 # revoke force-closes the live WS session keyed by deviceId.
@@ -1060,43 +1044,10 @@ app.include_router(
     include_in_schema=False,
 )
 
-# Marketplace listings (Plan 2) — router carries its own /api/v1/marketplace prefix.
-from routers import marketplace_listings  # noqa: E402
-
-app.include_router(marketplace_listings.router)
-
-
-# Claude Code context import — same /api/v1/marketplace prefix, own subtree.
-from routers import marketplace_import  # noqa: E402
-
-app.include_router(marketplace_import.router)
-
-
-# Marketplace purchases (Plan 2) — checkout, Stripe webhook, refunds.
-from routers import marketplace_purchases  # noqa: E402
-
-app.include_router(marketplace_purchases.router)
-
-# Marketplace payouts (Plan 2) — Stripe Connect Express onboarding + dashboard.
-from routers import marketplace_payouts  # noqa: E402
-
-app.include_router(marketplace_payouts.router)
-
 # Company Stripe account — status, create + hosted onboarding, connect existing, disconnect.
 from routers import company_stripe  # noqa: E402
 
 app.include_router(company_stripe.router, prefix="/api/v1/company/stripe", tags=["company-stripe"])
-
-# Provisioning rail (Stripe Projects) — Friday's ask routes, the owner's
-# approvals, and the provisioned-resource surface in Settings.
-from routers import company_provisioning  # noqa: E402
-
-app.include_router(company_provisioning.router, prefix="/api/v1/company/provisioning", tags=["company-provisioning"])
-
-# Apps on the provisioning rail: builders under /build, Canvas and the admin on the rest.
-from routers import apps as apps_routes  # noqa: E402
-
-app.include_router(apps_routes.router, prefix="/api/v1/apps", tags=["apps"])
 
 # Capability policy + revoke-all (the P0d slice — row + surface only;
 # enforcement in the rails is P1).
@@ -1160,16 +1111,6 @@ from routers import sessions as sessions_router  # noqa: E402
 
 app.include_router(sessions_router.router, prefix="/api/v1/sessions", tags=["sessions"])
 app.include_router(sessions_router.shared_router, prefix="/api/v1/shared", tags=["sessions"])
-
-# Marketplace admin (Plan 2) — moderation queue, approve/reject, takedown.
-from routers import marketplace_admin  # noqa: E402
-
-app.include_router(marketplace_admin.router)
-
-# Marketplace seller profiles — handle picker + public profile lookups.
-from routers import marketplace_sellers  # noqa: E402
-
-app.include_router(marketplace_sellers.router)
 
 
 @app.get(

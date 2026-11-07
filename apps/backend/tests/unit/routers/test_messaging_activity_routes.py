@@ -10,7 +10,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from core.auth import AuthContext, get_current_user
-from core.services import activity, marketplace_hire
+from core.services import activity
 from tests.unit.services.test_messaging_activity import (  # noqa: F401
     ANN,
     FRIDAY,
@@ -51,7 +51,6 @@ def paperclip(monkeypatch):
     admin.approve_approval.return_value = {"id": "ap-1", "status": "approved"}
     monkeypatch.setattr("routers.teams.agents._admin", lambda: admin)
     monkeypatch.setattr(activity, "teams_context", AsyncMock(return_value=ctx_for()))
-    monkeypatch.setattr(marketplace_hire, "deploy_for_approval", AsyncMock())
     return admin
 
 

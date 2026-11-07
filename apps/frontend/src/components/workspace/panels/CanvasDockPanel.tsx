@@ -1,44 +1,8 @@
 "use client";
 
-// Canvas in the right pane: the workspace's apps. params.app selects one (deep link ?app=). UX slice 5: the place is
-// Creations, and without an app it shows everything tasks made (CreationsGrid).
-import { AppList } from "@/components/canvas/AppList";
-import { AppView, AskAgent } from "@/components/canvas/AppView";
-import { AppConversation } from "@/components/canvas/AppConversation";
-import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
-import { creationState, displayName, statusLine } from "@/components/canvas/appText";
+// Creations in the right pane: everything tasks made (CreationsGrid).
 import { CreationsGrid } from "@/components/creations/CreationsGrid";
-import { useState } from "react";
-import { useApps } from "@/hooks/useApps";
-import { updatePanelParams } from "../workspaceController";
-import type { PanelProps } from "../panelComponents";
 
-export function CanvasDockPanel({ id, params }: PanelProps) {
-  const { apps, loading, error, refresh } = useApps();
-  const canManage = useIsWorkspaceAdmin();
-  const [now] = useState(() => Date.now());
-  const close = () => updatePanelParams(id, { app: undefined });
-  const open = params.app ? apps.find((a) => a.app_id === params.app) : undefined;
-  if (params.app) {
-    // Only an app with nothing to show yet gets this: one with a preview or a live version keeps the full view
-    // (the app, Publish, Settings) while a change, a publish or a sharing change builds; its status line says so.
-    const nothingYet = !open?.preview_url && !open?.live_url;
-    if (open && nothingYet && (["awaiting_approval", "provisioning", "building", "failed"].includes(open.state))) {
-      // Its builder talks while it is being set up, so its conversation is here too.
-      return <div className="canvas canvas--pending">
-        <h2 className="canvas__heading">{displayName(open)}</h2>
-        <p className="canvas__notice">{open.stuck ? creationState(open, "Engineering", now) : statusLine(open)}</p>
-        {open.stuck && (open.can_publish === true || canManage) && <AskAgent app={open} />}
-        <button type="button" className="app-view__btn" onClick={close}>All creations</button>
-        {open.can_open && <AppConversation app={open} />}
-      </div>;
-    }
-    if (open) return <AppView key={open.app_id} app={open} onBack={close} />;
-    if (error) return <AppList apps={[]} loading={false} error={error} onRetry={refresh} onOpen={() => {}} />;
-    return <div className="canvas">
-      <p className="canvas__notice">{loading ? "Opening…" : "That app isn't in this workspace."}</p>
-      {!loading && <button type="button" className="app-view__btn" onClick={close}>All creations</button>}
-    </div>;
-  }
+export function CanvasDockPanel() {
   return <CreationsGrid />;
 }

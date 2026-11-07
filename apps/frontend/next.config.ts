@@ -131,7 +131,7 @@ const BUILD_ID = process.env.NEXT_DEPLOYMENT_ID
 // offers), each 308'd to the nearest real page so old links and crawls land.
 export const RETIRED_PAGE_REDIRECTS: { source: string; destination: string }[] = [
   ["/ai-agent-workspace", "/"],
-  ["/ai-agent-marketplace", "/marketplace"],
+  ["/ai-agent-marketplace", "/"],
   ["/autonomous-ai-company", "/"],
   ["/persistent-ai-agents", "/"],
   ["/ai-agents-for-discord", "/"],

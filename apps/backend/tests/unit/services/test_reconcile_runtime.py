@@ -123,7 +123,6 @@ class World:
         mp.setattr(
             "core.services.credentials.mcp_server.build_connected_integration_servers", AsyncMock(return_value={})
         )
-        mp.setattr("core.services.provisioning_landing.build_provisioned_env", AsyncMock(return_value={}))
         mp.setattr("core.services.key_service.read_byo_key", AsyncMock(return_value="sk-byo-key"))
         mp.setattr(hp, "_stage_owner_facts", AsyncMock())
         mp.setattr(

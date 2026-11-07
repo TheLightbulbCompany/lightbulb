@@ -147,47 +147,6 @@ async def test_write_marker_rejects_missing_bucket(monkeypatch):
         )
 
 
-@pytest.mark.asyncio
-async def test_installed_endpoint_uses_only_valid_markers_for_live_roster(monkeypatch):
-    from unittest.mock import AsyncMock
-    from core.auth import AuthContext
-    from routers.marketplace_listings import my_installed_templates
-
-    def marker(agent_id):
-        return {
-            "agent_id": agent_id,
-            "listing_id": "listing",
-            "template_slug": "pulse",
-            "template_version": 2,
-            "seller_id": "seller",
-        }
-
-    markers = {
-        "live": marker("live"),
-        "wrong": marker("different"),
-        "partial": {"agent_id": "partial"},
-        "deleted": marker("deleted"),
-    }
-    reads = []
-
-    def read(owner_id, agent_id):
-        assert owner_id == "org_test"
-        reads.append(agent_id)
-        return markers.get(agent_id)
-
-    monkeypatch.setattr(agent_provenance, "_read_sidecar", read)
-    monkeypatch.setattr(
-        "core.services.messaging.load_agent_roster",
-        AsyncMock(return_value=[{"id": agent} for agent in ["live", "wrong", "partial"]]),
-    )
-
-    result = await my_installed_templates(AuthContext(user_id="human", org_id="org_test", org_role="org:admin"))
-    assert result == {
-        "installed": [{"agent_id": "live", "template_slug": "pulse", "template_version": 2, "listing_id": "listing"}]
-    }
-    assert "deleted" not in reads
-
-
 def test_runtime_owner_policy_cannot_write_backend_install_marker():
     from fnmatch import fnmatchcase
     from core.billing.bedrock_aip import build_owner_litestream_s3_policy

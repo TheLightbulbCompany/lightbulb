@@ -52,14 +52,6 @@ NEGATIVE_PASS_EXCLUSIONS: dict[str, str] = {
     # Exchanges the OAuth code with the external provider after an oauth-state
     # lookup; both the state table and the provider call are absent hermetically.
     "GET /api/v1/oauth/{provider}/callback": "external OAuth code exchange + oauth-state table not provisioned hermetically",
-    # Marketplace hire recommendation: same hook-token lookup on the DDB
-    # containers table as the hooks route above, before anything else can run, so
-    # an unmocked GetItem raises ResourceNotFoundException -> 5xx. With a real
-    # table any owner_id simply misses and the handler 401s, so this is a
-    # harness artifact, not a production 5xx. Covered by
-    # tests/unit/routers/test_marketplace_recommend.py (resolver) +
-    # tests/unit/services/test_marketplace_hire.py (approval + install).
-    "GET /api/v1/marketplace/u/{owner_id}/recommend": "hook-token lookup; containers table not provisioned hermetically",
     # Agent-started integration connect: same hook-token lookup on the DDB
     # containers table before anything else can run. Covered by
     # tests/unit/routers/test_connections.py::TestAuthorizeFromContainer
@@ -76,10 +68,6 @@ NEGATIVE_PASS_EXCLUSIONS: dict[str, str] = {
     # it is absent (Slack retries; a request can't be verified without it).
     # Covered by tests/unit/routers/test_slack_app.py.
     "POST /api/v1/slack/events": "platform Slack app secret (Secrets Manager) not provisioned hermetically → deliberate 503",
-    # Pure-DDB read, but the seller-profile table-name env is not wired into the
-    # chaos fixture → boto ParamValidationError (empty TableName). FOLLOW-UP:
-    # wire the seller table into the fixture to fuzz this endpoint for real.
-    "GET /api/v1/marketplace/seller/handle/{handle}": "seller-profile table env not wired in fixture (empty TableName); follow-up to provision it",
 }
 
 

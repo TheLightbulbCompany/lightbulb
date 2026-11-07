@@ -23,24 +23,6 @@ def _hints_drained_inline(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _apps_tasks_end_with_their_test():
-    """``apps_service.drive``/``watch`` keep one background task per app in module dicts; one armed by a
-    test (through ``status()``, say) must not outlive it and hold that app's slot in the next test's loop."""
-    yield
-    import sys
-    from contextlib import suppress
-
-    svc = sys.modules.get("core.services.apps_service")
-    if svc is None:
-        return
-    for tasks in (svc._drives, svc._watches):
-        for task in list(tasks.values()):
-            with suppress(RuntimeError):  # its loop may already be closed
-                task.cancel()
-        tasks.clear()
-
-
-@pytest.fixture(autouse=True)
 def _tasks_table_under_moto(request, monkeypatch):
     """Since the super-agent switch retired, every workspace reads the `tasks` table (workspace META, the agent
     registry, Questions, requests). A test that builds its moto tables by hand gets that table too, created the

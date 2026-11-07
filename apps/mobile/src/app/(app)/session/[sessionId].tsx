@@ -1,7 +1,7 @@
 import { useAuth } from "@clerk/expo";
 import { SymbolView } from "../../../components/ui/SymbolView";
 import {
-  ApiError, buildRows, canControlSession, endedWhy, groupRows, mainEvents, pendingApproval, receiptChip, sessionLabel, sessionRingState, sessionStatus, sessionTitle, sessionViewKey, sessionScreenNotice, unavailableReason, useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useSessionOutbox, useSessionResume, useWorkspaceSessions,
+  ApiError, buildRows, createApiClient, canControlSession, endedWhy, groupRows, mainEvents, pendingApproval, receiptChip, sessionLabel, sessionRingState, sessionStatus, sessionTitle, sessionViewKey, sessionScreenNotice, unavailableReason, useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useSessionOutbox, useSessionResume, useWorkspaceSessions,
   type LocalSession, type SessionControlClient, type SessionSource, type TranscriptItem, sessionAgentName,
 } from "@lightbulb/shared";
 import { randomUUID } from "expo-crypto";
@@ -27,7 +27,7 @@ import { PendingPromptRow, TranscriptRowView, WorkingRow } from "../../../compon
 import { BottomSheet } from "../../../components/ui/BottomSheet";
 import { fonts, radii, spacing, useChatPalette } from "../../../config/theme";
 import { markSessionsSeenOnDevice, memberName } from "../../../lib/localSessions";
-import { useDesktopSessionApi } from "../../../lib/desktopSessions";
+import { makeAdapter } from "../../../lib/adapter";
 import { JumpToLatest } from "../../../components/conversation/JumpToLatest";
 import { usePushedScreenKeyboardOffset } from "../../../lib/keyboardOffset";
 import { useReadBack } from "../../../lib/readBack";
@@ -60,8 +60,10 @@ function sessionWhere(session: LocalSession, own: boolean, ownerName: string): s
  */
 export default function SessionScreen() {
   const { sessionId } = useLocalSearchParams<{ sessionId: string }>();
-  const { userId } = useAuth();
-  const analyticsApi = useDesktopSessionApi();
+  const { userId, getToken } = useAuth();
+  const getTokenRef = useRef(getToken);
+  getTokenRef.current = getToken;
+  const analyticsApi = useMemo(() => createApiClient(makeAdapter(() => getTokenRef.current())), []);
   const openId = useRef(randomUUID());
   const reportedOpen = useRef<string | null>(null);
   const focused = useIsFocused();

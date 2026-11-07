@@ -263,6 +263,9 @@ def test_realtime_relays_the_kind_and_keeps_the_roster_on_the_meeting(env):
 
 def test_an_older_join_that_lands_after_a_newer_leave_does_not_bring_the_person_back():
     """Realtime events are background tasks: a join's write can commit after the leave that followed it."""
+    assert (
+        mod._rostered({}, "join", "1", "Pat", 1000, host=True)["1"]["host"] is True
+    )  # the meeting agent's member check
     left = mod._rostered({}, "leave", "1", "Pat", 2000)
     assert mod._names(mod._rostered(left, "join", "1", "Pat", 1000)) == []
     assert mod._names(mod._rostered(left, "join", "1", "Pat", 3000)) == ["Pat"]

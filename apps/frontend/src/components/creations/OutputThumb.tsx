@@ -7,7 +7,6 @@ import { useEffect, useRef, useState, type ReactElement } from "react";
 import useSWR from "swr";
 import { AppWindow, ArrowUpRight, FileText, File as FileIcon, Mail, Sparkles, type LucideIcon } from "lucide-react";
 import type { OutputKind, TaskOutput } from "@lightbulb/shared";
-import type { AppRow } from "@/hooks/useApps";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { blobBytes, blobText } from "@/components/media/readBlob";
 import { DOCX, DOCX_MAX_BYTES, docxFace } from "@/components/media/DocxPreview";
@@ -87,13 +86,11 @@ function textFace(text: string): { heading: string | null; lines: string[] } {
   return { heading, lines };
 }
 
-export function OutputThumb({ output, app, size = "tile", frame = true }: {
+export function OutputThumb({ output, size = "tile", frame = true }: {
   output: Pick<TaskOutput, "kind" | "title" | "ref">;
-  /** The app's row, for its page; without one an app shows its glyph. */
-  app?: AppRow;
   /** "tile": Creations' 16:10 tile, with the extension or host under the glyph. "mini": Made here's 88×56. */
   size?: "tile" | "mini";
-  /** false: never frame the app's page or preview the doc (the grid shows only its first few). */
+  /** false: never preview the doc (the grid shows only its first few). */
   frame?: boolean;
 }): ReactElement {
   const image = (output.kind === "file" || output.kind === "document") && output.ref?.contentType?.startsWith("image/");
@@ -102,14 +99,6 @@ export function OutputThumb({ output, app, size = "tile", frame = true }: {
   const { face, preview: read } = useDocPreview(output.ref ?? {}, frame && (docx || isTextDoc(output)), docx);
   // A short text result carries its words (`ref.text`): its face is them, no read (W16-3).
   const preview = output.ref?.text ? textFace(output.ref.text) : read;
-  // Only a public app frames as itself: any other shows its sign-in door, so it gets the glyph.
-  const page = frame && output.kind === "app" && app?.open_to === "public" && app.can_open !== false ? app.live_url ?? app.preview_url : null;
-  if (page && /^https?:\/\//.test(page)) {
-    // A live preview, not a control: lazy (only tiles on screen load), sandboxed, and out of the tab order.
-    return <span className="output-thumb output-thumb--page" data-size={size}>
-      <iframe src={page} title="" aria-hidden="true" tabIndex={-1} loading="lazy" sandbox="allow-scripts allow-same-origin" referrerPolicy="no-referrer" />
-    </span>;
-  }
   if (src) {
     return <span className="output-thumb" data-size={size}>
       {/* eslint-disable-next-line @next/next/no-img-element -- a presigned, short-lived URL: next/image can't proxy it */}

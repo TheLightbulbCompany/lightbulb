@@ -176,7 +176,6 @@ export default function AppLayout() {
                   <Stack.Screen name="automation/[id]" options={{ title: "Automation" }} />
                   {/* A shared Claude / Codex session's transcript: workspace-scoped, not
                       a room's (it sets its own title from the session). */}
-                  <Stack.Screen name="session/new" options={{ title: "New session" }} />
                   <Stack.Screen name="session/[sessionId]" options={{ title: "Session" }} />
                   {/* Teams' detail screens and Control were nested Stacks inside
                       hidden tabs; folded in here as pushed screens, over
@@ -194,8 +193,6 @@ export default function AppLayout() {
                   <Stack.Screen name="control/llm" options={{ title: "Model & Credits" }} />
                   <Stack.Screen name="control/integrations" options={{ title: "Integrations" }} />
                   <Stack.Screen name="control/website-signins" options={{ title: "Website sign-ins" }} />
-                  <Stack.Screen name="control/marketplace" options={{ title: "Marketplace" }} />
-                  <Stack.Screen name="control/listing/[id]" options={{ title: "Listing" }} />
                   <Stack.Screen name="workspaces" options={{ title: "Switch workspace" }} />
                   <Stack.Screen name="invite" options={{ title: "Invite people" }} />
                   {/* Legacy agent route — resolves that agent's DM and replaces

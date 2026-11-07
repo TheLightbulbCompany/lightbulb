@@ -143,13 +143,11 @@ it("owns Teams' detail screens, Control and the legacy agent route; Teams and Se
       "teams/issue/[id]",
       "teams/run/[runId]",
       "control/index",
-      "control/listing/[id]",
       "agent/[agentId]",
-      "session/new",
       "session/[sessionId]",
     ]),
   );
-  for (const gone of ["teams/index", "settings", "sessions"]) {
+  for (const gone of ["teams/index", "settings", "sessions", "session/new", "control/marketplace", "control/listing/[id]"]) {
     expect(names()).not.toContain(gone);
   }
 });

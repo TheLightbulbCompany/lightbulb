@@ -1,15 +1,13 @@
 """Chaos suite fixtures: moto-backed DynamoDB + S3 with all isol8 tables, and
 hypothesis profiles.
 
-Table names are derived three different ways in production code, so the
-fixture wires all three:
+Table names are derived two different ways in production code, so the
+fixture wires both:
   * ``core.dynamodb.get_table`` (prefix convention) — usage-counters,
     billing-accounts, paperclip-companies. Patched via ``_table_prefix`` +
     ``_dynamodb_resource``.
   * ``os.environ["WEBHOOK_DEDUP_TABLE"]`` — webhook_dedup makes its own boto3
     resource (moto intercepts it inside the ``mock_aws`` context).
-  * ``settings.MARKETPLACE_LISTINGS_TABLE`` / ``MARKETPLACE_ARTIFACTS_BUCKET``
-    — marketplace_service reads settings lazily, so we patch the attributes.
 """
 
 import os
@@ -32,8 +30,6 @@ settings.register_profile("dev", max_examples=500, deadline=None, suppress_healt
 settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "ci"))
 
 _PREFIX = "test-"
-_MARKETPLACE_TABLE = "test-marketplace-listings"
-_MARKETPLACE_BUCKET = "test-marketplace-artifacts"
 _DEDUP_TABLE = "test-webhook-event-dedup"
 
 
@@ -138,18 +134,6 @@ def _create_tables(resource):
             },
         ],
     )
-    # marketplace-listings: PK listing_id, SK version (N)
-    _make(
-        _MARKETPLACE_TABLE,
-        [
-            {"AttributeName": "listing_id", "KeyType": "HASH"},
-            {"AttributeName": "version", "KeyType": "RANGE"},
-        ],
-        [
-            {"AttributeName": "listing_id", "AttributeType": "S"},
-            {"AttributeName": "version", "AttributeType": "N"},
-        ],
-    )
     # webhook-event-dedup: PK event_id
     _make(
         _DEDUP_TABLE,
@@ -200,26 +184,18 @@ def _create_tables(resource):
 
 @pytest.fixture
 def chaos_ddb(monkeypatch):
-    """Boot moto (DynamoDB + S3) with every table/bucket the chaos machines
-    touch, wired into all three table-name mechanisms."""
+    """Boot moto (DynamoDB + S3) with every table the chaos machines
+    touch, wired into both table-name mechanisms."""
     from moto import mock_aws
 
     with mock_aws():
         resource = boto3.resource("dynamodb", region_name="us-east-1")
         _create_tables(resource)
 
-        s3 = boto3.client("s3", region_name="us-east-1")
-        s3.create_bucket(Bucket=_MARKETPLACE_BUCKET)
-
         # 1. prefix-convention repos (usage, billing, paperclip)
         monkeypatch.setattr("core.dynamodb._table_prefix", _PREFIX)
         monkeypatch.setattr("core.dynamodb._dynamodb_resource", resource)
         # 2. webhook_dedup reads this env var lazily
         monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", _DEDUP_TABLE)
-        # 3. marketplace reads settings lazily
-        from core.config import settings as _settings
-
-        monkeypatch.setattr(_settings, "MARKETPLACE_LISTINGS_TABLE", _MARKETPLACE_TABLE, raising=False)
-        monkeypatch.setattr(_settings, "MARKETPLACE_ARTIFACTS_BUCKET", _MARKETPLACE_BUCKET, raising=False)
 
         yield resource

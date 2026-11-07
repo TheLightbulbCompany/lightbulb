@@ -2,7 +2,7 @@
 
 import pytest
 
-from core.services import clerk_admin, messaging, onboarding_brief, seller_display
+from core.services import clerk_admin, messaging, onboarding_brief
 from routers.teams.agents import _member_row
 
 RELAY = "m2jdw4mbmt@privaterelay.appleid.com"
@@ -48,4 +48,3 @@ def test_the_other_email_fallbacks_follow_the_same_rule():
     assert _member_row("user_1", "Sam", "", RELAY, None)["name"] == "Sam"
     assert onboarding_brief.first_name_from_email(RELAY) == "there"
     assert onboarding_brief.first_name_from_email("priya.sharma@acme.co") == "Priya Sharma"
-    assert seller_display._name_from_user({**_user(email=RELAY), "primary_email_address_id": "e1"}) is None

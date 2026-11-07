@@ -1955,12 +1955,7 @@ async def require_room_member(owner_id: str, user_id: str, room_id: str) -> tupl
             if row is not None and row.get("removedAt") is not None:
                 raise ApiProblem("ROOM_NOT_FOUND", "Room not found.")
         elif meta.get("app"):
-            # An app's conversation: a seat never outlives the right to open the app (its sharing narrowed,
-            # the person left the app's room) — this door does not wait for the unseat sweep either.
-            from core.services import app_conversation  # lazy: it imports this module
-
-            if not await app_conversation.seat_still_opens(meta["ownerId"], meta["app"]["app_id"], user_id):
-                raise ApiProblem("ROOM_NOT_FOUND", "Room not found.")
+            raise ApiProblem("ROOM_NOT_FOUND", "Room not found.")  # Apps are deleted: an app's conversation stays shut
         elif meta.get("task"):
             # A task's conversation: a seat never outlives `can_view` (left the home room, dropped from the
             # audience, left the workspace). Seats are never swept, so this door is the check.
@@ -5001,13 +4996,6 @@ async def post_run_failure_message(
         if budget_reason:
             # No purchase link: the iPhone app renders room notes as-is (App Store 3.1.1).
             text = BUDGET_BLOCK_MESSAGES[budget_reason]
-        if error_kind != PROVIDER_QUOTA_EXHAUSTED:
-            # A builder's turn on an unfinished app is resumed for the person; say that instead.
-            from core.services import apps_run
-
-            resuming = await apps_run.on_turn_failed(owner_id, row, budget_reason=budget_reason, agent_name=agent_name)
-            if resuming:
-                text, system_notice = resuming, True
         trigger = (
             await messaging_repo.get_message_by_id(room_id, row["triggerMessageId"])
             if row.get("triggerMessageId")
@@ -5091,9 +5079,6 @@ async def end_run_and_announce(owner_id: str, run_id: str, **kwargs: Any) -> dic
         from core.services import meeting_notes  # a meeting's notes run owes its organizer one mail
 
         await meeting_notes.on_notes_run_ended(owner_id, row)
-        from core.services import apps_run  # a builder's turn ended or was stopped: nothing left to retry
-
-        await apps_run.on_run_ended(owner_id, row)
     return row
 
 

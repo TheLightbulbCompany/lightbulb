@@ -191,19 +191,6 @@ export function LocalMcpServers() {
           These servers run on your Mac, so they are managed from the Lightbulb
           desktop app — open it to add or remove them.
         </p>
-        <div className="settings-card">
-          <div className="settings-card-header">
-            <div>
-              <div className="settings-card-title">Desktop app</div>
-              <div className="settings-card-desc">Lightbulb for Mac — Apple Silicon</div>
-            </div>
-            {/* Plain <a>: an API route (302 to the signed DMG), not a Next page. */}
-            {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
-            <a href="/api/download/desktop" className="settings-btn-outline" title="macOS · Apple Silicon">
-              Download
-            </a>
-          </div>
-        </div>
       </div>
     );
   }

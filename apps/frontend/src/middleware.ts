@@ -10,7 +10,6 @@ import {
 import { shellUrlFromPaperclipPath } from "@/lib/shellNav";
 
 const isProtectedRoute = createRouteMatcher([
-  "/auth/connect-machine(.*)",
   "/chat(.*)",
   "/voice(.*)",
   "/onboarding",

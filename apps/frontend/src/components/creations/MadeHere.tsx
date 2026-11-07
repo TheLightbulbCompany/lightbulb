@@ -6,7 +6,6 @@
 import "./creations.css";
 import type { ReactElement } from "react";
 import { ChevronRight } from "lucide-react";
-import { useApps } from "@/hooks/useApps";
 import { openOutput, outputName } from "./openOutput";
 import { OutputThumb } from "./OutputThumb";
 import { useCreations } from "./useCreations";
@@ -17,7 +16,6 @@ export function MadeHere({ roomId, onOpenTask, onAllFiles }: {
   onAllFiles: () => void;
 }): ReactElement | null {
   const { outputs, loading, expected } = useCreations({ roomId, limit: 4 });
-  const { apps } = useApps();
   // The room's task list already says something was made: hold the strip's place with blank tiles while the outputs
   // read lands, so the list below never jumps down ~140 px a second after it draws (W15-8).
   const ghosts = !outputs.length && loading ? Math.min(expected, 4) : 0;
@@ -33,7 +31,7 @@ export function MadeHere({ roomId, onOpenTask, onAllFiles }: {
       </li>)}
       {outputs.slice(0, 4).map((o) => <li key={`${o.taskId}:${o.id}`}>
         <button type="button" className="made-here__tile" title={outputName(o)} aria-label={`Open ${outputName(o)}`} onClick={() => openOutput(o, onOpenTask, "tasks")}>
-          <OutputThumb output={o} size="mini" app={o.kind === "app" ? apps.find((a) => a.app_id === o.ref?.appId) : undefined} />
+          <OutputThumb output={o} size="mini" />
           <span className="made-here__name">{outputName(o)}</span>
         </button>
       </li>)}

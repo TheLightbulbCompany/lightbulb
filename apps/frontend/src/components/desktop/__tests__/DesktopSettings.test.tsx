@@ -21,11 +21,9 @@ afterEach(() => {
   delete (window as any).__TAURI__;
 });
 
-it("in a browser shows the download card and the account-level session switches", async () => {
+it("in a browser shows only the account-level session switches, no download", async () => {
   render(<DesktopSettings />);
-  expect(await screen.findByText("Lightbulb for Mac")).toBeInTheDocument();
-  expect(screen.getByRole("link", { name: "Download" })).toHaveAttribute("href", "/api/download/desktop");
-  expect(screen.getByText(/live on your Mac, so open the Lightbulb desktop app to change them/)).toBeInTheDocument();
+  expect(screen.queryByRole("link")).toBeNull();
   expect(screen.queryByRole("heading", { level: 2 })).toBeNull();
   const background = await screen.findByRole("switch", { name: /Background work/ });
   expect(background).not.toBeChecked();

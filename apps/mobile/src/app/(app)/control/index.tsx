@@ -59,13 +59,6 @@ const PANELS: PanelRow[] = [
     icon: "square.grid.2x2",
     route: "/(app)/control/integrations",
   },
-  {
-    key: "marketplace",
-    label: "Marketplace",
-    description: "Discover and deploy free community agents",
-    icon: "bag",
-    route: "/(app)/control/marketplace",
-  },
 ];
 
 export default function ControlIndex() {

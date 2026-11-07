@@ -75,7 +75,6 @@ export async function GET() {
     "## Optional",
     "",
     line("Full text of every doc and post", "/llms-full.txt", "One file containing the complete Markdown of all documentation and blog posts."),
-    line("Marketplace", "/marketplace", "Browse deployable agents and pre-built companies."),
     line("Blog feed", "/blog/rss.xml", "RSS feed of new posts."),
     "",
   ].join("\n");

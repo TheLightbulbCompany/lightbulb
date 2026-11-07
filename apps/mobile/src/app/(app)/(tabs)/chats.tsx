@@ -28,7 +28,6 @@ import { FocusedStatusBar } from "../../../components/ui/FocusedStatusBar";
 import { fonts, radii, spacing, useChatPalette, type ChatPalette } from "../../../config/theme";
 import { archiveSession, fileSpecialists, otherMembers, readArchivedSessions } from "../../../lib/chats";
 import { roomIdsWithDrafts } from "../../../lib/composerDraft";
-import { useDesktopSessionApi, type SessionTargets } from "../../../lib/desktopSessions";
 import { memberName, markSessionsSeenOnDevice } from "../../../lib/localSessions";
 import { AnimatedPressable, usePressScale } from "../../../lib/pressScale";
 import { useRoomActivity } from "../../../lib/roomActivity";
@@ -70,25 +69,11 @@ function ListSkeleton({ palette }: { palette: ChatPalette }) {
  * header still runs on every scheme change, same as any other component)
  * carries the current colours.
  */
-function HeaderActions({ onMessage, onSession }: { onMessage: () => void; onSession: () => void }) {
+function HeaderActions({ onMessage }: { onMessage: () => void }) {
   const palette = useChatPalette();
-  const desktopApi = useDesktopSessionApi();
-  const [sessionStartEnabled, setSessionStartEnabled] = useState(false);
-  useFocusEffect(useCallback(() => {
-    let active = true;
-    void desktopApi.get("/desktop-sessions/targets")
-      .then((response) => { if (active) setSessionStartEnabled((response as SessionTargets).enabled); })
-      .catch(() => { if (active) setSessionStartEnabled(false); });
-    return () => { active = false; };
-  }, [desktopApi]));
   const messageScale = usePressScale();
-  const sessionScale = usePressScale();
   return (
     <View style={styles.headerActions}>
-      {sessionStartEnabled ? <AnimatedPressable onPress={onSession} onPressIn={sessionScale.onPressIn} onPressOut={sessionScale.onPressOut}
-        hitSlop={8} accessibilityRole="button" accessibilityLabel="New session" style={[styles.compose, sessionScale.style]}>
-        <SymbolView accessibilityElementsHidden name="terminal" size={19} tintColor={palette.fgSoft} />
-      </AnimatedPressable> : null}
       <AnimatedPressable onPress={onMessage} onPressIn={messageScale.onPressIn} onPressOut={messageScale.onPressOut}
         hitSlop={8} accessibilityRole="button" accessibilityLabel="New message" style={[styles.compose, messageScale.style]}>
         <SymbolView accessibilityElementsHidden name="square.and.pencil" size={18} tintColor={palette.fgSoft} />
@@ -178,7 +163,7 @@ export default function Chats() {
         onChangeText: (event) => setQuery(event.nativeEvent.text),
         onCancelButtonPress: () => setQuery(""),
       },
-      headerRight: () => <HeaderActions onMessage={() => setPickerOpen(true)} onSession={() => router.push("/(app)/session/new")} />,
+      headerRight: () => <HeaderActions onMessage={() => setPickerOpen(true)} />,
     },
     () => {
       // No `cancelSearch()` here. This runs as the search bar is taken out of

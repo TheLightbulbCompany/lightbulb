@@ -5,10 +5,8 @@ import type { CreationOutput, TaskSummary } from "@lightbulb/shared";
 import { Fresh, fakeTasksClient, type FakeTasksClient } from "@/components/tasks/__tests__/fakeTasks";
 
 const live = vi.hoisted(() => ({ tasks: null as unknown, agentNames: new Map(), messaging: { attachmentUrl: vi.fn(), downloadAttachment: vi.fn() } }));
-const apps = vi.hoisted(() => ({ apps: [] as unknown[] }));
 const ctl = vi.hoisted(() => ({ openPanel: vi.fn(), openChatPanelWithDraft: vi.fn(() => true) }));
 vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live }));
-vi.mock("@/hooks/useApps", () => ({ useApps: () => apps }));
 vi.mock("@/components/workspace/workspaceController", () => ctl);
 vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({
   useMessagingWorkspaceOptional: () => ({ directoryProps: { rooms: [
@@ -38,7 +36,6 @@ let client: FakeTasksClient;
 beforeEach(() => {
   client = fakeTasksClient([]);
   live.tasks = client;
-  apps.apps = [];
   ctl.openPanel.mockReset();
   ctl.openChatPanelWithDraft.mockClear();
   live.messaging.downloadAttachment.mockReset().mockRejectedValue(new Error("no preview in this test"));
@@ -108,15 +105,6 @@ describe("Creations", () => {
     await waitFor(() => expect(client.outputs).toHaveBeenLastCalledWith(expect.objectContaining({ roomId: "r-walk9" })));
   });
 
-  it("a building app says Waiting on its builder in minutes, never Stopped; a live one says nothing", async () => {
-    apps.apps = [{ app_id: "a1", name: "walk7-signup", state: "building", stuck: { at: new Date(Date.now() - 5 * 60_000).toISOString(), step: "build" },
-      preview_url: null, live_url: null }];
-    client.outputs.mockResolvedValue({ outputs: [APP], next: null });
-    render(<Fresh><CreationsGrid /></Fresh>);
-    expect(await screen.findByText("Waiting on Engineering · 5 min")).toBeInTheDocument();
-    expect(screen.queryByText(/Stopped/)).toBeNull();
-  });
-
   it("Make something new › Doc drafts the ask in the Lightbulb chat and sends nothing", async () => {
     render(<Fresh><CreationsGrid /></Fresh>);
     await userEvent.click(screen.getByRole("button", { name: /Make a doc/ }));
@@ -124,26 +112,10 @@ describe("Creations", () => {
     expect(await screen.findByText("Everything Lightbulb and the specialists make lands here.")).toBeInTheDocument();
   });
 
-  it("frames only public, openable apps, and at most six; the rest (Load more too) show the glyph", async () => {
-    const row = (id: string, over = {}) => ({ app_id: id, name: id, state: "live", open_to: "public", can_open: true, live_url: `https://${id}.example`, preview_url: null, ...over });
-    apps.apps = [row("p0", { open_to: "workspace" }), row("p1", { can_open: false }), ...Array.from({ length: 8 }, (_, i) => row(`a${i}`))];
-    const app = (id: string) => out({ id: `app:${id}`, kind: "app", title: id, ref: { appId: id }, taskId: `t-${id}` });
-    client.outputs.mockResolvedValueOnce({ outputs: [app("p0"), app("p1"), ...Array.from({ length: 8 }, (_, i) => app(`a${i}`)), DOC, MAIL], next: "c2" })
-      .mockResolvedValueOnce({ outputs: [app("a9")], next: null });
-    apps.apps.push(row("a9"));
-    const { container } = render(<Fresh><CreationsGrid /></Fresh>);
-    await screen.findByRole("list", { name: "Creations" });
-    const srcs = () => [...container.querySelectorAll("iframe")].map((f) => f.getAttribute("src"));
-    expect(srcs()).toEqual(["a0", "a1", "a2", "a3", "a4", "a5"].map((id) => `https://${id}.example`));
-    await userEvent.click(screen.getByRole("button", { name: "Load more" }));
-    await screen.findByText("a9");
-    expect(srcs()).toHaveLength(6);
-  });
-
   it("a Make tile says so when Lightbulb isn't ready to take the ask", async () => {
     ctl.openChatPanelWithDraft.mockReturnValueOnce(false);
     render(<Fresh><CreationsGrid /></Fresh>);
-    await userEvent.click(screen.getByRole("button", { name: /Make an app/ }));
+    await userEvent.click(screen.getByRole("button", { name: /Make a doc/ }));
     expect(screen.getByRole("status")).toHaveTextContent("Lightbulb isn't ready yet.");
   });
 
@@ -287,8 +259,9 @@ describe("Files", () => {
     expect(within(table).getByRole("row", { name: /Logo/ })).toHaveTextContent("Priya (shared)");
     expect(screen.queryByRole("complementary", { name: "Tip" })).toBeNull();
     await userEvent.click(screen.getByRole("combobox", { name: "Type" }));
-    await userEvent.click(await screen.findByRole("option", { name: "Apps" }));
-    await waitFor(() => expect(client.outputs).toHaveBeenLastCalledWith(expect.objectContaining({ kind: ["app"] })));
+    await userEvent.click(await screen.findByRole("option", { name: "Docs" }));
+    await waitFor(() => expect(client.outputs).toHaveBeenLastCalledWith(expect.objectContaining({ kind: ["document"] })));
+    expect(screen.queryByRole("option", { name: "Apps" })).toBeNull();
   });
 });
 

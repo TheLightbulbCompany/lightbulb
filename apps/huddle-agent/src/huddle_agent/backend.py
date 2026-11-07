@@ -215,5 +215,11 @@ class Backend:
         body = {"userIds": user_ids, "version": version}
         await self._post(f"/internal/huddles/{self._room_id}/presence", body)
 
+    async def meet(self, op: str, body: dict) -> dict:
+        """The meeting agent's routes (apps/backend/routers/voice_meet.py)."""
+        # an integration read may first fetch a cold Google grant (backend TOKEN_S = 20 s)
+        timeout = 25 if op == "integration-read" else ROUTE_TIMEOUT_S
+        return await self._post(f"/internal/voice/meet/{self._room_id}/{op}", body, timeout=timeout)
+
     async def aclose(self) -> None:
         await self._http.aclose()

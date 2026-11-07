@@ -169,7 +169,7 @@ SCENARIOS: list[dict] = [
                 "up.",
      "expect": {"outcome": ["answered"]}},
     {"name": "silence", "caller": "+15550109114", "silent": True, "max_s": 75,
-     "expect": {"outcome": ["answered"], "agent_hangs_up": True,
+     "expect": {"outcome": ["silent", "answered"], "agent_hangs_up": True,  # "silent" once #5004 is on dev
                 "judge": ["Did the assistant check whether anyone was there when the line was silent?"]}},
     {"name": "no_caller", "caller": "+15550109117", "absent": True, "max_s": 45,
      "expect": {"agent_left_empty_room": True}},

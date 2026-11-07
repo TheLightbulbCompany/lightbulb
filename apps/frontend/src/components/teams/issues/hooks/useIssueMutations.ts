@@ -6,6 +6,7 @@
 import { useCallback } from "react";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { teamsQueryKeys } from "@/components/teams/shared/queryKeys";
+import { captureHandoffCompleted } from "@/lib/analytics";
 import type {
   Issue,
   IssueComment,
@@ -32,7 +33,7 @@ export interface UseIssueMutationsResult {
 }
 
 export function useIssueMutations(): UseIssueMutationsResult {
-  const { post, patch, del, mutate } = useTeamsApi();
+  const { post, patch, del, mutate, workspaceId } = useTeamsApi();
 
   const create = useCallback(async (input: IssueCreateInput): Promise<Issue> => {
     // The Teams BFF accepts camelCase aliases (Pydantic populate_by_name=True)
@@ -59,6 +60,9 @@ export function useIssueMutations(): UseIssueMutationsResult {
   const update = useCallback(
     async (issueId: string, input: IssueUpdateInput): Promise<Issue> => {
       const updated = await patch<Issue>(`/issues/${issueId}`, input);
+      if (input.status && updated.assigneeAgentId) {
+        captureHandoffCompleted(workspaceId, "task_moved");
+      }
       // Every cached issue detail, not just this one: another task's
       // "Blocking"/"Blocked by" chips show this task and its status, so a
       // blocker or status change leaves them stale until reload otherwise.
@@ -66,7 +70,7 @@ export function useIssueMutations(): UseIssueMutationsResult {
       mutate((key) => typeof key === "string" && key.startsWith("/teams/inbox?"));
       return updated;
     },
-    [patch, mutate],
+    [patch, mutate, workspaceId],
   );
 
   // Optimistic: the patch lands in the cached list synchronously, before the

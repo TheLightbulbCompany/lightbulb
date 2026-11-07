@@ -3,6 +3,7 @@
 
 import { useCallback } from "react";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
+import { captureHandoffCompleted } from "@/lib/analytics";
 
 const APPROVALS_KEY = "/teams/approvals";
 const DASHBOARD_KEY = "/teams/dashboard"; // pending-approvals tile
@@ -15,7 +16,7 @@ const DASHBOARD_KEY = "/teams/dashboard"; // pending-approvals tile
  * leaves the pending list on refetch.
  */
 export function useApprovalMutations() {
-  const { post, mutate } = useTeamsApi();
+  const { post, mutate, workspaceId } = useTeamsApi();
 
   const revalidate = useCallback(() => {
     mutate(APPROVALS_KEY);
@@ -31,17 +32,19 @@ export function useApprovalMutations() {
   const approve = useCallback(
     async (approvalId: string, note?: string) => {
       await post(`/approvals/${approvalId}/approve`, note ? { note } : {});
+      captureHandoffCompleted(workspaceId, "approval_answered");
       revalidate();
     },
-    [post, revalidate],
+    [post, revalidate, workspaceId],
   );
 
   const reject = useCallback(
     async (approvalId: string, reason: string) => {
       await post(`/approvals/${approvalId}/reject`, { reason });
+      captureHandoffCompleted(workspaceId, "approval_answered");
       revalidate();
     },
-    [post, revalidate],
+    [post, revalidate, workspaceId],
   );
 
   const requestRevision = useCallback(

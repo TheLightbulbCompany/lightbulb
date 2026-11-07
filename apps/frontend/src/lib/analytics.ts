@@ -70,6 +70,7 @@ export type AnalyticsEvent =
   | "task_steer_sent"
   | "task_stopped"
   // Growth: the door into a workspace and the sharing surface (2026-09-30)
+  | "handoff_completed"
   | "join_link_copied"
   | "session_opened"
   | "share_link_full_viewed"
@@ -469,6 +470,18 @@ export function capture(
   if (typeof window === "undefined") return;
   if (!isLoaded()) return;
   posthog.capture(event, { ...attributionProperties(), ...properties }, options);
+}
+
+export type HandoffKind = "approval_answered" | "task_moved" | "session_picked_up";
+
+/** Capture the browser action that completed a human/agent handoff. */
+export function captureHandoffCompleted(
+  workspaceId: string | null | undefined,
+  kind: HandoffKind,
+): void {
+  if (!workspaceId?.startsWith("org_")) return;
+  // `environment` is registered by PostHogProvider as a super property.
+  capture("handoff_completed", { workspace_id: workspaceId, kind });
 }
 
 /**

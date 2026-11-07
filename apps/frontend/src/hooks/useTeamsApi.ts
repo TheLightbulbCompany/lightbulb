@@ -192,7 +192,18 @@ export function useTeamsApi() {
     return api.downloadBlob(`/teams${path}`, TEAMS_API_OPTS);
   }
 
-  return { read: useRead, post, put, patch, del, upload, download, mutate, isCurrentScopeOrNonTeamsKey };
+  return {
+    read: useRead,
+    post,
+    put,
+    patch,
+    del,
+    upload,
+    download,
+    mutate,
+    isCurrentScopeOrNonTeamsKey,
+    workspaceId: orgId,
+  };
 }
 
 export type TeamsWorkspaceStatus =

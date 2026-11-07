@@ -51,8 +51,18 @@ server = AgentServer(
     load_threshold=float(os.environ.get("PHONE_LOAD_THRESHOLD", "0.7")),
 )
 
-INSTRUCTIONS = """You are {assistant}, the AI receptionist on the phone for {business}. The call opened with your
-greeting, already played to the caller: "{greeting}" Don't greet again; answer what the caller says. If you are told
+#: How the prompt opens: "say" until the TTS greeting has played (the Live model greets, on the fallback), then "played".
+OPENING = {
+    "say": 'Your first words on this call are exactly, word for word: "{greeting}" Say the greeting once, at the start, '
+    "and don't repeat it.",
+    "played": 'The call opened with your greeting, already played to the caller: "{greeting}" Don\'t greet again; '
+    "answer what the caller says.",
+}
+FIRST_AUDIO_S, STALL_S = (
+    3.0,
+    2.0,
+)  # TTS slower than this is silence on the line: the Live model greets instead
+INSTRUCTIONS = """You are {assistant}, the AI receptionist on the phone for {business}. {opening} If you are told
 the disclosure was missed, say the one disclosure sentence exactly as given, then continue with the caller. Speak briefly and warmly, one or two sentences at a time, like a good front desk. Today is {today}.
 {caller}What you may tell callers about the business: {facts}
 {can}
@@ -189,31 +199,43 @@ async def greeting_audio(text: str, key: str):
                 )  # 16-bit mono PCM at 24 kHz
 
 
-async def greet(session, greeting: str, stream, first: asyncio.Task) -> None:
+async def greet(session, agent, greeting: str, stream, first: asyncio.Task) -> None:
     """The compliance greeting, word for word, every call. An empty generate_reply() let gemini-3.8 make up its own
     first turn in 3 of 15 simulated calls (8 Nov: "Due to your audio input not being detected…", slots offered
-    unasked, a transfer nobody asked for). So the greeting is TTS audio of the exact text, played by say(); the Live
-    model only answers the caller. If TTS fails, the Live model is told the exact words, and the guard checks them."""
+    unasked, a transfer nobody asked for). So the greeting is TTS audio of the exact text, played by say(), and only
+    then does the prompt say it was played. TTS failing, slower than FIRST_AUDIO_S, or stalling STALL_S mid-stream:
+    the Live model greets from the "say" prompt with an empty generate_reply() (instructions passed to generate_reply
+    land in the Live history as a user turn and re-greet, 7 Nov); DisclosureGuard checks what it said."""
     try:
-        head = await first
-    except Exception:  # noqa: BLE001 -- no TTS: fall back to the Live model, checked by DisclosureGuard
+        head = await asyncio.wait_for(first, FIRST_AUDIO_S)
+    except Exception:  # noqa: BLE001 -- no TTS in time: the Live model greets, checked by DisclosureGuard
         logger.warning(
-            "phone: greeting TTS failed; the Live model says it", exc_info=True
+            "phone: greeting TTS failed or slow; the Live model greets", exc_info=True
         )
-        session.generate_reply(
-            instructions=f'Say exactly this, word for word, and nothing else: "{greeting}"'
-        )
+        session.generate_reply()
         return
+    stalled = []
 
     async def audio():
         yield head
-        try:
-            async for frame in stream:
-                yield frame
-        except Exception:  # noqa: BLE001 -- a cut-off greeting is judged by DisclosureGuard as interrupted
-            logger.warning("phone: greeting TTS stream broke", exc_info=True)
+        while True:
+            try:
+                frame = await asyncio.wait_for(anext(stream), STALL_S)
+            except StopAsyncIteration:
+                return
+            except Exception:  # noqa: BLE001 -- cut off: the Live model says the greeting whole, below
+                logger.warning(
+                    "phone: greeting TTS stream broke or stalled", exc_info=True
+                )
+                stalled.append(True)
+                return
+            yield frame
 
-    session.say(greeting, audio=audio())
+    await session.say(greeting, audio=audio())
+    if stalled:
+        session.generate_reply()
+    else:
+        await agent.update_instructions(agent.prompt("played"))
 
 
 class Backend:
@@ -262,16 +284,21 @@ class Receptionist(Agent):
             )
             if not can.get(k)
         ]
-        super().__init__(instructions=INSTRUCTIONS.format(**{
+        self._fields = {
             "assistant": info["assistantName"], "business": info["businessName"], "today": info["today"],
             "greeting": info["greeting"],
             "facts": info.get("facts") or "nothing; take a message for any question about the business.",
             "caller": f"The caller is {info['callerName']}, a returning client.\n" if info.get("callerName") else "",
             "can": f"On this line you can't {' or '.join(off)}." if off else "",
             "instructions": f"The owner's instructions: {info['instructions']}" if info.get("instructions") else "",
-        }))  # fmt: skip
+        }  # fmt: skip
+        super().__init__(instructions=self.prompt("say"))
         self._b, self._transfer = backend, transfer
         self.did: list[str] = []  # what the call did, the record's summary
+
+    def prompt(self, opening: str) -> str:
+        greeting = OPENING[opening].format(greeting=self._fields["greeting"])
+        return INSTRUCTIONS.format(**self._fields, opening=greeting)
 
     @function_tool
     async def check_availability(self, date: str, service: str = "") -> dict:
@@ -465,7 +492,7 @@ async def entrypoint(ctx: JobContext) -> None:
         ),
         record=True,  # the greeting says the call is recorded
     )
-    await greet(session, info["greeting"], stream, first)
+    await greet(session, agent, info["greeting"], stream, first)
 
 
 if __name__ == "__main__":

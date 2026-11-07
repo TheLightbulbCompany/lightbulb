@@ -32,64 +32,82 @@ INFO = {
 }
 
 
-def test_the_greeting_is_tts_of_the_exact_text_not_a_model_turn():
+def test_the_greeting_is_tts_of_the_exact_text_not_a_model_turn(monkeypatch):
     """8 Nov sims: an empty generate_reply() let gemini-3.8 invent its first turn (3/15). The greeting is TTS audio of
-    the exact text via say(); the prompt tells the Live model it was already played. No TTS -> the Live model is told
-    the exact words."""
+    the exact text via say(); only after it played does the prompt say so. TTS failing, slow or stalling: the Live
+    model greets from the "say" prompt via an empty generate_reply() (instructions there become a user turn)."""
     import asyncio
 
     agent = phone.Receptionist(phone.Backend(), INFO, None)
-    text = " ".join(agent.instructions.split())
+    say_text = " ".join(agent.instructions.split())
+    assert (
+        f'Your first words on this call are exactly, word for word: "{GREETING}"'
+        in say_text
+    )
+    played = " ".join(agent.prompt("played").split())
     assert (
         f'greeting, already played to the caller: "{GREETING}" Don\'t greet again'
-        in text
+        in played
     )
     assert (
         "If you are told the disclosure was missed, say the one disclosure sentence exactly as given"
-        in text
+        in played
     )
 
     class Session:
         def __init__(self):
-            self.said, self.replies = [], []
+            self.heard, self.replies = [], []
 
-        def say(self, text, audio):
-            self.said.append((text, audio))
+        async def say(self, text, audio):
+            self.heard += [text] + [f async for f in audio]
 
         def generate_reply(self, **kwargs):
             self.replies.append(kwargs)
 
-    async def frames():
+    class Agent:
+        def __init__(self):
+            self.prompts = []
+
+        async def update_instructions(self, text):
+            self.prompts.append(text)
+
+        def prompt(self, opening):
+            return opening
+
+    async def run(frames):
+        session, agent, stream = Session(), Agent(), frames()
+        await phone.greet(
+            session, agent, GREETING, stream, asyncio.ensure_future(anext(stream))
+        )
+        return session, agent
+
+    async def ok():
         yield "f1"
         yield "f2"
 
-    async def played(session):
-        stream = frames()
-        await phone.greet(
-            session, GREETING, stream, asyncio.ensure_future(anext(stream))
-        )
-        return [f async for f in session.said[0][1]]
-
-    s = Session()
+    s, a = asyncio.run(run(ok))
     assert (
-        asyncio.run(played(s)) == ["f1", "f2"]
-        and s.said[0][0] == GREETING
-        and not s.replies
+        s.heard == [GREETING, "f1", "f2"] and not s.replies and a.prompts == ["played"]
     )
 
     async def broken():
         raise RuntimeError("tts down")
         yield
 
-    async def fallback(session):
-        stream = broken()
-        await phone.greet(
-            session, GREETING, stream, asyncio.ensure_future(anext(stream))
-        )
+    async def stalls():
+        yield "f1"
+        await asyncio.sleep(60)
+        yield "f2"
 
-    s = Session()
-    asyncio.run(fallback(s))
-    assert not s.said and GREETING in s.replies[0]["instructions"]
+    async def slow():
+        await asyncio.sleep(60)
+        yield "f1"
+
+    monkeypatch.setattr(phone, "FIRST_AUDIO_S", 0.1)
+    monkeypatch.setattr(phone, "STALL_S", 0.1)
+    for frames, heard in ((broken, []), (slow, []), (stalls, [GREETING, "f1"])):
+        s, a = asyncio.run(run(frames))
+        assert s.heard == heard and s.replies == [{}] and not a.prompts, frames.__name__
 
 
 def test_the_transcript_keeps_final_lines_in_spoken_order_once():

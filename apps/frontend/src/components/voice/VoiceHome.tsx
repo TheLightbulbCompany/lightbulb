@@ -4,11 +4,10 @@
 // one timeline of every call and meeting with what the assistant did, and the pane with how it did it.
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import useSWR from "swr";
 import { ArrowLeft, Mic, Phone, UserRound, Video } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useHuddle } from "@/components/huddle/HuddleProvider";
-import { useApi } from "@/lib/api";
+import { useAssistantDm } from "@/components/huddle/TalkButton";
 import { Onboarding } from "./Onboarding";
 import { useNeedsYouTotal } from "./VoiceShell";
 import {
@@ -19,6 +18,7 @@ import {
 const OUTCOME: Record<Outcome, [string, "ok" | "warn" | "info" | undefined]> = {
   booked: ["Booked", "ok"], moved: ["Moved", "ok"], cancelled: ["Cancelled", undefined], message: ["Message", "info"],
   answered: ["Answered", undefined], needs_you: ["Needs you", "warn"], handoff_missed: ["Wanted you", "warn"], spam: ["Spam", undefined],
+  silent: ["Silent", undefined],
 };
 
 export function Tag({ outcome }: { outcome?: Outcome }) {
@@ -204,17 +204,12 @@ function MeetingPane({ meeting, name, onClose }: { meeting: MeetingItem; name: s
   </>;
 }
 
-interface RoomRow { roomId: string; kind: string; firstRun?: boolean; members?: { kind: string }[] }
-
-/** Hold to talk: the existing in-app Live session in the owner's own Lightbulb DM; release mutes the mic. */
+/** Hold to talk: Live in the owner's own Lightbulb DM, which is owner mode (the Router listens to the mic and
+ *  takes the turn when it goes quiet); release mutes the mic. */
 function TalkToAssistant({ name }: { name: string }) {
-  const api = useApi();
   const huddle = useHuddle();
   const held = useRef(false);
-  const { data: room } = useSWR("/messaging/rooms#voice-dm", async () => {
-    const { rooms } = (await api.get("/messaging/rooms")) as { rooms: RoomRow[] };
-    return rooms.find((r) => r.firstRun) ?? rooms.find((r) => r.kind === "dm" && r.members?.some((m) => m.kind === "agent")) ?? null;
-  });
+  const room = useAssistantDm();
   const live = !!room && huddle.roomId === room.roomId;
   const [talking, setTalking] = useState(false);
   const press = async () => {
@@ -222,7 +217,6 @@ function TalkToAssistant({ name }: { name: string }) {
     held.current = true; setTalking(true);
     if (!live) await huddle.join(room.roomId, name);
     else await huddle.room?.localParticipant.setMicrophoneEnabled(true);
-    if (held.current) huddle.talkStart();
   };
   const release = () => {
     if (!held.current) return;

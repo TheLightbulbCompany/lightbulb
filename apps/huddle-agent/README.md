@@ -62,6 +62,8 @@ The worker reads (LiveKit Cloud agent secrets, set per project):
   sent as `X-Lightbulb-Huddle-Secret`
 - `OPENAI_API_KEY` -- transcription and GPT-Live
 - `GOOGLE_API_KEY` -- Gemini Live, for Meet (`meet.py`) and phone calls (`phone.py`)
+- `OWNER_ENGINE` -- owner mode (`owner.py`, Live in a member's DM with the assistant): `openai` (default,
+  `gpt-realtime` on `OPENAI_API_KEY`) or `gemini` (Gemini Live on `GOOGLE_API_KEY`)
 
 LiveKit itself injects `LIVEKIT_URL`, `LIVEKIT_API_KEY` and `LIVEKIT_API_SECRET`.
 Nothing a huddle says is stored.

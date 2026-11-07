@@ -34,7 +34,7 @@ from openai.types.realtime import (
     ResponseCreateEvent,
 )
 
-from huddle_agent import meet, phone, record
+from huddle_agent import meet, owner, phone, record
 from huddle_agent.backend import Backend
 from huddle_agent.huddle import Huddle, emit_metric, units
 
@@ -656,6 +656,9 @@ async def entrypoint(ctx: JobContext) -> None:
     # the new one has a live meeting behind it.
     if meta.get("source") == "meet" and os.environ.get("MEET_ENGINE", "gemini") == "gemini":
         return await meet.run(ctx, meta)
+    # Live in a member's DM with the assistant: the Router session (owner.py), not the mouths below.
+    if meta.get("mode") == "owner":
+        return await owner.run(ctx, meta)
     started = time.monotonic()
     usage = {"stt": 0.0}
     emitted = {"stt": 0.0, "agent": 0.0, "gptlive": 0.0}

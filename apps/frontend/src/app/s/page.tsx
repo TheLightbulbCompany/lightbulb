@@ -415,6 +415,9 @@ export default function SessionLinkPageRoute() {
           </>
         : <>
             <p>Continue {page.title?.trim() || "this session"} in your own Claude Code, with a copy of the conversation.</p>
+            {/* Plain <a>: an API route (302 to the signed DMG), not a Next page. */}
+            {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
+            <a href="/api/download/desktop">Get Lightbulb for Mac</a>
             <p>Then run this in your terminal{isSignedIn ? "" : ". It opens this page again, where you sign up, free, and confirm"}:</p>
             <code className="font-mono text-xs">{command}</code>
             <Button type="button" variant="outline" size="sm" onClick={() => void copyText(command)}>Copy command</Button>

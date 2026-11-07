@@ -261,8 +261,8 @@ async def start_voice_work(owner_id: str, body: VoiceStartIn, origin: str | None
             **({"origin": origin} if origin else {}),
         },
     )
-    await admission.enqueue_trigger(owner_id, trigger, room_id=body.room_id)
-    return {"triggerId": trigger_id, "taskId": task_id}
+    created = await admission.enqueue_trigger(owner_id, trigger, room_id=body.room_id)
+    return {"triggerId": trigger_id, "taskId": task_id, "created": created}
 
 
 # --- watches: a Worker asks its task to watch something that finishes later (Task 12) --------------------------

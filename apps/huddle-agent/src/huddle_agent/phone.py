@@ -17,7 +17,9 @@ import re
 import time
 
 import httpx
-from livekit import api
+from google import genai
+from google.genai import types
+from livekit import api, rtc
 from livekit.agents import (
     Agent,
     AgentServer,
@@ -36,6 +38,14 @@ MODEL = os.environ.get("PHONE_MODEL", "gemini-3.8-live")  # 10-voice-models.md Â
 VOICE = os.environ.get(
     "PHONE_VOICE", "Kore"
 )  # one of Gemini's prebuilt voices; the greeting's TTS uses the same
+TTS_MODEL = os.environ.get(
+    "PHONE_TTS_MODEL", "gemini-3.1-flash-tts-preview"
+)  # streams: first audio in ~0.8 s
+AWAY_S = float(
+    os.environ.get("PHONE_AWAY_S", "15")
+)  # silence before "are you still there?", and again before hanging up
+STILL_THERE = 'The line has gone quiet. Ask once, briefly: "Are you still there?"'
+SILENT_BYE = "Nobody is answering. In one short sentence, say you'll hang up now and goodbye; don't ask anything."
 CALL_MAX_S = float(
     os.environ.get("PHONE_MAX_S", 20 * 60)
 )  # cost cap: a call ends after 20 minutes
@@ -46,8 +56,11 @@ server = AgentServer(
     load_threshold=float(os.environ.get("PHONE_LOAD_THRESHOLD", "0.7")),
 )
 
-INSTRUCTIONS = """You are {assistant}, the AI receptionist on the phone for {business}. Your first words on this call
-are exactly, word for word: "{greeting}" Say the greeting once, at the start, and don't repeat it. If you are told
+# TTS slower than this is silence on the line: the Live model greets instead (first audio), or it is cut off (a stall)
+FIRST_AUDIO_S, STALL_S = 3.0, 2.0
+INSTRUCTIONS = """You are {assistant}, the AI receptionist on the phone for {business}. Your greeting is exactly, word
+for word: "{greeting}" If it has already been played to the caller, don't say it again; otherwise your first words
+are exactly that greeting. Say it once and never repeat it; after it, answer what the caller says. If you are told
 the disclosure was missed, say the one disclosure sentence exactly as given, then continue with the caller. Speak briefly and warmly, one or two sentences at a time, like a good front desk. Today is {today}.
 {caller}What you may tell callers about the business: {facts}
 {can}
@@ -88,10 +101,17 @@ def _norm(text: str) -> str:
 
 def discloses(text: str, greeting: str, assistant: str) -> bool:
     """The greeting as said: the greeting itself (case, punctuation, spacing aside), or a line that still names the
-    assistant and says "AI assistant" and "recorded"."""
-    t = _norm(text)
-    return t == _norm(greeting) or all(
-        _norm(w) in t for w in (assistant, "AI assistant", "recorded")
+    assistant and says "AI assistant" and "recorded", as whole words ("Ava" isn't in "available"), never denied
+    ("not recorded", "isn't being recorded")."""
+    t = f" {_norm(text)} "
+    # "isn't" normalizes to "isn t"; up to three words between the denial and "recorded" ("not going to be recorded")
+    if re.search(
+        r" (not|never|no|nothing|t)( \w+){0,3} recorded |\bno part of\b.*\brecorded\b",
+        t,
+    ):
+        return False
+    return t.strip() == _norm(greeting) or all(
+        f" {_norm(w)} " in t for w in (assistant, "AI assistant", "recorded")
     )
 
 
@@ -153,11 +173,71 @@ def say_disclosure(session, line: str) -> None:
     )
 
 
-async def greet(session) -> None:
-    """The first reply, from the system instructions alone. generate_reply(instructions=...) on gemini-3.8 puts the
-    text in the Live history as a user turn, which the model answered again on the caller's first turn (live call
-    7 Nov: it re-greeted instead of answering)."""
-    session.generate_reply()
+async def greeting_audio(text: str, key: str):
+    """The greeting as Gemini TTS audio, streamed: the caller hears exactly this text, never a model's reply to it."""
+    client = genai.Client(
+        api_key=key, http_options={"api_version": "v1beta"}
+    )  # v1 refuses speechConfig (7 Nov)
+    voice = types.VoiceConfig(
+        prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=VOICE)
+    )
+    config = types.GenerateContentConfig(
+        response_modalities=["AUDIO"],
+        speech_config=types.SpeechConfig(voice_config=voice),
+    )
+    rest = b""
+    async for chunk in await client.aio.models.generate_content_stream(
+        model=TTS_MODEL, contents=text, config=config
+    ):
+        for part in [
+            p
+            for c in chunk.candidates or []
+            if c.content
+            for p in c.content.parts or []
+        ]:
+            if part.inline_data and part.inline_data.data:
+                pcm, rest = rest + part.inline_data.data, b""
+                if len(pcm) % 2:
+                    pcm, rest = pcm[:-1], pcm[-1:]
+                yield rtc.AudioFrame(
+                    pcm, 24000, 1, len(pcm) // 2
+                )  # 16-bit mono PCM at 24 kHz
+
+
+async def greet(session, greeting: str, stream, first: asyncio.Task) -> None:
+    """The compliance greeting, word for word, every call. An empty generate_reply() let gemini-3.8 make up its own
+    first turn in 3 of 15 simulated calls (8 Nov: "Due to your audio input not being detectedâ€¦", slots offered
+    unasked, a transfer nobody asked for). So the greeting is TTS audio of the exact text, played by say(); the prompt
+    says not to repeat a greeting already played. No first audio within FIRST_AUDIO_S: the Live model greets from the
+    prompt via an empty generate_reply() (instructions passed there land in the Live history as a user turn and
+    re-greet, 7 Nov). A stall of STALL_S mid-stream interrupts the say(): the record and DisclosureGuard then see a
+    cut-off greeting (`missing`), and the guard says the disclosure."""
+    try:
+        head = await asyncio.wait_for(first, FIRST_AUDIO_S)
+    except Exception:  # noqa: BLE001 -- no TTS in time: the Live model greets, checked by DisclosureGuard
+        logger.warning(
+            "phone: greeting TTS failed or slow; the Live model greets", exc_info=True
+        )
+        session.generate_reply()
+        return
+    handle = None
+
+    async def audio():
+        yield head
+        while True:
+            try:
+                frame = await asyncio.wait_for(anext(stream), STALL_S)
+            except StopAsyncIteration:
+                return
+            except Exception:  # noqa: BLE001 -- a stalled say() would count as played whole; cut it off instead
+                logger.warning(
+                    "phone: greeting TTS stream broke or stalled", exc_info=True
+                )
+                handle.interrupt(force=True)
+                return
+            yield frame
+
+    handle = session.say(greeting, audio=audio())
 
 
 class Backend:
@@ -301,7 +381,14 @@ class Receptionist(Agent):
 async def entrypoint(ctx: JobContext) -> None:
     started = time.monotonic()
     await ctx.connect()
-    caller = await ctx.wait_for_participant()
+    try:
+        caller = await asyncio.wait_for(ctx.wait_for_participant(), AWAY_S * 2)
+    except TimeoutError:  # 8 Nov sims: a job that started after the caller left sat in the room for 12 minutes
+        logger.info(
+            "phone: nobody joined job %s; leaving", ctx.job.id
+        )  # the room name holds the caller's number
+        ctx.shutdown("no caller")
+        return
     meta = json.loads(
         ctx.job.metadata or "{}"
     )  # a test dispatch (lk dispatch) names the numbers itself
@@ -341,7 +428,12 @@ async def entrypoint(ctx: JobContext) -> None:
         llm=google.realtime.RealtimeModel(
             model=MODEL, voice=VOICE, api_key=key, api_version="v1beta"
         ),
+        user_away_timeout=AWAY_S,
     )
+    stream = greeting_audio(info["greeting"], key)
+    first = asyncio.ensure_future(
+        anext(stream)
+    )  # the first audio overlaps the Live connect
     items: list[dict] = []
     t0 = time.time()
     guard = DisclosureGuard(
@@ -372,14 +464,40 @@ async def entrypoint(ctx: JobContext) -> None:
         guard.state(ev.old_state, ev.new_state)
         guard.seen(items)
 
-    async def hang_up() -> None:
+    async def hang_up(reason: str = "call max length") -> None:
         await ctx.delete_room()  # disconnects the SIP caller too
-        ctx.shutdown("call max length")
+        ctx.shutdown(reason)
+
+    silent: list[asyncio.Task] = []
+    silent_end: list[bool] = []
+
+    async def hang_up_silent() -> None:
+        """Still nobody after "are you still there?": a goodbye, then the line is closed (8 Nov sims: a silent line
+        stayed open, billing Gemini, until the 20-minute cap)."""
+        await asyncio.sleep(AWAY_S)
+        try:
+            await asyncio.wait_for(session.generate_reply(instructions=SILENT_BYE), 10)
+        except Exception:  # noqa: BLE001 -- a lost goodbye must not keep the line open
+            logger.warning(
+                "phone %s: silent goodbye failed", backend.call_id, exc_info=True
+            )
+        silent_end.append(True)
+        await hang_up("caller silent")
+
+    @session.on("user_state_changed")
+    def _away(ev) -> None:
+        if ev.new_state == "away" and not silent:
+            session.generate_reply(instructions=STILL_THERE)
+            silent.append(asyncio.create_task(hang_up_silent()))
+        elif ev.new_state != "away" and silent:
+            silent.pop().cancel()
 
     limit = asyncio.create_task(end_after(CALL_MAX_S, session, hang_up))
 
     async def on_end(_reason: str = "") -> None:
         limit.cancel()
+        for task in silent:
+            task.cancel()
         out = await backend.post(
             "end",
             {
@@ -390,6 +508,7 @@ async def entrypoint(ctx: JobContext) -> None:
                     items, info["greeting"], info["assistantName"]
                 ),
                 "disclosureRepeated": guard.corrected,
+                "silent": bool(silent_end),
             },
         )
         logger.info(
@@ -405,9 +524,7 @@ async def entrypoint(ctx: JobContext) -> None:
         ),
         record=True,  # the greeting says the call is recorded
     )
-    # The Live model speaks the compliance greeting. Dev test 7 Nov: a TTS say() and caller audio switched off while it
-    # played both stalled the Gemini Live session (the reply never finished), so the caller can talk over it.
-    await greet(session)
+    await greet(session, info["greeting"], stream, first)
 
 
 if __name__ == "__main__":

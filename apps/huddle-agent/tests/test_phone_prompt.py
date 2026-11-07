@@ -32,34 +32,87 @@ INFO = {
 }
 
 
-def test_the_greeting_comes_from_the_system_prompt_not_an_injected_turn():
-    """Live call 7 Nov: generate_reply(instructions="say exactly ...") became a user turn on gemini-3.8 and the agent
-    re-greeted on the caller's first turn. The rule lives in the instructions; the first reply gets none."""
+def test_the_greeting_is_tts_of_the_exact_text_not_a_model_turn(monkeypatch):
+    """8 Nov sims: an empty generate_reply() let gemini-3.8 invent its first turn (3/15). The greeting is TTS audio of
+    the exact text via say(); one prompt covers both paths. No first audio in time: the Live model greets via an empty
+    generate_reply() (instructions there become a user turn). A stall mid-stream interrupts the say()."""
+    import asyncio
+
     agent = phone.Receptionist(phone.Backend(), INFO, None)
     text = " ".join(agent.instructions.split())
     assert (
-        f'Your first words on this call are exactly, word for word: "{GREETING}"'
+        f'Your greeting is exactly, word for word: "{GREETING}" If it has already been played to the caller, don\'t say it again; otherwise your first words are exactly that greeting.'
         in text
-    )
-    assert (
-        "Say the greeting once, at the start, and don't repeat it." in text
-        and "You already greeted" not in text
     )
     assert (
         "If you are told the disclosure was missed, say the one disclosure sentence exactly as given"
         in text
     )
 
-    calls = []
+    class Handle:
+        interrupted = False
+
+        def interrupt(self, force=False):
+            self.interrupted = force
 
     class Session:
+        def __init__(self):
+            self.audio, self.replies, self.handle = None, [], Handle()
+
+        def say(self, text, audio):
+            self.text, self.audio = text, audio
+            return self.handle
+
         def generate_reply(self, **kwargs):
-            calls.append(kwargs)
+            self.replies.append(kwargs)
 
-    import asyncio
+    async def run(frames):
+        session, stream = Session(), frames()
+        await phone.greet(
+            session, GREETING, stream, asyncio.ensure_future(anext(stream))
+        )
+        played = (
+            [f async for f in session.audio] if session.audio else []
+        )  # what say() would play out
+        return session, played
 
-    asyncio.run(phone.greet(Session()))
-    assert calls == [{}]  # no instructions: nothing lands in the Live history as a turn
+    async def ok():
+        yield "f1"
+        yield "f2"
+
+    async def broken():
+        raise RuntimeError("tts down")
+        yield
+
+    async def slow():
+        await asyncio.sleep(60)
+        yield "f1"
+
+    async def stalls():
+        yield "f1"
+        await asyncio.sleep(60)
+        yield "f2"
+
+    monkeypatch.setattr(phone, "FIRST_AUDIO_S", 0.1)
+    monkeypatch.setattr(phone, "STALL_S", 0.1)
+    s, played = asyncio.run(run(ok))
+    assert (
+        s.text == GREETING
+        and played == ["f1", "f2"]
+        and not s.replies
+        and not s.handle.interrupted
+    )
+    for frames in (broken, slow):
+        s, played = asyncio.run(run(frames))
+        assert s.audio is None and s.replies == [{}], frames.__name__
+    s, played = asyncio.run(run(stalls))
+    assert (
+        played == ["f1"] and s.handle.interrupted and not s.replies
+    )  # cut off: the guard repeats the disclosure
+    items = [{"role": "assistant", "text": GREETING, "t": 1.0, "interrupted": True}]
+    assert (
+        phone.disclosure_of(items, GREETING, "Lightbulb") == "missing"
+    )  # what the record then says
 
 
 def test_the_transcript_keeps_final_lines_in_spoken_order_once():
@@ -206,3 +259,34 @@ def test_the_scripted_run_flag_fails_the_greeting_once_it_has_played(monkeypatch
     guard.state("speaking", "listening")
     guard.seen([])
     assert said == [guard.line] and guard.corrected
+
+
+def test_the_disclosure_matches_whole_words_and_not_a_denial():
+    """#4996 review: "Ava" must not match inside "available", and "not recorded" is no disclosure."""
+    assert phone.discloses(
+        "This is Ava, an AI assistant. This call is recorded.", "x", "Ava"
+    )
+    assert not phone.discloses(
+        "Nobody is available; I'm an AI assistant and this is recorded.", "x", "Ava"
+    )
+    assert not phone.discloses(
+        "This is Ava, an AI assistant. This call is not recorded.", "x", "Ava"
+    )
+    for denial in (
+        "this call isn't being recorded.",
+        "This call is not going to be recorded.",
+        "This call isn't currently recorded.",
+        "This call is not ever recorded.",
+        "This call is not really recorded.",
+        "Nothing is recorded.",
+        "No part of this call is recorded.",
+        "This call won’t be recorded.",
+    ):
+        assert not phone.discloses(
+            f"This is Ava, an AI assistant. {denial}", "x", "Ava"
+        ), denial
+    for ok in (
+        "Not a problem, this call is recorded.",
+        "Don't worry, this call is recorded.",
+    ):
+        assert phone.discloses(f"This is Ava, an AI assistant. {ok}", "x", "Ava"), ok

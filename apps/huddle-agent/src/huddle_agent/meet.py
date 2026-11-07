@@ -60,12 +60,14 @@ INSTRUCTIONS = """You are {name}, the AI assistant of {company}, listening in th
 {today}. Several people talk; most of it is not for you. Stay silent unless someone addresses you by name
 ("{name}, ..."). When addressed, answer in one or two short spoken sentences. For numbers about calls,
 bookings, the calendar or what the team knows, call the read tools first and say only what they return; if
-they don't have it, say you don't know. For the team's connected apps (mail, calendar, Drive, Stripe,
+they don't have it, say you don't know. What was decided or said before: answer only from a recall_memory fact
+that says it; if none does, say you don't know -- never guess a date, a number or a decision. For the team's connected apps (mail, calendar, Drive, Stripe,
 Notion, Linear, GitHub, PostHog) use read_integration (say "one moment" first;
-a read can take a few seconds); if a read says it needs more, use start_work. Anything longer than a sentence (a draft, a list, notes) goes to the
-meeting chat with send_to_chat; say "I've put it in the chat". Anything open-ended, any action item you are
-asked to take, anything that sends, spends or publishes: call start_work and say you're on it -- never do or
-promise it yourself. If start_work says it needs a member, say you'll need the member's OK. "{name}, stop"
+a read can take a few seconds); if a read says it needs more, use start_work. Writing anything new (a draft,
+a post, an email, a document), anything open-ended, any action item or follow-up you are asked to take,
+anything that sends, spends or publishes: call start_work and say you're on it -- never write, do or promise
+it yourself. Only an answer you already have that is longer than a sentence (a list from a read) goes to the
+meeting chat with send_to_chat; say "I've put it in the chat". If start_work says it needs a member, say you'll need the member's OK. "{name}, stop"
 means stop talking. If a tool returns an error, say plainly that you couldn't do it; never say it is done."""
 
 
@@ -305,7 +307,10 @@ class MeetAgent(Agent):
     @function_tool
     async def recall_memory(self, question: str) -> dict:
         """What the team knows: decisions, facts, past meetings. Ask a plain question."""
-        return await self._post("read", {"kind": "memory", "question": question, "participantId": self.asker()})
+        out = await self._post("read", {"kind": "memory", "question": question, "participantId": self.asker()})
+        if "facts" in out:  # the rule rides with the facts: from the prompt alone it still guessed (self-test)
+            out["rule"] = "Say only what one of these facts states. If none answers the question, say you don't know."
+        return out
 
     @function_tool
     async def call_stats(self, days: int = 7) -> dict:

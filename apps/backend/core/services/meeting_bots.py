@@ -120,7 +120,8 @@ async def create(*, room_id: str, meeting: dict, company: str) -> str:
         "variant": {"google_meet": "web_4_core"},
         "automatic_leave": {"waiting_room_timeout": 180, "noone_joined_timeout": 1200},
         "chat": {"on_bot_join": {"send_to": "everyone", "message": CONSENT_LINE.format(company=company), "pin": True}},
-        "metadata": {"roomId": room_id, "nonce": meeting["ticketNonce"]},
+        # env: Recall's status webhook is account-wide; the other environment ignores this bot (routers/meetings._bot).
+        "metadata": {"roomId": room_id, "nonce": meeting["ticketNonce"], "env": settings.ENVIRONMENT},
     }
     if join_at > time.time():
         body["join_at"] = _iso(join_at)  # omitted when already past: Recall joins now

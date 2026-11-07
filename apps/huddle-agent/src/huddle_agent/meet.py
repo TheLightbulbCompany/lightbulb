@@ -309,7 +309,8 @@ class MeetAgent(Agent):
 
     @function_tool
     async def call_stats(self, days: int = 7) -> dict:
-        """How many phone calls the assistant answered in the last `days`, by outcome (booked, message, ...)."""
+        """How many phone calls the assistant answered in the last `days` (days=1 means today), by outcome
+        (booked, message, ...)."""
         return await self._post("read", {"kind": "calls", "days": days})
 
     @function_tool

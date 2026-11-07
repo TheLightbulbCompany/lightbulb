@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import {
   DEFAULT_ADMIN_HOSTS,
   DEEP_LINK_SCHEME,
-  PAPERCLIP_HOSTS,
   ROOT_DOMAIN,
   SITE_URL,
 } from '@/lib/domain';
@@ -41,13 +40,6 @@ describe('domain config', () => {
     for (const h of ADMIN_HOSTS) expect(DEFAULT_ADMIN_HOSTS).toContain(h);
   });
 
-  it('admits the company host of EVERY product domain currently served', () => {
-    for (const d of ['thelightbulb.company']) {
-      expect(PAPERCLIP_HOSTS).toContain(`company.${d}`);
-      expect(PAPERCLIP_HOSTS).toContain(`dev.company.${d}`);
-    }
-  });
-
   it('admits the admin hosts of the domain dev moved to', () => {
     expect(DEFAULT_ADMIN_HOSTS).toContain('admin.dev.thelightbulb.company');
     expect(DEFAULT_ADMIN_HOSTS).toContain('admin.thelightbulb.company');
@@ -55,7 +47,6 @@ describe('domain config', () => {
 
   it('admits no duplicates', () => {
     expect(new Set(DEFAULT_ADMIN_HOSTS).size).toBe(DEFAULT_ADMIN_HOSTS.length);
-    expect(new Set(PAPERCLIP_HOSTS).size).toBe(PAPERCLIP_HOSTS.length);
   });
 });
 

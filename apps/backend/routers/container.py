@@ -209,30 +209,9 @@ def _status_response(contract: dict) -> dict:
 
 
 #: Mounted at ``/api/v1/browser``, not under this file's ``/api/v1/container`` prefix — the
-#: panel's URL is ``/api/v1/browser/live-view``. Same two-routers-in-one-module shape
+#: panel's URLs are ``/api/v1/browser/*``. Same two-routers-in-one-module shape
 #: ``connections.oauth_router`` already uses.
 browser_router = APIRouter()
-
-
-@browser_router.get(
-    "/live-view",
-    summary="Presigned live view of this workspace's running browser session",
-    description=(
-        "Returns a 300 s presigned DCV URL for the AgentCore Browser session this "
-        "workspace's agents are driving, or `active: false` when none is running. "
-        "Polling never starts a session and never takes or renews control; controller metadata "
-        "gates the workspace UI."
-    ),
-    operation_id="browser_live_view",
-)
-async def browser_live_view(
-    response: Response,
-    auth: AuthContext = Depends(get_current_user),
-):
-    # The URL is a short-lived bearer credential for a live browser: no CDN, no proxy, no
-    # disk cache. The owner comes from the Clerk claim and never from the request.
-    response.headers["Cache-Control"] = "no-store"
-    return await _browser_result(browser_control.view(resolve_owner_id(auth), auth.user_id))
 
 
 class BrowserGeneration(BaseModel):
@@ -460,18 +439,6 @@ async def browser_input(
     if body is None or body.type is None:
         return await _browser_result(browser_control.record_input(owner_id))
     return await _browser_result(browser_control.send_input(owner_id, body.model_dump(exclude_none=True)))
-
-
-class BrowserViewport(BaseModel):
-    width: int = Field(ge=browser_control.VIEWPORT_MIN[0], le=browser_control.VIEWPORT_MAX[0])
-    height: int = Field(ge=browser_control.VIEWPORT_MIN[1], le=browser_control.VIEWPORT_MAX[1])
-
-
-@browser_router.post("/viewport")
-async def browser_viewport(body: BrowserViewport, response: Response, auth: AuthContext = Depends(get_current_user)):
-    """Resize the shared browser's window to the panel showing it (idle browsers only)."""
-    response.headers["Cache-Control"] = "no-store"
-    return await _browser_result(browser_control.set_viewport(resolve_owner_id(auth), body.width, body.height))
 
 
 @browser_router.post("/stop")

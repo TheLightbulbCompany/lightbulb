@@ -136,23 +136,6 @@ async def test_the_same_conversation_started_again_is_listed_again(transport, s3
 
 
 @pytest.mark.asyncio
-async def test_remove_all_ended_takes_only_the_callers_own_ended_sessions(transport, s3):
-    ended = await claude_session(transport)
-    await end(transport, ended)
-    live = (await relay(transport).handle_message("conn-1", registration(nativeConversationId="still-running")))[
-        "sessionId"
-    ]
-    assert (await http(ALICE, "DELETE", "")).status_code == 422
-    assert (await http(ALICE, "DELETE", "?ended=false")).status_code == 400
-    # Bob has none of his own: Alice's stay.
-    assert (await http(BOB, "DELETE", "?ended=true")).json() == {"removed": 0}
-    assert sorted(await listed(BOB)) == sorted([ended, live])
-    assert (await http(ALICE, "DELETE", "?ended=true")).json() == {"removed": 1}
-    assert await listed(BOB) == [live]
-    assert (await http(ALICE, "DELETE", "?ended=true")).json() == {"removed": 0}
-
-
-@pytest.mark.asyncio
 async def test_a_resume_that_lands_first_keeps_its_link_and_the_remove_answers_409(transport, s3, monkeypatch):
     """The stamp is the commit point: nothing is revoked before it, so a session that started
     again while the DELETE was in flight is live with its link and pick-up intact."""

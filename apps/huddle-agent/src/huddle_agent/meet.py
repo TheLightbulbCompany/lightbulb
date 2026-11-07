@@ -307,7 +307,10 @@ class MeetAgent(Agent):
     @function_tool
     async def recall_memory(self, question: str) -> dict:
         """What the team knows: decisions, facts, past meetings. Ask a plain question."""
-        return await self._post("read", {"kind": "memory", "question": question, "participantId": self.asker()})
+        out = await self._post("read", {"kind": "memory", "question": question, "participantId": self.asker()})
+        if "facts" in out:  # the rule rides with the facts: from the prompt alone it still guessed (self-test)
+            out["rule"] = "Say only what one of these facts states. If none answers the question, say you don't know."
+        return out
 
     @function_tool
     async def call_stats(self, days: int = 7) -> dict:

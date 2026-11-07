@@ -47,12 +47,14 @@ from routers import (
     container_files,
     container_recover,
     debug,
+    desktop_auth,
     desktop_pair,
     devices,
     gateway_relay,
     hooks,
     huddles,
     desktop_execution,
+    desktop_sessions,
     desktop_session_pickup,
     desktop_session_resume,
     google_accounts,
@@ -645,6 +647,7 @@ app.include_router(gateway_relay.router, prefix="/api/v1/gateway", tags=["gatewa
 # Recall's per-person Meet audio: the same door, since it is the only raw-WS path the bv- edge forwards.
 app.include_router(meet_audio.router, prefix="/api/v1/gateway", tags=["meetings"])
 app.include_router(desktop_execution.router, prefix="/api/v1/desktop-execution", tags=["desktop"])
+app.include_router(desktop_sessions.router, prefix="/api/v1", tags=["desktop"])
 app.include_router(desktop_session_pickup.router, prefix="/api/v1", tags=["desktop"])
 app.include_router(desktop_session_resume.router, prefix="/api/v1", tags=["desktop"])
 
@@ -733,6 +736,8 @@ app.include_router(workspace_files.router, prefix="/api/v1/container", tags=["co
 
 # Debug routes (dev-only container provisioning)
 app.include_router(debug.router, prefix="/api/v1/debug", tags=["debug"])
+
+app.include_router(desktop_auth.router, prefix="/api/v1/auth", tags=["desktop"])
 
 # Desktop two-node pair / revoke (two-node architecture). Pair is idempotent;
 # revoke force-closes the live WS session keyed by deviceId.

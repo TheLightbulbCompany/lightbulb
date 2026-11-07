@@ -321,6 +321,14 @@ async def _mode_allows(ws: str, kind: str, operands: dict) -> str | None:
     return None if questions.asks(mode, kind, operands, members=members, limits=limits) else f"mode:{mode}"
 
 
+async def _from_contact(ws: str, task: dict) -> bool:
+    """Whether the task was started for an outside contact (a phone caller): its trigger's `ref.origin`, which only the
+    backend writes (routers/voice_phone.py). ponytail: the task's own trigger only; a sub-task it starts inherits
+    nothing yet."""
+    trig = await tasks_repo.get_trigger(ws, task.get("triggerId") or "")
+    return ((trig or {}).get("ref") or {}).get("origin") == "phone_contact"
+
+
 #: An identical effect that went ahead in the same task this recently is replayed, never run twice (gate run 9).
 _DUPLICATE_WINDOW = timedelta(minutes=10)
 
@@ -381,7 +389,10 @@ async def effect_check(owner_id: str, body: EffectBody, request: Request) -> dic
     rule = await questions.rule_effect(owner_id, task.get("specialist"), body.kind, body.operands)
     if rule and rule[0] == "deny":
         return {"decision": "denied", "questionId": None}
-    allowed_by = f"rule:{rule[1]}" if rule else await _mode_allows(owner_id, body.kind, body.operands)
+    if body.kind != "a2a.send" and await _from_contact(owner_id, task):
+        allowed_by = None  # a phone caller's request: no rule or mode spends, mails or changes things for them
+    else:
+        allowed_by = f"rule:{rule[1]}" if rule else await _mode_allows(owner_id, body.kind, body.operands)
     if allowed_by:
         row, created = await effects_repo.put_effect(owner_id, {**effect, "state": "intent", "allowedBy": allowed_by})
         if created:

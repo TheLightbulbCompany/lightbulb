@@ -45,14 +45,15 @@ server = AgentServer(
 
 INSTRUCTIONS = """You are {assistant}, the AI receptionist on the phone for {business}. You already greeted the
 caller. Speak briefly and warmly, one or two sentences at a time, like a good front desk. Today is {today}.
-Opening hours: {hours}. What you know about the business: {facts}
+{caller}What you may tell callers about the business: {facts}
+{can}
 
-You can: check availability, book, move or cancel the caller's own booking, take a message, transfer to a
-person, and hand open-ended requests to the team (start_work). Times you send to tools are local
-"YYYY-MM-DDTHH:MM". Offer only slots check_availability returned. Before booking, get the caller's name and the
-service, then confirm the day and time back. If you don't know something, say so and take a message; never
-invent prices or policies. Never share anything about other customers. You can't take payments, change prices,
-or send email; for those take a message for the owner."""
+Times you send to tools are local "YYYY-MM-DDTHH:MM". Offer only slots check_availability returned. Before
+booking, get the caller's name and the service, then confirm the day and time back. If you don't know something,
+call didnt_know with the question, say so, and offer to take a message; never invent prices or policies. If a tool
+answers not_allowed, don't retry it: offer to take a message. Never share anything about other customers. You
+can't take payments, change prices, or send email; for those take a message for the owner.
+{instructions}"""
 
 
 class Backend:
@@ -92,17 +93,29 @@ class Backend:
 
 class Receptionist(Agent):
     def __init__(self, backend: Backend, info: dict, transfer) -> None:
+        can = info.get("can") or {}
+        off = [
+            w
+            for k, w in (
+                ("book", "book appointments"),
+                ("move", "move or cancel appointments"),
+            )
+            if not can.get(k)
+        ]
         super().__init__(instructions=INSTRUCTIONS.format(**{
             "assistant": info["assistantName"], "business": info["businessName"], "today": info["today"],
-            "hours": info.get("hours") or "not set", "facts": info.get("facts") or "nothing yet",
+            "facts": info.get("facts") or "nothing; take a message for any question about the business.",
+            "caller": f"The caller is {info['callerName']}, a returning client.\n" if info.get("callerName") else "",
+            "can": f"On this line you can't {' or '.join(off)}." if off else "",
+            "instructions": f"The owner's instructions: {info['instructions']}" if info.get("instructions") else "",
         }))  # fmt: skip
         self._b, self._transfer = backend, transfer
         self.did: list[str] = []  # what the call did, the record's summary
 
     @function_tool
-    async def check_availability(self, date: str) -> dict:
-        """Free appointment start times on a date. date: "YYYY-MM-DD" (local)."""
-        return await self._b.post("availability", {"date": date})
+    async def check_availability(self, date: str, service: str = "") -> dict:
+        """Free appointment start times on a date for a service. date: "YYYY-MM-DD" (local)."""
+        return await self._b.post("availability", {"date": date, "service": service})
 
     @function_tool
     async def book(self, start: str, service: str, name: str) -> dict:
@@ -145,6 +158,11 @@ class Receptionist(Agent):
         )
 
     @function_tool
+    async def didnt_know(self, question: str) -> dict:
+        """Note a caller's question you couldn't answer, for the owner."""
+        return await self._b.post("unknown", {"question": question})
+
+    @function_tool
     async def transfer_to_human(self) -> dict:
         """Hand the caller to a person at the business. If none is available, offer to take a message."""
         out = await self._b.post("transfer")
@@ -153,8 +171,13 @@ class Receptionist(Agent):
                 "transferred": False,
                 "reason": "nobody is available to take calls right now",
             }
-        self.did.append(f"Transferred to {out['transferTo']}")
-        await self._transfer(out["transferTo"])
+        try:
+            await self._transfer(out["transferTo"])
+        except Exception:  # noqa: BLE001 -- a SIP refusal: the record says the hand-off was missed
+            logger.warning("phone %s: transfer failed", self._b.call_id, exc_info=True)
+            await self._b.post("transfer", {"failed": True})
+            return {"transferred": False, "reason": "the transfer didn't go through"}
+        self.did.append("Transferred to a person")
         return {"transferred": True}
 
     @function_tool
@@ -189,10 +212,10 @@ async def entrypoint(ctx: JobContext) -> None:
         },
     )
     if info.get("error"):
-        logger.error("phone: no line for %s (%s)", called, info["error"])
+        logger.error("phone: call refused (%s)", info["error"])
         return
     backend.call_id = info["callId"]
-    logger.info("phone: call %s to %s from %s", backend.call_id, called, caller_number)
+    logger.debug("phone: call %s started", backend.call_id)
 
     async def transfer(to: str) -> None:
         await ctx.api.sip.transfer_sip_participant(
@@ -220,13 +243,12 @@ async def entrypoint(ctx: JobContext) -> None:
         text = getattr(ev.item, "text_content", None)
         if text:
             transcript.append({"role": ev.item.role, "text": text})
-            logger.info("phone %s %s: %s", backend.call_id, ev.item.role, text)
 
     async def on_end(_reason: str = "") -> None:
         out = await backend.post(
             "end",
             {
-                "durationS": int(time.monotonic() - started),
+                "durationSec": int(time.monotonic() - started),
                 "summary": "; ".join(agent.did),
                 "transcript": transcript,
             },
@@ -244,7 +266,12 @@ async def entrypoint(ctx: JobContext) -> None:
         ),
         record=True,  # the greeting says the call is recorded
     )
-    await session.say(info["greeting"])
+    # The greeting plays in full before the caller's audio reaches the model (the compliance line is never cut off).
+    session.input.set_audio_enabled(False)
+    try:
+        await session.say(info["greeting"])
+    finally:
+        session.input.set_audio_enabled(True)
 
 
 if __name__ == "__main__":

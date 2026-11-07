@@ -188,7 +188,8 @@ class MeetAgent(Agent):
         self.reply_turn: dict | None = None  # the turn the reply now playing answers
         self.reply_end = time.monotonic()  # when the last reply ended: the start of the next ask window
         self.tool_at = -1.0  # when a tool last ran: Gemini's answer after it belongs to the turn it ran for
-        self.ends_at = time.monotonic() + MEETING_MAX_S  # from here the time limit's goodbye plays without an ask
+        self.ends_at = time.monotonic() + MEETING_MAX_S  # from here tools are refused
+        self.goodbye = False  # one-shot: the time limit's goodbye plays without an ask, nothing else does
 
     def heard(self, item_id: str | None, text: str, final: bool, now: float) -> dict:
         """One input-transcript event: the turn it belongs to, created or updated. Whether it asked is decided
@@ -223,7 +224,8 @@ class MeetAgent(Agent):
     def _authorize(self, now: float) -> tuple[bool | None, str]:
         """(True play | False drop | None wait, why) for the reply now held. Only a FINAL transcript decides:
         Gemini's partials grow while the person talks on, and a reply held for an early part is not the answer."""
-        if now >= self.ends_at:
+        if self.goodbye:
+            self.goodbye = False
             return True, "goodbye"
         t = self.turns[-1] if self.turns else None
         if t is not None and t["seq"] > self.consumed:
@@ -288,6 +290,9 @@ class MeetAgent(Agent):
     on_reply = staticmethod(lambda turn, items: None)  # run() records each played reply with its turn
 
     async def _post(self, op: str, body: dict) -> dict:
+        if time.monotonic() >= self.ends_at:
+            logger.info("meet: tool %s refused (time up)", op)
+            return {"error": "time_up"}
         self.tool_at = time.monotonic()
         try:
             out = await self._b.meet(op, body)
@@ -466,7 +471,7 @@ async def run(ctx: JobContext, meta: dict) -> None:
         await backend.leave_meeting()
         ctx.shutdown("meeting max length")
 
-    limit = asyncio.create_task(end_after(MEETING_MAX_S, session, time_up))
+    limit = asyncio.create_task(end_after(MEETING_MAX_S, session, time_up, before=lambda: setattr(agent, "goodbye", True)))
 
     async def on_end(_reason: str = "") -> None:
         limit.cancel()

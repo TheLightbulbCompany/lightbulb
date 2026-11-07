@@ -1,0 +1,24 @@
+{
+  "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-utils/schema.json",
+  "identifier": "default",
+  "description": "Prod: the only origin the prod app loads. Dev is capabilities/dev.json, enabled by tauri.dev.conf.json only.",
+  "windows": [
+    "main"
+  ],
+  "remote": {
+    "urls": [
+      "https://thelightbulb.company/*"
+    ]
+  },
+  "permissions": [
+    "core:default",
+    "core:window:allow-set-badge-count",
+    "autostart:allow-enable",
+    "autostart:allow-disable",
+    "autostart:allow-is-enabled",
+    "deep-link:default",
+    "shell:allow-open",
+    "updater:default",
+    "dialog:default"
+  ]
+}

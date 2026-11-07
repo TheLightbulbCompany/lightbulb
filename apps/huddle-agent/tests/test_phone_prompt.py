@@ -300,3 +300,12 @@ def test_message_only_mode_says_to_take_a_message():
     text = prompt(mode="message_only", can={"book": False, "move": False})
     assert "can only take a message" in text and "owner will call back" in text
     assert "can only take a message" not in prompt(mode="live")
+
+
+def test_phone_tools_include_remember():
+    r = phone.Receptionist(None, INFO, None)
+    names = {t.info.name for t in r.tools}
+    assert {"remember"} <= names
+    assert "only this caller's own preferences" in " ".join(phone.Receptionist.remember.info.description.split())
+    text = " ".join(phone.Receptionist(None, {**INFO, "callerMemory": ["Prefers Saturdays"]}, None).instructions.split())
+    assert "Prefers Saturdays" in text

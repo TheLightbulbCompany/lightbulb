@@ -27,4 +27,5 @@ test.each([
   expect(env.LIVEKIT_URL).toBe("wss://lightbulb-svx3a1rx.livekit.cloud");
   expect(env.LIVEKIT_AGENT_NAME).toBe(agentName);
   expect(env.VOICE_LINE_NUMBER).toBe(voiceLine); // the one phone line: prod only
+  expect(env.RECALL_GOOGLE_LOGIN_GROUP_ID).toBe(""); // set per env once the Recall login group exists
 });

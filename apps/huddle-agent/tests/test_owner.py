@@ -53,3 +53,25 @@ def test_the_engine_is_openai_unless_gemini_is_asked_for(monkeypatch):
     assert isinstance(owner.realtime_model(), openai.realtime.RealtimeModel)
     monkeypatch.setenv("OWNER_ENGINE", "gemini")
     assert isinstance(owner.realtime_model(), google.realtime.RealtimeModel)
+
+
+async def test_the_talk_is_kept_with_its_transcript_and_started_tasks():
+    a = _agent()
+
+    async def owner_op(op, body):
+        return {"started": True, "taskId": "k-1"} if body["title"] == "Post" else {"error": "x"}
+
+    a._b.owner = owner_op
+    await a.start_work("Post", "Holiday hours.")
+    await a.start_work("Post", "Holiday hours.")  # the same task once
+    await a.start_work("Broken", "fails")
+    items = [{"role": "assistant", "text": "Drafting it.", "t": 2.0, "interrupted": False},
+             {"role": "user", "text": "Draft the post", "t": 0.5, "interrupted": False},
+             {"role": "assistant", "text": "cut off", "t": 3.0, "interrupted": True}]  # fmt: skip
+    body = owner.talk_record(a, items, "job_1", 42.7)
+    assert body == {
+        "speakerUserId": "user_maya", "sessionId": "job_1", "durationSec": 42,
+        "transcript": [{"who": "caller", "text": "Draft the post", "t": 0.5},
+                       {"who": "assistant", "text": "Drafting it.", "t": 2.0}],
+        "work": [{"title": "Post", "taskId": "k-1"}],
+    }  # fmt: skip

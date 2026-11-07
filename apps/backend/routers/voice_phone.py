@@ -10,11 +10,12 @@ comes from that record, never from the model. The assistant's settings are the A
 Rows in the messaging table:
     PHONE#<e164>    LINE                  the number's workspace (ownerId) and the member tasks run as (ownerUserId)
     OWNER#<owner>   VOICEBOOK#<local>     one booking in the assistant's own calendar (local start "YYYY-MM-DDTHH:MM")
-    OWNER#<owner>   VOICECALLER#<e164>    a caller seen before: name, last call
+    OWNER#<owner>   VOICECALLER#<e164>    a caller seen before: name, last call, facts (<= 10, newest first), visits
 """
 
 import functools
 import hashlib
+import re
 import logging
 import uuid
 from datetime import datetime, timedelta
@@ -186,7 +187,7 @@ async def start_call(body: StartIn) -> dict:
         "booking": "",
         "steps": [],
         "transcript": [],
-        "callerMemory": [],
+        "callerMemory": list((seen or {}).get("facts", [])) if cfg["allow"]["greetByName"] else [],
         "ownerMode": False,
         "resolvedAt": None,
         "calledNumber": body.calledNumber,
@@ -226,6 +227,7 @@ async def start_call(body: StartIn) -> dict:
         "facts": _facts(cfg) if allow["answer"] and not paused else "",
         "instructions": cfg["instructions"][:4000],
         "callerName": call["callerName"] if allow["greetByName"] else "",
+        "callerMemory": call["callerMemory"],
         "can": {k: bool(allow[k]) and not paused for k in ("book", "move", "answer")},
         "transfer": bool(cfg["handoff"]["number"]),
         "today": datetime.now(_tz(cfg)).strftime("%A %Y-%m-%d %H:%M"),
@@ -262,17 +264,23 @@ def outcome_of(call: dict) -> str:
     return "message" if call.get("messages") else "answered"
 
 
-@router.post("/internal/voice/calls/{call_id}/end")
-async def end_call(call_id: str, body: EndIn) -> dict:
+def transcript_lines(transcript: list[dict]) -> list[dict]:
+    """The worker's lines as the record keeps them: `{who: caller|assistant, text, t}`; anyone else is dropped."""
     who = {"user": "caller", "caller": "caller", "assistant": "assistant"}
     lines = []
-    for t in body.transcript:
+    for t in transcript:
         if str(t.get("role") or t.get("who")) not in who:
             continue
         line = {"who": who[str(t.get("role") or t.get("who"))], "text": str(t.get("text", ""))[:2000]}
         if isinstance(t.get("t"), (int, float)) and not isinstance(t["t"], bool):
             line["t"] = round(min(max(float(t["t"]), 0.0), 86400.0), 1)  # seconds since the call started
         lines.append(line)
+    return lines
+
+
+@router.post("/internal/voice/calls/{call_id}/end")
+async def end_call(call_id: str, body: EndIn) -> dict:
+    lines = transcript_lines(body.transcript)
 
     def change(call: dict) -> dict:
         return {"status": "ended", "endedAt": utc_now_iso(), "durationSec": body.durationSec,
@@ -284,13 +292,23 @@ async def end_call(call_id: str, body: EndIn) -> dict:
     meta, _ = await _call(call_id)
     out = await _patch_call(call_id, change)
     if out.get("caller"):
-        item = {**_caller_key(meta["ownerId"], out["caller"]), "lastCallAt": out["endedAt"], "lastCallId": call_id}
-        if out.get("callerName"):
-            item["name"] = out["callerName"]
+        seen = await _seen(meta["ownerId"], out["caller"]) or {}
+        item = {**_caller_key(meta["ownerId"], out["caller"]), "lastCallAt": out["endedAt"], "lastCallId": call_id,
+                "visits": int(seen.get("visits", 0)) + 1}  # fmt: skip
+        if seen.get("forgottenAt"):
+            item["forgottenAt"] = seen["forgottenAt"]
+        if seen.get("forgottenAt") and datetime.fromisoformat(seen["forgottenAt"]) >= datetime.fromisoformat(
+            out["startedAt"]
+        ):
+            item["facts"] = seen.get("facts", [])  # Forgotten during this call: write neither name nor facts
+        else:
+            item["facts"] = list(dict.fromkeys([*out.get("remembered", [])[::-1], *seen.get("facts", [])]))[:MAX_FACTS]
+            if out.get("callerName") or seen.get("name"):
+                item["name"] = out.get("callerName") or seen["name"]
         await run_in_thread(messaging_repo._table().put_item, Item=item)
     asks = [("didnt_know", q) for q in dict.fromkeys(out.get("unknown", []))]
     if out.get("handoffMissed"):
-        asks.append(("line_problem" if out.get("transferFailed") else "handoff", ""))
+        asks.append(("handoff", ""))  # nobody free or the transfer failed: line_problem is for system issues
     for kind, question in asks if meta.get("ownerUserId") else ():
         ask = call_ask(call_id, out, kind, question)
         await _start_task(call_id, meta, out, ask["title"], f"{ask['title']}\n{ask['text']}", ask=ask)
@@ -312,7 +330,7 @@ def call_ask(call_id: str, call: dict, kind: str, question: str = "") -> dict:
     Its qid is the call, kind and question, so a retried end opens it once."""
     who = call.get("callerName") or call.get("caller") or "a caller"
     title = {"didnt_know": f"Answer {who}: {question}", "handoff": f"{who} wanted a person",
-             "line_problem": f"{who} wanted a person; the transfer didn't connect"}[kind]  # fmt: skip
+             "line_problem": f"{who}'s call hit a problem on the line"}[kind]  # fmt: skip
     return {
         "qid": questions.qid_for(f"{call_id}:{kind}:{question}"),
         "kind": "question",
@@ -336,17 +354,55 @@ async def remember_answer(owner_id: str, question: str, answer: str, by: str) ->
         return  # no Agent page yet: writing one would skip onboarding
     item = {"q": question, "a": answer, "source": KNOWLEDGE_SOURCE}
     knowledge, to_add = list(cfg.get("knowledge") or []), list(cfg.get("toAdd") or [])
-    if item in knowledge and question not in to_add:
+    if item in knowledge and question[:TO_ADD_CHARS] not in to_add:
         return
     await messaging_repo.put_voice_agent(
         owner_id,
         {
             **cfg,
             "knowledge": knowledge if item in knowledge else [*knowledge, item],
-            "toAdd": [t for t in to_add if t != question],
+            "toAdd": [t for t in to_add if t != question[:TO_ADD_CHARS]],
         },
         by,
     )
+
+
+MAX_FACTS = 10
+TO_ADD_MAX, TO_ADD_CHARS = 20, 200  # the Agent page's "questions to add": caller text, so capped (oldest drop)
+
+
+def _to_add(cfg: dict, item: str) -> list[str]:
+    return list(dict.fromkeys([*(cfg.get("toAdd") or []), item[:TO_ADD_CHARS]]))[-TO_ADD_MAX:]
+
+
+class RememberIn(BaseModel):
+    fact: Annotated[str, Field(min_length=1, max_length=120)]
+    kind: Literal["caller", "business"] = "caller"
+
+
+@router.post("/internal/voice/calls/{call_id}/remember")
+async def remember(call_id: str, body: RememberIn) -> dict:
+    """A caller's own preference (kept on their row at the end of the call) or a fact about the business (cfg toAdd)."""
+    meta, call = await _call(call_id)
+    if _line_state(await agent_config(meta["ownerId"]), call.get("caller", "")) != "live":
+        raise _err(403, "not_allowed")
+    if re.search(r"\d{12,}", re.sub(r"\D", "", body.fact)):  # card-like: never stored
+        raise _err(400, "looks_like_a_card")
+    if body.kind == "business":
+        cfg = await messaging_repo.get_voice_agent(meta["ownerId"]) or {}
+        await messaging_repo.put_voice_agent(meta["ownerId"], {**cfg, "toAdd": _to_add(cfg, body.fact)}, "voice")
+    else:
+        await _patch_call(call_id, lambda c: {"remembered": [*c.get("remembered", []), body.fact][-MAX_FACTS:]})
+    return {"remembered": True}
+
+
+async def resolve_call(owner_id: str, call_id: str, by: str) -> None:
+    """A call's Question was answered: the call is handled (what POST /voice/calls/{id}/done writes), so Home's
+    "Needs you" stops listing it. ponytail: the first answered Question resolves a call that had several."""
+    meta = await messaging_repo.get_room(call_id)
+    if not meta or meta.get("ownerId") != owner_id or meta.get("kind") != "call":
+        return
+    await _patch_call(call_id, lambda c: {} if c.get("resolvedAt") else {"resolvedAt": utc_now_iso(), "resolvedBy": by})
 
 
 # --- the assistant's own calendar (spec §4.1b: a hold in its calendar when the business has no API) --------
@@ -588,9 +644,9 @@ async def didnt_know(call_id: str, body: UnknownIn) -> dict:
     await _patch_call(call_id, lambda c: {"unknown": [*c.get("unknown", []), body.question],
                                           "steps": _step(c, f"Didn't know: {body.question[:160]}")})  # fmt: skip
     cfg = await messaging_repo.get_voice_agent(meta["ownerId"])
-    if cfg is not None and body.question not in (cfg.get("toAdd") or []):  # the Agent page's "questions to add"
+    if cfg is not None and body.question[:TO_ADD_CHARS] not in (cfg.get("toAdd") or []):
         await messaging_repo.put_voice_agent(
-            meta["ownerId"], {**cfg, "toAdd": [*(cfg.get("toAdd") or []), body.question]}, meta.get("ownerUserId") or ""
+            meta["ownerId"], {**cfg, "toAdd": _to_add(cfg, body.question)}, meta.get("ownerUserId") or ""
         )
     return {"noted": True}
 
@@ -612,8 +668,7 @@ async def transfer(call_id: str, body: TransferIn | None = None) -> dict:
     is_open = bool(window) and window[0] <= now < window[1]
     if (body and body.failed) or not h["number"] or (h["onlyOpenHours"] and not is_open):
         why = "the transfer didn't connect" if body and body.failed else "nobody was available"
-        await _patch_call(call_id, lambda c: {"handoffMissed": True, "transferFailed": bool(body and body.failed),
-                                              "steps": _step(c, f"Asked for a person; {why}")})  # fmt: skip
+        await _patch_call(call_id, lambda c: {"handoffMissed": True, "steps": _step(c, f"Asked for a person; {why}")})
         return {"transferTo": None}
     await _patch_call(call_id, lambda c: {"transferredTo": h["number"], "steps": _step(c, "Transferred to a person")})
     return {"transferTo": h["number"]}

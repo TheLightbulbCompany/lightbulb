@@ -289,6 +289,14 @@ async def test_answer_writes_knowledge_as_member(world, monkeypatch):
         docs[ws] = config
 
     monkeypatch.setattr(messaging_repo, "put_voice_agent", put)
+    room = {"roomId": "call-1", "ownerId": WS, "kind": "call", "revision": 3, "call": {"resolvedAt": None}}
+    monkeypatch.setattr(messaging_repo, "get_room", AsyncMock(side_effect=lambda r: room if r == "call-1" else None))
+
+    async def patch_meta(room_id, change, expected_revision):
+        assert expected_revision == room["revision"]
+        room.update(change, revision=room["revision"] + 1)
+
+    monkeypatch.setattr(messaging_repo, "patch_room_meta", patch_meta)
     answer_update = temporal_client.update_task
 
     async def ask_update(ws, task_id, name, ref):
@@ -309,5 +317,6 @@ async def test_answer_writes_knowledge_as_member(world, monkeypatch):
         {"q": q, "a": "Yes, up to eight people.", "source": "you answered this in Needs you"}
     ]
     assert docs[WS]["toAdd"] == ["Parking?"]
+    assert room["call"]["resolvedBy"] == SAM and room["call"]["resolvedAt"]  # Home stops listing it as Needs you
     assert (await _press(world, opened["qid"], "answer", text="Yes, up to eight people.")).status_code == 200
     assert len(docs[WS]["knowledge"]) == 1  # the same press again writes nothing twice

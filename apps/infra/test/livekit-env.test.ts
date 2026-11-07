@@ -20,10 +20,11 @@ function backendEnv(environment: string): Record<string, string> {
 
 // One LiveKit project serves both envs; dev must dispatch to its Mac worker, never prod's lightbulb-huddle.
 test.each([
-  ["dev", "lightbulb-meet-dev"],
-  ["prod", undefined],
-])("%s backend LiveKit env", (environment, agentName) => {
+  ["dev", "lightbulb-meet-dev", ""],
+  ["prod", undefined, "+14842079294"],
+])("%s backend LiveKit env", (environment, agentName, voiceLine) => {
   const env = backendEnv(environment);
   expect(env.LIVEKIT_URL).toBe("wss://lightbulb-svx3a1rx.livekit.cloud");
   expect(env.LIVEKIT_AGENT_NAME).toBe(agentName);
+  expect(env.VOICE_LINE_NUMBER).toBe(voiceLine); // the one phone line: prod only
 });

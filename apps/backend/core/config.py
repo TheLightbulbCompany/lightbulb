@@ -243,6 +243,8 @@ class Settings(BaseSettings):
     RECALL_API_KEY: str = ""
     RECALL_WEBHOOK_SECRET: str = ""
     """The ``whsec_`` workspace verification secret. Empty = every Recall webhook is refused."""
+    RECALL_GOOGLE_LOGIN_GROUP_ID: str = ""
+    """Recall Google Login Group the Meet bot signs in with. Empty = joins signed out (and may wait in the lobby)."""
     # Text agents (Photon iMessage/SMS). Empty = the texting rail is off.
     PHOTON_API_KEY: str = ""  # Photon 2.0 project key, pho_sk_...
     PHOTON_PROJECT_ID: str = ""  # pho_prj_...

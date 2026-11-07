@@ -277,10 +277,13 @@ def test_no_nudge_when_someone_in_the_room_has_the_assistants_name():
     assert meet.wakes("Nova", "Nova, can you share your screen?", [{"name": "Maya"}, {"name": "Novak"}])
 
 
-def test_opting_out_of_transcription():
-    for line in ("Nova, don't transcribe me.", "Please stop transcribing me", "Can you opt me out?",
-                 "Do not record me, thanks.", "Leave me out of the transcript, please."):  # fmt: skip
-        assert meet.opts_out(line), line
-    for line in ("Nova, how many calls?", "Don't transcribe the numbers wrong.", "I stopped recording the demo.",
-                 "We opted for the cheaper plan."):  # fmt: skip
-        assert not meet.opts_out(line), line
+def test_opting_out_of_transcription_needs_the_name_and_me():
+    for line in ("Nova, don't transcribe me.", "Nova, please stop transcribing me", "Nova, can you not transcribe me?",
+                 "Nova, turn off transcription for me", "Nova, opt me out.", "Hey Nova, do not record me, thanks.",
+                 "Nova, leave me out of the transcript, please.", "Don't transcribe me, Nova."):  # fmt: skip
+        assert meet.opts_out("Nova", line), line
+    for line in ("Customers can opt out of the reminder texts.", "Don't record my screen.", "Don't transcribe me.",
+                 "Nova, don't record my screen.", "I told Nova not to transcribe me last week, it's fine.",
+                 "Nova, how many calls?", "Nova, don't transcribe the numbers wrong.", "We opted for the cheaper plan.",
+                 "Leo, stop recording me!"):  # fmt: skip
+        assert not meet.opts_out("Nova", line), line

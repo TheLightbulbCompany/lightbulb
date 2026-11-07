@@ -89,17 +89,23 @@ QUESTION_WORDS = {
 }  # fmt: skip
 
 
+_ME = r"(?:me|myself|my (?:voice|speech|words|audio))\b"
 _OPT_OUT = re.compile(
-    r"\b(?:don'?t|do not|stop|quit|no more)\s+(?:transcrib\w*|record\w*)\s+(?:me|my)\b|\bopt (?:me )?out\b"
-    r"|\bleave me out of the transcript",
+    rf"\b(?:don'?t|do not|not|stop|quit|no longer|no more)\s+(?:transcrib\w*|record\w*)\s+{_ME}"
+    rf"|\b(?:turn off|switch off|stop|disable|pause)\s+(?:the\s+)?(?:transcription|transcript|transcribing|recording)"
+    rf"\s+(?:for|of)\s+{_ME}"
+    r"|\bopt me out\b|\bleave me out of the (?:transcript|transcription|recording)\b",
     re.I,
 )
 
 
-def opts_out(text: str) -> bool:
-    """The speaker asks not to be transcribed (spec §5: "guests can opt out of transcription per person (that STT
-    stream stops)"). Said by anyone, about themselves: it only ever takes their own voice out."""
-    return bool(_OPT_OUT.search(text))
+def opts_out(name: str, text: str, people: list[dict] | None = None) -> bool:
+    """The speaker asks the assistant, by name, not to transcribe THEM (spec §5: "guests can opt out of
+    transcription per person (that STT stream stops)"): addressed (the gate's rules) and about "me"/"my voice".
+    "Customers can opt out of the reminder texts" or "Don't record my screen" are not it."""
+    if not _OPT_OUT.search(text):
+        return False
+    return Gate(name=name, people=people or []).heard("", text, 0.0, new_turn=True) == "ask"
 
 
 def wakes(name: str, text: str, people: list[dict] | None = None) -> bool:
@@ -446,6 +452,8 @@ async def run(ctx: JobContext, meta: dict) -> None:
     }, names)  # fmt: skip
     readers: dict[str, asyncio.Task] = {}
     opted_out: set[str] = set()  # identities that asked not to be transcribed: no transcriber, not in the mix
+    # ...and who did so before this worker (a restart) or under another id (a rejoin): META.meeting.notTranscribed
+    kept_out = [(e.get("id") or "", (e.get("name") or "").lower()) for e in info.get("notTranscribed") or []]
     # the huddle's per-person transcriber (agent.py): the gate's ears, with the exact speaker of each line
     # the name in its prompt: unprompted, an accented "Lightbulb, can you..." came out as "la lampe" (self-test)
     stt_engine = openai.STT(
@@ -481,6 +489,9 @@ async def run(ctx: JobContext, meta: dict) -> None:
             await stream.aclose()
 
     def on_track(track: rtc.Track, _pub, p: rtc.RemoteParticipant) -> None:
+        pid = p.identity.rsplit(":", 1)[-1]
+        if any((i and i == pid) or (n and n == (p.name or "").lower()) for i, n in kept_out):
+            opted_out.add(p.identity)
         if track.kind == rtc.TrackKind.KIND_AUDIO and p.identity.startswith("meet:") and p.identity not in opted_out:
             names[p.identity] = p.name or "Someone"
             gate.people = [{"name": n} for n in names.values()]
@@ -520,13 +531,23 @@ async def run(ctx: JobContext, meta: dict) -> None:
     def label(identity: str) -> str:
         return names.get(identity, "Someone") if identity else "Several people"
 
+    async def keep_out(body: dict) -> None:
+        """Not a tool call (agent._post): it must not count as one for the follow-on rule."""
+        try:
+            await backend.meet("transcription", body)
+        except Exception:  # noqa: BLE001 -- this meeting still keeps them out; only a restart would forget
+            logger.warning("meet: opt-out not saved", exc_info=True)
+
     def on_heard(who: str, item: str, text: str, final: bool) -> None:
         if not text.strip() or who in opted_out:
             return
-        if final and opts_out(text):
+        if final and opts_out(name, text, gate.people):
             # from here on: their transcriber stops, their voice leaves what Gemini hears, the line itself is
-            # not kept, and the transcript says so (what they said before stays)
+            # not kept, and the transcript says so (what they said before stays). Kept on the meeting by id and
+            # name, so a restart or a rejoin keeps it; the Meet chat confirms it.
             opted_out.add(who)
+            body = {"participantId": who.rsplit(":", 1)[-1], "name": names.get(who, "")[:200], "optOut": True}
+            asyncio.create_task(keep_out(body))
             if (r := readers.pop(who, None)) is not None:
                 r.cancel()
             lines.append({"mark": len(lines), "kind": "agent", "name": name[:200], "at": time.time(),

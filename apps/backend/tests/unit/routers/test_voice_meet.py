@@ -191,3 +191,30 @@ def test_call_start_times_compare_across_offsets():
         {"startedAt": "2026-11-07T12:00:00+00:00"}
     )
     assert voice_meet._started({}).year == 1
+
+
+def _tx(pid: str, name: str, opt_out: bool = True):
+    return voice_meet.TranscriptionIn(ownerId="org_1", roomToken="t", participantId=pid, name=name, optOut=opt_out)
+
+
+async def test_an_opt_out_is_kept_on_the_meeting_by_id_and_name_and_said_in_chat(m):
+    out = await voice_meet.transcription(ROOM, _tx("12", "Sam"))
+    assert out["notTranscribed"] == [{"id": "12", "name": "Sam"}]
+    assert "nothing more you say is transcribed" in m["say"].await_args.args[1]
+    await voice_meet.transcription(ROOM, _tx("19", "sam"))  # a rejoin under a new id: one entry, the new id
+    assert m["meeting"]["notTranscribed"] == [{"id": "19", "name": "sam"}]
+    with patch.object(voice_meet, "assistant_name", AsyncMock(return_value="Nova")), \
+            patch.object(voice_meet.integration_reads, "warm_google", AsyncMock()):  # fmt: skip
+        started = await voice_meet.start(ROOM, voice_meet.StartIn(ownerId="org_1", roomToken="t"))
+    assert started["notTranscribed"] == [{"id": "19", "name": "sam"}]  # a restarted worker reads it back
+
+
+async def test_opting_back_in_clears_it(m):
+    await voice_meet.transcription(ROOM, _tx("12", "Sam"))
+    out = await voice_meet.transcription(ROOM, _tx("12", "Sam", opt_out=False))
+    assert out["notTranscribed"] == [] and "transcribed again" in m["say"].await_args.args[1]
+
+
+async def test_an_opt_out_needs_someone(m):
+    with pytest.raises(Exception):
+        await voice_meet.transcription(ROOM, _tx("", ""))

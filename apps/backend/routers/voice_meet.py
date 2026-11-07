@@ -3,7 +3,9 @@ meeting mode (apps/huddle-agent `meet.py`, one Gemini Live session per meeting) 
 secret and the room token.
 
 The meeting's record lives on the room META's ``meeting`` map, where the owner's timeline reads it:
-``asked`` [{t, who, q, a}], ``followUps`` [{text, status, taskId}], ``summary``.
+``asked`` [{t, who, q, a}], ``followUps`` [{text, status, taskId}], ``summary``, and ``notTranscribed``
+[{id, name}]: the people who asked not to be transcribed, by Recall participant id AND roster name (a rejoin can
+bring a new id: Recall KB "different speaker_ids ... the same speaker"; Meet has no stable id across meetings).
 
 Who may act: only the inviting member's own speech. A Meet speaker is the Recall participant the worker
 heard; it counts as the member only when Recall marks them the Meet's host AND the invite's organizer is the
@@ -78,7 +80,11 @@ async def start(room_id: str, body: StartIn) -> dict:
                 await meeting_bots.say(bot, ANNOUNCE.format(name=name, company=body.company or "the team"))
             except Exception as e:  # noqa: BLE001 -- RecallError or a transport error alike
                 logger.warning("meet room %s: announce failed %s", room_id, getattr(e, "code", type(e).__name__))
-    return {"assistantName": name, "title": meeting.get("title") or "Meeting"}
+    return {
+        "assistantName": name,
+        "title": meeting.get("title") or "Meeting",
+        "notTranscribed": meeting.get("notTranscribed") or [],
+    }
 
 
 def member_speaking(meeting: dict, members: list[dict], participant_id: str) -> str | None:
@@ -245,3 +251,38 @@ async def end(room_id: str, body: EndIn) -> dict:
     ]  # fmt: skip
     await meeting_invites._patch_meeting(room_id, {"asked": asked, "summary": body.summary})
     return {"ok": True}
+
+
+class TranscriptionIn(RoomBody):
+    participantId: str = Field(default="", max_length=128)
+    name: str = Field(default="", max_length=200)
+    optOut: bool = True
+
+
+def _same(entry: dict, pid: str, name: str) -> bool:
+    return bool((pid and entry.get("id") == pid) or (name and entry.get("name", "").lower() == name.lower()))
+
+
+@router.post("/internal/voice/meet/{room_id}/transcription")
+async def transcription(room_id: str, body: TranscriptionIn) -> dict:
+    """A person asked (by voice, addressing the assistant) not to be transcribed, or to be again. Kept on the
+    meeting so a worker restart or a rejoin keeps it; the Meet chat gets one line saying so (best-effort)."""
+    room_id, _meta, meeting = await _meeting(room_id, body)
+    pid, name = body.participantId, body.name.strip()
+    if not (pid or name):
+        raise _problem(400, "no_participant")
+
+    def change(m: dict) -> dict:
+        rest = [e for e in m.get("notTranscribed") or [] if not _same(e, pid, name)]
+        return {"notTranscribed": [*rest, {"id": pid, "name": name}] if body.optOut else rest}
+
+    meeting = await meeting_invites._patch_meeting(room_id, change) or meeting
+    if bot := meeting.get("recallBotId"):
+        who = name or "you"
+        line = (f"OK {who}: nothing more you say is transcribed or heard by the assistant." if body.optOut
+                else f"OK {who}: you are transcribed again.")  # fmt: skip
+        try:
+            await meeting_bots.say(bot, line)
+        except Exception as e:  # noqa: BLE001 -- the opt-out stands without the chat line
+            logger.warning("meet room %s: opt-out chat failed %s", room_id, getattr(e, "code", type(e).__name__))
+    return {"notTranscribed": meeting.get("notTranscribed") or []}

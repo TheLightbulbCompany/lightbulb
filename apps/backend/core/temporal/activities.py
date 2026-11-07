@@ -975,6 +975,8 @@ async def _ensure_task(ws: str, task_id: str, trig: dict, lane: str, status: str
             audience["roomId"] = room
     elif kind == "room":
         audience["roomId"] = room
+    parent = fields.get("parentTaskId")
+    confirm_all = ref.get("confirmAll") or (parent and (await tasks_repo.get_task(ws, parent) or {}).get("confirmAll"))
     row = {
         "taskId": task_id,
         "identifier": await tasks_repo.next_identifier(ws),
@@ -983,6 +985,7 @@ async def _ensure_task(ws: str, task_id: str, trig: dict, lane: str, status: str
         "lane": "private" if private else "shared",
         "ownerUserId": actor,
         "triggerId": trig["triggerId"],
+        "confirmAll": True if confirm_all else None,  # a meeting's task and its sub-tasks
         "a2aTaskId": ref.get("a2aTaskId"),  # lane Q (Q10): an inbound A2A task reports back by this id
         **{k: v for k, v in fields.items() if v is not None},
     }

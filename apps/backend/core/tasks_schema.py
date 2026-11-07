@@ -494,6 +494,7 @@ class Task(_Row):
     policy_ref: str | None = None  # SCHED#{id} or CAP#{id}
     budget_usd: float | None = None  # §13: per-run automation budget
     previous_run_task_id: str | None = None  # an automation run's previous run (lane A chaining)
+    confirm_all: bool = False  # started from a meeting: every spend, send or publish gets a card, in any mode
     hidden: bool = False  # §18 speculative work
     watch_until: str | None = None  # "Watching" when set
     attempt_count: int = 0

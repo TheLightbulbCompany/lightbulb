@@ -10,7 +10,8 @@ writes). `POST /api/v1/voice/calls/{roomId}/done` marks a call's Needs-you card 
 writes). The page owns the defaults; an unset workspace reads `{"config": null}` and the page opens onboarding.
 
 Onboarding (admin): `POST /voice/onboarding/draft` drafts the Agent page from the business's website;
-`POST /voice/number` gives the workspace its assistant number (core/services/voice_onboarding.py).
+`POST /voice/number` stores the number choice (keep and forward, or new); `PUT /voice/agent` with `live: true` gives the
+number at Go live (core/services/voice_onboarding.py).
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ import json
 import re
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -149,7 +150,13 @@ async def put_agent(body: AgentConfigIn, auth: AuthContext = Depends(get_current
         if number is None:  # the worker dials tel:{number} as stored
             raise HTTPException(status_code=422, detail={"code": "handoff_number_invalid"})
         body.config["handoff"] = {**handoff, "number": number}
-    await messaging_repo.put_voice_agent(resolve_owner_id(auth), body.config, auth.user_id)
+    ws = resolve_owner_id(auth)
+    if body.config.get("live") and not (await messaging_repo.get_voice_agent(ws) or {}).get("live"):
+        try:  # Go live: the number is given (bought, once buying is on) now, never at sign-up
+            body.config["number"] = await voice_onboarding.provision_at_go_live(ws, body.config, auth.user_id)
+        except voice_onboarding.NoNumber as exc:
+            raise HTTPException(status_code=409, detail={"code": "number_unavailable", "reason": str(exc)}) from None
+    await messaging_repo.put_voice_agent(ws, body.config, auth.user_id)
     return {"config": body.config}
 
 
@@ -165,9 +172,24 @@ async def onboarding_draft(body: DraftIn, auth: AuthContext = Depends(get_curren
     return {"draft": await voice_onboarding.draft(body.website, body.business, body.city)}
 
 
+class NumberIn(BaseModel):
+    path: Literal["keep", "new"] | None = None  # None: today's step 4 (posts {})
+    areaCode: str | None = Field(default=None, pattern=r"^[2-9]\d{2}$")
+    carrier: str | None = Field(default=None, pattern=r"^[a-z_]{1,30}$")
+    mode: Literal["missed", "all"] | None = None
+
+
 @router.post("/voice/number")
-async def assign_number(auth: AuthContext = Depends(get_current_user)) -> dict:
+async def assign_number(body: NumberIn | None = None, auth: AuthContext = Depends(get_current_user)) -> dict:
+    """With a body: store the onboarding choice (keep and forward, or new), nothing bought. Without: today's step 4,
+    the configured line now. ponytail: the bodyless branch goes when Task 30's step 4 sends the choice."""
     require_org_admin(auth)
+    if body and body.path:
+        ws = resolve_owner_id(auth)
+        choice = await voice_onboarding.reserve(
+            ws, body.path, body.areaCode, body.carrier, body.mode, user_id=auth.user_id
+        )
+        return {"numberChoice": choice}
     try:
         return {"number": await voice_onboarding.assign_number(resolve_owner_id(auth), auth.user_id)}
     except voice_onboarding.NoNumber as exc:

@@ -19,15 +19,6 @@ MEETING = {
 }
 
 
-def test_only_the_host_who_is_the_inviting_organizer_is_the_member():
-    assert voice_meet.member_speaking(MEETING, MEMBERS, "11") == "user_maya"
-    assert voice_meet.member_speaking(MEETING, MEMBERS, "12") is None  # a guest
-    assert voice_meet.member_speaking(MEETING, MEMBERS, "") is None  # nobody heard
-    # someone else's meeting the member forwarded: its host is not the member
-    other = {**MEETING, "organizer": "boss@elsewhere.com"}
-    assert voice_meet.member_speaking(other, MEMBERS, "11") is None
-
-
 @pytest.fixture
 def m():
     meeting = dict(MEETING)
@@ -66,11 +57,32 @@ async def test_member_ask_starts_a_task_and_a_follow_up(m):
     assert (f["text"], f["status"], f["taskId"]) == ("Draft the holiday-hours post", "working", "k1")
 
 
-async def test_guest_ask_starts_nothing(m):
+async def test_guest_start_work_runs_as_inviter(m):
     out = await voice_meet.start_work(ROOM, _work("12"))
-    assert out["started"] is False and out["reason"] == "needs_member"
+    assert out["started"] is True
+    assert m["put_run"].await_args.args[2]["requesterUserId"] == "user_maya"
+    assert m["sw"].await_args.kwargs["confirm_all"] is True  # a meeting's effects always get a card
+
+
+async def test_record_keeps_asker_name(m):
+    body = _work("12").model_copy(update={"speakerName": ""})
+    await voice_meet.start_work(ROOM, body)
+    [f] = m["meeting"]["followUps"]
+    assert f["who"] == "Sam"  # the roster name, for the record only
+    assert m["put_run"].await_args.args[2]["requesterUserId"] == "user_maya"
+
+
+async def test_no_inviter_no_host_refused(m):
+    m["meeting"].pop("invitedBy")
+    m["meeting"]["roster"] = {"12": {"name": "Sam", "in": True}}
+    out = await voice_meet.start_work(ROOM, _work("12"))
+    assert out == {"started": False, "reason": "no_inviter"}
     m["sw"].assert_not_awaited()
-    m["put_run"].assert_not_awaited()
+
+
+async def test_host_member_stands_in_without_an_inviter(m):
+    m["meeting"].pop("invitedBy")
+    assert (await voice_meet.start_work(ROOM, _work("12")))["started"] is True
 
 
 async def test_repeat_ask_is_already_on_it(m):
@@ -93,7 +105,11 @@ async def test_announce_once(m):
         await asyncio.sleep(0)
     warm.assert_awaited_with("org_1")  # the Google grant is warmed at the start, not on the first read
     [call] = m["say"].await_args_list
-    assert call.args[0] == "bot_1" and 'says "Nova, ..."' in call.args[1] and "members can approve" in call.args[1]
+    assert (
+        call.args[0] == "bot_1"
+        and 'says "Nova, ..."' in call.args[1]
+        and "waits for the inviting member" in call.args[1]
+    )
 
 
 async def test_a_failed_announcement_still_starts_the_meeting(m, caplog):
@@ -142,42 +158,24 @@ async def test_end_keeps_the_record(m):
     assert m["meeting"]["summary"] == "Asked twice"
 
 
-async def test_integration_read_is_the_members_own_speech_only(m):
-    with patch.object(voice_meet.integration_reads, "read", AsyncMock(return_value="Invoice 42")) as read:
-
-        def body(pid):
-            return voice_meet.IntegrationIn(
-                ownerId="org_1", roomToken="t", provider="gmail", query="invoice", participantId=pid
-            )
-
-        assert (await voice_meet.integration_read(ROOM, body("11")))["text"] == "Invoice 42"
-        assert "Only a member" in (await voice_meet.integration_read(ROOM, body("12")))["text"]
-    read.assert_awaited_once_with("org_1", "gmail", "invoice")
-
-
-async def test_a_guest_cannot_read_memory_or_bookings_or_post_to_chat(m):
-    """Gate B1: the whole meeting hears a read and sees the chat; a guest gets needs_member, a member is answered."""
+async def test_guest_read_allowed(m):
     page = {"results": [{"content": "Prices go up in May"}]}
     with (
-        patch.object(voice_meet.memory_api, "recall_page", AsyncMock(return_value=page)) as recall,
-        patch.object(
-            voice_meet, "_bookings", AsyncMock(return_value=[{"sk": "VOICEBOOK#2026-11-09T10:00", "name": "Ana"}])
-        ),
+        patch.object(voice_meet.memory_api, "recall_page", AsyncMock(return_value=page)),
+        patch.object(voice_meet.integration_reads, "read", AsyncMock(return_value="Invoice 42")),
+        patch.object(voice_meet, "_bookings", AsyncMock(return_value=[])),
     ):
         for kind in ("memory", "calendar"):
-            guest = voice_meet.ReadIn(ownerId="o", roomToken="t", kind=kind, participantId="12")
-            assert (await voice_meet.read(ROOM, guest))["reason"] == "needs_member", kind
-            member = voice_meet.ReadIn(ownerId="o", roomToken="t", kind=kind, participantId="11")
-            assert "reason" not in await voice_meet.read(ROOM, member), kind
-        assert recall.await_count == 1
-        calls = voice_meet.ReadIn(ownerId="o", roomToken="t", kind="calls", participantId="12")
-        with patch.object(voice_meet, "_calls", AsyncMock(return_value={"calls": 3})):
-            assert (await voice_meet.read(ROOM, calls))["calls"] == 3  # counts stay open
+            out = await voice_meet.read(
+                ROOM, voice_meet.ReadIn(ownerId="o", roomToken="t", kind=kind, participantId="12")
+            )
+            assert "reason" not in out, kind
+        body = voice_meet.IntegrationIn(ownerId="o", roomToken="t", provider="gmail", query="q", participantId="12")
+        assert (await voice_meet.integration_read(ROOM, body))["text"] == "Invoice 42"
     out = await voice_meet.chat(
         ROOM, voice_meet.ChatIn(ownerId="o", roomToken="t", text="Ana at 10", participantId="12")
     )
-    assert out["reason"] == "needs_member"
-    m["say"].assert_not_awaited()
+    assert out["sent"] == "chat"
 
 
 async def test_assistant_name_from_the_agent_page(m):

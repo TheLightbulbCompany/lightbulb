@@ -34,7 +34,7 @@ import pytest
 
 from core.services import runtime_rpc as rpc
 from core.services.hermes_profiles import model_block
-from core.services.hermes_provisioning import ProfileInputs
+from core.services.hermes_provisioning import HermesProfileError, ProfileInputs
 from core.services.messaging import ApiProblem
 
 
@@ -64,17 +64,11 @@ def _wire_paperclip_mirror(monkeypatch, admin):
     monkeypatch.setattr(rpc.agent_registry, "update", AsyncMock(side_effect=_update))
 
 
-def _wire_profile_inputs(monkeypatch, inputs: ProfileInputs, *, paperclip_api_key="pk-123"):
-    """The DynamoDB/Secrets/Paperclip edges write_profile_for_agent (row #1) and
-    _apply_agentcore_model_patch (row #2) both read through -- resolve_profile_inputs and the
-    Paperclip API key mint. Neither is one of the three orchestration functions the fix-round
-    review named, so collapsing them at this boundary (rather than their own sub-collaborators)
-    is consistent with test_hermes_provisioning.py's own write_profile_for_agent tests."""
-    monkeypatch.setattr("core.services.hermes_provisioning.resolve_profile_inputs", AsyncMock(return_value=inputs))
-    monkeypatch.setattr(
-        "core.services.paperclip_api_key.ensure_paperclip_api_key", AsyncMock(return_value=paperclip_api_key)
-    )
-    monkeypatch.setattr("core.services.paperclip_admin_client.shared_admin_client", lambda: object())
+def _wire_profile_inputs(monkeypatch, inputs):
+    """The DynamoDB/Secrets edges write_profile_for_agent (row #1) and _apply_agentcore_model_patch
+    (row #2) both read through, collapsed at resolve_profile_inputs. ``inputs`` may be an exception."""
+    mock = AsyncMock(side_effect=inputs) if isinstance(inputs, Exception) else AsyncMock(return_value=inputs)
+    monkeypatch.setattr("core.services.hermes_provisioning.resolve_profile_inputs", mock)
 
 
 _MANAGED_INPUTS = ProfileInputs(
@@ -132,14 +126,13 @@ async def test_agents_create_on_agentcore_row_writes_the_real_profile_with_no_pa
 
 @pytest.mark.asyncio
 async def test_agents_create_hermes_profile_error_is_a_clean_rpc_error_not_a_500(monkeypatch):
-    """Drives the real write_profile_for_agent into its real HermesProfileError raise (a failed
-    Paperclip key mint) rather than mocking the raise directly."""
+    """write_profile_for_agent raising HermesProfileError (a BYO key read failed) is a clean RPC error."""
     container = {"gateway_token": "tok", "runtime_host": "agentcore"}
     paperclip_agent = {"id": "agent_new", "name": "Ada"}
     monkeypatch.setattr(rpc.container_rpc, "running_container", AsyncMock(return_value=(container, "10.0.0.1")))
     monkeypatch.setattr(rpc.agent_registry, "create", AsyncMock(return_value=paperclip_agent))
     monkeypatch.setattr(rpc.agent_registry, "delete", AsyncMock())
-    _wire_profile_inputs(monkeypatch, _MANAGED_INPUTS, paperclip_api_key=None)
+    _wire_profile_inputs(monkeypatch, HermesProfileError("byo api key read failed"))
     monkeypatch.setattr(rpc, "publish_owner_users", AsyncMock())
 
     with pytest.raises(ApiProblem) as exc_info:

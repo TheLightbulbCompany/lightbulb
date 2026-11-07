@@ -26,6 +26,7 @@ DELETED = (
     "routers.paperclip_proxy",
     "routers.paperclip_cost",
     "routers.company_board",
+    "core.services.paperclip_api_key",
 )
 
 KEPT = {
@@ -34,7 +35,6 @@ KEPT = {
     "core/services/paperclip_admin_client.py": "workspace provisioning (its agent writes mirror into the registry) and purchase cards still write through Paperclip",
     "core/services/paperclip_admin_session.py": "admin cookie for the client above and for the prod scripts",
     "core/services/paperclip_agent_lifecycle.py": "marketplace deploy only (company_deploy_service, task 6)",
-    "core/services/paperclip_api_key.py": "each Hermes profile carries its agent's Paperclip API key",
     "core/services/paperclip_credential_rule.py": "catalog agent materializer",
     "core/services/paperclip_meta.py": "agent create fields",
     "core/services/paperclip_openclaw_pairing.py": "resolve_company_id_for_owner, read by the client callers",
@@ -47,7 +47,6 @@ KEPT = {
     "routers/teams/agents.py": "the shared /teams _ctx (session cookie) and /teams/members principal map; /agents routes are native",
     "routers/teams/deps.py": "TeamsContext for agents.py and settings.py",
     "routers/teams/schemas.py": "request bodies for agents.py and settings.py",
-    "routers/teams/settings.py": "/teams/settings: web Settings company name/description",
 }
 
 #: Import a ``KEPT`` module (a Paperclip call on a live path).
@@ -56,7 +55,6 @@ IMPORTERS = {
     "core/services/account_wipe.py",
     "core/services/activity.py",
     "core/services/admin_service.py",
-    "core/services/agent_email.py",
     "core/services/agent_lifecycle.py",
     "core/services/agent_mail_owner_send.py",
     "core/services/agent_mail_send.py",
@@ -65,14 +63,11 @@ IMPORTERS = {
     "core/services/company_agent_materializer.py",
     "core/services/company_deploy_service.py",
     "core/services/company_package.py",
-    "core/services/company_stripe.py",
     "core/services/daily_digest.py",
     "core/services/desktop_execution.py",
     "core/services/hermes_provisioning.py",
     "core/services/ideas.py",
     "core/services/inbound_triggers.py",
-    "core/services/jev.py",
-    "core/services/launch_service.py",
     "core/services/link_wallet.py",
     "core/services/mac_browser.py",
     "core/services/messaging.py",
@@ -91,6 +86,7 @@ IMPORTERS = {
     "core/services/voice_persona.py",
     "core/services/website_logins.py",
     "core/services/week4_active.py",
+    "core/services/workspace_name.py",  # the META store's class is still named PaperclipRepo (task 9 renames it)
     "core/services/workspace_wipe.py",
     "routers/admin.py",
     "routers/billing.py",
@@ -98,6 +94,7 @@ IMPORTERS = {
     "routers/debug.py",
     "routers/messaging.py",
     "routers/ses_inbound.py",
+    "routers/teams/settings.py",  # the META store's class is still named PaperclipRepo (task 9 renames it)
     "routers/webhooks.py",
 }
 
@@ -126,6 +123,7 @@ MENTIONS = {
     "core/services/needs_you_email.py",
     "core/services/node_broker.py",
     "core/services/notification_copy.py",
+    "core/services/owner_secret_sweep.py",
     "core/services/service_token.py",
     "core/services/session_keys.py",
     "core/services/stripe_webhook_handlers.py",
@@ -149,6 +147,7 @@ MENTIONS = {
 #: The prod data-move scripts and the code only they need.
 FOR_SCRIPTS = (
     "scripts/copy_workspace_meta.py",
+    "scripts/copy_workspace_names.py",
     "scripts/backfill_agent_registry.py",
     "scripts/cancel_paperclip_approvals.py",
     "scripts/list_paperclip_webhook_triggers.py",

@@ -80,7 +80,12 @@ async def test_create_body(recall, caplog):
     # env: Recall's status webhook is account-wide, so the other environment ignores this bot.
     assert body["metadata"] == {"roomId": "room-1", "nonce": "nonce-1", "env": meeting_bots.settings.ENVIRONMENT}
     assert body["variant"] == {"google_meet": "web_4_core"}
-    assert body["automatic_leave"] == {"waiting_room_timeout": 180, "noone_joined_timeout": 1200}
+    assert body["automatic_leave"] == {
+        "waiting_room_timeout": 180,
+        "noone_joined_timeout": 1200,
+        "everyone_left_timeout": {"timeout": 300},
+    }
+    assert "google_meet" not in body  # no login group configured
     chat = body["chat"]["on_bot_join"]
     assert (
         chat["send_to"] == "everyone"
@@ -103,6 +108,25 @@ async def test_create_body(recall, caplog):
     assert (room, nonce) == ("room-1", "nonce-1")
     assert "join_at" in body
     assert all(KEY not in r.getMessage() and URL not in r.getMessage() for r in caplog.records)
+
+
+async def test_create_bot_uses_login_group(recall, monkeypatch):
+    calls, _ = recall
+    monkeypatch.setattr(meeting_bots.settings, "RECALL_GOOGLE_LOGIN_GROUP_ID", "group-1")
+    await meeting_bots.create(room_id="room-1", meeting=_meeting(12 * 60), company="Acme")
+    assert json.loads(calls[0].content)["google_meet"] == {"google_login_group_id": "group-1"}
+
+
+async def test_create_bot_does_not_leave_on_brief_empty_room(recall):
+    calls, _ = recall
+    await meeting_bots.create(room_id="room-1", meeting=_meeting(12 * 60), company="Acme")
+    assert json.loads(calls[0].content)["automatic_leave"]["everyone_left_timeout"] == {"timeout": 300}
+
+
+async def test_prod_without_login_group_warns(recall, monkeypatch, caplog):
+    monkeypatch.setattr(meeting_bots.settings, "ENVIRONMENT", "prod")
+    await meeting_bots.create(room_id="room-1", meeting=_meeting(12 * 60), company="Acme")
+    assert "signed-out bot" in caplog.text
 
 
 async def test_a_meeting_a_minute_out_joins_now(recall):

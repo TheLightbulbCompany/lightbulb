@@ -344,7 +344,7 @@ async def leave(room_id: str, body: RoomBody):
             if attempt < _LEAVE_TRIES:
                 await asyncio.sleep(_LEAVE_GAP_S)
                 continue
-            # Recall's automatic_leave reaps a bot left alone; the LiveKit room still closes below.
+            # Recall's automatic_leave makes a bot leave after 5 minutes alone; the LiveKit room still closes below.
             put_metric("meeting.leave_failed")
             logger.warning("meeting room %s: bot leave failed", room_id, exc_info=True)
     await _finish(room_id, "ended", "idle_leave", notes=True, in_call_at=meeting.get("inCallAt"))

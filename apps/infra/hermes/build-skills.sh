@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Build the Hermes image's bundled skills tree from `skills-src`.
 #
-# `skills-src/` is the source of truth for the two agent-facing skills (`lightbulb`,
-# `paperclip`). It moved here from apps/infra/openclaw/skills when the OpenClaw extended
+# `skills-src/` is the source of truth for the agent-facing `lightbulb` skill. It moved here from apps/infra/openclaw/skills when the OpenClaw extended
 # image was deleted; this image is now its only consumer. There is deliberately no overlay:
 # per-file overlays shadowed newer source edits and shipped stale text, so wording a token
 # swap cannot express is written in skills-src directly.

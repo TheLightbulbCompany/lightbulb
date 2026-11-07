@@ -19,6 +19,7 @@ LINE = {"ownerId": "org_1", "ownerUserId": "user_owner"}  # number -> workspace 
 DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 CONFIG = {  # the Agent page document
     "name": "Nova",
+    "live": True,
     "hours": {d: {"open": "10:00", "close": "19:00"} for d in DAYS},
     "services": [{"name": "Gel manicure", "minutes": 60, "price": "$45", "staff": ""}],
     "bufferMin": 0,
@@ -213,3 +214,32 @@ async def test_worker_secret_required_and_unknown_number_404(client):
     body = {"calledNumber": NUMBER, "callerNumber": "", "livekitRoom": "r"}
     assert client.post("/api/v1/internal/voice/calls", json=body).status_code == 401
     assert client.post("/api/v1/internal/voice/calls", json=body, headers=W).status_code == 404
+
+
+async def test_paused_line_takes_messages_only(client):
+    call = await _start(client, paused=True)
+    assert call["mode"] == "message_only" and call["facts"] == ""
+    base = f"/api/v1/internal/voice/calls/{call['callId']}"
+    body = {"start": f"{_tomorrow()}T14:00", "service": "gel", "name": "Priya"}
+    r = client.post(f"{base}/book", json=body, headers=W)
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "not_allowed"
+    assert client.post(f"{base}/message", json={"text": "call me"}, headers=W).status_code == 200
+    assert client.post(f"{base}/transfer", headers=W).status_code == 403
+
+
+async def test_not_live_line_answers_owner_test_call(client):
+    body = {"start": f"{_tomorrow()}T14:00", "service": "gel", "name": "Priya"}
+    stranger = await _start(client, live=False)
+    assert stranger["mode"] == "message_only"
+    r = client.post(f"/api/v1/internal/voice/calls/{stranger['callId']}/book", json=body, headers=W)
+    assert r.status_code == 403
+    owner = await _start(client, caller="+14155550199", room="phone-dev-_o", live=False)  # the handoff number
+    assert owner["mode"] == "live"
+    assert client.post(f"/api/v1/internal/voice/calls/{owner['callId']}/book", json=body, headers=W).status_code == 200
+    fwd = await _start(client, caller="+14155550177", room="phone-dev-_f", live=False, forwardFrom="(415) 555-0177")
+    assert fwd["mode"] == "live"
+
+
+def test_next_time_note_reaches_facts():
+    cfg = {**voice_phone.DEFAULTS, "knowledge": [{"q": "", "a": "Parking is behind the building"}]}
+    assert "Note: Parking is behind the building" in voice_phone._facts(cfg)

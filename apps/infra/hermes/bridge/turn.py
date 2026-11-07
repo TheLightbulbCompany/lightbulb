@@ -4516,6 +4516,7 @@ def _run_task_session(identity: dict, request: dict) -> tuple[str, str | None, s
     _start_desktop_turn(_profile_dir(agent_id), {
         "apiUrl": API, "ownerId": OWNER, "hookToken": HOOK_TOKEN, "agentId": agent_id, "runId": run_id,
         "sessionKey": identity["sessionKey"], "family": "task",
+        "taskId": identity.get("taskId") or "", "runSecret": identity.get("runSecret") or "",
     })
     try:
         return _run_task_turn(identity, request, family="task")

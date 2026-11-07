@@ -73,17 +73,9 @@ it("opens the task screen a task_question push names, ahead of the room fallback
     .toEqual([{ pathname: "/(app)/task/[taskId]", params: { taskId: "t-1" } }]);
 });
 
-it("routes a Teams push to its issue, whatever the event type", async () => {
-  await tap({ source: "teams", eventType: "approval.created", issueId: "issue_xyz" });
-  expect(push).toHaveBeenCalledWith({
-    pathname: "/(app)/teams/issue/[id]",
-    params: { id: "issue_xyz" },
-  });
-});
-
-it("opens the run a team run push is about, not its task", () => {
-  expect(notificationHrefs({ source: "teams", eventType: "agent.run.failed", runId: "run-5", issueId: "issue_xyz" }))
-    .toEqual([{ pathname: "/(app)/teams/run/[runId]", params: { runId: "run-5" } }]);
+it("no longer opens the deleted issue or run screens for an old Teams push", () => {
+  expect(notificationHrefs({ source: "teams", eventType: "approval.created", issueId: "issue_xyz" })).toBeNull();
+  expect(notificationHrefs({ source: "teams", eventType: "agent.run.failed", issueId: "issue_xyz" })).toBeNull();
 });
 
 it("opens Activity on the approval an approval push names", async () => {

@@ -54,23 +54,28 @@ def token():
         yield t
 
 
+def _cell(day: str) -> str:  # the first 5-minute UTC cell of a 14:00 New York booking
+    return _z(day, "14:00")[:16]
+
+
 async def _row(start: str) -> dict | None:
     return await messaging_repo._get(messaging_repo.owner_pk("org_1"), f"VOICEBOOK#{start}")
 
 
 async def test_google_free_subtracts_busy(client, token, google):
     day = _tomorrow()
-    google.routes["POST /freeBusy"] = httpx.Response(200, json={
-        "calendars": {"primary": {"busy": [{"start": _z(day, "14:00"), "end": _z(day, "15:00")}]}}})  # fmt: skip
     google.routes["POST /calendars/primary/events"] = httpx.Response(200, json={"id": "ev0"})
     call = await _start(client, bookingsGo="google")
     base = f"/api/v1/internal/voice/calls/{call['callId']}"
     client.post(f"{base}/book", json={"start": f"{day}T11:00", "service": "gel", "name": "Ana"}, headers=W)
+    # The book-time check had no route (a failed check books as before); availability's freeBusy has one.
+    google.routes["POST /freeBusy"] = httpx.Response(200, json={
+        "calendars": {"primary": {"busy": [{"start": _z(day, "14:00"), "end": _z(day, "15:00")}]}}})  # fmt: skip
     slots = client.post(f"{base}/availability", json={"date": day, "service": "gel"}, headers=W).json()["slots"]
     for busy in ("10:30", "11:00", "11:30", "13:30", "14:00", "14:30"):  # Nova's own cell and Google's busy block
         assert f"{day}T{busy}" not in slots
     assert f"{day}T10:00" in slots and f"{day}T12:00" in slots and f"{day}T15:00" in slots
-    [sent] = google.sent("POST /freeBusy")
+    sent = google.sent("POST /freeBusy")[-1]
     assert sent["items"] == [{"id": "primary"}] and sent["timeMin"].startswith(f"{day}T10:00:00")
     assert all(r.headers["Authorization"] == "Bearer tok" for r in google.calls)
 
@@ -134,3 +139,44 @@ async def test_own_calendar_unchanged(client, token, google):
     ]
     assert [r.status_code for r in ok] == [200, 200, 200]
     assert not google.calls and not token.await_count and client.start_work.await_count == 0
+
+
+async def test_line_problem_raised_again_after_the_old_one_is_done(client, google):
+    day = _tomorrow()
+    with (
+        patch.object(voice_booking.access_token, "get", AsyncMock(side_effect=ValueError("google: refresh failed"))),
+        patch.object(voice_booking.tasks_repo, "get_task", AsyncMock(return_value={"status": "idle"})),
+    ):
+        call = await _start(client, bookingsGo="google")
+        base = f"/api/v1/internal/voice/calls/{call['callId']}"
+        for hm in ("14:00", "17:00"):
+            client.post(f"{base}/book", json={"start": f"{day}T{hm}", "service": "gel", "name": "Priya"}, headers=W)
+        assert client.start_work.await_count == 2  # the first task is idle (Done): a new problem is raised
+
+
+async def test_google_busy_at_book_time_refuses(client, token, google):
+    day = _tomorrow()
+    google.routes["POST /freeBusy"] = httpx.Response(200, json={
+        "calendars": {"primary": {"busy": [{"start": _z(day, "14:30"), "end": _z(day, "15:00")}]}}})  # fmt: skip
+    call = await _start(client, bookingsGo="google")
+    base = f"/api/v1/internal/voice/calls/{call['callId']}"
+    r = client.post(f"{base}/book", json={"start": f"{day}T14:00", "service": "gel", "name": "Priya"}, headers=W)
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "slot_taken"
+    [sent] = google.sent("POST /freeBusy")
+    assert sent["timeMin"].startswith(f"{day}T14:00:00") and sent["timeMax"].startswith(f"{day}T15:00:00")
+    assert await _row(f"{day}T14:00") is None and not google.sent("POST /calendars/primary/events")
+    cells = await messaging_repo._get(messaging_repo.owner_pk("org_1"), f"VOICECELL#{_cell(day)}")
+    assert cells is None  # the hold's cells went with it: the slot is free again in Nova's calendar
+
+
+async def test_google_check_failure_still_books(client, token, google):
+    day = _tomorrow()
+    google.routes |= {
+        "POST /freeBusy": httpx.Response(500),
+        "POST /calendars/primary/events": httpx.Response(200, json={"id": "ev2"}),
+    }
+    call = await _start(client, bookingsGo="google")
+    base = f"/api/v1/internal/voice/calls/{call['callId']}"
+    r = client.post(f"{base}/book", json={"start": f"{day}T14:00", "service": "gel", "name": "Priya"}, headers=W)
+    assert r.status_code == 200 and (await _row(f"{day}T14:00"))["eventId"] == "ev2"
+    assert client.start_work.await_count == 0  # only the check failed; the insert worked

@@ -31,6 +31,7 @@ GOOGLE_S = 2.0  # token + request, per Google call (the speed rule's integration
 API = "https://www.googleapis.com/calendar/v3"
 EVENTS = f"{API}/calendars/primary/events"
 _PROBLEM_SK = "VOICELINEPROBLEM#google"  # -> the open Line-problem's task, so a workspace has at most one
+_OPEN = ("queued", "working", "waiting")  # tasks_schema.TaskStatus; idle (Done), resolved, failed are closed
 
 
 def _vp():
@@ -73,7 +74,7 @@ async def _line_problem(ws: str, cfg: dict, call_id: str) -> None:
     `question`); Task 6 adds the `line_problem` kind and renames it."""
     vp, pk = _vp(), messaging_repo.owner_pk(ws)
     pointer = await messaging_repo._get(pk, _PROBLEM_SK)
-    if pointer and (await tasks_repo.get_task(ws, pointer["taskId"]) or {}).get("status") not in (None, "resolved", "failed"):  # fmt: skip
+    if pointer and (await tasks_repo.get_task(ws, pointer["taskId"]) or {}).get("status") in _OPEN:  # fmt: skip
         return
     now = vp._now(cfg).strftime("%Y-%m-%dT%H:%M")
     held = sum(1 for b in await vp._bookings(ws, "") if not b.get("eventId") and b["sk"][10:] >= now)
@@ -127,11 +128,33 @@ async def free(ws: str, cfg: dict, call_id: str, date: str, minutes: int) -> lis
     return vp.free_slots(cfg, date, taken, vp._now(cfg), minutes)
 
 
+async def _busy(ws: str, cfg: dict, start: str, minutes: int) -> bool:
+    """Whether the primary calendar is busy in [start, start + minutes). A failed check is "not busy": book as before."""
+    tz = _vp()._tz(cfg)
+    t = datetime.strptime(start, "%Y-%m-%dT%H:%M").replace(tzinfo=tz)
+    body = {
+        "timeMin": t.isoformat(),
+        "timeMax": (t + timedelta(minutes=minutes)).isoformat(),
+        "items": [{"id": "primary"}],
+    }
+    try:
+        return bool((await _request(ws, "POST", f"{API}/freeBusy", body))["calendars"]["primary"].get("busy"))
+    except Exception:  # noqa: BLE001 -- the insert that follows raises the Line-problem if Google is down
+        logger.warning("google freeBusy at book failed ws=%s", ws, exc_info=True)
+        return False
+
+
 async def book(ws: str, cfg: dict, call_id: str, call: dict, start: str, service: str, name: str) -> str:
     """Nova's hold first (Task 2's transaction), then the Google event; the event id ("" if none) is on the row."""
-    await _vp()._book(ws, call_id, call, cfg, start, service, name)
+    vp = _vp()
+    await vp._book(ws, call_id, call, cfg, start, service, name)
     if not _google(cfg):
         return ""
+    if await _busy(ws, cfg, start, vp._minutes(cfg, service) + int(cfg.get("bufferMin") or 0)):
+        pk = messaging_repo.owner_pk(ws)
+        row = await messaging_repo._get(pk, f"VOICEBOOK#{start}")
+        await messaging_repo._transact(vp._release(messaging_repo.settings.MESSAGING_TABLE, pk, row))
+        raise vp._err(409, "slot_taken")  # busy in the owner's real calendar: Nova offers another time
     got = await _try(ws, cfg, call_id, "POST", EVENTS, _event(cfg, call, start, service, name))
     return await _keep(ws, start, (got or {}).get("id", ""))
 

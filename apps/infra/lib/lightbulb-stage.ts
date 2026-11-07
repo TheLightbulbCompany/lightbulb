@@ -59,6 +59,10 @@ const LIVEKIT_AGENT_NAME_BY_ENV: Record<string, string> = { dev: "lightbulb-meet
 // (lightbulb-phone-prod) routes it to that env's agent. Dev has none: dev phone tests use simulated callers.
 const VOICE_LINE_NUMBER_BY_ENV: Record<string, string> = { prod: "+14842079294" };
 
+// Recall.ai Google Login Group the Meet bot joins as (so it is not held in the waiting room).
+// Set per env once the founder creates the group in Recall; empty = the bot joins anonymously.
+const RECALL_GOOGLE_LOGIN_GROUP_ID_BY_ENV: Record<string, string> = {};
+
 // The Lightbulb workspace per environment — the org every customer's shared
 // `lightbulb-<slug>` channel is shared with. Dev is the founder's dev org.
 const VENDOR_ORG_ID_BY_ENV: Record<string, string> = {
@@ -302,6 +306,7 @@ export class LightbulbStage extends cdk.Stage {
       livekitUrl: LIVEKIT_URL_BY_ENV[env],
       livekitAgentName: LIVEKIT_AGENT_NAME_BY_ENV[env],
       voiceLineNumber: VOICE_LINE_NUMBER_BY_ENV[env],
+      recallGoogleLoginGroupId: RECALL_GOOGLE_LOGIN_GROUP_ID_BY_ENV[env],
     });
 
     // The service ships AGENT_MAIL_CONFIGURATION_SET, and ses_email.py stamps

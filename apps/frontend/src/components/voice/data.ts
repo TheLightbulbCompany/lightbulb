@@ -74,7 +74,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
   number: "", forwardFrom: "",
   handoff: { number: "", onlyOpenHours: true },
   meetings: { followUps: true, emailNotes: true },
-  reminders: { dayBefore: true, missedCallers: true, waitlist: true },
+  reminders: { dayBefore: true, missedCallers: false, waitlist: false },
 };
 
 /** The name callers hear; "Lightbulb" until the owner picks one. */

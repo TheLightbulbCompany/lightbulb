@@ -1,0 +1,29 @@
+# A2A governance work: status
+
+Updated by the governance session at every task completion. Newest first. Everything here is a draft PR until the founder merges it.
+
+## 4 Nov 2026
+
+**Merged to main (founder-authorised, each tested on top of main):** #4562 phase 1, #4606 phase 1b (replaces #4571), #4608 phase 2 monorepo half (replaces #4591). Main deploys these to dev; production stays a manual dispatch. CLI #134 merged (cb962d0) after the Workers session's live checks passed; a release needs a version tag. Phase 2b (the runtime signs in as the workspace) approved with a 30-day proof life; planning next.
+
+## 2 Nov 2026, evening
+
+**Founder decisions today:** all four designs approved with the author's defaults; scope narrowed to phases 1b and 2; phases 3 and 4 wait as drafts.
+
+| Phase | What | Where | State |
+|---|---|---|---|
+| 1 | Hosted A2A door, authority object, rules, holds, records, Friday's ask_session, replay | monorepo PR #4562, branch `feat/a2a-authority-design` | Built. 81 tests pass. Whole-branch review clean. Waiting on the founder's merge. |
+| 1b | OAuth clients, Approve/Deny card in the DM, `when` clauses, re-decide on rules change, signed Agent Card | monorepo PR #4571, branch `feat/a2a-phase1b` (stacked on #4562) | Built. 115 unit + 2 conformance tests pass, 15/15 replay. Six task reviews, one whole-branch review (no bypass found; one injection fix in the hold DM), one fix wave, re-review clean. Waiting on the founder's merge of #4562 then #4571. |
+| 2 | The CLI network: signed envelopes with the A2A body, rules on every laptop, real holds, cards, Workers rows as rules, hosted sends via the cloud member | CLI PR #134, branch `feat/a2a-phase2` | Planned: 9 CLI tasks (plan on feat/a2a-phase2) + 3 monorepo tasks (PR #4591, feat/a2a-phase2-bridge on #4571). All nine CLI tasks done (signed envelopes with an A2A body; the authority verifier and envelope binding, matched to phase 1 check for check; the rules module with an atomic, fail-closed, workspace-pinned store; the signed document pushed over the route link; every message envelope judged, with real holds parked for the person; the person answers a hold with a signed record, standing exception and expiry; every member publishes a signed Agent Card and the p2p binding page; reviews clean; callers attach an authority object on send and inboxes show its summary; reviews clean; Workers rows read as rules, assigns to sessions judged, cancels bound to their target; every task review clean). Whole-branch review done and its fix wave re-reviewed clean (the cancel-to-session bypass closed; assigns with authority take their terms from the object; fresh-worker policy sees the requester's person; the mailbox row moves to release time so a downgraded build never delivers a held message). CLI half complete at 4eb3653 and PR #134 carries the evidence (45 suites, 1037 pass, 0 fail); the monorepo half (PR #4591) complete at e1c59b84d with its evidence in the PR body: rules document signed and pushed per workspace; the cloud-member send built but gated off; a laptop session's reply completes the task; the session-addressing defect from phase 1 fixed and the reported address pinned to the person's own computers. **Found 3 Nov (fixed on #4591, noted on #4562 and #4571):** a hosted ask to a laptop session was addressed by the backend's session record id (a bare UUID) instead of the session's network address, so it never reached the session on the computer-link path either; phase 1 had marked that path "not verified live". **Ruled (founder delegated, 3 Nov):** hosted sends keep riding the origin person's own computer link, the only route where every hop is signed by the person it names; the cloud-member route stays in the code behind a setting that is off by default, no relay list is built, and an ask fails cleanly as undeliverable when the requester's laptop is offline. The Workers session answered with four corrections, all taken; Task 9 is no longer gated. Needs an engine release and a Hermes roll from the founder. |
+| 3 | Spend mandates on Link | monorepo PR #4572 | Draft only. Waits. |
+| 4 | Adapters (GitHub, Slack, Copilot Studio, Notion), publishing | monorepo PR #4573 | Draft only. Waits. |
+
+**Founder-only steps outstanding:** merge #4562 (publishes the extension page); Hermes roll after it; Clerk Dashboard scopes `lightbulb:a2a:send` and `lightbulb:a2a:read` on dev and prod; one manual CIMD token test on dev to confirm Clerk issues the `/a2a` audience (else set `A2A_ACCEPT_MCP_AUDIENCE`); when phase 2 lands, fill the engine's issuer key list and cut the release.
+
+**Not verified live:** Hermes turn-context `messageId` (needs the roll); delivery through a real computer link.
+
+**Other sessions, as far as this session can see:** Apps session (provisioning approval cards, #4556 merged); Workers session (testing network workers; phase 2 will bring it the assign-envelope format change before touching `src/workers.rs`); a Codex session holds milestones since the orchestrator ended; a second Codex session (super-agent runtime, from the DeepSeek comparison) is designing only, holds the phase-2 assign slot and the tool bodies fixed, and has the phase docs and contracts from this session. The business-plan session ended.
+
+**Open from the founder:** a room for everyone's milestones; whether to add an `observe` rule effect (from the DeepSeek design) to phase 1b.
+
+**Rulings worth knowing:** a person requesting a resource they hold is allowed, not rejected as self; the held-task answer path in phase 1 is the REST route, the DM card arrives in 1b; the origin message id comes only from the runtime's turn context; reply linking requires the dispatched message id.

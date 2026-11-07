@@ -22,7 +22,7 @@
   - The models are `gpt-realtime-2.1-mini` / `gpt-realtime-2.1` and the transcriber `gpt-live-transcribe`. `gpt-realtime` and `gpt-realtime-mini` retire on 20 Jan 2027, and `gpt-4o-mini-transcribe` on 26 Feb 2027.
   - The one-vendor lane (`feat/voice-openai-engine`) makes the phone and Meet switch. Task 33 covers what that PR leaves.
   - Tasks that relied on Gemini specifics (proactive audio / decide-not-to-respond, the Gemini-TTS greeting, Gemini session resumption) follow the OpenAI engine: the gate owns `response.create`, the greeting is pre-rendered TTS, and sessions renew before the 60-minute maximum.
-- Numbers per sign-up: undecided. The Twilio lane is researching the onboarding paths (existing number: forward or port; no number: buy). Task 11 and onboarding step 4 wait on that research.
+- Numbers: an onboarding choice (founder, 7 Nov, late): **keep my number** (forward it: missed and busy by default, or all calls) or **get a new number**. Both get a dedicated number, bought at Go live ($1.15/mo). Purchasing is gated on Twilio KYC; until then the configured prod number serves the founder's test. Porting is a later opt-in (Tasks 11, 30).
 
 **Independent audit folded in:** `~/Lightbulb/super-agent-design/evidence/voice/07-decisions-vs-practice-nov2026.md`. It covers:
 - the contact-boundary hole (H → Task 4);
@@ -178,7 +178,7 @@ Paths: `VP` = `apps/backend/routers/voice_phone.py`, `V` = `apps/backend/routers
 - **Pre:** #5010 is merged. Merge #5007 (in re-review), then #5009, then #5002. Lane B and Task 31 assume them.
 - **First wave (independent, safety and correctness):** 1, 4, 33.
 - **Experts-do and eval (audit):** 34 after 3; 35 and 36 after 1; 37 any time; 38 after #5007; 39 after 34–36 (it is the gate for "sellable").
-- **Lane A, phone:** 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8; 9 and 10 after 1; 11 after the Twilio research; 12 after #5010; 13 after 6; 14 after 10.
+- **Lane A, phone:** 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8; 9 and 10 after 1; 11 any time (buying stays off until KYC); 12 after #5010; 13 after 6; 14 after 10.
 - **Lane B, Meet:** 16, 17, 18, 19, 20, 21, 22, 23 (19 before 15).
 - **Shared:** 15 after 6 and 19.
 - **Lane C, web:** 25 first; then 24 (after #5010), 26, 27 (after 5, 22, 24), 28 (after 6, 10, 13, 15), 29 (after 10, 14, 16), 30 (after 7, 10, 11), 31 (after 25); 32 last.
@@ -356,21 +356,38 @@ All dispatch on `cfg["bookingsGo"]`. `own` keeps today's `VOICEBOOK#` rows. `goo
   - `test_outbound_prompt_by_purpose`.
 - [ ] Run, implement, run again, commit `feat(voice): ring me, call back with the answer, forwarding check`.
 
-### Task 11: A number per business (waits on the Twilio onboarding-paths research)
+### Task 11: Numbers at onboarding: keep your number (forward it) or get a new one
 
-Do not start until the Twilio lane reports on the three paths: forward an existing number, port it, or buy one when there is none. Then shape this task to the path(s) the founder picks. What follows is the buy path, as drafted.
+The founder ruled (7 Nov, late) that this is an onboarding choice: "give them the option to extend one or buy a new one". Research: `~/Lightbulb/super-agent-design/evidence/voice/08-twilio-livekit.md`, the "Numbers at onboarding" section. Routing keys on the dialled number (`PHONE#<e164>` line row), so **every business gets its own number in both paths**. Porting is a later opt-in, not part of this task.
 
+**Paths:**
+- **A. Keep my number** (the default). The owner picks a carrier: Verizon, AT&T, T-Mobile, landline, VoIP app (Zoom Phone / OpenPhone / RingCentral / OneTalk), or Google Voice. They then pick a mode:
+  - **"Missed and busy calls only"** (default: their phone rings first). Verizon `*71<n>`; AT&T/T-Mobile `**61*<n>#` plus `**67*<n>#`.
+  - **"All calls"**. Verizon `*72<n>`; AT&T/T-Mobile `**21*<n>#`; Google Voice and Boost: all calls only.
+  - VoIP shows "set 'forward to external number' on busy/no-answer in your admin portal". iPhone gets a note to turn off Live Voicemail. The copy says "check your plan for forwarding charges".
+  - The codes live in one table, `FORWARDING_CODES` in `apps/frontend/src/components/voice/forwarding.ts`, with the off codes (`*73`, `##61#`, …).
+  - Then the forwarding check (Task 10) verifies that a call reached us.
+- **B. Get a new number.** Pick an area code. The bought number becomes their business line, and the page shows it to copy onto their Google Business Profile and website.
 
 **Files:**
-- Modify `apps/backend/core/services/voice_onboarding.py:166-214`. `assign_number` keeps today's env number for the first workspace. When it is taken, and `settings.VOICE_BUY_NUMBERS` is true, it buys a local Twilio number in the business's area code (`AvailablePhoneNumbers/US/Local?AreaCode=`), points its SIP trunk at LiveKit, and writes the line row. `release_number` releases it.
-- Add `apps/huddle-agent/scripts/phone_dispatch_rule.sh` (an idempotent `lk sip dispatch create|update` from a checked-in JSON) so the dispatch rule is no longer a hand step.
-- Test `apps/backend/tests/unit/services/test_voice_onboarding.py`.
+- Modify `apps/backend/core/services/voice_onboarding.py:166-214`:
+  - `async def reserve(ws, path: Literal["keep","new"], area_code: str | None, carrier: str | None, mode: Literal["missed","all"] | None) -> dict` stores the choice in the Agent-page document as `number = {path, areaCode, carrier, mode}`. Nothing is bought at sign-up.
+  - `async def provision_at_go_live(ws) -> str` runs when the document flips `live: true`, and returns the E.164 number.
+  - `release_number` releases a bought number; it is called when a workspace stays paused or unused for 30 days, from the existing daily job if one exists, otherwise on the next owner visit. No new timer.
+- **Purchase gate:** while `settings.VOICE_BUY_NUMBERS` is false (until Twilio KYC clears), `provision_at_go_live` assigns the configured `settings.VOICE_LINE_NUMBER` (today's single prod number, for the founder's test only), exactly as `assign_number` does now, and a second workspace gets 409 `number_unavailable`. When true, it buys one local number with `AvailablePhoneNumbers/US/Local.json?AreaCode=<a>&VoiceEnabled=true&SmsEnabled=true`, then `IncomingPhoneNumbers.json` with `TrunkSid=<settings.TWILIO_TRUNK_SID>`, and writes the line row. Path A uses the area code of the owner's business line.
+- Add `apps/huddle-agent/scripts/phone_dispatch_rule.sh`, an idempotent `lk sip dispatch create|update` from a checked-in JSON, so the dispatch rule is no longer a hand step.
+- Routes in `V`: `POST /voice/number` takes `{path, areaCode?, carrier?, mode?}` and calls `reserve`. `PUT /voice/agent` with `live: true` calls `provision_at_go_live` before saving, and fails with 409 when no number can be given.
+- Test `apps/backend/tests/unit/services/test_voice_onboarding.py`, `apps/frontend/src/components/voice/__tests__/forwarding.test.ts`.
 
 - [ ] Write the failing tests:
-  - `test_second_workspace_buys_when_enabled` (mocked Twilio).
-  - `test_second_workspace_409_when_disabled`.
+  - `test_reserve_buys_nothing`.
+  - `test_go_live_uses_configured_number_when_buying_off`.
+  - `test_second_workspace_409_when_buying_off`.
+  - `test_go_live_buys_in_area_code_when_on` (mocked Twilio; asserts `AreaCode=610` and `TrunkSid`).
+  - `test_keep_path_buys_in_business_line_area_code`.
   - `test_release_returns_number`.
-- [ ] Run, implement, run again, commit `feat(voice): a number per business at onboarding`.
+  - `forwarding codes: verizon missed = *71, att all = **21*<n>#, google voice offers all only`.
+- [ ] Run them and expect them to fail. Implement. Run them and expect them to pass. Commit `feat(voice): keep-your-number or new-number at onboarding; bought at Go live, gated on KYC`.
 
 ### Task 12: Owner mode on the phone, and bounded writes in owner mode
 
@@ -638,7 +655,10 @@ Mockup: `onboarding.html`.
 - Modify `FE/Onboarding.tsx` and `voice_onboarding.py`:
   - Step 1 reads the Google Business listing too (Places API Text Search plus Details for hours, phone and rating, when `settings.GOOGLE_PLACES_KEY` is set; otherwise only the website) and saves the time zone (Task 2).
   - Step 3 offers Google Calendar / Square / sign Nova in to Fresha-GlossGenius-Booksy-Vagaro (Task 8) / Nova's own calendar. Fresha, GlossGenius and Vagaro say "turn on Google Calendar sync in <system>" (spec §9). Booksy is labelled "beta — Nova keeps its own calendar".
-  - Step 4 gets the number (Task 11) and runs the forwarding check (Task 10), showing "We're ringing your line…" and then a tick or the fix.
+  - Step 4 is **Your number**, with two choices (Task 11):
+    - **Keep my number** (default): pick a carrier, pick "Missed and busy calls only" (default) or "All calls", see that carrier's code with the assistant's number filled in, then run the forwarding check (Task 10): "We're ringing your line…", then a tick or the fix.
+    - **Get a new number**: pick an area code; "Your new business line is ready at Go live".
+    - Before Go live, the assistant's number shown in the code is the one Go live will give (`settings.VOICE_LINE_NUMBER` while buying is off). Porting is not offered here.
   - Step 5 has the voice preview (Task 14), Ring me (Task 10, replacing the `tel:` link at `:241`), and Go live (sets `live`, which the phone now obeys, Task 1).
   - After Go live, the first three calls each push the row (Task 26's socket) with the step-by-step open.
 - Test `FE/__tests__/onboarding.test.ts`, `test_voice_onboarding.py::test_draft_merges_places_listing`.
@@ -802,7 +822,7 @@ Do it in prod after the gates, on the founder's workspace (Maya's Nail Studio da
    - Step 1: the business, city and mobile. Nova reads the website and the Google listing.
    - Step 2: correct the cards.
    - Step 3: connect Google Calendar or Square, or sign Nova into Fresha.
-   - Step 4: get a number; Nova shows the `*72` code; the forwarding check rings your line and shows a tick.
+   - Step 4: choose **Keep my number** (pick your carrier and "missed and busy" or "all calls"; see the code with Nova's number filled in; the forwarding check rings your line and shows a tick) or **Get a new number** (pick an area code).
    - Step 5: name the assistant, hear the voice preview, press Ring me and book something, then Go live.
    - The whole flow takes 15 minutes or less.
 2. **Home** → chips All · Calls · Meetings · Yours · Needs you. The foot reads "Answered · Booked · Working · Done · N of 1,500 min".
@@ -836,4 +856,4 @@ Do it in prod after the gates, on the founder's workspace (Maya's Nail Studio da
 1. **Meeting notes:** in the app only, no email (Tasks 22, 29).
 2. **Missed-caller and waitlist texts:** off until a consent review (Tasks 9, 29).
 3. **Voice engine:** OpenAI by default for phone, Meet and the orb (`gpt-realtime-2.1(-mini)`, `gpt-live-transcribe`), with Gemini a fallback flag only (founder, 7 Nov, late; the one-vendor lane switches phone and Meet; Task 33 covers the rest).
-4. **Number per sign-up:** undecided. The Twilio lane is researching the forward, port and buy paths, and Task 11 plus onboarding step 4 wait on that.
+4. **Numbers:** an onboarding choice, keep-and-forward or new. Each business gets its own number, bought at Go live once KYC clears; until then the configured prod number serves the founder's test. Porting comes later (Tasks 11, 30).

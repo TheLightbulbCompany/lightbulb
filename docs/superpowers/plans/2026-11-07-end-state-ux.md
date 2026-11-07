@@ -21,7 +21,7 @@
 - **The voice engine is OpenAI by default for phone, Meet and the in-app orb** (founder, 7 Nov, late; the audit supports it, and we already hold the key and credits). Gemini Live is a fallback flag only.
   - The models are `gpt-realtime-2.1-mini` / `gpt-realtime-2.1` and the transcriber `gpt-live-transcribe`. `gpt-realtime` and `gpt-realtime-mini` retire on 20 Jan 2027, and `gpt-4o-mini-transcribe` on 26 Feb 2027.
   - The one-vendor lane (`feat/voice-openai-engine`) makes the phone and Meet switch. Task 33 covers what that PR leaves.
-  - Tasks that relied on Gemini specifics (proactive audio / decide-not-to-respond, the Gemini-TTS greeting, Gemini session resumption) follow the OpenAI engine: the gate owns `response.create`, the verbatim opening uses LiveKit's and OpenAI realtime's own documented mechanism (the one-vendor lane implements it, measured over ≥20 runs; never a pre-rendered or recorded greeting, founder ruling), and sessions renew before the 60-minute maximum.
+  - Tasks that relied on Gemini specifics (proactive audio / decide-not-to-respond, the Gemini-TTS greeting, Gemini session resumption) follow the OpenAI engine: the gate owns `response.create`, the opening is the model's own words carrying the three required facts, checked by `DisclosureGuard` (never a pre-rendered, recorded or scripted greeting, founder ruling), and sessions renew before the 60-minute maximum.
 - Numbers: an onboarding choice (founder, 7 Nov, late): **keep my number** (forward it: missed and busy by default, or all calls) or **get a new number**. Both get a dedicated number, bought at Go live ($1.15/mo). Purchasing is gated on Twilio KYC; until then the configured prod number serves the founder's test. Porting is a later opt-in (Tasks 11, 30).
 
 **Independent audit folded in:** `~/Lightbulb/super-agent-design/evidence/voice/07-decisions-vs-practice-nov2026.md`. It covers:
@@ -32,7 +32,7 @@
 
 ## Global Constraints
 
-- First utterance of every call: the business, the assistant's name, "AI assistant", and "This call is recorded." (spec §5; `voice_phone.py:218-223` already builds it; never weaken the 422 in `routers/voice.py:127`).
+- **The opening is not verbatim** (founder, 7 Nov, late). The first utterance of every call must contain the assistant's name, "AI assistant", and that the call is recorded; the phrasing is the model's own. The check: those three facts are in the opening on ≥ 95% of calls unaided, and on 100% with `DisclosureGuard` (PH:102-163), which re-says what is missing. No exact-greeting, word-for-word, TTS-greeting or pre-rendered-audio requirement anywhere. The Agent page's greeting field becomes a **style guide** (tone, what to mention), not a script.
 - Callers (contacts) reach only the bounded set. The boundary is server-side (`voice_phone._allowed`, `effect_check`), never prompt text.
 - The Router never blocks on a Worker. Every tool returns in under 1 s, or under 2 s for integration reads (`integration_reads.READ_S`), or says "one moment" and moves on.
 - An answer not spoken within 20 s of its question is dropped and posted to chat (Meet) or to the timeline item (app, phone).
@@ -71,7 +71,7 @@ Paths: `VP` = `apps/backend/routers/voice_phone.py`, `V` = `apps/backend/routers
 |---|---|---|---|---|---|
 | P1 | PSTN → LiveKit SIP → worker; line row per number | partial | PH:395-409, agent.py:650-653, VP:65, `lightbulb-stage.ts:60` | SIP dispatch rule is a manual `lk` step (huddle-agent/README.md:117); dev has no number | 11 |
 | P2 | Number per business at onboarding | partial | `voice_onboarding.py:187-214`, V:152 | gives out the one env number; a 2nd workspace gets 409 | 11 |
-| P3 | Lawful greeting + disclosure check | built | VP:218-223, PH:102-163, PH:207-240 | — | — |
+| P3 | Opening carries name, "AI assistant", recorded + disclosure check | built (now scripted TTS on main, `07eb6db029`; the ruling makes it the model's own words, owned by the one-vendor lane) | VP:218-223, PH:102-163, PH:207-240 | — | — |
 | P4 | Reads: Knowledge, hours, services, returning caller | partial | VP:139-149, VP:161-166 | static prompt only; caller memory always `[]` (VP:174) | 3 |
 | P5 | Bounded writes (availability, book, move, cancel, waitlist, message, transfer, remember) | partial | PH:300-373; VP:341, :383, :402, :426, :444, :472 | no waitlist, no remember | 3 |
 | P6 | Contact memory + Forget | partial | VP:122-127, :269-273 | only the name is kept; no Forget route | 3 |
@@ -347,7 +347,7 @@ All dispatch on `cfg["bookingsGo"]`. `own` keeps today's `VOICEBOOK#` rows. `goo
 - Create `apps/backend/core/services/voice_outbound.py`: `async def dial(ws, to: str, purpose: Literal["ring_me","call_back","forward_check"], context: dict) -> str`, through LiveKit `CreateSIPParticipant` on the outbound trunk id in settings `VOICE_OUTBOUND_TRUNK_ID`. It dispatches the phone agent into a `phone-out-` room with metadata `{purpose, context}`.
 - Owner routes `POST /voice/ring-me` and `POST /voice/forward-check`.
 - When a `didnt_know` Question is answered with text, the Front-desk task calls back via `dial(purpose="call_back", context={answer, question})`.
-- `PH` handles `purpose`. `ring_me` opens with "This is Nova. Try booking something, the way a client would." `call_back` opens with the greeting plus the answer. `forward_check` dials the owner's business line and passes when the call arrives back on the line number within 20 s (the inbound `start` sees `callerNumber == line number` and context `forward_check`); the result is written to `cfg["forwardingOk"]`.
+- `PH` handles `purpose`. `ring_me` opens with "This is Nova. Try booking something, the way a client would." `call_back` opens with the three required facts plus the answer. `forward_check` dials the owner's business line and passes when the call arrives back on the line number within 20 s (the inbound `start` sees `callerNumber == line number` and context `forward_check`); the result is written to `cfg["forwardingOk"]`.
 - Test `apps/backend/tests/unit/services/test_voice_outbound.py`, `apps/huddle-agent/tests/test_phone_prompt.py`.
 
 - [ ] Write the failing tests:
@@ -424,7 +424,7 @@ The founder ruled (7 Nov, late) that this is an onboarding choice: "give them th
 **Files:**
 - Modify `PH:38`, `MT`, `owner.py`: read `cfg["voice"]` and map Warm/Bright/Calm to OpenAI realtime voice names (with a Gemini dict for the fallback flag).
 - `cfg["spanish"]` adds "If the caller speaks Spanish, answer in Spanish; the disclosure is said in Spanish too" to the prompt, and the Spanish disclosure words go into `DisclosureGuard`.
-- Route `GET /voice/preview?voice=Warm&lang=en` returns a short TTS clip of the greeting (cached per voice and greeting hash in S3).
+- Route `GET /voice/preview?voice=Warm&lang=en` returns a short sample line spoken in that voice ("Hi, I'm Nova…"), for the owner to hear the voice in the browser only. It is never played on a call. Cache it per voice in S3.
 - Test `test_phone_prompt.py`, `test_voice.py`.
 
 - [ ] Write the failing tests:
@@ -635,6 +635,7 @@ Mockup: `agent-page-v2.html`.
 
 **Files:**
 - Modify `FE/AgentPage.tsx:52-56,59-73,108-118,134-139`:
+  - Name, greeting & voice: the Greeting field becomes **Greeting style** ("How Nova should open: tone, what to mention"). It is optional and is passed to the model as guidance. Drop the lawful-words check on it in `isLawful` / the `422` in `routers/voice.py:127`, because `DisclosureGuard` guarantees the three facts. The hint says: "Nova always says its name, that it's an AI assistant and that the call is recorded." Test `greeting style is optional and never blocks save`.
   - **Ring me (test call)** in the header (Task 10 `/voice/ring-me`; the status reads "Calling your mobile…").
   - A ▶ preview next to Voice (Task 14).
   - Calendar & booking system: a Square Connect button (the existing `ConnectButton` with provider `square`); for "other", a sign-in form posting to `/voice/booking-login` (Task 8) with the copy "Nova writes each booking there after the call using your login".
@@ -786,7 +787,7 @@ Do it in prod after the gates, on the founder's workspace (Maya's Nail Studio da
 6. Release the orb mid-sentence → nothing is sent half-heard. Press End → the session closes, and the Yours row has the transcript.
 
 ### 2. The phone receptionist
-1. Call Nova's number from a phone that is not the owner's → you hear "Thanks for calling <business>. This is Nova, <business>'s AI assistant. This call is recorded. How can I help?"
+1. Call Nova's number from a phone that is not the owner's → in its own words, Nova's opening names itself, says it is an AI assistant, and says the call is recorded. The call record's `disclosure` is `ok`.
 2. Book a gel manicure on Saturday afternoon. While it checks, you hear what it is checking ("Checking Saturday afternoon…"), not silence. It offers open slots in the business's time zone, reads back service, day, time and your name, and books only after your yes. Then it asks whether to text the details. Try it from a noisy room too. Say yes → a text arrives from Nova's number.
 3. On Home, within seconds and without reloading → a row reads "<name> · new caller · Booked · Gel manicure, Sat … with … · put in Google Calendar · texted confirmation". The pane shows the steps with timestamps, the transcript, the recording, and "What Nova remembers".
 4. Call again from the same phone → "returning". Move the booking → Moved row.
@@ -824,7 +825,7 @@ Do it in prod after the gates, on the founder's workspace (Maya's Nail Studio da
    - Step 2: correct the cards.
    - Step 3: connect Google Calendar or Square, or sign Nova into Fresha.
    - Step 4: choose **Keep my number** (pick your carrier and "missed and busy" or "all calls"; see the code with Nova's number filled in; the forwarding check rings your line and shows a tick) or **Get a new number** (pick an area code).
-   - Step 5: name the assistant, hear the voice preview, press Ring me and book something, then Go live.
+   - Step 5: name the assistant, optionally write a greeting style, hear the voice preview, press Ring me and book something, then Go live.
    - The whole flow takes 15 minutes or less.
 2. **Home** → chips All · Calls · Meetings · Yours · Needs you. The foot reads "Answered · Booked · Working · Done · N of 1,500 min".
 3. **Needs you** → four kinds of card, each with its action. The foot says what did not need you.

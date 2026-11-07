@@ -681,7 +681,6 @@ export default function Settings() {
         {/* Everyone sees it: a member gets "ask an admin" there, not a missing door. */}
         <NavigationRow title="Invite people" icon="person.badge.plus" onPress={() => router.push("/invite")} />
         <NavigationRow title="Control" icon="slider.horizontal.3" onPress={() => router.push("/(app)/control")} />
-        <NavigationRow title="Integrations" icon="puzzlepiece.extension" onPress={() => router.push("/(app)/control/integrations")} />
       </Section>
 
       <SessionNotificationsSection api={api} menu={m.MENU} />

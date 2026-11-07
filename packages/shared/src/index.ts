@@ -162,8 +162,6 @@ export {
   useActivity,
 } from "./messaging/useActivity";
 export type { ActivityClient, ActivityPlatform, UseActivityOptions, UseActivityResult } from "./messaging/useActivity";
-export { ideaSectionKey, ideaSections, orderIdeas, useIdeas } from "./messaging/ideas";
-export type { Idea, IdeaSection, IdeaSectionKey, IdeaSize, IdeaStart, IdeasClient, IdeasResponse } from "./messaging/ideas";
 export {
   ACTIVITY_EMPTY_COPY,
   ACTIVITY_FILTERS,
@@ -320,7 +318,6 @@ export type {
   ActivitySeenResponse,
   ActivitySubtype,
   ActivitySummary,
-  FeedResponse,
   ProjectColor,
   ProjectIcon,
 } from "./messaging/types";

@@ -57,9 +57,9 @@ it("routes a room push to the conversation", async () => {
   expect(push.mock.calls).toEqual([["/(app)/room/room-1"]]);
 });
 
-it("opens a thread reply over its room, as Reply in thread does", async () => {
+it("opens an old thread reply's room (threads are gone)", async () => {
   await tap({ roomId: "room-1", threadRootMessageId: "m1" });
-  expect(push.mock.calls).toEqual([["/(app)/room/room-1"], ["/(app)/room/room-1/thread/m1"]]);
+  expect(push.mock.calls).toEqual([["/(app)/room/room-1"]]);
 });
 
 it("opens the shared session a session push is about", async () => {
@@ -120,10 +120,10 @@ it("does not push the conversation the reader already has open", async () => {
   expect(dismissTo).not.toHaveBeenCalled();
 });
 
-it("opens a thread reply over its room when that room is on screen", async () => {
+it("stays in the room for an old thread reply when that room is on screen", async () => {
   reading("room-1");
   await tap({ roomId: "room-1", threadRootMessageId: "m1" });
-  expect(push.mock.calls).toEqual([["/(app)/room/room-1/thread/m1"]]);
+  expect(push).not.toHaveBeenCalled();
 });
 
 it("goes back down to the room from one of its threads, not a second copy", async () => {

@@ -20,7 +20,6 @@ export function RoomHeaderActions({
   onToggleStar,
   onToggleMute,
   onAddPeople,
-  onIdeas,
   voice,
   onLayout,
 }: {
@@ -30,8 +29,6 @@ export function RoomHeaderActions({
   onToggleStar: () => void;
   onToggleMute: () => void;
   onAddPeople?: () => void;
-  /** Opens the Ideas sheet (the web header's 💡). */
-  onIdeas?: () => void;
   /**
    * Go live / Live (any room); passed only when the binary can do voice. It
    * takes the star's place: three controls left a channel name no room, and
@@ -46,7 +43,6 @@ export function RoomHeaderActions({
   const muteScale = usePressScale();
   const voiceScale = usePressScale();
   const addPeopleScale = usePressScale();
-  const ideasScale = usePressScale();
   return (
     <View style={styles.row} onLayout={onLayout}>
       {voice ? (
@@ -110,19 +106,6 @@ export function RoomHeaderActions({
           style={[styles.button, addPeopleScale.style]}
         >
           <SymbolView accessibilityElementsHidden name="person.badge.plus" size={18} tintColor={palette.fgSoft} />
-        </AnimatedPressable>
-      ) : null}
-      {onIdeas ? (
-        <AnimatedPressable
-          onPress={() => { hapticSelection(); onIdeas(); }}
-          onPressIn={ideasScale.onPressIn}
-          onPressOut={ideasScale.onPressOut}
-          hitSlop={8}
-          accessibilityRole="button"
-          accessibilityLabel="Ideas"
-          style={[styles.button, ideasScale.style]}
-        >
-          <SymbolView accessibilityElementsHidden name="lightbulb" size={18} tintColor={palette.fgSoft} />
         </AnimatedPressable>
       ) : null}
       <AnimatedPressable

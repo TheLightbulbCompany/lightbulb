@@ -5,12 +5,8 @@ import type { ComponentProps } from "react";
 import { Alert, Linking, Pressable, StyleSheet, Text, View } from "react-native";
 
 import { fonts, radii, spacing, useChatPalette } from "../../config/theme";
-import { hapticSelection } from "../../lib/haptics";
 import { messageUrl } from "../../lib/webLinks";
 import { BottomSheet } from "../ui/BottomSheet";
-
-/** The shipped fixed set, the same four the web's RoomPanel defaults to. */
-export const QUICK_REACTIONS = ["👍", "✅", "🎉", "👀"] as const;
 
 /**
  * App Store 1.2: a prefilled email to support, which needs no backend. The
@@ -39,21 +35,8 @@ interface ActionRow {
 }
 
 /**
- * The long-press sheet: the fixed reaction bar over Reply in thread / Copy text
- * / Mark unread / Copy link / Report (not on your own messages).
- *
- * Kept mounted by its callers and toggled via `visible` (BottomSheet's own
- * contract), so closing — from a row action, the scrim, or a drag — always
- * plays the sheet's spring-out before `onClose` runs.
- *
- * `onReplyInThread` and `onMarkUnread` are optional and their rows are omitted
- * without them — the same `!inThread` gate the web applies to both. Inside a
- * thread there is nowhere to reply-in-thread TO (the composer below already is
- * that thread), and the read cursor is per room, so a thread cannot express its
- * own unread.
- *
- * ponytail: fixed set only; the "more" picker lands with Phase B's emoji sheet,
- * which also brings Edit and Delete for your own messages.
+ * The long-press sheet: Copy text / Mark unread / Copy link / Report (not on
+ * your own messages). Kept mounted by its callers and toggled via `visible`.
  */
 export function MessageActionsSheet({
   message,
@@ -61,8 +44,6 @@ export function MessageActionsSheet({
   roomId,
   visible = true,
   onClose,
-  onReact,
-  onReplyInThread,
   onMarkUnread,
 }: {
   message: CanonicalRoomMessage;
@@ -76,18 +57,12 @@ export function MessageActionsSheet({
    */
   visible?: boolean;
   onClose: () => void;
-  onReact: (emoji: string, active: boolean) => void;
-  onReplyInThread?: () => void;
   onMarkUnread?: () => void;
 }) {
   const palette = useChatPalette();
-  // A tombstone carries no text, no attachments and no reactions (the server
-  // blanks all three), so reacting to one and copying its text are both dead.
+  // A tombstone carries no text (the server blanks it), so copying it is dead.
   const deleted = Boolean(message.deletedAt);
   const rows: ActionRow[] = [
-    ...(onReplyInThread
-      ? [{ icon: "arrowshape.turn.up.left" as const, label: "Reply in thread", run: onReplyInThread }]
-      : []),
     ...(deleted
       ? []
       : [
@@ -121,35 +96,6 @@ export function MessageActionsSheet({
   return (
     <BottomSheet visible={visible} onClose={onClose}>
       <View style={[styles.card, { backgroundColor: palette.surface }]}>
-        {deleted ? null : (
-          <View style={styles.reactions}>
-            {QUICK_REACTIONS.map((emoji) => {
-              const active = message.reactions?.[emoji]?.includes(currentUserId) ?? false;
-              return (
-                <Pressable
-                  key={emoji}
-                  onPress={() => {
-                    hapticSelection();
-                    onReact(emoji, !active);
-                    onClose();
-                  }}
-                  accessibilityRole="button"
-                  accessibilityLabel={active ? `Remove ${emoji} reaction` : `React with ${emoji}`}
-                  accessibilityState={{ selected: active }}
-                  style={({ pressed }) => [
-                    styles.reaction,
-                    { borderColor: palette.edge },
-                    // The manual's rule: state is a border and a tint, never a loud fill.
-                    active && { backgroundColor: palette.chip, borderColor: palette.fg },
-                    pressed && { backgroundColor: palette.hover },
-                  ]}
-                >
-                  <Text style={styles.emoji}>{emoji}</Text>
-                </Pressable>
-              );
-            })}
-          </View>
-        )}
         {rows.map(({ icon, label, run }) => (
           <Pressable
             key={label}
@@ -175,22 +121,6 @@ const styles = StyleSheet.create({
     borderTopRightRadius: radii.xl,
     paddingBottom: spacing.md,
   },
-  reactions: {
-    flexDirection: "row",
-    gap: spacing.md,
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.lg,
-    paddingBottom: spacing.sm,
-  },
-  reaction: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    borderWidth: 1,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  emoji: { fontSize: 20, lineHeight: 24 },
   row: {
     flexDirection: "row",
     alignItems: "center",

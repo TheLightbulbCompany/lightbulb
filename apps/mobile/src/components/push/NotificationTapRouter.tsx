@@ -39,10 +39,8 @@ export function notificationHrefs(data: TapData | undefined): Href[] | null {
     return [{ pathname: "/(app)/session/[sessionId]", params: { sessionId: data.sessionId } }];
   }
   if (data?.roomId) {
-    const room = `/(app)/room/${data.roomId}` as Href;
-    return data.threadRootMessageId
-      ? [room, `/(app)/room/${data.roomId}/thread/${data.threadRootMessageId}` as Href]
-      : [room];
+    // Threads are gone: a reply's notification opens its room.
+    return [`/(app)/room/${data.roomId}` as Href];
   }
   const agentId = data?.agentId ?? (data?.url ? parseAgentDeepLink(data.url)?.agentId : undefined);
   return agentId ? [`/agent/${agentId}` as Href] : null;
@@ -90,10 +88,8 @@ export function NotificationTapRouter() {
     if (shouldSuppressBanner(current, data ?? {})) return;
 
     if (data?.roomId && current.roomId === data.roomId) {
-      // Inside that room already: a thread reply opens over it, and a room
-      // message read from one of its threads goes back down to the room.
-      if (data.threadRootMessageId) router.push(hrefs[hrefs.length - 1]);
-      else router.dismissTo(hrefs[0]);
+      // Inside that room already: go back down to the room.
+      router.dismissTo(hrefs[0]);
       return;
     }
     for (const href of hrefs) router.push(href);

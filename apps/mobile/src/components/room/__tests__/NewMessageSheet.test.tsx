@@ -196,90 +196,11 @@ describe("NewMessageSheet", () => {
     expect(onOpenRoom).not.toHaveBeenCalled();
   });
 
-  describe("channel mode", () => {
-    it("creates a channel with a trimmed name and the picked members", async () => {
-      const onOpenRoom = jest.fn();
-      await render(<NewMessageSheet visible onClose={() => {}} onOpenRoom={onOpenRoom} />);
-      await waitFor(() => expect(screen.getByText("Bob")).toBeTruthy());
-      await fireEvent.press(screen.getByText("Channel"));
-      await fireEvent.changeText(screen.getByLabelText("Channel name"), "  launch-room  ");
-      await fireEvent.press(screen.getByText("Bob"));
-      await fireEvent.press(screen.getByLabelText("Start chat"));
-      await waitFor(() =>
-        expect(mockCreateRoom).toHaveBeenCalledWith(
-          expect.objectContaining({
-            kind: "channel",
-            name: "launch-room",
-            members: [{ kind: "human", id: "user-b", role: "member", listenMode: null }],
-          }),
-          { activate: false },
-        ),
-      );
-      await waitFor(() => expect(onOpenRoom).toHaveBeenCalledWith("room-group"));
-      expect(mockSelectDm).not.toHaveBeenCalled();
-    });
-
-    it("starts a channel's agents Listening, on every plan", async () => {
-      const listenMode = "active";
-      await render(<NewMessageSheet visible onClose={() => {}} onOpenRoom={() => {}} />);
-      await waitFor(() => expect(screen.getByText("Bob")).toBeTruthy());
-      await fireEvent.press(screen.getByText("Channel"));
-      await fireEvent.changeText(screen.getByLabelText("Channel name"), "launch");
-      await fireEvent.press(screen.getByText("Friday"));
-      await fireEvent.press(screen.getByLabelText("Start chat"));
-      await waitFor(() =>
-        expect(mockCreateRoom).toHaveBeenCalledWith(
-          expect.objectContaining({ members: [{ kind: "agent", id: "agent-1", role: "member", listenMode }] }),
-          { activate: false },
-        ),
-      );
-    });
-
-    it("allows creating a channel with nobody picked yet", async () => {
-      await render(<NewMessageSheet visible onClose={() => {}} onOpenRoom={() => {}} />);
-      await waitFor(() => expect(screen.getByText("Bob")).toBeTruthy());
-      await fireEvent.press(screen.getByText("Channel"));
-      expect(screen.getByLabelText("Start chat").props.accessibilityState.disabled).toBe(
-        true,
-      );
-      await fireEvent.changeText(screen.getByLabelText("Channel name"), "general-2");
-      expect(screen.getByLabelText("Start chat").props.accessibilityState.disabled).toBe(
-        false,
-      );
-    });
-
-    // Mirrors `RoomDirectory.tsx`'s channel `validName`: 1..80 trimmed characters.
-    it("rejects a blank or over-limit channel name", async () => {
-      await render(<NewMessageSheet visible onClose={() => {}} onOpenRoom={() => {}} />);
-      await waitFor(() => expect(screen.getByText("Bob")).toBeTruthy());
-      await fireEvent.press(screen.getByText("Channel"));
-      const nameField = screen.getByLabelText("Channel name");
-      const submit = () => screen.getByLabelText("Start chat");
-
-      await fireEvent.changeText(nameField, "   ");
-      expect(submit().props.accessibilityState.disabled).toBe(true);
-
-      await fireEvent.changeText(nameField, "a".repeat(81));
-      expect(submit().props.accessibilityState.disabled).toBe(true);
-
-      await fireEvent.changeText(nameField, "a".repeat(80));
-      expect(submit().props.accessibilityState.disabled).toBe(false);
-    });
-
-    it("clears previously picked members when switching modes", async () => {
-      await render(<NewMessageSheet visible onClose={() => {}} onOpenRoom={() => {}} />);
-      await waitFor(() => expect(screen.getByText("Bob")).toBeTruthy());
-      await fireEvent.press(screen.getByText("Bob"));
-      expect(screen.getByLabelText("Start chat").props.accessibilityState.disabled).toBe(
-        false,
-      );
-      await fireEvent.press(screen.getByText("Channel"));
-      await fireEvent.press(screen.getByText("Direct message"));
-      // Bob's pick did not survive the round trip through channel mode, the
-      // same way the web dialog clears `selected` on its kind-select onChange.
-      expect(screen.getByLabelText("Start chat").props.accessibilityState.disabled).toBe(
-        true,
-      );
-    });
+  // Channels are gone (Phase 1): the sheet starts DMs and group chats only.
+  it("offers no channel mode", async () => {
+    await render(<NewMessageSheet visible onClose={() => {}} onOpenRoom={() => {}} />);
+    await waitFor(() => expect(screen.getByText("Bob")).toBeTruthy());
+    expect(screen.queryByText("Channel")).toBeNull();
+    expect(screen.queryByLabelText("Channel name")).toBeNull();
   });
 });

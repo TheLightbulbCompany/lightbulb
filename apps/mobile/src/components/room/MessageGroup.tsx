@@ -20,7 +20,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { fonts, spacing, useChatPalette, type ChatPalette } from "../../config/theme";
-import { hapticImpact, hapticSelection } from "../../lib/haptics";
+import { hapticImpact } from "../../lib/haptics";
 import { attachmentFile } from "../../lib/attachmentFile";
 import type { LocalMessageRow } from "../../lib/rooms";
 import { Bubble, BubbleMeta, Chip, MetaText, AVATAR_GUTTER } from "../conversation/bubbles";
@@ -120,54 +120,10 @@ function AttachmentThumbnail({
   );
 }
 
-/** One emoji's reaction chip: `${emoji} ${count}`, selected when the viewer reacted. */
-function ReactionChips({
-  reactions,
-  currentUserId,
-  palette,
-  onToggle,
-  isAgentId,
-}: {
-  reactions: [string, string[]][];
-  currentUserId: string;
-  palette: ChatPalette;
-  onToggle: (emoji: string, active: boolean) => void;
-  /** Super-agent: a reaction only agents applied (Lightbulb's 👀) is a receipt, shown but not a toggle. */
-  isAgentId?: (id: string) => boolean;
-}) {
-  return (
-    <>
-      {reactions.map(([emoji, users]) => {
-        if (isAgentId && users.length > 0 && users.every(isAgentId)) {
-          return (
-            <View key={emoji} accessible accessibilityRole="image" accessibilityLabel={emoji === "👀" ? "Lightbulb saw this" : `Lightbulb reacted ${emoji}`}>
-              <Chip label={emoji} palette={palette} />
-            </View>
-          );
-        }
-        const selected = users.includes(currentUserId);
-        return (
-          <Chip
-            key={emoji}
-            label={`${emoji} ${users.length}`}
-            palette={palette}
-            selected={selected}
-            accessibilityLabel={`${selected ? "Remove" : "Add"} ${emoji} reaction, ${users.length}`}
-            onPress={() => {
-              hapticSelection();
-              onToggle(emoji, !selected);
-            }}
-          />
-        );
-      })}
-    </>
-  );
-}
-
 /**
  * One `message` timeline item as a bubble: an avatar + name above the first
  * bubble of an author's run (others only — mine never carries either), the
- * body inside the bubble, and everything else — reactions, reply count, the
+ * body inside the bubble, and everything else — the
  * unprompted label, the time, the read state — hanging off it in a
  * `BubbleMeta` row. A long press on anything in the group reveals the time of
  * a collapsed message and hands the press on to the caller (the actions sheet).
@@ -191,12 +147,8 @@ function SessionCard({ sessionId, label, session }: { sessionId: string; label?:
 export function MessageGroup({
   message,
   collapsed,
-  replyCount,
   currentUserId,
   onLongPress,
-  onOpenThread,
-  onToggleReaction,
-  reactionError = false,
   attachmentUrl,
   members = [],
   sessionCandidates = [],
@@ -209,15 +161,9 @@ export function MessageGroup({
 }: {
   message: CanonicalRoomMessage;
   collapsed: boolean;
-  replyCount: number;
-  /** Marks the viewer's own reaction chip as selected, tints a message that mentions them, and (with the author) decides `mine`. */
+  /** Tints a message that mentions them, and (with the author) decides `mine`. */
   currentUserId: string;
   onLongPress?: () => void;
-  onOpenThread?: () => void;
-  /** Omitted (e.g. for an in-flight local row) hides the reactions row entirely. */
-  onToggleReaction?: (emoji: string, active: boolean) => void;
-  /** True when this message's last reaction toggle failed. */
-  reactionError?: boolean;
   /** A short-lived presigned S3 URL: what a thumbnail and the viewer download from, and what a video plays off. */
   attachmentUrl: (roomId: string, attachmentId: string) => Promise<{ url: string; expiresIn: number }>;
   members?: readonly RoomMember[];
@@ -253,9 +199,6 @@ export function MessageGroup({
   const pending = message.messageSeq <= 0;
   const time = formatTime(message.createdAt);
   const showTimeNow = (showTime || timeShown) && Boolean(time);
-  const appliedReactions = Object.entries(message.reactions ?? {}).filter(
-    ([, users]) => users.length > 0,
-  );
   // Web's `.room-message-mentions-me` (RoomPanel.tsx), now a bubble stroke
   // instead of a whole-row tint.
   const mentionsMe = message.mentions.some(
@@ -389,31 +332,10 @@ export function MessageGroup({
         )}
         <BubbleMeta align={mine ? "end" : "start"} palette={palette} indent={mine ? 0 : AVATAR_GUTTER}>
           {!deleted && message.routedTo ? <RoutedToLine message={message} palette={palette} /> : null}
-          {!deleted && onToggleReaction && appliedReactions.length > 0 ? (
-            <ReactionChips
-              reactions={appliedReactions}
-              currentUserId={currentUserId}
-              palette={palette}
-              onToggle={onToggleReaction}
-              isAgentId={(id) => members.some((m) => m.kind === "agent" && m.id === id)}
-            />
-          ) : null}
-          {!deleted && reactionError ? (
-            <Text accessibilityRole="alert" style={[styles.reactionError, { color: palette.alert }]}>
-              Could not update reaction. Try again.
-            </Text>
-          ) : null}
           {!deleted && !!message.sessionMentions?.length ? <View style={styles.sessionSendRow}>
             {message.sessionMentions.map((sessionId) => <SessionCard key={sessionId} sessionId={sessionId} label={message.sessionTargetLabels?.[sessionId]}
               session={sessionCandidates.find(({ session }) => session.sessionId === sessionId)?.session} />)}
           </View> : null}
-          {!deleted && replyCount > 0 ? (
-            <Chip
-              label={`${replyCount} ${replyCount === 1 ? "reply" : "replies"}`}
-              palette={palette}
-              onPress={onOpenThread}
-            />
-          ) : null}
           {unprompted ? <MetaText palette={palette}>{unprompted}</MetaText> : null}
           {showTimeNow ? <MetaText palette={palette}>{time}</MetaText> : null}
           {!deleted && readLabel ? <MetaText palette={palette}>{readLabel}</MetaText> : null}
@@ -460,7 +382,6 @@ export function LocalMessageRows({
           <MessageGroup
             message={message}
             collapsed={false}
-            replyCount={0}
               attachmentUrl={attachmentUrl}
             members={members}
             currentUserId={currentUserId}
@@ -494,7 +415,6 @@ const styles = StyleSheet.create({
   authorName: { fontFamily: fonts.sans, fontSize: 12, lineHeight: 16, marginBottom: 2 },
   collapsedIndent: { paddingLeft: AVATAR_GUTTER },
   deleted: { fontFamily: fonts.sans, fontSize: 14, lineHeight: 20, fontStyle: "italic" },
-  reactionError: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18 },
   sessionSendRow: { flexDirection: "row", flexWrap: "wrap", gap: spacing.xs },
   sessionCard: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: spacing.sm, borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, paddingHorizontal: spacing.sm, paddingVertical: spacing.xs },
   sessionActionText: { fontFamily: fonts.sansSemiBold, fontSize: 12, lineHeight: 18 },

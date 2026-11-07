@@ -10,7 +10,6 @@ import { useMobileRooms } from "../../lib/rooms";
 import { fetchMembers, useTeamsConfig } from "../../lib/teamsData";
 import { useLiveEvents } from "../../providers/live-events";
 import { BottomSheet } from "../ui/BottomSheet";
-import { SegmentedControl } from "../ui/SegmentedControl";
 import { Avatar } from "./Avatar";
 
 /** One pickable counterpart — a workspace human or one of the owner's agents. */
@@ -22,15 +21,6 @@ interface Candidate extends MemberRef {
 const same = (left: MemberRef, right: MemberRef) =>
   left.kind === right.kind && left.id === right.id;
 
-type SheetMode = "channel" | "direct";
-
-// Mirrors the web creation dialog's own channel-name bound
-// (`RoomDirectory.tsx`'s `validName` for kind === "channel"), which itself
-// mirrors the backend's limit (`ROOM_NAME_MAX_CHARS` in
-// `core/services/messaging.py`) — the web dialog just picks a tighter bound
-// than the backend allows, and this sheet matches the web, not the backend.
-const CHANNEL_NAME_MAX_CHARS = 80;
-
 // Mirrors the web dialog's own participant cap (`RoomDirectory.tsx`'s
 // `canCreate`'s `selected.size <= 31`, and the picker checkbox's
 // `disabled={!selection && selected.size >= 31}`), which itself mirrors a
@@ -40,11 +30,6 @@ const CHANNEL_NAME_MAX_CHARS = 80;
 // `MEMBER_LIMIT` in `core/services/messaging.py`. A field that accepts more
 // than the backend will take is exactly the defect this cap exists to close.
 const MAX_ROOM_MEMBERS = 31;
-
-const SEGMENTS: readonly { key: SheetMode; label: string }[] = [
-  { key: "channel", label: "Channel" },
-  { key: "direct", label: "Direct message" },
-];
 
 /**
  * The pencil's sheet: pick people AND agents. One pick opens that
@@ -92,25 +77,15 @@ export function NewMessageSheet({
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Defaults to "direct", not "channel" — deliberately NOT matching the web
-  // dialog's own default. This sheet is opened from the pencil next to search
-  // (Slack's compose affordance: it starts a message, same as Slack's own
-  // pencil), while the web's "+" sits atop a sidebar whose first section is
-  // Channels. Two different entry points, two different defaults; do not
-  // "fix" this to match web.
-  const [mode, setMode] = useState<SheetMode>("direct");
-  const [channelName, setChannelName] = useState("");
 
   // Opening is what loads the roster and what clears the last visit's picks,
-  // mode and name — a reopened sheet that remembered them would silently add
-  // someone to a conversation you never chose, or resubmit a stale channel name.
+  // a reopened sheet that remembered them would silently add someone to a
+  // conversation you never chose.
   useEffect(() => {
     if (!visible) return;
     setPicked([]);
     setQuery("");
     setError(null);
-    setMode("direct");
-    setChannelName("");
     let alive = true;
     // ponytail: `fetchMembers` is best-effort and resolves to `[]` on failure,
     // so a members outage reads as a workspace with nobody in it while the
@@ -162,20 +137,7 @@ export function NewMessageSheet({
     });
   }, []);
 
-  // Matches the web dialog's own kind-select `onChange`: switching modes
-  // clears the picks, since a roster chosen for one conversation shape isn't
-  // necessarily what you want for the other.
-  const changeMode = useCallback((next: SheetMode) => {
-    setMode(next);
-    setPicked([]);
-  }, []);
 
-  const trimmedChannelName = channelName.trim();
-  // Mirrors `RoomDirectory.tsx`'s `validName` for kind === "channel": non-blank,
-  // and no member-count minimum (a channel can be created with nobody picked
-  // yet). `validCount` there is `true` unconditionally for channels.
-  const validChannelName =
-    trimmedChannelName.length >= 1 && trimmedChannelName.length <= CHANNEL_NAME_MAX_CHARS;
   // `picked.length <= MAX_ROOM_MEMBERS` is defensive — `toggle` already
   // refuses a pick past the cap — the same belt-and-suspenders shape as the
   // web dialog's `canCreate`, which checks `selected.size <= 31` even though
@@ -183,35 +145,15 @@ export function NewMessageSheet({
   const canStart =
     !busy &&
     picked.length <= MAX_ROOM_MEMBERS &&
-    (mode === "channel" ? validChannelName : picked.length > 0);
-  const actionLabel =
-    mode === "channel"
-      ? busy
-        ? "Creating…"
-        : "Create channel"
-      : picked.length > 1
-        ? "Create group"
-        : "Message";
+    picked.length > 0;
+  const actionLabel = picked.length > 1 ? "Create group" : "Message";
 
   const start = useCallback(async () => {
     setBusy(true);
     setError(null);
     try {
       let roomId: string | null;
-      if (mode === "channel") {
-        const created = await createRoom({
-          clientRoomId: randomUUID(),
-          kind: "channel",
-          name: trimmedChannelName,
-          members: picked.map((ref) => ({
-            kind: ref.kind,
-            id: ref.id,
-            role: "member" as const,
-            listenMode: ref.kind === "agent" ? ("active" as const) : null,
-          })),
-        }, { activate: false });
-        roomId = created.roomId;
-      } else if (picked.length === 1) {
+      if (picked.length === 1) {
         roomId = await selectDm(picked[0], { activate: false });
       } else {
         const created = await createRoom({
@@ -233,7 +175,7 @@ export function NewMessageSheet({
     } finally {
       setBusy(false);
     }
-  }, [createRoom, mode, onOpenRoom, picked, selectDm, trimmedChannelName]);
+  }, [createRoom, onOpenRoom, picked, selectDm]);
 
   return (
     <BottomSheet
@@ -243,30 +185,6 @@ export function NewMessageSheet({
     >
       <View style={[styles.card, { backgroundColor: palette.surface }]}>
         <Text style={[styles.overline, { color: palette.fgMute }]}>NEW MESSAGE</Text>
-        <SegmentedControl
-          label="Type"
-          segments={SEGMENTS}
-          value={mode}
-          onChange={changeMode}
-          style={styles.toggle}
-        />
-        {mode === "channel" ? (
-          <>
-            <Text style={[styles.fieldLabel, { color: palette.fgMute }]}>Channel name</Text>
-            <TextInput
-              style={[styles.nameInput, { backgroundColor: palette.raised, color: palette.fg }]}
-              value={channelName}
-              onChangeText={setChannelName}
-              maxLength={CHANNEL_NAME_MAX_CHARS}
-              accessibilityLabel="Channel name"
-              autoCorrect={false}
-              autoCapitalize="none"
-            />
-            <Text style={[styles.helper, { color: palette.fgMute }]}>
-              Only selected workspace members can read this chat.
-            </Text>
-          </>
-        ) : null}
         <View style={[styles.searchPill, { backgroundColor: palette.raised }]}>
           <SymbolView accessibilityElementsHidden name="magnifyingglass" size={14} tintColor={palette.fgMute} />
           <TextInput
@@ -356,30 +274,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.lg,
     paddingBottom: spacing.sm,
-  },
-  toggle: {
-    marginHorizontal: spacing.lg,
-    marginBottom: spacing.sm,
-  },
-  fieldLabel: {
-    ...type.caption,
-    fontFamily: fonts.sansMedium,
-    marginHorizontal: spacing.lg,
-    marginBottom: spacing.xs,
-  },
-  nameInput: {
-    marginHorizontal: spacing.lg,
-    marginBottom: spacing.sm,
-    height: 36,
-    paddingHorizontal: spacing.md,
-    borderRadius: radii.md,
-    fontFamily: fonts.sans,
-    fontSize: 15,
-  },
-  helper: {
-    ...type.caption,
-    marginHorizontal: spacing.lg,
-    marginBottom: spacing.sm,
   },
   searchPill: {
     flexDirection: "row",

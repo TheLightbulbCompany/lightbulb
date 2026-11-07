@@ -6,14 +6,12 @@ import {
   resolveTypedSessionMentions,
   respondHint,
   searchEmoji,
-  sessionMatches,
-  sessionTitle,
   wrapSelection,
   type MarkdownStyle,
   type RoomAttachmentInput,
   type RoomKind,
   type RoomMember,
-  type SessionMentionCandidate, sessionAgentName,
+  type SessionMentionCandidate,
 } from "@lightbulb/shared";
 import * as Clipboard from "expo-clipboard";
 import { TextInputWrapper, type PasteEventPayload } from "expo-paste-input";
@@ -51,7 +49,6 @@ import { useScaledHeight } from "../../lib/textScale";
 import { hapticSelection } from "../../lib/haptics";
 import { AttachmentChips } from "../chat/AttachmentChips";
 import { usePulse } from "../chat/usePulse";
-import { Avatar } from "./Avatar";
 import { EmojiPickerSheet } from "./EmojiPickerSheet";
 
 // The photo as it is on the phone. What the endpoint will not take is
@@ -242,28 +239,7 @@ export function RoomComposer({
   }));
 
   const trigger = activeTrigger(text, caret);
-  // The web composer's filter, verbatim: a member answers to their handle and
-  // to their display name.
-  const mentionOptions =
-    trigger?.kind === "mention"
-      ? members
-          .filter((member) => {
-            const needle = trigger.query.toLocaleLowerCase();
-            return (
-              member.displayName.toLocaleLowerCase().includes(needle) ||
-              (member.mentionHandle ?? "").toLocaleLowerCase().includes(needle)
-            );
-          })
-          .slice(0, 6)
-      : [];
-  const sessionOptions = trigger?.kind === "mention"
-    ? sessionTargets.filter(({ candidate, ownerName }) => {
-      const needle = trigger.query.toLocaleLowerCase();
-      return candidate.handle.toLocaleLowerCase().includes(needle)
-        || sessionAgentName(candidate.session.provider).toLowerCase().includes(needle)
-        || sessionMatches(candidate.session, needle, ownerName);
-    }).slice(0, 6)
-    : [];
+  // The @ picker is gone (Phase 1): a typed `@handle` still resolves at send.
   const emojiOptions = trigger?.kind === "emoji" ? searchEmoji(trigger.query).slice(0, 8) : [];
 
   // The toolbar wraps whatever is selected, so the whole range is tracked, not
@@ -560,7 +536,7 @@ export function RoomComposer({
       ]}
     >
       {reconnecting && <ReconnectingBanner palette={palette} />}
-      {(mentionOptions.length > 0 || sessionOptions.length > 0 || emojiOptions.length > 0) && (
+      {emojiOptions.length > 0 && (
         // A strip above the card, not an overlay: the keyboard owns the bottom
         // of the screen and a popover down there would sit under it.
         <ScrollView
@@ -569,51 +545,6 @@ export function RoomComposer({
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.strip}
         >
-          {mentionOptions.map((member) => (
-            <Pressable
-              key={`${member.kind}:${member.id}`}
-              style={[styles.option, { backgroundColor: palette.surface, borderColor: palette.edge }]}
-              onPress={() =>
-                complete(
-                  member.mentionHandle ? `@${member.mentionHandle}` : `@${member.displayName}`,
-                )
-              }
-              accessibilityRole="button"
-              accessibilityLabel={`Mention ${member.displayName}`}
-            >
-              <Avatar name={member.displayName} kind={member.kind} size={22} palette={palette} />
-              <View style={styles.optionLabels}>
-                <Text style={[styles.optionName, { color: palette.fg }]} numberOfLines={1}>
-                  {member.displayName}
-                </Text>
-                <Text style={[styles.optionMeta, { color: palette.fgMute }]} numberOfLines={1}>
-                  {member.mentionHandle ? `@${member.mentionHandle}` : "Person"}
-                </Text>
-              </View>
-            </Pressable>
-          ))}
-      {sessionOptions.map(({ candidate, ownerName }) => (
-            <Pressable
-              key={`session:${candidate.session.sessionId}`}
-              style={[styles.option, { backgroundColor: palette.surface, borderColor: palette.edge }]}
-              onPress={() => {
-                setSelectedSessions(current => ({ ...current, [candidate.handle.toLocaleLowerCase()]: candidate.session.sessionId }));
-                complete(`@${candidate.handle}`);
-              }}
-              accessibilityRole="button"
-              accessibilityLabel={`Mention ${sessionAgentName(candidate.session.provider)} session ${sessionTitle(candidate.session)}, owned by ${ownerName}`}
-            >
-              <Avatar name={ownerName} kind="agent" size={22} palette={palette} vendor={candidate.session.provider} />
-              <View style={styles.optionLabels}>
-                <Text style={[styles.optionName, { color: palette.fg }]} numberOfLines={1}>
-                  {sessionAgentName(candidate.session.provider)} · {sessionTitle(candidate.session)}
-                </Text>
-                <Text style={[styles.optionMeta, { color: palette.fgMute }]} numberOfLines={1}>
-                  {ownerName}{candidate.collided ? ` · ${candidate.session.cwdName ? `${candidate.session.cwdName} · ` : ""}${candidate.session.sessionId.slice(0, 8)}` : ""}
-                </Text>
-              </View>
-            </Pressable>
-          ))}
           {emojiOptions.map((entry) => (
             <Pressable
               key={entry.emoji}

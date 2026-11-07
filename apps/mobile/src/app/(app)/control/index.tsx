@@ -52,13 +52,7 @@ const PANELS: PanelRow[] = [
     icon: "cpu",
     route: "/(app)/control/llm",
   },
-  {
-    key: "integrations",
-    label: "Integrations",
-    description: "Connections, MCP servers, and plugins",
-    icon: "square.grid.2x2",
-    route: "/(app)/control/integrations",
-  },
+
 ];
 
 export default function ControlIndex() {

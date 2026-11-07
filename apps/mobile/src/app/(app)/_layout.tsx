@@ -168,7 +168,6 @@ export default function AppLayout() {
                   {/* The conversation and its threads. Both set their own title from
                       the room (`Stack.Screen` inside the screen body). */}
                   <Stack.Screen name="room/[roomId]/index" options={{ title: "" }} />
-                  <Stack.Screen name="room/[roomId]/thread/[messageId]" options={{ title: "Thread" }} />
                   <Stack.Screen name="room/[roomId]/details" options={{ title: "Details" }} />
                   {/* A super-agent request (opened from a card, Activity, a push or a link). */}
                   <Stack.Screen name="task/[taskId]" options={{ title: "Task" }} />
@@ -189,7 +188,6 @@ export default function AppLayout() {
                   <Stack.Screen name="control/skills" options={{ title: "Skills" }} />
                   <Stack.Screen name="control/usage" options={{ title: "Usage" }} />
                   <Stack.Screen name="control/llm" options={{ title: "Model & Credits" }} />
-                  <Stack.Screen name="control/integrations" options={{ title: "Integrations" }} />
                   <Stack.Screen name="control/website-signins" options={{ title: "Website sign-ins" }} />
                   <Stack.Screen name="workspaces" options={{ title: "Switch workspace" }} />
                   <Stack.Screen name="invite" options={{ title: "Invite people" }} />

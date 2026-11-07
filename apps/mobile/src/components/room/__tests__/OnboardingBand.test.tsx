@@ -115,12 +115,12 @@ describe("OnboardingBand", () => {
     expect(screen.queryByText("Get started")).toBeNull();
   });
 
-  it("orders starter model, invite, connectors, More connections, then naming", async () => {
+  it("orders starter model, invite, connectors, then naming", async () => {
     await renderBand();
     await waitFor(() => expect(screen.getByText("Get started")).toBeTruthy());
     const labels = screen.getAllByRole("button").map((node) => node.props.accessibilityLabel as string);
     const order = [
-      "You're on the starter model", "Invite your team", "Stripe", "GitHub", "Notion", "More connections",
+      "You're on the starter model", "Invite your team", "Stripe", "GitHub", "Notion",
       "Name your agents",
     ].map((label) => labels.findIndex((candidate) => candidate.startsWith(label)));
     expect(order.every((index) => index >= 0)).toBe(true);
@@ -156,13 +156,12 @@ describe("OnboardingBand", () => {
     expect(mockPush).toHaveBeenCalledWith("/(app)/control/llm");
   });
 
-  it("naming routes to the agents screen and More connections to integrations", async () => {
+  it("naming routes to the agents screen", async () => {
     await renderBand();
     const naming = await screen.findByLabelText(/^Name your agents/);
     await act(async () => { fireEvent.press(naming); });
     expect(mockPush).toHaveBeenCalledWith("/(app)/control/agents");
-    await act(async () => { fireEvent.press(screen.getByLabelText("More connections")); });
-    expect(mockPush).toHaveBeenCalledWith("/(app)/control/integrations");
+    expect(screen.queryByLabelText("More connections")).toBeNull();
   });
 
   it("refreshes after the definitive OAuth return even if the user switched back early", async () => {

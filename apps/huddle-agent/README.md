@@ -65,16 +65,14 @@ Nothing a huddle says is stored.
   call's inputs (what was said, what the backend answered, when) to that directory, so the call can be
   replayed offline (`tests/replay`).
 
-## First deploy (once per LiveKit project)
+## Deploys
+
+The LiveKit plan allows one deployed agent: prod `lightbulb-huddle`. Dev workers run on the Mac
+(`lk agent start`, or `uv run python -m huddle_agent.<module> dev`); nothing deploys them.
 
 `lk agent deploy` needs the `livekit.toml` (project subdomain + agent id) that `lk agent create`
-writes, so the first deploy is by hand:
+wrote; prod's is committed as `livekit.prod.toml`, and `huddle-agent.yml` (`deploy-prod`, manual,
+`LIVEKIT_PROD_ENABLED=true`) copies it to `livekit.toml` before each deploy.
 
-    cd apps/huddle-agent
-    lk agent create --project lightbulb-dev \
-      --secrets LIGHTBULB_API_URL=...,LIGHTBULB_HUDDLE_SECRET=...,OPENAI_API_KEY=...
-    mv livekit.toml livekit.dev.toml   # commit it; prod is the same with livekit.prod.toml
-
-`huddle-agent.yml` copies the env's file to `livekit.toml` before each deploy. Then set
-`LIVEKIT_DEV_ENABLED=true`, and only after the worker runs set `LIVEKIT_URL` for the backend:
-before that, every join dispatches a worker that never comes.
+Time limits (cost caps): a phone call ends after `PHONE_MAX_S` (default 1200, 20 min), a meeting after
+`MEET_MAX_S` (default 5400, 90 min). At the limit the assistant says a short goodbye and the session ends.

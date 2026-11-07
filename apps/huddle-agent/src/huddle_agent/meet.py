@@ -30,6 +30,7 @@ from livekit.agents import Agent, AgentSession, JobContext, function_tool, room_
 from livekit.agents.voice import io
 from livekit.plugins import google, noise_cancellation
 
+from huddle_agent import end_after
 from huddle_agent.backend import Backend, BackendError
 from huddle_agent.transcript import (
     address,
@@ -45,6 +46,7 @@ TRACK = f"agent-{ASSISTANT_ID}"  # the meet-bot page plays only `agent-*` tracks
 MEET_QUIET_S = 3.0  # huddle.py: a reply waits for a real pause in the room
 STALE_S = 20.0  # spec §4.4b.4: a reply not started this long after its ask is dropped
 MEETING_IDLE_S = 60 * 60  # spec §4.4b: leave after an hour of silence
+MEETING_MAX_S = float(os.environ.get("MEET_MAX_S", 90 * 60))  # cost cap: leave after 90 minutes whatever happens
 TRANSCRIPT_FLUSH_S = 10
 RATE, FRAME = 16000, 320  # 20 ms frames at Gemini's input rate
 TRANSCRIPT_WAIT_S = 10.0  # a held reply's turn must be transcribed this soon (measured 1.4-1.9 s, 7 Nov)
@@ -186,6 +188,8 @@ class MeetAgent(Agent):
         self.reply_turn: dict | None = None  # the turn the reply now playing answers
         self.reply_end = time.monotonic()  # when the last reply ended: the start of the next ask window
         self.tool_at = -1.0  # when a tool last ran: Gemini's answer after it belongs to the turn it ran for
+        self.ends_at = time.monotonic() + MEETING_MAX_S  # from here tools are refused and replies dropped...
+        self.goodbye_id = ""  # ...except the time limit's goodbye: the SpeechHandle id end_after made
 
     def heard(self, item_id: str | None, text: str, final: bool, now: float) -> dict:
         """One input-transcript event: the turn it belongs to, created or updated. Whether it asked is decided
@@ -217,9 +221,13 @@ class MeetAgent(Agent):
         who = self._mixer.sole(max(self.reply_end, time.monotonic() - ASK_WINDOW_S))
         return who.rsplit(":", 1)[-1] if who else ""
 
-    def _authorize(self, now: float) -> tuple[bool | None, str]:
+    def _authorize(self, now: float, speech_id: str | None = None) -> tuple[bool | None, str]:
         """(True play | False drop | None wait, why) for the reply now held. Only a FINAL transcript decides:
         Gemini's partials grow while the person talks on, and a reply held for an early part is not the answer."""
+        if self.goodbye_id and speech_id == self.goodbye_id:
+            return True, "goodbye"
+        if now >= self.ends_at:
+            return False, "time up"
         t = self.turns[-1] if self.turns else None
         if t is not None and t["seq"] > self.consumed:
             if not t["final"]:
@@ -244,7 +252,7 @@ class MeetAgent(Agent):
         started = time.monotonic()
         while True:
             now = time.monotonic()
-            ok, why = self._authorize(now)
+            ok, why = self._authorize(now, getattr(self.session.current_speech, "id", None))
             waiting_for_words = why in ("no transcript yet", "turn still coming")
             if ok is None and waiting_for_words and now - started > TRANSCRIPT_WAIT_S:
                 ok, why = False, "no transcript in time"  # a turn transcribed later is not this reply's
@@ -268,8 +276,9 @@ class MeetAgent(Agent):
             return
         if why == "ask":
             self.reply_turn, self.consumed = self.turns[-1], self.turns[-1]["seq"]
-        logger.info("meet: reply played (%s) for turn %d, held %.1fs", why, self.reply_turn["seq"], held)
-        speech.add_done_callback(lambda h, turn=self.reply_turn: self.on_reply(turn, h.chat_items))
+        logger.info("meet: reply played (%s) for turn %s, held %.1fs", why, (self.reply_turn or {}).get("seq"), held)
+        if why != "goodbye":
+            speech.add_done_callback(lambda h, turn=self.reply_turn: self.on_reply(turn, h.chat_items))
         try:
             async for frame in Agent.default.realtime_audio_output_node(
                 self, audio, model_settings
@@ -282,6 +291,9 @@ class MeetAgent(Agent):
     on_reply = staticmethod(lambda turn, items: None)  # run() records each played reply with its turn
 
     async def _post(self, op: str, body: dict) -> dict:
+        if time.monotonic() >= self.ends_at:
+            logger.info("meet: tool %s refused (time up)", op)
+            return {"error": "time_up"}
         self.tool_at = time.monotonic()
         try:
             out = await self._b.meet(op, body)
@@ -455,7 +467,15 @@ async def run(ctx: JobContext, meta: dict) -> None:
             await backend.transcript(f"{room_id}:{int(wall)}", batch, final=final)
             sent["n"] = len(lines)
 
+    async def time_up() -> None:
+        logger.info("meet: max length reached, leaving room %s", room_id)
+        await backend.leave_meeting()
+        ctx.shutdown("meeting max length")
+
+    limit = asyncio.create_task(end_after(MEETING_MAX_S, session, time_up, on_speech=lambda h: setattr(agent, "goodbye_id", h.id)))
+
     async def on_end(_reason: str = "") -> None:
+        limit.cancel()
         for t in readers.values():
             t.cancel()
         record = [{"t": int(a["turn"]["at"] - started), "who": label(a["turn"]["who"]), "q": a["turn"]["text"],

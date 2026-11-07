@@ -791,3 +791,30 @@ async def test_through_the_session_silent_frames_are_a_failed_unit_and_a_revoked
     assert len(asked) == 3 and receipts[0][3] == "revoked" and receipts[0][4]["loudMs"] == 0
     assert [max(f.data) for f in track.frames] == [0, 0], "the quiet lead passed, and no sound reached the track"
     assert ended == [(3, False)], "paused as not said: a refusal is not a failed playback"
+
+
+async def test_one_deployed_agent_routes_a_phone_call_a_meet_and_a_huddle(monkeypatch):
+    """The LiveKit plan allows one deployed agent: `lightbulb-huddle` takes phone calls (the SIP dispatch rule's
+    `phone-` room prefix), Meets and in-app huddles."""
+    import json
+    from types import SimpleNamespace
+
+    went = []
+
+    async def to(where, *_):
+        went.append(where)
+
+    monkeypatch.setattr(agent.phone, "entrypoint", lambda ctx: to("phone"))
+    monkeypatch.setattr(agent.meet, "run", lambda ctx, meta: to("meet"))
+    monkeypatch.setattr(agent.record, "start", lambda room_id: went.append("huddle") or 1 / 0)
+
+    def job(room, meta):
+        return SimpleNamespace(job=SimpleNamespace(room=SimpleNamespace(name=room), metadata=meta))
+
+    await agent.entrypoint(job("phone-prod-_+15551234567_aB3x", ""))  # a SIP dispatch carries no metadata
+    await agent.entrypoint(job("meet-prod-r1", json.dumps({"source": "meet", "roomId": "r1"})))
+    try:
+        await agent.entrypoint(job("huddle-prod-r1", json.dumps({"roomId": "r1", "ownerId": "u", "roomToken": "t"})))
+    except ZeroDivisionError:
+        pass
+    assert went == ["phone", "meet", "huddle"]

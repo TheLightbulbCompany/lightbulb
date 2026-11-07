@@ -140,3 +140,37 @@ def test_task_wording_is_super_agent_only():
         in (SKILL_DIR / "references" / "platform-primitives.md").read_text()
     )
     assert "--assignee-user <userId>" in (SKILL_DIR / "references" / "ideas.md").read_text()
+
+
+@pytest.mark.asyncio
+async def test_a_task_the_caller_cannot_see_is_not_found(world):
+    """Isolation (ported from the Paperclip-era test_task_board.py): a private task of another person, and another
+    workspace's task id, read as 404 and never show in a list."""
+    theirs = await _task(user=PRIYA)
+    for task in (theirs, "LB-9999"):
+        with pytest.raises(HTTPException) as exc:
+            await task_board.read_task(AUTH, task)
+        assert exc.value.status_code == 404
+    other_ws = AuthContext(user_id=SAM, org_id="org_other")
+    mine = await _task()
+    with pytest.raises(HTTPException) as exc:
+        await task_board.read_task(other_ws, mine)
+    assert exc.value.status_code == 404
+    assert theirs not in {t["id"] for t in (await task_board.find_tasks(AUTH))["tasks"]}
+    with pytest.raises(HTTPException) as exc:
+        await task_board.update_task(AUTH, theirs, status="done")
+    assert exc.value.status_code == 404 and world["updates"] == []
+
+
+@pytest.mark.asyncio
+async def test_hosted_update_needs_the_write_scope(world, monkeypatch):
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    from core.services import hosted_mcp
+
+    scopes = []
+    monkeypatch.setattr(hosted_mcp, "_caller", lambda scope=hosted_mcp.READ_SCOPE: scopes.append(scope) or AUTH)
+    monkeypatch.setattr(hosted_mcp, "_net_caller", lambda scope=hosted_mcp.READ_SCOPE: scopes.append(scope) or AUTH)
+    with pytest.raises(ToolError, match="404"):
+        await hosted_mcp.update_task("LB-9999", status="done")
+    assert scopes == [hosted_mcp.WRITE_SCOPE]

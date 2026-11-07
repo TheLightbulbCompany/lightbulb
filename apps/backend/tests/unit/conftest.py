@@ -86,22 +86,20 @@ def _no_registry_outside_moto(request, monkeypatch):
         return
     from moto.core.models import MockAWS
 
-    from core.services import agent_registry
+    from core.repositories import agent_registry_repo
 
-    real = agent_registry.roster
+    real = agent_registry_repo.list_agents
 
-    async def roster(ws, *args, **kwargs):
-        return await real(ws, *args, **kwargs) if MockAWS._mocks_active else []
+    async def list_agents(*args, **kwargs):
+        return await real(*args, **kwargs) if MockAWS._mocks_active else []
 
-    monkeypatch.setattr(agent_registry, "roster", roster)
+    monkeypatch.setattr(agent_registry_repo, "list_agents", list_agents)
 
-    from core.services import task_conversation
+    from core.services import session_chat
 
-    real_front = task_conversation.front_agent_id
+    real_default = session_chat._default_agents
 
-    async def front_agent_id(ws):
-        if MockAWS._mocks_active:
-            return await real_front(ws)
-        raise task_conversation.NoFrontAgent(ws)
+    async def default_agents(*args, **kwargs):  # the Paperclip fallback for a front agent
+        return await real_default(*args, **kwargs) if MockAWS._mocks_active else []
 
-    monkeypatch.setattr(task_conversation, "front_agent_id", front_agent_id)
+    monkeypatch.setattr(session_chat, "_default_agents", default_agents)

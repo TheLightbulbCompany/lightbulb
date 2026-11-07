@@ -54,6 +54,7 @@ DEFAULTS: dict = {
     "hours": {d: {"open": "09:00", "close": "18:00", "closed": d == "Sun"} for d in _DAYS},
     "services": [],
     "bufferMin": 10,
+    "timezone": "America/New_York",  # IANA; Onboarding saves the browser's
     "handoff": {"number": "", "onlyOpenHours": True},
     "forwardFrom": "",
 }
@@ -224,7 +225,7 @@ async def start_call(body: StartIn) -> dict:
         "callerName": call["callerName"] if allow["greetByName"] else "",
         "can": {k: bool(allow[k]) and not paused for k in ("book", "move", "answer")},
         "transfer": bool(cfg["handoff"]["number"]),
-        "today": datetime.now(_TZ).strftime("%A %Y-%m-%d %H:%M"),
+        "today": datetime.now(_tz(cfg)).strftime("%A %Y-%m-%d %H:%M"),
     }
 
 
@@ -332,18 +333,27 @@ async def _bookings(owner_id: str, prefix: str) -> list[dict]:
     return r.get("Items", [])
 
 
-async def _taken(owner_id: str, date: str, skip: str = "") -> list[tuple[datetime, datetime]]:
+async def _taken(owner_id: str, date: str) -> list[tuple[datetime, datetime]]:
     out = []
     for b in await _bookings(owner_id, date):
-        start = b["sk"].removeprefix("VOICEBOOK#")
-        if start != skip:
-            s = datetime.strptime(start, "%Y-%m-%dT%H:%M")
-            out.append((s, s + timedelta(minutes=int(b.get("minutes") or 60))))
+        s = datetime.strptime(b["sk"].removeprefix("VOICEBOOK#"), "%Y-%m-%dT%H:%M")
+        out.append((s, s + timedelta(minutes=int(b.get("minutes") or 60))))
     return out
 
 
-def _now() -> datetime:
-    return datetime.now(_TZ).replace(tzinfo=None)
+def _tz(cfg: dict) -> ZoneInfo:
+    return ZoneInfo(cfg.get("timezone") or "America/New_York")
+
+
+def _now(cfg: dict) -> datetime:
+    return datetime.now(_tz(cfg)).replace(tzinfo=None)
+
+
+def _cells(cfg: dict, start: str, minutes: int) -> list[str]:
+    """The 5-minute UTC cells a booking holds: [start, start + minutes + bufferMin)."""
+    t = datetime.strptime(start, "%Y-%m-%dT%H:%M").replace(tzinfo=_tz(cfg)).astimezone(ZoneInfo("UTC"))
+    n = -(-(minutes + int(cfg.get("bufferMin") or 0)) // 5)
+    return [f"VOICECELL#{(t + timedelta(minutes=5 * i)):%Y-%m-%dT%H:%M}" for i in range(n)]
 
 
 class DateIn(BaseModel):
@@ -357,7 +367,7 @@ async def availability(call_id: str, body: DateIn) -> dict:
     cfg = await agent_config(meta["ownerId"])
     _allowed(cfg, call, "book", "move")
     taken = await _taken(meta["ownerId"], body.date)
-    return {"date": body.date, "slots": free_slots(cfg, body.date, taken, _now(), _minutes(cfg, body.service))}
+    return {"date": body.date, "slots": free_slots(cfg, body.date, taken, _now(cfg), _minutes(cfg, body.service))}
 
 
 class BookIn(BaseModel):
@@ -367,30 +377,56 @@ class BookIn(BaseModel):
 
 
 async def _book(owner_id: str, call_id: str, call: dict, cfg: dict, start: str, service: str, name: str,
-                skip: str = "") -> None:  # fmt: skip
-    minutes = _minutes(cfg, service)
-    # ponytail: overlap is checked on a read; two calls booking overlapping (not equal) starts at once can both win.
-    if start not in free_slots(cfg, start[:10], await _taken(owner_id, start[:10], skip), _now(), minutes):
+                old: dict | None = None) -> None:  # fmt: skip
+    """Write the booking and its cells in one TransactWriteItems with `attribute_not_exists` on every cell, so an
+    overlap fails atomically (https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_TransactWriteItems.html,
+    https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transaction-apis.html). `old` is the booking
+    being moved: its row and cells go in the same transaction."""
+    minutes, pk, table = (
+        _minutes(cfg, service),
+        messaging_repo.owner_pk(owner_id),
+        messaging_repo.settings.MESSAGING_TABLE,
+    )
+    cells = _cells(cfg, start, minutes)
+    if len(cells) > 99:  # DynamoDB caps a transaction at 100 items (the booking row is one)
+        raise _err(400, "booking_too_long")
+    if start not in free_slots(cfg, start[:10], [], _now(cfg), minutes) or (old and old["sk"] == f"VOICEBOOK#{start}"):
         raise _err(400, "slot_unavailable")
+    sk, mine = f"VOICEBOOK#{start}", set(old.get("cells", [])) if old else set()
+    items = [{"Put": {"TableName": table, "ConditionExpression": "attribute_not_exists(sk)", "Item": {
+        "pk": pk, "sk": sk, "service": service, "minutes": minutes, "name": name, "phone": call.get("caller", ""),
+        "callId": call_id, "createdAt": utc_now_iso(), "cells": cells}}}]  # fmt: skip
+    for c in cells:
+        put = {
+            "TableName": table,
+            "Item": {"pk": pk, "sk": c, "booking": sk},
+            "ConditionExpression": "attribute_not_exists(sk)",
+        }
+        if c in mine:  # the booking being moved holds it now and gives it up in this same transaction
+            put |= {
+                "ConditionExpression": "attribute_not_exists(sk) OR booking = :old",
+                "ExpressionAttributeValues": {":old": old["sk"]},
+            }
+        items.append({"Put": put})
+    if old:
+        items += _release(table, pk, old, keep=set(cells))
+    if len(items) > 100:
+        raise _err(400, "booking_too_long")
     try:
-        await run_in_thread(
-            messaging_repo._table().put_item,
-            Item={
-                "pk": messaging_repo.owner_pk(owner_id),
-                "sk": f"VOICEBOOK#{start}",
-                "service": service,
-                "minutes": minutes,
-                "name": name,
-                "phone": call.get("caller", ""),
-                "callId": call_id,
-                "createdAt": utc_now_iso(),
-            },  # fmt: skip
-            ConditionExpression="attribute_not_exists(sk)",
-        )
+        await messaging_repo._transact(items)
     except ClientError as exc:
-        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+        if messaging_repo.is_cancelled(exc):
             raise _err(409, "slot_taken") from exc
         raise
+
+
+def _release(table: str, pk: str, row: dict, keep: set[str] = frozenset()) -> list[dict]:
+    # ponytail: VOICEBOOK# rows made before cells existed have no "cells" and hold nothing; no migration, they age out.
+    return [
+        {"Delete": {"TableName": table, "Key": {"pk": pk, "sk": k}}}
+        for k in [row["sk"], *row.get("cells", [])]
+        if k not in keep
+    ]
 
 
 @router.post("/internal/voice/calls/{call_id}/book")
@@ -423,8 +459,9 @@ async def change_booking(call_id: str, body: ChangeIn) -> dict:
     if not row or not call.get("caller") or row.get("phone") != call["caller"]:
         raise _err(404, "booking_not_found")
     if body.newStart:
-        await _book(meta["ownerId"], call_id, call, cfg, body.newStart, row["service"], row["name"], skip=body.start)
-    await run_in_thread(messaging_repo._table().delete_item, Key={"pk": owner_pk, "sk": sk})
+        await _book(meta["ownerId"], call_id, call, cfg, body.newStart, row["service"], row["name"], old=row)
+    else:
+        await messaging_repo._transact(_release(messaging_repo.settings.MESSAGING_TABLE, owner_pk, row))
     entry = {"start": body.start, "newStart": body.newStart, "service": row["service"], "name": row["name"]}
     line = (
         f"{row['service']} moved from {_pretty(body.start)} to {_pretty(body.newStart)}"
@@ -490,7 +527,7 @@ async def transfer(call_id: str, body: TransferIn | None = None) -> dict:
     cfg = await agent_config(meta["ownerId"])
     if _line_state(cfg, call.get("caller", "")) != "live":
         raise _err(403, "not_allowed")
-    h, now = cfg["handoff"], _now()
+    h, now = cfg["handoff"], _now(cfg)
     window = _open_window(cfg, now.strftime("%Y-%m-%d"))
     is_open = bool(window) and window[0] <= now < window[1]
     if (body and body.failed) or not h["number"] or (h["onlyOpenHours"] and not is_open):

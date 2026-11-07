@@ -37,6 +37,9 @@ export function applyDraft(c: AgentConfig, d: Draft): AgentConfig {
   };
 }
 
+/** The hours are in the owner's own zone; keep one already chosen. */
+export const withTimezone = (c: AgentConfig): AgentConfig => ({ ...c, timezone: c.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone });
+
 export function Onboarding({ config, save }: { config: AgentConfig; save: (c: AgentConfig) => Promise<void> }) {
   const { organization } = useOrganization();
   const [c, setC] = useState<AgentConfig>(() => ({ ...config, business: config.business || organization?.name || "" }));
@@ -49,7 +52,7 @@ export function Onboarding({ config, save }: { config: AgentConfig; save: (c: Ag
   const go = async (next: AgentConfig, to: number) => {
     setBusy(true); setErr("");
     try {
-      const doc = to > 5 ? { ...next, live: true, paused: false, onboardingStep: undefined } : { ...next, onboardingStep: to };
+      const doc = to > 5 ? { ...withTimezone(next), live: true, paused: false, onboardingStep: undefined } : { ...withTimezone(next), onboardingStep: to };
       await save(doc);
       setC(doc); setStep(Math.min(to, 5));
       window.scrollTo?.({ top: 0 });

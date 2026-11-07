@@ -10,10 +10,11 @@ comes from that record, never from the model. The assistant's settings are the A
 Rows in the messaging table:
     PHONE#<e164>    LINE                  the number's workspace (ownerId) and the member tasks run as (ownerUserId)
     OWNER#<owner>   VOICEBOOK#<local>     one booking in the assistant's own calendar (local start "YYYY-MM-DDTHH:MM")
-    OWNER#<owner>   VOICECALLER#<e164>    a caller seen before: name, last call
+    OWNER#<owner>   VOICECALLER#<e164>    a caller seen before: name, last call, facts (<= 10, newest first), visits
 """
 
 import hashlib
+import re
 import uuid
 from datetime import datetime, timedelta
 from typing import Annotated, Literal
@@ -182,7 +183,7 @@ async def start_call(body: StartIn) -> dict:
         "booking": "",
         "steps": [],
         "transcript": [],
-        "callerMemory": [],
+        "callerMemory": list((seen or {}).get("facts", [])) if cfg["allow"]["greetByName"] else [],
         "ownerMode": False,
         "resolvedAt": None,
         "calledNumber": body.calledNumber,
@@ -222,6 +223,7 @@ async def start_call(body: StartIn) -> dict:
         "facts": _facts(cfg) if allow["answer"] and not paused else "",
         "instructions": cfg["instructions"][:4000],
         "callerName": call["callerName"] if allow["greetByName"] else "",
+        "callerMemory": call["callerMemory"],
         "can": {k: bool(allow[k]) and not paused for k in ("book", "move", "answer")},
         "transfer": bool(cfg["handoff"]["number"]),
         "today": datetime.now(_TZ).strftime("%A %Y-%m-%d %H:%M"),
@@ -280,11 +282,41 @@ async def end_call(call_id: str, body: EndIn) -> dict:
     meta, _ = await _call(call_id)
     out = await _patch_call(call_id, change)
     if out.get("caller"):
-        item = {**_caller_key(meta["ownerId"], out["caller"]), "lastCallAt": out["endedAt"], "lastCallId": call_id}
-        if out.get("callerName"):
-            item["name"] = out["callerName"]
+        seen = await _seen(meta["ownerId"], out["caller"]) or {}
+        item = {**_caller_key(meta["ownerId"], out["caller"]), "lastCallAt": out["endedAt"], "lastCallId": call_id,
+                "visits": int(seen.get("visits", 0)) + 1}  # fmt: skip
+        new = out.get("remembered", [])
+        item["facts"] = list(dict.fromkeys([*new[::-1], *seen.get("facts", [])]))[:MAX_FACTS]
+        if out.get("callerName") or seen.get("name"):
+            item["name"] = out.get("callerName") or seen["name"]
         await run_in_thread(messaging_repo._table().put_item, Item=item)
     return out
+
+
+MAX_FACTS = 10
+
+
+class RememberIn(BaseModel):
+    fact: Annotated[str, Field(min_length=1, max_length=120)]
+    kind: Literal["caller", "business"] = "caller"
+
+
+@router.post("/internal/voice/calls/{call_id}/remember")
+async def remember(call_id: str, body: RememberIn) -> dict:
+    """A caller's own preference (kept on their row at the end of the call) or a fact about the business (cfg toAdd)."""
+    meta, call = await _call(call_id)
+    if _line_state(await agent_config(meta["ownerId"]), call.get("caller", "")) != "live":
+        raise _err(403, "not_allowed")
+    if re.search(r"\d{12,}", re.sub(r"[ -]", "", body.fact)):  # card-like: never stored
+        raise _err(400, "looks_like_a_card")
+    if body.kind == "business":
+        cfg = await messaging_repo.get_voice_agent(meta["ownerId"]) or {}
+        await messaging_repo.put_voice_agent(
+            meta["ownerId"], {**cfg, "toAdd": list(dict.fromkeys([*cfg.get("toAdd", []), body.fact]))}, "voice"
+        )
+    else:
+        await _patch_call(call_id, lambda c: {"remembered": [*c.get("remembered", []), body.fact]})
+    return {"remembered": True}
 
 
 # --- the assistant's own calendar (spec §4.1b: a hold in its calendar when the business has no API) --------

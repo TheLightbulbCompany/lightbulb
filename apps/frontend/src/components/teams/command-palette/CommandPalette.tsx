@@ -12,7 +12,6 @@ import { Dialog as DialogPrimitive } from "radix-ui";
 import { Dialog, DialogPortal, DialogTitle } from "@/components/ui/dialog";
 import { Search } from "lucide-react";
 import { filterNavActions, type CommandPaletteAction } from "./commandPaletteActions";
-import { useSuperAgent } from "@/hooks/useLiveEvents";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 import { navigateShell, teamsDetailUrl } from "@/lib/shellNav";
 import { agentInspectorUrl } from "@/components/teams/shared/lib/agentInspectorUrl";
@@ -62,7 +61,6 @@ export function wholeWordFirst<T extends { snippet: string }>(hits: readonly T[]
 }
 
 export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
-  const superAgent = useSuperAgent();
   // A result was opened: focus stays where it took the person (the message it scrolled to), not back on the page.
   const opened = useRef(false);
   const change = (next: boolean) => { if (next) opened.current = false; onOpenChange(next); };
@@ -71,15 +69,13 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
       <DialogPortal>
         <DialogPrimitive.Overlay
           className="fixed inset-0 z-50"
-          // Super-agent: the app's one --scrim (W14: a light grey sheet over the dark app).
-          style={{ background: superAgent ? "var(--scrim)" : "color-mix(in srgb, var(--midnight) 45%, transparent)" }}
+          // The app's one --scrim (W14: a light grey sheet over the dark app).
+          style={{ background: "var(--scrim)" }}
         />
         <DialogPrimitive.Content
           onCloseAutoFocus={(event) => { if (opened.current) event.preventDefault(); }}
-          // Super-agent: pinned from the top, not centred, so results arriving never move the box (W14: 312→319→302).
-          className={superAgent
-            ? "editorial-card fixed left-[50%] top-[14vh] z-50 grid w-full max-w-xl translate-x-[-50%] gap-0 overflow-hidden border-0 p-0 shadow-lg sm:rounded-lg"
-            : "editorial-card fixed left-[50%] top-[50%] z-50 grid w-full max-w-xl translate-x-[-50%] translate-y-[-50%] gap-0 overflow-hidden border-0 p-0 shadow-lg sm:rounded-lg"}
+          // Pinned from the top, not centred, so results arriving never move the box (W14: 312→319→302).
+          className="editorial-card fixed left-[50%] top-[14vh] z-50 grid w-full max-w-xl translate-x-[-50%] gap-0 overflow-hidden border-0 p-0 shadow-lg sm:rounded-lg"
           style={{
             background: "var(--cream)",
             border: "1px solid var(--edge)",
@@ -99,16 +95,11 @@ function CommandPaletteContent({ open, onOpenChange, onRun }: CommandPaletteProp
   const [query, setQuery] = useState("");
   const [rawSelectedIndex, setSelectedIndex] = useState(0);
 
-  const superAgent = useSuperAgent();
   const admin = useIsWorkspaceAdmin();
-  const navResults = useMemo(
-    () => filterNavActions(query, superAgent, admin),
-    [query, superAgent, admin],
-  );
-  const { agents, issues: paperclipIssues, projects } = useFilteredCommandResults(query, open);
-  // Super-agent workspaces have Tasks, not issues: the Tasks and Files groups take the Issues group's place.
-  const issues = useMemo(() => (superAgent ? [] : paperclipIssues), [superAgent, paperclipIssues]);
-  const found = useTaskSearch(query, open && superAgent);
+  const navResults = useMemo(() => filterNavActions(query, admin), [query, admin]);
+  // Tasks, not Paperclip issues: the Tasks and Files groups take the old Issues group's place.
+  const { agents, projects } = useFilteredCommandResults(query, open);
+  const found = useTaskSearch(query, open);
   const conversations = useRoomCommandResults(query, open);
   const workspace = useMessagingWorkspaceOptional();
   const messageSearch = useMessageSearch(query, { enabled: open && !!workspace, limit: 8, minLength: MIN_TERM });
@@ -133,10 +124,9 @@ function CommandPaletteContent({ open, onOpenChange, onRun }: CommandPaletteProp
     messageHits.forEach((m) => items.push({ kind: "message", id: m.id, label: m.label, path: "", run: m.run }));
     navResults.forEach((a) => items.push({ kind: "nav", id: a.id, label: a.label, path: a.path }));
     agents.forEach((a) => items.push({ kind: "agent", id: a.id, label: a.name, path: agentInspectorUrl(a.id) }));
-    issues.forEach((i) => items.push({ kind: "issue", id: i.id, label: i.title, path: teamsDetailUrl("issue", i.id) }));
     projects.forEach((p) => items.push({ kind: "project", id: p.id, label: p.name, path: teamsDetailUrl("project", p.id) }));
     return items;
-  }, [conversations, found, messageHits, navResults, agents, issues, projects]);
+  }, [conversations, found, messageHits, navResults, agents, projects]);
 
   // Derive a clamped index from raw state — no setState-in-effect needed.
   const selectedIndex = Math.min(rawSelectedIndex, Math.max(0, flatItems.length - 1));
@@ -179,7 +169,7 @@ function CommandPaletteContent({ open, onOpenChange, onRun }: CommandPaletteProp
         />
         <input
           autoFocus
-          placeholder={superAgent ? "Search projects, tasks, files and messages" : "Search messages, agents, issues, projects, or jump to..."}
+          placeholder="Search projects, tasks, files and messages"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={handleKeyDown}
@@ -187,8 +177,8 @@ function CommandPaletteContent({ open, onOpenChange, onRun }: CommandPaletteProp
           style={{ color: "var(--midnight)" }}
         />
       </div>
-      {/* Super-agent: while a search is typed the list keeps its height (results land without the box resizing). */}
-      <div className={superAgent && query.trim() ? "h-[min(360px,60vh)] overflow-y-auto py-2" : "max-h-[60vh] overflow-y-auto py-2"} style={{ background: "var(--cream)" }}>
+      {/* While a search is typed the list keeps its height (results land without the box resizing). */}
+      <div className={query.trim() ? "h-[min(360px,60vh)] overflow-y-auto py-2" : "max-h-[60vh] overflow-y-auto py-2"} style={{ background: "var(--cream)" }}>
           {flatItems.length === 0 ? (
             <div
               className="px-4 py-8 text-center text-ui italic"
@@ -249,7 +239,7 @@ function CommandPaletteContent({ open, onOpenChange, onRun }: CommandPaletteProp
                   {messageHits.map((m) => {
                     const idx = flatItems.findIndex((it) => it.kind === "message" && it.id === m.id);
                     return (
-                      <Row key={m.id} label={<SearchSnippet snippet={m.snippet} around={superAgent} />} sublabel={m.sublabel} selected={selectedIndex === idx}
+                      <Row key={m.id} label={<SearchSnippet snippet={m.snippet} around />} sublabel={m.sublabel} selected={selectedIndex === idx}
                         onMouseEnter={() => setSelectedIndex(idx)} onClick={() => select(flatItems[idx])} />
                     );
                   })}
@@ -289,23 +279,6 @@ function CommandPaletteContent({ open, onOpenChange, onRun }: CommandPaletteProp
                   })}
                 </Group>
               )}
-              {issues.length > 0 && (
-                <Group label="Issues">
-                  {issues.map((i) => {
-                    const idx = flatItems.findIndex((it) => it.kind === "issue" && it.id === i.id);
-                    return (
-                      <Row
-                        key={i.id}
-                        label={i.title}
-                        sublabel={i.identifier ?? "Issue"}
-                        selected={selectedIndex === idx}
-                        onMouseEnter={() => setSelectedIndex(idx)}
-                        onClick={() => select(flatItems[idx])}
-                      />
-                    );
-                  })}
-                </Group>
-              )}
               {projects.length > 0 && (
                 <Group label="Projects">
                   {projects.map((p) => {
@@ -331,18 +304,10 @@ function CommandPaletteContent({ open, onOpenChange, onRun }: CommandPaletteProp
 }
 
 function Group({ label, children }: { label: string; children: React.ReactNode }) {
-  // Super-agent: sentence-case heads and badges in Satoshi, no mono caps (dev walk W12-14).
-  const superAgent = useSuperAgent();
+  // Sentence-case heads and badges in Satoshi, no mono caps (dev walk W12-14).
   return (
     <div className="py-1">
-      <div
-        className={superAgent ? "px-3 py-1 text-ui font-medium" : "px-3 py-1 text-2xs uppercase"}
-        style={superAgent ? { color: "var(--midnight-muted)" } : {
-          color: "var(--midnight-muted)",
-          fontFamily: "var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace",
-          letterSpacing: "0.14em",
-        }}
-      >
+      <div className="px-3 py-1 text-ui font-medium" style={{ color: "var(--midnight-muted)" }}>
         {label}
       </div>
       <ul role="listbox" className="flex flex-col">
@@ -367,7 +332,6 @@ function Row({
   onMouseEnter: () => void;
   onClick: () => void;
 }) {
-  const superAgent = useSuperAgent();
   return (
     <li
       role="option"
@@ -396,15 +360,7 @@ function Row({
         />
       )}
       <span className="flex-1 truncate">{label}</span>
-      {sublabel && (superAgent
-        ? <span className="shrink-0 text-ui text-[var(--midnight-muted)]">{sublabel}</span>
-        : <span
-          className="agent-pill shrink-0"
-          style={{ background: "var(--cream-deep)" }}
-        >
-          {sublabel}
-        </span>
-      )}
+      {sublabel && <span className="shrink-0 text-ui text-[var(--midnight-muted)]">{sublabel}</span>}
     </li>
   );
 }

@@ -14,7 +14,7 @@ import { actorName } from "@/components/teams/shared/lib/actorName";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { useApi } from "@/lib/api";
 import { openPanel, openTaskPane, updatePanelParams, useWorkspaceState } from "../workspaceController";
-import { useLiveEvents, useSuperAgent } from "@/hooks/useLiveEvents";
+import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingWorkspaceContext";
 import { roomDisplayName } from "@lightbulb/shared";
 import { blobText } from "@/components/media/readBlob";
@@ -111,22 +111,20 @@ function FilePane({ source, task, from }: { source: FileSource; task: string | n
     }).catch((e) => { if (live) setState({ status: "error", message: describeError(e) }); });
     return () => { live = false; if (url) URL.revokeObjectURL(url); };
   }, [sourceKey, fromTask]);
-  const superAgent = useSuperAgent();
   const text = state.status === "ready" && (state.type === "text/markdown" || state.type === "text/plain");
-  // Super-agent: a text doc is titled by its first heading (RightPane reads `heading`; the file name is the line under).
+  // A text doc is titled by its first heading (RightPane reads `heading`; the file name is the line under).
   // The heading names the doc it came from (`headingOf`): a slow read of one doc never titles the next.
   const blob = state.status === "ready" ? state.blob : null;
   const docId = source.src === "text" ? undefined : source.id;
   useEffect(() => {
-    if (!superAgent || !text || !blob || !docId) return;
+    if (!text || !blob || !docId) return;
     let live = true;
     void blobText(blob.slice(0, 4096)).then((t) => {
       const heading = docPreview(t, 0).heading;
       if (live && heading) updatePanelParams("artifact", { heading, headingOf: docId });
     }, () => undefined);
     return () => { live = false; };
-  }, [superAgent, text, blob, docId]);
-  const download = state.status === "ready" ? <a className="inline-flex" href={state.url} download={state.name} aria-label="Download"><Download aria-hidden="true" /></a> : null;
+  }, [text, blob, docId]);
   const body = <>
     {state.status === "loading" && <p className="p-4 text-ui text-muted-foreground">Loading…</p>}
     {state.status === "error" && <p role="alert" className="p-4 text-ui">{state.message}</p>}
@@ -135,11 +133,10 @@ function FilePane({ source, task, from }: { source: FileSource; task: string | n
       // W18-10: say what it is ("Word file") and make Download the way in, not a dead end.
       : <div className="grid justify-items-start gap-3 p-4 text-ui">
         <p className="text-muted-foreground">{fileTypeWord(state.name) ? `${fileTypeWord(state.name)} file. ` : ""}It doesn&apos;t preview here.</p>
-        {superAgent && <Button asChild size="sm"><a href={state.url} download={state.name}><Download aria-hidden="true" />Download</a></Button>}
+        <Button asChild size="sm"><a href={state.url} download={state.name}><Download aria-hidden="true" />Download</a></Button>
       </div>)}
   </>;
-  if (!superAgent) return <PaneFrame actions={download}>{body}</PaneFrame>;
-  // Super-agent: Copy (a text doc) and Download sit in the pane's header beside Expand and ✕, no row of their own
+  // Copy (a text doc) and Download sit in the pane's header beside Expand and ✕, no row of their own
   // (W14); the file name and size are Download's label. Then the doc set as a document.
   return <>
     {state.status === "ready" && <HeaderActions>

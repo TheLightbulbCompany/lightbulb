@@ -4,9 +4,10 @@ import { render, fireEvent, screen } from "@testing-library/react";
 vi.mock("@/components/teams/command-palette/useFilteredCommandResults", () => ({
   useFilteredCommandResults: vi.fn(() => ({ agents: [], issues: [], projects: [] })),
 }));
+// The Tasks and Files groups read the tasks client; these suites are about navigation and messages.
+vi.mock("@/components/teams/command-palette/useTaskSearch", async (importOriginal) => ({ ...(await importOriginal<object>()), useTaskSearch: () => ({ tasks: [], files: [] }) }));
 vi.mock("@/hooks/useLiveEvents", () => ({
   useLiveEvents: () => ({ messaging: { searchMessages: vi.fn().mockResolvedValue({ hits: [] }), warmSearch: vi.fn().mockResolvedValue(undefined) } }),
-  useSuperAgent: () => false,
 }));
 vi.mock("@/components/settings/CompanyStripeSection", () => ({
   useCompanyStripeStatus: () => ({ data: null }),
@@ -33,7 +34,7 @@ test("renders 'Navigate' group with the IA nav actions on open with empty query"
 
 test("typing in search filters nav actions", () => {
   render(<CommandPalette open onOpenChange={vi.fn()} />);
-  const input = screen.getByPlaceholderText(/search messages/i);
+  const input = screen.getByPlaceholderText(/Search projects, tasks, files and messages/);
   fireEvent.change(input, { target: { value: "mai" } });
   expect(screen.getByText("Mail")).toBeInTheDocument();
   expect(screen.queryByText("Activity")).not.toBeInTheDocument();
@@ -102,20 +103,6 @@ test("dynamic agents render when useFilteredCommandResults provides them", () =>
   // is what we want when an agent result is also present.
   expect(screen.getAllByText("Agents").length).toBeGreaterThanOrEqual(2);
   expect(screen.getByText("Main Agent")).toBeInTheDocument();
-});
-
-test("dynamic issues render with identifier as sublabel", () => {
-  vi.mocked(useFilteredCommandResults).mockReturnValue({
-    agents: [],
-    issues: [{ id: "i1", title: "Fix bug", identifier: "PAP-42", status: "todo" }],
-    projects: [],
-  });
-  render(<CommandPalette open onOpenChange={vi.fn()} />);
-  // The nav row is "Tasks" (IA label); "Issues" is the dynamic-results group header.
-  expect(screen.getByText("Tasks")).toBeInTheDocument();
-  expect(screen.getAllByText("Issues").length).toBeGreaterThanOrEqual(1);
-  expect(screen.getByText("Fix bug")).toBeInTheDocument();
-  expect(screen.getByText("PAP-42")).toBeInTheDocument();
 });
 
 test("query state resets when dialog closes + reopens", () => {

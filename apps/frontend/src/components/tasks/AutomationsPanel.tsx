@@ -5,16 +5,12 @@
 // pane (AutomationDetail). This page is reached only by a stale link the alias missed, so it shows the one list.
 
 import type { ReactElement } from "react";
-import { RoutinesPanel } from "@/components/teams/panels/RoutinesPanel";
-import { useSuperAgent } from "@/hooks/useLiveEvents";
 import { openPanel, openTaskPane } from "@/components/workspace/workspaceController";
 import { ScheduledList } from "./ScheduledList";
 
 const WORKSPACE = { kind: "workspace" } as const;
 
 export function AutomationsPanel(): ReactElement {
-  const on = useSuperAgent();
-  if (!on) return <RoutinesPanel />;
   return <div className="px-6 py-4">
     <ScheduledList scope={WORKSPACE} onOpen={openTaskPane} onOpenAutomation={(id) => openPanel("automation", { id }, { pushUrl: true })} />
   </div>;

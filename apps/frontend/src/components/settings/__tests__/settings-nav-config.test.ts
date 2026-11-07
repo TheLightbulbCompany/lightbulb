@@ -10,12 +10,11 @@ describe("SETTINGS_NAV_SECTIONS", () => {
     expect(
       SETTINGS_NAV_SECTIONS.map((s) => [s.label, s.items.map((i) => i.id)]),
     ).toEqual([
-      ["YOU", ["profile"]],
-      ["WORKSPACE", ["workspace", "members", "approvals"]],
-      ["CONNECTIONS", ["connections"]],
-      ["PLAN AND USAGE", ["billing", "usage", "budgets"]],
-      ["MODEL", ["providers"]],
-      ["ADVANCED", ["skills", "mcp", "local-mcp", "desktop", "marketplace"]],
+      ["You", ["profile"]],
+      ["Workspace", ["workspace", "members", "approvals"]],
+      ["Connect", ["connections"]],
+      ["Plan", ["billing", "usage", "business", "providers"]],
+      ["Developer", ["skills", "mcp", "local-mcp", "desktop"]],
     ]);
   });
 

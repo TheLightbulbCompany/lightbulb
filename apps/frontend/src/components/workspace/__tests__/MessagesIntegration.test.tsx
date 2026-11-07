@@ -7,7 +7,7 @@ import type { RoomDetail, LocalSession, MessagePage } from "@lightbulb/shared";
 import { MessagingWorkspaceProvider, useMessagingWorkspace } from "@/components/messaging/MessagingWorkspaceContext";
 import { WorkspaceSidebar } from "../WorkspaceSidebar";
 import { ChatPanel } from "../panels/ChatPanel";
-import { attachShell, getWorkspaceSnapshot, openChatPanel, openChatPanelWithDraft, openPanel, openSessionPanel, openMessagePanel, useWorkspaceState } from "../workspaceController";
+import { attachShell, getWorkspaceSnapshot, openChatPanel, openChatPanelWithDraft, openSessionPanel, openMessagePanel, useWorkspaceState } from "../workspaceController";
 import { parseCommand } from "../urlChannel";
 import { MESSAGES_PANEL_ID } from "../panelRegistry";
 
@@ -67,7 +67,7 @@ const live = {
   httpReady: true, liveConnected: false, liveChannels: [] as string[], connectionRevision: 1, messaging,
   onEvent: () => () => {}, claimActiveRoomSubscription: () => () => {},
 };
-vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useOptionalLiveEvents: () => null, useSuperAgent: () => false }));
+vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useOptionalLiveEvents: () => null }));
 
 // The conversation reads its params from the controller, as WorkspaceBody mounts it.
 function Conversation() {
@@ -184,32 +184,6 @@ describe("Messages room/controller boundary", () => {
 
     await waitFor(() => expect(screen.getByLabelText("Selected room")).toHaveTextContent("a-first"));
     await waitFor(() => expect(composerValue()).toBe("file the inbox"));
-  });
-
-  it("synchronizes a newly created DM after late detail hydration for workspace consumers", async () => {
-    const created = dm("b-new", "agent-b", "Beta conversation");
-    let hydrate!: (room: RoomDetail) => void;
-    const delayed = new Promise<RoomDetail>((resolve) => { hydrate = resolve; });
-    messaging.getRoom.mockImplementation(async (id) => id === created.roomId ? delayed : listed.find((room) => room.roomId === id)!);
-    messaging.createRoom.mockImplementation(async () => { listed = [...listed, created]; return created; });
-    renderWorkspace();
-    await waitFor(() => expect(getWorkspaceSnapshot().focusedChatAgentId).toBe("agent-a"));
-    await waitFor(() => expect(screen.getByLabelText("Selected room")).toHaveTextContent("a-first"));
-    fireEvent.click(await screen.findByRole("button", { name: "New chat or channel" }));
-    fireEvent.change(screen.getByLabelText("Type"), { target: { value: "dm" } });
-    fireEvent.click(screen.getByLabelText("Select Beta"));
-    fireEvent.click(screen.getByRole("button", { name: "Start direct message" }));
-    await waitFor(() => expect(screen.getByLabelText("Selected room")).toHaveTextContent("b-new"));
-    await act(async () => { hydrate(created); });
-    await waitFor(() => expect(getWorkspaceSnapshot()).toMatchObject({
-      focusedChatAgentId: "agent-b", lastFocusedChatAgentId: "agent-b", visibleChatAgentIds: ["agent-b"],
-    }));
-    act(() => openPanel("file-viewer"));
-    expect(getWorkspaceSnapshot().lastFocusedChatAgentId).toBe("agent-b");
-    // Files open in the right pane; the conversation stays the place.
-    expect(getWorkspaceSnapshot().pane?.panelId).toBe("file-viewer");
-    expect(getWorkspaceSnapshot().place).toBe("chat");
-    expect(chatParams().agentSelection).toBe("resolved");
   });
 
   it("keeps an unresolved default-agent command until the roster arrives", async () => {

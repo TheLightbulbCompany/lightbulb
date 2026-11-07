@@ -46,13 +46,11 @@ export interface LiveEventsContextValue extends RuntimeRpcSource {
   liveChannels: readonly string[];
   liveError: string | null;
   messaging: ReturnType<typeof createMessagingClient>;
-  /** The workspace's super-agent switch, from the live config already fetched (contracts-v2 §1). */
-  superAgent: boolean;
-  /** The super-agent task routes; only called while `superAgent` is on. */
+  /** The super-agent task routes. */
   tasks: TasksClient;
-  /** Agent id → name while the switch is on (task specialists are agent ids); empty until it loads. */
+  /** Agent id → name (task specialists are agent ids); empty until it loads. */
   agentNames: AgentNames;
-  /** The front agent (displays as "Lightbulb" while the switch is on); undefined until the agents list loads. */
+  /** The front agent (displays as "Lightbulb"); undefined until the agents list loads. */
   frontAgentId: string | undefined;
   /** The signed-in API client (lane A's automation routes read through it). */
   api: ApiMethods;
@@ -188,10 +186,9 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     [],
   );
 
-  const superAgent = config?.features?.superAgent === true;
-  // Specialist names for task cards ("Finance", never the agent id): one read of the agents list while
-  // the switch is on, shared by every card through this context.
-  const { names: agentNames, frontAgentId } = useAgentDirectory(superAgent && httpReady ? tasks.cacheScope : null,
+  // Specialist names for task cards ("Finance", never the agent id): one read of the agents list,
+  // shared by every card through this context.
+  const { names: agentNames, frontAgentId } = useAgentDirectory(httpReady ? tasks.cacheScope : null,
     async () => ((await api.get("/teams/agents")) as { agents?: { id: string; name?: string | null; role?: string | null; reportsTo?: string | null; origin?: string | null }[] } | null)?.agents ?? []);
   const userChannel = config ? `/ws/${config.workspaceId}/users/${config.userChannelKey}` : null;
   const roomChannel = config && activeRoom
@@ -206,7 +203,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     onEvent: dispatchEvent,
     onChatMessage: dispatchChat,
     onConfigStale: refreshConfig,
-    tasksChannel: superAgent,
+    tasksChannel: true,
     enabled: foreground && httpReady,
   });
 
@@ -252,7 +249,6 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
       liveChannels: live.liveChannels,
       liveError: configError ? "Live updates are reconnecting." : live.lastError,
       messaging,
-      superAgent,
       tasks,
       agentNames,
       frontAgentId,
@@ -272,7 +268,6 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
       live.connectionRevision,
       configError,
       messaging,
-      superAgent,
       tasks,
       agentNames,
       frontAgentId,
@@ -302,9 +297,4 @@ export function useLiveEvents(): LiveEventsContextValue {
     throw new Error("useLiveEvents must be used within a LiveEventsProvider");
   }
   return value;
-}
-
-/** Super-agent UI switch: false until live config says `features.superAgent: true`, and outside a provider. */
-export function useSuperAgent(): boolean {
-  return useContext(LiveEventsContext)?.superAgent ?? false;
 }

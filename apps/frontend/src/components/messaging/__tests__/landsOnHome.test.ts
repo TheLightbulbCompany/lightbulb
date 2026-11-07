@@ -4,7 +4,7 @@ vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({}), useUser: () => ({}) }));
 import { isFreshWorkspace, landsOnHome } from "../MessagingWorkspaceContext";
 import type { RoomSummary } from "@lightbulb/shared";
 
-const base = { superAgent: true, fresh: false as boolean | null, search: "", snapshot: { ready: true, place: "chat" as const, pane: null }, picked: false };
+const base = { fresh: false as boolean | null, search: "", snapshot: { ready: true, place: "chat" as const, pane: null }, picked: false };
 
 describe("landsOnHome", () => {
   it("a returning super-agent workspace on a bare URL lands on Home", () => {
@@ -13,7 +13,6 @@ describe("landsOnHome", () => {
   it.each([
     ["a brand-new workspace (#general onboarding)", { fresh: true }],
     ["fresh-or-returning not known yet", { fresh: null }],
-    ["the switch off", { superAgent: false }],
     ["a URL naming a place", { search: "?panel=activity" }],
     ["a room permalink", { search: "?panel=chat&room=r1" }],
     ["a place already open", { snapshot: { ready: true, place: "work" as const, pane: null } }],

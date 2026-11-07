@@ -448,7 +448,7 @@ export interface LiveConfig {
   region: string;
   userChannelKey: string;
   workspaceId: string;
-  /** Present only while the super-agent switch is on for this workspace; absent or null = off. */
+  /** Always `{ superAgent: true }` now; kept on the wire for old app builds. Clients do not read it. */
   features?: { superAgent: boolean } | null;
 }
 

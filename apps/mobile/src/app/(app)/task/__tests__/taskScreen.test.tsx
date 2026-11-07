@@ -8,7 +8,7 @@ const mockAuth = { userId: SAM as string };
 // One task id per test: the shared SWR cache keys `task:<scope>:<id>` and `task-questions:<scope>:<id>` share the fake
 // client's one scope, so a second test on the same id would read the first test's rows for SWR's dedupe window.
 const mockParams = { taskId: "t-signup" };
-const mockLive = { superAgent: true, tasks: null as unknown, messaging: { attachmentUrl: jest.fn(async () => ({ url: "https://files.example/n.md" })) }, api: { get: jest.fn(async () => ({ apps: [{ app_id: "app1", live_url: null, live_version: null }] })), post: jest.fn(async () => ({ url: "https://preview.example/app1" })) } };
+const mockLive = { tasks: null as unknown, messaging: { attachmentUrl: jest.fn(async () => ({ url: "https://files.example/n.md" })) }, api: { get: jest.fn(async () => ({ apps: [{ app_id: "app1", live_url: null, live_version: null }] })), post: jest.fn(async () => ({ url: "https://preview.example/app1" })) } };
 const mockOpenBrowser = jest.fn(async (_url: string) => undefined);
 jest.mock("expo-web-browser", () => ({ openBrowserAsync: (url: string) => mockOpenBrowser(url) }));
 const mockRooms = {
@@ -28,7 +28,7 @@ jest.mock("expo-router", () => {
 jest.mock("@clerk/expo", () => ({ useAuth: () => ({ userId: mockAuth.userId }) }));
 jest.mock("expo-crypto", () => ({ randomUUID: () => "00000000-0000-4000-8000-000000000000" }));
 jest.mock("react-native-safe-area-context", () => ({ useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));
-jest.mock("../../../../providers/live-events", () => ({ useLiveEvents: () => mockLive, useSuperAgent: () => mockLive.superAgent }));
+jest.mock("../../../../providers/live-events", () => ({ useLiveEvents: () => mockLive }));
 jest.mock("../../../../lib/rooms", () => ({
   useMobileRooms: () => mockRooms,
   useSendDrafts: () => ({ canSend: true, send: mockSend, retry: jest.fn(), rows: [] }),
@@ -78,7 +78,7 @@ function client(detail: TaskDetail, views: QuestionView[], id: string) {
   mockLive.tasks = c;
   return c;
 }
-beforeEach(() => { mockLive.superAgent = true; mockAuth.userId = SAM; mockRooms.selectRoom.mockClear(); mockSend.mockClear(); });
+beforeEach(() => { mockAuth.userId = SAM; mockRooms.selectRoom.mockClear(); mockSend.mockClear(); });
 
 it("lists what the task made; a doc opens by its short-lived URL, mail is a row", async () => {
   const outputs: TaskOutput[] = [
@@ -139,17 +139,6 @@ it("409 shows who answered and removes the buttons, with no second POST", async 
   await waitFor(() => expect(view.queryByLabelText("Approve")).toBeNull());
   expect(await view.findByText("Already answered by Priya")).toBeTruthy();
   expect(c.answer).toHaveBeenCalledTimes(1);
-  await view.unmount();
-});
-
-it("switch off: a pasted task link renders nothing and fetches or marks nothing", async () => {
-  mockLive.superAgent = false;
-  const c = client({ ...step8, task: waiting }, [approval()], "t-off");
-  const view = await render(<TaskScreen />);
-  expect(view.toJSON()).toBeNull();
-  expect(c.get).not.toHaveBeenCalled();
-  expect(c.markRead).not.toHaveBeenCalled();
-  expect(mockRooms.selectRoom).not.toHaveBeenCalled();
   await view.unmount();
 });
 

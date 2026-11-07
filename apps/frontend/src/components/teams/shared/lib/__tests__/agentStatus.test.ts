@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest";
 
-import { AGENT_STATUS_CLASS, classifyAgentStatus } from "../agentStatus";
-import { STATUS_DOT_COLOR, STATUS_DOT_CLASS } from "@/components/teams/org-chart/statusColors";
+import { classifyAgentStatus } from "../agentStatus";
 
 describe("classifyAgentStatus", () => {
   it("treats every live-meaning status as live, not just 'running'", () => {
@@ -36,18 +35,5 @@ describe("classifyAgentStatus", () => {
     expect(classifyAgentStatus(undefined)).toBeNull();
     expect(classifyAgentStatus("")).toBeNull();
     expect(classifyAgentStatus("compacting")).toBeNull();
-  });
-});
-
-describe("status vocabulary fence", () => {
-  // The whole point of the shared table: two surfaces reading one backend enum
-  // must not drift. Adding a status to either side without the other fails
-  // here rather than silently mis-rendering on one surface.
-  it("covers exactly the statuses the org chart's colour table knows", () => {
-    expect(Object.keys(AGENT_STATUS_CLASS).sort()).toEqual(Object.keys(STATUS_DOT_COLOR).sort());
-  });
-
-  it("covers exactly the statuses the org chart's animation table knows", () => {
-    expect(Object.keys(AGENT_STATUS_CLASS).sort()).toEqual(Object.keys(STATUS_DOT_CLASS).sort());
   });
 });

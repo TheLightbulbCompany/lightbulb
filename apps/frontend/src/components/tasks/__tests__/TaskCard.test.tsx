@@ -5,8 +5,8 @@ import { ApiError } from "@lightbulb/shared";
 import { FIXTURES, PRIYA, SAM, viewAs } from "@lightbulb/shared/tasks/fixtures";
 import { Fresh, fakeTasksClient, type FakeTasksClient } from "./fakeTasks";
 
-const live = vi.hoisted(() => ({ superAgent: true, tasks: null as unknown }));
-vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useSuperAgent: () => live.superAgent }));
+const live = vi.hoisted(() => ({ tasks: null as unknown }));
+vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live }));
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 vi.mock("@/components/canvas/RequestApp", () => ({ RequestApp: () => null })); // its own test: RequestApp.test.tsx
 

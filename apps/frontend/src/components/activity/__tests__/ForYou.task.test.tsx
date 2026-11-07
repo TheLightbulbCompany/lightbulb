@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { ActivityItem } from "@lightbulb/shared";
-import { ForYou, rowTarget, type ForYouProps } from "../ForYou";
+import { ForYouAsks, rowTarget } from "../ForYou";
 import { approval } from "./fixtures";
 
 vi.mock("@/components/teams/inbox/hooks/useAgentWake", () => ({ useAgentWake: () => ({ wakeAgent: vi.fn() }) }));
@@ -25,11 +25,8 @@ describe("For you: task questions", () => {
   });
 
   it("the row opens the thread pane through onNavigate", async () => {
-    const props = {
-      activityItems: [taskQuestion], attentionItems: [], loading: false, filter: "all" as const, onFilterChange: vi.fn(),
-      onRunAction: vi.fn().mockResolvedValue(undefined), onNavigate: vi.fn(), onDismissRuns: vi.fn(), people: [], agents: [],
-    } satisfies ForYouProps;
-    render(<ForYou {...props} />);
+    const props = { items: [taskQuestion], onRunAction: vi.fn().mockResolvedValue(undefined), onNavigate: vi.fn() };
+    render(<ForYouAsks {...props} />);
     await userEvent.click(screen.getByRole("button", { name: "Open thread" }));
     expect(props.onNavigate).toHaveBeenCalledWith({ kind: "task", id: "t1", roomId: null });
   });

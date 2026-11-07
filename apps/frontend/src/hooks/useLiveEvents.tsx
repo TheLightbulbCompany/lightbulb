@@ -34,7 +34,6 @@ import { useApi } from "@/lib/api";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { readDesktopPermissionGrant } from "@/lib/desktopPermissions";
 import { subscribeDesktopPermissions } from "@/lib/desktopPermissionsSubscribe";
-import { readLastKnown, writeLastKnown } from "@/lib/lastKnown";
 
 export interface ActiveRoomSubscription {
   roomId: string;
@@ -52,15 +51,11 @@ export interface LiveEventsContextValue extends RuntimeRpcSource {
   /** Why the node is in its current status, when the desktop said (e.g. a pair refusal). */
   nodeStatusReason: string;
   messaging: ReturnType<typeof createMessagingClient>;
-  /** The workspace's super-agent switch, from the live config already fetched (contracts-v2 §1). */
-  superAgent: boolean;
-  /** The live config answered (or failed), so `superAgent` is final: a redirect that depends on it waits for this. */
-  featuresLoaded?: boolean;
-  /** The super-agent task routes; only called while `superAgent` is on. */
+  /** The super-agent task routes. */
   tasks: TasksClient;
-  /** Agent id → name while the switch is on (task specialists are agent ids); empty until it loads. */
+  /** Agent id → name (task specialists are agent ids); empty until it loads. */
   agentNames: AgentNames;
-  /** The front agent (shows as "Lightbulb" while the switch is on); undefined until the agents list loads. */
+  /** The front agent (shows as "Lightbulb"); undefined until the agents list loads. */
   frontAgentId: string | undefined;
   claimActiveRoomSubscription(room: ActiveRoomSubscription): () => void;
   /** Subscribe the active room's frames sibling channel (a Mac tab's view-tier frames) while
@@ -107,19 +102,10 @@ export function LiveEventsProvider({ children, preloadRooms = false }: { childre
   // No longer a member (403): SWR would keep the last config, and with it the socket and every
   // subscription. Dropping it closes them all.
   const config = configError instanceof ApiError && configError.status === 403 ? undefined : liveConfig;
-  const featuresLoaded = config !== undefined || configError !== undefined;
-  // Until the live config answers (1-3 s on a cold load), the switch reads what this browser last saw for this person
-  // and workspace, so a super-agent reload draws its own shell at once instead of the old one first (W12-18).
-  const switchScope = `${userId}:${ownerScope}`;
-  // (Read once Clerk has loaded: never during hydration, so the server's render and the first client render agree.)
-  const superAgent = featuresLoaded ? config?.features?.superAgent === true : httpReady && readLastKnown("superAgent", switchScope) === true;
-  useEffect(() => {
-    if (config && userId) writeLastKnown("superAgent", switchScope, config.features?.superAgent === true);
-  }, [config, userId, switchScope]);
-  // Specialist names for task cards ("Finance", never the agent id): one read of the agents list while
-  // the switch is on, shared by every card through this context.
+  // Specialist names for task cards ("Finance", never the agent id): one read of the agents list,
+  // shared by every card through this context.
   // The same `/teams/agents` SWR key the roster and the panels read, so a cold load makes one request, not two.
-  const { data: teamAgents } = useTeamsApi().read<{ agents?: DirectoryAgent[] }>(superAgent && httpReady ? "/agents" : null);
+  const { data: teamAgents } = useTeamsApi().read<{ agents?: DirectoryAgent[] }>(httpReady ? "/agents" : null);
   const { names: agentNames, frontAgentId } = useMemo(() => agentDirectory(teamAgents?.agents ?? []), [teamAgents]);
   const [activeRoomState, setActiveRoomState] = useState<{
     ownerScope: string | null;
@@ -160,7 +146,7 @@ export function LiveEventsProvider({ children, preloadRooms = false }: { childre
     roomChannel,
     framesChannel,
     sessionFramesChannels,
-    tasksChannel: superAgent,
+    tasksChannel: true,
     onSubscribeError: (channel) => {
       for (const claim of sessionFrameClaims.current) if (claim.channel === channel) claim.onRefused();
     },
@@ -304,8 +290,6 @@ export function LiveEventsProvider({ children, preloadRooms = false }: { childre
     nodeStatus,
     nodeStatusReason,
     messaging,
-    superAgent,
-    featuresLoaded,
     tasks,
     agentNames,
     frontAgentId,
@@ -326,8 +310,6 @@ export function LiveEventsProvider({ children, preloadRooms = false }: { childre
     nodeStatus,
     nodeStatusReason,
     messaging,
-    superAgent,
-    featuresLoaded,
     tasks,
     agentNames,
     frontAgentId,
@@ -352,10 +334,4 @@ export function useLiveEvents(): LiveEventsContextValue {
   const value = useContext(LiveEventsContext);
   if (!value) throw new Error("useLiveEvents must be used within a LiveEventsProvider");
   return value;
-}
-
-/** Super-agent UI switch: the live config's `features.superAgent` (until it answers, what this browser last saw for this
- *  person and workspace); false outside a provider. */
-export function useSuperAgent(): boolean {
-  return useContext(LiveEventsContext)?.superAgent ?? false;
 }

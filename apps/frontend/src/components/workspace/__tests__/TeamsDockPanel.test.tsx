@@ -82,12 +82,6 @@ describe("TeamsDockPanel — partial parameter updates", () => {
 });
 
 describe("TeamsDockPanel — durable params forwarding", () => {
-  // The dock panel's own params-forwarding spread once silently dropped a
-  // durable param before it ever reached the router; these are the wire.
-  it("forwards the money `day` param through to TeamsPanelRouter", () => {
-    show("teams-money", { day: "2026-09-05" });
-    expect((lastRouterProps().panelParams as Params).day).toBe("2026-09-05");
-  });
 
   it("forwards the agents `view` param — the absorbed org-chart key's only carrier", () => {
     // ?panel=teams-org-chart aliases to teams-agents and its view rides in the
@@ -96,13 +90,6 @@ describe("TeamsDockPanel — durable params forwarding", () => {
     expect((lastRouterProps().panelParams as Params).view).toBe("chart");
   });
 
-  it("forwards the money `section` param — the absorbed keys' only carrier", () => {
-    // ?panel=teams-spend aliases to teams-money and its section rides in the
-    // params. Dropped here (the same spread that once dropped `path`), every
-    // absorbed key would open Money at the top of the page instead.
-    show("teams-spend");
-    expect((lastRouterProps().panelParams as Params).section).toBe("spend");
-  });
 });
 
 describe("TeamsDockPanel — scroll-container wrapper", () => {

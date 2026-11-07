@@ -5,8 +5,7 @@ import { RoomDirectory, type RoomDirectoryProps } from "../RoomDirectory";
 import { SpecialistDmBanner } from "../SpecialistDmBanner";
 import type { DirectoryParticipant, DirectoryRoom } from "../types";
 
-const live = vi.hoisted(() => ({ superAgent: true }));
-vi.mock("@/hooks/useLiveEvents", () => ({ useSuperAgent: () => live.superAgent, useOptionalLiveEvents: () => null }));
+vi.mock("@/hooks/useLiveEvents", () => ({ useOptionalLiveEvents: () => null }));
 const openAgentDmWithDraft = vi.hoisted(() => vi.fn());
 vi.mock("@/components/workspace/workspaceController", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/components/workspace/workspaceController")>(),
@@ -23,7 +22,7 @@ const props: RoomDirectoryProps = {
   onSelectRoom: vi.fn(), onSelectParticipant: vi.fn(), onCreate: vi.fn().mockResolvedValue(false),
 };
 
-beforeEach(() => { live.superAgent = true; openAgentDmWithDraft.mockClear(); });
+beforeEach(() => { openAgentDmWithDraft.mockClear(); });
 
 describe("sidebar with the super-agent on", () => {
   it("W17-8: New chat lists Lightbulb first with its mark, and a group chat starts with it picked", async () => {
@@ -112,12 +111,6 @@ describe("sidebar with the super-agent on", () => {
     expect(screen.queryByRole("region", { name: "Specialists" })).toBeNull();
   });
 
-  it("off: every agent is a roster row under Team and there is no Specialists group", () => {
-    live.superAgent = false;
-    render(<RoomDirectory {...props} />);
-    expect(rowsOf("People")).toEqual(["Lightbulb", "Alice", "Engineering", "Finance"]);
-    expect(screen.queryByRole("region", { name: "Specialists" })).toBeNull();
-  });
 });
 
 describe("SpecialistDmBanner", () => {

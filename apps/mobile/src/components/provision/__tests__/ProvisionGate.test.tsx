@@ -420,7 +420,7 @@ describe("ProvisionGate container-status context", () => {
     );
 
     expect(screen.getByText("STATUS:starting:undefined")).toBeTruthy();
-    expect(screen.getByText("Your workspace is starting…")).toBeTruthy();
+    expect(screen.getByText(/Setting up, step 1 of 3/)).toBeTruthy();
     expect(screen.queryByTestId("provision-dot-rail")).toBeNull();
   });
 

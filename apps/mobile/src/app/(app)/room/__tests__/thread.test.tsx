@@ -117,7 +117,7 @@ const mockLive = {
 };
 // One hoisted object, never a fresh literal per call: RoomsPlatform requires a
 // referentially stable `live`.
-jest.mock("../../../../providers/live-events", () => ({ useSuperAgent: () => false, useLiveEvents: () => mockLive, useOptionalLiveEvents: () => mockLive }));
+jest.mock("../../../../providers/live-events", () => ({ useLiveEvents: () => mockLive, useOptionalLiveEvents: () => mockLive }));
 
 import Thread from "../[roomId]/thread/[messageId]";
 import { getCurrentTarget } from "../../../../lib/activeAgent";

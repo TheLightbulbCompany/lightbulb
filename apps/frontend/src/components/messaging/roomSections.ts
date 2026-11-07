@@ -23,13 +23,11 @@ export function groupRooms(
   sections: readonly RoomSection[],
   options: {
     sort: SidebarSort; nameOf: (room: DirectoryRoom) => string; alwaysShow?: readonly string[];
-    /** Super-agent: the one front agent (`@lightbulb`). A DM with any other agent is a specialist's: it leaves the
+    /** The one front agent (`@lightbulb`). A DM with any other agent is a specialist's: it leaves the
      *  sidebar (one voice) and is reached from the Team page, where specialists are hired and managed. It stays
      *  under Team while it has unread messages or is the open conversation, so nothing new hides. */
     frontAgentId?: string | null;
     currentRoomId?: string | null;
-    /** Super-agent (UX slice 6): the starred group reads "Pinned", like the row's Pin. */
-    pinned?: boolean;
   },
 ): RoomGroup[] {
   const known = new Set(sections.map((section) => section.id));
@@ -41,9 +39,10 @@ export function groupRooms(
         : room.kind === "channel" ? "channels"
           : specialistDm(room) && room.unreadCount === 0 && room.roomId !== options.currentRoomId ? null : "direct";
   const order: RoomGroup[] = [
-    { id: "starred", label: options.pinned ? "Pinned" : "Starred", rooms: [], custom: false },
+    // UX slice 6: the starred group reads "Pinned", like the row's Pin.
+    { id: "starred", label: "Pinned", rooms: [], custom: false },
     ...sections.map((section) => ({ id: section.id, label: section.name, rooms: [], custom: true })),
-    { id: "direct", label: options.pinned ? "Chats" : "People", rooms: [], custom: false },
+    { id: "direct", label: "Chats", rooms: [], custom: false },
     { id: "channels", label: "Channels", rooms: [], custom: false },
     { id: "external", label: "External connections", rooms: [], custom: false },
     { id: "archived", label: "Archived", rooms: [], custom: false },

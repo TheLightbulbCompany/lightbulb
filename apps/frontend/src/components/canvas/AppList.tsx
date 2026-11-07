@@ -9,7 +9,6 @@ import type { LucideIcon } from "lucide-react";
 import type { AppRow } from "@/hooks/useApps";
 import { openPanel, openTaskPane } from "@/components/workspace/workspaceController";
 import { Problem, displayName, roomOf } from "./appText";
-import { StartBox } from "./StartBox";
 import "./canvas.css";
 
 const WHO: Record<string, string> = {
@@ -109,10 +108,9 @@ function Row({ app, phase, onOpen, canManage }: { app: AppRow; phase: Phase; onO
   </li>;
 }
 
-export function AppList({ apps, loading, error, onOpen, onRetry, onStart, canManage = false }: {
+export function AppList({ apps, loading, error, onOpen, onRetry, canManage = false }: {
   canManage?: boolean; apps: AppRow[]; loading: boolean; error: Error | null;
   onOpen: (appId: string) => void; onRetry: () => void;
-  onStart?: (request: string) => Promise<{ app_id: string }>;
 }) {
   const [filter, setFilter] = useState<Filter>("all");
   const rows = apps
@@ -123,7 +121,6 @@ export function AppList({ apps, loading, error, onOpen, onRetry, onStart, canMan
     {error ? <div className="canvas__notice"><Problem raw={error.message}
       action={<button type="button" className="underline" onClick={onRetry}>Try again</button>}>
       We couldn&apos;t load the apps.</Problem></div> : null}
-    {onStart && !error && <StartBox onStart={onStart} onOpen={onOpen} first={!loading && apps.length === 0} />}
     {apps.length > 0 && <section aria-labelledby="canvas-heading">
       <header className="app-list__head">
         <h2 id="canvas-heading" className="app-list__title">Apps</h2>
@@ -139,7 +136,7 @@ export function AppList({ apps, loading, error, onOpen, onRetry, onStart, canMan
     {loading && apps.length === 0 && !error && <p className="canvas__notice">Loading apps…</p>}
     {!loading && !error && apps.length === 0 && <div className="app-list__empty">
       <p className="app-list__empty-title">No apps yet</p>
-      <p className="canvas__notice">{onStart ? "Describe one above, or ask an agent in any chat." : "Ask an agent in any chat for one, like \"a sign-up page for our workshop\"."} Each app is built in its own conversation and shows up here.</p>
+      <p className="canvas__notice">Ask an agent in any chat for one, like &quot;a sign-up page for our workshop&quot;. Each app is built in its own conversation and shows up here.</p>
     </div>}
   </div>;
 }

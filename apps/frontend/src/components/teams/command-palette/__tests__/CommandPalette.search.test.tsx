@@ -8,11 +8,9 @@ const searchTasks = vi.fn();
 const outputs = vi.fn();
 const openTaskPane = vi.fn();
 const openOutput = vi.fn();
-let superAgent = true;
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 vi.mock("@/hooks/useLiveEvents", () => ({
-  useSuperAgent: () => superAgent,
   useLiveEvents: () => ({ tasks: tasksClient, messaging: messagingClient }),
 }));
 const tasksClient = { searchTasks, outputs };
@@ -36,7 +34,6 @@ import { CommandPalette, wholeWordFirst } from "../CommandPalette";
 const doc = { id: "file:f1", kind: "document", title: "bakery.md", ref: {}, createdAt: "1", taskId: "t1" };
 
 beforeEach(() => {
-  superAgent = true;
   messagingClient = undefined;
   vi.clearAllMocks();
   searchTasks.mockResolvedValue({ tasks: [{ taskId: "t1", title: "Bakery taglines" }], next: null });
@@ -73,14 +70,6 @@ describe("command palette search (super-agent)", () => {
     fireEvent.change(input, { target: { value: "bakery" } });
     expect(first.aborted).toBe(true);
     await waitFor(() => expect(searchTasks).toHaveBeenLastCalledWith("bakery", 6, expect.any(AbortSignal)));
-  });
-
-  test("without the super-agent nothing asks the task routes", async () => {
-    superAgent = false;
-    render(<CommandPalette open onOpenChange={() => {}} />);
-    fireEvent.change(screen.getByRole("textbox"), { target: { value: "bakery" } });
-    expect(await screen.findByText("bakery issue")).toBeInTheDocument();
-    await waitFor(() => expect(searchTasks).not.toHaveBeenCalled());
   });
 
   test("a doc is found by a word in its text, read once through the ranged attachment read (W15-10)", async () => {

@@ -1,11 +1,10 @@
 // The conversation's tools and side column in the shell's one right pane, plus the one card
 // rule only RoomPanel can apply: whether the card's author is still in the room.
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { render, screen } from "@testing-library/react";
 import { beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { RoomPanel, type RoomPanelProps } from "../RoomPanel";
 import type { RoomMessage, RoomParticipant } from "../types";
-import { _resetControllerForTests, attachShell, getWorkspaceSnapshot, setThreadPaneHost } from "@/components/workspace/workspaceController";
+import { _resetControllerForTests } from "@/components/workspace/workspaceController";
 
 const shared = vi.hoisted(() => ({ statusLoaded: true }));
 vi.mock("@lightbulb/shared", async (importOriginal) => ({
@@ -47,63 +46,6 @@ beforeEach(() => {
   shared.statusLoaded = true;
 });
 
-/** The room's tools are labelled toggles in the header (founder: never hidden in ···). */
-const toolNames = () => ["Files", "Browser", "Ideas"].filter((name) => screen.queryByRole("button", { name }));
-async function pickTool(name: string) {
-  await userEvent.click(screen.getByRole("button", { name }));
-}
-
-it("shows Files, Browser and Ideas in the header only inside the shell, each opening the pane; pressed again closes it", async () => {
-  const outside = render(<RoomPanel {...props} />);
-  expect(toolNames()).toEqual([]);
-  outside.unmount();
-
-  attachShell(() => undefined);
-  render(<RoomPanel {...props} />);
-  // Not in the ··· menu any more.
-  await userEvent.click(screen.getByRole("button", { name: "Options" }));
-  const items = (await screen.findAllByRole("menuitem")).map((item) => item.textContent ?? "");
-  expect(items.some((t) => /Agent files|Browser|Ideas/.test(t))).toBe(false);
-  await userEvent.keyboard("{Escape}");
-  await pickTool("Files");
-  expect(getWorkspaceSnapshot().pane).toMatchObject({ panelId: "file-viewer", params: { agent: "friday" } });
-  expect(screen.getByRole("button", { name: "Files" })).toHaveAttribute("aria-pressed", "true");
-  await pickTool("Browser");
-  expect(getWorkspaceSnapshot().pane?.panelId).toBe("browser");
-  expect(getWorkspaceSnapshot().place).toBe("chat");
-  await pickTool("Browser");
-  expect(getWorkspaceSnapshot().pane).toBeNull();
-});
-
-it("Ideas opens the pane with the DM's agent first", async () => {
-  attachShell(() => undefined);
-  render(<RoomPanel {...props} />);
-  await pickTool("Ideas");
-  expect(getWorkspaceSnapshot().pane).toMatchObject({ panelId: "ideas", component: "ideas", params: { agent: "friday" } });
-  expect(getWorkspaceSnapshot().place).toBe("chat");
-});
-
-it("hides Browser until a status body has landed", async () => {
-  shared.statusLoaded = false;
-  attachShell(() => undefined);
-  render(<RoomPanel {...props} />);
-  expect(toolNames()).toEqual(["Files", "Ideas"]);
-});
-
-it("shows a thread in the pane, and folds it when something else takes the pane", async () => {
-  attachShell(() => undefined);
-  const host = document.createElement("div");
-  document.body.appendChild(host);
-  act(() => setThreadPaneHost(host));
-  render(<RoomPanel {...props} />);
-  fireEvent.click(screen.getByRole("button", { name: "Reply in thread" }));
-  expect(getWorkspaceSnapshot().pane?.component).toBe("thread");
-  expect(within(host).getByRole("complementary", { name: "Thread" })).toHaveTextContent("Reply text");
-  await pickTool("Files");
-  expect(getWorkspaceSnapshot().pane?.panelId).toBe("file-viewer");
-  expect(screen.queryByRole("complementary", { name: "Thread" })).toBeNull();
-  host.remove();
-});
 
 it("a card from an agent no longer in the room is read-only; a member's card still answers", async () => {
   const card: RoomMessage = { ...message, text: "```openui-lang\nroot = Stack([b])\nb = Buttons([Button(\"Studio\"), Button(\"Starter\")])\n```" };

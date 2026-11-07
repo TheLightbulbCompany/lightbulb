@@ -3,8 +3,8 @@ import { FIXTURES, PRIYA, SAM, viewAs } from "@lightbulb/shared/tasks/fixtures";
 
 import { chatPalette } from "../../../config/theme";
 
-const mockLive = { superAgent: true, tasks: null as unknown, agentNames: new Map<string, string>() };
-jest.mock("../../../providers/live-events", () => ({ useLiveEvents: () => mockLive, useSuperAgent: () => mockLive.superAgent }));
+const mockLive = { tasks: null as unknown, agentNames: new Map<string, string>() };
+jest.mock("../../../providers/live-events", () => ({ useLiveEvents: () => mockLive }));
 jest.mock("expo-router", () => ({ router: { push: jest.fn() } }));
 jest.mock("expo-crypto", () => ({ randomUUID: () => "00000000-0000-4000-8000-000000000000" }));
 

@@ -1,5 +1,5 @@
 // First run (UX slice 6): the first run's ideas wait in the Lightbulb DM as cards; the list is re-read when the first
-// run's task changes; nothing is read with the switch off.
+// run's task changes.
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -9,12 +9,12 @@ import type { Idea, LiveEvent } from "@lightbulb/shared";
 const client = vi.hoisted(() => ({ listIdeas: vi.fn(), startIdea: vi.fn(), dismissIdea: vi.fn() }));
 const handlers = vi.hoisted(() => new Set<(event: unknown) => void>());
 const live = vi.hoisted(() => ({
-  superAgent: true, agentNames: new Map([["ceo", "Lightbulb"]]), messaging: null as unknown,
+  agentNames: new Map([["ceo", "Lightbulb"]]), messaging: null as unknown,
   onEvent: (h: (event: unknown) => void) => { handlers.add(h); return () => handlers.delete(h); },
 }));
 const auth = vi.hoisted(() => ({ isLoaded: true, userId: "u1", orgId: "o1", orgRole: "org:admin" }));
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => auth }));
-vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useOptionalLiveEvents: () => live, useSuperAgent: () => live.superAgent }));
+vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useOptionalLiveEvents: () => live }));
 vi.mock("@/lib/notify", () => ({ notifyApiError: vi.fn() }));
 vi.mock("@/components/workspace/workspaceController", () => ({ openMessagePanel: vi.fn(), openTaskPane: vi.fn(), openPanel: vi.fn(), openChatPanelWithDraft: vi.fn() }));
 
@@ -29,7 +29,6 @@ const dm = () => render(<SWRConfig value={{ provider: () => new Map(), dedupingI
 beforeEach(() => {
   vi.clearAllMocks();
   handlers.clear();
-  live.superAgent = true;
   live.messaging = client;
   auth.orgRole = "org:admin";
   client.dismissIdea.mockResolvedValue(undefined);
@@ -68,9 +67,4 @@ describe("FirstMoves", () => {
     expect(client.listIdeas).not.toHaveBeenCalled();
   });
 
-  it("switch off: no read at all", () => {
-    live.superAgent = false;
-    dm();
-    expect(client.listIdeas).not.toHaveBeenCalled();
-  });
 });

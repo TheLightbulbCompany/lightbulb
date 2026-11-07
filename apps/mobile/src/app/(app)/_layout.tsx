@@ -185,7 +185,6 @@ export default function AppLayout() {
                       here any more. */}
                   <Stack.Screen name="teams/issue/[id]" options={{ title: "Issue" }} />
                   <Stack.Screen name="teams/run/[runId]" options={{ title: "Run" }} />
-                  <Stack.Screen name="teams/routines" options={{ title: "Routines" }} />
                   <Stack.Screen name="control/index" options={{ title: "Control" }} />
                   <Stack.Screen name="control/overview" options={{ title: "Overview" }} />
                   <Stack.Screen name="control/agents" options={{ title: "Agents" }} />

@@ -148,10 +148,10 @@ describe("clearPanelFromUrl (Messages singleton)", () => {
   });
   it("passes plain (non-sentinel) closes straight through", () => {
     expect(clearPanelFromUrl("?agent=agent-1", MESSAGES_PANEL_ID)).toBe("");
-    expect(clearPanelFromUrl("?panel=teams-artifacts", "teams-artifacts")).toBe(
+    expect(clearPanelFromUrl("?panel=teams-agents", "teams-agents")).toBe(
       "",
     );
-    expect(clearPanelFromUrl("?panel=teams-artifacts", "teams-issues")).toBeNull();
+    expect(clearPanelFromUrl("?panel=teams-agents", "teams-issues")).toBeNull();
   });
 });
 

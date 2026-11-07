@@ -13,9 +13,8 @@ import { useSearchParams } from "next/navigation";
 import { OrganizationList, useAuth, useOrganization } from "@clerk/nextjs";
 import { useOnboardingGate } from "@/hooks/useOnboardingGate";
 import { useAgents } from "@/hooks/useAgents";
-import { useSuperAgent } from "@/hooks/useLiveEvents";
 import { trapTab } from "@/lib/focusTrap";
-import { drawerUntil } from "./paneSheet";
+import { DRAWER_UNTIL } from "./paneSheet";
 import { replaceSearchParams } from "@/lib/shellNav";
 import { capture } from "@/lib/analytics";
 import { ProvisioningStepper } from "@/components/chat/ProvisioningStepper";
@@ -29,7 +28,6 @@ import { CommandPaletteProvider } from "@/components/teams/command-palette/Comma
 import { preloadTeamsPanels } from "@/components/teams/TeamsPanelRouter";
 import { DesktopPermissionsGate } from "@/components/desktop/DesktopPermissionsGate";
 import { ChatHistorySync } from "./ChatHistorySync";
-import { useIdeasFirstOpen } from "./ideasFirstOpen";
 import { useUserSyncOnce } from "@/components/chat/shell/useUserSyncOnce";
 import { useChatThemeAccountSync } from "@/components/chat/shell/useChatThemeAccountSync";
 import { useCheckoutReturn } from "@/components/chat/shell/useCheckoutReturn";
@@ -40,7 +38,7 @@ import { RightPane } from "./RightPane";
 import { WorkspaceSidebar } from "./WorkspaceSidebar";
 import { WorkspaceHeader } from "./WorkspaceHeader";
 import { InvitePeopleDialog } from "./InvitePeopleDialog";
-import { MESSAGES_PANEL_ID, resolvePanelAlias, setSuperAgentAliases, type PanelKind } from "./panelRegistry";
+import { MESSAGES_PANEL_ID, resolvePanelAlias, type PanelKind } from "./panelRegistry";
 import { parseCommand } from "./urlChannel";
 import { deriveReconcilerAction, isCommandTargetOpen } from "./workspaceShellReconciler";
 import {
@@ -165,11 +163,10 @@ function AuthenticatedWorkspace({ workspaceName }: { workspaceName: string }): R
   const [navOpenAt, setNavOpenAt] = useState<string | null>(null);
   const navOpen = navOpenAt === navPlace;
   const closeNav = useCallback(() => setNavOpenAt(null), []);
-  const superAgent = useSuperAgent();
-  // Super-agent on a narrow window (600-999 px): the drawer is the sidebar alone, beside a rail that stays on screen.
+  // A narrow window (600-999 px): the drawer is the sidebar alone, beside a rail that stays on screen.
   const [sidebarOnly, setSidebarOnly] = useState(false);
   const openNav = () => {
-    setSidebarOnly(superAgent && !!window.matchMedia?.("(min-width: 600px)")?.matches);
+    setSidebarOnly(!!window.matchMedia?.("(min-width: 600px)")?.matches);
     setNavOpenAt(navPlace);
   };
   const shellRef = useRef<HTMLDivElement>(null);
@@ -191,7 +188,7 @@ function AuthenticatedWorkspace({ workspaceName }: { workspaceName: string }): R
     const menuButton = menuButtonRef.current;
     // Widening past the drawer breakpoint hides the drawer's backdrop, so
     // close it there rather than leave the main column inert with no way out.
-    const wide = window.matchMedia?.(`(min-width: ${drawerUntil(superAgent)}px)`);
+    const wide = window.matchMedia?.(`(min-width: ${DRAWER_UNTIL}px)`);
     wide?.addEventListener("change", closeNav);
     // Narrowing to a phone turns a sidebar-only drawer into the phone drawer (rail and sidebar): the rail is back in it.
     const tablet = sidebarOnly ? window.matchMedia?.("(min-width: 600px)") : undefined;
@@ -203,13 +200,12 @@ function AuthenticatedWorkspace({ workspaceName }: { workspaceName: string }): R
       rail?.removeAttribute("inert");
       menuButton?.focus();
     };
-  }, [navOpen, closeNav, sidebarOnly, superAgent]);
+  }, [navOpen, closeNav, sidebarOnly]);
 
   useUserSyncOnce(true);
   useChatThemeAccountSync(true);
   const { showSubscriptionSuccess } = useCheckoutReturn();
   const { chatReady } = useChatReady();
-  const { userId: viewerId, orgId } = useAuth();
 
   // [reconciler] — pure decision in workspaceShellReconciler; this executes it.
   // Ordering (pinned by workspaceShellUrl.test.ts): signature latch BEFORE
@@ -255,12 +251,9 @@ function AuthenticatedWorkspace({ workspaceName }: { workspaceName: string }): R
     }
   }, []);
 
-  // Super-agent (UX slice 4): Work's keys open their new homes (panelRegistry's aliases), and /chat with nothing
-  // named lands on Home, not a conversation. The switch arrives with the live config, often after the first
-  // reconcile, so the URL is reconciled again once it does.
+  // UX slice 4: /chat with nothing named lands on Home, not a conversation.
   useEffect(() => {
-    setSuperAgentAliases(superAgent);
-    if (!superAgent || !getWorkspaceSnapshot().ready) return;
+    if (!getWorkspaceSnapshot().ready) return;
     lastAppliedRef.current = null;
     runReconciler(window.location.search);
     const { place, chatParams } = getWorkspaceSnapshot();
@@ -271,8 +264,7 @@ function AuthenticatedWorkspace({ workspaceName }: { workspaceName: string }): R
       sp.set("panel", "home");
       replaceSearchParams(sp);
     }
-    return () => setSuperAgentAliases(false);
-  }, [superAgent, runReconciler]);
+  }, [runReconciler]);
 
   useEffect(() => {
     // searchParams is the re-run TRIGGER only. Reconcile against the LIVE
@@ -287,9 +279,6 @@ function AuthenticatedWorkspace({ workspaceName }: { workspaceName: string }): R
     if (agentsSettled) runReconciler(window.location.search);
   }, [agentsSettled, runReconciler]);
 
-  // After the reconciler: a URL that names a pane keeps it, and Ideas does not replace it. Super-agent: the first run's
-  // ideas wait in the Lightbulb DM instead (UX slice 6), so the pane never opens by itself.
-  useIdeasFirstOpen(chatReady && !superAgent, viewerId, orgId ?? viewerId);
 
   // [selectAgent listener] — the shell only LISTENS, never dispatches
   // (loop-free by construction; accepts MarketplaceToast's sourceless events
@@ -356,9 +345,8 @@ function AuthenticatedWorkspace({ workspaceName }: { workspaceName: string }): R
             <ChatHistorySync />
             <InvitePeopleDialog />
             <div className="workspace-shell" ref={shellRef} data-nav-open={navOpen}
-              // Without the super-agent only Chat has a sidebar; with it, every place does (UX slice 4). Full screen folds it
-              // into the chat column.
-              data-sidebar={(superAgent || place === "chat") && !fullScreen} data-super-agent={superAgent || undefined}
+              // Every place has a sidebar (UX slice 4). Full screen folds it into the chat column.
+              data-sidebar={!fullScreen} data-super-agent="true"
               onKeyDown={navOpen ? (e) => { if (e.key === "Escape") closeNav(); else trapTab(e, drawerParts()); } : undefined}>
               {/* Before the drawer in the DOM, so the drawer paints over it. */}
               <div className="workspace-nav-backdrop" onClick={closeNav} />

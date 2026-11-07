@@ -2,15 +2,11 @@
 //
 // The BFF forwards Paperclip's agent status verbatim, so this string is a
 // backend enum that has drifted before and will drift again. It is read by
-// more than one surface — the org chart colours a dot from it, the roster
-// derives a rail/label/sort rank from it, the Teams pickers filter on it — and
+// more than one surface — the roster derives a rail/label/sort rank from it, the Teams pickers filter on it — and
 // every surface that keeps its OWN list of recognised values is one status
 // away from silently disagreeing with the others.
 //
-// So the CLASSIFICATION lives here, once. Presentation does not: the org chart
-// still maps `thinking` and `covered` to different colours than `running`
-// (see org-chart/statusColors.ts), which is a finer distinction than the
-// classes below and is none of this module's business. What this module
+// So the CLASSIFICATION lives here, once. Presentation does not. What this module
 // guarantees is that no surface can decide `failed` means "nothing is
 // happening" while another decides it means "this broke".
 //
@@ -39,14 +35,7 @@
  */
 export type AgentStatusClass = "live" | "attention" | "paused" | "terminated" | "idle";
 
-/**
- * Every `CompanyAgent.status` value the fleet is known to emit.
- *
- * Keep in lockstep with `org-chart/statusColors.ts` — a test asserts the two
- * cover exactly the same keys, so adding a status here fails the build until
- * that surface handles it too (and vice versa). That fence is the point: it
- * turns "one surface forgot" from a silent visual lie into a red test.
- */
+/** Every `CompanyAgent.status` value the fleet is known to emit. */
 export const AGENT_STATUS_CLASS: Record<string, AgentStatusClass> = {
   active: "live",
   online: "live",

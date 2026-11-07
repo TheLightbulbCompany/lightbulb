@@ -22,7 +22,7 @@ const mockClient = {
   startIdea: jest.fn(async () => ({ roomId: "room-b", projectId: "p-b" })),
   dismissIdea: jest.fn(async () => {}),
 };
-jest.mock("../../../providers/live-events", () => ({ useSuperAgent: () => false, useLiveEvents: () => ({ messaging: mockClient }) }));
+jest.mock("../../../providers/live-events", () => ({ useLiveEvents: () => ({ messaging: mockClient }) }));
 
 import { ActionSheetIOS } from "react-native";
 import { act } from "@testing-library/react-native";

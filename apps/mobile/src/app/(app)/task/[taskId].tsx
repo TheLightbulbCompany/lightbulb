@@ -14,7 +14,7 @@ import { TaskTranscript } from "../../../components/tasks/TaskTranscript";
 import { useTaskActions } from "../../../components/tasks/useTaskActions";
 import { fonts, radii, spacing, useChatPalette } from "../../../config/theme";
 import { usePushedScreenKeyboardOffset } from "../../../lib/keyboardOffset";
-import { useLiveEvents, useSuperAgent } from "../../../providers/live-events";
+import { useLiveEvents } from "../../../providers/live-events";
 
 /**
  * One task (mockup step 8, the phone): the specialist's name as the title, the task's title under it;
@@ -26,9 +26,7 @@ export default function TaskScreen() {
   const { userId } = useAuth();
   const palette = useChatPalette();
   const { tasks, agentNames, messaging, api } = useLiveEvents();
-  // Behind the switch: with it off (or still loading) a pasted task link fetches and marks nothing.
-  const on = useSuperAgent();
-  const id = on ? taskId ?? null : null;
+  const id = taskId ?? null;
   const { data: detail, error, isValidating } = useTask(tasks, id);
   const { data: views } = useTaskQuestions(tasks, detail?.questions.length ? id : null);
   const { act } = useTaskActions();
@@ -41,7 +39,6 @@ export default function TaskScreen() {
   useEffect(() => { if (id) void tasks.markRead(id).catch(() => undefined); }, [tasks, id]);
   const keyboardOffset = usePushedScreenKeyboardOffset();
 
-  if (!on) return null;
   const task = detail?.task;
   const view = task ? summaryView(task, userId ?? "") : null;
   // The specialist is the actor ("Growth"): each is its own agent, so no "Lightbulb ·" in front.

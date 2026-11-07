@@ -5,8 +5,8 @@ import type { AutomationView } from "@lightbulb/shared";
 import { FIXTURES } from "@lightbulb/shared/tasks/fixtures";
 import { Fresh } from "./fakeTasks";
 
-const live = vi.hoisted(() => ({ superAgent: true, tasks: { cacheScope: "org_test" }, agentNames: new Map([["agt-fin", "Finance desk"]]) }));
-vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useSuperAgent: () => live.superAgent, useOptionalLiveEvents: () => live }));
+const live = vi.hoisted(() => ({ tasks: { cacheScope: "org_test" }, agentNames: new Map([["agt-fin", "Finance desk"]]) }));
+vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useOptionalLiveEvents: () => live }));
 const api = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(async () => ({})), del: vi.fn(async () => undefined), patch: vi.fn(async () => ({})) }));
 vi.mock("@/lib/api", () => ({ useApi: () => api }));
 vi.mock("@/components/teams/panels/RoutinesPanel", () => ({ RoutinesPanel: () => <div data-testid="routines-panel">Routines (today)</div> }));
@@ -41,7 +41,7 @@ const routes = (over: Partial<AutomationView> = {}) => {
     throw new Error(`no route ${path}`);
   });
 };
-beforeEach(() => { live.superAgent = true; clerk.userId = "user_sam"; clerk.role = "org:admin"; api.get.mockReset(); api.post.mockClear(); openTaskPane.mockClear(); routes(); });
+beforeEach(() => { clerk.userId = "user_sam"; clerk.role = "org:admin"; api.get.mockReset(); api.post.mockClear(); openTaskPane.mockClear(); routes(); });
 
 describe("AutomationDetail (the automation pane)", () => {
   it("one header: ‹ Scheduled, the name, its state; the crumb goes back", async () => {
@@ -172,13 +172,7 @@ describe("AutomationDetail (the automation pane)", () => {
 });
 
 describe("AutomationsPanel (Work › Automations)", () => {
-  it("off: RoutinesPanel unchanged and no automations read; on: the one Scheduled list, a row opens the pane", async () => {
-    live.superAgent = false;
-    const { unmount } = render(<Fresh><AutomationsPanel /></Fresh>);
-    expect(screen.getByTestId("routines-panel")).toBeInTheDocument();
-    expect(api.get).not.toHaveBeenCalled();
-    unmount();
-    live.superAgent = true;
+  it("the one Scheduled list: a row opens the pane", async () => {
     render(<Fresh><AutomationsPanel /></Fresh>);
     await userEvent.click(await screen.findByRole("button", { name: "Post signups every Monday" }));
     expect(openPanel).toHaveBeenCalledWith("automation", { id: "a1" }, { pushUrl: true });

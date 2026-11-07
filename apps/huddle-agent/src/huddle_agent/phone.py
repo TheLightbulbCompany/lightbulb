@@ -290,8 +290,13 @@ class Receptionist(Agent):
             "assistant": info["assistantName"], "business": info["businessName"], "today": info["today"],
             "greeting": info["greeting"],
             "facts": info.get("facts") or "nothing; take a message for any question about the business.",
-            "caller": f"The caller is {info['callerName']}, a returning client.\n" if info.get("callerName") else "",
-            "can": f"On this line you can't {' or '.join(off)}." if off else "",
+            "caller": (f"The caller is {info['callerName']}, a returning client.\n" if info.get("callerName") else "")
+            + (f"What you remember about this caller: {'; '.join(info['callerMemory'])}.\n" if info.get("callerMemory") else ""),
+            "can": (
+                "This line is not taking bookings right now: you can only take a message, and the owner will call back."
+                if info.get("mode") == "message_only"
+                else f"On this line you can't {' or '.join(off)}." if off else ""
+            ),
             "instructions": f"The owner's instructions: {info['instructions']}" if info.get("instructions") else "",
         }))  # fmt: skip
         self._b, self._transfer = backend, transfer
@@ -364,6 +369,13 @@ class Receptionist(Agent):
             return {"transferred": False, "reason": "the transfer didn't go through"}
         self.did.append("Transferred to a person")
         return {"transferred": True}
+
+    @function_tool
+    async def remember(self, fact: str, kind: str = "caller") -> dict:
+        """Remember something for next time: only this caller's own preferences (kind "caller"); never other people,
+        never payment details. A fact about the business itself (kind "business"), such as where to park, is passed
+        to the owner. At most 120 characters."""
+        return await self._b.post("remember", {"fact": fact[:120], "kind": kind})
 
     @function_tool
     async def start_work(self, title: str, brief: str) -> dict:

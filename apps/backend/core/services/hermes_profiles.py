@@ -437,7 +437,6 @@ _BYO_ENV_KEY = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
 
 def build_profile_env(
     *,
-    paperclip_api_key: str,
     env_vars: dict[str, str],
     byo_provider: str | None = None,
     byo_api_key: str | None = None,
@@ -450,7 +449,6 @@ def build_profile_env(
     write, and nothing in ``bridge/`` ever read those names, so every value here is now the real,
     already-resolved secret — not a name for a later lookup.
 
-    ``paperclip_api_key`` is the resolved Paperclip API key value for this owner+agent.
     ``byo_provider``/``byo_api_key`` are OWNER-level (never read from the Paperclip roster row,
     which carries no such field — see ``write_agent_profile``'s C2 fix) and only emitted when both
     are given, so a non-BYO profile's ``.env`` carries neither key.
@@ -458,29 +456,13 @@ def build_profile_env(
     Owner-provisioned values (``env_vars``, from ``build_provisioned_env``) are carried as-is — the
     same rail ``openclaw.json``'s ``env.vars`` used.
     """
-    env = {"PAPERCLIP_API_KEY": paperclip_api_key}
+    env = {}
     if gate_bearer:  # this agent's own openrouter-gate bearer; the bridge prefers it to the boot one
         env["LIGHTBULB_AGENT_GATE_BEARER"] = gate_bearer
     if byo_api_key:
         env[_BYO_ENV_KEY[byo_provider or "anthropic"]] = byo_api_key
     env.update(env_vars or {})
     return env
-
-
-def paperclip_identity_env(agent: dict) -> dict[str, str]:
-    """The Paperclip identity a CHAT turn's shell needs next to ``PAPERCLIP_API_KEY``.
-
-    A room/DM turn's shell env is the profile's ``.env`` alone (bridge/turn.py ``_secret_scope``);
-    only a Paperclip-woken run layers these on top. Without them every ``paperclip-api.sh`` call
-    from chat dies "Missing PAPERCLIP_API_URL" -- while the skill and the credential rule both
-    promise they are always set. Roster and create-agent rows are Paperclip agent objects, so
-    ``companyId`` rides on the row; an unknown value is omitted, never written empty."""
-    identity = {
-        "PAPERCLIP_API_URL": settings.PAPERCLIP_INTERNAL_URL.rstrip("/"),
-        "PAPERCLIP_AGENT_ID": agent.get("id"),
-        "PAPERCLIP_COMPANY_ID": agent.get("companyId"),
-    }
-    return {name: value for name, value in identity.items() if value}
 
 
 def render_dotenv(env: dict[str, str]) -> str:
@@ -799,7 +781,6 @@ def write_agent_profile(
     agent: dict,
     *,
     provider_choice: str,
-    paperclip_api_key: str,
     integrations: dict[str, dict],
     env_vars: dict[str, str],
     byo_provider: str | None = None,
@@ -844,13 +825,13 @@ def write_agent_profile(
     # mcp_secrets first, env_vars second: an owner-provisioned value should win a name collision
     # over a generated MCP_<SERVER>_<VAR> one (unlikely given the prefix, but never the reverse).
     env = build_profile_env(
-        paperclip_api_key=paperclip_api_key,
         env_vars={**mcp_secrets, **(env_vars or {})},
         byo_provider=byo_provider,
         byo_api_key=byo_api_key,
         gate_bearer=gate_bearer,
     )
-    env.update(paperclip_identity_env(agent))
+    # The lightbulb-*.sh scripts' default sender. PAPERCLIP_AGENT_ID (same value) is for images not yet rolled.
+    env["LIGHTBULB_AGENT_ID"] = env["PAPERCLIP_AGENT_ID"] = agent["id"]
     return ProfileFiles(
         config_yaml=yaml.safe_dump(config, sort_keys=False),
         dotenv=render_dotenv(env),
@@ -1584,7 +1565,7 @@ def _write_mcp_token_files(
 def _rewrite_mcp_env_lines(dotenv_text: str, new_secrets: dict[str, str]) -> str:
     """Replace every existing ``MCP_<SERVER>_<VAR>`` line with a freshly rendered set — a
     disconnected provider's old secret must not survive a refresh — while every other line
-    (``PAPERCLIP_API_KEY``, a BYO key, an owner-provisioned env var) passes through untouched.
+    (a BYO key, an owner-provisioned env var) passes through untouched.
     Line-level surgery, not a full dotenv parse: identifying an ``MCP_``-prefixed KEY only needs
     the text before the first ``=``, which ``render_dotenv`` always writes verbatim regardless of
     whether the VALUE side is quoted.

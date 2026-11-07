@@ -5,7 +5,7 @@ sends from the team address under its own display name (``from_header``), and
 inbound to it goes to the CEO unless it answers a thread another agent wrote
 (``routers/ses_inbound.py``). One row in ``agent-email-addresses`` holds the
 workspace's policy flags; it is created on first use (``ensure_team_address``),
-not at provisioning, so the slug derives from the company name the agent chose.
+not at provisioning, so the slug derives from the workspace name (``workspace_name``).
 
 That slug-form address is the ROUTING address: every key, inbound lookup and
 inbox row uses it. A row may also carry a ``public_address`` (set only by
@@ -21,10 +21,9 @@ from email.utils import formataddr
 
 from core.config import settings
 from core.repositories import agent_email_repo, company_slug_repo
-from core.repositories.paperclip_repo import PaperclipRepo
+from core.services import agent_registry
 from core.services.company_identity import allocate_company_slug
-from core.services.paperclip_admin_client import shared_admin_client
-from core.services.paperclip_admin_session import get_admin_session_cookie
+from core.services.workspace_name import workspace_name
 
 logger = logging.getLogger(__name__)
 
@@ -45,12 +44,8 @@ async def append_agent_mail_footer(
         row = await agent_email_repo.get_by_address(address) or {}
         if row.get("footer_enabled") is False:
             return body_text, body_html
-        onboarding = await PaperclipRepo(table_name="paperclip-companies").get_onboarding_state(owner_id) or {}
-        company_id = onboarding.get("company_id")
-        company = await resolve_company_name(company_id) if company_id else None
-        agent = agent_name or (
-            await resolve_agent_name(agent_id=agent_id, company_id=company_id) if company_id else None
-        )
+        company = await workspace_name(owner_id)
+        agent = agent_name or await resolve_agent_name(owner_id=owner_id, agent_id=agent_id)
         if not agent or not company:
             logger.warning("agent_email: footer identity lookup failed for %s/%s", owner_id, agent_id)
             return body_text, body_html
@@ -155,10 +150,7 @@ async def ensure_team_address(owner_id: str, owner_email: str | None) -> tuple[s
             return None, "disabled"
         address = await team_address(owner_id)
         if not address:
-            onboarding = await PaperclipRepo(table_name="paperclip-companies").get_onboarding_state(owner_id) or {}
-            company_id = onboarding.get("company_id")
-            name = await resolve_company_name(company_id) if company_id else None
-            slug = await allocate_company_slug(owner_id=owner_id, name=name) if name else None
+            slug = await allocate_company_slug(owner_id=owner_id, name=await workspace_name(owner_id))
             if not slug:
                 return None, "slug_allocation_failed"
             address = f"agents@{slug}.{_domain()}"
@@ -189,10 +181,8 @@ async def from_header(owner_id: str, agent_id: str, address: str, agent_name: st
     name is unavailable; never raises, never fails a send."""
     address = await public_for(address)
     try:
-        onboarding = await PaperclipRepo(table_name="paperclip-companies").get_onboarding_state(owner_id) or {}
-        company_id = onboarding.get("company_id")
-        company = await resolve_company_name(company_id) if company_id else None
-        agent = agent_name or (await resolve_agent_name(agent_id=agent_id, company_id=company_id) if company else None)
+        company = await workspace_name(owner_id)
+        agent = agent_name or await resolve_agent_name(owner_id=owner_id, agent_id=agent_id)
         return formataddr((f"{agent} · {company} agents", address)) if agent else address
     except Exception:  # noqa: BLE001
         logger.warning("agent_email: display name lookup failed for %s/%s", owner_id, agent_id)
@@ -220,50 +210,13 @@ def sender_allowed(row: dict, sender: str) -> bool:
     return False
 
 
-async def resolve_company_name(company_id: str) -> str | None:
-    """The company's CURRENT name from Paperclip, or None. Read live, never
-    cached — the agent renames the company during its first run and that
-    rename lands in Paperclip, not in our row."""
+async def resolve_agent_name(*, owner_id: str, agent_id: str) -> str | None:
+    """The agent's name from this workspace's registry, or None (not this workspace's agent,
+    deleted, or a failed read). Scoped by ``owner_id``, so a foreign agent id never resolves."""
     try:
-        admin = shared_admin_client()
-        cookie = await get_admin_session_cookie(admin._http)
-        company = await admin.get_company(session_cookie=cookie, company_id=company_id)
-        name = (company or {}).get("name")
-        return name.strip() if isinstance(name, str) and name.strip() else None
-    except Exception as e:  # noqa: BLE001 — caller maps None to a failed mint
-        logger.warning("agent_email: company-name lookup failed for %s: %s", company_id, e)
-        return None
-
-
-async def resolve_agent_name(*, agent_id: str, company_id: str | None) -> str | None:
-    try:
-        admin = shared_admin_client()
-        cookie = await get_admin_session_cookie(admin._http)
-        agent = await admin.get_agent(session_cookie=cookie, agent_id=agent_id)
-        agent = agent or {}
-        agent_company_id = agent.get("companyId")
-        if agent_company_id != company_id:
-            # get_agent rides the shared admin cookie and is not company-scoped
-            # by itself — a container-supplied agent_id from a DIFFERENT
-            # owner's company must not mint a foreign agent's name onto this
-            # owner's subdomain. A MISSING companyId is unresolved, not
-            # authorized — a record with no companyId at all must not be
-            # treated as if it belonged to the owner's company.
-            if not agent_company_id:
-                logger.warning(
-                    "agent_email: agent %s has no companyId — refusing name resolution",
-                    agent_id,
-                )
-            else:
-                logger.warning(
-                    "agent_email: agent %s belongs to company %s, not owner's company %s — refusing name resolution",
-                    agent_id,
-                    agent_company_id,
-                    company_id,
-                )
-            return None
-        name = agent.get("name")
-        return name.strip() if isinstance(name, str) and name.strip() else None
+        agent = await agent_registry.get(owner_id, agent_id) or {}
     except Exception as e:  # noqa: BLE001
         logger.warning("agent_email: agent-name lookup failed for %s: %s", agent_id, e)
         return None
+    name = agent.get("name") if agent.get("status") != "deleted" else None
+    return name.strip() if isinstance(name, str) and name.strip() else None

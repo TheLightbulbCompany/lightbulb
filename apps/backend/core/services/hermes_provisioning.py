@@ -1416,7 +1416,7 @@ async def write_profile_for_agent(
     roster_fan_out: bool = False,
 ) -> None:
     """The per-agent Hermes profile write (M6-R23): owner-level inputs (``resolve_profile_inputs``)
-    plus this one agent's own Paperclip API key -> ``write_agent_profile`` -> ``upload_profile``.
+    -> ``write_agent_profile`` -> ``upload_profile``.
 
     Moved, unchanged in behaviour, from ``catalog_service._build_and_upload_agent_profile`` --
     this is now the ONE per-agent "write this agent's profile" seam every caller shares: the
@@ -1429,9 +1429,7 @@ async def write_profile_for_agent(
     this function does no roster read of its own, so a caller iterating a roster it already holds
     (``write_profiles``, below) never re-reads it per agent.
 
-    Raises ``HermesProfileError`` when ``resolve_profile_inputs`` hard-fails (a missing BYO key)
-    or this agent's own Paperclip API key mint/read fails (I2/M6-R13) -- a profile that boots but
-    cannot authenticate is a failed install, not a degrade. A ``ValueError`` from
+    Raises ``HermesProfileError`` when ``resolve_profile_inputs`` hard-fails (a missing BYO key). A ``ValueError`` from
     ``write_agent_profile`` (an illegal dotenv value) is re-raised as a named ``RuntimeError`` so a
     bad integration/env value fails with a diagnosable, agent-scoped message instead of leaving a
     roster half profiled with no indication which agent or variable broke it.
@@ -1457,8 +1455,6 @@ async def write_profile_for_agent(
     must never fail a profile write that already succeeded.
     """
     from core.services.hermes_profiles import upload_profile, write_agent_profile
-    from core.services.paperclip_admin_client import shared_admin_client
-    from core.services.paperclip_api_key import ensure_paperclip_api_key
 
     agent_id = agent_row["id"]
     # A roster fan-out passes ``inputs``; a lone create/hire/deploy does not, and that one must
@@ -1466,22 +1462,12 @@ async def write_profile_for_agent(
     lone_agent = inputs is None
     if inputs is None:
         inputs = await resolve_profile_inputs(owner_id)
-    paperclip_api_key = await ensure_paperclip_api_key(
-        owner_id=owner_id, paperclip_agent_id=agent_id, admin_client=shared_admin_client()
-    )
-    if paperclip_api_key is None:
-        # I2/M6-R13: never bake an empty credential. See this function's own docstring above --
-        # there is no "next provision" here to retry into, unlike the ECS poll-thread caller.
-        raise HermesProfileError(
-            f"hermes profile for owner={owner_id} agent={agent_id}: paperclip API key mint/read failed"
-        )
     try:
         files = write_agent_profile(
             owner_id,
             agent_row,
             gate_bearer=await agent_gate_bearer(owner_id, agent_id),
             provider_choice=inputs.provider_choice,
-            paperclip_api_key=paperclip_api_key,
             integrations=inputs.integrations,
             env_vars=inputs.env_vars,
             byo_provider=inputs.byo_provider,

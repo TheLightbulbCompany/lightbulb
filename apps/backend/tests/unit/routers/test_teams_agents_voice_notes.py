@@ -12,7 +12,7 @@ os.environ.setdefault("WS_MANAGEMENT_API_URL", "https://test.execute-api.us-east
 
 from core.services import hermes_profiles  # noqa: E402
 from routers.teams import agents as agents_mod  # noqa: E402
-from routers.teams.deps import TeamsContext  # noqa: E402
+from core.auth import AuthContext, get_current_user  # noqa: E402
 
 AGENT = "a-ceo"
 KEY = f"{hermes_profiles.profile_prefix('org_1', AGENT)}{hermes_profiles.VOICE_NOTES_FILENAME}"
@@ -28,33 +28,20 @@ def store(monkeypatch):
 
 @pytest.fixture
 def client(monkeypatch, store):
-    admin = MagicMock()
-    admin.get_agent = AsyncMock(
-        side_effect=lambda agent_id, session_cookie: (
-            {"id": agent_id, "name": "Nova", "companyId": "co_1"}
-            if agent_id == AGENT
-            else {"id": agent_id, "name": "Other", "companyId": "co_other"}
-        )
-    )
-    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    from core.services import agent_registry
+
+    monkeypatch.setattr(agent_registry, "roster", AsyncMock(return_value=[{"id": AGENT, "name": "Nova"}]))
     repo = MagicMock()
     repo.resolve_owner_row = AsyncMock(return_value=SimpleNamespace(starter_agent_ids={"ceo": AGENT}))
     monkeypatch.setattr(agents_mod, "_repo", lambda: repo)
     monkeypatch.setattr(agents_mod.voice_calls, "send_note_saved", AsyncMock())
     app = FastAPI()
     app.include_router(agents_mod.router)
-    app.dependency_overrides[agents_mod._ctx] = lambda: TeamsContext(
-        user_id="user_1",
-        org_id="org_1",
-        owner_id="org_1",
-        company_id="co_1",
-        paperclip_user_id="p1",
-        session_cookie="c",
-    )
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_1", org_id="org_1")
     return TestClient(app)
 
 
-def test_get_without_file_returns_paperclip_name_and_role_voice(client):
+def test_get_without_file_returns_registry_name_and_role_voice(client):
     r = client.get(f"/agents/{AGENT}/voice-notes")
     assert r.status_code == 200
     assert r.json() == {"name": "Nova", "notes": "", "voice": "marin"}

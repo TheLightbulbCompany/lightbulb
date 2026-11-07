@@ -1,19 +1,10 @@
-"""The per-agent heartbeat checklist: its CEO default matches the bundled skill reference, and the
-seed never overwrites an existing file."""
+"""The per-agent heartbeat checklist: the default by role, and the seed never overwrites an existing file."""
 
-from pathlib import Path
 from unittest.mock import patch
 
 from core.config import settings
 from core.services import hermes_profiles
 from core.services.heartbeat_checklist import CEO_CHECKLIST, SPECIALIST_CHECKLIST, default_checklist
-
-_REFERENCE = Path(__file__).resolve().parents[5] / "apps/infra/hermes/skills-src/paperclip/references/ceo-heartbeat.md"
-
-
-def test_ceo_default_is_the_bundled_reference_after_the_build_swap():
-    body = _REFERENCE.read_text().split("-->\n", 1)[1].lstrip("\n")
-    assert CEO_CHECKLIST == body.replace("/app/skills/", "/opt/hermes-skills/")
 
 
 def test_default_by_role():

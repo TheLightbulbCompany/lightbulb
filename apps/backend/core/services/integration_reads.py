@@ -25,11 +25,13 @@ from core.services.credentials import access_token, integration_secret_store, re
 logger = logging.getLogger(__name__)
 
 READ_S = 2.0  # the provider's HTTP calls; the token fetch has its own budget
+MCP_READ_S = 6.0  # a hosted MCP read is four round trips (initialize, initialized, tools/list, tools/call)
 TOKEN_S = 20.0  # a cold Google grant (S3 read + gog export + token POST) takes seconds; it is then cached
 GOOGLE_RETRY = "Google didn't answer in time; ask again."
 GOOGLE_OFF = "Google isn't connected."
 ANSWER_CHARS = 2000
 HEAVY = "That needs a proper look; ask me to start work on it."
+START_WORK = {"start_work": True, "say": "I'll get that"}  # connected, nothing here reads it: a Worker does
 
 
 class NotReadable(Exception):
@@ -141,7 +143,7 @@ def _rpc(r: httpx.Response) -> dict:
 
 async def _mcp(c, ws, key: str, prefer: tuple[str, ...], args: dict) -> list[str]:
     """initialize -> tools/list -> tools/call on the provider's hosted MCP. The tool is the first of `prefer`
-    the server lists, else the first whose name has "search" in it."""
+    the server lists, else the first whose name has "search" in it, else "list"."""
     provider = registry.get_provider(key)
     url = provider.mcp_remote.url
     h = {
@@ -160,7 +162,9 @@ async def _mcp(c, ws, key: str, prefer: tuple[str, ...], args: dict) -> list[str
         h["Mcp-Session-Id"] = sid
     await c.post(url, headers=h, json={"jsonrpc": "2.0", "method": "notifications/initialized"})
     tools = [t["name"] for t in _rpc(await c.post(url, headers=h, json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"})).get("result", {}).get("tools", [])]  # fmt: skip
-    name = next((p for p in prefer if p in tools), None) or next((t for t in tools if "search" in t), None)
+    name = next((p for p in prefer if p in tools), None) or next(
+        (t for word in ("search", "list") for t in tools if word in t), None
+    )
     if name is None:
         raise NotReadable(f"{key} has no search I can use. {HEAVY}")
     body = {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": name, "arguments": args}}
@@ -195,8 +199,53 @@ async def _slack(c, ws, query):
     raise NotReadable(f"Slack search isn't available from a meeting. {HEAVY}")
 
 
-# name -> (integrations row it needs, reader)
+# --- Knowledge (the Agent page), the web (the workspace's Parallel key) --------------------------------------
+
+
+async def _knowledge(ws: str, instructions: bool) -> str:
+    """The Agent page at the phone's sizes (all of _facts, instructions up to 4,000), outside ANSWER_CHARS. The
+    instructions are the owner's private steering: owner mode only, never a meeting the guests hear."""
+    from routers import voice_phone  # lazy: routers import this module
+
+    if not await voice_phone.messaging_repo.get_voice_agent(ws):  # no page: not the default hours as fact
+        return "Hours aren't set yet."
+    cfg = await voice_phone.agent_config(ws)
+    steer = cfg["instructions"][:4000] if instructions else ""
+    return voice_phone._facts(cfg) + (f"\nInstructions: {steer}" if steer else "")
+
+
+async def _web(c, ws, query):
+    """Parallel's Search API (docs.parallel.ai/api-reference/search-beta/search), at the url and auth header
+    providers.yaml validates the pasted key with. "fast" mode answers in about 700 ms."""
+    if not query:  # never a paid search for nothing
+        return ["What should I look up?"]
+    key = (await integration_secret_store.get(ws, "parallel") or {}).get("token")
+    if not key:
+        raise NotReadable("The web search key needs reconnecting in Settings.")
+    v = registry.get_provider("parallel").validation
+    body = {"search_queries": [query], "mode": "fast", "advanced_settings": {"max_results": 3}}
+    r = await c.post(v.url, headers={v.auth_header: key}, json=body)
+    r.raise_for_status()
+    return [
+        f"{x.get('title') or x['url']} ({x['url']}): {' '.join(x.get('excerpts') or [])[:500]}"
+        for x in r.json().get("results", [])[:3]
+    ]
+
+
+def _hosted(key: str):
+    """A reader over the provider's hosted MCP (providers.yaml `mcp_remote.url`), or None."""
+    try:
+        if registry.get_provider(key).mcp_remote is None:
+            return None
+    except KeyError:
+        return None
+    return lambda c, ws, query: _mcp(c, ws, key, (), {"query": query})
+
+
+# name -> (integrations row it needs, reader). A connected row with no reader here: _hosted, else a Worker
+# (START_WORK). `knowledge` is always there and read apart (read()).
 READERS = {
+    "web": ("parallel", _web),
     "gmail": ("google", _gmail),
     "calendar": ("google", _calendar),
     "drive": ("google", _drive),
@@ -209,6 +258,9 @@ READERS = {
 }
 
 
+_MCP = {"notion", "linear", "stripe"}  # read over a hosted MCP (stripe without the business key), like _hosted
+
+
 async def warm_google(ws: str) -> None:
     """Fetch (and so cache) the workspace's Google token, so the first read in a meeting is not a cold one.
     Fire-and-forget at the meeting's start; never raises."""
@@ -219,22 +271,31 @@ async def warm_google(ws: str) -> None:
 
 
 async def connected(ws: str) -> list[str]:
-    """The readable names this workspace has connected."""
+    """Every name this workspace can ask about: the readers it has connected, then its other connected providers."""
     rows = {
         r["provider"] for r in await integrations_repo.list_for_owner(ws) if r.get("status", "connected") == "connected"
     }
-    names = [n for n, (key, _) in READERS.items() if key in rows]
+    names = ["knowledge", *(n for n, (key, _) in READERS.items() if key in rows)]
     if "stripe" not in names and await integration_secret_store.get(ws, API_KEY_SECRET_PROVIDER):
         names.append("stripe")
-    return names
+    return names + sorted(rows - {key for key, _ in READERS.values()})
 
 
-async def read(ws: str, provider: str, query: str) -> str:
-    """Plain text for the voice to say or summarise; never raises."""
+async def read(ws: str, provider: str, query: str, *, instructions: bool = False) -> str | dict:
+    """Plain text for the voice to say or summarise, or START_WORK; never raises. `instructions`: the Agent page's
+    private instructions ride along with `knowledge` (owner mode only)."""
     name = provider.strip().lower()
-    if name not in READERS or name not in await connected(ws):
+    if name == "knowledge":
+        try:
+            return await _knowledge(ws, instructions)
+        except Exception:  # noqa: BLE001 -- a sentence, not a failed meeting
+            logger.warning("knowledge read failed ws=%s", ws, exc_info=True)
+            return "I couldn't read knowledge just now."
+    if name not in await connected(ws):
         return f"{provider} is not connected."
-    key, reader = READERS[name]
+    key, reader = READERS.get(name) or (name, _hosted(name))
+    if reader is None:
+        return START_WORK
     try:
         if key == "google":  # outside READ_S: a cold grant takes seconds; google_grant caches it after
             try:
@@ -242,7 +303,8 @@ async def read(ws: str, provider: str, query: str) -> str:
             except TimeoutError:
                 return GOOGLE_RETRY
         async with httpx.AsyncClient(timeout=READ_S) as c:
-            lines = await asyncio.wait_for(reader(c, ws, query.strip()[:300]), READ_S)
+            bound = MCP_READ_S if name in _MCP or name not in READERS else READ_S
+            lines = await asyncio.wait_for(reader(c, ws, query.strip()[:300]), bound)
     except NotReadable as e:
         return str(e)
     except (TimeoutError, httpx.TimeoutException):

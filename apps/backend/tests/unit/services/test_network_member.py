@@ -4,7 +4,7 @@
 
 import json
 import logging
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -191,8 +191,6 @@ def _profile_write_stubs(monkeypatch):
     )
     monkeypatch.setattr(hp, "resolve_profile_inputs", AsyncMock(return_value=inputs))
     monkeypatch.setattr(hp, "_stage_owner_facts", AsyncMock())
-    monkeypatch.setattr("core.services.paperclip_api_key.ensure_paperclip_api_key", AsyncMock(return_value="pcp"))
-    monkeypatch.setattr("core.services.paperclip_admin_client.shared_admin_client", lambda: object())
     monkeypatch.setattr("core.services.hermes_profiles.write_agent_profile", lambda *a, **k: SimpleNamespace())
     monkeypatch.setattr("core.services.hermes_profiles.upload_profile", AsyncMock())
     monkeypatch.setattr("core.services.hermes_profiles.read_soul_md", lambda o, a: None)
@@ -256,11 +254,15 @@ async def test_a_rename_republishes_sessions(monkeypatch, published):
 
 @pytest.mark.asyncio
 async def test_an_agent_delete_republishes_sessions(monkeypatch, published):
-    from core.services import paperclip_agent_lifecycle as lifecycle
+    from core.services import agent_lifecycle as lifecycle, agent_registry
 
-    monkeypatch.setattr(lifecycle, "prepare_paperclip_agent_delete", AsyncMock(return_value={}))
-    monkeypatch.setattr(lifecycle, "delete_paperclip_for_chat", AsyncMock())
-    monkeypatch.setattr(lifecycle, "_refresh_facts", AsyncMock())
+    monkeypatch.setattr(agent_registry, "roster", AsyncMock(return_value=[]))
+    monkeypatch.setattr(agent_registry, "delete", AsyncMock())
+    monkeypatch.setattr(
+        "core.repositories.paperclip_repo.PaperclipRepo",
+        MagicMock(return_value=MagicMock(remove_starter_agent_id=AsyncMock())),
+    )
+    monkeypatch.setattr("core.services.owner_facts.write_owner_facts", AsyncMock())
     monkeypatch.setattr("core.services.hermes_profiles.delete_profile", lambda o, a: None)
 
     await lifecycle.delete_agent_everywhere(owner_id="org_a", agent_id=A1)

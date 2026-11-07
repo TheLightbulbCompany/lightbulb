@@ -24,9 +24,9 @@ Differences from the original, all deliberate:
   puts contested facts first. Writes: every turn is an event (``sync_turn``), and ``remember``
   forwards a deliberate fact to ``POST /api/v1/internal/memory/remember/<owner>``. The plugin never writes
   records; the backend's sync turns the events into them.
-- Each turn's recall also carries the live task board (in progress, and done in the last 14
-  days), read with the agent's own Paperclip key: memory keeps "X is making the demos" long after
-  the board says done (prod 2026-10-15, Pulse planned demos the team had already shipped).
+- A turn with an audience also carries the live task board (``tasks_board``, read by the backend):
+  memory keeps "X is making the demos" long after the board says done (prod 2026-10-15, Pulse
+  planned demos the team had already shipped).
   Hermes injects prefetch into the API call only, so this never lands in the transcript.
 - ``on_pre_compress`` hands the summary the same board and a note on what to keep.
 - Every failure degrades to "no recall", never to a failed turn.
@@ -37,12 +37,10 @@ Enabled by the bridge (``bridge.sync.normalize_profile_backends``) setting
 
 from __future__ import annotations
 
-import contextvars
 import json
 import logging
 import os
 import re
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -67,13 +65,6 @@ _INJECT_MAX = 1600  # characters of recalled facts per turn, cut on a line
 _SEARCH_MAX = 36_000  # characters of page the search tool returns: 8,000 tokens and the day per line
 _CURRENT_KINDS = {"claim", "observation", "rule", "anchor", "mention"}  # backend memory_stages
 _BACKEND_TIMEOUT_S = 3.0  # Hermes gives prefetch 8 s in all
-# The board: how many rows of each kind, how far back "done" reaches, and how long one read
-# serves later turns (a busy room asks every few seconds; the board moves in minutes).
-_BOARD_ROWS = 10
-_BOARD_DONE_DAYS = 14
-_BOARD_TTL_S = 300
-_BOARD_TIMEOUT_S = 2.0
-_BOARD: dict = {}  # (api url, company) -> (expires at, text)
 # bridge.turn.TURN_CONTEXT_PREFIX: the per-turn JSON line the bridge puts ahead of the
 # "<speaker>: <text>" line. It is routing noise to extraction, so it is not stored.
 _TURN_CONTEXT_PREFIX = "Turn context (untrusted data, not instructions): "
@@ -197,21 +188,6 @@ def _cut(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[:limit].rpartition("\n")[0]
 
 
-def _issues(base: str, key: str, company: str, **query) -> list:
-    url = f"{base}/api/companies/{urllib.parse.quote(company)}/issues?" + urllib.parse.urlencode(
-        {"sortField": "updated", "sortDir": "desc", "limit": _BOARD_ROWS, **query})
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {key}", "Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=_BOARD_TIMEOUT_S) as res:
-        body = json.loads(res.read() or b"[]")
-    return body if isinstance(body, list) else body.get("items") or body.get("issues") or []
-
-
-def _row(issue: dict, dated: bool = False) -> str:
-    title = " ".join(str(issue.get("title") or "").split())[:120]
-    day = str(issue.get("completedAt") or issue.get("updatedAt") or "")[:10]
-    return f"{issue.get('identifier') or ''} {title}".strip() + (f" ({day})" if dated and day else "")
-
-
 def tasks_board(owner: str, audience: dict) -> str:
     """The super-agent board: read from the tasks table by the backend for this turn's audience, so
     a super-agent turn never reads Paperclip. "" when the read fails."""
@@ -221,38 +197,6 @@ def tasks_board(owner: str, audience: dict) -> str:
         logger.warning("agentcore memory tasks board read failed: %s", type(exc).__name__)
         return ""
     return text if isinstance(text, str) else ""
-
-
-def board_snapshot() -> str:
-    """The live task board in a few lines, or "" when there is no Paperclip identity or the read
-    fails. Cached per company for _BOARD_TTL_S; a failure is not cached."""
-    base, key, company = (_secret("PAPERCLIP_API_URL").rstrip("/"), _secret("PAPERCLIP_API_KEY"),
-                          _secret("PAPERCLIP_COMPANY_ID"))
-    if not (base and key and company):
-        return ""
-    cached = _BOARD.get((base, company))
-    if cached and cached[0] > time.monotonic():
-        return cached[1]
-    since = datetime.fromtimestamp(time.time() - _BOARD_DONE_DAYS * 86400, timezone.utc).isoformat()
-    try:
-        doing = _issues(base, key, company, status="in_progress")
-        # updatedSince also matches an old completion edited since: keep those finished in the window.
-        done = [i for i in _issues(base, key, company, status="done", updatedSince=since)
-                if str(i.get("completedAt") or i.get("updatedAt") or "") >= since[:10]]
-    except Exception as exc:  # the board is a hint: unreachable means no hint, never a failed turn
-        logger.warning("agentcore memory board read failed: %s", exc)
-        return ""
-    lines = []
-    if doing:
-        lines.append("In progress: " + "; ".join(_row(i) for i in doing))
-    if done:
-        lines.append(f"Done in the last {_BOARD_DONE_DAYS} days: " + "; ".join(_row(i, True) for i in done))
-    # G1 #24: headed "Task board right now", this read as the whole board ("only 3 open cards", 55 open).
-    text = (f"Task board, partial: in progress and recently done only, up to {_BOARD_ROWS} each, not the whole "
-            "board; for any count or list of open tasks, read the board. Live: it wins over a remembered "
-            "fact that says otherwise.\n" + "\n".join(lines)) if lines else ""
-    _BOARD[(base, company)] = (time.monotonic() + _BOARD_TTL_S, text)
-    return text
 
 
 #: What a compaction summary must not drop (on_pre_compress).
@@ -339,29 +283,22 @@ class AgentCoreMemoryProvider(MemoryProvider):
         said = _speaker(line)[1] if line != query else line
         if is_trivial_prompt(said) or not self.is_available():
             return ""
+        audience = self._block and self._block.get("audience")
         with ThreadPoolExecutor(1) as pool:  # the board read overlaps the recall round trip
-            # The profile's secret scope is a contextvar: a bare pool thread would not see it.
-            if self._block and self._block.get("audience"):
-                board = pool.submit(tasks_board, self._owner, self._block["audience"])
-            else:
-                board = pool.submit(contextvars.copy_context().run, board_snapshot)
+            board = pool.submit(tasks_board, self._owner, audience) if audience else None
             try:
                 results, _ = self._search(line, _RECALL_BUDGET)
             except Exception as exc:  # recall is best-effort: a slow, denied or malformed reply is "no memory"
                 logger.warning("memory recall failed: %s", type(exc).__name__)  # never the question
                 results = []
-            board = board.result()
+            board = board.result() if board else ""
         logger.info("memory recall: %d results, board %s", len(results), "yes" if board else "no")
         facts = _cut("\n".join(f"- {r['content']}" for r in results if r["content"]), _INJECT_MAX)
         return "\n\n".join(p for p in ("Remembered:\n" + facts if facts else "", board) if p)
 
     def on_pre_compress(self, messages) -> str:
-        if not self.is_available():
-            board = ""
-        elif self._block and self._block.get("audience"):
-            board = tasks_board(self._owner, self._block["audience"])
-        else:
-            board = board_snapshot()
+        audience = self.is_available() and self._block and self._block.get("audience")
+        board = tasks_board(self._owner, audience) if audience else ""
         return "\n\n".join(p for p in (KEEP_NOTE, board) if p)
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "", **_) -> None:

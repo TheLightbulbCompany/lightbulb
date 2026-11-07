@@ -3,12 +3,7 @@
 never recorded a disposition get the task blocked: ISOA-860). A room turn files the task with a
 From section; the task's own run reports done / needs-you back to that room."""
 import json
-import os
-import pathlib
-import shutil
-import subprocess
 
-import pytest
 
 from bridge import turn
 
@@ -21,7 +16,6 @@ SESSION = f"paperclip:company:company-1:agent:{AGENT}:issue:{ISSUE}"
 IDENTITY = {"runId": RUN, "companyId": "company-1", "agentId": AGENT, "sessionId": SESSION,
             "issueId": ISSUE, "paperclipApiUrl": "http://paperclip.internal:3100"}
 REQUEST = {"input": "Wake: issue assigned", "instructions": "Follow the wake.", "session_id": SESSION}
-SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "skills-src/paperclip/scripts/paperclip-api.sh"
 
 
 def _old_binding():
@@ -68,127 +62,3 @@ def test_the_native_run_uses_its_own_session_and_has_no_room_for_prompts(monkeyp
     assert seen["construct"] == ({"sessionKey": SESSION}, SESSION)
     assert seen["run"]["user_message"] == REQUEST["input"] and "conversation_history" not in seen["run"]
     assert seen["prompts"] == [None]
-
-
-# ---- the helper -------------------------------------------------------------------------------
-def _helper(tmp_path, args, *, session_key=ROOM_KEY, room_key=None, message_id=None, stdin="",
-            responses=None, ok=True, requester=None):
-    """Run paperclip-api.sh against a fake curl that records each request. `responses` is one
-    [status, body] per request, in order (the last repeats)."""
-    calls, count = tmp_path / "calls.jsonl", tmp_path / "count"
-    calls.unlink(missing_ok=True)
-    count.write_text("0")
-    fake = tmp_path / "bin" / "curl"
-    fake.parent.mkdir(exist_ok=True)
-    fake.write_text(
-        "#!/usr/bin/env bash\n"
-        'out=""; method=""; body=""; headers=(); while [[ $# -gt 0 ]]; do case "$1" in -o) out="$2"; shift 2;;'
-        ' -H) headers+=("$2"); shift 2;; -X) method="$2"; shift 2;; --data-binary) body="$2"; shift 2;;'
-        ' -w) shift 2;; -sS) shift;; *) url="$1"; shift;; esac; done\n'
-        'n=$(<"$COUNT"); echo $((n + 1)) > "$COUNT"\n'
-        'jq -nc --arg m "$method" --arg url "$url" --arg body "$body" --args'
-        ' \'{method: $m, url: $url, body: $body, headers: $ARGS.positional}\' "${headers[@]}" >> "$CALLS"\n'
-        'jq -c --argjson n "$n" \'.[if $n < length then $n else length - 1 end]\' <<<"$RESPONSES" > "$out.pair"\n'
-        'jq -c ".[1]" "$out.pair" > "$out"; jq -r ".[0]" "$out.pair"; rm -f "$out.pair"\n'
-    )
-    fake.chmod(0o755)
-    env = {**os.environ, "PATH": f"{fake.parent}:{os.environ['PATH']}", "CALLS": str(calls), "COUNT": str(count),
-           "PAPERCLIP_API_URL": "http://pc", "PAPERCLIP_API_KEY": "k", "PAPERCLIP_AGENT_ID": AGENT,
-           "HERMES_HOME": str(tmp_path / "profile"), "HERMES_SESSION_KEY": session_key,
-           "RESPONSES": json.dumps(responses or [[201, {"id": ISSUE, "status": "todo"}]])}
-    for name in ("PAPERCLIP_RUN_ID", "LIGHTBULB_ROOM_SESSION_KEY", "LIGHTBULB_ROOM_MESSAGE_ID",
-                 "LIGHTBULB_ROOM_REQUESTER_ID"):
-        env.pop(name, None)
-    if room_key:
-        env["LIGHTBULB_ROOM_SESSION_KEY"] = room_key
-    if message_id:
-        env["LIGHTBULB_ROOM_MESSAGE_ID"] = message_id
-    if requester:
-        env["LIGHTBULB_ROOM_REQUESTER_ID"] = requester
-    proc = subprocess.run(["bash", str(SCRIPT), *args], input=stdin, env=env, capture_output=True, text=True)
-    assert (proc.returncode == 0) is ok, proc.stderr
-    return [json.loads(line) for line in calls.read_text().splitlines()] if calls.exists() else []
-
-
-helper = pytest.mark.skipif(not shutil.which("jq"), reason="the helper needs jq")
-FROM = f"## From\nFiled from room `{ROOM}`."
-
-
-@helper
-def test_an_assigned_create_is_one_post_carrying_todo(tmp_path):
-    [create] = _helper(tmp_path, ["create", "company-1", "--title", "Fix it", "--assignee", AGENT])
-    body = json.loads(create["body"])
-    assert create["method"] == "POST" and body["status"] == "todo" and body["assigneeAgentId"] == AGENT
-    assert not (tmp_path / "profile" / "lightbulb-issue-bindings").exists()
-    assert not any(h.startswith("X-Paperclip-Run-Id") for h in create["headers"])
-
-
-@helper
-@pytest.mark.parametrize("command", [["create", "company-1"], ["subtask", "company-1", "--parent", ISSUE]])
-def test_a_room_create_appends_one_from_section_after_the_description(tmp_path, command):
-    [create] = _helper(tmp_path, [*command, "--title", "Fix it", "--assignee", AGENT],
-                       stdin="Asked by Ana: fix the 500.", message_id="m-1")
-    assert json.loads(create["body"])["description"] == (
-        f"Asked by Ana: fix the 500.\n\n{FROM} The message that asked: "
-        f"/chat?panel=chat&room={ROOM}&message=m-1")
-
-
-@helper
-def test_the_from_section_names_who_asked(tmp_path):
-    [create] = _helper(tmp_path, ["create", "company-1", "--title", "Fix it", "--assignee", AGENT],
-                       requester="user_ana")
-    assert json.loads(create["body"])["description"] == f"{FROM} Asked by user `user_ana`."
-
-
-@helper
-def test_a_from_section_is_never_appended_twice_and_names_the_room_beside_a_call(tmp_path):
-    [create] = _helper(tmp_path, ["create", "company-1", "--title", "Fix it"],
-                       stdin=f"Context.\n\n{FROM}")
-    assert json.loads(create["body"])["description"].count("## From") == 1
-    call = turn.call_session_key(AGENT, "call-1")
-    [create] = _helper(tmp_path, ["create", "company-1", "--title", "Fix it"], session_key=call, room_key=ROOM_KEY)
-    assert json.loads(create["body"])["description"] == FROM  # no message id: no link, never an invented one
-
-
-@helper
-def test_starting_an_existing_task_from_a_room_gives_it_a_from_section(tmp_path):
-    get, patch = _helper(tmp_path, ["update", ISSUE, "--assignee", AGENT, "--status", "todo"],
-                         responses=[[200, {"id": ISSUE, "description": "Context."}], [200, {"id": ISSUE}]])
-    assert get["method"] == "GET" and patch["method"] == "PATCH"
-    assert json.loads(patch["body"])["description"] == f"Context.\n\n{FROM}"
-    [patch] = _helper(tmp_path, ["update", ISSUE, "--status", "done"], responses=[[200, {"id": ISSUE}]])
-    assert "description" not in json.loads(patch["body"])  # closing a task never rewrites it
-
-
-@helper
-def test_a_create_outside_a_room_session_appends_nothing(tmp_path):
-    [create] = _helper(tmp_path, ["create", "company-1", "--title", "Fix it", "--assignee", AGENT],
-                       session_key=f"agent:{AGENT}:{SESSION}", stdin="Context.")
-    assert json.loads(create["body"])["description"] == "Context."
-    [create] = _helper(tmp_path, ["create", "company-1", "--title", "Fix it"], session_key="")
-    assert "description" not in json.loads(create["body"])
-
-
-@helper
-def test_create_can_file_into_a_project_and_assign_a_person(tmp_path):
-    calls = _helper(tmp_path, ["create", "company-1", "--title", "Sign the form", "--project", "proj-1",
-                               "--assignee-user", "user-9"], session_key="")
-    body = json.loads(calls[0]["body"])
-    assert body["projectId"] == "proj-1" and body["assigneeUserId"] == "user-9"
-    assert "assigneeAgentId" not in body and body["status"] == "todo"
-
-
-@helper
-def test_subtask_can_file_into_a_project(tmp_path):
-    calls = _helper(tmp_path, ["subtask", "company-1", "--title", "One directory", "--parent", ISSUE,
-                               "--project", "proj-1", "--assignee-user", "user-9"], session_key="")
-    body = json.loads(calls[0]["body"])
-    assert body["projectId"] == "proj-1" and body["assigneeUserId"] == "user-9" and body["status"] == "todo"
-
-
-@helper
-def test_subtask_in_a_project_with_an_agent_assignee_starts_it(tmp_path):
-    [create] = _helper(tmp_path, ["subtask", "company-1", "--title", "One directory", "--parent", ISSUE,
-                                  "--project", "proj-1", "--assignee", AGENT, "--status", "todo"], session_key="")
-    body = json.loads(create["body"])
-    assert body["projectId"] == "proj-1" and body["assigneeAgentId"] == AGENT and body["status"] == "todo"

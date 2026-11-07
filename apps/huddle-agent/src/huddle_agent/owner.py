@@ -21,6 +21,7 @@ from livekit.plugins import google, openai
 
 from huddle_agent import end_after
 from huddle_agent.backend import Backend, BackendError
+from huddle_agent.phone import clean_transcript
 
 logger = logging.getLogger("owner")
 OWNER_MAX_S = float(os.environ.get("OWNER_MAX_S", 20 * 60))  # cost cap, like a phone call
@@ -31,8 +32,9 @@ app. Today is {today}. Answer in one or two short spoken sentences. For anything
 calendar, mail, documents, payments, issues, calls, bookings, what the team decided -- call a read tool first and
 say only what it returns; if it has nothing, say you don't know. The workspace's connected calendar, mail and Drive
 (the account the workspace connected, which may not be {who}'s own): read_integration with provider calendar,
-gmail or drive (say "one moment" first). Other connected apps: list_integrations, then
-read_integration. Writing anything (a draft, a post, an email), anything open-ended, anything that sends, spends
+gmail or drive (say "one moment" first). The business's own services, prices, hours and Q&A: read_integration
+with provider knowledge; the public web: provider web. Every other connected app: list_integrations, then
+read_integration; if it returns start_work, call start_work with the question and say "I'll get that". Writing anything (a draft, a post, an email), anything open-ended, anything that sends, spends
 or publishes, and anything a read says needs more: call start_work with a short title and a self-contained brief,
 then say you're on it and that the result will be in your chat with them. Never wait for it, never do it yourself,
 never say it is done. If a tool returns an error, say plainly that you couldn't do it."""
@@ -59,6 +61,7 @@ class OwnerAgent(Agent):
     def __init__(self, backend: Backend, speaker: str, info: dict) -> None:
         super().__init__(instructions=INSTRUCTIONS.format(**info))
         self._b, self._speaker = backend, speaker
+        self.work: list[dict] = []  # the tasks this talk started: its follow-ups on Home
 
     async def _post(self, op: str, body: dict) -> dict:
         try:
@@ -77,9 +80,10 @@ class OwnerAgent(Agent):
         return out
 
     @function_tool
-    async def call_stats(self, days: int = 7) -> dict:
-        """How many phone calls the assistant answered in the last `days` (1 = today), by outcome."""
-        return await self._post("read", {"kind": "calls", "days": days})
+    async def call_stats(self, days: int = 7, from_date: str = "", to_date: str = "") -> dict:
+        """How many phone calls the assistant answered in the last `days` (1 = today), by outcome. For a range
+        ("this month versus last"), from_date and to_date as "YYYY-MM-DD" (inclusive), once per range."""
+        return await self._post("read", {"kind": "calls", "days": days, "from": from_date, "to": to_date})
 
     @function_tool
     async def calendar(self, date: str = "") -> dict:
@@ -89,13 +93,15 @@ class OwnerAgent(Agent):
 
     @function_tool
     async def list_integrations(self) -> dict:
-        """The connected apps you can read (gmail, calendar, drive, stripe, notion, linear, github, ...)."""
+        """What you can read: knowledge, web, and the connected apps (gmail, calendar, drive, stripe, ...)."""
         return await self._post("integrations", {})
 
     @function_tool
     async def read_integration(self, provider: str, query: str) -> dict:
-        """One quick read of a connected app: provider is a name from list_integrations; query is what to search
-        for (mail search words, an event name, an issue keyword; "" for the next events). Bigger: start_work."""
+        """One quick read: provider is a name from list_integrations ("knowledge" is the business's own facts,
+        "web" the public web); query is what to search for (mail search words, an event name, an issue keyword;
+        "" for the next events). Say "one moment" first: a connected app's read can take up to six seconds.
+        Bigger, or when it returns start_work: start_work with the question."""
         return await self._post("integration-read", {"provider": provider, "query": query})
 
     @function_tool
@@ -105,7 +111,16 @@ class OwnerAgent(Agent):
         out = await self._post("start-work", {"title": title, "brief": brief})
         if out.get("already"):
             out["say"] = "already on it"
+        ref = {"title": title, "taskId": out.get("taskId")}
+        if ref["taskId"] and ref not in self.work:
+            self.work.append(ref)
         return out
+
+
+def talk_record(agent: OwnerAgent, items: list[dict], session_id: str, seconds: float) -> dict:
+    """What `/owner/{room}/end` keeps as the "Yours" row: the transcript as phone calls keep it, and the tasks."""
+    return {"speakerUserId": agent._speaker, "sessionId": session_id, "durationSec": int(seconds),
+            "transcript": clean_transcript(items), "work": agent.work}  # fmt: skip
 
 
 async def run(ctx: JobContext, meta: dict) -> None:
@@ -123,6 +138,14 @@ async def run(ctx: JobContext, meta: dict) -> None:
         "name": name, "who": member.name or "the owner", "today": time.strftime("%A %Y-%m-%d"),
     })  # fmt: skip
     session = AgentSession(llm=realtime_model(), user_away_timeout=AWAY_S)
+    items: list[dict] = []
+    t0 = time.time()
+
+    @session.on("conversation_item_added")  # LiveKit's documented per-turn event: each final user/agent line
+    def _item(ev) -> None:
+        if text := getattr(ev.item, "text_content", None):
+            at = (ev.item.metrics or {}).get("started_speaking_at") or ev.item.created_at
+            items.append({"role": ev.item.role, "text": text, "t": at - t0, "interrupted": ev.item.interrupted})
     attrs = ctx.room.local_participant.set_attributes
 
     @session.on("agent_state_changed")
@@ -145,7 +168,8 @@ async def run(ctx: JobContext, meta: dict) -> None:
 
     session.on("close", lambda _ev: ctx.shutdown("session closed"))
     limit = asyncio.create_task(end_after(OWNER_MAX_S, session, lambda: leave("owner max length")))
-    ctx.add_shutdown_callback(lambda _reason="": _close(limit, backend))
+    record = lambda: talk_record(agent, items, ctx.job.id, time.time() - t0)  # noqa: E731
+    ctx.add_shutdown_callback(lambda _reason="": _close(limit, backend, record))
     # the web's Talk RPC (HuddleProvider.talkStart): nothing to summon here, the session already listens
     ctx.room.local_participant.register_rpc_method("talk_start", lambda _data: "ok")
     await session.start(
@@ -162,6 +186,11 @@ async def run(ctx: JobContext, meta: dict) -> None:
     logger.info("owner: listening in room %s as %s", meta["roomId"], name)
 
 
-async def _close(limit: asyncio.Task, backend: Backend) -> None:
+async def _close(limit: asyncio.Task, backend: Backend, record) -> None:
     limit.cancel()
-    await backend.aclose()
+    try:
+        await backend.owner("end", record())  # the talk becomes a "Yours" row on Home
+    except BackendError as e:
+        logger.warning("owner: talk not kept (%s)", e.code)
+    finally:
+        await backend.aclose()

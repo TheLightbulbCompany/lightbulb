@@ -1084,7 +1084,6 @@ def _patch_write_profiles_collaborators(
     byo_provider=None,
     read_byo_key=None,
     write_agent_profile=None,
-    paperclip_api_key="pcp_key",
     mock_facts_staging=True,
 ):
     """``mock_facts_staging=True`` (the default) no-ops ``_stage_owner_facts`` -- since
@@ -1102,17 +1101,12 @@ def _patch_write_profiles_collaborators(
     async def _fake_build_connected_integration_servers(owner_id):
         return {}
 
-    async def _fake_ensure_paperclip_api_key(*, owner_id, paperclip_agent_id, admin_client):
-        return paperclip_api_key
-
     monkeypatch.setattr("core.services.container_provision.resolve_provider_choice", _fake_resolve_provider_choice)
     monkeypatch.setattr(
         "core.services.credentials.mcp_server.build_connected_integration_servers",
         _fake_build_connected_integration_servers,
     )
     monkeypatch.setattr("core.services.messaging.load_agent_roster", _fake_roster)
-    monkeypatch.setattr("core.services.paperclip_api_key.ensure_paperclip_api_key", _fake_ensure_paperclip_api_key)
-    monkeypatch.setattr("core.services.paperclip_admin_client.shared_admin_client", lambda: object())
     monkeypatch.setattr("core.services.hermes_profiles.upload_profile", _noop_async)
     if mock_facts_staging:
         monkeypatch.setattr(hermes_provisioning, "_stage_owner_facts", _noop_async)
@@ -1120,27 +1114,6 @@ def _patch_write_profiles_collaborators(
         monkeypatch.setattr("core.services.key_service.read_byo_key", read_byo_key)
     if write_agent_profile is not None:
         monkeypatch.setattr("core.services.hermes_profiles.write_agent_profile", write_agent_profile)
-
-
-@pytest.mark.asyncio
-async def test_a_none_paperclip_api_key_raises_named_instead_of_baking_an_empty_credential(monkeypatch):
-    """I2: ensure_paperclip_api_key returns None on ANY failure (its documented contract is
-    "skip, try again next time") -- there is no next time once provision_hermes_runtime
-    idempotent-returns on the ARN, so this must fail the provision, not ship an empty
-    PAPERCLIP_API_KEY."""
-
-    def _write_agent_profile_must_not_be_called(*args, **kwargs):
-        raise AssertionError("write_agent_profile must not be reached -- the raise happens first")
-
-    _patch_write_profiles_collaborators(
-        monkeypatch,
-        paperclip_api_key=None,
-        read_byo_key=_explode,
-        write_agent_profile=_write_agent_profile_must_not_be_called,
-    )
-
-    with pytest.raises(RuntimeError, match="org_a.*11111111-1111-1111-1111-111111111111"):
-        await hermes_provisioning.write_profiles("org_a")
 
 
 # --- BYO key delivery (M4-R32) --------------------------------------------------------------
@@ -1236,7 +1209,7 @@ async def test_two_concurrent_write_profiles_calls_produce_byte_identical_config
     roster = [
         {"id": f"1111111{i}-1111-1111-1111-111111111111", "name": f"Agent{i}", "role": "general"} for i in range(6)
     ]
-    _patch_write_profiles_collaborators(monkeypatch, paperclip_api_key="pcp_key_fixed")
+    _patch_write_profiles_collaborators(monkeypatch)
     monkeypatch.setattr("core.services.messaging.load_agent_roster", AsyncMock(return_value=roster))
 
     uploaded: dict[int, dict[str, tuple[str, str]]] = {0: {}, 1: {}}
@@ -1349,8 +1322,15 @@ async def test_write_profiles_facts_staging_is_best_effort(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_write_profile_for_agent_writes_and_uploads(monkeypatch):
+async def test_write_profile_for_new_agent_never_mints_key(monkeypatch):
+    """Paperclip exit (task 8b.2): the write needs no Paperclip key, so a dead admin client cannot fail it."""
     from core.services.hermes_provisioning import ProfileInputs
+    from core.services.paperclip_admin_client import PaperclipAdminClient
+
+    def _no_paperclip(*a, **k):
+        raise AssertionError("no Paperclip call")
+
+    monkeypatch.setattr(PaperclipAdminClient, "__init__", _no_paperclip)
 
     inputs = ProfileInputs(
         provider_choice="chatgpt_oauth",
@@ -1360,8 +1340,6 @@ async def test_write_profile_for_agent_writes_and_uploads(monkeypatch):
         env_vars={},
     )
     monkeypatch.setattr(hermes_provisioning, "resolve_profile_inputs", AsyncMock(return_value=inputs))
-    monkeypatch.setattr("core.services.paperclip_api_key.ensure_paperclip_api_key", AsyncMock(return_value="pk-123"))
-    monkeypatch.setattr("core.services.paperclip_admin_client.shared_admin_client", lambda: object())
     written = {}
 
     def fake_write_agent_profile(owner_id, agent, **kwargs):
@@ -1384,7 +1362,7 @@ async def test_write_profile_for_agent_writes_and_uploads(monkeypatch):
     assert written["owner_id"] == "owner_1"
     assert written["agent"] is agent_row
     assert written["kwargs"]["provider_choice"] == "chatgpt_oauth"
-    assert written["kwargs"]["paperclip_api_key"] == "pk-123"
+    assert "paperclip_api_key" not in written["kwargs"]
     upload_mock.assert_awaited_once()
     assert upload_mock.await_args.args[0] == "owner_1"
     assert upload_mock.await_args.args[1] == "agent_new"
@@ -1408,8 +1386,6 @@ async def test_write_profile_for_agent_stages_facts_for_the_new_agent(monkeypatc
         env_vars={},
     )
     monkeypatch.setattr(hermes_provisioning, "resolve_profile_inputs", AsyncMock(return_value=inputs))
-    monkeypatch.setattr("core.services.paperclip_api_key.ensure_paperclip_api_key", AsyncMock(return_value="pk-123"))
-    monkeypatch.setattr("core.services.paperclip_admin_client.shared_admin_client", lambda: object())
     monkeypatch.setattr(
         "core.services.hermes_profiles.write_agent_profile",
         lambda owner_id, agent, **kwargs: SimpleNamespace(soul_md="S"),
@@ -1463,34 +1439,6 @@ async def test_write_profile_for_agent_propagates_a_hermes_profile_error_from_re
 
 
 @pytest.mark.asyncio
-async def test_write_profile_for_agent_raises_when_paperclip_key_mint_fails(monkeypatch):
-    """A failed/empty Paperclip key mint must never ship a profile whose paperclip skill
-    silently 401s on every call."""
-    from core.services.hermes_provisioning import ProfileInputs
-
-    inputs = ProfileInputs(
-        provider_choice="chatgpt_oauth",
-        byo_provider=None,
-        byo_api_key=None,
-        integrations={},
-        env_vars={},
-    )
-    monkeypatch.setattr(hermes_provisioning, "resolve_profile_inputs", AsyncMock(return_value=inputs))
-    monkeypatch.setattr("core.services.paperclip_api_key.ensure_paperclip_api_key", AsyncMock(return_value=None))
-    monkeypatch.setattr("core.services.paperclip_admin_client.shared_admin_client", lambda: object())
-    write_mock = AsyncMock()
-    monkeypatch.setattr("core.services.hermes_profiles.write_agent_profile", write_mock)
-    upload_mock = AsyncMock()
-    monkeypatch.setattr("core.services.hermes_profiles.upload_profile", upload_mock)
-
-    with pytest.raises(RuntimeError, match="paperclip"):
-        await hermes_provisioning.write_profile_for_agent("owner_1", {"id": "agent_new"})
-
-    write_mock.assert_not_called()
-    upload_mock.assert_not_awaited()
-
-
-@pytest.mark.asyncio
 async def test_write_profile_for_agent_soul_md_override_replaces_the_derived_soul(monkeypatch):
     from core.services.hermes_provisioning import ProfileInputs
 
@@ -1502,8 +1450,6 @@ async def test_write_profile_for_agent_soul_md_override_replaces_the_derived_sou
         env_vars={},
     )
     monkeypatch.setattr(hermes_provisioning, "resolve_profile_inputs", AsyncMock(return_value=inputs))
-    monkeypatch.setattr("core.services.paperclip_api_key.ensure_paperclip_api_key", AsyncMock(return_value="pk-123"))
-    monkeypatch.setattr("core.services.paperclip_admin_client.shared_admin_client", lambda: object())
     monkeypatch.setattr(
         "core.services.hermes_profiles.write_agent_profile",
         lambda owner_id, agent, **kwargs: SimpleNamespace(soul_md="DERIVED"),
@@ -2083,8 +2029,6 @@ async def _front_desk_profile(monkeypatch, line, override=None):
     monkeypatch.setattr(
         "core.services.credentials.mcp_server.build_connected_integration_servers", AsyncMock(return_value={})
     )
-    monkeypatch.setattr("core.services.paperclip_api_key.ensure_paperclip_api_key", AsyncMock(return_value="pk"))
-    monkeypatch.setattr("core.services.paperclip_admin_client.shared_admin_client", lambda: object())
     upload = AsyncMock()
     monkeypatch.setattr("core.services.hermes_profiles.upload_profile", upload)
     monkeypatch.setattr(hermes_provisioning, "_stage_owner_facts", AsyncMock())

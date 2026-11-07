@@ -221,7 +221,7 @@ async def voice_start(owner_id: str, body: VoiceStartIn, request: Request) -> di
 async def start_voice_work(
     owner_id: str,
     body: VoiceStartIn,
-    origin: Literal["phone_contact", "meeting", "owner"],
+    origin: Literal["phone_contact", "meeting", "owner", "owner_voice"],
     specialist: str | None = None,
     budget_s: int = 600,
 ) -> dict:

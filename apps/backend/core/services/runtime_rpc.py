@@ -10,10 +10,8 @@ import uuid
 from typing import Any
 
 import botocore.exceptions
-import httpx
 
 from core.auth import AuthContext, require_org_admin, resolve_owner_id
-from core.config import settings
 from core.dynamodb import run_in_thread
 from core.observability.metrics import put_metric
 from core.repositories import container_repo, messaging_repo
@@ -28,21 +26,13 @@ from core.services.messaging import (
     make_live_event,
     runtime_operation,
 )
-from core.services.paperclip_admin_client import (
-    PaperclipAdminClient,
-    PaperclipApiError,
-)
-from core.services.paperclip_admin_session import get_admin_session_cookie
-from core.services.paperclip_agent_lifecycle import (
+from core.services import agent_registry
+from core.services.agent_lifecycle import (
     AgentLifecycleConflict,
-    create_paperclip_for_chat,
     delete_agent_everywhere,
     ensure_root_ceo_survives,
 )
-from core.services.paperclip_meta import read_from_agent_entry
-from core.services.paperclip_openclaw_pairing import (
-    resolve_company_id_for_owner,
-)
+from core.services.paperclip_meta import read_from_agent_entry, resolve_create_agent_fields
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +76,6 @@ _MUTATING_METHODS = frozenset(
 # auxiliary base_url), so reading or writing it is admin-only -- the same gate as the REST twin,
 # routers/config.py. agents.* stay open to members, matching routers/teams/agents.py.
 _ADMIN_METHODS = frozenset({"config.get", "config.patch"})
-_PAPERCLIP_MIRROR_MAX_ATTEMPTS = 3
 _RPC_TIMEOUT_S = 30.0
 #: M4-R1 (Task 13a): served from the profile in S3 + the Paperclip roster, never forwarded to
 #: the runtime.
@@ -499,63 +488,28 @@ def _normalize_gateway_error(method: str, exc: RuntimeError) -> ApiProblem:
 
 
 async def _create_agent(owner_id: str, user_id: str, params: dict[str, Any], container: dict) -> dict:
-    name = params["name"]
-    role = params.get("role")
-    model = params.get("model")
     inner = params.get("params") or {}
     meta = read_from_agent_entry({"params": inner}) if inner.get("paperclip") else None
-    paperclip_agent = await create_paperclip_for_chat(
-        creator_user_id=user_id,
-        owner_id=owner_id,
-        name=name,
-        role=role,
-        model=model,
-        meta=meta,
+    fields = resolve_create_agent_fields(role=params.get("role"), meta=meta)
+    agent = await agent_registry.create(
+        owner_id,
+        name=params["name"],
+        role=fields["role"],
+        title=fields["title"],
+        persona=fields["capabilities"],
+        icon=fields["icon"],
     )
-    # write_profile_for_agent IS this transport's pairing: it gives the agent its config, its
-    # Paperclip key and its SOUL (the identity-staging gap scan row #16 flagged). There is no
-    # gateway `agents.create` RPC and no openclaw.json for `apply_paperclip_meta` to write into
-    # (Q9a fix round 1, M6-R27) -- the meta rides the Paperclip row itself.
+    # write_profile_for_agent IS this transport's pairing: config, credentials and SOUL. No profile,
+    # no agent: the row is deleted again so the roster never shows one that cannot run.
     from core.services.hermes_provisioning import write_profile_for_agent
 
-    await write_profile_for_agent(owner_id, paperclip_agent)
+    try:
+        await write_profile_for_agent(owner_id, agent)
+    except Exception:
+        await agent_registry.delete(owner_id, agent["id"])
+        raise
     await _invalidate(owner_id, "agents.create")
-    from routers.teams.agents import _redact_agent
-
-    return {"agentId": paperclip_agent["id"], "agent": _redact_agent(paperclip_agent)}
-
-
-async def _mirror_paperclip_update_with_retry(
-    *,
-    admin: PaperclipAdminClient,
-    cookie: str,
-    company_id: str,
-    agent_id: str,
-    body: dict[str, str],
-) -> None:
-    target = await admin.get_agent(session_cookie=cookie, agent_id=agent_id)
-    if target.get("companyId") != company_id:
-        return
-    if body.get("role") not in (None, "ceo") and target.get("role") == "ceo" and not target.get("reportsTo"):
-        payload = await admin.list_agents(company_id=company_id, session_cookie=cookie)
-        agents = payload if isinstance(payload, list) else payload.get("agents", [])
-        agents = [agent for agent in agents if isinstance(agent, dict)]
-        ensure_root_ceo_survives(target=target, agents=agents)
-    for attempt in range(_PAPERCLIP_MIRROR_MAX_ATTEMPTS):
-        try:
-            await admin.patch_agent(
-                session_cookie=cookie,
-                agent_id=agent_id,
-                body=body,
-            )
-            return
-        except (PaperclipApiError, httpx.HTTPError) as exc:
-            if (
-                not (isinstance(exc, httpx.HTTPError) or getattr(exc, "retryable", False))
-                or attempt + 1 == _PAPERCLIP_MIRROR_MAX_ATTEMPTS
-            ):
-                raise
-            await asyncio.sleep(0.2 * 2**attempt)
+    return {"agentId": agent["id"], "agent": agent}
 
 
 #: The pseudo-key ``config.patch`` carries the owner-level overhead-model choice on (M6 task
@@ -814,31 +768,17 @@ async def _mirror_agent_update(
             value = paperclip.get(key)
             if isinstance(value, str):
                 body[key] = value
+    fields = {"persona" if k == "capabilities" else k: v for k, v in body.items()}
     try:
-        from core.repositories.paperclip_repo import PaperclipRepo
-
-        company_id = await resolve_company_id_for_owner(
-            owner_id=owner_id,
-            repo=PaperclipRepo(table_name="paperclip-companies"),
-        )
-        if not company_id:
-            # No company row means nowhere to write the edit -- the same lost edit as a failed
-            # mirror, so it gets the same refusal below instead of {"ok": True}.
-            raise RuntimeError("no Paperclip company for owner")
-        async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0) as client:
-            await _mirror_paperclip_update_with_retry(
-                admin=PaperclipAdminClient(http_client=client),
-                cookie=await get_admin_session_cookie(client),
-                company_id=company_id,
-                agent_id=agent_id,
-                body=body,
-            )
-    except AgentLifecycleConflict:
-        raise
-    except (PaperclipApiError, httpx.HTTPError, RuntimeError) as exc:
-        # Name/role/title/capabilities live only on the Paperclip row: swallowing this answered
-        # {"ok": True} to an edit that was lost.
-        logger.warning("Paperclip agent metadata mirror failed owner=%s agent=%s", owner_id, agent_id, exc_info=True)
+        roster = await agent_registry.roster(owner_id)
+        target = next((a for a in roster if a["id"] == agent_id), None)
+        if target is None:
+            return
+        if body.get("role") not in (None, "ceo"):
+            ensure_root_ceo_survives(target=target, agents=roster)
+        await agent_registry.update(owner_id, agent_id, fields)
+    except agent_registry.RegistryUnavailable as exc:
+        logger.warning("agent metadata write failed owner=%s agent=%s", owner_id, agent_id, exc_info=True)
         raise ApiProblem(
             "RUNTIME_UNAVAILABLE",
             "Couldn't save the agent's details.",
@@ -849,7 +789,7 @@ async def _mirror_agent_update(
     if agentcore:
         # Row #2 (Q9a fix round 1): an AgentCore row has no openclaw.json for
         # apply_paperclip_meta to write. name/role/title/capabilities/icon already landed on
-        # the Paperclip row above; any identity-shaped change refreshes SOUL.md (I2) -- never a
+        # the registry row above; any identity-shaped change refreshes SOUL.md (I2) -- never a
         # full write_profile_for_agent, which would clobber the owner's own config.yaml/.env
         # edits.
         #

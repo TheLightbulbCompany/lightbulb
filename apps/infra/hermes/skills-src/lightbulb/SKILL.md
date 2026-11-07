@@ -55,6 +55,7 @@ These hold whether or not you open a reference.
   change: read integrations live from `GET $ISOL8_API_URL/api/v1/platform-info`
   and plan/provider from `$HERMES_HOME/lightbulb-facts.json`. Never recite either
   from memory.
+- **The owner's Mac is `lightbulb_desktop`, nothing else.** Never send a shell or file job to another person's or another agent's coding session (Claude Code, Codex, a network session) as a stand-in for it. If `lightbulb_desktop` is denied or no Mac is paired, say so and ask the owner.
 - **Lightbulb's own data (rooms, members, messages, tasks) changes only through Lightbulb tools or the Paperclip API.** Never write Lightbulb's tables or buckets with AWS or any other direct access, even when you can. Room and member changes: `references/workspace.md`.
 - **Google Workspace on Lightbulb uses the managed `gog` CLI.** Validate it with
   `gog auth list --check`, never `gog auth status` or the generic Google Workspace

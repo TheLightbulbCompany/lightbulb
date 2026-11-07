@@ -625,3 +625,88 @@ def test_use_browser_in_a_paperclip_turn_passes_family(mac_turn):
     mac_turn["start"]("paperclip")
     _use({})
     assert mac_turn["posted"][0][1]["family"] == "paperclip"
+
+
+def test_a_task_run_sends_its_attempt_proof(monkeypatch):
+    seen = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+        def read(self, _n):
+            return b"{}"
+
+    def urlopen(request, timeout):
+        seen.update({k.lower(): v for k, v in request.header_items()})
+        return Response()
+
+    monkeypatch.setattr(desktop_transport.urllib.request, "urlopen", urlopen)
+    ctx = {"apiUrl": "https://x", "hookToken": "h", "ownerId": "o", "runId": "r", "agentId": "a"}
+    desktop_transport._http(ctx | {"family": "task", "taskId": "t1", "runSecret": "s1"}, "GET", "devices")
+    assert (seen["x-desktop-run-family"], seen["x-desktop-task"], seen["x-desktop-run-secret"]) == ("task", "t1", "s1")
+    seen.clear()
+    desktop_transport._http(ctx | {"family": "room"}, "GET", "devices")
+    assert "x-desktop-task" not in seen and "x-desktop-run-secret" not in seen
+
+
+def test_the_task_session_desktop_ctx_names_its_attempt(monkeypatch):
+    from bridge import turn
+
+    seen = {}
+    monkeypatch.setattr(turn, "_start_desktop_turn", lambda _root, ctx: seen.update(ctx))
+    monkeypatch.setattr(turn, "_run_task_turn", lambda *_a, **_k: ("", None, "", {}))
+    monkeypatch.setattr(turn, "cancel_run_desktop", lambda _r: None)
+    turn._run_task_session(
+        {"agentId": "a1", "runId": "r1", "sessionKey": "k", "taskId": "t1", "runSecret": "s1"}, {}
+    )
+    assert (seen["family"], seen["taskId"], seen["runSecret"]) == ("task", "t1", "s1")
+
+
+@pytest.mark.parametrize(
+    "status,code,expected",
+    [
+        (403, "unsupported_run_family", "denied"),
+        (403, "run_member_authority_unavailable", "denied"),
+        (409, "desktop_target_not_found", "no paired Mac"),
+        (503, "desktop_disabled", "unavailable"),
+    ],
+)
+def test_desktop_errors_say_the_real_reason(tmp_path, monkeypatch, status, code, expected):
+    import io
+    import urllib.error
+    from lightbulb import desktop, turn_context
+
+    monkeypatch.setattr(turn_context, "_home", lambda: tmp_path)
+    ctx = {"runId": "run", "family": "task", "sessionKey": "session"}
+    desktop.start_run_desktop(tmp_path, ctx)
+    activate(tmp_path, "session", "run")
+
+    def refuse(*_a, **_k):
+        body = io.BytesIO(json.dumps({"detail": {"code": code}}).encode())
+        raise urllib.error.HTTPError("u", status, "x", {}, body)
+
+    monkeypatch.setattr(desktop_transport, "_http", refuse)
+    result = json.loads(desktop.handle({"action": "devices"}, session_id="session"))
+    assert expected in result["error"] and result["code"] == code
+    assert "another" in result["error"]  # never a stand-in session
+
+
+def test_no_paired_mac_is_said_plainly(tmp_path, monkeypatch):
+    from lightbulb import desktop, turn_context
+
+    monkeypatch.setattr(turn_context, "_home", lambda: tmp_path)
+    ctx = {"runId": "run", "family": "task", "sessionKey": "session"}
+    desktop.start_run_desktop(tmp_path, ctx)
+    activate(tmp_path, "session", "run")
+    monkeypatch.setattr(desktop_transport, "_http", lambda *_a: {"devices": [], "submissionsEnabled": True})
+    result = json.loads(desktop.handle({"action": "devices"}, session_id="session"))
+    assert result["devices"] == [] and "no paired Mac" in result["note"]
+
+
+def test_the_skill_forbids_a_stand_in_session_for_the_mac():
+    skill = (pathlib.Path(__file__).resolve().parents[1] / "skills-src/lightbulb/SKILL.md").read_text()
+    assert "as a stand-in for it" in skill and "ask the owner" in skill

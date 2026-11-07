@@ -26,7 +26,7 @@ from core.repositories import messaging_repo
 from core.services import integration_reads, meeting_bots, meeting_invites, memory_api
 from routers.huddles import RoomBody, _problem, _require_room_token, _room_id, _Worker
 from routers.internal_automations import VoiceStartIn, start_voice_work
-from routers.voice_phone import _bookings
+from routers.voice_phone import _TZ, _bookings
 
 router = APIRouter(dependencies=[_Worker])
 logger = logging.getLogger(__name__)
@@ -134,6 +134,8 @@ class ReadIn(RoomBody):
     days: Annotated[int, Field(le=90), AfterValidator(lambda d: max(d, 1))] = 7  # 0 or less: today
     date: str = Field(default="", pattern=r"^(\d{4}-\d{2}-\d{2})?$")
     participantId: str = Field(default="", max_length=128)
+    from_: str = Field(default="", alias="from", pattern=r"^(\d{4}-\d{2}-\d{2})?$")  # call counts over local days
+    to: str = Field(default="", pattern=r"^(\d{4}-\d{2}-\d{2})?$")
 
 
 def _started(call: dict) -> datetime:
@@ -144,9 +146,14 @@ def _started(call: dict) -> datetime:
     return at if at.tzinfo else at.replace(tzinfo=UTC)
 
 
-async def _calls(owner_id: str, days: int) -> dict:
-    """Phone calls in the last `days`, by outcome (the call rooms' META.call records)."""
-    since = datetime.now(UTC) - timedelta(days=days)
+async def _calls(owner_id: str, days: int, frm: str = "", to: str = "") -> dict:
+    """Phone calls in the last `days`, or on the business's local days `frm`..`to` inclusive, by outcome (the call
+    rooms' META.call records)."""
+    since, until = datetime.now(UTC) - timedelta(days=days), datetime.max.replace(tzinfo=UTC)
+    if frm:
+        to = to or frm
+        since = datetime.fromisoformat(frm).replace(tzinfo=_TZ)
+        until = datetime.fromisoformat(to).replace(tzinfo=_TZ) + timedelta(days=1)
     # ponytail: one META read per call room, capped at the newest 200; a calls index when volume needs it.
     rows = [r for r in await messaging_repo._query(messaging_repo.owner_pk(owner_id), begins_with="ROOM#")
             if str(r.get("name", "")).startswith("Call · ")]  # fmt: skip
@@ -154,10 +161,11 @@ async def _calls(owner_id: str, days: int) -> dict:
     outcomes: dict[str, int] = {}
     for r in rows:
         call = ((await messaging_repo.get_room(r["roomId"])) or {}).get("call") or {}
-        if _started(call) >= since:  # startedAt carries the business's offset: compare as times
+        if since <= _started(call) < until:  # startedAt carries the business's offset: compare as times
             key = call.get("outcome") or call.get("status") or "unknown"
             outcomes[key] = outcomes.get(key, 0) + 1
-    return {"days": days, "calls": sum(outcomes.values()), "byOutcome": outcomes}
+    span = {"from": frm, "to": to} if frm else {"days": days}
+    return {**span, "calls": sum(outcomes.values()), "byOutcome": outcomes}
 
 
 @router.post("/internal/voice/meet/{room_id}/read")
@@ -175,7 +183,7 @@ async def read(room_id: str, body: ReadIn) -> dict:
         )  # fmt: skip
         return {"facts": [" ".join(r["content"].split())[:400] for r in page.get("results", [])[:6]]}
     if body.kind == "calls":
-        return await _calls(body.ownerId, body.days)
+        return await _calls(body.ownerId, body.days, body.from_, body.to)
     rows = await _bookings(body.ownerId, body.date)
     return {"bookings": [{"start": b["sk"].removeprefix("VOICEBOOK#"), "service": b.get("service"),
                           "name": b.get("name")} for b in rows[:50]]}  # fmt: skip
@@ -200,7 +208,8 @@ async def integration_read(room_id: str, body: IntegrationIn) -> dict:
     room_id, _meta, meeting = await _meeting(room_id, body)
     if not await _member_asked(room_id, meeting, body.participantId):
         return {"text": "Only a member can ask me to read the team's connected apps in a meeting."}
-    return {"text": await integration_reads.read(body.ownerId, body.provider, body.query)}
+    out = await integration_reads.read(body.ownerId, body.provider, body.query)
+    return out if isinstance(out, dict) else {"text": out}
 
 
 class ChatIn(RoomBody):

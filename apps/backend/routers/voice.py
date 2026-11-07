@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from datetime import datetime
 from typing import Any
 
@@ -25,7 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
-from core.dynamodb import utc_now_iso
+from core.dynamodb import run_in_thread, utc_now_iso
 from core.repositories import messaging_repo
 from core.services import voice_onboarding
 
@@ -109,6 +110,20 @@ async def call_done(room_id: str, auth: AuthContext = Depends(get_current_user))
     return {"ok": True}
 
 
+@router.delete("/voice/callers/{e164}/memory")
+async def forget_caller(e164: str, auth: AuthContext = Depends(get_current_user)) -> dict:
+    """Forget: clear what the assistant remembers of one caller (facts and name)."""
+    number, ws = _e164(e164), resolve_owner_id(auth)
+    key = {"pk": messaging_repo.owner_pk(ws), "sk": f"VOICECALLER#{number}"}
+    if not number or not await messaging_repo._get(**key):
+        raise HTTPException(status_code=404, detail={"code": "not_found"})
+    await run_in_thread(
+        messaging_repo._table().update_item, Key=key, UpdateExpression="SET facts = :f, forgottenAt = :t REMOVE #n",
+        ExpressionAttributeNames={"#n": "name"}, ExpressionAttributeValues={":f": [], ":t": utc_now_iso()},
+    )  # fmt: skip
+    return {"ok": True}
+
+
 class AgentConfigIn(BaseModel):
     config: dict
 
@@ -127,6 +142,12 @@ async def put_agent(body: AgentConfigIn, auth: AuthContext = Depends(get_current
     if body.config.get("live") and greeting.strip() and not (_AI.search(greeting) and _RECORDED.search(greeting)):
         # The recording and AI-disclosure laws want both, and the page is not the only writer.
         raise HTTPException(status_code=422, detail={"code": "greeting_needs_disclosure"})
+    tz = body.config.get("timezone")
+    if tz:
+        try:
+            ZoneInfo(str(tz))
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail={"code": "timezone_invalid"}) from exc
     handoff = body.config.get("handoff")
     if isinstance(handoff, dict) and handoff.get("number"):
         number = _e164(handoff["number"]) if isinstance(handoff["number"], str) else None

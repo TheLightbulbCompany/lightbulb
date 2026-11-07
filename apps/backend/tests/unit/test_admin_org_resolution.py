@@ -438,7 +438,7 @@ class TestAdminMutationOwnerResolution:
     async def test_agent_delete_uses_org_owner_id(self, async_client, admin_env, org_mode):
         delete_everywhere = AsyncMock(return_value={"deleted": True})
         with patch(
-            "core.services.paperclip_agent_lifecycle.delete_agent_everywhere",
+            "core.services.agent_lifecycle.delete_agent_everywhere",
             new=delete_everywhere,
         ):
             res = await async_client.post("/api/v1/admin/users/user_123/agents/agt_42/delete")
@@ -450,7 +450,7 @@ class TestAdminMutationOwnerResolution:
     async def test_agent_delete_delegates_each_call_to_lifecycle(self, async_client, admin_env, org_mode):
         delete_everywhere = AsyncMock(return_value={"deleted": True})
         with patch(
-            "core.services.paperclip_agent_lifecycle.delete_agent_everywhere",
+            "core.services.agent_lifecycle.delete_agent_everywhere",
             new=delete_everywhere,
         ):
             r1 = await async_client.post("/api/v1/admin/users/user_123/agents/agt_42/delete")

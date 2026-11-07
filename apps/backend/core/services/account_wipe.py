@@ -118,14 +118,15 @@ from core.repositories import (
 from core.repositories.paperclip_repo import PaperclipIdentity, PaperclipRepo
 from core.services import clerk_admin, company_stripe, message_search, text_lines, voice_onboarding
 from core.services.billing_service import delete_stripe_customer
-from core.services.paperclip_api_key import (
-    delete_owner_agent_key_secrets,
-    list_owner_agent_key_secret_names,
-)
 from core.services.paperclip_admin_client import PaperclipAdminClient
 from core.services.paperclip_admin_session import get_admin_session_cookie
 from core.services.oauth_service import revoke_user_oauth
-from core.services.owner_secret_sweep import delete_owner_secrets, list_owner_secret_names
+from core.services.owner_secret_sweep import (
+    delete_owner_agent_key_secrets,
+    delete_owner_secrets,
+    list_owner_agent_key_secret_names,
+    list_owner_secret_names,
+)
 from core.services.paperclip_provisioning import build_paperclip_provisioning, close_paperclip_provisioning
 from core.services.paperclip_user_delete import BOOTSTRAP_EMAILS, delete_paperclip_user
 
@@ -1137,8 +1138,7 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
         _skip(steps, "user_row", "user_repo.delete", "no users row")
 
     # --- Step 9e: per-agent Paperclip key secrets --------------------------
-    # These live in Secrets Manager with no per-agent index (see the
-    # paperclip_api_key module docstring), so the sweep enumerates
+    # These live in Secrets Manager with no per-agent index, so the sweep enumerates
     # isol8/<env>/paperclip-agent-keys/<owner>/* by name prefix and deletes
     # each. Added after the 2026-07-14 account-wipe dogfood found them
     # orphaned post-wipe. Unconditional + idempotent (no-ops on an empty set).

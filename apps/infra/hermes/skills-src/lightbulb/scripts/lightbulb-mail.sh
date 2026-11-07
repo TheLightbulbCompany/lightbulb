@@ -12,7 +12,7 @@ Usage:
   lightbulb-mail.sh send --to someone@example.com --subject "S"
   lightbulb-mail.sh send --reply <Reply-Key>               (body on stdin)
 Options:
-  --as <agent_id>   act as this agent (default: $PAPERCLIP_AGENT_ID, else your workspace-<id> cwd)
+  --as <agent_id>   act as this agent (default: $LIGHTBULB_AGENT_ID, else your workspace-<id> cwd)
 Env (already set): OPENCLAW_HOOK_TOKEN, ISOL8_API_URL, ISOL8_OWNER_ID
 EOF
 }
@@ -27,7 +27,7 @@ command -v jq >/dev/null || die 'Missing jq'; command -v curl >/dev/null || die 
 
 need_val() { [[ $# -ge 2 && -n "${2:-}" ]] || die "Option $1 needs a value."; }
 
-agent_id="${PAPERCLIP_AGENT_ID:-}"
+agent_id="${LIGHTBULB_AGENT_ID:-${PAPERCLIP_AGENT_ID:-}}"
 case "$PWD" in */workspace-*) [[ -n "$agent_id" ]] || agent_id="${PWD##*/workspace-}" ;; esac
 to=""; subject=""; reply=""; owner=false; since=""; limit="20"
 while [[ $# -gt 0 ]]; do

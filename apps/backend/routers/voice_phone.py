@@ -10,14 +10,17 @@ comes from that record, never from the model. The assistant's settings are the A
 Rows in the messaging table:
     PHONE#<e164>    LINE                  the number's workspace (ownerId) and the member tasks run as (ownerUserId)
     OWNER#<owner>   VOICEBOOK#<local>     one booking in the assistant's own calendar (local start "YYYY-MM-DDTHH:MM")
-    OWNER#<owner>   VOICECALLER#<e164>    a caller seen before: name, last call
+    OWNER#<owner>   VOICECALLER#<e164>    a caller seen before: name, last call, facts (<= 10, newest first), visits
 """
 
+import functools
 import hashlib
+import re
+import logging
 import uuid
 from datetime import datetime, timedelta
 from typing import Annotated, Literal
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
@@ -28,8 +31,10 @@ from core.dynamodb import run_in_thread, utc_now_iso
 from core.repositories import messaging_repo
 from core.services import clerk_admin, voice_calls
 from routers.huddles import _Worker
+from routers.voice import _e164
 from routers.internal_automations import VoiceStartIn, start_voice_work
 
+logger = logging.getLogger(__name__)
 router = APIRouter(dependencies=[_Worker])
 
 _Str = Annotated[str, Field(min_length=1, max_length=500)]
@@ -45,6 +50,7 @@ _DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 DEFAULTS: dict = {
     "name": "",
     "greeting": "",
+    "live": False,
     "paused": False,
     "instructions": "",
     "allow": {"book": True, "move": True, "waitlist": True, "greetByName": True, "answer": True},
@@ -52,9 +58,11 @@ DEFAULTS: dict = {
     "hours": {d: {"open": "09:00", "close": "18:00", "closed": d == "Sun"} for d in _DAYS},
     "services": [],
     "bufferMin": 10,
+    "timezone": "America/New_York",  # IANA; Onboarding saves the browser's
     "handoff": {"number": "", "onlyOpenHours": True},
+    "forwardFrom": "",
 }
-_TZ = ZoneInfo("America/New_York")  # ponytail: one zone until the Agent page asks for the business's own
+_TZ = ZoneInfo("America/New_York")  # the call clock (startedAt, step times); bookings and hours use _tz(cfg)
 _GRID = timedelta(minutes=30)  # slot starts every half hour
 
 
@@ -77,9 +85,15 @@ async def agent_config(owner_id: str) -> dict:
     return cfg
 
 
-def _allowed(cfg: dict, *caps: str) -> None:
-    """Refuse (403) a capability the owner turned off, or everything but a message while paused."""
-    if cfg.get("paused") or not any(cfg["allow"].get(c) for c in caps):
+def _line_state(cfg: dict, caller: str) -> Literal["live", "message_only"]:
+    """Live after Go live and not paused; the owner's own number always gets the live line (the test call)."""
+    owner = {_e164(str(n or "")) for n in (cfg["handoff"]["number"], cfg.get("forwardFrom"))} - {None}
+    return "live" if (cfg.get("live") and not cfg.get("paused")) or _e164(caller) in owner else "message_only"
+
+
+def _allowed(cfg: dict, call: dict, *caps: str) -> None:
+    """Refuse (403) a capability the owner turned off, or everything but a message while the line is message-only."""
+    if _line_state(cfg, call.get("caller", "")) != "live" or not any(cfg["allow"].get(c) for c in caps):
         raise _err(403, "not_allowed")
 
 
@@ -145,7 +159,9 @@ def _facts(cfg: dict) -> str:
     hours = ", ".join(
         f"{d} {h['open']}–{h['close']}" if not h.get("closed") else f"{d} closed" for d, h in cfg["hours"].items()
     )
-    qa = " ".join(f"Q: {k.get('q')} A: {k.get('a')}" for k in cfg["knowledge"] if k.get("q") and k.get("a"))
+    qa = " ".join(
+        f"Q: {k['q']} A: {k['a']}" if k.get("q") else f"Note: {k['a']}" for k in cfg["knowledge"] if k.get("a")
+    )
     return f"Services: {services or 'not listed'}. Opening hours: {hours}. {qa}".strip()
 
 
@@ -171,7 +187,7 @@ async def start_call(body: StartIn) -> dict:
         "booking": "",
         "steps": [],
         "transcript": [],
-        "callerMemory": [],
+        "callerMemory": list((seen or {}).get("facts", [])) if cfg["allow"]["greetByName"] else [],
         "ownerMode": False,
         "resolvedAt": None,
         "calledNumber": body.calledNumber,
@@ -200,8 +216,10 @@ async def start_call(body: StartIn) -> dict:
         if await messaging_repo.get_room(call_id) is None:  # a replay keeps the room it made
             raise
     voice_calls._fire(_warm_front_desk(owner_id))  # the call's start_work finds Front desk warm; no new timer
-    allow, paused = cfg["allow"], bool(cfg.get("paused"))
+    allow, mode = cfg["allow"], _line_state(cfg, body.callerNumber)
+    paused = mode != "live"
     return {
+        "mode": mode,
         "callId": call_id,
         "ownerId": owner_id,
         "businessName": business,
@@ -210,9 +228,10 @@ async def start_call(body: StartIn) -> dict:
         "facts": _facts(cfg) if allow["answer"] and not paused else "",
         "instructions": cfg["instructions"][:4000],
         "callerName": call["callerName"] if allow["greetByName"] else "",
+        "callerMemory": call["callerMemory"],
         "can": {k: bool(allow[k]) and not paused for k in ("book", "move", "answer")},
         "transfer": bool(cfg["handoff"]["number"]),
-        "today": datetime.now(_TZ).strftime("%A %Y-%m-%d %H:%M"),
+        "today": datetime.now(_tz(cfg)).strftime("%A %Y-%m-%d %H:%M"),
     }
 
 
@@ -258,17 +277,23 @@ def outcome_of(call: dict) -> str:
     return "message" if call.get("messages") else "answered"
 
 
-@router.post("/internal/voice/calls/{call_id}/end")
-async def end_call(call_id: str, body: EndIn) -> dict:
+def transcript_lines(transcript: list[dict]) -> list[dict]:
+    """The worker's lines as the record keeps them: `{who: caller|assistant, text, t}`; anyone else is dropped."""
     who = {"user": "caller", "caller": "caller", "assistant": "assistant"}
     lines = []
-    for t in body.transcript:
+    for t in transcript:
         if str(t.get("role") or t.get("who")) not in who:
             continue
         line = {"who": who[str(t.get("role") or t.get("who"))], "text": str(t.get("text", ""))[:2000]}
         if isinstance(t.get("t"), (int, float)) and not isinstance(t["t"], bool):
             line["t"] = round(min(max(float(t["t"]), 0.0), 86400.0), 1)  # seconds since the call started
         lines.append(line)
+    return lines
+
+
+@router.post("/internal/voice/calls/{call_id}/end")
+async def end_call(call_id: str, body: EndIn) -> dict:
+    lines = transcript_lines(body.transcript)
 
     def change(call: dict) -> dict:
         return {"status": "ended", "endedAt": utc_now_iso(), "durationSec": body.durationSec,
@@ -280,11 +305,47 @@ async def end_call(call_id: str, body: EndIn) -> dict:
     meta, _ = await _call(call_id)
     out = await _patch_call(call_id, change)
     if out.get("caller"):
-        item = {**_caller_key(meta["ownerId"], out["caller"]), "lastCallAt": out["endedAt"], "lastCallId": call_id}
-        if out.get("callerName"):
-            item["name"] = out["callerName"]
+        seen = await _seen(meta["ownerId"], out["caller"]) or {}
+        item = {**_caller_key(meta["ownerId"], out["caller"]), "lastCallAt": out["endedAt"], "lastCallId": call_id,
+                "visits": int(seen.get("visits", 0)) + 1}  # fmt: skip
+        if seen.get("forgottenAt"):
+            item["forgottenAt"] = seen["forgottenAt"]
+        if seen.get("forgottenAt") and datetime.fromisoformat(seen["forgottenAt"]) >= datetime.fromisoformat(
+            out["startedAt"]
+        ):
+            item["facts"] = seen.get("facts", [])  # Forgotten during this call: write neither name nor facts
+        else:
+            item["facts"] = list(dict.fromkeys([*out.get("remembered", [])[::-1], *seen.get("facts", [])]))[:MAX_FACTS]
+            if out.get("callerName") or seen.get("name"):
+                item["name"] = out.get("callerName") or seen["name"]
         await run_in_thread(messaging_repo._table().put_item, Item=item)
     return out
+
+
+MAX_FACTS = 10
+
+
+class RememberIn(BaseModel):
+    fact: Annotated[str, Field(min_length=1, max_length=120)]
+    kind: Literal["caller", "business"] = "caller"
+
+
+@router.post("/internal/voice/calls/{call_id}/remember")
+async def remember(call_id: str, body: RememberIn) -> dict:
+    """A caller's own preference (kept on their row at the end of the call) or a fact about the business (cfg toAdd)."""
+    meta, call = await _call(call_id)
+    if _line_state(await agent_config(meta["ownerId"]), call.get("caller", "")) != "live":
+        raise _err(403, "not_allowed")
+    if re.search(r"\d{12,}", re.sub(r"\D", "", body.fact)):  # card-like: never stored
+        raise _err(400, "looks_like_a_card")
+    if body.kind == "business":
+        cfg = await messaging_repo.get_voice_agent(meta["ownerId"]) or {}
+        await messaging_repo.put_voice_agent(
+            meta["ownerId"], {**cfg, "toAdd": list(dict.fromkeys([*cfg.get("toAdd", []), body.fact]))[-20:]}, "voice"
+        )
+    else:
+        await _patch_call(call_id, lambda c: {"remembered": [*c.get("remembered", []), body.fact][-MAX_FACTS:]})
+    return {"remembered": True}
 
 
 # --- the assistant's own calendar (spec §4.1b: a hold in its calendar when the business has no API) --------
@@ -332,18 +393,36 @@ async def _bookings(owner_id: str, prefix: str) -> list[dict]:
     return r.get("Items", [])
 
 
-async def _taken(owner_id: str, date: str, skip: str = "") -> list[tuple[datetime, datetime]]:
+async def _taken(owner_id: str, date: str) -> list[tuple[datetime, datetime]]:
     out = []
     for b in await _bookings(owner_id, date):
-        start = b["sk"].removeprefix("VOICEBOOK#")
-        if start != skip:
-            s = datetime.strptime(start, "%Y-%m-%dT%H:%M")
-            out.append((s, s + timedelta(minutes=int(b.get("minutes") or 60))))
+        s = datetime.strptime(b["sk"].removeprefix("VOICEBOOK#"), "%Y-%m-%dT%H:%M")
+        out.append((s, s + timedelta(minutes=int(b.get("minutes") or 60))))
     return out
 
 
-def _now() -> datetime:
-    return datetime.now(_TZ).replace(tzinfo=None)
+@functools.cache
+def _zone(name: str) -> ZoneInfo:
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):  # a bad stored name must not 500 every call
+        logger.warning("unknown business timezone %r; using America/New_York", name)
+        return _TZ
+
+
+def _tz(cfg: dict) -> ZoneInfo:
+    return _zone(cfg.get("timezone") or "America/New_York")
+
+
+def _now(cfg: dict) -> datetime:
+    return datetime.now(_tz(cfg)).replace(tzinfo=None)
+
+
+def _cells(cfg: dict, start: str, minutes: int) -> list[str]:
+    """The 5-minute UTC cells a booking holds: [start, start + minutes + bufferMin)."""
+    t = datetime.strptime(start, "%Y-%m-%dT%H:%M").replace(tzinfo=_tz(cfg)).astimezone(ZoneInfo("UTC"))
+    n = -(-(minutes + int(cfg.get("bufferMin") or 0)) // 5)
+    return [f"VOICECELL#{(t + timedelta(minutes=5 * i)):%Y-%m-%dT%H:%M}" for i in range(n)]
 
 
 class DateIn(BaseModel):
@@ -353,11 +432,11 @@ class DateIn(BaseModel):
 
 @router.post("/internal/voice/calls/{call_id}/availability")
 async def availability(call_id: str, body: DateIn) -> dict:
-    meta, _call_ = await _call(call_id)
+    meta, call = await _call(call_id)
     cfg = await agent_config(meta["ownerId"])
-    _allowed(cfg, "book", "move")
+    _allowed(cfg, call, "book", "move")
     taken = await _taken(meta["ownerId"], body.date)
-    return {"date": body.date, "slots": free_slots(cfg, body.date, taken, _now(), _minutes(cfg, body.service))}
+    return {"date": body.date, "slots": free_slots(cfg, body.date, taken, _now(cfg), _minutes(cfg, body.service))}
 
 
 class BookIn(BaseModel):
@@ -367,37 +446,68 @@ class BookIn(BaseModel):
 
 
 async def _book(owner_id: str, call_id: str, call: dict, cfg: dict, start: str, service: str, name: str,
-                skip: str = "") -> None:  # fmt: skip
-    minutes = _minutes(cfg, service)
-    # ponytail: overlap is checked on a read; two calls booking overlapping (not equal) starts at once can both win.
-    if start not in free_slots(cfg, start[:10], await _taken(owner_id, start[:10], skip), _now(), minutes):
+                old: dict | None = None) -> None:  # fmt: skip
+    """Write the booking and its cells in one TransactWriteItems with `attribute_not_exists` on every cell, so an
+    overlap fails atomically (https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_TransactWriteItems.html,
+    https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transaction-apis.html). `old` is the booking
+    being moved: its row and cells go in the same transaction."""
+    minutes, pk, table = (
+        _minutes(cfg, service),
+        messaging_repo.owner_pk(owner_id),
+        messaging_repo.settings.MESSAGING_TABLE,
+    )
+    cells = _cells(cfg, start, minutes)
+    if len(cells) > 99:  # DynamoDB caps a transaction at 100 items (the booking row is one)
+        raise _err(400, "booking_too_long")
+    if start not in free_slots(cfg, start[:10], [], _now(cfg), minutes) or (old and old["sk"] == f"VOICEBOOK#{start}"):
         raise _err(400, "slot_unavailable")
+    sk, mine = f"VOICEBOOK#{start}", set(old.get("cells", [])) if old else set()
+    items = [{"Put": {"TableName": table, "ConditionExpression": "attribute_not_exists(sk)", "Item": {
+        "pk": pk, "sk": sk, "service": service, "minutes": minutes, "name": name, "phone": call.get("caller", ""),
+        "callId": call_id, "createdAt": utc_now_iso(), "cells": cells}}}]  # fmt: skip
+    for c in cells:
+        put = {
+            "TableName": table,
+            "Item": {"pk": pk, "sk": c, "booking": sk, "expiresAt": _cell_expiry(c)},
+            "ConditionExpression": "attribute_not_exists(sk)",
+        }
+        if c in mine:  # the booking being moved holds it now and gives it up in this same transaction
+            put |= {
+                "ConditionExpression": "attribute_not_exists(sk) OR booking = :old",
+                "ExpressionAttributeValues": {":old": old["sk"]},
+            }
+        items.append({"Put": put})
+    if old:
+        items += _release(table, pk, old, keep=set(cells))
+    if len(items) > 100:
+        raise _err(400, "booking_too_long")
     try:
-        await run_in_thread(
-            messaging_repo._table().put_item,
-            Item={
-                "pk": messaging_repo.owner_pk(owner_id),
-                "sk": f"VOICEBOOK#{start}",
-                "service": service,
-                "minutes": minutes,
-                "name": name,
-                "phone": call.get("caller", ""),
-                "callId": call_id,
-                "createdAt": utc_now_iso(),
-            },  # fmt: skip
-            ConditionExpression="attribute_not_exists(sk)",
-        )
+        await messaging_repo._transact(items)
     except ClientError as exc:
-        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+        if messaging_repo.is_cancelled(exc):
             raise _err(409, "slot_taken") from exc
         raise
+
+
+def _cell_expiry(cell: str) -> int:  # the table's TTL attribute: the cell's end + 1 day
+    t = datetime.strptime(cell.removeprefix("VOICECELL#"), "%Y-%m-%dT%H:%M").replace(tzinfo=ZoneInfo("UTC"))
+    return int(t.timestamp()) + 300 + 86400
+
+
+def _release(table: str, pk: str, row: dict, keep: set[str] = frozenset()) -> list[dict]:
+    # ponytail: VOICEBOOK# rows made before cells existed have no "cells" and hold nothing; no migration, they age out.
+    return [
+        {"Delete": {"TableName": table, "Key": {"pk": pk, "sk": k}}}
+        for k in [row["sk"], *row.get("cells", [])]
+        if k not in keep
+    ]
 
 
 @router.post("/internal/voice/calls/{call_id}/book")
 async def book(call_id: str, body: BookIn) -> dict:
     meta, call = await _call(call_id)
     cfg = await agent_config(meta["ownerId"])
-    _allowed(cfg, "book")
+    _allowed(cfg, call, "book")
     await _book(meta["ownerId"], call_id, call, cfg, body.start, body.service, body.name)
     entry = {"start": body.start, "service": body.service, "name": body.name}
     line = f"{body.service} · {_pretty(body.start)} for {body.name}"
@@ -417,14 +527,15 @@ async def change_booking(call_id: str, body: ChangeIn) -> dict:
     """Move or cancel a booking -- only one made from this caller's number (a contact never touches another's)."""
     meta, call = await _call(call_id)
     cfg = await agent_config(meta["ownerId"])
-    _allowed(cfg, "move")
+    _allowed(cfg, call, "move")
     owner_pk, sk = messaging_repo.owner_pk(meta["ownerId"]), f"VOICEBOOK#{body.start}"
     row = await messaging_repo._get(owner_pk, sk)
     if not row or not call.get("caller") or row.get("phone") != call["caller"]:
         raise _err(404, "booking_not_found")
     if body.newStart:
-        await _book(meta["ownerId"], call_id, call, cfg, body.newStart, row["service"], row["name"], skip=body.start)
-    await run_in_thread(messaging_repo._table().delete_item, Key={"pk": owner_pk, "sk": sk})
+        await _book(meta["ownerId"], call_id, call, cfg, body.newStart, row["service"], row["name"], old=row)
+    else:
+        await messaging_repo._transact(_release(messaging_repo.settings.MESSAGING_TABLE, owner_pk, row))
     entry = {"start": body.start, "newStart": body.newStart, "service": row["service"], "name": row["name"]}
     line = (
         f"{row['service']} moved from {_pretty(body.start)} to {_pretty(body.newStart)}"
@@ -439,7 +550,7 @@ async def change_booking(call_id: str, body: ChangeIn) -> dict:
 @router.post("/internal/voice/calls/{call_id}/my-bookings")
 async def my_bookings(call_id: str) -> dict:
     meta, call = await _call(call_id)
-    _allowed(await agent_config(meta["ownerId"]), "move")
+    _allowed(await agent_config(meta["ownerId"]), call, "move")
     caller = call.get("caller")
     rows = [b for b in await _bookings(meta["ownerId"], "") if caller and b.get("phone") == caller]
     return {"bookings": [{"start": b["sk"].removeprefix("VOICEBOOK#"), "service": b["service"]} for b in rows]}
@@ -486,9 +597,11 @@ class TransferIn(BaseModel):
 async def transfer(call_id: str, body: TransferIn | None = None) -> dict:
     """The number to hand the caller to (Agent page `handoff`), or none: after hours, unset, or a failed transfer
     is `handoff_missed`. The worker does the SIP transfer."""
-    meta, _c = await _call(call_id)
+    meta, call = await _call(call_id)
     cfg = await agent_config(meta["ownerId"])
-    h, now = cfg["handoff"], _now()
+    if _line_state(cfg, call.get("caller", "")) != "live":
+        raise _err(403, "not_allowed")
+    h, now = cfg["handoff"], _now(cfg)
     window = _open_window(cfg, now.strftime("%Y-%m-%d"))
     is_open = bool(window) and window[0] <= now < window[1]
     if (body and body.failed) or not h["number"] or (h["onlyOpenHours"] and not is_open):
@@ -510,7 +623,7 @@ async def start_work(call_id: str, body: WorkIn) -> dict:
     effect_check asks the owner before any outside action. The requester is the line's owner user, written by the
     backend; the same title in one call is the same task (a retried tool call)."""
     meta, call = await _call(call_id)
-    if (await agent_config(meta["ownerId"])).get("paused"):
+    if _line_state(await agent_config(meta["ownerId"]), call.get("caller", "")) != "live":
         raise _err(403, "not_allowed")
     requester = meta.get("ownerUserId")  # written by start_call from the line; never the dialed number again
     if not requester:

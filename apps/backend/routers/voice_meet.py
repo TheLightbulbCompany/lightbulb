@@ -253,3 +253,28 @@ async def end(room_id: str, body: EndIn) -> dict:
     ]  # fmt: skip
     await meeting_invites._patch_meeting(room_id, {"asked": asked, "summary": body.summary})
     return {"ok": True}
+
+
+_FOLLOW_UP = {"working": "working", "waiting": "needs_you", "failed": "needs_you", "idle": "done", "resolved": "done"}
+
+
+async def task_moved(task: dict, to: str) -> None:
+    """A voice task changed status (activities._announce). When it is a meeting's follow-up, the follow-up tracks
+    it; a newly done one is said in the Meet's chat with its link while the bot is still in the call. A voice
+    trigger's call id is the room it was asked in; a phone call's room has no meeting, so nothing is written.
+    Best-effort: a status change never fails over this."""
+    parts, status = str(task.get("triggerId") or "").split(":"), _FOLLOW_UP.get(to)
+    if parts[0] != "voice" or len(parts) != 3 or status is None:
+        return
+    mine = lambda f: f.get("taskId") == task["taskId"]  # noqa: E731
+    try:
+        meeting = await meeting_invites._patch_meeting(
+            parts[1],
+            lambda m: {"followUps": [{**f, "status": status} if mine(f) else f for f in m.get("followUps") or []]},
+            when=lambda m: any(mine(f) and f.get("status") != status for f in m.get("followUps") or []),
+        )  # None: no such follow-up, or already this status (a retried Activity says nothing twice)
+        if meeting and status == "done" and meeting.get("status") == "in_call" and meeting.get("recallBotId"):
+            link = f"{settings.FRONTEND_URL.rstrip('/')}/chat?panel=task&taskId={task['taskId']}"
+            await meeting_bots.say(meeting["recallBotId"], f"Draft ready: {task.get('title') or 'Task'} — {link}")
+    except Exception:  # noqa: BLE001 -- RecallError, a lost CAS race or a transport error alike
+        logger.warning("meet follow-up not updated task=%s to=%s", task.get("taskId"), to, exc_info=True)

@@ -28,6 +28,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from core.dynamodb import run_in_thread, utc_now_iso
+from core.observability.metrics import put_metric
 from core.repositories import messaging_repo
 from core.services import clerk_admin
 from routers.huddles import _Worker
@@ -306,6 +307,10 @@ async def end_call(call_id: str, body: EndIn) -> dict:
             if out.get("callerName") or seen.get("name"):
                 item["name"] = out.get("callerName") or seen["name"]
         await run_in_thread(messaging_repo._table().put_item, Item=item)
+    try:  # best-effort: the one outcome metric must never fail the route
+        put_metric("VoiceCallOutcome", dimensions={"outcome": out["outcome"]})
+    except Exception:
+        logger.warning("VoiceCallOutcome metric failed", exc_info=True)
     return out
 
 

@@ -2636,6 +2636,39 @@ def handler(event, context):
         "Open voice windows reached 70% of the 25-session GPT-Live tier for 2 of 3 minutes - raise the tier before new Live calls start failing.",
     });
 
+    // W85: ERROR lines from the voice routers (routers.voice, routers.voice_phone).
+    // No existing 5xx metric carries the route, so this is a filter on the backend
+    // log group. A JSON filter cannot set dimensions, so the env rides in the
+    // namespace (same reason as P32) and the alarm reads the filter's own metric.
+    const voiceErrors = new logs.MetricFilter(this, "VoiceErrorsFilter", {
+      logGroup: logs.LogGroup.fromLogGroupName(
+        this,
+        "BackendLogGroupRef",
+        props.backendLogGroupName,
+      ),
+      filterPattern: logs.FilterPattern.literal(
+        '{ $.level = "ERROR" && $.logger = "routers.voice*" }',
+      ),
+      metricNamespace: `LightbulbAI/Voice/${this.envName}`,
+      metricName: "voice.errors",
+      metricValue: "1",
+    });
+    this.createAlarm({
+      id: "W85",
+      name: "voice-errors",
+      metric: voiceErrors.metric({
+        statistic: "Sum",
+        period: cdk.Duration.minutes(5),
+      }),
+      threshold: 3,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      severity: "warn",
+      description:
+        "3+ ERROR log lines from the voice routers in 5 min - check the backend log group for routers.voice / routers.voice_phone.",
+    });
+
     // P32: Paperclip secret decryption failures, straight from its logs.
     //
     // A backstop that does not depend on the fork plugin forwarding events.

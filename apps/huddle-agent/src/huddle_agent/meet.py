@@ -3,10 +3,14 @@ session per Google Meet, in the huddle worker (agent.py hands it every `source: 
 
 It hears the room (every Meet person's track, mixed here: a realtime session takes one input stream) and
 speaks only when addressed by the assistant's name. Two gates: Gemini's own decide-not-to-respond, and
-`Gate` -- the wake rules of transcript.py over the session's input transcript. Gemini sends that transcript
-seconds AFTER its reply's audio is ready (live test 7 Nov), so a reply's audio is HELD until its turn's
-transcript arrives and shows an ask (then after a real pause, MEET_QUIET_S); anything else is dropped
-unheard. A reply not started within STALE_S is dropped. The worker never leaves on an empty room: Recall's
+`Gate` -- the wake rules of transcript.py over each person's own transcript (the huddle's per-person
+transcriber, one stream per Meet track, so every line has its exact speaker). Gemini's input transcript is
+not used: after it declines to answer side talk it sends none for the talk that follows, for as long as half a
+minute (self-test 7 Nov: an ask and a guest's question in that gap were never seen). A reply's audio is HELD
+until the latest line's final transcript (about half a second after the person stops) shows an ask and the
+room has paused (MEET_QUIET_S); anything else is dropped unheard. When a line asks and Gemini starts no reply
+(its own hearing missed the name), it is asked to answer that line (NUDGE_S). A reply not started within
+STALE_S is dropped. The worker never leaves on an empty room: Recall's
 call_ended closes the LiveKit room (routers/meetings.py), and an hour of silence pulls the bot.
 
 Reads, chat, work and the meeting's record go to the backend's /internal/voice/meet routes
@@ -26,9 +30,9 @@ from dataclasses import dataclass, field
 import numpy as np
 from google.genai import types
 from livekit import rtc
-from livekit.agents import Agent, AgentSession, JobContext, function_tool, room_io
+from livekit.agents import Agent, AgentSession, JobContext, function_tool, room_io, stt
 from livekit.agents.voice import io
-from livekit.plugins import google, noise_cancellation
+from livekit.plugins import google, noise_cancellation, openai
 
 from huddle_agent import end_after
 from huddle_agent.backend import Backend, BackendError
@@ -50,10 +54,11 @@ MEETING_MAX_S = float(os.environ.get("MEET_MAX_S", 90 * 60))  # cost cap: leave 
 TRANSCRIPT_FLUSH_S = 10
 RATE, FRAME = 16000, 320  # 20 ms frames at Gemini's input rate
 TRANSCRIPT_WAIT_S = 10.0  # a held reply's turn must be transcribed this soon (measured 1.4-1.9 s, 7 Nov)
-ASK_WINDOW_S = 30.0  # who asked: the tracks voiced since the last reply, at most this far back
+NUDGE_S = 3.0  # an ask Gemini has not started answering this long after its final: Gemini is told to answer it
 ADDRESSED = ("ask",)
 VOICED_RMS = 500  # int16 RMS a frame needs to count as someone speaking (after noise cancellation)
-ATTRIB_RMS = 150  # lower bar for "this track spoke" when deciding who asked: a quiet guest is not missed
+STT_VAD = {"type": "server_vad", "threshold": 0.5, "prefix_padding_ms": 600, "silence_duration_ms": 400}
+# agent.MEET_VAD; not imported: agent.py imports this module
 # ponytail: fixed threshold; tune from a real meeting's levels.
 
 INSTRUCTIONS = """You are {name}, the AI assistant of {company}, listening in the Google Meet "{title}". Today is
@@ -128,13 +133,12 @@ class Gate:
 
 
 class Mixer(io.AudioInput):
-    """Every Meet person's audio, summed into the one stream the session hears, paced at 20 ms. Also who is
-    which tracks carried speech when (who asked: `sole`) and when anyone last spoke (the pause rule)."""
+    """Every Meet person's audio, summed into the one stream the session hears, paced at 20 ms. Also when
+    anyone last spoke (the pause rule)."""
 
     def __init__(self) -> None:
         super().__init__(label="meet-mix")
         self._q: dict[str, deque[np.ndarray]] = {}
-        self._voiced: deque[tuple[float, str, float]] = deque(maxlen=2000)  # (when, who, rms)
         self.voiced_at = time.monotonic()
         self._next = 0.0
 
@@ -148,26 +152,15 @@ class Mixer(io.AudioInput):
 
     def mix(self) -> np.ndarray:
         out = np.zeros(FRAME, dtype=np.int32)
-        for who, q in self._q.items():
+        for q in self._q.values():
             if not q:
                 continue
             a = q.popleft()[:FRAME]
             out[: len(a)] += a
             rms = float(np.sqrt(np.mean(a.astype(np.float64) ** 2))) if len(a) else 0.0
-            if rms >= ATTRIB_RMS:  # quieter than speech counts for who-asked: a soft guest makes it ambiguous
-                self._voiced.append((time.monotonic(), who, rms))
             if rms >= VOICED_RMS:
                 self.voiced_at = time.monotonic()
         return np.clip(out, -32768, 32767).astype(np.int16)
-
-    def voiced(self, since: float) -> set[str]:
-        """The tracks that carried any voice (ATTRIB_RMS) since `since` (monotonic)."""
-        return {who for at, who, _ in self._voiced if at >= since}
-
-    def sole(self, since: float) -> str:
-        """The one track that spoke since `since`, else "" (nobody, or several: never a guess)."""
-        tracks = self.voiced(since)
-        return next(iter(tracks)) if len(tracks) == 1 else ""
 
     async def __anext__(self) -> rtc.AudioFrame:
         now = time.monotonic()
@@ -185,7 +178,8 @@ class MeetAgent(Agent):
     ) -> None:
         super().__init__(instructions=INSTRUCTIONS.format(**info))
         self._b, self.gate, self._mixer, self._names = b, gate, mixer, names
-        self.turns: list[dict] = []  # each person turn Gemini transcribed: seq, kind, final, who, text
+        self.turns: list[dict] = []  # each person's line, in the order they began: seq, kind, final, who, text
+        self._by_item: dict[str, dict] = {}
         self.consumed = 0  # turns up to this seq have had their reply (or were refused one)
         self.reply_turn: dict | None = None  # the turn the reply now playing answers
         self.reply_end = time.monotonic()  # when the last reply ended: the start of the next ask window
@@ -193,15 +187,15 @@ class MeetAgent(Agent):
         self.ends_at = time.monotonic() + MEETING_MAX_S  # from here tools are refused and replies dropped...
         self.goodbye_id = ""  # ...except the time limit's goodbye: the SpeechHandle id end_after made
 
-    def heard(self, item_id: str | None, text: str, final: bool, now: float) -> dict:
-        """One input-transcript event: the turn it belongs to, created or updated. Whether it asked is decided
-        on the FINAL transcript only; a partial can only make it a stop."""
-        t = self.turns[-1] if self.turns else None
-        if t is None or (item_id and t["item"] != item_id) or (not item_id and t["final"]):
-            who = self._mixer.sole(max(self.reply_end, now - ASK_WINDOW_S))
+    def heard(self, item_id: str, text: str, final: bool, now: float, who: str = "") -> dict:
+        """One transcript event of `who`'s line `item_id`: the turn, created or updated. Whether it asked is
+        decided on the FINAL transcript only; a partial (a prefix as it streams) can only make it a stop."""
+        t = self._by_item.get(item_id)
+        if t is None:
             t = {"seq": len(self.turns) + 1, "item": item_id, "kind": "", "final": False, "final_at": None,
                  "who": who, "text": "", "at": now}  # fmt: skip
             self.turns.append(t)
+            self._by_item[item_id] = t
         t["text"] = text
         if not final:
             # a partial is a few words that keep growing ("We should ask Nova" -> "... about it later."): it may
@@ -218,9 +212,9 @@ class MeetAgent(Agent):
         return t
 
     def asker(self) -> str:
-        """The Meet participant id whose ask this is: the ONE track voiced since the last reply; "" when
-        nobody or several spoke (the backend then treats it as a guest's: needs_member)."""
-        who = self._mixer.sole(max(self.reply_end, time.monotonic() - ASK_WINDOW_S))
+        """The Meet participant id whose ask this is: who said the latest line ("" for nobody: the backend
+        then treats it as a guest's, needs_member)."""
+        who = self.turns[-1]["who"] if self.turns else ""
         return who.rsplit(":", 1)[-1] if who else ""
 
     def _authorize(self, now: float, speech_id: str | None = None) -> tuple[bool | None, str]:
@@ -274,7 +268,11 @@ class MeetAgent(Agent):
             if why in ("stop", "not addressed"):
                 self.consumed = self.turns[-1]["seq"]  # that turn had its say: no later reply claims it
             logger.info("meet: reply dropped (%s) after %.1fs", why, held)
-            self.session.interrupt()
+            # unheard, to its end: session.interrupt() cannot cancel a Gemini reply (with server VAD the
+            # plugin's interrupt sends nothing), so the speech then hung for LiveKit's 5 s timeout and the
+            # next reply queued behind it
+            async for _ in audio:
+                pass
             return
         if why == "ask":
             self.reply_turn, self.consumed = self.turns[-1], self.turns[-1]["seq"]
@@ -376,17 +374,38 @@ async def run(ctx: JobContext, meta: dict) -> None:
         "today": time.strftime("%A %Y-%m-%d"),
     }, names)  # fmt: skip
     readers: dict[str, asyncio.Task] = {}
+    # the huddle's per-person transcriber (agent.py): the gate's ears, with the exact speaker of each line
+    # the name in its prompt: unprompted, an accented "Lightbulb, can you..." came out as "la lampe" (self-test)
+    stt_engine = openai.STT(
+        model="gpt-4o-mini-transcribe", use_realtime=True, turn_detection=STT_VAD,
+        prompt=f'A meeting at {meta.get("company") or "a business"}. People ask the AI assistant "{name}" things '
+        f'by name: "{name}, ...".',
+    )  # fmt: skip
 
     async def read(track: rtc.Track, identity: str) -> None:
         stream = rtc.AudioStream.from_track(
             track=track, sample_rate=RATE, num_channels=1, frame_size_ms=20,
             noise_cancellation=noise_cancellation.NC(),
         )  # fmt: skip
+        words = stt_engine.stream()
+
+        async def listen() -> None:
+            n = 0
+            async for ev in words:
+                if ev.alternatives and ev.type in (stt.SpeechEventType.INTERIM_TRANSCRIPT, stt.SpeechEventType.FINAL_TRANSCRIPT):
+                    final = ev.type == stt.SpeechEventType.FINAL_TRANSCRIPT
+                    on_heard(identity, f"{identity}#{n}", ev.alternatives[0].text, final)
+                    n += final
+
+        listener = asyncio.create_task(listen())
         try:
             async for ev in stream:
                 mixer.push(identity, ev.frame)
+                words.push_frame(ev.frame)
         finally:
             mixer.remove(identity)
+            listener.cancel()
+            await words.aclose()
             await stream.aclose()
 
     def on_track(track: rtc.Track, _pub, p: rtc.RemoteParticipant) -> None:
@@ -429,14 +448,32 @@ async def run(ctx: JobContext, meta: dict) -> None:
     def label(identity: str) -> str:
         return names.get(identity, "Someone") if identity else "Several people"
 
-    def on_heard(ev) -> None:
-        t = agent.heard(ev.item_id, ev.transcript, ev.is_final, time.monotonic())
-        logger.info("meet: turn %d kind=%s final=%s", t["seq"], t["kind"] or "-", ev.is_final)
+    def on_heard(who: str, item: str, text: str, final: bool) -> None:
+        if not text.strip():
+            return
+        t = agent.heard(item, text, final, time.monotonic(), who=who)
+        logger.info("meet: turn %d kind=%s final=%s", t["seq"], t["kind"] or "-", final)
         if t["kind"] == "stop":
             session.interrupt()
-        if ev.is_final:
+        if final and t["kind"] in ADDRESSED:
+            asyncio.create_task(nudge(t, text))
+        if final:
             lines.append({"mark": len(lines), "kind": "person", "name": label(t["who"])[:200],
-                          "text": ev.transcript[:4000], "at": time.time()})  # fmt: skip
+                          "text": text[:4000], "at": time.time()})  # fmt: skip
+
+    async def nudge(t: dict, text: str) -> None:
+        """Our transcript says the assistant was asked; Gemini's own hearing may have missed the name and
+        stayed silent (self-test 7 Nov: a guest's two asks, unanswered). If nothing is under way for this
+        line by NUDGE_S, Gemini is given the line to answer."""
+        await asyncio.sleep(NUDGE_S)
+        busy = session.current_speech is not None or agent.tool_at >= (t["final_at"] or 0)
+        if busy or agent.consumed >= t["seq"] or agent.turns[-1] is not t or time.monotonic() >= agent.ends_at:
+            return
+        logger.info("meet: turn %d nudged", t["seq"])
+        try:
+            session.generate_reply(user_input=f'{label(t["who"])} said to you: "{text}"')
+        except RuntimeError:  # the session is closed (Gemini refused it): nothing to nudge
+            logger.warning("meet: nudge refused, the session is not running")
 
     def on_reply(turn: dict, items: list) -> None:
         """A played reply, done: its words go on the record with the turn it answered (never another's)."""
@@ -463,7 +500,6 @@ async def run(ctx: JobContext, meta: dict) -> None:
             {f"lightbulb.agent.{ASSISTANT_ID}.status": status, f"lightbulb.agent.{ASSISTANT_ID}.name": name}
         ))  # fmt: skip
 
-    session.on("user_input_transcribed", on_heard)
     session.on("agent_state_changed", on_state)
     sent = {"n": 0}
 

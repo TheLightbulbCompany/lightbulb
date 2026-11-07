@@ -14,7 +14,7 @@ import Page from "../page";
 const save = vi.fn();
 beforeEach(() => {
   save.mockReset();
-  hooks.useUsage.mockReturnValue({ data: { minutes: 38, included: 1500, overageRate: 0.35, runOut: "keep" } });
+  hooks.useUsage.mockReturnValue({ data: { used: 38, included: 1500, overageRate: 0.35, runOut: "keep" } });
   hooks.useAgentConfig.mockReturnValue({ data: { name: "Nova" }, save });
 });
 
@@ -35,5 +35,5 @@ it("saves the run-out choice into the Agent document", () => {
   render(<Page />);
   expect(screen.getByLabelText(/Keep answering/)).toBeChecked();
   fireEvent.click(screen.getByLabelText(/Send calls to my phone/));
-  expect(save).toHaveBeenCalledWith({ name: "Nova", runOut: "phone" });
+  expect(save).toHaveBeenCalledWith({ name: "Nova", runOut: "forward" });
 });

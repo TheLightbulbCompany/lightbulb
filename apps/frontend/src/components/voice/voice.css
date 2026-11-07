@@ -187,3 +187,4 @@ textarea.vx-field { resize: vertical; }
 .vx-meter > span { display: block; height: 100%; border-radius: inherit; background: var(--fg); }
 .vx-runout { border: 0; padding: 0; margin: 6px 0 0; min-width: 0; }
 .vx-runout legend { margin-bottom: 8px; }
+.vx-orgs { display: flex; justify-content: center; margin-top: 24px; }

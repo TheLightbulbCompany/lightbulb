@@ -5,7 +5,7 @@
 import "./voice.css";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { UserButton, useOrganization } from "@clerk/nextjs";
+import { OrganizationList, UserButton, useOrganization } from "@clerk/nextjs";
 import { CircleAlert, Home, PhoneCall, Settings } from "lucide-react";
 import { HuddleProvider } from "@/components/huddle/HuddleProvider";
 import { callNeedsYou, useQuestions, useTimeline } from "./data";
@@ -28,8 +28,9 @@ export function VoiceShell({ children }: { children: React.ReactNode }) {
   const { organization, isLoaded } = useOrganization();
   const needs = useNeedsYouTotal();
   if (isLoaded && !organization) {
-    return <main className="vx-page"><h1 className="vx-title">Choose a workspace first</h1>
-      <p className="vx-sub"><Link className="vx-link" href="/chat">Open Lightbulb</Link> and pick your business.</p></main>;
+    // Clerk <OrganizationList> props: https://clerk.com/docs/components/organization/organization-list
+    return <main className="vx-page"><h1 className="vx-title">Choose your workspace</h1>
+      <div className="vx-orgs"><OrganizationList hidePersonal afterSelectOrganizationUrl="/voice" afterCreateOrganizationUrl="/onboarding" skipInvitationScreen /></div></main>;
   }
   return (
     <HuddleProvider>

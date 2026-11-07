@@ -54,7 +54,7 @@ export interface AgentConfig {
   meetings: { followUps: boolean; emailNotes: boolean };
   reminders: { dayBefore: boolean; missedCallers: boolean; waitlist: boolean };
   /** Past the included minutes: keep answering at the overage rate, or send calls to the owner's phone. */
-  runOut?: "keep" | "phone";
+  runOut?: "keep" | "forward";
   /** Onboarding: what the owner typed in step 1, and the step to resume at (absent once it went live). */
   business?: string; city?: string; website?: string; onboardingStep?: number;
 }
@@ -126,7 +126,7 @@ export function monthMinutes(items: TimelineItem[], now = new Date()): number {
     .reduce((s, c) => s + (c.durationSec ?? 0), 0) / 60);
 }
 
-export interface Usage { minutes: number; included: number; overageRate: number; runOut: "keep" | "phone" }
+export interface Usage { used: number; included: number; overageRate: number; runOut: "keep" | "forward" }
 
 /** GET /voice/usage (Task 13). Until it ships (404) this month's minutes come from the timeline: $250 plan, 1,500 included, $0.35/min after. */
 export function useUsage() {
@@ -137,6 +137,6 @@ export function useUsage() {
     catch (e) { if ((e as { status?: number }).status === 404) return null; throw e; }
   });
   if (swr.data) return { data: swr.data, isLoading: false };
-  if (swr.data === null && items) return { data: { minutes: monthMinutes(items), included: 1500, overageRate: 0.35, runOut: "keep" } as Usage, isLoading: false };
+  if (swr.data === null && items) return { data: { used: monthMinutes(items), included: 1500, overageRate: 0.35, runOut: "keep" } as Usage, isLoading: false };
   return { data: undefined, isLoading: true };
 }

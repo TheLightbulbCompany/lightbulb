@@ -1,12 +1,11 @@
 name: Huddle Agent
 
-# LiveKit Cloud Agents worker (apps/huddle-agent). Deploy jobs stay inert until
-# the LiveKit account exists and LIVEKIT_{DEV,PROD}_ENABLED is set to 'true'.
+# LiveKit Cloud Agents worker (apps/huddle-agent). The plan allows one deployed agent, prod `lightbulb-huddle`
+# (deploy-prod, manual). Dev workers run on the Mac with `lk agent start`, so there is no dev deploy.
 on:
   pull_request:
     # The three backend files are the replay's router (tests/replay/router.py loads them by path), so a
-    # change to them runs the replay gate. Pull requests only: on a push they would redeploy a worker
-    # that did not change (deploy-dev runs on every push this workflow takes).
+    # change to them runs the replay gate.
     paths:
       - "apps/huddle-agent/**"
       - ".github/workflows/huddle-agent.yml"
@@ -21,8 +20,7 @@ on:
 permissions:
   contents: read
 
-# Supersede in-flight runs for the same PR; a push to main gets its own group (its SHA)
-# so a deploy-dev run is never cancelled by the next merge's.
+# Supersede in-flight runs for the same PR; a push to main gets its own group (its SHA).
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: true
@@ -43,23 +41,6 @@ jobs:
           cache-dependency-glob: apps/huddle-agent/uv.lock
       - run: uv sync
       - run: uv run pytest
-
-  deploy-dev:
-    needs: test
-    if: github.event_name == 'push' && vars.LIVEKIT_DEV_ENABLED == 'true'
-    runs-on: ${{ vars.CI_RUNNER }}
-    steps:
-      - uses: actions/checkout@v7
-      # lk agent deploy needs the livekit.toml that `lk agent create` wrote for this project (README).
-      - run: cp apps/huddle-agent/livekit.dev.toml apps/huddle-agent/livekit.toml
-      - uses: livekit/deploy-action@v2.12.2
-        env:
-          LIVEKIT_URL: ${{ secrets.LIVEKIT_URL_DEV }}
-          LIVEKIT_API_KEY: ${{ secrets.LIVEKIT_API_KEY_DEV }}
-          LIVEKIT_API_SECRET: ${{ secrets.LIVEKIT_API_SECRET_DEV }}
-        with:
-          OPERATION: deploy
-          WORKING_DIRECTORY: apps/huddle-agent
 
   deploy-prod:
     needs: test

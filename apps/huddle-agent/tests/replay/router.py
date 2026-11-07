@@ -85,6 +85,7 @@ def backend():
         return ceo if ceo in candidates else min(candidates)
 
     vc.messaging_repo.list_members = members
+    vc.messaging_repo.agent_text = lambda text: text  # the real one only unescapes web-composer markdown
     vc._room_team = room_team
     vc.openclaw_work._fallback_single = fallback
     jev.agent_card, jev.decide = card, decide

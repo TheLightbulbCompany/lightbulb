@@ -8,6 +8,7 @@ also keep the call record. Run: `AGENT_MODULE=huddle_agent.phone uv run python -
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -26,6 +27,8 @@ from livekit.agents import (
 )
 from livekit.plugins import google
 
+from huddle_agent import end_after
+
 logger = logging.getLogger("phone")
 # LIVEKIT_AGENT_NAME wins over the decorator's kwarg (livekit-agents 1.8); the image's ENV says lightbulb-huddle.
 os.environ["LIVEKIT_AGENT_NAME"] = os.environ.get(
@@ -35,6 +38,7 @@ MODEL = os.environ.get("PHONE_MODEL", "gemini-3.8-live")  # 10-voice-models.md Â
 VOICE = os.environ.get(
     "PHONE_VOICE", "Kore"
 )  # one of Gemini's prebuilt voices; the greeting's TTS uses the same
+CALL_MAX_S = float(os.environ.get("PHONE_MAX_S", 20 * 60))  # cost cap: a call ends after 20 minutes
 # One warm process is plenty for a line; a busy host gets a longer start and its own load ceiling.
 server = AgentServer(
     num_idle_processes=1,
@@ -241,7 +245,14 @@ async def entrypoint(ctx: JobContext) -> None:
         if text:
             transcript.append({"role": ev.item.role, "text": text})
 
+    async def hang_up() -> None:
+        await ctx.delete_room()  # disconnects the SIP caller too
+        ctx.shutdown("call max length")
+
+    limit = asyncio.create_task(end_after(CALL_MAX_S, session, hang_up))
+
     async def on_end(_reason: str = "") -> None:
+        limit.cancel()
         out = await backend.post(
             "end",
             {
